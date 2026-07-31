@@ -170,3 +170,5 @@ Recorded because the review rounds found several confidently-stated shell facts 
 - `-n -b -o` produces byte-identical output under ripgrep 15.1.0 and BSD grep 2.6.0-FreeBSD, which is what `rules/RULE-FORMAT.md` §10.3's per-match ordinal needs.
 - `printf '--- ...'` is parsed as options by bash's builtin printf; use `printf -- '--- ...'`.
 - `find` over a directory that does not exist fails, and under `pipefail` takes the whole pipeline with it.
+- ShellCheck versions disagree: Ubuntu's reports `SC2119`/`SC2120` where 0.11.0 does not. CI runs whatever the image ships, so a finding is silenced with an explicit `# shellcheck disable=` and a reason rather than left to the version.
+- A comment line beginning `# shellcheck ` is parsed as a DIRECTIVE, so prose about shellcheck must not start a line with that word.

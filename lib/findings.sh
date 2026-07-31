@@ -221,6 +221,12 @@ _REDACTION_LOADED=0
 _REDACTION_COMBINED=''
 declare -a _REDACTION_IDS=()
 
+# The path argument is optional and defaults to the shipped file.  Callers that
+# pass one - the fixture harness and the test suites - live outside this file and
+# are therefore invisible to the linter.  Older releases report SC2120 here and
+# newer ones do not, so it is silenced explicitly rather than left to whichever
+# version a CI image happens to ship.
+# shellcheck disable=SC2120
 redaction_load() {
   local path=${1:-$SCOURSH_INSTALL_ROOT/rules/redaction.rules}
   _REDACTION_LOADED=1
@@ -262,6 +268,7 @@ redact() {
     printf '%s' "$text"
     return 0
   fi
+  # shellcheck disable=SC2119
   (( _REDACTION_LOADED )) || redaction_load
   if [[ -z $_REDACTION_COMBINED || -z $text ]]; then
     printf '%s' "$text"
@@ -443,6 +450,12 @@ md_fence_for() {
 declare -A _RUBRIC=()
 _RUBRIC_LOADED=0
 
+# The path argument is optional and defaults to the shipped file.  Callers that
+# pass one - the fixture harness and the test suites - live outside this file and
+# are therefore invisible to the linter.  Older releases report SC2120 here and
+# newer ones do not, so it is silenced explicitly rather than left to whichever
+# version a CI image happens to ship.
+# shellcheck disable=SC2120
 rubric_load() {
   local path=${1:-$SCOURSH_INSTALL_ROOT/data/severity-rubric.conf}
   _RUBRIC=()
@@ -470,6 +483,7 @@ _rubric_mod() {
 severity_final() {
   local base=$1 exposure=${2:-unknown} auth=${3:-user} sensitive=${4:-false}
   local confidence=${5:-medium} floor=${6:-} ceiling=${7:-}
+  # shellcheck disable=SC2119
   (( _RUBRIC_LOADED )) || rubric_load
   local n
   n=$(severity_rank "$base")
@@ -569,6 +583,12 @@ declare -A _ATTR_HOST=()      # host -> LF-joined target ids
 declare -A _ATTR_SUBDOMAIN=() # target -> LF-joined hosts allowing subdomains
 _ATTR_LOADED=0
 
+# The path argument is optional and defaults to the shipped file.  Callers that
+# pass one - the fixture harness and the test suites - live outside this file and
+# are therefore invisible to the linter.  Older releases report SC2120 here and
+# newer ones do not, so it is silenced explicitly rather than left to whichever
+# version a CI image happens to ship.
+# shellcheck disable=SC2120
 attribution_load() {
   local path=${1:-$SCOURSH_INSTALL_ROOT/config/scope.conf}
   _ATTR_HOST=()
@@ -635,6 +655,7 @@ _normalise_host() {
 # as zero matches: guessing a correlation value is worse than not having one.
 attribute_target() {
   local matches='' host t id sub
+  # shellcheck disable=SC2119
   (( _ATTR_LOADED )) || attribution_load
   for host in "$@"; do
     [[ -n $host ]] || continue
@@ -782,8 +803,11 @@ finding_set_evidence() {
 # a subshell, be thrown away, and re-parse the file for every single finding, so
 # they are loaded here, in the caller's shell, exactly once.
 findings_ensure_loaded() {
+  # shellcheck disable=SC2119
   (( _REDACTION_LOADED )) || redaction_load
+  # shellcheck disable=SC2119
   (( _RUBRIC_LOADED )) || rubric_load
+  # shellcheck disable=SC2119
   (( _ATTR_LOADED )) || attribution_load
 }
 
