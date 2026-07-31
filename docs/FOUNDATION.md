@@ -478,8 +478,10 @@ what keeps an adapter id from ever being mistaken for an authored one.
 
 **Consequence for the build.**
 `lib/findings.sh` exposes exactly one fingerprint function, and no module computes a fingerprint itself.
-`FP_SCHEMA` is written into every `state/` file and every `config/baseline.json`; on a mismatch no prior
-fingerprint is comparable, so nothing is reported `fixed` and the gate goes fail-closed (tension 12).
+`FP_SCHEMA` is written into every `state/` file and every `config/baseline.json`.
+On a mismatch tension 12 treats the **prior set as empty** for classification: nothing `fixed`, nothing
+`recurring`, this run's findings `new`, prior findings persisted `unknown` with the mismatch as the
+reason, and the gate fail-closed.
 A test asserts fingerprint stability directly: it inserts blank lines and reindents a fixture, re-runs,
 and requires the fingerprint set to be byte-identical.
 A second test asserts that two distinct secrets in one file produce two distinct fingerprints.
@@ -654,22 +656,39 @@ A composite that was not selected is `unknown`, exactly as an unselected ordinar
 - **(b2) A listed check that produced no prior contributor finding.**
   `contributors` records only the checks that actually *fired*, so a listed `any-of` alternative that did
   not fire leaves no pair to look up and would otherwise be invisible.
-  Such a check must be covered over **every cell the prior run covered it over** - that is, the prior
-  `state/`'s `covered_checks[<check>].cells` set must be a subset of this run's for that check.
-  If any of those cells was not revisited, the composite is `unknown`.
+  Such a check counts as covered only when **both** of the following hold, and the composite is
+  `unknown` if either fails:
 
-  **"Covered in at least one cell" is not sufficient here**, and using it would have reopened the defect
-  this tension exists to close, on the same invocation.
-  Construction: `requires: DAST-A-01`, `any-of: DAST-B-01`, `any-of: CLOUD-C-01`, `correlate-on: target`.
+  1. **A floor.** The check has an entry in **this run's** `covered_checks` with at least one cell.
+     A check with no entry at all is **not covered, whatever the prior run recorded.**
+  2. **A subset.** The prior `state/`'s `covered_checks[<check>].cells` set is a subset of this run's for
+     that check, so every cell the prior run covered it over was revisited.
+
+  **Neither half is sufficient alone**, and this tension has now been wrong in each direction once, so
+  both failures are recorded rather than just the second.
+
+  *Without the subset test*, the region-narrowed case slips through.
+  `requires: DAST-A-01`, `any-of: DAST-B-01`, `any-of: CLOUD-C-01`, `correlate-on: target`.
   Run 1 `--regions all`: A and B fire at `staging`, C never fires anywhere, so `contributors = [A, B]`
   while `covered_checks[CLOUD-C-01].cells` records both regions.
-  Run 2 `--regions us-east-1`: (a) holds, (b1) holds for A and B, and under the weak test (b2) holds too
-  because C was "covered" in `us-east-1` - so the composite is reported **`fixed (chain broken)`** and
+  Run 2 `--regions us-east-1`: (a) holds, (b1) holds for A and B, and under a floor-only test (b2) holds
+  because C was covered in `us-east-1` - so the composite is reported **`fixed (chain broken)`** and
   persisted, even though `eu-west-1`, the only region where C could have fired, was never visited.
-  Under the subset test, `eu-west-1` is in the prior cell set and not in this run's, so the composite is
-  `unknown`.
-  The weak phrasing is also the exact formulation this tension refuses to use forty lines below, on the
-  predates-`contributors` branch; it has no better claim here.
+
+  *Without the floor*, the never-covered case slips through, and this one needs no exotic flags at all.
+  Same record, run 1 `scan.sh all` on a runner with no cloud credentials, so `CLOUD-C-01` is kept out of
+  `covered_checks` entirely by the exclusion list below.
+  A and B fire, the composite fires, `contributors = [A, B]`.
+  Run 2 is the **identical invocation** with B remediated.
+  The prior cell set for `CLOUD-C-01` is empty, empty is a subset of anything, "if any of those cells was
+  not revisited" ranges over nothing, so a bare subset test holds **vacuously** and the composite is
+  persisted **`fixed (chain broken)`** naming B as the link that went away - while C, the alternative
+  that could keep `A ∧ (B ∨ C)` live, was never assessed in either run.
+  That is prescribed test 9.
+
+  An earlier draft carried the floor as part of a weaker rule, and replacing that rule with the subset
+  test dropped it silently.
+  It is restored here as an explicit conjunct so it cannot be dropped again by rewriting the other half.
 
   This is the case where "the one that would have fired never ran" has to be distinguished from "none of
   them fired", and it is why (b) is stated over the record's `requires` and `any-of` lists rather than
@@ -756,6 +775,7 @@ test that passes under both readings pins nothing:
 | 6 | **`any-of: DAST-B-01, CLOUD-C-01`; run 1 `--regions all`, only B fires; run 2 `--regions us-east-1`, same modules selected, B now absent** | **`unknown`** | condition (b2) omitted **and** (b2) stated as "covered in at least one cell" - both return `fixed`, because C *is* covered in `us-east-1` while `eu-west-1` was never revisited |
 | 7 | **`SAST-HIST-*` contributor whose cell is covered but whose `oldest_reaching_commit_time` precedes this run's `oldest_commit_time`** | **`unknown`** | condition (b1)'s `fixed`-eligibility clause omitted - cell-only returns `fixed` |
 | 8 | Prior composite finding with no `contributors` recorded | **`unknown`** | the "covered in at least one cell" fallback applied to this branch |
+| 9 | **`requires: DAST-A-01`, `any-of: DAST-B-01`, `any-of: CLOUD-C-01`. Run 1 `scan.sh all` on a runner with no cloud credentials, so `CLOUD-C-01` is never covered; A and B fire; composite fires with `contributors = [A, B]`. Run 2 identical invocation, B remediated** | **`unknown`** | **a bare subset test: the prior cell set for `CLOUD-C-01` is empty, empty is a subset of anything, so (b2) holds vacuously and the composite is reported `fixed (chain broken)` while the alternative that could keep `A ∧ (B ∨ C)` live was never assessed in either run** |
 
 Cases 5, 6, 7, and 8 are new, and each is the only case in the set that discriminates its condition:
 under the round-2 rule every one of them returns `fixed (chain broken)` while cases 1 to 4 still pass, so
@@ -1119,9 +1139,12 @@ The pipeline is frozen in this order, and every stage is a named function in `li
      A first run's findings are `new`, they are persisted `new`, and the first report a team ever sees
      counts them as `new` - which is what makes the "baseline after the first red build" workflow
      (tension 14) mean anything.
-   - **`fp_schema` mismatch.** The prior fingerprints are not comparable to this run's, so the table has
-     no prior finding to match and every finding is again `new`, with the report saying the schema
-     changed and a baseline rebuild is required.
+   - **`fp_schema` mismatch.** Tension 12 treats the prior set as empty, so the table has no prior
+     finding to match and every finding this run produced is again `new`, with the prior findings
+     persisted `unknown` and the report saying the schema changed and a baseline rebuild is required.
+     Note it is the emptied prior set, not the raw table, that gives this answer: run against the prior
+     set intact, the table's `present, covered | absent | fixed` row would report the whole backlog
+     remediated.
    - **`scan_root_id` mismatch.** As above, for `path-root` cells only.
 
    An earlier draft of this step said `status` was `unknown` for every finding in these cases.
@@ -1317,12 +1340,20 @@ scan_root        =  git -C "$resolved_path" rev-parse --show-toplevel   # if it 
 # scan_root_id is "<kind>:<value>" - the kind prefix is part of the id, so
 # two different kinds can never collide on one string.
 if scan_root came from git:
-    url = git -C "$scan_root" config --get remote.origin.url
-    if url is non-empty:  kind = "git-remote"; value = url, with one trailing "/"
-                                                    then one trailing ".git" stripped
-    else:                 kind = "git-local";  value = scan_root          # absolute path
-else:                     kind = "path";       value = resolved_path      # absolute path
+    url = git -C "$scan_root" config --local --get remote.origin.url   # --local: see (5)
+    url = url with one trailing "/" then one trailing ".git" stripped  # normalise FIRST
+    url = url with any userinfo removed:                               # see (4)
+              "<scheme>://<user>[:<pass>]@<rest>"  ->  "<scheme>://<rest>"
+              "<user>@<host>:<path>"               ->  "<host>:<path>"
+    if url is non-empty:  kind = "git-remote"; value = url             # test AFTER normalise
+    else:                 kind = "git-local";  value = scan_root       # absolute path
+else:                     kind = "path";       value = resolved_path   # absolute path
 ```
+
+**`scan_root_id` MUST NOT contain credentials.**
+It is written to `state/<run-id>.json`, to `run.json`, and into the `run_identity` hash (tension 18), so
+a credential in it is a secret on disk, which tension 9 forbids without qualification.
+The userinfo strip is not a tidiness step; it is that rule applied here.
 
 **This recipe was chosen by running it, not by reasoning about it.**
 The obvious identity - the repository's root commit - reads correctly and fails three ways in practice,
@@ -1355,6 +1386,22 @@ $ git -C single2 rev-list --max-parents=0 --all | sort | head -1
 09e3153106d25eda557e3f48ca8a53925ef77c16
 ```
 
+Setup note for (2), because the transcript is not re-executable without it: `git clone --depth 1`
+against a **local path** silently ignores the flag, so the shallow limb must be cloned over `file://`.
+Git says so itself:
+
+```
+$ git clone -q --depth 1 "$SP/src" bypath
+warning: --depth is ignored in local clones; use file:// instead.
+$ git -C bypath rev-parse --is-shallow-repository ; git -C bypath rev-list --count HEAD
+false
+3
+$ git clone -q --depth 1 "file://$SP/src" byfile
+$ git -C byfile rev-parse --is-shallow-repository ; git -C byfile rev-list --count HEAD
+true
+1
+```
+
 Each failure is fatal in a different way.
 (1) leaves `scan_root_id` **undefined**, so two unrelated commit-less trees scanned from one install
 share the empty id and cell `.`, and the second run reports the first's findings `fixed` - the exact
@@ -1369,7 +1416,17 @@ The replacement was then run against the same three constructions plus the colli
 apart:
 
 ```
-$ git -C B remote get-url origin ; git -C shallow3 remote get-url origin ; git -C single3 remote get-url origin
+# read with THE FROZEN COMMAND. `git remote get-url` is NOT equivalent and must not be
+# substituted: it applies url.<base>.insteadOf rewriting and returns the FIRST url of a
+# multi-url remote, while `config --local --get` returns the raw LAST value. Measured:
+$ git -C io config url.'git@host.example:'.insteadOf 'https://host.example/'
+$ git -C io config --local --get remote.origin.url   ->  https://host.example/org/proj.git
+$ git -C io remote get-url origin                    ->  git@host.example:org/proj.git
+$ git -C io remote set-url --add origin https://host.example/org/mirror.git
+$ git -C io config --local --get remote.origin.url   ->  https://host.example/org/mirror.git
+$ git -C io remote get-url origin                    ->  git@host.example:org/proj.git
+
+$ git -C B config --local --get remote.origin.url ; git -C shallow3 ... ; git -C single3 ...
 https://example.invalid/org/proj.git
 https://example.invalid/org/proj.git/
 https://example.invalid/org/proj
@@ -1396,6 +1453,41 @@ tarball/frontend       path:/tmp/probe/tarball/frontend
 The three URL spellings in that run differ by a trailing `/` and a trailing `.git`; the two-step
 normalisation collapses them, which is why the three clones agree.
 
+**The `--local` and userinfo clauses each close a defect that was measured, not imagined.**
+
+```
+# (4) credential leak. This is the standard GitLab Runner clone shape.
+$ git -C gl config --local --get remote.origin.url
+https://gitlab-ci-token:JOBTOKEN123@gitlab.example/org/proj.git
+     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a live job token, bound for state/, run.json and run_identity
+
+#     and because the job token rotates per job, the id moved on every run, so path-root
+#     cells were permanently incomparable and the gate could never converge:
+     token=JOBTOKEN123 -> git-remote:https://gitlab.example/org/proj   # after the strip
+     token=JOBTOKEN456 -> git-remote:https://gitlab.example/org/proj   # unchanged
+
+# (5) --get reads global config too, so a stray global remote.origin.url collides
+#     two unrelated remote-less repositories onto one id and one cell "."
+$ printf '[remote "origin"]\n\turl = https://host.example/org/LEAK.git\n' > "$GIT_CONFIG_GLOBAL"
+$ git -C R1 config --get remote.origin.url         ->  https://host.example/org/LEAK.git
+$ git -C R2 config --get remote.origin.url         ->  https://host.example/org/LEAK.git
+$ git -C R1 config --local --get remote.origin.url ->  (unset, exit 1)
+     R1 -> git-local:/tmp/probe2/R1     # with --local: distinct again
+     R2 -> git-local:/tmp/probe2/R2
+
+# (6) normalise-then-test: a degenerate url of exactly ".git" normalises to empty and
+#     must fall through to git-local rather than yielding a bare "git-remote:"
+     origin=".git"  ->  git-local:/tmp/probe2/degen
+
+# scp-like userinfo is stripped by the second form of the rule
+     origin="git@host.example:org/proj.git"  ->  git-remote:host.example:org/proj
+```
+
+`git config --local --get` exits 1 when the key is unset, which under tension 4's mandatory
+`set -Eeuo pipefail` aborts the run unless the call is written in a condition context (tension 4 rule 3).
+That is a fail-loud error rather than a wrong id, and it is noted here so the implementer does not meet
+it by surprise.
+
 **What the replacement does and does not promise**, stated so nobody has to re-derive it:
 
 - It is **defined for every input**, including a commit-less repository and a directory that is not a
@@ -1404,8 +1496,12 @@ normalisation collapses them, which is why the three clones agree.
   rather than the object graph.
 - It **distinguishes** a superproject from a nested repository, two unrelated commit-less repositories,
   and two nested non-git roots - the cases that would otherwise collide onto cell `.`.
-- It is **portable across CI workspaces** for the ordinary case of a repository with a remote, since the
-  id contains no checkout path.
+- It is **portable across CI workspaces** for the ordinary case of a repository with an `origin` remote
+  whose URL is not a local path, since the id then contains no checkout path.
+  A remote named something other than `origin` falls to `git-local:`, and a local-path remote yields
+  `git-remote:/abs/path`; both are workspace-bound.
+- It **never contains a credential**, by the userinfo strip above.
+- It reads **local config only**, so nothing outside the repository can supply or collide it.
 - It does **not** unify different spellings of one remote beyond the trailing `/` and `.git`: an `ssh://`
   and an `https://` URL for one repository are different ids.
   That direction is safe - a differing id makes `path-root` cells incomparable, so nothing is reported
@@ -1513,8 +1609,8 @@ A region-scoped or target-scoped run therefore leaves every other region's and t
   A composite is `fixed` only when **(a)** its own record was selected this run, **(b)** every check
   named in its `requires` and `any-of` is covered - contributors that fired by their recorded
   `(check_id, cell)` pair *and* by the same test that would let their own finding be `fixed`, listed
-  checks that did not fire by having **every cell the prior run covered them over** revisited - and
-  **(c)** the predicate no longer holds.
+  checks that did not fire by being covered **this run** at all **and** having every cell the prior run
+  covered them over revisited - and **(c)** the predicate no longer holds.
   Reading only the recorded pairs is not sufficient, for two reasons this section has to state because
   they are properties of the cell mechanism: a composite has no cell, so nothing else asks whether it was
   selected; and for a `SAST-HIST-*` contributor "cell covered" is precisely the signal the bullet above
@@ -1530,9 +1626,28 @@ reason from `run.json`.
 
 Two guards sit alongside it:
 
-- **`fp_schema` or `scan_root_id` mismatch** between `state/latest.json` and this run makes the whole
-  diff `unknown` rather than reporting a mass new-and-fixed.
-  The report says which changed and that a baseline rebuild is required.
+- **`fp_schema` or `scan_root_id` mismatch** between `state/latest.json` and this run makes the prior set
+  **incomparable**, and the mechanism for that is stated here because the table above is the only owner
+  of classification and would otherwise answer it wrongly.
+
+  **The prior set is treated as empty for classification**, with one addition:
+
+  - Nothing is reported `fixed`.
+  - Nothing is carried forward as `recurring`.
+  - Every finding *this run* produced takes the table's `absent | present` row and is therefore `new`.
+  - Every *prior* finding is persisted `unknown`, with the mismatch recorded as the reason, so history is
+    not erased.
+
+  Saying only "nothing is reported `fixed`" would not have been enough, and the earlier wording that did
+  say only that was wrong in a way worth recording.
+  Follow the table literally after an `fp/1` to `fp/2` bump: the prior findings are present in `state/`,
+  their `(C, K)` cells *are* covered because the run ran normally, and no prior fingerprint matches any of
+  this run's - which is exactly the `present, (C, K) covered | absent | fixed` row.
+  The table would have persisted the **entire backlog as `fixed`** and headlined it as remediated.
+  Treating the prior set as empty is what stops the table reaching that row at all, and it is a
+  mechanism rather than an assertion.
+
+  The report says which of the two changed and that a baseline rebuild is required.
   Both set **`diff_usable = false`** (tension 11 step 5), and that flag - **not** any finding's `status` -
   is what the gate reads.
   Statuses come from the classification table above and from nothing else; `diff_usable` never overrides
@@ -1817,7 +1932,7 @@ This distinction is load-bearing and the two must never be conflated, because te
 | A retired check id (tension 7) | declared | none |
 | A `SAST-HIST-*` finding older than this run's history boundary (tension 13) | declared | none |
 | A composite not selected this run, or with incomplete contributor coverage (tension 6) | inherits its cause's class | inherits |
-| An unusable diff: `fp_schema` or `scan_root_id` mismatch (tension 12) | neither; see below | none, **but the gate goes fail-closed** |
+| An unusable diff: `fp_schema` mismatch, or a `scan_root_id` mismatch **for a run whose findings live in `path-root` cells** (tension 12) | neither; see below | none, **but the gate goes fail-closed** |
 | Circuit breaker opened | **unplanned** | **5** |
 | Per-run request budget exhausted | **unplanned** | **5** |
 | A module or check aborted with an error mid-flight | **unplanned** | **5** |
@@ -1865,7 +1980,11 @@ findings", not "investigate the run".
 Three edge cases are decided rather than left open, all three **fail closed**:
 
 - **An unusable diff** - `diff_usable == false` per tension 11 step 5, which covers no prior state (first
-  ever run or `state/` cleared), an `fp_schema` mismatch, and a `scan_root_id` mismatch.
+  ever run or `state/` cleared), an `fp_schema` mismatch, and a `scan_root_id` mismatch **when this run's
+  selected modules put their findings in `path-root` cells**.
+  The `path-root` qualifier is not decoration: `dast`, `cloud` and `posture` have no `--path`, so without
+  it `scan.sh cloud --live` from a new working directory would set `diff_usable = false`, gate on the
+  whole backlog, and exit `1` forever - the precise symptom tension 12 scoped the gate to prevent.
   In every one of these `--fail-on-new` gates on **all** findings, and the report says so.
   Failing open would let the very first CI run pass silently with a full backlog, and teams calibrate on
   that first green build; the `fp_schema` case is worse still, because a tool upgrade would turn fifty
@@ -1915,12 +2034,16 @@ violation, missing input), plus two cases each chosen to fail under a rejected r
 | `--profile-scan quick --fail-on high --fail-on-new`, prior state and a backlog, no new high | `0` | "any `unknown` forces 5" |
 | the same, with one new high | `1` | the same |
 | **`--fail-on critical --fail-on-new` after an `fp_schema` bump, 50 criticals present** | **`1`** | **`unknown` excluded from the gate unconditionally, or a bare `status == new` predicate - both give `0`** |
-| **the same after a `scan_root_id` change with no `fp_schema` change** | **`1`** | treating only `fp_schema` as making a diff unusable |
+| **`scan.sh sast --fail-on critical --fail-on-new` after a `scan_root_id` change, no `fp_schema` change, 50 criticals** | **`1`** | treating only `fp_schema` as making a diff unusable. The module mix is named deliberately: `sast` findings live in `path-root` cells, which is the only kind `scan_root_id` gates |
+| **`scan.sh cloud --live --fail-on critical --fail-on-new` run from `/repoA`, then the identical scan from `/repoB`, with a prior cloud backlog and no new criticals** | **`0`, with cloud findings classified normally** | **the comparability gate stated flat rather than scoped to `path-root`: a change of working directory invalidates the entire cloud diff, every prior finding goes `unknown`, `--fail-on-new` falls back to gating everything, and the run exits `1` forever. Fails under each of the unscoped consumer sentences independently** |
 | **First-ever run, no `state/` at all, `--fail-on critical --fail-on-new`, 50 criticals** | **`1`, and all 50 persisted with `status: new`** | **`diff_usable` overriding `status` to `unknown` - the gate still gives `1`, but `state/` and the first report a team ever sees carry the wrong status for every finding** |
 
-The third row is the one no earlier test touched: tension 14's matrix had no `fp_schema` axis, and
+The `fp_schema` row is one no earlier test touched: tension 14's matrix had no `fp_schema` axis, and
 tensions 5, 11 and 12's tests are about fingerprints, baseline ordering, and coverage respectively, so
 the fail-open shipped green under every prescribed test in the register.
+The two rows after it name their **module mix**, which the earlier drafts did not: a `sast` fixture and a
+`cloud` fixture answer differently once the gate is scoped, so a row that does not say which module ran
+cannot discriminate the scoping at all.
 
 ## Tension 15 - check-set selection precedence
 
@@ -3035,13 +3158,62 @@ All three are fixed here:
   classification table - the owner of classification, byte-identical to the original commit - says a
   finding absent from prior state and present now is `new`.
   `diff_usable` now governs the gate only and never a `status`; a first run's findings are `new`.
-- **Condition (b2) used "covered in at least one cell",** the exact formulation this tension refuses to
-  use forty lines below it, and it produced a false `fixed` on a region-narrowed run.
-  It now requires the prior run's recorded cell set for that check to be a subset of this run's.
+- **Condition (b2) used "covered in at least one cell",** which produced a false `fixed` on a
+  region-narrowed run.
+  It gained a subset test - but replacing the old rule wholesale also **dropped its floor clause**, which
+  made the new rule vacuous whenever the prior cell set was empty, and that was a safety regression
+  against round 3 on the never-covered case.
+  Round 5 restores the floor alongside the subset test, as two explicit conjuncts, with prescribed test 9
+  pinning the case the floor exists for.
 
 Also scoped in the same section: the cell-comparability gate applies to `path-root` cells only, since
 `dast`, `cloud` and `posture` have no `--path` and a global gate would invalidate their diffs from a
 change of working directory.
+
+**Round 5** confirmed round 4 closed all three of its named blockers, and closed the first-run `status`
+one in the right way - consumer sentence deleted rather than patched, ownership handed to tension 12 by
+name, and a test asserting the persisted byte.
+It also found that four rounds had shared one ordering habit: **write the rule, then write a test that
+agrees with it.**
+A test written after the rule, by whoever wrote the rule, tests the reading its author already had, which
+is why every round passed its own suite while carrying a defect.
+Round 4 made that concrete by *deleting* the fixture covering a never-covered `any-of` alternative in the
+same edit that removed the rule the fixture guarded, and arguing for the deletion.
+
+**Round 5 therefore inverted the order: the two fixtures were written into the test tables first, then
+the rules were changed, then each fixture was re-checked against the rule that resulted.**
+The fixtures are tension 6 case 9 and the cloud-only row of tension 14's gate matrix.
+
+Fixed here:
+
+- **A live credential in `scan_root_id`.** On GitLab's standard runner
+  `git config --get remote.origin.url` returns
+  `https://gitlab-ci-token:<TOKEN>@gitlab.example/org/proj.git`, measured, so the frozen recipe wrote a
+  job token into `state/`, into `run.json`, and into the `run_identity` hash - a direct violation of
+  tension 9.
+  The token also rotates per job, so the id moved every run and the gate could never converge, which is
+  the failure the root-commit recipe was replaced to escape.
+  The recipe now strips any `userinfo@` component and states normatively that the id must never contain
+  credentials.
+- **`git config --get` reads global config**, so a stray global `remote.origin.url` collided two
+  unrelated remote-less repositories onto one id and one cell `.` - the same collision class, through a
+  different channel. Now `--local`.
+- **(b2) was vacuous on an empty prior cell set.** Round 4's subset test dropped round 3's floor clause,
+  and empty is a subset of anything, so an alternative never covered in either run satisfied it and the
+  composite was persisted `fixed`. This was a safety regression against round 3. The floor is restored
+  as an explicit second conjunct.
+- **The `fp_schema` mismatch had no mechanism.** Round 4 kept the assertion "nothing is reported `fixed`"
+  and deleted the mechanism, while naming tension 12's table the sole owner of classification - and that
+  table, followed literally, puts the entire backlog on its `present, covered | absent | fixed` row.
+  The prior set is now treated as **empty** for classification, which is a mechanism the table cannot
+  route around.
+
+Consumers swept with them: the three unscoped `diff_usable` / `scan_root_id` statements, tension 5's
+`FP_SCHEMA` sentence, step 5's `fp_schema` bullet, tension 12's mirror of (b2), `AGENTS.md`, and round
+4's own change-log entry, which had described the (b2) edit as strictly strengthening.
+The evidence block was re-run with the **frozen** command: round 4's proof executed
+`git remote get-url origin`, which applies `insteadOf` rewriting and returns a different value, so it
+could not have caught the defect in the thing it was proving.
 
 The twelve below remain **open**, deliberately deferred, and are recorded with their finding numbers so
 the next task inherits them rather than rediscovering them.
