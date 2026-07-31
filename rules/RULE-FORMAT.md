@@ -80,24 +80,45 @@ and `§6.3` unambiguously belong to `docs/DESIGN.md`, and they are the two most 
 
 ### 3.2 Line classification
 
-Every line in the file is exactly one of five kinds, decided by the line's first bytes, in this order:
+This is **the** normative definition of line kind.
+§6 and §7 restate it and MUST NOT be read as varying it.
 
-| Kind | Recognised by | Meaning |
-|---|---|---|
-| **Blank** | the line is zero bytes long | Record separator (§4) |
-| **Comment** | the first byte is `#` | Never part of a value; does not end the record (§3.3) |
-| **Continuation** | the line begins with exactly two spaces (`0x20 0x20`) | Appends to the previous field (§6) |
-| **Field** | the line matches `^[a-z][a-z0-9-]*: .` | A `key: value` pair (§5) |
-| **Invalid** | anything else | Parse error |
+Every line is classified by applying these six tests **in this exact order** and stopping at the first
+that holds.
+The order is part of the definition: several tests overlap, and a different order accepts different
+files.
 
-A line consisting only of whitespace (spaces or tabs) is **Invalid**, not Blank.
-This is deliberate.
-A "blank" line with a trailing space would otherwise fail to separate two records and silently merge
-them, which is exactly the class of invisible-byte bug this format exists to eliminate.
-The linter reports it as `E011` with the byte offset of the offending whitespace.
+| # | Kind | Test (on the line's bytes, excluding its terminator) | Meaning |
+|---|---|---|---|
+| 1 | **Blank** | the line is **zero bytes** long | Record separator (§4) |
+| 2 | **Invalid** `E011` | the line is non-empty and **every** byte is `0x20` or `0x09` | Whitespace-only line |
+| 3 | **Invalid** `E021` | the first byte is `0x09` | Leading TAB |
+| 4 | **Comment** | the first byte is `#` (`0x23`) | Never part of a value; does not end the record (§3.3) |
+| 5 | **Continuation** | the **first two bytes are `0x20 0x20`** | Appends to the previous field (§6) |
+| 6 | **Field** | the line matches `^[a-z][a-z0-9-]*: .` | A `key: value` pair (§5) |
+| 7 | **Invalid** | anything else | Parse error, `E010` or `E013` per §7 |
 
-A TAB (`0x09`) is legal **inside a value** and illegal as **leading indentation**.
-A line beginning with a TAB is Invalid.
+Four consequences follow from the order, and all four are intended.
+
+- **A whitespace-only line is never a Blank and never a Continuation.**
+  Test 2 precedes test 5, so a line of exactly two spaces is `E011`, not a Continuation with an empty
+  payload.
+  This is the point of the whole rule: a "blank" line carrying an invisible trailing space must never
+  silently fail to separate two records, and a stray two-space line inside a record must never silently
+  append an empty line to a prose value.
+  Both are the invisible-byte bug this format exists to eliminate, and both are now loud.
+- **A line with more than two leading spaces is a Continuation**, because test 5 asks only about the
+  first two bytes.
+  `····x` (four spaces, then `x`) is a Continuation whose payload is `··x` (§6 rule 1).
+  Test 2 has already excluded the case where there is nothing but whitespace.
+- **A line with exactly one leading space is `E010`**, since it fails tests 1 to 6.
+  This is the off-by-one indentation typo, and it is an error rather than a silent misparse.
+- **A TAB is legal inside a value and illegal as leading indentation** (test 3).
+  A line that is only TABs is `E011` (test 2 runs first); a line that is a TAB followed by content is
+  `E021`.
+
+`E011` and `E021` are reported with the byte offset of the offending whitespace.
+Worked negative examples for each of these cases are in §12.6.
 
 ### 3.3 Comments
 
@@ -185,9 +206,13 @@ Each key in §9 is marked *single* or *repeatable*.
 
 ## 6. Multi-line values (continuations)
 
-A Continuation line begins with exactly two spaces.
-The two spaces are stripped; everything after them, byte-exact, is appended to the value of the most
-recent Field line, preceded by one LF.
+A Continuation line is one classified as such by §3.2: its **first two bytes are `0x20 0x20`**, and it
+was not already claimed by an earlier test in that ordered list (in particular it is not
+whitespace-only, which is `E011`).
+§3.2 is the definition; this section only says what a Continuation *does*.
+
+The two leading spaces are stripped; everything after them, byte-exact, is appended to the value of the
+most recent Field line, preceded by one LF.
 
 ```
 remediation: Do not pass request-derived data to eval().
@@ -206,11 +231,13 @@ allowlist of permitted operations.
 Rules:
 
 1. Any indentation beyond the first two spaces is preserved.
-   `    x` (four spaces) continues the value with `  x`.
+   `····x` (four spaces) continues the value with `··x`.
 2. A Continuation line with no preceding Field line in the current record is `E015`.
 3. A Blank line ends the record even if the author intended the value to continue.
    There is exactly one record separator and it always wins.
    A value therefore cannot contain a blank line; use a single LF between paragraphs, or two records.
+   A **whitespace-only** line does not continue a value either: it is `E011` per §3.2 test 2, so a
+   continuation block cannot contain an empty line by any spelling.
 4. Continuations are permitted **only** on keys marked *multi-line* in §9.
    In particular `pattern`, `context-require`, and `context-deny` are **single-line only** (`E016`).
    Regexes never span lines.
@@ -221,6 +248,7 @@ Rules:
 ## 7. Reference parse algorithm
 
 Non-normative, but a conforming parser produces the same result.
+The branch order below is exactly §3.2's test order, and is not an implementation choice.
 
 ```
 records = []
@@ -228,24 +256,31 @@ cur = null          # {order: [], fields: {}, line: N}
 last_key = null
 
 for (lineno, raw) in lines(file):          # after the §3.1 file checks
-    if raw == "":                          # Blank
+    # --- §3.2 test 1: Blank
+    if raw == "":
         if cur: records.append(cur); cur = null
         last_key = null
         continue
-    if raw[0] == "#":                      # Comment: record continues, field does not
+    # --- §3.2 test 2: whitespace-only. MUST precede the Continuation test.
+    if every byte of raw is 0x20 or 0x09:  error E011
+    # --- §3.2 test 3: leading TAB (with content, since test 2 already ran)
+    if raw[0] == "\t":                     error E021
+    # --- §3.2 test 4: Comment. Record continues; current field does not.
+    if raw[0] == "#":
         last_key = null
         continue
-    if raw starts with "  ":               # Continuation
+    # --- §3.2 test 5: Continuation (first two bytes are 0x20 0x20)
+    if raw[0] == " " and raw[1] == " ":
         if cur == null:      error E015    # no record open
         if last_key == null: error E012    # a comment intervened
         if last_key not multi-line in schema: error E016
         cur.fields[last_key][-1] += "\n" + raw[2:]
         continue
+    # --- §3.2 test 6: Field
     m = match ^([a-z][a-z0-9-]*): (.+)$ against raw
-    if not m:
-        if raw is all whitespace:                    error E011
+    if not m:                              # --- §3.2 test 7: Invalid
         if raw matches ^[a-z][a-z0-9-]*:[ ]*$:       error E013   # empty value
-        error E010
+        error E010                                                # incl. one leading space
     key, value = m[1], m[2]
     if cur == null:
         if key != "id": error E020
@@ -333,17 +368,45 @@ Unbounded quantifiers applied to a single character class are fine (`\s*`, `[A-Z
 The syntax above is universal.
 The key set depends on the record file's path.
 
+This table is **exhaustive**: every path the format covers has a row, and every row names a schema
+defined in this document.
+A parser cannot classify a line without its schema, because §7 consults *single* / *repeatable* for
+`E014` and *multi-line* for `E016`, so no schema may be deferred to "wherever its consumer lives".
+
 | Path | Schema |
 |---|---|
+| any file named `checks.rules`, at any depth | **script check** (§9.5) |
 | `modules/sast/rules/*.rules`, `modules/iac/*.rules` | **pattern rule** (§9.1) |
 | `rules/derived.rules` | **derived finding** (§9.2) |
 | `rules/redaction.rules` | **redaction rule** (§9.3) |
 | `config/scope.conf` | **scope target** (§9.4) |
-| `config/scanner.conf`, `config/auth.conf`, `config/discovery.conf`, `config/posture.conf`, `data/severity-rubric.conf` | operator config, one schema per file, keys defined alongside their consumer |
+| `config/scanner.conf` | **scanner config** (§9.6.1) |
+| `config/auth.conf` | **auth identity** (§9.6.2) |
+| `config/discovery.conf` | **discovery input** (§9.6.3) |
+| `config/posture.conf` | **posture expectation** (§9.6.4) |
+| `data/severity-rubric.conf` | **severity modifier** (§9.6.5) |
+
+**The first matching row wins**, which is why the `checks.rules` row is first.
+The basename `checks.rules` is **reserved repository-wide**: it always takes the §9.5 schema regardless
+of directory.
+Without that reservation the `modules/iac/*.rules` glob would capture `modules/iac/checks.rules` and
+assign it the pattern-rule schema, so every script-check record in it would fail `E023` for a missing
+`pattern`.
+A file matching no row is `E070`.
 
 An unknown key in any schema is `E017`.
 Unknown keys are an error and not a warning, because a typo in `context-deny` would otherwise silently
 disable a false-positive guard and flood the report.
+
+**Single-record config files.**
+§4 requires every record's first field to be `id`.
+For a file that holds exactly one record of flat settings (`config/scanner.conf`), the `id` value is a
+frozen literal equal to the file's basename without extension, so `config/scanner.conf` begins
+`id: scanner`.
+This costs one line, keeps §4 total with no special case in the parser, and gives the linter a name to
+put in every diagnostic for that file.
+`E071` fires when a single-record schema's `id` is not its frozen literal, or when such a file contains
+more than one record.
 
 ### 9.1 Schema: pattern rule
 
@@ -470,14 +533,61 @@ One of:
 | Value | Contributors are grouped by |
 |---|---|
 | `none` | Nothing; the composite fires at most once per run |
-| `target` | The scope target name (`config/scope.conf` `name`) |
+| `target` | The scope target id (`config/scope.conf` `id`) |
 | `account` | AWS account id |
 | `account-region` | AWS account id and region |
 | `file` | Repository-relative file path |
 
-Contributors that lack the correlation key cannot participate in a correlated composite.
+Contributors that cannot supply the correlation key cannot participate in a correlated composite.
 The composite fires once per distinct correlation value for which the `requires` / `any-of` predicate
 holds, and the correlation value is part of the composite's fingerprint.
+
+#### 9.2.2 Correlation-key capability
+
+`E053` requires deciding, statically, whether a contributor's module can supply a given correlation key.
+This table is that decision, and it is frozen.
+It also drives §9.5.1's `coverage-scope` validation.
+
+| Module | `target` | `account` | `account-region` | `file` |
+|---|---|---|---|---|
+| SAST (incl. history) | no | no | no | **yes** |
+| SCA | no | no | no | **yes** |
+| IAC | no | no | no | **yes** |
+| DAST | **yes** | no | no | no |
+| CLOUD | **yes**, by attribution | **yes** | **yes** | no |
+| POSTURE | **yes**, when `scope-key` is a target id | **yes** | **yes** | no |
+
+`E053` fires when a derived record's `correlate-on` is a key that **any** of its `requires` or `any-of`
+contributors' modules cannot supply per this table.
+`correlate-on: none` is always legal.
+
+**Cloud target attribution.**
+A cloud-live finding has no scope-target name in its own identity, so `target` is supplied by an
+attribution step in `lib/findings.sh`, frozen here because `COMPOSITE-TOKEN-HIJACK` depends on it:
+
+1. A cloud check that reads a resource with a public endpoint records the resource's domain names on
+   the finding as `endpoint_hosts`, taken from the read-only API response (for example an AppSync
+   `uris` value, a CloudFront `DomainName`, an ELB `DNSName`, an API Gateway execute-api hostname).
+2. `lib/findings.sh` builds a **target attribution map** once per run from `config/scope.conf`: the set
+   of `(host)` values across every target's `base-url` and `extra-host`, lowercased and dot-stripped
+   exactly as the scope gate normalises them (`docs/FOUNDATION.md` tension 19).
+3. A cloud finding's `target` correlation value is the target id whose host set contains any of the
+   finding's `endpoint_hosts`.
+   Zero matches means the finding has no `target` value and does not participate in a `target`
+   composite.
+   More than one match is `E076` on the config, since two targets claiming the same host makes
+   correlation ambiguous.
+
+**Attribution never enters the fingerprint.**
+`target` is a correlation attribute only.
+Putting it in a cloud finding's fingerprint (tension 5) would make every cloud finding churn to
+`new` the moment an operator edited `config/scope.conf`, which is precisely the instability tension 5
+exists to prevent.
+
+A run that produces cloud findings but has no `config/scope.conf` attributes no targets at all, which is
+correct: with no authorised targets there is no deployed front end to attribute a chain to.
+Such a run also has no DAST contributors, so a `target` composite is uncovered and classified `unknown`
+rather than `fixed` (tension 6, sub-case 2).
 
 ### 9.3 Schema: redaction rule
 
@@ -512,6 +622,178 @@ control in the tool.
 | `allow-subdomains` | optional | single | no | `true` or `false`. Default `false`. |
 | `allow-private-addresses` | optional | single | no | `true` or `false`. Default `false`. Gates the link-local and loopback deny list. |
 | `notes` | optional | single | yes | Free text. Now safely free text. |
+
+### 9.5 Schema: script check
+
+`modules/<module>/checks.rules` registers every check that is a **script** rather than a pattern: all of
+DAST passive and active, all cloud live checks, all posture checks, and the SCA checks.
+It is the check registry that `docs/FOUNDATION.md` tension 12 computes `covered_checks` from, that
+tension 15's filter chain filters, and that tension 7 requires so scripts have stable ids exactly as
+patterns do.
+
+| Key | Req | Card | Multi-line | Value |
+|---|---|---|---|---|
+| `id` | required | single | no | Check id, §9.1.1, with `MODULE` matching the owning module. MUST be first. |
+| `title` | required | single | no | As §9.1. |
+| `script` | required | single | no | Module-relative path to the implementing script, for example `active/sqli.sh`. Must exist (`E072`). |
+| `entry` | optional | single | no | Shell function name the runner calls. `^[a-z_][a-z0-9_]*$`. Default `run_check`. |
+| `severity` | required | single | no | As §9.1. Base severity; the rubric adjusts it. |
+| `confidence` | optional | single | no | As §9.1. Default `medium`. |
+| `cwe` | required | single | no | As §9.1. |
+| `owasp` | required | single | no | As §9.1. |
+| `tags` | required | repeatable | no | §9.1.3. Exactly one type tag, which for this schema MUST NOT be `static` or `derived` (`E044`). |
+| `coverage-scope` | required | single | no | The scope dimension that partitions this check's findings, §9.5.1. |
+| `requires-config` | optional | repeatable | no | A config file that must be present and non-empty for the check to run, for example `config/auth.conf`. Absent means the check is skipped with a `run.json` reason, not an error. |
+| `requires-cmd` | optional | repeatable | no | An external command the check needs, for example `openssl`. Absent means skipped with a reason. |
+| `requires-identities` | optional | single | no | Decimal integer, the number of labelled auth identities the check needs. Default `0`. `authz.sh` declares `2`. |
+| `remediation` | required | single | yes | As §9.1. |
+| `references` | optional | repeatable | no | As §9.1. |
+| `cis` | optional | repeatable | no | As §9.1. |
+| `severity-floor` | optional | single | no | As §9.1. |
+| `severity-ceiling` | optional | single | no | As §9.1. |
+
+A script check has no `pattern`, `dialect`, `files`, or `context-*` key; those are `E017` here.
+
+#### 9.5.1 `coverage-scope`
+
+It names the dimension along which a run can cover *part* of a check, and it is what
+`docs/FOUNDATION.md` tension 12 records in `state/` so that a region-scoped or target-scoped run cannot
+manufacture `fixed` findings for the regions or targets it never visited.
+
+This is a different vocabulary from §9.2.2's correlation keys and is **not** validated against that
+table: correlation asks "can two findings be joined", coverage asks "what did this run visit".
+The value is fixed per module, so the linter checks it against this table alone (`E053`):
+
+| Module | Required `coverage-scope` | Cell value |
+|---|---|---|
+| `SAST` | `path-root` | the normalised `--path` root |
+| `SCA` | `path-root` | the normalised `--path` root |
+| `IAC` | `path-root` | the normalised `--path` root |
+| `DAST` | `target` | the `config/scope.conf` target id |
+| `CLOUD` | `account-region` | `<account_id>/<region>`, or `<account_id>/global` |
+| `POSTURE` | `scope-key` | the expectation's `scope-key` (§9.6.4) |
+
+`none` means a run either covers the check entirely or not at all.
+No script check qualifies, so `none` never appears in a §9.5 record; it is the value derived findings
+take, and they carry it implicitly rather than as a key, since §9.2 has no `coverage-scope`.
+
+`SAST-HIST-*` checks take `path-root` like the rest of SAST, but their cell additionally carries the
+run's resolved history boundary, because a rolling commit window shrinks coverage with no config change
+at all (`docs/FOUNDATION.md` tension 13).
+
+Every cell value is derivable from the finding's own recorded location (`docs/FOUNDATION.md` tension 5),
+which is what keeps coverage and identity in sync without a second source of truth.
+
+### 9.6 Schemas: operator config
+
+These files are hand-edited by operators, so their key sets are frozen here rather than left with their
+consumers.
+Every value is data and is never expanded or executed (§11).
+
+#### 9.6.1 `config/scanner.conf` - scanner config
+
+Exactly one record, `id: scanner`.
+Every key is optional and has the stated default; an absent file is equivalent to an empty one.
+
+| Key | Card | Multi-line | Value | Default |
+|---|---|---|---|---|
+| `id` | single | no | Literal `scanner`. MUST be first. | required |
+| `requests-per-second` | single | no | Decimal, may be fractional | `4` |
+| `jobs` | single | no | Positive integer | `4` |
+| `http-timeout` | single | no | Seconds, positive integer | `20` |
+| `max-redirects` | single | no | Non-negative integer | `5` |
+| `request-budget` | single | no | Positive integer, per run | `20000` |
+| `circuit-breaker-failures` | single | no | Positive integer | `10` |
+| `circuit-breaker-window` | single | no | Seconds | `60` |
+| `fail-on` | single | no | Severity name or `none` | `none` |
+| `min-confidence` | single | no | `high` `medium` `low` | `low` |
+| `redact-secrets` | single | no | `true` or `false` | `true` |
+| `formats` | repeatable | no | `json` `sarif` `html` `md` | all four |
+| `max-matches-per-file` | single | no | Positive integer | `200` |
+| `evidence-max-bytes` | single | no | Positive integer | `512` |
+| `scratch-dir` | single | no | Absolute path | `${TMPDIR:-/tmp}` |
+| `state-retain-runs` | single | no | Positive integer | `30` |
+| `history-window-days` | single | no | Positive integer | `365` |
+| `history-max-commits` | single | no | Positive integer | `5000` |
+| `lock-stale-seconds` | single | no | Positive integer | `30` |
+| `mutex-timeout-seconds` | single | no | Positive integer | `120` |
+| `paranoid-allow` | repeatable | no | `addr:port` | empty |
+| `notes` | single | yes | Free text | empty |
+
+`docs/DESIGN.md` §11 also lists "the named scan-profile check-sets (`quick`/`full`/`compliance`)" as
+living here.
+They do not: `docs/FOUNDATION.md` tension 15 derives profile membership from each check's own `tags`, so
+there is no profile definition to store and no way for a profile list to drift out of sync with the
+checks it names.
+
+#### 9.6.2 `config/auth.conf` - auth identity
+
+One record per (target, identity).
+File permissions MUST be `600` (`E073`).
+Every value in this schema is marked **secret**, so `redact()` covers it in every log, report, and
+evidence field (`docs/FOUNDATION.md` tension 9).
+
+| Key | Req | Card | Multi-line | Value |
+|---|---|---|---|---|
+| `id` | required | single | no | `<target-id>.<label>`, for example `staging.a`. `^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$`. MUST be first. |
+| `mode` | required | single | no | `bearer` `api-key` `form` `oauth2-password` `oauth2-client` `srp` `external` |
+| `secret-file` | optional | single | no | Absolute path to a `600` file holding the credential. Preferred over inline values. |
+| `token` | optional | single | no | Inline token, for `bearer` / `api-key`. |
+| `header-name` | optional | single | no | Header to carry the credential. Default `Authorization`. |
+| `username` | optional | single | no | For `form`, `oauth2-password`, `srp`. |
+| `password` | optional | single | no | As above. Prefer `secret-file`. |
+| `login-path` | optional | single | no | Target-relative path for `form`. |
+| `token-url` | optional | single | no | For the OAuth2 modes. |
+| `client-id` | optional | single | no | For the OAuth2 modes. |
+| `client-secret` | optional | single | no | As above. Prefer `secret-file`. |
+| `scope` | optional | single | no | OAuth2 scope string. |
+| `pool-id` | optional | single | no | For `srp`. |
+| `notes` | optional | single | yes | Free text. |
+
+Which optional keys are required is a function of `mode`, checked as `E074`.
+
+#### 9.6.3 `config/discovery.conf` - discovery input
+
+One record per target, `id` = the target id.
+
+| Key | Req | Card | Multi-line | Value |
+|---|---|---|---|---|
+| `id` | required | single | no | Target id. MUST be first. |
+| `openapi-path` | optional | single | no | Path to an OpenAPI or Swagger document. |
+| `graphql-schema-path` | optional | single | no | Path to a GraphQL schema. |
+| `postman-path` | optional | single | no | Path to a Postman collection. |
+| `har-path` | optional | single | no | Path to a HAR capture. |
+| `crawl-depth` | optional | single | no | Non-negative integer. Default `3`. |
+| `include-path` | optional | repeatable | no | Glob (§9.1.2) of target-relative paths to crawl. |
+| `exclude-path` | optional | repeatable | no | Glob of target-relative paths never to request. |
+| `notes` | optional | single | yes | Free text. |
+
+#### 9.6.4 `config/posture.conf` - posture expectation
+
+One record per expected control, so §8.7 reports **drift** rather than opinion.
+
+| Key | Req | Card | Multi-line | Value |
+|---|---|---|---|---|
+| `id` | required | single | no | Check id, §9.1.1, `MODULE` = `POSTURE`. MUST be first. |
+| `scope-key` | required | single | no | What the expectation applies to: a target id, an account id, or `account/region`. |
+| `expect` | required | single | no | `present` `absent` `equals` `at-least` `at-most` |
+| `value` | optional | single | no | Required when `expect` is `equals`, `at-least`, or `at-most`. |
+| `notes` | optional | single | yes | Free text. |
+
+#### 9.6.5 `data/severity-rubric.conf` - severity modifier
+
+One record per modifier, implementing the frozen table in `docs/FOUNDATION.md` tension 8.
+
+| Key | Req | Card | Multi-line | Value |
+|---|---|---|---|---|
+| `id` | required | single | no | `^[a-z][a-z0-9-]*$`, for example `exposure-internet`. MUST be first. |
+| `fact` | required | single | no | The finding field examined: `exposure` `auth` `sensitive-data` `confidence` |
+| `equals` | required | single | no | The value of that field this record matches. |
+| `modifier` | required | single | no | Signed decimal integer, `-4` to `+4`. |
+
+The rubric reads no field outside this table, which is what makes `severity_of()` pure and total.
+`E075` fires when two records share the same (`fact`, `equals`) pair, since that would make the sum
+order-dependent.
 
 ## 10. The `context` directive
 
@@ -747,6 +1029,79 @@ The `context-deny` gives operators an in-file, reviewable exception marker whose
 and `context-window: 1` keeps that marker adjacent so it cannot be parked at the top of the file and
 forgotten.
 
+### 12.6 Negative examples: the whitespace cases
+
+These are the cases §3.2's test order exists to decide, and they are the first fixtures the linter needs.
+`·` denotes one `0x20` space and `→` one `0x09` TAB; neither character appears in the file.
+
+**(a) A "blank" line carrying two spaces does not separate records, and does not continue a value.**
+
+```
+id: SAST-PY-EVAL-01
+remediation: line one
+··
+files: *.py
+```
+
+Line 3 is whitespace-only, so §3.2 test 2 fires **before** the Continuation test: **`E011` at 3:1**.
+
+Without the ordering this file would parse clean two different ways depending on the implementation.
+Read as a Continuation, `remediation` becomes `"line one\n"` with a trailing empty line and the record
+continues.
+Read as a Blank, the record ends at line 2 and `files: *.py` starts a new record that fails `E020` for
+not beginning with `id`.
+Both are silent misparses of an invisible byte, and the parsed bytes feed `rule_digest`
+(`docs/FOUNDATION.md` tension 12), so the two implementations would also disagree on diff
+classification.
+
+**(b) One leading space is an error, not a continuation.**
+
+```
+id: SAST-PY-EVAL-01
+remediation: line one
+·line two
+```
+
+Line 3 fails every test: not blank, not whitespace-only, no leading TAB, not `#`, its first two bytes
+are not `0x20 0x20`, and it does not match the Field pattern.
+**`E010` at 3:1.**
+This is the off-by-one indentation typo, and it is loud.
+
+**(c) Three or more leading spaces is a valid continuation with preserved indentation.**
+
+```
+id: SAST-PY-EVAL-01
+remediation: Do not eval() request data.
+··Prefer:
+····ast.literal_eval()
+```
+
+Parses clean.
+`remediation` is `Do not eval() request data.\nPrefer:\n··ast.literal_eval()` - the first two spaces are
+stripped from each continuation, and the remaining two on line 4 are part of the value (§6 rule 1).
+
+**(d) A TAB is content, never indentation.**
+
+```
+id: SAST-PY-EVAL-01
+→remediation: x
+```
+
+**`E021` at 2:1.**
+A line that is only TABs would instead be `E011`, because test 2 runs before test 3.
+A TAB *inside* a value is fine and needs no escaping.
+
+**(e) An empty value is an error, not an unset field.**
+
+```
+id: SAST-PY-EVAL-01
+cwe:
+```
+
+**`E013` at 2:1.**
+So is `cwe:·`.
+A schema that needs "unset" uses the literal token `none` (§5.3).
+
 ## 13. Linter checks
 
 `tests/lint-rules.sh` implements every check below and exits non-zero if any error fires.
@@ -760,8 +1115,8 @@ Warnings are reported and do not fail unless `--strict`.
 | E002 | error | File contains CR (`0x0D`) |
 | E003 | error | File begins with a byte-order mark |
 | E004 | error | File contains NUL |
-| E010 | error | Line matches no line kind in §3.2 |
-| E011 | error | Line contains only whitespace (not a valid record separator) |
+| E010 | error | Line matches no line kind in §3.2 (includes the one-leading-space typo, §12.6b) |
+| E011 | error | Line is non-empty and entirely whitespace: not a record separator, not a continuation (§3.2 test 2, §12.6a) |
 | E012 | error | Comment line between a field line and its continuations |
 | E013 | error | Field line with an empty value |
 | E014 | error | Duplicate *single* key in one record |
@@ -786,8 +1141,14 @@ Warnings are reported and do not fail unless `--strict`.
 | E028 | error | `id` appears in `rules/RETIRED.txt` |
 | E029 | error | `severity-floor` is above `severity-ceiling` |
 | E043 | error | `intrusive` tag on a pattern rule |
-| E044 | error | No type tag, or more than one type tag |
+| E044 | error | No type tag, or more than one type tag, or a type tag illegal for the schema (§9.5) |
 | E045 | error | `format-version` present and not `1` |
+| E070 | error | Record file matches no row of the §9 path table |
+| E071 | error | Single-record config file has the wrong `id` literal, or more than one record (§9) |
+| E072 | error | §9.5 `script` names a path that does not exist |
+| E073 | error | `config/auth.conf` permissions are not `600` |
+| E074 | error | §9.6.2 record is missing a key its `mode` requires |
+| E075 | error | Two `data/severity-rubric.conf` records share the same (`fact`, `equals`) pair |
 
 ### Regex (from §8)
 
@@ -814,7 +1175,8 @@ Warnings are reported and do not fail unless `--strict`.
 | E050 | error | Derived record has neither `requires` nor `any-of` |
 | E051 | error | `requires` / `any-of` names an id that does not exist |
 | E052 | error | `requires` / `any-of` names a derived id (no chaining) |
-| E053 | error | `correlate-on` value that a contributor's module cannot supply |
+| E053 | error | `correlate-on` naming a key a contributor's module cannot supply (§9.2.2), or a §9.5 `coverage-scope` that is not its module's required value (§9.5.1) |
+| E076 | error | Two `config/scope.conf` targets claim the same host, making cloud target attribution ambiguous (§9.2.2) |
 
 ### Coverage (from `docs/DESIGN.md` §12)
 

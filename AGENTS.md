@@ -70,9 +70,10 @@ The full cost is enumerated in `rules/RULE-FORMAT.md` §14, and a change require
 These are resolved decisions, not open questions.
 Each has a full entry in `docs/FOUNDATION.md`.
 
-- **Never put a line number in a fingerprint** (tension 5). It would make every finding `new` after any unrelated edit, destroying the diff, the baseline, and the CI gate.
+- **Never put a line number in a fingerprint** (tension 5). It would make every finding `new` after any unrelated edit, destroying the diff, the baseline, and the CI gate. Repeated byte-identical matches in one file are told apart by an `occurrence` ordinal, not a line.
+- **`fixed` is inferred only inside a covered (check, scope-cell) pair** (tension 12). Check-id-alone coverage lets a `--regions` or `--target` run report every unvisited region's or target's findings as remediated.
 - **Never call `grep` or `rg` bare** (tension 4). `set -Eeuo pipefail` is mandatory and grep exits 1 on no-match, which is the normal case. Use `scan_match`, which distinguishes no-match from engine failure.
-- **Guard the `EXIT` cleanup trap with `[[ $BASHPID == $$ ]]`** (tension 4). Traps are inherited by subshells, so an unguarded one shreds the scratch dir mid-run.
+- **The `EXIT` cleanup trap needs an ownership guard** (tension 4). An `xargs -P` worker must not shred the shared scratch dir when it exits. **The specific guard currently written in tension 4 is wrong and is under review as finding F13** - read the "Known follow-ups" section of `docs/FOUNDATION.md` before implementing it.
 - **Shared state across `xargs -P` workers goes in files under an atomic-`mkdir` mutex** (tension 16). The rate limiter, request budget, circuit breaker, and AWS cache are all per-process otherwise, so `--jobs 8` means 8x the request rate and a breaker that never trips.
 - **Workers write to their own shard file, never a shared `findings.jsonl`** (tension 17). Appends above `PIPE_BUF` interleave.
 - **Never `source` a config file** (tension 26). It is a code-execution vector that would run before the scope gate is consulted.
@@ -87,6 +88,11 @@ Each has a full entry in `docs/FOUNDATION.md`.
 **Current position: nothing in §13 has been implemented.**
 This repository currently contains documentation and the frozen format only.
 The next task is §13 step 1.
+
+**Read `docs/FOUNDATION.md` "Known follow-ups" first.**
+Review round 1 left twelve open findings recorded there with their finding numbers.
+Five of them (F13, F14, F12, F15, F16) must be settled **before** `lib/core.sh` and the parallel path are written, because they concern the EXIT trap, the sleep primitive, where shards live, the mutex, and `shred`.
+The other seven are cheap corrections that cost nothing to defer.
 
 Two amendments to §13 come from `docs/FOUNDATION.md` and apply from the start:
 

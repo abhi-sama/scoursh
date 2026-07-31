@@ -380,15 +380,15 @@ full 64 hex characters retained, and the components in the fixed order below.
 
 | Module | Location components |
 |---|---|
-| SAST, IaC, containers | repository-relative path (normalised, `/` separators, no `./`), then `match_digest` |
-| SAST history | `blob_sha`, then `match_digest` (see tension 13) |
+| SAST, IaC, containers | repository-relative path (normalised, `/` separators, no `./`), `match_digest`, `occurrence` |
+| SAST history | `blob_sha`, `match_digest`, `occurrence` (see tension 13) |
 | SCA | `ecosystem`, `package` (normalised per tension 25), `advisory_id`. **Not the version.** |
 | DAST | `target_name` (the `config/scope.conf` id, not the URL), `method`, `path_template`, `param_location` (`query`/`body`/`header`/`path`/`cookie`), `param_name` |
 | Cloud live | `account_id`, `region` (or `global`), `resource_key` (the ARN when one exists), `sub_key` (or `none`) |
 | Posture | `control_id`, `scope_key` (target name, or account, or `account/region`) |
 | Derived | correlation value only (see tension 6) |
 
-Three of these need their normalisation frozen:
+Four of these need their normalisation frozen:
 
 - **`match_digest`** = first 16 hex characters of `sha256(normalise(raw_matched_text))`, where
   `normalise` collapses every run of whitespace to a single space and strips leading and trailing
@@ -397,6 +397,27 @@ Three of these need their normalisation frozen:
   correct, because the matched text *is* the finding.
   The raw text is hashed, not the redacted text; see tension 9 for why, and for the rule that it never
   touches disk.
+- **`occurrence`** = the 0-based ordinal of this match among the matches **in the same file, for the
+  same `check_id`, with an identical `match_digest`**, ordered by ascending line number.
+  This exists because `match_digest` alone collides on the common case.
+  Most rules in the §6.3 catalog match a short fixed construct (`\byaml\.load\s*\(`, `\beval\s*\(`,
+  `# nosec`), so every occurrence in a file produces byte-identical matched text and therefore an
+  identical digest.
+  `max_matches_per_file` defaults to 200, so many matches per file is the expected shape, not an edge
+  case.
+  Without a discriminator, five `yaml.load(` calls in one file would be five findings sharing one
+  fingerprint, and nothing would decide whether they collapse or coexist: collapsing hides four of
+  five and lets one `baseline.json` entry silently suppress every future occurrence in that file, while
+  coexisting puts duplicate keys in `state/` and breaks tension 17's byte-reproducible merge.
+  The ordinal is scoped to identical digests, so it is unaffected by unrelated matches of the same rule
+  elsewhere in the file, and it survives line shifts and reindentation, which is what tension 5 is
+  for.
+  **Its cost, stated plainly:** deleting or inserting one of several byte-identical matches in a file
+  renumbers the ones after it, so those report as one `fixed` plus one `new`.
+  That churn is bounded to files containing repeated byte-identical matches of the same check, and it
+  is the price of not collapsing distinct call sites into one finding.
+  There is no discriminator that is both stable under sibling edits and distinct per occurrence without
+  a language parser, which §9 rules out.
 - **`path_template`** replaces volatile path segments with `{id}` so `/users/123` and `/users/456` are
   one finding.
   A segment is replaced when it is entirely digits, or matches a UUID, or matches a ULID, or is
@@ -406,6 +427,19 @@ Three of these need their normalisation frozen:
   Upgrading past an advisory makes the finding disappear, which the diff reports as `fixed`.
   Including the version would instead report `fixed` plus `new` on every patch bump.
 
+Only the SAST, history, IaC, and container modules need `occurrence`.
+The other modules' component tuples are already unique per issue: a DAST finding is keyed down to the
+parameter, a cloud finding down to the sub-resource, an SCA finding down to the advisory.
+
+**Fingerprints are therefore unique within a run**, which two other resolutions depend on and which was
+not true before the discriminator existed.
+The dedup at step 3 of tension 11's pipeline is consequently a genuine merge of *one* finding seen by
+two engines, not a collapse of distinct occurrences: an adapter result (§6.4) is normalised onto the
+native location model first, re-deriving `match_digest` and `occurrence` from the file at the adapter's
+reported path and line, and only then compared.
+An adapter finding that does not normalise onto a native location (no file, or a line that no longer
+matches) is kept as its own finding rather than being merged or dropped.
+
 **Consequence for the build.**
 `lib/findings.sh` exposes exactly one fingerprint function, and no module computes a fingerprint itself.
 `FP_SCHEMA` is written into every `state/` file and every `config/baseline.json`; on a mismatch the diff
@@ -414,6 +448,11 @@ new-and-fixed (tension 12).
 A test asserts fingerprint stability directly: it inserts blank lines and reindents a fixture, re-runs,
 and requires the fingerprint set to be byte-identical.
 A second test asserts that two distinct secrets in one file produce two distinct fingerprints.
+A third test asserts that a fixture with five byte-identical matches of one check in one file produces
+**five** distinct fingerprints, and that shifting them all down by twenty lines leaves that set
+byte-identical.
+A fourth asserts the merged `findings.jsonl` contains no duplicate fingerprint, which is the invariant
+tension 17's sort key and tension 12's `state/` keying both rely on.
 
 ## Tension 6 - derived / composite findings
 
@@ -469,8 +508,31 @@ linter enforces it (E051, E052).
 Contributors count toward one composite instance only when their correlation values are equal, so a
 key found in account A and introspection enabled in account B do not fabricate a composite.
 `correlate-on: none` means the composite fires at most once per run.
+
+Which module can supply which key is **not** a per-finding judgement, and must not be, because `E053`
+has to be decidable statically at lint time.
+The frozen capability table is `rules/RULE-FORMAT.md` §9.2.2, and `E053` fires when a record's
+`correlate-on` is a key that any of its contributors' modules cannot supply.
+
 `COMPOSITE-TOKEN-HIJACK` uses `correlate-on: target`, since the chain is a property of one deployed
 front end.
+That requires the cloud-live module to supply `target`, and a cloud finding's identity (tension 5) has
+no scope-target name in it - only account, region, and ARN.
+The gap is closed by **cloud target attribution**, frozen in `rules/RULE-FORMAT.md` §9.2.2: a cloud
+check that reads a resource with a public endpoint records the resource's domain names on the finding
+as `endpoint_hosts`, and `lib/findings.sh` maps those against the host set of every
+`config/scope.conf` target to derive the finding's `target` correlation value.
+So the composite's three contributors - the §8.5 long-lived key finding from cloud live, the §7.1
+key-in-bundle finding from DAST passive, and the §7.4 introspection finding from DAST active - all
+share one correlation domain, and the chain is only asserted when the key actually belongs to the front
+end that was scanned.
+
+Attribution is a **correlation attribute only and never a fingerprint input**.
+Putting it into a cloud finding's identity would make every cloud finding churn to `new` the moment an
+operator edited `config/scope.conf`, which is exactly the instability tension 5 exists to prevent.
+A cloud finding whose `endpoint_hosts` match no target simply has no `target` value and does not
+participate, which is the correct outcome: a key on an API that is not behind the scanned front end is
+not evidence of that front end's hijack chain.
 
 **When it is evaluated.**
 Exactly once, in `lib/findings.sh`, at a fixed point in the frozen pipeline (tension 11):
@@ -868,6 +930,9 @@ The pipeline is frozen in this order, and every stage is a named function in `li
 1. **Collect** raw findings from modules.
 2. **Normalise and fingerprint** (tension 5).
 3. **Merge and dedup** native results with adapter results (§6.4) on fingerprint.
+   This is a merge of one finding seen by two engines, **not** a collapse of distinct occurrences:
+   fingerprints are unique per occurrence (tension 5), and adapter results are normalised onto the
+   native location model before comparison.
 4. **Derive** composite findings (tension 6).
 5. **Classify** against `state/` into `new` / `recurring` / `fixed` / `unknown` (tension 12).
 6. **Suppress**: for each finding matching a baseline entry, set `suppressed: true` and
@@ -933,32 +998,69 @@ It also poisons the persisted state, so the next full run reports all of them as
    Rejected: too coarse.
    Inside one module, `quick` runs a subset of checks, and a breaker abort stops a module partway, so
    module granularity still manufactures `fixed`.
-3. *Track coverage at check granularity and only infer `fixed` inside it.* **Chosen.**
+3. *Track coverage at check granularity alone.*
+   Rejected: a check id cannot represent a region set or a DAST target, so
+   `scan.sh cloud --live --regions us-east-1` after an all-regions run would mark every cloud check
+   covered and report every prior finding in every other region as `fixed`.
+   The same holds for `scan.sh dast --target a` after a run that covered `a` and `b`.
+   That is the identical phantom-remediation failure surviving one level below the granularity chosen to
+   fix it, and §8.1 makes multi-region iteration a correctness requirement, so this is the ordinary
+   deployment shape rather than an edge case.
+4. *Track coverage at (check, scope) granularity and only infer `fixed` inside a covered cell.*
+   **Chosen.**
 
 **RESOLUTION.**
-`state/` records **coverage**, not just findings.
+`state/` records **coverage**, not just findings, and coverage is **scoped**.
 Each run writes `state/<run-id>.json` plus a `state/latest.json` pointer:
 
 ```json
 { "fp_schema": "fp/1", "tool_version": "…", "run_id": "…", "completed_at": "…",
-  "covered_checks": { "SAST-PY-EVAL-01": {"rule_digest": "…"}, … },
-  "findings": [ {"fingerprint": "…", "check_id": "…", "severity": "…",
+  "covered_checks": {
+    "SAST-PY-EVAL-01":     {"rule_digest": "…", "scope": "path-root",     "cells": ["src"]},
+    "CLOUD-EC2-SG_OPEN-01":{"rule_digest": "…", "scope": "account-region",
+                            "cells": ["123456789012/us-east-1", "123456789012/eu-west-1"]},
+    "DAST-XSS-REFLECT-01": {"rule_digest": "…", "scope": "target",        "cells": ["staging"]} },
+  "findings": [ {"fingerprint": "…", "check_id": "…", "cell": "…", "severity": "…",
                  "first_seen": "…", "last_seen": "…", "suppressed": false}, … ] }
 ```
 
-A check id enters `covered_checks` **only if it ran to completion**.
-It does not if the module was not selected, if a profile or intensity filter dropped it (tension 15),
-if it was skipped for a missing dependency or an unavailable engine (tension 2), if the circuit breaker
-aborted its module (tension 16), or if a resumed run never reached it (tension 18).
+A **coverage cell** is the value of the scope dimension that partitions a check's findings.
+The dimension is declared per check (`coverage-scope` in `rules/RULE-FORMAT.md` §9.5 for script checks;
+implied by the module for pattern rules) and is frozen as:
 
-Classification is then:
+| Module | `coverage-scope` | Cell value |
+|---|---|---|
+| SAST, IaC, containers, SCA | `path-root` | the normalised `--path` root |
+| SAST history | `path-root` | the `--path` root, plus the resolved history boundary (tension 13) |
+| DAST | `target` | the `config/scope.conf` target id |
+| Cloud live | `account-region` | `<account_id>/<region>`, or `<account_id>/global` |
+| Posture | `scope-key` | the expectation's `scope-key` |
+| Derived | `none` | the literal `none` |
+
+The cell of a finding is **derivable from its recorded location** (tension 5), which is what keeps the
+two in sync: `account-region` is the first two location components of a cloud finding, `target` is the
+first component of a DAST finding, `scope-key` is the second component of a posture finding.
+A cell is never a fingerprint input; it is recorded alongside the fingerprint in `state/` so a prior
+finding can be tested against this run's coverage without re-deriving it.
+
+A (check, cell) pair enters `covered_checks` **only if that check ran to completion over that cell**.
+It does not if the module was not selected, if a profile or intensity filter dropped the check
+(tension 15), if the check was skipped for a missing dependency or an unavailable engine (tension 2),
+if the circuit breaker aborted its module (tension 16), if a resumed run never reached it (tension 18),
+or if the run simply never visited that region, target, or path root.
+
+Classification is then, for a prior finding with `check_id` C and cell K:
 
 | Prior finding | This run | Status |
 |---|---|---|
-| present, `check_id` in `covered_checks` | present | `recurring` |
-| present, `check_id` in `covered_checks` | absent | **`fixed`** |
-| present, `check_id` **not** in `covered_checks` | absent | **`unknown`**, carried forward with its original `first_seen` |
+| present, (C, K) covered | present | `recurring` |
+| present, (C, K) covered | absent | **`fixed`** |
+| present, (C, K) **not** covered | absent | **`unknown`**, carried forward with its original `first_seen` |
 | absent | present | `new` |
+
+The middle row is the whole point: `fixed` is inferred only inside a cell this run actually visited.
+A region-scoped or target-scoped run therefore leaves every other region's and target's prior findings
+`unknown`, exactly as a module-scoped run leaves other modules' findings `unknown`.
 
 `unknown` findings are carried into the persisted state unchanged so that coverage gaps never erode
 history, are excluded from the gate, and are shown in the report as "not assessed this run" with the
@@ -978,11 +1080,19 @@ An automatic run diffs against `state/latest.json`; `scan.sh diff --against <dir
 `state/` is pruned to `state_retain_runs` (default 30) newest runs plus `latest.json`.
 
 **Consequence for the build.**
-Every check must be registered with an id before it runs and must report completion, which means
-`scan.sh` owns a check registry rather than each module tracking its own.
-This is why check ids are authored and stable (tension 7).
-§13 step 7 implements it; the test that matters runs a full scan, then a `sast`-only scan, and asserts
-that zero non-SAST findings are classified `fixed`.
+Every check must be registered with an id and a `coverage-scope` before it runs, and must report
+completion **per cell**, which means `scan.sh` owns a check registry rather than each module tracking
+its own, and a module must know which cells it is about to visit before it visits them.
+That last requirement is the same one tension 18 imposes for `unit_key`, and it is satisfied by the same
+enumerate-then-execute structure.
+This is why check ids are authored and stable (tension 7), and why script checks are registered as
+records (`rules/RULE-FORMAT.md` §9.5).
+§13 step 7 implements it.
+Three tests matter, one per granularity: a full scan then a `sast`-only scan asserts zero non-SAST
+findings are `fixed`; a full-region cloud scan then `--regions us-east-1` asserts zero `eu-west-1`
+findings are `fixed`; a two-target DAST scan then a single-`--target` scan asserts zero findings for the
+other target are `fixed`.
+Only the first of those would have passed under check-id-only coverage.
 
 ## Tension 13 - git-history findings
 
@@ -1043,12 +1153,49 @@ It is **never** `fixed` merely because the working tree changed.
 Its `remediation` states the real fix explicitly: **rotate the credential first**, because purging
 history does not un-disclose it, then purge the blob, then force-push and re-clone.
 
-**The window is coverage.**
-The window (`history_window_days`, default 365, and `history_max_commits`, default 5000, whichever
-binds first) is recorded in `state/` alongside `covered_checks`.
-When a run's window is **narrower** than the prior run's, `SAST-HIST-*` checks are excluded from
-`covered_checks`, so findings that fell outside are classified `unknown`, never `fixed`.
-A wider window is fine and can only add findings.
+**The window is coverage, and coverage is measured on the commits actually reached, not on the config.**
+
+The obvious rule - "compare `history_window_days` and `history_max_commits` against the prior run's, and
+treat a narrower setting as reduced coverage" - is wrong, and wrong in the dangerous direction.
+Both defaults describe a **rolling** window, so with no config change whatever, coverage shrinks at the
+trailing edge on every single run: a blob reachable only from commits that have since aged past a
+constant 365-day cutoff is simply absent from this run's enumeration.
+The settings compare equal, the check looks fully covered, and a leaked credential still sitting in git
+history is reported **`fixed`**.
+`history_max_commits` does the same thing continuously on any active repository, from the moment the cap
+starts binding.
+That is a false all-clear on the one finding class this design explicitly says cannot be verified from
+the working tree, and a settings comparison cannot see it.
+
+So coverage is recorded as the **resolved boundary of the enumeration**, and it is compared per finding
+rather than per check.
+Each run records, for the `SAST-HIST-*` family in `state/`:
+
+```json
+"history_boundary": { "oldest_commit": "<sha>", "oldest_commit_time": "<iso8601>",
+                      "objects_scanned": 12345, "bound_by": "window-days|max-commits|repo-root" }
+```
+
+and every history finding records `oldest_reaching_commit_time`, the committer timestamp of the earliest
+commit that reaches its blob, which it already has to compute for its `location`.
+
+Classification for a prior `SAST-HIST-*` finding absent from this run:
+
+- If its `oldest_reaching_commit_time` is **at or after** this run's `oldest_commit_time`, the blob was
+  inside the range this run actually walked, so its absence is real: **`fixed`**.
+- If it is **before** this run's `oldest_commit_time`, this run could not have seen it whatever the
+  config said: **`unknown`**.
+
+One rule catches all three ways coverage shrinks - a rolling cutoff, a `max_commits` cap that has
+started binding, and a manual narrowing - and it does not permanently blind the check the way a
+whole-family exclusion would.
+That matters: under a rolling window every run's boundary is more recent than the last, so excluding the
+family whenever the boundary moves would make history findings `unknown` forever and a genuinely purged
+secret would never be reported `fixed`.
+Per-finding comparison keeps `fixed` reachable for everything still inside the walked range while
+protecting everything outside it.
+`bound_by` is recorded so the report can say *why* coverage ended where it did.
+
 `history.sh` is skipped entirely, with a `run.json` reason, when the path is not a git repository or the
 clone is shallow, since a shallow clone silently truncates history and would otherwise look like
 remediation.
@@ -1057,8 +1204,14 @@ remediation.
 `history.sh` lands at the end of §13 step 3 and needs `git rev-list`, `git cat-file`, and
 `git rev-parse --is-shallow-repository`, which join the required-command probe (tension 24).
 A fixture repository with a secret committed and then removed is part of `tests/fixtures/`, and the test
-asserts one finding rather than one per commit, that it is not reported `fixed` after the removal
-commit, and that narrowing the window yields `unknown`.
+asserts one finding rather than one per commit, and that it is not reported `fixed` after the removal
+commit.
+Two further tests cover the boundary rule, and the second is the one a settings comparison would have
+passed while shipping the bug: **narrowing `history_window_days` yields `unknown`**, and **holding
+`history_window_days` constant while the fixture's commit dates advance past the cutoff also yields
+`unknown`**, not `fixed`.
+A third asserts that a blob purged from a repository whose boundary did not move is reported `fixed`, so
+the rule has not simply disabled `fixed` for the family.
 
 ## Tension 14 - exit-code precedence and required inputs
 
@@ -1101,8 +1254,8 @@ dummy scope entry, which weakens the one control §7 calls "the single most impo
 2  usage error          (the invocation was invalid; nothing ran)
 3  scope violation      (the tool was asked to leave its authorised scope)
 4  missing required input
-5  incomplete run       (circuit breaker, or any module aborted before completion)
-1  gate failed          (a complete run found findings at or above --fail-on)
+5  incomplete run       (the run did not finish what it was asked to do)
+1  gate failed          (the run finished what it was asked to do, and found findings at or above --fail-on)
 0  clean
 ```
 
@@ -1117,6 +1270,44 @@ and re-scan, `2`/`3`/`4` mean fix the invocation or the config.
 Codes `2`, `3`, and `4` sit above `5` because they mean the run was never valid, and `3` in particular
 must never be masked, since it is the signal that the tool was pointed somewhere it was not authorised
 to go.
+
+**Exit 5 means unplanned incompleteness, never declared scope reduction.**
+This distinction is load-bearing and the two must never be conflated, because tension 12 produces
+`unknown` findings for both.
+
+| Cause of reduced coverage | Class | Effect on exit code |
+|---|---|---|
+| Subcommand selected one module (`scan.sh sast`) | declared | none |
+| `--profile-scan quick` / `compliance` dropped checks | declared | none |
+| `--intensity` ceiling dropped checks | declared | none |
+| `--allow-intrusive` absent dropped checks | declared | none |
+| `--regions` / `--target` narrowed the cells visited | declared | none |
+| A module skipped under `all` for absent inputs | declared | none |
+| A `pcre` record skipped for an unavailable engine (tension 2) | declared | none |
+| A check skipped for an absent `requires-cmd` or `requires-config` | declared | none |
+| A retired check id (tension 7) | declared | none |
+| Circuit breaker opened | **unplanned** | **5** |
+| Per-run request budget exhausted | **unplanned** | **5** |
+| A module or check aborted with an error mid-flight | **unplanned** | **5** |
+| A resumed run was itself interrupted | **unplanned** | **5** |
+| `--paranoid` requested but no observer available | **unplanned** | **5** |
+
+A run whose reduced check set follows directly from its own invocation **did** do what it was asked, so
+it exits `0` or `1` normally.
+Only a run that failed to do what it was asked exits `5`.
+`run.json` carries `coverage_reduction` (the declared entries, with the flag responsible, per
+tension 15) and `incomplete_reason` (the unplanned ones), and `incomplete_reason` being non-empty is
+exactly the exit-5 predicate.
+
+Without this split, exit 5 swallows the product.
+Tension 12 emits `unknown` for every prior finding of any uncovered check, so on any repository with
+prior state and a non-empty backlog, `scan.sh sast` and `--profile-scan quick` would *always* exit 5 and
+`0` and `1` would be unreachable.
+That would kill the fast partial run - the mode tension 12 explicitly refused to sacrifice when it
+rejected "only diff full runs", and the mode §9a calls the single most useful one - by making it
+indistinguishable, to CI, from a target that fell over.
+A `--profile-scan quick --fail-on-new` pipeline that catches a genuine new critical must report "fix the
+findings", not "investigate the run".
 
 **The missing gate flags** are added to the frozen CLI surface:
 
@@ -1133,7 +1324,12 @@ Two edge cases are decided rather than left open, both **fail closed**:
   The intended workflow after a first red build is to baseline (tension 11), which is explicit and
   reviewable, rather than to inherit an invisible amnesty.
 - **Findings classified `unknown`** (tension 12): excluded from the gate, since nothing was learned
-  about them, but their presence forces exit `5` because the run was incomplete anyway.
+  about them.
+  Their presence **does not** by itself affect the exit code.
+  Whether the run exits `5` is decided solely by `incomplete_reason` per the declared-versus-unplanned
+  table above, so a deliberately scoped run still returns `0` or `1`.
+  The `unknown` findings and the reason each was not assessed are recorded in `run.json` and led with in
+  the report, which is what tension 12 already specifies and is the right place for that signal.
 
 **Required inputs are per module,** and exit `4` is scoped accordingly:
 
@@ -1152,9 +1348,12 @@ raw-URL bypass) while removing the incentive to write a dummy entry.
 **Consequence for the build.**
 §13 step 2 delivers the exit-code precedence function and the complete flag table; the gate itself lands
 in step 10 but its inputs exist from step 2.
-`run.json` gains `incomplete_reason`, `gate`, and `gated_findings`.
+`run.json` gains `incomplete_reason`, `coverage_reduction`, `gate`, and `gated_findings`.
 A test matrix asserts one exit code per combination of (breaker tripped, findings above gate, scope
 violation, missing input).
+It includes the case the declared-versus-unplanned split exists for: a `--profile-scan quick
+--fail-on high --fail-on-new` run against a repository with prior state and a backlog, which must exit
+`0` when it finds no new high, and `1` when it does - never `5`.
 
 ## Tension 15 - check-set selection precedence
 
@@ -1352,7 +1551,12 @@ At end of run, `scan.sh` merges every shard into `reports/<run>/findings.jsonl`,
 Sorting is not cosmetic: it makes the output **byte-reproducible** across runs regardless of scheduling,
 which is what §4's audit-record claim needs and what makes a diff of two `findings.jsonl` files readable
 by a human.
-The sort key is total, because the fingerprint is unique within a check.
+The sort key is total, because the fingerprint is unique within a run.
+That uniqueness is not free: it holds only because tension 5's location components carry an `occurrence`
+discriminator for the SAST, history, IaC, and container modules, whose `match_digest` would otherwise be
+identical across every repeated byte-identical match in a file.
+Without it this sort would be non-deterministic between ties and the merged file would not be
+byte-reproducible.
 
 "Incrementally" is preserved in the sense §10 actually needs: findings are durable on disk as they are
 produced, so an interrupted run loses nothing and a resumed run (tension 18) reads the prior shards.
@@ -2037,7 +2241,7 @@ against a small committed fixture database.
 Tension 1 has just established that a pipe-delimited record cannot safely carry free text, and `notes`
 is free text by definition.
 The remaining config files in §11 (`scanner.conf`, `auth.conf`, `discovery.conf`, `posture.conf`) have
-no stated format at all.
+no stated format at all, and no stated key set.
 
 **Why it bites.**
 The same delimiter bug, in the file that gates every outbound request.
@@ -2072,7 +2276,16 @@ A clean split by authorship, with exactly one format on each side.
 `modules/<m>/checks.rules`, `rules/derived.rules`, and `rules/redaction.rules`.
 The **syntax** is identical for all of them; only the **key set** differs, and each key set is a schema
 listed in `rules/RULE-FORMAT.md` §9.
+
+Every one of those schemas is defined **in that document**, not alongside its consumer.
+That is not tidiness: §7's parser consults *single* versus *repeatable* to raise `E014` and *multi-line*
+to raise `E016`, so a file whose key cardinality lives elsewhere cannot be parsed at all, and
+`rules/RULE-FORMAT.md`'s claim to be self-contained would be false.
+The operator-config schemas are §9.6.1 to §9.6.5, and the script-check registry is §9.5.
+
 A file containing exactly one record is legal, which is what `scanner.conf` is.
+Its `id` is the frozen literal `scanner`, so §4's "first field is `id`" rule stays total with no special
+case in the parser (`rules/RULE-FORMAT.md` §9).
 `config/scope.conf`'s schema is `rules/RULE-FORMAT.md` §9.4, which replaces §11's pipe-delimited line and
 gives `notes` a genuinely free-text field and `extra-host` a repeatable one.
 
@@ -2114,18 +2327,134 @@ Six decisions here reach beyond their own tension and are collected so they are 
 3. **A check registry exists in `scan.sh`**, because tensions 7, 12, 15, and 18 all need every check to
    have a stable id, a set of tags, and a completion signal.
 4. **`run.json` is load-bearing, not decorative.**
-   It carries `skipped_checks` with reasons, `coverage_gap` entries, `incomplete_reason`, the capability
-   probe results, the paranoid allowlist, and the advisory snapshot date.
+   It carries `skipped_checks` with reasons, `coverage_gap` entries, `coverage_reduction`,
+   `incomplete_reason`, the capability probe results, the paranoid allowlist, and the advisory snapshot
+   date.
    Tensions 2, 12, 14, 15, 20, 21, 24, and 25 all write to it, and §15's honesty requirement is
    implemented through it.
+   `incomplete_reason` being non-empty is exactly the exit-5 predicate (tension 14).
 5. **`fp/1` and `uk/1` are versioned schemas** (tensions 5 and 18) whose change invalidates `state/` and
    `config/baseline.json`.
    They are printed in every report.
 6. **CI runs the suite on both GNU and BSD userlands** (tension 24) and asserts byte-identical findings,
    which is the check that keeps most of the resolutions above honest.
 
+---
+
+## Known follow-ups
+
+Review round 1 ran six adversarial lenses over this register and `rules/RULE-FORMAT.md`.
+Twenty defects survived verification.
+Eight were fixed in that round because they define what gets persisted into `state/` and
+`config/baseline.json`, or the bytes a parser produces, and changing those after the freeze is a data
+migration rather than a document edit: **F1, F2, F6/F10, F7, F9, F11, F19**.
+They are resolved in the tensions above and are not repeated here.
+
+The twelve below are **open**, deliberately deferred, and recorded with their finding numbers so the
+next task inherits them rather than rediscovering them.
+Each names the tension it lands in and the build step it must land before.
+None is a matter of taste; each has a defect and a direction, and the direction is not yet frozen.
+
+### Must land before `lib/core.sh` and the parallel path are written (§13 step 1)
+
+- **F13 [high] - the EXIT-trap subshell guard defends a case bash never produces and passes the case it
+  does** (tension 4, rule 5).
+  Bash resets trapped EXIT actions in subshells, so the stated hazard does not occur, while an
+  `xargs -P` worker is a fresh process where `$BASHPID == $$` is true and the guard passes.
+  The first worker to finish would shred the shared scratch dir holding the rate limiter, budget,
+  breaker state, finding shards, and units journal, and the prescribed test is vacuous.
+  Direction: guard on scratch-dir ownership (a recorded owner pid plus a created-here marker), not on
+  subshell-ness, and replace the test with one that runs N workers under `xargs -P`.
+  **This wrong claim is also frozen into `AGENTS.md`** under "Sharp edges"; correct both together.
+- **F14 [high] - the `msleep` fallback does not sleep** (tension 24 capability table, consumed by
+  tension 16's `mutex_acquire`).
+  `read -t 0.05 </dev/null` returns at EOF immediately, so the mutex retry loop becomes a spin that
+  exhausts its timeout in under a millisecond, and a probe based on exit status cannot detect it because
+  `read` returns non-zero for both EOF and timeout.
+  Direction: read from a descriptor that never yields data rather than one already at EOF, and probe by
+  measuring elapsed time.
+  Tension 16's code sample also calls `sleep 0.05` literally instead of the frozen wrapper.
+- **F12 [high] - resume reads shards that the scratch-dir cleanup destroys** (tension 18 against
+  tension 17 and tension 4).
+  Finding shards and the unit journal live in `$SCRATCH`, are retained only under `--keep-shards`, and
+  the EXIT trap shreds `$SCRATCH` on the signal tension 18's own resume test uses.
+  Direction: write both unconditionally into the run directory and redefine `--keep-shards` as "do not
+  delete after a successful merge", leaving the scratch dir for genuinely transient data.
+- **F15 [medium] - the mkdir mutex stale-reclaim path can delete a live lock, and `lock_is_stale` is
+  asserted rather than specified** (tension 16).
+  Two waiters can both judge a lock stale, and the second deletes the first's freshly acquired lock.
+  Separately the routine needs a liveness primitive, an mtime accessor that tension 24's capability layer
+  does not provide (`stat_mtime`), a `now_epoch` that is not among the frozen functions, and a policy
+  for the window in which a lock dir exists with no owner file.
+  Direction: make reclaim single-winner via an atomic rename rather than `rm -rf`, publish the owner
+  before publishing the lock, and add the missing capability functions.
+- **F16 [medium] - `shred` is GNU-only, sits inside the mandated EXIT cleanup, and is absent from the
+  capability layer** (tension 24 against tension 4 rule 5 and tension 9).
+  On a host without it the trap fails and, under `set -Eeuo pipefail`, the process exits 127, outside
+  the frozen 0-5 contract, leaving the scratch dir behind on exactly the platform the CI matrix
+  mandates.
+  Overwrite-based erasure is also ineffective on modern filesystems, so the honest control is
+  `scratch_dir` on tmpfs.
+  The same omission applies to `look` (tension 25), which is absent from several minimal images and is
+  neither probed nor recorded, and whose stated `grep -F` fallback is O(n) per lookup against a
+  millions-of-rows table that the tension justifies on O(log n) grounds.
+
+### Cheap corrections, safe to defer
+
+- **F4 [medium] - §12.2's `context-deny` rewrite suppresses true positives**
+  (`rules/RULE-FORMAT.md` §12.2, blessed as the general recipe by §8.3 and tension 2).
+  With `context-window: 2`, a correct safe-loader call within two lines of a genuine vulnerable call
+  suppresses the finding, and tension 12 then classifies the suppressed finding `fixed`.
+  §12.1 already states the correct discipline (`context-window: 0` for a same-line guard) and §12.2
+  abandons it, so the two frozen examples give contradictory precedents for the identical hazard.
+  Direction: freeze that a same-line-intent deny must carry `context-window: 0`, fix §12.2, add a linter
+  warning for a deny on a rule with a window above 0, and state in §10.2 that widening a deny window
+  trades false positives for silent false negatives rather than being monotonically safe.
+- **F3 [medium] - the `tags` vocabulary is not closed, so `E044` is unimplementable and a typo silently
+  disables** (`rules/RULE-FORMAT.md` §9.1.3 and §13 against tension 15).
+  `tags: quik` lints clean and silently removes a rule from the `quick` profile, which is the exact
+  failure mode `E017` exists to prevent for keys.
+  `compliance` also has two incompatible definitions - tag-based in §9.1.3, derived from a non-empty
+  `cis` or `owasp` in tension 15 - and since `owasp` is required on every pattern rule the derived form
+  selects the entire catalog.
+  Direction: declare the closed vocabulary normatively, add an error code for a tag outside it, and pick
+  one definition of `compliance`.
+- **F5 and F20 [medium] - seeding the composite at §13 step 1 is a guaranteed lint failure**
+  (tension 6's "Consequence for the build" against `E051`, and `E060`).
+  Tension 6 instructs seeding `COMPOSITE-TOKEN-HIJACK` at step 1 while its contributors do not exist
+  until steps 5 and 6, and `E051` makes a dangling contributor id an error, so the first build task
+  ships a red CI.
+  `E060` is a second, independent failure for the same record, since a composite's fixture is a
+  synthetic findings set rather than a source fixture.
+  Direction: either defer the seed to step 6, or add a narrow, explicit forward-reference allowance that
+  downgrades `E051` and forces the check into `skipped_checks`, and state `E060`'s applicability to the
+  derived schema.
+- **F18 [medium] - `die 6` appears in two normative code samples and in no exit-code table**
+  (tensions 4 and 16 against tension 14 and `docs/DESIGN.md` §5).
+  Both conditions - a pattern-engine failure and a mutex timeout - are what tension 14 already calls an
+  incomplete run, so `5` is the natural fit, and `6` would reach CI unclassifiable.
+  Direction: change both samples to `die 5` and have it write `incomplete_reason`.
+  While in tension 4, also fix the `scan_match` comment, which says "writes hits to `$2`" while the body
+  takes the output path as `$1`.
+- **F8 [low] - the `derived` type tag falls outside every `--intensity` tier** (tension 15 step 3, and
+  `rules/RULE-FORMAT.md` §9.1.3 against §9.2).
+  Under an intersection filter where nothing can be re-enabled, any run carrying `--intensity` drops
+  every composite, and a dropped check never enters `covered_checks`, so its prior findings are
+  `unknown` forever.
+  Direction: state that `derived` checks are exempt from the intensity ceiling, since they consume
+  findings rather than issue requests, and add `derived` to §9.1.3's enumeration so `E044` and the
+  schema agree.
+- **F17 [low] - `aws_ro` pins `--no-cli-pager`, which AWS CLI v1 rejects** (tension 23, item 5).
+  The flag is v2-only, and tension 24 probes for `aws` by presence rather than by major version, so on a
+  v1 host every AWS call fails at argument parsing and the entire cloud module produces zero findings
+  while reporting a tool error.
+  Direction: set `AWS_PAGER=` in the call's environment instead, which both major versions honour and
+  which needs no version detection, and record the detected major version in `run.json` either way.
+
 ## Where the build currently stands
 
 Nothing in `docs/DESIGN.md` §13 has been implemented.
 This foundation freezes the record format (`rules/RULE-FORMAT.md`) and resolves the tensions above so
-that §13 step 1 can begin without re-litigating any of them.
+that §13 step 1 can begin without re-litigating any of them, subject to the open follow-ups listed
+immediately above, five of which must be settled before `lib/core.sh` and the parallel path are
+written.
