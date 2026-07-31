@@ -221,6 +221,20 @@ report_md() {
 _md_limitations() {
   local rundir=$1 line any=0
   printf '## Limitations and coverage\n\n'
+  if [[ -r $rundir/meta/coverage_reduction ]]; then
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      any=1
+      printf -- '- declared reduced coverage: %s\n' "$line"
+    done <"$rundir/meta/coverage_reduction"
+  fi
+  if [[ -r $rundir/meta/skipped_checks ]]; then
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      any=1
+      printf -- '- skipped: %s\n' "$line"
+    done <"$rundir/meta/skipped_checks"
+  fi
   if [[ -r $rundir/meta/coverage_gap ]]; then
     while IFS= read -r line; do
       [[ -n $line ]] || continue
@@ -241,11 +255,15 @@ _md_limitations() {
 
 _location_summary() {
   local out=''
-  if [[ -n ${_DF[loc_path]:-} ]]; then
+  # blob BEFORE path: a SAST-HIST-* finding carries a path for navigation, but
+  # its identity is the blob (tension 13), and showing only the path would read
+  # as a working-tree finding - which is the one thing history findings are not.
+  if [[ -n ${_DF[loc_blob_sha]:-} ]]; then
+    out="blob ${_DF[loc_blob_sha]:0:12}"
+    [[ -n ${_DF[loc_path]:-} ]] && out="$out (${_DF[loc_path]})"
+  elif [[ -n ${_DF[loc_path]:-} ]]; then
     out=${_DF[loc_path]}
     [[ -n ${_DF[loc_line]:-} ]] && out="$out:${_DF[loc_line]}"
-  elif [[ -n ${_DF[loc_blob_sha]:-} ]]; then
-    out="blob ${_DF[loc_blob_sha]}"
   elif [[ -n ${_DF[loc_resource_key]:-} ]]; then
     out="${_DF[loc_account_id]:-}/${_DF[loc_region]:-} ${_DF[loc_resource_key]}"
   elif [[ -n ${_DF[loc_target]:-} ]]; then
@@ -350,6 +368,8 @@ details.f[data-sev="info"] { border-left-color: var(--info); }
 .sev.medium { color: var(--medium); }
 .sev.low { color: var(--low); }
 .sev.info { color: var(--info); }
+.loc { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+       font-size: .78rem; margin-left: .5rem; word-break: break-all; }
 .body { padding: 0 .8rem .8rem; border-top: 1px solid var(--line); }
 .meta { color: var(--muted); font-size: .82rem; margin: .6rem 0; word-break: break-all; }
 pre.ev { background: var(--bg); border: 1px solid var(--line); border-radius: .35rem;
@@ -439,16 +459,22 @@ _html_findings() {
 }
 
 _html_one_finding() {
-  local sev=${_DF[severity]:-info}
-  printf '<details class="f" data-sev="%s"><summary><span class="sev %s">%s</span> <strong>%s</strong> - %s</summary>\n' \
+  local sev=${_DF[severity]:-info} loc
+  loc=$(_location_summary)
+  # The location belongs in the COLLAPSED line, not only inside it: repeated
+  # byte-identical matches of one check are distinct findings with distinct
+  # fingerprints (tension 5), and a list that renders them as three identical
+  # rows reads as a duplication bug.
+  printf '<details class="f" data-sev="%s"><summary><span class="sev %s">%s</span> <strong>%s</strong> - %s<span class="loc">%s</span></summary>\n' \
     "$(html_escape "$sev")" "$(html_escape "$sev")" "$(html_escape "$sev")" \
-    "$(html_escape "${_DF[check_id]}")" "$(html_escape "${_DF[title]}")"
+    "$(html_escape "${_DF[check_id]}")" "$(html_escape "${_DF[title]}")" \
+    "$(html_escape "$loc")"
   printf '<div class="body">\n'
   printf '<p class="meta">%s · %s · confidence %s · status %s · base severity %s</p>\n' \
     "$(html_escape "${_DF[cwe]:-none}")" "$(html_escape "${_DF[owasp]:-none}")" \
     "$(html_escape "${_DF[confidence]:-medium}")" "$(html_escape "${_DF[status]:-new}")" \
     "$(html_escape "${_DF[base_severity]:-}")"
-  printf '<p class="meta">location: %s</p>\n' "$(html_escape "$(_location_summary)")"
+  printf '<p class="meta">location: %s</p>\n' "$(html_escape "$loc")"
   printf '<p class="meta">CVSS: %s (%s)</p>\n' \
     "$(html_escape "${_DF[_cvss_vector]:-}")" "$(html_escape "${_DF[_cvss_score]:-}")"
   printf '<p class="meta">fingerprint: %s</p>\n' "$(html_escape "${_DF[fingerprint]}")"
@@ -481,6 +507,13 @@ _html_limitations() {
       any=1
       printf '<li>coverage gap: %s</li>\n' "$(html_escape "$line")"
     done <"$rundir/meta/coverage_gap"
+  fi
+  if [[ -r $rundir/meta/coverage_reduction ]]; then
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      any=1
+      printf '<li>declared reduced coverage: %s</li>\n' "$(html_escape "$line")"
+    done <"$rundir/meta/coverage_reduction"
   fi
   if [[ -r $rundir/meta/skipped_checks ]]; then
     while IFS= read -r line; do

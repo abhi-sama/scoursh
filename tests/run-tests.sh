@@ -28,9 +28,9 @@ run_one() {
   local kind=$1 name=$2 path=$3
   printf '\n=== %s: %s ===\n' "$kind" "$name"
   if bash "$path"; then
-    printf '--- %s passed\n' "$name"
+    printf -- '--- %s passed\n' "$name"
   else
-    printf '--- %s FAILED\n' "$name"
+    printf -- '--- %s FAILED\n' "$name"
     failed+=("$name")
   fi
 }
@@ -57,7 +57,9 @@ else
   # must still be runnable there.  CI installs it.
   if command -v shellcheck >/dev/null 2>&1; then
     printf '\n=== linter: shellcheck ===\n'
-    if find lib tests tools -name '*.sh' -type f 2>/dev/null \
+    sc_dirs=()
+    for d in lib tests tools modules aws; do [[ -d $d ]] && sc_dirs+=("$d"); done
+    if find "${sc_dirs[@]+"${sc_dirs[@]}"}" -name '*.sh' -type f \
       | LC_ALL=C sort \
       | xargs shellcheck -x -s bash; then
       printf -- '--- shellcheck passed\n'

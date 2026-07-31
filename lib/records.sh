@@ -1010,13 +1010,13 @@ _records_check_one_regex() {
 
 _records_regex_compiles() {
   local rc=0
-  "${SCOURSH_GREP[@]}" -e "$1" /dev/null >/dev/null 2>&1 || rc=$?
+  "${SCOURSH_GREP[@]+"${SCOURSH_GREP[@]}"}" -e "$1" /dev/null >/dev/null 2>&1 || rc=$?
   (( rc <= 1 ))
 }
 
 _records_regex_compiles_pcre() {
   local rc=0
-  "${SCOURSH_GREP_PCRE[@]}" -e "$1" /dev/null >/dev/null 2>&1 || rc=$?
+  "${SCOURSH_GREP_PCRE[@]+"${SCOURSH_GREP_PCRE[@]}"}" -e "$1" /dev/null >/dev/null 2>&1 || rc=$?
   (( rc <= 1 ))
 }
 

@@ -1,0 +1,85 @@
+# docs/FOUNDATION.md tension 24: the suite runs on Linux with GNU coreutils AND
+# on macOS with a BSD userland, because that is what turns "one capability
+# layer" from a list of good intentions into a checked property.  Several of the
+# shell facts this repository depends on differ between the two, and every one
+# of them was found by running the command rather than by reasoning about it.
+name: tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  suite:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            userland: GNU coreutils
+          - os: macos-latest
+            userland: BSD
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.os }} (${{ matrix.userland }})
+    steps:
+      - uses: actions/checkout@v4
+
+      # macOS ships bash 3.2, which has no associative arrays; tension 24
+      # freezes the minimum at 4.2.
+      - name: Install a bash that meets the frozen minimum
+        if: runner.os == 'macOS'
+        run: brew install bash
+
+      - name: Install shellcheck
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then brew install shellcheck; else sudo apt-get update -qq && sudo apt-get install -y shellcheck; fi
+
+      - name: Report the userland
+        run: |
+          set -x
+          bash --version | head -1
+          /opt/homebrew/bin/bash --version 2>/dev/null | head -1 || true
+          grep --version 2>&1 | head -1 || true
+          command -v shred || echo 'no shred (expected on macOS)'
+          command -v rg || echo 'no ripgrep'
+
+      - name: Run the suite
+        run: |
+          BASH=bash
+          for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+            [ -x "$candidate" ] && BASH=$candidate && break
+          done
+          "$BASH" tests/run-tests.sh
+
+      - name: Emit the fixture scan for cross-userland comparison
+        run: |
+          BASH=bash
+          for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+            [ -x "$candidate" ] && BASH=$candidate && break
+          done
+          "$BASH" tests/e2e/fixture-scan.sh "$RUNNER_TEMP/run"
+          # The run timestamp is the only value that legitimately differs between
+          # two runs; everything else must be byte-identical across userlands.
+          sed -e 's/"first_seen":"[^"]*"/"first_seen":"T"/g' \
+              -e 's/"last_seen":"[^"]*"/"last_seen":"T"/g' \
+              "$RUNNER_TEMP/run/findings.jsonl" > findings.normalised.jsonl
+          wc -l findings.normalised.jsonl
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: findings-${{ matrix.os }}
+          path: findings.normalised.jsonl
+
+  compare:
+    # tension 24's actual requirement: the suite fails if a finding, a
+    # fingerprint, or a findings.jsonl byte differs between the two userlands.
+    needs: suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: findings-ubuntu-latest, path: gnu }
+      - uses: actions/download-artifact@v4
+        with: { name: findings-macos-latest, path: bsd }
+      - name: Assert byte-identical findings across GNU and BSD userlands
+        run: diff -u gnu/findings.normalised.jsonl bsd/findings.normalised.jsonl

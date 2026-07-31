@@ -276,7 +276,7 @@ redact() {
     return 0
   fi
   local i pat kind m d hits
-  for i in "${_REDACTION_IDS[@]}"; do
+  for i in "${_REDACTION_IDS[@]+"${_REDACTION_IDS[@]}"}"; do
     pat=$(records_field redaction "$i" pattern)
     kind=$(records_field redaction "$i" kind)
     hits=$(printf '%s' "$text" | scan_match_stdin "$pat" || true)
@@ -830,7 +830,7 @@ finding_fingerprint() {
     [[ -n $comp ]] || continue
     parts+=("${_F[loc_$comp]:-}")
   done <<<"$(_fp_components_for "$profile")"
-  fingerprint_compute "${parts[@]}"
+  fingerprint_compute "${parts[@]+"${parts[@]}"}"
 }
 
 finding_emit() {
@@ -1357,7 +1357,7 @@ _derive_fire() {
   # part.
   local best r
   best=$(severity_rank "${_F[base_severity]}")
-  for fp in "${contributors[@]}"; do
+  for fp in "${contributors[@]+"${contributors[@]}"}"; do
     r=${_DERIVE_SEV[$fp]:-0}
     (( r > best )) && best=$r
   done
@@ -1371,7 +1371,7 @@ _derive_fire() {
   local -A added=()
   local composite_id
   composite_id=$(records_id derivedset "$ridx")
-  for fp in "${contributors[@]}"; do
+  for fp in "${contributors[@]+"${contributors[@]}"}"; do
     [[ -n ${added[$fp]:-} ]] && continue
     added[$fp]=1
     finding_add contributors "$fp"

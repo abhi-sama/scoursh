@@ -295,7 +295,12 @@ for c in SAST-B-B-01 SAST-C-C-01 SAST-A-A-01; do emit_match "$d2" "$c" u.py 1 "m
 findings_merge "$d2"
 findings_write_jsonl "$d1"
 findings_write_jsonl "$d2"
-assert_eq "$(cat "$d1/findings.jsonl")" "$(cat "$d2/findings.jsonl")" \
+# One run timestamp is shared by every finding of a run (lib/core.sh run_init),
+# so normalising that single value is all that is needed to compare two runs
+# byte for byte.  Comparing them raw would pass or fail on whether the two runs
+# happened to land in the same second, which is a flaky test and worse than none.
+norm() { sed -e 's/"first_seen":"[^"]*"/"first_seen":"T"/g' -e 's/"last_seen":"[^"]*"/"last_seen":"T"/g' "$1"; }
+assert_eq "$(norm "$d1/findings.jsonl")" "$(norm "$d2/findings.jsonl")" \
   'sorted by (module, check_id, fingerprint) under LC_ALL=C, so two identical scans produce identical bytes'
 
 t_case 'shards live in the RUN directory, never in the scratch directory (finding F12)'

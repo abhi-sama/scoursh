@@ -430,9 +430,17 @@ core_probe_msleep() {
   log_warn "no verified sub-second sleep on this host: msleep falls back to a 1-second floor"
 }
 
-# True when candidate implementation $1, asked for 50 ms, actually blocks for at
-# least 20 ms.  20 ms is far above any scheduling noise on a no-op return (which
-# measures in microseconds) and far below a correct 50 ms sleep.
+# True when candidate implementation $1, asked for 200 ms, actually blocks for at
+# least 100 ms.
+#
+# The margin is wide on purpose.  What separates a working sleep from a broken
+# one here is the REQUESTED interval, not a fixed threshold: a broken
+# implementation returns after a fork and an exec, which costs single-digit
+# milliseconds, while a working one blocks for the full 200 ms.  A tighter
+# threshold makes the probe a race against process-startup cost on a loaded
+# machine - and a probe that flakes gets deleted, which is how the defect it
+# guards comes back.  Being wrong in the remaining direction is safe: the
+# fallback is the one-second floor, which is slow but correct.
 _core_measures_as_sleep() {
   local impl=$1 t0 t1 saved=${SCOURSH_CAP_MSLEEP:-}
   SCOURSH_CAP_MSLEEP=$impl
@@ -442,10 +450,10 @@ _core_measures_as_sleep() {
   # like a working one - which is the single failure this probe exists to catch.
   msleep 1 || true
   t0=$(now_epoch_ns)
-  msleep 50 || true
+  msleep 200 || true
   t1=$(now_epoch_ns)
   SCOURSH_CAP_MSLEEP=$saved
-  (( t1 - t0 >= 20000000 ))
+  (( t1 - t0 >= 100000000 ))
 }
 
 # --- pattern engine ----------------------------------------------------------
@@ -482,7 +490,11 @@ scan_match() {
   local out=$1
   shift
   local rc=0
-  "${SCOURSH_GREP[@]}" "$@" >"$out" || rc=$?
+  # An unbound engine array would expand to nothing, leaving a bare redirect
+  # that succeeds and writes an empty file - "no match" for every rule, which is
+  # the silent coverage hole this wrapper exists to prevent.
+  (( ${#SCOURSH_GREP[@]} > 0 )) || die "$SCOURSH_EXIT_INCOMPLETE" "pattern engine is not bound"
+  "${SCOURSH_GREP[@]+"${SCOURSH_GREP[@]}"}" "$@" >"$out" || rc=$?
   (( rc <= 1 )) || die "$SCOURSH_EXIT_INCOMPLETE" "pattern engine failed (rc=$rc): $*"
   return "$rc"
 }
@@ -494,7 +506,7 @@ scan_match_pcre() {
   shift
   local rc=0
   core_has_pcre || die "$SCOURSH_EXIT_INCOMPLETE" "scan_match_pcre called with no PCRE2 engine"
-  "${SCOURSH_GREP_PCRE[@]}" "$@" >"$out" || rc=$?
+  "${SCOURSH_GREP_PCRE[@]+"${SCOURSH_GREP_PCRE[@]}"}" "$@" >"$out" || rc=$?
   (( rc <= 1 )) || die "$SCOURSH_EXIT_INCOMPLETE" "PCRE pattern engine failed (rc=$rc): $*"
   return "$rc"
 }
@@ -522,7 +534,8 @@ scan_match_offsets() {
 # command-line argument.  The pattern is the argument here; the text is stdin.
 scan_match_stdin() {
   local rc=0
-  "${SCOURSH_GREP_PLAIN[@]}" -o -e "$1" || rc=$?
+  (( ${#SCOURSH_GREP_PLAIN[@]} > 0 )) || die "$SCOURSH_EXIT_INCOMPLETE" "pattern engine is not bound"
+  "${SCOURSH_GREP_PLAIN[@]+"${SCOURSH_GREP_PLAIN[@]}"}" -o -e "$1" || rc=$?
   (( rc <= 1 )) || die "$SCOURSH_EXIT_INCOMPLETE" "pattern engine failed (rc=$rc) on stdin match"
   return "$rc"
 }
@@ -531,7 +544,7 @@ core_has_pcre() {
   if [[ -z ${SCOURSH_CAP_PCRE:-} ]]; then
     SCOURSH_CAP_PCRE=none
     if [[ ${#SCOURSH_GREP_PCRE[@]} -gt 0 ]] \
-      && "${SCOURSH_GREP_PCRE[@]}" -e 'a' /dev/null >/dev/null 2>&1; then
+      && "${SCOURSH_GREP_PCRE[@]+"${SCOURSH_GREP_PCRE[@]}"}" -e 'a' /dev/null >/dev/null 2>&1; then
       SCOURSH_CAP_PCRE=rg-pcre2
     elif grep -P -e 'a' /dev/null >/dev/null 2>&1; then
       SCOURSH_CAP_PCRE=grep-P
