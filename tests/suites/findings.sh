@@ -192,10 +192,22 @@ assert_ne "$(fingerprint_digest "$s1")" "$(fingerprint_digest "$s2")" \
 dg=$(fingerprint_digest x)
 assert_eq 16 "${#dg}" 'the digest is 16 hex characters and only the hash is retained'
 
-t_case 'redaction covers JWT, private keys and bearer tokens'
+t_case 'redaction covers JWT and bearer tokens'
 assert_contains "$(redact 'x eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abcDEF123 y')" '<redacted:JWT:' 'JWT'
-assert_contains "$(redact -----BEGIN\ RSA\ PRIVATE\ KEY-----MIIBOgIBAAJ)" '<redacted:PRIVATE_KEY:' 'PEM'
 assert_contains "$(redact 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz')" '<redacted:BEARER:' 'bearer'
+
+t_case 'a REAL multi-line PEM has its body redacted, not just its header'
+# The previous assertion here used a single-line pseudo-PEM
+# (-----BEGIN RSA PRIVATE KEY-----MIIBOgIBAAJ), a shape no real key has.  The
+# matcher is line-oriented, so the correct and the broken implementation agree
+# on that input and the test certified a credential disclosure green.
+PEM=$(printf -- '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAvSECRETBODYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nBBBSECRETBODYTWOBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\nKw==\n-----END RSA PRIVATE KEY-----')
+R=$(redact "$PEM")
+assert_contains "$R" '<redacted:PRIVATE_KEY:' 'the header is redacted'
+assert_not_contains "$R" 'SECRETBODYAAAA' 'the first body line is redacted'
+assert_not_contains "$R" 'SECRETBODYTWOB' 'the second body line is redacted'
+assert_not_contains "$R" 'Kw==' 'the short padded tail line is redacted too'
+assert_contains "$R" 'END RSA PRIVATE KEY' 'the END marker is left as a readable signal'
 
 t_case 'redact_secrets=false is permitted but must be visible'
 out=$(SCOURSH_REDACT_SECRETS=false bash -c "source '$ROOT/lib/findings.sh'; redact '$s1'")

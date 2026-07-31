@@ -118,7 +118,12 @@ assert_not_contains "$H" 'url(' 'no CSS url()'
 assert_contains "$H" '&lt;/script&gt;&lt;img src=x onerror=alert(1)&gt;' 'hostile evidence is escaped'
 
 t_case 'no raw secret from the fixture reaches any output'
-for s in wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY12 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; do
+# PEMBODYMARKER* are the body lines of a MULTI-LINE private key.  They are the
+# case a single-line pseudo-PEM cannot distinguish: the matcher is line-oriented,
+# so a rule written to swallow the block redacts only the header and writes every
+# base64 body line out in the clear.
+for s in wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY12 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  PEMBODYMARKERONE PEMBODYMARKERTWO; do
   for f in findings.json findings.jsonl report.html report.md run.json; do
     if /usr/bin/grep -q -F "$s" "$R1/$f" 2>/dev/null; then
       _t_no "no raw secret in $f" "found $s"

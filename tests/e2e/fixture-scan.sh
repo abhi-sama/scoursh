@@ -186,6 +186,27 @@ finding_set remediation 'Move the API to IAM or identity-provider auth and expir
 finding_set_evidence 'expires: 2099-01-01T00:00:00Z'
 finding_emit
 
+# A multi-line PEM private key, so the end-to-end path proves a MULTI-LINE
+# secret is redacted in every emitted format, not only a single-line one.
+finding_new
+finding_set check_id SAST-SEC-PRIVATE_KEY-01
+finding_set module sast
+finding_set title 'Hardcoded private key'
+finding_set base_severity critical
+finding_set confidence high
+finding_set cwe CWE-798
+finding_set owasp A07:2021
+finding_set loc_path deploy/id_rsa
+finding_set loc_line 1
+finding_set cell "$SCOURSH_PATH_ROOT"
+finding_set sensitive_data true
+finding_set logical_kind file
+finding_set logical_fqn 'deploy/id_rsa:1'
+finding_set remediation 'Rotate the key pair and remove it from source.'
+finding_set_match 'private key'
+finding_set_evidence "$(printf -- '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAvPEMBODYMARKERONEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\nBBBPEMBODYMARKERTWOBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\nKw==\n-----END RSA PRIVATE KEY-----')"
+finding_emit
+
 # Posture: control_id / scope_key
 finding_new
 finding_set check_id POSTURE-EDGE-WAF_GEO-01

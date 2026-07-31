@@ -15,6 +15,23 @@
 # available is bash's own `=~`: the system regcomp on macOS/BSD supports none of
 # \b, \w, \s or \d (measured), which is why redact() pipes through the engine
 # rather than matching in-process.
+#
+# MATCHING IS LINE-ORIENTED (rules/RULE-FORMAT.md §8.2): a pattern can never
+# match across a newline.  A multi-line secret therefore needs one rule per line
+# SHAPE, not one rule that tries to swallow the block.
+#
+# That is why the PEM private key is two rules.  It was one, titled "header and
+# body", whose `[^-]*` tail was written to swallow the body - and could not,
+# because the matcher sees one line at a time.  On a real (multi-line) key only
+# the header was replaced and every base64 body line was written verbatim into
+# findings.json, findings.jsonl, report.md and report.html.  The test that
+# should have caught it asserted a single-line pseudo-PEM, a shape no real key
+# has, where the correct and the broken implementation agree.
+#
+# The body rule is deliberately a little greedy: a line that is entirely base64
+# and at least twenty characters long, or any base64 line carrying `=` padding.
+# Over-redaction costs a reader some evidence; under-redaction discloses a
+# credential, so the asymmetry decides the trade.
 
 id: SAST-REDACT-AWS_SECRET-01
 format-version: 1
@@ -24,8 +41,14 @@ dialect: ere
 kind: AWS_SECRET
 
 id: SAST-REDACT-PRIVATE_KEY-01
-title: PEM private-key header and body
-pattern: -----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[^-]*
+title: PEM private-key header line
+pattern: -----BEGIN [A-Z0-9 ]*PRIVATE KEY-----
+dialect: ere
+kind: PRIVATE_KEY
+
+id: SAST-REDACT-PRIVATE_KEY_BODY-01
+title: PEM private-key body line
+pattern: ^([A-Za-z0-9+/]{20,}={0,2}|[A-Za-z0-9+/]{2,}={1,2})$
 dialect: ere
 kind: PRIVATE_KEY
 
