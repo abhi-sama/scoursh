@@ -64,12 +64,18 @@ assert_contains "$J" '"cell":null' 'a derived finding persists cell as JSON null
 
 t_case 'the clean fixture stays quiet'
 # The false-positive guard: the same rules over the clean tree must fire nothing.
+# Files are enumerated explicitly rather than passing `-r`: that flag means
+# --recursive to grep and --replace to ripgrep, so one engine would have
+# silently searched a replacement string instead of a tree.
 hits=0
 while IFS= read -r pat; do
   [[ -n $pat ]] || continue
-  if scan_match "$SCOURSH_SCRATCH/cl" -e "$pat" -r -- "$ROOT/tests/fixtures/clean"; then
-    hits=$(( hits + 1 ))
-  fi
+  while IFS= read -r cf; do
+    [[ -n $cf ]] || continue
+    if scan_match "$SCOURSH_SCRATCH/cl" -e "$pat" -- "$cf"; then
+      hits=$(( hits + 1 ))
+    fi
+  done <<<"$(find "$ROOT/tests/fixtures/clean" -type f | LC_ALL=C sort)"
 done <<<"$(/usr/bin/grep '^pattern: ' "$ROOT/tests/fixtures/rules/fixture.rules" | sed 's/^pattern: //')"
 assert_eq 0 "$hits" 'no seeded rule fires on the clean fixture'
 

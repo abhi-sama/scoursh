@@ -439,12 +439,20 @@ records_digest() {
   printf '%s' "$digest"
 }
 
+# _REC_ORDER records a key once per OCCURRENCE, so a repeatable key appears in it
+# as many times as it was authored.  Its values are emitted as a group the first
+# time it is seen and skipped thereafter, which is what "one key/value pair per
+# occurrence, in file order" means - and what stops a two-entry `tags` from
+# contributing its values twice.
 _records_digest_stream() {
   local set=$1 idx=$2 key val schema
+  local -A seen=()
   schema=${_REC_SCHEMA[$set]:-}
   printf '%s' 'rd/1'
   while IFS= read -r key; do
     [[ -n $key ]] || continue
+    [[ -n ${seen[$key]:-} ]] && continue
+    seen[$key]=1
     if records_key_is_repeatable "$schema" "$key"; then
       while IFS= read -r val; do
         printf '\0%s\0%s' "$key" "$val"
@@ -891,8 +899,13 @@ _records_check_enum() {
 _records_check_trailing_space() {
   local set=$1 i=$2 path=$3 line=$4 id=$5 schema=$6
   local key v
+  local -A seen=()
   while IFS= read -r key; do
     [[ -n $key ]] || continue
+    # Once per key, not once per occurrence, or a repeatable key's values would
+    # each be reported as many times as the key was authored.
+    [[ -n ${seen[$key]:-} ]] && continue
+    seen[$key]=1
     if records_key_is_repeatable "$schema" "$key"; then
       while IFS= read -r v; do
         _records_trailing_space_one "$path" "$line" "$id" "$key" "$v"

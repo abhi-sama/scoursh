@@ -50,7 +50,19 @@ jobs:
           for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
             [ -x "$candidate" ] && BASH=$candidate && break
           done
-          "$BASH" tests/run-tests.sh
+          set -o pipefail
+          "$BASH" tests/run-tests.sh 2>&1 | tee suite.log
+
+      # The job log is only readable through an API that truncates, and a
+      # failure summary lives at the END of the run, so the log is kept as an
+      # artifact whatever the outcome.
+      - name: Keep the suite log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-log-${{ matrix.os }}
+          path: suite.log
+          if-no-files-found: warn
 
       - name: Emit the fixture scan for cross-userland comparison
         run: |
