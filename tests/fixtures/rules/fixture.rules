@@ -1,0 +1,54 @@
+# Fixture pattern rules for the end-to-end harness.
+#
+# NOT a shipped rule pack: docs/DESIGN.md §13 step 3 owns those.  These exist so
+# step 1 can prove the plumbing runs from parse through finding through report.
+# They carry no context-require / context-deny, because evaluating the context
+# window is the SAST engine's job at step 3 and this repository does not have a
+# second implementation of it.
+
+id: SAST-PY-EVAL-01
+format-version: 1
+title: Use of eval() on request-derived data
+severity: critical
+confidence: high
+cwe: CWE-95
+owasp: A03:2021
+pattern: \beval\s*\(
+dialect: ere
+files: *.py
+tags: static
+tags: quick
+remediation: Do not pass request-derived data to eval().
+  Parse literals with ast.literal_eval(), or dispatch through an explicit
+  allowlist of permitted operations.
+references: CWE-95
+
+id: SAST-SEC-AWS_SECRET-01
+title: Hardcoded AWS secret access key
+severity: critical
+confidence: high
+cwe: CWE-798
+owasp: A07:2021
+pattern: (aws_secret_access_key|AWS_SECRET_ACCESS_KEY)[[:space:]]*=[[:space:]]*"[A-Za-z0-9/+=]{40}"
+dialect: ere
+files: *.py
+tags: static
+tags: quick
+severity-floor: high
+remediation: Remove the key from source and rotate it immediately; a committed key must be
+  treated as compromised even if the commit was reverted, because it remains in git history.
+references: CWE-798
+
+id: SAST-PY-YAML_LOAD-01
+title: yaml.load() without a safe loader
+severity: high
+confidence: medium
+cwe: CWE-502
+owasp: A08:2021
+pattern: \byaml\.load\s*\(
+dialect: ere
+files: *.py
+tags: static
+severity-floor: medium
+remediation: Use yaml.safe_load(), or pass Loader=yaml.SafeLoader explicitly.
+references: CWE-502

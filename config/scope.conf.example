@@ -1,0 +1,18 @@
+# scoursh scope - rules/RULE-FORMAT.md §9.4
+#
+# REQUIRED for `dast`.  The single most important safety control in the tool:
+# DAST refuses any host absent from here and there is no raw-URL bypass.
+# `sast`, `sca` and `iac` do not need this file at all
+# (docs/FOUNDATION.md tension 14).
+#
+# The gate matches a normalised (scheme, host, port) tuple.  Path is NOT part of
+# the gate; it bounds the crawler's frontier, which is a coverage control rather
+# than a safety one (docs/FOUNDATION.md tension 19).
+
+id: example-target
+base-url: https://target.example/app
+allow-subdomains: false
+allow-private-addresses: false
+notes: Free text, safely. A pipe | a colon: a hash # and a "quote" are all
+  ordinary bytes here, which is the whole reason config/scope.conf uses the
+  block-record format instead of `name | base_url | notes`.

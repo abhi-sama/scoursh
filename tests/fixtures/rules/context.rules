@@ -1,0 +1,16 @@
+# Exercises the §10 context directive through the parser and the linter.
+# Deliberately not scanned by the end-to-end harness; see fixture.rules.
+
+id: SAST-PY-CONTEXT-01
+title: Context directive round-trip
+severity: low
+confidence: medium
+cwe: none
+owasp: none
+pattern: \byaml\.load\s*\(
+dialect: ere
+context-deny: (SafeLoader|CSafeLoader|BaseLoader|yaml\.safe_load)
+context-require: (req|request|body|query|params|JSON\.parse|\$_)
+context-window: 2
+tags: static
+remediation: Data fixture only.

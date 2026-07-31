@@ -1,0 +1,42 @@
+# scoursh redaction rules - rules/RULE-FORMAT.md §9.3
+#
+# Applied by redact() in lib/findings.sh before ANY evidence, log line, or
+# report byte is written (docs/FOUNDATION.md tension 9).  Each match is replaced
+# with <redacted:KIND:DDDDDDDD>, where DDDDDDDD is the first 8 hex characters of
+# the SHA-256 of the raw matched bytes, so a reader can tell two distinct
+# secrets apart and recognise the same secret across three findings without the
+# secret being present.
+#
+# Adding a new secret shape is a data change, per docs/DESIGN.md §16.
+#
+# AUTHORING NOTE.  These patterns are applied to in-memory strings, but through
+# the same engine wrapper the scanner uses, so the whole §8.2 portable ERE
+# subset is available exactly as it is for a pattern rule.  What is NOT
+# available is bash's own `=~`: the system regcomp on macOS/BSD supports none of
+# \b, \w, \s or \d (measured), which is why redact() pipes through the engine
+# rather than matching in-process.
+
+id: SAST-REDACT-AWS_SECRET-01
+format-version: 1
+title: AWS secret access key assignment
+pattern: (aws_secret_access_key|AWS_SECRET_ACCESS_KEY|aws-secret-access-key|awsSecretAccessKey)[[:space:]]*[=:][[:space:]]*["']?[A-Za-z0-9/+=]{40}
+dialect: ere
+kind: AWS_SECRET
+
+id: SAST-REDACT-PRIVATE_KEY-01
+title: PEM private-key header and body
+pattern: -----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[^-]*
+dialect: ere
+kind: PRIVATE_KEY
+
+id: SAST-REDACT-JWT-01
+title: JSON Web Token
+pattern: eyJ[A-Za-z0-9_=-]+\.eyJ[A-Za-z0-9_=-]+\.[A-Za-z0-9_=-]+
+dialect: ere
+kind: JWT
+
+id: SAST-REDACT-BEARER-01
+title: Bearer or API-key credential in a header or assignment
+pattern: ([Bb]earer|[Aa]uthorization:|api[_-]?[Kk]ey[[:space:]]*[=:])[[:space:]]*["']?[A-Za-z0-9._~+/=-]{16,}
+dialect: ere
+kind: BEARER
