@@ -77,7 +77,7 @@ Each has a full entry in `docs/FOUNDATION.md`.
 - **Shared state across `xargs -P` workers goes in files under an atomic-`mkdir` mutex** (tension 16). The rate limiter, request budget, circuit breaker, and AWS cache are all per-process otherwise, so `--jobs 8` means 8x the request rate and a breaker that never trips.
 - **Workers write to their own shard file, never a shared `findings.jsonl`** (tension 17). Appends above `PIPE_BUF` interleave.
 - **Never `source` a config file** (tension 26). It is a code-execution vector that would run before the scope gate is consulted.
-- **A partial run must never report `fixed`** (tension 12). `state/` tracks `covered_checks`; an uncovered check's prior findings are `unknown`.
+- **A partial run must never report `fixed`** (tension 12). `state/` tracks coverage as **(check, scope-cell)** pairs; a prior finding whose own cell was not visited is `unknown`. Two families refine this and can only narrow it: `SAST-HIST-*` adds a per-finding history-boundary test (tension 13), and a composite is `fixed` only when every prior contributor's (check, cell) is covered (tension 6).
 - **A secret is never a command-line argument and never touches disk raw** (tension 9). `sha256_of` reads stdin only.
 - **Evidence is untrusted target output** (tension 10). It goes through `finding_set_evidence` and is escaped per emitter; the HTML report contains no `<script>` at all.
 

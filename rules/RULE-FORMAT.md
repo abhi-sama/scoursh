@@ -83,8 +83,8 @@ and `§6.3` unambiguously belong to `docs/DESIGN.md`, and they are the two most 
 This is **the** normative definition of line kind.
 §6 and §7 restate it and MUST NOT be read as varying it.
 
-Every line is classified by applying these six tests **in this exact order** and stopping at the first
-that holds.
+Every line is classified by applying these tests **in this exact order** and stopping at the first that
+holds; row 7 is the fallback, not a test.
 The order is part of the definition: several tests overlap, and a different order accepts different
 files.
 
@@ -111,8 +111,10 @@ Four consequences follow from the order, and all four are intended.
   first two bytes.
   `····x` (four spaces, then `x`) is a Continuation whose payload is `··x` (§6 rule 1).
   Test 2 has already excluded the case where there is nothing but whitespace.
-- **A line with exactly one leading space is `E010`**, since it fails tests 1 to 6.
+- **A line with exactly one leading space followed by content is `E010`**, since it fails tests 1 to 6.
   This is the off-by-one indentation typo, and it is an error rather than a silent misparse.
+  A line consisting of a single space and nothing else is `E011` instead, by test 2; both abort the
+  parse, so the difference is only which code a linter fixture expects.
 - **A TAB is legal inside a value and illegal as leading indentation** (test 3).
   A line that is only TABs is `E011` (test 2 runs first); a line that is a TAB followed by content is
   `E021`.
@@ -458,9 +460,13 @@ Examples: `SAST-PY-EVAL-01`, `SAST-SEC-AWS_AKID-01`, `IAC-TF-OPEN_CIDR-01`,
 
 Requirements:
 
-- The `MODULE` component MUST match the module that owns the rule pack (`E018`).
-- The id MUST be unique across **every** record file in the repository (`E019`), not merely within its
-  own file.
+- The `MODULE` component MUST match the module that owns the record file, per the frozen path map in
+  §9.5.1 (`E018`).
+- A check id MUST be unique across **every record file that carries check ids** (`E019`), not merely
+  within its own file: all `*.rules` packs, every `checks.rules`, `rules/derived.rules`, and
+  `rules/redaction.rules`.
+  Uniqueness is scoped to that **namespace**, not to every record file in the repository, because the
+  other schemas' `id` values are not check ids and live in namespaces of their own (§9.1.1a).
 - The id is **stable forever**.
   It is the SARIF `ruleId`, the Appendix A check id, an input to the finding fingerprint, and the key
   for `covered_checks` in `state/`.
@@ -470,6 +476,27 @@ Requirements:
 - There is **no per-occurrence sequence number** anywhere in the system.
   The `-01` suffix distinguishes sibling rules of one family, not occurrences of a match.
   Per-occurrence identity is the fingerprint (`docs/FOUNDATION.md` tensions 5 and 7).
+
+#### 9.1.1a Id namespaces
+
+Not every schema's `id` is a check id, and uniqueness is scoped per namespace.
+A global "unique across every record file" rule would be wrong in both directions: it would forbid
+`config/discovery.conf` from using the target ids it is *required* to match, and it would let an
+expectation id silently collide with a scope target id.
+
+| Namespace | Files | Id form | Uniqueness |
+|---|---|---|---|
+| **check id** | `*.rules`, every `checks.rules`, `derived.rules`, `redaction.rules` | §9.1.1 | Unique across the whole namespace (`E019`) |
+| **target id** | `config/scope.conf` | `^[a-z][a-z0-9-]*$` | Unique within `scope.conf` |
+| **discovery id** | `config/discovery.conf` | `^[a-z][a-z0-9-]*$` | Unique within the file, and MUST name an existing target id (`E080`) |
+| **auth identity id** | `config/auth.conf` | `<target>.<label>` | Unique within the file; the `<target>` part MUST name an existing target id (`E080`) |
+| **expectation id** | `config/posture.conf` | `^[a-z][a-z0-9-]*$` | Unique within the file |
+| **rubric modifier id** | `data/severity-rubric.conf` | `^[a-z][a-z0-9-]*$` | Unique within the file |
+| **config literal** | single-record config files | the frozen basename literal | One record per file (`E071`) |
+
+Ids in different namespaces may coincide freely; that is what lets `discovery.conf` and `auth.conf`
+reference targets by name, and it is why a posture expectation named `staging` does not collide with a
+scope target named `staging`.
 
 #### 9.1.2 `files` globs
 
@@ -546,7 +573,9 @@ holds, and the correlation value is part of the composite's fingerprint.
 
 `E053` requires deciding, statically, whether a contributor's module can supply a given correlation key.
 This table is that decision, and it is frozen.
-It also drives §9.5.1's `coverage-scope` validation.
+It governs `correlate-on` **only**.
+`coverage-scope` is a different vocabulary and is validated against §9.5.1's own table; see the note
+there.
 
 | Module | `target` | `account` | `account-region` | `file` |
 |---|---|---|---|---|
@@ -555,11 +584,26 @@ It also drives §9.5.1's `coverage-scope` validation.
 | IAC | no | no | no | **yes** |
 | DAST | **yes** | no | no | no |
 | CLOUD | **yes**, by attribution | **yes** | **yes** | no |
-| POSTURE | **yes**, when `scope-key` is a target id | **yes** | **yes** | no |
+| POSTURE | **yes**, by scope-key | **yes** | **yes** | no |
 
 `E053` fires when a derived record's `correlate-on` is a key that **any** of its `requires` or `any-of`
 contributors' modules cannot supply per this table.
 `correlate-on: none` is always legal.
+
+Every **yes** in this table is a statement about the module *in principle*, which is what makes the
+table static and `E053` decidable from record text alone.
+Two cells are supplied conditionally at runtime, and both resolve the same graceful way: a finding that
+cannot produce the value simply has no value for that key and does not participate in that composite.
+
+- **CLOUD / `target`** is supplied by attribution, below; zero host matches means no `target` value.
+- **POSTURE / `target`** is supplied when the finding's expectation carries a `scope-key` that is a
+  scope target id (`rules/RULE-FORMAT.md` §9.6.4).
+  When the `scope-key` is an account id or `account/region` instead, the finding has no `target` value
+  and does not participate in a `target` composite, exactly as for a cloud finding with no host match.
+
+Neither case is an error, and neither is silent: a composite that never fires because its contributors
+never share a correlation value is reported in `run.json` under `coverage_gap`, so the operator sees a
+chain that cannot correlate rather than a chain that is clean.
 
 **Cloud target attribution.**
 A cloud-live finding has no scope-target name in its own identity, so `target` is supplied by an
@@ -568,15 +612,35 @@ attribution step in `lib/findings.sh`, frozen here because `COMPOSITE-TOKEN-HIJA
 1. A cloud check that reads a resource with a public endpoint records the resource's domain names on
    the finding as `endpoint_hosts`, taken from the read-only API response (for example an AppSync
    `uris` value, a CloudFront `DomainName`, an ELB `DNSName`, an API Gateway execute-api hostname).
-2. `lib/findings.sh` builds a **target attribution map** once per run from `config/scope.conf`: the set
-   of `(host)` values across every target's `base-url` and `extra-host`, lowercased and dot-stripped
+2. `lib/findings.sh` builds a **target attribution map** once per run from `config/scope.conf`: for each
+   target, the set of hosts from its `base-url` and every `extra-host`, lowercased and dot-stripped
    exactly as the scope gate normalises them (`docs/FOUNDATION.md` tension 19).
-3. A cloud finding's `target` correlation value is the target id whose host set contains any of the
+   When a target declares `allow-subdomains: true`, the map additionally matches any host that is a
+   subdomain of one of its hosts.
+   Omitting that would make attribution flip on a flag this section never mentions: a custom-domain
+   endpoint reachable only through `allow-subdomains` would be in scope for DAST, absent from the
+   attribution set, and the composite would silently never fire, while the same deployment authored with
+   an explicit `extra-host` would work.
+3. A cloud finding's `target` correlation value is the target id whose host set matches any of the
    finding's `endpoint_hosts`.
-   Zero matches means the finding has no `target` value and does not participate in a `target`
-   composite.
-   More than one match is `E076` on the config, since two targets claiming the same host makes
-   correlation ambiguous.
+   - **Zero matches**: the finding has no `target` value and does not participate in a `target`
+     composite.
+   - **Exactly one match**: that target id.
+   - **More than one match**: the finding has **no** `target` value, and the ambiguity is recorded in
+     `run.json` under `coverage_gap`.
+     Two targets legitimately share a host whenever an operator authors two path-scoped targets on one
+     host, which `docs/FOUNDATION.md` tension 19 explicitly supports as the way to bound two crawl
+     frontiers, so this must not be an error.
+     Declining to attribute is the same conservative outcome as zero matches, reached for the same
+     reason: guessing a correlation value is worse than not having one.
+
+**Authoring note.**
+A `target` composite requires its contributors to be authored under **one** target id.
+If the front end and the managed-GraphQL endpoint are authored as two separate `config/scope.conf`
+targets, the §7.1 contributor carries the first and the §7.4 and cloud contributors carry the second,
+and the predicate is unsatisfiable however open the chain actually is.
+Nothing lints this, because both authorings are legal and only the operator knows which deployment they
+describe, so the composite reports through `coverage_gap` rather than through a finding.
 
 **Attribution never enters the fingerprint.**
 `target` is a correlation attribute only.
@@ -586,8 +650,8 @@ exists to prevent.
 
 A run that produces cloud findings but has no `config/scope.conf` attributes no targets at all, which is
 correct: with no authorised targets there is no deployed front end to attribute a chain to.
-Such a run also has no DAST contributors, so a `target` composite is uncovered and classified `unknown`
-rather than `fixed` (tension 6, sub-case 2).
+Such a run also has no DAST contributors, so a `target` composite has an uncovered contributor and is
+classified `unknown` rather than `fixed` (`docs/FOUNDATION.md` tension 6).
 
 ### 9.3 Schema: redaction rule
 
@@ -662,7 +726,9 @@ manufacture `fixed` findings for the regions or targets it never visited.
 
 This is a different vocabulary from §9.2.2's correlation keys and is **not** validated against that
 table: correlation asks "can two findings be joined", coverage asks "what did this run visit".
-The value is fixed per module, so the linter checks it against this table alone (`E053`):
+The two vocabularies do not even overlap - `path-root` and `scope-key` appear in no §9.2.2 column - so
+validating one against the other would emit an error for every SAST, SCA, IAC, and POSTURE script check.
+The value is fixed per module, so the linter checks it against this table alone (`E079`):
 
 | Module | Required `coverage-scope` | Cell value |
 |---|---|---|
@@ -673,16 +739,46 @@ The value is fixed per module, so the linter checks it against this table alone 
 | `CLOUD` | `account-region` | `<account_id>/<region>`, or `<account_id>/global` |
 | `POSTURE` | `scope-key` | the expectation's `scope-key` (§9.6.4) |
 
-`none` means a run either covers the check entirely or not at all.
-No script check qualifies, so `none` never appears in a §9.5 record; it is the value derived findings
-take, and they carry it implicitly rather than as a key, since §9.2 has no `coverage-scope`.
+`none` is not a legal value in a §9.5 record: no script check is all-or-nothing.
+Derived findings have no `coverage-scope` at all - §9.2 has no such key - because they are classified by
+contributor coverage rather than by a cell (`docs/FOUNDATION.md` tension 6).
 
-`SAST-HIST-*` checks take `path-root` like the rest of SAST, but their cell additionally carries the
-run's resolved history boundary, because a rolling commit window shrinks coverage with no config change
-at all (`docs/FOUNDATION.md` tension 13).
+`SAST-HIST-*` checks take `path-root` like the rest of SAST, and **their cell carries nothing else**.
+The resolved history boundary is *not* part of the cell.
+Cells are compared by exact value, so a boundary in the cell would make every prior history finding
+`unknown` forever under a rolling window, which is the outcome `docs/FOUNDATION.md` tension 13 rejects.
+That tension owns `SAST-HIST-*` classification and applies its per-finding boundary comparison
+**inside** a covered cell, as a second layer, not as a competing cell definition.
 
-Every cell value is derivable from the finding's own recorded location (`docs/FOUNDATION.md` tension 5),
-which is what keeps coverage and identity in sync without a second source of truth.
+**The cell is recorded on the finding, not always derived from it.**
+For `CLOUD`, `DAST`, and `POSTURE` the cell is a projection of the finding's location components
+(`docs/FOUNDATION.md` tension 5), so the two cannot drift.
+For `SAST`, `SCA`, and `IAC` the cell is the run's `--path` root, which is a run parameter and is
+deliberately absent from the finding's identity: `src/sub/x.py` is consistent with a root of `.`,
+`src`, or `src/sub`, and an SCA finding's location carries no path at all.
+`docs/FOUNDATION.md` tension 12 freezes the exact normalisation of the `path-root` string and states
+that cells are compared by exact string equality with no subsumption rule.
+
+**Owning module, for `E018`.**
+`E018` compares a record's `MODULE` component against the module that owns the record's **file**.
+That ownership is not the first path segment: `docs/DESIGN.md` §3 nests posture under
+`modules/cloud/posture/` while `POSTURE` is a module in its own right in the §9.1.1 enum, and two rule
+files live outside `modules/` entirely.
+The map is frozen here, **most specific first, first match wins**:
+
+| Path prefix | Owning module |
+|---|---|
+| `modules/cloud/posture/` | `POSTURE` |
+| `modules/cloud/` | `CLOUD` |
+| `modules/sast/` | `SAST` |
+| `modules/sca/` | `SCA` |
+| `modules/iac/` | `IAC` |
+| `modules/dast/` | `DAST` |
+| `rules/derived.rules` | `COMPOSITE` |
+| `rules/redaction.rules` | `SAST` (redaction ids are `SAST-REDACT-*`, §9.3) |
+
+A `POSTURE-*` record in `modules/cloud/posture/checks.rules` therefore does not fire `E018`, and a
+`CLOUD-*` record in that same directory does.
 
 ### 9.6 Schemas: operator config
 
@@ -693,7 +789,8 @@ Every value is data and is never expanded or executed (§11).
 #### 9.6.1 `config/scanner.conf` - scanner config
 
 Exactly one record, `id: scanner`.
-Every key is optional and has the stated default; an absent file is equivalent to an empty one.
+`id` is required, as in every schema; every **other** key is optional and takes the stated default, so
+an absent file is equivalent to one containing only `id: scanner`.
 
 | Key | Card | Multi-line | Value | Default |
 |---|---|---|---|---|
@@ -722,9 +819,12 @@ Every key is optional and has the stated default; an absent file is equivalent t
 
 `docs/DESIGN.md` §11 also lists "the named scan-profile check-sets (`quick`/`full`/`compliance`)" as
 living here.
-They do not: `docs/FOUNDATION.md` tension 15 derives profile membership from each check's own `tags`, so
-there is no profile definition to store and no way for a profile list to drift out of sync with the
+They do not: `docs/FOUNDATION.md` tension 15 computes profile membership from each check's own record,
+so there is no profile definition to store and no way for a profile list to drift out of sync with the
 checks it names.
+(Exactly *which* field of the record decides `compliance` - the `compliance` tag of §9.1.3, or a
+non-empty `cis` / `owasp` per tension 15 - is open as finding **F3** in that document's known
+follow-ups, and is not settled here.)
 
 #### 9.6.2 `config/auth.conf` - auth identity
 
@@ -735,7 +835,7 @@ evidence field (`docs/FOUNDATION.md` tension 9).
 
 | Key | Req | Card | Multi-line | Value |
 |---|---|---|---|---|
-| `id` | required | single | no | `<target-id>.<label>`, for example `staging.a`. `^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$`. MUST be first. |
+| `id` | required | single | no | `<target-id>.<label>`, for example `staging.a`. `^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$`. The `<target-id>` part MUST name a `config/scope.conf` target (`E080`, §9.1.1a). MUST be first. |
 | `mode` | required | single | no | `bearer` `api-key` `form` `oauth2-password` `oauth2-client` `srp` `external` |
 | `secret-file` | optional | single | no | Absolute path to a `600` file holding the credential. Preferred over inline values. |
 | `token` | optional | single | no | Inline token, for `bearer` / `api-key`. |
@@ -758,7 +858,7 @@ One record per target, `id` = the target id.
 
 | Key | Req | Card | Multi-line | Value |
 |---|---|---|---|---|
-| `id` | required | single | no | Target id. MUST be first. |
+| `id` | required | single | no | Target id; MUST name a `config/scope.conf` target (`E080`, §9.1.1a). MUST be first. |
 | `openapi-path` | optional | single | no | Path to an OpenAPI or Swagger document. |
 | `graphql-schema-path` | optional | single | no | Path to a GraphQL schema. |
 | `postman-path` | optional | single | no | Path to a Postman collection. |
@@ -770,15 +870,31 @@ One record per target, `id` = the target id.
 
 #### 9.6.4 `config/posture.conf` - posture expectation
 
-One record per expected control, so §8.7 reports **drift** rather than opinion.
+One record per expected control **per scope**, so §8.7 reports **drift** rather than opinion.
+
+An expectation is **not** a check.
+The check is the script registered in `checks.rules` (§9.5) that reads the live or config state; the
+expectation is the operator-supplied baseline it is compared against.
+They are two different things in two different files, so they live in **two different id namespaces**
+(§9.1.1a): the check in the check-id namespace, the expectation in its own.
+Giving the expectation a `POSTURE-*` check id instead would put two records in the check-id namespace
+under one id and fire `E019` on every posture control.
 
 | Key | Req | Card | Multi-line | Value |
 |---|---|---|---|---|
-| `id` | required | single | no | Check id, §9.1.1, `MODULE` = `POSTURE`. MUST be first. |
-| `scope-key` | required | single | no | What the expectation applies to: a target id, an account id, or `account/region`. |
+| `id` | required | single | no | Expectation id, `^[a-z][a-z0-9-]*$`. **Not a check id.** MUST be first. |
+| `check` | required | single | no | The check id this expectation parameterises, §9.1.1 with `MODULE` = `POSTURE`. Must exist in a `checks.rules` (`E077`). |
+| `scope-key` | required | single | no | What this expectation applies to: a target id, an account id, or `account/region`. |
 | `expect` | required | single | no | `present` `absent` `equals` `at-least` `at-most` |
 | `value` | optional | single | no | Required when `expect` is `equals`, `at-least`, or `at-most`. |
 | `notes` | optional | single | yes | Free text. |
+
+The (`check`, `scope-key`) pair MUST be unique across the file (`E078`); two baselines for one control
+in one scope is a contradiction with no defined winner.
+That pair is also what makes a posture finding's identity unique (`docs/FOUNDATION.md` tension 5) and
+what makes `coverage-scope: scope-key` a real partition rather than a degenerate one: a control can now
+carry several expectations across several scopes, which is the shape `docs/DESIGN.md` §11 describes when
+it lists "WAF IP/geo expectations, org password-policy thresholds" as posture config.
 
 #### 9.6.5 `data/severity-rubric.conf` - severity modifier
 
@@ -1124,7 +1240,7 @@ Warnings are reported and do not fail unless `--strict`.
 | E016 | error | Continuation on a key that is single-line only |
 | E017 | error | Unknown key for the file's schema |
 | E018 | error | `id` module component does not match the owning module |
-| E019 | error | Duplicate `id` across all record files |
+| E019 | error | Duplicate `id` within one id namespace (§9.1.1a) |
 | E020 | error | Record's first field is not `id` |
 | E021 | error | Leading TAB used as indentation |
 | W022 | warning | Trailing whitespace on a non-pattern value |
@@ -1137,7 +1253,8 @@ Warnings are reported and do not fail unless `--strict`.
 | E024 | error | Enum value outside its permitted set (`severity`, `confidence`, `dialect`, `kind`, `correlate-on`, boolean fields) |
 | E025 | error | `cwe` does not match `^(CWE-[0-9]+\|none)$` |
 | E026 | error | `owasp` does not match `^(A[0-9]{2}:[0-9]{4}\|none)$` |
-| E027 | error | `id` does not match the §9.1.1 regex, or carries a `SEQ` suffix in the derived schema, or omits one in any other schema |
+| E027 | error | `id` does not match the form its namespace requires (§9.1.1a); for check ids that is the §9.1.1 regex, with `SEQ` forbidden in the derived schema and required in every other |
+| E080 | error | A `config/discovery.conf` or `config/auth.conf` `id` names a target that `config/scope.conf` does not define (§9.1.1a) |
 | E028 | error | `id` appears in `rules/RETIRED.txt` |
 | E029 | error | `severity-floor` is above `severity-ceiling` |
 | E043 | error | `intrusive` tag on a pattern rule |
@@ -1149,6 +1266,9 @@ Warnings are reported and do not fail unless `--strict`.
 | E073 | error | `config/auth.conf` permissions are not `600` |
 | E074 | error | §9.6.2 record is missing a key its `mode` requires |
 | E075 | error | Two `data/severity-rubric.conf` records share the same (`fact`, `equals`) pair |
+| E077 | error | §9.6.4 `check` names a `POSTURE-*` check id that no `checks.rules` defines |
+| E078 | error | Two §9.6.4 records share the same (`check`, `scope-key`) pair |
+| E079 | error | §9.5 `coverage-scope` is not its module's required value (§9.5.1) |
 
 ### Regex (from §8)
 
@@ -1175,8 +1295,7 @@ Warnings are reported and do not fail unless `--strict`.
 | E050 | error | Derived record has neither `requires` nor `any-of` |
 | E051 | error | `requires` / `any-of` names an id that does not exist |
 | E052 | error | `requires` / `any-of` names a derived id (no chaining) |
-| E053 | error | `correlate-on` naming a key a contributor's module cannot supply (§9.2.2), or a §9.5 `coverage-scope` that is not its module's required value (§9.5.1) |
-| E076 | error | Two `config/scope.conf` targets claim the same host, making cloud target attribution ambiguous (§9.2.2) |
+| E053 | error | `correlate-on` naming a key a contributor's module cannot supply (§9.2.2) |
 
 ### Coverage (from `docs/DESIGN.md` §12)
 
