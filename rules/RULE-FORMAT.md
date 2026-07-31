@@ -493,6 +493,7 @@ expectation id silently collide with a scope target id.
 | **expectation id** | `config/posture.conf` | `^[a-z][a-z0-9-]*$` | Unique within the file |
 | **rubric modifier id** | `data/severity-rubric.conf` | `^[a-z][a-z0-9-]*$` | Unique within the file |
 | **config literal** | single-record config files | the frozen basename literal | One record per file (`E071`) |
+| **adapter check id** | not a record file; produced at runtime by a vendored engine (§6.4) | `<ADAPTER>:<engine rule id>`, for example `semgrep:python.lang.security.eval` | Unique within the adapter's own output; never linted, since no record declares it |
 
 Ids in different namespaces may coincide freely; that is what lets `discovery.conf` and `auth.conf`
 reference targets by name, and it is why a posture expectation named `staging` does not collide with a
@@ -500,14 +501,14 @@ scope target named `staging`.
 
 #### 9.1.2 `files` globs
 
-A glob is matched against the **repository-relative path** with `/` separators, using these operators
-and no others:
+A glob is matched against the **scan-root-relative path** (`docs/FOUNDATION.md` tension 12 freezes what
+the scan root is) with `/` separators, using these operators and no others:
 
 - `*` matches any run of characters except `/`.
 - `**` matches any run of characters including `/`, and is only legal as a whole path segment.
 - `?` matches one character except `/`.
 - `[abc]` and `[a-z]` match one character from the set.
-- A leading `/` anchors to the repository root; without it the glob may match at any depth.
+- A leading `/` anchors to the scan root; without it the glob may match at any depth.
 
 Examples: `*.py`, `**/Dockerfile`, `/infra/**/*.tf`, `*.[jt]s`.
 A glob containing `\` or `{}` is `E042`; brace expansion is not supported, use two `files` entries.
@@ -689,8 +690,11 @@ control in the tool.
 
 ### 9.5 Schema: script check
 
-`modules/<module>/checks.rules` registers every check that is a **script** rather than a pattern: all of
-DAST passive and active, all cloud live checks, all posture checks, and the SCA checks.
+A `checks.rules` registers every check that is a **script** rather than a pattern: all of DAST passive
+and active, all cloud live checks, all posture checks, and the SCA checks.
+It lives under the module that owns it, which for posture is `modules/cloud/posture/` rather than a
+top-level directory; the owning-module map in §9.5.1 is authoritative, and a `checks.rules` outside every
+prefix in it is `E081`.
 It is the check registry that `docs/FOUNDATION.md` tension 12 computes `covered_checks` from, that
 tension 15's filter chain filters, and that tension 7 requires so scripts have stable ids exactly as
 patterns do.
@@ -732,16 +736,18 @@ The value is fixed per module, so the linter checks it against this table alone 
 
 | Module | Required `coverage-scope` | Cell value |
 |---|---|---|
-| `SAST` | `path-root` | the normalised `--path` root |
-| `SCA` | `path-root` | the normalised `--path` root |
-| `IAC` | `path-root` | the normalised `--path` root |
+| `SAST` | `path-root` | the `--path` root relative to the scan root |
+| `SCA` | `path-root` | the `--path` root relative to the scan root |
+| `IAC` | `path-root` | the `--path` root relative to the scan root |
 | `DAST` | `target` | the `config/scope.conf` target id |
 | `CLOUD` | `account-region` | `<account_id>/<region>`, or `<account_id>/global` |
 | `POSTURE` | `scope-key` | the expectation's `scope-key` (§9.6.4) |
 
 `none` is not a legal value in a §9.5 record: no script check is all-or-nothing.
 Derived findings have no `coverage-scope` at all - §9.2 has no such key - because they are classified by
-contributor coverage rather than by a cell (`docs/FOUNDATION.md` tension 6).
+their own selection plus contributor coverage rather than by a cell (`docs/FOUNDATION.md` tension 6).
+A derived finding's persisted `cell` is JSON `null`, never the string `none`, since `none` is a legal
+`path-root` and a legal scope target id and a string sentinel could collide with either.
 
 `SAST-HIST-*` checks take `path-root` like the rest of SAST, and **their cell carries nothing else**.
 The resolved history boundary is *not* part of the cell.
@@ -779,6 +785,13 @@ The map is frozen here, **most specific first, first match wins**:
 
 A `POSTURE-*` record in `modules/cloud/posture/checks.rules` therefore does not fire `E018`, and a
 `CLOUD-*` record in that same directory does.
+
+The map is **total** over the §9 path table: a record file matching none of these prefixes carries no
+check ids (every operator-config schema uses a different namespace, §9.1.1a), so `E018` does not apply
+to it.
+A `checks.rules` placed outside every prefix above matches the §9 table's "any depth" row but has no
+owning module, which is `E081` - a script check must live under the module that owns it, since that is
+what makes its ids, its `coverage-scope`, and its `script` path meaningful.
 
 ### 9.6 Schemas: operator config
 
@@ -959,11 +972,19 @@ predicate.
 
 Non-normative, but the semantics above must be preserved exactly.
 
-The engine gets candidate line numbers for a file in one pass (`rg -n` or `grep -n`), then evaluates
-windows for all matches in that file in a second single pass over the file, rather than re-reading the
-file once per match.
-Per-file match count is capped by `max_matches_per_file` from `config/scanner.conf` (default 200); on
-overflow the engine emits the findings it has plus one `info` finding recording the truncation, and
+The engine gets candidate matches for a file in one pass, then evaluates windows for all of them in a
+second single pass over the file, rather than re-reading the file once per match.
+
+The first pass must yield **every match, with its byte offset within the line**, not one hit per matching
+line: `docs/FOUNDATION.md` tension 5 orders the `occurrence` ordinal by line and then by byte offset, and
+settles that one line yielding two matches yields two findings.
+A bare `rg -n` or `grep -n` reports each matching line once and no offsets, so it **cannot** produce the
+frozen ordinal.
+Use `rg --json` (which reports every match with `absolute_offset` and submatch offsets) or
+`rg -n --byte-offset -o` / `grep -n -b -o`, whose `-o` emits one record per match rather than per line.
+`max_matches_per_file` (default 200, from `config/scanner.conf`) counts **matches**, not matching lines.
+
+On overflow the engine emits the findings it has plus one `info` finding recording the truncation, and
 records the truncation in `run.json`.
 Silent truncation would understate coverage, which §15 of `docs/DESIGN.md` forbids.
 
@@ -1269,6 +1290,7 @@ Warnings are reported and do not fail unless `--strict`.
 | E077 | error | §9.6.4 `check` names a `POSTURE-*` check id that no `checks.rules` defines |
 | E078 | error | Two §9.6.4 records share the same (`check`, `scope-key`) pair |
 | E079 | error | §9.5 `coverage-scope` is not its module's required value (§9.5.1) |
+| E081 | error | A `checks.rules` sits outside every prefix of the §9.5.1 owning-module map, so its records have no owning module |
 
 ### Regex (from §8)
 

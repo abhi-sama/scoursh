@@ -387,12 +387,12 @@ full 64 hex characters retained, and the components in the fixed order below.
 
 | Module | Location components |
 |---|---|
-| SAST, IaC, containers | repository-relative path (normalised, `/` separators, no `./`), `match_digest`, `occurrence` |
+| SAST, IaC, containers | **scan-root-relative** path (tension 12; `/` separators, no `./`), `match_digest`, `occurrence` |
 | SAST history | `blob_sha`, `match_digest`, `occurrence` (see tension 13) |
 | SCA | `ecosystem`, `package` (normalised per tension 25), `advisory_id`. **Not the version.** |
 | DAST | `target_name` (the `config/scope.conf` id, not the URL), `method`, `path_template`, `param_location` (`query`/`body`/`header`/`path`/`cookie`), `param_name` |
 | Cloud live | `account_id`, `region` (or `global`), `resource_key` (the ARN when one exists), `sub_key` (or `none`) |
-| Posture | `control_id`, `scope_key` (target name, or account, or `account/region`) |
+| Posture | `control_id` (= the `POSTURE-*` **check** id, never the expectation id), `scope_key` (target name, or account, or `account/region`) |
 | Derived | correlation value only (see tension 6) |
 
 Four of these need their normalisation frozen:
@@ -443,6 +443,14 @@ Four of these need their normalisation frozen:
   Upgrading past an advisory makes the finding disappear, which the diff reports as `fixed`.
   Including the version would instead report `fixed` plus `new` on every patch bump.
 
+**`control_id` is the `POSTURE-*` check id**, not the `config/posture.conf` expectation id.
+Those became two different things when `rules/RULE-FORMAT.md` §9.6.4 split the namespaces, and a
+fingerprint input may not have two candidate referents.
+Because `check_id` is already a separate input to the same hash, `control_id` is redundant with it and
+the posture location's discriminating component is `scope_key` alone; it is retained so every module's
+location tuple has the same shape, and its value is pinned so two implementations cannot hash different
+bytes.
+
 Only the SAST, history, IaC, and container modules need `occurrence`.
 Every other module's component tuple is already unique per issue, and each for its own reason:
 a DAST finding is keyed down to the parameter, a cloud finding down to the sub-resource, an SCA finding
@@ -463,8 +471,10 @@ from a separate ordinal space: the rank among **that adapter's own** findings in
 same `check_id` and `match_digest`, ordered as above.
 Without that, its ordinal would be undefined, since the native ordinal is defined by enumerating matches
 of a native check.
-Its `check_id` carries the adapter's own id namespace, so the two spaces cannot collide in a
-fingerprint.
+Its `check_id` carries the adapter's own id namespace - `<ADAPTER>:<engine rule id>`, frozen as a row of
+`rules/RULE-FORMAT.md` §9.1.1a - so the two ordinal spaces cannot collide in a fingerprint.
+That form contains a `:` and is therefore outside the §9.1.1 check-id regex by construction, which is
+what keeps an adapter id from ever being mistaken for an authored one.
 
 **Consequence for the build.**
 `lib/findings.sh` exposes exactly one fingerprint function, and no module computes a fingerprint itself.
@@ -607,28 +617,63 @@ A composite fires, this run, for every correlation value where its `requires` an
 holds over the findings actually present.
 If the contributors are there, the chain is real, whatever else the run did or did not visit.
 
-**Classifying a prior composite that did not fire this run** is where coverage matters, and the test is:
+**Classifying a prior composite that did not fire this run** is where coverage matters.
+A prior composite is **`fixed`** only if **all three** of the following hold; if any fails it is
+**`unknown`**:
 
-> A prior composite is **`fixed`** only if **every** (`check_id`, `cell`) pair recorded against its
-> prior contributors is covered by this run.
-> If any one of them is not covered, the composite is **`unknown`**.
+> **(a) The composite's own record was selected and evaluated this run.**
+> **(b) Every check named in the record's `requires` and `any-of` is covered this run**, where "covered"
+> is judged per §(b1)/(b2) below.
+> **(c) The predicate no longer holds** over this run's findings.
 
-This works because a composite already records `contributors: [<fingerprint>, ...]`, and `state/`
-already records each finding's `check_id` and `cell` (tension 12).
-So the pairs are looked up, not inferred, and no new mapping from a correlation value to a contributor's
-coverage cell has to be invented.
+Each of the three exists because leaving it out produces a false `fixed`, and each is stated as its own
+condition rather than folded into a single "contributors are covered" test, because that single test was
+the round-2 formulation and it was wrong on two of the three counts.
 
-The two outcomes, restated as the sub-cases they replace:
+**(a) Own selection.**
+A composite has no coverage cell, so tension 12's `(check, cell)` test cannot protect it, and nothing
+else asked whether the composite record itself survived tension 15's filter chain.
+It frequently does not: `derived` is a type tag in no `--intensity` tier (open finding F8), so
+`scan.sh all --intensity active` drops every composite, and `--profile-scan quick` drops any composite
+without a `quick` profile tag.
+Without (a), `scan.sh all` followed by `scan.sh all --intensity active` would classify the flagship
+`COMPOSITE-TOKEN-HIJACK` **`fixed (chain broken)`** with all three contributors still present and the
+chain fully open.
+A composite that was not selected is `unknown`, exactly as an unselected ordinary check's findings are.
 
-1. **Every prior contributor's (check, cell) is covered, and the predicate no longer holds.**
-   Classified **`fixed`**, and this is correct and desirable: the chain is broken even though individual
-   links may remain open.
-   The report renders it `fixed (chain broken)` and names which contributor went away, from the prior
-   run's `contributors` list, so a reader can see *why* it closed.
-2. **Some prior contributor's (check, cell) is not covered.**
-   Classified **`unknown`**, recorded in `run.json` under `skipped_checks` with reason
-   `contributor-not-covered` naming the check ids and cells that were missed.
-   Nothing was learned, so nothing is claimed.
+**(b) Contributor coverage**, which has two branches because contributors divide into two kinds:
+
+- **(b1) A check that produced a prior contributor finding.**
+  Its `(check_id, cell)` pair is read from `state/` and must be covered this run.
+  Additionally, that contributor must itself be **`fixed`-eligible**, not merely cell-covered: for a
+  `SAST-HIST-*` contributor its `oldest_reaching_commit_time` must be at or after this run's
+  `oldest_commit_time` (tension 13).
+  A covered cell is necessary but not sufficient for that family, and reading only the cell would let a
+  composite be `fixed` while the history contributor it depends on is itself correctly `unknown`.
+  The rule is general, not a `SAST-HIST-*` special case: **a contributor counts as covered only under
+  the same test that would let its own finding be classified `fixed`.**
+- **(b2) A listed check that produced no prior contributor finding.**
+  `contributors` records only the checks that actually *fired*, so a listed `any-of` alternative that did
+  not fire leaves no pair to look up and would otherwise be invisible.
+  Such a check must be covered **in at least one cell**, and if its module was not selected at all it is
+  not covered and the composite is `unknown`.
+  This is the case where "the one that would have fired never ran" has to be distinguished from "none of
+  them fired", and it is why (b) is stated over the record's `requires` and `any-of` lists rather than
+  over the recorded contributor set alone.
+
+`contributors` is still what supplies the cells in (b1), so the pairs there are looked up, never
+inferred, and no mapping from a correlation value to a contributor's coverage cell has to be invented.
+
+**(c)** is the ordinary predicate re-evaluation.
+
+When all three hold, the composite is **`fixed`**, and this is correct and desirable: the chain is broken
+even though individual links may remain open.
+The report renders it `fixed (chain broken)` and names which contributor went away, from the prior run's
+`contributors` list, so a reader can see *why* it closed.
+When (a) or (b) fails, the composite is **`unknown`**, recorded in `run.json` under `skipped_checks` with
+reason `composite-not-selected` or `contributor-not-covered`, the latter naming the check ids and cells
+that were missed.
+Nothing was learned, so nothing is claimed.
 
 **Why the earlier check-id-only test was wrong.**
 It read "a composite is evaluated if and only if every check id named in its `requires` and `any-of`
@@ -647,27 +692,59 @@ Under the rule above, the prior cloud contributor's cell is `123.../eu-west-1`, 
 this run, and the composite is `unknown`.
 
 **A composite has no coverage cell of its own** and does not appear in `covered_checks`.
-Its coverage is exactly the conjunction of its contributors', which is why the rule above is stated over
-pairs rather than over a cell.
+Its `cell` is persisted as JSON `null` (tension 12).
+Its coverage is **not** simply the conjunction of its contributors': condition (a) above is a property of
+the composite record itself and has no contributor to read it from, which is exactly why the round-2
+formulation - "the conjunction of its contributors'" - was wrong and is withdrawn here.
 
-For a composite with no prior contributors recorded (it is new, or the prior state predates
-`contributors`), fall back to requiring every check id in `requires` and `any-of` to be covered in **at
-least one** cell, and flag it in `run.json`; a composite that never fired before cannot be reported
-`fixed` anyway, so this fallback can only affect `unknown` versus absent.
+**No prior contributors recorded.**
+Two situations produce this and they are decided differently, because the justification that made one of
+them harmless does not hold for the other:
 
-`any-of` requires all of its listed checks to have been *covered*, not just one; a partially-covered
-`any-of` cannot distinguish "none of them fired" from "the one that would have fired never ran".
+- **The composite is new** (no prior composite finding at all).
+  There is nothing to classify as `fixed`, so any coverage test can only affect `unknown` versus absent.
+  Require every check id in `requires` and `any-of` to be covered in at least one cell, and flag it in
+  `run.json`.
+- **A prior composite finding exists but the state predates `contributors`.**
+  Here the weak "covered in at least one cell" test is exactly the round-2 formulation this tension
+  replaced, and a region-narrowed run would report the flagship composite `fixed` through it.
+  So it is **not** used: such a prior finding is classified **`unknown`** and `run.json` records
+  `contributors-unavailable`.
+  Nothing gates this branch on `tool_version`, and `fp_schema` does not change when `contributors` is
+  added, so the branch has to fail safe on its own rather than be detected.
+
+Condition (b2) above is what the old sentence "`any-of` requires all of its listed checks to have been
+*covered*, not just one" was reaching for, and it now has a defined scope and a defined meaning of
+"covered".
+That sentence used the pre-cell vocabulary and, left standing beside a cell-keyed rule, gave two
+conformant implementations opposite classifications for the same `any-of` composite; it is withdrawn and
+replaced by (b2).
 
 **Consequence for the build.**
 `lib/findings.sh` gains `derive_findings`, called once by `scan.sh` after module completion, and
 `classify_derived`, called during tension 11's step 5.
 Both are pure: their inputs are the merged findings list, the derived records, `covered_checks`, and the
 prior state's contributor records.
-A fixture test feeds a synthetic findings set and asserts each outcome: fires; does not fire with every
-prior contributor pair covered, giving `fixed`; does not fire with one prior contributor pair uncovered,
-giving `unknown`; correlation mismatch.
-The third of those is the regression test for the region-narrowed case above, and it is the one that
-would have passed while shipping the bug had classification stayed keyed on bare check ids.
+A fixture test feeds a synthetic findings set and asserts each outcome.
+**Every case below is chosen to fail under a specific rejected reading**, named alongside it, because a
+test that passes under both readings pins nothing:
+
+| # | Fixture | Must be | Fails under |
+|---|---|---|---|
+| 1 | Predicate holds over present findings | fires | - |
+| 2 | Correlation values differ across contributors | does not fire | joining on `none` |
+| 3 | Does not fire; every prior contributor pair covered; composite selected | `fixed` | a rule that never reports `fixed` |
+| 4 | Does not fire; one prior contributor's cell not visited (`--regions` narrowed) | **`unknown`** | classification keyed on bare check id ("ran somewhere") |
+| 5 | **Composite record dropped by `--intensity active`; all contributors present and firing** | **`unknown`** | condition (a) omitted - the round-2 rule returns `fixed (chain broken)` |
+| 6 | **`any-of: A, B`; run 1 only A fired; run 2 covers A, module owning B not selected** | **`unknown`** | condition (b2) omitted - contributor-pair-only returns `fixed` |
+| 7 | **`SAST-HIST-*` contributor whose cell is covered but whose `oldest_reaching_commit_time` precedes this run's `oldest_commit_time`** | **`unknown`** | condition (b1)'s `fixed`-eligibility clause omitted - cell-only returns `fixed` |
+| 8 | Prior composite finding with no `contributors` recorded | **`unknown`** | the "covered in at least one cell" fallback applied to this branch |
+
+Cases 5, 6, 7, and 8 are new, and each is the only case in the set that discriminates its condition:
+under the round-2 rule every one of them returns `fixed (chain broken)` while cases 1 to 4 still pass, so
+the previous suite certified the defect green.
+Case 5 additionally pins that `--profile-scan quick` reaches the same hole independently of open finding
+F8.
 `COMPOSITE-TOKEN-HIJACK` is seeded in `rules/derived.rules` as part of §13 step 1, since `findings.sh`
 lands there, but its contributors do not exist until steps 5 and 6, so until then the composite is
 correctly and visibly `unknown` in every run.
@@ -707,7 +784,11 @@ Exactly two identifiers exist, and there is no third.
 - **`check_id`** identifies the *check*.
   It is the rule record's `id`, authored in full including the module prefix
   (`SAST-PY-EVAL-01`), with the linter enforcing that the prefix matches the owning module (E018) and
-  that the id is unique across every record file in the repository (E019).
+  that the id is unique **within the check-id namespace** (E019) - that is, across every record file
+  that carries check ids, and *not* across every record file in the repository.
+  The distinction is load-bearing: `config/discovery.conf` and `config/auth.conf` ids are *required* to
+  name `config/scope.conf` targets, so a global rule would make every correct config a lint error.
+  `rules/RULE-FORMAT.md` §9.1.1a is the normative namespace table.
   Format is frozen in `rules/RULE-FORMAT.md` §9.1.1.
   It is the SARIF `ruleId`, the Appendix A check id, the key of `covered_checks` in `state/`, and an
   input to the fingerprint.
@@ -1003,11 +1084,24 @@ The pipeline is frozen in this order, and every stage is a named function in `li
    native location model before comparison.
 4. **Derive** composite findings (tension 6).
 5. **Classify** against `state/` into `new` / `recurring` / `fixed` / `unknown` (tension 12).
+   This step also sets one run-level boolean, **`diff_usable`**, which step 7 reads.
+   It is false when there is no prior state, when `state/latest.json`'s `fp_schema` does not match this
+   build's, and when its `scan_root_id` does not match this run's (tension 12).
+   In every one of those cases the diff carries no information, so `status` is `unknown` for every
+   finding rather than only for carried-forward ones.
 6. **Suppress**: for each finding matching a baseline entry, set `suppressed: true` and
    `suppressed_by: <entry id>`.
    **Never delete.**
-7. **Gate**: `--fail-on` considers only findings where `suppressed == false`, `confidence >=
-   --min-confidence`, and, when `--fail-on-new` is given, `status == new`.
+7. **Gate**: `--fail-on` considers only findings where `suppressed == false` and `confidence >=
+   --min-confidence`.
+   When `--fail-on-new` is given, it additionally requires `status == new` **if and only if
+   `diff_usable` is true**; when `diff_usable` is false, `--fail-on-new` gates on **all** findings this
+   run.
+   The carve-out is not optional wording: with an unusable diff every finding's status is `unknown` and
+   never `new`, so a bare `status == new` predicate would gate on nothing and a run that found fifty
+   criticals after a tool upgrade would exit `0`.
+   Unusable prior state and absent prior state are the same situation and get the same fail-closed
+   answer.
 8. **Persist** `state/`: **all** findings, including suppressed ones, with their `first_seen` preserved.
 9. **Report**: suppressed findings render in a separate collapsed "accepted risk" section with their
    reason, and are counted separately in every summary.
@@ -1083,6 +1177,7 @@ Each run writes `state/<run-id>.json` plus a `state/latest.json` pointer:
 
 ```json
 { "fp_schema": "fp/1", "tool_version": "…", "run_id": "…", "completed_at": "…",
+  "scan_root_kind": "git", "scan_root_id": "<root-commit-sha>",
   "covered_checks": {
     "SAST-PY-EVAL-01":     {"rule_digest": "…", "scope": "path-root",     "cells": ["src"]},
     "SAST-HIST-AWSKEY-01": {"rule_digest": "…", "scope": "path-root",     "cells": ["."],
@@ -1099,8 +1194,8 @@ Each run writes `state/<run-id>.json` plus a `state/latest.json` pointer:
                  "contributors": ["…"]}, … ] }
 ```
 
-Three of those fields are conditional, and are listed here rather than only in the tension that consumes
-them so that the persisted shape and its consumers agree in one place:
+Four of those fields are conditional or need their value pinning, and are listed here rather than only in
+the tension that consumes them so that the persisted shape and its consumers agree in one place:
 
 - `covered_checks[].history_boundary` is present for `SAST-HIST-*` checks only, and
   `findings[].oldest_reaching_commit_time` for their findings only.
@@ -1109,6 +1204,15 @@ them so that the persisted shape and its consumers agree in one place:
   contributor-coverage classification reads.
   Each contributor fingerprint resolves to another entry in the same `findings` array, from which its
   `check_id` and `cell` are read - so the pairs that rule tests are looked up, never inferred.
+- **`findings[].cell` is present on every finding, and for a derived finding its value is JSON `null`.**
+  The key is never omitted and is never the string `"none"`.
+  A derived finding has no coverage cell (its classification replaces the cell test entirely), and the
+  earlier `none` sentinel was withdrawn because a string sentinel can collide with a real cell value -
+  `none` is a legal `path-root` and a legal scope target id.
+  `null` is unambiguous, and it makes "this finding is classified by contributor coverage" checkable in
+  one comparison.
+- `scan_root_kind` and `scan_root_id` are present on every run and gate whether any cell is comparable at
+  all.
 
 A **coverage cell** is the value of the scope dimension that partitions a check's findings.
 The dimension is declared per check (`coverage-scope` in `rules/RULE-FORMAT.md` §9.5 for script checks;
@@ -1116,12 +1220,12 @@ implied by the module for pattern rules) and is frozen as:
 
 | Module | `coverage-scope` | Cell value |
 |---|---|---|
-| SAST, IaC, containers, SCA | `path-root` | the run's normalised `--path` root |
-| SAST history | `path-root` | the run's normalised `--path` root |
+| SAST, IaC, containers, SCA | `path-root` | the `--path` root relative to the scan root |
+| SAST history | `path-root` | the `--path` root relative to the scan root |
 | DAST | `target` | the `config/scope.conf` target id |
 | Cloud live | `account-region` | `<account_id>/<region>`, or `<account_id>/global` |
 | Posture | `scope-key` | the expectation's `scope-key` |
-| Derived | (not applicable) | derived findings are classified by contributor coverage, tension 6 |
+| Derived | (none; `cell` is JSON `null`) | classified by tension 6's three-condition rule, not by a cell |
 
 **The history cell does not carry the boundary.**
 An earlier draft put the resolved history boundary inside the cell, which would have been a second,
@@ -1155,21 +1259,79 @@ It is not always re-derivable from the location, and the earlier blanket claim t
 A cell is never a fingerprint input, in either case.
 Recording it rather than deriving it is what keeps identity stable while coverage varies per run.
 
-**The `path-root` cell string is frozen**, because cells are compared across runs by exact string
-equality and persisted, which is the same class of thing tension 5 froze its own paths for.
-`path_root` is computed from the `--path` argument as:
+**The scan root.**
+Everything below, and every "repository-relative path" elsewhere in these documents, is relative to the
+**scan root**, which is frozen here because nothing else defined it and it decides a fingerprint input, a
+`unit_key` input, a glob base, and a persisted cell string.
 
-1. Resolve to an absolute real path with `realpath_of` (tension 24), following symlinks.
-2. If it is inside the repository root, make it repository-relative; otherwise keep it absolute.
-3. Use `/` separators, strip any trailing `/`, and strip a leading `./`.
-4. The repository root itself is the literal `.`, never the empty string.
+```
+--path              defaults to "." when omitted
+resolved_path    =  realpath_of("$--path")            # absolute, symlinks followed (tension 24)
+scan_root        =  git rev-parse --show-toplevel     # run from resolved_path, if it is a directory
+                    else resolved_path                # not a git repo, or git absent
+scan_root_kind   =  "git" | "path"                    # which branch was taken
+scan_root_id     =  kind "git"  -> the repository's root-commit sha:
+                                   the lexicographically smallest of
+                                   `git rev-list --max-parents=0 --all`
+                    kind "path" -> resolved absolute scan_root
+```
 
-Comparison is **exact string equality with no subsumption rule**.
+"The repository root" is **not** scoursh's own install root.
+That other sense survives in exactly one place, tension 26's config loader, and is called the *install
+root* there so the two can never be confused.
+
+**`path_root`, the cell string**, is then:
+
+1. `resolved_path` expressed relative to `scan_root`, with `/` separators, no trailing `/`, no leading
+   `./`.
+2. The literal `.` when `resolved_path` equals `scan_root`, never the empty string.
+
+Deriving `scan_root` from the git toplevel rather than from `--path` is what makes the cell
+**cwd-independent**: `cd /repo && scan --path .` and `cd /repo/src && scan --path /repo` both yield
+`scan_root = /repo` and cell `.`.
+It is also what makes `state/` **portable across CI workspaces** for a git target, since neither the cell
+nor `scan_root_id` contains the checkout path.
+
+**Two distinct scan roots may never map to the same cell string.**
+Exact-equality comparison alone does not deliver this: it only helps when two scopes produce *different*
+strings, and the dangerous case is two scopes colliding onto the same one.
+So cells are comparable **only between runs whose `scan_root_id` is equal**; when it differs, every prior
+finding is `unknown` and no `fixed` is inferred.
+That closes the two constructions this rule exists for:
+
+- **Non-git target** (an unpacked tarball, ordinary usage since only `history.sh` needs git).
+  `--path /srv/app` and `--path /srv/app/frontend` each become their own `scan_root`, so both would
+  otherwise carry cell `.` and the narrower run would report every backend finding `fixed`.
+  Their `scan_root_id` values are the two different absolute paths, so the cells are not comparable and
+  the result is `unknown`.
+- **Nested repository or submodule.**
+  `--path /repo` and `--path /repo/vendor/libfoo` both resolve to a git toplevel, so both would otherwise
+  carry cell `.`.
+  Their root-commit shas differ, so again the cells are not comparable.
+
+Within one `scan_root_id`, comparison is **exact string equality with no subsumption rule**.
 `--path .` after `--path src` therefore leaves the earlier findings `unknown` rather than `fixed`, and
 so does the reverse, even though one root contains the other.
 That is deliberate: a subsumption rule would have to decide whether a wider root's coverage entitles it
 to declare a narrower root's findings fixed, and getting that wrong is phantom remediation.
 Failing to `unknown` in both directions is the conservative reading, and it is the one frozen here.
+
+`scan_root_kind` and `scan_root_id` are recorded in `state/` alongside `fp_schema`, and a mismatch is
+handled exactly like an `fp_schema` mismatch below: the diff is unusable, every finding is `unknown`, and
+the gate falls back to fail-closed.
+
+**One consequence, stated so it is not discovered later.**
+Because `location.path` is scan-root-relative and is a fingerprint input (tension 5), a **git** target's
+fingerprints are stable no matter which `--path` subtree a run scans, since `scan_root` is the toplevel
+either way.
+A **non-git** target's are not: there `scan_root` is the resolved `--path`, so `--path /srv/app` and
+`--path /srv/app/frontend` record different relative paths for the same file and therefore different
+fingerprints.
+That is correct rather than a defect, and it is safe: those two runs also have different `scan_root_id`
+values, so their diffs are not comparable at all and every finding is `unknown` rather than `new` or
+`fixed`.
+The churn is confined to non-git trees, where there is no repository identity to anchor to, and it fails
+in the conservative direction.
 
 A (check, cell) pair enters `covered_checks` **only if that check ran to completion over that cell**.
 It does not if the module was not selected, if a profile or intensity filter dropped the check
@@ -1195,9 +1357,17 @@ A region-scoped or target-scoped run therefore leaves every other region's and t
 - `SAST-HIST-*`: a covered cell is necessary but not sufficient.
   Tension 13's per-finding boundary comparison then decides `fixed` versus `unknown` within it.
 - Derived findings: they have no cell of their own, and the whole `(C, K)` test is replaced by
-  tension 6's contributor-coverage rule.
-  A composite is `fixed` only when **every** (check id, cell) pair recorded against its prior
-  contributors is covered this run.
+  tension 6's three-condition rule.
+  A composite is `fixed` only when **(a)** its own record was selected this run, **(b)** every check
+  named in its `requires` and `any-of` is covered - contributors that fired by their recorded
+  `(check_id, cell)` pair *and* by the same test that would let their own finding be `fixed`, listed
+  checks that did not fire by being covered in at least one cell - and **(c)** the predicate no longer
+  holds.
+  Reading only the recorded pairs is not sufficient, for two reasons this section has to state because
+  they are properties of the cell mechanism: a composite has no cell, so nothing else asks whether it was
+  selected; and for a `SAST-HIST-*` contributor "cell covered" is precisely the signal the bullet above
+  says is *not* sufficient, so a composite over a history contributor would otherwise be `fixed` while
+  that contributor is itself correctly `unknown`.
 
 Both refinements can only turn a `fixed` into an `unknown`, never the reverse, so the table remains the
 upper bound on what may be claimed as remediated.
@@ -1208,15 +1378,17 @@ reason from `run.json`.
 
 Two guards sit alongside it:
 
-- **`fp_schema` mismatch** between `state/latest.json` and this build makes the whole diff `unknown`
-  rather than reporting a mass new-and-fixed.
-  The report says the fingerprint schema changed and that a baseline rebuild is required.
-  **This condition is fail-closed at the gate**: because it marks *this run's* present findings
-  `unknown` and not merely carried-forward priors, letting `unknown` starve the gate would turn a
-  tool upgrade that bumps `fp/1` to `fp/2` into a run that finds fifty criticals and exits `0`.
-  A whole-diff-`unknown` condition therefore takes the same path as no-prior-state (tension 14): the
-  gate applies to **all** findings this run, `--fail-on-new` included.
-  Unusable prior state and absent prior state are the same situation and get the same answer.
+- **`fp_schema` or `scan_root_id` mismatch** between `state/latest.json` and this run makes the whole
+  diff `unknown` rather than reporting a mass new-and-fixed.
+  The report says which changed and that a baseline rebuild is required.
+  Both set **`diff_usable = false`** (tension 11 step 5), and that flag - not the `unknown` status - is
+  what the gate reads.
+  **The condition is fail-closed at the gate**: because it marks *this run's* present findings `unknown`
+  and not merely carried-forward priors, letting `unknown` starve the gate would turn a tool upgrade that
+  bumps `fp/1` to `fp/2` into a run that finds fifty criticals and exits `0`.
+  So `--fail-on-new` gates on **all** findings, exactly as with no prior state.
+  This is stated identically in tension 11 step 7 (which owns the gate predicate) and tension 14 (which
+  owns exit codes); a rule that lived only here would be contradicted by both.
 - **`rule_digest`** is the SHA-256 of the rule record that defines a check.
   When it changes, findings for that check are still classified normally, but the report flags
   `rule changed - new/fixed for this check may reflect the rule edit, not a code change`.
@@ -1234,11 +1406,23 @@ enumerate-then-execute structure.
 This is why check ids are authored and stable (tension 7), and why script checks are registered as
 records (`rules/RULE-FORMAT.md` §9.5).
 §13 step 7 implements it.
-Three tests matter, one per granularity: a full scan then a `sast`-only scan asserts zero non-SAST
-findings are `fixed`; a full-region cloud scan then `--regions us-east-1` asserts zero `eu-west-1`
-findings are `fixed`; a two-target DAST scan then a single-`--target` scan asserts zero findings for the
-other target are `fixed`.
-Only the first of those would have passed under check-id-only coverage.
+Each test below names the reading it fails under:
+
+| # | Fixture | Must be | Fails under |
+|---|---|---|---|
+| 1 | Full scan, then `sast`-only | zero non-SAST findings `fixed` | module-blind coverage |
+| 2 | All-region cloud scan, then `--regions us-east-1` | zero `eu-west-1` findings `fixed` | check-id-only coverage |
+| 3 | Two-target DAST scan, then one `--target` | zero other-target findings `fixed` | check-id-only coverage |
+| 4 | **Non-git tree: `--path /srv/app`, then `--path /srv/app/frontend`** | **zero backend findings `fixed`** | **a `path-root` cell that collapses each scan root to `.` without comparing `scan_root_id`** |
+| 5 | **`--path /repo`, then `--path /repo/vendor/libfoo` where that is a nested repo or submodule** | **zero superproject findings `fixed`** | the same; both would otherwise carry cell `.` |
+| 6 | **`cd /repo && scan --path .` versus `cd /repo/src && scan --path /repo`** | **identical cell, all findings `recurring`** | a cwd-derived or `--path`-derived root instead of the git toplevel |
+| 7 | **Same git repo cloned to two different absolute paths** | **identical cells, all findings `recurring`** | embedding the checkout path in the cell or in `scan_root_id` |
+
+Tests 1 to 3 pin the coverage granularity; only test 1 would have passed under check-id-only coverage.
+Tests 4 to 7 pin the scan-root definition, and none of them existed while "the repository root" was
+undefined: 4 and 5 are the two constructions that produce a false `fixed` by colliding two scopes onto
+one cell string, and 6 and 7 are the cwd-independence and CI-portability properties that deriving the
+root from the git toplevel is what buys.
 
 ## Tension 13 - git-history findings
 
@@ -1378,15 +1562,28 @@ remediation.
 **Consequence for the build.**
 `history.sh` lands at the end of §13 step 3 and needs `git rev-list`, `git cat-file`, and
 `git rev-parse --is-shallow-repository`, which join the required-command probe (tension 24).
-A fixture repository with a secret committed and then removed is part of `tests/fixtures/`, and the test
-asserts one finding rather than one per commit, and that it is not reported `fixed` after the removal
-commit.
-Two further tests cover the boundary rule, and the second is the one a settings comparison would have
-passed while shipping the bug: **narrowing `history_window_days` yields `unknown`**, and **holding
-`history_window_days` constant while the fixture's commit dates advance past the cutoff also yields
-`unknown`**, not `fixed`.
-A third asserts that a blob purged from a repository whose boundary did not move is reported `fixed`, so
-the rule has not simply disabled `fixed` for the family.
+A fixture repository with a secret committed and then removed is part of `tests/fixtures/`.
+**Each test below names the reading it fails under**, since the earlier suite consisted entirely of cases
+where the correct and the rejected readings agree, and therefore certified the defect green:
+
+| # | Fixture | Must be | Fails under |
+|---|---|---|---|
+| 1 | Secret in one blob reached by many commits | one finding, not one per commit | commit-keyed identity |
+| 2 | Secret committed then removed from the working tree, blob still reachable | not `fixed` | working-tree-driven `fixed` |
+| 3 | `history_window_days` narrowed | `unknown` | settings-blind coverage |
+| 4 | `history_window_days` **constant**, fixture commit dates advanced past the cutoff | `unknown` | comparing settings instead of the resolved boundary |
+| 5 | Blob purged; boundary did **not** move | `fixed` | a rule that simply disables `fixed` for the family |
+| 6 | **Blob purged; boundary HAS moved; the finding's `oldest_reaching_commit_time` is still at or after the new boundary** | **`fixed`** | **boundary-in-the-cell** - cell equality fails, giving `unknown` |
+| 7 | **Five byte-identical secrets in one blob** | **five distinct fingerprints** | a two-component history fingerprint without `occurrence` |
+| 8 | **The same blob reachable at three paths across many commits** | **one set of ordinals** | an `occurrence` scoped to the path rather than the blob |
+
+Case 6 is the one that matters most and was missing: case 5 stipulates an unmoved boundary, which is the
+single condition under which the rejected boundary-in-cell reading still produces `fixed`, while case 6
+is the **ordinary** shape on any active repository, since a rolling boundary moves on essentially every
+run.
+An implementation that folds the boundary back into the cell string passes 1 to 5 and fails 6.
+Cases 7 and 8 pin the two `occurrence` decisions this module carries (tension 5), neither of which any
+earlier test exercised.
 
 ## Tension 14 - exit-code precedence and required inputs
 
@@ -1462,7 +1659,8 @@ This distinction is load-bearing and the two must never be conflated, because te
 | A check skipped for an absent `requires-cmd` or `requires-config` | declared | none |
 | A retired check id (tension 7) | declared | none |
 | A `SAST-HIST-*` finding older than this run's history boundary (tension 13) | declared | none |
-| A composite whose prior contributor coverage is incomplete (tension 6) | inherits its contributor's class | inherits |
+| A composite not selected this run, or with incomplete contributor coverage (tension 6) | inherits its cause's class | inherits |
+| An unusable diff: `fp_schema` or `scan_root_id` mismatch (tension 12) | neither; see below | none, **but the gate goes fail-closed** |
 | Circuit breaker opened | **unplanned** | **5** |
 | Per-run request budget exhausted | **unplanned** | **5** |
 | A module or check aborted with an error mid-flight | **unplanned** | **5** |
@@ -1507,19 +1705,27 @@ findings", not "investigate the run".
   Using it without `--fail-on` is a usage error (exit `2`).
 - `--min-confidence <level>` - default `low` (tension 8).
 
-Two edge cases are decided rather than left open, both **fail closed**:
+Three edge cases are decided rather than left open, all three **fail closed**:
 
-- **No prior state** (first ever run, or `state/` cleared): `--fail-on-new` gates on **all** findings,
-  and the report says so.
+- **An unusable diff** - `diff_usable == false` per tension 11 step 5, which covers no prior state (first
+  ever run or `state/` cleared), an `fp_schema` mismatch, and a `scan_root_id` mismatch.
+  In every one of these `--fail-on-new` gates on **all** findings, and the report says so.
   Failing open would let the very first CI run pass silently with a full backlog, and teams calibrate on
-  that first green build.
+  that first green build; the `fp_schema` case is worse still, because a tool upgrade would turn fifty
+  criticals into a green build with no operator action at all.
   The intended workflow after a first red build is to baseline (tension 11), which is explicit and
   reviewable, rather than to inherit an invisible amnesty.
-- **Findings classified `unknown`** (tension 12): excluded from the gate, since nothing was learned
-  about them.
+  Unusable prior state and absent prior state are the same situation and get the same answer.
+- **Findings classified `unknown` while the diff is usable** (tension 12): excluded from the gate, since
+  nothing was learned about them.
+  The qualifier matters - under an unusable diff *every* finding is `unknown`, and the bullet above
+  governs instead, so this exclusion must never be read as unconditional.
   Their presence **does not** by itself affect the exit code.
+- **Exit code versus gate outcome.**
   Whether the run exits `5` is decided solely by `incomplete_reason` per the declared-versus-unplanned
-  table above, so a deliberately scoped run still returns `0` or `1`.
+  table above, so a deliberately scoped run still returns `0` or `1`, and an unusable diff sets no
+  `incomplete_reason` and so cannot produce `5` either - it changes what the gate examines, not the
+  precedence.
   The `unknown` findings and the reason each was not assessed are recorded in `run.json` and led with in
   the report, which is what tension 12 already specifies and is the right place for that signal.
 
@@ -1527,7 +1733,7 @@ Two edge cases are decided rather than left open, both **fail closed**:
 
 | Command | Requires |
 |---|---|
-| `sast`, `sca`, `iac` | a readable `--path`. **No `scope.conf`.** |
+| `sast`, `sca`, `iac` | a readable `--path`, which is optional and **defaults to `.`** (tension 12), so exit `4` means the resolved path is absent or unreadable, not that the flag was omitted. **No `scope.conf`.** |
 | `dast` | `config/scope.conf` with a matching `--target`; `config/auth.conf` additionally when `--authed` |
 | `cloud --live` | resolvable AWS credentials; `config/scope.conf` is not required, since AWS endpoints are allowed by §2 independently |
 | `posture` | `config/posture.conf` |
@@ -1542,10 +1748,18 @@ raw-URL bypass) while removing the incentive to write a dummy entry.
 in step 10 but its inputs exist from step 2.
 `run.json` gains `incomplete_reason`, `coverage_reduction`, `gate`, and `gated_findings`.
 A test matrix asserts one exit code per combination of (breaker tripped, findings above gate, scope
-violation, missing input).
-It includes the case the declared-versus-unplanned split exists for: a `--profile-scan quick
---fail-on high --fail-on-new` run against a repository with prior state and a backlog, which must exit
-`0` when it finds no new high, and `1` when it does - never `5`.
+violation, missing input), plus two cases each chosen to fail under a rejected reading:
+
+| Fixture | Must exit | Fails under |
+|---|---|---|
+| `--profile-scan quick --fail-on high --fail-on-new`, prior state and a backlog, no new high | `0` | "any `unknown` forces 5" |
+| the same, with one new high | `1` | the same |
+| **`--fail-on critical --fail-on-new` after an `fp_schema` bump, 50 criticals present** | **`1`** | **`unknown` excluded from the gate unconditionally, or a bare `status == new` predicate - both give `0`** |
+| **the same after a `scan_root_id` change with no `fp_schema` change** | **`1`** | treating only `fp_schema` as making a diff unusable |
+
+The third row is the one no earlier test touched: tension 14's matrix had no `fp_schema` axis, and
+tensions 5, 11 and 12's tests are about fingerprints, baseline ordering, and coverage respectively, so
+the fail-open shipped green under every prescribed test in the register.
 
 ## Tension 15 - check-set selection precedence
 
@@ -1805,12 +2019,12 @@ unit_key = lowercase_hex_sha256( "uk/1" \0 module \0 check_id \0 scope_1 \0 scop
 
 | Module | Unit scope |
 |---|---|
-| SAST, IaC | repository-relative file path |
+| SAST, IaC | scan-root-relative file path (tension 12) |
 | SAST history | blob sha |
 | SCA | lockfile path |
 | DAST | `target_name`, `method`, `path_template`, `param_location`, `param_name` |
 | Cloud live | `account_id`, `region`, `service` |
-| Posture | `control_id`, `scope_key` |
+| Posture | `control_id` (the `POSTURE-*` check id), `scope_key` |
 
 Each worker appends `{"unit_key":…, "state":"started"|"done"|"failed", "ts":…}` to its own shard of
 `reports/<run>/units.jsonl`, using the same per-worker shard mechanism as tension 17, so the journal
@@ -1825,7 +2039,7 @@ contributes nothing, and a unit that had found something contributes its already
 `run.json` records:
 
 ```
-run_identity = sha256( tool_version \0 fp_schema \0 uk_schema \0 sorted(check_ids selected)
+run_identity = sha256( tool_version \0 fp_schema \0 uk_schema \0 scan_root_id \0 sorted(check_ids selected)
                        \0 digest(config/*.conf) \0 digest(all record files) \0 normalised CLI flags )
 ```
 
@@ -2493,8 +2707,11 @@ than hand-edited and because §11 already specifies it as JSON.
 **Config files are data and are never executed.**
 `source`, `.`, and `eval` applied to anything under `config/`, `rules/`, or `data/` are lint failures.
 Values undergo no expansion: `$HOME` in a config value is five literal bytes.
-Where a path genuinely needs to be relative to something, it is resolved against the repository root by
-the loader, explicitly, rather than by the shell implicitly.
+Where a path genuinely needs to be relative to something, it is resolved by the loader, explicitly,
+rather than by the shell implicitly, against scoursh's own **install root** - the directory containing
+`scan.sh`.
+That is a different root from the **scan root** of tension 12, which is a property of the tree being
+scanned; the two are never interchangeable and are named differently for that reason.
 
 One parser, `lib/records.sh`, serves all of it.
 One linter covers all of it, so a typo in `scanner.conf` fails the same way a typo in a rule pack does,
@@ -2514,7 +2731,7 @@ its values are marked secret at the schema level so `redact` (tension 9) covers 
 
 ## Cross-cutting consequences
 
-Six decisions here reach beyond their own tension and are collected so they are not missed.
+Eight decisions here reach beyond their own tension and are collected so they are not missed.
 
 1. **`lib/records.sh` is the first thing built**, ahead of §13 step 1's stated contents, because
    tensions 1, 6, 9, 15, and 26 all depend on it.
@@ -2527,19 +2744,30 @@ Six decisions here reach beyond their own tension and are collected so they are 
    `SAST-HIST-*` keeps the cell test and adds tension 13's per-finding boundary comparison **inside** a
    covered cell.
    Derived findings have no cell at all and replace the cell test outright with tension 6's
-   contributor-coverage rule.
-   There is no third mechanism, and no check is subject to both exceptions.
-4. **`run.json` is load-bearing, not decorative.**
+   three-condition rule.
+   There is no third mechanism.
+   A composite whose contributor is a `SAST-HIST-*` check is subject to **both** exceptions, which is
+   exactly why tension 6 condition (b1) requires a contributor to pass the same test that would let its
+   own finding be `fixed` rather than merely to have a covered cell.
+   The earlier claim that no check is subject to both was true per check and false for that composition,
+   and it is withdrawn.
+5. **The scan root is a defined term** (tension 12): the git toplevel of the resolved `--path`, else the
+   resolved `--path` itself.
+   Every "repository-relative path" in these documents means scan-root-relative, and scoursh's own
+   install root (tension 26) is a different thing that is never called the repository root.
+   Cells are comparable only between runs with equal `scan_root_id`.
+6. **`run.json` is load-bearing, not decorative.**
    It carries `skipped_checks` with reasons, `coverage_gap` entries, `coverage_reduction`,
    `incomplete_reason`, the capability probe results, the paranoid allowlist, and the advisory snapshot
    date.
    Tensions 2, 12, 14, 15, 20, 21, 24, and 25 all write to it, and §15's honesty requirement is
    implemented through it.
    `incomplete_reason` being non-empty is exactly the exit-5 predicate (tension 14).
-5. **`fp/1` and `uk/1` are versioned schemas** (tensions 5 and 18) whose change invalidates `state/` and
+7. **`fp/1` and `uk/1` are versioned schemas** (tensions 5 and 18) whose change invalidates `state/` and
    `config/baseline.json`.
-   They are printed in every report.
-6. **CI runs the suite on both GNU and BSD userlands** (tension 24) and asserts byte-identical findings,
+   They are printed in every report, and a mismatch makes the diff unusable and the gate fail-closed
+   (tension 11 step 7).
+8. **CI runs the suite on both GNU and BSD userlands** (tension 24) and asserts byte-identical findings,
    which is the check that keeps most of the resolutions above honest.
 
 ---
@@ -2566,7 +2794,8 @@ Five contract-determining items were fixed in round 2 and are resolved in the te
   per-finding test applies as a second layer inside a covered cell.
 - The **composite coverage predicate**, which still read "appears in `covered_checks`" after that map
   became cell-scoped, so a region-narrowed run still reported the flagship composite `fixed`.
-  Classification now requires every prior contributor's `(check_id, cell)` pair to be covered.
+  Classification then required every prior contributor's `(check_id, cell)` pair to be covered - which
+  round 3 found insufficient on two further counts and replaced with the three-condition rule below.
 - The **posture id collision**, where a `POSTURE-*` id was required in both `checks.rules` and
   `config/posture.conf` and fired `E019` on every control.
   Expectations now carry their own id namespace plus a `check` reference, which also makes
@@ -2584,6 +2813,46 @@ tension 15's stale §9.1.3 citation, the `AGENTS.md` check-keyed summary, the `o
 two matches on one line, the history `occurrence` scoping, the adapter-finding ordinal, `allow-subdomains`
 hosts missing from the attribution set, tension 18's all-units rule, `E018` for posture placement, and
 the §3.2 and §9.6.1 wording slips.
+
+**Round 3** confirmed the tension 13 Identity line, the `SAST-HIST-*` coverage owner and the posture id
+split as closed by mechanism, and found that rounds 1 and 2 shared one procedural failure: a mechanism
+was fixed in the section that owns it while the sections that **consume** it kept the pre-fix sentence,
+and no prescribed test was ever changed, so every test landed where the correct and the rejected readings
+agree.
+Two of the surviving contradictions were byte-identical to the original commit.
+Eight items were fixed in round 3, each with its consumers swept and its test rewritten to **fail** under
+the reading that was rejected:
+
+- **Tension 6 condition (a)**: a composite whose own record was not selected this run is `unknown`.
+  Round 2 removed the composite's `covered_checks` entry and nothing then asked whether the composite
+  survived tension 15's filters, so `scan.sh all --intensity active` reported the flagship composite
+  `fixed` with its chain fully open.
+  F8's rationale is corrected to match.
+- **Tension 6 condition (b2)**: the orphaned `any-of` sentence is withdrawn and replaced.
+  `contributors` records only checks that fired, so a listed alternative that never fired was invisible
+  to the contributor-pair test.
+- **Tension 6 condition (b1)**: a contributor counts as covered only under the test that would let its
+  own finding be `fixed`, which for `SAST-HIST-*` includes the boundary comparison.
+  This is where the round-2 fixes for items 2 and 3 failed to compose.
+- **Tension 12: the scan root**, previously undefined for the scanned tree while deciding a fingerprint
+  input, a `unit_key` input, a glob base and a persisted cell.
+  Frozen as the git toplevel of the resolved `--path`, else the resolved `--path`, with `scan_root_id`
+  gating cell comparability so two distinct roots can never collide onto one cell string.
+  The `--path` default is frozen at `.`, and scoursh's own **install root** is renamed so it can never be
+  confused with the scan root.
+- **Tension 12: the derived `cell` value**, frozen as JSON `null` rather than a string sentinel.
+- **Tension 5: `control_id`** bound to the `POSTURE-*` check id, which gained a second candidate referent
+  when the posture namespaces split.
+- **The `fp_schema` fail-closed rule**, which existed only in tension 12 while tension 11 step 7 (the
+  frozen gate predicate) and tension 14 (the owner of exit codes) both still contradicted it.
+  `diff_usable` is now a named flag set in step 5 and read in step 7, and it covers `scan_root_id`
+  mismatch too.
+- **Discriminating tests** for all of the above, plus the history boundary-has-moved case, replacing
+  suites that certified the defects green.
+
+Also swept as consumers while their mechanisms were open: tension 7's global `E019` scope, the adapter
+`check_id` namespace row, §10.3's line-based match sketch against the byte-offset ordinal, the
+owning-module map's totality, and the cross-cutting numbering.
 
 The twelve below remain **open**, deliberately deferred, and are recorded with their finding numbers so
 the next task inherits them rather than rediscovering them.
@@ -2674,8 +2943,14 @@ None is a matter of taste; each has a defect and a direction, and the direction 
 - **F8 [low] - the `derived` type tag falls outside every `--intensity` tier** (tension 15 step 3, and
   `rules/RULE-FORMAT.md` §9.1.3 against §9.2).
   Under an intersection filter where nothing can be re-enabled, any run carrying `--intensity` drops
-  every composite, and a dropped check never enters `covered_checks`, so its prior findings are
-  `unknown` forever.
+  every composite.
+  The consequence is that composites are silently absent from those runs, not that they are wrongly
+  classified: a composite has no `covered_checks` entry to lose, and tension 6 condition (a) makes an
+  unselected composite `unknown`.
+  (The earlier rationale here said "a dropped check never enters `covered_checks`, so its prior findings
+  are `unknown` forever", which was the *ordinary*-check mechanism and stopped applying to composites
+  once they lost their cell; the outcome is the same but it now comes from condition (a), and this entry
+  no longer contradicts tension 6.)
   Direction: state that `derived` checks are exempt from the intensity ceiling, since they consume
   findings rather than issue requests, and add `derived` to §9.1.3's enumeration so `E044` and the
   schema agree.
