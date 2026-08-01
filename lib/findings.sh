@@ -191,6 +191,14 @@ path_template_of() {
 declare -A _OCC=()
 OCCURRENCE_RESULT=0
 
+# Clears every ordinal space.  A real run is one process, so this is normally
+# implicit; a test harness that simulates several runs in one process must call
+# it, or a counter from the previous run leaks into the next one's identities.
+occurrence_reset_all() {
+  _OCC=()
+  SCOURSH_SCAN_UNIT=''
+}
+
 occurrence_reset_unit() {
   SCOURSH_SCAN_UNIT=$1
   local k
@@ -207,6 +215,30 @@ occurrence_reset_unit() {
 # repeated byte-identical match in a file would take ordinal 0, collapse onto
 # one fingerprint, and be deduped by the merge - which is exactly the collision
 # the discriminator exists to eliminate.
+# The scanning unit comes from the fingerprint PROFILE, so tension 5's frozen
+# table is the single source and no fallback can reach a different answer.
+#
+# It was a fallback chain - SCOURSH_SCAN_UNIT, then loc_path, then loc_blob_sha -
+# and it never reached the blob.  A SAST-HIST-* finding always carries a path,
+# because tension 13 requires the path in the reported location for navigation,
+# so loc_path always won; and after any working-tree scan the leftover
+# SCOURSH_SCAN_UNIT won ahead of both, keying every history finding in the run on
+# the last file scanned.
+#
+# The consequence was the churn tension 13 exists to prevent: a blob's ordinal
+# depended on how many OTHER blobs at the same path carrying the same secret were
+# enumerated before it, so adding one older commit to the history window
+# renumbered an untouched blob and the diff reported one `fixed` plus one `new`
+# for a secret nobody had touched.  Path scoping also collides two findings for
+# one blob reachable at two paths onto a single fingerprint, breaking tension 5's
+# "fingerprints are unique within a run".
+_occurrence_unit_for() {
+  case $1 in
+    history) printf '%s' "${_F[loc_blob_sha]:-}" ;;
+    *) printf '%s' "${SCOURSH_SCAN_UNIT:-${_F[loc_path]:-}}" ;;
+  esac
+}
+
 occurrence_next() {
   local unit=$1 check_id=$2 digest=$3
   local k="$unit"$'\x1f'"$check_id"$'\x1f'"$digest"
@@ -937,7 +969,8 @@ finding_emit() {
   # The occurrence ordinal is computed HERE and never by a module, so two
   # conformant call sites cannot disagree about it (tension 5).
   if _fp_profile_needs_occurrence "$profile" && [[ -z ${_F[loc_occurrence]:-} ]]; then
-    local unit=${SCOURSH_SCAN_UNIT:-${_F[loc_path]:-${_F[loc_blob_sha]:-unit}}}
+    local unit
+    unit=$(_occurrence_unit_for "$profile")
     occurrence_next "$unit" "${_F[check_id]}" "${_F[loc_match_digest]:-}"
     _F[loc_occurrence]=$OCCURRENCE_RESULT
   fi

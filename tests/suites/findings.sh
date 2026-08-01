@@ -35,6 +35,10 @@ new_run() {
   rm -rf "${W:?}/run.$1"
   SCOURSH_RUN_DIR=''
   SCOURSH_RUN_ID=''
+  # A real run is one process; this suite simulates many in one, so the ordinal
+  # spaces are cleared explicitly or a counter leaks from the previous run into
+  # the next one's identities.
+  occurrence_reset_all
   run_init "$W/run.$1"
 }
 
@@ -141,6 +145,84 @@ occurrence_reset_unit b.py
 emit_match "$d" SAST-X-Y-01 b.py 1 'eval(x)'
 findings_merge "$d"
 assert_eq 2 "$(fps_of "$d" | wc -l | tr -d ' ')" 'a new file restarts the ordinal at 0 but the path differs'
+
+# ---------------------------------------------------------------------------
+printf '\n-- tension 13: the history occurrence is scoped to the BLOB --\n'
+# ---------------------------------------------------------------------------
+# "The history `occurrence` is scoped to the blob, not to a path" - stated
+# without qualification in tension 13 and repeated in tension 5.  The unit was
+# picked by a fallback chain that reached loc_path first, and a SAST-HIST-*
+# finding always carries a path (tension 13 requires it in the reported
+# location), so loc_blob_sha was never consulted.
+emit_hist() {                    # emit_hist RUNDIR BLOB PATH TEXT
+  finding_new
+  finding_set check_id SAST-HIST-AWS_SECRET-01
+  finding_set module sast
+  finding_set title t
+  finding_set base_severity critical
+  finding_set cwe CWE-798
+  finding_set owasp A07:2021
+  finding_set loc_blob_sha "$2"
+  finding_set loc_path "$3"
+  finding_set cell .
+  finding_set_match "$4"
+  finding_emit
+}
+
+t_case 'two DIFFERENT blobs at one path both take occurrence 0'
+new_run h1
+d=$SCOURSH_RUN_DIR
+emit_hist "$d" 1111111111111111111111111111111111111111 config/settings.py 'key = "AAAA"'
+OCC_A=${_F[loc_occurrence]}
+FP_A=${_F[fingerprint]}
+emit_hist "$d" 2222222222222222222222222222222222222222 config/settings.py 'key = "AAAA"'
+OCC_B=${_F[loc_occurrence]}
+assert_eq 0 "$OCC_A" 'the first blob takes ordinal 0'
+assert_eq 0 "$OCC_B" \
+  'and so does the second (fails under path scoping, which gives it 1 and makes its identity depend on enumeration order)'
+
+t_case 'an untouched blob keeps its identity when another blob is enumerated first'
+# The churn tension 13 exists to prevent: adding one older commit to the window
+# renumbers an untouched blob, and the diff reports one `fixed` plus one `new`
+# for a secret nobody touched.
+new_run h2
+d=$SCOURSH_RUN_DIR
+emit_hist "$d" 2222222222222222222222222222222222222222 config/settings.py 'key = "AAAA"'
+emit_hist "$d" 1111111111111111111111111111111111111111 config/settings.py 'key = "AAAA"'
+assert_eq "$FP_A" "${_F[fingerprint]}" \
+  'the blob enumerated second this run has the same fingerprint it had when enumerated first'
+
+t_case 'a leftover working-tree scan unit does not leak into history ordinals'
+# The state the shipped harness actually leaves behind: scan_tree runs first and
+# occurrence_reset_unit was last called for a working-tree file.
+new_run h3
+d=$SCOURSH_RUN_DIR
+occurrence_reset_unit some/other/file.py
+emit_hist "$d" 3333333333333333333333333333333333333333 config/settings.py 'key = "AAAA"'
+assert_eq 0 "${_F[loc_occurrence]}" 'the first history finding takes ordinal 0'
+emit_hist "$d" 4444444444444444444444444444444444444444 config/settings.py 'key = "AAAA"'
+assert_eq 0 "${_F[loc_occurrence]}" \
+  'and so does the next blob (fails when SCOURSH_SCAN_UNIT wins, keying every history finding on the last file scanned)'
+
+t_case 'one blob reachable at two paths yields ONE set of ordinals'
+# tension 13: "One blob reachable at three paths across four hundred commits is
+# scanned once and yields one set of ordinals."  Under path scoping the two
+# emissions land in two ordinal spaces, both take ordinal 0, and the two
+# findings collide on ONE fingerprint - breaking tension 5's "fingerprints are
+# unique within a run", which tensions 12 and 17 both depend on.
+new_run h4
+d=$SCOURSH_RUN_DIR
+# Cleared deliberately: with a leftover unit still set, BOTH readings key on it
+# and the case stops discriminating - which it did on the first run of this test.
+SCOURSH_SCAN_UNIT=''
+emit_hist "$d" 5555555555555555555555555555555555555555 old/name.py 'key = "AAAA"'
+FP_P1=${_F[fingerprint]}
+emit_hist "$d" 5555555555555555555555555555555555555555 new/name.py 'key = "AAAA"'
+assert_ne "$FP_P1" "${_F[fingerprint]}" \
+  'the same blob reported at a second path does not collide onto one fingerprint'
+findings_merge "$d"
+assert_eq 2 "$(fps_of "$d" | LC_ALL=C sort -u | wc -l | tr -d ' ')" \
+  'and the merge keeps both rather than deduping a genuine pair away'
 
 t_case 'each module uses its own frozen location tuple'
 assert_eq path "$(_fp_profile_for sast SAST-PY-EVAL-01)" 'sast -> path'
