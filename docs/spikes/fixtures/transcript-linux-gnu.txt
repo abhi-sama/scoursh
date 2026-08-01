@@ -1,0 +1,42 @@
+Unable to find image 'debian:12-slim' locally
+12-slim: Pulling from library/debian
+53bb9e501f18: Pulling fs layer
+53bb9e501f18: Download complete
+469438e8f041: Download complete
+53bb9e501f18: Pull complete
+Digest: sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+Status: Downloaded newer image for debian:12-slim
+=== ENV ===
+Linux 810d464ca329 6.12.76-linuxkit #1 SMP Thu Jun 25 13:45:40 UTC 2026 aarch64 GNU/Linux
+GNU bash, version 5.2.15(1)-release (aarch64-unknown-linux-gnu)
+getopt from util-linux 2.38.1
+
+=== Candidate A (getopt) on GNU/Linux bash ===
+path=[src] lang=[py,js] history=1 jobs=[4] fail_on=[high] format=[json,html] out=[/tmp/o] paranoid=1 positional=[extra1 extra2]
+rc=0
+
+=== Candidate A (getopt) - unknown flag ===
+candidate-a: unrecognized option '--bogus'
+die(2): getopt(1) rejected the arguments (rc=1)
+rc=2
+
+=== Candidate A (getopt) - missing value ===
+candidate-a: option '--path' requires an argument
+die(2): getopt(1) rejected the arguments (rc=1)
+rc=2
+
+=== Candidate B (hand-rolled) on GNU/Linux bash ===
+path=[src] lang=[py,js] history=1 jobs=[4] fail_on=[high] format=[json,html] out=[/tmp/o] paranoid=1 positional=[extra1 extra2]
+rc=0
+
+=== Candidate B - equals form ===
+path=[src] lang=[] history=0 jobs=[] fail_on=[high] format=[] out=[] paranoid=0 positional=[extra1]
+rc=0
+
+=== Candidate B - unknown flag ===
+die(2): unknown option: --bogus
+rc=2
+
+=== Candidate B - missing value ===
+die(2): --path requires a value
+rc=2
