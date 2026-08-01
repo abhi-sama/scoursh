@@ -1,0 +1,35 @@
+# scoursh scanner configuration - rules/RULE-FORMAT.md §9.6.1
+#
+# Exactly one record, whose id is the frozen literal `scanner`.  Every other key
+# is optional and takes the stated default, so an absent file is equivalent to
+# one containing only `id: scanner`.
+#
+# Values are DATA and are never expanded or executed: `$HOME` here is five
+# literal bytes (docs/FOUNDATION.md tension 26).
+
+id: scanner
+requests-per-second: 4
+jobs: 4
+http-timeout: 20
+max-redirects: 5
+request-budget: 20000
+circuit-breaker-failures: 10
+circuit-breaker-window: 60
+fail-on: none
+min-confidence: low
+redact-secrets: true
+formats: json
+formats: sarif
+formats: html
+formats: md
+max-matches-per-file: 200
+evidence-max-bytes: 512
+state-retain-runs: 30
+history-window-days: 365
+history-max-commits: 5000
+lock-stale-seconds: 30
+mutex-timeout-seconds: 120
+notes: scratch-dir is best pointed at a tmpfs. Overwrite-based erasure is not
+  effective on APFS, journalled ext4, or any SSD with wear levelling, so a
+  memory-backed scratch directory is the real control for the raw matched lines
+  scan_match writes there (docs/FOUNDATION.md tension 9, finding F16).

@@ -1,0 +1,7 @@
+# Run output and run-to-run state are artifacts, never sources.
+reports/
+state/
+
+# Downloaded CI artifacts, never sources.
+suite.log
+findings-*/

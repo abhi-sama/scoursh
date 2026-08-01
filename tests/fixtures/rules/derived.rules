@@ -1,0 +1,19 @@
+# Fixture composite.  rules/derived.rules is deliberately NOT shipped at step 1:
+# docs/FOUNDATION.md open findings F5 and F20 record that seeding
+# COMPOSITE-TOKEN-HIJACK now is a guaranteed E051 lint failure, because its
+# contributors do not exist until §13 steps 5 and 6.
+
+id: COMPOSITE-FIXTURE-CHAIN
+kind: derived
+title: Hardcoded key present in a file that also evaluates request data
+severity: medium
+confidence: high
+cwe: CWE-798
+owasp: A07:2021
+requires: SAST-SEC-AWS_SECRET-01
+any-of: SAST-PY-EVAL-01
+any-of: SAST-PY-YAML_LOAD-01
+correlate-on: file
+tags: derived
+remediation: Rotate the credential first, then remove the dynamic evaluation sink.
+  A chain is worth more than its links: the report names it as one story.

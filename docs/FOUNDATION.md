@@ -160,9 +160,36 @@ Every regex-bearing record declares a `dialect`, one of exactly two values, defa
   (tension 12).
 
 The `rg` invocation is pinned to remove its defaults:
-`rg --no-config --no-ignore --hidden --binary=false --engine default -n --no-heading --color never`,
+`rg --no-config --no-ignore --hidden --no-binary --engine default -n --no-heading --color never`,
 with `--engine pcre2` added only for `pcre` records.
-The `grep` fallback is `grep -E -n -r` with an explicit exclude list.
+
+> **`--binary=false` was corrected to `--no-binary` in §13 step 1.**
+> ripgrep rejects the former outright - "invalid CLI arguments: unexpected argument for option
+> '--binary'", measured on ripgrep 15.1.0 - so `scan_match` aborted the run on its first call.
+> It failed loudly rather than silently, which is what tension 4 rule 2 is for.
+The `grep` fallback is `grep -E -n`.
+
+> **`-r` and the exclude list were removed from the pinned invocation in §13
+> step 1, and the removal was measured rather than reasoned.**
+> `-r` is `--recursive` to `grep` and `--replace` to `ripgrep`:
+> `rg <pinned flags> -r 'eval' tree` consumes `eval` as a replacement string and
+> returns rc=1 having searched nothing, while `grep -E -n -r 'eval' tree`
+> recurses and matches (measured; commit `a28cba8`).
+> A flag that means two different things to the two engines cannot live in a
+> shared wrapper whose whole purpose is that the two produce byte-identical
+> findings, so **file enumeration is the caller's job** and the wrapper is handed
+> one path at a time.
+>
+> That moves the **exclude list** to the caller too.  It is not lost: it belongs
+> with the walker that §13 step 3 builds, alongside `files` / `exclude-files`
+> (`rules/RULE-FORMAT.md` §9.1.2), which are per-rule and which the wrapper could
+> never have applied anyway.  Recorded here as a step-3 obligation so it is not
+> silently dropped.
+>
+> This paragraph is now checked rather than asserted: `tests/suites/core.sh`
+> reads what `lib/core.sh` binds for each engine and requires this document to
+> contain that exact string, so the two cannot drift again without a test
+> failing.
 Both are wrapped in one function so the invocation exists in exactly one place.
 
 §6.2's `yaml\.load\((?!.*Loader)` is **rewritten** as an `ere` pattern plus a `context-deny`; the
@@ -177,6 +204,10 @@ The linter compiles every pattern against its declared engine (E046) so a pack c
 that does not compile.
 A parity test in `tests/` runs the whole catalog under `rg` and under `grep -E` against the same fixture
 tree and asserts byte-identical findings; a pack that diverges fails CI.
+`-n -b -o` - the invocation `rules/RULE-FORMAT.md` §10.3 requires so that one line yielding two matches
+yields two findings - was measured to produce byte-identical output under ripgrep 15.1.0 and BSD grep
+2.6.0-FreeBSD, and `\b`, `\w` and `\s` were measured to behave identically under both, so §8.2's
+portable subset holds on a BSD userland as stated.
 Reaching for `pcre` is a documented last resort, and the linter warns (W047) when a `pcre` record uses
 no PCRE-only construct.
 
@@ -259,11 +290,19 @@ Four separate ways, all of which produce a tool that appears to work and does no
 3. `pipefail` makes it worse: in `rg ... | sort | head`, a no-match `rg` makes the *whole pipeline*
    return 1 even though `head` succeeded, so a pipeline cannot be used to post-process matches at all.
 4. Least obvious and most damaging: `trap cleanup EXIT` installed in the parent is **inherited by every
-   subshell**.
-   A `( ... )` or a `$( ... )` that exits runs the cleanup handler, which shreds the scratch directory
-   while the run is still using it.
-   With `set -E` the same inheritance applies to the `ERR` trap.
-   Since §10 fans out with `xargs -P` into subprocesses that each exit, this fires constantly.
+   `xargs -P` worker**, because a worker is a fresh `bash` process that sources `lib/core.sh` and
+   therefore installs the trap itself.
+   The first worker to finish then erases the scratch directory while the run is still using it.
+
+   > **Corrected in §13 step 1 (finding F13).**
+   > This item previously said the hazard was *subshell* inheritance - that a `( ... )` or a `$( ... )`
+   > that exits runs the cleanup handler.
+   > That is false for bash, which resets trapped `EXIT` actions to their default in every subshell, and
+   > it was measured: `trap 'echo FIRED' EXIT; ( true ); x=$(exit 3); ( exit 5 ) & wait` prints `FIRED`
+   > exactly once, at parent exit, on bash 3.2.57 and on bash 5.3.9.
+   > `$$` is also the parent pid inside a subshell, so the guard rule 5 used to prescribe was a no-op
+   > belt for a case that cannot occur - while passing in the case that does.
+   > `tests/suites/core.sh` reproduces both halves.
 
 Also, `set -u` plus `"${arr[@]}"` on an empty array is an unbound-variable error in bash before 4.4,
 which is guaranteed to happen the first time a rule matches no files (see tension 24).
@@ -292,13 +331,26 @@ A lint in `tests/` enforces rules 1, 2, and 5 by grep.
    outcomes explicitly:
 
    ```
-   scan_match() {                       # writes hits to $2; 0 = matched, 1 = no match
+   scan_match() {                       # writes hits to $1; 0 = matched, 1 = no match
      local rc=0 out=$1; shift
-     "${SCOURSH_GREP[@]}" "$@" >"$out" || rc=$?
-     (( rc <= 1 )) || die 6 "pattern engine failed (rc=$rc): $*"
+     "${SCOURSH_GREP[@]+"${SCOURSH_GREP[@]}"}" "$@" >"$out" || rc=$?
+     (( rc <= 1 )) || die 5 "pattern engine failed (rc=$rc): $*"
      return $rc
    }
    ```
+
+   Three corrections to this sample landed with §13 step 1.
+   The comment said "writes hits to `$2`" while the body takes the output path as `$1` (open finding
+   F18's second half).
+   `die 6` is outside the frozen 0-5 exit contract of tension 14 and would reach CI unclassifiable; a
+   pattern-engine failure is what tension 14 already calls an **incomplete run**, so it is `die 5` and it
+   writes `incomplete_reason`.
+   `die` itself now validates its argument against 0-5, so `die 6` cannot exist - which closes the rest
+   of F18 by mechanism rather than by editing each sample.
+   The array expansion takes tension 24's guarded form, and `scan_match` additionally aborts when the
+   engine array is unbound, because an empty expansion would leave a bare redirect that succeeds and
+   writes an empty file - "no match" for every rule, which is the silent coverage hole this wrapper
+   exists to prevent.
 
    `rc >= 2` is a hard error and aborts, so a malformed pattern or an I/O failure can never be mistaken
    for a clean result.
@@ -311,29 +363,60 @@ A lint in `tests/` enforces rules 1, 2, and 5 by grep.
    directly, as in `scan_match` above.
    `mapfile -t x < <(producer)` is forbidden in the engine because it discards the producer's exit
    status, which is the very thing rule 2 exists to check.
-5. **The `EXIT` cleanup trap is guarded so that only the process owning the scratch dir removes it.**
-
-   > **This rule is WRONG as written and is open as finding F13.**
-   > Do not implement the guard below; read the "Known follow-ups" section of this document first.
-   > Bash resets trapped `EXIT` actions in subshells, so the hazard the guard defends against does not
-   > occur, while an `xargs -P` worker is a fresh *process* where `$BASHPID == $$` is true, so the guard
-   > passes and the first worker to finish shreds the shared scratch dir.
-   > The direction is to guard on scratch-dir **ownership** (a recorded owner pid plus a created-here
-   > marker) rather than on subshell-ness.
+5. **The `EXIT` cleanup trap is guarded on scratch-dir OWNERSHIP, so that only the process that created
+   the scratch dir removes it.**
 
    ```
-   cleanup() { [[ $BASHPID == $$ ]] || return 0; ... shred the scratch dir ... }
+   scratch_init() {
+     [[ -n ${SCOURSH_SCRATCH:-} && -d ${SCOURSH_SCRATCH:-} ]] && return 0   # inherited: never our own
+     SCOURSH_SCRATCH=$(tmpdir_make); chmod 700 "$SCOURSH_SCRATCH"
+     printf '%s\n' "$$" >"$SCOURSH_SCRATCH/.owner"
+     export SCOURSH_SCRATCH          # the PATH is inherited ...
+     SCOURSH_SCRATCH_OWNER=$$        # ... but ownership is NOT exported
+   }
+   scratch_is_owned_here() {         # in-memory marker AND the on-disk one
+     [[ ${SCOURSH_SCRATCH_OWNER:-} == "$$" ]] || return 1
+     IFS= read -r recorded <"$SCOURSH_SCRATCH/.owner" || true
+     [[ $recorded == "$$" ]]
+   }
+   cleanup() { scratch_is_owned_here && erase_dir "$SCOURSH_SCRATCH"; return 0; }
    trap cleanup EXIT
    ```
 
+   > **This replaces the guard `[[ $BASHPID == $$ ]]`, which was wrong in both directions (finding
+   > F13, closed in §13 step 1).**
+   > It defended subshell inheritance, which bash does not produce, and it PASSED in an `xargs -P`
+   > worker, which is a fresh process where `$BASHPID == $$` is true - so the first worker to finish
+   > erased the shared scratch dir holding the rate limiter, the budget counter, the breaker state and
+   > the AWS cache.
+   > Ownership is deliberately not exported and is confirmed against an on-disk marker, so a worker
+   > cannot become the owner by inheriting or re-exporting a variable.
+
+   The scratch dir now holds **only genuinely transient data**: the matching lines `scan_match` writes,
+   the mutex directories, and the rate, budget and breaker state.
+   Finding shards and the unit journal live in the run directory instead (finding F12, tensions 17 and
+   18), because this trap erases the scratch dir on the very signal tension 18's resume test uses.
+
    The `ERR` trap reports `${BASH_SOURCE[0]}:${LINENO}` and `$BASH_COMMAND`, must contain no command
    that can itself fail, and re-raises the original status.
+   `die` removes the `ERR` trap before exiting, so an intentional exit is not re-reported as an error.
 
 **Consequence for the build.**
 This lands in §13 step 1, because every later module depends on it.
 `tests/run-tests.sh` includes a negative test that a deliberately broken pattern makes the run abort
-with a non-zero status rather than reporting zero findings, and a test that a subshell exit leaves the
-scratch dir intact.
+with a non-zero status rather than reporting zero findings.
+
+**The prescribed cleanup test is replaced (finding F13).**
+It used to be "a subshell exit leaves the scratch dir intact", which is vacuous: a subshell never runs
+the trap in the first place, so the assertion holds under the correct implementation and under the
+broken one alike.
+The replacement runs **N workers under `xargs -P`**, each sourcing `lib/core.sh` for real, and asserts
+that the scratch dir, a parent-owned sentinel, and every worker's shard all survive until the parent
+exits.
+That test fails under the old guard.
+A second test asserts the converse directly - that `[[ $BASHPID == $$ ]]` passes in every one of four
+`xargs -P` workers - so the register's claim about why the old rule was wrong is itself checked rather
+than asserted.
 The scratch dir is created once by `lib/core.sh` and its path is exported, so workers never create their
 own.
 
@@ -393,17 +476,45 @@ full 64 hex characters retained, and the components in the fixed order below.
 | DAST | `target_name` (the `config/scope.conf` id, not the URL), `method`, `path_template`, `param_location` (`query`/`body`/`header`/`path`/`cookie`), `param_name` |
 | Cloud live | `account_id`, `region` (or `global`), `resource_key` (the ARN when one exists), `sub_key` (or `none`) |
 | Posture | `control_id` (= the `POSTURE-*` **check** id, never the expectation id), `scope_key` (target name, or account, or `account/region`) |
-| Derived | correlation value only (see tension 6) |
+| Derived | correlation value only (see tension 6). The **module component of the hash is the literal `composite`**, not this row's label and not the finding's `module` field, which is `derived` |
 
 Four of these need their normalisation frozen:
 
 - **`match_digest`** = first 16 hex characters of `sha256(normalise(raw_matched_text))`, where
-  `normalise` collapses every run of whitespace to a single space and strips leading and trailing
-  whitespace.
+  `normalise` **strips every whitespace byte** (space, TAB, LF, CR, FF, VT).
   Reindenting or reformatting therefore does not churn identity; changing the code does, which is
   correct, because the matched text *is* the finding.
   The raw text is hashed, not the redacted text; see tension 9 for why, and for the rule that it never
   touches disk.
+
+  **This was "collapse every run of whitespace to a single space", and that was not enough.**
+  Collapsing runs is not insensitivity to whitespace: zero spaces versus one space is not a run, and
+  intra-token respacing is exactly what a code formatter changes.
+  Measured: `eval( user_input )` and `eval(user_input)` hashed differently, so a `black`, `prettier`
+  or `gofmt` pass over a repository gave every affected finding a new fingerprint.
+  The old fingerprint is then absent from the run, tension 12's table classifies it **`fixed`**, and a
+  formatting-only commit writes a wave of remediations that never happened into `state/` while
+  `--fail-on-new` fires on the whole affected set.
+  That is this tension's own phantom-remediation failure, reached by a mechanism none of its tests
+  exercised - the stability test inserts blank lines and reindents, both of which were already
+  correct, and neither of which is what a formatter does.
+
+  **The cost is stated rather than hidden.**
+  `a b` and `ab` now share a `match_digest`.
+  They remain **two findings**, told apart by the `occurrence` ordinal exactly as two byte-identical
+  matches already are, and by the path component, so identity is not lost - only the discriminator
+  changes.
+  This widens slightly the bounded ordinal churn described below (deleting one of several matches that
+  share a digest renumbers the ones after it), and buys immunity to the far more common formatter case.
+  The normalisation can only ever **merge** digests, never split them, so it cannot manufacture a `new`
+  finding.
+
+  The alternative considered and rejected was to narrow the claim instead - say "reindentation" rather
+  than "reformatting" and accept the churn.
+  It was rejected because this register exists to stop a scanner claiming a fix that did not happen,
+  and that option knowingly leaves one such path open for a routine, repository-wide operation.
+  The change is a **fingerprint input**, so it was made while nothing had been persisted: no scan had
+  run, and no `state/` or `config/baseline.json` existed anywhere.
 - **`occurrence`** = the 0-based ordinal of this match among the matches **in the same scanning unit,
   for the same `check_id`, with an identical `match_digest`**, ordered by ascending line number and
   then by ascending byte offset within the line.
@@ -484,6 +595,12 @@ On a mismatch tension 12 treats the **prior set as empty** for classification: n
 reason, and the gate fail-closed.
 A test asserts fingerprint stability directly: it inserts blank lines and reindents a fixture, re-runs,
 and requires the fingerprint set to be byte-identical.
+A further test uses a **formatter-style respacing** (`eval( x )` becoming `eval(x)`, and
+`key = "AAAA"` becoming `key="AAAA"`) and requires the same, because the reindentation cases pass
+under run-collapsing and therefore cannot distinguish the two normalisations - which is how the
+overclaim survived to review round 2.
+A companion test pins the accepted cost, asserting that `a b` and `ab` share a digest and are still
+two distinct findings.
 A second test asserts that two distinct secrets in one file produce two distinct fingerprints.
 A third test asserts that a fixture with five byte-identical matches of one check in one file produces
 **five** distinct fingerprints, and that shifting them all down by twenty lines leaves that set
@@ -593,6 +710,25 @@ fingerprint = sha256( "fp/1" \0 "composite" \0 check_id \0 correlation_value )
 ```
 
 with `correlation_value` being the literal string `none` when `correlate-on: none`.
+
+**The first component is the literal `composite`, and it is NOT the finding's
+`module` field.**
+That field is `derived` - which is how tension 5's table labels the row, and what
+`lib/report.sh` groups by - so the two are different strings for two different
+jobs, and `lib/findings.sh` maps one to the other explicitly rather than passing
+the module through.
+This is called out because the implementation originally passed the module field
+into the frozen slot and hashed `derived`: no test noticed, because the only
+assertions on a composite fingerprint were self-consistency ones that agreed with
+whatever the emitter produced.
+A composite fingerprint is persisted into `state/` and `config/baseline.json`, so
+hashing the wrong literal means a baseline written by a conformant implementation
+suppresses nothing, and correcting it after release costs an `fp_schema` bump and
+a full-backlog churn - which is the whole reason this byte string is pinned here
+rather than left to the module name.
+`tests/suites/findings.sh` now computes the reference digest from raw bytes
+rather than through `fingerprint_compute`, so the assertion cannot agree with the
+implementation by sharing its helper.
 
 **Contributor fingerprints are deliberately not in the identity.**
 They are recorded in the finding body as `contributors: [<fingerprint>, ...]`, which is evidence, not
@@ -997,8 +1133,13 @@ Three handling rules make this safe in shell, and are enforced by lint:
 2. **Raw matched text never touches disk.**
    It is hashed and redacted in-process; only the redacted form is written to the shard files.
    `scan_match` writes matching *lines* to the scratch dir, so the scratch dir is created mode `700`
-   inside a `umask 077` and is shredded on exit, and `config/scanner.conf` gains
-   `scratch_dir` so an operator can point it at a tmpfs.
+   inside a `umask 077` and is erased on exit by `erase_dir` (tension 24), and `config/scanner.conf`
+   gains `scratch-dir` so an operator can point it at a tmpfs.
+   **The tmpfs is the real control, and the erasure is best effort**: overwriting achieves nothing on
+   APFS, journalled ext4, tmpfs, or an SSD with wear levelling, and `shred` does not exist on macOS at
+   all (finding F16).
+   Saying "shredded" without that qualification claimed a guarantee the primitive cannot deliver, on a
+   platform where the primitive is absent.
 3. **Evidence is only ever set through `finding_set_evidence`,** which applies `redact`, truncation
    (tension 10), and control-character stripping in that order.
    The lint fails on any direct assignment to an evidence field.
@@ -2151,18 +2292,80 @@ atomic on every POSIX filesystem and needs no external binary.
 
 ```
 mutex_acquire() {           # $1 = mutex name
-  local d="$SCOURSH_SCRATCH/mx/$1.lock" waited=0
-  until mkdir "$d" 2>/dev/null; do
-    if lock_is_stale "$d"; then rm -rf "$d"; continue; fi
-    sleep 0.05; waited=$((waited+1))
-    (( waited < MUTEX_TIMEOUT_TICKS )) || die 6 "mutex timeout: $1"
+  local d="$SCOURSH_SCRATCH/mx/$1.lock" waited=0 token
+  while ! mkdir "$d" 2>/dev/null; do
+    token=$(_lock_token "$d")                  # the instance we are judging
+    if lock_is_stale "$d"; then
+      if _lock_reclaim "$d" "$token"; then continue; fi
+    fi
+    msleep "$MUTEX_TICK_MS"; waited=$((waited+1))
+    (( waited < MUTEX_TIMEOUT_TICKS )) || die 5 "mutex timeout: $1"
   done
   printf '%s %s\n' "$BASHPID" "$(now_epoch)" > "$d/owner"
 }
 ```
 
-`lock_is_stale` treats a lock as reclaimable when its `owner` pid is no longer alive **and** it is older
-than `lock_stale_seconds` (default 30), so a `SIGKILL`ed worker cannot wedge the run.
+Two corrections to this sample landed with §13 step 1.
+It called `sleep 0.05` literally, contradicting its own "Consequence for the build" paragraph and the
+capability layer of tension 24; it now calls `msleep`, which is the point of finding F14.
+And `die 6` is outside the frozen 0-5 exit contract; a mutex timeout is an **incomplete run**, so it is
+`die 5` (see tension 4's `scan_match` note).
+
+**`lock_is_stale` is specified rather than asserted (finding F15).**
+A lock is reclaimable only when **both** of these hold:
+
+1. it has been held for at least `lock_stale_seconds` (default 30), measured from the timestamp the
+   owner **recorded**, never from filesystem mtime, so a `touch` cannot extend a lock; and
+2. the process that published it is no longer alive (`proc_alive`, over `kill -0`).
+
+Requiring both is what bounds **pid reuse** over a long DAST run: a recycled pid belonging to some
+unrelated live process makes the lock look held, so the run waits and then fails loud on the mutex
+timeout rather than entering a critical section another process may be in.
+
+The window between `mkdir` returning and the owner file being written is **decided rather than left
+undefined**: a published lock with no owner file is NOT stale until it is older than
+`lock_stale_seconds` by its directory mtime (`stat_mtime`).
+Treating it as stale would let a waiter delete a lock acquired microseconds earlier by a live holder;
+treating it as never stale would wedge the run if a holder died inside that window.
+
+**Reclaim is single-winner and identity-bound.**
+The frozen path was `if lock_is_stale "$d"; then rm -rf "$d"; continue; fi`, which can delete a **live**
+lock: waiters W1 and W2 both judge one lock stale, W1 removes it and acquires, and W2 - already past its
+check - removes W1's freshly acquired lock and acquires too, putting two processes in the critical
+section.
+`mkdir` is atomic; the reclaim was not.
+So reclaim now takes a **claim marker whose name embeds the token of the instance being reclaimed**:
+
+```
+_lock_reclaim() {                       # $1 = lock dir, $2 = the token we judged stale
+  local claim="$1.rcl.$(slug "$2")"
+  [[ -d $claim ]] && lock_is_stale "$claim" && rm -rf "$claim"   # an abandoned claim
+  mkdir "$claim" 2>/dev/null || return 1                         # lost the race; just retry
+  printf '%s %s\n' "$$" "$(now_epoch)" > "$claim/owner"
+  [[ $(_lock_token "$1") == "$2" ]] && rm -rf "$1"               # re-verify, THEN delete
+  rm -rf "$claim"
+}
+```
+
+Only one process can create a given claim name, so only one can reclaim a given lock instance; a process
+that judged an **older** instance stale re-verifies the token inside the claim and declines when it has
+changed.
+An abandoned claim - a reclaimer killed inside the microseconds it takes to remove a small directory -
+is itself reclaimed by the same staleness test, so the recovery path terminates, and it cannot produce
+double occupancy, because deleting the lock still requires winning the claim `mkdir` **and** the token
+re-check.
+
+Prescribed tests, each naming the reading it fails under:
+
+| Fixture | Must be | Fails under |
+|---|---|---|
+| Fresh lock, live owner | not stale | age-only |
+| **Old lock, owner still alive** | **not stale** | **liveness-only: this is the pid-reuse bound** |
+| Dead owner, no age | not stale | liveness-only |
+| Old lock, dead owner | stale | - |
+| **Published lock with no owner file yet** | **not stale** | an undefined window: a waiter deletes a live holder's lock |
+| **Reclaim a stale lock, let a live holder take it, then reclaim again with the OLD token** | **the live lock survives** | **a bare `rm -rf` reclaim, which deletes it** |
+| 8 concurrent workers each entering the critical section | no overlap | any of the above |
 
 Four pieces of state, with their protocols:
 
@@ -2233,9 +2436,26 @@ reproducible and defensible for an audit".
 3. *Per-worker shard files, merged deterministically.* **Chosen.**
 
 **RESOLUTION.**
-Each worker writes only to `$SCRATCH/findings/<worker-id>.jsonl`, which it owns exclusively.
+Each worker writes only to `reports/<run>/shards/<worker-id>.jsonl`, which it owns exclusively.
 No locking is needed, because there is no sharing.
 The worker id is `$BASHPID` plus the work-unit index, so it is unique even if a pid is recycled.
+
+> **The shard location moved out of the scratch dir in §13 step 1 (finding F12).**
+> It was `$SCRATCH/findings/<worker-id>.jsonl`, retained under `reports/<run>/shards/` only when
+> `--keep-shards` was given, while tension 4 rule 5's `EXIT` trap erases `$SCRATCH` - including on the
+> `SIGTERM` that tension 18's own resume test uses.
+> So on a normal interrupted run both of tension 18's inputs were destroyed, and an operator would have
+> had to pass `--keep-shards` on the run they did not know would be interrupted.
+> Shards are now written into the run directory **unconditionally**, and `--keep-shards` is redefined
+> below.
+>
+> The worker id must be taken in the CURRENT shell, not from a command substitution: `$BASHPID` inside
+> `$( ... )` is the subshell's pid and differs on every call, which silently gives every finding a shard
+> of its own.
+
+`--keep-shards` is redefined accordingly: it means **do not delete the shard and unit directories after
+a successful merge**.  Without it they are removed once the merge has completed, which is the only point
+at which they are genuinely redundant.
 
 At end of run, `scan.sh` merges every shard into `reports/<run>/findings.jsonl`, sorted by
 `(module, check_id, fingerprint)` under `LC_ALL=C`.
@@ -2252,8 +2472,16 @@ byte-reproducible.
 "Incrementally" is preserved in the sense §10 actually needs: findings are durable on disk as they are
 produced, so an interrupted run loses nothing and a resumed run (tension 18) reads the prior shards.
 What is deferred to the merge is only the *ordering*, not the *persistence*.
-The shard directory is retained under `reports/<run>/shards/` when `--keep-shards` is given, for
-debugging a partial run.
+That claim is now true rather than contradicted two paragraphs earlier, which is what finding F12 was.
+
+**The merge sorts a sidecar, not the JSONL.** Each worker writes its finding twice: as JSON to
+`shards/<worker-id>.jsonl`, which is the durable artifact this section names and what a resume reads,
+and as one line to `shards/<worker-id>.fields` in an internal escaped `key=value` encoding, which the
+merge sorts and the report renders from.
+Both are written by one process in lockstep, so they cannot drift.
+The sidecar exists so that nothing in this repository has to parse JSON in bash, which would be a second
+parser with its own quoting bugs sitting in the path of every report - the mistake tension 1 spent a
+whole section avoiding one level up.
 
 Every finding line is guaranteed to be a single line by construction: `finding_set_evidence`
 (tension 10) removes control characters including LF from the only field that could carry one.
@@ -2310,9 +2538,16 @@ unit_key = lowercase_hex_sha256( "uk/1" \0 module \0 check_id \0 scope_1 \0 scop
 | Cloud live | `account_id`, `region`, `service` |
 | Posture | `control_id` (the `POSTURE-*` check id), `scope_key` |
 
-Each worker appends `{"unit_key":…, "state":"started"|"done"|"failed", "ts":…}` to its own shard of
-`reports/<run>/units.jsonl`, using the same per-worker shard mechanism as tension 17, so the journal
-needs no locking either.
+Each worker appends `{"unit_key":…, "state":"started"|"done"|"failed", "ts":…}` to
+`reports/<run>/units/<worker-id>.jsonl`, using the same per-worker shard mechanism as tension 17, so the
+journal needs no locking either.
+
+> **The path was ambiguous and is now single (finding F12).**
+> It read `reports/<run>/units.jsonl`, a single durable path, while "the same per-worker shard
+> mechanism" pointed at `$SCRATCH` - which the `EXIT` trap erases on the very signal this section's own
+> resume test uses.
+> Both the finding shards and this journal are now written into the run directory unconditionally, and
+> the scratch dir holds only genuinely transient data (tension 4 rule 5).
 A resume skips exactly the units whose latest record is `done`.
 A unit recorded `started` but never `done` is re-run, which is correct: partial work is discarded rather
 than trusted.
@@ -2809,14 +3044,53 @@ failing on `sha256sum`, `shasum`, `sort -V`, `grep -P`, `readlink -f`, `sed -i`,
 
 | Function | Implemented over |
 |---|---|
-| `sha256_of` | `sha256sum`, else `shasum -a 256`, else `openssl dgst -sha256`; **reads stdin only** (tension 9), output normalised to bare lowercase hex with any trailing filename stripped |
+| `sha256_of` | `sha256sum`, else `shasum -a 256`, else `openssl dgst -sha256`; **reads stdin only** (tension 9), output normalised to bare lowercase hex with any trailing filename stripped, and **rejected if it is not 64 hex characters**, since a provider that leaves the filename in would make every fingerprint path-dependent |
 | `now_iso` | `date -u +%Y-%m-%dT%H:%M:%SZ`, which is portable, rather than `-Iseconds` |
-| `now_epoch_ns` | `date +%s%N` where supported, else `%s` scaled, with the resolution recorded so the rate limiter's arithmetic is correct either way |
-| `msleep` | `sleep 0.05` when fractional sleep works, else `read -t 0.05 </dev/null` (a bash builtin, so no process), else a 1-second floor with a startup warning |
+| `now_epoch` | `$EPOCHSECONDS` where the shell has it, else `date -u +%s`. Added by finding F15: tension 16's mutex sample called it while it was not among the frozen functions |
+| `now_epoch_ns` | `$EPOCHREALTIME` (a builtin, so no fork) where the shell has it, else `date -u +%s%N` where it yields real nanoseconds, else `%s` scaled - with `SCOURSH_CLOCK_NS` recording whether the source is genuinely sub-second, so the rate limiter's arithmetic and the `msleep` probe both know what they are working with |
+| `msleep` | **See below (finding F14).** `sleep 0.05` when a MEASUREMENT shows it really sleeps, else a `read -t` on a FIFO this process holds open read-write, else a 1-second floor with a startup warning |
 | `stat_mode` | `stat -c %a`, else `stat -f %Lp` |
-| `realpath_of` | `readlink -f`, else `cd`-and-`pwd -P` in a subshell |
+| `stat_mtime` | `stat -c %Y`, else `stat -f %m`. Added by finding F15: `lock_is_stale` needs an mtime accessor and the frozen table provided only `stat_mode`, while linting `stat` out of every file but `lib/core.sh` |
+| `proc_alive` | `kill -0`. Added by finding F15, which named a liveness primitive without providing one |
+| `erase_dir` | `shred -u -n 1` over the regular files where `shred` exists, then `rm -rf` either way. Added by finding F16 |
+| `realpath_of` | `readlink -f`, else `cd`-and-`pwd -P` in a subshell. Resolves a path that does not exist yet by resolving the deepest existing ancestor and appending the remainder, because a run directory is named before it is created and `readlink -f` does not accept a missing component on every BSD |
 | `sed_inplace` | `sed -i.bak` plus removal, which is the one form both accept |
 | `tmpdir_make` | `mktemp -d "${TMPDIR:-/tmp}/scoursh.XXXXXXXX"`, which is the portable form |
+
+**`msleep` is selected by measurement, never by exit status (finding F14).**
+The frozen fallback was `read -t 0.05 </dev/null`, described as "a bash builtin, so no process".
+Reading from `/dev/null` returns at EOF **immediately**; the timeout never elapses.
+Measured: 2000 iterations complete in 0 seconds, where a real 0.05 s sleep would take 100.
+Tension 16's `mutex_acquire` retry loop therefore became a spin that burned a core and consumed its
+whole timeout in under a millisecond, so every worker contending for a lock held longer than that -
+the AWS cache path holds one across a full API call - aborted with "mutex timeout".
+
+The defect is also **undetectable by a naive probe**, because `read` returns non-zero for EOF exactly as
+it does for a timeout, so a probe asking "did `read -t` return non-zero" concludes the fallback works.
+Two changes close it:
+
+- **Read from a descriptor that never yields data** rather than one already at EOF: a FIFO under the
+  scratch dir, opened read-write (`exec {fd}<>"$fifo"`), so this process is itself a writer, no EOF ever
+  arrives, and `read -t` times out as intended.
+  `mkfifo` joins the probed-optional list; where it is absent the 1-second floor applies.
+- **Probe by measuring elapsed time**, with a discarded warm-up round first.
+  A candidate asked for 200 ms must block for at least 100 ms.
+  The margin is wide on purpose: what separates a working implementation from a broken one is the
+  REQUESTED interval, not a fixed threshold, since a broken one returns after a fork and an exec that
+  cost single-digit milliseconds.
+  A tighter threshold would make the probe a race against process-startup cost on a loaded machine, and
+  a probe that flakes gets deleted - which is how the defect it guards comes back.
+  Being wrong in the remaining direction is safe, because the fallback is the one-second floor: slow,
+  but correct.
+  The warm-up is not decoration: the first exec of an external `sleep` measured 175 ms cold against 7 ms
+  warm, and a cold-start artifact would make a broken `sleep` look like a working one - the single
+  failure the probe exists to catch.
+  Where there is no sub-second clock at all, nothing can be verified, so the 1-second floor applies and
+  is recorded; refusing to certify what cannot be measured is the point.
+
+`tests/suites/core.sh` reproduces the defect, asserts that an exit-status probe cannot see it, asserts
+that the selected implementation really sleeps, and asserts that a fake `sleep` which returns instantly
+is **rejected** by the probe - which is the case that discriminates the two probe designs.
 
 `require_cmd` runs once at startup and reports **every** missing command at once rather than failing on
 the first, since discovering four missing dependencies one run at a time is a bad first experience for an
@@ -2824,9 +3098,26 @@ air-gapped install.
 Required: `bash`, `grep`, `sed`, `awk`, `sort`, `tr`, `cut`, `find`, `xargs`, `mktemp`, `date`, `curl`,
 one of the SHA-256 providers, and `git` for `history.sh` only.
 Optional and probed: `rg`, `rg` with PCRE2 (tension 2), `openssl` (for `tls.sh`), `aws`, GNU `parallel`,
-`ss` or `strace` (tension 20).
+`ss` or `strace` (tension 20), **`mkfifo`** (the `msleep` fallback, finding F14), **`shred`** and
+**`look`** (finding F16).
 Everything probed is recorded in `run.json`, so a report always states what the host could and could not
 do.
+
+**`shred` is probed, never assumed (finding F16).**
+It is GNU coreutils and does not exist on macOS - measured, `command -v shred` returns nothing - yet the
+cleanup was specified as shredding, inside the one trap tension 4 rule 5 says must contain no command
+that can itself fail.
+On a host without it the trap ran a missing command and, under the mandated `set -Eeuo pipefail`, the
+process exited **127** on every single run: outside the frozen 0-5 exit contract of tension 14, and with
+the scratch dir left behind on exactly the platform this section's CI matrix mandates.
+`erase_dir` above replaces it, and `lint-shell.sh` fails on any direct `shred` call outside
+`lib/core.sh`.
+
+**Overwrite-based erasure is best effort, and this is stated in the docs rather than implied.**
+It achieves nothing on APFS, on journalled ext4, on tmpfs, or on any SSD with wear levelling, so the
+security claim of tension 9 handling rule 2 does not rest on it.
+The real control is `scratch-dir` pointed at a tmpfs, which `config/scanner.conf` exposes and its
+shipped example documents.
 
 `xargs -P` is used without `-r`, which BSD lacks, by never invoking `xargs` on a possibly-empty input:
 the caller checks the unit count first.
@@ -3215,54 +3506,76 @@ The evidence block was re-run with the **frozen** command: round 4's proof execu
 `git remote get-url origin`, which applies `insteadOf` rewriting and returns a different value, so it
 could not have caught the defect in the thing it was proving.
 
-The twelve below remain **open**, deliberately deferred, and are recorded with their finding numbers so
-the next task inherits them rather than rediscovering them.
-Each names the tension it lands in and the build step it must land before.
-None is a matter of taste; each has a defect and a direction, and the direction is not yet frozen.
+Twelve findings were recorded here with their numbers so the next task would inherit them rather than
+rediscover them.
+**Six are now closed** - the five that had to land before `lib/core.sh`, plus F18, which closed with
+them by mechanism.
+The remaining six are still open, deliberately deferred; each names the tension it lands in and the
+build step it must land before, and none is a matter of taste.
 
-### Must land before `lib/core.sh` and the parallel path are written (§13 step 1)
+### Closed in §13 step 1
 
-- **F13 [high] - the EXIT-trap subshell guard defends a case bash never produces and passes the case it
-  does** (tension 4, rule 5).
-  Bash resets trapped EXIT actions in subshells, so the stated hazard does not occur, while an
-  `xargs -P` worker is a fresh process where `$BASHPID == $$` is true and the guard passes.
-  The first worker to finish would shred the shared scratch dir holding the rate limiter, budget,
-  breaker state, finding shards, and units journal, and the prescribed test is vacuous.
-  Direction: guard on scratch-dir ownership (a recorded owner pid plus a created-here marker), not on
-  subshell-ness, and replace the test with one that runs N workers under `xargs -P`.
-  **This wrong claim is also frozen into `AGENTS.md`** under "Sharp edges"; correct both together.
-- **F14 [high] - the `msleep` fallback does not sleep** (tension 24 capability table, consumed by
-  tension 16's `mutex_acquire`).
-  `read -t 0.05 </dev/null` returns at EOF immediately, so the mutex retry loop becomes a spin that
-  exhausts its timeout in under a millisecond, and a probe based on exit status cannot detect it because
-  `read` returns non-zero for both EOF and timeout.
-  Direction: read from a descriptor that never yields data rather than one already at EOF, and probe by
-  measuring elapsed time.
-  Tension 16's code sample also calls `sleep 0.05` literally instead of the frozen wrapper.
-- **F12 [high] - resume reads shards that the scratch-dir cleanup destroys** (tension 18 against
-  tension 17 and tension 4).
-  Finding shards and the unit journal live in `$SCRATCH`, are retained only under `--keep-shards`, and
-  the EXIT trap shreds `$SCRATCH` on the signal tension 18's own resume test uses.
-  Direction: write both unconditionally into the run directory and redefine `--keep-shards` as "do not
-  delete after a successful merge", leaving the scratch dir for genuinely transient data.
-- **F15 [medium] - the mkdir mutex stale-reclaim path can delete a live lock, and `lock_is_stale` is
-  asserted rather than specified** (tension 16).
-  Two waiters can both judge a lock stale, and the second deletes the first's freshly acquired lock.
-  Separately the routine needs a liveness primitive, an mtime accessor that tension 24's capability layer
-  does not provide (`stat_mtime`), a `now_epoch` that is not among the frozen functions, and a policy
-  for the window in which a lock dir exists with no owner file.
-  Direction: make reclaim single-winner via an atomic rename rather than `rm -rf`, publish the owner
-  before publishing the lock, and add the missing capability functions.
-- **F16 [medium] - `shred` is GNU-only, sits inside the mandated EXIT cleanup, and is absent from the
-  capability layer** (tension 24 against tension 4 rule 5 and tension 9).
-  On a host without it the trap fails and, under `set -Eeuo pipefail`, the process exits 127, outside
-  the frozen 0-5 contract, leaving the scratch dir behind on exactly the platform the CI matrix
-  mandates.
-  Overwrite-based erasure is also ineffective on modern filesystems, so the honest control is
-  `scratch_dir` on tmpfs.
-  The same omission applies to `look` (tension 25), which is absent from several minimal images and is
-  neither probed nor recorded, and whose stated `grep -F` fallback is O(n) per lookup against a
-  millions-of-rows table that the tension justifies on O(log n) grounds.
+These five had to land before `lib/core.sh` and the parallel path were written, and they did.
+Each is fixed **in the tension that owns it**, its consumers are swept, and each carries a test that
+**fails under the original** - since round 5's finding was that a test written to agree with its own
+rule pins nothing.
+
+- **F13 [high] - CLOSED. The EXIT-trap guard is on scratch-dir ownership** (tension 4 rule 5, and its
+  "Why it bites" item 4, both rewritten).
+  Both halves of the original claim were measured and are recorded there: bash resets trapped `EXIT`
+  actions in subshells, so the hazard the guard defended cannot occur, and `[[ $BASHPID == $$ ]]` passes
+  in every `xargs -P` worker, so the guard let through exactly the case that destroys the run.
+  The vacuous prescribed test is replaced by one that runs eight workers under `xargs -P` and asserts
+  the scratch dir, a parent-owned sentinel and every shard survive; a second test asserts the old guard
+  would have passed in all four of its workers, so the register's reasoning is itself checked.
+  The matching claim in `AGENTS.md` is corrected in the same change.
+- **F14 [high] - CLOSED. `msleep` reads a FIFO that never yields data, and is selected by measurement**
+  (tension 24 capability table).
+  The 200 ms / 100 ms margin, the discarded warm-up round, and why an exit-status probe cannot see the
+  defect are stated there.
+  Tension 16's sample now calls `msleep` rather than `sleep 0.05`.
+- **F12 [high] - CLOSED. Shards and the unit journal live in the run directory unconditionally**
+  (tensions 17 and 18, with tension 4 rule 5 stating that the scratch dir now holds only transient
+  data).
+  `--keep-shards` is redefined as "do not delete after a successful merge".
+  The test interrupts a run with `SIGTERM` and asserts the shard and the journal survive while the
+  scratch dir is erased - which is precisely the run the original could not survive.
+- **F15 [medium] - CLOSED. Reclaim is single-winner and identity-bound, and `lock_is_stale` is
+  specified** (tension 16), with `stat_mtime`, `now_epoch` and `proc_alive` added to the capability
+  table.
+  The discriminating test reclaims a stale lock, lets a live holder take it, and reclaims again with the
+  stale token: the live lock must survive, where a bare `rm -rf` deletes it.
+- **F16 [medium] - CLOSED. `shred` is a probed capability behind `erase_dir`** (tension 24), the
+  cleanup cannot fail, and `look` joined the probed-optional list.
+  `die` validates its code against the frozen 0-5 contract, so no path can leave the process with an
+  unclassifiable status.
+  Overwrite-based erasure is documented as best effort, with `scratch-dir` on a tmpfs as the real
+  control.
+  `look`'s O(n) `grep -F` fallback cost is the SCA half of F16 and remains open; it lands with §13
+  step 4.
+
+**F18 is closed as a consequence rather than deferred.**
+Once `die` refuses any code outside 0-5, a `die 6` cannot exist: both normative samples now read
+`die 5` and write `incomplete_reason`, and the `scan_match` comment that said "writes hits to `$2`"
+while the body took `$1` is corrected.
+
+Two further corrections were found while building, and are recorded because a document that asserts
+what the code disproves is the failure mode round 3 diagnosed:
+
+- **Tension 2's pinned `rg` invocation** used `--binary=false`, which ripgrep rejects outright
+  ("unexpected argument for option '--binary'", measured on ripgrep 15.1.0), so `scan_match` aborted on
+  its first call.  It is `--no-binary`.
+- **Tension 26 requires the linter to run over `config/*.example`**, but `rules/RULE-FORMAT.md` §9's
+  path table has no row for them.  The loader strips a trailing `.example` before resolving the schema,
+  so an example takes the schema of the file it is an example of.  That is a loader rule rather than a
+  format change, and the frozen document is untouched.
+
+**Still open, and inherited by §13 step 2 and beyond.**
+F5 and F20 are why `rules/derived.rules` is **not** seeded at step 1: `COMPOSITE-TOKEN-HIJACK`'s
+contributors do not exist until steps 5 and 6, so seeding it now is a guaranteed `E051` failure and a
+red CI on the first build task.  The derived MECHANISM is delivered and tested against a fixture
+composite under `tests/fixtures/rules/derived.rules`; only the shipped seed waits.
+
 
 ### Cheap corrections, safe to defer
 
@@ -3294,13 +3607,11 @@ None is a matter of taste; each has a defect and a direction, and the direction 
   Direction: either defer the seed to step 6, or add a narrow, explicit forward-reference allowance that
   downgrades `E051` and forces the check into `skipped_checks`, and state `E060`'s applicability to the
   derived schema.
-- **F18 [medium] - `die 6` appears in two normative code samples and in no exit-code table**
-  (tensions 4 and 16 against tension 14 and `docs/DESIGN.md` §5).
-  Both conditions - a pattern-engine failure and a mutex timeout - are what tension 14 already calls an
-  incomplete run, so `5` is the natural fit, and `6` would reach CI unclassifiable.
-  Direction: change both samples to `die 5` and have it write `incomplete_reason`.
-  While in tension 4, also fix the `scan_match` comment, which says "writes hits to `$2`" while the body
-  takes the output path as `$1`.
+- **F18 [medium] - CLOSED in §13 step 1**, as a consequence of F16's exit-code work rather than as a
+  deferred edit.
+  `die` validates its argument against the frozen 0-5 contract, so a `die 6` cannot exist; both
+  normative samples read `die 5` and write `incomplete_reason`, and the `scan_match` comment that said
+  "writes hits to `$2`" while the body took `$1` is corrected.
 - **F8 [low] - the `derived` type tag falls outside every `--intensity` tier** (tension 15 step 3, and
   `rules/RULE-FORMAT.md` §9.1.3 against §9.2).
   Under an intersection filter where nothing can be re-enabled, any run carrying `--intensity` drops
@@ -3324,8 +3635,21 @@ None is a matter of taste; each has a defect and a direction, and the direction 
 
 ## Where the build currently stands
 
-Nothing in `docs/DESIGN.md` §13 has been implemented.
-This foundation freezes the record format (`rules/RULE-FORMAT.md`) and resolves the tensions above so
-that §13 step 1 can begin without re-litigating any of them, subject to the open follow-ups listed
-immediately above, five of which must be settled before `lib/core.sh` and the parallel path are
-written.
+**`docs/DESIGN.md` §13 step 1 is implemented.**
+`lib/records.sh`, `lib/core.sh`, `lib/findings.sh` and `lib/report.sh` exist, with
+`rules/redaction.rules`, `data/severity-rubric.conf`, the shipped `config/*.example` files, a fixture
+end-to-end path, and a test suite that runs from `tests/run-tests.sh`.
+The five follow-ups that had to be settled first - F13, F14, F12, F15, F16 - are closed above, each in
+the tension that owns it and each with a test that fails under the original.
+F18 closed with them by mechanism.
+
+Steps 2 to 10 are unstarted.
+The seven remaining follow-ups (F4, F3, F5, F20, F8, F17, and F16's `look` half) are inherited by them
+and are still open.
+
+What §13 step 1 deliberately did **not** build, so the boundary is not rediscovered: `scan.sh`, anything
+under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
+shipped rule pack, and `state/`.  Diff classification (tension 12) and baseline suppression (tension 11
+steps 5 and 6) are step 7's; step 1 delivers the primitives they call - the merge, the fingerprint, the
+`findings_mark_suppressed` annotation, and `classify_derived`, which is pure and is already tested
+against tension 6's full case table.
