@@ -889,12 +889,31 @@ finding_from_record() {
 # ---------------------------------------------------------------------------
 # 12. Emitting
 # ---------------------------------------------------------------------------
+# The first fingerprint component is NOT simply the `module` field.
+#
+# tension 6 freezes the composite's identity as
+#   sha256( "fp/1" \0 "composite" \0 check_id \0 correlation_value )
+# with "composite" spelled out, while the emitted `module` field is `derived` -
+# which is what tension 5's table row is LABELLED and what the report groups by.
+# Those are two different things, and putting the module field in the frozen
+# slot hashed `derived` and silently produced an identity no conformant
+# implementation would agree with.  That matters more than it looks: composite
+# fingerprints are persisted into `state/` and `config/baseline.json`, so a
+# baseline written by a conformant implementation would suppress nothing, and
+# correcting it after release costs an fp_schema bump and a full-backlog churn.
+_fp_module_token() {
+  case $1 in
+    derived) printf '%s' 'composite' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 finding_fingerprint() {
   local module=${_F[module]} check_id=${_F[check_id]}
   local profile comp
   profile=$(_fp_profile_for "$module" "$check_id") \
     || die "$SCOURSH_EXIT_INCOMPLETE" "no fingerprint profile for module '$module'"
-  local -a parts=("$module" "$check_id")
+  local -a parts=("$(_fp_module_token "$module")" "$check_id")
   while IFS= read -r comp; do
     [[ -n $comp ]] || continue
     parts+=("${_F[loc_$comp]:-}")

@@ -454,7 +454,7 @@ full 64 hex characters retained, and the components in the fixed order below.
 | DAST | `target_name` (the `config/scope.conf` id, not the URL), `method`, `path_template`, `param_location` (`query`/`body`/`header`/`path`/`cookie`), `param_name` |
 | Cloud live | `account_id`, `region` (or `global`), `resource_key` (the ARN when one exists), `sub_key` (or `none`) |
 | Posture | `control_id` (= the `POSTURE-*` **check** id, never the expectation id), `scope_key` (target name, or account, or `account/region`) |
-| Derived | correlation value only (see tension 6) |
+| Derived | correlation value only (see tension 6). The **module component of the hash is the literal `composite`**, not this row's label and not the finding's `module` field, which is `derived` |
 
 Four of these need their normalisation frozen:
 
@@ -654,6 +654,25 @@ fingerprint = sha256( "fp/1" \0 "composite" \0 check_id \0 correlation_value )
 ```
 
 with `correlation_value` being the literal string `none` when `correlate-on: none`.
+
+**The first component is the literal `composite`, and it is NOT the finding's
+`module` field.**
+That field is `derived` - which is how tension 5's table labels the row, and what
+`lib/report.sh` groups by - so the two are different strings for two different
+jobs, and `lib/findings.sh` maps one to the other explicitly rather than passing
+the module through.
+This is called out because the implementation originally passed the module field
+into the frozen slot and hashed `derived`: no test noticed, because the only
+assertions on a composite fingerprint were self-consistency ones that agreed with
+whatever the emitter produced.
+A composite fingerprint is persisted into `state/` and `config/baseline.json`, so
+hashing the wrong literal means a baseline written by a conformant implementation
+suppresses nothing, and correcting it after release costs an `fp_schema` bump and
+a full-backlog churn - which is the whole reason this byte string is pinned here
+rather than left to the module name.
+`tests/suites/findings.sh` now computes the reference digest from raw bytes
+rather than through `fingerprint_compute`, so the assertion cannot agree with the
+implementation by sharing its helper.
 
 **Contributor fingerprints are deliberately not in the identity.**
 They are recorded in the finding body as `contributors: [<fingerprint>, ...]`, which is evidence, not

@@ -346,6 +346,28 @@ mk_derived "$W/d1.rules" file SAST-A-A-01 SAST-B-B-01
 derive_findings "$d" "$W/d1.rules"
 assert_eq 1 "$(/usr/bin/grep -c 'check_id=COMPOSITE-TEST-CHAIN' "$d/findings.fields" || true)" 'the composite fires once'
 
+t_case 'the composite fingerprint hashes the literal frozen in tension 6'
+# tension 6 freezes it as
+#   sha256( "fp/1" \0 "composite" \0 check_id \0 correlation_value )
+# The reference is computed here from raw bytes, NOT through
+# fingerprint_compute, so the assertion cannot agree with the implementation by
+# sharing its helper.  A composite fingerprint is written into state/ and
+# config/baseline.json, so hashing a different literal means a baseline produced
+# by a conformant implementation suppresses nothing.
+ref_fp() {
+  { printf '%s' 'fp/1'
+    local c
+    for c in "$@"; do printf '\0%s' "$c"; done
+  } | sha256_of
+}
+finding_decode "$(/usr/bin/grep 'check_id=COMPOSITE-TEST-CHAIN' "$d/findings.fields")"
+assert_eq "$(ref_fp composite COMPOSITE-TEST-CHAIN same.py)" "${_DF[fingerprint]}" \
+  'the first component is the frozen literal "composite"'
+assert_ne "$(ref_fp derived COMPOSITE-TEST-CHAIN same.py)" "${_DF[fingerprint]}" \
+  'and NOT the emitted module value "derived", which is a different thing'
+assert_eq derived "${_DF[module]}" \
+  'while the emitted module field stays "derived", which is what the report groups by'
+
 t_case 'the composite is clamped UPWARD to its worst contributor'
 line=$(/usr/bin/grep 'check_id=COMPOSITE-TEST-CHAIN' "$d/findings.fields")
 finding_decode "$line"
