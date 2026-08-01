@@ -935,17 +935,33 @@ scan_root_id_of() {
 # scan_root_id MUST NOT contain credentials: it is written to state/, to
 # run.json and into run_identity, and a GitLab runner's default clone URL is
 # https://gitlab-ci-token:<TOKEN>@host/org/proj.git.
+# Userinfo is by definition the component before the AUTHORITY's terminating
+# delimiter, so the authority is split off before stripping.  Stripping to the
+# first `@` anywhere discarded the host and the leading path whenever a
+# repository path contained one - and `scan_root_id` is a persisted
+# cell-comparability key, so two unrelated repositories whose paths share a
+# suffix would collapse onto one id and their `path-root` cells would become
+# wrongly comparable, defeating tension 12 for them.
 _strip_userinfo() {
-  local u=$1 scheme rest
+  local u=$1 scheme rest authority path before
   case $u in
     *://*@*)
       scheme=${u%%://*}
       rest=${u#*://}
-      rest=${rest#*@}
-      printf '%s://%s' "$scheme" "$rest"
+      authority=${rest%%/*}
+      if [[ $rest == */* ]]; then path=/${rest#*/}; else path=''; fi
+      authority=${authority#*@}          # only within the authority
+      printf '%s://%s%s' "$scheme" "$authority" "$path"
       ;;
     *@*:*)
-      printf '%s' "${u#*@}"
+      # scp-like `user@host:path`.  The userinfo terminates at the first `:`, so
+      # an `@` after it is path content.
+      before=${u%%:*}
+      if [[ $before == *@* ]]; then
+        printf '%s' "${u#*@}"
+      else
+        printf '%s' "$u"
+      fi
       ;;
     *) printf '%s' "$u" ;;
   esac

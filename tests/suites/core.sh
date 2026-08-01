@@ -376,6 +376,32 @@ else
   _t_ok 'git unavailable, scan-root tests skipped'
 fi
 
+t_case 'userinfo is stripped from the AUTHORITY only, never from the path'
+# tension 12 freezes the strip as
+#   "<scheme>://<user>[:<pass>]@<rest>" -> "<scheme>://<rest>"
+# where userinfo is by definition the component before the authority's
+# terminating '/'.  Stripping to the first '@' ANYWHERE discards the host and the
+# leading path when a repository path happens to contain one, and scan_root_id is
+# a persisted cell-comparability key: two unrelated repositories whose paths
+# share a suffix would collapse onto one id, `path-root` cells would become
+# wrongly comparable, and tension 12's whole purpose - never infer `fixed` from
+# absence across incomparable scopes - is defeated for them.
+assert_eq 'https://host.example/org/pr@oj' "$(_strip_userinfo 'https://host.example/org/pr@oj')" \
+  'an @ in the PATH is content, not a userinfo delimiter'
+assert_eq 'host.example:org/pr@oj' "$(_strip_userinfo 'host.example:org/pr@oj')" \
+  'and in an scp-like path, where userinfo would terminate at the first colon'
+# The register's own documented cases must keep working.
+assert_eq 'https://host.example/org/proj' "$(_strip_userinfo 'https://user:pass@host.example/org/proj')" \
+  'user:pass userinfo is still stripped'
+assert_eq 'https://gitlab.example/org/proj' "$(_strip_userinfo 'https://gitlab-ci-token:JOBTOKEN123@gitlab.example/org/proj')" \
+  'the GitLab runner job token is still stripped'
+assert_eq 'host.example:org/proj' "$(_strip_userinfo 'git@host.example:org/proj')" \
+  'scp-like userinfo is still stripped'
+assert_eq 'https://host.example/org/proj' "$(_strip_userinfo 'https://host.example/org/proj')" \
+  'a URL with no userinfo is untouched'
+assert_eq 'https://host.example/a@b/c' "$(_strip_userinfo 'https://user@host.example/a@b/c')" \
+  'userinfo is stripped once, and a later @ in the path survives'
+
 t_case 'a non-git tree falls back to its resolved path'
 mkdir -p "$W/tarball/frontend"
 assert_eq "path:$(realpath_of "$W/tarball")" "$(scan_root_id_of "$W/tarball")" 'path: kind'
