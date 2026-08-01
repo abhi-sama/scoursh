@@ -167,7 +167,29 @@ with `--engine pcre2` added only for `pcre` records.
 > ripgrep rejects the former outright - "invalid CLI arguments: unexpected argument for option
 > '--binary'", measured on ripgrep 15.1.0 - so `scan_match` aborted the run on its first call.
 > It failed loudly rather than silently, which is what tension 4 rule 2 is for.
-The `grep` fallback is `grep -E -n -r` with an explicit exclude list.
+The `grep` fallback is `grep -E -n`.
+
+> **`-r` and the exclude list were removed from the pinned invocation in §13
+> step 1, and the removal was measured rather than reasoned.**
+> `-r` is `--recursive` to `grep` and `--replace` to `ripgrep`:
+> `rg <pinned flags> -r 'eval' tree` consumes `eval` as a replacement string and
+> returns rc=1 having searched nothing, while `grep -E -n -r 'eval' tree`
+> recurses and matches (measured; commit `a28cba8`).
+> A flag that means two different things to the two engines cannot live in a
+> shared wrapper whose whole purpose is that the two produce byte-identical
+> findings, so **file enumeration is the caller's job** and the wrapper is handed
+> one path at a time.
+>
+> That moves the **exclude list** to the caller too.  It is not lost: it belongs
+> with the walker that §13 step 3 builds, alongside `files` / `exclude-files`
+> (`rules/RULE-FORMAT.md` §9.1.2), which are per-rule and which the wrapper could
+> never have applied anyway.  Recorded here as a step-3 obligation so it is not
+> silently dropped.
+>
+> This paragraph is now checked rather than asserted: `tests/suites/core.sh`
+> reads what `lib/core.sh` binds for each engine and requires this document to
+> contain that exact string, so the two cannot drift again without a test
+> failing.
 Both are wrapped in one function so the invocation exists in exactly one place.
 
 §6.2's `yaml\.load\((?!.*Loader)` is **rewritten** as an `ere` pattern plus a `context-deny`; the

@@ -298,6 +298,44 @@ done <<<"$(find "$ROOT/lib" "$ROOT/tests" -name '*.sh' -type f | LC_ALL=C sort)"
 assert_eq 0 "$found" 'tension 4 rule 1: set +e is forbidden repository-wide'
 
 # ---------------------------------------------------------------------------
+printf '\n-- tension 2: the register and the code pin the SAME invocation --\n'
+# ---------------------------------------------------------------------------
+# tension 2 pins both engine invocations "so the invocation exists in exactly one
+# place" and requires byte-identical findings between them.  A register that
+# specifies flags the code does not use is not a cosmetic slip: §13 step 3 builds
+# the real file enumerator from that paragraph, and an implementer who follows it
+# reintroduces the asymmetry the parity test exists to catch.
+#
+# This is a DRIFT test, not a spelling check: it reads what lib/core.sh actually
+# binds for each engine and requires the register to contain that exact string,
+# so changing either side alone fails.
+t_case 'each pinned engine invocation appears verbatim in the register'
+REG=$ROOT/docs/FOUNDATION.md
+for eng in rg grep; do
+  bound=$(
+    SCOURSH_ENGINE=$eng
+    core_bind_engine
+    printf '%s' "${SCOURSH_GREP[*]}"
+  )
+  if /usr/bin/grep -qF -- "\`$bound\`" "$REG"; then
+    _t_ok "the register pins '$bound' for $eng, exactly as lib/core.sh binds it"
+  else
+    _t_no "the register pins '$bound' for $eng, exactly as lib/core.sh binds it" \
+      "docs/FOUNDATION.md does not contain that invocation"
+  fi
+done
+
+t_case '-r is not PINNED for either engine'
+# It is --recursive to grep and --replace to ripgrep, so a shared wrapper cannot
+# carry it; file enumeration is the caller's job.  Scoped to the sentence that
+# PINS the invocation, because the prose around it quotes the disproved command
+# on purpose, as the evidence for removing it - a blunt whole-file check fires
+# on the explanation of its own fix.
+pinned=$(/usr/bin/grep -F 'The `grep` fallback is' "$REG" || true)
+assert_not_contains "$pinned" ' -r' 'the pinned fallback carries no -r'
+assert_contains "$pinned" 'grep -E -n' 'and pins the invocation the code binds'
+
+# ---------------------------------------------------------------------------
 printf '\n-- tension 12: the scan root --\n'
 # ---------------------------------------------------------------------------
 t_case 'scan_root_id never contains a credential'
