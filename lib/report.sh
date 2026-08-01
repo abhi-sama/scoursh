@@ -156,6 +156,9 @@ report_run_json() {
     fi
     printf '}\n'
     printf '  },\n'
+    _meta_array_unique "$rundir" targets 'targets'
+    _meta_array_unique "$rundir" regions 'regions'
+    _meta_array_unique "$rundir" checks_run 'checks_run'
     _meta_array "$rundir" skipped_checks 'skipped_checks'
     _meta_array "$rundir" coverage_gap 'coverage_gap'
     _meta_array "$rundir" coverage_reduction 'coverage_reduction'
@@ -173,6 +176,23 @@ _meta_first() {
   [[ -r $rundir/meta/$key ]] || { printf '%s' ''; return 0; }
   IFS= read -r v <"$rundir/meta/$key" || true
   printf '%s' "$v"
+}
+
+# As _meta_array, but deduped and sorted: a loader may legitimately run more
+# than once in a process, and a repeated target or check id is noise rather than
+# information.
+_meta_array_unique() {
+  local rundir=$1 key=$2 label=$3 line first=1
+  printf '  %s: [' "$(json_string "$label")"
+  if [[ -r $rundir/meta/$key ]]; then
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      (( first )) || printf ','
+      first=0
+      printf '%s' "$(json_string "$line")"
+    done <<<"$(LC_ALL=C sort -u "$rundir/meta/$key")"
+  fi
+  printf '],\n'
 }
 
 _meta_array() {

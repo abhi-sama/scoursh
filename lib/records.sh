@@ -672,6 +672,27 @@ _cur_id() {
   printf '%s' "${_REC_S["$set|$idx|id"]:-}"
 }
 
+# `records_register_checks SET` - record every check id in SET as having run.
+#
+# DESIGN §4 asks run.json for "which checks ran/skipped and why".  Only the
+# skipped half existed, so a reader could not tell "this check ran and found
+# nothing" from "this check was never loaded" - the distinction §15's honesty
+# requirement rests on.
+#
+# This is the set of checks the run LOADED AND EXECUTED.  It is not tension 12's
+# `covered_checks`, which is per-(check, cell) coverage persisted in `state/` and
+# is owned by §13 step 7; a check can appear here and still be uncovered for a
+# cell the run never visited.
+records_register_checks() {
+  local set=$1 schema n i
+  schema=${_REC_SCHEMA[$set]:-}
+  records_schema_is_check_id "$schema" || return 0
+  n=$(records_count "$set")
+  for (( i = 0; i < n; i++ )); do
+    run_record checks_run "$(records_id "$set" "$i")"
+  done
+}
+
 # ---------------------------------------------------------------------------
 # 7. Schema validation (rules/RULE-FORMAT.md §9 and §13)
 # ---------------------------------------------------------------------------

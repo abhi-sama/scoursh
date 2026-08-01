@@ -39,6 +39,7 @@ rubric_load "$ROOT/data/severity-rubric.conf"
 records_load "$FIXTURES/rules/fixture.rules" pattern-rule pack \
   || die "$SCOURSH_EXIT_INPUT" "fixture rule pack failed to parse"
 records_validate pack || die "$SCOURSH_EXIT_INPUT" "fixture rule pack failed validation"
+records_register_checks pack
 
 # ---------------------------------------------------------------------------
 # SAST: path / match_digest / occurrence

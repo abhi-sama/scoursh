@@ -620,6 +620,10 @@ attribution_load() {
   n=$(records_count scope)
   for (( i = 0; i < n; i++ )); do
     id=$(records_id scope "$i")
+    # DESIGN §4 requires run.json to name the targets a run was scoped to.
+    # Recorded here, where scope.conf is actually read, so the audit record
+    # cannot drift from the gate's own view of what was in scope.
+    run_record targets "$id"
     url=$(records_field scope "$i" base-url)
     subs=$(records_field_or scope "$i" allow-subdomains false)
     host=$(_host_of_url "$url")

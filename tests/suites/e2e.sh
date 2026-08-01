@@ -108,6 +108,24 @@ else
   _t_ok 'python3 unavailable, JSON validation skipped'
 fi
 
+t_case 'run.json is the audit record DESIGN §4 asks for'
+# §4 specifies run.json as "tool version, timestamp, targets, regions, which
+# checks ran/skipped and why, counts, and duration".  The skipped half was
+# implemented; the RAN half was not, so a reader could not tell "this check ran
+# and found nothing" from "this check was never loaded" - which is the honesty
+# property §15 leans on.
+RJ=$(cat "$R1/run.json")
+assert_contains "$RJ" '"targets"' 'run.json carries the targets that were in scope'
+assert_contains "$RJ" 'fixture-target' 'naming the target the fixture scope defines'
+assert_contains "$RJ" 'fixture-wide' 'and the second one'
+assert_contains "$RJ" '"regions"' 'and a regions key'
+assert_contains "$RJ" '"checks_run"' 'and which checks RAN, not only which were skipped'
+for c in SAST-PY-EVAL-01 SAST-SEC-AWS_SECRET-01 SAST-PY-YAML_LOAD-01; do
+  assert_contains "$RJ" "\"$c\"" "checks_run names $c"
+done
+assert_contains "$RJ" 'the rule engine lands at §13 step 3' \
+  'and the skipped half still carries its reason'
+
 t_case 'the HTML report is genuinely self-contained'
 H=$(cat "$R1/report.html")
 assert_not_contains "$H" '<script' 'no script element'

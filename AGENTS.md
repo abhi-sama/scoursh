@@ -106,6 +106,21 @@ Diff classification (tension 12) and baseline suppression (tension 11 steps 5 an
 step 1 ships the primitives they call - the merge, the fingerprint, `findings_mark_suppressed`, and
 `classify_derived`, which is pure and already tested against tension 6's whole case table.
 
+**Two run.json fields are deliberately empty at step 1**, rather than absent, so a
+consumer never has to handle a missing key and the gap is visible in the output:
+
+- `regions` is `[]`. Region iteration is `modules/cloud/aws/regions.sh` at step 6;
+  nothing before it visits a region, and inferring regions from a finding's cell
+  would report where findings happened to land rather than where the run looked.
+- `run_identity` is absent. `docs/FOUNDATION.md` tension 18 records it in
+  run.json, but its inputs include the normalised CLI flags, which arrive with
+  `scan.sh` at step 2.
+
+`checks_run` is the set of checks the run LOADED AND EXECUTED. It is not
+tension 12's `covered_checks`, which is per-(check, cell) coverage persisted in
+`state/` and owned by step 7: a check can be in `checks_run` and still be
+uncovered for a cell the run never visited.
+
 `rules/derived.rules` is **not** seeded, and that is deliberate: findings F5 and F20 record that
 `COMPOSITE-TOKEN-HIJACK`'s contributors do not exist until steps 5 and 6, so seeding it now is a
 guaranteed `E051` lint failure.  The derived *mechanism* is delivered and is tested against a fixture
