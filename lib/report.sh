@@ -24,29 +24,44 @@ source "${BASH_SOURCE[0]%/*}/findings.sh"
 # ---------------------------------------------------------------------------
 # 1. Counting
 # ---------------------------------------------------------------------------
+# tension 11 step 9: suppressed findings "render in a separate collapsed
+# 'accepted risk' section with their reason, and are counted SEPARATELY in every
+# summary".  So every _RPT_* map below counts LIVE findings only, and the
+# accepted set has its own breakdown.  Counting them together let an accepted
+# critical keep inflating the critical count, which misrepresents risk state -
+# the one thing a security report may not do.
 declare -A _RPT_SEV=()
 declare -A _RPT_MODULE=()
 declare -A _RPT_STATUS=()
 declare -A _RPT_OWASP=()
+declare -A _RPT_SEV_SUP=()
 _RPT_TOTAL=0
 _RPT_SUPPRESSED=0
+_RPT_LIVE=0
 
 report_count() {
   local rundir=${1:-$SCOURSH_RUN_DIR} line
   _RPT_SEV=([critical]=0 [high]=0 [medium]=0 [low]=0 [info]=0)
+  _RPT_SEV_SUP=([critical]=0 [high]=0 [medium]=0 [low]=0 [info]=0)
   _RPT_MODULE=()
   _RPT_STATUS=([new]=0 [recurring]=0 [fixed]=0 [unknown]=0)
   _RPT_OWASP=()
   _RPT_TOTAL=0
   _RPT_SUPPRESSED=0
+  _RPT_LIVE=0
   [[ -s $rundir/findings.fields ]] || return 0
   local sev mod st ow
   while IFS= read -r line; do
     [[ -n $line ]] || continue
     finding_decode "$line"
     _RPT_TOTAL=$(( _RPT_TOTAL + 1 ))
-    [[ ${_DF[suppressed]:-false} == true ]] && _RPT_SUPPRESSED=$(( _RPT_SUPPRESSED + 1 ))
     sev=${_DF[severity]:-info}
+    if [[ ${_DF[suppressed]:-false} == true ]]; then
+      _RPT_SUPPRESSED=$(( _RPT_SUPPRESSED + 1 ))
+      _RPT_SEV_SUP[$sev]=$(( ${_RPT_SEV_SUP[$sev]:-0} + 1 ))
+      continue
+    fi
+    _RPT_LIVE=$(( _RPT_LIVE + 1 ))
     mod=${_DF[module]:-unknown}
     st=${_DF[status]:-new}
     ow=${_DF[owasp]:-none}
@@ -103,6 +118,7 @@ report_run_json() {
     printf '  },\n'
     printf '  "counts": {\n'
     printf '    "total": %s,\n' "$(json_number "$_RPT_TOTAL")"
+    printf '    "live": %s,\n' "$(json_number "$_RPT_LIVE")"
     printf '    "suppressed": %s,\n' "$(json_number "$_RPT_SUPPRESSED")"
     printf '    "by_severity": {'
     local first=1 k
@@ -110,6 +126,14 @@ report_run_json() {
       (( first )) || printf ','
       first=0
       printf '%s:%s' "$(json_string "$k")" "$(json_number "${_RPT_SEV[$k]:-0}")"
+    done
+    printf '},\n'
+    printf '    "suppressed_by_severity": {'
+    first=1
+    for k in critical high medium low info; do
+      (( first )) || printf ','
+      first=0
+      printf '%s:%s' "$(json_string "$k")" "$(json_number "${_RPT_SEV_SUP[$k]:-0}")"
     done
     printf '},\n'
     printf '    "by_status": {'
@@ -179,43 +203,73 @@ report_md() {
     printf -- '- run: `%s`\n' "${SCOURSH_RUN_ID:-}"
     printf -- '- tool version: `%s`\n' "$(scoursh_version)"
     printf -- '- fingerprint schema: `%s`\n' "$FP_SCHEMA"
-    printf -- '- findings: %s (%s suppressed)\n\n' "$_RPT_TOTAL" "$_RPT_SUPPRESSED"
+    printf -- '- findings: %s live, %s accepted risk (%s total)\n\n' \
+      "$_RPT_LIVE" "$_RPT_SUPPRESSED" "$_RPT_TOTAL"
     if [[ $SCOURSH_REDACT_SECRETS != true ]]; then
       printf '> **WARNING - redaction is disabled for this run.** This report may contain\n'
       printf '> live credentials and must not be circulated.\n\n'
     fi
-    printf '## Severity\n\n| severity | count |\n|---|---|\n'
+    printf '## Severity\n\n| severity | live | accepted risk |\n|---|---|---|\n'
     local k
     for k in critical high medium low info; do
-      printf '| %s | %s |\n' "$k" "${_RPT_SEV[$k]:-0}"
+      printf '| %s | %s | %s |\n' "$k" "${_RPT_SEV[$k]:-0}" "${_RPT_SEV_SUP[$k]:-0}"
     done
     printf '\n## Findings\n\n'
-    local line fence
     if [[ -s $rundir/findings.fields ]]; then
-      while IFS= read -r line; do
-        [[ -n $line ]] || continue
-        finding_decode "$line"
-        printf '### %s - %s\n\n' "${_DF[check_id]}" "${_DF[title]}"
-        printf -- '- severity: **%s** (base %s), confidence %s, status %s\n' \
-          "${_DF[severity]}" "${_DF[base_severity]}" "${_DF[confidence]}" "${_DF[status]}"
-        printf -- '- %s / %s · `%s`\n' "${_DF[cwe]}" "${_DF[owasp]}" "${_DF[_cvss_vector]:-}"
-        printf -- '- location: `%s`\n' "$(_location_summary)"
-        printf -- '- fingerprint: `%s`\n\n' "${_DF[fingerprint]}"
-        if [[ -n ${_DF[evidence]:-} ]]; then
-          # A fence one backtick longer than the longest run in the content, so
-          # evidence cannot break out of the code block (tension 10).
-          fence=$(md_fence_for "${_DF[evidence]}")
-          printf '%s\n%s\n%s\n\n' "$fence" "${_DF[evidence]}" "$fence"
-        fi
-        if [[ -n ${_DF[remediation]:-} ]]; then
-          printf '%s\n\n' "${_DF[remediation]}"
-        fi
-      done <"$rundir/findings.fields"
+      _md_findings "$rundir" live
     else
       printf '_No findings._\n\n'
     fi
+    # Suppressed findings render in their OWN section with their reason, never
+    # inline with live ones (tension 11 step 9).  report_html did this; the
+    # Markdown emitter printed both into one list with identical formatting, so
+    # a reader could not tell an accepted risk from a live critical.
+    if (( _RPT_SUPPRESSED > 0 )); then
+      printf '## Accepted risk (%s)\n\n' "$_RPT_SUPPRESSED"
+      printf 'These are suppressed by `config/baseline.json` and are excluded from the\n'
+      printf 'counts above and from the CI gate. They are still reported, never deleted.\n\n'
+      _md_findings "$rundir" suppressed
+    fi
     _md_limitations "$rundir"
   } >"$rundir/report.md"
+}
+
+# `_md_findings RUNDIR live|suppressed`
+#
+# SC2016 fires on every Markdown code span below; the backticks are literal
+# output, not command substitution.
+# shellcheck disable=SC2016
+_md_findings() {
+  local rundir=$1 want=$2 line fence is_sup
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    finding_decode "$line"
+    is_sup=${_DF[suppressed]:-false}
+    if [[ $want == live ]]; then
+      [[ $is_sup == true ]] && continue
+    else
+      [[ $is_sup == true ]] || continue
+    fi
+    printf '### %s - %s\n\n' "${_DF[check_id]}" "${_DF[title]}"
+    printf -- '- severity: **%s** (base %s), confidence %s, status %s\n' \
+      "${_DF[severity]}" "${_DF[base_severity]}" "${_DF[confidence]}" "${_DF[status]}"
+    printf -- '- %s / %s · `%s`\n' "${_DF[cwe]}" "${_DF[owasp]}" "${_DF[_cvss_vector]:-}"
+    printf -- '- location: `%s`\n' "$(_location_summary)"
+    printf -- '- fingerprint: `%s`\n' "${_DF[fingerprint]}"
+    if [[ $is_sup == true ]]; then
+      printf -- '- **accepted risk**: %s\n' "${_DF[suppressed_by]:-no reason recorded}"
+    fi
+    printf '\n'
+    if [[ -n ${_DF[evidence]:-} ]]; then
+      # A fence one backtick longer than the longest run in the content, so
+      # evidence cannot break out of the code block (tension 10).
+      fence=$(md_fence_for "${_DF[evidence]}")
+      printf '%s\n%s\n%s\n\n' "$fence" "${_DF[evidence]}" "$fence"
+    fi
+    if [[ -n ${_DF[remediation]:-} ]]; then
+      printf '%s\n\n' "${_DF[remediation]}"
+    fi
+  done <"$rundir/findings.fields"
 }
 
 _md_limitations() {
@@ -390,9 +444,9 @@ HTML
 
 _html_summary() {
   printf '<h1>scoursh scan report</h1>\n'
-  printf '<p class="sub">run <code>%s</code> · tool <code>%s</code> · fingerprint schema <code>%s</code> · %s findings, %s accepted</p>\n' \
+  printf '<p class="sub">run <code>%s</code> · tool <code>%s</code> · fingerprint schema <code>%s</code> · %s live findings, %s accepted risk</p>\n' \
     "$(html_escape "${SCOURSH_RUN_ID:-}")" "$(html_escape "$(scoursh_version)")" \
-    "$(html_escape "$FP_SCHEMA")" "$_RPT_TOTAL" "$_RPT_SUPPRESSED"
+    "$(html_escape "$FP_SCHEMA")" "$_RPT_LIVE" "$_RPT_SUPPRESSED"
   if [[ $SCOURSH_REDACT_SECRETS != true ]]; then
     printf '<p class="banner">Redaction is DISABLED for this run. This report may contain live credentials and must not be circulated.</p>\n'
   fi
@@ -403,6 +457,13 @@ _html_summary() {
       "$k" "${_RPT_SEV[$k]:-0}" "$k"
   done
   printf '</div>\n'
+  if (( _RPT_SUPPRESSED > 0 )); then
+    printf '<p class="sub">Counts above are LIVE findings. Accepted risk is counted separately:'
+    for k in critical high medium low info; do
+      (( ${_RPT_SEV_SUP[$k]:-0} > 0 )) && printf ' %s&nbsp;%s' "${_RPT_SEV_SUP[$k]}" "$k"
+    done
+    printf '.</p>\n'
+  fi
   printf '<h2>Since the last scan</h2>\n<div class="tiles">\n'
   for k in new recurring fixed unknown; do
     printf '<div class="tile"><div class="n">%s</div><div class="l">%s</div></div>\n' \

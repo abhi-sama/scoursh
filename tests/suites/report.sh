@@ -59,9 +59,16 @@ finding_set remediation 'Rotate it.'
 finding_emit
 
 findings_merge "$D"
-SUPPRESSED=$(head -1 "$D/findings.fields")
-finding_decode "$SUPPRESSED"
-findings_mark_suppressed "$D" "${_DF[fingerprint]}" 'accepted: tracked in a ticket'
+# Suppress the CRITICAL one deliberately: the counting half of tension 11 step 9
+# can only be tested by a suppressed finding whose severity would otherwise show
+# up in the live totals.
+while IFS= read -r _line; do
+  finding_decode "$_line"
+  [[ ${_DF[severity]} == critical ]] && break
+done <"$D/findings.fields"
+SUPPRESSED_FP=${_DF[fingerprint]}
+SUPPRESSED_CHECK=${_DF[check_id]}
+findings_mark_suppressed "$D" "$SUPPRESSED_FP" 'accepted: tracked in a ticket'
 run_record coverage_gap 'no SAST route inventory was available to this run'
 report_all "$D"
 
@@ -124,6 +131,32 @@ assert_not_contains "$M" "$(printf '\033')" 'no ESC byte in the Markdown'
 t_case 'Markdown'
 assert_contains "$M" '````````' 'the fence is one backtick longer than the seven-run in the evidence'
 assert_contains "$M" '# scoursh scan report' 'the report renders'
+
+# ---------------------------------------------------------------------------
+printf '\n-- tension 11 step 9: accepted risk is separated, and counted separately --\n'
+# ---------------------------------------------------------------------------
+# report_html did this and report_md did not: it printed every finding,
+# suppressed or not, into one `## Findings` list with identical formatting and
+# no reason, so a reader could not tell an accepted risk from a live critical.
+md_section() {                    # the body of the `## <name>` section
+  sed -n "/^## $1\$/,/^## /p" "$D/report.md"
+}
+t_case 'Markdown separates accepted risk from live findings'
+assert_contains "$M" '## Accepted risk' 'report.md has an accepted-risk section'
+assert_not_contains "$(md_section Findings)" "$SUPPRESSED_CHECK" \
+  'the suppressed finding is NOT in the live findings section'
+assert_contains "$(md_section 'Accepted risk (1)')" "$SUPPRESSED_CHECK" \
+  'it is in the accepted-risk section instead'
+assert_contains "$(md_section 'Accepted risk (1)')" 'accepted: tracked in a ticket' \
+  'with the reason that was recorded, which the reader needs to judge it'
+
+t_case 'an accepted critical does not inflate the live severity counts'
+R2=$(cat "$D/run.json")
+assert_contains "$R2" '"critical":0' \
+  'run.json by_severity counts LIVE findings only (the only critical here is accepted)'
+assert_contains "$R2" '"suppressed_by_severity"' 'and the accepted set is broken out on its own'
+assert_contains "$H" '<div class="n">0</div><div class="l">critical</div>' \
+  'the HTML critical tile counts live findings only'
 
 t_case 'redaction reaches every format'
 for f in findings.json findings.jsonl report.html report.md run.json; do
