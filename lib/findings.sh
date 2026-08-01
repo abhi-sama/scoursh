@@ -45,16 +45,29 @@ export FP_SCHEMA UK_SCHEMA
 # 2. Digests (tensions 5 and 9)
 # ---------------------------------------------------------------------------
 
-# Collapse every run of whitespace to a single space and strip leading and
-# trailing whitespace.  Reindenting or reformatting therefore does not churn
+# Strip ALL whitespace.  Reindenting or reformatting therefore does not churn
 # identity; changing the code does, which is correct, because the matched text
 # IS the finding.
+#
+# This collapses runs AND the zero-versus-one-space distinction, and the second
+# half is the point.  Collapsing runs alone is not insensitivity to whitespace:
+# zero spaces versus one space is not a run, and that is exactly what a code
+# formatter changes.  Under run-collapsing, `eval( x )` and `eval(x)` hashed
+# differently, so a `black` / `prettier` / `gofmt` pass over a repository gave
+# every affected finding a new fingerprint - the old one absent, hence classified
+# `fixed` by tension 12 - and wrote a wave of remediations that never happened
+# into `state/`, with `--fail-on-new` firing on the whole set.
+#
+# THE COST, stated rather than hidden: `a b` and `ab` now share a digest.  They
+# remain two distinct findings, told apart by the `occurrence` ordinal exactly as
+# two byte-identical matches already are, and by path, so identity is not lost -
+# only the discriminator changes.  That slightly widens the bounded ordinal churn
+# tension 5 already documents, and it buys immunity to the far more common
+# formatter case.  The normalisation can only ever MERGE digests, never split
+# them, so it cannot manufacture a `new` finding.
 fingerprint_normalise() {
   local s=$1
-  s=${s//[$'\t\n\r\f\v']/ }
-  while [[ $s == *'  '* ]]; do s=${s//'  '/' '}; done
-  s=${s#' '}
-  s=${s%' '}
+  s=${s//[$' \t\n\r\f\v']/}
   printf '%s' "$s"
 }
 

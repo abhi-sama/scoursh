@@ -91,6 +91,61 @@ after=$(fps_of "$d")
 assert_eq "$before" "$after" \
   'a line shift plus reindentation leaves the fingerprint byte-identical (fails if line is an input, or if whitespace is not normalised)'
 
+t_case 'a formatter-style respacing does NOT churn the fingerprint'
+# Collapsing whitespace RUNS is not the same as being insensitive to whitespace:
+# zero spaces versus one space is not a run, and that is exactly what a code
+# formatter changes.  Under run-collapsing, `black`/`prettier`/`gofmt` across a
+# repository gave every affected finding a new fingerprint, so tension 12 saw the
+# old one absent and classified it `fixed` - a wave of remediations that never
+# happened, written into state/, with --fail-on-new firing on the whole set.
+#
+# The existing stability tests cannot see this: they insert blank lines and
+# reindent, both of which were already correct.
+new_run fmt1
+d=$SCOURSH_RUN_DIR
+occurrence_reset_unit app.py
+emit_match "$d" SAST-X-Y-01 app.py 10 'eval( user_input )'
+findings_merge "$d"
+spaced=$(fps_of "$d")
+
+new_run fmt2
+d=$SCOURSH_RUN_DIR
+occurrence_reset_unit app.py
+emit_match "$d" SAST-X-Y-01 app.py 10 'eval(user_input)'
+findings_merge "$d"
+assert_eq "$spaced" "$(fps_of "$d")" \
+  'eval( user_input ) and eval(user_input) are one identity (fails under run-collapsing)'
+
+t_case 'and neither does a formatter that changes spacing around an operator'
+new_run fmt3
+d=$SCOURSH_RUN_DIR
+occurrence_reset_unit app.py
+emit_match "$d" SAST-SEC-K-01 app.py 5 'key="AAAA"'
+findings_merge "$d"
+tight=$(fps_of "$d")
+new_run fmt4
+d=$SCOURSH_RUN_DIR
+occurrence_reset_unit app.py
+emit_match "$d" SAST-SEC-K-01 app.py 5 'key = "AAAA"'
+findings_merge "$d"
+assert_eq "$tight" "$(fps_of "$d")" 'key="AAAA" and key = "AAAA" are one identity'
+
+t_case 'the accepted cost: texts differing only in whitespace share a digest'
+# Stated rather than hidden.  `a b` and `ab` collide on match_digest under this
+# normalisation.  They remain TWO findings, told apart by the occurrence ordinal
+# exactly as two byte-identical matches already are, so identity is not lost -
+# only the discriminator changes.
+assert_eq "$(fingerprint_digest 'a b')" "$(fingerprint_digest 'ab')" \
+  'the digests are equal, which is the price of formatter stability'
+new_run fmt5
+d=$SCOURSH_RUN_DIR
+occurrence_reset_unit app.py
+emit_match "$d" SAST-X-Y-01 app.py 1 'a b'
+emit_match "$d" SAST-X-Y-01 app.py 2 'ab'
+findings_merge "$d"
+assert_eq 2 "$(fps_of "$d" | LC_ALL=C sort -u | wc -l | tr -d ' ')" \
+  'and they are still two distinct findings, separated by the ordinal'
+
 t_case 'two distinct secrets in one file are two distinct findings'
 new_run c
 d=$SCOURSH_RUN_DIR

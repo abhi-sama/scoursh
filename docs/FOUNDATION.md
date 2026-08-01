@@ -481,12 +481,40 @@ full 64 hex characters retained, and the components in the fixed order below.
 Four of these need their normalisation frozen:
 
 - **`match_digest`** = first 16 hex characters of `sha256(normalise(raw_matched_text))`, where
-  `normalise` collapses every run of whitespace to a single space and strips leading and trailing
-  whitespace.
+  `normalise` **strips every whitespace byte** (space, TAB, LF, CR, FF, VT).
   Reindenting or reformatting therefore does not churn identity; changing the code does, which is
   correct, because the matched text *is* the finding.
   The raw text is hashed, not the redacted text; see tension 9 for why, and for the rule that it never
   touches disk.
+
+  **This was "collapse every run of whitespace to a single space", and that was not enough.**
+  Collapsing runs is not insensitivity to whitespace: zero spaces versus one space is not a run, and
+  intra-token respacing is exactly what a code formatter changes.
+  Measured: `eval( user_input )` and `eval(user_input)` hashed differently, so a `black`, `prettier`
+  or `gofmt` pass over a repository gave every affected finding a new fingerprint.
+  The old fingerprint is then absent from the run, tension 12's table classifies it **`fixed`**, and a
+  formatting-only commit writes a wave of remediations that never happened into `state/` while
+  `--fail-on-new` fires on the whole affected set.
+  That is this tension's own phantom-remediation failure, reached by a mechanism none of its tests
+  exercised - the stability test inserts blank lines and reindents, both of which were already
+  correct, and neither of which is what a formatter does.
+
+  **The cost is stated rather than hidden.**
+  `a b` and `ab` now share a `match_digest`.
+  They remain **two findings**, told apart by the `occurrence` ordinal exactly as two byte-identical
+  matches already are, and by the path component, so identity is not lost - only the discriminator
+  changes.
+  This widens slightly the bounded ordinal churn described below (deleting one of several matches that
+  share a digest renumbers the ones after it), and buys immunity to the far more common formatter case.
+  The normalisation can only ever **merge** digests, never split them, so it cannot manufacture a `new`
+  finding.
+
+  The alternative considered and rejected was to narrow the claim instead - say "reindentation" rather
+  than "reformatting" and accept the churn.
+  It was rejected because this register exists to stop a scanner claiming a fix that did not happen,
+  and that option knowingly leaves one such path open for a routine, repository-wide operation.
+  The change is a **fingerprint input**, so it was made while nothing had been persisted: no scan had
+  run, and no `state/` or `config/baseline.json` existed anywhere.
 - **`occurrence`** = the 0-based ordinal of this match among the matches **in the same scanning unit,
   for the same `check_id`, with an identical `match_digest`**, ordered by ascending line number and
   then by ascending byte offset within the line.
@@ -567,6 +595,12 @@ On a mismatch tension 12 treats the **prior set as empty** for classification: n
 reason, and the gate fail-closed.
 A test asserts fingerprint stability directly: it inserts blank lines and reindents a fixture, re-runs,
 and requires the fingerprint set to be byte-identical.
+A further test uses a **formatter-style respacing** (`eval( x )` becoming `eval(x)`, and
+`key = "AAAA"` becoming `key="AAAA"`) and requires the same, because the reindentation cases pass
+under run-collapsing and therefore cannot distinguish the two normalisations - which is how the
+overclaim survived to review round 2.
+A companion test pins the accepted cost, asserting that `a b` and `ab` share a digest and are still
+two distinct findings.
 A second test asserts that two distinct secrets in one file produce two distinct fingerprints.
 A third test asserts that a fixture with five byte-identical matches of one check in one file produces
 **five** distinct fingerprints, and that shifting them all down by twenty lines leaves that set
