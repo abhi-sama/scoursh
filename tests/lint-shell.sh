@@ -139,9 +139,13 @@ check 'sha256_of takes no argument' \
   'sha256_of[[:space:]]+[^|)&;]' engine_files
 
 # Evidence is only ever set through finding_set_evidence, which applies redact,
-# truncation and control-character stripping in that order.
-check 'no direct assignment to the evidence field' \
-  '_F\[evidence\]=' engine_files lib/findings.sh
+# truncation and control-character stripping in that order.  The other
+# target-derived fields are only ever set through finding_set, which redacts
+# them.  A direct assignment to any of them bypasses redact() and writes a
+# credential into every emitted format.
+check 'no direct assignment to a redacted field' \
+  '_F\[(evidence|title|remediation|url|logical_fqn|loc_path_template|loc_param_name)\]=' \
+  engine_files lib/findings.sh
 
 printf '\n'
 if (( FAILED )); then

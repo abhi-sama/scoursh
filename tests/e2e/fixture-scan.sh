@@ -142,7 +142,6 @@ finding_emit
 finding_new
 finding_set check_id DAST-XSS-REFLECT-01
 finding_set module dast
-finding_set title 'Unescaped reflection of a request parameter'
 finding_set base_severity medium
 finding_set confidence medium
 finding_set cwe CWE-79
@@ -152,13 +151,18 @@ finding_set loc_method GET
 finding_set path '/users/12345/profile'
 finding_set loc_param_location query
 finding_set loc_param_name q
-finding_set url 'https://app.fixture.invalid/users/12345/profile?q=1'
 finding_set cell fixture-target
 finding_set exposure internet
 finding_set auth none
 finding_set logical_kind endpoint
-finding_set logical_fqn 'fixture-target:GET /users/{id}/profile#q'
-finding_set remediation 'Contextually escape the reflected value.'
+# tension 9 defines redact() as what is written ANYWHERE, not only evidence.
+# These four fields are target-derived in the modules that carry credentials - a
+# crawled URL's query string is exactly where api_key= lives - so each carries a
+# distinct credential-shaped marker that must not survive into any output.
+finding_set url 'https://app.fixture.invalid/users/12345/profile?api_key=URLLEAKKEY0123456789abcdef'
+finding_set logical_fqn 'fixture-target:GET /users/{id}/profile#q Bearer FQNLEAKTOKEN0123456789abcdef'
+finding_set title 'Unescaped reflection, seen with Authorization: TITLELEAKTOKEN0123456789abcdef'
+finding_set remediation 'Contextually escape the reflected value; rotate api_key=REMEDIATIONLEAKKEY0123456789abcdef'
 finding_set_evidence "$(printf '</script><img src=x onerror=alert(1)> \033[31mANSI\033[0m raw\nnewline \xC3\050 badutf8 ``````fence Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345')"
 finding_emit
 

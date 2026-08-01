@@ -219,6 +219,11 @@ occurrence_next() {
 # ---------------------------------------------------------------------------
 _REDACTION_LOADED=0
 _REDACTION_COMBINED=''
+# Short inputs are memoised: a rule's title and remediation are redacted once per
+# finding and are identical across every finding of that check, and each miss
+# costs an engine fork.  Evidence is usually longer and usually unique, so the
+# size cap keeps the cache small.
+declare -A _REDACT_MEMO=()
 declare -a _REDACTION_IDS=()
 
 # The path argument is optional and defaults to the shipped file.  Callers that
@@ -232,6 +237,7 @@ redaction_load() {
   _REDACTION_LOADED=1
   _REDACTION_COMBINED=''
   _REDACTION_IDS=()
+  _REDACT_MEMO=()
   [[ -r $path ]] || return 0
   records_load "$path" redaction redaction || die "$SCOURSH_EXIT_INPUT" \
     "rules/redaction.rules failed to parse"
@@ -269,9 +275,15 @@ redact() {
     return 0
   fi
   # shellcheck disable=SC2119
+  # shellcheck disable=SC2119
   (( _REDACTION_LOADED )) || redaction_load
   if [[ -z $_REDACTION_COMBINED || -z $text ]]; then
     printf '%s' "$text"
+    return 0
+  fi
+  local memo_key=$text
+  if (( ${#text} <= 512 )) && [[ -n ${_REDACT_MEMO[$text]+set} ]]; then
+    printf '%s' "${_REDACT_MEMO[$text]}"
     return 0
   fi
   # Fast path: one engine call decides whether any rule matches at all, which
@@ -279,6 +291,7 @@ redact() {
   local any
   any=$(printf '%s' "$text" | scan_match_stdin "$_REDACTION_COMBINED" || true)
   if [[ -z $any ]]; then
+    _redact_memoise "$memo_key" "$text"
     printf '%s' "$text"
     return 0
   fi
@@ -295,7 +308,13 @@ redact() {
       text=${text//"$m"/"<redacted:$kind:${d:0:8}>"}
     done <<<"$hits"
   done
+  _redact_memoise "$memo_key" "$text"
   printf '%s' "$text"
+}
+
+_redact_memoise() {
+  (( ${#1} <= 512 )) || return 0
+  _REDACT_MEMO[$1]=$2
 }
 
 # ---------------------------------------------------------------------------
@@ -771,10 +790,32 @@ finding_new() {
   _F[sensitive_data]=false
 }
 
+# Fields that carry TARGET-DERIVED free text and are therefore redacted at the
+# setter.  tension 9 defines redact() as what is written ANYWHERE - "evidence,
+# logs, run.json, JSON, SARIF, Markdown, HTML" - and DESIGN §14 says
+# redact_secrets scrubs secret-matching patterns from all evidence AND reports.
+# Wiring it only into finding_set_evidence left a credential in a crawled URL's
+# query string, in a logical name built from target-supplied method and parameter
+# data, or in an adapter-supplied title or remediation, written out in the clear.
+#
+# `path_template` and `param_name` are fingerprint inputs.  Redacting them is
+# still stable, because redact() is deterministic - the same bytes in always
+# produce the same bytes out - so identity does not churn.
+_finding_redacted_field() {
+  case $1 in
+    title | remediation | url | logical_fqn | loc_path_template | loc_param_name) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 finding_set() {
   local k=$1 v=$2
   _finding_known_field "$k" || die "$SCOURSH_EXIT_INCOMPLETE" \
     "finding_set: unknown field '$k'"
+  if [[ -n $v ]] && _finding_redacted_field "$k"; then
+    findings_ensure_loaded
+    v=$(redact "$v")
+  fi
   _F[$k]=$v
 }
 

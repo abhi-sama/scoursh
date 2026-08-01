@@ -122,8 +122,13 @@ t_case 'no raw secret from the fixture reaches any output'
 # case a single-line pseudo-PEM cannot distinguish: the matcher is line-oriented,
 # so a rule written to swallow the block redacts only the header and writes every
 # base64 body line out in the clear.
+# The *LEAK* markers are planted in location.url, logical.fqn, title and
+# remediation respectively.  Redaction that is wired only into
+# finding_set_evidence writes all four out in the clear.
 for s in wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY12 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-  PEMBODYMARKERONE PEMBODYMARKERTWO; do
+  PEMBODYMARKERONE PEMBODYMARKERTWO \
+  URLLEAKKEY0123456789abcdef FQNLEAKTOKEN0123456789abcdef \
+  TITLELEAKTOKEN0123456789abcdef REMEDIATIONLEAKKEY0123456789abcdef; do
   for f in findings.json findings.jsonl report.html report.md run.json; do
     if /usr/bin/grep -q -F "$s" "$R1/$f" 2>/dev/null; then
       _t_no "no raw secret in $f" "found $s"
