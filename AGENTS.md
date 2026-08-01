@@ -149,6 +149,16 @@ tests/lint-aws-readonly.sh         # read-only AWS lint, docs/FOUNDATION.md tens
 tests/e2e/fixture-scan.sh <dir>    # the end-to-end path on its own, for eyeballing a report
 ```
 
+`package.json` at the repository root exists **only** so the conventional `pnpm test` / `npm test`
+entry point runs the real suite above.
+`pnpm test` is a thin alias for `bash tests/run-tests.sh`: no dependencies, no lockfile, no
+`node_modules`, no build step.
+scoursh has no Node runtime dependency and is not becoming a Node project; the shell entry point,
+`tests/run-tests.sh`, remains the real one and the one to run directly when Node/npm/pnpm are not on
+the box.
+Anyone tempted to add a dependency, a devDependency, or tooling config to `package.json` has
+misunderstood why it exists - don't.
+
 Each suite runs in its own process, because `lib/core.sh` installs traps, sets shell options and owns a
 scratch directory: a suite sharing a shell with another would not be testing what the tool does.
 `shellcheck` runs over everything if it is installed and is skipped with a notice if it is not, since an
