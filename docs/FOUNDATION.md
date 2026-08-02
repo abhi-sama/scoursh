@@ -2626,6 +2626,14 @@ cloud credentials and puts them in the report as evidence.
 
 **RESOLUTION.**
 
+**Entry point.**
+`http_request` is the single chokepoint every network call in scoursh routes through.
+No module, check script, or crawler calls `curl`, a language HTTP client, or any other transport
+primitive directly; every one of them calls `http_request`, and `http_request` is the only place the
+gate logic below runs.
+This is enforced, not just documented: the "No bypass" lint below fails the build the moment a second
+path to the network exists, so the contract cannot silently rot as modules are added in later steps.
+
 **What the gate matches.**
 Each `config/scope.conf` target (block-record format, `rules/RULE-FORMAT.md` §9.4) contributes a set of
 `(scheme, host, port)` tuples, with the port defaulted from the scheme when absent.
@@ -2675,13 +2683,111 @@ A lint fails on any `curl`, `wget`, `nc`, or `openssl s_client` invocation outsi
 `modules/dast/passive/tls.sh`, the latter being the one documented exception, which takes its host from
 the same resolved, gated tuple set.
 
+**Normalization order.**
+Every URL `http_request` is given, whether authored in `scope.conf`, discovered by the crawler, or
+returned in a `Location` header, is put through the same pipeline **before** any gate comparison runs,
+and the pipeline runs exactly once per URL, not once per bypass class:
+
+1. Percent-decode the authority component only (scheme, userinfo, host, port), one pass.
+   A second decode pass is never performed, because decoding twice is itself the bypass: a host authored
+   or matched as `evil` and presented as `%65vil` survives one decode as `evil`, but a value that must
+   stay `%2565vil` (a literal, encoded `%65vil` string some application-layer consumer might re-decode)
+   would be corrupted into `evil` by a second pass.
+   One pass, applied uniformly, is the only rule that is unambiguous to re-implement.
+2. Split the authority into userinfo, host, and port per RFC 3986; **discard userinfo**.
+   `http://allowed@evil/` names host `evil`, not `allowed`; the gate has never looked at userinfo and
+   must not start now, so this step exists to stop userinfo from ever reaching the comparison as if it
+   were the host.
+   `http_request` also refuses to place a non-empty userinfo on the wire at all (`curl -u` is not used
+   from a parsed URL), because a credential embedded in an authored or discovered URL is exactly the
+   shape of value tension 9 requires never touch disk raw or appear in a log; if the check needs
+   authentication it comes from `config/auth.conf`, not from the URL.
+3. Canonicalize a numeric host.
+   A host that parses as an IPv4 or IPv6 literal is normalised to its canonical dotted-quad or
+   compressed-colon form before either the scope-tuple compare or the deny-list compare, which closes
+   every non-canonical numeric spelling as a distinct bypass:
+   - Decimal (`2851995906`), octal (`0251.0.0.1` / `025154325002`), and hex (`0xA9FEA9FE`) IPv4 forms all
+     canonicalize to the same dotted-quad `169.254.169.254` before comparison.
+   - IPv4-mapped and IPv4-compatible IPv6 (`::ffff:169.254.169.254`, `::a9fe:a9fe`) canonicalize to the
+     same address family used by the deny list, so the `169.254.0.0/16` entry catches the IPv6 spelling
+     too.
+   - A host that is a numeric literal in **any** of these forms skips DNS resolution entirely (there is
+     nothing to resolve), so step 4 below applies the deny list to the canonicalized literal directly,
+     not just to the outcome of a lookup; the "IP literals must be authored literally" rule above governs
+     which literals a target may *author*, this step governs what every literal *means* once one appears,
+     authored or discovered.
+4. Lowercase the host, strip one trailing dot, convert IDNs to A-labels (already stated above; repeated
+   here because it is step 4 of one pipeline, not a separate check that could run out of order or be
+   skipped for one call site).
+
+Steps 1-4 are one function, not four call sites a check script could invoke a subset of; a module cannot
+"skip encoding normalization because this call is only ever hit with a literal IP" any more than it can
+skip the deny list, because both live inside `http_request` and neither is reachable independently.
+
+**Redirect-recheck parity.**
+The manual, one-hop-at-a-time redirect loop re-runs the **entire** gate above on each `Location` header,
+including the normalization pipeline, not a lighter host-only comparison.
+A `Location` is untrusted target output (tension 10) before it is anything else, so it goes through the
+identical percent-decode / userinfo-strip / numeric-canonicalize / lowercase-and-dot-strip sequence the
+initial URL does, then the same `(scheme, host, port)` tuple compare and the same resolution-pinning and
+deny-list steps, including a fresh per-hop resolution (each hop is a new host, so the once-per-run
+resolution cache is keyed per resolved host, not per run-start).
+An implementation that fast-paths the redirect check to "just compare the new host string" reintroduces
+every bypass class above one hop later, which is why this is stated as parity with the initial check
+rather than assumed to follow from it.
+
+**Auditability.**
+A caught bypass attempt is not a silent abort.
+Whichever step rejects the URL - deny-list hit, out-of-scope tuple after normalization, a decode that
+changed the host, a non-empty userinfo - produces a scope-violation finding record (same record path the
+existing deny-list-hit abort already uses) carrying the check id, the raw input as given to `http_request`,
+the canonicalized value the gate actually compared, and which pipeline step rejected it.
+The raw and canonicalized values go through `finding_set_evidence` like any other evidence field, so a
+userinfo credential embedded in the rejected URL is redacted (tension 9) rather than landing in the report
+in the clear.
+This is what makes a bypass *attempt* - as opposed to a successful bypass, which by construction cannot
+reach the network - visible to the operator instead of only visible as a process exit code in a log no one
+reads; it is also what lets a future review confirm the gate is actually being exercised by a run rather
+than trivially satisfied because nothing ever tried to violate it.
+
 **Consequence for the build.**
 `lib/http.sh` at §13 step 5 owns the tuple set, the resolution cache, the deny list, and the manual
 redirect loop.
 `config/scope.conf` moves to the block-record format (tension 26), which is what lets `notes` be free
 text and `extra-host` be repeatable.
 Tests cover each bypass in turn: a different port, a subdomain, a redirect to an out-of-scope host, a
-hostname resolving to `169.254.169.254`, and an `http://` probe of an `https://` target.
+hostname resolving to `169.254.169.254`, an `http://` probe of an `https://` target, a percent-encoded
+host that decodes to an in-scope or deny-listed name, a URL carrying userinfo naming an in-scope host
+while the real authority host is out of scope (`http://allowed@evil/`), a decimal/octal/hex IPv4 literal
+for `169.254.169.254`, an IPv4-mapped IPv6 literal for the same address, and a redirect `Location` that
+itself carries one of the encoding bypasses above, to prove the redirect recheck applies the full
+pipeline rather than a host-string compare.
+Each rejected case also asserts a scope-violation finding record was produced (the auditability
+subsection above), not just a non-zero exit, so the audit trail is pinned by the same tests as the
+rejection itself.
+
+**Verification.**
+This resolution is a contract, not yet code (`lib/http.sh` lands at §13 step 5); a reviewer signing off
+before that implementation starts can check the contract itself rather than an implementation:
+
+- `grep -n "Entry point\." docs/FOUNDATION.md` finds the callout naming `http_request` as the single
+  chokepoint (AC1).
+- `grep -n "Normalization order\.\|Redirect-recheck parity\.\|Auditability\." docs/FOUNDATION.md` finds
+  the three subsections covering encoding/authority-confusion, redirect-recheck parity, and audit
+  logging added by this ticket, alongside the pre-existing IP-literal-vs-hostname, redirect, and
+  case/trailing-dot coverage in the same tension, so all four AC2 bypass classes (encoding, IP-literal
+  vs hostname, redirects, case/trailing-dot) are enumerated in one place.
+- `grep -n "percent-encoded\|userinfo\|IPv4-mapped\|decimal.*octal.*hex" docs/FOUNDATION.md` confirms the
+  specific encoding sub-cases (percent-encoding, userinfo/authority confusion, numeric IP-literal
+  obfuscation) the round-1 tech-lead review flagged as missing are now present.
+- `docs/FOUNDATION.md` still has exactly one `## Tension 19` heading and this document remains the sole
+  owner of scope-gate semantics; `grep -rn "scope-gate\|scope gate" docs/` finding no second document
+  making competing claims rules out the doc-fork the tech-lead review also flagged.
+- Sign-off itself is a board action, not a grep: this ticket is handed to `in_review` with this diff
+  attached so a human or the tech-lead role can record an explicit approve/request-changes verdict via
+  `crewban_move_ticket`, per AC3. No `lib/http.sh` or other network-call code is added by this change, so
+  the gate implementation gate ("§13 step 5 does not start until sign-off") is preserved by construction:
+  there is nothing here to have jumped ahead of the sign-off.
 
 ## Tension 20 - paranoid mode versus infrastructure traffic
 
