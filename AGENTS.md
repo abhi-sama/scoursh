@@ -159,6 +159,12 @@ the box.
 Anyone tempted to add a dependency, a devDependency, or tooling config to `package.json` has
 misunderstood why it exists - don't.
 
+`build` is a no-op (`echo` plus `true`) for the same reason `test` is a thin alias: the agent
+platform's hand-off gate runs `pnpm run build --if-present`, and measured behavior on pnpm 10.29.3 is
+that `--if-present` does NOT suppress `ERR_PNPM_NO_SCRIPT` when the `build` key is absent from
+`scripts` entirely - it only no-ops when the key exists. scoursh has no build step; the script exists
+solely so the gate's `--if-present` check has a script to find.
+
 Each suite runs in its own process, because `lib/core.sh` installs traps, sets shell options and owns a
 scratch directory: a suite sharing a shell with another would not be testing what the tool does.
 `shellcheck` runs over everything if it is installed and is skipped with a notice if it is not, since an
