@@ -1,0 +1,153 @@
+# modules/sast/rules/java.rules - docs/DESIGN.md §6.3 "java" seed catalog:
+# Runtime.exec, JDBC statement concatenation, XML parsers without
+# disallow-doctype, unsafe deserialization (readObject), trust-all
+# TrustManager/HostnameVerifier, SpEL/OGNL injection.
+#
+# "Runtime.exec" is deliberately NOT re-implemented here: the §13 step 3a
+# engine ticket's modules/sast/rules/injection.rules already carries
+# `Runtime\.getRuntime\(\)\.exec\(` as one of the alternatives in the
+# language-agnostic SAST-INJ-OS_COMMAND-01 pattern - the exact shape every
+# real Runtime.exec use goes through, since exec() is an INSTANCE method
+# reached only via Runtime.getRuntime(), never a static Runtime.exec(...).
+# Re-declaring it under a new SAST-JAVA-* id would fire two check ids on the
+# same line for the same root cause, following the precedent already set in
+# modules/sast/rules/javascript.rules for child_process.exec and
+# rejectUnauthorized:false.
+#
+# Trust-all TLS and SpEL/OGNL injection are each split into two ids, one per
+# distinct code shape - the javascript.rules precedent for prototype
+# pollution: an X509TrustManager whose checkServerTrusted is a no-op
+# (SAST-JAVA-TRUST_ALL_MANAGER-01) is a different shape from a
+# HostnameVerifier whose verify() unconditionally returns true
+# (SAST-JAVA-TRUST_ALL_HOSTNAME-01); SpEL's ExpressionParser and OGNL's
+# static Ognl helper are two different libraries with two different call
+# shapes, not one pattern wearing two names.
+#
+# SAST-JAVA-XXE_DISALLOW_DOCTYPE-01 is deliberately an ABSENCE check (a
+# factory instantiation with no hardening call nearby), unlike the existing
+# SAST-INJ-XXE-01's PRESENCE check (an explicit insecure flag already set to
+# an unsafe value). An absence check can only be expressed as a
+# `context-deny` with a non-zero window, since the hardening call is always
+# a separate statement and never on the same line as the factory
+# instantiation it protects - rules/RULE-FORMAT.md §10.2's context-window:0
+# MUST binds same-line-intent guards only, so it does not apply here. The
+# resulting W033 advisory is the deliberate, reviewed trade-off §10.2
+# describes; the window is kept as tight as the real idiom allows (3 lines)
+# to limit the false-negative exposure that trade-off accepts.
+
+id: SAST-JAVA-JDBC_SQL_CONCAT-01
+title: JDBC statement executed with a concatenated SQL string
+severity: critical
+confidence: medium
+cwe: CWE-89
+owasp: A03:2021
+pattern: \.execute(Query|Update)?\s*\(
+dialect: ere
+context-require: ["'](SELECT|INSERT|UPDATE|DELETE)[^"']*["'][[:space:]]*\+
+context-window: 3
+files: *.java
+tags: static
+tags: quick
+remediation: Build the query with a PreparedStatement and bind values as parameters
+  instead of concatenating request-derived data into the SQL text passed to
+  Statement.executeQuery()/executeUpdate()/execute().
+references: CWE-89
+
+id: SAST-JAVA-XXE_DISALLOW_DOCTYPE-01
+title: XML parser factory created without disabling DOCTYPE/external entities
+severity: high
+confidence: medium
+cwe: CWE-611
+owasp: A05:2021
+pattern: (DocumentBuilderFactory|SAXParserFactory|XMLInputFactory|TransformerFactory)\.newInstance\s*\(\s*\)
+dialect: ere
+context-deny: (disallow-doctype-decl|FEATURE_SECURE_PROCESSING|setExpandEntityReferences\s*\(\s*false\s*\)|ACCESS_EXTERNAL_DTD)
+context-window: 3
+files: *.java
+tags: static
+remediation: Immediately after creating the factory, disable DOCTYPE declarations (the
+  "http://apache.org/xml/features/disallow-doctype-decl" feature) or external
+  entity/DTD resolution before parsing any untrusted XML.
+references: CWE-611
+
+id: SAST-JAVA-UNSAFE_DESERIALIZATION-01
+title: ObjectInputStream.readObject() used to deserialize untrusted data
+severity: critical
+confidence: medium
+cwe: CWE-502
+owasp: A08:2021
+pattern: \.readObject\s*\(\s*\)
+dialect: ere
+context-require: ObjectInputStream
+context-window: 3
+files: *.java
+tags: static
+tags: quick
+remediation: Do not deserialize untrusted data with Java's native ObjectInputStream;
+  gadget chains in common classpath libraries turn readObject() into arbitrary code
+  execution. Use a schema-constrained format such as JSON, or at minimum install an
+  ObjectInputFilter that allow-lists the exact classes expected.
+references: CWE-502
+
+id: SAST-JAVA-TRUST_ALL_MANAGER-01
+title: X509TrustManager with an empty checkServerTrusted accepts any certificate
+severity: critical
+confidence: high
+cwe: CWE-295
+owasp: A02:2021
+pattern: checkServerTrusted\s*\([^)]*\)\s*\{\s*\}
+dialect: ere
+files: *.java
+tags: static
+tags: quick
+remediation: Implement checkServerTrusted to actually validate the certificate chain
+  against a trust store, or use the platform default TrustManagerFactory instead of a
+  custom one. An empty body accepts every certificate presented, authentic or forged.
+references: CWE-295
+
+id: SAST-JAVA-TRUST_ALL_HOSTNAME-01
+title: HostnameVerifier unconditionally returns true
+severity: critical
+confidence: medium
+cwe: CWE-295
+owasp: A02:2021
+pattern: \bverify\s*\([^)]*\)\s*\{\s*return\s+true;\s*\}
+dialect: ere
+context-require: HostnameVerifier
+context-window: 3
+files: *.java
+tags: static
+remediation: Verify that the presented certificate's hostname actually matches the
+  requested host (HttpsURLConnection.getDefaultHostnameVerifier() or the platform
+  default verifier), instead of returning true unconditionally.
+references: CWE-295
+
+id: SAST-JAVA-SPEL_INJECTION-01
+title: SpEL expression parsed from a non-literal, request-derived value
+severity: critical
+confidence: medium
+cwe: CWE-94
+owasp: A03:2021
+pattern: \.parseExpression\s*\(\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*\)
+dialect: ere
+files: *.java
+tags: static
+remediation: Never pass request-derived data to ExpressionParser.parseExpression().
+  Restrict evaluation to a fixed, developer-authored expression, or evaluate it through
+  a SimpleEvaluationContext with a restricted set of allowed operations.
+references: CWE-94
+
+id: SAST-JAVA-OGNL_INJECTION-01
+title: OGNL expression evaluated from request-derived data
+severity: critical
+confidence: medium
+cwe: CWE-94
+owasp: A03:2021
+pattern: Ognl\.(getValue|setValue)\s*\(
+dialect: ere
+files: *.java
+tags: static
+remediation: Never evaluate an OGNL expression built from request-derived data. Use
+  direct property access or a restricted, allow-listed expression context instead of
+  Ognl.getValue()/setValue() on untrusted input.
+references: CWE-94
