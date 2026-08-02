@@ -20,6 +20,12 @@
 # shellcheck shell=bash
 # shellcheck source=modules/sast/engine.sh
 source "${BASH_SOURCE[0]%/*}/engine.sh"
+# history.sh (docs/DESIGN.md §6.3, §13 step 3e) is the module that deliberately
+# DOES read git history; it is its own pure function library, sourced here
+# exactly like engine.sh, and its real work only happens when
+# _sast_history_run is called below.
+# shellcheck source=modules/sast/history.sh
+source "${BASH_SOURCE[0]%/*}/history.sh"
 
 _sast_run_module() {
   local path=${_SCAN_RESOLVED_PATH:-.}
@@ -28,29 +34,35 @@ _sast_run_module() {
     # _scan_apply_profile_filter already recorded coverage_reduction for this
     # (module=sast reason=no_check_registry_on_disk_yet); nothing more to do.
     log_warn 'sast: no pattern-rule registry on disk under modules/sast/rules/ - nothing to scan'
-    return 0
-  fi
-
-  sast_index_checks
-
-  local -a ids=()
-  local id
-  for id in "${CHECKS_LAST_SELECTED_IDS[@]+"${CHECKS_LAST_SELECTED_IDS[@]}"}"; do
-    [[ -n ${_SAST_CHECK_LOC[$id]:-} ]] || continue
-    ids+=("$id")
-    run_record checks_run "$id"
-  done
-
-  if (( ${#ids[@]} == 0 )); then
-    run_record coverage_reduction 'module=sast reason=no_checks_selected'
   else
-    sast_scan_tree "$path" "${ids[@]+"${ids[@]}"}"
+    sast_index_checks
+
+    local -a ids=()
+    local id
+    for id in "${CHECKS_LAST_SELECTED_IDS[@]+"${CHECKS_LAST_SELECTED_IDS[@]}"}"; do
+      [[ -n ${_SAST_CHECK_LOC[$id]:-} ]] || continue
+      ids+=("$id")
+      run_record checks_run "$id"
+    done
+
+    if (( ${#ids[@]} == 0 )); then
+      run_record coverage_reduction 'module=sast reason=no_checks_selected'
+    else
+      sast_scan_tree "$path" "${ids[@]+"${ids[@]}"}"
+    fi
+
+    # tension 16's parallel workers (rate limiter, request budget, circuit
+    # breaker) land at §13 step 5; this run is single-worker, honestly declared
+    # rather than silently claimed as parallel.
+    run_record coverage_reduction 'module=sast reason=single_worker_no_parallel_scan_yet'
   fi
 
-  # tension 16's parallel workers (rate limiter, request budget, circuit
-  # breaker) land at §13 step 5; this run is single-worker, honestly declared
-  # rather than silently claimed as parallel.
-  run_record coverage_reduction 'module=sast reason=single_worker_no_parallel_scan_yet'
+  # Independent of the working-tree registry above: history.sh replays only
+  # modules/sast/rules/secrets.rules (loaded directly, not through
+  # CHECKS_REGISTRY_SETS), and _sast_history_run's own gates (--history
+  # requested, scan root is a git repo, not shallow, has commits) decide
+  # whether it does anything at all.
+  _sast_history_run "$path"
 
   findings_merge "$SCOURSH_RUN_DIR"
   derive_findings "$SCOURSH_RUN_DIR"
