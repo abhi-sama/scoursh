@@ -137,6 +137,21 @@ t_case 'an invalid enum value'
 assert_status 2 "'--profile-scan bogus' is not quick|full|compliance" \
   scan_parse_args sast --profile-scan bogus --path .
 
+t_case "scan_validate_flag_value's profile-scan/intensity branches are driven directly off lib/checks.sh's CHECKS_PROFILES/CHECKS_INTENSITIES (checks_valid_profile/checks_valid_intensity), not a separately hardcoded regex here - walks both arrays so a name added to one array alone is caught here rather than only at the lib/checks.sh layer"
+for _p in "${CHECKS_PROFILES[@]}"; do
+  assert_status 0 "scan_validate_flag_value accepts profile-scan='$_p' (a CHECKS_PROFILES member)" \
+    scan_validate_flag_value profile-scan "$_p"
+done
+assert_status 1 "scan_validate_flag_value rejects profile-scan='bogus' (not a CHECKS_PROFILES member)" \
+  scan_validate_flag_value profile-scan bogus
+for _i in "${CHECKS_INTENSITIES[@]}"; do
+  assert_status 0 "scan_validate_flag_value accepts intensity='$_i' (a CHECKS_INTENSITIES member)" \
+    scan_validate_flag_value intensity "$_i"
+done
+assert_status 1 "scan_validate_flag_value rejects intensity='bogus' (not a CHECKS_INTENSITIES member)" \
+  scan_validate_flag_value intensity bogus
+unset _p _i
+
 t_case 'a non-numeric --jobs'
 assert_status 2 "'--jobs abc' is not a positive integer" \
   scan_parse_args sast --jobs abc --path .

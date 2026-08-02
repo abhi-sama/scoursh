@@ -172,13 +172,21 @@ checks_is_intrusive() { checks_has_tag "$1" "$2" intrusive; }
 # ---------------------------------------------------------------------------
 
 # checks_profile_keeps SET IDX PROFILE - filter 1: the profile TAG filter.
+# `checks_valid_profile` (the CHECKS_PROFILES membership check) is the GATE:
+# anything it rejects keeps nothing, full stop, so "which names are legal" has
+# exactly one place it is decided.  The `case` below is a SECOND, necessary
+# thing - which TAG each legal name maps to - that membership alone cannot
+# answer; tests/suites/checks.sh's "profile/intensity name/behaviour agree
+# with the arrays" block below walks CHECKS_PROFILES and fails if a name ever
+# passes the gate without a matching arm here (or vice versa), so the two
+# cannot silently drift apart even though they remain two pieces of code.
 checks_profile_keeps() {
   local set=$1 idx=$2 profile=$3
+  checks_valid_profile "$profile" || return 1
   case $profile in
     full) return 0 ;;
     quick) checks_has_tag "$set" "$idx" quick ;;
     compliance) checks_has_tag "$set" "$idx" compliance ;;
-    *) return 1 ;;   # not one of the three named profiles: keep nothing
   esac
 }
 
@@ -187,9 +195,15 @@ checks_profile_keeps() {
 # one, e.g. a module with no --intensity concept); every OTHER value must be
 # one of the three named tiers or nothing is kept, same "unknown means keep
 # nothing" discipline as checks_profile_keeps.
+# Same "membership is one gate, tier-behaviour is a second thing" split as
+# checks_profile_keeps, above, for the same reason: checks_valid_intensity
+# (CHECKS_INTENSITIES membership) decides which names are legal at all; the
+# `case` below decides which type tags each legal tier's ceiling admits, which
+# membership alone cannot answer.  Also walked by the agreement test.
 checks_intensity_keeps() {
   local set=$1 idx=$2 intensity=$3 type
   [[ -n $intensity ]] || return 0
+  checks_valid_intensity "$intensity" || return 1
   type=$(checks_type_tag "$set" "$idx")
   [[ $type != derived ]] || return 0   # finding F8: composites are exempt
   case $intensity in
@@ -197,7 +211,6 @@ checks_intensity_keeps() {
     safe) [[ $type == passive || $type == config-read || $type == posture || $type == static || $type == safe-active ]] ;;
     active) [[ $type == passive || $type == config-read || $type == posture || $type == static \
       || $type == safe-active || $type == active ]] ;;
-    *) return 1 ;;
   esac
 }
 

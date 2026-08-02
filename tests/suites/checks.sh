@@ -36,6 +36,24 @@ assert_status 0 'safe is a valid intensity' checks_valid_intensity safe
 assert_status 0 'active is a valid intensity' checks_valid_intensity active
 assert_status 1 "'bogus' is not a valid intensity" checks_valid_intensity bogus
 
+t_case 'CHECKS_PROFILES/CHECKS_INTENSITIES are the single source of truth: checks_valid_profile/checks_valid_intensity accept exactly the array members and nothing else'
+# Guards against the two arrays and the checks_valid_* membership loops
+# silently disagreeing (they read the same array, so this mostly proves the
+# arrays themselves have not grown a stray entry) - the case statements this
+# pins are checks_profile_keeps/checks_intensity_keeps and
+# scan.sh's scan_validate_flag_value, both exercised below.
+assert_eq 'quick full compliance' "${CHECKS_PROFILES[*]}" \
+  'CHECKS_PROFILES is exactly the three documented profile names, in the order the header comment documents them'
+assert_eq 'passive safe active' "${CHECKS_INTENSITIES[*]}" \
+  'CHECKS_INTENSITIES is exactly the three documented tiers, in ceiling order'
+for _p in "${CHECKS_PROFILES[@]}"; do
+  assert_status 0 "checks_valid_profile accepts '$_p' (a CHECKS_PROFILES member)" checks_valid_profile "$_p"
+done
+for _i in "${CHECKS_INTENSITIES[@]}"; do
+  assert_status 0 "checks_valid_intensity accepts '$_i' (a CHECKS_INTENSITIES member)" checks_valid_intensity "$_i"
+done
+unset _p _i
+
 # =============================================================================
 printf -- '\n-- loading the fixture registry --\n'
 # =============================================================================
@@ -129,6 +147,18 @@ BOGUS_SEL=$(checks_select bogus '' false "$DAST_SET")
 assert_eq '' "$BOGUS_SEL" \
   "checks_select with profile='bogus' selects zero checks - fails under 'an unrecognised profile falls back to full'"
 
+t_case "checks_profile_keeps has a real, non-default-fallthrough arm for EVERY CHECKS_PROFILES member - fails if a profile is ever added to the array without a matching case arm (the drift QA flagged: a case statement with no matching pattern and no '*)' returns 0, i.e. silently KEEPS a check it should have filtered)"
+for _p in "${CHECKS_PROFILES[@]}"; do
+  if [[ $_p == full ]]; then
+    assert_status 0 "'$_p' keeps DAST-HDR-HSTS-01 (no profile tags at all) - full's documented behaviour" \
+      checks_profile_keeps "$DAST_SET" "$(_idx_of DAST-HDR-HSTS-01)" "$_p"
+  else
+    assert_status 1 "'$_p' drops DAST-HDR-HSTS-01 (carries neither a quick nor a compliance tag) - would wrongly pass (fallthrough bug) if this profile's case arm went missing" \
+      checks_profile_keeps "$DAST_SET" "$(_idx_of DAST-HDR-HSTS-01)" "$_p"
+  fi
+done
+unset _p
+
 # =============================================================================
 printf -- "\n-- filter 2: --intensity (the type-tag ceiling) --\n"
 # =============================================================================
@@ -160,6 +190,20 @@ assert_eq "$QUICK_ONLY_SEL" "$QA_SEL" \
 t_case "'' (no ceiling) keeps everything, independent of type tag"
 NONE_SEL=$(checks_select full '' true "$DAST_SET")
 assert_contains "$NONE_SEL" 'DAST-INJ-SQLI-01' 'active check kept when no intensity ceiling is applied at all'
+
+t_case "checks_intensity_keeps has a real, non-default-fallthrough arm for EVERY CHECKS_INTENSITIES member - same drift guard as checks_profile_keeps above, using DAST-INJ-SQLI-01 (type: active), which only 'active' admits"
+for _i in "${CHECKS_INTENSITIES[@]}"; do
+  if [[ $_i == active ]]; then
+    assert_status 0 "'$_i' keeps DAST-INJ-SQLI-01 (type: active) - the top tier's documented behaviour" \
+      checks_intensity_keeps "$DAST_SET" "$(_idx_of DAST-INJ-SQLI-01)" "$_i"
+  else
+    assert_status 1 "'$_i' drops DAST-INJ-SQLI-01 (type: active, above this tier's ceiling) - would wrongly pass (fallthrough bug) if this tier's case arm went missing" \
+      checks_intensity_keeps "$DAST_SET" "$(_idx_of DAST-INJ-SQLI-01)" "$_i"
+  fi
+  assert_status 0 "'$_i' keeps DAST-DISC-CRAWL-01 (type: config-read) - inside every tier's ceiling" \
+    checks_intensity_keeps "$DAST_SET" "$(_idx_of DAST-DISC-CRAWL-01)" "$_i"
+done
+unset _i
 
 # =============================================================================
 printf -- "\n-- filter 3: --allow-intrusive --\n"
@@ -225,7 +269,18 @@ rm -rf "$W"
 mkdir -p "$W"
 run_init "$W/run1"
 
-checks_record_run_selection quick passive false "$DAST_SET"
+# Captured via a `{ ...; } 2>file` GROUP, not `$(...)`: checks_record_run_selection's
+# own comment requires it be called directly, never through a command
+# substitution subshell (CHECKS_LAST_SELECTED_IDS below would silently stay
+# empty otherwise).  A `{ }` group redirects this shell's stderr for the
+# duration without forking one, so the discipline holds while still letting
+# the test capture what log_warn wrote.
+RUN1_WARN_LOG=$W/run1-warn.log
+{ checks_record_run_selection quick passive false "$DAST_SET"; } 2>"$RUN1_WARN_LOG"
+
+t_case "checks_record_run_selection logs a warning naming the flag that won and the count of checks it dropped - docs/FOUNDATION.md tension 15's own quoted requirement, previously implemented (checks_record_run_selection's log_warn call) but untested"
+assert_contains "$(cat "$RUN1_WARN_LOG")" "profile filter 'profile-scan=quick' dropped 3 check(s)" \
+  "names the flag ('profile-scan=quick') and the count (3: HSTS-01, IDOR-01, SQLI-01, all dropped by profile-scan per the skipped_checks assertions below) - fails under 'no warning is logged' or under a wrong flag/count"
 
 t_case 'selected checks landed in meta/checks_selected'
 assert_file_exists "$W/run1/meta/checks_selected" 'meta/checks_selected was written'
@@ -242,6 +297,21 @@ assert_contains "$(cat "$W/run1/meta/skipped_checks")" 'check=DAST-INJ-SQLI-01 s
 
 t_case 'CHECKS_LAST_SELECTED_IDS reflects exactly the selected set'
 assert_eq 2 "${#CHECKS_LAST_SELECTED_IDS[@]}" 'two checks selected under quick+passive (CSP and discovery)'
+
+# Run AFTER every RUN1/CHECKS_LAST_SELECTED_IDS assertion above, deliberately:
+# checks_record_run_selection overwrites CHECKS_LAST_SELECTED_IDS on every
+# call, so a second call earlier would make the assertion above see this
+# call's ids instead of RUN1's.
+W2=$SCOURSH_SCRATCH/checks-nowarn
+rm -rf "$W2"
+mkdir -p "$W2"
+run_init "$W2/run1"
+RUN2_WARN_LOG=$W2/run1-warn.log
+{ checks_record_run_selection full '' true "$DAST_SET"; } 2>"$RUN2_WARN_LOG"
+
+t_case 'checks_record_run_selection logs NO warning when every check survives every filter'
+assert_eq '' "$(cat "$RUN2_WARN_LOG")" \
+  "full + no intensity ceiling + --allow-intrusive selects all 5 fixture checks, so dropped_by is empty - fails under 'a warning is logged unconditionally, even with nothing dropped'"
 
 t_summary 'checks' || FAILED=1
 exit "${FAILED:-0}"

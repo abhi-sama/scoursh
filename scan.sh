@@ -260,8 +260,18 @@ _scan_validate_csv() {
 scan_validate_flag_value() {
   local flag=$1 val=$2
   case $flag in
-    profile-scan) [[ $val =~ ^(quick|full|compliance)$ ]] ;;
-    intensity) [[ $val =~ ^(passive|safe|active)$ ]] ;;
+    # Delegate to lib/checks.sh's own CHECKS_PROFILES/CHECKS_INTENSITIES
+    # membership checks rather than re-stating the three/three names as a
+    # third hardcoded regex here: lib/checks.sh is sourced (step 1, above)
+    # before this function is ever called, so checks_valid_profile/
+    # checks_valid_intensity are always available by the time a flag is
+    # actually parsed.  This is the single source of truth for "which names
+    # are legal" that lib/checks.sh's own checks_profile_keeps/
+    # checks_intensity_keeps gate on too (see their comments) - add a profile
+    # or intensity tier by editing CHECKS_PROFILES/CHECKS_INTENSITIES once,
+    # here included, rather than three places in lockstep.
+    profile-scan) checks_valid_profile "$val" ;;
+    intensity) checks_valid_intensity "$val" ;;
     fail-on) [[ $val =~ ^(critical|high|medium|low|info|none)$ ]] ;;
     min-confidence) [[ $val =~ ^(high|medium|low)$ ]] ;;
     jobs) [[ $val =~ ^[1-9][0-9]*$ ]] ;;
