@@ -618,8 +618,13 @@ assert_eq unknown "${out%%$'\t'*}" 'the cell where the contributor could have fi
 
 t_case 'case 5: the composite record itself was dropped by a filter -> unknown'
 # Fails when condition (a) is omitted: the round-2 rule returns
-# `fixed (chain broken)` with all contributors present and the chain fully open,
-# because `derived` is a type tag in no --intensity tier.
+# `fixed (chain broken)` with all contributors present and the chain fully open.
+# SCOURSH_SELECTED_CHECKS is set directly here rather than through
+# lib/checks.sh's real filter chain, so this pins condition (a) independent of
+# WHICH filter did the dropping - originally --intensity active (before
+# finding F8 exempted `derived` from the intensity ceiling), now realistically
+# --profile-scan or --allow-intrusive; docs/FOUNDATION.md tension 6's own case
+# 5 note says the same.
 printf 'fpA\tSAST-A-A-01\t.\t\nfpC\tSAST-C-C-01\t.\t\n' >"$PS"
 printf 'SAST-A-A-01\t.\nSAST-B-B-01\t.\nSAST-C-C-01\t.\n' >"$CN"
 out=$(SCOURSH_SELECTED_CHECKS='SAST-A-A-01' classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' "$PS" "$CN" "$CP" '')

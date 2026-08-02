@@ -248,6 +248,66 @@ assert_file_exists "$W/run-good-scanner/meta/coverage_reduction" \
   'this time scan_dispatch DID run and recorded the declared skip'
 
 # =============================================================================
+printf -- '\n-- lib/checks.sh wiring: --profile-scan actually changes which checks run --\n'
+# =============================================================================
+# A fixture install root carrying a REAL on-disk check registry (unlike every
+# other fixture root above, which has none - this is the one that proves
+# checks_registry_load's glob really does pick up a file once it exists,
+# rather than only being exercised directly against tests/suites/checks.sh's
+# own fixture).
+mkdir -p "$W/root-with-checks/config" "$W/root-with-checks/modules/sast/rules"
+printf 'id: scanner\njobs: 2\n' >"$W/root-with-checks/config/scanner.conf"
+cp "$ROOT/tests/fixtures/checks-registry/modules/sast/rules/demo.rules" \
+  "$W/root-with-checks/modules/sast/rules/demo.rules"
+# Canonicalised (`cd && pwd -P`), NOT just "$W/root-with-checks": lib/records.sh
+# resolves every loaded file's path via realpath and strips $SCOURSH_INSTALL_ROOT
+# as a literal prefix, so the two must agree on the canonical form or the
+# strip silently fails and every fixture check hits E070.  This matters here
+# specifically because $SCOURSH_SCRATCH (which $W descends from) is built
+# under $TMPDIR, and macOS's $TMPDIR resolves through a `/var` -> `/private/var`
+# symlink - measured, not assumed (docs/FOUNDATION.md's own "measured, not
+# assumed" discipline). Every fixture root ABOVE this point in the file never
+# hit this because they only ever load files through explicit-schema calls
+# (config_load_or_die), which never consults the path table at all.
+ROOT_WITH_CHECKS=$(cd -- "$W/root-with-checks" && pwd -P)
+
+t_case '--profile-scan quick against a real on-disk registry records only the quick-tagged check as run'
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_CHECKS assert_status 0 \
+  'sast --profile-scan quick succeeds' \
+  _run_main sast --path . --profile-scan quick --out "$W/run-quick"
+assert_contains "$(cat "$W/run-quick/meta/checks_selected")" 'SAST-GEN-DEMO_QUICK-01' \
+  'the quick+compliance-tagged fixture rule is recorded as run'
+assert_not_contains "$(cat "$W/run-quick/meta/checks_selected")" 'SAST-GEN-DEMO_FULL-01' \
+  'the full-only fixture rule is NOT recorded as run under --profile-scan quick'
+assert_contains "$(cat "$W/run-quick/meta/skipped_checks")" \
+  'check=SAST-GEN-DEMO_FULL-01 skipped_by=profile-scan=quick' \
+  'the full-only rule is recorded as skipped, with the profile-scan reason - this ticket''s 1st acceptance criterion, end to end'
+
+t_case '--profile-scan full (or the default, no flag at all) against the SAME registry records both'
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_CHECKS assert_status 0 \
+  'sast with no --profile-scan defaults to full' \
+  _run_main sast --path . --out "$W/run-full"
+assert_contains "$(cat "$W/run-full/meta/checks_selected")" 'SAST-GEN-DEMO_QUICK-01' \
+  'quick-tagged rule still runs under the default'
+assert_contains "$(cat "$W/run-full/meta/checks_selected")" 'SAST-GEN-DEMO_FULL-01' \
+  "full-only rule ALSO runs under the default - fails under 'no --profile-scan silently narrows the scan'"
+assert_file_absent "$W/run-full/meta/skipped_checks" \
+  'nothing was skipped under full - both fixture rules ran, so meta/skipped_checks was never written'
+
+t_case "an unknown --profile-scan value is refused at the CLI layer, never reaches the registry (this ticket's 2nd acceptance criterion)"
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_CHECKS assert_status 2 \
+  "'--profile-scan bogus' dies exit 2, not a silent fallback to full" \
+  _run_main sast --path . --profile-scan bogus --out "$W/run-bogus-profile"
+
+t_case 'a module with no registry on disk still exits 0 and declares why, distinctly from "no run.sh yet"'
+SCOURSH_INSTALL_ROOT=$ROOT_OK_SCANNER assert_status 0 \
+  'sca (no modules/sca/ under this fixture root) still succeeds' \
+  _run_main sca --path . --out "$W/run-no-registry"
+assert_contains "$(cat "$W/run-no-registry/meta/coverage_reduction")" \
+  'module=sca reason=no_check_registry_on_disk_yet' \
+  'the filter-chain reason is recorded distinctly from scan_dispatch''s own not_yet_built reason'
+
+# =============================================================================
 printf '\n-- real end-to-end: scan.sh executed as an actual script, not sourced --\n'
 # =============================================================================
 _bin_run() {

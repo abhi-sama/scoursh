@@ -92,7 +92,7 @@ Each has a full entry in `docs/FOUNDATION.md`.
 
 `docs/DESIGN.md` §13 gives the build order, in ten steps, starting with `lib/core.sh` / `lib/findings.sh` / `lib/report.sh` and ending with SARIF plus the compliance report plus docs.
 
-**Current position: §13 step 1 is done. The next task is step 2.**
+**Current position: §13 step 1 and step 2 are done. The next task is step 3.**
 
 **One piece of step 5 landed out of sequence: `lib/http.sh` (the scope-gate chokepoint,
 docs/FOUNDATION.md tension 19) now exists**, built and reviewed as its own ticket once tension 19's
@@ -109,9 +109,24 @@ end-to-end path under `tests/e2e/`, and the test suite.
 The six findings that blocked it (F13, F14, F12, F15, F16, and F18 by consequence) are **closed**, each
 in the tension that owns it; see `docs/FOUNDATION.md` "Known follow-ups".
 
-**What step 1 deliberately did not build**, so the boundary is not rediscovered: `scan.sh`, anything
-under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
-shipped rule pack, and `state/`.
+Step 2 delivered `scan.sh` (the §5 CLI grammar, tension 14's exit-code precedence, and wiring
+`lib/config.sh` ahead of dispatch) and, in a later ticket, `lib/checks.sh` (tension 15's check-set
+filter chain and registry loader, wired into `scan.sh` via `_scan_apply_profile_filter` ahead of every
+`scan_dispatch`).
+Findings F3 (which of two incompatible readings decides the `compliance` profile - settled on the TAG
+reading) and F8 (`derived` checks are exempt from the `--intensity` ceiling) are **closed** as part of
+that; see their entries in `docs/FOUNDATION.md` "Known follow-ups", and tension 15's own RESOLUTION,
+both amended in the same change.
+`lib/checks.sh` also wires `SCOURSH_SELECTED_CHECKS`, the env var `lib/findings.sh`'s
+`_derived_record_selected` was already reading at step 1 in anticipation of this filter chain landing.
+
+**What steps 1 and 2 deliberately did not build**, so the boundary is not rediscovered: anything under
+`modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any shipped
+rule pack, and `state/`.
+Every `scan_dispatch` call remains a logged `coverage_reduction` no-op (`reason=not_yet_built`), and
+every `_scan_apply_profile_filter` call finds an empty check registry (`reason=
+no_check_registry_on_disk_yet`), until a module actually ships one - both mechanisms are real and
+tested against fixtures, they simply have nothing on disk to find yet.
 Diff classification (tension 12) and baseline suppression (tension 11 steps 5 and 6) belong to step 7;
 step 1 ships the primitives they call - the merge, the fingerprint, `findings_mark_suppressed`, and
 `classify_derived`, which is pure and already tested against tension 6's whole case table.
@@ -148,9 +163,9 @@ Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start
 ## Tests
 
 ```
-tests/run-tests.sh                 # everything: five suites plus four linters
+tests/run-tests.sh                 # everything: eight suites plus four linters
 tests/run-tests.sh --list          # what is available
-tests/run-tests.sh records         # one suite: records | core | config | findings | report | http | e2e
+tests/run-tests.sh records         # one suite: records | core | config | checks | findings | report | http | e2e | scan
 tests/run-tests.sh lint-rules      # or one linter by name
 tests/lint-rules.sh                # record-format linter, error codes in rules/RULE-FORMAT.md §13
 tests/lint-shell.sh                # the tension 4, 9, 24 and 26 shell lints

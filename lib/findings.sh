@@ -1705,12 +1705,15 @@ classify_derived() {
 
   # (a) Own selection.  A composite has no coverage cell, so tension 12's
   # (check, cell) test cannot protect it, and nothing else asks whether the
-  # composite record itself survived tension 15's filter chain.  It frequently
-  # does not: `derived` is a type tag in no --intensity tier, so
-  # `scan.sh all --intensity active` drops every composite.  Without (a),
-  # `scan.sh all` followed by `scan.sh all --intensity active` classifies the
-  # flagship composite `fixed (chain broken)` with all three contributors still
-  # present and the chain fully open.
+  # composite record itself survived tension 15's filter chain.  It still can
+  # not: `--profile-scan quick` drops any composite with no `quick` tag, and
+  # `--allow-intrusive` off drops one tagged `intrusive` (lib/checks.sh
+  # exempts `derived` from the --intensity ceiling specifically - finding F8 -
+  # so --intensity alone no longer does this, but the other two filters
+  # still can).  Without (a), `scan.sh all` followed by
+  # `scan.sh all --profile-scan quick` classifies the flagship composite
+  # `fixed (chain broken)` with all three contributors still present and the
+  # chain fully open.
   if ! _derived_record_selected "$check_id"; then
     printf 'unknown\tcomposite-not-selected'
     return 0
