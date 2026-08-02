@@ -363,6 +363,36 @@ if command -v git >/dev/null 2>&1; then
   assert_eq "git-local:$(realpath_of "$W/commitless")" "$(scan_root_id_of "$W/commitless")" \
     'a commit-less repository has a DEFINED id (the root-commit recipe returned nothing)'
 
+  t_case 'a stray GLOBAL git config does not collide two remote-less repos onto one id'
+  # tension 12, round 5 ("`git config --get` reads global config"): a bare
+  # `git config --get remote.origin.url` also consults the GLOBAL config, so a
+  # stray `remote.origin.url` in a developer's or a CI runner's global
+  # gitconfig - not implausible, since some setups template one - would make
+  # scan_root_id_of() read the SAME remote for every remote-less repository on
+  # the box.  scan_root_id is a persisted cell-comparability key (the same one
+  # the `_strip_userinfo` cases above pin), so two UNRELATED repositories would
+  # collapse onto one `git-remote:` id and their `path-root` cells would become
+  # wrongly comparable, defeating tension 12's "never infer fixed across
+  # incomparable scopes" for them through a second channel.  The fix is
+  # `git -C "$root" config --local --get remote.origin.url` (lib/core.sh);
+  # this fails under the same call with `--local` dropped, which is the exact
+  # regression the round-5 finding describes.
+  GLOBAL_CONF=$W/global-gitconfig
+  printf '[remote "origin"]\n\turl = https://global.example/leaked/proj\n' >"$GLOBAL_CONF"
+  export GIT_CONFIG_GLOBAL=$GLOBAL_CONF
+  rm -rf "$W/remoteless-a" "$W/remoteless-b"
+  git init -q "$W/remoteless-a"
+  git init -q "$W/remoteless-b"
+  id_a=$(scan_root_id_of "$W/remoteless-a")
+  id_b=$(scan_root_id_of "$W/remoteless-b")
+  unset GIT_CONFIG_GLOBAL
+  assert_eq "git-local:$(realpath_of "$W/remoteless-a")" "$id_a" \
+    'repo A ignores the global remote and falls back to git-local'
+  assert_eq "git-local:$(realpath_of "$W/remoteless-b")" "$id_b" \
+    'repo B ignores the global remote too'
+  assert_ne "$id_a" "$id_b" \
+    'two unrelated remote-less repos still get DIFFERENT ids, so their cells are never wrongly comparable'
+
   t_case 'the path-root cell is cwd-independent'
   rm -rf "$W/repo"
   mkdir -p "$W/repo/src"
