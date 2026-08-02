@@ -92,7 +92,57 @@ Each has a full entry in `docs/FOUNDATION.md`.
 
 `docs/DESIGN.md` §13 gives the build order, in ten steps, starting with `lib/core.sh` / `lib/findings.sh` / `lib/report.sh` and ending with SARIF plus the compliance report plus docs.
 
-**Current position: §13 step 1 and step 2 are done. The next task is step 3.**
+**Current position: §13 steps 1 and 2 are done, and step 3 is under way.**
+Step 3's sub-steps 3a, 3b, and 3c have landed on `dev`.
+Step 3 as a whole is not finished: `docs/DESIGN.md` §13 step 3 also calls for "the other languages"
+beyond what 3a-3c seeded, plus `history.sh` (the `SAST-HIST-*` mechanism, tension 13), and neither
+has landed yet.
+The next task is the remainder of step 3.
+
+**Step 3a-3c shipped the SAST module.**
+Three tickets landed, in this order:
+
+- **3a** (`6f25a67`, "SAST: native pattern engine + seed secrets/crypto/injection/python rules")
+  shipped `modules/sast/engine.sh` (the native pattern engine: walks the repo, applies per-language
+  rule packs, matches only through `lib/core.sh`'s `scan_match` family per tension 4 rule 2, and
+  implements the `context` directive - the first ticket to evaluate it at all), `modules/sast/run.sh`
+  (the `scan_dispatch sast` entry point, sourced rather than subprocessed per its own header), and
+  four rule packs: `modules/sast/rules/secrets.rules`, `crypto.rules`, `injection.rules`, and
+  `python.rules`.
+  It also closed finding F4 (the `context-deny` window contradiction between `rules/RULE-FORMAT.md`
+  §12.1 and §12.2); see `docs/FOUNDATION.md` "Known follow-ups" for the closure detail.
+- **3c** (`754a994`, "SAST: seed Go rule pack") shipped `modules/sast/rules/go.rules`.
+  It landed before 3b in commit order even though it is lettered after it; the letter is a step-3
+  sub-label from the ticket titles, not a landing-order guarantee.
+- **3b** (`446f642`, "SAST: seed JS/TS rule pack") shipped `modules/sast/rules/javascript.rules`.
+
+`modules/sast/rules/` now holds **six** packs on disk: `secrets.rules`, `crypto.rules`,
+`injection.rules`, `python.rules`, `go.rules`, and `javascript.rules`.
+Do not undercount this to the five named in an individual ticket's own description - a ticket written
+before 3c landed, or one that only tracked 3a/3b, will list five; check the directory, not the ticket
+text.
+
+**Findings still open after 3a-3c, and the step each is inherited by:**
+
+- **F5 and F20** - `rules/derived.rules` still does not seed `COMPOSITE-TOKEN-HIJACK`, because its
+  contributors do not exist until steps 5 and 6.
+  Seeding it now is a guaranteed `E051`/`E060` lint failure.
+- **F17** - `aws_ro` pins `--no-cli-pager`, which AWS CLI v1 rejects.
+  Lands with step 6 (cloud), when `lib/awscli.sh`'s first real caller ships.
+- **F16's `look` half** - the O(n) `grep -F` fallback cost for SCA lookups.
+  Lands with step 4 (SCA), which has not started.
+
+F3, F4, and F8 are closed (F3 and F8 as of step 2's `lib/checks.sh`; F4 as of 3a above); do not
+re-flag them.
+
+**`main` can lag `dev` - check `dev`, not just `main`, before declaring a dependency unlanded.**
+This project develops on `dev` and merges to `main` in batches, so a checkout of `main` can be several
+merged tickets behind what `dev` already has.
+An earlier agent run on the 3b ticket read a `main` checkout where `modules/` was genuinely still
+absent, concluded the 3a dependency (and this stale memory) meant the work hadn't landed, and moved the
+ticket to `blocked` - when 3a had in fact already merged to `dev`.
+Before concluding a dependency is missing, check the actual workspace branch and, if it is behind, check
+`dev`'s tip rather than trusting `main` or this file's prose alone.
 
 **One piece of step 5 landed out of sequence: `lib/http.sh` (the scope-gate chokepoint,
 docs/FOUNDATION.md tension 19) now exists**, built and reviewed as its own ticket once tension 19's
@@ -100,8 +150,8 @@ contract itself was signed off, rather than waiting for steps 2-4.  It has no de
 SAST, or SCA/IaC - it is a self-contained URL-normalization/tuple-match/deny-list/redirect-loop library
 over `config/scope.conf` - so pulling it forward cost nothing those steps would otherwise have blocked.
 `modules/dast/`, the rate limiter/request budget/circuit breaker (tension 16), and IDN/general-IPv6-CIDR
-support (both explicitly out of scope for this ticket) still arrive at step 5 proper.  Step 2 (`scan.sh`
-skeleton, scan profiles) is still the next task; do not read this paragraph as "step 5 is done."
+support (both explicitly out of scope for this ticket) still arrive at step 5 proper.  Do not read this
+paragraph as "step 5 is done" - see "Current position" above for what is actually next.
 
 Step 1 delivered `lib/records.sh`, `lib/core.sh`, `lib/findings.sh` and `lib/report.sh`, plus
 `rules/redaction.rules`, `data/severity-rubric.conf`, the `config/*.example` files, a fixture
@@ -123,10 +173,18 @@ both amended in the same change.
 **What steps 1 and 2 deliberately did not build**, so the boundary is not rediscovered: anything under
 `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any shipped
 rule pack, and `state/`.
-Every `scan_dispatch` call remains a logged `coverage_reduction` no-op (`reason=not_yet_built`), and
-every `_scan_apply_profile_filter` call finds an empty check registry (`reason=
-no_check_registry_on_disk_yet`), until a module actually ships one - both mechanisms are real and
-tested against fixtures, they simply have nothing on disk to find yet.
+`lib/http.sh` landed anyway, out of sequence - see above.
+**Step 3a-3c then filled in one corner of that gap**: `modules/sast/` and its six rule packs now
+exist, so `scan_dispatch sast` no longer no-ops and `_scan_apply_profile_filter` finds a non-empty
+registry for SAST checks.
+Everything else in the original list is still true: `modules/dast/`, `modules/sca/`, `modules/iac/`,
+`modules/cloud/`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, and `state/` do not
+exist yet, and `modules/sast/` itself has no `history.sh`.
+Every `scan_dispatch` call for a module other than `sast` remains a logged `coverage_reduction` no-op
+(`reason=not_yet_built`), and every `_scan_apply_profile_filter` call for a non-SAST check set finds
+an empty check registry (`reason=no_check_registry_on_disk_yet`), until that module actually ships one
+- both mechanisms are real and tested against fixtures, they simply have nothing on disk to find yet
+outside SAST.
 Diff classification (tension 12) and baseline suppression (tension 11 steps 5 and 6) belong to step 7;
 step 1 ships the primitives they call - the merge, the fingerprint, `findings_mark_suppressed`, and
 `classify_derived`, which is pure and already tested against tension 6's whole case table.
@@ -154,6 +212,9 @@ composite under `tests/fixtures/rules/derived.rules`.
 **Read `docs/FOUNDATION.md` "Known follow-ups" before starting step 2.**
 Six findings remain open (F4, F3, F5, F20, F8, F17, plus F16's `look` half); all are cheap corrections
 that cost nothing to defer, and each names the step it must land before.
+This is a snapshot from before step 2 landed and is kept for history; it is stale on its own.
+F3, F4, and F8 have since closed (see "Findings still open after 3a-3c" above for the current list:
+only F5, F20, F17, and F16's `look` half remain).
 
 Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start:
 
