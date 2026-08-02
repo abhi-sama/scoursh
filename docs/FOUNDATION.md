@@ -3831,9 +3831,21 @@ F3 and F8 are closed as part of `lib/checks.sh` landing (see their own entries a
 remain open for the same reason they always were - `rules/derived.rules` is still not seeded, since its
 contributors do not exist until steps 5 and 6.
 
-Steps 3 to 10 are otherwise unstarted.
-The remaining follow-ups (F5, F20, F17, and F16's `look` half) are inherited by them and are still
-open.  (F4 is closed above.)
+**§13 step 3 is under way, not unstarted: its sub-steps 3a, 3b, 3c, and 3e have landed on `dev`.**
+3a (`6f25a67`) shipped the native pattern engine `modules/sast/engine.sh` and the `scan_dispatch sast`
+entry point `modules/sast/run.sh`, plus four rule packs (`secrets.rules`, `crypto.rules`,
+`injection.rules`, `python.rules`); 3b (`446f642`) and 3c (`754a994`) added `javascript.rules` and
+`go.rules`, so `modules/sast/rules/` now holds six packs on disk; and 3e (`18c4c3f`) shipped
+`modules/sast/history.sh`, which replays `secrets.rules` against git history (bounded by a commit/time
+window, per §6.3) and populates the `SAST-HIST-*` check family - the fingerprint profile
+(`blob_sha`, `match_digest`, `occurrence`) and `oldest_reaching_commit_time` that tension 13's boundary
+test and tension 6 condition (b1) read once `state/` exists at step 7.
+Step 3 as a whole is still not finished: `docs/DESIGN.md` §6.3's catalog also calls for `java.rules`,
+`nosql.rules`, and `ldap.rules`, none of which have landed.
+Steps 4 through 10 remain unstarted, so `modules/dast/`, `modules/sca/`, `modules/iac/`,
+`modules/cloud/`, and `lib/awscli.sh` remain unbuilt.
+The remaining follow-ups (F5, F20, F17, and F16's `look` half) are inherited by steps 4 through 10 and
+are still open.  (F4 is closed above.)
 
 What §13 step 1 deliberately did **not** build, so the boundary is not rediscovered: `scan.sh`, anything
 under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
@@ -3841,3 +3853,15 @@ shipped rule pack, and `state/`.  Diff classification (tension 12) and baseline 
 steps 5 and 6) are step 7's; step 1 delivers the primitives they call - the merge, the fingerprint, the
 `findings_mark_suppressed` annotation, and `classify_derived`, which is pure and is already tested
 against tension 6's full case table.
+That sentence describes step 1's own historical boundary and is unaffected by later steps: `scan.sh`
+was step 1's placeholder and is now built by step 2 (above); `modules/sast/` and its six rule packs are
+now built by steps 3a-3c and 3e (above); `lib/http.sh` landed early, out of its normal step-5 sequence
+(tension 19); and `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, and `state/` remain
+unbuilt, as does the rest of `modules/` (`dast/`, `sca/`, `iac/`, `cloud/`).
+
+**Process note: this section must be updated in the same change that lands a §13 step, not in a later
+cleanup ticket.**
+Step 3e shipped without this section (or `AGENTS.md`'s mirror) being updated, so a later agent working
+an unrelated doc-staleness ticket had to rediscover that `history.sh` existed by reading the branch
+rather than the docs - precisely the failure this section exists to prevent. `AGENTS.md`'s "Build order
+and where we are" carries the same rule; keep the two in sync.
