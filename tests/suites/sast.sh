@@ -376,6 +376,60 @@ assert_contains "$(cat "$W/run-full-profile/meta/checks_run" 2>/dev/null)" 'SAST
   'full-only check ALSO runs under the default - fails under "no --profile-scan silently narrows the scan"'
 
 # =============================================================================
+printf -- '\n-- sast_evaluate_gate: the SCAN_FLAGS declaredness guard itself --\n'
+# =============================================================================
+# This module is sourced standalone by this very suite (line 29 above), never
+# through scan.sh, so SCAN_FLAGS has never been declared at all when this file
+# starts.  A pre-fix `[[ ${SCAN_FLAGS+set} ]] || declare -A SCAN_FLAGS=()`
+# guard tests element `[0]`/`["0"]` on an associative array, not declaredness
+# - that test is false even once SCAN_FLAGS below IS declared with a real
+# `fail-on-new` key, so the guard's RHS still runs and `declare -A
+# SCAN_FLAGS=()` (no `-g`, called from inside sast_evaluate_gate) creates a
+# new LOCAL that shadows this real global for the rest of the function body.
+# Every subsequent `${SCAN_FLAGS[fail-on-new]}` read then silently sees empty
+# regardless of what is set here, so `--fail-on-new` never actually filters
+# anything - exactly the bug this ticket fixes.
+#
+# Two synthetic findings are written straight to rundir/findings.fields
+# (bypassing scan.sh's CLI parser entirely, per this ticket's acceptance
+# criterion), identical in every gate-relevant field except `status`: one
+# `status=new`, one `status=old` (state persistence/step 7 does not exist yet,
+# so this is the only way to get a non-`new` status on disk today). Both clear
+# the severity/confidence thresholds below on their own, so severity and
+# confidence cannot be what tells them apart - only fail-on-new's status
+# filter can.
+GATEGUARD_RUNDIR=$W/run-gate-guard
+rm -rf "$GATEGUARD_RUNDIR"
+mkdir -p "$GATEGUARD_RUNDIR"
+printf 'confidence=high\tseverity=high\tstatus=new\tsuppressed=false\n' >"$GATEGUARD_RUNDIR/findings.fields"
+printf 'confidence=high\tseverity=high\tstatus=old\tsuppressed=false\n' >>"$GATEGUARD_RUNDIR/findings.fields"
+
+t_case 'sast_evaluate_gate honors a real global SCAN_FLAGS[fail-on-new]=true set directly, not via scan.sh'
+# A REAL global, declared at this file's top level (exactly the pattern
+# tests/suites/sast-history.sh already uses for the identical hazard) -
+# never scan.sh's --fail-on-new CLI flag.
+declare -A SCAN_FLAGS=([fail-on-new]=true)
+SCOURSH_FAIL_ON=high
+SCOURSH_MIN_CONFIDENCE=low
+unset SCOURSH_GATE_RESULT SCOURSH_GATED_FINDINGS
+sast_evaluate_gate "$GATEGUARD_RUNDIR"
+assert_eq 1 "$SCOURSH_GATED_FINDINGS" \
+  'only the status=new finding is gated, not both - fails under the pre-fix `${SCAN_FLAGS+set}` guard, where the shadowed-empty local reads fail-on-new as false and BOTH findings (new and old alike) pass the (disabled) status filter, gating 2 instead of 1'
+assert_eq fail "$SCOURSH_GATE_RESULT" \
+  'the surviving new finding still trips the gate result itself'
+
+t_case 'sanity: the SAME two findings with fail-on-new=false gate on both, proving the fixture is not just "any finding gates"'
+declare -A SCAN_FLAGS=([fail-on-new]=false)
+SCOURSH_FAIL_ON=high
+SCOURSH_MIN_CONFIDENCE=low
+unset SCOURSH_GATE_RESULT SCOURSH_GATED_FINDINGS
+sast_evaluate_gate "$GATEGUARD_RUNDIR"
+assert_eq 2 "$SCOURSH_GATED_FINDINGS" \
+  'without fail-on-new, status is never consulted, so both the new and the old finding gate - confirms the =1 result above is the status filter at work, not an artefact of the fixture'
+
+unset SCAN_FLAGS SCOURSH_FAIL_ON SCOURSH_MIN_CONFIDENCE GATEGUARD_RUNDIR
+
+# =============================================================================
 printf -- '\n-- exit-code flip (this ticket''s last acceptance criterion) --\n'
 # =============================================================================
 t_case 'scan.sh sast tests/fixtures/vuln --fail-on high --fail-on-new now exits non-zero'

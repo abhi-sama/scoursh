@@ -436,7 +436,21 @@ sast_evaluate_gate() {
   # arithmetic (indexed-array fallback) and dies on the first bare word in
   # it.  Declaring it (once, only if absent) makes the lookup behave exactly
   # like every other unset-key read in this file.
-  [[ ${SCAN_FLAGS+set} ]] || declare -A SCAN_FLAGS=()
+  #
+  # `${SCAN_FLAGS+set}` is NOT the right test here: measured (bash 5.3.9, and
+  # this is not version-specific - it is how `${arr+set}` has always worked),
+  # `${arr+set}` on an associative array tests element `[0]`/`["0"]`, not "is
+  # the array declared" - `declare -A G=([fail-on-new]=true); [[ ${G+set} ]]`
+  # is FALSE, because there is no key literally named `0`.  Called from
+  # inside a function, that makes the guard's RHS run unconditionally, and
+  # `declare -A SCAN_FLAGS=()` inside a function - with no `-g` - creates a
+  # new LOCAL that shadows the real global for the rest of this function's
+  # body, so every subsequent `${SCAN_FLAGS[...]}` read in this function
+  # would silently see empty regardless of what the caller actually set.
+  # `declare -p SCAN_FLAGS &>/dev/null` tests declaredness directly and is
+  # unaffected by which keys happen to be populated - the same pattern
+  # history.sh's `_sast_history_run` uses for the identical case.
+  declare -p SCAN_FLAGS &>/dev/null || declare -A SCAN_FLAGS=()
   local fail_on=${SCOURSH_FAIL_ON:-none}
   if [[ -z $fail_on || $fail_on == none ]]; then
     SCOURSH_GATE_RESULT=not-evaluated
