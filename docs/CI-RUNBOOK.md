@@ -48,6 +48,12 @@ Everything else in the `suite` job establishes that the tool behaves correctly o
 
 ## Required checks today
 
+**Status: branch protection is NOT currently enforced on `main`.**
+This is a known gap, not a completed control - do not read anything below as meaning `main` is protected.
+GitHub pushes to `main` are not currently blocked by CI status or by review; the only thing preventing an unreviewed or red-CI change from landing on `main` is that every change today arrives via a PR an agent opens and a human or reviewing agent merges deliberately, and CI already runs the three required contexts (below) on every push and PR.
+That is process discipline, not a server-side gate: it is the last line of defence that is missing, not the only one.
+See "Operator decision, 2026-08-02" below for why this is being left as-is for now, and the JSON payload and `gh api` command further down are ready to apply verbatim the moment that changes.
+
 CI produces three check runs per push/PR: the two `suite` matrix legs and `compare`.
 All three should be configured as required status checks on protected branches, since `compare` only means something once both `suite` legs have reported, and `suite` failing on either userland is exactly the class of defect this pipeline exists to catch.
 
@@ -114,7 +120,14 @@ Unblocking requires a human decision between:
 2. Make the repository public, which lifts the restriction on the Free plan at the cost of exposing the rule/check catalog and scan logic, or
 3. Defer enforcement and rely on the documented convention (PR-only, three required checks) without a server-side gate until (1) or (2) happens.
 
-This ticket is parked on that decision; the configuration above is ready to apply verbatim the moment either (1) or (2) is chosen.
+### Operator decision, 2026-08-02
+
+Option 3, for now: leave `main` un-enforced and rely on the documented PR-only convention, rather than force (1) or (2) tonight.
+Rationale recorded here so it isn't re-litigated: (1) and (2) both cost something only the product owner should decide to spend - money for a paid plan, or exposing a security scanner's rule/check catalog by going public - and neither was urgent enough to force immediately.
+The practical exposure of option 3 is narrower than "no protection at all" suggests, because the PR-only convention is already enforced by the delivery process (every change to `main` currently arrives via an agent-opened PR that a human or reviewing agent merges deliberately, and CI already runs all three required contexts on every push and PR); what is actually missing is GitHub refusing a direct push if someone bypasses that process.
+That is a real gap in the last line of defence, not the only line, and not yet closed.
+
+The configuration above is ready to apply verbatim, unchanged, the moment (1) or (2) is chosen - it is a single `gh api` call once the plan/visibility allows it, no further engineering work needed.
 
 ## GNU/BSD dual-runner rationale
 
