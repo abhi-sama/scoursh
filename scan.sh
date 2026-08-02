@@ -557,7 +557,15 @@ scan_main() {
   # 8a. The config loader runs before any dispatch (this ticket's third
   # acceptance criterion, verbatim): scanner.conf is resolved through the
   # CLI > env > file > default chain lib/config.sh already implements, with
-  # this invocation's flags as the CLI layer.
+  # this invocation's flags as the CLI layer.  Called with no argument on
+  # purpose, to pick up config_scanner_load's own default path
+  # ($SCOURSH_INSTALL_ROOT/config/scanner.conf, lib/config.sh) - $1 there is
+  # an explicit optional override, not scan_main's own args forwarded, so
+  # this is not the "$@" case SC2119 warns about.  Older shellcheck reports
+  # it here and 0.11.0 does not (AGENTS.md "Things measured on this
+  # codebase"), so it is silenced explicitly rather than left to whichever
+  # version a CI image happens to ship.
+  # shellcheck disable=SC2119
   config_scanner_load
   _scan_capture SCOURSH_JOBS config_scanner_value jobs "${SCAN_FLAGS[jobs]:-}"
   _scan_capture SCOURSH_FAIL_ON config_scanner_value fail-on "${SCAN_FLAGS[fail-on]:-}"

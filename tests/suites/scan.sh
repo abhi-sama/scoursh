@@ -17,7 +17,16 @@
 #   next.
 # SC2329: `_run_main` is only ever invoked indirectly, as an argument to
 #   assert_status, which shellcheck's static call graph does not follow.
-# shellcheck disable=SC2015,SC2016,SC2030,SC2031,SC2329
+# SC2317: the same indirect-invocation pattern as SC2329 above, applied to
+#   `_bin_run` (invoked only as an argument to assert_status, e.g. `assert_status
+#   0 '...' _bin_run --help`) - shellcheck's static call graph does not follow
+#   it either, and newer shellcheck (0.9.0+, e.g. Ubuntu 24.04's apt package)
+#   reports every statement inside as "unreachable" where older releases
+#   (0.8.0, and Homebrew's 0.11.0) do not.  Same root cause as SC2329, a
+#   different rule id depending on version, per AGENTS.md's "ShellCheck
+#   versions disagree" note - silenced explicitly rather than left to
+#   whichever version a CI image happens to ship.
+# shellcheck disable=SC2015,SC2016,SC2030,SC2031,SC2329,SC2317
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
