@@ -14,7 +14,7 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$ROOT"
 
-SUITES=(records core config findings report e2e)
+SUITES=(records core config findings report e2e scan)
 LINTERS=(lint-rules lint-shell lint-aws-readonly)
 
 if [[ ${1:-} == --list ]]; then
@@ -59,6 +59,7 @@ else
     printf '\n=== linter: shellcheck ===\n'
     sc_dirs=()
     for d in lib tests tools modules aws; do [[ -d $d ]] && sc_dirs+=("$d"); done
+    [[ -f scan.sh ]] && sc_dirs+=(scan.sh)
     if find "${sc_dirs[@]+"${sc_dirs[@]}"}" -name '*.sh' -type f \
       | LC_ALL=C sort \
       | xargs shellcheck -x -s bash; then
