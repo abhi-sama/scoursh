@@ -1,0 +1,75 @@
+# modules/sast/rules/crypto.rules - docs/DESIGN.md §6.3 "crypto.rules" seed
+# catalog: MD5/SHA1 for security, DES/ECB, hardcoded IV/salt, disabled TLS
+# verification, Math.random() for tokens.
+
+id: SAST-CRY-WEAK_HASH-01
+title: MD5 or SHA1 used where a security-relevant hash is expected
+severity: medium
+confidence: medium
+cwe: CWE-327
+owasp: A02:2021
+pattern: (hashlib\.md5|hashlib\.sha1|MessageDigest\.getInstance\(["'](MD5|SHA-?1)["']\)|crypto\.createHash\(["'](md5|sha1)["']\))
+dialect: ere
+tags: static
+remediation: Use SHA-256 or better for anything security-relevant (password hashing needs
+  a dedicated KDF such as bcrypt/scrypt/argon2, not a bare fast hash at all).
+  MD5 and SHA1 remain acceptable only for non-adversarial checksums.
+references: CWE-327
+
+id: SAST-CRY-DES_ECB-01
+title: DES or ECB-mode cipher in use
+severity: high
+confidence: medium
+cwe: CWE-327
+owasp: A02:2021
+pattern: (DES/ECB|AES/ECB|MODE_ECB)
+dialect: ere
+tags: static
+remediation: Replace DES with AES-256, and replace ECB mode with an authenticated mode
+  such as GCM. ECB leaks structure across blocks of identical plaintext regardless of
+  which cipher it wraps.
+references: CWE-327
+
+id: SAST-CRY-HARDCODED_IV-01
+title: Hardcoded initialization vector or salt
+severity: medium
+confidence: low
+cwe: CWE-329
+owasp: A02:2021
+pattern: [Ii][Vv][[:space:]]*=[[:space:]]*b?["'][0-9A-Fa-f]{16,}["']
+dialect: ere
+tags: static
+severity-floor: low
+remediation: Generate the IV/salt fresh per operation with a cryptographically secure
+  random source, and store it alongside the ciphertext rather than fixing it in source.
+references: CWE-329
+
+id: SAST-CRY-TLS_VERIFY_DISABLED-01
+title: TLS certificate verification disabled
+severity: high
+confidence: high
+cwe: CWE-295
+owasp: A02:2021
+pattern: (verify[[:space:]]*=[[:space:]]*False|rejectUnauthorized[[:space:]]*:[[:space:]]*false|InsecureSkipVerify[[:space:]]*:[[:space:]]*true|ssl_verify[[:space:]]*=[[:space:]]*[Ff]alse)
+dialect: ere
+tags: static
+tags: quick
+remediation: Never disable certificate verification outside a throwaway local test fixture.
+  If a private CA is in play, add it to the trust store instead of turning verification off.
+references: CWE-295
+
+id: SAST-CRY-WEAK_RANDOM_TOKEN-01
+title: Math.random() used to generate a token, session id, or secret
+severity: high
+confidence: medium
+cwe: CWE-338
+owasp: A02:2021
+pattern: Math\.random\(\)
+dialect: ere
+context-require: (token|Token|session|Session|password|Password|secret|Secret|auth|Auth)
+context-window: 3
+tags: static
+remediation: Use a cryptographically secure random source (crypto.randomBytes /
+  crypto.getRandomValues) for anything used as a token, session id, or secret.
+  Math.random() is not unpredictable enough to resist a determined attacker.
+references: CWE-338

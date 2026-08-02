@@ -672,6 +672,16 @@ scan_main() {
 
   local code
   code=$(scan_exit_code 0 0 0 "$incomplete" "$gate")
+  # An intentional exit is not an error to be re-reported by the ERR trap -
+  # same reasoning and the same guard as lib/core.sh's own `die`.  Without
+  # it, a non-zero CODE (gate or incomplete) makes the EXIT trap
+  # (core_cleanup, lib/core.sh) end in `return "$status"`, which under
+  # `set -E` errtrace re-fires the ERR trap on the trap handler's own
+  # non-zero return and prints a spurious "command failed" line naming this
+  # exit statement - measured against a real `--fail-on` gate trip, not
+  # assumed, once modules/sast/run.sh (docs/DESIGN.md §13 step 3) became the
+  # first code path that ever produced a non-zero, non-`die` exit here.
+  trap - ERR
   exit "$code"
 }
 

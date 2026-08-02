@@ -49,7 +49,10 @@ fail() {
 repo_record_files() {
   local dirs=()
   local d
-  for d in rules data config; do [[ -d $d ]] && dirs+=("$d"); done
+  # `modules` joined the sweep at docs/DESIGN.md §13 step 3, once
+  # modules/sast/rules/*.rules shipped the first real pattern packs (§13
+  # step 1/2 shipped none, so this directory did not exist yet).
+  for d in rules data config modules; do [[ -d $d ]] && dirs+=("$d"); done
   (( ${#dirs[@]} > 0 )) || return 0
   find "${dirs[@]}" -type f \
     \( -name '*.rules' -o -name '*.conf' -o -name '*.conf.example' \) \
@@ -307,7 +310,10 @@ if [[ -d modules ]]; then
     shipped_patterns=$(( shipped_patterns + 1 ))
   done <<<"$(find modules -type f -name '*.rules' | LC_ALL=C sort)"
 fi
-note "  --  $shipped_patterns shipped pattern packs under modules/ (§13 step 3 seeds the first)"
+note "  --  $shipped_patterns shipped pattern packs under modules/ (§13 step 3a seeded the first four:"
+note "      secrets/crypto/injection/python) - E060/W061 fixture-coverage ENFORCEMENT is still a"
+note "      placeholder (tracked separately); true-positive coverage for these packs is proved by"
+note "      tests/suites/sast.sh instead, until E060 itself is implemented"
 
 printf '\n'
 if (( FAILED )); then
