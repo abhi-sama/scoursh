@@ -21,6 +21,7 @@
 # AGENTS.md's testing rule.
 #
 # shellcheck shell=bash
+# shellcheck disable=SC2016
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
