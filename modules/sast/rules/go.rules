@@ -1,0 +1,94 @@
+# modules/sast/rules/go.rules - docs/DESIGN.md §6.3 "go" seed catalog:
+# exec.Command with concatenation, text/template used for HTML output,
+# math/rand for secrets, SQL string concatenation, InsecureSkipVerify:true.
+#
+# Path note: docs/DESIGN.md §3's tree lists this pack simply as "go.rules"
+# alongside its siblings (secrets.rules, crypto.rules, injection.rules,
+# python.rules), all of which live under modules/sast/rules/ per
+# rules/RULE-FORMAT.md §9's frozen path table
+# (`modules/sast/rules/*.rules`). A bare modules/sast/go.rules would match
+# no row of that table and fail E070, so this file is shipped here, one
+# directory level below the shorthand the ticket used.
+
+id: SAST-GO-EXEC_CONCAT-01
+title: exec.Command built from a concatenated string
+severity: critical
+confidence: medium
+cwe: CWE-78
+owasp: A03:2021
+pattern: exec\.Command\([^)]*\+
+dialect: ere
+files: *.go
+tags: static
+tags: quick
+remediation: Pass each argument to exec.Command as its own slice element instead of
+  concatenating untrusted input into a command or argument string, and never route a
+  concatenated string through a shell (`"sh", "-c", ...`). If a shell is unavoidable,
+  validate or escape every concatenated component first.
+references: CWE-78
+
+id: SAST-GO-TEMPLATE_HTML-01
+title: text/template used where html/template is required
+severity: high
+confidence: medium
+cwe: CWE-79
+owasp: A03:2021
+pattern: "text/template"
+dialect: ere
+files: *.go
+context-require: ResponseWriter
+context-window: 15
+tags: static
+remediation: Use html/template, not text/template, whenever the rendered output is HTML
+  written to an http.ResponseWriter. text/template performs no contextual auto-escaping,
+  so any request-derived value reaching the template is a reflected XSS sink.
+references: CWE-79
+
+id: SAST-GO-WEAK_RANDOM-01
+title: math/rand used to generate a token, session id, or secret
+severity: high
+confidence: medium
+cwe: CWE-338
+owasp: A02:2021
+pattern: "math/rand"
+dialect: ere
+files: *.go
+context-require: (token|Token|session|Session|password|Password|secret|Secret|auth|Auth)
+context-window: 15
+tags: static
+remediation: Use crypto/rand, not math/rand, for anything used as a token, session id, or
+  secret. math/rand is a deterministic PRNG seeded from a small state space and is
+  predictable to an attacker who observes even a little output.
+references: CWE-338
+
+id: SAST-GO-SQL_CONCAT-01
+title: SQL statement built by string concatenation or Sprintf formatting
+severity: critical
+confidence: medium
+cwe: CWE-89
+owasp: A03:2021
+pattern: (["'](SELECT|INSERT|UPDATE|DELETE)[^"']*["'][[:space:]]*\+|fmt\.Sprintf\(["'](SELECT|INSERT|UPDATE|DELETE))
+dialect: ere
+files: *.go
+tags: static
+tags: quick
+remediation: Build the query with a parameterised placeholder (`?` or `$1`) and pass
+  values through database/sql's own argument list, never by concatenating or
+  fmt.Sprintf-ing request-derived data into the query text.
+references: CWE-89
+
+id: SAST-GO-TLS_SKIP_VERIFY-01
+title: TLS certificate verification disabled via InsecureSkipVerify
+severity: high
+confidence: high
+cwe: CWE-295
+owasp: A02:2021
+pattern: InsecureSkipVerify[[:space:]]*:[[:space:]]*true
+dialect: ere
+files: *.go
+tags: static
+tags: quick
+remediation: Never set InsecureSkipVerify to true outside a throwaway local test
+  fixture. If a private CA is in play, add it to a custom tls.Config RootCAs pool
+  instead of disabling verification outright.
+references: CWE-295

@@ -182,6 +182,37 @@ for _pair in \
 done
 unset _pair _pack _want _fixture _found _want_id
 
+# =============================================================================
+printf -- '\n-- go.rules (docs/DESIGN.md §13 step 3c): one fixture per rule id --\n'
+# =============================================================================
+# Unlike the four §13 step 3a packs above (one combined fixture per pack
+# under tests/fixtures/sast/), go.rules ships one true-positive fixture per
+# rule id under tests/fixtures/vuln/ and one true-negative (safe-equivalent)
+# fixture per rule id under tests/fixtures/clean/, per this ticket's own
+# acceptance criteria. Both directories already carry non-Go fixtures used
+# by other suites/cases in this file, so scanning them wholesale (as the
+# exit-code-flip cases below already do) is exactly the real-world shape:
+# a mixed-language tree, one rule pack's `files: *.go` glob doing the
+# filtering.
+_scan_one_pack go "$ROOT/tests/fixtures/vuln" "$W/run-go-vuln"
+_go_vuln_found=$(_ids_found "$W/run-go-vuln")
+for _go_id in SAST-GO-EXEC_CONCAT-01 SAST-GO-TEMPLATE_HTML-01 SAST-GO-WEAK_RANDOM-01 \
+  SAST-GO-SQL_CONCAT-01 SAST-GO-TLS_SKIP_VERIFY-01; do
+  t_case "go: $_go_id true-positive detection"
+  assert_contains "$_go_vuln_found" "$_go_id" \
+    "$_go_id fires on tests/fixtures/vuln/*.go - fails if the pattern, files glob, or context directive silently drops the match"
+done
+
+_scan_one_pack go "$ROOT/tests/fixtures/clean" "$W/run-go-clean"
+_go_clean_found=$(_ids_found "$W/run-go-clean")
+for _go_id in SAST-GO-EXEC_CONCAT-01 SAST-GO-TEMPLATE_HTML-01 SAST-GO-WEAK_RANDOM-01 \
+  SAST-GO-SQL_CONCAT-01 SAST-GO-TLS_SKIP_VERIFY-01; do
+  t_case "go: $_go_id stays quiet on its safe equivalent"
+  assert_not_contains "$_go_clean_found" "$_go_id" \
+    "$_go_id does NOT fire on tests/fixtures/clean/*.go - fails if the safe equivalent were not actually safe, or the rule over-matched"
+done
+unset _go_id _go_vuln_found _go_clean_found
+
 t_case 'secrets: the placeholder password literal is suppressed by context-deny (context-window: 0)'
 assert_not_contains "$(_ids_found "$W/run-secrets")" 'nonexistent-marker-CHANGEME_PLACEHOLDER' \
   'sanity: the suppressed literal never appears as its own check id (guards the test itself against a typo)'
