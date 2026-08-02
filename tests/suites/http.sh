@@ -26,6 +26,26 @@
 # Location). That is exactly what "removing the gate" means for a chokepoint
 # function, so this is what the AC's regression requirement pins.
 #
+# IMPORTANT: the fatal-path case deliberately targets
+# api.good.fixture.example, an out-of-scope host that the stub resolver
+# (_test_resolve below) DOES resolve successfully - not evil.example, which
+# the stub resolver cannot resolve. A round of review (see this file's git
+# history) caught that using an unresolvable out-of-scope host let a removed
+# gate hide behind a second, unrelated `die` in http_request's DNS-resolution
+# step: with the gate's own `die` deleted, execution fell through to
+# `http_resolve_host`, which failed for evil.example and died with the SAME
+# exit code (3, SCOURSH_EXIT_SCOPE) the gate itself would have used - so the
+# "exits 3" assertion kept passing even with the gate deleted, and the
+# transport-log-is-empty assertion also kept passing "by accident" (the
+# request never got far enough to resolve, gate or no gate). Neither
+# assertion actually pinned the gate. Using a host the stub CAN resolve
+# closes that hole: with the gate intact, http_scope_match still refuses it
+# (it is not good.fixture.example and fixture-good does not set
+# allow-subdomains: true) and http_request dies with exit 3 before resolving
+# or calling the transport; with the gate's `die` deleted, execution falls
+# through, resolves successfully, and reaches the stub transport (exit 0,
+# transport log non-empty) - a result these assertions correctly fail on.
+#
 # shellcheck shell=bash
 #
 # SC2015/SC2016/SC2329: as tests/suites/config.sh.
@@ -246,11 +266,18 @@ assert_status 1 'a host that fails to resolve is refused, not silently skipped' 
 printf '\n-- http_request: the chokepoint --\n'
 
 : >"$TRANSPORT_LOG"
+# api.good.fixture.example, NOT evil.example: it is out-of-scope (fixture-good
+# only declares good.fixture.example / internal.fixture.example /
+# still-good.fixture.example, and does not set allow-subdomains: true) but IS
+# resolvable in the stub resolver above, so a deleted gate falls through to a
+# successful resolve-and-fetch (exit 0, transport called) rather than masking
+# itself behind the unrelated DNS-failure `die`, which also exits 3. See the
+# file-header "REGRESSION PROOF" note for why this choice matters.
 assert_status 3 \
   'http_request on an out-of-scope URL exits 3 (docs/DESIGN.md exit-code table: 3 = scope violation) BEFORE any network call' \
-  http_request GET 'https://evil.example/x'
+  http_request GET 'https://api.good.fixture.example/x'
 assert_eq '' "$(cat "$TRANSPORT_LOG")" \
-  'the transport (the only thing that would touch the network) was never invoked for the refused URL - this is what "before any network call" means operationally'
+  'the transport (the only thing that would touch the network) was never invoked for the refused URL - this is what "before any network call" means operationally, and is exactly what a deleted gate would fail here (it would reach the transport)'
 
 : >"$TRANSPORT_LOG"
 http_request GET 'https://good.fixture.example/x'
