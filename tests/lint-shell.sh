@@ -33,19 +33,26 @@ report() {
   printf '%s\n' "$@" >&2
 }
 
-# Files the engine rules apply to.
+# Files the engine rules apply to.  scan.sh is the entry point, not a
+# module, but it is the same class of code (it dispatches to the engine and
+# owns the exit-code/scratch-dir contract every engine file relies on), so it
+# is held to the same discipline rather than living in an unlint-ed root.
 engine_files() {
   local dirs=() d
   for d in lib modules tools aws; do [[ -d $d ]] && dirs+=("$d"); done
   (( ${#dirs[@]} > 0 )) || return 0
-  find "${dirs[@]}" -type f -name '*.sh' | LC_ALL=C sort
+  { find "${dirs[@]}" -type f -name '*.sh'
+    [[ -f scan.sh ]] && printf '%s\n' scan.sh
+  } | LC_ALL=C sort
 }
 
 all_files() {
   local dirs=() d
   for d in lib modules tools aws tests; do [[ -d $d ]] && dirs+=("$d"); done
   (( ${#dirs[@]} > 0 )) || return 0
-  find "${dirs[@]}" -type f -name '*.sh' | LC_ALL=C sort
+  { find "${dirs[@]}" -type f -name '*.sh'
+    [[ -f scan.sh ]] && printf '%s\n' scan.sh
+  } | LC_ALL=C sort
 }
 
 # `check NAME PATTERN FILE-LIST-FN [EXEMPT...]` - fails when PATTERN matches.
