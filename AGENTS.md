@@ -173,6 +173,8 @@ tests/lint-aws-readonly.sh         # read-only AWS lint, docs/FOUNDATION.md tens
 tests/e2e/fixture-scan.sh <dir>    # the end-to-end path on its own, for eyeballing a report
 ```
 
+See `docs/CI-RUNBOOK.md` for what CI actually runs, which checks are required on protected branches, the GNU/BSD dual-runner rationale, and the checklist for adding a new required check.
+
 `package.json` at the repository root exists **only** so the conventional `pnpm test` / `npm test`
 entry point runs the real suite above.
 `pnpm test` is a thin alias for `bash tests/run-tests.sh`: no dependencies, no lockfile, no
