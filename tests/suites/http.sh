@@ -46,6 +46,38 @@
 # through, resolves successfully, and reaches the stub transport (exit 0,
 # transport log non-empty) - a result these assertions correctly fail on.
 #
+# ADVERSARIAL SUITE ADDENDUM (crewban ticket "Adversarial test suite: attempt
+# to defeat the scope.conf gate"): the cases below marked "Adversarial:" add
+# coverage the sections above left as a real gap, each verified the same way
+# - copy lib/ to a scratch dir, break ONE specific mechanism, confirm the
+# targeted case (and only cases that actually exercise that mechanism) fail:
+#
+#  1. Deny-list-disabled mutation (forced `denied=1` unconditionally inside
+#     http_gate_url's resolution-pinning check, so nothing is ever refused
+#     for resolving to a denied address): every "octal/hex/IPv4-mapped/
+#     hex-group literal for the SSRF sentinel" case FAILED, along with both
+#     hostname-resolves-to-169.254.169.254 cases and the redirect-Location-
+#     resolves-to-the-sentinel case. This same mutation left the PRE-EXISTING
+#     decimal-literal and bracketed-::ffff:-literal cases passing, which is
+#     what exposed that those two (as originally written) are actually
+#     rejected by the out-of-scope-tuple check, not the deny list - neither
+#     address had a matching scope.conf entry, so the deny list was never
+#     reached. That is why tests/fixtures/config/http-scope.conf now
+#     authorises the sentinel address directly as `fixture-literal-denied`:
+#     every literal-form deny-list case below targets THAT address (an
+#     authorised-but-denied tuple) specifically so the deny list, not the
+#     tuple compare, is what is actually under test, confirmed by asserting
+#     the loopback/link-local/private reason string rather than exit status
+#     alone.
+#  2. Redirect-recheck-as-raw-host-string-compare mutation (the hop loop
+#     rejects a Location only if its UNDECODED host exactly equals a fixed
+#     literal bad-host list, never running normalize/decode/deny-list on it -
+#     literally "just compare the new host string", the shortcut tension 19
+#     names by name): the percent-encoded-Location case FAILED (the encoded
+#     form never equals the literal bad string, so the naive check fails
+#     open), which is exactly the bypass decoding-before-comparison exists to
+#     close.
+#
 # shellcheck shell=bash
 #
 # SC2015/SC2016/SC2329: as tests/suites/config.sh.
@@ -71,6 +103,7 @@ _test_resolve() {
     good.fixture.example) printf '93.184.216.34' ;;
     api.good.fixture.example) printf '93.184.216.34' ;;
     internal.fixture.example) printf '127.0.0.1' ;;
+    metadata.fixture.example) printf '169.254.169.254' ;;
     priv.fixture.example) printf '127.0.0.1' ;;
     sub.wide.fixture.example) printf '93.184.216.34' ;;
     still-good.fixture.example) printf '93.184.216.34' ;;
@@ -247,11 +280,68 @@ assert_status 1 'userinfo confusion is refused even though the trailing host IS 
 assert_status 1 'percent-encoded host that decodes to an out-of-scope literal is refused' \
   http_gate_url 'https://%65vil.example/x'
 
-assert_status 1 'a decimal IPv4 literal for the SSRF sentinel is refused (not in scope AND on the deny list)' \
+assert_status 1 'a decimal IPv4 literal for the SSRF sentinel, with no matching scope entry, is refused (out-of-scope tuple - it does not even reach the deny list yet)' \
   http_gate_url 'https://2852039166/x'
+
+# Adversarial, and a genuine gap the cases above leave open: EVERY literal-IP
+# SSRF-sentinel case above is rejected by the out-of-scope-TUPLE check
+# (there is no scope.conf entry for that address), so none of them actually
+# reach the resolution-pinning deny-list code at all - confirmed by
+# mutation: with the deny-list check in http_gate_url disabled outright,
+# every case above still correctly returns 1, because the tuple mismatch
+# alone is sufficient. That means those cases do not pin "the deny list
+# still refuses a literal SSRF address" the way internal.fixture.example
+# and metadata.fixture.example pin it for a HOSTNAME (both are declared IN
+# SCOPE and rejected only by resolution-pinning). tests/fixtures/config/
+# http-scope.conf's fixture-literal-denied target closes that gap: it
+# authorises https://169.254.169.254/ directly (an operator's honest
+# mistake, or a copy-pasted base-url that later turned out to be a metadata
+# endpoint), so a request against that SAME address now MATCHES the scope
+# tuple and must be caught by the deny list instead - and, because
+# normalization canonicalises every numeric spelling to the identical
+# dotted-quad before either compare runs, decimal/octal/hex/IPv6-embedded
+# spellings of that address all resolve to the one scope tuple and all must
+# be independently caught by the deny list.
+assert_status 1 'a decimal literal for an ADDRESS THAT IS ITSELF THE AUTHORISED SCOPE TARGET is still refused by the deny list - FAILS if the deny-list check is skipped once the tuple already matched' \
+  http_gate_url 'https://169.254.169.254/x'
+http_gate_url 'https://169.254.169.254/x' || true
+assert_contains "$_HTTP_GATE_REASON" 'loopback/link-local/private' \
+  'the rejection is the deny-list reason, not "no entry in config/scope.conf" - proving this request DID match the scope tuple and was still refused'
+
+assert_status 1 'the SAME authorised-but-denied address, spelled as an octal IPv4 literal, is refused end-to-end via http_gate_url - FAILS if the gate deny-list check only recognises the decimal literal form' \
+  http_gate_url 'https://025177524776/x'
+http_gate_url 'https://025177524776/x' || true
+assert_contains "$_HTTP_GATE_REASON" 'loopback/link-local/private' \
+  'the octal spelling also gets the deny-list reason, not an out-of-scope-tuple reason - proving normalisation canonicalised it to the same authorised-but-denied tuple before either compare ran'
+
+assert_status 1 'the SAME authorised-but-denied address, spelled as a hex IPv4 literal, is refused end-to-end via http_gate_url - FAILS if the gate deny-list check only recognises the decimal literal form' \
+  http_gate_url 'https://0xA9FEA9FE/x'
 
 assert_status 1 'a bracketed IPv4-mapped IPv6 literal for the SSRF sentinel is refused' \
   http_gate_url 'https://[::ffff:169.254.169.254]/x'
+http_gate_url 'https://[::ffff:169.254.169.254]/x' || true
+assert_contains "$_HTTP_GATE_REASON" 'loopback/link-local/private' \
+  'the IPv4-mapped IPv6 spelling also gets the deny-list reason, matching the authorised-but-denied tuple rather than being rejected as merely out of scope'
+
+# Adversarial: the dotted "::ffff:a.b.c.d" spelling is refused above, but
+# tension 19 names a SECOND IPv6-embedded-IPv4 shape - the hex-group form
+# "::a9fe:a9fe" - as an independent bypass ("FAILS if only the dotted ::ffff:
+# form is handled and the hex-group form is left as opaque IPv6", per the
+# normalize-layer case earlier in this file). An implementation that wired
+# only the dotted form into the scope-tuple/deny-list compare (plausible,
+# since it is the more common spelling in the wild) would pass every case
+# above and still let this exact address through under the hex-group
+# spelling - and because it now targets the SAME authorised-but-denied
+# fixture-literal-denied tuple, a bug that skipped the deny list once a
+# tuple matched, or a bug that failed to extract this second embedded-IPv4
+# shape at all (falling back to treating it as opaque IPv6, which would
+# never match the tuple and would be rejected as merely out-of-scope
+# instead), are both distinguishable via the reason-string assertion below.
+assert_status 1 'a bracketed IPv4-compatible (hex-group) IPv6 literal for the SSRF sentinel is refused end-to-end via http_gate_url - FAILS if only the dotted "::ffff:" spelling reaches the gate deny-list check' \
+  http_gate_url 'https://[::a9fe:a9fe]/x'
+http_gate_url 'https://[::a9fe:a9fe]/x' || true
+assert_contains "$_HTTP_GATE_REASON" 'loopback/link-local/private' \
+  'the hex-group IPv6 spelling also gets the deny-list reason - FAILS if the hex-group form is left as opaque IPv6 (never matches the fixture-literal-denied tuple, so it would be rejected as merely out-of-scope instead, which proves the extraction itself, not just the deny list, was skipped)'
 
 assert_status 1 'an in-scope hostname that resolves to a loopback address, with no allow-private-addresses, is refused (the resolution-pinning deny list)' \
   http_gate_url 'https://internal.fixture.example/x'
@@ -259,6 +349,23 @@ assert_status 1 'an in-scope hostname that resolves to a loopback address, with 
 http_gate_url 'https://internal.fixture.example/x' || true
 assert_contains "$_HTTP_GATE_REASON" 'loopback' \
   'the deny-list rejection reason names loopback/link-local/private, distinguishable from an out-of-scope-tuple rejection'
+
+# Adversarial: tension 19's own bypass-class list names "a hostname resolving
+# to 169.254.169.254" as a DISTINCT case from a literal spelling of the same
+# address - the SSRF concern §7.3 raises is specifically an in-scope,
+# innocuous-looking hostname whose DNS answer is the cloud metadata endpoint,
+# not an attacker typing the address directly. metadata.fixture.example is
+# declared in scope (tests/fixtures/config/http-scope.conf) with no
+# allow-private-addresses, so this pins the deny list catching a RESOLVED
+# address, not merely a literal one - a gate that deny-lists literals but
+# trusts whatever DNS returns for an already-in-scope name would pass every
+# other case in this file and still exfiltrate credentials here.
+assert_status 1 'an in-scope hostname that RESOLVES to the cloud metadata sentinel 169.254.169.254 is refused - FAILS if the deny list is only checked against literal hosts and not against a resolved address' \
+  http_gate_url 'https://metadata.fixture.example/x'
+
+http_gate_url 'https://metadata.fixture.example/x' || true
+assert_contains "$_HTTP_GATE_REASON" "'metadata.fixture.example' resolves to '169.254.169.254'" \
+  'the rejection reason names the HOSTNAME resolving to the address, distinct wording from a literal-IP case (where host and addr are the same value) - proving the deny-list hit came from the DNS-resolution path (is_literal=false), not the literal-IPv4 branch'
 
 assert_status 1 'a host that fails to resolve is refused, not silently skipped' \
   http_gate_url 'https://unresolvable.fixture.example/x'
@@ -300,6 +407,61 @@ http_request GET 'https://good.fixture.example/x'
 assert_eq 200 "$_HTTP_LAST_STATUS" 'a redirect chain that STAYS in scope is followed to completion'
 assert_eq "$(printf 'GET good.fixture.example\nGET still-good.fixture.example')" "$(cat "$TRANSPORT_LOG")" \
   'both in-scope hops were fetched, in order'
+SCOURSH_HTTP_TRANSPORT=_test_transport
+
+# Adversarial: redirect-recheck parity (docs/FOUNDATION.md tension 19,
+# "Redirect-recheck parity") requires the manual redirect loop to re-run the
+# FULL normalization + gate pipeline on every Location header, not a cheap
+# "compare the new host string" shortcut. The plain-hostname redirect case
+# above (good.fixture.example -> https://evil.example/next) would pass even
+# under that cheap shortcut, because a bare hostname compare and a full gate
+# re-run agree on it. Tension 19 explicitly names "a redirect Location that
+# itself carries one of the encoding bypasses above" as the case that tells
+# the two apart: a host-string-only recheck would decode nothing, see an
+# opaque, not-literally-"evil.example" string, and could easily let it
+# through where a full pipeline run would decode/canonicalize and reject it
+# exactly as the initial-URL cases above do.
+: >"$TRANSPORT_LOG"
+_test_transport_redirect_encoded() {
+  printf '%s %s\n' "$1" "$3" >>"$TRANSPORT_LOG"
+  case $3 in
+    good.fixture.example) printf '301\nhttps://%%65vil.example/next\n' ;;
+    *) printf '200\n\n' ;;
+  esac
+}
+SCOURSH_HTTP_TRANSPORT=_test_transport_redirect_encoded
+http_request GET 'https://good.fixture.example/x'
+assert_eq 0 $? 'a redirect Location whose host is percent-encoded (decodes to an out-of-scope host) does not crash the run'
+assert_eq 301 "$_HTTP_LAST_STATUS" 'the redirect is not followed, so the redirect response itself is what is returned'
+assert_eq "GET good.fixture.example" "$(cat "$TRANSPORT_LOG")" \
+  'redirect-recheck parity, encoding case: the percent-encoded out-of-scope Location is never handed to the transport - FAILS if the redirect recheck only string-compares the raw, still-encoded Location against the scope host instead of running it through the same normalize pipeline the initial URL got'
+SCOURSH_HTTP_TRANSPORT=_test_transport
+
+# This case must land on an IN-SCOPE hostname whose resolution is
+# deny-listed (metadata.fixture.example, added to
+# tests/fixtures/config/http-scope.conf for exactly this), not an
+# out-of-scope literal: a Location naming an out-of-scope host - literal or
+# not - is already rejected by the scope-tuple compare alone, same as the
+# plain evil.example redirect case above, and would not distinguish "the
+# redirect recheck re-runs resolution-pinning" from "the redirect recheck
+# only re-runs the tuple compare". Landing on an ALREADY-in-scope hostname
+# that then fails the deny list is the only way to isolate that the
+# redirect loop's gate re-run goes all the way through resolution, not just
+# through the tuple match.
+: >"$TRANSPORT_LOG"
+_test_transport_redirect_denylist() {
+  printf '%s %s\n' "$1" "$3" >>"$TRANSPORT_LOG"
+  case $3 in
+    good.fixture.example) printf '301\nhttps://metadata.fixture.example/next\n' ;;
+    *) printf '200\n\n' ;;
+  esac
+}
+SCOURSH_HTTP_TRANSPORT=_test_transport_redirect_denylist
+http_request GET 'https://good.fixture.example/x'
+assert_eq 0 $? 'a redirect Location naming an in-scope hostname that resolves to the cloud metadata sentinel does not crash the run'
+assert_eq 301 "$_HTTP_LAST_STATUS" 'the redirect is not followed'
+assert_eq "GET good.fixture.example" "$(cat "$TRANSPORT_LOG")" \
+  'redirect-recheck parity, deny-list case: a Location naming an ALREADY-in-scope hostname that resolves to 169.254.169.254 is still never handed to the transport - FAILS if the redirect recheck re-runs only the scope-tuple compare on redirected hops and skips resolution-pinning, since the tuple compare alone would pass this Location (the hostname genuinely is in scope.conf)'
 SCOURSH_HTTP_TRANSPORT=_test_transport
 
 printf '\n-- auditability: a rejection is recorded, not a silent abort --\n'
