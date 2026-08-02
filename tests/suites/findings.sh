@@ -428,6 +428,27 @@ assert_eq NONE "$(attribute_target nothing.invalid || printf NONE)" \
 assert_eq fixture-wide "$(attribute_target deep.sub.wide.fixture.invalid || printf NONE)" \
   'allow-subdomains: true matches a subdomain (fails if the flag is ignored, and the composite would then silently never fire)'
 
+t_case 'scope_split_authority: the shared parser lib/http.sh and attribution both call'
+scope_split_authority 'user:pass@good.fixture.invalid:8443'
+assert_eq good.fixture.invalid "$_SAH_HOST" 'userinfo is stripped before the host is read'
+assert_eq 8443 "$_SAH_PORT" 'port survives userinfo stripping'
+assert_eq true "$_SAH_HAD_USERINFO" 'userinfo presence is flagged, same signal lib/http.sh gates on'
+scope_split_authority '[2001:db8::1]:8443'
+assert_eq '2001:db8::1' "$_SAH_HOST" \
+  'a bracketed IPv6 authority is NOT truncated to "[" - FAILS under the old first-colon split (attribution_load extra-host loop, pre-fix)'
+assert_eq true "$_SAH_BRACKETED" 'bracket presence is flagged for a numeric-literal check to run on top'
+scope_split_authority '%67ood.fixture.invalid'
+assert_eq good.fixture.invalid "$_SAH_HOST" \
+  'percent-encoding is decoded exactly once - FAILS under the old split, which never decoded at all'
+assert_status 1 'an authority with no host (userinfo but nothing after the last "@") is refused, not silently accepted as an empty host' \
+  scope_split_authority 'nobody@'
+
+t_case 'attribution now shares the same authority split as the DAST gate (regression: tension 19 "attribution normalises identically")'
+assert_eq fixture-authority "$(attribute_target authority.fixture.invalid || printf NONE)" \
+  'a userinfo-bearing base-url ("https://user@authority.fixture.invalid/") attributes on the HOST, not on "user@authority.fixture.invalid" - FAILS under the old _host_of_url, which never split userinfo and left it stuck to the host'
+assert_eq fixture-authority "$(attribute_target '2001:db8::1' || printf NONE)" \
+  'a bracketed-IPv6 extra-host ("[2001:db8::1]:8443") attributes on the address - FAILS under the old extra-host loop, which truncated the host to "[" and could never match anything'
+
 # ---------------------------------------------------------------------------
 printf '\n-- tension 17: the deterministic merge --\n'
 # ---------------------------------------------------------------------------

@@ -51,31 +51,20 @@ source "${BASH_SOURCE[0]%/*}/config.sh"
 source "${BASH_SOURCE[0]%/*}/findings.sh"
 
 # ---------------------------------------------------------------------------
-# 1. Percent-decoding (normalization step 1)
+# 1. Percent-decoding, userinfo-stripping, and bracket-aware host/port
+#    splitting (normalization steps 1-2) now live in lib/findings.sh as
+#    scope_split_authority - see the ADR comment above _host_of_url there.
+#    They moved out of this file because attribution_load (lib/findings.sh)
+#    must produce the IDENTICAL split this file's http_url_normalize does
+#    (tension 19: attribution and the gate must never disagree on what a
+#    scope.conf host STRING means), and lib/findings.sh cannot depend on
+#    THIS file: cloud-only runs source lib/findings.sh and never
+#    lib/http.sh, and http.sh already sources findings.sh, never the
+#    reverse.  http_url_normalize below calls the shared function and then
+#    layers its OWN numeric-literal canonicalization (this section and the
+#    next) on top - that part stays here because it is gate-only SSRF
+#    hardening a correlation-only lookup does not need.
 # ---------------------------------------------------------------------------
-# Decodes %HH exactly ONCE.  A byte that is not a well-formed %HH escape is
-# left alone.  Never called a second time on its own output anywhere in this
-# file: decoding twice is itself the bypass tension 19 names ("a value that
-# must stay %2565vil would be corrupted into evil by a second pass").
-_http_pct_decode() {
-  local s=$1 out='' i=0 c hex
-  local len=${#s}
-  while (( i < len )); do
-    c=${s:i:1}
-    if [[ $c == '%' ]] && (( i + 3 <= len )); then
-      hex=${s:i+1:2}
-      if [[ $hex =~ ^[0-9A-Fa-f][0-9A-Fa-f]$ ]]; then
-        # shellcheck disable=SC2059
-        out+=$(printf "\\x$hex")
-        i=$(( i + 3 ))
-        continue
-      fi
-    fi
-    out+=$c
-    i=$(( i + 1 ))
-  done
-  printf '%s' "$out"
-}
 
 # ---------------------------------------------------------------------------
 # 2. Numeric IPv4 literal canonicalization (normalization step 3)
@@ -260,37 +249,16 @@ http_url_normalize() {
   [[ -n $path ]] || path='/'
   [[ -n $authority ]] || return 1
 
-  # Step 1: percent-decode the authority, exactly once.
-  authority=$(_http_pct_decode "$authority")
-
-  # Step 2: split userinfo/host/port; userinfo is discarded, never compared,
-  # never placed on the wire (`http://allowed@evil/` names host `evil`).
-  # Multiple '@' in a decoded authority means everything up to the LAST '@'
-  # is userinfo, per RFC 3986 - not the first, which is what makes
-  # `user%40name@evil` (decoding to `user@name@evil`) split correctly.
-  local had_userinfo=false
-  if [[ $authority == *@* ]]; then
-    had_userinfo=true
-    authority=${authority##*@}
-  fi
-
-  local host port is_v6=false
-  if [[ $authority == \[* ]]; then
-    is_v6=true
-    host=${authority#\[}
-    host=${host%%]*}
-    local after=${authority#*]}
-    if [[ $after == :* ]]; then port=${after#:}; else port=''; fi
-  else
-    if [[ $authority == *:* ]]; then
-      host=${authority%%:*}
-      port=${authority#*:}
-    else
-      host=$authority
-      port=''
-    fi
-  fi
-  [[ -n $host ]] || return 1
+  # Steps 1-2: percent-decode the authority (once), strip userinfo (up to
+  # the LAST '@' per RFC 3986 - never placed on the wire: `http://allowed@
+  # evil/` names host `evil`), and split a bracket-aware host/port.  This is
+  # scope_split_authority (lib/findings.sh), shared with attribution_load so
+  # the two can never disagree on what a scope.conf host STRING means - see
+  # the ADR above _host_of_url there.  _SAH_HOST comes back already
+  # lowercased and trailing-dot-stripped (_normalise_host).
+  scope_split_authority "$authority" || return 1
+  local host=$_SAH_HOST port=$_SAH_PORT
+  local had_userinfo=$_SAH_HAD_USERINFO is_v6=$_SAH_BRACKETED
 
   if [[ -n $port ]]; then
     [[ $port =~ ^[0-9]{1,5}$ ]] || return 1
@@ -300,27 +268,27 @@ http_url_normalize() {
     port=$(_http_default_port "$scheme") || return 1
   fi
 
-  # Steps 3-4: canonicalize a numeric host, else lowercase + strip one
-  # trailing dot.  _normalise_host (lib/findings.sh) is the SAME function
-  # cloud/DAST attribution uses, by design (tension 19: "attribution
-  # normalises identically so the two can never disagree").
+  # Steps 3-4: canonicalize a numeric host, else keep the already-normalised
+  # host scope_split_authority produced.  Gate-only SSRF hardening: a
+  # correlation-only lookup (attribution_load) has no need of it, which is
+  # why it stays here rather than folding into the shared function.
   local canon_host is_literal=false
   if [[ $is_v6 == true ]]; then
     # Step 3 applies to IPv6 too: an IPv4-mapped or IPv4-compatible literal
     # canonicalizes to the SAME dotted-quad the deny list and the scope-tuple
     # compare both use, "not just to the outcome of a lookup" (tension 19).
-    # Anything else stays an (lowercased) opaque IPv6 literal.
+    # Anything else stays an (already-lowercased) opaque IPv6 literal.
     local v4
     if v4=$(_http_ipv6_extract_v4 "$host"); then
       canon_host=$v4
     else
-      canon_host=${host,,}
+      canon_host=$host
     fi
     is_literal=true
   elif canon_host=$(_http_canon_ipv4 "$host"); then
     is_literal=true
   else
-    canon_host=$(_normalise_host "$host")
+    canon_host=$host
   fi
 
   _HN_SCHEME=$scheme
