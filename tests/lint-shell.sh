@@ -154,6 +154,20 @@ check 'no direct assignment to a redacted field' \
   '_F\[(evidence|title|remediation|url|logical_fqn|loc_path_template|loc_param_name)\]=' \
   engine_files lib/findings.sh
 
+printf '\n== tension 19: no bypass - a single chokepoint for the network ==\n'
+# docs/FOUNDATION.md tension 19 "No bypass": every request in every module
+# goes through lib/http.sh's http_request. A bare curl/wget/nc/openssl
+# s_client anywhere else is a second, ungated path to the network - exactly
+# the bypass the scope gate exists to make impossible. lib/http.sh is where
+# the wrapper itself lives (it is expected to invoke curl); the documented
+# `modules/dast/passive/tls.sh` exception (docs/FOUNDATION.md tension 19)
+# does not exist yet, so it is not exempted here - add it the day it lands,
+# with the same comment tension 19 requires of it (host taken from the
+# already-resolved, gated tuple set).
+check 'no bypass: no curl/wget/nc/openssl s_client outside lib/http.sh' \
+  '(^|[;&|(])[[:space:]]*(curl|wget|nc|ncat|netcat|openssl[[:space:]]+s_client)([[:space:]]|\$)' \
+  engine_files lib/http.sh
+
 printf '\n'
 if (( FAILED )); then
   printf 'lint-shell: FAILED\n'
