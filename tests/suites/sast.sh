@@ -309,11 +309,15 @@ printf -- '\n-- check selection integration: lib/checks.sh really gates what run
 ROOT_REAL_REGISTRY=$W/root-real-registry
 mkdir -p "$ROOT_REAL_REGISTRY/config" "$ROOT_REAL_REGISTRY/modules/sast/rules"
 printf 'id: scanner\n' >"$ROOT_REAL_REGISTRY/config/scanner.conf"
-# The real run.sh/engine.sh too, not just the rules - scan_dispatch resolves
-# $SCOURSH_INSTALL_ROOT/modules/sast/run.sh, so a fixture root carrying only
-# *.rules would silently take the "module has no run.sh yet" no-op path
-# instead of actually running anything.
-cp "$ROOT/modules/sast/run.sh" "$ROOT/modules/sast/engine.sh" "$ROOT_REAL_REGISTRY/modules/sast/"
+# The real run.sh/engine.sh/history.sh too, not just the rules -
+# scan_dispatch resolves $SCOURSH_INSTALL_ROOT/modules/sast/run.sh, so a
+# fixture root carrying only *.rules would silently take the "module has no
+# run.sh yet" no-op path instead of actually running anything.  history.sh is
+# needed even though these two invocations never pass --history: run.sh now
+# unconditionally sources it (modules/sast/run.sh's own header), exactly like
+# engine.sh, so its absence would fail the `source` itself.
+cp "$ROOT/modules/sast/run.sh" "$ROOT/modules/sast/engine.sh" "$ROOT/modules/sast/history.sh" \
+  "$ROOT_REAL_REGISTRY/modules/sast/"
 cp "$ROOT/modules/sast/rules/secrets.rules" "$ROOT_REAL_REGISTRY/modules/sast/rules/secrets.rules"
 cp "$ROOT/modules/sast/rules/crypto.rules" "$ROOT_REAL_REGISTRY/modules/sast/rules/crypto.rules"
 ROOT_REAL_REGISTRY=$(cd -- "$ROOT_REAL_REGISTRY" && pwd -P)
