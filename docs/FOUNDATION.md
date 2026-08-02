@@ -3736,15 +3736,25 @@ composite under `tests/fixtures/rules/derived.rules`; only the shipped seed wait
 
 ### Cheap corrections, safe to defer
 
-- **F4 [medium] - §12.2's `context-deny` rewrite suppresses true positives**
-  (`rules/RULE-FORMAT.md` §12.2, blessed as the general recipe by §8.3 and tension 2).
-  With `context-window: 2`, a correct safe-loader call within two lines of a genuine vulnerable call
-  suppresses the finding, and tension 12 then classifies the suppressed finding `fixed`.
-  §12.1 already states the correct discipline (`context-window: 0` for a same-line guard) and §12.2
-  abandons it, so the two frozen examples give contradictory precedents for the identical hazard.
-  Direction: freeze that a same-line-intent deny must carry `context-window: 0`, fix §12.2, add a linter
-  warning for a deny on a rule with a window above 0, and state in §10.2 that widening a deny window
-  trades false positives for silent false negatives rather than being monotonically safe.
+- **F4 [medium] - CLOSED.**
+  Originally: "§12.2's `context-deny` rewrite suppresses true positives" (`rules/RULE-FORMAT.md` §12.2,
+  blessed as the general recipe by §8.3 and tension 2) - with `context-window: 2`, a correct safe-loader
+  call within two lines of a genuine vulnerable call suppressed the finding, and tension 12 then
+  classified the suppressed finding `fixed`.
+  §12.1 already stated the correct discipline (`context-window: 0` for a same-line guard) and §12.2
+  abandoned it, so the two frozen examples gave contradictory precedents for the identical hazard.
+  Closed by the "SAST: native pattern engine + seed secrets/crypto/injection/python rules" ticket
+  (`docs/DESIGN.md` §13 step 3a), the first ticket to evaluate the `context` directive at all and
+  therefore its correct owner: `rules/RULE-FORMAT.md` §12.2's worked example now carries
+  `context-window: 0` with an inline note explaining the correction; §10.2 states the general rule
+  (widening a `context-deny` window trades a detectable false positive for an undetectable false
+  negative, while widening a `context-require` window only ever risks the detectable direction); and
+  `lib/records.sh`'s `_records_validate_record` gained `W033`, a warning (not an error - a wider deny
+  window is sometimes a deliberate, reviewed trade-off) that fires whenever a `context-deny` is present
+  with an EFFECTIVE window above 0, including an absent `context-window` (which defaults to 2).  The
+  shipped `modules/sast/rules/python.rules` `SAST-PY-YAML_LOAD-01` (the real-world equivalent of the
+  worked example) ships with `context-window: 0` from day one, and `tests/suites/sast.sh` carries a
+  regression test that fails under the pre-fix (window-2) reading.
 - **F3 [medium] - CLOSED.**
   Originally: "the `tags` vocabulary is not closed, so `E044` is unimplementable and a typo silently
   disables" (`rules/RULE-FORMAT.md` §9.1.3 and §13 against tension 15) - `tags: quik` lints clean and
@@ -3822,8 +3832,8 @@ remain open for the same reason they always were - `rules/derived.rules` is stil
 contributors do not exist until steps 5 and 6.
 
 Steps 3 to 10 are otherwise unstarted.
-The remaining follow-ups (F4, F5, F20, F17, and F16's `look` half) are inherited by them and are still
-open.
+The remaining follow-ups (F5, F20, F17, and F16's `look` half) are inherited by them and are still
+open.  (F4 is closed above.)
 
 What §13 step 1 deliberately did **not** build, so the boundary is not rediscovered: `scan.sh`, anything
 under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any

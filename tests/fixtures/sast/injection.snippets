@@ -1,0 +1,21 @@
+# tests/fixtures/sast/injection.snippets - true-positive fixture for
+# modules/sast/rules/injection.rules (tests/suites/sast.sh).  Extension-less
+# by design: injection.rules carries no per-rule `files` restriction, since
+# the catalog is language-agnostic (docs/DESIGN.md 6.3).
+
+os.system("rm -rf " + user_path)
+
+query = "SELECT * FROM users WHERE id = " + "'" + user_id + "'"
+
+response.setHeader("X-Debug", req.query.debug)
+
+host = request.headers.get("Host")
+
+template = render_template_string(user_supplied_template)
+
+return redirect(request.args.get("next"))
+
+user = Model(**request.form)
+
+parser.getFeatureConfig()
+resolve_entities = True

@@ -1,0 +1,112 @@
+# modules/sast/rules/injection.rules - docs/DESIGN.md §6.3 "injection.rules
+# (language-agnostic sinks)" seed catalog: OS-command concatenation, SQL
+# string concatenation, CRLF/header injection, host-header trust, template
+# injection sinks, unsafe redirect, mass-assignment, XXE.
+
+id: SAST-INJ-OS_COMMAND-01
+title: OS command built from a shell that trusts its own arguments
+severity: critical
+confidence: medium
+cwe: CWE-78
+owasp: A03:2021
+pattern: (os\.system\(|subprocess\.(call|run|Popen)\([^)]*shell[[:space:]]*=[[:space:]]*True|child_process\.exec\(|Runtime\.getRuntime\(\)\.exec\()
+dialect: ere
+tags: static
+tags: quick
+remediation: Pass arguments as a list/array to a non-shell exec call instead of building a
+  shell command string; never dispatch untrusted input through a shell.
+references: CWE-78
+
+id: SAST-INJ-SQL_CONCAT-01
+title: SQL statement built by string concatenation
+severity: critical
+confidence: medium
+cwe: CWE-89
+owasp: A03:2021
+pattern: ["'](SELECT|INSERT|UPDATE|DELETE)[^"']*["'][[:space:]]*(\+|%)
+dialect: ere
+tags: static
+tags: quick
+remediation: Use parameterised queries or an ORM that never interpolates request-derived
+  data into SQL text.
+references: CWE-89
+
+id: SAST-INJ-CRLF_HEADER-01
+title: Response header value built from request-derived data
+severity: high
+confidence: medium
+cwe: CWE-113
+owasp: A03:2021
+pattern: (setHeader|set_header)\([^)]*req(uest)?\.
+dialect: ere
+tags: static
+remediation: Reject or strip CR/LF from any value placed into a response header, and
+  prefer a framework API that rejects header-splitting characters outright.
+references: CWE-113
+
+id: SAST-INJ-HOST_HEADER_TRUST-01
+title: Host header trusted to build a URL or redirect target
+severity: medium
+confidence: medium
+cwe: CWE-441
+owasp: A03:2021
+pattern: (request\.headers\.get\(["']Host["']\)|req\.headers\.host|HTTP_HOST\b|request\.headers\[["']Host["']\])
+dialect: ere
+tags: static
+remediation: Build absolute URLs from a configured, trusted hostname rather than the
+  request's Host header, which the client fully controls.
+references: CWE-441
+
+id: SAST-INJ-SSTI-01
+title: Server-side template built from request-derived data
+severity: critical
+confidence: medium
+cwe: CWE-1336
+owasp: A03:2021
+pattern: (render_template_string\(|Template\([^)]*request\.|jinja2\.Template\()
+dialect: ere
+tags: static
+remediation: Never compile a template string built from request-derived data; use a fixed
+  template with request data passed only as render-context variables.
+references: CWE-1336
+
+id: SAST-INJ-OPEN_REDIRECT-01
+title: Redirect target taken directly from request-derived data
+severity: medium
+confidence: medium
+cwe: CWE-601
+owasp: A01:2021
+pattern: (redirect\(request\.|res\.redirect\(req\.|response\.sendRedirect\(request\.getParameter)
+dialect: ere
+tags: static
+remediation: Validate the redirect target against an allow-list of known-safe paths/hosts
+  before honoring it, rather than redirecting to whatever the request supplied.
+references: CWE-601
+
+id: SAST-INJ-MASS_ASSIGNMENT-01
+title: Whole request body bound directly to a model
+severity: high
+confidence: low
+cwe: CWE-915
+owasp: A08:2021
+pattern: (\.update_attributes\(request\.|Model\(\*\*request\.|\.update\(\*\*request\.)
+dialect: ere
+tags: static
+severity-floor: low
+remediation: Bind only an explicit allow-list of fields from the request to the model,
+  never the whole body, so a client cannot set fields it should never control (roles,
+  ownership, verified flags).
+references: CWE-915
+
+id: SAST-INJ-XXE-01
+title: XML parser configured to resolve external entities
+severity: high
+confidence: medium
+cwe: CWE-611
+owasp: A05:2021
+pattern: (resolve_entities[[:space:]]*=[[:space:]]*True|disallow-doctype-decl[^)]*[Ff]alse|IS_SUPPORTING_EXTERNAL_ENTITIES[^)]*true)
+dialect: ere
+tags: static
+remediation: Disable external entity resolution and DTD processing on every XML parser
+  that reads untrusted input; use the platform's documented hardened-parser configuration.
+references: CWE-611

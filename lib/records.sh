@@ -821,6 +821,30 @@ _records_validate_record() {
     fi
   fi
 
+  # W033 (docs/FOUNDATION.md finding F4, §10.2): a context-deny with an
+  # effective window above 0 can silently suppress a genuine, unrelated
+  # finding whose only fault is sharing a window with the deny token - a
+  # false negative masquerading as a fix once tension 12 sees it (the
+  # suppressed match is reported `fixed`, not `new`).  A same-line-intent
+  # guard (the common case - a literal flag on the matched call itself) must
+  # pin `context-window: 0`; §12.1's `SAST-SEC-AWS_AKID-01` and the corrected
+  # §12.2 `SAST-PY-YAML_LOAD-01` both do.  The window defaults to 2
+  # (rules/RULE-FORMAT.md §10.1) when the key is absent, so an ABSENT
+  # context-window with a context-deny present is the same hazard and must
+  # warn too - only checking an EXPLICIT value would miss the common case
+  # where an author never wrote context-window at all.  Deliberately a
+  # warning (`W*` never increments RECORDS_ERRORS, records_diag) rather than
+  # an error: a wider deny window is sometimes a deliberate, reviewed
+  # trade-off (§10.2), never a syntax mistake.
+  if records_has "$set" "$i" context-deny; then
+    local ctx_win=2
+    records_has "$set" "$i" context-window && ctx_win=$(records_field "$set" "$i" context-window)
+    if [[ $ctx_win =~ ^[0-9]+$ ]] && (( ctx_win > 0 )); then
+      records_diag "$path" "$line" 1 W033 "$id" \
+        "context-deny with context-window $ctx_win (effective) can silently suppress a genuine finding within the window; use context-window: 0 for a same-line-intent guard (docs/FOUNDATION.md finding F4, §10.2)"
+    fi
+  fi
+
   # E030 trailing space on a regex value; W022 elsewhere (§5.3)
   _records_check_trailing_space "$set" "$i" "$path" "$line" "$id" "$schema"
 

@@ -1,0 +1,122 @@
+# modules/sast/rules/python.rules - docs/DESIGN.md §6.3 "python" seed catalog:
+# eval/exec, pickle, yaml.load, subprocess shell=True, os.system, Flask
+# debug=True, Jinja autoescape=False.
+#
+# SAST-PY-YAML_UNSAFE_LOAD-01 closes docs/FOUNDATION.md finding F4: this is
+# the SHIPPED equivalent of rules/RULE-FORMAT.md §12.2's worked example, and
+# carries `context-window: 0` per F4's frozen direction, not the `2` the old
+# (defective) worked example used - a coincidental SafeLoader mention up to
+# two lines away must never suppress a genuine, unrelated yaml.load() call.
+# See tests/suites/sast.sh "F4 regression" for the test that fails under the
+# window-2 reading.
+
+id: SAST-PY-EVAL_EXEC-01
+title: Use of eval() or exec() on request-derived data
+severity: critical
+confidence: high
+cwe: CWE-95
+owasp: A03:2021
+pattern: \b(eval|exec)\s*\(
+dialect: ere
+files: *.py
+tags: static
+tags: quick
+remediation: Do not pass request-derived data to eval()/exec().
+  Parse literals with ast.literal_eval(), or dispatch through an explicit allowlist of
+  permitted operations.
+references: CWE-95
+
+id: SAST-PY-PICKLE_LOAD-01
+title: pickle.load()/loads() on untrusted data
+severity: critical
+confidence: medium
+cwe: CWE-502
+owasp: A08:2021
+pattern: \bpickle\.(load|loads)\s*\(
+dialect: ere
+files: *.py
+tags: static
+tags: quick
+remediation: Never unpickle data from an untrusted source; pickle can construct arbitrary
+  objects and execute arbitrary code during deserialization.
+  Use a safe, schema-constrained format such as JSON instead.
+references: CWE-502
+
+id: SAST-PY-YAML_UNSAFE_LOAD-01
+title: yaml.load() without a safe loader
+severity: high
+confidence: medium
+cwe: CWE-502
+owasp: A08:2021
+pattern: \byaml\.load\s*\(
+dialect: ere
+files: *.py
+files: *.pyi
+context-deny: (SafeLoader|CSafeLoader|BaseLoader|yaml\.safe_load)
+context-window: 0
+tags: static
+tags: quick
+severity-floor: medium
+remediation: Use yaml.safe_load(), or pass Loader=yaml.SafeLoader explicitly on the SAME
+  call. yaml.load() with the default loader constructs arbitrary Python objects and is a
+  remote code execution sink whenever the document is attacker-influenced.
+references: CWE-502
+
+id: SAST-PY-SUBPROCESS_SHELL-01
+title: subprocess call with shell=True
+severity: high
+confidence: medium
+cwe: CWE-78
+owasp: A03:2021
+pattern: subprocess\.(call|run|Popen)\([^)]*shell[[:space:]]*=[[:space:]]*True
+dialect: ere
+files: *.py
+tags: static
+remediation: Pass the command as a list with shell=False (the default), so the shell
+  never re-interprets metacharacters in an argument.
+references: CWE-78
+
+id: SAST-PY-OS_SYSTEM-01
+title: os.system() invocation
+severity: high
+confidence: medium
+cwe: CWE-78
+owasp: A03:2021
+pattern: \bos\.system\s*\(
+dialect: ere
+files: *.py
+tags: static
+remediation: Replace os.system() with subprocess.run() passing an argument list and
+  shell=False, so untrusted input cannot reach a shell.
+references: CWE-78
+
+id: SAST-PY-FLASK_DEBUG-01
+title: Flask application run or configured with debug enabled
+severity: high
+confidence: medium
+cwe: CWE-489
+owasp: A05:2021
+pattern: (app\.run\([^)]*debug[[:space:]]*=[[:space:]]*True|app\.debug[[:space:]]*=[[:space:]]*True)
+dialect: ere
+files: *.py
+tags: static
+remediation: Never enable debug mode in production; Flask's debugger exposes an
+  interactive Python console reachable by anyone who can trigger an unhandled exception.
+references: CWE-489
+
+id: SAST-PY-JINJA_AUTOESCAPE_FALSE-01
+title: Jinja2 environment with autoescape disabled
+severity: high
+confidence: medium
+cwe: CWE-79
+owasp: A03:2021
+pattern: autoescape[[:space:]]*=[[:space:]]*False
+dialect: ere
+files: *.py
+files: *.html
+files: *.jinja
+files: *.j2
+tags: static
+remediation: Leave autoescape enabled (or set it True explicitly) so template output is
+  HTML-escaped by default; disabling it reintroduces XSS for every variable in the template.
+references: CWE-79
