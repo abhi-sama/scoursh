@@ -4,6 +4,7 @@
   "description": "Air-gapped shell security scanner. This file exists ONLY so the conventional `pnpm test` / `npm test` entry point runs tests/run-tests.sh. scoursh has no JavaScript, no Node runtime dependency, and no build step; the shell entry point (tests/run-tests.sh) is the real one.",
   "scripts": {
     "test": "bash tests/run-tests.sh",
-    "typecheck": "bash tests/lint-shell.sh"
+    "typecheck": "bash tests/lint-shell.sh",
+    "build": "echo 'scoursh is pure POSIX/bash; there is no build step.'"
   }
 }
