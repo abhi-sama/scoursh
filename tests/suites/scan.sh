@@ -17,7 +17,13 @@
 #   next.
 # SC2329: `_run_main` is only ever invoked indirectly, as an argument to
 #   assert_status, which shellcheck's static call graph does not follow.
-# shellcheck disable=SC2015,SC2016,SC2030,SC2031,SC2329
+# SC2317: the companion "unreachable" finding shellcheck emits for every
+#   statement inside a function it has already decided (via SC2329) is never
+#   called - same root cause, not a second bug (`_run_main` and `_bin_run`
+#   both fall under this). Measured: ShellCheck 0.11.0 (this repo's pinned
+#   local version) does not emit SC2317 for these bodies; the version CI's
+#   `apt-get install shellcheck` resolves does.
+# shellcheck disable=SC2015,SC2016,SC2030,SC2031,SC2329,SC2317
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)

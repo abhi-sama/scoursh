@@ -38,7 +38,17 @@
 # shellcheck shell=bash
 #
 # SC2016: diagnostic prose quotes shell/URL syntax literally.
-# shellcheck disable=SC2016
+# SC2119/SC2120: http_scope_load takes an optional path override
+#   (rules/RULE-FORMAT.md's config/scope.conf default), but every call SITE
+#   inside this file (http_scope_match, http_gate_url) intentionally uses the
+#   default and calls it bare; the argument form is exercised from
+#   tests/suites/http.sh ("http_scope_load $FIXTURE_SCOPE"), which shellcheck's
+#   per-file call graph does not see. Measured: ShellCheck 0.11.0 (this repo's
+#   pinned local version) does not flag this; the version CI's `apt-get
+#   install shellcheck` resolves does. Per AGENTS.md's "measured, not assumed"
+#   convention, the finding is silenced with its reason rather than left to
+#   depend on which ShellCheck build happens to run.
+# shellcheck disable=SC2016,SC2119,SC2120
 
 if [[ -n ${SCOURSH_HTTP_SOURCED:-} ]]; then
   return 0
