@@ -92,12 +92,22 @@ Each has a full entry in `docs/FOUNDATION.md`.
 
 `docs/DESIGN.md` §13 gives the build order, in ten steps, starting with `lib/core.sh` / `lib/findings.sh` / `lib/report.sh` and ending with SARIF plus the compliance report plus docs.
 
+**Process rule: shipping a §13 step updates this section, and its mirror in `docs/FOUNDATION.md`'s
+"Where the build currently stands," in the same change.**
+Step 3e (`modules/sast/history.sh`, commit `18c4c3f`) landed without either doc being updated, so its
+existence was rediscovered a ticket downstream by an agent working on unrelated doc staleness, which is
+exactly the failure mode this file exists to prevent (see "`main` can lag `dev`" below for the earlier,
+sibling instance of the same pattern). Do not repeat it: a ticket that lands a `docs/DESIGN.md` §13
+sub-step is not done until this paragraph's "Current position" and the FOUNDATION.md section it mirrors
+both say so.
+
 **Current position: §13 steps 1 and 2 are done, and step 3 is under way.**
-Step 3's sub-steps 3a, 3b, and 3c have landed on `dev`.
-Step 3 as a whole is not finished: `docs/DESIGN.md` §13 step 3 also calls for "the other languages"
-beyond what 3a-3c seeded, plus `history.sh` (the `SAST-HIST-*` mechanism, tension 13), and neither
-has landed yet.
-The next task is the remainder of step 3.
+Step 3's sub-steps 3a, 3b, 3c, and 3e have landed on `dev`.
+Step 3 as a whole is not finished: `docs/DESIGN.md` §6.3's rule catalog also calls for the `java`,
+`nosql`, and `ldap` rule packs beyond what 3a-3c seeded, and none of those three have landed yet.
+`history.sh` (the `SAST-HIST-*` mechanism, tension 13) - the other item this section used to list as
+outstanding - shipped as 3e; see below.
+The next task is the remainder of step 3 (the still-missing language/sink packs).
 
 **Step 3a-3c shipped the SAST module.**
 Three tickets landed, in this order:
@@ -122,7 +132,19 @@ Do not undercount this to the five named in an individual ticket's own descripti
 before 3c landed, or one that only tracked 3a/3b, will list five; check the directory, not the ticket
 text.
 
-**Findings still open after 3a-3c, and the step each is inherited by:**
+**Step 3e shipped `history.sh`, landing after 3a-3c and out of letter order (§13 lists it last in the
+step-3 sentence, but it is not "3d").**
+`18c4c3f` ("SAST: history.sh - replay secrets.rules across git history (§13 step 3e)") shipped
+`modules/sast/history.sh` (429 lines): it replays `modules/sast/rules/secrets.rules` against git
+history rather than the working tree, bounded by a commit/time window per `docs/DESIGN.md` §6.3, and
+populates the `SAST-HIST-*` check family - including the `history` fingerprint profile (`blob_sha`,
+`match_digest`, `occurrence`) and the per-finding `oldest_reaching_commit_time` that tension 13's
+boundary test and tension 6 condition (b1) read once `state/` exists at step 7.
+`tests/suites/sast-history.sh` (295 lines) tests it.
+`modules/sast/` now has all three files `docs/DESIGN.md` §13 step 3 names for it: `engine.sh`, `run.sh`,
+and `history.sh`; only the additional rule packs (`java`, `nosql`, `ldap`) are still missing.
+
+**Findings still open after 3a-3c and 3e, and the step each is inherited by:**
 
 - **F5 and F20** - `rules/derived.rules` still does not seed `COMPOSITE-TOKEN-HIJACK`, because its
   contributors do not exist until steps 5 and 6.
@@ -174,12 +196,12 @@ both amended in the same change.
 `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any shipped
 rule pack, and `state/`.
 `lib/http.sh` landed anyway, out of sequence - see above.
-**Step 3a-3c then filled in one corner of that gap**: `modules/sast/` and its six rule packs now
-exist, so `scan_dispatch sast` no longer no-ops and `_scan_apply_profile_filter` finds a non-empty
-registry for SAST checks.
+**Step 3a-3c and 3e then filled in most of that gap**: `modules/sast/` (with `engine.sh`, `run.sh`,
+AND `history.sh` - see above) and its six rule packs now exist, so `scan_dispatch sast` no longer
+no-ops and `_scan_apply_profile_filter` finds a non-empty registry for SAST checks.
 Everything else in the original list is still true: `modules/dast/`, `modules/sca/`, `modules/iac/`,
 `modules/cloud/`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, and `state/` do not
-exist yet, and `modules/sast/` itself has no `history.sh`.
+exist yet.
 Every `scan_dispatch` call for a module other than `sast` remains a logged `coverage_reduction` no-op
 (`reason=not_yet_built`), and every `_scan_apply_profile_filter` call for a non-SAST check set finds
 an empty check registry (`reason=no_check_registry_on_disk_yet`), until that module actually ships one
@@ -213,7 +235,7 @@ composite under `tests/fixtures/rules/derived.rules`.
 Six findings remain open (F4, F3, F5, F20, F8, F17, plus F16's `look` half); all are cheap corrections
 that cost nothing to defer, and each names the step it must land before.
 This is a snapshot from before step 2 landed and is kept for history; it is stale on its own.
-F3, F4, and F8 have since closed (see "Findings still open after 3a-3c" above for the current list:
+F3, F4, and F8 have since closed (see "Findings still open after 3a-3c and 3e" above for the current list:
 only F5, F20, F17, and F16's `look` half remain).
 
 Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start:
