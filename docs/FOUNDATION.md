@@ -770,10 +770,13 @@ the round-2 formulation and it was wrong on two of the three counts.
 **(a) Own selection.**
 A composite has no coverage cell, so tension 12's `(check, cell)` test cannot protect it, and nothing
 else asked whether the composite record itself survived tension 15's filter chain.
-It frequently does not: `derived` is a type tag in no `--intensity` tier (open finding F8), so
-`scan.sh all --intensity active` drops every composite, and `--profile-scan quick` drops any composite
-without a `quick` profile tag.
-Without (a), `scan.sh all` followed by `scan.sh all --intensity active` would classify the flagship
+It still can not: `--profile-scan quick` drops any composite without a `quick` profile tag, and
+`--allow-intrusive` off drops one tagged `intrusive`, exactly as either would for an ordinary check.
+(`--intensity` used to be a THIRD way this happened - `derived` was a type tag in no `--intensity`
+tier, open finding F8, so `scan.sh all --intensity active` dropped every composite regardless of intent
+- but F8 is closed: `lib/checks.sh` exempts `derived` from the intensity ceiling specifically, so
+`--intensity` alone no longer drops a composite.  `--profile-scan` and `--allow-intrusive` still can.)
+Without (a), `scan.sh all` followed by `scan.sh all --profile-scan quick` would classify the flagship
 `COMPOSITE-TOKEN-HIJACK` **`fixed (chain broken)`** with all three contributors still present and the
 chain fully open.
 A composite that was not selected is `unknown`, exactly as an unselected ordinary check's findings are.
@@ -907,7 +910,7 @@ test that passes under both readings pins nothing:
 | 2 | Correlation values differ across contributors | does not fire | joining on `none` |
 | 3 | Does not fire; every prior contributor pair covered; composite selected | `fixed` | a rule that never reports `fixed` |
 | 4 | Does not fire; one prior contributor's cell not visited (`--regions` narrowed) | **`unknown`** | classification keyed on bare check id ("ran somewhere") |
-| 5 | **Composite record dropped by `--intensity active`; all contributors present and firing** | **`unknown`** | condition (a) omitted - the round-2 rule returns `fixed (chain broken)` |
+| 5 | **Composite record dropped by a filter (e.g. `--profile-scan quick`); all contributors present and firing** | **`unknown`** | condition (a) omitted - the round-2 rule returns `fixed (chain broken)` |
 | 6 | **`any-of: DAST-B-01, CLOUD-C-01`; run 1 `--regions all`, only B fires; run 2 `--regions us-east-1`, same modules selected, B now absent** | **`unknown`** | condition (b2) omitted **and** (b2) stated as "covered in at least one cell" - both return `fixed`, because C *is* covered in `us-east-1` while `eu-west-1` was never revisited |
 | 7 | **`SAST-HIST-*` contributor whose cell is covered but whose `oldest_reaching_commit_time` precedes this run's `oldest_commit_time`** | **`unknown`** | condition (b1)'s `fixed`-eligibility clause omitted - cell-only returns `fixed` |
 | 8 | Prior composite finding with no `contributors` recorded | **`unknown`** | the "covered in at least one cell" fallback applied to this branch |
@@ -916,8 +919,10 @@ test that passes under both readings pins nothing:
 Cases 5, 6, 7, and 8 are new, and each is the only case in the set that discriminates its condition:
 under the round-2 rule every one of them returns `fixed (chain broken)` while cases 1 to 4 still pass, so
 the previous suite certified the defect green.
-Case 5 additionally pins that `--profile-scan quick` reaches the same hole independently of open finding
-F8.
+Case 5 additionally pins that `--profile-scan quick` reaches the same hole independently of `--intensity`
+(originally "independently of open finding F8"; F8 - `derived` falling outside every `--intensity`
+tier - is now closed, so `--intensity` alone no longer drops a composite at all, and `--profile-scan`/
+`--allow-intrusive` are the two filters condition (a) still has to guard against).
 Case 6 **varies the region rather than the module**, deliberately: an earlier draft of it dropped the
 module owning the never-fired alternative, which is the one condition under which the weak
 "covered in at least one cell" test and the strict subset test agree, so it would have certified the weak
@@ -2219,11 +2224,25 @@ their **intersection**.
 The most restrictive control always wins; no control can ever re-enable a check another has removed.
 
 1. **Module selection** (the subcommand) picks the candidate set.
-2. **`--profile-scan`** filters by profile tag: `quick` keeps checks tagged `quick`; `full` keeps
-   everything; `compliance` keeps checks with a non-empty `cis` **or** `owasp` field.
-   `compliance` is thus computable from the record, with no separate list to drift.
+2. **`--profile-scan`** filters by profile TAG: `quick` keeps checks tagged `quick`; `full` keeps
+   everything; `compliance` keeps checks tagged `compliance`.
+   (Finding F3, closed: the line originally here read "keeps checks with a non-empty `cis` **or**
+   `owasp` field... computable from the record, with no separate list to drift".
+   That reading is unusable as written - `owasp` is a REQUIRED key on every pattern rule and script
+   check (`rules/RULE-FORMAT.md` §9.1, §9.5), present as a real category or the literal `none` but
+   never absent, so "non-empty owasp field" is true for the entire catalog and selects nothing
+   `compliance`-specific.
+   `lib/checks.sh` settles F3 on the TAG reading: it is the only one of the two that is actually
+   computable as a strict subset, `lib/records.sh`'s closed tag vocabulary already treats `compliance`
+   as a legal profile-tag value (`_records_check_tags`, E044), and `rules/RULE-FORMAT.md` §12's own
+   worked examples assume it - 12.1 and 12.5 carry an explicit `tags: compliance` line, while 12.2 has a
+   real, non-`none` `owasp` value and NO compliance tag.)
 3. **`--intensity`** applies a type-tag ceiling: `passive` keeps `passive`, `config-read`, `posture`,
    and `static`; `safe` additionally keeps `safe-active`; `active` additionally keeps `active`.
+   `derived` is exempt from this filter entirely (finding F8, closed: see its own entry in "Known
+   follow-ups" - a composite consumes other checks' findings rather than issuing requests of its own,
+   so no intensity tier is a meaningful ceiling for one).  A `derived` check remains fully subject to
+   `--profile-scan` and `--allow-intrusive`; only the intensity ceiling is waived.
 4. **`--allow-intrusive`** (default off) removes every check tagged `intrusive`, regardless of anything
    above.
    It can only ever remove checks; it never adds one that a prior filter dropped.
@@ -2244,11 +2263,25 @@ Registering script checks as records is also what gives tension 12 a check regis
 `covered_checks` from, and gives tension 7 stable ids for scripts and not just for patterns.
 
 **Consequence for the build.**
-§13 step 2 delivers the filter chain and the registry loader.
+§13 step 2 delivers the filter chain and the registry loader: `lib/checks.sh`, plus the
+`_scan_apply_profile_filter` wiring in `scan.sh` that calls it ahead of every `scan_dispatch`.
 The §7.4 enumeration-via-response checks and the §8.3 live user-enumeration probe are the seed
 `intrusive` checks, which makes §14's "side-effecting checks are off unless `--allow-intrusive`"
 enforced by the selection chain rather than by each script remembering to check a variable.
-A test asserts that `--profile-scan quick --intensity active` selects zero `active` checks.
+A test asserts that `--profile-scan quick --intensity active` selects zero `active` checks
+(`tests/suites/checks.sh`).
+
+Two defaults this tension left unstated are pinned in `lib/checks.sh` rather than in this document,
+because they are ordinary engineering judgement calls, not open design tensions: `--profile-scan`
+defaults to `full` when not given (an absent flag must not silently narrow "scan exhaustively"), and
+`--intensity` defaults to `passive` when not given, including for `dast` itself (every other guardrail
+in this tool defaults to the safest behaviour, and "no flag given" must not be the one exception).
+
+`lib/checks.sh` also delivers the registry loader's other half: `checks_registry_load` discovers every
+`*.rules` file that exists on disk under a module's directory right now (none do, before §13 step 3),
+and `SCOURSH_SELECTED_CHECKS` - the LF-joined selected-id env var `lib/findings.sh`'s
+`_derived_record_selected` already read from step 1, in anticipation of this filter chain - is wired
+from `scan.sh`, union'd across every module one invocation dispatches.
 
 ## Tension 16 - shared limiter, budget, breaker, and cache across processes
 
@@ -3712,15 +3745,23 @@ composite under `tests/fixtures/rules/derived.rules`; only the shipped seed wait
   Direction: freeze that a same-line-intent deny must carry `context-window: 0`, fix §12.2, add a linter
   warning for a deny on a rule with a window above 0, and state in §10.2 that widening a deny window
   trades false positives for silent false negatives rather than being monotonically safe.
-- **F3 [medium] - the `tags` vocabulary is not closed, so `E044` is unimplementable and a typo silently
-  disables** (`rules/RULE-FORMAT.md` §9.1.3 and §13 against tension 15).
-  `tags: quik` lints clean and silently removes a rule from the `quick` profile, which is the exact
-  failure mode `E017` exists to prevent for keys.
-  `compliance` also has two incompatible definitions - tag-based in §9.1.3, derived from a non-empty
-  `cis` or `owasp` in tension 15 - and since `owasp` is required on every pattern rule the derived form
-  selects the entire catalog.
-  Direction: declare the closed vocabulary normatively, add an error code for a tag outside it, and pick
-  one definition of `compliance`.
+- **F3 [medium] - CLOSED.**
+  Originally: "the `tags` vocabulary is not closed, so `E044` is unimplementable and a typo silently
+  disables" (`rules/RULE-FORMAT.md` §9.1.3 and §13 against tension 15) - `tags: quik` lints clean and
+  silently removes a rule from the `quick` profile, which is the exact failure mode `E017` exists to
+  prevent for keys; and "`compliance` has two incompatible definitions - tag-based in §9.1.3, derived
+  from a non-empty `cis` or `owasp` in tension 15 - and since `owasp` is required on every pattern rule
+  the derived form selects the entire catalog."
+  Both halves are closed, the first one retroactively: `lib/records.sh`'s `_records_check_tags`
+  (`rules/RULE-FORMAT.md` §13 step 1, `b25cd26`) already enumerates the closed vocabulary - every type
+  tag, `quick`, `compliance`, `intrusive` - and fires `E044` for anything outside it; this entry was
+  simply never updated to say so.
+  The second half is closed by the "Wire scan profiles: quick, full, compliance" ticket:
+  `lib/checks.sh` picks the TAG reading of `compliance` (tension 15 step 2, amended in the same change)
+  for the reasons recorded there - the field-derived reading is not computable as written (`owasp` is
+  required, so "non-empty" selects the whole catalog), the closed vocabulary above already treats
+  `compliance` as a legal tag, and `rules/RULE-FORMAT.md` §12's own worked examples (12.1, 12.5) already
+  assume the tag reading.
 - **F5 and F20 [medium] - seeding the composite at §13 step 1 is a guaranteed lint failure**
   (tension 6's "Consequence for the build" against `E051`, and `E060`).
   Tension 6 instructs seeding `COMPOSITE-TOKEN-HIJACK` at step 1 while its contributors do not exist
@@ -3736,20 +3777,25 @@ composite under `tests/fixtures/rules/derived.rules`; only the shipped seed wait
   `die` validates its argument against the frozen 0-5 contract, so a `die 6` cannot exist; both
   normative samples read `die 5` and write `incomplete_reason`, and the `scan_match` comment that said
   "writes hits to `$2`" while the body took `$1` is corrected.
-- **F8 [low] - the `derived` type tag falls outside every `--intensity` tier** (tension 15 step 3, and
-  `rules/RULE-FORMAT.md` §9.1.3 against §9.2).
-  Under an intersection filter where nothing can be re-enabled, any run carrying `--intensity` drops
-  every composite.
-  The consequence is that composites are silently absent from those runs, not that they are wrongly
+- **F8 [low] - CLOSED.**
+  Originally: "the `derived` type tag falls outside every `--intensity` tier" (tension 15 step 3, and
+  `rules/RULE-FORMAT.md` §9.1.3 against §9.2) - under an intersection filter where nothing can be
+  re-enabled, any run carrying `--intensity` drops every composite.
+  The consequence was that composites are silently absent from those runs, not that they are wrongly
   classified: a composite has no `covered_checks` entry to lose, and tension 6 condition (a) makes an
   unselected composite `unknown`.
   (The earlier rationale here said "a dropped check never enters `covered_checks`, so its prior findings
   are `unknown` forever", which was the *ordinary*-check mechanism and stopped applying to composites
   once they lost their cell; the outcome is the same but it now comes from condition (a), and this entry
   no longer contradicts tension 6.)
-  Direction: state that `derived` checks are exempt from the intensity ceiling, since they consume
-  findings rather than issue requests, and add `derived` to §9.1.3's enumeration so `E044` and the
-  schema agree.
+  Closed by the "Wire scan profiles: quick, full, compliance" ticket exactly per this entry's own
+  direction: `lib/checks.sh`'s `checks_intensity_keeps` exempts a `derived`-type record from the
+  `--intensity` ceiling unconditionally (tension 15 step 3, amended in the same change), while leaving
+  it fully subject to `--profile-scan` and `--allow-intrusive` - only the intensity filter is waived.
+  `rules/RULE-FORMAT.md` §9.1.3's own enumeration is untouched (the frozen document; see §11's rule
+  against editing it for a decision settled elsewhere), so `derived` remains absent from its type-tag
+  list there - that list was never wrong, since a composite is never itself tagged with an
+  `--intensity` tier; it is tension 15's FILTER that needed the exemption, not the tag vocabulary.
 - **F17 [low] - `aws_ro` pins `--no-cli-pager`, which AWS CLI v1 rejects** (tension 23, item 5).
   The flag is v2-only, and tension 24 probes for `aws` by presence rather than by major version, so on a
   v1 host every AWS call fails at argument parsing and the entire cloud module produces zero findings
@@ -3767,9 +3813,17 @@ The five follow-ups that had to be settled first - F13, F14, F12, F15, F16 - are
 the tension that owns it and each with a test that fails under the original.
 F18 closed with them by mechanism.
 
-Steps 2 to 10 are unstarted.
-The seven remaining follow-ups (F4, F3, F5, F20, F8, F17, and F16's `look` half) are inherited by them
-and are still open.
+`scan.sh` (the §5 CLI grammar, tension 14's exit-code precedence, and wiring `lib/config.sh` ahead of
+dispatch) and `lib/checks.sh` (tension 15's filter chain and registry loader, plus the
+`_scan_apply_profile_filter` wiring into `scan.sh`) are both now built, closing out §13 step 2 except
+for real module execution, which waits on step 3+ as `scan.sh`'s own header says.
+F3 and F8 are closed as part of `lib/checks.sh` landing (see their own entries above); F5 and F20
+remain open for the same reason they always were - `rules/derived.rules` is still not seeded, since its
+contributors do not exist until steps 5 and 6.
+
+Steps 3 to 10 are otherwise unstarted.
+The remaining follow-ups (F4, F5, F20, F17, and F16's `look` half) are inherited by them and are still
+open.
 
 What §13 step 1 deliberately did **not** build, so the boundary is not rediscovered: `scan.sh`, anything
 under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any

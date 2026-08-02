@@ -13,15 +13,25 @@
 # §5 grammar, the tension-14 exit-code precedence function (unit-testable on
 # its own), and wiring the config loader (lib/config.sh) in ahead of
 # dispatch.  What it deliberately does NOT deliver, because the things they
-# depend on do not exist yet: tension 15's check-set filter chain and check
-# registry (no module ships a `checks.rules` registry yet), tension 12's
-# diff/baseline logic (no `state/` writer yet), and real module execution
-# (nothing under `modules/` exists yet - see AGENTS.md "Build order").  Each
-# subcommand's dispatch is therefore a clearly-logged, `coverage_reduction`
-# no-op until its module lands, per docs/FOUNDATION.md tension 14's "declared
-# reduction" row: an invocation naming a module that is not yet built did
-# what it was asked as far as scan.sh's own contract goes, so it is not an
-# error and does not affect the exit code.
+# depend on do not exist yet: tension 12's diff/baseline logic (no `state/`
+# writer yet) and real module execution (nothing under `modules/` exists yet
+# - see AGENTS.md "Build order").  Each subcommand's dispatch is therefore a
+# clearly-logged, `coverage_reduction` no-op until its module lands, per
+# docs/FOUNDATION.md tension 14's "declared reduction" row: an invocation
+# naming a module that is not yet built did what it was asked as far as
+# scan.sh's own contract goes, so it is not an error and does not affect the
+# exit code.
+#
+# Tension 15's check-set filter chain and check registry loader - the piece
+# THIS comment used to list as undelivered - now ship in lib/checks.sh
+# (a later ticket, "Wire scan profiles: quick, full, compliance").
+# `_scan_apply_profile_filter` below calls it in front of every
+# `scan_dispatch`: it discovers whatever `*.rules` files already exist under
+# a module's directory (none do yet, so this remains an honest no-op today -
+# see lib/checks.sh's own comment on `checks_registry_load`) and records
+# `checks_selected` / `skipped_checks` into run.json exactly as it will once
+# a module ships a real registry, so wiring a module in later never has to
+# touch this filtering step.
 #
 # shellcheck shell=bash
 #
@@ -111,6 +121,8 @@ SCOURSH_SCAN_SH_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$SCOURSH_SCAN_SH_DIR/lib/report.sh"
 # shellcheck source=lib/config.sh
 source "$SCOURSH_SCAN_SH_DIR/lib/config.sh"
+# shellcheck source=lib/checks.sh
+source "$SCOURSH_SCAN_SH_DIR/lib/checks.sh"
 
 # -----------------------------------------------------------------------------
 # 2. The §5 grammar, encoded as data rather than a chain of if/elif.
@@ -199,13 +211,14 @@ Commands:
   sca      [--path DIR]
   iac      [--path DIR]
   dast     --target <name-from-scope> [--intensity passive|safe|active] [--authed]
+                                        (--intensity default: passive)
   cloud    [--live] [--profile <p>] [--regions all|us-east-1,...] [--assume-role ARN]
   all      run every module for which inputs are configured
   diff     --against <prior-run-dir>
   report   --from <prior-run-dir>
 
 Global:
-  --profile-scan quick|full|compliance
+  --profile-scan quick|full|compliance   (default: full - see lib/checks.sh)
   --paranoid
   --allow-intrusive
   --jobs N
@@ -247,8 +260,18 @@ _scan_validate_csv() {
 scan_validate_flag_value() {
   local flag=$1 val=$2
   case $flag in
-    profile-scan) [[ $val =~ ^(quick|full|compliance)$ ]] ;;
-    intensity) [[ $val =~ ^(passive|safe|active)$ ]] ;;
+    # Delegate to lib/checks.sh's own CHECKS_PROFILES/CHECKS_INTENSITIES
+    # membership checks rather than re-stating the three/three names as a
+    # third hardcoded regex here: lib/checks.sh is sourced (step 1, above)
+    # before this function is ever called, so checks_valid_profile/
+    # checks_valid_intensity are always available by the time a flag is
+    # actually parsed.  This is the single source of truth for "which names
+    # are legal" that lib/checks.sh's own checks_profile_keeps/
+    # checks_intensity_keeps gate on too (see their comments) - add a profile
+    # or intensity tier by editing CHECKS_PROFILES/CHECKS_INTENSITIES once,
+    # here included, rather than three places in lockstep.
+    profile-scan) checks_valid_profile "$val" ;;
+    intensity) checks_valid_intensity "$val" ;;
     fail-on) [[ $val =~ ^(critical|high|medium|low|info|none)$ ]] ;;
     min-confidence) [[ $val =~ ^(high|medium|low)$ ]] ;;
     jobs) [[ $val =~ ^[1-9][0-9]*$ ]] ;;
@@ -482,6 +505,47 @@ scan_dispatch() {
   return 0
 }
 
+# `_scan_apply_profile_filter MODULE` - the lib/checks.sh wiring, called once
+# per module right before `scan_dispatch`: discover whatever check registry
+# already exists on disk for MODULE, apply the tension-15 filter chain
+# (--profile-scan / --intensity / --allow-intrusive, each with the defaults
+# lib/checks.sh documents), and record the outcome into run.json via
+# checks_record_run_selection (checks_selected / skipped_checks) - or, when
+# the module has no registry on disk yet (true for every module today), a
+# coverage_reduction fact, the same declared-no-op shape scan_dispatch itself
+# uses for "no run.sh yet".  Placed ahead of dispatch rather than inside it so
+# the SAME filtering step already exists once a module's run.sh lands and
+# needs the selected id list - it will read CHECKS_REGISTRY_SETS /
+# meta/checks_selected rather than reinventing this.  `checks_selected` is
+# deliberately NOT `checks_run`: nothing has executed anything yet at this
+# point (scan_dispatch runs AFTER this), so claiming `checks_run` here would
+# overclaim - see lib/checks.sh's own comment on
+# checks_record_run_selection.
+#
+# Also grows SCOURSH_SELECTED_CHECKS (declared with SCAN_FLAGS below): the
+# LF-joined id list lib/findings.sh's `_derived_record_selected` already
+# reads (tension 6 condition (a)), across every module this run dispatches -
+# `scan.sh all` must union sast+sca+iac+dast+cloud's selections, not just the
+# last module filtered, or a composite whose contributors span modules would
+# be judged against only one of them.
+_scan_apply_profile_filter() {
+  local module=$1
+  local profile=${SCAN_FLAGS[profile-scan]:-$CHECKS_PROFILE_DEFAULT}
+  local intensity=${SCAN_FLAGS[intensity]:-$CHECKS_INTENSITY_DEFAULT}
+  local allow=${SCAN_FLAGS[allow-intrusive]:-false}
+  checks_registry_load "$module" "reg_$module"
+  if (( ${#CHECKS_REGISTRY_SETS[@]} > 0 )); then
+    checks_record_run_selection "$profile" "$intensity" "$allow" "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"
+    local id
+    for id in "${CHECKS_LAST_SELECTED_IDS[@]+"${CHECKS_LAST_SELECTED_IDS[@]}"}"; do
+      SCOURSH_SELECTED_CHECKS="${SCOURSH_SELECTED_CHECKS:+$SCOURSH_SELECTED_CHECKS$'\n'}$id"
+    done
+  else
+    run_record coverage_reduction "module=$module reason=no_check_registry_on_disk_yet"
+  fi
+  return 0
+}
+
 # -----------------------------------------------------------------------------
 # 8. main
 # -----------------------------------------------------------------------------
@@ -494,11 +558,24 @@ scan_main() {
   local out_dir=${SCAN_FLAGS[out]:-"$SCOURSH_INSTALL_ROOT/reports/$(now_iso | tr ':' '-')"}
   run_init "$out_dir"
   run_record notes "command=$SCAN_COMMAND"
+  # Reset for THIS invocation - scan_main may run more than once in one
+  # process (every test in tests/suites/scan.sh sources scan.sh once and
+  # calls scan_main repeatedly), and _scan_apply_profile_filter only ever
+  # APPENDS to this variable.
+  SCOURSH_SELECTED_CHECKS=''
 
   # 8a. The config loader runs before any dispatch (this ticket's third
   # acceptance criterion, verbatim): scanner.conf is resolved through the
   # CLI > env > file > default chain lib/config.sh already implements, with
-  # this invocation's flags as the CLI layer.
+  # this invocation's flags as the CLI layer.  Called with no argument on
+  # purpose, to pick up config_scanner_load's own default path
+  # ($SCOURSH_INSTALL_ROOT/config/scanner.conf, lib/config.sh) - $1 there is
+  # an explicit optional override, not scan_main's own args forwarded, so
+  # this is not the "$@" case SC2119 warns about.  Older shellcheck reports
+  # it here and 0.11.0 does not (AGENTS.md "Things measured on this
+  # codebase"), so it is silenced explicitly rather than left to whichever
+  # version a CI image happens to ship.
+  # shellcheck disable=SC2119
   config_scanner_load
   _scan_capture SCOURSH_JOBS config_scanner_value jobs "${SCAN_FLAGS[jobs]:-}"
   _scan_capture SCOURSH_FAIL_ON config_scanner_value fail-on "${SCAN_FLAGS[fail-on]:-}"
@@ -516,6 +593,7 @@ scan_main() {
       SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$_SCAN_RESOLVED_PATH")
       SCOURSH_PATH_ROOT=$(path_root_cell "$_SCAN_RESOLVED_PATH")
       export SCOURSH_SCAN_ROOT_ID SCOURSH_PATH_ROOT
+      _scan_apply_profile_filter "$SCAN_COMMAND"
       scan_dispatch "$SCAN_COMMAND"
       ;;
     dast)
@@ -526,6 +604,7 @@ scan_main() {
       # away the instant it exits).
       config_scope_require "${SCAN_FLAGS[target]}"
       run_record targets "${SCAN_FLAGS[target]}"
+      _scan_apply_profile_filter dast
       scan_dispatch dast
       ;;
     cloud)
@@ -533,6 +612,7 @@ scan_main() {
         command -v aws >/dev/null 2>&1 \
           || die "$SCOURSH_EXIT_INPUT" "cloud --live requires the aws CLI to be installed"
       fi
+      _scan_apply_profile_filter cloud
       scan_dispatch cloud
       ;;
     all)
@@ -541,12 +621,16 @@ scan_main() {
       SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$_SCAN_RESOLVED_PATH")
       SCOURSH_PATH_ROOT=$(path_root_cell "$_SCAN_RESOLVED_PATH")
       export SCOURSH_SCAN_ROOT_ID SCOURSH_PATH_ROOT
+      _scan_apply_profile_filter sast
       scan_dispatch sast
+      _scan_apply_profile_filter sca
       scan_dispatch sca
+      _scan_apply_profile_filter iac
       scan_dispatch iac
       if [[ -n ${SCAN_FLAGS[target]:-} ]]; then
         config_scope_require "${SCAN_FLAGS[target]}"
         run_record targets "${SCAN_FLAGS[target]}"
+        _scan_apply_profile_filter dast
         scan_dispatch dast
       else
         run_record coverage_reduction 'module=dast reason=no --target given (declared, all)'
@@ -554,6 +638,7 @@ scan_main() {
       if [[ ${SCAN_FLAGS[live]:-} == true ]]; then
         command -v aws >/dev/null 2>&1 \
           || die "$SCOURSH_EXIT_INPUT" "cloud --live requires the aws CLI to be installed"
+        _scan_apply_profile_filter cloud
         scan_dispatch cloud
       else
         run_record coverage_reduction 'module=cloud reason=no --live given (declared, all)'
@@ -571,6 +656,16 @@ scan_main() {
       ;;
   esac
 
+  # SCOURSH_SELECTED_CHECKS: LF-joined ids every _scan_apply_profile_filter
+  # call above added; export unconditionally (possibly empty) so a findings
+  # pipeline downstream never has to distinguish "the filter chain ran and
+  # selected nothing" from "the filter chain never ran" - lib/findings.sh's
+  # `_derived_record_selected` already treats unset/empty as "no filter
+  # chain: all selected" (tension 6 condition (a)'s permissive default),
+  # which stays correct either way; this just makes it accurate rather than
+  # perpetually falling back to that default now that the filter chain
+  # actually exists.
+  export SCOURSH_SELECTED_CHECKS
   SCOURSH_GATE_RESULT=${SCOURSH_GATE_RESULT:-not-evaluated}
   export SCOURSH_GATE_RESULT
   report_run_json "$SCOURSH_RUN_DIR"
