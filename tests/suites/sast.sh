@@ -253,6 +253,41 @@ done
 unset JS_IDS _js_vuln_found _js_clean_found _want_id _safe_id
 
 # =============================================================================
+printf -- '\n-- java.rules: true-positive AND true-negative, per rule id --\n'
+# =============================================================================
+# java.rules (§13 step 3d) follows the javascript.rules (§13 step 3b) shape:
+# tests/fixtures/vuln/app.java and tests/fixtures/clean/app.java rather than
+# tests/fixtures/sast/, one true-positive fixture per rule id under
+# tests/fixtures/vuln, one true-negative (safe equivalent) per rule id under
+# tests/fixtures/clean.  Those two directories are also the ones the
+# whole-tree gate test at the bottom of this file scans with every shipped
+# pack, so a regression here would show up there too - this section pins WHICH
+# id is responsible, which the gate test alone cannot.
+#
+# Runtime.exec is deliberately absent from this list: it is not a
+# SAST-JAVA-* id at all, see the note at the top of
+# modules/sast/rules/java.rules - it is already covered by the
+# language-agnostic SAST-INJ-OS_COMMAND-01 in injection.rules.
+JAVA_IDS='SAST-JAVA-JDBC_SQL_CONCAT-01 SAST-JAVA-XXE_DISALLOW_DOCTYPE-01 SAST-JAVA-UNSAFE_DESERIALIZATION-01 SAST-JAVA-TRUST_ALL_MANAGER-01 SAST-JAVA-TRUST_ALL_HOSTNAME-01 SAST-JAVA-SPEL_INJECTION-01 SAST-JAVA-OGNL_INJECTION-01'
+
+_scan_one_pack java "$ROOT/tests/fixtures/vuln" "$W/run-java-vuln"
+_java_vuln_found=$(_ids_found "$W/run-java-vuln")
+for _want_id in $JAVA_IDS; do
+  t_case "java: $_want_id true-positive detection"
+  assert_contains "$_java_vuln_found" "$_want_id" \
+    "$_want_id fires on tests/fixtures/vuln/app.java - fails if the pattern, files glob, or context directive silently drops the match"
+done
+
+_scan_one_pack java "$ROOT/tests/fixtures/clean" "$W/run-java-clean"
+_java_clean_found=$(_ids_found "$W/run-java-clean")
+for _safe_id in $JAVA_IDS; do
+  t_case "java: $_safe_id stays quiet on its safe equivalent"
+  assert_not_contains "$_java_clean_found" "$_safe_id" \
+    "$_safe_id does NOT fire on tests/fixtures/clean/app.java - fails if the safe rewrite still matches the pattern (a true-negative fixture that isn't actually negative)"
+done
+unset JAVA_IDS _java_vuln_found _java_clean_found _want_id _safe_id
+
+# =============================================================================
 printf -- '\n-- occurrence ordinal and fingerprint (docs/FOUNDATION.md tension 5) --\n'
 # =============================================================================
 # tests/fixtures/vuln/app.py already carries three byte-identical eval()
