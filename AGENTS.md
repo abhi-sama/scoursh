@@ -94,6 +94,15 @@ Each has a full entry in `docs/FOUNDATION.md`.
 
 **Current position: §13 step 1 is done. The next task is step 2.**
 
+**One piece of step 5 landed out of sequence: `lib/http.sh` (the scope-gate chokepoint,
+docs/FOUNDATION.md tension 19) now exists**, built and reviewed as its own ticket once tension 19's
+contract itself was signed off, rather than waiting for steps 2-4.  It has no dependency on `scan.sh`,
+SAST, or SCA/IaC - it is a self-contained URL-normalization/tuple-match/deny-list/redirect-loop library
+over `config/scope.conf` - so pulling it forward cost nothing those steps would otherwise have blocked.
+`modules/dast/`, the rate limiter/request budget/circuit breaker (tension 16), and IDN/general-IPv6-CIDR
+support (both explicitly out of scope for this ticket) still arrive at step 5 proper.  Step 2 (`scan.sh`
+skeleton, scan profiles) is still the next task; do not read this paragraph as "step 5 is done."
+
 Step 1 delivered `lib/records.sh`, `lib/core.sh`, `lib/findings.sh` and `lib/report.sh`, plus
 `rules/redaction.rules`, `data/severity-rubric.conf`, the `config/*.example` files, a fixture
 end-to-end path under `tests/e2e/`, and the test suite.
@@ -141,7 +150,7 @@ Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start
 ```
 tests/run-tests.sh                 # everything: five suites plus four linters
 tests/run-tests.sh --list          # what is available
-tests/run-tests.sh records         # one suite: records | core | findings | report | e2e
+tests/run-tests.sh records         # one suite: records | core | config | findings | report | http | e2e
 tests/run-tests.sh lint-rules      # or one linter by name
 tests/lint-rules.sh                # record-format linter, error codes in rules/RULE-FORMAT.md §13
 tests/lint-shell.sh                # the tension 4, 9, 24 and 26 shell lints

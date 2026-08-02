@@ -61,6 +61,7 @@ fixture_schema_for() {
     tests/fixtures/rules/derived.rules) printf '%s' derived ;;
     tests/fixtures/rules/*.rules) printf '%s' pattern-rule ;;
     tests/fixtures/config/scope.conf) printf '%s' scope-target ;;
+    tests/fixtures/config/http-scope.conf) printf '%s' scope-target ;;
     *) return 1 ;;
   esac
 }

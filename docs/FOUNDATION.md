@@ -2789,6 +2789,24 @@ before that implementation starts can check the contract itself rather than an i
   the gate implementation gate ("§13 step 5 does not start until sign-off") is preserved by construction:
   there is nothing here to have jumped ahead of the sign-off.
 
+**Implementation.**
+The paragraph above is the record of the contract-definition ticket, before any code existed; it is left
+as written rather than rewritten, because it is the sign-off record this tension's own "Verification"
+section describes.  The follow-on ticket (`b3de331d-...`, "Implement the scope.conf authorization gate for
+DAST targets") landed the code this paragraph is a status update for: `lib/http.sh` now implements every
+mechanism this tension describes - `http_url_normalize` (steps 1-4), `http_scope_load`/`http_scope_match`
+(the tuple compare, the port-80 relaxation, `allow-subdomains`), `http_resolve_host` (resolution pinning,
+cached per host), the IPv4/IPv6 deny list, `http_gate_url` (the pure predicate), and `http_request` (the
+chokepoint: fatal on the initial URL, non-fatal per redirect hop, `--resolve`-pinned, `--max-redirs 0`)
+- plus the auditability finding (`DAST-SCOPE-GATE-VIOLATION`) and the `tests/lint-shell.sh` "no bypass"
+check.  `tests/suites/http.sh` is the regression suite.  Two things this ticket deliberately left open
+rather than silently narrowing the contract: IDN/A-label conversion (hosts are compared as lowercased
+bytes, not punycode-normalised - a real homograph-bypass gap, tracked separately) and a general IPv6 CIDR
+matcher (the deny list currently matches `::1` exactly, `fe80::/10` and `fd00::/8` by leading-hextet
+pattern, and the two documented embedded-IPv4 forms, rather than an arbitrary compressed address). The
+rate limiter, request budget, and circuit breaker (tension 16) are still not built; `http_request` is the
+place they hook in when they are.
+
 ## Tension 20 - paranoid mode versus infrastructure traffic
 
 **The tension.**
