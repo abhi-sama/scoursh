@@ -120,6 +120,21 @@ limiter/budget/breaker piece (DAST-01) and everything under `modules/dast/` rema
 **No DAST-0x ticket is picked up until step 3's `nosql`/`ldap` rule packs (above) and step 4 (SCA) are
 both complete on `dev`** - this plan is a written breakdown for later, not permission to start now.
 
+**Step 8 (`--paranoid` / `tools/run-in-netns.sh`) now has a written sub-ticket plan, split into two
+independently schedulable tickets, and neither is blocked.**
+`docs/STEP8-PARANOID-PLAN.md` splits `docs/DESIGN.md` §13 step 8 into **PARANOID-01** (the `--paranoid`
+connection-observer and abort-on-out-of-scope enforcement, per `docs/FOUNDATION.md` tension 20's
+RESOLUTION) and **NETNS-01** (`tools/run-in-netns.sh`, the network-namespace runner - optional and
+root-requiring, stated directly in that ticket's own filed description, not only in the plan doc).
+Both were filed to the backlog as real tickets (Crewban-57 and Crewban-58 respectively); neither is
+implemented by the planning ticket that produced the plan doc.
+Unlike the DAST plan above, step 8 is **not** gated on any unlanded step: this planning ticket's own
+acceptance criteria named `lib/http.sh` (the tension-19 chokepoint) as step 8's blocker, and it is
+confirmed present on `dev` - it shipped early, out of its normal step-5 sequence, exactly as noted
+below. Tension 20's RESOLUTION says explicitly that step 8's only real dependency is `lib/http.sh`'s
+pinned resolution cache, "so the ordering already works." Both PARANOID-01 and NETNS-01 may be picked
+up independently of each other and of the remaining un-landed steps.
+
 **Step 3a-3d shipped the SAST module's rule packs and engine.**
 Four tickets landed, in this order:
 
