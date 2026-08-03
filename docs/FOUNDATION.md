@@ -3936,7 +3936,7 @@ always did - to avoid touching `sca_scan_tree`'s already-tested npm code path - 
 unknown-version cases in both an npm/Ruby lockfile AND a Python one still emits two separate roll-up
 findings; a stated, filed gap, not a defect either the Python or Ruby ticket needed to fix.
 `tests/suites/sca.sh` tests all three slices, including the real `scan.sh sca` end-to-end path.
-Go, Java, and PHP (the remaining ecosystems `docs/DESIGN.md` §6.5 names) are still open; step 4's
+Go (the remaining ecosystem `docs/DESIGN.md` §6.5 names) is still open; step 4's
 SCA half is not complete.
 
 **Step 4's SCA half has since started - it is not the "both remain unstarted" state the previous
@@ -4031,8 +4031,9 @@ That sentence describes step 1's own historical boundary and is unaffected by la
 was step 1's placeholder and is now built by step 2 (above); `modules/sast/` and its seven rule packs
 are now built by steps 3a-3e (above); `modules/iac/` and its `terraform.rules`, `helm.rules`, and
 `dockerfile.rules` packs are now built by step 4's IaC half, landed out of sequence in three parts
-(above); `modules/sca/` (npm, Python, and Ruby slices - three ecosystems of six) is now built by step
-4's SCA half, also landed out of sequence (above), though Go/Java/PHP remain; `lib/http.sh` landed
+(above); `modules/sca/` (npm, Python, Ruby, Java, and PHP slices - five ecosystems of six, Java and PHP
+having since landed) is now built by step 4's SCA half, also landed out of sequence (above), though Go
+remains; `lib/http.sh` landed
 early, out of its normal step-5 sequence (tension 19), and step 5 as a whole now has a written
 sub-ticket plan
 (`docs/STEP5-DAST-PLAN.md`, above) though none of it has started; and `lib/engines.sh`, `lib/awscli.sh`,
