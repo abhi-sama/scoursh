@@ -3936,8 +3936,10 @@ always did - to avoid touching `sca_scan_tree`'s already-tested npm code path - 
 unknown-version cases in both an npm/Ruby lockfile AND a Python one still emits two separate roll-up
 findings; a stated, filed gap, not a defect either the Python or Ruby ticket needed to fix.
 `tests/suites/sca.sh` tests all three slices, including the real `scan.sh sca` end-to-end path.
-Go, Java, and PHP (the remaining ecosystems `docs/DESIGN.md` §6.5 names) are still open; step 4's
-SCA half is not complete.
+That last sentence read "Go, Java, and PHP ... are still open" until this ticket; Java (`a1b3c43`) and
+PHP (`7e7b186`) have both landed since, so it is corrected here rather than left to contradict the
+paragraphs below.  Of the six ecosystems `docs/DESIGN.md` §6.5 names, only **Go** (`go.mod`/`go.sum`)
+is still open; step 4's SCA half is not complete.
 
 **Step 4's SCA half has since started - it is not the "both remain unstarted" state the previous
 paragraph describes, which is kept above for history rather than silently rewritten.**
@@ -3950,9 +3952,20 @@ engine.sh/run.sh split.  Both look pinned, exact `(ecosystem, package, version)`
 `data/advisories.db` via the shared `db_lookup_exact`/`sca_lookup_exact` (tension 25's frozen exact-match
 contract - no version-range arithmetic), and both emit the shared `SCA-COV-UNKNOWN_VERSION-01` roll-up
 (one per ecosystem-scan entry point, never per package) for a package the db tracks whose exact pinned
-version it does not.  `docs/DESIGN.md` §6.5's remaining ecosystems - Python
-(`requirements.txt`/`poetry.lock`/`Pipfile.lock`), Go (`go.mod`/`go.sum`), Ruby (`Gemfile.lock`), and PHP
-(`composer.lock`) - have not landed, so step 4's SCA half is still not finished.
+version it does not.
+This paragraph's own closing sentence listed Python, Go, Ruby and PHP as "have not landed", which was
+already wrong for Python (`aec866b`) and Ruby (`a2d37aa`) when it was written - both are documented in
+the paragraph immediately above it - and went on to be wrong for PHP (`7e7b186`) too.  It is corrected
+here, which is this ticket's whole subject: **five of `docs/DESIGN.md` §6.5's six ecosystems have
+landed** - npm (`ed8c283`), Python (`aec866b`), Ruby (`a2d37aa`), Java (`a1b3c43`) and PHP
+(`7e7b186`) - and only Go (`go.mod`/`go.sum`) is outstanding, so step 4's SCA half is still not
+finished.
+The wiring is verifiable on disk rather than from this prose: `modules/sca/run.sh`'s `_sca_run_module`
+calls `_sca_npm_run` (whose `sca_scan_tree` walks npm, RubyGems and, via `modules/sca/php_engine.sh`,
+Composer in one call), then `_sca_py_run` (`sca_scan_python_tree`), then `_sca_java_run`
+(`sca_scan_java_tree`); the shipped check ids are `SCA-NPM-`, `SCA-PY-`, `SCA-RUBY-`, `SCA-JAVA-` and
+`SCA-PHP-VULNERABLE_DEP-01` plus the `SCA-COV-UNKNOWN_VERSION-01` roll-up, and there is no `SCA-GO-*`
+id and no Go entry point.
 
 **Step 5 (DAST) has a written, dependency-ordered sub-ticket plan (`docs/STEP5-DAST-PLAN.md`), but no
 implementation ticket has started.**
@@ -4031,8 +4044,8 @@ That sentence describes step 1's own historical boundary and is unaffected by la
 was step 1's placeholder and is now built by step 2 (above); `modules/sast/` and its seven rule packs
 are now built by steps 3a-3e (above); `modules/iac/` and its `terraform.rules`, `helm.rules`, and
 `dockerfile.rules` packs are now built by step 4's IaC half, landed out of sequence in three parts
-(above); `modules/sca/` (npm, Python, and Ruby slices - three ecosystems of six) is now built by step
-4's SCA half, also landed out of sequence (above), though Go/Java/PHP remain; `lib/http.sh` landed
+(above); `modules/sca/` (npm, Python, Ruby, Java and PHP slices - five ecosystems of six) is now built by
+step 4's SCA half, also landed out of sequence (above), though Go remains; `lib/http.sh` landed
 early, out of its normal step-5 sequence (tension 19), and step 5 as a whole now has a written
 sub-ticket plan
 (`docs/STEP5-DAST-PLAN.md`, above) though none of it has started; and `lib/engines.sh`, `lib/awscli.sh`,
@@ -4047,7 +4060,15 @@ rather than the docs - precisely the failure this section exists to prevent. `AG
 and where we are" carries the same rule; keep the two in sync.
 The npm SCA ticket (`ed8c283`) repeated the exact same failure - this section and `AGENTS.md`'s mirror
 both still said "SCA half has not landed"/"`modules/sca/`... remain unbuilt" straight through its own
-landing - and it went uncaught until the Ruby SCA ticket (`11e7c97`) corrected both in this same change.
-Two independent instances of one failure mode is a pattern, not a coincidence: treat "does the build-order
-doc already say this landed?" as part of a landing ticket's own definition of done, not an optional
-follow-up.
+landing - and it went uncaught until the Ruby SCA ticket (`a2d37aa`) corrected both in this same change.
+The PHP/Composer ticket (`7e7b186`) then did it a third time: it landed `modules/sca/php_engine.sh` and
+`SCA-PHP-VULNERABLE_DEP-01` without touching either doc's build-status section, so both went on calling
+PHP "still open" until this ticket corrected them.
+Three independent instances of one failure mode is a pattern, not a coincidence: treat "does the
+build-order doc already say this landed?" as part of a landing ticket's own definition of done, not an
+optional follow-up.
+Filing a follow-up documentation ticket to fix this section later is not an acceptable substitute for
+updating it in the step ticket itself - that pattern is what produced the java.rules staleness this
+section itself once had (a doc-refresh ticket landed a commit after java.rules shipped and still
+described it as not landed), and then produced the SCA-ecosystem staleness the paragraphs above are
+corrected for. A step ticket is not done while this section describes that step as unbuilt.

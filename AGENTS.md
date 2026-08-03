@@ -100,6 +100,11 @@ exactly the failure mode this file exists to prevent (see "`main` can lag `dev`"
 sibling instance of the same pattern). Do not repeat it: a ticket that lands a `docs/DESIGN.md` §13
 sub-step is not done until this paragraph's "Current position" and the FOUNDATION.md section it mirrors
 both say so.
+This paragraph and `docs/FOUNDATION.md`'s "Where the build currently stands" are part of the deliverable
+for every step ticket, not follow-up work: filing a separate documentation ticket to update them later
+is not an acceptable substitute, however small the wording change looks. A step landed without this
+paragraph and its FOUNDATION.md mirror updated in the same commit range is not done, full stop - close
+the gap in the step ticket itself.
 
 **Current position: §13 steps 1 and 2 are done, step 3 is under way, and step 4's IaC half has begun
 landing out of step order.**
@@ -117,17 +122,26 @@ Helm-values slice of §6.6's container/orchestration catalog (`modules/iac/helm.
 (`ae03175`) adds the Dockerfile slice (`modules/iac/dockerfile.rules`).
 CloudFormation, bare Kubernetes-manifest checks, and docker-compose checks are all still open under
 §6.6 - see the detailed paragraph below.
-**Step 4's SCA half is also under way, out of sequence, and now four ecosystems in: `ed8c283` shipped
-the npm/yarn/pnpm lockfile slice, a follow-on ticket shipped the Python slice
-(`requirements.txt`/`poetry.lock`/`Pipfile.lock`) on top of it, `11e7c97` then added the Ruby slice
-(`Gemfile.lock`), and a later ticket added the Java slice (`pom.xml`/`build.gradle`, under check id
-`SCA-JAVA-VULNERABLE_DEP-01`) - see the detailed paragraph below.**
-Each ecosystem has its own self-contained `sca_scan_*_tree` entry point in `modules/sca/engine.sh`,
-called from `modules/sca/run.sh`'s `_sca_run_module`.
-Go (`go.mod`/`go.sum`) and PHP (`composer.lock`) - the remaining ecosystems `docs/DESIGN.md` §6.5
-names - are still open, so SCA is not yet complete.
+**Step 4's SCA half is also under way, out of sequence, and now five ecosystems in: `ed8c283` shipped
+the npm/yarn/pnpm lockfile slice, `aec866b` shipped the Python slice
+(`requirements.txt`/`poetry.lock`/`Pipfile.lock`) on top of it, `a2d37aa` then added the Ruby slice
+(`Gemfile.lock`), `a1b3c43` added the Java slice (`pom.xml`/`build.gradle`, under check id
+`SCA-JAVA-VULNERABLE_DEP-01`), and `7e7b186` added the PHP/Composer slice (`composer.lock`, under
+`SCA-PHP-VULNERABLE_DEP-01`) - see the detailed paragraph below.**
+Ecosystems do **not** map one-to-one onto entry points, so do not infer coverage from the number of
+`sca_scan_*_tree` functions: `modules/sca/run.sh`'s `_sca_run_module` calls exactly three run functions -
+`_sca_npm_run`, whose `sca_scan_tree` walks npm, RubyGems **and** Composer in one call (Composer's parser
+lives in its own `modules/sca/php_engine.sh`; the three share one `unknown_count` table because
+`SCA-COV-UNKNOWN_VERSION-01`'s fingerprint carries no ecosystem component), then `_sca_py_run`
+(`sca_scan_python_tree`) and `_sca_java_run` (`sca_scan_java_tree`), which are separate calls only to
+avoid disturbing the already-tested npm path.
+Go (`go.mod`/`go.sum`) is the one remaining ecosystem `docs/DESIGN.md` §6.5 names, so SCA is not yet
+complete.
+This block previously said "four ecosystems in" and listed PHP alongside Go as still open, and claimed
+each ecosystem had its own entry point; PHP had already landed in `7e7b186` without either doc being
+updated, which is the recurrence the process rule above exists to stop.
 The next tasks are therefore step 3's remaining `nosql.rules`/`ldap.rules`, step 4's remaining SCA
-ecosystems (Go and PHP), and step 4's remaining container/orchestration and CloudFormation IaC checks -
+ecosystem (Go), and step 4's remaining container/orchestration and CloudFormation IaC checks -
 not step 3 alone.
 
 Because `checks_registry_load` (`lib/checks.sh`) globs every `*.rules` file under `modules/iac/` with
@@ -300,8 +314,8 @@ It landed ahead of step 3's remaining `nosql`/`ldap` rule packs and ahead of ste
 same "land what's ready, out of strict step order" pattern as `lib/http.sh` above.
 `nosql`/`ldap`, the rest of §6.6's container/orchestration catalog (bare Kubernetes manifests and
 docker-compose), CloudFormation, and step 4's SCA half - now covered in its own paragraph below, since
-it has since landed its npm, Python, Ruby, and Java slices - all remain open (Go/PHP outstanding for
-SCA); do not read this paragraph as "step 4 is done."
+it has since landed its npm, Python, Ruby, Java, and PHP slices - all remain open (Go alone outstanding
+for SCA); do not read this paragraph as "step 4 is done."
 
 **A third piece of step 4 has now landed, in three sub-tickets: `modules/sca/` (the SCA module's npm,
 Python, and Ruby slices).**
@@ -347,8 +361,17 @@ all three ecosystems.
 and RubyGems rows sorted together under `LC_ALL=C` (tension 25's own `look`-compatible sort
 requirement).
 
-Go (`go.mod`/`go.sum`), Java (`pom.xml`/`build.gradle`), and PHP (`composer.lock`) - the remaining
-ecosystems `docs/DESIGN.md` §6.5 names - are still open; step 4's SCA half is not complete.
+That sentence read "Go, Java, and PHP ... are still open" until this ticket, which is the staleness this
+ticket exists to fix: Java (`a1b3c43`, `sca_scan_java_tree` / `SCA-JAVA-VULNERABLE_DEP-01`) and PHP
+(`7e7b186`, `modules/sca/php_engine.sh` / `SCA-PHP-VULNERABLE_DEP-01`) have both landed on `dev` since it
+was written.
+**Five of `docs/DESIGN.md` §6.5's six ecosystems have landed** - npm (`ed8c283`), Python (`aec866b`),
+Ruby (`a2d37aa`), Java (`a1b3c43`) and PHP (`7e7b186`) - and only Go (`go.mod`/`go.sum`) is still open,
+so step 4's SCA half is not complete.
+Check that against the tree rather than against this paragraph: `modules/sca/` holds `engine.sh`,
+`php_engine.sh` and `run.sh`, whose `_sca_run_module` calls `_sca_npm_run` (npm + RubyGems + Composer in
+one `sca_scan_tree` call), `_sca_py_run` and `_sca_java_run`; the shipped ids are `SCA-NPM-`, `SCA-PY-`,
+`SCA-RUBY-`, `SCA-JAVA-` and `SCA-PHP-VULNERABLE_DEP-01`, and no `SCA-GO-*` id or Go entry point exists.
 
 **A third piece of step 4's IaC half has since landed on top of the Terraform one above:
 `modules/iac/docker-compose.rules` (the "IaC: docker-compose checks via the pattern-rule engine"
