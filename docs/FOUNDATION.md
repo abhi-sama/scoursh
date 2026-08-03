@@ -3831,21 +3831,37 @@ F3 and F8 are closed as part of `lib/checks.sh` landing (see their own entries a
 remain open for the same reason they always were - `rules/derived.rules` is still not seeded, since its
 contributors do not exist until steps 5 and 6.
 
-**§13 step 3 is under way, not unstarted: its sub-steps 3a, 3b, 3c, and 3e have landed on `dev`.**
+**§13 step 3 is under way, not unstarted: its sub-steps 3a, 3b, 3c, 3d, and 3e have landed on `dev`.**
 3a (`6f25a67`) shipped the native pattern engine `modules/sast/engine.sh` and the `scan_dispatch sast`
 entry point `modules/sast/run.sh`, plus four rule packs (`secrets.rules`, `crypto.rules`,
 `injection.rules`, `python.rules`); 3b (`446f642`) and 3c (`754a994`) added `javascript.rules` and
-`go.rules`, so `modules/sast/rules/` now holds six packs on disk; and 3e (`18c4c3f`) shipped
-`modules/sast/history.sh`, which replays `secrets.rules` against git history (bounded by a commit/time
-window, per §6.3) and populates the `SAST-HIST-*` check family - the fingerprint profile
-(`blob_sha`, `match_digest`, `occurrence`) and `oldest_reaching_commit_time` that tension 13's boundary
-test and tension 6 condition (b1) read once `state/` exists at step 7.
-Step 3 as a whole is still not finished: `docs/DESIGN.md` §6.3's catalog also calls for `java.rules`,
-`nosql.rules`, and `ldap.rules`, none of which have landed.
+`go.rules`; 3d (`910d2c7`) added `java.rules`, so `modules/sast/rules/` now holds seven packs on disk;
+and 3e (`18c4c3f`) shipped `modules/sast/history.sh`, which replays `secrets.rules` against git history
+(bounded by a commit/time window, per §6.3) and populates the `SAST-HIST-*` check family - the
+fingerprint profile (`blob_sha`, `match_digest`, `occurrence`) and `oldest_reaching_commit_time` that
+tension 13's boundary test and tension 6 condition (b1) read once `state/` exists at step 7.
+Step 3 as a whole is still not finished: `docs/DESIGN.md` §6.3's catalog also calls for `nosql.rules`
+and `ldap.rules`, neither of which has landed; every per-language pack the catalog names has shipped.
+This paragraph previously undercounted step 3 at "3a, 3b, 3c, and 3e" and left `java.rules` in the
+still-missing list after 3d had already landed - `AGENTS.md`'s "Build order and where we are" had the
+correct count; this section is corrected here to match it, which is what the process note below exists
+to keep from recurring.
 Steps 4 through 10 remain unstarted, so `modules/dast/`, `modules/sca/`, `modules/iac/`,
 `modules/cloud/`, and `lib/awscli.sh` remain unbuilt.
 The remaining follow-ups (F5, F20, F17, and F16's `look` half) are inherited by steps 4 through 10 and
-are still open.  (F4 is closed above.)
+are still open.  (F3, F4, and F8 are closed above.)
+
+**Step 5 (DAST) has a written, dependency-ordered sub-ticket plan (`docs/STEP5-DAST-PLAN.md`), but no
+implementation ticket has started.**
+The plan breaks the ~30-script step-5 scope into tickets DAST-01 through DAST-30, ordered per this
+section's own build-order sequence (`lib/http.sh -> auth.sh -> crawl.sh -> passive -> safe-active ->
+injection, one file at a time -> §7.4 auth/API/authz`), confirms `lib/http.sh`'s scope-gate chokepoint
+(tension 19) already shipped and removes it from the "still to plan" list rather than re-listing it as
+pending, and states the client-rendered-app (SPA) limitation as a `coverage_gap` the crawler ticket
+(DAST-04) must surface in the report, not a gap this plan (or any step-5 ticket) closes with a headless
+browser.
+**No DAST-0x ticket is picked up until step 3's `nosql`/`ldap` rule packs and step 4 (SCA) are both
+complete on `dev`**, per the plan's own "Status: blocked" section and this ticket's description.
 
 What §13 step 1 deliberately did **not** build, so the boundary is not rediscovered: `scan.sh`, anything
 under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
@@ -3854,10 +3870,11 @@ steps 5 and 6) are step 7's; step 1 delivers the primitives they call - the merg
 `findings_mark_suppressed` annotation, and `classify_derived`, which is pure and is already tested
 against tension 6's full case table.
 That sentence describes step 1's own historical boundary and is unaffected by later steps: `scan.sh`
-was step 1's placeholder and is now built by step 2 (above); `modules/sast/` and its six rule packs are
-now built by steps 3a-3c and 3e (above); `lib/http.sh` landed early, out of its normal step-5 sequence
-(tension 19); and `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, and `state/` remain
-unbuilt, as does the rest of `modules/` (`dast/`, `sca/`, `iac/`, `cloud/`).
+was step 1's placeholder and is now built by step 2 (above); `modules/sast/` and its seven rule packs
+are now built by steps 3a-3e (above); `lib/http.sh` landed early, out of its normal step-5 sequence
+(tension 19), and step 5 as a whole now has a written sub-ticket plan (`docs/STEP5-DAST-PLAN.md`, above)
+though none of it has started; and `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, and
+`state/` remain unbuilt, as does the rest of `modules/` (`dast/`, `sca/`, `iac/`, `cloud/`).
 
 **Process note: this section must be updated in the same change that lands a §13 step, not in a later
 cleanup ticket.**
