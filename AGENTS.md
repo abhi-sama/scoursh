@@ -191,6 +191,30 @@ scope for that reason. **No CLOUD-0x or POSTURE-0x ticket is picked up until ste
 gated on the whole sequential chain in front of it, not just step 4, and this plan is a written
 breakdown for later, not permission to start now.
 
+**PARANOID-01 has now landed - `lib/paranoid.sh` implements `--paranoid` for real.**
+It builds the four-set allowlist tension 20's RESOLUTION specifies (`paranoid_allowlist_build`).
+It attaches a connection sampler (`ss`, or a measured-usable `strace -f -e trace=connect` fallback -
+`paranoid_probe_backend`), aborts the run with exit `3` (`SCOURSH_EXIT_SCOPE`) on the first observed
+destination outside that allowlist, and exits `4` (`SCOURSH_EXIT_INPUT`) when neither backend is
+available or permitted.
+It is wired into `scan.sh`'s `scan_main` right after config loads and before any module dispatch.
+`tests/suites/paranoid.sh` is the deterministic no-egress fixture tension 20 calls for.
+`SCOURSH_PARANOID_FORCE_BACKEND`/`SCOURSH_PARANOID_SAMPLE` stand in for the ss/strace probe and the
+sampler itself (the same swappable-hook idiom `lib/http.sh`'s `SCOURSH_HTTP_RESOLVE`/
+`SCOURSH_HTTP_TRANSPORT` already use).
+So the suite never depends on `ss`/`strace` actually being installed - both are Linux-only, and this
+project's CI matrix runs macOS too.
+One correction surfaced while building this ticket, recorded in full in `docs/FOUNDATION.md` tension
+20's own "Implementation" paragraph: the observer and the abort's kill action are scoped to the
+DESCENDANT-PROCESS FAMILY rooted at the main `scan.sh` pid, not the raw OS process group tension 20's
+prose names.
+A plain `cmd &` never changes pgid, so scoping to the real process group would have let a violation's
+`kill -TERM` reach unrelated processes sharing that group by accident - measured directly: it took out
+this project's own test harness before the fix.
+`tools/run-in-netns.sh` (NETNS-01) is **not** implemented by this ticket, exactly as
+`docs/STEP8-PARANOID-PLAN.md` scoped it - it remains a separate, independently-schedulable,
+root-requiring ticket.
+
 **Step 3a-3d shipped the SAST module's rule packs and engine.**
 Four tickets landed, in this order:
 

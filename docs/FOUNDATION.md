@@ -2911,6 +2911,70 @@ the process-group level (`ss` sampling filtered by the run's cgroup or process g
 `strace -f -e trace=connect` where available and permitted) rather than to a single pid.
 Where neither is available, `--paranoid` fails with exit `4` rather than pretending to be active.
 
+**Implementation.**
+`lib/paranoid.sh` (PARANOID-01) now implements every mechanism this tension describes.
+`paranoid_allowlist_build` assembles the four sets in one call.
+`_paranoid_allowlist_in_scope` proactively resolves (not merely reads) every `config/scope.conf`
+tuple through `lib/http.sh`'s `http_resolve_host` *before* the observer starts.
+That ordering is how this implementation closes the bootstrapping problem this tension opens with
+("`--paranoid` aborts on scoursh's own first name lookup") - by sequencing (resolve everything the
+run could need, unobserved, then attach), not by a DNS-specific carve-out, since option 1 above
+("allowlist anything on port 53") stays rejected.
+`_paranoid_allowlist_aws` degrades set 2 to empty with a stated reason (`run.json`'s
+`paranoid_allowlist_note`), because `modules/cloud/aws/regions.sh` (§13 step 6) has not landed yet.
+That is the same forward-dependency shape `docs/STEP5-DAST-PLAN.md`'s DAST-09 used for
+`data/versions.db`.
+`_paranoid_allowlist_infra` parses the host's own `/etc/resolv.conf` for `nameserver` lines (port 53
+only) and adds loopback (`127.0.0.0/8`, `::1`) unconditionally on any port.
+The two are not the same rule, precisely because option 1 above is rejected for the resolver case but
+loopback never leaves the host.
+`_paranoid_allowlist_operator` reads `scanner.conf`'s `paranoid_allow`.
+
+**Family, not process group, for the kill action.**
+The RESOLUTION text above says "ss sampling filtered by the run's cgroup OR process group".
+This implementation instead attributes both the sampler's readings AND the abort's kill action to the
+DESCENDANT-PROCESS FAMILY rooted at the main `scan.sh` pid (`_paranoid_family_pids`, a fixed-point
+walk over `ps -Ao pid=,ppid=`), not the raw OS process group.
+This is a correction found empirically while building this ticket, not a stylistic choice: a plain
+`cmd &`/`( ... )` never changes pgid, so `scan.sh`'s own process group is whatever group its OWN
+invoker happens to be in.
+Reproduced directly against this project's own test harness, a pgid-wide `kill -TERM` on a violation
+took out the test runner driving the suite itself, because sourcing `scan.sh` and calling `scan_main`
+inside nested subshells shares one process group with the whole harness, none of it under `setsid`.
+Every `xargs -P` worker is a descendant of the invoking `scan.sh` process regardless of pgid, so the
+family walk gets the same coverage this tension's "not per-pid" requirement (§13 step 8's AC3) asks
+for, without that blast radius.
+
+The abort path is a dedicated `SIGUSR2` trap (`paranoid_on_violation`), installed by `paranoid_attach`
+and never overloaded onto the existing `SIGTERM`/`SIGINT`/`SIGHUP` handlers `lib/core.sh` already
+installs.
+Those exit `5` ("incomplete run"); a paranoid violation must exit `3`, a different point on tension
+14's precedence table, so it cannot share their signal or their exit path.
+The background sampler writes a violation marker and signals the main process rather than aborting
+the run itself, because only the main process can produce the exit-3 `die()` tension 14 requires.
+Measured directly (20/20 runs): a `wait` on the sampler's own pid reliably lets a pending trapped
+signal interrupt it and run before the waiter's own next statement, which is what makes the handoff
+deterministic rather than a race against how much work the dispatched module still has left to do.
+`_paranoid_audit_violation` mirrors `lib/http.sh`'s `_http_gate_audit` - the same finding pipeline,
+reusing the `dast` fingerprint profile rather than adding a new module to the closed enum
+`lib/findings.sh`'s `_fp_profile_for` owns, for one check id (`PARANOID-EGRESS-VIOLATION`).
+
+The "detector, not guarantee" framing is written into `run.json`'s `coverage_gap` array (via
+`run_record coverage_gap ...` in `paranoid_attach`, read by both `lib/report.sh` limitations
+emitters) on every `--paranoid` run.
+That is how the framing reaches the actual report output this tension's own RESOLUTION requires, not
+only this document.
+
+`tests/suites/paranoid.sh` is the regression suite, and it is fully deterministic on every host.
+`SCOURSH_PARANOID_FORCE_BACKEND` overrides the ss/strace probe (mirroring
+`SCOURSH_FORCE_MSLEEP_IMPL`, `lib/core.sh`) and `SCOURSH_PARANOID_SAMPLE` overrides the sampler
+itself with a scripted, recorded sequence of "observed" connections (mirroring `lib/http.sh`'s own
+`SCOURSH_HTTP_RESOLVE`/`SCOURSH_HTTP_TRANSPORT`).
+So the no-egress fixture this tension asks for never depends on `ss`/`strace` actually being
+installed - both are Linux-only and this project's own CI matrix runs macOS too.
+`tools/run-in-netns.sh` (NETNS-01) is not implemented by this ticket, per
+`docs/STEP8-PARANOID-PLAN.md`'s own split.
+
 ## Tension 21 - module independence versus cross-module inventory
 
 **The tension.**
@@ -4020,6 +4084,15 @@ work, out of this plan's scope. **No CLOUD-0x or POSTURE-0x ticket is picked up 
 `nosql`/`ldap` rule packs, step 4 (SCA + IaC), and step 5 (DAST) are all complete on `dev`** - step 6 is
 gated on the whole sequential chain ahead of it, not step 4 alone, per the plan's own "Status: blocked"
 section and this ticket's description.
+
+**PARANOID-01 has landed: `lib/paranoid.sh` now implements `--paranoid` for real.**
+Full detail lives in tension 20's own "Implementation" paragraph above, since that is where this
+register already keeps the mechanism's contract; this entry exists only so this section does not go
+stale the way the process note below warns against.
+In short: the four-set allowlist, the `ss`/`strace` backend probe, the exit-3 abort and exit-4
+missing-backend paths, and the deterministic `tests/suites/paranoid.sh` fixture all now exist on
+`dev`.
+`tools/run-in-netns.sh` (NETNS-01) remains unimplemented, as scoped.
 
 What §13 step 1 deliberately did **not** build, so the boundary is not rediscovered: `scan.sh`, anything
 under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
