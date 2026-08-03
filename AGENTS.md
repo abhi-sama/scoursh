@@ -298,8 +298,11 @@ grep -ohE '`[0-9a-f]{7,40}`' AGENTS.md docs/FOUNDATION.md | tr -d '`' | sort -u 
   done
 ```
 
-Two decimal/octal IPv4 literals in `docs/FOUNDATION.md` tension 19's SSRF prose (`2851995906`,
-`025154325002`) match that pattern and are not shas; everything else it reports is a real reference.
+It has exactly four known false positives, all in prose rather than in a citation: the two decimal/octal
+IPv4 literals in `docs/FOUNDATION.md` tension 19's SSRF text (`2851995906`, `025154325002`), which are
+not shas at all, and `ae03175`/`11e7c97` in the paragraph immediately above, which this note quotes on
+purpose as the bad values to recognise.
+Anything else it reports is a real reference to a commit that does not exist, and is a bug.
 
 **A Crewban ticket that is `done` with `landed_sha` NULL is usually a bookkeeping gap, not stranded
 work - prove the work is really unlanded before rescuing it by hand.**
