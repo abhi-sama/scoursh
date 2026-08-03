@@ -102,15 +102,17 @@ sub-step is not done until this paragraph's "Current position" and the FOUNDATIO
 both say so.
 
 **Current position: §13 steps 1 and 2 are done, and step 3 is under way.**
-Step 3's sub-steps 3a, 3b, 3c, and 3e have landed on `dev`.
-Step 3 as a whole is not finished: `docs/DESIGN.md` §6.3's rule catalog also calls for the `java`,
-`nosql`, and `ldap` rule packs beyond what 3a-3c seeded, and none of those three have landed yet.
-`history.sh` (the `SAST-HIST-*` mechanism, tension 13) - the other item this section used to list as
-outstanding - shipped as 3e; see below.
-The next task is the remainder of step 3 (the still-missing language/sink packs).
+Step 3's sub-steps 3a, 3b, 3c, 3d, and 3e have landed on `dev`.
+Step 3 as a whole is still not finished: `docs/DESIGN.md` §6.3's rule catalog also calls for the
+`nosql` and `ldap` rule packs, and neither has landed yet.
+Every per-language pack the catalog names - `python`, `javascript/ts`, `go`, and now `java` - has
+shipped; nothing beyond `nosql.rules`/`ldap.rules` remains under the "language" heading.
+`history.sh` (the `SAST-HIST-*` mechanism, tension 13) already shipped as 3e (see below); do not
+re-list it as outstanding.
+The next task is the remainder of step 3 (`nosql.rules` and `ldap.rules`).
 
-**Step 3a-3c shipped the SAST module.**
-Three tickets landed, in this order:
+**Step 3a-3d shipped the SAST module's rule packs and engine.**
+Four tickets landed, in this order:
 
 - **3a** (`6f25a67`, "SAST: native pattern engine + seed secrets/crypto/injection/python rules")
   shipped `modules/sast/engine.sh` (the native pattern engine: walks the repo, applies per-language
@@ -125,12 +127,18 @@ Three tickets landed, in this order:
   It landed before 3b in commit order even though it is lettered after it; the letter is a step-3
   sub-label from the ticket titles, not a landing-order guarantee.
 - **3b** (`446f642`, "SAST: seed JS/TS rule pack") shipped `modules/sast/rules/javascript.rules`.
+- **3d** (`910d2c7`, "SAST: seed Java rule pack") shipped `modules/sast/rules/java.rules`: `Runtime.exec`
+  is deliberately *not* re-declared under a new `SAST-JAVA-*` id, since `injection.rules`' existing
+  `SAST-INJ-OS_COMMAND-01` already carries `Runtime.getRuntime().exec(` as one of its alternatives; the
+  pack instead adds JDBC statement concatenation, XML parsers missing `disallow-doctype` (an absence
+  check, `context-deny` with a non-zero window), unsafe `readObject` deserialization, a trust-all
+  `X509TrustManager`/`HostnameVerifier` pair (two ids, one per code shape), and SpEL/OGNL injection (two
+  ids, one per library). It landed after 3e in commit order, out of letter order, same as 3c did for 3b.
 
-`modules/sast/rules/` now holds **six** packs on disk: `secrets.rules`, `crypto.rules`,
-`injection.rules`, `python.rules`, `go.rules`, and `javascript.rules`.
-Do not undercount this to the five named in an individual ticket's own description - a ticket written
-before 3c landed, or one that only tracked 3a/3b, will list five; check the directory, not the ticket
-text.
+`modules/sast/rules/` now holds **seven** packs on disk: `secrets.rules`, `crypto.rules`,
+`injection.rules`, `python.rules`, `go.rules`, `javascript.rules`, and `java.rules`.
+Do not undercount this to six (or five) from an individual ticket's own description - a ticket written
+before 3d (or 3c) landed will list fewer; check the directory, not the ticket text.
 
 **Step 3e shipped `history.sh`, landing after 3a-3c and out of letter order (§13 lists it last in the
 step-3 sentence, but it is not "3d").**
@@ -142,9 +150,10 @@ populates the `SAST-HIST-*` check family - including the `history` fingerprint p
 boundary test and tension 6 condition (b1) read once `state/` exists at step 7.
 `tests/suites/sast-history.sh` (295 lines) tests it.
 `modules/sast/` now has all three files `docs/DESIGN.md` §13 step 3 names for it: `engine.sh`, `run.sh`,
-and `history.sh`; only the additional rule packs (`java`, `nosql`, `ldap`) are still missing.
+and `history.sh`; 3d then shipped `java.rules` after 3e (see above), so only the `nosql` and `ldap` rule
+packs are still missing.
 
-**Findings still open after 3a-3c and 3e, and the step each is inherited by:**
+**Findings still open after 3a-3d and 3e, and the step each is inherited by:**
 
 - **F5 and F20** - `rules/derived.rules` still does not seed `COMPOSITE-TOKEN-HIJACK`, because its
   contributors do not exist until steps 5 and 6.
@@ -196,8 +205,8 @@ both amended in the same change.
 `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any shipped
 rule pack, and `state/`.
 `lib/http.sh` landed anyway, out of sequence - see above.
-**Step 3a-3c and 3e then filled in most of that gap**: `modules/sast/` (with `engine.sh`, `run.sh`,
-AND `history.sh` - see above) and its six rule packs now exist, so `scan_dispatch sast` no longer
+**Step 3a-3d and 3e then filled in most of that gap**: `modules/sast/` (with `engine.sh`, `run.sh`,
+AND `history.sh` - see above) and its seven rule packs now exist, so `scan_dispatch sast` no longer
 no-ops and `_scan_apply_profile_filter` finds a non-empty registry for SAST checks.
 Everything else in the original list is still true: `modules/dast/`, `modules/sca/`, `modules/iac/`,
 `modules/cloud/`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, and `state/` do not
@@ -235,7 +244,7 @@ composite under `tests/fixtures/rules/derived.rules`.
 Six findings remain open (F4, F3, F5, F20, F8, F17, plus F16's `look` half); all are cheap corrections
 that cost nothing to defer, and each names the step it must land before.
 This is a snapshot from before step 2 landed and is kept for history; it is stale on its own.
-F3, F4, and F8 have since closed (see "Findings still open after 3a-3c and 3e" above for the current list:
+F3, F4, and F8 have since closed (see "Findings still open after 3a-3d and 3e" above for the current list:
 only F5, F20, F17, and F16's `look` half remain).
 
 Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start:
