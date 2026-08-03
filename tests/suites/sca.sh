@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # tests/suites/sca.sh - modules/sca/{engine.sh,run.sh}: npm lockfile parsing
-# (package-lock.json v1/v2/v3, yarn.lock, pnpm-lock.yaml) and the
-# data/advisories.db exact-match lookup (docs/DESIGN.md §13 step 4,
-# docs/FOUNDATION.md tension 25).
+# (package-lock.json v1/v2/v3, yarn.lock, pnpm-lock.yaml), Ruby/RubyGems
+# lockfile parsing (Gemfile.lock), and the data/advisories.db exact-match
+# lookup (docs/DESIGN.md §13 step 4, docs/FOUNDATION.md tension 25).
 #
-# Covers this ticket's acceptance criteria:
+# Covers the npm ticket's acceptance criteria:
 #   - `scan_dispatch sca` no longer no-ops for a fixture repo containing an
 #     npm lockfile with a known-vulnerable pinned dependency
 #   - direct vs transitive, and no-fixed-version (accept-risk), are both
@@ -14,11 +14,26 @@
 #   - all three lockfile parsers (package-lock.json v1 AND v2/v3, yarn.lock,
 #     pnpm-lock.yaml) extract the right (name, version, direct|transitive)
 #
+# ...and this ticket's (Ruby) own acceptance criteria:
+#   - a fixture Gemfile.lock with a known-vulnerable pinned gem reports it
+#     under SCA-RUBY-VULNERABLE_DEP-01
+#   - a mixed-case gem name normalises to lowercase before the db lookup and
+#     still resolves to its advisory
+#   - direct (top-level DEPENDENCIES) vs transitive (GEM/specs only) is
+#     classified correctly per gem
+#   - a gem whose advisory carries no fixed version is flagged accept-risk,
+#     not skipped and not mismatched
+#   - a gem known to the db but at an unmatched exact version contributes to
+#     the SHARED SCA-COV-UNKNOWN_VERSION-01 roll-up - proven both in
+#     isolation and, in the mixed-ecosystems case below, combined with an
+#     npm-side unknown-version gem in the SAME roll-up finding
+#
 # None of this depends on a real, production-scale data/advisories.db:
 # tools/vendor-engines.sh (the only script that populates one) is never run
 # in this repo/CI (AGENTS.md), so every case here points
 # SCOURSH_SCA_ADVISORIES_DB at the small, committed
-# tests/fixtures/sca/advisories.db instead.
+# tests/fixtures/sca/advisories.db instead (now carrying both npm and
+# RubyGems fixture rows).
 #
 # shellcheck shell=bash
 # shellcheck disable=SC2016
@@ -116,6 +131,36 @@ assert_contains "$PNPM_OUT" $'minimist\x1f1.2.5\x1ftransitive' \
   'minimist appears only under packages:, never under importers: - transitive'
 
 # =============================================================================
+printf -- '\n-- Gemfile.lock: DEPENDENCIES set, specs parsing, direct-or-transitive --\n'
+# =============================================================================
+t_case 'Gemfile.lock: _sca_gemfile_dependencies_set reads the top-level DEPENDENCIES stanza'
+RUBY_DIRECT=$(_sca_gemfile_dependencies_set "$FIXTURES/ruby/Gemfile.lock")
+assert_contains "$RUBY_DIRECT" 'RailsAddon' 'RailsAddon is declared in the fixture'"'"'s DEPENDENCIES stanza'
+assert_contains "$RUBY_DIRECT" 'puma' 'puma is declared in the fixture'"'"'s DEPENDENCIES stanza'
+assert_not_contains "$RUBY_DIRECT" 'rack' \
+  'rack is never listed in DEPENDENCIES - only reachable as RailsAddon'"'"'s own specs: annotation'
+
+RUBY_OUT=$(sca_parse_gemfile_lock "$FIXTURES/ruby/Gemfile.lock")
+t_case 'Gemfile.lock: a DEPENDENCIES entry is direct, exact case preserved pre-normalisation'
+assert_contains "$RUBY_OUT" $'RailsAddon\x1f2.0.0\x1fdirect' \
+  'RailsAddon is direct - listed verbatim (mixed case) in DEPENDENCIES'
+assert_contains "$RUBY_OUT" $'puma\x1f5.6.4\x1fdirect' 'puma is direct'
+
+t_case 'Gemfile.lock: a specs-only entry (never in DEPENDENCIES) is transitive'
+assert_contains "$RUBY_OUT" $'rack\x1f2.2.3\x1ftransitive' \
+  'rack is only ever a specs: entry and RailsAddon'"'"'s own dependency annotation, never in DEPENDENCIES'
+assert_contains "$RUBY_OUT" $'nokogiri\x1f1.13.8\x1ftransitive' 'nokogiri is transitive'
+assert_contains "$RUBY_OUT" $'mini_portile2\x1f2.8.1\x1ftransitive' \
+  'mini_portile2 is transitive - fails if the 6-space nested annotation line under nokogiri were mistaken for a second specs: entry'
+
+# =============================================================================
+printf -- '\n-- name normalisation (docs/FOUNDATION.md tension 25): RubyGems is lowercased --\n'
+# =============================================================================
+t_case 'RubyGems normalisation lowercases the name (unlike npm'"'"'s identity function)'
+assert_eq railsaddon "$(sca_ruby_normalize_name RailsAddon)" 'mixed-case gem name is lowercased'
+assert_eq puma "$(sca_ruby_normalize_name puma)" 'an already-lowercase name is unaffected'
+
+# =============================================================================
 printf -- '\n-- data/advisories.db exact-match lookup (docs/FOUNDATION.md tension 25) --\n'
 # =============================================================================
 t_case 'sca_lookup_exact: an exact (ecosystem, package, version) hit'
@@ -132,6 +177,20 @@ assert_status 0 'lodash is known at some version, even though 4.17.16 itself is 
 t_case 'sca_package_known: false when the package has no advisories.db rows at all'
 assert_status 1 'a package the fixture db never mentions is NOT "known" - this is the unknown-version roll-up'"'"'s own precondition, not "not vulnerable"' \
   sca_package_known npm totally-untracked-package "$DB"
+
+t_case 'sca_lookup_exact: the same exact-match path works for RubyGems, keyed on the normalised (lowercase) name'
+RUBY_LOOKUP_HIT=$(sca_lookup_exact RubyGems railsaddon 2.0.0 "$DB")
+assert_contains "$RUBY_LOOKUP_HIT" 'SCA-FIXTURE-RUBY-001' \
+  'the exact-match row for railsaddon@2.0.0 is returned once the mixed-case DEPENDENCIES name is normalised to lowercase'
+t_case 'sca_lookup_exact: the raw (un-normalised) mixed-case name does NOT match - proves normalisation is load-bearing, not incidental'
+assert_status 1 'a lookup using the raw "RailsAddon" spelling misses, because data/advisories.db stores the lowercase key' \
+  sca_lookup_exact RubyGems RailsAddon 2.0.0 "$DB"
+t_case 'sca_package_known: RubyGems, package known at a different version'
+assert_status 0 'mini_portile2 is known at 2.9.0 in the fixture db, even though 2.8.1 (the fixture'"'"'s pinned version) is not' \
+  sca_package_known RubyGems mini_portile2 "$DB"
+t_case 'sca_package_known: RubyGems, a package the db never mentions at all'
+assert_status 1 'nokogiri has no data/advisories.db rows whatsoever' \
+  sca_package_known RubyGems nokogiri "$DB"
 
 # =============================================================================
 printf -- '\n-- sca_scan_tree: full npm-lock fixture against the fixture db --\n'
@@ -194,6 +253,106 @@ assert_contains "$(cat "$RUNDIR/meta/checks_run" 2>/dev/null)" 'SCA-COV-UNKNOWN_
 t_case 'run.json: the unknown-version coverage_gap is recorded with the ecosystem breakdown'
 assert_contains "$(cat "$RUNDIR/meta/coverage_gap" 2>/dev/null)" 'ecosystem=npm count=2' \
   'the coverage_gap fact carries the same count the roll-up finding'"'"'s title states'
+
+unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+
+# =============================================================================
+printf -- '\n-- sca_scan_tree: full Gemfile.lock fixture against the fixture db --\n'
+# =============================================================================
+RUBY_RUNDIR=$W/run-ruby
+rm -rf "$RUBY_RUNDIR"
+run_init "$RUBY_RUNDIR"
+SCOURSH_PATH_ROOT=$(path_root_cell "$FIXTURES/ruby")
+SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$FIXTURES/ruby")
+export SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+export SCOURSH_SCA_ADVISORIES_DB=$DB
+
+sca_scan_tree "$FIXTURES/ruby"
+findings_merge "$RUBY_RUNDIR"
+RUBY_FINDINGS=$(_sca_findings "$RUBY_RUNDIR")
+
+t_case 'AC: a fixture Gemfile.lock with a known-vulnerable pinned gem reports it under SCA-RUBY-VULNERABLE_DEP-01'
+assert_contains "$RUBY_FINDINGS" 'SCA-RUBY-VULNERABLE_DEP-01' \
+  'at least one SCA-RUBY-VULNERABLE_DEP-01 finding was emitted for the ruby fixture'
+
+t_case 'AC: a mixed-case gem name (RailsAddon) normalises to lowercase and still resolves to its advisory'
+assert_contains "$RUBY_FINDINGS" 'railsaddon@2.0.0 is vulnerable (SCA-FIXTURE-RUBY-001)' \
+  'the finding title carries the lowercase-normalised package name matched against the db, proving RailsAddon -> railsaddon -> SCA-FIXTURE-RUBY-001 round-tripped'
+
+t_case 'AC: direct vs transitive is classified from DEPENDENCIES vs GEM/specs-only, per dependency'
+assert_contains "$RUBY_FINDINGS" 'dependency: railsaddon@2.0.0\ndependency_type: direct' \
+  'railsaddon is direct - listed in the fixture'"'"'s top-level DEPENDENCIES stanza'
+assert_contains "$RUBY_FINDINGS" 'dependency: rack@2.2.3\ndependency_type: transitive' \
+  'rack is transitive - only a GEM/specs entry (and RailsAddon'"'"'s own dependency annotation), never in DEPENDENCIES'
+
+t_case 'AC: a gem with no fixed/pinned version in its advisory is flagged accept-risk, not skipped or mismatched'
+assert_contains "$RUBY_FINDINGS" 'dependency: puma@5.6.4\ndependency_type: direct\nlockfile: Gemfile.lock\nadvisory: SCA-FIXTURE-RUBY-002 (critical)\nfixed_versions: none published\naccept_risk_candidate: true' \
+  'puma@5.6.4 (SCA-FIXTURE-RUBY-002, empty fixed_versions in the db) is reported - not silently skipped - and flagged accept_risk_candidate: true'
+
+t_case 'AC: contributes to the SHARED SCA-COV-UNKNOWN_VERSION-01 roll-up (RubyGems side, in isolation)'
+RUBY_UNKNOWN_COUNT=$(printf '%s\n' "$RUBY_FINDINGS" | grep -c '^SCA-COV-UNKNOWN_VERSION-01' || true)
+assert_eq 1 "$RUBY_UNKNOWN_COUNT" \
+  'exactly one roll-up finding for the ruby-only fixture (mini_portile2@2.8.1: package known at 2.9.0, exact version unmatched)'
+assert_contains "$RUBY_FINDINGS" 'SCA: 1 pinned dependency version' \
+  'the roll-up title states the correct count (1: mini_portile2)'
+assert_contains "$RUBY_FINDINGS" 'RubyGems: 1' 'the roll-up breakdown names the RubyGems ecosystem'
+
+t_case 'a gem with NO advisories.db rows at all (nokogiri) does not appear in the roll-up or as a finding'
+assert_not_contains "$RUBY_FINDINGS" 'nokogiri' \
+  'nokogiri has no db rows whatsoever (sca_package_known is false for it) - absence is silent, not an unknown-version count'
+
+t_case 'run.json: checks_run records SCA-RUBY-VULNERABLE_DEP-01 and the shared roll-up check'
+assert_contains "$(cat "$RUBY_RUNDIR/meta/checks_run" 2>/dev/null)" 'SCA-RUBY-VULNERABLE_DEP-01' \
+  'SCA-RUBY-VULNERABLE_DEP-01 is recorded as run'
+assert_contains "$(cat "$RUBY_RUNDIR/meta/checks_run" 2>/dev/null)" 'SCA-COV-UNKNOWN_VERSION-01' \
+  'SCA-COV-UNKNOWN_VERSION-01 is recorded as run'
+
+t_case 'run.json: the unknown-version coverage_gap is recorded under the RubyGems ecosystem'
+assert_contains "$(cat "$RUBY_RUNDIR/meta/coverage_gap" 2>/dev/null)" 'ecosystem=RubyGems count=1' \
+  'the coverage_gap fact carries the same count the roll-up finding'"'"'s title states'
+
+unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+
+# =============================================================================
+printf -- '\n-- sca_scan_tree: mixed npm + Ruby root - one SHARED SCA-COV-UNKNOWN_VERSION-01 --\n'
+# =============================================================================
+# tests/fixtures/sca/mixed-ecosystems/ carries BOTH a package-lock.json
+# (lodash pinned at 4.17.99 - known package, unmatched exact version) and a
+# Gemfile.lock (mini_portile2 pinned at 2.8.1 - same shape).  This is the
+# AC's own "shared roll-up" case made concrete: one sca_scan_tree call over
+# one root must produce exactly ONE SCA-COV-UNKNOWN_VERSION-01 finding whose
+# breakdown mentions BOTH ecosystems, not two competing findings that would
+# collide on one fingerprint (module=sca, check_id=SCA-COV-UNKNOWN_VERSION-01,
+# and no ecosystem/package/advisory_id component - see sca_scan_tree's own
+# header comment in modules/sca/engine.sh) and have findings_merge's dedup
+# silently drop one ecosystem's count.
+MIXED_RUNDIR=$W/run-mixed
+rm -rf "$MIXED_RUNDIR"
+run_init "$MIXED_RUNDIR"
+SCOURSH_PATH_ROOT=$(path_root_cell "$FIXTURES/mixed-ecosystems")
+SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$FIXTURES/mixed-ecosystems")
+export SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+export SCOURSH_SCA_ADVISORIES_DB=$DB
+
+sca_scan_tree "$FIXTURES/mixed-ecosystems"
+findings_merge "$MIXED_RUNDIR"
+MIXED_FINDINGS=$(_sca_findings "$MIXED_RUNDIR")
+
+t_case 'AC: one root with both an npm lockfile and a Gemfile.lock produces exactly ONE roll-up finding'
+MIXED_UNKNOWN_COUNT=$(printf '%s\n' "$MIXED_FINDINGS" | grep -c '^SCA-COV-UNKNOWN_VERSION-01' || true)
+assert_eq 1 "$MIXED_UNKNOWN_COUNT" \
+  'exactly one SCA-COV-UNKNOWN_VERSION-01 finding - fails if npm and RubyGems each produced their own (which would also silently collide on one fingerprint and lose data in findings_merge'"'"'s dedup)'
+
+t_case 'AC: the single roll-up breakdown combines BOTH ecosystems'"'"' counts'
+assert_contains "$MIXED_FINDINGS" 'SCA: 2 pinned dependency version' \
+  'the roll-up title sums both ecosystems'"'"' unknown-version counts (1 npm + 1 RubyGems = 2)'
+assert_contains "$MIXED_FINDINGS" 'npm: 1' 'the breakdown names npm'"'"'s own count'
+assert_contains "$MIXED_FINDINGS" 'RubyGems: 1' 'the breakdown names RubyGems'"'"'s own count'
+
+t_case 'run.json: coverage_gap carries one fact per ecosystem, both from the same run'
+MIXED_GAP=$(cat "$MIXED_RUNDIR/meta/coverage_gap" 2>/dev/null)
+assert_contains "$MIXED_GAP" 'ecosystem=npm count=1' 'npm'"'"'s own coverage_gap fact is recorded'
+assert_contains "$MIXED_GAP" 'ecosystem=RubyGems count=1' 'RubyGems'"'"'s own coverage_gap fact is recorded'
 
 unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
 
@@ -390,6 +549,20 @@ t_case 'run.json: the module-level coverage_reduction facts (db-absent/single-wo
 _SINGLE_WORKER_COUNT=$(printf '%s' "$E2E_PY_RUNJSON" | grep -o 'single_worker_no_parallel_scan_yet' | wc -l | tr -d ' ')
 assert_eq 1 "$_SINGLE_WORKER_COUNT" \
   'exactly one occurrence - fails if sca_scan_python_tree independently re-recorded the module-level fact npm'"'"'s pass already owns'
+
+# =============================================================================
+printf -- '\n-- end-to-end: Ruby (Gemfile.lock), through the real scan.sh entry point --\n'
+# =============================================================================
+t_case 'scan.sh sca --path against the Ruby fixture exits 0 and reports the vulnerable gem'
+E2E_RUBY_RUNDIR=$W/run-e2e-ruby
+rm -rf "$E2E_RUBY_RUNDIR"
+assert_status 0 'a real subprocess against the ruby fixture, with the fixture db, exits clean' \
+  env SCOURSH_SCA_ADVISORIES_DB="$DB" bash "$ROOT/scan.sh" sca --path "$FIXTURES/ruby" --out "$E2E_RUBY_RUNDIR"
+E2E_RUBY_RUNJSON=$(cat "$E2E_RUBY_RUNDIR/run.json" 2>/dev/null)
+assert_contains "$E2E_RUBY_RUNJSON" '"SCA-RUBY-VULNERABLE_DEP-01"' \
+  'checks_run in run.json shows the check actually executed through the real scan.sh entry point (scan_dispatch sca), not just when the module is sourced standalone'
+assert_contains "$E2E_RUBY_RUNJSON" '"sca":4' \
+  'run.json by_module counts 4 live findings for sca - the ruby fixture'"'"'s 3 vulnerable gems plus the one roll-up'
 
 t_summary 'sca' || FAILED=1
 exit "${FAILED:-0}"

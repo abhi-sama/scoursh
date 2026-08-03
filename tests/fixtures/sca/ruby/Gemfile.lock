@@ -1,0 +1,20 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    RailsAddon (2.0.0)
+      rack (>= 1.0)
+    mini_portile2 (2.8.1)
+    nokogiri (1.13.8)
+      mini_portile2 (~> 2.8.0)
+    puma (5.6.4)
+    rack (2.2.3)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  RailsAddon
+  puma
+
+BUNDLED WITH
+   2.3.7
