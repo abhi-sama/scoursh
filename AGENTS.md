@@ -201,14 +201,11 @@ packs are still missing.
   Seeding it now is a guaranteed `E051`/`E060` lint failure.
 - **F17** - `aws_ro` pins `--no-cli-pager`, which AWS CLI v1 rejects.
   Lands with step 6 (cloud), when `lib/awscli.sh`'s first real caller ships.
-- **F16's `look` half** - the O(n) `grep -F` fallback cost for SCA lookups.
-  SCA's npm, Python, Ruby, and Java slices have all landed and already exercise `db_lookup_exact`/
-  `look`, so this cost is live on a `look`-less host rather than theoretical; this finding stays open
-  until step 4's SCA half is complete (Go/PHP remain). The asymmetry itself was already accepted as
-  tension 25's own stated tradeoff, not a defect any SCA ecosystem ticket needed to fix.
 
-F3, F4, and F8 are closed (F3 and F8 as of step 2's `lib/checks.sh`; F4 as of 3a above); do not
-re-flag them.
+F3, F4, F8, and F16's `look` half are closed (F3 and F8 as of step 2's `lib/checks.sh`; F4 as of 3a
+above; F16's `look` half as of `lib/core.sh`'s `db_lookup_exact` and its new `tests/suites/core.sh`
+test - see `docs/FOUNDATION.md`'s "Known follow-ups" for the full closure detail); do not re-flag any
+of them.
 
 **`main` can lag `dev` - check `dev`, not just `main`, before declaring a dependency unlanded.**
 This project develops on `dev` and merges to `main` in batches, so a checkout of `main` can be several

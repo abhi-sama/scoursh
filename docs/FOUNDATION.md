@@ -3708,8 +3708,23 @@ rule pins nothing.
   unclassifiable status.
   Overwrite-based erasure is documented as best effort, with `scratch-dir` on a tmpfs as the real
   control.
-  `look`'s O(n) `grep -F` fallback cost is the SCA half of F16 and remains open; it lands with §13
-  step 4.
+  **The SCA half - `look`'s O(n) `grep -F` fallback cost - is CLOSED too.**
+  `lib/core.sh`'s `db_lookup_exact` is the one implementation of the `LC_ALL=C look`-on-PREFIX,
+  `LC_ALL=C grep -F -m 1`-fallback mechanism tension 25's lookup names, and `modules/sca/engine.sh`'s
+  two call sites (`sca_lookup_exact`, `sca_package_known`) route every npm, Python, and Ruby
+  exact-match lookup through it - no second, ad hoc parser exists alongside it (tension 24's "one
+  capability layer").
+  `tests/suites/core.sh` now pins both branches directly, against a fixture with two rows sharing one
+  exact prefix: the fallback returns only the first row (FAILS under a bare `grep -F` missing `-m 1`,
+  which would return both), `look` returns every row sharing the prefix (FAILS under an implementation
+  that routed the `look` branch through the fallback instead of a real `look` call), and both the
+  no-match and missing-file cases return status 1 with no output under either branch.
+  This entry previously read "remains open; it lands with §13 step 4", reasoning that the mechanism was
+  unexercised until a real caller existed; three real callers (npm, Python, Ruby) now exist and are
+  tested end to end (`tests/suites/sca.sh`), so that condition is met.
+  The O(n) cost on a `look`-less host is tension 25's own accepted, frozen tradeoff, not an open
+  defect - whether Go, Java, and PHP have joined the same call site is step 4 SCA-completeness
+  bookkeeping, tracked separately in "Where the build currently stands", not this finding.
 
 **F18 is closed as a consequence rather than deferred.**
 Once `die` refuses any code outside 0-5, a `die 6` cannot exist: both normative samples now read
