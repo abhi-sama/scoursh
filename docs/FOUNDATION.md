@@ -3775,20 +3775,22 @@ rule pins nothing.
   **The SCA half - `look`'s O(n) `grep -F` fallback cost - is CLOSED too.**
   `lib/core.sh`'s `db_lookup_exact` is the one implementation of the `LC_ALL=C look`-on-PREFIX,
   `LC_ALL=C grep -F -m 1`-fallback mechanism tension 25's lookup names, and `modules/sca/engine.sh`'s
-  two call sites (`sca_lookup_exact`, `sca_package_known`) route every npm, Python, and Ruby
-  exact-match lookup through it - no second, ad hoc parser exists alongside it (tension 24's "one
-  capability layer").
+  two call sites (`sca_lookup_exact`, `sca_package_known`) route every npm, Python, Ruby, Maven,
+  Composer AND Go exact-match lookup through it - `modules/sca/go_engine.sh`, the one SCA engine that
+  lives outside `engine.sh`, deliberately calls those same two shared helpers rather than reaching for
+  `look`/`grep` itself, so no second, ad hoc parser exists alongside it (tension 24's "one capability
+  layer").
   `tests/suites/core.sh` now pins both branches directly, against a fixture with two rows sharing one
   exact prefix: the fallback returns only the first row (FAILS under a bare `grep -F` missing `-m 1`,
   which would return both), `look` returns every row sharing the prefix (FAILS under an implementation
   that routed the `look` branch through the fallback instead of a real `look` call), and both the
   no-match and missing-file cases return status 1 with no output under either branch.
   This entry previously read "remains open; it lands with §13 step 4", reasoning that the mechanism was
-  unexercised until a real caller existed; three real callers (npm, Python, Ruby) now exist and are
-  tested end to end (`tests/suites/sca.sh`), so that condition is met.
+  unexercised until a real caller existed; six real callers (npm, Python, Ruby, Java, PHP, Go) now exist
+  and are tested end to end (`tests/suites/sca.sh`), so that condition is met.
   The O(n) cost on a `look`-less host is tension 25's own accepted, frozen tradeoff, not an open
-  defect - whether Go, Java, and PHP have joined the same call site is step 4 SCA-completeness
-  bookkeeping, tracked separately in "Where the build currently stands", not this finding.
+  defect - which ecosystems have joined the same call site is step 4 SCA-completeness bookkeeping,
+  tracked separately in "Where the build currently stands", not this finding.
 
 **F18 is closed as a consequence rather than deferred.**
 Once `die` refuses any code outside 0-5, a `die 6` cannot exist: both normative samples now read
@@ -3927,10 +3929,12 @@ correct count; this section is corrected here to match it, which is what the pro
 to keep from recurring.
 Steps 4 through 10 remain mostly unstarted, so `modules/dast/` and `modules/cloud/` remain unbuilt,
 along with `lib/awscli.sh`.
-`modules/iac/` and `modules/sca/` are exceptions, each landed only partially - see the two paragraphs
-below.
-The remaining follow-ups (F5, F20, F17, and F16's `look` half) are inherited by steps 4 through 10 and
-are still open.  (F3, F4, and F8 are closed above.)
+`modules/iac/` and `modules/sca/` are exceptions - see the two paragraphs below.
+`modules/iac/` is still partial; `modules/sca/` covers every ecosystem `docs/DESIGN.md` §6.5 names as
+of the Go landing.
+The remaining follow-ups (F5, F20, and F17) are inherited by steps 4 through 10 and are still open.
+(F3, F4, F8, and F16 - including its `look` half - are closed above; this sentence still listed F16's
+`look` half as open after `4684e44` closed it, and is corrected here.)
 
 **Step 4's IaC half landed out of sequence, ahead of step 3's remaining `nosql`/`ldap` sub-steps and
 ahead of step 4's own SCA half - in four separate landings, and still only partial.**
@@ -4013,23 +4017,37 @@ always did - to avoid touching `sca_scan_tree`'s already-tested npm code path - 
 unknown-version cases in both an npm/Ruby lockfile AND a Python one still emits two separate roll-up
 findings; a stated, filed gap, not a defect either the Python or Ruby ticket needed to fix.
 `tests/suites/sca.sh` tests all three slices, including the real `scan.sh sca` end-to-end path.
-Go (the remaining ecosystem `docs/DESIGN.md` §6.5 names) is still open; step 4's
-SCA half is not complete.
 
-**Step 4's SCA half has since started - it is not the "both remain unstarted" state the previous
-paragraph describes, which is kept above for history rather than silently rewritten.**
-An npm ecosystem (`package-lock.json`/`yarn.lock`/`pnpm-lock.yaml`, commit `ed8c283`) landed first,
-followed by Java (`pom.xml`/`build.gradle`, this ticket) in `modules/sca/engine.sh`, under check ids
-`SCA-NPM-VULNERABLE_DEP-01` and `SCA-JAVA-VULNERABLE_DEP-01` respectively - each ecosystem is its own
-self-contained `sca_scan_*_tree` function (`sca_scan_tree` for npm, `sca_scan_java_tree` for Java),
-called from `modules/sca/run.sh`'s `_sca_run_module`, mirroring `modules/sast/`'s own
-engine.sh/run.sh split.  Both look pinned, exact `(ecosystem, package, version)` triples up against
-`data/advisories.db` via the shared `db_lookup_exact`/`sca_lookup_exact` (tension 25's frozen exact-match
-contract - no version-range arithmetic), and both emit the shared `SCA-COV-UNKNOWN_VERSION-01` roll-up
-(one per ecosystem-scan entry point, never per package) for a package the db tracks whose exact pinned
-version it does not.  `docs/DESIGN.md` §6.5's remaining ecosystems - Python
-(`requirements.txt`/`poetry.lock`/`Pipfile.lock`), Go (`go.mod`/`go.sum`), Ruby (`Gemfile.lock`), and PHP
-(`composer.lock`) - have not landed, so step 4's SCA half is still not finished.
+**Java, PHP/Composer, and Go then completed step 4's SCA half.**
+`a1b3c43` added Maven coordinates (`pom.xml`, `build.gradle`) as `sca_scan_java_tree` in
+`modules/sca/engine.sh`, under `SCA-JAVA-VULNERABLE_DEP-01`.
+`7e7b186` added Composer (`composer.lock`, cross-referenced against `composer.json` for
+direct-vs-transitive) under `SCA-PHP-VULNERABLE_DEP-01`; it is the first ecosystem whose parser lives
+outside `engine.sh`, in `modules/sca/php_engine.sh`, though it is still driven from inside
+`sca_scan_tree` and so joins npm/Ruby's shared roll-up.
+The Go ticket landed last and went one step further: `modules/sca/go_engine.sh` is a fully standalone
+engine with its own entry point, `sca_go_scan_tree`, called from its own `_sca_go_run` in
+`modules/sca/run.sh` - exactly the shape that file's own header invited for a further ecosystem ("do not
+fork this file per ecosystem").
+`go.mod`'s `require` block (single-line and block form) is the authoritative direct/transitive source: a
+trailing `// indirect` comment marks a require line transitive, its absence marks it direct.
+`go.sum` alone (no `go.mod` beside it) is parsed too, but every entry is honestly reported `unknown`
+rather than guessed; `go.mod` wins when both are present in one directory.
+Normalisation follows tension 25's frozen Go row exactly - the full module path with a `/vN`
+major-version suffix RETAINED, and a trailing `+incompatible` version suffix STRIPPED before lookup -
+each direction pinned by its own test against the naive misreading, and the raw pinned version is kept
+visible in the finding's evidence rather than silently rewritten.
+`replace`/`exclude` directives are NOT resolved: a stated limitation, surfaced at runtime as a
+`reason=go_replace_exclude_directives_not_resolved` coverage_reduction rather than hidden.
+It mints `SCA-GO-VULNERABLE_DEP-01` and, like Python and Java, its own `SCA-COV-UNKNOWN_VERSION-01`
+roll-up rather than joining npm/Ruby/PHP's shared one - the same stated cross-ecosystem-merge gap
+recorded above, not a new one.
+Unlike `sca_scan_python_tree` and `sca_scan_java_tree`, `sca_go_scan_tree` performs its own
+`data/advisories.db`-readable check, so `_sca_go_run` carries no "must run after `_sca_npm_run`"
+ordering requirement; it is still called last in `_sca_run_module` for a stable emission order.
+With Go landed, every ecosystem `docs/DESIGN.md` §6.5 names has a parser, so step 4's SCA half is
+COMPLETE and the step-5 DAST gate is no longer blocked on it; what step 4 still owes is its remaining
+container/orchestration and CloudFormation IaC checks.
 
 **Step 5 (DAST) has a written, dependency-ordered sub-ticket plan (`docs/STEP5-DAST-PLAN.md`), but no
 implementation ticket has started.**
@@ -4117,9 +4135,9 @@ That sentence describes step 1's own historical boundary and is unaffected by la
 was step 1's placeholder and is now built by step 2 (above); `modules/sast/` and its seven rule packs
 are now built by steps 3a-3e (above); `modules/iac/` and its `terraform.rules`, `helm.rules`,
 `dockerfile.rules`, and `kubernetes.rules` packs are now built by step 4's IaC half, landed out of
-sequence in four parts (above); `modules/sca/` (npm, Python, Ruby, Java, and PHP slices - five
-ecosystems of six, Java and PHP having since landed) is now built by step 4's SCA half, also landed out
-of sequence (above), though Go remains; `lib/http.sh` landed
+sequence in four parts (above); `modules/sca/` (npm, Python, Ruby, Java, PHP, and Go slices - all six of
+`docs/DESIGN.md` §6.5's ecosystems, Java and PHP having landed at `a1b3c43`/`7e7b186` and Go last) is
+now built by step 4's SCA half, also landed out of sequence (above); `lib/http.sh` landed
 early, out of its normal step-5 sequence (tension 19), and step 5 as a whole now has a written
 sub-ticket plan
 (`docs/STEP5-DAST-PLAN.md`, above) though none of it has started; and `lib/engines.sh`, `lib/awscli.sh`,

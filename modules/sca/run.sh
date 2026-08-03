@@ -61,6 +61,25 @@
 # _sca_run_module below, next to these three - do not fork this file per
 # ecosystem.
 #
+# GO IS THE FOURTH SUCH CALL, AND IT IS FULLY SELF-CONTAINED - the one way
+# it differs from Python and Java above, recorded here so the ordering
+# constraint is not over-applied to it.  Go went further than PHP did and
+# landed its parser in its OWN file, modules/sca/go_engine.sh (go.mod/go.sum
+# parsing, SCA-GO-VULNERABLE_DEP-01), sourced below next to
+# modules/sca/engine.sh, exactly as this file's original header invited
+# ("if a further ecosystem (Go, ...) lands its own ... entry point, its own
+# run function is likewise called from _sca_run_module below").
+# `sca_go_scan_tree` (modules/sca/go_engine.sh) does run its OWN
+# data/advisories.db-readable check and emits its own
+# `reason=no_advisories_db_on_disk ecosystem=Go` coverage_reduction, so
+# unlike `_sca_py_run` and `_sca_java_run` it does NOT depend on
+# `_sca_npm_run` having gone first.  It is still called last below, purely
+# for a stable emission order.  It shares the roll-up exposure the
+# paragraphs above describe: a run with both an npm/Ruby/PHP (or Python, or
+# Java) unknown-version case and a Go one emits a SEPARATE
+# SCA-COV-UNKNOWN_VERSION-01 per ecosystem-scan call - the same stated,
+# filed follow-up, not a new one.
+#
 # shellcheck shell=bash
 # shellcheck source=modules/sca/engine.sh
 source "${BASH_SOURCE[0]%/*}/engine.sh"
@@ -71,6 +90,11 @@ source "${BASH_SOURCE[0]%/*}/engine.sh"
 # engine.sh is the same convention.
 # shellcheck source=modules/sca/php_engine.sh
 source "${BASH_SOURCE[0]%/*}/php_engine.sh"
+# go_engine.sh guards its own engine.sh source the same way, so the order of
+# these three lines does not matter; it is sourced explicitly here for the
+# same self-documenting reason as php_engine.sh above.
+# shellcheck source=modules/sca/go_engine.sh
+source "${BASH_SOURCE[0]%/*}/go_engine.sh"
 
 # _sca_npm_run - npm/yarn/pnpm, RubyGems (Gemfile.lock) AND, as of the
 # PHP/Composer ticket, composer.lock: all three live inside the single
@@ -105,6 +129,16 @@ _sca_java_run() {
   sca_scan_java_tree "$path"
 }
 
+# _sca_go_run - Go (go.mod/go.sum), the fourth call and the first whose
+# parser lives in its own file (modules/sca/go_engine.sh).  Unlike
+# _sca_py_run and _sca_java_run it carries no "must run after _sca_npm_run"
+# requirement - sca_go_scan_tree does its own db-absent check - but it is
+# kept last for a stable emission order.  See the header above.
+_sca_go_run() {
+  local path=${_SCAN_RESOLVED_PATH:-.}
+  sca_go_scan_tree "$path"
+}
+
 _sca_run_module() {
   # No check-registry gate here the way modules/sast/run.sh has one: SCA is
   # a table lookup, not a pattern-rule engine (the npm ticket's own framing),
@@ -115,10 +149,11 @@ _sca_run_module() {
   #
   # _sca_npm_run (sca_scan_tree) covers npm, RubyGems AND PHP/Composer in
   # one call; see the header above for why Ruby and PHP joined that call
-  # while Python and Java did not.
+  # while Python, Java and Go did not.
   _sca_npm_run
   _sca_py_run
   _sca_java_run
+  _sca_go_run
 
   findings_merge "$SCOURSH_RUN_DIR"
   derive_findings "$SCOURSH_RUN_DIR"
