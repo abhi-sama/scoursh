@@ -3846,10 +3846,28 @@ This paragraph previously undercounted step 3 at "3a, 3b, 3c, and 3e" and left `
 still-missing list after 3d had already landed - `AGENTS.md`'s "Build order and where we are" had the
 correct count; this section is corrected here to match it, which is what the process note below exists
 to keep from recurring.
-Steps 4 through 10 remain unstarted, so `modules/dast/`, `modules/sca/`, `modules/iac/`,
-`modules/cloud/`, and `lib/awscli.sh` remain unbuilt.
+Steps 4 through 10 remain mostly unstarted, so `modules/dast/`, `modules/sca/`, and `modules/cloud/`
+remain unbuilt, along with `lib/awscli.sh`.
+`modules/iac/` is the one exception - see the paragraph below.
 The remaining follow-ups (F5, F20, F17, and F16's `look` half) are inherited by steps 4 through 10 and
 are still open.  (F3, F4, and F8 are closed above.)
+
+**Step 4's IaC half landed out of sequence, ahead of step 3's remaining `nosql`/`ldap` sub-steps and
+ahead of step 4's own SCA half.**
+`5de4460` ("IaC: Terraform checks via the pattern-rule engine (§13 step 4)") shipped `modules/iac/run.sh`
+(the `scan_dispatch iac` entry point), `modules/iac/parse.sh` (the Terraform HCL parser), and
+`modules/iac/terraform.rules`, reusing the native pattern engine `modules/sast/engine.sh` built at step
+3a rather than forking a second one.
+`terraform.rules` seeds seven checks: `IAC-TF-OPEN_CIDR-01`, `IAC-TF-PUBLIC_ACL-01`,
+`IAC-TF-UNENCRYPTED-01`, `IAC-TF-KEY_ROTATION_DISABLED-01`, `IAC-TF-PUBLIC_IP-01`,
+`IAC-TF-HARDCODED_SECRET-01`, and `IAC-TF-RDS_PUBLIC-01`; `tests/suites/iac.sh` tests it.
+This landing is **Terraform only** - CloudFormation and container (Dockerfile / Kubernetes-manifest) IaC
+rules are still open and out of scope for it.
+`modules/` as a whole now ships eight pattern packs on disk (the seven under `modules/sast/rules/` plus
+`modules/iac/terraform.rules`), which is the count `tests/lint-rules.sh`'s E060 fixture-coverage note
+now reports.
+Step 3's `nosql`/`ldap` rule packs and step 4's own SCA half both remain unstarted; do not read this
+paragraph as "step 4 is done."
 
 **Step 5 (DAST) has a written, dependency-ordered sub-ticket plan (`docs/STEP5-DAST-PLAN.md`), but no
 implementation ticket has started.**
@@ -3860,7 +3878,7 @@ injection, one file at a time -> §7.4 auth/API/authz`), confirms `lib/http.sh`'
 pending, and states the client-rendered-app (SPA) limitation as a `coverage_gap` the crawler ticket
 (DAST-04) must surface in the report, not a gap this plan (or any step-5 ticket) closes with a headless
 browser.
-**No DAST-0x ticket is picked up until step 3's `nosql`/`ldap` rule packs and step 4 (SCA) are both
+**No DAST-0x ticket is picked up until step 3's `nosql`/`ldap` rule packs and step 4's SCA half are both
 complete on `dev`**, per the plan's own "Status: blocked" section and this ticket's description.
 
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) also now has a written sub-ticket plan
@@ -3884,10 +3902,12 @@ steps 5 and 6) are step 7's; step 1 delivers the primitives they call - the merg
 against tension 6's full case table.
 That sentence describes step 1's own historical boundary and is unaffected by later steps: `scan.sh`
 was step 1's placeholder and is now built by step 2 (above); `modules/sast/` and its seven rule packs
-are now built by steps 3a-3e (above); `lib/http.sh` landed early, out of its normal step-5 sequence
-(tension 19), and step 5 as a whole now has a written sub-ticket plan (`docs/STEP5-DAST-PLAN.md`, above)
-though none of it has started; and `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, and
-`state/` remain unbuilt, as does the rest of `modules/` (`dast/`, `sca/`, `iac/`, `cloud/`).
+are now built by steps 3a-3e (above); `modules/iac/` and its `terraform.rules` pack are now built by
+step 4's IaC half, landed out of sequence (above); `lib/http.sh` landed early, out of its normal step-5
+sequence (tension 19), and step 5 as a whole now has a written sub-ticket plan
+(`docs/STEP5-DAST-PLAN.md`, above) though none of it has started; and `lib/engines.sh`, `lib/awscli.sh`,
+SARIF, the compliance report, and `state/` remain unbuilt, as does the rest of `modules/` (`dast/`,
+`sca/`, `cloud/`).
 
 **Process note: this section must be updated in the same change that lands a §13 step, not in a later
 cleanup ticket.**

@@ -110,6 +110,8 @@ shipped; nothing beyond `nosql.rules`/`ldap.rules` remains under the "language" 
 `history.sh` (the `SAST-HIST-*` mechanism, tension 13) already shipped as 3e (see below); do not
 re-list it as outstanding.
 The next task is the remainder of step 3 (`nosql.rules` and `ldap.rules`).
+Step 4's IaC half has also landed, out of sequence and ahead of step 3's remaining `nosql`/`ldap` sub-steps (see below).
+Step 4's SCA half has not landed.
 
 **Step 5 (DAST) now has a written, dependency-ordered sub-ticket plan, but is not started.**
 `docs/STEP5-DAST-PLAN.md` breaks the ~30-script step 5 scope into tickets DAST-01 through DAST-30,
@@ -117,8 +119,8 @@ ordered per `docs/DESIGN.md` §13's own `lib/http.sh -> auth.sh -> crawl.sh -> p
 injection -> §7.4` sequence, and states plainly that `lib/http.sh`'s scope-gate chokepoint (tension 19)
 already shipped (see below) and is not re-planned - only the still-unbuilt tension-16 rate
 limiter/budget/breaker piece (DAST-01) and everything under `modules/dast/` remain.
-**No DAST-0x ticket is picked up until step 3's `nosql`/`ldap` rule packs (above) and step 4 (SCA) are
-both complete on `dev`** - this plan is a written breakdown for later, not permission to start now.
+**No DAST-0x ticket is picked up until step 3's `nosql`/`ldap` rule packs (above) and step 4's SCA half
+are both complete on `dev`** - this plan is a written breakdown for later, not permission to start now.
 
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) now has a written sub-ticket plan, split into two
 independently schedulable tickets, and neither is blocked.**
@@ -185,7 +187,7 @@ packs are still missing.
 - **F17** - `aws_ro` pins `--no-cli-pager`, which AWS CLI v1 rejects.
   Lands with step 6 (cloud), when `lib/awscli.sh`'s first real caller ships.
 - **F16's `look` half** - the O(n) `grep -F` fallback cost for SCA lookups.
-  Lands with step 4 (SCA), which has not started.
+  Lands with step 4's SCA half, which has not started.
 
 F3, F4, and F8 are closed (F3 and F8 as of step 2's `lib/checks.sh`; F4 as of 3a above); do not
 re-flag them.
@@ -209,6 +211,25 @@ support (both explicitly out of scope for this ticket) still arrive at step 5 pr
 paragraph as "step 5 is done" - see "Current position" above for what is actually next.
 `docs/STEP5-DAST-PLAN.md` is the sub-ticket breakdown for that remaining step-5 work and already excludes
 `lib/http.sh` from its "still to plan" list, since this paragraph is where that fact is recorded.
+
+**A second piece of a later step also landed out of sequence: `modules/iac/` (step 4's IaC half) now
+exists.**
+`5de4460` ("IaC: Terraform checks via the pattern-rule engine (§13 step 4)") shipped `modules/iac/run.sh`
+(the `scan_dispatch iac` entry point), `modules/iac/parse.sh` (the Terraform HCL parser), and
+`modules/iac/terraform.rules`, run through the same native pattern engine `modules/sast/engine.sh` built
+at step 3a.
+`terraform.rules` seeds seven checks: `IAC-TF-OPEN_CIDR-01`, `IAC-TF-PUBLIC_ACL-01`,
+`IAC-TF-UNENCRYPTED-01`, `IAC-TF-KEY_ROTATION_DISABLED-01`, `IAC-TF-PUBLIC_IP-01`,
+`IAC-TF-HARDCODED_SECRET-01`, and `IAC-TF-RDS_PUBLIC-01`.
+`tests/suites/iac.sh` tests it.
+This landing is **Terraform only**: CloudFormation and container (Dockerfile / Kubernetes-manifest) IaC
+rules are still open and explicitly out of scope for it.
+`modules/` as a whole now ships **eight** pattern packs on disk - the seven under `modules/sast/rules/`
+plus `modules/iac/terraform.rules` - which is the count `tests/lint-rules.sh`'s E060 fixture-coverage
+note now reports.
+It landed ahead of step 3's remaining `nosql`/`ldap` rule packs and ahead of step 4's own SCA half, the
+same "land what's ready, out of strict step order" pattern as `lib/http.sh` above.
+Both `nosql`/`ldap` and SCA remain unstarted - do not read this paragraph as "step 4 is done."
 
 Step 1 delivered `lib/records.sh`, `lib/core.sh`, `lib/findings.sh` and `lib/report.sh`, plus
 `rules/redaction.rules`, `data/severity-rubric.conf`, the `config/*.example` files, a fixture
@@ -234,14 +255,14 @@ rule pack, and `state/`.
 **Step 3a-3d and 3e then filled in most of that gap**: `modules/sast/` (with `engine.sh`, `run.sh`,
 AND `history.sh` - see above) and its seven rule packs now exist, so `scan_dispatch sast` no longer
 no-ops and `_scan_apply_profile_filter` finds a non-empty registry for SAST checks.
-Everything else in the original list is still true: `modules/dast/`, `modules/sca/`, `modules/iac/`,
-`modules/cloud/`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, and `state/` do not
-exist yet.
-Every `scan_dispatch` call for a module other than `sast` remains a logged `coverage_reduction` no-op
-(`reason=not_yet_built`), and every `_scan_apply_profile_filter` call for a non-SAST check set finds
-an empty check registry (`reason=no_check_registry_on_disk_yet`), until that module actually ships one
-- both mechanisms are real and tested against fixtures, they simply have nothing on disk to find yet
-outside SAST.
+Everything else in the original list is still true: `modules/dast/`, `modules/sca/`, `modules/cloud/`,
+`lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, and `state/` do not exist yet.
+`modules/iac/` landed anyway, out of sequence - see above.
+Every `scan_dispatch` call for a module other than `sast` or `iac` remains a logged
+`coverage_reduction` no-op (`reason=not_yet_built`), and every `_scan_apply_profile_filter` call for a
+check set outside SAST/IaC finds an empty check registry (`reason=no_check_registry_on_disk_yet`),
+until that module actually ships one - both mechanisms are real and tested against fixtures, they
+simply have nothing on disk to find yet outside SAST and IaC.
 Diff classification (tension 12) and baseline suppression (tension 11 steps 5 and 6) belong to step 7;
 step 1 ships the primitives they call - the merge, the fingerprint, `findings_mark_suppressed`, and
 `classify_derived`, which is pure and already tested against tension 6's whole case table.
