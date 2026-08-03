@@ -3917,6 +3917,21 @@ findings; a stated, filed gap, not a defect either the Python or Ruby ticket nee
 Go, Java, and PHP (the remaining ecosystems `docs/DESIGN.md` §6.5 names) are still open; step 4's
 SCA half is not complete.
 
+**Step 4's SCA half has since started - it is not the "both remain unstarted" state the previous
+paragraph describes, which is kept above for history rather than silently rewritten.**
+An npm ecosystem (`package-lock.json`/`yarn.lock`/`pnpm-lock.yaml`, commit `ed8c283`) landed first,
+followed by Java (`pom.xml`/`build.gradle`, this ticket) in `modules/sca/engine.sh`, under check ids
+`SCA-NPM-VULNERABLE_DEP-01` and `SCA-JAVA-VULNERABLE_DEP-01` respectively - each ecosystem is its own
+self-contained `sca_scan_*_tree` function (`sca_scan_tree` for npm, `sca_scan_java_tree` for Java),
+called from `modules/sca/run.sh`'s `_sca_run_module`, mirroring `modules/sast/`'s own
+engine.sh/run.sh split.  Both look pinned, exact `(ecosystem, package, version)` triples up against
+`data/advisories.db` via the shared `db_lookup_exact`/`sca_lookup_exact` (tension 25's frozen exact-match
+contract - no version-range arithmetic), and both emit the shared `SCA-COV-UNKNOWN_VERSION-01` roll-up
+(one per ecosystem-scan entry point, never per package) for a package the db tracks whose exact pinned
+version it does not.  `docs/DESIGN.md` §6.5's remaining ecosystems - Python
+(`requirements.txt`/`poetry.lock`/`Pipfile.lock`), Go (`go.mod`/`go.sum`), Ruby (`Gemfile.lock`), and PHP
+(`composer.lock`) - have not landed, so step 4's SCA half is still not finished.
+
 **Step 5 (DAST) has a written, dependency-ordered sub-ticket plan (`docs/STEP5-DAST-PLAN.md`), but no
 implementation ticket has started.**
 The plan breaks the ~30-script step-5 scope into tickets DAST-01 through DAST-30, ordered per this

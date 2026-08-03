@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>fixture-app</artifactId>
+  <version>1.0.0</version>
+
+  <!-- dependencyManagement only PINS a version for children that reference it;
+       it never adds an actual dependency on its own, so nothing under here may
+       ever be reported as an in-use dependency of this project. -->
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>should.not</groupId>
+        <artifactId>be-captured-managed-only</artifactId>
+        <version>9.9.9</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-collections4</artifactId>
+      <version>4.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fixture</groupId>
+      <artifactId>no-fix-lib</artifactId>
+      <version>2.0.0</version>
+    </dependency>
+    <dependency>
+      <groupId>org.fixture</groupId>
+      <artifactId>unknown-version-lib</artifactId>
+      <version>5.5.5</version>
+    </dependency>
+    <dependency>
+      <!-- computed/variable version - a known, documented gap (this module does
+           not resolve Maven property interpolation); the literal, unresolved
+           "${property.version}" string is what gets looked up, which misses
+           cleanly rather than guessing a real version. -->
+      <groupId>org.fixture</groupId>
+      <artifactId>property-version-lib</artifactId>
+      <version>${property.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fixture</groupId>
+      <artifactId>clean-lib</artifactId>
+      <version>1.0.0</version>
+      <scope>test</scope>
+      <!-- an exclusion's own groupId/artifactId sit two levels deeper than a
+           <dependency>'s direct children and must never be captured as if they
+           were their own dependency. -->
+      <exclusions>
+        <exclusion>
+          <groupId>should.not</groupId>
+          <artifactId>be-captured-exclusion</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+  </dependencies>
+</project>

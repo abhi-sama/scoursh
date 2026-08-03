@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # tests/suites/sca.sh - modules/sca/{engine.sh,run.sh}: npm lockfile parsing
-# (package-lock.json v1/v2/v3, yarn.lock, pnpm-lock.yaml), Ruby/RubyGems
-# lockfile parsing (Gemfile.lock), and the data/advisories.db exact-match
-# lookup (docs/DESIGN.md §13 step 4, docs/FOUNDATION.md tension 25).
+# (package-lock.json v1/v2/v3, yarn.lock, pnpm-lock.yaml), Python
+# requirements.txt/poetry.lock/Pipfile.lock parsing, Ruby/RubyGems lockfile
+# parsing (Gemfile.lock), Java build-manifest parsing (pom.xml,
+# build.gradle), and the data/advisories.db exact-match lookup
+# (docs/DESIGN.md §13 step 4, docs/FOUNDATION.md tension 25).
 #
 # Covers the npm ticket's acceptance criteria:
 #   - `scan_dispatch sca` no longer no-ops for a fixture repo containing an
@@ -14,7 +16,9 @@
 #   - all three lockfile parsers (package-lock.json v1 AND v2/v3, yarn.lock,
 #     pnpm-lock.yaml) extract the right (name, version, direct|transitive)
 #
-# ...and this ticket's (Ruby) own acceptance criteria:
+# ...the Python ticket's own acceptance criteria (requirements.txt,
+# poetry.lock, Pipfile.lock - see that section's own header comment below for
+# the detail) - and the Ruby ticket's own acceptance criteria:
 #   - a fixture Gemfile.lock with a known-vulnerable pinned gem reports it
 #     under SCA-RUBY-VULNERABLE_DEP-01
 #   - a mixed-case gem name normalises to lowercase before the db lookup and
@@ -28,12 +32,26 @@
 #     isolation and, in the mixed-ecosystems case below, combined with an
 #     npm-side unknown-version gem in the SAME roll-up finding
 #
+# ...and this ticket's (Java) own acceptance criteria:
+#   - a fixture pom.xml and a fixture build.gradle, each with a
+#     known-vulnerable pinned dependency, both report it under
+#     SCA-JAVA-VULNERABLE_DEP-01
+#   - pom.xml's top-level <dependencies> only - dependencyManagement,
+#     profiles, and plugin dependencies are excluded, per that parser's own
+#     header
+#   - both build.gradle declaration shapes this ticket supports
+#     (`implementation "g:a:v"` and the group:/name:/version: map form) are
+#     parsed; a version-catalog accessor or a computed/interpolated value is
+#     a stated, documented gap, not a silent miss
+#   - a Maven coordinate known to the db but at an unmatched exact version
+#     contributes to the SHARED SCA-COV-UNKNOWN_VERSION-01 roll-up
+#
 # None of this depends on a real, production-scale data/advisories.db:
 # tools/vendor-engines.sh (the only script that populates one) is never run
 # in this repo/CI (AGENTS.md), so every case here points
 # SCOURSH_SCA_ADVISORIES_DB at the small, committed
-# tests/fixtures/sca/advisories.db instead (now carrying both npm and
-# RubyGems fixture rows).
+# tests/fixtures/sca/advisories.db instead (now carrying npm, pypi,
+# RubyGems, and maven fixture rows).
 #
 # shellcheck shell=bash
 # shellcheck disable=SC2016
@@ -50,7 +68,6 @@ DB=$FIXTURES/advisories.db
 W=$SCOURSH_SCRATCH/sca-suite
 rm -rf "$W"
 mkdir -p "$W"
-
 # =============================================================================
 printf -- '\n-- name normalisation (docs/FOUNDATION.md tension 25): npm is verbatim --\n'
 # =============================================================================
@@ -391,6 +408,154 @@ assert_contains "$E2E_RUNJSON" '"sca":4' \
   'run.json by_module counts 4 live findings for sca - the fixture'"'"'s 3 distinct-version vulnerable rows plus the one roll-up'
 
 # =============================================================================
+printf -- '\n-- name normalisation (docs/FOUNDATION.md tension 25): Maven is groupId:artifactId --\n'
+# =============================================================================
+t_case 'Maven normalisation joins groupId and artifactId with a single colon'
+assert_eq 'org.apache.commons:commons-collections4' \
+  "$(sca_maven_normalize_name org.apache.commons commons-collections4)" \
+  'groupId and artifactId are joined verbatim, no case-folding (Maven coordinates are case-sensitive)'
+assert_eq 'com.fixture:no-fix-lib' "$(sca_maven_normalize_name com.fixture no-fix-lib)" \
+  'a second, differently-shaped groupId/artifactId pair normalises the same way - proves the join is not a one-off constant'
+
+# =============================================================================
+printf -- '\n-- pom.xml: top-level <dependencies> only, exclusions/dependencyManagement excluded --\n'
+# =============================================================================
+POM_OUT=$(_sca_parse_pom_xml "$FIXTURES/maven/pom.xml")
+
+t_case 'pom.xml: a top-level dependency is captured, name normalised to groupId:artifactId'
+assert_contains "$POM_OUT" $'org.apache.commons:commons-collections4\x1f4.0\x1funknown' \
+  'commons-collections4@4.0 is captured from the top-level <dependencies> block'
+
+t_case 'pom.xml: dependency_type is the literal "unknown", never guessed as direct/transitive'
+assert_not_contains "$POM_OUT" $'\x1fdirect' 'no pom.xml row is ever marked "direct"'
+assert_not_contains "$POM_OUT" $'\x1ftransitive' 'no pom.xml row is ever marked "transitive"'
+
+t_case 'pom.xml: <dependencyManagement>'"'"'s own nested <dependencies> is NOT a real dependency'
+assert_not_contains "$POM_OUT" 'be-captured-managed-only' \
+  'dependencyManagement only pins a version for a child that references it - it never adds a dependency on its own, and its <dependencies> sits one level deeper than the eligible top-level one'
+
+t_case 'pom.xml: an <exclusion>'"'"'s groupId/artifactId is never mistaken for its own <dependency>'"'"'s'
+assert_not_contains "$POM_OUT" 'be-captured-exclusion' \
+  'exclusions sit two levels deeper than a dependency'"'"'s own immediate children'
+
+t_case 'pom.xml: an unresolved Maven property version is passed through literally, not guessed'
+assert_contains "$POM_OUT" $'org.fixture:property-version-lib\x1f${property.version}\x1funknown' \
+  'the raw, un-substituted "${property.version}" string is what a lookup would use - a documented, stated gap, not a crash'
+
+# =============================================================================
+printf -- '\n-- build.gradle: both supported declaration shapes, catalog/computed versions are a documented gap --\n'
+# =============================================================================
+GRADLE_OUT=$(_sca_parse_build_gradle "$FIXTURES/gradle/build.gradle")
+
+t_case 'build.gradle: shape 1 - implementation "group:artifact:version"'
+assert_contains "$GRADLE_OUT" $'com.fasterxml.jackson.core:jackson-databind\x1f2.9.8\x1fdirect' \
+  'the quoted-string shape is parsed and normalised to groupId:artifactId'
+
+t_case 'build.gradle: shape 2 - implementation group: '"'"'g'"'"', name: '"'"'a'"'"', version: '"'"'v'"'"''
+assert_contains "$GRADLE_OUT" $'org.yaml:snakeyaml\x1f1.26\x1fdirect' \
+  'the map-argument shape is parsed and normalised to groupId:artifactId'
+
+t_case 'build.gradle: every captured row is "direct" - build.gradle carries no transitive graph at all'
+assert_not_contains "$GRADLE_OUT" $'\x1funknown' 'gradle rows are never "unknown"'
+assert_not_contains "$GRADLE_OUT" $'\x1ftransitive' 'gradle rows are never "transitive"'
+
+t_case 'build.gradle: a version-catalog accessor is a documented gap, silently skipped'
+assert_not_contains "$GRADLE_OUT" 'someCatalogEntry' \
+  'implementation(libs.someCatalogEntry) matches neither supported shape and is not mis-parsed as a dependency'
+
+t_case 'build.gradle: a computed/interpolated version is a documented gap, silently skipped'
+assert_not_contains "$GRADLE_OUT" 'another-lib' \
+  'implementation "org.yaml:another-lib:$snakeVersion" is detected as $-bearing and discarded rather than treated as a literal version'
+
+# =============================================================================
+printf -- '\n-- sca_scan_java_tree: pom.xml fixture against the fixture db --\n'
+# =============================================================================
+RUNDIR_MVN=$W/run-maven
+rm -rf "$RUNDIR_MVN"
+run_init "$RUNDIR_MVN"
+SCOURSH_PATH_ROOT=$(path_root_cell "$FIXTURES/maven")
+SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$FIXTURES/maven")
+export SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+export SCOURSH_SCA_ADVISORIES_DB=$DB
+
+sca_scan_java_tree "$FIXTURES/maven"
+findings_merge "$RUNDIR_MVN"
+MVN_FINDINGS=$(_sca_findings "$RUNDIR_MVN")
+
+t_case 'AC: a fixture pom.xml with a known-vulnerable pinned dependency returns SCA-JAVA-VULNERABLE_DEP-01'
+assert_contains "$MVN_FINDINGS" 'SCA-JAVA-VULNERABLE_DEP-01' \
+  'at least one SCA-JAVA-VULNERABLE_DEP-01 finding was emitted for the fixture pom.xml'
+assert_contains "$MVN_FINDINGS" 'SCA-FIXTURE-ADVISORY-006' \
+  'the finding references the fixture advisories table'"'"'s own advisory id (commons-collections4@4.0)'
+
+t_case 'AC: a pom.xml dependency with no fixed version is flagged accept-risk, not silently dropped'
+assert_contains "$MVN_FINDINGS" 'accept_risk_candidate: true' \
+  'com.fixture:no-fix-lib@2.0.0 (SCA-FIXTURE-ADVISORY-007, empty fixed_versions) is flagged accept_risk_candidate: true'
+assert_contains "$MVN_FINDINGS" 'accept_risk_candidate: false' \
+  'commons-collections4@4.0 (a fixed version IS published) is not flagged accept-risk'
+
+t_case 'AC: pom.xml dependencies are marked "unknown", never guessed as direct/transitive'
+assert_contains "$MVN_FINDINGS" 'dependency_type: unknown' \
+  'every pom.xml-derived finding carries dependency_type: unknown'
+assert_not_contains "$MVN_FINDINGS" 'dependency_type: direct' 'no pom.xml finding is ever marked direct'
+assert_not_contains "$MVN_FINDINGS" 'dependency_type: transitive' 'no pom.xml finding is ever marked transitive'
+
+t_case 'AC: an unresolvable pinned version contributes to the shared SCA-COV-UNKNOWN_VERSION-01 roll-up'
+assert_contains "$MVN_FINDINGS" 'SCA-COV-UNKNOWN_VERSION-01' \
+  'org.fixture:unknown-version-lib@5.5.5 (package known at a different version, 1.0.0) triggers the roll-up'
+assert_contains "$MVN_FINDINGS" 'by ecosystem: maven: 1' \
+  'the roll-up breaks down by ecosystem - maven: 1 for this run'
+
+t_case 'a package the fixture db never mentions at all does not appear in the roll-up or as a finding'
+assert_not_contains "$MVN_FINDINGS" 'property-version-lib' \
+  'org.fixture:property-version-lib is not in the fixture db at any version - sca_package_known is false, so it contributes nothing (not even to the roll-up)'
+assert_not_contains "$MVN_FINDINGS" 'clean-lib' \
+  'com.fixture:clean-lib is not in the fixture db at any version'
+
+t_case 'run.json: checks_run records SCA-JAVA-VULNERABLE_DEP-01 and the roll-up check'
+assert_contains "$(cat "$RUNDIR_MVN/meta/checks_run" 2>/dev/null)" 'SCA-JAVA-VULNERABLE_DEP-01' \
+  'SCA-JAVA-VULNERABLE_DEP-01 is recorded as run'
+assert_contains "$(cat "$RUNDIR_MVN/meta/checks_run" 2>/dev/null)" 'SCA-COV-UNKNOWN_VERSION-01' \
+  'SCA-COV-UNKNOWN_VERSION-01 is recorded as run (the roll-up fired this run)'
+
+unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+
+# =============================================================================
+printf -- '\n-- sca_scan_java_tree: build.gradle fixture, both declaration shapes --\n'
+# =============================================================================
+RUNDIR_GRADLE=$W/run-gradle
+rm -rf "$RUNDIR_GRADLE"
+run_init "$RUNDIR_GRADLE"
+SCOURSH_PATH_ROOT=$(path_root_cell "$FIXTURES/gradle")
+SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$FIXTURES/gradle")
+export SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+export SCOURSH_SCA_ADVISORIES_DB=$DB
+
+sca_scan_java_tree "$FIXTURES/gradle"
+findings_merge "$RUNDIR_GRADLE"
+GRADLE_FINDINGS=$(_sca_findings "$RUNDIR_GRADLE")
+
+t_case 'AC: a fixture build.gradle with both supported shapes returns matching findings'
+assert_contains "$GRADLE_FINDINGS" 'SCA-FIXTURE-ADVISORY-009' \
+  'shape 1 (implementation "group:artifact:version") matches jackson-databind@2.9.8'
+assert_contains "$GRADLE_FINDINGS" 'SCA-FIXTURE-ADVISORY-010' \
+  'shape 2 (implementation group:/name:/version:) matches org.yaml:snakeyaml@1.26'
+
+t_case 'AC: a build.gradle dependency with no fixed version is flagged accept-risk, not silently dropped'
+assert_contains "$GRADLE_FINDINGS" 'accept_risk_candidate: true' \
+  'com.fixture:no-fix-gradle-lib@3.0.0 has no fixed version published'
+assert_contains "$GRADLE_FINDINGS" 'accept_risk_candidate: false' \
+  'jackson-databind@2.9.8 (a fixed version IS published) is not flagged accept-risk'
+
+t_case 'build.gradle findings are always "direct" - build.gradle carries no transitive graph'
+assert_contains "$GRADLE_FINDINGS" 'dependency_type: direct' 'every build.gradle finding is direct'
+assert_not_contains "$GRADLE_FINDINGS" 'dependency_type: unknown' 'never "unknown" for build.gradle'
+assert_not_contains "$GRADLE_FINDINGS" 'dependency_type: transitive' 'never "transitive" for build.gradle'
+
+t_case 'a build.gradle dependency absent from the fixture db is silently absent, not a finding'
+assert_not_contains "$GRADLE_FINDINGS" 'clean-gradle-lib' 'com.fixture:clean-gradle-lib is not in the fixture db'
+
+# =============================================================================
 # Python: requirements.txt, poetry.lock, Pipfile.lock (docs/DESIGN.md §13
 # step 4's Python slice, docs/FOUNDATION.md tension 25).
 #
@@ -563,6 +728,31 @@ assert_contains "$E2E_RUBY_RUNJSON" '"SCA-RUBY-VULNERABLE_DEP-01"' \
   'checks_run in run.json shows the check actually executed through the real scan.sh entry point (scan_dispatch sca), not just when the module is sourced standalone'
 assert_contains "$E2E_RUBY_RUNJSON" '"sca":4' \
   'run.json by_module counts 4 live findings for sca - the ruby fixture'"'"'s 3 vulnerable gems plus the one roll-up'
+
+# =============================================================================
+printf -- '\n-- end-to-end: a real scan.sh subprocess against the pom.xml and build.gradle fixtures --\n'
+# =============================================================================
+t_case 'scan.sh sca --path against the pom.xml fixture exits 0 and reports via SCA-JAVA-VULNERABLE_DEP-01'
+E2E_MVN_RUNDIR=$W/run-e2e-maven
+rm -rf "$E2E_MVN_RUNDIR"
+assert_status 0 'a real subprocess against the maven fixture, with the fixture db, exits clean' \
+  env SCOURSH_SCA_ADVISORIES_DB="$DB" bash "$ROOT/scan.sh" sca --path "$FIXTURES/maven" --out "$E2E_MVN_RUNDIR"
+E2E_MVN_RUNJSON=$(cat "$E2E_MVN_RUNDIR/run.json" 2>/dev/null)
+assert_contains "$E2E_MVN_RUNJSON" '"SCA-JAVA-VULNERABLE_DEP-01"' \
+  'checks_run in run.json shows the check actually executed through the real scan.sh entry point (scan_dispatch sca), not just when the module is sourced standalone'
+assert_contains "$E2E_MVN_RUNJSON" '"sca":3' \
+  'run.json by_module counts 3 live findings for sca - 2 vulnerable pom.xml dependencies plus the one roll-up'
+
+t_case 'scan.sh sca --path against the build.gradle fixture exits 0 and reports via SCA-JAVA-VULNERABLE_DEP-01'
+E2E_GRADLE_RUNDIR=$W/run-e2e-gradle
+rm -rf "$E2E_GRADLE_RUNDIR"
+assert_status 0 'a real subprocess against the gradle fixture, with the fixture db, exits clean' \
+  env SCOURSH_SCA_ADVISORIES_DB="$DB" bash "$ROOT/scan.sh" sca --path "$FIXTURES/gradle" --out "$E2E_GRADLE_RUNDIR"
+E2E_GRADLE_RUNJSON=$(cat "$E2E_GRADLE_RUNDIR/run.json" 2>/dev/null)
+assert_contains "$E2E_GRADLE_RUNJSON" '"SCA-JAVA-VULNERABLE_DEP-01"' \
+  'checks_run in run.json shows the check actually executed through the real scan.sh entry point'
+assert_contains "$E2E_GRADLE_RUNJSON" '"sca":3' \
+  'run.json by_module counts 3 live findings for sca - both supported shapes'"'"' vulnerable dependencies plus no-fix-gradle-lib'
 
 t_summary 'sca' || FAILED=1
 exit "${FAILED:-0}"

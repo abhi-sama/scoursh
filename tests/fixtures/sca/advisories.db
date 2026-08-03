@@ -6,6 +6,12 @@ RubyGems	mini_portile2	2.9.0	SCA-FIXTURE-RUBY-004	low	2.9.1	fixture: known packa
 RubyGems	puma	5.6.4	SCA-FIXTURE-RUBY-002	critical		fixture: no fixed version published yet
 RubyGems	rack	2.2.3	SCA-FIXTURE-RUBY-003	medium	2.2.4	fixture: transitive dependency vulnerability
 RubyGems	railsaddon	2.0.0	SCA-FIXTURE-RUBY-001	high	2.0.1	fixture: mixed-case gem name normalizes before lookup
+maven	com.fasterxml.jackson.core:jackson-databind	2.9.8	SCA-FIXTURE-ADVISORY-009	critical	2.9.10.4	fixture: polymorphic deserialization RCE
+maven	com.fixture:no-fix-gradle-lib	3.0.0	SCA-FIXTURE-ADVISORY-011	critical		fixture: no fixed version published yet (gradle)
+maven	com.fixture:no-fix-lib	2.0.0	SCA-FIXTURE-ADVISORY-007	critical		fixture: no fixed version published yet
+maven	org.apache.commons:commons-collections4	4.0	SCA-FIXTURE-ADVISORY-006	high	4.4	fixture: unsafe deserialization gadget chain
+maven	org.fixture:unknown-version-lib	1.0.0	SCA-FIXTURE-ADVISORY-008	medium	1.1.0	fixture: known package, different pinned version than what the fixture pom.xml declares
+maven	org.yaml:snakeyaml	1.26	SCA-FIXTURE-ADVISORY-010	high	1.31	fixture: unsafe Constructor deserialization
 npm	@scope/pkg	1.0.0	SCA-FIXTURE-ADVISORY-001	high	1.0.1	fixture: prototype pollution
 npm	left-pad	1.3.0	SCA-FIXTURE-ADVISORY-004	critical		fixture: no fixed version published yet
 npm	lodash	4.17.15	SCA-FIXTURE-ADVISORY-002	high	4.17.21	fixture: prototype pollution
