@@ -65,6 +65,17 @@ There is no raw-URL flag that bypasses this: `--target` only ever takes a name, 
 The gate matches on the normalized `(scheme, host, port)` tuple from the target's `base-url`, plus any `extra-host` entries.
 Path is **not** part of the gate - it only bounds what the crawler will fetch, it is not a safety boundary.
 
+### `--paranoid` - the connection observer (a detector, not a guarantee)
+
+`--paranoid` builds a run-scoped allowlist from exactly four sets (`docs/FOUNDATION.md` tension 20): every in-scope target address `lib/http.sh` actually resolves this run, resolved AWS endpoint addresses for regions actually iterated (empty, with a stated reason, until `modules/cloud/aws/regions.sh` lands), the host's own `/etc/resolv.conf` nameservers on port 53 plus loopback on any port, and `config/scanner.conf`'s `paranoid_allow` entries.
+It then samples this run's own connections (`ss`, or a measured-usable `strace -f -e trace=connect` fallback) and aborts with exit `3` on the first destination it observes outside that allowlist.
+If neither `ss` nor a usable `strace` exists on the host, the run refuses with exit `4` rather than pretending to be watching.
+
+**Read this plainly: it is a detector, not a guarantee.**
+Sampling can miss a connection that opens and closes between two polls.
+`tools/run-in-netns.sh` (not yet built - see `docs/STEP8-PARANOID-PLAN.md`) is the actual guarantee: a network namespace whose only route is the declared scope makes an out-of-scope connection categorically impossible rather than merely observable.
+Every `--paranoid` run states this same limitation in its own `run.json` (`coverage_gap`), so the report never overstates what the flag proved.
+
 ## Configuration
 
 Both config files use the same on-disk record format: blank-line-separated `key: value` blocks, one `#`-prefixed comment per line, no escaping in values.
@@ -115,7 +126,8 @@ The environment variable for key `foo-bar` is `SCOURSH_CONFIG_FOO_BAR`.
 
 **Implementation note:** as of this build (`docs/DESIGN.md` §13 step 2), `scan.sh` only actually reads and exports four of these keys at run time - `jobs`, `fail-on`, `min-confidence`, and `redact-secrets`.
 `formats` is parsed and validated but its resolved value is currently discarded (no format-specific writer is wired in yet).
-The remaining keys (`requests-per-second`, `http-timeout`, `max-redirects`, `request-budget`, the circuit-breaker pair, `max-matches-per-file`, `evidence-max-bytes`, `scratch-dir`, the state/history/lock/mutex settings, `paranoid-allow`) are schema-checked structurally when the file loads (unknown keys and cardinality errors are caught) but their *value* shape (e.g. "must be a positive integer") is only enforced once a future module actually calls for that key - they take effect as `lib/http.sh`'s rate limiter, circuit breaker, and `--paranoid` enforcement land (`docs/DESIGN.md` §13 steps 5 and 8).
+`paranoid-allow` is now read and enforced by `--paranoid` (`lib/paranoid.sh`, `docs/DESIGN.md` §13 step 8) - see "`--paranoid` - the connection observer" above.
+The remaining keys (`requests-per-second`, `http-timeout`, `max-redirects`, `request-budget`, the circuit-breaker pair, `max-matches-per-file`, `evidence-max-bytes`, `scratch-dir`, the state/history/lock/mutex settings) are schema-checked structurally when the file loads (unknown keys and cardinality errors are caught) but their *value* shape (e.g. "must be a positive integer") is only enforced once a future module actually calls for that key - they take effect as `lib/http.sh`'s rate limiter and circuit breaker land (`docs/DESIGN.md` §13 step 5).
 Setting them today is safe but has no observable effect yet.
 
 ## Scan profiles and intensity
@@ -184,7 +196,7 @@ respectively.
 This means a scan run today validates flags, config, and (for `dast`) the scope gate correctly for every
 subcommand, and always produces a `run.json`; for `sast`, `iac`, and `sca` it also produces real
 findings in `findings.jsonl`, while `dast` and `cloud` still produce none.
-`--paranoid` is accepted and validated but has no enforcement yet (`docs/DESIGN.md` §13 step 8); `--baseline` is accepted but not yet consulted (suppression logic lands with `state/` at step 7).
+`--paranoid` is now fully enforced (`lib/paranoid.sh`, `docs/DESIGN.md` §13 step 8 - see "`--paranoid` - the connection observer" above); `--baseline` is accepted but not yet consulted (suppression logic lands with `state/` at step 7).
 
 ### Known gaps
 
