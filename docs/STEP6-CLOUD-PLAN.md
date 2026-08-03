@@ -130,18 +130,18 @@ against the AC's estimate.
 
 | # | Ticket | AWS CLI service | Notes |
 |---|---|---|---|
-| CLOUD-05 | `aws/live/s3.sh` | `s3` / `s3api` | Public ACL/policy, no default encryption, block-public-access off, no versioning/logging, `get` open to all principals. Bucket listing is a global call; per-bucket checks still cite the bucket's actual region. |
-| CLOUD-06 | `aws/live/iam.sh` | `iam` | Root MFA, root access keys, `*:*` policies, wildcard/`*` trust policies, cross-account trust without `ExternalId`, unused/old keys & roles, no password policy, no permission boundaries, IAM Access Analyzer findings, inline-vs-managed sprawl. Global service; findings carry `region: global`. |
-| CLOUD-07 | `aws/live/kms.sh` | `kms` | Key rotation off, overly-permissive key policies. |
-| CLOUD-08 | `aws/live/secretsmanager.sh` | `secretsmanager` | Secrets without rotation, over-broad resource policies. |
-| CLOUD-09 | `aws/live/ssm.sh` | `ssm` | `String` parameters where `SecureString` is expected, over-broad resource policies. |
-| CLOUD-10 | `aws/live/acm.sh` | `acm` | Certificate nearing expiry. |
-| CLOUD-11 | `aws/live/route53.sh` | `route53` | Dangling DNS records (subdomain-takeover risk). Global service; `region: global`. |
-| CLOUD-12 | `aws/live/backup.sh` | `backup` | No backup plan covering a critical resource (cross-references findings from CLOUD-05/13/14). |
+| CLOUD-05 | `aws/live/s3.sh` | `s3` / `s3api` | Public ACL/policy, no default encryption, block-public-access off, no versioning/logging, `get` open to all principals. Bucket listing is a global call; per-bucket checks still cite the bucket's actual region. Findings must cite ARN, region, account id, CIS control id. |
+| CLOUD-06 | `aws/live/iam.sh` | `iam` | Root MFA, root access keys, `*:*` policies, wildcard/`*` trust policies, cross-account trust without `ExternalId`, unused/old keys & roles, no password policy, no permission boundaries, IAM Access Analyzer findings, inline-vs-managed sprawl. Global service; findings carry `region: global`. Findings must cite ARN, region, account id, CIS control id. |
+| CLOUD-07 | `aws/live/kms.sh` | `kms` | Key rotation off, overly-permissive key policies. Findings must cite ARN, region, account id, CIS control id. |
+| CLOUD-08 | `aws/live/secretsmanager.sh` | `secretsmanager` | Secrets without rotation, over-broad resource policies. Findings must cite ARN, region, account id, CIS control id. |
+| CLOUD-09 | `aws/live/ssm.sh` | `ssm` | `String` parameters where `SecureString` is expected, over-broad resource policies. Findings must cite ARN, region, account id, CIS control id. |
+| CLOUD-10 | `aws/live/acm.sh` | `acm` | Certificate nearing expiry. Findings must cite ARN, region, account id, CIS control id. |
+| CLOUD-11 | `aws/live/route53.sh` | `route53` | Dangling DNS records (subdomain-takeover risk). Global service; `region: global`. Findings must cite ARN, region, account id, CIS control id. |
+| CLOUD-12 | `aws/live/backup.sh` | `backup` | No backup plan covering a critical resource (cross-references findings from CLOUD-05/13/14). Findings must cite ARN, region, account id, CIS control id. |
 
-Every ticket in every tier below carries the same requirement this table's first row states in full so
-it is not repeated 23 more times: **findings must cite the resource ARN, region, account id, and CIS
-control id**, per `docs/DESIGN.md` §8.1's closing sentence ("Every finding cites the resource ARN,
+Every per-service ticket above and below states the same requirement inline in its own Notes column so a
+reviewer never has to chase a cross-reference: **findings must cite the resource ARN, region, account id,
+and CIS control id**, per `docs/DESIGN.md` §8.1's closing sentence ("Every finding cites the resource ARN,
 region/account, and the CIS control id"). `lib/findings.sh` already ships the `cloud` location schema
 (`account_id`, `region`, `resource_key`, `sub_key`, shipped step 1) that `resource_key` is meant to hold
 the ARN in; the `cis` field is an existing optional/repeatable field on every finding record
