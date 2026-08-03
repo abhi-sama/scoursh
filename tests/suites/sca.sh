@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# tests/suites/sca.sh - modules/sca/{engine.sh,run.sh}: npm lockfile parsing
-# (package-lock.json v1/v2/v3, yarn.lock, pnpm-lock.yaml), Python
-# requirements.txt/poetry.lock/Pipfile.lock parsing, Ruby/RubyGems lockfile
-# parsing (Gemfile.lock), Java build-manifest parsing (pom.xml,
-# build.gradle), and the data/advisories.db exact-match lookup
-# (docs/DESIGN.md §13 step 4, docs/FOUNDATION.md tension 25).
+# tests/suites/sca.sh - modules/sca/{engine.sh,php_engine.sh,run.sh}: npm
+# lockfile parsing (package-lock.json v1/v2/v3, yarn.lock, pnpm-lock.yaml),
+# Python requirements.txt/poetry.lock/Pipfile.lock parsing, Ruby/RubyGems
+# lockfile parsing (Gemfile.lock), Java build-manifest parsing (pom.xml,
+# build.gradle), PHP/Composer lockfile parsing (composer.lock,
+# cross-referenced against composer.json), and the data/advisories.db
+# exact-match lookup shared across ecosystems (docs/DESIGN.md §13 step 4,
+# docs/FOUNDATION.md tension 25).
 #
 # Covers the npm ticket's acceptance criteria:
 #   - `scan_dispatch sca` no longer no-ops for a fixture repo containing an
@@ -32,7 +34,7 @@
 #     isolation and, in the mixed-ecosystems case below, combined with an
 #     npm-side unknown-version gem in the SAME roll-up finding
 #
-# ...and this ticket's (Java) own acceptance criteria:
+# ...the Java ticket's own acceptance criteria:
 #   - a fixture pom.xml and a fixture build.gradle, each with a
 #     known-vulnerable pinned dependency, both report it under
 #     SCA-JAVA-VULNERABLE_DEP-01
@@ -46,12 +48,24 @@
 #   - a Maven coordinate known to the db but at an unmatched exact version
 #     contributes to the SHARED SCA-COV-UNKNOWN_VERSION-01 roll-up
 #
+# ...and this ticket's (PHP/Composer) own acceptance criteria:
+#   - a known-vulnerable pinned package from a fixture composer.lock is
+#     reported via `scan_dispatch sca`, tagged SCA-PHP-VULNERABLE_DEP-01
+#   - a mixed-case package name is normalised to lowercase before lookup
+#   - direct-vs-transitive is reported per package when a fixture
+#     composer.json is present, and "unknown" when it is absent
+#   - a pinned package with no fixed version in advisories.db is accept-risk,
+#     not dropped
+#   - an unresolved/unknown-version composer package contributes to the
+#     SAME shared SCA-COV-UNKNOWN_VERSION-01 roll-up npm contributes to -
+#     never a second, composer-only roll-up finding in the same run
+#
 # None of this depends on a real, production-scale data/advisories.db:
 # tools/vendor-engines.sh (the only script that populates one) is never run
 # in this repo/CI (AGENTS.md), so every case here points
 # SCOURSH_SCA_ADVISORIES_DB at the small, committed
 # tests/fixtures/sca/advisories.db instead (now carrying npm, pypi,
-# RubyGems, and maven fixture rows).
+# RubyGems, composer, and maven fixture rows).
 #
 # shellcheck shell=bash
 # shellcheck disable=SC2016
@@ -60,6 +74,11 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # shellcheck source=modules/sca/engine.sh
 source "$ROOT/modules/sca/engine.sh"
+# Sourced explicitly too, even though engine.sh already pulls this in
+# (guarded, see both files' own headers) - self-documenting about which
+# ecosystems this suite covers, same convention modules/sca/run.sh uses.
+# shellcheck source=modules/sca/php_engine.sh
+source "$ROOT/modules/sca/php_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
 
@@ -753,6 +772,184 @@ assert_contains "$E2E_GRADLE_RUNJSON" '"SCA-JAVA-VULNERABLE_DEP-01"' \
   'checks_run in run.json shows the check actually executed through the real scan.sh entry point'
 assert_contains "$E2E_GRADLE_RUNJSON" '"sca":3' \
   'run.json by_module counts 3 live findings for sca - both supported shapes'"'"' vulnerable dependencies plus no-fix-gradle-lib'
+
+# =============================================================================
+printf -- '\n-- name normalisation (docs/FOUNDATION.md tension 25): Composer is lowercase --\n'
+# =============================================================================
+t_case 'composer normalisation lowercases, unlike npm'"'"'s identity function'
+assert_eq 'acme/widget' "$(sca_composer_normalize_name 'acme/widget')" 'an already-lowercase name is unchanged'
+assert_eq 'acme/mixedcase' "$(sca_composer_normalize_name 'Acme/MixedCase')" \
+  'AC: a mixed-case package name normalises to lowercase - fails if normalisation were the npm-style identity function instead'
+
+# =============================================================================
+printf -- '\n-- composer.json: require/require-dev cross-reference --\n'
+# =============================================================================
+t_case 'sca_composer_direct_deps reads the sibling composer.json'"'"'s require AND require-dev'
+COMPOSER_DIRECT=$(sca_composer_direct_deps "$FIXTURES/composer")
+assert_contains "$COMPOSER_DIRECT" 'acme/widget' 'acme/widget is declared in composer.json'"'"'s require'
+assert_contains "$COMPOSER_DIRECT" 'acme/mixedcase' 'the require key is already-lowercase acme/mixedcase'
+assert_contains "$COMPOSER_DIRECT" 'acme/dev-tool' 'acme/dev-tool is declared in composer.json'"'"'s require-dev'
+assert_contains "$COMPOSER_DIRECT" 'php' 'a platform entry (php) is read too - it simply never matches anything in composer.lock'"'"'s own packages array'
+
+t_case 'sca_composer_direct_deps prints nothing (not an error) when composer.json is absent'
+assert_eq '' "$(sca_composer_direct_deps "$FIXTURES/composer-no-manifest")" \
+  'no composer.json sibling in the no-manifest fixture directory'
+
+# =============================================================================
+printf -- '\n-- composer.lock: name/version/direct-transitive-unknown --\n'
+# =============================================================================
+COMPOSER_OUT=$(sca_parse_composer_lock "$FIXTURES/composer/composer.lock")
+t_case 'composer.lock: a package required directly in composer.json is direct'
+assert_contains "$COMPOSER_OUT" $'acme/widget\x1f1.2.3\x1fdirect' \
+  'acme/widget is in composer.json'"'"'s require'
+assert_contains "$COMPOSER_OUT" $'acme/dev-tool\x1f2.5.0\x1fdirect' \
+  'acme/dev-tool sits in packages-dev and is in composer.json'"'"'s require-dev - direct, not "unknown" or mis-tagged from the dev split'
+
+t_case 'composer.lock: a package present but never required directly is transitive'
+assert_contains "$COMPOSER_OUT" $'acme/widget-support\x1f0.9.0\x1ftransitive' \
+  'acme/widget-support is in the packages array but not in composer.json at all'
+assert_contains "$COMPOSER_OUT" $'acme/legacy-lib\x1f0.1.0\x1ftransitive' \
+  'acme/legacy-lib is resolved-in but not directly required'
+
+t_case 'AC: direct/transitive classification is normalisation-aware even though the emitted name stays raw/verbatim'
+assert_contains "$COMPOSER_OUT" $'Acme/MixedCase\x1f3.0.0\x1fdirect' \
+  'composer.json requires the lowercase "acme/mixedcase"; composer.lock spells the same package "Acme/MixedCase" - the RAW (unnormalised) name is preserved in the row, but classified direct because the comparison itself normalises both sides first'
+
+t_case 'AC: with no sibling composer.json, every package is honestly "unknown", never guessed'
+COMPOSER_UNKNOWN_OUT=$(sca_parse_composer_lock "$FIXTURES/composer-no-manifest/composer.lock")
+assert_contains "$COMPOSER_UNKNOWN_OUT" $'acme/widget\x1f1.2.3\x1funknown' \
+  'acme/widget would be direct under the composer/ fixture (which HAS a composer.json) - here, with no composer.json at all, it must be "unknown", not silently defaulted to direct or transitive'
+assert_not_contains "$COMPOSER_UNKNOWN_OUT" 'direct' \
+  'no row in the no-manifest fixture output is ever tagged direct'
+assert_not_contains "$COMPOSER_UNKNOWN_OUT" 'transitive' \
+  'no row in the no-manifest fixture output is ever tagged transitive either - "unknown" is the ONLY status possible with no composer.json'
+
+# =============================================================================
+printf -- '\n-- sca_scan_tree: full composer.lock fixture against the fixture db --\n'
+# =============================================================================
+RUNDIR3=$W/run-composer
+rm -rf "$RUNDIR3"
+run_init "$RUNDIR3"
+SCOURSH_PATH_ROOT=$(path_root_cell "$FIXTURES/composer")
+SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$FIXTURES/composer")
+export SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+export SCOURSH_SCA_ADVISORIES_DB=$DB
+
+sca_scan_tree "$FIXTURES/composer"
+findings_merge "$RUNDIR3"
+COMPOSER_FINDINGS=$(_sca_findings "$RUNDIR3")
+
+t_case 'AC: a known-vulnerable pinned package from composer.lock is reported, tagged SCA-PHP-VULNERABLE_DEP-01'
+assert_contains "$COMPOSER_FINDINGS" 'SCA-PHP-VULNERABLE_DEP-01' \
+  'at least one SCA-PHP-VULNERABLE_DEP-01 finding was emitted for the fixture repo - fails if the check id were left as the shared npm one'
+assert_contains "$COMPOSER_FINDINGS" 'acme/widget@1.2.3 is vulnerable (SCA-FIXTURE-ADVISORY-101)' \
+  'the pinned acme/widget@1.2.3 row matches the fixture db exactly'
+
+t_case 'AC: the mixed-case package is matched too - proves normalisation happens before the lookup, not just before classification'
+assert_contains "$COMPOSER_FINDINGS" 'acme/mixedcase@3.0.0 is vulnerable (SCA-FIXTURE-ADVISORY-102)' \
+  'db row is stored lowercase (acme/mixedcase); composer.lock spelled it Acme/MixedCase - a miss here means normalisation was skipped before sca_lookup_exact'
+
+t_case 'AC: direct vs transitive is distinguished in the composer finding evidence too'
+assert_contains "$COMPOSER_FINDINGS" 'dependency_type: direct' 'acme/widget and acme/mixedcase are both direct'
+assert_contains "$COMPOSER_FINDINGS" 'dependency_type: transitive' 'acme/legacy-lib is transitive'
+
+t_case 'AC: a pinned package with no fixed version in advisories.db is accept-risk, not dropped'
+assert_contains "$COMPOSER_FINDINGS" 'acme/legacy-lib@0.1.0 is vulnerable (SCA-FIXTURE-ADVISORY-103)' \
+  'the no-fixed-version package still produced a finding - "dropping it" would mean this line is simply absent'
+assert_contains "$COMPOSER_FINDINGS" 'accept_risk_candidate: true' \
+  'acme/legacy-lib (empty fixed_versions in the fixture db) is flagged accept_risk_candidate: true'
+
+t_case 'AC: an unresolved/unknown-version composer package contributes to the SHARED roll-up, not a second one'
+_COMPOSER_ROLLUP_COUNT=$(printf '%s\n' "$COMPOSER_FINDINGS" | grep -c '^SCA-COV-UNKNOWN_VERSION-01' || true)
+assert_eq 1 "$_COMPOSER_ROLLUP_COUNT" \
+  'exactly one roll-up finding for this run - not one for npm-shaped code and a second, composer-only one'
+assert_contains "$COMPOSER_FINDINGS" 'by ecosystem: composer: 1' \
+  'acme/unknown-version-pkg@9.9.9 (package known at some other version, exact pin unmatched) is the sole contributor here'
+
+t_case 'a composer package with NO advisories.db rows at all does not appear in the roll-up or as a finding'
+assert_not_contains "$COMPOSER_FINDINGS" 'untracked-pkg' \
+  'acme/untracked-pkg has no db rows whatsoever - absence is silent, not an unknown-version count'
+assert_not_contains "$COMPOSER_FINDINGS" 'widget-support' \
+  'acme/widget-support also has no db rows - transitive-but-clean, no finding of any kind'
+
+t_case 'run.json: checks_run records SCA-PHP-VULNERABLE_DEP-01'
+assert_contains "$(cat "$RUNDIR3/meta/checks_run" 2>/dev/null)" 'SCA-PHP-VULNERABLE_DEP-01' \
+  'SCA-PHP-VULNERABLE_DEP-01 is recorded as run for a repo containing a composer.lock'
+
+unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+
+# =============================================================================
+printf -- '\n-- sca_scan_tree: composer.lock with NO sibling composer.json --\n'
+# =============================================================================
+RUNDIR4=$W/run-composer-no-manifest
+rm -rf "$RUNDIR4"
+run_init "$RUNDIR4"
+SCOURSH_PATH_ROOT=$(path_root_cell "$FIXTURES/composer-no-manifest")
+SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$FIXTURES/composer-no-manifest")
+export SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+export SCOURSH_SCA_ADVISORIES_DB=$DB
+
+sca_scan_tree "$FIXTURES/composer-no-manifest"
+findings_merge "$RUNDIR4"
+NO_MANIFEST_FINDINGS=$(_sca_findings "$RUNDIR4")
+
+t_case 'AC: direct/transitive status is honestly "unknown" end-to-end when composer.json is absent'
+assert_contains "$NO_MANIFEST_FINDINGS" 'SCA-PHP-VULNERABLE_DEP-01' \
+  'the vulnerable pinned package is still reported - "unknown" status does not suppress the finding'
+assert_contains "$NO_MANIFEST_FINDINGS" 'dependency_type: unknown' \
+  'with no composer.json sibling, dependency_type is unknown, not defaulted to direct or transitive'
+assert_not_contains "$NO_MANIFEST_FINDINGS" 'dependency_type: direct' \
+  'never guessed as direct with no composer.json present'
+assert_not_contains "$NO_MANIFEST_FINDINGS" 'dependency_type: transitive' \
+  'never guessed as transitive with no composer.json present either'
+
+unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+
+# =============================================================================
+printf -- '\n-- sca_scan_tree: npm AND composer in the SAME repo - one shared roll-up, not two --\n'
+# =============================================================================
+# tests/fixtures/sca/mixed-ecosystems-php/ is a SEPARATE fixture directory
+# from tests/fixtures/sca/mixed-ecosystems/ (the npm+Ruby pairing tested
+# above): both a package-lock.json and a composer.lock landing in the SAME
+# mixed-ecosystems/ directory as the npm+Ruby case's own Gemfile.lock would
+# make that earlier case's assertions (exactly 2 pinned/npm:1/RubyGems:1)
+# false the moment a third ecosystem's unknown-version count joined the same
+# roll-up - so this ticket's own npm+composer pairing gets its own directory
+# instead of silently widening the npm+Ruby fixture's scope.
+RUNDIR5=$W/run-mixed-ecosystems-php
+rm -rf "$RUNDIR5"
+run_init "$RUNDIR5"
+SCOURSH_PATH_ROOT=$(path_root_cell "$FIXTURES/mixed-ecosystems-php")
+SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$FIXTURES/mixed-ecosystems-php")
+export SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+export SCOURSH_SCA_ADVISORIES_DB=$DB
+
+sca_scan_tree "$FIXTURES/mixed-ecosystems-php"
+findings_merge "$RUNDIR5"
+MIXED_FINDINGS=$(_sca_findings "$RUNDIR5")
+
+t_case 'AC: an unknown-version case from EACH ecosystem in one run still produces exactly one roll-up finding'
+_MIXED_ROLLUP_COUNT=$(printf '%s\n' "$MIXED_FINDINGS" | grep -c '^SCA-COV-UNKNOWN_VERSION-01' || true)
+assert_eq 1 "$_MIXED_ROLLUP_COUNT" \
+  'the fixture has an npm lockfile (lodash@4.17.99, unmatched) AND a composer.lock (acme/unknown-version-pkg@9.9.9, unmatched) - this must still be ONE finding, not one per ecosystem, which is exactly the failure mode a naive per-ecosystem sca_scan_tree split would reintroduce'
+assert_contains "$MIXED_FINDINGS" 'by ecosystem: composer: 1, npm: 1' \
+  'the single roll-up'"'"'s evidence breaks the count down by ecosystem, LC_ALL=C sorted (composer before npm) - proves both ecosystems fed the SAME finding rather than each producing its own'
+
+unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+
+# =============================================================================
+printf -- '\n-- end-to-end: a real scan.sh subprocess against a composer.lock fixture --\n'
+# =============================================================================
+t_case 'scan.sh sca --path against the composer fixture exits 0 and reports the vulnerable dependency'
+E2E_COMPOSER_RUNDIR=$W/run-e2e-composer
+rm -rf "$E2E_COMPOSER_RUNDIR"
+assert_status 0 'a real subprocess against the composer fixture, with the fixture db, exits clean' \
+  env SCOURSH_SCA_ADVISORIES_DB="$DB" bash "$ROOT/scan.sh" sca --path "$FIXTURES/composer" --out "$E2E_COMPOSER_RUNDIR"
+E2E_COMPOSER_RUNJSON=$(cat "$E2E_COMPOSER_RUNDIR/run.json" 2>/dev/null)
+assert_contains "$E2E_COMPOSER_RUNJSON" '"SCA-PHP-VULNERABLE_DEP-01"' \
+  'checks_run in run.json shows SCA-PHP-VULNERABLE_DEP-01 actually executed through the real scan.sh entry point (scan_dispatch sca), not just when the module is sourced standalone'
+assert_contains "$E2E_COMPOSER_RUNJSON" '"sca":4' \
+  'run.json by_module counts 4 live findings for sca - 3 vulnerable composer packages (acme/widget, acme/mixedcase, acme/legacy-lib) plus the one roll-up'
 
 t_summary 'sca' || FAILED=1
 exit "${FAILED:-0}"

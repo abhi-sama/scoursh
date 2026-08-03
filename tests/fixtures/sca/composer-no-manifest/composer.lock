@@ -1,0 +1,24 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state"
+    ],
+    "content-hash": "1111111111111111111111111111111",
+    "packages": [
+        {
+            "name": "acme/widget",
+            "version": "1.2.3",
+            "type": "library"
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": [],
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {
+        "php": ">=7.4"
+    },
+    "platform-dev": [],
+    "plugin-api-version": "2.3.0"
+}

@@ -17,7 +17,8 @@
 #
 # THIS FILE IS SHARED ACROSS EVERY SCA ECOSYSTEM TICKET (the npm ticket's own
 # instruction, still honoured): a sibling ecosystem's lockfile/manifest parser
-# lands in modules/sca/engine.sh rather than forking this file.
+# lands in modules/sca/engine.sh (or, for PHP, its own
+# modules/sca/php_engine.sh - see below) rather than forking this file.
 #
 # ONE SCAN CALL PER "family", NOT ONE PER ECOSYSTEM - a correction of this
 # file's own original plan, recorded here rather than silently diverging from
@@ -29,40 +30,51 @@
 # ecosystem - would emit two findings that collide on one fingerprint, and
 # findings_merge's dedup would silently drop whichever ecosystem lost the
 # sort instead of merging their counts.  `sca_scan_tree`
-# (modules/sca/engine.sh) therefore walks npm AND RubyGems lockfiles itself,
-# in one call, sharing one `unknown_count` table - see that function's own
-# header for the full reasoning.
+# (modules/sca/engine.sh) therefore walks npm, RubyGems AND, as of the
+# PHP/Composer ticket, composer.lock (parsed by the sibling
+# modules/sca/php_engine.sh, sourced below) itself, in one call, sharing one
+# `unknown_count` table - see that function's own header for the full
+# reasoning.  A future ecosystem sharing this same roll-up is expected to
+# extend `sca_scan_tree` itself the same way, not add a fourth call here.
 #
 # PYTHON AND JAVA BOTH DIVERGED FROM THAT PLAN, DELIBERATELY - each is its own
 # correction, added once each ticket landed after the paragraph above was
 # written.  Rather than folding a third or fourth ecosystem into
 # `sca_scan_tree` itself, Python shipped a sibling function,
 # `sca_scan_python_tree` (modules/sca/engine.sh), called from its own
-# `_sca_py_run` below, and Java (this ticket) likewise shipped
-# `sca_scan_java_tree`, called from its own `_sca_java_run` below - both to
-# avoid touching `sca_scan_tree`'s already-tested npm/Ruby code path.  Each
-# sibling function's own header states this plainly: a run with BOTH an
-# npm/Ruby unknown-version case AND a Python or Java one emits a SEPARATE
-# SCA-COV-UNKNOWN_VERSION-01 finding per ecosystem-scan call rather than one
-# truly-merged roll-up - the same fingerprint-collision exposure the
+# `_sca_py_run` below, and Java likewise shipped `sca_scan_java_tree`,
+# called from its own `_sca_java_run` below - both to avoid touching
+# `sca_scan_tree`'s already-tested npm/Ruby/PHP code path.  Each sibling
+# function's own header states this plainly: a run with BOTH an
+# npm/Ruby/PHP unknown-version case AND a Python or Java one emits a
+# SEPARATE SCA-COV-UNKNOWN_VERSION-01 finding per ecosystem-scan call rather
+# than one truly-merged roll-up - the same fingerprint-collision exposure the
 # paragraph above describes, accepted as a stated, filed follow-up rather
-# than re-touching the tested npm/Ruby path.  `_sca_run_module` below MUST
-# keep running `_sca_npm_run` (and so `sca_scan_tree`) before `_sca_py_run`
-# and `_sca_java_run`: both `sca_scan_python_tree` and `sca_scan_java_tree`
-# deliberately skip the db-absent check and the two module-level
-# coverage_reduction facts that `sca_scan_tree` already records
+# than re-touching the tested npm/Ruby/PHP path.  `_sca_run_module` below
+# MUST keep running `_sca_npm_run` (and so `sca_scan_tree`) before
+# `_sca_py_run` and `_sca_java_run`: both `sca_scan_python_tree` and
+# `sca_scan_java_tree` deliberately skip the db-absent check and the two
+# module-level coverage_reduction facts that `sca_scan_tree` already records
 # unconditionally, relying on that ordering to avoid duplicating them (see
-# each function's own header).  If a further ecosystem (Go, PHP, ...) lands
-# its own engine.sh entry point, its own run function is likewise called from
+# each function's own header).  If a further ecosystem (Go, ...) lands its
+# own engine.sh entry point, its own run function is likewise called from
 # _sca_run_module below, next to these three - do not fork this file per
 # ecosystem.
 #
 # shellcheck shell=bash
 # shellcheck source=modules/sca/engine.sh
 source "${BASH_SOURCE[0]%/*}/engine.sh"
+# php_engine.sh is also sourced transitively by engine.sh itself (guarded,
+# see both files' own headers); sourced again here, explicitly, purely so
+# this entry point stays self-documenting about which ecosystems it covers -
+# modules/sast/run.sh's own explicit source of history.sh alongside
+# engine.sh is the same convention.
+# shellcheck source=modules/sca/php_engine.sh
+source "${BASH_SOURCE[0]%/*}/php_engine.sh"
 
-# _sca_npm_run - npm/yarn/pnpm AND RubyGems (Gemfile.lock): both live inside
-# the single shared sca_scan_tree call, per the header above.
+# _sca_npm_run - npm/yarn/pnpm, RubyGems (Gemfile.lock) AND, as of the
+# PHP/Composer ticket, composer.lock: all three live inside the single
+# shared sca_scan_tree call, per the header above.
 _sca_npm_run() {
   local path=${_SCAN_RESOLVED_PATH:-.}
   sca_scan_tree "$path"
@@ -73,7 +85,7 @@ _sca_npm_run() {
 # next to _sca_npm_run"): requirements.txt/poetry.lock/Pipfile.lock, added by
 # the ticket that shipped modules/sca/engine.sh's section 10.  Always run
 # AFTER _sca_npm_run below - sca_scan_python_tree's own header comment
-# documents relying on sca_scan_tree (npm+Ruby) having already,
+# documents relying on sca_scan_tree (npm+Ruby+PHP) having already,
 # unconditionally, recorded the module-level coverage_reduction facts
 # (db-absent, single_worker, gate-not-wired) so this pass does not duplicate
 # them.
@@ -101,8 +113,9 @@ _sca_run_module() {
   # (no_advisories_db_on_disk) when there is nothing to match against,
   # exactly as sca_scan_tree's own header documents.
   #
-  # _sca_npm_run (sca_scan_tree) covers npm AND RubyGems in one call; see the
-  # header above for why Ruby joined that call while Python and Java did not.
+  # _sca_npm_run (sca_scan_tree) covers npm, RubyGems AND PHP/Composer in
+  # one call; see the header above for why Ruby and PHP joined that call
+  # while Python and Java did not.
   _sca_npm_run
   _sca_py_run
   _sca_java_run
