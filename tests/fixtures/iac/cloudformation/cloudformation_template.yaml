@@ -1,0 +1,40 @@
+# tests/fixtures/iac/cloudformation/cloudformation_template.yaml - CloudFormation-shaped
+# fixture (this ticket's acceptance criteria: "never fires on
+# CloudFormation-shaped fixtures (AWSTemplateFormatVersion/AWS:: types), even
+# where their file glob overlaps with Kubernetes manifests").
+#
+# Deliberately an ECS task definition, since that is the CFN resource whose
+# properties come closest in vocabulary to a Kubernetes container spec
+# (Image, Privileged, resource sizing) - the closest real adversarial case
+# for a files-glob-only distinction, not a contrived one. Every field here
+# is CloudFormation's own PascalCase; the pack's IAC-K8S-* patterns key on
+# the Kubernetes API's lowerCamelCase spelling of the same concepts, and
+# matching is case-sensitive (rules/RULE-FORMAT.md §8.2), so none of the
+# eight checks match on vocabulary grounds alone. AWSTemplateFormatVersion is
+# also present for the three absence checks' own belt-and-suspenders
+# context-deny.
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Example ECS service, not a Kubernetes manifest
+Resources:
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: demo-task
+      ContainerDefinitions:
+        - Name: app
+          Image: registry.example.com/app:latest
+          Privileged: true
+          Essential: true
+          Memory: 512
+          Cpu: 256
+  ServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Action:
+              - "sts:AssumeRole"
+            Principal:
+              Service:
+                - ecs-tasks.amazonaws.com

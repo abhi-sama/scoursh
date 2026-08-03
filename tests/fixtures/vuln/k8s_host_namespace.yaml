@@ -1,0 +1,24 @@
+# tests/fixtures/vuln/k8s_host_namespace.yaml - true-positive fixture for
+# IAC-K8S-HOST_NAMESPACE-01.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: host-namespace-demo
+spec:
+  hostNetwork: true
+  hostPID: true
+  automountServiceAccountToken: false
+  containers:
+    - name: app
+      image: registry.example.com/app:1.4.2
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        privileged: false
+        runAsNonRoot: true
+      resources:
+        limits:
+          cpu: "500m"
+          memory: "256Mi"
+        requests:
+          cpu: "250m"
+          memory: "128Mi"
