@@ -1,0 +1,18 @@
+# tests/fixtures/vuln/docker-compose.yml - cross-check fixture (this ticket's
+# AC4): docker-compose is explicitly OUT of scope for modules/iac/helm.rules
+# (ticket text: "scoped to Helm only and excluding docker-compose"). This
+# file intentionally reuses the exact vocabulary IAC-HELM-HARDCODED_SECRET-01
+# matches (a lowercase `password:` key with a plaintext literal, no
+# CHANGEME/example placeholder) so tests/suites/iac.sh's cross-check proves
+# the boundary is the `files:` glob (values.yaml / templates/*.yaml only),
+# not an accident of this file's content happening not to match.
+version: "3.8"
+services:
+  web:
+    image: myapp:latest
+    ports:
+      - "8443:8443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      password: "Sup3rSecretPass!"

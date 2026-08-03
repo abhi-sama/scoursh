@@ -1,0 +1,34 @@
+{{- if .Values.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-app
+spec:
+  replicas: {{ .Values.replicaCount }}
+  template:
+    spec:
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          ports:
+            - containerPort: 8443
+              # IAC-HELM-HOST_PORT-01: hardcoded directly in the rendered
+              # template, bypassing values.yaml entirely.
+              hostPort: 8443
+      volumes:
+        - name: docker-sock
+          hostPath:
+            # IAC-HELM-HOST_MOUNT-01: sensitive host path bind-mounted from
+            # a template rather than values.yaml.
+            path: /var/run/docker.sock
+{{- end }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secret
+type: Opaque
+stringData:
+  # IAC-HELM-HARDCODED_SECRET-01: literal secret hardcoded into the
+  # template instead of sourced from an external secret store.
+  password: "Tr0ub4dor&3"

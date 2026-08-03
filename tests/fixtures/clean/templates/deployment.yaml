@@ -1,0 +1,30 @@
+{{- if .Values.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-app
+spec:
+  replicas: {{ .Values.replicaCount }}
+  template:
+    spec:
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          ports:
+            # safe: containerPort only, no hostPort - reachable through the
+            # Service/Ingress, never bound to the node's own network.
+            - containerPort: 8443
+          env:
+            - name: DB_PASSWORD
+              # safe: value comes from an existing Secret via secretKeyRef,
+              # never a literal.
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.credentials.passwordSecretName }}
+                  key: password
+      volumes:
+        - name: app-config
+          # safe: ConfigMap, not a hostPath bind mount.
+          configMap:
+            name: {{ .Release.Name }}-config
+{{- end }}

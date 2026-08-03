@@ -1,0 +1,27 @@
+# tests/fixtures/clean/values.yaml - safe equivalent of
+# tests/fixtures/vuln/values.yaml, one rewrite per IAC-HELM-* rule id.
+replicaCount: 1
+
+image:
+  repository: myapp
+  tag: "1.4.2"
+
+service:
+  type: ClusterIP
+  port: 80
+
+container:
+  # safe: reachable only through the Service, never bound to the host
+  # network (no hostPort key at all).
+  containerPort: 8443
+
+extraVolumes:
+  - name: app-config
+    # safe: sourced from a ConfigMap, not a hostPath bind mount.
+    configMap:
+      name: app-config
+
+credentials:
+  # safe: names an EXISTING Kubernetes Secret for the template to read via
+  # secretKeyRef; no credential literal appears anywhere in this file.
+  passwordSecretName: app-db-credentials

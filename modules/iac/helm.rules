@@ -1,0 +1,116 @@
+# modules/iac/helm.rules - Helm chart checks via the pattern-rule engine
+# (docs/DESIGN.md §13 step 4's container-rules half, this ticket).
+#
+# Path note: same frozen path table as terraform.rules (rules/RULE-FORMAT.md
+# §9's `modules/iac/*.rules` row) - flat, directly under modules/iac/, never
+# nested under a `rules/` subdirectory and never named `checks.rules` (that
+# basename is reserved repository-wide for the §9.5 script-check schema and
+# is matched first in records_schema_for_path, ahead of this row).
+#
+# Scope discipline, per this ticket's own text: Helm chart sources only -
+# `values.yaml` and `templates/*.yaml` - never docker-compose, and never a
+# bare (non-Helm) Kubernetes manifest.  docs/DESIGN.md §7/§8.2 group
+# Kubernetes-manifest checks and docker-compose/Helm-values checks together
+# under one future `containers.rules` concept; this pack deliberately narrows
+# to the Helm half only, the same "split the monolith into single-topic
+# packs, land what's ready" precedent terraform.rules already set for
+# cloud.rules (§8.2's "cloud.rules terraform.rules cloudformation.rules"
+# became `terraform.rules` alone, CloudFormation deferred).  A bare
+# Kubernetes manifest (a raw `kind: Pod`/`kind: Deployment` file that is not
+# part of a Helm chart's `templates/` directory, and is not `values.yaml`)
+# and a docker-compose file are both out of scope here and MUST NOT be
+# matched by any `files:` glob below - tests/suites/iac.sh's Helm section
+# cross-checks both boundaries with dedicated fixtures.
+#
+# KNOWN GAP, stated rather than hidden: no `modules/iac/kubernetes.rules` (or
+# any other Kubernetes-manifest pattern pack) exists anywhere in this
+# codebase as of this ticket - confirmed against `dev`'s tip, which carries
+# only `terraform.rules` under modules/iac/ before this change.  A literal
+# cross-check that "the existing Kubernetes rule pack's checks do not also
+# fire on a Helm template" therefore has nothing to run against yet.
+# tests/suites/iac.sh's cross-check section instead proves the two boundaries
+# that ARE testable today: (a) `terraform.rules` - the only other IaC pack
+# that actually exists on disk - does not fire on any Helm fixture and this
+# pack does not fire on any Terraform fixture, both via the `files:` glob
+# alone; and (b) this pack stays silent on a docker-compose fixture despite
+# docker-compose using the same "host-published port / host bind mount /
+# plaintext secret" vocabulary.  Once a real Kubernetes-manifest pack ships,
+# extend that same cross-check section with it directly.
+#
+# Engine note: `values.yaml` is genuinely YAML and `templates/*.yaml` is
+# YAML-shaped text carrying embedded Go-template directives (`{{ ... }}`).
+# Neither this engine nor any other module parses YAML - `docs/FOUNDATION.md`
+# tension 25 and this file's own SCA sibling both note the same thing for
+# their formats - so both file kinds are scanned exactly like SAST source:
+# line-based pattern matching via `scan_match`/`scan_match_offsets`
+# (rules/RULE-FORMAT.md §10.3), never a real parse tree.  Every pattern below
+# is written to match a single YAML `key: value` line and to tolerate a
+# Go-template expression appearing elsewhere on the same or a nearby line
+# without either false-negating (missing the real key) or false-positiving
+# on the template expression itself (see IAC-HELM-HARDCODED_SECRET-01's
+# `{`-exclusion below).
+#
+# Seed rules, each straight out of docs/DESIGN.md §8.2/§7's Helm-values list
+# ("exposed ports, host bind mounts of sensitive paths, plaintext secrets"):
+#   hostPort published on the container spec, a hostPath volume targeting a
+#   sensitive host directory, and a hardcoded credential literal.
+
+id: IAC-HELM-HOST_PORT-01
+title: Container port published directly on the host network via hostPort
+severity: high
+confidence: high
+cwe: CWE-668
+owasp: A05:2021
+pattern: hostPort\s*:\s*[0-9]+
+dialect: ere
+files: values.yaml
+files: templates/*.yaml
+context-deny: ^\s*#\s*scoursh-allow: host-port
+context-window: 1
+tags: static
+tags: compliance
+remediation: Remove hostPort (or the NodePort service type it typically pairs with) and reach
+  the workload through a ClusterIP Service plus an Ingress/LoadBalancer instead. hostPort binds
+  the container port directly onto every node's host network interface, bypassing the cluster's
+  own network policy and exposing the port to anything that can reach the node.
+references: CWE-668
+
+id: IAC-HELM-HOST_MOUNT-01
+title: hostPath volume mounts a sensitive host directory into the container
+severity: critical
+confidence: medium
+cwe: CWE-668
+owasp: A05:2021
+pattern: path\s*:\s*["']?(/etc|/var/run/docker\.sock|/root|/proc|/sys|/home)\b
+dialect: ere
+files: values.yaml
+files: templates/*.yaml
+context-require: hostPath
+context-window: 3
+tags: static
+tags: compliance
+remediation: Remove the hostPath volume and use a PersistentVolumeClaim, ConfigMap, or Secret
+  instead. Mounting /var/run/docker.sock hands the container the equivalent of root on the host
+  (full control of the container runtime); mounting /etc, /root, /proc, /sys, or /home exposes
+  host secrets, credentials, or kernel/process state to anything running in the pod.
+references: CWE-668
+
+id: IAC-HELM-HARDCODED_SECRET-01
+title: Plaintext credential literal in a Helm chart
+severity: critical
+confidence: medium
+cwe: CWE-798
+owasp: A07:2021
+pattern: \b(password|secret|secretKey|secret_key|apiKey|api_key|access_key|token|clientSecret)\b\s*:\s*["']?[^"'\s{][^"'\n]{7,}
+dialect: ere
+files: values.yaml
+files: templates/*.yaml
+context-deny: (CHANGEME|changeme|EXAMPLE|example|XXXXXXXX|xxxxxxxx|placeholder|dummy|TODO)
+context-window: 0
+tags: static
+remediation: Remove the literal credential from values.yaml/templates and rotate it immediately;
+  a committed secret must be treated as compromised even if the commit is later reverted, because
+  it remains in git history. Source the value from an existing Kubernetes Secret via
+  valueFrom.secretKeyRef (or an external-secrets operator backed by Vault/AWS Secrets Manager/SSM
+  SecureString) instead of a literal in values.yaml or a template.
+references: CWE-798
