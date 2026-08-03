@@ -3863,6 +3863,19 @@ browser.
 **No DAST-0x ticket is picked up until step 3's `nosql`/`ldap` rule packs and step 4 (SCA) are both
 complete on `dev`**, per the plan's own "Status: blocked" section and this ticket's description.
 
+**Step 8 (`--paranoid` / `tools/run-in-netns.sh`) also now has a written sub-ticket plan
+(`docs/STEP8-PARANOID-PLAN.md`), split into two independently schedulable tickets, and - unlike step
+5's plan above - neither sub-ticket is blocked.**
+The plan splits `docs/DESIGN.md` §13 step 8 per tension 20's RESOLUTION into **PARANOID-01** (the
+`--paranoid` connection-observer and abort-on-out-of-scope enforcement) and **NETNS-01**
+(`tools/run-in-netns.sh`, the network-namespace runner - optional and root-requiring, stated directly in
+that ticket's own filed description). Both were filed to the backlog as real tickets (Crewban-57 and
+Crewban-58); neither is implemented by the planning ticket that produced the plan doc. This planning
+ticket's own acceptance criteria named `lib/http.sh` (tension 19) as step 8's blocker, and confirm it
+present on `dev`; tension 20's RESOLUTION already states that `lib/http.sh`'s pinned resolution cache is
+step 8's only real dependency ("so the ordering already works"), so both tickets may be picked up
+independently of each other and of the remaining un-landed steps (6, 7, 9, 10).
+
 What §13 step 1 deliberately did **not** build, so the boundary is not rediscovered: `scan.sh`, anything
 under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
 shipped rule pack, and `state/`.  Diff classification (tension 12) and baseline suppression (tension 11
