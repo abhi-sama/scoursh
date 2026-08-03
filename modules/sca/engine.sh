@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# modules/sca/engine.sh - the SCA lockfile parsers (npm and Ruby/RubyGems) and
-# the shared data/advisories.db exact-match lookup (docs/DESIGN.md §6.5,
-# §13 step 4).
+# modules/sca/engine.sh - the SCA lockfile/manifest parsers (npm, Python,
+# Ruby/RubyGems, and Java) and the shared data/advisories.db exact-match
+# lookup (docs/DESIGN.md §6.5, §13 step 4).
 #
 # Owns:
 #   docs/DESIGN.md      §6.5 "SCA (dependency vulnerabilities, offline)"
@@ -9,14 +9,29 @@
 #                       arithmetic, an exact (ecosystem, package, version)
 #                       lookup against a pre-expanded data/advisories.db, name
 #                       normalisation frozen per ecosystem (npm: verbatim,
-#                       scope included; RubyGems: verbatim, lowercased), and
-#                       the ONE roll-up finding for a package the db knows but
-#                       whose exact pinned version it does not.
+#                       scope included; PyPI: PEP 503; RubyGems: verbatim,
+#                       lowercased; Maven: `groupId:artifactId`), and the ONE
+#                       roll-up finding (per ecosystem-scan entry point) for a
+#                       package the db knows but whose exact pinned version it
+#                       does not.
 #
-# SCOPE: npm - package-lock.json (v1/v2/v3), yarn.lock, pnpm-lock.yaml - plus,
-# as of this ticket, Ruby/RubyGems - Gemfile.lock.  A later ticket adds
-# another ecosystem alongside these; nothing here parses a manifest belonging
-# to one still un-shipped (Python, Go, ...).
+# SCOPE: npm (package-lock.json v1/v2/v3, yarn.lock, pnpm-lock.yaml) - PLUS
+# Python (requirements.txt, poetry.lock, Pipfile.lock) - PLUS Ruby/RubyGems
+# (Gemfile.lock) - PLUS, as of this ticket, Java (this ticket): `pom.xml`'s
+# top-level `<dependencies>`, and `build.gradle`'s two literal-string
+# declaration shapes (`implementation "g:a:v"` and `implementation group:
+# 'g', name: 'a', version: 'v'`), regex/line-based best-effort per this
+# ticket's own framing.  A later ticket adds another ecosystem alongside
+# these four; nothing here parses a manifest belonging to one still
+# un-shipped (Go, PHP, ...).  NOT in scope for Java specifically, stated
+# rather than silently missed: Gradle Kotlin DSL (`build.gradle.kts`); Gradle
+# version catalogs (`libs.versions.toml`, or any `libs.xxx` accessor
+# reference inside a `build.gradle`); and any Gradle or Maven dependency whose
+# group/artifact/version is a computed value or a property/variable
+# interpolation rather than a literal - `_sca_parse_build_gradle` and
+# `_sca_parse_pom_xml` below both document exactly where each of these is
+# recognised and silently skipped, precisely so this list stays true and is
+# not just aspirational prose.
 #
 # A pure function library: sourced once, defines functions, no side effects
 # at source time (modules/sca/run.sh is the file that DOES something when
@@ -915,34 +930,24 @@ sca_package_known() {
 # 9. Finding emission and orchestration
 # ---------------------------------------------------------------------------
 
-# _sca_check_id_for_ecosystem ECO - the per-ecosystem `SCA-<FAM>-
-# VULNERABLE_DEP-01` check id a data/advisories.db row's own `ecosystem`
-# field (the exact-lookup key, e.g. `npm` or `RubyGems`) maps to.  A frozen,
-# explicit table rather than a mechanical uppercase-of-ECO: the ecosystem
-# field's own spelling (tension 25's normalisation table - `npm` lowercase,
-# `RubyGems` mixed-case) is not the check id family name each ecosystem's own
-# ticket picked (`NPM`, `RUBY`), and deriving one from the other would
-# silently mint the wrong check id the day a third ecosystem's field spelling
-# does not machine-transform to its expected family (PyPI -> `PYTHON` or
-# `PY`? Go -> `GO`? neither is a mechanical transform of the ecosystem
-# string) - explicit now costs one line per ecosystem and never guesses.
-_sca_check_id_for_ecosystem() {
-  case $1 in
-    npm) printf 'SCA-NPM-VULNERABLE_DEP-01' ;;
-    RubyGems) printf 'SCA-RUBY-VULNERABLE_DEP-01' ;;
-    *) printf 'SCA-UNKNOWN-VULNERABLE_DEP-01' ;;
-  esac
-}
-
-# _sca_emit_finding DIRECT LOCKFILE_RELPATH ROW - ROW is one
-# `data/advisories.db` TSV line already known to match a pinned dependency.
-# Mints the row's own ecosystem's `SCA-<FAM>-VULNERABLE_DEP-01` check
-# (_sca_check_id_for_ecosystem) directly via lib/findings.sh's finding API
-# (this check id has no `*.rules` pattern record behind it - a table lookup
-# is not a pattern rule, per the npm ticket's own instruction, unchanged by
-# a second ecosystem reusing the same emitter).
+# _sca_emit_finding CHECK_ID DIRECT MANIFEST_LABEL MANIFEST_RELPATH ROW - ROW
+# is one `data/advisories.db` TSV line already known to match a pinned
+# dependency.  CHECK_ID is the check id to mint the finding under
+# (SCA-NPM-VULNERABLE_DEP-01, SCA-RUBY-VULNERABLE_DEP-01, or
+# SCA-JAVA-VULNERABLE_DEP-01 - each ecosystem's own scan entry point passes
+# its own, since the id does not derive from the row's `ecosystem` field
+# alone: `maven` mints under `SCA-JAVA-*`, per this ticket's own instruction,
+# not a hypothetical `SCA-MAVEN-*`, and `RubyGems` mints under `SCA-RUBY-*`
+# rather than `SCA-RUBYGEMS-*`).
+# MANIFEST_LABEL is the evidence line's own label word (`lockfile` for npm and
+# Ruby, `manifest` for Java - a lockfile and a build manifest are not the
+# same thing, and the evidence should say which one this is).  Mints directly
+# via lib/findings.sh's finding API (this check id has no `*.rules` pattern
+# record behind it - a table lookup is not a pattern rule, per the npm
+# ticket's own instruction, unchanged by later ecosystems reusing the same
+# emitter).
 _sca_emit_finding() {
-  local direct=$1 lockfile_rel=$2 row=$3
+  local check_id=$1 direct=$2 manifest_label=$3 lockfile_rel=$4 row=$5
   local eco pkg ver advisory sev fixed summary
   # data/advisories.db is real-TAB TSV (tension 25's frozen on-disk schema,
   # not this file's own choice), and `fixed_versions` is legitimately empty
@@ -962,7 +967,7 @@ _sca_emit_finding() {
   [[ -z $fixed ]] && accept_risk=true
 
   finding_new
-  finding_set check_id "$(_sca_check_id_for_ecosystem "$eco")"
+  finding_set check_id "$check_id"
   finding_set module sca
   finding_set title "$eco: $pkg@$ver is vulnerable ($advisory)"
   finding_set base_severity "$sev"
@@ -985,7 +990,7 @@ _sca_emit_finding() {
   local evline
   evline="dependency: $pkg@$ver"$'\n'
   evline+="dependency_type: $direct"$'\n'
-  evline+="lockfile: $lockfile_rel"$'\n'
+  evline+="$manifest_label: $lockfile_rel"$'\n'
   evline+="advisory: $advisory ($sev)"$'\n'
   evline+="fixed_versions: ${fixed:-none published}"$'\n'
   evline+="accept_risk_candidate: $accept_risk"$'\n'
@@ -1054,7 +1059,7 @@ sca_scan_tree() {
       if sca_lookup_exact npm "$name" "$ver" "$db" >"$hits"; then
         while IFS= read -r row; do
           [[ -n $row ]] || continue
-          _sca_emit_finding "$direct" "$relpath" "$row"
+          _sca_emit_finding SCA-NPM-VULNERABLE_DEP-01 "$direct" lockfile "$relpath" "$row"
         done <"$hits"
       elif sca_package_known npm "$name" "$db"; then
         unknown_count[npm]=$(( ${unknown_count[npm]:-0} + 1 ))
@@ -1079,7 +1084,7 @@ sca_scan_tree() {
       if sca_lookup_exact RubyGems "$name" "$ver" "$db" >"$hits"; then
         while IFS= read -r row; do
           [[ -n $row ]] || continue
-          _sca_emit_finding "$direct" "$relpath" "$row"
+          _sca_emit_finding SCA-RUBY-VULNERABLE_DEP-01 "$direct" lockfile "$relpath" "$row"
         done <"$hits"
       elif sca_package_known RubyGems "$name" "$db"; then
         unknown_count[RubyGems]=$(( ${unknown_count[RubyGems]:-0} + 1 ))
@@ -1677,6 +1682,408 @@ sca_scan_python_tree() {
     finding_set cell "$SCOURSH_PATH_ROOT"
     finding_set remediation 'Refresh data/advisories.db (tools/vendor-engines.sh, on a networked box) to a snapshot that covers these exact pinned versions - absence here means "unknown", never "not vulnerable".'
     finding_set_evidence "by ecosystem: pypi: $cnt"
+    finding_emit
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 11. Java: pom.xml and build.gradle (this ticket)
+# ---------------------------------------------------------------------------
+# Ecosystem string is `maven` (docs/FOUNDATION.md tension 25's frozen
+# normalisation table names the ecosystem "Maven", and `data/advisories.db`
+# rows use the lower-case form, matching `npm`'s own lower-case row values) -
+# for BOTH pom.xml and build.gradle, since Gradle resolves against the same
+# Maven-shaped coordinate (`groupId:artifactId:version`) and the same
+# artifact repositories; there is no separate "gradle" ecosystem in any
+# advisory feed.
+
+# Directories never worth walking into, for Java's own build tooling: `target`
+# (Maven's build output - can contain a shaded/copied pom.xml that is not this
+# project's own manifest) and `.gradle` (Gradle's cache/daemon state).  Built
+# from SCA_DEFAULT_EXCLUDE_DIRS rather than duplicating it, so a future
+# addition to the shared list is not silently missed here.
+SCA_JAVA_EXCLUDE_DIRS=("${SCA_DEFAULT_EXCLUDE_DIRS[@]+"${SCA_DEFAULT_EXCLUDE_DIRS[@]}"}" target .gradle)
+
+_sca_java_dir_excluded() {
+  local base=$1 d
+  for d in "${SCA_JAVA_EXCLUDE_DIRS[@]+"${SCA_JAVA_EXCLUDE_DIRS[@]}"}"; do
+    [[ $base == "$d" ]] && return 0
+  done
+  return 1
+}
+
+# sca_walk_java_manifests ROOT - prints one absolute path per line, in
+# LC_ALL=C sorted order, to every pom.xml and build.gradle under ROOT,
+# skipping SCA_JAVA_EXCLUDE_DIRS at any depth.  ROOT itself may be a single
+# manifest file directly, exactly like sca_walk_npm_lockfiles.  Deliberately
+# does NOT match `build.gradle.kts` (Gradle's Kotlin DSL) - a different
+# syntax this ticket's two regex shapes do not parse, stated as an
+# unsupported gap in this file's own header rather than silently mis-parsed.
+sca_walk_java_manifests() {
+  local root=$1
+  if [[ -f $root ]]; then
+    case ${root##*/} in
+      pom.xml | build.gradle) printf '%s\n' "$root" ;;
+    esac
+    return 0
+  fi
+  local -a prune=()
+  local d first=1
+  for d in "${SCA_JAVA_EXCLUDE_DIRS[@]+"${SCA_JAVA_EXCLUDE_DIRS[@]}"}"; do
+    (( first )) || prune+=(-o)
+    prune+=(-path "$root/*/$d" -o -path "$root/$d")
+    first=0
+  done
+  find "$root" \( "${prune[@]+"${prune[@]}"}" \) -prune -o -type f \
+    \( -name pom.xml -o -name build.gradle \) \
+    -print 2>/dev/null | LC_ALL=C sort
+}
+
+# sca_maven_normalize_name GROUPID ARTIFACTID - the Maven key
+# (docs/FOUNDATION.md tension 25's frozen table: "Maven | `groupId:artifactId`"),
+# a plain `:`-join with no case-folding - Maven coordinates are
+# case-sensitive, unlike PyPI's normalisation.  Kept as its own named call for
+# the same reason sca_npm_normalize_name is (§2 above): the per-ecosystem
+# table stays visibly complete at every call site rather than inlined once
+# and forgotten the next time an ecosystem lands.
+sca_maven_normalize_name() {
+  printf '%s:%s' "$1" "$2"
+}
+
+# ---------------------------------------------------------------------------
+# 10a. pom.xml - a line-based XML walker
+# ---------------------------------------------------------------------------
+# ASSUMPTION (stated, not hidden, same convention as _sca_json_walk's own
+# header above): every pom.xml this module reads carries at most one
+# structural token per physical line - an opening tag, a closing tag, or one
+# `<tag>text</tag>` scalar - which is true of every pom.xml produced by an
+# IDE, `mvn archetype:generate`, or a human editing Maven's own conventional
+# 2-space/4-space pretty-printed style.  A single-line minified pom.xml (all
+# elements on one line) would defeat this walker; none is known to exist in
+# practice, and Maven's own tooling never emits one.
+#
+# What is (and is not) captured, spelled out because pom.xml's shape has two
+# traps for a naive dependency scan:
+#
+#   - `<dependencyManagement><dependencies>` only PINS a version for a
+#     dependency some *other* module or child POM chooses to declare; it
+#     never by itself makes this project depend on anything.  Only a
+#     `<dependencies>` that is a DIRECT CHILD OF THE ROOT `<project>` element
+#     is scanned - which excludes dependencyManagement's own nested
+#     `<dependencies>` (one level deeper), <profiles>/<profile>/<dependencies>
+#     (two levels deeper, and conditionally active besides), and any
+#     <plugin>'s own <dependencies> (nested under <build>/<plugins>/<plugin>).
+#     Stated limitation: a dependency declared only inside an active
+#     <profile> is not seen by this walker at all - out of scope for this
+#     ticket, which targets the always-active top-level dependency list.
+#   - Inside one eligible `<dependency>`, only its IMMEDIATE children
+#     (`<groupId>`, `<artifactId>`, `<version>`) are read; a nested
+#     `<exclusions><exclusion><groupId>...` sits two levels deeper and is
+#     never mistaken for the dependency's own groupId.
+#
+# Prints one `name<0x1F>version<0x1F>unknown` row per eligible <dependency>
+# (name already normalised to `groupId:artifactId`).  The third field is the
+# literal string `unknown`, never `direct` or `transitive` - this ticket's
+# own instruction: pom.xml's <dependencies> list is Maven's declared
+# dependency set, but whether any one of them is ALSO reachable transitively
+# through another (the same ambiguity npm's hoisting creates) is a fact only
+# a real `mvn dependency:tree` resolution could settle, and this module never
+# invokes Maven or touches the network to do that - so it says "unknown"
+# rather than guessing "direct" for every entry, which is this ticket's
+# explicit "marked ... unknown rather than guessed" requirement.
+#
+# A `<version>` that is a Maven property placeholder (`${...}`) is passed
+# through completely unresolved - property interpolation is a stated,
+# documented gap (this file's own header, and the module-level SCOPE note
+# above): the literal, un-substituted string is what gets looked up, which
+# misses cleanly (data/advisories.db never contains a `${...}` version)
+# rather than guessing which concrete version the property resolves to.
+_sca_parse_pom_xml() {
+  local file=$1
+  local -a stack=()
+  local depth=0
+  local elig_deps_depth=-1 elig_dep_depth=-1
+  local cur_group='' cur_artifact='' cur_version=''
+  local in_comment=0
+  local line trimmed tag value
+
+  while IFS= read -r line || [[ -n $line ]]; do
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    [[ -n $trimmed ]] || continue
+
+    if (( in_comment )); then
+      [[ $trimmed == *'-->'* ]] && in_comment=0
+      continue
+    fi
+    if [[ $trimmed == '<!--'* ]]; then
+      [[ $trimmed == *'-->'* ]] || in_comment=1
+      continue
+    fi
+    [[ $trimmed == '<?'* ]] && continue
+
+    # self-closing: <tag/> or <tag attr="x"/> - no depth change, no scalar.
+    # `<` and `>` are backslash-escaped in every pattern below for the SHELL's
+    # own sake, not the regex engine's: written bare in an inline `[[ ... ]]`
+    # word, `<`/`>` are shell redirection operators and bash's parser rejects
+    # them before `=~` ever runs (MEASURED: `^<[A-Za-z...` here is a syntax
+    # error, "unexpected token `<'"). `\<`/`\>` is bash's own quote-removal
+    # escape (same mechanism as `\;` in a `find` command) - it is stripped by
+    # bash itself while parsing the source line, so the compiled regex the C
+    # library actually sees contains a plain, ordinary `<`/`>` byte, never a
+    # backslash - there is no GNU-vs-BSD `\<` "word boundary" ambiguity here,
+    # because regcomp never receives a backslash for this character at all.
+    # (This escape is therefore NOT available via a variable holding the
+    # pattern text - MEASURED: storing `\<...\>` in a variable and matching
+    # `[[ $x =~ $re ]]` fails, because at that point the backslash is already
+    # gone from a NORMAL variable assignment's own quote-removal pass and the
+    # variable holds a bare `<`, which is fine, OR - if the assignment itself
+    # was singly-quoted - the backslash survives literally into the pattern
+    # text and IS then handed to regcomp, which is the one case this parser
+    # avoids entirely by never storing a `<`/`>`-bearing pattern in a
+    # variable; every regex below that needs one is written inline instead.)
+    if [[ $trimmed =~ ^\<[A-Za-z_][A-Za-z0-9_.:-]*([[:space:]][^\>]*)?/\>$ ]]; then
+      continue
+    fi
+
+    # scalar: <tag>text</tag> entirely on one line.  The open and close tag
+    # names are captured SEPARATELY and compared as plain bash strings below,
+    # never via a `\1` backreference in the pattern itself - a backreference
+    # is a GNU regex extension, not POSIX ERE, and (unlike the `\<`/`\>` case
+    # above) IS handed to regcomp as-is, so it would be a real GNU-vs-BSD
+    # portability risk if used.
+    if [[ $trimmed =~ ^\<([A-Za-z_][A-Za-z0-9_.:-]*)\>(.*)\</([A-Za-z_][A-Za-z0-9_.:-]*)\>$ ]]; then
+      tag=${BASH_REMATCH[1]}
+      value=${BASH_REMATCH[2]}
+      if [[ $tag == "${BASH_REMATCH[3]}" ]] && (( elig_dep_depth >= 0 )) && (( depth == elig_dep_depth + 1 )); then
+        case $tag in
+          groupId) cur_group=$value ;;
+          artifactId) cur_artifact=$value ;;
+          version) cur_version=$value ;;
+        esac
+      fi
+      continue
+    fi
+
+    # closing tag
+    if [[ $trimmed =~ ^\</([A-Za-z_][A-Za-z0-9_.:-]*)\>$ ]]; then
+      tag=${BASH_REMATCH[1]}
+      if [[ $tag == dependency ]] && (( elig_dep_depth >= 0 )) && (( depth == elig_dep_depth + 1 )); then
+        if [[ -n $cur_group && -n $cur_artifact ]]; then
+          printf '%s\x1f%s\x1funknown\n' "$(sca_maven_normalize_name "$cur_group" "$cur_artifact")" "$cur_version"
+        fi
+        cur_group='' cur_artifact='' cur_version=''
+        elig_dep_depth=-1
+      fi
+      if [[ $tag == dependencies ]] && (( elig_deps_depth >= 0 )) && (( depth == elig_deps_depth + 1 )); then
+        elig_deps_depth=-1
+      fi
+      depth=$(( depth - 1 ))
+      if (( depth < 0 )); then depth=0; fi
+      continue
+    fi
+
+    # opening tag: <tag> or <tag attr="x">
+    if [[ $trimmed =~ ^\<([A-Za-z_][A-Za-z0-9_.:-]*)([[:space:]][^\>]*)?\>$ ]]; then
+      tag=${BASH_REMATCH[1]}
+      if [[ $tag == dependencies ]] && (( depth == 1 )) && [[ ${stack[0]:-} == project ]]; then
+        elig_deps_depth=$depth
+      elif [[ $tag == dependency ]] && (( elig_deps_depth >= 0 )) && (( depth == elig_deps_depth + 1 )); then
+        elig_dep_depth=$depth
+      fi
+      stack[depth]=$tag
+      depth=$(( depth + 1 ))
+      continue
+    fi
+    # else: text content on its own line (e.g. a multi-line comment's body) -
+    # matches none of the above and is correctly ignored.
+  done <"$file"
+}
+
+# ---------------------------------------------------------------------------
+# 10b. build.gradle - regex-based best effort (Groovy DSL only, this ticket's
+# own framing; build.gradle.kts is a different syntax and out of scope)
+# ---------------------------------------------------------------------------
+# Recognises exactly the two declaration shapes this ticket names, each
+# entirely on its own line:
+#
+#   implementation "group:artifact:version"          (also single-quoted)
+#   implementation group: 'g', name: 'a', version: 'v'  (also double-quoted)
+#
+# across the common single-module dependency configurations (`implementation`,
+# `api`, `compile`, `runtimeOnly`, `compileOnly`, `annotationProcessor`, and
+# their `test*` equivalents) - a small, closed, named list rather than a bare
+# `\w+` match, so an unrelated Groovy method call is never mistaken for a
+# dependency declaration.
+#
+# Everything else is a stated, documented gap, not a silent miss:
+#   - a version catalog accessor (`implementation(libs.foo)`, `libs.versions.toml`
+#     entirely) matches neither shape's literal-quoted-string requirement and
+#     is skipped;
+#   - a computed/interpolated value (a Groovy local var, or `"...:$var"`
+#     string interpolation) is DETECTED (the quoted string still matches the
+#     shape) and then explicitly discarded because it contains a `$` - this
+#     module never evaluates Groovy, so a `$`-bearing group/artifact/version
+#     is never treated as if it were the literal text after substitution;
+#   - a 4-component coordinate (`group:artifact:version:classifier`, or an
+#     `@ext` package-type suffix) is likewise discarded rather than guessed
+#     at, since a wrong split would silently corrupt the version used for
+#     lookup.
+#
+# Prints the same `name<0x1F>version<0x1F>direct` row shape as the other
+# parsers (name already normalised to `groupId:artifactId`).  The
+# classification is always the literal `direct`: every configuration keyword
+# this function matches is itself Gradle's own declaration of a dependency
+# this build script asks for directly - build.gradle carries no transitive
+# graph at all (that only exists after Gradle's own dependency resolution,
+# which this module never invokes), so unlike pom.xml there is no separate
+# "is this really direct" ambiguity to hedge with "unknown": everything this
+# function can see is, by construction, a direct declaration.
+_SCA_GRADLE_CFG_RE='(implementation|api|compile|runtimeOnly|compileOnly|annotationProcessor|testImplementation|testCompile|testRuntimeOnly|testCompileOnly|testAnnotationProcessor)'
+
+_sca_parse_build_gradle() {
+  local file=$1 line trimmed
+  local shape1_re="^${_SCA_GRADLE_CFG_RE}[[:space:]]*\\(?[[:space:]]*['\"]([^'\"]+)['\"][[:space:]]*\\)?[[:space:]]*\$"
+  local shape2_re="^${_SCA_GRADLE_CFG_RE}[[:space:]]+group:[[:space:]]*['\"]([^'\"]+)['\"][[:space:]]*,[[:space:]]*name:[[:space:]]*['\"]([^'\"]+)['\"][[:space:]]*,[[:space:]]*version:[[:space:]]*['\"]([^'\"]+)['\"][[:space:]]*\$"
+  local g a v rest spec
+
+  while IFS= read -r line || [[ -n $line ]]; do
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+    [[ -n $trimmed ]] || continue
+    [[ $trimmed == //* ]] && continue
+
+    if [[ $trimmed =~ $shape2_re ]]; then
+      g=${BASH_REMATCH[2]}
+      a=${BASH_REMATCH[3]}
+      v=${BASH_REMATCH[4]}
+      if [[ $g == *'$'* || $a == *'$'* || $v == *'$'* ]]; then continue; fi
+      [[ -n $g && -n $a && -n $v ]] || continue
+      printf '%s\x1f%s\x1fdirect\n' "$(sca_maven_normalize_name "$g" "$a")" "$v"
+      continue
+    fi
+
+    if [[ $trimmed =~ $shape1_re ]]; then
+      spec=${BASH_REMATCH[2]}
+      [[ $spec == *'$'* ]] && continue
+      g=${spec%%:*}
+      rest=${spec#*:}
+      a=${rest%%:*}
+      v=${rest#*:}
+      # exactly 3 colon-separated fields: `rest` unchanged from `spec` means
+      # there was no second ':' at all (one colon total, or none); `v`
+      # containing a further ':' means a 4th component was present.  Either
+      # way this is not a plain group:artifact:version triple - skip rather
+      # than guess.
+      if [[ -z $g || -z $a || -z $v ]]; then continue; fi
+      if [[ $rest == "$spec" || $v == *:* ]]; then continue; fi
+      printf '%s\x1f%s\x1fdirect\n' "$(sca_maven_normalize_name "$g" "$a")" "$v"
+      continue
+    fi
+  done <"$file"
+}
+
+# sca_scan_java_tree ROOT - the module's whole Java slice: walk ROOT for
+# pom.xml/build.gradle, parse each, look every pinned dependency up against
+# data/advisories.db, emit one SCA-JAVA-VULNERABLE_DEP-01 finding per
+# vulnerable pinned dependency, and one roll-up SCA-COV-UNKNOWN_VERSION-01
+# finding (never per-package) when any package the db tracks had its exact
+# pinned version go unmatched - the same self-contained, independently
+# callable contract sca_scan_tree above documents and is tested under
+# (tests/suites/sca.sh calls each ecosystem's entry point standalone).
+#
+# Deliberately NOT merged into one shared "scan every ecosystem, emit one
+# combined roll-up" function with sca_scan_tree: this repository's own
+# convention (docs/FOUNDATION.md tension 24) avoids `local -n` namerefs
+# entirely (`bash >= 4.2` is the frozen minimum; namerefs need 4.3), so there
+# is no portable way to hand one ecosystem-keyed associative array to a
+# shared emitter across two functions without either a global or an eval - a
+# larger, subtler-bug-prone change for a smaller win than just keeping each
+# ecosystem's scan function self-contained.  Stated cost, not hidden: a
+# single scan_dispatch sca run against a tree containing BOTH an npm
+# lockfile and a Java manifest emits two SCA-COV-UNKNOWN_VERSION-01 findings
+# (one per ecosystem-scan entry point) rather than one merged across both -
+# each is still individually correct (never per-package, always the true
+# per-ecosystem total), just not cross-ecosystem-merged.
+#
+# Deliberately does NOT run the data/advisories.db-absent check nor the two
+# module-level coverage_reduction facts (single_worker_no_parallel_scan_yet,
+# gate_evaluation_not_yet_wired) that section 9's sca_scan_tree records - the
+# same reasoning sca_scan_python_tree's own header states: modules/sca/run.sh's
+# _sca_run_module always runs _sca_npm_run (and so sca_scan_tree) before
+# _sca_java_run, and sca_scan_tree's own db-absent check and its two trailing
+# facts are UNCONDITIONAL there regardless of whether any npm lockfile
+# actually exists in the tree - so they are already recorded exactly once for
+# the whole module by the time this function would otherwise duplicate them.
+# Stated, not hidden: calling sca_scan_java_tree ALONE with a missing db (as
+# this ticket's own unit tests do) therefore returns silently rather than
+# re-declaring a fact only the npm pass owns; the real _sca_run_module
+# ordering that makes this safe end-to-end is exercised by the e2e
+# `scan.sh sca` case in tests/suites/sca.sh.
+sca_scan_java_tree() {
+  local root=$1
+  local db
+  db=$(sca_advisories_db_path)
+  if [[ ! -r $db ]]; then
+    return 0
+  fi
+
+  local -A unknown_count=()
+  local manifest relpath fmt row name ver direct hits
+  hits=$SCOURSH_SCRATCH/sca-java-hits.$$
+  while IFS= read -r manifest; do
+    [[ -n $manifest ]] || continue
+    case ${manifest##*/} in
+      pom.xml) fmt=pom.xml ;;
+      build.gradle) fmt=build.gradle ;;
+      *) continue ;;
+    esac
+    relpath=$(sca_relpath "$root" "$manifest")
+    run_record checks_run SCA-JAVA-VULNERABLE_DEP-01
+
+    while IFS=$'\x1f' read -r name ver direct; do
+      [[ -n $name && -n $ver ]] || continue
+      if sca_lookup_exact maven "$name" "$ver" "$db" >"$hits"; then
+        while IFS= read -r row; do
+          [[ -n $row ]] || continue
+          _sca_emit_finding SCA-JAVA-VULNERABLE_DEP-01 "$direct" manifest "$relpath" "$row"
+        done <"$hits"
+      elif sca_package_known maven "$name" "$db"; then
+        unknown_count[maven]=$(( ${unknown_count[maven]:-0} + 1 ))
+      fi
+    done < <(
+      case $fmt in
+        pom.xml) _sca_parse_pom_xml "$manifest" ;;
+        build.gradle) _sca_parse_build_gradle "$manifest" ;;
+      esac
+    )
+  done < <(sca_walk_java_manifests "$root")
+  rm -f "$hits"
+
+  if (( ${#unknown_count[@]} > 0 )); then
+    run_record checks_run SCA-COV-UNKNOWN_VERSION-01
+    local -a ecos=()
+    local eco cnt total=0 breakdown=''
+    while IFS= read -r eco; do
+      [[ -n $eco ]] && ecos+=("$eco")
+    done < <(printf '%s\n' "${!unknown_count[@]}" | LC_ALL=C sort)
+    for eco in "${ecos[@]+"${ecos[@]}"}"; do
+      cnt=${unknown_count[$eco]}
+      total=$(( total + cnt ))
+      breakdown="${breakdown:+$breakdown, }$eco: $cnt"
+      run_record coverage_gap "module=sca reason=unknown_version ecosystem=$eco count=$cnt"
+    done
+    finding_new
+    finding_set check_id SCA-COV-UNKNOWN_VERSION-01
+    finding_set module sca
+    finding_set title "SCA: $total pinned dependency version(s) not present in data/advisories.db (package known, exact version unmatched)"
+    finding_set base_severity info
+    finding_set confidence high
+    finding_set cwe none
+    finding_set owasp none
+    finding_set cell "$SCOURSH_PATH_ROOT"
+    finding_set remediation 'Refresh data/advisories.db (tools/vendor-engines.sh, on a networked box) to a snapshot that covers these exact pinned versions - absence here means "unknown", never "not vulnerable".'
+    finding_set_evidence "by ecosystem: $breakdown"
     finding_emit
   fi
 }
