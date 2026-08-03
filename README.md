@@ -145,25 +145,42 @@ The shipped behavior - and the one documented above - is the tag reading (`tags:
 ## Current status: what running a scan does today
 
 Three modules have landed and produce real findings: `sast`, `iac`, and `sca`.
+Everything else `docs/DESIGN.md` §13 schedules - `dast`, `cloud` (including `lib/awscli.sh`), SARIF
+output, the compliance report, and `state/` - has not landed yet.
+`AGENTS.md`'s "Build order and where we are" section is the authoritative, continuously-updated account
+of exactly what has shipped; this section is a summary of it and should never say less (or more) than
+`modules/` on disk actually contains.
 
-- **`scan.sh sast`** runs `modules/sast/engine.sh`'s native pattern engine over the scan root against
-  whatever `modules/sast/rules/*.rules` packs are on disk today - `secrets`, `crypto`, `injection`, and
-  per-language packs for Python, JavaScript/TypeScript, Go, and Java - and additionally replays
-  `secrets.rules` across git history via `modules/sast/history.sh`, populating the `SAST-HIST-*` check
-  family.
-- **`scan.sh iac`** runs the same pattern engine over infrastructure-as-code via `modules/iac/parse.sh`:
-  Terraform HCL (`modules/iac/terraform.rules`, seven checks covering open CIDRs, public ACLs,
-  unencrypted resources, disabled key rotation, public IPs, hardcoded secrets, and publicly-reachable
-  RDS instances) and Helm charts (`modules/iac/helm.rules`). CloudFormation is still out of scope.
-- **`scan.sh sca`** (`modules/sca/engine.sh`) parses npm/yarn/pnpm lockfiles under the scan root and
-  matches every pinned dependency's exact ecosystem/name/version against the vendored,
-  pre-expanded `data/advisories.db`, emitting one finding per matched advisory.
+- **`scan.sh sast`** (`modules/sast/engine.sh` + `run.sh` + `history.sh` + rule packs) runs the native
+  pattern engine over the scan root against whatever `modules/sast/rules/*.rules` packs are on disk
+  today - `secrets`, `crypto`, `injection`, and per-language packs for Python, JavaScript/TypeScript,
+  Go, and Java - and additionally replays `secrets.rules` across git history via
+  `modules/sast/history.sh`, populating the `SAST-HIST-*` check family.
+- **`scan.sh iac`** (`modules/iac/run.sh` + `parse.sh` + `terraform.rules`, plus `helm.rules` and
+  `dockerfile.rules`) runs the same pattern engine over infrastructure-as-code: Terraform HCL
+  (`modules/iac/terraform.rules`, seven checks covering open CIDRs, public ACLs, unencrypted resources,
+  disabled key rotation, public IPs, hardcoded secrets, and publicly-reachable RDS instances), Helm
+  charts (`modules/iac/helm.rules`, three checks for host ports, host mounts, and hardcoded secrets),
+  and Dockerfiles (`modules/iac/dockerfile.rules`, six checks for root users, `:latest` tags, secrets in
+  `ENV`, remote `ADD`, piping a fetch to a shell, and unpinned base-image digests). CloudFormation, bare
+  Kubernetes manifests, and docker-compose files are still out of scope.
+- **`scan.sh sca`** (`modules/sca/engine.sh` + `run.sh`) parses dependency manifests under the scan root
+  and matches every pinned dependency's exact ecosystem/name/version against the vendored,
+  pre-expanded `data/advisories.db`, emitting one finding per matched advisory. It now covers five
+  ecosystems: npm/yarn/pnpm, RubyGems (`Gemfile.lock`), and Composer/PHP (`composer.lock`) via the
+  shared `sca_scan_tree`, plus Python (`requirements.txt`, `poetry.lock`, `Pipfile.lock`) and Java
+  (`pom.xml`, `build.gradle`) via their own dedicated scan functions. Go (`go.mod`/`go.sum`) is the one
+  ecosystem `docs/DESIGN.md` §6.5 names that has not landed yet.
 
 `dast` and `cloud` have not landed yet: their subcommands are still a logged no-op, recording a
 `coverage_reduction` fact in `run.json` (`reason=not_yet_built`) instead of scanning anything, and the
 profile/intensity filter chain likewise records `reason=no_check_registry_on_disk_yet` for them since
 they have no check registry on disk.
 `diff` and `report` behave the same way (`reason=not_yet_built`) once their own required-input checks pass.
+`lib/awscli.sh` (the read-only AWS API wrapper step 6 needs before any `cloud` check can run), `state/`
+(the per-(check, scope-cell) coverage tracking step 7 needs for diffing and baseline suppression), SARIF
+output, and the compliance report also do not exist on disk yet; they land with steps 6, 7, and 10
+respectively.
 This means a scan run today validates flags, config, and (for `dast`) the scope gate correctly for every
 subcommand, and always produces a `run.json`; for `sast`, `iac`, and `sca` it also produces real
 findings in `findings.jsonl`, while `dast` and `cloud` still produce none.
@@ -173,3 +190,17 @@ findings in `findings.jsonl`, while `dast` and `cloud` still produce none.
 
 - `report`'s `--from` flag name is not specified in `docs/DESIGN.md`'s grammar block (it only says "regenerate reports from a prior run's findings.json" with no flag shown); `--from` is the engineer's own judgment call, noted as such in `scan.sh`'s own comments for a human to confirm or override.
 - No SARIF or compliance-mapping report exists yet (`docs/DESIGN.md` §13 step 10), so `--format sarif` is accepted but there is nothing yet that emits SARIF.
+
+### Keeping this section honest
+
+This section has gone stale before: for a stretch after `sast`, `iac`, and `sca` had already landed and
+were passing tests, it still opened with "no module has landed yet," so a reader trusted stale,
+contradictory documentation over the accurate `AGENTS.md` "Build order and where we are" section.
+`AGENTS.md` already imposes an "update on landing" discipline on itself - a ticket that lands a
+`docs/DESIGN.md` §13 sub-step is not considered done until that section, and its `docs/FOUNDATION.md`
+mirror, are updated in the same change.
+**Recommendation:** extend that same discipline to this README section - a ticket that adds or removes
+a `modules/<name>/` directory, or changes what a landed module covers, should not be considered done
+until this "Current status" section is updated in the same change, and ideally that should be enforced
+mechanically (e.g. a CI lint that fails when a `modules/<name>/` directory exists on disk but is not
+named as landed here, or vice versa) rather than left to reviewer memory.
