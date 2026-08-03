@@ -381,15 +381,24 @@ Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start
 ## Tests
 
 ```
-tests/run-tests.sh                 # everything: eight suites plus four linters
-tests/run-tests.sh --list          # what is available
-tests/run-tests.sh records         # one suite: records | core | config | checks | findings | report | http | e2e | scan
+tests/run-tests.sh                 # everything: every suite plus every linter
+tests/run-tests.sh --list          # the source of truth for exactly which suites and linters exist today
+tests/run-tests.sh <suite-name>    # one suite, e.g. tests/run-tests.sh sca
 tests/run-tests.sh lint-rules      # or one linter by name
 tests/lint-rules.sh                # record-format linter, error codes in rules/RULE-FORMAT.md §13
 tests/lint-shell.sh                # the tension 4, 9, 24 and 26 shell lints
 tests/lint-aws-readonly.sh         # read-only AWS lint, docs/FOUNDATION.md tension 23
 tests/e2e/fixture-scan.sh <dir>    # the end-to-end path on its own, for eyeballing a report
 ```
+
+**`tests/run-tests.sh --list` is the source of truth for the current suite and linter names, not this
+paragraph.**
+This file used to hand-copy that list (as "eight suites: records | core | config | checks | findings |
+report | http | e2e | scan"), and it silently went stale the moment `sast`, `sast-history`, `sca`, `iac`,
+`exit-code-matrix`, `gate-mutation-proof`, and `ci-smoke` were registered - each addition is a one-line
+edit to `SUITES=(...)` in `tests/run-tests.sh` itself (`docs/CI-RUNBOOK.md` checklist item 8) that this
+doc has no way of tracking automatically. Run `tests/run-tests.sh --list` to see what actually exists;
+do not hand-maintain a duplicate enumeration here or trust one written before your current checkout.
 
 See `docs/CI-RUNBOOK.md` for what CI actually runs, which checks are required on protected branches, the GNU/BSD dual-runner rationale, and the checklist for adding a new required check.
 

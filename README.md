@@ -144,9 +144,29 @@ The shipped behavior - and the one documented above - is the tag reading (`tags:
 
 ## Current status: what running a scan does today
 
-No module (`modules/sast`, `modules/dast`, etc.) has landed yet - `scan.sh` itself is complete (CLI parsing, config loading, the scope gate, exit codes, and profile filtering), but every subcommand's dispatch is currently a logged no-op: it records a `coverage_reduction` fact in `run.json` (`reason=not_yet_built`) instead of scanning anything, and the profile/intensity filter chain likewise records `reason=no_check_registry_on_disk_yet` since no `*.rules` files exist on disk yet for any module.
+Three modules have landed and produce real findings: `sast`, `iac`, and `sca`.
+
+- **`scan.sh sast`** runs `modules/sast/engine.sh`'s native pattern engine over the scan root against
+  whatever `modules/sast/rules/*.rules` packs are on disk today - `secrets`, `crypto`, `injection`, and
+  per-language packs for Python, JavaScript/TypeScript, Go, and Java - and additionally replays
+  `secrets.rules` across git history via `modules/sast/history.sh`, populating the `SAST-HIST-*` check
+  family.
+- **`scan.sh iac`** runs the same pattern engine over infrastructure-as-code via `modules/iac/parse.sh`:
+  Terraform HCL (`modules/iac/terraform.rules`, seven checks covering open CIDRs, public ACLs,
+  unencrypted resources, disabled key rotation, public IPs, hardcoded secrets, and publicly-reachable
+  RDS instances) and Helm charts (`modules/iac/helm.rules`). CloudFormation is still out of scope.
+- **`scan.sh sca`** (`modules/sca/engine.sh`) parses npm/yarn/pnpm lockfiles under the scan root and
+  matches every pinned dependency's exact ecosystem/name/version against the vendored,
+  pre-expanded `data/advisories.db`, emitting one finding per matched advisory.
+
+`dast` and `cloud` have not landed yet: their subcommands are still a logged no-op, recording a
+`coverage_reduction` fact in `run.json` (`reason=not_yet_built`) instead of scanning anything, and the
+profile/intensity filter chain likewise records `reason=no_check_registry_on_disk_yet` for them since
+they have no check registry on disk.
 `diff` and `report` behave the same way (`reason=not_yet_built`) once their own required-input checks pass.
-This means a scan run today validates flags, config, and (for `dast`) the scope gate correctly, and always produces a `run.json`, but never yet a finding.
+This means a scan run today validates flags, config, and (for `dast`) the scope gate correctly for every
+subcommand, and always produces a `run.json`; for `sast`, `iac`, and `sca` it also produces real
+findings in `findings.jsonl`, while `dast` and `cloud` still produce none.
 `--paranoid` is accepted and validated but has no enforcement yet (`docs/DESIGN.md` §13 step 8); `--baseline` is accepted but not yet consulted (suppression logic lands with `state/` at step 7).
 
 ### Known gaps
