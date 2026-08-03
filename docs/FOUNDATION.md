@@ -3882,3 +3882,8 @@ Step 3e shipped without this section (or `AGENTS.md`'s mirror) being updated, so
 an unrelated doc-staleness ticket had to rediscover that `history.sh` existed by reading the branch
 rather than the docs - precisely the failure this section exists to prevent. `AGENTS.md`'s "Build order
 and where we are" carries the same rule; keep the two in sync.
+Filing a follow-up documentation ticket to fix this section later is not an acceptable substitute for
+updating it in the step ticket itself - that pattern is what produced the java.rules staleness this
+section itself once had (a doc-refresh ticket landed a commit after java.rules shipped and still
+described it as not landed). A step ticket is not done while this section describes that step as
+unbuilt.

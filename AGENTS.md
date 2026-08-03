@@ -100,6 +100,11 @@ exactly the failure mode this file exists to prevent (see "`main` can lag `dev`"
 sibling instance of the same pattern). Do not repeat it: a ticket that lands a `docs/DESIGN.md` §13
 sub-step is not done until this paragraph's "Current position" and the FOUNDATION.md section it mirrors
 both say so.
+This paragraph and `docs/FOUNDATION.md`'s "Where the build currently stands" are part of the deliverable
+for every step ticket, not follow-up work: filing a separate documentation ticket to update them later
+is not an acceptable substitute, however small the wording change looks. A step landed without this
+paragraph and its FOUNDATION.md mirror updated in the same commit range is not done, full stop - close
+the gap in the step ticket itself.
 
 **Current position: §13 steps 1 and 2 are done, and step 3 is under way.**
 Step 3's sub-steps 3a, 3b, 3c, 3d, and 3e have landed on `dev`.
