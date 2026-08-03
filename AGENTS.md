@@ -124,10 +124,10 @@ the npm/yarn/pnpm lockfile slice, a follow-on ticket shipped the Python slice
 `SCA-JAVA-VULNERABLE_DEP-01`) - see the detailed paragraph below.**
 Each ecosystem has its own self-contained `sca_scan_*_tree` entry point in `modules/sca/engine.sh`,
 called from `modules/sca/run.sh`'s `_sca_run_module`.
-Go (`go.mod`/`go.sum`) and PHP (`composer.lock`) - the remaining ecosystems `docs/DESIGN.md` §6.5
-names - are still open, so SCA is not yet complete.
+Go (`go.mod`/`go.sum`) - the remaining ecosystem `docs/DESIGN.md` §6.5
+names - is still open, so SCA is not yet complete.
 The next tasks are therefore step 3's remaining `nosql.rules`/`ldap.rules`, step 4's remaining SCA
-ecosystems (Go and PHP), and step 4's remaining container/orchestration and CloudFormation IaC checks -
+ecosystem (Go), and step 4's remaining container/orchestration and CloudFormation IaC checks -
 not step 3 alone.
 
 Because `checks_registry_load` (`lib/checks.sh`) globs every `*.rules` file under `modules/iac/` with
@@ -190,6 +190,30 @@ scope for that reason. **No CLOUD-0x or POSTURE-0x ticket is picked up until ste
 `nosql`/`ldap` packs, step 4 (SCA + IaC), and step 5 (DAST) are all complete on `dev`** - step 6 is
 gated on the whole sequential chain in front of it, not just step 4, and this plan is a written
 breakdown for later, not permission to start now.
+
+**PARANOID-01 has now landed - `lib/paranoid.sh` implements `--paranoid` for real.**
+It builds the four-set allowlist tension 20's RESOLUTION specifies (`paranoid_allowlist_build`).
+It attaches a connection sampler (`ss`, or a measured-usable `strace -f -e trace=connect` fallback -
+`paranoid_probe_backend`), aborts the run with exit `3` (`SCOURSH_EXIT_SCOPE`) on the first observed
+destination outside that allowlist, and exits `4` (`SCOURSH_EXIT_INPUT`) when neither backend is
+available or permitted.
+It is wired into `scan.sh`'s `scan_main` right after config loads and before any module dispatch.
+`tests/suites/paranoid.sh` is the deterministic no-egress fixture tension 20 calls for.
+`SCOURSH_PARANOID_FORCE_BACKEND`/`SCOURSH_PARANOID_SAMPLE` stand in for the ss/strace probe and the
+sampler itself (the same swappable-hook idiom `lib/http.sh`'s `SCOURSH_HTTP_RESOLVE`/
+`SCOURSH_HTTP_TRANSPORT` already use).
+So the suite never depends on `ss`/`strace` actually being installed - both are Linux-only, and this
+project's CI matrix runs macOS too.
+One correction surfaced while building this ticket, recorded in full in `docs/FOUNDATION.md` tension
+20's own "Implementation" paragraph: the observer and the abort's kill action are scoped to the
+DESCENDANT-PROCESS FAMILY rooted at the main `scan.sh` pid, not the raw OS process group tension 20's
+prose names.
+A plain `cmd &` never changes pgid, so scoping to the real process group would have let a violation's
+`kill -TERM` reach unrelated processes sharing that group by accident - measured directly: it took out
+this project's own test harness before the fix.
+`tools/run-in-netns.sh` (NETNS-01) is **not** implemented by this ticket, exactly as
+`docs/STEP8-PARANOID-PLAN.md` scoped it - it remains a separate, independently-schedulable,
+root-requiring ticket.
 
 **Step 3a-3d shipped the SAST module's rule packs and engine.**
 Four tickets landed, in this order:
@@ -340,7 +364,7 @@ It landed ahead of step 3's remaining `nosql`/`ldap` rule packs and ahead of ste
 same "land what's ready, out of strict step order" pattern as `lib/http.sh` above.
 `nosql`/`ldap`, the rest of §6.6's container/orchestration catalog (bare Kubernetes manifests and
 docker-compose), CloudFormation, and step 4's SCA half - now covered in its own paragraph below, since
-it has since landed its npm, Python, Ruby, and Java slices - all remain open (Go/PHP outstanding for
+it has since landed its npm, Python, Ruby, Java, and PHP slices - all remain open (Go outstanding for
 SCA); do not read this paragraph as "step 4 is done."
 
 **A third piece of step 4 has now landed, in three sub-tickets: `modules/sca/` (the SCA module's npm,
@@ -387,8 +411,8 @@ all three ecosystems.
 and RubyGems rows sorted together under `LC_ALL=C` (tension 25's own `look`-compatible sort
 requirement).
 
-Go (`go.mod`/`go.sum`), Java (`pom.xml`/`build.gradle`), and PHP (`composer.lock`) - the remaining
-ecosystems `docs/DESIGN.md` §6.5 names - are still open; step 4's SCA half is not complete.
+Go (`go.mod`/`go.sum`) - the remaining ecosystem `docs/DESIGN.md` §6.5 names - is still open; step 4's
+SCA half is not complete.
 
 **A third piece of step 4's IaC half has since landed on top of the Terraform one above:
 `modules/iac/docker-compose.rules` (the "IaC: docker-compose checks via the pattern-rule engine"
