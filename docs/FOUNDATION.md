@@ -3879,8 +3879,8 @@ Step 3's `nosql`/`ldap` rule packs, step 4's own SCA half (see the paragraph bel
 §6.6's container/orchestration catalog plus CloudFormation all remain open; do not read this paragraph
 as "step 4 is done."
 
-**A third piece of step 4 has now landed, in two sub-tickets: `modules/sca/` (the SCA module's npm and
-Python slices).**
+**A third piece of step 4 has now landed, in three sub-tickets: `modules/sca/` (the SCA module's npm,
+Python, and Ruby slices).**
 `ed8c283` ("SCA: parse npm lockfiles and match against data/advisories.db") shipped `modules/sca/run.sh`
 (the `scan_dispatch sca` entry point, with no check-registry gate - SCA is a table lookup, not a
 pattern-rule engine) and `modules/sca/engine.sh`: lockfile discovery, `package-lock.json` (v1 and
@@ -3896,8 +3896,25 @@ findings under ecosystem `pypi`, plus its own `SCA-COV-UNKNOWN_VERSION-01` roll-
 from npm's own when both ecosystems have unknown-version cases in the same run - a stated scope limit,
 not a true cross-ecosystem merge; see `sca_scan_python_tree`'s own header comment in
 `modules/sca/engine.sh`).
-`tests/suites/sca.sh` tests both slices.
-Go, Java, Ruby, and PHP (the remaining ecosystems `docs/DESIGN.md` §6.5 names) are still open; step 4's
+`11e7c97` ("SCA: parse Ruby Gemfile.lock and match against data/advisories.db (§13 step 4)") then added
+Ruby/RubyGems, in the same `modules/sca/engine.sh` file rather than a forked one: `sca_parse_gemfile_lock`
+(Gemfile.lock's `GEM`/`GIT`/`PATH` `specs:` blocks, already flat - no recursion needed, unlike npm v1),
+`sca_ruby_normalize_name` (lowercase, tension 25's RubyGems rule), and direct-vs-transitive from the
+lockfile's own `DEPENDENCIES` stanza versus a specs-only entry, minting `SCA-RUBY-VULNERABLE_DEP-01`.
+UNLIKE Python, Ruby joined npm's own `sca_scan_tree` call rather than getting a sibling function:
+`sca_scan_tree` walks BOTH npm's and RubyGems' lockfiles in ONE call, sharing one `unknown_count` table,
+rather than one call per ecosystem, because `SCA-COV-UNKNOWN_VERSION-01`'s fingerprint carries no
+ecosystem/package/advisory_id component - two separate calls would emit two findings colliding on one
+fingerprint, and `findings_merge`'s dedup would silently drop whichever ecosystem lost the sort instead
+of merging their counts - proved concretely in `tests/suites/sca.sh` via a `mixed-ecosystems` fixture
+(one npm lockfile, one Gemfile.lock, one root) asserting exactly one roll-up finding naming both
+ecosystems.
+`sca_scan_python_tree` (the Python slice, above) still runs as its own separate call for the reason it
+always did - to avoid touching `sca_scan_tree`'s already-tested npm code path - so a run with
+unknown-version cases in both an npm/Ruby lockfile AND a Python one still emits two separate roll-up
+findings; a stated, filed gap, not a defect either the Python or Ruby ticket needed to fix.
+`tests/suites/sca.sh` tests all three slices, including the real `scan.sh sca` end-to-end path.
+Go, Java, and PHP (the remaining ecosystems `docs/DESIGN.md` §6.5 names) are still open; step 4's
 SCA half is not complete.
 
 **Step 5 (DAST) has a written, dependency-ordered sub-ticket plan (`docs/STEP5-DAST-PLAN.md`), but no
@@ -3934,12 +3951,13 @@ against tension 6's full case table.
 That sentence describes step 1's own historical boundary and is unaffected by later steps: `scan.sh`
 was step 1's placeholder and is now built by step 2 (above); `modules/sast/` and its seven rule packs
 are now built by steps 3a-3e (above); `modules/iac/` and its `terraform.rules` and `helm.rules` packs
-are now built by step 4's IaC half, landed out of sequence in two parts (above); `modules/sca/` (npm and
-Python slices) is now built by step 4's SCA half, also landed out of sequence (above), though
-Go/Java/Ruby/PHP remain; `lib/http.sh` landed early, out of its normal step-5 sequence (tension 19), and
-step 5 as a whole now has a written sub-ticket plan (`docs/STEP5-DAST-PLAN.md`, above) though none of it
-has started; and `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, and `state/` remain
-unbuilt, as does the rest of `modules/` (`dast/`, `cloud/`).
+are now built by step 4's IaC half, landed out of sequence in two parts (above); `modules/sca/` (npm,
+Python, and Ruby slices - three ecosystems of six) is now built by step 4's SCA half, also landed out
+of sequence (above), though Go/Java/PHP remain; `lib/http.sh` landed early, out of its normal step-5
+sequence (tension 19), and step 5 as a whole now has a written sub-ticket plan
+(`docs/STEP5-DAST-PLAN.md`, above) though none of it has started; and `lib/engines.sh`, `lib/awscli.sh`,
+SARIF, the compliance report, and `state/` remain unbuilt, as does the rest of `modules/` (`dast/`,
+`cloud/`).
 
 **Process note: this section must be updated in the same change that lands a §13 step, not in a later
 cleanup ticket.**
@@ -3947,3 +3965,9 @@ Step 3e shipped without this section (or `AGENTS.md`'s mirror) being updated, so
 an unrelated doc-staleness ticket had to rediscover that `history.sh` existed by reading the branch
 rather than the docs - precisely the failure this section exists to prevent. `AGENTS.md`'s "Build order
 and where we are" carries the same rule; keep the two in sync.
+The npm SCA ticket (`ed8c283`) repeated the exact same failure - this section and `AGENTS.md`'s mirror
+both still said "SCA half has not landed"/"`modules/sca/`... remain unbuilt" straight through its own
+landing - and it went uncaught until the Ruby SCA ticket (`11e7c97`) corrected both in this same change.
+Two independent instances of one failure mode is a pattern, not a coincidence: treat "does the build-order
+doc already say this landed?" as part of a landing ticket's own definition of done, not an optional
+follow-up.
