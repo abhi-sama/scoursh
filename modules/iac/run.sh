@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# modules/iac/run.sh - the IaC module entry point (docs/DESIGN.md §13 step 4).
+#
+# Contract (modules/sast/run.sh's own header, reused verbatim here): scan.sh's
+# `scan_dispatch iac` does a plain `source` of this file, never a subprocess,
+# so it inherits every already-set variable of the calling scan_main
+# invocation - SCOURSH_RUN_DIR, SCOURSH_SCAN_ROOT_ID, SCOURSH_PATH_ROOT,
+# SCOURSH_JOBS, SCOURSH_FAIL_ON, SCOURSH_MIN_CONFIDENCE,
+# SCOURSH_REDACT_SECRETS, _SCAN_RESOLVED_PATH, SCAN_FLAGS,
+# CHECKS_REGISTRY_SETS, CHECKS_LAST_SELECTED_IDS - and every lib/*.sh
+# function, all already sourced by scan.sh itself.
+#
+# UNLIKE lib/*.sh, this file has no "sourced once" guard: `scan_dispatch` is
+# meant to run its module's work EVERY time it is called, and more than one
+# scan_main invocation can happen in one process (tests/suites/scan.sh calls
+# it repeatedly).  Only modules/iac/parse.sh, a pure function library, gets
+# the standard sourced-once guard - exactly the sast/engine.sh split.
+#
+# shellcheck shell=bash
+# shellcheck source=modules/iac/parse.sh
+source "${BASH_SOURCE[0]%/*}/parse.sh"
+
+_iac_run_module() {
+  local path=${_SCAN_RESOLVED_PATH:-.}
+
+  if (( ${#CHECKS_REGISTRY_SETS[@]} == 0 )); then
+    # _scan_apply_profile_filter already recorded coverage_reduction for this
+    # (module=iac reason=no_check_registry_on_disk_yet); nothing more to do.
+    log_warn 'iac: no pattern-rule registry on disk under modules/iac/ - nothing to scan'
+  else
+    # sast_index_checks (modules/sast/engine.sh) is reused unchanged: it
+    # indexes CHECKS_REGISTRY_SETS by check id, keyed off lib/records.sh
+    # alone, with nothing SAST-specific in it.
+    sast_index_checks
+
+    local -a ids=()
+    local id
+    for id in "${CHECKS_LAST_SELECTED_IDS[@]+"${CHECKS_LAST_SELECTED_IDS[@]}"}"; do
+      [[ -n ${_SAST_CHECK_LOC[$id]:-} ]] || continue
+      ids+=("$id")
+      run_record checks_run "$id"
+    done
+
+    if (( ${#ids[@]} == 0 )); then
+      run_record coverage_reduction 'module=iac reason=no_checks_selected'
+    else
+      iac_scan_tree "$path" "${ids[@]+"${ids[@]}"}"
+    fi
+
+    # tension 16's parallel workers (rate limiter, request budget, circuit
+    # breaker) land at §13 step 5; this run is single-worker, honestly
+    # declared rather than silently claimed as parallel - same declaration
+    # modules/sast/run.sh makes for itself.
+    run_record coverage_reduction 'module=iac reason=single_worker_no_parallel_scan_yet'
+  fi
+
+  findings_merge "$SCOURSH_RUN_DIR"
+  derive_findings "$SCOURSH_RUN_DIR"
+  # sast_evaluate_gate (modules/sast/engine.sh) is reused unchanged rather
+  # than forked into an "iac_evaluate_gate": despite its name it is already
+  # module-agnostic - it re-reads every finding currently in
+  # $rundir/findings.fields and applies the severity/confidence/fail-on-new
+  # filter chain with no module check anywhere in its body - so calling it
+  # again here after iac's own findings are merged evaluates the gate over
+  # the run's accumulated findings exactly like the sast module's own call
+  # does, and sets the caller's `gate` local through the same
+  # sourced-not-subprocess dynamic-scoping contract scan.sh's header
+  # documents.
+  sast_evaluate_gate "$SCOURSH_RUN_DIR"
+  report_all "$SCOURSH_RUN_DIR"
+}
+
+_iac_run_module

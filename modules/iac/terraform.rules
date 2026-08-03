@@ -1,0 +1,165 @@
+# modules/iac/terraform.rules - docs/DESIGN.md §8.2 IaC seed catalog, scoped to
+# Terraform HCL only (docs/DESIGN.md §13 step 4, this ticket).
+#
+# Path note: rules/RULE-FORMAT.md §9's frozen path table grants the
+# pattern-rule schema to `modules/iac/*.rules` FLAT - unlike
+# `modules/sast/rules/*.rules`, there is no `rules/` subdirectory under
+# modules/iac/.  A file at modules/iac/rules/terraform.rules would match no
+# row of that table and fail E070.  The basename `checks.rules` is reserved
+# repository-wide for the §9.5 script-check schema (it is matched first in
+# records_schema_for_path, ahead of the `modules/iac/*.rules` row), so this
+# pack is deliberately named `terraform.rules`, never `checks.rules`.
+#
+# Scope discipline: Terraform (*.tf) only, per this ticket.  CloudFormation,
+# Docker, Kubernetes, and Helm checks - though §8.2 and this same `.rules`
+# engine could carry them - are explicitly out of scope here; see
+# docs/DESIGN.md §8.2's own "Optional adapter" note and §7 (containers) for
+# where those belong instead.
+#
+# Seed rules, each straight out of §8.2's list:
+#   cidr_blocks = ["0.0.0.0/0"], acl = "public-read", encrypted = false,
+#   missing enable_key_rotation, associate_public_ip_address = true,
+#   hardcoded secrets in .tf, publicly_accessible = true (RDS).
+#
+# IAC-TF-OPEN_CIDR-01 is rules/RULE-FORMAT.md §9.1.1's own worked example and
+# §12.5's own worked pattern-rule example; both are reproduced here verbatim
+# rather than paraphrased, so this pack matches the spec's own reference
+# byte-for-byte.
+#
+# IAC-TF-KEY_ROTATION_DISABLED-01 is the one ABSENCE check in this pack, the
+# same shape java.rules' SAST-JAVA-XXE_DISALLOW_DOCTYPE-01 already
+# establishes: the finding fires on `resource "aws_kms_key" ...  {` unless a
+# `enable_key_rotation = true` line appears within the context-window.  Like
+# that precedent, an absence check can only be a `context-deny` with a
+# non-zero window (rules/RULE-FORMAT.md §10.2 - context-window:0 binds
+# same-line-intent guards only), so it carries the same reviewed W033
+# trade-off; the window (12 lines) is sized to the typical short
+# `aws_kms_key` resource block.
+
+id: IAC-TF-OPEN_CIDR-01
+title: Security group rule open to 0.0.0.0/0
+severity: high
+confidence: high
+cwe: CWE-284
+owasp: A05:2021
+pattern: cidr_blocks\s*=\s*\[[^]]*"0\.0\.0\.0/0"
+dialect: ere
+files: *.tf
+context-deny: ^\s*#\s*scoursh-allow: open-cidr
+context-window: 1
+tags: static
+tags: compliance
+cis: 5.2
+cis: 5.3
+remediation: Restrict the CIDR to the smallest network that needs access.
+  Where public reachability is genuinely required (a public load balancer listener),
+  terminate it at an edge that applies WAF and rate limiting rather than at the
+  instance security group, and record the exception with an inline
+  "# scoursh-allow: open-cidr" comment on the preceding line.
+references: CIS-AWS-5.2
+
+id: IAC-TF-PUBLIC_ACL-01
+title: S3 bucket ACL set to a public value
+severity: critical
+confidence: high
+cwe: CWE-284
+owasp: A05:2021
+pattern: acl\s*=\s*"public-read(-write)?"
+dialect: ere
+files: *.tf
+tags: static
+tags: compliance
+cis: 2.1.1
+remediation: Remove the public ACL and rely on the bucket's default private ACL with
+  Block Public Access enabled. If the object truly must be public, front it with
+  CloudFront and an Origin Access Control instead of a public bucket ACL.
+references: CWE-284
+references: CIS-AWS-2.1.1
+
+id: IAC-TF-UNENCRYPTED-01
+title: Resource explicitly configured without encryption at rest
+severity: high
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+pattern: \bencrypted\s*=\s*false\b
+dialect: ere
+files: *.tf
+tags: static
+tags: compliance
+cis: 2.1.1
+remediation: Set encrypted = true (or omit the attribute where the provider default is
+  encryption-on) and, where the resource supports it, pin a customer-managed KMS key
+  rather than relying on the provider default key.
+references: CWE-311
+
+id: IAC-TF-KEY_ROTATION_DISABLED-01
+title: KMS key created without automatic key rotation enabled
+severity: medium
+confidence: medium
+cwe: CWE-320
+owasp: A02:2021
+pattern: resource\s+"aws_kms_key"\s+"[A-Za-z0-9_-]+"\s*\{
+dialect: ere
+files: *.tf
+context-deny: enable_key_rotation\s*=\s*true
+context-window: 12
+tags: static
+remediation: Add enable_key_rotation = true to the aws_kms_key resource so AWS rotates
+  the backing key material annually without any application-visible change (KMS
+  transparently keeps prior key material available for decrypting old ciphertext).
+references: CWE-320
+references: CIS-AWS-3.8
+cis: 3.8
+
+id: IAC-TF-PUBLIC_IP-01
+title: Instance or launch resource auto-assigns a public IP address
+severity: high
+confidence: high
+cwe: CWE-284
+owasp: A05:2021
+pattern: associate_public_ip_address\s*=\s*true
+dialect: ere
+files: *.tf
+tags: static
+tags: compliance
+remediation: Set associate_public_ip_address = false and reach the instance through a
+  bastion, a VPN, or a load balancer in a public subnet instead of giving the
+  instance itself a public address. If a public address is genuinely required,
+  pair it with a security group scoped to specific source ranges, not 0.0.0.0/0.
+references: CWE-284
+
+id: IAC-TF-HARDCODED_SECRET-01
+title: Hardcoded credential literal in Terraform configuration
+severity: critical
+confidence: medium
+cwe: CWE-798
+owasp: A07:2021
+pattern: \b(password|secret|secret_key|access_key|api_key|token)\s*=\s*"[^"$]{8,}"
+dialect: ere
+files: *.tf
+context-deny: (CHANGEME|changeme|EXAMPLE|example|XXXXXXXX|xxxxxxxx|placeholder|dummy|TODO)
+context-window: 0
+tags: static
+remediation: Remove the literal credential from the .tf file and rotate it immediately;
+  a committed secret must be treated as compromised even if the commit is later
+  reverted, because it remains in git history. Source the value from a variable backed
+  by a secret store (Vault, AWS Secrets Manager, SSM SecureString) instead of a literal.
+references: CWE-798
+
+id: IAC-TF-RDS_PUBLIC-01
+title: RDS instance configured as publicly accessible
+severity: critical
+confidence: high
+cwe: CWE-284
+owasp: A05:2021
+pattern: publicly_accessible\s*=\s*true
+dialect: ere
+files: *.tf
+tags: static
+tags: compliance
+cis: 2.3.2
+remediation: Set publicly_accessible = false and reach the database through an
+  application tier inside the same VPC, a bastion, or a VPN, never a public endpoint.
+references: CWE-284
+references: CIS-AWS-2.3.2
