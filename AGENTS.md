@@ -109,13 +109,20 @@ Every per-language pack the catalog names - `python`, `javascript/ts`, `go`, and
 shipped; nothing beyond `nosql.rules`/`ldap.rules` remains under the "language" heading.
 `history.sh` (the `SAST-HIST-*` mechanism, tension 13) already shipped as 3e (see below); do not
 re-list it as outstanding.
-The next task is the remainder of step 3 (`nosql.rules` and `ldap.rules`).
-Step 4's IaC half has also landed, out of sequence and ahead of step 3's remaining `nosql`/`ldap` sub-steps (see below).
-Step 4's SCA half is under way, also out of sequence: its npm slice (`ed8c283`) and now its Python
-slice (this ticket, see below) have both landed on `dev`.
+Step 4's IaC half has also landed, out of sequence and ahead of step 3's remaining `nosql`/`ldap`
+sub-steps, in two separate landings: `5de4460` shipped Terraform checks, and a later landing, `add2b21`,
+added the Helm-values slice of §6.6's container/orchestration catalog (`modules/iac/helm.rules`).
+CloudFormation, Dockerfile checks, bare Kubernetes-manifest checks, and docker-compose checks are all
+still open under §6.6 - see the detailed paragraph below.
+Step 4's SCA half is also under way, out of sequence: `ed8c283` shipped the npm/yarn/pnpm lockfile
+slice, and a follow-on ticket shipped the Python slice (`requirements.txt`/`poetry.lock`/`Pipfile.lock`)
+on top of it - see the detailed paragraph below.
 Go (`go.mod`/`go.sum`), Java (`pom.xml`/`build.gradle`), Ruby (`Gemfile.lock`), and PHP
 (`composer.lock`) - the remaining ecosystems `docs/DESIGN.md` §6.5 names - are still open, so SCA is
 not yet complete.
+The next tasks are therefore step 3's remaining `nosql.rules`/`ldap.rules`, step 4's remaining SCA
+ecosystems, and step 4's remaining container/orchestration and CloudFormation IaC checks - not step 3
+alone.
 
 **Step 5 (DAST) now has a written, dependency-ordered sub-ticket plan, but is not started.**
 `docs/STEP5-DAST-PLAN.md` breaks the ~30-script step 5 scope into tickets DAST-01 through DAST-30,
@@ -218,7 +225,7 @@ paragraph as "step 5 is done" - see "Current position" above for what is actuall
 `lib/http.sh` from its "still to plan" list, since this paragraph is where that fact is recorded.
 
 **A second piece of a later step also landed out of sequence: `modules/iac/` (step 4's IaC half) now
-exists.**
+exists - in two separate landings, and still only partial.**
 `5de4460` ("IaC: Terraform checks via the pattern-rule engine (§13 step 4)") shipped `modules/iac/run.sh`
 (the `scan_dispatch iac` entry point), `modules/iac/parse.sh` (the Terraform HCL parser), and
 `modules/iac/terraform.rules`, run through the same native pattern engine `modules/sast/engine.sh` built
@@ -227,16 +234,25 @@ at step 3a.
 `IAC-TF-UNENCRYPTED-01`, `IAC-TF-KEY_ROTATION_DISABLED-01`, `IAC-TF-PUBLIC_IP-01`,
 `IAC-TF-HARDCODED_SECRET-01`, and `IAC-TF-RDS_PUBLIC-01`.
 `tests/suites/iac.sh` tests it.
-This landing is **Terraform only**: CloudFormation and container (Dockerfile / Kubernetes-manifest) IaC
-rules are still open and explicitly out of scope for it.
-`modules/` as a whole now ships **eight** pattern packs on disk - the seven under `modules/sast/rules/`
-plus `modules/iac/terraform.rules` - which is the count `tests/lint-rules.sh`'s E060 fixture-coverage
-note now reports.
+A second, later landing, `add2b21` ("IaC: Helm chart checks via the pattern-rule engine (§13 step 4)"),
+added `modules/iac/helm.rules`: three checks (`IAC-HELM-HOST_PORT-01`, `IAC-HELM-HOST_MOUNT-01`,
+`IAC-HELM-HARDCODED_SECRET-01`) against Helm chart sources only (`values.yaml` and
+`templates/*.yaml`) - its own header states that scope discipline explicitly (never a docker-compose
+file, never a bare non-Helm Kubernetes manifest) and its own "KNOWN GAP" note confirms no
+`modules/iac/kubernetes.rules` (or any other Kubernetes-manifest pattern pack) exists on `dev` as of
+that landing.
+So §6.6's container/orchestration catalog has landed only for its Helm-values slice: Dockerfile checks,
+bare Kubernetes-manifest checks, and docker-compose checks are all still open, and so is CloudFormation
+- this remains **Terraform + Helm-values only**.
+`modules/` as a whole now ships **nine** pattern packs on disk - the seven under `modules/sast/rules/`
+plus `modules/iac/terraform.rules` and `modules/iac/helm.rules` - which is the count
+`tests/lint-rules.sh`'s E060 fixture-coverage note now reports.
 It landed ahead of step 3's remaining `nosql`/`ldap` rule packs and ahead of step 4's own SCA half, the
 same "land what's ready, out of strict step order" pattern as `lib/http.sh` above.
-Step 3's `nosql`/`ldap` rule packs remain unstarted, and step 4's SCA half - now covered in its own
-paragraph below, since it has since landed its npm and Python slices - is still incomplete
-(Go/Java/Ruby/PHP outstanding); do not read this paragraph as "step 4 is done."
+`nosql`/`ldap`, the rest of §6.6's container/orchestration catalog, CloudFormation, and step 4's SCA
+half - now covered in its own paragraph below, since it has since landed its npm and Python slices -
+all remain open (Go/Java/Ruby/PHP outstanding for SCA); do not read this paragraph as "step 4 is
+done."
 
 **A third piece of step 4 has now landed, in two sub-tickets: `modules/sca/` (the SCA module's npm and
 Python slices).**
@@ -284,14 +300,17 @@ rule pack, and `state/`.
 **Step 3a-3d and 3e then filled in most of that gap**: `modules/sast/` (with `engine.sh`, `run.sh`,
 AND `history.sh` - see above) and its seven rule packs now exist, so `scan_dispatch sast` no longer
 no-ops and `_scan_apply_profile_filter` finds a non-empty registry for SAST checks.
-Everything else in the original list is still true: `modules/dast/`, `modules/sca/`, `modules/cloud/`,
-`lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, and `state/` do not exist yet.
-`modules/iac/` landed anyway, out of sequence - see above.
-Every `scan_dispatch` call for a module other than `sast` or `iac` remains a logged
-`coverage_reduction` no-op (`reason=not_yet_built`), and every `_scan_apply_profile_filter` call for a
-check set outside SAST/IaC finds an empty check registry (`reason=no_check_registry_on_disk_yet`),
-until that module actually ships one - both mechanisms are real and tested against fixtures, they
-simply have nothing on disk to find yet outside SAST and IaC.
+Everything else in the original list is still true: `modules/dast/`, `modules/cloud/`, `lib/engines.sh`,
+`lib/awscli.sh`, SARIF, the compliance report, and `state/` do not exist yet.
+`modules/iac/` and `modules/sca/` both landed anyway, out of sequence - see above.
+Every `scan_dispatch` call for a module other than `sast`, `iac`, or `sca` remains a logged
+`coverage_reduction` no-op (`reason=not_yet_built`); `scan_dispatch sca` is no longer one of them, since
+`modules/sca/run.sh` now does real work for the npm/yarn/pnpm ecosystem.
+`_scan_apply_profile_filter`'s check-registry side is a separate mechanism, though: it loads check ids
+from on-disk `*.rules` files (`checks_registry_load`), and `modules/sca/` ships none - its findings are
+emitted directly by `engine.sh` rather than through the record/pattern-rule mechanism SAST and IaC use -
+so an SCA check set still finds an empty registry (`reason=no_check_registry_on_disk_yet`) even though
+the module itself now runs.
 Diff classification (tension 12) and baseline suppression (tension 11 steps 5 and 6) belong to step 7;
 step 1 ships the primitives they call - the merge, the fingerprint, `findings_mark_suppressed`, and
 `classify_derived`, which is pure and already tested against tension 6's whole case table.
