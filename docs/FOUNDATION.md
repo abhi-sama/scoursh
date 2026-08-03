@@ -3884,8 +3884,8 @@ added `modules/iac/helm.rules`: three checks (`IAC-HELM-HOST_PORT-01`, `IAC-HELM
 docker-compose file, never a bare non-Helm Kubernetes manifest) and its own "KNOWN GAP" note confirms no
 `modules/iac/kubernetes.rules` (or any other Kubernetes-manifest pattern pack) exists on `dev` as of
 that landing.
-A third landing, `ae03175` ("IaC: Dockerfile checks via the pattern-rule engine (§13 step 4)", this
-ticket), added `modules/iac/dockerfile.rules`: six checks (root/no `USER`, `:latest` base tag, secrets
+A third landing, `25abfa3` ("IaC: Dockerfile checks via the pattern-rule engine (§13 step 4)") added
+`modules/iac/dockerfile.rules`: six checks (root/no `USER`, `:latest` base tag, secrets
 in `ENV`/`ARG`, remote `ADD`, `curl | sh` build steps, unpinned base digest), scoped strictly to
 `Dockerfile`, `Dockerfile.*`, and `*.dockerfile` - `docker-compose*.yml` and Helm `values.yaml` are
 deliberately excluded from this pack's `files:` list, continuing the same one-pack-per-format split
@@ -3918,7 +3918,7 @@ findings under ecosystem `pypi`, plus its own `SCA-COV-UNKNOWN_VERSION-01` roll-
 from npm's own when both ecosystems have unknown-version cases in the same run - a stated scope limit,
 not a true cross-ecosystem merge; see `sca_scan_python_tree`'s own header comment in
 `modules/sca/engine.sh`).
-`11e7c97` ("SCA: parse Ruby Gemfile.lock and match against data/advisories.db (§13 step 4)") then added
+`a2d37aa` ("SCA: parse Ruby Gemfile.lock and match against data/advisories.db (§13 step 4)") then added
 Ruby/RubyGems, in the same `modules/sca/engine.sh` file rather than a forked one: `sca_parse_gemfile_lock`
 (Gemfile.lock's `GEM`/`GIT`/`PATH` `specs:` blocks, already flat - no recursion needed, unlike npm v1),
 `sca_ruby_normalize_name` (lowercase, tension 25's RubyGems rule), and direct-vs-transitive from the
@@ -4047,7 +4047,7 @@ rather than the docs - precisely the failure this section exists to prevent. `AG
 and where we are" carries the same rule; keep the two in sync.
 The npm SCA ticket (`ed8c283`) repeated the exact same failure - this section and `AGENTS.md`'s mirror
 both still said "SCA half has not landed"/"`modules/sca/`... remain unbuilt" straight through its own
-landing - and it went uncaught until the Ruby SCA ticket (`11e7c97`) corrected both in this same change.
+landing - and it went uncaught until the Ruby SCA ticket (`a2d37aa`) corrected both in this same change.
 Two independent instances of one failure mode is a pattern, not a coincidence: treat "does the build-order
 doc already say this landed?" as part of a landing ticket's own definition of done, not an optional
 follow-up.
