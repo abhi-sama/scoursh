@@ -126,6 +126,7 @@ files: *.yml
 files: *.json
 context-deny: ^\s*"?resources"?\s*:
 context-deny: \{\{
+context-deny: AWSTemplateFormatVersion|AWS::
 context-window: 20
 tags: static
 remediation: Add a resources block with both limits and requests for cpu and memory.
@@ -146,6 +147,7 @@ files: *.yml
 files: *.json
 context-deny: "?runAsNonRoot"?\s*:\s*"?true"?\b
 context-deny: \{\{
+context-deny: AWSTemplateFormatVersion|AWS::
 context-window: 20
 tags: static
 remediation: Set securityContext.runAsNonRoot to true (and pair it with a non-zero

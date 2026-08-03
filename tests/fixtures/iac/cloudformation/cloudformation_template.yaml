@@ -13,6 +13,20 @@
 # eight checks match on vocabulary grounds alone. AWSTemplateFormatVersion is
 # also present for the three absence checks' own belt-and-suspenders
 # context-deny.
+#
+# The `ConfigResource` block below is the adversarial case that guard is
+# actually for: a genuine `AWS::CloudFormation::Init` metadata block uses its
+# OWN lowercase keys (`config`, `packages`, `files`, `commands`, ...) by AWS's
+# own spec, unlike the PascalCase `Properties` used everywhere else in this
+# template. `containers`/`image` here stand in for that lowercase vocabulary -
+# a bare files-glob/case-sensitivity distinction would not stop the two
+# ABSENCE checks (IAC-K8S-MISSING_RESOURCE_LIMITS-01, IAC-K8S-RUN_AS_ROOT-01)
+# from firing on it, because an absence check matches on what is NOT nearby,
+# not on the vocabulary of what its own anchor pattern matched (`^\s*"?image"?\s*:`
+# and `^\s*"?containers"?\s*:` are both indifferent to CloudFormation vs.
+# Kubernetes - only the `AWSTemplateFormatVersion|AWS::` context-deny tells
+# them apart). This block is what pins that: dropping either check's
+# CloudFormation context-deny reintroduces this exact false positive.
 AWSTemplateFormatVersion: "2010-09-09"
 Description: Example ECS service, not a Kubernetes manifest
 Resources:
@@ -27,6 +41,13 @@ Resources:
           Essential: true
           Memory: 512
           Cpu: 256
+  ConfigResource:
+    Type: AWS::CloudFormation::Init
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          containers:
+            image: registry.example.com/sidecar:1.0
   ServiceRole:
     Type: AWS::IAM::Role
     Properties:
