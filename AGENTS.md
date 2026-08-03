@@ -124,10 +124,10 @@ the npm/yarn/pnpm lockfile slice, a follow-on ticket shipped the Python slice
 `SCA-JAVA-VULNERABLE_DEP-01`) - see the detailed paragraph below.**
 Each ecosystem has its own self-contained `sca_scan_*_tree` entry point in `modules/sca/engine.sh`,
 called from `modules/sca/run.sh`'s `_sca_run_module`.
-Go (`go.mod`/`go.sum`) and PHP (`composer.lock`) - the remaining ecosystems `docs/DESIGN.md` §6.5
-names - are still open, so SCA is not yet complete.
+Go (`go.mod`/`go.sum`) - the remaining ecosystem `docs/DESIGN.md` §6.5
+names - is still open, so SCA is not yet complete.
 The next tasks are therefore step 3's remaining `nosql.rules`/`ldap.rules`, step 4's remaining SCA
-ecosystems (Go and PHP), and step 4's remaining container/orchestration and CloudFormation IaC checks -
+ecosystem (Go), and step 4's remaining container/orchestration and CloudFormation IaC checks -
 not step 3 alone.
 
 Because `checks_registry_load` (`lib/checks.sh`) globs every `*.rules` file under `modules/iac/` with
@@ -300,7 +300,7 @@ It landed ahead of step 3's remaining `nosql`/`ldap` rule packs and ahead of ste
 same "land what's ready, out of strict step order" pattern as `lib/http.sh` above.
 `nosql`/`ldap`, the rest of §6.6's container/orchestration catalog (bare Kubernetes manifests and
 docker-compose), CloudFormation, and step 4's SCA half - now covered in its own paragraph below, since
-it has since landed its npm, Python, Ruby, and Java slices - all remain open (Go/PHP outstanding for
+it has since landed its npm, Python, Ruby, Java, and PHP slices - all remain open (Go outstanding for
 SCA); do not read this paragraph as "step 4 is done."
 
 **A third piece of step 4 has now landed, in three sub-tickets: `modules/sca/` (the SCA module's npm,
@@ -347,8 +347,8 @@ all three ecosystems.
 and RubyGems rows sorted together under `LC_ALL=C` (tension 25's own `look`-compatible sort
 requirement).
 
-Go (`go.mod`/`go.sum`), Java (`pom.xml`/`build.gradle`), and PHP (`composer.lock`) - the remaining
-ecosystems `docs/DESIGN.md` §6.5 names - are still open; step 4's SCA half is not complete.
+Go (`go.mod`/`go.sum`) - the remaining ecosystem `docs/DESIGN.md` §6.5 names - is still open; step 4's
+SCA half is not complete.
 
 **A third piece of step 4's IaC half has since landed on top of the Terraform one above:
 `modules/iac/docker-compose.rules` (the "IaC: docker-compose checks via the pattern-rule engine"
