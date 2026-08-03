@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+        - name: web
+          image: myapp:latest
+          securityContext:
+            privileged: true
+          ports:
+            - containerPort: 5432
+              hostPort: 5432
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+          env:
+            - name: DATABASE_PASSWORD
+              value: hunter2correcthorse
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
