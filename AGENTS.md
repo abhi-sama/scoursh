@@ -92,6 +92,13 @@ Each has a full entry in `docs/FOUNDATION.md`.
 
 `docs/DESIGN.md` §13 gives the build order, in ten steps, starting with `lib/core.sh` / `lib/findings.sh` / `lib/report.sh` and ending with SARIF plus the compliance report plus docs.
 
+This paragraph and `docs/FOUNDATION.md`'s "Where the build currently stands" are
+part of the deliverable for every step ticket, not follow-up work: filing a
+separate documentation ticket to update them later is not an acceptable
+substitute, however small the wording change looks. A step landed without this
+paragraph and its FOUNDATION.md mirror updated in the same commit range is not
+done, full stop - close the gap in the step ticket itself.
+
 **Current position: §13 step 1 is done. The next task is step 2.**
 
 Step 1 delivered `lib/records.sh`, `lib/core.sh`, `lib/findings.sh` and `lib/report.sh`, plus
