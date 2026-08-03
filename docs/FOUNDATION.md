@@ -3959,18 +3959,45 @@ browser.
 **No DAST-0x ticket is picked up until step 3's `nosql`/`ldap` rule packs and step 4's SCA half are both
 complete on `dev`**, per the plan's own "Status: blocked" section and this ticket's description.
 
-**Step 8 (`--paranoid` / `tools/run-in-netns.sh`) also now has a written sub-ticket plan
-(`docs/STEP8-PARANOID-PLAN.md`), split into two independently schedulable tickets, and - unlike step
-5's plan above - neither sub-ticket is blocked.**
-The plan splits `docs/DESIGN.md` §13 step 8 per tension 20's RESOLUTION into **PARANOID-01** (the
-`--paranoid` connection-observer and abort-on-out-of-scope enforcement) and **NETNS-01**
-(`tools/run-in-netns.sh`, the network-namespace runner - optional and root-requiring, stated directly in
-that ticket's own filed description). Both were filed to the backlog as real tickets (Crewban-57 and
-Crewban-58); neither is implemented by the planning ticket that produced the plan doc. This planning
-ticket's own acceptance criteria named `lib/http.sh` (tension 19) as step 8's blocker, and confirm it
-present on `dev`; tension 20's RESOLUTION already states that `lib/http.sh`'s pinned resolution cache is
-step 8's only real dependency ("so the ordering already works"), so both tickets may be picked up
-independently of each other and of the remaining un-landed steps (6, 7, 9, 10).
+**Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01
+has not.**
+`docs/STEP8-PARANOID-PLAN.md` split `docs/DESIGN.md` §13 step 8 per tension 20's RESOLUTION into
+**PARANOID-01** (the `--paranoid` connection-observer and abort-on-out-of-scope enforcement) and
+**NETNS-01** (`tools/run-in-netns.sh`, the network-namespace runner - optional and root-requiring,
+stated directly in that ticket's own filed description). Both were filed to the backlog as real tickets
+(Crewban-57 and Crewban-58).
+**NETNS-01 (Crewban-58, ticket b20cee9c) has now landed.**
+`tools/run-in-netns.sh` is a Linux-only, root/CAP_NET_ADMIN+CAP_SYS_ADMIN-requiring wrapper: it builds a
+network namespace whose route table admits only two IPv4 address sets - tension 19's pinned resolution
+cache (read via `lib/http.sh`'s own `http_scope_load`/`http_resolve_host`, never re-implemented) for
+scoursh's in-scope targets, and the nameservers parsed from `/etc/resolv.conf` (this tension's own "set
+3") - installs no default route inside the namespace, and execs the wrapped command inside it via
+`ip netns exec`, so a connection attempt to anything outside those two sets has no route and fails at
+the kernel level before a packet is sent, rather than being sampled or logged after the fact the way
+`--paranoid` (PARANOID-01, still unbuilt) would. Namespace/veth/NAT/`ip_forward` teardown runs from the
+tool's own EXIT trap on every exit path, success or failure, and every failure path (bad usage, wrong
+host, missing privilege, a plumbing step itself failing) goes through `lib/core.sh`'s `die`, staying
+inside the 0-5 exit contract; the one exit path deliberately NOT forced through `die` is the wrapped
+command's own exit status, which is forwarded transparently rather than laundered. It is never invoked
+by `scan.sh` and carries no dependency on PARANOID-01 - confirming this RESOLUTION's own "guarantee vs
+detector" distinction holds in the shipped code, not just in this register's prose. IPv6 routing is
+out of scope for this tool per its own ticket; an in-scope host that only resolves to IPv6 is logged
+and skipped, never routed - a follow-up ticket for dual-stack support was filed separately rather than
+absorbed into NETNS-01.
+`tests/suites/netns.sh` tests it, and states plainly what it can and cannot prove on a given host:
+argument parsing, the CapEff bitmask arithmetic, the collectors, and the build/teardown command
+sequence are unit-tested against stubbed `ip`/`iptables`/`sysctl` on any host; the fail-closed
+non-Linux and no-privilege paths run as real subprocess invocations (whichever applies on the host the
+suite runs on); and the one claim that genuinely needs a privileged Linux kernel - an out-of-scope
+connection attempt actually failing - is a real end-to-end case gated behind a genuine capability probe,
+recorded as SKIPPED rather than a silent pass when that probe fails.
+**PARANOID-01 remains unimplemented** and is unaffected by NETNS-01 landing; the two were never
+interdependent, so PARANOID-01 may still be picked up on its own. This planning ticket's own acceptance
+criteria named `lib/http.sh` (tension 19) as step 8's blocker, and confirmed it present on `dev` before
+either sub-ticket started - it shipped early, out of its normal step-5 sequence, exactly as noted
+below - and tension 20's RESOLUTION already states that `lib/http.sh`'s pinned resolution cache was
+step 8's only real dependency ("so the ordering already works"), which NETNS-01 landing now confirms in
+practice as well as in plan. Steps 6, 7, 9, and 10 remain un-landed and are not touched by this.
 
 What §13 step 1 deliberately did **not** build, so the boundary is not rediscovered: `scan.sh`, anything
 under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any

@@ -65,6 +65,7 @@ fixture_schema_for() {
     tests/fixtures/rules/*.rules) printf '%s' pattern-rule ;;
     tests/fixtures/config/scope.conf) printf '%s' scope-target ;;
     tests/fixtures/config/http-scope.conf) printf '%s' scope-target ;;
+    tests/fixtures/config/netns-scope.conf) printf '%s' scope-target ;;
     tests/fixtures/checks-registry/modules/sast/rules/*.rules) printf '%s' pattern-rule ;;
     tests/fixtures/checks-registry/modules/dast/checks.rules) printf '%s' script-check ;;
     *) return 1 ;;
