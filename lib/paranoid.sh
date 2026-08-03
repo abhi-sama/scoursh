@@ -300,7 +300,20 @@ _paranoid_family_pids() {
   declare -A family=()
   family[$root]=1
   local -a table=()
-  while IFS= read -r pid ppid; do
+  # Deliberately NOT `IFS= read -r pid ppid`: an empty IFS disables word
+  # splitting entirely, so a two-column `ps` line ("   123     1") would
+  # collapse onto `pid` alone and leave `ppid` permanently empty - which
+  # silently empties `table` on every call (the `-n $ppid` guard below would
+  # never pass) and collapses the whole fixed-point walk down to just
+  # `family[$root]`, no descendants ever added.  Measured directly while
+  # fixing this: that exact bug shipped in the first cut of this function
+  # and every existing test still passed, because every one of them drove
+  # detection through SCOURSH_PARANOID_SAMPLE, bypassing this function
+  # entirely (see tests/suites/paranoid.sh's "unit: _paranoid_family_pids"
+  # section, added specifically to catch this class of defect).  The
+  # default (unset-in-this-`read`) IFS is what is needed here: it splits on
+  # the run of whitespace `ps -Ao pid=,ppid=` pads each column with.
+  while read -r pid ppid; do
     [[ -n $pid && -n $ppid ]] && table+=("$pid $ppid")
   done < <(ps -Ao pid=,ppid= 2>/dev/null)
   # Fixed-point over the (small, per-run) pid/ppid table: repeat until a
