@@ -1,0 +1,31 @@
+# fixture poetry.lock, no sibling pyproject.toml - scoursh SCA test suite
+# (not a real project) - exercises the graph-only "referenced by nobody
+# else" direct/transitive fallback.
+
+[[package]]
+name = "click"
+version = "8.0.0"
+description = "fixture"
+category = "main"
+optional = false
+python-versions = "*"
+
+[package.dependencies]
+colorama = ">=0.4"
+
+[[package]]
+name = "colorama"
+version = "0.4.4"
+description = "fixture"
+category = "main"
+optional = false
+python-versions = "*"
+
+[metadata]
+lock-version = "1.1"
+python-versions = "^3.8"
+content-hash = "deadbeef"
+
+[metadata.files]
+click = []
+colorama = []

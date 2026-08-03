@@ -231,5 +231,165 @@ assert_contains "$E2E_RUNJSON" '"SCA-NPM-VULNERABLE_DEP-01"' \
 assert_contains "$E2E_RUNJSON" '"sca":4' \
   'run.json by_module counts 4 live findings for sca - the fixture'"'"'s 3 distinct-version vulnerable rows plus the one roll-up'
 
+# =============================================================================
+# Python: requirements.txt, poetry.lock, Pipfile.lock (docs/DESIGN.md §13
+# step 4's Python slice, docs/FOUNDATION.md tension 25).
+#
+# Covers this ticket's own acceptance criteria:
+#   - a known-vulnerable pinned dependency is reported for each of
+#     requirements.txt, poetry.lock, and Pipfile.lock, against the same
+#     fixture-scale advisories.db
+#   - PEP 503 normalisation (lowercase, `-`/`_`/`.` runs collapsed to one
+#     `-`) is proven with a raw form that differs from its normalised form
+#   - direct vs transitive is determined from poetry.lock/Pipfile.lock
+#     themselves (or their sibling manifest); requirements.txt always
+#     reports `unknown`, never a guess
+#   - a no-fixed-version advisory is flagged accept-risk; an unresolved
+#     version (unmatched pin, or no pin at all) feeds SCA-COV-UNKNOWN_VERSION-01
+#   - npm's own section 1-9 functions/fixtures/assertions above are
+#     untouched by anything below this point
+# =============================================================================
+
+# =============================================================================
+printf -- '\n-- PyPI name normalisation (docs/FOUNDATION.md tension 25): PEP 503 --\n'
+# =============================================================================
+t_case 'PEP 503: lowercase, with runs of -/_/. collapsed to a single -'
+assert_eq 'flask-login' "$(sca_pypi_normalize_name Flask_Login)" \
+  'raw "Flask_Login" (mixed case, underscore) normalises to "flask-login" - proves normalisation actually runs, not just a lowercase-only pass'
+assert_eq 'django-rest-framework' "$(sca_pypi_normalize_name 'Django.REST_Framework')" \
+  'mixed "." and "_" runs both collapse to a single "-", and case folds too'
+assert_ne 'Flask_Login' "$(sca_pypi_normalize_name Flask_Login)" \
+  'the raw and normalised forms differ for this fixture name - the exact case this AC requires a test to prove'
+
+# =============================================================================
+printf -- '\n-- requirements.txt: flat pins, unresolved specifiers, stated "unknown" limitation --\n'
+# =============================================================================
+REQ_OUT=$(sca_parse_requirements_txt "$FIXTURES/python-requirements/requirements.txt")
+t_case 'requirements.txt: a `==`-pinned requirement is extracted with its exact version'
+assert_contains "$REQ_OUT" $'Flask_Login\x1f1.2.3\x1funknown' \
+  'Flask_Login==1.2.3 is read as name=Flask_Login version=1.2.3 (normalisation happens at lookup time, not in the parser)'
+
+t_case 'requirements.txt: a range specifier (no exact pin) still yields a row, with an empty version field'
+assert_contains "$REQ_OUT" $'numpy\x1f\x1funknown' \
+  'numpy>=1.10 has no exact version to extract - the empty version field is what lets the caller still ask sca_package_known about it'
+
+t_case 'requirements.txt: an extras marker and a trailing environment marker are both stripped'
+assert_contains "$REQ_OUT" $'some-pkg\x1f9.9.9\x1funknown' \
+  'some-pkg[extra]==9.9.9 ; python_version >= "3.8" reduces to name=some-pkg version=9.9.9'
+
+t_case 'requirements.txt: a `-r` option line and a VCS URL requirement are skipped, not misparsed'
+assert_not_contains "$REQ_OUT" 'base.txt' 'the -r base.txt option line produced no row'
+assert_not_contains "$REQ_OUT" 'vcspkg' 'the git+ VCS requirement (no static version) produced no row'
+
+t_case 'AC: direct/transitive is always literal "unknown" for requirements.txt - never guessed'
+assert_not_contains "$REQ_OUT" 'direct' 'no row claims "direct"'
+assert_not_contains "$REQ_OUT" $'\x1ftransitive' 'no row claims "transitive"'
+
+# =============================================================================
+printf -- '\n-- poetry.lock: sibling pyproject.toml direct set, [package.dependencies] graph fallback --\n'
+# =============================================================================
+t_case 'poetry.lock: sca_poetry_pyproject_direct_deps reads [tool.poetry.dependencies] and [tool.poetry.group.*.dependencies], excluding "python"'
+PYPROJECT_DIRECT=$(sca_poetry_pyproject_direct_deps "$FIXTURES/python-poetry/pyproject.toml")
+assert_contains "$PYPROJECT_DIRECT" 'requests' 'requests is declared under [tool.poetry.dependencies]'
+assert_contains "$PYPROJECT_DIRECT" 'pytest' 'pytest is declared under [tool.poetry.group.dev.dependencies]'
+assert_not_contains "$PYPROJECT_DIRECT" 'python' 'the "python" interpreter-constraint key is excluded - never a real PyPI package'
+
+POETRY_OUT=$(sca_parse_poetry_lock "$FIXTURES/python-poetry/poetry.lock")
+t_case 'poetry.lock: a pyproject.toml-declared dependency is direct'
+assert_contains "$POETRY_OUT" $'requests\x1f2.6.0\x1fdirect' 'requests is direct - declared in the sibling pyproject.toml'
+t_case 'poetry.lock: a dependency absent from pyproject.toml is transitive'
+assert_contains "$POETRY_OUT" $'urllib3\x1f1.24.1\x1ftransitive' 'urllib3 is only referenced inside requests'"'"' own [package.dependencies] - transitive'
+assert_contains "$POETRY_OUT" $'certifi\x1f2019.11.28\x1ftransitive' 'certifi is likewise only referenced, not declared - transitive'
+
+t_case 'poetry.lock: with NO sibling pyproject.toml, falls back to the "referenced by nobody else" graph heuristic'
+POETRY_FALLBACK_OUT=$(sca_parse_poetry_lock "$FIXTURES/python-poetry-no-manifest/poetry.lock")
+assert_contains "$POETRY_FALLBACK_OUT" $'click\x1f8.0.0\x1fdirect' \
+  'click is never named in any [package.dependencies] table - direct under the graph-only fallback'
+assert_contains "$POETRY_FALLBACK_OUT" $'colorama\x1f0.4.4\x1ftransitive' \
+  'colorama is referenced by click'"'"'s own [package.dependencies] - transitive under the graph-only fallback, fails if the fallback were "everything is direct" instead'
+
+# =============================================================================
+printf -- '\n-- Pipfile.lock: flat default/develop maps, sibling Pipfile as the only direct-set source --\n'
+# =============================================================================
+t_case 'Pipfile.lock: sca_pipfile_direct_deps reads [packages] and [dev-packages]'
+PIPFILE_DIRECT=$(sca_pipfile_direct_deps "$FIXTURES/python-pipenv/Pipfile")
+assert_contains "$PIPFILE_DIRECT" 'django' 'django is declared under [packages]'
+assert_contains "$PIPFILE_DIRECT" 'pytest' 'pytest is declared under [dev-packages]'
+
+PIPFILE_LOCK_OUT=$(sca_parse_pipfile_lock "$FIXTURES/python-pipenv/Pipfile.lock")
+t_case 'Pipfile.lock: a Pipfile-declared dependency in "default" is direct'
+assert_contains "$PIPFILE_LOCK_OUT" $'django\x1f1.11.1\x1fdirect' 'django is direct - declared in the sibling Pipfile'
+t_case 'Pipfile.lock: a "default" entry absent from Pipfile is transitive - Pipfile.lock itself has no dependency graph to fall back on'
+assert_contains "$PIPFILE_LOCK_OUT" $'pytz\x1f2016.10\x1ftransitive' \
+  'pytz sits in the flat "default" map alongside django but is never declared in Pipfile - transitive'
+t_case 'Pipfile.lock: a "develop" entry declared in [dev-packages] is direct too'
+assert_contains "$PIPFILE_LOCK_OUT" $'pytest\x1f6.2.5\x1fdirect' 'pytest is direct - declared under [dev-packages], regardless of which JSON section it resolved into'
+
+# =============================================================================
+printf -- '\n-- sca_scan_python_tree: full fixture-scale runs against the fixture db --\n'
+# =============================================================================
+_sca_py_run_case() {
+  local dirname=$1 rundir=$W/run-py-$1
+  rm -rf "$rundir"
+  run_init "$rundir"
+  SCOURSH_PATH_ROOT=$(path_root_cell "$FIXTURES/$dirname")
+  SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$FIXTURES/$dirname")
+  export SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+  export SCOURSH_SCA_ADVISORIES_DB=$DB
+  sca_scan_python_tree "$FIXTURES/$dirname"
+  findings_merge "$rundir"
+  _sca_findings "$rundir"
+  unset SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID SCOURSH_SCA_ADVISORIES_DB
+}
+
+PY_REQ_FINDINGS=$(_sca_py_run_case python-requirements)
+t_case 'AC: requirements.txt - a known-vulnerable pinned dependency is reported'
+assert_contains "$PY_REQ_FINDINGS" 'SCA-PY-VULNERABLE_DEP-01' 'at least one SCA-PY-VULNERABLE_DEP-01 finding was emitted'
+assert_contains "$PY_REQ_FINDINGS" 'flask-login@1.2.3' \
+  'the finding is keyed on the NORMALISED name (flask-login), even though the file spells it Flask_Login'
+assert_contains "$PY_REQ_FINDINGS" 'dependency_type: unknown' 'the requirements.txt-sourced finding carries the stated "unknown" direct/transitive status'
+t_case 'AC: an unresolved requirements.txt specifier (numpy>=1.10, package known) contributes to the roll-up'
+assert_contains "$PY_REQ_FINDINGS" 'SCA-COV-UNKNOWN_VERSION-01' 'the roll-up fired for the pypi ecosystem'
+assert_contains "$PY_REQ_FINDINGS" 'SCA: 1 pinned dependency version' 'exactly one unresolved case (numpy) is counted'
+assert_not_contains "$PY_REQ_FINDINGS" 'totally-unknown-py-package' \
+  'a package with NO advisories.db rows at all (unlike numpy) is silently absent, not counted as unknown-version'
+
+PY_POETRY_FINDINGS=$(_sca_py_run_case python-poetry)
+t_case 'AC: poetry.lock - direct AND transitive vulnerable pinned dependencies are both reported'
+assert_contains "$PY_POETRY_FINDINGS" 'requests@2.6.0' 'the direct dependency requests@2.6.0 is reported vulnerable'
+assert_contains "$PY_POETRY_FINDINGS" 'dependency_type: direct' 'requests carries dependency_type: direct'
+assert_contains "$PY_POETRY_FINDINGS" 'urllib3@1.24.1' 'the transitive dependency urllib3@1.24.1 is reported vulnerable'
+assert_contains "$PY_POETRY_FINDINGS" 'dependency_type: transitive' 'urllib3 carries dependency_type: transitive'
+t_case 'AC: a no-fixed-version pypi advisory is flagged accept-risk (urllib3), a fixed one is not (requests)'
+assert_contains "$PY_POETRY_FINDINGS" 'accept_risk_candidate: true' 'urllib3 (empty fixed_versions in the fixture db) is accept-risk'
+assert_contains "$PY_POETRY_FINDINGS" 'fixed_versions: none published' 'the empty fixed_versions field renders as "none published"'
+assert_contains "$PY_POETRY_FINDINGS" 'accept_risk_candidate: false' 'requests (has a fixed version) is NOT accept-risk'
+t_case 'poetry.lock: an unmatched-but-known pinned version (certifi) feeds the roll-up'
+assert_contains "$PY_POETRY_FINDINGS" 'SCA-COV-UNKNOWN_VERSION-01' 'the roll-up fired'
+assert_contains "$PY_POETRY_FINDINGS" 'SCA: 1 pinned dependency version' 'exactly one unresolved case (certifi@2019.11.28) is counted'
+
+PY_PIPENV_FINDINGS=$(_sca_py_run_case python-pipenv)
+t_case 'AC: Pipfile.lock - direct AND transitive vulnerable pinned dependencies are both reported'
+assert_contains "$PY_PIPENV_FINDINGS" 'django@1.11.1' 'the direct dependency django@1.11.1 is reported vulnerable'
+assert_contains "$PY_PIPENV_FINDINGS" 'dependency_type: direct' 'django carries dependency_type: direct'
+assert_contains "$PY_PIPENV_FINDINGS" 'pytz@2016.10' 'the transitive dependency pytz@2016.10 is reported vulnerable'
+assert_contains "$PY_PIPENV_FINDINGS" 'dependency_type: transitive' 'pytz carries dependency_type: transitive'
+
+t_case 'run.json: checks_run records SCA-PY-VULNERABLE_DEP-01 through the real _sca_run_module ordering'
+E2E_PY_RUNDIR=$W/run-py-e2e
+rm -rf "$E2E_PY_RUNDIR"
+assert_status 0 'a real scan.sh subprocess against the poetry.lock fixture, with the fixture db, exits clean' \
+  env SCOURSH_SCA_ADVISORIES_DB="$DB" bash "$ROOT/scan.sh" sca --path "$FIXTURES/python-poetry" --out "$E2E_PY_RUNDIR"
+E2E_PY_RUNJSON=$(cat "$E2E_PY_RUNDIR/run.json" 2>/dev/null)
+assert_contains "$E2E_PY_RUNJSON" '"SCA-PY-VULNERABLE_DEP-01"' \
+  'checks_run in run.json shows the Python check actually executed through scan_dispatch sca (_sca_run_module -> _sca_py_run), not just when sca_scan_python_tree is called standalone'
+assert_contains "$E2E_PY_RUNJSON" '"sca":3' \
+  'run.json by_module counts 3 live findings for sca on this fixture - requests + urllib3 (vulnerable) plus the one roll-up'
+
+t_case 'run.json: the module-level coverage_reduction facts (db-absent/single-worker/gate) are recorded exactly ONCE, not duplicated by the Python pass'
+_SINGLE_WORKER_COUNT=$(printf '%s' "$E2E_PY_RUNJSON" | grep -o 'single_worker_no_parallel_scan_yet' | wc -l | tr -d ' ')
+assert_eq 1 "$_SINGLE_WORKER_COUNT" \
+  'exactly one occurrence - fails if sca_scan_python_tree independently re-recorded the module-level fact npm'"'"'s pass already owns'
+
 t_summary 'sca' || FAILED=1
 exit "${FAILED:-0}"

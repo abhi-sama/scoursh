@@ -3846,9 +3846,9 @@ This paragraph previously undercounted step 3 at "3a, 3b, 3c, and 3e" and left `
 still-missing list after 3d had already landed - `AGENTS.md`'s "Build order and where we are" had the
 correct count; this section is corrected here to match it, which is what the process note below exists
 to keep from recurring.
-Steps 4 through 10 remain mostly unstarted, so `modules/dast/`, `modules/sca/`, and `modules/cloud/`
-remain unbuilt, along with `lib/awscli.sh`.
-`modules/iac/` is the one exception - see the paragraph below.
+Steps 4 through 10 remain mostly unstarted, so `modules/dast/` and `modules/cloud/` remain unbuilt,
+along with `lib/awscli.sh`.
+`modules/iac/` and `modules/sca/` are exceptions - see the paragraphs below.
 The remaining follow-ups (F5, F20, F17, and F16's `look` half) are inherited by steps 4 through 10 and
 are still open.  (F3, F4, and F8 are closed above.)
 
@@ -3866,8 +3866,30 @@ rules are still open and out of scope for it.
 `modules/` as a whole now ships eight pattern packs on disk (the seven under `modules/sast/rules/` plus
 `modules/iac/terraform.rules`), which is the count `tests/lint-rules.sh`'s E060 fixture-coverage note
 now reports.
-Step 3's `nosql`/`ldap` rule packs and step 4's own SCA half both remain unstarted; do not read this
-paragraph as "step 4 is done."
+Step 3's `nosql`/`ldap` rule packs remain unstarted, and step 4's own SCA half - covered in its own
+paragraph below, since it has since landed its npm and Python slices - is still incomplete
+(Go/Java/Ruby/PHP outstanding); do not read this paragraph as "step 4 is done."
+
+**A third piece of step 4 has now landed, in two sub-tickets: `modules/sca/` (the SCA module's npm and
+Python slices).**
+`ed8c283` ("SCA: parse npm lockfiles and match against data/advisories.db") shipped `modules/sca/run.sh`
+(the `scan_dispatch sca` entry point, with no check-registry gate - SCA is a table lookup, not a
+pattern-rule engine) and `modules/sca/engine.sh`: lockfile discovery, `package-lock.json` (v1 and
+v2/v3), `yarn.lock`, and `pnpm-lock.yaml` parsing, npm's own (identity) name normalisation, and the
+`data/advisories.db` exact-match lookup (`sca_lookup_exact`/`sca_package_known`, both routed through
+`lib/core.sh`'s `db_lookup_exact`, tension 25), emitting `SCA-NPM-VULNERABLE_DEP-01` and the
+`SCA-COV-UNKNOWN_VERSION-01` roll-up.
+A follow-on ticket ("SCA: parse Python lockfiles and match against data/advisories.db") added the
+module's Python slice on top of the same `run.sh`/`engine.sh` split, exactly as `run.sh`'s own header
+comment anticipated for a sibling ecosystem: `requirements.txt`, `poetry.lock`, and `Pipfile.lock`
+parsing, PEP 503 name normalisation (`sca_pypi_normalize_name`), and `SCA-PY-VULNERABLE_DEP-01`
+findings under ecosystem `pypi`, plus its own `SCA-COV-UNKNOWN_VERSION-01` roll-up (a separate finding
+from npm's own when both ecosystems have unknown-version cases in the same run - a stated scope limit,
+not a true cross-ecosystem merge; see `sca_scan_python_tree`'s own header comment in
+`modules/sca/engine.sh`).
+`tests/suites/sca.sh` tests both slices.
+Go, Java, Ruby, and PHP (the remaining ecosystems `docs/DESIGN.md` §6.5 names) are still open; step 4's
+SCA half is not complete.
 
 **Step 5 (DAST) has a written, dependency-ordered sub-ticket plan (`docs/STEP5-DAST-PLAN.md`), but no
 implementation ticket has started.**
@@ -3903,11 +3925,12 @@ against tension 6's full case table.
 That sentence describes step 1's own historical boundary and is unaffected by later steps: `scan.sh`
 was step 1's placeholder and is now built by step 2 (above); `modules/sast/` and its seven rule packs
 are now built by steps 3a-3e (above); `modules/iac/` and its `terraform.rules` pack are now built by
-step 4's IaC half, landed out of sequence (above); `lib/http.sh` landed early, out of its normal step-5
-sequence (tension 19), and step 5 as a whole now has a written sub-ticket plan
-(`docs/STEP5-DAST-PLAN.md`, above) though none of it has started; and `lib/engines.sh`, `lib/awscli.sh`,
-SARIF, the compliance report, and `state/` remain unbuilt, as does the rest of `modules/` (`dast/`,
-`sca/`, `cloud/`).
+step 4's IaC half, landed out of sequence (above); `modules/sca/` (npm and Python slices) is now built
+by step 4's SCA half, also landed out of sequence (above), though Go/Java/Ruby/PHP remain; `lib/http.sh`
+landed early, out of its normal step-5 sequence (tension 19), and step 5 as a whole now has a written
+sub-ticket plan (`docs/STEP5-DAST-PLAN.md`, above) though none of it has started; and `lib/engines.sh`,
+`lib/awscli.sh`, SARIF, the compliance report, and `state/` remain unbuilt, as does the rest of
+`modules/` (`dast/`, `cloud/`).
 
 **Process note: this section must be updated in the same change that lands a §13 step, not in a later
 cleanup ticket.**

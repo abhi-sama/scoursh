@@ -908,3 +908,554 @@ sca_scan_tree() {
   # function once a second module needs the identical logic.
   run_record coverage_reduction 'module=sca reason=gate_evaluation_not_yet_wired'
 }
+
+# ---------------------------------------------------------------------------
+# 10. Python: requirements.txt, poetry.lock, Pipfile.lock (docs/DESIGN.md
+#     §6.5, docs/FOUNDATION.md tension 25 - the Python slice of §13 step 4)
+# ---------------------------------------------------------------------------
+# SCOPE (this ticket): parses exactly the three names docs/DESIGN.md §6.5
+# names for Python - `requirements.txt`, `poetry.lock`, `Pipfile.lock` - no
+# `requirements-*.txt`/`requirements/*.txt` variants, no bare `pyproject.toml`
+# PEP 621 projects with no `poetry.lock`, no `setup.py`/`setup.cfg`.  Touches
+# nothing under npm/Go/Java/Ruby/PHP - this ticket's own scope line - and
+# does not modify section 5-9 above (npm) at all.
+
+# ---- 10.1 PyPI name normalisation (frozen table, tension 25) --------------
+# PEP 503: lowercase, with runs of `-`, `_`, `.` collapsed to a single `-`
+# (Python's own `re.sub(r"[-_.]+", "-", name).lower()`).  A pure-bash char
+# scan, not `sed`/`tr`, mirroring this file's other small per-token scanners
+# (_sca_pnpm_indent, _sca_yarn_dep_line_name) rather than spawning a
+# subprocess per dependency line.
+sca_pypi_normalize_name() {
+  local s=${1,,} out='' ch prev='' i n
+  n=${#s}
+  for (( i = 0; i < n; i++ )); do
+    ch=${s:i:1}
+    case $ch in
+      -|_|.) ch='-' ;;
+    esac
+    if [[ $ch == '-' && $prev == '-' ]]; then
+      continue
+    fi
+    # SC2324 false positive: `out` is a string accumulator (declared `out=''`
+    # above), and `$ch` is a single character, never a bare numeric literal -
+    # the linter's own "did you mean ((out+=1))" heuristic misfires on any
+    # `+=` whose right-hand side traces back to a one-character case arm.
+    # shellcheck disable=SC2324
+    out+=$ch
+    prev=$ch
+  done
+  printf '%s' "$out"
+}
+
+# ---- 10.2 Manifest/lockfile discovery --------------------------------------
+# Reuses SCA_DEFAULT_EXCLUDE_DIRS (section 1) unchanged - it already lists
+# .venv/venv/__pycache__/.mypy_cache/.pytest_cache/.tox precisely because it
+# was written with this ecosystem in mind, per that array's own comment.
+sca_walk_python_manifests() {
+  local root=$1
+  if [[ -f $root ]]; then
+    case ${root##*/} in
+      requirements.txt | poetry.lock | Pipfile.lock) printf '%s\n' "$root" ;;
+    esac
+    return 0
+  fi
+  local -a prune=()
+  local d first=1
+  for d in "${SCA_DEFAULT_EXCLUDE_DIRS[@]+"${SCA_DEFAULT_EXCLUDE_DIRS[@]}"}"; do
+    (( first )) || prune+=(-o)
+    prune+=(-path "$root/*/$d" -o -path "$root/$d")
+    first=0
+  done
+  find "$root" \( "${prune[@]+"${prune[@]}"}" \) -prune -o -type f \
+    \( -name requirements.txt -o -name poetry.lock -o -name Pipfile.lock \) \
+    -print 2>/dev/null | LC_ALL=C sort
+}
+
+# ---- 10.3 A minimal, stated-assumption TOML reader -------------------------
+# poetry.lock, pyproject.toml and Pipfile are all TOML.  Like section 3's
+# JSON reader, this is NOT a general TOML parser: it reads only
+# `[table]`/`[[table]]` headers and `key = "value"` (or `key = value`) lines,
+# one per physical line - true of every poetry.lock (machine-written) and of
+# every hand-authored pyproject.toml/Pipfile in the shape this module reads
+# (a flat dependency table, one package per line), which is the same
+# real-world scope-limit tradeoff section 3 already states for JSON.  Inline
+# tables (`{version = "1.0", extras = ["x"]}`) and multi-line arrays inside a
+# table this module reads are not modelled - out of scope for this ticket's
+# fixture-scale target, stated rather than hidden.
+
+# _sca_toml_table_header LINE - prints the bare table name of a
+# `[table]`/`[[table]]` header line, or nothing if LINE is not one.
+_sca_toml_table_header() {
+  local line=$1 t
+  t="${line#"${line%%[![:space:]]*}"}"
+  case $t in
+    '[['*']]'*)
+      t=${t#\[\[}
+      t=${t%%\]\]*}
+      printf '%s' "$t"
+      ;;
+    '['*']'*)
+      t=${t#\[}
+      t=${t%%\]*}
+      printf '%s' "$t"
+      ;;
+  esac
+}
+
+# _sca_toml_kv LINE - sets _SCA_TOML_KEY/_SCA_TOML_VALUE from a `key = value`
+# line (a bare or quoted key, a quoted-string value with its quotes stripped -
+# every key/value this module reads is one of those two shapes).  Returns 1
+# with both unset when LINE has no top-level `=` (a table header, a blank
+# line, or a shape this reader does not model).
+_sca_toml_kv() {
+  local line=$1 k v
+  if [[ $line != *=* ]]; then
+    _SCA_TOML_KEY=''
+    _SCA_TOML_VALUE=''
+    return 1
+  fi
+  k=${line%%=*}
+  v=${line#*=}
+  k="${k#"${k%%[![:space:]]*}"}"
+  k="${k%"${k##*[![:space:]]}"}"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  if [[ $k == \"*\" && ${#k} -ge 2 ]]; then
+    k=${k:1:${#k}-2}
+  fi
+  if [[ $v == \"*\" ]]; then
+    v=${v#\"}
+    v=${v%\"}
+  fi
+  _SCA_TOML_KEY=$k
+  _SCA_TOML_VALUE=$v
+  return 0
+}
+
+# ---- 10.4 requirements.txt --------------------------------------------------
+
+# _sca_req_strip_extras STRING - drops a `[extra1,extra2]` marker, keeping
+# whatever came before AND after it (the version specifier, if any, follows
+# the closing `]`) - e.g. `foo[bar]==1.2.3` -> `foo==1.2.3`.
+_sca_req_strip_extras() {
+  local s=$1 pre post
+  if [[ $s == *'['*']'* ]]; then
+    pre=${s%%\[*}
+    post=${s#*\]}
+    printf '%s' "$pre$post"
+  else
+    printf '%s' "$s"
+  fi
+}
+
+# sca_parse_requirements_txt FILE - prints one `name<0x1F>version<0x1F>unknown`
+# row per requirement line: VERSION is the exact pinned version for a `==`
+# requirement, or empty when this format cannot resolve one (a range
+# specifier such as `>=1.0`, or a bare unpinned name) - the caller still
+# looks an empty-version name up via sca_package_known, which is how a
+# requirements.txt entry with no pin at all contributes to the
+# SCA-COV-UNKNOWN_VERSION-01 roll-up even though there is no version to
+# exact-match: this case cannot arise for a resolved lockfile (every
+# poetry.lock/Pipfile.lock entry is already pinned to one exact version) and
+# is unique to a hand-authored/`pip freeze`-shaped manifest like this one.
+#
+# STATED LIMITATION (this ticket's own AC: "documents rather than guesses"):
+# direct/transitive is always literal `unknown`, never guessed.
+# requirements.txt carries no dependency graph (unlike poetry.lock's own
+# `[package.dependencies]` sub-tables) and has no separate manifest/lockfile
+# pair to cross-reference the way pyproject.toml/Pipfile give poetry.lock and
+# Pipfile.lock (below) - a hand-curated requirements.txt often IS the
+# manifest, and `pip freeze` output is byte-indistinguishable from one
+# written by hand, so there is no second artifact to read at all, let alone
+# one recording which entries were declared by name.
+#
+# Skips `-r`/`-e`/`--flag` option lines and VCS/URL/local-path requirements
+# (no static exact version); drops a trailing environment marker
+# (`; python_version >= "3.8"`, discarded rather than evaluated - the
+# conservative "never silently narrow coverage" direction this file's other
+# stated limitations already take, since evaluating it could make a real
+# vulnerable pin disappear from the report on the wrong interpreter).  A
+# `--hash=...` continuation line is not modelled (out of scope: fixture-scale,
+# no fixture in this suite uses one).
+sca_parse_requirements_txt() {
+  local file=$1 line t name version rest
+  while IFS= read -r line || [[ -n $line ]]; do
+    t=$line
+    t="${t#"${t%%[![:space:]]*}"}"
+    t="${t%"${t##*[![:space:]]}"}"
+    [[ -n $t ]] || continue
+    [[ $t == \#* ]] && continue
+    [[ $t == -* ]] && continue
+    t=${t%%;*}
+    t="${t%"${t##*[![:space:]]}"}"
+    [[ -n $t ]] || continue
+    case $t in
+      git+* | hg+* | svn+* | bzr+* | http://* | https://* | ./* | ../* | /*) continue ;;
+    esac
+    t=$(_sca_req_strip_extras "$t")
+    if [[ $t == *'=='* ]]; then
+      rest=$t
+      name=${rest%%==*}
+      version=${rest#*==}
+      version=${version%%,*}
+      version="${version%"${version##*[![:space:]]}"}"
+    else
+      name=${t%%[\<\>=\!\~\ ]*}
+      version=''
+    fi
+    name="${name%"${name##*[![:space:]]}"}"
+    [[ -n $name ]] || continue
+    printf '%s\x1f%s\x1funknown\n' "$name" "$version"
+  done <"$file"
+}
+
+# ---- 10.5 poetry.lock -------------------------------------------------------
+
+# sca_poetry_pyproject_direct_deps FILE - prints, one per line, every key
+# under a sibling pyproject.toml's `[tool.poetry.dependencies]`,
+# `[tool.poetry.dev-dependencies]` (legacy) or `[tool.poetry.group.<name>.
+# dependencies]` (current) tables - poetry's own declared direct-dependency
+# sets, across the default group and every named group - excluding the
+# `python` key, which poetry lists as the interpreter's own version
+# constraint, never a real PyPI package.  Prints nothing (not an error) when
+# FILE is absent - sca_parse_poetry_lock below falls back to a lockfile-native
+# heuristic in that case, exactly as sca_npm_direct_deps's own callers do for
+# a missing package.json.
+sca_poetry_pyproject_direct_deps() {
+  local file=$1 line cur_table='' hdr key
+  [[ -r $file ]] || return 0
+  while IFS= read -r line || [[ -n $line ]]; do
+    hdr=$(_sca_toml_table_header "$line")
+    if [[ -n $hdr ]]; then
+      cur_table=$hdr
+      continue
+    fi
+    case $cur_table in
+      tool.poetry.dependencies | tool.poetry.dev-dependencies | tool.poetry.group.*.dependencies) ;;
+      *) continue ;;
+    esac
+    if _sca_toml_kv "$line"; then
+      key=$_SCA_TOML_KEY
+      [[ -n $key && $key != python ]] && printf '%s\n' "$key"
+    fi
+  done <"$file"
+}
+
+# sca_parse_poetry_lock FILE - prints one `name<0x1F>version<0x1F>
+# direct|transitive` row per `[[package]]` block.
+#
+# Direct/transitive: primary source is a sibling pyproject.toml (above) - the
+# same "read the manifest, not just the lockfile" pattern this file already
+# uses for package-lock.json v1/yarn.lock/pnpm-lock.yaml.  With no
+# pyproject.toml available, this format - UNLIKE Pipfile.lock below, which
+# has no dependency structure at all - carries its OWN graph in each
+# package's `[package.dependencies]` sub-table, so it falls back to the same
+# "referenced by nobody else" heuristic sca_parse_yarn_lock uses for
+# yarn.lock's own package.json-absent path: a package is direct only if no
+# OTHER package's own dependencies table names it (stated limitation,
+# identical in shape to yarn.lock's own: a package that is BOTH a genuine
+# direct dependency AND separately required by another package would be
+# reported transitive under this fallback alone).
+sca_parse_poetry_lock() {
+  local file=$1 dir
+  dir=$(dirname -- "$file")
+  local -A direct_set=()
+  local has_direct_set=0 line
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    direct_set[$line]=1
+    has_direct_set=1
+  done < <(sca_poetry_pyproject_direct_deps "$dir/pyproject.toml")
+
+  local -A referenced=()
+  local -a names=() versions=()
+  local cur_table='' in_pkg_deps=0 pkg_name='' pkg_version='' hdr line2
+  while IFS= read -r line2 || [[ -n $line2 ]]; do
+    [[ -n $line2 ]] || continue
+    [[ $line2 == \#* ]] && continue
+    hdr=$(_sca_toml_table_header "$line2")
+    if [[ -n $hdr ]]; then
+      if [[ -n $pkg_name && $hdr == package ]]; then
+        names+=("$pkg_name")
+        versions+=("$pkg_version")
+        pkg_name=''
+        pkg_version=''
+      fi
+      cur_table=$hdr
+      in_pkg_deps=0
+      [[ $hdr == package.dependencies ]] && in_pkg_deps=1
+      continue
+    fi
+    if (( in_pkg_deps )); then
+      if _sca_toml_kv "$line2"; then
+        [[ -n $_SCA_TOML_KEY ]] && referenced[$_SCA_TOML_KEY]=1
+      fi
+      continue
+    fi
+    [[ $cur_table == package ]] || continue
+    if _sca_toml_kv "$line2"; then
+      case $_SCA_TOML_KEY in
+        name) pkg_name=$_SCA_TOML_VALUE ;;
+        version) pkg_version=$_SCA_TOML_VALUE ;;
+      esac
+    fi
+  done <"$file"
+  if [[ -n $pkg_name ]]; then
+    names+=("$pkg_name")
+    versions+=("$pkg_version")
+  fi
+
+  local i name version
+  for (( i = 0; i < ${#names[@]}; i++ )); do
+    name=${names[i]}
+    version=${versions[i]}
+    [[ -n $name && -n $version ]] || continue
+    if (( has_direct_set )); then
+      if [[ -n ${direct_set[$name]:-} ]]; then
+        printf '%s\x1f%s\x1fdirect\n' "$name" "$version"
+      else
+        printf '%s\x1f%s\x1ftransitive\n' "$name" "$version"
+      fi
+    else
+      if [[ -z ${referenced[$name]:-} ]]; then
+        printf '%s\x1f%s\x1fdirect\n' "$name" "$version"
+      else
+        printf '%s\x1f%s\x1ftransitive\n' "$name" "$version"
+      fi
+    fi
+  done
+}
+
+# ---- 10.6 Pipfile.lock ------------------------------------------------------
+
+# sca_pipfile_direct_deps FILE - prints, one per line, every key under a
+# sibling Pipfile's `[packages]`/`[dev-packages]` tables (pipenv's own
+# declared direct-dependency sets).  Prints nothing (not an error) when FILE
+# is absent.
+sca_pipfile_direct_deps() {
+  local file=$1 line cur_table='' hdr key
+  [[ -r $file ]] || return 0
+  while IFS= read -r line || [[ -n $line ]]; do
+    hdr=$(_sca_toml_table_header "$line")
+    if [[ -n $hdr ]]; then
+      cur_table=$hdr
+      continue
+    fi
+    case $cur_table in
+      packages | dev-packages) ;;
+      *) continue ;;
+    esac
+    if _sca_toml_kv "$line"; then
+      key=$_SCA_TOML_KEY
+      [[ -n $key ]] && printf '%s\n' "$key"
+    fi
+  done <"$file"
+}
+
+# _sca_pipfile_lock_section FILE SECTION - prints one `name<0x1F>version` row
+# per package under Pipfile.lock's top-level SECTION map ("default" or
+# "develop"), reusing section 3's _sca_json_walk (Pipfile.lock is
+# machine-generated by pipenv with one token per line, same as
+# package-lock.json).  VERSION has its pipenv-recorded leading `==` stripped
+# (Pipfile.lock always records `"version": "==x.y.z"`, never a bare version).
+_sca_pipfile_lock_section() {
+  local file=$1 section=$2
+  local -a stack=()
+  local depth key kind value
+  while IFS=$'\x1f' read -r depth key kind value; do
+    if [[ $kind == open ]]; then
+      stack[depth]=$key
+    fi
+    if [[ $kind == scalar && $depth -eq 2 && $key == version ]]; then
+      if [[ ${stack[0]:-} == "$section" && -n ${stack[1]:-} ]]; then
+        local ver
+        ver=$(_sca_json_scalar_str "$value")
+        ver=${ver#==}
+        printf '%s\x1f%s\n' "${stack[1]}" "$ver"
+      fi
+    fi
+  done < <(_sca_json_walk "$file")
+}
+
+# sca_parse_pipfile_lock FILE - prints one `name<0x1F>version<0x1F>
+# direct|transitive` row per package across BOTH the "default" and "develop"
+# sections.
+#
+# Pipfile.lock's own "default"/"develop" maps are FLAT: pipenv's resolver
+# records every resolved package - direct AND transitive alike - at the same
+# single level (unlike poetry.lock's per-package `[package.dependencies]`
+# sub-tables above), so there is no dependency graph inside Pipfile.lock
+# itself to fall back on.  Direct/transitive therefore comes ONLY from a
+# sibling Pipfile's own `[packages]`/`[dev-packages]` tables (the same
+# "read the manifest" pattern package-lock.json v1/yarn.lock/pnpm-lock.yaml
+# already use for THEIR sibling package.json) - when Pipfile is absent, every
+# entry is reported `direct`, the same stated, lockfile-only-heuristic
+# fallback those three parsers use for a missing package.json.
+sca_parse_pipfile_lock() {
+  local file=$1 dir
+  dir=$(dirname -- "$file")
+  local -A direct_set=()
+  local has_direct_set=0 line
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    direct_set[$line]=1
+    has_direct_set=1
+  done < <(sca_pipfile_direct_deps "$dir/Pipfile")
+
+  local name ver
+  while IFS=$'\x1f' read -r name ver; do
+    [[ -n $name && -n $ver ]] || continue
+    if (( ! has_direct_set )) || [[ -n ${direct_set[$name]:-} ]]; then
+      printf '%s\x1f%s\x1fdirect\n' "$name" "$ver"
+    else
+      printf '%s\x1f%s\x1ftransitive\n' "$name" "$ver"
+    fi
+  done < <(_sca_pipfile_lock_section "$file" default; _sca_pipfile_lock_section "$file" develop)
+}
+
+# ---- 10.7 Finding emission and orchestration -------------------------------
+
+# _sca_py_emit_finding DIRECT MANIFEST_RELPATH ROW - the Python-ecosystem
+# mirror of section 9's _sca_emit_finding: same fields, same TSV-via-\x1f
+# translation and the same reasoning for it (see that function's own
+# comment), differing only in check_id/title, which is why this is a
+# separate function rather than a parameterised call into npm's own
+# (this ticket's scope line: do not modify section 9).
+_sca_py_emit_finding() {
+  local direct=$1 lockfile_rel=$2 row=$3
+  local eco pkg ver advisory sev fixed summary
+  local marked=${row//$'\t'/$'\x1f'}
+  IFS=$'\x1f' read -r eco pkg ver advisory sev fixed summary <<<"$marked"
+
+  local accept_risk=false
+  [[ -z $fixed ]] && accept_risk=true
+
+  finding_new
+  finding_set check_id SCA-PY-VULNERABLE_DEP-01
+  finding_set module sca
+  finding_set title "python: $pkg@$ver is vulnerable ($advisory)"
+  finding_set base_severity "$sev"
+  finding_set confidence high
+  finding_set cwe none
+  finding_set owasp A06:2021
+  finding_set loc_ecosystem "$eco"
+  finding_set loc_package "$pkg"
+  finding_set loc_version "$ver"
+  finding_set loc_advisory_id "$advisory"
+  finding_set path "$lockfile_rel"
+  finding_set cell "$SCOURSH_PATH_ROOT"
+  finding_set logical_kind dependency
+  finding_set logical_fqn "$eco:$pkg@$ver"
+  if [[ -n $fixed ]]; then
+    finding_set remediation "Upgrade $pkg to one of: $fixed."
+  else
+    finding_set remediation "No fixed version is published upstream yet for $advisory against $pkg; this is an accept-risk candidate pending an upstream fix."
+  fi
+  local evline
+  evline="dependency: $pkg@$ver"$'\n'
+  evline+="dependency_type: $direct"$'\n'
+  evline+="lockfile: $lockfile_rel"$'\n'
+  evline+="advisory: $advisory ($sev)"$'\n'
+  evline+="fixed_versions: ${fixed:-none published}"$'\n'
+  evline+="accept_risk_candidate: $accept_risk"$'\n'
+  evline+="summary: $summary"
+  finding_set_evidence "$evline"
+  finding_emit
+}
+
+# sca_scan_python_tree ROOT - the module's whole Python slice: walk ROOT for
+# requirements.txt/poetry.lock/Pipfile.lock, parse each, normalise every name
+# per PEP 503, look every resolved pinned dependency up against
+# data/advisories.db under ecosystem "pypi", emit one SCA-PY-VULNERABLE_DEP-01
+# finding per vulnerable pinned dependency, and contribute to the
+# SCA-COV-UNKNOWN_VERSION-01 roll-up mechanism section 9 uses for npm -
+# "shared" in the sense of reusing the identical check id, finding shape and
+# coverage semantics documented in docs/FOUNDATION.md tension 25; NOT
+# literally merged into one finding object with npm's own roll-up when both
+# ecosystems have unknown-version cases in the SAME run (two
+# SCA-COV-UNKNOWN_VERSION-01 findings would be emitted in that case, one per
+# ecosystem-scan call) - a true cross-ecosystem merge is a stated, filed
+# follow-up rather than attempted here, to avoid touching section 9's own,
+# already-tested npm code path.
+#
+# A requirements.txt entry the parser could not resolve to an exact version
+# (a range specifier, or a bare unpinned name - see sca_parse_requirements_txt
+# above) still contributes here when the package is otherwise KNOWN to the db
+# - there being no exact version to check at all is itself "unresolved",
+# landing in the same roll-up bucket an unmatched pinned version falls into.
+#
+# Deliberately does NOT run the data/advisories.db-absent check nor the two
+# module-level coverage_reduction facts (single_worker_no_parallel_scan_yet,
+# gate_evaluation_not_yet_wired) that section 9's sca_scan_tree records:
+# modules/sca/run.sh's _sca_run_module always runs _sca_npm_run (and so
+# sca_scan_tree) before _sca_py_run, and sca_scan_tree's own db-absent check
+# and its two trailing facts are UNCONDITIONAL there regardless of whether
+# any npm lockfile actually exists in the tree - so they are already recorded
+# exactly once for the whole module by the time this function would
+# otherwise duplicate them.  Stated, not hidden: calling
+# sca_scan_python_tree ALONE with a missing db (as this ticket's own unit
+# tests do) therefore returns silently rather than re-declaring a fact only
+# the npm pass owns; the real _sca_run_module ordering that makes this safe
+# end-to-end is exercised by the e2e `scan.sh sca` case in tests/suites/sca.sh.
+sca_scan_python_tree() {
+  local root=$1
+  local db
+  db=$(sca_advisories_db_path)
+  if [[ ! -r $db ]]; then
+    return 0
+  fi
+
+  local -A unknown_count=()
+  local manifest relpath fmt name ver direct hits
+  hits=$SCOURSH_SCRATCH/sca-py-hits.$$
+  while IFS= read -r manifest; do
+    [[ -n $manifest ]] || continue
+    case ${manifest##*/} in
+      requirements.txt) fmt=requirements.txt ;;
+      poetry.lock) fmt=poetry.lock ;;
+      Pipfile.lock) fmt=Pipfile.lock ;;
+      *) continue ;;
+    esac
+    relpath=$(sca_relpath "$root" "$manifest")
+    run_record checks_run SCA-PY-VULNERABLE_DEP-01
+
+    while IFS=$'\x1f' read -r name ver direct; do
+      [[ -n $name ]] || continue
+      name=$(sca_pypi_normalize_name "$name")
+      if [[ -n $ver ]] && sca_lookup_exact pypi "$name" "$ver" "$db" >"$hits"; then
+        while IFS= read -r row; do
+          [[ -n $row ]] || continue
+          _sca_py_emit_finding "$direct" "$relpath" "$row"
+        done <"$hits"
+      elif sca_package_known pypi "$name" "$db"; then
+        unknown_count[pypi]=$(( ${unknown_count[pypi]:-0} + 1 ))
+      fi
+    done < <(
+      case $fmt in
+        requirements.txt) sca_parse_requirements_txt "$manifest" ;;
+        poetry.lock) sca_parse_poetry_lock "$manifest" ;;
+        Pipfile.lock) sca_parse_pipfile_lock "$manifest" ;;
+      esac
+    )
+  done < <(sca_walk_python_manifests "$root")
+  rm -f "$hits"
+
+  if (( ${#unknown_count[@]} > 0 )); then
+    run_record checks_run SCA-COV-UNKNOWN_VERSION-01
+    local cnt=${unknown_count[pypi]}
+    run_record coverage_gap "module=sca reason=unknown_version ecosystem=pypi count=$cnt"
+    finding_new
+    finding_set check_id SCA-COV-UNKNOWN_VERSION-01
+    finding_set module sca
+    finding_set title "SCA: $cnt pinned dependency version(s) not present in data/advisories.db (package known, exact version unmatched)"
+    finding_set base_severity info
+    finding_set confidence high
+    finding_set cwe none
+    finding_set owasp none
+    finding_set cell "$SCOURSH_PATH_ROOT"
+    finding_set remediation 'Refresh data/advisories.db (tools/vendor-engines.sh, on a networked box) to a snapshot that covers these exact pinned versions - absence here means "unknown", never "not vulnerable".'
+    finding_set_evidence "by ecosystem: pypi: $cnt"
+    finding_emit
+  fi
+}

@@ -1,0 +1,7 @@
+# fixture requirements.txt - scoursh SCA test suite (not a real project)
+-r base.txt
+Flask_Login==1.2.3
+numpy>=1.10
+totally-unknown-py-package==1.0.0
+some-pkg[extra]==9.9.9 ; python_version >= "3.8"
+git+https://example.invalid/some/repo.git#egg=vcspkg

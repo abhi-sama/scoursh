@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "fixture-project"
+version = "0.1.0"
+description = "scoursh SCA test fixture - not a real project"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+requests = "^2.6.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^6.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

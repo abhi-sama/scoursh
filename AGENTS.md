@@ -111,7 +111,11 @@ shipped; nothing beyond `nosql.rules`/`ldap.rules` remains under the "language" 
 re-list it as outstanding.
 The next task is the remainder of step 3 (`nosql.rules` and `ldap.rules`).
 Step 4's IaC half has also landed, out of sequence and ahead of step 3's remaining `nosql`/`ldap` sub-steps (see below).
-Step 4's SCA half has not landed.
+Step 4's SCA half is under way, also out of sequence: its npm slice (`ed8c283`) and now its Python
+slice (this ticket, see below) have both landed on `dev`.
+Go (`go.mod`/`go.sum`), Java (`pom.xml`/`build.gradle`), Ruby (`Gemfile.lock`), and PHP
+(`composer.lock`) - the remaining ecosystems `docs/DESIGN.md` §6.5 names - are still open, so SCA is
+not yet complete.
 
 **Step 5 (DAST) now has a written, dependency-ordered sub-ticket plan, but is not started.**
 `docs/STEP5-DAST-PLAN.md` breaks the ~30-script step 5 scope into tickets DAST-01 through DAST-30,
@@ -187,7 +191,8 @@ packs are still missing.
 - **F17** - `aws_ro` pins `--no-cli-pager`, which AWS CLI v1 rejects.
   Lands with step 6 (cloud), when `lib/awscli.sh`'s first real caller ships.
 - **F16's `look` half** - the O(n) `grep -F` fallback cost for SCA lookups.
-  Lands with step 4's SCA half, which has not started.
+  SCA's npm and Python slices have both landed and already exercise `db_lookup_exact`/`look`; this
+  finding stays open until step 4's SCA half is complete (Go/Java/Ruby/PHP remain).
 
 F3, F4, and F8 are closed (F3 and F8 as of step 2's `lib/checks.sh`; F4 as of 3a above); do not
 re-flag them.
@@ -229,7 +234,31 @@ plus `modules/iac/terraform.rules` - which is the count `tests/lint-rules.sh`'s 
 note now reports.
 It landed ahead of step 3's remaining `nosql`/`ldap` rule packs and ahead of step 4's own SCA half, the
 same "land what's ready, out of strict step order" pattern as `lib/http.sh` above.
-Both `nosql`/`ldap` and SCA remain unstarted - do not read this paragraph as "step 4 is done."
+Step 3's `nosql`/`ldap` rule packs remain unstarted, and step 4's SCA half - now covered in its own
+paragraph below, since it has since landed its npm and Python slices - is still incomplete
+(Go/Java/Ruby/PHP outstanding); do not read this paragraph as "step 4 is done."
+
+**A third piece of step 4 has now landed, in two sub-tickets: `modules/sca/` (the SCA module's npm and
+Python slices).**
+`ed8c283` ("SCA: parse npm lockfiles and match against data/advisories.db") shipped `modules/sca/run.sh`
+(the `scan_dispatch sca` entry point - no check-registry gate, unlike SAST/IaC, since SCA is a table
+lookup rather than a pattern-rule engine) and `modules/sca/engine.sh`: lockfile discovery,
+`package-lock.json` (v1 and v2/v3), `yarn.lock`, and `pnpm-lock.yaml` parsing, npm's own (identity)
+name normalisation, and the `data/advisories.db` exact-match lookup (`sca_lookup_exact`/
+`sca_package_known`, both routed through `lib/core.sh`'s `db_lookup_exact` per tension 25), emitting
+`SCA-NPM-VULNERABLE_DEP-01` and the `SCA-COV-UNKNOWN_VERSION-01` roll-up.
+A follow-on ticket ("SCA: parse Python lockfiles and match against data/advisories.db") then added the
+module's Python slice on top of that same `run.sh`/`engine.sh` split, exactly as `run.sh`'s own header
+comment anticipated for a sibling ecosystem: `requirements.txt`, `poetry.lock`, and `Pipfile.lock`
+parsing, PEP 503 name normalisation (`sca_pypi_normalize_name`), and `SCA-PY-VULNERABLE_DEP-01`
+findings under ecosystem `pypi`, plus its own `SCA-COV-UNKNOWN_VERSION-01` roll-up - a separate finding
+from npm's own when both ecosystems have unknown-version cases in the same run, a stated scope limit
+rather than a true cross-ecosystem merge (see `modules/sca/engine.sh`'s `sca_scan_python_tree` header
+comment).
+`tests/suites/sca.sh` tests both slices.
+Go (`go.mod`/`go.sum`), Java (`pom.xml`/`build.gradle`), Ruby (`Gemfile.lock`), and PHP
+(`composer.lock`) - the remaining ecosystems `docs/DESIGN.md` §6.5 names - are still open; step 4's SCA
+half is not complete.
 
 Step 1 delivered `lib/records.sh`, `lib/core.sh`, `lib/findings.sh` and `lib/report.sh`, plus
 `rules/redaction.rules`, `data/severity-rubric.conf`, the `config/*.example` files, a fixture

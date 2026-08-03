@@ -30,6 +30,19 @@ _sca_npm_run() {
   sca_scan_tree "$path"
 }
 
+# _sca_py_run - the Python sibling ecosystem this file's own header
+# anticipated ("its own run function is called from _sca_run_module below,
+# next to _sca_npm_run"): requirements.txt/poetry.lock/Pipfile.lock, added by
+# the ticket that shipped modules/sca/engine.sh's section 10.  Always run
+# AFTER _sca_npm_run below - sca_scan_python_tree's own header comment
+# documents relying on sca_scan_tree (npm) having already, unconditionally,
+# recorded the module-level coverage_reduction facts (db-absent,
+# single_worker, gate-not-wired) so this pass does not duplicate them.
+_sca_py_run() {
+  local path=${_SCAN_RESOLVED_PATH:-.}
+  sca_scan_python_tree "$path"
+}
+
 _sca_run_module() {
   # No check-registry gate here the way modules/sast/run.sh has one: SCA is
   # a table lookup, not a pattern-rule engine (this ticket's own framing),
@@ -38,6 +51,7 @@ _sca_run_module() {
   # (no_advisories_db_on_disk) when there is nothing to match against,
   # exactly as sca_scan_tree's own header documents.
   _sca_npm_run
+  _sca_py_run
 
   findings_merge "$SCOURSH_RUN_DIR"
   derive_findings "$SCOURSH_RUN_DIR"
