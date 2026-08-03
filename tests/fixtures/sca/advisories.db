@@ -1,0 +1,9 @@
+# scoursh SCA test fixture advisories.db - NOT the real database.
+# data/advisories.db is generated offline by tools/vendor-engines.sh
+# (docs/FOUNDATION.md tension 25) and is never produced in this repo/CI;
+# this is a small, hand-authored, committed stand-in for tests only.
+npm	@scope/pkg	1.0.0	SCA-FIXTURE-ADVISORY-001	high	1.0.1	fixture: prototype pollution
+npm	left-pad	1.3.0	SCA-FIXTURE-ADVISORY-004	critical		fixture: no fixed version published yet
+npm	lodash	4.17.15	SCA-FIXTURE-ADVISORY-002	high	4.17.21	fixture: prototype pollution
+npm	lodash	4.17.20	SCA-FIXTURE-ADVISORY-003	medium	4.17.21	fixture: ReDoS
+npm	minimist	1.2.5	SCA-FIXTURE-ADVISORY-005	critical	1.2.6	fixture: prototype pollution
