@@ -6,6 +6,10 @@ RubyGems	mini_portile2	2.9.0	SCA-FIXTURE-RUBY-004	low	2.9.1	fixture: known packa
 RubyGems	puma	5.6.4	SCA-FIXTURE-RUBY-002	critical		fixture: no fixed version published yet
 RubyGems	rack	2.2.3	SCA-FIXTURE-RUBY-003	medium	2.2.4	fixture: transitive dependency vulnerability
 RubyGems	railsaddon	2.0.0	SCA-FIXTURE-RUBY-001	high	2.0.1	fixture: mixed-case gem name normalizes before lookup
+composer	acme/legacy-lib	0.1.0	SCA-FIXTURE-ADVISORY-103	critical		fixture: no fixed version published yet
+composer	acme/mixedcase	3.0.0	SCA-FIXTURE-ADVISORY-102	high	3.0.1	fixture: mixed-case name must normalize to lowercase before lookup
+composer	acme/unknown-version-pkg	1.0.0	SCA-FIXTURE-ADVISORY-104	medium	1.0.1	fixture: package known, pinned version 9.9.9 not tracked
+composer	acme/widget	1.2.3	SCA-FIXTURE-ADVISORY-101	high	1.2.4	fixture: known-vulnerable pinned package
 maven	com.fasterxml.jackson.core:jackson-databind	2.9.8	SCA-FIXTURE-ADVISORY-009	critical	2.9.10.4	fixture: polymorphic deserialization RCE
 maven	com.fixture:no-fix-gradle-lib	3.0.0	SCA-FIXTURE-ADVISORY-011	critical		fixture: no fixed version published yet (gradle)
 maven	com.fixture:no-fix-lib	2.0.0	SCA-FIXTURE-ADVISORY-007	critical		fixture: no fixed version published yet

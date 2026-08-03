@@ -1,0 +1,70 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "read more about it at https://getcomposer.org/doc/01-basic-usage.md#composer-lock-the-lock-file"
+    ],
+    "content-hash": "0000000000000000000000000000000",
+    "packages": [
+        {
+            "name": "acme/widget",
+            "version": "1.2.3",
+            "source": {
+                "type": "git",
+                "url": "https://example.invalid/acme/widget.git",
+                "reference": "abc123"
+            },
+            "type": "library",
+            "authors": [
+                {
+                    "name": "Fixture Author",
+                    "email": "fixture@example.invalid"
+                }
+            ],
+            "require": {
+                "php": ">=7.4"
+            }
+        },
+        {
+            "name": "acme/widget-support",
+            "version": "0.9.0",
+            "type": "library"
+        },
+        {
+            "name": "Acme/MixedCase",
+            "version": "3.0.0",
+            "type": "library"
+        },
+        {
+            "name": "acme/legacy-lib",
+            "version": "0.1.0",
+            "type": "library"
+        },
+        {
+            "name": "acme/unknown-version-pkg",
+            "version": "9.9.9",
+            "type": "library"
+        },
+        {
+            "name": "acme/untracked-pkg",
+            "version": "1.0.0",
+            "type": "library"
+        }
+    ],
+    "packages-dev": [
+        {
+            "name": "acme/dev-tool",
+            "version": "2.5.0",
+            "type": "library"
+        }
+    ],
+    "aliases": [],
+    "minimum-stability": "stable",
+    "stability-flags": [],
+    "prefer-stable": false,
+    "prefer-lowest": false,
+    "platform": {
+        "php": ">=7.4"
+    },
+    "platform-dev": [],
+    "plugin-api-version": "2.3.0"
+}

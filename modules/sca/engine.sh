@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # modules/sca/engine.sh - the SCA lockfile/manifest parsers (npm, Python,
 # Ruby/RubyGems, and Java) and the shared data/advisories.db exact-match
-# lookup (docs/DESIGN.md §6.5, §13 step 4).
+# lookup (docs/DESIGN.md §6.5, §13 step 4).  PHP/Composer's own parser lives
+# in the sibling php_engine.sh (sourced below) instead of inline here - see
+# that file's own header; nothing in THIS file parses a composer manifest
+# directly.
 #
 # Owns:
 #   docs/DESIGN.md      §6.5 "SCA (dependency vulnerabilities, offline)"
@@ -10,28 +13,37 @@
 #                       lookup against a pre-expanded data/advisories.db, name
 #                       normalisation frozen per ecosystem (npm: verbatim,
 #                       scope included; PyPI: PEP 503; RubyGems: verbatim,
-#                       lowercased; Maven: `groupId:artifactId`), and the ONE
-#                       roll-up finding (per ecosystem-scan entry point) for a
-#                       package the db knows but whose exact pinned version it
-#                       does not.
+#                       lowercased; Maven: `groupId:artifactId`; Composer:
+#                       verbatim, lowercased), and the ONE roll-up finding
+#                       (per ecosystem-scan entry point) for a package the db
+#                       knows but whose exact pinned version it does not.
 #
 # SCOPE: npm (package-lock.json v1/v2/v3, yarn.lock, pnpm-lock.yaml) - PLUS
 # Python (requirements.txt, poetry.lock, Pipfile.lock) - PLUS Ruby/RubyGems
-# (Gemfile.lock) - PLUS, as of this ticket, Java (this ticket): `pom.xml`'s
-# top-level `<dependencies>`, and `build.gradle`'s two literal-string
-# declaration shapes (`implementation "g:a:v"` and `implementation group:
-# 'g', name: 'a', version: 'v'`), regex/line-based best-effort per this
-# ticket's own framing.  A later ticket adds another ecosystem alongside
-# these four; nothing here parses a manifest belonging to one still
-# un-shipped (Go, PHP, ...).  NOT in scope for Java specifically, stated
-# rather than silently missed: Gradle Kotlin DSL (`build.gradle.kts`); Gradle
-# version catalogs (`libs.versions.toml`, or any `libs.xxx` accessor
-# reference inside a `build.gradle`); and any Gradle or Maven dependency whose
+# (Gemfile.lock) - PLUS Java: `pom.xml`'s top-level `<dependencies>`, and
+# `build.gradle`'s two literal-string declaration shapes (`implementation
+# "g:a:v"` and `implementation group: 'g', name: 'a', version: 'v'`),
+# regex/line-based best-effort - PLUS, as of this ticket, PHP/Composer
+# (composer.lock/composer.json), parsed by the sibling php_engine.sh instead
+# of inline here.  A later ticket adds another ecosystem alongside these
+# five; nothing here parses a manifest belonging to one still un-shipped
+# (Go, ...).  NOT in scope for Java specifically, stated rather than
+# silently missed: Gradle Kotlin DSL (`build.gradle.kts`); Gradle version
+# catalogs (`libs.versions.toml`, or any `libs.xxx` accessor reference inside
+# a `build.gradle`); and any Gradle or Maven dependency whose
 # group/artifact/version is a computed value or a property/variable
 # interpolation rather than a literal - `_sca_parse_build_gradle` and
 # `_sca_parse_pom_xml` below both document exactly where each of these is
 # recognised and silently skipped, precisely so this list stays true and is
 # not just aspirational prose.
+#
+# `sca_scan_tree` below (section 9) is the SHARED per-run orchestrator for
+# npm, Ruby and PHP alike (Java's own sca_scan_java_tree and Python's own
+# sca_scan_python_tree are deliberately separate - see each function's own
+# header for why), because docs/DESIGN.md/this ticket's own acceptance
+# criteria require SCA-COV-UNKNOWN_VERSION-01 to be ONE roll-up finding per
+# run for the ecosystems it covers, not one per ecosystem - see that
+# function's own comment.
 #
 # A pure function library: sourced once, defines functions, no side effects
 # at source time (modules/sca/run.sh is the file that DOES something when
@@ -58,6 +70,16 @@ fi
 if [[ -z ${SCOURSH_CONFIG_SOURCED:-} ]]; then
   # shellcheck source=lib/config.sh
   source "${BASH_SOURCE[0]%/*}/../../lib/config.sh"
+fi
+# php_engine.sh (PHP/Composer: composer.lock + composer.json, §13 step 4) is
+# the sibling "front end" `sca_scan_tree` below calls into for that
+# ecosystem, exactly as this file is npm's own front end - see
+# php_engine.sh's own header for why it is a separate file and why the two
+# source each other (both guarded, so the recursive attempt below is a
+# same-line no-op whichever file a caller sources first).
+if [[ -z ${SCOURSH_SCA_PHP_ENGINE_SOURCED:-} ]]; then
+  # shellcheck source=modules/sca/php_engine.sh
+  source "${BASH_SOURCE[0]%/*}/php_engine.sh"
 fi
 
 # ---------------------------------------------------------------------------
@@ -933,19 +955,22 @@ sca_package_known() {
 # _sca_emit_finding CHECK_ID DIRECT MANIFEST_LABEL MANIFEST_RELPATH ROW - ROW
 # is one `data/advisories.db` TSV line already known to match a pinned
 # dependency.  CHECK_ID is the check id to mint the finding under
-# (SCA-NPM-VULNERABLE_DEP-01, SCA-RUBY-VULNERABLE_DEP-01, or
-# SCA-JAVA-VULNERABLE_DEP-01 - each ecosystem's own scan entry point passes
+# (SCA-NPM-VULNERABLE_DEP-01, SCA-RUBY-VULNERABLE_DEP-01, SCA-PHP-VULNERABLE_DEP-01,
+# or SCA-JAVA-VULNERABLE_DEP-01 - each ecosystem's own scan entry point passes
 # its own, since the id does not derive from the row's `ecosystem` field
-# alone: `maven` mints under `SCA-JAVA-*`, per this ticket's own instruction,
+# alone: `maven` mints under `SCA-JAVA-*`, per that ticket's own instruction,
 # not a hypothetical `SCA-MAVEN-*`, and `RubyGems` mints under `SCA-RUBY-*`
-# rather than `SCA-RUBYGEMS-*`).
-# MANIFEST_LABEL is the evidence line's own label word (`lockfile` for npm and
-# Ruby, `manifest` for Java - a lockfile and a build manifest are not the
-# same thing, and the evidence should say which one this is).  Mints directly
-# via lib/findings.sh's finding API (this check id has no `*.rules` pattern
-# record behind it - a table lookup is not a pattern rule, per the npm
-# ticket's own instruction, unchanged by later ecosystems reusing the same
-# emitter).
+# rather than `SCA-RUBYGEMS-*`).  This function itself otherwise stays
+# ecosystem-agnostic (the title/logical_fqn already read the ecosystem label
+# from ROW's own first field, not a literal), so a new ecosystem only ever
+# needs its own check id and label, never a fork of this function.
+# MANIFEST_LABEL is the evidence line's own label word (`lockfile` for npm,
+# Ruby and PHP, `manifest` for Java - a lockfile and a build manifest are not
+# the same thing, and the evidence should say which one this is).  Mints
+# directly via lib/findings.sh's finding API (this check id has no
+# `*.rules` pattern record behind it - a table lookup is not a pattern rule,
+# per the npm ticket's own instruction, unchanged by later ecosystems
+# reusing the same emitter).
 _sca_emit_finding() {
   local check_id=$1 direct=$2 manifest_label=$3 lockfile_rel=$4 row=$5
   local eco pkg ver advisory sev fixed summary
@@ -999,28 +1024,33 @@ _sca_emit_finding() {
   finding_emit
 }
 
-# sca_scan_tree ROOT - the module's whole lockfile-ecosystem slice: walk ROOT
-# for package-lock.json/yarn.lock/pnpm-lock.yaml AND Gemfile.lock, parse each,
-# look every pinned dependency up against data/advisories.db, emit one
-# finding per vulnerable pinned dependency, and one roll-up
-# SCA-COV-UNKNOWN_VERSION-01 finding (never per-package, and never per
-# ecosystem) when any package the db tracks had its exact pinned version go
-# unmatched.
+# sca_scan_tree ROOT - the module's npm+Ruby+PHP slice: walk ROOT for
+# package-lock.json/yarn.lock/pnpm-lock.yaml, Gemfile.lock, AND
+# composer.lock, parse each, look every pinned dependency up against
+# data/advisories.db, emit one finding per vulnerable pinned dependency, and
+# one roll-up SCA-COV-UNKNOWN_VERSION-01 finding (never per-package, and -
+# this is the reason every ecosystem here is walked in ONE function rather
+# than one per ecosystem - never per-ecosystem either) when any package the
+# db tracks had its exact pinned version go unmatched.  (Python's own
+# sca_scan_python_tree, section 10, is deliberately a separate function with
+# its own roll-up - see that function's header for why it is not folded in
+# here too.)
 #
-# DELIBERATELY ONE FUNCTION FOR EVERY ECOSYSTEM, not "one sca_scan_tree call
-# per ecosystem" the way run.sh's own header comment originally speculated a
-# second ecosystem might be wired: `unknown_count` (declared once, below) and
-# the roll-up finding it feeds are process-wide state for THIS run, and
-# SCA-COV-UNKNOWN_VERSION-01's own fingerprint (lib/findings.sh's `sca`
-# profile: ecosystem/package/advisory_id) carries none of those three fields
-# for a roll-up finding - only `module`+`check_id`+`cell` do, which are
-# identical for every ecosystem's roll-up.  Two separate finding_emit calls
-# for this check id would therefore collide on ONE fingerprint, and
-# findings_merge's dedup (lib/findings.sh, keyed on fingerprint, first one
-# in sorted order wins) would silently drop whichever ecosystem's count lost
-# the sort - not merge them.  Looping every ecosystem's lockfiles inside one
-# call, sharing one `unknown_count` array, is what makes the roll-up
-# genuinely SHARED rather than accidentally clobbered.
+# WHY ONE FUNCTION FOR EVERY ECOSYSTEM IT COVERS: `unknown_count` below is a
+# single local associative array keyed by ecosystem, and the roll-up
+# finding is emitted exactly once, after EVERY walk, from that one array.
+# Splitting this into a per-ecosystem `sca_scan_tree`/`sca_ruby_scan_tree`/
+# `sca_composer_scan_tree` set (each with its own local `unknown_count` and
+# its own roll-up emission) was considered and rejected: a repository with
+# an npm lockfile, a Gemfile.lock and a composer.lock, each contributing
+# unknown-version packages, would then emit THREE SCA-COV-UNKNOWN_VERSION-01
+# findings in one run, which is exactly what this ticket's own acceptance
+# criterion ("contributes ... to the SHARED roll-up") and the npm suite's
+# own "fires exactly ONCE, not per package" invariant both rule out.
+# Calling this once per ecosystem-walk was the only way found to keep that
+# invariant true for a real mixed repository rather than merely for each
+# ecosystem tested in isolation - tests/suites/sca.sh's "mixed ecosystems"
+# case exercises exactly this.
 sca_scan_tree() {
   local root=$1
   local db
@@ -1073,6 +1103,10 @@ sca_scan_tree() {
     )
   done < <(sca_walk_npm_lockfiles "$root")
 
+  # Ruby/RubyGems - Gemfile.lock - same shared `hits` scratch file and the
+  # SAME `unknown_count` array the npm walk above just populated, per this
+  # function's own header comment on why the roll-up is computed once,
+  # after every ecosystem, rather than per ecosystem.
   while IFS= read -r lockfile; do
     [[ -n $lockfile ]] || continue
     relpath=$(sca_relpath "$root" "$lockfile")
@@ -1091,6 +1125,29 @@ sca_scan_tree() {
       fi
     done < <(sca_parse_gemfile_lock "$lockfile")
   done < <(sca_walk_gemfile_locks "$root")
+
+  # PHP/Composer (php_engine.sh, sourced above) - same shared `hits` scratch
+  # file and the SAME `unknown_count` array the npm walk above just
+  # populated, per this function's own header comment on why the roll-up is
+  # computed once, after every ecosystem, rather than per ecosystem.
+  while IFS= read -r lockfile; do
+    [[ -n $lockfile ]] || continue
+    relpath=$(sca_relpath "$root" "$lockfile")
+    run_record checks_run SCA-PHP-VULNERABLE_DEP-01
+
+    while IFS=$'\x1f' read -r name ver direct; do
+      [[ -n $name && -n $ver ]] || continue
+      name=$(sca_composer_normalize_name "$name")
+      if sca_lookup_exact composer "$name" "$ver" "$db" >"$hits"; then
+        while IFS= read -r row; do
+          [[ -n $row ]] || continue
+          _sca_emit_finding SCA-PHP-VULNERABLE_DEP-01 "$direct" lockfile "$relpath" "$row"
+        done <"$hits"
+      elif sca_package_known composer "$name" "$db"; then
+        unknown_count[composer]=$(( ${unknown_count[composer]:-0} + 1 ))
+      fi
+    done < <(sca_parse_composer_lock "$lockfile")
+  done < <(sca_walk_composer_lockfiles "$root")
   rm -f "$hits"
 
   if (( ${#unknown_count[@]} > 0 )); then
