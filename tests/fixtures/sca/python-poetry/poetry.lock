@@ -1,0 +1,48 @@
+# fixture poetry.lock - scoursh SCA test suite (not a real project)
+
+[[package]]
+name = "requests"
+version = "2.6.0"
+description = "fixture"
+category = "main"
+optional = false
+python-versions = "*"
+
+[package.dependencies]
+urllib3 = ">=1.21.1,<1.27"
+certifi = ">=2017.4.17"
+
+[[package]]
+name = "urllib3"
+version = "1.24.1"
+description = "fixture"
+category = "main"
+optional = false
+python-versions = "*"
+
+[[package]]
+name = "certifi"
+version = "2019.11.28"
+description = "fixture"
+category = "main"
+optional = false
+python-versions = "*"
+
+[[package]]
+name = "pytest"
+version = "6.2.5"
+description = "fixture"
+category = "dev"
+optional = false
+python-versions = "*"
+
+[metadata]
+lock-version = "1.1"
+python-versions = "^3.8"
+content-hash = "deadbeef"
+
+[metadata.files]
+requests = []
+urllib3 = []
+certifi = []
+pytest = []

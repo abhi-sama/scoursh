@@ -7,3 +7,10 @@ npm	left-pad	1.3.0	SCA-FIXTURE-ADVISORY-004	critical		fixture: no fixed version 
 npm	lodash	4.17.15	SCA-FIXTURE-ADVISORY-002	high	4.17.21	fixture: prototype pollution
 npm	lodash	4.17.20	SCA-FIXTURE-ADVISORY-003	medium	4.17.21	fixture: ReDoS
 npm	minimist	1.2.5	SCA-FIXTURE-ADVISORY-005	critical	1.2.6	fixture: prototype pollution
+pypi	certifi	2020.4.5.1	SCA-FIXTURE-ADVISORY-104	low	2021.5.30	fixture: certificate validation bypass
+pypi	django	1.11.1	SCA-FIXTURE-ADVISORY-105	critical	1.11.29	fixture: SQL injection
+pypi	flask-login	1.2.3	SCA-FIXTURE-ADVISORY-101	high	1.3.0	fixture: session fixation
+pypi	numpy	1.16.0	SCA-FIXTURE-ADVISORY-107	medium	1.16.1	fixture: buffer overflow
+pypi	pytz	2016.10	SCA-FIXTURE-ADVISORY-106	low	2021.1	fixture: stale tzdata
+pypi	requests	2.6.0	SCA-FIXTURE-ADVISORY-102	critical	2.20.0	fixture: header injection
+pypi	urllib3	1.24.1	SCA-FIXTURE-ADVISORY-103	critical		fixture: no fixed version published yet
