@@ -109,17 +109,18 @@ Every per-language pack the catalog names - `python`, `javascript/ts`, `go`, and
 shipped; nothing beyond `nosql.rules`/`ldap.rules` remains under the "language" heading.
 `history.sh` (the `SAST-HIST-*` mechanism, tension 13) already shipped as 3e (see below); do not
 re-list it as outstanding.
+The next task is the remainder of step 3 (`nosql.rules` and `ldap.rules`).
 Step 4's IaC half has also landed, out of sequence and ahead of step 3's remaining `nosql`/`ldap`
 sub-steps, in two separate landings: `5de4460` shipped Terraform checks, and a later landing, `add2b21`,
 added the Helm-values slice of §6.6's container/orchestration catalog (`modules/iac/helm.rules`).
 CloudFormation, Dockerfile checks, bare Kubernetes-manifest checks, and docker-compose checks are all
 still open under §6.6 - see the detailed paragraph below.
-Step 4's SCA half is also under way, out of sequence: `ed8c283` shipped the npm/yarn/pnpm lockfile
-slice, and a follow-on ticket shipped the Python slice (`requirements.txt`/`poetry.lock`/`Pipfile.lock`)
-on top of it - see the detailed paragraph below.
-Go (`go.mod`/`go.sum`), Java (`pom.xml`/`build.gradle`), Ruby (`Gemfile.lock`), and PHP
-(`composer.lock`) - the remaining ecosystems `docs/DESIGN.md` §6.5 names - are still open, so SCA is
-not yet complete.
+**Step 4's SCA half is also under way, out of sequence, and now three ecosystems in: `ed8c283` shipped
+the npm/yarn/pnpm lockfile slice, a follow-on ticket shipped the Python slice
+(`requirements.txt`/`poetry.lock`/`Pipfile.lock`) on top of it, and `11e7c97` then added the Ruby slice
+(`Gemfile.lock`) alongside both - see the detailed paragraph below.**
+Go (`go.mod`/`go.sum`), Java (`pom.xml`/`build.gradle`), and PHP (`composer.lock`) - the remaining
+ecosystems `docs/DESIGN.md` §6.5 names - are still open, so SCA is not yet complete.
 The next tasks are therefore step 3's remaining `nosql.rules`/`ldap.rules`, step 4's remaining SCA
 ecosystems, and step 4's remaining container/orchestration and CloudFormation IaC checks - not step 3
 alone.
@@ -198,8 +199,10 @@ packs are still missing.
 - **F17** - `aws_ro` pins `--no-cli-pager`, which AWS CLI v1 rejects.
   Lands with step 6 (cloud), when `lib/awscli.sh`'s first real caller ships.
 - **F16's `look` half** - the O(n) `grep -F` fallback cost for SCA lookups.
-  SCA's npm and Python slices have both landed and already exercise `db_lookup_exact`/`look`; this
-  finding stays open until step 4's SCA half is complete (Go/Java/Ruby/PHP remain).
+  SCA's npm, Python, and Ruby slices have all landed and already exercise `db_lookup_exact`/`look`, so
+  this cost is live on a `look`-less host rather than theoretical; this finding stays open until step
+  4's SCA half is complete (Go/Java/PHP remain). The asymmetry itself was already accepted as tension
+  25's own stated tradeoff, not a defect any SCA ecosystem ticket needed to fix.
 
 F3, F4, and F8 are closed (F3 and F8 as of step 2's `lib/checks.sh`; F4 as of 3a above); do not
 re-flag them.
@@ -250,12 +253,12 @@ plus `modules/iac/terraform.rules` and `modules/iac/helm.rules` - which is the c
 It landed ahead of step 3's remaining `nosql`/`ldap` rule packs and ahead of step 4's own SCA half, the
 same "land what's ready, out of strict step order" pattern as `lib/http.sh` above.
 `nosql`/`ldap`, the rest of §6.6's container/orchestration catalog, CloudFormation, and step 4's SCA
-half - now covered in its own paragraph below, since it has since landed its npm and Python slices -
-all remain open (Go/Java/Ruby/PHP outstanding for SCA); do not read this paragraph as "step 4 is
+half - now covered in its own paragraph below, since it has since landed its npm, Python, and Ruby
+slices - all remain open (Go/Java/PHP outstanding for SCA); do not read this paragraph as "step 4 is
 done."
 
-**A third piece of step 4 has now landed, in two sub-tickets: `modules/sca/` (the SCA module's npm and
-Python slices).**
+**A third piece of step 4 has now landed, in three sub-tickets: `modules/sca/` (the SCA module's npm,
+Python, and Ruby slices).**
 `ed8c283` ("SCA: parse npm lockfiles and match against data/advisories.db") shipped `modules/sca/run.sh`
 (the `scan_dispatch sca` entry point - no check-registry gate, unlike SAST/IaC, since SCA is a table
 lookup rather than a pattern-rule engine) and `modules/sca/engine.sh`: lockfile discovery,
@@ -271,10 +274,35 @@ findings under ecosystem `pypi`, plus its own `SCA-COV-UNKNOWN_VERSION-01` roll-
 from npm's own when both ecosystems have unknown-version cases in the same run, a stated scope limit
 rather than a true cross-ecosystem merge (see `modules/sca/engine.sh`'s `sca_scan_python_tree` header
 comment).
-`tests/suites/sca.sh` tests both slices.
-Go (`go.mod`/`go.sum`), Java (`pom.xml`/`build.gradle`), Ruby (`Gemfile.lock`), and PHP
-(`composer.lock`) - the remaining ecosystems `docs/DESIGN.md` §6.5 names - are still open; step 4's SCA
-half is not complete.
+
+`11e7c97` ("SCA: parse Ruby Gemfile.lock and match against data/advisories.db (§13 step 4)") then added
+Ruby/RubyGems, in `modules/sca/engine.sh` alongside the npm parser rather than a forked file:
+`sca_parse_gemfile_lock` (Gemfile.lock's `GEM`/`GIT`/`PATH` `specs:` blocks - already flat, one resolved
+gem per 4-space-indented line, so unlike npm v1 no recursion is needed), `sca_ruby_normalize_name`
+(lowercase, tension 25's RubyGems rule - unlike npm's identity function), and direct-vs-transitive
+classified from the lockfile's own top-level `DEPENDENCIES` stanza versus a specs-only entry.  It mints
+`SCA-RUBY-VULNERABLE_DEP-01` via the same `_sca_emit_finding` the npm path uses, now dispatched by
+ecosystem (`_sca_check_id_for_ecosystem`) rather than hardcoded to npm's own check id.
+UNLIKE Python, Ruby joined npm's OWN shared `sca_scan_tree` call rather than getting a sibling function:
+`sca_scan_tree` (`modules/sca/engine.sh`) now walks BOTH npm's and RubyGems' lockfiles in one call and
+shares one `unknown_count` table across them, because two separate `sca_scan_tree` calls would emit two
+`SCA-COV-UNKNOWN_VERSION-01` findings that collide on one fingerprint (it carries no
+ecosystem/package/advisory_id component) - `findings_merge`'s dedup would then silently drop whichever
+ecosystem lost the sort instead of merging their counts.  `sca_scan_python_tree` (the Python slice, see
+above) still runs as its own separate call for the same reason it always did - to avoid touching
+`sca_scan_tree`'s already-tested npm code path - so a run with unknown-version cases in both an npm/Ruby
+lockfile AND a Python one still emits two separate roll-up findings; that gap is stated and filed, not a
+defect either the Python or Ruby ticket needed to fix.
+`tests/suites/sca.sh` proves the npm+Ruby merge concretely with a `mixed-ecosystems` fixture carrying
+both an npm lockfile and a Gemfile.lock, asserting exactly one roll-up finding whose breakdown names
+both ecosystems, and separately tests the Python slice and the real `scan.sh sca` end-to-end path for
+all three ecosystems.
+`tests/fixtures/sca/advisories.db` now carries `npm`, `pypi`, and `RubyGems` fixture rows, with the npm
+and RubyGems rows sorted together under `LC_ALL=C` (tension 25's own `look`-compatible sort
+requirement).
+
+Go (`go.mod`/`go.sum`), Java (`pom.xml`/`build.gradle`), and PHP (`composer.lock`) - the remaining
+ecosystems `docs/DESIGN.md` §6.5 names - are still open; step 4's SCA half is not complete.
 
 Step 1 delivered `lib/records.sh`, `lib/core.sh`, `lib/findings.sh` and `lib/report.sh`, plus
 `rules/redaction.rules`, `data/severity-rubric.conf`, the `config/*.example` files, a fixture

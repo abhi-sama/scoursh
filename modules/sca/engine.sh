@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# modules/sca/engine.sh - the SCA npm-lockfile parser and advisories.db
-# exact-match lookup (docs/DESIGN.md §6.5, §13 step 4).
+# modules/sca/engine.sh - the SCA lockfile parsers (npm and Ruby/RubyGems) and
+# the shared data/advisories.db exact-match lookup (docs/DESIGN.md §6.5,
+# §13 step 4).
 #
 # Owns:
 #   docs/DESIGN.md      §6.5 "SCA (dependency vulnerabilities, offline)"
@@ -8,20 +9,20 @@
 #                       arithmetic, an exact (ecosystem, package, version)
 #                       lookup against a pre-expanded data/advisories.db, name
 #                       normalisation frozen per ecosystem (npm: verbatim,
-#                       scope included), and the ONE roll-up finding for a
-#                       package the db knows but whose exact pinned version it
-#                       does not.
+#                       scope included; RubyGems: verbatim, lowercased), and
+#                       the ONE roll-up finding for a package the db knows but
+#                       whose exact pinned version it does not.
 #
-# SCOPE (this ticket): npm only - package-lock.json (v1/v2/v3), yarn.lock,
-# pnpm-lock.yaml.  A later ticket adds another ecosystem alongside this one
-# in modules/sca/run.sh, per that file's own header; nothing here parses a
-# non-npm manifest.
+# SCOPE: npm - package-lock.json (v1/v2/v3), yarn.lock, pnpm-lock.yaml - plus,
+# as of this ticket, Ruby/RubyGems - Gemfile.lock.  A later ticket adds
+# another ecosystem alongside these; nothing here parses a manifest belonging
+# to one still un-shipped (Python, Go, ...).
 #
 # A pure function library: sourced once, defines functions, no side effects
 # at source time (modules/sca/run.sh is the file that DOES something when
 # sourced) - the same split modules/sast/engine.sh and modules/sast/run.sh
-# use, deliberately mirrored here per this ticket's own instruction to reuse
-# the proven per-module registry/dispatch pattern.
+# use, deliberately mirrored here per the npm ticket's own instruction to
+# reuse the proven per-module registry/dispatch pattern.
 #
 # shellcheck shell=bash
 
@@ -49,14 +50,17 @@ fi
 # ---------------------------------------------------------------------------
 # Directories never worth walking into, for the same reason
 # modules/sast/engine.sh's SAST_DEFAULT_EXCLUDE_DIRS exists: a vendored,
-# already-installed node_modules tree can itself contain lockfiles (nested
-# workspace packages, or a vendored dependency that ships its own), and
-# walking into it would report someone else's already-installed tree as this
-# repository's own dependency graph.  A separate array from SAST's rather than
-# a shared one: this module owns its own exclusion policy and a future
-# SAST-side change must not silently change what SCA walks.
+# already-installed node_modules tree (or, for Ruby, a `bundle install
+# --path` local gem cache under .bundle/) can itself contain lockfiles
+# (nested workspace packages, or a vendored dependency that ships its own),
+# and walking into it would report someone else's already-installed tree as
+# this repository's own dependency graph.  A separate array from SAST's
+# rather than a shared one: this module owns its own exclusion policy and a
+# future SAST-side change must not silently change what SCA walks.  `vendor`
+# is already shared with Go's own vendoring convention, kept as one entry
+# rather than duplicated.
 SCA_DEFAULT_EXCLUDE_DIRS=(.git node_modules vendor .venv venv __pycache__
-  .mypy_cache .pytest_cache .tox dist build reports state .terraform)
+  .mypy_cache .pytest_cache .tox dist build reports state .terraform .bundle)
 
 _sca_dir_excluded() {
   local base=$1 d
@@ -100,6 +104,17 @@ sca_walk_npm_lockfiles() {
 # half-assumed.
 sca_npm_normalize_name() {
   printf '%s' "$1"
+}
+
+# RubyGems: "name verbatim, lowercase" (docs/FOUNDATION.md tension 25's
+# frozen table - the same rule the table states for Composer and Cargo,
+# which this ticket does not implement).  `${1,,}` is the bash 4+
+# lowercasing expansion; §13/tension 24 already requires bash >= 4.2, so no
+# `tr`/capability wrapper is needed the way tension 24's frozen-function
+# table reserves for genuinely non-portable operations.
+sca_ruby_normalize_name() {
+  local n=$1
+  printf '%s' "${n,,}"
 }
 
 # ---------------------------------------------------------------------------
@@ -699,6 +714,156 @@ sca_parse_pnpm_lock() {
   done <"$file"
 }
 
+# ---------------------------------------------------------------------------
+# 7a. Gemfile.lock - Ruby/RubyGems (docs/DESIGN.md §6.5)
+# ---------------------------------------------------------------------------
+# A blank-line-separated sequence of top-level (column 0) stanzas: `GEM`,
+# `GIT`, or `PATH` (one per dependency source; a project with a git-sourced
+# gem has more than one), each carrying a 2-space-indented `remote:`/
+# `revision:`/etc. and a 2-space-indented `specs:` sub-header whose OWN
+# 4-space-indented children are `name (version)` lines - one per RESOLVED
+# gem, direct or transitive alike; a spec's own dependency names are listed
+# as 6-space(+)-indented annotation lines directly below it, purely for
+# documentation (bundler flattens the whole graph into this one list, unlike
+# npm v1's genuinely nested node_modules/ tree - see sca_parse_gemfile_lock's
+# own header for why that means no recursion is needed here); then a bare
+# `PLATFORMS` stanza; then the top-level `DEPENDENCIES` stanza, whose OWN
+# 2-space-indented children are the project's Gemfile's own direct
+# requirements (bundler's direct analogue of npm's package.json dependency
+# lists) - `name`, `name (~> 1.0)`, or `name!` (bundler's own marker for a
+# git-/path-/local-sourced dependency); then usually `BUNDLED WITH`.
+
+# _sca_gemfile_indent LINE - number of leading space characters (mirrors
+# _sca_pnpm_indent; kept as its own small helper rather than shared with it,
+# the same "one helper per format" convention this file already uses for
+# yarn vs pnpm - Gemfile.lock's indentation levels mean something different:
+# 2-space is a stanza's own property line, 4-space is a specs entry, 6-space+
+# is that entry's own dependency annotation).
+_sca_gemfile_indent() {
+  local line=$1 stripped
+  stripped="${line#"${line%%[![:space:]]*}"}"
+  printf '%d' $(( ${#line} - ${#stripped} ))
+}
+
+# _sca_gemfile_dep_token LINE - LINE is a `DEPENDENCIES` entry (`  name`,
+# `  name (~> 1.0)`, or `  name!`) or a `specs:` entry (`    name (1.2.3)`);
+# prints just the bare name (the first whitespace-delimited token, with a
+# trailing `!` - bundler's git/path/local marker, valid only in
+# `DEPENDENCIES` - stripped; a `specs:` entry line never carries one).
+_sca_gemfile_dep_token() {
+  local line=$1 t
+  t="${line#"${line%%[![:space:]]*}"}"
+  t=${t%%[[:space:]]*}
+  t=${t%!}
+  printf '%s' "$t"
+}
+
+# _sca_gemfile_dependencies_set FILE - prints, one per line, every gem name
+# declared directly under the top-level `DEPENDENCIES` stanza - what
+# sca_parse_gemfile_lock classifies direct-vs-transitive against.  Unlike
+# the npm/yarn/pnpm parsers above, there is no "package.json absent" fallback
+# to reason about: `DEPENDENCIES` is part of Gemfile.lock itself (bundler
+# always writes it), never a sibling file that might not exist.
+_sca_gemfile_dependencies_set() {
+  local file=$1 line indent in_deps=0
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    indent=$(_sca_gemfile_indent "$line")
+    if (( indent == 0 )); then
+      if [[ $line == DEPENDENCIES ]]; then in_deps=1; else in_deps=0; fi
+      continue
+    fi
+    if (( in_deps )) && (( indent == 2 )); then
+      printf '%s\n' "$(_sca_gemfile_dep_token "$line")"
+    fi
+  done <"$file"
+}
+
+# sca_parse_gemfile_lock FILE - prints one `name<0x1F>version<0x1F>
+# direct|transitive` row per line per resolved gem, the same shape every
+# other lockfile parser in this file uses.  A `specs:` block (under `GEM`,
+# and identically shaped under `GIT`/`PATH` for a git-/path-sourced gem) is
+# already FLAT - every resolved gem, direct or transitive, is one
+# 4-space-indented `name (version)` line - so, unlike
+# _sca_parse_npm_lock_v1, no recursion is needed: every `specs:` entry is
+# classified in one pass against the top-level DEPENDENCIES set (this
+# file's own header comment explains why the 6-space+ annotation lines
+# beneath an entry are skipped rather than walked).
+sca_parse_gemfile_lock() {
+  local file=$1
+  local -A direct_set=()
+  local line
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    direct_set[$line]=1
+  done < <(_sca_gemfile_dependencies_set "$file")
+
+  local indent in_specs=0 name version rest
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    indent=$(_sca_gemfile_indent "$line")
+    if (( indent == 0 )); then
+      in_specs=0
+      continue
+    fi
+    if (( indent == 2 )); then
+      if [[ $line == '  specs:' ]]; then in_specs=1; else in_specs=0; fi
+      continue
+    fi
+    if (( ! in_specs )); then continue; fi
+    if (( indent != 4 )); then continue; fi
+    # `    name (version)` - name is everything up to the space before the
+    # opening paren; version is the parenthesised content.  STATED
+    # LIMITATION, not hidden: a platform-specific gem
+    # (`nokogiri (1.13.8-x86_64-linux)`) carries its platform suffix INSIDE
+    # the same parens and it is not stripped here - this module's fixtures
+    # and data/advisories.db rows are both keyed on the plain version
+    # tools/vendor-engines.sh resolves, so a platform-tagged pin would
+    # under-match (miss the advisory, reported honestly via the
+    # unknown-version roll-up once the package is otherwise known) rather
+    # than over-match - the same declared-cost direction tension 25 already
+    # accepts elsewhere in this module.
+    rest="${line#*"("}"
+    name="${line%%(*}"
+    name="${name#"${name%%[![:space:]]*}"}"
+    name="${name%"${name##*[![:space:]]}"}"
+    version="${rest%)}"
+    [[ -n $name && -n $version ]] || continue
+    if [[ -n ${direct_set[$name]:-} ]]; then
+      printf '%s\x1f%s\x1fdirect\n' "$name" "$version"
+    else
+      printf '%s\x1f%s\x1ftransitive\n' "$name" "$version"
+    fi
+  done <"$file"
+}
+
+# sca_walk_gemfile_locks ROOT - prints one absolute path per line, in
+# LC_ALL=C sorted order, to every Gemfile.lock under ROOT, skipping
+# SCA_DEFAULT_EXCLUDE_DIRS at any depth - the same walk shape
+# sca_walk_npm_lockfiles uses above, kept as its own function (rather than a
+# shared "walk for these basenames" helper) so a third ecosystem's own
+# lockfile basename stays a one-line diff here, not a shared array two
+# ecosystems must agree on growing.  ROOT itself may be a single Gemfile.lock
+# (a `--path` naming one file directly).
+sca_walk_gemfile_locks() {
+  local root=$1
+  if [[ -f $root ]]; then
+    case ${root##*/} in
+      Gemfile.lock) printf '%s\n' "$root" ;;
+    esac
+    return 0
+  fi
+  local -a prune=()
+  local d first=1
+  for d in "${SCA_DEFAULT_EXCLUDE_DIRS[@]+"${SCA_DEFAULT_EXCLUDE_DIRS[@]}"}"; do
+    (( first )) || prune+=(-o)
+    prune+=(-path "$root/*/$d" -o -path "$root/$d")
+    first=0
+  done
+  find "$root" \( "${prune[@]+"${prune[@]}"}" \) -prune -o -type f \
+    -name Gemfile.lock -print 2>/dev/null | LC_ALL=C sort
+}
+
 # sca_relpath ROOT PATH - PATH relative to ROOT, or "." when they are equal
 # (mirrors modules/sast/engine.sh's own sast_relpath).
 sca_relpath() {
@@ -750,11 +915,32 @@ sca_package_known() {
 # 9. Finding emission and orchestration
 # ---------------------------------------------------------------------------
 
+# _sca_check_id_for_ecosystem ECO - the per-ecosystem `SCA-<FAM>-
+# VULNERABLE_DEP-01` check id a data/advisories.db row's own `ecosystem`
+# field (the exact-lookup key, e.g. `npm` or `RubyGems`) maps to.  A frozen,
+# explicit table rather than a mechanical uppercase-of-ECO: the ecosystem
+# field's own spelling (tension 25's normalisation table - `npm` lowercase,
+# `RubyGems` mixed-case) is not the check id family name each ecosystem's own
+# ticket picked (`NPM`, `RUBY`), and deriving one from the other would
+# silently mint the wrong check id the day a third ecosystem's field spelling
+# does not machine-transform to its expected family (PyPI -> `PYTHON` or
+# `PY`? Go -> `GO`? neither is a mechanical transform of the ecosystem
+# string) - explicit now costs one line per ecosystem and never guesses.
+_sca_check_id_for_ecosystem() {
+  case $1 in
+    npm) printf 'SCA-NPM-VULNERABLE_DEP-01' ;;
+    RubyGems) printf 'SCA-RUBY-VULNERABLE_DEP-01' ;;
+    *) printf 'SCA-UNKNOWN-VULNERABLE_DEP-01' ;;
+  esac
+}
+
 # _sca_emit_finding DIRECT LOCKFILE_RELPATH ROW - ROW is one
 # `data/advisories.db` TSV line already known to match a pinned dependency.
-# Mints SCA-NPM-VULNERABLE_DEP-01 directly via lib/findings.sh's finding API
+# Mints the row's own ecosystem's `SCA-<FAM>-VULNERABLE_DEP-01` check
+# (_sca_check_id_for_ecosystem) directly via lib/findings.sh's finding API
 # (this check id has no `*.rules` pattern record behind it - a table lookup
-# is not a pattern rule, per this ticket's own instruction).
+# is not a pattern rule, per the npm ticket's own instruction, unchanged by
+# a second ecosystem reusing the same emitter).
 _sca_emit_finding() {
   local direct=$1 lockfile_rel=$2 row=$3
   local eco pkg ver advisory sev fixed summary
@@ -776,9 +962,9 @@ _sca_emit_finding() {
   [[ -z $fixed ]] && accept_risk=true
 
   finding_new
-  finding_set check_id SCA-NPM-VULNERABLE_DEP-01
+  finding_set check_id "$(_sca_check_id_for_ecosystem "$eco")"
   finding_set module sca
-  finding_set title "npm: $pkg@$ver is vulnerable ($advisory)"
+  finding_set title "$eco: $pkg@$ver is vulnerable ($advisory)"
   finding_set base_severity "$sev"
   finding_set confidence high
   finding_set cwe none
@@ -808,12 +994,28 @@ _sca_emit_finding() {
   finding_emit
 }
 
-# sca_scan_tree ROOT - the module's whole npm slice: walk ROOT for
-# package-lock.json/yarn.lock/pnpm-lock.yaml, parse each, look every pinned
-# dependency up against data/advisories.db, emit one finding per vulnerable
-# pinned dependency, and one roll-up SCA-COV-UNKNOWN_VERSION-01 finding (never
-# per-package) when any package the db tracks had its exact pinned version
-# go unmatched.
+# sca_scan_tree ROOT - the module's whole lockfile-ecosystem slice: walk ROOT
+# for package-lock.json/yarn.lock/pnpm-lock.yaml AND Gemfile.lock, parse each,
+# look every pinned dependency up against data/advisories.db, emit one
+# finding per vulnerable pinned dependency, and one roll-up
+# SCA-COV-UNKNOWN_VERSION-01 finding (never per-package, and never per
+# ecosystem) when any package the db tracks had its exact pinned version go
+# unmatched.
+#
+# DELIBERATELY ONE FUNCTION FOR EVERY ECOSYSTEM, not "one sca_scan_tree call
+# per ecosystem" the way run.sh's own header comment originally speculated a
+# second ecosystem might be wired: `unknown_count` (declared once, below) and
+# the roll-up finding it feeds are process-wide state for THIS run, and
+# SCA-COV-UNKNOWN_VERSION-01's own fingerprint (lib/findings.sh's `sca`
+# profile: ecosystem/package/advisory_id) carries none of those three fields
+# for a roll-up finding - only `module`+`check_id`+`cell` do, which are
+# identical for every ecosystem's roll-up.  Two separate finding_emit calls
+# for this check id would therefore collide on ONE fingerprint, and
+# findings_merge's dedup (lib/findings.sh, keyed on fingerprint, first one
+# in sorted order wins) would silently drop whichever ecosystem's count lost
+# the sort - not merge them.  Looping every ecosystem's lockfiles inside one
+# call, sharing one `unknown_count` array, is what makes the roll-up
+# genuinely SHARED rather than accidentally clobbered.
 sca_scan_tree() {
   local root=$1
   local db
@@ -865,6 +1067,25 @@ sca_scan_tree() {
       esac
     )
   done < <(sca_walk_npm_lockfiles "$root")
+
+  while IFS= read -r lockfile; do
+    [[ -n $lockfile ]] || continue
+    relpath=$(sca_relpath "$root" "$lockfile")
+    run_record checks_run SCA-RUBY-VULNERABLE_DEP-01
+
+    while IFS=$'\x1f' read -r name ver direct; do
+      [[ -n $name && -n $ver ]] || continue
+      name=$(sca_ruby_normalize_name "$name")
+      if sca_lookup_exact RubyGems "$name" "$ver" "$db" >"$hits"; then
+        while IFS= read -r row; do
+          [[ -n $row ]] || continue
+          _sca_emit_finding "$direct" "$relpath" "$row"
+        done <"$hits"
+      elif sca_package_known RubyGems "$name" "$db"; then
+        unknown_count[RubyGems]=$(( ${unknown_count[RubyGems]:-0} + 1 ))
+      fi
+    done < <(sca_parse_gemfile_lock "$lockfile")
+  done < <(sca_walk_gemfile_locks "$root")
   rm -f "$hits"
 
   if (( ${#unknown_count[@]} > 0 )); then

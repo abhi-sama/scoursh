@@ -2,6 +2,10 @@
 # data/advisories.db is generated offline by tools/vendor-engines.sh
 # (docs/FOUNDATION.md tension 25) and is never produced in this repo/CI;
 # this is a small, hand-authored, committed stand-in for tests only.
+RubyGems	mini_portile2	2.9.0	SCA-FIXTURE-RUBY-004	low	2.9.1	fixture: known package, different pinned version (unknown-version roll-up case)
+RubyGems	puma	5.6.4	SCA-FIXTURE-RUBY-002	critical		fixture: no fixed version published yet
+RubyGems	rack	2.2.3	SCA-FIXTURE-RUBY-003	medium	2.2.4	fixture: transitive dependency vulnerability
+RubyGems	railsaddon	2.0.0	SCA-FIXTURE-RUBY-001	high	2.0.1	fixture: mixed-case gem name normalizes before lookup
 npm	@scope/pkg	1.0.0	SCA-FIXTURE-ADVISORY-001	high	1.0.1	fixture: prototype pollution
 npm	left-pad	1.3.0	SCA-FIXTURE-ADVISORY-004	critical		fixture: no fixed version published yet
 npm	lodash	4.17.15	SCA-FIXTURE-ADVISORY-002	high	4.17.21	fixture: prototype pollution
