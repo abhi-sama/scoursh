@@ -1,0 +1,23 @@
+lockfileVersion: '6.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      lodash:
+        specifier: ^4.17.15
+        version: 4.17.15
+
+packages:
+
+  /lodash@4.17.15:
+    resolution: {integrity: sha512-fixture}
+    dev: false
+
+  /minimist@1.2.5:
+    resolution: {integrity: sha512-fixture}
+    dev: false
