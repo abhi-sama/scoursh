@@ -289,9 +289,11 @@ an empty PR.
 Two shapes cause the NULL: a landing job recorded against a sibling ticket that shared the branch, and
 "merger" tickets (`crewban/resolve-merge-conflict-*`), which resolve the conflict in the *source*
 ticket's workspace on the *source* ticket's branch and so frequently own no branch of their own.
-Unpushed agent work, if any exists, lives in the agent workspaces at `~/.ace/workspaces/<ticket-uuid>`;
-sweep them with `git rev-list HEAD --not --remotes=origin` plus `git stash list` rather than assuming a
-branch missing from `origin` means the work is lost.
+Unpushed agent work, if any exists, lives outside this repo in the harness's per-ticket clones - at the
+time of writing `~/.ace/workspaces/<ticket-uuid>`, a pre-rename path still in use by Crewban.
+Sweep those with `git rev-list HEAD --not --remotes=origin` plus `git stash list` before concluding a
+branch missing from `origin` means the work is lost; a commit found that way still has to be compared
+against `dev` artifact by artifact, since it is usually a superseded draft of what already landed.
 
 **One piece of step 5 landed out of sequence: `lib/http.sh` (the scope-gate chokepoint,
 docs/FOUNDATION.md tension 19) now exists**, built and reviewed as its own ticket once tension 19's
