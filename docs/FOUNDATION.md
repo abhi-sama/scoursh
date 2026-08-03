@@ -4008,6 +4008,19 @@ below - and tension 20's RESOLUTION already states that `lib/http.sh`'s pinned r
 step 8's only real dependency ("so the ordering already works"), which NETNS-01 landing now confirms in
 practice as well as in plan. Steps 6, 7, 9, and 10 remain un-landed and are not touched by this.
 
+**Step 6 (Cloud/AWS) also now has a written, dependency-ordered sub-ticket plan
+(`docs/STEP6-CLOUD-PLAN.md`), but no implementation ticket has started.**
+The plan breaks §13 step 6's scope (`regions.sh` iteration -> the §8.1 live read-only catalog -> the
+read-only-verb CI lint -> `posture/` checks) into tickets CLOUD-01 through CLOUD-34 plus POSTURE-01
+through POSTURE-04, confirms `tests/lint-aws-readonly.sh` (tension 23's read-only lint) already shipped
+at step 1 as a no-op stub over an empty set and removes its matching logic from the "still to write"
+list - only `lib/awscli.sh` itself, the exception-file seeding, and a negative-fixture test remain
+(CLOUD-03) - and states that the one landed IaC ticket (`modules/iac/`, on `origin/dev`) is §8.2/step 4
+work, out of this plan's scope. **No CLOUD-0x or POSTURE-0x ticket is picked up until step 3's
+`nosql`/`ldap` rule packs, step 4 (SCA + IaC), and step 5 (DAST) are all complete on `dev`** - step 6 is
+gated on the whole sequential chain ahead of it, not step 4 alone, per the plan's own "Status: blocked"
+section and this ticket's description.
+
 What §13 step 1 deliberately did **not** build, so the boundary is not rediscovered: `scan.sh`, anything
 under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
 shipped rule pack, and `state/`.  Diff classification (tension 12) and baseline suppression (tension 11
