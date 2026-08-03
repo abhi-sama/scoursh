@@ -137,20 +137,38 @@ limiter/budget/breaker piece (DAST-01) and everything under `modules/dast/` rema
 **No DAST-0x ticket is picked up until step 3's `nosql`/`ldap` rule packs (above) and step 4's SCA half
 are both complete on `dev`** - this plan is a written breakdown for later, not permission to start now.
 
-**Step 8 (`--paranoid` / `tools/run-in-netns.sh`) now has a written sub-ticket plan, split into two
-independently schedulable tickets, and neither is blocked.**
+**Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01 has
+not.**
 `docs/STEP8-PARANOID-PLAN.md` splits `docs/DESIGN.md` §13 step 8 into **PARANOID-01** (the `--paranoid`
 connection-observer and abort-on-out-of-scope enforcement, per `docs/FOUNDATION.md` tension 20's
 RESOLUTION) and **NETNS-01** (`tools/run-in-netns.sh`, the network-namespace runner - optional and
 root-requiring, stated directly in that ticket's own filed description, not only in the plan doc).
-Both were filed to the backlog as real tickets (Crewban-57 and Crewban-58 respectively); neither is
-implemented by the planning ticket that produced the plan doc.
-Unlike the DAST plan above, step 8 is **not** gated on any unlanded step: this planning ticket's own
-acceptance criteria named `lib/http.sh` (the tension-19 chokepoint) as step 8's blocker, and it is
-confirmed present on `dev` - it shipped early, out of its normal step-5 sequence, exactly as noted
-below. Tension 20's RESOLUTION says explicitly that step 8's only real dependency is `lib/http.sh`'s
-pinned resolution cache, "so the ordering already works." Both PARANOID-01 and NETNS-01 may be picked
-up independently of each other and of the remaining un-landed steps.
+Both were filed to the backlog as real tickets (Crewban-57 and Crewban-58 respectively).
+**NETNS-01 (Crewban-58) has now landed**: `tools/run-in-netns.sh` (a Linux-only, root/CAP_NET_ADMIN
++CAP_SYS_ADMIN-requiring wrapper) builds a network namespace whose route table admits only two sets of
+IPv4 addresses - the resolved addresses of scoursh's in-scope targets, via `lib/http.sh`'s own
+`http_scope_load`/`http_resolve_host` (tension 19's pinned resolution cache, never a re-implementation),
+and the nameservers parsed from `/etc/resolv.conf` (tension 20's "set 3") - installs NO default route
+inside the namespace, and execs the wrapped command inside it via `ip netns exec`. Teardown (namespace,
+veth, NAT/iptables rules, `ip_forward` restoration) runs from the tool's own EXIT trap on every exit
+path, success or failure, staying inside the project's 0-5 exit-code contract throughout. It is never
+invoked by `scan.sh` and has no dependency on PARANOID-01 - the two are independent, peer mechanisms per
+tension 20's "guarantee vs detector" distinction. `tests/suites/netns.sh` tests it: argument parsing,
+the CapEff bitmask arithmetic, the target-IP/nameserver collectors, and the build/teardown command
+sequence are unit-tested against stubbed `ip`/`iptables`/`sysctl` on any host; the "fails immediately, no
+isolation action, `<command>` never runs" non-Linux/no-privilege paths (this ticket's ACs 3-4) are
+exercised as real subprocess invocations on whichever host the suite runs on; and a real, kernel-level
+out-of-scope-connection-fails test (this ticket's AC2) is gated behind a genuine Linux+root/capability+
+tooling probe and is honestly marked SKIPPED (not a silent pass) on a host that does not meet it.
+IPv6 routing is out of scope for this tool (an in-scope host that only resolves to IPv6 is logged and
+skipped, never routed) - a follow-up ticket for dual-stack support was filed separately, per this
+ticket's own out-of-scope list.
+**PARANOID-01 (the `--paranoid` observer/abort mechanism) remains unimplemented.**
+Unlike the DAST plan above, step 8 was never gated on any unlanded step: this planning ticket's own
+acceptance criteria named `lib/http.sh` (the tension-19 chokepoint) as step 8's blocker, and it was
+confirmed present on `dev` before either sub-ticket started - it shipped early, out of its normal step-5
+sequence, exactly as noted below. PARANOID-01 may still be picked up independently at any time; it does
+not depend on NETNS-01 having landed, or vice versa.
 
 **Step 3a-3d shipped the SAST module's rule packs and engine.**
 Four tickets landed, in this order:
