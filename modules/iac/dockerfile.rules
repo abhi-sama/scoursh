@@ -1,0 +1,173 @@
+# modules/iac/dockerfile.rules - docs/DESIGN.md §8.2's Dockerfile catalog
+# (docs/DESIGN.md §13 step 4, "IaC (cloud + container rules)... reuse the
+# rule engine"), this ticket.
+#
+# Path note: same discipline modules/iac/terraform.rules documents at its own
+# top - rules/RULE-FORMAT.md §9's frozen path table grants the pattern-rule
+# schema to `modules/iac/*.rules` FLAT, so this pack lives at
+# modules/iac/dockerfile.rules, never modules/iac/rules/dockerfile.rules or
+# modules/iac/checks.rules (the latter basename is reserved repository-wide
+# for the §9.5 script-check schema).
+#
+# Scope discipline, per this ticket's own text: `files:` below is
+# deliberately the three literal glob forms `Dockerfile`, `Dockerfile.*`, and
+# `*.dockerfile` - nothing else. docs/DESIGN.md §3's original layout sketch
+# grouped "Dockerfile, Kubernetes, docker-compose, Helm" into one
+# `containers.rules` file; modules/iac/terraform.rules already established
+# that FOUNDATION's actual build splits the grouped §3 sketch into one
+# vendored pack per format under modules/iac/ (terraform.rules landed alone,
+# not a combined cloud.rules), and this ticket continues that split for the
+# container side: docker-compose and Helm values are explicitly OUT of scope
+# here and left to a separate ticket, so this pack's `files:` list must never
+# grow to cover `docker-compose*.yml` or a Helm `values.yaml` without that
+# separate ticket doing it deliberately.  Nothing needs an `exclude-files`
+# entry to keep those out: `files:` is an allow-list (OR, §9.1.2), so a path
+# that matches none of the three globs never reaches the engine at all -
+# tests/suites/iac.sh's docker-compose.yml/values.yaml fixtures pin exactly
+# that reading.
+#
+# Six seed rules, straight out of docs/DESIGN.md §8.2's own list, in the same
+# order it states them: runs as root / no USER, unpinned :latest base tag,
+# secrets in ENV/ARG, ADD from a URL, curl|sh build steps, no pinned base
+# digest.
+#
+# IAC-DOCKER-ROOT_USER-01 and IAC-DOCKER-UNPINNED_DIGEST-01 are both ABSENCE
+# checks on the same `^FROM\s+\S+` trigger line (the same shape
+# IAC-TF-KEY_ROTATION_DISABLED-01 and SAST-JAVA-XXE_DISALLOW_DOCTYPE-01
+# already establish for this engine): a `context-deny` with a non-zero (or,
+# for UNPINNED_DIGEST, zero) window is the only way §8's lookahead-free ERE
+# subset can express "unless X appears nearby", so both carry the reviewed
+# W033 advisory §10.2 describes rather than a lookahead.  ROOT_USER's window
+# is 50 - rules/RULE-FORMAT.md §10's E032 ceiling - because the guarding
+# `USER` instruction can legitimately sit anywhere later in a short
+# Dockerfile and a narrower window would just manufacture false positives on
+# every fixture that happens to declare a few RUN/COPY steps first.
+# UNPINNED_DIGEST's `@sha256:` deny is a same-line-intent guard exactly like
+# `SAST-SEC-AWS_AKID-01`'s own EXAMPLE/placeholder deny, so it stays at
+# `context-window: 0`.
+#
+# Known trade-off, honestly stated rather than silently accepted: this
+# engine has no concept of a Dockerfile "stage" (a multi-stage `FROM
+# builder AS runtime` referencing an earlier stage by name, not a real
+# registry image). `^FROM\s+\S+` matches a stage-alias FROM line exactly
+# like a real base-image FROM line, so UNPINNED_DIGEST-01 (and, for a stage
+# alias that happens to end in a literal ":latest" segment, LATEST_TAG-01)
+# can fire on an internal stage reference that was never pulled from a
+# registry and so was never a supply-chain concern. Tightening this needs
+# stage-name tracking the engine does not have; deferred rather than solved
+# with a lookahead the §8.2 ERE subset forbids.
+
+id: IAC-DOCKER-ROOT_USER-01
+title: Dockerfile builds an image with no non-root USER instruction
+severity: high
+confidence: medium
+cwe: CWE-250
+owasp: A05:2021
+pattern: ^FROM\s+\S+
+dialect: ere
+files: Dockerfile
+files: Dockerfile.*
+files: *.dockerfile
+context-deny: ^\s*USER\s+
+context-window: 50
+tags: static
+tags: compliance
+remediation: Create an unprivileged account (`RUN addgroup -S app && adduser -S app -G app` or
+  equivalent for the base distro) and add a `USER app` instruction before the container's default
+  entrypoint/cmd runs, so the process does not run as root by default. An attacker who achieves code
+  execution inside the container then does not automatically inherit root privileges in the
+  container's own namespace.
+references: CWE-250
+
+id: IAC-DOCKER-LATEST_TAG-01
+title: Base image pinned to the mutable :latest tag
+severity: medium
+confidence: high
+cwe: CWE-829
+owasp: A08:2021
+pattern: ^FROM\s+\S+:latest\b
+dialect: ere
+files: Dockerfile
+files: Dockerfile.*
+files: *.dockerfile
+tags: static
+tags: quick
+remediation: Pin the base image to an explicit, immutable release tag (and ideally an
+  `@sha256:...` digest, see IAC-DOCKER-UNPINNED_DIGEST-01) rather than `:latest`, so a rebuild does
+  not silently pull in an unreviewed upstream change.
+references: CWE-829
+
+id: IAC-DOCKER-SECRET_ENV-01
+title: Credential-shaped literal assigned via a Dockerfile ENV or ARG instruction
+severity: critical
+confidence: medium
+cwe: CWE-798
+owasp: A07:2021
+pattern: ^(ENV|ARG)\s+[A-Za-z0-9_]*(PASSWORD|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY)[A-Za-z0-9_]*\s*=\s*\S+
+dialect: ere
+files: Dockerfile
+files: Dockerfile.*
+files: *.dockerfile
+context-deny: (CHANGEME|changeme|EXAMPLE|example|XXXXXXXX|xxxxxxxx|placeholder|dummy|TODO)
+context-window: 0
+tags: static
+remediation: Remove the literal from the Dockerfile and rotate it immediately - both ENV and ARG
+  values are baked into the image's layer history and are recoverable with `docker history` even
+  from a later layer that unsets them. Inject the secret at container-start time instead (an
+  orchestrator secret store, a mounted file, or `--env-file` kept out of the image), or use a
+  multi-stage build's `--mount=type=secret` build-time-only mount for a value the build itself needs.
+references: CWE-798
+
+id: IAC-DOCKER-REMOTE_ADD-01
+title: ADD instruction fetches a remote URL directly into the image
+severity: medium
+confidence: high
+cwe: CWE-494
+owasp: A08:2021
+pattern: ^ADD\s+\S*https?://
+dialect: ere
+files: Dockerfile
+files: Dockerfile.*
+files: *.dockerfile
+tags: static
+remediation: Use COPY for anything already in the build context. For a remote artifact, replace
+  ADD with an explicit RUN step that fetches it (curl/wget) and verifies a checksum or signature
+  before extracting it, rather than relying on ADD's implicit, unauthenticated fetch-and-extract.
+references: CWE-494
+
+id: IAC-DOCKER-PIPE_TO_SHELL-01
+title: Build step pipes a downloaded script straight into a shell
+severity: high
+confidence: medium
+cwe: CWE-494
+owasp: A08:2021
+pattern: ^RUN\s+.*(curl|wget)\s+[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|ash)\b
+dialect: ere
+files: Dockerfile
+files: Dockerfile.*
+files: *.dockerfile
+tags: static
+remediation: Download the script to a file, verify its checksum or GPG signature, then execute the
+  verified file, instead of piping an unauthenticated remote script straight into a shell - a
+  compromised or MITM'd download otherwise runs arbitrary code in the build with no review step.
+references: CWE-494
+
+id: IAC-DOCKER-UNPINNED_DIGEST-01
+title: Base image not pinned to a content digest
+severity: low
+confidence: medium
+cwe: CWE-829
+owasp: A08:2021
+pattern: ^FROM\s+\S+
+dialect: ere
+files: Dockerfile
+files: Dockerfile.*
+files: *.dockerfile
+context-deny: @sha256:
+context-window: 0
+tags: static
+remediation: Pin the base image with an `@sha256:<digest>` suffix (`docker pull` and then
+  `docker inspect --format '{{index .RepoDigests 0}}'` the image you intend to use, or read the
+  digest off the registry) in addition to, or instead of, a tag - a tag can be repointed at a
+  different image server-side, but a digest cannot.
+references: CWE-829

@@ -1,0 +1,13 @@
+# Not a Dockerfile either: Helm values files are explicitly out of scope for
+# dockerfile.rules (same separate-ticket carve-out as docker-compose.yml,
+# see the comment there). Kept minimal since this pack's patterns require a
+# line-start Dockerfile instruction keyword (FROM/ENV/ARG/ADD/RUN), which a
+# YAML values file never contains regardless of path scoping.
+image:
+  repository: myapp
+  tag: latest
+containers:
+  - name: app
+    env:
+      - name: PASSWORD
+        value: hunter2supersecret

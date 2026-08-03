@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # tests/suites/iac.sh - modules/iac/{parse.sh,run.sh} and its seed pattern
-# packs: terraform.rules (docs/DESIGN.md §13 step 4's cloud half) and
-# helm.rules (§13 step 4's container half, this ticket).
+# packs: terraform.rules (docs/DESIGN.md §13 step 4's cloud half), helm.rules
+# (§13 step 4's container half, Helm ticket), and dockerfile.rules (§13 step
+# 4's container half, IaC-Dockerfile ticket, this ticket).
 #
 # Modeled on tests/suites/sast.sh's go.rules section (§13 step 3c precedent):
 # one true-positive fixture per rule id under tests/fixtures/vuln/, one
 # true-negative (safe-equivalent) fixture per rule id under
 # tests/fixtures/clean/, both directories scanned wholesale exactly like the
 # real end-to-end shape - each pack's own `files:` glob (`*.tf` for
-# terraform.rules; `values.yaml` / `templates/*.yaml` for helm.rules) is what
-# does the filtering out of the fixtures that belong to a different pack.
+# terraform.rules; `values.yaml` / `templates/*.yaml` for helm.rules;
+# `Dockerfile`/`Dockerfile.*`/`*.dockerfile` for dockerfile.rules) is what
+# does the filtering out of the fixtures that belong to a different pack (or,
+# for dockerfile.rules' docker-compose.yml/helm fixtures below, to no pack at
+# all).
 #
 # Covers the terraform.rules ticket's acceptance criteria:
 #   - `scan_dispatch iac` no longer no-ops for a fixture .tf file matching
@@ -22,18 +26,29 @@
 #     is what proves modules/iac/parse.sh's own emission path, not a reused
 #     sast one, actually ran)
 #
-# Covers this ticket's (Helm) acceptance criteria, in the "helm.rules" and
+# Covers the Helm ticket's acceptance criteria, in the "helm.rules" and
 # "cross-check" sections below:
 #   - each IAC-HELM-* id fires on true-positive fixtures covering BOTH
 #     values.yaml and templates/*.yaml, and stays quiet on the clean
 #     equivalent of each
-#   - a cross-check fixture proves helm.rules and the other IaC pack that
-#     actually exists on disk (terraform.rules) do not fire on each other's
-#     fixtures, and that helm.rules stays silent on a docker-compose fixture
-#     (this ticket's own "excluding docker-compose" scope statement) - see
-#     that section's own header comment for why this substitutes for a
-#     literal "Kubernetes rule pack" cross-check: no such pack exists yet
-#     anywhere in this codebase
+#   - a cross-check fixture proves helm.rules and the other IaC packs that
+#     actually exist on disk (terraform.rules, dockerfile.rules) do not fire
+#     on each other's fixtures, and that helm.rules stays silent on a
+#     docker-compose fixture (that ticket's own "excluding docker-compose"
+#     scope statement) - see that section's own header comment for why this
+#     substitutes for a literal "Kubernetes rule pack" cross-check: no such
+#     pack exists yet anywhere in this codebase
+#
+# Covers this (Dockerfile) ticket's acceptance criteria:
+#   - each IAC-DOCKER-* id fires on its tests/fixtures/vuln/ Dockerfile
+#     fixture and stays quiet across every tests/fixtures/clean/ Dockerfile
+#     fixture (no false positives)
+#   - a docker-compose.yml and a Helm values.yaml fixture, each containing
+#     content that would trip every IAC-DOCKER-* pattern if the file path
+#     matched, produce NO iac findings at all - proving the `files:` glob
+#     scoping, not the pattern content, is what keeps those formats out
+#   - dockerfile.rules lives at modules/iac/dockerfile.rules and passes
+#     tests/lint-rules.sh (run separately by tests/run-tests.sh lint-rules)
 #
 # Every case that pins a decision names the reading it FAILS under, per
 # AGENTS.md's testing rule.
@@ -108,6 +123,18 @@ _ids_and_paths_found() {
     [[ -n $line ]] || continue
     finding_decode "$line"
     printf '%s:%s\n' "${_DF[check_id]}" "${_DF[loc_path]}"
+  done <"$rundir/findings.fields"
+}
+
+# _paths_found RUNDIR - one loc_path per finding, used by the dockerfile.rules
+# section below to prove which file (not which check id) triggered.
+_paths_found() {
+  local rundir=$1 line
+  [[ -s $rundir/findings.fields ]] || return 0
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    finding_decode "$line"
+    printf '%s\n' "${_DF[loc_path]}"
   done <"$rundir/findings.fields"
 }
 
@@ -224,17 +251,65 @@ unset HELM_IDS _helm_vuln_found _helm_vuln_paths _helm_clean_found _want_id _saf
   _helm_vuln_modules _tf_vs_helm_found _helm_vs_compose_paths
 
 # =============================================================================
+printf -- '\n-- dockerfile.rules: true-positive AND true-negative, per rule id --\n'
+# =============================================================================
+DOCKER_IDS='IAC-DOCKER-ROOT_USER-01 IAC-DOCKER-LATEST_TAG-01 IAC-DOCKER-SECRET_ENV-01 IAC-DOCKER-REMOTE_ADD-01 IAC-DOCKER-PIPE_TO_SHELL-01 IAC-DOCKER-UNPINNED_DIGEST-01'
+
+_scan_one_pack dockerfile "$ROOT/tests/fixtures/vuln" "$W/run-docker-vuln"
+_docker_vuln_found=$(_ids_found "$W/run-docker-vuln")
+for _want_id in $DOCKER_IDS; do
+  t_case "dockerfile: $_want_id true-positive detection"
+  assert_contains "$_docker_vuln_found" "$_want_id" \
+    "$_want_id fires on its tests/fixtures/vuln/ Dockerfile fixture - fails if the pattern, files glob, or context directive silently drops the match"
+done
+
+_scan_one_pack dockerfile "$ROOT/tests/fixtures/clean" "$W/run-docker-clean"
+_docker_clean_found=$(_ids_found "$W/run-docker-clean")
+for _safe_id in $DOCKER_IDS; do
+  t_case "dockerfile: $_safe_id stays quiet on its safe equivalent"
+  assert_not_contains "$_docker_clean_found" "$_safe_id" \
+    "$_safe_id does NOT fire on any tests/fixtures/clean/ Dockerfile fixture - fails if the safe rewrite still matches the pattern (a true-negative fixture that isn't actually negative)"
+done
+
+t_case 'every finding the dockerfile pack emits carries module=iac, not module=sast'
+_docker_vuln_modules=$(_modules_found "$W/run-docker-vuln")
+assert_not_contains "$_docker_vuln_modules" 'sast' \
+  'no finding from this run reports module=sast - fails if iac_scan_tree fell through to sast_scan_file/_sast_emit_finding instead of its own emission path'
+assert_contains "$_docker_vuln_modules" 'iac' \
+  'at least one finding reports module=iac - sanity check that the assertion above is not vacuously true on an empty run'
+
+# Scope: docker-compose.yml and a Helm values.yaml live in tests/fixtures/vuln/
+# alongside the Dockerfile fixtures above, and their content is deliberately
+# built to trip every IAC-DOCKER-* pattern (an inline `dockerfile_inline:`
+# block with FROM node:latest / curl|sh / ADD http:// / ENV API_KEY=...).
+# `files:` (Dockerfile, Dockerfile.*, *.dockerfile) must never match
+# docker-compose.yml or helm/values.yaml, so no finding in this same
+# "$W/run-docker-vuln" run may report either path.
+t_case 'docker-compose.yml is never scanned by dockerfile.rules, despite containing every trigger pattern'
+_docker_vuln_paths=$(_paths_found "$W/run-docker-vuln")
+assert_not_contains "$_docker_vuln_paths" 'docker-compose.yml' \
+  "no finding's loc_path is docker-compose.yml - fails if the files glob accidentally admitted a non-Dockerfile path (scope creep this ticket explicitly forbids)"
+
+t_case 'a Helm values.yaml is never scanned by dockerfile.rules'
+assert_not_contains "$_docker_vuln_paths" 'helm/values.yaml' \
+  "no finding's loc_path is helm/values.yaml - fails on the same scope-creep reading as the docker-compose.yml case above"
+
+unset DOCKER_IDS _docker_vuln_found _docker_clean_found _want_id _safe_id _docker_vuln_modules _docker_vuln_paths
+
+# =============================================================================
 printf -- '\n-- check selection integration: scan_dispatch iac is no longer a no-op --\n'
 # =============================================================================
-t_case 'scan.sh iac tests/fixtures/vuln records every IAC-TF-* AND IAC-HELM-* id as actually run'
+t_case 'scan.sh iac tests/fixtures/vuln records every IAC-TF-*/IAC-HELM-*/IAC-DOCKER-* id as actually run'
 rm -rf "$W/run-checks"
 bash "$ROOT/scan.sh" iac --path "$ROOT/tests/fixtures/vuln" --out "$W/run-checks" >/dev/null 2>&1
 _checks_run=$(cat "$W/run-checks/meta/checks_run" 2>/dev/null || true)
 for _id in IAC-TF-OPEN_CIDR-01 IAC-TF-PUBLIC_ACL-01 IAC-TF-UNENCRYPTED-01 \
   IAC-TF-KEY_ROTATION_DISABLED-01 IAC-TF-PUBLIC_IP-01 IAC-TF-HARDCODED_SECRET-01 \
   IAC-TF-RDS_PUBLIC-01 IAC-HELM-HOST_PORT-01 IAC-HELM-HOST_MOUNT-01 \
-  IAC-HELM-HARDCODED_SECRET-01; do
-  t_case "scan.sh iac: $_id is recorded in checks_run - fails if scan_dispatch iac still took the 'no run.sh yet' no-op path, or if the real on-disk registry loader (checks_registry_load) did not pick up modules/iac/helm.rules alongside terraform.rules"
+  IAC-HELM-HARDCODED_SECRET-01 IAC-DOCKER-ROOT_USER-01 IAC-DOCKER-LATEST_TAG-01 \
+  IAC-DOCKER-SECRET_ENV-01 IAC-DOCKER-REMOTE_ADD-01 IAC-DOCKER-PIPE_TO_SHELL-01 \
+  IAC-DOCKER-UNPINNED_DIGEST-01; do
+  t_case "scan.sh iac: $_id is recorded in checks_run - fails if scan_dispatch iac still took the 'no run.sh yet' no-op path, or if the real on-disk registry loader (checks_registry_load) did not pick up modules/iac/helm.rules and modules/iac/dockerfile.rules alongside terraform.rules"
   assert_contains "$_checks_run" "$_id" "$_id present in $W/run-checks/meta/checks_run"
 done
 unset _checks_run _id
