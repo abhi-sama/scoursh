@@ -1,0 +1,155 @@
+# modules/iac/docker-compose.rules - docs/DESIGN.md §6.6's "docker-compose /
+# Helm values" bullet, docker-compose half only (docs/DESIGN.md §13 step 4,
+# this ticket).
+#
+# Path note: same as modules/iac/terraform.rules - rules/RULE-FORMAT.md §9's
+# path table grants the pattern-rule schema to `modules/iac/*.rules` FLAT, so
+# this pack lives at modules/iac/docker-compose.rules, not nested under a
+# `rules/` subdirectory and not named `checks.rules` (that basename is
+# reserved repository-wide for the §9.5 script-check schema and is matched
+# first in records_schema_for_path, ahead of the `modules/iac/*.rules` row).
+#
+# Scope: docker-compose only.  docs/DESIGN.md §6.6 bundles docker-compose in
+# with Dockerfile/Kubernetes/Helm under one prose "containers.rules" bullet,
+# but the decomposed IaC tickets (Terraform, CloudFormation, Docker,
+# Kubernetes, Helm) never claimed the docker-compose slice, and this ticket
+# closes exactly that gap - not the wider container bundle.  Dockerfile,
+# Kubernetes manifest, and Helm chart checks belong to their own tickets and
+# their own `files:` globs; nothing here inspects file CONTENT to guess a
+# file's shape, only its path, per rules/RULE-FORMAT.md §9.1.2 - the same
+# discipline terraform.rules documents for its own `*.tf` glob.
+#
+# `files` globs, repeated identically on every rule below: docker-compose.yml,
+# docker-compose.yaml, compose.yml, compose.yaml, and their "override"/variant
+# forms (docker-compose.override.yml, docker-compose.prod.yaml, and so on).
+# rules/RULE-FORMAT.md §9.1.2's glob engine anchors each glob to the FULL
+# basename (`^(.*/)?<glob>$`), so "compose.yml" and "docker-compose.yml" are
+# each their own entry - one is never a substring match for the other - and
+# "docker-compose.*.yml" requires a literal middle segment (a bare
+# "docker-compose.yml" has only one dot before the extension, so it does NOT
+# also satisfy the variant glob; both entries are needed).  A file named
+# "values.yaml" (Helm) or "deployment.yaml" (Kubernetes) matches none of
+# these globs regardless of what its content looks like, which is the
+# mechanism tests/suites/iac.sh's cross-shape section asserts directly.
+#
+# Seed rules, one per bullet in this ticket's own acceptance criteria:
+#   exposed host port (IAC-COMPOSE-EXPOSED_PORT-01), privileged container mode
+#   (IAC-COMPOSE-PRIVILEGED-01), sensitive host bind mount
+#   (IAC-COMPOSE-SENSITIVE_MOUNT-01), and a plaintext secret literal in
+#   `environment:` (IAC-COMPOSE-PLAINTEXT_SECRET-01, which also covers the
+#   `env_file:` half of the ticket text: an `env_file:` reference is a bare
+#   path with no secret-shaped literal in it, so it never matches this
+#   pattern, and referencing an external file instead of a literal is exactly
+#   the SAFE rewrite the true-negative fixture for this check demonstrates).
+#
+# Matching is line-oriented (rules/RULE-FORMAT.md §8.2), not a YAML parse, the
+# same trade-off modules/iac/terraform.rules makes for HCL: it is precise
+# enough for the shapes docker-compose actually uses in practice and avoids
+# depending on a YAML library that may not exist on an air-gapped host.
+
+id: IAC-COMPOSE-EXPOSED_PORT-01
+title: Host port published without restricting the bind address
+severity: high
+confidence: medium
+cwe: CWE-284
+owasp: A05:2021
+pattern: ^\s*-\s*"?(0\.0\.0\.0:)?[0-9]{2,5}:[0-9]{2,5}"?\s*$
+dialect: ere
+files: docker-compose.yml
+files: docker-compose.yaml
+files: compose.yml
+files: compose.yaml
+files: docker-compose.*.yml
+files: docker-compose.*.yaml
+files: compose.*.yml
+files: compose.*.yaml
+context-deny: ^\s*#\s*scoursh-allow: exposed-port
+context-window: 1
+tags: static
+remediation: Bind the published port to a specific interface instead of every interface -
+  write "127.0.0.1:HOST_PORT:CONTAINER_PORT" (or the host's private address) rather than
+  the bare "HOST_PORT:CONTAINER_PORT" short form, which Docker binds to 0.0.0.0 by
+  default. Where the service genuinely must be reachable from outside the host, put a
+  reverse proxy or load balancer in front of it and keep the compose-level binding
+  private, and record a deliberate exception with an inline
+  "# scoursh-allow: exposed-port" comment on the preceding line.
+references: CWE-284
+
+id: IAC-COMPOSE-PRIVILEGED-01
+title: Service runs in Docker privileged mode
+severity: critical
+confidence: high
+cwe: CWE-250
+owasp: A05:2021
+pattern: ^\s*privileged:\s*true\s*$
+dialect: ere
+files: docker-compose.yml
+files: docker-compose.yaml
+files: compose.yml
+files: compose.yaml
+files: docker-compose.*.yml
+files: docker-compose.*.yaml
+files: compose.*.yml
+files: compose.*.yaml
+tags: static
+cis: 5.4
+remediation: Remove "privileged: true" and grant only the specific Linux capabilities the
+  container needs via "cap_add", rather than every device and capability the host has.
+  A privileged container has no meaningful isolation from the host at all - a compromise
+  of the process inside it is a compromise of the host.
+references: CWE-250
+references: CIS-Docker-5.4
+
+id: IAC-COMPOSE-SENSITIVE_MOUNT-01
+title: Sensitive host path bind-mounted into a container
+severity: critical
+confidence: high
+cwe: CWE-284
+owasp: A05:2021
+pattern: ^\s*-\s*"?(/var/run/docker\.sock|/proc|/sys|/etc|/root|/home|/)\s*:
+dialect: ere
+files: docker-compose.yml
+files: docker-compose.yaml
+files: compose.yml
+files: compose.yaml
+files: docker-compose.*.yml
+files: docker-compose.*.yaml
+files: compose.*.yml
+files: compose.*.yaml
+context-deny: ^\s*#\s*scoursh-allow: sensitive-mount
+context-window: 1
+tags: static
+remediation: Do not bind-mount the Docker socket, the host root filesystem, or system
+  directories such as /etc, /proc, /sys, /root, or /home into a container. A mount of
+  /var/run/docker.sock in particular gives the container the same control over the host
+  as root, regardless of any other restriction placed on it. Bind-mount only the
+  specific application directory the service needs, or use a named volume instead of a
+  host path.
+references: CWE-284
+
+id: IAC-COMPOSE-PLAINTEXT_SECRET-01
+title: Plaintext credential literal in a compose environment entry
+severity: critical
+confidence: medium
+cwe: CWE-798
+owasp: A07:2021
+pattern: ^\s*-?\s*"?[A-Za-z0-9_]*(PASSWORD|SECRET|API_KEY|ACCESS_KEY|TOKEN|PRIVATE_KEY)[A-Za-z0-9_]*\s*[:=]\s*['"]?[A-Za-z0-9+/_.=-]{8,}
+dialect: ere
+files: docker-compose.yml
+files: docker-compose.yaml
+files: compose.yml
+files: compose.yaml
+files: docker-compose.*.yml
+files: docker-compose.*.yaml
+files: compose.*.yml
+files: compose.*.yaml
+context-deny: (CHANGEME|changeme|EXAMPLE|example|XXXXXXXX|xxxxxxxx|placeholder|dummy|TODO|\$\{|\$[A-Za-z_])
+context-window: 0
+tags: static
+remediation: Remove the literal credential from the environment entry and rotate it
+  immediately - a committed secret must be treated as compromised even if the commit is
+  later reverted, because it remains in git history. Source the value from the host
+  environment or a .env file that is itself excluded from version control (an
+  "environment: [KEY=${KEY}]" substitution, or an "env_file:" reference to an untracked
+  file), or better, from a secret store the orchestrator injects at runtime.
+references: CWE-798

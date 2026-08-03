@@ -1,0 +1,7 @@
+version: "3.8"
+services:
+  app:
+    image: myapp:latest
+    volumes:
+      - ./data:/var/lib/app/data
+      - app-data:/var/lib/postgresql/data

@@ -350,6 +350,30 @@ requirement).
 Go (`go.mod`/`go.sum`), Java (`pom.xml`/`build.gradle`), and PHP (`composer.lock`) - the remaining
 ecosystems `docs/DESIGN.md` §6.5 names - are still open; step 4's SCA half is not complete.
 
+**A third piece of step 4's IaC half has since landed on top of the Terraform one above:
+`modules/iac/docker-compose.rules` (the "IaC: docker-compose checks via the pattern-rule engine"
+ticket).**
+docs/DESIGN.md §6.6 bundles docker-compose in with Dockerfile/Kubernetes/Helm under one prose
+"containers.rules" bullet, but none of the decomposed IaC tickets had claimed the docker-compose slice
+itself; this ticket closes exactly that one gap, reusing `modules/iac/run.sh`/`parse.sh` unchanged (they
+already existed from the Terraform landing above) and adding only the new flat pack file plus its
+fixtures.
+`docker-compose.rules` seeds four checks: `IAC-COMPOSE-EXPOSED_PORT-01` (a host port bound without
+restricting the interface), `IAC-COMPOSE-PRIVILEGED-01` (`privileged: true`),
+`IAC-COMPOSE-SENSITIVE_MOUNT-01` (a host bind mount of `/var/run/docker.sock`, `/etc`, `/root`, `/home`,
+`/proc`, `/sys`, or `/` itself), and `IAC-COMPOSE-PLAINTEXT_SECRET-01` (a literal credential value in an
+`environment:` entry, rather than a `${VAR}`/`env_file:` reference).
+Its `files:` globs match `docker-compose.yml`/`compose.yml` (and their `.yaml`/override-variant forms)
+only - `tests/suites/iac.sh` has a dedicated cross-shape section proving a Kubernetes-manifest-shaped and
+a Helm `values.yaml`-shaped fixture, each deliberately carrying content that would trip every
+`IAC-COMPOSE-*` check if the engine ever inspected file content, still produce zero findings, and that a
+mixed directory holding one file of each IaC shape never lets a check cross-attribute to the wrong file.
+`modules/` as a whole now ships **nine** pattern packs on disk (the eight above plus this one), which is
+the count `tests/lint-rules.sh`'s E060 fixture-coverage note now reports.
+Dockerfile, Kubernetes-manifest, Helm-chart, and CloudFormation IaC rules remain unclaimed by any landed
+ticket - do not read this paragraph as "step 4's container-rules bullet is done," only its
+docker-compose slice is.
+
 Step 1 delivered `lib/records.sh`, `lib/core.sh`, `lib/findings.sh` and `lib/report.sh`, plus
 `rules/redaction.rules`, `data/severity-rubric.conf`, the `config/*.example` files, a fixture
 end-to-end path under `tests/e2e/`, and the test suite.

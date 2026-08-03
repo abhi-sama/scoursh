@@ -1,0 +1,14 @@
+image:
+  repository: myapp
+  tag: latest
+service:
+  type: NodePort
+  ports:
+    - port: 5432
+      targetPort: 5432
+persistence:
+  hostPath: /var/run/docker.sock
+env:
+  DATABASE_PASSWORD: hunter2correcthorse
+containerSecurityContext:
+  privileged: true
