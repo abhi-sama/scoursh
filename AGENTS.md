@@ -111,6 +111,15 @@ shipped; nothing beyond `nosql.rules`/`ldap.rules` remains under the "language" 
 re-list it as outstanding.
 The next task is the remainder of step 3 (`nosql.rules` and `ldap.rules`).
 
+**Step 5 (DAST) now has a written, dependency-ordered sub-ticket plan, but is not started.**
+`docs/STEP5-DAST-PLAN.md` breaks the ~30-script step 5 scope into tickets DAST-01 through DAST-30,
+ordered per `docs/DESIGN.md` §13's own `lib/http.sh -> auth.sh -> crawl.sh -> passive -> safe-active ->
+injection -> §7.4` sequence, and states plainly that `lib/http.sh`'s scope-gate chokepoint (tension 19)
+already shipped (see below) and is not re-planned - only the still-unbuilt tension-16 rate
+limiter/budget/breaker piece (DAST-01) and everything under `modules/dast/` remain.
+**No DAST-0x ticket is picked up until step 3's `nosql`/`ldap` rule packs (above) and step 4 (SCA) are
+both complete on `dev`** - this plan is a written breakdown for later, not permission to start now.
+
 **Step 3a-3d shipped the SAST module's rule packs and engine.**
 Four tickets landed, in this order:
 
@@ -183,6 +192,8 @@ over `config/scope.conf` - so pulling it forward cost nothing those steps would 
 `modules/dast/`, the rate limiter/request budget/circuit breaker (tension 16), and IDN/general-IPv6-CIDR
 support (both explicitly out of scope for this ticket) still arrive at step 5 proper.  Do not read this
 paragraph as "step 5 is done" - see "Current position" above for what is actually next.
+`docs/STEP5-DAST-PLAN.md` is the sub-ticket breakdown for that remaining step-5 work and already excludes
+`lib/http.sh` from its "still to plan" list, since this paragraph is where that fact is recorded.
 
 Step 1 delivered `lib/records.sh`, `lib/core.sh`, `lib/findings.sh` and `lib/report.sh`, plus
 `rules/redaction.rules`, `data/severity-rubric.conf`, the `config/*.example` files, a fixture
