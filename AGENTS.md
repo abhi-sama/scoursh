@@ -177,6 +177,20 @@ confirmed present on `dev` before either sub-ticket started - it shipped early, 
 sequence, exactly as noted below. PARANOID-01 may still be picked up independently at any time; it does
 not depend on NETNS-01 having landed, or vice versa.
 
+**Step 6 (Cloud/AWS) now also has a written, dependency-ordered sub-ticket plan, but is not started.**
+`docs/STEP6-CLOUD-PLAN.md` breaks the `docs/DESIGN.md` §13 step 6 scope (`regions.sh` iteration -> the
+§8.1 live read-only catalog -> the read-only-verb CI lint -> `posture/` checks) into tickets CLOUD-01
+through CLOUD-34 plus POSTURE-01 through POSTURE-04, and states plainly that `tests/lint-aws-readonly.sh`
+(tension 23's read-only lint) already shipped at step 1 as a no-op stub that passes over an empty set -
+it is not re-planned as new matching logic, only the still-missing `lib/awscli.sh` chokepoint it lints
+against, the exception-file seeding, and the negative-fixture test are (CLOUD-03). It also records that
+the one IaC ticket already landed on `origin/dev` (`modules/iac/`, "IaC: Terraform checks via the
+pattern-rule engine") is step 4's `docs/DESIGN.md` §8.2 work, not step 6's, and is out of this plan's
+scope for that reason. **No CLOUD-0x or POSTURE-0x ticket is picked up until step 3's remaining
+`nosql`/`ldap` packs, step 4 (SCA + IaC), and step 5 (DAST) are all complete on `dev`** - step 6 is
+gated on the whole sequential chain in front of it, not just step 4, and this plan is a written
+breakdown for later, not permission to start now.
+
 **Step 3a-3d shipped the SAST module's rule packs and engine.**
 Four tickets landed, in this order:
 
