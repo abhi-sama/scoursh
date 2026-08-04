@@ -420,14 +420,21 @@ _trivy_json_number_field() {
 # UNKNOWN/LOW/MEDIUM/HIGH/CRITICAL vocabulary onto scoursh's
 # info|low|medium|high|critical (lib/records.sh's severity_rank/
 # severity_name).  UNLIKE modules/sast/adapters/semgrep/adapter.sh's own
-# _semgrep_severity_map, this DOES map onto `critical`: that function's own
-# comment claims native pattern rules "never author critical directly", but
-# that claim does not hold for this module specifically - grep
-# modules/iac/*.rules and `critical` is the base severity of several real
-# checks (e.g. IAC-TF-HARDCODED_SECRET-01), so withholding trivy's own
-# CRITICAL from the same vocabulary its sibling native pack already uses
-# would be an inconsistency invented for this adapter alone, not a rule this
-# codebase actually follows.
+# _semgrep_severity_map, this DOES map onto `critical` - see that file's own
+# header ("SEVERITY MAPPING: WHY THIS CAPS AT `high`, UNLIKE
+# `_trivy_severity_map`") for the full, current reasoning, which turns on
+# two things neither of which applies here: (1) vocabulary shape - semgrep's
+# own signal is the coarser three-tier ERROR/WARNING/INFO, with no tier of
+# its own above ERROR, whereas trivy's CRITICAL/HIGH/MEDIUM/LOW is already
+# four tiers that map 1:1 onto scoursh's own four non-`info` tiers, so this
+# mapping is a rename, not a judgement call; and (2) ruleset provenance -
+# trivy's misconfiguration checks are COMPILED INTO the vendored binary
+# itself, a fixed, versioned catalog from trivy's own upstream release
+# (see this file's own "WHICH ENGINE, AND WHY" above), unlike semgrep's
+# separate, operator-vendored, arbitrary-and-unreviewed ruleset.  Both
+# reasons argue for withholding `critical` from semgrep specifically, and
+# neither argues against trivy's own CRITICAL reaching scoursh's `critical`
+# here.
 _trivy_severity_map() {
   case $1 in
     CRITICAL) printf 'critical' ;;
