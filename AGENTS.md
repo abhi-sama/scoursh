@@ -220,18 +220,18 @@ Landed 6 of 6.  Outstanding: none.
 
 | Artifact | Status | Checks | Exercised by |
 | --- | --- | --- | --- |
-| `modules/iac/cloudformation.rules` | not landed | - | - |
+| `modules/iac/cloudformation.rules` | landed | 8 | `tests/suites/iac.sh` |
 | `modules/iac/docker-compose.rules` | landed | 4 | `tests/suites/iac.sh` |
 | `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/iac.sh` |
 | `modules/iac/helm.rules` | landed | 3 | `tests/suites/iac.sh` |
 | `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/iac.sh` |
 | `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac-trivy.sh` |
 
-Landed 5 of 6.  Outstanding: `cloudformation.rules`.
+Landed 6 of 6.  Outstanding: none.
 
 #### Totals
 
-- Pattern packs on disk: **12** (`modules/sast/rules/` 7, `modules/iac/` 5).
+- Pattern packs on disk: **13** (`modules/sast/rules/` 7, `modules/iac/` 6).
 - Module directories present: `modules/iac/`, `modules/sast/`, `modules/sca/`.
 
 <!-- END GENERATED STATUS -->
@@ -270,6 +270,40 @@ list:
   CloudFormation's PascalCase) and `context-deny` (`\{\{` for Helm, `AWSTemplateFormatVersion|AWS::` for
   CloudFormation, on the three absence-style checks) mechanisms that keep it out of scope for those two
   shapes even though the file glob overlaps.
+- The CloudFormation ticket ("IaC: CloudFormation checks via the pattern-rule engine") shipped
+  `modules/iac/cloudformation.rules`: eight `IAC-CFN-*` checks, the seven `IAC-TF-*` siblings
+  restated in CloudFormation's PascalCase property shape plus `IAC-CFN-ECS_PRIVILEGED-01`, which
+  has no Terraform sibling and is the CloudFormation spelling of `IAC-K8S-PRIVILEGED-01`.
+  Its scoping is the **inverse** of every other pack in this directory, and that is the part worth
+  keeping in prose: a genuine CloudFormation template has no reserved filename or path convention at
+  all, so `files:` is deliberately as broad as the format allows (`*.yaml`, `*.yml`, `*.json`,
+  `*.template`) and ALL the narrowing is a `context-require` on `Type: AWS::<Service>::<Resource>`,
+  the one string a Kubernetes manifest, a Helm chart or a docker-compose file cannot carry while
+  still being that thing.  That anchor is strictly stronger than a filename glob, which is why this
+  pack ships **no `exclude-files`** where `kubernetes.rules` needs eight - and why the absence is
+  asserted against the same `tests/fixtures/iac/docker-compose/` fixture rather than left as a
+  comment.  Do not "harden" this pack by adding compose globs to it: they would be a guard no fixture
+  can distinguish from its absence.
+
+Three things this pack measured that are easy to get wrong again, and are not specific to it:
+
+- **Write a `files:` glob as `*.yaml`, never `**/*.yaml`.**  Per `rules/RULE-FORMAT.md` §9.1.2 an
+  unanchored glob already matches at any depth (`sast_glob_match` tries every path-segment-aligned
+  suffix), so `*.yaml` covers `infra/main.yaml`.  `**/*.yaml` translates to
+  `^(.*/)?.*/[^/]*\.yaml$`, whose `.*/` requires at least one directory component, so it silently
+  MISSES a file at the scan root - the likeliest place for a template.  The bug is invisible in a
+  fixture tree, where every path is nested by construction.
+- **The pattern engine has no comment awareness anywhere.**  A `#` line in a *clean* fixture that
+  quotes the hazardous `Key: value` pair it is documenting IS a match, and turns that fixture into a
+  false positive against itself.  `tests/fixtures/clean/cfn_ecs_privileged.yaml` was exactly that
+  before it was reworded; the suite caught it, but the failure reads as a rule defect rather than a
+  prose defect, so it costs a debugging cycle.  Describe the hazard, do not spell it.
+- **A "not landed" row in the generated status block is not proof the work was never done.**  This
+  pack existed as a finished commit in a merger ticket's workspace for a day: mergers resolve on the
+  *source* ticket's branch, so they have no branch of their own, the landing sweep skips them by
+  design, and nothing then records an outcome - a merger that had something to land looks identical
+  to one that did not.  When an artifact is outstanding, search the workspaces for a commit naming
+  it before writing it from scratch.
 
 Step 4's IaC scope is drawn from two separate places - `docs/DESIGN.md` §6.6's
 container/orchestration catalog and §8.2's CloudFormation checks - and the generated block above tracks

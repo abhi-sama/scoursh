@@ -234,18 +234,18 @@ Landed 6 of 6.  Outstanding: none.
 
 | Artifact | Status | Checks | Exercised by |
 | --- | --- | --- | --- |
-| `modules/iac/cloudformation.rules` | not landed | - | - |
+| `modules/iac/cloudformation.rules` | landed | 8 | `tests/suites/iac.sh` |
 | `modules/iac/docker-compose.rules` | landed | 4 | `tests/suites/iac.sh` |
 | `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/iac.sh` |
 | `modules/iac/helm.rules` | landed | 3 | `tests/suites/iac.sh` |
 | `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/iac.sh` |
 | `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac-trivy.sh` |
 
-Landed 5 of 6.  Outstanding: `cloudformation.rules`.
+Landed 6 of 6.  Outstanding: none.
 
 #### Totals
 
-- Pattern packs on disk: **12** (`modules/sast/rules/` 7, `modules/iac/` 5).
+- Pattern packs on disk: **13** (`modules/sast/rules/` 7, `modules/iac/` 6).
 - Module directories present: `modules/iac/`, `modules/sast/`, `modules/sca/`.
 
 <!-- END GENERATED STATUS -->
