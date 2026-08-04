@@ -327,10 +327,11 @@ Before concluding a dependency is missing, check the actual workspace branch and
 Landings reach `dev` as squash commits, so the sha a ticket's own branch carries is not the sha its work
 ends up with, and a ticket writing "`<sha>` (this ticket)" into these docs is guessing at a commit that
 does not exist yet and generally never will.
-This has already happened twice and shipped both times: `ae03175` (the Dockerfile slice, really
-`25abfa3`) and `11e7c97` (the Ruby SCA slice, really `a2d37aa`) were each cited in both `AGENTS.md` and
-`docs/FOUNDATION.md` - seven references between them - and `git cat-file -e` resolved neither until this
-change corrected them.
+This has already happened three times and shipped every time: `ae03175` (the Dockerfile slice, really
+`25abfa3`), `11e7c97` (the Ruby SCA slice, really `a2d37aa`) and `d7a746f` (the Kubernetes IaC slice,
+really `bb75c9b`) - eight references between them across `AGENTS.md` and `docs/FOUNDATION.md`, none of
+which `git cat-file -e` could resolve until this change corrected them.
+The third one landed while this very change was in review, which is the argument for the rule.
 Write the landing in prose without a sha ("this ticket adds ..."), and let the next ticket that touches
 the paragraph fill in the real one.
 Before trusting any sha in these two files, resolve it:
@@ -342,10 +343,10 @@ grep -ohE '`[0-9a-f]{7,40}`' AGENTS.md docs/FOUNDATION.md | tr -d '`' | sort -u 
   done
 ```
 
-It has exactly four known false positives, all in prose rather than in a citation: the two decimal/octal
+It has exactly five known false positives, all in prose rather than in a citation: the two decimal/octal
 IPv4 literals in `docs/FOUNDATION.md` tension 19's SSRF text (`2851995906`, `025154325002`), which are
-not shas at all, and `ae03175`/`11e7c97` in the paragraph immediately above, which this note quotes on
-purpose as the bad values to recognise.
+not shas at all, and `ae03175`/`11e7c97`/`d7a746f` in the paragraph immediately above, which this note
+quotes on purpose as the bad values to recognise.
 Anything else it reports is a real reference to a commit that does not exist, and is a bug.
 
 **A Crewban ticket that is `done` with `landed_sha` NULL is usually a bookkeeping gap, not stranded

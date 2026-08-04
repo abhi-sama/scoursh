@@ -3959,8 +3959,8 @@ in `ENV`/`ARG`, remote `ADD`, `curl | sh` build steps, unpinned base digest), sc
 deliberately excluded from this pack's `files:` list, continuing the same one-pack-per-format split
 `terraform.rules`' own header already established for `docs/DESIGN.md` §3's originally-combined
 `containers.rules` sketch.
-A fourth landing, `d7a746f` ("IaC: Kubernetes manifest checks via the pattern-rule engine (§13 step 4)",
-this ticket), added `modules/iac/kubernetes.rules`: eight `IAC-K8S-*` checks (privileged containers,
+A fourth landing, `bb75c9b` ("IaC: Kubernetes manifest checks via the pattern-rule engine (§13 step 4)")
+added `modules/iac/kubernetes.rules`: eight `IAC-K8S-*` checks (privileged containers,
 host network/PID namespace sharing, missing resource limits/requests, `runAsNonRoot` unset, plaintext
 secrets in env vars, the mutable `:latest` image tag, wildcard RBAC verbs/resources, and
 `automountServiceAccountToken` left at its default), scoped to plain Kubernetes YAML/JSON manifests and
