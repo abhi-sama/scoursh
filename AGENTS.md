@@ -113,13 +113,13 @@ re-list it as outstanding.
 The next task for step 3 itself is its remainder (`nosql.rules` and `ldap.rules`).
 Step 4's IaC half has also landed, out of sequence and ahead of step 3's remaining `nosql`/`ldap`
 sub-steps, in three separate landings: `5de4460` shipped Terraform checks, `add2b21` added the
-Helm-values slice of §6.6's container/orchestration catalog (`modules/iac/helm.rules`), and this ticket
-(`ae03175`) adds the Dockerfile slice (`modules/iac/dockerfile.rules`).
+Helm-values slice of §6.6's container/orchestration catalog (`modules/iac/helm.rules`), and `25abfa3`
+added the Dockerfile slice (`modules/iac/dockerfile.rules`).
 CloudFormation, bare Kubernetes-manifest checks, and docker-compose checks are all still open under
 §6.6 - see the detailed paragraph below.
 **Step 4's SCA half is also under way, out of sequence, and now six ecosystems in - every ecosystem
 `docs/DESIGN.md` §6.5 names: `ed8c283` shipped the npm/yarn/pnpm lockfile slice, a follow-on ticket
-shipped the Python slice (`requirements.txt`/`poetry.lock`/`Pipfile.lock`) on top of it, `11e7c97` then
+shipped the Python slice (`requirements.txt`/`poetry.lock`/`Pipfile.lock`) on top of it, `a2d37aa` then
 added the Ruby slice (`Gemfile.lock`), a later ticket added the Java slice
 (`pom.xml`/`build.gradle`, under check id `SCA-JAVA-VULNERABLE_DEP-01`), `7e7b186` added the
 PHP/Composer slice (`composer.lock`, `SCA-PHP-VULNERABLE_DEP-01`), and this ticket adds the Go slice
@@ -323,6 +323,50 @@ ticket to `blocked` - when 3a had in fact already merged to `dev`.
 Before concluding a dependency is missing, check the actual workspace branch and, if it is behind, check
 `dev`'s tip rather than trusting `main` or this file's prose alone.
 
+**A ticket can never cite its own landing sha, because the squash merge mints that sha afterwards.**
+Landings reach `dev` as squash commits, so the sha a ticket's own branch carries is not the sha its work
+ends up with, and a ticket writing "`<sha>` (this ticket)" into these docs is guessing at a commit that
+does not exist yet and generally never will.
+This has already happened three times and shipped every time: `ae03175` (the Dockerfile slice, really
+`25abfa3`), `11e7c97` (the Ruby SCA slice, really `a2d37aa`) and `d7a746f` (the Kubernetes IaC slice,
+really `bb75c9b`) - eight references between them across `AGENTS.md` and `docs/FOUNDATION.md`, none of
+which `git cat-file -e` could resolve until this change corrected them.
+The third one landed while this very change was in review, which is the argument for the rule.
+Write the landing in prose without a sha ("this ticket adds ..."), and let the next ticket that touches
+the paragraph fill in the real one.
+Before trusting any sha in these two files, resolve it:
+
+```sh
+grep -ohE '`[0-9a-f]{7,40}`' AGENTS.md docs/FOUNDATION.md | tr -d '`' | sort -u |
+  while read -r s; do
+    git cat-file -e "$s^{commit}" 2>/dev/null || echo "MISSING $s"
+  done
+```
+
+It has exactly five known false positives, all in prose rather than in a citation: the two decimal/octal
+IPv4 literals in `docs/FOUNDATION.md` tension 19's SSRF text (`2851995906`, `025154325002`), which are
+not shas at all, and `ae03175`/`11e7c97`/`d7a746f` in the paragraph immediately above, which this note
+quotes on purpose as the bad values to recognise.
+Anything else it reports is a real reference to a commit that does not exist, and is a bug.
+
+**A Crewban ticket that is `done` with `landed_sha` NULL is usually a bookkeeping gap, not stranded
+work - prove the work is really unlanded before rescuing it by hand.**
+Because every landing squashes, `git log origin/dev..<branch>` reports "1 commit ahead" for a branch
+whose content is *already fully merged*, so commits-ahead is not evidence of anything.
+The test that actually discriminates is `git cherry origin/dev origin/<branch>`: a leading `-` means the
+patch is already upstream, `+` means it is not.
+Confirm a `-` by comparing trees (`git rev-parse <branch>^{tree}` against the `dev` commit that landed
+it); identical trees mean there is nothing to rescue and the correct outcome is to say so, not to open
+an empty PR.
+Two shapes cause the NULL: a landing job recorded against a sibling ticket that shared the branch, and
+"merger" tickets (`crewban/resolve-merge-conflict-*`), which resolve the conflict in the *source*
+ticket's workspace on the *source* ticket's branch and so frequently own no branch of their own.
+Unpushed agent work, if any exists, lives outside this repo in the harness's per-ticket clones - at the
+time of writing `~/.ace/workspaces/<ticket-uuid>`, a pre-rename path still in use by Crewban.
+Sweep those with `git rev-list HEAD --not --remotes=origin` plus `git stash list` before concluding a
+branch missing from `origin` means the work is lost; a commit found that way still has to be compared
+against `dev` artifact by artifact, since it is usually a superseded draft of what already landed.
+
 **One piece of step 5 landed out of sequence: `lib/http.sh` (the scope-gate chokepoint,
 docs/FOUNDATION.md tension 19) now exists**, built and reviewed as its own ticket once tension 19's
 contract itself was signed off, rather than waiting for steps 2-4.  It has no dependency on `scan.sh`,
@@ -351,8 +395,8 @@ added `modules/iac/helm.rules`: three checks (`IAC-HELM-HOST_PORT-01`, `IAC-HELM
 file, never a bare non-Helm Kubernetes manifest) and its own "KNOWN GAP" note confirms no
 `modules/iac/kubernetes.rules` (or any other Kubernetes-manifest pattern pack) exists on `dev` as of
 that landing.
-A third landing, `ae03175` ("IaC: Dockerfile checks via the pattern-rule engine (§13 step 4)", this
-ticket), added `modules/iac/dockerfile.rules`: six checks (`IAC-DOCKER-ROOT_USER-01`,
+A third landing, `25abfa3` ("IaC: Dockerfile checks via the pattern-rule engine (§13 step 4)") added
+`modules/iac/dockerfile.rules`: six checks (`IAC-DOCKER-ROOT_USER-01`,
 `IAC-DOCKER-LATEST_TAG-01`, `IAC-DOCKER-SECRET_ENV-01`, `IAC-DOCKER-REMOTE_ADD-01`,
 `IAC-DOCKER-PIPE_TO_SHELL-01`, `IAC-DOCKER-UNPINNED_DIGEST-01`) scoped strictly to `Dockerfile`,
 `Dockerfile.*`, and `*.dockerfile` - `docker-compose*.yml` and Helm `values.yaml` are deliberately NOT
@@ -389,7 +433,7 @@ from npm's own when both ecosystems have unknown-version cases in the same run, 
 rather than a true cross-ecosystem merge (see `modules/sca/engine.sh`'s `sca_scan_python_tree` header
 comment).
 
-`11e7c97` ("SCA: parse Ruby Gemfile.lock and match against data/advisories.db (§13 step 4)") then added
+`a2d37aa` ("SCA: parse Ruby Gemfile.lock and match against data/advisories.db (§13 step 4)") then added
 Ruby/RubyGems, in `modules/sca/engine.sh` alongside the npm parser rather than a forked file:
 `sca_parse_gemfile_lock` (Gemfile.lock's `GEM`/`GIT`/`PATH` `specs:` blocks - already flat, one resolved
 gem per 4-space-indented line, so unlike npm v1 no recursion is needed), `sca_ruby_normalize_name`
