@@ -182,6 +182,7 @@ veng_fetch() {
 declare -A VENG_REGISTRY=(
   [semgrep]=veng_vendor_semgrep
   [trivy]=veng_vendor_trivy
+  [gitleaks]=veng_vendor_gitleaks
 )
 
 # veng_vendor_semgrep - the semgrep registry entry.  Delegates to
@@ -199,8 +200,8 @@ veng_vendor_semgrep() {
   semgrep_vendor
 }
 
-# veng_vendor_trivy - the trivy registry entry (this ticket, the second
-# concrete adapter, the first for a module other than sast).  Delegates to
+# veng_vendor_trivy - the trivy registry entry (the second concrete
+# adapter, the first for a module other than sast).  Delegates to
 # modules/iac/adapters/trivy/vendor.sh's own `trivy_vendor`, loaded lazily
 # for the identical reason veng_vendor_semgrep loads its own vendor.sh
 # lazily above.
@@ -211,6 +212,19 @@ veng_vendor_trivy() {
   # shellcheck source=modules/iac/adapters/trivy/vendor.sh
   source "$vendor_sh"
   trivy_vendor
+}
+
+# veng_vendor_gitleaks - the gitleaks registry entry (this ticket, the
+# third concrete adapter).  Delegates to
+# modules/sast/adapters/gitleaks/vendor.sh's own `gitleaks_vendor`, loaded
+# the identical lazy, per-invocation way veng_vendor_semgrep already does.
+veng_vendor_gitleaks() {
+  local vendor_sh="$VENG_DIR/modules/sast/adapters/gitleaks/vendor.sh"
+  [[ -f $vendor_sh ]] || die "$SCOURSH_EXIT_INCOMPLETE" \
+    "vendor-engines: $vendor_sh is missing - modules/sast/adapters/gitleaks/ should ship it"
+  # shellcheck source=modules/sast/adapters/gitleaks/vendor.sh
+  source "$vendor_sh"
+  gitleaks_vendor
 }
 
 veng_list() {

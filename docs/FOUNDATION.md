@@ -4330,6 +4330,41 @@ and an extended `tests/suites/vendor-engines.sh` (a `trivy_vendor` fetch/verify 
 pass; as with semgrep, zero real engines are vendored anywhere in this repository, and the round-trip and
 graceful-degradation proofs run against a FAKE stand-in `trivy` binary.
 
+**A third concrete adapter ticket has now landed on top of that plumbing: `modules/sast/adapters/gitleaks/`.**
+It reuses `lib/engines.sh`'s `has_engine` and `--use-engines` unchanged - this ticket adds no new
+plumbing of its own - and ships `gitleaks_detect`/`gitleaks_run`/`gitleaks_normalize`
+(`modules/sast/adapters/gitleaks/adapter.sh`) plus `modules/sast/adapters/gitleaks/vendor.sh`, gated
+INDEPENDENTLY of semgrep in `modules/sast/run.sh`'s own `--use-engines` block so neither adapter's
+presence, absence, or failure affects the other's own `coverage_reduction` line.  `gitleaks_run` invokes
+`detect --no-banner --no-git --exit-code 0 ...` (`docs/DESIGN.md` §6.4's own "gitleaks --no-banner",
+`--no-git` because history scanning is `history.sh`'s own already-shipped job, `--exit-code 0` because
+gitleaks' normal "leaks found" exit status is 1, not a crash); `gitleaks_normalize` parses gitleaks' own
+BARE top-level JSON array (unlike semgrep's `{"results":[...]}` envelope) with the same
+depth/string-aware `awk` splitter shape, started at the first `[` directly.  `tools/vendor-engines.sh`'s
+`VENG_REGISTRY` now carries three entries (`semgrep`, `trivy`, `gitleaks`), and `docs/ADAPTERS.md` §9's
+roster gains its third row.
+This ticket's own additional scope item - deduplicating a gitleaks finding against a
+`modules/sast/rules/secrets.rules` native finding at the same file and matched bytes, which the ordinary
+per-run fingerprint dedup cannot do because `check_id` is itself hashed into the fingerprint - is
+`_gitleaks_dup_of_native_secret`, which reads this run's own not-yet-merged shard via
+`lib/findings.sh`'s public `finding_decode` (native pattern scan, then history, then engine adapters run
+strictly in that order, single-worker, so the native secrets findings are already on disk by the time
+this runs) and compares `(loc_path, loc_match_digest)`.  Getting that comparison to actually FIRE
+required matching how `modules/sast/engine.sh` computes its own digest - from the exact regex-match
+SUBSTRING (`scan_match_offsets`' own `text` field), never a whole re-read line - which is why
+`_gitleaks_match_text` prefers gitleaks' own reported `Secret` field (then `Match`, then a re-derived
+line, then `Description`) rather than copying the semgrep adapter's own whole-line-read preference:
+semgrep has no distinct matched-substring field to prefer, so its adapter reads the line as its best
+available surrogate, but gitleaks already reports the exact matched bytes directly, and preferring those
+is what makes this adapter's digest land on the same value a native finding's own digest does at the
+identical file+line.  A first draft that copied semgrep's whole-line-read pattern silently defeated the
+dedup end to end; `tests/suites/sast-gitleaks.sh` section D (a real `scan.sh sast --use-engines`
+subprocess against a FAKE vendored gitleaks reporting one true duplicate and one non-overlapping finding)
+is the fixture that caught it and now pins the fix, alongside sections A-C mirroring
+`tests/suites/sast-semgrep.sh`'s own three-function/graceful-degradation/round-trip shape, and an
+expanded `tests/suites/vendor-engines.sh` (three sorted registry entries, `gitleaks_vendor`'s own
+fetch/verify path).
+
 What §13 step 1 deliberately did **not** build, so the boundary is not rediscovered: `scan.sh`, anything
 under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
 shipped rule pack, and `state/`.  Diff classification (tension 12) and baseline suppression (tension 11

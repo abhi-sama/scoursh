@@ -18,13 +18,22 @@
 # sourced-once guard.
 #
 # THE OPTIONAL SEMGREP ENGINE ADAPTER (docs/DESIGN.md §6.4; docs/ADAPTERS.md;
-# this ticket, the first concrete adapter) is wired in at the end of `_sast_run_module`,
-# below, gated on BOTH `${SCAN_FLAGS[use-engines]:-} == true` AND
-# `has_engine sast semgrep` (lib/engines.sh) - docs/ADAPTERS.md §5's own
-# pseudocode keeps those two conditions independent, never collapsed into
-# one check.  Absent either, this is a silent, honestly-declared
-# native-only continue (`coverage_reduction reason=engine_not_vendored`),
-# never an error - see `_sast_run_semgrep_adapter`'s own comment.
+# the semgrep ticket, the first concrete adapter) is wired in at the end of
+# `_sast_run_module`, below, gated on BOTH `${SCAN_FLAGS[use-engines]:-} ==
+# true` AND `has_engine sast semgrep` (lib/engines.sh) - docs/ADAPTERS.md
+# §5's own pseudocode keeps those two conditions independent, never
+# collapsed into one check.  Absent either, this is a silent,
+# honestly-declared native-only continue (`coverage_reduction
+# reason=engine_not_vendored`), never an error - see
+# `_sast_run_semgrep_adapter`'s own comment.
+#
+# THE OPTIONAL GITLEAKS ENGINE ADAPTER (this ticket, the second concrete
+# adapter, built on the same plumbing) is wired in immediately after the
+# semgrep block, gated the IDENTICAL, INDEPENDENT way -
+# `${SCAN_FLAGS[use-engines]:-} == true` AND `has_engine sast gitleaks` -
+# so one adapter's presence, absence, or failure never affects the other's
+# own gate or its own coverage_reduction line.  See
+# `_sast_run_gitleaks_adapter`'s own comment for its failure handling.
 #
 # shellcheck shell=bash
 # shellcheck source=modules/sast/engine.sh
@@ -56,6 +65,32 @@ _sast_run_semgrep_adapter() {
     semgrep_normalize "$out"
   else
     run_record coverage_reduction 'module=sast reason=engine_run_failed engine=semgrep'
+  fi
+  rm -f "$out"
+}
+
+# _sast_run_gitleaks_adapter ROOT - runs the vendored gitleaks adapter
+# (modules/sast/adapters/gitleaks/adapter.sh, sourced by `has_engine`'s own
+# call in _sast_run_module below) and normalizes its results into the
+# finding model.  Only ever called after `has_engine sast gitleaks` has
+# already returned 0, so `gitleaks_run`/`gitleaks_normalize` are guaranteed
+# to be defined by the time this runs.
+#
+# Mirrors `_sast_run_semgrep_adapter` exactly, including the
+# `engine_run_failed` distinct-reason handling for a genuine engine crash
+# (docs/ADAPTERS.md §7) - deliberately called AFTER the semgrep block in
+# `_sast_run_module`, and after the native pattern scan above it, so
+# `gitleaks_normalize`'s own cross-check-id dedup against
+# modules/sast/rules/secrets.rules
+# (`_gitleaks_dup_of_native_secret`, in the adapter itself) can read this
+# run's own native SAST-SEC-* findings from the still-unmerged shard file.
+_sast_run_gitleaks_adapter() {
+  local root=$1
+  local out=$SCOURSH_SCRATCH/gitleaks-run.$$.json
+  if gitleaks_run "$out" "$root"; then
+    gitleaks_normalize "$out"
+  else
+    run_record coverage_reduction 'module=sast reason=engine_run_failed engine=gitleaks'
   fi
   rm -f "$out"
 }
@@ -106,6 +141,11 @@ _sast_run_module() {
       _sast_run_semgrep_adapter "$path"
     else
       run_record coverage_reduction 'module=sast reason=engine_not_vendored engine=semgrep'
+    fi
+    if has_engine sast gitleaks; then
+      _sast_run_gitleaks_adapter "$path"
+    else
+      run_record coverage_reduction 'module=sast reason=engine_not_vendored engine=gitleaks'
     fi
   fi
 

@@ -36,6 +36,10 @@ that landing, which is the point of freezing the contract before the first adapt
 (`trivy config`) - the first for a module other than `sast`, proving §4's directory-convention
 generalization for real rather than leaving it a claim about a hypothetical future module. Nothing in
 §2 through §8 needed to change to accommodate it; only §9's roster gained a row.
+**A third concrete adapter ticket has now shipped the third one**, independently, on top of the
+plumbing (`lib/engines.sh`, `--use-engines`) the first one built -
+`modules/sast/adapters/gitleaks/`, still one ticket, no others bundled with it, and still no change to
+this document's own contract; only §9's roster table gains another row.
 
 ## 2. The no-egress rule, restated for this document
 
@@ -201,16 +205,23 @@ guarantees for free rather than needing its own emitter path. **This ticket (`te
 section C) is the fixture that proves this empirically**: a real `scan.sh sast --use-engines` subprocess
 against a genuinely vendored (fake, stand-in) `semgrep` binary, asserting the resulting
 `semgrep:<rule id>` finding appears, correctly, in `findings.jsonl`, `findings.json`, `report.md` and
-`report.html` alike. A second concrete adapter's own ticket is responsible for the equivalent fixture
-against its own engine's output shape; this document states the requirement generally, it no longer has
-to prove it from nothing.
+`report.html` alike. **The trivy ticket (the second concrete adapter) has since shipped the equivalent
+fixture for its own engine's output shape**, and **the gitleaks ticket (the third concrete adapter) has
+now shipped the equivalent fixture for its own engine's output shape too**: `tests/suites/sast-gitleaks.sh`
+section C runs a real `scan.sh sast --use-engines` subprocess against a genuinely vendored (fake,
+stand-in) `gitleaks` binary and asserts the resulting `gitleaks:<rule id>` finding round-trips through
+the same four formats.
+A fourth concrete adapter's own ticket is responsible for the same fixture shape against its own engine's
+output; this document states the requirement generally, it no longer has to prove it from nothing for
+any of the three shapes already covered.
 
 ## 9. Roster
 
 | Module | Engine | Status |
 |---|---|---|
-| sast | semgrep | shipped - `modules/sast/adapters/semgrep/`; zero real binaries vendored in this repository (§1/§2 - `tools/vendor-engines.sh` is the only way to populate `bin/`/`rules/`, and nobody has run it here) |
-| iac | trivy (`trivy config`) | shipped (this ticket) - `modules/iac/adapters/trivy/`; zero real binaries vendored in this repository (§1/§2, same as above). Detects on `bin/trivy` alone - no `rules/` is vendored, since trivy's misconfiguration checks are compiled into the binary itself (§4's "self-contained binary" case; see the adapter's own header for why `trivy config` was picked over `checkov`/`tfsec`) |
+| sast | semgrep | shipped (the semgrep ticket, the first concrete adapter) - `modules/sast/adapters/semgrep/`; zero real binaries vendored in this repository (§1/§2 - `tools/vendor-engines.sh` is the only way to populate `bin/`/`rules/`, and nobody has run it here) |
+| iac | trivy (`trivy config`) | shipped (the trivy ticket, the second concrete adapter, the first for a module other than sast) - `modules/iac/adapters/trivy/`; zero real binaries vendored in this repository (§1/§2, same as above). Detects on `bin/trivy` alone - no `rules/` is vendored, since trivy's misconfiguration checks are compiled into the binary itself (§4's "self-contained binary" case; see the adapter's own header for why `trivy config` was picked over `checkov`/`tfsec`) |
+| sast | gitleaks | shipped (this ticket, the third concrete adapter) - `modules/sast/adapters/gitleaks/`; zero real binaries vendored in this repository, identically to semgrep above. Deduplicates against `modules/sast/rules/secrets.rules`' native findings by (loc_path, loc_match_digest) - a narrower, cross-check-id identity the ordinary per-run fingerprint dedup cannot catch on its own, since `check_id` is itself one of the fingerprint's hashed components (`modules/sast/adapters/gitleaks/adapter.sh`'s own `_gitleaks_dup_of_native_secret`) |
 
 A concrete adapter ticket adds its own row here in the same change that ships it, per the project's
 build-order process rule (`AGENTS.md`'s "Process rule" paragraph, `docs/FOUNDATION.md`'s mirror) - the
