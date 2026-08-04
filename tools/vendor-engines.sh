@@ -41,16 +41,22 @@
 #     scanner is allowed to point ITS SCANS at, and this script never scans
 #     anything.
 #
-# CURRENT SCOPE UPDATE (this ticket, the first concrete adapter): the
+# CURRENT SCOPE UPDATE (the first concrete adapter ticket, semgrep): the
 # scaffold ticket referenced just above shipped this file with an EMPTY
 # registry, exactly as its own "CURRENT SCOPE" paragraph (preserved below
-# for history) describes.  This ticket is the "future single-engine-adapter
-# ticket" that paragraph anticipates: it adds ONE registry entry
+# for history) describes.  That ticket was the "future single-engine-adapter
+# ticket" this paragraph anticipates: it added ONE registry entry
 # (`semgrep`, section 2), the `veng_fetch` helper every `vendor.sh` is
 # restricted to (section 2a), and `modules/sast/adapters/semgrep/` itself -
-# in the SAME change, per that paragraph's own instruction.  This script is
-# still not forked per engine: a second adapter ticket adds one more
-# registry line and one more fetch function here, not a second dispatcher.
+# in the SAME change, per that paragraph's own instruction.
+#
+# CURRENT SCOPE UPDATE (this ticket, the second concrete adapter, and the
+# first for a module other than sast): adds a SECOND registry entry
+# (`trivy` -> `veng_vendor_trivy`, section 2) and `modules/iac/adapters/trivy/`
+# itself, in the SAME change, proving the "one more registry line and one
+# more fetch function, not a second dispatcher" claim below for real rather
+# than leaving it a prediction about a hypothetical future ticket.
+# `veng_fetch` (section 2a) is reused completely unchanged.
 #
 # ORIGINAL "CURRENT SCOPE" (this ticket - docs/FOUNDATION.md tension 27's
 # "scaffold, not per-engine logic" boundary).  This script ships as a real,
@@ -175,6 +181,7 @@ veng_fetch() {
 # new entry needs no companion change to veng_list/veng_vendor_all below.
 declare -A VENG_REGISTRY=(
   [semgrep]=veng_vendor_semgrep
+  [trivy]=veng_vendor_trivy
 )
 
 # veng_vendor_semgrep - the semgrep registry entry.  Delegates to
@@ -190,6 +197,20 @@ veng_vendor_semgrep() {
   # shellcheck source=modules/sast/adapters/semgrep/vendor.sh
   source "$vendor_sh"
   semgrep_vendor
+}
+
+# veng_vendor_trivy - the trivy registry entry (this ticket, the second
+# concrete adapter, the first for a module other than sast).  Delegates to
+# modules/iac/adapters/trivy/vendor.sh's own `trivy_vendor`, loaded lazily
+# for the identical reason veng_vendor_semgrep loads its own vendor.sh
+# lazily above.
+veng_vendor_trivy() {
+  local vendor_sh="$VENG_DIR/modules/iac/adapters/trivy/vendor.sh"
+  [[ -f $vendor_sh ]] || die "$SCOURSH_EXIT_INCOMPLETE" \
+    "vendor-engines: $vendor_sh is missing - modules/iac/adapters/trivy/ should ship it"
+  # shellcheck source=modules/iac/adapters/trivy/vendor.sh
+  source "$vendor_sh"
+  trivy_vendor
 }
 
 veng_list() {

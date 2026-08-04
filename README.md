@@ -239,7 +239,7 @@ Landed 6 of 6.  Outstanding: none.
 | `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/iac.sh` |
 | `modules/iac/helm.rules` | landed | 3 | `tests/suites/iac.sh` |
 | `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/iac.sh` |
-| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac.sh` |
+| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac-trivy.sh` |
 
 Landed 5 of 6.  Outstanding: `cloudformation.rules`.
 

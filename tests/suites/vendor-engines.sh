@@ -9,12 +9,16 @@
 #    the no-args usage error, and the exit-code contract (0/2/4, never
 #    outside 0-5) are all exercised as REAL subprocess invocations of the
 #    actual script (`bash "$TOOL" ...`).
-#  - This ticket (the first concrete adapter) registered the first real
-#    engine, `semgrep` -> `veng_vendor_semgrep`, so "the registry is
-#    genuinely empty" is no longer true and every assertion below that used
-#    to rely on that is updated to the new, real shape: `--list`/the
-#    registry itself now name `semgrep`, and vendoring an UNREGISTERED name
-#    uses a different bogus engine id so that path is still exercised.
+#  - The first concrete adapter ticket registered the first real engine,
+#    `semgrep` -> `veng_vendor_semgrep`, so "the registry is genuinely
+#    empty" is no longer true; THIS ticket (the second concrete adapter,
+#    the first for a module other than sast) registers a SECOND real
+#    engine, `trivy` -> `veng_vendor_trivy`, so every assertion below that
+#    used to assume "exactly one entry" is updated to the new, real shape:
+#    `--list`/the registry itself now name both `semgrep` and `trivy`, and
+#    vendoring an UNREGISTERED name still uses a different bogus engine id
+#    so that path stays exercised regardless of how many real engines are
+#    registered.
 #  - Section D is the fetch/verify flow the scaffold suite's own comment
 #    promised the first concrete adapter ticket would add: `veng_fetch`'s
 #    checksum success and mismatch paths, and `semgrep_vendor`'s
@@ -26,7 +30,12 @@
 #    every time). Runs against a SCRATCH COPY of
 #    modules/sast/adapters/semgrep/, never the real one - vendoring for
 #    real would write a fake "binary" into this repository's own working
-#    tree, which no test may do.
+#    tree, which no test may do.  This ticket extends section D with the
+#    equivalent proof for `trivy_vendor` (modules/iac/adapters/trivy/
+#    vendor.sh) against its own SCRATCH COPY - a required-env-var gate and
+#    a full success path, but only ONE artifact (bin/trivy - no rules/,
+#    since trivy's checks are compiled into the binary; see that
+#    vendor.sh's own header).
 #  - It still asserts this script makes NO real network call in any path
 #    that is not deliberately exercising the (stubbed) fetch flow, by
 #    running those paths with PATH stripped of curl/wget entirely
@@ -54,20 +63,22 @@ mkdir -p "$W"
 # -- section A: in-process function tests (pure logic, nothing that exits) --
 # ---------------------------------------------------------------------------
 t_case 'registry'
-assert_eq 1 "${#VENG_REGISTRY[@]}" \
-  'the engine registry has exactly one entry (semgrep) after this ticket - fails under the reading that it is still empty, or that a second adapter snuck in'
+assert_eq 2 "${#VENG_REGISTRY[@]}" \
+  'the engine registry has exactly two entries (semgrep, trivy) after this ticket - fails under the reading that it is still empty, still one, or that a third adapter snuck in'
 assert_eq veng_vendor_semgrep "${VENG_REGISTRY[semgrep]:-}" \
   'the semgrep entry maps to veng_vendor_semgrep specifically'
+assert_eq veng_vendor_trivy "${VENG_REGISTRY[trivy]:-}" \
+  'the trivy entry maps to veng_vendor_trivy specifically'
 
-t_case 'veng_list, one registered engine'
+t_case 'veng_list, two registered engines'
 out=$(veng_list)
-assert_eq semgrep "$out" \
-  'listing the registry now prints exactly "semgrep" - fails under the stale reading that it still reports empty'
+assert_eq "$(printf 'semgrep\ntrivy')" "$out" \
+  'listing the registry now prints "semgrep" then "trivy", LC_ALL=C sorted - fails under the stale reading that it still reports only semgrep, or in a different order'
 rc=0
 veng_list >/dev/null || rc=$?
 assert_eq 0 "$rc" 'listing a non-empty registry is success'
 
-t_case 'veng_vendor_all, one registered engine, no operator-supplied values'
+t_case 'veng_vendor_all, two registered engines, no operator-supplied values: refuses on the first one it reaches, alphabetically'
 rc=0
 # In a subshell: semgrep_vendor's env-var gate calls die(), which calls
 # exit() - run in-process it would terminate this whole suite, not just
@@ -76,7 +87,7 @@ rc=0
 # reason.
 ( veng_vendor_all ) >"$W/all.out" 2>&1 || rc=$?
 assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
-  '--all now reaches semgrep_vendor, which refuses (exit 4) rather than guessing a version/URL/checksum - fails under the stale reading that nothing is registered so this is still a no-op'
+  '--all now reaches semgrep_vendor (first, alphabetically), which refuses (exit 4) rather than guessing a version/URL/checksum - fails under the stale reading that nothing is registered so this is still a no-op'
 assert_contains "$(cat "$W/all.out")" 'SCOURSH_SEMGREP_VERSION' \
   'the refusal names the actual env var an operator must set, not just "no"'
 
@@ -116,8 +127,8 @@ t_case '--list, real subprocess'
 rc=0
 out=$(PATH=$NO_NET_PATH bash "$TOOL" --list 2>&1) || rc=$?
 assert_eq 0 "$rc" '--list exits 0'
-assert_eq semgrep "$out" \
-  '--list reports exactly "semgrep" as a real subprocess too'
+assert_eq "$(printf 'semgrep\ntrivy')" "$out" \
+  '--list reports "semgrep" then "trivy" as a real subprocess too'
 
 t_case 'unregistered engine name'
 rc=0
@@ -139,14 +150,24 @@ assert_contains "$out" 'SCOURSH_SEMGREP_VERSION' \
 assert_contains "$out" 'never guesses or hardcodes a checksum' \
   'the refusal states the reason (no invented checksum), matching this file'"'"'s and vendor.sh'"'"'s own stated policy'
 
+t_case 'trivy, no operator-supplied values: refuses, never touches the network'
+rc=0
+out=$(PATH=$NO_NET_PATH bash "$TOOL" trivy 2>&1) || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
+  'trivy with none of SCOURSH_TRIVY_VERSION/URL/SHA256 set is exit 4 - the same shape semgrep uses, with a smaller env-var set (no RULES_URL/RULES_SHA256 - trivy vendors one artifact, not two)'
+assert_contains "$out" 'SCOURSH_TRIVY_VERSION' \
+  'the refusal names the actual env vars an operator must set'
+assert_contains "$out" 'never guesses or hardcodes a checksum' \
+  'the refusal states the reason (no invented checksum), matching semgrep_vendor'"'"'s own stated policy'
+
 t_case '--all, real subprocess'
 rc=0
 out=$(PATH=$NO_NET_PATH bash "$TOOL" --all 2>&1) || rc=$?
 assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
-  '--all as a real subprocess reaches semgrep and refuses (exit 4) the same way, with curl entirely absent from PATH - proving the refusal happens before any network attempt, not because curl was unavailable'
+  '--all as a real subprocess reaches semgrep (first, alphabetically) and refuses (exit 4) the same way, with curl entirely absent from PATH - proving the refusal happens before any network attempt, not because curl was unavailable'
 
 t_case 'exit codes never leave 0-5 (tension 14, finding F16)'
-for args in '' '--help' '--list' '--all' '--bogus' 'semgrep'; do
+for args in '' '--help' '--list' '--all' '--bogus' 'semgrep' 'trivy'; do
   rc=0
   # shellcheck disable=SC2086
   PATH=$NO_NET_PATH bash "$TOOL" $args >/dev/null 2>&1 || rc=$?
@@ -171,7 +192,8 @@ cat >"$FAKE_BIN/curl" <<'FAKECURL'
 # Test double for curl (tests/suites/vendor-engines.sh only) - never a real
 # network call.  Writes deterministic bytes to the --output destination:
 # FAKE_CURL_CONTENT_BIN when the requested URL contains "semgrep-bin",
-# FAKE_CURL_CONTENT_RULES when it contains "semgrep-rules", else
+# FAKE_CURL_CONTENT_RULES when it contains "semgrep-rules",
+# FAKE_CURL_CONTENT_TRIVY_BIN when it contains "trivy-bin", else
 # FAKE_CURL_CONTENT (or a fixed default) - letting one semgrep_vendor call,
 # which fetches two different URLs, be verified against two different
 # known-content checksums in a single real invocation.
@@ -193,6 +215,7 @@ fi
 case $url in
   *semgrep-bin*) printf '%s' "${FAKE_CURL_CONTENT_BIN:-fake-semgrep-binary-bytes}" >"$out" ;;
   *semgrep-rules*) printf '%s' "${FAKE_CURL_CONTENT_RULES:-fake-semgrep-rules-bytes}" >"$out" ;;
+  *trivy-bin*) printf '%s' "${FAKE_CURL_CONTENT_TRIVY_BIN:-fake-trivy-binary-bytes}" >"$out" ;;
   *) printf '%s' "${FAKE_CURL_CONTENT:-fake-artifact-bytes}" >"$out" ;;
 esac
 FAKECURL
@@ -272,6 +295,46 @@ assert_eq 'fake-semgrep-binary-bytes' "$(cat "$ADAPTER_COPY/bin/semgrep" 2>/dev/
 assert_eq 'fake-semgrep-rules-bytes' "$(cat "$ADAPTER_COPY/rules/semgrep-rules.yml" 2>/dev/null)" \
   'the vendored ruleset holds exactly the checksum-verified bytes for its OWN URL, not the binary'"'"'s - fails under a bug that swapped the two destinations'
 rm -rf "$ADAPTER_COPY"
+
+# trivy_vendor's own end-to-end orchestration (this ticket, the second
+# concrete adapter), against a SCRATCH COPY of
+# modules/iac/adapters/trivy/, never the real one, for the identical
+# reason the semgrep block above uses one.
+TRIVY_ADAPTER_COPY=$W/trivy-adapter-copy
+rm -rf "$TRIVY_ADAPTER_COPY"
+mkdir -p "$TRIVY_ADAPTER_COPY"
+cp "$ROOT/modules/iac/adapters/trivy/vendor.sh" "$TRIVY_ADAPTER_COPY/vendor.sh"
+
+t_case 'trivy_vendor: missing operator-supplied values refuses before ever calling curl'
+rc=0
+( unset SCOURSH_TRIVY_VERSION SCOURSH_TRIVY_URL SCOURSH_TRIVY_SHA256
+  # shellcheck source=/dev/null
+  source "$TRIVY_ADAPTER_COPY/vendor.sh"
+  PATH=$NO_NET_PATH trivy_vendor ) >"$W/tv.out" 2>&1 || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
+  'trivy_vendor with nothing set refuses (exit 4) even with curl entirely unavailable on PATH, proving the env-var gate runs before any fetch attempt'
+
+t_case 'trivy_vendor: full success path populates bin/ (executable) only - no rules/ at all, verified end to end'
+TRIVY_BIN_SHA=$(printf '%s' 'fake-trivy-binary-bytes' | sha256_of)
+rc=0
+( export SCOURSH_TRIVY_VERSION=0.99.0
+  export SCOURSH_TRIVY_URL=https://example.invalid/trivy-bin
+  export SCOURSH_TRIVY_SHA256=$TRIVY_BIN_SHA
+  # shellcheck source=/dev/null
+  source "$TRIVY_ADAPTER_COPY/vendor.sh"
+  PATH="$FAKE_BIN:$PATH" trivy_vendor ) >"$W/tv-ok.out" 2>&1 || rc=$?
+assert_eq 0 "$rc" 'trivy_vendor succeeds end to end when the value and checksum are correct'
+assert_file_exists "$TRIVY_ADAPTER_COPY/bin/trivy" 'the vendored binary lands at bin/trivy'
+if [[ -x $TRIVY_ADAPTER_COPY/bin/trivy ]]; then
+  _t_ok 'the vendored binary is executable'
+else
+  _t_no 'the vendored binary is executable' "not executable: $TRIVY_ADAPTER_COPY/bin/trivy"
+fi
+assert_eq 'fake-trivy-binary-bytes' "$(cat "$TRIVY_ADAPTER_COPY/bin/trivy" 2>/dev/null)" \
+  'the vendored binary holds exactly the checksum-verified bytes'
+assert_file_absent "$TRIVY_ADAPTER_COPY/rules" \
+  'trivy_vendor never creates a rules/ directory at all - fails under a reading that copied semgrep_vendor'"'"'s two-artifact shape verbatim'
+rm -rf "$TRIVY_ADAPTER_COPY"
 
 # ---------------------------------------------------------------------------
 # -- section C: the dual-mode source guard - sourcing this file (as section

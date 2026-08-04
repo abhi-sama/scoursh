@@ -32,6 +32,10 @@ engine. **The first concrete adapter ticket has since shipped the first one** -
 `modules/sast/adapters/semgrep/` - exactly as this section anticipated, one ticket, no others bundled
 with it. §3 and §9 below are updated accordingly; the rest of this document's contract is unchanged by
 that landing, which is the point of freezing the contract before the first adapter rather than after.
+**A second concrete adapter ticket has since shipped a second one** - `modules/iac/adapters/trivy/`
+(`trivy config`) - the first for a module other than `sast`, proving §4's directory-convention
+generalization for real rather than leaving it a claim about a hypothetical future module. Nothing in
+§2 through §8 needed to change to accommodate it; only §9's roster gained a row.
 
 ## 2. The no-egress rule, restated for this document
 
@@ -205,7 +209,8 @@ to prove it from nothing.
 
 | Module | Engine | Status |
 |---|---|---|
-| sast | semgrep | shipped (this ticket) - `modules/sast/adapters/semgrep/`; zero real binaries vendored in this repository (§1/§2 - `tools/vendor-engines.sh` is the only way to populate `bin/`/`rules/`, and nobody has run it here) |
+| sast | semgrep | shipped - `modules/sast/adapters/semgrep/`; zero real binaries vendored in this repository (§1/§2 - `tools/vendor-engines.sh` is the only way to populate `bin/`/`rules/`, and nobody has run it here) |
+| iac | trivy (`trivy config`) | shipped (this ticket) - `modules/iac/adapters/trivy/`; zero real binaries vendored in this repository (§1/§2, same as above). Detects on `bin/trivy` alone - no `rules/` is vendored, since trivy's misconfiguration checks are compiled into the binary itself (§4's "self-contained binary" case; see the adapter's own header for why `trivy config` was picked over `checkov`/`tfsec`) |
 
 A concrete adapter ticket adds its own row here in the same change that ships it, per the project's
 build-order process rule (`AGENTS.md`'s "Process rule" paragraph, `docs/FOUNDATION.md`'s mirror) - the
