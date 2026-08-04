@@ -79,6 +79,20 @@
 #     IAC-TF-*/IAC-HELM-*/IAC-DOCKER-* ones, proving kubernetes.rules is
 #     registered, not merely present on disk
 #
+# Covers the docker-compose cross-fire regression (the "Get
+# modules/iac/kubernetes.rules correct" ticket), in the same section:
+#   - zero IAC-K8S-* findings on tests/fixtures/iac/docker-compose/, a
+#     compose file deliberately carrying `privileged: true`, `image:
+#     x:latest`, and no `resources:` block - all three of the checks a real
+#     compose file can reach - so the assertion pins the `exclude-files`
+#     boundary rather than an accident of content
+#   - the OPPOSITE direction, in one scan of tests/fixtures/iac-scope/:
+#     those same three ids still fire on k8s-deployment.yaml while nothing
+#     attaches to docker-compose.yml.  Both halves are needed because the
+#     naive fix for each is the other's bug - a narrowing that silences the
+#     cross-fire by making the pack inert passes every "stays quiet"
+#     assertion in this file
+#
 # Every case that pins a decision names the reading it FAILS under, per
 # AGENTS.md's testing rule.
 #
@@ -529,7 +543,78 @@ t_case 'kubernetes.rules: zero IAC-K8S-* findings on the CloudFormation-shaped f
 assert_not_contains "$_k8s_cfn_found" 'IAC-K8S-' \
   'no IAC-K8S-* id fired on the CloudFormation-shaped fixture - fails if a pattern keyed on Kubernetes lowerCamelCase vocabulary also matched CloudFormations PascalCase equivalent (a case-sensitivity regression), or if an anchor as generic as image:/containers:/kind: matched CloudFormations differently-named/differently-cased keys'
 
-unset K8S_IDS _k8s_vuln_found _k8s_clean_found _want_id _safe_id _k8s_vuln_modules _k8s_helm_found _k8s_cfn_found
+# ---------------------------------------------------------------------------
+# The docker-compose scope guard, and the regression that pins BOTH
+# directions of it.
+#
+# kubernetes.rules shipped with no docker-compose guard even though
+# modules/iac/docker-compose.rules (57d1cd1) and its
+# tests/fixtures/clean/docker-compose.*.yml fixtures had ALREADY landed when
+# it did (bb75c9b).  The per-id "stays quiet across the WHOLE
+# tests/fixtures/clean/ tree" loop above swept those fixtures from this
+# pack's first commit, so IAC-K8S-MISSING_RESOURCE_LIMITS-01 and
+# IAC-K8S-MUTABLE_TAG-01 were red on docker-compose.*.yml the moment the
+# pack merged - this suite reports 110 passed, 2 failed at bb75c9b itself.
+# It is a cross-fire, not an inert rule.  kubernetes.rules now carries the
+# same eight `exclude-files` globs that docker-compose.rules uses as its own
+# `files:` allow-list.
+#
+# Two failure modes have to be pinned, not one, because the obvious fix for
+# each is the other's bug:
+#
+#   - narrow too little and the cross-fire comes back (the negative half);
+#   - narrow too much - an `exclude-files: *.yaml`, a `files:` typo, a
+#     context-deny that suppresses everything - and the pack goes INERT,
+#     silently reporting nothing at all while every "stays quiet" assertion
+#     in this file goes green (the positive half).
+#
+# The per-id loop above already fires each check on tests/fixtures/vuln/,
+# but the two halves are asserted here TOGETHER, over one scan of one
+# directory, so the thing under test is unambiguously the path boundary and
+# neither half can be satisfied by breaking the other.
+# ---------------------------------------------------------------------------
+_scan_one_pack kubernetes "$ROOT/tests/fixtures/iac/docker-compose" "$W/run-k8s-compose-guard"
+_k8s_compose_found=$(_ids_found "$W/run-k8s-compose-guard")
+t_case 'kubernetes.rules: zero IAC-K8S-* findings on the docker-compose-shaped fixture (the cross-fire that broke dev)'
+assert_not_contains "$_k8s_compose_found" 'IAC-K8S-' \
+  'no IAC-K8S-* id fired on tests/fixtures/iac/docker-compose/docker-compose.yml - fails if the exclude-files globs are dropped or stop covering a compose basename, which is exactly the regression that put IAC-K8S-MISSING_RESOURCE_LIMITS-01 and IAC-K8S-MUTABLE_TAG-01 on a docker-compose file: that fixture carries a literal privileged: true, a literal image: x:latest, and no resources: block, so all three of this packs compose-reachable checks WOULD match on content alone'
+
+# Same pack, one directory, two shapes: tests/fixtures/iac-scope/ holds a
+# docker-compose.yml and a k8s-deployment.yaml that were written for the
+# docker-compose section above to carry deliberately parallel hazard content
+# - both have a literal `privileged: true` and a bare `image:` line with no
+# `resources:` block anywhere, which is precisely what
+# IAC-K8S-PRIVILEGED-01 and IAC-K8S-MISSING_RESOURCE_LIMITS-01 key on.  The
+# manifest additionally tags `:latest`, which the compose file does not, so
+# IAC-K8S-MUTABLE_TAG-01 is asserted positive here and negative on the
+# dedicated compose guard above (which does carry `:latest`); between the
+# two, all three compose-reachable checks are pinned in both directions.
+#
+# Asserting over `check_id@loc_path` pairs from ONE scan is what stops the
+# halves being traded off against each other: the pack has to fire on the
+# manifest and stay silent on the compose file in the same run.
+_scan_one_pack kubernetes "$ROOT/tests/fixtures/iac-scope" "$W/run-k8s-scope"
+_k8s_scope_pairs=$(_ids_and_paths_found "$W/run-k8s-scope")
+
+for _want_id in IAC-K8S-PRIVILEGED-01 IAC-K8S-MISSING_RESOURCE_LIMITS-01 IAC-K8S-MUTABLE_TAG-01; do
+  t_case "kubernetes.rules: $_want_id still fires on the Kubernetes manifest in the mixed directory"
+  assert_contains "$_k8s_scope_pairs" "$_want_id@tests/fixtures/iac-scope/k8s-deployment.yaml" \
+    "$_want_id fires on k8s-deployment.yaml - fails if a docker-compose narrowing overshot and made the pack inert (an over-broad exclude-files, or a context-deny wide enough to suppress a real manifest), which is the failure mode the compose fix must NOT introduce and which every stays-quiet assertion in this file would report as green"
+done
+
+_bad_k8s_on_compose=''
+while IFS= read -r _pair; do
+  [[ -n $_pair ]] || continue
+  case $_pair in
+    IAC-K8S-*@tests/fixtures/iac-scope/docker-compose.yml) _bad_k8s_on_compose+="$_pair "$'\n' ;;
+  esac
+done <<<"$_k8s_scope_pairs"
+t_case 'kubernetes.rules: no IAC-K8S-* finding is attributed to docker-compose.yml in the mixed directory'
+assert_eq '' "$_bad_k8s_on_compose" \
+  "expected zero Kubernetes checks attributed to docker-compose.yml, found: $_bad_k8s_on_compose - that file carries a literal privileged: true and an image: line with no resources: nearby, so this fails the moment the exclude-files boundary stops holding"
+
+unset K8S_IDS _k8s_vuln_found _k8s_clean_found _want_id _safe_id _k8s_vuln_modules _k8s_helm_found _k8s_cfn_found \
+  _k8s_compose_found _k8s_scope_pairs _bad_k8s_on_compose _pair
 
 # =============================================================================
 printf -- '\n-- check selection integration: scan_dispatch iac is no longer a no-op --\n'

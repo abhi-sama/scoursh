@@ -1,0 +1,55 @@
+# tests/fixtures/iac/docker-compose/docker-compose.yml -
+# docker-compose-shaped fixture, the third scope guard for
+# modules/iac/kubernetes.rules alongside tests/fixtures/iac/helm/ and
+# tests/fixtures/iac/cloudformation/.
+#
+# Why it exists: the Kubernetes pack (bb75c9b) landed AFTER
+# modules/iac/docker-compose.rules (57d1cd1) and its own true-negative
+# fixtures under tests/fixtures/clean/, yet carried no docker-compose guard.
+# The pack's "stays quiet across the WHOLE tests/fixtures/clean/ tree"
+# assertion swept those fixtures from its first commit, so
+# IAC-K8S-MISSING_RESOURCE_LIMITS-01 and IAC-K8S-MUTABLE_TAG-01 were red the
+# moment it merged - a cross-fire, not an inert rule.  The `exclude-files`
+# globs on every record in kubernetes.rules are the fix; this fixture is
+# what keeps it fixed.
+#
+# Ordinary, valid docker-compose syntax, deliberately carrying every literal
+# token a real compose file can plausibly hold that an IAC-K8S-* pattern
+# also keys on:
+#
+#   - `privileged: true` is byte-identical in both schemas
+#     (IAC-K8S-PRIVILEGED-01).
+#   - `image: <name>:latest` is byte-identical in both schemas
+#     (IAC-K8S-MUTABLE_TAG-01).
+#   - no `resources:` block appears anywhere, so the absence check
+#     IAC-K8S-MISSING_RESOURCE_LIMITS-01 - which fires on a bare `image:`
+#     line with no nearby `resources:` - has nothing to suppress it.
+#
+# Those three are the whole real false-positive surface: `hostNetwork` /
+# `hostPID`, `containers:`, `runAsNonRoot`, `kind:`, RBAC `verbs:` and a
+# name/value env pair are Kubernetes-only vocabulary with no compose
+# equivalent (compose uses `network_mode: host` and a flat `environment:`
+# map), so those five checks are structurally immune here whatever the glob
+# says.  Asserting zero IAC-K8S-* over the whole file therefore pins the
+# three that could fire without weakening to a vacuous check on the five
+# that could not.
+#
+# The pack must stay silent on ALL of this because the path is
+# docker-compose.rules', not because the content happens not to match - the
+# `exclude-files` glob is the boundary.  The companion positive assertion,
+# over tests/fixtures/iac-scope/k8s-deployment.yaml, holds the other end:
+# the same tokens in a manifest-named file still fire, so a narrowing that
+# silences this fixture by making the pack inert fails there.
+version: "3.8"
+services:
+  app:
+    image: myapp:latest
+    privileged: true
+    ports:
+      - "8080:8080"
+    environment:
+      - APP_ENV=production
+  worker:
+    image: myworker:latest
+    restart: unless-stopped
+    command: ["worker", "--queue", "default"]
