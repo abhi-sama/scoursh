@@ -3982,6 +3982,30 @@ Step 3's `nosql`/`ldap` rule packs, step 4's own SCA half (see the paragraph bel
 §6.6's container/orchestration catalog (docker-compose) plus CloudFormation all remain open; do not read
 this paragraph as "step 4 is done."
 
+**A fifth landing has since closed the docker-compose gap the paragraph above left open:
+`57d1cd1` ("IaC: docker-compose checks via the pattern-rule engine (§13 step 4)") added
+`modules/iac/docker-compose.rules`.**
+`docs/DESIGN.md` §6.6 bundles docker-compose in with Dockerfile/Kubernetes/Helm under one prose
+"containers.rules" bullet, but none of the four landings above had claimed the docker-compose slice
+itself; this ticket closed exactly that one gap, reusing `modules/iac/run.sh`/`parse.sh` unchanged (they
+already existed from the Terraform landing above) and adding only the new flat pack file plus its
+fixtures.
+`docker-compose.rules` seeds four checks: `IAC-COMPOSE-EXPOSED_PORT-01` (a host port bound without
+restricting the interface), `IAC-COMPOSE-PRIVILEGED-01` (`privileged: true`),
+`IAC-COMPOSE-SENSITIVE_MOUNT-01` (a host bind mount of `/var/run/docker.sock`, `/etc`, `/root`, `/home`,
+`/proc`, `/sys`, or `/` itself), and `IAC-COMPOSE-PLAINTEXT_SECRET-01` (a literal credential value in an
+`environment:` entry, rather than a `${VAR}`/`env_file:` reference).
+Its `files:` globs match `docker-compose.yml`/`compose.yml` (and their `.yaml`/override-variant forms)
+only - `tests/suites/iac.sh` has a dedicated cross-shape section proving a Kubernetes-manifest-shaped and
+a Helm `values.yaml`-shaped fixture, each deliberately carrying content that would trip every
+`IAC-COMPOSE-*` check if the engine ever inspected file content, still produce zero findings, and that a
+mixed directory holding one file of each IaC shape never lets a check cross-attribute to the wrong file.
+`modules/` as a whole now ships **twelve** pattern packs on disk (the eleven above plus this one), which
+is the count `tests/lint-rules.sh`'s E060 fixture-coverage note now reports.
+Dockerfile, Kubernetes-manifest, Helm-values, and now docker-compose IaC rules have all landed; only
+CloudFormation (§8.2's IaC catalog) remains unclaimed by any landed ticket - do not read this paragraph
+as "step 4 is done," only its docker-compose slice is newly closed.
+
 **A third piece of step 4 has now landed, in three sub-tickets: `modules/sca/` (the SCA module's npm,
 Python, and Ruby slices).**
 `ed8c283` ("SCA: parse npm lockfiles and match against data/advisories.db") shipped `modules/sca/run.sh`
