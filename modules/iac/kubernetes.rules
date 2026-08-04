@@ -15,16 +15,22 @@
 # under one `containers.rules` name, but terraform.rules already established
 # the precedent of one flat file per technology rather than the grouped
 # name, and this ticket's acceptance criteria name `modules/iac/kubernetes.rules`
-# specifically.  Docker/compose/Helm-template scanning is future work for a
-# separate ticket; this file's only obligation toward Helm is the negative
-# one - stay silent on a Helm-template-shaped file.
+# specifically.  Helm-template scanning is future work for a separate
+# ticket; this file's only obligation toward Helm is the negative one - stay
+# silent on a Helm-template-shaped file.  Dockerfile and docker-compose
+# scanning were never future work: `modules/iac/dockerfile.rules` (25abfa3)
+# and `modules/iac/docker-compose.rules` (57d1cd1) had BOTH already landed
+# when this pack did (bb75c9b), and the docker-compose one is why this pack
+# now carries `exclude-files` - see mechanism 3 below.
 #
 # `files` intentionally covers *.yaml, *.yml, AND *.json: a Kubernetes
 # manifest is valid in any of the three, and CloudFormation templates and
 # Helm-rendered charts use the exact same extensions - the glob cannot be
 # the thing that tells them apart (this ticket's own acceptance criteria say
 # so explicitly for CloudFormation).  Two different content-based mechanisms
-# do that job instead:
+# do that job instead, and a third, glob-based one handles docker-compose,
+# which - unlike CloudFormation and Helm - DOES have a conventional
+# filename:
 #
 # 1. CloudFormation exclusion is primarily a STRUCTURAL property of the
 #    patterns themselves, not a context-deny.  Every Kubernetes API field
@@ -57,7 +63,59 @@
 #    every Helm-rendered chart.  The `\{\{` deny suppresses exactly that
 #    case, on the same window already open for the guard token itself.
 #
-# Both mechanisms are line-oriented and window-bounded (rules/RULE-FORMAT.md
+# 3. docker-compose exclusion is an `exclude-files` glob list (§9.1.2,
+#    applied after `files`) on EVERY record in this pack, mirroring byte for
+#    byte the eight `files:` globs `modules/iac/docker-compose.rules` uses to
+#    claim those same paths as its own.
+#
+#    This is the one shape where the glob IS the right discriminator, which
+#    is why it does not go through mechanisms 1 and 2.  CloudFormation
+#    templates and rendered Helm charts have no conventional filename - they
+#    are `*.yaml` like everything else, so only content can separate them.
+#    A docker-compose file does have one: `docker-compose.yml`/`.yaml`,
+#    `compose.yml`/`.yaml`, and their `<name>.<env>` override siblings.  The
+#    codebase already depends on exactly that closed set - it is
+#    docker-compose.rules' entire `files:` allow-list - so excluding it here
+#    states one ownership boundary in one place, in both directions.
+#
+#    The alternative, a content-based `context-deny` on docker-compose's own
+#    column-0 `services:`/`version:` keys, was considered and rejected.  It
+#    works for IAC-K8S-MISSING_RESOURCE_LIMITS-01, whose window is already
+#    20, but IAC-K8S-MUTABLE_TAG-01 - one of the two checks that actually
+#    cross-fired - carries `context-window: 0`, and a column-0 key can never
+#    share a line with the indented `image:` line it would guard.  Fixing
+#    that check content-wise therefore means widening its window from 0 to
+#    ~20, which also widens its EXISTING `\{\{` Helm deny: a genuine
+#    manifest with `image: app:latest` and any templated annotation within
+#    twenty lines would then go silently unreported.  §10.2 is normative
+#    that a same-line-intent deny MUST stay at `context-window: 0`, and
+#    finding F4 names that trade - a detectable false positive swapped for
+#    an undetectable false negative - as the wrong direction.  An
+#    `exclude-files` glob cannot interact with any context window at all,
+#    and it applies uniformly to all eight checks rather than only to the
+#    two that some fixture happened to exercise, since the gap was never
+#    specific to those two.
+#
+#    How this shipped broken, measured rather than assumed:
+#    `tests/fixtures/clean/docker-compose.*.yml` already existed when this
+#    pack landed - docker-compose.rules is 57d1cd1, this pack is bb75c9b -
+#    and this pack's own "stays quiet across the WHOLE
+#    tests/fixtures/clean/ tree" loop swept them from its first commit.
+#    `tests/suites/iac.sh` at bb75c9b reports 110 passed, 2 failed: the pack
+#    was never green, and `dev` has carried those two failures ever since,
+#    so every branch cut from it inherited them.  The lesson is not "add a
+#    guard for the packs that exist" but "a new pack's fixtures land in a
+#    SHARED fixture tree, so every existing pack's negative assertions
+#    change meaning the moment it lands" - check both directions of every
+#    files-glob overlap, and run the suite, before calling a pack done.
+#
+#    The regression tests in tests/suites/iac.sh now pin BOTH directions on
+#    purpose - that no IAC-K8S-* id attaches to a compose-shaped path, AND
+#    that the same ids still fire on a Kubernetes manifest carrying the same
+#    tokens - so a future narrowing cannot make this pack inert without a
+#    red test.
+#
+# Mechanisms 1 and 2 are line-oriented and window-bounded (rules/RULE-FORMAT.md
 # §10, context-window capped at 50 by E032), consistent with the rest of
 # this pattern-rule engine - this is not a YAML/JSON parser, so a minified
 # single-line JSON document (the entire manifest as one line) is a known,
@@ -86,6 +144,14 @@ dialect: ere
 files: *.yaml
 files: *.yml
 files: *.json
+exclude-files: docker-compose.yml
+exclude-files: docker-compose.yaml
+exclude-files: compose.yml
+exclude-files: compose.yaml
+exclude-files: docker-compose.*.yml
+exclude-files: docker-compose.*.yaml
+exclude-files: compose.*.yml
+exclude-files: compose.*.yaml
 tags: static
 tags: compliance
 remediation: Remove `privileged: true` from the container's securityContext.
@@ -105,6 +171,14 @@ dialect: ere
 files: *.yaml
 files: *.yml
 files: *.json
+exclude-files: docker-compose.yml
+exclude-files: docker-compose.yaml
+exclude-files: compose.yml
+exclude-files: compose.yaml
+exclude-files: docker-compose.*.yml
+exclude-files: docker-compose.*.yaml
+exclude-files: compose.*.yml
+exclude-files: compose.*.yaml
 tags: static
 tags: compliance
 remediation: Set hostNetwork and hostPID to false (or omit them; both default to false).
@@ -124,6 +198,14 @@ dialect: ere
 files: *.yaml
 files: *.yml
 files: *.json
+exclude-files: docker-compose.yml
+exclude-files: docker-compose.yaml
+exclude-files: compose.yml
+exclude-files: compose.yaml
+exclude-files: docker-compose.*.yml
+exclude-files: docker-compose.*.yaml
+exclude-files: compose.*.yml
+exclude-files: compose.*.yaml
 context-deny: ^\s*"?resources"?\s*:
 context-deny: \{\{
 context-deny: AWSTemplateFormatVersion|AWS::
@@ -145,6 +227,14 @@ dialect: ere
 files: *.yaml
 files: *.yml
 files: *.json
+exclude-files: docker-compose.yml
+exclude-files: docker-compose.yaml
+exclude-files: compose.yml
+exclude-files: compose.yaml
+exclude-files: docker-compose.*.yml
+exclude-files: docker-compose.*.yaml
+exclude-files: compose.*.yml
+exclude-files: compose.*.yaml
 context-deny: "?runAsNonRoot"?\s*:\s*"?true"?\b
 context-deny: \{\{
 context-deny: AWSTemplateFormatVersion|AWS::
@@ -168,6 +258,14 @@ dialect: ere
 files: *.yaml
 files: *.yml
 files: *.json
+exclude-files: docker-compose.yml
+exclude-files: docker-compose.yaml
+exclude-files: compose.yml
+exclude-files: compose.yaml
+exclude-files: docker-compose.*.yml
+exclude-files: docker-compose.*.yaml
+exclude-files: compose.*.yml
+exclude-files: compose.*.yaml
 context-require: "?name"?\s*:\s*"?[A-Za-z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|CREDENTIAL)[A-Za-z0-9_]*"?
 context-deny: (CHANGEME|changeme|EXAMPLE|example|XXXXXXXX|xxxxxxxx|placeholder|dummy)
 context-deny: \{\{
@@ -191,6 +289,14 @@ dialect: ere
 files: *.yaml
 files: *.yml
 files: *.json
+exclude-files: docker-compose.yml
+exclude-files: docker-compose.yaml
+exclude-files: compose.yml
+exclude-files: compose.yaml
+exclude-files: docker-compose.*.yml
+exclude-files: docker-compose.*.yaml
+exclude-files: compose.*.yml
+exclude-files: compose.*.yaml
 context-deny: \{\{
 context-window: 0
 tags: static
@@ -213,6 +319,14 @@ dialect: ere
 files: *.yaml
 files: *.yml
 files: *.json
+exclude-files: docker-compose.yml
+exclude-files: docker-compose.yaml
+exclude-files: compose.yml
+exclude-files: compose.yaml
+exclude-files: docker-compose.*.yml
+exclude-files: docker-compose.*.yaml
+exclude-files: compose.*.yml
+exclude-files: compose.*.yaml
 context-require: "?(verbs|resources)"?\s*:
 context-window: 3
 tags: static
@@ -235,6 +349,14 @@ dialect: ere
 files: *.yaml
 files: *.yml
 files: *.json
+exclude-files: docker-compose.yml
+exclude-files: docker-compose.yaml
+exclude-files: compose.yml
+exclude-files: compose.yaml
+exclude-files: docker-compose.*.yml
+exclude-files: docker-compose.*.yaml
+exclude-files: compose.*.yml
+exclude-files: compose.*.yaml
 context-deny: "?automountServiceAccountToken"?\s*:\s*"?false"?\b
 context-deny: \{\{
 context-deny: AWSTemplateFormatVersion|AWS::
