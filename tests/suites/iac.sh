@@ -4,8 +4,9 @@
 # (§13 step 4's container half, the "IaC: Helm chart checks via the
 # pattern-rule engine" ticket), dockerfile.rules (§13 step 4's container
 # half, the "IaC: Dockerfile checks via the pattern-rule engine" ticket),
-# docker-compose.rules (§13 step 4's container half), and kubernetes.rules
-# (§13 step 4's container half, this ticket).
+# docker-compose.rules (§13 step 4's container half), kubernetes.rules
+# (§13 step 4's container half), and cloudformation.rules (§13 step 4's
+# remaining cloud-half item, this ticket).
 #
 # Modeled on tests/suites/sast.sh's go.rules section (§13 step 3c precedent):
 # one true-positive fixture per rule id under tests/fixtures/vuln/, one
@@ -92,6 +93,37 @@
 #     naive fix for each is the other's bug - a narrowing that silences the
 #     cross-fire by making the pack inert passes every "stays quiet"
 #     assertion in this file
+#
+# Covers this (CloudFormation) ticket's acceptance criteria, in the
+# "cloudformation.rules" and its own cross-check section below:
+#   - each IAC-CFN-* id fires on its true-positive fixture (open ingress
+#     CIDR, disabled/public S3 access blocking, disabled encryption,
+#     missing KMS key rotation, AssociatePublicIpAddress, hardcoded
+#     secrets, publicly accessible RDS, privileged ECS container) and stays
+#     quiet across the WHOLE tests/fixtures/clean/ tree
+#   - tests/fixtures/iac/cloudformation/cloudformation_template.yaml - which
+#     landed on dev as a NEGATIVE fixture for kubernetes.rules and until now
+#     exercised no CloudFormation check at all - is IAC-CFN-ECS_PRIVILEGED-01's
+#     true-positive fixture, asserted as a check_id@loc_path pair so the
+#     assertion names that exact file.  It already carried `Privileged: true`
+#     on an `AWS::ECS::TaskDefinition`; this pack is what makes that
+#     load-bearing rather than decorative
+#   - a bare Kubernetes manifest (tests/fixtures/vuln/k8s_manifest.yaml) and
+#     a generic non-CloudFormation JSON file
+#     (tests/fixtures/vuln/app_config.json) - both deliberately reusing
+#     cloudformation.rules' own property-name vocabulary - produce ZERO
+#     IAC-CFN-* findings, proving the `Type: AWS::...` context-require (not
+#     the `files:` glob, which is deliberately broad here - see
+#     modules/iac/cloudformation.rules' own header) is what distinguishes a
+#     genuine CloudFormation template from a similarly-shaped file
+#   - cloudformation.rules does not fire on any Terraform/Helm/docker-compose
+#     fixture, and terraform.rules/helm.rules do not fire on any CFN fixture.
+#     The docker-compose direction is asserted over the SAME
+#     tests/fixtures/iac/docker-compose/ fixture kubernetes.rules needed its
+#     `exclude-files` globs for, because that is the question this pack has
+#     to answer explicitly rather than inherit: it deliberately ships NO
+#     `exclude-files`, on the grounds that its content anchor is a strictly
+#     stronger discriminator than a filename glob
 #
 # Every case that pins a decision names the reading it FAILS under, per
 # AGENTS.md's testing rule.
@@ -617,9 +649,165 @@ unset K8S_IDS _k8s_vuln_found _k8s_clean_found _want_id _safe_id _k8s_vuln_modul
   _k8s_compose_found _k8s_scope_pairs _bad_k8s_on_compose _pair
 
 # =============================================================================
+printf -- '\n-- cloudformation.rules: true-positive AND true-negative, per rule id (this ticket) --\n'
+# =============================================================================
+# CFN_VULN_TREE_IDS are the seven checks whose true-positive fixture lives
+# under tests/fixtures/vuln/cfn_*.{yaml,json}, exactly like every sibling
+# pack above.  IAC-CFN-ECS_PRIVILEGED-01 is deliberately NOT among them: its
+# true-positive fixture is
+# tests/fixtures/iac/cloudformation/cloudformation_template.yaml, which was
+# already on dev (as kubernetes.rules' CloudFormation-shaped negative guard,
+# where it exercised no CloudFormation check whatsoever) and already carried
+# a literal `Privileged: true` under an `AWS::ECS::TaskDefinition`.  Pointing
+# this check at that file rather than minting an eighth near-identical
+# cfn_*.yaml is what turns it from a fixture nothing runs against into one
+# that pins a rule - and a duplicate would have let the pack pass while the
+# committed fixture stayed inert.
+#
+# CFN_IDS is all eight, and is what the clean-tree and checks_run loops use:
+# a check with no clean-tree assertion at all is a check whose false-positive
+# behaviour nothing measures.
+CFN_VULN_TREE_IDS='IAC-CFN-OPEN_CIDR-01 IAC-CFN-S3_PUBLIC_ACCESS-01 IAC-CFN-UNENCRYPTED-01 IAC-CFN-KEY_ROTATION_DISABLED-01 IAC-CFN-PUBLIC_IP-01 IAC-CFN-HARDCODED_SECRET-01 IAC-CFN-RDS_PUBLIC-01'
+CFN_IDS="$CFN_VULN_TREE_IDS IAC-CFN-ECS_PRIVILEGED-01"
+
+_scan_one_pack cloudformation "$ROOT/tests/fixtures/vuln" "$W/run-cfn-vuln"
+_cfn_vuln_found=$(_ids_found "$W/run-cfn-vuln")
+for _want_id in $CFN_VULN_TREE_IDS; do
+  t_case "cloudformation: $_want_id true-positive detection"
+  assert_contains "$_cfn_vuln_found" "$_want_id" \
+    "$_want_id fires on its tests/fixtures/vuln/cfn_*.{yaml,json} fixture - fails if the pattern, files glob, or context-require Type: AWS::... anchor silently drops the match"
+done
+
+_scan_one_pack cloudformation "$ROOT/tests/fixtures/clean" "$W/run-cfn-clean"
+_cfn_clean_found=$(_ids_found "$W/run-cfn-clean")
+for _safe_id in $CFN_IDS; do
+  t_case "cloudformation: $_safe_id stays quiet on its safe equivalent"
+  assert_not_contains "$_cfn_clean_found" "$_safe_id" \
+    "$_safe_id does NOT fire anywhere under tests/fixtures/clean/ - fails if the safe rewrite (private CIDR, block-public-access on, StorageEncrypted true, EnableKeyRotation true, AssociatePublicIpAddress false, a secretsmanager dynamic reference, PubliclyAccessible false, Privileged false) still matches the pattern (a true-negative fixture that isn't actually negative), or if it fires on an UNRELATED clean fixture"
+done
+
+t_case 'every finding cloudformation.rules emits carries module=iac, not module=sast'
+_cfn_vuln_modules=$(_modules_found "$W/run-cfn-vuln")
+assert_not_contains "$_cfn_vuln_modules" 'sast' \
+  'no finding from this run reports module=sast - fails if iac_scan_tree fell through to the sast emission path'
+assert_contains "$_cfn_vuln_modules" 'iac' \
+  'at least one finding reports module=iac - sanity check that the assertion above is not vacuously true on an empty run'
+
+# ---------------------------------------------------------------------------
+# The committed CloudFormation fixture, now load-bearing.
+#
+# tests/fixtures/iac/cloudformation/cloudformation_template.yaml landed on
+# dev with the kubernetes.rules pack, as the shape a files-glob-only
+# distinction cannot separate from a Kubernetes manifest.  Every assertion
+# against it was NEGATIVE ("zero IAC-K8S-* findings"), so it certified a
+# guard while exercising no CloudFormation check at all - there were none.
+# Asserting a check_id@loc_path PAIR, not merely the id, is what pins it: an
+# id-only assertion would go green on any other fixture in the tree that
+# happened to carry the same property, which is precisely how a fixture ends
+# up nominally covered and actually untouched.
+# ---------------------------------------------------------------------------
+_scan_one_pack cloudformation "$ROOT/tests/fixtures/iac/cloudformation" "$W/run-cfn-committed-fixture"
+_cfn_committed_pairs=$(_ids_and_paths_found "$W/run-cfn-committed-fixture")
+
+t_case 'cloudformation.rules: IAC-CFN-ECS_PRIVILEGED-01 fires on the committed tests/fixtures/iac/cloudformation/ fixture specifically'
+assert_contains "$_cfn_committed_pairs" 'IAC-CFN-ECS_PRIVILEGED-01@tests/fixtures/iac/cloudformation/cloudformation_template.yaml' \
+  'the privileged-ECS check fires on that exact path - fails if the pack never reaches the one CloudFormation fixture already committed to dev (an inert pack, a files: glob that misses it, or a context-require anchor that its AWS::ECS::TaskDefinition declaration does not satisfy), which is the state dev was in before this change and which every "stays quiet" assertion in this file reports as green'
+
+# The same scan, the other direction: nothing ELSE in that template may fire.
+# It is a deliberately well-formed template apart from the privileged
+# container, so any second id here is a false positive on genuine
+# CloudFormation - the failure mode a pack this broad on files: is most
+# exposed to, and one no non-CloudFormation cross-check below can detect.
+_cfn_committed_extra=''
+while IFS= read -r _pair; do
+  [[ -n $_pair ]] || continue
+  case $_pair in
+    IAC-CFN-ECS_PRIVILEGED-01@*) ;;
+    *) _cfn_committed_extra+="$_pair "$'\n' ;;
+  esac
+done <<<"$_cfn_committed_pairs"
+t_case 'cloudformation.rules: no OTHER check fires on the committed fixture (no false positive on a genuine, otherwise-clean template)'
+assert_eq '' "$_cfn_committed_extra" \
+  "expected IAC-CFN-ECS_PRIVILEGED-01 to be the only id on tests/fixtures/iac/cloudformation/, found also: $_cfn_committed_extra - fails if a pattern is loose enough to match ordinary CloudFormation (an ImageId, an IAM policy Action, a Description) once the Type: AWS:: anchor is satisfied, which the non-CloudFormation cross-checks below cannot catch because their files never satisfy that anchor at all"
+
+# =============================================================================
+printf -- '\n-- cross-check: cloudformation.rules is scoped to genuine CloudFormation, not to *.yaml/*.json by extension --\n'
+# =============================================================================
+# This is the ticket's central AC: cloudformation.rules' own `files:` glob is
+# deliberately broad (*.yaml, *.yml, *.json, *.template - see
+# modules/iac/cloudformation.rules' header for why no narrower glob is
+# possible for CloudFormation), so the only thing that can possibly keep it
+# from misfiring on a Kubernetes manifest, a Helm chart, or a docker-compose
+# file living in the same tree is the `Type: AWS::...` context-require.
+# Every assertion below scans the WHOLE tests/fixtures/vuln tree with
+# cloudformation.rules' own checks and proves none of them land on a
+# non-CloudFormation path.
+_cfn_vuln_paths=$(_ids_and_paths_found "$W/run-cfn-vuln")
+
+t_case 'cross-check: cloudformation.rules stays silent on tests/fixtures/vuln/k8s_manifest.yaml (a bare Kubernetes Secret manifest reusing the exact Password/AssociatePublicIpAddress vocabulary, no CHANGEME placeholder)'
+assert_not_contains "$_cfn_vuln_paths" 'k8s_manifest.yaml' \
+  'no finding has loc_path=k8s_manifest.yaml - fails if the Type: AWS::... context-require were dropped, widened past the point of discriminating, or bypassed, letting the broad *.yaml glob alone decide'
+
+t_case 'cross-check: cloudformation.rules stays silent on tests/fixtures/vuln/app_config.json (generic non-CloudFormation JSON with a password-shaped key)'
+assert_not_contains "$_cfn_vuln_paths" 'app_config.json' \
+  'no finding has loc_path=app_config.json - fails if the broad *.json glob alone were enough to trigger a finding on ordinary application config'
+
+t_case 'cross-check: cloudformation.rules stays silent on the Helm values.yaml/templates/deployment.yaml fixtures'
+assert_not_contains "$_cfn_vuln_paths" 'values.yaml' \
+  'no finding has loc_path=values.yaml - fails if a CFN context-require anchor were loose enough to match Helm/Kubernetes vocabulary (apiVersion/kind, never Type: AWS::...)'
+assert_not_contains "$_cfn_vuln_paths" 'templates/deployment.yaml' \
+  'no finding has loc_path=templates/deployment.yaml - same boundary, the Helm template path this time'
+
+t_case 'cross-check: cloudformation.rules does not fire on any *.tf fixture'
+assert_not_contains "$_cfn_vuln_found" 'IAC-TF-' \
+  'no IAC-TF-* id appears in a cloudformation.rules-only scan of tests/fixtures/vuln - fails if the check registries were somehow merged'
+
+_scan_one_pack terraform "$ROOT/tests/fixtures/vuln" "$W/run-tf-vs-cfn-fixtures"
+_tf_vs_cfn_found=$(_ids_found "$W/run-tf-vs-cfn-fixtures")
+t_case 'cross-check: terraform.rules does not fire on any cfn_* fixture'
+assert_not_contains "$_tf_vs_cfn_found" 'IAC-CFN-' \
+  'no IAC-CFN-* id appears in a terraform.rules-only scan (which walks the same tests/fixtures/vuln tree, cfn_*.yaml/.json included) - fails if terraform.rules files: *.tf glob were loosened enough to also match CloudFormation sources'
+
+_scan_one_pack helm "$ROOT/tests/fixtures/vuln" "$W/run-helm-vs-cfn-fixtures"
+_helm_vs_cfn_found=$(_ids_found "$W/run-helm-vs-cfn-fixtures")
+t_case 'cross-check: helm.rules does not fire on any cfn_* fixture'
+assert_not_contains "$_helm_vs_cfn_found" 'IAC-CFN-' \
+  'no IAC-CFN-* id appears in a helm.rules-only scan (files: values.yaml / templates/*.yaml only) - fails if that glob were loosened enough to also match cfn_*.yaml at the fixture tree root'
+
+# ---------------------------------------------------------------------------
+# The docker-compose boundary, asserted rather than inherited.
+#
+# kubernetes.rules needed eight `exclude-files` compose globs because its
+# patterns key on `image:`/`privileged:`/`resources:` - vocabulary a compose
+# file uses verbatim - and it cross-fired on tests/fixtures/clean/
+# docker-compose.*.yml from its first commit.  This pack ships NO
+# `exclude-files`, on the claim that a `Type: AWS::...` content anchor is a
+# strictly stronger discriminator than any filename glob.  That claim is a
+# decision, so it gets a test rather than a comment: the SAME compose fixture
+# that pins kubernetes.rules' exclude-files, scanned with this pack.  Both
+# adjacent shapes are scanned as SEPARATE directories, mirroring the
+# kubernetes guards above, so a failure names which one tripped.
+# ---------------------------------------------------------------------------
+_scan_one_pack cloudformation "$ROOT/tests/fixtures/iac/docker-compose" "$W/run-cfn-compose-guard"
+_cfn_compose_found=$(_ids_found "$W/run-cfn-compose-guard")
+t_case 'cloudformation.rules: zero IAC-CFN-* findings on the docker-compose-shaped fixture, WITHOUT any exclude-files glob'
+assert_not_contains "$_cfn_compose_found" 'IAC-CFN-' \
+  'no IAC-CFN-* id fired on tests/fixtures/iac/docker-compose/docker-compose.yml - fails if any check in this pack can match without its Type: AWS::... anchor, which is the whole basis for omitting the eight exclude-files globs kubernetes.rules carries; if this goes red the fix is to add them, not to narrow a pattern'
+
+_scan_one_pack cloudformation "$ROOT/tests/fixtures/iac/helm" "$W/run-cfn-helm-guard"
+_cfn_helm_found=$(_ids_found "$W/run-cfn-helm-guard")
+t_case 'cloudformation.rules: zero IAC-CFN-* findings on the Helm-template-shaped fixture ({{ }} directives)'
+assert_not_contains "$_cfn_helm_found" 'IAC-CFN-' \
+  'no IAC-CFN-* id fired on the Helm-template fixture - fails if an anchor matched Kubernetes/Helm vocabulary, or if a literal true/false were matched through a {{ ... }} template expression'
+
+unset CFN_IDS CFN_VULN_TREE_IDS _cfn_vuln_found _cfn_clean_found _want_id _safe_id _cfn_vuln_modules \
+  _cfn_vuln_paths _tf_vs_cfn_found _helm_vs_cfn_found _cfn_committed_pairs _cfn_committed_extra \
+  _cfn_compose_found _cfn_helm_found _pair
+
+# =============================================================================
 printf -- '\n-- check selection integration: scan_dispatch iac is no longer a no-op --\n'
 # =============================================================================
-t_case 'scan.sh iac tests/fixtures/vuln records every IAC-TF-*/IAC-HELM-*/IAC-DOCKER-*/IAC-K8S-* id as actually run'
+t_case 'scan.sh iac tests/fixtures/vuln records every IAC-TF-*/IAC-HELM-*/IAC-DOCKER-*/IAC-K8S-*/IAC-CFN-* id as actually run'
 rm -rf "$W/run-checks"
 bash "$ROOT/scan.sh" iac --path "$ROOT/tests/fixtures/vuln" --out "$W/run-checks" >/dev/null 2>&1
 _checks_run=$(cat "$W/run-checks/meta/checks_run" 2>/dev/null || true)
@@ -630,8 +818,11 @@ for _id in IAC-TF-OPEN_CIDR-01 IAC-TF-PUBLIC_ACL-01 IAC-TF-UNENCRYPTED-01 \
   IAC-DOCKER-SECRET_ENV-01 IAC-DOCKER-REMOTE_ADD-01 IAC-DOCKER-PIPE_TO_SHELL-01 \
   IAC-DOCKER-UNPINNED_DIGEST-01 IAC-K8S-PRIVILEGED-01 IAC-K8S-HOST_NAMESPACE-01 \
   IAC-K8S-MISSING_RESOURCE_LIMITS-01 IAC-K8S-RUN_AS_ROOT-01 IAC-K8S-SECRET_ENV-01 \
-  IAC-K8S-MUTABLE_TAG-01 IAC-K8S-RBAC_WILDCARD-01 IAC-K8S-SA_TOKEN_DEFAULT-01; do
-  t_case "scan.sh iac: $_id is recorded in checks_run - fails if scan_dispatch iac still took the 'no run.sh yet' no-op path, or if the real on-disk registry loader (checks_registry_load) did not pick up modules/iac/helm.rules, modules/iac/dockerfile.rules, and modules/iac/kubernetes.rules alongside terraform.rules"
+  IAC-K8S-MUTABLE_TAG-01 IAC-K8S-RBAC_WILDCARD-01 IAC-K8S-SA_TOKEN_DEFAULT-01 \
+  IAC-CFN-OPEN_CIDR-01 IAC-CFN-S3_PUBLIC_ACCESS-01 IAC-CFN-UNENCRYPTED-01 \
+  IAC-CFN-KEY_ROTATION_DISABLED-01 IAC-CFN-PUBLIC_IP-01 IAC-CFN-HARDCODED_SECRET-01 \
+  IAC-CFN-RDS_PUBLIC-01 IAC-CFN-ECS_PRIVILEGED-01; do
+  t_case "scan.sh iac: $_id is recorded in checks_run - fails if scan_dispatch iac still took the 'no run.sh yet' no-op path, or if the real on-disk registry loader (checks_registry_load) did not pick up modules/iac/helm.rules, modules/iac/dockerfile.rules, modules/iac/kubernetes.rules, and modules/iac/cloudformation.rules alongside terraform.rules"
   assert_contains "$_checks_run" "$_id" "$_id present in $W/run-checks/meta/checks_run"
 done
 unset _checks_run _id

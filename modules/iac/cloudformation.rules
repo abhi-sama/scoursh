@@ -1,0 +1,287 @@
+# modules/iac/cloudformation.rules - CloudFormation checks via the pattern-rule
+# engine (docs/DESIGN.md §13 step 4's remaining cloud-half item; §8.2's own
+# catalog line names this file directly: "cloud.rules terraform.rules
+# cloudformation.rules").
+#
+# Path note: same frozen path table row as terraform.rules, helm.rules and
+# kubernetes.rules (rules/RULE-FORMAT.md §9's `modules/iac/*.rules` row) -
+# flat, directly under modules/iac/, never nested, never named
+# `checks.rules` (reserved repository-wide for the §9.5 script-check schema
+# and matched first in records_schema_for_path).
+#
+# Seed rules, straight out of docs/DESIGN.md §8.2's own list, translated from
+# Terraform's HCL attribute shape into CloudFormation's YAML/JSON property
+# shape: open ingress CIDR, disabled/public S3 access blocking, disabled
+# encryption at rest, missing KMS key rotation, AssociatePublicIpAddress,
+# hardcoded secrets, and a publicly accessible RDS instance - plus one check
+# with no Terraform sibling, the privileged ECS container
+# (IAC-CFN-ECS_PRIVILEGED-01), which is the CloudFormation spelling of
+# kubernetes.rules' own IAC-K8S-PRIVILEGED-01.
+#
+# THE SCOPING PROBLEM THIS PACK EXISTS TO SOLVE, stated up front because it
+# shapes every rule below: unlike Terraform (`*.tf`, a format no other tool
+# in this repo emits) and unlike Helm (`values.yaml` / `templates/*.yaml`,
+# a path convention scoursh can lean on), a genuine CloudFormation template
+# has NO reserved filename or path convention at all - docs/DESIGN.md §8.2
+# itself says the walk is over `*.yaml`/`*.yml`/`*.json` generically.  A bare
+# Kubernetes manifest, a Helm chart source, a docker-compose file, or any
+# other unrelated YAML/JSON in the same repository is exactly as likely to
+# carry that same extension.  `files:` globs alone therefore CANNOT do the
+# disambiguation terraform.rules and helm.rules both rely on; every rule
+# below is deliberately broad on `files:` (`*.yaml`, `*.yml`, `*.json`,
+# `*.template` - every extension a real CloudFormation template is shipped
+# under) and instead does the real narrowing with a `context-require` that a
+# genuine `Type: AWS::<Service>::<Resource>` (or its quoted JSON spelling,
+# `"Type": "AWS::<Service>::<Resource>"`) declaration sits within the
+# window: that string is CloudFormation's own resource-type discriminator,
+# is never emitted by a Kubernetes manifest (which declares
+# `apiVersion`/`kind`, not `Type: AWS::...`), a Helm chart (same Kubernetes
+# vocabulary, plus Go-template directives), or a docker-compose file
+# (`services:`/`image:`, no `Type:` key at all) - so it is the one anchor
+# available that is genuinely CloudFormation-specific regardless of what the
+# surrounding file happens to be named.  IAC-CFN-KEY_ROTATION_DISABLED-01
+# needs no `context-require` for this because its own `pattern` IS that
+# anchor.
+#
+# The globs are written `*.yaml`, NOT `**/*.yaml`.  Per §9.1.2 an unanchored
+# glob "may match at any depth" - sast_glob_match tries it against every
+# path-segment-aligned suffix - so `*.yaml` already covers `infra/main.yaml`.
+# `**/*.yaml` translates to `^(.*/)?.*/[^/]*\.yaml$`, whose `.*/` requires at
+# least one directory component, so it would silently MISS a template sitting
+# at the scan root (`main.yaml` in a repo whose toplevel is the scan root) -
+# the single most likely place for one.  Every sibling pack in this directory
+# uses the bare form for the same reason.
+#
+# WHY THERE IS NO `exclude-files` HERE, unlike kubernetes.rules.  That pack
+# carries eight `exclude-files` compose globs because its patterns key on
+# `image:`/`privileged:`/`resources:` - vocabulary a docker-compose file uses
+# verbatim - so nothing in the pattern itself could tell the two shapes
+# apart, and it cross-fired on `docker-compose.*.yml` from its first commit.
+# This pack has the opposite property: the `Type: AWS::...` anchor is a
+# STRICTLY STRONGER discriminator than any filename glob, because it is
+# content a docker-compose file (or a Kubernetes manifest, or a Helm chart)
+# cannot contain while still being that thing.  Adding compose globs here
+# would be a guard no fixture can distinguish from its absence - i.e. an
+# untestable line - so the boundary is asserted the other way instead:
+# tests/suites/iac.sh scans tests/fixtures/iac/docker-compose/ and
+# tests/fixtures/iac/helm/ with this pack and requires zero IAC-CFN-*
+# findings.  If that assertion ever goes red, `exclude-files` is the fix; it
+# is not the prophylactic.
+#
+# Engine note: exactly like helm.rules and kubernetes.rules, neither this
+# engine nor any other module parses YAML or JSON - `docs/FOUNDATION.md`
+# tension 25 makes the same point for SCA's lockfile formats - so both a
+# CloudFormation YAML template and its JSON twin are scanned as
+# line-oriented text via `scan_match`/`scan_match_offsets`
+# (rules/RULE-FORMAT.md §10.3), never a real parse tree.  Each pattern below
+# is written to match either spelling: an unquoted YAML key
+# (`CidrIp: 0.0.0.0/0`) or a quoted JSON key/value pair
+# (`"CidrIp": "0.0.0.0/0"`), via an optional leading/trailing `"` on the key
+# and an optional `"` around the value.  A minified single-line JSON
+# document is the same known, documented window gap kubernetes.rules already
+# records for itself.
+#
+# IAC-CFN-KEY_ROTATION_DISABLED-01 is this pack's one ABSENCE check, the same
+# shape as terraform.rules' own IAC-TF-KEY_ROTATION_DISABLED-01 and
+# java.rules' SAST-JAVA-XXE_DISALLOW_DOCTYPE-01 before it: the finding fires
+# on a `Type: AWS::KMS::Key` resource declaration unless `EnableKeyRotation:
+# true` appears within the context-window.  An absence check can only be a
+# `context-deny` with a non-zero window (rules/RULE-FORMAT.md §10.2 -
+# context-window:0 binds same-line-intent guards only), so it carries the
+# same reviewed W033 trade-off terraform.rules' own copy of this check does.
+#
+# IAC-CFN-HARDCODED_SECRET-01 shares its `context-window` between a
+# `context-require` (the `Type: AWS::` anchor above) and a `context-deny`
+# (the placeholder-literal allowlist terraform.rules/helm.rules both use at
+# `context-window: 0`) - rules/RULE-FORMAT.md §9.1 fixes `context-window` as
+# ONE value per rule, shared by every context-require/context-deny entry, so
+# the two cannot be given independent windows here.  Widening the deny's
+# window past 0 is the "not the safe direction" trade-off
+# `docs/FOUNDATION.md` tension 3/§10.2 names (a placeholder token elsewhere
+# in the same resource block could mask a genuine adjacent secret literal),
+# accepted deliberately here - the same way terraform.rules' own
+# IAC-TF-KEY_ROTATION_DISABLED-01 accepts W033 - because without it there is
+# no way to require the CloudFormation-specific anchor at all: the other
+# checks in this pack that also share a window do not carry a context-deny,
+# so they keep the require-only, no-trade-off shape.
+
+id: IAC-CFN-OPEN_CIDR-01
+title: CloudFormation security group ingress open to 0.0.0.0/0 or ::/0
+severity: high
+confidence: high
+cwe: CWE-284
+owasp: A05:2021
+pattern: "?Cidr(Ip|Ipv6)"?\s*:\s*"?(0\.0\.0\.0/0|::/0)"?
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+files: *.template
+context-require: "?Type"?\s*:\s*"?AWS::EC2::SecurityGroup(Ingress)?"?
+context-window: 15
+tags: static
+tags: compliance
+cis: 5.2
+cis: 5.3
+remediation: Restrict CidrIp/CidrIpv6 to the smallest network that needs access. Where
+  public reachability is genuinely required (a public load balancer listener), terminate
+  it at an edge that applies WAF and rate limiting rather than at the instance security
+  group.
+references: CIS-AWS-5.2
+
+id: IAC-CFN-S3_PUBLIC_ACCESS-01
+title: S3 bucket disables a public-access-block control, or sets a public canned ACL
+severity: critical
+confidence: high
+cwe: CWE-284
+owasp: A05:2021
+pattern: "?(BlockPublicAcls|BlockPublicPolicy|IgnorePublicAcls|RestrictPublicBuckets)"?\s*:\s*"?[Ff]alse"?|"?AccessControl"?\s*:\s*"?[Pp]ublic-?[Rr]ead(-?[Ww]rite)?"?
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+files: *.template
+context-require: "?Type"?\s*:\s*"?AWS::S3::Bucket"?
+context-window: 15
+tags: static
+tags: compliance
+cis: 2.1.1
+remediation: Set every PublicAccessBlockConfiguration flag (BlockPublicAcls,
+  BlockPublicPolicy, IgnorePublicAcls, RestrictPublicBuckets) to true and remove any
+  public canned ACL. If the object truly must be public, front it with CloudFront and
+  an Origin Access Control instead of a public bucket.
+references: CWE-284
+references: CIS-AWS-2.1.1
+
+id: IAC-CFN-UNENCRYPTED-01
+title: RDS or EBS resource explicitly configured without encryption at rest
+severity: high
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+pattern: "?StorageEncrypted"?\s*:\s*"?[Ff]alse"?
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+files: *.template
+context-require: "?Type"?\s*:\s*"?AWS::(RDS::DB(Instance|Cluster)|EC2::Volume)"?
+context-window: 15
+tags: static
+tags: compliance
+cis: 2.1.1
+remediation: Set StorageEncrypted to true and, where the resource supports it, pin a
+  customer-managed KMS key via KmsKeyId rather than relying on the account default key.
+references: CWE-311
+
+id: IAC-CFN-KEY_ROTATION_DISABLED-01
+title: KMS key resource declared without automatic key rotation enabled
+severity: medium
+confidence: medium
+cwe: CWE-320
+owasp: A02:2021
+pattern: "?Type"?\s*:\s*"?AWS::KMS::Key"?
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+files: *.template
+context-deny: "?EnableKeyRotation"?\s*:\s*"?[Tt]rue"?
+context-window: 12
+tags: static
+remediation: Add EnableKeyRotation: true to the AWS::KMS::Key resource so AWS rotates
+  the backing key material annually without any application-visible change (KMS
+  transparently keeps prior key material available for decrypting old ciphertext).
+references: CWE-320
+references: CIS-AWS-3.8
+cis: 3.8
+
+id: IAC-CFN-PUBLIC_IP-01
+title: EC2 instance or launch template auto-assigns a public IP address
+severity: high
+confidence: high
+cwe: CWE-284
+owasp: A05:2021
+pattern: "?AssociatePublicIpAddress"?\s*:\s*"?[Tt]rue"?
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+files: *.template
+context-require: "?Type"?\s*:\s*"?AWS::EC2::(Instance|LaunchTemplate)"?
+context-window: 15
+tags: static
+tags: compliance
+remediation: Set AssociatePublicIpAddress to false and reach the instance through a
+  bastion, a VPN, or a load balancer in a public subnet instead of giving the instance
+  itself a public address. If a public address is genuinely required, pair it with a
+  security group scoped to specific source ranges, not 0.0.0.0/0.
+references: CWE-284
+
+id: IAC-CFN-HARDCODED_SECRET-01
+title: Hardcoded credential literal in a CloudFormation resource property
+severity: critical
+confidence: medium
+cwe: CWE-798
+owasp: A07:2021
+pattern: \b(Password|Secret|SecretKey|ApiKey|AccessKey|Token|MasterUserPassword|ClientSecret)\b"?\s*:\s*"?[^"'!{\s][^"'\n]{7,}
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+files: *.template
+context-require: "?Type"?\s*:\s*"?AWS::
+context-deny: (CHANGEME|changeme|EXAMPLE|example|XXXXXXXX|xxxxxxxx|placeholder|dummy|TODO)
+context-window: 10
+tags: static
+remediation: Remove the literal credential from the template and rotate it immediately;
+  a committed secret must be treated as compromised even if the commit is later reverted,
+  because it remains in git history. Source the value from an existing Secrets
+  Manager/SSM SecureString resource via a dynamic reference
+  ('{{resolve:secretsmanager:...}}' / '{{resolve:ssm-secure:...}}') instead of a literal.
+references: CWE-798
+
+id: IAC-CFN-RDS_PUBLIC-01
+title: RDS instance configured as publicly accessible
+severity: critical
+confidence: high
+cwe: CWE-284
+owasp: A05:2021
+pattern: "?PubliclyAccessible"?\s*:\s*"?[Tt]rue"?
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+files: *.template
+context-require: "?Type"?\s*:\s*"?AWS::RDS::DBInstance"?
+context-window: 15
+tags: static
+tags: compliance
+cis: 2.3.2
+remediation: Set PubliclyAccessible to false and reach the database through an
+  application tier inside the same VPC, a bastion, or a VPN, never a public endpoint.
+references: CWE-284
+references: CIS-AWS-2.3.2
+
+id: IAC-CFN-ECS_PRIVILEGED-01
+title: ECS task definition runs a container with privileged escalation enabled
+severity: critical
+confidence: high
+cwe: CWE-269
+owasp: A05:2021
+pattern: "?Privileged"?\s*:\s*"?[Tt]rue"?
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+files: *.template
+context-require: "?Type"?\s*:\s*"?AWS::ECS::TaskDefinition"?
+context-window: 15
+tags: static
+tags: compliance
+remediation: Remove the Privileged property from the container definition (it defaults to
+  false). A privileged ECS container gets near-complete access to the container instance -
+  device nodes, kernel capabilities, and namespaces - so almost every real task can run
+  instead with a narrow, explicit linuxParameters.capabilities.add list for only the
+  capability it actually needs. On Fargate the property is not supported at all.
+references: CWE-269

@@ -1,0 +1,11 @@
+# KMS key resource with no EnableKeyRotation property anywhere in the
+# block - true positive (absence check) for
+# IAC-CFN-KEY_ROTATION_DISABLED-01.
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  AppKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: application data key
+      KeyPolicy:
+        Version: '2012-10-17'

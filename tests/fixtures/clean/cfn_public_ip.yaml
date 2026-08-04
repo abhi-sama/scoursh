@@ -1,0 +1,12 @@
+# EC2 instance does not auto-assign a public IP address - safe equivalent
+# for IAC-CFN-PUBLIC_IP-01.
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  AppServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0abcdef1234567890
+      NetworkInterfaces:
+        - DeviceIndex: 0
+          AssociatePublicIpAddress: false
+          SubnetId: subnet-0123456789abcdef0

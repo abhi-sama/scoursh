@@ -4119,6 +4119,41 @@ The on-disk pattern-pack count `tests/lint-rules.sh`'s E060 fixture-coverage not
 this one records only what the docker-compose landing itself decided.
 Do not read it as "step 4 is done."
 
+**A sixth landing added `modules/iac/cloudformation.rules`, closing out §8.2's CloudFormation half of
+the IaC catalog** (§8.2's own catalog line - "cloud.rules terraform.rules cloudformation.rules" - names
+this file directly).
+It seeds eight checks: the seven `IAC-TF-*` siblings restated in CloudFormation's PascalCase property
+shape (`IAC-CFN-OPEN_CIDR-01`, `IAC-CFN-S3_PUBLIC_ACCESS-01`, `IAC-CFN-UNENCRYPTED-01`,
+`IAC-CFN-KEY_ROTATION_DISABLED-01`, `IAC-CFN-PUBLIC_IP-01`, `IAC-CFN-HARDCODED_SECRET-01`,
+`IAC-CFN-RDS_PUBLIC-01`) plus `IAC-CFN-ECS_PRIVILEGED-01`, which has no Terraform sibling and is the
+CloudFormation spelling of the Kubernetes pack's own `IAC-K8S-PRIVILEGED-01`.
+**Its scoping inverts every other pack in `modules/iac/`, and that is what this paragraph exists to
+record.**
+Unlike Terraform (`*.tf`, a format nothing else in this repo emits) and unlike Helm (`values.yaml` /
+`templates/*.yaml`, a path convention to lean on), a genuine CloudFormation template has no reserved
+filename or path convention at all - `docs/DESIGN.md` §8.2 itself walks `*.yaml`/`*.yml`/`*.json`
+generically - so `files:` globs cannot do the disambiguation the sibling packs rely on.
+Every rule is therefore deliberately as broad on `files:` as the format allows and does the real
+narrowing with a `context-require` that a genuine `Type: AWS::<Service>::<Resource>` declaration (or its
+quoted JSON spelling) sits within the window: the one string a Kubernetes manifest, a Helm chart, or a
+docker-compose file cannot carry while still being that thing.
+That anchor is **strictly stronger than a filename glob**, which is why this pack ships no
+`exclude-files` where `kubernetes.rules` needs eight compose globs (tension 4's own docker-compose
+cross-fire) - and, because an untested claim is not a resolution, `tests/suites/iac.sh` asserts it
+against the same `tests/fixtures/iac/docker-compose/` fixture that pack needed its globs for, plus the
+Helm-template fixture, a bare Kubernetes Secret manifest and a generic non-CloudFormation JSON file that
+both deliberately reuse the pack's own PascalCase vocabulary.
+Adding compose globs here would be a guard no fixture can distinguish from its absence; if that
+assertion ever goes red, adding them is the fix, not the prophylactic.
+The landing also made an already-committed fixture load-bearing:
+`tests/fixtures/iac/cloudformation/cloudformation_template.yaml` arrived with the Kubernetes pack as its
+CloudFormation-shaped NEGATIVE guard and, until this pack existed, exercised no CloudFormation check at
+all - `IAC-CFN-ECS_PRIVILEGED-01` now fires on the `Privileged: true` it already carried, asserted as a
+`check_id@loc_path` pair so the assertion names that exact file, with the opposite direction asserted
+too (no other check may fire on an otherwise-clean template).
+Which §6.6/§8.2 slices have landed, and the on-disk pattern-pack count `tests/lint-rules.sh`'s E060
+fixture-coverage note reports, are in the generated block below rather than in this paragraph.
+
 **A third piece of step 4 has now landed, in three sub-tickets: `modules/sca/` (the SCA module's npm,
 Python, and Ruby slices).**
 `ed8c283` ("SCA: parse npm lockfiles and match against data/advisories.db") shipped `modules/sca/run.sh`
@@ -4449,18 +4484,18 @@ Landed 6 of 6.  Outstanding: none.
 
 | Artifact | Status | Checks | Exercised by |
 | --- | --- | --- | --- |
-| `modules/iac/cloudformation.rules` | not landed | - | - |
+| `modules/iac/cloudformation.rules` | landed | 8 | `tests/suites/iac.sh` |
 | `modules/iac/docker-compose.rules` | landed | 4 | `tests/suites/iac.sh` |
 | `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/iac.sh` |
 | `modules/iac/helm.rules` | landed | 3 | `tests/suites/iac.sh` |
 | `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/iac.sh` |
 | `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac-trivy.sh` |
 
-Landed 5 of 6.  Outstanding: `cloudformation.rules`.
+Landed 6 of 6.  Outstanding: none.
 
 #### Totals
 
-- Pattern packs on disk: **12** (`modules/sast/rules/` 7, `modules/iac/` 5).
+- Pattern packs on disk: **13** (`modules/sast/rules/` 7, `modules/iac/` 6).
 - Module directories present: `modules/iac/`, `modules/sast/`, `modules/sca/`.
 
 <!-- END GENERATED STATUS -->
