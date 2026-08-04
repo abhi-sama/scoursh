@@ -389,6 +389,54 @@ criteria scoped it out ("adds no per-engine logic itself, only the scaffold"). Z
 exist anywhere in the tree; the full suite (`tests/run-tests.sh`) passes with none present, which is
 the concrete proof that no adapter is required for `scoursh` to run, not merely an assertion.
 
+**This ticket is the first concrete adapter ticket the scaffold above anticipated, and it closes every
+gap that paragraph named as deliberately unbuilt.**
+It ships `lib/engines.sh` (`has_engine MODULE ENGINE`, memoised per pair, a pure filesystem question -
+"would this engine's own `<engine>_detect` return 0 right now" - that deliberately never reads
+`--use-engines` itself; docs/ADAPTERS.md §5's own pseudocode keeps "is it vendored" and "was
+`--use-engines` given" independent, ANDed together only at the calling module's own call site) and wires
+the `--use-engines` global flag through `scan.sh` (`_SCAN_FLAG_KIND`, usage text, and one
+`run_record use_engines <bool>` per run for audit) - `lib/checks.sh` itself gained no new filtering logic,
+only a header paragraph stating explicitly why not: an adapter check id (`<engine>:<engine's own rule
+id>`) is minted at runtime, never declared in a `*.rules` file, so `checks_registry_load` has nothing of
+its own to select or drop, exactly as `docs/ADAPTERS.md` §6 already froze.
+It ships `modules/sast/adapters/semgrep/adapter.sh` (the three-function contract: `semgrep_detect` is a
+pure filesystem check for an executable `bin/semgrep` plus a non-empty `rules/`; `semgrep_run` invokes it
+with `--offline --metrics=off` - and `SEMGREP_SEND_METRICS=off` as a belt-and-suspenders second control,
+since an air-gapped scanner cannot rely on a vendored third-party binary's own default being safe;
+`semgrep_normalize` parses semgrep's own JSON with a purpose-built, depth- and string-aware `awk`
+splitter plus bash-native field extractors - never a general JSON parser, the same pragmatic,
+stated-scope choice `modules/sca/engine.sh`'s `_sca_json_walk` already makes for lockfiles) and
+`modules/sast/adapters/semgrep/vendor.sh` (the sole file, besides `tools/vendor-engines.sh` itself,
+permitted to touch the network - and it does not either: it calls only `veng_fetch`, the new function
+`tools/vendor-engines.sh` now exports, which downloads and then verifies a caller-supplied sha256, never
+a hardcoded or guessed one - hardcoding an unverified checksum here would be the exact `AGENTS.md`
+"invented fact" mistake this file's own history section already warns about, applied to integrity
+verification instead of a commit sha). `tools/vendor-engines.sh`'s `VENG_REGISTRY` now carries exactly
+one entry, `[semgrep]=veng_vendor_semgrep`, which requires five operator-supplied
+`SCOURSH_SEMGREP_*` environment values (version, binary URL + sha256, ruleset URL + sha256) and refuses
+- never guesses - when any are missing.
+A normalised finding is validated against the scan root before it is ever trusted (`path` traversal
+outside the scan root is rejected with its own `coverage_reduction` reason, never silently accepted) and
+its match text is re-derived from the real file at the reported line when that still resolves, falling
+back to semgrep's own reported snippet only when it does not - `docs/FOUNDATION.md` tension 5/11's
+"re-derive match_digest ... from the file at the adapter's reported path and line" requirement, made
+concrete.
+Absent or un-vendored is a clean, logged `coverage_reduction reason=engine_not_vendored engine=semgrep`
+with the run otherwise unaffected; without `--use-engines` at all, a run behaves byte-for-byte as it did
+before this ticket - not even a `coverage_reduction` mentions the engine.
+`tests/suites/engines.sh` (fake, purpose-built adapters, independent of semgrep specifically) and
+`tests/suites/sast-semgrep.sh` (the three-function contract, the path-traversal guard, graceful
+degradation as a real `scan.sh sast` subprocess, and a full round-trip through every report format
+against a FAKE vendored "semgrep" - a tiny stand-in script, since zero real engines are vendored anywhere
+in this repository per `docs/ADAPTERS.md` §1) both exist and pass; `tests/suites/vendor-engines.sh`
+gained a fetch/verify section (stubbed `curl`, never a real network call) proving `veng_fetch`'s
+checksum-match, checksum-mismatch, and download-failure paths, plus `semgrep_vendor`'s own
+required-env-var gate and full success path against a scratch copy of the adapter directory - never the
+real one, so no test ever writes a fake "binary" into this repository's own working tree.
+`docs/ADAPTERS.md` §9's roster table now names this one row; every other module/engine cell remains
+"none shipped" exactly as before.
+
 **Step 3a-3d shipped the SAST module's rule packs and engine.**
 Four tickets landed, in this order:
 
@@ -658,7 +706,9 @@ rule pack, and `state/`.
 no-ops either and `_scan_apply_profile_filter` finds a non-empty registry for IaC checks too -
 `modules/iac/` is off the "do not exist yet" list accordingly.
 `modules/sca/` also landed out of sequence - see above.
-Of the original list, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, and `state/` are
+`lib/engines.sh` also landed out of sequence, ahead of step 5/6/step-3's remaining packs - see the
+paragraph above.
+Of the original list, `lib/awscli.sh`, SARIF, the compliance report, and `state/` are
 still unbuilt; which module directories exist is in the generated block above.
 Every `scan_dispatch` call for a module other than `sast`, `iac`, or `sca` remains a logged
 `coverage_reduction` no-op (`reason=not_yet_built`); `scan_dispatch sca` is no longer one of them, since

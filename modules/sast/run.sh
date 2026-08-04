@@ -17,6 +17,15 @@
 # modules/sast/engine.sh, a pure function library, gets the standard
 # sourced-once guard.
 #
+# THE OPTIONAL SEMGREP ENGINE ADAPTER (docs/DESIGN.md §6.4; docs/ADAPTERS.md;
+# this ticket, the first concrete adapter) is wired in at the end of `_sast_run_module`,
+# below, gated on BOTH `${SCAN_FLAGS[use-engines]:-} == true` AND
+# `has_engine sast semgrep` (lib/engines.sh) - docs/ADAPTERS.md §5's own
+# pseudocode keeps those two conditions independent, never collapsed into
+# one check.  Absent either, this is a silent, honestly-declared
+# native-only continue (`coverage_reduction reason=engine_not_vendored`),
+# never an error - see `_sast_run_semgrep_adapter`'s own comment.
+#
 # shellcheck shell=bash
 # shellcheck source=modules/sast/engine.sh
 source "${BASH_SOURCE[0]%/*}/engine.sh"
@@ -26,6 +35,30 @@ source "${BASH_SOURCE[0]%/*}/engine.sh"
 # _sast_history_run is called below.
 # shellcheck source=modules/sast/history.sh
 source "${BASH_SOURCE[0]%/*}/history.sh"
+
+# _sast_run_semgrep_adapter ROOT - runs the vendored semgrep adapter
+# (modules/sast/adapters/semgrep/adapter.sh, sourced by `has_engine`'s own
+# call in _sast_run_module above) and normalizes its results into the
+# finding model.  Only ever called after `has_engine sast semgrep` has
+# already returned 0, so `semgrep_run`/`semgrep_normalize` are guaranteed to
+# be defined by the time this runs.
+#
+# `semgrep_run` failing is a genuine engine crash, not "absent" - handled
+# exactly like a missing adapter (docs/ADAPTERS.md §7: "log it, record a
+# coverage_reduction with a distinct reason, and continue the run with
+# native-only results for that module - never abort the whole scan for an
+# opt-in power-up"), with its OWN reason (`engine_run_failed`) so the two
+# cases are distinguishable in run.json.
+_sast_run_semgrep_adapter() {
+  local root=$1
+  local out=$SCOURSH_SCRATCH/semgrep-run.$$.json
+  if semgrep_run "$out" "$root"; then
+    semgrep_normalize "$out"
+  else
+    run_record coverage_reduction 'module=sast reason=engine_run_failed engine=semgrep'
+  fi
+  rm -f "$out"
+}
 
 _sast_run_module() {
   local path=${_SCAN_RESOLVED_PATH:-.}
@@ -63,6 +96,18 @@ _sast_run_module() {
   # requested, scan root is a git repo, not shallow, has commits) decide
   # whether it does anything at all.
   _sast_history_run "$path"
+
+  # Also independent of the working-tree registry above, for the same
+  # reason: the semgrep adapter's check ids are minted at runtime, never
+  # loaded through CHECKS_REGISTRY_SETS (lib/checks.sh's own header now
+  # states this boundary explicitly).
+  if [[ ${SCAN_FLAGS[use-engines]:-} == true ]]; then
+    if has_engine sast semgrep; then
+      _sast_run_semgrep_adapter "$path"
+    else
+      run_record coverage_reduction 'module=sast reason=engine_not_vendored engine=semgrep'
+    fi
+  fi
 
   findings_merge "$SCOURSH_RUN_DIR"
   derive_findings "$SCOURSH_RUN_DIR"

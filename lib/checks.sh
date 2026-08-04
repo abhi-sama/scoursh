@@ -11,6 +11,22 @@
 #   docs/FOUNDATION.md finding F3 (closed here) and F8 (closed here).
 #   rules/RULE-FORMAT.md §9.1.3 (tags), §9.5 (script check).
 #
+# `--use-engines` (docs/ADAPTERS.md; lib/engines.sh; the first concrete adapter ticket) NEVER
+# REACHES THE FILTER CHAIN BELOW, and that is by design, not a gap: an
+# adapter check id (`<engine>:<engine's own rule id>`, rules/RULE-FORMAT.md
+# §9.1.1a) is minted at RUNTIME by the adapter's own `<engine>_normalize`,
+# never declared in a `*.rules` file, so `checks_registry_load` (§4 below)
+# has no record for it to load and `checks_selection_reason` has nothing of
+# its own to accept or drop. `--profile-scan`/`--intensity`/
+# `--allow-intrusive` therefore narrow or widen NATIVE pattern-rule and
+# script-check selection only; whether an adapter's findings appear in a
+# run is governed entirely by `--use-engines` plus that adapter's own
+# `<engine>_detect`, evaluated at the calling module's own run.sh (e.g.
+# modules/sast/run.sh), never by anything in this file. A future ticket
+# that wants profile/intensity to reach adapter output has to design that
+# extension deliberately; docs/ADAPTERS.md §6 takes no position on it
+# beyond stating today's boundary.
+#
 # ---------------------------------------------------------------------------
 # The three filters, and how they compose
 # ---------------------------------------------------------------------------

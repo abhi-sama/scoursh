@@ -41,8 +41,19 @@
 #     scanner is allowed to point ITS SCANS at, and this script never scans
 #     anything.
 #
-# CURRENT SCOPE (this ticket - docs/FOUNDATION.md tension 27's "scaffold,
-# not per-engine logic" boundary).  This script ships as a real,
+# CURRENT SCOPE UPDATE (this ticket, the first concrete adapter): the
+# scaffold ticket referenced just above shipped this file with an EMPTY
+# registry, exactly as its own "CURRENT SCOPE" paragraph (preserved below
+# for history) describes.  This ticket is the "future single-engine-adapter
+# ticket" that paragraph anticipates: it adds ONE registry entry
+# (`semgrep`, section 2), the `veng_fetch` helper every `vendor.sh` is
+# restricted to (section 2a), and `modules/sast/adapters/semgrep/` itself -
+# in the SAME change, per that paragraph's own instruction.  This script is
+# still not forked per engine: a second adapter ticket adds one more
+# registry line and one more fetch function here, not a second dispatcher.
+#
+# ORIGINAL "CURRENT SCOPE" (this ticket - docs/FOUNDATION.md tension 27's
+# "scaffold, not per-engine logic" boundary).  This script ships as a real,
 # runnable dispatcher with an EMPTY engine registry (section 2): it has
 # structurally correct usage, listing, and error paths, and zero adapters to
 # actually vendor, because zero adapters exist anywhere in the repository
@@ -118,6 +129,35 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# 2a. veng_fetch - the ONLY function a vendor.sh may use to reach the
+#     network (docs/ADAPTERS.md §2; modules/sast/adapters/semgrep/vendor.sh
+#     is the first caller).  Downloads URL to DEST and verifies it against
+#     an EXPECTED sha256 the caller supplies - never a hardcoded or guessed
+#     one (OWASP A08: an unverified artifact is not meaningfully different
+#     from an unsigned one; see vendor.sh's own header for the fuller
+#     argument).  Refuses to leave a mismatched file in place: DEST is
+#     removed on a checksum failure so a partial or wrong download can never
+#     be mistaken for a successfully vendored artifact.
+# ---------------------------------------------------------------------------
+veng_fetch() {
+  local url=$1 dest=$2 expected_sha256=$3
+  [[ -n $url && -n $dest && -n $expected_sha256 ]] \
+    || die "$SCOURSH_EXIT_INPUT" 'veng_fetch: URL, DEST and EXPECTED_SHA256 are all required'
+  require_cmd curl
+  log_info "vendor-engines: fetching $url"
+  curl --fail --location --show-error --silent --output "$dest" -- "$url" \
+    || die "$SCOURSH_EXIT_INCOMPLETE" "veng_fetch: download failed: $url"
+  local got_sha256
+  got_sha256=$(cat -- "$dest" | sha256_of)
+  if [[ $got_sha256 != "$expected_sha256" ]]; then
+    rm -f "$dest"
+    die "$SCOURSH_EXIT_INCOMPLETE" \
+      "veng_fetch: checksum mismatch for $url (expected $expected_sha256, got $got_sha256) - refusing to vendor an unverified artifact"
+  fi
+  log_info "vendor-engines: checksum verified for $(basename -- "$dest")"
+}
+
+# ---------------------------------------------------------------------------
 # 2. The engine registry
 # ---------------------------------------------------------------------------
 # Maps a registered engine name to the bash function that vendors it.  A
@@ -126,14 +166,31 @@ EOF
 # its own modules/<module>/adapters/<engine>/ directory - see this file's
 # own header, "CURRENT SCOPE", and docs/ADAPTERS.md §3/§9.
 #
-# Deliberately empty as of this ticket.  Iterating over an empty associative
-# array is well-defined in bash 4.2+ (the frozen minimum, tension 24) and
-# needs no special-casing here, unlike a plain positional array under
-# `set -u` (tension 24's empty-array-expansion note) - an associative
-# array's `${!VENG_REGISTRY[@]}` on an empty array expands to nothing
-# without error, which is exactly the "zero adapters" case this script must
-# handle cleanly.
-declare -A VENG_REGISTRY=()
+# Iterating over an associative array is well-defined in bash 4.2+ (the
+# frozen minimum, tension 24) and needs no special-casing here, unlike a
+# plain positional array under `set -u` (tension 24's empty-array-expansion
+# note) - an associative array's `${!VENG_REGISTRY[@]}` on an empty array
+# expands to nothing without error, which is exactly what let this script
+# ship correct with zero entries before this ticket, and is exactly why a
+# new entry needs no companion change to veng_list/veng_vendor_all below.
+declare -A VENG_REGISTRY=(
+  [semgrep]=veng_vendor_semgrep
+)
+
+# veng_vendor_semgrep - the semgrep registry entry.  Delegates to
+# modules/sast/adapters/semgrep/vendor.sh's own `semgrep_vendor`, sourced
+# HERE rather than at this file's top level, so a `--list`/`--help`
+# invocation with no adapter directory on disk yet never fails just to
+# populate a registry - the same "load what a command actually needs, when
+# it needs it" shape veng_vendor_one already applies to every entry.
+veng_vendor_semgrep() {
+  local vendor_sh="$VENG_DIR/modules/sast/adapters/semgrep/vendor.sh"
+  [[ -f $vendor_sh ]] || die "$SCOURSH_EXIT_INCOMPLETE" \
+    "vendor-engines: $vendor_sh is missing - modules/sast/adapters/semgrep/ should ship it"
+  # shellcheck source=modules/sast/adapters/semgrep/vendor.sh
+  source "$vendor_sh"
+  semgrep_vendor
+}
 
 veng_list() {
   if (( ${#VENG_REGISTRY[@]} == 0 )); then

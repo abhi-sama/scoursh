@@ -25,9 +25,13 @@ An adapter is **not**:
   complete. `tests/suites/vendor-engines.sh` and the rest of the suite prove this holds with the
   `adapters/` directories absent entirely, which is the state of every module as of this document.
 
-**Zero adapters exist as of this document.** This document defines the convention a future
-**single-engine-adapter ticket** implements independently; each concrete adapter (`semgrep`, `gitleaks`,
-an IaC engine, ...) is its own ticket, never bundled with the scaffold or with another engine.
+**Zero adapters existed as of this document's first version.** It defined the convention a future
+**single-engine-adapter ticket** would implement independently; each concrete adapter (`semgrep`,
+`gitleaks`, an IaC engine, ...) is its own ticket, never bundled with the scaffold or with another
+engine. **The first concrete adapter ticket has since shipped the first one** -
+`modules/sast/adapters/semgrep/` - exactly as this section anticipated, one ticket, no others bundled
+with it. §3 and §9 below are updated accordingly; the rest of this document's contract is unchanged by
+that landing, which is the point of freezing the contract before the first adapter rather than after.
 
 ## 2. The no-egress rule, restated for this document
 
@@ -50,16 +54,35 @@ This has one direct, load-bearing consequence for adapter code:
   the two checks together are what makes "the only script permitted to reach the network" a property CI
   actually checks, not a comment someone can drift away from.
 
-## 3. Runtime gating (not yet built - stated so it is not rediscovered)
+## 3. Runtime gating
 
 `docs/DESIGN.md`'s directory layout names `lib/engines.sh` ("detect optional vendored engines; expose
 `has_engine()`") and §6.4 names the `--use-engines` flag that must be given, together with a passing
-`<engine>_detect`, before an adapter runs at all. **Neither exists yet.** This scaffold ticket
-deliberately does not build them: `docs/FOUNDATION.md` Tension 27 records that the first concrete
-adapter ticket builds `lib/engines.sh`/`has_engine()` and wires `--use-engines` through `scan.sh`/
-`lib/checks.sh` together with its own adapter, mirroring how `--paranoid`'s flag landed together with
-its first real enforcement rather than as a separate ticket. Until that lands, an adapter directory
-containing real code is inert: nothing calls `<engine>_detect`, so nothing can run it.
+`<engine>_detect`, before an adapter runs at all. **Both now exist**, built together with
+the first concrete adapter, mirroring how `--paranoid`'s flag landed together with its first real
+enforcement rather than as a separate ticket.
+
+`has_engine MODULE ENGINE` (`lib/engines.sh`) answers exactly one pure filesystem question: does
+`modules/<module>/adapters/<engine>/adapter.sh` exist, and does sourcing it and calling its own
+`<engine>_detect` return 0? It is memoised per `(module, engine)` pair and deliberately never reads
+`--use-engines` itself - the two conditions below are independent and ANDed together **at the calling
+module's own call site**, never collapsed into `has_engine`:
+
+```sh
+if [[ ${SCAN_FLAGS[use-engines]:-} == true ]] && has_engine sast semgrep; then
+  _sast_run_semgrep_adapter "$path"
+else
+  run_record coverage_reduction 'module=sast reason=engine_not_vendored engine=semgrep'
+fi
+```
+
+`--use-engines` itself is a `scan.sh` global flag (alongside `--paranoid`, `--allow-intrusive`, ...);
+`scan.sh` records its value into `run.json` (`run_record use_engines <bool>`) for every run regardless of
+outcome, but does not itself call `has_engine` or run any adapter - that happens at each module's own
+call site, per the snippet above. `lib/checks.sh`'s own registry-based filter chain
+(`--profile-scan`/`--intensity`/`--allow-intrusive`) never reaches an adapter's findings either way: an
+adapter check id is minted at runtime, not declared in a `*.rules` file, so that filter chain has nothing
+of its own to select or drop (§6 below).
 
 ## 4. Directory convention
 
@@ -86,10 +109,11 @@ modules/<module>/adapters/<engine>/
   more than one binary may add further files under `bin/`. What is frozen is `adapter.sh`'s three
   functions (§5) and that nothing outside `bin/`/`rules/` under the adapter's own directory is ever
   fetched from the network by anything other than `tools/vendor-engines.sh`.
-- No adapter directory exists on disk as of this document. A concrete adapter ticket creates its own
-  `modules/<module>/adapters/<engine>/` from nothing; there is no placeholder or template file to copy,
-  since an empty directory carries no content for git to track and a stale template would only invite
-  drift from this document, which is the actual contract.
+- No adapter directory existed on disk as of this document's first version; `modules/sast/adapters/semgrep/`
+  is now the first (this ticket), created from nothing per this section - there was no placeholder or
+  template file to copy, since an empty directory carries no content for git to track and a stale
+  template would only have invited drift from this document, which is the actual contract. A future
+  second adapter ticket does the same thing again, independently, for its own `<module>/<engine>` pair.
 
 ## 5. The `adapter.sh` interface contract
 
@@ -123,16 +147,21 @@ follow directly from that section, restated here because they are easy to miss:
   in different namespaces without conflict - that is what namespacing means.
 - Because an adapter check id carries no `MODULE-FAMILY-NAME` shape, it is not a candidate for
   `_scan_apply_profile_filter`'s check-registry selection (`lib/checks.sh`) or for `state/`'s
-  `covered_checks` today. How adapter findings interact with check-set selection, `--intensity`, and
-  coverage/diff-state once `--use-engines` is real is left to the ticket that builds `lib/engines.sh`
-  (§3) to decide and document; this scaffold takes no position on it beyond what §9.1.1a already froze.
+  `covered_checks`. **This ticket settled this, rather than leaving it open**: `--profile-scan`,
+  `--intensity` and `--allow-intrusive` narrow or widen NATIVE pattern-rule/script-check selection only
+  and never reach an adapter's findings; whether an adapter's findings appear in a run is governed
+  entirely by `--use-engines` plus that adapter's own `<engine>_detect` (§3), independent of every other
+  filter. `lib/checks.sh`'s own header now states this boundary explicitly. `state/`'s
+  `covered_checks` interaction is still open - `state/` itself does not exist yet (§13 step 7) - and is
+  left for whichever ticket builds it.
 
 ## 7. Graceful degradation is mandatory, not best-effort
 
 An absent, un-vendored, or failing adapter must never make a scan error, and must never silently produce
 fewer findings without saying so. The contract, mirroring the pattern every `not_yet_built`/
 `no_advisories_db_on_disk`/`engine_not_vendored`-style module gap already uses (`lib/core.sh`'s
-`run_record`):
+`run_record`) - simplified here to the `<engine>_detect` boundary; §3 above shows the full call site
+including the `--use-engines` flag check `has_engine` wraps around exactly this:
 
 ```sh
 if <engine>_detect; then
@@ -147,11 +176,15 @@ fi
 `coverage_reduction` with a distinct reason, and continue the run with native-only results for that
 module - never abort the whole scan for an opt-in power-up.
 
-`tests/suites/vendor-engines.sh` (this ticket) and the full suite together prove the zero-adapter case:
-every existing suite already passes with no `modules/*/adapters/` directory on disk anywhere, because no
-module's `run.sh` calls into an adapter today (§3) - there is nothing yet to gracefully degrade *from*.
-The concrete-adapter ticket that first calls `<engine>_detect` from a module's `run.sh` is the one that
-must add the fixture proving the `else` branch above.
+`tests/suites/vendor-engines.sh` and the rest of the pre-this-ticket suite together proved the
+zero-adapter case: every suite passed with no `modules/*/adapters/` directory on disk anywhere, because
+no module's `run.sh` called into an adapter at all. **This ticket added the fixture proving the `else`
+branch above for real**: `tests/suites/sast-semgrep.sh`'s "graceful degradation" section runs a real
+`scan.sh sast --use-engines` subprocess against an install root that genuinely has no
+`modules/sast/adapters/semgrep/` on disk, and asserts the exact `coverage_reduction
+reason=engine_not_vendored engine=semgrep` line plus an unaffected exit code - and a second case, with
+neither `--use-engines` given, asserts not even that line appears, proving "unmodified default
+behaviour" rather than merely "no crash".
 
 ## 8. Round-trip requirement
 
@@ -160,16 +193,19 @@ SARIF, HTML, Markdown) **identically** to a native finding - same schema, same r
 emitters. This falls out of §5's requirement that `<engine>_normalize` only ever calls
 `lib/findings.sh`'s existing public functions: those functions are exactly what a native pattern-rule
 finding and an SCA table-lookup finding already go through, so an adapter finding gets the same
-guarantees for free rather than needing its own emitter path. The concrete-adapter ticket that first
-implements a real `<engine>_normalize` is responsible for a fixture that proves this round-trip for its
-own engine's output shape; this document states the requirement, it does not (and cannot, with zero
-adapters shipped) prove it empirically.
+guarantees for free rather than needing its own emitter path. **This ticket (`tests/suites/sast-semgrep.sh`,
+section C) is the fixture that proves this empirically**: a real `scan.sh sast --use-engines` subprocess
+against a genuinely vendored (fake, stand-in) `semgrep` binary, asserting the resulting
+`semgrep:<rule id>` finding appears, correctly, in `findings.jsonl`, `findings.json`, `report.md` and
+`report.html` alike. A second concrete adapter's own ticket is responsible for the equivalent fixture
+against its own engine's output shape; this document states the requirement generally, it no longer has
+to prove it from nothing.
 
 ## 9. Roster
 
 | Module | Engine | Status |
 |---|---|---|
-| - | - | none shipped; this table is empty by design (§1) |
+| sast | semgrep | shipped (this ticket) - `modules/sast/adapters/semgrep/`; zero real binaries vendored in this repository (§1/§2 - `tools/vendor-engines.sh` is the only way to populate `bin/`/`rules/`, and nobody has run it here) |
 
 A concrete adapter ticket adds its own row here in the same change that ships it, per the project's
 build-order process rule (`AGENTS.md`'s "Process rule" paragraph, `docs/FOUNDATION.md`'s mirror) - the
