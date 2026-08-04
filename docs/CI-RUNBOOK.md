@@ -34,6 +34,7 @@ Each matrix leg checks out the repo, installs a bash that meets the frozen 4.2 m
 | `lint-rules` | Record-format linter: whole-repository checks the per-record parser can't do alone - check-id namespace, contributor existence/chaining, correlation-key capability, rubric uniqueness, cross-references. |
 | `lint-shell` | Enforces: no bare `grep`/`rg` outside `scan_match`, no `source`/`eval` on config/rules/data, the single network chokepoint (`lib/http.sh`), one capability layer. |
 | `lint-aws-readonly` | Enforces every AWS call goes through `aws_ro` with an operation on the frozen read-only prefix allowlist. Passes over an empty set today; `lib/awscli.sh` and `aws/live/` land at step 6. |
+| `lint-status` | The generated build-status blocks in `AGENTS.md` and `docs/FOUNDATION.md` equal a fresh `tools/gen-status.sh` run, the two blocks are byte-identical, a hand-edited block is caught, and an edit *outside* the markers is not. Fix a failure with `tools/gen-status.sh --write`, never by hand-editing the block. |
 
 **`shellcheck`** runs last, over `lib/`, `tests/`, `tools/`, `modules/`, `aws/`, `scan.sh`, if the binary is present.
 It is optional locally (an air-gapped host may not have it) but CI always installs it, so it is effectively required in CI even though `tests/run-tests.sh` itself treats it as best-effort.

@@ -3912,32 +3912,24 @@ F3 and F8 are closed as part of `lib/checks.sh` landing (see their own entries a
 remain open for the same reason they always were - `rules/derived.rules` is still not seeded, since its
 contributors do not exist until steps 5 and 6.
 
-**§13 step 3 is under way, not unstarted: its sub-steps 3a, 3b, 3c, 3d, and 3e have landed on `dev`.**
-3a (`6f25a67`) shipped the native pattern engine `modules/sast/engine.sh` and the `scan_dispatch sast`
-entry point `modules/sast/run.sh`, plus four rule packs (`secrets.rules`, `crypto.rules`,
-`injection.rules`, `python.rules`); 3b (`446f642`) and 3c (`754a994`) added `javascript.rules` and
-`go.rules`; 3d (`910d2c7`) added `java.rules`, so `modules/sast/rules/` now holds seven packs on disk;
-and 3e (`18c4c3f`) shipped `modules/sast/history.sh`, which replays `secrets.rules` against git history
-(bounded by a commit/time window, per §6.3) and populates the `SAST-HIST-*` check family - the
-fingerprint profile (`blob_sha`, `match_digest`, `occurrence`) and `oldest_reaching_commit_time` that
-tension 13's boundary test and tension 6 condition (b1) read once `state/` exists at step 7.
-Step 3 as a whole is still not finished: `docs/DESIGN.md` §6.3's catalog also calls for `nosql.rules`
-and `ldap.rules`, neither of which has landed; every per-language pack the catalog names has shipped.
-This paragraph previously undercounted step 3 at "3a, 3b, 3c, and 3e" and left `java.rules` in the
-still-missing list after 3d had already landed - `AGENTS.md`'s "Build order and where we are" had the
-correct count; this section is corrected here to match it, which is what the process note below exists
-to keep from recurring.
+**§13 step 3 is under way, not unstarted.**
+3a shipped the native pattern engine `modules/sast/engine.sh` and the `scan_dispatch sast` entry point
+`modules/sast/run.sh` plus the first rule packs; 3b, 3c and 3d added further per-language packs; and 3e
+shipped `modules/sast/history.sh`, which replays `secrets.rules` against git history (bounded by a
+commit/time window, per §6.3) and populates the `SAST-HIST-*` check family - the fingerprint profile
+(`blob_sha`, `match_digest`, `occurrence`) and `oldest_reaching_commit_time` that tension 13's boundary
+test and tension 6 condition (b1) read once `state/` exists at step 7.
+WHICH packs have landed and what §6.3 still owes is in the generated block below, not in this
+paragraph: it previously undercounted step 3 and left an already-landed pack in its still-missing list,
+which is the failure the generator exists to make impossible.
 Steps 4 through 10 remain mostly unstarted, so `modules/dast/` and `modules/cloud/` remain unbuilt,
 along with `lib/awscli.sh`.
 `modules/iac/` and `modules/sca/` are exceptions - see the two paragraphs below.
-`modules/iac/` is still partial; `modules/sca/` covers every ecosystem `docs/DESIGN.md` §6.5 names as
-of the Go landing.
 The remaining follow-ups (F5, F20, and F17) are inherited by steps 4 through 10 and are still open.
-(F3, F4, F8, and F16 - including its `look` half - are closed above; this sentence still listed F16's
-`look` half as open after `4684e44` closed it, and is corrected here.)
+(F3, F4, F8, and F16 - including its `look` half - are closed above.)
 
-**Step 4's IaC half landed out of sequence, ahead of step 3's remaining `nosql`/`ldap` sub-steps and
-ahead of step 4's own SCA half - in four separate landings, and still only partial.**
+**Step 4's IaC half landed out of sequence, ahead of step 3's remaining sub-steps and ahead of step 4's
+own SCA half, one ticket per file format.**
 `5de4460` ("IaC: Terraform checks via the pattern-rule engine (§13 step 4)") shipped `modules/iac/run.sh`
 (the `scan_dispatch iac` entry point), `modules/iac/parse.sh` (the Terraform HCL parser), and
 `modules/iac/terraform.rules`, reusing the native pattern engine `modules/sast/engine.sh` built at step
@@ -3971,16 +3963,10 @@ templates are explicitly excluded by design: the pack's own header covers the ca
 for Helm, `AWSTemplateFormatVersion|AWS::` for CloudFormation, on the three absence-style checks)
 mechanisms that keep it out of scope for those two shapes even though the file glob overlaps;
 `tests/suites/iac.sh` proves both fixture shapes yield zero `IAC-K8S-*` findings.
-So §6.6's container/orchestration catalog has now landed its Helm-values, Dockerfile, and
-Kubernetes-manifest slices: only docker-compose checks are still open, and so is CloudFormation
-(§8.2's IaC catalog) - this landing spans **Terraform + Helm-values + Dockerfile + Kubernetes-manifest**.
-`modules/` as a whole now ships **eleven** pattern packs on disk (the seven under `modules/sast/rules/`
-plus `modules/iac/terraform.rules`, `modules/iac/helm.rules`, `modules/iac/dockerfile.rules`, and
-`modules/iac/kubernetes.rules`), which is the count `tests/lint-rules.sh`'s E060 fixture-coverage note
-now reports.
-Step 3's `nosql`/`ldap` rule packs, step 4's own SCA half (see the paragraph below), and the rest of
-§6.6's container/orchestration catalog (docker-compose) plus CloudFormation all remain open; do not read
-this paragraph as "step 4 is done."
+§6.6's container/orchestration catalog and §8.2's CloudFormation checks are two separate sub-scopes of
+step 4's IaC half; which of their slices have landed, and the on-disk pattern-pack count that
+`tests/lint-rules.sh`'s E060 fixture-coverage note reports, are both in the generated block below.
+Do not read this paragraph as "step 4 is done."
 
 **A fifth landing has since closed the docker-compose gap the paragraph above left open:
 `57d1cd1` ("IaC: docker-compose checks via the pattern-rule engine (§13 step 4)") added
@@ -4000,11 +3986,10 @@ only - `tests/suites/iac.sh` has a dedicated cross-shape section proving a Kuber
 a Helm `values.yaml`-shaped fixture, each deliberately carrying content that would trip every
 `IAC-COMPOSE-*` check if the engine ever inspected file content, still produce zero findings, and that a
 mixed directory holding one file of each IaC shape never lets a check cross-attribute to the wrong file.
-`modules/` as a whole now ships **twelve** pattern packs on disk (the eleven above plus this one), which
-is the count `tests/lint-rules.sh`'s E060 fixture-coverage note now reports.
-Dockerfile, Kubernetes-manifest, Helm-values, and now docker-compose IaC rules have all landed; only
-CloudFormation (§8.2's IaC catalog) remains unclaimed by any landed ticket - do not read this paragraph
-as "step 4 is done," only its docker-compose slice is newly closed.
+The on-disk pattern-pack count `tests/lint-rules.sh`'s E060 fixture-coverage note reports, and which
+§6.6/§8.2 slices are still unclaimed, are in the generated block below rather than in this paragraph -
+this one records only what the docker-compose landing itself decided.
+Do not read it as "step 4 is done."
 
 **A third piece of step 4 has now landed, in three sub-tickets: `modules/sca/` (the SCA module's npm,
 Python, and Ruby slices).**
@@ -4069,9 +4054,8 @@ recorded above, not a new one.
 Unlike `sca_scan_python_tree` and `sca_scan_java_tree`, `sca_go_scan_tree` performs its own
 `data/advisories.db`-readable check, so `_sca_go_run` carries no "must run after `_sca_npm_run`"
 ordering requirement; it is still called last in `_sca_run_module` for a stable emission order.
-With Go landed, every ecosystem `docs/DESIGN.md` §6.5 names has a parser, so step 4's SCA half is
-COMPLETE and the step-5 DAST gate is no longer blocked on it; what step 4 still owes is its remaining
-container/orchestration and CloudFormation IaC checks.
+Whether every ecosystem `docs/DESIGN.md` §6.5 names now has a parser - and so whether the step-5 DAST
+gate is still blocked on this half - is in the generated block below, counted from the tree.
 
 **Step 5 (DAST) has a written, dependency-ordered sub-ticket plan (`docs/STEP5-DAST-PLAN.md`), but no
 implementation ticket has started.**
@@ -4082,9 +4066,8 @@ injection, one file at a time -> §7.4 auth/API/authz`), confirms `lib/http.sh`'
 pending, and states the client-rendered-app (SPA) limitation as a `coverage_gap` the crawler ticket
 (DAST-04) must surface in the report, not a gap this plan (or any step-5 ticket) closes with a headless
 browser.
-**No DAST-0x ticket is picked up until step 3's `nosql`/`ldap` rule packs and step 4's SCA half are both
-complete on `dev`** (step 4's IaC half - `terraform.rules`, `helm.rules`, `dockerfile.rules`, and
-`kubernetes.rules` - has already landed, see "Step 4's IaC half" above; SCA has not), per the plan's own
+**No DAST-0x ticket is picked up until step 3's outstanding rule packs and step 4's SCA half are both
+complete on `dev`** - the generated block below is what says whether they are - per the plan's own
 "Status: blocked" section and this ticket's description.
 
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01
@@ -4136,7 +4119,7 @@ at step 1 as a no-op stub over an empty set and removes its matching logic from 
 list - only `lib/awscli.sh` itself, the exception-file seeding, and a negative-fixture test remain
 (CLOUD-03) - and states that the one landed IaC ticket (`modules/iac/`, on `origin/dev`) is §8.2/step 4
 work, out of this plan's scope. **No CLOUD-0x or POSTURE-0x ticket is picked up until step 3's
-`nosql`/`ldap` rule packs, step 4 (SCA + IaC), and step 5 (DAST) are all complete on `dev`** - step 6 is
+outstanding rule packs, step 4 (SCA + IaC), and step 5 (DAST) are all complete on `dev`** - step 6 is
 gated on the whole sequential chain ahead of it, not step 4 alone, per the plan's own "Status: blocked"
 section and this ticket's description.
 
@@ -4156,17 +4139,97 @@ steps 5 and 6) are step 7's; step 1 delivers the primitives they call - the merg
 `findings_mark_suppressed` annotation, and `classify_derived`, which is pure and is already tested
 against tension 6's full case table.
 That sentence describes step 1's own historical boundary and is unaffected by later steps: `scan.sh`
-was step 1's placeholder and is now built by step 2 (above); `modules/sast/` and its seven rule packs
-are now built by steps 3a-3e (above); `modules/iac/` and its `terraform.rules`, `helm.rules`,
-`dockerfile.rules`, and `kubernetes.rules` packs are now built by step 4's IaC half, landed out of
-sequence in four parts (above); `modules/sca/` (npm, Python, Ruby, Java, PHP, and Go slices - all six of
-`docs/DESIGN.md` §6.5's ecosystems, Java and PHP having landed at `a1b3c43`/`7e7b186` and Go last) is
-now built by step 4's SCA half, also landed out of sequence (above); `lib/http.sh` landed
+was step 1's placeholder and is now built by step 2 (above); `modules/sast/`, `modules/iac/` and
+`modules/sca/` are now built by steps 3 and 4, the latter landed out of sequence (above), and the
+generated block below is what says which of their packs and ecosystems are in; `lib/http.sh` landed
 early, out of its normal step-5 sequence (tension 19), and step 5 as a whole now has a written
-sub-ticket plan
-(`docs/STEP5-DAST-PLAN.md`, above) though none of it has started; and `lib/engines.sh`, `lib/awscli.sh`,
-SARIF, the compliance report, and `state/` remain unbuilt, as does the rest of `modules/` (`dast/`,
-`cloud/`).
+sub-ticket plan (`docs/STEP5-DAST-PLAN.md`, above) though none of it has started; and `lib/engines.sh`,
+`lib/awscli.sh`, SARIF, the compliance report, and `state/` remain unbuilt.
+
+<!-- BEGIN GENERATED STATUS -->
+<!--
+  GENERATED by tools/gen-status.sh.  Everything between these two markers is
+  machine-written from the repository tree and docs/DESIGN.md's own catalog.
+
+  Do not hand-edit inside the markers: run `tools/gen-status.sh --write`.
+  `tests/lint-status.sh` (run by `tests/run-tests.sh`) fails when a committed
+  block differs from a fresh generation, so an edit here is a broken build.
+
+  A MERGE CONFLICT INSIDE THIS BLOCK IS NEVER RESOLVED BY HAND.  Take either
+  side of the conflict, then re-run `tools/gen-status.sh --write`.
+-->
+
+### Module status inventory (generated)
+
+What is PLANNED is parsed from `docs/DESIGN.md`'s own catalog (§6.3 SAST, §6.5
+SCA, §6.6 and §8.2 IaC).  What has LANDED is read off the repository tree.  What
+REMAINS is the difference, computed rather than typed - which is why no sentence
+in here has to be rewritten when a module lands, and why two branches landing
+different modules cannot conflict over it.
+
+**Landed** means both halves hold, and both are checked on every run:
+
+1. the artifact exists at its path under `modules/`, and
+2. the test tree exercises it - for a rule pack, at least one check id the pack
+   itself declares appears in a `tests/**/*.sh` suite; for a script, its
+   basename does; for an SCA ecosystem, every manifest `docs/DESIGN.md` §6.5
+   names for it is parsed under `modules/sca/` and at least one has a real
+   fixture file under `tests/fixtures/`.
+
+A file that is present but that no suite names is **present, untested** - its own
+state, never rounded up to landed.  Artifacts are identified by PATH and never by
+a commit sha: a ticket cannot know its own landing sha, and invented ones have
+shipped here before.
+
+#### SAST - `docs/DESIGN.md` §6.3 catalog -> `modules/sast/`
+
+| Artifact | Status | Checks | Exercised by |
+| --- | --- | --- | --- |
+| `modules/sast/rules/crypto.rules` | landed | 5 | `tests/suites/sast.sh` |
+| `modules/sast/rules/go.rules` | landed | 5 | `tests/suites/sast.sh` |
+| `modules/sast/rules/injection.rules` | landed | 8 | `tests/suites/sast.sh` |
+| `modules/sast/rules/java.rules` | landed | 7 | `tests/suites/sast.sh` |
+| `modules/sast/rules/javascript.rules` | landed | 7 | `tests/suites/sast.sh` |
+| `modules/sast/rules/ldap.rules` | not landed | - | - |
+| `modules/sast/rules/nosql.rules` | not landed | - | - |
+| `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/sast.sh` |
+| `modules/sast/rules/secrets.rules` | landed | 5 | `tests/suites/records.sh` |
+| `modules/sast/history.sh` | landed | - | `tests/suites/sast-history.sh` |
+
+Landed 8 of 10.  Outstanding: `ldap.rules`, `nosql.rules`.
+
+#### SCA ecosystems - `docs/DESIGN.md` §6.5 catalog -> `modules/sca/`
+
+| Manifests | Status | Parsers | Exercised by |
+| --- | --- | --- | --- |
+| `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` | landed | 3 of 3 parsed | `tests/fixtures/sca/mixed-ecosystems-php/package-lock.json` |
+| `requirements.txt`, `poetry.lock`, `Pipfile.lock` | landed | 3 of 3 parsed | `tests/fixtures/sca/python-requirements/requirements.txt` |
+| `go.mod`, `go.sum` | landed | 2 of 2 parsed | `tests/fixtures/sca/go-mod/go.mod` |
+| `pom.xml`, `build.gradle` | landed | 2 of 2 parsed | `tests/fixtures/sca/maven/pom.xml` |
+| `Gemfile.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca/mixed-ecosystems/Gemfile.lock` |
+| `composer.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca/composer-no-manifest/composer.lock` |
+
+Landed 6 of 6.  Outstanding: none.
+
+#### IaC rule packs - `docs/DESIGN.md` §6.6 and §8.2 -> `modules/iac/`
+
+| Artifact | Status | Checks | Exercised by |
+| --- | --- | --- | --- |
+| `modules/iac/cloudformation.rules` | not landed | - | - |
+| `modules/iac/docker-compose.rules` | landed | 4 | `tests/suites/iac.sh` |
+| `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/iac.sh` |
+| `modules/iac/helm.rules` | landed | 3 | `tests/suites/iac.sh` |
+| `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/iac.sh` |
+| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac.sh` |
+
+Landed 5 of 6.  Outstanding: `cloudformation.rules`.
+
+#### Totals
+
+- Pattern packs on disk: **12** (`modules/sast/rules/` 7, `modules/iac/` 5).
+- Module directories present: `modules/iac/`, `modules/sast/`, `modules/sca/`.
+
+<!-- END GENERATED STATUS -->
 
 **Process note: this section must be updated in the same change that lands a §13 step, not in a later
 cleanup ticket.**
@@ -4185,9 +4248,19 @@ landed - `modules/sca/php_engine.sh` and `SCA-PHP-VULNERABLE_DEP-01` among them 
 either doc's build-status section, so both documents went on calling Java and PHP "still open" until
 `ab23b79` and this ticket went back and corrected them. Two separate tickets spent cleaning up after
 one landing's missing paragraph is exactly the cost this note exists to avoid.
-Five independent instances of one failure mode is a pattern, not a coincidence: treat "does the
-build-order doc already say this landed?" as part of a landing ticket's own definition of done, not an
-optional follow-up.
+Five independent instances of one failure mode is a pattern, not a coincidence, and the separate
+correction tickets that cleaned up after them are a sixth cost: the inventory half of this section is
+therefore GENERATED.
+`tools/gen-status.sh --write` rewrites the block above - and its byte-identical copies in `AGENTS.md`
+and `README.md` - from the repository tree, and `tests/lint-status.sh` fails the suite when a committed
+block differs from a fresh generation. So "does the build-order doc already say this landed?" is now
+answered by running the generator rather than by reviewer memory, and a landing ticket can no longer
+leave this section stale by forgetting.
+What is left for a landing ticket to write by hand is the reasoning - scoping decisions, exclusions,
+why a file sits where it does - which no generator can derive, and it is still part of that ticket's
+own deliverable.
+A merge conflict inside the generated block is never resolved by hand: take either side and re-run the
+generator.
 Filing a follow-up documentation ticket to fix this section later is not an acceptable substitute for
 updating it in the step ticket itself - that pattern is what produced the java.rules staleness this
 section itself once had (a doc-refresh ticket landed a commit after java.rules shipped and still
