@@ -1,0 +1,17 @@
+# tests/fixtures/clean/k8s_rbac_wildcard.yaml - true-negative (safe
+# equivalent) fixture for IAC-K8S-RBAC_WILDCARD-01: explicit, narrow verbs
+# and resources, no wildcard anywhere.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rbac-wildcard-demo
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - "pods"
+      - "services"
+    verbs:
+      - "get"
+      - "list"
+      - "watch"

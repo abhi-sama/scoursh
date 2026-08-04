@@ -117,22 +117,64 @@ Helm-values slice of §6.6's container/orchestration catalog (`modules/iac/helm.
 added the Dockerfile slice (`modules/iac/dockerfile.rules`).
 CloudFormation, bare Kubernetes-manifest checks, and docker-compose checks are all still open under
 §6.6 - see the detailed paragraph below.
-**Step 4's SCA half is also under way, out of sequence, and now four ecosystems in: `ed8c283` shipped
-the npm/yarn/pnpm lockfile slice, a follow-on ticket shipped the Python slice
-(`requirements.txt`/`poetry.lock`/`Pipfile.lock`) on top of it, `a2d37aa` then added the Ruby slice
-(`Gemfile.lock`), and a later ticket added the Java slice (`pom.xml`/`build.gradle`, under check id
-`SCA-JAVA-VULNERABLE_DEP-01`) - see the detailed paragraph below.**
-Each ecosystem has its own self-contained `sca_scan_*_tree` entry point in `modules/sca/engine.sh`,
-called from `modules/sca/run.sh`'s `_sca_run_module`.
-Go (`go.mod`/`go.sum`) - the remaining ecosystem `docs/DESIGN.md` §6.5
-names - is still open, so SCA is not yet complete.
-The next tasks are therefore step 3's remaining `nosql.rules`/`ldap.rules`, step 4's remaining SCA
-ecosystem (Go), and step 4's remaining container/orchestration and CloudFormation IaC checks -
-not step 3 alone.
+**Step 4's SCA half is also under way, out of sequence, and now six ecosystems in - every ecosystem
+`docs/DESIGN.md` §6.5 names: `ed8c283` shipped the npm/yarn/pnpm lockfile slice, a follow-on ticket
+shipped the Python slice (`requirements.txt`/`poetry.lock`/`Pipfile.lock`) on top of it, `a2d37aa` then
+added the Ruby slice (`Gemfile.lock`), a later ticket added the Java slice
+(`pom.xml`/`build.gradle`, under check id `SCA-JAVA-VULNERABLE_DEP-01`), `7e7b186` added the
+PHP/Composer slice (`composer.lock`, `SCA-PHP-VULNERABLE_DEP-01`), and this ticket adds the Go slice
+(`go.mod`/`go.sum`, `SCA-GO-VULNERABLE_DEP-01`) - see the detailed paragraph below.**
+Each ecosystem has its own self-contained `sca_scan_*_tree` entry point, called from
+`modules/sca/run.sh`'s `_sca_run_module`; most live in `modules/sca/engine.sh`, while PHP and Go each
+landed in their own file (`modules/sca/php_engine.sh`, `modules/sca/go_engine.sh`) per that file's own
+header instruction not to fork `run.sh` per ecosystem.
+Neither the Java nor the PHP row of this paragraph was written by the ticket that shipped it:
+`a1b3c43` and `7e7b186` both landed without updating this section, and `ab23b79` ("Fix stale
+'Go/Java/PHP remain' SCA status text") had to go back and add them - the stale-doc failure the process
+rule above exists to prevent, twice.
+With Go landed, no §6.5 manifest format is outstanding; what step 4 still owes is its remaining
+container/orchestration and CloudFormation IaC checks.
+The next tasks are therefore step 3's remaining `nosql.rules`/`ldap.rules` and those remaining IaC
+checks - not step 3 alone.
 
 Because `checks_registry_load` (`lib/checks.sh`) globs every `*.rules` file under `modules/iac/` with
 no per-pack allowlist, all three IaC packs load together on any `scan.sh iac` run - `tests/suites/iac.sh`
 now scans `IAC-TF-*`, `IAC-HELM-*`, AND `IAC-DOCKER-*` ids in its `checks_run` integration section.
+
+**Step 4's IaC half has also started landing, out of the strict step order and ahead of step 3's
+`nosql`/`ldap` packs and of SCA (`docs/DESIGN.md` §13 groups SCA and IaC into one step 4, "both reuse the
+rule engine") - this is not step 4 being done, only its IaC half being under way.**
+Two tickets have landed on `modules/iac/` so far:
+
+- The Terraform ticket (commit `5de4460`, "IaC: Terraform checks via the pattern-rule engine") shipped
+  the shared IaC scaffolding - `modules/iac/run.sh` (the `scan_dispatch iac` entry point, reusing
+  `modules/sast/engine.sh`'s `sast_evaluate_gate` and `sast_index_checks` unchanged rather than forking
+  an IaC-specific copy) and `modules/iac/parse.sh` (`iac_scan_file`/`iac_scan_tree`, the same two-pass
+  design as `sast_scan_file` with only the finding-emission path forked so `module` reads `iac`) - plus
+  `modules/iac/terraform.rules` (seven `IAC-TF-*` checks: open CIDR, public ACL, unencrypted-at-rest,
+  KMS key rotation disabled, public IP, hardcoded secret, RDS publicly accessible), scoped to `*.tf`
+  only.
+  This ticket landed without this section (or `docs/FOUNDATION.md`'s mirror) being updated - the same
+  process-note failure §13 step 3e's own paragraph below already documents for `history.sh` - so
+  `modules/iac/` existing was rediscovered by the next ticket reading the tree rather than the docs;
+  this section and its mirror are corrected here to close that gap, which is what this paragraph and the
+  process note above exist to keep from recurring.
+- This ticket ("IaC: Kubernetes manifest checks via the pattern-rule engine") shipped
+  `modules/iac/kubernetes.rules`: eight `IAC-K8S-*` checks (privileged containers, host
+  network/PID namespace sharing, missing resource limits/requests, `runAsNonRoot` unset, plaintext
+  secrets in env vars, the mutable `:latest` image tag, wildcard RBAC verbs/resources, and
+  `automountServiceAccountToken` left at its default), scoped to plain Kubernetes YAML/JSON manifests
+  and reusing `modules/iac/run.sh`/`parse.sh` unchanged (they were already technology-agnostic).
+  Helm chart templates and CloudFormation templates are explicitly excluded by design - see the pack's
+  own header comment for the case-sensitivity (Kubernetes' lowerCamelCase field names versus
+  CloudFormation's PascalCase) and `context-deny` (`\{\{` for Helm, `AWSTemplateFormatVersion|AWS::` for
+  CloudFormation, on the three absence-style checks) mechanisms that keep it out of scope for those two
+  shapes even though the file glob overlaps.
+
+Step 4 as a whole is still **not** done: SCA (lockfile parsing -> `advisories.db`) has not started, and
+`docs/DESIGN.md` §6.6's Docker/docker-compose/Helm-**rendered**-chart checks and §8.2's CloudFormation
+checks remain separate, unstarted IaC sub-scopes - `modules/iac/` currently holds only
+`terraform.rules` and `kubernetes.rules`.
 
 **Step 5 (DAST) now has a written, dependency-ordered sub-ticket plan, but is not started.**
 `docs/STEP5-DAST-PLAN.md` breaks the ~30-script step 5 scope into tickets DAST-01 through DAST-30,
@@ -143,6 +185,8 @@ limiter/budget/breaker piece (DAST-01) and everything under `modules/dast/` rema
 **No DAST-0x ticket is picked up until step 3's `nosql`/`ldap` rule packs (above) and step 4's SCA half
 (above - IaC's own half has started, SCA's has not) are both complete on `dev`** - this plan is a
 written breakdown for later, not permission to start now.
+(Step 4's IaC half is a separate sub-scope and has already begun landing - see above - but that does not
+lift this gate, which names SCA specifically.)
 
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01 has
 not.**
@@ -366,9 +410,9 @@ is the count `tests/lint-rules.sh`'s E060 fixture-coverage note now reports.
 It landed ahead of step 3's remaining `nosql`/`ldap` rule packs and ahead of step 4's own SCA half, the
 same "land what's ready, out of strict step order" pattern as `lib/http.sh` above.
 `nosql`/`ldap`, the rest of §6.6's container/orchestration catalog (bare Kubernetes manifests and
-docker-compose), CloudFormation, and step 4's SCA half - now covered in its own paragraph below, since
-it has since landed its npm, Python, Ruby, Java, and PHP slices - all remain open (Go outstanding for
-SCA); do not read this paragraph as "step 4 is done."
+docker-compose), and CloudFormation all remain open; do not read this paragraph as "step 4 is done."
+Step 4's SCA half is covered in its own paragraph below and, with the Go slice, has landed every
+ecosystem `docs/DESIGN.md` §6.5 names - npm, Python, Ruby, Java, PHP, and Go.
 
 **A third piece of step 4 has now landed, in three sub-tickets: `modules/sca/` (the SCA module's npm,
 Python, and Ruby slices).**
@@ -414,8 +458,34 @@ all three ecosystems.
 and RubyGems rows sorted together under `LC_ALL=C` (tension 25's own `look`-compatible sort
 requirement).
 
-Go (`go.mod`/`go.sum`) - the remaining ecosystem `docs/DESIGN.md` §6.5 names - is still open; step 4's
-SCA half is not complete.
+Java (`pom.xml`/`build.gradle`, `a1b3c43`) and PHP/Composer (`composer.lock`, `7e7b186`) landed after
+that paragraph was written, each without updating this section; `ab23b79` went back and corrected the
+"still open" sentences for both.
+
+**The Go slice (`go.mod`/`go.sum`) landed last, and is the first SCA ecosystem to ship as its own
+engine file: `modules/sca/go_engine.sh`.**
+PHP had already broken `engine.sh`'s monopoly with `modules/sca/php_engine.sh`, but PHP's parser is
+still driven from inside `sca_scan_tree`; Go is fully standalone - `sca_go_scan_tree` is its own entry
+point, called from its own `_sca_go_run` in `modules/sca/run.sh`, exactly as that file's own header
+invited a further ecosystem to land ("do not fork this file per ecosystem").
+It parses `go.mod`'s `require` lines (single-line and block form), reading a trailing `// indirect`
+comment as the direct-vs-transitive signal, and falls back to `go.sum` when no `go.mod` sits beside it -
+in which case `dependency_type` is reported **`unknown`**, never guessed.
+`go.mod` wins when both are present in one directory.
+Normalisation follows tension 25's frozen Go row: the `/vN` major-version suffix is **retained** and a
+`+incompatible` version suffix is **stripped** before the `data/advisories.db` lookup, and both halves
+are pinned by a test that fails under the naive opposite reading.
+`replace`/`exclude` directives are **not** resolved - a stated limitation recorded in
+`go_engine.sh`'s own header and surfaced at runtime as a
+`reason=go_replace_exclude_directives_not_resolved` coverage_reduction, not hidden.
+`sca_go_scan_tree` does its own `data/advisories.db`-readable check (unlike `sca_scan_python_tree` and
+`sca_scan_java_tree`, which rely on `_sca_npm_run` having gone first), so `_sca_go_run` carries no
+ordering requirement; it is still called last for a stable emission order.
+Like Python and Java, Go emits its **own** `SCA-COV-UNKNOWN_VERSION-01` roll-up rather than joining
+npm/Ruby/PHP's shared one - the same stated, filed cross-ecosystem-merge gap, not a new one.
+With Go landed, step 4's SCA half covers every §6.5 manifest format; `tests/fixtures/sca/advisories.db`
+now carries `Go` rows alongside `npm`, `pypi`, `RubyGems`, `composer`, and `maven`, all sorted together
+under `LC_ALL=C` (tension 25's `look`-compatible sort requirement).
 
 **A third piece of step 4's IaC half has since landed on top of the Terraform one above:
 `modules/iac/docker-compose.rules` (the "IaC: docker-compose checks via the pattern-rule engine"
@@ -465,22 +535,30 @@ rule pack, and `state/`.
 **Step 3a-3d and 3e then filled in most of that gap**: `modules/sast/` (with `engine.sh`, `run.sh`,
 AND `history.sh` - see above) and its seven rule packs now exist, so `scan_dispatch sast` no longer
 no-ops and `_scan_apply_profile_filter` finds a non-empty registry for SAST checks.
-**The IaC-Terraform, IaC-Helm, and IaC-Dockerfile tickets (see the step 4 paragraph above) then did the
-same for `modules/iac/`**: it now holds `run.sh`, `parse.sh`, `terraform.rules`, `helm.rules`, and
-`dockerfile.rules`, so `scan_dispatch iac` no longer no-ops either and `_scan_apply_profile_filter`
-finds a non-empty registry for IaC checks too - `modules/iac/` is removed from the "do not exist yet"
+**The IaC-Terraform, IaC-Helm, and IaC-Dockerfile tickets (see the step 4 paragraph above), and this
+Kubernetes ticket on top of them, then did the same for `modules/iac/`**: it now holds `run.sh`,
+`parse.sh`, `terraform.rules`, `helm.rules`, `dockerfile.rules`, and `kubernetes.rules`, so
+`scan_dispatch iac` no longer no-ops either and `_scan_apply_profile_filter` finds a non-empty registry
+for IaC checks (including `IAC-K8S-*`) too - `modules/iac/` is removed from the "do not exist yet"
 list below accordingly.
 Everything else in the original list is still true: `modules/dast/`, `modules/cloud/`, `lib/engines.sh`,
 `lib/awscli.sh`, SARIF, the compliance report, and `state/` do not exist yet.
-`modules/sca/` also landed anyway, out of sequence - see above.
+`modules/sca/` also landed anyway, out of sequence - see above - and now holds `run.sh`, `engine.sh`,
+`php_engine.sh`, and `go_engine.sh`.
 Every `scan_dispatch` call for a module other than `sast`, `iac`, or `sca` remains a logged
 `coverage_reduction` no-op (`reason=not_yet_built`); `scan_dispatch sca` is no longer one of them, since
-`modules/sca/run.sh` now does real work for the npm/yarn/pnpm ecosystem.
-`_scan_apply_profile_filter`'s check-registry side is a separate mechanism, though: it loads check ids
-from on-disk `*.rules` files (`checks_registry_load`), and `modules/sca/` ships none - its findings are
-emitted directly by `engine.sh` rather than through the record/pattern-rule mechanism SAST and IaC use -
-so an SCA check set still finds an empty registry (`reason=no_check_registry_on_disk_yet`) even though
-the module itself now runs.
+`modules/sca/run.sh` now does real work for npm/yarn/pnpm, Python, RubyGems, Maven, Composer, and Go.
+`sca` is DIFFERENT from that group in a way worth stating precisely, since it is easy to conflate the
+two separate coverage_reduction mechanisms `scan.sh` has: `scan_dispatch sca` itself no longer no-ops
+(its `reason=not_yet_built` no longer fires - `modules/sca/run.sh` is real), but
+`_scan_apply_profile_filter sca` still records `reason=no_check_registry_on_disk_yet` on every run, and
+always will - by design, not because the module is unbuilt.
+`_scan_apply_profile_filter`'s check-registry side loads check ids from on-disk `*.rules` files
+(`checks_registry_load`), and `modules/sca/` ships none: SCA is a table lookup against
+`data/advisories.db`, not a pattern-rule engine, so it has no `modules/sca/checks.rules` registry to
+ever populate (`modules/sca/run.sh`'s own header states this explicitly) and its findings are emitted
+directly by the engine files instead.
+Both mechanisms are real and tested against fixtures.
 Diff classification (tension 12) and baseline suppression (tension 11 steps 5 and 6) belong to step 7;
 step 1 ships the primitives they call - the merge, the fingerprint, `findings_mark_suppressed`, and
 `classify_derived`, which is pure and already tested against tension 6's whole case table.

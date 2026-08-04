@@ -1,0 +1,22 @@
+# tests/fixtures/vuln/k8s_sa_token.yaml - true-positive fixture for
+# IAC-K8S-SA_TOKEN_DEFAULT-01: no automountServiceAccountToken anywhere, so
+# the default (true) applies.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sa-token-demo
+spec:
+  containers:
+    - name: app
+      image: registry.example.com/app:1.4.2
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        privileged: false
+        runAsNonRoot: true
+      resources:
+        limits:
+          cpu: "500m"
+          memory: "256Mi"
+        requests:
+          cpu: "250m"
+          memory: "128Mi"

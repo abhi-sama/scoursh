@@ -1,0 +1,248 @@
+# modules/iac/kubernetes.rules - Kubernetes manifest checks for the
+# pattern-rule engine (docs/DESIGN.md §13 step 4, §6.6's Kubernetes bullet;
+# this ticket).
+#
+# Path note: same frozen-path reasoning as modules/iac/terraform.rules'
+# own header - rules/RULE-FORMAT.md §9's path table grants the pattern-rule
+# schema to `modules/iac/*.rules` FLAT.  This file is `kubernetes.rules`,
+# never `checks.rules` (reserved repo-wide for the §9.5 script-check schema
+# and matched first in records_schema_for_path) and never nested under a
+# `rules/` subdirectory the way modules/sast/rules/*.rules is.
+#
+# Scope discipline (this ticket's own text): plain Kubernetes YAML/JSON
+# manifests ONLY.  Docker/Dockerfile, docker-compose, Helm chart TEMPLATES,
+# and CloudFormation are explicitly out of scope - §6.6 groups all of those
+# under one `containers.rules` name, but terraform.rules already established
+# the precedent of one flat file per technology rather than the grouped
+# name, and this ticket's acceptance criteria name `modules/iac/kubernetes.rules`
+# specifically.  Docker/compose/Helm-template scanning is future work for a
+# separate ticket; this file's only obligation toward Helm is the negative
+# one - stay silent on a Helm-template-shaped file.
+#
+# `files` intentionally covers *.yaml, *.yml, AND *.json: a Kubernetes
+# manifest is valid in any of the three, and CloudFormation templates and
+# Helm-rendered charts use the exact same extensions - the glob cannot be
+# the thing that tells them apart (this ticket's own acceptance criteria say
+# so explicitly for CloudFormation).  Two different content-based mechanisms
+# do that job instead:
+#
+# 1. CloudFormation exclusion is primarily a STRUCTURAL property of the
+#    patterns themselves, not a context-deny.  Every Kubernetes API field
+#    this pack keys on - `privileged`, `hostNetwork`, `hostPID`, `containers`,
+#    `image`, `resources`, `runAsNonRoot`, `imagePullPolicy`,
+#    `automountServiceAccountToken`, `kind`, `verbs` - is lowerCamelCase in
+#    the Kubernetes API, and matching (§8.2) is case-sensitive.
+#    CloudFormation's equivalent concepts (ECS `ContainerDefinitions`,
+#    `Privileged`, `Image`, IAM `Action`/`Resource`) are PascalCase by AWS-wide
+#    convention, and CFN has no `kind:` field at all (its own top-level keys
+#    are `AWSTemplateFormatVersion`/`Resources`/`Type`).  A pattern anchored on
+#    the exact lowercase spelling therefore never matches CloudFormation
+#    regardless of file extension.  The three ABSENCE checks
+#    (IAC-K8S-MISSING_RESOURCE_LIMITS-01, IAC-K8S-RUN_AS_ROOT-01,
+#    IAC-K8S-SA_TOKEN_DEFAULT-01) additionally carry an
+#    `AWSTemplateFormatVersion|AWS::` context-deny as belt-and-suspenders,
+#    since an absence check fires on the ABSENCE of a nearby token and a
+#    second, independent signal costs nothing once the record already has a
+#    context-window open for the Helm guard below.
+#
+# 2. Helm chart TEMPLATE exclusion is a `\{\{` context-deny on the three
+#    absence checks above.  A Helm template replaces literal risk values
+#    with `{{ .Values.x }}` expressions, so the five PRESENCE checks
+#    (privileged, host-namespace, secret-env, mutable-tag, RBAC-wildcard)
+#    are already immune - there is no literal `true`/`:latest`/bare `"*"` for
+#    them to match once the value is templated.  The three ABSENCE checks
+#    are the genuine risk: they fire when a literal guard token is missing
+#    nearby, and a Helm template's guard token is ALSO missing (it is
+#    templated, not literal), which would otherwise be a false positive on
+#    every Helm-rendered chart.  The `\{\{` deny suppresses exactly that
+#    case, on the same window already open for the guard token itself.
+#
+# Both mechanisms are line-oriented and window-bounded (rules/RULE-FORMAT.md
+# §10, context-window capped at 50 by E032), consistent with the rest of
+# this pattern-rule engine - this is not a YAML/JSON parser, so a minified
+# single-line JSON document (the entire manifest as one line) is a known,
+# documented gap rather than a silent one, exactly like the KMS
+# key-rotation absence check in terraform.rules already accepts a bounded
+# window over a hypothetical arbitrarily-long resource block.  Field names
+# are matched with an optional surrounding quote (`"?name"?`) so the same
+# pattern covers both YAML's usually-unquoted keys and JSON's always-quoted
+# ones.
+#
+# Each absence check's W033 warning (context-deny with context-window above
+# 0) is the same accepted, reviewed trade-off IAC-TF-KEY_ROTATION_DISABLED-01
+# already carries: the window must be wide enough to reach the rest of a
+# short manifest, and docs/FOUNDATION.md finding F4 (§10.2) already covers
+# the reasoning for taking that trade knowingly rather than avoiding the
+# warning by narrowing the window until the check no longer works.
+
+id: IAC-K8S-PRIVILEGED-01
+title: Container runs with privileged escalation enabled
+severity: critical
+confidence: high
+cwe: CWE-269
+owasp: A05:2021
+pattern: ^\s*"?privileged"?\s*:\s*"?true"?\b
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+tags: static
+tags: compliance
+remediation: Remove `privileged: true` from the container's securityContext.
+  A privileged container has near-complete access to the host - device nodes, kernel
+  capabilities, and namespaces - so almost every real workload can run instead with a
+  narrow, explicit `capabilities.add` list for only the capability it actually needs.
+references: CWE-269
+
+id: IAC-K8S-HOST_NAMESPACE-01
+title: Pod shares the host network or PID namespace
+severity: high
+confidence: high
+cwe: CWE-284
+owasp: A05:2021
+pattern: ^\s*"?(hostNetwork|hostPID)"?\s*:\s*"?true"?\b
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+tags: static
+tags: compliance
+remediation: Set hostNetwork and hostPID to false (or omit them; both default to false).
+  A pod in the host's network namespace can sniff and spoof traffic for every other pod on
+  the node, and one in the host PID namespace can see and signal every process on the
+  node, including other tenants' workloads.
+references: CWE-284
+
+id: IAC-K8S-MISSING_RESOURCE_LIMITS-01
+title: Container has no resource limits or requests
+severity: medium
+confidence: medium
+cwe: CWE-400
+owasp: A05:2021
+pattern: ^\s*"?image"?\s*:\s*\S+
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+context-deny: ^\s*"?resources"?\s*:
+context-deny: \{\{
+context-deny: AWSTemplateFormatVersion|AWS::
+context-window: 20
+tags: static
+remediation: Add a resources block with both limits and requests for cpu and memory.
+  A container with no ceiling can starve every other workload on the node (or be starved
+  by one), and the scheduler cannot bin-pack a pod whose requests are unset.
+references: CWE-400
+
+id: IAC-K8S-RUN_AS_ROOT-01
+title: Container has no explicit non-root execution guard
+severity: medium
+confidence: medium
+cwe: CWE-269
+owasp: A05:2021
+pattern: ^\s*"?containers"?\s*:
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+context-deny: "?runAsNonRoot"?\s*:\s*"?true"?\b
+context-deny: \{\{
+context-deny: AWSTemplateFormatVersion|AWS::
+context-window: 20
+tags: static
+remediation: Set securityContext.runAsNonRoot to true (and pair it with a non-zero
+  runAsUser) at the pod or container level. Without it, the container image's own
+  default user applies, which for most public base images is root - a container
+  breakout then lands the attacker in the host's root context rather than an
+  unprivileged one.
+references: CWE-269
+
+id: IAC-K8S-SECRET_ENV-01
+title: Plaintext credential-shaped literal in a container environment variable
+severity: critical
+confidence: medium
+cwe: CWE-798
+owasp: A07:2021
+pattern: ^\s*"?value"?\s*:\s*["'][^"'[:space:]]{4,}["']\s*,?\s*$
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+context-require: "?name"?\s*:\s*"?[A-Za-z0-9_]*(PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|CREDENTIAL)[A-Za-z0-9_]*"?
+context-deny: (CHANGEME|changeme|EXAMPLE|example|XXXXXXXX|xxxxxxxx|placeholder|dummy)
+context-deny: \{\{
+context-window: 1
+tags: static
+remediation: Remove the literal value and source it via valueFrom.secretKeyRef (backed by
+  a Kubernetes Secret, ideally itself populated from Vault/AWS Secrets Manager/SSM rather
+  than committed) instead of a literal `value:` in the manifest. A value literal in a
+  manifest lands in git history and in `kubectl get -o yaml` for anyone with read access
+  to the resource.
+references: CWE-798
+
+id: IAC-K8S-MUTABLE_TAG-01
+title: Container image pinned to the mutable :latest tag
+severity: medium
+confidence: high
+cwe: CWE-494
+owasp: A08:2021
+pattern: ^\s*"?image"?\s*:\s*"?\S*:latest\b
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+context-deny: \{\{
+context-window: 0
+tags: static
+tags: compliance
+remediation: Pin the image to an immutable reference - a specific semver tag the registry
+  will not overwrite, or better, a content-addressed digest (`@sha256:...`). `:latest`
+  (or no tag at all, which defaults to it) means the same manifest can deploy a different
+  image tomorrow with no corresponding change to review, and a rollback cannot pin to
+  "what was actually running."
+references: CWE-494
+
+id: IAC-K8S-RBAC_WILDCARD-01
+title: RBAC rule grants a wildcard verb or resource
+severity: high
+confidence: high
+cwe: CWE-269
+owasp: A01:2021
+pattern: ^\s*-?\s*['"]\*['"]\s*,?\s*$
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+context-require: "?(verbs|resources)"?\s*:
+context-window: 3
+tags: static
+tags: compliance
+remediation: Enumerate the specific verbs (get, list, watch, ...) and resource types the
+  role actually needs instead of `"*"`. A wildcarded Role or ClusterRole grants every
+  future API type and every future verb Kubernetes ever adds, not just the ones that
+  exist today, so the blast radius of a compromised service account grows with every
+  Kubernetes upgrade.
+references: CWE-269
+
+id: IAC-K8S-SA_TOKEN_DEFAULT-01
+title: Pod does not disable automatic service-account token mounting
+severity: medium
+confidence: medium
+cwe: CWE-269
+owasp: A01:2021
+pattern: ^\s*"?kind"?\s*:\s*"?(Pod|Deployment|StatefulSet|DaemonSet|ReplicaSet|Job|CronJob)"?\b
+dialect: ere
+files: *.yaml
+files: *.yml
+files: *.json
+context-deny: "?automountServiceAccountToken"?\s*:\s*"?false"?\b
+context-deny: \{\{
+context-deny: AWSTemplateFormatVersion|AWS::
+context-window: 20
+tags: static
+remediation: Set automountServiceAccountToken to false on the pod spec (or the
+  ServiceAccount) unless the workload genuinely calls the Kubernetes API. The default is
+  true, so every pod otherwise carries a live, mountable credential for its service
+  account into a container that most workloads never use it from - exactly what a
+  container-escape or SSRF exploit looks for next.
+references: CWE-269
