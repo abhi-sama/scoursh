@@ -1,0 +1,22 @@
+# tests/fixtures/vuln/k8s_mutable_tag.yaml - true-positive fixture for
+# IAC-K8S-MUTABLE_TAG-01: image pinned to the mutable :latest tag.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mutable-tag-demo
+spec:
+  automountServiceAccountToken: false
+  containers:
+    - name: app
+      image: registry.example.com/app:latest
+      imagePullPolicy: Always
+      securityContext:
+        privileged: false
+        runAsNonRoot: true
+      resources:
+        limits:
+          cpu: "500m"
+          memory: "256Mi"
+        requests:
+          cpu: "250m"
+          memory: "128Mi"

@@ -4,7 +4,8 @@
 # (§13 step 4's container half, the "IaC: Helm chart checks via the
 # pattern-rule engine" ticket), dockerfile.rules (§13 step 4's container
 # half, the "IaC: Dockerfile checks via the pattern-rule engine" ticket),
-# and docker-compose.rules (§13 step 4's container half, this ticket).
+# docker-compose.rules (§13 step 4's container half), and kubernetes.rules
+# (§13 step 4's container half, this ticket).
 #
 # Modeled on tests/suites/sast.sh's go.rules section (§13 step 3c precedent):
 # one true-positive fixture per rule id under tests/fixtures/vuln/, one
@@ -13,9 +14,10 @@
 # real end-to-end shape - each pack's own `files:` glob (`*.tf` for
 # terraform.rules; `values.yaml` / `templates/*.yaml` for helm.rules;
 # `Dockerfile`/`Dockerfile.*`/`*.dockerfile` for dockerfile.rules;
-# `docker-compose*.y*ml` / `compose*.y*ml` for docker-compose.rules) is what
-# does the filtering out of the fixtures that belong to a different pack (or,
-# for dockerfile.rules' docker-compose.yml/helm fixtures below, to no pack at
+# `docker-compose*.y*ml` / `compose*.y*ml` for docker-compose.rules;
+# `*.yaml`/`*.yml`/`*.json` for kubernetes.rules) is what does the filtering
+# out of the fixtures that belong to a different pack (or, for
+# dockerfile.rules' docker-compose.yml/helm fixtures below, to no pack at
 # all).
 #
 # Covers the terraform.rules ticket's acceptance criteria:
@@ -64,6 +66,18 @@
 #     docker-compose, Kubernetes-shaped, Helm-shaped) never lets an
 #     IAC-COMPOSE-* id attach to the non-compose files or an IAC-TF-* id
 #     attach to the non-Terraform files - the "double-fire" section
+#
+# Covers this (Kubernetes manifest checks) ticket's acceptance criteria, in
+# the "kubernetes.rules: true-positive AND true-negative" section below:
+#   - each IAC-K8S-* id fires on its own tests/fixtures/vuln/k8s_*.yaml
+#     fixture and stays quiet across the WHOLE tests/fixtures/clean/ tree
+#   - zero IAC-K8S-* findings on tests/fixtures/iac/helm/ (a Helm chart
+#     TEMPLATE, {{ }} directives, never rendered) and on
+#     tests/fixtures/iac/cloudformation/ (AWSTemplateFormatVersion/AWS::
+#     types), even though both share kubernetes.rules' own files glob
+#   - `scan.sh iac`'s checks_run names every IAC-K8S-* id alongside the
+#     IAC-TF-*/IAC-HELM-*/IAC-DOCKER-* ones, proving kubernetes.rules is
+#     registered, not merely present on disk
 #
 # Every case that pins a decision names the reading it FAILS under, per
 # AGENTS.md's testing rule.
@@ -460,9 +474,67 @@ assert_not_contains "$_mixed_pairs" '@tests/fixtures/iac-scope/values.yaml' \
 unset _mixed_pairs _pair _bad_compose_on_tf _bad_tf_on_compose
 
 # =============================================================================
+printf -- '\n-- kubernetes.rules: true-positive AND true-negative, per rule id (this ticket) --\n'
+# =============================================================================
+# Same shape as the terraform.rules section above: one true-positive fixture
+# per rule id under tests/fixtures/vuln/k8s_*.yaml, one true-negative
+# (hardened) fixture per rule id under tests/fixtures/clean/k8s_*.yaml, both
+# directories scanned wholesale - modules/iac/kubernetes.rules' own
+# `files: *.yaml`/`*.yml`/`*.json` glob does the filtering, and every
+# tests/fixtures/clean/k8s_*.yaml fixture is hardened against ALL eight
+# checks (not merely its own), because the assertions below scan the whole
+# directory and would otherwise see cross-fire from an unrelated fixture.
+K8S_IDS='IAC-K8S-PRIVILEGED-01 IAC-K8S-HOST_NAMESPACE-01 IAC-K8S-MISSING_RESOURCE_LIMITS-01 IAC-K8S-RUN_AS_ROOT-01 IAC-K8S-SECRET_ENV-01 IAC-K8S-MUTABLE_TAG-01 IAC-K8S-RBAC_WILDCARD-01 IAC-K8S-SA_TOKEN_DEFAULT-01'
+
+_scan_one_pack kubernetes "$ROOT/tests/fixtures/vuln" "$W/run-k8s-vuln"
+_k8s_vuln_found=$(_ids_found "$W/run-k8s-vuln")
+for _want_id in $K8S_IDS; do
+  t_case "kubernetes: $_want_id true-positive detection"
+  assert_contains "$_k8s_vuln_found" "$_want_id" \
+    "$_want_id fires on its tests/fixtures/vuln/k8s_*.yaml fixture - fails if the pattern, files glob, or context directive silently drops the match"
+done
+
+_scan_one_pack kubernetes "$ROOT/tests/fixtures/clean" "$W/run-k8s-clean"
+_k8s_clean_found=$(_ids_found "$W/run-k8s-clean")
+for _safe_id in $K8S_IDS; do
+  t_case "kubernetes: $_safe_id stays quiet on its safe equivalent"
+  assert_not_contains "$_k8s_clean_found" "$_safe_id" \
+    "$_safe_id does NOT fire anywhere under tests/fixtures/clean/ - fails if the safe rewrite still matches the pattern (a true-negative fixture that isn't actually negative), or if it fires on an UNRELATED clean fixture (the hardened-template assumption breaking)"
+done
+
+t_case 'every finding the kubernetes pack emits carries module=iac, not module=sast'
+_k8s_vuln_modules=$(_modules_found "$W/run-k8s-vuln")
+assert_not_contains "$_k8s_vuln_modules" 'sast' \
+  'no finding from this run reports module=sast'
+assert_contains "$_k8s_vuln_modules" 'iac' \
+  'at least one finding reports module=iac - sanity check that the assertion above is not vacuously true on an empty run'
+
+# ---------------------------------------------------------------------------
+# Scope guards: Helm chart TEMPLATES and CloudFormation must never contribute
+# an IAC-K8S-* finding, even though each fixture below shares the exact same
+# files glob (*.yaml/*.yml/*.json) that a real Kubernetes manifest uses - the
+# ticket's own acceptance criteria call this out as the case a files-glob-only
+# distinction cannot cover. Scanned as two SEPARATE directories (not one
+# combined tests/fixtures/iac/ tree) so a failure names which shape tripped.
+# ---------------------------------------------------------------------------
+_scan_one_pack kubernetes "$ROOT/tests/fixtures/iac/helm" "$W/run-k8s-helm-guard"
+_k8s_helm_found=$(_ids_found "$W/run-k8s-helm-guard")
+t_case 'kubernetes.rules: zero IAC-K8S-* findings on the Helm-template-shaped fixture ({{ }} directives)'
+assert_not_contains "$_k8s_helm_found" 'IAC-K8S-' \
+  'no IAC-K8S-* id fired on the Helm-template fixture - fails if a literal true/false/latest/wildcard token were matched through a {{ ... }} template expression, or if an absence check fired because its guard token was templated rather than literal'
+
+_scan_one_pack kubernetes "$ROOT/tests/fixtures/iac/cloudformation" "$W/run-k8s-cfn-guard"
+_k8s_cfn_found=$(_ids_found "$W/run-k8s-cfn-guard")
+t_case 'kubernetes.rules: zero IAC-K8S-* findings on the CloudFormation-shaped fixture (AWSTemplateFormatVersion/AWS:: types)'
+assert_not_contains "$_k8s_cfn_found" 'IAC-K8S-' \
+  'no IAC-K8S-* id fired on the CloudFormation-shaped fixture - fails if a pattern keyed on Kubernetes lowerCamelCase vocabulary also matched CloudFormations PascalCase equivalent (a case-sensitivity regression), or if an anchor as generic as image:/containers:/kind: matched CloudFormations differently-named/differently-cased keys'
+
+unset K8S_IDS _k8s_vuln_found _k8s_clean_found _want_id _safe_id _k8s_vuln_modules _k8s_helm_found _k8s_cfn_found
+
+# =============================================================================
 printf -- '\n-- check selection integration: scan_dispatch iac is no longer a no-op --\n'
 # =============================================================================
-t_case 'scan.sh iac tests/fixtures/vuln records every IAC-TF-*/IAC-HELM-*/IAC-DOCKER-* id as actually run'
+t_case 'scan.sh iac tests/fixtures/vuln records every IAC-TF-*/IAC-HELM-*/IAC-DOCKER-*/IAC-K8S-* id as actually run'
 rm -rf "$W/run-checks"
 bash "$ROOT/scan.sh" iac --path "$ROOT/tests/fixtures/vuln" --out "$W/run-checks" >/dev/null 2>&1
 _checks_run=$(cat "$W/run-checks/meta/checks_run" 2>/dev/null || true)
@@ -471,8 +543,10 @@ for _id in IAC-TF-OPEN_CIDR-01 IAC-TF-PUBLIC_ACL-01 IAC-TF-UNENCRYPTED-01 \
   IAC-TF-RDS_PUBLIC-01 IAC-HELM-HOST_PORT-01 IAC-HELM-HOST_MOUNT-01 \
   IAC-HELM-HARDCODED_SECRET-01 IAC-DOCKER-ROOT_USER-01 IAC-DOCKER-LATEST_TAG-01 \
   IAC-DOCKER-SECRET_ENV-01 IAC-DOCKER-REMOTE_ADD-01 IAC-DOCKER-PIPE_TO_SHELL-01 \
-  IAC-DOCKER-UNPINNED_DIGEST-01; do
-  t_case "scan.sh iac: $_id is recorded in checks_run - fails if scan_dispatch iac still took the 'no run.sh yet' no-op path, or if the real on-disk registry loader (checks_registry_load) did not pick up modules/iac/helm.rules and modules/iac/dockerfile.rules alongside terraform.rules"
+  IAC-DOCKER-UNPINNED_DIGEST-01 IAC-K8S-PRIVILEGED-01 IAC-K8S-HOST_NAMESPACE-01 \
+  IAC-K8S-MISSING_RESOURCE_LIMITS-01 IAC-K8S-RUN_AS_ROOT-01 IAC-K8S-SECRET_ENV-01 \
+  IAC-K8S-MUTABLE_TAG-01 IAC-K8S-RBAC_WILDCARD-01 IAC-K8S-SA_TOKEN_DEFAULT-01; do
+  t_case "scan.sh iac: $_id is recorded in checks_run - fails if scan_dispatch iac still took the 'no run.sh yet' no-op path, or if the real on-disk registry loader (checks_registry_load) did not pick up modules/iac/helm.rules, modules/iac/dockerfile.rules, and modules/iac/kubernetes.rules alongside terraform.rules"
   assert_contains "$_checks_run" "$_id" "$_id present in $W/run-checks/meta/checks_run"
 done
 unset _checks_run _id

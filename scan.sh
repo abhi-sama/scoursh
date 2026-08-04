@@ -123,6 +123,8 @@ source "$SCOURSH_SCAN_SH_DIR/lib/report.sh"
 source "$SCOURSH_SCAN_SH_DIR/lib/config.sh"
 # shellcheck source=lib/checks.sh
 source "$SCOURSH_SCAN_SH_DIR/lib/checks.sh"
+# shellcheck source=lib/paranoid.sh
+source "$SCOURSH_SCAN_SH_DIR/lib/paranoid.sh"
 
 # -----------------------------------------------------------------------------
 # 2. The §5 grammar, encoded as data rather than a chain of if/elif.
@@ -219,7 +221,13 @@ Commands:
 
 Global:
   --profile-scan quick|full|compliance   (default: full - see lib/checks.sh)
-  --paranoid
+  --paranoid                (connection DETECTOR, not a guarantee - aborts
+                              (exit 3) on the first connection outside the
+                              run's allowlist; exits 4 if neither `ss` nor a
+                              usable `strace` is available. A sufficiently
+                              short-lived connection can still evade
+                              detection - tools/run-in-netns.sh is the actual
+                              guarantee. See docs/FOUNDATION.md tension 20.)
   --allow-intrusive
   --jobs N
   --format json,sarif,html,md
@@ -584,6 +592,16 @@ scan_main() {
   export SCOURSH_JOBS SCOURSH_FAIL_ON SCOURSH_MIN_CONFIDENCE SCOURSH_REDACT_SECRETS
   config_scanner_list formats "${SCAN_FLAGS[format]:-}" >/dev/null
 
+  # 8b. --paranoid (docs/FOUNDATION.md tension 20; lib/paranoid.sh): attached
+  # AFTER config is loaded (paranoid_allow, the fourth allowlist set, comes
+  # from scanner.conf) and BEFORE any module dispatch, so the observer is
+  # watching for the very first connection any module could make.  Dies
+  # exit 4 on its own (SCOURSH_EXIT_INPUT) when neither `ss` nor a usable
+  # `strace` is available - see lib/paranoid.sh's paranoid_attach.
+  if [[ ${SCAN_FLAGS[paranoid]:-} == true ]]; then
+    paranoid_attach
+  fi
+
   local incomplete=0 gate=0 path
 
   case $SCAN_COMMAND in
@@ -668,6 +686,14 @@ scan_main() {
   export SCOURSH_SELECTED_CHECKS
   SCOURSH_GATE_RESULT=${SCOURSH_GATE_RESULT:-not-evaluated}
   export SCOURSH_GATE_RESULT
+
+  # A violation aborts via paranoid_on_violation's own die() (exit 3) and
+  # never reaches here; reaching this point means the run's observer, if
+  # any, found nothing out of scope for its entire duration.
+  if [[ -n $PARANOID_SAMPLER_PID ]]; then
+    paranoid_detach
+  fi
+
   report_run_json "$SCOURSH_RUN_DIR"
 
   local code

@@ -150,6 +150,41 @@ Because `checks_registry_load` (`lib/checks.sh`) globs every `*.rules` file unde
 no per-pack allowlist, all three IaC packs load together on any `scan.sh iac` run - `tests/suites/iac.sh`
 now scans `IAC-TF-*`, `IAC-HELM-*`, AND `IAC-DOCKER-*` ids in its `checks_run` integration section.
 
+**Step 4's IaC half has also started landing, out of the strict step order and ahead of step 3's
+`nosql`/`ldap` packs and of SCA (`docs/DESIGN.md` §13 groups SCA and IaC into one step 4, "both reuse the
+rule engine") - this is not step 4 being done, only its IaC half being under way.**
+Two tickets have landed on `modules/iac/` so far:
+
+- The Terraform ticket (commit `5de4460`, "IaC: Terraform checks via the pattern-rule engine") shipped
+  the shared IaC scaffolding - `modules/iac/run.sh` (the `scan_dispatch iac` entry point, reusing
+  `modules/sast/engine.sh`'s `sast_evaluate_gate` and `sast_index_checks` unchanged rather than forking
+  an IaC-specific copy) and `modules/iac/parse.sh` (`iac_scan_file`/`iac_scan_tree`, the same two-pass
+  design as `sast_scan_file` with only the finding-emission path forked so `module` reads `iac`) - plus
+  `modules/iac/terraform.rules` (seven `IAC-TF-*` checks: open CIDR, public ACL, unencrypted-at-rest,
+  KMS key rotation disabled, public IP, hardcoded secret, RDS publicly accessible), scoped to `*.tf`
+  only.
+  This ticket landed without this section (or `docs/FOUNDATION.md`'s mirror) being updated - the same
+  process-note failure §13 step 3e's own paragraph below already documents for `history.sh` - so
+  `modules/iac/` existing was rediscovered by the next ticket reading the tree rather than the docs;
+  this section and its mirror are corrected here to close that gap, which is what this paragraph and the
+  process note above exist to keep from recurring.
+- This ticket ("IaC: Kubernetes manifest checks via the pattern-rule engine") shipped
+  `modules/iac/kubernetes.rules`: eight `IAC-K8S-*` checks (privileged containers, host
+  network/PID namespace sharing, missing resource limits/requests, `runAsNonRoot` unset, plaintext
+  secrets in env vars, the mutable `:latest` image tag, wildcard RBAC verbs/resources, and
+  `automountServiceAccountToken` left at its default), scoped to plain Kubernetes YAML/JSON manifests
+  and reusing `modules/iac/run.sh`/`parse.sh` unchanged (they were already technology-agnostic).
+  Helm chart templates and CloudFormation templates are explicitly excluded by design - see the pack's
+  own header comment for the case-sensitivity (Kubernetes' lowerCamelCase field names versus
+  CloudFormation's PascalCase) and `context-deny` (`\{\{` for Helm, `AWSTemplateFormatVersion|AWS::` for
+  CloudFormation, on the three absence-style checks) mechanisms that keep it out of scope for those two
+  shapes even though the file glob overlaps.
+
+Step 4 as a whole is still **not** done: SCA (lockfile parsing -> `advisories.db`) has not started, and
+`docs/DESIGN.md` §6.6's Docker/docker-compose/Helm-**rendered**-chart checks and §8.2's CloudFormation
+checks remain separate, unstarted IaC sub-scopes - `modules/iac/` currently holds only
+`terraform.rules` and `kubernetes.rules`.
+
 **Step 5 (DAST) now has a written, dependency-ordered sub-ticket plan, but is not started.**
 `docs/STEP5-DAST-PLAN.md` breaks the ~30-script step 5 scope into tickets DAST-01 through DAST-30,
 ordered per `docs/DESIGN.md` §13's own `lib/http.sh -> auth.sh -> crawl.sh -> passive -> safe-active ->
@@ -159,6 +194,8 @@ limiter/budget/breaker piece (DAST-01) and everything under `modules/dast/` rema
 **No DAST-0x ticket is picked up until step 3's `nosql`/`ldap` rule packs (above) and step 4's SCA half
 (above - IaC's own half has started, SCA's has not) are both complete on `dev`** - this plan is a
 written breakdown for later, not permission to start now.
+(Step 4's IaC half is a separate sub-scope and has already begun landing - see above - but that does not
+lift this gate, which names SCA specifically.)
 
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01 has
 not.**
@@ -206,6 +243,30 @@ scope for that reason. **No CLOUD-0x or POSTURE-0x ticket is picked up until ste
 `nosql`/`ldap` packs, step 4 (SCA + IaC), and step 5 (DAST) are all complete on `dev`** - step 6 is
 gated on the whole sequential chain in front of it, not just step 4, and this plan is a written
 breakdown for later, not permission to start now.
+
+**PARANOID-01 has now landed - `lib/paranoid.sh` implements `--paranoid` for real.**
+It builds the four-set allowlist tension 20's RESOLUTION specifies (`paranoid_allowlist_build`).
+It attaches a connection sampler (`ss`, or a measured-usable `strace -f -e trace=connect` fallback -
+`paranoid_probe_backend`), aborts the run with exit `3` (`SCOURSH_EXIT_SCOPE`) on the first observed
+destination outside that allowlist, and exits `4` (`SCOURSH_EXIT_INPUT`) when neither backend is
+available or permitted.
+It is wired into `scan.sh`'s `scan_main` right after config loads and before any module dispatch.
+`tests/suites/paranoid.sh` is the deterministic no-egress fixture tension 20 calls for.
+`SCOURSH_PARANOID_FORCE_BACKEND`/`SCOURSH_PARANOID_SAMPLE` stand in for the ss/strace probe and the
+sampler itself (the same swappable-hook idiom `lib/http.sh`'s `SCOURSH_HTTP_RESOLVE`/
+`SCOURSH_HTTP_TRANSPORT` already use).
+So the suite never depends on `ss`/`strace` actually being installed - both are Linux-only, and this
+project's CI matrix runs macOS too.
+One correction surfaced while building this ticket, recorded in full in `docs/FOUNDATION.md` tension
+20's own "Implementation" paragraph: the observer and the abort's kill action are scoped to the
+DESCENDANT-PROCESS FAMILY rooted at the main `scan.sh` pid, not the raw OS process group tension 20's
+prose names.
+A plain `cmd &` never changes pgid, so scoping to the real process group would have let a violation's
+`kill -TERM` reach unrelated processes sharing that group by accident - measured directly: it took out
+this project's own test harness before the fix.
+`tools/run-in-netns.sh` (NETNS-01) is **not** implemented by this ticket, exactly as
+`docs/STEP8-PARANOID-PLAN.md` scoped it - it remains a separate, independently-schedulable,
+root-requiring ticket.
 
 **Step 3a-3d shipped the SAST module's rule packs and engine.**
 Four tickets landed, in this order:
@@ -421,10 +482,11 @@ rule pack, and `state/`.
 **Step 3a-3d and 3e then filled in most of that gap**: `modules/sast/` (with `engine.sh`, `run.sh`,
 AND `history.sh` - see above) and its seven rule packs now exist, so `scan_dispatch sast` no longer
 no-ops and `_scan_apply_profile_filter` finds a non-empty registry for SAST checks.
-**The IaC-Terraform, IaC-Helm, and IaC-Dockerfile tickets (see the step 4 paragraph above) then did the
-same for `modules/iac/`**: it now holds `run.sh`, `parse.sh`, `terraform.rules`, `helm.rules`, and
-`dockerfile.rules`, so `scan_dispatch iac` no longer no-ops either and `_scan_apply_profile_filter`
-finds a non-empty registry for IaC checks too - `modules/iac/` is removed from the "do not exist yet"
+**The IaC-Terraform, IaC-Helm, and IaC-Dockerfile tickets (see the step 4 paragraph above), and this
+Kubernetes ticket on top of them, then did the same for `modules/iac/`**: it now holds `run.sh`,
+`parse.sh`, `terraform.rules`, `helm.rules`, `dockerfile.rules`, and `kubernetes.rules`, so
+`scan_dispatch iac` no longer no-ops either and `_scan_apply_profile_filter` finds a non-empty registry
+for IaC checks (including `IAC-K8S-*`) too - `modules/iac/` is removed from the "do not exist yet"
 list below accordingly.
 Everything else in the original list is still true: `modules/dast/`, `modules/cloud/`, `lib/engines.sh`,
 `lib/awscli.sh`, SARIF, the compliance report, and `state/` do not exist yet.

@@ -1,0 +1,13 @@
+# tests/fixtures/vuln/k8s_rbac_wildcard.yaml - true-positive fixture for
+# IAC-K8S-RBAC_WILDCARD-01: a ClusterRole granting wildcard verbs/resources.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rbac-wildcard-demo
+rules:
+  - apiGroups:
+      - "*"
+    resources:
+      - "*"
+    verbs:
+      - "*"
