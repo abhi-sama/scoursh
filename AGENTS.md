@@ -358,6 +358,37 @@ this project's own test harness before the fix.
 `docs/STEP8-PARANOID-PLAN.md` scoped it - it remains a separate, independently-schedulable,
 root-requiring ticket.
 
+**Step 9 (optional engine adapters) now has a real scaffold, out of its normal sequence and ahead of
+step 3's remaining `nosql`/`ldap` packs, step 5 (DAST), and step 6 (Cloud) - it shipped no per-engine
+logic and cost nothing those blocked steps.**
+`docs/ADAPTERS.md` is the new normative, self-contained convention document (the same role
+`rules/RULE-FORMAT.md` plays for records): it defines the `modules/<module>/adapters/<engine>/`
+directory shape and the three-function `adapter.sh` contract (`<engine>_detect`/`<engine>_run`/
+`<engine>_normalize`), generalizing `docs/DESIGN.md` §3/§6.4's SAST-only `adapters/` diagram to any
+module - `docs/FOUNDATION.md` Tension 27 records that generalization as a deliberate extension, not a
+correction, since DESIGN.md is preserved verbatim and is never edited to match it. It points at
+`rules/RULE-FORMAT.md` §9.1.1a for the check-id convention (`<engine>:<engine's own rule id>`) rather
+than inventing a second one.
+`tools/vendor-engines.sh` now exists as a real, runnable script - `docs/DESIGN.md` §9/§13 step 9's "only
+script permitted to reach the network" - with a genuinely empty engine registry (`VENG_REGISTRY`):
+`--help`, `--list`, `--all`, and vendoring a named engine all work today, and every one of those paths
+is exercised as a real subprocess in `tests/suites/vendor-engines.sh`, run with `curl`/`wget` absent
+from `PATH` so an accidental fetch attempt fails loudly rather than silently reaching the network. It is
+never called during a scan; `tests/lint-shell.sh` gained two checks enforcing that in both directions -
+`tools/vendor-engines.sh` is now exempted (alongside `lib/http.sh`) from the tension-19 "no bare
+curl/wget" check, and a new tension-27 check fails the build if anything under `lib/`, `modules/`, or
+`scan.sh` sources, execs, or evals `tools/vendor-engines.sh` by name.
+**What this ticket deliberately did not build**, so the boundary is not rediscovered: `lib/engines.sh`
+and `has_engine()` (named in `docs/DESIGN.md`'s directory layout but not step 9's - the first concrete
+adapter ticket builds them together with its own adapter, mirroring how `--paranoid`'s flag landed with
+its first real enforcement), the `--use-engines` flag, and `tools/vendor-engines.sh`'s *second*,
+unrelated responsibility that `docs/FOUNDATION.md` tension 25 already committed it to - regenerating
+`data/advisories.db`/`data/versions.db` from each SCA ecosystem's real tooling. That responsibility is
+real and already designed, but it is SCA work, not an engine adapter, and this ticket's own acceptance
+criteria scoped it out ("adds no per-engine logic itself, only the scaffold"). Zero adapter directories
+exist anywhere in the tree; the full suite (`tests/run-tests.sh`) passes with none present, which is
+the concrete proof that no adapter is required for `scoursh` to run, not merely an assertion.
+
 **Step 3a-3d shipped the SAST module's rule packs and engine.**
 Four tickets landed, in this order:
 

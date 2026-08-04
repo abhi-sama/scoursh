@@ -3525,6 +3525,134 @@ its values are marked secret at the schema level so `redact` (tension 9) covers 
 
 ---
 
+## Tension 27 - optional engine adapters: quarantine and convention
+
+**The tension.**
+`docs/DESIGN.md` §9 offers a second, opt-in tier on top of the native pattern engine: drop a vendored
+`semgrep`/`gitleaks` binary plus a local ruleset into `adapters/`, run it fully offline, and merge its
+findings with the native ones. §3's tree diagram and §6.4 describe this only under `modules/sast/`; §6.6
+separately invites "the same pattern" for IaC engines (`checkov`/`tfsec`/`trivy config`); §13 step 9
+names `tools/vendor-engines.sh` as the mechanism that populates `adapters/` in the first place, "the
+*only* script that touches the internet... never called during a scan... clearly quarantined." None of
+that is a directory convention, an interface contract, or an enforcement mechanism yet - it is prose
+describing a shape, not a shape a second engine's ticket could implement without guessing, and "clearly
+quarantined" is not, on its own, something CI can fail a build over.
+
+**Why it bites.**
+Three separate failure modes, all avoidable only by deciding the shape before the first adapter, not
+after:
+
+1. Without a frozen interface contract, the first two adapter tickets (say, `semgrep` for SAST and
+   `checkov` for IaC) would each invent their own function names, their own detect/run/normalize split,
+   and their own error-handling convention, and nothing would catch the divergence until a third ticket
+   tried to write code that treats adapters uniformly and discovered there were two incompatible shapes
+   to support.
+2. Without a single, actually-enforced "only script that touches the internet," the guarantee is a
+   sentence in a document rather than a property of the repository. A future adapter ticket, under
+   deadline pressure, could plausibly have its `adapter.sh` reach out and fetch its own ruleset "just
+   this once" - `docs/FOUNDATION.md` tension 19's own "no bypass" check does not know `adapters/` exists
+   yet, so nothing would stop it.
+3. Without an explicit "adapters are optional" proof, an operator or a future maintainer reading the
+   code cannot tell whether `scoursh` still runs, unmodified, with zero engines vendored - which is the
+   entire point of "native (default): zero deps, fully air-gapped" in §9's own two-tier framing.
+
+**Options considered.**
+
+1. *Defer the whole scaffold until the first concrete adapter ticket, and let it define the convention
+   ad hoc.*
+   Rejected: this is exactly failure mode 1 above, and it is the same mistake `docs/FOUNDATION.md`
+   already paid for once, in a different shape - `rules/RULE-FORMAT.md` exists precisely because
+   deferring "what does a record look like" to the first rule pack produced a pipe-delimited format that
+   broke on its own catalog's regexes (tension 1).
+2. *Fold the adapter convention into `rules/RULE-FORMAT.md` itself, as a new schema.*
+   Rejected: `rules/RULE-FORMAT.md` §9.1.1a already draws the correct line - an adapter check id is
+   "not a record file; produced at runtime by a vendored engine... never linted, since no record
+   declares it." Adapters are executable bash, not data; putting them in the frozen record format would
+   contradict the format's own reason to exist (tension 26: "record files are data, never code").
+3. *One convention document (this scaffold), plus a lint that makes the quarantine a checked property
+   rather than a comment.* **Chosen.**
+
+**RESOLUTION.**
+
+`docs/ADAPTERS.md` is a new, normative, self-contained document - the same role `rules/RULE-FORMAT.md`
+plays for records - defining:
+
+- **Directory convention**: `modules/<module>/adapters/<engine>/adapter.sh` (plus conventional `bin/`
+  and `rules/` subdirectories for the vendored binary and local ruleset). This **generalizes** §3's
+  SAST-only diagram to any module, which is a deliberate extension of DESIGN.md's literal text, not a
+  correction of it: DESIGN.md is preserved verbatim per this project's own rule and is never edited to
+  match a later decision, and §9/§13 step 9's own prose already speaks of `adapters/` without confining
+  it to SAST, while §6.6 explicitly invites the same shape for IaC. A future reader comparing §3's
+  diagram against a `modules/iac/adapters/checkov/` directory is seeing this deliberate generalization,
+  not drift.
+- **The three-function interface contract**: `<engine>_detect` (pure filesystem check, never touches the
+  network), `<engine>_run OUTPUT_FILE TARGET...` (runs the vendored engine fully offline, writes its
+  native JSON), `<engine>_normalize INPUT_FILE` (reads that JSON and calls `lib/findings.sh`'s existing
+  public API - `finding_new`/`finding_set`/`finding_set_evidence`/`finding_set_match`/`finding_emit` -
+  never the internal `_F` array directly, which `tests/lint-shell.sh`'s existing redacted-field check
+  already forbids repository-wide). Namespacing the three functions by engine name is what lets more
+  than one adapter be sourced into the same process without collision, the same reason `sca_go_scan_tree`
+  is named for its ecosystem rather than reusing `sca_scan_tree`'s name.
+- **Check ids reuse `rules/RULE-FORMAT.md` §9.1.1a's already-frozen "adapter check id" namespace**
+  (`<engine>:<engine's own rule id>`) rather than inventing a second convention that could drift from
+  it. This is the one place this tension deliberately adds nothing new: the frozen format already
+  drew the correct line (option 2, rejected above, would have redrawn it).
+- **Graceful degradation is mandatory**: an absent or failing adapter records a `coverage_reduction`
+  (`reason=engine_not_vendored`, mirroring the `not_yet_built`/`no_advisories_db_on_disk` convention
+  every other module-gap case already uses) and the run continues native-only. It is never an error, per
+  §9's own "if absent, silently continue native-only."
+- **Runtime gating is explicitly deferred, not built here.** `docs/DESIGN.md`'s directory layout names
+  `lib/engines.sh` and `has_engine()`; §6.4 names the `--use-engines` flag. Neither exists as of this
+  ticket. The first concrete adapter ticket builds both, together with its own adapter - mirroring how
+  `--paranoid`'s flag landed together with its first real enforcement (tension 20) rather than as a
+  separate ticket - so that `lib/engines.sh` is designed against one real adapter's actual needs instead
+  of a guess. Until it lands, a fully-populated `adapters/` directory would still be inert: nothing
+  calls `<engine>_detect`.
+
+**`tools/vendor-engines.sh` is established as the network chokepoint, and it is now an enforced property,
+not a comment.**
+The script itself is real and runnable - usage/help, `--list`, `--all`, and vendoring a named engine all
+work - with a genuinely empty registry (`VENG_REGISTRY`), since zero adapters exist. Two additions to
+`tests/lint-shell.sh` make "the only script permitted to reach the network" checked in both directions:
+
+1. The existing tension-19 "no bare curl/wget/nc/openssl s_client" check now exempts
+   `tools/vendor-engines.sh` alongside `lib/http.sh` - it is expected to call `curl`/`wget` directly, and
+   is deliberately **not** routed through `lib/http.sh`'s scope gate, because that gate authorizes scan
+   *targets* (`config/scope.conf`) and a vendored engine's own upstream release URL is not one; routing
+   it through the gate would be a category error, not an extra safety layer.
+2. A new check fails the build if anything under `lib/`, `modules/`, or `scan.sh` - `scan.sh`'s own
+   dispatch path, narrower than tension 19's `engine_files` (which also covers `tools/` and a future
+   `aws/`) - sources, execs, or evals `tools/vendor-engines.sh` by name. It is matched at command
+   position with an explicit invocation verb required (`source`/`.`/`eval`/`bash`/`sh`), not a bare
+   substring match: `modules/sca/engine.sh` and `modules/sca/go_engine.sh` already name
+   `tools/vendor-engines.sh` in log and remediation prose (tension 25), including one case immediately
+   after a literal `(` inside a quoted string, and a bare substring check fails under its own first real
+   run - on code that is correct today - which is exactly the "a test that passes under both readings
+   pins nothing" failure `AGENTS.md`'s Tests section warns against, applied to a lint instead of a suite.
+
+**`tools/vendor-engines.sh` carries a second, unrelated, already-committed responsibility that this
+ticket does not implement.**
+Tension 25's RESOLUTION already assigns this same script the job of resolving `data/advisories.db`'s and
+`data/versions.db`'s advisory ranges against each SCA ecosystem's real published version list ("the
+expansion logic moves into `tools/vendor-engines.sh` at §13 step 9"). That is real, SCA-scoped work, not
+an engine adapter, and it needs genuine per-ecosystem tooling this scaffold has no offline, fixture-testable
+way to exercise - it is explicitly out of this ticket's scope ("adds no per-engine logic itself, only the
+scaffold") and is recorded here, in the script's own header, and in `docs/ADAPTERS.md` §10, so it is not
+mistaken for an oversight or silently re-invented as a second network-touching script later. The two
+responsibilities share this one file for the same reason they share the no-egress rule, not because they
+are the same kind of work.
+
+**Consequence for the build.**
+Zero adapter directories exist anywhere in the tree as of this ticket. `tests/suites/vendor-engines.sh`
+proves the empty-registry script's own behavior end-to-end as real subprocess invocations, with
+`curl`/`wget` stripped from `PATH` so an accidental fetch attempt fails loudly rather than silently
+reaching the network - and the full suite (`tests/run-tests.sh`) passing with no `modules/*/adapters/`
+directory anywhere is the concrete proof, not merely an assertion, that `docs/DESIGN.md` §9's "if absent,
+silently continue native-only" already holds for the only case that exists today: every adapter, for
+every module.
+
+---
+
 ## Cross-cutting consequences
 
 Eight decisions here reach beyond their own tension and are collected so they are not missed.
@@ -4131,6 +4259,18 @@ In short: the four-set allowlist, the `ss`/`strace` backend probe, the exit-3 ab
 missing-backend paths, and the deterministic `tests/suites/paranoid.sh` fixture all now exist on
 `dev`.
 `tools/run-in-netns.sh` (NETNS-01) remains unimplemented, as scoped.
+
+**Step 9 (optional engine adapters) now has a real scaffold - `docs/ADAPTERS.md` and
+`tools/vendor-engines.sh` both exist - landed out of sequence, ahead of step 3's remaining `nosql`/`ldap`
+packs and steps 5/6, because it cost nothing those blocked steps and ships no per-engine logic.**
+Tension 27's own "Implementation" paragraph carries the full detail, since that is where this register
+keeps the mechanism's contract, the same pattern PARANOID-01's entry above uses; in short,
+`docs/ADAPTERS.md` freezes the `modules/<module>/adapters/<engine>/adapter.sh` directory convention and
+three-function contract, and `tools/vendor-engines.sh` is now a real script - the sole network-permitted
+one - with a genuinely empty engine registry, exercised end-to-end by `tests/suites/vendor-engines.sh`
+with `curl`/`wget` stripped from `PATH`. `lib/engines.sh`, `has_engine()`, and `--use-engines` remain
+unbuilt on purpose (the first concrete adapter ticket builds them together with its own adapter); zero
+adapter directories exist anywhere in the tree, and the full suite passes with none present.
 
 What §13 step 1 deliberately did **not** build, so the boundary is not rediscovered: `scan.sh`, anything
 under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any

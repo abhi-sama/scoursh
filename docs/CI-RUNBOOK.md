@@ -32,7 +32,7 @@ Each matrix leg checks out the repo, installs a bash that meets the frozen 4.2 m
 | Linter | Purpose |
 |---|---|
 | `lint-rules` | Record-format linter: whole-repository checks the per-record parser can't do alone - check-id namespace, contributor existence/chaining, correlation-key capability, rubric uniqueness, cross-references. |
-| `lint-shell` | Enforces: no bare `grep`/`rg` outside `scan_match`, no `source`/`eval` on config/rules/data, the single network chokepoint (`lib/http.sh`), one capability layer. |
+| `lint-shell` | Enforces: no bare `grep`/`rg` outside `scan_match`, no `source`/`eval` on config/rules/data, the network chokepoint (`lib/http.sh`, plus `tools/vendor-engines.sh` as the one documented quarantined exception - tension 27), that nothing under `lib/`/`modules/`/`scan.sh` wires `tools/vendor-engines.sh` into a scan, one capability layer. |
 | `lint-aws-readonly` | Enforces every AWS call goes through `aws_ro` with an operation on the frozen read-only prefix allowlist. Passes over an empty set today; `lib/awscli.sh` and `aws/live/` land at step 6. |
 | `lint-status` | The generated build-status blocks in `AGENTS.md` and `docs/FOUNDATION.md` equal a fresh `tools/gen-status.sh` run, the two blocks are byte-identical, a hand-edited block is caught, and an edit *outside* the markers is not. Fix a failure with `tools/gen-status.sh --write`, never by hand-editing the block. |
 
