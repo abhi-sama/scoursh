@@ -2,6 +2,10 @@
 # data/advisories.db is generated offline by tools/vendor-engines.sh
 # (docs/FOUNDATION.md tension 25) and is never produced in this repo/CI;
 # this is a small, hand-authored, committed stand-in for tests only.
+Go	github.com/no-fix/pkg	v1.0.0	SCA-FIXTURE-ADVISORY-008	critical		fixture: Go no fixed version published yet
+Go	github.com/pkg/errors	v0.9.1	SCA-FIXTURE-ADVISORY-006	high	v0.9.2	fixture: Go stack trace disclosure
+Go	github.com/unknown-version/pkg	v9.9.9	SCA-FIXTURE-ADVISORY-009	medium	v10.0.0	fixture: Go unknown-version rollup proof
+Go	github.com/vulnerable/incompatible/v3	v3.2.1	SCA-FIXTURE-ADVISORY-007	critical	v3.2.2	fixture: Go /vN + +incompatible normalization proof
 RubyGems	mini_portile2	2.9.0	SCA-FIXTURE-RUBY-004	low	2.9.1	fixture: known package, different pinned version (unknown-version roll-up case)
 RubyGems	puma	5.6.4	SCA-FIXTURE-RUBY-002	critical		fixture: no fixed version published yet
 RubyGems	rack	2.2.3	SCA-FIXTURE-RUBY-003	medium	2.2.4	fixture: transitive dependency vulnerability
