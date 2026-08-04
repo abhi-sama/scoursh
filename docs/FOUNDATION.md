@@ -3933,7 +3933,7 @@ The remaining follow-ups (F5, F20, F17, and F16's `look` half) are inherited by 
 are still open.  (F3, F4, and F8 are closed above.)
 
 **Step 4's IaC half landed out of sequence, ahead of step 3's remaining `nosql`/`ldap` sub-steps and
-ahead of step 4's own SCA half - in three separate landings, and still only partial.**
+ahead of step 4's own SCA half - in four separate landings, and still only partial.**
 `5de4460` ("IaC: Terraform checks via the pattern-rule engine (§13 step 4)") shipped `modules/iac/run.sh`
 (the `scan_dispatch iac` entry point), `modules/iac/parse.sh` (the Terraform HCL parser), and
 `modules/iac/terraform.rules`, reusing the native pattern engine `modules/sast/engine.sh` built at step
@@ -3955,15 +3955,28 @@ in `ENV`/`ARG`, remote `ADD`, `curl | sh` build steps, unpinned base digest), sc
 deliberately excluded from this pack's `files:` list, continuing the same one-pack-per-format split
 `terraform.rules`' own header already established for `docs/DESIGN.md` §3's originally-combined
 `containers.rules` sketch.
-So §6.6's container/orchestration catalog has now landed its Helm-values and Dockerfile slices: only
-bare Kubernetes-manifest checks and docker-compose checks are still open, and so is CloudFormation
-(§8.2's IaC catalog) - this landing remains **Terraform + Helm-values + Dockerfile only**.
-`modules/` as a whole now ships **ten** pattern packs on disk (the seven under `modules/sast/rules/`
-plus `modules/iac/terraform.rules`, `modules/iac/helm.rules`, and `modules/iac/dockerfile.rules`), which
-is the count `tests/lint-rules.sh`'s E060 fixture-coverage note now reports.
+A fourth landing, `d7a746f` ("IaC: Kubernetes manifest checks via the pattern-rule engine (§13 step 4)",
+this ticket), added `modules/iac/kubernetes.rules`: eight `IAC-K8S-*` checks (privileged containers,
+host network/PID namespace sharing, missing resource limits/requests, `runAsNonRoot` unset, plaintext
+secrets in env vars, the mutable `:latest` image tag, wildcard RBAC verbs/resources, and
+`automountServiceAccountToken` left at its default), scoped to plain Kubernetes YAML/JSON manifests and
+reusing `modules/iac/run.sh`/`parse.sh` unchanged - closing exactly the gap the Helm landing's own
+"KNOWN GAP" note (above) flagged as still open at that point. Helm chart templates and CloudFormation
+templates are explicitly excluded by design: the pack's own header covers the case-sensitivity
+(Kubernetes' lowerCamelCase field names versus CloudFormation's PascalCase) and `context-deny` (`\{\{`
+for Helm, `AWSTemplateFormatVersion|AWS::` for CloudFormation, on the three absence-style checks)
+mechanisms that keep it out of scope for those two shapes even though the file glob overlaps;
+`tests/suites/iac.sh` proves both fixture shapes yield zero `IAC-K8S-*` findings.
+So §6.6's container/orchestration catalog has now landed its Helm-values, Dockerfile, and
+Kubernetes-manifest slices: only docker-compose checks are still open, and so is CloudFormation
+(§8.2's IaC catalog) - this landing spans **Terraform + Helm-values + Dockerfile + Kubernetes-manifest**.
+`modules/` as a whole now ships **eleven** pattern packs on disk (the seven under `modules/sast/rules/`
+plus `modules/iac/terraform.rules`, `modules/iac/helm.rules`, `modules/iac/dockerfile.rules`, and
+`modules/iac/kubernetes.rules`), which is the count `tests/lint-rules.sh`'s E060 fixture-coverage note
+now reports.
 Step 3's `nosql`/`ldap` rule packs, step 4's own SCA half (see the paragraph below), and the rest of
-§6.6's container/orchestration catalog (bare Kubernetes manifests and docker-compose) plus CloudFormation
-all remain open; do not read this paragraph as "step 4 is done."
+§6.6's container/orchestration catalog (docker-compose) plus CloudFormation all remain open; do not read
+this paragraph as "step 4 is done."
 
 **A third piece of step 4 has now landed, in three sub-tickets: `modules/sca/` (the SCA module's npm,
 Python, and Ruby slices).**
@@ -4028,9 +4041,9 @@ pending, and states the client-rendered-app (SPA) limitation as a `coverage_gap`
 (DAST-04) must surface in the report, not a gap this plan (or any step-5 ticket) closes with a headless
 browser.
 **No DAST-0x ticket is picked up until step 3's `nosql`/`ldap` rule packs and step 4's SCA half are both
-complete on `dev`** (step 4's IaC half - `terraform.rules` and `dockerfile.rules` - has already landed,
-see "Step 4's IaC half" above; SCA has not), per the plan's own "Status: blocked" section and this
-ticket's description.
+complete on `dev`** (step 4's IaC half - `terraform.rules`, `helm.rules`, `dockerfile.rules`, and
+`kubernetes.rules` - has already landed, see "Step 4's IaC half" above; SCA has not), per the plan's own
+"Status: blocked" section and this ticket's description.
 
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01
 has not.**
@@ -4102,11 +4115,11 @@ steps 5 and 6) are step 7's; step 1 delivers the primitives they call - the merg
 against tension 6's full case table.
 That sentence describes step 1's own historical boundary and is unaffected by later steps: `scan.sh`
 was step 1's placeholder and is now built by step 2 (above); `modules/sast/` and its seven rule packs
-are now built by steps 3a-3e (above); `modules/iac/` and its `terraform.rules`, `helm.rules`, and
-`dockerfile.rules` packs are now built by step 4's IaC half, landed out of sequence in three parts
-(above); `modules/sca/` (npm, Python, Ruby, Java, and PHP slices - five ecosystems of six, Java and PHP
-having since landed) is now built by step 4's SCA half, also landed out of sequence (above), though Go
-remains; `lib/http.sh` landed
+are now built by steps 3a-3e (above); `modules/iac/` and its `terraform.rules`, `helm.rules`,
+`dockerfile.rules`, and `kubernetes.rules` packs are now built by step 4's IaC half, landed out of
+sequence in four parts (above); `modules/sca/` (npm, Python, Ruby, Java, and PHP slices - five
+ecosystems of six, Java and PHP having since landed) is now built by step 4's SCA half, also landed out
+of sequence (above), though Go remains; `lib/http.sh` landed
 early, out of its normal step-5 sequence (tension 19), and step 5 as a whole now has a written
 sub-ticket plan
 (`docs/STEP5-DAST-PLAN.md`, above) though none of it has started; and `lib/engines.sh`, `lib/awscli.sh`,
@@ -4119,9 +4132,12 @@ Step 3e shipped without this section (or `AGENTS.md`'s mirror) being updated, so
 an unrelated doc-staleness ticket had to rediscover that `history.sh` existed by reading the branch
 rather than the docs - precisely the failure this section exists to prevent. `AGENTS.md`'s "Build order
 and where we are" carries the same rule; keep the two in sync.
+The Terraform IaC ticket repeated the same lapse (see "Step 4's IaC half" above): it shipped
+`modules/iac/run.sh`/`parse.sh`/`terraform.rules` without touching this section or its mirror, and a
+later IaC landing closed the gap.
 The npm SCA ticket (`ed8c283`) repeated the exact same failure - this section and `AGENTS.md`'s mirror
 both still said "SCA half has not landed"/"`modules/sca/`... remain unbuilt" straight through its own
 landing - and it went uncaught until the Ruby SCA ticket (`11e7c97`) corrected both in this same change.
-Two independent instances of one failure mode is a pattern, not a coincidence: treat "does the build-order
-doc already say this landed?" as part of a landing ticket's own definition of done, not an optional
-follow-up.
+Three independent instances of one failure mode is a pattern, not a coincidence: treat "does the
+build-order doc already say this landed?" as part of a landing ticket's own definition of done, not an
+optional follow-up.

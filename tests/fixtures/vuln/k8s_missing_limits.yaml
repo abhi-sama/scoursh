@@ -1,0 +1,16 @@
+# tests/fixtures/vuln/k8s_missing_limits.yaml - true-positive fixture for
+# IAC-K8S-MISSING_RESOURCE_LIMITS-01: an image with no resources block
+# anywhere in the file.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: missing-limits-demo
+spec:
+  automountServiceAccountToken: false
+  containers:
+    - name: app
+      image: registry.example.com/app:1.4.2
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        privileged: false
+        runAsNonRoot: true
