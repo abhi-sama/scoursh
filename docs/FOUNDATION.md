@@ -4272,6 +4272,30 @@ with `curl`/`wget` stripped from `PATH`. `lib/engines.sh`, `has_engine()`, and `
 unbuilt on purpose (the first concrete adapter ticket builds them together with its own adapter); zero
 adapter directories exist anywhere in the tree, and the full suite passes with none present.
 
+**This ticket, the first concrete adapter ticket, has now landed and closes every one of those
+deliberate gaps.**
+`lib/engines.sh` is real: `has_engine MODULE ENGINE`, memoised per pair, answers a pure filesystem
+question only - whether `modules/<module>/adapters/<engine>/adapter.sh` exists and its own
+`<engine>_detect` returns 0 - and deliberately never reads `--use-engines` itself, per docs/ADAPTERS.md
+§5's own "two independent conditions" pseudocode.  `--use-engines` is wired through `scan.sh` (global
+flag, usage text, one `run_record use_engines <bool>` per run); `lib/checks.sh` gained no new filtering
+logic, only a header paragraph stating why an adapter check id is invisible to its filter chain (it is
+minted at runtime, never declared in a `*.rules` file).  `modules/sast/adapters/semgrep/adapter.sh`
+implements the three-function contract against semgrep's own JSON output via a purpose-built,
+depth/string-aware `awk` splitter plus bash-native field extractors (never a general JSON parser, the
+same pragmatic choice `modules/sca/engine.sh`'s `_sca_json_walk` already made), re-derives match text
+from the real file at the reported line when it still resolves, and rejects any reported path that does
+not resolve inside the scan root as its own `coverage_reduction`, never trusting it as a finding
+location.  `modules/sast/adapters/semgrep/vendor.sh` is the only other file permitted to touch the
+network, and even it only calls `veng_fetch` (new, in `tools/vendor-engines.sh`), which verifies a
+caller-supplied sha256 and refuses - never hardcodes or guesses one.  `VENG_REGISTRY` now carries one
+entry, `[semgrep]=veng_vendor_semgrep`.  Absent or un-vendored is a clean `coverage_reduction
+reason=engine_not_vendored engine=semgrep`; without `--use-engines` at all, behaviour is unchanged from
+before this ticket.  `tests/suites/engines.sh`, `tests/suites/sast-semgrep.sh`, and an expanded
+`tests/suites/vendor-engines.sh` (a stubbed-`curl` fetch/verify section) all exist and pass; zero real
+engines are vendored anywhere in this repository, per `docs/ADAPTERS.md` §1 - the round-trip and
+graceful-degradation suites exercise a FAKE stand-in binary, never a real semgrep.
+
 What §13 step 1 deliberately did **not** build, so the boundary is not rediscovered: `scan.sh`, anything
 under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
 shipped rule pack, and `state/`.  Diff classification (tension 12) and baseline suppression (tension 11
@@ -4283,7 +4307,8 @@ was step 1's placeholder and is now built by step 2 (above); `modules/sast/`, `m
 `modules/sca/` are now built by steps 3 and 4, the latter landed out of sequence (above), and the
 generated block below is what says which of their packs and ecosystems are in; `lib/http.sh` landed
 early, out of its normal step-5 sequence (tension 19), and step 5 as a whole now has a written
-sub-ticket plan (`docs/STEP5-DAST-PLAN.md`, above) though none of it has started; and `lib/engines.sh`,
+sub-ticket plan (`docs/STEP5-DAST-PLAN.md`, above) though none of it has started; `lib/engines.sh` also
+landed early, out of its normal step-9 sequence, as part of this ticket (immediately above); and
 `lib/awscli.sh`, SARIF, the compliance report, and `state/` remain unbuilt.
 
 <!-- BEGIN GENERATED STATUS -->

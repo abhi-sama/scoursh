@@ -125,6 +125,8 @@ source "$SCOURSH_SCAN_SH_DIR/lib/config.sh"
 source "$SCOURSH_SCAN_SH_DIR/lib/checks.sh"
 # shellcheck source=lib/paranoid.sh
 source "$SCOURSH_SCAN_SH_DIR/lib/paranoid.sh"
+# shellcheck source=lib/engines.sh
+source "$SCOURSH_SCAN_SH_DIR/lib/engines.sh"
 
 # -----------------------------------------------------------------------------
 # 2. The §5 grammar, encoded as data rather than a chain of if/elif.
@@ -137,6 +139,7 @@ SCAN_COMMANDS=(sast sca iac dast cloud all diff report)
 declare -A _SCAN_FLAG_KIND=(
   [global:profile-scan]=value
   [global:paranoid]=bool
+  [global:use-engines]=bool
   [global:allow-intrusive]=bool
   [global:jobs]=value
   [global:format]=value
@@ -228,6 +231,16 @@ Global:
                               short-lived connection can still evade
                               detection - tools/run-in-netns.sh is the actual
                               guarantee. See docs/FOUNDATION.md tension 20.)
+  --use-engines             (opt in to optional vendored engine adapters,
+                              e.g. semgrep for sast - docs/ADAPTERS.md. Only
+                              runs an adapter whose own vendored binary +
+                              ruleset is actually present on disk
+                              (bin/, rules/ under
+                              modules/<module>/adapters/<engine>/); absent
+                              or not vendored is a silent, native-only
+                              continue with a logged coverage_reduction,
+                              never an error. Nothing is fetched at scan
+                              time - see tools/vendor-engines.sh.)
   --allow-intrusive
   --jobs N
   --format json,sarif,html,md
@@ -601,6 +614,24 @@ scan_main() {
   if [[ ${SCAN_FLAGS[paranoid]:-} == true ]]; then
     paranoid_attach
   fi
+
+  # 8c. --use-engines (docs/ADAPTERS.md; lib/engines.sh) - recorded once per
+  # run.json for audit, exactly like every other flag this section already
+  # captures, regardless of which command actually reads it.  scan.sh does
+  # NOT itself call has_engine or run any adapter: the gate
+  # "${SCAN_FLAGS[use-engines]:-} == true) && has_engine MODULE ENGINE" is
+  # evaluated at each module's own call site (modules/sast/run.sh), never
+  # here - docs/ADAPTERS.md §5's pseudocode keeps "was --use-engines given"
+  # and "is it vendored" independent, and lib/engines.sh's own header
+  # explains why folding them into one function/one call site would be
+  # wrong.  Adapter check ids are also never selected by
+  # `_scan_apply_profile_filter` below (rules/RULE-FORMAT.md §9.1.1a /
+  # docs/ADAPTERS.md §6: an adapter check id carries no MODULE-FAMILY-NAME
+  # shape, so lib/checks.sh's registry-based filter chain has nothing of
+  # theirs to select or drop) - lib/checks.sh's own header states this
+  # boundary explicitly so a future reader does not wonder why
+  # --use-engines never narrows or widens what that filter chain selects.
+  run_record use_engines "${SCAN_FLAGS[use-engines]:-false}"
 
   local incomplete=0 gate=0 path
 
