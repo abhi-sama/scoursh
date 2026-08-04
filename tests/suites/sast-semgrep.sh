@@ -109,6 +109,13 @@ ESC_OBJ='{"message":"quote \" backslash \\ tab\tend"}'
 assert_eq 'quote " backslash \ tab	end' "$(_semgrep_json_string_field "$ESC_OBJ" message)" \
   'standard JSON escapes (\", \\\\, \t) decode to their real characters, not left literal'
 
+t_case '_semgrep_severity_map: ERROR caps at high, deliberately never critical - unlike _trivy_severity_map'
+assert_eq high "$(_semgrep_severity_map ERROR)" \
+  'fails under a reading that widened this adapter to mirror _trivy_severity_map (ERROR -> critical): semgrep has only three native severity tiers (ERROR/WARNING/INFO) with no tier of its own distinct from and above ERROR, unlike trivy'\''s own four-tier CRITICAL/HIGH/MEDIUM/LOW vocabulary that maps 1:1 onto scoursh'\''s; and semgrep'\''s rules/ is a separate, operator-vendored, unreviewed ruleset (vendor.sh'\''s SCOURSH_SEMGREP_RULES_URL) rather than trivy'\''s fixed, compiled-in check catalog, so an arbitrary vendored rule labelling itself ERROR must not auto-mint scoursh'\''s own critical ceiling - see this function'\''s own comment'
+assert_eq medium "$(_semgrep_severity_map WARNING)" 'WARNING maps to medium'
+assert_eq low "$(_semgrep_severity_map INFO)" 'INFO maps to low'
+assert_eq medium "$(_semgrep_severity_map UNKNOWN)" 'an unrecognised severity falls back to medium, never a crash'
+
 t_case 'semgrep_normalize: full round-trip through finding_emit for a real fixture on disk'
 SCOURSH_RUN_DIR=$W/run-a
 rm -rf "$SCOURSH_RUN_DIR"

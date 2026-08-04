@@ -45,6 +45,49 @@
 # boundary, the same class of control OWASP A01 (broken access control /
 # SSRF-style trust-the-input mistakes) asks for at every boundary.
 #
+# SEVERITY MAPPING: WHY THIS CAPS AT `high`, UNLIKE `_trivy_severity_map`
+# (`_semgrep_severity_map` below - a decision record, not incidental).  An
+# earlier version of that function's comment claimed no native `*.rules`
+# pack ever authors `severity: critical`, as the reason a raw engine
+# severity is never mapped there either.  That claim was false the moment it
+# was written: `modules/sast/rules/secrets.rules`, `injection.rules`,
+# `python.rules`, `go.rules`, `java.rules`, `javascript.rules`, and every
+# landed `modules/iac/*.rules` pack (`terraform.rules`, `kubernetes.rules`,
+# `helm.rules`, `dockerfile.rules`, `docker-compose.rules`) all author
+# `severity: critical` directly today - `grep -rn 'severity: critical'
+# modules/` shows it.  The cap stays, but on the real, considered reasoning
+# below, not that one:
+#   1. Vocabulary shape.  Trivy's own severity signal is CRITICAL/HIGH/
+#      MEDIUM/LOW - four tiers that map 1:1 onto scoursh's own four
+#      non-`info` tiers, so `_trivy_severity_map` is a rename, not a
+#      judgement call (see that function's own comment).  Semgrep's signal
+#      is coarser: ERROR/WARNING/INFO, three tiers, with no tier of its own
+#      distinct from and above ERROR.  There is no native "more severe than
+#      ERROR" signal to place at `critical`; ERROR is already semgrep's own
+#      ceiling, and this mapping already treats it as this adapter's
+#      ceiling (`high`, the top of the three tiers it actually uses).
+#   2. Ruleset provenance.  Trivy's misconfiguration checks are COMPILED
+#      INTO the vendored binary itself - a fixed, versioned catalog from
+#      trivy's own upstream release (this file's sibling,
+#      modules/iac/adapters/trivy/adapter.sh's own "WHICH ENGINE, AND WHY").
+#      Semgrep's ruleset is a SEPARATE, operator-vendored artifact
+#      (vendor.sh's `SCOURSH_SEMGREP_RULES_URL`) that can point at an
+#      arbitrary community or custom rule pack this project has never
+#      reviewed rule-by-rule.  Every native scoursh pack's `critical` is
+#      earned one rule at a time, by review, in this repository; letting an
+#      unreviewed, operator-swappable third-party ruleset auto-mint that
+#      same ceiling merely by labelling a rule ERROR would hand it more
+#      authority than this project's own curated packs get.
+# Capping at `high` leaves `critical` reachable two ways that both still
+# apply to a semgrep-sourced finding: scoursh's own native packs, and
+# `data/severity-rubric.conf`'s escalation modifiers, which run over EVERY
+# finding - semgrep-sourced ones included - and can still raise a `high`
+# base_severity to `critical` when exposure/auth/sensitive-data/confidence
+# facts warrant it.  It is a raw, unreviewed engine label alone that never
+# gets to mint `critical` directly.  Revisit this if `docs/ADAPTERS.md`
+# ever specifies a curated/reviewed semgrep ruleset as this project's own
+# vendoring default rather than an arbitrary operator-supplied URL.
+#
 # shellcheck shell=bash
 #
 # SC2329: several `_semgrep_*` helpers are only reachable through the three
@@ -362,10 +405,15 @@ _semgrep_json_array_first_string() {
 
 # _semgrep_severity_map SEMGREP_SEVERITY - semgrep's ERROR/WARNING/INFO onto
 # scoursh's own info|low|medium|high|critical vocabulary
-# (lib/records.sh's severity_rank/severity_name).  Never `critical`: that is
-# reserved for scoursh's own rubric escalation (data/severity-rubric.conf),
-# not a raw engine-reported severity - the same reason native pattern rules
-# never author `critical` directly (grep every *.rules pack: none do).
+# (lib/records.sh's severity_rank/severity_name).  DELIBERATELY caps at
+# `high`, never `critical` - see this file's own header ("SEVERITY MAPPING:
+# WHY THIS CAPS AT `high`, UNLIKE `_trivy_severity_map`") for the full
+# reasoning and the current decision record.  This is NOT because no native
+# `*.rules` pack ever authors `critical` directly - several do today
+# (modules/sast/rules/secrets.rules, injection.rules, python.rules,
+# go.rules, java.rules, javascript.rules, and every landed
+# modules/iac/*.rules pack) - that claim was simply false and is corrected
+# here rather than repeated.
 _semgrep_severity_map() {
   case $1 in
     ERROR) printf 'high' ;;
