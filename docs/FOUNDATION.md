@@ -4180,6 +4180,16 @@ later IaC landing closed the gap.
 The npm SCA ticket (`ed8c283`) repeated the exact same failure - this section and `AGENTS.md`'s mirror
 both still said "SCA half has not landed"/"`modules/sca/`... remain unbuilt" straight through its own
 landing - and it went uncaught until the Ruby SCA ticket (`a2d37aa`) corrected both in this same change.
-Three independent instances of one failure mode is a pattern, not a coincidence: treat "does the
+The Java (`a1b3c43`) and PHP/Composer (`7e7b186`) SCA tickets then did it a fourth and fifth time: both
+landed - `modules/sca/php_engine.sh` and `SCA-PHP-VULNERABLE_DEP-01` among them - without touching
+either doc's build-status section, so both documents went on calling Java and PHP "still open" until
+`ab23b79` and this ticket went back and corrected them. Two separate tickets spent cleaning up after
+one landing's missing paragraph is exactly the cost this note exists to avoid.
+Five independent instances of one failure mode is a pattern, not a coincidence: treat "does the
 build-order doc already say this landed?" as part of a landing ticket's own definition of done, not an
 optional follow-up.
+Filing a follow-up documentation ticket to fix this section later is not an acceptable substitute for
+updating it in the step ticket itself - that pattern is what produced the java.rules staleness this
+section itself once had (a doc-refresh ticket landed a commit after java.rules shipped and still
+described it as not landed), and then produced the SCA-ecosystem staleness the paragraphs above are
+corrected for. A step ticket is not done while this section describes that step as unbuilt.

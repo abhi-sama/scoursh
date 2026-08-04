@@ -102,6 +102,11 @@ exactly the failure mode this file exists to prevent (see "`main` can lag `dev`"
 sibling instance of the same pattern). Do not repeat it: a ticket that lands a `docs/DESIGN.md` §13
 sub-step is not done until this paragraph's "Current position" and the FOUNDATION.md section it mirrors
 both say so.
+This paragraph and `docs/FOUNDATION.md`'s "Where the build currently stands" are part of the deliverable
+for every step ticket, not follow-up work: filing a separate documentation ticket to update them later
+is not an acceptable substitute, however small the wording change looks. A step landed without this
+paragraph and its FOUNDATION.md mirror updated in the same commit range is not done, full stop - close
+the gap in the step ticket itself.
 
 **Current position: §13 steps 1 and 2 are done, step 3 is under way, and step 4's IaC half has begun
 landing out of step order.**
@@ -126,10 +131,23 @@ added the Ruby slice (`Gemfile.lock`), a later ticket added the Java slice
 (`pom.xml`/`build.gradle`, under check id `SCA-JAVA-VULNERABLE_DEP-01`), `7e7b186` added the
 PHP/Composer slice (`composer.lock`, `SCA-PHP-VULNERABLE_DEP-01`), and this ticket adds the Go slice
 (`go.mod`/`go.sum`, `SCA-GO-VULNERABLE_DEP-01`) - see the detailed paragraph below.**
-Each ecosystem has its own self-contained `sca_scan_*_tree` entry point, called from
-`modules/sca/run.sh`'s `_sca_run_module`; most live in `modules/sca/engine.sh`, while PHP and Go each
-landed in their own file (`modules/sca/php_engine.sh`, `modules/sca/go_engine.sh`) per that file's own
-header instruction not to fork `run.sh` per ecosystem.
+Ecosystems do **not** map one-to-one onto entry points, so do not infer coverage from the number of
+tree-walk functions - six ecosystems are covered by **four**, called from `modules/sca/run.sh`'s
+`_sca_run_module` as `_sca_npm_run`, `_sca_py_run`, `_sca_java_run` and `_sca_go_run`:
+
+| entry point | file | ecosystems |
+|---|---|---|
+| `sca_scan_tree` | `engine.sh` | npm, RubyGems, Composer |
+| `sca_scan_python_tree` | `engine.sh` | pypi |
+| `sca_scan_java_tree` | `engine.sh` | maven |
+| `sca_go_scan_tree` | `go_engine.sh` | Go |
+
+Ruby and PHP have no entry point of their own: `sca_scan_tree` walks npm, `Gemfile.lock` **and**
+`composer.lock` in one call, sharing one `unknown_count` table, because
+`SCA-COV-UNKNOWN_VERSION-01`'s fingerprint carries no ecosystem component and two calls would emit two
+findings colliding on one fingerprint. Composer's parser lives in `php_engine.sh` and Go's in
+`go_engine.sh`, but a separate *file* is not a separate entry point - and note Go's is spelled
+`sca_go_scan_tree`, which a `sca_scan_*_tree` glob does not even match.
 Neither the Java nor the PHP row of this paragraph was written by the ticket that shipped it:
 `a1b3c43` and `7e7b186` both landed without updating this section, and `ab23b79` ("Fix stale
 'Go/Java/PHP remain' SCA status text") had to go back and add them - the stale-doc failure the process
