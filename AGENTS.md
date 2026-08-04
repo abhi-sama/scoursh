@@ -506,8 +506,8 @@ These packs landed ahead of step 3's remaining rule packs and ahead of step 4's 
 "land what's ready, out of strict step order" pattern as `lib/http.sh` above; step 4's SCA half has its
 own paragraph below.
 
-**A third piece of step 4 has now landed, in three sub-tickets: `modules/sca/` (the SCA module's npm,
-Python, and Ruby slices).**
+**A third piece of step 4 has now landed, in five sub-tickets: `modules/sca/` (the SCA module's npm,
+Python, Ruby, Java, and PHP slices).**
 `ed8c283` ("SCA: parse npm lockfiles and match against data/advisories.db") shipped `modules/sca/run.sh`
 (the `scan_dispatch sca` entry point - no check-registry gate, unlike SAST/IaC, since SCA is a table
 lookup rather than a pattern-rule engine) and `modules/sca/engine.sh`: lockfile discovery,
@@ -539,9 +539,7 @@ shares one `unknown_count` table across them, because two separate `sca_scan_tre
 ecosystem/package/advisory_id component) - `findings_merge`'s dedup would then silently drop whichever
 ecosystem lost the sort instead of merging their counts.  `sca_scan_python_tree` (the Python slice, see
 above) still runs as its own separate call for the same reason it always did - to avoid touching
-`sca_scan_tree`'s already-tested npm code path - so a run with unknown-version cases in both an npm/Ruby
-lockfile AND a Python one still emits two separate roll-up findings; that gap is stated and filed, not a
-defect either the Python or Ruby ticket needed to fix.
+`sca_scan_tree`'s already-tested npm code path.
 `tests/suites/sca.sh` proves the npm+Ruby merge concretely with a `mixed-ecosystems` fixture carrying
 both an npm lockfile and a Gemfile.lock, asserting exactly one roll-up finding whose breakdown names
 both ecosystems, and separately tests the Python slice and the real `scan.sh sca` end-to-end path for
