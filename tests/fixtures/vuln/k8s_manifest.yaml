@@ -1,0 +1,28 @@
+# Bare Kubernetes manifest - NOT a Helm chart (lives outside templates/, is
+# not values.yaml) and NOT a CloudFormation template.  Glob-collision-guard
+# fixture for this ticket's AC2/AC3 ("produces zero CloudFormation-related
+# findings when scanning a valid but non-CloudFormation YAML/JSON file...
+# confirming real CloudFormation templates are distinguished from
+# similarly-shaped files").
+#
+# Deliberately reuses modules/iac/cloudformation.rules' own property-name
+# vocabulary VERBATIM, including its exact PascalCase spelling
+# (Password / AssociatePublicIpAddress), with no CHANGEME/example
+# placeholder anywhere - the shape a Kubernetes custom resource mirroring an
+# AWS API can genuinely take (AWS Controllers for Kubernetes' CRDs carry the
+# same PascalCase field names the underlying AWS API does).  This is the
+# closest real vocabulary collision IAC-CFN-HARDCODED_SECRET-01 and
+# IAC-CFN-PUBLIC_IP-01 have with a similarly-shaped non-CloudFormation file,
+# so tests/suites/iac.sh's cross-check proves the `Type: AWS::...`
+# context-require - not an accident of this file's vocabulary happening not
+# to overlap - is what keeps cloudformation.rules quiet here.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-credentials
+  labels:
+    app: demo
+type: Opaque
+stringData:
+  Password: Sup3rSecretPass!
+  AssociatePublicIpAddress: "true"

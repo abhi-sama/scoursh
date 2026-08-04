@@ -1,0 +1,25 @@
+# ECS task definition whose container is NOT privileged - safe equivalent
+# for IAC-CFN-ECS_PRIVILEGED-01.  Its true-positive counterpart is
+# tests/fixtures/iac/cloudformation/cloudformation_template.yaml, which
+# already enabled that property on an AWS::ECS::TaskDefinition before this
+# pack existed; see tests/suites/iac.sh's cloudformation section for why the
+# positive half lives there rather than under tests/fixtures/vuln/.
+#
+# This comment deliberately does NOT spell the hazardous property/value pair
+# out: the pattern-rule engine is line-oriented and has no comment awareness
+# anywhere in the codebase (terraform.rules and kubernetes.rules are the same),
+# so prose quoting the literal in a clean fixture is itself a match.  It was
+# one, before this file was reworded.
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: demo-task
+      ContainerDefinitions:
+        - Name: app
+          Image: registry.example.com/app:1.4.2
+          Privileged: false
+          Essential: true
+          Memory: 512
+          Cpu: 256

@@ -1,0 +1,10 @@
+# RDS instance with encryption at rest enabled - safe equivalent for
+# IAC-CFN-UNENCRYPTED-01.
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  AppDatabase:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: postgres
+      DBInstanceClass: db.t3.micro
+      StorageEncrypted: true
