@@ -4296,6 +4296,40 @@ before this ticket.  `tests/suites/engines.sh`, `tests/suites/sast-semgrep.sh`, 
 engines are vendored anywhere in this repository, per `docs/ADAPTERS.md` §1 - the round-trip and
 graceful-degradation suites exercise a FAKE stand-in binary, never a real semgrep.
 
+**A second concrete adapter ticket has now landed, `modules/iac/adapters/trivy/` - the first for a
+module other than sast, proving `docs/ADAPTERS.md` §4's directory-convention generalization for real.**
+`lib/engines.sh`/`has_engine`/`--use-engines` needed no change at all: `has_engine iac trivy` and the
+`modules/iac/run.sh` call site (`if [[ ${SCAN_FLAGS[use-engines]:-} == true ]] && has_engine iac trivy`)
+are the exact same shape `modules/sast/run.sh` already established, which is the point of building that
+plumbing module-agnostic the first time.  Picking `trivy config` over `docs/DESIGN.md` §6.6's other two
+named candidates (`checkov`, `tfsec`) was this ticket's own reasoned call, not the operator's: only
+`trivy config` natively scans every IaC shape the ticket's scope named (Terraform, CloudFormation,
+Kubernetes, Helm, docker-compose) in one binary, where `tfsec` is Terraform-only and `checkov` is a
+Python application rather than a single vendorable static binary.  `trivy_detect` needs only an
+executable `bin/trivy` - no `rules/` - because trivy's misconfiguration checks are compiled into the
+binary itself, `docs/ADAPTERS.md` §4's "self-contained binary" case; `trivy_run` passes
+`--offline-scan --skip-check-update --skip-db-update --scanners misconfig`.  `trivy_normalize` walks a
+JSON shape nested TWO levels deep (`Results[].Misconfigurations[]`, one array per scanned target file)
+rather than semgrep's single flat array, via a generalized version of the same depth/string-aware `awk`
+splitting technique (`_trivy_split_objects_from_marker`, parameterised by which marker/level it is
+walking) rather than two independent copies.  Severity mapping deliberately widens onto scoursh's full
+`critical` severity - unlike `_semgrep_severity_map`, which caps at `high` - because native
+`modules/iac/*.rules` packs already author `severity: critical` directly (e.g.
+`IAC-TF-PUBLIC_ACL-01`/`IAC-K8S-*`), so capping this adapter alone would be an invented inconsistency,
+not a rule this codebase actually follows.  `VENG_REGISTRY` gained a second entry,
+`[trivy]=veng_vendor_trivy`, needing three operator-supplied `SCOURSH_TRIVY_*` values (version, URL,
+sha256 - one artifact, since there is no separate ruleset) rather than semgrep's five; its `vendor.sh`
+states explicitly why it never extracts trivy's real `.tar.gz` release archive itself (the operator
+supplies a URL to the already-extracted binary).  Merge/dedup against native findings (this ticket's own
+scope item 3) needed no new code - the frozen pipeline's existing fingerprint-based merge/dedup (tension
+11 stage 3, above) already covers it, since a `trivy:<AVD-ID>` check id never collides with a native
+`IAC-TF-*`/`IAC-K8S-*`/... id - `tests/suites/iac-trivy.sh` proves this concretely with a fixture where a
+native `IAC-TF-OPEN_CIDR-01` finding and a `trivy:AVD-AWS-0107` finding share the exact same file, line,
+and re-derived match text, and still both appear as two distinct findings.  `tests/suites/iac-trivy.sh`
+and an extended `tests/suites/vendor-engines.sh` (a `trivy_vendor` fetch/verify section) both exist and
+pass; as with semgrep, zero real engines are vendored anywhere in this repository, and the round-trip and
+graceful-degradation proofs run against a FAKE stand-in `trivy` binary.
+
 What §13 step 1 deliberately did **not** build, so the boundary is not rediscovered: `scan.sh`, anything
 under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
 shipped rule pack, and `state/`.  Diff classification (tension 12) and baseline suppression (tension 11
@@ -4385,7 +4419,7 @@ Landed 6 of 6.  Outstanding: none.
 | `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/iac.sh` |
 | `modules/iac/helm.rules` | landed | 3 | `tests/suites/iac.sh` |
 | `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/iac.sh` |
-| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac.sh` |
+| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac-trivy.sh` |
 
 Landed 5 of 6.  Outstanding: `cloudformation.rules`.
 

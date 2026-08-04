@@ -225,7 +225,7 @@ Landed 6 of 6.  Outstanding: none.
 | `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/iac.sh` |
 | `modules/iac/helm.rules` | landed | 3 | `tests/suites/iac.sh` |
 | `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/iac.sh` |
-| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac.sh` |
+| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac-trivy.sh` |
 
 Landed 5 of 6.  Outstanding: `cloudformation.rules`.
 
@@ -436,6 +436,50 @@ required-env-var gate and full success path against a scratch copy of the adapte
 real one, so no test ever writes a fake "binary" into this repository's own working tree.
 `docs/ADAPTERS.md` §9's roster table now names this one row; every other module/engine cell remains
 "none shipped" exactly as before.
+
+**This ticket is the SECOND concrete adapter, and the first for a module other than sast - it proves
+`docs/ADAPTERS.md`'s directory-convention generalization (§4) for real rather than leaving it a claim
+about a hypothetical future module.**
+It ships `modules/iac/adapters/trivy/adapter.sh` (the same three-function contract as semgrep's, applied
+to `trivy config`, trivy's offline IaC misconfiguration scanner): `trivy_detect` is a pure filesystem
+check for an executable `bin/trivy` ONLY - unlike `semgrep_detect`, it needs no `rules/` at all, because
+trivy's misconfiguration checks (OPA/Rego policies) are compiled into the binary itself, the
+"self-contained binary" case `docs/ADAPTERS.md` §4 already anticipated; `trivy_run` invokes it with
+`--offline-scan --skip-check-update --skip-db-update --scanners misconfig`, the same
+belt-and-suspenders "two independent ways of saying offline" precedent `semgrep_run` set;
+`trivy_normalize` walks trivy's own JSON, which nests findings TWO levels deep (a top-level `Results`
+array, one entry per scanned target file, each with its own `Misconfigurations` array) rather than
+semgrep's single flat array, via a generalized depth- and string-aware `awk` splitter
+(`_trivy_split_objects_from_marker`) reused for both levels.
+Which of `docs/DESIGN.md` §6.6's three named candidates (`checkov`, `tfsec`, `trivy config`) to build was
+this ticket's own decision to make, not the operator's: only `trivy config` natively scans every IaC
+shape the ticket's own scope names (Terraform, CloudFormation, Kubernetes, Helm, docker-compose) in one
+binary - `tfsec` is Terraform-only, and `checkov` is a Python application rather than the single
+vendorable static binary `semgrep`'s own adapter already established as this project's shape - see
+`modules/iac/adapters/trivy/adapter.sh`'s own header for the full reasoning.
+`tools/vendor-engines.sh`'s `VENG_REGISTRY` now carries a SECOND entry,
+`[trivy]=veng_vendor_trivy`, requiring three operator-supplied `SCOURSH_TRIVY_*` values (version, binary
+URL, sha256 - one artifact, not two, since there is no ruleset to vendor separately) and refusing - never
+guessing - when any are missing; `modules/iac/adapters/trivy/vendor.sh` states explicitly why it never
+extracts trivy's real `.tar.gz` release archive (the operator supplies a URL to the already-extracted
+binary, the same "operator supplies the exact right platform artifact" contract semgrep's own vendor.sh
+already uses).
+Merge/dedup against native `modules/iac/*.rules` findings (this ticket's own scope item 3) needed no new
+code: `docs/FOUNDATION.md`'s frozen pipeline (tension 11 stage 3) already merges and dedups every
+finding, native and adapter alike, purely by fingerprint equality after every module's findings are
+collected, and a trivy finding's `trivy:<AVD-ID>` check id never collides with a native `IAC-TF-*`/
+`IAC-K8S-*`/... id - `tests/suites/iac-trivy.sh`'s section C fixture proves this concretely by engineering
+a native `IAC-TF-OPEN_CIDR-01` finding and a `trivy:AVD-AWS-0107` finding to land on the exact same file
+and line (so their `match_digest` is identical too) and asserting both still appear as two distinct
+findings.
+`tests/suites/iac-trivy.sh` (the three-function contract including the nested-array split, the
+path-traversal guard, the `_trivy_severity_map` widening to `critical` - unlike `_semgrep_severity_map`,
+because native `modules/iac/*.rules` packs already author `severity: critical` directly, so capping this
+adapter at `high` would be an inconsistency invented for it alone - graceful degradation as a real
+`scan.sh iac` subprocess, and the full round-trip/merge proof above against a FAKE vendored "trivy") is
+new and passes; `tests/suites/vendor-engines.sh` gained the equivalent `trivy_vendor` fetch/verify
+section, against its own scratch copy of the adapter directory.
+`docs/ADAPTERS.md` §9's roster table now names this second row too.
 
 **Step 3a-3d shipped the SAST module's rule packs and engine.**
 Four tickets landed, in this order:
