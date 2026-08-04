@@ -11,14 +11,21 @@
 #    actual script (`bash "$TOOL" ...`).
 #  - The first concrete adapter ticket registered the first real engine,
 #    `semgrep` -> `veng_vendor_semgrep`, so "the registry is genuinely
-#    empty" is no longer true; THIS ticket (the second concrete adapter,
-#    the first for a module other than sast) registers a SECOND real
-#    engine, `trivy` -> `veng_vendor_trivy`, so every assertion below that
-#    used to assume "exactly one entry" is updated to the new, real shape:
-#    `--list`/the registry itself now name both `semgrep` and `trivy`, and
-#    vendoring an UNREGISTERED name still uses a different bogus engine id
-#    so that path stays exercised regardless of how many real engines are
-#    registered.
+#    empty" is no longer true; the second concrete adapter ticket (the
+#    first for a module other than sast) registered a second real engine,
+#    `trivy` -> `veng_vendor_trivy`.  THIS ticket (the third concrete
+#    adapter) registers a THIRD, `gitleaks` -> `veng_vendor_gitleaks`: the
+#    registry now has THREE entries, and every assertion below that named
+#    an exact count or an exact `--list` output is updated again here, in
+#    the same change, per the project's build-order process rule (a landed
+#    module's status text is part of the same commit, never a follow-up).
+#    `veng_list` sorts under `LC_ALL=C`, so the order is `gitleaks`,
+#    `semgrep`, `trivy` (g < s < t) - the assertions below that used to say
+#    "reaches semgrep_vendor" when refusing now say "reaches
+#    gitleaks_vendor first", because that is what actually happens once
+#    three engines are registered.  Vendoring an UNREGISTERED name still
+#    uses a different bogus engine id so that path stays exercised
+#    regardless of how many real engines are registered.
 #  - Section D is the fetch/verify flow the scaffold suite's own comment
 #    promised the first concrete adapter ticket would add: `veng_fetch`'s
 #    checksum success and mismatch paths, and `semgrep_vendor`'s
@@ -30,12 +37,15 @@
 #    every time). Runs against a SCRATCH COPY of
 #    modules/sast/adapters/semgrep/, never the real one - vendoring for
 #    real would write a fake "binary" into this repository's own working
-#    tree, which no test may do.  This ticket extends section D with the
-#    equivalent proof for `trivy_vendor` (modules/iac/adapters/trivy/
+#    tree, which no test may do.  The trivy ticket extended section D with
+#    the equivalent proof for `trivy_vendor` (modules/iac/adapters/trivy/
 #    vendor.sh) against its own SCRATCH COPY - a required-env-var gate and
 #    a full success path, but only ONE artifact (bin/trivy - no rules/,
 #    since trivy's checks are compiled into the binary; see that
-#    vendor.sh's own header).
+#    vendor.sh's own header).  THIS ticket extends section D again with the
+#    equivalent proof for `gitleaks_vendor` (modules/sast/adapters/gitleaks/
+#    vendor.sh) against its own SCRATCH COPY, mirroring semgrep's two-artifact
+#    (bin/ + rules/) shape.
 #  - It still asserts this script makes NO real network call in any path
 #    that is not deliberately exercising the (stubbed) fetch flow, by
 #    running those paths with PATH stripped of curl/wget entirely
@@ -63,33 +73,35 @@ mkdir -p "$W"
 # -- section A: in-process function tests (pure logic, nothing that exits) --
 # ---------------------------------------------------------------------------
 t_case 'registry'
-assert_eq 2 "${#VENG_REGISTRY[@]}" \
-  'the engine registry has exactly two entries (semgrep, trivy) after this ticket - fails under the reading that it is still empty, still one, or that a third adapter snuck in'
+assert_eq 3 "${#VENG_REGISTRY[@]}" \
+  'the engine registry has exactly three entries (semgrep, trivy, gitleaks) after this ticket - fails under the reading that it is still empty, still one, still two, or that a fourth adapter snuck in'
 assert_eq veng_vendor_semgrep "${VENG_REGISTRY[semgrep]:-}" \
   'the semgrep entry maps to veng_vendor_semgrep specifically'
 assert_eq veng_vendor_trivy "${VENG_REGISTRY[trivy]:-}" \
   'the trivy entry maps to veng_vendor_trivy specifically'
+assert_eq veng_vendor_gitleaks "${VENG_REGISTRY[gitleaks]:-}" \
+  'the gitleaks entry maps to veng_vendor_gitleaks specifically'
 
-t_case 'veng_list, two registered engines'
+t_case 'veng_list, three registered engines, sorted under LC_ALL=C'
 out=$(veng_list)
-assert_eq "$(printf 'semgrep\ntrivy')" "$out" \
-  'listing the registry now prints "semgrep" then "trivy", LC_ALL=C sorted - fails under the stale reading that it still reports only semgrep, or in a different order'
+assert_eq "$(printf 'gitleaks\nsemgrep\ntrivy')" "$out" \
+  'listing the registry now prints "gitleaks" then "semgrep" then "trivy", LC_ALL=C sorted - fails under the stale reading that it still reports fewer engines, or in insertion order rather than sorted'
 rc=0
 veng_list >/dev/null || rc=$?
 assert_eq 0 "$rc" 'listing a non-empty registry is success'
 
-t_case 'veng_vendor_all, two registered engines, no operator-supplied values: refuses on the first one it reaches, alphabetically'
+t_case 'veng_vendor_all, three registered engines, no operator-supplied values: refuses on the first one it reaches, alphabetically'
 rc=0
-# In a subshell: semgrep_vendor's env-var gate calls die(), which calls
+# In a subshell: gitleaks_vendor's env-var gate calls die(), which calls
 # exit() - run in-process it would terminate this whole suite, not just
 # return a status, exactly the same subshell discipline scan.sh's own
 # comment on _scan_require_readable_path documents for the identical
 # reason.
 ( veng_vendor_all ) >"$W/all.out" 2>&1 || rc=$?
 assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
-  '--all now reaches semgrep_vendor (first, alphabetically), which refuses (exit 4) rather than guessing a version/URL/checksum - fails under the stale reading that nothing is registered so this is still a no-op'
-assert_contains "$(cat "$W/all.out")" 'SCOURSH_SEMGREP_VERSION' \
-  'the refusal names the actual env var an operator must set, not just "no"'
+  '--all now reaches gitleaks_vendor FIRST (sorted before semgrep and trivy) and refuses (exit 4) rather than guessing a version/URL/checksum - fails under the stale reading that nothing is registered so this is still a no-op, or that semgrep/trivy is reached first'
+assert_contains "$(cat "$W/all.out")" 'SCOURSH_GITLEAKS_VERSION' \
+  'the refusal names the actual env var an operator must set for the FIRST registered engine reached, not just "no"'
 
 # ---------------------------------------------------------------------------
 # -- section B: real subprocess invocations of the actual script, with
@@ -127,8 +139,8 @@ t_case '--list, real subprocess'
 rc=0
 out=$(PATH=$NO_NET_PATH bash "$TOOL" --list 2>&1) || rc=$?
 assert_eq 0 "$rc" '--list exits 0'
-assert_eq "$(printf 'semgrep\ntrivy')" "$out" \
-  '--list reports "semgrep" then "trivy" as a real subprocess too'
+assert_eq "$(printf 'gitleaks\nsemgrep\ntrivy')" "$out" \
+  '--list reports "gitleaks" then "semgrep" then "trivy" as a real subprocess too'
 
 t_case 'unregistered engine name'
 rc=0
@@ -140,7 +152,7 @@ assert_contains "$out" "unknown engine 'nonexistent-engine'" \
 assert_contains "$out" 'docs/ADAPTERS.md' \
   'the error points at the convention document, not just "no"'
 
-t_case 'registered engine name, no operator-supplied values: refuses, never touches the network'
+t_case 'registered engine name "semgrep", no operator-supplied values: refuses, never touches the network'
 rc=0
 out=$(PATH=$NO_NET_PATH bash "$TOOL" semgrep 2>&1) || rc=$?
 assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
@@ -160,14 +172,24 @@ assert_contains "$out" 'SCOURSH_TRIVY_VERSION' \
 assert_contains "$out" 'never guesses or hardcodes a checksum' \
   'the refusal states the reason (no invented checksum), matching semgrep_vendor'"'"'s own stated policy'
 
+t_case 'registered engine name "gitleaks", no operator-supplied values: refuses, never touches the network'
+rc=0
+out=$(PATH=$NO_NET_PATH bash "$TOOL" gitleaks 2>&1) || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
+  'gitleaks with none of SCOURSH_GITLEAKS_VERSION/URL/SHA256/RULES_URL/RULES_SHA256 set is exit 4 - the identical gate semgrep and trivy above already prove, now proven for the third registry entry too'
+assert_contains "$out" 'SCOURSH_GITLEAKS_VERSION' \
+  'the refusal names the actual env vars an operator must set'
+assert_contains "$out" 'never guesses or hardcodes a checksum' \
+  'the refusal states the reason (no invented checksum), matching this file'"'"'s and vendor.sh'"'"'s own stated policy'
+
 t_case '--all, real subprocess'
 rc=0
 out=$(PATH=$NO_NET_PATH bash "$TOOL" --all 2>&1) || rc=$?
 assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
-  '--all as a real subprocess reaches semgrep (first, alphabetically) and refuses (exit 4) the same way, with curl entirely absent from PATH - proving the refusal happens before any network attempt, not because curl was unavailable'
+  '--all as a real subprocess reaches gitleaks FIRST (sorted before semgrep and trivy) and refuses (exit 4) the same way, with curl entirely absent from PATH - proving the refusal happens before any network attempt, not because curl was unavailable'
 
 t_case 'exit codes never leave 0-5 (tension 14, finding F16)'
-for args in '' '--help' '--list' '--all' '--bogus' 'semgrep' 'trivy'; do
+for args in '' '--help' '--list' '--all' '--bogus' 'semgrep' 'trivy' 'gitleaks'; do
   rc=0
   # shellcheck disable=SC2086
   PATH=$NO_NET_PATH bash "$TOOL" $args >/dev/null 2>&1 || rc=$?
@@ -193,10 +215,13 @@ cat >"$FAKE_BIN/curl" <<'FAKECURL'
 # network call.  Writes deterministic bytes to the --output destination:
 # FAKE_CURL_CONTENT_BIN when the requested URL contains "semgrep-bin",
 # FAKE_CURL_CONTENT_RULES when it contains "semgrep-rules",
-# FAKE_CURL_CONTENT_TRIVY_BIN when it contains "trivy-bin", else
-# FAKE_CURL_CONTENT (or a fixed default) - letting one semgrep_vendor call,
-# which fetches two different URLs, be verified against two different
-# known-content checksums in a single real invocation.
+# FAKE_CURL_CONTENT_TRIVY_BIN when it contains "trivy-bin", the same two
+# generic defaults reused for "gitleaks-bin"/"gitleaks-rules" (this ticket,
+# the gitleaks fetch/verify section below), else FAKE_CURL_CONTENT (or a
+# fixed default) - letting one semgrep_vendor, trivy_vendor, or
+# gitleaks_vendor call, each of
+# which fetches one or two different URLs, be verified against one or two
+# different known-content checksums in a single real invocation.
 set -Eeuo pipefail
 out='' url=''
 args=("$@")
@@ -216,6 +241,8 @@ case $url in
   *semgrep-bin*) printf '%s' "${FAKE_CURL_CONTENT_BIN:-fake-semgrep-binary-bytes}" >"$out" ;;
   *semgrep-rules*) printf '%s' "${FAKE_CURL_CONTENT_RULES:-fake-semgrep-rules-bytes}" >"$out" ;;
   *trivy-bin*) printf '%s' "${FAKE_CURL_CONTENT_TRIVY_BIN:-fake-trivy-binary-bytes}" >"$out" ;;
+  *gitleaks-bin*) printf '%s' "${FAKE_CURL_CONTENT_BIN:-fake-gitleaks-binary-bytes}" >"$out" ;;
+  *gitleaks-rules*) printf '%s' "${FAKE_CURL_CONTENT_RULES:-fake-gitleaks-rules-bytes}" >"$out" ;;
   *) printf '%s' "${FAKE_CURL_CONTENT:-fake-artifact-bytes}" >"$out" ;;
 esac
 FAKECURL
@@ -296,7 +323,7 @@ assert_eq 'fake-semgrep-rules-bytes' "$(cat "$ADAPTER_COPY/rules/semgrep-rules.y
   'the vendored ruleset holds exactly the checksum-verified bytes for its OWN URL, not the binary'"'"'s - fails under a bug that swapped the two destinations'
 rm -rf "$ADAPTER_COPY"
 
-# trivy_vendor's own end-to-end orchestration (this ticket, the second
+# trivy_vendor's own end-to-end orchestration (the second
 # concrete adapter), against a SCRATCH COPY of
 # modules/iac/adapters/trivy/, never the real one, for the identical
 # reason the semgrep block above uses one.
@@ -335,6 +362,51 @@ assert_eq 'fake-trivy-binary-bytes' "$(cat "$TRIVY_ADAPTER_COPY/bin/trivy" 2>/de
 assert_file_absent "$TRIVY_ADAPTER_COPY/rules" \
   'trivy_vendor never creates a rules/ directory at all - fails under a reading that copied semgrep_vendor'"'"'s two-artifact shape verbatim'
 rm -rf "$TRIVY_ADAPTER_COPY"
+
+# gitleaks_vendor's own end-to-end orchestration (this ticket, the third
+# concrete adapter), against a SCRATCH COPY of
+# modules/sast/adapters/gitleaks/, mirroring the semgrep_vendor section
+# above exactly - same shape, same assertions, third engine.
+GITLEAKS_ADAPTER_COPY=$W/gitleaks-adapter-copy
+rm -rf "$GITLEAKS_ADAPTER_COPY"
+mkdir -p "$GITLEAKS_ADAPTER_COPY"
+cp "$ROOT/modules/sast/adapters/gitleaks/vendor.sh" "$GITLEAKS_ADAPTER_COPY/vendor.sh"
+
+t_case 'gitleaks_vendor: missing operator-supplied values refuses before ever calling curl'
+rc=0
+( unset SCOURSH_GITLEAKS_VERSION SCOURSH_GITLEAKS_URL SCOURSH_GITLEAKS_SHA256 \
+    SCOURSH_GITLEAKS_RULES_URL SCOURSH_GITLEAKS_RULES_SHA256
+  # shellcheck source=/dev/null
+  source "$GITLEAKS_ADAPTER_COPY/vendor.sh"
+  PATH=$NO_NET_PATH gitleaks_vendor ) >"$W/gv.out" 2>&1 || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
+  'gitleaks_vendor with nothing set refuses (exit 4) even with curl entirely unavailable on PATH, proving the env-var gate runs before any fetch attempt'
+
+t_case 'gitleaks_vendor: full success path populates bin/ (executable) and rules/gitleaks.toml, verified end to end'
+GL_BIN_SHA=$(printf '%s' 'fake-gitleaks-binary-bytes' | sha256_of)
+GL_RULES_SHA=$(printf '%s' 'fake-gitleaks-rules-bytes' | sha256_of)
+rc=0
+( export SCOURSH_GITLEAKS_VERSION=8.18.0
+  export SCOURSH_GITLEAKS_URL=https://example.invalid/gitleaks-bin
+  export SCOURSH_GITLEAKS_SHA256=$GL_BIN_SHA
+  export SCOURSH_GITLEAKS_RULES_URL=https://example.invalid/gitleaks-rules
+  export SCOURSH_GITLEAKS_RULES_SHA256=$GL_RULES_SHA
+  # shellcheck source=/dev/null
+  source "$GITLEAKS_ADAPTER_COPY/vendor.sh"
+  PATH="$FAKE_BIN:$PATH" gitleaks_vendor ) >"$W/gv-ok.out" 2>&1 || rc=$?
+assert_eq 0 "$rc" 'gitleaks_vendor succeeds end to end when every value and both checksums are correct'
+assert_file_exists "$GITLEAKS_ADAPTER_COPY/bin/gitleaks" 'the vendored binary lands at bin/gitleaks'
+if [[ -x $GITLEAKS_ADAPTER_COPY/bin/gitleaks ]]; then
+  _t_ok 'the vendored binary is executable'
+else
+  _t_no 'the vendored binary is executable' "not executable: $GITLEAKS_ADAPTER_COPY/bin/gitleaks"
+fi
+assert_file_exists "$GITLEAKS_ADAPTER_COPY/rules/gitleaks.toml" 'the vendored ruleset lands at rules/gitleaks.toml'
+assert_eq 'fake-gitleaks-binary-bytes' "$(cat "$GITLEAKS_ADAPTER_COPY/bin/gitleaks" 2>/dev/null)" \
+  'the vendored binary holds exactly the checksum-verified bytes for its OWN URL, not the ruleset'"'"'s'
+assert_eq 'fake-gitleaks-rules-bytes' "$(cat "$GITLEAKS_ADAPTER_COPY/rules/gitleaks.toml" 2>/dev/null)" \
+  'the vendored ruleset holds exactly the checksum-verified bytes for its OWN URL, not the binary'"'"'s - fails under a bug that swapped the two destinations'
+rm -rf "$GITLEAKS_ADAPTER_COPY"
 
 # ---------------------------------------------------------------------------
 # -- section C: the dual-mode source guard - sourcing this file (as section
