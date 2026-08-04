@@ -122,29 +122,38 @@ Helm-values slice of §6.6's container/orchestration catalog (`modules/iac/helm.
 (`ae03175`) adds the Dockerfile slice (`modules/iac/dockerfile.rules`).
 CloudFormation, bare Kubernetes-manifest checks, and docker-compose checks are all still open under
 §6.6 - see the detailed paragraph below.
-**Step 4's SCA half is also under way, out of sequence, and now five ecosystems in: `ed8c283` shipped
-the npm/yarn/pnpm lockfile slice, `aec866b` shipped the Python slice
-(`requirements.txt`/`poetry.lock`/`Pipfile.lock`) on top of it, `a2d37aa` then added the Ruby slice
-(`Gemfile.lock`), `a1b3c43` added the Java slice (`pom.xml`/`build.gradle`, under check id
-`SCA-JAVA-VULNERABLE_DEP-01`), and `7e7b186` added the PHP/Composer slice (`composer.lock`, under
-`SCA-PHP-VULNERABLE_DEP-01`) - see the detailed paragraph below.**
+**Step 4's SCA half is also under way, out of sequence, and now six ecosystems in - every ecosystem
+`docs/DESIGN.md` §6.5 names: `ed8c283` shipped the npm/yarn/pnpm lockfile slice, a follow-on ticket
+shipped the Python slice (`requirements.txt`/`poetry.lock`/`Pipfile.lock`) on top of it, `11e7c97` then
+added the Ruby slice (`Gemfile.lock`), a later ticket added the Java slice
+(`pom.xml`/`build.gradle`, under check id `SCA-JAVA-VULNERABLE_DEP-01`), `7e7b186` added the
+PHP/Composer slice (`composer.lock`, `SCA-PHP-VULNERABLE_DEP-01`), and this ticket adds the Go slice
+(`go.mod`/`go.sum`, `SCA-GO-VULNERABLE_DEP-01`) - see the detailed paragraph below.**
 Ecosystems do **not** map one-to-one onto entry points, so do not infer coverage from the number of
-`sca_scan_*_tree` functions: `modules/sca/run.sh`'s `_sca_run_module` calls exactly three run functions -
-`_sca_npm_run`, whose `sca_scan_tree` walks npm, RubyGems **and** Composer in one call (Composer's parser
-lives in its own `modules/sca/php_engine.sh`; the three share one `unknown_count` table because
-`SCA-COV-UNKNOWN_VERSION-01`'s fingerprint carries no ecosystem component), then `_sca_py_run`
-(`sca_scan_python_tree`) and `_sca_java_run` (`sca_scan_java_tree`), which are separate calls only to
-avoid disturbing the already-tested npm path.
-Go (`go.mod`/`go.sum`) is the one remaining ecosystem `docs/DESIGN.md` §6.5 names, so SCA is not yet
-complete.
-This block previously said "four ecosystems in", omitted PHP from the landing list, and claimed each
-ecosystem had its own entry point; PHP had already landed in `7e7b186` without either doc being updated,
-which is the recurrence the process rule above exists to stop.
-`ab23b79` corrected the trailing "Go and PHP ... are still open" sentence concurrently with this change;
-the count, the landing list and the entry-point claim above are the rest of the same defect.
-The next tasks are therefore step 3's remaining `nosql.rules`/`ldap.rules`, step 4's remaining SCA
-ecosystem (Go), and step 4's remaining container/orchestration and CloudFormation IaC checks -
-not step 3 alone.
+tree-walk functions - six ecosystems are covered by **four**, called from `modules/sca/run.sh`'s
+`_sca_run_module` as `_sca_npm_run`, `_sca_py_run`, `_sca_java_run` and `_sca_go_run`:
+
+| entry point | file | ecosystems |
+|---|---|---|
+| `sca_scan_tree` | `engine.sh` | npm, RubyGems, Composer |
+| `sca_scan_python_tree` | `engine.sh` | pypi |
+| `sca_scan_java_tree` | `engine.sh` | maven |
+| `sca_go_scan_tree` | `go_engine.sh` | Go |
+
+Ruby and PHP have no entry point of their own: `sca_scan_tree` walks npm, `Gemfile.lock` **and**
+`composer.lock` in one call, sharing one `unknown_count` table, because
+`SCA-COV-UNKNOWN_VERSION-01`'s fingerprint carries no ecosystem component and two calls would emit two
+findings colliding on one fingerprint. Composer's parser lives in `php_engine.sh` and Go's in
+`go_engine.sh`, but a separate *file* is not a separate entry point - and note Go's is spelled
+`sca_go_scan_tree`, which a `sca_scan_*_tree` glob does not even match.
+Neither the Java nor the PHP row of this paragraph was written by the ticket that shipped it:
+`a1b3c43` and `7e7b186` both landed without updating this section, and `ab23b79` ("Fix stale
+'Go/Java/PHP remain' SCA status text") had to go back and add them - the stale-doc failure the process
+rule above exists to prevent, twice.
+With Go landed, no §6.5 manifest format is outstanding; what step 4 still owes is its remaining
+container/orchestration and CloudFormation IaC checks.
+The next tasks are therefore step 3's remaining `nosql.rules`/`ldap.rules` and those remaining IaC
+checks - not step 3 alone.
 
 Because `checks_registry_load` (`lib/checks.sh`) globs every `*.rules` file under `modules/iac/` with
 no per-pack allowlist, all three IaC packs load together on any `scan.sh iac` run - `tests/suites/iac.sh`
@@ -376,9 +385,9 @@ is the count `tests/lint-rules.sh`'s E060 fixture-coverage note now reports.
 It landed ahead of step 3's remaining `nosql`/`ldap` rule packs and ahead of step 4's own SCA half, the
 same "land what's ready, out of strict step order" pattern as `lib/http.sh` above.
 `nosql`/`ldap`, the rest of §6.6's container/orchestration catalog (bare Kubernetes manifests and
-docker-compose), CloudFormation, and step 4's SCA half - now covered in its own paragraph below, since
-it has since landed its npm, Python, Ruby, Java, and PHP slices - all remain open (Go outstanding for
-SCA); do not read this paragraph as "step 4 is done."
+docker-compose), and CloudFormation all remain open; do not read this paragraph as "step 4 is done."
+Step 4's SCA half is covered in its own paragraph below and, with the Go slice, has landed every
+ecosystem `docs/DESIGN.md` §6.5 names - npm, Python, Ruby, Java, PHP, and Go.
 
 **A third piece of step 4 has now landed, in three sub-tickets: `modules/sca/` (the SCA module's npm,
 Python, and Ruby slices).**
@@ -424,15 +433,34 @@ all three ecosystems.
 and RubyGems rows sorted together under `LC_ALL=C` (tension 25's own `look`-compatible sort
 requirement).
 
-**Five of `docs/DESIGN.md` §6.5's six ecosystems have landed** - npm (`ed8c283`), Python (`aec866b`),
-Ruby (`a2d37aa`), Java (`a1b3c43`) and PHP (`7e7b186`) - and Go (`go.mod`/`go.sum`) alone is still open,
-so step 4's SCA half is not complete.
-This sentence read "Go, Java, and PHP ... are still open" until `ab23b79` narrowed it to Go; the
-paragraph above it still describes only the npm, Python and Ruby slices, so check the tree rather than
-the prose: `modules/sca/` holds `engine.sh`, `php_engine.sh` and `run.sh`, whose `_sca_run_module` calls
-`_sca_npm_run` (npm + RubyGems + Composer in one `sca_scan_tree` call), `_sca_py_run` and
-`_sca_java_run`; the shipped ids are `SCA-NPM-`, `SCA-PY-`, `SCA-RUBY-`, `SCA-JAVA-` and
-`SCA-PHP-VULNERABLE_DEP-01`, and no `SCA-GO-*` id or Go entry point exists.
+Java (`pom.xml`/`build.gradle`, `a1b3c43`) and PHP/Composer (`composer.lock`, `7e7b186`) landed after
+that paragraph was written, each without updating this section; `ab23b79` went back and corrected the
+"still open" sentences for both.
+
+**The Go slice (`go.mod`/`go.sum`) landed last, and is the first SCA ecosystem to ship as its own
+engine file: `modules/sca/go_engine.sh`.**
+PHP had already broken `engine.sh`'s monopoly with `modules/sca/php_engine.sh`, but PHP's parser is
+still driven from inside `sca_scan_tree`; Go is fully standalone - `sca_go_scan_tree` is its own entry
+point, called from its own `_sca_go_run` in `modules/sca/run.sh`, exactly as that file's own header
+invited a further ecosystem to land ("do not fork this file per ecosystem").
+It parses `go.mod`'s `require` lines (single-line and block form), reading a trailing `// indirect`
+comment as the direct-vs-transitive signal, and falls back to `go.sum` when no `go.mod` sits beside it -
+in which case `dependency_type` is reported **`unknown`**, never guessed.
+`go.mod` wins when both are present in one directory.
+Normalisation follows tension 25's frozen Go row: the `/vN` major-version suffix is **retained** and a
+`+incompatible` version suffix is **stripped** before the `data/advisories.db` lookup, and both halves
+are pinned by a test that fails under the naive opposite reading.
+`replace`/`exclude` directives are **not** resolved - a stated limitation recorded in
+`go_engine.sh`'s own header and surfaced at runtime as a
+`reason=go_replace_exclude_directives_not_resolved` coverage_reduction, not hidden.
+`sca_go_scan_tree` does its own `data/advisories.db`-readable check (unlike `sca_scan_python_tree` and
+`sca_scan_java_tree`, which rely on `_sca_npm_run` having gone first), so `_sca_go_run` carries no
+ordering requirement; it is still called last for a stable emission order.
+Like Python and Java, Go emits its **own** `SCA-COV-UNKNOWN_VERSION-01` roll-up rather than joining
+npm/Ruby/PHP's shared one - the same stated, filed cross-ecosystem-merge gap, not a new one.
+With Go landed, step 4's SCA half covers every §6.5 manifest format; `tests/fixtures/sca/advisories.db`
+now carries `Go` rows alongside `npm`, `pypi`, `RubyGems`, `composer`, and `maven`, all sorted together
+under `LC_ALL=C` (tension 25's `look`-compatible sort requirement).
 
 **A third piece of step 4's IaC half has since landed on top of the Terraform one above:
 `modules/iac/docker-compose.rules` (the "IaC: docker-compose checks via the pattern-rule engine"
@@ -490,15 +518,22 @@ for IaC checks (including `IAC-K8S-*`) too - `modules/iac/` is removed from the 
 list below accordingly.
 Everything else in the original list is still true: `modules/dast/`, `modules/cloud/`, `lib/engines.sh`,
 `lib/awscli.sh`, SARIF, the compliance report, and `state/` do not exist yet.
-`modules/sca/` also landed anyway, out of sequence - see above.
+`modules/sca/` also landed anyway, out of sequence - see above - and now holds `run.sh`, `engine.sh`,
+`php_engine.sh`, and `go_engine.sh`.
 Every `scan_dispatch` call for a module other than `sast`, `iac`, or `sca` remains a logged
 `coverage_reduction` no-op (`reason=not_yet_built`); `scan_dispatch sca` is no longer one of them, since
-`modules/sca/run.sh` now does real work for the npm/yarn/pnpm ecosystem.
-`_scan_apply_profile_filter`'s check-registry side is a separate mechanism, though: it loads check ids
-from on-disk `*.rules` files (`checks_registry_load`), and `modules/sca/` ships none - its findings are
-emitted directly by `engine.sh` rather than through the record/pattern-rule mechanism SAST and IaC use -
-so an SCA check set still finds an empty registry (`reason=no_check_registry_on_disk_yet`) even though
-the module itself now runs.
+`modules/sca/run.sh` now does real work for npm/yarn/pnpm, Python, RubyGems, Maven, Composer, and Go.
+`sca` is DIFFERENT from that group in a way worth stating precisely, since it is easy to conflate the
+two separate coverage_reduction mechanisms `scan.sh` has: `scan_dispatch sca` itself no longer no-ops
+(its `reason=not_yet_built` no longer fires - `modules/sca/run.sh` is real), but
+`_scan_apply_profile_filter sca` still records `reason=no_check_registry_on_disk_yet` on every run, and
+always will - by design, not because the module is unbuilt.
+`_scan_apply_profile_filter`'s check-registry side loads check ids from on-disk `*.rules` files
+(`checks_registry_load`), and `modules/sca/` ships none: SCA is a table lookup against
+`data/advisories.db`, not a pattern-rule engine, so it has no `modules/sca/checks.rules` registry to
+ever populate (`modules/sca/run.sh`'s own header states this explicitly) and its findings are emitted
+directly by the engine files instead.
+Both mechanisms are real and tested against fixtures.
 Diff classification (tension 12) and baseline suppression (tension 11 steps 5 and 6) belong to step 7;
 step 1 ships the primitives they call - the merge, the fingerprint, `findings_mark_suppressed`, and
 `classify_derived`, which is pure and already tested against tension 6's whole case table.

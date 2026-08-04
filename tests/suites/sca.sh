@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# tests/suites/sca.sh - modules/sca/{engine.sh,php_engine.sh,run.sh}: npm
-# lockfile parsing (package-lock.json v1/v2/v3, yarn.lock, pnpm-lock.yaml),
-# Python requirements.txt/poetry.lock/Pipfile.lock parsing, Ruby/RubyGems
-# lockfile parsing (Gemfile.lock), Java build-manifest parsing (pom.xml,
-# build.gradle), PHP/Composer lockfile parsing (composer.lock,
-# cross-referenced against composer.json), and the data/advisories.db
-# exact-match lookup shared across ecosystems (docs/DESIGN.md §13 step 4,
-# docs/FOUNDATION.md tension 25).
+# tests/suites/sca.sh - modules/sca/{engine.sh,php_engine.sh,go_engine.sh,run.sh}:
+# npm lockfile parsing (package-lock.json v1/v2/v3, yarn.lock,
+# pnpm-lock.yaml), Python requirements.txt/poetry.lock/Pipfile.lock parsing,
+# Ruby/RubyGems lockfile parsing (Gemfile.lock), Java build-manifest parsing
+# (pom.xml, build.gradle), PHP/Composer lockfile parsing (composer.lock,
+# cross-referenced against composer.json), Go module-file parsing
+# (go.mod/go.sum), and the data/advisories.db exact-match lookup shared
+# across ecosystems (docs/DESIGN.md §13 step 4, docs/FOUNDATION.md
+# tension 25).
 #
 # Covers the npm ticket's acceptance criteria:
 #   - `scan_dispatch sca` no longer no-ops for a fixture repo containing an
@@ -48,7 +49,7 @@
 #   - a Maven coordinate known to the db but at an unmatched exact version
 #     contributes to the SHARED SCA-COV-UNKNOWN_VERSION-01 roll-up
 #
-# ...and this ticket's (PHP/Composer) own acceptance criteria:
+# ...the PHP/Composer ticket's own acceptance criteria:
 #   - a known-vulnerable pinned package from a fixture composer.lock is
 #     reported via `scan_dispatch sca`, tagged SCA-PHP-VULNERABLE_DEP-01
 #   - a mixed-case package name is normalised to lowercase before lookup
@@ -60,12 +61,27 @@
 #     SAME shared SCA-COV-UNKNOWN_VERSION-01 roll-up npm contributes to -
 #     never a second, composer-only roll-up finding in the same run
 #
+# ...and the Go ticket's own acceptance criteria, in its own section below
+# ("-- Go: ... --" onward):
+#   - a fixture Go project reports SCA-GO-VULNERABLE_DEP-01 for a
+#     known-vulnerable pinned dependency declared in go.mod/go.sum
+#   - a /vN module suffix is RETAINED and a +incompatible version suffix is
+#     STRIPPED before lookup, pinned against the naive (unstripped) reading
+#   - direct vs transitive is read from go.mod's own `// indirect` marker
+#     when go.mod is present, and honestly reported "unknown" when only
+#     go.sum is available
+#   - a dependency with no fixed version is flagged accept-risk
+#   Go's roll-up is deliberately its OWN SCA-COV-UNKNOWN_VERSION-01 finding
+#   rather than the shared one npm/Ruby/PHP feed - see sca_go_scan_tree's own
+#   header for that stated limitation, which is why the Go section asserts
+#   exactly one roll-up per Go-only scan rather than a merged breakdown.
+#
 # None of this depends on a real, production-scale data/advisories.db:
 # tools/vendor-engines.sh (the only script that populates one) is never run
 # in this repo/CI (AGENTS.md), so every case here points
 # SCOURSH_SCA_ADVISORIES_DB at the small, committed
 # tests/fixtures/sca/advisories.db instead (now carrying npm, pypi,
-# RubyGems, composer, and maven fixture rows).
+# RubyGems, composer, maven, and Go fixture rows).
 #
 # shellcheck shell=bash
 # shellcheck disable=SC2016
@@ -79,6 +95,11 @@ source "$ROOT/modules/sca/engine.sh"
 # ecosystems this suite covers, same convention modules/sca/run.sh uses.
 # shellcheck source=modules/sca/php_engine.sh
 source "$ROOT/modules/sca/php_engine.sh"
+# go_engine.sh is a separate file, not part of engine.sh - it must be sourced
+# for the Go section below to see sca_go_normalize_module/_sca_go_parse_mod/
+# sca_go_scan_tree at all.
+# shellcheck source=modules/sca/go_engine.sh
+source "$ROOT/modules/sca/go_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
 
@@ -950,6 +971,181 @@ assert_contains "$E2E_COMPOSER_RUNJSON" '"SCA-PHP-VULNERABLE_DEP-01"' \
   'checks_run in run.json shows SCA-PHP-VULNERABLE_DEP-01 actually executed through the real scan.sh entry point (scan_dispatch sca), not just when the module is sourced standalone'
 assert_contains "$E2E_COMPOSER_RUNJSON" '"sca":4' \
   'run.json by_module counts 4 live findings for sca - 3 vulnerable composer packages (acme/widget, acme/mixedcase, acme/legacy-lib) plus the one roll-up'
+
+# =============================================================================
+printf -- '\n-- Go: name normalisation (docs/FOUNDATION.md tension 25'"'"'s frozen Go row) --\n'
+# =============================================================================
+t_case 'Go module normalisation RETAINS a /vN major-version suffix'
+assert_eq 'github.com/vulnerable/incompatible/v3' \
+  "$(sca_go_normalize_module 'github.com/vulnerable/incompatible/v3')" \
+  'the /vN suffix must be retained, not stripped - a module path with no /vN passes through unchanged either way, so this only proves the RETAIN half'
+assert_eq 'github.com/pkg/errors' "$(sca_go_normalize_module 'github.com/pkg/errors')" \
+  'a module path with no /vN suffix is unaffected'
+
+t_case 'Go version normalisation STRIPS a +incompatible suffix'
+assert_eq 'v3.2.1' "$(sca_go_normalize_version 'v3.2.1+incompatible')" \
+  'the +incompatible suffix must be stripped before lookup'
+assert_eq 'v0.9.1' "$(sca_go_normalize_version 'v0.9.1')" \
+  'a version with no +incompatible suffix passes through unchanged'
+
+t_case 'AC: normalisation is required, not cosmetic - the naive (unstripped) reading misses the exact advisory row'
+assert_status 1 'looking up the RAW pinned version with +incompatible still attached misses entirely' \
+  sca_lookup_exact Go 'github.com/vulnerable/incompatible/v3' 'v3.2.1+incompatible' "$DB"
+assert_status 0 'the normalized version (the same module@version, +incompatible stripped) matches the same db row' \
+  sca_lookup_exact Go 'github.com/vulnerable/incompatible/v3' 'v3.2.1' "$DB"
+
+t_case 'AC: the OTHER naive misreading - stripping /vN instead of retaining it - also misses'
+assert_status 1 'looking up the module path WITHOUT its /v3 suffix misses too - proves /vN must be retained' \
+  sca_lookup_exact Go 'github.com/vulnerable/incompatible' 'v3.2.1' "$DB"
+
+# =============================================================================
+printf -- '\n-- Go: go.mod parsing - require lines, block form, and // indirect --\n'
+# =============================================================================
+GOMOD_OUT=$(_sca_go_parse_mod "$FIXTURES/go-mod/go.mod")
+t_case 'go.mod: a bare require line (no "// indirect") is direct'
+assert_contains "$GOMOD_OUT" $'github.com/pkg/errors\x1fv0.9.1\x1fdirect' \
+  'github.com/pkg/errors carries no // indirect comment - direct'
+assert_contains "$GOMOD_OUT" $'github.com/no-fix/pkg\x1fv1.0.0\x1fdirect' \
+  'github.com/no-fix/pkg carries no // indirect comment - direct'
+assert_contains "$GOMOD_OUT" $'github.com/unknown-version/pkg\x1fv1.0.0\x1fdirect' \
+  'github.com/unknown-version/pkg carries no // indirect comment - direct'
+
+t_case 'go.mod: a "// indirect" require line is transitive, and its RAW (unnormalised) version is what the parser prints'
+assert_contains "$GOMOD_OUT" $'github.com/vulnerable/incompatible/v3\x1fv3.2.1+incompatible\x1ftransitive' \
+  'the parser prints the pinned version exactly as go.mod wrote it (+incompatible still attached) - normalisation is the caller'"'"'s job (sca_go_scan_tree), not the parser'"'"'s, so this fails if the parser normalised prematurely'
+
+# =============================================================================
+printf -- '\n-- Go: go.sum parsing - no direct/transitive signal, module-zip/go.mod dedup --\n'
+# =============================================================================
+GOSUM_OUT=$(_sca_go_parse_sum "$FIXTURES/go-sum-only/go.sum")
+t_case 'go.sum: every entry is reported "unknown" - go.sum alone carries no direct/transitive signal'
+assert_contains "$GOSUM_OUT" $'github.com/pkg/errors\x1fv0.9.1\x1funknown' 'pkg/errors is unknown from go.sum alone'
+assert_contains "$GOSUM_OUT" $'github.com/only-in-sum/pkg\x1fv2.0.0\x1funknown' 'only-in-sum/pkg is unknown from go.sum alone'
+
+t_case 'go.sum: the module-zip hash line and its own "/go.mod" hash line dedupe to ONE row'
+_GOSUM_ERRORS_COUNT=$(printf '%s\n' "$GOSUM_OUT" | grep -c '^github.com/pkg/errors' || true)
+assert_eq 1 "$_GOSUM_ERRORS_COUNT" \
+  'pkg/errors appears TWICE in go.sum (the module hash line and its "v0.9.1/go.mod" sibling) but must dedupe to one parsed row - fails if the "/go.mod" suffix were left attached to the version, which would also silently corrupt the lookup version'
+
+# =============================================================================
+printf -- '\n-- Go: sca_go_scan_tree with go.mod present - direct/transitive, accept-risk, go.mod precedence --\n'
+# =============================================================================
+GO_RUNDIR=$W/run-go-mod
+rm -rf "$GO_RUNDIR"
+run_init "$GO_RUNDIR"
+SCOURSH_PATH_ROOT=$(path_root_cell "$FIXTURES/go-mod")
+SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$FIXTURES/go-mod")
+export SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+export SCOURSH_SCA_ADVISORIES_DB=$DB
+
+sca_go_scan_tree "$FIXTURES/go-mod"
+findings_merge "$GO_RUNDIR"
+GO_FINDINGS=$(_sca_findings "$GO_RUNDIR")
+
+t_case 'AC: scan_dispatch sca reports SCA-GO-VULNERABLE_DEP-01 for a known-vulnerable pinned Go dependency'
+assert_contains "$GO_FINDINGS" 'SCA-GO-VULNERABLE_DEP-01' \
+  'at least one SCA-GO-VULNERABLE_DEP-01 finding was emitted for the go-mod fixture'
+
+t_case 'AC: direct vs transitive is read from go.mod'"'"'s own "// indirect" marker'
+assert_contains "$GO_FINDINGS" 'dependency_type: direct' 'a direct dependency finding carries dependency_type: direct'
+assert_contains "$GO_FINDINGS" 'dependency_type: transitive' \
+  'the "// indirect" dependency (github.com/vulnerable/incompatible/v3) carries dependency_type: transitive'
+
+t_case 'AC: normalisation is visible in the evidence, not a silent rewrite of what was pinned'
+assert_contains "$GO_FINDINGS" 'pinned_version: v3.2.1+incompatible (normalized to v3.2.1 for lookup' \
+  'the finding for the /vN + +incompatible dependency states both the raw pinned version and the normalized lookup version'
+
+t_case 'AC: a no-fixed-version advisory is flagged as an accept-risk candidate'
+assert_contains "$GO_FINDINGS" 'accept_risk_candidate: true' \
+  'github.com/no-fix/pkg@v1.0.0 (SCA-FIXTURE-ADVISORY-008, empty fixed_versions) is flagged accept_risk_candidate: true'
+assert_contains "$GO_FINDINGS" 'fixed_versions: none published' \
+  'the empty fixed_versions db field renders as "none published"'
+assert_contains "$GO_FINDINGS" 'accept_risk_candidate: false' \
+  'a dependency WITH a fixed version is NOT flagged as accept-risk - proves the flag is not stuck on one constant value'
+
+t_case 'go.mod precedence: go.sum-only entries are NOT scanned when go.mod is present in the same directory'
+assert_not_contains "$GO_FINDINGS" 'only-in-sum' \
+  'github.com/only-in-sum/pkg@v9.9.9 exists in the go-mod fixture'"'"'s own go.sum but NOT in its go.mod - go.mod, not go.sum, is authoritative when both are present, so this must be absent entirely'
+
+t_case 'AC: a pinned version the db does not know about at all rolls up to SCA-COV-UNKNOWN_VERSION-01, not silently dropped or per-package noise'
+_GO_UNKNOWN_COUNT=$(printf '%s\n' "$GO_FINDINGS" | grep -c '^SCA-COV-UNKNOWN_VERSION-01' || true)
+assert_eq 1 "$_GO_UNKNOWN_COUNT" \
+  'exactly one roll-up finding - github.com/unknown-version/pkg@v1.0.0 is a known package (db has it at v9.9.9) pinned at an unmatched exact version'
+assert_contains "$GO_FINDINGS" 'SCA: 1 pinned dependency version' \
+  'the roll-up title states the correct count (1: only unknown-version/pkg)'
+
+t_case 'run.json: checks_run records SCA-GO-VULNERABLE_DEP-01 as run'
+assert_contains "$(cat "$GO_RUNDIR/meta/checks_run" 2>/dev/null)" 'SCA-GO-VULNERABLE_DEP-01' \
+  'SCA-GO-VULNERABLE_DEP-01 is recorded as run'
+
+unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+
+# =============================================================================
+printf -- '\n-- Go: sca_go_scan_tree with ONLY go.sum - honest "unknown", never guessed --\n'
+# =============================================================================
+GO_SUM_RUNDIR=$W/run-go-sum-only
+rm -rf "$GO_SUM_RUNDIR"
+run_init "$GO_SUM_RUNDIR"
+SCOURSH_PATH_ROOT=$(path_root_cell "$FIXTURES/go-sum-only")
+SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$FIXTURES/go-sum-only")
+export SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+export SCOURSH_SCA_ADVISORIES_DB=$DB
+
+sca_go_scan_tree "$FIXTURES/go-sum-only"
+findings_merge "$GO_SUM_RUNDIR"
+GO_SUM_FINDINGS=$(_sca_findings "$GO_SUM_RUNDIR")
+
+t_case 'AC: with no go.mod, a vulnerable pinned dependency from go.sum alone is still reported'
+assert_contains "$GO_SUM_FINDINGS" 'SCA-GO-VULNERABLE_DEP-01' \
+  'github.com/pkg/errors@v0.9.1 is found via go.sum alone'
+
+t_case 'AC: with no go.mod present, dependency_type is honestly "unknown", never guessed direct or transitive'
+assert_contains "$GO_SUM_FINDINGS" 'dependency_type: unknown' \
+  'go.sum alone carries no direct/transitive signal, so the finding must say unknown rather than pick one'
+assert_not_contains "$GO_SUM_FINDINGS" 'dependency_type: direct' \
+  'no go.mod exists in this fixture directory - nothing here may be labeled direct'
+assert_not_contains "$GO_SUM_FINDINGS" 'dependency_type: transitive' \
+  'no go.mod exists in this fixture directory - nothing here may be labeled transitive'
+
+t_case 'a package with NO advisories.db rows at all does not appear in the roll-up or as a finding'
+assert_not_contains "$GO_SUM_FINDINGS" 'only-in-sum' \
+  'github.com/only-in-sum/pkg has no db rows whatsoever (sca_package_known is false for it) - absence is silent, not an unknown-version count'
+
+unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+
+# =============================================================================
+printf -- '\n-- Go: data/advisories.db absent - an honest coverage_reduction, never a crash --\n'
+# =============================================================================
+GO_RUNDIR3=$W/run-go-no-db
+rm -rf "$GO_RUNDIR3"
+run_init "$GO_RUNDIR3"
+SCOURSH_PATH_ROOT=$(path_root_cell "$FIXTURES/go-mod")
+SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$FIXTURES/go-mod")
+export SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+export SCOURSH_SCA_ADVISORIES_DB=$W/does-not-exist-go.db
+
+t_case 'sca_go_scan_tree with no readable db records coverage_reduction and does not die'
+assert_status 0 'a missing advisories.db is a declared reduction, not a fatal error' \
+  sca_go_scan_tree "$FIXTURES/go-mod"
+sca_go_scan_tree "$FIXTURES/go-mod" >/dev/null 2>&1 || true
+assert_contains "$(cat "$GO_RUNDIR3/meta/coverage_reduction" 2>/dev/null)" 'no_advisories_db_on_disk' \
+  'the honest reason is recorded in run.json (via meta/coverage_reduction)'
+
+unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+
+# =============================================================================
+printf -- '\n-- Go: end-to-end - a real scan.sh subprocess, scan_dispatch sca picks up Go too --\n'
+# =============================================================================
+t_case 'scan.sh sca --path against the Go fixture exits 0 and reports the vulnerable dependency'
+GO_E2E_RUNDIR=$W/run-go-e2e
+rm -rf "$GO_E2E_RUNDIR"
+assert_status 0 'a real subprocess against the go-mod fixture, with the fixture db, exits clean' \
+  env SCOURSH_SCA_ADVISORIES_DB="$DB" bash "$ROOT/scan.sh" sca --path "$FIXTURES/go-mod" --out "$GO_E2E_RUNDIR"
+GO_E2E_RUNJSON=$(cat "$GO_E2E_RUNDIR/run.json" 2>/dev/null)
+assert_contains "$GO_E2E_RUNJSON" '"SCA-GO-VULNERABLE_DEP-01"' \
+  'checks_run in run.json shows the Go check actually executed through the real scan.sh entry point (scan_dispatch sca -> _sca_go_run), not just when go_engine.sh is sourced standalone'
+assert_contains "$GO_E2E_RUNJSON" '"sca":4' \
+  'run.json by_module counts 4 live findings for sca - 3 vulnerable Go dependencies plus the one unknown-version roll-up'
 
 t_summary 'sca' || FAILED=1
 exit "${FAILED:-0}"
