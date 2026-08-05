@@ -1,0 +1,16 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-NPM-1",
+  "summary": "fixture: prototype pollution in left-pad-fixture's merge()",
+  "database_specific": {"severity": "HIGH"},
+  "affected": [
+    {
+      "package": {"ecosystem": "npm", "name": "left-pad-fixture"},
+      "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.1.0"}]}],
+      "versions": ["1.0.0", "1.0.1", "1.0.2"]
+    },
+    {
+      "package": {"ecosystem": "PyPI", "name": "decoy-should-not-appear"},
+      "versions": ["9.9.9"]
+    }
+  ]
+}

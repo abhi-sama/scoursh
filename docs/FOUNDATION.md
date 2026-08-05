@@ -3651,6 +3651,38 @@ directory anywhere is the concrete proof, not merely an assertion, that `docs/DE
 silently continue native-only" already holds for the only case that exists today: every adapter, for
 every module.
 
+**The second, unrelated responsibility the paragraph above names as unimplemented has since landed** -
+a later ticket ("Implement tools/vendor-engines.sh's advisories.db/versions.db expansion") added the
+`advisories` command namespace `tools/vendor-engines.sh`'s own §3 now documents: `VENG_ADVISORY_REGISTRY`,
+`veng_advisories_list`/`veng_advisories_one`/`veng_advisories_all`, and one `veng_advisories_<ecosystem>`
+function per `docs/DESIGN.md` §6.5 ecosystem (npm, PyPI, Maven, Go, RubyGems, Composer) - kept
+structurally separate from `VENG_REGISTRY`/`veng_vendor_one`/`veng_vendor_all`/`veng_list` exactly as
+this section's own header note required, with its own `advisories` branch in `veng_main` rather than a
+name collision with a registered `<engine>`.
+Each ecosystem resolves real advisory data via OSV.dev (`https://api.osv.dev/v1/vulns/<id>`), the same
+cross-ecosystem, open-source vulnerability database `govulncheck`/`pip-audit`/`osv-scanner` are
+themselves built on - chosen because OSV's own schema already carries a per-advisory
+`affected[].versions` array, the exact ecosystem-tool-computed version enumeration tension 25 asks for,
+so this script still performs no range arithmetic of its own.
+Every advisory id is operator-supplied via `SCOURSH_ADVISORY_<ECOSYSTEM>_IDS`, never guessed or
+hardcoded - the identical discipline this file's own `semgrep_vendor` narrative already established for
+a release URL/checksum.
+JSON parsing uses `python3`'s stdlib `json` module rather than a hand-rolled bash/grep parser (this
+script runs on a networked, operator-controlled box with real tooling, never in the air-gapped scan-time
+path), and per-ecosystem name normalisation reuses `modules/sca/engine.sh`'s, `php_engine.sh`'s and
+`go_engine.sh`'s own `sca_*_normalize_name`/`sca_go_normalize_version` functions verbatim, lazily
+sourced, so the writer and the reader of `data/advisories.db` can never drift apart.
+`data/versions.db` is written by the identical `_veng_advisories_write_db` call, mirroring tension 25's
+own "the same shape and the same rule" - its own, separate banner-matching product catalog (a bare web
+server or TLS library with no SCA-ecosystem manifest at all) is a stated gap this ticket does not close,
+not silently assumed covered.
+`tests/suites/vendor-engines-advisories.sh` is the fixture-driven proof, against hand-authored,
+OSV.dev-*shaped* (never live-fetched) fixtures under `tests/fixtures/vendor-engines/osv/` - the identical
+"no live network calls in CI" posture `tests/fixtures/sca/advisories.db` already established for that
+data's READER side.
+`docs/ADAPTERS.md` §10 and this script's own header are both updated in the same change to stop calling
+this responsibility unimplemented.
+
 ---
 
 ## Cross-cutting consequences

@@ -586,6 +586,42 @@ new and passes; `tests/suites/vendor-engines.sh` gained the equivalent `trivy_ve
 section, against its own scratch copy of the adapter directory.
 `docs/ADAPTERS.md` §9's roster table now names this second row too.
 
+**`tools/vendor-engines.sh`'s OTHER, unrelated responsibility - tension 25's `data/advisories.db`/
+`data/versions.db` expansion, named as deliberately unbuilt by the step-9 scaffold paragraph above - has
+now landed too, as its own ticket ("Implement tools/vendor-engines.sh's advisories.db/versions.db
+expansion (tension 25)"), independent of and structurally separate from the semgrep/trivy/gitleaks
+adapter work above.**
+It adds the `advisories` command namespace to `tools/vendor-engines.sh` §3: a SEPARATE associative array
+(`VENG_ADVISORY_REGISTRY`, never `VENG_REGISTRY`), separate functions (`veng_advisories_list`/
+`veng_advisories_one`/`veng_advisories_all`, never `veng_vendor_*`), and its own `advisories` branch in
+`veng_main`, exactly as the scaffold paragraph's own instruction required - an `<engine>` name and an
+ecosystem name can never be mistaken for each other.
+It covers all six `docs/DESIGN.md` §6.5 ecosystems (npm, PyPI, Maven, Go, RubyGems, Composer), one
+`veng_advisories_<ecosystem>` function each, resolving real advisory data from OSV.dev
+(`https://api.osv.dev/v1/vulns/<id>`) - the same cross-ecosystem vulnerability database
+`govulncheck`/`pip-audit`/`osv-scanner` are themselves built on, chosen because OSV's schema already
+carries a per-advisory `affected[].versions` array (the exact, ecosystem-tool-computed exact-version
+enumeration tension 25 asks for), so this script still performs no range arithmetic of its own.
+Every advisory id is operator-supplied via `SCOURSH_ADVISORY_<ECOSYSTEM>_IDS`, never guessed or
+hardcoded, mirroring `semgrep_vendor`'s own "operator supplies the fact, this script only
+fetches/transforms it" discipline.
+JSON parsing uses `python3`'s stdlib `json` module (this script runs on a networked, operator-controlled
+box with real tooling, never in the air-gapped scan-time path); per-ecosystem name normalisation reuses
+`modules/sca/engine.sh`'s, `php_engine.sh`'s and `go_engine.sh`'s own `sca_*_normalize_name`/
+`sca_go_normalize_version` functions verbatim (lazily sourced), so the writer and the reader of
+`data/advisories.db` can never drift apart on the frozen normalisation table.
+`data/versions.db` is written by the identical `_veng_advisories_write_db` call, mirroring tension 25's
+own "the same shape and the same rule" - its own, separate banner-matching product catalog (a bare web
+server or TLS library with no SCA-ecosystem manifest at all) is a stated, filed gap, not silently assumed
+covered.
+`tests/suites/vendor-engines-advisories.sh` (85 assertions) is the fixture-driven proof, against
+hand-authored, OSV.dev-*shaped* (never live-fetched) fixtures under
+`tests/fixtures/vendor-engines/osv/` - the identical "no live network calls in CI" posture
+`tests/fixtures/sca/advisories.db` already established for that data's READER side.
+`docs/ADAPTERS.md` §10 and this script's own header are both updated in the same change to stop calling
+this responsibility unimplemented; `docs/FOUNDATION.md` tension 27's own section carries the mirror of
+this paragraph.
+
 **Step 3a-3d shipped the SAST module's rule packs and engine.**
 Four tickets landed, in this order:
 
