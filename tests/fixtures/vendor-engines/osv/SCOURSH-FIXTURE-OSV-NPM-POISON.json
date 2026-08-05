@@ -1,0 +1,11 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-NPM-POISON",
+  "summary": "fixture: a fixed-version event smuggling a literal TAB byte",
+  "affected": [
+    {
+      "package": {"ecosystem": "npm", "name": "poison-fixture"},
+      "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.0.0\t2.0.0"}]}],
+      "versions": ["0.9.0"]
+    }
+  ]
+}

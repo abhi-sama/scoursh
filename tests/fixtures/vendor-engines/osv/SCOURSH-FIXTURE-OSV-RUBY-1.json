@@ -1,0 +1,11 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-RUBY-1",
+  "summary": "fixture: no fixed version published yet for RailsFixtureGem",
+  "database_specific": {"severity": "LOW"},
+  "affected": [
+    {
+      "package": {"ecosystem": "RubyGems", "name": "RailsFixtureGem"},
+      "versions": ["5.0.0"]
+    }
+  ]
+}

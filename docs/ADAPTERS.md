@@ -241,8 +241,13 @@ being explicit about, so a future reader does not mistake generalization for con
   does not need a DESIGN.md amendment.
 - §6.5's SCA section and `docs/FOUNDATION.md` Tension 25 give `tools/vendor-engines.sh` a **second**,
   unrelated responsibility - expanding `data/advisories.db`/`data/versions.db`'s version ranges into
-  exact-version rows on the networked box. That responsibility is real, already committed, and
-  unimplemented; it is explicitly **not** built by this ticket (see `tools/vendor-engines.sh`'s own
-  header for where that boundary is drawn) and is not an "engine adapter" in this document's sense at
-  all - it shares the script for the same reason it shares the no-egress rule, not because it is part of
-  this convention.
+  exact-version rows on the networked box. That responsibility is real, already committed, and **is now
+  implemented**, by the `advisories` command namespace (`tools/vendor-engines.sh`'s own §3, "Advisory/
+  version-range expansion") - kept structurally separate from `VENG_REGISTRY`/`veng_vendor_one`/
+  `veng_vendor_all`/`veng_list` (its own `VENG_ADVISORY_REGISTRY`, its own `veng_advisories_*`
+  functions, its own `advisories` branch in `veng_main`) and is not an "engine adapter" in this
+  document's sense at all - it shares the script for the same reason it shares the no-egress rule, not
+  because it is part of this convention. It resolves all six `docs/DESIGN.md` §6.5 ecosystems (npm,
+  PyPI, Maven, Go, RubyGems, Composer) via OSV.dev, with every advisory id operator-supplied
+  (`SCOURSH_ADVISORY_<ECOSYSTEM>_IDS`) rather than guessed - see `tools/vendor-engines.sh`'s own header
+  and `tests/suites/vendor-engines-advisories.sh` for the fixture-driven proof.

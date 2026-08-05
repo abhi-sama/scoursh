@@ -1,0 +1,11 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-PYPI-1",
+  "summary": "fixture: SSTI in Django_Fixture.App's template loader",
+  "affected": [
+    {
+      "package": {"ecosystem": "PyPI", "name": "Django_Fixture.App"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "2.1.0"}]}],
+      "versions": ["2.0", "2.0.1"]
+    }
+  ]
+}
