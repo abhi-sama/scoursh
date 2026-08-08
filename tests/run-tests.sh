@@ -14,8 +14,8 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$ROOT"
 
-SUITES=(records core findings report http update-advisories e2e)
-LINTERS=(lint-rules lint-shell lint-aws-readonly)
+SUITES=(records core findings report http update-advisories lint-egress-selftest lint-no-ai-selftest e2e)
+LINTERS=(lint-rules lint-shell lint-aws-readonly lint-egress lint-no-ai)
 
 if [[ ${1:-} == --list ]]; then
   printf 'suites:  %s\n' "${SUITES[*]}"
