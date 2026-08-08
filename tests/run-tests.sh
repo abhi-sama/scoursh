@@ -53,8 +53,8 @@ else
   for l in "${LINTERS[@]}"; do
     run_one linter "$l" "tests/$l.sh"
   done
-  # ShellCheck is optional: an air-gapped host may not have it, and the suite
-  # must still be runnable there.  CI installs it.
+  # ShellCheck is optional: a scan host may have no internet access to install
+  # it with, and the suite must still be runnable there.  CI installs it.
   if command -v shellcheck >/dev/null 2>&1; then
     printf '\n=== linter: shellcheck ===\n'
     sc_dirs=()

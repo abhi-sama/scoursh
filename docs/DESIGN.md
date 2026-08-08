@@ -1,11 +1,17 @@
-# Air-Gapped Shell Security Scanner - Design & Implementation Plan
+# Egress-Restricted Shell Security Scanner - Design & Implementation Plan
 
 > Handoff spec. Build in the order given in §13. Each module is
-> independent and testable in isolation. Nothing in the core makes third-party
-> network calls. The only outbound traffic permitted is (a) `curl` to targets the
-> operator has explicitly authorized in `config/scope.conf`, and (b) read-only AWS
-> API calls to the operator's own account. Everything else - rules, payloads,
-> wordlists, signature data - is vendored in the repo and used from disk.
+> independent and testable in isolation. Nothing in the core makes an
+> unauthorized network call. The only outbound traffic permitted is (a) `curl` to
+> targets the operator has explicitly authorized in `config/scope.conf`, (b)
+> read-only AWS API calls to the operator's own account, and (c) `curl` to a
+> configured advisory/rule update endpoint, reached only by the explicit,
+> never-scan-time update channel (§2). Everything else - rules, payloads,
+> wordlists, and (between updates) advisory data - is vendored/cached on disk and
+> used from there. Findings never leave the machine, and no AI/LLM is called
+> anywhere in the shipped tool. See `docs/adr/0001-egress-model-correction.md`
+> for why this replaced an earlier "air-gapped" framing, and
+> `docs/FOUNDATION.md` tension 27 for the resolution against the register.
 
 ---
 
@@ -14,25 +20,39 @@
 - One shell-based tool that audits three surfaces: **source code (SAST)**, a **running endpoint (DAST)**, and **AWS configuration (live + IaC)**.
 - **Exhaustive** across the surfaces it can reach - code, dependencies, running endpoint, and cloud/IaC config - with coverage and blind spots stated explicitly (§15) rather than implied. Depth on SAST scales with the engine tier (§9).
 - **Modular** - each surface is a self-contained module under `modules/`, invokable alone or together.
-- **No third-party egress.** No telemetry, no SaaS backend, no fetching rules at scan time. Runs on an air-gapped host.
+- **Egress-restricted, by destination.** No telemetry, no SaaS backend, no upload of findings or source, ever. Scan-time network access is limited to three allowed destinations (§2), and rules/advisory data update only through an explicit, out-of-band channel - never as a side effect of a scan. No AI/LLM is called anywhere in the shipped tool.
 - **Pure bash by default.** External engines are optional, adapter-gated power-ups - never required for the tool to run.
 - **Target-agnostic - no hardcoded names.** No application, company, environment, product, or endpoint name is ever baked into a script or rule. Every site-specific value (hosts, endpoint paths, an org's password-policy baseline, which downstream SSO integrations are expected) is supplied at runtime through the config files in §11. Rules and checks describe *classes* of issue ("authenticated profile endpoint returns excess user data"), never a specific system. This keeps the tool reusable across projects and keeps internal names out of the codebase.
 
 ## 2. The egress model (read this first - it drives the whole design)
 
-Three things people forget are technically "network traffic" but are legitimately in-scope here:
+The model is **egress-restricted, enforced by destination, not by verb** - a request carrying its
+payload in a query string is technically a "download," so a direction-only rule is not enforceable.
+This corrects an earlier "air-gapped" framing that the architecture itself never actually satisfied;
+see `docs/adr/0001-egress-model-correction.md` and `docs/FOUNDATION.md` tension 27.
+
+Four things people forget are technically "network traffic" but are legitimately in-scope here, plus the
+one destination that is never allowed:
 
 | Traffic | Verdict | Why |
 |---|---|---|
 | `curl` to a host listed in `scope.conf` | **Allowed** | It's the operator's own app; DAST requires it |
 | `aws` read-only calls to the operator's account | **Allowed** | It's the operator's own infra |
-| Any connection to a host *not* in scope / not the AWS API | **Forbidden** | Exfiltration / telemetry - abort |
+| `curl` to the configured advisory/rule update endpoint, via `tools/update-advisories.sh` only | **Allowed, explicit-only** | Rules and advisory data need to be refreshable without a source-controlled release; never invoked implicitly during a scan, so a scan's rules never change mid-run |
+| Any connection to a host *not* in scope / not the AWS API / not the update endpoint | **Forbidden** | Exfiltration / telemetry - abort |
+| Uploading findings, source, or scan output anywhere, by any flag or feature | **Forbidden, always** | Findings never leave the machine |
+
+There is also a fourth rule with no traffic shape at all: **no AI/LLM call anywhere in the shipped
+tool** - no model API, no API key for a model provider, no "explain this with AI" feature. `tests/lint-no-ai.sh`
+enforces this by scanning for provider hostnames, SDK names, and key-shaped environment variable
+patterns, since a rule enforced only by comment is not enforced.
 
 Enforcement, layered:
 
-1. **No hidden calls in code.** Core libs never `curl`/`wget`/`nc` except through the single wrapper in `lib/http.sh`, which refuses any host absent from the resolved allowlist (scope hosts + AWS endpoints).
-2. **Paranoid mode (`--paranoid`).** Wrap the whole run in a check that logs every destination host any child process opens (via `ss`/`conntrack` sampling or an `strace -f -e connect` shim where available) and **aborts on the first host not in the allowlist**. Document the limitations honestly (sampling can miss short-lived connections).
-3. **Optional netns isolation.** Provide `tools/run-in-netns.sh` that runs a module inside a network namespace whose only route is to the declared scope - belt-and-suspenders for high-assurance environments. Optional because it needs root.
+1. **No hidden calls in code.** Core libs never `curl`/`wget`/`nc` except through the single wrapper in `lib/http.sh`, which refuses any host absent from the resolved allowlist (scope hosts + the configured update endpoint; AWS endpoints are gated separately by `lib/awscli.sh`, since AWS calls go through the `aws` CLI rather than curl). `tests/lint-egress.sh` checks this mechanically.
+2. **The update channel is a first-class feature, invoked explicitly.** `tools/update-advisories.sh` (or `scan.sh --update`, once `scan.sh` exists) is the only caller allowed to reach the update endpoint. It is never sourced or invoked from `scan.sh` or any `lib/`/`modules/` script - `tests/lint-egress.sh` asserts this in both directions.
+3. **Paranoid mode (`--paranoid`).** Wrap the whole run in a check that logs every destination host any child process opens (via `ss`/`conntrack` sampling or an `strace -f -e connect` shim where available) and **aborts on the first host not in the allowlist**. Document the limitations honestly (sampling can miss short-lived connections).
+4. **Optional netns isolation.** Provide `tools/run-in-netns.sh` that runs a module inside a network namespace whose only route is to the declared scope - belt-and-suspenders for high-assurance environments. Optional because it needs root.
 
 ## 3. Directory layout
 
@@ -83,7 +103,7 @@ scanner/
         regions.sh            # enumerate + iterate enabled regions (per-region checks)
         live/                 # one script per service (see §8.1 catalog)
       posture/                # §8.7 expected-control checks (SAML, WAF, SSO, logout)
-  data/                       # vendored, offline: versions.db  advisories.db  cis-mappings
+  data/                       # cached, refreshed via the update channel: versions.db  advisories.db  cis-mappings
   reports/                    # timestamped output dirs (findings.jsonl per run)
   state/                      # prior-run fingerprints for run-to-run diff (§9a)
   tests/
@@ -91,7 +111,8 @@ scanner/
     run-tests.sh
   tools/
     run-in-netns.sh
-    vendor-engines.sh         # one-time, on a networked box, to populate adapters + data/ offline
+    vendor-engines.sh         # one-time, on a networked box, to populate optional adapters/ (semgrep, gitleaks)
+    update-advisories.sh      # explicit, repeatable update channel for data/advisories.db (§2); never called during a scan
 ```
 
 ## 4. Shared libraries
@@ -103,11 +124,18 @@ scanner/
 - Small helpers: `require_cmd`, `is_tty`, `now_iso`, `sha256_of`.
 
 ### `lib/http.sh` (the enforcement chokepoint)
-- Single function `http_request METHOD URL [opts...]`. **Every** network call in DAST goes through it.
-- On entry: resolve URL host, check against the allowlist built from `scope.conf`. Not listed -> hard fail, logged as a scope violation.
+- Single function `http_request METHOD URL [opts...]`. **Every** curl-based network call - DAST and the
+  advisory update channel alike - goes through it. (AWS calls are a separate call path, gated by the
+  sibling chokepoint `lib/awscli.sh`, not this file.)
+- On entry: resolve URL host, check against the allowlist built from `scope.conf` **plus the configured
+  update endpoint** (§2). Not listed -> hard fail, logged as a scope violation, exit 3.
 - Global token-bucket **rate limiter** (`requests_per_second` from config) so scans stay polite and don't DoS the target.
 - Sane curl defaults: `--max-time`, `-s`, no redirects unless asked, custom UA string identifying the scanner, connection reuse.
 - Never follows a redirect to an out-of-scope host.
+- The destination-allowlist half of this file (host resolution + the abort) landed ahead of its §13
+  step 5 slot, delivered by the egress-model correction (`docs/adr/0001-egress-model-correction.md`); the
+  rate limiter, circuit breaker, and DAST-specific curl defaults above remain step 5 work layered onto
+  the same chokepoint.
 
 ### `lib/findings.sh` - data model
 Every finding is one JSON object:
@@ -209,8 +237,8 @@ Loader in `run.sh` parses these; each match becomes a finding with file+line. Ke
 ### 6.5 Module - SCA (dependency vulnerabilities, offline) - `modules/sca/run.sh`
 This is the *proper* answer to OWASP A06, stronger than version-in-response detection:
 - Parse dependency manifests/lockfiles: `package-lock.json`/`yarn.lock`/`pnpm-lock.yaml`, `requirements.txt`/`poetry.lock`/`Pipfile.lock`, `go.mod`/`go.sum`, `pom.xml`/`build.gradle`, `Gemfile.lock`, `composer.lock`.
-- Match each pinned `name@version` against a **vendored offline advisory database** (`data/advisories.db`, e.g. an OSV export refreshed by `vendor-engines.sh` on a networked box) -> emit a finding per vulnerable dependency with the advisory id, affected range, and fixed version.
-- Flag **direct vs transitive**, and dependencies with no fixed version (accept-risk candidates). Pure text/JSON parsing - no package manager needs to run, so it stays air-gapped.
+- Match each pinned `name@version` against a **cached advisory database** (`data/advisories.db`, e.g. an OSV export, refreshed via `tools/update-advisories.sh`'s explicit update channel - §2) -> emit a finding per vulnerable dependency with the advisory id, affected range, and fixed version.
+- Flag **direct vs transitive**, and dependencies with no fixed version (accept-risk candidates). Pure text/JSON parsing - no package manager needs to run, and no network access is needed between updates.
 
 ### 6.6 Module - Container & orchestration IaC - `modules/iac/` (`containers.rules`)
 Extends IaC beyond Terraform/CloudFormation (§8.2) to the container stack:
@@ -394,10 +422,10 @@ These live under `modules/cloud/posture/` and read from live APIs, IaC, or an op
 
 Two tiers, operator chooses:
 
-1. **Native (default):** pure bash + pattern rules. Zero deps, fully air-gapped, "linter-grade" depth. Great signal on secrets, dangerous sinks, weak crypto, IaC misconfig, header/TLS/injection *detection*. Blind spot: cross-function data-flow.
-2. **Engine-boosted (opt-in):** drop vendored offline engines into `adapters/` via `tools/vendor-engines.sh` (run **once on a networked box**, commit the binaries + local rule DBs, then the scanner uses them offline forever). Adds taint/data-flow depth without breaking no-egress.
+1. **Native (default):** pure bash + pattern rules. Zero deps, needs no network access to run, "linter-grade" depth. Great signal on secrets, dangerous sinks, weak crypto, IaC misconfig, header/TLS/injection *detection*. Blind spot: cross-function data-flow.
+2. **Engine-boosted (opt-in):** drop vendored offline engines into `adapters/` via `tools/vendor-engines.sh` (run **once on a networked box**, commit the binaries + local rule DBs, then the scanner uses them offline forever). Adds taint/data-flow depth without adding a scan-time network dependency.
 
-`tools/vendor-engines.sh` is the *only* script that touches the internet, is never called during a scan, and is clearly quarantined + documented as such.
+`tools/vendor-engines.sh` and `tools/update-advisories.sh` are the *only* scripts that touch the internet - the former once, at build time, for optional engine binaries; the latter explicitly and repeatably, for `data/advisories.db` (§2). Neither is ever called during a scan, and both are clearly quarantined + documented as such.
 
 ## 9a. Run-to-run diff & baselining (`diff` command + `state/`)
 For a remediation-verification tool this is a first-class feature, not an add-on:
@@ -415,7 +443,7 @@ For a remediation-verification tool this is a first-class feature, not an add-on
 ## 11. Config files
 
 - **`config/scope.conf`** - required. Named targets: `name | base_url | notes`. DAST refuses anything not here. Ship a `.example` and make the tool error clearly if it's missing/empty.
-- **`config/scanner.conf`** - `requests_per_second`, `jobs`, `http_timeout`, `fail_on`, `redact_secrets=true`, default formats, circuit-breaker thresholds, per-run request budget, and the named **scan-profile** check-sets (`quick`/`full`/`compliance`).
+- **`config/scanner.conf`** - `requests_per_second`, `jobs`, `http_timeout`, `fail_on`, `redact_secrets=true`, default formats, circuit-breaker thresholds, per-run request budget, the named **scan-profile** check-sets (`quick`/`full`/`compliance`), and `advisory-update-url` (§2) - the sole configured destination `tools/update-advisories.sh` is allowed to reach.
 - **`config/auth.conf`** (perms `600`, or a reference to an external secrets file) - per-target login mode + credentials for authenticated DAST; supports multiple labelled identities (A/B) for IDOR checks. Never logged; redacted everywhere.
 - **`config/discovery.conf`** - optional paths to an OpenAPI/Swagger spec, GraphQL schema, Postman collection, or HAR capture to feed the crawler (§7.5); crawl depth; endpoint/param allow-and-deny lists.
 - **`config/posture.conf`** - expected-control baselines for §8.7 (which SSO integrations should exist, WAF IP/geo expectations, org password-policy thresholds) so posture checks report *drift* rather than opinion.
@@ -433,12 +461,18 @@ For a remediation-verification tool this is a first-class feature, not an add-on
 2. `scan.sh` skeleton + config loading + `scope.conf` gate + exit codes + scan profiles.
 3. **SAST** native engine + rule format + seed `secrets`/`crypto`/`injection`/`python` rules + fixtures/tests. Then the other languages; then `history.sh`.
 4. **SCA** (lockfile parse -> `advisories.db`) and **IaC** (cloud + container rules) - both reuse the rule engine.
-5. `lib/http.sh` (scope allowlist + rate limit + circuit breaker) -> **`auth.sh`** (§7.0) -> **`crawl.sh`** (§7.5) -> **DAST passive** -> safe-active -> injection probes one file at a time, each with a mock-response test -> §7.4 auth/API/authz checks.
+5. `lib/http.sh` (rate limit + circuit breaker + DAST curl defaults, layered onto the destination-allowlist chokepoint that landed early - see below) -> **`auth.sh`** (§7.0) -> **`crawl.sh`** (§7.5) -> **DAST passive** -> safe-active -> injection probes one file at a time, each with a mock-response test -> §7.4 auth/API/authz checks.
 6. **Cloud**: `regions.sh` iteration -> live read-only checks (§8.1 catalog) + the read-only lint -> `posture/` checks.
 7. **Diff/state** (§9a): fingerprint history + `diff` command + "fail on new only" mode.
 8. `--paranoid` enforcement + `tools/run-in-netns.sh`.
-9. Optional `adapters/` + `tools/vendor-engines.sh` (also populates `data/` DBs), clearly quarantined.
+9. Optional `adapters/` + `tools/vendor-engines.sh` (populates optional engine binaries only), clearly quarantined.
 10. SARIF + compliance-mapping report + `--fail-on` CI gate + docs/README.
+
+`lib/http.sh`'s destination-allowlist chokepoint and `tools/update-advisories.sh` (the explicit update
+channel that now owns `data/advisories.db`, superseding step 9's original "also populates `data/` DBs")
+landed ahead of step 2, delivered by the egress-model correction
+(`docs/adr/0001-egress-model-correction.md`, `docs/FOUNDATION.md` tension 27): a corrected founding
+premise is enforced from the start, not bolted on at its originally-scheduled step.
 
 ## 14. Guardrails to bake in from day one
 
@@ -447,14 +481,16 @@ For a remediation-verification tool this is a first-class feature, not an add-on
 - Side-effecting checks (live user-enum, signup/reset probing) are off unless `--allow-intrusive`.
 - Live AWS is read-only by construction and enforced by a CI lint; multi-account only via read-only assumed roles.
 - Credentials (DAST auth, AWS) are never logged; `redact_secrets` scrubs secret-matching patterns from all evidence and reports; scratch/session/config files use `600` perms.
-- The only internet-touching script (`vendor-engines.sh`) is never invoked by a scan and is documented as the sole exception.
+- The two internet-touching scripts (`vendor-engines.sh`, `update-advisories.sh`) are never invoked by a scan and are documented as the sole exceptions; `tests/lint-egress.sh` checks this mechanically.
+- No AI/LLM call anywhere in the shipped tool - no model API, no model-provider API key - enforced by `tests/lint-no-ai.sh`.
+- Findings never leave the machine: no flag or feature uploads scan output anywhere.
 
 ## 15. Known limitations & honest scope (state these in the report)
 
 Being explicit here is what keeps the output trustworthy - a scan that overstates coverage is worse than one that names its blind spots:
 - **Client-rendered SPAs** - the pure-shell crawler can't execute JavaScript; client routes/XHR endpoints are only covered if a spec/HAR is supplied or routes come from SAST (§7.5).
 - **Data-flow SAST** - native tier is pattern/linter-grade; true taint/cross-function analysis needs the optional vendored engines (§9).
-- **CVE/advisory freshness** - SCA and outdated-component verdicts are only as current as the last `vendor-engines.sh` refresh of `data/`; on an air-gapped host that's a deliberate, dated snapshot, not real-time.
+- **CVE/advisory freshness** - SCA and outdated-component verdicts are only as current as the last `tools/update-advisories.sh` refresh of `data/advisories.db`; between updates that's a deliberate, dated snapshot, not real-time.
 - **Business logic & full authorization** - IDOR/excessive-data checks are detection-oriented; complete access-control correctness (A01) and design flaws (A04) still require human review.
 - **Not a pentest / not ASVS** - this is automated regression + posture scanning that complements, and does not replace, a manual assessment.
 

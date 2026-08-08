@@ -4,7 +4,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## What scoursh is
 
-`scoursh` ("scan exhaustively") is a shell-based, air-gapped security scanner.
+`scoursh` ("scan exhaustively") is a shell-based, **egress-restricted** security scanner.
 One tool audits three surfaces: source code (SAST plus SCA plus IaC), a running endpoint (DAST), and AWS configuration (live read-only plus IaC).
 
 It is **target-agnostic**.
@@ -13,34 +13,37 @@ Every site-specific value comes from the operator's config at runtime.
 Rules describe *classes* of issue, never a specific system.
 This is `docs/DESIGN.md` §1 and it is a hard rule for every change.
 
-## The no-egress rule, and why it drives everything
+## The egress model, and why it drives everything
 
-Exactly two kinds of outbound traffic are permitted:
+scoursh was originally described as "air-gapped." That word is retired: `docs/adr/0001-egress-model-correction.md` records why (a tool that curls a live DAST target and calls a live AWS API at scan time was never actually air-gapped) and `docs/FOUNDATION.md` tension 27 holds the resolution against the register.
+The accurate model is **egress-restricted, enforced by destination**: exactly three destinations are allowed at scan time, findings never leave the machine, and there is no AI in the shipped tool.
 
-1. `curl` to a host the operator authorised in `config/scope.conf`.
-2. Read-only AWS API calls to the operator's own account.
+1. **`curl` to a host the operator authorised in `config/scope.conf`** (DAST targets).
+2. **Read-only AWS API calls** to the operator's own account.
+3. **A configured advisory/rule update endpoint** - NEW. Reached only by `tools/update-advisories.sh`, invoked explicitly (never implicitly during a scan, so a scan's rules never change mid-run).
+4. **Findings never leave the machine.** No telemetry, no SaaS backend, no upload of results anywhere, under any flag.
+5. **No AI/LLM in the shipped tool.** No model calls, no API keys for model providers, no "explain this finding with AI" feature - enforced by `tests/lint-no-ai.sh`, not by comment.
 
-Everything else is forbidden: no telemetry, no SaaS backend, no fetching rules or advisories at scan time.
-The tool must run on an air-gapped host.
+This explains most of the architecture, so do not "improve" a design decision without checking it against this first:
 
-This single constraint explains most of the architecture, so do not "improve" a design decision without checking it against this first:
-
-- Rules, payloads, wordlists, and advisory data are **vendored in the repo** and read from disk.
-- `tools/vendor-engines.sh` is the only script that touches the internet, is never called during a scan, and is quarantined and documented as such.
-- Every network call goes through the single wrapper `lib/http.sh`, which refuses any host absent from the resolved allowlist.
-- Every AWS call goes through `lib/awscli.sh`, which refuses any operation that is not read-only (`docs/FOUNDATION.md` tension 23).
+- Rules, payloads, wordlists, and (still, for now) advisory data are **vendored in the repo** and read from disk between updates.
+- `tools/vendor-engines.sh` populates optional engine binaries (`semgrep`, `gitleaks`) and their local rule DBs, once, on a networked box; it is never called during a scan.
+- `tools/update-advisories.sh` is the explicit, repeatable update channel for `data/advisories.db` (superseding the vendor-once model tension 25 originally assigned to `vendor-engines.sh`); it is never called during a scan, and `tests/lint-egress.sh` asserts it is unreachable from `scan.sh` or any `lib/`/`modules/` code.
+- Every curl-based network call goes through the single wrapper `lib/http.sh`, which refuses any host absent from the resolved allowlist (scope hosts + the update endpoint).
+- Every AWS call goes through `lib/awscli.sh`, which refuses any operation that is not read-only (`docs/FOUNDATION.md` tension 23). AWS's destination category is enforced there, not by `lib/http.sh`, since AWS calls go through the `aws` CLI rather than curl.
 - The HTML report is self-contained with no external assets and a strict inline CSP, because a report that fetches a font is egress.
-- Version-range arithmetic for SCA is done on the networked box and shipped pre-expanded, so the scanner only does table lookups (`docs/FOUNDATION.md` tension 25).
+- Version-range arithmetic for SCA is shipped pre-expanded via the update channel, so the scanner only does table lookups (`docs/FOUNDATION.md` tension 25, narrowed by tension 27).
 
 ## Documents, and which one wins
 
 | Document | Role |
 |---|---|
-| `docs/DESIGN.md` | The handoff spec. **Preserved verbatim**; its wording is load-bearing. Do not rewrite, re-order, summarise, or "improve" it. |
-| `docs/FOUNDATION.md` | The design-tension register. 26 tensions, each with a committed RESOLUTION. **Where it contradicts the letter of `docs/DESIGN.md`, it wins**, and it says so explicitly at each point. |
+| `docs/DESIGN.md` | The handoff spec. **Preserved verbatim**; its wording is load-bearing. Do not rewrite, re-order, summarise, or "improve" it. The one exception: `docs/adr/0001-egress-model-correction.md` corrected the "air-gapped" language in the title, header, §1 and §2, because the wording itself was the defect being fixed, not an implementation detail. |
+| `docs/FOUNDATION.md` | The design-tension register. 27 tensions, each with a committed RESOLUTION. **Where it contradicts the letter of `docs/DESIGN.md`, it wins**, and it says so explicitly at each point. |
 | `rules/RULE-FORMAT.md` | The **FROZEN** on-disk record format. Normative and self-contained. |
+| `docs/adr/` | Dated decision records for corrections to the founding premise itself - rare, and each one explains why the prior framing was wrong so it is not "restored" later. |
 
-Read all three before changing anything structural.
+Read all four before changing anything structural.
 `docs/FOUNDATION.md` exists so that decisions are not re-litigated; if you disagree with a resolution, change the register deliberately and cost the change, do not quietly diverge in code.
 
 ## The frozen record format
@@ -101,8 +104,9 @@ The six findings that blocked it (F13, F14, F12, F15, F16, and F18 by consequenc
 in the tension that owns it; see `docs/FOUNDATION.md` "Known follow-ups".
 
 **What step 1 deliberately did not build**, so the boundary is not rediscovered: `scan.sh`, anything
-under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
+under `modules/`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
 shipped rule pack, and `state/`.
+`lib/http.sh` is a partial exception: the egress-model correction (`docs/adr/0001-egress-model-correction.md`, `docs/FOUNDATION.md` tension 27) landed its destination-allowlist chokepoint ahead of schedule, narrowed to exactly that - resolve a URL's host, check it against scope hosts plus the configured update endpoint, abort on anything else. Rate limiting, the circuit breaker, and DAST's fuller curl defaults are still step 5 work, layered onto the same chokepoint later.
 Diff classification (tension 12) and baseline suppression (tension 11 steps 5 and 6) belong to step 7;
 step 1 ships the primitives they call - the merge, the fingerprint, `findings_mark_suppressed`, and
 `classify_derived`, which is pure and already tested against tension 6's whole case table.
@@ -135,17 +139,20 @@ Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start
 
 - `lib/records.sh` (the record parser) is built **before** step 1's stated contents, since tensions 1, 6, 9, 15, and 26 all depend on it.
 - `lib/awscli.sh` is added to the layout and lands at the start of step 6, before any `aws/live/*.sh` script exists, so no script is ever written against a bare `aws`.
+- `lib/http.sh`'s destination-allowlist chokepoint (not its full step-5 feature set) and `tools/update-advisories.sh` land ahead of step 2, per the egress-model correction (`docs/adr/0001-egress-model-correction.md`, `docs/FOUNDATION.md` tension 27) - a corrected founding premise is not something later steps should build on top of unenforced.
 
 ## Tests
 
 ```
-tests/run-tests.sh                 # everything: five suites plus four linters
+tests/run-tests.sh                 # everything: seven suites plus six linters
 tests/run-tests.sh --list          # what is available
-tests/run-tests.sh records         # one suite: records | core | findings | report | e2e
+tests/run-tests.sh records         # one suite: records | core | findings | report | e2e | lint-egress | lint-no-ai
 tests/run-tests.sh lint-rules      # or one linter by name
 tests/lint-rules.sh                # record-format linter, error codes in rules/RULE-FORMAT.md §13
 tests/lint-shell.sh                # the tension 4, 9, 24 and 26 shell lints
 tests/lint-aws-readonly.sh         # read-only AWS lint, docs/FOUNDATION.md tension 23
+tests/lint-egress.sh [ROOT]        # destination-allowlist lint, docs/FOUNDATION.md tension 27
+tests/lint-no-ai.sh [ROOT]         # no AI/LLM SDK, hostname, or key-env-var lint, tension 27
 tests/e2e/fixture-scan.sh <dir>    # the end-to-end path on its own, for eyeballing a report
 ```
 
@@ -161,8 +168,8 @@ misunderstood why it exists - don't.
 
 Each suite runs in its own process, because `lib/core.sh` installs traps, sets shell options and owns a
 scratch directory: a suite sharing a shell with another would not be testing what the tool does.
-`shellcheck` runs over everything if it is installed and is skipped with a notice if it is not, since an
-air-gapped host may not have it.
+`shellcheck` runs over everything if it is installed and is skipped with a notice if it is not, since a
+scan host may have no internet access to install it with.
 
 **Every test that pins a decision names the reading it fails under.**
 That is not a style preference: review round 5 found that four rounds had all written the test after the

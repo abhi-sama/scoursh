@@ -9,10 +9,13 @@
 > An implementer must be able to act on any entry here without asking a follow-up question.
 > Where a resolution contradicts the letter of `docs/DESIGN.md`, this document wins and says so
 > explicitly; `docs/DESIGN.md` is preserved verbatim as the handoff artifact it is, and is not edited to
-> match.
+> match. Tension 27 is the one deliberate exception: it corrects wording in `docs/DESIGN.md`'s title,
+> header, §1 and §2 directly, because the wording itself - "air-gapped" - was the defect, not an
+> implementation detail underneath sound prose.
 >
-> Companion documents: `docs/DESIGN.md` (what scoursh is) and `rules/RULE-FORMAT.md` (the frozen
-> on-disk record format, which tension 1 produces and which several later tensions reuse).
+> Companion documents: `docs/DESIGN.md` (what scoursh is), `rules/RULE-FORMAT.md` (the frozen
+> on-disk record format, which tension 1 produces and which several later tensions reuse), and
+> `docs/adr/` (dated corrections to the founding premise itself, of which tension 27 is the first).
 
 ## Index
 
@@ -44,6 +47,7 @@
 | 24 | Runtime freeze: bash and coreutils portability | §4, §10 |
 | 25 | Offline version matching for SCA | §6.5 |
 | 26 | One record format for human-authored config | §11 |
+| 27 | The "air-gapped" premise was wrong | header, §1, §2 |
 
 ---
 
@@ -2996,8 +3000,8 @@ calling a mutating operation fails both the lint and the runtime guard.
 §4 depends on `sha256_of`, `now_iso`, and `mktemp -d`; §10 depends on `xargs -P` and a per-key cache
 that wants an associative array; tension 16 needs sub-second sleep; tension 25 needs version-aware
 sorting.
-None of these is portable, and §1 promises "pure bash by default" running on "an air-gapped host",
-which says nothing about which bash.
+None of these is portable, and §1 promises "pure bash by default" on a scan host that may have no
+internet access, which says nothing about which bash.
 
 **Why it bites.**
 The specific breakages are not exotic, they are the first things any implementer hits.
@@ -3022,7 +3026,7 @@ output is a security verdict is the worst category.
    traps.
 2. *Target GNU only and document it.*
    Rejected: it excludes macOS, which is where a large share of the SAST and IaC use will happen, and
-   §1's air-gapped host is not guaranteed to be Linux.
+   §1 does not guarantee the scan host is Linux.
 3. *Freeze a minimum bash and put every non-portable call behind one detected wrapper.* **Chosen.**
 
 **RESOLUTION.**
@@ -3135,8 +3139,8 @@ this from a list of good intentions into a checked property.
 
 **The tension.**
 §6.5 requires matching each pinned `name@version` from a lockfile against `data/advisories.db` and
-emitting a finding "with the advisory id, **affected range**, and fixed version", all in pure bash on an
-air-gapped host.
+emitting a finding "with the advisory id, **affected range**, and fixed version", all in pure bash with
+no network access needed at scan time.
 
 **Why it bites.**
 "Affected range" means implementing version-range comparison, and there is no such thing as *the*
@@ -3168,9 +3172,11 @@ actual published version list, using that ecosystem's real tooling on a machine 
 
 The scanner's entire SCA matching step becomes an exact string lookup.
 This is the resolution that survives contact with shell: the hard, easy-to-get-silently-wrong part is
-done once, on the machine equipped to do it, and the air-gapped host does something it cannot get wrong.
-It also strengthens the air-gap story rather than weakening it, since the scan-time behaviour is now a
-table lookup with no logic to diverge.
+done once, on the machine equipped to do it, and the scan host does something it cannot get wrong.
+It also strengthens the egress-restricted story rather than weakening it (tension 27), since the
+scan-time behaviour is now a table lookup with no logic to diverge - and, per tension 27, the "done once"
+machine is now `tools/update-advisories.sh`'s explicit update channel rather than a one-time
+`vendor-engines.sh` run.
 
 **Format.**
 `data/advisories.db` is TSV, not the frozen record format, and this exemption is explicit: it is
@@ -3214,8 +3220,10 @@ than a caveat in a document nobody reads.
 **Consequence for the build.**
 §13 step 4's SCA module is reduced to lockfile parsing, name normalisation, and a table lookup, which is
 a much smaller and more testable module than the original framing.
-The expansion logic moves into `tools/vendor-engines.sh` at §13 step 9, and is the reason that script's
-output is a build artifact with its own tests rather than a download.
+The expansion logic moves into the update channel at §13 step 9 - originally assigned to
+`tools/vendor-engines.sh` as a one-time build artifact "rather than a download"; tension 27 narrows this
+to `tools/update-advisories.sh`, since the corrected egress model makes an explicit, repeatable download
+the whole point rather than something to avoid.
 Tests cover normalisation per ecosystem, the exact-lookup path, and the unknown-version roll-up, all
 against a small committed fixture database.
 
@@ -3302,11 +3310,103 @@ cannot drift from the schema.
 `auth.conf` keeps its `600` permission requirement from §7.0, checked via `stat_mode` (tension 24), and
 its values are marked secret at the schema level so `redact` (tension 9) covers them everywhere.
 
+## Tension 27 - the "air-gapped" premise was wrong
+
+**The tension.**
+The handoff header, §1, and §2's title all called scoursh "air-gapped" and said it "must run on an
+air-gapped host."
+§2 simultaneously lists two categories of scan-time network traffic as **Allowed**: `curl` to
+`scope.conf` hosts, and read-only AWS API calls.
+An operator later asked for a third: an explicit channel to download rule and advisory updates.
+
+**Why it bites.**
+"Air-gapped" is falsifiable by the tool's own design.
+A DAST scan curls the operator's live target and a cloud scan calls a live AWS API, both while the scan
+is running; a host with either connection open is not air-gapped, whatever the intent behind the word.
+The word also collapses two different properties into one, which is what let the contradiction stand
+unnoticed: (a) the tool does not *depend* on live internet access to run (true, and worth keeping), and
+(b) the tool never *exfiltrates* the operator's data (the property that actually matters for a security
+scanner, and the one an operator evaluating the tool cares about).
+Treating (a) as the requirement is what produced the wrong word, and a wrong word in a founding document
+is not cosmetic: `docs/DESIGN.md` §1 is "a hard rule for every change" (`AGENTS.md`), so an implementer
+who takes "air-gapped" literally would be right to reject the update channel as a violation of the
+document that is supposed to be authoritative.
+
+Separately, tension 25 assigned `data/advisories.db` generation to `tools/vendor-engines.sh`, run once
+on a networked box, explicitly framed as an artifact "rather than a download."
+An explicit, repeatable, operator-invoked update channel is a download, by design and on purpose, so
+tension 25's framing and the operator's corrected model are in direct conflict, not just in
+terminology.
+
+**Options considered.**
+
+1. *Keep "air-gapped" and describe the update channel as a documented exception.*
+   Rejected: an architecture with two pre-existing "allowed" categories and a newly-added third is not
+   describing an invariant called "air-gapped" - it is describing a rule with three holes in it, and a
+   rule known only by its exceptions gets "cleaned up" back to the false absolute it was excepted from.
+   `docs/FOUNDATION.md` exists so that does not happen quietly; better to fix the word.
+2. *Drop network restrictions and gate everything by an operator-set authorization flag instead.*
+   Rejected: this is the shape of the actual risk here - a shipped scanner that can be configured to
+   phone home with scan results or source code. Destination allowlisting, not a trust flag, is what lets
+   `lib/http.sh` enforce "never upload" as a property of the code rather than a policy operators are
+   trusted to configure correctly.
+3. *Rename the property, keep destination-based enforcement, make the update channel a first-class,
+   explicitly-invoked feature, and add a fourth rule ruling out AI/LLM calls entirely.* **Chosen.**
+
+**RESOLUTION.**
+"Air-gapped" is retired as scoursh's self-description.
+The accurate term is **egress-restricted, enforced by destination**: scan-time network access is
+restricted to an explicit allowlist by destination, not absent, and enforcement is keyed on *where* a
+connection goes rather than *which verb* it uses - a GET can carry a finding in its query string, so a
+direction-only rule ("never upload") is not mechanically enforceable on its own.
+
+The model is four rules, recorded in full in `docs/adr/0001-egress-model-correction.md`:
+
+1. **Allowed destinations at scan time**: `scope.conf` hosts (DAST), the AWS API (read-only), and a
+   configured advisory/rule update endpoint. Everything else aborts with exit 3, exactly as tension 19's
+   scope gate already does for DAST.
+2. **The update channel is explicit and never automatic.** `tools/update-advisories.sh` (or
+   `scan.sh --update` once `scan.sh` exists) is the only caller allowed to reach the update endpoint, and
+   it is never invoked as a side effect of a scan - a scan's rules must not change mid-run, which is also
+   what keeps two scans of one target reproducible.
+3. **Findings never leave the machine**, under any flag, in any mode.
+4. **No AI/LLM call anywhere in the shipped tool** - no model API, no model-provider API key, no
+   "explain this finding" feature. Enforced by `tests/lint-no-ai.sh` scanning for provider hostnames, SDK
+   names, and key-shaped environment-variable patterns, since a rule enforced only by a comment is not a
+   rule the register can point to.
+
+`docs/DESIGN.md`'s title, handoff header, §1, and §2 are corrected to this language directly - the one
+deliberate exception to this document's own policy that `docs/DESIGN.md` is preserved verbatim, recorded
+in the register intro. The exception is narrow: the module catalog, the rule format, the build order, and
+every other section of `docs/DESIGN.md` are untouched.
+
+**Tension 25 is narrowed, not reversed.**
+`tools/vendor-engines.sh` keeps its original job unchanged: populating optional engine binaries
+(`semgrep`, `gitleaks`) and their local rule databases, once, on a networked box, committed to the repo.
+What it no longer owns is `data/advisories.db`.
+That responsibility moves to `tools/update-advisories.sh`, which reuses tension 25's frozen schema
+(`ecosystem \t package \t version \t advisory_id \t severity \t fixed_versions \t summary`), its
+name-normalisation table, and its "exact string lookup, no version-range arithmetic on the scan host"
+guarantee unchanged - only the *venue and cadence* change, from a one-time build artifact to an explicit,
+repeatable update.
+Both scripts share the property that neither runs during a scan and neither is reachable from `scan.sh`;
+this is checked by `tests/lint-egress.sh` for both, not assumed for either.
+
+**Consequence for the build.**
+`lib/http.sh`'s destination-allowlist chokepoint - resolve a URL's host, check it against scope hosts
+plus the configured update endpoint, abort on anything else - lands ahead of its §13 step 5 slot, because
+a corrected founding premise is enforced from the moment it exists rather than left unenforced until its
+originally-scheduled step. Rate limiting, the circuit breaker, and DAST's fuller curl defaults remain
+step 5 work, layered onto the same chokepoint. AWS's destination category continues to be enforced by the
+sibling chokepoint `lib/awscli.sh` (tension 23), not by `lib/http.sh`, since AWS calls go through the
+`aws` CLI rather than curl. `tools/update-advisories.sh` ships with the mechanism only - no real
+ecosystem advisory data is populated by this change; that is an explicit follow-up.
+
 ---
 
 ## Cross-cutting consequences
 
-Eight decisions here reach beyond their own tension and are collected so they are not missed.
+Nine decisions here reach beyond their own tension and are collected so they are not missed.
 
 1. **`lib/records.sh` is the first thing built**, ahead of §13 step 1's stated contents, because
    tensions 1, 6, 9, 15, and 26 all depend on it.
@@ -3345,6 +3445,12 @@ Eight decisions here reach beyond their own tension and are collected so they ar
    (tension 11 step 7).
 8. **CI runs the suite on both GNU and BSD userlands** (tension 24) and asserts byte-identical findings,
    which is the check that keeps most of the resolutions above honest.
+9. **"Air-gapped" is retired; "egress-restricted, enforced by destination" replaces it everywhere**
+   (tension 27). `lib/http.sh`'s destination allowlist gains a third category (the update endpoint)
+   alongside scope hosts, `tools/update-advisories.sh` becomes the explicit channel that owns
+   `data/advisories.db` (narrowing tension 25 away from `vendor-engines.sh`), and two CI checks
+   (`tests/lint-egress.sh`, `tests/lint-no-ai.sh`) enforce the corrected model going forward rather than
+   leaving it to be re-litigated.
 
 ---
 
