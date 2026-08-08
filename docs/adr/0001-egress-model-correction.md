@@ -44,7 +44,8 @@ The model going forward, in the operator's own words:
 
 The reference point named was **Invicti**: a scanner that pulls advisory/signature updates over a real
 update channel, scans only explicitly authorized targets, keeps findings local (on-prem edition), and
-has no AI in the scanning path. scoursh adopts the same shape.
+has no AI in the scanning path.
+scoursh adopts the same shape.
 
 ### The four rules, enforced by destination
 
@@ -54,7 +55,9 @@ The rules are therefore stated - and implemented - by **destination**, not by HT
 
 1. **Allowed destinations at scan time** are exactly three: hosts in `config/scope.conf` (DAST
    targets), the AWS API (read-only calls only, per tension 23), and a configured advisory/rule update
-   endpoint. Every other destination aborts the run. This is `docs/DESIGN.md` §2's corrected table.
+   endpoint.
+   Every other destination aborts the run.
+   This is `docs/DESIGN.md` §2's corrected table.
 2. **The update channel is explicit, not automatic.** `tools/update-advisories.sh` (or
    `scan.sh --update`, once `scan.sh` exists) is the only thing allowed to talk to the update endpoint,
    and it is never invoked as a side effect of a scan. A scan's rules do not change mid-run, and two

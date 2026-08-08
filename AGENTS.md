@@ -15,7 +15,8 @@ This is `docs/DESIGN.md` §1 and it is a hard rule for every change.
 
 ## The egress model, and why it drives everything
 
-scoursh was originally described as "air-gapped." That word is retired: `docs/adr/0001-egress-model-correction.md` records why (a tool that curls a live DAST target and calls a live AWS API at scan time was never actually air-gapped) and `docs/FOUNDATION.md` tension 27 holds the resolution against the register.
+scoursh was originally described as "air-gapped."
+That word is retired: `docs/adr/0001-egress-model-correction.md` records why (a tool that curls a live DAST target and calls a live AWS API at scan time was never actually air-gapped) and `docs/FOUNDATION.md` tension 27 holds the resolution against the register.
 The accurate model is **egress-restricted, enforced by destination**: exactly three destinations are allowed at scan time, findings never leave the machine, and there is no AI in the shipped tool.
 
 1. **`curl` to a host the operator authorised in `config/scope.conf`** (DAST targets).
@@ -106,7 +107,8 @@ in the tension that owns it; see `docs/FOUNDATION.md` "Known follow-ups".
 **What step 1 deliberately did not build**, so the boundary is not rediscovered: `scan.sh`, anything
 under `modules/`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
 shipped rule pack, and `state/`.
-`lib/http.sh` is a partial exception: the egress-model correction (`docs/adr/0001-egress-model-correction.md`, `docs/FOUNDATION.md` tension 27) landed its destination-allowlist chokepoint ahead of schedule, narrowed to exactly that - resolve a URL's host, check it against scope hosts plus the configured update endpoint, abort on anything else. Rate limiting, the circuit breaker, and DAST's fuller curl defaults are still step 5 work, layered onto the same chokepoint later.
+`lib/http.sh` is a partial exception: the egress-model correction (`docs/adr/0001-egress-model-correction.md`, `docs/FOUNDATION.md` tension 27) landed its destination-allowlist chokepoint ahead of schedule, narrowed to exactly that - resolve a URL's host, check it against scope hosts plus the configured update endpoint, abort on anything else.
+Rate limiting, the circuit breaker, and DAST's fuller curl defaults are still step 5 work, layered onto the same chokepoint later.
 Diff classification (tension 12) and baseline suppression (tension 11 steps 5 and 6) belong to step 7;
 step 1 ships the primitives they call - the merge, the fingerprint, `findings_mark_suppressed`, and
 `classify_derived`, which is pure and already tested against tension 6's whole case table.
