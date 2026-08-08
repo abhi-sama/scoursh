@@ -144,9 +144,10 @@ Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start
 ## Tests
 
 ```
-tests/run-tests.sh                 # everything: seven suites plus six linters
+tests/run-tests.sh                 # everything: nine suites plus six linters
 tests/run-tests.sh --list          # what is available
-tests/run-tests.sh records         # one suite: records | core | findings | report | e2e | lint-egress | lint-no-ai
+tests/run-tests.sh records         # one suite: records | core | findings | report | http |
+                                    #   update-advisories | lint-egress-selftest | lint-no-ai-selftest | e2e
 tests/run-tests.sh lint-rules      # or one linter by name
 tests/lint-rules.sh                # record-format linter, error codes in rules/RULE-FORMAT.md §13
 tests/lint-shell.sh                # the tension 4, 9, 24 and 26 shell lints
@@ -186,10 +187,22 @@ What the suite covers now, per `docs/DESIGN.md` §12 and the resolutions above:
 - Hostile evidence: a script tag, an ANSI sequence, a raw newline, invalid UTF-8 and a backtick run, asserted escaped in every emitter, with the CSP present and no `<script>` in the HTML.
 - Byte-reproducible `findings.jsonl` across two runs.
 - The five closed findings, each with a test that fails under the original implementation.
+- `lib/http.sh`'s destination-allowlist tuple matching: exact `(scheme, host, port)` admission, the
+  same-host-wrong-port and same-host-wrong-scheme cases tension 19 names as the rejected host-only
+  design, `allow-subdomains`, and the update endpoint's one-host-no-subdomains admission - all without a
+  live network call, since the abort path never opens a socket.
+- `tools/update-advisories.sh`'s full round trip against a real loopback fixture server (fetch, shape
+  validation, merge, sort, write), plus every failure path (unconfigured endpoint, a misrouted feed, an
+  unreachable host) dying clean with no partial output file.
+- Both new CI lints, each proven in **both directions** against a throwaway fixture tree: a planted
+  violation fails the lint, and removing it passes again. A lint that has never been seen to fail is a
+  lint nobody has verified checks anything.
 
 Still to come with their steps: SARIF schema validation (step 10), the read-only lint over a non-empty
-`aws/live/` (step 6), a no-egress run under `--paranoid` (step 8), and byte-identical findings between
-GNU and BSD userlands, which needs CI on both (`.github/workflows/ci.yml` runs the matrix).
+`aws/live/` (step 6), a no-egress run under `--paranoid` (step 8), byte-identical findings between
+GNU and BSD userlands, which needs CI on both (`.github/workflows/ci.yml` runs the matrix), and populating
+`data/advisories.db` with real ecosystem data via `tools/update-advisories.sh` (an explicit follow-up;
+this build only shipped the mechanism).
 
 ## Things measured on this codebase, not assumed
 
