@@ -828,7 +828,13 @@ an absent file is equivalent to one containing only `id: scanner`.
 | `lock-stale-seconds` | single | no | Positive integer | `30` |
 | `mutex-timeout-seconds` | single | no | Positive integer | `120` |
 | `paranoid-allow` | repeatable | no | `addr:port` | empty |
+| `advisory-update-url` | single | no | `https://` URL | empty (update channel disabled) |
 | `notes` | single | yes | Free text | empty |
+
+`advisory-update-url` is `docs/FOUNDATION.md` tension 27's third allowed scan-time destination category:
+the base URL `tools/update-advisories.sh` fetches from, and the only additional host `lib/http.sh`
+admits beyond `config/scope.conf`'s targets. Empty (the default) means the update channel is
+unconfigured, and `tools/update-advisories.sh` refuses to run rather than guessing a host.
 
 `docs/DESIGN.md` §11 also lists "the named scan-profile check-sets (`quick`/`full`/`compliance`)" as
 living here.

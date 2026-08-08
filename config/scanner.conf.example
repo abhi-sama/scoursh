@@ -6,6 +6,10 @@
 #
 # Values are DATA and are never expanded or executed: `$HOME` here is five
 # literal bytes (docs/FOUNDATION.md tension 26).
+#
+# `advisory-update-url` is the sole destination `tools/update-advisories.sh` is
+# allowed to reach (docs/FOUNDATION.md tension 27); leave it unset to disable
+# the update channel entirely.
 
 id: scanner
 requests-per-second: 4
@@ -29,6 +33,7 @@ history-window-days: 365
 history-max-commits: 5000
 lock-stale-seconds: 30
 mutex-timeout-seconds: 120
+advisory-update-url: https://updates.example.org/scoursh/advisories
 notes: scratch-dir is best pointed at a tmpfs. Overwrite-based erasure is not
   effective on APFS, journalled ext4, or any SSD with wear levelling, so a
   memory-backed scratch directory is the real control for the raw matched lines

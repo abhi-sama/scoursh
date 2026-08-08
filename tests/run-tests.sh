@@ -14,7 +14,7 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$ROOT"
 
-SUITES=(records core findings report e2e)
+SUITES=(records core findings report http e2e)
 LINTERS=(lint-rules lint-shell lint-aws-readonly)
 
 if [[ ${1:-} == --list ]]; then
