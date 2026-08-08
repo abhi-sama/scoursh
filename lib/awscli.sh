@@ -22,7 +22,7 @@
 # next item on the critical path.  See AGENTS.md, "AWS module: what exists
 # ahead of step 6". No live/ script exists yet, so aws_ro has no shipped caller
 # today; it is exercised by tests/suites/awscli.sh (a stub `aws`, no network)
-# and tools/localstack-run.sh (a real emulator, still not an AWS account).
+# and tests/localstack/run.sh (a real emulator, still not an AWS account).
 #
 # shellcheck shell=bash
 

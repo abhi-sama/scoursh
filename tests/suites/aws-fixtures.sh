@@ -45,7 +45,7 @@ export AWS_FIXTURE_RESPONSE=''
 # inspect the body, build the finding through the real data model.
 _example_check_s3_public_read_acl() {
   local bucket=$1 body
-  body=$(aws_ro s3 get-bucket-acl --bucket "$bucket")
+  body=$(aws_ro s3api get-bucket-acl --bucket "$bucket")
   finding_new
   if [[ $body == *'"URI": "http://acs.amazonaws.com/groups/global/AllUsers"'* ]]; then
     finding_set check_id EXAMPLE-S3-PUBLIC-READ-ACL

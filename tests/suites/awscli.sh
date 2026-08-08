@@ -9,9 +9,10 @@
 # refused flags, the F17 pager fix - not anything AWS-shaped, which is why a
 # stub is sufficient and correct rather than a compromise.
 #
-# tools/localstack-run.sh separately proves aws_ro against a real (emulated)
+# tests/localstack/run.sh separately proves aws_ro against a real (emulated)
 # API shape; that is an integration concern and deliberately lives outside this
-# suite so `tests/run-tests.sh` never depends on docker.
+# suite, and outside tests/run-tests.sh's default run, so the suite never
+# depends on docker.
 #
 # shellcheck shell=bash
 #
@@ -80,14 +81,14 @@ for op in describe-instances list-buckets get-bucket-policy search-transit-gatew
 done
 
 t_case 'the read-only call reaches the stub with the caller-supplied args intact'
-run_stub s3 list-buckets --region us-east-1 >/dev/null
-assert_true "$(log_has 'ARG:s3' && echo 0 || echo 1)" 'service is argv[1]'
+run_stub s3api list-buckets --region us-east-1 >/dev/null
+assert_true "$(log_has 'ARG:s3api' && echo 0 || echo 1)" 'service is argv[1]'
 assert_true "$(log_has 'ARG:list-buckets' && echo 0 || echo 1)" 'operation is argv[2]'
 assert_true "$(log_has 'ARG:--region' && echo 0 || echo 1)" 'a caller flag survives'
 assert_true "$(log_has 'ARG:us-east-1' && echo 0 || echo 1)" "a caller flag's value survives"
 
 t_case '--output json is always appended, and cannot be supplied twice'
-run_stub s3 list-buckets >/dev/null
+run_stub s3api list-buckets >/dev/null
 assert_true "$(log_has 'ARG:--output' && echo 0 || echo 1)" '--output is present exactly once, pinned by aws_ro'
 n=$(grep -cF 'ARG:--output' "$STUB_LOG")
 assert_eq 1 "$n" 'no duplicate --output'
@@ -96,7 +97,7 @@ assert_eq 1 "$n" 'no duplicate --output'
 printf '\n-- finding F17: AWS_PAGER, never --no-cli-pager --\n'
 # ---------------------------------------------------------------------------
 t_case 'AWS_PAGER is pinned empty rather than passing --no-cli-pager'
-run_stub s3 list-buckets >/dev/null
+run_stub s3api list-buckets >/dev/null
 assert_true "$(log_has 'AWS_PAGER=' && echo 0 || echo 1)" \
   'AWS_PAGER is set (to empty), which both CLI v1 and v2 honour'
 assert_true "$(log_has 'ARG:--no-cli-pager' && echo 1 || echo 0)" \
@@ -104,7 +105,7 @@ assert_true "$(log_has 'ARG:--no-cli-pager' && echo 1 || echo 0)" \
 
 t_case 'a v1 `aws --version` string does not change behaviour (the F17 failure mode, reproduced absent)'
 printf 'aws-cli/1.32.0 Python/3.11.6 Linux/6.1.0 botocore/1.34.0' >"$STUB_VERSION_FILE"
-assert_status 0 'the call still succeeds against a v1 stub' run_stub s3 list-buckets
+assert_status 0 'the call still succeeds against a v1 stub' run_stub s3api list-buckets
 printf 'aws-cli/2.15.0 Python/3.11.6 Linux/6.1.0 exe/x86_64.stub' >"$STUB_VERSION_FILE"
 
 # ---------------------------------------------------------------------------
@@ -159,13 +160,13 @@ assert_eq 3 "$rc" 'a listed sibling operation does not authorise a different one
 printf '\n-- refused flags: the lint cannot see through these --\n'
 # ---------------------------------------------------------------------------
 t_case '--cli-input-json and --cli-input-yaml are refused outright, not merely un-pinned'
-assert_status 3 '--cli-input-json is refused' run_stub s3 list-buckets --cli-input-json 'file://x.json'
-assert_status 3 '--cli-input-json= is refused' run_stub s3 list-buckets --cli-input-json=file://x.json
-assert_status 3 '--cli-input-yaml is refused' run_stub s3 list-buckets --cli-input-yaml 'file://x.yaml'
+assert_status 3 '--cli-input-json is refused' run_stub s3api list-buckets --cli-input-json 'file://x.json'
+assert_status 3 '--cli-input-json= is refused' run_stub s3api list-buckets --cli-input-json=file://x.json
+assert_status 3 '--cli-input-yaml is refused' run_stub s3api list-buckets --cli-input-yaml 'file://x.yaml'
 
 t_case 'a caller cannot override the pinned --output'
 assert_status 3 '--output text is refused rather than silently overridden' \
-  run_stub s3 list-buckets --output text
+  run_stub s3api list-buckets --output text
 
 # ---------------------------------------------------------------------------
 printf '\n-- usage and missing-binary errors stay inside the frozen 0-5 contract --\n'
@@ -180,7 +181,7 @@ PATH=/usr/bin:/bin SCOURSH_AWSCLI_BIN=scoursh-aws-does-not-exist \
     set -Eeuo pipefail
     source "'"$ROOT"'/lib/core.sh"
     source "'"$ROOT"'/lib/awscli.sh"
-    aws_ro s3 list-buckets
+    aws_ro s3api list-buckets
   ' >/dev/null 2>&1 || rc=$?
 assert_eq 4 "$rc" 'a missing aws binary is reported as a missing required input'
 
