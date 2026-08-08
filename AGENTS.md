@@ -320,6 +320,18 @@ limiter/budget/breaker piece (DAST-01) and everything under `modules/dast/` rema
 complete on `dev`** (the generated block above is what says whether they are) - this plan is a written
 breakdown for later, not permission to start now.
 Step 4's IaC half is a separate sub-scope and does not lift this gate, which names SCA specifically.
+**Crewban-22 (a local, authorized DAST test target) has landed while this block still holds.**
+`tools/dast-test-target.sh` and `tools/dast-test-identities.sh` start a pinned, self-hosted OWASP Juice
+Shop container and provision two distinct throwaway identities in it, authorized by
+`tools/dast-test-target/scope.conf` and `docs/DAST-TEST-TARGET-AUTHORIZATION.md`'s written record, with
+`tests/e2e/dast-target-smoke.sh` as an opt-in (Docker- and network-requiring, so not in
+`tests/run-tests.sh`'s default list) end-to-end proof that the target is reachable, that `lib/http.sh`'s
+scope gate really does refuse everything else, and that the two identities' basket-IDOR case is real.
+This does not lift the block above - target *acquisition* was the blocker this ticket closed, not step
+3/4 completion - but it means DAST-01 onward has something to build and test against the moment the gate
+does lift, and does not need to plan or authorize a target of its own. See
+`docs/STEP5-DAST-PLAN.md`'s own section on this for the two conventions worth knowing before building
+against it.
 
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01 has
 not.**

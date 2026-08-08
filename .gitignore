@@ -9,3 +9,8 @@ findings-*/
 # macOS Finder metadata.  An untracked .DS_Store was enough to make fleet
 # tooling refuse this clone as dirty.
 .DS_Store
+
+# Generated local DAST test-target state: the two throwaway identities'
+# secret-files and the auth.conf referencing them (tools/dast-test-identities.sh).
+# Machine-specific and regenerable; never sources, never committed.
+.dast-test-target/
