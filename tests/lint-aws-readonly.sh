@@ -38,10 +38,24 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 # shellcheck source=lib/core.sh
 source "$ROOT/lib/core.sh"
-cd "$ROOT"
+
+# The lint always scans a real tree relative to its own cwd; in production that
+# is $ROOT.  An optional first argument points it at a different tree instead -
+# used only by tests/suites/aws-lint.sh, this lint's own meta-test, to prove it
+# fails on a planted mutating call and passes once the call is removed, without
+# ever touching the real lib/modules/aws/tools trees.
+SCAN_ROOT=${1:-$ROOT}
+cd "$SCAN_ROOT"
 
 READONLY_PREFIXES='^(describe|list|get|search|lookup|select|head|batch-get|preview|estimate|simulate)(-|$)'
-ALLOW_FILE=tests/aws-readonly-allow.txt
+# Always scoursh's own reviewed exception list, never the scanned tree's -
+# tests/aws-readonly-allow.txt is scoursh's exception file (docs/FOUNDATION.md
+# tension 23 item 4), not something a fixture root would carry its own copy of.
+# SCOURSH_AWS_LINT_ALLOWFILE overrides it for tests/suites/aws-lint.sh only, so
+# that suite can exercise check 4 (a stale exception rots into a blanket
+# permission) without ever writing to the real, committed file.
+: "${SCOURSH_AWS_LINT_ALLOWFILE:=$ROOT/tests/aws-readonly-allow.txt}"
+ALLOW_FILE=$SCOURSH_AWS_LINT_ALLOWFILE
 
 FAILED=0
 HITS=$SCOURSH_SCRATCH/aws-hits
@@ -90,24 +104,55 @@ while IFS= read -r f; do
       op=${op%% *}
       op=${op%\"}
       op=${op#\"}
+      svc=${hit#*aws_ro }
+      svc=${svc%% *}
       case $op in
         '$'*)
           # Check 3: a variable operation is permitted only from a readonly
-          # array of literals declared in the same file.
+          # declaration of literals in the same file, and EVERY literal is
+          # checked - a `readonly` declaration existing under the right name is
+          # not by itself a guarantee, or a mutating verb could hide inside the
+          # array/scalar value while only the declaration's presence was ever
+          # examined.
           name=${op#\$}
           name=${name#\{}
           name=${name%%[\[\}]*}
           if ! scan_match "$SCOURSH_SCRATCH/aws-decl" \
-            -e "readonly[[:space:]]+(-a[[:space:]]+)?$name=" -- "$rel"; then
-            report "$rel: aws_ro operation '\$$name' is not assigned from a readonly array of literals in this file"
+            -e "^[[:space:]]*readonly[[:space:]]+(-a[[:space:]]+)?${name}=" -- "$rel"; then
+            report "$rel: aws_ro operation '\$$name' is not assigned from a readonly declaration of literals in this file"
+          else
+            decl=$(head -n 1 "$SCOURSH_SCRATCH/aws-decl")
+            decl=${decl%%#*}
+            body=${decl#*"$name"=}
+            if [[ $body == \(*\)* ]]; then
+              body=${body#\(}
+              body=${body%%\)*}
+            fi
+            lit_count=0
+            for lit in $body; do
+              lit=${lit%\"}
+              lit=${lit#\"}
+              lit=${lit%\'}
+              lit=${lit#\'}
+              [[ -n $lit ]] || continue
+              lit_count=$(( lit_count + 1 ))
+              if [[ ! $lit =~ $READONLY_PREFIXES ]]; then
+                if [[ -f $ALLOW_FILE ]] && scan_match "$SCOURSH_SCRATCH/aws-allow-arr" \
+                  -e "^${svc}[[:space:]]+${lit}([[:space:]]|\$)" -- "$ALLOW_FILE"; then
+                  : # covered by the reviewed exception file
+                else
+                  report "$rel: aws_ro operation '\$$name' includes literal '$lit', which is not read-only and is not in $ALLOW_FILE"
+                fi
+              fi
+            done
+            (( lit_count > 0 )) \
+              || report "$rel: aws_ro operation '\$$name' readonly declaration has no literal this lint can parse - it is a multi-line or computed value, and cannot be certified"
           fi
           ;;
         *)
           if [[ ! $op =~ $READONLY_PREFIXES ]]; then
-            svc=${hit#*aws_ro }
-            svc=${svc%% *}
             if [[ -f $ALLOW_FILE ]] && scan_match "$SCOURSH_SCRATCH/aws-allow" \
-              -e "^${svc}[[:space:]]+${op}\$" -- "$ALLOW_FILE"; then
+              -e "^${svc}[[:space:]]+${op}([[:space:]]|\$)" -- "$ALLOW_FILE"; then
               : # covered by the reviewed exception file
             else
               report "$rel: aws_ro operation '$op' is not read-only and is not in $ALLOW_FILE"
@@ -124,13 +169,20 @@ done <<<"$files"
 if [[ -f $ALLOW_FILE ]]; then
   while IFS= read -r entry; do
     entry=${entry%%#*}
+    # A comment is nearly always preceded by a space in the documented style
+    # ("service operation # reason"), and stripping "#*" alone leaves that
+    # space on the end.  Left untrimmed, `${entry##* }` reads the LAST space
+    # as the token boundary and extracts an empty `op`, which then matches
+    # every call to that service regardless of operation - the exact silent
+    # rot this check exists to catch.
+    entry=${entry%"${entry##*[![:space:]]}"}
     [[ -n ${entry// /} ]] || continue
     svc=${entry%% *}
     op=${entry##* }
     seen=0
     while IFS= read -r f; do
       [[ -n $f ]] || continue
-      if scan_match "$HITS" -e "aws_ro[[:space:]]+${svc}[[:space:]]+${op}" -- "${f#./}"; then
+      if scan_match "$HITS" -e "aws_ro[[:space:]]+${svc}[[:space:]]+${op}([[:space:]]|\$)" -- "${f#./}"; then
         seen=1
       fi
     done <<<"$files"

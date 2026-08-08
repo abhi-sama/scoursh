@@ -3626,12 +3626,18 @@ composite under `tests/fixtures/rules/derived.rules`; only the shipped seed wait
   Direction: state that `derived` checks are exempt from the intensity ceiling, since they consume
   findings rather than issue requests, and add `derived` to §9.1.3's enumeration so `E044` and the
   schema agree.
-- **F17 [low] - `aws_ro` pins `--no-cli-pager`, which AWS CLI v1 rejects** (tension 23, item 5).
-  The flag is v2-only, and tension 24 probes for `aws` by presence rather than by major version, so on a
-  v1 host every AWS call fails at argument parsing and the entire cloud module produces zero findings
-  while reporting a tool error.
-  Direction: set `AWS_PAGER=` in the call's environment instead, which both major versions honour and
-  which needs no version detection, and record the detected major version in `run.json` either way.
+- **F17 [low] - CLOSED. `aws_ro` sets `AWS_PAGER=''` rather than pinning `--no-cli-pager`**
+  (tension 23, item 5), which is exactly the prescribed direction.
+  The flag is v2-only; tension 24 probes for `aws` by presence rather than by major version, so on a
+  v1 host every AWS call would have failed at argument parsing and the entire cloud module would have
+  produced zero findings while reporting a tool error.
+  Measured against a real `aws-cli/1.44.x` install (`tests/localstack/run.sh`, not just a stub):
+  `--no-cli-pager` is rejected at parsing exactly as described, and `AWS_PAGER=''` is not.
+  `_awscli_probe` in `lib/awscli.sh` records the detected major version via `run_record
+  aws_cli_major` whenever a run directory exists, satisfying the second half of the direction; it is
+  a no-op outside a run (`tests/suites/awscli.sh`), same as every other `run_record` call.
+  `lib/awscli.sh` itself lands ahead of `docs/DESIGN.md` §13 step 6 as part of a credential-less pass
+  advancing what needed no AWS account; see `AGENTS.md`, "AWS module: what exists ahead of step 6".
 
 ## Where the build currently stands
 
@@ -3644,12 +3650,16 @@ the tension that owns it and each with a test that fails under the original.
 F18 closed with them by mechanism.
 
 Steps 2 to 10 are unstarted.
-The seven remaining follow-ups (F4, F3, F5, F20, F8, F17, and F16's `look` half) are inherited by them
-and are still open.
+The six remaining follow-ups (F4, F3, F5, F20, F8, and F16's `look` half) are inherited by them and are
+still open.
+F17 closed out of order, as part of a credential-less pass that advanced the parts of §13 step 6 that
+need no AWS account - see "AWS module: what exists ahead of step 6" in `AGENTS.md`.
 
 What §13 step 1 deliberately did **not** build, so the boundary is not rediscovered: `scan.sh`, anything
-under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
-shipped rule pack, and `state/`.  Diff classification (tension 12) and baseline suppression (tension 11
-steps 5 and 6) are step 7's; step 1 delivers the primitives they call - the merge, the fingerprint, the
-`findings_mark_suppressed` annotation, and `classify_derived`, which is pure and is already tested
-against tension 6's full case table.
+under `modules/`, `lib/http.sh`, `lib/engines.sh`, SARIF, the compliance report, any shipped rule pack,
+and `state/`.  `lib/awscli.sh` was in this list too, until the credential-less pass above built it ahead
+of schedule; `modules/cloud/aws/live/*.sh` and everything else §13 step 6 names are still unbuilt.  Diff
+classification (tension 12) and baseline suppression (tension 11 steps 5 and 6) are step 7's; step 1
+delivers the primitives they call - the merge, the fingerprint, the `findings_mark_suppressed`
+annotation, and `classify_derived`, which is pure and is already tested against tension 6's full case
+table.
