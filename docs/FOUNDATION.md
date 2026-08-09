@@ -4047,12 +4047,18 @@ composite under `tests/fixtures/rules/derived.rules`; only the shipped seed wait
   against editing it for a decision settled elsewhere), so `derived` remains absent from its type-tag
   list there - that list was never wrong, since a composite is never itself tagged with an
   `--intensity` tier; it is tension 15's FILTER that needed the exemption, not the tag vocabulary.
-- **F17 [low] - `aws_ro` pins `--no-cli-pager`, which AWS CLI v1 rejects** (tension 23, item 5).
-  The flag is v2-only, and tension 24 probes for `aws` by presence rather than by major version, so on a
-  v1 host every AWS call fails at argument parsing and the entire cloud module produces zero findings
-  while reporting a tool error.
-  Direction: set `AWS_PAGER=` in the call's environment instead, which both major versions honour and
-  which needs no version detection, and record the detected major version in `run.json` either way.
+- **F17 [low] - CLOSED. `aws_ro` sets `AWS_PAGER=''` rather than pinning `--no-cli-pager`**
+  (tension 23, item 5), which is exactly the prescribed direction.
+  The flag is v2-only; tension 24 probes for `aws` by presence rather than by major version, so on a
+  v1 host every AWS call would have failed at argument parsing and the entire cloud module would have
+  produced zero findings while reporting a tool error.
+  Measured against a real `aws-cli/1.44.x` install (`tests/localstack/run.sh`, not just a stub):
+  `--no-cli-pager` is rejected at parsing exactly as described, and `AWS_PAGER=''` is not.
+  `_awscli_probe` in `lib/awscli.sh` records the detected major version via `run_record
+  aws_cli_major` whenever a run directory exists, satisfying the second half of the direction; it is
+  a no-op outside a run (`tests/suites/awscli.sh`), same as every other `run_record` call.
+  `lib/awscli.sh` itself lands ahead of `docs/DESIGN.md` §13 step 6 as part of a credential-less pass
+  advancing what needed no AWS account; see `AGENTS.md`, "AWS module: what exists ahead of step 6".
 
 ## Where the build currently stands
 
@@ -4082,11 +4088,14 @@ test and tension 6 condition (b1) read once `state/` exists at step 7.
 WHICH packs have landed and what §6.3 still owes is in the generated block below, not in this
 paragraph: it previously undercounted step 3 and left an already-landed pack in its still-missing list,
 which is the failure the generator exists to make impossible.
-Steps 4 through 10 remain mostly unstarted, so `modules/dast/` and `modules/cloud/` remain unbuilt,
-along with `lib/awscli.sh`.
+Steps 4 through 10 remain mostly unstarted, so `modules/dast/` and `modules/cloud/` remain unbuilt.
 `modules/iac/` and `modules/sca/` are exceptions - see the two paragraphs below.
-The remaining follow-ups (F5, F20, and F17) are inherited by steps 4 through 10 and are still open.
-(F3, F4, F8, and F16 - including its `look` half - are closed above.)
+`lib/awscli.sh` is a third: a credential-less pass built it ahead of step 6, so the chokepoint exists
+while `modules/cloud/aws/live/*.sh` and everything else step 6 names are still unbuilt - see "AWS
+module: what exists ahead of step 6" in `AGENTS.md`.
+The remaining follow-ups (F5 and F20) are inherited by steps 4 through 10 and are still open.
+(F3, F4, F8, and F16 - including its `look` half - are closed above, and F17 closed out of order as
+part of that same credential-less pass.)
 
 **Step 4's IaC half landed out of sequence, ahead of step 3's remaining sub-steps and ahead of step 4's
 own SCA half, one ticket per file format.**
@@ -4444,8 +4453,11 @@ was step 1's placeholder and is now built by step 2 (above); `modules/sast/`, `m
 generated block below is what says which of their packs and ecosystems are in; `lib/http.sh` landed
 early, out of its normal step-5 sequence (tension 19), and step 5 as a whole now has a written
 sub-ticket plan (`docs/STEP5-DAST-PLAN.md`, above) though none of it has started; `lib/engines.sh` also
-landed early, out of its normal step-9 sequence, as part of this ticket (immediately above); and
-`lib/awscli.sh`, SARIF, the compliance report, and `state/` remain unbuilt.
+landed early, out of its normal step-9 sequence, as part of this ticket (immediately above);
+`lib/awscli.sh` landed early too, out of its normal step-6 sequence, as part of a credential-less pass
+that advanced only what needed no AWS account (see "AWS module: what exists ahead of step 6" in
+`AGENTS.md`), so the read-only chokepoint exists while `modules/cloud/aws/live/*.sh` and the rest of
+step 6 do not; and SARIF, the compliance report, and `state/` remain unbuilt.
 
 <!-- BEGIN GENERATED STATUS -->
 <!--

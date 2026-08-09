@@ -943,7 +943,64 @@ only F5, F20, F17, and F16's `look` half remain).
 Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start:
 
 - `lib/records.sh` (the record parser) is built **before** step 1's stated contents, since tensions 1, 6, 9, 15, and 26 all depend on it.
-- `lib/awscli.sh` is added to the layout and lands at the start of step 6, before any `aws/live/*.sh` script exists, so no script is ever written against a bare `aws`.
+- `lib/awscli.sh` is added to the layout and lands at the start of step 6, before any `aws/live/*.sh` script exists, so no script is ever written against a bare `aws`. **Update:** `lib/awscli.sh` itself now exists (see "AWS module: what exists ahead of step 6" below) - built out of sequence, deliberately, without the `aws/live/*.sh` scripts it was meant to land alongside.
+
+## AWS module: what exists ahead of step 6, and why
+
+A credential-less pass (no AWS account was available, and none of §13 step 2's other work was
+blocked on it) advanced the part of step 6 that needs no account: the chokepoint, its runtime
+guard, and the test infrastructure around both.
+**Nothing in `docs/DESIGN.md` §8.1's check catalog was built** - no `modules/cloud/aws/live/*.sh`
+script exists, `scan.sh` still does not exist, and this work does not change "current position:
+step 2 is next" above.
+
+**What exists now:**
+
+- `lib/awscli.sh` - `aws_ro`, tension 23's chokepoint, exactly as specified: the prefix allowlist
+  enforced at runtime (exit 3, not just a lint), `--cli-input-json`/`--cli-input-yaml`/`--output`
+  refused outright, and **finding F17 closed**: `AWS_PAGER=''` rather than `--no-cli-pager`, which
+  is CLI-v2-only and fails argument parsing on a v1 host before the call is even attempted.
+  `tests/suites/awscli.sh` reproduces F17's failure mode against a real AWS CLI v1 install
+  (`aws-cli/1.44.x`, measured) in `tests/localstack/run.sh`, not just a stub - the flag really does
+  reject at parsing, and `AWS_PAGER` really does not.
+- `tests/lint-aws-readonly.sh` gained an optional scan-root and allow-file override (used only by
+  its own meta-test) and three real fixes, found while proving it fails on a planted mutating call:
+  check 3 used to accept ANY `readonly`-declared variable regardless of what its literals were,
+  so `readonly OPS=(list-users delete-user); aws_ro iam "${OPS[1]}"` passed clean; checks 2 and 3's
+  allow-file lookup required the operation to be the last byte on the line, so the file's own
+  documented style (`service operation # reason`) could never match; check 4's stale-entry
+  detector had the same trailing-space-before-comment bug, which silently marked every entry for a
+  service "used" the moment any call to that service existed anywhere. All three are fixed with a
+  test that fails under the original reading, in `tests/suites/aws-lint.sh`.
+- `tests/lib/aws-fixtures.sh` + `tests/fixtures/aws/` - the fixture harness for §8.1: a stub `aws`
+  serves a recorded/synthetic JSON response, so a check's own logic can be unit-tested against
+  known-good and known-bad inputs offline. Proven against one reference check
+  (`tests/suites/aws-fixtures.sh`), explicitly labelled as a template, not a shipped check -
+  `tests/fixtures/aws/README.md` says why.
+- `tests/localstack/run.sh` - brings up LocalStack (docker), seeds a bucket via the real `aws` CLI
+  directly (creation is mutating, so it deliberately does not go through `aws_ro`), then proves
+  `aws_ro` against a real API shape: two read calls return the seeded bucket, and a mutating call
+  is refused with exit 3 before it ever reaches the endpoint - verified independently by listing
+  buckets again afterward. **Opt-in only**, not part of `tests/run-tests.sh`, requires docker and a
+  real `aws` CLI (neither is a scoursh runtime dependency); confirmed by running the full suite
+  with `docker` removed from `PATH`.
+- `tests/aws-readonly-allow.txt` is **deliberately still absent**. No code calls `sts assume-role`
+  until an `aws/live/*.sh` script exists at step 6, and seeding the file now would trip the lint's
+  own check 4 (confirmed empirically before deciding this).
+
+**What is NOT proven, and should not be read into any of the above:** none of this has run against
+a real AWS account. LocalStack's S3 implementation is close to real but not identical - it does not
+reproduce IAM policy evaluation, real service quotas or throttling, cross-account behaviour, or
+every service's edge cases, and only S3 was exercised. `aws_ro`'s multi-account `sts assume-role`
+path is unused and untested beyond being allow-listable. The read-only guarantee is proven against
+a stub and against one emulated service, not against the full breadth of read operations §8.1's
+catalog will eventually call. Do not describe any of this as "verified against AWS."
+
+**A naming lesson worth keeping:** for `list-buckets`, `get-bucket-acl`, and the rest of the
+low-level S3 API, the AWS CLI service name is `s3api`, not `s3` - `aws s3 <verb>` is a distinct
+high-level command set (`ls`, `cp`, `mb`, `sync`, ...) with different verbs entirely. A first draft
+of the fixture/stub examples got this wrong; it only surfaced once `tests/localstack/run.sh` ran
+against a real CLI, since a stub that ignores the service name never would have caught it.
 
 ## Tests
 
@@ -958,6 +1015,10 @@ tests/lint-aws-readonly.sh         # read-only AWS lint, docs/FOUNDATION.md tens
 tests/lint-status.sh               # the generated build-status blocks are current, and the guard bites
 tools/gen-status.sh --write        # regenerate those blocks after landing a module
 tests/e2e/fixture-scan.sh <dir>    # the end-to-end path on its own, for eyeballing a report
+tests/localstack/run.sh [up|verify|down|all]   # OPT-IN: real API shapes via a local emulator.
+                                    # Needs docker and a real `aws` CLI (neither is a scoursh
+                                    # runtime dependency). NOT part of the suite above and never
+                                    # run by CI's default job - see "AWS module" below.
 ```
 
 **`tests/run-tests.sh --list` is the source of truth for the current suite and linter names, not this
