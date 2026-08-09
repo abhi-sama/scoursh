@@ -1,0 +1,23 @@
+# tests/fixtures/vuln/k8s_run_as_root.yaml - true-positive fixture for
+# IAC-K8S-RUN_AS_ROOT-01: no runAsNonRoot anywhere near the container list.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: run-as-root-demo
+spec:
+  automountServiceAccountToken: false
+  containers:
+    - name: app
+      image: registry.example.com/app:1.4.2
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        capabilities:
+          drop:
+            - ALL
+      resources:
+        limits:
+          cpu: "500m"
+          memory: "256Mi"
+        requests:
+          cpu: "250m"
+          memory: "128Mi"

@@ -1,0 +1,8 @@
+{
+  "_comment": "Generic application config JSON, not CloudFormation - glob-collision-guard fixture for this ticket's AC2/AC3, proving the broad **/*.json files: glob does not misfire on unrelated JSON that happens to carry credential-shaped keys.",
+  "app": "demo",
+  "database": {
+    "host": "db.internal",
+    "password": "Sup3rSecretPass!"
+  }
+}

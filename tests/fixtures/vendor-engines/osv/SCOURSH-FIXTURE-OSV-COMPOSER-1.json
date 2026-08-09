@@ -1,0 +1,12 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-COMPOSER-1",
+  "summary": "fixture: mixed-case vendor/package must normalize to lowercase",
+  "database_specific": {"severity": "HIGH"},
+  "affected": [
+    {
+      "package": {"ecosystem": "Packagist", "name": "Acme/Fixture-Widget"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "3.1.0"}]}],
+      "versions": ["3.0.0", "3.0.1"]
+    }
+  ]
+}

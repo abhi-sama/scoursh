@@ -1,0 +1,13 @@
+# CloudFormation security group ingress restricted to the operator's own
+# network - safe equivalent for IAC-CFN-OPEN_CIDR-01.
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH from the office network only
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 10.0.0.0/16

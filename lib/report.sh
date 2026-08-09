@@ -80,6 +80,15 @@ report_count() {
 # and the counts.  §15's honesty requirement is implemented through this file,
 # and `incomplete_reason` being non-empty is exactly the exit-5 predicate
 # (tension 14).
+#
+# `checks_selected` (tension 15, `lib/checks.sh`) vs `checks_run` (AGENTS.md
+# "Build order and where we are", `records_register_checks`): the former is
+# every check the run's filter chain selected as eligible BEFORE dispatch;
+# the latter is every check some module actually loaded and executed.  A
+# selected check is not yet a run one - a module may still skip it for its
+# own reason (a missing `requires-cmd`, an unmet `requires-identities`) - so
+# the two arrays are kept distinct rather than merged into one that would
+# overclaim for every check on the wrong side of that gap.
 report_run_json() {
   local rundir=${1:-$SCOURSH_RUN_DIR}
   report_count "$rundir"
@@ -159,6 +168,7 @@ report_run_json() {
     _meta_array_unique "$rundir" targets 'targets'
     _meta_array_unique "$rundir" regions 'regions'
     _meta_array_unique "$rundir" checks_run 'checks_run'
+    _meta_array_unique "$rundir" checks_selected 'checks_selected'
     _meta_array "$rundir" skipped_checks 'skipped_checks'
     _meta_array "$rundir" coverage_gap 'coverage_gap'
     _meta_array "$rundir" coverage_reduction 'coverage_reduction'

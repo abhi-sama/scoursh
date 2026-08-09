@@ -675,7 +675,14 @@ attribution_load() {
     _attr_add "$host" "$id" "$subs"
     while IFS= read -r h; do
       [[ -n $h ]] || continue
-      _attr_add "$(_normalise_host "${h%%:*}")" "$id" "$subs"
+      # extra-host is `host[:port]` (rules/RULE-FORMAT.md §9.4), the same
+      # authority grammar http_scope_load feeds through http_url_normalize -
+      # scope_split_authority is the shared parser for that grammar (see its
+      # ADR above _host_of_url), so a bracketed IPv6 extra-host no longer
+      # truncates to "[" here the way it did before this shared helper.
+      if scope_split_authority "$h"; then
+        _attr_add "$_SAH_HOST" "$id" "$subs"
+      fi
     done <<<"$(records_list scope "$i" extra-host)"
   done
 }
@@ -697,17 +704,120 @@ _attr_add() {
   fi
 }
 
+# ADR: one shared authority (host[:port]) canonicalizer for scope.conf hosts
+# Context: a config/scope.conf host feeds two independent readers - the DAST
+#   network gate (lib/http.sh http_scope_load -> http_url_normalize) and
+#   this file's cloud-finding correlation (attribution_load below) - and
+#   this file's own comment on _normalise_host claimed "attribution
+#   normalises identically [to the gate] so the two can never disagree".
+#   That claim was false: http_url_normalize percent-decodes once, strips
+#   userinfo up to the LAST '@', and is bracket-aware for an IPv6 host
+#   before splitting off the port; this file's _host_of_url and
+#   attribution_load's extra-host loop instead split on the FIRST ':',
+#   with no percent-decoding and no userinfo handling.  A bracketed
+#   extra-host ("[::1]:8443") truncated to the single byte "[" here; a
+#   userinfo-bearing base-url ("https://user@host/") kept "user@host" as
+#   the host.  Either one silently breaks correlation for a host the
+#   network gate authorises correctly - three call sites (http.sh's
+#   authority split, this file's _host_of_url, this file's extra-host
+#   loop) computing one conceptual value with two disagreeing on it.
+# Decision: scope_split_authority is that one function.  It owns
+#   percent-decoding (once), userinfo stripping, and bracket-aware
+#   host/port splitting; lib/http.sh's http_url_normalize now calls it
+#   too instead of re-implementing the same three steps, then layers its
+#   own numeric-literal (octal/hex/decimal IPv4, embedded-IPv4 IPv6)
+#   canonicalization on top of the shared result.  It lives in this file,
+#   not lib/http.sh, because attribution_load (cloud-only runs) must
+#   never require lib/http.sh to be sourced - lib/http.sh already sources
+#   this file, never the reverse.
+# Alternatives considered: leaving the numeric-literal canonicalization
+#   itself out of the shared function - it is deliberate SSRF hardening
+#   for a live network call, not needed for a correlation-only lookup,
+#   and folding it in here would blur the documented gate-versus-
+#   attribution distinction (tension 19: attribution is a correlation
+#   attribute, never a fingerprint input and never a gate).
+# Consequences: the gate and attribution can no longer silently disagree
+#   on what a scope.conf host STRING means; a new decoding/splitting rule
+#   is now a one-file change. An operator-authored NUMERIC LITERAL host
+#   (SSRF-style spelling) still only canonicalizes on the gate path -
+#   attribution can in principle still miss correlating one - which is a
+#   narrower, separately tracked gap, not silently "fixed" by this change.
+_scope_pct_decode() {
+  local s=$1 out='' i=0 c hex
+  local len=${#s}
+  while (( i < len )); do
+    c=${s:i:1}
+    if [[ $c == '%' ]] && (( i + 3 <= len )); then
+      hex=${s:i+1:2}
+      if [[ $hex =~ ^[0-9A-Fa-f][0-9A-Fa-f]$ ]]; then
+        # shellcheck disable=SC2059
+        out+=$(printf "\\x$hex")
+        i=$(( i + 3 ))
+        continue
+      fi
+    fi
+    out+=$c
+    i=$(( i + 1 ))
+  done
+  printf '%s' "$out"
+}
+
+# `scope_split_authority AUTHORITY` - percent-decodes once, strips userinfo
+# (up to the LAST '@', RFC 3986 - not the first, so `user%40name@evil`,
+# which decodes to `user@name@evil`, splits at the right '@'), and splits a
+# bracket-aware host[:port].  Sets _SAH_HOST (already lowercased and
+# trailing-dot-stripped via _normalise_host), _SAH_PORT (raw, unvalidated -
+# callers that care about port range/defaults validate it themselves),
+# _SAH_HAD_USERINFO and _SAH_BRACKETED (true when the host was written
+# `[...]`, the caller's signal to attempt IPv6 handling).  Returns 1 for an
+# empty authority or an empty host after userinfo is stripped; the globals
+# are then unreliable and must not be read.
+scope_split_authority() {
+  local authority=$1
+  _SAH_HOST='' _SAH_PORT='' _SAH_HAD_USERINFO=false _SAH_BRACKETED=false
+  [[ -n $authority ]] || return 1
+
+  authority=$(_scope_pct_decode "$authority")
+
+  if [[ $authority == *@* ]]; then
+    _SAH_HAD_USERINFO=true
+    authority=${authority##*@}
+  fi
+
+  local host port
+  if [[ $authority == \[* ]]; then
+    _SAH_BRACKETED=true
+    host=${authority#\[}
+    host=${host%%]*}
+    local after=${authority#*]}
+    if [[ $after == :* ]]; then port=${after#:}; else port=''; fi
+  elif [[ $authority == *:* ]]; then
+    host=${authority%%:*}
+    port=${authority#*:}
+  else
+    host=$authority
+    port=''
+  fi
+  [[ -n $host ]] || return 1
+
+  _SAH_HOST=$(_normalise_host "$host")
+  _SAH_PORT=$port
+  return 0
+}
+
 _host_of_url() {
   local u=$1
   u=${u#*://}
   u=${u%%/*}
   u=${u%%\?*}
-  u=${u%%:*}
-  _normalise_host "$u"
+  scope_split_authority "$u" || return 0
+  printf '%s' "$_SAH_HOST"
 }
 
 # The scope gate lowercases the host and strips a trailing dot (tension 19);
-# attribution normalises identically so the two can never disagree.
+# scope_split_authority (above) is what makes attribution normalise
+# identically to the gate, by construction rather than by two independently
+# maintained implementations agreeing.
 _normalise_host() {
   local h=$1
   h=${h,,}
@@ -1595,12 +1705,15 @@ classify_derived() {
 
   # (a) Own selection.  A composite has no coverage cell, so tension 12's
   # (check, cell) test cannot protect it, and nothing else asks whether the
-  # composite record itself survived tension 15's filter chain.  It frequently
-  # does not: `derived` is a type tag in no --intensity tier, so
-  # `scan.sh all --intensity active` drops every composite.  Without (a),
-  # `scan.sh all` followed by `scan.sh all --intensity active` classifies the
-  # flagship composite `fixed (chain broken)` with all three contributors still
-  # present and the chain fully open.
+  # composite record itself survived tension 15's filter chain.  It still can
+  # not: `--profile-scan quick` drops any composite with no `quick` tag, and
+  # `--allow-intrusive` off drops one tagged `intrusive` (lib/checks.sh
+  # exempts `derived` from the --intensity ceiling specifically - finding F8 -
+  # so --intensity alone no longer does this, but the other two filters
+  # still can).  Without (a), `scan.sh all` followed by
+  # `scan.sh all --profile-scan quick` classifies the flagship composite
+  # `fixed (chain broken)` with all three contributors still present and the
+  # chain fully open.
   if ! _derived_record_selected "$check_id"; then
     printf 'unknown\tcomposite-not-selected'
     return 0

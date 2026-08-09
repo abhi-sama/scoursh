@@ -1,0 +1,29 @@
+# tests/fixtures/vuln/values.yaml - Helm true-positive fixture (IAC-HELM-*).
+# Every value below is deliberately vulnerable; see tests/fixtures/clean/values.yaml
+# for the safe equivalent of each one.
+replicaCount: 1
+
+image:
+  repository: myapp
+  tag: latest
+
+service:
+  type: ClusterIP
+  port: 80
+
+container:
+  # IAC-HELM-HOST_PORT-01: publishes the container port directly on the
+  # node's host network interface instead of only through the Service.
+  hostPort: 8443
+
+extraVolumes:
+  - name: docker-sock
+    # IAC-HELM-HOST_MOUNT-01: hostPath volume targeting a sensitive host
+    # path (the container-runtime socket - equivalent to host root).
+    hostPath:
+      path: /var/run/docker.sock
+
+credentials:
+  # IAC-HELM-HARDCODED_SECRET-01: plaintext credential literal, never
+  # sourced from an existing Kubernetes Secret.
+  password: "Sup3rSecretPass!"

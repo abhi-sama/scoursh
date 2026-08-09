@@ -1,0 +1,75 @@
+# Fixture script-check registry for tests/suites/checks.sh and the scan.sh
+# registry-discovery integration test.  NOT a shipped catalog: docs/DESIGN.md
+# §13 step 3+ owns modules/dast/checks.rules for real.  One check per
+# --intensity tier, plus one `intrusive` check, so the filter chain's every
+# branch (docs/FOUNDATION.md tension 15) has a fixture to exercise it.
+
+id: DAST-HDR-CSP-01
+title: Content-Security-Policy header missing or unsafe
+script: passive/headers.sh
+severity: medium
+confidence: high
+cwe: CWE-1021
+owasp: A05:2021
+tags: passive
+tags: quick
+coverage-scope: target
+remediation: Set a restrictive Content-Security-Policy header with no unsafe-inline
+  or unsafe-eval source, and no wildcard host.
+references: CWE-1021
+
+id: DAST-HDR-HSTS-01
+title: Strict-Transport-Security header missing or too short
+script: passive/headers.sh
+severity: low
+confidence: high
+cwe: CWE-319
+owasp: A05:2021
+tags: passive
+coverage-scope: target
+remediation: Set Strict-Transport-Security with a max-age of at least one year
+  and includeSubDomains.
+references: CWE-319
+
+id: DAST-AUTHZ-IDOR-01
+title: Cross-user object reference not enforced
+script: safe-active/authz.sh
+severity: high
+confidence: medium
+cwe: CWE-639
+owasp: A01:2021
+tags: safe-active
+tags: compliance
+coverage-scope: target
+requires-identities: 2
+cis: 6.1
+remediation: Enforce an ownership check on every object reference, keyed to the
+  authenticated identity rather than a client-supplied id.
+references: CWE-639
+
+id: DAST-INJ-SQLI-01
+title: SQL injection via request parameter
+script: active/sqli.sh
+severity: critical
+confidence: medium
+cwe: CWE-89
+owasp: A03:2021
+tags: active
+tags: intrusive
+coverage-scope: target
+remediation: Use parameterised queries or an ORM that never interpolates
+  request-derived data into SQL text.
+references: CWE-89
+
+id: DAST-DISC-CRAWL-01
+title: Discovery input reachable
+script: config-read/discovery.sh
+severity: info
+confidence: high
+cwe: none
+owasp: none
+tags: config-read
+tags: quick
+coverage-scope: target
+remediation: No fix required; this is a coverage/discovery fact, not a
+  vulnerability.

@@ -87,12 +87,780 @@ Each has a full entry in `docs/FOUNDATION.md`.
 - **An unusable diff is fail-closed at the gate** (tension 11 step 7). No prior state, an `fp_schema` mismatch, or a `scan_root_id` mismatch **on a run whose findings live in `path-root` cells** all set `diff_usable = false` (a `cloud`/`dast`/`posture`-only run is unaffected by `scan_root_id`, since those cells carry no path), and `--fail-on-new` then gates on **all** findings. `diff_usable` governs the **gate only** and never overrides a `status`: a first run's findings are `new` per tension 12's table, not `unknown`.
 - **A secret is never a command-line argument and never touches disk raw** (tension 9). `sha256_of` reads stdin only.
 - **Evidence is untrusted target output** (tension 10). It goes through `finding_set_evidence` and is escaped per emitter; the HTML report contains no `<script>` at all.
+- **`tests/fixtures/{vuln,clean}/` are SHARED trees scanned wholesale, so landing a new `*.rules` pack changes what every existing pack is tested against - and what every existing pack's fixtures test the new one against.** Each pack asserts "stays quiet across the whole clean tree", so an overlapping `files:` glob is a cross-fire, not a local concern. `kubernetes.rules` (`bb75c9b`) landed **after** `docker-compose.rules` (`57d1cd1`) and its `tests/fixtures/clean/docker-compose.*.yml` fixtures, carried no compose guard, and so merged red: `tests/suites/iac.sh` reports `110 passed, 2 failed` at `bb75c9b` itself, and `dev` carried those two failures onward into every branch cut from it until they were fixed. `image:` and `privileged: true` are byte-identical vocabulary in the two schemas. A pack whose `files:` glob overlaps another's must state the boundary explicitly - `exclude-files` mirroring the owning pack's `files:` list where the shape has a conventional filename (docker-compose, Dockerfile), a content `context-deny` only where it does not (CloudFormation, Helm templates). Reach for `exclude-files` first: it cannot interact with a `context-window`, whereas a content deny on a check like `IAC-K8S-MUTABLE_TAG-01` forces widening a same-line-intent window that `rules/RULE-FORMAT.md` §10.2 requires to stay at `0`, trading a visible false positive for a silent false negative (finding F4).
+- **A cross-fire fix needs a test in BOTH directions, because the naive fix for each is the other's bug.** Narrow too little and the false positives return; narrow too much and the pack goes inert - and an inert pack passes every "stays quiet" assertion in the suite, so the only thing that catches it is an assertion that the rules still FIRE. The kubernetes/docker-compose section of `tests/suites/iac.sh` pins both halves, and asserts them over `check_id@loc_path` pairs from a single scan of `tests/fixtures/iac-scope/` so neither half can be satisfied by breaking the other. That failure mode had already cost two tickets before it was tested.
 
 ## Build order and where we are
 
 `docs/DESIGN.md` §13 gives the build order, in ten steps, starting with `lib/core.sh` / `lib/findings.sh` / `lib/report.sh` and ending with SARIF plus the compliance report plus docs.
 
-**Current position: §13 step 1 is done. The next task is step 2.**
+**Process rule: shipping a §13 step updates this section, and its mirror in `docs/FOUNDATION.md`'s
+"Where the build currently stands," in the same change.**
+Step 3e (`modules/sast/history.sh`, commit `18c4c3f`) landed without either doc being updated, so its
+existence was rediscovered a ticket downstream by an agent working on unrelated doc staleness, which is
+exactly the failure mode this file exists to prevent (see "`main` can lag `dev`" below for the earlier,
+sibling instance of the same pattern). Do not repeat it: a ticket that lands a `docs/DESIGN.md` §13
+sub-step is not done until this paragraph's "Current position" and the FOUNDATION.md section it mirrors
+both say so.
+This paragraph and `docs/FOUNDATION.md`'s "Where the build currently stands" are part of the deliverable
+for every step ticket, not follow-up work: filing a separate documentation ticket to update them later
+is not an acceptable substitute, however small the wording change looks. A step landed without this
+paragraph and its FOUNDATION.md mirror updated in the same commit range is not done, full stop - close
+the gap in the step ticket itself.
+
+**The inventory half of that rule is now mechanical; the prose half is what is left of it.**
+`tools/gen-status.sh` regenerates the status block below - and its byte-identical copies in
+`README.md` and `docs/FOUNDATION.md` - from the repository tree and `docs/DESIGN.md`'s own catalog, and
+`tests/lint-status.sh` (run by `tests/run-tests.sh`, so by CI) fails when any committed block differs
+from a fresh generation.
+A ticket that lands a module therefore runs `tools/gen-status.sh --write` and commits the result; it
+never types a pack count, a "still open" list, or a "the next task is" sentence about a module, because
+those are the sentences that went stale three times and that made every branch alive for more than a
+few minutes conflict on these files.
+**A merge conflict inside a generated block is never resolved by hand.**
+Take either side of the conflict and re-run `tools/gen-status.sh --write`: both sides are machine
+output, neither is more authoritative than a fresh generation, and hand-merging two generated tables is
+exactly how a wrong count gets committed with a straight face.
+
+**Current position: §13 steps 1 and 2 are done, and steps 3 and 4 are both under way, with step 4
+landing out of step order and in slices.**
+Which rule packs, SCA ecosystems and IaC packs have landed, and what remains of each, is in the
+generated block below - read it there rather than restating it here.
+The design notes the inventory cannot carry stay hand-written:
+
+- Ecosystems do **not** map one-to-one onto entry points, so never infer coverage from the number of
+  tree-walk functions, in either direction. The mapping is:
+
+  | entry point | file | ecosystems |
+  |---|---|---|
+  | `sca_scan_tree` | `engine.sh` | npm, RubyGems, Composer |
+  | `sca_scan_python_tree` | `engine.sh` | pypi |
+  | `sca_scan_java_tree` | `engine.sh` | maven |
+  | `sca_go_scan_tree` | `go_engine.sh` | Go |
+
+  Ruby and PHP have no entry point of their own: `sca_scan_tree` walks npm, `Gemfile.lock` **and**
+  `composer.lock` in one call, sharing one `unknown_count` table, because
+  `SCA-COV-UNKNOWN_VERSION-01`'s fingerprint carries no ecosystem component and two calls would emit two
+  findings colliding on one fingerprint. Composer's parser lives in `php_engine.sh` and Go's in
+  `go_engine.sh`, but a separate *file* is not a separate entry point - and note Go's is spelled
+  `sca_go_scan_tree`, which a `sca_scan_*_tree` glob does not even match.
+- `history.sh` (the `SAST-HIST-*` mechanism, tension 13) is step 3's sub-step 3e, not a rule pack; it
+  appears in the generated SAST table as a script row for that reason.
+- Step 3's sub-step letters come from the ticket titles, not from landing order: 3c landed before 3b,
+  and 3d after 3e.
+- Step 4 groups SCA and IaC into one step (`docs/DESIGN.md` §13, "both reuse the rule engine"), so
+  neither half being complete makes step 4 done.
+
+<!-- BEGIN GENERATED STATUS -->
+<!--
+  GENERATED by tools/gen-status.sh.  Everything between these two markers is
+  machine-written from the repository tree and docs/DESIGN.md's own catalog.
+
+  Do not hand-edit inside the markers: run `tools/gen-status.sh --write`.
+  `tests/lint-status.sh` (run by `tests/run-tests.sh`) fails when a committed
+  block differs from a fresh generation, so an edit here is a broken build.
+
+  A MERGE CONFLICT INSIDE THIS BLOCK IS NEVER RESOLVED BY HAND.  Take either
+  side of the conflict, then re-run `tools/gen-status.sh --write`.
+-->
+
+### Module status inventory (generated)
+
+What is PLANNED is parsed from `docs/DESIGN.md`'s own catalog (§6.3 SAST, §6.5
+SCA, §6.6 and §8.2 IaC).  What has LANDED is read off the repository tree.  What
+REMAINS is the difference, computed rather than typed - which is why no sentence
+in here has to be rewritten when a module lands, and why two branches landing
+different modules cannot conflict over it.
+
+**Landed** means both halves hold, and both are checked on every run:
+
+1. the artifact exists at its path under `modules/`, and
+2. the test tree exercises it - for a rule pack, at least one check id the pack
+   itself declares appears in a `tests/**/*.sh` suite; for a script, its
+   basename does; for an SCA ecosystem, every manifest `docs/DESIGN.md` §6.5
+   names for it is parsed under `modules/sca/` and at least one has a real
+   fixture file under `tests/fixtures/`.
+
+A file that is present but that no suite names is **present, untested** - its own
+state, never rounded up to landed.  Artifacts are identified by PATH and never by
+a commit sha: a ticket cannot know its own landing sha, and invented ones have
+shipped here before.
+
+#### SAST - `docs/DESIGN.md` §6.3 catalog -> `modules/sast/`
+
+| Artifact | Status | Checks | Exercised by |
+| --- | --- | --- | --- |
+| `modules/sast/rules/crypto.rules` | landed | 5 | `tests/suites/sast.sh` |
+| `modules/sast/rules/go.rules` | landed | 5 | `tests/suites/sast.sh` |
+| `modules/sast/rules/injection.rules` | landed | 8 | `tests/suites/sast.sh` |
+| `modules/sast/rules/java.rules` | landed | 7 | `tests/suites/sast.sh` |
+| `modules/sast/rules/javascript.rules` | landed | 7 | `tests/suites/sast.sh` |
+| `modules/sast/rules/ldap.rules` | not landed | - | - |
+| `modules/sast/rules/nosql.rules` | not landed | - | - |
+| `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/sast.sh` |
+| `modules/sast/rules/secrets.rules` | landed | 5 | `tests/suites/records.sh` |
+| `modules/sast/history.sh` | landed | - | `tests/suites/sast-history.sh` |
+
+Landed 8 of 10.  Outstanding: `ldap.rules`, `nosql.rules`.
+
+#### SCA ecosystems - `docs/DESIGN.md` §6.5 catalog -> `modules/sca/`
+
+| Manifests | Status | Parsers | Exercised by |
+| --- | --- | --- | --- |
+| `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` | landed | 3 of 3 parsed | `tests/fixtures/sca/mixed-ecosystems-php/package-lock.json` |
+| `requirements.txt`, `poetry.lock`, `Pipfile.lock` | landed | 3 of 3 parsed | `tests/fixtures/sca/python-requirements/requirements.txt` |
+| `go.mod`, `go.sum` | landed | 2 of 2 parsed | `tests/fixtures/sca/go-mod/go.mod` |
+| `pom.xml`, `build.gradle` | landed | 2 of 2 parsed | `tests/fixtures/sca/maven/pom.xml` |
+| `Gemfile.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca/mixed-ecosystems/Gemfile.lock` |
+| `composer.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca/composer-no-manifest/composer.lock` |
+
+Landed 6 of 6.  Outstanding: none.
+
+#### IaC rule packs - `docs/DESIGN.md` §6.6 and §8.2 -> `modules/iac/`
+
+| Artifact | Status | Checks | Exercised by |
+| --- | --- | --- | --- |
+| `modules/iac/cloudformation.rules` | landed | 8 | `tests/suites/iac.sh` |
+| `modules/iac/docker-compose.rules` | landed | 4 | `tests/suites/iac.sh` |
+| `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/iac.sh` |
+| `modules/iac/helm.rules` | landed | 3 | `tests/suites/iac.sh` |
+| `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/iac.sh` |
+| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac-trivy.sh` |
+
+Landed 6 of 6.  Outstanding: none.
+
+#### Totals
+
+- Pattern packs on disk: **13** (`modules/sast/rules/` 7, `modules/iac/` 6).
+- Module directories present: `modules/iac/`, `modules/sast/`, `modules/sca/`.
+
+<!-- END GENERATED STATUS -->
+
+Because `checks_registry_load` (`lib/checks.sh`) globs every `*.rules` file under `modules/iac/` with
+no per-pack allowlist, EVERY IaC pack on disk loads together on any `scan.sh iac` run, whichever packs
+those currently are - `tests/suites/iac.sh` scans each landed pack's ids in its `checks_run` integration
+section, so a new pack that forgets that section shows up as a gap rather than as silence.
+
+**Step 4's IaC half landed out of the strict step order, one ticket per file format.**
+Which formats are in and which are outstanding is in the generated block above; what is worth keeping
+in prose is the scoping reasoning behind two of them, because it is not recoverable from the file
+list:
+
+- The Terraform ticket (commit `5de4460`, "IaC: Terraform checks via the pattern-rule engine") shipped
+  the shared IaC scaffolding - `modules/iac/run.sh` (the `scan_dispatch iac` entry point, reusing
+  `modules/sast/engine.sh`'s `sast_evaluate_gate` and `sast_index_checks` unchanged rather than forking
+  an IaC-specific copy) and `modules/iac/parse.sh` (`iac_scan_file`/`iac_scan_tree`, the same two-pass
+  design as `sast_scan_file` with only the finding-emission path forked so `module` reads `iac`) - plus
+  `modules/iac/terraform.rules` (seven `IAC-TF-*` checks: open CIDR, public ACL, unencrypted-at-rest,
+  KMS key rotation disabled, public IP, hardcoded secret, RDS publicly accessible), scoped to `*.tf`
+  only.
+  This ticket landed without this section (or `docs/FOUNDATION.md`'s mirror) being updated - the same
+  process-note failure §13 step 3e's own paragraph below already documents for `history.sh` - so
+  `modules/iac/` existing was rediscovered by the next ticket reading the tree rather than the docs;
+  this section and its mirror are corrected here to close that gap, which is what this paragraph and the
+  process note above exist to keep from recurring.
+- This ticket ("IaC: Kubernetes manifest checks via the pattern-rule engine") shipped
+  `modules/iac/kubernetes.rules`: eight `IAC-K8S-*` checks (privileged containers, host
+  network/PID namespace sharing, missing resource limits/requests, `runAsNonRoot` unset, plaintext
+  secrets in env vars, the mutable `:latest` image tag, wildcard RBAC verbs/resources, and
+  `automountServiceAccountToken` left at its default), scoped to plain Kubernetes YAML/JSON manifests
+  and reusing `modules/iac/run.sh`/`parse.sh` unchanged (they were already technology-agnostic).
+  Helm chart templates and CloudFormation templates are explicitly excluded by design - see the pack's
+  own header comment for the case-sensitivity (Kubernetes' lowerCamelCase field names versus
+  CloudFormation's PascalCase) and `context-deny` (`\{\{` for Helm, `AWSTemplateFormatVersion|AWS::` for
+  CloudFormation, on the three absence-style checks) mechanisms that keep it out of scope for those two
+  shapes even though the file glob overlaps.
+- The CloudFormation ticket ("IaC: CloudFormation checks via the pattern-rule engine") shipped
+  `modules/iac/cloudformation.rules`: eight `IAC-CFN-*` checks, the seven `IAC-TF-*` siblings
+  restated in CloudFormation's PascalCase property shape plus `IAC-CFN-ECS_PRIVILEGED-01`, which
+  has no Terraform sibling and is the CloudFormation spelling of `IAC-K8S-PRIVILEGED-01`.
+  Its scoping is the **inverse** of every other pack in this directory, and that is the part worth
+  keeping in prose: a genuine CloudFormation template has no reserved filename or path convention at
+  all, so `files:` is deliberately as broad as the format allows (`*.yaml`, `*.yml`, `*.json`,
+  `*.template`) and ALL the narrowing is a `context-require` on `Type: AWS::<Service>::<Resource>`,
+  the one string a Kubernetes manifest, a Helm chart or a docker-compose file cannot carry while
+  still being that thing.  That anchor is strictly stronger than a filename glob, which is why this
+  pack ships **no `exclude-files`** where `kubernetes.rules` needs eight - and why the absence is
+  asserted against the same `tests/fixtures/iac/docker-compose/` fixture rather than left as a
+  comment.  Do not "harden" this pack by adding compose globs to it: they would be a guard no fixture
+  can distinguish from its absence.
+
+Three things this pack measured that are easy to get wrong again, and are not specific to it:
+
+- **Write a `files:` glob as `*.yaml`, never `**/*.yaml`.**  Per `rules/RULE-FORMAT.md` §9.1.2 an
+  unanchored glob already matches at any depth (`sast_glob_match` tries every path-segment-aligned
+  suffix), so `*.yaml` covers `infra/main.yaml`.  `**/*.yaml` translates to
+  `^(.*/)?.*/[^/]*\.yaml$`, whose `.*/` requires at least one directory component, so it silently
+  MISSES a file at the scan root - the likeliest place for a template.  The bug is invisible in a
+  fixture tree, where every path is nested by construction.
+- **The pattern engine has no comment awareness anywhere.**  A `#` line in a *clean* fixture that
+  quotes the hazardous `Key: value` pair it is documenting IS a match, and turns that fixture into a
+  false positive against itself.  `tests/fixtures/clean/cfn_ecs_privileged.yaml` was exactly that
+  before it was reworded; the suite caught it, but the failure reads as a rule defect rather than a
+  prose defect, so it costs a debugging cycle.  Describe the hazard, do not spell it.
+- **A "not landed" row in the generated status block is not proof the work was never done.**  This
+  pack existed as a finished commit in a merger ticket's workspace for a day: mergers resolve on the
+  *source* ticket's branch, so they have no branch of their own, the landing sweep skips them by
+  design, and nothing then records an outcome - a merger that had something to land looks identical
+  to one that did not.  When an artifact is outstanding, search the workspaces for a commit naming
+  it before writing it from scratch.
+
+Step 4's IaC scope is drawn from two separate places - `docs/DESIGN.md` §6.6's
+container/orchestration catalog and §8.2's CloudFormation checks - and the generated block above tracks
+both against what is on disk.  §6.6's Helm bullet means Helm **values and chart sources**; the
+**rendered**-chart case is a distinct sub-scope that no pack claims.
+
+**Step 5 (DAST) now has a written, dependency-ordered sub-ticket plan, but is not started.**
+`docs/STEP5-DAST-PLAN.md` breaks the ~30-script step 5 scope into tickets DAST-01 through DAST-30,
+ordered per `docs/DESIGN.md` §13's own `lib/http.sh -> auth.sh -> crawl.sh -> passive -> safe-active ->
+injection -> §7.4` sequence, and states plainly that `lib/http.sh`'s scope-gate chokepoint (tension 19)
+already shipped (see below) and is not re-planned - only the still-unbuilt tension-16 rate
+limiter/budget/breaker piece (DAST-01) and everything under `modules/dast/` remain.
+**No DAST-0x ticket is picked up until step 3's outstanding rule packs and step 4's SCA half are both
+complete on `dev`** (the generated block above is what says whether they are) - this plan is a written
+breakdown for later, not permission to start now.
+Step 4's IaC half is a separate sub-scope and does not lift this gate, which names SCA specifically.
+
+**Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01 has
+not.**
+`docs/STEP8-PARANOID-PLAN.md` splits `docs/DESIGN.md` §13 step 8 into **PARANOID-01** (the `--paranoid`
+connection-observer and abort-on-out-of-scope enforcement, per `docs/FOUNDATION.md` tension 20's
+RESOLUTION) and **NETNS-01** (`tools/run-in-netns.sh`, the network-namespace runner - optional and
+root-requiring, stated directly in that ticket's own filed description, not only in the plan doc).
+Both were filed to the backlog as real tickets (Crewban-57 and Crewban-58 respectively).
+**NETNS-01 (Crewban-58) has now landed**: `tools/run-in-netns.sh` (a Linux-only, root/CAP_NET_ADMIN
++CAP_SYS_ADMIN-requiring wrapper) builds a network namespace whose route table admits only two sets of
+IPv4 addresses - the resolved addresses of scoursh's in-scope targets, via `lib/http.sh`'s own
+`http_scope_load`/`http_resolve_host` (tension 19's pinned resolution cache, never a re-implementation),
+and the nameservers parsed from `/etc/resolv.conf` (tension 20's "set 3") - installs NO default route
+inside the namespace, and execs the wrapped command inside it via `ip netns exec`. Teardown (namespace,
+veth, NAT/iptables rules, `ip_forward` restoration) runs from the tool's own EXIT trap on every exit
+path, success or failure, staying inside the project's 0-5 exit-code contract throughout. It is never
+invoked by `scan.sh` and has no dependency on PARANOID-01 - the two are independent, peer mechanisms per
+tension 20's "guarantee vs detector" distinction. `tests/suites/netns.sh` tests it: argument parsing,
+the CapEff bitmask arithmetic, the target-IP/nameserver collectors, and the build/teardown command
+sequence are unit-tested against stubbed `ip`/`iptables`/`sysctl` on any host; the "fails immediately, no
+isolation action, `<command>` never runs" non-Linux/no-privilege paths (this ticket's ACs 3-4) are
+exercised as real subprocess invocations on whichever host the suite runs on; and a real, kernel-level
+out-of-scope-connection-fails test (this ticket's AC2) is gated behind a genuine Linux+root/capability+
+tooling probe and is honestly marked SKIPPED (not a silent pass) on a host that does not meet it.
+IPv6 routing is out of scope for this tool (an in-scope host that only resolves to IPv6 is logged and
+skipped, never routed) - a follow-up ticket for dual-stack support was filed separately, per this
+ticket's own out-of-scope list.
+**PARANOID-01 (the `--paranoid` observer/abort mechanism) remains unimplemented.**
+Unlike the DAST plan above, step 8 was never gated on any unlanded step: this planning ticket's own
+acceptance criteria named `lib/http.sh` (the tension-19 chokepoint) as step 8's blocker, and it was
+confirmed present on `dev` before either sub-ticket started - it shipped early, out of its normal step-5
+sequence, exactly as noted below. PARANOID-01 may still be picked up independently at any time; it does
+not depend on NETNS-01 having landed, or vice versa.
+
+**Step 6 (Cloud/AWS) now also has a written, dependency-ordered sub-ticket plan, but is not started.**
+`docs/STEP6-CLOUD-PLAN.md` breaks the `docs/DESIGN.md` §13 step 6 scope (`regions.sh` iteration -> the
+§8.1 live read-only catalog -> the read-only-verb CI lint -> `posture/` checks) into tickets CLOUD-01
+through CLOUD-34 plus POSTURE-01 through POSTURE-04, and states plainly that `tests/lint-aws-readonly.sh`
+(tension 23's read-only lint) already shipped at step 1 as a no-op stub that passes over an empty set -
+it is not re-planned as new matching logic, only the still-missing `lib/awscli.sh` chokepoint it lints
+against, the exception-file seeding, and the negative-fixture test are (CLOUD-03). It also records that
+the one IaC ticket already landed on `origin/dev` (`modules/iac/`, "IaC: Terraform checks via the
+pattern-rule engine") is step 4's `docs/DESIGN.md` §8.2 work, not step 6's, and is out of this plan's
+scope for that reason. **No CLOUD-0x or POSTURE-0x ticket is picked up until step 3's remaining
+rule packs, step 4 (SCA + IaC), and step 5 (DAST) are all complete on `dev`** - step 6 is
+gated on the whole sequential chain in front of it, not just step 4, and this plan is a written
+breakdown for later, not permission to start now.
+
+**PARANOID-01 has now landed - `lib/paranoid.sh` implements `--paranoid` for real.**
+It builds the four-set allowlist tension 20's RESOLUTION specifies (`paranoid_allowlist_build`).
+It attaches a connection sampler (`ss`, or a measured-usable `strace -f -e trace=connect` fallback -
+`paranoid_probe_backend`), aborts the run with exit `3` (`SCOURSH_EXIT_SCOPE`) on the first observed
+destination outside that allowlist, and exits `4` (`SCOURSH_EXIT_INPUT`) when neither backend is
+available or permitted.
+It is wired into `scan.sh`'s `scan_main` right after config loads and before any module dispatch.
+`tests/suites/paranoid.sh` is the deterministic no-egress fixture tension 20 calls for.
+`SCOURSH_PARANOID_FORCE_BACKEND`/`SCOURSH_PARANOID_SAMPLE` stand in for the ss/strace probe and the
+sampler itself (the same swappable-hook idiom `lib/http.sh`'s `SCOURSH_HTTP_RESOLVE`/
+`SCOURSH_HTTP_TRANSPORT` already use).
+So the suite never depends on `ss`/`strace` actually being installed - both are Linux-only, and this
+project's CI matrix runs macOS too.
+One correction surfaced while building this ticket, recorded in full in `docs/FOUNDATION.md` tension
+20's own "Implementation" paragraph: the observer and the abort's kill action are scoped to the
+DESCENDANT-PROCESS FAMILY rooted at the main `scan.sh` pid, not the raw OS process group tension 20's
+prose names.
+A plain `cmd &` never changes pgid, so scoping to the real process group would have let a violation's
+`kill -TERM` reach unrelated processes sharing that group by accident - measured directly: it took out
+this project's own test harness before the fix.
+`tools/run-in-netns.sh` (NETNS-01) is **not** implemented by this ticket, exactly as
+`docs/STEP8-PARANOID-PLAN.md` scoped it - it remains a separate, independently-schedulable,
+root-requiring ticket.
+
+**Step 9 (optional engine adapters) now has a real scaffold, out of its normal sequence and ahead of
+step 3's remaining `nosql`/`ldap` packs, step 5 (DAST), and step 6 (Cloud) - it shipped no per-engine
+logic and cost nothing those blocked steps.**
+`docs/ADAPTERS.md` is the new normative, self-contained convention document (the same role
+`rules/RULE-FORMAT.md` plays for records): it defines the `modules/<module>/adapters/<engine>/`
+directory shape and the three-function `adapter.sh` contract (`<engine>_detect`/`<engine>_run`/
+`<engine>_normalize`), generalizing `docs/DESIGN.md` §3/§6.4's SAST-only `adapters/` diagram to any
+module - `docs/FOUNDATION.md` Tension 27 records that generalization as a deliberate extension, not a
+correction, since DESIGN.md is preserved verbatim and is never edited to match it. It points at
+`rules/RULE-FORMAT.md` §9.1.1a for the check-id convention (`<engine>:<engine's own rule id>`) rather
+than inventing a second one.
+`tools/vendor-engines.sh` now exists as a real, runnable script - `docs/DESIGN.md` §9/§13 step 9's "only
+script permitted to reach the network" - with a genuinely empty engine registry (`VENG_REGISTRY`):
+`--help`, `--list`, `--all`, and vendoring a named engine all work today, and every one of those paths
+is exercised as a real subprocess in `tests/suites/vendor-engines.sh`, run with `curl`/`wget` absent
+from `PATH` so an accidental fetch attempt fails loudly rather than silently reaching the network. It is
+never called during a scan; `tests/lint-shell.sh` gained two checks enforcing that in both directions -
+`tools/vendor-engines.sh` is now exempted (alongside `lib/http.sh`) from the tension-19 "no bare
+curl/wget" check, and a new tension-27 check fails the build if anything under `lib/`, `modules/`, or
+`scan.sh` sources, execs, or evals `tools/vendor-engines.sh` by name.
+**What this ticket deliberately did not build**, so the boundary is not rediscovered: `lib/engines.sh`
+and `has_engine()` (named in `docs/DESIGN.md`'s directory layout but not step 9's - the first concrete
+adapter ticket builds them together with its own adapter, mirroring how `--paranoid`'s flag landed with
+its first real enforcement), the `--use-engines` flag, and `tools/vendor-engines.sh`'s *second*,
+unrelated responsibility that `docs/FOUNDATION.md` tension 25 already committed it to - regenerating
+`data/advisories.db`/`data/versions.db` from each SCA ecosystem's real tooling. That responsibility is
+real and already designed, but it is SCA work, not an engine adapter, and this ticket's own acceptance
+criteria scoped it out ("adds no per-engine logic itself, only the scaffold"). Zero adapter directories
+exist anywhere in the tree; the full suite (`tests/run-tests.sh`) passes with none present, which is
+the concrete proof that no adapter is required for `scoursh` to run, not merely an assertion.
+
+**This ticket is the first concrete adapter ticket the scaffold above anticipated, and it closes every
+gap that paragraph named as deliberately unbuilt.**
+It ships `lib/engines.sh` (`has_engine MODULE ENGINE`, memoised per pair, a pure filesystem question -
+"would this engine's own `<engine>_detect` return 0 right now" - that deliberately never reads
+`--use-engines` itself; docs/ADAPTERS.md §5's own pseudocode keeps "is it vendored" and "was
+`--use-engines` given" independent, ANDed together only at the calling module's own call site) and wires
+the `--use-engines` global flag through `scan.sh` (`_SCAN_FLAG_KIND`, usage text, and one
+`run_record use_engines <bool>` per run for audit) - `lib/checks.sh` itself gained no new filtering logic,
+only a header paragraph stating explicitly why not: an adapter check id (`<engine>:<engine's own rule
+id>`) is minted at runtime, never declared in a `*.rules` file, so `checks_registry_load` has nothing of
+its own to select or drop, exactly as `docs/ADAPTERS.md` §6 already froze.
+It ships `modules/sast/adapters/semgrep/adapter.sh` (the three-function contract: `semgrep_detect` is a
+pure filesystem check for an executable `bin/semgrep` plus a non-empty `rules/`; `semgrep_run` invokes it
+with `--offline --metrics=off` - and `SEMGREP_SEND_METRICS=off` as a belt-and-suspenders second control,
+since an air-gapped scanner cannot rely on a vendored third-party binary's own default being safe;
+`semgrep_normalize` parses semgrep's own JSON with a purpose-built, depth- and string-aware `awk`
+splitter plus bash-native field extractors - never a general JSON parser, the same pragmatic,
+stated-scope choice `modules/sca/engine.sh`'s `_sca_json_walk` already makes for lockfiles) and
+`modules/sast/adapters/semgrep/vendor.sh` (the sole file, besides `tools/vendor-engines.sh` itself,
+permitted to touch the network - and it does not either: it calls only `veng_fetch`, the new function
+`tools/vendor-engines.sh` now exports, which downloads and then verifies a caller-supplied sha256, never
+a hardcoded or guessed one - hardcoding an unverified checksum here would be the exact `AGENTS.md`
+"invented fact" mistake this file's own history section already warns about, applied to integrity
+verification instead of a commit sha). `tools/vendor-engines.sh`'s `VENG_REGISTRY` now carries exactly
+one entry, `[semgrep]=veng_vendor_semgrep`, which requires five operator-supplied
+`SCOURSH_SEMGREP_*` environment values (version, binary URL + sha256, ruleset URL + sha256) and refuses
+- never guesses - when any are missing.
+A normalised finding is validated against the scan root before it is ever trusted (`path` traversal
+outside the scan root is rejected with its own `coverage_reduction` reason, never silently accepted) and
+its match text is re-derived from the real file at the reported line when that still resolves, falling
+back to semgrep's own reported snippet only when it does not - `docs/FOUNDATION.md` tension 5/11's
+"re-derive match_digest ... from the file at the adapter's reported path and line" requirement, made
+concrete.
+Absent or un-vendored is a clean, logged `coverage_reduction reason=engine_not_vendored engine=semgrep`
+with the run otherwise unaffected; without `--use-engines` at all, a run behaves byte-for-byte as it did
+before this ticket - not even a `coverage_reduction` mentions the engine.
+`tests/suites/engines.sh` (fake, purpose-built adapters, independent of semgrep specifically) and
+`tests/suites/sast-semgrep.sh` (the three-function contract, the path-traversal guard, graceful
+degradation as a real `scan.sh sast` subprocess, and a full round-trip through every report format
+against a FAKE vendored "semgrep" - a tiny stand-in script, since zero real engines are vendored anywhere
+in this repository per `docs/ADAPTERS.md` §1) both exist and pass; `tests/suites/vendor-engines.sh`
+gained a fetch/verify section (stubbed `curl`, never a real network call) proving `veng_fetch`'s
+checksum-match, checksum-mismatch, and download-failure paths, plus `semgrep_vendor`'s own
+required-env-var gate and full success path against a scratch copy of the adapter directory - never the
+real one, so no test ever writes a fake "binary" into this repository's own working tree.
+`docs/ADAPTERS.md` §9's roster table now names this one row; every other module/engine cell remains
+"none shipped" exactly as before (the gitleaks ticket, immediately below, adds the second row).
+
+**A second concrete adapter has now landed on top of the first: `modules/sast/adapters/gitleaks/`
+(§13 step 9), built entirely on the plumbing the semgrep ticket shipped above - `lib/engines.sh`'s
+`has_engine`, the `--use-engines` flag - rather than duplicating any of it.**
+It ships `modules/sast/adapters/gitleaks/adapter.sh` (the three-function contract: `gitleaks_detect` is
+a pure filesystem check for an executable `bin/gitleaks` plus a `rules/gitleaks.toml` file;
+`gitleaks_run` invokes it with `detect --no-banner --no-git --exit-code 0 --source <target> --config
+<vendored gitleaks.toml> --report-format json --report-path <file>` per `docs/DESIGN.md` §6.4's own
+"gitleaks --no-banner" - `--no-git` because this adapter scans the WORKING TREE, leaving git-history
+secret scanning to `modules/sast/history.sh`'s own, already-shipped `SAST-HIST-*` mechanism (§13 step
+3e), and `--exit-code 0` because gitleaks' own default exit code (1 when leaks are found) is a normal,
+successful outcome for a secrets scanner, not an engine failure; `gitleaks_normalize` parses gitleaks'
+own BARE top-level JSON array - unlike semgrep's `{"results":[...]}` envelope - with the same
+purpose-built, depth/string-aware `awk` splitter shape `_semgrep_split_results` established, adapted to
+start directly at the first `[` rather than locating a `"results"` key first) and
+`modules/sast/adapters/gitleaks/vendor.sh` (the only other file permitted to touch the network, calling
+only `veng_fetch`, mirroring `semgrep/vendor.sh` exactly - never a hardcoded or guessed checksum).
+`tools/vendor-engines.sh`'s `VENG_REGISTRY` now carries two entries, `[semgrep]=veng_vendor_semgrep` and
+`[gitleaks]=veng_vendor_gitleaks`; the gitleaks entry requires the same five-operator-supplied-value
+shape (`SCOURSH_GITLEAKS_VERSION`/`URL`/`SHA256`/`RULES_URL`/`RULES_SHA256`) and refuses - never
+guesses - when any are missing, identically to semgrep.  `modules/sast/run.sh`'s `_sast_run_module` now
+gates semgrep and gitleaks INDEPENDENTLY in the same `--use-engines` block, in two separate
+`has_engine`/adapter-call pairs - one adapter's presence, absence, or failure never affects the other's
+own gate or its own `coverage_reduction` line.
+
+**This ticket's own, additional scope item - deduplicating gitleaks findings against the native
+`modules/sast/rules/secrets.rules` pack - exists because both target the same class of issue (a
+hardcoded credential), so the same secret at the same location is a routine, expected overlap that the
+ordinary per-run fingerprint dedup (`lib/findings.sh`'s `findings_merge`) cannot catch on its own:
+`check_id` is itself one of the fingerprint's own hashed components, so `gitleaks:aws-access-token` and
+`SAST-SEC-AWS_AKID-01` always hash to two different fingerprints even when they report the identical
+file, line, and matched bytes.**
+`_gitleaks_dup_of_native_secret` (in `adapter.sh`) is the narrower, second dedup pass this ticket adds:
+it reads this run's own not-yet-merged shard file(s) under `$SCOURSH_RUN_DIR/shards/*.fields` (via
+`lib/findings.sh`'s public `finding_decode` reader - never a hand-rolled parse of that format) for an
+already-emitted `module=sast`, `check_id=SAST-SEC-*` finding at the same `loc_path` AND the same
+`loc_match_digest`, and skips emitting the gitleaks finding when one is found, counting it in a
+`reason=dedup_native_secret engine=gitleaks count=N` `coverage_reduction` rather than dropping it
+invisibly.  This works reliably because `modules/sast/run.sh` calls the native pattern scan, then
+`history.sh`, then the engine adapters, strictly in that order, single-worker (its own
+`single_worker_no_parallel_scan_yet` `coverage_reduction` already states there is exactly one shard per
+run) - so by the time `gitleaks_normalize` runs, this run's own native secrets findings are already
+sitting in that one shard file, unmerged.
+**One correction surfaced while building this: `loc_match_digest` is NOT comparable across a
+whole-line read and a matched-substring read.**
+`modules/sast/engine.sh`'s own `_sast_emit_finding` hashes ONLY the exact regex-match substring
+`scan_match_offsets` captured (`rules/RULE-FORMAT.md` §10.3's pass 1 - the `text` field of `while
+IFS=: read -r ln off text`), never a `sed -n "${ln}p"`-read whole line.  The semgrep adapter's own
+`_semgrep_match_text` DOES prefer a re-derived whole-line read, because semgrep's JSON carries no
+distinct "just the matched substring" field - only a line-level `extra.lines` snippet - so a first draft
+of `_gitleaks_match_text` that copied that same whole-line-read preference produced a digest that never
+matched a native secrets.rules finding's own digest even at the identical file+line, silently defeating
+the dedup entirely (caught by this ticket's own end-to-end fixture, section D of
+`tests/suites/sast-gitleaks.sh`, before it ever reached review).  The fix, and the shipped behaviour:
+`_gitleaks_match_text` prefers gitleaks' OWN reported `Secret` field (falling back to `Match`, then a
+re-derived line, then `Description`) BECAUSE gitleaks, unlike semgrep, already reports the exact matched
+secret substring directly - that is the "raw matched text" this codebase's fingerprint convention wants,
+with no re-derivation needed, and re-deriving a whole line here would only pull in surrounding-line noise
+the underlying match never had.
+Absent or un-vendored is a clean, logged `coverage_reduction reason=engine_not_vendored engine=gitleaks`,
+independent of semgrep's own; without `--use-engines` at all, behaviour is unchanged, exactly as semgrep
+established.
+`tests/suites/sast-gitleaks.sh` (35 assertions: the three-function contract including the bare-array
+JSON shape, the path-traversal guard, the dedup helper in isolation, graceful degradation as a real
+`scan.sh sast` subprocess, a full round-trip through every report format against a FAKE vendored
+"gitleaks", and an end-to-end section proving the dedup itself - one gitleaks finding at the same
+file+line as a native AWS-key finding is dropped, while a second, non-overlapping gitleaks finding at a
+different line survives) and an expanded `tests/suites/vendor-engines.sh` (the registry now names two
+engines sorted under `LC_ALL=C`, so `gitleaks` reaches its own refusal path before `semgrep` in `--all`,
+plus `gitleaks_vendor`'s own fetch/verify section mirroring `semgrep_vendor`'s) both exist and pass.
+`docs/ADAPTERS.md` §9's roster table now names this second row.
+
+**This ticket is the SECOND concrete adapter, and the first for a module other than sast - it proves
+`docs/ADAPTERS.md`'s directory-convention generalization (§4) for real rather than leaving it a claim
+about a hypothetical future module.**
+It ships `modules/iac/adapters/trivy/adapter.sh` (the same three-function contract as semgrep's, applied
+to `trivy config`, trivy's offline IaC misconfiguration scanner): `trivy_detect` is a pure filesystem
+check for an executable `bin/trivy` ONLY - unlike `semgrep_detect`, it needs no `rules/` at all, because
+trivy's misconfiguration checks (OPA/Rego policies) are compiled into the binary itself, the
+"self-contained binary" case `docs/ADAPTERS.md` §4 already anticipated; `trivy_run` invokes it with
+`--offline-scan --skip-check-update --skip-db-update --scanners misconfig`, the same
+belt-and-suspenders "two independent ways of saying offline" precedent `semgrep_run` set;
+`trivy_normalize` walks trivy's own JSON, which nests findings TWO levels deep (a top-level `Results`
+array, one entry per scanned target file, each with its own `Misconfigurations` array) rather than
+semgrep's single flat array, via a generalized depth- and string-aware `awk` splitter
+(`_trivy_split_objects_from_marker`) reused for both levels.
+Which of `docs/DESIGN.md` §6.6's three named candidates (`checkov`, `tfsec`, `trivy config`) to build was
+this ticket's own decision to make, not the operator's: only `trivy config` natively scans every IaC
+shape the ticket's own scope names (Terraform, CloudFormation, Kubernetes, Helm, docker-compose) in one
+binary - `tfsec` is Terraform-only, and `checkov` is a Python application rather than the single
+vendorable static binary `semgrep`'s own adapter already established as this project's shape - see
+`modules/iac/adapters/trivy/adapter.sh`'s own header for the full reasoning.
+`tools/vendor-engines.sh`'s `VENG_REGISTRY` now carries a SECOND entry,
+`[trivy]=veng_vendor_trivy`, requiring three operator-supplied `SCOURSH_TRIVY_*` values (version, binary
+URL, sha256 - one artifact, not two, since there is no ruleset to vendor separately) and refusing - never
+guessing - when any are missing; `modules/iac/adapters/trivy/vendor.sh` states explicitly why it never
+extracts trivy's real `.tar.gz` release archive (the operator supplies a URL to the already-extracted
+binary, the same "operator supplies the exact right platform artifact" contract semgrep's own vendor.sh
+already uses).
+Merge/dedup against native `modules/iac/*.rules` findings (this ticket's own scope item 3) needed no new
+code: `docs/FOUNDATION.md`'s frozen pipeline (tension 11 stage 3) already merges and dedups every
+finding, native and adapter alike, purely by fingerprint equality after every module's findings are
+collected, and a trivy finding's `trivy:<AVD-ID>` check id never collides with a native `IAC-TF-*`/
+`IAC-K8S-*`/... id - `tests/suites/iac-trivy.sh`'s section C fixture proves this concretely by engineering
+a native `IAC-TF-OPEN_CIDR-01` finding and a `trivy:AVD-AWS-0107` finding to land on the exact same file
+and line (so their `match_digest` is identical too) and asserting both still appear as two distinct
+findings.
+`tests/suites/iac-trivy.sh` (the three-function contract including the nested-array split, the
+path-traversal guard, the `_trivy_severity_map` widening to `critical` - unlike `_semgrep_severity_map`,
+because native `modules/iac/*.rules` packs already author `severity: critical` directly, so capping this
+adapter at `high` would be an inconsistency invented for it alone - graceful degradation as a real
+`scan.sh iac` subprocess, and the full round-trip/merge proof above against a FAKE vendored "trivy") is
+new and passes; `tests/suites/vendor-engines.sh` gained the equivalent `trivy_vendor` fetch/verify
+section, against its own scratch copy of the adapter directory.
+`docs/ADAPTERS.md` §9's roster table now names this second row too.
+
+**`tools/vendor-engines.sh`'s OTHER, unrelated responsibility - tension 25's `data/advisories.db`/
+`data/versions.db` expansion, named as deliberately unbuilt by the step-9 scaffold paragraph above - has
+now landed too, as its own ticket ("Implement tools/vendor-engines.sh's advisories.db/versions.db
+expansion (tension 25)"), independent of and structurally separate from the semgrep/trivy/gitleaks
+adapter work above.**
+It adds the `advisories` command namespace to `tools/vendor-engines.sh` §3: a SEPARATE associative array
+(`VENG_ADVISORY_REGISTRY`, never `VENG_REGISTRY`), separate functions (`veng_advisories_list`/
+`veng_advisories_one`/`veng_advisories_all`, never `veng_vendor_*`), and its own `advisories` branch in
+`veng_main`, exactly as the scaffold paragraph's own instruction required - an `<engine>` name and an
+ecosystem name can never be mistaken for each other.
+It covers all six `docs/DESIGN.md` §6.5 ecosystems (npm, PyPI, Maven, Go, RubyGems, Composer), one
+`veng_advisories_<ecosystem>` function each, resolving real advisory data from OSV.dev
+(`https://api.osv.dev/v1/vulns/<id>`) - the same cross-ecosystem vulnerability database
+`govulncheck`/`pip-audit`/`osv-scanner` are themselves built on, chosen because OSV's schema already
+carries a per-advisory `affected[].versions` array (the exact, ecosystem-tool-computed exact-version
+enumeration tension 25 asks for), so this script still performs no range arithmetic of its own.
+Every advisory id is operator-supplied via `SCOURSH_ADVISORY_<ECOSYSTEM>_IDS`, never guessed or
+hardcoded, mirroring `semgrep_vendor`'s own "operator supplies the fact, this script only
+fetches/transforms it" discipline.
+JSON parsing uses `python3`'s stdlib `json` module (this script runs on a networked, operator-controlled
+box with real tooling, never in the air-gapped scan-time path); per-ecosystem name normalisation reuses
+`modules/sca/engine.sh`'s, `php_engine.sh`'s and `go_engine.sh`'s own `sca_*_normalize_name`/
+`sca_go_normalize_version` functions verbatim (lazily sourced), so the writer and the reader of
+`data/advisories.db` can never drift apart on the frozen normalisation table.
+`data/versions.db` is written by the identical `_veng_advisories_write_db` call, mirroring tension 25's
+own "the same shape and the same rule" - its own, separate banner-matching product catalog (a bare web
+server or TLS library with no SCA-ecosystem manifest at all) is a stated, filed gap, not silently assumed
+covered.
+`tests/suites/vendor-engines-advisories.sh` (85 assertions) is the fixture-driven proof, against
+hand-authored, OSV.dev-*shaped* (never live-fetched) fixtures under
+`tests/fixtures/vendor-engines/osv/` - the identical "no live network calls in CI" posture
+`tests/fixtures/sca/advisories.db` already established for that data's READER side.
+`docs/ADAPTERS.md` §10 and this script's own header are both updated in the same change to stop calling
+this responsibility unimplemented; `docs/FOUNDATION.md` tension 27's own section carries the mirror of
+this paragraph.
+
+**Step 3a-3d shipped the SAST module's rule packs and engine.**
+Four tickets landed, in this order:
+
+- **3a** (`6f25a67`, "SAST: native pattern engine + seed secrets/crypto/injection/python rules")
+  shipped `modules/sast/engine.sh` (the native pattern engine: walks the repo, applies per-language
+  rule packs, matches only through `lib/core.sh`'s `scan_match` family per tension 4 rule 2, and
+  implements the `context` directive - the first ticket to evaluate it at all), `modules/sast/run.sh`
+  (the `scan_dispatch sast` entry point, sourced rather than subprocessed per its own header), and
+  four rule packs: `modules/sast/rules/secrets.rules`, `crypto.rules`, `injection.rules`, and
+  `python.rules`.
+  It also closed finding F4 (the `context-deny` window contradiction between `rules/RULE-FORMAT.md`
+  §12.1 and §12.2); see `docs/FOUNDATION.md` "Known follow-ups" for the closure detail.
+- **3c** (`754a994`, "SAST: seed Go rule pack") shipped `modules/sast/rules/go.rules`.
+  It landed before 3b in commit order even though it is lettered after it; the letter is a step-3
+  sub-label from the ticket titles, not a landing-order guarantee.
+- **3b** (`446f642`, "SAST: seed JS/TS rule pack") shipped `modules/sast/rules/javascript.rules`.
+- **3d** (`910d2c7`, "SAST: seed Java rule pack") shipped `modules/sast/rules/java.rules`: `Runtime.exec`
+  is deliberately *not* re-declared under a new `SAST-JAVA-*` id, since `injection.rules`' existing
+  `SAST-INJ-OS_COMMAND-01` already carries `Runtime.getRuntime().exec(` as one of its alternatives; the
+  pack instead adds JDBC statement concatenation, XML parsers missing `disallow-doctype` (an absence
+  check, `context-deny` with a non-zero window), unsafe `readObject` deserialization, a trust-all
+  `X509TrustManager`/`HostnameVerifier` pair (two ids, one per code shape), and SpEL/OGNL injection (two
+  ids, one per library). It landed after 3e in commit order, out of letter order, same as 3c did for 3b.
+
+What `modules/sast/rules/` holds is in the generated block above, counted from the directory.
+Do not take a pack count from an individual ticket's own description - a ticket written before a
+sibling pack landed will list fewer, which is how this paragraph itself used to be wrong; the directory
+is the source, and the generator reads it.
+
+**Step 3e shipped `history.sh`, landing after 3a-3c and out of letter order (§13 lists it last in the
+step-3 sentence, but it is not "3d").**
+`18c4c3f` ("SAST: history.sh - replay secrets.rules across git history (§13 step 3e)") shipped
+`modules/sast/history.sh` (429 lines): it replays `modules/sast/rules/secrets.rules` against git
+history rather than the working tree, bounded by a commit/time window per `docs/DESIGN.md` §6.3, and
+populates the `SAST-HIST-*` check family - including the `history` fingerprint profile (`blob_sha`,
+`match_digest`, `occurrence`) and the per-finding `oldest_reaching_commit_time` that tension 13's
+boundary test and tension 6 condition (b1) read once `state/` exists at step 7.
+`tests/suites/sast-history.sh` (295 lines) tests it.
+`modules/sast/` now has all three files `docs/DESIGN.md` §13 step 3 names for it: `engine.sh`, `run.sh`,
+and `history.sh`; what step 3 still owes under §6.3's catalog is in the generated block above.
+
+**Findings still open after 3a-3d and 3e, and the step each is inherited by:**
+
+- **F5 and F20** - `rules/derived.rules` still does not seed `COMPOSITE-TOKEN-HIJACK`, because its
+  contributors do not exist until steps 5 and 6.
+  Seeding it now is a guaranteed `E051`/`E060` lint failure.
+- **F17** - `aws_ro` pins `--no-cli-pager`, which AWS CLI v1 rejects.
+  Lands with step 6 (cloud), when `lib/awscli.sh`'s first real caller ships.
+
+F3, F4, F8, and F16's `look` half are closed (F3 and F8 as of step 2's `lib/checks.sh`; F4 as of 3a
+above; F16's `look` half as of `lib/core.sh`'s `db_lookup_exact` and its new `tests/suites/core.sh`
+test - see `docs/FOUNDATION.md`'s "Known follow-ups" for the full closure detail); do not re-flag any
+of them.
+
+**`main` can lag `dev` - check `dev`, not just `main`, before declaring a dependency unlanded.**
+This project develops on `dev` and merges to `main` in batches, so a checkout of `main` can be several
+merged tickets behind what `dev` already has.
+An earlier agent run on the 3b ticket read a `main` checkout where `modules/` was genuinely still
+absent, concluded the 3a dependency (and this stale memory) meant the work hadn't landed, and moved the
+ticket to `blocked` - when 3a had in fact already merged to `dev`.
+Before concluding a dependency is missing, check the actual workspace branch and, if it is behind, check
+`dev`'s tip rather than trusting `main` or this file's prose alone.
+
+**A ticket can never cite its own landing sha, because the squash merge mints that sha afterwards.**
+Landings reach `dev` as squash commits, so the sha a ticket's own branch carries is not the sha its work
+ends up with, and a ticket writing "`<sha>` (this ticket)" into these docs is guessing at a commit that
+does not exist yet and generally never will.
+This has already happened three times and shipped every time: `ae03175` (the Dockerfile slice, really
+`25abfa3`), `11e7c97` (the Ruby SCA slice, really `a2d37aa`) and `d7a746f` (the Kubernetes IaC slice,
+really `bb75c9b`) - eight references between them across `AGENTS.md` and `docs/FOUNDATION.md`, none of
+which `git cat-file -e` could resolve until this change corrected them.
+The third one landed while this very change was in review, which is the argument for the rule.
+Write the landing in prose without a sha ("this ticket adds ..."), and let the next ticket that touches
+the paragraph fill in the real one.
+Before trusting any sha in these two files, resolve it:
+
+```sh
+grep -ohE '`[0-9a-f]{7,40}`' AGENTS.md docs/FOUNDATION.md | tr -d '`' | sort -u |
+  while read -r s; do
+    git cat-file -e "$s^{commit}" 2>/dev/null || echo "MISSING $s"
+  done
+```
+
+It has exactly five known false positives, all in prose rather than in a citation: the two decimal/octal
+IPv4 literals in `docs/FOUNDATION.md` tension 19's SSRF text (`2851995906`, `025154325002`), which are
+not shas at all, and `ae03175`/`11e7c97`/`d7a746f` in the paragraph immediately above, which this note
+quotes on purpose as the bad values to recognise.
+Anything else it reports is a real reference to a commit that does not exist, and is a bug.
+
+**A Crewban ticket that is `done` with `landed_sha` NULL is usually a bookkeeping gap, not stranded
+work - prove the work is really unlanded before rescuing it by hand.**
+Because every landing squashes, `git log origin/dev..<branch>` reports "1 commit ahead" for a branch
+whose content is *already fully merged*, so commits-ahead is not evidence of anything.
+The test that actually discriminates is `git cherry origin/dev origin/<branch>`: a leading `-` means the
+patch is already upstream, `+` means it is not.
+Confirm a `-` by comparing trees (`git rev-parse <branch>^{tree}` against the `dev` commit that landed
+it); identical trees mean there is nothing to rescue and the correct outcome is to say so, not to open
+an empty PR.
+Two shapes cause the NULL: a landing job recorded against a sibling ticket that shared the branch, and
+"merger" tickets (`crewban/resolve-merge-conflict-*`), which resolve the conflict in the *source*
+ticket's workspace on the *source* ticket's branch and so frequently own no branch of their own.
+Unpushed agent work, if any exists, lives outside this repo in the harness's per-ticket clones - at the
+time of writing `~/.ace/workspaces/<ticket-uuid>`, a pre-rename path still in use by Crewban.
+Sweep those with `git rev-list HEAD --not --remotes=origin` plus `git stash list` before concluding a
+branch missing from `origin` means the work is lost; a commit found that way still has to be compared
+against `dev` artifact by artifact, since it is usually a superseded draft of what already landed.
+
+**One piece of step 5 landed out of sequence: `lib/http.sh` (the scope-gate chokepoint,
+docs/FOUNDATION.md tension 19) now exists**, built and reviewed as its own ticket once tension 19's
+contract itself was signed off, rather than waiting for steps 2-4.  It has no dependency on `scan.sh`,
+SAST, or SCA/IaC - it is a self-contained URL-normalization/tuple-match/deny-list/redirect-loop library
+over `config/scope.conf` - so pulling it forward cost nothing those steps would otherwise have blocked.
+`modules/dast/`, the rate limiter/request budget/circuit breaker (tension 16), and IDN/general-IPv6-CIDR
+support (both explicitly out of scope for this ticket) still arrive at step 5 proper.  Do not read this
+paragraph as "step 5 is done" - see "Current position" above for what is actually next.
+`docs/STEP5-DAST-PLAN.md` is the sub-ticket breakdown for that remaining step-5 work and already excludes
+`lib/http.sh` from its "still to plan" list, since this paragraph is where that fact is recorded.
+
+**A second piece of a later step also landed out of sequence: `modules/iac/` (step 4's IaC half) now
+exists - in three separate landings, and still only partial.**
+`5de4460` ("IaC: Terraform checks via the pattern-rule engine (§13 step 4)") shipped `modules/iac/run.sh`
+(the `scan_dispatch iac` entry point), `modules/iac/parse.sh` (the Terraform HCL parser), and
+`modules/iac/terraform.rules`, run through the same native pattern engine `modules/sast/engine.sh` built
+at step 3a.
+`terraform.rules` seeds seven checks: `IAC-TF-OPEN_CIDR-01`, `IAC-TF-PUBLIC_ACL-01`,
+`IAC-TF-UNENCRYPTED-01`, `IAC-TF-KEY_ROTATION_DISABLED-01`, `IAC-TF-PUBLIC_IP-01`,
+`IAC-TF-HARDCODED_SECRET-01`, and `IAC-TF-RDS_PUBLIC-01`.
+`tests/suites/iac.sh` tests it.
+A second landing, `add2b21` ("IaC: Helm chart checks via the pattern-rule engine (§13 step 4)"),
+added `modules/iac/helm.rules`: three checks (`IAC-HELM-HOST_PORT-01`, `IAC-HELM-HOST_MOUNT-01`,
+`IAC-HELM-HARDCODED_SECRET-01`) against Helm chart sources only (`values.yaml` and
+`templates/*.yaml`) - its own header states that scope discipline explicitly (never a docker-compose
+file, never a bare non-Helm Kubernetes manifest) and its own "KNOWN GAP" note confirms no
+`modules/iac/kubernetes.rules` (or any other Kubernetes-manifest pattern pack) exists on `dev` as of
+that landing.
+A third landing, `25abfa3` ("IaC: Dockerfile checks via the pattern-rule engine (§13 step 4)") added
+`modules/iac/dockerfile.rules`: six checks (`IAC-DOCKER-ROOT_USER-01`,
+`IAC-DOCKER-LATEST_TAG-01`, `IAC-DOCKER-SECRET_ENV-01`, `IAC-DOCKER-REMOTE_ADD-01`,
+`IAC-DOCKER-PIPE_TO_SHELL-01`, `IAC-DOCKER-UNPINNED_DIGEST-01`) scoped strictly to `Dockerfile`,
+`Dockerfile.*`, and `*.dockerfile` - `docker-compose*.yml` and Helm `values.yaml` are deliberately NOT
+in this pack's `files:` list, per `docs/DESIGN.md` §3's original combined `containers.rules` sketch
+being deliberately split one-format-per-file.
+Which §6.6 slices have landed, and the on-disk pattern-pack count that `tests/lint-rules.sh`'s E060
+fixture-coverage note reports, are both in the generated block above.
+These packs landed ahead of step 3's remaining rule packs and ahead of step 4's own SCA half, the same
+"land what's ready, out of strict step order" pattern as `lib/http.sh` above; step 4's SCA half has its
+own paragraph below.
+
+**A third piece of step 4 has now landed, in five sub-tickets: `modules/sca/` (the SCA module's npm,
+Python, Ruby, Java, and PHP slices).**
+`ed8c283` ("SCA: parse npm lockfiles and match against data/advisories.db") shipped `modules/sca/run.sh`
+(the `scan_dispatch sca` entry point - no check-registry gate, unlike SAST/IaC, since SCA is a table
+lookup rather than a pattern-rule engine) and `modules/sca/engine.sh`: lockfile discovery,
+`package-lock.json` (v1 and v2/v3), `yarn.lock`, and `pnpm-lock.yaml` parsing, npm's own (identity)
+name normalisation, and the `data/advisories.db` exact-match lookup (`sca_lookup_exact`/
+`sca_package_known`, both routed through `lib/core.sh`'s `db_lookup_exact` per tension 25), emitting
+`SCA-NPM-VULNERABLE_DEP-01` and the `SCA-COV-UNKNOWN_VERSION-01` roll-up.
+A follow-on ticket ("SCA: parse Python lockfiles and match against data/advisories.db") then added the
+module's Python slice on top of that same `run.sh`/`engine.sh` split, exactly as `run.sh`'s own header
+comment anticipated for a sibling ecosystem: `requirements.txt`, `poetry.lock`, and `Pipfile.lock`
+parsing, PEP 503 name normalisation (`sca_pypi_normalize_name`), and `SCA-PY-VULNERABLE_DEP-01`
+findings under ecosystem `pypi`, plus its own `SCA-COV-UNKNOWN_VERSION-01` roll-up - a separate finding
+from npm's own when both ecosystems have unknown-version cases in the same run, a stated scope limit
+rather than a true cross-ecosystem merge (see `modules/sca/engine.sh`'s `sca_scan_python_tree` header
+comment).
+
+`a2d37aa` ("SCA: parse Ruby Gemfile.lock and match against data/advisories.db (§13 step 4)") then added
+Ruby/RubyGems, in `modules/sca/engine.sh` alongside the npm parser rather than a forked file:
+`sca_parse_gemfile_lock` (Gemfile.lock's `GEM`/`GIT`/`PATH` `specs:` blocks - already flat, one resolved
+gem per 4-space-indented line, so unlike npm v1 no recursion is needed), `sca_ruby_normalize_name`
+(lowercase, tension 25's RubyGems rule - unlike npm's identity function), and direct-vs-transitive
+classified from the lockfile's own top-level `DEPENDENCIES` stanza versus a specs-only entry.  It mints
+`SCA-RUBY-VULNERABLE_DEP-01` via the same `_sca_emit_finding` the npm path uses, now dispatched by
+ecosystem (`_sca_check_id_for_ecosystem`) rather than hardcoded to npm's own check id.
+UNLIKE Python, Ruby joined npm's OWN shared `sca_scan_tree` call rather than getting a sibling function:
+`sca_scan_tree` (`modules/sca/engine.sh`) now walks BOTH npm's and RubyGems' lockfiles in one call and
+shares one `unknown_count` table across them, because two separate `sca_scan_tree` calls would emit two
+`SCA-COV-UNKNOWN_VERSION-01` findings that collide on one fingerprint (it carries no
+ecosystem/package/advisory_id component) - `findings_merge`'s dedup would then silently drop whichever
+ecosystem lost the sort instead of merging their counts.  `sca_scan_python_tree` (the Python slice, see
+above) still runs as its own separate call for the same reason it always did - to avoid touching
+`sca_scan_tree`'s already-tested npm code path.
+`tests/suites/sca.sh` proves the npm+Ruby merge concretely with a `mixed-ecosystems` fixture carrying
+both an npm lockfile and a Gemfile.lock, asserting exactly one roll-up finding whose breakdown names
+both ecosystems, and separately tests the Python slice and the real `scan.sh sca` end-to-end path for
+all three ecosystems.
+`tests/fixtures/sca/advisories.db` now carries `npm`, `pypi`, and `RubyGems` fixture rows, with the npm
+and RubyGems rows sorted together under `LC_ALL=C` (tension 25's own `look`-compatible sort
+requirement).
+
+Java (`pom.xml`/`build.gradle`, `a1b3c43`) and PHP/Composer (`composer.lock`, `7e7b186`) landed after
+that paragraph was written, each without updating this section; `ab23b79` went back and corrected the
+"still open" sentences for both.
+
+**The Go slice (`go.mod`/`go.sum`) landed last, and is the first SCA ecosystem to ship as its own
+engine file: `modules/sca/go_engine.sh`.**
+PHP had already broken `engine.sh`'s monopoly with `modules/sca/php_engine.sh`, but PHP's parser is
+still driven from inside `sca_scan_tree`; Go is fully standalone - `sca_go_scan_tree` is its own entry
+point, called from its own `_sca_go_run` in `modules/sca/run.sh`, exactly as that file's own header
+invited a further ecosystem to land ("do not fork this file per ecosystem").
+It parses `go.mod`'s `require` lines (single-line and block form), reading a trailing `// indirect`
+comment as the direct-vs-transitive signal, and falls back to `go.sum` when no `go.mod` sits beside it -
+in which case `dependency_type` is reported **`unknown`**, never guessed.
+`go.mod` wins when both are present in one directory.
+Normalisation follows tension 25's frozen Go row: the `/vN` major-version suffix is **retained** and a
+`+incompatible` version suffix is **stripped** before the `data/advisories.db` lookup, and both halves
+are pinned by a test that fails under the naive opposite reading.
+`replace`/`exclude` directives are **not** resolved - a stated limitation recorded in
+`go_engine.sh`'s own header and surfaced at runtime as a
+`reason=go_replace_exclude_directives_not_resolved` coverage_reduction, not hidden.
+`sca_go_scan_tree` does its own `data/advisories.db`-readable check (unlike `sca_scan_python_tree` and
+`sca_scan_java_tree`, which rely on `_sca_npm_run` having gone first), so `_sca_go_run` carries no
+ordering requirement; it is still called last for a stable emission order.
+Like Python and Java, Go emits its **own** `SCA-COV-UNKNOWN_VERSION-01` roll-up rather than joining
+npm/Ruby/PHP's shared one - the same stated, filed cross-ecosystem-merge gap, not a new one.
+With Go landed, step 4's SCA half covers every §6.5 manifest format; `tests/fixtures/sca/advisories.db`
+now carries `Go` rows alongside `npm`, `pypi`, `RubyGems`, `composer`, and `maven`, all sorted together
+under `LC_ALL=C` (tension 25's `look`-compatible sort requirement).
+
+**A third piece of step 4's IaC half has since landed on top of the Terraform one above:
+`modules/iac/docker-compose.rules` (the "IaC: docker-compose checks via the pattern-rule engine"
+ticket).**
+docs/DESIGN.md §6.6 bundles docker-compose in with Dockerfile/Kubernetes/Helm under one prose
+"containers.rules" bullet, but none of the decomposed IaC tickets had claimed the docker-compose slice
+itself; this ticket closes exactly that one gap, reusing `modules/iac/run.sh`/`parse.sh` unchanged (they
+already existed from the Terraform landing above) and adding only the new flat pack file plus its
+fixtures.
+`docker-compose.rules` seeds four checks: `IAC-COMPOSE-EXPOSED_PORT-01` (a host port bound without
+restricting the interface), `IAC-COMPOSE-PRIVILEGED-01` (`privileged: true`),
+`IAC-COMPOSE-SENSITIVE_MOUNT-01` (a host bind mount of `/var/run/docker.sock`, `/etc`, `/root`, `/home`,
+`/proc`, `/sys`, or `/` itself), and `IAC-COMPOSE-PLAINTEXT_SECRET-01` (a literal credential value in an
+`environment:` entry, rather than a `${VAR}`/`env_file:` reference).
+Its `files:` globs match `docker-compose.yml`/`compose.yml` (and their `.yaml`/override-variant forms)
+only - `tests/suites/iac.sh` has a dedicated cross-shape section proving a Kubernetes-manifest-shaped and
+a Helm `values.yaml`-shaped fixture, each deliberately carrying content that would trip every
+`IAC-COMPOSE-*` check if the engine ever inspected file content, still produce zero findings, and that a
+mixed directory holding one file of each IaC shape never lets a check cross-attribute to the wrong file.
+This paragraph describes one slice of §6.6's container-rules bullet, not the bullet; the generated
+block above is what says which of its slices are in.
 
 Step 1 delivered `lib/records.sh`, `lib/core.sh`, `lib/findings.sh` and `lib/report.sh`, plus
 `rules/redaction.rules`, `data/severity-rubric.conf`, the `config/*.example` files, a fixture
@@ -100,9 +868,47 @@ end-to-end path under `tests/e2e/`, and the test suite.
 The six findings that blocked it (F13, F14, F12, F15, F16, and F18 by consequence) are **closed**, each
 in the tension that owns it; see `docs/FOUNDATION.md` "Known follow-ups".
 
-**What step 1 deliberately did not build**, so the boundary is not rediscovered: `scan.sh`, anything
-under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
-shipped rule pack, and `state/`.
+Step 2 delivered `scan.sh` (the §5 CLI grammar, tension 14's exit-code precedence, and wiring
+`lib/config.sh` ahead of dispatch) and, in a later ticket, `lib/checks.sh` (tension 15's check-set
+filter chain and registry loader, wired into `scan.sh` via `_scan_apply_profile_filter` ahead of every
+`scan_dispatch`).
+Findings F3 (which of two incompatible readings decides the `compliance` profile - settled on the TAG
+reading) and F8 (`derived` checks are exempt from the `--intensity` ceiling) are **closed** as part of
+that; see their entries in `docs/FOUNDATION.md` "Known follow-ups", and tension 15's own RESOLUTION,
+both amended in the same change.
+`lib/checks.sh` also wires `SCOURSH_SELECTED_CHECKS`, the env var `lib/findings.sh`'s
+`_derived_record_selected` was already reading at step 1 in anticipation of this filter chain landing.
+
+**What steps 1 and 2 deliberately did not build**, so the boundary is not rediscovered: anything under
+`modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any shipped
+rule pack, and `state/`.
+`lib/http.sh` landed anyway, out of sequence - see above.
+**Step 3 then filled in most of that gap**: `modules/sast/` (with `engine.sh`, `run.sh`, AND
+`history.sh` - see above) and its rule packs exist, so `scan_dispatch sast` no longer no-ops and
+`_scan_apply_profile_filter` finds a non-empty registry for SAST checks.
+**The IaC tickets (see the step 4 paragraph above) then did the same for `modules/iac/`**: it holds
+`run.sh` and `parse.sh` plus the packs the generated block above lists, so `scan_dispatch iac` no longer
+no-ops either and `_scan_apply_profile_filter` finds a non-empty registry for IaC checks too -
+`modules/iac/` is off the "do not exist yet" list accordingly.
+`modules/sca/` also landed out of sequence - see above.
+`lib/engines.sh` also landed out of sequence, ahead of step 5/6/step-3's remaining packs - see the
+paragraph above.
+Of the original list, `lib/awscli.sh`, SARIF, the compliance report, and `state/` are
+still unbuilt; which module directories exist is in the generated block above.
+Every `scan_dispatch` call for a module other than `sast`, `iac`, or `sca` remains a logged
+`coverage_reduction` no-op (`reason=not_yet_built`); `scan_dispatch sca` is no longer one of them, since
+`modules/sca/run.sh` now does real work for npm/yarn/pnpm, Python, RubyGems, Maven, Composer, and Go.
+`sca` is DIFFERENT from that group in a way worth stating precisely, since it is easy to conflate the
+two separate coverage_reduction mechanisms `scan.sh` has: `scan_dispatch sca` itself no longer no-ops
+(its `reason=not_yet_built` no longer fires - `modules/sca/run.sh` is real), but
+`_scan_apply_profile_filter sca` still records `reason=no_check_registry_on_disk_yet` on every run, and
+always will - by design, not because the module is unbuilt.
+`_scan_apply_profile_filter`'s check-registry side loads check ids from on-disk `*.rules` files
+(`checks_registry_load`), and `modules/sca/` ships none: SCA is a table lookup against
+`data/advisories.db`, not a pattern-rule engine, so it has no `modules/sca/checks.rules` registry to
+ever populate (`modules/sca/run.sh`'s own header states this explicitly) and its findings are emitted
+directly by the engine files instead.
+Both mechanisms are real and tested against fixtures.
 Diff classification (tension 12) and baseline suppression (tension 11 steps 5 and 6) belong to step 7;
 step 1 ships the primitives they call - the merge, the fingerprint, `findings_mark_suppressed`, and
 `classify_derived`, which is pure and already tested against tension 6's whole case table.
@@ -130,6 +936,9 @@ composite under `tests/fixtures/rules/derived.rules`.
 **Read `docs/FOUNDATION.md` "Known follow-ups" before starting step 2.**
 Six findings remain open (F4, F3, F5, F20, F8, F17, plus F16's `look` half); all are cheap corrections
 that cost nothing to defer, and each names the step it must land before.
+This is a snapshot from before step 2 landed and is kept for history; it is stale on its own.
+F3, F4, and F8 have since closed (see "Findings still open after 3a-3d and 3e" above for the current list:
+only F5, F20, F17, and F16's `look` half remain).
 
 Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start:
 
@@ -196,20 +1005,32 @@ against a real CLI, since a stub that ignores the service name never would have 
 ## Tests
 
 ```
-tests/run-tests.sh                 # everything: eight suites plus four linters
-tests/run-tests.sh --list          # what is available
-tests/run-tests.sh records         # one suite: records | core | findings | report | e2e |
-                                    #   awscli | aws-lint | aws-fixtures
+tests/run-tests.sh                 # everything: every suite plus every linter
+tests/run-tests.sh --list          # the source of truth for exactly which suites and linters exist today
+tests/run-tests.sh <suite-name>    # one suite, e.g. tests/run-tests.sh sca
 tests/run-tests.sh lint-rules      # or one linter by name
 tests/lint-rules.sh                # record-format linter, error codes in rules/RULE-FORMAT.md §13
 tests/lint-shell.sh                # the tension 4, 9, 24 and 26 shell lints
 tests/lint-aws-readonly.sh         # read-only AWS lint, docs/FOUNDATION.md tension 23
+tests/lint-status.sh               # the generated build-status blocks are current, and the guard bites
+tools/gen-status.sh --write        # regenerate those blocks after landing a module
 tests/e2e/fixture-scan.sh <dir>    # the end-to-end path on its own, for eyeballing a report
 tests/localstack/run.sh [up|verify|down|all]   # OPT-IN: real API shapes via a local emulator.
                                     # Needs docker and a real `aws` CLI (neither is a scoursh
                                     # runtime dependency). NOT part of the suite above and never
                                     # run by CI's default job - see "AWS module" below.
 ```
+
+**`tests/run-tests.sh --list` is the source of truth for the current suite and linter names, not this
+paragraph.**
+This file used to hand-copy that list (as "eight suites: records | core | config | checks | findings |
+report | http | e2e | scan"), and it silently went stale the moment `sast`, `sast-history`, `sca`, `iac`,
+`exit-code-matrix`, `gate-mutation-proof`, and `ci-smoke` were registered - each addition is a one-line
+edit to `SUITES=(...)` in `tests/run-tests.sh` itself (`docs/CI-RUNBOOK.md` checklist item 8) that this
+doc has no way of tracking automatically. Run `tests/run-tests.sh --list` to see what actually exists;
+do not hand-maintain a duplicate enumeration here or trust one written before your current checkout.
+
+See `docs/CI-RUNBOOK.md` for what CI actually runs, which checks are required on protected branches, the GNU/BSD dual-runner rationale, and the checklist for adding a new required check.
 
 `package.json` at the repository root exists **only** so the conventional `pnpm test` / `npm test`
 entry point runs the real suite above.

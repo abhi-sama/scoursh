@@ -1,0 +1,34 @@
+# tests/fixtures/iac/helm/helm_template.yaml - Helm-chart-TEMPLATE-shaped fixture
+# (this ticket's acceptance criteria: "zero IAC-K8S-* findings on a
+# Helm-template-shaped fixture containing {{ }} directives").
+#
+# Every field an IAC-K8S-* check keys on is templated here rather than
+# literal, exactly like a real `helm template` source file before rendering
+# - this is deliberately NOT a rendered chart (a rendered chart is a plain
+# Kubernetes manifest and is correctly in scope; the unrendered TEMPLATE,
+# which this ticket explicitly excludes, is what this fixture represents).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "demo.fullname" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  template:
+    spec:
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      hostNetwork: {{ .Values.hostNetwork }}
+      hostPID: {{ .Values.hostPID }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            privileged: {{ .Values.securityContext.privileged }}
+            runAsNonRoot: {{ .Values.securityContext.runAsNonRoot }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            {{- range .Values.env }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}

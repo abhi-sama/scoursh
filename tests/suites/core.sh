@@ -363,6 +363,36 @@ if command -v git >/dev/null 2>&1; then
   assert_eq "git-local:$(realpath_of "$W/commitless")" "$(scan_root_id_of "$W/commitless")" \
     'a commit-less repository has a DEFINED id (the root-commit recipe returned nothing)'
 
+  t_case 'a stray GLOBAL git config does not collide two remote-less repos onto one id'
+  # tension 12, round 5 ("`git config --get` reads global config"): a bare
+  # `git config --get remote.origin.url` also consults the GLOBAL config, so a
+  # stray `remote.origin.url` in a developer's or a CI runner's global
+  # gitconfig - not implausible, since some setups template one - would make
+  # scan_root_id_of() read the SAME remote for every remote-less repository on
+  # the box.  scan_root_id is a persisted cell-comparability key (the same one
+  # the `_strip_userinfo` cases above pin), so two UNRELATED repositories would
+  # collapse onto one `git-remote:` id and their `path-root` cells would become
+  # wrongly comparable, defeating tension 12's "never infer fixed across
+  # incomparable scopes" for them through a second channel.  The fix is
+  # `git -C "$root" config --local --get remote.origin.url` (lib/core.sh);
+  # this fails under the same call with `--local` dropped, which is the exact
+  # regression the round-5 finding describes.
+  GLOBAL_CONF=$W/global-gitconfig
+  printf '[remote "origin"]\n\turl = https://global.example/leaked/proj\n' >"$GLOBAL_CONF"
+  export GIT_CONFIG_GLOBAL=$GLOBAL_CONF
+  rm -rf "$W/remoteless-a" "$W/remoteless-b"
+  git init -q "$W/remoteless-a"
+  git init -q "$W/remoteless-b"
+  id_a=$(scan_root_id_of "$W/remoteless-a")
+  id_b=$(scan_root_id_of "$W/remoteless-b")
+  unset GIT_CONFIG_GLOBAL
+  assert_eq "git-local:$(realpath_of "$W/remoteless-a")" "$id_a" \
+    'repo A ignores the global remote and falls back to git-local'
+  assert_eq "git-local:$(realpath_of "$W/remoteless-b")" "$id_b" \
+    'repo B ignores the global remote too'
+  assert_ne "$id_a" "$id_b" \
+    'two unrelated remote-less repos still get DIFFERENT ids, so their cells are never wrongly comparable'
+
   t_case 'the path-root cell is cwd-independent'
   rm -rf "$W/repo"
   mkdir -p "$W/repo/src"
@@ -407,6 +437,61 @@ mkdir -p "$W/tarball/frontend"
 assert_eq "path:$(realpath_of "$W/tarball")" "$(scan_root_id_of "$W/tarball")" 'path: kind'
 assert_ne "$(scan_root_id_of "$W/tarball")" "$(scan_root_id_of "$W/tarball/frontend")" \
   'two nested non-git roots get different ids, so their cells are never comparable'
+
+# ---------------------------------------------------------------------------
+printf '\n-- finding F16 (look half) / tension 25: db_lookup_exact --\n'
+# ---------------------------------------------------------------------------
+# db_lookup_exact (lib/core.sh) is the ONE implementation modules/sca/engine.sh's
+# sca_lookup_exact and sca_package_known both call: `LC_ALL=C look` on PREFIX when
+# the capability probe found `look`, `LC_ALL=C grep -F -m 1` otherwise.  The
+# asymmetry is deliberate (docs/FOUNDATION.md tension 25): `look` returns every
+# line sharing the prefix, since more than one advisory can exist for one exact
+# package@version, while the fallback returns only the first.
+#
+# tests/suites/sca.sh already exercises both call sites end-to-end against
+# tests/fixtures/sca/advisories.db, but every fixture row there is the ONLY row
+# for its (ecosystem, package, version), so neither branch's asymmetry is ever
+# actually forced - a fallback that dropped `-m 1` (a bare `grep -F`, returning
+# every matching line instead of just the first) would pass that suite
+# unchanged.  The cases below force each branch directly, with a fixture that
+# has two rows sharing one exact prefix, so each assertion fails under the
+# reading its message names.
+rm -rf "$W/lookup.db"
+printf 'eco\tpkgA\t1.0\trecA1\neco\tpkgA\t1.0\trecA2\neco\tpkgA\t2.0\trecA3\neco\tpkgB\t1.0\trecB1\n' \
+  >"$W/lookup.db"
+DUP_PREFIX=$(printf 'eco\tpkgA\t1.0\t')
+NOMATCH_PREFIX=$(printf 'eco\tpkgZ\t9.9\t')
+
+t_case 'the grep -F -m 1 fallback returns only the FIRST line sharing the prefix'
+out=$(SCOURSH_CAP_LOOK=none db_lookup_exact "$DUP_PREFIX" "$W/lookup.db")
+assert_eq "$(printf 'eco\tpkgA\t1.0\trecA1')" "$out" \
+  'FAILS under a fallback missing -m 1 (a bare grep -F): two rows share this exact prefix, and a bare grep -F would return BOTH, not just recA1'
+
+t_case 'look returns EVERY line sharing the prefix, not just the first'
+if _have look; then
+  out=$(SCOURSH_CAP_LOOK=look db_lookup_exact "$DUP_PREFIX" "$W/lookup.db")
+  assert_eq "$(printf 'eco\tpkgA\t1.0\trecA1\neco\tpkgA\t1.0\trecA2')" "$out" \
+    'FAILS under an implementation that routes the look branch through grep -F -m 1 instead of a real `look` call: it would return only recA1, silently dropping recA2 - the second advisory for this exact package@version'
+else
+  _t_ok 'look unavailable on this host; the fallback branch above still covers it'
+fi
+
+t_case 'no match: both branches return status 1 with no output'
+rc=0
+out=$(SCOURSH_CAP_LOOK=none db_lookup_exact "$NOMATCH_PREFIX" "$W/lookup.db") || rc=$?
+assert_eq 1 "$rc" 'the grep fallback returns 1, not 0, when nothing matches'
+assert_eq '' "$out" 'and prints nothing'
+if _have look; then
+  rc=0
+  out=$(SCOURSH_CAP_LOOK=look db_lookup_exact "$NOMATCH_PREFIX" "$W/lookup.db") || rc=$?
+  assert_eq 1 "$rc" 'and look itself also returns 1, not 0, when nothing matches'
+  assert_eq '' "$out" 'and prints nothing'
+fi
+
+t_case 'a missing or unreadable file returns 1 immediately, without invoking look or grep at all'
+rc=0
+db_lookup_exact "$DUP_PREFIX" "$W/does-not-exist.db" >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" 'FAILS if the [[ -r $file ]] guard is dropped: look/grep would then run against a nonexistent path'
 
 # ---------------------------------------------------------------------------
 printf '\n-- json_string --\n'

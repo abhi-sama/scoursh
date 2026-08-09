@@ -574,6 +574,43 @@ core_require_baseline() {
     || die "$SCOURSH_EXIT_INPUT" "missing required command(s): one of sha256sum, shasum, openssl"
 }
 
+# --- exact-prefix lookup (tension 25) -----------------------------------------
+# db_lookup_exact PREFIX FILE - the ONE implementation of the lookup primitive
+# docs/FOUNDATION.md tension 25 freezes for `data/advisories.db`
+# (`ecosystem\tpackage\tversion\t`) and, by the same tension's own note, for
+# `data/versions.db` later: `LC_ALL=C look` on FILE when the capability probe
+# above found it, falling back to `LC_ALL=C grep -F -m 1` when it did not.
+#
+# The asymmetry is deliberate and is tension 25's own wording, not an
+# oversight here: `look` returns every line sharing the prefix (there can be
+# more than one advisory for one exact package@version), while the `grep`
+# fallback returns only the first.  A host without `look` degrades to
+# "one advisory reported per exact version" rather than none, which is the
+# conservative direction for a vulnerability scanner - and it is safe against
+# a false match landing mid-line rather than at a real record boundary,
+# because `data/advisories.db`'s own frozen schema forbids a TAB inside any
+# field (tension 25), so the literal 3-tab PREFIX byte sequence can only ever
+# occur at a genuine field boundary.
+#
+# This lives here, next to the SCOURSH_CAP_LOOK probe it reads, rather than in
+# a module: it is the "one capability layer" (tension 24) call site for `look`
+# and the one exemption tests/lint-shell.sh's "no bare grep" rule grants
+# outside this file - a second implementation in modules/sca/ would be exactly
+# the "ad hoc parser, subtly different" failure tension 24 exists to prevent.
+#
+# Returns the underlying command's own exit status: 0 with output when at
+# least one line matched, 1 with no output otherwise. FILE must already be
+# sorted under `LC_ALL=C` (tension 25) - this function does not sort it.
+db_lookup_exact() {
+  local prefix=$1 file=$2
+  [[ -r $file ]] || return 1
+  if [[ ${SCOURSH_CAP_LOOK:-none} == look ]]; then
+    LC_ALL=C look -- "$prefix" "$file"
+  else
+    LC_ALL=C grep -F -m 1 -- "$prefix" "$file"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # 5. JSON string writer (tension 10)
 # ---------------------------------------------------------------------------

@@ -1,0 +1,14 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-MAVEN-1",
+  "summary": "fixture: unsafe deserialization in widget-core",
+  "database_specific": {"severity": "CRITICAL"},
+  "affected": [
+    {
+      "package": {"ecosystem": "Maven", "name": "org.example.fixture:widget-core"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [
+        {"introduced": "0"}, {"fixed": "1.2.4"}, {"introduced": "1.3.0"}, {"fixed": "1.3.0"}
+      ]}],
+      "versions": ["1.2.3"]
+    }
+  ]
+}

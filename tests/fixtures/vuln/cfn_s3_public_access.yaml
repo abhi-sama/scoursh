@@ -1,0 +1,13 @@
+# S3 bucket with every public-access-block control disabled - true positive
+# for IAC-CFN-S3_PUBLIC_ACCESS-01.
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: my-app-data-bucket
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false

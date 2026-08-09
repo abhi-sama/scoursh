@@ -1,0 +1,38 @@
+# tests/fixtures/vuln/docker-compose.yml - shared cross-check fixture for
+# TWO IaC packs, each of which needs docker-compose.yml to stay silent:
+#
+#   - modules/iac/helm.rules (Helm ticket, AC4): docker-compose is explicitly
+#     OUT of scope ("scoped to Helm only and excluding docker-compose"). The
+#     `environment: password: ...` block below reuses the exact vocabulary
+#     IAC-HELM-HARDCODED_SECRET-01 matches (a lowercase `password:` key with
+#     a plaintext literal, no CHANGEME/example placeholder).
+#   - modules/iac/dockerfile.rules (this ticket): dockerfile.rules' `files:`
+#     list (Dockerfile, Dockerfile.*, *.dockerfile) must never match this
+#     path either - docker-compose is explicitly out of scope for this pack
+#     too. The embedded inline Dockerfile body below deliberately reproduces
+#     every IAC-DOCKER-* trigger line.
+#
+# tests/suites/iac.sh's cross-checks (for both packs) prove the boundary is
+# each pack's `files:` glob (values.yaml/templates/*.yaml for helm.rules;
+# Dockerfile/Dockerfile.*/*.dockerfile for dockerfile.rules) - not an
+# accident of this file's content happening not to match either pattern set.
+version: "3.8"
+services:
+  web:
+    image: myapp:latest
+    ports:
+      - "8443:8443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      password: "Sup3rSecretPass!"
+  app:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM node:latest
+        RUN curl -fsSL https://example.test/install.sh | sh
+        ADD https://example.test/payload.tar.gz /opt/payload.tar.gz
+        ENV API_KEY=abcdef1234567890
+    environment:
+      - NODE_ENV=production

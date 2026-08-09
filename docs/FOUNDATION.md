@@ -770,10 +770,13 @@ the round-2 formulation and it was wrong on two of the three counts.
 **(a) Own selection.**
 A composite has no coverage cell, so tension 12's `(check, cell)` test cannot protect it, and nothing
 else asked whether the composite record itself survived tension 15's filter chain.
-It frequently does not: `derived` is a type tag in no `--intensity` tier (open finding F8), so
-`scan.sh all --intensity active` drops every composite, and `--profile-scan quick` drops any composite
-without a `quick` profile tag.
-Without (a), `scan.sh all` followed by `scan.sh all --intensity active` would classify the flagship
+It still can not: `--profile-scan quick` drops any composite without a `quick` profile tag, and
+`--allow-intrusive` off drops one tagged `intrusive`, exactly as either would for an ordinary check.
+(`--intensity` used to be a THIRD way this happened - `derived` was a type tag in no `--intensity`
+tier, open finding F8, so `scan.sh all --intensity active` dropped every composite regardless of intent
+- but F8 is closed: `lib/checks.sh` exempts `derived` from the intensity ceiling specifically, so
+`--intensity` alone no longer drops a composite.  `--profile-scan` and `--allow-intrusive` still can.)
+Without (a), `scan.sh all` followed by `scan.sh all --profile-scan quick` would classify the flagship
 `COMPOSITE-TOKEN-HIJACK` **`fixed (chain broken)`** with all three contributors still present and the
 chain fully open.
 A composite that was not selected is `unknown`, exactly as an unselected ordinary check's findings are.
@@ -907,7 +910,7 @@ test that passes under both readings pins nothing:
 | 2 | Correlation values differ across contributors | does not fire | joining on `none` |
 | 3 | Does not fire; every prior contributor pair covered; composite selected | `fixed` | a rule that never reports `fixed` |
 | 4 | Does not fire; one prior contributor's cell not visited (`--regions` narrowed) | **`unknown`** | classification keyed on bare check id ("ran somewhere") |
-| 5 | **Composite record dropped by `--intensity active`; all contributors present and firing** | **`unknown`** | condition (a) omitted - the round-2 rule returns `fixed (chain broken)` |
+| 5 | **Composite record dropped by a filter (e.g. `--profile-scan quick`); all contributors present and firing** | **`unknown`** | condition (a) omitted - the round-2 rule returns `fixed (chain broken)` |
 | 6 | **`any-of: DAST-B-01, CLOUD-C-01`; run 1 `--regions all`, only B fires; run 2 `--regions us-east-1`, same modules selected, B now absent** | **`unknown`** | condition (b2) omitted **and** (b2) stated as "covered in at least one cell" - both return `fixed`, because C *is* covered in `us-east-1` while `eu-west-1` was never revisited |
 | 7 | **`SAST-HIST-*` contributor whose cell is covered but whose `oldest_reaching_commit_time` precedes this run's `oldest_commit_time`** | **`unknown`** | condition (b1)'s `fixed`-eligibility clause omitted - cell-only returns `fixed` |
 | 8 | Prior composite finding with no `contributors` recorded | **`unknown`** | the "covered in at least one cell" fallback applied to this branch |
@@ -916,8 +919,10 @@ test that passes under both readings pins nothing:
 Cases 5, 6, 7, and 8 are new, and each is the only case in the set that discriminates its condition:
 under the round-2 rule every one of them returns `fixed (chain broken)` while cases 1 to 4 still pass, so
 the previous suite certified the defect green.
-Case 5 additionally pins that `--profile-scan quick` reaches the same hole independently of open finding
-F8.
+Case 5 additionally pins that `--profile-scan quick` reaches the same hole independently of `--intensity`
+(originally "independently of open finding F8"; F8 - `derived` falling outside every `--intensity`
+tier - is now closed, so `--intensity` alone no longer drops a composite at all, and `--profile-scan`/
+`--allow-intrusive` are the two filters condition (a) still has to guard against).
 Case 6 **varies the region rather than the module**, deliberately: an earlier draft of it dropped the
 module owning the never-fired alternative, which is the one condition under which the weak
 "covered in at least one cell" test and the strict subset test agree, so it would have certified the weak
@@ -2219,11 +2224,25 @@ their **intersection**.
 The most restrictive control always wins; no control can ever re-enable a check another has removed.
 
 1. **Module selection** (the subcommand) picks the candidate set.
-2. **`--profile-scan`** filters by profile tag: `quick` keeps checks tagged `quick`; `full` keeps
-   everything; `compliance` keeps checks with a non-empty `cis` **or** `owasp` field.
-   `compliance` is thus computable from the record, with no separate list to drift.
+2. **`--profile-scan`** filters by profile TAG: `quick` keeps checks tagged `quick`; `full` keeps
+   everything; `compliance` keeps checks tagged `compliance`.
+   (Finding F3, closed: the line originally here read "keeps checks with a non-empty `cis` **or**
+   `owasp` field... computable from the record, with no separate list to drift".
+   That reading is unusable as written - `owasp` is a REQUIRED key on every pattern rule and script
+   check (`rules/RULE-FORMAT.md` §9.1, §9.5), present as a real category or the literal `none` but
+   never absent, so "non-empty owasp field" is true for the entire catalog and selects nothing
+   `compliance`-specific.
+   `lib/checks.sh` settles F3 on the TAG reading: it is the only one of the two that is actually
+   computable as a strict subset, `lib/records.sh`'s closed tag vocabulary already treats `compliance`
+   as a legal profile-tag value (`_records_check_tags`, E044), and `rules/RULE-FORMAT.md` §12's own
+   worked examples assume it - 12.1 and 12.5 carry an explicit `tags: compliance` line, while 12.2 has a
+   real, non-`none` `owasp` value and NO compliance tag.)
 3. **`--intensity`** applies a type-tag ceiling: `passive` keeps `passive`, `config-read`, `posture`,
    and `static`; `safe` additionally keeps `safe-active`; `active` additionally keeps `active`.
+   `derived` is exempt from this filter entirely (finding F8, closed: see its own entry in "Known
+   follow-ups" - a composite consumes other checks' findings rather than issuing requests of its own,
+   so no intensity tier is a meaningful ceiling for one).  A `derived` check remains fully subject to
+   `--profile-scan` and `--allow-intrusive`; only the intensity ceiling is waived.
 4. **`--allow-intrusive`** (default off) removes every check tagged `intrusive`, regardless of anything
    above.
    It can only ever remove checks; it never adds one that a prior filter dropped.
@@ -2244,11 +2263,25 @@ Registering script checks as records is also what gives tension 12 a check regis
 `covered_checks` from, and gives tension 7 stable ids for scripts and not just for patterns.
 
 **Consequence for the build.**
-§13 step 2 delivers the filter chain and the registry loader.
+§13 step 2 delivers the filter chain and the registry loader: `lib/checks.sh`, plus the
+`_scan_apply_profile_filter` wiring in `scan.sh` that calls it ahead of every `scan_dispatch`.
 The §7.4 enumeration-via-response checks and the §8.3 live user-enumeration probe are the seed
 `intrusive` checks, which makes §14's "side-effecting checks are off unless `--allow-intrusive`"
 enforced by the selection chain rather than by each script remembering to check a variable.
-A test asserts that `--profile-scan quick --intensity active` selects zero `active` checks.
+A test asserts that `--profile-scan quick --intensity active` selects zero `active` checks
+(`tests/suites/checks.sh`).
+
+Two defaults this tension left unstated are pinned in `lib/checks.sh` rather than in this document,
+because they are ordinary engineering judgement calls, not open design tensions: `--profile-scan`
+defaults to `full` when not given (an absent flag must not silently narrow "scan exhaustively"), and
+`--intensity` defaults to `passive` when not given, including for `dast` itself (every other guardrail
+in this tool defaults to the safest behaviour, and "no flag given" must not be the one exception).
+
+`lib/checks.sh` also delivers the registry loader's other half: `checks_registry_load` discovers every
+`*.rules` file that exists on disk under a module's directory right now (none do, before §13 step 3),
+and `SCOURSH_SELECTED_CHECKS` - the LF-joined selected-id env var `lib/findings.sh`'s
+`_derived_record_selected` already read from step 1, in anticipation of this filter chain - is wired
+from `scan.sh`, union'd across every module one invocation dispatches.
 
 ## Tension 16 - shared limiter, budget, breaker, and cache across processes
 
@@ -2626,6 +2659,14 @@ cloud credentials and puts them in the report as evidence.
 
 **RESOLUTION.**
 
+**Entry point.**
+`http_request` is the single chokepoint every network call in scoursh routes through.
+No module, check script, or crawler calls `curl`, a language HTTP client, or any other transport
+primitive directly; every one of them calls `http_request`, and `http_request` is the only place the
+gate logic below runs.
+This is enforced, not just documented: the "No bypass" lint below fails the build the moment a second
+path to the network exists, so the contract cannot silently rot as modules are added in later steps.
+
 **What the gate matches.**
 Each `config/scope.conf` target (block-record format, `rules/RULE-FORMAT.md` §9.4) contributes a set of
 `(scheme, host, port)` tuples, with the port defaulted from the scheme when absent.
@@ -2675,13 +2716,129 @@ A lint fails on any `curl`, `wget`, `nc`, or `openssl s_client` invocation outsi
 `modules/dast/passive/tls.sh`, the latter being the one documented exception, which takes its host from
 the same resolved, gated tuple set.
 
+**Normalization order.**
+Every URL `http_request` is given, whether authored in `scope.conf`, discovered by the crawler, or
+returned in a `Location` header, is put through the same pipeline **before** any gate comparison runs,
+and the pipeline runs exactly once per URL, not once per bypass class:
+
+1. Percent-decode the authority component only (scheme, userinfo, host, port), one pass.
+   A second decode pass is never performed, because decoding twice is itself the bypass: a host authored
+   or matched as `evil` and presented as `%65vil` survives one decode as `evil`, but a value that must
+   stay `%2565vil` (a literal, encoded `%65vil` string some application-layer consumer might re-decode)
+   would be corrupted into `evil` by a second pass.
+   One pass, applied uniformly, is the only rule that is unambiguous to re-implement.
+2. Split the authority into userinfo, host, and port per RFC 3986; **discard userinfo**.
+   `http://allowed@evil/` names host `evil`, not `allowed`; the gate has never looked at userinfo and
+   must not start now, so this step exists to stop userinfo from ever reaching the comparison as if it
+   were the host.
+   `http_request` also refuses to place a non-empty userinfo on the wire at all (`curl -u` is not used
+   from a parsed URL), because a credential embedded in an authored or discovered URL is exactly the
+   shape of value tension 9 requires never touch disk raw or appear in a log; if the check needs
+   authentication it comes from `config/auth.conf`, not from the URL.
+3. Canonicalize a numeric host.
+   A host that parses as an IPv4 or IPv6 literal is normalised to its canonical dotted-quad or
+   compressed-colon form before either the scope-tuple compare or the deny-list compare, which closes
+   every non-canonical numeric spelling as a distinct bypass:
+   - Decimal (`2851995906`), octal (`0251.0.0.1` / `025154325002`), and hex (`0xA9FEA9FE`) IPv4 forms all
+     canonicalize to the same dotted-quad `169.254.169.254` before comparison.
+   - IPv4-mapped and IPv4-compatible IPv6 (`::ffff:169.254.169.254`, `::a9fe:a9fe`) canonicalize to the
+     same address family used by the deny list, so the `169.254.0.0/16` entry catches the IPv6 spelling
+     too.
+   - A host that is a numeric literal in **any** of these forms skips DNS resolution entirely (there is
+     nothing to resolve), so step 4 below applies the deny list to the canonicalized literal directly,
+     not just to the outcome of a lookup; the "IP literals must be authored literally" rule above governs
+     which literals a target may *author*, this step governs what every literal *means* once one appears,
+     authored or discovered.
+4. Lowercase the host, strip one trailing dot, convert IDNs to A-labels (already stated above; repeated
+   here because it is step 4 of one pipeline, not a separate check that could run out of order or be
+   skipped for one call site).
+
+Steps 1-4 are one function, not four call sites a check script could invoke a subset of; a module cannot
+"skip encoding normalization because this call is only ever hit with a literal IP" any more than it can
+skip the deny list, because both live inside `http_request` and neither is reachable independently.
+
+**Redirect-recheck parity.**
+The manual, one-hop-at-a-time redirect loop re-runs the **entire** gate above on each `Location` header,
+including the normalization pipeline, not a lighter host-only comparison.
+A `Location` is untrusted target output (tension 10) before it is anything else, so it goes through the
+identical percent-decode / userinfo-strip / numeric-canonicalize / lowercase-and-dot-strip sequence the
+initial URL does, then the same `(scheme, host, port)` tuple compare and the same resolution-pinning and
+deny-list steps, including a fresh per-hop resolution (each hop is a new host, so the once-per-run
+resolution cache is keyed per resolved host, not per run-start).
+An implementation that fast-paths the redirect check to "just compare the new host string" reintroduces
+every bypass class above one hop later, which is why this is stated as parity with the initial check
+rather than assumed to follow from it.
+
+**Auditability.**
+A caught bypass attempt is not a silent abort.
+Whichever step rejects the URL - deny-list hit, out-of-scope tuple after normalization, a decode that
+changed the host, a non-empty userinfo - produces a scope-violation finding record (same record path the
+existing deny-list-hit abort already uses) carrying the check id, the raw input as given to `http_request`,
+the canonicalized value the gate actually compared, and which pipeline step rejected it.
+The raw and canonicalized values go through `finding_set_evidence` like any other evidence field, so a
+userinfo credential embedded in the rejected URL is redacted (tension 9) rather than landing in the report
+in the clear.
+This is what makes a bypass *attempt* - as opposed to a successful bypass, which by construction cannot
+reach the network - visible to the operator instead of only visible as a process exit code in a log no one
+reads; it is also what lets a future review confirm the gate is actually being exercised by a run rather
+than trivially satisfied because nothing ever tried to violate it.
+
 **Consequence for the build.**
 `lib/http.sh` at §13 step 5 owns the tuple set, the resolution cache, the deny list, and the manual
 redirect loop.
 `config/scope.conf` moves to the block-record format (tension 26), which is what lets `notes` be free
 text and `extra-host` be repeatable.
 Tests cover each bypass in turn: a different port, a subdomain, a redirect to an out-of-scope host, a
-hostname resolving to `169.254.169.254`, and an `http://` probe of an `https://` target.
+hostname resolving to `169.254.169.254`, an `http://` probe of an `https://` target, a percent-encoded
+host that decodes to an in-scope or deny-listed name, a URL carrying userinfo naming an in-scope host
+while the real authority host is out of scope (`http://allowed@evil/`), a decimal/octal/hex IPv4 literal
+for `169.254.169.254`, an IPv4-mapped IPv6 literal for the same address, and a redirect `Location` that
+itself carries one of the encoding bypasses above, to prove the redirect recheck applies the full
+pipeline rather than a host-string compare.
+Each rejected case also asserts a scope-violation finding record was produced (the auditability
+subsection above), not just a non-zero exit, so the audit trail is pinned by the same tests as the
+rejection itself.
+
+**Verification.**
+This resolution is a contract, not yet code (`lib/http.sh` lands at §13 step 5); a reviewer signing off
+before that implementation starts can check the contract itself rather than an implementation:
+
+- `grep -n "Entry point\." docs/FOUNDATION.md` finds the callout naming `http_request` as the single
+  chokepoint (AC1).
+- `grep -n "Normalization order\.\|Redirect-recheck parity\.\|Auditability\." docs/FOUNDATION.md` finds
+  the three subsections covering encoding/authority-confusion, redirect-recheck parity, and audit
+  logging added by this ticket, alongside the pre-existing IP-literal-vs-hostname, redirect, and
+  case/trailing-dot coverage in the same tension, so all four AC2 bypass classes (encoding, IP-literal
+  vs hostname, redirects, case/trailing-dot) are enumerated in one place.
+- `grep -n "percent-encoded\|userinfo\|IPv4-mapped\|decimal.*octal.*hex" docs/FOUNDATION.md` confirms the
+  specific encoding sub-cases (percent-encoding, userinfo/authority confusion, numeric IP-literal
+  obfuscation) the round-1 tech-lead review flagged as missing are now present.
+- `docs/FOUNDATION.md` still has exactly one `## Tension 19` heading and this document remains the sole
+  owner of scope-gate semantics; `grep -rn "scope-gate\|scope gate" docs/` finding no second document
+  making competing claims rules out the doc-fork the tech-lead review also flagged.
+- Sign-off itself is a board action, not a grep: this ticket is handed to `in_review` with this diff
+  attached so a human or the tech-lead role can record an explicit approve/request-changes verdict via
+  `crewban_move_ticket`, per AC3. No `lib/http.sh` or other network-call code is added by this change, so
+  the gate implementation gate ("§13 step 5 does not start until sign-off") is preserved by construction:
+  there is nothing here to have jumped ahead of the sign-off.
+
+**Implementation.**
+The paragraph above is the record of the contract-definition ticket, before any code existed; it is left
+as written rather than rewritten, because it is the sign-off record this tension's own "Verification"
+section describes.  The follow-on ticket (`b3de331d-...`, "Implement the scope.conf authorization gate for
+DAST targets") landed the code this paragraph is a status update for: `lib/http.sh` now implements every
+mechanism this tension describes - `http_url_normalize` (steps 1-4), `http_scope_load`/`http_scope_match`
+(the tuple compare, the port-80 relaxation, `allow-subdomains`), `http_resolve_host` (resolution pinning,
+cached per host), the IPv4/IPv6 deny list, `http_gate_url` (the pure predicate), and `http_request` (the
+chokepoint: fatal on the initial URL, non-fatal per redirect hop, `--resolve`-pinned, `--max-redirs 0`)
+- plus the auditability finding (`DAST-SCOPE-GATE-VIOLATION`) and the `tests/lint-shell.sh` "no bypass"
+check.  `tests/suites/http.sh` is the regression suite.  Two things this ticket deliberately left open
+rather than silently narrowing the contract: IDN/A-label conversion (hosts are compared as lowercased
+bytes, not punycode-normalised - a real homograph-bypass gap, tracked separately) and a general IPv6 CIDR
+matcher (the deny list currently matches `::1` exactly, `fe80::/10` and `fd00::/8` by leading-hextet
+pattern, and the two documented embedded-IPv4 forms, rather than an arbitrary compressed address). The
+rate limiter, request budget, and circuit breaker (tension 16) are still not built; `http_request` is the
+place they hook in when they are.
 
 ## Tension 20 - paranoid mode versus infrastructure traffic
 
@@ -2753,6 +2910,70 @@ The observer covers child processes, which matters because §10 fans out with `x
 the process-group level (`ss` sampling filtered by the run's cgroup or process group, or
 `strace -f -e trace=connect` where available and permitted) rather than to a single pid.
 Where neither is available, `--paranoid` fails with exit `4` rather than pretending to be active.
+
+**Implementation.**
+`lib/paranoid.sh` (PARANOID-01) now implements every mechanism this tension describes.
+`paranoid_allowlist_build` assembles the four sets in one call.
+`_paranoid_allowlist_in_scope` proactively resolves (not merely reads) every `config/scope.conf`
+tuple through `lib/http.sh`'s `http_resolve_host` *before* the observer starts.
+That ordering is how this implementation closes the bootstrapping problem this tension opens with
+("`--paranoid` aborts on scoursh's own first name lookup") - by sequencing (resolve everything the
+run could need, unobserved, then attach), not by a DNS-specific carve-out, since option 1 above
+("allowlist anything on port 53") stays rejected.
+`_paranoid_allowlist_aws` degrades set 2 to empty with a stated reason (`run.json`'s
+`paranoid_allowlist_note`), because `modules/cloud/aws/regions.sh` (§13 step 6) has not landed yet.
+That is the same forward-dependency shape `docs/STEP5-DAST-PLAN.md`'s DAST-09 used for
+`data/versions.db`.
+`_paranoid_allowlist_infra` parses the host's own `/etc/resolv.conf` for `nameserver` lines (port 53
+only) and adds loopback (`127.0.0.0/8`, `::1`) unconditionally on any port.
+The two are not the same rule, precisely because option 1 above is rejected for the resolver case but
+loopback never leaves the host.
+`_paranoid_allowlist_operator` reads `scanner.conf`'s `paranoid_allow`.
+
+**Family, not process group, for the kill action.**
+The RESOLUTION text above says "ss sampling filtered by the run's cgroup OR process group".
+This implementation instead attributes both the sampler's readings AND the abort's kill action to the
+DESCENDANT-PROCESS FAMILY rooted at the main `scan.sh` pid (`_paranoid_family_pids`, a fixed-point
+walk over `ps -Ao pid=,ppid=`), not the raw OS process group.
+This is a correction found empirically while building this ticket, not a stylistic choice: a plain
+`cmd &`/`( ... )` never changes pgid, so `scan.sh`'s own process group is whatever group its OWN
+invoker happens to be in.
+Reproduced directly against this project's own test harness, a pgid-wide `kill -TERM` on a violation
+took out the test runner driving the suite itself, because sourcing `scan.sh` and calling `scan_main`
+inside nested subshells shares one process group with the whole harness, none of it under `setsid`.
+Every `xargs -P` worker is a descendant of the invoking `scan.sh` process regardless of pgid, so the
+family walk gets the same coverage this tension's "not per-pid" requirement (§13 step 8's AC3) asks
+for, without that blast radius.
+
+The abort path is a dedicated `SIGUSR2` trap (`paranoid_on_violation`), installed by `paranoid_attach`
+and never overloaded onto the existing `SIGTERM`/`SIGINT`/`SIGHUP` handlers `lib/core.sh` already
+installs.
+Those exit `5` ("incomplete run"); a paranoid violation must exit `3`, a different point on tension
+14's precedence table, so it cannot share their signal or their exit path.
+The background sampler writes a violation marker and signals the main process rather than aborting
+the run itself, because only the main process can produce the exit-3 `die()` tension 14 requires.
+Measured directly (20/20 runs): a `wait` on the sampler's own pid reliably lets a pending trapped
+signal interrupt it and run before the waiter's own next statement, which is what makes the handoff
+deterministic rather than a race against how much work the dispatched module still has left to do.
+`_paranoid_audit_violation` mirrors `lib/http.sh`'s `_http_gate_audit` - the same finding pipeline,
+reusing the `dast` fingerprint profile rather than adding a new module to the closed enum
+`lib/findings.sh`'s `_fp_profile_for` owns, for one check id (`PARANOID-EGRESS-VIOLATION`).
+
+The "detector, not guarantee" framing is written into `run.json`'s `coverage_gap` array (via
+`run_record coverage_gap ...` in `paranoid_attach`, read by both `lib/report.sh` limitations
+emitters) on every `--paranoid` run.
+That is how the framing reaches the actual report output this tension's own RESOLUTION requires, not
+only this document.
+
+`tests/suites/paranoid.sh` is the regression suite, and it is fully deterministic on every host.
+`SCOURSH_PARANOID_FORCE_BACKEND` overrides the ss/strace probe (mirroring
+`SCOURSH_FORCE_MSLEEP_IMPL`, `lib/core.sh`) and `SCOURSH_PARANOID_SAMPLE` overrides the sampler
+itself with a scripted, recorded sequence of "observed" connections (mirroring `lib/http.sh`'s own
+`SCOURSH_HTTP_RESOLVE`/`SCOURSH_HTTP_TRANSPORT`).
+So the no-egress fixture this tension asks for never depends on `ss`/`strace` actually being
+installed - both are Linux-only and this project's own CI matrix runs macOS too.
+`tools/run-in-netns.sh` (NETNS-01) is not implemented by this ticket, per
+`docs/STEP8-PARANOID-PLAN.md`'s own split.
 
 ## Tension 21 - module independence versus cross-module inventory
 
@@ -3304,6 +3525,166 @@ its values are marked secret at the schema level so `redact` (tension 9) covers 
 
 ---
 
+## Tension 27 - optional engine adapters: quarantine and convention
+
+**The tension.**
+`docs/DESIGN.md` §9 offers a second, opt-in tier on top of the native pattern engine: drop a vendored
+`semgrep`/`gitleaks` binary plus a local ruleset into `adapters/`, run it fully offline, and merge its
+findings with the native ones. §3's tree diagram and §6.4 describe this only under `modules/sast/`; §6.6
+separately invites "the same pattern" for IaC engines (`checkov`/`tfsec`/`trivy config`); §13 step 9
+names `tools/vendor-engines.sh` as the mechanism that populates `adapters/` in the first place, "the
+*only* script that touches the internet... never called during a scan... clearly quarantined." None of
+that is a directory convention, an interface contract, or an enforcement mechanism yet - it is prose
+describing a shape, not a shape a second engine's ticket could implement without guessing, and "clearly
+quarantined" is not, on its own, something CI can fail a build over.
+
+**Why it bites.**
+Three separate failure modes, all avoidable only by deciding the shape before the first adapter, not
+after:
+
+1. Without a frozen interface contract, the first two adapter tickets (say, `semgrep` for SAST and
+   `checkov` for IaC) would each invent their own function names, their own detect/run/normalize split,
+   and their own error-handling convention, and nothing would catch the divergence until a third ticket
+   tried to write code that treats adapters uniformly and discovered there were two incompatible shapes
+   to support.
+2. Without a single, actually-enforced "only script that touches the internet," the guarantee is a
+   sentence in a document rather than a property of the repository. A future adapter ticket, under
+   deadline pressure, could plausibly have its `adapter.sh` reach out and fetch its own ruleset "just
+   this once" - `docs/FOUNDATION.md` tension 19's own "no bypass" check does not know `adapters/` exists
+   yet, so nothing would stop it.
+3. Without an explicit "adapters are optional" proof, an operator or a future maintainer reading the
+   code cannot tell whether `scoursh` still runs, unmodified, with zero engines vendored - which is the
+   entire point of "native (default): zero deps, fully air-gapped" in §9's own two-tier framing.
+
+**Options considered.**
+
+1. *Defer the whole scaffold until the first concrete adapter ticket, and let it define the convention
+   ad hoc.*
+   Rejected: this is exactly failure mode 1 above, and it is the same mistake `docs/FOUNDATION.md`
+   already paid for once, in a different shape - `rules/RULE-FORMAT.md` exists precisely because
+   deferring "what does a record look like" to the first rule pack produced a pipe-delimited format that
+   broke on its own catalog's regexes (tension 1).
+2. *Fold the adapter convention into `rules/RULE-FORMAT.md` itself, as a new schema.*
+   Rejected: `rules/RULE-FORMAT.md` §9.1.1a already draws the correct line - an adapter check id is
+   "not a record file; produced at runtime by a vendored engine... never linted, since no record
+   declares it." Adapters are executable bash, not data; putting them in the frozen record format would
+   contradict the format's own reason to exist (tension 26: "record files are data, never code").
+3. *One convention document (this scaffold), plus a lint that makes the quarantine a checked property
+   rather than a comment.* **Chosen.**
+
+**RESOLUTION.**
+
+`docs/ADAPTERS.md` is a new, normative, self-contained document - the same role `rules/RULE-FORMAT.md`
+plays for records - defining:
+
+- **Directory convention**: `modules/<module>/adapters/<engine>/adapter.sh` (plus conventional `bin/`
+  and `rules/` subdirectories for the vendored binary and local ruleset). This **generalizes** §3's
+  SAST-only diagram to any module, which is a deliberate extension of DESIGN.md's literal text, not a
+  correction of it: DESIGN.md is preserved verbatim per this project's own rule and is never edited to
+  match a later decision, and §9/§13 step 9's own prose already speaks of `adapters/` without confining
+  it to SAST, while §6.6 explicitly invites the same shape for IaC. A future reader comparing §3's
+  diagram against a `modules/iac/adapters/checkov/` directory is seeing this deliberate generalization,
+  not drift.
+- **The three-function interface contract**: `<engine>_detect` (pure filesystem check, never touches the
+  network), `<engine>_run OUTPUT_FILE TARGET...` (runs the vendored engine fully offline, writes its
+  native JSON), `<engine>_normalize INPUT_FILE` (reads that JSON and calls `lib/findings.sh`'s existing
+  public API - `finding_new`/`finding_set`/`finding_set_evidence`/`finding_set_match`/`finding_emit` -
+  never the internal `_F` array directly, which `tests/lint-shell.sh`'s existing redacted-field check
+  already forbids repository-wide). Namespacing the three functions by engine name is what lets more
+  than one adapter be sourced into the same process without collision, the same reason `sca_go_scan_tree`
+  is named for its ecosystem rather than reusing `sca_scan_tree`'s name.
+- **Check ids reuse `rules/RULE-FORMAT.md` §9.1.1a's already-frozen "adapter check id" namespace**
+  (`<engine>:<engine's own rule id>`) rather than inventing a second convention that could drift from
+  it. This is the one place this tension deliberately adds nothing new: the frozen format already
+  drew the correct line (option 2, rejected above, would have redrawn it).
+- **Graceful degradation is mandatory**: an absent or failing adapter records a `coverage_reduction`
+  (`reason=engine_not_vendored`, mirroring the `not_yet_built`/`no_advisories_db_on_disk` convention
+  every other module-gap case already uses) and the run continues native-only. It is never an error, per
+  §9's own "if absent, silently continue native-only."
+- **Runtime gating is explicitly deferred, not built here.** `docs/DESIGN.md`'s directory layout names
+  `lib/engines.sh` and `has_engine()`; §6.4 names the `--use-engines` flag. Neither exists as of this
+  ticket. The first concrete adapter ticket builds both, together with its own adapter - mirroring how
+  `--paranoid`'s flag landed together with its first real enforcement (tension 20) rather than as a
+  separate ticket - so that `lib/engines.sh` is designed against one real adapter's actual needs instead
+  of a guess. Until it lands, a fully-populated `adapters/` directory would still be inert: nothing
+  calls `<engine>_detect`.
+
+**`tools/vendor-engines.sh` is established as the network chokepoint, and it is now an enforced property,
+not a comment.**
+The script itself is real and runnable - usage/help, `--list`, `--all`, and vendoring a named engine all
+work - with a genuinely empty registry (`VENG_REGISTRY`), since zero adapters exist. Two additions to
+`tests/lint-shell.sh` make "the only script permitted to reach the network" checked in both directions:
+
+1. The existing tension-19 "no bare curl/wget/nc/openssl s_client" check now exempts
+   `tools/vendor-engines.sh` alongside `lib/http.sh` - it is expected to call `curl`/`wget` directly, and
+   is deliberately **not** routed through `lib/http.sh`'s scope gate, because that gate authorizes scan
+   *targets* (`config/scope.conf`) and a vendored engine's own upstream release URL is not one; routing
+   it through the gate would be a category error, not an extra safety layer.
+2. A new check fails the build if anything under `lib/`, `modules/`, or `scan.sh` - `scan.sh`'s own
+   dispatch path, narrower than tension 19's `engine_files` (which also covers `tools/` and a future
+   `aws/`) - sources, execs, or evals `tools/vendor-engines.sh` by name. It is matched at command
+   position with an explicit invocation verb required (`source`/`.`/`eval`/`bash`/`sh`), not a bare
+   substring match: `modules/sca/engine.sh` and `modules/sca/go_engine.sh` already name
+   `tools/vendor-engines.sh` in log and remediation prose (tension 25), including one case immediately
+   after a literal `(` inside a quoted string, and a bare substring check fails under its own first real
+   run - on code that is correct today - which is exactly the "a test that passes under both readings
+   pins nothing" failure `AGENTS.md`'s Tests section warns against, applied to a lint instead of a suite.
+
+**`tools/vendor-engines.sh` carries a second, unrelated, already-committed responsibility that this
+ticket does not implement.**
+Tension 25's RESOLUTION already assigns this same script the job of resolving `data/advisories.db`'s and
+`data/versions.db`'s advisory ranges against each SCA ecosystem's real published version list ("the
+expansion logic moves into `tools/vendor-engines.sh` at §13 step 9"). That is real, SCA-scoped work, not
+an engine adapter, and it needs genuine per-ecosystem tooling this scaffold has no offline, fixture-testable
+way to exercise - it is explicitly out of this ticket's scope ("adds no per-engine logic itself, only the
+scaffold") and is recorded here, in the script's own header, and in `docs/ADAPTERS.md` §10, so it is not
+mistaken for an oversight or silently re-invented as a second network-touching script later. The two
+responsibilities share this one file for the same reason they share the no-egress rule, not because they
+are the same kind of work.
+
+**Consequence for the build.**
+Zero adapter directories exist anywhere in the tree as of this ticket. `tests/suites/vendor-engines.sh`
+proves the empty-registry script's own behavior end-to-end as real subprocess invocations, with
+`curl`/`wget` stripped from `PATH` so an accidental fetch attempt fails loudly rather than silently
+reaching the network - and the full suite (`tests/run-tests.sh`) passing with no `modules/*/adapters/`
+directory anywhere is the concrete proof, not merely an assertion, that `docs/DESIGN.md` §9's "if absent,
+silently continue native-only" already holds for the only case that exists today: every adapter, for
+every module.
+
+**The second, unrelated responsibility the paragraph above names as unimplemented has since landed** -
+a later ticket ("Implement tools/vendor-engines.sh's advisories.db/versions.db expansion") added the
+`advisories` command namespace `tools/vendor-engines.sh`'s own §3 now documents: `VENG_ADVISORY_REGISTRY`,
+`veng_advisories_list`/`veng_advisories_one`/`veng_advisories_all`, and one `veng_advisories_<ecosystem>`
+function per `docs/DESIGN.md` §6.5 ecosystem (npm, PyPI, Maven, Go, RubyGems, Composer) - kept
+structurally separate from `VENG_REGISTRY`/`veng_vendor_one`/`veng_vendor_all`/`veng_list` exactly as
+this section's own header note required, with its own `advisories` branch in `veng_main` rather than a
+name collision with a registered `<engine>`.
+Each ecosystem resolves real advisory data via OSV.dev (`https://api.osv.dev/v1/vulns/<id>`), the same
+cross-ecosystem, open-source vulnerability database `govulncheck`/`pip-audit`/`osv-scanner` are
+themselves built on - chosen because OSV's own schema already carries a per-advisory
+`affected[].versions` array, the exact ecosystem-tool-computed version enumeration tension 25 asks for,
+so this script still performs no range arithmetic of its own.
+Every advisory id is operator-supplied via `SCOURSH_ADVISORY_<ECOSYSTEM>_IDS`, never guessed or
+hardcoded - the identical discipline this file's own `semgrep_vendor` narrative already established for
+a release URL/checksum.
+JSON parsing uses `python3`'s stdlib `json` module rather than a hand-rolled bash/grep parser (this
+script runs on a networked, operator-controlled box with real tooling, never in the air-gapped scan-time
+path), and per-ecosystem name normalisation reuses `modules/sca/engine.sh`'s, `php_engine.sh`'s and
+`go_engine.sh`'s own `sca_*_normalize_name`/`sca_go_normalize_version` functions verbatim, lazily
+sourced, so the writer and the reader of `data/advisories.db` can never drift apart.
+`data/versions.db` is written by the identical `_veng_advisories_write_db` call, mirroring tension 25's
+own "the same shape and the same rule" - its own, separate banner-matching product catalog (a bare web
+server or TLS library with no SCA-ecosystem manifest at all) is a stated gap this ticket does not close,
+not silently assumed covered.
+`tests/suites/vendor-engines-advisories.sh` is the fixture-driven proof, against hand-authored,
+OSV.dev-*shaped* (never live-fetched) fixtures under `tests/fixtures/vendor-engines/osv/` - the identical
+"no live network calls in CI" posture `tests/fixtures/sca/advisories.db` already established for that
+data's READER side.
+`docs/ADAPTERS.md` §10 and this script's own header are both updated in the same change to stop calling
+this responsibility unimplemented.
+
+---
+
 ## Cross-cutting consequences
 
 Eight decisions here reach beyond their own tension and are collected so they are not missed.
@@ -3551,8 +3932,25 @@ rule pins nothing.
   unclassifiable status.
   Overwrite-based erasure is documented as best effort, with `scratch-dir` on a tmpfs as the real
   control.
-  `look`'s O(n) `grep -F` fallback cost is the SCA half of F16 and remains open; it lands with §13
-  step 4.
+  **The SCA half - `look`'s O(n) `grep -F` fallback cost - is CLOSED too.**
+  `lib/core.sh`'s `db_lookup_exact` is the one implementation of the `LC_ALL=C look`-on-PREFIX,
+  `LC_ALL=C grep -F -m 1`-fallback mechanism tension 25's lookup names, and `modules/sca/engine.sh`'s
+  two call sites (`sca_lookup_exact`, `sca_package_known`) route every npm, Python, Ruby, Maven,
+  Composer AND Go exact-match lookup through it - `modules/sca/go_engine.sh`, the one SCA engine that
+  lives outside `engine.sh`, deliberately calls those same two shared helpers rather than reaching for
+  `look`/`grep` itself, so no second, ad hoc parser exists alongside it (tension 24's "one capability
+  layer").
+  `tests/suites/core.sh` now pins both branches directly, against a fixture with two rows sharing one
+  exact prefix: the fallback returns only the first row (FAILS under a bare `grep -F` missing `-m 1`,
+  which would return both), `look` returns every row sharing the prefix (FAILS under an implementation
+  that routed the `look` branch through the fallback instead of a real `look` call), and both the
+  no-match and missing-file cases return status 1 with no output under either branch.
+  This entry previously read "remains open; it lands with §13 step 4", reasoning that the mechanism was
+  unexercised until a real caller existed; six real callers (npm, Python, Ruby, Java, PHP, Go) now exist
+  and are tested end to end (`tests/suites/sca.sh`), so that condition is met.
+  The O(n) cost on a `look`-less host is tension 25's own accepted, frozen tradeoff, not an open
+  defect - which ecosystems have joined the same call site is step 4 SCA-completeness bookkeeping,
+  tracked separately in "Where the build currently stands", not this finding.
 
 **F18 is closed as a consequence rather than deferred.**
 Once `die` refuses any code outside 0-5, a `die 6` cannot exist: both normative samples now read
@@ -3579,24 +3977,42 @@ composite under `tests/fixtures/rules/derived.rules`; only the shipped seed wait
 
 ### Cheap corrections, safe to defer
 
-- **F4 [medium] - §12.2's `context-deny` rewrite suppresses true positives**
-  (`rules/RULE-FORMAT.md` §12.2, blessed as the general recipe by §8.3 and tension 2).
-  With `context-window: 2`, a correct safe-loader call within two lines of a genuine vulnerable call
-  suppresses the finding, and tension 12 then classifies the suppressed finding `fixed`.
-  §12.1 already states the correct discipline (`context-window: 0` for a same-line guard) and §12.2
-  abandons it, so the two frozen examples give contradictory precedents for the identical hazard.
-  Direction: freeze that a same-line-intent deny must carry `context-window: 0`, fix §12.2, add a linter
-  warning for a deny on a rule with a window above 0, and state in §10.2 that widening a deny window
-  trades false positives for silent false negatives rather than being monotonically safe.
-- **F3 [medium] - the `tags` vocabulary is not closed, so `E044` is unimplementable and a typo silently
-  disables** (`rules/RULE-FORMAT.md` §9.1.3 and §13 against tension 15).
-  `tags: quik` lints clean and silently removes a rule from the `quick` profile, which is the exact
-  failure mode `E017` exists to prevent for keys.
-  `compliance` also has two incompatible definitions - tag-based in §9.1.3, derived from a non-empty
-  `cis` or `owasp` in tension 15 - and since `owasp` is required on every pattern rule the derived form
-  selects the entire catalog.
-  Direction: declare the closed vocabulary normatively, add an error code for a tag outside it, and pick
-  one definition of `compliance`.
+- **F4 [medium] - CLOSED.**
+  Originally: "§12.2's `context-deny` rewrite suppresses true positives" (`rules/RULE-FORMAT.md` §12.2,
+  blessed as the general recipe by §8.3 and tension 2) - with `context-window: 2`, a correct safe-loader
+  call within two lines of a genuine vulnerable call suppressed the finding, and tension 12 then
+  classified the suppressed finding `fixed`.
+  §12.1 already stated the correct discipline (`context-window: 0` for a same-line guard) and §12.2
+  abandoned it, so the two frozen examples gave contradictory precedents for the identical hazard.
+  Closed by the "SAST: native pattern engine + seed secrets/crypto/injection/python rules" ticket
+  (`docs/DESIGN.md` §13 step 3a), the first ticket to evaluate the `context` directive at all and
+  therefore its correct owner: `rules/RULE-FORMAT.md` §12.2's worked example now carries
+  `context-window: 0` with an inline note explaining the correction; §10.2 states the general rule
+  (widening a `context-deny` window trades a detectable false positive for an undetectable false
+  negative, while widening a `context-require` window only ever risks the detectable direction); and
+  `lib/records.sh`'s `_records_validate_record` gained `W033`, a warning (not an error - a wider deny
+  window is sometimes a deliberate, reviewed trade-off) that fires whenever a `context-deny` is present
+  with an EFFECTIVE window above 0, including an absent `context-window` (which defaults to 2).  The
+  shipped `modules/sast/rules/python.rules` `SAST-PY-YAML_LOAD-01` (the real-world equivalent of the
+  worked example) ships with `context-window: 0` from day one, and `tests/suites/sast.sh` carries a
+  regression test that fails under the pre-fix (window-2) reading.
+- **F3 [medium] - CLOSED.**
+  Originally: "the `tags` vocabulary is not closed, so `E044` is unimplementable and a typo silently
+  disables" (`rules/RULE-FORMAT.md` §9.1.3 and §13 against tension 15) - `tags: quik` lints clean and
+  silently removes a rule from the `quick` profile, which is the exact failure mode `E017` exists to
+  prevent for keys; and "`compliance` has two incompatible definitions - tag-based in §9.1.3, derived
+  from a non-empty `cis` or `owasp` in tension 15 - and since `owasp` is required on every pattern rule
+  the derived form selects the entire catalog."
+  Both halves are closed, the first one retroactively: `lib/records.sh`'s `_records_check_tags`
+  (`rules/RULE-FORMAT.md` §13 step 1, `b25cd26`) already enumerates the closed vocabulary - every type
+  tag, `quick`, `compliance`, `intrusive` - and fires `E044` for anything outside it; this entry was
+  simply never updated to say so.
+  The second half is closed by the "Wire scan profiles: quick, full, compliance" ticket:
+  `lib/checks.sh` picks the TAG reading of `compliance` (tension 15 step 2, amended in the same change)
+  for the reasons recorded there - the field-derived reading is not computable as written (`owasp` is
+  required, so "non-empty" selects the whole catalog), the closed vocabulary above already treats
+  `compliance` as a legal tag, and `rules/RULE-FORMAT.md` §12's own worked examples (12.1, 12.5) already
+  assume the tag reading.
 - **F5 and F20 [medium] - seeding the composite at §13 step 1 is a guaranteed lint failure**
   (tension 6's "Consequence for the build" against `E051`, and `E060`).
   Tension 6 instructs seeding `COMPOSITE-TOKEN-HIJACK` at step 1 while its contributors do not exist
@@ -3612,20 +4028,25 @@ composite under `tests/fixtures/rules/derived.rules`; only the shipped seed wait
   `die` validates its argument against the frozen 0-5 contract, so a `die 6` cannot exist; both
   normative samples read `die 5` and write `incomplete_reason`, and the `scan_match` comment that said
   "writes hits to `$2`" while the body took `$1` is corrected.
-- **F8 [low] - the `derived` type tag falls outside every `--intensity` tier** (tension 15 step 3, and
-  `rules/RULE-FORMAT.md` §9.1.3 against §9.2).
-  Under an intersection filter where nothing can be re-enabled, any run carrying `--intensity` drops
-  every composite.
-  The consequence is that composites are silently absent from those runs, not that they are wrongly
+- **F8 [low] - CLOSED.**
+  Originally: "the `derived` type tag falls outside every `--intensity` tier" (tension 15 step 3, and
+  `rules/RULE-FORMAT.md` §9.1.3 against §9.2) - under an intersection filter where nothing can be
+  re-enabled, any run carrying `--intensity` drops every composite.
+  The consequence was that composites are silently absent from those runs, not that they are wrongly
   classified: a composite has no `covered_checks` entry to lose, and tension 6 condition (a) makes an
   unselected composite `unknown`.
   (The earlier rationale here said "a dropped check never enters `covered_checks`, so its prior findings
   are `unknown` forever", which was the *ordinary*-check mechanism and stopped applying to composites
   once they lost their cell; the outcome is the same but it now comes from condition (a), and this entry
   no longer contradicts tension 6.)
-  Direction: state that `derived` checks are exempt from the intensity ceiling, since they consume
-  findings rather than issue requests, and add `derived` to §9.1.3's enumeration so `E044` and the
-  schema agree.
+  Closed by the "Wire scan profiles: quick, full, compliance" ticket exactly per this entry's own
+  direction: `lib/checks.sh`'s `checks_intensity_keeps` exempts a `derived`-type record from the
+  `--intensity` ceiling unconditionally (tension 15 step 3, amended in the same change), while leaving
+  it fully subject to `--profile-scan` and `--allow-intrusive` - only the intensity filter is waived.
+  `rules/RULE-FORMAT.md` §9.1.3's own enumeration is untouched (the frozen document; see §11's rule
+  against editing it for a decision settled elsewhere), so `derived` remains absent from its type-tag
+  list there - that list was never wrong, since a composite is never itself tagged with an
+  `--intensity` tier; it is tension 15's FILTER that needed the exemption, not the tag vocabulary.
 - **F17 [low] - CLOSED. `aws_ro` sets `AWS_PAGER=''` rather than pinning `--no-cli-pager`**
   (tension 23, item 5), which is exactly the prescribed direction.
   The flag is v2-only; tension 24 probes for `aws` by presence rather than by major version, so on a
@@ -3649,17 +4070,512 @@ The five follow-ups that had to be settled first - F13, F14, F12, F15, F16 - are
 the tension that owns it and each with a test that fails under the original.
 F18 closed with them by mechanism.
 
-Steps 2 to 10 are unstarted.
-The six remaining follow-ups (F4, F3, F5, F20, F8, and F16's `look` half) are inherited by them and are
-still open.
-F17 closed out of order, as part of a credential-less pass that advanced the parts of §13 step 6 that
-need no AWS account - see "AWS module: what exists ahead of step 6" in `AGENTS.md`.
+`scan.sh` (the §5 CLI grammar, tension 14's exit-code precedence, and wiring `lib/config.sh` ahead of
+dispatch) and `lib/checks.sh` (tension 15's filter chain and registry loader, plus the
+`_scan_apply_profile_filter` wiring into `scan.sh`) are both now built, closing out §13 step 2 except
+for real module execution, which waits on step 3+ as `scan.sh`'s own header says.
+F3 and F8 are closed as part of `lib/checks.sh` landing (see their own entries above); F5 and F20
+remain open for the same reason they always were - `rules/derived.rules` is still not seeded, since its
+contributors do not exist until steps 5 and 6.
+
+**§13 step 3 is under way, not unstarted.**
+3a shipped the native pattern engine `modules/sast/engine.sh` and the `scan_dispatch sast` entry point
+`modules/sast/run.sh` plus the first rule packs; 3b, 3c and 3d added further per-language packs; and 3e
+shipped `modules/sast/history.sh`, which replays `secrets.rules` against git history (bounded by a
+commit/time window, per §6.3) and populates the `SAST-HIST-*` check family - the fingerprint profile
+(`blob_sha`, `match_digest`, `occurrence`) and `oldest_reaching_commit_time` that tension 13's boundary
+test and tension 6 condition (b1) read once `state/` exists at step 7.
+WHICH packs have landed and what §6.3 still owes is in the generated block below, not in this
+paragraph: it previously undercounted step 3 and left an already-landed pack in its still-missing list,
+which is the failure the generator exists to make impossible.
+Steps 4 through 10 remain mostly unstarted, so `modules/dast/` and `modules/cloud/` remain unbuilt.
+`modules/iac/` and `modules/sca/` are exceptions - see the two paragraphs below.
+`lib/awscli.sh` is a third: a credential-less pass built it ahead of step 6, so the chokepoint exists
+while `modules/cloud/aws/live/*.sh` and everything else step 6 names are still unbuilt - see "AWS
+module: what exists ahead of step 6" in `AGENTS.md`.
+The remaining follow-ups (F5 and F20) are inherited by steps 4 through 10 and are still open.
+(F3, F4, F8, and F16 - including its `look` half - are closed above, and F17 closed out of order as
+part of that same credential-less pass.)
+
+**Step 4's IaC half landed out of sequence, ahead of step 3's remaining sub-steps and ahead of step 4's
+own SCA half, one ticket per file format.**
+`5de4460` ("IaC: Terraform checks via the pattern-rule engine (§13 step 4)") shipped `modules/iac/run.sh`
+(the `scan_dispatch iac` entry point), `modules/iac/parse.sh` (the Terraform HCL parser), and
+`modules/iac/terraform.rules`, reusing the native pattern engine `modules/sast/engine.sh` built at step
+3a rather than forking a second one.
+`terraform.rules` seeds seven checks: `IAC-TF-OPEN_CIDR-01`, `IAC-TF-PUBLIC_ACL-01`,
+`IAC-TF-UNENCRYPTED-01`, `IAC-TF-KEY_ROTATION_DISABLED-01`, `IAC-TF-PUBLIC_IP-01`,
+`IAC-TF-HARDCODED_SECRET-01`, and `IAC-TF-RDS_PUBLIC-01`; `tests/suites/iac.sh` tests it.
+A second landing, `add2b21` ("IaC: Helm chart checks via the pattern-rule engine (§13 step 4)"),
+added `modules/iac/helm.rules`: three checks (`IAC-HELM-HOST_PORT-01`, `IAC-HELM-HOST_MOUNT-01`,
+`IAC-HELM-HARDCODED_SECRET-01`) against Helm chart sources only (`values.yaml` and
+`templates/*.yaml`) - `helm.rules`' own header states its scope discipline explicitly (never a
+docker-compose file, never a bare non-Helm Kubernetes manifest) and its own "KNOWN GAP" note confirms no
+`modules/iac/kubernetes.rules` (or any other Kubernetes-manifest pattern pack) exists on `dev` as of
+that landing.
+A third landing, `25abfa3` ("IaC: Dockerfile checks via the pattern-rule engine (§13 step 4)") added
+`modules/iac/dockerfile.rules`: six checks (root/no `USER`, `:latest` base tag, secrets
+in `ENV`/`ARG`, remote `ADD`, `curl | sh` build steps, unpinned base digest), scoped strictly to
+`Dockerfile`, `Dockerfile.*`, and `*.dockerfile` - `docker-compose*.yml` and Helm `values.yaml` are
+deliberately excluded from this pack's `files:` list, continuing the same one-pack-per-format split
+`terraform.rules`' own header already established for `docs/DESIGN.md` §3's originally-combined
+`containers.rules` sketch.
+A fourth landing, `bb75c9b` ("IaC: Kubernetes manifest checks via the pattern-rule engine (§13 step 4)")
+added `modules/iac/kubernetes.rules`: eight `IAC-K8S-*` checks (privileged containers,
+host network/PID namespace sharing, missing resource limits/requests, `runAsNonRoot` unset, plaintext
+secrets in env vars, the mutable `:latest` image tag, wildcard RBAC verbs/resources, and
+`automountServiceAccountToken` left at its default), scoped to plain Kubernetes YAML/JSON manifests and
+reusing `modules/iac/run.sh`/`parse.sh` unchanged - closing exactly the gap the Helm landing's own
+"KNOWN GAP" note (above) flagged as still open at that point. Helm chart templates and CloudFormation
+templates are explicitly excluded by design: the pack's own header covers the case-sensitivity
+(Kubernetes' lowerCamelCase field names versus CloudFormation's PascalCase) and `context-deny` (`\{\{`
+for Helm, `AWSTemplateFormatVersion|AWS::` for CloudFormation, on the three absence-style checks)
+mechanisms that keep it out of scope for those two shapes even though the file glob overlaps;
+`tests/suites/iac.sh` proves both fixture shapes yield zero `IAC-K8S-*` findings.
+§6.6's container/orchestration catalog and §8.2's CloudFormation checks are two separate sub-scopes of
+step 4's IaC half; which of their slices have landed, and the on-disk pattern-pack count that
+`tests/lint-rules.sh`'s E060 fixture-coverage note reports, are both in the generated block below.
+Do not read this paragraph as "step 4 is done."
+
+**A fifth landing has since closed the docker-compose gap the paragraph above left open:
+`57d1cd1` ("IaC: docker-compose checks via the pattern-rule engine (§13 step 4)") added
+`modules/iac/docker-compose.rules`.**
+`docs/DESIGN.md` §6.6 bundles docker-compose in with Dockerfile/Kubernetes/Helm under one prose
+"containers.rules" bullet, but none of the four landings above had claimed the docker-compose slice
+itself; this ticket closed exactly that one gap, reusing `modules/iac/run.sh`/`parse.sh` unchanged (they
+already existed from the Terraform landing above) and adding only the new flat pack file plus its
+fixtures.
+`docker-compose.rules` seeds four checks: `IAC-COMPOSE-EXPOSED_PORT-01` (a host port bound without
+restricting the interface), `IAC-COMPOSE-PRIVILEGED-01` (`privileged: true`),
+`IAC-COMPOSE-SENSITIVE_MOUNT-01` (a host bind mount of `/var/run/docker.sock`, `/etc`, `/root`, `/home`,
+`/proc`, `/sys`, or `/` itself), and `IAC-COMPOSE-PLAINTEXT_SECRET-01` (a literal credential value in an
+`environment:` entry, rather than a `${VAR}`/`env_file:` reference).
+Its `files:` globs match `docker-compose.yml`/`compose.yml` (and their `.yaml`/override-variant forms)
+only - `tests/suites/iac.sh` has a dedicated cross-shape section proving a Kubernetes-manifest-shaped and
+a Helm `values.yaml`-shaped fixture, each deliberately carrying content that would trip every
+`IAC-COMPOSE-*` check if the engine ever inspected file content, still produce zero findings, and that a
+mixed directory holding one file of each IaC shape never lets a check cross-attribute to the wrong file.
+The on-disk pattern-pack count `tests/lint-rules.sh`'s E060 fixture-coverage note reports, and which
+§6.6/§8.2 slices are still unclaimed, are in the generated block below rather than in this paragraph -
+this one records only what the docker-compose landing itself decided.
+Do not read it as "step 4 is done."
+
+**A sixth landing added `modules/iac/cloudformation.rules`, closing out §8.2's CloudFormation half of
+the IaC catalog** (§8.2's own catalog line - "cloud.rules terraform.rules cloudformation.rules" - names
+this file directly).
+It seeds eight checks: the seven `IAC-TF-*` siblings restated in CloudFormation's PascalCase property
+shape (`IAC-CFN-OPEN_CIDR-01`, `IAC-CFN-S3_PUBLIC_ACCESS-01`, `IAC-CFN-UNENCRYPTED-01`,
+`IAC-CFN-KEY_ROTATION_DISABLED-01`, `IAC-CFN-PUBLIC_IP-01`, `IAC-CFN-HARDCODED_SECRET-01`,
+`IAC-CFN-RDS_PUBLIC-01`) plus `IAC-CFN-ECS_PRIVILEGED-01`, which has no Terraform sibling and is the
+CloudFormation spelling of the Kubernetes pack's own `IAC-K8S-PRIVILEGED-01`.
+**Its scoping inverts every other pack in `modules/iac/`, and that is what this paragraph exists to
+record.**
+Unlike Terraform (`*.tf`, a format nothing else in this repo emits) and unlike Helm (`values.yaml` /
+`templates/*.yaml`, a path convention to lean on), a genuine CloudFormation template has no reserved
+filename or path convention at all - `docs/DESIGN.md` §8.2 itself walks `*.yaml`/`*.yml`/`*.json`
+generically - so `files:` globs cannot do the disambiguation the sibling packs rely on.
+Every rule is therefore deliberately as broad on `files:` as the format allows and does the real
+narrowing with a `context-require` that a genuine `Type: AWS::<Service>::<Resource>` declaration (or its
+quoted JSON spelling) sits within the window: the one string a Kubernetes manifest, a Helm chart, or a
+docker-compose file cannot carry while still being that thing.
+That anchor is **strictly stronger than a filename glob**, which is why this pack ships no
+`exclude-files` where `kubernetes.rules` needs eight compose globs (tension 4's own docker-compose
+cross-fire) - and, because an untested claim is not a resolution, `tests/suites/iac.sh` asserts it
+against the same `tests/fixtures/iac/docker-compose/` fixture that pack needed its globs for, plus the
+Helm-template fixture, a bare Kubernetes Secret manifest and a generic non-CloudFormation JSON file that
+both deliberately reuse the pack's own PascalCase vocabulary.
+Adding compose globs here would be a guard no fixture can distinguish from its absence; if that
+assertion ever goes red, adding them is the fix, not the prophylactic.
+The landing also made an already-committed fixture load-bearing:
+`tests/fixtures/iac/cloudformation/cloudformation_template.yaml` arrived with the Kubernetes pack as its
+CloudFormation-shaped NEGATIVE guard and, until this pack existed, exercised no CloudFormation check at
+all - `IAC-CFN-ECS_PRIVILEGED-01` now fires on the `Privileged: true` it already carried, asserted as a
+`check_id@loc_path` pair so the assertion names that exact file, with the opposite direction asserted
+too (no other check may fire on an otherwise-clean template).
+Which §6.6/§8.2 slices have landed, and the on-disk pattern-pack count `tests/lint-rules.sh`'s E060
+fixture-coverage note reports, are in the generated block below rather than in this paragraph.
+
+**A third piece of step 4 has now landed, in three sub-tickets: `modules/sca/` (the SCA module's npm,
+Python, and Ruby slices).**
+`ed8c283` ("SCA: parse npm lockfiles and match against data/advisories.db") shipped `modules/sca/run.sh`
+(the `scan_dispatch sca` entry point, with no check-registry gate - SCA is a table lookup, not a
+pattern-rule engine) and `modules/sca/engine.sh`: lockfile discovery, `package-lock.json` (v1 and
+v2/v3), `yarn.lock`, and `pnpm-lock.yaml` parsing, npm's own (identity) name normalisation, and the
+`data/advisories.db` exact-match lookup (`sca_lookup_exact`/`sca_package_known`, both routed through
+`lib/core.sh`'s `db_lookup_exact`, tension 25), emitting `SCA-NPM-VULNERABLE_DEP-01` and the
+`SCA-COV-UNKNOWN_VERSION-01` roll-up.
+A follow-on ticket ("SCA: parse Python lockfiles and match against data/advisories.db") added the
+module's Python slice on top of the same `run.sh`/`engine.sh` split, exactly as `run.sh`'s own header
+comment anticipated for a sibling ecosystem: `requirements.txt`, `poetry.lock`, and `Pipfile.lock`
+parsing, PEP 503 name normalisation (`sca_pypi_normalize_name`), and `SCA-PY-VULNERABLE_DEP-01`
+findings under ecosystem `pypi`, plus its own `SCA-COV-UNKNOWN_VERSION-01` roll-up (a separate finding
+from npm's own when both ecosystems have unknown-version cases in the same run - a stated scope limit,
+not a true cross-ecosystem merge; see `sca_scan_python_tree`'s own header comment in
+`modules/sca/engine.sh`).
+`a2d37aa` ("SCA: parse Ruby Gemfile.lock and match against data/advisories.db (§13 step 4)") then added
+Ruby/RubyGems, in the same `modules/sca/engine.sh` file rather than a forked one: `sca_parse_gemfile_lock`
+(Gemfile.lock's `GEM`/`GIT`/`PATH` `specs:` blocks, already flat - no recursion needed, unlike npm v1),
+`sca_ruby_normalize_name` (lowercase, tension 25's RubyGems rule), and direct-vs-transitive from the
+lockfile's own `DEPENDENCIES` stanza versus a specs-only entry, minting `SCA-RUBY-VULNERABLE_DEP-01`.
+UNLIKE Python, Ruby joined npm's own `sca_scan_tree` call rather than getting a sibling function:
+`sca_scan_tree` walks BOTH npm's and RubyGems' lockfiles in ONE call, sharing one `unknown_count` table,
+rather than one call per ecosystem, because `SCA-COV-UNKNOWN_VERSION-01`'s fingerprint carries no
+ecosystem/package/advisory_id component - two separate calls would emit two findings colliding on one
+fingerprint, and `findings_merge`'s dedup would silently drop whichever ecosystem lost the sort instead
+of merging their counts - proved concretely in `tests/suites/sca.sh` via a `mixed-ecosystems` fixture
+(one npm lockfile, one Gemfile.lock, one root) asserting exactly one roll-up finding naming both
+ecosystems.
+`sca_scan_python_tree` (the Python slice, above) still runs as its own separate call for the reason it
+always did - to avoid touching `sca_scan_tree`'s already-tested npm code path - so a run with
+unknown-version cases in both an npm/Ruby lockfile AND a Python one still emits two separate roll-up
+findings; a stated, filed gap, not a defect either the Python or Ruby ticket needed to fix.
+`tests/suites/sca.sh` tests all three slices, including the real `scan.sh sca` end-to-end path.
+
+**Java, PHP/Composer, and Go then completed step 4's SCA half.**
+`a1b3c43` added Maven coordinates (`pom.xml`, `build.gradle`) as `sca_scan_java_tree` in
+`modules/sca/engine.sh`, under `SCA-JAVA-VULNERABLE_DEP-01`.
+`7e7b186` added Composer (`composer.lock`, cross-referenced against `composer.json` for
+direct-vs-transitive) under `SCA-PHP-VULNERABLE_DEP-01`; it is the first ecosystem whose parser lives
+outside `engine.sh`, in `modules/sca/php_engine.sh`, though it is still driven from inside
+`sca_scan_tree` and so joins npm/Ruby's shared roll-up.
+The Go ticket landed last and went one step further: `modules/sca/go_engine.sh` is a fully standalone
+engine with its own entry point, `sca_go_scan_tree`, called from its own `_sca_go_run` in
+`modules/sca/run.sh` - exactly the shape that file's own header invited for a further ecosystem ("do not
+fork this file per ecosystem").
+`go.mod`'s `require` block (single-line and block form) is the authoritative direct/transitive source: a
+trailing `// indirect` comment marks a require line transitive, its absence marks it direct.
+`go.sum` alone (no `go.mod` beside it) is parsed too, but every entry is honestly reported `unknown`
+rather than guessed; `go.mod` wins when both are present in one directory.
+Normalisation follows tension 25's frozen Go row exactly - the full module path with a `/vN`
+major-version suffix RETAINED, and a trailing `+incompatible` version suffix STRIPPED before lookup -
+each direction pinned by its own test against the naive misreading, and the raw pinned version is kept
+visible in the finding's evidence rather than silently rewritten.
+`replace`/`exclude` directives are NOT resolved: a stated limitation, surfaced at runtime as a
+`reason=go_replace_exclude_directives_not_resolved` coverage_reduction rather than hidden.
+It mints `SCA-GO-VULNERABLE_DEP-01` and, like Python and Java, its own `SCA-COV-UNKNOWN_VERSION-01`
+roll-up rather than joining npm/Ruby/PHP's shared one - the same stated cross-ecosystem-merge gap
+recorded above, not a new one.
+Unlike `sca_scan_python_tree` and `sca_scan_java_tree`, `sca_go_scan_tree` performs its own
+`data/advisories.db`-readable check, so `_sca_go_run` carries no "must run after `_sca_npm_run`"
+ordering requirement; it is still called last in `_sca_run_module` for a stable emission order.
+Whether every ecosystem `docs/DESIGN.md` §6.5 names now has a parser - and so whether the step-5 DAST
+gate is still blocked on this half - is in the generated block below, counted from the tree.
+
+**Step 5 (DAST) has a written, dependency-ordered sub-ticket plan (`docs/STEP5-DAST-PLAN.md`), but no
+implementation ticket has started.**
+The plan breaks the ~30-script step-5 scope into tickets DAST-01 through DAST-30, ordered per this
+section's own build-order sequence (`lib/http.sh -> auth.sh -> crawl.sh -> passive -> safe-active ->
+injection, one file at a time -> §7.4 auth/API/authz`), confirms `lib/http.sh`'s scope-gate chokepoint
+(tension 19) already shipped and removes it from the "still to plan" list rather than re-listing it as
+pending, and states the client-rendered-app (SPA) limitation as a `coverage_gap` the crawler ticket
+(DAST-04) must surface in the report, not a gap this plan (or any step-5 ticket) closes with a headless
+browser.
+**No DAST-0x ticket is picked up until step 3's outstanding rule packs and step 4's SCA half are both
+complete on `dev`** - the generated block below is what says whether they are - per the plan's own
+"Status: blocked" section and this ticket's description.
+
+**Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01
+has not.**
+`docs/STEP8-PARANOID-PLAN.md` split `docs/DESIGN.md` §13 step 8 per tension 20's RESOLUTION into
+**PARANOID-01** (the `--paranoid` connection-observer and abort-on-out-of-scope enforcement) and
+**NETNS-01** (`tools/run-in-netns.sh`, the network-namespace runner - optional and root-requiring,
+stated directly in that ticket's own filed description). Both were filed to the backlog as real tickets
+(Crewban-57 and Crewban-58).
+**NETNS-01 (Crewban-58, ticket b20cee9c) has now landed.**
+`tools/run-in-netns.sh` is a Linux-only, root/CAP_NET_ADMIN+CAP_SYS_ADMIN-requiring wrapper: it builds a
+network namespace whose route table admits only two IPv4 address sets - tension 19's pinned resolution
+cache (read via `lib/http.sh`'s own `http_scope_load`/`http_resolve_host`, never re-implemented) for
+scoursh's in-scope targets, and the nameservers parsed from `/etc/resolv.conf` (this tension's own "set
+3") - installs no default route inside the namespace, and execs the wrapped command inside it via
+`ip netns exec`, so a connection attempt to anything outside those two sets has no route and fails at
+the kernel level before a packet is sent, rather than being sampled or logged after the fact the way
+`--paranoid` (PARANOID-01, still unbuilt) would. Namespace/veth/NAT/`ip_forward` teardown runs from the
+tool's own EXIT trap on every exit path, success or failure, and every failure path (bad usage, wrong
+host, missing privilege, a plumbing step itself failing) goes through `lib/core.sh`'s `die`, staying
+inside the 0-5 exit contract; the one exit path deliberately NOT forced through `die` is the wrapped
+command's own exit status, which is forwarded transparently rather than laundered. It is never invoked
+by `scan.sh` and carries no dependency on PARANOID-01 - confirming this RESOLUTION's own "guarantee vs
+detector" distinction holds in the shipped code, not just in this register's prose. IPv6 routing is
+out of scope for this tool per its own ticket; an in-scope host that only resolves to IPv6 is logged
+and skipped, never routed - a follow-up ticket for dual-stack support was filed separately rather than
+absorbed into NETNS-01.
+`tests/suites/netns.sh` tests it, and states plainly what it can and cannot prove on a given host:
+argument parsing, the CapEff bitmask arithmetic, the collectors, and the build/teardown command
+sequence are unit-tested against stubbed `ip`/`iptables`/`sysctl` on any host; the fail-closed
+non-Linux and no-privilege paths run as real subprocess invocations (whichever applies on the host the
+suite runs on); and the one claim that genuinely needs a privileged Linux kernel - an out-of-scope
+connection attempt actually failing - is a real end-to-end case gated behind a genuine capability probe,
+recorded as SKIPPED rather than a silent pass when that probe fails.
+**PARANOID-01 remains unimplemented** and is unaffected by NETNS-01 landing; the two were never
+interdependent, so PARANOID-01 may still be picked up on its own. This planning ticket's own acceptance
+criteria named `lib/http.sh` (tension 19) as step 8's blocker, and confirmed it present on `dev` before
+either sub-ticket started - it shipped early, out of its normal step-5 sequence, exactly as noted
+below - and tension 20's RESOLUTION already states that `lib/http.sh`'s pinned resolution cache was
+step 8's only real dependency ("so the ordering already works"), which NETNS-01 landing now confirms in
+practice as well as in plan. Steps 6, 7, 9, and 10 remain un-landed and are not touched by this.
+
+**Step 6 (Cloud/AWS) also now has a written, dependency-ordered sub-ticket plan
+(`docs/STEP6-CLOUD-PLAN.md`), but no implementation ticket has started.**
+The plan breaks §13 step 6's scope (`regions.sh` iteration -> the §8.1 live read-only catalog -> the
+read-only-verb CI lint -> `posture/` checks) into tickets CLOUD-01 through CLOUD-34 plus POSTURE-01
+through POSTURE-04, confirms `tests/lint-aws-readonly.sh` (tension 23's read-only lint) already shipped
+at step 1 as a no-op stub over an empty set and removes its matching logic from the "still to write"
+list - only `lib/awscli.sh` itself, the exception-file seeding, and a negative-fixture test remain
+(CLOUD-03) - and states that the one landed IaC ticket (`modules/iac/`, on `origin/dev`) is §8.2/step 4
+work, out of this plan's scope. **No CLOUD-0x or POSTURE-0x ticket is picked up until step 3's
+outstanding rule packs, step 4 (SCA + IaC), and step 5 (DAST) are all complete on `dev`** - step 6 is
+gated on the whole sequential chain ahead of it, not step 4 alone, per the plan's own "Status: blocked"
+section and this ticket's description.
+
+**PARANOID-01 has landed: `lib/paranoid.sh` now implements `--paranoid` for real.**
+Full detail lives in tension 20's own "Implementation" paragraph above, since that is where this
+register already keeps the mechanism's contract; this entry exists only so this section does not go
+stale the way the process note below warns against.
+In short: the four-set allowlist, the `ss`/`strace` backend probe, the exit-3 abort and exit-4
+missing-backend paths, and the deterministic `tests/suites/paranoid.sh` fixture all now exist on
+`dev`.
+`tools/run-in-netns.sh` (NETNS-01) remains unimplemented, as scoped.
+
+**Step 9 (optional engine adapters) now has a real scaffold - `docs/ADAPTERS.md` and
+`tools/vendor-engines.sh` both exist - landed out of sequence, ahead of step 3's remaining `nosql`/`ldap`
+packs and steps 5/6, because it cost nothing those blocked steps and ships no per-engine logic.**
+Tension 27's own "Implementation" paragraph carries the full detail, since that is where this register
+keeps the mechanism's contract, the same pattern PARANOID-01's entry above uses; in short,
+`docs/ADAPTERS.md` freezes the `modules/<module>/adapters/<engine>/adapter.sh` directory convention and
+three-function contract, and `tools/vendor-engines.sh` is now a real script - the sole network-permitted
+one - with a genuinely empty engine registry, exercised end-to-end by `tests/suites/vendor-engines.sh`
+with `curl`/`wget` stripped from `PATH`. `lib/engines.sh`, `has_engine()`, and `--use-engines` remain
+unbuilt on purpose (the first concrete adapter ticket builds them together with its own adapter); zero
+adapter directories exist anywhere in the tree, and the full suite passes with none present.
+
+**This ticket, the first concrete adapter ticket, has now landed and closes every one of those
+deliberate gaps.**
+`lib/engines.sh` is real: `has_engine MODULE ENGINE`, memoised per pair, answers a pure filesystem
+question only - whether `modules/<module>/adapters/<engine>/adapter.sh` exists and its own
+`<engine>_detect` returns 0 - and deliberately never reads `--use-engines` itself, per docs/ADAPTERS.md
+§5's own "two independent conditions" pseudocode.  `--use-engines` is wired through `scan.sh` (global
+flag, usage text, one `run_record use_engines <bool>` per run); `lib/checks.sh` gained no new filtering
+logic, only a header paragraph stating why an adapter check id is invisible to its filter chain (it is
+minted at runtime, never declared in a `*.rules` file).  `modules/sast/adapters/semgrep/adapter.sh`
+implements the three-function contract against semgrep's own JSON output via a purpose-built,
+depth/string-aware `awk` splitter plus bash-native field extractors (never a general JSON parser, the
+same pragmatic choice `modules/sca/engine.sh`'s `_sca_json_walk` already made), re-derives match text
+from the real file at the reported line when it still resolves, and rejects any reported path that does
+not resolve inside the scan root as its own `coverage_reduction`, never trusting it as a finding
+location.  `modules/sast/adapters/semgrep/vendor.sh` is the only other file permitted to touch the
+network, and even it only calls `veng_fetch` (new, in `tools/vendor-engines.sh`), which verifies a
+caller-supplied sha256 and refuses - never hardcodes or guesses one.  `VENG_REGISTRY` now carries one
+entry, `[semgrep]=veng_vendor_semgrep`.  Absent or un-vendored is a clean `coverage_reduction
+reason=engine_not_vendored engine=semgrep`; without `--use-engines` at all, behaviour is unchanged from
+before this ticket.  `tests/suites/engines.sh`, `tests/suites/sast-semgrep.sh`, and an expanded
+`tests/suites/vendor-engines.sh` (a stubbed-`curl` fetch/verify section) all exist and pass; zero real
+engines are vendored anywhere in this repository, per `docs/ADAPTERS.md` §1 - the round-trip and
+graceful-degradation suites exercise a FAKE stand-in binary, never a real semgrep.
+
+**A second concrete adapter ticket has now landed, `modules/iac/adapters/trivy/` - the first for a
+module other than sast, proving `docs/ADAPTERS.md` §4's directory-convention generalization for real.**
+`lib/engines.sh`/`has_engine`/`--use-engines` needed no change at all: `has_engine iac trivy` and the
+`modules/iac/run.sh` call site (`if [[ ${SCAN_FLAGS[use-engines]:-} == true ]] && has_engine iac trivy`)
+are the exact same shape `modules/sast/run.sh` already established, which is the point of building that
+plumbing module-agnostic the first time.  Picking `trivy config` over `docs/DESIGN.md` §6.6's other two
+named candidates (`checkov`, `tfsec`) was this ticket's own reasoned call, not the operator's: only
+`trivy config` natively scans every IaC shape the ticket's scope named (Terraform, CloudFormation,
+Kubernetes, Helm, docker-compose) in one binary, where `tfsec` is Terraform-only and `checkov` is a
+Python application rather than a single vendorable static binary.  `trivy_detect` needs only an
+executable `bin/trivy` - no `rules/` - because trivy's misconfiguration checks are compiled into the
+binary itself, `docs/ADAPTERS.md` §4's "self-contained binary" case; `trivy_run` passes
+`--offline-scan --skip-check-update --skip-db-update --scanners misconfig`.  `trivy_normalize` walks a
+JSON shape nested TWO levels deep (`Results[].Misconfigurations[]`, one array per scanned target file)
+rather than semgrep's single flat array, via a generalized version of the same depth/string-aware `awk`
+splitting technique (`_trivy_split_objects_from_marker`, parameterised by which marker/level it is
+walking) rather than two independent copies.  Severity mapping deliberately widens onto scoursh's full
+`critical` severity - unlike `_semgrep_severity_map`, which caps at `high` - because native
+`modules/iac/*.rules` packs already author `severity: critical` directly (e.g.
+`IAC-TF-PUBLIC_ACL-01`/`IAC-K8S-*`), so capping this adapter alone would be an invented inconsistency,
+not a rule this codebase actually follows.  `VENG_REGISTRY` gained a second entry,
+`[trivy]=veng_vendor_trivy`, needing three operator-supplied `SCOURSH_TRIVY_*` values (version, URL,
+sha256 - one artifact, since there is no separate ruleset) rather than semgrep's five; its `vendor.sh`
+states explicitly why it never extracts trivy's real `.tar.gz` release archive itself (the operator
+supplies a URL to the already-extracted binary).  Merge/dedup against native findings (this ticket's own
+scope item 3) needed no new code - the frozen pipeline's existing fingerprint-based merge/dedup (tension
+11 stage 3, above) already covers it, since a `trivy:<AVD-ID>` check id never collides with a native
+`IAC-TF-*`/`IAC-K8S-*`/... id - `tests/suites/iac-trivy.sh` proves this concretely with a fixture where a
+native `IAC-TF-OPEN_CIDR-01` finding and a `trivy:AVD-AWS-0107` finding share the exact same file, line,
+and re-derived match text, and still both appear as two distinct findings.  `tests/suites/iac-trivy.sh`
+and an extended `tests/suites/vendor-engines.sh` (a `trivy_vendor` fetch/verify section) both exist and
+pass; as with semgrep, zero real engines are vendored anywhere in this repository, and the round-trip and
+graceful-degradation proofs run against a FAKE stand-in `trivy` binary.
+
+**A third concrete adapter ticket has now landed on top of that plumbing: `modules/sast/adapters/gitleaks/`.**
+It reuses `lib/engines.sh`'s `has_engine` and `--use-engines` unchanged - this ticket adds no new
+plumbing of its own - and ships `gitleaks_detect`/`gitleaks_run`/`gitleaks_normalize`
+(`modules/sast/adapters/gitleaks/adapter.sh`) plus `modules/sast/adapters/gitleaks/vendor.sh`, gated
+INDEPENDENTLY of semgrep in `modules/sast/run.sh`'s own `--use-engines` block so neither adapter's
+presence, absence, or failure affects the other's own `coverage_reduction` line.  `gitleaks_run` invokes
+`detect --no-banner --no-git --exit-code 0 ...` (`docs/DESIGN.md` §6.4's own "gitleaks --no-banner",
+`--no-git` because history scanning is `history.sh`'s own already-shipped job, `--exit-code 0` because
+gitleaks' normal "leaks found" exit status is 1, not a crash); `gitleaks_normalize` parses gitleaks' own
+BARE top-level JSON array (unlike semgrep's `{"results":[...]}` envelope) with the same
+depth/string-aware `awk` splitter shape, started at the first `[` directly.  `tools/vendor-engines.sh`'s
+`VENG_REGISTRY` now carries three entries (`semgrep`, `trivy`, `gitleaks`), and `docs/ADAPTERS.md` §9's
+roster gains its third row.
+This ticket's own additional scope item - deduplicating a gitleaks finding against a
+`modules/sast/rules/secrets.rules` native finding at the same file and matched bytes, which the ordinary
+per-run fingerprint dedup cannot do because `check_id` is itself hashed into the fingerprint - is
+`_gitleaks_dup_of_native_secret`, which reads this run's own not-yet-merged shard via
+`lib/findings.sh`'s public `finding_decode` (native pattern scan, then history, then engine adapters run
+strictly in that order, single-worker, so the native secrets findings are already on disk by the time
+this runs) and compares `(loc_path, loc_match_digest)`.  Getting that comparison to actually FIRE
+required matching how `modules/sast/engine.sh` computes its own digest - from the exact regex-match
+SUBSTRING (`scan_match_offsets`' own `text` field), never a whole re-read line - which is why
+`_gitleaks_match_text` prefers gitleaks' own reported `Secret` field (then `Match`, then a re-derived
+line, then `Description`) rather than copying the semgrep adapter's own whole-line-read preference:
+semgrep has no distinct matched-substring field to prefer, so its adapter reads the line as its best
+available surrogate, but gitleaks already reports the exact matched bytes directly, and preferring those
+is what makes this adapter's digest land on the same value a native finding's own digest does at the
+identical file+line.  A first draft that copied semgrep's whole-line-read pattern silently defeated the
+dedup end to end; `tests/suites/sast-gitleaks.sh` section D (a real `scan.sh sast --use-engines`
+subprocess against a FAKE vendored gitleaks reporting one true duplicate and one non-overlapping finding)
+is the fixture that caught it and now pins the fix, alongside sections A-C mirroring
+`tests/suites/sast-semgrep.sh`'s own three-function/graceful-degradation/round-trip shape, and an
+expanded `tests/suites/vendor-engines.sh` (three sorted registry entries, `gitleaks_vendor`'s own
+fetch/verify path).
 
 What §13 step 1 deliberately did **not** build, so the boundary is not rediscovered: `scan.sh`, anything
-under `modules/`, `lib/http.sh`, `lib/engines.sh`, SARIF, the compliance report, any shipped rule pack,
-and `state/`.  `lib/awscli.sh` was in this list too, until the credential-less pass above built it ahead
-of schedule; `modules/cloud/aws/live/*.sh` and everything else §13 step 6 names are still unbuilt.  Diff
-classification (tension 12) and baseline suppression (tension 11 steps 5 and 6) are step 7's; step 1
-delivers the primitives they call - the merge, the fingerprint, the `findings_mark_suppressed`
-annotation, and `classify_derived`, which is pure and is already tested against tension 6's full case
-table.
+under `modules/`, `lib/http.sh`, `lib/engines.sh`, `lib/awscli.sh`, SARIF, the compliance report, any
+shipped rule pack, and `state/`.  Diff classification (tension 12) and baseline suppression (tension 11
+steps 5 and 6) are step 7's; step 1 delivers the primitives they call - the merge, the fingerprint, the
+`findings_mark_suppressed` annotation, and `classify_derived`, which is pure and is already tested
+against tension 6's full case table.
+That sentence describes step 1's own historical boundary and is unaffected by later steps: `scan.sh`
+was step 1's placeholder and is now built by step 2 (above); `modules/sast/`, `modules/iac/` and
+`modules/sca/` are now built by steps 3 and 4, the latter landed out of sequence (above), and the
+generated block below is what says which of their packs and ecosystems are in; `lib/http.sh` landed
+early, out of its normal step-5 sequence (tension 19), and step 5 as a whole now has a written
+sub-ticket plan (`docs/STEP5-DAST-PLAN.md`, above) though none of it has started; `lib/engines.sh` also
+landed early, out of its normal step-9 sequence, as part of this ticket (immediately above);
+`lib/awscli.sh` landed early too, out of its normal step-6 sequence, as part of a credential-less pass
+that advanced only what needed no AWS account (see "AWS module: what exists ahead of step 6" in
+`AGENTS.md`), so the read-only chokepoint exists while `modules/cloud/aws/live/*.sh` and the rest of
+step 6 do not; and SARIF, the compliance report, and `state/` remain unbuilt.
+
+<!-- BEGIN GENERATED STATUS -->
+<!--
+  GENERATED by tools/gen-status.sh.  Everything between these two markers is
+  machine-written from the repository tree and docs/DESIGN.md's own catalog.
+
+  Do not hand-edit inside the markers: run `tools/gen-status.sh --write`.
+  `tests/lint-status.sh` (run by `tests/run-tests.sh`) fails when a committed
+  block differs from a fresh generation, so an edit here is a broken build.
+
+  A MERGE CONFLICT INSIDE THIS BLOCK IS NEVER RESOLVED BY HAND.  Take either
+  side of the conflict, then re-run `tools/gen-status.sh --write`.
+-->
+
+### Module status inventory (generated)
+
+What is PLANNED is parsed from `docs/DESIGN.md`'s own catalog (§6.3 SAST, §6.5
+SCA, §6.6 and §8.2 IaC).  What has LANDED is read off the repository tree.  What
+REMAINS is the difference, computed rather than typed - which is why no sentence
+in here has to be rewritten when a module lands, and why two branches landing
+different modules cannot conflict over it.
+
+**Landed** means both halves hold, and both are checked on every run:
+
+1. the artifact exists at its path under `modules/`, and
+2. the test tree exercises it - for a rule pack, at least one check id the pack
+   itself declares appears in a `tests/**/*.sh` suite; for a script, its
+   basename does; for an SCA ecosystem, every manifest `docs/DESIGN.md` §6.5
+   names for it is parsed under `modules/sca/` and at least one has a real
+   fixture file under `tests/fixtures/`.
+
+A file that is present but that no suite names is **present, untested** - its own
+state, never rounded up to landed.  Artifacts are identified by PATH and never by
+a commit sha: a ticket cannot know its own landing sha, and invented ones have
+shipped here before.
+
+#### SAST - `docs/DESIGN.md` §6.3 catalog -> `modules/sast/`
+
+| Artifact | Status | Checks | Exercised by |
+| --- | --- | --- | --- |
+| `modules/sast/rules/crypto.rules` | landed | 5 | `tests/suites/sast.sh` |
+| `modules/sast/rules/go.rules` | landed | 5 | `tests/suites/sast.sh` |
+| `modules/sast/rules/injection.rules` | landed | 8 | `tests/suites/sast.sh` |
+| `modules/sast/rules/java.rules` | landed | 7 | `tests/suites/sast.sh` |
+| `modules/sast/rules/javascript.rules` | landed | 7 | `tests/suites/sast.sh` |
+| `modules/sast/rules/ldap.rules` | not landed | - | - |
+| `modules/sast/rules/nosql.rules` | not landed | - | - |
+| `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/sast.sh` |
+| `modules/sast/rules/secrets.rules` | landed | 5 | `tests/suites/records.sh` |
+| `modules/sast/history.sh` | landed | - | `tests/suites/sast-history.sh` |
+
+Landed 8 of 10.  Outstanding: `ldap.rules`, `nosql.rules`.
+
+#### SCA ecosystems - `docs/DESIGN.md` §6.5 catalog -> `modules/sca/`
+
+| Manifests | Status | Parsers | Exercised by |
+| --- | --- | --- | --- |
+| `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` | landed | 3 of 3 parsed | `tests/fixtures/sca/mixed-ecosystems-php/package-lock.json` |
+| `requirements.txt`, `poetry.lock`, `Pipfile.lock` | landed | 3 of 3 parsed | `tests/fixtures/sca/python-requirements/requirements.txt` |
+| `go.mod`, `go.sum` | landed | 2 of 2 parsed | `tests/fixtures/sca/go-mod/go.mod` |
+| `pom.xml`, `build.gradle` | landed | 2 of 2 parsed | `tests/fixtures/sca/maven/pom.xml` |
+| `Gemfile.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca/mixed-ecosystems/Gemfile.lock` |
+| `composer.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca/composer-no-manifest/composer.lock` |
+
+Landed 6 of 6.  Outstanding: none.
+
+#### IaC rule packs - `docs/DESIGN.md` §6.6 and §8.2 -> `modules/iac/`
+
+| Artifact | Status | Checks | Exercised by |
+| --- | --- | --- | --- |
+| `modules/iac/cloudformation.rules` | landed | 8 | `tests/suites/iac.sh` |
+| `modules/iac/docker-compose.rules` | landed | 4 | `tests/suites/iac.sh` |
+| `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/iac.sh` |
+| `modules/iac/helm.rules` | landed | 3 | `tests/suites/iac.sh` |
+| `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/iac.sh` |
+| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac-trivy.sh` |
+
+Landed 6 of 6.  Outstanding: none.
+
+#### Totals
+
+- Pattern packs on disk: **13** (`modules/sast/rules/` 7, `modules/iac/` 6).
+- Module directories present: `modules/iac/`, `modules/sast/`, `modules/sca/`.
+
+<!-- END GENERATED STATUS -->
+
+**Process note: this section must be updated in the same change that lands a §13 step, not in a later
+cleanup ticket.**
+Step 3e shipped without this section (or `AGENTS.md`'s mirror) being updated, so a later agent working
+an unrelated doc-staleness ticket had to rediscover that `history.sh` existed by reading the branch
+rather than the docs - precisely the failure this section exists to prevent. `AGENTS.md`'s "Build order
+and where we are" carries the same rule; keep the two in sync.
+The Terraform IaC ticket repeated the same lapse (see "Step 4's IaC half" above): it shipped
+`modules/iac/run.sh`/`parse.sh`/`terraform.rules` without touching this section or its mirror, and a
+later IaC landing closed the gap.
+The npm SCA ticket (`ed8c283`) repeated the exact same failure - this section and `AGENTS.md`'s mirror
+both still said "SCA half has not landed"/"`modules/sca/`... remain unbuilt" straight through its own
+landing - and it went uncaught until the Ruby SCA ticket (`a2d37aa`) corrected both in this same change.
+The Java (`a1b3c43`) and PHP/Composer (`7e7b186`) SCA tickets then did it a fourth and fifth time: both
+landed - `modules/sca/php_engine.sh` and `SCA-PHP-VULNERABLE_DEP-01` among them - without touching
+either doc's build-status section, so both documents went on calling Java and PHP "still open" until
+`ab23b79` and this ticket went back and corrected them. Two separate tickets spent cleaning up after
+one landing's missing paragraph is exactly the cost this note exists to avoid.
+Five independent instances of one failure mode is a pattern, not a coincidence, and the separate
+correction tickets that cleaned up after them are a sixth cost: the inventory half of this section is
+therefore GENERATED.
+`tools/gen-status.sh --write` rewrites the block above - and its byte-identical copies in `AGENTS.md`
+and `README.md` - from the repository tree, and `tests/lint-status.sh` fails the suite when a committed
+block differs from a fresh generation. So "does the build-order doc already say this landed?" is now
+answered by running the generator rather than by reviewer memory, and a landing ticket can no longer
+leave this section stale by forgetting.
+What is left for a landing ticket to write by hand is the reasoning - scoping decisions, exclusions,
+why a file sits where it does - which no generator can derive, and it is still part of that ticket's
+own deliverable.
+A merge conflict inside the generated block is never resolved by hand: take either side and re-run the
+generator.
+Filing a follow-up documentation ticket to fix this section later is not an acceptable substitute for
+updating it in the step ticket itself - that pattern is what produced the java.rules staleness this
+section itself once had (a doc-refresh ticket landed a commit after java.rules shipped and still
+described it as not landed), and then produced the SCA-ecosystem staleness the paragraphs above are
+corrected for. A step ticket is not done while this section describes that step as unbuilt.

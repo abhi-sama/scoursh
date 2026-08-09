@@ -14,8 +14,8 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$ROOT"
 
-SUITES=(records core findings report e2e awscli aws-lint aws-fixtures)
-LINTERS=(lint-rules lint-shell lint-aws-readonly)
+SUITES=(records core config checks findings report http e2e scan sast sast-history sca iac exit-code-matrix gate-mutation-proof ci-smoke netns paranoid vendor-engines vendor-engines-advisories engines sast-semgrep iac-trivy sast-gitleaks awscli aws-lint aws-fixtures)
+LINTERS=(lint-rules lint-shell lint-aws-readonly lint-status)
 
 if [[ ${1:-} == --list ]]; then
   printf 'suites:  %s\n' "${SUITES[*]}"
@@ -59,6 +59,7 @@ else
     printf '\n=== linter: shellcheck ===\n'
     sc_dirs=()
     for d in lib tests tools modules aws; do [[ -d $d ]] && sc_dirs+=("$d"); done
+    [[ -f scan.sh ]] && sc_dirs+=(scan.sh)
     if find "${sc_dirs[@]+"${sc_dirs[@]}"}" -name '*.sh' -type f \
       | LC_ALL=C sort \
       | xargs shellcheck -x -s bash; then

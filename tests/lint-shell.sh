@@ -33,19 +33,42 @@ report() {
   printf '%s\n' "$@" >&2
 }
 
-# Files the engine rules apply to.
+# Files the engine rules apply to.  scan.sh is the entry point, not a
+# module, but it is the same class of code (it dispatches to the engine and
+# owns the exit-code/scratch-dir contract every engine file relies on), so it
+# is held to the same discipline rather than living in an unlint-ed root.
 engine_files() {
   local dirs=() d
   for d in lib modules tools aws; do [[ -d $d ]] && dirs+=("$d"); done
   (( ${#dirs[@]} > 0 )) || return 0
-  find "${dirs[@]}" -type f -name '*.sh' | LC_ALL=C sort
+  { find "${dirs[@]}" -type f -name '*.sh'
+    [[ -f scan.sh ]] && printf '%s\n' scan.sh
+  } | LC_ALL=C sort
 }
 
 all_files() {
   local dirs=() d
   for d in lib modules tools aws tests; do [[ -d $d ]] && dirs+=("$d"); done
   (( ${#dirs[@]} > 0 )) || return 0
-  find "${dirs[@]}" -type f -name '*.sh' | LC_ALL=C sort
+  { find "${dirs[@]}" -type f -name '*.sh'
+    [[ -f scan.sh ]] && printf '%s\n' scan.sh
+  } | LC_ALL=C sort
+}
+
+# scan.sh's actual DISPATCH PATH - deliberately narrower than engine_files:
+# no tools/, no aws/.  This is tension 27's (docs/FOUNDATION.md) "no wiring"
+# check's file set: tools/vendor-engines.sh is itself under tools/, and
+# tools/run-in-netns.sh legitimately mentions scan.sh in its own usage text,
+# so scoping to lib/, modules/, and scan.sh alone is what lets that check
+# assert "nothing scan.sh can reach references tools/vendor-engines.sh"
+# without also having to reason about tools/ referencing itself.
+dispatch_path_files() {
+  local dirs=() d
+  for d in lib modules; do [[ -d $d ]] && dirs+=("$d"); done
+  (( ${#dirs[@]} > 0 )) || return 0
+  { find "${dirs[@]}" -type f -name '*.sh'
+    [[ -f scan.sh ]] && printf '%s\n' scan.sh
+  } | LC_ALL=C sort
 }
 
 # `check NAME PATTERN FILE-LIST-FN [EXEMPT...]` - fails when PATTERN matches.
@@ -146,6 +169,54 @@ check 'sha256_of takes no argument' \
 check 'no direct assignment to a redacted field' \
   '_F\[(evidence|title|remediation|url|logical_fqn|loc_path_template|loc_param_name)\]=' \
   engine_files lib/findings.sh
+
+printf '\n== tension 19: no bypass - a single chokepoint for the network ==\n'
+# docs/FOUNDATION.md tension 19 "No bypass": every request in every module
+# goes through lib/http.sh's http_request. A bare curl/wget/nc/openssl
+# s_client anywhere else is a second, ungated path to the network - exactly
+# the bypass the scope gate exists to make impossible. lib/http.sh is where
+# the wrapper itself lives (it is expected to invoke curl); the documented
+# `modules/dast/passive/tls.sh` exception (docs/FOUNDATION.md tension 19)
+# does not exist yet, so it is not exempted here - add it the day it lands,
+# with the same comment tension 19 requires of it (host taken from the
+# already-resolved, gated tuple set).
+#
+# tools/vendor-engines.sh (docs/FOUNDATION.md tension 27) is the SECOND and
+# LAST documented exception, added by that ticket: it is the one script
+# docs/DESIGN.md §9/§13 step 9 names as permitted to touch the network at
+# all, and it necessarily calls curl/wget directly to do it - it is never
+# called during a scan and is not gated by lib/http.sh's scope allowlist on
+# purpose (config/scope.conf authorizes scan TARGETS; a vendored engine's
+# own upstream release URL is not one). The check immediately below is what
+# keeps this exemption from becoming a real bypass: it fails the build if
+# anything under scan.sh's own dispatch path ever wires this script in.
+check 'no bypass: no curl/wget/nc/openssl s_client outside lib/http.sh' \
+  '(^|[;&|(])[[:space:]]*(curl|wget|nc|ncat|netcat|openssl[[:space:]]+s_client)([[:space:]]|\$)' \
+  engine_files lib/http.sh tools/vendor-engines.sh
+
+printf '\n== tension 27: tools/vendor-engines.sh is never wired into a scan ==\n'
+# docs/FOUNDATION.md tension 27 / docs/ADAPTERS.md §2: tools/vendor-engines.sh
+# is the only script permitted to reach the network, and that guarantee is
+# only real if nothing scan.sh can reach ever sources, execs, or otherwise
+# runs it - a `source tools/vendor-engines.sh` (or `bash`/`sh`/`eval`)
+# anywhere under lib/, modules/, or scan.sh would open exactly the second,
+# ungated network path the whole quarantine exists to prevent, even though
+# the curl/wget calls themselves would still live inside the one exempted
+# file.
+#
+# Matched at COMMAND position with an explicit invocation verb required
+# (source/./eval/bash/sh), same discipline as the curl/wget and
+# source-a-record-file checks above, and deliberately NOT a bare substring
+# match: modules/sca/engine.sh and modules/sca/go_engine.sh already mention
+# "tools/vendor-engines.sh" by name in log/remediation prose (tension 25 -
+# "refresh data/advisories.db via tools/vendor-engines.sh"), including one
+# case where the mention sits right after a literal `(` inside a quoted
+# string. A bare substring check fails under its own first real run, on
+# code that is correct today; requiring an invocation verb is what tells
+# "the file is named in a message" apart from "the file is executed".
+check 'no wiring of tools/vendor-engines.sh into the scan-time dispatch path' \
+  '(^|[;&|(])[[:space:]]*(source|\.|eval|bash|sh)[[:space:]]+.*vendor-engines\.sh' \
+  dispatch_path_files
 
 printf '\n'
 if (( FAILED )); then

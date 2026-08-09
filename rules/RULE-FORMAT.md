@@ -968,6 +968,26 @@ firing.
 That monotonicity is what lets an author tune a noisy rule without re-reasoning about the whole
 predicate.
 
+**Widening a `context-deny` window is not free, and it is not the safe direction
+(`docs/FOUNDATION.md` finding F4).**
+A `context-require` window and a `context-deny` window trade off in opposite directions.
+Widening a `context-require` window only ever admits MORE candidate lines to satisfy an AND
+condition that must already hold for every entry, so the worst case is an extra false positive -
+loud, and reviewable in the report.
+Widening a `context-deny` window instead admits more lines that can SUPPRESS a match outright, so
+the worst case is a false NEGATIVE: a genuine, unrelated vulnerable call goes unreported because an
+unrelated safe-guard token happened to fall inside the window, and `docs/FOUNDATION.md` tension 12
+then classifies the suppressed finding `fixed` rather than `new` - a false negative masquerading as
+a fix, which is worse than either alone because nothing in the report says a check ever considered
+that line.
+A same-line-intent deny - a guard that must appear on the call it protects, such as
+`Loader=yaml.SafeLoader` on the same `yaml.load(` call, or `verify=False` on the same request call -
+MUST carry `context-window: 0`.
+§12.1's `SAST-SEC-AWS_AKID-01` already follows this discipline; §12.2 below now does too.
+Reaching for a wider deny window to also catch a guard written a line or two away trades a
+detectable false positive for an undetectable false negative, which `tests/lint-rules.sh` warns
+on (`W033`) precisely because the trade is easy to make by accident and hard to notice afterward.
+
 ### 10.3 Implementation contract
 
 Non-normative, but the semantics above must be preserved exactly.
@@ -1048,8 +1068,20 @@ containing the word `example` cannot suppress a real key.
 `docs/DESIGN.md` §6.2 shows `yaml\.load\((?!.*Loader)`, a PCRE negative lookahead.
 Under §8.3 that would make the whole check silently unavailable on any host whose `rg` lacks PCRE2 and
 whose `grep` is BSD.
-The `context` directive expresses the same intent portably, and gets a two-line window for free, so it
-also catches the common shape where the loader is passed on the next line.
+The `context` directive expresses the same intent portably.
+
+> **Corrected by `docs/FOUNDATION.md` finding F4.**
+> An earlier revision of this example used `context-window: 2` here, reasoned as "catches the common
+> shape where the loader is passed on the next line".
+> That reasoning is the false-negative hazard §10.2 now documents: a `SafeLoader`/`yaml.safe_load`
+> token belonging to a DIFFERENT, unrelated call within two lines of a genuinely vulnerable
+> `yaml.load(` silently suppressed the real finding, and `docs/FOUNDATION.md` tension 12 then
+> reported the suppressed finding `fixed` rather than `new`.
+> This is a same-line-intent guard - the loader argument belongs on the call it protects - so per
+> §10.2 it MUST carry `context-window: 0`, exactly like §12.1's `SAST-SEC-AWS_AKID-01`.
+> The cost is accepted deliberately: a loader argument written on the line *after* `yaml.load(` no
+> longer suppresses the finding and is reported instead, which is a detectable false positive, not
+> an undetectable false negative.
 
 ```
 id: SAST-PY-YAML_LOAD-01
@@ -1063,7 +1095,7 @@ dialect: ere
 files: *.py
 files: *.pyi
 context-deny: (SafeLoader|CSafeLoader|BaseLoader|yaml\.safe_load)
-context-window: 2
+context-window: 0
 tags: static
 tags: quick
 severity-floor: medium
@@ -1309,6 +1341,7 @@ Warnings are reported and do not fail unless `--strict`.
 |---|---|---|
 | E031 | error | `context-window` present with no `context-require` and no `context-deny` |
 | E032 | error | `context-window` is not a non-negative decimal integer, or exceeds 50 |
+| W033 | warning | `context-deny` present with an effective `context-window` above 0 (§10.2, `docs/FOUNDATION.md` finding F4) - includes an ABSENT `context-window`, since it defaults to 2 |
 
 ### Derived findings (from §9.2)
 

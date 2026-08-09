@@ -1,0 +1,11 @@
+{
+    "name": "sca-fixture-composer",
+    "require": {
+        "php": ">=7.4",
+        "acme/widget": "^1.0",
+        "acme/mixedcase": "^3.0"
+    },
+    "require-dev": {
+        "acme/dev-tool": "^2.0"
+    }
+}

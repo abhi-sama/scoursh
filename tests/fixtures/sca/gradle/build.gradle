@@ -1,0 +1,31 @@
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenCentral()
+}
+
+def snakeVersion = '1.30'
+
+dependencies {
+    // shape 1: implementation "group:artifact:version"
+    implementation "com.fasterxml.jackson.core:jackson-databind:2.9.8"
+    implementation "com.fixture:no-fix-gradle-lib:3.0.0"
+    implementation "com.fixture:clean-gradle-lib:1.0.0"
+
+    // shape 2: implementation group: 'g', name: 'a', version: 'v'
+    implementation group: 'org.yaml', name: 'snakeyaml', version: '1.26'
+
+    // a version catalog reference (libs.versions.toml) - a known, documented
+    // gap: this is not a supported declaration shape, and is silently skipped
+    // rather than mis-parsed.
+    implementation(libs.someCatalogEntry)
+
+    // a computed/variable version - a known, documented gap: matches neither
+    // supported shape's literal-quoted-string requirement, so it is silently
+    // skipped rather than guessed.
+    implementation "org.yaml:another-lib:$snakeVersion"
+
+    testImplementation "junit:junit:4.12"
+}

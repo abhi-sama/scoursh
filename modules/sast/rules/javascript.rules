@@ -1,0 +1,170 @@
+# modules/sast/rules/javascript.rules - docs/DESIGN.md §6.3 "javascript/ts"
+# seed catalog: eval, child_process.exec, dangerouslySetInnerHTML,
+# document.write, template-literal SQL, require on user input, disabled TLS
+# (rejectUnauthorized:false), prototype-pollution patterns (recursive merge /
+# __proto__ assignment).
+#
+# Two catalog items are deliberately NOT re-implemented here, because the
+# §13 step 3a engine ticket already shipped them as cross-language rules that
+# match the exact JS syntax the catalog names:
+#   - "disabled TLS (rejectUnauthorized:false)" is SAST-CRY-TLS_VERIFY_DISABLED-01
+#     in modules/sast/rules/crypto.rules, whose pattern already alternates in
+#     `rejectUnauthorized[[:space:]]*:[[:space:]]*false` alongside the
+#     Python/Go spellings of the same control.
+#   - "child_process.exec" is already one of the alternatives in
+#     SAST-INJ-OS_COMMAND-01's pattern in modules/sast/rules/injection.rules
+#     (that file is explicitly "language-agnostic sinks").
+# Re-declaring either here under a new SAST-JS-* id would fire two check ids
+# on the same line for the same root cause, which is strictly worse than one
+# accurate finding: it inflates counts without adding coverage. See the
+# hand-off comment on this ticket for the same note.
+#
+# Prototype pollution is split into two ids, following injection.rules'
+# precedent of one id per distinct code shape rather than one id per catalog
+# phrase: direct assignment to `__proto__` (SAST-JS-PROTO_ASSIGN-01), and the
+# unguarded recursive-merge loop shape that is how attacker-controlled keys
+# usually reach that assignment (SAST-JS-UNSAFE_MERGE-01).  UNSAFE_MERGE-01
+# deliberately carries no `context-deny`: docs/FOUNDATION.md finding F4 says a
+# deny window wider than 0 risks a false negative, and a guard clause for a
+# recursive merge is never on the same line as the assignment it protects, so
+# a window:0 deny could never see it - the only F4-safe choice here is not to
+# attempt suppression at all, and let a genuinely different, non-matching
+# shape (Object.assign / object-spread) be the safe equivalent instead.
+
+id: SAST-JS-EVAL-01
+title: Use of eval() to execute dynamic code
+severity: critical
+confidence: high
+cwe: CWE-95
+owasp: A03:2021
+pattern: \beval\s*\(
+dialect: ere
+files: *.js
+files: *.jsx
+files: *.ts
+files: *.tsx
+files: *.mjs
+files: *.cjs
+tags: static
+tags: quick
+remediation: Do not pass request-derived or otherwise dynamic data to eval().
+  Parse literals with JSON.parse(), or dispatch through an explicit allowlist of
+  permitted operations instead of evaluating a string as code.
+references: CWE-95
+
+id: SAST-JS-DANGEROUSLY_SET_INNER_HTML-01
+title: React dangerouslySetInnerHTML used to render markup
+severity: high
+confidence: medium
+cwe: CWE-79
+owasp: A03:2021
+pattern: dangerouslySetInnerHTML
+dialect: ere
+files: *.js
+files: *.jsx
+files: *.ts
+files: *.tsx
+tags: static
+remediation: Render content as text (React escapes it by default) instead of raw HTML.
+  If HTML rendering is genuinely required, sanitize it through a vetted library such as
+  DOMPurify immediately before it reaches dangerouslySetInnerHTML, every time it is used.
+references: CWE-79
+
+id: SAST-JS-DOCUMENT_WRITE-01
+title: document.write() used to inject markup into the page
+severity: medium
+confidence: medium
+cwe: CWE-79
+owasp: A03:2021
+pattern: document\.write\s*\(
+dialect: ere
+files: *.js
+files: *.jsx
+files: *.ts
+files: *.tsx
+tags: static
+remediation: Build the DOM with document.createElement()/textContent, or set
+  element.textContent directly, rather than injecting a markup string with
+  document.write(); it parses its argument as HTML with no escaping.
+references: CWE-79
+
+id: SAST-JS-TEMPLATE_LITERAL_SQL-01
+title: SQL statement built from a JavaScript template literal
+severity: critical
+confidence: medium
+cwe: CWE-89
+owasp: A03:2021
+pattern: `[^`]*(SELECT|INSERT|UPDATE|DELETE)[^`]*\$\{
+dialect: ere
+files: *.js
+files: *.jsx
+files: *.ts
+files: *.tsx
+tags: static
+tags: quick
+remediation: Use a parameterised query (a placeholder plus a bound-values array) or an
+  ORM/query builder that never interpolates request-derived data into SQL text; a
+  template-literal `${}` interpolation inside a SQL string is string concatenation with
+  extra syntax.
+references: CWE-89
+
+id: SAST-JS-DYNAMIC_REQUIRE-01
+title: require() called with a non-literal module specifier
+severity: high
+confidence: medium
+cwe: CWE-829
+owasp: A08:2021
+pattern: require\s*\(\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*\)
+dialect: ere
+files: *.js
+files: *.jsx
+files: *.ts
+files: *.tsx
+files: *.mjs
+files: *.cjs
+tags: static
+remediation: Pass require() a fixed string literal. If the module to load must vary at
+  runtime, resolve it against an explicit allowlist of known module names first, so
+  request-derived data can never select an arbitrary file to load.
+references: CWE-829
+
+id: SAST-JS-PROTO_ASSIGN-01
+title: Direct assignment to __proto__
+severity: high
+confidence: medium
+cwe: CWE-1321
+owasp: A08:2021
+pattern: (\.__proto__[[:space:]]*=|\[["']__proto__["']\][[:space:]]*=)
+dialect: ere
+files: *.js
+files: *.jsx
+files: *.ts
+files: *.tsx
+files: *.mjs
+files: *.cjs
+tags: static
+remediation: Never assign to __proto__ directly. Use Object.create(null) or a Map for a
+  dictionary of attacker-influenced keys, so there is no prototype chain to pollute.
+references: CWE-1321
+
+id: SAST-JS-UNSAFE_MERGE-01
+title: Recursive merge assigns an attacker-controlled key without a prototype guard
+severity: high
+confidence: medium
+cwe: CWE-1321
+owasp: A08:2021
+pattern: \[[[:space:]]*key[[:space:]]*\][[:space:]]*=[[:space:]]*[A-Za-z_$][A-Za-z0-9_$]*\[[[:space:]]*key[[:space:]]*\]
+dialect: ere
+context-require: for[[:space:]]*\(
+context-window: 2
+files: *.js
+files: *.jsx
+files: *.ts
+files: *.tsx
+files: *.mjs
+files: *.cjs
+tags: static
+remediation: Reject or skip "__proto__", "constructor" and "prototype" keys before
+  assigning into the target of a recursive merge, or use Object.assign()/object-spread
+  (which never copy onto the prototype) instead of a hand-written key-by-key loop.
+references: CWE-1321

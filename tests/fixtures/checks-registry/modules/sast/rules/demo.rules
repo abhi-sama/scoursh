@@ -1,0 +1,32 @@
+# Fixture pattern-rule pack for the scan.sh registry-discovery integration
+# test (tests/suites/scan.sh): one quick+compliance-tagged rule, one full-only
+# rule, so a `--profile-scan quick` run visibly selects fewer checks than a
+# `--profile-scan full` run over the SAME on-disk registry.
+
+id: SAST-GEN-DEMO_QUICK-01
+title: Fixture quick+compliance rule
+severity: high
+confidence: high
+cwe: CWE-95
+owasp: A03:2021
+pattern: \bdemo_eval\s*\(
+dialect: ere
+tags: static
+tags: quick
+tags: compliance
+cis: 1.1
+remediation: This is a fixture rule; it exists only to prove registry
+  discovery and profile filtering compose end to end.
+references: CWE-95
+
+id: SAST-GEN-DEMO_FULL-01
+title: Fixture full-only rule
+severity: low
+confidence: medium
+cwe: none
+owasp: none
+pattern: \bdemo_noop\s*\(
+dialect: ere
+tags: static
+remediation: This is a fixture rule with no profile tag, so it runs only under
+  `full` - the docs/RULE-FORMAT.md §9.1.3 default.

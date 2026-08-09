@@ -5,3 +5,7 @@ state/
 # Downloaded CI artifacts, never sources.
 suite.log
 findings-*/
+
+# macOS Finder metadata.  An untracked .DS_Store was enough to make fleet
+# tooling refuse this clone as dirty.
+.DS_Store
