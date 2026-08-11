@@ -110,7 +110,7 @@ title: CloudFormation security group ingress open to 0.0.0.0/0 or ::/0
 severity: high
 confidence: high
 cwe: CWE-284
-owasp: A05:2021
+owasp: A02:2025
 pattern: "?Cidr(Ip|Ipv6)"?\s*:\s*"?(0\.0\.0\.0/0|::/0)"?
 dialect: ere
 files: *.yaml
@@ -134,7 +134,7 @@ title: S3 bucket disables a public-access-block control, or sets a public canned
 severity: critical
 confidence: high
 cwe: CWE-284
-owasp: A05:2021
+owasp: A02:2025
 pattern: "?(BlockPublicAcls|BlockPublicPolicy|IgnorePublicAcls|RestrictPublicBuckets)"?\s*:\s*"?[Ff]alse"?|"?AccessControl"?\s*:\s*"?[Pp]ublic-?[Rr]ead(-?[Ww]rite)?"?
 dialect: ere
 files: *.yaml
@@ -158,7 +158,7 @@ title: RDS or EBS resource explicitly configured without encryption at rest
 severity: high
 confidence: high
 cwe: CWE-311
-owasp: A02:2021
+owasp: A04:2025
 pattern: "?StorageEncrypted"?\s*:\s*"?[Ff]alse"?
 dialect: ere
 files: *.yaml
@@ -179,7 +179,7 @@ title: KMS key resource declared without automatic key rotation enabled
 severity: medium
 confidence: medium
 cwe: CWE-320
-owasp: A02:2021
+owasp: A04:2025
 pattern: "?Type"?\s*:\s*"?AWS::KMS::Key"?
 dialect: ere
 files: *.yaml
@@ -201,7 +201,7 @@ title: EC2 instance or launch template auto-assigns a public IP address
 severity: high
 confidence: high
 cwe: CWE-284
-owasp: A05:2021
+owasp: A02:2025
 pattern: "?AssociatePublicIpAddress"?\s*:\s*"?[Tt]rue"?
 dialect: ere
 files: *.yaml
@@ -223,7 +223,7 @@ title: Hardcoded credential literal in a CloudFormation resource property
 severity: critical
 confidence: medium
 cwe: CWE-798
-owasp: A07:2021
+owasp: A07:2025
 pattern: \b(Password|Secret|SecretKey|ApiKey|AccessKey|Token|MasterUserPassword|ClientSecret)\b"?\s*:\s*"?[^"'!{\s][^"'\n]{7,}
 dialect: ere
 files: *.yaml
@@ -246,7 +246,7 @@ title: RDS instance configured as publicly accessible
 severity: critical
 confidence: high
 cwe: CWE-284
-owasp: A05:2021
+owasp: A02:2025
 pattern: "?PubliclyAccessible"?\s*:\s*"?[Tt]rue"?
 dialect: ere
 files: *.yaml
@@ -268,7 +268,7 @@ title: ECS task definition runs a container with privileged escalation enabled
 severity: critical
 confidence: high
 cwe: CWE-269
-owasp: A05:2021
+owasp: A02:2025
 pattern: "?Privileged"?\s*:\s*"?[Tt]rue"?
 dialect: ere
 files: *.yaml

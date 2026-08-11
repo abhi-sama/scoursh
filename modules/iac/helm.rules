@@ -60,7 +60,7 @@ title: Container port published directly on the host network via hostPort
 severity: high
 confidence: high
 cwe: CWE-668
-owasp: A05:2021
+owasp: A02:2025
 pattern: hostPort\s*:\s*[0-9]+
 dialect: ere
 files: values.yaml
@@ -80,7 +80,7 @@ title: hostPath volume mounts a sensitive host directory into the container
 severity: critical
 confidence: medium
 cwe: CWE-668
-owasp: A05:2021
+owasp: A02:2025
 pattern: path\s*:\s*["']?(/etc|/var/run/docker\.sock|/root|/proc|/sys|/home)\b
 dialect: ere
 files: values.yaml
@@ -100,7 +100,7 @@ title: Plaintext credential literal in a Helm chart
 severity: critical
 confidence: medium
 cwe: CWE-798
-owasp: A07:2021
+owasp: A07:2025
 pattern: \b(password|secret|secretKey|secret_key|apiKey|api_key|access_key|token|clientSecret)\b\s*:\s*["']?[^"'\s{][^"'\n]{7,}
 dialect: ere
 files: values.yaml

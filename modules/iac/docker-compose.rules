@@ -52,7 +52,7 @@ title: Host port published without restricting the bind address
 severity: high
 confidence: medium
 cwe: CWE-284
-owasp: A05:2021
+owasp: A02:2025
 pattern: ^\s*-\s*"?(0\.0\.0\.0:)?[0-9]{2,5}:[0-9]{2,5}"?\s*$
 dialect: ere
 files: docker-compose.yml
@@ -80,7 +80,7 @@ title: Service runs in Docker privileged mode
 severity: critical
 confidence: high
 cwe: CWE-250
-owasp: A05:2021
+owasp: A02:2025
 pattern: ^\s*privileged:\s*true\s*$
 dialect: ere
 files: docker-compose.yml
@@ -105,7 +105,7 @@ title: Sensitive host path bind-mounted into a container
 severity: critical
 confidence: high
 cwe: CWE-284
-owasp: A05:2021
+owasp: A02:2025
 pattern: ^\s*-\s*"?(/var/run/docker\.sock|/proc|/sys|/etc|/root|/home|/)\s*:
 dialect: ere
 files: docker-compose.yml
@@ -132,7 +132,7 @@ title: Plaintext credential literal in a compose environment entry
 severity: critical
 confidence: medium
 cwe: CWE-798
-owasp: A07:2021
+owasp: A07:2025
 pattern: ^\s*-?\s*"?[A-Za-z0-9_]*(PASSWORD|SECRET|API_KEY|ACCESS_KEY|TOKEN|PRIVATE_KEY)[A-Za-z0-9_]*\s*[:=]\s*['"]?[A-Za-z0-9+/_.=-]{8,}
 dialect: ere
 files: docker-compose.yml

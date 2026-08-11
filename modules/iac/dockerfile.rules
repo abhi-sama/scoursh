@@ -62,7 +62,7 @@ title: Dockerfile builds an image with no non-root USER instruction
 severity: high
 confidence: medium
 cwe: CWE-250
-owasp: A05:2021
+owasp: A02:2025
 pattern: ^FROM\s+\S+
 dialect: ere
 files: Dockerfile
@@ -84,7 +84,7 @@ title: Base image pinned to the mutable :latest tag
 severity: medium
 confidence: high
 cwe: CWE-829
-owasp: A08:2021
+owasp: A08:2025
 pattern: ^FROM\s+\S+:latest\b
 dialect: ere
 files: Dockerfile
@@ -102,7 +102,7 @@ title: Credential-shaped literal assigned via a Dockerfile ENV or ARG instructio
 severity: critical
 confidence: medium
 cwe: CWE-798
-owasp: A07:2021
+owasp: A07:2025
 pattern: ^(ENV|ARG)\s+[A-Za-z0-9_]*(PASSWORD|SECRET|TOKEN|API_KEY|ACCESS_KEY|PRIVATE_KEY)[A-Za-z0-9_]*\s*=\s*\S+
 dialect: ere
 files: Dockerfile
@@ -123,7 +123,7 @@ title: ADD instruction fetches a remote URL directly into the image
 severity: medium
 confidence: high
 cwe: CWE-494
-owasp: A08:2021
+owasp: A08:2025
 pattern: ^ADD\s+\S*https?://
 dialect: ere
 files: Dockerfile
@@ -140,7 +140,7 @@ title: Build step pipes a downloaded script straight into a shell
 severity: high
 confidence: medium
 cwe: CWE-494
-owasp: A08:2021
+owasp: A08:2025
 pattern: ^RUN\s+.*(curl|wget)\s+[^|]*\|\s*(sudo\s+)?(sh|bash|zsh|ash)\b
 dialect: ere
 files: Dockerfile
@@ -157,7 +157,7 @@ title: Base image not pinned to a content digest
 severity: low
 confidence: medium
 cwe: CWE-829
-owasp: A08:2021
+owasp: A08:2025
 pattern: ^FROM\s+\S+
 dialect: ere
 files: Dockerfile

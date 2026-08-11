@@ -40,7 +40,7 @@ title: JDBC statement executed with a concatenated SQL string
 severity: critical
 confidence: medium
 cwe: CWE-89
-owasp: A03:2021
+owasp: A05:2025
 pattern: \.execute(Query|Update)?\s*\(
 dialect: ere
 context-require: ["'](SELECT|INSERT|UPDATE|DELETE)[^"']*["'][[:space:]]*\+
@@ -58,7 +58,7 @@ title: XML parser factory created without disabling DOCTYPE/external entities
 severity: high
 confidence: medium
 cwe: CWE-611
-owasp: A05:2021
+owasp: A02:2025
 pattern: (DocumentBuilderFactory|SAXParserFactory|XMLInputFactory|TransformerFactory)\.newInstance\s*\(\s*\)
 dialect: ere
 context-deny: (disallow-doctype-decl|FEATURE_SECURE_PROCESSING|setExpandEntityReferences\s*\(\s*false\s*\)|ACCESS_EXTERNAL_DTD)
@@ -75,7 +75,7 @@ title: ObjectInputStream.readObject() used to deserialize untrusted data
 severity: critical
 confidence: medium
 cwe: CWE-502
-owasp: A08:2021
+owasp: A08:2025
 pattern: \.readObject\s*\(\s*\)
 dialect: ere
 context-require: ObjectInputStream
@@ -94,7 +94,7 @@ title: X509TrustManager with an empty checkServerTrusted accepts any certificate
 severity: critical
 confidence: high
 cwe: CWE-295
-owasp: A02:2021
+owasp: A04:2025
 pattern: checkServerTrusted\s*\([^)]*\)\s*\{\s*\}
 dialect: ere
 files: *.java
@@ -110,7 +110,7 @@ title: HostnameVerifier unconditionally returns true
 severity: critical
 confidence: medium
 cwe: CWE-295
-owasp: A02:2021
+owasp: A04:2025
 pattern: \bverify\s*\([^)]*\)\s*\{\s*return\s+true;\s*\}
 dialect: ere
 context-require: HostnameVerifier
@@ -127,7 +127,7 @@ title: SpEL expression parsed from a non-literal, request-derived value
 severity: critical
 confidence: medium
 cwe: CWE-94
-owasp: A03:2021
+owasp: A05:2025
 pattern: \.parseExpression\s*\(\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*\)
 dialect: ere
 files: *.java
@@ -142,7 +142,7 @@ title: OGNL expression evaluated from request-derived data
 severity: critical
 confidence: medium
 cwe: CWE-94
-owasp: A03:2021
+owasp: A05:2025
 pattern: Ognl\.(getValue|setValue)\s*\(
 dialect: ere
 files: *.java

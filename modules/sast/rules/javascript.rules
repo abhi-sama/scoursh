@@ -36,7 +36,7 @@ title: Use of eval() to execute dynamic code
 severity: critical
 confidence: high
 cwe: CWE-95
-owasp: A03:2021
+owasp: A05:2025
 pattern: \beval\s*\(
 dialect: ere
 files: *.js
@@ -57,7 +57,7 @@ title: React dangerouslySetInnerHTML used to render markup
 severity: high
 confidence: medium
 cwe: CWE-79
-owasp: A03:2021
+owasp: A05:2025
 pattern: dangerouslySetInnerHTML
 dialect: ere
 files: *.js
@@ -75,7 +75,7 @@ title: document.write() used to inject markup into the page
 severity: medium
 confidence: medium
 cwe: CWE-79
-owasp: A03:2021
+owasp: A05:2025
 pattern: document\.write\s*\(
 dialect: ere
 files: *.js
@@ -93,7 +93,7 @@ title: SQL statement built from a JavaScript template literal
 severity: critical
 confidence: medium
 cwe: CWE-89
-owasp: A03:2021
+owasp: A05:2025
 pattern: `[^`]*(SELECT|INSERT|UPDATE|DELETE)[^`]*\$\{
 dialect: ere
 files: *.js
@@ -113,7 +113,7 @@ title: require() called with a non-literal module specifier
 severity: high
 confidence: medium
 cwe: CWE-829
-owasp: A08:2021
+owasp: A08:2025
 pattern: require\s*\(\s*[A-Za-z_$][A-Za-z0-9_$.]*\s*\)
 dialect: ere
 files: *.js
@@ -133,7 +133,7 @@ title: Direct assignment to __proto__
 severity: high
 confidence: medium
 cwe: CWE-1321
-owasp: A08:2021
+owasp: A08:2025
 pattern: (\.__proto__[[:space:]]*=|\[["']__proto__["']\][[:space:]]*=)
 dialect: ere
 files: *.js
@@ -152,7 +152,7 @@ title: Recursive merge assigns an attacker-controlled key without a prototype gu
 severity: high
 confidence: medium
 cwe: CWE-1321
-owasp: A08:2021
+owasp: A08:2025
 pattern: \[[[:space:]]*key[[:space:]]*\][[:space:]]*=[[:space:]]*[A-Za-z_$][A-Za-z0-9_$]*\[[[:space:]]*key[[:space:]]*\]
 dialect: ere
 context-require: for[[:space:]]*\(

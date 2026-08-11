@@ -15,7 +15,7 @@ title: Use of eval() or exec() on request-derived data
 severity: critical
 confidence: high
 cwe: CWE-95
-owasp: A03:2021
+owasp: A05:2025
 pattern: \b(eval|exec)\s*\(
 dialect: ere
 files: *.py
@@ -31,7 +31,7 @@ title: pickle.load()/loads() on untrusted data
 severity: critical
 confidence: medium
 cwe: CWE-502
-owasp: A08:2021
+owasp: A08:2025
 pattern: \bpickle\.(load|loads)\s*\(
 dialect: ere
 files: *.py
@@ -47,7 +47,7 @@ title: yaml.load() without a safe loader
 severity: high
 confidence: medium
 cwe: CWE-502
-owasp: A08:2021
+owasp: A08:2025
 pattern: \byaml\.load\s*\(
 dialect: ere
 files: *.py
@@ -67,7 +67,7 @@ title: subprocess call with shell=True
 severity: high
 confidence: medium
 cwe: CWE-78
-owasp: A03:2021
+owasp: A05:2025
 pattern: subprocess\.(call|run|Popen)\([^)]*shell[[:space:]]*=[[:space:]]*True
 dialect: ere
 files: *.py
@@ -81,7 +81,7 @@ title: os.system() invocation
 severity: high
 confidence: medium
 cwe: CWE-78
-owasp: A03:2021
+owasp: A05:2025
 pattern: \bos\.system\s*\(
 dialect: ere
 files: *.py
@@ -95,7 +95,7 @@ title: Flask application run or configured with debug enabled
 severity: high
 confidence: medium
 cwe: CWE-489
-owasp: A05:2021
+owasp: A02:2025
 pattern: (app\.run\([^)]*debug[[:space:]]*=[[:space:]]*True|app\.debug[[:space:]]*=[[:space:]]*True)
 dialect: ere
 files: *.py
@@ -109,7 +109,7 @@ title: Jinja2 environment with autoescape disabled
 severity: high
 confidence: medium
 cwe: CWE-79
-owasp: A03:2021
+owasp: A05:2025
 pattern: autoescape[[:space:]]*=[[:space:]]*False
 dialect: ere
 files: *.py

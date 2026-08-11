@@ -138,7 +138,7 @@ title: Container runs with privileged escalation enabled
 severity: critical
 confidence: high
 cwe: CWE-269
-owasp: A05:2021
+owasp: A02:2025
 pattern: ^\s*"?privileged"?\s*:\s*"?true"?\b
 dialect: ere
 files: *.yaml
@@ -165,7 +165,7 @@ title: Pod shares the host network or PID namespace
 severity: high
 confidence: high
 cwe: CWE-284
-owasp: A05:2021
+owasp: A02:2025
 pattern: ^\s*"?(hostNetwork|hostPID)"?\s*:\s*"?true"?\b
 dialect: ere
 files: *.yaml
@@ -192,7 +192,7 @@ title: Container has no resource limits or requests
 severity: medium
 confidence: medium
 cwe: CWE-400
-owasp: A05:2021
+owasp: A02:2025
 pattern: ^\s*"?image"?\s*:\s*\S+
 dialect: ere
 files: *.yaml
@@ -221,7 +221,7 @@ title: Container has no explicit non-root execution guard
 severity: medium
 confidence: medium
 cwe: CWE-269
-owasp: A05:2021
+owasp: A02:2025
 pattern: ^\s*"?containers"?\s*:
 dialect: ere
 files: *.yaml
@@ -252,7 +252,7 @@ title: Plaintext credential-shaped literal in a container environment variable
 severity: critical
 confidence: medium
 cwe: CWE-798
-owasp: A07:2021
+owasp: A07:2025
 pattern: ^\s*"?value"?\s*:\s*["'][^"'[:space:]]{4,}["']\s*,?\s*$
 dialect: ere
 files: *.yaml
@@ -283,7 +283,7 @@ title: Container image pinned to the mutable :latest tag
 severity: medium
 confidence: high
 cwe: CWE-494
-owasp: A08:2021
+owasp: A08:2025
 pattern: ^\s*"?image"?\s*:\s*"?\S*:latest\b
 dialect: ere
 files: *.yaml
@@ -313,7 +313,7 @@ title: RBAC rule grants a wildcard verb or resource
 severity: high
 confidence: high
 cwe: CWE-269
-owasp: A01:2021
+owasp: A01:2025
 pattern: ^\s*-?\s*['"]\*['"]\s*,?\s*$
 dialect: ere
 files: *.yaml
@@ -343,7 +343,7 @@ title: Pod does not disable automatic service-account token mounting
 severity: medium
 confidence: medium
 cwe: CWE-269
-owasp: A01:2021
+owasp: A01:2025
 pattern: ^\s*"?kind"?\s*:\s*"?(Pod|Deployment|StatefulSet|DaemonSet|ReplicaSet|Job|CronJob)"?\b
 dialect: ere
 files: *.yaml

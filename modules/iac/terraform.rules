@@ -41,7 +41,7 @@ title: Security group rule open to 0.0.0.0/0
 severity: high
 confidence: high
 cwe: CWE-284
-owasp: A05:2021
+owasp: A02:2025
 pattern: cidr_blocks\s*=\s*\[[^]]*"0\.0\.0\.0/0"
 dialect: ere
 files: *.tf
@@ -63,7 +63,7 @@ title: S3 bucket ACL set to a public value
 severity: critical
 confidence: high
 cwe: CWE-284
-owasp: A05:2021
+owasp: A02:2025
 pattern: acl\s*=\s*"public-read(-write)?"
 dialect: ere
 files: *.tf
@@ -81,7 +81,7 @@ title: Resource explicitly configured without encryption at rest
 severity: high
 confidence: high
 cwe: CWE-311
-owasp: A02:2021
+owasp: A04:2025
 pattern: \bencrypted\s*=\s*false\b
 dialect: ere
 files: *.tf
@@ -98,7 +98,7 @@ title: KMS key created without automatic key rotation enabled
 severity: medium
 confidence: medium
 cwe: CWE-320
-owasp: A02:2021
+owasp: A04:2025
 pattern: resource\s+"aws_kms_key"\s+"[A-Za-z0-9_-]+"\s*\{
 dialect: ere
 files: *.tf
@@ -117,7 +117,7 @@ title: Instance or launch resource auto-assigns a public IP address
 severity: high
 confidence: high
 cwe: CWE-284
-owasp: A05:2021
+owasp: A02:2025
 pattern: associate_public_ip_address\s*=\s*true
 dialect: ere
 files: *.tf
@@ -134,7 +134,7 @@ title: Hardcoded credential literal in Terraform configuration
 severity: critical
 confidence: medium
 cwe: CWE-798
-owasp: A07:2021
+owasp: A07:2025
 pattern: \b(password|secret|secret_key|access_key|api_key|token)\s*=\s*"[^"$]{8,}"
 dialect: ere
 files: *.tf
@@ -152,7 +152,7 @@ title: RDS instance configured as publicly accessible
 severity: critical
 confidence: high
 cwe: CWE-284
-owasp: A05:2021
+owasp: A02:2025
 pattern: publicly_accessible\s*=\s*true
 dialect: ere
 files: *.tf

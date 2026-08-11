@@ -7,7 +7,7 @@ title: MD5 or SHA1 used where a security-relevant hash is expected
 severity: medium
 confidence: medium
 cwe: CWE-327
-owasp: A02:2021
+owasp: A04:2025
 pattern: (hashlib\.md5|hashlib\.sha1|MessageDigest\.getInstance\(["'](MD5|SHA-?1)["']\)|crypto\.createHash\(["'](md5|sha1)["']\))
 dialect: ere
 tags: static
@@ -21,7 +21,7 @@ title: DES or ECB-mode cipher in use
 severity: high
 confidence: medium
 cwe: CWE-327
-owasp: A02:2021
+owasp: A04:2025
 pattern: (DES/ECB|AES/ECB|MODE_ECB)
 dialect: ere
 tags: static
@@ -35,7 +35,7 @@ title: Hardcoded initialization vector or salt
 severity: medium
 confidence: low
 cwe: CWE-329
-owasp: A02:2021
+owasp: A04:2025
 pattern: [Ii][Vv][[:space:]]*=[[:space:]]*b?["'][0-9A-Fa-f]{16,}["']
 dialect: ere
 tags: static
@@ -49,7 +49,7 @@ title: TLS certificate verification disabled
 severity: high
 confidence: high
 cwe: CWE-295
-owasp: A02:2021
+owasp: A04:2025
 pattern: (verify[[:space:]]*=[[:space:]]*False|rejectUnauthorized[[:space:]]*:[[:space:]]*false|InsecureSkipVerify[[:space:]]*:[[:space:]]*true|ssl_verify[[:space:]]*=[[:space:]]*[Ff]alse)
 dialect: ere
 tags: static
@@ -63,7 +63,7 @@ title: Math.random() used to generate a token, session id, or secret
 severity: high
 confidence: medium
 cwe: CWE-338
-owasp: A02:2021
+owasp: A04:2025
 pattern: Math\.random\(\)
 dialect: ere
 context-require: (token|Token|session|Session|password|Password|secret|Secret|auth|Auth)
