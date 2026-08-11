@@ -1,64 +1,127 @@
 # scoursh
 
-**scoursh - scan exhaustively**
+**Scan exhaustively. Trust nothing over the network.**
 
-`scoursh` is an air-gapped, shell-based security scanner: one tool, one entry point, no network
-calls except the ones you explicitly authorize. It runs entirely offline against vendored rule
-packs and vendored data, so it can sit inside an isolated build environment with no telemetry, no
-SaaS backend, and nothing fetched at scan time.
+`scoursh` is an air-gapped, shell-based security scanner. One tool, one entry point, one report -
+covering source code (SAST), dependencies (SCA), and infrastructure-as-code (IaC) today, with a
+running-endpoint scanner (DAST) and live cloud posture checking (CSPM) already designed and next in
+line. It runs entirely offline against rules and data vendored *in the repository*, so it can sit
+inside a fully isolated build environment with no telemetry, no SaaS backend, and nothing fetched
+at scan time.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 ## Table of contents
 
-- [What scoursh can do today](#what-scoursh-can-do-today)
+- [Why "scoursh"](#why-scoursh)
+- [Features](#features)
+- [Types of security scans, and where scoursh stands today](#types-of-security-scans-and-where-scoursh-stands-today)
+- [scoursh vs. semgrep](#scoursh-vs-semgrep)
 - [Why air-gapped](#why-air-gapped)
 - [Installation](#installation)
-- [Usage](#usage)
 - [Try it yourself: sample vulnerable repos](#try-it-yourself-sample-vulnerable-repos)
 - [Optional third-party engines](#optional-third-party-engines)
-- [Roadmap](#roadmap)
+- [Build status](#build-status)
+- [What's next](#whats-next)
 - [Documentation](#documentation)
 - [License](#license)
 
-## What scoursh can do today
+## Why "scoursh"
 
-Security scanning is usually split into a handful of well-known categories, tied to *when* in a
-project's lifecycle they run. Here is where `scoursh` sits in that picture:
+The name is a blend of **scour** - to search something thoroughly, corner to corner, and clean out
+what you find - and **sh**, the Unix shell the entire tool is written in: no runtime, no
+interpreter, no dependency beyond `bash` and standard coreutils. The tagline says the rest: *scan
+exhaustively.*
 
-| Scanner type | What it scans | Stage in lifecycle | scoursh support |
+## Features
+
+- **Four scan surfaces in one tool** - source code, dependencies, infrastructure-as-code, and
+  secrets, sharing one CLI, one exit-code contract, and one report.
+- **Genuinely air-gapped** - not "air-gapped if you configure it right." Every network call in the
+  codebase routes through one of two chokepoints (an HTTP wrapper and a read-only AWS wrapper), a
+  dedicated lint fails the build if anything bypasses them, and a separate lint proves no AI/LLM
+  provider is reachable from the shipped tool at all.
+- **Deterministic output** - the same scan produces byte-identical findings whether it runs on
+  Linux with GNU coreutils or macOS with a BSD userland, checked automatically in CI.
+  Fingerprints survive reindentation and unrelated edits, so a diff or baseline never reports a
+  false "fixed" or a false "new."
+- **A detector *and* a guarantee for egress** - `--paranoid` watches the process's own outbound
+  connections and aborts on the first one outside scope; on Linux, `tools/run-in-netns.sh` goes
+  further and builds a network namespace where an out-of-scope connection is not just detected, it's
+  physically impossible.
+- **Honest about its own gaps** - every module a run skips, every coverage limitation, every
+  unproven claim is recorded directly in the run's own output as a `coverage_reduction` or
+  `coverage_gap` fact, not silently dropped from the report.
+- **Optional extra firepower, still offline** - can shell out to vendored copies of semgrep,
+  gitleaks, and trivy for broader coverage, with results deduplicated against scoursh's own
+  findings, all still under the same zero-network-at-scan-time rule.
+- **A real CI gate, not just a report** - a fixed 0-5 exit-code contract, severity thresholds,
+  confidence filtering, and a `--fail-on-new` mode designed to gate a pull request rather than just
+  produce a PDF nobody reads.
+
+## Types of security scans, and where scoursh stands today
+
+Security scanning is usually split into a handful of categories, tied to *when* in a project's
+lifecycle they run:
+
+| Scanner type | What it scans | Stage in lifecycle | scoursh |
 |---|---|---|---|
-| **SAST** | Source code | Development / build | Landed - `scan.sh sast` |
-| **SCA** | Open source dependencies | Build / CI-CD pipeline | Landed - `scan.sh sca` |
-| **IaC** | Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose | CI-CD pipeline | Landed - `scan.sh iac` |
-| **Secret detection** | Git repositories / files | Commit / pre-commit | Landed - folded into `sast` (`secrets.rules` plus `--history` for git-history replay) |
-| **DAST** | A running application | Staging / production | Planned, not built - `scan.sh dast` parses its full flag grammar and enforces a scope gate, but has no scan engine behind it yet |
-| **CSPM** | Live cloud infrastructure | Production / runtime | Planned, not built - `scan.sh cloud --live` is a no-op; the read-only AWS wrapper (`lib/awscli.sh`) already exists ahead of schedule |
-| **Container image scanning** | Built Docker images (layers, installed packages) | Build / registry | Not built, not currently on the roadmap - `scoursh` lints Dockerfile/docker-compose *source* as part of `iac`, but does not scan built image layers |
-| **Network / host scanning** | Servers, ports, OS patches | Operations / maintenance | Not built, not on the roadmap |
+| **SAST** | Source code | Development / build | ✅ Available - `scan.sh sast` |
+| **SCA** | Open source dependencies | Build / CI-CD pipeline | ✅ Available - `scan.sh sca` |
+| **IaC** | Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose | CI-CD pipeline | ✅ Available - `scan.sh iac` |
+| **Secret detection** | Git repositories / files | Commit / pre-commit | ✅ Available - built into `sast` (`--history` replays across git history) |
+| **DAST** | A running application | Staging / production | 🚧 Designed, not built - the CLI grammar and scope gate exist; no scan engine yet |
+| **CSPM** | Live cloud infrastructure | Production / runtime | 🚧 Designed, not built - the read-only AWS wrapper exists ahead of schedule; no live checks yet |
+| **Container image scanning** | Built Docker images (layers, installed packages) | Build / registry | ⛔ Not planned - `scoursh` lints Dockerfile/compose *source* as IaC, not built image layers |
+| **Network / host scanning** | Servers, ports, OS patches | Operations / maintenance | ⛔ Not planned |
 
-So today, `scoursh` covers everything on the *static* side of that list - SAST, SCA, IaC, and
-secrets - across a single local checkout, before anything ever runs. See
-[Roadmap](#roadmap) for what's planned next.
+So today, `scoursh` covers everything on the *static* side of that list - before anything ever
+runs, and before any code ships - in a single pass over a local checkout. See
+[What's next](#whats-next) for the rest.
 
-### Landed coverage, in detail
+### What's available today, in detail
 
 - **SAST** (`modules/sast/`) - pattern-based scanning for Go, Java, JavaScript, and Python, covering
-  injection, crypto misuse, and language-specific issues, plus a dedicated secrets pack
-  (`secrets.rules`). `--history` replays the secrets pack across git history via `history.sh`,
-  emitting a separate `SAST-HIST-*` check family.
+  injection, crypto misuse, and language-specific issues, plus a dedicated secrets pack.
+  `--history` replays the secrets pack across git history, so a credential removed from the working
+  tree but still reachable through git log still gets caught.
 - **SCA** (`modules/sca/`) - parses lockfiles/manifests for six ecosystems (npm/yarn/pnpm,
   pip/poetry/Pipfile, Go modules, Maven, RubyGems, Composer) and matches every pinned dependency
-  against a vendored, pre-expanded advisory database (`data/advisories.db`) - no network lookup at
-  scan time.
+  against a locally-generated advisory database sourced from [OSV.dev](https://osv.dev) - no
+  network lookup at scan time. (The database ships empty; see
+  [Installation](#installation) for the one-time step to populate it.)
 - **IaC** (`modules/iac/`) - six rule packs: Terraform, Kubernetes manifests, Helm chart sources,
   CloudFormation templates, Dockerfile, and docker-compose.
 
-The exact, generated breakdown of every rule pack and ecosystem - which ones are landed, how many
-checks each carries, and what's still outstanding - is in
-[Current status: what running a scan does today](#current-status-what-running-a-scan-does-today)
-below; it's machine-generated from the repository tree so it can't drift out of date the way
-hand-written status prose can.
+The exact, generated breakdown of every rule pack and ecosystem - how many checks each carries and
+what's still outstanding - is in [Build status](#build-status) below; it's regenerated from the
+repository tree on every change, so it can't go stale the way hand-written status prose does.
+
+## scoursh vs. semgrep
+
+Both are pattern-based scanners, and they're not really competitors - `scoursh` can optionally
+*vendor semgrep itself* as an add-on engine (see [Optional third-party
+engines](#optional-third-party-engines)). But if you're deciding which to reach for, here's the
+honest comparison:
+
+| | scoursh | semgrep |
+|---|---|---|
+| Network posture | Zero network calls at scan time, enforced by CI-checked lints and (on Linux) a kernel-level network-namespace guarantee | Rule registry fetches and telemetry contact home by default unless explicitly disabled |
+| Scope | SAST + SCA + IaC + secrets, one tool, one report, one exit-code contract | Primarily SAST; dependency/supply-chain scanning is a separate paid product |
+| Matching engine | Regex/pattern-based; can optionally vendor semgrep itself for AST-aware matching | Full AST-aware, semantic pattern matching - more precise, broader language support |
+| Rule ecosystem | Small, hand-authored, project-owned rule set | Large community and commercial rule registry |
+| Determinism | Tested byte-identical across GNU and BSD userlands in CI | Not a stated design goal |
+| Maturity | Early-stage, single project, 4 languages | Mature, widely adopted, dozens of languages, IDE integrations |
+
+**Reach for scoursh** when the environment itself is the constraint - an air-gapped network, a
+regulated pipeline where "the scanner phones home" is disqualifying on its own, or you want one CLI
+covering SAST, SCA, and IaC instead of stitching several tools together.
+
+**Reach for semgrep** when you need its semantic matching, its much larger rule registry, or broad
+language coverage scoursh doesn't have yet.
+
+**Or use both** - point `scoursh --use-engines` at a vendored copy of semgrep and get its matching
+engine's coverage inside scoursh's own unified report, still with zero network calls once vendored.
 
 ## Why air-gapped
 
@@ -80,6 +143,8 @@ That single constraint shapes most of the architecture:
   it observes one outside the resolved allowlist; `tools/run-in-netns.sh` goes further on Linux,
   building a network namespace whose route table admits only the declared scope, so an
   out-of-scope connection is categorically impossible rather than merely observed.
+- `tests/lint-no-ai.sh` scans the entire shipped tool for any AI/LLM provider hostname, SDK name, or
+  API-key-shaped environment variable, and fails the build if it finds one.
 
 ## Installation
 
@@ -96,142 +161,22 @@ cd scoursh
 (`package.json` exists only for that convention - scoursh has no JavaScript and no Node runtime
 dependency).
 
-## Usage
-
-`scoursh` is a single entry point, `scan.sh`, with one subcommand per surface it scans.
-Every run writes `run.json` into its output directory, whether or not any findings were produced.
+**One-time setup for SCA:** `data/advisories.db` ships empty on a fresh clone - SCA's parsing and
+matching code is fully built and tested, but the actual advisory data is deliberately never
+bundled or auto-fetched. Populate it yourself, on a networked box, with real advisory IDs you've
+identified for the ecosystems you care about:
 
 ```sh
-scan.sh <command> [options]
+export SCOURSH_ADVISORY_NPM_IDS="GHSA-xxxx-xxxx-xxxx,GHSA-yyyy-yyyy-yyyy"
+tools/vendor-engines.sh advisories npm
+# or: tools/vendor-engines.sh advisories --all
 ```
 
-### Commands
+See [`tools/vendor-engines.sh advisories --help`](tools/vendor-engines.sh) for the full list of
+per-ecosystem environment variables.
 
-| Command | Flags | Notes |
-|---|---|---|
-| `sast` | `[--path DIR]` `[--lang py,js,go,java]` `[--history]` | Source code. `--history` replays secret checks across git history and requires `git` on `PATH`. |
-| `sca` | `[--path DIR]` | Dependency/lockfile CVEs. |
-| `iac` | `[--path DIR]` | Cloud IaC plus container/Kubernetes manifests. |
-| `dast` | `--target NAME` `[--intensity passive\|safe\|active]` `[--authed]` | `--target` is required and must name an entry in `config/scope.conf` (see "The scope gate" below). `--intensity` defaults to `passive`. |
-| `cloud` | `[--live]` `[--profile NAME]` `[--regions all\|us-east-1,...]` `[--assume-role ARN]` | `--live` requires the `aws` CLI on `PATH`; the run refuses (exit 4) if it is missing. |
-| `all` | union of every module's own flags above | Runs sast, sca, iac unconditionally; runs dast only if `--target` is given and cloud only if `--live` is given. Every module it skips is recorded in `run.json` as a `coverage_reduction` fact, not silently dropped. |
-| `diff` | `--against DIR` | `DIR` must be a prior run's output directory (must contain `findings.jsonl` or `run.json`). |
-| `report` | `--from DIR` | Regenerate reports from a prior run's directory (same shape requirement as `diff --against`). |
-
-`-h` / `--help` at any position before the first unrecognized token prints usage and exits 0.
-
-### Global flags (apply to every command)
-
-| Flag | Value | Default |
-|---|---|---|
-| `--profile-scan` | `quick` \| `full` \| `compliance` | `full` |
-| `--paranoid` | boolean | off |
-| `--allow-intrusive` | boolean | off |
-| `--jobs N` | positive integer | from `config/scanner.conf` (`4`) |
-| `--format` | CSV of `json,sarif,html,md` | all four |
-| `--fail-on` | `critical\|high\|medium\|low\|info\|none` | from `config/scanner.conf` (`none`) |
-| `--fail-on-new` | boolean; **requires `--fail-on`**, usage error otherwise | off |
-| `--min-confidence` | `high\|medium\|low` | from `config/scanner.conf` (`low`) |
-| `--baseline FILE` | path | none |
-| `--out DIR` | path | `reports/<timestamp>` |
-
-### Exit codes
-
-Checked in this fixed order - the first true condition wins, never "worst finding wins":
-
-| Code | Meaning |
-|---|---|
-| `0` | Clean, or findings all below `--fail-on`. |
-| `1` | Findings at or above `--fail-on` (the CI gate). |
-| `2` | Usage error (bad flag, bad value, missing required flag). |
-| `3` | Scope violation (`dast --target` not found in `config/scope.conf`). |
-| `4` | Missing required input (unreadable path, missing config file, missing required command). |
-| `5` | Incomplete run (circuit breaker tripped or the run aborted mid-flight). A run that both trips the breaker and has gated findings exits `5`, not `1` - an incomplete run cannot assert a clean gate result either way. |
-
-### The scope gate (dast)
-
-Plain language: **`dast` will not touch a host you have not explicitly listed.**
-Before any request goes out, `--target NAME` must match the `id` of an entry in `config/scope.conf`.
-If `config/scope.conf` does not exist at all, the run refuses with exit `4` ("missing required input") -
-`dast` cannot even attempt the gate.
-If the file exists but has no entry with that `id`, the run refuses with exit `3` ("scope violation") -
-the gate itself is refusing.
-There is no raw-URL flag that bypasses this: `--target` only ever takes a name, never a URL.
-`sast`, `sca`, and `iac` do not need `config/scope.conf` at all.
-
-The gate matches on the normalized `(scheme, host, port)` tuple from the target's `base-url`, plus any
-`extra-host` entries.
-Path is **not** part of the gate - it only bounds what the crawler will fetch, it is not a safety
-boundary.
-
-### `--paranoid` - the connection observer (a detector, not a guarantee)
-
-`--paranoid` builds a run-scoped allowlist from exactly four sets: every in-scope target address
-`lib/http.sh` actually resolves this run, resolved AWS endpoint addresses for regions actually iterated
-(empty, with a stated reason, until region iteration lands), the host's own `/etc/resolv.conf`
-nameservers on port 53 plus loopback on any port, and `config/scanner.conf`'s `paranoid_allow` entries.
-It then samples this run's own connections (`ss`, or a measured-usable `strace -f -e trace=connect`
-fallback) and aborts with exit `3` on the first destination it observes outside that allowlist.
-If neither `ss` nor a usable `strace` exists on the host, the run refuses with exit `4` rather than
-pretending to be watching.
-
-**Read this plainly: it is a detector, not a guarantee.**
-Sampling can miss a connection that opens and closes between two polls.
-`tools/run-in-netns.sh` is the actual guarantee: a network namespace whose only route is the declared
-scope makes an out-of-scope connection categorically impossible rather than merely observable
-(Linux-only, requires root/`CAP_NET_ADMIN`+`CAP_SYS_ADMIN`).
-Every `--paranoid` run states this same limitation in its own `run.json`, so the report never
-overstates what the flag proved.
-
-## Configuration
-
-Both config files use the same on-disk record format: blank-line-separated `key: value` blocks, one
-`#`-prefixed comment per line, no escaping in values.
-Never hand-edit these with tooling that assumes shell syntax - the loader parses them as data and never
-`source`s them.
-
-### `config/scope.conf` - required only for `dast`
-
-One record per target.
-
-| Key | Required | Repeatable | Default | Value |
-|---|---|---|---|---|
-| `id` | yes | no | - | Target name used by `--target`. Pattern `^[a-z][a-z0-9-]*$`. Must be the first field. |
-| `base-url` | yes | no | - | `https://host[:port][/path]`. Scheme must be `http` or `https`. |
-| `extra-host` | no | yes | none | Additional `host[:port]` in scope for this target. |
-| `allow-subdomains` | no | no | `false` | `true`/`false`. |
-| `allow-private-addresses` | no | no | `false` | `true`/`false`. Gates the link-local/loopback deny list. |
-| `notes` | no | no (multi-line) | empty | Free text. |
-
-### `config/scanner.conf` - optional; an absent file behaves as if it contained only `id: scanner`
-
-Resolution order for every key, checked independently per key: **CLI flag > environment variable >
-file > built-in default**.
-The environment variable for key `foo-bar` is `SCOURSH_CONFIG_FOO_BAR`.
-
-| Key | Value | Default |
-|---|---|---|
-| `requests-per-second` | decimal, may be fractional | `4` |
-| `jobs` | positive integer | `4` |
-| `http-timeout` | positive integer (seconds) | `20` |
-| `max-redirects` | non-negative integer | `5` |
-| `request-budget` | positive integer, per run | `20000` |
-| `circuit-breaker-failures` | positive integer | `10` |
-| `circuit-breaker-window` | non-negative integer (seconds) | `60` |
-| `fail-on` | severity name or `none` | `none` |
-| `min-confidence` | `high\|medium\|low` | `low` |
-| `redact-secrets` | `true`/`false` | `true` |
-| `formats` | repeatable, `json\|sarif\|html\|md` | all four |
-| `max-matches-per-file` | positive integer | `200` |
-| `evidence-max-bytes` | positive integer | `512` |
-| `scratch-dir` | absolute path | `${TMPDIR:-/tmp}` |
-| `state-retain-runs` | positive integer | `30` |
-| `history-window-days` | positive integer | `365` |
-| `history-max-commits` | positive integer | `5000` |
-| `lock-stale-seconds` | positive integer | `30` |
-| `mutex-timeout-seconds` | positive integer | `120` |
-| `paranoid-allow` | repeatable, `addr:port` | empty |
-| `notes` | free text (multi-line) | empty |
+For the complete CLI, exit-code, and configuration-file reference, see
+[`docs/USAGE.md`](docs/USAGE.md).
 
 ## Try it yourself: sample vulnerable repos
 
@@ -275,7 +220,7 @@ git clone --depth 1 https://github.com/OWASP-Benchmark/BenchmarkJava ~/scoursh-t
 ```sh
 git clone --depth 1 https://github.com/juice-shop/juice-shop ~/scoursh-test-repos/juice-shop
 ./scan.sh sast --path ~/scoursh-test-repos/juice-shop --lang js --history
-./scan.sh sca --path ~/scoursh-test-repos/juice-shop
+./scan.sh sca --path ~/scoursh-test-repos/juice-shop   # needs data/advisories.db populated, see Installation
 ```
 
 `scan.sh` never clones anything itself - `--path` must already point at a local, readable
@@ -289,8 +234,8 @@ third-party engines for extra coverage, gated behind `--use-engines`:
 
 | Module | Engine | What it adds |
 |---|---|---|
-| `sast` | [semgrep](https://github.com/semgrep/semgrep) | Broader pattern-based SAST coverage |
-| `sast` | [gitleaks](https://github.com/gitleaks/gitleaks) | Secondary secrets detection, deduplicated against `secrets.rules` findings at the same file/line |
+| `sast` | [semgrep](https://github.com/semgrep/semgrep) | Broader, AST-aware SAST coverage |
+| `sast` | [gitleaks](https://github.com/gitleaks/gitleaks) | Secondary secrets detection, deduplicated against native findings at the same file/line |
 | `iac` | [trivy](https://aquasecurity.github.io/trivy/) (`trivy config`) | Broader IaC misconfiguration coverage across Terraform, CloudFormation, Kubernetes, Helm, and docker-compose |
 
 None of these engines ship with the repository. `tools/vendor-engines.sh` is the one script
@@ -300,12 +245,15 @@ the exact binary URL and checksum yourself via environment variables (`SCOURSH_S
 `--use-engines`, or with an engine simply absent, `scoursh` behaves exactly as if the flag were never
 given - the run is unaffected, only the coverage gap is logged.
 
-## Current status: what running a scan does today
+## Build status
 
-Three modules have landed and produce real findings: `sast`, `iac`, and `sca`.
-`dast` and `cloud` remain a logged no-op today; see [Roadmap](#roadmap).
-Exactly which rule packs and ecosystems those three modules cover is GENERATED below by
-`tools/gen-status.sh` from `modules/` itself, so it cannot drift from the tree.
+Three modules are available today and produce real findings: `sast`, `iac`, and `sca`.
+`dast` and `cloud` are designed but not built; see [What's next](#whats-next).
+
+Exactly which rule packs and ecosystems those three modules cover is generated below straight from
+the repository tree, so it can't drift out of sync with what's actually on disk. In this table,
+**landed** is the generator's own term for "built and covered by a passing test" - everything else
+follows from that.
 
 <!-- BEGIN GENERATED STATUS -->
 <!--
@@ -400,31 +348,35 @@ Landed 6 of 6.  Outstanding: none.
 - No SARIF or compliance-mapping report exists yet, so `--format sarif` is accepted but there is
   nothing yet that emits SARIF.
 
-## Roadmap
+## What's next
 
 The full, dependency-ordered build plan lives in [`docs/DESIGN.md`](docs/DESIGN.md) §13, with a
-running account of what has landed and what's next in [`CLAUDE.md`](CLAUDE.md)'s "Build order and
-where we are" section. In short, what's left:
+running account of progress in [`CLAUDE.md`](CLAUDE.md)'s "Build order and where we are" section.
+In short, what's left:
 
 - Two outstanding SAST rule packs: `ldap.rules`, `nosql.rules`.
-- **DAST** (`scan.sh dast`) - a full, dependency-ordered sub-ticket plan already exists
-  ([`docs/STEP5-DAST-PLAN.md`](docs/STEP5-DAST-PLAN.md)), but no work has started; it is gated on the
-  two SAST packs above landing first.
+- **DAST** (`scan.sh dast`) - a full, dependency-ordered ticket plan already exists
+  ([`docs/STEP5-DAST-PLAN.md`](docs/STEP5-DAST-PLAN.md)), but no work has started; it's gated on the
+  two SAST packs above landing first. A local, self-hosted test target is already in place ahead of
+  time (`tools/dast-test-target.sh`).
 - **Live cloud/CSPM scanning** (`scan.sh cloud --live`) - also fully planned
   ([`docs/STEP6-CLOUD-PLAN.md`](docs/STEP6-CLOUD-PLAN.md)), gated on DAST completing. The read-only
-  AWS wrapper (`lib/awscli.sh`) already exists ahead of schedule.
-- **SARIF output and the compliance report** - `--format sarif` is accepted but nothing emits it yet.
+  AWS wrapper already exists ahead of schedule.
+- **SARIF output and a compliance report** - `--format sarif` is accepted but nothing emits it yet.
 - **Persistent run state** (`state/`) - needed before `--baseline` suppression and the `diff`/`report`
-  subcommands do real work; both are currently logged no-ops.
+  subcommands do real work; both are currently no-ops. A full ticket plan exists here too
+  ([`docs/STEP7-STATE-PLAN.md`](docs/STEP7-STATE-PLAN.md)).
 - Container image scanning (scanning built image layers, not just Dockerfile/compose source) and
   network/host scanning are not currently part of the design plan at all.
 
-See [`ROADMAP.md`](ROADMAP.md) for the fuller breakdown, including what has already landed ahead of
-its normal step order (the optional engine adapters, the `--paranoid` connection observer, and the
-Linux network-namespace guarantee are all further along than the step numbering alone would suggest).
+See [`ROADMAP.md`](ROADMAP.md) for the fuller breakdown, including work that's already landed ahead
+of its normal turn (the optional engine adapters, the `--paranoid` connection observer, and the
+Linux network-namespace guarantee are all further along than the step numbering alone would
+suggest).
 
 ## Documentation
 
+- [`docs/USAGE.md`](docs/USAGE.md) - the full CLI, exit-code, and configuration reference.
 - [`docs/DESIGN.md`](docs/DESIGN.md) - the original handoff spec.
 - [`docs/FOUNDATION.md`](docs/FOUNDATION.md) - the design-tension register: every non-obvious
   architectural decision, with its resolution.
