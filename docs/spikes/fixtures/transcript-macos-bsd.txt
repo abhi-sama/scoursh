@@ -1,0 +1,30 @@
+=== ENV ===
+Darwin Abhisheks-MacBook-Pro.local 25.5.0 Darwin Kernel Version 25.5.0: Tue Jun  9 22:28:34 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_T6050 arm64
+GNU bash, version 3.2.57(1)-release (arm64-apple-darwin25)
+ --
+
+=== Candidate A (getopt) on /bin/bash (macOS system bash 3.2) ===
+path=[] lang=[] history=0 jobs=[] fail_on=[] format=[] out=[] paranoid=0 positional=[--long path:,lang:,history,jobs:,fail-on:,format:,out:,paranoid -n candidate-a -- --path src --lang py,js --history --jobs 4 --fail-on high --format json,html --out /tmp/o --paranoid -- extra1 extra2]
+rc=0
+
+=== Candidate A (getopt) - unknown flag ===
+path=[] lang=[] history=0 jobs=[] fail_on=[] format=[] out=[] paranoid=0 positional=[--long path:,lang:,history,jobs:,fail-on:,format:,out:,paranoid -n candidate-a -- --bogus foo]
+
+=== Candidate A (getopt) - missing value ===
+path=[] lang=[] history=0 jobs=[] fail_on=[] format=[] out=[] paranoid=0 positional=[--long path:,lang:,history,jobs:,fail-on:,format:,out:,paranoid -n candidate-a -- --path]
+
+=== Candidate B (hand-rolled) on /bin/bash (macOS system bash 3.2) ===
+path=[src] lang=[py,js] history=1 jobs=[4] fail_on=[high] format=[json,html] out=[/tmp/o] paranoid=1 positional=[extra1 extra2]
+rc=0
+
+=== Candidate B - equals form ===
+path=[src] lang=[] history=0 jobs=[] fail_on=[high] format=[] out=[] paranoid=0 positional=[extra1]
+rc=0
+
+=== Candidate B - unknown flag ===
+die(2): unknown option: --bogus
+rc=2
+
+=== Candidate B - missing value ===
+die(2): --path requires a value
+rc=2
