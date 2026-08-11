@@ -49,11 +49,86 @@ Everything else in the `suite` job establishes that the tool behaves correctly o
 
 ## Required checks today
 
+**Status: branch protection is NOT currently enforced on `main`.**
+This is a known gap, not a completed control - do not read anything below as meaning `main` is protected.
+GitHub pushes to `main` are not currently blocked by CI status or by review; the only thing preventing an unreviewed or red-CI change from landing on `main` is that every change today arrives via a PR an agent opens and a human or reviewing agent merges deliberately, and CI already runs the three required contexts (below) on every push and PR.
+That is process discipline, not a server-side gate: it is the last line of defence that is missing, not the only one.
+See "Operator decision, 2026-08-02" below for why this is being left as-is for now, and the JSON payload and `gh api` command further down are ready to apply verbatim the moment that changes.
+
 CI produces three check runs per push/PR: the two `suite` matrix legs and `compare`.
 All three should be configured as required status checks on protected branches, since `compare` only means something once both `suite` legs have reported, and `suite` failing on either userland is exactly the class of defect this pipeline exists to catch.
 
-**Gap:** this workspace's GitHub App token cannot read `repos/abhi-sama/scoursh/branches/main/protection` (`403 Upgrade to GitHub Pro or make this repository public`), so the actual branch-protection configuration could not be verified from here.
-Confirm the required-status-check list in the repo's Settings > Branches against the three check names above (read them off the Checks tab of a real run, since GitHub's displayed name is the job's `name:` field, e.g. `ubuntu-latest (GNU coreutils)`, `macos-latest (BSD)`, `compare` - not necessarily prefixed with the workflow name `tests`).
+There is no separate "egress-lint" or "smoke-test" workflow: `tests/run-tests.sh` runs `lint-shell` (the egress-chokepoint/no-bypass linter) and the `ci-smoke` suite (`tests/suites/ci-smoke.sh`, added for the step-2 exit-code/profile smoke matrix) as part of the same `suite` job on both matrix legs. So "step-2 tests, egress-lint, smoke test" (the ticket's phrasing) map onto exactly the three check names below - there is nothing further to add to `ci.yml` for this ticket; see the checklist below for why a new suite/linter never needs a workflow edit.
+
+The three GitHub check names to require (read off the Checks tab of a real run; GitHub displays the job's `name:` field, not the workflow name `tests`):
+
+- `ubuntu-latest (GNU coreutils)`
+- `macos-latest (BSD)`
+- `compare`
+
+### Target branch-protection configuration for `main`
+
+```json
+{
+  "required_status_checks": {
+    "strict": true,
+    "checks": [
+      { "context": "ubuntu-latest (GNU coreutils)" },
+      { "context": "macos-latest (BSD)" },
+      { "context": "compare" }
+    ]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 1,
+    "dismiss_stale_reviews": true
+  },
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false
+}
+```
+
+Apply with (requires an admin token on a plan that supports this - see the blocker below):
+
+```
+gh api --method PUT repos/abhi-sama/scoursh/branches/main/protection \
+  -H "Accept: application/vnd.github+json" --input - <<'JSON'
+{ ...the object above... }
+JSON
+```
+
+`required_pull_request_reviews` being non-null is what disables direct pushes to `main` (GitHub always routes protected-branch changes through a PR once any review requirement or status check is required) and satisfies the "changes land via PR only" acceptance criterion.
+`enforce_admins` is deliberately `false` at rollout: `abhi-sama` is currently the sole admin and the only person who can unblock a red `main` if the required checks themselves regress.
+Flip it to `true` once there has been at least one real PR merged under the new rule with no incident, per the checklist below.
+
+**Blocker (confirmed, not a token/scope problem):** both the classic branch-protection API and the newer rulesets API refuse to configure anything on this repo:
+
+```
+$ gh api repos/abhi-sama/scoursh/branches/main/protection
+{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature.","status":"403"}
+$ gh api repos/abhi-sama/scoursh/rulesets
+{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature.","status":"403"}
+```
+
+Confirmed this is a plan limitation, not a permissions gap: `gh api repos/abhi-sama/scoursh/collaborators/abhi-sama/permission` reports `admin`, and the token has the `repo` scope.
+GitHub disables both branch protection and rulesets for private repositories on the Free plan for personal accounts; public repositories and paid plans (Pro/Team/Enterprise) are unaffected.
+This repo is private (`scoursh` is a security tool with vendored rule content; making it public is a product decision, not an infra one).
+
+Unblocking requires a human decision between:
+
+1. Upgrade the `abhi-sama` account to GitHub Pro (or move the repo under a GitHub Team org), then run the `gh api` command above, or
+2. Make the repository public, which lifts the restriction on the Free plan at the cost of exposing the rule/check catalog and scan logic, or
+3. Defer enforcement and rely on the documented convention (PR-only, three required checks) without a server-side gate until (1) or (2) happens.
+
+### Operator decision, 2026-08-02
+
+Option 3, for now: leave `main` un-enforced and rely on the documented PR-only convention, rather than force (1) or (2) tonight.
+Rationale recorded here so it isn't re-litigated: (1) and (2) both cost something only the product owner should decide to spend - money for a paid plan, or exposing a security scanner's rule/check catalog by going public - and neither was urgent enough to force immediately.
+The practical exposure of option 3 is narrower than "no protection at all" suggests, because the PR-only convention is already enforced by the delivery process (every change to `main` currently arrives via an agent-opened PR that a human or reviewing agent merges deliberately, and CI already runs all three required contexts on every push and PR); what is actually missing is GitHub refusing a direct push if someone bypasses that process.
+That is a real gap in the last line of defence, not the only line, and not yet closed.
+
+The configuration above is ready to apply verbatim, unchanged, the moment (1) or (2) is chosen - it is a single `gh api` call once the plan/visibility allows it, no further engineering work needed.
 
 ## GNU/BSD dual-runner rationale
 
