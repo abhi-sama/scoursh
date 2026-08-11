@@ -1025,6 +1025,8 @@ tests/lint-rules.sh                # record-format linter, error codes in rules/
 tests/lint-shell.sh                # the tension 4, 9, 24 and 26 shell lints
 tests/lint-aws-readonly.sh         # read-only AWS lint, docs/FOUNDATION.md tension 23
 tests/lint-status.sh               # the generated build-status blocks are current, and the guard bites
+tests/lint-no-ai.sh                # no AI/LLM provider hostname, SDK name, or API-key env var
+                                    # anywhere in the shipped tool (excludes docs and its own two files)
 tools/gen-status.sh --write        # regenerate those blocks after landing a module
 tests/e2e/fixture-scan.sh <dir>    # the end-to-end path on its own, for eyeballing a report
 tests/localstack/run.sh [up|verify|down|all]   # OPT-IN: real API shapes via a local emulator.
