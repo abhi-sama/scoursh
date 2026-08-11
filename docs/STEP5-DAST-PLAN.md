@@ -40,6 +40,38 @@ genuinely unbuilt - `docs/FOUNDATION.md` tension 19's own "Implementation" note 
 That gap is real remaining step-5 work and is planned below as DAST-01, distinct from the chokepoint
 itself, which is done.
 
+## A local, authorized DAST test target now exists - do not re-plan it either
+
+Crewban-22 (operator-blocked - no staging environment, and the operator would not scan anything not
+owned outright) landed while this block held: `tools/dast-test-target.sh` starts (idempotently) a
+pinned, self-hosted OWASP Juice Shop container on a fixed local port for exactly this purpose, and
+`tools/dast-test-identities.sh` provisions two distinct throwaway identities in it, following the same
+`secret-file`-in-a-600-file convention `config/auth.conf` (`rules/RULE-FORMAT.md` §9.6.2) already
+defines for a real operator's credentials.
+`tools/dast-test-target/scope.conf` is the `config/scope.conf`-format record authorizing exactly that
+target; `docs/DAST-TEST-TARGET-AUTHORIZATION.md` is the written authorization record itself, dated.
+None of DAST-01 through DAST-30 below need to plan target acquisition, authorization, or multi-identity
+setup - DAST-29 (`authz.sh`) in particular can point straight at this fixture's two identities and their
+already-confirmed basket-IDOR case (see `tests/e2e/dast-target-smoke.sh`) rather than standing up its
+own.
+
+Two things worth knowing before building against it:
+
+- **This tooling never calls a host-side `curl`/`wget`/etc.**, on purpose: `tests/lint-shell.sh`'s
+  tension-19 "no bypass" check only exempts `lib/http.sh` and `tools/vendor-engines.sh`, and adding a
+  third exemption for one-time local setup tooling was judged not worth diverging from that frozen
+  invariant. Instead, the one HTTP call this tooling needs (registration, login, the readiness poll)
+  runs *inside* the container over `docker exec`, via the small vendored
+  `tools/dast-test-target/http-client.js`. A future DAST-0x script that legitimately needs to talk to
+  this fixture from the host should go through `lib/http.sh`'s `http_request` like everything else -
+  `tests/e2e/dast-target-smoke.sh` already does exactly that for its own reachability/gate checks.
+- **The container's account database does not survive a stop/start cycle** (it is not a volume), while
+  `.dast-test-target/`'s generated secret-files are local state that does. `tools/dast-test-identities.sh`
+  handles this by always re-registering (harmless against this pinned image, which does not reject a
+  duplicate email) rather than skipping registration whenever a secret-file already exists - see that
+  script's own comment on `dti_provision` if this ever needs revisiting against a different pinned
+  version.
+
 ## Dependency-ordered sub-ticket list
 
 Ordering follows `docs/DESIGN.md` §13 step 5's own sequence (`lib/http.sh` -> `auth.sh` -> `crawl.sh` ->
