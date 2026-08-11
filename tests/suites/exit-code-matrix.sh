@@ -55,7 +55,12 @@
 #   `_row_*` via EXIT_CODE_TABLE's driving loop (`"$_fn" "$_code"`) - neither
 #   of which shellcheck's static call graph follows, same as `_run_main` in
 #   tests/suites/scan.sh.
-# shellcheck disable=SC2015,SC2016,SC2030,SC2031,SC2329
+# SC2317: the companion "unreachable" finding shellcheck emits for every
+#   statement inside a function it has already decided (via SC2329) is never
+#   called - same root cause, not a second bug. Measured: ShellCheck 0.11.0
+#   (this repo's pinned local version) does not emit SC2317 for these bodies;
+#   the version CI's `apt-get install shellcheck` resolves does.
+# shellcheck disable=SC2015,SC2016,SC2030,SC2031,SC2329,SC2317
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)

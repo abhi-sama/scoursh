@@ -38,7 +38,15 @@
 # SC2329: several `cmd_*`/`_scan_*` functions are only ever called through
 # the command dispatch table (`scan_dispatch`) or by scan_main, not by a
 # literal call shellcheck's static graph can follow.
-# shellcheck disable=SC2329
+# SC2119: `config_scanner_load` (lib/config.sh) takes an optional path
+#   override; scan_main calls it bare on purpose (the CLI>env>file>default
+#   chain resolves scanner.conf's location itself), while
+#   tests/suites/config.sh calls it with an explicit fixture path - a real
+#   optional argument, not an unused one. Measured: ShellCheck 0.11.0 (this
+#   repo's pinned local version) does not flag this call; the version CI's
+#   `apt-get install shellcheck` resolves does, same class of disagreement as
+#   lib/http.sh's SC2119/SC2120 note.
+# shellcheck disable=SC2329,SC2119
 
 # Sourced twice (a test re-sourcing it) is a no-op the second time, same
 # guard idiom as every lib/*.sh file.  This branch is only reachable via
