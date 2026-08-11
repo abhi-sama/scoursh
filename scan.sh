@@ -146,6 +146,7 @@ SCAN_COMMANDS=(sast sca iac dast cloud all diff report)
 # to index an array-of-arrays by a variable holding its name.
 declare -A _SCAN_FLAG_KIND=(
   [global:profile-scan]=value
+  [global:verbose]=bool
   [global:paranoid]=bool
   [global:use-engines]=bool
   [global:allow-intrusive]=bool
@@ -232,6 +233,9 @@ Commands:
 
 Global:
   --profile-scan quick|full|compliance   (default: full - see lib/checks.sh)
+  --verbose                 (also print rule-authoring lint warnings, e.g.
+                              W033, that a normal run keeps out of your way -
+                              see rules/RULE-FORMAT.md for what they mean)
   --paranoid                (connection DETECTOR, not a guarantee - aborts
                               (exit 3) on the first connection outside the
                               run's allowlist; exits 4 if neither `ss` nor a
@@ -579,6 +583,7 @@ _scan_apply_profile_filter() {
 # 8. main
 # -----------------------------------------------------------------------------
 scan_main() {
+  local _scan_t0=$SECONDS
   scan_parse_args "$@"
 
   core_require_baseline
@@ -610,7 +615,9 @@ scan_main() {
   _scan_capture SCOURSH_FAIL_ON config_scanner_value fail-on "${SCAN_FLAGS[fail-on]:-}"
   _scan_capture SCOURSH_MIN_CONFIDENCE config_scanner_value min-confidence "${SCAN_FLAGS[min-confidence]:-}"
   _scan_capture SCOURSH_REDACT_SECRETS config_scanner_value redact-secrets ''
-  export SCOURSH_JOBS SCOURSH_FAIL_ON SCOURSH_MIN_CONFIDENCE SCOURSH_REDACT_SECRETS
+  SCOURSH_SHOW_RULE_WARNINGS=${SCAN_FLAGS[verbose]:-false}
+  export SCOURSH_JOBS SCOURSH_FAIL_ON SCOURSH_MIN_CONFIDENCE SCOURSH_REDACT_SECRETS \
+    SCOURSH_SHOW_RULE_WARNINGS
   config_scanner_list formats "${SCAN_FLAGS[format]:-}" >/dev/null
 
   # 8b. --paranoid (docs/FOUNDATION.md tension 20; lib/paranoid.sh): attached
@@ -734,6 +741,7 @@ scan_main() {
   fi
 
   report_run_json "$SCOURSH_RUN_DIR"
+  log_info "scan complete in $(( SECONDS - _scan_t0 ))s - report: $SCOURSH_RUN_DIR"
 
   local code
   code=$(scan_exit_code 0 0 0 "$incomplete" "$gate")

@@ -465,6 +465,18 @@ pre.ev { background: var(--bg); border: 1px solid var(--line); border-radius: .3
 .empty { color: var(--muted); font-style: italic; }
 footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--line);
          color: var(--muted); font-size: .8rem; }
+nav.toc { border: 1px solid var(--line); border-radius: .5rem; padding: .7rem 1rem;
+          margin: 0 0 2rem; background: var(--card); }
+nav.toc p { margin: 0 0 .35rem; font-size: .72rem; text-transform: uppercase;
+            letter-spacing: .07em; color: var(--muted); font-weight: 600; }
+nav.toc ul { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: .4rem .9rem; }
+nav.toc a, .top-link, .permalink { color: var(--accent); text-decoration: none; }
+nav.toc a:hover, .top-link:hover, .permalink:hover { text-decoration: underline; }
+.permalink { margin-left: .4rem; opacity: .5; font-weight: 400; }
+.permalink:hover { opacity: 1; }
+h2 { scroll-margin-top: 1rem; }
+details.f { scroll-margin-top: 1rem; }
+.top-link { display: inline-block; margin-top: .75rem; font-size: .82rem; }
 </style>
 </head>
 <body>
@@ -473,14 +485,23 @@ HTML
 }
 
 _html_summary() {
-  printf '<h1>scoursh scan report</h1>\n'
+  printf '<h1 id="top">scoursh scan report</h1>\n'
   printf '<p class="sub">run <code>%s</code> · tool <code>%s</code> · fingerprint schema <code>%s</code> · %s live findings, %s accepted risk</p>\n' \
     "$(html_escape "${SCOURSH_RUN_ID:-}")" "$(html_escape "$(scoursh_version)")" \
     "$(html_escape "$FP_SCHEMA")" "$_RPT_LIVE" "$_RPT_SUPPRESSED"
   if [[ $SCOURSH_REDACT_SECRETS != true ]]; then
     printf '<p class="banner">Redaction is DISABLED for this run. This report may contain live credentials and must not be circulated.</p>\n'
   fi
-  printf '<h2>Severity</h2>\n<div class="tiles">\n'
+  printf '<nav class="toc"><p>On this page</p><ul>\n'
+  printf '<li><a href="#severity">Severity</a></li>\n'
+  printf '<li><a href="#since-last-scan">Since the last scan</a></li>\n'
+  (( ${#_RPT_MODULE[@]} > 0 )) && printf '<li><a href="#by-module">By module</a></li>\n'
+  (( ${#_RPT_OWASP[@]} > 0 )) && printf '<li><a href="#by-owasp">By OWASP category</a></li>\n'
+  printf '<li><a href="#findings">Findings (%s)</a></li>\n' "$_RPT_LIVE"
+  (( _RPT_SUPPRESSED > 0 )) && printf '<li><a href="#accepted-risk">Accepted risk (%s)</a></li>\n' "$_RPT_SUPPRESSED"
+  printf '<li><a href="#limitations">Limitations and coverage</a></li>\n'
+  printf '</ul></nav>\n'
+  printf '<h2 id="severity">Severity</h2>\n<div class="tiles">\n'
   local k
   for k in critical high medium low info; do
     printf '<div class="tile %s"><div class="n">%s</div><div class="l">%s</div></div>\n' \
@@ -494,14 +515,14 @@ _html_summary() {
     done
     printf '.</p>\n'
   fi
-  printf '<h2>Since the last scan</h2>\n<div class="tiles">\n'
+  printf '<h2 id="since-last-scan">Since the last scan</h2>\n<div class="tiles">\n'
   for k in new recurring fixed unknown; do
     printf '<div class="tile"><div class="n">%s</div><div class="l">%s</div></div>\n' \
       "${_RPT_STATUS[$k]:-0}" "$k"
   done
   printf '</div>\n'
   if (( ${#_RPT_MODULE[@]} > 0 )); then
-    printf '<h2>By module</h2>\n<table><tr><th>module</th><th>findings</th></tr>\n'
+    printf '<h2 id="by-module">By module</h2>\n<table><tr><th>module</th><th>findings</th></tr>\n'
     while IFS= read -r k; do
       [[ -n $k ]] || continue
       printf '<tr><td>%s</td><td>%s</td></tr>\n' "$(html_escape "$k")" "${_RPT_MODULE[$k]}"
@@ -509,7 +530,7 @@ _html_summary() {
     printf '</table>\n'
   fi
   if (( ${#_RPT_OWASP[@]} > 0 )); then
-    printf '<h2>By OWASP category</h2>\n<table><tr><th>category</th><th>findings</th></tr>\n'
+    printf '<h2 id="by-owasp">By OWASP category</h2>\n<table><tr><th>category</th><th>findings</th></tr>\n'
     while IFS= read -r k; do
       [[ -n $k ]] || continue
       printf '<tr><td>%s</td><td>%s</td></tr>\n' "$(html_escape "$k")" "${_RPT_OWASP[$k]}"
@@ -520,7 +541,7 @@ _html_summary() {
 
 _html_findings() {
   local rundir=$1 line
-  printf '<h2>Findings</h2>\n'
+  printf '<h2 id="findings">Findings</h2>\n'
   if [[ ! -s $rundir/findings.fields ]]; then
     printf '<p class="empty">No findings.</p>\n'
     return 0
@@ -539,7 +560,7 @@ _html_findings() {
   # with their reason, and are counted separately (tension 11 step 9).  They are
   # never deleted.
   if (( _RPT_SUPPRESSED > 0 )); then
-    printf '<h2>Accepted risk (%s)</h2>\n' "$_RPT_SUPPRESSED"
+    printf '<h2 id="accepted-risk">Accepted risk (%s)</h2>\n' "$_RPT_SUPPRESSED"
     while IFS= read -r line; do
       [[ -n $line ]] || continue
       finding_decode "$line"
@@ -550,16 +571,21 @@ _html_findings() {
 }
 
 _html_one_finding() {
-  local sev=${_DF[severity]:-info} loc
+  local sev=${_DF[severity]:-info} loc fp_id
   loc=$(_location_summary)
+  # The fingerprint is already the finding's own stable identity (tension 5:
+  # never a line number, so it survives reindentation) - reused directly as
+  # the anchor id so a link to one finding stays valid across re-runs whose
+  # content did not change.
+  fp_id="f-$(html_escape "${_DF[fingerprint]}")"
   # The location belongs in the COLLAPSED line, not only inside it: repeated
   # byte-identical matches of one check are distinct findings with distinct
   # fingerprints (tension 5), and a list that renders them as three identical
   # rows reads as a duplication bug.
-  printf '<details class="f" data-sev="%s"><summary><span class="sev %s">%s</span> <strong>%s</strong> - %s<span class="loc">%s</span></summary>\n' \
-    "$(html_escape "$sev")" "$(html_escape "$sev")" "$(html_escape "$sev")" \
+  printf '<details class="f" id="%s" data-sev="%s"><summary><span class="sev %s">%s</span> <strong>%s</strong> - %s<span class="loc">%s</span><a class="permalink" href="#%s" title="Permalink to this finding">#</a></summary>\n' \
+    "$fp_id" "$(html_escape "$sev")" "$(html_escape "$sev")" "$(html_escape "$sev")" \
     "$(html_escape "${_DF[check_id]}")" "$(html_escape "${_DF[title]}")" \
-    "$(html_escape "$loc")"
+    "$(html_escape "$loc")" "$fp_id"
   printf '<div class="body">\n'
   printf '<p class="meta">%s · %s · confidence %s · status %s · base severity %s</p>\n' \
     "$(html_escape "${_DF[cwe]:-none}")" "$(html_escape "${_DF[owasp]:-none}")" \
@@ -591,7 +617,7 @@ _html_one_finding() {
 
 _html_limitations() {
   local rundir=$1 line any=0
-  printf '<h2>Limitations and coverage</h2>\n<ul>\n'
+  printf '<h2 id="limitations">Limitations and coverage</h2>\n<ul>\n'
   if [[ -r $rundir/meta/coverage_gap ]]; then
     while IFS= read -r line; do
       [[ -n $line ]] || continue
@@ -625,6 +651,7 @@ _html_limitations() {
 }
 
 _html_foot() {
+  printf '<p><a class="top-link" href="#top">&uarr; Back to top</a></p>\n'
   printf '<footer>Generated by scoursh %s. This report is self-contained: no external assets, no scripts, no network requests.</footer>\n' \
     "$(html_escape "$(scoursh_version)")"
   printf '</main>\n</body>\n</html>\n'

@@ -141,8 +141,21 @@ iac_scan_tree() {
   local scan_root
   scan_root=$(scan_root_of "$root")
   local abspath rel id loc set idx
+  local files total n
+  files=$(sast_walk_files "$root")
+  total=0
+  if [[ -n $files ]]; then
+    total=$(wc -l <<<"$files")
+    total=${total// /}
+  fi
+  log_info "iac: scanning $total files under $root"
+  n=0
   while IFS= read -r abspath; do
     [[ -n $abspath ]] || continue
+    n=$(( n + 1 ))
+    if is_tty; then
+      printf '\r  %d / %d files scanned' "$n" "$total" >&2
+    fi
     rel=$(sast_relpath "$scan_root" "$abspath")
     occurrence_reset_unit "$rel"
     for id in "${ids[@]+"${ids[@]}"}"; do
@@ -152,5 +165,8 @@ iac_scan_tree() {
       sast_rule_matches_file "$set" "$idx" "$rel" || continue
       iac_scan_file "$set" "$idx" "$rel" "$abspath"
     done
-  done < <(sast_walk_files "$root")
+  done <<<"$files"
+  if is_tty && (( total > 0 )); then
+    printf '\r  %d / %d files scanned\n' "$n" "$total" >&2
+  fi
 }

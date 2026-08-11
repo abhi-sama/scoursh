@@ -252,7 +252,18 @@ records_diag() {
   local msg="$path:$line:$col: $code ${id:--} $*"
   RECORDS_DIAGNOSTICS+=("$msg")
   case $code in
-    W*) ;;
+    # A W-class diagnostic is a rule-authoring note (a reviewed, deliberate
+    # trade-off - e.g. W033, docs/FOUNDATION.md finding F4) meant for whoever
+    # edits a *.rules file, not for someone running a scan against their own
+    # project.  It is always recorded in RECORDS_DIAGNOSTICS above (so
+    # tests/lint-rules.sh, which reads that array directly rather than
+    # stderr, sees every one regardless), but only PRINTED here when
+    # SCOURSH_SHOW_RULE_WARNINGS is set - scan.sh's --verbose flag - so a
+    # normal scan run isn't opened with a wall of warnings nobody scanning
+    # their own code can act on.
+    W*)
+      [[ ${SCOURSH_SHOW_RULE_WARNINGS:-} == true ]] || return 0
+      ;;
     *) RECORDS_ERRORS=$(( RECORDS_ERRORS + 1 )) ;;
   esac
   printf '%s\n' "$msg" >&2
