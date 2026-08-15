@@ -279,30 +279,40 @@ _sca_go_emit_finding() {
 # against data/advisories.db, emit one SCA-GO-VULNERABLE_DEP-01 finding per
 # vulnerable pinned dependency, and one roll-up SCA-COV-UNKNOWN_VERSION-01
 # finding when any Go package the db tracks had its exact pinned version go
-# unmatched - the same shape as modules/sca/engine.sh's sca_scan_tree, but
-# deliberately NOT calling into it or sharing its local unknown_count: this
-# is a second, independent invocation with its own local state, exactly as
+# unmatched - the same shape as modules/sca/engine.sh's sca_scan_tree, and
+# still a second, independent invocation that never calls into it, exactly as
 # modules/sca/run.sh's own header instructs each ecosystem's run function to
-# be self-contained.
+# be self-contained.  The ONE thing the two now share is the roll-up
+# accumulator (modules/sca/engine.sh section 8a), for the reason immediately
+# below.
 #
-# STATED LIMITATION: when a single run scans BOTH an npm and a Go manifest
-# tree and BOTH have unknown-version gaps, this emits its OWN
-# SCA-COV-UNKNOWN_VERSION-01 finding alongside the npm engine's - two
-# roll-ups rather than one unified one, because the two engines share no
-# process state. A shared-emitter refactor to unify this across ecosystems
-# is filed as a follow-up rather than done here, to keep this ticket's diff
-# to the Go slice.
+# THE STATED LIMITATION THIS HEADER USED TO CARRY IS FIXED, and the fix is
+# worth knowing about here because it is the one piece of shared state this
+# file has.  It used to read: when a single run scans BOTH an npm and a Go
+# manifest tree and BOTH have unknown-version gaps, this emits its OWN
+# SCA-COV-UNKNOWN_VERSION-01 alongside the npm engine's - two roll-ups rather
+# than one, because the two engines share no process state.  That was worse
+# than "two roll-ups": both hashed to the SAME fingerprint (the SCA location
+# profile is ecosystem/package/advisory_id and a roll-up populates none of
+# them), so findings_merge's dedup silently dropped one and the operator was
+# told a smaller number of unknown-version dependencies than the truth.
+# modules/sca/engine.sh's section 8a is the shared accumulator that replaces
+# the per-walk emission; this walk feeds it with `sca_rollup_add Go` and ends
+# with `_sca_rollup_autoflush`, so it still emits its own roll-up when called
+# standalone and contributes to the module's single one when called from
+# modules/sca/run.sh.
+#
+# The db-absent guard below is SILENT for the same reason
+# modules/sca/engine.sh's is: this file's warning and that one's meant every
+# `sca` run announced the same absence twice, while the Python and Java walks
+# announced nothing.  `sca_report_no_advisories_db` (engine.sh) now makes that
+# announcement once, for the module, naming every ecosystem.
 sca_go_scan_tree() {
   local root=$1
   local db
   db=$(sca_advisories_db_path)
-  if [[ ! -r $db ]]; then
-    log_warn "sca: data/advisories.db not readable at '$db' - nothing to match Go dependencies against (tools/vendor-engines.sh populates it and is never run in this repo/CI, docs/FOUNDATION.md tension 25)"
-    run_record coverage_reduction 'module=sca reason=no_advisories_db_on_disk ecosystem=Go'
-    return 0
-  fi
+  sca_advisories_db_readable "$db" || return 0
 
-  local -A unknown_count=()
   local dir has_mod has_sum relpath hits name pinned_ver direct row processed=0
   hits=$SCOURSH_SCRATCH/sca-go-hits.$$
 
@@ -333,7 +343,7 @@ sca_go_scan_tree() {
           _sca_go_emit_finding "$direct" "$relpath" "$pinned_ver" "$row"
         done <"$hits"
       elif sca_package_known Go "$lookup_name" "$db"; then
-        unknown_count[Go]=$(( ${unknown_count[Go]:-0} + 1 ))
+        sca_rollup_add Go
       fi
     done < <(
       if (( has_mod )); then
@@ -345,32 +355,9 @@ sca_go_scan_tree() {
   done < <(_sca_go_manifest_dirs "$root")
   rm -f "$hits"
 
-  if (( ${#unknown_count[@]} > 0 )); then
-    run_record checks_run SCA-COV-UNKNOWN_VERSION-01
-    local -a ecos=()
-    local eco cnt total=0 breakdown=''
-    while IFS= read -r eco; do
-      [[ -n $eco ]] && ecos+=("$eco")
-    done < <(printf '%s\n' "${!unknown_count[@]}" | LC_ALL=C sort)
-    for eco in "${ecos[@]+"${ecos[@]}"}"; do
-      cnt=${unknown_count[$eco]}
-      total=$(( total + cnt ))
-      breakdown="${breakdown:+$breakdown, }$eco: $cnt"
-      run_record coverage_gap "module=sca reason=unknown_version ecosystem=$eco count=$cnt"
-    done
-    finding_new
-    finding_set check_id SCA-COV-UNKNOWN_VERSION-01
-    finding_set module sca
-    finding_set title "SCA: $total pinned dependency version(s) not present in data/advisories.db (package known, exact version unmatched)"
-    finding_set base_severity info
-    finding_set confidence high
-    finding_set cwe none
-    finding_set owasp none
-    finding_set cell "$SCOURSH_PATH_ROOT"
-    finding_set remediation 'Refresh data/advisories.db (tools/vendor-engines.sh, on a networked box) to a snapshot that covers these exact pinned versions - absence here means "unknown", never "not vulnerable".'
-    finding_set_evidence "by ecosystem: $breakdown"
-    finding_emit
-  fi
+  # Section 8a (modules/sca/engine.sh): accumulate always, emit only when no
+  # deferred window is open.
+  _sca_rollup_autoflush
 
   if (( processed > 0 )); then
     run_record coverage_reduction 'module=sca reason=go_replace_exclude_directives_not_resolved'

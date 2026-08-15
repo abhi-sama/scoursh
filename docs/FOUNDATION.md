@@ -554,6 +554,29 @@ Four of these need their normalisation frozen:
   Upgrading past an advisory makes the finding disappear, which the diff reports as `fixed`.
   Including the version would instead report `fixed` plus `new` on every patch bump.
 
+**An SCA coverage roll-up populates none of those three components, and that obliges the module to emit
+exactly one of it per run.**
+`SCA-COV-UNKNOWN_VERSION-01` and `SCA-COV-NO_ADVISORY_DB-01` answer a question about the run, not about
+a dependency: they name no ecosystem, no package and no advisory, so every instance of one hashes to
+the identical fingerprint, by construction and correctly.
+The uniqueness that the "fingerprints are unique within a run" property below asserts therefore rests, for
+these two check ids alone, on the module emitting each at most once - not on the components telling two
+instances apart, because there are no components.
+That obligation was breached and cost real coverage: the module's four ecosystem-scan entry points each
+accumulated unknown-version counts locally and each emitted its own roll-up, so a repository with npm and
+Python dependencies produced two findings with one fingerprint, the merge's dedup kept whichever won its
+sort, and the operator was told a smaller number than the truth - measured at four-to-one on a fixture
+carrying npm, PyPI, Maven and Go gaps together.
+The repair is at the emission layer: the walks accumulate into one table that the module flushes once.
+**Adding `ecosystem` to the roll-up's fingerprint was the obvious alternative and is rejected**, on two
+grounds worth keeping so it is not re-proposed.
+It changes finding identity for a shipped check id, which `rules/RULE-FORMAT.md` §14 item 3 prices as
+invalidating `state/` and every `config/baseline.json` entry for it; and it is a false model, since the
+roll-up is one answer to one per-run question and splitting it per ecosystem makes the check mean
+something it does not.
+Emitting once is also the stronger repair: a second roll-up becomes impossible to produce rather than
+merely harmless.
+
 **`control_id` is the `POSTURE-*` check id**, not the `config/posture.conf` expectation id.
 Those became two different things when `rules/RULE-FORMAT.md` §9.6.4 split the namespaces, and a
 fingerprint input may not have two candidate referents.
@@ -2158,7 +2181,8 @@ Three edge cases are decided rather than left open, all three **fail closed**:
 
 | Command | Requires |
 |---|---|
-| `sast`, `sca`, `iac` | a readable `--path`, which is optional and **defaults to `.`** (tension 12), so exit `4` means the resolved path is absent or unreadable, not that the flag was omitted. **No `scope.conf`.** |
+| `sast`, `iac` | a readable `--path`, which is optional and **defaults to `.`** (tension 12), so exit `4` means the resolved path is absent or unreadable, not that the flag was omitted. **No `scope.conf`.** |
+| `sca` | the same readable `--path`, **and a readable `data/advisories.db`** - see the paragraph below |
 | `dast` | `config/scope.conf` with a matching `--target`; `config/auth.conf` additionally when `--authed` |
 | `cloud --live` | resolvable AWS credentials; `config/scope.conf` is not required, since AWS endpoints are allowed by §2 independently |
 | `posture` | `config/posture.conf` |
@@ -2167,6 +2191,50 @@ Three edge cases are decided rather than left open, all three **fail closed**:
 A missing `scope.conf` is exit `4` only for `dast`.
 This preserves the §7 gate exactly (a `dast` run still cannot proceed without it, and there is still no
 raw-URL bypass) while removing the incentive to write a dummy entry.
+
+**`data/advisories.db` is `sca`'s required input, and this row was added rather than assumed.**
+It is a later amendment to this table, not part of the original resolution, so it is marked as one.
+The register already answers what a missing module input costs; what it had never been asked is whether
+the advisory database *is* one.
+It is: `sca` is a table lookup (tension 25), every ecosystem is matched against that one table, and
+without it not a single dependency in any ecosystem is examined.
+The behaviour before this row existed was that a `scan.sh sca` against a knowingly vulnerable project
+exited `0` with zero findings and an empty `checks_run`, which renders "it did not look" and "it looked
+and found nothing" identically - the precise failure §15 and this whole register exist to prevent, and
+worse here than elsewhere because `data/advisories.db` is absent by default (`tools/vendor-engines.sh`
+populates it on a networked box and never runs during a scan), so the misleading run was the ordinary
+one rather than an edge case.
+Nothing new is minted for it: no exit code outside `0`-`5`, and the precedence order above is untouched.
+Exit `5` was considered and rejected - it is reserved for **unplanned** incompleteness, its predicate is
+`incomplete_reason` being non-empty, and this run did not fail part-way through; it never had the input
+it needed, which is what `4` means.
+The documented CI contract settles it independently: `5` says "investigate the target or the run and
+re-scan", `4` says "fix the invocation or the config", and the remedy here is to populate the database.
+The closest existing precedent is tension 20's, where `--paranoid` with no connection observer available
+on the host is exit `4` before the run starts, for the same reason: a requested capability whose
+prerequisite is absent, discovered from the environment rather than the command line.
+The `all` row above governs unchanged - a `scan.sh all` with no advisory database **skips `sca` with a
+`run.json` reason and does not change the exit code**, because the other modules did do what they were
+asked.
+Both directions are pinned by tests, because the naive fix for each is the other's bug: exit `4`
+unconditionally makes every `all` run non-zero on a fresh checkout, and exit `0` unconditionally is the
+defect itself.
+
+**Implementation.**
+`modules/sca/run.sh` decides the gate once, for the module, before any ecosystem walk, and records one
+`coverage_reduction module=sca reason=no_advisories_db_on_disk ecosystems=<every ecosystem, LC_ALL=C
+sorted>` plus a `SCA-COV-NO_ADVISORY_DB-01` finding so the report says so in the findings list rather
+than only in its limitations section.
+That announcement had previously been each walk's own business, which is a shape in which it cannot be
+correct: two of the four walks announced it (so a plain `sca` run recorded the same fact twice whatever
+the tree contained) and the other two returned silently (so half the ecosystems were accounted for by
+nothing at all).
+The finding is `info`, matching its sibling `SCA-COV-UNKNOWN_VERSION-01`: a blind spot is not a
+vulnerability, and giving it a gating severity would make the run report exit `1`, which asserts "a
+complete assessment that failed its gate" - exactly the claim this run cannot make.
+The module sets the `input` condition and `scan_exit_code` applies the precedence, so the run still
+writes its full report before returning `4`; a `die` would have exited with nothing on disk, which
+trades one kind of silence for another.
 
 **Consequence for the build.**
 §13 step 2 delivers the exit-code precedence function and the complete flag table; the gate itself lands
@@ -4648,7 +4716,7 @@ Landed 10 of 10.  Outstanding: none.
 | Manifests | Status | Parsers | Exercised by |
 | --- | --- | --- | --- |
 | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` | landed | 3 of 3 parsed | `tests/fixtures/sca/mixed-ecosystems-php/package-lock.json` |
-| `requirements.txt`, `poetry.lock`, `Pipfile.lock` | landed | 3 of 3 parsed | `tests/fixtures/sca/python-requirements/requirements.txt` |
+| `requirements.txt`, `poetry.lock`, `Pipfile.lock` | landed | 3 of 3 parsed | `tests/fixtures/sca/mixed-four-ecosystems/requirements.txt` |
 | `go.mod`, `go.sum` | landed | 2 of 2 parsed | `tests/fixtures/sca/go-mod/go.mod` |
 | `pom.xml`, `build.gradle` | landed | 2 of 2 parsed | `tests/fixtures/sca/maven/pom.xml` |
 | `Gemfile.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca/mixed-ecosystems/Gemfile.lock` |

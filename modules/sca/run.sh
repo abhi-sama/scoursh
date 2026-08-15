@@ -37,48 +37,45 @@
 # reasoning.  A future ecosystem sharing this same roll-up is expected to
 # extend `sca_scan_tree` itself the same way, not add a fourth call here.
 #
-# PYTHON AND JAVA BOTH DIVERGED FROM THAT PLAN, DELIBERATELY - each is its own
-# correction, added once each ticket landed after the paragraph above was
-# written.  Rather than folding a third or fourth ecosystem into
-# `sca_scan_tree` itself, Python shipped a sibling function,
-# `sca_scan_python_tree` (modules/sca/engine.sh), called from its own
-# `_sca_py_run` below, and Java likewise shipped `sca_scan_java_tree`,
-# called from its own `_sca_java_run` below - both to avoid touching
-# `sca_scan_tree`'s already-tested npm/Ruby/PHP code path.  Each sibling
-# function's own header states this plainly: a run with BOTH an
-# npm/Ruby/PHP unknown-version case AND a Python or Java one emits a
-# SEPARATE SCA-COV-UNKNOWN_VERSION-01 finding per ecosystem-scan call rather
-# than one truly-merged roll-up - the same fingerprint-collision exposure the
-# paragraph above describes, accepted as a stated, filed follow-up rather
-# than re-touching the tested npm/Ruby/PHP path.  `_sca_run_module` below
-# MUST keep running `_sca_npm_run` (and so `sca_scan_tree`) before
-# `_sca_py_run` and `_sca_java_run`: both `sca_scan_python_tree` and
-# `sca_scan_java_tree` deliberately skip the db-absent check and the two
-# module-level coverage_reduction facts that `sca_scan_tree` already records
-# unconditionally, relying on that ordering to avoid duplicating them (see
-# each function's own header).  If a further ecosystem (Go, ...) lands its
-# own engine.sh entry point, its own run function is likewise called from
-# _sca_run_module below, next to these three - do not fork this file per
-# ecosystem.
+# PYTHON AND JAVA BOTH DIVERGED FROM THAT PLAN, DELIBERATELY, AND GO WENT
+# FURTHER STILL - each is its own correction, added once each ticket landed
+# after the paragraph above was written.  Rather than folding a third or
+# fourth ecosystem into `sca_scan_tree` itself, Python shipped a sibling
+# function, `sca_scan_python_tree` (modules/sca/engine.sh), called from its
+# own `_sca_py_run` below; Java likewise shipped `sca_scan_java_tree`, called
+# from `_sca_java_run`; and Go shipped `sca_go_scan_tree` in its OWN file,
+# modules/sca/go_engine.sh, called from `_sca_go_run` - all three to avoid
+# touching `sca_scan_tree`'s already-tested npm/Ruby/PHP code path.  If a
+# further ecosystem lands its own entry point, its run function is likewise
+# called from _sca_run_module below, next to these four - do not fork this
+# file per ecosystem.
 #
-# GO IS THE FOURTH SUCH CALL, AND IT IS FULLY SELF-CONTAINED - the one way
-# it differs from Python and Java above, recorded here so the ordering
-# constraint is not over-applied to it.  Go went further than PHP did and
-# landed its parser in its OWN file, modules/sca/go_engine.sh (go.mod/go.sum
-# parsing, SCA-GO-VULNERABLE_DEP-01), sourced below next to
-# modules/sca/engine.sh, exactly as this file's original header invited
-# ("if a further ecosystem (Go, ...) lands its own ... entry point, its own
-# run function is likewise called from _sca_run_module below").
-# `sca_go_scan_tree` (modules/sca/go_engine.sh) does run its OWN
-# data/advisories.db-readable check and emits its own
-# `reason=no_advisories_db_on_disk ecosystem=Go` coverage_reduction, so
-# unlike `_sca_py_run` and `_sca_java_run` it does NOT depend on
-# `_sca_npm_run` having gone first.  It is still called last below, purely
-# for a stable emission order.  It shares the roll-up exposure the
-# paragraphs above describe: a run with both an npm/Ruby/PHP (or Python, or
-# Java) unknown-version case and a Go one emits a SEPARATE
-# SCA-COV-UNKNOWN_VERSION-01 per ecosystem-scan call - the same stated,
-# filed follow-up, not a new one.
+# THE COST OF THAT DIVERGENCE WAS REAL, AND IS NOW PAID OFF RATHER THAN
+# RESTATED.  Each of the four walks accumulated unknown-version counts in its
+# OWN local table and emitted its OWN roll-up, so the collision the paragraph
+# above avoided for npm/Ruby/PHP simply reappeared BETWEEN the walks: a run
+# with an npm gap and a Python one emitted two SCA-COV-UNKNOWN_VERSION-01
+# findings with one fingerprint, findings_merge's dedup kept one, and the
+# operator was told a smaller number than the truth (measured 1 reported
+# against 4 real on tests/fixtures/sca/mixed-four-ecosystems/).  Every
+# sibling function's header used to record that as a stated, filed
+# follow-up; it is fixed instead.  modules/sca/engine.sh section 8a holds one
+# shared accumulator, `_sca_run_module` below brackets its four calls with
+# `sca_rollup_begin`/`sca_rollup_flush`, and each walk still self-flushes when
+# called standalone, so the unit tests that call each entry point on its own
+# are unaffected.  A fifth ecosystem needs no new roll-up code at all: call
+# `sca_rollup_add <ecosystem>` and end with `_sca_rollup_autoflush`.
+#
+# ONE ORDERING CONSTRAINT SURVIVES, AND IT IS NARROWER THAN IT WAS.
+# `_sca_npm_run` (and so `sca_scan_tree`) must still run before the other
+# three, because `sca_scan_tree` is the only walk that records the
+# module-level `single_worker_no_parallel_scan_yet` coverage_reduction and
+# the others deliberately skip it rather than duplicate it.  The db-absent
+# announcement is NO LONGER part of that constraint: it belonged to
+# `sca_scan_tree` and `sca_go_scan_tree` individually, which is why a plain
+# `sca` run recorded the same fact twice while Python and Java recorded
+# nothing, and it now belongs to `_sca_run_module` itself - see its own
+# comment.  Go remains called last purely for a stable emission order.
 #
 # shellcheck shell=bash
 # shellcheck source=modules/sca/engine.sh
@@ -156,18 +153,72 @@ _sca_go_run() {
 _sca_run_module() {
   # No check-registry gate here the way modules/sast/run.sh has one: SCA is
   # a table lookup, not a pattern-rule engine (the npm ticket's own framing),
-  # so it has no `modules/sca/rules/*.rules` to be empty or non-empty - it
-  # always attempts a scan and reports its own real reason
-  # (no_advisories_db_on_disk) when there is nothing to match against,
-  # exactly as sca_scan_tree's own header documents.
+  # so it has no `modules/sca/rules/*.rules` to be empty or non-empty.
   #
-  # _sca_npm_run (sca_scan_tree) covers npm, RubyGems AND PHP/Composer in
-  # one call; see the header above for why Ruby and PHP joined that call
-  # while Python, Java and Go did not.
-  _sca_npm_run
-  _sca_py_run
-  _sca_java_run
-  _sca_go_run
+  # THE ADVISORY-DATABASE GATE IS THIS MODULE'S REQUIRED-INPUT CHECK, and it
+  # is decided here, once, rather than inside each walk.  `data/advisories.db`
+  # is what every ecosystem is matched against; without it not one dependency
+  # is examined, in any ecosystem.  The shipped behaviour was to let each walk
+  # discover that for itself and return - two of the four said so (twice, on
+  # every run, whatever ecosystems the tree held), the other two said nothing,
+  # and the run then exited 0 with zero findings and an empty `checks_run`.
+  # An operator reading that could not tell "it did not look" from "it looked
+  # and found nothing", which for a dependency scanner is the whole product.
+  #
+  # WHY EXIT 4 AND WHY ONLY WHEN `sca` WAS SELECTED (docs/FOUNDATION.md
+  # tension 14).  The precedence list is frozen and nothing new is minted
+  # here: 4 is "missing required input", and tension 14's own "Required
+  # inputs are per module" table already assigns it to exactly this shape -
+  # `dast` exits 4 for a missing scope.conf, `posture` for a missing
+  # posture.conf, and (tension 20) `--paranoid` exits 4 when no connection
+  # observer is available on the host.  5 would be wrong: it is reserved for
+  # UNPLANNED incompleteness (circuit breaker, request budget, a mid-flight
+  # abort), `incomplete_reason` non-empty is its exact predicate, and this run
+  # did not fail mid-flight - it never had the input it needed.  The CI
+  # contract tension 14 documents settles it too: "5 means investigate the
+  # target or the run and re-scan; 2/3/4 mean fix the invocation or the
+  # config", and the fix here is to populate the database.
+  #
+  # Under `all` the same table's other row governs - "a module whose inputs
+  # are absent is skipped with a run.json reason" - so the reduction and the
+  # finding are still recorded and the exit code is untouched, because the
+  # other modules did do what they were asked.  Both directions are pinned in
+  # tests/suites/sca.sh, because the naive fix for each is the other's bug.
+  if ! sca_advisories_db_readable; then
+    sca_report_no_advisories_db
+    if [[ ${SCAN_COMMAND:-sca} == sca ]]; then
+      # Sets scan_main's OWN `input` local through the sourced-not-subprocess
+      # dynamic-scoping contract scan.sh's header documents - the identical
+      # mechanism modules/sast/engine.sh's sast_evaluate_gate uses for `gate`,
+      # and for the identical reason: scan_exit_code's precedence table is the
+      # one place an exit code is decided, and a module must feed it rather
+      # than exit on its own.  A plain assignment with no `local` and no
+      # `export` is deliberate; shellcheck cannot see that caller across the
+      # source boundary.
+      # shellcheck disable=SC2034
+      input=1
+    fi
+  else
+    # sca_rollup_begin/sca_rollup_flush (modules/sca/engine.sh section 8a)
+    # bracket the four walks so their unknown-version counts land in ONE
+    # SCA-COV-UNKNOWN_VERSION-01 finding rather than one per walk.  Four
+    # roll-ups in a run do not merely read oddly: the check's fingerprint has
+    # no ecosystem component (tension 5's SCA profile is ecosystem/package/
+    # advisory_id, all empty for a roll-up), so they collide and
+    # findings_merge's dedup keeps exactly one - which is how a repository
+    # with npm and Python gaps got told about one of them.
+    #
+    # _sca_npm_run (sca_scan_tree) covers npm, RubyGems AND PHP/Composer in
+    # one call; see the header above for why Ruby and PHP joined that call
+    # while Python, Java and Go did not.  That grouping is unchanged and now
+    # matters less, since every walk feeds the same accumulator either way.
+    sca_rollup_begin
+    _sca_npm_run
+    _sca_py_run
+    _sca_java_run
+    _sca_go_run
+    sca_rollup_flush
+  fi
 
   findings_merge "$SCOURSH_RUN_DIR"
   derive_findings "$SCOURSH_RUN_DIR"

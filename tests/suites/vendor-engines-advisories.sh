@@ -967,17 +967,26 @@ assert_not_contains "$(LC_ALL=C sed -n '/^# bulk:/p' "$BDB")" 'ecosystem=maven' 
 # ---------------------------------------------------------------------------
 DEMO=$ROOT/tests/fixtures/vendor-engines/bulk-demo-project
 
-t_case 'BEFORE: with no advisory database, a real scan.sh sca reports the vulnerable project clean'
+# This case used to assert exit 0 here, on the reading that "the module is
+# finished and working, it simply has nothing to match against".  That was
+# true of the module and false of the RUN: exit 0 with zero findings is
+# byte-indistinguishable, to CI, from a clean dependency scan of a project
+# that is knowingly vulnerable.  A separate ticket fixed that, and this case
+# now pins the honest half of the before/after pair - the run refuses rather
+# than reporting, and the value of the bulk import below is unchanged.
+t_case 'BEFORE: with no advisory database, a real scan.sh sca refuses instead of reporting the vulnerable project clean'
 E2E_BEFORE=$BULK_W/e2e-before
 rm -rf "$E2E_BEFORE"
-assert_status 0 'the scan itself succeeds - the module is finished and working, it simply has nothing to match against' \
+assert_status "$SCOURSH_EXIT_INPUT" 'exit 4 (missing required input) - fails under the reading this case used to carry, where the same run exited 0 and looked exactly like a clean scan' \
   env SCOURSH_SCA_ADVISORIES_DB="$BULK_W/absent-advisories.db" bash "$ROOT/scan.sh" sca \
   --path "$DEMO" --out "$E2E_BEFORE"
 before_json=$(cat "$E2E_BEFORE/run.json" 2>/dev/null)
 assert_not_contains "$before_json" 'SCA-NPM-VULNERABLE_DEP-01' \
-  'zero vulnerable-dependency findings against a knowingly vulnerable project: the exact defect this ticket exists to fix'
+  'still zero vulnerable-dependency findings against a knowingly vulnerable project - which is what the bulk import below exists to change'
 assert_contains "$before_json" 'no_advisories_db_on_disk' \
-  'and the run does at least record WHY it found nothing'
+  'and the run records WHY it found nothing'
+assert_contains "$before_json" 'SCA-COV-NO_ADVISORY_DB-01' \
+  'and carries the coverage finding that says so on the report itself, not only in run.json metadata'
 
 t_case 'AFTER: the same scan against the same project, pointed at a bulk-imported database, reports the vulnerabilities'
 bulk_reset_db

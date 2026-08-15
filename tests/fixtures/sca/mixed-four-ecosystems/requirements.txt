@@ -1,0 +1,5 @@
+# fixture requirements.txt - scoursh SCA test suite (not a real project)
+# numpy is KNOWN to tests/fixtures/sca/advisories.db (at 1.16.0) but pinned
+# here at a version the db does not track, so it is an unknown-version case
+# rather than a vulnerable-dependency case.
+numpy==9.9.9

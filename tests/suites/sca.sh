@@ -414,8 +414,16 @@ assert_contains "$MIXED_GAP" 'ecosystem=RubyGems count=1' 'RubyGems'"'"'s own co
 unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
 
 # =============================================================================
-printf -- '\n-- data/advisories.db absent: an honest coverage_reduction, never a crash --\n'
+printf -- '\n-- data/advisories.db absent: sca_scan_tree degrades, never crashes --\n'
 # =============================================================================
+# This section used to assert that sca_scan_tree ITSELF recorded the
+# `no_advisories_db_on_disk` reason.  It no longer does, deliberately: that
+# announcement is the module's (sca_report_no_advisories_db, called once by
+# modules/sca/run.sh and asserted in the "no advisory database" section near
+# the end of this file), because a per-walk announcement can be made twice
+# and still account for only half the ecosystems - which is exactly what
+# shipped.  What this walk still owes its caller is what is asserted here: it
+# degrades cleanly and emits nothing of its own.
 RUNDIR2=$W/run-no-db
 rm -rf "$RUNDIR2"
 run_init "$RUNDIR2"
@@ -424,12 +432,14 @@ SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$FIXTURES/npm-lock")
 export SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
 export SCOURSH_SCA_ADVISORIES_DB=$W/does-not-exist.db
 
-t_case 'sca_scan_tree with no readable db records coverage_reduction and does not die'
+t_case 'sca_scan_tree with no readable db returns cleanly and does not die'
 assert_status 0 'a missing advisories.db is a declared reduction, not a fatal error' \
   sca_scan_tree "$FIXTURES/npm-lock"
 sca_scan_tree "$FIXTURES/npm-lock" >/dev/null 2>&1 || true
-assert_contains "$(cat "$RUNDIR2/meta/coverage_reduction" 2>/dev/null)" 'no_advisories_db_on_disk' \
-  'the honest reason is recorded in run.json (via meta/coverage_reduction)'
+assert_eq '' "$(cat "$RUNDIR2/meta/coverage_reduction" 2>/dev/null)" \
+  'and records no reason of its own - fails under the shipped reading, where this walk announced one and sca_go_scan_tree announced a second, so every sca run carried the same fact twice'
+assert_file_absent "$RUNDIR2/findings.jsonl" \
+  'and emits no finding, since it examined nothing'
 
 unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
 
@@ -1124,12 +1134,16 @@ SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$FIXTURES/go-mod")
 export SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
 export SCOURSH_SCA_ADVISORIES_DB=$W/does-not-exist-go.db
 
-t_case 'sca_go_scan_tree with no readable db records coverage_reduction and does not die'
+t_case 'sca_go_scan_tree with no readable db returns cleanly and does not die'
 assert_status 0 'a missing advisories.db is a declared reduction, not a fatal error' \
   sca_go_scan_tree "$FIXTURES/go-mod"
 sca_go_scan_tree "$FIXTURES/go-mod" >/dev/null 2>&1 || true
-assert_contains "$(cat "$GO_RUNDIR3/meta/coverage_reduction" 2>/dev/null)" 'no_advisories_db_on_disk' \
-  'the honest reason is recorded in run.json (via meta/coverage_reduction)'
+# Same change of ownership as the sca_scan_tree section above: this walk used
+# to record `no_advisories_db_on_disk ecosystem=Go`, which - together with
+# sca_scan_tree's own - is why a plain `scan.sh sca` announced the fact twice
+# and still left Python and Java unaccounted for.
+assert_eq '' "$(cat "$GO_RUNDIR3/meta/coverage_reduction" 2>/dev/null)" \
+  'no Go-specific db-absent reason - fails under the shipped reading, where this walk announced its own alongside sca_scan_tree'"'"'s'
 
 unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
 
@@ -1208,6 +1222,192 @@ assert_status 0 'the npm-lock fixture without --fail-on exits clean despite its 
 GATE_NONE_RUNJSON=$(cat "$GATE_NONE_RUNDIR/run.json" 2>/dev/null)
 assert_contains "$GATE_NONE_RUNJSON" '"gate": "not-evaluated"' \
   'with --fail-on defaulting to none, the gate reports not-evaluated exactly as sast and iac runs do'
+
+# =============================================================================
+printf -- '\n-- no advisory database: a scan that never looked must not read as clean --\n'
+# =============================================================================
+# `data/advisories.db` does not exist in this repository (tools/vendor-engines.sh
+# populates it on a networked box and is never run here), so the shipped
+# behaviour below IS what an operator gets by default:
+#
+#   scan.sh sca --path <knowingly vulnerable project>   ->   exit 0
+#   run.json: "checks_run": [], zero findings, "_No findings._" in report.md
+#
+# "It did not look" was indistinguishable from "it looked and found nothing",
+# which for a security scanner is the worst class of defect there is.  Every
+# assertion in this section fails under that shipped reading.
+#
+# The exit code is docs/FOUNDATION.md tension 14's `4` (missing required
+# input), NOT a new code and NOT `5`: tension 14's own precedence list is
+# frozen, `5` is reserved for UNPLANNED incompleteness (breaker, budget,
+# mid-flight abort), and its "Required inputs are per module" table already
+# assigns `4` to exactly this shape - a module explicitly selected whose
+# required input is absent, the same rule that gives `dast` exit 4 for a
+# missing scope.conf and (tension 20) `--paranoid` exit 4 for an absent
+# observer.  The register's own row for the `all` case - "a module whose
+# inputs are absent is skipped with a run.json reason", declared, no
+# exit-code effect - is pinned separately below, because the naive fix for
+# each direction is the other's bug.
+NODB=$W/no-such-advisories.db
+rm -f "$NODB"
+
+t_case 'AC: scan.sh sca with no advisory database exits 4, not 0'
+NODB_RUNDIR=$W/run-nodb-sca
+rm -rf "$NODB_RUNDIR"
+assert_status 4 'a run that could not check a single dependency exits SCOURSH_EXIT_INPUT - fails under the shipped reading, where the same run exits 0 and is byte-indistinguishable to CI from a clean dependency scan' \
+  env SCOURSH_SCA_ADVISORIES_DB="$NODB" bash "$ROOT/scan.sh" sca --path "$FIXTURES/npm-lock" --out "$NODB_RUNDIR"
+
+t_case 'the run still writes its full report set, so exit 4 is a verdict rather than an abort'
+assert_file_exists "$NODB_RUNDIR/run.json" 'run.json is written before the exit code is returned - fails under a die()-based reading, which exits 4 with no report at all'
+assert_file_exists "$NODB_RUNDIR/report.md" 'report.md is written too'
+NODB_RUNJSON=$(cat "$NODB_RUNDIR/run.json" 2>/dev/null)
+
+t_case 'AC: the missing database is announced exactly ONCE for the whole run'
+# grep -o, never grep -c: run.json puts a whole array on ONE line, so a
+# line count reports 1 whether the reason was recorded once or twice and the
+# assertion would pass under the very reading it exists to reject.
+NODB_REASONS=$(printf '%s\n' "$NODB_RUNJSON" | grep -o 'no_advisories_db_on_disk' | wc -l | tr -d ' ')
+assert_eq 1 "$NODB_REASONS" \
+  'exactly one no_advisories_db_on_disk record - fails under the shipped reading, which announces it TWICE (once bare from the shared npm/RubyGems/Composer walk and once with ecosystem=Go from the Go walk) on every sca run whatever ecosystems are present'
+
+t_case 'AC: that one record names EVERY ecosystem that could not be scanned'
+assert_contains "$NODB_RUNJSON" 'reason=no_advisories_db_on_disk ecosystems=Go,RubyGems,composer,maven,npm,pypi' \
+  'all six docs/DESIGN.md §6.5 ecosystems are named in one record, LC_ALL=C sorted - fails under the shipped reading, where npm/RubyGems/Composer and Go each announce their own and the Python and Java walks return silently, accounting for nothing'
+
+t_case 'AC: checks_run is no longer empty - the coverage check itself ran'
+assert_contains "$NODB_RUNJSON" '"SCA-COV-NO_ADVISORY_DB-01"' \
+  'the run records the coverage check it actually executed - fails under the shipped reading, where checks_run is [] and an operator has no evidence the module did anything at all'
+
+t_case 'AC: the report itself says dependency scanning did not run'
+NODB_REPORT=$(cat "$NODB_RUNDIR/report.md" 2>/dev/null)
+assert_not_contains "$NODB_REPORT" '_No findings._' \
+  'the findings section no longer reads "_No findings._" - fails under the shipped reading, which is exactly the sentence that misleads a human reader'
+assert_contains "$NODB_REPORT" 'SCA-COV-NO_ADVISORY_DB-01' \
+  'the coverage finding is on the report, not only in run.json metadata'
+assert_contains "$NODB_REPORT" 'no advisory database' \
+  'the finding title states the cause in prose'
+
+t_case 'the coverage finding reports zero dependencies checked rather than zero findings'
+NODB_FINDINGS=$(cat "$NODB_RUNDIR/findings.jsonl" 2>/dev/null)
+assert_contains "$NODB_FINDINGS" 'SCA-COV-NO_ADVISORY_DB-01' 'the finding is emitted'
+assert_contains "$NODB_FINDINGS" 'tools/vendor-engines.sh' \
+  'its remediation names the operator-run tool that populates the database, so the reader knows what to do next'
+
+t_case 'AC (other direction): scan.sh all does NOT exit 4 for the same absent database'
+NODB_ALL_RUNDIR=$W/run-nodb-all
+rm -rf "$NODB_ALL_RUNDIR"
+assert_status 0 'docs/FOUNDATION.md tension 14 classes "a module skipped under all for absent inputs" as a DECLARED reduction with no exit-code effect - fails under the naive fix, which makes every missing module input exit 4 regardless of whether the operator selected that module' \
+  env SCOURSH_SCA_ADVISORIES_DB="$NODB" bash "$ROOT/scan.sh" all --path "$FIXTURES/npm-lock" --out "$NODB_ALL_RUNDIR"
+NODB_ALL_RUNJSON=$(cat "$NODB_ALL_RUNDIR/run.json" 2>/dev/null)
+assert_contains "$NODB_ALL_RUNJSON" 'reason=no_advisories_db_on_disk ecosystems=' \
+  'the skip is still recorded with its reason under `all` - declared, not silent'
+assert_contains "$NODB_ALL_RUNJSON" '"SCA-COV-NO_ADVISORY_DB-01"' \
+  'and the coverage finding is still emitted, so `all` reports the blind spot even though it does not change the exit code'
+
+t_case 'AC (other direction): a db that IS present produces no coverage finding and no exit 4'
+DB_PRESENT_RUNDIR=$W/run-db-present
+rm -rf "$DB_PRESENT_RUNDIR"
+assert_status 0 'the same command with the fixture db exits 0 - fails under a hardwired reading that emits the coverage finding or the exit code unconditionally' \
+  env SCOURSH_SCA_ADVISORIES_DB="$DB" bash "$ROOT/scan.sh" sca --path "$FIXTURES/npm-lock" --out "$DB_PRESENT_RUNDIR"
+DB_PRESENT_RUNJSON=$(cat "$DB_PRESENT_RUNDIR/run.json" 2>/dev/null)
+assert_not_contains "$DB_PRESENT_RUNJSON" 'SCA-COV-NO_ADVISORY_DB-01' \
+  'no coverage finding when there was nothing to report'
+assert_not_contains "$DB_PRESENT_RUNJSON" 'no_advisories_db_on_disk' \
+  'and no db-absent reason either'
+
+t_case 'each ecosystem walk called STANDALONE with no db stays silent - the announcement belongs to the module, and is why it can be made once'
+SILENT_RUNDIR=$W/run-nodb-standalone
+rm -rf "$SILENT_RUNDIR"
+run_init "$SILENT_RUNDIR"
+SCOURSH_PATH_ROOT=$(path_root_cell "$FIXTURES/npm-lock")
+SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$FIXTURES/npm-lock")
+export SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+export SCOURSH_SCA_ADVISORIES_DB=$NODB
+assert_status 0 'sca_scan_tree with no readable db is still a declared reduction, not a fatal error' \
+  sca_scan_tree "$FIXTURES/npm-lock"
+assert_status 0 'sca_go_scan_tree likewise' \
+  sca_go_scan_tree "$FIXTURES/go-mod"
+sca_scan_tree "$FIXTURES/npm-lock" >/dev/null 2>&1 || true
+sca_go_scan_tree "$FIXTURES/go-mod" >/dev/null 2>&1 || true
+sca_scan_python_tree "$FIXTURES/python-requirements" >/dev/null 2>&1 || true
+sca_scan_java_tree "$FIXTURES/maven" >/dev/null 2>&1 || true
+assert_eq '' "$(cat "$SILENT_RUNDIR/meta/coverage_reduction" 2>/dev/null)" \
+  'no walk records a db-absent reason of its own - fails under the shipped reading, where sca_scan_tree and sca_go_scan_tree each announce one, which is precisely why the module-level run announced it twice'
+unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+
+# =============================================================================
+printf -- '\n-- the unknown-version roll-up: ONE per run, and its counts add up --\n'
+# =============================================================================
+# tests/fixtures/sca/mixed-four-ecosystems/ carries one unknown-version case in
+# each of the four ecosystem-scan ENTRY POINTS the module has - npm
+# (sca_scan_tree), pypi (sca_scan_python_tree), maven (sca_scan_java_tree) and
+# Go (sca_go_scan_tree) - so the true total is 4.
+#
+# Shipped behaviour, measured before this change: run.json recorded all four
+# coverage_gap facts, and the report carried ONE roll-up finding reading
+# "SCA: 1 pinned dependency version(s) ... by ecosystem: Go: 1".  Each walk
+# emitted its own SCA-COV-UNKNOWN_VERSION-01, all four hashed to the identical
+# fingerprint (the SCA location profile is ecosystem/package/advisory_id and a
+# roll-up populates none of them), and findings_merge's dedup kept exactly one
+# - so three quarters of the real coverage gap was dropped silently and the
+# operator was told a smaller number than the truth.
+#
+# The fix is at the EMISSION layer, not the fingerprint layer: the roll-up is
+# one per run by construction, so the four walks now accumulate into one shared
+# table that the module flushes once.  Its fingerprint is therefore UNCHANGED,
+# which is pinned below against a digest computed from raw bytes.
+MIXED4=$FIXTURES/mixed-four-ecosystems
+MIXED4_RUNDIR=$W/run-mixed-four
+rm -rf "$MIXED4_RUNDIR"
+assert_status 0 'the four-ecosystem fixture scans clean of gated findings' \
+  env SCOURSH_SCA_ADVISORIES_DB="$DB" bash "$ROOT/scan.sh" sca --path "$MIXED4" --out "$MIXED4_RUNDIR"
+MIXED4_FINDINGS=$(cat "$MIXED4_RUNDIR/findings.jsonl" 2>/dev/null)
+MIXED4_RUNJSON=$(cat "$MIXED4_RUNDIR/run.json" 2>/dev/null)
+
+t_case 'AC: four ecosystems with unknown-version dependencies produce exactly one roll-up'
+MIXED4_ROLLUPS=$(printf '%s\n' "$MIXED4_FINDINGS" | grep -c 'SCA-COV-UNKNOWN_VERSION-01' || true)
+assert_eq 1 "$MIXED4_ROLLUPS" \
+  'one roll-up finding survives - true under the shipped reading too, but only because three of the four were silently deduplicated away rather than never emitted'
+
+t_case 'AC: the roll-up count is the TRUTH across every ecosystem, not one walk'"'"'s share'
+assert_contains "$MIXED4_FINDINGS" 'SCA: 4 pinned dependency version(s)' \
+  'the title states 4 (npm 1 + pypi 1 + maven 1 + Go 1) - fails under the shipped reading, whose surviving roll-up states 1 because the other three walks'"'"' counts were dropped by the fingerprint collision'
+
+t_case 'AC: the breakdown names every contributing ecosystem, LC_ALL=C sorted'
+assert_contains "$MIXED4_FINDINGS" 'by ecosystem: Go: 1, maven: 1, npm: 1, pypi: 1' \
+  'all four ecosystems appear in one breakdown - fails under the shipped reading, whose survivor reads "by ecosystem: Go: 1" alone'
+
+t_case 'AC: the coverage_gap facts and the roll-up finding now agree'
+for _eco in Go maven npm pypi; do
+  assert_contains "$MIXED4_RUNJSON" "reason=unknown_version ecosystem=$_eco count=1" \
+    "run.json still records $_eco's own coverage_gap fact"
+done
+MIXED4_GAP_TOTAL=$(printf '%s\n' "$MIXED4_RUNJSON" | grep -o 'reason=unknown_version ecosystem=[^ ]* count=1' | wc -l | tr -d ' ')
+assert_eq 4 "$MIXED4_GAP_TOTAL" \
+  'four coverage_gap facts, and the finding above states 4 - fails under the shipped reading, where run.json said four and the report said one, and nothing reconciled them'
+
+t_case 'the roll-up fingerprint is UNCHANGED by this fix (rules/RULE-FORMAT.md §14 item 3)'
+# Pick the roll-up's own line explicitly rather than the first finding in the
+# file: the fixture happens to emit only the roll-up today, and an assertion
+# that silently depends on that would start checking a different finding's
+# fingerprint the moment the fixture gains a vulnerable dependency.
+MIXED4_FP=$(printf '%s\n' "$MIXED4_FINDINGS" | grep 'SCA-COV-UNKNOWN_VERSION-01' \
+  | sed -n 's/.*"fingerprint": *"\([0-9a-f]*\)".*/\1/p' | head -1)
+EXPECTED_ROLLUP_FP=$(printf 'fp/1\0sca\0SCA-COV-UNKNOWN_VERSION-01\0\0\0' | sha256_of)
+assert_eq "$EXPECTED_ROLLUP_FP" "$MIXED4_FP" \
+  'the roll-up still hashes fp/1 + sca + check id + three EMPTY SCA location components, asserted against a digest computed from raw bytes rather than through fingerprint_compute - fails under the rejected alternative fix (adding the ecosystem to the roll-up fingerprint), which would change finding identity, invalidate every baseline entry for this check, and cost a format_version bump'
+assert_eq 'a4688098bdb845ce8da891fb7fbed9d9c31cd359e3fe66e811bd3134731fd997' "$MIXED4_FP" \
+  'and it is byte-for-byte the value the shipped code produced before this change, measured on the same fixture db - so no state/ migration and no fp_schema bump are owed'
+
+t_case 'a single-ecosystem run is unaffected: still one roll-up, still that ecosystem'"'"'s own count'
+SINGLE_RUNDIR=$W/run-single-eco
+rm -rf "$SINGLE_RUNDIR"
+env SCOURSH_SCA_ADVISORIES_DB="$DB" bash "$ROOT/scan.sh" sca --path "$FIXTURES/python-requirements" --out "$SINGLE_RUNDIR" >/dev/null 2>&1 || true
+SINGLE_FINDINGS=$(cat "$SINGLE_RUNDIR/findings.jsonl" 2>/dev/null)
+SINGLE_ROLLUPS=$(printf '%s\n' "$SINGLE_FINDINGS" | grep -c 'SCA-COV-UNKNOWN_VERSION-01' || true)
+assert_eq 1 "$SINGLE_ROLLUPS" 'exactly one roll-up for a pypi-only tree'
+assert_contains "$SINGLE_FINDINGS" 'by ecosystem: pypi: 1' \
+  'and it reports pypi'"'"'s own real count - fails if the shared accumulator leaked a count from an earlier run or dropped this one'
 
 t_summary 'sca' || FAILED=1
 exit "${FAILED:-0}"

@@ -1081,7 +1081,22 @@ scan_main() {
   run_record contact "$SCOURSH_CONTACT"
   run_record user_agent_suffix "${SCAN_FLAGS[user-agent-suffix]:-}"
 
-  local incomplete=0 gate=0 path
+  # `input` and `gate` are both set BY A DISPATCHED MODULE, through the
+  # sourced-not-subprocess dynamic-scoping contract this file's own header
+  # documents, and are read only by scan_exit_code below.
+  #
+  # `input` exists because a missing required input is not always discoverable
+  # before dispatch.  Every case that IS - an unreadable --path, a scope.conf
+  # with no matching --target, an absent `aws` CLI - still calls die() and
+  # exits immediately, which is right when nothing ran.  A module that DID run
+  # and found its own required input missing is a different situation: the run
+  # has a real report to write (what it could not do, and why), so it records
+  # that, sets `input`, and lets the frozen precedence table in scan_exit_code
+  # produce the 4.  modules/sca/run.sh is the first such caller - see its own
+  # comment for why a missing advisory database is tension 14's exit 4 rather
+  # than exit 5 or a silent 0.
+  # shellcheck disable=SC2034
+  local incomplete=0 gate=0 input=0 path
 
   case $SCAN_COMMAND in
     sast | sca | iac)
@@ -1179,7 +1194,10 @@ scan_main() {
   log_info "scan complete in $(( SECONDS - _scan_t0 ))s - report: $SCOURSH_RUN_DIR"
 
   local code
-  code=$(scan_exit_code 0 0 0 "$incomplete" "$gate")
+  # usage and scope are 0 here because both die() outright and never reach
+  # this line; `input` does reach it, for the reason its declaration above
+  # gives.  The precedence itself lives in scan_exit_code and nowhere else.
+  code=$(scan_exit_code 0 0 "$input" "$incomplete" "$gate")
   # An intentional exit is not an error to be re-reported by the ERR trap -
   # same reasoning and the same guard as lib/core.sh's own `die`.  Without
   # it, a non-zero CODE (gate or incomplete) makes the EXIT trap
