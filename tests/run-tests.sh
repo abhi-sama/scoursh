@@ -118,20 +118,30 @@ else
       return 1
     fi
     if command -v vm_stat >/dev/null 2>&1 && command -v sysctl >/dev/null 2>&1; then
-      local page_size free_pages inactive_pages key val
+      local page_size free_pages key val
       page_size=$(sysctl -n hw.pagesize 2>/dev/null) || page_size=
       [[ $page_size =~ ^[0-9]+$ ]] || page_size=4096
       free_pages=
-      inactive_pages=
       while IFS=: read -r key val; do
         val=${val//[!0-9]/}
         case $key in
           "Pages free") free_pages=$val ;;
-          "Pages inactive") inactive_pages=$val ;;
         esac
       done < <(vm_stat 2>/dev/null)
-      if [[ $free_pages =~ ^[0-9]+$ && $inactive_pages =~ ^[0-9]+$ ]]; then
-        printf '%s\n' "$(( (free_pages + inactive_pages) * page_size / 1024 / 1024 / 1024 ))"
+      # "Pages free" ONLY, deliberately NOT "+ Pages inactive": inactive
+      # pages are reclaimable but not immediately so, and on this exact
+      # host, counting them inflated this figure by ~19GB versus true free
+      # memory (26.84GB computed vs 7.95GB actually free, measured while
+      # under real concurrent pressure from unrelated processes) - which
+      # meant the free-memory floor built on this number effectively never
+      # fired, because it was comparing against a number that stayed high
+      # long after the host was in real trouble.  "Pages free" alone is
+      # also the exact formula a separate, hand-verified emergency guard
+      # used to twice catch genuine pressure this reformulated figure
+      # would have missed, so it is not a guess - it is the one formula
+      # already proven to protect this host under real conditions.
+      if [[ $free_pages =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$(( free_pages * page_size / 1024 / 1024 / 1024 ))"
         return 0
       fi
     fi
