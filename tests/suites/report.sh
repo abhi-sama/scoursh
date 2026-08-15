@@ -211,4 +211,141 @@ assert_contains "$(cat "$D2/report.md")" 'redaction is disabled' 'and so does th
 assert_contains "$(cat "$D2/run.json")" '"redact_secrets": false' 'and run.json records it'
 SCOURSH_REDACT_SECRETS=true
 
+# ===========================================================================
+# docs/STEP5-DAST-PLAN.md DAST-33/34: the authorisation record in run.json,
+# and the unrestricted-run banner in the reports a human opens.
+# ===========================================================================
+printf '\n-- DAST-33: run.json renders the audit facts, not just the meta files --\n'
+
+# Asserted against run.json ITSELF, never against reports/<run>/meta/<key>.
+# That distinction is the entire ticket: `run_record use_engines` has been
+# writing meta/use_engines since the semgrep adapter landed and nothing
+# rendered it, and both suites covering it asserted against the meta FILE - so
+# a fact that never reached the consumer surface read as fully covered.
+D3=$SCOURSH_SCRATCH/rpt-authz
+rm -rf "$D3"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$D3"
+D3=$SCOURSH_RUN_DIR
+
+t_case 'an unaffirmed run still renders a complete authorization object'
+run_record use_engines false
+run_record authorization_affirmed false
+run_record authorization_source none
+run_record authorization_scope_target fixture-target
+run_record authorization_intensity passive
+run_record authorization_intrusive false
+run_record authorization_authed false
+run_record authorization_scope_conf_sha256 abc123
+run_record limits_clamped 'request-budget:20000->5000 reason=no_owner_affirmation source=default'
+run_record limits_enforced 'scope-gate:config/scope.conf'
+report_run_json "$D3"
+J3=$(cat "$D3/run.json")
+assert_contains "$J3" '"use_engines": false' \
+  'run.json renders use_engines - FAILS in the state this ticket found the tool in, where scan.sh recorded the flag and report_run_json never rendered it, leaving the only shipped audit flag half-recorded'
+assert_contains "$J3" '"authorization": {' 'run.json carries an authorization object'
+assert_contains "$J3" '"affirmed": false' \
+  'an UNAFFIRMED run records the object too, rather than omitting it - FAILS under "only record it when something was affirmed", which makes an absent key ambiguous between "nothing was affirmed" and "this version does not record it"'
+assert_contains "$J3" '"affirmation_source": "none"' \
+  'and names the route explicitly, so a reviewer can tell a flag pasted into a CI file from a human answering at a terminal'
+assert_contains "$J3" '"scope_conf_sha256": "abc123"' \
+  'and ties the run to the exact authorisation-file state, so "was this host authorised at the time" stays answerable from the run plus that file'"'"'s git history'
+assert_contains "$J3" 'request-budget:20000->5000 reason=no_owner_affirmation source=default' \
+  'the clamp that actually bit is rendered as a DELTA with its resolution layer - FAILS under a boolean "unrestricted: true", which tells a later reader nothing about what traffic was authorised'
+assert_contains "$J3" '"limits_enforced": ["scope-gate:config/scope.conf"]' \
+  'and what stayed ON is rendered too, because the usual question after an incident is what the tool could not have done'
+assert_contains "$J3" '"gate":' 'and the keys after the object are still present, i.e. the JSON was not truncated by the new block'
+
+t_case 'the rendered run.json is still valid JSON with the object in it'
+if command -v python3 >/dev/null 2>&1; then
+  rc=0
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$D3/run.json" || rc=$?
+  assert_eq 0 "$rc" \
+    'run.json parses as JSON with the nested authorization object present - FAILS on a stray or missing comma in the nested block, which no string-containment assertion above would catch'
+else
+  printf '  skip JSON parse check: no python3 on this host\n'
+fi
+
+t_case 'an affirmed run renders the deltas it was granted'
+D4=$SCOURSH_SCRATCH/rpt-authz-affirmed
+rm -rf "$D4"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$D4"
+D4=$SCOURSH_RUN_DIR
+run_record use_engines true
+run_record authorization_affirmed true
+run_record authorization_source flag
+run_record authorization_target fixture-target
+run_record authorization_scope_target fixture-target
+run_record authorization_at '2026-08-15T00:00:00Z'
+run_record authorization_intensity active
+run_record authorization_intrusive true
+run_record authorization_authed true
+run_record limits_relaxed 'intensity-ceiling:passive->active'
+run_record limits_relaxed 'request-budget:5000->20000'
+run_record limits_enforced 'payloads:detection-only'
+report_run_json "$D4"
+J4=$(cat "$D4/run.json")
+assert_contains "$J4" '"use_engines": true' 'use_engines renders true when the flag was given'
+assert_contains "$J4" '"affirmed": true' 'the affirmation is recorded'
+assert_contains "$J4" '"affirmation_source": "flag"' 'and the route it came by'
+assert_contains "$J4" '"affirmed_at": "2026-08-15T00:00:00Z"' 'and when'
+assert_contains "$J4" '"intensity": "active"' 'and the intensity it ran at'
+assert_contains "$J4" '"intrusive": true' \
+  'and whether side-effecting checks were on - FAILS if intrusive and authed are treated as run flags rather than authorisation facts, which leaves the record unable to distinguish an authenticated active scan from an unauthenticated crawl'
+assert_contains "$J4" '"authed": true' 'and whether it was authenticated'
+assert_contains "$J4" 'intensity-ceiling:passive->active' 'the intensity delta is rendered'
+assert_contains "$J4" 'request-budget:5000->20000' 'and the budget delta'
+assert_eq '' "$(printf '%s' "$J4" | grep -o '"operator": "[^"]\+"' || true)" \
+  'and NO operator identity is attached when SCOURSH_OPERATOR is unset - FAILS if it is harvested from `id -un` and the hostname, which quietly attaches a username and machine name to an artifact frequently handed to a third party'
+
+printf '\n-- DAST-34: an unrestricted run says so where a human will read it --\n'
+
+t_case 'the markdown and HTML reports both banner the relaxations'
+findings_merge "$D4"
+report_all "$D4"
+MD4=$(cat "$D4/report.md")
+HT4=$(cat "$D4/report.html")
+assert_contains "$MD4" 'This run was UNRESTRICTED' \
+  'report.md leads with the banner - FAILS under "run.json is the audit surface, the report is for findings", which leaves the reader of the report unable to tell a target that handles load from a scanner told to ignore its own limits'
+assert_contains "$MD4" 'request-budget:5000->20000' 'and names what was lifted, not merely that something was'
+assert_contains "$HT4" 'This run was UNRESTRICTED' 'and so does report.html'
+assert_contains "$HT4" 'is not evidence about the target' \
+  'and both state the specific consequence: an ABSENCE of availability findings from an unrestricted run is not evidence (docs/DESIGN.md §15)'
+assert_contains "$MD4" 'unrestricted run' \
+  'and it also appears in the limitations section, which is where §15 requires a run to name its blind spots'
+assert_contains "$HT4" '<strong>unrestricted run</strong>' 'same, in HTML'
+assert_not_contains "$HT4" '<script' \
+  'and the HTML report still contains no <script> element at all (docs/FOUNDATION.md tension 10) - the banner is plain text through the same escaping path as every other untrusted string'
+
+t_case 'the banner fires on RELAXATION, never on the affirmation alone'
+D5=$SCOURSH_SCRATCH/rpt-authz-keyonly
+rm -rf "$D5"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$D5"
+D5=$SCOURSH_RUN_DIR
+run_record authorization_affirmed true
+run_record authorization_source flag
+run_record authorization_scope_target fixture-target
+report_all "$D5"
+assert_not_contains "$(cat "$D5/report.md")" 'This run was UNRESTRICTED' \
+  'an affirmed run that relaxed NOTHING gets no banner - FAILS under "banner whenever affirmed", which announces an unrestricted run that did not happen and teaches a reader to ignore the banner (the affirmation is a key, not a switch: --i-own-target alone changes no limit)'
+assert_not_contains "$(cat "$D5/report.html")" 'This run was UNRESTRICTED' 'same, in HTML'
+
+t_case 'a relaxation string is escaped like any other untrusted value'
+D6=$SCOURSH_SCRATCH/rpt-authz-hostile
+rm -rf "$D6"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$D6"
+D6=$SCOURSH_RUN_DIR
+run_record authorization_scope_target '<img src=x onerror=alert(1)>'
+run_record limits_relaxed 'request-budget:5000-><script>alert(1)</script>'
+report_all "$D6"
+HT6=$(cat "$D6/report.html")
+assert_not_contains "$HT6" '<script>alert(1)</script>' \
+  'a relaxation line composed from an operator-supplied --target id is escaped in the HTML banner - FAILS under "we wrote this string ourselves, so it is trusted", which is how an operator-controlled value reaches a report unescaped'
+assert_contains "$HT6" '&lt;script&gt;' 'and it is rendered escaped rather than dropped, so the reader still sees what was recorded'
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+
+
 t_summary report

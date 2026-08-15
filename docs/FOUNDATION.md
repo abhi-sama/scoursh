@@ -4093,9 +4093,14 @@ The last two packs, `nosql.rules` (4 checks) and `ldap.rules` (3 checks), landed
 `tests/suites/sast.sh` from 90 to 130 passing assertions with none failing.
 Step 4 is complete: both its IaC and its SCA halves landed, out of step order and in slices - see the
 two paragraphs below.
-Steps 5 through 10 remain mostly unstarted, so `modules/dast/` and `modules/cloud/` remain unbuilt;
-with steps 3 and 4 both complete, nothing now stands in front of step 5 (DAST), which is the top
-priority ahead of steps 6, 7 and 10 and whose first ticket (DAST-01) is under way.
+Step 5 (DAST) is under way and its whole **tier 0 is complete**: DAST-01 (the tension-16 limiter,
+budget and breaker), DAST-02 (`modules/dast/run.sh`, the dispatch entry point), DAST-31 (the
+identifying `User-Agent`), DAST-32 (the conservative ceilings and the `--i-own-target` affirmation),
+DAST-33 (the authorisation record in `run.json`) and DAST-34 (an unrestricted run stated on stderr and
+in the report) have all landed, so `modules/dast/` exists and tiers 1-5 - beginning with DAST-03
+(`auth.sh`) and DAST-04 (`crawl.sh`) - are unblocked.
+`modules/cloud/` remains unbuilt and steps 6, 7 and 10 remain unstarted; step 5 is still the top
+priority ahead of them.
 `lib/awscli.sh` is a further out-of-sequence exception: a credential-less pass built it ahead of step
 6, so the chokepoint exists while `modules/cloud/aws/live/*.sh` and everything else step 6 names are
 still unbuilt - see "AWS module: what exists ahead of step 6" in `AGENTS.md`.
@@ -4268,7 +4273,7 @@ Whether every ecosystem `docs/DESIGN.md` §6.5 names now has a parser - and so w
 since-discharged step-5 DAST gate is complete - is in the generated block below, counted from the tree.
 
 **Step 5 (DAST) has a written, dependency-ordered sub-ticket plan (`docs/STEP5-DAST-PLAN.md`), and its
-first ticket, DAST-01, is under way.**
+whole tier 0 has now landed.**
 The plan breaks the ~30-script step-5 scope into tickets DAST-01 through DAST-30, ordered per this
 section's own build-order sequence (`lib/http.sh -> auth.sh -> crawl.sh -> passive -> safe-active ->
 injection, one file at a time -> §7.4 auth/API/authz`), confirms `lib/http.sh`'s scope-gate chokepoint
@@ -4294,11 +4299,27 @@ against a live endpoint with no throttle at all - tension 16's own per-process-s
 one that leaves the breaker unable to trip - which is why DAST-01 is tier 0 in the plan and tier 0
 blocks tiers 1 to 5.
 That is a constraint internal to step 5 on the order its own tickets land, not a blocker on starting
-step 5: DAST-01 IS the first step-5 ticket, and it is under way.
-**Step 5 is now this project's top priority**, ahead of live cloud scanning (step 6), persistent run
+step 5, and **it is now satisfied**: DAST-01 landed first, and the rest of tier 0 - DAST-02, and then
+DAST-31/32/33/34 together - landed on top of it.
+No ticket below tier 0 has yet issued a request, so nothing sent traffic before the controls existed.
+
+**Tier 0's safety half, DAST-31 through DAST-34, added two refinements this register owns rather than
+the plan, because both are decisions about tension 16's own controls.**
+First, the ceilings are applied to the RESOLVED value at the `lib/http.sh` chokepoint, and lifting them
+requires an affirmation carried as a per-run record under the run directory - never an environment
+variable, because an env var is settable by anything that can start the process and the ceiling's whole
+job is to bind callers whose command line nobody parsed (`tests/e2e/dast-target-smoke.sh` is exactly
+such a caller today).
+Second, and not stated by the plan's own "Relaxable" table: the affirmation lifts the three UPPER bounds
+(rate, budget, breaker threshold) and lifts NEITHER of `circuit-breaker-window`'s two bounds.  The 60s
+floor stays because a shorter window counts fewer failures towards the same threshold, so relaxing it
+would reach "the breaker never trips" by a different route than the disable switch this tension declines
+to offer; the 86400s maximum stays because it is arithmetic rather than safety - it is what keeps
+`now - window` inside 64-bit arithmetic, which no assertion about who owns a host can change.
+
+**Step 5 is still this project's top priority**, ahead of live cloud scanning (step 6), persistent run
 state (step 7), and SARIF plus the compliance report (step 10).
-`docs/STEP5-DAST-PLAN.md`, not this entry, is the authority for what is and is not still in front of
-DAST-01.
+`docs/STEP5-DAST-PLAN.md`, not this entry, is the authority for which tickets remain.
 
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01
 has not.**

@@ -143,6 +143,12 @@ _scanner_default() {
     # fallback constant, not config data, so resolving it in bash is exactly
     # what tension 26 asks for.
     scratch-dir) printf '%s' "${TMPDIR:-/tmp}" ;;
+    # An empty default is a real value here, not a missing one: `contact` is
+    # optional and its ABSENCE is what selects the no-contact User-Agent form
+    # (docs/STEP5-DAST-PLAN.md, "The identifying User-Agent").  Returning ''
+    # with status 0 is therefore correct, and is why this arm exists rather
+    # than falling through to the `*) return 1` unknown-key refusal.
+    contact) printf '%s' '' ;;
     state-retain-runs) printf '%s' 30 ;;
     history-window-days) printf '%s' 365 ;;
     history-max-commits) printf '%s' 5000 ;;
@@ -185,9 +191,35 @@ _scanner_validate_value() {
       [[ $val == true || $val == false ]] ;;
     scratch-dir)
       [[ $val == /* ]] ;;
+    contact)
+      config_valid_ua_text "$val" ;;
     *)
       return 1 ;;
   esac
+}
+
+# The shape both User-Agent inputs share (docs/STEP5-DAST-PLAN.md DAST-31):
+# `contact`, the scanner-config key, and `--user-agent-suffix`, which is a CLI
+# flag with no config key of its own.  One predicate rather than two, so the
+# two can never disagree about what is safe to put in a request header.
+#
+# Empty is VALID and means "not configured": `contact`'s documented default is
+# empty, and an empty value is what selects the no-contact User-Agent form.
+#
+# The charset is deliberately narrow rather than "free text": this value is
+# concatenated into an HTTP `User-Agent` header, so a CR or LF would be header
+# injection, and an unescaped `(`, `)` or `\` would break out of - or corrupt -
+# the RFC 7230 comment the contact is placed inside.  A space is excluded too,
+# because every value this key is meant to hold (an email address, a URL, a
+# product token) has none, and excluding it means the resulting header cannot
+# grow a second, unintended product token out of one operator value.
+config_valid_ua_text() {
+  local v=$1
+  if [[ -z $v ]]; then
+    return 0
+  fi
+  [[ $v =~ ^[!-~]+$ ]] || return 1
+  [[ $v != *'('* && $v != *')'* && $v != *\\* ]]
 }
 
 _scanner_validate_list_item() {
@@ -210,9 +242,31 @@ _scanner_validate_list_item() {
 # (not yet built) is what will eventually supply it.  An empty CLI_VALUE or
 # an empty/unset env var both mean "not given at this level" and fall
 # through, exactly like an absent flag or an unset variable.
+#
+# It also PUBLISHES which level won, in `CONFIG_SCANNER_LAST_SOURCE` (one of
+# `cli`, `env`, `file`, `default`).  That is not a new mechanism: the `src`
+# variable below already decided which exit code an invalid value costs, and
+# docs/STEP5-DAST-PLAN.md's DAST-32 clamp needs exactly the same distinction
+# for a VALID value that is above a module ceiling - an explicit `cli`/`env`
+# value is the operator's own invocation and is refused rather than rewritten,
+# while a `file`/`default` value is clamped.  Reading it back requires calling
+# this function WITHOUT a `$(...)` wrapper (lib/core.sh's `core_capture`, or
+# scan.sh's `_scan_capture`), because a subshell's assignment to a global is
+# discarded when the subshell exits - the same property that already makes
+# `die` unreliable through `$(...)` here.  A `$(...)` caller that does not read
+# the source at all is unaffected, which is why the test suite's own
+# `$(config_scanner_value ...)` idiom keeps working.
+# SC2034: read by lib/http.sh's DAST-32 clamp, which shellcheck's per-file
+# call graph does not follow.  Deliberately NOT exported: an exported variable
+# would cross into a subprocess and become another way for a limit decision to
+# be influenced from outside this process.
+# shellcheck disable=SC2034
+CONFIG_SCANNER_LAST_SOURCE=''
+
 config_scanner_value() {
   local key=$1 cli=${2:-}
   local env_name env_val src val
+  CONFIG_SCANNER_LAST_SOURCE=''
 
   if [[ -n $cli ]]; then
     val=$cli
@@ -232,6 +286,9 @@ config_scanner_value() {
       src=default
     fi
   fi
+
+  # shellcheck disable=SC2034  # read by lib/http.sh; see the declaration above
+  CONFIG_SCANNER_LAST_SOURCE=$src
 
   if ! _scanner_validate_value "$key" "$val"; then
     case $src in

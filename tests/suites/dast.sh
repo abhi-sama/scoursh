@@ -191,8 +191,15 @@ assert_contains "$RUN_OK_JSON" 'intensity=passive' \
   'an unflagged run records intensity=passive (lib/checks.sh CHECKS_INTENSITY_DEFAULT) - fails under "intensity only matters to the check-registry filter, so the module need not resolve it"'
 
 t_case 'an explicit intensity is resolved and recorded'
-_dast_scan "$W/run-active" "$FIX_SCOPE" --target dast-fixture --intensity active
-assert_eq 0 "$_RC" 'an --intensity active run still exits 0'
+# `--intensity active` now needs the own-your-target affirmation to be reachable
+# at all (docs/STEP5-DAST-PLAN.md DAST-32: `passive` is the ceiling for a host
+# this tool cannot vouch for).  The affirmation is what this case supplies; the
+# REFUSAL without it is pinned in tests/suites/scan.sh's own affirmation
+# section rather than here, because it is a parser decision and never reaches
+# the module.
+_dast_scan "$W/run-active" "$FIX_SCOPE" --target dast-fixture --intensity active \
+  --i-own-target dast-fixture
+assert_eq 0 "$_RC" 'an affirmed --intensity active run still exits 0'
 RUN_ACTIVE_JSON=$(_slurp "$W/run-active/run.json")
 assert_contains "$RUN_ACTIVE_JSON" 'intensity=active' \
   'run.json records the intensity actually resolved for this run'
@@ -351,5 +358,98 @@ assert_file_absent "$ROOT/modules/dast/checks.rules" \
   'no checks.rules is shipped - fails under "register the phases now so the registry is warm", which would trip rules/RULE-FORMAT.md E072 (script must exist) on every one of them'
 assert_contains "$RUN_OK_JSON" 'reason=no_check_registry_on_disk_yet' \
   'scan.sh still records the empty registry honestly, exactly as it did before this module landed'
+
+# =============================================================================
+printf '\n-- DAST-32/33/34 end to end: the authorisation record a real run leaves --\n'
+# =============================================================================
+# Everything below runs `scan.sh dast` as a REAL SUBPROCESS and asserts on
+# run.json and report.md - the surfaces a consumer actually reads.  Asserting
+# on reports/<run>/meta/<key> instead is the exact gap DAST-33 exists to close:
+# `run_record use_engines` had been writing its meta file since the semgrep
+# adapter landed, nothing rendered it into run.json, and both suites covering
+# it asserted against the meta file, so a fact that never reached a consumer
+# read as fully covered.
+
+t_case 'an unaffirmed run records a complete, honest authorization object'
+_dast_scan "$W/run-authz-none" "$FIX_SCOPE" --target dast-fixture
+assert_eq 0 "$_RC" 'an ordinary unaffirmed dast run still exits 0'
+AZ_NONE=$(_slurp "$W/run-authz-none/run.json")
+assert_contains "$AZ_NONE" '"authorization": {' \
+  'run.json carries the authorization object on an UNAFFIRMED run too - fails under "record it only when something was affirmed", which leaves an absent key ambiguous between "nothing was affirmed" and "this version does not record it"'
+assert_contains "$AZ_NONE" '"affirmed": false' 'and states plainly that nothing was affirmed'
+assert_contains "$AZ_NONE" '"scope_target": "dast-fixture"' 'and names the host the decision was about'
+assert_contains "$AZ_NONE" '"intensity": "passive"' 'and the intensity it actually ran at'
+assert_contains "$AZ_NONE" 'request-budget:20000->5000 reason=no_owner_affirmation source=default' \
+  'and the clamp that actually bit, as a delta with its resolution layer - fails if the clamp only warns on stderr, which is not an artifact a reader has a month later'
+assert_contains "$AZ_NONE" 'scope-gate:config/scope.conf' \
+  'and what stayed enforced, so the record is a complete statement rather than a partial one'
+assert_contains "$AZ_NONE" '"use_engines": false' \
+  'and run.json renders use_engines - fails in the state this ticket found the tool in, where scan.sh recorded the flag and report_run_json never rendered it'
+assert_not_contains "$(_slurp "$W/run-authz-none/report.md")" 'This run was UNRESTRICTED' \
+  'and an unaffirmed run gets no unrestricted banner, because nothing was lifted'
+
+t_case 'a run with no operator contact says so, once, and names the key that fixes it'
+NOCONTACT_LOG=$(_slurp "$_LOG")
+assert_contains "$NOCONTACT_LOG" 'no operator contact is configured' \
+  'a dast run with no contact set states it at run start - fails if the contact is simply omitted from the User-Agent, which leaves an operator with no idea that a target owner who notices their traffic has no way to reach them'
+assert_contains "$NOCONTACT_LOG" 'config/scanner.conf' \
+  'and names the config key that fixes it, rather than describing the problem only'
+assert_not_contains "$NOCONTACT_LOG" 'warn  no operator contact' \
+  'and it is INFO, not a warning - an unset contact is a legal configuration and the request is still identified as scoursh, so scolding every run for it teaches the operator to ignore the log'
+
+t_case 'a configured contact removes that line entirely'
+FIX_CONTACT=$W/root-with-contact
+_fixture_root "$FIX_CONTACT"
+cp "$FIX_SCOPE/config/scope.conf" "$FIX_CONTACT/config/scope.conf"
+printf 'id: scanner\ncontact: security@operator.example\n' >"$FIX_CONTACT/config/scanner.conf"
+_dast_scan "$W/run-contact" "$FIX_CONTACT" --target dast-fixture
+assert_eq 0 "$_RC" 'a run with a configured contact still exits 0'
+assert_not_contains "$(_slurp "$_LOG")" 'no operator contact is configured' \
+  'and says nothing about a missing contact - fails if the notice is unconditional, which is noise rather than information'
+
+t_case 'an explicit env value above a ceiling is exit 2 through the real CLI, before anything ran'
+_RC=0
+SCOURSH_INSTALL_ROOT=$FIX_SCOPE SCOURSH_CONFIG_REQUEST_BUDGET=100000 \
+  bash "$ROOT/scan.sh" dast --target dast-fixture --out "$W/run-authz-refuse" \
+  >"$W/refuse.log" 2>&1 || _RC=$?
+assert_eq 2 "$_RC" \
+  'an explicit over-ceiling request-budget exits 2 end to end - fails under a symmetric clamp, which would run the scan at a number the operator did not ask for'
+assert_contains "$(_slurp "$W/refuse.log")" '--i-own-target' \
+  'and the refusal names the flag that resolves it'
+assert_file_absent "$W/run-authz-refuse/report.md" \
+  'and it refuses BEFORE the module ran, so no report claims a scan happened - fails if the ceiling is only enforced at the first request, where a usage error fires after traffic has already left'
+
+t_case 'an affirmed run records the deltas, banners them, and says so on stderr'
+_RC=0
+SCOURSH_INSTALL_ROOT=$FIX_SCOPE SCOURSH_OPERATOR='ops@operator.example' \
+  SCOURSH_CONFIG_REQUEST_BUDGET=20000 \
+  bash "$ROOT/scan.sh" dast --target dast-fixture --intensity active \
+  --i-own-target dast-fixture --out "$W/run-authz-yes" \
+  >"$W/affirmed.log" 2>&1 || _RC=$?
+assert_eq 0 "$_RC" 'an affirmed run at a raised budget completes'
+AZ_YES=$(_slurp "$W/run-authz-yes/run.json")
+assert_contains "$AZ_YES" '"affirmed": true' 'run.json records the affirmation'
+assert_contains "$AZ_YES" '"affirmation_source": "flag"' 'and that it came by flag rather than from a terminal'
+assert_contains "$AZ_YES" '"affirmation_target": "dast-fixture"' 'and which host it named'
+assert_contains "$AZ_YES" '"operator": "ops@operator.example"' \
+  'and the operator, because SCOURSH_OPERATOR was set - fails if identity is harvested unconditionally, which attaches a username and machine name to an artifact frequently handed to a third party'
+assert_contains "$AZ_YES" 'intensity-ceiling:passive->active' \
+  'the intensity delta is recorded as a from->to pair, never as a boolean'
+assert_contains "$AZ_YES" 'request-budget:5000->20000' \
+  'and so is the budget the affirmation actually raised - fails if the affirmation is recorded without the numbers it changed, which is the "unrestricted: true" record that reconstructs no traffic profile'
+BANNER_MD=$(_slurp "$W/run-authz-yes/report.md")
+assert_contains "$BANNER_MD" 'This run was UNRESTRICTED' \
+  'report.md banners it where a human reads - fails under "run.json is the audit surface", which leaves the report reader unable to tell a target that handles load from a scanner told to ignore its own limits'
+assert_contains "$(_slurp "$W/run-authz-yes/report.html")" 'This run was UNRESTRICTED' 'and so does report.html'
+assert_contains "$(_slurp "$W/affirmed.log")" 'UNRESTRICTED RUN' \
+  'and one stderr line says so at run start, naming the target, the operator and the relaxations - fails if the only trace is in files the operator has to go and open'
+assert_eq 1 "$(_slurp "$W/affirmed.log" | grep -c 'UNRESTRICTED RUN' || true)" \
+  'exactly ONE such line, not one per relaxation: loud, once, not a wall'
+
+t_case 'the affirmation must still name this run'"'"'s own target, end to end'
+_dast_scan "$W/run-authz-mismatch" "$FIX_SCOPE" --target dast-fixture --i-own-target some-other-host
+assert_eq 2 "$_RC" \
+  'an affirmation naming a different host is exit 2 through the real CLI - fails under "the affirmation is a switch", which is how a copied CI file carries one to a target that changed hands'
+
 
 t_summary dast

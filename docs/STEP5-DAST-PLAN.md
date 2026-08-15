@@ -8,7 +8,58 @@ mock-response test -> §7.4 auth/API/authz checks" - can be picked up as a clean
 independently reviewable tickets, instead of being re-derived from `docs/DESIGN.md` §7 from scratch by
 whoever picks it up first.
 
-## Status: top priority - one gate cleared, one sequencing item left
+## Status: top priority - tier 0 is complete; tiers 1-5 are unblocked
+
+**Every gate this section used to record is now discharged, and the whole of tier 0 has landed.**
+`docs/DESIGN.md` §13 step 3 finished (`nosql.rules` and `ldap.rules` landed), step 4 finished (SCA at
+6 of 6 ecosystems, IaC at 6 of 6 packs), and step 5's own tier-0 tickets are in:
+
+| Ticket | State |
+|---|---|
+| DAST-01 - the tension-16 rate limiter, request budget and circuit breaker in `http_request` | landed |
+| DAST-02 - `modules/dast/run.sh`, the `scan_dispatch dast` entry point | landed |
+| DAST-31 - the identifying `User-Agent` and operator contact | landed |
+| DAST-32 - the conservative ceilings and the `--i-own-target` affirmation | landed |
+| DAST-33 - the authorisation record in `run.json` (and `use_engines`, the same gap) | landed |
+| DAST-34 - an unrestricted run stated on stderr and in the report | landed |
+| DAST-35 - the lint forbidding a bundled scan target | separate ticket; no ticket below is gated on it |
+| DAST-36 - folding this posture into DAST-01..30's own acceptance criteria | doc-only; not started |
+
+**Nothing now blocks DAST-03 (`auth.sh`) or DAST-04 (`crawl.sh`), which are what tiers 2-5 wait on.**
+The one ordering constraint tier 0 existed to impose has been met: no ticket may issue real HTTP
+traffic until the limiter, the budget, the breaker, the identified `User-Agent` and the conservative
+ceilings are all in `lib/http.sh`, and they are.
+
+What DAST-31 through DAST-34 actually shipped, stated once here rather than left to be read out of
+the diff:
+
+- Every request carries `scoursh/<version> (+<contact>)`, composed in `_http_transport_default` and
+  nowhere else, with the no-contact form naming the project URL instead.  `contact` is a
+  `config/scanner.conf` key (`rules/RULE-FORMAT.md` §9.6.1) plus a `--contact` flag;
+  `--user-agent-suffix` appends a product token and cannot displace the prefix.
+  **The `format_version` question was checked rather than assumed** and the answer is the expected
+  one: an additive optional key trips §14 item 2 only, and `rules/RULE-FORMAT.md` §14 now carries the
+  worked item-by-item reasoning so the next additive key does not have to re-derive it.
+- The ceilings are applied to the **resolved** value at the `lib/http.sh` chokepoint, and the clamp
+  policy is asymmetric exactly as specified below: a **file or default** value above a ceiling is
+  clamped with one `log_warn` and a recorded delta, an explicit **CLI or env** value above one is
+  exit 2 naming `--i-own-target`.  Both directions are pinned by tests that fail under the other
+  reading.
+- `--i-own-target <id>` must equal `--target <id>`; it is valid on `dast` and `all` only, it is a key
+  rather than a switch, and it is carried as a per-run record under the run directory, never an
+  environment variable.  `--intensity` above `passive` and `--allow-intrusive` both require it.
+- The affirmation lifts the three upper bounds (rate, budget, breaker threshold) and **neither** of
+  `circuit-breaker-window`'s bounds: the 60s floor because a shorter window is a weaker breaker, and
+  the 86400s maximum because it is arithmetic rather than safety.  This is a refinement of the
+  "Relaxable" table below, which did not say which way the window moves.
+- `run.json` carries an `authorization` object on **every** run, affirmed or not, and now also renders
+  `use_engines`, which had been recorded and never rendered since the semgrep adapter landed.
+
+## Status (historical): top priority - one gate cleared, one sequencing item left
+
+The section below is the state this plan recorded BEFORE tier 0 landed.  It is kept because its
+reasoning held rather than evaporated, in the same way the step-3/step-4 gate was; the table above is
+the live answer.
 
 **Step 5 is now this project's top-priority feature**, ahead of live cloud scanning (step 6), persistent
 run state (step 7), and SARIF plus the compliance report (step 10).
@@ -379,6 +430,7 @@ Three consequences of that honest valuation are load-bearing and easy to get bac
 |---|---|---|
 | The scope gate (`config/scope.conf` + `http_gate_url` on every hop) | **no** | The four reasons above. The guided mode may offer to write a record; the gate then re-reads the file and can still refuse. |
 | `--intensity` ceiling of `passive` | yes | This is the clean line: anything beyond reading what the target volunteers needs the affirmation. `safe` puts hundreds of 404s in someone's logs; `active` sends injection payloads. Neither is covered by permission to browse, and the Nmap finding is exactly a permission that covers one technique and excludes another. Costs nothing today, since `CHECKS_INTENSITY_DEFAULT` is already `passive`. |
+| `circuit-breaker-window` (either bound) | **no** | Added by DAST-32's implementation, because this table did not say which way the window moves and both directions turn out to be refusals. The 60s FLOOR is not relaxable because a shorter window counts fewer failures towards the same threshold, so relaxing it reaches "the breaker never trips" by a different route than the disable switch the row above declines to offer. The 86400s MAXIMUM is not relaxable because it is not a safety limit at all - it is what keeps `now - window` inside 64-bit arithmetic, and no statement about who owns a host can make a wrapped integer mean what it says. |
 | requests per second, DAST concurrency | yes | Rate limiting is a condition of authorisation against a host the authors cannot vet. Against a host that genuinely is the operator's, a 4/s cap has no safety content and the worst case is that they degrade their own lab. (Concurrency has no ceiling to relax yet: DAST-01 bounds rate only, per the concurrency row's note in "The conservative defaults" above. This row describes what an affirmation would relax once one exists.) |
 | per-run request budget | **partially** | The number is raisable; the existence of a finite budget is not. The budget is what bounds the worst case of every *other* mistake in the tool - a crawler loop, a redirect cycle, a parameter-list bug. A control whose whole job is bounding unknown failures cannot be surrendered to an assertion about a known one. |
 | circuit breaker | **partially** | Threshold raisable, disabling never offered, and the argument is that disabling has no upside even on your own host: a target returning sustained 5xx produces no useful findings, so continuing to hammer it buys nothing. There is no honest case for a prompt that removes it. |

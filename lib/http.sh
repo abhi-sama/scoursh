@@ -32,14 +32,20 @@
 # authorization gate itself, and http_request is the only place they hook in -
 # for the same reason the gate lives there.  See section 11's own header.
 #
-# STILL DELIBERATELY NOT IN THIS FILE: the own-your-target affirmation that
-# RAISES those limits (docs/STEP5-DAST-PLAN.md, DAST-32).  Section 11's
-# `_http_effective_limit_set` and `_http_effective_rps_milli_set` are the seam
-# it fills in; nothing else reads config_scanner_value for a limit.  IDN
-# (A-label) conversion is also not implemented - hosts are compared as
-# authored/discovered bytes, lowercased - which is a real, known gap for a
-# homograph-style bypass and is tracked separately rather than silently
-# dropped (see the ticket filed alongside that change).
+# THE THIRD CONTRACT (docs/STEP5-DAST-PLAN.md DAST-31 and DAST-32, sections
+# 10a and 11 below): the identifying `User-Agent` every request carries, and
+# the own-your-target affirmation that raises the tension-16 limits.  Both live
+# here for the same reason as the two above - a caller that never went through
+# scan.sh's CLI parser must inherit the identified UA and the SAFE limit, not
+# an anonymous request and an unbounded one.  The affirmation is read from a
+# per-run RECORD under the run directory, never from an environment variable:
+# an env var is settable by anything that can start the process, and the whole
+# job of the ceiling is to bind callers whose command line nobody parsed.
+#
+# STILL DELIBERATELY NOT IN THIS FILE: IDN (A-label) conversion - hosts are
+# compared as authored/discovered bytes, lowercased - which is a real, known
+# gap for a homograph-style bypass and is tracked separately rather than
+# silently dropped (see the ticket filed alongside that change).
 #
 # shellcheck shell=bash
 #
@@ -549,6 +555,10 @@ _http_transport_default() {
   local hdrfile
   hdrfile=$(mktemp "${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/http-hdr.XXXXXX")
   local timeout=${SCOURSH_HTTP_TIMEOUT:-20}
+  # The identifying User-Agent (section 10a).  Composed HERE and nowhere else,
+  # which is what makes it unconditional: there is no second curl invocation in
+  # this repository for a later ticket to add an unidentified request through.
+  _http_user_agent_set
   # --max-redirs 0, never -L: the manual, one-hop-at-a-time loop in
   # http_request is what re-runs the full gate on every hop (tension 19
   # "Redirects" / "Redirect-recheck parity").  --resolve pins the connection
@@ -556,6 +566,7 @@ _http_transport_default() {
   # between the gate's resolution and curl's.
   if ! curl --silent --show-error --max-redirs 0 --max-time "$timeout" \
     --resolve "$host:$port:$addr" \
+    -A "$_HTTP_UA" \
     -o /dev/null -D "$hdrfile" \
     -X "$method" -- "$scheme://$host:$port$path"; then
     rm -f "$hdrfile"
@@ -573,6 +584,76 @@ _http_transport_default() {
   done <"$hdrfile"
   rm -f "$hdrfile"
   printf '%s\n%s\n' "$status" "$location"
+}
+
+# ---------------------------------------------------------------------------
+# 10a. The identifying User-Agent (docs/STEP5-DAST-PLAN.md DAST-31)
+# ---------------------------------------------------------------------------
+# Every request this tool sends says what it is and how to reach whoever is
+# running it.  The argument is a practical one rather than a courtesy: a target
+# owner who notices unusual traffic and can identify the tool and its operator
+# can send one email; an owner who cannot has escalation as their only
+# available response.
+#
+# THE `scoursh/<version>` PRODUCT TOKEN IS NEVER REMOVABLE, AT ANY SETTING.
+# There is no flag, config key or environment variable below that replaces or
+# suppresses it, and there deliberately never will be: an authorised scan has
+# no need to be unidentifiable and an unauthorised one has every need, so a
+# switch whose only function is hiding the tool's identity is a switch for
+# scanning something you do not own.  Expect it to be requested as WAF evasion.
+# `--user-agent-suffix` APPENDS an extra product token and cannot displace the
+# prefix, because it is concatenated after it.
+#
+# The two operator-supplied halves reach this file by two different routes, and
+# the difference is deliberate.  `contact` is a scanner-config key, so a caller
+# with no run directory at all still resolves it through the ordinary
+# CLI > env > file > default chain; the per-run record is what carries the CLI
+# LAYER of that chain (scan.sh's `--contact`) across into a module, since
+# nothing here can see `SCAN_FLAGS`.  `--user-agent-suffix` has no config key
+# (docs/STEP5-DAST-PLAN.md DAST-31 names only `contact` as a schema addition),
+# so the run record is its only route.
+#
+# Both are re-validated here even though scan.sh already validated them.  The
+# run record is a file under a directory an operator can edit, and this value
+# is concatenated into an HTTP header, so trusting it because "we wrote it"
+# would be trusting a file for a header - the same reasoning that puts the
+# scope gate inside http_request rather than in its callers.  An invalid value
+# is dropped with a warning rather than aborting the run: it degrades the
+# request's identification, which is not worth failing an authorised scan over.
+_HTTP_PROJECT_URL='https://github.com/abhi-sama/scoursh'
+
+# Sets `_HTTP_UA`.  Never printed through `$(...)`: `config_scanner_value` can
+# `die`, and section 11's own note explains at length why that is unreliable
+# inside a command substitution.
+_http_user_agent_set() {
+  local contact suffix ua
+  run_fact_first_set contact contact
+  if [[ -z $contact ]]; then
+    core_capture contact config_scanner_value contact ''
+  fi
+  if ! config_valid_ua_text "$contact"; then
+    log_warn "the configured 'contact' value is not usable in a User-Agent header and is being ignored for this run; the request will identify the tool but not the operator (rules/RULE-FORMAT.md §9.6.1)"
+    contact=''
+  fi
+  run_fact_first_set suffix user_agent_suffix
+  if ! config_valid_ua_text "$suffix"; then
+    log_warn "the --user-agent-suffix value is not usable in a User-Agent header and is being ignored for this run"
+    suffix=''
+  fi
+
+  ua="scoursh/$(scoursh_version)"
+  if [[ -n $contact ]]; then
+    ua="$ua (+$contact)"
+  else
+    # The documented no-contact form.  It still identifies the TOOL, which is
+    # the half that is never removable; what it cannot supply is the operator,
+    # so it says so in as many words rather than leaving the owner to guess
+    # whether the missing contact is a policy or an oversight.
+    ua="$ua (+$_HTTP_PROJECT_URL; no operator contact configured)"
+  fi
+  [[ -n $suffix ]] && ua="$ua $suffix"
+  _HTTP_UA=$ua
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -672,12 +753,11 @@ _http_decimal_is_zero() {
 # scan.sh's parser - the smoke test, a future tool, an interactive
 # `source lib/http.sh` - inherits the safe number rather than an unbounded one.
 #
-# DAST-32 owns the own-your-target affirmation that RAISES these, and this
-# function is the seam it fills in.  That is why nothing below ever calls
-# config_scanner_value directly: docs/STEP5-DAST-PLAN.md's own DAST-01
-# amendment requires the limiter, budget and breaker to read an EFFECTIVE
-# value, "or DAST-32 becomes a retrofit".  Until it lands there is no
-# affirmation record to read, so the ceiling always applies.
+# The own-your-target affirmation (DAST-32) is what RAISES these, and it is
+# read from a per-run record rather than from an environment variable - see
+# `_http_affirmation_set` below.  An ABSENT record means the conservative
+# ceiling, which is what makes a caller that never went through scan.sh's
+# parser inherit the safe value rather than an unbounded one.
 #
 # Two of the four clamp in opposite directions, which is worth stating rather
 # than rediscovering: a HIGHER rate, a HIGHER budget and a HIGHER failure
@@ -696,6 +776,66 @@ _http_limit_ceiling_set() {
     circuit-breaker-window) _HTTP_LIMIT_CEIL=60 ;;
     *) _HTTP_LIMIT_CEIL=''; return 1 ;;
   esac
+  return 0
+}
+
+# The own-your-target affirmation, read from the per-run record scan.sh writes
+# at parse time (docs/STEP5-DAST-PLAN.md, "How the affirmation reaches the
+# limiter, and why it is not an environment variable").
+#
+# Re-read on every call rather than memoised: one process can run more than one
+# scan_main (tests/suites/scan.sh does exactly that), and a memoised
+# affirmation would carry an earlier run's answer into a later run that never
+# made one - which is the "no persisted affirmation" non-goal, arrived at by
+# accident instead of by design.  It costs one builtin `read` and forks
+# nothing.
+#
+# Sets `_HTTP_AFFIRMED` (true/false) and `_HTTP_AFFIRMED_TARGET`.
+_http_affirmation_set() {
+  _HTTP_AFFIRMED=false
+  _HTTP_AFFIRMED_TARGET=''
+  local v
+  run_fact_first_set v authorization_affirmed
+  [[ $v == true ]] || return 0
+  _HTTP_AFFIRMED=true
+  run_fact_first_set _HTTP_AFFIRMED_TARGET authorization_target
+  return 0
+}
+
+# The asymmetric clamp policy (docs/STEP5-DAST-PLAN.md DAST-32), which matches
+# lib/config.sh's own precedent: `config_scanner_value` dies exit 2 for a bad
+# CLI *or env* value and exit 4 for a bad FILE value, because the first two are
+# the operator's own invocation.  The same split applies to a value that is
+# valid but above a module ceiling:
+#
+#   file / default  -> CLAMP down, one log_warn, and a recorded delta.
+#   cli  / env      -> EXIT 2, naming --i-own-target.
+#
+# Both halves are deliberate and neither is the "obvious" uniform choice.
+# Clamping the file/default case rather than refusing it is what stops an
+# operator being pushed to affirm reflexively just to get any scan at all - an
+# affirmation people click through to make the tool work is worth nothing, and
+# that is the only thing the affirmation has to sell.  Refusing the explicit
+# case rather than clamping it is what stops this tool quietly running at a
+# different number than the operator typed: everywhere else in this codebase an
+# invocation is authoritative or fatal, never silently rewritten.
+#
+# Dies, so it must be called directly and never through `$(...)`.
+_http_limit_refuse_or_clamp() {
+  local key=$1 raw=$2 eff=$3 src=$4 where env_name
+  case $src in
+    cli | env)
+      if [[ $src == env ]]; then
+        env_name=$(_scanner_env_name "$key")
+        where="the environment variable $env_name"
+      else
+        where="the command line"
+      fi
+      die "$SCOURSH_EXIT_USAGE" \
+        "'$key' is $raw, above the conservative limit of $eff that applies to a running-endpoint scan against a host this tool cannot vouch for. It was given explicitly, on $where, and scoursh does not silently run at a number other than the one you asked for. Either lower it to $eff or below, or affirm that you own the target by re-running with '--i-own-target <the same id you passed to --target>' (docs/STEP5-DAST-PLAN.md, 'Safety defaults and authorisation')."
+      ;;
+  esac
+  _http_limit_warn_clamp "$key" "$raw" "$eff"
   return 0
 }
 
@@ -776,48 +916,91 @@ _http_limit_warn_clamp() {
 }
 
 # `_http_effective_limit_set KEY` - sets `_HTTP_EFF_LIMIT` to the resolved,
-# clamped integer value.  The rate has its own accessor below because it is the
-# one decimal key.
+# clamped integer value, and `_HTTP_EFF_SRC` to the level it was resolved from.
+# The rate has its own accessor below because it is the one decimal key.
+#
+# WHICH BOUNDS AN AFFIRMATION LIFTS, AND WHICH IT NEVER DOES.  The affirmation
+# raises the three UPPER bounds - rate, budget, breaker threshold - because
+# those are the numbers whose only justification is that this tool cannot vet
+# the host, and against a host that genuinely is the operator's, a 4/s cap has
+# no safety content.  It lifts NEITHER of `circuit-breaker-window`'s two
+# bounds, and both refusals have their own reason:
+#
+#   * The 60s FLOOR is not relaxable because a shorter window counts fewer
+#     failures towards the same threshold, so relaxing it is a way of weakening
+#     the breaker, and docs/STEP5-DAST-PLAN.md offers "threshold raisable,
+#     disabling never offered".  A dial that reaches "never trips" by a
+#     different route is the disable switch wearing a hat.
+#   * The 86400s MAXIMUM is not relaxable because it is not a safety limit at
+#     all - it is what keeps `now - window` inside 64-bit arithmetic.  An
+#     affirmation is a statement about who owns a host; it cannot make a
+#     wrapped integer mean what it says.
+#
+# The budget stays FINITE under an affirmation for the same class of reason:
+# raising it is allowed, and the schema's own positive-integer shape is what
+# makes "no budget" unrepresentable, so there is nothing here to switch off.
 _http_effective_limit_set() {
-  local key=$1 raw ceil eff
+  local key=$1 raw ceil eff src
   _http_limit_ceiling_set "$key" \
     || die "$SCOURSH_EXIT_INCOMPLETE" "internal: no DAST ceiling defined for '$key'"
   ceil=$_HTTP_LIMIT_CEIL
   core_capture raw config_scanner_value "$key"
+  src=$CONFIG_SCANNER_LAST_SOURCE
+  _http_affirmation_set
   _http_int_cmp_set "$raw" "$ceil"
   eff=$raw
+  # "Was the resolved value above the RELAXABLE upper ceiling", which is what
+  # decides whether this key contributes a `limits_relaxed` or a
+  # `limits_clamped` line to the run's authorisation record.  It is false for
+  # `circuit-breaker-window` by construction: that key's ceiling is a floor and
+  # neither of its bounds is affirmable, so it can never be relaxed.
+  _HTTP_EFF_ABOVE=false
+  [[ $key != circuit-breaker-window && $_HTTP_INT_CMP == 1 ]] && _HTTP_EFF_ABOVE=true
   case $key in
     circuit-breaker-window)
       # A floor (a shorter window is a weaker breaker) AND a maximum, because
       # the value beyond it stops being arithmetic the cutoff can hold.
+      # Neither is affirmable; see this function's own header for why each.
       [[ $_HTTP_INT_CMP == -1 ]] && eff=$ceil
       _http_int_cmp_set "$eff" "$_HTTP_BREAKER_WINDOW_MAX"
       [[ $_HTTP_INT_CMP == 1 ]] && eff=$_HTTP_BREAKER_WINDOW_MAX
+      [[ $eff == "$raw" ]] || _http_limit_warn_clamp "$key" "$raw" "$eff"
       ;;
     *)
-      [[ $_HTTP_INT_CMP == 1 ]] && eff=$ceil        # a bigger number is louder
+      if [[ $_HTTP_INT_CMP == 1 && $_HTTP_AFFIRMED != true ]]; then
+        eff=$ceil                                   # a bigger number is louder
+        _http_limit_refuse_or_clamp "$key" "$raw" "$eff" "$src"
+      fi
       ;;
   esac
-  [[ $eff == "$raw" ]] || _http_limit_warn_clamp "$key" "$raw" "$eff"
   _HTTP_EFF_LIMIT=$eff
+  _HTTP_EFF_SRC=$src
   return 0
 }
 
 # The rate, in milli-tokens per second, already clamped.  Sets
 # `_HTTP_EFF_RPS_MILLI`.
 _http_effective_rps_milli_set() {
-  local raw ms ceil_ms=4000
+  local raw ms src ceil_ms=4000
   core_capture raw config_scanner_value requests-per-second
+  src=$CONFIG_SCANNER_LAST_SOURCE
+  _HTTP_EFF_RPS_RAW=$raw
+  _HTTP_EFF_RPS_SRC=$src
+  _http_affirmation_set
   if ! _http_rps_milli_set "$raw"; then
     # Well-formed per the schema but absurd, so it is certainly above the
-    # ceiling; clamping is the honest reading of "above the ceiling".
+    # ceiling.  An affirmed run cannot honour it either - the value does not
+    # fit the limiter's own arithmetic, which is a representability fact rather
+    # than a safety one - so this clamps in BOTH cases and never refuses.
     _http_limit_warn_clamp requests-per-second "$raw" 4
     _HTTP_EFF_RPS_MILLI=$ceil_ms
     return 0
   fi
   ms=$_HTTP_RPS_MILLI
-  if (( ms > ceil_ms )); then
-    _http_limit_warn_clamp requests-per-second "$raw" 4
+  _HTTP_EFF_RPS_ABOVE=false
+  (( ms > ceil_ms )) && _HTTP_EFF_RPS_ABOVE=true
+  if (( ms > ceil_ms )) && [[ $_HTTP_AFFIRMED != true ]]; then
+    _http_limit_refuse_or_clamp requests-per-second "$raw" 4 "$src"
     ms=$ceil_ms
   fi
   if (( ms <= 0 )); then
@@ -909,7 +1092,100 @@ _http_limit_announce_once() {
   local rps_milli=$1 budget=$2 failures=$3 window=$4
   [[ -d $_HTTP_LIMIT_DIR/announced ]] && return 0
   mkdir "$_HTTP_LIMIT_DIR/announced" 2>/dev/null || return 0
-  log_info "request limiter armed for this run: $(( rps_milli / 1000 )).$(printf '%03d' $(( rps_milli % 1000 ))) requests/second, a per-run budget of $budget requests, and a circuit breaker at $failures failed requests within ${window}s (docs/FOUNDATION.md tension 16)"
+  log_info "request limiter armed for this run: $(_http_rps_render "$rps_milli") requests/second, a per-run budget of $budget requests, and a circuit breaker at $failures failed requests within ${window}s (docs/FOUNDATION.md tension 16)"
+  return 0
+}
+
+# Milli-tokens back to the decimal an operator recognises.
+_http_rps_render() {
+  printf '%s.%03d' $(( $1 / 1000 )) $(( $1 % 1000 ))
+}
+
+# ---------------------------------------------------------------------------
+# 11a. The run's authorisation record (docs/STEP5-DAST-PLAN.md DAST-32/33/34)
+# ---------------------------------------------------------------------------
+# `http_limits_record` - resolve all four network limits ONCE, at run start,
+# and write what actually happened to each into the run's own meta records, so
+# run.json can state it (DAST-33) and the report can banner it (DAST-34).
+#
+# Recording is separate from ENFORCING on purpose, and the separation is the
+# point rather than an implementation detail.  Enforcement happens per request,
+# at the chokepoint, where a caller cannot go around it.  Recording happens once
+# per run, because a run that sends ZERO requests still made an authorisation
+# decision, and today's DAST module sends exactly zero - so a record written
+# only by the request path would be absent from precisely the runs a reader is
+# most likely to be looking at.  Both call the same resolution helpers, so the
+# numbers a run REPORTS and the numbers it KEEPS cannot drift.
+#
+# Calling this at run start also moves an explicit over-ceiling refusal from
+# "the first request" to "before anything ran", which is the better failure: a
+# usage error that fires after a scan has started is a usage error that has
+# already sent traffic.
+#
+# Dies (exit 2) for an explicit CLI/env value above a ceiling with no
+# affirmation, so it must be called directly and never through `$(...)`.
+http_limits_record() {
+  local rps_milli budget failures window contact
+  local rps_ceil='4.000'
+
+  _http_effective_rps_milli_set
+  rps_milli=$_HTTP_EFF_RPS_MILLI
+  if [[ $_HTTP_EFF_RPS_ABOVE == true ]]; then
+    if [[ $_HTTP_AFFIRMED == true ]]; then
+      run_record limits_relaxed "requests-per-second:$rps_ceil->$(_http_rps_render "$rps_milli")"
+    else
+      run_record limits_clamped "requests-per-second:$_HTTP_EFF_RPS_RAW->$rps_ceil reason=no_owner_affirmation source=$_HTTP_EFF_RPS_SRC"
+    fi
+  fi
+
+  _http_effective_limit_set request-budget
+  budget=$_HTTP_EFF_LIMIT
+  _http_limit_delta_record request-budget 5000 "$budget"
+
+  _http_effective_limit_set circuit-breaker-failures
+  failures=$_HTTP_EFF_LIMIT
+  _http_limit_delta_record circuit-breaker-failures 10 "$failures"
+
+  _http_effective_limit_set circuit-breaker-window
+  window=$_HTTP_EFF_LIMIT
+
+  # What was NOT relaxed, so the record is a complete statement rather than a
+  # partial one.  The usual question after an incident is what the tool could
+  # not have done, and a list of what stayed on is the answer; without it a
+  # reader has to reason from the version number.
+  run_record limits_enforced "request-budget:$budget (finite, never removable)"
+  run_record limits_enforced "circuit-breaker:$failures-failures/${window}s (never disableable)"
+  run_record limits_enforced 'scope-gate:config/scope.conf (every URL and every redirect hop; no affirmation authorises a target)'
+  run_record limits_enforced 'payloads:detection-only (docs/DESIGN.md §7.3; no destructive payload exists at any setting)'
+  run_record limits_enforced 'ssrf:in-scope-sentinels-only'
+  run_record limits_enforced 'user-agent:scoursh-identified (the product token is never removable)'
+
+  # DAST-31's run-start notice.  A warning would overstate it: an unset contact
+  # is a perfectly legal configuration, and the request is still identified as
+  # scoursh.  What it costs is the target owner's ability to reach the person
+  # running it, so the line names the key that fixes it rather than scolding.
+  run_fact_first_set contact contact
+  if [[ -z $contact ]]; then
+    log_info "no operator contact is configured, so requests will identify this tool but not you; set 'contact' in config/scanner.conf (rules/RULE-FORMAT.md §9.6.1) or pass --contact so a target owner who notices the traffic can reach you"
+  fi
+  return 0
+}
+
+# One `limits_relaxed` or `limits_clamped` line for an integer key, from the
+# state `_http_effective_limit_set` just published.  Split out because the two
+# integer keys are identical here and the rate is not (it is the one decimal).
+_http_limit_delta_record() {
+  local key=$1 ceil=$2 eff=$3
+  [[ $_HTTP_EFF_ABOVE == true ]] || return 0
+  if [[ $_HTTP_AFFIRMED == true ]]; then
+    run_record limits_relaxed "$key:$ceil->$eff"
+  else
+    # `_http_effective_limit_set` has already clamped and warned (or died, for
+    # an explicit value); this only states the delta durably, since a warning
+    # on stderr is not an artifact a reader has a month later.
+    core_capture _HTTP_DELTA_RAW config_scanner_value "$key"
+    run_record limits_clamped "$key:$_HTTP_DELTA_RAW->$eff reason=no_owner_affirmation source=$_HTTP_EFF_SRC"
+  fi
   return 0
 }
 
