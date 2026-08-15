@@ -166,6 +166,12 @@ _dast_auth_touch600() {
 # writer owns the whole record and a partial update is impossible.
 _dast_auth_state_write() {
   local target=$1 label=$2 state=$3 reason=$4
+  # The reason can quote what a TARGET said (an OAuth2 `error` value, a status
+  # line), and this record is line-structured, so a newline in it would make
+  # every following key unreadable.  Flattened rather than refused: the reason
+  # is diagnostic text, and losing its line breaks costs nothing.
+  reason=${reason//$'\n'/ }
+  reason=${reason//$'\r'/ }
   _dast_auth_dir_set "$target" "$label"
   local f=$_DAST_AUTH_DIR/state
   _dast_auth_touch600 "$f"
@@ -1015,6 +1021,15 @@ dast_auth_enum_scan() {
   _dast_auth_dir_set "$target" "$label"
   corpus=$_DAST_AUTH_DIR/responses
   [[ -r $corpus ]] || return 0
+
+  # RECORDED HERE, NOT AT THE EMIT.  `checks_run` is the set of checks the run
+  # loaded and EXECUTED (AGENTS.md's own definition), not the set that found
+  # something: a check that ran and found nothing is coverage, and recording it
+  # only on a hit would make a clean result indistinguishable from a check that
+  # never ran - which is the exact confusion modules/dast/run.sh's roll-up
+  # exists to prevent, arrived at from the other side.
+  run_record checks_run 'DAST-AUTH-ENUM_RESPONSE-01'
+
   hits=$_DAST_AUTH_DIR/.enum
   for pattern in "${_DAST_AUTH_ENUM_PATTERNS[@]+"${_DAST_AUTH_ENUM_PATTERNS[@]}"}"; do
     if scan_match "$hits" -i -o -e "$pattern" -- "$corpus"; then
@@ -1047,7 +1062,6 @@ dast_auth_enum_scan() {
   finding_set loc_param_name 'authentication-response'
   finding_set_evidence "an authentication response this run already received distinguishes account state rather than failing generically: $matched"
   finding_emit
-  run_record checks_run 'DAST-AUTH-ENUM_RESPONSE-01'
   return 0
 }
 

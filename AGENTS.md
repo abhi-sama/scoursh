@@ -134,13 +134,13 @@ exactly how a wrong count gets committed with a straight face.
 
 **Current position: §13 steps 1, 2, 3 and 4 are done - step 4 landed out of step order and in slices,
 and step 3's §6.3 rule-pack catalog is complete now that `nosql.rules` and `ldap.rules` have landed -
-and step 5 (DAST) is under way with its whole TIER 0 complete: DAST-01 (the tension-16 rate limiter,
-per-run request budget and circuit breaker), DAST-02 (`modules/dast/run.sh`, the `scan_dispatch dast`
-entry point), and the safety half DAST-31/32/33/34 (the identifying `User-Agent`, the conservative
-ceilings plus the `--i-own-target` affirmation, the `run.json` authorisation record, and an
-unrestricted run stated on stderr and in the report) have all landed.
-Tiers 1-5 are therefore unblocked, beginning with DAST-03 (`auth.sh`) and DAST-04 (`crawl.sh`); step 5
-remains the top priority ahead of steps 6, 7 and 10.**
+step 5 (DAST) has its whole TIER 0 complete: DAST-01 (the tension-16 rate limiter, per-run request
+budget and circuit breaker), DAST-02 (`modules/dast/run.sh`, the `scan_dispatch dast` entry point), and
+the safety half DAST-31/32/33/34 (the identifying `User-Agent`, the conservative ceilings plus the
+`--i-own-target` affirmation, the `run.json` authorisation record, and an unrestricted run stated on
+stderr and in the report); and TIER 1 IS NOW HALF LANDED - DAST-03 (`auth.sh`, §7.0 authentication and
+session acquisition) is in, leaving DAST-04 (`crawl.sh`) as the one thing tiers 2-5 still wait on.
+Step 5 remains the top priority ahead of steps 6, 7 and 10.**
 Which rule packs, SCA ecosystems and IaC packs have landed, and what remains of each, is in the
 generated block below - read it there rather than restating it here.
 The design notes the inventory cannot carry stay hand-written:
@@ -367,6 +367,105 @@ easy to get backwards.**
   tension 16 as well: the affirmation lifts the three UPPER bounds (rate, budget, breaker threshold)
   and lifts NEITHER of `circuit-breaker-window`'s bounds - the 60s floor because a shorter window is a
   weaker breaker, and the 86400s maximum because it is arithmetic rather than safety.
+
+**DAST-03 (`auth.sh`) has landed - the first ticket of tier 1, and the first DAST phase script that
+exists at all.**
+`modules/dast/auth_engine.sh` is the pure library (config load, the session store, every §7.0 login
+mode, re-auth, and the config-derived enumeration check) and `modules/dast/auth.sh` is the phase script
+`dast_run_phase` sources - the `engine.sh`/`run.sh` split `modules/sast/` established, one level down.
+`tests/suites/dast-auth.sh` is the mocked suite (no network, no Docker, so it runs everywhere) and
+`tests/e2e/dast-auth-live.sh` is the opt-in proof against the authorized local Juice Shop target, in
+the same shape and for the same reason as `tests/e2e/dast-target-smoke.sh`.
+`docs/STEP5-DAST-PLAN.md`'s own DAST-03 landing note is the authority for the detail; six things about
+it are worth carrying here because a later ticket will otherwise rediscover them the expensive way.
+
+- **`lib/http.sh` gained a per-request context, and the module deliberately did not.**  `http_request`
+  could previously send neither a header nor a request body and discarded the response body, which is
+  everything §7.0 needs.  `http_request_header` / `http_request_body` / `http_request_capture` (that
+  file's new section 9a) are consumed by `http_request` at ENTRY and the globals reset immediately, so
+  a credential attached for one request can never ride along on the next one however the first one
+  ended.  Putting any of this in `modules/dast/` would have been the second path to the network
+  tension 19 exists to prevent, and would have skipped the limiter, the budget, the breaker and the
+  DAST-32 ceilings that all hang off the chokepoint.
+- **A credential reaches curl over STDIN, as a `curl -K -` config, never through `argv` and never
+  through a file.**  curl has no `-H @file` and no stdin-header option, so the real alternatives were
+  argv (visible in `ps` to every user on the host) or a scratch file - and tension 9's handling rules 1
+  and 2 forbid both.  `tests/suites/http.sh` proves it with a stub `curl` that dumps its own `argv`.
+  There is still **exactly one curl invocation** in that file, and the empty config is passed anyway
+  rather than branching, because "every request carries the identifying User-Agent" is only structural
+  while there is one command line to notice.
+- **A redirect drops the caller's headers and body when it crosses ORIGIN, and downgrades the method on
+  a 301/302 after a non-GET.**  Both origins being in `config/scope.conf` does not make them the same
+  principal: the gate answers "may this tool talk to that host", never "does this credential belong to
+  it".  And re-POSTing a login body to a path the SCANNED TARGET chose is exactly what a login flow
+  must not do (RFC 7231 §6.4.3; 307/308 are left alone, since preserving the method is what they are
+  for).
+- **The `form` mode probes at most three body shapes because the FROZEN schema names none.**
+  `rules/RULE-FORMAT.md` §9.6.2 gives `form` a `login-path`, a `username` and a credential and no body
+  encoding and no field names, so an implementation must choose - and choosing one would work against
+  classic HTML form logins or against JSON login APIs but never both.  Order: urlencoded, then JSON
+  `{"email":..}`, then JSON `{"username":..}`; first to yield a session wins; the winner is PERSISTED
+  so a re-auth replays it and never probes again.  Three attempts is a real cost against an account
+  lockout policy, which is why it is bounded and never repeated.  Do not "improve" this by adding a
+  fourth shape: a `login-body-shape` key is the better answer and is a register change, since §9.6.2 is
+  frozen.
+- **`srp` accepts a pre-obtained token and does not compute the handshake**, which `docs/DESIGN.md`
+  §7.0 explicitly permits ("compute the SRP handshake in shell, **or** accept a pre-obtained token to
+  avoid re-implementing crypto").  A pure-shell SRP-6a is modular exponentiation over a 3072-bit group
+  in bash arithmetic - unverifiable crypto in a language with no way to test it.  E074 says so at
+  config-load time and the run records `srp_handshake_not_computed`, so `mode: srp` never reads as
+  evidence the provider's SRP exchange was exercised.
+- **A failed authentication is a DECLARED coverage reduction, not exit 5.**  §7.0's own wording is
+  "mark the authenticated checks `skipped` with a clear reason", which is the vocabulary of
+  `docs/FOUNDATION.md` tension 14's declared rows ("a check skipped for an absent `requires-cmd` or
+  `requires-config`"), not of its unplanned ones - a session that could not be obtained makes the
+  authenticated checks' required input absent, exactly as a missing `config/auth.conf` does.  The run
+  continues; `dast_auth_state` returns `failed` for the rest of it and `dast_auth_skip_reason` is the
+  sentence every dependent check states.  What is forbidden, and is the whole point, is running those
+  checks unauthenticated and reporting their silence as clean.
+
+**The live proof, and one pre-existing bug it turned up.**  `tests/e2e/dast-auth-live.sh` passes 25 of
+25 against a real, local Juice Shop container: both identities log in over real HTTP, the form-shape
+probe picks the JSON shape (this target's urlencoded attempt is rejected, so a single hardcoded body
+would never have logged in at all), each session reaches its OWN object server-side, identity A reading
+identity B's object is the broken-access-control case DAST-29 will assert on, and a deliberately
+corrupted token produces a real 401 that is re-authenticated and retried once.
+Two facts measured there are worth keeping:
+
+- **This pinned Juice Shop image 400s on a duplicate registration**, and
+  `tools/dast-test-identities.sh`'s header claimed the opposite as a measured fact ("accepting a repeat
+  registration rather than 400ing on a duplicate email - verified against bkimminich/juice-shop:v20.1.1").
+  Re-measured: first registration 201, same email again 400 `email must be unique`, login afterwards
+  200.  So running that script twice against one still-running container died, and every run after the
+  first failed on a target that was in fact correctly provisioned.  `dti_provision` now treats a
+  duplicate refusal as the success it is, but only after a login proves the persisted password still
+  opens the account - "the email is taken" and "the email is taken by an account whose password we
+  hold" are different facts and only the second is idempotency.
+- **This target's login sets NO cookie**: it returns the JWT in the JSON body and leaves the SPA to
+  install it, so its own `/rest/user/whoami` - which reads a session cookie - answers `{"user":{}}` to a
+  perfectly valid bearer token.  A shell scanner authenticating against a client-rendered app therefore
+  holds a token some of that app's own endpoints will not accept, which is the same blind spot
+  `docs/DESIGN.md` §7.5's SPA limitation names for crawling.  Do not read a 200-with-empty-body from
+  such an endpoint as a failed session.
+
+Two things landed with it because the first phase script is what made them true.
+**E073 and E074 now have implementations** - both codes were reserved in `rules/RULE-FORMAT.md` §13 with
+none.  E074's mode-to-required-keys table lives in `lib/records.sh` in ONE copy, which
+`modules/dast/auth_engine.sh` consumes rather than restating, and E073 is enforced at runtime as well
+as by the linter (the file whose permissions matter is the operator's own; a lint that ran in this
+repository has said nothing about it), and a `secret-file` is held to the same 600 requirement.
+**`modules/dast/run.sh`'s honesty roll-up now keys on COVERAGE rather than on execution**: DAST-02 could
+ask "did any phase run" because none existed and the two questions had one answer, but `auth.sh` runs on
+every passive run and covers nothing without `--authed`, so that reading would have started reporting
+coverage on exactly the run that has none.  It counts `run_record checks_run` instead - the mechanism
+`modules/sast/`, `modules/iac/` and every `modules/sca/` engine already use - and gained a third reason,
+`no_check_covered_by_any_phase`, alongside DAST-02's two.
+**What DAST-03 deliberately did not build**: the LIVE user-enumeration probe.  §7.4's closing paragraph
+splits that check in two and only the config-derived half is here - it reads the authentication
+responses the run already received and sends nothing.  The live half submits an identifier the operator
+never configured, which on a real identity provider creates accounts and sends messages, so it needs
+`--allow-intrusive`; a run given that flag today records `live_enumeration_probe_not_implemented`
+rather than letting an absent finding read as a clean result.
 
 **This block used to read "no DAST-0x ticket is picked up until step 3's outstanding rule packs and
 step 4's SCA half are both complete on `dev`"; BOTH halves of that gate are now discharged, so it is

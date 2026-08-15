@@ -4336,12 +4336,24 @@ The last two packs, `nosql.rules` (4 checks) and `ldap.rules` (3 checks), landed
 `tests/suites/sast.sh` from 90 to 130 passing assertions with none failing.
 Step 4 is complete: both its IaC and its SCA halves landed, out of step order and in slices - see the
 two paragraphs below.
-Step 5 (DAST) is under way and its whole **tier 0 is complete**: DAST-01 (the tension-16 limiter,
-budget and breaker), DAST-02 (`modules/dast/run.sh`, the dispatch entry point), DAST-31 (the
-identifying `User-Agent`), DAST-32 (the conservative ceilings and the `--i-own-target` affirmation),
-DAST-33 (the authorisation record in `run.json`) and DAST-34 (an unrestricted run stated on stderr and
-in the report) have all landed, so `modules/dast/` exists and tiers 1-5 - beginning with DAST-03
-(`auth.sh`) and DAST-04 (`crawl.sh`) - are unblocked.
+Step 5 (DAST) is under way, its whole **tier 0 is complete**, and **tier 1 is half landed**.
+Tier 0: DAST-01 (the tension-16 limiter, budget and breaker), DAST-02 (`modules/dast/run.sh`, the
+dispatch entry point), DAST-31 (the identifying `User-Agent`), DAST-32 (the conservative ceilings and
+the `--i-own-target` affirmation), DAST-33 (the authorisation record in `run.json`) and DAST-34 (an
+unrestricted run stated on stderr and in the report).
+Tier 1: **DAST-03 (`auth.sh`, §7.0 authentication and session acquisition) has landed** -
+`modules/dast/auth_engine.sh` and `modules/dast/auth.sh`, with every §7.0 login mode (static bearer and
+API key, form login, the OAuth2 password and client-credentials grants, and Cognito-style SRP from a
+pre-obtained token), a mode-600 cookie-jar-plus-token session store in the run scratch directory,
+transparent re-auth on a `401` exactly once, two labelled identities for DAST-29, and the
+config-derived half of §7.4's user-enumeration checks.
+It also enforces `rules/RULE-FORMAT.md`'s E073 and E074 for the first time, and it extended
+`lib/http.sh` with the per-request context (headers, a request body, and response capture) that §7.0
+cannot be expressed without - inside the chokepoint, for tension 19's own reason, with the credential
+reaching curl over stdin rather than through `argv` or a file (tension 9).
+`docs/STEP5-DAST-PLAN.md`'s DAST-03 landing note carries the full detail, including why a failed
+authentication is a DECLARED coverage reduction under tension 14's table rather than an exit 5.
+**DAST-04 (`crawl.sh`) is the only tier-1 ticket left, and is the one thing tiers 2-5 now wait on.**
 `modules/cloud/` remains unbuilt and steps 6, 7 and 10 remain unstarted; step 5 is still the top
 priority ahead of them.
 `lib/awscli.sh` is a further out-of-sequence exception: a credential-less pass built it ahead of step

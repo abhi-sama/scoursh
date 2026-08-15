@@ -1777,8 +1777,14 @@ http_request() {
         req_has_body=false
         kept=()
         for item in "${req_headers[@]+"${req_headers[@]}"}"; do
+          # Compared lowercased, because a header field name is
+          # case-insensitive (RFC 7230 §3.2) and a caller is entitled to spell
+          # it any way it likes; matching the one spelling this repository
+          # happens to use today would leave the entity header attached to a
+          # bodyless GET the first time somebody wrote it differently.
           case ${item%%:*} in
-            [Cc]ontent-[Tt]ype | [Cc]ontent-[Ll]ength) continue ;;
+            [Cc][Oo][Nn][Tt][Ee][Nn][Tt]-[Tt][Yy][Pp][Ee] \
+              | [Cc][Oo][Nn][Tt][Ee][Nn][Tt]-[Ll][Ee][Nn][Gg][Tt][Hh]) continue ;;
           esac
           kept+=("$item")
         done

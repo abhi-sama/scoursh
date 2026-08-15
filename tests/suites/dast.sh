@@ -469,4 +469,58 @@ assert_eq 2 "$_RC" \
   'an affirmation naming a different host is exit 2 through the real CLI - fails under "the affirmation is a switch", which is how a copied CI file carries one to a target that changed hands'
 
 
+# =============================================================================
+printf -- '\n-- the auth phase, through the real scan.sh dispatch (DAST-03) --\n'
+# =============================================================================
+# tests/suites/dast-auth.sh exercises the engine directly.  These two cases
+# exercise the WIRING: that `dast_run_phase` reaches modules/dast/auth.sh at all,
+# that it sees `--authed`, and that what it records lands on the surfaces a
+# consumer reads.  Neither sends a request.
+
+t_case '--authed with no config/auth.conf is a recorded reduction, not an error'
+_dast_scan "$W/run-authed-noconf" "$FIX_SCOPE" --target dast-fixture --authed
+assert_eq 0 "$_RC" \
+  'the run still exits 0 - FAILS under "auth.conf is a required input for --authed", which docs/FOUNDATION.md tension 14 classes as a DECLARED reduction ("a check skipped for an absent requires-config"), not a missing-input abort'
+RUN_AUTH_JSON=$(_slurp "$W/run-authed-noconf/run.json")
+assert_contains "$RUN_AUTH_JSON" 'reason=auth_config_absent' \
+  'run.json says the session could not be acquired and why - fails if the phase returns quietly, which leaves an --authed run reporting the same coverage as an authenticated one'
+assert_contains "$RUN_AUTH_JSON" 'every authenticated check is skipped' \
+  'and the human-readable gap states the consequence, not just the cause'
+assert_contains "$RUN_AUTH_JSON" 'NOT assessed at all' \
+  'the user-enumeration gap says which half ran even when neither did (docs/DESIGN.md §7.4) - fails under "say nothing when nothing happened", which lets a clean report read as "user enumeration was tested"'
+
+t_case 'a static identity authenticates through the real dispatch, sending nothing'
+FIX_AUTH=$W/root-with-auth
+_fixture_root "$FIX_AUTH"
+cp "$FIX_SCOPE/config/scope.conf" "$FIX_AUTH/config/scope.conf"
+cat >"$FIX_AUTH/config/auth.conf" <<'AUTHEOF'
+id: dast-fixture.a
+mode: bearer
+token: a-static-token-no-login-needed
+AUTHEOF
+chmod 600 "$FIX_AUTH/config/auth.conf"
+STUB2=$W/netstub2
+mkdir -p "$STUB2"
+for c in curl wget nc openssl; do
+  printf '#!/bin/sh\nprintf "%%s\\n" "$0 $*" >>"%s"\nexit 0\n' "$W/authed-network-attempts" >"$STUB2/$c"
+  chmod 755 "$STUB2/$c"
+done
+rm -f "$W/authed-network-attempts"
+_AUTH_RC=0
+SCOURSH_INSTALL_ROOT=$FIX_AUTH PATH="$STUB2:$PATH" \
+  bash "$ROOT/scan.sh" dast --target dast-fixture --authed --out "$W/run-authed-ok" \
+  >"$W/run-authed-ok.log" 2>&1 || _AUTH_RC=$?
+assert_eq 0 "$_AUTH_RC" 'the authenticated run exits 0'
+assert_file_absent "$W/authed-network-attempts" \
+  'and a STATIC credential produced no network call at all - FAILS under "every mode logs in", which would put a request on the wire for a credential the operator already handed us'
+RUN_AUTH_OK=$(_slurp "$W/run-authed-ok/run.json")
+assert_contains "$RUN_AUTH_OK" 'state=authenticated' \
+  'run.json records the identity as authenticated - fails if the phase is reached but its record never leaves the process'
+assert_not_contains "$RUN_AUTH_OK" 'a-static-token-no-login-needed' \
+  'and the CREDENTIAL ITSELF appears nowhere in run.json - FAILS if the phase records the identity by logging what it sent, which writes the operator'"'"'s token into the artifact people attach to tickets'
+assert_not_contains "$(_slurp "$W/run-authed-ok/report.md")" 'a-static-token-no-login-needed' \
+  'nor in the markdown report'
+assert_contains "$RUN_AUTH_OK" 'need TWO' \
+  'and the run states that one identity is not enough for a cross-user check - fails if the shortfall is discovered later by DAST-29 reporting a clean result it had no second identity to obtain'
+
 t_summary dast
