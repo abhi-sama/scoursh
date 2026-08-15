@@ -2,15 +2,15 @@
 
 **Scan exhaustively. Trust nothing over the network.**
 
-`scoursh` is an air-gapped, shell-based security scanner - meaning it has no back-channel to
+`scoursh` is an egress-restricted, shell-based security scanner - meaning it has no back-channel to
 anyone. It never phones home, never checks for updates, never fetches its own rules or advisories
 from a server, and never sends telemetry to its maintainers or anyone else. One tool, one entry
 point, one report - covering source code (SAST), dependencies (SCA), and infrastructure-as-code
 (IaC) today, all three with **zero network calls of any kind**. A running-endpoint scanner (DAST)
 and live cloud posture checking (CSPM) are already designed and next in line; by nature, those two
 have to talk to *something* - but only ever to a target *you* explicitly pre-authorized, never
-anywhere scoursh decided on its own. See [Why air-gapped](#why-air-gapped) for exactly where the
-line is drawn and why.
+anywhere scoursh decided on its own. See [Why egress-restricted, not air-gapped](#why-egress-restricted-not-air-gapped)
+for exactly where the line is drawn and why.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
@@ -20,7 +20,7 @@ line is drawn and why.
 - [Features](#features)
 - [Types of security scans, and where scoursh stands today](#types-of-security-scans-and-where-scoursh-stands-today)
 - [scoursh vs. semgrep](#scoursh-vs-semgrep)
-- [Why air-gapped](#why-air-gapped)
+- [Why egress-restricted, not air-gapped](#why-egress-restricted-not-air-gapped)
 - [Installation](#installation)
 - [Try it yourself: sample vulnerable repos](#try-it-yourself-sample-vulnerable-repos)
 - [Optional third-party engines](#optional-third-party-engines)
@@ -41,14 +41,14 @@ exhaustively.*
 
 - **Four scan surfaces in one tool** - source code, dependencies, infrastructure-as-code, and
   secrets, sharing one CLI, one exit-code contract, and one report.
-- **Genuinely air-gapped, precisely defined** - scoursh itself has no back-channel to anyone: no
-  update check, no telemetry, no rule registry to fetch from. SAST, SCA, and IaC make zero network
-  calls, full stop. The only traffic that ever leaves the host at all is to a target *you*
-  explicitly pre-authorized (a DAST target in `config/scope.conf`, or your own AWS account) - never
-  to scoursh's maintainers, never to a third party, and never automatically. Every network call in
-  the codebase, present or future, routes through one of two chokepoints, a dedicated lint fails the
-  build if anything bypasses them, and a separate lint proves no AI/LLM provider is reachable from
-  the shipped tool at all.
+- **Egress-restricted, enforced by destination, precisely defined** - scoursh itself has no
+  back-channel to anyone: no update check, no telemetry, no rule registry to fetch from. SAST, SCA,
+  and IaC make zero network calls, full stop. The only traffic that ever leaves the host at all is to
+  a target *you* explicitly pre-authorized (a DAST target in `config/scope.conf`, or your own AWS
+  account) - never to scoursh's maintainers, never to a third party, and never automatically. Every
+  network call in the codebase, present or future, routes through one of two chokepoints, a dedicated
+  lint fails the build if anything bypasses them, and a separate lint proves no AI/LLM provider is
+  reachable from the shipped tool at all.
 - **Deterministic output** - the same scan produces byte-identical findings whether it runs on
   Linux with GNU coreutils or macOS with a BSD userland, checked automatically in CI.
   Fingerprints survive reindentation and unrelated edits, so a diff or baseline never reports a
@@ -142,21 +142,26 @@ language coverage scoursh doesn't have yet.
 **Or use both** - point `scoursh --use-engines` at a vendored copy of semgrep and get its matching
 engine's coverage inside scoursh's own unified report, still with zero network calls once vendored.
 
-## Why air-gapped
+## Why egress-restricted, not air-gapped
 
-**What this does and doesn't mean.** "Air-gapped" doesn't mean scoursh can never make a network
-request - `dast` and `cloud --live` inherently have to talk to *something*, since testing a running
-application or reading your live AWS configuration is the entire point of those two scans. What it
-means is narrower, and it's the part that actually matters: **scoursh itself has no back-channel,
-and it never decides on its own who to contact.** Exactly two kinds of outbound traffic are ever
-permitted, and both require *you* to have named the exact target first: `curl` to a host you
-explicitly authorized in `config/scope.conf`, and read-only AWS API calls to your own account.
-Everything else - phoning home, a SaaS backend, fetching rules or advisories at scan time,
+**What this does and doesn't mean.** scoursh is **egress-restricted, enforced by destination** -
+not air-gapped, and that distinction is deliberate rather than pedantic: "air-gapped" would mean the
+tool never touches a network at all, and that's not true of it as a whole, nor was it ever meant to
+be. `dast` and `cloud --live` inherently have to talk to *something*, since testing a running
+application or reading your live AWS configuration is the entire point of those two scans. What
+scoursh actually guarantees is narrower, and it's the part that actually matters: **scoursh itself
+has no back-channel, and it never decides on its own who to contact.** Exactly two kinds of outbound
+traffic are ever permitted, and both require *you* to have named the exact target first: `curl` to a
+host you explicitly authorized in `config/scope.conf`, and read-only AWS API calls to your own
+account. Everything else - phoning home, a SaaS backend, fetching rules or advisories at scan time,
 telemetry to scoursh's own maintainers or anyone else - is forbidden by design, with no
 configuration flag that turns it back on. That's why SAST, SCA, and IaC - the three modules
 actually built today - make genuinely zero network calls: nothing about reading source code,
 dependency manifests, or config files needs an external target to begin with, so for those three,
-"no network calls when authorized" and "no network calls at all" are the same thing in practice.
+"no network calls when authorized" and "no network calls at all" are the same thing in practice -
+and it's the reason those three modules really can run unmodified on a genuinely air-gapped host,
+even though the tool as a whole is not one. See `docs/FOUNDATION.md` tension 28 for the full
+correction and `docs/adr/0001-egress-model-correction.md` for the dated decision record.
 
 That single constraint shapes most of the architecture:
 

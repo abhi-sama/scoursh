@@ -10,7 +10,7 @@ A ticket that finds itself disagreeing with one of those resolutions changes the
 
 ## Status: blocked, and now second in the priority order
 
-**No step 7 ticket (any of STATE-01 through STATE-08 below) is picked up until every earlier `docs/DESIGN.md` §13 step is complete on `dev`.**
+**No step 7 ticket (any of STATE-01 through STATE-08 below) is picked up until every earlier `docs/DESIGN.md` §13 step is complete on `main`** (this repository's sole branch; there is no `dev` branch today - it was promoted into `main` and removed).
 The build order (§13) is strictly sequential, so step 7 waits behind:
 
 1. **§13 step 3 (SAST) finishes**: the `nosql.rules` and `ldap.rules` packs land.

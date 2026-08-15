@@ -121,7 +121,7 @@ is not an acceptable foundation for `scan.sh`, which per `docs/DESIGN.md`
 
 Installing GNU getopt via Homebrew (`brew install gnu-getopt`) fixes this,
 but that means the tool cannot run on a stock macOS install - which
-directly conflicts with the air-gapped, zero-install-step posture this
+directly conflicts with the egress-restricted, zero-install-step posture this
 project already holds for everything else (vendored rules, no runtime
 fetches, `require_cmd` in `lib/core.sh` only demanding POSIX-standard
 tools).

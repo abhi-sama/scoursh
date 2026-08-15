@@ -43,7 +43,7 @@
 # `--offline-scan` and `--skip-check-update` (belt-and-suspenders: the first
 # stops trivy resolving license/OS metadata over the network, the second
 # stops it fetching its own OPA check bundle from an OCI registry even
-# though this binary's checks are already compiled in) - an air-gapped
+# though this binary's checks are already compiled in) - an egress-restricted
 # scanner cannot rely on a THIRD PARTY BINARY's own default being safe, the
 # same reasoning modules/sast/adapters/semgrep/adapter.sh's own header
 # states for semgrep's `--offline`/`SEMGREP_SEND_METRICS=off` pair.

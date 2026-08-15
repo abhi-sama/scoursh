@@ -4,7 +4,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## What scoursh is
 
-`scoursh` ("scan exhaustively") is a shell-based, air-gapped security scanner.
+`scoursh` ("scan exhaustively") is a shell-based, egress-restricted security scanner.
 One tool audits three surfaces: source code (SAST plus SCA plus IaC), a running endpoint (DAST), and AWS configuration (live read-only plus IaC).
 
 It is **target-agnostic**.
@@ -15,13 +15,19 @@ This is `docs/DESIGN.md` §1 and it is a hard rule for every change.
 
 ## The no-egress rule, and why it drives everything
 
-Exactly two kinds of outbound traffic are permitted:
+`scoursh` is **egress-restricted, enforced by destination** - not air-gapped; see `docs/FOUNDATION.md`
+tension 28 and `docs/adr/0001-egress-model-correction.md` for the full correction and why "air-gapped"
+overstates the guarantee. Exactly two kinds of outbound traffic are permitted:
 
 1. `curl` to a host the operator authorised in `config/scope.conf`.
 2. Read-only AWS API calls to the operator's own account.
 
 Everything else is forbidden: no telemetry, no SaaS backend, no fetching rules or advisories at scan time.
-The tool must run on an air-gapped host.
+DAST and live cloud scanning need real network access to do their job - the guarantee is not that the
+tool never touches a network, but that it never decides on its own who to contact, and refuses anything
+outside those two categories at a runtime chokepoint. SAST, SCA, and IaC need no external target at all,
+so those three modules alone genuinely make zero network calls and genuinely run unmodified on an
+air-gapped host.
 
 This single constraint explains most of the architecture, so do not "improve" a design decision without checking it against this first:
 
@@ -462,8 +468,9 @@ against, the exception-file seeding, and the negative-fixture test are (CLOUD-03
 the one IaC ticket already landed on `origin/dev` (`modules/iac/`, "IaC: Terraform checks via the
 pattern-rule engine") is step 4's `docs/DESIGN.md` §8.2 work, not step 6's, and is out of this plan's
 scope for that reason. **No CLOUD-0x or POSTURE-0x ticket is picked up until step 5 (DAST) is
-complete on `dev`** - step 6 is gated on the whole sequential chain in front of it, and steps 3 and 4
-were the other two links in that chain, so step 5 is now the only one left; this plan is still a
+complete on `main`** (this repository's sole branch; there is no `dev` branch today, see "There is no
+`dev` branch today" above) - step 6 is gated on the whole sequential chain in front of it, and steps 3
+and 4 were the other two links in that chain, so step 5 is now the only one left; this plan is still a
 written breakdown for later, not permission to start now.
 
 **PARANOID-01 has now landed - `lib/paranoid.sh` implements `--paranoid` for real.**
@@ -535,7 +542,7 @@ its own to select or drop, exactly as `docs/ADAPTERS.md` §6 already froze.
 It ships `modules/sast/adapters/semgrep/adapter.sh` (the three-function contract: `semgrep_detect` is a
 pure filesystem check for an executable `bin/semgrep` plus a non-empty `rules/`; `semgrep_run` invokes it
 with `--offline --metrics=off` - and `SEMGREP_SEND_METRICS=off` as a belt-and-suspenders second control,
-since an air-gapped scanner cannot rely on a vendored third-party binary's own default being safe;
+since an egress-restricted scanner cannot rely on a vendored third-party binary's own default being safe;
 `semgrep_normalize` parses semgrep's own JSON with a purpose-built, depth- and string-aware `awk`
 splitter plus bash-native field extractors - never a general JSON parser, the same pragmatic,
 stated-scope choice `modules/sca/engine.sh`'s `_sca_json_walk` already makes for lockfiles) and
@@ -704,7 +711,7 @@ Every advisory id is operator-supplied via `SCOURSH_ADVISORY_<ECOSYSTEM>_IDS`, n
 hardcoded, mirroring `semgrep_vendor`'s own "operator supplies the fact, this script only
 fetches/transforms it" discipline.
 JSON parsing uses `python3`'s stdlib `json` module (this script runs on a networked, operator-controlled
-box with real tooling, never in the air-gapped scan-time path); per-ecosystem name normalisation reuses
+box with real tooling, never in the egress-restricted scan-time path); per-ecosystem name normalisation reuses
 `modules/sca/engine.sh`'s, `php_engine.sh`'s and `go_engine.sh`'s own `sca_*_normalize_name`/
 `sca_go_normalize_version` functions verbatim (lazily sourced), so the writer and the reader of
 `data/advisories.db` can never drift apart on the frozen normalisation table.
@@ -775,14 +782,23 @@ above; F16's `look` half as of `lib/core.sh`'s `db_lookup_exact` and its new `te
 test - see `docs/FOUNDATION.md`'s "Known follow-ups" for the full closure detail); do not re-flag any
 of them.
 
-**`main` can lag `dev` - check `dev`, not just `main`, before declaring a dependency unlanded.**
-This project develops on `dev` and merges to `main` in batches, so a checkout of `main` can be several
-merged tickets behind what `dev` already has.
+**There is no `dev` branch today.** It was promoted into `main` and removed; `main` is this repository's
+sole and default branch, and every current and future landing happens directly on it. Historical
+narrative below that says a ticket "landed on `dev`" is describing what was true when it happened, before
+the promotion, and is left as written for that reason.
+The paragraph immediately below is kept as history too - the failure mode it describes (trusting a stale
+local checkout over the actual tip) is still real - but its specific advice to check `dev`'s tip no
+longer applies to a live workflow: check `main`'s own tip instead.
+
+**`main` used to be able to lag `dev` - check the actual branch tip, not a stale local checkout, before
+declaring a dependency unlanded.** (Historical: this project developed on `dev` and merged to `main` in
+batches, so a checkout of `main` could be several merged tickets behind what `dev` already had, until
+`dev` was promoted into `main` and removed.)
 An earlier agent run on the 3b ticket read a `main` checkout where `modules/` was genuinely still
 absent, concluded the 3a dependency (and this stale memory) meant the work hadn't landed, and moved the
 ticket to `blocked` - when 3a had in fact already merged to `dev`.
-Before concluding a dependency is missing, check the actual workspace branch and, if it is behind, check
-`dev`'s tip rather than trusting `main` or this file's prose alone.
+Before concluding a dependency is missing, check the actual workspace branch and, if it is behind, fetch
+and check the remote tip rather than trusting a stale checkout or this file's prose alone.
 
 **A ticket can never cite its own landing sha, because the squash merge mints that sha afterwards.**
 Landings reach `dev` as squash commits, so the sha a ticket's own branch carries is not the sha its work
@@ -812,11 +828,13 @@ Anything else it reports is a real reference to a commit that does not exist, an
 
 **A Crewban ticket that is `done` with `landed_sha` NULL is usually a bookkeeping gap, not stranded
 work - prove the work is really unlanded before rescuing it by hand.**
-Because every landing squashes, `git log origin/dev..<branch>` reports "1 commit ahead" for a branch
+(This project's default branch is `main`; there is no `dev` branch today, per the note above - the
+commands below target `origin/main`, not the `origin/dev` this paragraph used before that promotion.)
+Because every landing squashes, `git log origin/main..<branch>` reports "1 commit ahead" for a branch
 whose content is *already fully merged*, so commits-ahead is not evidence of anything.
-The test that actually discriminates is `git cherry origin/dev origin/<branch>`: a leading `-` means the
+The test that actually discriminates is `git cherry origin/main origin/<branch>`: a leading `-` means the
 patch is already upstream, `+` means it is not.
-Confirm a `-` by comparing trees (`git rev-parse <branch>^{tree}` against the `dev` commit that landed
+Confirm a `-` by comparing trees (`git rev-parse <branch>^{tree}` against the `main` commit that landed
 it); identical trees mean there is nothing to rescue and the correct outcome is to say so, not to open
 an empty PR.
 Two shapes cause the NULL: a landing job recorded against a sibling ticket that shared the branch, and
@@ -826,7 +844,7 @@ Unpushed agent work, if any exists, lives outside this repo in the harness's per
 time of writing `~/.ace/workspaces/<ticket-uuid>`, a pre-rename path still in use by Crewban.
 Sweep those with `git rev-list HEAD --not --remotes=origin` plus `git stash list` before concluding a
 branch missing from `origin` means the work is lost; a commit found that way still has to be compared
-against `dev` artifact by artifact, since it is usually a superseded draft of what already landed.
+against `main` artifact by artifact, since it is usually a superseded draft of what already landed.
 
 **One piece of step 5 landed out of sequence: `lib/http.sh` (the scope-gate chokepoint,
 docs/FOUNDATION.md tension 19) now exists**, built and reviewed as its own ticket once tension 19's

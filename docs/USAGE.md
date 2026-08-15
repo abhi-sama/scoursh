@@ -247,8 +247,8 @@ remove it: an authorised scan has no need to be unidentifiable and an unauthoris
 That file is not in this repository - `data/` ships only `severity-rubric.conf` - so on a stock
 checkout `sca` finds nothing at all, whatever the lockfiles contain, and says so in `run.json` with a
 `coverage_reduction reason=no_advisories_db_on_disk` fact.
-This is by design rather than an oversight: the scanner is air-gapped and never fetches advisory data
-at scan time.
+This is by design rather than an oversight: scoursh is egress-restricted, and advisory data is never
+fetched at scan time under any circumstance.
 Build the database on a networked host with `tools/vendor-engines.sh advisories`, or point
 `SCOURSH_SCA_ADVISORIES_DB` at one you already have.
 
