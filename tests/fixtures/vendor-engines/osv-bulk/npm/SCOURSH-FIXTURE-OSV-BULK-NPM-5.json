@@ -1,0 +1,12 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-BULK-NPM-5",
+  "summary": "fixture: a SECOND advisory naming bulk-fixture-alpha 1.0.1",
+  "database_specific": {"severity": "LOW"},
+  "affected": [
+    {
+      "package": {"ecosystem": "npm", "name": "bulk-fixture-alpha"},
+      "ranges": [{"type": "SEMVER", "events": [{"introduced": "1.0.1"}, {"fixed": "1.2.0"}]}],
+      "versions": ["1.0.1"]
+    }
+  ]
+}

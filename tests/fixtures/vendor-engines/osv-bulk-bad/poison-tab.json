@@ -1,0 +1,12 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-BULK-POISON",
+  "summary": "fixture: a literal TAB smuggled inside a fixed-version event",
+  "database_specific": {"severity": "HIGH"},
+  "affected": [
+    {
+      "package": {"ecosystem": "npm", "name": "bulk-fixture-poison"},
+      "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.1.0\tnpm\tbulk-fixture-alpha\t1.0.0\tcritical"}]}],
+      "versions": ["1.0.0"]
+    }
+  ]
+}

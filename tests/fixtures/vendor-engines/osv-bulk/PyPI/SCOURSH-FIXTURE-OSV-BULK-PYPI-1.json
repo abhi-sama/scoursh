@@ -1,0 +1,11 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-BULK-PYPI-1",
+  "summary": "fixture: SQL injection in Bulk_Fixture.Django",
+  "affected": [
+    {
+      "package": {"ecosystem": "PyPI", "name": "Bulk_Fixture.Django"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "2.1.0"}]}],
+      "versions": ["2.0"]
+    }
+  ]
+}

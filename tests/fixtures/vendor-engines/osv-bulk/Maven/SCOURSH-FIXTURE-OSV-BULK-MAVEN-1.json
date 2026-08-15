@@ -1,0 +1,15 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-BULK-MAVEN-1",
+  "summary": "fixture: unsafe deserialization in org.example.bulk:widget-core",
+  "database_specific": {"severity": "CRITICAL"},
+  "affected": [
+    {
+      "package": {"ecosystem": "Maven", "name": "org.example.bulk:widget-core"},
+      "ranges": [
+        {"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "1.2.4"}]},
+        {"type": "ECOSYSTEM", "events": [{"introduced": "1.3.0"}, {"fixed": "1.3.0"}]}
+      ],
+      "versions": ["1.2.3"]
+    }
+  ]
+}

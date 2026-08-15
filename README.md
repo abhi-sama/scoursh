@@ -208,13 +208,32 @@ project you know to be vulnerable.
 Two warning lines are printed, but the exit code and the headline count both look exactly like a clean
 scan - so a green `sca` run tells you nothing until the database is in place.
 
-Building it is a manual, one-advisory-at-a-time job today, done on a networked box.
-You supply the exact advisory IDs you already know you care about, and `tools/vendor-engines.sh`
-resolves each one from [OSV.dev](https://osv.dev) into the pre-expanded rows the scanner looks up.
-There is no bulk or ecosystem-wide import: `--all` means "every ecosystem you have supplied an ID list
-for", not "every known advisory".
+You build it on a networked box with `tools/vendor-engines.sh`, which resolves advisories from
+[OSV.dev](https://osv.dev) into the pre-expanded rows the scanner looks up.
+There are two ways to do it.
+
+**Bulk, which is what you almost certainly want.**
+`advisories bulk` imports a whole ecosystem's published export in one command, or all six with
+`--all`, so you do not have to know in advance which advisories matter - which is the thing a
+dependency scanner is supposed to tell you.
+Because that export is rebuilt upstream continuously, there is no fixed checksum to pin, so an
+import whose content was not verified refuses until you pass `--accept-unverified`.
+Every import prints the integrity grade it achieved and records the digest of exactly what it
+fetched into the database header, so you can pin that digest with `--sha256` next time.
+
+**One advisory at a time**, when you already know the specific IDs you care about.
+You supply them per ecosystem and `advisories <ecosystem>` resolves just those.
+Here `--all` means "every ecosystem you have supplied an ID list for", not "every known advisory".
 
 ```sh
+# Bulk: every advisory OSV publishes for an ecosystem, in one command.
+tools/vendor-engines.sh advisories bulk --accept-unverified npm
+# ...or all six ecosystems at once.
+tools/vendor-engines.sh advisories bulk --accept-unverified --all
+# ...or pin the exact bytes, once you know the digest you want.
+tools/vendor-engines.sh advisories bulk --sha256 <hex> npm
+
+# One advisory at a time, when you already know the IDs.
 export SCOURSH_ADVISORY_NPM_IDS="GHSA-xxxx-xxxx-xxxx,GHSA-yyyy-yyyy-yyyy"
 tools/vendor-engines.sh advisories npm
 # or, once an ID list is set for each ecosystem you care about:
@@ -388,7 +407,7 @@ Landed 6 of 6.  Outstanding: none.
 #### Totals
 
 - Pattern packs on disk: **15** (`modules/sast/rules/` 9, `modules/iac/` 6).
-- Module directories present: `modules/iac/`, `modules/sast/`, `modules/sca/`.
+- Module directories present: `modules/dast/`, `modules/iac/`, `modules/sast/`, `modules/sca/`.
 
 <!-- END GENERATED STATUS -->
 

@@ -103,7 +103,14 @@ assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
 # ---------------------------------------------------------------------------
 NO_NET_PATH=$W/no-curl-path
 mkdir -p "$NO_NET_PATH"
-for tool in bash cat sort mkdir dirname pwd printf true false grep sed date python3 mv wc; do
+# A full-enough userland for lib/core.sh's own baseline (grep sed awk sort tr
+# cut find xargs mktemp date, plus a SHA-256 provider) and for a real bulk
+# import, with curl and wget DELIBERATELY absent: every test that runs under
+# this PATH is one where reaching the network would be a defect, so a pass
+# proves the code path never tried rather than that it tried and was refused.
+for tool in bash sh cat sort mkdir rmdir dirname basename pwd printf true false \
+  grep sed awk date python3 mv cp rm ln wc cut tr find xargs mktemp look \
+  uname id chmod stat readlink head tail env sleep tee sha256sum shasum openssl; do
   src=$(command -v "$tool" 2>/dev/null) || continue
   ln -sf "$src" "$NO_NET_PATH/$tool"
 done
@@ -387,5 +394,609 @@ assert_contains "$after" 'django-fixture-app' \
   'pypi row still present after a second, unrelated npm re-run - proves the merge only touches the target ecosystem'
 assert_not_contains "$after" 'left-pad-fixture' \
   "npm's stale row from the FIRST npm run is gone - a re-run replaces, it does not accumulate stale rows forever"
+
+# ===========================================================================
+# BULK IMPORT (tools/vendor-engines.sh advisories bulk)
+# ===========================================================================
+# The single-advisory path above resolves ONE operator-supplied OSV id at a
+# time, which cannot populate a useful database: knowing which advisory ids
+# to fetch is the thing a dependency scanner is supposed to TELL the
+# operator.  The `bulk` sub-namespace imports a whole ecosystem's published
+# OSV export in one command.
+#
+# Every assertion below is offline.  Two shapes are exercised:
+#
+#  - `--archive PATH`, which reaches no network code at all (curl is absent
+#    from PATH for those cases, so a false pass would be a network attempt,
+#    not a real import), against an archive this suite builds at test time
+#    from the hand-authored, OSV-shaped fixtures under
+#    tests/fixtures/vendor-engines/osv-bulk/ with python3's own zipfile
+#    module.
+#  - the network path, against a STUBBED curl serving that same archive -
+#    the identical posture section D already uses for the single-advisory
+#    fetch.
+#
+# The archive is BUILT rather than committed as a binary so every byte of
+# the fixture data stays reviewable as text, and so the deliberately broken
+# archives (truncated, bad member, poisoned member) are visibly derived from
+# the good one rather than being opaque blobs.
+# ---------------------------------------------------------------------------
+
+BULK_FIXTURES=$ROOT/tests/fixtures/vendor-engines/osv-bulk
+BULK_BAD=$ROOT/tests/fixtures/vendor-engines/osv-bulk-bad
+BULK_W=$W/bulk
+mkdir -p "$BULK_W/zips"
+
+# bulk_make_zip OUTZIP SRCDIR [EXTRA_FILE...] - builds an all.zip-shaped
+# archive (flat members, one JSON per advisory) with python3's zipfile.
+bulk_make_zip() {
+  local out=$1 src=$2
+  shift 2
+  python3 - "$out" "$src" "$@" <<'PY'
+import os
+import sys
+import zipfile
+
+out, src = sys.argv[1], sys.argv[2]
+extra = sys.argv[3:]
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for name in sorted(os.listdir(src)):
+        if name.endswith(".json"):
+            z.write(os.path.join(src, name), name)
+    for path in extra:
+        z.write(path, os.path.basename(path))
+PY
+}
+
+bulk_make_zip "$BULK_W/zips/npm.zip" "$BULK_FIXTURES/npm"
+bulk_make_zip "$BULK_W/zips/PyPI.zip" "$BULK_FIXTURES/PyPI"
+bulk_make_zip "$BULK_W/zips/Maven.zip" "$BULK_FIXTURES/Maven"
+bulk_make_zip "$BULK_W/zips/Go.zip" "$BULK_FIXTURES/Go"
+bulk_make_zip "$BULK_W/zips/RubyGems.zip" "$BULK_FIXTURES/RubyGems"
+bulk_make_zip "$BULK_W/zips/Packagist.zip" "$BULK_FIXTURES/Packagist"
+bulk_make_zip "$BULK_W/zips/npm-malformed.zip" "$BULK_FIXTURES/npm" "$BULK_BAD/malformed-json.json"
+bulk_make_zip "$BULK_W/zips/npm-poison.zip" "$BULK_FIXTURES/npm" "$BULK_BAD/poison-tab.json"
+
+# An archive whose ONLY member is the range-only advisory: structurally
+# perfect, and it yields zero exact-version rows.
+mkdir -p "$BULK_W/only-rangeonly"
+cp -- "$BULK_FIXTURES/npm/SCOURSH-FIXTURE-OSV-BULK-NPM-3.json" "$BULK_W/only-rangeonly/"
+bulk_make_zip "$BULK_W/zips/npm-zero-rows.zip" "$BULK_W/only-rangeonly"
+
+# A truncated download: the central directory lives at the END of a zip, so
+# chopping the tail is exactly what a silently-truncated transfer produces.
+python3 - "$BULK_W/zips/npm.zip" "$BULK_W/zips/npm-truncated.zip" <<'PY'
+import sys
+
+src, dst = sys.argv[1], sys.argv[2]
+with open(src, "rb") as fh:
+    data = fh.read()
+with open(dst, "wb") as fh:
+    fh.write(data[: len(data) // 2])
+PY
+printf 'not a zip at all\n' >"$BULK_W/zips/not-a-zip.zip"
+
+NPM_ZIP=$BULK_W/zips/npm.zip
+NPM_ZIP_SHA=$(sha256_of <"$NPM_ZIP")
+BAD_SHA='0000000000000000000000000000000000000000000000000000000000000000'
+
+BDB=$BULK_W/advisories.db
+BVDB=$BULK_W/versions.db
+bulk_reset_db() {
+  rm -f "$BDB" "$BVDB"
+}
+
+# bulk_run [ARGS...] - one real subprocess of the bulk importer with curl
+# ENTIRELY ABSENT from PATH, writing to this suite's own scratch db paths.
+# Output lands in $BULK_W/last.out; the exit status is returned.
+bulk_run() {
+  local rc=0
+  ( PATH="$NO_NET_PATH" \
+    SCOURSH_SCA_ADVISORIES_DB="$BDB" \
+    SCOURSH_SCA_VERSIONS_DB="$BVDB" \
+    bash "$TOOL" advisories bulk "$@" ) >"$BULK_W/last.out" 2>&1 || rc=$?
+  return "$rc"
+}
+
+# bulk_run_net [ARGS...] - the same, but with a STUBBED curl on PATH that
+# serves the built fixture archives instead of reaching the network.
+bulk_run_net() {
+  local rc=0
+  ( PATH="$FAKE_BULK_BIN:$NO_NET_PATH" \
+    FAKE_BULK_ZIP_DIR="$BULK_W/zips" \
+    SCOURSH_SCA_ADVISORIES_DB="$BDB" \
+    SCOURSH_SCA_VERSIONS_DB="$BVDB" \
+    bash "$TOOL" advisories bulk "$@" ) >"$BULK_W/last.out" 2>&1 || rc=$?
+  return "$rc"
+}
+
+FAKE_BULK_BIN=$BULK_W/fake-bin
+mkdir -p "$FAKE_BULK_BIN"
+cat >"$FAKE_BULK_BIN/curl" <<'FAKEBULKCURL'
+#!/usr/bin/env bash
+# Test double for curl (tests/suites/vendor-engines-advisories.sh, bulk
+# sections only) - never a real network call.  Serves
+# .../<ECOSYSTEM>/all.zip out of FAKE_BULK_ZIP_DIR/<ECOSYSTEM>.zip.
+set -Eeuo pipefail
+out='' url=''
+args=("$@")
+i=0
+while (( i < ${#args[@]} )); do
+  case ${args[i]} in
+    --output) out=${args[$(( i + 1 ))]} ;;
+    http*) url=${args[i]} ;;
+  esac
+  i=$(( i + 1 ))
+done
+if [[ -n ${FAKE_CURL_FAIL:-} ]]; then
+  printf 'fake curl: simulated failure\n' >&2
+  exit 22
+fi
+rest=${url%/all.zip}
+eco=${rest##*/}
+src="${FAKE_BULK_ZIP_DIR:?}/$eco.zip"
+if [[ ! -f $src ]]; then
+  printf 'fake curl: no fixture archive for %s\n' "$eco" >&2
+  exit 22
+fi
+cp -- "$src" "$out"
+FAKEBULKCURL
+chmod +x "$FAKE_BULK_BIN/curl"
+
+# ---------------------------------------------------------------------------
+# -- section F: the bulk command surface and its integrity gate.  curl is
+#    absent from PATH for every case here, so a pass proves the refusal
+#    happened BEFORE any network attempt rather than instead of one --
+# ---------------------------------------------------------------------------
+t_case 'advisories bulk --help'
+rc=0
+bulk_run --help || rc=$?
+out=$(cat "$BULK_W/last.out")
+assert_eq 0 "$rc" 'advisories bulk --help exits 0'
+assert_contains "$out" 'usage: tools/vendor-engines.sh advisories bulk' \
+  'bulk --help prints its OWN usage banner, not the advisories one or the top-level one'
+assert_contains "$out" '--accept-unverified' \
+  'the usage text names the explicit acknowledgement an unpinned bulk import requires'
+assert_contains "$out" '--sha256' 'the usage text names the pinning option'
+assert_contains "$out" '--archive' 'the usage text names the local-archive option'
+
+t_case 'advisories bulk with no ecosystem is a usage error (exit 2)'
+rc=0
+bulk_run || rc=$?
+assert_eq "$SCOURSH_EXIT_USAGE" "$rc" "'advisories bulk' alone names no ecosystem and is exit 2"
+
+t_case 'advisories bulk --bogus is a usage error (exit 2)'
+rc=0
+bulk_run --bogus npm || rc=$?
+assert_eq "$SCOURSH_EXIT_USAGE" "$rc" 'an unrecognised bulk flag is exit 2'
+
+t_case 'advisories bulk <ecosystem> UNPINNED, without the explicit acknowledgement: refuses (exit 4)'
+rc=0
+bulk_run npm || rc=$?
+out=$(cat "$BULK_W/last.out")
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
+  'an unpinned bulk import refuses by default - fails under the reading that silently drops the integrity requirement to make bulk work'
+assert_contains "$out" 'refusing an unverified bulk import' 'the refusal says what it is refusing and why'
+assert_contains "$out" '--sha256' 'the refusal names the pinning option the operator can use instead'
+assert_contains "$out" '--accept-unverified' 'the refusal names the explicit acknowledgement that unblocks it'
+assert_file_absent "$BDB" 'nothing was written: the refusal happens before any fetch or any db write'
+
+t_case 'a pinned bulk import needs no acknowledgement, and an acknowledged one needs no pin'
+# Both are proven for real further down (sections G and I); here only the
+# ARGUMENT gate is exercised.  curl is absent from PATH, so both of these
+# still fail - the point is that they fail on the MISSING TOOL rather than
+# on the integrity gate, which the distinct refusal wording discriminates.
+rc=0
+bulk_run --sha256 "$BAD_SHA" npm || rc=$?
+out=$(cat "$BULK_W/last.out")
+assert_not_contains "$out" 'refusing an unverified bulk import' \
+  '--sha256 alone satisfies the integrity gate: this run gets past it and fails later, on the absent curl'
+assert_contains "$out" 'missing required command' 'and that later failure is the missing fetch tool, proving the gate was passed rather than skipped'
+rc=0
+bulk_run --accept-unverified npm || rc=$?
+out=$(cat "$BULK_W/last.out")
+assert_not_contains "$out" 'refusing an unverified bulk import' \
+  '--accept-unverified alone satisfies the integrity gate the same way'
+assert_contains "$out" 'missing required command' 'and reaches the same later failure'
+
+t_case 'advisories bulk: unknown ecosystem refuses (exit 4)'
+rc=0
+bulk_run --accept-unverified not-a-real-ecosystem || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" 'an unknown ecosystem is exit 4 in the bulk namespace too'
+assert_contains "$(cat "$BULK_W/last.out")" 'not-a-real-ecosystem' 'the refusal names the ecosystem requested'
+
+t_case 'advisories bulk: a registered ENGINE name is still not an ecosystem'
+rc=0
+bulk_run --accept-unverified semgrep || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
+  "'semgrep' is a VENG_REGISTRY engine, never an ecosystem - the bulk namespace keeps the two registries separate exactly as the single-advisory namespace does"
+
+t_case 'advisories bulk --all --archive is refused (exit 2): one archive is one ecosystem'
+rc=0
+bulk_run --all --archive "$NPM_ZIP" --accept-unverified || rc=$?
+assert_eq "$SCOURSH_EXIT_USAGE" "$rc" \
+  'a single local archive cannot supply six ecosystems, so the combination is refused rather than silently importing one ecosystem six times'
+
+t_case 'advisories bulk --all --sha256 is refused (exit 2): one digest cannot pin six artifacts'
+rc=0
+bulk_run --all --sha256 "$NPM_ZIP_SHA" || rc=$?
+assert_eq "$SCOURSH_EXIT_USAGE" "$rc" \
+  'a single digest cannot pin six separate artifacts, so the combination is refused rather than verifying one and trusting five'
+
+t_case 'advisories bulk --archive with a missing file refuses (exit 4), writes nothing'
+rc=0
+bulk_run --archive "$BULK_W/zips/does-not-exist.zip" --accept-unverified npm || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" 'an unreadable archive path is exit 4'
+assert_file_absent "$BDB" 'no db was created by a refused import'
+
+t_case 'advisories bulk: a flag missing its value is a usage error (exit 2)'
+for bad in '--sha256' '--archive'; do
+  rc=0
+  bulk_run "$bad" || rc=$?
+  assert_eq "$SCOURSH_EXIT_USAGE" "$rc" "$bad with no value is exit 2 rather than consuming the next argument silently"
+done
+
+t_case 'bulk exit codes never leave 0-5 (tension 14, finding F16)'
+for args in 'bulk' 'bulk --help' 'bulk npm' 'bulk --bogus' 'bulk --all' \
+  'bulk --accept-unverified nonexistent-eco' 'bulk --archive /nope --accept-unverified npm'; do
+  rc=0
+  # shellcheck disable=SC2086
+  ( PATH=$NO_NET_PATH SCOURSH_SCA_ADVISORIES_DB="$BDB" SCOURSH_SCA_VERSIONS_DB="$BVDB" \
+    bash "$TOOL" advisories $args ) >/dev/null 2>&1 || rc=$?
+  if (( rc >= 0 && rc <= 5 )); then
+    _t_ok "exit code for 'advisories $args' is $rc, within 0-5"
+  else
+    _t_no "exit code for 'advisories $args' is $rc, OUTSIDE 0-5" "args: [$args]"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# -- section G: a real end-to-end bulk import from a local archive, with NO
+#    network code reachable at all (curl absent from PATH) --
+# ---------------------------------------------------------------------------
+t_case 'bulk import from a local archive: rows written, integrity grade stated'
+bulk_reset_db
+rc=0
+bulk_run --archive "$NPM_ZIP" --accept-unverified npm || rc=$?
+out=$(cat "$BULK_W/last.out")
+assert_eq 0 "$rc" 'an acknowledged local-archive import of npm exits 0'
+assert_file_exists "$BDB" 'the database was written'
+assert_contains "$out" 'integrity: unpinned-local-archive' \
+  'the run states plainly which integrity grade it achieved, rather than leaving the operator to guess'
+assert_contains "$out" "artifact sha256: $NPM_ZIP_SHA" \
+  'the digest of what WAS imported is computed and reported even when nothing pinned it, so a later operator can tell exactly what they got'
+assert_contains "$out" 'content was NOT verified' \
+  'the unpinned grade says out loud what it does not guarantee'
+
+t_case 'bulk import: every enumerated affected version becomes one exact-version row'
+db=$(cat "$BDB")
+assert_contains "$db" "$(printf 'npm\tbulk-fixture-alpha\t1.0.0\tSCOURSH-FIXTURE-OSV-BULK-NPM-1\thigh\t1.1.0\tfixture: prototype pollution in bulk-fixture-alpha')" \
+  'the frozen 7-field schema is written verbatim, severity normalised HIGH -> high'
+assert_contains "$db" "$(printf 'npm\tbulk-fixture-alpha\t1.0.1\tSCOURSH-FIXTURE-OSV-BULK-NPM-1\thigh')" \
+  'the second enumerated version of the same advisory gets its own row (pre-expansion, tension 25)'
+assert_contains "$db" "$(printf 'npm\t@bulk-scope/beta\t2.0.0\tSCOURSH-FIXTURE-OSV-BULK-NPM-2\tcritical')" \
+  'a scoped npm name is carried verbatim, scope included (tension 25 frozen table)'
+assert_contains "$db" "$(printf 'npm\tbulk-fixture-gamma\t3.0.0\tSCOURSH-FIXTURE-OSV-BULK-NPM-4\tmedium')" \
+  'an advisory with no severity at all defaults to medium rather than being dropped'
+assert_contains "$db" 'fixture: bulk-fixture-gamma leaks a token in its debug log.' \
+  'the summary falls back to the first line of the details field when no summary field exists'
+assert_not_contains "$db" 'A second line the summary fallback must not carry' \
+  'only the FIRST line of details is used - a multi-line summary would be an LF inside a frozen-schema field'
+
+t_case 'bulk import: a range-only advisory is skipped and COUNTED, never guessed at'
+assert_not_contains "$(cat "$BDB")" 'bulk-fixture-rangeonly' \
+  'no row is invented for an advisory with no enumerated versions - tension 25 puts range arithmetic on the networked box, and OSV published none here'
+assert_contains "$(cat "$BULK_W/last.out")" 'range_only_skipped=1' \
+  'the skipped advisory is reported as a count, so a database that covers less than the ecosystem does is never silently smaller'
+
+t_case 'bulk import: a decoy affected entry for another ecosystem is skipped and counted'
+assert_not_contains "$(cat "$BDB")" 'bulk-decoy-should-not-appear' \
+  "the PyPI 'affected' entry inside an npm-ecosystem import is not emitted as an npm row"
+assert_contains "$(cat "$BULK_W/last.out")" 'other_ecosystem_skipped=1' \
+  'the cross-ecosystem skip is counted too rather than being invisible'
+
+t_case 'bulk import: the run reports what it actually imported'
+out=$(cat "$BULK_W/last.out")
+assert_contains "$out" 'advisories_read=5' 'every member of the archive is accounted for'
+assert_contains "$out" 'rows=7' \
+  '7 exact-version rows from 5 advisories - 2 + 2 + 0 (range-only) + 2 + 1'
+body=$(LC_ALL=C sed -e '/^#/d' -e '/^$/d' "$BDB")
+assert_eq 7 "$(printf '%s\n' "$body" | wc -l | tr -d ' ')" \
+  'the row count in the file matches the count the run reported - a reported number that the file does not back is exactly the silent-coverage-gap shape'
+
+t_case 'bulk import: the database records its own provenance'
+hdr=$(LC_ALL=C sed -n '/^#/p' "$BDB")
+assert_contains "$hdr" 'ecosystem=npm' 'the provenance line names the ecosystem it covers'
+assert_contains "$hdr" 'grade=unpinned-local-archive' 'it records the integrity grade that produced these rows'
+assert_contains "$hdr" "sha256=$NPM_ZIP_SHA" 'it records the digest of the artifact those rows came from'
+assert_contains "$hdr" 'rows=7' 'it records the row count'
+assert_contains "$hdr" 'range_only_skipped=1' 'it records what it could NOT express, next to what it could'
+
+t_case 'bulk import: versions.db is written with the identical body (tension 25)'
+assert_file_exists "$BVDB" 'data/versions.db (scratch) was written too'
+assert_eq "$(LC_ALL=C sed -e '/^#/d' "$BDB")" "$(LC_ALL=C sed -e '/^#/d' "$BVDB")" \
+  'the two files carry byte-identical data rows, the same "same shape and same rule" the single-advisory path already honours'
+
+t_case 'bulk import: a pinned artifact is verified, and states so'
+bulk_reset_db
+rc=0
+bulk_run --archive "$NPM_ZIP" --sha256 "$NPM_ZIP_SHA" npm || rc=$?
+out=$(cat "$BULK_W/last.out")
+assert_eq 0 "$rc" 'a correctly pinned local archive imports with no acknowledgement flag at all'
+assert_contains "$out" 'integrity: pinned-sha256' 'the run reports the strongest grade it actually achieved'
+assert_contains "$(cat "$BDB")" 'bulk-fixture-alpha' 'the pinned path imports the same rows as the unpinned one'
+
+t_case 'bulk import: a WRONG pin refuses (exit 5) and leaves the existing database untouched'
+before=$(cat "$BDB")
+rc=0
+bulk_run --archive "$NPM_ZIP" --sha256 "$BAD_SHA" npm || rc=$?
+assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$rc" \
+  'a digest mismatch is exit 5 - fails under a reading that warns and imports anyway'
+assert_contains "$(cat "$BULK_W/last.out")" "$BAD_SHA" 'the refusal names the expected digest'
+assert_eq "$before" "$(cat "$BDB")" \
+  'the database is byte-identical to what it was before the refused import - the write is transactional, so a refusal never half-replaces an ecosystem'
+
+t_case 'bulk import: a TRUNCATED archive refuses (exit 5), database untouched'
+before=$(cat "$BDB")
+rc=0
+bulk_run --archive "$BULK_W/zips/npm-truncated.zip" --accept-unverified npm || rc=$?
+assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$rc" \
+  "a silently-truncated download is refused: a zip's central directory lives at its end, so a short read cannot open at all - fails under a reading that imports whatever members it managed to read"
+assert_eq "$before" "$(cat "$BDB")" 'the database is unchanged by the refused import'
+
+t_case 'bulk import: a file that is not an archive at all refuses (exit 5)'
+rc=0
+bulk_run --archive "$BULK_W/zips/not-a-zip.zip" --accept-unverified npm || rc=$?
+assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$rc" 'a non-archive artifact (an error page, a redirect body) is refused rather than parsed as zero advisories'
+
+t_case 'bulk import: ONE malformed member fails the WHOLE ecosystem, rather than importing the rest'
+before=$(cat "$BDB")
+rc=0
+bulk_run --archive "$BULK_W/zips/npm-malformed.zip" --accept-unverified npm || rc=$?
+assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$rc" \
+  'a member that does not parse is exit 5 - fails under the reading that skips it and reports the remaining rows as a complete ecosystem, which is the silent-partial-coverage shape this repository has shipped before'
+assert_eq "$before" "$(cat "$BDB")" 'and the previously good database is left exactly as it was'
+assert_contains "$(cat "$BULK_W/last.out")" 'malformed-json.json' 'the refusal names the member that failed'
+
+t_case 'bulk import: a TAB smuggled into a member is refused (exit 5), nothing written'
+before=$(cat "$BDB")
+rc=0
+bulk_run --archive "$BULK_W/zips/npm-poison.zip" --accept-unverified npm || rc=$?
+assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$rc" \
+  'the frozen schema forbids a TAB inside any field, and OSV text is untrusted target-adjacent content - fails under a reading that trusts the upstream export verbatim'
+assert_eq "$before" "$(cat "$BDB")" 'the database is unchanged'
+assert_not_contains "$(cat "$BDB")" 'bulk-fixture-poison' 'no row from the poisoned member reached the database'
+
+t_case 'bulk import: a structurally perfect archive that yields ZERO rows is refused (exit 5)'
+before=$(cat "$BDB")
+rc=0
+bulk_run --archive "$BULK_W/zips/npm-zero-rows.zip" --accept-unverified npm || rc=$?
+assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$rc" \
+  'an import that produces no rows refuses rather than replacing the ecosystem rows with nothing - fails under the reading that treats an empty result as a successful import, which would quietly turn every dependency in that ecosystem clean'
+assert_eq "$before" "$(cat "$BDB")" 'and the previous rows survive untouched'
+assert_contains "$(cat "$BULK_W/last.out")" 'ZERO exact-version rows' 'the refusal says exactly what was wrong'
+
+t_case 'bulk import: re-importing one ecosystem replaces only its own rows and its own provenance'
+bulk_reset_db
+bulk_run --archive "$BULK_W/zips/PyPI.zip" --accept-unverified pypi
+bulk_run --archive "$NPM_ZIP" --accept-unverified npm
+both=$(cat "$BDB")
+assert_contains "$both" 'bulk-fixture-django' 'the pypi rows are present (PEP 503 normalised)'
+assert_contains "$both" 'bulk-fixture-alpha' 'the npm rows are present'
+assert_eq 2 "$(LC_ALL=C sed -n '/^# bulk:/p' "$BDB" | wc -l | tr -d ' ')" \
+  'two provenance lines, one per imported ecosystem - the header states per-ecosystem coverage rather than one global claim'
+bulk_run --archive "$BULK_W/zips/Go.zip" --accept-unverified Go
+after=$(cat "$BDB")
+assert_contains "$after" 'bulk-fixture-django' 'a third ecosystem import leaves pypi alone'
+assert_contains "$after" 'bulk-fixture-alpha' 'and leaves npm alone'
+assert_eq 3 "$(LC_ALL=C sed -n '/^# bulk:/p' "$BDB" | wc -l | tr -d ' ')" 'three provenance lines now'
+
+t_case 'a single-advisory import of an ecosystem RETIRES that ecosystem bulk provenance claim'
+( PATH="$FAKE_BIN:$NO_NET_PATH" FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
+  SCOURSH_ADVISORY_NPM_IDS='SCOURSH-FIXTURE-OSV-NPM-1' \
+  SCOURSH_SCA_ADVISORIES_DB="$BDB" SCOURSH_SCA_VERSIONS_DB="$BVDB" \
+  bash "$TOOL" advisories npm ) >"$BULK_W/retire.out" 2>&1
+assert_not_contains "$(LC_ALL=C sed -n '/^# bulk:/p' "$BDB")" 'ecosystem=npm' \
+  'replacing npm rows with a one-advisory import drops the stale "this ecosystem was bulk imported" claim - fails under a reading that leaves the old provenance line describing rows that no longer exist'
+assert_contains "$(LC_ALL=C sed -n '/^# bulk:/p' "$BDB")" 'ecosystem=pypi' \
+  'the other ecosystems keep theirs'
+
+# ---------------------------------------------------------------------------
+# -- section H: the sort order, proven through the READER's own code path --
+# ---------------------------------------------------------------------------
+t_case 'bulk import: the body is LC_ALL=C sorted, in the order only LC_ALL=C produces'
+bulk_reset_db
+bulk_run --archive "$NPM_ZIP" --accept-unverified npm
+body=$(LC_ALL=C sed -e '/^#/d' -e '/^$/d' "$BDB")
+assert_eq "$(LC_ALL=C sort <<<"$body")" "$body" 'the body is already in LC_ALL=C order'
+first_pkg=$(printf '%s\n' "$body" | LC_ALL=C sed -n '1p' | cut -f 2)
+assert_eq '@bulk-scope/beta' "$first_pkg" \
+  "'@bulk-scope/beta' sorts FIRST because '@' is 0x40 and 'b' is 0x62 - it fails under any punctuation-folding collation, which would sort it as 'bulkscopebeta' and put it last, and under that ordering db_lookup_exact's binary search misses rows that are really in the file"
+
+t_case 'the reader finds every written row through db_lookup_exact itself, not by inspection'
+# Proving the sort by eyeballing the file is exactly the mistake tension 25
+# warns about: the thing that matters is whether the READER's own lookup
+# finds the row.  This runs sca_lookup_exact (modules/sca/engine.sh), which
+# routes through lib/core.sh's db_lookup_exact, against the generated file.
+_veng_advisories_load_normalizers
+missed=0
+while IFS=$'\t' read -r eco pkg ver _rest; do
+  [[ -n $eco ]] || continue
+  if ! sca_lookup_exact "$eco" "$pkg" "$ver" "$BDB" >/dev/null; then
+    missed=$(( missed + 1 ))
+    printf '    MISSED: %s %s %s\n' "$eco" "$pkg" "$ver" >&2
+  fi
+done <<<"$body"
+assert_eq 0 "$missed" \
+  'every one of the 7 generated rows is found by the reader own lookup primitive - a wrong sort order makes look silently miss rows that are visibly present in the file'
+
+t_case 'the reader finds every row under BOTH lookup backends (look and the grep fallback)'
+missed=0
+# SC2030/SC2031: forcing SCOURSH_CAP_LOOK inside a subshell is the point of
+# this case (it drives db_lookup_exact down its grep -F fallback), and it
+# must NOT leak back into the surrounding suite, which goes on to exercise
+# the look path on the same file.
+# shellcheck disable=SC2030
+while IFS=$'\t' read -r eco pkg ver _rest; do
+  [[ -n $eco ]] || continue
+  if ! ( SCOURSH_CAP_LOOK=none; sca_lookup_exact "$eco" "$pkg" "$ver" "$BDB" >/dev/null ); then
+    missed=$(( missed + 1 ))
+  fi
+done <<<"$body"
+assert_eq 0 "$missed" \
+  "the grep -F fallback path finds them too, so a host without look reads the same database (tension 25's own frozen asymmetry is about how MANY rows come back, never about which exist)"
+
+t_case 'a version that was never written is NOT found (the lookup is exact, not a prefix guess)'
+rc=0
+sca_lookup_exact npm bulk-fixture-alpha 9.9.9 "$BDB" >/dev/null || rc=$?
+assert_ne 0 "$rc" 'an unwritten version misses, so a passing lookup above is evidence rather than a lookup that matches everything'
+rc=0
+sca_lookup_exact npm bulk-fixture-rangeonly 1.2.0 "$BDB" >/dev/null || rc=$?
+assert_ne 0 "$rc" 'and the range-only advisory really is absent from the reader path, not merely from a visual scan of the file'
+
+t_case 'two advisories for one package@version both come back through the reader (look only)'
+# shellcheck disable=SC2031
+if [[ ${SCOURSH_CAP_LOOK:-none} == look ]]; then
+  hits=$(sca_lookup_exact npm bulk-fixture-alpha 1.0.1 "$BDB" | wc -l | tr -d ' ')
+  assert_eq 2 "$hits" \
+    'NPM-1 and NPM-5 both name bulk-fixture-alpha 1.0.1, and look returns both rows - a sort that grouped them apart would return one'
+else
+  printf '  SKIP  look is absent on this host; the multi-row half of tension 25 lookup asymmetry cannot be exercised here\n'
+fi
+
+t_case 'a deliberately mis-sorted copy of the same rows FAILS the same lookups (look only)'
+# shellcheck disable=SC2031
+if [[ ${SCOURSH_CAP_LOOK:-none} == look ]]; then
+  MIS=$BULK_W/mis-sorted.db
+  { LC_ALL=C sed -n '/^#/p' "$BDB"; LC_ALL=C sort -r <<<"$body"; } >"$MIS"
+  found=0
+  while IFS=$'\t' read -r eco pkg ver _rest; do
+    [[ -n $eco ]] || continue
+    if sca_lookup_exact "$eco" "$pkg" "$ver" "$MIS" >/dev/null; then
+      found=$(( found + 1 ))
+    fi
+  done <<<"$body"
+  if (( found < 7 )); then
+    _t_ok "a reverse-sorted copy of the identical rows loses $(( 7 - found )) of 7 lookups, so the LC_ALL=C sort is load-bearing rather than incidental"
+  else
+    _t_no 'a reverse-sorted copy of the identical rows loses at least one lookup' "found=$found of 7"
+  fi
+else
+  printf '  SKIP  look is absent on this host; the binary-search half of the sort requirement cannot be exercised here\n'
+fi
+
+# ---------------------------------------------------------------------------
+# -- section I: the network path, against a STUBBED curl --
+# ---------------------------------------------------------------------------
+t_case 'bulk import over the network: acknowledged, transport-only grade'
+bulk_reset_db
+rc=0
+bulk_run_net --accept-unverified npm || rc=$?
+out=$(cat "$BULK_W/last.out")
+assert_eq 0 "$rc" 'an acknowledged network bulk import of npm exits 0'
+assert_contains "$out" 'integrity: unpinned-transport-only' \
+  'the network grade is named separately from the local-archive one, because what was verified differs'
+assert_contains "$out" "artifact sha256: $NPM_ZIP_SHA" 'the digest of what was fetched is recorded'
+assert_contains "$out" 'osv-vulnerabilities.storage.googleapis.com' \
+  'the exact artifact URL is printed, so the operator can see what was reached'
+assert_contains "$(cat "$BDB")" 'bulk-fixture-alpha' 'and the rows landed'
+
+t_case 'bulk import over the network: pinned, and verified through veng_fetch itself'
+bulk_reset_db
+rc=0
+bulk_run_net --sha256 "$NPM_ZIP_SHA" npm || rc=$?
+out=$(cat "$BULK_W/last.out")
+assert_eq 0 "$rc" 'a correctly pinned network import exits 0 with no acknowledgement flag'
+assert_contains "$out" 'checksum verified' \
+  'the pinned network path goes through veng_fetch, the existing download-and-verify primitive, rather than a second parallel fetch that reimplements verification'
+assert_contains "$out" 'integrity: pinned-sha256' 'and reports the pinned grade'
+
+t_case 'bulk import over the network: a wrong pin refuses (exit 5) and imports nothing'
+bulk_reset_db
+rc=0
+bulk_run_net --sha256 "$BAD_SHA" npm || rc=$?
+assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$rc" 'a mismatched pin on the network path is exit 5'
+assert_file_absent "$BDB" 'nothing was imported'
+
+t_case 'bulk import over the network: a failed download is exit 5, not a silent empty import'
+bulk_reset_db
+rc=0
+( PATH="$FAKE_BULK_BIN:$NO_NET_PATH" FAKE_BULK_ZIP_DIR="$BULK_W/zips" FAKE_CURL_FAIL=1 \
+  SCOURSH_SCA_ADVISORIES_DB="$BDB" SCOURSH_SCA_VERSIONS_DB="$BVDB" \
+  bash "$TOOL" advisories bulk --accept-unverified npm ) >"$BULK_W/last.out" 2>&1 || rc=$?
+assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$rc" 'a failed fetch is exit 5'
+assert_file_absent "$BDB" 'and writes no database, rather than an empty one that reports every project clean'
+
+t_case 'bulk --all imports all six ecosystems in one command'
+bulk_reset_db
+rc=0
+bulk_run_net --all --accept-unverified || rc=$?
+out=$(cat "$BULK_W/last.out")
+assert_eq 0 "$rc" 'bulk --all over the six ecosystems exits 0'
+db=$(cat "$BDB")
+assert_contains "$db" "$(printf 'npm\tbulk-fixture-alpha')" 'npm rows'
+assert_contains "$db" "$(printf 'pypi\tbulk-fixture-django')" 'pypi rows, PEP 503 normalised'
+assert_contains "$db" "$(printf 'maven\torg.example.bulk:widget-core')" 'maven rows, groupId:artifactId'
+assert_contains "$db" "$(printf 'Go\tgithub.com/example/bulk/v3\tv3.0.0\t')" \
+  'Go rows with +incompatible stripped from the version key, /vN retained in the module path'
+assert_contains "$db" "$(printf 'RubyGems\tbulkfixturegem')" 'RubyGems rows, lowercased'
+assert_contains "$db" "$(printf 'composer\tacme/bulk-widget')" 'composer rows, lowercased (Packagist upstream, composer in the frozen schema)'
+assert_eq 6 "$(LC_ALL=C sed -n '/^# bulk:/p' "$BDB" | wc -l | tr -d ' ')" 'one provenance line per ecosystem'
+body=$(LC_ALL=C sed -e '/^#/d' -e '/^$/d' "$BDB")
+assert_eq "$(LC_ALL=C sort <<<"$body")" "$body" 'the six ecosystems are sorted TOGETHER under LC_ALL=C, not concatenated per ecosystem'
+
+t_case 'bulk --all is honest when one ecosystem fails: the others land, the run still fails'
+bulk_reset_db
+mv -- "$BULK_W/zips/Maven.zip" "$BULK_W/zips/Maven.zip.hidden"
+rc=0
+bulk_run_net --all --accept-unverified || rc=$?
+out=$(cat "$BULK_W/last.out")
+mv -- "$BULK_W/zips/Maven.zip.hidden" "$BULK_W/zips/Maven.zip"
+assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$rc" \
+  'one failed ecosystem fails the whole run - fails under the reading that exits 0 because five of six worked, which is exactly a database silently covering less than it claims'
+assert_contains "$out" 'FAILED' 'the summary marks the failed ecosystem'
+assert_contains "$out" 'maven' 'and names it'
+assert_contains "$(cat "$BDB")" 'bulk-fixture-alpha' 'the ecosystems that DID import are still written, rather than discarded'
+assert_not_contains "$(LC_ALL=C sed -n '/^# bulk:/p' "$BDB")" 'ecosystem=maven' \
+  'and no provenance line claims coverage for the ecosystem that failed'
+
+# ---------------------------------------------------------------------------
+# -- section J: the whole point of the ticket, end to end.  A real
+#    `scan.sh sca` subprocess against a vulnerable fixture project, before
+#    and after the bulk import, with nothing else changed --
+# ---------------------------------------------------------------------------
+DEMO=$ROOT/tests/fixtures/vendor-engines/bulk-demo-project
+
+t_case 'BEFORE: with no advisory database, a real scan.sh sca reports the vulnerable project clean'
+E2E_BEFORE=$BULK_W/e2e-before
+rm -rf "$E2E_BEFORE"
+assert_status 0 'the scan itself succeeds - the module is finished and working, it simply has nothing to match against' \
+  env SCOURSH_SCA_ADVISORIES_DB="$BULK_W/absent-advisories.db" bash "$ROOT/scan.sh" sca \
+  --path "$DEMO" --out "$E2E_BEFORE"
+before_json=$(cat "$E2E_BEFORE/run.json" 2>/dev/null)
+assert_not_contains "$before_json" 'SCA-NPM-VULNERABLE_DEP-01' \
+  'zero vulnerable-dependency findings against a knowingly vulnerable project: the exact defect this ticket exists to fix'
+assert_contains "$before_json" 'no_advisories_db_on_disk' \
+  'and the run does at least record WHY it found nothing'
+
+t_case 'AFTER: the same scan against the same project, pointed at a bulk-imported database, reports the vulnerabilities'
+bulk_reset_db
+bulk_run --archive "$NPM_ZIP" --sha256 "$NPM_ZIP_SHA" npm
+E2E_AFTER=$BULK_W/e2e-after
+rm -rf "$E2E_AFTER"
+assert_status 0 'the scan exits 0' \
+  env SCOURSH_SCA_ADVISORIES_DB="$BDB" bash "$ROOT/scan.sh" sca \
+  --path "$DEMO" --out "$E2E_AFTER"
+after_json=$(cat "$E2E_AFTER/run.json" 2>/dev/null)
+assert_contains "$after_json" 'SCA-NPM-VULNERABLE_DEP-01' \
+  'the vulnerable-dependency check now actually executes and fires, through the real scan.sh entry point, against a database built by one bulk command'
+findings=$(cat "$E2E_AFTER/findings.jsonl" 2>/dev/null || true)
+assert_contains "$findings" 'SCOURSH-FIXTURE-OSV-BULK-NPM-1' \
+  'the advisory id carried through the whole pipeline: OSV export -> bulk import -> frozen TSV -> reader lookup -> finding'
+assert_contains "$findings" 'SCOURSH-FIXTURE-OSV-BULK-NPM-2' 'both vulnerable dependencies are reported, not just the first'
+assert_contains "$after_json" '"sca":3' \
+  'two vulnerable dependencies plus the one unknown-version roll-up for the known package pinned at an untracked version'
+assert_not_contains "$findings" 'bulk-fixture-clean' \
+  'the dependency that appears in no advisory is not reported - the database discriminates rather than matching everything'
 
 t_summary 'vendor-engines-advisories'

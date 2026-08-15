@@ -1,0 +1,11 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-BULK-NPM-3",
+  "summary": "fixture: range-only advisory, no enumerated affected versions",
+  "database_specific": {"severity": "HIGH"},
+  "affected": [
+    {
+      "package": {"ecosystem": "npm", "name": "bulk-fixture-rangeonly"},
+      "ranges": [{"type": "SEMVER", "events": [{"introduced": "1.0.0"}, {"fixed": "1.4.0"}]}]
+    }
+  ]
+}

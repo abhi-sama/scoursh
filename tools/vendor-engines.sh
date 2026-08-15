@@ -133,7 +133,9 @@ Commands:
   advisories ...    resolve SCA advisory data into data/advisories.db and
                      data/versions.db (docs/FOUNDATION.md tension 25) - a
                      SEPARATE command namespace, never an <engine> name; run
-                     'advisories --help' for its own usage
+                     'advisories --help' for its own usage.  'advisories
+                     bulk <ecosystem>' imports a whole ecosystem at once and
+                     is the command that populates a usable database.
   -h, --help        print this message and exit 0
 
 Every command other than --help fails loudly (see EXIT CODES) rather than
@@ -369,6 +371,11 @@ Commands:
                        SCOURSH_ADVISORY_<ECOSYSTEM>_IDS must be set)
   <ecosystem>          expand one ecosystem (npm, pypi, maven, Go,
                        RubyGems, composer)
+  bulk ...            import a WHOLE ecosystem's published OSV.dev export in
+                       one command, instead of naming advisory ids one at a
+                       time; run 'advisories bulk --help' for its own usage,
+                       including how artifact integrity is handled.  This is
+                       the command that populates a usable database.
   -h, --help          print this message and exit 0
 
 Every ecosystem reads its advisory ids from an operator-supplied env var -
@@ -530,6 +537,12 @@ _veng_advisories_osv_fetch() {
 # function is concerned, but the caller (_veng_advisories_expand_one) logs
 # a per-advisory count so a zero-row expansion is never invisible.
 #
+# A THIN WRAPPER over _veng_advisories_osv_extract_py (section 3a), which
+# owns the single copy of the OSV record walk.  The bulk importer reads the
+# SAME records out of an archive rather than one file at a time, and a
+# second walk written for it would be writer-versus-writer drift of exactly
+# the kind this section's own header already refuses for normalisation.
+#
 # WHY 0x1f AND NOT A TAB (measured, not assumed, tension 25's own
 # `_sca_emit_finding` comment in modules/sca/engine.sh already documents
 # the general form of this bug): a `name`/`summary`/`fixed_versions` field
@@ -549,71 +562,189 @@ _veng_advisories_osv_fetch() {
 # byte real advisory prose is expected to contain.
 _veng_advisories_osv_extract() {
   local jsonfile=$1 osv_ecosystem=$2
+  _veng_advisories_osv_extract_py file "$jsonfile" "$osv_ecosystem" ''
+}
+
+# _veng_advisories_osv_extract_py MODE INPUT OSV_ECOSYSTEM STATSFILE - the
+# ONE OSV record walk in this file.  MODE is `file` (INPUT is a single
+# advisory's JSON, the single-advisory path above) or `archive` (INPUT is an
+# OSV bulk export zip, section 3a below); the per-record logic either mode
+# applies is identical by construction, because there is only one copy of
+# it.  STATSFILE, when non-empty, receives `key=value` counters the caller
+# reports to the operator; the row format on stdout is the same in both
+# modes.
+#
+# ARCHIVE MODE'S REFUSALS, and what each one actually proves:
+#   - `zipfile.ZipFile()` failing means the artifact is not a zip, or is
+#     TRUNCATED: a zip's central directory sits at the END of the file, so a
+#     short or interrupted transfer cannot be opened at all.  That is a real
+#     structural guarantee against silent truncation, and it is not a
+#     guarantee about authorship - see section 3a's integrity note.
+#   - `ZipFile.read()` verifies each member's stored CRC32, so a corrupted
+#     member is refused rather than parsed.
+#   - a member that is not valid JSON, or that carries no advisory id, fails
+#     the WHOLE import.  Skipping it and importing the rest would produce a
+#     database that silently covers less than it claims, which is the exact
+#     failure mode this data exists to prevent.
+#   - members are never extracted to disk, and a traversing member name is
+#     refused anyway rather than relying on that fact staying true.
+# Progress is printed to stderr as members are read, so a full ecosystem
+# (tens of thousands of advisories) never looks hung.
+_veng_advisories_osv_extract_py() {
+  local mode=$1 input=$2 osv_ecosystem=$3 statsfile=$4
   require_cmd python3
-  python3 - "$jsonfile" "$osv_ecosystem" <<'PY'
+  python3 - "$mode" "$input" "$osv_ecosystem" "$statsfile" <<'PY'
 import json
 import sys
+import zipfile
 
-path, eco = sys.argv[1], sys.argv[2]
-with open(path, "r", encoding="utf-8") as fh:
-    data = json.load(fh)
-
-vuln_id = data.get("id", "")
+mode, path, eco, stats_path = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 US = "\x1f"
+
+STATS = {
+    "advisories_read": 0,
+    "rows_extracted": 0,
+    "range_only_skipped": 0,
+    "other_ecosystem_skipped": 0,
+}
+
+
+def fail(msg):
+    sys.stderr.write("advisories: extract: " + msg + "\n")
+    sys.exit(1)
 
 
 def clean(s):
     # Collapses embedded tabs/newlines/runs of whitespace to a single
     # space - the frozen schema forbids a raw TAB or LF inside a field
     # (tension 25).  Applied to every field EXCEPT fixed_versions (see
-    # below): the bash caller re-validates all of them with
-    # _veng_advisories_reject_tab_lf rather than trusting this alone.
+    # below): the bash caller re-validates all of them rather than
+    # trusting this alone.
     return " ".join(str(s).split())
 
 
-summary = data.get("summary") or ""
-if not summary:
-    details = data.get("details") or ""
-    summary = details.splitlines()[0] if details else ""
-summary = clean(summary)
+def rows_for(data):
+    vuln_id = clean(data.get("id", "") or "")
 
-top_severity = ""
-ds = data.get("database_specific") or {}
-if isinstance(ds, dict):
-    top_severity = ds.get("severity") or ""
+    summary = data.get("summary") or ""
+    if not summary:
+        details = data.get("details") or ""
+        summary = details.splitlines()[0] if details else ""
+    summary = clean(summary)
 
-for affected in data.get("affected", []) or []:
-    pkg = affected.get("package") or {}
-    if pkg.get("ecosystem") != eco:
-        continue
-    name = pkg.get("name") or ""
-    if not name:
-        continue
+    top_severity = ""
+    ds = data.get("database_specific") or {}
+    if isinstance(ds, dict):
+        top_severity = ds.get("severity") or ""
 
-    severity = top_severity
-    if not severity:
-        ads = affected.get("database_specific") or {}
-        if isinstance(ads, dict):
-            severity = ads.get("severity") or ""
+    out = []
+    for affected in data.get("affected", []) or []:
+        pkg = affected.get("package") or {}
+        if pkg.get("ecosystem") != eco:
+            STATS["other_ecosystem_skipped"] += 1
+            continue
+        name = clean(pkg.get("name") or "")
+        if not name:
+            continue
 
-    fixed = []
-    for rng in affected.get("ranges", []) or []:
-        for ev in rng.get("events", []) or []:
-            f = ev.get("fixed")
-            if f and f not in fixed:
-                fixed.append(f)
-    # NOT cleaned: tension 25 states fixed_versions is "carried as opaque
-    # display text and never compared" - a raw TAB/LF smuggled inside one
-    # of OSV's own `fixed` event strings must reach
-    # _veng_advisories_reject_tab_lf intact so the bash caller can refuse
-    # it, rather than being silently normalised away here first.
-    fixed_str = ",".join(fixed)
+        severity = top_severity
+        if not severity:
+            ads = affected.get("database_specific") or {}
+            if isinstance(ads, dict):
+                severity = ads.get("severity") or ""
 
-    for version in affected.get("versions") or []:
-        row = US.join(
-            [clean(name), clean(version), clean(vuln_id), clean(severity), fixed_str, summary]
-        )
+        fixed = []
+        for rng in affected.get("ranges", []) or []:
+            for ev in rng.get("events", []) or []:
+                f = ev.get("fixed")
+                if f and f not in fixed:
+                    fixed.append(f)
+        # NOT cleaned: tension 25 states fixed_versions is "carried as
+        # opaque display text and never compared" - a raw TAB/LF smuggled
+        # inside one of OSV's own `fixed` event strings must reach the bash
+        # caller's own guard intact so it can be refused, rather than being
+        # silently normalised away here first.
+        fixed_str = ",".join(fixed)
+
+        versions = affected.get("versions") or []
+        if not versions:
+            # A range-only entry.  tension 25 puts range arithmetic on the
+            # networked box using the ECOSYSTEM's own resolved version
+            # list, never on a guess made here, so this is counted and
+            # reported rather than approximated.
+            STATS["range_only_skipped"] += 1
+            continue
+        for version in versions:
+            v = clean(version)
+            if not v:
+                continue
+            out.append(
+                US.join([name, v, vuln_id, clean(severity), fixed_str, summary])
+            )
+    return out
+
+
+def emit(data):
+    STATS["advisories_read"] += 1
+    for row in rows_for(data):
         print(row)
+        STATS["rows_extracted"] += 1
+
+
+if mode == "file":
+    with open(path, "r", encoding="utf-8") as fh:
+        emit(json.load(fh))
+elif mode == "archive":
+    try:
+        zf = zipfile.ZipFile(path)
+    except Exception as exc:
+        fail(
+            "archive is unreadable, not a zip, or truncated (%s): %s"
+            % (type(exc).__name__, path)
+        )
+    with zf:
+        names = sorted(n for n in zf.namelist() if n.endswith(".json"))
+        if not names:
+            fail("archive holds no .json advisory member at all: " + path)
+        total = len(names)
+        sys.stderr.write(
+            "advisories: bulk: archive holds %d advisory member(s)\n" % total
+        )
+        sys.stderr.flush()
+        done = 0
+        for name in names:
+            if name.startswith("/") or ".." in name.split("/"):
+                fail("refusing an archive member with a traversing name: " + name)
+            try:
+                raw = zf.read(name)
+            except Exception as exc:
+                fail(
+                    "member failed its stored CRC or could not be read (%s): %s"
+                    % (type(exc).__name__, name)
+                )
+            try:
+                data = json.loads(raw.decode("utf-8"))
+            except Exception as exc:
+                fail(
+                    "member is not valid OSV JSON (%s): %s"
+                    % (type(exc).__name__, name)
+                )
+            if not isinstance(data, dict) or not (data.get("id") or ""):
+                fail("member carries no advisory id: " + name)
+            emit(data)
+            done += 1
+            if done % 2000 == 0 or done == total:
+                sys.stderr.write(
+                    "advisories: bulk: %d/%d advisories read\n" % (done, total)
+                )
+                sys.stderr.flush()
+else:
+    fail("unknown extract mode: " + mode)
+
+if stats_path:
+    with open(stats_path, "w", encoding="utf-8") as fh:
+        for key in sorted(STATS):
+            fh.write("%s=%d\n" % (key, STATS[key]))
 PY
 }
 
@@ -664,41 +795,70 @@ _veng_advisories_expand_one() {
   fi
 }
 
-# _veng_advisories_write_db DB DB_ECOSYSTEM NEW_ROWS - replaces every
-# existing DB_ECOSYSTEM row in DB with the rows in NEW_ROWS, leaving every
-# OTHER ecosystem's rows untouched, then rewrites DB sorted under LC_ALL=C
-# with a fresh `#` header (tension 25: "sorted... under LC_ALL=C, with a
-# `#` header line" - db_lookup_exact's own `look`/`grep -F` lookup,
-# lib/core.sh, requires the file sorted; a leading `#` byte sorts before
-# every real ecosystem's first letter under LC_ALL=C, so a header line
-# never disturbs that requirement, the same shape
-# tests/fixtures/sca/advisories.db already uses).  Filtering is done in
-# pure bash, deliberately not `grep`, per tension 4 rule 2's "no bare
-# grep/rg outside the wrapper" - this is plain line selection, not the
-# rule-matching engine, so scan_match does not apply either, but avoiding
-# grep here keeps this file simple to audit against that rule by eye.
+# _veng_advisories_write_db DB DB_ECOSYSTEM NEW_ROWS [PROVENANCE] - replaces
+# every existing DB_ECOSYSTEM row in DB with the rows in NEW_ROWS, leaving
+# every OTHER ecosystem's rows untouched, then rewrites DB sorted under
+# LC_ALL=C with a fresh `#` header (tension 25: "sorted... under LC_ALL=C,
+# with a `#` header line" - db_lookup_exact's own `look`/`grep -F` lookup,
+# lib/core.sh, requires the file sorted; a leading `#` byte (0x23) sorts
+# before every real ecosystem's first letter under LC_ALL=C, so a header
+# line never disturbs that requirement, the same shape
+# tests/fixtures/sca/advisories.db already uses).
+#
+# THE ONE WRITER for both the single-advisory path and the bulk importer
+# (section 3a), so the two can never diverge on schema, sort order or header
+# shape.  Filtering moved from a `while read` bash loop to a single `awk`
+# pass when the bulk path landed: the bash loop was O(rows) SHELL
+# iterations, which is fine for a handful of hand-listed advisories and
+# unusable for a real ecosystem's hundreds of thousands.  It is still not
+# `grep` (tension 4 rule 2's "no bare grep/rg outside the wrapper"), and awk
+# is already this repository's field-splitting tool of choice elsewhere.
+# `sort` is given TMPDIR inside the scratch directory so a full-ecosystem
+# external sort spills where the run's own cleanup can reach it.
+#
+# PROVENANCE, when supplied, is a single `# bulk: ecosystem=<eco> ...`
+# comment line recording where this ecosystem's rows came from and what was
+# verified about them.  Other ecosystems' provenance lines are carried
+# forward unchanged; THIS ecosystem's previous line is always dropped,
+# whether or not a replacement is supplied, because a provenance claim
+# describing rows that have just been replaced is worse than none - it
+# would tell an operator the database covers an ecosystem in a way it no
+# longer does.
 _veng_advisories_write_db() {
-  local db=$1 db_eco=$2 new_rows=$3
+  local db=$1 db_eco=$2 new_rows=$3 provenance=${4:-}
   mkdir -p "$(dirname -- "$db")"
+  mkdir -p "$SCOURSH_SCRATCH/advisories"
   local body=$SCOURSH_SCRATCH/advisories/body.$$.tsv
+  local keep=$SCOURSH_SCRATCH/advisories/keep-bulk.$$.txt
   : >"$body"
-  local line
+  : >"$keep"
   if [[ -r $db ]]; then
-    while IFS= read -r line || [[ -n $line ]]; do
-      [[ -z $line ]] && continue
-      [[ $line == '#'* ]] && continue
-      [[ $line == "$db_eco"$'\t'* ]] && continue
-      printf '%s\n' "$line" >>"$body"
-    done <"$db"
+    awk -v eco="$db_eco" -v keep="$keep" '
+      /^#/ {
+        if ($0 ~ /^# bulk: ecosystem=/) {
+          f = $0
+          sub(/^# bulk: ecosystem=/, "", f)
+          sub(/ .*$/, "", f)
+          if (f != eco) print $0 > keep
+        }
+        next
+      }
+      $0 == "" { next }
+      { split($0, a, "\t"); if (a[1] != eco) print }
+    ' "$db" >"$body"
   fi
   cat -- "$new_rows" >>"$body"
+  if [[ -n $provenance ]]; then
+    printf '%s\n' "$provenance" >>"$keep"
+  fi
 
   local tmp=$SCOURSH_SCRATCH/advisories/db.$$.tsv
   {
     printf '# scoursh %s - generated by tools/vendor-engines.sh advisories (docs/FOUNDATION.md tension 25)\n' "$(basename -- "$db")"
     printf '# generated: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf '# source: OSV.dev (https://osv.dev), advisory ids operator-supplied via SCOURSH_ADVISORY_<ECOSYSTEM>_IDS\n'
-    LC_ALL=C sort -u -- "$body"
+    printf '# source: OSV.dev (https://osv.dev), per-ecosystem provenance on the `# bulk:` lines below where present\n'
+    LC_ALL=C sort -u -- "$keep"
+    TMPDIR=$SCOURSH_SCRATCH LC_ALL=C sort -u -- "$body"
   } >"$tmp"
   mv -f -- "$tmp" "$db"
   local rows
@@ -775,6 +935,498 @@ veng_advisories_all() {
   done < <(veng_advisories_list)
 }
 
+# ---------------------------------------------------------------------------
+# 3a. BULK ecosystem import (`advisories bulk`)
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS.  Section 3 above resolves ONE operator-supplied OSV id at
+# a time.  That is the right shape for "the operator already knows which
+# advisory matters", and it is the wrong shape for populating a database at
+# all: knowing which advisory ids exist for an ecosystem is precisely the
+# thing a dependency scanner is supposed to TELL the operator.  With no
+# data/advisories.db on disk, `scan.sh sca` reports every project clean
+# (modules/sca/ records a `no_advisories_db_on_disk` coverage_reduction and
+# emits nothing), so a finished, tested SCA module sits behind a database
+# that in practice nobody can build.  This section imports a whole
+# ecosystem's published OSV export in one command, per ecosystem or for all
+# six.
+#
+# WHAT IT FETCHES.  OSV.dev publishes a per-ecosystem bulk export at
+# `https://osv-vulnerabilities.storage.googleapis.com/<ECOSYSTEM>/all.zip`,
+# one JSON record per advisory in the identical schema section 3's
+# single-advisory endpoint returns - so the record walk, the normalisation,
+# the frozen TSV schema and the writer are all REUSED here unchanged rather
+# than re-implemented (`_veng_advisories_osv_extract_py`,
+# `_veng_advisories_normalize_*`, `_veng_advisories_write_db`).  The
+# ecosystem path component is `_veng_advisories_osv_ecosystem`'s own mapping,
+# not a second copy of it.  No range arithmetic happens here either: exactly
+# as in section 3, only OSV's own enumerated `affected[].versions` become
+# rows, and a range-only advisory is counted and reported, never guessed at
+# (tension 25).
+#
+# INTEGRITY: THE DESIGN TENSION, AND WHAT THIS RESOLUTION DOES AND DOES NOT
+# GUARANTEE.  Every other download in this file goes through `veng_fetch`
+# (section 2a), which REQUIRES the caller to supply an expected sha256,
+# because an unverified artifact is not meaningfully different from an
+# unsigned one and this file never guesses or hardcodes a checksum.  A bulk
+# export is rebuilt upstream continuously, so there is no stable digest an
+# operator could know in advance and the existing pattern does not transfer
+# unchanged.  Silently dropping the check to make bulk work would be the
+# worst of the available answers, so instead this section states an explicit
+# grade for every import and refuses to proceed unpinned without the
+# operator saying so:
+#
+#   pinned-sha256            The operator supplied `--sha256`.  A network
+#                            fetch goes through `veng_fetch` VERBATIM (same
+#                            download-and-verify primitive, same refusal,
+#                            same removal of a mismatched file), and a local
+#                            `--archive` is compared against the same digest.
+#                            GUARANTEES the bytes imported are exactly the
+#                            bytes the operator named.  It does NOT say those
+#                            bytes are authentic, only that they are the ones
+#                            already decided on - which is what makes an
+#                            import reproducible and reviewable.
+#   unpinned-transport-only  A network fetch with no digest.  Requires
+#                            `--accept-unverified`.  curl is pinned to
+#                            `--proto '=https' --proto-redir '=https'
+#                            --tlsv1.2`, so the TRANSPORT is authenticated
+#                            (the host's certificate chain, including across
+#                            redirects) and cannot silently downgrade to
+#                            cleartext.  That authenticates the SERVER, not
+#                            the CONTENT: it says nothing about whether
+#                            upstream published what it should have, and it
+#                            is strictly weaker than a pin.
+#   unpinned-local-archive   An operator-supplied `--archive`, no digest.
+#                            Requires `--accept-unverified`.  This file
+#                            verified NOTHING about the content; the operator
+#                            chose the bytes.  Reaches no network code at
+#                            all.
+#
+# In every grade the sha256 of what was ACTUALLY imported is computed,
+# printed, and written into the database's own header, so a later operator
+# can tell exactly what they got, diff two snapshots, and pass that same
+# digest back as `--sha256` to pin the next import.  An unpinned import
+# without `--accept-unverified` is refused outright rather than warned
+# about, because a warning in a log an operator does not read is not a
+# decision they made.
+#
+# WHAT IS ALWAYS CHECKED, REGARDLESS OF GRADE, and is not authenticity:
+# the artifact must open as a zip (a truncated transfer cannot, since the
+# central directory sits at the file's END), every member must pass its
+# stored CRC32, every member must be valid OSV JSON carrying an advisory id,
+# the archive must hold at least one member, and the import must produce at
+# least one row.  Any one of those failing fails the WHOLE ecosystem, and
+# the database is written only after all of them pass, so a refusal can
+# never leave an ecosystem half-imported.  See
+# `_veng_advisories_osv_extract_py`'s own header for the per-refusal detail.
+#
+# SCALE.  A real ecosystem is tens of thousands of advisories and hundreds
+# of thousands of exact-version rows, so nothing here may be per-row shell
+# work.  The pipeline is: one `python3` pass over the archive (one record in
+# memory at a time) emitting raw rows to a file; one `awk` pass to collect
+# the DISTINCT raw package names, versions and severities; one bash loop per
+# DISTINCT VALUE - not per row - through the frozen normalisation functions,
+# written with the loop's stdout redirected so it costs no subprocess at
+# all; one `awk` pass to join the three maps onto the rows and enforce the
+# frozen schema; one `sort -u`.  Every stage is linear, streams through
+# files rather than shell variables, and reports progress.
+VENG_BULK_BASE_URL='https://osv-vulnerabilities.storage.googleapis.com'
+
+VENG_BULK_ARCHIVE=''
+VENG_BULK_SHA256=''
+VENG_BULK_ACCEPT=0
+
+veng_bulk_usage() {
+  cat <<'EOF'
+usage: tools/vendor-engines.sh advisories bulk [options] <ecosystem>
+       tools/vendor-engines.sh advisories bulk [options] --all
+
+Imports a whole ecosystem's published OSV.dev export
+(https://osv-vulnerabilities.storage.googleapis.com/<ECOSYSTEM>/all.zip) into
+data/advisories.db and data/versions.db in ONE command, pre-expanded to one
+row per exact affected version (docs/FOUNDATION.md tension 25).  Run this BY
+HAND, ON A NETWORKED BOX, like every other command in this script.
+
+Ecosystems are the same six 'advisories --list' reports.
+
+Options:
+  --sha256 HEX          verify the artifact against this sha256 and refuse on
+                         mismatch.  The strongest grade, and the only one
+                         that needs no acknowledgement.  Take HEX from the
+                         'artifact sha256:' line of an earlier import, or
+                         from your own out-of-band record.
+  --archive PATH        import an already-downloaded export instead of
+                         fetching one.  Makes no network call at all; use it
+                         on a box that downloads separately, or with an
+                         internal mirror.
+  --accept-unverified   acknowledge an import whose CONTENT this script did
+                         not verify (no --sha256).  Required for an unpinned
+                         import; see below for exactly what is and is not
+                         guaranteed then.
+  --all                 import every ecosystem.  Cannot be combined with
+                         --archive (one archive is one ecosystem) or with
+                         --sha256 (one digest cannot pin six artifacts).
+  -h, --help            print this message and exit 0
+
+INTEGRITY.  Every import prints the grade it achieved and the sha256 of what
+it actually imported, and records both in the database header:
+
+  pinned-sha256            the bytes are exactly the ones you named.
+  unpinned-transport-only  fetched over HTTPS with a TLS 1.2 floor and no
+                           redirect downgrade, so the SERVER is
+                           authenticated; the CONTENT was not verified.
+  unpinned-local-archive   you supplied the bytes; this script verified
+                           nothing about them.
+
+Regardless of grade, the archive must open as a zip (which a truncated
+download cannot), every member must pass its stored CRC and parse as OSV
+JSON, and the import must yield at least one row.  Any failure aborts that
+ecosystem WITHOUT touching the database, so an ecosystem is never left half
+imported; with --all, the ecosystems that succeeded are kept, the failures
+are listed, and the run still exits non-zero.
+
+EXIT CODES: 0 ok, 2 bad usage, 4 unknown ecosystem, missing acknowledgement,
+missing tooling or unreadable archive, 5 the fetch, the integrity check or
+the import itself failed.  Never anything outside 0-5.
+EOF
+}
+
+# _veng_bulk_url DB_ECOSYSTEM - the upstream export URL, built from
+# _veng_advisories_osv_ecosystem's own frozen mapping (npm/PyPI/Maven/Go/
+# RubyGems/Packagist) rather than a second copy of it.
+_veng_bulk_url() {
+  local osv_eco
+  osv_eco=$(_veng_advisories_osv_ecosystem "$1")
+  printf '%s/%s/all.zip' "$VENG_BULK_BASE_URL" "$osv_eco"
+}
+
+# _veng_bulk_acquire DB_ECOSYSTEM - puts the artifact on disk and settles its
+# integrity grade, reporting both.  Sets _VENG_BULK_ARTIFACT,
+# _VENG_BULK_GRADE, _VENG_BULK_SOURCE and _VENG_BULK_SHA256_GOT.
+_veng_bulk_acquire() {
+  local db_eco=$1
+  local dir=$SCOURSH_SCRATCH/advisories/bulk
+  mkdir -p "$dir"
+
+  if [[ -n $VENG_BULK_ARCHIVE ]]; then
+    [[ -r $VENG_BULK_ARCHIVE ]] || die "$SCOURSH_EXIT_INPUT" \
+      "advisories: bulk: --archive '$VENG_BULK_ARCHIVE' is not a readable file"
+    _VENG_BULK_ARTIFACT=$VENG_BULK_ARCHIVE
+    _VENG_BULK_SOURCE="local archive $VENG_BULK_ARCHIVE"
+    _VENG_BULK_SHA256_GOT=$(cat -- "$VENG_BULK_ARCHIVE" | sha256_of)
+    if [[ -n $VENG_BULK_SHA256 ]]; then
+      [[ $_VENG_BULK_SHA256_GOT == "$VENG_BULK_SHA256" ]] || die "$SCOURSH_EXIT_INCOMPLETE" \
+        "advisories: bulk: checksum mismatch for $VENG_BULK_ARCHIVE (expected $VENG_BULK_SHA256, got $_VENG_BULK_SHA256_GOT) - refusing to import an artifact that is not the one you pinned"
+      _VENG_BULK_GRADE=pinned-sha256
+    else
+      _VENG_BULK_GRADE=unpinned-local-archive
+    fi
+    return 0
+  fi
+
+  local url dest
+  url=$(_veng_bulk_url "$db_eco")
+  dest=$dir/$db_eco.zip
+  rm -f -- "$dest"
+  if [[ -n $VENG_BULK_SHA256 ]]; then
+    # veng_fetch VERBATIM: the pinned path reuses the existing
+    # download-and-verify primitive rather than forking a second one, so
+    # there is exactly one implementation of "download, then refuse unless
+    # the bytes match".
+    veng_fetch "$url" "$dest" "$VENG_BULK_SHA256"
+    _VENG_BULK_GRADE=pinned-sha256
+  else
+    # The unpinned path has ONLY the transport to rely on, so it insists on
+    # it: HTTPS with a TLS 1.2 floor, and redirects that cannot leave HTTPS.
+    # (veng_fetch above does not add these because a pinned artifact is
+    # verified by its digest whatever route it took, and because changing
+    # veng_fetch's own flags would change every adapter's vendoring path for
+    # a reason that does not apply to them.)
+    require_cmd curl
+    log_info "vendor-engines: advisories: bulk: fetching $url"
+    curl --fail --location --show-error --silent \
+      --proto '=https' --proto-redir '=https' --tlsv1.2 \
+      --output "$dest" -- "$url" \
+      || die "$SCOURSH_EXIT_INCOMPLETE" "advisories: bulk: download failed: $url"
+    _VENG_BULK_GRADE=unpinned-transport-only
+  fi
+  _VENG_BULK_ARTIFACT=$dest
+  _VENG_BULK_SOURCE=$url
+  _VENG_BULK_SHA256_GOT=$(cat -- "$dest" | sha256_of)
+}
+
+# _veng_bulk_normalize_rows DB_ECOSYSTEM RAWFILE OUTFILE - turns the
+# extractor's raw 0x1f-separated rows into frozen-schema TSV rows.
+#
+# The normalisation itself is the SAME `_veng_advisories_normalize_*`
+# dispatch the single-advisory path uses (which is in turn
+# modules/sca/*.sh's own frozen functions, never a re-implementation), but
+# it is applied once per DISTINCT raw value rather than once per row: an
+# ecosystem has hundreds of thousands of rows and only tens of thousands of
+# distinct package names, and normalisation depends on nothing but the
+# value.  The loops write through a redirected stdout instead of a command
+# substitution, so normalising a whole ecosystem costs ZERO subprocesses.
+#
+# The final awk pass enforces the frozen schema at scale, in place of the
+# per-field `_veng_advisories_reject_tab_lf` calls the single-advisory path
+# makes: an LF inside any OSV field breaks the 0x1f transport into a line
+# with the wrong field count, and a TAB inside any field makes the assembled
+# row split into more than 7 TAB fields.  Same rule, same refusal, one pass
+# instead of three subprocesses per row.
+_veng_bulk_normalize_rows() {
+  local db_eco=$1 raw=$2 out=$3
+  local dir=$SCOURSH_SCRATCH/advisories/bulk
+  mkdir -p "$dir"
+  local us=$'\x1f'
+  local names_raw=$dir/names.raw vers_raw=$dir/vers.raw sevs_raw=$dir/sevs.raw
+  local names_map=$dir/names.map vers_map=$dir/vers.map sevs_map=$dir/sevs.map
+  local errfile=$dir/join.err raw_value
+  : >"$errfile"
+
+  awk -F"$us" '{ print $1 }' "$raw" | LC_ALL=C sort -u >"$names_raw"
+  awk -F"$us" '{ print $2 }' "$raw" | LC_ALL=C sort -u >"$vers_raw"
+  awk -F"$us" '{ print $4 }' "$raw" | LC_ALL=C sort -u >"$sevs_raw"
+
+  local distinct_names
+  distinct_names=$(wc -l <"$names_raw")
+  distinct_names=${distinct_names//[[:space:]]/}
+  log_info "vendor-engines: advisories: bulk: normalising $distinct_names distinct package name(s) through the frozen $db_eco rules"
+
+  while IFS= read -r raw_value; do
+    printf '%s\t' "$raw_value"
+    _veng_advisories_normalize_name "$db_eco" "$raw_value"
+    printf '\n'
+  done <"$names_raw" >"$names_map"
+
+  while IFS= read -r raw_value; do
+    printf '%s\t' "$raw_value"
+    _veng_advisories_normalize_version "$db_eco" "$raw_value"
+    printf '\n'
+  done <"$vers_raw" >"$vers_map"
+
+  while IFS= read -r raw_value; do
+    printf '%s\t' "$raw_value"
+    _veng_advisories_normalize_severity "$raw_value"
+    printf '\n'
+  done <"$sevs_raw" >"$sevs_map"
+
+  awk -F"$us" -v OFS=$'\t' -v eco="$db_eco" -v errf="$errfile" \
+    -v nmap="$names_map" -v vmap="$vers_map" -v smap="$sevs_map" '
+    function bail(msg) { print msg > errf; close(errf); exit 1 }
+    function mapline(dest, line,   i) {
+      i = index(line, "\t")
+      dest[substr(line, 1, i - 1)] = substr(line, i + 1)
+    }
+    FILENAME == nmap { mapline(NAME, $0); next }
+    FILENAME == vmap { mapline(VER, $0); next }
+    FILENAME == smap { mapline(SEV, $0); next }
+    {
+      if (NF != 6) {
+        bail("row " FNR " carries " NF " field(s) where 6 are expected - an LF inside an OSV field does exactly this, and the frozen schema forbids one")
+      }
+      if (!($1 in NAME) || !($2 in VER) || !($4 in SEV)) {
+        bail("row " FNR " has no normalisation entry for one of its fields: " $1 " / " $2)
+      }
+      row = eco OFS NAME[$1] OFS VER[$2] OFS $3 OFS SEV[$4] OFS $5 OFS $6
+      if (split(row, parts, "\t") != 7) {
+        bail("row " FNR " assembles into more than 7 TAB-separated fields - a TAB inside an OSV field, which the frozen schema forbids")
+      }
+      print row
+    }
+  ' "$names_map" "$vers_map" "$sevs_map" "$raw" >"$out" || {
+    local why=''
+    [[ -s $errfile ]] && why=$(cat -- "$errfile")
+    die "$SCOURSH_EXIT_INCOMPLETE" \
+      "advisories: bulk: refusing to write a corrupt data/advisories.db row (tension 25's frozen schema): ${why:-the row transform failed}"
+  }
+}
+
+# _veng_bulk_one DB_ECOSYSTEM - one ecosystem, end to end and transactional:
+# nothing reaches data/advisories.db until every stage has succeeded.
+_veng_bulk_one() {
+  local db_eco=$1
+  [[ -n ${VENG_ADVISORY_REGISTRY[$db_eco]:-} ]] \
+    || die "$SCOURSH_EXIT_INPUT" \
+      "advisories: bulk: unknown ecosystem '$db_eco' - run 'advisories --list' to see the six docs/DESIGN.md §6.5 ecosystems"
+  _veng_advisories_load_normalizers
+
+  local dir=$SCOURSH_SCRATCH/advisories/bulk
+  mkdir -p "$dir"
+  local raw=$dir/rows.$db_eco.raw
+  local tsv=$dir/rows.$db_eco.tsv
+  local stats=$dir/stats.$db_eco.txt
+  local summary=$dir/summary.$db_eco.txt
+  : >"$raw"
+  : >"$tsv"
+  : >"$stats"
+  : >"$summary"
+
+  log_info "vendor-engines: advisories: bulk: importing '$db_eco'"
+  _veng_bulk_acquire "$db_eco"
+  log_info "vendor-engines: advisories: bulk: $db_eco: integrity: $_VENG_BULK_GRADE"
+  case $_VENG_BULK_GRADE in
+    pinned-sha256)
+      log_info "vendor-engines: advisories: bulk: $db_eco: the artifact matched the operator-supplied digest byte for byte"
+      ;;
+    unpinned-transport-only)
+      log_warn "vendor-engines: advisories: bulk: $db_eco: the HTTPS transport was verified (TLS 1.2 floor, no redirect downgrade) but the artifact content was NOT verified - re-run with --sha256 $_VENG_BULK_SHA256_GOT to pin exactly this artifact"
+      ;;
+    unpinned-local-archive)
+      log_warn "vendor-engines: advisories: bulk: $db_eco: this is an operator-supplied archive and its content was NOT verified by this script - re-run with --sha256 $_VENG_BULK_SHA256_GOT to pin exactly these bytes"
+      ;;
+  esac
+  log_info "vendor-engines: advisories: bulk: $db_eco: artifact sha256: $_VENG_BULK_SHA256_GOT"
+  log_info "vendor-engines: advisories: bulk: $db_eco: artifact source: $_VENG_BULK_SOURCE"
+
+  local osv_eco
+  osv_eco=$(_veng_advisories_osv_ecosystem "$db_eco")
+  _veng_advisories_osv_extract_py archive "$_VENG_BULK_ARTIFACT" "$osv_eco" "$stats" >"$raw" \
+    || die "$SCOURSH_EXIT_INCOMPLETE" \
+      "advisories: bulk: $db_eco: the export failed validation and NOTHING was written (see the reason above)"
+
+  local advisories_read=0 rows_extracted=0 range_only_skipped=0 other_ecosystem_skipped=0
+  local line
+  while IFS= read -r line || [[ -n $line ]]; do
+    case $line in
+      advisories_read=*) advisories_read=${line#*=} ;;
+      rows_extracted=*) rows_extracted=${line#*=} ;;
+      range_only_skipped=*) range_only_skipped=${line#*=} ;;
+      other_ecosystem_skipped=*) other_ecosystem_skipped=${line#*=} ;;
+    esac
+  done <"$stats"
+
+  _veng_bulk_normalize_rows "$db_eco" "$raw" "$tsv"
+  LC_ALL=C sort -u -- "$tsv" >"$tsv.sorted"
+  mv -f -- "$tsv.sorted" "$tsv"
+
+  local rows
+  rows=$(wc -l <"$tsv")
+  rows=${rows//[[:space:]]/}
+  (( rows > 0 )) || die "$SCOURSH_EXIT_INCOMPLETE" \
+    "advisories: bulk: $db_eco: the export produced ZERO exact-version rows ($advisories_read advisory record(s) read, $range_only_skipped of them range-only) - refusing to replace this ecosystem's rows with nothing, which would quietly turn every $db_eco dependency clean"
+  if (( rows != rows_extracted )); then
+    log_info "vendor-engines: advisories: bulk: $db_eco: $(( rows_extracted - rows )) duplicate row(s) collapsed"
+  fi
+
+  local provenance
+  provenance=$(printf '# bulk: ecosystem=%s grade=%s sha256=%s advisories_read=%s rows=%s range_only_skipped=%s other_ecosystem_skipped=%s generated=%s source=%s' \
+    "$db_eco" "$_VENG_BULK_GRADE" "$_VENG_BULK_SHA256_GOT" "$advisories_read" "$rows" \
+    "$range_only_skipped" "$other_ecosystem_skipped" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_VENG_BULK_SOURCE")
+  _veng_advisories_reject_tab_lf provenance "$provenance"
+
+  _veng_advisories_write_db "$VENG_ADVISORIES_DB" "$db_eco" "$tsv" "$provenance"
+  _veng_advisories_write_db "$VENG_VERSIONS_DB" "$db_eco" "$tsv" "$provenance"
+
+  printf 'grade=%s advisories_read=%s rows=%s range_only_skipped=%s other_ecosystem_skipped=%s\n' \
+    "$_VENG_BULK_GRADE" "$advisories_read" "$rows" "$range_only_skipped" "$other_ecosystem_skipped" \
+    >"$summary"
+  log_info "vendor-engines: advisories: bulk: $db_eco: imported: advisories_read=$advisories_read rows=$rows range_only_skipped=$range_only_skipped other_ecosystem_skipped=$other_ecosystem_skipped"
+  if (( range_only_skipped > 0 )); then
+    log_warn "vendor-engines: advisories: bulk: $db_eco: $range_only_skipped advisory entr(y/ies) published no explicit affected-version list and are NOT represented in the database - this ecosystem's coverage is smaller than its advisory count by exactly that much (tension 25 requires exact versions, never a guessed range)"
+  fi
+}
+
+# _veng_bulk_all - every ecosystem, each one transactional and independent.
+# A failing ecosystem does NOT discard the ones that already succeeded (they
+# are real coverage, and their own provenance lines say what they are), and
+# it does NOT let the run report success either: a partially-imported
+# database that exits 0 is exactly the silently-covers-less-than-it-claims
+# shape this data exists to prevent.
+_veng_bulk_all() {
+  local dir=$SCOURSH_SCRATCH/advisories/bulk
+  mkdir -p "$dir"
+  local report=$dir/all-report.txt
+  : >"$report"
+  local failed=0 eco rc detail
+  while IFS= read -r eco; do
+    [[ -n $eco ]] || continue
+    rc=0
+    ( _veng_bulk_one "$eco" ) || rc=$?
+    if (( rc == 0 )); then
+      detail=$(cat -- "$dir/summary.$eco.txt" 2>/dev/null || printf '')
+      printf '  %-10s OK      %s\n' "$eco" "$detail" >>"$report"
+    else
+      failed=1
+      printf '  %-10s FAILED  (exit %s, nothing written for this ecosystem - see the log above)\n' \
+        "$eco" "$rc" >>"$report"
+    fi
+  done < <(veng_advisories_list)
+
+  printf 'vendor-engines: advisories: bulk: per-ecosystem result:\n' >&2
+  cat -- "$report" >&2
+  if (( failed )); then
+    die "$SCOURSH_EXIT_INCOMPLETE" \
+      'advisories: bulk: at least one ecosystem failed to import - the database covers only the ecosystems marked OK above'
+  fi
+}
+
+veng_bulk_main() {
+  local want_all=0 eco=''
+  VENG_BULK_ARCHIVE=''
+  VENG_BULK_SHA256=''
+  VENG_BULK_ACCEPT=0
+
+  while (( $# > 0 )); do
+    case $1 in
+      -h | --help)
+        veng_bulk_usage
+        exit "$SCOURSH_EXIT_OK"
+        ;;
+      --all) want_all=1 ;;
+      --accept-unverified) VENG_BULK_ACCEPT=1 ;;
+      --sha256)
+        (( $# >= 2 )) || { veng_bulk_usage >&2; die "$SCOURSH_EXIT_USAGE" 'advisories: bulk: --sha256 needs a value'; }
+        VENG_BULK_SHA256=$2
+        shift
+        ;;
+      --archive)
+        (( $# >= 2 )) || { veng_bulk_usage >&2; die "$SCOURSH_EXIT_USAGE" 'advisories: bulk: --archive needs a value'; }
+        VENG_BULK_ARCHIVE=$2
+        shift
+        ;;
+      --*)
+        veng_bulk_usage >&2
+        die "$SCOURSH_EXIT_USAGE" "advisories: bulk: unknown flag: '$1'"
+        ;;
+      *)
+        [[ -z $eco ]] || { veng_bulk_usage >&2; die "$SCOURSH_EXIT_USAGE" "advisories: bulk: more than one ecosystem given ('$eco' and '$1')"; }
+        eco=$1
+        ;;
+    esac
+    shift
+  done
+
+  if (( want_all )) && [[ -n $eco ]]; then
+    veng_bulk_usage >&2
+    die "$SCOURSH_EXIT_USAGE" "advisories: bulk: --all and an ecosystem name ('$eco') are mutually exclusive"
+  fi
+  if (( ! want_all )) && [[ -z $eco ]]; then
+    veng_bulk_usage >&2
+    die "$SCOURSH_EXIT_USAGE" 'advisories: bulk: name an ecosystem, or pass --all'
+  fi
+  if (( want_all )) && [[ -n $VENG_BULK_ARCHIVE ]]; then
+    veng_bulk_usage >&2
+    die "$SCOURSH_EXIT_USAGE" \
+      'advisories: bulk: --all and --archive are mutually exclusive - one archive is one ecosystem export, and importing it six times would file the same advisories under five ecosystems that never published them'
+  fi
+  if (( want_all )) && [[ -n $VENG_BULK_SHA256 ]]; then
+    veng_bulk_usage >&2
+    die "$SCOURSH_EXIT_USAGE" \
+      'advisories: bulk: --all and --sha256 are mutually exclusive - one digest cannot pin six separate artifacts, and accepting it would verify one while silently trusting five'
+  fi
+
+  # The integrity gate, ahead of every fetch, every read and every write.
+  if [[ -z $VENG_BULK_SHA256 ]] && (( ! VENG_BULK_ACCEPT )); then
+    die "$SCOURSH_EXIT_INPUT" \
+      "advisories: bulk: refusing an unverified bulk import. A bulk export is rebuilt upstream continuously, so there is no published digest to check it against by default. Either pin the artifact you mean with --sha256 <hex> (the strongest grade, and reproducible), or acknowledge explicitly with --accept-unverified, which imports over a verified HTTPS transport - or from an archive you supplied - WITHOUT verifying the content, and records the sha256 of whatever it got so you can pin it next time."
+  fi
+
+  if (( want_all )); then
+    _veng_bulk_all
+  else
+    _veng_bulk_one "$eco"
+  fi
+}
+
 veng_advisories_main() {
   (( $# > 0 )) || { veng_advisories_usage >&2; die "$SCOURSH_EXIT_USAGE" 'advisories: no command given'; }
 
@@ -788,6 +1440,10 @@ veng_advisories_main() {
       ;;
     --all)
       veng_advisories_all
+      ;;
+    bulk)
+      shift
+      veng_bulk_main "$@"
       ;;
     --*)
       veng_advisories_usage >&2

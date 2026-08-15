@@ -1,0 +1,12 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-BULK-GO-1",
+  "summary": "fixture: stack trace disclosure in bulk fixture/v3",
+  "database_specific": {"severity": "MODERATE"},
+  "affected": [
+    {
+      "package": {"ecosystem": "Go", "name": "github.com/example/bulk/v3"},
+      "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "v3.1.0"}]}],
+      "versions": ["v3.0.0+incompatible", "v3.0.1"]
+    }
+  ]
+}

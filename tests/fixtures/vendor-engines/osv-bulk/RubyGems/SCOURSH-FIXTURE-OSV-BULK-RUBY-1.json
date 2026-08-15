@@ -1,0 +1,12 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-BULK-RUBY-1",
+  "summary": "fixture: session fixation in BulkFixtureGem",
+  "database_specific": {"severity": "LOW"},
+  "affected": [
+    {
+      "package": {"ecosystem": "RubyGems", "name": "BulkFixtureGem"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}],
+      "versions": ["5.0.0"]
+    }
+  ]
+}
