@@ -207,7 +207,7 @@ _crawl_static() {
   local frontier=$SCOURSH_SCRATCH/crawl-frontier.$BASHPID
   local nextf=$SCOURSH_SCRATCH/crawl-next.$BASHPID
   local -A visited=()
-  local depth=0 pages=0 url kind a b c
+  local depth=0 pages=0 url kind a b
   local form_method='' form_action='' formurl='' formep=''
 
   _CRAWL_PAGES=0
@@ -284,8 +284,11 @@ _crawl_static() {
       # counted rather than guessed at: running the tag scanner over a PDF or
       # a minified bundle produces "links" that are byte sequences, and every
       # one of them would become a real request downstream.
+      # `*html*` already covers `application/xhtml+xml`, so xhtml is NOT
+      # listed separately: a second pattern that can never be reached reads
+      # like coverage it does not add.
       case ${_CRAWL_CTYPE,,} in
-        *html* | *xhtml* | '') ;;
+        *html* | '') ;;
         *)
           _CRAWL_NONHTML=$(( _CRAWL_NONHTML + 1 ))
           continue
@@ -310,7 +313,10 @@ _crawl_static() {
       fi
 
       form_method='' form_action='' formurl='' formep=''
-      while IFS=$'\t' read -r kind a b c; do
+      # Three fields, because `crawl_html_extract`'s widest record is
+      # `form<TAB>METHOD<TAB>ACTION`.  A fourth read variable would be dead,
+      # and reading one field FEWER would silently fold ACTION into METHOD.
+      while IFS=$'\t' read -r kind a b; do
         case $kind in
           base)
             # `<base href>` changes what every relative reference on the page

@@ -249,6 +249,11 @@ crawl_json_flatten() {
 # allowlist as authored bytes (lib/http.sh's own note that IDN/A-label
 # conversion is a KNOWN, tracked gap rather than a silently-handled one).
 # Leaving it visible keeps that gap visible too.
+#
+# SC1003: `'\'` here is a literal single backslash - the character this
+# function exists to interpret - not a botched attempt to escape a quote.
+# Written any other way it stops being the JSON escape character.
+# shellcheck disable=SC1003
 crawl_json_unescape() {
   local s=$1 out='' i n ch nx code decoded
   # The overwhelmingly common case, checked once: a value with no escape at
@@ -292,6 +297,9 @@ crawl_json_unescape() {
           # and the untranslated text.  The digits are safe to interpolate
           # into the format because the regex above has already proven the
           # whole four-character code is hex.
+          # SC2059: the interpolation into the format string is the point
+          # here, and the regex above is what makes it safe.
+          # shellcheck disable=SC2059
           printf -v decoded "\\x${code:2:2}"
           out+=$decoded
           i=$(( i + 5 ))
@@ -977,7 +985,10 @@ CRAWL_INV_PARAMETERS_SCHEMA='scoursh.inventory.parameters/1'
 # emit - a producer that pretty-prints differently is still readable, which
 # is what "frozen schema" has to mean when three modules write the file.
 crawl_inv_merge_endpoints() {
-  local file=$1 target_default=${2:-} line p type v idx last_idx='' key
+  local file=$1 target_default=${2:-} p type v idx last_idx='' key
+  # SC2034: `cur` is passed BY NAME to `_crawl_merge_flush_endpoint`, which
+  # takes it as a nameref, so every read of it is invisible from here.
+  # shellcheck disable=SC2034
   local -A cur=()
   _CRAWL_MERGED_COUNT=0
   [[ -r $file && -s $file ]] || return 1
@@ -997,6 +1008,7 @@ crawl_inv_merge_endpoints() {
     fi
     last_idx=$idx
     [[ $type == s ]] && v=$(crawl_json_unescape "$v")
+    # shellcheck disable=SC2034
     cur[$key]=$v
   done < <(crawl_json_flatten <"$file" 2>/dev/null)
   if [[ -n $last_idx ]]; then
@@ -1202,8 +1214,7 @@ crawl_spec_postman() {
     return 1
   fi
 
-  local -A meth=() raw=() qname=() qvalue=()
-  local -A pathseg=()
+  local -A meth=() raw=()
   while IFS=$'\t' read -r p type v; do
     case $p in
       *"${sep}request${sep}method")
@@ -1442,7 +1453,7 @@ _crawl_graphql_from_introspection() {
   local -A roots=()
   local -A tname=()
   local -A tfield=()
-  local rest ti fpart fi
+  local rest ti fpart fidx
   while IFS=$'\t' read -r p type v; do
     case $p in
       *"queryType${sep}name" | *"mutationType${sep}name" | *"subscriptionType${sep}name")
@@ -1462,10 +1473,10 @@ _crawl_graphql_from_introspection() {
         case $rest in
           *"fields${sep}"*"${sep}name")
             fpart=${rest#*"fields${sep}"}
-            fi=${fpart%%"$sep"*}
-            [[ $fi =~ ^[0-9]+$ ]] || continue
+            fidx=${fpart%%"$sep"*}
+            [[ $fidx =~ ^[0-9]+$ ]] || continue
             [[ ${fpart#*"$sep"} == name ]] || continue
-            tfield["$ti/$fi"]=$(crawl_json_unescape "$v")
+            tfield["$ti/$fidx"]=$(crawl_json_unescape "$v")
             ;;
         esac
         ;;

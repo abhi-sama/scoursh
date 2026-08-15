@@ -99,6 +99,8 @@ t_case 'a key carrying an ESCAPED path separator cannot forge a nested path'
 # separator.  BS holds one literal backslash so this file can spell a JSON
 # escape without the shell - or anything that later edits this file -
 # collapsing it first.
+# SC1003: one literal backslash is exactly what this needs to hold.
+# shellcheck disable=SC1003
 BS=$(printf '\\')
 FLAT=$(printf '%s' "{\"a${BS}u001fb\":\"v\"}" | crawl_json_flatten)
 assert_contains "$FLAT" "a${BS}u001fb	s	v" \
