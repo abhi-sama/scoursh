@@ -398,6 +398,27 @@ a target of its own.
 See `docs/STEP5-DAST-PLAN.md`'s own section on this for the two conventions worth knowing before
 building against it.
 
+**DAST-35 (the "no bundled scan target" lint) has also landed, ahead of DAST-01 - it has no dependency
+on anything in this plan and its own row says "can land immediately".**
+Three checks now live in `tests/lint-shell.sh`, in the same one-exemption-with-a-stated-reason shape
+the file's own tension-19 "no bypass" check already uses: `config/` ships `scope.conf.example` only,
+never a real `scope.conf`; `scope.conf.example`'s own `base-url` names an RFC 2606/6761 reserved
+example domain; and no shipped script, rule or config file anywhere in the tree carries a
+`base-url`/`extra-host` record naming anything other than a reserved example domain or a
+reserved/non-routable IP literal - `tools/dast-test-target/scope.conf` is exempt **by path**, not by
+pattern, exactly as `docs/DAST-TEST-TARGET-AUTHORIZATION.md` already authorizes.  Landing this needed
+one small, additive change to `tests/lint-shell.sh` itself, which every other check in the file now
+also benefits from: an optional first argument, `SCAN_ROOT` (default `$ROOT`), the same convention
+`tests/lint-aws-readonly.sh` already established, so the lint can run against a disposable fixture tree
+instead of the real repository.  `tests/suites/dast35-lint.sh` is the meta-test - both directions for
+each of the three checks, plus the path exemption proven both ways (the authorized file passes at its
+real path; a byte-identical copy at any other path fails) - and `tests/run-tests.sh`'s `SUITES` array
+now names it.  See `docs/STEP5-DAST-PLAN.md`'s DAST-35 row and the landing note just below it for the
+full detail, including the one deliberate asymmetry worth knowing: loopback (`127.0.0.0/8`, `::1`) is
+NOT in the generic "safe" IP set that private/link-local/CGN/TEST-NET literals sit in, because unlike
+those, a bare loopback address means "whatever this operator's own machine happens to be running" for
+every installation - it is allowed only via the one authorized file's path exemption.
+
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01 has
 not.**
 `docs/STEP8-PARANOID-PLAN.md` splits `docs/DESIGN.md` §13 step 8 into **PARANOID-01** (the `--paranoid`
