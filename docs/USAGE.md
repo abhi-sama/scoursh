@@ -46,7 +46,7 @@ scan.sh <command> [options]
 | `sast` | `[--path DIR]` `[--lang py,js,go,java]` `[--history]` | live | Source code. `--history` replays secret checks across git history and requires `git` on `PATH`. |
 | `sca` | `[--path DIR]` | live, needs an advisory database | Dependency/lockfile CVEs. Lockfile parsing works for every supported ecosystem, but matching needs `data/advisories.db`, which this repository does not ship. See ["Dependency data"](#dependency-data-dataadvisoriesdb). |
 | `iac` | `[--path DIR]` | live | Cloud IaC plus container/Kubernetes manifests. |
-| `dast` | `--target NAME` `[--intensity passive\|safe\|active]` `[--authed]` | inert | The scope gate below is real and is enforced before anything else (see "The scope gate"). Past it, nothing happens: there is no `modules/dast/`, so the run records `module=dast reason=not_yet_built` and exits 0 without making a single request. |
+| `dast` | `--target NAME` `[--intensity passive\|safe\|active]` `[--authed]` `[--i-own-target NAME]` | inert as a scanner; its safety layer is live | The scope gate below is real and is enforced before anything else (see "The scope gate"), as are the conservative rate/budget/breaker ceilings and the `--i-own-target` affirmation (see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)). Past those, nothing happens: `modules/dast/run.sh` exists but ships no phase script, so the run records `module=dast reason=no_phase_scripts_on_disk_yet` plus a `coverage_gap` saying no request was sent, and exits 0. |
 | `cloud` | `[--live]` `[--profile NAME]` `[--regions all\|us-east-1,...]` `[--assume-role ARN]` | inert | `--live` requires the `aws` CLI on `PATH` and the run refuses (exit 4) if it is missing, which is a real check. No AWS call follows it: there is no `modules/cloud/`, so the run records `module=cloud reason=not_yet_built`. |
 | `all` | union of every module's own flags above | live | Runs sast, sca, iac unconditionally; runs dast only if `--target` is given and cloud only if `--live` is given, and those two do nothing when they run. Every module it skips is recorded in `run.json` as a `coverage_reduction` fact, not silently dropped. |
 | `diff` | `--against DIR` | inert | `DIR` must be a prior run's output directory (must contain `findings.jsonl` or `run.json`), and that check is enforced. Nothing is then compared. |
@@ -62,8 +62,9 @@ scan.sh <command> [options]
 | `--lang py,js,go,java` | sast, all | inert |
 | `--history` | sast, all | live |
 | `--target NAME` | dast, all | live as a gate; the scan it gates does not exist |
-| `--intensity passive\|safe\|active` | dast, all | inert |
-| `--authed` | dast, all | inert |
+| `--intensity passive\|safe\|active` | dast, all | live as a ceiling; the checks it would select do not exist |
+| `--authed` | dast, all | recorded in `run.json`'s authorization object; no authentication exists |
+| `--i-own-target NAME` | dast, all | live |
 | `--live` | cloud, all | live as a precondition check only |
 | `--profile NAME` | cloud, all | inert |
 | `--regions all\|us-east-1,...` | cloud, all | inert |
@@ -77,7 +78,9 @@ scan.sh <command> [options]
 | `--verbose` | boolean | off | live |
 | `--paranoid` | boolean | off | live on Linux only |
 | `--use-engines` | boolean | off | live, but no engine is vendored here |
-| `--allow-intrusive` | boolean | off | inert |
+| `--allow-intrusive` | boolean | off | live as a gate (needs `--i-own-target`); the checks it would admit do not exist |
+| `--contact VALUE` | one printable, space-free token | from `config/scanner.conf` (`contact`), else none | live |
+| `--user-agent-suffix TOKEN` | one printable, space-free token | none | live |
 | `--jobs N` | positive integer | from `config/scanner.conf` (`4`) | inert |
 | `--format` | CSV of `json,sarif,html,md` | all four | inert |
 | `--fail-on` | `critical\|high\|medium\|low\|info\|none` | from `config/scanner.conf` (`none`) | live |
@@ -164,17 +167,78 @@ Every SAST run applies every rule pack; `--lang go` and no `--lang` at all produ
 
 ### `--intensity` and `--allow-intrusive`
 
-Both are wired into the check-selection chain, and neither can change what a shipped run selects.
-`--intensity` filters on a check's type tag, and every check shipped in this repository is tagged
-`static`, which all three tiers admit.
-`--allow-intrusive` filters on the `intrusive` tag, which no shipped check carries.
-`--intensity` is also only accepted for `dast` and `all`, and `dast` itself is unbuilt.
-They will start to bite when the DAST checks they were designed for land.
+Both are wired into the check-selection chain, and neither can change what a shipped run *selects*:
+`--intensity` filters on a check's type tag and every check shipped here is tagged `static`, which all
+three tiers admit, while `--allow-intrusive` filters on the `intrusive` tag, which no shipped check
+carries.
+They will start to bite on selection when the DAST checks they were designed for land.
+
+**Their GATE is live today, though, and it will refuse an invocation.**
+`--intensity safe` or `--intensity active`, and `--allow-intrusive`, each require the own-your-target
+affirmation described in the next section, so `scan.sh dast --target NAME --intensity active` is exit 2
+without it.  That refusal is real now, not deferred.
 
 ### `--authed`
 
-Parsed for `dast` and `all`, listed in `--help`, read by nothing, and not recorded in `run.json`.
-There is no authentication anywhere in the tool yet.
+Parsed for `dast` and `all`, and recorded in `run.json`'s `authorization` object, because an
+authenticated active scan reaches state-changing endpoints an unauthenticated crawl never sees and an
+authorisation record that cannot distinguish the two is not answering its own question.
+Nothing else reads it: there is no authentication anywhere in the tool yet.
+
+### Conservative DAST limits and `--i-own-target`
+
+The four network limits - `requests-per-second`, `request-budget`, `circuit-breaker-failures` and
+`circuit-breaker-window` - are resolved through the ordinary CLI > env > file > default chain and then
+held to a conservative limit for a running-endpoint scan, inside `lib/http.sh`, at the same chokepoint
+the scope gate lives at.  The effective unaffirmed values are 4 requests/second and a per-run budget of
+5000.
+
+What happens to a value above one of those limits depends on where it came from, and the split is
+deliberate:
+
+| Where the value came from | What happens |
+|---|---|
+| `config/scanner.conf`, or the built-in default | Clamped down, with one warning and a `limits_clamped` delta in `run.json`. An unedited install therefore always runs, and never has to affirm anything. |
+| The command line, or a `SCOURSH_CONFIG_*` environment variable | **Exit 2**, naming `--i-own-target`. scoursh does not run at a number other than the one you asked for. |
+
+To actually raise one, affirm that you own the target:
+
+```sh
+scan.sh dast --target NAME --i-own-target NAME
+```
+
+Four things about that flag are worth knowing before reaching for it.
+
+- **It must equal `--target`.** A mismatch, or `--i-own-target` with no `--target`, is exit 2 - so a
+  stale command, a shell alias, or a CI file copied between repositories cannot carry an affirmation to
+  a host that changed hands.
+- **It is a key, not a switch.** On its own it raises nothing, sends nothing, and enables no check. It
+  makes the higher settings *available*; you still have to ask for each one.
+- **It is never persisted.** There is no config key, dotfile, cache or environment variable that means
+  "always unrestricted", and there will not be one.
+- **It authorises nothing.** A host is scannable if and only if it has a record in `config/scope.conf`
+  and every URL, including every redirect hop, passes the gate. The affirmation bounds the *limits*; it
+  says nothing about *which hosts* a run may reach.
+
+Two bounds no affirmation lifts: `circuit-breaker-window` cannot go below 60 seconds (a shorter window
+counts fewer failures towards the same threshold, which is a weaker breaker) or above 86400 (that one
+is arithmetic, not safety).  The budget can be raised but never removed, and the breaker can have its
+threshold raised but never be disabled.
+
+A run that did relax something says so on stderr at run start, banners it in the HTML and Markdown
+reports, and records the from->to deltas in `run.json`'s `authorization` object - because an
+unrestricted run's *absence* of availability findings is not evidence about the target.
+
+### The identifying `User-Agent`
+
+Every request carries `scoursh/<version> (+<contact>)`, or
+`scoursh/<version> (+<project-url>; no operator contact configured)` when no contact is set, so a target
+owner who notices the traffic can identify the tool and reach whoever ran it.
+Set the contact with `--contact` or the `contact` key in `config/scanner.conf`; append an extra product
+token with `--user-agent-suffix`.
+
+The `scoursh/<version>` prefix is **not removable at any setting**, and no flag will ever be added to
+remove it: an authorised scan has no need to be unidentifiable and an unauthorised one has every need.
 
 ### Dependency data (`data/advisories.db`)
 
@@ -296,13 +360,13 @@ file yet; those are called out in the Notes column.
 
 | Key | Value | Default | Status | Notes |
 |---|---|---|---|---|
-| `requests-per-second` | decimal, may be fractional | `4` | inert | No rate limiter exists yet. |
+| `requests-per-second` | decimal, may be fractional | `4` | live | The token-bucket limiter in `lib/http.sh`, shared across workers. Held to 4/s for a DAST scan without `--i-own-target`; see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target). |
 | `jobs` | positive integer | `4` | inert | Every run is single-worker. See [`--jobs N`](#--jobs-n-and-the-jobs-config-key). |
 | `http-timeout` | positive integer (seconds) | `20` | inert | The HTTP layer's timeout reads `SCOURSH_HTTP_TIMEOUT`, never this file. |
 | `max-redirects` | non-negative integer | `5` | inert | The redirect cap is a caller-supplied argument defaulting to 5, never read from this file. |
-| `request-budget` | positive integer, per run | `20000` | inert | No request budget exists yet. |
-| `circuit-breaker-failures` | positive integer | `10` | inert | No circuit breaker exists yet. |
-| `circuit-breaker-window` | non-negative integer (seconds) | `60` | inert | As above. |
+| `request-budget` | positive integer, per run | `20000` | live | Per-run, shared across workers; exhausting it stops the run at exit 5. Clamped to 5000 for a DAST scan without `--i-own-target`, so this default is not what a DAST run spends. |
+| `circuit-breaker-failures` | positive integer | `10` | live | Failures (transport failure or 5xx) within the window below; reaching it aborts the run at exit 5. Never disableable. |
+| `circuit-breaker-window` | non-negative integer (seconds) | `60` | live | Rolling window. Bounded at both ends - never below 60s, never above 86400 - and no affirmation lifts either bound. |
 | `fail-on` | severity name or `none` | `none` | live | |
 | `min-confidence` | `high\|medium\|low` | `low` | live | |
 | `redact-secrets` | `true`/`false` | `true` | live | |
@@ -316,4 +380,5 @@ file yet; those are called out in the Notes column.
 | `lock-stale-seconds` | positive integer | `30` | inert | The staleness rule is real, but reads `SCOURSH_LOCK_STALE_SECONDS`. |
 | `mutex-timeout-seconds` | positive integer | `120` | inert | The timeout is real, but reads `SCOURSH_MUTEX_TIMEOUT_SECONDS`. |
 | `paranoid-allow` | repeatable, `addr:port` | empty | live | The fourth allowlist set for `--paranoid`. |
+| `contact` | one printable, space-free token | empty | live | Where a target owner can reach you. Rendered into the `User-Agent` every request carries; see ["The identifying `User-Agent`"](#the-identifying-user-agent). |
 | `notes` | free text (multi-line) | empty | inert by design | Free text for the operator; no code reads it, and none is meant to. |

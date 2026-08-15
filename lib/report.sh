@@ -174,11 +174,67 @@ report_run_json() {
     _meta_array "$rundir" coverage_reduction 'coverage_reduction'
     _meta_array "$rundir" incomplete_reason 'incomplete_reason'
     _meta_array "$rundir" notes 'notes'
+    # `use_engines` (docs/ADAPTERS.md) is a SCALAR bool, not an array: scan.sh
+    # records exactly one value per run.  Rendering it here closes a real,
+    # already-shipped gap - `run_record use_engines` has been writing
+    # meta/use_engines since the semgrep adapter landed, and nothing rendered
+    # it, so the tool's only audit flag was half-recorded and both suites that
+    # cover it asserted against the meta FILE rather than run.json.  Defaults
+    # to false rather than being omitted, so a consumer never has to
+    # distinguish "not given" from "this version does not record it".
+    printf '  "use_engines": %s,\n' "$(json_bool "$(_meta_first "$rundir" use_engines)")"
+    _report_authorization_json "$rundir"
     printf '  "gate": %s,\n' "$(json_string "${SCOURSH_GATE_RESULT:-not-evaluated}")"
     printf '  "gated_findings": %s,\n' "$(json_number "${SCOURSH_GATED_FINDINGS:-0}")"
     printf '  "diff_usable": %s\n' "$(json_bool "${SCOURSH_DIFF_USABLE:-false}")"
     printf '}\n'
   } >"$rundir/run.json"
+}
+
+# The run's authorisation object (docs/STEP5-DAST-PLAN.md DAST-33).
+#
+# Rendered on EVERY run, not only a DAST one, and every field is present even
+# when it is empty.  An absent key would be ambiguous between "nothing was
+# affirmed" and "this version does not record it" - and the second reading is
+# exactly what the `use_engines` gap above already cost this tool once.  A
+# `sast` run therefore renders `affirmed: false, affirmation_source: "none"`
+# and an empty scope target, which is a true and complete statement about it.
+#
+# `limits_relaxed` records the DELTA, from-value to to-value, never a boolean:
+# "unrestricted: true" tells a later reader nothing about what traffic was
+# authorised, whereas the delta reconstructs the traffic profile.
+# `limits_clamped` is the unaffirmed run's mirror of it, carrying the
+# resolution layer the refused value came from.  `limits_enforced` records
+# what was NOT relaxed, because the usual question after an incident is what
+# the tool could not have done.
+_report_authorization_json() {
+  local rundir=$1 src
+  src=$(_meta_first "$rundir" authorization_source)
+  [[ -n $src ]] || src=none
+  printf '  "authorization": {\n'
+  printf '    "scope_target": %s,\n' "$(json_string "$(_meta_first "$rundir" authorization_scope_target)")"
+  printf '    "scope_conf_sha256": %s,\n' "$(json_string "$(_meta_first "$rundir" authorization_scope_conf_sha256)")"
+  printf '    "affirmed": %s,\n' "$(json_bool "$(_meta_first "$rundir" authorization_affirmed)")"
+  # Defaults to `none` rather than the empty string, because a run that never
+  # reached the authorisation step at all (any non-DAST command) genuinely made
+  # no affirmation, and `none` says that where `""` reads as a field somebody
+  # forgot to fill in.  The vocabulary is `flag`, `none`, and - reserved for
+  # the guided mode - `interactive-guided`.
+  printf '    "affirmation_source": %s,\n' "$(json_string "$src")"
+  printf '    "affirmation_target": %s,\n' "$(json_string "$(_meta_first "$rundir" authorization_target)")"
+  printf '    "affirmed_at": %s,\n' "$(json_string "$(_meta_first "$rundir" authorization_at)")"
+  # Recorded only when SCOURSH_OPERATOR was set, never harvested from `id -un`
+  # and the hostname: run.json is frequently handed to a third party alongside
+  # a report, and attaching a username and machine name to every run is a
+  # privacy cost the audit requirement does not need.
+  printf '    "operator": %s,\n' "$(json_string "$(_meta_first "$rundir" authorization_operator)")"
+  printf '    "intensity": %s,\n' "$(json_string "$(_meta_first "$rundir" authorization_intensity)")"
+  printf '    "intrusive": %s,\n' "$(json_bool "$(_meta_first "$rundir" authorization_intrusive)")"
+  printf '    "authed": %s,\n' "$(json_bool "$(_meta_first "$rundir" authorization_authed)")"
+  _meta_array "$rundir" limits_relaxed 'limits_relaxed' '    '
+  _meta_array "$rundir" limits_clamped 'limits_clamped' '    '
+  _meta_array "$rundir" limits_enforced 'limits_enforced' '    ' 1
+  printf '  },\n'
 }
 
 _meta_first() {
@@ -205,9 +261,15 @@ _meta_array_unique() {
   printf '],\n'
 }
 
+# `_meta_array RUNDIR KEY LABEL [INDENT] [LAST]` - INDENT and LAST exist only
+# so the same renderer can be reused INSIDE a nested object (the authorisation
+# object above), where the indent is deeper and the final member carries no
+# trailing comma.  Both default to the top-level shape every existing call
+# already relies on.
 _meta_array() {
-  local rundir=$1 key=$2 label=$3 line first=1
-  printf '  %s: [' "$(json_string "$label")"
+  local rundir=$1 key=$2 label=$3 indent=${4:-} last=${5:-0} line first=1
+  [[ -n $indent ]] || indent='  '
+  printf '%s%s: [' "$indent" "$(json_string "$label")"
   if [[ -r $rundir/meta/$key ]]; then
     while IFS= read -r line; do
       [[ -n $line ]] || continue
@@ -216,7 +278,11 @@ _meta_array() {
       printf '%s' "$(json_string "$line")"
     done <"$rundir/meta/$key"
   fi
-  printf '],\n'
+  if (( last )); then
+    printf ']\n'
+  else
+    printf '],\n'
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -239,6 +305,7 @@ report_md() {
       printf '> **WARNING - redaction is disabled for this run.** This report may contain\n'
       printf '> live credentials and must not be circulated.\n\n'
     fi
+    _md_unrestricted_banner "$rundir"
     printf '## Severity\n\n| severity | live | accepted risk |\n|---|---|---|\n'
     local k
     for k in critical high medium low info; do
@@ -302,9 +369,57 @@ _md_findings() {
   done <"$rundir/findings.fields"
 }
 
+# DAST-34's report half.  The banner is plain text through the ordinary
+# escaping path in both emitters, because evidence is untrusted and the HTML
+# report contains no <script> at all (docs/FOUNDATION.md tension 10) - and a
+# relaxation string is composed from an operator-supplied `--target` id, so it
+# is no more trusted than any other operator input.
+#
+# It renders when limits were RELAXED, not when an affirmation was made: the
+# affirmation is a key rather than a switch, so `--i-own-target` on its own
+# changed nothing and a banner for it would announce something that did not
+# happen.
+# SC2016: the Markdown code spans below are literal output, not command
+# substitution - the same note report_md itself already carries.
+# shellcheck disable=SC2016
+_md_unrestricted_banner() {
+  local rundir=$1 line any=0
+  [[ -r $rundir/meta/limits_relaxed ]] || return 0
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    if (( ! any )); then
+      any=1
+      printf '> **This run was UNRESTRICTED.** Its conservative limits were lifted by an\n'
+      printf '> `--i-own-target` affirmation for `%s`, so an ABSENCE of availability or\n' \
+        "$(_meta_first "$rundir" authorization_scope_target)"
+      printf '> throttling findings below is not evidence about the target: it may only mean\n'
+      printf '> the scanner was told to ignore its own limits. What was lifted:\n>\n'
+    fi
+    printf '> - `%s`\n' "$line"
+  done <"$rundir/meta/limits_relaxed"
+  (( any )) && printf '\n'
+  return 0
+}
+
+# SC2016: as above - literal Markdown code spans, never substitution.
+# shellcheck disable=SC2016
 _md_limitations() {
   local rundir=$1 line any=0
   printf '## Limitations and coverage\n\n'
+  if [[ -r $rundir/meta/limits_relaxed ]]; then
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      any=1
+      printf -- '- **unrestricted run** (`--i-own-target`): %s\n' "$line"
+    done <"$rundir/meta/limits_relaxed"
+  fi
+  if [[ -r $rundir/meta/limits_clamped ]]; then
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      any=1
+      printf -- '- limit clamped to the conservative default for an unaffirmed run: %s\n' "$line"
+    done <"$rundir/meta/limits_clamped"
+  fi
   if [[ -r $rundir/meta/coverage_reduction ]]; then
     while IFS= read -r line; do
       [[ -n $line ]] || continue
@@ -382,7 +497,7 @@ report_html() {
   report_count "$rundir"
   {
     _html_head
-    _html_summary
+    _html_summary "$rundir"
     _html_findings "$rundir"
     _html_limitations "$rundir"
     _html_foot
@@ -462,6 +577,13 @@ pre.ev { background: var(--bg); border: 1px solid var(--line); border-radius: .3
 .rem { margin: .6rem 0 0; white-space: pre-wrap; }
 .banner { border: 1px solid var(--critical); color: var(--critical); border-radius: .4rem;
           padding: .7rem .9rem; margin: 0 0 1.5rem; font-weight: 600; }
+/* The unrestricted-run banner (DAST-34) is a <div> holding a <p> and a <ul>,
+   because a list of the limits that were lifted cannot legally sit inside the
+   <p> the redaction banner uses. These two rules keep the box reading as one
+   block rather than as a paragraph followed by an unrelated list. */
+.banner p { margin: 0; }
+.banner ul { margin: .5rem 0 0; padding-left: 1.3rem; font-weight: 400; }
+.banner code { background: none; color: inherit; padding: 0; }
 .empty { color: var(--muted); font-style: italic; }
 footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--line);
          color: var(--muted); font-size: .8rem; }
@@ -485,6 +607,7 @@ HTML
 }
 
 _html_summary() {
+  local rundir=${1:-$SCOURSH_RUN_DIR}
   printf '<h1 id="top">scoursh scan report</h1>\n'
   printf '<p class="sub">run <code>%s</code> · tool <code>%s</code> · fingerprint schema <code>%s</code> · %s live findings, %s accepted risk</p>\n' \
     "$(html_escape "${SCOURSH_RUN_ID:-}")" "$(html_escape "$(scoursh_version)")" \
@@ -492,6 +615,7 @@ _html_summary() {
   if [[ $SCOURSH_REDACT_SECRETS != true ]]; then
     printf '<p class="banner">Redaction is DISABLED for this run. This report may contain live credentials and must not be circulated.</p>\n'
   fi
+  _html_unrestricted_banner "$rundir"
   printf '<nav class="toc"><p>On this page</p><ul>\n'
   printf '<li><a href="#severity">Severity</a></li>\n'
   printf '<li><a href="#since-last-scan">Since the last scan</a></li>\n'
@@ -615,9 +739,46 @@ _html_one_finding() {
   printf '</div>\n</details>\n'
 }
 
+# The HTML half of DAST-34's banner.  Plain text through html_escape, in a
+# TEXT NODE, never an attribute and never inside <script> or <style> - the same
+# path every other untrusted string in this file takes (tension 10).  It reuses
+# the existing `.banner` class rather than adding a style, so a report has one
+# visual vocabulary for "read this before you read the findings".
+_html_unrestricted_banner() {
+  local rundir=$1 line any=0
+  [[ -r $rundir/meta/limits_relaxed ]] || return 0
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    if (( ! any )); then
+      any=1
+      printf '<div class="banner"><p>This run was UNRESTRICTED. Its conservative limits were lifted by an <code>--i-own-target</code> affirmation for %s, so an ABSENCE of availability or throttling findings below is not evidence about the target: it may only mean the scanner was told to ignore its own limits. What was lifted:</p>\n<ul>\n' \
+        "$(html_escape "$(_meta_first "$rundir" authorization_scope_target)")"
+    fi
+    printf '<li>%s</li>\n' "$(html_escape "$line")"
+  done <"$rundir/meta/limits_relaxed"
+  (( any )) && printf '</ul></div>\n'
+  return 0
+}
+
 _html_limitations() {
   local rundir=$1 line any=0
   printf '<h2 id="limitations">Limitations and coverage</h2>\n<ul>\n'
+  if [[ -r $rundir/meta/limits_relaxed ]]; then
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      any=1
+      printf '<li><strong>unrestricted run</strong> (<code>--i-own-target</code>): %s</li>\n' \
+        "$(html_escape "$line")"
+    done <"$rundir/meta/limits_relaxed"
+  fi
+  if [[ -r $rundir/meta/limits_clamped ]]; then
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      any=1
+      printf '<li>limit clamped to the conservative default for an unaffirmed run: %s</li>\n' \
+        "$(html_escape "$line")"
+    done <"$rundir/meta/limits_clamped"
+  fi
   if [[ -r $rundir/meta/coverage_gap ]]; then
     while IFS= read -r line; do
       [[ -n $line ]] || continue

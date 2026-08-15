@@ -757,6 +757,32 @@ run_facts() {
   cat -- "$SCOURSH_RUN_DIR/meta/$key"
 }
 
+# `run_fact_first_set VARNAME KEY` - the FIRST line of a run fact, for the keys
+# that hold a single value rather than an append-only list
+# (`authorization_affirmed`, `contact`, ...).  Yields the empty string, with
+# status 0, when there is no run directory or no such fact: "not recorded" is a
+# normal state for every caller of this, never an error, because a caller that
+# never went through scan.sh's parser (the DAST smoke test, an interactive
+# `source lib/http.sh`) legitimately has none.
+#
+# It SETS a variable rather than printing one, for the reason this file's own
+# `worker_id_set` and `_lock_owner_line_set` are written that way: `$(...)`
+# forks a subshell, and lib/http.sh reads several of these on EVERY request
+# (the User-Agent's two halves and the affirmation, four times over for the
+# four limit keys).  Written as an accessor, that is a handful of forks per
+# request in the one path this codebase already counts them in; written as a
+# setter, it is a builtin `read` and no fork at all.
+#
+# `printf -v` rather than `read -r "$__var"`: a here-string would materialise a
+# temp file, which is the cost this is avoiding.
+run_fact_first_set() {
+  local __var=$1 __key=$2 __v=''
+  if [[ -n ${SCOURSH_RUN_DIR:-} && -r $SCOURSH_RUN_DIR/meta/$__key ]]; then
+    IFS= read -r __v <"$SCOURSH_RUN_DIR/meta/$__key" || true
+  fi
+  printf -v "$__var" '%s' "$__v"
+}
+
 # The per-worker shard id: $BASHPID plus the work-unit index, so it stays unique
 # even if a pid is recycled (tension 17).
 #

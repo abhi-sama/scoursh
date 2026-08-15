@@ -133,6 +133,17 @@ SCOURSH_SCAN_SH_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 source "$SCOURSH_SCAN_SH_DIR/lib/report.sh"
 # shellcheck source=lib/config.sh
 source "$SCOURSH_SCAN_SH_DIR/lib/config.sh"
+# lib/http.sh is sourced here, not only by modules/dast/, because THIS file is
+# what writes the run's authorisation record (docs/STEP5-DAST-PLAN.md DAST-32:
+# "scan.sh writes the affirmation as a per-run record under the run directory
+# at parse time") and that record's numeric half is `http_limits_record`, which
+# resolves the very ceilings lib/http.sh enforces.  Computing those numbers
+# anywhere else would be a second copy of the ceiling table, and two copies of
+# a safety limit drift.  Sourcing it costs nothing at run time: at source time
+# lib/http.sh only defines functions, and its own two dependencies
+# (lib/config.sh, lib/findings.sh) are already loaded by the lines above.
+# shellcheck source=lib/http.sh
+source "$SCOURSH_SCAN_SH_DIR/lib/http.sh"
 # shellcheck source=lib/checks.sh
 source "$SCOURSH_SCAN_SH_DIR/lib/checks.sh"
 # shellcheck source=lib/paranoid.sh
@@ -161,6 +172,8 @@ declare -A _SCAN_FLAG_KIND=(
   [global:min-confidence]=value
   [global:baseline]=value
   [global:out]=value
+  [global:contact]=value
+  [global:user-agent-suffix]=value
 
   [sast:path]=value
   [sast:lang]=value
@@ -173,6 +186,12 @@ declare -A _SCAN_FLAG_KIND=(
   [dast:target]=value
   [dast:intensity]=value
   [dast:authed]=bool
+  # The own-your-target affirmation (docs/STEP5-DAST-PLAN.md DAST-32).  Valid
+  # on `dast` and `all` only, because those are the two commands that can reach
+  # a live endpoint; it is deliberately NOT global, since an affirmation about
+  # a host has nothing to say on a `sast` run and offering it there would be
+  # inviting it into CI boilerplate that never scans anything.
+  [dast:i-own-target]=value
 
   [cloud:live]=bool
   [cloud:profile]=value
@@ -200,6 +219,7 @@ declare -A _SCAN_FLAG_KIND=(
   [all:target]=value
   [all:intensity]=value
   [all:authed]=bool
+  [all:i-own-target]=value
   [all:live]=bool
   [all:profile]=value
   [all:regions]=value
@@ -229,7 +249,11 @@ Commands:
   sca      [--path DIR]
   iac      [--path DIR]
   dast     --target <name-from-scope> [--intensity passive|safe|active] [--authed]
+           [--i-own-target <same-name>]
                                         (--intensity default: passive)
+                                        (--intensity above passive, and
+                                         --allow-intrusive, each require
+                                         --i-own-target)
   cloud    [--live] [--profile <p>] [--regions all|us-east-1,...] [--assume-role ARN]
   all      run every module for which inputs are configured
   diff     --against <prior-run-dir>
@@ -257,7 +281,27 @@ Global:
                               continue with a logged coverage_reduction,
                               never an error. Nothing is fetched at scan
                               time - see tools/vendor-engines.sh.)
-  --allow-intrusive
+  --allow-intrusive         (side-effecting checks: live user enumeration,
+                              signup/reset probing, the burst probe. On `dast`
+                              - and on `all` with a --target - this requires
+                              --i-own-target as well, because the blast radius
+                              escapes the target: these checks create users and
+                              send messages, so the harmed parties are the
+                              target's USERS, and owning a host does not confer
+                              permission to do that to them.)
+  --contact VALUE           (an email address or URL a target owner can reach
+                              you at. It is placed in the User-Agent every
+                              request carries. Also settable as `contact` in
+                              config/scanner.conf; the flag wins, per the usual
+                              CLI > env > file > default chain.)
+  --user-agent-suffix TOKEN (append one extra product token to the User-Agent.
+                              It APPENDS: the `scoursh/<version>` prefix is
+                              never replaceable at any setting, because an
+                              authorised scan has no need to be unidentifiable
+                              and an unauthorised one has every need - a switch
+                              whose only function is hiding this tool's
+                              identity is a switch for scanning something you
+                              do not own.)
   --jobs N
   --format json,sarif,html,md
   --fail-on SEVERITY        (critical|high|medium|low|info|none)
@@ -316,6 +360,13 @@ scan_validate_flag_value() {
     lang) _scan_validate_csv "$val" '^(py|js|go|java)$' ;;
     regions) [[ $val == all ]] || _scan_validate_csv "$val" '^[a-zA-Z0-9-]+$' ;;
     assume-role) [[ $val == arn:*:role/* ]] ;;
+    # Both User-Agent inputs share ONE predicate, in lib/config.sh, rather than
+    # a second regex here: the flag layer and the config layer must never
+    # disagree about what is safe to concatenate into a request header
+    # (a CR or LF there is header injection).  `contact`'s empty-is-valid case
+    # is unreachable through this arm, because the parser already refuses an
+    # empty value for every value-flag.
+    contact | user-agent-suffix) config_valid_ua_text "$val" ;;
     *) [[ -n $val ]] ;;   # every other value-flag: non-empty is the whole contract
   esac
 }
@@ -423,6 +474,73 @@ scan_parse_args() {
       [[ -n ${SCAN_FLAGS[from]:-} ]] || scan_die_usage "'report' requires --from"
       ;;
   esac
+  _scan_check_affirmation
+}
+
+# -----------------------------------------------------------------------------
+# 4a. The own-your-target affirmation (docs/STEP5-DAST-PLAN.md DAST-32)
+# -----------------------------------------------------------------------------
+# THE AFFIRMATION IS A KEY, NOT A SWITCH.  It makes the higher settings
+# AVAILABLE; it never itself selects one.  `--i-own-target` on its own changes
+# no limit, sends no extra request, and enables no check - a single flag that
+# raised intensity, removed the rate limit and turned on side-effecting checks
+# together would hand the maximum blast radius to one token and undo the whole
+# design.
+#
+# WHAT IT IS HONESTLY WORTH.  It is not a technical control: it is answered by
+# the same person who typed the command, it stands between them and the result
+# they want, and it adds no independent knowledge to the system.  It stops
+# nobody willing to lie.  What it buys is an audit trail (a timestamped,
+# host-named, numerically-specific self-assertion in run.json), a shift of
+# responsibility, and friction in the ACCIDENTAL case - which is what the
+# must-equal-`--target` rule below is for, and the only one of the three that
+# this function implements.
+#
+# Pure: it reads SCAN_FLAGS and dies, and it touches no run directory, so it
+# runs inside scan_parse_args and is unit-testable without a run.
+_scan_check_affirmation() {
+  local affirm=${SCAN_FLAGS[i-own-target]:-}
+  local target=${SCAN_FLAGS[target]:-}
+  local intensity=${SCAN_FLAGS[intensity]:-}
+  local intrusive=${SCAN_FLAGS[allow-intrusive]:-false}
+
+  # A stale command, a shell alias, or a CI config copied between repositories
+  # is exactly how an affirmation ends up pointed at a host nobody meant, so a
+  # mismatch is fatal rather than ignored.  The no-`--target` case lands here
+  # too and is the same mistake: an affirmation naming a host this run is not
+  # scanning is an affirmation about nothing.
+  if [[ -n $affirm && $affirm != "$target" ]]; then
+    if [[ -z $target ]]; then
+      scan_die_usage "--i-own-target '$affirm' was given but this run has no --target, so there is nothing it affirms ownership of (docs/STEP5-DAST-PLAN.md, 'What the own-your-target affirmation actually accomplishes')"
+    fi
+    scan_die_usage "--i-own-target '$affirm' does not match --target '$target'; the affirmation must name the very host this run will scan, so a stale or copied affirmation cannot follow a command to a different target"
+  fi
+
+  # Only where a live endpoint is actually reachable.  `all` without a
+  # `--target` runs no DAST at all, so refusing there would be refusing an
+  # invocation that sends nothing.
+  case $SCAN_COMMAND in
+    dast) ;;
+    all) [[ -n $target ]] || return 0 ;;
+    *) return 0 ;;
+  esac
+
+  # The `--intensity` ceiling is the ONE conservative default enforced here
+  # rather than in lib/http.sh, and the reason is that intensity is check
+  # SELECTION: it never reaches the transport, so there is no chokepoint for it
+  # to sit at.  It is always an explicit CLI value - there is no `intensity`
+  # config key - so the asymmetric clamp policy's explicit-value half applies
+  # and this refuses rather than quietly running something gentler than asked.
+  # `passive` is already the default, so an operator who does not pass the flag
+  # never meets this.
+  if [[ -n $intensity && $intensity != "$CHECKS_INTENSITY_DEFAULT" && -z $affirm ]]; then
+    scan_die_usage "--intensity $intensity goes beyond reading what the target already volunteers ('$CHECKS_INTENSITY_DEFAULT'), and this tool does not do that to a host it cannot vouch for. 'safe' puts hundreds of 404s in someone's logs and 'active' sends injection payloads; neither is covered by permission to browse. Re-run with '--i-own-target $target' to affirm you own it, or drop the flag."
+  fi
+
+  if [[ $intrusive == true && -z $affirm ]]; then
+    scan_die_usage "--allow-intrusive turns on side-effecting checks that create users and send messages, so the parties they can harm are the TARGET'S USERS rather than the target. Owning a host does not confer permission to do that to them, which is why this needs the affirmation as well as its own opt-in: re-run with '--i-own-target $target' if you accept that."
+  fi
+  return 0
 }
 
 # -----------------------------------------------------------------------------
@@ -588,6 +706,115 @@ _scan_apply_profile_filter() {
 }
 
 # -----------------------------------------------------------------------------
+# 7a. The run's authorisation record (docs/STEP5-DAST-PLAN.md DAST-32/33/34)
+# -----------------------------------------------------------------------------
+# Written on EVERY run that resolves a `--target`, affirmed or not.  Recording
+# it unconditionally is deliberate: an absent key would be ambiguous between
+# "nothing was affirmed" and "this version does not record it", and the clamp
+# that actually bit is exactly the fact a reviewer needs in order to judge
+# whether a run was gentle or heavy without reconstructing it.
+#
+# A safety prompt that leaves no trace is theatre.  The whole value of the
+# affirmation is the audit trail, so this runs BEFORE dispatch: a run that
+# aborts mid-scan still leaves behind what it was authorised to do.
+#
+# `SCOURSH_OPERATOR` is read but never manufactured.  run.json is frequently
+# handed to a third party alongside a report, and harvesting `id -un` plus the
+# hostname onto every run is a privacy cost the audit requirement does not
+# need: that it happened, when, for which named target, by which route, and
+# what numbers it changed is the complete set of facts an auditor asks for.
+_scan_record_authorization() {
+  local target=$1
+  local affirm=${SCAN_FLAGS[i-own-target]:-}
+  local intensity=${SCAN_FLAGS[intensity]:-$CHECKS_INTENSITY_DEFAULT}
+  local intrusive=${SCAN_FLAGS[allow-intrusive]:-false}
+  local authed=${SCAN_FLAGS[authed]:-false}
+  local affirmed=false source=none
+
+  if [[ -n $affirm ]]; then
+    affirmed=true
+    # One of `flag` or `none` today.  The vocabulary has a third value,
+    # `interactive-guided`, reserved for the guided mode (GUIDE-04): a human
+    # answering a question at a terminal and a flag pasted into a CI file are
+    # both legitimate but they are DIFFERENT evidence, and collapsing them
+    # loses the distinction that matters most in review.
+    source=flag
+  fi
+
+  run_record authorization_affirmed "$affirmed"
+  run_record authorization_source "$source"
+  run_record authorization_scope_target "$target"
+  [[ -n $affirm ]] && run_record authorization_target "$affirm"
+  [[ $affirmed == true ]] && run_record authorization_at "$(now_iso)"
+  run_record authorization_intensity "$intensity"
+  run_record authorization_intrusive "$intrusive"
+  run_record authorization_authed "$authed"
+  run_record authorization_scope_conf_sha256 "$(_scan_scope_conf_sha256)"
+  [[ -n ${SCOURSH_OPERATOR:-} ]] && run_record authorization_operator "$SCOURSH_OPERATOR"
+
+  # The two relaxations scan.sh itself owns, because neither reaches the
+  # transport: intensity is check selection, and --allow-intrusive is a check
+  # filter (lib/checks.sh's checks_intrusive_keeps).  The four numeric ones are
+  # http_limits_record's, below, because they ARE the transport's.
+  if [[ $intensity != "$CHECKS_INTENSITY_DEFAULT" ]]; then
+    run_record limits_relaxed "intensity-ceiling:$CHECKS_INTENSITY_DEFAULT->$intensity"
+  fi
+  if [[ $intrusive == true ]]; then
+    run_record limits_relaxed 'allow-intrusive:false->true'
+  fi
+
+  # Called directly, never through $(...): it dies exit 2 for an explicit
+  # over-ceiling value with no affirmation, and a command substitution would
+  # turn that abort into just another exit status (see
+  # _scan_require_readable_path's comment).  Deliberately here, at run start,
+  # rather than at the first request: a usage error that fires after a scan has
+  # begun is a usage error that has already sent traffic.
+  http_limits_record
+  _scan_announce_unrestricted "$target"
+  return 0
+}
+
+# The authorisation file's own state, so "was this host authorised at the time"
+# stays answerable from the run plus that file's git history, long after the
+# file itself has been edited.  Empty when there is no scope.conf, which for a
+# `dast` run cannot happen (config_scope_require already died) but for a future
+# caller might.
+_scan_scope_conf_sha256() {
+  local f=$SCOURSH_INSTALL_ROOT/config/scope.conf
+  [[ -r $f ]] || { printf '%s' ''; return 0; }
+  # Piped rather than fed by an input redirection, matching every other shipped
+  # call site: tests/lint-shell.sh's tension-9 check reads a redirection here
+  # as an argument, and the pipe is the idiom the rest of the tree already
+  # uses.  It costs one fork, once per run.
+  # shellcheck disable=SC2002
+  cat -- "$f" | sha256_of
+}
+
+# DAST-34: ONE stderr line at run start when limits were actually relaxed.
+# Loud, once, not a wall.
+#
+# The reason is specific rather than decorative.  An unrestricted run's
+# ABSENCE of availability findings is not evidence: a reader cannot tell
+# whether "no throttling findings" means the target handles load or means the
+# scanner was told to ignore its own limits.  docs/DESIGN.md §15's framing
+# applies - a scan that overstates coverage is worse than one that names its
+# blind spots.
+#
+# It fires on relaxation, not on affirmation, because the affirmation is a key
+# rather than a switch: `--i-own-target` alone changes nothing, and announcing
+# an unrestricted run for it would be announcing something that did not happen.
+_scan_announce_unrestricted() {
+  local target=$1 relaxed operator when
+  relaxed=$(run_facts limits_relaxed | tr '\n' ';')
+  relaxed=${relaxed%;}
+  [[ -n $relaxed ]] || return 0
+  operator=${SCOURSH_OPERATOR:-'(not recorded; set SCOURSH_OPERATOR to name one)'}
+  run_fact_first_set when authorization_at
+  log_warn "UNRESTRICTED RUN - target '$target', affirmed by $operator at ${when:-unknown}, relaxations: ${relaxed//;/, }. This run's conservative limits were lifted by --i-own-target, so an absence of availability or throttling findings from it is not evidence about the target."
+  return 0
+}
+
+# -----------------------------------------------------------------------------
 # 8. main
 # -----------------------------------------------------------------------------
 scan_main() {
@@ -656,6 +883,17 @@ scan_main() {
   # --use-engines never narrows or widens what that filter chain selects.
   run_record use_engines "${SCAN_FLAGS[use-engines]:-false}"
 
+  # 8d. The two User-Agent inputs (docs/STEP5-DAST-PLAN.md DAST-31), recorded
+  # unconditionally rather than only for `dast`.  lib/http.sh cannot see
+  # SCAN_FLAGS, so the run record is how the CLI LAYER of `contact`'s
+  # CLI > env > file > default chain reaches it, and `--user-agent-suffix`
+  # (which has no config key at all) has no other route.  Recording them on
+  # every command costs two short files and means a future module that issues a
+  # request inherits an identified User-Agent without a second wiring step.
+  _scan_capture SCOURSH_CONTACT config_scanner_value contact "${SCAN_FLAGS[contact]:-}"
+  run_record contact "$SCOURSH_CONTACT"
+  run_record user_agent_suffix "${SCAN_FLAGS[user-agent-suffix]:-}"
+
   local incomplete=0 gate=0 path
 
   case $SCAN_COMMAND in
@@ -676,6 +914,7 @@ scan_main() {
       # away the instant it exits).
       config_scope_require "${SCAN_FLAGS[target]}"
       run_record targets "${SCAN_FLAGS[target]}"
+      _scan_record_authorization "${SCAN_FLAGS[target]}"
       _scan_apply_profile_filter dast
       scan_dispatch dast
       ;;
@@ -702,6 +941,7 @@ scan_main() {
       if [[ -n ${SCAN_FLAGS[target]:-} ]]; then
         config_scope_require "${SCAN_FLAGS[target]}"
         run_record targets "${SCAN_FLAGS[target]}"
+        _scan_record_authorization "${SCAN_FLAGS[target]}"
         _scan_apply_profile_filter dast
         scan_dispatch dast
       else

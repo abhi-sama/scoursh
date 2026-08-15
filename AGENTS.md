@@ -124,7 +124,13 @@ exactly how a wrong count gets committed with a straight face.
 
 **Current position: §13 steps 1, 2, 3 and 4 are done - step 4 landed out of step order and in slices,
 and step 3's §6.3 rule-pack catalog is complete now that `nosql.rules` and `ldap.rules` have landed -
-so step 5 (DAST) is the top priority ahead of steps 6, 7 and 10, with nothing left gating it.**
+and step 5 (DAST) is under way with its whole TIER 0 complete: DAST-01 (the tension-16 rate limiter,
+per-run request budget and circuit breaker), DAST-02 (`modules/dast/run.sh`, the `scan_dispatch dast`
+entry point), and the safety half DAST-31/32/33/34 (the identifying `User-Agent`, the conservative
+ceilings plus the `--i-own-target` affirmation, the `run.json` authorisation record, and an
+unrestricted run stated on stderr and in the report) have all landed.
+Tiers 1-5 are therefore unblocked, beginning with DAST-03 (`auth.sh`) and DAST-04 (`crawl.sh`); step 5
+remains the top priority ahead of steps 6, 7 and 10.**
 Which rule packs, SCA ecosystems and IaC packs have landed, and what remains of each, is in the
 generated block below - read it there rather than restating it here.
 The design notes the inventory cannot carry stay hand-written:
@@ -311,16 +317,44 @@ container/orchestration catalog and §8.2's CloudFormation checks - and the gene
 both against what is on disk.  §6.6's Helm bullet means Helm **values and chart sources**; the
 **rendered**-chart case is a distinct sub-scope that no pack claims.
 
-**Step 5 (DAST) is now the TOP priority - ahead of live cloud scanning (step 6), persistent run state
-(step 7), and SARIF plus the compliance report (step 10) - and it has a written, dependency-ordered
-sub-ticket plan, but is not started.**
-`docs/STEP5-DAST-PLAN.md` breaks the ~30-script step 5 scope into tickets DAST-01 through DAST-30,
-ordered per `docs/DESIGN.md` §13's own `lib/http.sh -> auth.sh -> crawl.sh -> passive -> safe-active ->
-injection -> §7.4` sequence, and states plainly that `lib/http.sh`'s scope-gate chokepoint (tension 19)
-already shipped (see below) and is not re-planned - only the still-unbuilt tension-16 rate
-limiter/budget/breaker piece (DAST-01) and everything under `modules/dast/` remain.
+**Step 5 (DAST) is the TOP priority - ahead of live cloud scanning (step 6), persistent run state
+(step 7), and SARIF plus the compliance report (step 10) - it has a written, dependency-ordered
+sub-ticket plan, and its TIER 0 is now complete.**
+`docs/STEP5-DAST-PLAN.md` breaks the ~30-script step 5 scope into tickets DAST-01 through DAST-30 plus
+DAST-31 through DAST-36, ordered per `docs/DESIGN.md` §13's own `lib/http.sh -> auth.sh -> crawl.sh ->
+passive -> safe-active -> injection -> §7.4` sequence, and states plainly that `lib/http.sh`'s
+scope-gate chokepoint (tension 19) already shipped (see below) and is not re-planned.
 That plan, not this paragraph, is the authority for the sub-ticket sequence and for what each ticket
-depends on.
+depends on; its own "Status" section carries the per-ticket landed table.
+
+**What tier 0's safety half (DAST-31 through DAST-34) shipped, and the three things about it that are
+easy to get backwards.**
+
+- **The ceilings are enforced where the scope gate is enforced, and nowhere else.**  They are applied
+  to the RESOLVED value inside `lib/http.sh`, never in `modules/dast/`, for the identical reason
+  tension 19 puts the gate in `http_request`: `tests/e2e/dast-target-smoke.sh` already sends real HTTP
+  by calling `http_request` directly, with no module and no `scan.sh` parser anywhere in the path, so a
+  ceiling living in a module would bind exactly the callers that had already come through it.
+- **The clamp policy is ASYMMETRIC, and each half is the other half's bug.**  A **file or default**
+  value above a ceiling is CLAMPED with one `log_warn` and a durable recorded delta; an explicit **CLI
+  or env** value above one is **exit 2** naming `--i-own-target`.  Clamping the first is what stops an
+  operator affirming reflexively just to make an unedited install run at all - `request-budget`'s own
+  §9.6.1 default of `20000` is above the 5000 DAST ceiling, so a uniformly-fatal policy means a fresh
+  clone cannot send one request.  Refusing the second is what stops the tool running at a number other
+  than the one the operator typed.  `tests/suites/http.sh` pins both directions, each with a case that
+  fails under the other reading.
+- **`--i-own-target` is a KEY, not a switch, and the affirmation lives in a per-run RECORD.**  It must
+  equal `--target` (mismatch, or no `--target` at all, is exit 2), it is valid on `dast` and `all`
+  only, and on its own it changes no limit - `--intensity` above `passive` and `--allow-intrusive` each
+  need it PLUS themselves.  It is deliberately not an environment variable: an env var is settable by
+  anything that can start the process, and binding callers whose command line nobody parsed is the
+  ceiling's entire job.  It is never persisted, and there is no `scanner.conf` key meaning "always
+  unrestricted".
+- One refinement the plan's own "Relaxable" table did not state, now recorded in `docs/FOUNDATION.md`
+  tension 16 as well: the affirmation lifts the three UPPER bounds (rate, budget, breaker threshold)
+  and lifts NEITHER of `circuit-breaker-window`'s bounds - the 60s floor because a shorter window is a
+  weaker breaker, and the 86400s maximum because it is arithmetic rather than safety.
+
 **This block used to read "no DAST-0x ticket is picked up until step 3's outstanding rule packs and
 step 4's SCA half are both complete on `dev`"; BOTH halves of that gate are now discharged, so it is
 gone rather than narrowed.**
@@ -335,12 +369,14 @@ No DAST ticket consumes a SAST rule pack, and DAST-01 - the tension-16 rate limi
 request budget and circuit breaker - touches `lib/http.sh` only, on top of `lib/core.sh`'s mkdir-mutex
 and scratch-dir primitives that shipped at step 1, so step 5 is startable now with nothing in front of
 it.
-**One ordering constraint remains, and it is internal to step 5 rather than a gate on starting it:
-DAST-01 must land before anything issues real HTTP traffic.**
+**One ordering constraint was internal to step 5 rather than a gate on starting it - DAST-01 must land
+before anything issues real HTTP traffic - and it has been satisfied.**
 Until the limiter and the budget are hooked into `http_request`, `--jobs` multiplies the request rate
 against a live endpoint with no throttle at all - tension 16's own per-process-state failure, the same
 one that leaves the breaker unable to trip - which is why DAST-01 heads the plan's tier 0, and that
 tier blocks all of tiers 1 to 5.
+DAST-01 landed first and the rest of tier 0 landed on top of it, so no ticket has yet issued a request
+before the controls that bound it existed.
 **Crewban-22 (a local, authorized DAST test target) has already landed, ahead of DAST-01.**
 `tools/dast-test-target.sh` and `tools/dast-test-identities.sh` start a pinned, self-hosted OWASP Juice
 Shop container and provision two distinct throwaway identities in it, authorized by
@@ -1131,3 +1167,10 @@ Recorded because the review rounds found several confidently-stated shell facts 
 - `find` over a directory that does not exist fails, and under `pipefail` takes the whole pipeline with it.
 - ShellCheck versions disagree: Ubuntu's reports `SC2119`/`SC2120` where 0.11.0 does not. CI runs whatever the image ships, so a finding is silenced with an explicit `# shellcheck disable=` and a reason rather than left to the version.
 - A comment line beginning `# shellcheck ` is parsed as a DIRECTIVE, so prose about shellcheck must not start a line with that word.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

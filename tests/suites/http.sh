@@ -370,6 +370,26 @@ assert_contains "$_HTTP_GATE_REASON" "'metadata.fixture.example' resolves to '16
 assert_status 1 'a host that fails to resolve is refused, not silently skipped' \
   http_gate_url 'https://unresolvable.fixture.example/x'
 
+# ---------------------------------------------------------------------------
+# The one DAST-32 case that has to run BEFORE anything issues a request.
+# ---------------------------------------------------------------------------
+# Its subject is the DEFAULT resolution layer, and the reading it rejects -
+# "any value above the ceiling is fatal" - makes an install with no config file
+# at all unable to send a single request, because request-budget's §9.6.1
+# default of 20000 is itself above the 5000 DAST ceiling.  Under that reading
+# every http_request case below aborts the whole suite process before reaching
+# the DAST-32 section at the end of this file, so the failure would be an
+# aborted run rather than a named assertion.  Placed here, it is the FIRST
+# thing to go red, which is what makes it a pin rather than a casualty.
+t_case 'an unedited install resolves the budget without dying'
+default_rc=0
+default_eff=$( ( _http_effective_limit_set request-budget \
+  && printf '%s' "$_HTTP_EFF_LIMIT" ) 2>/dev/null ) || default_rc=$?
+assert_eq 0 "$default_rc" \
+  'resolving request-budget with NO config file at all is not fatal - FAILS under "any resolved value above the ceiling is a usage error", where the §9.6.1 default of 20000 exceeds the 5000 DAST ceiling and a fresh clone therefore cannot send one request without an affirmation, which is exactly the "affirm reflexively to make the tool work" outcome docs/STEP5-DAST-PLAN.md rejects'
+assert_eq 5000 "$default_eff" \
+  'and the default is silently clamped to the conservative ceiling, because warning here would be blaming the operator for a config they never wrote'
+
 printf '\n-- http_request: the chokepoint --\n'
 
 : >"$TRANSPORT_LOG"
@@ -547,15 +567,30 @@ assert_at_least_ms 950 $(( T1 - T0 )) \
 assert_eq 5 "$(wc -l <"$TRANSPORT_LOG" | tr -d ' ')" \
   'and all five requests really were issued - the elapsed time above is a throttle, not five refusals'
 
+# The clamp is measured through a config FILE value, not an env var, and that
+# is not incidental: docs/STEP5-DAST-PLAN.md's DAST-32 clamp policy is
+# ASYMMETRIC, and only the file/default half clamps.  An env or CLI value above
+# the ceiling is a usage error instead, which the "-- DAST-32 --" section below
+# pins separately.  Writing this case with an env var (as it was, before the
+# affirmation existed) would now be asserting the clamp on the one resolution
+# layer that no longer clamps.
+cat >"$W/scanner-fast.conf" <<'EOF'
+id: scanner
+requests-per-second: 100
+EOF
+# `$W/scanner-absent.conf` is deliberately never created: `config_scanner_load`
+# treats an absent file as "every key resolves through env/default", which is
+# how each case below returns the loader to its unconfigured state without
+# leaking a fixture into the next one.
 _limits_reset
 : >"$TRANSPORT_LOG"
-export SCOURSH_CONFIG_REQUESTS_PER_SECOND=100
+config_scanner_load "$W/scanner-fast.conf"
 T0=$(_now_ms)
 for _i in 1 2 3 4 5; do http_request GET "$RATE_URL" >/dev/null; done
 T1=$(_now_ms)
-unset SCOURSH_CONFIG_REQUESTS_PER_SECOND
+config_scanner_load "$W/scanner-absent.conf"
 assert_at_least_ms 950 $(( T1 - T0 )) \
-  'a requests-per-second of 100 is clamped to the conservative ceiling of 4/s before the limiter ever sees it, so the same 5 requests still take 1.0s - FAILS if the limiter reads the operator value straight out of config (100/s would finish in ~40ms), which is the ceiling docs/STEP5-DAST-PLAN.md puts at the chokepoint rather than in a module'
+  'a config-FILE requests-per-second of 100 is clamped to the conservative ceiling of 4/s before the limiter ever sees it, so the same 5 requests still take 1.0s - FAILS if the limiter reads the operator value straight out of config (100/s would finish in ~40ms), which is the ceiling docs/STEP5-DAST-PLAN.md puts at the chokepoint rather than in a module'
 
 printf '\n-- tension 16: the per-run request budget --\n'
 
@@ -567,10 +602,14 @@ _http_effective_limit_set request-budget 2>/dev/null
 assert_eq 5000 "$_HTTP_EFF_LIMIT" \
   'the effective per-run budget is the conservative 5000, not the §9.6.1 schema default of 20000 - FAILS if the budget reads config_scanner_value without the module ceiling applied'
 
-export SCOURSH_CONFIG_REQUEST_BUDGET=100000
+cat >"$W/scanner-bigbudget.conf" <<'EOF'
+id: scanner
+request-budget: 100000
+EOF
+config_scanner_load "$W/scanner-bigbudget.conf"
 _HTTP_EFF_LIMIT=MISSING
 _http_effective_limit_set request-budget 2>/dev/null
-unset SCOURSH_CONFIG_REQUEST_BUDGET
+config_scanner_load "$W/scanner-absent.conf"
 assert_eq 5000 "$_HTTP_EFF_LIMIT" \
   'raising the configured budget far above the ceiling does not raise the effective one - the budget is a tunable that can only be lowered without an affirmation, and is never an off switch (docs/STEP5-DAST-PLAN.md: "the number is raisable; the existence of a finite budget is not")'
 
@@ -1088,13 +1127,13 @@ assert_eq '' "$(cat "$W/clamp.log")" \
   'and the clamp prints NO warning when the value it clamped is the built-in schema default, i.e. when no operator ever asked for it - FAILS while the clamp warns on any difference between resolved and effective, which fires on every run of an unconfigured install and names a config nobody wrote'
 
 _limits_reset
-export SCOURSH_CONFIG_REQUEST_BUDGET=100000
+config_scanner_load "$W/scanner-bigbudget.conf"
 _http_effective_limit_set request-budget 2>"$W/clamp.log"
-unset SCOURSH_CONFIG_REQUEST_BUDGET
+config_scanner_load "$W/scanner-absent.conf"
 clamp_out=$(cat "$W/clamp.log")
 assert_eq 5000 "$_HTTP_EFF_LIMIT" 'a raised budget is still clamped to the ceiling'
 assert_contains "$clamp_out" '100000' \
-  'a budget the operator actually raised DOES warn, and names the value that was refused - FAILS if suppressing the default-value warning also suppressed the one case the warning exists for'
+  'a budget the operator actually raised in config/scanner.conf DOES warn, and names the value that was refused - FAILS if suppressing the default-value warning also suppressed the one case the warning exists for'
 
 printf '\n-- a very slow rate is not refused as if it were zero --\n'
 
@@ -1195,5 +1234,204 @@ assert_contains "$shared_gap" '93.184.216.34' \
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 
 _limits_reset
+
+# ===========================================================================
+# docs/STEP5-DAST-PLAN.md DAST-31: the identifying User-Agent
+# ===========================================================================
+# The point of a UA test is not the string, it is that the string cannot be
+# suppressed.  Every case below therefore asserts on what the TRANSPORT was
+# handed, and the last two assert on what no setting can remove.
+printf '\n-- DAST-31: the identifying User-Agent --\n'
+
+_limits_reset
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+config_scanner_load "$W/scanner-absent.conf"
+
+t_case 'the no-contact form still identifies the tool'
+_HTTP_UA=MISSING
+_http_user_agent_set
+assert_contains "$_HTTP_UA" "scoursh/$(scoursh_version)" \
+  'with no contact configured anywhere the UA still carries the scoursh/<version> product token - FAILS under "an unconfigured install sends curl'"'"'s own default UA", which is the state this ticket found lib/http.sh in and is what leaves a target owner with no way to identify the tool'
+assert_contains "$_HTTP_UA" 'no operator contact configured' \
+  'and it says the contact is missing rather than silently omitting it, so an owner can tell a policy from an oversight'
+
+t_case 'a configured contact reaches the User-Agent'
+cat >"$W/scanner-contact.conf" <<'EOF'
+id: scanner
+contact: security@operator.example
+EOF
+config_scanner_load "$W/scanner-contact.conf"
+_HTTP_UA=MISSING
+_http_user_agent_set
+assert_eq "scoursh/$(scoursh_version) (+security@operator.example)" "$_HTTP_UA" \
+  'the configured contact is rendered in the documented `scoursh/<version> (+<contact>)` form - FAILS if `contact` is added to the schema but never read by the transport, which is the shape of a config key that exists only in documentation'
+config_scanner_load "$W/scanner-absent.conf"
+
+t_case 'the run record carries the CLI layer of the contact chain'
+rm -rf "${W:?}/run.ua"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$W/run.ua"
+run_record contact 'https://operator.example/security'
+run_record user_agent_suffix 'operator-ci/2.1'
+_HTTP_UA=MISSING
+_http_user_agent_set
+assert_eq "scoursh/$(scoursh_version) (+https://operator.example/security) operator-ci/2.1" "$_HTTP_UA" \
+  'the per-run record supplies both halves, which is the ONLY route --contact and --user-agent-suffix have into this file (lib/http.sh cannot see SCAN_FLAGS) - FAILS if the transport reads config_scanner_value alone, in which case --contact on the command line is accepted by the parser and then silently ignored by every request'
+
+t_case 'the product-token prefix is never displaceable'
+assert_eq "scoursh/" "${_HTTP_UA:0:8}" \
+  'the suffix APPENDS: the UA still BEGINS with the scoursh product token even with a suffix set - FAILS under an implementation where --user-agent-suffix replaces or prefixes the identity, which is the WAF-evasion reading this flag will be asked for'
+
+t_case 'a header-injecting contact is dropped, not concatenated'
+# Written straight into the meta file rather than through run_record, because
+# run_record APPENDS and run_fact_first_set reads the FIRST line: appending here
+# would leave the previous case's valid contact in place and this whole case
+# would pass without ever exercising the guard.
+printf '%s\n' "evil$(printf '\r')X-Injected: yes" >"$SCOURSH_RUN_DIR/meta/contact"
+: >"$SCOURSH_RUN_DIR/meta/user_agent_suffix"
+_HTTP_UA=MISSING
+_http_user_agent_set 2>/dev/null
+assert_not_contains "$_HTTP_UA" 'X-Injected' \
+  'a CR in the recorded contact never reaches the User-Agent - FAILS under "scan.sh already validated it", which trusts a file under a directory the operator can edit to compose an HTTP header'
+assert_contains "$_HTTP_UA" 'no operator contact configured' \
+  'and the run degrades to the no-contact form rather than aborting: a malformed contact costs identification, which is not worth failing an authorised scan over'
+: >"$SCOURSH_RUN_DIR/meta/contact"
+: >"$SCOURSH_RUN_DIR/meta/user_agent_suffix"
+
+t_case 'every real request actually carries it'
+# The transport stub records the argv it was handed; the default transport is
+# the only place -A is composed, so this asserts the composition point rather
+# than the string.
+assert_contains "$(declare -f _http_transport_default)" '-A "$_HTTP_UA"' \
+  'the default transport passes the composed UA to curl via -A - FAILS if a second curl invocation is ever added without one, which is the only way an unidentified request can leave this tool'
+assert_eq 1 "$(declare -f _http_transport_default | grep -c 'curl ' || true)" \
+  'and there is exactly ONE curl invocation in the transport, so "every request is identified" is a structural fact rather than a convention'
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+
+# ===========================================================================
+# docs/STEP5-DAST-PLAN.md DAST-32: the asymmetric clamp and the affirmation
+# ===========================================================================
+printf '\n-- DAST-32: the asymmetric clamp policy --\n'
+
+# The two halves are tested in BOTH directions, because each half's naive
+# implementation is the other half's bug: clamp everything and an operator's
+# explicit number is silently rewritten; refuse everything and an unedited
+# config file cannot run a scan without an affirmation, which turns the
+# affirmation into something people pass reflexively.
+_limits_reset
+config_scanner_load "$W/scanner-absent.conf"
+
+t_case 'an explicit ENV value above the ceiling is a usage error, not a clamp'
+_clamp_probe() {
+  local rc=0 out
+  out=$( ( _http_effective_limit_set request-budget ) 2>&1 >/dev/null ) || rc=$?
+  printf '%s\n%s' "$rc" "$out"
+}
+export SCOURSH_CONFIG_REQUEST_BUDGET=100000
+probe=$(_clamp_probe)
+unset SCOURSH_CONFIG_REQUEST_BUDGET
+assert_eq 2 "${probe%%$'\n'*}" \
+  'a request-budget of 100000 in the environment exits 2 rather than being clamped to 5000 - FAILS under a SYMMETRIC clamp that quietly runs at a different number than the operator asked for, which contradicts this codebase'"'"'s own rule that an invocation is authoritative or fatal, never rewritten (lib/config.sh already dies 2 for a bad CLI/env value and 4 for a bad file value, for the same reason)'
+assert_contains "${probe#*$'\n'}" '--i-own-target' \
+  'and the refusal names the flag that resolves it, so the operator is not left guessing which of two dozen flags applies'
+assert_contains "${probe#*$'\n'}" 'SCOURSH_CONFIG_REQUEST_BUDGET' \
+  'and it names the environment variable it actually read, distinguishing an inherited CI variable from a flag someone typed'
+
+t_case 'a FILE value above the ceiling clamps, with a warning and a durable delta'
+_limits_reset
+rm -rf "${W:?}/run.clamp"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$W/run.clamp"
+config_scanner_load "$W/scanner-bigbudget.conf"
+# Run the resolution INSIDE a status-capturing subshell rather than bare.  A
+# uniformly-fatal policy - the reading this case exists to reject - would `die`
+# here, and a bare call would take the whole suite process with it: the case
+# would "fail" as an aborted run rather than as a named assertion, which is not
+# a pin.  Everything asserted afterwards is a FILE (the warning log, the run's
+# own meta records), so it survives the subshell that produced it.
+clamp_rc=0
+clamp_eff=$( ( _http_effective_limit_set request-budget \
+  && _http_limit_delta_record request-budget 5000 "$_HTTP_EFF_LIMIT" \
+  && printf '%s' "$_HTTP_EFF_LIMIT" ) 2>"$W/clamp2.log" ) || clamp_rc=$?
+assert_eq 0 "$clamp_rc" \
+  'a config-FILE value above the ceiling does NOT abort the run - FAILS under a uniformly-fatal policy, which would make an operator affirm ownership just to run any scan at all and reduce the affirmation to something you pass to make the tool work'
+assert_eq 5000 "$clamp_eff" \
+  'and it is clamped to the conservative ceiling instead'
+assert_contains "$(cat "$W/clamp2.log")" '100000' \
+  'the clamp warns once and names the value it refused'
+assert_contains "$(cat "$SCOURSH_RUN_DIR/meta/limits_clamped" 2>/dev/null || printf '')" \
+  'request-budget:100000->5000 reason=no_owner_affirmation source=file' \
+  'and the delta is recorded durably with the resolution layer it came from - FAILS if the clamp only warns on stderr, which is not an artifact a reader has a month later (docs/STEP5-DAST-PLAN.md: "an unaffirmed run records the clamps that bit in the same shape")'
+config_scanner_load "$W/scanner-absent.conf"
+
+t_case 'the affirmation is what lifts the ceiling, and only for the relaxable bounds'
+_limits_reset
+run_record authorization_affirmed true
+run_record authorization_target fixture-good
+export SCOURSH_CONFIG_REQUEST_BUDGET=100000
+_HTTP_EFF_LIMIT=MISSING
+_http_effective_limit_set request-budget 2>/dev/null
+unset SCOURSH_CONFIG_REQUEST_BUDGET
+assert_eq 100000 "$_HTTP_EFF_LIMIT" \
+  'with the per-run affirmation record present, the SAME explicit value that exited 2 above is honoured - FAILS if the ceiling is unconditional, in which case --i-own-target is a flag that changes nothing'
+
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_WINDOW=5
+_HTTP_EFF_LIMIT=MISSING
+_http_effective_limit_set circuit-breaker-window 2>/dev/null
+unset SCOURSH_CONFIG_CIRCUIT_BREAKER_WINDOW
+assert_eq 60 "$_HTTP_EFF_LIMIT" \
+  'but an affirmed run STILL cannot shorten the breaker window below 60s - FAILS under "the affirmation lifts every ceiling", which reaches "the breaker never trips" by a different route than the disable switch docs/STEP5-DAST-PLAN.md refuses to offer ("threshold raisable, disabling never offered")'
+
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_WINDOW=10000000000000000000
+_HTTP_EFF_LIMIT=MISSING
+_http_effective_limit_set circuit-breaker-window 2>/dev/null
+unset SCOURSH_CONFIG_CIRCUIT_BREAKER_WINDOW
+assert_eq 86400 "$_HTTP_EFF_LIMIT" \
+  'and an affirmed run still cannot widen it past a day - FAILS under the same reading; this bound is arithmetic rather than safety (it is what keeps `now - window` inside a 64-bit integer) and no statement about who owns a host can make a wrapped integer mean what it says'
+
+t_case 'an affirmation does not survive into the next run'
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+rm -rf "${W:?}/run.unaffirmed"
+run_init "$W/run.unaffirmed"
+_limits_reset
+export SCOURSH_CONFIG_REQUEST_BUDGET=100000
+probe=$(_clamp_probe)
+unset SCOURSH_CONFIG_REQUEST_BUDGET
+assert_eq 2 "${probe%%$'\n'*}" \
+  'a NEW run in the same process, with no affirmation record of its own, is back to exit 2 - FAILS if the affirmation is memoised in a shell variable, which is the "no persisted affirmation" non-goal arrived at by accident instead of by design'
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+
+t_case 'the affirmation is not settable from the environment'
+_limits_reset
+rm -rf "${W:?}/run.envaffirm"
+run_init "$W/run.envaffirm"
+export SCOURSH_CONFIG_REQUEST_BUDGET=100000
+export SCOURSH_AUTHORIZATION_AFFIRMED=true SCOURSH_I_OWN_TARGET=fixture-good
+probe=$(_clamp_probe)
+unset SCOURSH_CONFIG_REQUEST_BUDGET SCOURSH_AUTHORIZATION_AFFIRMED SCOURSH_I_OWN_TARGET
+assert_eq 2 "${probe%%$'\n'*}" \
+  'no environment variable affirms ownership - FAILS if the affirmation is ever read from the environment, which is settable by anything that can start the process and would defeat the whole reason the ceiling binds callers whose command line nobody parsed'
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+
+t_case 'http_limits_record states what stayed enforced, not only what was lifted'
+_limits_reset
+rm -rf "${W:?}/run.record"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$W/run.record"
+config_scanner_load "$W/scanner-absent.conf"
+http_limits_record 2>/dev/null
+enforced=$(cat "$SCOURSH_RUN_DIR/meta/limits_enforced" 2>/dev/null || printf '')
+assert_contains "$enforced" 'request-budget:5000 (finite, never removable)' \
+  'an unaffirmed run records the budget it kept'
+assert_contains "$enforced" 'scope-gate:config/scope.conf' \
+  'and that the scope gate is not among the things any affirmation relaxes - FAILS if the record lists only relaxations, which leaves a reader reasoning about what the tool could NOT have done from its version number'
+assert_contains "$enforced" 'never removable' \
+  'and that the identifying User-Agent is not removable either'
+assert_file_absent "$SCOURSH_RUN_DIR/meta/limits_relaxed" \
+  'an unaffirmed run with an unedited config relaxes NOTHING, so the relaxed record is absent rather than empty - FAILS if the ceiling is recorded as a relaxation of itself'
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+
+_limits_reset
+config_scanner_load "$W/scanner-absent.conf"
 
 t_summary 'http'

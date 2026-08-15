@@ -828,7 +828,14 @@ an absent file is equivalent to one containing only `id: scanner`.
 | `lock-stale-seconds` | single | no | Positive integer | `30` |
 | `mutex-timeout-seconds` | single | no | Positive integer | `120` |
 | `paranoid-allow` | repeatable | no | `addr:port` | empty |
+| `contact` | single | no | One printable, space-free token a target owner can reach the operator at (an email address or a URL). `(`, `)` and `\` are excluded because the value is placed inside an RFC 7230 `User-Agent` comment. | empty |
 | `notes` | single | yes | Free text | empty |
+
+`contact` is the operator-configurable half of the identifying `User-Agent` every network request carries
+(`docs/STEP5-DAST-PLAN.md`, "The identifying `User-Agent`").
+Adding it is an **additive, optional** key: it trips §14 item 2 only (`lib/records.sh` and
+`tests/lint-rules.sh` move together) and none of items 1, 3 or 4, so it carries **no `format_version`
+bump** - see §14's own note on this.
 
 `docs/DESIGN.md` §11 also lists "the named scan-profile check-sets (`quick`/`full`/`compliance`)" as
 living here.
@@ -1380,3 +1387,22 @@ Enumerated so the cost is explicit rather than discovered later:
 
 That is why this format is frozen, and why §2's `format_version` exists: a future change is a versioned
 migration, not an edit.
+
+**Which of the four an ADDITIVE OPTIONAL key trips, checked rather than asserted.**
+Adding a new optional single-cardinality key to one schema - `contact` in §9.6.1 is the worked example -
+trips item **2** and nothing else, so it needs **no `format_version` bump**:
+
+1. **Does not apply.** No existing `.rules` pack or `config/*.conf` file is rewritten. Every one of them
+   already parses, because the key is optional and an absent optional key is the documented default; a
+   file that omits it validates exactly as it did before.
+2. **Applies, and is discharged inside the same change.** `lib/records.sh`'s schema table gains one arm
+   and `tests/lint-rules.sh` is re-run over every shipped record file; the consumer, `lib/config.sh`,
+   gains its `_scanner_default`/`_scanner_validate_value` arms in the same commit.
+3. **Does not apply.** `contact` is a scanner-config key, not a check id. No check id, module prefix or
+   fingerprint input changes, so `state/` and `config/baseline.json` stay valid and no finding becomes
+   `new`.
+4. **Does not apply.** No SARIF `ruleId` or `partialFingerprints` value derives from a scanner-config
+   key, so no previously-ingested result is orphaned.
+
+A key that were **required**, renamed, retyped, or removed would trip item 1 (every file rewritten) and
+IS a versioned migration.  The distinction is the optionality, not the size of the diff.

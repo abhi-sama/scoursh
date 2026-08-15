@@ -175,6 +175,83 @@ assert_status 2 'no documented command takes a bare positional (docs/DESIGN.md �
   scan_parse_args sast extra-arg --path .
 
 # =============================================================================
+printf '\n-- the own-your-target affirmation (docs/STEP5-DAST-PLAN.md DAST-32) --\n'
+# =============================================================================
+# Every case here runs against scan_parse_args alone, because the affirmation
+# rules are PURE: they read SCAN_FLAGS and die, and they touch no run
+# directory.  That is what lets them run before anything is created, which is
+# the whole point - a usage error that fires after a scan has started is a
+# usage error that has already sent traffic.
+
+t_case '--i-own-target must name the very host this run scans'
+assert_status 2 \
+  "--i-own-target naming a DIFFERENT host than --target dies exit 2 - fails under 'the affirmation is a switch, so its value is decoration', which is exactly how a stale CI file or a copied shell alias carries an affirmation to a target that changed hands" \
+  scan_parse_args dast --target host-a --i-own-target host-b
+assert_status 2 \
+  '--i-own-target with no --target at all is the same mistake and dies exit 2, rather than being silently accepted as an affirmation of nothing' \
+  scan_parse_args all --i-own-target host-a
+scan_parse_args dast --target host-a --i-own-target host-a
+assert_eq host-a "${SCAN_FLAGS[i-own-target]}" \
+  'a matching affirmation parses cleanly'
+
+t_case 'the affirmation is a key, not a switch: alone it changes nothing'
+scan_parse_args dast --target host-a --i-own-target host-a
+assert_eq '' "${SCAN_FLAGS[intensity]:-}" \
+  '--i-own-target on its own does not select a higher intensity - fails under a single flag that raises intensity, removes the rate limit and enables side-effecting checks together, which hands the maximum blast radius to one token'
+assert_eq '' "${SCAN_FLAGS[allow-intrusive]:-}" \
+  'and does not turn on side-effecting checks either'
+
+t_case 'the --intensity ceiling is passive without an affirmation'
+assert_status 2 \
+  "'dast --intensity safe' with no affirmation dies exit 2 - fails if the ceiling is only the check-registry filter's default, which a single flag then silently raises against a host this tool cannot vouch for ('safe' puts hundreds of 404s in someone's logs)" \
+  scan_parse_args dast --target host-a --intensity safe
+assert_status 2 \
+  "'dast --intensity active' with no affirmation dies exit 2 as well - active sends injection payloads, which no permission to browse covers" \
+  scan_parse_args dast --target host-a --intensity active
+scan_parse_args dast --target host-a --intensity passive
+assert_eq passive "${SCAN_FLAGS[intensity]}" \
+  'an explicit --intensity passive needs no affirmation: it is the ceiling, not above it - fails under "any --intensity flag requires the affirmation", which would make the conservative choice cost the same as the loud one'
+scan_parse_args dast --target host-a
+assert_eq '' "${SCAN_FLAGS[intensity]:-}" \
+  'and an operator who passes no --intensity at all never meets this rule, since passive is already the default'
+scan_parse_args dast --target host-a --intensity active --i-own-target host-a
+assert_eq active "${SCAN_FLAGS[intensity]}" \
+  'a matched affirmation is what makes active reachable'
+
+t_case '--allow-intrusive is brought under the affirmation'
+assert_status 2 \
+  "'dast --allow-intrusive' with no affirmation dies exit 2 - fails under 'it already has its own opt-in, so that is enough': its blast radius escapes the target, since §7.4's checks create users and send messages, and owning a host does not confer permission to do that to its users" \
+  scan_parse_args dast --target host-a --allow-intrusive
+assert_status 2 \
+  "and the same holds for 'all' once a --target makes DAST reachable" \
+  scan_parse_args all --target host-a --allow-intrusive --path .
+scan_parse_args all --allow-intrusive --path .
+assert_eq true "${SCAN_FLAGS[allow-intrusive]}" \
+  "'all' with NO --target runs no DAST at all, so --allow-intrusive there is not refused - fails under a blanket rule, which would refuse an invocation that cannot reach a live endpoint"
+scan_parse_args sast --allow-intrusive --path .
+assert_eq true "${SCAN_FLAGS[allow-intrusive]}" \
+  'and it stays a global flag on the non-network commands, so docs/DESIGN.md §5'"'"'s grammar block is not diverged from'
+scan_parse_args dast --target host-a --allow-intrusive --i-own-target host-a
+assert_eq true "${SCAN_FLAGS[allow-intrusive]}" \
+  'a matched affirmation plus the separate opt-in is what enables it - two flags, never one'
+
+t_case '--i-own-target is not offered where it would only become boilerplate'
+assert_status 2 \
+  '--i-own-target is not a valid flag on sast - fails if it is declared global, which invites it into CI files for runs that never touch a host' \
+  scan_parse_args sast --i-own-target host-a --path .
+
+t_case 'the two User-Agent inputs refuse a header-injecting value'
+assert_status 2 \
+  "a --contact carrying a space (the first byte of a second header token) is refused at parse time - fails if the flag is validated only by the generic non-empty rule, which lets an operator value be concatenated straight into a request header" \
+  scan_parse_args dast --target host-a --contact 'me and you'
+scan_parse_args dast --target host-a --contact 'security@operator.example'
+assert_eq 'security@operator.example' "${SCAN_FLAGS[contact]}" \
+  'an ordinary contact parses cleanly'
+scan_parse_args dast --target host-a --user-agent-suffix 'operator-ci/2.1'
+assert_eq 'operator-ci/2.1' "${SCAN_FLAGS[user-agent-suffix]}" \
+  'and so does a product token for the suffix'
+
+# =============================================================================
 printf '\n-- exit-code precedence (docs/FOUNDATION.md tension 14) --\n'
 # =============================================================================
 t_case 'each condition alone maps to its own code'

@@ -32,6 +32,28 @@
 # The limits are not removable here: there is no config key, environment
 # variable, or flag that switches the budget or the breaker off, and no
 # schema-valid value of any of these four keys can disable either of them.
+#
+# RAISING one of them is a different question from removing it, and the answer
+# depends on WHERE the raised value came from.  A value set in THIS FILE, or
+# left at its default, is clamped down to the conservative limit with one
+# warning; a value given explicitly on the command line or in a
+# SCOURSH_CONFIG_* environment variable is refused outright (exit 2), because
+# scoursh does not run at a number other than the one you asked for.  To
+# actually raise one, affirm that you own the target:
+#
+#   scan.sh dast --target NAME --i-own-target NAME
+#
+# That affirmation is per run and is never persisted: there is deliberately no
+# key here that means "always unrestricted", and there never will be.  It also
+# raises nothing by itself - it is a key that makes the higher settings
+# available, not a switch that selects one.
+#
+# `contact` is what a target owner who notices your traffic uses to reach you.
+# Every request carries `scoursh/<version> (+<contact>)`; with no contact set,
+# the request still identifies the tool but cannot identify you.  One printable
+# token, no spaces - an email address or a URL.  `--contact` is the flag form.
+#
+#   contact: security@example.org
 
 id: scanner
 requests-per-second: 4
