@@ -390,7 +390,7 @@ one that leaves the breaker unable to trip - which is why DAST-01 heads the plan
 tier blocks all of tiers 1 to 5.
 DAST-01 landed first and the rest of tier 0 landed on top of it, so no ticket has yet issued a request
 before the controls that bound it existed.
-**Crewban-22 (a local, authorized DAST test target) has already landed, ahead of DAST-01.**
+**A local, authorized DAST test target has already landed, ahead of DAST-01.**
 `tools/dast-test-target.sh` and `tools/dast-test-identities.sh` start a pinned, self-hosted OWASP Juice
 Shop container and provision two distinct throwaway identities in it, authorized by
 `tools/dast-test-target/scope.conf` and `docs/DAST-TEST-TARGET-AUTHORIZATION.md`'s written record, with
@@ -438,8 +438,7 @@ not.**
 connection-observer and abort-on-out-of-scope enforcement, per `docs/FOUNDATION.md` tension 20's
 RESOLUTION) and **NETNS-01** (`tools/run-in-netns.sh`, the network-namespace runner - optional and
 root-requiring, stated directly in that ticket's own filed description, not only in the plan doc).
-Both were filed to the backlog as real tickets (Crewban-57 and Crewban-58 respectively).
-**NETNS-01 (Crewban-58) has now landed**: `tools/run-in-netns.sh` (a Linux-only, root/CAP_NET_ADMIN
+**NETNS-01 has now landed**: `tools/run-in-netns.sh` (a Linux-only, root/CAP_NET_ADMIN
 +CAP_SYS_ADMIN-requiring wrapper) builds a network namespace whose route table admits only two sets of
 IPv4 addresses - the resolved addresses of scoursh's in-scope targets, via `lib/http.sh`'s own
 `http_scope_load`/`http_resolve_host` (tension 19's pinned resolution cache, never a re-implementation),
@@ -862,7 +861,7 @@ not shas at all, and `ae03175`/`11e7c97`/`d7a746f` in the paragraph immediately 
 quotes on purpose as the bad values to recognise.
 Anything else it reports is a real reference to a commit that does not exist, and is a bug.
 
-**A Crewban ticket that is `done` with `landed_sha` NULL is usually a bookkeeping gap, not stranded
+**A branch marked done with no recorded landing commit is usually a bookkeeping gap, not stranded
 work - prove the work is really unlanded before rescuing it by hand.**
 (This project's default branch is `main`; there is no `dev` branch today, per the note above - the
 commands below target `origin/main`, not the `origin/dev` this paragraph used before that promotion.)
@@ -873,14 +872,14 @@ patch is already upstream, `+` means it is not.
 Confirm a `-` by comparing trees (`git rev-parse <branch>^{tree}` against the `main` commit that landed
 it); identical trees mean there is nothing to rescue and the correct outcome is to say so, not to open
 an empty PR.
-Two shapes cause the NULL: a landing job recorded against a sibling ticket that shared the branch, and
-"merger" tickets (`crewban/resolve-merge-conflict-*`), which resolve the conflict in the *source*
-ticket's workspace on the *source* ticket's branch and so frequently own no branch of their own.
-Unpushed agent work, if any exists, lives outside this repo in the harness's per-ticket clones - at the
-time of writing `~/.ace/workspaces/<ticket-uuid>`, a pre-rename path still in use by Crewban.
-Sweep those with `git rev-list HEAD --not --remotes=origin` plus `git stash list` before concluding a
-branch missing from `origin` means the work is lost; a commit found that way still has to be compared
-against `main` artifact by artifact, since it is usually a superseded draft of what already landed.
+Two shapes cause a missing landing record: a landing recorded against a sibling branch that shared the
+work, and merge-conflict-resolution branches, which resolve the conflict in the source branch's own
+workspace and so frequently own no branch of their own.
+Unpushed work, if any exists, can also live outside this repository entirely, in whatever per-task
+workspace the driving automation used - sweep those clones and any local stashes
+(`git rev-list HEAD --not --remotes=origin` plus `git stash list`) before concluding a branch missing
+from `origin` means the work is lost; a commit found that way still has to be compared against `main`
+artifact by artifact, since it is usually a superseded draft of what already landed.
 
 **One piece of step 5 landed out of sequence: `lib/http.sh` (the scope-gate chokepoint,
 docs/FOUNDATION.md tension 19) now exists**, built and reviewed as its own ticket once tension 19's

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/e2e/dast-target-smoke.sh - end-to-end smoke test for Crewban-22's
+# tests/e2e/dast-target-smoke.sh - end-to-end smoke test for the
 # local DAST test target: proves the target is reachable, that lib/http.sh's
 # scope gate (docs/FOUNDATION.md tension 19) really allows exactly the
 # authorized host and refuses everything else, and that the two test

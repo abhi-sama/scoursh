@@ -69,9 +69,9 @@ Both tickets named above have been filed to the backlog as concrete, standalone 
 described in this document, mirroring the distinction this planning ticket's own acceptance criteria
 draw between "the sub-ticket's own description" and "this planning doc"):
 
-- **PARANOID-01** - Crewban-57, "Implement `--paranoid` mode: connection-observer + abort-on-out-of-scope
+- **PARANOID-01** - "Implement `--paranoid` mode: connection-observer + abort-on-out-of-scope
   enforcement"
-- **NETNS-01** - Crewban-58, "Build `tools/run-in-netns.sh`: optional, root-requiring network-namespace
+- **NETNS-01** - "Build `tools/run-in-netns.sh`: optional, root-requiring network-namespace
   runner" - its own description states the optional/root-requiring constraint directly, not only here.
 
 Neither has been implemented as part of this ticket - see "Fails review if..." in this ticket's own

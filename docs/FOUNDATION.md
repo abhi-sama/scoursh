@@ -4569,9 +4569,8 @@ has not.**
 `docs/STEP8-PARANOID-PLAN.md` split `docs/DESIGN.md` §13 step 8 per tension 20's RESOLUTION into
 **PARANOID-01** (the `--paranoid` connection-observer and abort-on-out-of-scope enforcement) and
 **NETNS-01** (`tools/run-in-netns.sh`, the network-namespace runner - optional and root-requiring,
-stated directly in that ticket's own filed description). Both were filed to the backlog as real tickets
-(Crewban-57 and Crewban-58).
-**NETNS-01 (Crewban-58, ticket b20cee9c) has now landed.**
+stated directly in that ticket's own filed description).
+**NETNS-01 has now landed.**
 `tools/run-in-netns.sh` is a Linux-only, root/CAP_NET_ADMIN+CAP_SYS_ADMIN-requiring wrapper: it builds a
 network namespace whose route table admits only two IPv4 address sets - tension 19's pinned resolution
 cache (read via `lib/http.sh`'s own `http_scope_load`/`http_resolve_host`, never re-implemented) for

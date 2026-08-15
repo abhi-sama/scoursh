@@ -124,8 +124,8 @@ itself, which is done.
 
 ## A local, authorized DAST test target now exists - do not re-plan it either
 
-Crewban-22 (operator-blocked - no staging environment, and the operator would not scan anything not
-owned outright) landed while this block held: `tools/dast-test-target.sh` starts (idempotently) a
+This target was needed because no staging environment was available, and the operator would not scan
+anything not owned outright: `tools/dast-test-target.sh` starts (idempotently) a
 pinned, self-hosted OWASP Juice Shop container on a fixed local port for exactly this purpose, and
 `tools/dast-test-identities.sh` provisions two distinct throwaway identities in it, following the same
 `secret-file`-in-a-600-file convention `config/auth.conf` (`rules/RULE-FORMAT.md` §9.6.2) already
