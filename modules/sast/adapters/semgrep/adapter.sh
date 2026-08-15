@@ -24,8 +24,8 @@
 # with `--offline` and metrics explicitly disabled (see its own comment) as
 # a second, belt-and-suspenders control on top of that: semgrep's upstream
 # default is to phone home anonymous usage metrics unless told not to, and
-# an air-gapped scanner cannot rely on a THIRD PARTY BINARY's own default
-# being safe - the no-egress rule (AGENTS.md) has to hold even if the
+# an egress-restricted scanner cannot rely on a THIRD PARTY BINARY's own
+# default being safe - the no-egress rule (AGENTS.md) has to hold even if the
 # vendored tool's own defaults would not, on their own, guarantee it.
 #
 # UNTRUSTED OUTPUT (CLAUDE.md §6 / docs/FOUNDATION.md tension 9's "evidence
@@ -145,8 +145,8 @@ semgrep_run() {
   local rc=0 errfile=$SCOURSH_SCRATCH/semgrep-stderr.$$
   # SEMGREP_SEND_METRICS/--metrics=off: two independent ways of saying the
   # same thing to semgrep's own CLI, deliberately redundant (see this
-  # file's header) - an air-gapped scan must not depend on getting exactly
-  # one flag spelling right against a moving upstream default.
+  # file's header) - an egress-restricted scan must not depend on getting
+  # exactly one flag spelling right against a moving upstream default.
   # --offline: never resolve or fetch a registry ruleset; only the
   # vendored, on-disk $SEMGREP_RULES_DIR is ever consulted.
   SEMGREP_SEND_METRICS=off "$SEMGREP_BIN" \

@@ -18,8 +18,11 @@
 # with a vendored engine binary and its local ruleset (docs/DESIGN.md §9's
 # "drop vendored offline engines into adapters/ ... commit the binaries +
 # local rule DBs, then the scanner uses them offline forever").  The result
-# is committed to git.  From that point on, every real scan runs on an
-# air-gapped host and never invokes this script again.
+# is committed to git.  From that point on, every real scan of source,
+# dependencies, or IaC (scoursh is egress-restricted, not air-gapped -
+# docs/FOUNDATION.md tension 28 - but those three modules make zero network
+# calls of their own) needs no network access and never invokes this script
+# again.
 #
 # WHAT THIS IS NOT.
 #   - It is NEVER called during a scan.  `scan.sh`, every `lib/*.sh`, and
@@ -279,9 +282,9 @@ veng_vendor_all() {
 #    ecosystem's real advisory data into pre-expanded, exact-version rows
 #    for data/advisories.db and data/versions.db (tension 25's frozen TSV
 #    schema: `ecosystem\tpackage\tversion\tadvisory_id\tseverity\t
-#    fixed_versions\tsummary`, sorted under LC_ALL=C), so the air-gapped
-#    scanner's own SCA matching step (modules/sca/) stays an exact string
-#    lookup with no version algebra of its own.
+#    fixed_versions\tsummary`, sorted under LC_ALL=C), so the scanner's own
+#    SCA matching step (modules/sca/), which makes zero network calls of its
+#    own, stays an exact string lookup with no version algebra of its own.
 #
 #    KEPT COMPLETELY SEPARATE from section 2 above: a different associative
 #    array (VENG_ADVISORY_REGISTRY, not VENG_REGISTRY), a different set of
@@ -320,7 +323,7 @@ veng_vendor_all() {
 #    bugs are invisible" tension 25 rejects for version algebra.  This
 #    script already runs on a networked, operator-controlled box with real
 #    tooling (curl, npm, pip, ...) - python3 is near-universal on such a
-#    box - and is used NOWHERE in the air-gapped scan-time path;
+#    box - and is used NOWHERE in the egress-restricted scan-time path;
 #    tests/lint-shell.sh's dispatch-wiring check (tension 27) still covers
 #    this file unchanged.
 #

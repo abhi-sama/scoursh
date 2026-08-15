@@ -3668,8 +3668,8 @@ Every advisory id is operator-supplied via `SCOURSH_ADVISORY_<ECOSYSTEM>_IDS`, n
 hardcoded - the identical discipline this file's own `semgrep_vendor` narrative already established for
 a release URL/checksum.
 JSON parsing uses `python3`'s stdlib `json` module rather than a hand-rolled bash/grep parser (this
-script runs on a networked, operator-controlled box with real tooling, never in the air-gapped scan-time
-path), and per-ecosystem name normalisation reuses `modules/sca/engine.sh`'s, `php_engine.sh`'s and
+script runs on a networked, operator-controlled box with real tooling, never in the egress-restricted
+scan-time path), and per-ecosystem name normalisation reuses `modules/sca/engine.sh`'s, `php_engine.sh`'s and
 `go_engine.sh`'s own `sca_*_normalize_name`/`sca_go_normalize_version` functions verbatim, lazily
 sourced, so the writer and the reader of `data/advisories.db` can never drift apart.
 `data/versions.db` is written by the identical `_veng_advisories_write_db` call, mirroring tension 25's
@@ -3682,6 +3682,87 @@ OSV.dev-*shaped* (never live-fetched) fixtures under `tests/fixtures/vendor-engi
 data's READER side.
 `docs/ADAPTERS.md` §10 and this script's own header are both updated in the same change to stop calling
 this responsibility unimplemented.
+
+---
+
+## Tension 28 - the egress claim: air-gapped versus egress-restricted-by-destination
+
+**The tension.**
+`docs/DESIGN.md`'s title and §1 describe scoursh as an "air-gapped" scanner, and that word is repeated
+throughout `README.md` and `AGENTS.md`. Taken at face value, "air-gapped" means the host has no network
+path to reach at all - but scoursh's own design, from `docs/DESIGN.md` §7 (DAST) and §8 (cloud/AWS live)
+onward, requires exactly two categories of scan-time network access: a `curl` to an operator-authorized
+target in `config/scope.conf`, and read-only AWS API calls to the operator's own account. Both are real
+HTTP/API calls over a real network connection made *at scan time*, not vendored data resolved in advance.
+A tool that has to reach a live target to do its job is not air-gapped by any ordinary reading of the
+word, and describing it that way overstates the guarantee to a reader deciding whether it is safe to run
+inside a genuinely isolated network.
+
+**Why it bites.**
+1. It is the sentence an operator uses to decide whether the tool is safe to run inside a network with no
+   egress at all. Taken at face value and then followed by `scan.sh dast` or `scan.sh cloud --live`, the
+   claim is falsified by the tool's own next command - or, worse, an operator who trusts the label punches
+   an undocumented exception through a boundary they believed the tool never needed crossed.
+2. It is self-contradictory on its own terms already. `AGENTS.md`'s "no-egress rule" section states
+   plainly that "exactly two kinds of outbound traffic are permitted," then two sentences later says "the
+   tool must run on an air-gapped host" - a host that can reach a `curl` target and the AWS API is not
+   air-gapped by definition, so the same paragraph asserts and denies the same property.
+3. It undersells what the design actually guarantees, which is stronger and more checkable than "no
+   network access": every outbound call, without exception, is enforced at a single runtime chokepoint
+   (`lib/http.sh`'s scope gate, `lib/awscli.sh`'s read-only guard) against an allowlist the operator
+   supplies, refused by default with `SCOURSH_EXIT_SCOPE`. That is a *destination-restricted* guarantee,
+   provable by reading two files and their tests, not an *absence* claim that a single un-audited `curl`
+   call anywhere in the tree would silently falsify.
+
+Not every occurrence of "air-gapped" in the tree makes this same claim, and this tension does not correct
+the ones that don't. "An air-gapped host may not have `shellcheck` installed" and "must run identically on
+an air-gapped Linux host and macOS" describe the class of restricted-network host the tool is expected to
+run on - a true and useful thing to say, unaffected by this tension, since SAST/SCA/IaC genuinely make zero
+network calls and so genuinely run unmodified on such a host. What is corrected here is narrower: the claim
+that scoursh *itself*, as a whole, is air-gapped, unconditionally.
+
+**Options considered.**
+1. *Keep "air-gapped" but add a caveat every time it appears near DAST or cloud.*
+   Rejected: the caveat would have to be repeated at every one of dozens of sites, drifts the moment one is
+   missed, and still leaves the headline word wrong - a reader who reads only the title or the first
+   sentence gets the false claim with no caveat in sight.
+2. *Rewrite `docs/DESIGN.md` to drop the word, including its title.*
+   Rejected outright: `docs/DESIGN.md` is preserved verbatim by this project's own rule (`AGENTS.md`, "the
+   handoff spec... preserved verbatim; its wording is load-bearing"). An earlier attempt at this exact
+   correction (PR #66) rewrote `docs/DESIGN.md`'s title and closed unmerged, among other reasons - that
+   document's wording is not this project's to edit after the fact, whatever it later turns out to have
+   been wrong about.
+3. *Say nothing in this register and let `README.md`/`AGENTS.md`'s wording changes speak for themselves.*
+   Rejected: this project's own convention is that a decision correcting or superseding `docs/DESIGN.md`'s
+   letter is recorded here, with an explicit statement that the register wins where the two conflict - see
+   this file's own preface and every prior tension. Skipping that step for the one claim this register
+   exists to correct would defeat the reason it exists.
+4. *Record the correction as a tension here, with a dated ADR alongside it, and correct every reader-facing
+   document except `docs/DESIGN.md` directly.* **Chosen.**
+
+**RESOLUTION.**
+scoursh is **egress-restricted, enforced by destination** - not air-gapped. Exactly two categories of
+scan-time outbound traffic are ever permitted, each requiring the operator to have named the exact
+destination in advance:
+
+1. `curl` (via `lib/http.sh`'s `http_request`) to a host authorized in `config/scope.conf`.
+2. Read-only AWS API calls (via `lib/awscli.sh`'s `aws_ro`) to the operator's own account.
+
+Everything else is refused by default at those two chokepoints - not merely undocumented, but rejected at
+runtime with `SCOURSH_EXIT_SCOPE` (`lib/http.sh`'s scope gate; `lib/awscli.sh`'s read-only-prefix and
+disallowed-flag checks) - and the three modules that exist today (SAST, SCA, IaC) make zero network calls
+at all, since nothing about reading source, lockfiles, or config needs an external target to begin with.
+**Where `docs/DESIGN.md`'s title and its §1, §6.5, and §9 text call the tool "air-gapped," that wording is
+superseded by this resolution, and this resolution wins** - exactly as this register's own preface reserves
+for every tension that contradicts the letter of `docs/DESIGN.md`. `docs/DESIGN.md`'s text is not edited to
+match: it is preserved verbatim as the historical handoff spec, and this paragraph is where the correction
+lives instead. `docs/adr/0001-egress-model-correction.md` records the dated decision in full; `README.md`
+and `AGENTS.md` are corrected directly, since neither is a preserved-verbatim document.
+
+This is a documentation correction only. `lib/http.sh` and `lib/awscli.sh` already implement exactly this
+model - both were built, reviewed, and tested (tensions 19 and 23) against a destination-restricted
+contract, never an absence-of-network one - so nothing changes in the enforcement chokepoints themselves.
+What changes is the label attached to a guarantee that was already real.
 
 ---
 
