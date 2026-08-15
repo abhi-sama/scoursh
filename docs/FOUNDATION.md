@@ -4336,7 +4336,7 @@ The last two packs, `nosql.rules` (4 checks) and `ldap.rules` (3 checks), landed
 `tests/suites/sast.sh` from 90 to 130 passing assertions with none failing.
 Step 4 is complete: both its IaC and its SCA halves landed, out of step order and in slices - see the
 two paragraphs below.
-Step 5 (DAST) is under way, its whole **tier 0 is complete**, and **tier 1 is half landed**.
+Step 5 (DAST) is under way, its whole **tier 0 is complete**, and **tier 1 is now complete too**.
 Tier 0: DAST-01 (the tension-16 limiter, budget and breaker), DAST-02 (`modules/dast/run.sh`, the
 dispatch entry point), DAST-31 (the identifying `User-Agent`), DAST-32 (the conservative ceilings and
 the `--i-own-target` affirmation), DAST-33 (the authorisation record in `run.json`) and DAST-34 (an
@@ -4353,7 +4353,25 @@ cannot be expressed without - inside the chokepoint, for tension 19's own reason
 reaching curl over stdin rather than through `argv` or a file (tension 9).
 `docs/STEP5-DAST-PLAN.md`'s DAST-03 landing note carries the full detail, including why a failed
 authentication is a DECLARED coverage reduction under tension 14's table rather than an exit 5.
-**DAST-04 (`crawl.sh`) is the only tier-1 ticket left, and is the one thing tiers 2-5 now wait on.**
+**Tier 1's DAST-04 (`modules/dast/crawl.sh` plus `crawl_engine.sh`) has landed alongside it**, so the
+endpoint and parameter inventory that all twenty-seven tickets in tiers 2-5 consume exists and has a
+normative, frozen-in-intent shape in `docs/INVENTORY-FORMAT.md`.
+With both tier-1 tickets in, **tiers 2-5 are unblocked and nothing remains in front of them**; the
+authenticated crawl pass plugs into DAST-03's session rather than being stubbed.
+Two things about DAST-04 are worth carrying here rather than only in the plan, because both are
+tension decisions rather than implementation detail.
+First, the scope pre-check on a discovered link is **not** a second gate and never becomes one
+(tension 19): `http_request` gates fatally, which is right for an operator-configured URL and wrong
+for one lifted off a scanned page, since it would let any site abort the operator's run by linking
+off-target; the pre-check decides only what is worth enqueueing, and everything that survives is
+still requested through `http_request`, which re-gates on the way out and on every redirect hop.
+Second, a specification contributes its PATHS and never its HOST - adopting an OpenAPI
+`servers[].url`, a Postman URL or a HAR entry's host would turn `config/discovery.conf` into a way
+past that gate.
+The client-rendered (SPA) limitation ships as a stated `coverage_gap` reaching `run.json` and both
+report formats, not as prose and not as a fix: scoursh executes no JavaScript, so a crawl of a real
+Angular target found 13 endpoints and 0 parameters and said so, which is the honest result
+`docs/DESIGN.md` §15 demands rather than a defect to tune away.
 `modules/cloud/` remains unbuilt and steps 6, 7 and 10 remain unstarted; step 5 is still the top
 priority ahead of them.
 `lib/awscli.sh` is a further out-of-sequence exception: a credential-less pass built it ahead of step
