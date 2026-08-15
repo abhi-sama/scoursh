@@ -4,16 +4,27 @@
 #
 # DETERMINISM (mirrors tests/suites/http.sh's own header exactly, same
 # reasoning applied to the sampler instead of the resolver/transport): `ss`
-# and `strace` are Linux-only and this suite's CI matrix runs macOS too
-# (AGENTS.md "GNU/BSD dual-runner"), so nothing here depends on either being
-# installed.  SCOURSH_PARANOID_FORCE_BACKEND stands in for the ss/strace
-# probe (same idiom as lib/core.sh's SCOURSH_FORCE_MSLEEP_IMPL) and
-# SCOURSH_PARANOID_SAMPLE stands in for the sampler itself (same idiom as
-# lib/http.sh's SCOURSH_HTTP_RESOLVE/SCOURSH_HTTP_TRANSPORT), so a passing
-# run here means the ALLOWLIST + ABORT WIRING is correct, deterministically,
-# on every host - exactly what tension 20 asks the no-egress fixture to
-# prove ("a passing test means zero connections outside loopback rather than
-# zero connections we did not expect").
+# and `strace` are Linux-only, `lsof` is not installed everywhere either, and
+# this suite runs on both userlands (AGENTS.md "GNU/BSD dual-runner"), so
+# nothing in the default path depends on any of the three being installed.
+# SCOURSH_PARANOID_FORCE_BACKEND stands in for the backend probe (same idiom
+# as lib/core.sh's SCOURSH_FORCE_MSLEEP_IMPL) and SCOURSH_PARANOID_SAMPLE
+# stands in for the sampler itself (same idiom as lib/http.sh's
+# SCOURSH_HTTP_RESOLVE/SCOURSH_HTTP_TRANSPORT), so a passing run here means
+# the ALLOWLIST + ABORT WIRING is correct, deterministically, on every host -
+# exactly what tension 20 asks the no-egress fixture to prove ("a passing
+# test means zero connections outside loopback rather than zero connections
+# we did not expect").
+#
+# ONE SECTION IS HOST-CONDITIONAL AND DELIBERATELY UNMOCKED: "REAL lsof"
+# below runs the actual lsof binary against actual sockets, including a full
+# `scan_main --paranoid` run that aborts with exit 3 on a real socket held by
+# a real descendant.  It is still a NO-EGRESS test: the sockets it opens are
+# *connected UDP* sockets, and connect(2) on a UDP socket only records a
+# default peer, transmitting nothing - so an RFC 5737 TEST-NET-3 destination
+# is observable without a single packet leaving the machine.  On a host with
+# no lsof the section prints SKIPPED, which is not a pass (the same
+# convention tests/suites/netns.sh uses for its root-requiring section).
 #
 # Every case that pins a decision names the reading it FAILS under, per
 # AGENTS.md's testing rule.
@@ -30,6 +41,27 @@
 # sections (which never reach the predicate on a denied path), and the
 # already-allowlisted-destination case kept passing.  That is exactly the
 # shape defeating one predicate, and only that predicate, should produce.
+#
+# REGRESSION PROOF FOR THE `lsof` BACKEND (the macOS one), by the same
+# method: each mutation below was applied to a scratch copy of lib/paranoid.sh
+# and this suite re-run against it, rather than the tests being reasoned about.
+# Every one was caught by exactly the case whose own name predicts it:
+#
+#   peer address read as the LOCAL one (`${peer%%->*}`)     -> 2 failures
+#   `-a` dropped so `-i`/`-p` OR instead of AND             -> 0 failures (!)
+#   the family-pid check removed (trust lsof `-p` alone)    -> 1 failure
+#   the `->` test removed (every `n` line is a destination) -> 1 failure
+#   the probe reduced to `command -v lsof`                  -> 1 failure
+#   `lsof` moved AHEAD of `strace` in the probe order       -> 1 failure
+#   the `lsof` case removed from _paranoid_sample           -> 1 failure
+#   the chunk stride raised so the pid list is never split  -> 1 failure
+#
+# The `-a` row is reported rather than hidden, and it is not a missing test:
+# with the family-pid check in place, ORing `-i` and `-p` produces no
+# observable difference at all (every extra line lsof then prints is dropped
+# either by that check or by the `->` test), so `-a` is a cost control and
+# nothing in the output can pin it.  lib/paranoid.sh says the same thing at
+# the check itself.
 #
 # shellcheck shell=bash
 #
@@ -251,6 +283,81 @@ t_case '_paranoid_sample_strace parses both the AF_INET and AF_INET6 connect() s
 assert_status 0 'strace sample: both shapes parsed in order, third line ignored' _test_sample_strace_probe
 
 # =============================================================================
+printf -- '\n-- unit: _paranoid_sample_lsof (the `lsof -F pn` parser, pid-filtered) --\n'
+# =============================================================================
+# The macOS backend.  Driven against CANNED `lsof -F pn` text for the same
+# reason the ss section above is: `lsof` is not installed everywhere, and this
+# suite must pass on a host without it.  The canned text below is a verbatim
+# transcript of what `lsof -w -nP -i -a -p <pids> -F pn` printed on macOS
+# 26.5.2 (arm64) while measuring this backend, with the addresses swapped for
+# RFC 5737 documentation ranges - the field IDs, the always-present `f` line,
+# the `[v6]:port` bracket form and the arrow-less LISTEN form are all real.
+LSOF_FAMILY_PID=''
+
+_test_lsof_canned_output() {
+  # 1. a family pid with a real IPv4 peer            -> kept
+  printf 'p%s\n' "$LSOF_FAMILY_PID"
+  printf 'f3\n'
+  printf 'n192.168.4.26:58214->203.0.113.5:443\n'
+  # 2. the same family pid, IPv6 bracket form        -> kept
+  printf 'f4\n'
+  printf 'n[2001:db8::1]:58217->[2001:db8::99]:9443\n'
+  # 3. the same family pid, a LISTEN socket (no ->)  -> dropped
+  printf 'f5\n'
+  printf 'n127.0.0.1:19097\n'
+  # 4. the same family pid, a fully unbound socket   -> dropped
+  #    (`n*:*` is not invented: 24 of them were open on the measuring host)
+  printf 'f6\n'
+  printf 'n*:*\n'
+  # 5. pid 1, syntactically perfect                  -> dropped (not family)
+  printf 'p1\n'
+  printf 'f7\n'
+  printf 'n192.168.4.26:58215->198.51.100.9:9443\n'
+}
+
+_test_sample_lsof_probe() {
+  local root=$BASHPID
+  sleep 30 &
+  LSOF_FAMILY_PID=$!
+  SCOURSH_PARANOID_LSOF_CMD=_test_lsof_canned_output
+  local out
+  out=$(_paranoid_sample_lsof "$root")
+  kill "$LSOF_FAMILY_PID" 2>/dev/null || true
+  wait "$LSOF_FAMILY_PID" 2>/dev/null || true
+  unset SCOURSH_PARANOID_LSOF_CMD
+  [[ $out == $'203.0.113.5 443\n2001:db8::99 9443' ]]
+}
+t_case '_paranoid_sample_lsof keeps only the family pid`s CONNECTED sockets, parsing both the IPv4 and the bracketed IPv6 peer form - fails under "take the local address" (field 4 vs field 5 of the arrow), under "trust lsof -p and skip the pid check" (the pid=1 line survives), and under "any n line is a destination" (the LISTEN and `*:*` lines become bogus violations)'
+assert_status 0 'lsof sample: two peers parsed, LISTEN/unbound/non-family lines all dropped' _test_sample_lsof_probe
+
+_test_sample_lsof_chunking() {
+  # The chunk loop must call the command for EVERY chunk, not just the first.
+  # With a 128-pid chunk size, a family of one is a single chunk, so this
+  # asserts the loop's arithmetic directly instead: it counts invocations for
+  # a synthetic 300-entry pid list.  Fails under a "call lsof once with the
+  # whole list" reading (1 invocation) and under an off-by-one chunk stride.
+  local countfile=$W/lsof-chunk-count
+  : >"$countfile"
+  _test_lsof_count_cmd() {
+    printf 'x\n' >>"$countfile"
+    printf ''
+  }
+  _test_lsof_big_family() { local i; for (( i = 1000; i < 1300; i++ )); do printf '%s\n' "$i"; done; }
+  local saved_family
+  saved_family=$(declare -f _paranoid_family_pids)
+  eval "_paranoid_family_pids() { _test_lsof_big_family; }"
+  SCOURSH_PARANOID_LSOF_CMD=_test_lsof_count_cmd
+  _paranoid_sample_lsof 1 >/dev/null
+  unset SCOURSH_PARANOID_LSOF_CMD
+  eval "$saved_family"
+  local n
+  n=$(wc -l <"$countfile" | tr -d ' ')
+  [[ $n == 3 ]]   # ceil(300 / 128)
+}
+t_case 'the lsof sampler chunks its pid list rather than passing an unbounded argv - 300 family pids become exactly 3 invocations at a stride of 128'
+assert_status 0 '300 pids -> 3 lsof invocations' _test_sample_lsof_chunking
+
+# =============================================================================
 printf -- '\n-- backend probe: forced override (SCOURSH_PARANOID_FORCE_BACKEND) --\n'
 # =============================================================================
 _test_forced_backend_none() {
@@ -262,7 +369,167 @@ t_case 'SCOURSH_PARANOID_FORCE_BACKEND=none is honoured by the probe'
 assert_status 0 'forced backend=none is read back as none' _test_forced_backend_none
 
 # =============================================================================
-printf -- '\n-- AC4: neither ss nor strace usable -> exit 4 (SCOURSH_EXIT_INPUT) --\n'
+printf -- '\n-- backend probe: the ss -> strace -> lsof ORDER (a pinned decision) --\n'
+# =============================================================================
+# Each case stubs availability rather than depending on which of the three
+# tools this host happens to ship, so the ORDER is pinned identically on
+# Linux and on macOS.  assert_status runs its command in a subshell, so a
+# stub defined inside one of these functions cannot leak into the next.
+_test_backend_order() {
+  local have_ss=$1 strace_ok=$2 lsof_ok=$3 want=$4
+  unset SCOURSH_PARANOID_FORCE_BACKEND
+  _have() { [[ $1 == ss && $have_ss == yes ]]; }
+  _paranoid_probe_strace() { [[ $strace_ok == yes ]]; }
+  _paranoid_probe_lsof() { [[ $lsof_ok == yes ]]; }
+  paranoid_probe_backend
+  [[ $PARANOID_BACKEND == "$want" ]]
+}
+
+t_case 'ss still wins when everything is available - fails under "prefer lsof because it is portable", which would silently change every existing Linux host`s backend'
+assert_status 0 'ss + strace + lsof -> ss' _test_backend_order yes yes yes ss
+t_case 'strace still beats lsof when ss is absent - fails under "insert lsof ahead of strace"; strace is a TRACER (it sees a connect() that opens and closes between two polls) and lsof is a SAMPLER, so where strace is usable it is the stronger detector'
+assert_status 0 'no ss, strace usable, lsof usable -> strace' _test_backend_order no yes yes strace
+t_case 'lsof is selected when neither ss nor a usable strace exists - THE macOS CASE; fails under the pre-change reading, where this host resolved to `none` and --paranoid refused the whole run with exit 4'
+assert_status 0 'no ss, no strace, lsof usable -> lsof' _test_backend_order no no yes lsof
+t_case 'none of the three usable still resolves to `none` - the lsof addition must not turn an unobservable host into a silently-unobserved one'
+assert_status 0 'no ss, no strace, no lsof -> none' _test_backend_order no no no none
+
+# =============================================================================
+printf -- '\n-- unit: _paranoid_probe_lsof needs a POSITIVE CONTROL, not just an exit code --\n'
+# =============================================================================
+# lsof exits 1 both when it matched nothing and (on a restricted host) when it
+# was not permitted to look, so an exit-status probe cannot tell "no sockets
+# open" from "you will never be shown any".  These two cases shadow the real
+# `lsof` binary with a bash function - which `command -v` (and therefore
+# `_have`) finds - so the discriminating behaviour is exercised on every host,
+# including one where the real lsof works perfectly and could never produce
+# the restricted case.
+_test_lsof_probe_rejects_blind_lsof() {
+  unset SCOURSH_PARANOID_FORCE_BACKEND
+  # Present on PATH, runs, exits 1, shows nothing: a restricted host.
+  lsof() { return 1; }
+  ! _paranoid_probe_lsof
+}
+t_case 'the lsof probe REFUSES a present-but-blind lsof - fails under both rejected readings: "command -v lsof is enough" and "any exit status <= 1 means usable", each of which would attach an observer that can never see anything and report the run as watched'
+assert_status 0 'blind lsof: probe returns non-zero' _test_lsof_probe_rejects_blind_lsof
+
+_test_lsof_probe_accepts_reporting_lsof() {
+  unset SCOURSH_PARANOID_FORCE_BACKEND
+  # Reports the probe's own control socket back, which is the whole test.
+  lsof() { printf 'p%s\nf9\nn127.0.0.1:54321->127.0.0.1:9\n' "$BASHPID"; }
+  _paranoid_probe_lsof
+}
+t_case 'the lsof probe ACCEPTS an lsof that reports the control socket back - without this half the case above is satisfiable by a probe that rejects everything'
+assert_status 0 'reporting lsof: probe returns 0' _test_lsof_probe_accepts_reporting_lsof
+
+_test_lsof_probe_does_not_swallow_stderr() {
+  unset SCOURSH_PARANOID_FORCE_BACKEND
+  lsof() { printf 'p%s\nf9\nn127.0.0.1:54321->127.0.0.1:9\n' "$BASHPID"; }
+  local errfile=$W/probe-stderr.err
+  rm -f "$errfile"
+  ( _paranoid_probe_lsof >/dev/null || true; printf 'STDERR-STILL-ALIVE\n' >&2 ) 2>"$errfile"
+  [[ -s $errfile ]] || return 1
+  local got
+  got=$(cat "$errfile")
+  [[ $got == *'STDERR-STILL-ALIVE'* ]]
+}
+t_case 'the lsof probe leaves the calling shell`s STDERR intact - fails under the natural `exec {fd}<>/dev/udp/... 2>/dev/null` spelling, where `exec` with redirections and no command makes 2>/dev/null PERMANENT and silences every log line the rest of the run would print, including the violation message itself, while the exit code stays correct'
+assert_status 0 'probe: stderr survives the control-socket open' _test_lsof_probe_does_not_swallow_stderr
+
+# =============================================================================
+printf -- '\n-- REAL lsof: the probe and the sampler against sockets this test opens --\n'
+# =============================================================================
+# Everything above drives the lsof backend through canned text or a stub.
+# This section runs the REAL `lsof` binary against REAL sockets, so a defect
+# in the actual invocation (a wrong flag, `-a` omitted so `-i`/`-p` OR rather
+# than AND, an `-F` field this lsof build does not emit) cannot hide behind a
+# fixture.  It is host-conditional and states plainly when it is SKIPPED - a
+# SKIP here is not a pass, the same convention tests/suites/netns.sh uses for
+# its own root-requiring section.
+#
+# NO PACKET LEAVES THIS MACHINE, by construction: the sockets below are
+# *connected UDP* sockets, and connect(2) on a UDP socket only records a
+# default peer - it transmits nothing.  So the out-of-allowlist case can use a
+# real RFC 5737 TEST-NET-3 address and still be a genuinely no-egress test,
+# which is what tension 20's §12 fixture requires.
+if ! command -v lsof >/dev/null 2>&1; then
+  printf -- '\n-- SKIPPED: no `lsof` on this host, so the real-backend cases below did NOT run (the canned-output and ordering cases above still did) --\n'
+else
+  _test_real_lsof_probe() {
+    unset SCOURSH_PARANOID_FORCE_BACKEND
+    _paranoid_probe_lsof
+  }
+  t_case '_paranoid_probe_lsof reports usable on a host that really ships lsof - the positive half; the discriminating negative half is the stubbed case below, which this host cannot produce for real'
+  assert_status 0 'real lsof probe: usable' _test_real_lsof_probe
+
+  _test_real_lsof_sees_out_of_allowlist() {
+    local root=$BASHPID out=''
+    # A descendant holding a connected UDP socket to TEST-NET-3 (RFC 5737).
+    ( exec 3<>/dev/udp/198.51.100.250/4444 || exit 1; sleep 10 ) &
+    local holder=$!
+    msleep 300
+    out=$(_paranoid_sample_lsof "$root")
+    kill "$holder" 2>/dev/null || true
+    wait "$holder" 2>/dev/null || true
+    [[ $out == *'198.51.100.250 4444'* ]]
+  }
+  t_case 'the REAL lsof sampler observes a real out-of-allowlist socket held by a DESCENDANT of the root pid - fails under a "look at the root pid only" reading (the socket belongs to a child, not to the observer)'
+  assert_status 0 'real lsof sample: descendant`s 198.51.100.250:4444 peer observed' _test_real_lsof_sees_out_of_allowlist
+
+  _test_real_lsof_ignores_non_family() {
+    # Same real sampler, rooted at a SIBLING of the socket holder.  Deliberately
+    # not pid 1: pid 1 is an ANCESTOR of everything, so rooting the walk there
+    # would make the whole machine "family" and this case would fail for a
+    # reason that says nothing about the -p filter.  Two siblings are the
+    # correct shape - neither is a descendant of the other.
+    local out=''
+    ( sleep 10 ) &
+    local unrelated_root=$!
+    ( exec 3<>/dev/udp/198.51.100.251/4445 || exit 1; sleep 10 ) &
+    local holder=$!
+    msleep 300
+    out=$(_paranoid_sample_lsof "$unrelated_root") || true
+    kill "$holder" "$unrelated_root" 2>/dev/null || true
+    wait "$holder" "$unrelated_root" 2>/dev/null || true
+    [[ $out != *'198.51.100.251'* ]]
+  }
+  t_case 'the REAL lsof sampler does NOT report a socket belonging to a process outside the watched family - fails under "drop -p and scan every process on the host", which would abort a run because some unrelated program had a connection open'
+  assert_status 0 'real lsof sample: non-family socket not reported' _test_real_lsof_ignores_non_family
+
+  # --- the whole mechanism, unmocked: real backend, real socket, real abort ---
+  _test_real_lsof_run_aborts() {
+    export SCOURSH_INSTALL_ROOT=$FROOT SCOURSH_RESOLV_CONF=$RESOLV
+    export SCOURSH_PARANOID_FORCE_BACKEND=lsof SCOURSH_PARANOID_POLL_MS=20
+    unset SCOURSH_PARANOID_SAMPLE
+    # Forked HERE, not inside a nested subshell, because paranoid_attach takes
+    # $BASHPID of the process running scan_main as the family root - a holder
+    # forked inside a nested subshell would not be a descendant of it, and the
+    # test would pass for the wrong reason (nothing observed, so no abort).
+    # `scan_main` exits this subshell directly on the abort, so the holder is
+    # cleaned up by _paranoid_kill_siblings rather than by a line below.
+    ( exec 3<>/dev/udp/198.51.100.250/4444 || exit 1; sleep 30 ) &
+    scan_main sast --paranoid --out "$W/run-real-lsof-violation"
+  }
+  t_case 'END TO END, nothing mocked: a real out-of-allowlist socket held by a descendant of a real `scan_main --paranoid` run, observed by the real lsof sampler, aborts the run with exit 3 - this is the case that was IMPOSSIBLE on macOS before this change, where the same run exited 4 before dispatching a single module'
+  assert_status "$SCOURSH_EXIT_SCOPE" 'real lsof end-to-end: exit 3' _test_real_lsof_run_aborts
+
+  _test_real_lsof_run_clean() {
+    export SCOURSH_INSTALL_ROOT=$FROOT SCOURSH_RESOLV_CONF=$RESOLV
+    export SCOURSH_PARANOID_FORCE_BACKEND=lsof SCOURSH_PARANOID_POLL_MS=20
+    unset SCOURSH_PARANOID_SAMPLE
+    # Identical shape, and forked from the same place for the same reason as
+    # above, but the peer is loopback - allowlist set 3.  scan_main exits this
+    # subshell on success too, so the holder is left to expire on its own
+    # (it is orphaned, holds one loopback UDP socket, and blocks nothing).
+    ( exec 3<>/dev/udp/127.0.0.1/9 || exit 1; sleep 30 ) &
+    scan_main sast --paranoid --out "$W/run-real-lsof-clean"
+  }
+  t_case 'END TO END, nothing mocked: the SAME shape with an allowlisted (loopback) peer completes normally - fails under "abort on any observed connection", and without this half the case above is satisfiable by a detector that aborts everything'
+  assert_status "$SCOURSH_EXIT_OK" 'real lsof end-to-end: allowlisted peer, exit 0' _test_real_lsof_run_clean
+fi
+
+# =============================================================================
+printf -- '\n-- AC4: no usable backend at all -> exit 4 (SCOURSH_EXIT_INPUT) --\n'
 # =============================================================================
 t_case '--paranoid with no usable backend dies exit 4, not silently running unobserved'
 SCOURSH_INSTALL_ROOT=$FROOT SCOURSH_PARANOID_FORCE_BACKEND=none assert_status "$SCOURSH_EXIT_INPUT" \

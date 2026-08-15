@@ -6,9 +6,13 @@
 #   docs/FOUNDATION.md tension 20 (paranoid mode versus infrastructure traffic
 #                      - the frozen RESOLUTION this file implements: the
 #                      four-set allowlist, process-group-level attachment,
-#                      exit 3 on violation, exit 4 when neither ss nor a
-#                      usable strace is available, and the "detector, not
-#                      guarantee" framing)
+#                      exit 3 on violation, exit 4 when no usable sampling
+#                      backend is available, and the "detector, not
+#                      guarantee" framing.  Tension 20's RESOLUTION named
+#                      `ss` and `strace` specifically; its "Backend roster"
+#                      paragraph records `lsof` as a deliberate ADDITION to
+#                      that roster, which is what makes --paranoid work on
+#                      macOS at all.)
 #   docs/STEP8-PARANOID-PLAN.md PARANOID-01 (this ticket's own sub-ticket row)
 #
 # THE FRAMING (stated here because tension 20 requires it stated plainly, not
@@ -16,10 +20,16 @@
 # outbound connections on a timer and aborts the run on the first destination
 # it observes outside the allowlist.  A sufficiently short-lived connection
 # can open and close between two samples and never be observed at all.
-# `tools/run-in-netns.sh` (NETNS-01, not built by this ticket - see
-# docs/STEP8-PARANOID-PLAN.md) is the actual guarantee: a network namespace
-# whose only route is the declared scope makes an out-of-scope connection
-# categorically impossible rather than merely observable.  This framing is
+# `tools/run-in-netns.sh` (NETNS-01) is the actual guarantee: a network
+# namespace whose only route is the declared scope makes an out-of-scope
+# connection categorically impossible rather than merely observable.  That
+# tool is LINUX-ONLY and has no macOS equivalent, so on macOS the detector
+# below is the only egress control this project offers - there is no
+# stronger tier to fall back on, and nothing here should be read as
+# implying parity with Linux.  The `lsof` backend added for macOS is a
+# SAMPLER, exactly like `ss`: it has the identical blind spot (a connection
+# that opens and closes between two polls is never observed) and buys no
+# stronger promise than `ss` already did.  This framing is
 # recorded into every run's `run.json` (via `coverage_gap`, read by both
 # lib/report.sh limitations sections) whenever --paranoid is engaged, so the
 # report never overstates what the mechanism proved (docs/DESIGN.md §15).
@@ -71,7 +81,8 @@ SCOURSH_PARANOID_SOURCED=1
 source "${BASH_SOURCE[0]%/*}/http.sh"
 
 # ---------------------------------------------------------------------------
-# 1. Backend probe: `ss`, or a usable `strace -f -e trace=connect`, or none.
+# 1. Backend probe: `ss`, a usable `strace -f -e trace=connect`, `lsof`, or
+#    none.
 # ---------------------------------------------------------------------------
 # "Usable" is measured, not assumed (AGENTS.md "Things measured on this
 # codebase" is the standing house style for exactly this class of claim):
@@ -104,6 +115,80 @@ _paranoid_probe_strace() {
   (( ok ))
 }
 
+# `lsof` is the macOS backend (macOS ships /usr/sbin/lsof and runs it
+# unprivileged; it ships neither `ss` nor `strace`, and `dtruss` is
+# deliberately not a candidate - DTrace generally needs System Integrity
+# Protection disabled, and a security tool must not ask an operator to weaken
+# their OS in order to be observed).
+#
+# WHY lsof AND NOT `netstat`/`nettop`, both of which macOS also ships, both
+# measured on macOS 26.5.2 (arm64) before choosing:
+#   - `netstat` has no per-process filter on macOS at all, so a connection
+#     could not be attributed to this run's own process family - the whole
+#     point of _paranoid_family_pids.
+#   - `nettop`'s per-connection rows carry NO pid of their own: they are
+#     emitted UNDER a preceding process row, so attributing a connection to a
+#     process needs stateful parsing of an interactive tool's batch dump, and
+#     its per-process (`-P`) mode drops the remote address entirely.  Measured
+#     directly: `nettop -P -L 1 -x` prints no peer address, and `nettop -L 1
+#     -x -n` prints `tcp4 LOCAL<->REMOTE` rows with an empty pid column.
+#   - `lsof -F` is a purpose-built machine-readable mode that emits one `p<pid>`
+#     line followed by that process's own `n<addr:port->addr:port>` lines, so
+#     both halves arrive unambiguously and a command name containing a space
+#     (`Google Chrome`) cannot shift a column.
+#
+# "Usable" is MEASURED here for the same reason it is for strace, and with a
+# real positive control rather than a `command -v`: lsof exits 1 both when it
+# matched nothing and (on a restricted host) when it was not permitted to
+# look, so an exit-status probe alone cannot tell "this host has no sockets
+# open" from "this host will never show me any".  The probe therefore opens a
+# socket of its OWN - a connected loopback UDP socket, which needs no listener
+# and sends no packet - and requires lsof to report that exact socket back.
+# The socket is loopback-only, so it is inside set 3 of the allowlist and is
+# opened before the observer attaches in any case.
+_paranoid_probe_lsof() {
+  _have lsof || return 1
+  local out rc=0 pfd=''
+  # The brace group around the `exec` is NOT decoration, and removing it is
+  # the single most expensive mistake available in this function: `exec` with
+  # redirections and no command makes those redirections PERMANENT for the
+  # shell, so a bare `exec {pfd}<>... 2>/dev/null` sends the MAIN PROCESS's
+  # stderr to /dev/null for the rest of the run.  Measured the hard way while
+  # building this: every log line a `--paranoid` run would have printed -
+  # including `paranoid: connection to <addr> is outside this run's
+  # allowlist`, the one line an operator most needs - vanished, while the
+  # exit code stayed correct, so it looked like a working detector that had
+  # gone mute.  A group redirection is scoped to the group; the fd assignment
+  # inside it still outlives it, which is exactly the split needed here.
+  if ! { exec {pfd}<>/dev/udp/127.0.0.1/9; } 2>/dev/null; then
+    # A bash built without --enable-net-redirections has no /dev/udp at all,
+    # so the control socket cannot be created.  That is INCONCLUSIVE rather
+    # than disqualifying, so fall back to the weaker "lsof ran and did not
+    # hard-error" reading and say so out loud, rather than silently rejecting
+    # a backend that probably works and refusing the run with exit 4.
+    log_warn "paranoid: lsof probe could not open its loopback control socket (bash without /dev/udp?); falling back to a weaker 'lsof executes' check"
+    lsof -w -nP -i -a -p "$BASHPID" -F pn >/dev/null 2>&1 || rc=$?
+    (( rc <= 1 ))
+    return
+  fi
+  out=$(lsof -w -nP -i -a -p "$BASHPID" -F pn 2>/dev/null) || true
+  exec {pfd}>&-
+  # Glob, not a pattern engine: tension 4 rule 2 forbids a bare grep, and this
+  # is a fixed-string containment test on a string already in memory.
+  [[ $out == *'->127.0.0.1:9'* ]]
+}
+
+# ORDER, stated because it is a decision and not an accident: `ss` first
+# (unchanged), then `strace`, then `lsof`.  `lsof` is placed AFTER `strace`
+# rather than before it for two independent reasons.  First, `strace` is a
+# TRACER and the other two are SAMPLERS: it sees every connect() syscall,
+# including one that opens and closes between two polls, so where it is
+# genuinely usable it is the strictly stronger detector.  Second, appending
+# rather than inserting means no host that resolved to a backend before this
+# change resolves to a different one after it - a Linux box with ss keeps ss,
+# a Linux box with strace-but-no-ss keeps strace.  Only a host that previously
+# resolved to `none` (macOS, and any Linux host with neither) is affected, and
+# for those the old answer was "refuse the run".
 paranoid_probe_backend() {
   if [[ -n ${SCOURSH_PARANOID_FORCE_BACKEND:-} ]]; then
     PARANOID_BACKEND=$SCOURSH_PARANOID_FORCE_BACKEND
@@ -111,6 +196,8 @@ paranoid_probe_backend() {
     PARANOID_BACKEND=ss
   elif _paranoid_probe_strace; then
     PARANOID_BACKEND=strace
+  elif _paranoid_probe_lsof; then
+    PARANOID_BACKEND=lsof
   else
     PARANOID_BACKEND=none
   fi
@@ -367,6 +454,99 @@ _paranoid_sample_ss() {
   done < <("${SCOURSH_PARANOID_SS_CMD:-_paranoid_ss_cmd}")
 }
 
+# `lsof -F pn` emits, per matched file, a `p<pid>` line, an `f<fd>` line
+# (lsof always emits the fd field as its per-file set separator, whether or
+# not it was requested), and an `n<name>` line:
+#   p1234
+#   f3
+#   n192.168.4.26:58214->1.1.1.1:443
+#   n[2607:f598::1]:58217->[2606:4700:10::ac42:93f3]:443
+# A listening or unconnected socket's `n` line carries no `->` at all
+# (`n127.0.0.1:19097`), which is exactly how those are dropped.  `-n` and `-P`
+# keep lsof from doing any name or service lookup of its own, so the observer
+# never generates the traffic it is watching for.
+#
+# `-a` ANDs `-i` (internet files only) with `-p` (this pid set only).  Without
+# it lsof ORs them and reports every open file of every process, which would
+# be both enormous and wrong.
+_paranoid_lsof_cmd() {
+  # `|| true` because lsof exits 1 for "matched nothing", which is the normal
+  # case on most polls - the same shape _paranoid_ss_cmd already uses, and the
+  # reason tension 4 rule 2 exists for pattern engines applies here too.
+  lsof -w -nP -i -a -p "$1" -F pn 2>/dev/null || true
+}
+
+# Chunked at 128 pids per invocation rather than passing the whole family in
+# one argv: an unbounded list would eventually hit ARG_MAX, and lsof failing
+# with E2BIG would be swallowed by the `|| true` above into "observed nothing"
+# - a silent coverage hole rather than a loud error.  Chunking has no cap and
+# so drops nothing, which is why it is preferred to a top-N limit here.
+_paranoid_sample_lsof() {
+  local root_pid=$1 line pid='' peer addr port p
+  local -a fam=()
+  declare -A fampids=()
+  while IFS= read -r p; do
+    [[ -n $p ]] || continue
+    fam+=("$p")
+    fampids[$p]=1
+  done < <(_paranoid_family_pids "$root_pid")
+  (( ${#fam[@]} > 0 )) || return 0
+
+  local i n=${#fam[@]} chunk
+  for (( i = 0; i < n; i += 128 )); do
+    chunk=$(IFS=,; printf '%s' "${fam[*]:i:128}")
+    while IFS= read -r line; do
+      case $line in
+        p*)
+          pid=${line#p}
+          continue
+          ;;
+        n*) ;;
+        *) continue ;;
+      esac
+      # Belt and braces on top of lsof's own `-p` filter: the pid is checked
+      # against the family set here as well, so a typo or a future change to
+      # the invocation cannot quietly widen what this run attributes to
+      # itself.  This is also what makes the parser unit-testable against
+      # canned output containing a deliberately foreign pid.
+      #
+      # Measured, so the redundancy is not mistaken for belt with no braces:
+      # this check is the load-bearing one.  Removing `-a` from the
+      # invocation above (which makes lsof OR `-i` and `-p` instead of ANDing
+      # them, so it lists every internet file on the host plus every open
+      # file of the family) changes NOTHING observable, because every extra
+      # line is dropped either here (foreign pid) or by the `->` test below
+      # (a plain file path has no peer).  `-a` is therefore a cost control,
+      # not a correctness control, and tests/suites/paranoid.sh says so
+      # rather than pretending a test pins it.
+      [[ -n $pid && -n ${fampids[$pid]:-} ]] || continue
+      peer=${line#n}
+      [[ $peer == *'->'* ]] || continue     # a LISTEN/unconnected socket
+      peer=${peer##*->}
+      peer=${peer%% *}                      # drop a trailing " (ESTABLISHED)"
+      if [[ $peer =~ ^\[(.+)\]:([0-9]+)$ ]]; then
+        addr=${BASH_REMATCH[1]}
+        port=${BASH_REMATCH[2]}
+      elif [[ $peer =~ ^([^][]+):([0-9]+)$ ]]; then
+        addr=${BASH_REMATCH[1]}
+        port=${BASH_REMATCH[2]}
+      else
+        continue
+      fi
+      # lsof writes `*` for an unbound half of a socket.  Purely defensive:
+      # the fully-unbound form (`n*:*`) is real and common - 24 of them were
+      # open on the measuring host at the time of writing - but it carries no
+      # `->` and is already dropped above, and a HALF-unbound peer
+      # (`->*:443`) was not observed at all.  The guard is here because a
+      # literal `*` reaching the allowlist would match nothing and abort the
+      # run over a socket that has no destination, which is a bad enough
+      # failure to be worth one comparison.
+      if [[ $addr == *'*'* ]]; then continue; fi
+      printf '%s %s\n' "$addr" "$port"
+    done < <("${SCOURSH_PARANOID_LSOF_CMD:-_paranoid_lsof_cmd}" "$chunk")
+  done
+}
+
 _paranoid_strace_logfile() { printf '%s/paranoid/strace.log' "$SCOURSH_SCRATCH"; }
 PARANOID_STRACE_PID=''
 
@@ -409,6 +589,7 @@ _paranoid_sample() {
   case $PARANOID_BACKEND in
     ss) _paranoid_sample_ss "$1" ;;
     strace) _paranoid_sample_strace "$1" ;;
+    lsof) _paranoid_sample_lsof "$1" ;;
     *) return 0 ;;
   esac
 }
@@ -507,7 +688,7 @@ paranoid_on_violation() {
 paranoid_attach() {
   paranoid_probe_backend
   if [[ $PARANOID_BACKEND == none ]]; then
-    die "$SCOURSH_EXIT_INPUT" "--paranoid requires 'ss' or a usable 'strace -f -e trace=connect'; neither is available/permitted on this host"
+    die "$SCOURSH_EXIT_INPUT" "--paranoid requires 'ss', a usable 'strace -f -e trace=connect', or a usable 'lsof'; none is available/permitted on this host"
   fi
 
   # Allowlist BEFORE the observer starts (see _paranoid_allowlist_in_scope's

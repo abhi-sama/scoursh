@@ -76,7 +76,7 @@ scan.sh <command> [options]
 |---|---|---|---|
 | `--profile-scan` | `quick` \| `full` \| `compliance` | `full` | live |
 | `--verbose` | boolean | off | live |
-| `--paranoid` | boolean | off | live on Linux only |
+| `--paranoid` | boolean | off | live on Linux (`ss`/`strace`) and macOS (`lsof`) |
 | `--use-engines` | boolean | off | live, but no engine is vendored here |
 | `--allow-intrusive` | boolean | off | live as a gate (needs `--i-own-target`); the checks it would admit do not exist |
 | `--contact VALUE` | one printable, space-free token | from `config/scanner.conf` (`contact`), else none | live |
@@ -303,23 +303,38 @@ checkout every `dast` invocation refuses with exit 4 until you write the real fi
 `lib/http.sh` actually resolves this run, resolved AWS endpoint addresses for regions actually iterated
 (empty, with a stated reason, until region iteration lands), the host's own `/etc/resolv.conf`
 nameservers on port 53 plus loopback on any port, and `config/scanner.conf`'s `paranoid-allow` entries.
-It then samples this run's own connections (`ss`, or a measured-usable `strace -f -e trace=connect`
-fallback) and aborts with exit `3` on the first destination it observes outside that allowlist.
-If neither `ss` nor a usable `strace` exists on the host, the run refuses with exit `4` rather than
-pretending to be watching.
+It then samples this run's own connections and aborts with exit `3` on the first destination it
+observes outside that allowlist.
 
-**In practice this makes `--paranoid` a Linux-only flag.**
-Both backends are Linux-only, so on macOS the refusal above is what always happens: the run exits `4`
-before a single module has been dispatched, and no findings and no reports are written.
+**It works on Linux and on macOS**, through three backends tried in this order:
+
+| Backend | Kind | Where |
+|---|---|---|
+| `ss` | sampler | Linux |
+| `strace -f -e trace=connect` | tracer (only used where an attach is measured to work) | Linux |
+| `lsof` | sampler | macOS, and any host that ships it |
+
+The order is not alphabetical and is not an accident.
+`strace` is a *tracer*: it sees every `connect()`, including one that opens and closes between two
+polls, so where it genuinely works it is the strongest of the three.
+`ss` and `lsof` are *samplers* and are exactly as good - and exactly as blind - as each other.
+Availability is measured rather than assumed: `lsof` exits `1` both when it matched nothing and when it
+was not permitted to look, so the probe opens a loopback socket of its own and requires `lsof` to
+report that exact socket back before accepting it.
+
+If none of the three is usable, the run refuses with exit `4` before a single module is dispatched, and
+no findings and no reports are written.
 It does not degrade to scanning without the observer, and that is deliberate - a `--paranoid` run that
 quietly stopped watching would be worse than no flag at all.
-Plan for it in CI: a matrix leg that passes `--paranoid` on macOS fails every time.
 
-**Read this plainly: it is a detector, not a guarantee.**
+**Read this plainly: it is a detector, not a guarantee - on every platform.**
 Sampling can miss a connection that opens and closes between two polls.
 `tools/run-in-netns.sh` is the actual guarantee: a network namespace whose only route is the declared
-scope makes an out-of-scope connection categorically impossible rather than merely observable
-(Linux-only, requires root/`CAP_NET_ADMIN`+`CAP_SYS_ADMIN`).
+scope makes an out-of-scope connection categorically impossible rather than merely observable.
+**That tool is Linux-only and has no macOS equivalent** (it needs network namespaces, and
+root/`CAP_NET_ADMIN`+`CAP_SYS_ADMIN`).
+So on Linux you can have a detector and, separately, a guarantee; on macOS you have the detector and
+nothing behind it.
 Every `--paranoid` run states this same limitation in its own `run.json`, so the report never
 overstates what the flag proved.
 

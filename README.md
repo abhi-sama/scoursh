@@ -53,12 +53,14 @@ exhaustively.*
   Linux with GNU coreutils or macOS with a BSD userland, checked automatically in CI.
   Fingerprints survive reindentation and unrelated edits, so a diff or baseline never reports a
   false "fixed" or a false "new."
-- **A detector *and* a guarantee for egress** - on Linux, `--paranoid` watches the process's own
-  outbound connections and aborts on the first one outside scope, and `tools/run-in-netns.sh` goes
-  further and builds a network namespace where an out-of-scope connection is not just detected, it's
-  physically impossible.
-  Both are Linux-only, and `--paranoid` refuses the run outright rather than proceeding unobserved on
-  a host that can't support it.
+- **A detector for egress, on Linux *and* macOS** - `--paranoid` watches the process's own outbound
+  connections and aborts on the first one outside scope, sampling through `ss` or `strace` on Linux
+  and through `lsof` on macOS.
+  It refuses the run outright rather than proceeding unobserved on a host that supports none of them.
+  **On Linux there is also a guarantee** - `tools/run-in-netns.sh` builds a network namespace where an
+  out-of-scope connection is not just detected but physically impossible.
+  That one is Linux-only and has no macOS equivalent, so a macOS run has the detector and nothing
+  behind it.
 - **Honest about its own gaps** - every module a run skips, every coverage limitation, every
   unproven claim is recorded directly in the run's own output as a `coverage_reduction` or
   `coverage_gap` fact, not silently dropped from the report.
@@ -178,12 +180,17 @@ That single constraint shapes most of the architecture:
 - The HTML report is self-contained, with no external assets and a strict inline CSP.
 - `--paranoid` samples the process's own outbound connections during a run and aborts the moment
   it observes one outside the resolved allowlist.
-  It is Linux-only in practice: both of its sampling backends (`ss` and `strace`) are Linux-only, and
-  on a host with neither - macOS included - `--paranoid` refuses the entire scan with exit 4 before
-  any module runs, rather than quietly downgrading to an unobserved one.
-  `tools/run-in-netns.sh` goes further, also on Linux only, building a network namespace whose route
-  table admits only the declared scope, so an out-of-scope connection is categorically impossible
-  rather than merely observed.
+  It has three sampling backends, tried in order: `ss`, then `strace -f -e trace=connect`, then
+  `lsof`.
+  The first two are Linux-only; `lsof` is what macOS ships, so `--paranoid` works there too.
+  On a host where none of the three is usable, it refuses the entire scan with exit 4 before any
+  module runs, rather than quietly downgrading to an unobserved one.
+  It is a **detector, not a guarantee** on every platform: it samples, so a connection that opens and
+  closes between two polls is never seen, and `lsof` has exactly the same blind spot `ss` does.
+  `tools/run-in-netns.sh` is the guarantee - a network namespace whose route table admits only the
+  declared scope, so an out-of-scope connection is categorically impossible rather than merely
+  observed - and it is **Linux-only with no macOS equivalent**.
+  On macOS the detector is the only egress control available; there is no stronger tier behind it.
 - `tests/lint-no-ai.sh` scans the entire shipped tool for any AI/LLM provider hostname, SDK name, or
   API-key-shaped environment variable, and fails the build if it finds one.
 
