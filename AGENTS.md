@@ -1407,9 +1407,16 @@ CI - see "The hosted workflow is dormant, and a PR carries no automatic pass/fai
 all right now - a billing condition, not a workflow defect - so it produces no status check today.**
 It is kept, not deleted: the maintainer intends to make this repository public, which is what lifts that
 condition, and at that point the workflow starts running for real with nothing to reconstruct.
+**Restoring the file alone is not enough to make that true**: without a guard, GitHub still schedules
+the `suite` job on every push and PR, and it fails within seconds with zero steps recorded - a real red
+X, not "no check at all" - because the account has no machine to assign. The `suite` job therefore
+carries `if: ${{ !github.event.repository.private }}`, which the Actions scheduler evaluates itself
+before ever requesting a runner, so it reports `skipped` instead. That flips to `false` and the job
+becomes real automatically the moment the repository goes public - no edit needed. Do not remove this
+guard when troubleshooting a "why didn't CI run" question; it is working as intended.
 Until then, do not assume a check will run on a push, and do not read a green-looking PR as a tested
-one: there is no status check of any kind on a commit or a pull request, so a PR that breaks every
-suite looks exactly like one that breaks nothing.
+one: there is no *failing* status of any kind on a commit or a pull request (only a skipped one), so a
+PR that breaks every suite looks exactly like one that breaks nothing.
 Anyone merging is the check - run `tests/run-tests.sh` against the merge result, or confirm a
 `tools/daily-suite.sh` run *newer than the change* passed.
 See `docs/CI-RUNBOOK.md` for the full account, including what changes once the repository is public.
