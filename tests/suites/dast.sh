@@ -158,24 +158,41 @@ assert_contains "$RUN_OK_JSON" '"checks_run": []' \
   'checks_run is empty - fails under "record the phases we would have run", which is the overclaim this ticket exists to avoid'
 
 # =============================================================================
-printf '\n-- run.json tells the truth about a run with no phases (constraint 3) --\n'
+printf '\n-- run.json tells the truth about a run that covered nothing (constraint 3) --\n'
 # =============================================================================
+#
+# DAST-03 landed `auth.sh`, the FIRST phase script, and that changed which
+# reason this run records without changing what it must say.  Before it, no
+# phase existed and the reason was `no_phase_scripts_on_disk_yet`; now a phase
+# both exists and runs, and - with no `--authed` - covers nothing.  The
+# assertion that matters is unchanged and is asserted below: the run must still
+# state that it covered nothing on this target.  What is deliberately NOT
+# asserted any more is "no phase ran", because that is no longer the honest
+# description of this run.
 
-t_case 'run.json records a coverage_reduction naming the missing phase scripts'
-assert_contains "$RUN_OK_JSON" 'reason=no_phase_scripts_on_disk_yet' \
+t_case 'run.json records a coverage_reduction naming the real cause'
+assert_contains "$RUN_OK_JSON" 'reason=no_check_covered_by_any_phase' \
   'run.json carries the declared reduction - fails under "the module logs it to stderr", which leaves the artifact claiming a complete run'
+assert_not_contains "$RUN_OK_JSON" 'no_phase_scripts_on_disk_yet' \
+  'and it does NOT claim modules/dast/ ships no phase script, now that auth.sh does - fails if the roll-up keys on "did a phase run" rather than "was a check covered", which was one question while no phase existed and is two now'
+
+t_case 'the phase that ran states its own reason for covering nothing'
+assert_contains "$RUN_OK_JSON" 'reason=authed_not_requested' \
+  'auth.sh records why it acquired no session - fails under "the roll-up is enough", which leaves a reader unable to tell an unauthenticated run from a broken one'
+assert_contains "$RUN_OK_JSON" 'No credential was sent' \
+  'and states plainly that no credential left the process on a run that did not ask for one'
 
 t_case 'run.json records a coverage_gap a human reads, naming the target'
 assert_contains "$RUN_OK_JSON" '"coverage_gap": [' 'run.json has a coverage_gap array'
 assert_contains "$RUN_OK_JSON" "covered nothing on target 'dast-fixture'" \
   'the gap sentence itself names the target it did not cover - fails under "the targets array already names it", which leaves the gap unattributed'
-assert_contains "$RUN_OK_JSON" 'no request was sent' \
-  'the gap says plainly that nothing was sent - fails under "reason=not_yet_built is enough", which a reader cannot tell from a clean scan'
+assert_contains "$RUN_OK_JSON" 'no property of the running endpoint was tested' \
+  'the gap says plainly that nothing was tested - fails under "reason=not_yet_built is enough", which a reader cannot tell from a clean scan'
 
 t_case 'the report a human opens carries the same statement'
 REPORT_MD=$(_slurp "$W/run-ok/report.md")
 assert_contains "$REPORT_MD" 'Limitations and coverage' 'report.md has its limitations section'
-assert_contains "$REPORT_MD" 'no_phase_scripts_on_disk_yet' \
+assert_contains "$REPORT_MD" 'no_check_covered_by_any_phase' \
   'report.md states the reduction - fails under "run.json is the audit surface, the report is for findings"'
 
 t_case 'the target-scoped coverage cell is recorded'
@@ -340,8 +357,8 @@ assert_not_contains "$RUN_FULL_JSON" 'endpoint_inventory_absent' \
   'no absent-gap is recorded for a file that is there - fails under "record the gap unconditionally", which would make the record decoration'
 assert_not_contains "$RUN_FULL_JSON" 'parameter_inventory_absent' \
   'nor for the parameter inventory'
-assert_contains "$RUN_FULL_JSON" 'no_phase_scripts_on_disk_yet' \
-  'and the no-phases reduction is still recorded, because a full inventory that nothing consumes is not coverage'
+assert_contains "$RUN_FULL_JSON" 'no_check_covered_by_any_phase' \
+  'and the no-coverage reduction is still recorded, because a full inventory that nothing consumes is not coverage'
 
 t_case 'the inventory paths are published for the phase that will consume them'
 assert_eq "$W/run-full-inv/inventory/endpoints.json" \
@@ -451,5 +468,59 @@ _dast_scan "$W/run-authz-mismatch" "$FIX_SCOPE" --target dast-fixture --i-own-ta
 assert_eq 2 "$_RC" \
   'an affirmation naming a different host is exit 2 through the real CLI - fails under "the affirmation is a switch", which is how a copied CI file carries one to a target that changed hands'
 
+
+# =============================================================================
+printf -- '\n-- the auth phase, through the real scan.sh dispatch (DAST-03) --\n'
+# =============================================================================
+# tests/suites/dast-auth.sh exercises the engine directly.  These two cases
+# exercise the WIRING: that `dast_run_phase` reaches modules/dast/auth.sh at all,
+# that it sees `--authed`, and that what it records lands on the surfaces a
+# consumer reads.  Neither sends a request.
+
+t_case '--authed with no config/auth.conf is a recorded reduction, not an error'
+_dast_scan "$W/run-authed-noconf" "$FIX_SCOPE" --target dast-fixture --authed
+assert_eq 0 "$_RC" \
+  'the run still exits 0 - FAILS under "auth.conf is a required input for --authed", which docs/FOUNDATION.md tension 14 classes as a DECLARED reduction ("a check skipped for an absent requires-config"), not a missing-input abort'
+RUN_AUTH_JSON=$(_slurp "$W/run-authed-noconf/run.json")
+assert_contains "$RUN_AUTH_JSON" 'reason=auth_config_absent' \
+  'run.json says the session could not be acquired and why - fails if the phase returns quietly, which leaves an --authed run reporting the same coverage as an authenticated one'
+assert_contains "$RUN_AUTH_JSON" 'every authenticated check is skipped' \
+  'and the human-readable gap states the consequence, not just the cause'
+assert_contains "$RUN_AUTH_JSON" 'NOT assessed at all' \
+  'the user-enumeration gap says which half ran even when neither did (docs/DESIGN.md §7.4) - fails under "say nothing when nothing happened", which lets a clean report read as "user enumeration was tested"'
+
+t_case 'a static identity authenticates through the real dispatch, sending nothing'
+FIX_AUTH=$W/root-with-auth
+_fixture_root "$FIX_AUTH"
+cp "$FIX_SCOPE/config/scope.conf" "$FIX_AUTH/config/scope.conf"
+cat >"$FIX_AUTH/config/auth.conf" <<'AUTHEOF'
+id: dast-fixture.a
+mode: bearer
+token: a-static-token-no-login-needed
+AUTHEOF
+chmod 600 "$FIX_AUTH/config/auth.conf"
+STUB2=$W/netstub2
+mkdir -p "$STUB2"
+for c in curl wget nc openssl; do
+  printf '#!/bin/sh\nprintf "%%s\\n" "$0 $*" >>"%s"\nexit 0\n' "$W/authed-network-attempts" >"$STUB2/$c"
+  chmod 755 "$STUB2/$c"
+done
+rm -f "$W/authed-network-attempts"
+_AUTH_RC=0
+SCOURSH_INSTALL_ROOT=$FIX_AUTH PATH="$STUB2:$PATH" \
+  bash "$ROOT/scan.sh" dast --target dast-fixture --authed --out "$W/run-authed-ok" \
+  >"$W/run-authed-ok.log" 2>&1 || _AUTH_RC=$?
+assert_eq 0 "$_AUTH_RC" 'the authenticated run exits 0'
+assert_file_absent "$W/authed-network-attempts" \
+  'and a STATIC credential produced no network call at all - FAILS under "every mode logs in", which would put a request on the wire for a credential the operator already handed us'
+RUN_AUTH_OK=$(_slurp "$W/run-authed-ok/run.json")
+assert_contains "$RUN_AUTH_OK" 'state=authenticated' \
+  'run.json records the identity as authenticated - fails if the phase is reached but its record never leaves the process'
+assert_not_contains "$RUN_AUTH_OK" 'a-static-token-no-login-needed' \
+  'and the CREDENTIAL ITSELF appears nowhere in run.json - FAILS if the phase records the identity by logging what it sent, which writes the operator'"'"'s token into the artifact people attach to tickets'
+assert_not_contains "$(_slurp "$W/run-authed-ok/report.md")" 'a-static-token-no-login-needed' \
+  'nor in the markdown report'
+assert_contains "$RUN_AUTH_OK" 'need TWO' \
+  'and the run states that one identity is not enough for a cross-user check - fails if the shortfall is discovered later by DAST-29 reporting a clean result it had no second identity to obtain'
 
 t_summary dast

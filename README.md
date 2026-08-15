@@ -459,8 +459,12 @@ the tool rather than in a pipeline:
   against, so there is nothing yet for it to narrow the gate down to.
 - **`--jobs N` is parsed and ignored.**
   Every scan is single-worker and records `single_worker_no_parallel_scan_yet` in its own output.
-- **`--authed` is parsed and read by nothing.**
-  It belongs to `dast`, which is not built, and it is not recorded in `run.json` either.
+- **`--authed` works, but only the session half of what it implies exists yet.**
+  It belongs to `dast`, and `modules/dast/auth.sh` now reads it: with a `config/auth.conf`
+  (`config/auth.conf.example` is the annotated template) it really does log in, keep a session, and
+  re-authenticate once on a `401`.  What does not exist yet is any check that USES that session - the
+  cross-user and API checks arrive later in step 5 - so an `--authed` run acquires a session, records
+  that it did, and then has nothing to spend it on.
 - **There is no per-subcommand help.**
   `scan.sh dast --help`, `scan.sh cloud --help`, `scan.sh diff --help`, and `scan.sh sca --help` all
   print the same global usage and exit 0, so nothing there tells you a subcommand is unbuilt.
@@ -477,14 +481,14 @@ What's left, in priority order:
 1. **DAST** (`scan.sh dast`) - the running-endpoint scanner, and now the top priority.
    A full, dependency-ordered ticket plan already exists
    ([`docs/STEP5-DAST-PLAN.md`](docs/STEP5-DAST-PLAN.md)), the CLI grammar and the scope gate are in
-   place, the HTTP chokepoint (`lib/http.sh`) is complete and tested, and tooling to stand up a local,
-   self-hosted test target already exists (`tools/dast-test-target.sh`), though it has not yet been
-   observed running end to end - but no scanning code is written yet.
-   Two things originally sat in front of it, and only one still does.
-   Step 4 (SCA + IaC) is complete, so that half is cleared.
-   The other, the two outstanding SAST rule packs below, is a sequencing preference from the original
-   build order rather than a technical dependency: the first DAST ticket - the rate limiter, per-run
-   request budget, and circuit breaker - touches `lib/http.sh` only and consumes no rule pack at all.
+   place, and the HTTP chokepoint (`lib/http.sh`) is complete and tested - including the rate limiter,
+   the per-run request budget and the circuit breaker every DAST request pays.
+   Tier 0 (that safety layer) is complete, and tier 1 is half done: `modules/dast/auth.sh` -
+   authentication and session acquisition - has landed, and is exercised both against mock responses
+   and against a real, local, self-hosted test target (`tools/dast-test-target.sh`).
+   What is still missing is the part that finds things: the crawler (`crawl.sh`) that builds the
+   endpoint inventory, and every check that reads it.
+   Everything that originally sat in front of step 5 is cleared.
 2. **Persistent run state** (`state/`) - needed before `--baseline` suppression, a `--fail-on-new` that
    means anything, and the `diff`/`report` subcommands do real work; all are currently no-ops.
    A full ticket plan exists here too ([`docs/STEP7-STATE-PLAN.md`](docs/STEP7-STATE-PLAN.md)).
@@ -496,10 +500,8 @@ What's left, in priority order:
    all.
    The read-only AWS wrapper already exists ahead of schedule.
 
-Outside that ordering: two SAST rule packs, `ldap.rules` and `nosql.rules`, are still outstanding from
-step 3.
-Container image scanning (scanning built image layers, not just Dockerfile/compose source) and
-network/host scanning are not currently part of the design plan at all.
+Outside that ordering: container image scanning (scanning built image layers, not just
+Dockerfile/compose source) and network/host scanning are not currently part of the design plan at all.
 
 See [`ROADMAP.md`](ROADMAP.md) for the fuller breakdown, including work that's already landed ahead
 of its normal turn (the optional engine adapters, the `--paranoid` connection observer, and the

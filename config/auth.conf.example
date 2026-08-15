@@ -1,0 +1,114 @@
+# config/auth.conf.example - authentication identities (rules/RULE-FORMAT.md §9.6.2)
+#
+# Copy to config/auth.conf, edit, and `chmod 600` it.  scoursh REFUSES to read
+# this file at any other mode (E073): every value in it is a credential.
+#
+# One record per (target, identity).  The `id` is `<target-id>.<label>`, where
+# `<target-id>` MUST name a target your config/scope.conf defines (E080) and
+# `<label>` is yours to choose.  Two labelled identities on one target is what
+# the cross-user access-control checks need - they work by asking for identity
+# B's object as identity A, so with one identity they cannot run at all.
+#
+# CREDENTIALS: prefer `secret-file`, an ABSOLUTE path to a mode-600 file holding
+# the credential, over the inline `token` / `password` / `client-secret` keys.
+# The inline keys work, but they put the credential in this file, and this file
+# is the one somebody pastes into a ticket.  A secret-file is read as its FIRST
+# LINE, so a trailing newline from your editor is not part of the credential.
+# scoursh never passes a credential as a command-line argument and never writes
+# one to disk in the clear (docs/FOUNDATION.md tension 9).
+#
+# Which keys each `mode` requires is checked as E074 when the file loads, so a
+# missing key is reported here rather than at the first request to your target.
+#
+# Nothing below is a default and no host named here exists: every value is an
+# RFC 2606 reserved example domain or a placeholder path.  scoursh ships no
+# scannable target of its own (docs/DESIGN.md §1).
+
+# --- a static bearer token -------------------------------------------------
+# Sends `Authorization: Bearer <credential>`.  `header-name` moves it to
+# another header if your API wants one; the `Bearer ` prefix stays.
+id: staging.a
+mode: bearer
+secret-file: /etc/scoursh/staging-a.token
+notes: A long-lived token you already hold. scoursh performs no login for this
+  mode and sends no request to acquire the session.
+
+# --- a raw API key ---------------------------------------------------------
+# Sends the credential VERBATIM under `header-name` - no `Bearer ` prefix,
+# because an API key is not a bearer token and prefixing it would send a
+# credential shape the target never issued.  `header-name` defaults to
+# `Authorization` if you omit it.
+id: staging.b
+mode: api-key
+secret-file: /etc/scoursh/staging-b.key
+header-name: X-API-Key
+notes: The second identity on this target. Two identities is what the
+  cross-user access-control checks need.
+
+# --- form login ------------------------------------------------------------
+# POSTs the credentials to `login-path` (relative to the target's base-url) and
+# keeps whatever the exchange leaves behind: a Set-Cookie jar, a token in the
+# response body, or both.
+#
+# The request BODY SHAPE is not part of this schema, so scoursh tries at most
+# three, in order, and stops at the first that yields a session:
+#   1. application/x-www-form-urlencoded  username=<u>&password=<p>
+#   2. application/json                   {"email":<u>,"password":<p>}
+#   3. application/json                   {"username":<u>,"password":<p>}
+# The winning shape is remembered, so a re-authentication replays it directly
+# and never probes again.  If your target has an account lockout policy, be
+# aware that a wholly failed login costs three attempts, once, per identity.
+id: app.a
+mode: form
+username: scan-test-a@example.com
+secret-file: /etc/scoursh/app-a.password
+login-path: /api/login
+
+# --- OAuth2 / OIDC, resource-owner password grant (RFC 6749 §4.3) ----------
+# `token-url` is a full URL and is scope-gated like every other request: put
+# its host in config/scope.conf, or the run refuses to contact it.
+# `client-secret` is optional here (a public client has none); if you set both
+# it and `secret-file`, the secret-file holds the USER's password.
+id: api.a
+mode: oauth2-password
+token-url: https://idp.example.com/oauth2/token
+username: scan-test-a@example.com
+secret-file: /etc/scoursh/api-a.password
+client-id: scoursh-scan
+scope: openid profile
+
+# --- OAuth2, client-credentials grant (RFC 6749 §4.4) ---------------------
+# No user; the client authenticates as itself. `secret-file` holds the CLIENT
+# secret for this mode. Client credentials are sent as body parameters rather
+# than HTTP Basic; RFC 6749 §2.3.1 permits both.
+id: api.svc
+mode: oauth2-client
+token-url: https://idp.example.com/oauth2/token
+client-id: scoursh-scan
+secret-file: /etc/scoursh/api-client.secret
+scope: api.read
+
+# --- an identity-provider SRP pool (Cognito-style) -------------------------
+# scoursh does NOT compute the SRP handshake: docs/DESIGN.md §7.0 permits
+# either computing it or accepting a pre-obtained token, and this build accepts
+# the token - a pure-shell SRP-6a implementation is unverifiable crypto in a
+# language with no way to test it. Obtain the token with your provider's own
+# CLI or SDK, put it in a 600 file, and point `secret-file` at it. The run
+# records that the SRP exchange was not performed, so nobody reads `mode: srp`
+# as evidence that your provider's SRP implementation was exercised.
+id: api.pooled
+mode: srp
+username: scan-test-a@example.com
+pool-id: replace-with-your-pool-id
+secret-file: /etc/scoursh/api-pooled.jwt
+
+# --- a credential obtained entirely out of band ----------------------------
+# Mechanically the same as api-key, recorded differently on purpose: nothing in
+# the run checked that this session was still valid, and a reader of the report
+# needs to know that was nobody's job.
+id: api.external
+mode: external
+secret-file: /etc/scoursh/api-external.token
+notes: Refreshed by something outside scoursh. If it expires mid-run, the
+  authenticated checks are marked skipped with that reason - never run
+  unauthenticated and reported as clean.

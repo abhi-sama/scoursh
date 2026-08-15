@@ -8,7 +8,7 @@ mock-response test -> §7.4 auth/API/authz checks" - can be picked up as a clean
 independently reviewable tickets, instead of being re-derived from `docs/DESIGN.md` §7 from scratch by
 whoever picks it up first.
 
-## Status: top priority - tier 0 is complete; tiers 1-5 are unblocked
+## Status: top priority - tier 0 is complete, and tier 1 has started
 
 **Every gate this section used to record is now discharged, and the whole of tier 0 has landed.**
 `docs/DESIGN.md` §13 step 3 finished (`nosql.rules` and `ldap.rules` landed), step 4 finished (SCA at
@@ -24,6 +24,16 @@ whoever picks it up first.
 | DAST-34 - an unrestricted run stated on stderr and in the report | landed |
 | DAST-35 - the lint forbidding a bundled scan target | separate ticket; no ticket below is gated on it |
 | DAST-36 - folding this posture into DAST-01..30's own acceptance criteria | doc-only; not started |
+
+**Tier 1 is now half landed.**
+
+| Ticket | State |
+|---|---|
+| DAST-03 - `auth.sh`, authentication and session acquisition (§7.0) | landed |
+| DAST-04 - `crawl.sh`, crawling, parameter and spec discovery (§7.5) | not started |
+
+DAST-04 is the only thing tiers 2-5 are still waiting on: every check below needs the endpoint and
+parameter inventory it writes, and none of them needs anything else DAST-03 did not already ship.
 
 **Nothing now blocks DAST-03 (`auth.sh`) or DAST-04 (`crawl.sh`), which are what tiers 2-5 wait on.**
 The one ordering constraint tier 0 existed to impose has been met: no ticket may issue real HTTP
@@ -535,8 +545,83 @@ They are specified in "Safety defaults and authorisation" above rather than rest
 
 | # | Ticket | Depends on | Notes |
 |---|---|---|---|
-| DAST-03 | `auth.sh` (§7.0) - authentication & session acquisition | DAST-01, DAST-02, `config/auth.conf` schema (already frozen, `rules/RULE-FORMAT.md` §9.6.2) | Static bearer/API key, form login, OAuth2/OIDC password/client-credentials grant, Cognito-style SRP. Session store (cookie jar + token cache) in the run scratch dir, perms `600`. Transparent re-auth on `401`, else the authenticated checks are marked `skipped` with a reason. Multi-identity (labelled A/B) for DAST-29 (`authz.sh`). The config-derived half of the §7.4 closing paragraph's user-enumeration checks (detection via config, not a live probe) belongs here too; the live `--allow-intrusive` opt-in variant is a small follow-up once this ticket's session modes exist, not counted separately below. |
+| DAST-03 **(landed)** | `auth.sh` (§7.0) - authentication & session acquisition | DAST-01, DAST-02, `config/auth.conf` schema (already frozen, `rules/RULE-FORMAT.md` §9.6.2) | Static bearer/API key, form login, OAuth2/OIDC password/client-credentials grant, Cognito-style SRP. Session store (cookie jar + token cache) in the run scratch dir, perms `600`. Transparent re-auth on `401`, else the authenticated checks are marked `skipped` with a reason. Multi-identity (labelled A/B) for DAST-29 (`authz.sh`). The config-derived half of the §7.4 closing paragraph's user-enumeration checks (detection via config, not a live probe) belongs here too; the live `--allow-intrusive` opt-in variant is a small follow-up once this ticket's session modes exist, not counted separately below. |
 | DAST-04 | `crawl.sh` (§7.5) - crawling, parameter & spec discovery | DAST-01, DAST-02; optionally DAST-03 for an authenticated crawl pass (unauthenticated static crawl does not need it) | Static crawl (links/forms/`action`s/input names, depth-limited, scope-gated); spec ingestion (OpenAPI/Swagger, GraphQL schema, Postman, HAR) as the preferred, most-complete input; merges any `reports/<run>/inventory/endpoints.json` another module already wrote (tension 21 - SAST route extraction, `apigw.sh`), tolerating its absence with a `coverage_gap` record via the mechanism `lib/report.sh` already ships (step 1). Writes `endpoints.json` + `parameters.json`, which every ticket below consumes. **Must implement the SPA/client-rendered-app limitation as a stated `coverage_gap`, not a fix**: see "SPA/client-rendered limitation" below - this ticket's acceptance criteria should require that gap to actually appear in `run.json`/the report when no spec/HAR is supplied, not just be true in prose. |
+
+#### What DAST-03 actually shipped, and the five things about it that are easy to get backwards
+
+`modules/dast/auth_engine.sh` (the pure library: config load, the session store, every mode, re-auth,
+and the config-derived enumeration check) plus `modules/dast/auth.sh` (the phase script
+`dast_run_phase` sources), in the `engine.sh`/`run.sh` split `modules/sast/` established.
+`tests/suites/dast-auth.sh` is the mocked suite; `tests/e2e/dast-auth-live.sh` is the opt-in
+Docker-requiring proof against the authorized local target, in the same shape and for the same reason
+as `tests/e2e/dast-target-smoke.sh`.
+The public surface later tickets consume is `dast_auth_load`, `dast_auth_labels_set`,
+`dast_auth_acquire`, `dast_auth_apply`, `dast_auth_request`, `dast_auth_state`,
+`dast_auth_skip_reason` and `dast_auth_authenticated_labels_set`.
+
+- **`lib/http.sh` grew a per-request context, and that is where it had to go.**  Before this ticket
+  `http_request` could send neither a header nor a body and discarded the response - which is
+  everything §7.0 needs and nothing a reachability probe does.  Sections 9a and 12 of that file now
+  carry `http_request_header` / `http_request_body` / `http_request_capture`.  Putting it in the module
+  instead would have been the second path to the network tension 19 exists to make impossible, and it
+  would have skipped the limiter, the budget, the breaker and the ceilings that all hang off the
+  chokepoint.  **A credential reaches curl over STDIN, as a `curl -K -` config**: there is no `-H
+  @file` and no stdin-header option, so the alternatives really were argv (visible in `ps`) or a
+  scratch file, and neither satisfies tension 9.  `tests/suites/http.sh` proves it against a stub
+  `curl` that dumps its own `argv`.
+- **The context is CONSUMED at entry, not cleared at exit, and a redirect drops it.**  A credential
+  left attached after a gate refusal or an opened breaker would ride along on the next request.  A
+  redirect crossing ORIGIN drops the caller's headers and body even when both origins are in
+  `config/scope.conf`: the gate answers "may this tool talk to that host", never "does this credential
+  belong to it".  A 301/302 after a non-GET is re-issued as GET with the body dropped (RFC 7231
+  §6.4.3), because re-POSTing a credential to a path the *scanned target* chose is exactly what a
+  login flow must not do; 307/308 are left alone.
+- **The `form` mode probes at most three body shapes, and the frozen schema is what forced it.**
+  §9.6.2 gives `form` a `login-path`, a `username` and a credential, and names no body encoding and no
+  field names, so an implementation must pick - and picking one would work against classic HTML form
+  logins or against JSON login APIs but never both.  Order: urlencoded `username=/password=`, then
+  JSON `{"email":..}`, then JSON `{"username":..}`; first to yield a session wins; the winner is
+  persisted so a re-auth replays it and never probes again.  Three attempts is a real cost against an
+  account lockout policy, which is why it is bounded and never repeated.  A `login-body-shape` key
+  would be the better answer and is a REGISTER change, not something to add here.
+- **`srp` accepts a pre-obtained token; it does not compute the handshake.**  `docs/DESIGN.md` §7.0
+  offers the implementer both, and a pure-shell SRP-6a is modular exponentiation over a 3072-bit group
+  written in bash arithmetic - unverifiable crypto in a language with no way to test it.  E074 says so
+  at config-load time, and the run records `srp_handshake_not_computed`, so nobody reads `mode: srp` as
+  evidence the provider's SRP exchange was exercised.
+- **A failed authentication is a DECLARED coverage reduction, not exit 5.**  `docs/DESIGN.md` §7.0's
+  own wording is "mark the authenticated checks `skipped` with a clear reason", which is the vocabulary
+  of `docs/FOUNDATION.md` tension 14's declared rows ("a check skipped for an absent `requires-cmd` or
+  `requires-config`") rather than its unplanned ones: a session that could not be obtained makes the
+  authenticated checks' required input absent, exactly as a missing `config/auth.conf` does.  The run
+  is not abandoned; `dast_auth_state` returns `failed` for the rest of it and `dast_auth_skip_reason`
+  is the sentence every dependent check must state.
+
+Two smaller things this ticket had to land with it, because the first phase script is what made them
+true:
+
+- **E073 and E074 are now enforced.**  Both error codes were reserved in `rules/RULE-FORMAT.md` §13 and
+  neither had an implementation.  E074's mode-to-required-keys table lives in `lib/records.sh` (one
+  copy, which `modules/dast/auth_engine.sh` consumes rather than restating), and E073 is checked at
+  runtime as well as by the linter - the file whose permissions matter is the operator's own, and a
+  lint that ran in this repository has said nothing about it.  A `secret-file` is held to the same
+  600 requirement as `config/auth.conf` itself.
+- **`modules/dast/run.sh`'s honesty roll-up now keys on COVERAGE, not on execution.**  DAST-02 could
+  ask "did any phase run", because none existed and the two questions had one answer.  `auth.sh` runs
+  on every passive run and, without `--authed`, covers nothing - so "a phase ran" would have started
+  reading as coverage on exactly the run that has none.  The roll-up counts `checks_run` instead, which
+  is the mechanism `modules/sast/`, `modules/iac/` and every `modules/sca/` engine already use, and it
+  gained a third reason (`no_check_covered_by_any_phase`) alongside the two DAST-02 shipped.
+
+**What DAST-03 deliberately did NOT build**, so the boundary is not rediscovered: the LIVE
+user-enumeration probe.  §7.4's closing paragraph splits that check in two, and only the config-derived
+half - which reads the authentication responses the run already received and sends nothing - is here.
+The live half submits an identifier the operator did not configure, which on a real identity provider
+creates accounts and sends messages, so it needs `--allow-intrusive`; a run given that flag today
+records `live_enumeration_probe_not_implemented` rather than letting an absent finding read as a clean
+result.  Also not built, and belonging to their own tickets: an authenticated crawl pass (DAST-04) and
+any consumer of the two-identity plumbing (DAST-29).
 
 ### Tier 2 - passive checks (§7.1, 7 scripts, `modules/dast/passive/*.sh`)
 

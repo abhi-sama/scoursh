@@ -18,13 +18,13 @@
 # tools/dast-test-target/http-client.js, exactly as that file's own header
 # explains.
 #
-# Idempotent across both a still-running target (reuses the existing
-# password, re-registration is a harmless no-op against this pinned Juice
-# Shop version) and a stopped-then-restarted one (the container's account
-# database does not persist across restarts, so re-registering with the
-# same, already-persisted password is what makes the old secret-file valid
-# again) - see dti_provision's own comment for why skip-if-exists would be
-# wrong here.
+# Idempotent across both a still-running target (the account is already
+# there; re-registration is REFUSED and that refusal is the expected,
+# successful outcome - see dti_provision) and a stopped-then-restarted one
+# (the container's account database does not persist across restarts, so
+# re-registering with the same, already-persisted password is what makes the
+# old secret-file valid again) - see dti_provision's own comment for why
+# skip-if-exists would be wrong here.
 #
 # Emits two lines on stdout, one per identity, machine-readable:
 #   <label> <email> <secret-file-path>
@@ -59,11 +59,27 @@ dti_require_target_running() {
 # already existed would silently leave a locally-remembered password with
 # no matching account in a freshly (re)started target. Idempotency instead
 # comes from re-registering every time (reusing the persisted password when
-# one already exists) and from this pinned Juice Shop version's own
-# behaviour of accepting a repeat registration rather than 400ing on a
-# duplicate email - verified against bkimminich/juice-shop:v20.1.1 while
-# building this script. A future image that starts rejecting duplicates
-# would surface as this function's own die below, not a silent bad state.
+# one already exists) and, when that registration is REFUSED as a duplicate,
+# from proving the account is usable rather than assuming either way.
+#
+# THIS FUNCTION USED TO CLAIM THE OPPOSITE, AND THE CLAIM WAS WRONG.  Its own
+# header stated that this pinned image "accepts a repeat registration rather
+# than 400ing on a duplicate email - verified against
+# bkimminich/juice-shop:v20.1.1". Re-measured against that same image while
+# building DAST-03's live test, it 400s:
+#
+#   first registration:  201
+#   same email again:    400 {"message":"Validation error",
+#                             "errors":[{"field":"email",
+#                                        "message":"email must be unique"}]}
+#   login afterwards:    200
+#
+# so running this script twice against one still-running container died, and
+# every run after the first one failed on a target that was in fact perfectly
+# provisioned. A duplicate refusal is therefore treated as the SUCCESS it is -
+# but only after a login proves the persisted password still opens the account,
+# because "the email is taken" and "the email is taken by an account whose
+# password we hold" are different facts and only the second one is idempotency.
 dti_provision() {
   local label=$1 email=$2 secret_file=$3 password reused=false
 
@@ -82,16 +98,34 @@ dti_provision() {
     "$email" "$password" "$password")
   reg_out=$(dtt_call POST /api/Users '' "$reg_body")
   reg_status=${reg_out%%$'\n'*}
-  if [[ $reg_status != 2* ]]; then
-    die "$SCOURSH_EXIT_INCOMPLETE" \
-      "dast-test-identities: registration of $label ($email) failed, status $reg_status"
+
+  if [[ $reg_status == 2* ]]; then
+    if [[ $reused == true ]]; then
+      log_info "dast-test-identities: $label re-registered against a restarted target, reusing its existing password ($email)"
+    else
+      log_info "dast-test-identities: provisioned $label ($email)"
+    fi
+    return 0
+  fi
+
+  # Registration refused. The only acceptable reason is that this account is
+  # already there from an earlier run of this script against this same still-
+  # running container, and the password we hold still opens it.
+  local login_out login_status
+  login_out=$(dtt_call POST /rest/user/login '' \
+    "$(printf '{"email":"%s","password":"%s"}' "$email" "$password")")
+  login_status=${login_out%%$'\n'*}
+  if [[ $login_status == 200 ]]; then
+    log_info "dast-test-identities: $label already exists on the running target and its stored password still works ($email)"
+    return 0
   fi
 
   if [[ $reused == true ]]; then
-    log_info "dast-test-identities: $label re-registered against the current target, reusing its existing password ($email)"
-  else
-    log_info "dast-test-identities: provisioned $label ($email)"
+    die "$SCOURSH_EXIT_INCOMPLETE" \
+      "dast-test-identities: $label ($email) could not be registered (status $reg_status) and the stored password in $secret_file does not open the existing account (login status $login_status). Delete $secret_file and restart the target (tools/dast-test-target.sh --stop, then start) to provision it fresh."
   fi
+  die "$SCOURSH_EXIT_INCOMPLETE" \
+    "dast-test-identities: registration of $label ($email) failed, status $reg_status, and the newly generated password does not open an existing account either (login status $login_status). The target may already hold this account from a run whose secret-file was deleted; restart it (tools/dast-test-target.sh --stop, then start) to reset its account database."
 }
 
 dti_main() {
