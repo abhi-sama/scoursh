@@ -461,5 +461,102 @@ assert_contains "$_all_findings" '"module":"sast"' \
 assert_contains "$_all_findings" '"module":"iac"' \
   'the iac module contributed a finding TOO - fails under "all aborted after the first module", which leaves a report that silently omits every later module while run.json still declares the run complete'
 
+# =============================================================================
+printf '\n-- --format actually selects which artifacts get written --\n'
+# =============================================================================
+# Reuses $W/all-tree (one sast fixture, one iac fixture) from the case above,
+# so every --format run below has at least one real finding to report, not an
+# empty tree that would write the same five near-empty files whatever
+# --format asked for and pin nothing.
+
+t_case 'no --format: the five artifacts this project has always written are all still written'
+rm -rf "$W/fmt-default"
+assert_status 0 './scan.sh all --path DIR --out DIR (no --format) exits 0' \
+  _bin_run all --path "$W/all-tree" --out "$W/fmt-default"
+for f in findings.json findings.jsonl report.md report.html run.json; do
+  assert_file_exists "$W/fmt-default/$f" \
+    "$f is written with no --format given - pins today's unchanged default, fails under a default that silently narrows what a caller who never asked for --format gets"
+done
+
+t_case '--format md writes only report.md, plus the two mandatory records'
+rm -rf "$W/fmt-md"
+assert_status 0 './scan.sh all --format md exits 0' \
+  _bin_run all --path "$W/all-tree" --out "$W/fmt-md" --format md
+assert_file_exists "$W/fmt-md/report.md" 'report.md is written'
+assert_file_exists "$W/fmt-md/findings.jsonl" \
+  'findings.jsonl is written regardless - it is a mandatory per-run record, not one of the four --format values'
+assert_file_exists "$W/fmt-md/run.json" \
+  'run.json is written regardless - every run writes run.json (docs/DESIGN.md §4)'
+assert_file_absent "$W/fmt-md/findings.json" \
+  "findings.json is NOT written - fails under the shipped defect where --format is parsed and then discarded, so 'md' still got findings.json too"
+assert_file_absent "$W/fmt-md/report.html" \
+  "report.html is NOT written - fails under the same discarded-format defect"
+
+t_case '--format json,html (multi-format) writes exactly those two, and nothing findings.jsonl/run.json would not already cover'
+rm -rf "$W/fmt-json-html"
+assert_status 0 './scan.sh all --format json,html exits 0' \
+  _bin_run all --path "$W/all-tree" --out "$W/fmt-json-html" --format json,html
+assert_file_exists "$W/fmt-json-html/findings.json" 'findings.json is written'
+assert_file_exists "$W/fmt-json-html/report.html" 'report.html is written'
+assert_file_absent "$W/fmt-json-html/report.md" \
+  "report.md is NOT written - fails under 'every format list still writes all five artifacts'"
+
+t_case '--format sarif alone: no SARIF emitter exists yet (docs/DESIGN.md §13 step 10), so it selects nothing beyond the two mandatory records'
+rm -rf "$W/fmt-sarif"
+assert_status 0 './scan.sh all --format sarif exits 0' \
+  _bin_run all --path "$W/all-tree" --out "$W/fmt-sarif" --format sarif
+assert_file_exists "$W/fmt-sarif/findings.jsonl" 'findings.jsonl is still written (mandatory)'
+assert_file_exists "$W/fmt-sarif/run.json" 'run.json is still written (mandatory)'
+assert_file_absent "$W/fmt-sarif/findings.json" 'findings.json is NOT written for --format sarif'
+assert_file_absent "$W/fmt-sarif/report.md" 'report.md is NOT written for --format sarif'
+assert_file_absent "$W/fmt-sarif/report.html" 'report.html is NOT written for --format sarif'
+
+# =============================================================================
+printf '\n-- per-subcommand help: scan.sh <command> --help --\n'
+# =============================================================================
+t_case 'dast --help exits 0 with no --target given, and states it is only partially built'
+assert_status 0 './scan.sh dast --help exits 0 with no --target' _bin_run dast --help
+DAST_HELP=$(cat "$W/bin.out")
+assert_contains "$DAST_HELP" 'scan.sh dast [options]' 'command-specific header'
+assert_contains "$DAST_HELP" 'partially built' \
+  "dast states plainly that it is only partially built - fails under the shipped defect where every subcommand prints the same global usage and says nothing about build status"
+assert_contains "$DAST_HELP" 'scan phases implemented' \
+  'the phase count is stated, not just a bare "partial"'
+assert_not_contains "$DAST_HELP" 'Commands:' \
+  "dast --help is NOT the global usage text - fails under 'scan.sh dast --help prints the same global usage' (the shipped defect this ticket fixes)"
+
+t_case 'cloud --help exits 0 and states plainly it is not built'
+assert_status 0 './scan.sh cloud --help exits 0' _bin_run cloud --help
+CLOUD_HELP=$(cat "$W/bin.out")
+assert_contains "$CLOUD_HELP" 'scan.sh cloud [options]' 'command-specific header'
+assert_contains "$CLOUD_HELP" 'NOT built' 'cloud states plainly that it is not built'
+assert_contains "$CLOUD_HELP" 'modules/cloud/aws/run.sh does not exist' \
+  'the reason is the real, checkable fact scan_dispatch itself acts on, not a hand-typed claim'
+
+t_case 'diff --help exits 0 with no --against given, and states plainly it is not built'
+assert_status 0 './scan.sh diff --help exits 0 with no --against' _bin_run diff --help
+DIFF_HELP=$(cat "$W/bin.out")
+assert_contains "$DIFF_HELP" 'scan.sh diff [options]' 'command-specific header'
+assert_contains "$DIFF_HELP" 'NOT built' 'diff states plainly that it is not built'
+assert_contains "$DIFF_HELP" 'state/' 'the reason names the real step-7 dependency, not a vague "later"'
+
+t_case 'sca --help exits 0 and states plainly it IS built'
+assert_status 0 './scan.sh sca --help exits 0' _bin_run sca --help
+SCA_HELP=$(cat "$W/bin.out")
+assert_contains "$SCA_HELP" 'scan.sh sca [options]' 'command-specific header'
+assert_contains "$SCA_HELP" 'Status: built.' \
+  'sca is real (modules/sca/run.sh exists) and says so, distinctly from a NOT-built command'
+
+t_case 'four different --help outputs are four different texts, never one shared global usage'
+assert_ne "$DAST_HELP" "$CLOUD_HELP" 'dast --help differs from cloud --help'
+assert_ne "$CLOUD_HELP" "$DIFF_HELP" 'cloud --help differs from diff --help'
+assert_ne "$DIFF_HELP" "$SCA_HELP" \
+  "diff --help differs from sca --help - fails under the shipped defect where 'scan.sh dast --help, scan.sh cloud --help, scan.sh diff --help and scan.sh sca --help all print the same global usage'"
+
+t_case 'every accepted flag for a command is listed in its own --help - generated from the parser''s own table, not hand-typed'
+assert_contains "$DAST_HELP" '--target VALUE' "dast's own required flag is listed"
+assert_contains "$DAST_HELP" '--intensity VALUE' "dast's own --intensity is listed"
+assert_contains "$DAST_HELP" '--format VALUE' 'a global flag (--format) is listed too, since every command accepts it'
+
 t_summary 'scan' || FAILED=1
 exit "${FAILED:-0}"

@@ -31,6 +31,14 @@ This file is a shorter, reader-facing summary of the same information, and is ha
 - `lib/http.sh` (the scope-gate chokepoint, normally part of step 5) and `lib/awscli.sh` (the
   read-only AWS wrapper, normally part of step 6) both landed early since neither depends on the
   steps in front of them.
+- **`--format` now actually selects output artifacts, and every subcommand has real `--help`.**
+  `scan.sh <cmd> --format <fmt>` writes exactly the artifacts `<fmt>` implies; `findings.jsonl` and
+  `run.json` are written on every run regardless, as mandatory per-run records rather than
+  `--format`-selectable artifacts.
+  The no-`--format` default is unchanged (all five artifacts, same as before).
+  `scan.sh <command> --help` now prints that command's own accepted flags (generated from the
+  parser's own flag table, so it cannot list a flag the parser would reject) and a plainly-stated
+  build status, derived from the same on-disk check `scan_dispatch` itself uses wherever one exists.
 
 ## Not yet started
 
@@ -97,16 +105,19 @@ scheduled on its own.
   The Python and Java walks return just as silently but record no reason of their own.
   Populating the database means `tools/vendor-engines.sh advisories`, which resolves one advisory at a time
   from an ID the operator must already know - there is no bulk or ecosystem-wide import.
-- **Four flags are accepted and do nothing.**
-  `--format` is parsed and the resolved format list is then discarded, so every run writes the same
-  five artifacts (`findings.json`, `findings.jsonl`, `report.md`, `report.html`, `run.json`)
-  whatever was asked for, and `--format md` still writes HTML.
+- **Three flags are accepted and do nothing.**
   `--baseline FILE` is parsed and never read, and a path that does not exist is accepted with no
   error, no warning, and no record in `run.json`.
   `--authed` is parsed and appears in the help text, but nothing reads it and it is not recorded in
   `run.json` either.
   `--jobs N` is documented with a default of 4 and changes nothing; every scan is single-worker and
   records `single_worker_no_parallel_scan_yet`.
+  (`--format` used to be a fourth: it was parsed and the resolved format list was then discarded, so
+  every run wrote the same five artifacts whatever was asked for.  Fixed - see "Landed" above.
+  `findings.jsonl` and `run.json` are mandatory per-run records rather than one of the four
+  `--format` values, and are written on every run regardless of what `--format` asked for; `sarif` is
+  accepted and validated but still selects nothing, because no SARIF emitter exists yet - that part of
+  the gap is step 10's, not this one's, and remains listed above.)
 - **`--fail-on-new` is currently a tautology.**
   Every finding is created with `status=new`, because the diff classification that would mark
   anything otherwise belongs to step 7, so `--fail-on-new` behaves identically to plain
@@ -120,10 +131,6 @@ scheduled on its own.
   the Python, Java and Go paths each emit their own roll-up rather than joining npm's.
   A project with both npm and Python dependencies therefore produces two roll-ups with an identical
   fingerprint, deduplication drops one, and the survivor reports only npm's count.
-- **There is no per-subcommand help.**
-  `scan.sh dast --help`, `scan.sh cloud --help`, `scan.sh diff --help` and `scan.sh sca --help` all
-  print the same global usage and exit 0, so nothing tells an operator at the command line that a
-  subcommand is unbuilt.
 
 ## Not currently on the roadmap
 

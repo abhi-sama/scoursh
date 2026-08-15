@@ -821,11 +821,49 @@ _html_foot() {
 # ---------------------------------------------------------------------------
 # 5. Everything
 # ---------------------------------------------------------------------------
+# `report_all [RUNDIR]` writes every artifact this run's resolved --format
+# list selects (docs/DESIGN.md §5: `--format json,sarif,html,md`), plus two
+# records this project treats as mandatory rather than format-selectable,
+# neither of which is even in that four-value enum
+# (`_scan_validate_csv`/`_scanner_validate_list_item`, scan.sh and
+# lib/config.sh):
+#
+#   - `findings.jsonl` - docs/DESIGN.md §3's directory layout calls it out as
+#     "reports/ timestamped output dirs (findings.jsonl per run)", a bullet
+#     separate from and prior to the --format one; it is the incremental,
+#     resumable ledger a later stage reads back (`_scan_require_prior_run`
+#     accepts either it or run.json as proof of "a prior run directory").
+#   - `run.json` - docs/DESIGN.md §4: "every run writes run.json"; it carries
+#     the run's own identity and coverage_reduction facts that tension 12's
+#     diff classifier and the CI baseline gate both depend on existing
+#     unconditionally, whatever an operator asked `--format` for.
+#
+# `SCOURSH_FORMATS` is the CSV scan.sh resolves via config_scanner_list and
+# exports before dispatch.  A caller that never sets it - every direct
+# report_all call in this test suite, none of which goes through scan_main -
+# gets the identical "every format" default `_scanner_default_list formats`
+# already documents (lib/config.sh), so this function's own fallback and that
+# documented default can never quietly diverge into two different answers to
+# "what happens when nobody asked".
 report_all() {
   local rundir=${1:-$SCOURSH_RUN_DIR}
+  local _rpt_formats_csv=${SCOURSH_FORMATS:-json,sarif,html,md}
+  local -a _rpt_fmt=()
+  IFS=',' read -r -a _rpt_fmt <<<"$_rpt_formats_csv"
+  local -A _rpt_want=()
+  local _rpt_f
+  for _rpt_f in "${_rpt_fmt[@]+"${_rpt_fmt[@]}"}"; do
+    [[ -n $_rpt_f ]] && _rpt_want[$_rpt_f]=1
+  done
+
   findings_write_jsonl "$rundir"
-  findings_write_json "$rundir"
-  report_md "$rundir"
-  report_html "$rundir"
+  [[ -z ${_rpt_want[json]:-} ]] || findings_write_json "$rundir"
+  [[ -z ${_rpt_want[md]:-} ]] || report_md "$rundir"
+  [[ -z ${_rpt_want[html]:-} ]] || report_html "$rundir"
+  # sarif: accepted by the CLI parser, no emitter exists yet
+  # (docs/DESIGN.md §13 step 10; ROADMAP.md "Not yet started") - requesting
+  # it selects nothing here, same as it always has, and that gap is tracked
+  # on the roadmap rather than papered over with an emitter this ticket does
+  # not own.
   report_run_json "$rundir"
 }
