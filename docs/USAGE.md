@@ -44,7 +44,7 @@ scan.sh <command> [options]
 | Command | Flags | Status | Notes |
 |---|---|---|---|
 | `sast` | `[--path DIR]` `[--lang py,js,go,java]` `[--history]` | live | Source code. `--history` replays secret checks across git history and requires `git` on `PATH`. |
-| `sca` | `[--path DIR]` | live, needs an advisory database | Dependency/lockfile CVEs. Lockfile parsing works for every supported ecosystem, but matching needs `data/advisories.db`, which this repository does not ship. See ["Dependency data"](#dependency-data-dataadvisoriesdb). |
+| `sca` | `[--path DIR]` | live, needs an advisory database | Dependency/lockfile CVEs. Lockfile parsing works for every supported ecosystem, but matching needs `data/advisories.db`, which this repository does not ship - without it the run exits `4` rather than reporting a clean project. See ["Dependency data"](#dependency-data-dataadvisoriesdb). |
 | `iac` | `[--path DIR]` | live | Cloud IaC plus container/Kubernetes manifests. |
 | `dast` | `--target NAME` `[--intensity passive\|safe\|active]` `[--authed]` `[--i-own-target NAME]` | inert as a scanner; its safety layer is live | The scope gate below is real and is enforced before anything else (see "The scope gate"), as are the conservative rate/budget/breaker ceilings and the `--i-own-target` affirmation (see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)). Past those, nothing happens: `modules/dast/run.sh` exists but ships no phase script, so the run records `module=dast reason=no_phase_scripts_on_disk_yet` plus a `coverage_gap` saying no request was sent, and exits 0. |
 | `cloud` | `[--live]` `[--profile NAME]` `[--regions all\|us-east-1,...]` `[--assume-role ARN]` | inert | `--live` requires the `aws` CLI on `PATH` and the run refuses (exit 4) if it is missing, which is a real check. No AWS call follows it: there is no `modules/cloud/`, so the run records `module=cloud reason=not_yet_built`. |
@@ -245,10 +245,15 @@ remove it: an authorised scan has no need to be unidentifiable and an unauthoris
 `sca` parses every lockfile format it supports, then looks each resolved package up in
 `data/advisories.db`.
 That file is not in this repository - `data/` ships only `severity-rubric.conf` - so on a stock
-checkout `sca` finds nothing at all, whatever the lockfiles contain, and says so in `run.json` with a
-`coverage_reduction reason=no_advisories_db_on_disk` fact.
-This is by design rather than an oversight: scoursh is egress-restricted, and advisory data is never
-fetched at scan time under any circumstance.
+checkout `sca` examines nothing at all, whatever the lockfiles contain.
+It reports that rather than reporting a clean project: `scan.sh sca` **exits `4`** (missing required
+input - the advisory database is `sca`'s, exactly as `config/scope.conf` is `dast`'s), records one
+`coverage_reduction module=sca reason=no_advisories_db_on_disk ecosystems=<every ecosystem>` fact in
+`run.json`, and puts a `SCA-COV-NO_ADVISORY_DB-01` finding on the report stating that zero dependencies
+were checked.
+Under `scan.sh all` the same reason and finding are recorded but the exit code is left to the modules
+that did run, since a module skipped for absent inputs is a declared reduction rather than a failure.
+This is by design rather than an oversight: the scanner never fetches advisory data at scan time.
 Build the database on a networked host with `tools/vendor-engines.sh advisories`, or point
 `SCOURSH_SCA_ADVISORIES_DB` at one you already have.
 
@@ -262,7 +267,7 @@ Checked in this fixed order - the first true condition wins, never "worst findin
 | `1` | Findings at or above `--fail-on` (the CI gate). |
 | `2` | Usage error (bad flag, bad value, missing required flag). |
 | `3` | Scope violation (`dast --target` not found in `config/scope.conf`), or a `--paranoid` connection observed outside the allowlist. |
-| `4` | Missing required input (unreadable path, missing config file, missing required command). |
+| `4` | Missing required input (unreadable path, missing config file, missing required command, or `sca` with no `data/advisories.db` - see ["Dependency data"](#dependency-data-dataadvisoriesdb)). |
 | `5` | Incomplete run (circuit breaker tripped or the run aborted mid-flight). A run that both trips the breaker and has gated findings exits `5`, not `1` - an incomplete run cannot assert a clean gate result either way. |
 
 One caveat on `5`: the rate limiter, request budget, and circuit breaker are not built yet, and no

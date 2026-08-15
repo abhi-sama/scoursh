@@ -207,11 +207,16 @@ dependency).
 bundled or auto-fetched, and you build it yourself.
 SCA's parsing and matching code is fully built and tested, but every ecosystem walk tests for that
 file first and returns before it discovers or parses a single manifest.
-So until you build it, `scan.sh sca` does not scan at all: it records a `no_advisories_db_on_disk`
-coverage reduction, leaves `checks_run` empty in `run.json`, and exits 0 reporting zero findings on a
-project you know to be vulnerable.
-Two warning lines are printed, but the exit code and the headline count both look exactly like a clean
-scan - so a green `sca` run tells you nothing until the database is in place.
+So until you build it, `scan.sh sca` does not scan at all - and it says so rather than reporting a
+clean project.
+It **exits 4** (`missing required input`, [`docs/USAGE.md`](docs/USAGE.md)'s exit-code contract), writes
+its report, records one `module=sca reason=no_advisories_db_on_disk ecosystems=<all six>` coverage
+reduction in `run.json`, and puts a `SCA-COV-NO_ADVISORY_DB-01` finding on the report stating that zero
+dependencies were checked.
+Nothing about that run can be read as a clean dependency scan, by you or by CI - which is the point,
+because absence of findings here is absence of evidence, never evidence of absence.
+(`scan.sh all` behaves the same way except for the exit code: it skips `sca` with that same recorded
+reason and finding, and leaves the exit code to the modules that did run.)
 
 You build it on a networked box with `tools/vendor-engines.sh`, which resolves advisories from
 [OSV.dev](https://osv.dev) into the pre-expanded rows the scanner looks up.
@@ -388,7 +393,7 @@ Landed 10 of 10.  Outstanding: none.
 | Manifests | Status | Parsers | Exercised by |
 | --- | --- | --- | --- |
 | `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml` | landed | 3 of 3 parsed | `tests/fixtures/sca/mixed-ecosystems-php/package-lock.json` |
-| `requirements.txt`, `poetry.lock`, `Pipfile.lock` | landed | 3 of 3 parsed | `tests/fixtures/sca/python-requirements/requirements.txt` |
+| `requirements.txt`, `poetry.lock`, `Pipfile.lock` | landed | 3 of 3 parsed | `tests/fixtures/sca/mixed-four-ecosystems/requirements.txt` |
 | `go.mod`, `go.sum` | landed | 2 of 2 parsed | `tests/fixtures/sca/go-mod/go.mod` |
 | `pom.xml`, `build.gradle` | landed | 2 of 2 parsed | `tests/fixtures/sca/maven/pom.xml` |
 | `Gemfile.lock` | landed | 1 of 1 parsed | `tests/fixtures/sca/mixed-ecosystems/Gemfile.lock` |
@@ -424,13 +429,15 @@ Several are self-disclosed in the run's own `run.json`, but with one exception n
 on the console or changes an exit code, so they are listed here to be found while you are evaluating
 the tool rather than in a pipeline:
 
-- **`sca` scans nothing until you build an advisory database.**
+- **`sca` scans nothing until you build an advisory database** - but it will not pretend otherwise.
   No `data/advisories.db` ships with this repository, and each ecosystem walk returns before it
   discovers or parses a single manifest without one.
-  Until you build it ([Installation](#installation)), `scan.sh sca` exits 0 with zero findings and an
-  empty `checks_run` on a knowingly vulnerable project.
-  This is the one gap here that does say something on the console: every run prints two warning lines
-  about the missing database, one from the shared npm/RubyGems/Composer walk and one from the Go walk.
+  This is the one gap here that both warns on the console and changes the exit code: until you build it
+  ([Installation](#installation)), `scan.sh sca` **exits 4**, prints one warning naming every ecosystem
+  it could not scan, and reports a `SCA-COV-NO_ADVISORY_DB-01` finding saying zero dependencies were
+  checked.
+  It is listed here because it is a setup step you have to know about, not because it can be mistaken
+  for a passing scan.
 - **`--format` does nothing.**
   Every run writes all five artifacts - `findings.json`, `findings.jsonl`, `report.md`,
   `report.html`, and `run.json` - whatever `--format` is given, so `--format md` still writes the

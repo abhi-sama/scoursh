@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- fixture pom.xml - scoursh SCA test suite (not a real project).
+     org.fixture:unknown-version-lib is KNOWN to the fixture advisories.db
+     (at 1.0.0) but pinned here at a version the db does not track. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.fixture</groupId>
+  <artifactId>mixed-four</artifactId>
+  <version>1.0.0</version>
+  <dependencies>
+    <dependency>
+      <groupId>org.fixture</groupId>
+      <artifactId>unknown-version-lib</artifactId>
+      <version>5.5.5</version>
+    </dependency>
+  </dependencies>
+</project>

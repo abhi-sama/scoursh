@@ -948,6 +948,187 @@ sca_package_known() {
   db_lookup_exact "$prefix" "$db" >/dev/null
 }
 
+# sca_ecosystems_all - every ecosystem this module can scan, one per line,
+# LC_ALL=C sorted.  It is the ANSWER TO "what could this run not scan", so it
+# is deliberately a single list in a single place rather than a fact each walk
+# knows about itself: the walks used to each announce their own absence (two
+# of them) or none at all (the other two), and no reader could assemble the
+# whole from the parts.  Adding a seventh ecosystem means adding it here.
+#
+# These are `data/advisories.db`'s own ecosystem keys (tension 25's frozen
+# normalisation table), not display names, so the record a reader sees names
+# exactly what a db row would have to say.
+sca_ecosystems_all() {
+  printf '%s\n' Go RubyGems composer maven npm pypi | LC_ALL=C sort
+}
+
+# sca_advisories_db_readable [DB] - the one place the module asks whether it
+# can scan at all.  Every walk's own guard and the module-level announcement
+# below both go through it, so "is the db usable" is decided identically
+# everywhere and cannot drift between them.
+sca_advisories_db_readable() {
+  local db=${1:-$(sca_advisories_db_path)}
+  [[ -r $db ]]
+}
+
+# sca_report_no_advisories_db - the module-level announcement when there is no
+# advisory database: ONE warning, ONE coverage_reduction naming EVERY
+# ecosystem, and one SCA-COV-NO_ADVISORY_DB-01 finding on the report.
+#
+# WHY THIS LIVES AT THE MODULE AND NOT IN THE WALKS, which is the whole point
+# of the function: `data/advisories.db` does not exist in a fresh checkout
+# (tools/vendor-engines.sh populates it on a networked box and is never run
+# during a scan), so the shipped behaviour was the DEFAULT one - a `scan.sh
+# sca` against a knowingly vulnerable project exited 0 with zero findings and
+# an empty `checks_run`, which is "it did not look" rendered exactly like "it
+# looked and found nothing".  Two of the four walks announced the absence
+# (`sca_scan_tree` bare, `sca_go_scan_tree` with `ecosystem=Go`), so a plain
+# `sca` run recorded the same reason twice whatever ecosystems the tree
+# actually contained, while `sca_scan_python_tree` and `sca_scan_java_tree`
+# returned silently and accounted for nothing.  A single announcement made
+# once, by the module, is the only shape in which "announced exactly once"
+# and "names every ecosystem" can both be true - a per-walk announcement can
+# satisfy neither without knowing what the other walks did.
+#
+# The finding is `info`, matching SCA-COV-UNKNOWN_VERSION-01, its sibling in
+# the same SCA-COV-* coverage family: a blind spot is not a vulnerability,
+# and inflating its severity would trip a `--fail-on` gate and report exit 1
+# ("a complete assessment that failed its gate", docs/FOUNDATION.md tension
+# 14), which is the opposite of what this run can claim.  The honest exit
+# code is 4, and modules/sca/run.sh sets it - see that file for why.
+sca_report_no_advisories_db() {
+  local db
+  db=$(sca_advisories_db_path)
+  local -a ecos=()
+  local eco joined=''
+  while IFS= read -r eco; do
+    [[ -n $eco ]] && ecos+=("$eco")
+  done < <(sca_ecosystems_all)
+  for eco in "${ecos[@]+"${ecos[@]}"}"; do
+    joined="${joined:+$joined,}$eco"
+  done
+
+  log_warn "sca: no advisory database at '$db' - NO dependency was checked in any of: $joined (populate it with 'tools/vendor-engines.sh advisories' on a networked box, docs/FOUNDATION.md tension 25)"
+  run_record coverage_reduction "module=sca reason=no_advisories_db_on_disk ecosystems=$joined"
+  run_record checks_run SCA-COV-NO_ADVISORY_DB-01
+
+  finding_new
+  finding_set check_id SCA-COV-NO_ADVISORY_DB-01
+  finding_set module sca
+  finding_set title 'SCA: dependency scanning did NOT run - no advisory database on disk, so ZERO dependencies were checked'
+  finding_set base_severity info
+  finding_set confidence high
+  finding_set cwe none
+  finding_set owasp none
+  finding_set cell "$SCOURSH_PATH_ROOT"
+  finding_set remediation "Populate the advisory database with 'tools/vendor-engines.sh advisories' on a networked box, then re-run. Until then this run says NOTHING about the dependencies of this project - absence of findings here is absence of evidence, never evidence of absence."
+  finding_set_evidence "advisories_db: $db (absent or unreadable)
+ecosystems_not_scanned: $joined
+dependencies_checked: 0"
+  finding_emit
+}
+
+# ---------------------------------------------------------------------------
+# 8a. The shared unknown-version roll-up (docs/FOUNDATION.md tension 5)
+# ---------------------------------------------------------------------------
+# SCA-COV-UNKNOWN_VERSION-01 is a PER-RUN roll-up, never a per-package and
+# never a per-ecosystem-walk finding, and tension 5's SCA fingerprint profile
+# is (ecosystem, package, advisory_id) - all three of which a roll-up leaves
+# empty, because it names no single dependency.  Every roll-up in a run
+# therefore hashes to the identical fingerprint by construction.
+#
+# That is correct as long as a run emits exactly ONE.  It did not: each of the
+# module's four ecosystem-scan entry points (sca_scan_tree, which itself
+# covers npm+RubyGems+composer; sca_scan_python_tree; sca_scan_java_tree;
+# sca_go_scan_tree) accumulated into its OWN local table and emitted its own
+# roll-up, so a repository with both npm and Python dependencies produced two
+# findings with one fingerprint, findings_merge's dedup kept whichever won its
+# sort, and the operator was told a SMALLER number of unknown-version
+# dependencies than the truth.  Measured on tests/fixtures/sca/
+# mixed-four-ecosystems/: run.json recorded four coverage_gap facts and the
+# report carried one roll-up reading "1 ... by ecosystem: Go: 1".
+#
+# The fix is at the EMISSION layer rather than the fingerprint layer, and that
+# choice is load-bearing.  Adding the ecosystem to the roll-up's fingerprint
+# would also stop the collision, but it changes finding identity for a shipped
+# check id (rules/RULE-FORMAT.md §14 item 3), and it would be modelling the
+# roll-up as a per-ecosystem fact, which it is not - the check answers "how
+# much of this project's dependency surface could this run not resolve", one
+# question with one answer per run.  Accumulating into one table and flushing
+# once makes a second roll-up impossible to emit rather than merely harmless,
+# and leaves the fingerprint byte-for-byte what it already was.
+#
+# The DEFERRAL FLAG is what keeps each walk independently callable.  A walk
+# invoked on its own (every unit test in tests/suites/sca.sh does this) still
+# flushes its own roll-up on the way out, exactly as before; modules/sca/run.sh
+# wraps its four calls in sca_rollup_begin/sca_rollup_flush, and inside that
+# window the walks only accumulate.  A global associative array is the
+# portable way to share the table: docs/FOUNDATION.md tension 24 rules out
+# `local -n` namerefs (bash >= 4.2 is the frozen minimum; namerefs need 4.3),
+# which is the reason each walk kept its own local table in the first place.
+declare -gA _SCA_UNKNOWN_COUNT=()
+declare -g _SCA_ROLLUP_DEFERRED=0
+
+# sca_rollup_begin - open a deferred window: the walks accumulate, nobody
+# flushes until sca_rollup_flush is called.  Resets the table, so a window
+# never inherits a count from an earlier run in the same process.
+sca_rollup_begin() {
+  _SCA_UNKNOWN_COUNT=()
+  _SCA_ROLLUP_DEFERRED=1
+}
+
+# sca_rollup_add ECOSYSTEM [N] - record N (default 1) unknown-version
+# dependencies for ECOSYSTEM.
+sca_rollup_add() {
+  local eco=$1 n=${2:-1}
+  _SCA_UNKNOWN_COUNT[$eco]=$(( ${_SCA_UNKNOWN_COUNT[$eco]:-0} + n ))
+}
+
+# sca_rollup_flush - emit the single roll-up finding for everything
+# accumulated since the last begin/flush, then reset.  A no-op when nothing
+# was accumulated, so a run with no unknown-version case emits no roll-up at
+# all, exactly as before.  Also closes any deferred window, so the next
+# standalone walk self-flushes again.
+sca_rollup_flush() {
+  _SCA_ROLLUP_DEFERRED=0
+  (( ${#_SCA_UNKNOWN_COUNT[@]} > 0 )) || return 0
+
+  run_record checks_run SCA-COV-UNKNOWN_VERSION-01
+  local -a ecos=()
+  local eco cnt total=0 breakdown=''
+  while IFS= read -r eco; do
+    [[ -n $eco ]] && ecos+=("$eco")
+  done < <(printf '%s\n' "${!_SCA_UNKNOWN_COUNT[@]}" | LC_ALL=C sort)
+  for eco in "${ecos[@]+"${ecos[@]}"}"; do
+    cnt=${_SCA_UNKNOWN_COUNT[$eco]}
+    total=$(( total + cnt ))
+    breakdown="${breakdown:+$breakdown, }$eco: $cnt"
+    run_record coverage_gap "module=sca reason=unknown_version ecosystem=$eco count=$cnt"
+  done
+  _SCA_UNKNOWN_COUNT=()
+
+  finding_new
+  finding_set check_id SCA-COV-UNKNOWN_VERSION-01
+  finding_set module sca
+  finding_set title "SCA: $total pinned dependency version(s) not present in data/advisories.db (package known, exact version unmatched)"
+  finding_set base_severity info
+  finding_set confidence high
+  finding_set cwe none
+  finding_set owasp none
+  finding_set cell "$SCOURSH_PATH_ROOT"
+  finding_set remediation 'Refresh data/advisories.db (tools/vendor-engines.sh, on a networked box) to a snapshot that covers these exact pinned versions - absence here means "unknown", never "not vulnerable".'
+  finding_set_evidence "by ecosystem: $breakdown"
+  finding_emit
+}
+
+# _sca_rollup_autoflush - what every walk calls on its way out: flush only
+# when no deferred window is open.  This is the single line that makes "each
+# walk is independently callable" and "one roll-up per module run" both true.
+_sca_rollup_autoflush() {
+  (( _SCA_ROLLUP_DEFERRED )) && return 0
+  sca_rollup_flush
+}
+
 # ---------------------------------------------------------------------------
 # 9. Finding emission and orchestration
 # ---------------------------------------------------------------------------
@@ -1032,36 +1213,39 @@ _sca_emit_finding() {
 # this is the reason every ecosystem here is walked in ONE function rather
 # than one per ecosystem - never per-ecosystem either) when any package the
 # db tracks had its exact pinned version go unmatched.  (Python's own
-# sca_scan_python_tree, section 10, is deliberately a separate function with
-# its own roll-up - see that function's header for why it is not folded in
-# here too.)
+# sca_scan_python_tree, section 10, is deliberately a separate FUNCTION - see
+# that function's header for why it is not folded in here too - but it is no
+# longer a separate roll-up: every walk feeds section 8a's shared
+# accumulator.)
 #
-# WHY ONE FUNCTION FOR EVERY ECOSYSTEM IT COVERS: `unknown_count` below is a
-# single local associative array keyed by ecosystem, and the roll-up
-# finding is emitted exactly once, after EVERY walk, from that one array.
-# Splitting this into a per-ecosystem `sca_scan_tree`/`sca_ruby_scan_tree`/
-# `sca_composer_scan_tree` set (each with its own local `unknown_count` and
-# its own roll-up emission) was considered and rejected: a repository with
-# an npm lockfile, a Gemfile.lock and a composer.lock, each contributing
-# unknown-version packages, would then emit THREE SCA-COV-UNKNOWN_VERSION-01
-# findings in one run, which is exactly what this ticket's own acceptance
-# criterion ("contributes ... to the SHARED roll-up") and the npm suite's
-# own "fires exactly ONCE, not per package" invariant both rule out.
-# Calling this once per ecosystem-walk was the only way found to keep that
-# invariant true for a real mixed repository rather than merely for each
-# ecosystem tested in isolation - tests/suites/sca.sh's "mixed ecosystems"
-# case exercises exactly this.
+# WHY ONE FUNCTION FOR EVERY ECOSYSTEM IT COVERS: the three walks below share
+# one accumulator, so npm, RubyGems and composer contribute to one roll-up
+# rather than three.  Splitting this into a per-ecosystem `sca_scan_tree`/
+# `sca_ruby_scan_tree`/`sca_composer_scan_tree` set (each with its own roll-up
+# emission) was considered and rejected: a repository with an npm lockfile, a
+# Gemfile.lock and a composer.lock, each contributing unknown-version
+# packages, would then emit THREE SCA-COV-UNKNOWN_VERSION-01 findings in one
+# run, which is exactly what this ticket's own acceptance criterion
+# ("contributes ... to the SHARED roll-up") and the npm suite's own "fires
+# exactly ONCE, not per package" invariant both rule out.
+#
+# THAT ACCUMULATOR IS NOW MODULE-WIDE rather than local to this function, and
+# the sibling walks (Python, Java, Go) share it too - see section 8a's own
+# header for why they had to.  The per-ecosystem-walk shape this header used
+# to describe was only ever a partial defence: it kept npm/RubyGems/composer
+# from colliding with each other while leaving them free to collide with the
+# other three walks, which is what shipped and what section 8a fixes.
+#
+# The db-absent guard here is SILENT by design.  The announcement moved to
+# `sca_report_no_advisories_db`, called once by modules/sca/run.sh, because
+# this function's warning plus `sca_go_scan_tree`'s meant every `sca` run
+# announced the same fact twice while Python and Java announced nothing.
 sca_scan_tree() {
   local root=$1
   local db
   db=$(sca_advisories_db_path)
-  if [[ ! -r $db ]]; then
-    log_warn "sca: data/advisories.db not readable at '$db' - nothing to match against (tools/vendor-engines.sh populates it and is never run in this repo/CI, docs/FOUNDATION.md tension 25)"
-    run_record coverage_reduction 'module=sca reason=no_advisories_db_on_disk'
-    return 0
-  fi
+  sca_advisories_db_readable "$db" || return 0
 
-  local -A unknown_count=()
   local lockfile relpath fmt row name ver direct hits
   hits=$SCOURSH_SCRATCH/sca-hits.$$
   while IFS= read -r lockfile; do
@@ -1092,7 +1276,7 @@ sca_scan_tree() {
           _sca_emit_finding SCA-NPM-VULNERABLE_DEP-01 "$direct" lockfile "$relpath" "$row"
         done <"$hits"
       elif sca_package_known npm "$name" "$db"; then
-        unknown_count[npm]=$(( ${unknown_count[npm]:-0} + 1 ))
+        sca_rollup_add npm
       fi
     done < <(
       case $fmt in
@@ -1103,9 +1287,9 @@ sca_scan_tree() {
     )
   done < <(sca_walk_npm_lockfiles "$root")
 
-  # Ruby/RubyGems - Gemfile.lock - same shared `hits` scratch file and the
-  # SAME `unknown_count` array the npm walk above just populated, per this
-  # function's own header comment on why the roll-up is computed once,
+  # Ruby/RubyGems - Gemfile.lock - same shared `hits` scratch file, and the
+  # SAME roll-up accumulator (section 8a) the npm walk above just fed, per
+  # this function's own header comment on why the roll-up is computed once,
   # after every ecosystem, rather than per ecosystem.
   while IFS= read -r lockfile; do
     [[ -n $lockfile ]] || continue
@@ -1121,14 +1305,14 @@ sca_scan_tree() {
           _sca_emit_finding SCA-RUBY-VULNERABLE_DEP-01 "$direct" lockfile "$relpath" "$row"
         done <"$hits"
       elif sca_package_known RubyGems "$name" "$db"; then
-        unknown_count[RubyGems]=$(( ${unknown_count[RubyGems]:-0} + 1 ))
+        sca_rollup_add RubyGems
       fi
     done < <(sca_parse_gemfile_lock "$lockfile")
   done < <(sca_walk_gemfile_locks "$root")
 
   # PHP/Composer (php_engine.sh, sourced above) - same shared `hits` scratch
-  # file and the SAME `unknown_count` array the npm walk above just
-  # populated, per this function's own header comment on why the roll-up is
+  # file, and the SAME roll-up accumulator (section 8a) the npm walk above
+  # just fed, per this function's own header comment on why the roll-up is
   # computed once, after every ecosystem, rather than per ecosystem.
   while IFS= read -r lockfile; do
     [[ -n $lockfile ]] || continue
@@ -1144,38 +1328,17 @@ sca_scan_tree() {
           _sca_emit_finding SCA-PHP-VULNERABLE_DEP-01 "$direct" lockfile "$relpath" "$row"
         done <"$hits"
       elif sca_package_known composer "$name" "$db"; then
-        unknown_count[composer]=$(( ${unknown_count[composer]:-0} + 1 ))
+        sca_rollup_add composer
       fi
     done < <(sca_parse_composer_lock "$lockfile")
   done < <(sca_walk_composer_lockfiles "$root")
   rm -f "$hits"
 
-  if (( ${#unknown_count[@]} > 0 )); then
-    run_record checks_run SCA-COV-UNKNOWN_VERSION-01
-    local -a ecos=()
-    local eco cnt total=0 breakdown=''
-    while IFS= read -r eco; do
-      [[ -n $eco ]] && ecos+=("$eco")
-    done < <(printf '%s\n' "${!unknown_count[@]}" | LC_ALL=C sort)
-    for eco in "${ecos[@]+"${ecos[@]}"}"; do
-      cnt=${unknown_count[$eco]}
-      total=$(( total + cnt ))
-      breakdown="${breakdown:+$breakdown, }$eco: $cnt"
-      run_record coverage_gap "module=sca reason=unknown_version ecosystem=$eco count=$cnt"
-    done
-    finding_new
-    finding_set check_id SCA-COV-UNKNOWN_VERSION-01
-    finding_set module sca
-    finding_set title "SCA: $total pinned dependency version(s) not present in data/advisories.db (package known, exact version unmatched)"
-    finding_set base_severity info
-    finding_set confidence high
-    finding_set cwe none
-    finding_set owasp none
-    finding_set cell "$SCOURSH_PATH_ROOT"
-    finding_set remediation 'Refresh data/advisories.db (tools/vendor-engines.sh, on a networked box) to a snapshot that covers these exact pinned versions - absence here means "unknown", never "not vulnerable".'
-    finding_set_evidence "by ecosystem: $breakdown"
-    finding_emit
-  fi
+  # Section 8a: accumulate always, emit only when no deferred window is open.
+  # A standalone call still produces its own roll-up here; a module run
+  # (modules/sca/run.sh) collects this walk's counts with the other three and
+  # flushes one roll-up for the whole run.
+  _sca_rollup_autoflush
 
   # tension 16's parallel workers (rate limiter, request budget, circuit
   # breaker) land at §13 step 5, same as modules/sast/run.sh's identical
@@ -1643,16 +1806,19 @@ _sca_py_emit_finding() {
 # requirements.txt/poetry.lock/Pipfile.lock, parse each, normalise every name
 # per PEP 503, look every resolved pinned dependency up against
 # data/advisories.db under ecosystem "pypi", emit one SCA-PY-VULNERABLE_DEP-01
-# finding per vulnerable pinned dependency, and contribute to the
-# SCA-COV-UNKNOWN_VERSION-01 roll-up mechanism section 9 uses for npm -
-# "shared" in the sense of reusing the identical check id, finding shape and
-# coverage semantics documented in docs/FOUNDATION.md tension 25; NOT
-# literally merged into one finding object with npm's own roll-up when both
-# ecosystems have unknown-version cases in the SAME run (two
-# SCA-COV-UNKNOWN_VERSION-01 findings would be emitted in that case, one per
-# ecosystem-scan call) - a true cross-ecosystem merge is a stated, filed
-# follow-up rather than attempted here, to avoid touching section 9's own,
-# already-tested npm code path.
+# finding per vulnerable pinned dependency, and contribute to the shared
+# SCA-COV-UNKNOWN_VERSION-01 roll-up.
+#
+# "Shared" is now literal.  This header used to say the opposite - that a run
+# with both an npm and a Python unknown-version case emitted TWO
+# SCA-COV-UNKNOWN_VERSION-01 findings, one per ecosystem-scan call, with a
+# true cross-ecosystem merge left as a stated, filed follow-up.  That was not
+# a cosmetic gap: both findings hashed to the identical fingerprint (a roll-up
+# populates none of tension 5's SCA location components), so findings_merge's
+# dedup dropped one and the surviving count understated the truth.  Section 8a
+# is the shared accumulator that fixes it; this walk feeds it with
+# `sca_rollup_add pypi` and ends with `_sca_rollup_autoflush`, so it still
+# emits its own roll-up when called standalone.
 #
 # A requirements.txt entry the parser could not resolve to an exact version
 # (a range specifier, or a bare unpinned name - see sca_parse_requirements_txt
@@ -1660,28 +1826,22 @@ _sca_py_emit_finding() {
 # - there being no exact version to check at all is itself "unresolved",
 # landing in the same roll-up bucket an unmatched pinned version falls into.
 #
-# Deliberately does NOT run the data/advisories.db-absent check nor the
-# module-level single_worker_no_parallel_scan_yet coverage_reduction fact that
-# section 9's sca_scan_tree records:
-# modules/sca/run.sh's _sca_run_module always runs _sca_npm_run (and so
-# sca_scan_tree) before _sca_py_run, and sca_scan_tree's own db-absent check
-# and its trailing fact are UNCONDITIONAL there regardless of whether
-# any npm lockfile actually exists in the tree - so they are already recorded
-# exactly once for the whole module by the time this function would
-# otherwise duplicate them.  Stated, not hidden: calling
-# sca_scan_python_tree ALONE with a missing db (as this ticket's own unit
-# tests do) therefore returns silently rather than re-declaring a fact only
-# the npm pass owns; the real _sca_run_module ordering that makes this safe
-# end-to-end is exercised by the e2e `scan.sh sca` case in tests/suites/sca.sh.
+# Deliberately does NOT record the module-level
+# single_worker_no_parallel_scan_yet coverage_reduction fact that section 9's
+# sca_scan_tree records: modules/sca/run.sh's _sca_run_module always runs
+# _sca_npm_run (and so sca_scan_tree) before _sca_py_run, and that trailing
+# fact is UNCONDITIONAL there regardless of whether any npm lockfile actually
+# exists in the tree, so it is already recorded exactly once for the whole
+# module by the time this function would otherwise duplicate it.  The
+# db-absent guard below is silent for a different and stronger reason: that
+# announcement is `sca_report_no_advisories_db`'s, made once by the module -
+# no walk owns it, precisely so that none can make it twice.
 sca_scan_python_tree() {
   local root=$1
   local db
   db=$(sca_advisories_db_path)
-  if [[ ! -r $db ]]; then
-    return 0
-  fi
+  sca_advisories_db_readable "$db" || return 0
 
-  local -A unknown_count=()
   local manifest relpath fmt name ver direct hits
   hits=$SCOURSH_SCRATCH/sca-py-hits.$$
   while IFS= read -r manifest; do
@@ -1704,7 +1864,7 @@ sca_scan_python_tree() {
           _sca_py_emit_finding "$direct" "$relpath" "$row"
         done <"$hits"
       elif sca_package_known pypi "$name" "$db"; then
-        unknown_count[pypi]=$(( ${unknown_count[pypi]:-0} + 1 ))
+        sca_rollup_add pypi
       fi
     done < <(
       case $fmt in
@@ -1716,23 +1876,11 @@ sca_scan_python_tree() {
   done < <(sca_walk_python_manifests "$root")
   rm -f "$hits"
 
-  if (( ${#unknown_count[@]} > 0 )); then
-    run_record checks_run SCA-COV-UNKNOWN_VERSION-01
-    local cnt=${unknown_count[pypi]}
-    run_record coverage_gap "module=sca reason=unknown_version ecosystem=pypi count=$cnt"
-    finding_new
-    finding_set check_id SCA-COV-UNKNOWN_VERSION-01
-    finding_set module sca
-    finding_set title "SCA: $cnt pinned dependency version(s) not present in data/advisories.db (package known, exact version unmatched)"
-    finding_set base_severity info
-    finding_set confidence high
-    finding_set cwe none
-    finding_set owasp none
-    finding_set cell "$SCOURSH_PATH_ROOT"
-    finding_set remediation 'Refresh data/advisories.db (tools/vendor-engines.sh, on a networked box) to a snapshot that covers these exact pinned versions - absence here means "unknown", never "not vulnerable".'
-    finding_set_evidence "by ecosystem: pypi: $cnt"
-    finding_emit
-  fi
+  # Section 8a: accumulate always, emit only when no deferred window is open.
+  # A standalone call still produces its own roll-up here; a module run
+  # (modules/sca/run.sh) collects this walk's counts with the other three and
+  # flushes one roll-up for the whole run.
+  _sca_rollup_autoflush
 }
 
 # ---------------------------------------------------------------------------
@@ -2041,43 +2189,37 @@ _sca_parse_build_gradle() {
 # callable contract sca_scan_tree above documents and is tested under
 # (tests/suites/sca.sh calls each ecosystem's entry point standalone).
 #
-# Deliberately NOT merged into one shared "scan every ecosystem, emit one
-# combined roll-up" function with sca_scan_tree: this repository's own
-# convention (docs/FOUNDATION.md tension 24) avoids `local -n` namerefs
-# entirely (`bash >= 4.2` is the frozen minimum; namerefs need 4.3), so there
-# is no portable way to hand one ecosystem-keyed associative array to a
-# shared emitter across two functions without either a global or an eval - a
-# larger, subtler-bug-prone change for a smaller win than just keeping each
-# ecosystem's scan function self-contained.  Stated cost, not hidden: a
-# single scan_dispatch sca run against a tree containing BOTH an npm
-# lockfile and a Java manifest emits two SCA-COV-UNKNOWN_VERSION-01 findings
-# (one per ecosystem-scan entry point) rather than one merged across both -
-# each is still individually correct (never per-package, always the true
-# per-ecosystem total), just not cross-ecosystem-merged.
+# Still NOT merged into one shared "scan every ecosystem" FUNCTION with
+# sca_scan_tree - each ecosystem's walk stays self-contained and
+# independently callable - but the two now share one ROLL-UP ACCUMULATOR
+# (section 8a), which is a different thing and was the missing half.
 #
-# Deliberately does NOT run the data/advisories.db-absent check nor the
-# module-level single_worker_no_parallel_scan_yet coverage_reduction fact that
-# section 9's sca_scan_tree records - the
-# same reasoning sca_scan_python_tree's own header states: modules/sca/run.sh's
-# _sca_run_module always runs _sca_npm_run (and so sca_scan_tree) before
-# _sca_java_run, and sca_scan_tree's own db-absent check and its trailing
-# fact are UNCONDITIONAL there regardless of whether any npm lockfile
-# actually exists in the tree - so they are already recorded exactly once for
-# the whole module by the time this function would otherwise duplicate them.
-# Stated, not hidden: calling sca_scan_java_tree ALONE with a missing db (as
-# this ticket's own unit tests do) therefore returns silently rather than
-# re-declaring a fact only the npm pass owns; the real _sca_run_module
-# ordering that makes this safe end-to-end is exercised by the e2e
-# `scan.sh sca` case in tests/suites/sca.sh.
+# The cost this header used to state as acceptable was not: a single
+# scan_dispatch sca run against a tree with BOTH an npm lockfile and a Java
+# manifest emitted two SCA-COV-UNKNOWN_VERSION-01 findings, one per entry
+# point, and because a roll-up populates none of tension 5's SCA location
+# components the two hashed identically, so findings_merge's dedup kept one
+# and the operator was told the smaller number.  "Each is still individually
+# correct" was true and irrelevant - only one of them reached the report.
+#
+# The portability objection that produced the per-walk shape is answered
+# rather than overridden: docs/FOUNDATION.md tension 24 does rule out
+# `local -n` namerefs (`bash >= 4.2` is the frozen minimum; namerefs need
+# 4.3), which is why a shared emitter cannot take the table as an argument -
+# so section 8a uses a plain global associative array, the same
+# `declare -gA` idiom modules/sast/engine.sh's own _SAST_CHECK_LOC already
+# uses, with an explicit begin/flush protocol rather than an eval.
+#
+# Deliberately does NOT record the module-level
+# single_worker_no_parallel_scan_yet coverage_reduction fact that section 9's
+# sca_scan_tree records - the same reasoning sca_scan_python_tree's own header
+# states, and the same silent db-absent guard, for the same two reasons.
 sca_scan_java_tree() {
   local root=$1
   local db
   db=$(sca_advisories_db_path)
-  if [[ ! -r $db ]]; then
-    return 0
-  fi
+  sca_advisories_db_readable "$db" || return 0
 
-  local -A unknown_count=()
   local manifest relpath fmt row name ver direct hits
   hits=$SCOURSH_SCRATCH/sca-java-hits.$$
   while IFS= read -r manifest; do
@@ -2098,7 +2240,7 @@ sca_scan_java_tree() {
           _sca_emit_finding SCA-JAVA-VULNERABLE_DEP-01 "$direct" manifest "$relpath" "$row"
         done <"$hits"
       elif sca_package_known maven "$name" "$db"; then
-        unknown_count[maven]=$(( ${unknown_count[maven]:-0} + 1 ))
+        sca_rollup_add maven
       fi
     done < <(
       case $fmt in
@@ -2109,30 +2251,9 @@ sca_scan_java_tree() {
   done < <(sca_walk_java_manifests "$root")
   rm -f "$hits"
 
-  if (( ${#unknown_count[@]} > 0 )); then
-    run_record checks_run SCA-COV-UNKNOWN_VERSION-01
-    local -a ecos=()
-    local eco cnt total=0 breakdown=''
-    while IFS= read -r eco; do
-      [[ -n $eco ]] && ecos+=("$eco")
-    done < <(printf '%s\n' "${!unknown_count[@]}" | LC_ALL=C sort)
-    for eco in "${ecos[@]+"${ecos[@]}"}"; do
-      cnt=${unknown_count[$eco]}
-      total=$(( total + cnt ))
-      breakdown="${breakdown:+$breakdown, }$eco: $cnt"
-      run_record coverage_gap "module=sca reason=unknown_version ecosystem=$eco count=$cnt"
-    done
-    finding_new
-    finding_set check_id SCA-COV-UNKNOWN_VERSION-01
-    finding_set module sca
-    finding_set title "SCA: $total pinned dependency version(s) not present in data/advisories.db (package known, exact version unmatched)"
-    finding_set base_severity info
-    finding_set confidence high
-    finding_set cwe none
-    finding_set owasp none
-    finding_set cell "$SCOURSH_PATH_ROOT"
-    finding_set remediation 'Refresh data/advisories.db (tools/vendor-engines.sh, on a networked box) to a snapshot that covers these exact pinned versions - absence here means "unknown", never "not vulnerable".'
-    finding_set_evidence "by ecosystem: $breakdown"
-    finding_emit
-  fi
+  # Section 8a: accumulate always, emit only when no deferred window is open.
+  # A standalone call still produces its own roll-up here; a module run
+  # (modules/sca/run.sh) collects this walk's counts with the other three and
+  # flushes one roll-up for the whole run.
+  _sca_rollup_autoflush
 }

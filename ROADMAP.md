@@ -13,10 +13,13 @@ This file is a shorter, reader-facing summary of the same information, and is ha
 
 - **Steps 1-2** - core libraries (`lib/records.sh`, `lib/core.sh`, `lib/findings.sh`,
   `lib/report.sh`), the `scan.sh` CLI grammar, and the check-registry/profile filter chain.
-- **Step 3 (SAST)** - 8 of the 10 planned step-3 artifacts.
+- **Step 3 (SAST)** - complete: all 10 planned step-3 artifacts.
   Those 10 are 9 rule packs plus `modules/sast/history.sh`, the git-history scanner, which is a
   script rather than a rule pack.
-  So the 8 are 7 rule packs on disk plus that scanner, and 2 rule packs are outstanding; see below.
+  (This entry read "8 of 10, 2 rule packs outstanding" until `ldap.rules` and `nosql.rules` landed
+  without it being updated - the silent-staleness this file's own maintenance note warns about.
+  The generated block in [`README.md`](README.md) reports 10 of 10, outstanding none, and is the
+  authority.)
 - **Step 4 (SCA + IaC)** - complete: all 6 SCA ecosystems, all 6 IaC rule packs.
   `modules/sca/run.sh` now calls `sast_evaluate_gate` like its SAST and IaC siblings, so
   `scan.sh sca --fail-on` really gates a run.
@@ -52,12 +55,11 @@ SARIF and the compliance report, and live cloud scanning.
    [`docs/STEP5-DAST-PLAN.md`](docs/STEP5-DAST-PLAN.md) (tickets DAST-01 through DAST-30, following
    `docs/DESIGN.md` §13's `lib/http.sh -> auth.sh -> crawl.sh -> passive -> safe-active -> injection`
    sequence).
-   Two things gated step 5 when that plan was written, and one of them is now cleared: step 4
-   (SCA + IaC) is complete, so only step 3's two remaining rule packs still stand in front of the
-   module.
-   That remaining gate is a sequencing preference rather than a technical dependency.
-   DAST-01 (the rate limiter, the per-run request budget, and the circuit breaker) touches
-   `lib/http.sh` only and depends on no SAST rule pack whatsoever.
+   Two things gated step 5 when that plan was written, and **both are now cleared**: step 4
+   (SCA + IaC) and step 3 (SAST) are each complete, so nothing stands in front of the module.
+   Neither was ever a technical dependency - DAST-01 (the rate limiter, the per-run request budget,
+   and the circuit breaker) touches `lib/http.sh` only and depends on no SAST rule pack whatsoever -
+   but the sequencing preference they represented is discharged rather than argued away.
 2. **Step 7 (`state/` - persistent coverage tracking)** - needed before `--baseline` suppression and
    the `diff`/`report` subcommands do real work.
    The two subcommands no-op with a stated reason in `run.json`, while `--baseline` records nothing
@@ -75,11 +77,6 @@ SARIF and the compliance report, and live cloud scanning.
 
 Outside that ordering:
 
-- **Step 3, remaining** - two SAST rule packs: `ldap.rules` and `nosql.rules`.
-  They are the last sequencing item inherited from the original build order in front of DAST, but
-  not a technical dependency of it.
-  Both are pattern packs against a rule engine that has already shipped, so neither needs engine
-  work, and they are the cheapest outstanding items on this page.
 - Two derived/composite findings (`COMPOSITE-TOKEN-HIJACK` and its dependents) are intentionally
   not seeded yet, because their contributing checks don't exist until DAST (step 5) and cloud (step
   6) land.
@@ -92,19 +89,6 @@ These are not unbuilt steps.
 They are features that ship today and are wrong, incomplete, or inert, and each one has to be
 scheduled on its own.
 
-- **Dependency scanning skips the scan entirely without an advisory database.**
-  `data/advisories.db` does not exist in this repository; the only advisory database in the tree is
-  `tests/fixtures/sca/advisories.db`, which is a test fixture.
-  With no database, every ecosystem walk returns before it discovers or parses a single manifest, so
-  `scan.sh sca` exits 0 against a knowingly vulnerable project with zero findings and an empty
-  `checks_run` - it did not look, rather than looking and finding nothing.
-  It is announced twice on every SCA run whatever ecosystems are present, since both walks that carry
-  an announcement run unconditionally: one warning from the shared npm/RubyGems/Composer walk and one
-  from the Go walk, recorded in `run.json` as `module=sca reason=no_advisories_db_on_disk` and the
-  same reason with `ecosystem=Go`.
-  The Python and Java walks return just as silently but record no reason of their own.
-  Populating the database means `tools/vendor-engines.sh advisories`, which resolves one advisory at a time
-  from an ID the operator must already know - there is no bulk or ecosystem-wide import.
 - **Three flags are accepted and do nothing.**
   `--baseline FILE` is parsed and never read, and a path that does not exist is accepted with no
   error, no warning, and no record in `run.json`.
@@ -126,11 +110,42 @@ scheduled on its own.
   Both of its connection-observer backends, `ss` and `strace`, are Linux-only.
   On macOS it does not degrade to a warning: it refuses the entire scan with exit 4 before any
   module runs.
-- **Two SCA coverage warnings can collide, and one is dropped silently.**
-  The `SCA-COV-UNKNOWN_VERSION-01` roll-up carries no ecosystem component in its fingerprint, and
-  the Python, Java and Go paths each emit their own roll-up rather than joining npm's.
-  A project with both npm and Python dependencies therefore produces two roll-ups with an identical
-  fingerprint, deduplication drops one, and the survivor reports only npm's count.
+
+## Recently fixed
+
+Entries that used to sit under "Known defects" above, kept for a release or two so a reader who knew the
+old behaviour can see what replaced it.
+
+- **Dependency scanning skipped the scan entirely without an advisory database, and reported that as clean.**
+  `data/advisories.db` still does not exist in this repository - the only advisory database in the tree
+  is `tests/fixtures/sca/advisories.db`, a test fixture - and populating it is still the operator's job
+  (`tools/vendor-engines.sh advisories`, run on a networked box; it takes either a list of OSV ids the
+  operator supplies or, since the bulk importer landed, a whole ecosystem at once).
+  What changed is that the tool now says so instead of reporting a clean scan.
+  `scan.sh sca` with no database exits **4** (`SCOURSH_EXIT_INPUT`, "missing required input" -
+  [`docs/FOUNDATION.md`](docs/FOUNDATION.md) tension 14's frozen precedence, no new code and no change
+  to the order), writes its full report, and carries a `SCA-COV-NO_ADVISORY_DB-01` finding stating that
+  zero dependencies were checked.
+  `run.json` records **one** `module=sca reason=no_advisories_db_on_disk ecosystems=<all six>` reduction
+  in place of the previous two-from-some-walks-and-nothing-from-the-others, and `checks_run` is no longer
+  empty.
+  A `scan.sh all` run is unaffected in its exit code, per the same tension's row for a module skipped
+  under `all` for absent inputs; it still reports the blind spot.
+- **Two SCA coverage roll-ups collided, and one was dropped silently.**
+  The `SCA-COV-UNKNOWN_VERSION-01` roll-up carries no ecosystem component in its fingerprint - it names
+  no single dependency, so it never could - and the Python, Java and Go paths each used to emit their
+  own roll-up rather than joining npm's.
+  A project with dependencies in two of those groups therefore produced two findings with an identical
+  fingerprint, deduplication dropped one, and the survivor reported one walk's share as if it were the
+  total (on a fixture carrying npm, PyPI, Maven and Go gaps, the report said 1 where the truth was 4;
+  which walk's count survived depended on the merge sort, not on anything meaningful).
+  The four walks now accumulate into one shared table that the module flushes once, so a run emits
+  exactly one roll-up and its count is the true total across every ecosystem.
+  The fix is at the emission layer on purpose: the fingerprint is byte-for-byte unchanged, so no
+  `format_version` bump and no `state/` migration are owed
+  ([`rules/RULE-FORMAT.md`](rules/RULE-FORMAT.md) §14 item 3).
+  Adding an ecosystem component was weighed and rejected - see
+  [`docs/FOUNDATION.md`](docs/FOUNDATION.md) tension 5 for the argument.
 
 ## Not currently on the roadmap
 
