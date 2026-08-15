@@ -1,0 +1,17 @@
+# A Swagger 2.0 document in block YAML, to prove the YAML front-end.
+swagger: "2.0"
+basePath: /v1
+paths:
+  /users:
+    get:
+      summary: list users
+      parameters:
+        - name: page
+          in: query
+        - name: X-Api-Version
+          in: header
+    post:
+      summary: create a user
+  /users/{userId}:
+    get:
+      summary: read one

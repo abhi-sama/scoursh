@@ -8,7 +8,7 @@ mock-response test -> §7.4 auth/API/authz checks" - can be picked up as a clean
 independently reviewable tickets, instead of being re-derived from `docs/DESIGN.md` §7 from scratch by
 whoever picks it up first.
 
-## Status: top priority - tier 0 is complete, and tier 1 has started
+## Status: top priority - tiers 0 and 1 are both complete
 
 **Every gate this section used to record is now discharged, and the whole of tier 0 has landed.**
 `docs/DESIGN.md` §13 step 3 finished (`nosql.rules` and `ldap.rules` landed), step 4 finished (SCA at
@@ -24,18 +24,20 @@ whoever picks it up first.
 | DAST-34 - an unrestricted run stated on stderr and in the report | landed |
 | DAST-35 - the lint forbidding a bundled scan target | separate ticket; no ticket below is gated on it |
 | DAST-36 - folding this posture into DAST-01..30's own acceptance criteria | doc-only; not started |
+| DAST-04 - `crawl.sh`, the endpoint/parameter inventory every later ticket reads | **landed** (tier 1) |
 
-**Tier 1 is now half landed.**
+**Tier 1 is now complete.**
 
 | Ticket | State |
 |---|---|
 | DAST-03 - `auth.sh`, authentication and session acquisition (§7.0) | landed |
-| DAST-04 - `crawl.sh`, crawling, parameter and spec discovery (§7.5) | not started |
+| DAST-04 - `crawl.sh`, crawling, parameter and spec discovery (§7.5) | landed |
 
-DAST-04 is the only thing tiers 2-5 are still waiting on: every check below needs the endpoint and
-parameter inventory it writes, and none of them needs anything else DAST-03 did not already ship.
-
-**Nothing now blocks DAST-03 (`auth.sh`) or DAST-04 (`crawl.sh`), which are what tiers 2-5 wait on.**
+**Tiers 2-5 are unblocked and nothing remains in front of them**: every check below needs the endpoint
+and parameter inventory DAST-04 writes, and the authenticated ones need the session DAST-03 acquires.
+Both are in.
+What each shipped, and the things about them that are easy to get backwards, are stated in their own
+landing notes below the ticket table.
 The one ordering constraint tier 0 existed to impose has been met: no ticket may issue real HTTP
 traffic until the limiter, the budget, the breaker, the identified `User-Agent` and the conservative
 ceilings are all in `lib/http.sh`, and they are.
@@ -546,7 +548,63 @@ They are specified in "Safety defaults and authorisation" above rather than rest
 | # | Ticket | Depends on | Notes |
 |---|---|---|---|
 | DAST-03 **(landed)** | `auth.sh` (§7.0) - authentication & session acquisition | DAST-01, DAST-02, `config/auth.conf` schema (already frozen, `rules/RULE-FORMAT.md` §9.6.2) | Static bearer/API key, form login, OAuth2/OIDC password/client-credentials grant, Cognito-style SRP. Session store (cookie jar + token cache) in the run scratch dir, perms `600`. Transparent re-auth on `401`, else the authenticated checks are marked `skipped` with a reason. Multi-identity (labelled A/B) for DAST-29 (`authz.sh`). The config-derived half of the §7.4 closing paragraph's user-enumeration checks (detection via config, not a live probe) belongs here too; the live `--allow-intrusive` opt-in variant is a small follow-up once this ticket's session modes exist, not counted separately below. |
-| DAST-04 | `crawl.sh` (§7.5) - crawling, parameter & spec discovery | DAST-01, DAST-02; optionally DAST-03 for an authenticated crawl pass (unauthenticated static crawl does not need it) | Static crawl (links/forms/`action`s/input names, depth-limited, scope-gated); spec ingestion (OpenAPI/Swagger, GraphQL schema, Postman, HAR) as the preferred, most-complete input; merges any `reports/<run>/inventory/endpoints.json` another module already wrote (tension 21 - SAST route extraction, `apigw.sh`), tolerating its absence with a `coverage_gap` record via the mechanism `lib/report.sh` already ships (step 1). Writes `endpoints.json` + `parameters.json`, which every ticket below consumes. **Must implement the SPA/client-rendered-app limitation as a stated `coverage_gap`, not a fix**: see "SPA/client-rendered limitation" below - this ticket's acceptance criteria should require that gap to actually appear in `run.json`/the report when no spec/HAR is supplied, not just be true in prose. |
+| DAST-04 (**landed**) | `crawl.sh` (§7.5) - crawling, parameter & spec discovery | DAST-01, DAST-02; optionally DAST-03 for an authenticated crawl pass (unauthenticated static crawl does not need it) | Static crawl (links/forms/`action`s/input names, depth-limited, scope-gated); spec ingestion (OpenAPI/Swagger, GraphQL schema, Postman, HAR) as the preferred, most-complete input; merges any `reports/<run>/inventory/endpoints.json` another module already wrote (tension 21 - SAST route extraction, `apigw.sh`), tolerating its absence with a `coverage_gap` record via the mechanism `lib/report.sh` already ships (step 1). Writes `endpoints.json` + `parameters.json`, which every ticket below consumes. **Must implement the SPA/client-rendered-app limitation as a stated `coverage_gap`, not a fix**: see "SPA/client-rendered limitation" below - this ticket's acceptance criteria should require that gap to actually appear in `run.json`/the report when no spec/HAR is supplied, not just be true in prose. |
+
+**DAST-04 has landed.**  It ships `modules/dast/crawl.sh` (the phase script `dast_run_phase`
+sources, which orchestrates the four inputs and writes the two artifacts) and
+`modules/dast/crawl_engine.sh` (the pure, testable half: the HTML link/form extractors, the JSON and
+YAML front-ends, the four specification parsers, and the inventory reader/writer), plus
+`docs/INVENTORY-FORMAT.md`, which is the **normative shape of the two files every ticket in tiers 2
+through 5 reads** - treat it as a contract and read it before consuming either file.
+
+Five things about it are easy to get backwards, and each is pinned by a test naming the reading it
+fails under (`tests/suites/dast-crawl.sh`, 146 assertions, no network and no Docker):
+
+- **A discovered link is pre-checked against the scope gate BEFORE it is enqueued, and that
+  pre-check is not the gate.**  `http_request` gates fatally - an out-of-scope URL is a caller bug
+  and exits 3 - which is right for a URL the operator configured and exactly wrong for one lifted off
+  a scanned page: handing a crawled link straight to `http_request` lets any site stop the operator's
+  whole run by linking to a search engine.  `_crawl_in_scope` therefore decides only whether a URL is
+  worth ENQUEUEING; every URL that survives is still requested through `http_request`, which applies
+  the real gate again on the way out and on every redirect hop.  Deleting the pre-check would make the
+  crawler fragile; deleting the `http_request` call would make it unsafe, and only one of those two
+  is a gate.  Both halves are asserted on a REQUEST LOG rather than on a return value.
+- **A specification contributes its PATHS, never its HOST.**  An OpenAPI `servers[].url`, a Postman
+  URL and a HAR entry each name a host, routinely a production one.  Taking it would turn
+  `config/discovery.conf` into a way past the scope gate, so only the path is used and the host is
+  always the operator's own `--target`.  The server URL's own PATH PREFIX *is* honoured (and
+  `basePath` is the Swagger 2 spelling of it), because that is a fact about where the API is mounted
+  rather than about who to talk to.
+- **The client-rendered gap is recorded only when no specification closed it.**  Printing it
+  unconditionally would make asserting its presence prove nothing, so the suite asserts it present
+  without a spec AND absent with one.  It reaches `run.json`, `report.md` and `report.html` - not
+  just prose - which is this ticket's own acceptance criterion.
+- **A form is inventoried, never submitted.**  Its `action`, its method and its input names become an
+  endpoint and parameters; no POST is sent.  Submitting one is a state change, forbidden at the
+  passive tier `docs/DESIGN.md` §7.1 defines.
+- **A query string is stripped from the endpoint URL and its keys recorded as parameters instead.**
+  Keeping the query would turn a paginated listing into fifty endpoints and make every later check
+  re-test one handler fifty times.
+
+Everything the crawl cannot see is recorded rather than absorbed: an unusable specification, an
+unreachable URL, a depth or page ceiling that bit, a truncated inventory, and the anonymous-crawl
+case all emit their own `coverage_gap`/`coverage_reduction`.  `tests/e2e/dast-crawl-target.sh` is the
+opt-in (Docker-requiring) proof against the real local Juice Shop container, and it is worth reading
+for what it asserts: a crawl of a real Angular application found **13 endpoints and 0 parameters**,
+all static assets plus the root, and the run SAID SO - `spa_shaped=1` was measured off the target's
+own root document.  A thin result there is the pass condition, not a defect; supplying a
+specification to the same target took it to 16.  That file is also where the scope gate is proven
+live: the target's own root document links to a third-party font CDN, and the request log shows no
+request was ever made to it.
+
+**What DAST-04 deliberately did NOT build**, so the boundary is not rediscovered: the authenticated
+crawl pass.  `crawl.sh` runs unauthenticated and records a `coverage_gap` saying so.  DAST-03 owns
+the session and was built in parallel with this ticket, so nothing here was stubbed against it; both
+have now landed, which means **the authenticated crawl pass is a real, available follow-up rather
+than a blocked one** - `crawl.sh` still does not take a session, and until something wires
+`dast_auth_state`'s session into `_crawl_fetch`, a crawl of an authenticated application sees only
+its public surface and says exactly that.  There is also no JavaScript execution and no headless
+browser, now or later - that is the stated limitation above, not a gap awaiting a ticket.
 
 #### What DAST-03 actually shipped, and the five things about it that are easy to get backwards
 

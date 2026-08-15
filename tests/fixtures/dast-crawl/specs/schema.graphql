@@ -1,0 +1,15 @@
+"""Fixture schema."""
+type Query {
+  # a line comment
+  users(first: Int): [User!]!
+  currentUser: User
+}
+
+type User {
+  id: ID!
+  email: String
+}
+
+type Mutation {
+  login(email: String!, password: String!): Token
+}

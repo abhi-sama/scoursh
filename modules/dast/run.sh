@@ -59,7 +59,7 @@ _dast_record_inventory_gaps() {
     esac
     case $state in
       absent)
-        run_record coverage_gap "dast: no ${kind} inventory at $file in this run (reason=${kind}_inventory_absent, docs/FOUNDATION.md tension 21) - no crawler has run and no other module wrote one, so nothing here knows any endpoint or parameter beyond what config/scope.conf names"
+        run_record coverage_gap "dast: no ${kind} inventory at $file was available as INPUT when this module started (reason=${kind}_inventory_absent, docs/FOUNDATION.md tension 21) - no other module wrote one, so this run began knowing no endpoint or parameter beyond what config/scope.conf names. This says nothing about what the run ends with: modules/dast/crawl.sh (DAST-04) runs later in this same run and writes $file itself, so read that file, not this sentence, for the surface the run finished with."
         ;;
       empty)
         run_record coverage_gap "dast: the ${kind} inventory at $file exists but is empty (reason=${kind}_inventory_empty, docs/FOUNDATION.md tension 21) - a producer created it and wrote nothing, which is not the same as a surface with nothing in it"

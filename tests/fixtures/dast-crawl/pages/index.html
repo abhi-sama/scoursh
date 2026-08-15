@@ -1,0 +1,20 @@
+<!doctype html>
+<html><head><title>fixture root</title></head>
+<body>
+<h1>root</h1>
+<a href="/about.html">about</a>
+<a href="deep1.html">deep one</a>
+<a href="/search?q=hello&amp;page=2">search</a>
+<a href="#top">fragment only</a>
+<a href="mailto:nobody@example.invalid">mail</a>
+<!-- <a href="/commented-out.html">never</a> -->
+<script>var hidden = "/only-in-javascript.html";</script>
+<a href="https://off-target.example.invalid/leak">an off-target link</a>
+<form action="/login" method="POST">
+  <input name="username" type="text">
+  <input name="password" type="password">
+  <input type="submit" value="go">
+  <button name="remember">stay</button>
+</form>
+<form action="/find" method="GET"><input name="term"></form>
+</body></html>

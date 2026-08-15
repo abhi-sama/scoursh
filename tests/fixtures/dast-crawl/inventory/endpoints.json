@@ -1,0 +1,15 @@
+{
+  "schema": "scoursh.inventory.endpoints/1",
+  "run_id": "a-previous-producer",
+  "generated_by": "tests/fixtures/dast-crawl (stands in for SAST route extraction, docs/DESIGN.md 8.4)",
+  "endpoints": [
+    {"id": "aaaaaaaaaaaa", "target": "crawl-fixture", "method": "GET",
+     "url": "https://crawl.fixture.invalid/internal/health",
+     "host": "crawl.fixture.invalid", "path": "/internal/health",
+     "source": "sast-routes", "depth": 0, "status": "", "content_type": ""},
+    {"id": "bbbbbbbbbbbb", "target": "crawl-fixture", "method": "POST",
+     "url": "https://crawl.fixture.invalid/internal/admin/reset",
+     "host": "crawl.fixture.invalid", "path": "/internal/admin/reset",
+     "source": "sast-routes", "depth": 0, "status": "", "content_type": ""}
+  ]
+}

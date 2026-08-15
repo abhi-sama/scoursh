@@ -1,0 +1,8 @@
+{"data": {"__schema": {
+  "queryType": {"name": "RootQuery"},
+  "mutationType": {"name": "RootMutation"},
+  "types": [
+    {"name": "RootQuery", "fields": [{"name": "nodes"}, {"name": "viewer"}]},
+    {"name": "User", "fields": [{"name": "id"}, {"name": "email"}]},
+    {"name": "RootMutation", "fields": [{"name": "signIn"}]}
+  ]}}}

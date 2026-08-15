@@ -1,0 +1,23 @@
+{
+  "openapi": "3.0.3",
+  "info": {"title": "fixture", "version": "1.0"},
+  "servers": [{"url": "https://spec-declared-host.example.invalid/api/v2"}],
+  "paths": {
+    "/pets": {
+      "get": {
+        "summary": "list",
+        "parameters": [
+          {"name": "limit", "in": "query"},
+          {"name": "X-Trace-Id", "in": "header"}
+        ]
+      },
+      "post": {"summary": "create"}
+    },
+    "/pets/{petId}": {
+      "parameters": [{"name": "petId", "in": "path"}],
+      "get": {"summary": "read"},
+      "delete": {"summary": "remove"}
+    },
+    "/never-linked-from-anywhere": {"get": {"summary": "unreachable by crawl"}}
+  }
+}
