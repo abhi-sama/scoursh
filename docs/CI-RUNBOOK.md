@@ -38,6 +38,9 @@ Each matrix leg checks out the repo, installs a bash that meets the frozen 4.2 m
 
 **`shellcheck`** runs last, over `lib/`, `tests/`, `tools/`, `modules/`, `aws/`, `scan.sh`, if the binary is present.
 It is optional locally (an air-gapped host may not have it) but CI always installs it, so it is effectively required in CI even though `tests/run-tests.sh` itself treats it as best-effort.
+It runs in parallel batches sized to the host's own core count (`nproc`, then `getconf _NPROCESSORS_ONLN`, then `sysctl -n hw.ncpu`, falling back to 4), one batch per core via `xargs -P`, each batch writing to its own shard file rather than shared stdout so parallel writers cannot interleave a finding across two files.
+`-x` (follow `source`) still runs on every batch; only the process count changed.
+A failure in any batch, first or last, still fails the stage: the branch is on `xargs -P`'s own aggregate exit status (123 if any invocation exited 1-125), not on parsed output.
 
 Each matrix leg finishes by running the fixture scan again, normalizing out the one field that legitimately differs between runs (`first_seen`/`last_seen` timestamps), and uploading `findings.normalised.jsonl` plus the full suite log as artifacts.
 
