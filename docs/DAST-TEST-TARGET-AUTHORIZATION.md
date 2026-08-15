@@ -1,7 +1,6 @@
 # DAST test-target authorization record
 
 Date: 2026-08-07.
-Ticket: Crewban-22 (operator-blocked - "authorize a DAST target and two test identities").
 
 ## The decision
 

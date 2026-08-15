@@ -9,7 +9,7 @@
 #   tools/dast-test-target/scope.conf (the config/scope.conf record that
 #     authorizes exactly this target - rules/RULE-FORMAT.md §9.4)
 #
-# WHY DOCKER, WHY LOCAL.  Crewban-22: DAST work was operator-blocked because
+# WHY DOCKER, WHY LOCAL.  DAST work was operator-blocked because
 # there was no staging environment to point it at, and the operator will not
 # scan anything not owned outright. Juice Shop is a deliberately vulnerable
 # app built for exactly this purpose (broken access control, injection, and
