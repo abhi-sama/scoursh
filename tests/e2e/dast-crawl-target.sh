@@ -176,7 +176,10 @@ printf -- '\n-- C. the scope gate holds during a real crawl --\n'
 t_case 'the real root document really does carry an off-target link'
 http_scope_load "$FIX/config/scope.conf"
 BODY=$W/root-body.txt
-http_request GET "$DTT_URL/" 5 dast-test-target "$BODY" >/dev/null 2>&1 || true
+# The body is asked for with http_request_capture (lib/http.sh section 9a), not
+# with a positional sink: that is the one way to obtain a response body.
+http_request_capture "$BODY" ''
+http_request GET "$DTT_URL/" 5 dast-test-target >/dev/null 2>&1 || true
 ROOTDOC=$(cat "$BODY" 2>/dev/null || printf '')
 assert_contains "$ROOTDOC" 'fonts.googleapis.com' \
   'the target page links to a third-party host - this guards the next case from going vacuous the day the target stops linking to one'

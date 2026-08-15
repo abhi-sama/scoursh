@@ -681,8 +681,9 @@ _http_curl_cfg_quote() {
 # ---------------------------------------------------------------------------
 # Swappable via SCOURSH_HTTP_TRANSPORT (a function name) so the redirect-loop
 # and gate-recheck logic in http_request is fully testable with no network,
-# per docs/DESIGN.md §12.  Contract: METHOD SCHEME HOST PORT PATH ADDR on
-# stdin/argv; on success prints up to THREE lines to stdout - the status code,
+# per docs/DESIGN.md §12.  Contract: METHOD SCHEME HOST PORT PATH ADDR
+# [BODY_OUT] [HEADERS_OUT] on argv; on success prints up to THREE lines to
+# stdout - the status code,
 # the Location header value (or an empty line), and the Content-Type header
 # value (or an empty line, or no line at all) - and returns 0; a transport-
 # level failure returns non-zero.  Section 9a's `_HTTP_TX_*` globals carry the
@@ -696,14 +697,16 @@ _http_curl_cfg_quote() {
 # and the breaker.  A crawler that fetched its own bodies would be tension 19's
 # bypass with a different name.
 #
-# THE BODY SINK IS DAST-03's `_HTTP_TX_BODY_OUT` GLOBAL, NOT A SEVENTH
-# POSITIONAL ARGUMENT.  DAST-04 originally threaded it through argv; DAST-03
-# landed the same capability first, as part of the per-request context, and
-# gave the reason this file now keeps: every already-written stub takes exactly
-# six arguments, so widening the positional contract silently changes what they
-# receive, whereas a global leaves a stub that ignores it behaving as before.
-# Two mechanisms for one capability at the single chokepoint would be the
-# second path to the network in miniature, so there is one.
+# THE TWO CAPTURE SINKS ARRIVE BOTH WAYS, AND THAT IS DELIBERATE.  DAST-03
+# introduced them as the `_HTTP_TX_*` globals; DAST-04 needs them to reach a
+# transport that is an EXECUTABLE rather than a function, and a global does not
+# cross a fork - a wrapper that `source`s this file even re-runs the
+# initialisation below and erases what the environment carried.  So
+# `http_request` sets the globals AND appends the two paths as arguments 7 and
+# 8, and this transport prefers the argument.  Appending is safe by
+# construction: a six-argument stub never reads $7 or $8.
+# Only the PATHS travel as arguments; the request headers and body stay globals
+# because argv is world-readable (tension 9).
 # A stub transport that prints only two lines stays conformant: http_request
 # reads a missing third line as an empty Content-Type.
 _http_transport_default() {
@@ -713,7 +716,11 @@ _http_transport_default() {
   hdrfile=$(mktemp "${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/http-hdr.XXXXXX")
   chmod 600 "$hdrfile"
   local timeout=${SCOURSH_HTTP_TIMEOUT:-20}
-  local bodyout=${_HTTP_TX_BODY_OUT:-}
+  # ARGUMENT FIRST, GLOBAL AS FALLBACK.  The argument is what reaches a forked
+  # transport; the global is what an in-process one has always read.  Same value
+  # either way - http_request sets both from the same local.
+  local bodyout=${7:-${_HTTP_TX_BODY_OUT:-}}
+  local hdrsout=${8:-${_HTTP_TX_HEADERS_OUT:-}}
   local outarg=/dev/null
   [[ -n $bodyout ]] && outarg=$bodyout
   # The identifying User-Agent (section 10a).  Composed HERE and nowhere else,
@@ -759,7 +766,7 @@ _http_transport_default() {
     return 1
   fi
 
-  [[ -n ${_HTTP_TX_HEADERS_OUT:-} ]] && cat -- "$hdrfile" >>"$_HTTP_TX_HEADERS_OUT"
+  [[ -n $hdrsout ]] && cat -- "$hdrfile" >>"$hdrsout"
   local status='' location='' ctype='' line
   while IFS= read -r line; do
     line=${line%$'\r'}
@@ -1782,23 +1789,33 @@ http_request() {
     # case that makes "the body file holds the last hop's body" false.
     [[ -n $cap_body ]] && : >"$cap_body"
 
-    # The two CAPTURE PATHS are also passed in the environment of this one
-    # invocation, because `SCOURSH_HTTP_TRANSPORT` may name an EXECUTABLE and
-    # not just a function: a plain global is invisible across a fork, so an
-    # external transport would silently receive no body sink and every caller
-    # of `http_request_capture` would read an empty file.  A `VAR=val cmd`
-    # prefix covers both shapes and is scoped to the single call.
+    # The two CAPTURE PATHS are ALSO APPENDED AS ARGUMENTS 7 AND 8, and that is
+    # not redundancy - it is the only channel that survives a fork.
+    # `SCOURSH_HTTP_TRANSPORT` may name an EXECUTABLE, not just a function, and
+    # a shell global is invisible across a fork; worse, a wrapper that `source`s
+    # this file re-runs section 9a's own `_HTTP_TX_BODY_OUT=''` initialisation
+    # and so ERASES any value inherited through the environment.  Measured, not
+    # reasoned: with the globals alone, tests/e2e/dast-crawl-target.sh's
+    # delegating wrapper crawled the live target and got 1 endpoint instead of
+    # 13, because every response body was silently discarded.
     #
-    # ONLY THE PATHS.  `_HTTP_TX_BODY` and `_HTTP_TX_HEADERS` carry the
-    # credential and are deliberately NOT passed this way: a child's
-    # environment is readable much like its argv, which is the exposure tension
-    # 9 handling rule 1 exists to prevent.  An executable transport therefore
-    # gets the sinks and not the request context, and the in-process default
-    # transport - the only one that sends a credential - reads the globals
-    # directly, in this same process, where no fork is involved.
-    if ! out=$(_HTTP_TX_BODY_OUT="$cap_body" _HTTP_TX_HEADERS_OUT="$cap_hdrs" \
-      "${SCOURSH_HTTP_TRANSPORT:-_http_transport_default}" \
-      "$method" "$_HN_SCHEME" "$_HN_HOST" "$_HN_PORT" "$_HN_PATH" "$addr"); then
+    # Passing them in the ENVIRONMENT instead would also be wrong on its own
+    # terms: anything able to set the environment could then choose where this
+    # process writes response bodies.  An argument is chosen by the caller.
+    #
+    # Appending cannot disturb an existing stub - a six-argument transport
+    # simply never reads $7 or $8 - which is the property DAST-03's own note
+    # about not widening the contract was protecting.
+    #
+    # ONLY THE PATHS CROSS THE BOUNDARY.  `_HTTP_TX_BODY` and `_HTTP_TX_HEADERS`
+    # carry the credential and stay globals precisely because argv is world-
+    # readable in `ps` (tension 9 handling rule 1).  So an external transport
+    # gets the sinks and never the request context, and the in-process default
+    # transport - the only one that sends a credential - reads those globals in
+    # this same process, where no fork is involved.
+    if ! out=$("${SCOURSH_HTTP_TRANSPORT:-_http_transport_default}" \
+      "$method" "$_HN_SCHEME" "$_HN_HOST" "$_HN_PORT" "$_HN_PATH" "$addr" \
+      "$cap_body" "$cap_hdrs"); then
       # No usable response at all, which is the strongest evidence the breaker
       # gets; it is recorded before the failure is returned, so a caller that
       # swallows the non-zero status cannot also swallow the breaker.

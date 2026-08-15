@@ -365,13 +365,14 @@ REQLOG=$W/requests.log
 
 cat >"$STUB_DIR/transport" <<'STUBEOF'
 #!/usr/bin/env bash
-# METHOD SCHEME HOST PORT PATH ADDR - lib/http.sh's transport
+# METHOD SCHEME HOST PORT PATH ADDR [BODY_OUT] [HEADERS_OUT] - lib/http.sh's transport
 # contract.  Serves tests/fixtures/dast-crawl/pages/ and logs every request it
 # is ASKED to make, which is the evidence the scope-gate cases assert on.
 set -Eeuo pipefail
-# The body sink arrives as _HTTP_TX_BODY_OUT, section 9a's global, not as a
-# seventh argument: the transport's positional contract is still six wide.
-method=$1; host=$3; path=$5; bodyout=${_HTTP_TX_BODY_OUT:-}
+# The body sink arrives as argument 7.  A global would NOT reach this stub: it
+# is a separate executable, so nothing but argv and the environment crosses the
+# fork - which is the whole reason http_request appends it.
+method=$1; host=$3; path=$5; bodyout=${7:-}
 printf '%s %s %s\n' "$method" "$host" "$path" >>"$CRAWL_STUB_LOG"
 p=${path%%\?*}
 case $p in
