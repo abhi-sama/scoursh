@@ -1434,4 +1434,217 @@ SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 _limits_reset
 config_scanner_load "$W/scanner-absent.conf"
 
+# =============================================================================
+printf -- '\n-- DAST-03: the per-request context (headers, body, response capture) --\n'
+# =============================================================================
+# lib/http.sh section 9a.  These are properties of the CHOKEPOINT, not of any
+# module: a caller composing its own request would be the second path to the
+# network tension 19 exists to make impossible, so the ability to send a header
+# and a body has to live here and has to be tested here.
+
+_limits_reset
+config_scanner_load "$W/scanner-absent.conf"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+
+CTX_LOG=$W/ctx.log
+
+# The value of KEY in the LAST request block of $CTX_LOG.  Last, not first: a
+# redirect case logs two blocks and every assertion below is about the hop that
+# was FOLLOWED, so a first-match reader would report the original request and
+# pass an implementation that resent everything.
+_ctx_last() {
+  local key=$1 line out=''
+  while IFS= read -r line; do
+    case $line in "$key "*) out=${line#"$key "} ;; esac
+  done <"$CTX_LOG"
+  printf '%s' "$out"
+}
+
+# The header lines of the LAST request block alone.
+_ctx_last_headers() {
+  local line out=''
+  while IFS= read -r line; do
+    case $line in
+      '--- '*) out='' ;;
+      'H '*) out+="$line"$'\n' ;;
+    esac
+  done <"$CTX_LOG"
+  printf '%s' "$out"
+}
+
+_ctx_transport() {
+  local method=$1 scheme=$2 host=$3 port=$4 path=$5
+  {
+    printf -- '--- %s %s://%s:%s%s\n' "$method" "$scheme" "$host" "$port" "$path"
+    local h
+    for h in "${_HTTP_TX_HEADERS[@]+"${_HTTP_TX_HEADERS[@]}"}"; do printf 'H %s\n' "$h"; done
+    printf 'HASBODY %s\n' "${_HTTP_TX_HAS_BODY:-false}"
+    printf 'B %s\n' "${_HTTP_TX_BODY:-}"
+  } >>"$CTX_LOG"
+  if [[ -n ${_HTTP_TX_BODY_OUT:-} ]]; then printf 'the-response-body' >"$_HTTP_TX_BODY_OUT"; fi
+  if [[ -n ${_HTTP_TX_HEADERS_OUT:-} ]]; then
+    printf 'HTTP/1.1 200 OK\nSet-Cookie: s=1\n\n' >>"$_HTTP_TX_HEADERS_OUT"
+  fi
+  printf '200\n\n'
+}
+
+t_case 'a header and a body attached by the caller reach the transport'
+: >"$CTX_LOG"
+SCOURSH_HTTP_TRANSPORT=_ctx_transport
+http_request_header Authorization 'Bearer sekrit'
+http_request_body '{"a":1}'
+http_request POST 'https://good.fixture.example/login'
+assert_contains "$(cat "$CTX_LOG")" 'H Authorization: Bearer sekrit' \
+  'the header reaches the transport - fails if the context is accepted and dropped, which is a silently unauthenticated request'
+assert_contains "$(cat "$CTX_LOG")" 'B {"a":1}' 'and so does the body'
+
+t_case 'the context is consumed by ONE request and never rides along on the next'
+: >"$CTX_LOG"
+http_request GET 'https://good.fixture.example/other'
+assert_not_contains "$(cat "$CTX_LOG")" 'Authorization' \
+  'the second request carries no header from the first - FAILS if the context is cleared at the END of http_request rather than consumed at its start, in which case any path that dies in between (a gate refusal, an exhausted budget, an opened breaker) leaves a credential attached to whatever request comes next'
+assert_eq 'false' "$(_ctx_last HASBODY)" 'and no body either'
+
+t_case 'the response body and headers are captured, at mode 600'
+: >"$CTX_LOG"
+http_request_capture "$W/cap.body" "$W/cap.hdr"
+http_request GET 'https://good.fixture.example/x'
+assert_eq 'the-response-body' "$(cat "$W/cap.body")" 'the response body is captured'
+assert_contains "$(cat "$W/cap.hdr")" 'Set-Cookie: s=1' 'and the raw response headers with it'
+assert_eq '600' "$(stat_mode "$W/cap.body")" \
+  'the body capture is 600 - fails under the process umask alone; a login response is where the token is, and it must not be world-readable for even one hop'
+assert_eq '600' "$(stat_mode "$W/cap.hdr")" 'and so is the header capture'
+
+t_case 'a header value containing CR or LF is refused, not truncated'
+_hdr_probe() {
+  local rc=0
+  bash -c "
+    source '$ROOT/lib/http.sh'
+    http_request_header X-Test 'one
+two'
+  " >/dev/null 2>&1 || rc=$?
+  printf '%s' "$rc"
+}
+assert_eq 4 "$(_hdr_probe)" \
+  'a newline in a header value exits 4 - FAILS under "strip it and carry on", which silently sends a request the operator did not write, and under "send it anyway", which is request splitting'
+
+# =============================================================================
+printf -- '\n-- DAST-03: a redirect does not carry a credential or a body with it --\n'
+# =============================================================================
+
+_redir_transport() {
+  local method=$1 host=$3 path=$5
+  {
+    printf -- '--- %s %s%s\n' "$method" "$host" "$path"
+    local h
+    for h in "${_HTTP_TX_HEADERS[@]+"${_HTTP_TX_HEADERS[@]}"}"; do printf 'H %s\n' "$h"; done
+    printf 'HASBODY %s\n' "${_HTTP_TX_HAS_BODY:-false}"
+  } >>"$CTX_LOG"
+  case $path in
+    /login) printf '302\nhttps://good.fixture.example/landed\n' ;;
+    /crossorigin) printf '302\nhttps://sub.wide.fixture.example/landed\n' ;;
+    /keepmethod) printf '307\nhttps://good.fixture.example/landed\n' ;;
+    *) printf '200\n\n' ;;
+  esac
+}
+
+t_case 'a 302 after a POST is re-issued as GET, with the body dropped'
+: >"$CTX_LOG"
+SCOURSH_HTTP_TRANSPORT=_redir_transport
+http_request_header Content-Type 'application/x-www-form-urlencoded'
+http_request_body 'username=u&password=p'
+http_request POST 'https://good.fixture.example/login'
+assert_contains "$(cat "$CTX_LOG")" '--- GET good.fixture.example/landed' \
+  'the followed hop is a GET - FAILS if the redirect loop replays the original method, which re-POSTs the credential to a path the SCANNED TARGET chose (RFC 7231 §6.4.3, and what every browser and curl -L do)'
+assert_eq 'false' "$(_ctx_last HASBODY)" \
+  'and the body is not resent'
+assert_not_contains "$(_ctx_last_headers)" 'Content-Type' \
+  'nor the entity headers that described it'
+
+t_case 'a 307 DOES preserve the method and the body, because that is what it is for'
+: >"$CTX_LOG"
+http_request_header Content-Type 'application/json'
+http_request_body '{"k":1}'
+http_request POST 'https://good.fixture.example/keepmethod'
+assert_contains "$(cat "$CTX_LOG")" '--- POST good.fixture.example/landed' \
+  'a 307 hop keeps POST - FAILS under "downgrade every 3xx to GET", which breaks the one status code that exists specifically to prevent that'
+assert_eq 'true' "$(_ctx_last HASBODY)" 'and keeps the body'
+
+t_case 'a redirect that crosses ORIGIN drops the credential, even when both origins are in scope'
+: >"$CTX_LOG"
+http_request_header Authorization 'Bearer for-good-fixture-only'
+http_request GET 'https://good.fixture.example/crossorigin'
+assert_contains "$(cat "$CTX_LOG")" '--- GET sub.wide.fixture.example/landed' \
+  'the hop is followed, because both origins really are authorised'
+assert_not_contains "$(_ctx_last_headers)" 'Authorization' \
+  'and the Authorization header is NOT resent - FAILS under "the scope gate already approved both hosts, so carry on", which confuses "this tool may talk to that host" with "this credential belongs to that host" and hands host B a token the operator issued for host A'
+
+SCOURSH_HTTP_TRANSPORT=_t_transport
+_limits_reset
+config_scanner_load "$W/scanner-absent.conf"
+
+# =============================================================================
+printf -- '\n-- DAST-03 / tension 9: the credential never reaches curl'"'"'s argv --\n'
+# =============================================================================
+# The one case in this file that runs the REAL transport, against a stub `curl`
+# on PATH.  Everything else stubs SCOURSH_HTTP_TRANSPORT, which is exactly the
+# wrong layer for this assertion: what is being tested is how
+# `_http_transport_default` INVOKES curl, so a stub that replaces it proves
+# nothing.  Nothing leaves the machine - the stub is a shell script.
+
+t_case 'a header value and a request body reach curl over stdin, never as arguments'
+STUB=$W/curlstub
+mkdir -p "$STUB"
+ARGV_OUT=$W/curl.argv
+STDIN_OUT=$W/curl.stdin
+cat >"$STUB/curl" <<'STUBEOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$@" >"$SCOURSH_STUB_ARGV"
+cat >"$SCOURSH_STUB_STDIN"
+hdr=''
+prev=''
+for a in "$@"; do
+  [[ $prev == -D ]] && hdr=$a
+  prev=$a
+done
+[[ -n $hdr ]] && printf 'HTTP/1.1 200 OK\r\n\r\n' >"$hdr"
+exit 0
+STUBEOF
+chmod 755 "$STUB/curl"
+
+CREDENTIAL='s3cr3t-token-value-never-in-argv'
+BODYSECRET='password=another-s3cr3t-value'
+(
+  unset SCOURSH_HTTP_TRANSPORT
+  export SCOURSH_STUB_ARGV=$ARGV_OUT SCOURSH_STUB_STDIN=$STDIN_OUT
+  PATH="$STUB:$PATH"
+  http_request_header Authorization "Bearer $CREDENTIAL"
+  http_request_body "$BODYSECRET"
+  http_request POST 'https://good.fixture.example/login'
+) >/dev/null 2>&1
+ARGV=$(cat "$ARGV_OUT")
+STDIN_SEEN=$(cat "$STDIN_OUT")
+assert_not_contains "$ARGV" "$CREDENTIAL" \
+  'the token is NOT in curl'"'"'s argv - FAILS under the obvious `-H "Authorization: Bearer $t"` spelling, which puts the credential in `ps` output for every user on the host (docs/FOUNDATION.md tension 9 handling rule 1)'
+assert_not_contains "$ARGV" 'another-s3cr3t-value' \
+  'and neither is the request body - FAILS under `--data "$body"`, the same exposure by a different flag'
+assert_contains "$STDIN_SEEN" "$CREDENTIAL" \
+  'it reached curl over stdin instead, as a config directive - fails if the header is dropped entirely, in which case the request is silently unauthenticated'
+assert_contains "$STDIN_SEEN" 'another-s3cr3t-value' 'and so did the body'
+assert_contains "$ARGV" '-K' 'curl really was told to read that config'
+assert_file_absent "$W/curl.cfg" \
+  'and no config FILE was written - FAILS under "write the header to a 600 temp file and pass -K <path>", which is argv-safe but puts the credential on disk (tension 9 handling rule 2)'
+
+t_case 'a request with no header and no body still uses the SAME single curl invocation'
+: >"$ARGV_OUT"
+(
+  unset SCOURSH_HTTP_TRANSPORT
+  export SCOURSH_STUB_ARGV=$ARGV_OUT SCOURSH_STUB_STDIN=$STDIN_OUT
+  PATH="$STUB:$PATH"
+  http_request GET 'https://good.fixture.example/plain'
+) >/dev/null 2>&1
+assert_contains "$(cat "$ARGV_OUT")" '-K' \
+  'the plain path takes the identical command line - FAILS under a second, header-free curl branch, which is the first place a request with no identifying User-Agent could appear (the "exactly ONE curl invocation" case above is what keeps that structural)'
+
 t_summary 'http'

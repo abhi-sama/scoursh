@@ -82,6 +82,7 @@ _dast_run_module() {
 
   local intensity=${SCAN_FLAGS[intensity]:-$CHECKS_INTENSITY_DEFAULT}
   local authed=${SCAN_FLAGS[authed]:-false}
+  local intrusive=${SCAN_FLAGS[allow-intrusive]:-false}
 
   # scan.sh's parser already refuses an unknown --intensity, and lib/checks.sh
   # is the single vocabulary both consult.  Re-checking here is not
@@ -101,7 +102,7 @@ _dast_run_module() {
     || die "$SCOURSH_EXIT_USAGE" "'dast' requires --target"
   targets+=("${SCAN_FLAGS[target]}")
 
-  local target phase script tier present why
+  local target phase script tier present why line covered
   local ran absent above expected=${#_DAST_PHASES[@]}
   local -a above_names=()
 
@@ -154,8 +155,15 @@ _dast_run_module() {
     SCOURSH_DAST_INTENSITY=$intensity
     SCOURSH_DAST_ENDPOINTS=$_DAST_ENDPOINTS_FILE
     SCOURSH_DAST_PARAMETERS=$_DAST_PARAMETERS_FILE
+    # A phase reads these rather than `SCAN_FLAGS`, which is scan.sh's own
+    # global and is a LOCAL inside this function on the test path that declares
+    # it here.  Published for the same reason SCOURSH_DAST_TARGET already is:
+    # a phase must never have to trust a variable it did not see set.
+    SCOURSH_DAST_AUTHED=$authed
+    SCOURSH_DAST_ALLOW_INTRUSIVE=$intrusive
     export SCOURSH_DAST_TARGET SCOURSH_DAST_CELL SCOURSH_DAST_INTENSITY \
-      SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
+      SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS \
+      SCOURSH_DAST_AUTHED SCOURSH_DAST_ALLOW_INTRUSIVE
 
     run_record notes "module=dast target=$target coverage-scope=target cell=$target intensity=$intensity authed=$authed"
 
@@ -190,7 +198,21 @@ _dast_run_module() {
       run_record coverage_reduction "module=dast reason=phase_above_intensity_ceiling target=$target intensity=$intensity phases=[${above_names[*]}]"
     fi
 
-    if (( ran == 0 )); then
+    # THE HONESTY TEST IS COVERAGE, NOT EXECUTION, AND THE DIFFERENCE ARRIVED
+    # WITH THE FIRST PHASE SCRIPT.  DAST-02 could ask "did any phase run",
+    # because none existed and the two questions had one answer.  DAST-03's
+    # `auth.sh` runs on every passive run and, without `--authed`, covers
+    # nothing - so "a phase ran" would have started reading as coverage on
+    # exactly the run that has none.  What a reader needs to know is whether any
+    # CHECK was covered, and `run_record checks_run` is this repository's
+    # existing answer to that (modules/sast/run.sh, modules/iac/run.sh and every
+    # modules/sca/ engine already write it).
+    covered=0
+    while IFS= read -r line; do
+      [[ -n $line ]] && covered=$(( covered + 1 ))
+    done <<<"$(run_facts checks_run)"
+
+    if (( covered == 0 )); then
       # The point of this ticket, stated on the consumer surface.  Both records
       # are written, because they answer different readers: the
       # coverage_reduction is the machine-readable declared reduction
@@ -206,13 +228,20 @@ _dast_run_module() {
       # reporting a phase that is sitting right there as "not shipped yet".
       present=$(( expected - absent ))
       if (( present == 0 )); then
-        why="modules/dast/ ships no phase script yet ($present of $expected present, docs/STEP5-DAST-PLAN.md tiers 1-5)"
-        run_record coverage_reduction "module=dast reason=no_phase_scripts_on_disk_yet target=$target intensity=$intensity phases_expected=$expected phases_present=$present phases_ran=0"
-      else
-        why="all $present of the $expected phase scripts present declare a higher intensity than this run's --intensity $intensity"
+        why="modules/dast/ ships no phase script yet ($present of $expected present, docs/STEP5-DAST-PLAN.md tiers 1-5), so no request was sent"
+        run_record coverage_reduction "module=dast reason=no_phase_scripts_on_disk_yet target=$target intensity=$intensity phases_expected=$expected phases_present=$present phases_ran=$ran"
+      elif (( ran == 0 )); then
+        why="all $present of the $expected phase scripts present declare a higher intensity than this run's --intensity $intensity, so no request was sent"
         run_record coverage_reduction "module=dast reason=no_phase_permitted_by_intensity target=$target intensity=$intensity phases_expected=$expected phases_present=$present phases_ran=0"
+      else
+        # The new third case: phases exist, were permitted, and ran - and none
+        # of them covered a check.  Each one has already recorded its own reason
+        # (auth.sh records `authed_not_requested`, `auth_config_absent`, and so
+        # on); this is the roll-up a reader sees without knowing what a phase is.
+        why="$ran of the $expected phase scripts ran and none of them covered a check - each one's own coverage_reduction above says why"
+        run_record coverage_reduction "module=dast reason=no_check_covered_by_any_phase target=$target intensity=$intensity phases_expected=$expected phases_present=$present phases_ran=$ran"
       fi
-      run_record coverage_gap "dast covered nothing on target '$target': $why, so no request was sent and no property of the running endpoint was tested - a clean result here is the absence of a test, not the absence of a problem"
+      run_record coverage_gap "dast covered nothing on target '$target': $why and no property of the running endpoint was tested - a clean result here is the absence of a test, not the absence of a problem"
     fi
   done
 

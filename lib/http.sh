@@ -42,6 +42,15 @@
 # an env var is settable by anything that can start the process, and the whole
 # job of the ceiling is to bind callers whose command line nobody parsed.
 #
+# THE FOURTH CONTRACT (docs/STEP5-DAST-PLAN.md DAST-03, section 9a below): the
+# per-request context - request headers, a request body, and capture of the
+# response body and response headers.  It lives here for the same reason as the
+# three above: §7.0's form login and OAuth2 grants cannot be expressed without
+# it, and a module that could compose its own request would be exactly the
+# second path to the network the scope gate exists to make impossible.  A
+# credential in a header or a body reaches curl over STDIN, never through argv
+# and never through a file (tension 9 handling rules 1 and 2).
+#
 # STILL DELIBERATELY NOT IN THIS FILE: IDN (A-label) conversion - hosts are
 # compared as authored/discovered bytes, lowercased - which is a real, known
 # gap for a homograph-style bypass and is tracked separately rather than
@@ -541,6 +550,133 @@ http_gate_url() {
 }
 
 # ---------------------------------------------------------------------------
+# 9a. The per-request context (docs/STEP5-DAST-PLAN.md DAST-03)
+# ---------------------------------------------------------------------------
+# `http_request METHOD URL` could originally send neither a request header nor
+# a request body, and discarded the response body - which is everything an
+# authenticated scan needs and nothing a bare reachability probe does.
+# §7.0's form login "POST creds, capture Set-Cookie" and its OAuth2 grants are
+# not expressible without all four, so they are added HERE rather than in
+# modules/dast/auth.sh, for the reason tension 19 gives for the gate itself: a
+# module that could compose its own request would be a second path to the
+# network, and the rate limiter, the budget, the breaker and the ceilings all
+# hang off this one.
+#
+# THE CONTEXT IS SET BY A CALL AND CONSUMED BY EXACTLY ONE REQUEST.
+# `http_request` takes it into locals at entry and resets these globals before
+# it does anything else, so a credential a caller attached for one request can
+# never ride along on the next one - the failure mode that matters here is not
+# a lost header but a leaked one, and "reset at the end" would keep the header
+# attached across any path that dies in between.
+#
+# THE SECRET NEVER REACHES `argv` AND NEVER REACHES DISK (tension 9 handling
+# rules 1 and 2).  A header value and a request body are exactly the two places
+# a credential travels, so neither is passed to curl as an argument (visible in
+# `ps` to every user on the host) and neither is written to a file: they are
+# serialised into a curl config that is piped to `curl -K -` over STDIN.  curl
+# offers no other way to supply a header - there is no `-H @file` and no
+# stdin-header option - so the alternatives really were argv or a scratch file,
+# and this is the only one that is neither.  Bash function arguments are not
+# argv (no process is forked to pass them), which is the same property that
+# lets `printf '%s' "$x" | sha256_of` satisfy the same rule.
+declare -ga _HTTP_REQ_HEADERS=()
+_HTTP_REQ_BODY=''
+_HTTP_REQ_HAS_BODY=false
+_HTTP_REQ_CAPTURE_BODY=''
+_HTTP_REQ_CAPTURE_HEADERS=''
+
+# What the transport reads for the hop it is about to send.  Separate from the
+# `_HTTP_REQ_*` set above because a redirect that crosses origins drops the
+# caller's headers and body (see http_request), so "what the caller attached"
+# and "what this hop actually carries" are two different facts.
+#
+# Passed as GLOBALS rather than as extra positional parameters deliberately:
+# `SCOURSH_HTTP_TRANSPORT` is a documented swappable hook and every existing
+# stub takes exactly six arguments and prints exactly two lines.  Widening the
+# positional contract would silently change what those stubs receive; adding
+# globals leaves a stub that ignores them behaving exactly as it did.
+declare -ga _HTTP_TX_HEADERS=()
+_HTTP_TX_BODY=''
+_HTTP_TX_HAS_BODY=false
+_HTTP_TX_BODY_OUT=''
+_HTTP_TX_HEADERS_OUT=''
+
+http_request_reset() {
+  _HTTP_REQ_HEADERS=()
+  _HTTP_REQ_BODY=''
+  _HTTP_REQ_HAS_BODY=false
+  _HTTP_REQ_CAPTURE_BODY=''
+  _HTTP_REQ_CAPTURE_HEADERS=''
+  return 0
+}
+
+# `http_request_header NAME VALUE` - attach one header to the NEXT request.
+#
+# The two refusals are deliberately different codes because they are different
+# mistakes.  A malformed NAME can only come from this repository's own code, so
+# it is an internal error; a VALUE carrying CR or LF comes from an operator's
+# credential file or a target's response, and splitting it into two headers is
+# request smuggling, so it is refused as an unusable input rather than sanitised
+# into something the operator did not write.  The value is never echoed in the
+# diagnostic: it is the one string in this function most likely to be a secret.
+http_request_header() {
+  local name=$1 value=$2
+  local re='^[A-Za-z0-9!#$%&'"'"'*+.^_`|~-]+$'
+  [[ $name =~ $re ]] \
+    || die "$SCOURSH_EXIT_INCOMPLETE" \
+      "internal: '$name' is not a valid HTTP header field name (RFC 7230 token)"
+  if [[ $value == *$'\r'* || $value == *$'\n'* ]]; then
+    die "$SCOURSH_EXIT_INPUT" \
+      "the value supplied for the '$name' request header contains a carriage return or newline, which would split one request into two; it is refused rather than truncated, and the value itself is not printed here because it may be a credential"
+  fi
+  _HTTP_REQ_HEADERS+=("$name: $value")
+  return 0
+}
+
+# `http_request_body TEXT` - the body for the NEXT request, as a VALUE rather
+# than a path, so a credential in it never touches disk (tension 9 rule 2).
+http_request_body() {
+  _HTTP_REQ_BODY=$1
+  _HTTP_REQ_HAS_BODY=true
+  return 0
+}
+
+# `http_request_capture [BODY_FILE] [HEADER_FILE]` - where the RESPONSE is put.
+# Either may be empty, meaning "discard".  Both are created mode 600 by
+# http_request before the first hop: a login response body carries the token
+# the whole exchange existed to obtain, and the header capture carries every
+# Set-Cookie.
+#
+# The body file holds the LAST hop's body (each hop truncates it, which is what
+# a caller following a redirect wants); the header file ACCUMULATES every hop's
+# response headers, because a 302 login sets its session cookie on the hop that
+# redirects, not on the one that finally answers 200.
+http_request_capture() {
+  _HTTP_REQ_CAPTURE_BODY=${1:-}
+  _HTTP_REQ_CAPTURE_HEADERS=${2:-}
+  return 0
+}
+
+# curl's config-file quoting (`curl(1)`, "CONFIG FILE"): inside a double-quoted
+# parameter curl understands \\, \", \t, \n, \r and \v, and nothing else.  A
+# raw newline would end the line and turn the rest of a body into a bogus
+# directive, so every one of them is escaped rather than rejected.
+#
+# Pure parameter expansion, no external command and no `$(...)`: the string
+# passing through here is the credential, and a fork is the one thing that could
+# put it somewhere another process can see.  Sets `_HTTP_CFG_Q`.
+_http_curl_cfg_quote() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\t'/\\t}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\n'/\\n}
+  _HTTP_CFG_Q=$s
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # 10. The transport (curl, invoked ONLY from here)
 # ---------------------------------------------------------------------------
 # Swappable via SCOURSH_HTTP_TRANSPORT (a function name) so the redirect-loop
@@ -548,30 +684,64 @@ http_gate_url() {
 # per docs/DESIGN.md §12.  Contract: METHOD SCHEME HOST PORT PATH ADDR on
 # stdin/argv; on success prints exactly two lines to stdout (status code,
 # then Location header value or an empty line) and returns 0; a transport-
-# level failure returns non-zero.
+# level failure returns non-zero.  Section 9a's `_HTTP_TX_*` globals carry the
+# request headers, the request body, and the two response-capture paths; a
+# transport that ignores them behaves exactly as this one did before they
+# existed, which is what keeps every already-written stub valid.
 _http_transport_default() {
   local method=$1 scheme=$2 host=$3 port=$4 path=$5 addr=$6
   require_cmd curl
   local hdrfile
   hdrfile=$(mktemp "${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/http-hdr.XXXXXX")
+  chmod 600 "$hdrfile"
   local timeout=${SCOURSH_HTTP_TIMEOUT:-20}
+  local bodyout=${_HTTP_TX_BODY_OUT:-}
+  local outarg=/dev/null
+  [[ -n $bodyout ]] && outarg=$bodyout
   # The identifying User-Agent (section 10a).  Composed HERE and nowhere else,
   # which is what makes it unconditional: there is no second curl invocation in
   # this repository for a later ticket to add an unidentified request through.
   _http_user_agent_set
+
+  # The config curl reads from stdin.  It is frequently EMPTY - a plain
+  # reachability request attaches no header and no body - and `-K -` is still
+  # passed in that case, deliberately: there must remain exactly ONE curl
+  # invocation in this file, because "every request carries the identifying
+  # User-Agent" is only a structural fact while there is a single command line
+  # for a later ticket to have to notice.  tests/suites/http.sh counts the
+  # invocations for precisely that reason, and a second, header-free branch
+  # would have been the first place an unidentified request could appear.
+  local cfg='' item
+  for item in "${_HTTP_TX_HEADERS[@]+"${_HTTP_TX_HEADERS[@]}"}"; do
+    _http_curl_cfg_quote "$item"
+    cfg+="header = \"$_HTTP_CFG_Q\""$'\n'
+  done
+  if [[ ${_HTTP_TX_HAS_BODY:-false} == true ]]; then
+    _http_curl_cfg_quote "$_HTTP_TX_BODY"
+    # data-binary, never data: `--data` strips newlines when it reads a file
+    # and this repository should not have to remember which of the two forms
+    # it is using to know whether the bytes it sent are the bytes it composed.
+    cfg+="data-binary = \"$_HTTP_CFG_Q\""$'\n'
+  fi
+
   # --max-redirs 0, never -L: the manual, one-hop-at-a-time loop in
   # http_request is what re-runs the full gate on every hop (tension 19
   # "Redirects" / "Redirect-recheck parity").  --resolve pins the connection
   # to the address the gate itself just approved, closing the TOCTOU window
   # between the gate's resolution and curl's.
-  if ! curl --silent --show-error --max-redirs 0 --max-time "$timeout" \
+  local rc=0
+  printf '%s' "$cfg" | curl --silent --show-error --max-redirs 0 --max-time "$timeout" \
     --resolve "$host:$port:$addr" \
     -A "$_HTTP_UA" \
-    -o /dev/null -D "$hdrfile" \
-    -X "$method" -- "$scheme://$host:$port$path"; then
+    -o "$outarg" -D "$hdrfile" \
+    -K - \
+    -X "$method" -- "$scheme://$host:$port$path" || rc=$?
+  if (( rc != 0 )); then
     rm -f "$hdrfile"
     return 1
   fi
+
+  [[ -n ${_HTTP_TX_HEADERS_OUT:-} ]] && cat -- "$hdrfile" >>"$_HTTP_TX_HEADERS_OUT"
   local status='' location='' line
   while IFS= read -r line; do
     line=${line%$'\r'}
@@ -1467,10 +1637,40 @@ _http_breaker_record_failure() {
 # redirect that crosses from one in-scope target to another draws down the
 # second target's bucket, which is what "rate is a politeness property of the
 # target" means.
+#
+# THE REQUEST CONTEXT (section 9a) IS CONSUMED HERE, ONCE, BEFORE ANYTHING ELSE
+# CAN FAIL.  A caller attaches headers and a body for the next request; this
+# function takes them into locals and clears the globals immediately, so no
+# later path - a gate refusal, a budget exhaustion, an opened breaker - can
+# leave a credential attached to whatever request happens to come next.
+#
+# Two response artifacts are published on success: `_HTTP_LAST_BODY_FILE` and
+# `_HTTP_LAST_HEADER_FILE`, each empty when the caller asked for no capture.
 http_request() {
   local method=$1 url=$2 max_redirects=${3:-5} target=${4:-}
   local cur=$url hop=0 addr out status location bucket
   local rps_milli budget breaker_failures breaker_window
+  local origin prev_origin='' item
+  local -a req_headers=() kept=()
+
+  req_headers=("${_HTTP_REQ_HEADERS[@]+"${_HTTP_REQ_HEADERS[@]}"}")
+  local req_body=$_HTTP_REQ_BODY req_has_body=$_HTTP_REQ_HAS_BODY
+  local cap_body=$_HTTP_REQ_CAPTURE_BODY cap_hdrs=$_HTTP_REQ_CAPTURE_HEADERS
+  http_request_reset
+  _HTTP_LAST_BODY_FILE=$cap_body
+  _HTTP_LAST_HEADER_FILE=$cap_hdrs
+  # Created empty and 600 BEFORE the first hop, not by whoever writes to them
+  # first: the header capture is appended to per hop, so it needs to start
+  # empty, and a response body that turns out to hold a session token must
+  # never exist for even one hop at the umask's default mode.
+  if [[ -n $cap_body ]]; then
+    : >"$cap_body"
+    chmod 600 "$cap_body"
+  fi
+  if [[ -n $cap_hdrs ]]; then
+    : >"$cap_hdrs"
+    chmod 600 "$cap_hdrs"
+  fi
 
   if ! http_gate_url "$cur" "$target"; then
     _http_gate_audit "$cur" "${_HTTP_GATE_CANON:-$cur}" "$_HTTP_GATE_REASON" "$method" "$target"
@@ -1496,6 +1696,27 @@ http_request() {
 
   while :; do
     bucket=${_HTTP_MATCH_ID:-unattributed}
+
+    # AN `Authorization` HEADER IS BOUND TO THE ORIGIN IT WAS ISSUED FOR, AND
+    # BOTH ORIGINS BEING IN SCOPE DOES NOT MAKE THEM THE SAME PRINCIPAL.  The
+    # gate answers "may this tool talk to that host at all"; it does not answer
+    # "should this credential be shown to it".  config/scope.conf routinely
+    # authorises several hosts of one estate, so a redirect from one to another
+    # is an ordinary event, and resending the header would hand host B a
+    # credential the operator issued for host A - the classic credential-leak-
+    # on-redirect bug, which every HTTP client drops the header for.  The body
+    # goes with it: it is the other place the credential lives on a login POST.
+    origin="$_HN_SCHEME://$_HN_HOST:$_HN_PORT"
+    if [[ -n $prev_origin && $origin != "$prev_origin" ]]; then
+      if (( ${#req_headers[@]} > 0 )) || [[ $req_has_body == true ]]; then
+        log_warn "redirect crossed origin ($prev_origin -> $origin): the request headers and body this call carried are NOT resent, because a credential is bound to the origin it was issued for and both origins being in config/scope.conf does not make them the same principal"
+      fi
+      req_headers=()
+      req_body=''
+      req_has_body=false
+    fi
+    prev_origin=$origin
+
     _http_abort_check "$bucket"
     _http_throttle "$bucket" "$rps_milli" "$budget"
     # Again after the wait returns and before anything is sent.  The throttle
@@ -1510,6 +1731,12 @@ http_request() {
       die "$SCOURSH_EXIT_SCOPE" "scope gate: DNS resolution failed for '$_HN_HOST' after the gate had approved it"
     fi
     _http_note_target_address "$bucket" "$addr"
+
+    _HTTP_TX_HEADERS=("${req_headers[@]+"${req_headers[@]}"}")
+    _HTTP_TX_BODY=$req_body
+    _HTTP_TX_HAS_BODY=$req_has_body
+    _HTTP_TX_BODY_OUT=$cap_body
+    _HTTP_TX_HEADERS_OUT=$cap_hdrs
 
     if ! out=$("${SCOURSH_HTTP_TRANSPORT:-_http_transport_default}" \
       "$method" "$_HN_SCHEME" "$_HN_HOST" "$_HN_PORT" "$_HN_PATH" "$addr"); then
@@ -1535,6 +1762,27 @@ http_request() {
         log_warn "redirect not followed (hop $hop): $cur"
         _HTTP_LAST_STATUS=$status
         return 0
+      fi
+      # RFC 7231 §6.4.4: a 303 is re-issued as GET, always.  A 301 or 302 after
+      # a non-GET/HEAD method is re-issued as GET by every browser and by
+      # `curl -L`, and this follows them rather than inventing a third
+      # behaviour: re-POSTing a credential to a path the SCANNED TARGET chose
+      # is exactly what a login flow must not do, and it would also double-
+      # submit whatever the original body was.  307 and 308 exist precisely to
+      # preserve the method and body, so they are left alone.
+      if [[ $status == 303 ]] \
+        || { [[ $status == 301 || $status == 302 ]] && [[ $method != GET && $method != HEAD ]]; }; then
+        method=GET
+        req_body=''
+        req_has_body=false
+        kept=()
+        for item in "${req_headers[@]+"${req_headers[@]}"}"; do
+          case ${item%%:*} in
+            [Cc]ontent-[Tt]ype | [Cc]ontent-[Ll]ength) continue ;;
+          esac
+          kept+=("$item")
+        done
+        req_headers=("${kept[@]+"${kept[@]}"}")
       fi
       continue
     fi

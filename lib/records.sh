@@ -777,7 +777,12 @@ _records_validate_record() {
   _records_check_enum "$set" "$i" "$path" "$line" "$id" expect present absent equals at-least at-most
   _records_check_enum "$set" "$i" "$path" "$line" "$id" fact exposure auth sensitive-data confidence
   _records_check_enum "$set" "$i" "$path" "$line" "$id" correlate-on none target account account-region file
+  _records_check_enum "$set" "$i" "$path" "$line" "$id" mode \
+    bearer api-key form oauth2-password oauth2-client srp external
   case $schema in
+    auth-identity)
+      _records_check_auth_mode "$set" "$i" "$path" "$line" "$id"
+      ;;
     derived)
       _records_check_enum "$set" "$i" "$path" "$line" "$id" kind derived
       ;;
@@ -921,6 +926,65 @@ _records_check_id_form() {
         || records_diag "$path" "$line" 1 E027 "$id" 'id must match ^[a-z][a-z0-9-]*$'
       ;;
   esac
+}
+
+# E074, rules/RULE-FORMAT.md §9.6.2: "Which optional keys are required is a
+# function of `mode`, checked as `E074`."
+#
+# §9.6.2 states that the rule exists and freezes the key set, but not the table
+# itself, so the table is stated HERE, once, and modules/dast/auth_engine.sh
+# consumes these modes rather than restating which keys each one needs - two
+# copies of it would drift, and the copy an operator's config is validated
+# against would stop being the copy the login path actually reads.
+#
+# Two shapes of requirement, because the schema has two.  `need` is a plain
+# required key.  `alt` is a set of which AT LEAST ONE must be present, which is
+# how §9.6.2 expresses the credential itself: `secret-file` is "preferred over
+# inline values", so an inline `token` / `password` / `client-secret` is a legal
+# alternative rather than a second required key, and a record naming neither has
+# no credential at all.
+#
+# `srp` requires a TOKEN rather than a username and a pool: docs/DESIGN.md §7.0
+# offers the implementer a choice - "compute the SRP handshake in shell, or
+# accept a pre-obtained token to avoid re-implementing crypto" - and this
+# repository takes the second, so a record supplying only a username and a
+# pool-id would validate and then be unable to authenticate.  E074 says so at
+# config-load time instead.
+_records_check_auth_mode() {
+  local set=$1 i=$2 path=$3 line=$4 id=$5
+  local mode k found
+  local -a need=() alt=()
+  mode=$(records_field "$set" "$i" mode)
+  case $mode in
+    bearer | api-key | external | srp) alt=(token secret-file) ;;
+    form) need=(username login-path); alt=(password secret-file) ;;
+    oauth2-password) need=(token-url username); alt=(password secret-file) ;;
+    oauth2-client) need=(token-url client-id); alt=(client-secret secret-file) ;;
+    # An unrecognised mode is E024's to report; reporting it twice would make
+    # one typo look like two separate faults.
+    *) return 0 ;;
+  esac
+
+  for k in "${need[@]+"${need[@]}"}"; do
+    records_has "$set" "$i" "$k" \
+      || records_diag "$path" "$line" 1 E074 "$id" \
+        "mode '$mode' requires '$k', which this record does not set (§9.6.2)"
+  done
+
+  found=0
+  for k in "${alt[@]+"${alt[@]}"}"; do
+    records_has "$set" "$i" "$k" && found=1
+  done
+  if (( ! found )) && (( ${#alt[@]} > 0 )); then
+    if [[ $mode == srp ]]; then
+      records_diag "$path" "$line" 1 E074 "$id" \
+        "mode 'srp' requires a pre-obtained token, via 'secret-file' (preferred) or 'token'; scoursh does not compute the SRP handshake itself (docs/DESIGN.md §7.0 permits either, and this build accepts the token), so a username and a pool-id alone cannot authenticate (§9.6.2)"
+    else
+      records_diag "$path" "$line" 1 E074 "$id" \
+        "mode '$mode' requires a credential: one of ${alt[*]}, with 'secret-file' preferred over an inline value (§9.6.2)"
+    fi
+  fi
+  return 0
 }
 
 _records_check_coverage_scope() {
