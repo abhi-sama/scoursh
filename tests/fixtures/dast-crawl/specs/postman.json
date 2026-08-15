@@ -1,0 +1,8 @@
+{"info": {"name": "fixture collection", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+ "item": [
+   {"name": "search", "request": {"method": "GET", "url": {"raw": "https://collection-declared-host.example.invalid/find?term=abc&sort=desc"}}},
+   {"name": "folder", "item": [
+      {"name": "create", "request": {"method": "POST", "url": "https://collection-declared-host.example.invalid/items"}}
+   ]},
+   {"name": "templated", "request": {"method": "GET", "url": {"raw": "https://{{baseUrl}}/unresolved"}}}
+ ]}

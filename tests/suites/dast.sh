@@ -149,8 +149,16 @@ SCOURSH_INSTALL_ROOT=$FIX_SCOPE PATH="$STUB:$PATH" \
   bash "$ROOT/scan.sh" dast --target dast-fixture --out "$W/run-notraffic" \
   >"$W/run-notraffic.log" 2>&1 || _NET_RC=$?
 assert_eq 0 "$_NET_RC" 'the run still exits 0 with a poisoned PATH, because it never reaches for a transport'
+# DAST-04 landed `crawl.sh`, which DOES want to send requests, so this case no
+# longer says "this module never makes a network call" - that would be false.
+# What it says now is narrower and still load-bearing: this fixture's target
+# does not RESOLVE, so lib/http.sh's gate refuses it before the transport is
+# ever reached, and a refused URL costs no request.  It fails under "the
+# crawler fetches first and checks the gate against the response", which is
+# the ordering that would put a request on the wire for a host the gate was
+# about to refuse.
 assert_file_absent "$W/network-attempts" \
-  'no curl/wget/nc/openssl was invoked by a dast run - fails under "the dispatch skeleton may probe the target once to prove it is up"'
+  'no curl/wget/nc/openssl was invoked for a target the scope gate refuses - fails if a URL is fetched before it is gated'
 
 t_case 'nothing is claimed as executed'
 RUN_OK_JSON=$(_slurp "$W/run-ok/run.json")
@@ -160,40 +168,52 @@ assert_contains "$RUN_OK_JSON" '"checks_run": []' \
 # =============================================================================
 printf '\n-- run.json tells the truth about a run that covered nothing (constraint 3) --\n'
 # =============================================================================
+# THIS BLOCK CHANGED SHAPE TWICE, AND BOTH CHANGES ARE THE POINT.
+# It originally asserted `reason=no_phase_scripts_on_disk_yet` - "modules/dast/
+# ships no phase script" - which was true of DAST-02 and is now false twice
+# over: DAST-03 put `auth.sh` on disk and DAST-04 put `crawl.sh` there, and
+# both run at `passive`.  The obligation being pinned never changed and is
+# re-asserted below against the records this run actually produces: a run that
+# tested nothing must SAY it tested nothing, on run.json and on report.md, in a
+# sentence naming the target.  Weakening it to "some coverage record exists"
+# would have let the honesty regress silently.
 #
-# DAST-03 landed `auth.sh`, the FIRST phase script, and that changed which
-# reason this run records without changing what it must say.  Before it, no
-# phase existed and the reason was `no_phase_scripts_on_disk_yet`; now a phase
-# both exists and runs, and - with no `--authed` - covers nothing.  The
-# assertion that matters is unchanged and is asserted below: the run must still
-# state that it covered nothing on this target.  What is deliberately NOT
-# asserted any more is "no phase ran", because that is no longer the honest
-# description of this run.
+# BOTH PHASES' REASONS ARE ASSERTED, not either one.  Each phase states why it
+# covered nothing in its own words, and a resolution that kept only one side's
+# assertions would stop noticing if that phase went silent.
 
 t_case 'run.json records a coverage_reduction naming the real cause'
 assert_contains "$RUN_OK_JSON" 'reason=no_check_covered_by_any_phase' \
   'run.json carries the declared reduction - fails under "the module logs it to stderr", which leaves the artifact claiming a complete run'
 assert_not_contains "$RUN_OK_JSON" 'no_phase_scripts_on_disk_yet' \
-  'and it does NOT claim modules/dast/ ships no phase script, now that auth.sh does - fails if the roll-up keys on "did a phase run" rather than "was a check covered", which was one question while no phase existed and is two now'
+  'and it does NOT claim modules/dast/ ships no phase script, now that auth.sh and crawl.sh both do - fails if the roll-up keys on "did a phase run" rather than "was a check covered", which was one question while no phase existed and is two now'
 
-t_case 'the phase that ran states its own reason for covering nothing'
+t_case 'the auth phase states its own reason for covering nothing'
 assert_contains "$RUN_OK_JSON" 'reason=authed_not_requested' \
   'auth.sh records why it acquired no session - fails under "the roll-up is enough", which leaves a reader unable to tell an unauthenticated run from a broken one'
 assert_contains "$RUN_OK_JSON" 'No credential was sent' \
   'and states plainly that no credential left the process on a run that did not ask for one'
 
+t_case 'the crawl phase states its own reason for discovering nothing'
+assert_contains "$RUN_OK_JSON" 'reason=url_not_requestable' \
+  'crawl.sh records what stopped it - fails if the no-phases branch is reached whenever a phase found nothing, which would make "not shipped" and "found nothing" the same sentence'
+
 t_case 'run.json records a coverage_gap a human reads, naming the target'
 assert_contains "$RUN_OK_JSON" '"coverage_gap": [' 'run.json has a coverage_gap array'
-assert_contains "$RUN_OK_JSON" "covered nothing on target 'dast-fixture'" \
+assert_contains "$RUN_OK_JSON" "target 'dast-fixture'" \
   'the gap sentence itself names the target it did not cover - fails under "the targets array already names it", which leaves the gap unattributed'
 assert_contains "$RUN_OK_JSON" 'no property of the running endpoint was tested' \
   'the gap says plainly that nothing was tested - fails under "reason=not_yet_built is enough", which a reader cannot tell from a clean scan'
+assert_contains "$RUN_OK_JSON" 'NOTHING was discovered' \
+  'and the crawl says plainly that it found nothing - fails under "a machine-readable reason is enough", which a reader cannot tell from a clean scan'
 
 t_case 'the report a human opens carries the same statement'
 REPORT_MD=$(_slurp "$W/run-ok/report.md")
 assert_contains "$REPORT_MD" 'Limitations and coverage' 'report.md has its limitations section'
 assert_contains "$REPORT_MD" 'no_check_covered_by_any_phase' \
   'report.md states the reduction - fails under "run.json is the audit surface, the report is for findings"'
+assert_contains "$REPORT_MD" 'url_not_requestable' \
+  'and the crawl phase reaches the report too, not only run.json'
 
 t_case 'the target-scoped coverage cell is recorded'
 assert_contains "$RUN_OK_JSON" '"targets": ["dast-fixture"]' \
@@ -358,7 +378,9 @@ assert_not_contains "$RUN_FULL_JSON" 'endpoint_inventory_absent' \
 assert_not_contains "$RUN_FULL_JSON" 'parameter_inventory_absent' \
   'nor for the parameter inventory'
 assert_contains "$RUN_FULL_JSON" 'no_check_covered_by_any_phase' \
-  'and the no-coverage reduction is still recorded, because a full inventory that nothing consumes is not coverage'
+  'and the no-coverage reduction is still recorded, because a full inventory that no CHECK consumes is not coverage'
+assert_contains "$RUN_FULL_JSON" 'inventory_merged=' \
+  'and the merge result is recorded, because "an inventory was present" and "this run could read it" are two different facts - fails under "the absent-gap not firing is proof enough", which reports an unreadable inventory as coverage'
 
 t_case 'the inventory paths are published for the phase that will consume them'
 assert_eq "$W/run-full-inv/inventory/endpoints.json" \

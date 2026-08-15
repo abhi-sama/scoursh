@@ -682,12 +682,30 @@ _http_curl_cfg_quote() {
 # Swappable via SCOURSH_HTTP_TRANSPORT (a function name) so the redirect-loop
 # and gate-recheck logic in http_request is fully testable with no network,
 # per docs/DESIGN.md §12.  Contract: METHOD SCHEME HOST PORT PATH ADDR on
-# stdin/argv; on success prints exactly two lines to stdout (status code,
-# then Location header value or an empty line) and returns 0; a transport-
+# stdin/argv; on success prints up to THREE lines to stdout - the status code,
+# the Location header value (or an empty line), and the Content-Type header
+# value (or an empty line, or no line at all) - and returns 0; a transport-
 # level failure returns non-zero.  Section 9a's `_HTTP_TX_*` globals carry the
 # request headers, the request body, and the two response-capture paths; a
 # transport that ignores them behaves exactly as this one did before they
 # existed, which is what keeps every already-written stub valid.
+#
+# THE THIRD LINE IS ADDITIVE, AND ONLY THE THIRD LINE (DAST-04).  A crawler
+# needs the response BODY and its Content-Type, and there is exactly one legal
+# place to obtain either: here, behind the gate, the rate limiter, the budget
+# and the breaker.  A crawler that fetched its own bodies would be tension 19's
+# bypass with a different name.
+#
+# THE BODY SINK IS DAST-03's `_HTTP_TX_BODY_OUT` GLOBAL, NOT A SEVENTH
+# POSITIONAL ARGUMENT.  DAST-04 originally threaded it through argv; DAST-03
+# landed the same capability first, as part of the per-request context, and
+# gave the reason this file now keeps: every already-written stub takes exactly
+# six arguments, so widening the positional contract silently changes what they
+# receive, whereas a global leaves a stub that ignores it behaving as before.
+# Two mechanisms for one capability at the single chokepoint would be the
+# second path to the network in miniature, so there is one.
+# A stub transport that prints only two lines stays conformant: http_request
+# reads a missing third line as an empty Content-Type.
 _http_transport_default() {
   local method=$1 scheme=$2 host=$3 port=$4 path=$5 addr=$6
   require_cmd curl
@@ -742,18 +760,22 @@ _http_transport_default() {
   fi
 
   [[ -n ${_HTTP_TX_HEADERS_OUT:-} ]] && cat -- "$hdrfile" >>"$_HTTP_TX_HEADERS_OUT"
-  local status='' location='' line
+  local status='' location='' ctype='' line
   while IFS= read -r line; do
     line=${line%$'\r'}
     if [[ $line =~ ^HTTP/[0-9.]+\ ([0-9]{3}) ]]; then
       status=${BASH_REMATCH[1]}
-      location=''
-    elif [[ $line =~ ^[Ll]ocation:\ (.*)$ ]]; then
+      # Both reset on every status line, so an intermediate 1xx/3xx response's
+      # headers can never be attributed to the final one.
+      location='' ctype=''
+    elif [[ $line =~ ^[Ll]ocation:[[:space:]]*(.*)$ ]]; then
       location=${BASH_REMATCH[1]}
+    elif [[ $line =~ ^[Cc]ontent-[Tt]ype:[[:space:]]*(.*)$ ]]; then
+      ctype=${BASH_REMATCH[1]}
     fi
   done <"$hdrfile"
   rm -f "$hdrfile"
-  printf '%s\n%s\n' "$status" "$location"
+  printf '%s\n%s\n%s\n' "$status" "$location" "$ctype"
 }
 
 # ---------------------------------------------------------------------------
@@ -1617,6 +1639,19 @@ _http_breaker_record_failure() {
 # ---------------------------------------------------------------------------
 # `http_request METHOD URL [MAX_REDIRECTS] [TARGET_ID]`.
 #
+# A caller that wants the RESPONSE BODY asks for it with `http_request_capture`
+# (section 9a) before the call, rather than by passing a sink positionally.
+# DAST-04's crawler originally took a fifth argument for exactly this; DAST-03
+# landed the same capability first as part of the per-request context, so there
+# is ONE mechanism here rather than two - see section 10's note.  The body sink
+# is truncated at the top of every hop, so a caller can never read a previous
+# hop's body as if it were this one's, and a transport failure leaves it empty
+# rather than stale - the crawler in modules/dast/crawl.sh reads it immediately
+# after the call returns and treats emptiness as "no body", which is only a
+# true statement if nothing else can have put bytes there.  It is a
+# caller-chosen path rather than a value this file invents so that a caller
+# running under `xargs -P` owns its own sink.
+#
 # The initial URL is gated FATALLY: a caller only ever reaches http_request
 # with a URL it believes is authorised, so a rejection here means either a
 # caller bug or an actual bypass attempt, and docs/DESIGN.md's exit-code
@@ -1627,8 +1662,8 @@ _http_breaker_record_failure() {
 # returns the last in-scope response instead of aborting the whole run over a
 # link the SCANNED SITE chose, not the operator.
 #
-# Sets _HTTP_LAST_STATUS.  Never calls curl (or any transport) for a URL that
-# has not just passed http_gate_url.
+# Sets _HTTP_LAST_STATUS and _HTTP_LAST_CONTENT_TYPE.  Never calls curl (or
+# any transport) for a URL that has not just passed http_gate_url.
 # The tension-16 controls sit between the gate and the transport, and inside
 # the redirect loop rather than ahead of it: a followed hop is a real request
 # and pays a real token, a real unit of budget, and a real breaker outcome.
@@ -1648,10 +1683,12 @@ _http_breaker_record_failure() {
 # `_HTTP_LAST_HEADER_FILE`, each empty when the caller asked for no capture.
 http_request() {
   local method=$1 url=$2 max_redirects=${3:-5} target=${4:-}
-  local cur=$url hop=0 addr out status location bucket
+  local cur=$url hop=0 addr out status location ctype bucket line
   local rps_milli budget breaker_failures breaker_window
   local origin prev_origin='' item
-  local -a req_headers=() kept=()
+  local -a req_headers=() kept=() outlines=()
+
+  _HTTP_LAST_CONTENT_TYPE=''
 
   req_headers=("${_HTTP_REQ_HEADERS[@]+"${_HTTP_REQ_HEADERS[@]}"}")
   local req_body=$_HTTP_REQ_BODY req_has_body=$_HTTP_REQ_HAS_BODY
@@ -1738,7 +1775,29 @@ http_request() {
     _HTTP_TX_BODY_OUT=$cap_body
     _HTTP_TX_HEADERS_OUT=$cap_hdrs
 
-    if ! out=$("${SCOURSH_HTTP_TRANSPORT:-_http_transport_default}" \
+    # Truncated per HOP, not per call.  curl truncates the sink itself on every
+    # hop it actually runs, so this only bites when the transport FAILS: without
+    # it a followed redirect would leave the previous hop's body sitting in the
+    # sink for a caller that reads it after the later hop died, which is the one
+    # case that makes "the body file holds the last hop's body" false.
+    [[ -n $cap_body ]] && : >"$cap_body"
+
+    # The two CAPTURE PATHS are also passed in the environment of this one
+    # invocation, because `SCOURSH_HTTP_TRANSPORT` may name an EXECUTABLE and
+    # not just a function: a plain global is invisible across a fork, so an
+    # external transport would silently receive no body sink and every caller
+    # of `http_request_capture` would read an empty file.  A `VAR=val cmd`
+    # prefix covers both shapes and is scoped to the single call.
+    #
+    # ONLY THE PATHS.  `_HTTP_TX_BODY` and `_HTTP_TX_HEADERS` carry the
+    # credential and are deliberately NOT passed this way: a child's
+    # environment is readable much like its argv, which is the exposure tension
+    # 9 handling rule 1 exists to prevent.  An executable transport therefore
+    # gets the sinks and not the request context, and the in-process default
+    # transport - the only one that sends a credential - reads the globals
+    # directly, in this same process, where no fork is involved.
+    if ! out=$(_HTTP_TX_BODY_OUT="$cap_body" _HTTP_TX_HEADERS_OUT="$cap_hdrs" \
+      "${SCOURSH_HTTP_TRANSPORT:-_http_transport_default}" \
       "$method" "$_HN_SCHEME" "$_HN_HOST" "$_HN_PORT" "$_HN_PATH" "$addr"); then
       # No usable response at all, which is the strongest evidence the breaker
       # gets; it is recorded before the failure is returned, so a caller that
@@ -1746,9 +1805,20 @@ http_request() {
       _http_breaker_record_failure "$bucket" "$breaker_failures" "$breaker_window"
       return 1
     fi
-    status=${out%%$'\n'*}
-    location=${out#*$'\n'}
-    location=${location%$'\n'}
+    # Read as up to three whole LINES rather than by suffix-stripping the
+    # captured string.  `$(...)` strips trailing newlines, so a transport that
+    # legitimately reports an empty Location and an empty Content-Type yields
+    # one line, and the older `${out#*$'\n'}` form returns the WHOLE string
+    # unchanged when the pattern does not match - i.e. it reported the status
+    # code as the Location.  That was harmless while only a 3xx read the
+    # Location; a Content-Type read the same way would mis-type every body.
+    # No `mapfile`: tension 4 rule 4 forbids it in the engine.
+    outlines=()
+    while IFS= read -r line; do outlines+=("$line"); done <<<"$out"
+    status=${outlines[0]:-}
+    location=${outlines[1]:-}
+    ctype=${outlines[2]:-}
+    _HTTP_LAST_CONTENT_TYPE=$ctype
 
     if _http_status_is_failure "$status"; then
       _http_breaker_record_failure "$bucket" "$breaker_failures" "$breaker_window"
