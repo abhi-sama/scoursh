@@ -482,17 +482,46 @@ written breakdown for later, not permission to start now.
 
 **PARANOID-01 has now landed - `lib/paranoid.sh` implements `--paranoid` for real.**
 It builds the four-set allowlist tension 20's RESOLUTION specifies (`paranoid_allowlist_build`).
-It attaches a connection sampler (`ss`, or a measured-usable `strace -f -e trace=connect` fallback -
-`paranoid_probe_backend`), aborts the run with exit `3` (`SCOURSH_EXIT_SCOPE`) on the first observed
-destination outside that allowlist, and exits `4` (`SCOURSH_EXIT_INPUT`) when neither backend is
-available or permitted.
+It attaches a connection sampler (`paranoid_probe_backend`), aborts the run with exit `3`
+(`SCOURSH_EXIT_SCOPE`) on the first observed destination outside that allowlist, and exits `4`
+(`SCOURSH_EXIT_INPUT`) when no backend is available or permitted.
 It is wired into `scan.sh`'s `scan_main` right after config loads and before any module dispatch.
 `tests/suites/paranoid.sh` is the deterministic no-egress fixture tension 20 calls for.
-`SCOURSH_PARANOID_FORCE_BACKEND`/`SCOURSH_PARANOID_SAMPLE` stand in for the ss/strace probe and the
+`SCOURSH_PARANOID_FORCE_BACKEND`/`SCOURSH_PARANOID_SAMPLE` stand in for the backend probe and the
 sampler itself (the same swappable-hook idiom `lib/http.sh`'s `SCOURSH_HTTP_RESOLVE`/
-`SCOURSH_HTTP_TRANSPORT` already use).
-So the suite never depends on `ss`/`strace` actually being installed - both are Linux-only, and this
-project's CI matrix runs macOS too.
+`SCOURSH_HTTP_TRANSPORT` already use), so the suite never depends on a backend actually being
+installed.
+
+**There are THREE backends, not two, and `lsof` is the one that makes `--paranoid` work on macOS.**
+`paranoid_probe_backend` tries `ss`, then a measured-usable `strace -f -e trace=connect`, then a
+measured-usable `lsof`, and only then gives up with exit 4.
+Do not reorder that list casually: `strace` is a TRACER (it sees a `connect()` that opens and closes
+between two polls) while `ss` and `lsof` are SAMPLERS, so `lsof` is APPENDED rather than inserted -
+which also means no host that resolved to a backend before resolves to a different one now.
+`lsof` was chosen over macOS's other candidates for measured reasons - `netstat` has no per-process
+filter there, `nettop`'s per-connection rows carry no pid, and `dtruss` needs SIP disabled, which a
+security tool must never ask for - and the full reasoning is in `docs/FOUNDATION.md` tension 20's
+"Backend roster" paragraph, which records the extension deliberately rather than diverging from the
+RESOLUTION in silence.
+**None of this changes the framing**: `lsof` is a sampler with exactly `ss`'s blind spot, and
+`tools/run-in-netns.sh` - the actual guarantee - is Linux-only with **no macOS equivalent**, so a
+macOS run has the detector and nothing behind it.
+
+**Two things measured while building that backend, both easy to hit again:**
+
+- **`exec` with redirections and no command makes those redirections PERMANENT.**
+  `exec {pfd}<>/dev/udp/127.0.0.1/9 2>/dev/null` - the natural spelling of the probe's positive
+  control - silenced the whole run's stderr, so every log line including the violation message
+  vanished while the exit code stayed correct: a detector that looked like it worked and had gone
+  mute.  Wrap it: `if ! { exec {pfd}<>...; } 2>/dev/null`.  Pinned by a test that fails under the
+  original spelling.
+- **A `--paranoid` end-to-end test must fork its connection holder in the same shell that runs
+  `scan_main`**, because `paranoid_attach` takes `$BASHPID` of that process as the family root.  A
+  holder forked inside a nested subshell is not a descendant of it, and the test then passes for the
+  wrong reason - nothing observed, so no abort.  `tests/suites/paranoid.sh`'s "REAL lsof" section is
+  the worked example, and it stays a no-egress test by using *connected UDP* sockets: `connect(2)` on
+  a UDP socket only records a default peer, so an RFC 5737 destination is observable without a packet
+  leaving the machine.
 One correction surfaced while building this ticket, recorded in full in `docs/FOUNDATION.md` tension
 20's own "Implementation" paragraph: the observer and the abort's kill action are scoped to the
 DESCENDANT-PROCESS FAMILY rooted at the main `scan.sh` pid, not the raw OS process group tension 20's

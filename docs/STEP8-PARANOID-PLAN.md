@@ -18,14 +18,17 @@ guarantees, and the resolution is careful to keep that distinction visible rathe
 grow into the other:
 
 - **`--paranoid`** is a **detector**. It samples child-process connections (`ss` filtered by the run's
-  cgroup/process group, or `strace -f -e trace=connect` where available and permitted) and aborts the
-  run (`exit 3`, `SCOURSH_EXIT_SCOPE`) on the first destination outside a four-set allowlist. Sampling
-  can miss a sufficiently short-lived connection, and tension 20 is explicit that the docs and report
-  must say so plainly (§15) rather than imply a guarantee.
+  cgroup/process group, `strace -f -e trace=connect` where available and permitted, or `lsof` - the
+  backend added after this plan was written, and the one macOS ships; see tension 20's "Backend
+  roster") and aborts the run (`exit 3`, `SCOURSH_EXIT_SCOPE`) on the first destination outside a
+  four-set allowlist. Sampling can miss a sufficiently short-lived connection, and tension 20 is
+  explicit that the docs and report must say so plainly (§15) rather than imply a guarantee.
 - **`tools/run-in-netns.sh`** is the **guarantee**. A Linux network namespace whose only route is to the
   declared scope makes an out-of-scope connection categorically impossible rather than merely
   observable. It needs root (or `CAP_NET_ADMIN`/`CAP_SYS_ADMIN`) to create the namespace and its
-  veth/route plumbing, and it is Linux-only - neither property `--paranoid` shares.
+  veth/route plumbing, and it is Linux-only with **no macOS equivalent** - neither property
+  `--paranoid` shares, now that `--paranoid` has a macOS backend.  On macOS the detector is therefore
+  the only egress control available: there is no guarantee tier behind it.
 
 Because the two mechanisms have different implementers' concerns (a sampling observer with graceful
 degradation vs. a privileged, optional, Linux-only wrapper script), they are independently schedulable
@@ -54,7 +57,7 @@ per-ticket notes on graceful degradation below.
 
 | # | Ticket | Depends on | Notes |
 |---|---|---|---|
-| PARANOID-01 | `--paranoid` mode: connection-observer + abort-on-out-of-scope enforcement | `lib/http.sh`'s pinned resolution cache (tension 19, shipped), `scan.sh`'s existing `--paranoid`/`paranoid-allow` CLI and config plumbing (step 2, shipped - flag parsing only, no enforcement yet), `SCOURSH_EXIT_SCOPE=3`/`SCOURSH_EXIT_INPUT=4` (step 1, shipped) | Implements tension 20's RESOLUTION verbatim: builds the four-set allowlist (in-scope resolved target addresses+ports; AWS endpoint addresses for regions actually iterated; `/etc/resolv.conf` nameservers on port 53 plus loopback; `scanner.conf`'s `paranoid_allow`), attaches the process-group-level observer, aborts with exit 3 on the first out-of-scope destination, and exits 4 when neither `ss` nor `strace` is usable. The AWS-endpoint set (set 2) has a forward dependency on step 6's `regions.sh` (not yet built): this ticket must degrade that set to empty with a stated reason rather than error, exactly the pattern `docs/STEP5-DAST-PLAN.md`'s DAST-09 used for its own forward dependency on `data/versions.db`. Also ships the deterministic §12 no-egress test tension 20 describes: the fixture suite run against mock responses and `file://` inputs with `--resolve` entries pre-seeded on loopback, so DNS is removed from the test entirely and a pass means zero non-loopback connections. Must state the "detector, not guarantee" framing in the report and docs per §15, not imply `--paranoid` alone proves zero out-of-scope traffic. |
+| PARANOID-01 | `--paranoid` mode: connection-observer + abort-on-out-of-scope enforcement | `lib/http.sh`'s pinned resolution cache (tension 19, shipped), `scan.sh`'s existing `--paranoid`/`paranoid-allow` CLI and config plumbing (step 2, shipped - flag parsing only, no enforcement yet), `SCOURSH_EXIT_SCOPE=3`/`SCOURSH_EXIT_INPUT=4` (step 1, shipped) | Implements tension 20's RESOLUTION verbatim: builds the four-set allowlist (in-scope resolved target addresses+ports; AWS endpoint addresses for regions actually iterated; `/etc/resolv.conf` nameservers on port 53 plus loopback; `scanner.conf`'s `paranoid_allow`), attaches the process-group-level observer, aborts with exit 3 on the first out-of-scope destination, and exits 4 when no backend is usable (`ss`/`strace` as written here; `lsof` was added to the roster afterwards - see tension 20's "Backend roster"). The AWS-endpoint set (set 2) has a forward dependency on step 6's `regions.sh` (not yet built): this ticket must degrade that set to empty with a stated reason rather than error, exactly the pattern `docs/STEP5-DAST-PLAN.md`'s DAST-09 used for its own forward dependency on `data/versions.db`. Also ships the deterministic §12 no-egress test tension 20 describes: the fixture suite run against mock responses and `file://` inputs with `--resolve` entries pre-seeded on loopback, so DNS is removed from the test entirely and a pass means zero non-loopback connections. Must state the "detector, not guarantee" framing in the report and docs per §15, not imply `--paranoid` alone proves zero out-of-scope traffic. |
 | NETNS-01 | `tools/run-in-netns.sh`: network-namespace runner | `lib/http.sh`'s pinned resolution cache (tension 19, shipped) to know which addresses to route into the namespace | **Optional and root-requiring** - this is stated directly in the ticket's own description (filed separately; see below), not only here, per this ticket's own acceptance criteria. Does not depend on PARANOID-01: it is the alternative, stronger mechanism tension 20 names ("the guarantee" vs. `--paranoid`'s "the detector"), not a wrapper around it. Linux-only; must fail clearly (not silently degrade) on a non-Linux host or without the required privilege, rather than pretending isolation was applied. |
 
 The two tickets are peers - neither blocks the other - which is why they are split rather than landed as

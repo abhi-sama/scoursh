@@ -2978,6 +2978,9 @@ The observer covers child processes, which matters because §10 fans out with `x
 the process-group level (`ss` sampling filtered by the run's cgroup or process group, or
 `strace -f -e trace=connect` where available and permitted) rather than to a single pid.
 Where neither is available, `--paranoid` fails with exit `4` rather than pretending to be active.
+(See "Backend roster" below: the roster this paragraph names is **extended**, not replaced - `lsof`
+was added as a third backend so the mechanism exists at all on macOS.
+The exit-`4` rule is unchanged and now means "none of the three is usable".)
 
 **Implementation.**
 `lib/paranoid.sh` (PARANOID-01) now implements every mechanism this tension describes.
@@ -3034,14 +3037,104 @@ That is how the framing reaches the actual report output this tension's own RESO
 only this document.
 
 `tests/suites/paranoid.sh` is the regression suite, and it is fully deterministic on every host.
-`SCOURSH_PARANOID_FORCE_BACKEND` overrides the ss/strace probe (mirroring
+`SCOURSH_PARANOID_FORCE_BACKEND` overrides the backend probe (mirroring
 `SCOURSH_FORCE_MSLEEP_IMPL`, `lib/core.sh`) and `SCOURSH_PARANOID_SAMPLE` overrides the sampler
 itself with a scripted, recorded sequence of "observed" connections (mirroring `lib/http.sh`'s own
 `SCOURSH_HTTP_RESOLVE`/`SCOURSH_HTTP_TRANSPORT`).
-So the no-egress fixture this tension asks for never depends on `ss`/`strace` actually being
-installed - both are Linux-only and this project's own CI matrix runs macOS too.
+So the no-egress fixture this tension asks for never depends on any backend actually being installed -
+`ss` and `strace` are Linux-only, `lsof` is not universal either, and this project's suite runs on both
+userlands.
 `tools/run-in-netns.sh` (NETNS-01) is not implemented by this ticket, per
 `docs/STEP8-PARANOID-PLAN.md`'s own split.
+
+**Backend roster: `ss`, `strace`, and now `lsof` - a deliberate EXTENSION of this RESOLUTION.**
+The "Consequence for the build" paragraph above names `ss` and `strace -f -e trace=connect`
+specifically, and both are Linux-only.
+macOS ships neither, so on macOS the mechanism this tension exists to provide did not exist at all:
+`--paranoid` refused every run with exit `4` before dispatching a single module.
+That was recorded as a documented limitation while Linux was the assumed platform.
+It is no longer acceptable, because macOS is now the platform this tool is primarily run on, and a
+flagship safety control that is unavailable on the primary platform is a control nobody has.
+
+`lsof` is therefore added to the roster as a third backend, and this register records the addition the
+way Tension 27 records the `adapters/` generalisation: as an extension made deliberately, not a quiet
+divergence in code.
+
+**This changes nothing about what the tension MEANS**, which is why it is an extension rather than a
+re-resolution, and each half of that claim is worth stating rather than asserting:
+
+- The four-set allowlist is untouched.
+  A backend only answers "what destinations did this run's own processes connect to"; it has no say in
+  which of them are permitted.
+- The abort contract is untouched: exit `3` on the first out-of-allowlist destination, exit `4` when no
+  backend is usable.
+  Exit `4` now means "none of `ss`, a usable `strace`, or a usable `lsof`", which is strictly narrower
+  than before - a host that used to refuse may now run, and no host that used to run now refuses.
+- **The honesty framing is untouched, and this is the half most at risk of quiet inflation.**
+  `lsof` is a **sampler**, exactly like `ss`, with exactly the same blind spot: a connection that opens
+  and closes between two polls is never observed.
+  It is emphatically not a tracer, so it buys nothing `ss` did not already buy, and nothing about
+  "detector, not guarantee" softens because a third platform now has a detector.
+- The order is `ss` -> `strace` -> `lsof`, and `lsof` is APPENDED rather than inserted.
+  `strace` is a tracer and therefore the strictly stronger detector where it is genuinely usable, and
+  appending means no host that resolved to a backend before this change resolves to a different one
+  after it.
+  Only a host that previously resolved to `none` is affected at all.
+
+**`lsof` and not `netstat`, `nettop`, or `dtruss`**, all of which macOS also ships, each rejected for a
+measured reason rather than a stylistic one (measured on macOS 26.5.2, arm64, as an ordinary
+unprivileged user):
+
+- `netstat` has no per-process filter on macOS, so a connection cannot be attributed to the run's own
+  process family - which is the entire mechanism `_paranoid_family_pids` implements.
+- `nettop`'s per-connection rows carry no pid of their own; they are emitted under a preceding process
+  row, so attribution needs stateful parsing of an interactive tool's batch dump, and its per-process
+  (`-P`) mode drops the remote address entirely.
+- `dtruss` would be the macOS analogue of `strace`, and it is deliberately NOT a candidate: DTrace
+  generally requires System Integrity Protection to be disabled, and a security tool must not ask an
+  operator to weaken their operating system in order to be observed.
+- `lsof` runs unprivileged, and `lsof -F` is a purpose-built machine-readable mode emitting one
+  `p<pid>` line followed by that process's own `n<local>-><peer>` lines, so a command name containing a
+  space cannot shift a column.
+
+**What macOS still does NOT get, stated plainly so no reader infers parity.**
+`tools/run-in-netns.sh` - the guarantee this tension names, and the only mechanism here that makes an
+out-of-scope connection impossible rather than merely observable - is built on Linux network
+namespaces and **has no macOS equivalent**.
+Nothing in this extension provides one.
+So on Linux the two tiers are "detector, plus a guarantee available separately"; on macOS there is the
+detector and nothing behind it.
+
+**Usability is MEASURED, with a positive control, not inferred from `command -v`.**
+`lsof` exits `1` both when it matched nothing and, on a restricted host, when it was not permitted to
+look, so an exit-status probe cannot tell those apart.
+`_paranoid_probe_lsof` therefore opens a socket of its own - a connected loopback UDP socket, which
+needs no listener and transmits nothing, since `connect(2)` on a UDP socket only records a default
+peer - and requires `lsof` to report that exact socket back.
+The control socket is loopback (allowlist set 3) and is opened before the observer attaches in any
+case, so the probe cannot trip the mechanism it is probing.
+
+**One defect found while building this, recorded because it is invisible and expensive.**
+The natural spelling of that probe, `exec {pfd}<>/dev/udp/127.0.0.1/9 2>/dev/null`, is wrong: `exec`
+with redirections and no command makes those redirections **permanent for the shell**, so the
+`2>/dev/null` silenced the main process's stderr for the rest of the run.
+Every log line a `--paranoid` run would have printed disappeared - including the violation message
+itself - while the exit code stayed correct, so the detector looked like it was working and had merely
+gone mute.
+The fix is a brace group (`if ! { exec {pfd}<>...; } 2>/dev/null`), which scopes the redirection while
+leaving the fd assignment in place, and `tests/suites/paranoid.sh` pins it with a case that fails under
+the original spelling.
+
+`tests/suites/paranoid.sh` covers the new backend at three levels, all of which run on every host: the
+`lsof -F pn` parser against canned output (including a foreign pid, a `LISTEN` row and an unbound
+socket, each of which must be dropped), the probe against a stubbed present-but-blind `lsof`, and the
+`ss` -> `strace` -> `lsof` order against stubbed availability.
+A further host-conditional section runs the real `lsof` binary against real sockets - up to and
+including a full `scan_main --paranoid` run that aborts with exit `3` on a real socket held by a real
+descendant - and is honestly marked SKIPPED, never silently passed, where `lsof` is absent.
+That section is still a **no-egress** test: its sockets are connected UDP sockets, so an RFC 5737
+TEST-NET-3 destination is observable without a single packet leaving the machine, which is exactly what
+this tension's §12 fixture requires.
 
 ## Tension 21 - module independence versus cross-module inventory
 
@@ -3387,7 +3480,8 @@ air-gapped install.
 Required: `bash`, `grep`, `sed`, `awk`, `sort`, `tr`, `cut`, `find`, `xargs`, `mktemp`, `date`, `curl`,
 one of the SHA-256 providers, and `git` for `history.sh` only.
 Optional and probed: `rg`, `rg` with PCRE2 (tension 2), `openssl` (for `tls.sh`), `aws`, GNU `parallel`,
-`ss` or `strace` (tension 20), **`mkfifo`** (the `msleep` fallback, finding F14), **`shred`** and
+`ss`, `strace` or `lsof` (tension 20 - `lsof` is the one of the three macOS ships), **`mkfifo`** (the
+`msleep` fallback, finding F14), **`shred`** and
 **`look`** (finding F16).
 Everything probed is recorded in `run.json`, so a report always states what the host could and could not
 do.

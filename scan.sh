@@ -277,11 +277,14 @@ Global:
                               see rules/RULE-FORMAT.md for what they mean)
   --paranoid                (connection DETECTOR, not a guarantee - aborts
                               (exit 3) on the first connection outside the
-                              run's allowlist; exits 4 if neither `ss` nor a
-                              usable `strace` is available. A sufficiently
-                              short-lived connection can still evade
-                              detection - tools/run-in-netns.sh is the actual
-                              guarantee. See docs/FOUNDATION.md tension 20.)
+                              run's allowlist; exits 4 if none of `ss`,
+                              a usable `strace`, or `lsof` is available.
+                              `lsof` is what makes this work on macOS. A
+                              sufficiently short-lived connection can still
+                              evade detection - tools/run-in-netns.sh is the
+                              actual guarantee, and it is Linux-only with no
+                              macOS equivalent. See docs/FOUNDATION.md
+                              tension 20.)
   --use-engines             (opt in to optional vendored engine adapters,
                               e.g. semgrep for sast - docs/ADAPTERS.md. Only
                               runs an adapter whose own vendored binary +
@@ -1046,8 +1049,8 @@ scan_main() {
   # AFTER config is loaded (paranoid_allow, the fourth allowlist set, comes
   # from scanner.conf) and BEFORE any module dispatch, so the observer is
   # watching for the very first connection any module could make.  Dies
-  # exit 4 on its own (SCOURSH_EXIT_INPUT) when neither `ss` nor a usable
-  # `strace` is available - see lib/paranoid.sh's paranoid_attach.
+  # exit 4 on its own (SCOURSH_EXIT_INPUT) when none of `ss`, a usable
+  # `strace`, or `lsof` is available - see lib/paranoid.sh's paranoid_attach.
   if [[ ${SCAN_FLAGS[paranoid]:-} == true ]]; then
     paranoid_attach
   fi
