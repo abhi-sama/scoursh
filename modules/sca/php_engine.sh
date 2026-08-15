@@ -39,8 +39,22 @@ SCOURSH_SCA_PHP_ENGINE_SOURCED=1
 # safe only because each sets its own "already sourced" flag before
 # recursing into the other, which turns the second, recursive attempt into
 # an immediate no-op rather than infinite mutual sourcing.
+#
+# The `source=/dev/null` directive is what stops ShellCheck FOLLOWING this
+# particular edge, and it is deliberate rather than lazy: `-x` resolves sources
+# statically, where the mutual guard above does not exist, so engine.sh ->
+# php_engine.sh -> engine.sh is an unbounded static cycle that ShellCheck
+# inlines until it runs out of memory.  Measured on a real run of
+# `shellcheck -x -s bash modules/sca/run.sh`: 43.6 GB peak RSS and 236 seconds
+# with this edge followed, against 4.6 GB and 16 seconds with it cut - and an
+# OOM kill, not a slow pass, on any machine with less RAM than this one, which
+# is how it was found (the Linux container leg of tools/daily-suite.sh died
+# where the 64 GB macOS leg survived).  Cutting ONE edge of the cycle is enough;
+# engine.sh's forward edge to this file is still followed, so nothing is lost
+# from the analysis - `run.sh`, the entry point, sources every file in this
+# directory itself and remains the graph ShellCheck actually walks.
 if [[ -z ${SCOURSH_SCA_ENGINE_SOURCED:-} ]]; then
-  # shellcheck source=modules/sca/engine.sh
+  # shellcheck source=/dev/null
   source "${BASH_SOURCE[0]%/*}/engine.sh"
 fi
 

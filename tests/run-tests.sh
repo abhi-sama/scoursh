@@ -18,7 +18,7 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$ROOT"
 
-SUITES=(records core config checks findings report http e2e scan sast sast-history sca iac dast dast-auth dast-crawl exit-code-matrix gate-mutation-proof ci-smoke netns paranoid vendor-engines vendor-engines-advisories engines sast-semgrep iac-trivy sast-gitleaks awscli aws-lint aws-fixtures lint-no-ai-selftest dast35-lint)
+SUITES=(records core config checks findings report http e2e scan sast sast-history sca iac dast dast-auth dast-crawl exit-code-matrix gate-mutation-proof ci-smoke netns paranoid vendor-engines vendor-engines-advisories engines sast-semgrep iac-trivy sast-gitleaks awscli aws-lint aws-fixtures lint-no-ai-selftest dast35-lint daily-suite)
 LINTERS=(lint-rules lint-shell lint-aws-readonly lint-status lint-no-ai)
 
 if [[ ${1:-} == --list ]]; then
@@ -58,7 +58,8 @@ else
     run_one linter "$l" "tests/$l.sh"
   done
   # ShellCheck is optional: an air-gapped host may not have it, and the suite
-  # must still be runnable there.  CI installs it.
+  # must still be runnable there.  CI installs it, and so does tools/daily-suite.sh's GNU leg
+  # (its BSD leg expects it installed on the machine already) - see docs/CI-RUNBOOK.md.
   # --- shellcheck concurrency helpers -------------------------------------
   #
   # A single serial shellcheck process is the slowest thing in this suite by

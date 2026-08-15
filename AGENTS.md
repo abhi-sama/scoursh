@@ -121,7 +121,7 @@ the gap in the step ticket itself.
 **The inventory half of that rule is now mechanical; the prose half is what is left of it.**
 `tools/gen-status.sh` regenerates the status block below - and its byte-identical copies in
 `README.md` and `docs/FOUNDATION.md` - from the repository tree and `docs/DESIGN.md`'s own catalog, and
-`tests/lint-status.sh` (run by `tests/run-tests.sh`, so by CI) fails when any committed block differs
+`tests/lint-status.sh` (run by `tests/run-tests.sh`, so by the daily local run) fails when any committed block differs
 from a fresh generation.
 A ticket that lands a module therefore runs `tools/gen-status.sh --write` and commits the result; it
 never types a pack count, a "still open" list, or a "the next task is" sentence about a module, because
@@ -1341,8 +1341,11 @@ tools/gen-status.sh --write        # regenerate those blocks after landing a mod
 tests/e2e/fixture-scan.sh <dir>    # the end-to-end path on its own, for eyeballing a report
 tests/localstack/run.sh [up|verify|down|all]   # OPT-IN: real API shapes via a local emulator.
                                     # Needs docker and a real `aws` CLI (neither is a scoursh
-                                    # runtime dependency). NOT part of the suite above and never
-                                    # run by CI's default job - see "AWS module" below.
+                                    # runtime dependency). NOT part of the suite above - see the
+                                    # "AWS module" section below.
+tools/daily-suite.sh               # the scheduled local runner: the whole suite on BSD, again on
+                                    # GNU in a container, and a byte-for-byte diff of the two
+tools/daily-suite.sh --status      # what the last scheduled run said (and whether one happened)
 ```
 
 **`tests/run-tests.sh --list` is the source of truth for the current suite and linter names, not this
@@ -1354,7 +1357,7 @@ edit to `SUITES=(...)` in `tests/run-tests.sh` itself (`docs/CI-RUNBOOK.md` chec
 doc has no way of tracking automatically. Run `tests/run-tests.sh --list` to see what actually exists;
 do not hand-maintain a duplicate enumeration here or trust one written before your current checkout.
 
-See `docs/CI-RUNBOOK.md` for what CI actually runs, which checks are required on protected branches, the GNU/BSD dual-runner rationale, and the checklist for adding a new required check.
+See `docs/CI-RUNBOOK.md` for how the suite is actually run now that there is no hosted CI: the daily local runner, how to install and remove its schedule, how to read a result, the GNU/BSD dual-userland rationale, and the checklist for adding a new suite or linter.
 
 `package.json` at the repository root exists **only** so the conventional `pnpm test` / `npm test`
 entry point runs the real suite above.
@@ -1394,8 +1397,54 @@ What the suite covers now, per `docs/DESIGN.md` §12 and the resolutions above:
 - The five closed findings, each with a test that fails under the original implementation.
 
 Still to come with their steps: SARIF schema validation (step 10), the read-only lint over a non-empty
-`aws/live/` (step 6), a no-egress run under `--paranoid` (step 8), and byte-identical findings between
-GNU and BSD userlands, which needs CI on both (`.github/workflows/ci.yml` runs the matrix).
+`aws/live/` (step 6), and a no-egress run under `--paranoid` (step 8).
+Byte-identical findings between GNU and BSD userlands is checked by `tools/daily-suite.sh`, not by
+CI - see "There is no hosted CI" below.
+
+## There is no hosted CI, and a PR carries no automatic pass/fail
+
+**GitHub Actions is switched off for this repository. `.github/` does not exist.**
+Do not add a workflow, do not assume a check will run on a push, and do not read a green-looking PR as
+a tested one: there is no status check of any kind on a commit or a pull request, so a PR that breaks
+every suite looks exactly like one that breaks nothing.
+Anyone merging is the check - run `tests/run-tests.sh` against the merge result, or confirm a
+`tools/daily-suite.sh` run *newer than the change* passed.
+
+What replaced it is `tools/daily-suite.sh`, a local runner on a `launchd` daily schedule.
+`docs/CI-RUNBOOK.md` is the authority for how it is installed, what it records, and how to read a
+result; three things are worth knowing before touching it:
+
+- **A missing or stale result is never a pass.**  `--status` reports `NEVER RUN`, `DID NOT FINISH` and
+  `STALE` as distinct non-zero outcomes, and a run writes `verdict=INCOMPLETE` to `STATUS` *before* it
+  starts work rather than writing a verdict after it succeeds.  With no PR check watching, a cron job
+  that quietly stopped firing would otherwise leave a genuine old `PASS` behind and read as green.
+- **A skipped leg is not a pass either.**  If docker is unusable the GNU leg is recorded as skipped and
+  the verdict is `PASS-PARTIAL`, exit 5 - because tension 24's cross-userland guarantee genuinely was
+  not checked that run.
+- **The runner pins `/usr/bin:/bin:/usr/sbin:/sbin` ahead of `PATH` and then PROVES the userland is
+  BSD, aborting if it is not.**  On this class of machine an interactive `PATH` resolves `grep` to
+  ugrep and `find` to bfs; a suite run under those goes green while testing tools scoursh does not ship
+  on, which is worse than not running it at all.  `tests/suites/daily-suite.sh` section B pins that the
+  guard bites, in both directions - a shadow reachable only through `PATH` must be *overridden* by the
+  pin and the run must proceed, so the suite can tell the pin working from the pin missing.
+
+**Pinning the system path also pins `/bin/bash` 3.2.57, and `tests/run-tests.sh` spawns every suite as
+a bare `bash "$path"`.**
+That is measured, on the first real end-to-end run: all 35 checks died with "bash >= 4.2 required"
+while the runner itself was healthy.  The fix is a one-entry shim directory holding only a `bash`
+symlink, placed ahead of the pinned path - prepending the modern bash's own directory instead would put
+Homebrew or a Nix profile back in front of `/usr/bin` and hand the grep shadow its win back.
+
+**`SCOURSH_SCRATCH` is EXPORTED, so a nested `tools/*.sh` invocation shares its parent's scratch
+directory** (`lib/core.sh`: that is deliberate, so `xargs -P` workers use the parent's; only
+`SCOURSH_SCRATCH_OWNER` is non-exported, which is what keeps a worker from erasing it).
+The consequence bit on the second real end-to-end run: `tests/suites/daily-suite.sh` runs
+`tools/daily-suite.sh` as a subprocess, so the nested run got the same scratch directory AND its own
+`$BASH` was the outer run's bash shim - one fixed shim path plus an underefenced `ln -sf` pointed that
+shim at itself, and every check spawned after that suite died with "Too many levels of symbolic links",
+from a run that had been green until then.
+Anything writing a fixed-name file into `$SCOURSH_SCRATCH` from a `tools/` script has the same problem:
+name it per-PID, and dereference `$BASH` before treating it as a real interpreter path.
 
 ## Things measured on this codebase, not assumed
 
@@ -1409,8 +1458,11 @@ Recorded because the review rounds found several confidently-stated shell facts 
 - `-n -b -o` produces byte-identical output under ripgrep 15.1.0 and BSD grep 2.6.0-FreeBSD, which is what `rules/RULE-FORMAT.md` §10.3's per-match ordinal needs.
 - `printf '--- ...'` is parsed as options by bash's builtin printf; use `printf -- '--- ...'`.
 - `find` over a directory that does not exist fails, and under `pipefail` takes the whole pipeline with it.
-- ShellCheck versions disagree: Ubuntu's reports `SC2119`/`SC2120` where 0.11.0 does not. CI runs whatever the image ships, so a finding is silenced with an explicit `# shellcheck disable=` and a reason rather than left to the version.
+- ShellCheck versions disagree: Debian's reports `SC2119`/`SC2120` where 0.11.0 does not. The BSD leg runs whatever Homebrew installed and the GNU leg whatever the container image ships, so a finding is silenced with an explicit `# shellcheck disable=` and a reason rather than left to the version.
 - A comment line beginning `# shellcheck ` is parsed as a DIRECTIVE, so prose about shellcheck must not start a line with that word.
+- **`shellcheck -x` follows `source` STATICALLY, where a runtime "already sourced" guard does not exist, so two files that source each other are an unbounded cycle it inlines until it dies.** `modules/sca/engine.sh` and `modules/sca/php_engine.sh` do exactly that on purpose (each sets its flag before recursing, so at runtime the second attempt is a no-op). Measured on `shellcheck -x -s bash modules/sca/run.sh`: **43.6 GB peak RSS and 236 seconds** with the cycle followed, **4.6 GB and 16 seconds** with one `# shellcheck source=/dev/null` on the back-edge, and an OOM kill rather than a slow pass on any machine with less RAM - which is how it was found, when the Linux container leg of `tools/daily-suite.sh` died where the 64 GB macOS leg survived. Cut ONE edge; the entry point (`run.sh`) sources every file in the directory itself and stays the graph shellcheck walks, so nothing is lost.
+- **On Docker Desktop for macOS, a bind mount whose source and destination are the SAME absolute path is silently not mounted when written as `-v <path>:<path>:ro`** - the destination simply does not exist inside the container and `docker run` reports nothing. The identical read-only bind written as `--mount type=bind,src=<path>,dst=<path>,readonly` works. `-v <path>:<path>` (read-write) also works, so the `:ro` suffix is the trigger.
+- **A `git worktree` checkout's `.git` is a FILE holding an absolute path into the main repository**, so git does not work inside a container that mounts only the checkout. `tools/daily-suite.sh` mounts `git rev-parse --git-common-dir` as well, at its own path. Without it `git rev-parse --show-toplevel` fails, `lib/core.sh` falls back to the resolved `--path` as the scan root, and every finding's repository-relative `loc_path` changes - a whole class of "the rule pack broke" failures whose real cause is the scan root.
 
 ## Maintaining this file
 
