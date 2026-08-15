@@ -1615,6 +1615,14 @@ chmod 755 "$STUB/curl"
 
 CREDENTIAL='s3cr3t-token-value-never-in-argv'
 BODYSECRET='password=another-s3cr3t-value'
+# The subshell is the POINT, not an accident: this is the only case in this file
+# that unsets SCOURSH_HTTP_TRANSPORT and puts a stub `curl` on PATH, and both
+# must be confined to it or every later case in the suite would silently run
+# against the stub instead of the fixture transport.  SC2030/SC2031 warn that
+# the changes might be lost, which is exactly what is wanted here - nothing is
+# read back through a variable.  What the assertions read is the two FILES the
+# stub writes, and a file outlives the subshell that produced it.
+# shellcheck disable=SC2030,SC2031
 (
   unset SCOURSH_HTTP_TRANSPORT
   export SCOURSH_STUB_ARGV=$ARGV_OUT SCOURSH_STUB_STDIN=$STDIN_OUT
@@ -1638,6 +1646,8 @@ assert_file_absent "$W/curl.cfg" \
 
 t_case 'a request with no header and no body still uses the SAME single curl invocation'
 : >"$ARGV_OUT"
+# Same deliberate confinement as the case above, for the same reason.
+# shellcheck disable=SC2030,SC2031
 (
   unset SCOURSH_HTTP_TRANSPORT
   export SCOURSH_STUB_ARGV=$ARGV_OUT SCOURSH_STUB_STDIN=$STDIN_OUT
