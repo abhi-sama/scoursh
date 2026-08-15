@@ -25,9 +25,13 @@
 # Comments, remediation strings and variable names are never examined, so the
 # lint has no false positives by construction.
 #
-# STATUS AT §13 STEP 1: lib/awscli.sh and aws/live/ arrive at the start of §13
-# step 6.  Nothing exists for this lint to examine yet, so it passes over an
-# empty set - and says so, rather than reporting a green it did not earn.
+# STATUS: lib/awscli.sh has landed ahead of §13 step 6 (a credential-less
+# pass - see AGENTS.md, "AWS module: what exists ahead of step 6") and defines
+# aws_ro, but modules/cloud/aws/live/ does not exist, so nothing CALLS aws_ro
+# yet.  Checks 2 and 3 therefore still have an empty set to enforce, and this
+# lint says so rather than reporting a green it did not earn.  lib/awscli.sh
+# itself is skipped by name in the file loop below: it is the one file where a
+# bare `aws` invocation is legitimate, because it is the only place one exists.
 #
 # shellcheck shell=bash
 #
@@ -194,7 +198,7 @@ fi
 
 printf '  --  examined %s shell files, %s aws_ro call sites\n' "$count" "$calls"
 if (( bare == 0 && calls == 0 )); then
-  printf '  --  lib/awscli.sh and aws/live/ arrive at §13 step 6; nothing to enforce yet\n'
+  printf '  --  lib/awscli.sh has landed and defines aws_ro, but nothing calls it yet (modules/cloud/aws/live/ arrives at §13 step 6); no call sites to enforce\n'
 fi
 
 printf '\n'

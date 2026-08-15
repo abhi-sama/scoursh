@@ -12,11 +12,14 @@
 # step 2, scoped to the entry-point skeleton): a portable CLI parser for the
 # §5 grammar, the tension-14 exit-code precedence function (unit-testable on
 # its own), and wiring the config loader (lib/config.sh) in ahead of
-# dispatch.  What it deliberately does NOT deliver, because the things they
-# depend on do not exist yet: tension 12's diff/baseline logic (no `state/`
-# writer yet) and real module execution (nothing under `modules/` exists yet
-# - see AGENTS.md "Build order").  Each subcommand's dispatch is therefore a
-# clearly-logged, `coverage_reduction` no-op until its module lands, per
+# dispatch.  What it deliberately does NOT deliver, because the thing it
+# depends on does not exist yet: tension 12's diff/baseline logic (no
+# `state/` writer yet).  Real module execution is NO LONGER in that group -
+# `modules/sast/`, `modules/sca/` and `modules/iac/` have all landed, and
+# dispatch sources and runs each of them for real (see AGENTS.md "Build
+# order", and the generated status block there for which artifacts are in).
+# Only a subcommand naming a module that has not landed yet - `dast` and
+# `cloud` today - is still a clearly-logged, `coverage_reduction` no-op, per
 # docs/FOUNDATION.md tension 14's "declared reduction" row: an invocation
 # naming a module that is not yet built did what it was asked as far as
 # scan.sh's own contract goes, so it is not an error and does not affect the
@@ -27,11 +30,12 @@
 # (a later ticket, "Wire scan profiles: quick, full, compliance").
 # `_scan_apply_profile_filter` below calls it in front of every
 # `scan_dispatch`: it discovers whatever `*.rules` files already exist under
-# a module's directory (none do yet, so this remains an honest no-op today -
-# see lib/checks.sh's own comment on `checks_registry_load`) and records
-# `checks_selected` / `skipped_checks` into run.json exactly as it will once
-# a module ships a real registry, so wiring a module in later never has to
-# touch this filtering step.
+# a module's directory (`modules/sast/rules/` and `modules/iac/` both ship
+# them today; `modules/sca/` deliberately ships none, since SCA is a table
+# lookup rather than a pattern-rule engine - see lib/checks.sh's own comment
+# on `checks_registry_load`) and records `checks_selected` /
+# `skipped_checks` into run.json for every module that has one, so wiring a
+# module in later never has to touch this filtering step.
 #
 # shellcheck shell=bash
 #
@@ -511,12 +515,15 @@ _scan_require_prior_run() {
 }
 
 # -----------------------------------------------------------------------------
-# 7. Dispatch.  Real modules do not exist yet (nothing under modules/ has
-#    landed - AGENTS.md "Build order"), so this is deliberately a thin,
-#    logged no-op rather than a guess at module internals that a later
-#    ticket will actually own.  A `coverage_reduction` fact is recorded so
-#    run.json states the reason honestly (docs/FOUNDATION.md tension 14's
-#    "declared reduction" - this run did what it was asked, and said so).
+# 7. Dispatch.  `scan_dispatch` sources the module's own run.sh when that
+#    file exists on disk, which is the real path for `sast`, `sca` and `iac`
+#    today (AGENTS.md "Build order").  For a module that has NOT landed -
+#    `dast` and `cloud` today - there is no run.sh to source, so it falls
+#    back to a thin, logged no-op rather than a guess at module internals
+#    that a later ticket will actually own, and records a
+#    `coverage_reduction` fact so run.json states the reason honestly
+#    (docs/FOUNDATION.md tension 14's "declared reduction" - this run did
+#    what it was asked, and said so).
 # -----------------------------------------------------------------------------
 _scan_module_script() {
   case $1 in
@@ -544,11 +551,12 @@ scan_dispatch() {
 # (--profile-scan / --intensity / --allow-intrusive, each with the defaults
 # lib/checks.sh documents), and record the outcome into run.json via
 # checks_record_run_selection (checks_selected / skipped_checks) - or, when
-# the module has no registry on disk yet (true for every module today), a
+# the module has no registry on disk (true today for `sca`, which ships no
+# `*.rules` at all by design, and for every module that has not landed), a
 # coverage_reduction fact, the same declared-no-op shape scan_dispatch itself
 # uses for "no run.sh yet".  Placed ahead of dispatch rather than inside it so
 # the SAME filtering step already exists once a module's run.sh lands and
-# needs the selected id list - it will read CHECKS_REGISTRY_SETS /
+# needs the selected id list - it reads CHECKS_REGISTRY_SETS /
 # meta/checks_selected rather than reinventing this.  `checks_selected` is
 # deliberately NOT `checks_run`: nothing has executed anything yet at this
 # point (scan_dispatch runs AFTER this), so claiming `checks_run` here would

@@ -427,12 +427,16 @@ CHECKS_REGISTRY_SETS=()
 # glob, because both share the `.rules` extension and lib/records.sh's own
 # `records_schema_for_path` is what tells them apart.
 #
-# Finds NOTHING today: no module ships a rule pack or a checks.rules
-# registry yet (docs/DESIGN.md §13 build order - modules/ is empty until
-# step 3+), so CHECKS_REGISTRY_SETS is left empty and this is a silent,
-# correct no-op, exactly like scan_dispatch's own "module has no run.sh yet"
-# path.  It requires no changes once a real module lands: the glob picks up
-# whatever exists.
+# Finds real pattern-rule packs today for `sast` (modules/sast/rules/) and
+# `iac` (modules/iac/); no module ships a `checks.rules` script-check
+# registry yet, so that half of the glob's remit is still unexercised outside
+# fixtures.  For a module with nothing matching on disk - `sca`, which is a
+# table lookup against data/advisories.db rather than a pattern-rule engine
+# and so ships no `*.rules` at all, and any module that has not landed -
+# CHECKS_REGISTRY_SETS is left empty and this is a silent, correct no-op,
+# exactly like scan_dispatch's own "module has no run.sh yet" path.  It
+# needed no changes when those modules landed: the glob picks up whatever
+# exists.
 #
 # Must be called directly, never through $(...) (see CHECKS_REGISTRY_SETS's
 # own comment on why `die` inside this function needs that).

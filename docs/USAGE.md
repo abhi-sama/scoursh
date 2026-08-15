@@ -4,42 +4,189 @@ The complete CLI, exit-code, and configuration-file reference for `scan.sh`.
 For an introduction to what `scoursh` is and why it's built this way, see the main
 [`README.md`](../README.md).
 
+## How to read this reference
+
+`scoursh` is still being built, and its argument parser accepts several flags and subcommands whose
+implementation does not exist yet.
+Every table below therefore carries a **Status** column.
+It has two values, sometimes followed by a short qualifier:
+
+- **live** - it does what its description says.
+- **inert** - it is parsed, validated, and accepted, and then changes nothing about the run.
+
+An inert flag is not a usage error and does not print a warning.
+It is accepted, the run exits normally, and in most cases nothing in `run.json` records that the flag
+was ever given.
+That is the trap this column exists to close: `--baseline /typo/path.json` and `--format sarif` both
+look exactly like they worked.
+
+[Accepted but not yet implemented](#accepted-but-not-yet-implemented) gives the precise behaviour of
+every inert entry, and is the section to read before wiring `scoursh` into CI.
+
+The tool's own help does not carry this distinction.
+`-h` / `--help` prints the same global usage text for every command, built or not, so
+`scan.sh diff --help` is byte-identical to `scan.sh sast --help`.
+This document is the only place the difference is written down.
+
 ## Commands
 
 `scoursh` is a single entry point, `scan.sh`, with one subcommand per surface it scans.
-Every run writes `run.json` into its output directory, whether or not any findings were produced.
+Every run that gets as far as dispatching its command writes `run.json` into its output directory,
+whether or not any findings were produced.
+A run that refuses first - a missing required input, a scope violation, a `--paranoid` host with no
+usable observer - exits before `run.json` is written, so its exit code and its error line are the only
+record of it.
 
 ```sh
 scan.sh <command> [options]
 ```
 
-| Command | Flags | Notes |
-|---|---|---|
-| `sast` | `[--path DIR]` `[--lang py,js,go,java]` `[--history]` | Source code. `--history` replays secret checks across git history and requires `git` on `PATH`. |
-| `sca` | `[--path DIR]` | Dependency/lockfile CVEs. |
-| `iac` | `[--path DIR]` | Cloud IaC plus container/Kubernetes manifests. |
-| `dast` | `--target NAME` `[--intensity passive\|safe\|active]` `[--authed]` | `--target` is required and must name an entry in `config/scope.conf` (see "The scope gate" below). `--intensity` defaults to `passive`. |
-| `cloud` | `[--live]` `[--profile NAME]` `[--regions all\|us-east-1,...]` `[--assume-role ARN]` | `--live` requires the `aws` CLI on `PATH`; the run refuses (exit 4) if it is missing. |
-| `all` | union of every module's own flags above | Runs sast, sca, iac unconditionally; runs dast only if `--target` is given and cloud only if `--live` is given. Every module it skips is recorded in `run.json` as a `coverage_reduction` fact, not silently dropped. |
-| `diff` | `--against DIR` | `DIR` must be a prior run's output directory (must contain `findings.jsonl` or `run.json`). |
-| `report` | `--from DIR` | Regenerate reports from a prior run's directory (same shape requirement as `diff --against`). |
+| Command | Flags | Status | Notes |
+|---|---|---|---|
+| `sast` | `[--path DIR]` `[--lang py,js,go,java]` `[--history]` | live | Source code. `--history` replays secret checks across git history and requires `git` on `PATH`. |
+| `sca` | `[--path DIR]` | live, needs an advisory database | Dependency/lockfile CVEs. Lockfile parsing works for every supported ecosystem, but matching needs `data/advisories.db`, which this repository does not ship. See ["Dependency data"](#dependency-data-dataadvisoriesdb). |
+| `iac` | `[--path DIR]` | live | Cloud IaC plus container/Kubernetes manifests. |
+| `dast` | `--target NAME` `[--intensity passive\|safe\|active]` `[--authed]` | inert | The scope gate below is real and is enforced before anything else (see "The scope gate"). Past it, nothing happens: there is no `modules/dast/`, so the run records `module=dast reason=not_yet_built` and exits 0 without making a single request. |
+| `cloud` | `[--live]` `[--profile NAME]` `[--regions all\|us-east-1,...]` `[--assume-role ARN]` | inert | `--live` requires the `aws` CLI on `PATH` and the run refuses (exit 4) if it is missing, which is a real check. No AWS call follows it: there is no `modules/cloud/`, so the run records `module=cloud reason=not_yet_built`. |
+| `all` | union of every module's own flags above | live | Runs sast, sca, iac unconditionally; runs dast only if `--target` is given and cloud only if `--live` is given, and those two do nothing when they run. Every module it skips is recorded in `run.json` as a `coverage_reduction` fact, not silently dropped. |
+| `diff` | `--against DIR` | inert | `DIR` must be a prior run's output directory (must contain `findings.jsonl` or `run.json`), and that check is enforced. Nothing is then compared. |
+| `report` | `--from DIR` | inert | Regenerating reports from a prior run is not built. Report file generation during a scan is a different thing and works - see the section below. |
 
 `-h` / `--help` at any position before the first unrecognized token prints usage and exits 0.
 
+### Per-command flags
+
+| Flag | Command | Status |
+|---|---|---|
+| `--path DIR` | sast, sca, iac, all | live |
+| `--lang py,js,go,java` | sast, all | inert |
+| `--history` | sast, all | live |
+| `--target NAME` | dast, all | live as a gate; the scan it gates does not exist |
+| `--intensity passive\|safe\|active` | dast, all | inert |
+| `--authed` | dast, all | inert |
+| `--live` | cloud, all | live as a precondition check only |
+| `--profile NAME` | cloud, all | inert |
+| `--regions all\|us-east-1,...` | cloud, all | inert |
+| `--assume-role ARN` | cloud, all | inert |
+
 ## Global flags (apply to every command)
 
-| Flag | Value | Default |
-|---|---|---|
-| `--profile-scan` | `quick` \| `full` \| `compliance` | `full` |
-| `--paranoid` | boolean | off |
-| `--allow-intrusive` | boolean | off |
-| `--jobs N` | positive integer | from `config/scanner.conf` (`4`) |
-| `--format` | CSV of `json,sarif,html,md` | all four |
-| `--fail-on` | `critical\|high\|medium\|low\|info\|none` | from `config/scanner.conf` (`none`) |
-| `--fail-on-new` | boolean; **requires `--fail-on`**, usage error otherwise | off |
-| `--min-confidence` | `high\|medium\|low` | from `config/scanner.conf` (`low`) |
-| `--baseline FILE` | path | none |
-| `--out DIR` | path | `reports/<timestamp>` |
+| Flag | Value | Default | Status |
+|---|---|---|---|
+| `--profile-scan` | `quick` \| `full` \| `compliance` | `full` | live |
+| `--verbose` | boolean | off | live |
+| `--paranoid` | boolean | off | live on Linux only |
+| `--use-engines` | boolean | off | live, but no engine is vendored here |
+| `--allow-intrusive` | boolean | off | inert |
+| `--jobs N` | positive integer | from `config/scanner.conf` (`4`) | inert |
+| `--format` | CSV of `json,sarif,html,md` | all four | inert |
+| `--fail-on` | `critical\|high\|medium\|low\|info\|none` | from `config/scanner.conf` (`none`) | live |
+| `--fail-on-new` | boolean; **requires `--fail-on`**, usage error otherwise | off | inert |
+| `--min-confidence` | `high\|medium\|low` | from `config/scanner.conf` (`low`) | live |
+| `--baseline FILE` | path | none | inert |
+| `--out DIR` | path | `reports/<timestamp>` | live |
+
+`--verbose` also prints the rule-authoring lint warnings a normal run keeps out of the way.
+`--use-engines` is fully wired, but it only has an effect once an optional engine has been vendored
+into `modules/<module>/adapters/<engine>/` by hand on a networked host; no engine binary is committed
+to this repository, so on a stock checkout the flag produces a
+`coverage_reduction reason=engine_not_vendored` line and nothing else.
+
+## Accepted but not yet implemented
+
+Everything in this section parses, validates, and is accepted today.
+None of it changes the outcome of a run.
+
+### `diff --against DIR`
+
+`DIR` is validated (a directory that is not a prior run directory is a hard exit 4), then the run
+prints `'diff' has no engine yet`, records `module=diff reason=not_yet_built` in `run.json`, and exits
+0.
+Nothing is compared, because there is no persistent run state to compare against: no findings are
+classified as new, fixed, or unchanged, and no output directory of a previous run is read beyond
+confirming it exists.
+
+### `report --from DIR`
+
+The same shape as `diff`: `DIR` is validated, the run prints `'report' regeneration has no engine
+yet`, records `module=report reason=not_yet_built`, and exits 0.
+It creates its own output directory containing `run.json` and empty scaffolding, and no `report.md`,
+`report.html`, `findings.json`, or `findings.jsonl`.
+
+**Report file generation itself works, and is not affected by this.**
+Every `sast`, `sca`, `iac`, and `all` run writes `findings.json`, `findings.jsonl`, `report.md`,
+`report.html`, and `run.json` into its own output directory as part of the scan.
+What does not exist is the separate ability to rebuild those files from an earlier run's directory
+after the fact.
+Until it does, keep the output directory a run produced, or scan again.
+
+### `--baseline FILE`
+
+Accepted as a value flag with no validation beyond being non-empty, and then never read.
+A path that does not exist is accepted with no error and no warning, the file is never opened, and
+the value is not recorded in `run.json`.
+Nothing is suppressed by it.
+The concrete failure this invites: a CI pipeline with a typo in the baseline path gets a clean exit
+and no trace anywhere that suppression never ran.
+Baseline suppression needs the not-yet-built `state/` layer.
+
+### `--format` and the `formats` config key
+
+The list is validated, resolved through the full CLI-over-environment-over-file-over-default chain,
+and then discarded.
+Every scan - `sast`, `sca`, `iac`, `all` - writes exactly the same five files regardless of what is
+passed: `findings.json`, `findings.jsonl`, `report.md`, `report.html`, and `run.json`.
+
+`sarif` is accepted as a value, and no SARIF is produced.
+There is no SARIF writer anywhere in the tool; the name is a legal config value and nothing more.
+Do not point a SARIF-consuming CI step at a `scoursh` run yet.
+
+### `--jobs N` and the `jobs` config key
+
+Validated as a positive integer, resolved, exported, and read by no module.
+Every run is single-worker, and each module says so in `run.json` with a
+`coverage_reduction reason=single_worker_no_parallel_scan_yet` fact.
+The advertised default is `4`; the actual concurrency is 1, at every value of the flag.
+
+### `--fail-on-new`
+
+Today this is a tautology, not a filter.
+Every finding is created with `status: new` and nothing overwrites it, because the diff classification
+that would ever mark a finding as anything else needs the not-yet-built `state/` layer.
+Gating on "only new findings" therefore gates on all findings, so `--fail-on high --fail-on-new` and
+`--fail-on high` return the same exit code on the same tree, always.
+The usage error when `--fail-on` is absent is real and is enforced.
+
+### `--lang py,js,go,java`
+
+Validated as a CSV of the four language names, then never read.
+Every SAST run applies every rule pack; `--lang go` and no `--lang` at all produce identical findings.
+
+### `--intensity` and `--allow-intrusive`
+
+Both are wired into the check-selection chain, and neither can change what a shipped run selects.
+`--intensity` filters on a check's type tag, and every check shipped in this repository is tagged
+`static`, which all three tiers admit.
+`--allow-intrusive` filters on the `intrusive` tag, which no shipped check carries.
+`--intensity` is also only accepted for `dast` and `all`, and `dast` itself is unbuilt.
+They will start to bite when the DAST checks they were designed for land.
+
+### `--authed`
+
+Parsed for `dast` and `all`, listed in `--help`, read by nothing, and not recorded in `run.json`.
+There is no authentication anywhere in the tool yet.
+
+### Dependency data (`data/advisories.db`)
+
+`sca` parses every lockfile format it supports, then looks each resolved package up in
+`data/advisories.db`.
+That file is not in this repository - `data/` ships only `severity-rubric.conf` - so on a stock
+checkout `sca` finds nothing at all, whatever the lockfiles contain, and says so in `run.json` with a
+`coverage_reduction reason=no_advisories_db_on_disk` fact.
+This is by design rather than an oversight: the scanner is air-gapped and never fetches advisory data
+at scan time.
+Build the database on a networked host with `tools/vendor-engines.sh advisories`, or point
+`SCOURSH_SCA_ADVISORIES_DB` at one you already have.
 
 ## Exit codes
 
@@ -50,9 +197,14 @@ Checked in this fixed order - the first true condition wins, never "worst findin
 | `0` | Clean, or findings all below `--fail-on`. |
 | `1` | Findings at or above `--fail-on` (the CI gate). |
 | `2` | Usage error (bad flag, bad value, missing required flag). |
-| `3` | Scope violation (`dast --target` not found in `config/scope.conf`). |
+| `3` | Scope violation (`dast --target` not found in `config/scope.conf`), or a `--paranoid` connection observed outside the allowlist. |
 | `4` | Missing required input (unreadable path, missing config file, missing required command). |
 | `5` | Incomplete run (circuit breaker tripped or the run aborted mid-flight). A run that both trips the breaker and has gated findings exits `5`, not `1` - an incomplete run cannot assert a clean gate result either way. |
+
+One caveat on `5`: the rate limiter, request budget, and circuit breaker are not built yet, and no
+module records an aborted-mid-flight reason, so no scan trips either half of that description today.
+The code is currently produced only by an internal consistency failure, which should never happen and
+is a bug if it does.
 
 ## The scope gate (`dast`)
 
@@ -70,16 +222,29 @@ The gate matches on the normalized `(scheme, host, port)` tuple from the target'
 Path is **not** part of the gate - it only bounds what the crawler will fetch, it is not a safety
 boundary.
 
+This gate is live and enforced, and it is worth being clear about what passing it currently buys you:
+nothing yet runs behind it.
+A `dast` run that satisfies the gate makes no requests, because the DAST module is unbuilt.
+The repository also ships `config/scope.conf.example` rather than `config/scope.conf`, so on a fresh
+checkout every `dast` invocation refuses with exit 4 until you write the real file.
+
 ## `--paranoid` - the connection observer (a detector, not a guarantee)
 
 `--paranoid` builds a run-scoped allowlist from exactly four sets: every in-scope target address
 `lib/http.sh` actually resolves this run, resolved AWS endpoint addresses for regions actually iterated
 (empty, with a stated reason, until region iteration lands), the host's own `/etc/resolv.conf`
-nameservers on port 53 plus loopback on any port, and `config/scanner.conf`'s `paranoid_allow` entries.
+nameservers on port 53 plus loopback on any port, and `config/scanner.conf`'s `paranoid-allow` entries.
 It then samples this run's own connections (`ss`, or a measured-usable `strace -f -e trace=connect`
 fallback) and aborts with exit `3` on the first destination it observes outside that allowlist.
 If neither `ss` nor a usable `strace` exists on the host, the run refuses with exit `4` rather than
 pretending to be watching.
+
+**In practice this makes `--paranoid` a Linux-only flag.**
+Both backends are Linux-only, so on macOS the refusal above is what always happens: the run exits `4`
+before a single module has been dispatched, and no findings and no reports are written.
+It does not degrade to scanning without the observer, and that is deliberate - a `--paranoid` run that
+quietly stopped watching would be worse than no flag at all.
+Plan for it in CI: a matrix leg that passes `--paranoid` on macOS fails every time.
 
 **Read this plainly: it is a detector, not a guarantee.**
 Sampling can miss a connection that opens and closes between two polls.
@@ -95,6 +260,8 @@ Both config files use the same on-disk record format: blank-line-separated `key:
 `#`-prefixed comment per line, no escaping in values.
 Never hand-edit these with tooling that assumes shell syntax - the loader parses them as data and never
 `source`s them.
+Neither file is committed to this repository; `config/` ships `scope.conf.example` and
+`scanner.conf.example`, which you copy and edit.
 
 ### `config/scope.conf` - required only for `dast`
 
@@ -109,32 +276,44 @@ One record per target.
 | `allow-private-addresses` | no | no | `false` | `true`/`false`. Gates the link-local/loopback deny list. |
 | `notes` | no | no (multi-line) | empty | Free text. |
 
+Every key here that affects behaviour is live: `id`, `base-url`, `extra-host`, `allow-subdomains`, and
+`allow-private-addresses` are all consumed by the scope gate, which is enforced today.
+`notes` is free text that no code reads, exactly as intended.
+
 ### `config/scanner.conf` - optional; an absent file behaves as if it contained only `id: scanner`
 
-Resolution order for every key, checked independently per key: **CLI flag > environment variable >
-file > built-in default**.
+Resolution order for every key that is read at all, checked independently per key: **CLI flag >
+environment variable > file > built-in default**.
 The environment variable for key `foo-bar` is `SCOURSH_CONFIG_FOO_BAR`.
+An inert key is either never asked for at all, or asked for and then discarded, so setting its
+environment variable is exactly as inert as setting it in the file.
 
-| Key | Value | Default |
-|---|---|---|
-| `requests-per-second` | decimal, may be fractional | `4` |
-| `jobs` | positive integer | `4` |
-| `http-timeout` | positive integer (seconds) | `20` |
-| `max-redirects` | non-negative integer | `5` |
-| `request-budget` | positive integer, per run | `20000` |
-| `circuit-breaker-failures` | positive integer | `10` |
-| `circuit-breaker-window` | non-negative integer (seconds) | `60` |
-| `fail-on` | severity name or `none` | `none` |
-| `min-confidence` | `high\|medium\|low` | `low` |
-| `redact-secrets` | `true`/`false` | `true` |
-| `formats` | repeatable, `json\|sarif\|html\|md` | all four |
-| `max-matches-per-file` | positive integer | `200` |
-| `evidence-max-bytes` | positive integer | `512` |
-| `scratch-dir` | absolute path | `${TMPDIR:-/tmp}` |
-| `state-retain-runs` | positive integer | `30` |
-| `history-window-days` | positive integer | `365` |
-| `history-max-commits` | positive integer | `5000` |
-| `lock-stale-seconds` | positive integer | `30` |
-| `mutex-timeout-seconds` | positive integer | `120` |
-| `paranoid-allow` | repeatable, `addr:port` | empty |
-| `notes` | free text (multi-line) | empty |
+The **Status** column means the same thing it means everywhere else in this document.
+An inert key is accepted by the record format and validated on load, and then no code asks for its
+value, so editing it changes nothing.
+Several of the inert keys name a limit that does exist internally and is simply not wired to this
+file yet; those are called out in the Notes column.
+
+| Key | Value | Default | Status | Notes |
+|---|---|---|---|---|
+| `requests-per-second` | decimal, may be fractional | `4` | inert | No rate limiter exists yet. |
+| `jobs` | positive integer | `4` | inert | Every run is single-worker. See [`--jobs N`](#--jobs-n-and-the-jobs-config-key). |
+| `http-timeout` | positive integer (seconds) | `20` | inert | The HTTP layer's timeout reads `SCOURSH_HTTP_TIMEOUT`, never this file. |
+| `max-redirects` | non-negative integer | `5` | inert | The redirect cap is a caller-supplied argument defaulting to 5, never read from this file. |
+| `request-budget` | positive integer, per run | `20000` | inert | No request budget exists yet. |
+| `circuit-breaker-failures` | positive integer | `10` | inert | No circuit breaker exists yet. |
+| `circuit-breaker-window` | non-negative integer (seconds) | `60` | inert | As above. |
+| `fail-on` | severity name or `none` | `none` | live | |
+| `min-confidence` | `high\|medium\|low` | `low` | live | |
+| `redact-secrets` | `true`/`false` | `true` | live | |
+| `formats` | repeatable, `json\|sarif\|html\|md` | all four | inert | See [`--format`](#--format-and-the-formats-config-key). |
+| `max-matches-per-file` | positive integer | `200` | live | Read by both the SAST and IaC scanners. |
+| `evidence-max-bytes` | positive integer | `512` | inert | Truncation is real, but reads `SCOURSH_EVIDENCE_MAX_BYTES`, not this file. |
+| `scratch-dir` | absolute path | `${TMPDIR:-/tmp}` | inert | The scratch directory follows `SCOURSH_SCRATCH_BASE`, else `TMPDIR`. |
+| `state-retain-runs` | positive integer | `30` | inert | There is no `state/` to retain runs in yet. |
+| `history-window-days` | positive integer | `365` | live | Bounds `sast --history`. |
+| `history-max-commits` | positive integer | `5000` | live | Bounds `sast --history`. |
+| `lock-stale-seconds` | positive integer | `30` | inert | The staleness rule is real, but reads `SCOURSH_LOCK_STALE_SECONDS`. |
+| `mutex-timeout-seconds` | positive integer | `120` | inert | The timeout is real, but reads `SCOURSH_MUTEX_TIMEOUT_SECONDS`. |
+| `paranoid-allow` | repeatable, `addr:port` | empty | live | The fourth allowlist set for `--paranoid`. |
+| `notes` | free text (multi-line) | empty | inert by design | Free text for the operator; no code reads it, and none is meant to. |

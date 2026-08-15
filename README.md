@@ -25,6 +25,7 @@ line is drawn and why.
 - [Try it yourself: sample vulnerable repos](#try-it-yourself-sample-vulnerable-repos)
 - [Optional third-party engines](#optional-third-party-engines)
 - [Build status](#build-status)
+- [Known gaps](#known-gaps)
 - [What's next](#whats-next)
 - [Documentation](#documentation)
 - [License](#license)
@@ -52,10 +53,12 @@ exhaustively.*
   Linux with GNU coreutils or macOS with a BSD userland, checked automatically in CI.
   Fingerprints survive reindentation and unrelated edits, so a diff or baseline never reports a
   false "fixed" or a false "new."
-- **A detector *and* a guarantee for egress** - `--paranoid` watches the process's own outbound
-  connections and aborts on the first one outside scope; on Linux, `tools/run-in-netns.sh` goes
+- **A detector *and* a guarantee for egress** - on Linux, `--paranoid` watches the process's own
+  outbound connections and aborts on the first one outside scope, and `tools/run-in-netns.sh` goes
   further and builds a network namespace where an out-of-scope connection is not just detected, it's
   physically impossible.
+  Both are Linux-only, and `--paranoid` refuses the run outright rather than proceeding unobserved on
+  a host that can't support it.
 - **Honest about its own gaps** - every module a run skips, every coverage limitation, every
   unproven claim is recorded directly in the run's own output as a `coverage_reduction` or
   `coverage_gap` fact, not silently dropped from the report.
@@ -65,6 +68,8 @@ exhaustively.*
 - **A real CI gate, not just a report** - a fixed 0-5 exit-code contract, severity thresholds,
   confidence filtering, and a `--fail-on-new` mode designed to gate a pull request rather than just
   produce a PDF nobody reads.
+  Which parts of that are wired today, and which are accepted but inert, is in
+  [Known gaps](#known-gaps).
 
 ## Types of security scans, and where scoursh stands today
 
@@ -74,17 +79,19 @@ lifecycle they run:
 | Scanner type | What it scans | Stage in lifecycle | scoursh |
 |---|---|---|---|
 | **SAST** | Source code | Development / build | ✅ Available - `scan.sh sast` |
-| **SCA** | Open source dependencies | Build / CI-CD pipeline | ✅ Available - `scan.sh sca` |
+| **SCA** | Open source dependencies | Build / CI-CD pipeline | ✅ Available - `scan.sh sca`, once you have built an advisory database ([Installation](#installation)); see also [Known gaps](#known-gaps) |
 | **IaC** | Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose | CI-CD pipeline | ✅ Available - `scan.sh iac` |
 | **Secret detection** | Git repositories / files | Commit / pre-commit | ✅ Available - built into `sast` (`--history` replays across git history) |
 | **DAST** | A running application | Staging / production | 🚧 Designed, not built - the CLI grammar and scope gate exist; no scan engine yet |
-| **CSPM** | Live cloud infrastructure | Production / runtime | 🚧 Designed, not built - the read-only AWS wrapper exists ahead of schedule; no live checks yet |
+| **CSPM** | Live cloud infrastructure | Production / runtime | 🚧 Designed, not built - the read-only AWS wrapper exists ahead of schedule; `scan.sh cloud` does nothing yet, with or without `--live` |
 | **Container image scanning** | Built Docker images (layers, installed packages) | Build / registry | ⛔ Not planned - `scoursh` lints Dockerfile/compose *source* as IaC, not built image layers |
 | **Network / host scanning** | Servers, ports, OS patches | Operations / maintenance | ⛔ Not planned |
 
 So today, `scoursh` covers everything on the *static* side of that list - before anything ever
-runs, and before any code ships - in a single pass over a local checkout. See
-[What's next](#whats-next) for the rest.
+runs, and before any code ships - in a single pass over a local checkout.
+The dependency half of that coverage stays inert until you build `data/advisories.db` yourself
+([Installation](#installation)).
+See [What's next](#whats-next) for the rest.
 
 ### What's available today, in detail
 
@@ -95,8 +102,13 @@ runs, and before any code ships - in a single pass over a local checkout. See
 - **SCA** (`modules/sca/`) - parses lockfiles/manifests for six ecosystems (npm/yarn/pnpm,
   pip/poetry/Pipfile, Go modules, Maven, RubyGems, Composer) and matches every pinned dependency
   against a locally-generated advisory database sourced from [OSV.dev](https://osv.dev) - no
-  network lookup at scan time. (The database ships empty; see
-  [Installation](#installation) for the one-time step to populate it.)
+  network lookup at scan time.
+  That advisory database is never bundled or auto-fetched, and until you build it once, every
+  ecosystem walk skips the scan entirely ([Installation](#installation)).
+  Its `--fail-on` severity gate is wired, the same one `sast` and `iac` use: a run carrying a finding
+  at or above the threshold exits 1 and records `"gate": "fail"` in `run.json`.
+  That gate went unevaluated in earlier revisions, so `scan.sh sca --fail-on critical` exited 0 on
+  critical findings; it is fixed, and covered by a regression test.
 - **IaC** (`modules/iac/`) - six rule packs: Terraform, Kubernetes manifests, Helm chart sources,
   CloudFormation templates, Dockerfile, and docker-compose.
 
@@ -154,11 +166,19 @@ That single constraint shapes most of the architecture:
 - Every HTTP call goes through one wrapper (`lib/http.sh`) that refuses any host absent from the
   resolved scope allowlist; every AWS call goes through one wrapper (`lib/awscli.sh`) that refuses
   any operation that is not read-only.
+  The AWS half is real and tested, but it currently guards an empty set: no AWS call ships in the tool
+  yet, and the project's own read-only lint reports zero call sites for it.
+  The wrapper and its lint landed ahead of the cloud checks deliberately, so that no cloud check is
+  ever written against a bare `aws` in the first place.
 - The HTML report is self-contained, with no external assets and a strict inline CSP.
 - `--paranoid` samples the process's own outbound connections during a run and aborts the moment
-  it observes one outside the resolved allowlist; `tools/run-in-netns.sh` goes further on Linux,
-  building a network namespace whose route table admits only the declared scope, so an
-  out-of-scope connection is categorically impossible rather than merely observed.
+  it observes one outside the resolved allowlist.
+  It is Linux-only in practice: both of its sampling backends (`ss` and `strace`) are Linux-only, and
+  on a host with neither - macOS included - `--paranoid` refuses the entire scan with exit 4 before
+  any module runs, rather than quietly downgrading to an unobserved one.
+  `tools/run-in-netns.sh` goes further, also on Linux only, building a network namespace whose route
+  table admits only the declared scope, so an out-of-scope connection is categorically impossible
+  rather than merely observed.
 - `tests/lint-no-ai.sh` scans the entire shipped tool for any AI/LLM provider hostname, SDK name, or
   API-key-shaped environment variable, and fails the build if it finds one.
 
@@ -177,15 +197,28 @@ cd scoursh
 (`package.json` exists only for that convention - scoursh has no JavaScript and no Node runtime
 dependency).
 
-**One-time setup for SCA:** `data/advisories.db` ships empty on a fresh clone - SCA's parsing and
-matching code is fully built and tested, but the actual advisory data is deliberately never
-bundled or auto-fetched. Populate it yourself, on a networked box, with real advisory IDs you've
-identified for the ecosystems you care about:
+**One-time setup for SCA, required before your first scan.**
+`data/advisories.db` is not shipped with this repository - the advisory data is deliberately never
+bundled or auto-fetched, and you build it yourself.
+SCA's parsing and matching code is fully built and tested, but every ecosystem walk tests for that
+file first and returns before it discovers or parses a single manifest.
+So until you build it, `scan.sh sca` does not scan at all: it records a `no_advisories_db_on_disk`
+coverage reduction, leaves `checks_run` empty in `run.json`, and exits 0 reporting zero findings on a
+project you know to be vulnerable.
+Two warning lines are printed, but the exit code and the headline count both look exactly like a clean
+scan - so a green `sca` run tells you nothing until the database is in place.
+
+Building it is a manual, one-advisory-at-a-time job today, done on a networked box.
+You supply the exact advisory IDs you already know you care about, and `tools/vendor-engines.sh`
+resolves each one from [OSV.dev](https://osv.dev) into the pre-expanded rows the scanner looks up.
+There is no bulk or ecosystem-wide import: `--all` means "every ecosystem you have supplied an ID list
+for", not "every known advisory".
 
 ```sh
 export SCOURSH_ADVISORY_NPM_IDS="GHSA-xxxx-xxxx-xxxx,GHSA-yyyy-yyyy-yyyy"
 tools/vendor-engines.sh advisories npm
-# or: tools/vendor-engines.sh advisories --all
+# or, once an ID list is set for each ecosystem you care about:
+tools/vendor-engines.sh advisories --all
 ```
 
 See [`tools/vendor-engines.sh advisories --help`](tools/vendor-engines.sh) for the full list of
@@ -193,6 +226,8 @@ per-ecosystem environment variables.
 
 For the complete CLI, exit-code, and configuration-file reference, see
 [`docs/USAGE.md`](docs/USAGE.md).
+That document describes the grammar `scan.sh` accepts, not what each flag does today - read it
+alongside [Known gaps](#known-gaps), which is where the accepted-but-inert flags are listed.
 
 ## Try it yourself: sample vulnerable repos
 
@@ -236,7 +271,7 @@ git clone --depth 1 https://github.com/OWASP-Benchmark/BenchmarkJava ~/scoursh-t
 ```sh
 git clone --depth 1 https://github.com/juice-shop/juice-shop ~/scoursh-test-repos/juice-shop
 ./scan.sh sast --path ~/scoursh-test-repos/juice-shop --lang js --history
-./scan.sh sca --path ~/scoursh-test-repos/juice-shop   # needs data/advisories.db populated, see Installation
+./scan.sh sca --path ~/scoursh-test-repos/juice-shop   # finds nothing until you build data/advisories.db, see Installation
 ```
 
 `scan.sh` never clones anything itself - `--path` must already point at a local, readable
@@ -263,7 +298,8 @@ given - the run is unaffected, only the coverage gap is logged.
 
 ## Build status
 
-Three modules are available today and produce real findings: `sast`, `iac`, and `sca`.
+Three modules are available today and produce real findings: `sast`, `iac`, and `sca` - the last of
+those once you have built `data/advisories.db` ([Installation](#installation)).
 `dast` and `cloud` are designed but not built; see [What's next](#whats-next).
 
 Exactly which rule packs and ecosystems those three modules cover is generated below straight from
@@ -356,34 +392,76 @@ Landed 6 of 6.  Outstanding: none.
 
 <!-- END GENERATED STATUS -->
 
-### Known gaps
+## Known gaps
 
+Some of the CLI grammar is accepted today but does nothing yet, because the machinery behind it
+belongs to a later step; a few other rough edges in shipped behavior are listed here too.
+Several are self-disclosed in the run's own `run.json`, but with one exception none of them warns you
+on the console or changes an exit code, so they are listed here to be found while you are evaluating
+the tool rather than in a pipeline:
+
+- **`sca` scans nothing until you build an advisory database.**
+  No `data/advisories.db` ships with this repository, and each ecosystem walk returns before it
+  discovers or parses a single manifest without one.
+  Until you build it ([Installation](#installation)), `scan.sh sca` exits 0 with zero findings and an
+  empty `checks_run` on a knowingly vulnerable project.
+  This is the one gap here that does say something on the console: every run prints two warning lines
+  about the missing database, one from the shared npm/RubyGems/Composer walk and one from the Go walk.
+- **`--format` does nothing.**
+  Every run writes all five artifacts - `findings.json`, `findings.jsonl`, `report.md`,
+  `report.html`, and `run.json` - whatever `--format` is given, so `--format md` still writes the
+  HTML report.
+  `--format sarif` is accepted too, and nothing anywhere in the tree emits SARIF yet.
+- **`--baseline FILE` is parsed and never read.**
+  Baseline suppression arrives with persistent run state.
+  A path that does not exist is accepted with no error, no warning, and no record of the flag in
+  `run.json`.
+- **`--fail-on-new` currently behaves identically to `--fail-on`.**
+  Every finding is emitted with `status=new` until there is persistent run state to compare a run
+  against, so there is nothing yet for it to narrow the gate down to.
+- **`--jobs N` is parsed and ignored.**
+  Every scan is single-worker and records `single_worker_no_parallel_scan_yet` in its own output.
+- **`--authed` is parsed and read by nothing.**
+  It belongs to `dast`, which is not built, and it is not recorded in `run.json` either.
+- **There is no per-subcommand help.**
+  `scan.sh dast --help`, `scan.sh cloud --help`, `scan.sh diff --help`, and `scan.sh sca --help` all
+  print the same global usage and exit 0, so nothing there tells you a subcommand is unbuilt.
 - `report`'s `--from` flag name is not specified in `docs/DESIGN.md`'s grammar block; `--from` is the
   engineer's own judgment call, noted as such in `scan.sh`'s own comments for a human to confirm or
   override.
-- No SARIF or compliance-mapping report exists yet, so `--format sarif` is accepted but there is
-  nothing yet that emits SARIF.
 
 ## What's next
 
 The full, dependency-ordered build plan lives in [`docs/DESIGN.md`](docs/DESIGN.md) §13, with a
 running account of progress in [`CLAUDE.md`](CLAUDE.md)'s "Build order and where we are" section.
-In short, what's left:
+What's left, in priority order:
 
-- Two outstanding SAST rule packs: `ldap.rules`, `nosql.rules`.
-- **DAST** (`scan.sh dast`) - a full, dependency-ordered ticket plan already exists
-  ([`docs/STEP5-DAST-PLAN.md`](docs/STEP5-DAST-PLAN.md)), but no work has started; it's gated on the
-  two SAST packs above landing first. A local, self-hosted test target is already in place ahead of
-  time (`tools/dast-test-target.sh`).
-- **Live cloud/CSPM scanning** (`scan.sh cloud --live`) - also fully planned
-  ([`docs/STEP6-CLOUD-PLAN.md`](docs/STEP6-CLOUD-PLAN.md)), gated on DAST completing. The read-only
-  AWS wrapper already exists ahead of schedule.
-- **SARIF output and a compliance report** - `--format sarif` is accepted but nothing emits it yet.
-- **Persistent run state** (`state/`) - needed before `--baseline` suppression and the `diff`/`report`
-  subcommands do real work; both are currently no-ops. A full ticket plan exists here too
-  ([`docs/STEP7-STATE-PLAN.md`](docs/STEP7-STATE-PLAN.md)).
-- Container image scanning (scanning built image layers, not just Dockerfile/compose source) and
-  network/host scanning are not currently part of the design plan at all.
+1. **DAST** (`scan.sh dast`) - the running-endpoint scanner, and now the top priority.
+   A full, dependency-ordered ticket plan already exists
+   ([`docs/STEP5-DAST-PLAN.md`](docs/STEP5-DAST-PLAN.md)), the CLI grammar and the scope gate are in
+   place, the HTTP chokepoint (`lib/http.sh`) is complete and tested, and tooling to stand up a local,
+   self-hosted test target already exists (`tools/dast-test-target.sh`), though it has not yet been
+   observed running end to end - but no scanning code is written yet.
+   Two things originally sat in front of it, and only one still does.
+   Step 4 (SCA + IaC) is complete, so that half is cleared.
+   The other, the two outstanding SAST rule packs below, is a sequencing preference from the original
+   build order rather than a technical dependency: the first DAST ticket - the rate limiter, per-run
+   request budget, and circuit breaker - touches `lib/http.sh` only and consumes no rule pack at all.
+2. **Persistent run state** (`state/`) - needed before `--baseline` suppression, a `--fail-on-new` that
+   means anything, and the `diff`/`report` subcommands do real work; all are currently no-ops.
+   A full ticket plan exists here too ([`docs/STEP7-STATE-PLAN.md`](docs/STEP7-STATE-PLAN.md)).
+3. **SARIF output** - `--format sarif` is accepted but nothing emits it yet.
+4. **The compliance-mapping report.**
+5. **Live cloud/CSPM scanning** (`scan.sh cloud`) - also fully planned
+   ([`docs/STEP6-CLOUD-PLAN.md`](docs/STEP6-CLOUD-PLAN.md)), and last in the queue.
+   The subcommand is inert today with or without `--live`; there is no `modules/cloud/` in the tree at
+   all.
+   The read-only AWS wrapper already exists ahead of schedule.
+
+Outside that ordering: two SAST rule packs, `ldap.rules` and `nosql.rules`, are still outstanding from
+step 3.
+Container image scanning (scanning built image layers, not just Dockerfile/compose source) and
+network/host scanning are not currently part of the design plan at all.
 
 See [`ROADMAP.md`](ROADMAP.md) for the fuller breakdown, including work that's already landed ahead
 of its normal turn (the optional engine adapters, the `--paranoid` connection observer, and the

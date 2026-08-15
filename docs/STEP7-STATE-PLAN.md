@@ -8,23 +8,30 @@ Every design decision this plan sequences is already committed.
 Tension 11 (the frozen nine-stage pipeline, the fail-closed `diff_usable` gate, the `baseline.json` object schema), tension 12 ((check, scope-cell) coverage, the classification table, the `scan_root_id` gate), tension 13 (the per-finding history boundary), and tension 6 (the composite three-condition rule) each carry a RESOLUTION, and the tickets below implement those resolutions rather than re-litigating them.
 A ticket that finds itself disagreeing with one of those resolutions changes the register deliberately and costs the change, per `AGENTS.md`; it does not quietly diverge in code.
 
-## Status: blocked
+## Status: blocked, and now second in the priority order
 
 **No step 7 ticket (any of STATE-01 through STATE-08 below) is picked up until every earlier `docs/DESIGN.md` §13 step is complete on `dev`.**
 The build order (§13) is strictly sequential, so step 7 waits behind:
 
 1. **§13 step 3 (SAST) finishes**: the `nosql.rules` and `ldap.rules` packs land.
-   As of this writing the generated status block in `AGENTS.md` reports SAST at 8 of 10, with exactly those two outstanding.
+   **Still outstanding**: the generated status block in `AGENTS.md` reports SAST at 8 of 10, with exactly those two outstanding.
 2. **§13 step 4 (SCA + IaC) completes.**
-   As of this writing the generated status block reports both halves complete: SCA 6 of 6 ecosystems, IaC 6 of 6 packs.
+   **This was a real blocker and it is now CLEARED**, recorded here rather than deleted so that a reader can see the gate held and was discharged rather than quietly dropped.
+   The generated status block reports both halves complete: SCA 6 of 6 ecosystems, IaC 6 of 6 packs, with nothing outstanding in either.
 3. **§13 step 5 (DAST) completes.**
-   As of this writing zero of DAST-01 through DAST-30 (`docs/STEP5-DAST-PLAN.md`) has landed and `modules/dast/` does not exist.
+   **Still outstanding**: zero of DAST-01 through DAST-30 (`docs/STEP5-DAST-PLAN.md`) has landed and `modules/dast/` does not exist.
 4. **§13 step 6 (Cloud) completes.**
-   As of this writing zero of CLOUD-01 through CLOUD-34 / POSTURE-01 through POSTURE-04 (`docs/STEP6-CLOUD-PLAN.md`) has landed and neither `lib/awscli.sh` nor `modules/cloud/` exists.
+   **Still outstanding**: zero of CLOUD-01 through CLOUD-34 / POSTURE-01 through POSTURE-04 (`docs/STEP6-CLOUD-PLAN.md`) has landed and `modules/cloud/` does not exist.
+   `lib/awscli.sh` is the one exception, and its absence must not be cited as evidence here, because it is no longer absent: the `aws_ro` chokepoint landed ahead of step 6 in a credential-less pass (`AGENTS.md`, "AWS module: what exists ahead of step 6"), leaving `modules/cloud/` as the thing that says step 6 is unstarted.
 
 The generated status block in `AGENTS.md` (mirrored in `README.md` and `docs/FOUNDATION.md`) is what says whether these gates have lifted - read it there, not this snapshot.
 The gate matters more for step 7 than for any earlier step: tension 12's coverage-cell table spans every module's scope kind (`path-root`, `target`, `account-region`, `scope-key`), and building classification before the `target` and `account-region` producers exist would leave those arms of the table untestable against real emitters.
 Steps 8 and 9 are explicitly NOT in this gate: both have landed early, out of step order, and step 7 neither depends on them nor waits for anything behind them.
+
+**Step 7 now sits SECOND in the project's priority order**, behind step 5 (DAST) and ahead of both step 10 (SARIF plus the compliance report) and step 6 (live cloud scanning).
+That priority order is in genuine tension with gate item 4 above, and this plan does not pretend to resolve it: the owner's order puts step 7 ahead of step 6, while §13's sequential build order puts step 6 first, and the paragraph above gives a technical reason - not merely a sequencing preference - for wanting step 6's `account-region` producer to exist before classification is built and tested against it.
+Whoever picks up STATE-01 has to settle that explicitly, rather than reading either the priority order or the gate as having silently overridden the other.
+Note that the same question does not arise for gate item 3: step 5 is both ahead of step 7 in the build order and ahead of it in priority, so it blocks step 7 either way.
 
 Whoever lifts this block should update the "Status" line above, and the two build-order sections named in "Doc-update process" below, in the same change that starts STATE-01.
 
@@ -38,9 +45,12 @@ Whoever picks up a STATE-* ticket reads these before writing anything, the same 
 - **`lib/core.sh` ships `scan_root_id_of`** - tension 12's frozen, measured recipe (git toplevel, `config --local --get remote.origin.url`, normalise-then-test, userinfo strip) - and `scan.sh` already calls it, so `run.json` carries `scan_root_id` today.
 - **`lib/report.sh` already writes `diff_usable` into `run.json`**, currently always `false` via the `SCOURSH_DIFF_USABLE` default - honest, since no classification exists to make it true.
 - **`scan.sh` already parses the step-7 CLI surface**: `--fail-on-new` (usage-errors without `--fail-on`, per tension 14), and the `diff` subcommand exists as a stub that validates `--against` and logs `reason=not_yet_built`.
-- **The `--fail-on` gate itself already runs**: `sast_evaluate_gate` (`modules/sast/engine.sh`, reused unchanged by `modules/iac/run.sh`) evaluates severity/confidence/suppression and sets scan_main's `gate` local, and `tests/suites/gate-mutation-proof.sh` pins it.
+- **The `--fail-on` gate itself already runs**: `sast_evaluate_gate` (`modules/sast/engine.sh`, reused unchanged by `modules/iac/run.sh` and `modules/sca/run.sh`) evaluates severity/confidence/suppression and sets scan_main's `gate` local, and `tests/suites/gate-mutation-proof.sh` pins it.
   Its current `--fail-on-new` predicate is a bare `status == new` test with `new` as the default status - which today gates on ALL findings, coincidentally matching tension 11's fail-closed posture, precisely because nothing yet assigns any other status.
   STATE-08 replaces that coincidence with the real carve-out; it does not build a gate from scratch.
+  SCA's call site is the newest of the three and was missing at first: `modules/sca/run.sh` ran findings_merge -> derive_findings -> report_all with no gate call between them, so `scan.sh sca --fail-on critical` exited 0 on critical findings and `run.json` recorded `"gate": "not-evaluated"`.
+  It now sources the SAST engine and calls `sast_evaluate_gate` before `report_all` like its two siblings, with an end-to-end regression case in `tests/suites/sca.sh` asserting exit 1 and `"gate": "fail"` over the `tests/fixtures/sca/npm-lock` fixture.
+  STATE-08 therefore inherits three module call sites for this predicate, not two.
 - **`lib/checks.sh` owns the check registry** (step 2), and `run.json`'s `checks_run` already records what ran.
   `checks_run` is NOT tension 12's `covered_checks` - the distinction is stated in `lib/records.sh` and in `AGENTS.md`, and STATE-02 is the ticket that builds the latter.
 - **`modules/sast/history.sh`** (step 3e) already emits per-finding `oldest_reaching_commit_time` and resolves the enumeration boundary, in anticipation of tension 13's comparison landing here.

@@ -249,7 +249,34 @@ sast_context_ok() {
 # ---------------------------------------------------------------------------
 # 4. Check registry lookup: id -> "set idx", built once per sast_run call
 # ---------------------------------------------------------------------------
-declare -A _SAST_CHECK_LOC=()
+# `declare -gA`, never a bare `declare -A`, and the `-g` is load-bearing: in a
+# real run NOTHING sources this file at top level.  `scan_dispatch` (scan.sh
+# §7) is a FUNCTION, and it reaches every module by running `source "$script"`
+# from inside itself, so this line executes in that function's scope - and
+# `declare -A` with no `-g` inside a function creates a LOCAL that is destroyed
+# the moment that first `scan_dispatch` returns.  The sourced-once guard at the
+# top of this file is a plain assignment, which IS a global and DOES survive,
+# so the guard would outlive the very thing it guards: the SECOND consumer of
+# this engine in one process hits the guard, returns early, and never
+# re-declares the array.  `scan.sh all` is exactly that case - it dispatches
+# sast, then sca, then iac, and both modules/sast/run.sh and modules/iac/run.sh
+# call `sast_index_checks` - so `sast_index_checks` below would assign into an
+# UNDECLARED name, which bash treats as an INDEXED array, evaluating a check id
+# like `IAC-CFN-UNENCRYPTED-01` as an ARITHMETIC subscript and dying `IAC:
+# unbound variable` under `set -u`.  Measured: that aborted `scan.sh all` on
+# every invocation (even over an empty tree, since this indexes the on-disk
+# registry rather than the scanned files), while still leaving a full-looking
+# report on disk whose run.json declared the run complete and simply had no IaC
+# findings in it.  A guard and what it guards must share one scope; `-g` is what
+# makes this global no matter who sources the file, and it costs nothing here -
+# docs/FOUNDATION.md tension 24 freezes the floor at bash 4.2 (lib/core.sh
+# refuses to run below it, scan.sh re-execs to reach it), which is the release
+# `declare -g` arrived in.  This is the same hazard the comment on
+# sast_evaluate_gate below already documents for SCAN_FLAGS; that lesson was
+# written down and this site was missed, so it is now pinned by a test -
+# tests/suites/scan.sh's `scan.sh all` case, which fails under the bare
+# `declare -A` reading.
+declare -gA _SAST_CHECK_LOC=()
 
 sast_index_checks() {
   _SAST_CHECK_LOC=()

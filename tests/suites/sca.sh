@@ -1147,5 +1147,67 @@ assert_contains "$GO_E2E_RUNJSON" '"SCA-GO-VULNERABLE_DEP-01"' \
 assert_contains "$GO_E2E_RUNJSON" '"sca":4' \
   'run.json by_module counts 4 live findings for sca - 3 vulnerable Go dependencies plus the one unknown-version roll-up'
 
+# =============================================================================
+printf -- '\n-- end-to-end: --fail-on really gates an sca-only run (regression) --\n'
+# =============================================================================
+# `_sca_run_module` (modules/sca/run.sh) used to run
+# findings_merge -> derive_findings -> report_all with NO gate call between
+# the last two, unlike modules/sast/run.sh and modules/iac/run.sh, which both
+# call sast_evaluate_gate there.  The gate was therefore never evaluated on an
+# sca-only run: `scan.sh sca --fail-on critical` exited 0 with two critical
+# findings on the report and run.json recorded `"gate": "not-evaluated"`, so a
+# CI job gating on dependency findings was permanently green.  Every assertion
+# in this section fails under that reading.
+#
+# Both directions are pinned deliberately, because the naive fix for each is
+# the other's bug: a gate hardwired to fail satisfies the npm-lock case below
+# while breaking every clean run, and the module's real defect - a gate that
+# never runs at all - satisfies the python-requirements case while letting the
+# npm-lock one through.  Only a gate that is actually evaluated, against the
+# run's real severities, satisfies both.
+t_case 'scan.sh sca --fail-on critical exits 1 (SCOURSH_EXIT_GATE) when the run carries critical findings'
+GATE_E2E_RUNDIR=$W/run-gate-e2e
+rm -rf "$GATE_E2E_RUNDIR"
+assert_status 1 'a real subprocess over the npm-lock fixture (left-pad 1.3.0 and minimist 1.2.5 are both critical rows in the fixture db) trips the gate instead of exiting clean' \
+  env SCOURSH_SCA_ADVISORIES_DB="$DB" bash "$ROOT/scan.sh" sca --path "$FIXTURES/npm-lock" --fail-on critical --out "$GATE_E2E_RUNDIR"
+GATE_E2E_RUNJSON=$(cat "$GATE_E2E_RUNDIR/run.json" 2>/dev/null)
+assert_contains "$GATE_E2E_RUNJSON" '"gate": "fail"' \
+  'run.json records the gate as failing rather than "not-evaluated" - the gate was genuinely evaluated on an sca-only run, not skipped'
+assert_contains "$GATE_E2E_RUNJSON" '"gated_findings": 2' \
+  'both critical findings are counted by the gate, so the failure is the severity filter doing its job rather than an unrelated error'
+assert_contains "$GATE_E2E_RUNJSON" '"critical":2' \
+  'the run really did carry two critical findings, which is what the gate is reacting to'
+assert_not_contains "$GATE_E2E_RUNJSON" 'gate_evaluation_not_yet_wired' \
+  'the coverage_reduction disclosing an unwired gate is gone, because it no longer describes this module'
+
+t_case 'the same gate PASSES when no finding reaches the threshold - the fix evaluates the gate rather than hardwiring a failure'
+GATE_PASS_RUNDIR=$W/run-gate-pass
+rm -rf "$GATE_PASS_RUNDIR"
+assert_status 0 'the python-requirements fixture tops out at high severity, so --fail-on critical leaves it clean' \
+  env SCOURSH_SCA_ADVISORIES_DB="$DB" bash "$ROOT/scan.sh" sca --path "$FIXTURES/python-requirements" --fail-on critical --out "$GATE_PASS_RUNDIR"
+GATE_PASS_RUNJSON=$(cat "$GATE_PASS_RUNDIR/run.json" 2>/dev/null)
+assert_contains "$GATE_PASS_RUNJSON" '"gate": "pass"' \
+  'run.json records an evaluated, passing gate - NOT "not-evaluated", which is what an unwired gate would still report here'
+assert_contains "$GATE_PASS_RUNJSON" '"gated_findings": 0' \
+  'nothing met the critical threshold, so the gate counted nothing'
+
+t_case 'the same fixture DOES trip the gate at the threshold its findings actually reach'
+GATE_HIGH_RUNDIR=$W/run-gate-high
+rm -rf "$GATE_HIGH_RUNDIR"
+assert_status 1 'lowering the bar to --fail-on high makes the python-requirements run fail, proving the threshold is read from the flag and not fixed' \
+  env SCOURSH_SCA_ADVISORIES_DB="$DB" bash "$ROOT/scan.sh" sca --path "$FIXTURES/python-requirements" --fail-on high --out "$GATE_HIGH_RUNDIR"
+GATE_HIGH_RUNJSON=$(cat "$GATE_HIGH_RUNDIR/run.json" 2>/dev/null)
+assert_contains "$GATE_HIGH_RUNJSON" '"gate": "fail"' \
+  'the high-severity flask-login finding trips a --fail-on high gate on the very fixture that stayed clean at --fail-on critical'
+
+t_case 'an sca run with no --fail-on at all is still "not-evaluated" - the gate is opt-in, and the fix does not change that'
+GATE_NONE_RUNDIR=$W/run-gate-none
+rm -rf "$GATE_NONE_RUNDIR"
+assert_status 0 'the npm-lock fixture without --fail-on exits clean despite its critical findings' \
+  env SCOURSH_SCA_ADVISORIES_DB="$DB" bash "$ROOT/scan.sh" sca --path "$FIXTURES/npm-lock" --out "$GATE_NONE_RUNDIR"
+GATE_NONE_RUNJSON=$(cat "$GATE_NONE_RUNDIR/run.json" 2>/dev/null)
+assert_contains "$GATE_NONE_RUNJSON" '"gate": "not-evaluated"' \
+  'with --fail-on defaulting to none, the gate reports not-evaluated exactly as sast and iac runs do'
+
 t_summary 'sca' || FAILED=1
 exit "${FAILED:-0}"

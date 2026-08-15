@@ -4088,11 +4088,13 @@ test and tension 6 condition (b1) read once `state/` exists at step 7.
 WHICH packs have landed and what §6.3 still owes is in the generated block below, not in this
 paragraph: it previously undercounted step 3 and left an already-landed pack in its still-missing list,
 which is the failure the generator exists to make impossible.
-Steps 4 through 10 remain mostly unstarted, so `modules/dast/` and `modules/cloud/` remain unbuilt.
-`modules/iac/` and `modules/sca/` are exceptions - see the two paragraphs below.
-`lib/awscli.sh` is a third: a credential-less pass built it ahead of step 6, so the chokepoint exists
-while `modules/cloud/aws/live/*.sh` and everything else step 6 names are still unbuilt - see "AWS
-module: what exists ahead of step 6" in `AGENTS.md`.
+Step 4 is complete: both its IaC and its SCA halves landed, out of step order and in slices - see the
+two paragraphs below.
+Steps 5 through 10 remain mostly unstarted, so `modules/dast/` and `modules/cloud/` remain unbuilt,
+and step 5 (DAST) is now the top priority ahead of steps 6, 7 and 10.
+`lib/awscli.sh` is a further out-of-sequence exception: a credential-less pass built it ahead of step
+6, so the chokepoint exists while `modules/cloud/aws/live/*.sh` and everything else step 6 names are
+still unbuilt - see "AWS module: what exists ahead of step 6" in `AGENTS.md`.
 The remaining follow-ups (F5 and F20) are inherited by steps 4 through 10 and are still open.
 (F3, F4, F8, and F16 - including its `look` half - are closed above, and F17 closed out of order as
 part of that same credential-less pass.)
@@ -4270,9 +4272,19 @@ injection, one file at a time -> §7.4 auth/API/authz`), confirms `lib/http.sh`'
 pending, and states the client-rendered-app (SPA) limitation as a `coverage_gap` the crawler ticket
 (DAST-04) must surface in the report, not a gap this plan (or any step-5 ticket) closes with a headless
 browser.
-**No DAST-0x ticket is picked up until step 3's outstanding rule packs and step 4's SCA half are both
-complete on `dev`** - the generated block below is what says whether they are - per the plan's own
-"Status: blocked" section and this ticket's description.
+**This entry used to read "no DAST-0x ticket is picked up until step 3's outstanding rule packs and
+step 4's SCA half are both complete on `dev`"; step 4's SCA half is now complete, so that half of the
+gate is satisfied** - the generated block below reports SCA at 6 of 6 ecosystems with none
+outstanding, and it remains the live answer if this sentence is ever in doubt.
+The only item left of that gate is step 3's two outstanding rule packs, `nosql.rules` and `ldap.rules`,
+which the generated block below still lists as not landed.
+**That remaining item is a sequencing preference inherited from `docs/DESIGN.md` §13's build order, not
+a technical dependency**: no DAST ticket consumes a SAST rule pack, and DAST-01 - the tension-16 rate
+limiter with its per-run request budget and circuit breaker - touches `lib/http.sh` only.
+**Step 5 is now this project's top priority**, ahead of live cloud scanning (step 6), persistent run
+state (step 7), and SARIF plus the compliance report (step 10).
+`docs/STEP5-DAST-PLAN.md`, not this entry, is the authority for what is and is not still in front of
+DAST-01.
 
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01
 has not.**
@@ -4319,13 +4331,15 @@ practice as well as in plan. Steps 6, 7, 9, and 10 remain un-landed and are not 
 The plan breaks §13 step 6's scope (`regions.sh` iteration -> the §8.1 live read-only catalog -> the
 read-only-verb CI lint -> `posture/` checks) into tickets CLOUD-01 through CLOUD-34 plus POSTURE-01
 through POSTURE-04, confirms `tests/lint-aws-readonly.sh` (tension 23's read-only lint) already shipped
-at step 1 as a no-op stub over an empty set and removes its matching logic from the "still to write"
-list - only `lib/awscli.sh` itself, the exception-file seeding, and a negative-fixture test remain
-(CLOUD-03) - and states that the one landed IaC ticket (`modules/iac/`, on `origin/dev`) is §8.2/step 4
-work, out of this plan's scope. **No CLOUD-0x or POSTURE-0x ticket is picked up until step 3's
+at step 1 as a no-op stub over an empty set of call sites and removes its matching logic from the
+"still to write" list - `lib/awscli.sh` has since landed too, so what is left of CLOUD-03 is seeding
+`tests/aws-readonly-allow.txt`, adding a negative-fixture test, and re-verifying the lint's checks
+against the first real `aws_ro` call sites once the live scripts start landing - and states that the
+landed IaC work (`modules/iac/`) is §8.2/step 4 work, out of this plan's scope. **No CLOUD-0x or
+POSTURE-0x ticket is picked up until step 3's
 outstanding rule packs, step 4 (SCA + IaC), and step 5 (DAST) are all complete on `dev`** - step 6 is
-gated on the whole sequential chain ahead of it, not step 4 alone, per the plan's own "Status: blocked"
-section and this ticket's description.
+gated on the whole sequential chain ahead of it, not step 4 alone, per that plan's own status section
+and this ticket's description.
 
 **PARANOID-01 has landed: `lib/paranoid.sh` now implements `--paranoid` for real.**
 Full detail lives in tension 20's own "Implementation" paragraph above, since that is where this

@@ -95,6 +95,21 @@ source "${BASH_SOURCE[0]%/*}/php_engine.sh"
 # same self-documenting reason as php_engine.sh above.
 # shellcheck source=modules/sca/go_engine.sh
 source "${BASH_SOURCE[0]%/*}/go_engine.sh"
+# The SAST engine is sourced for exactly ONE function, sast_evaluate_gate,
+# called at the end of _sca_run_module below - none of its pattern-rule
+# machinery is used or wanted here, since SCA is a table lookup rather than a
+# rule engine.  This is a relative source across module directories, the same
+# shape modules/iac/parse.sh already uses to reach the same file, and it is
+# what makes the gate REACHABLE: modules/sast/run.sh sources that engine as
+# its own sibling and modules/iac/run.sh gets it transitively through
+# parse.sh, but this module had no path to it at all, so adding the call
+# below without this line fails a standalone `scan.sh sca` run outright -
+# measured, `sast_evaluate_gate: command not found`, status 127.
+# engine.sh carries the standard sourced-once guard, so a combined
+# `scan.sh all` run that dispatches sast before sca in the same shell sources
+# it once and re-uses it here.
+# shellcheck source=modules/sast/engine.sh
+source "${BASH_SOURCE[0]%/*}/../sast/engine.sh"
 
 # _sca_npm_run - npm/yarn/pnpm, RubyGems (Gemfile.lock) AND, as of the
 # PHP/Composer ticket, composer.lock: all three live inside the single
@@ -111,8 +126,7 @@ _sca_npm_run() {
 # AFTER _sca_npm_run below - sca_scan_python_tree's own header comment
 # documents relying on sca_scan_tree (npm+Ruby+PHP) having already,
 # unconditionally, recorded the module-level coverage_reduction facts
-# (db-absent, single_worker, gate-not-wired) so this pass does not duplicate
-# them.
+# (db-absent, single_worker) so this pass does not duplicate them.
 _sca_py_run() {
   local path=${_SCAN_RESOLVED_PATH:-.}
   sca_scan_python_tree "$path"
@@ -157,6 +171,23 @@ _sca_run_module() {
 
   findings_merge "$SCOURSH_RUN_DIR"
   derive_findings "$SCOURSH_RUN_DIR"
+  # sast_evaluate_gate (modules/sast/engine.sh, sourced at the top of this
+  # file) is called here rather than reimplemented as an "sca_evaluate_gate":
+  # nothing in its body is SAST-specific despite the prefix - it re-reads
+  # $rundir/findings.fields, which by this point holds THIS run's merged and
+  # derived findings whatever module produced them, and applies the
+  # severity/confidence/suppression/fail-on-new filter chain with no module
+  # test anywhere in it.  modules/iac/run.sh reached the same conclusion for
+  # the same reason; a third copy of that filter chain would be one more place
+  # for `--fail-on` to drift per module, which is exactly how this module came
+  # to exit 0 on critical findings in the first place.  Position matters: it
+  # must run AFTER derive_findings, so composites and statuses are settled
+  # before the gate reads them, and BEFORE report_all, so run.json records the
+  # real gate result instead of lib/report.sh's "not-evaluated" default.  It
+  # sets scan_main's own `gate` local through the sourced-not-subprocess
+  # dynamic-scoping contract scan.sh's header documents, which is what turns a
+  # tripped gate into SCOURSH_EXIT_GATE.
+  sast_evaluate_gate "$SCOURSH_RUN_DIR"
   report_all "$SCOURSH_RUN_DIR"
 }
 

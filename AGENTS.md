@@ -122,8 +122,9 @@ Take either side of the conflict and re-run `tools/gen-status.sh --write`: both 
 output, neither is more authoritative than a fresh generation, and hand-merging two generated tables is
 exactly how a wrong count gets committed with a straight face.
 
-**Current position: §13 steps 1 and 2 are done, and steps 3 and 4 are both under way, with step 4
-landing out of step order and in slices.**
+**Current position: §13 steps 1, 2 and 4 are done - step 4 landed out of step order and in slices -
+step 3 is still short of its full §6.3 rule-pack catalog, and step 5 (DAST) is now the top priority
+ahead of steps 6, 7 and 10.**
 Which rule packs, SCA ecosystems and IaC packs have landed, and what remains of each, is in the
 generated block below - read it there rather than restating it here.
 The design notes the inventory cannot carry stay hand-written:
@@ -310,28 +311,45 @@ container/orchestration catalog and §8.2's CloudFormation checks - and the gene
 both against what is on disk.  §6.6's Helm bullet means Helm **values and chart sources**; the
 **rendered**-chart case is a distinct sub-scope that no pack claims.
 
-**Step 5 (DAST) now has a written, dependency-ordered sub-ticket plan, but is not started.**
+**Step 5 (DAST) is now the TOP priority - ahead of live cloud scanning (step 6), persistent run state
+(step 7), and SARIF plus the compliance report (step 10) - and it has a written, dependency-ordered
+sub-ticket plan, but is not started.**
 `docs/STEP5-DAST-PLAN.md` breaks the ~30-script step 5 scope into tickets DAST-01 through DAST-30,
 ordered per `docs/DESIGN.md` §13's own `lib/http.sh -> auth.sh -> crawl.sh -> passive -> safe-active ->
 injection -> §7.4` sequence, and states plainly that `lib/http.sh`'s scope-gate chokepoint (tension 19)
 already shipped (see below) and is not re-planned - only the still-unbuilt tension-16 rate
 limiter/budget/breaker piece (DAST-01) and everything under `modules/dast/` remain.
-**No DAST-0x ticket is picked up until step 3's outstanding rule packs and step 4's SCA half are both
-complete on `dev`** (the generated block above is what says whether they are) - this plan is a written
-breakdown for later, not permission to start now.
-Step 4's IaC half is a separate sub-scope and does not lift this gate, which names SCA specifically.
-**Crewban-22 (a local, authorized DAST test target) has landed while this block still holds.**
+That plan, not this paragraph, is the authority for the sub-ticket sequence and for what each ticket
+depends on.
+**This block used to read "no DAST-0x ticket is picked up until step 3's outstanding rule packs and
+step 4's SCA half are both complete on `dev`"; step 4's SCA half is now complete, so that half of the
+gate is satisfied** - the generated block above reports SCA at 6 of 6 ecosystems with none outstanding,
+and it remains the live answer if this sentence is ever in doubt.
+The only item left of that gate is step 3's two outstanding rule packs, `nosql.rules` and `ldap.rules`,
+which the generated block above still lists as not landed.
+**That remaining item is a SEQUENCING preference inherited from `docs/DESIGN.md` §13's build order, not
+a technical dependency.**
+No DAST ticket consumes a SAST rule pack, and DAST-01 - the tension-16 rate limiter with its per-run
+request budget and circuit breaker - touches `lib/http.sh` only, on top of `lib/core.sh`'s mkdir-mutex
+and scratch-dir primitives that shipped at step 1, so it can begin immediately.
+**One ordering constraint inside step 5 is genuine and is not a preference: DAST-01 must land before
+anything issues real HTTP traffic.**
+Until the limiter and the budget are hooked into `http_request`, `--jobs` multiplies the request rate
+against a live endpoint with no throttle at all - tension 16's own per-process-state failure, the same
+one that leaves the breaker unable to trip - which is why DAST-01 heads the plan's tier 0, and that
+tier blocks all of tiers 1 to 5.
+**Crewban-22 (a local, authorized DAST test target) has already landed, ahead of DAST-01.**
 `tools/dast-test-target.sh` and `tools/dast-test-identities.sh` start a pinned, self-hosted OWASP Juice
 Shop container and provision two distinct throwaway identities in it, authorized by
 `tools/dast-test-target/scope.conf` and `docs/DAST-TEST-TARGET-AUTHORIZATION.md`'s written record, with
 `tests/e2e/dast-target-smoke.sh` as an opt-in (Docker- and network-requiring, so not in
 `tests/run-tests.sh`'s default list) end-to-end proof that the target is reachable, that `lib/http.sh`'s
 scope gate really does refuse everything else, and that the two identities' basket-IDOR case is real.
-This does not lift the block above - target *acquisition* was the blocker this ticket closed, not step
-3/4 completion - but it means DAST-01 onward has something to build and test against the moment the gate
-does lift, and does not need to plan or authorize a target of its own. See
-`docs/STEP5-DAST-PLAN.md`'s own section on this for the two conventions worth knowing before building
-against it.
+Target *acquisition* was the blocker that ticket closed, not step 3 or step 4 completion - but it means
+DAST-01 onward already has something to build and test against, and does not need to plan or authorize
+a target of its own.
+See `docs/STEP5-DAST-PLAN.md`'s own section on this for the two conventions worth knowing before
+building against it.
 
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01 has
 not.**

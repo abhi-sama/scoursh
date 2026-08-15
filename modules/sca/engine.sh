@@ -1182,14 +1182,6 @@ sca_scan_tree() {
   # note; this run is single-worker, honestly declared rather than silently
   # claimed as parallel.
   run_record coverage_reduction 'module=sca reason=single_worker_no_parallel_scan_yet'
-  # `scan.sh sca --fail-on`/`--fail-on-new` do not yet gate the exit code:
-  # modules/sast/engine.sh's own sast_evaluate_gate is SAST-specific code,
-  # not a shared lib/findings.sh function, so there is nothing generic for
-  # this module to call yet - declared here rather than silently left
-  # looking gated (SCOURSH_GATE_RESULT stays lib/report.sh's own
-  # "not-evaluated" default). Follow-up ticket filed for a shared gate
-  # function once a second module needs the identical logic.
-  run_record coverage_reduction 'module=sca reason=gate_evaluation_not_yet_wired'
 }
 
 # ---------------------------------------------------------------------------
@@ -1668,12 +1660,12 @@ _sca_py_emit_finding() {
 # - there being no exact version to check at all is itself "unresolved",
 # landing in the same roll-up bucket an unmatched pinned version falls into.
 #
-# Deliberately does NOT run the data/advisories.db-absent check nor the two
-# module-level coverage_reduction facts (single_worker_no_parallel_scan_yet,
-# gate_evaluation_not_yet_wired) that section 9's sca_scan_tree records:
+# Deliberately does NOT run the data/advisories.db-absent check nor the
+# module-level single_worker_no_parallel_scan_yet coverage_reduction fact that
+# section 9's sca_scan_tree records:
 # modules/sca/run.sh's _sca_run_module always runs _sca_npm_run (and so
 # sca_scan_tree) before _sca_py_run, and sca_scan_tree's own db-absent check
-# and its two trailing facts are UNCONDITIONAL there regardless of whether
+# and its trailing fact are UNCONDITIONAL there regardless of whether
 # any npm lockfile actually exists in the tree - so they are already recorded
 # exactly once for the whole module by the time this function would
 # otherwise duplicate them.  Stated, not hidden: calling
@@ -2063,13 +2055,13 @@ _sca_parse_build_gradle() {
 # each is still individually correct (never per-package, always the true
 # per-ecosystem total), just not cross-ecosystem-merged.
 #
-# Deliberately does NOT run the data/advisories.db-absent check nor the two
-# module-level coverage_reduction facts (single_worker_no_parallel_scan_yet,
-# gate_evaluation_not_yet_wired) that section 9's sca_scan_tree records - the
+# Deliberately does NOT run the data/advisories.db-absent check nor the
+# module-level single_worker_no_parallel_scan_yet coverage_reduction fact that
+# section 9's sca_scan_tree records - the
 # same reasoning sca_scan_python_tree's own header states: modules/sca/run.sh's
 # _sca_run_module always runs _sca_npm_run (and so sca_scan_tree) before
-# _sca_java_run, and sca_scan_tree's own db-absent check and its two trailing
-# facts are UNCONDITIONAL there regardless of whether any npm lockfile
+# _sca_java_run, and sca_scan_tree's own db-absent check and its trailing
+# fact are UNCONDITIONAL there regardless of whether any npm lockfile
 # actually exists in the tree - so they are already recorded exactly once for
 # the whole module by the time this function would otherwise duplicate them.
 # Stated, not hidden: calling sca_scan_java_tree ALONE with a missing db (as

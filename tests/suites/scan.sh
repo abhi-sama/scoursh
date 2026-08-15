@@ -355,5 +355,34 @@ assert_file_exists "$W/real-run/run.json" 'run.json was written by the real scri
 assert_contains "$(cat "$W/real-run/run.json")" '"gate": "not-evaluated"' \
   'run.json honestly reports that no gate has been evaluated yet (no findings pipeline exists yet)'
 
+# `all` is the ONLY command that dispatches more than one module into a single
+# process, so it is the only one that can catch a module library whose state
+# does not survive the FIRST `scan_dispatch` return.  This case must run as a
+# real subprocess for the same reason the three above it do, and for one more:
+# every consumer of `modules/sast/engine.sh` is reached through `scan_dispatch`,
+# which is a FUNCTION that `source`s its module - so a unit test that calls
+# `sast_index_checks` directly passes under both the broken and the fixed
+# reading, and pins nothing.  Only the second consumer in one process fails.
+t_case 'scan.sh all dispatches every module in one process and each one still contributes findings'
+rm -rf "$W/run-all" "$W/all-tree"
+mkdir -p "$W/all-tree"
+# One canonical fixture file per module rather than the whole
+# tests/fixtures/vuln tree: this case has to prove BOTH modules really ran, and
+# the smallest tree that does so keeps it at a couple of seconds instead of the
+# ~50s the full tree costs.  They are copies of the shared fixture files, not
+# new inline content, so a rule change that retires either one is visible here.
+cp "$ROOT/tests/fixtures/vuln/go_exec_concat.go" \
+  "$ROOT/tests/fixtures/vuln/tf_open_cidr.tf" "$W/all-tree/"
+assert_status 0 './scan.sh all --path DIR --out DIR exits 0 end to end' \
+  _bin_run all --path "$W/all-tree" --out "$W/run-all"
+assert_not_contains "$(cat "$W/bin.out")" 'unbound variable' \
+  'no module library lost its state when the previous module''s scan_dispatch returned - fails under "a file-scope declare -A in a library sourced from inside scan_dispatch is a global", which makes the SECOND consumer index checks into an undeclared name and evaluate its check-id subscript as arithmetic'
+assert_file_exists "$W/run-all/run.json" 'run.json was written by the real script'
+_all_findings=$(cat "$W/run-all/findings.jsonl")
+assert_contains "$_all_findings" '"module":"sast"' \
+  'the sast module contributed a finding'
+assert_contains "$_all_findings" '"module":"iac"' \
+  'the iac module contributed a finding TOO - fails under "all aborted after the first module", which leaves a report that silently omits every later module while run.json still declares the run complete'
+
 t_summary 'scan' || FAILED=1
 exit "${FAILED:-0}"
