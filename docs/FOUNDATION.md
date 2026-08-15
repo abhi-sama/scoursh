@@ -3977,8 +3977,9 @@ Eight decisions here reach beyond their own tension and are collected so they ar
    (tension 11 step 7).
 8. **The suite runs on both GNU and BSD userlands** (tension 24) and asserts byte-identical findings,
    which is the check that keeps most of the resolutions above honest.
-   `tools/daily-suite.sh` is what runs it, on a daily local schedule; there is no hosted CI and no
-   pull-request status check (`docs/CI-RUNBOOK.md`).
+   `tools/daily-suite.sh` is what runs it, on a daily local schedule; the hosted-CI workflow is
+   dormant until the repository is public, so there is no pull-request status check today
+   (`docs/CI-RUNBOOK.md`).
 
 ---
 

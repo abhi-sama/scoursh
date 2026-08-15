@@ -1357,7 +1357,7 @@ edit to `SUITES=(...)` in `tests/run-tests.sh` itself (`docs/CI-RUNBOOK.md` chec
 doc has no way of tracking automatically. Run `tests/run-tests.sh --list` to see what actually exists;
 do not hand-maintain a duplicate enumeration here or trust one written before your current checkout.
 
-See `docs/CI-RUNBOOK.md` for how the suite is actually run now that there is no hosted CI: the daily local runner, how to install and remove its schedule, how to read a result, the GNU/BSD dual-userland rationale, and the checklist for adding a new suite or linter.
+See `docs/CI-RUNBOOK.md` for how the suite is actually run while the hosted workflow is dormant: the daily local runner, how to install and remove its schedule, how to read a result, the GNU/BSD dual-userland rationale, and the checklist for adding a new suite or linter.
 
 `package.json` at the repository root exists **only** so the conventional `pnpm test` / `npm test`
 entry point runs the real suite above.
@@ -1399,18 +1399,22 @@ What the suite covers now, per `docs/DESIGN.md` §12 and the resolutions above:
 Still to come with their steps: SARIF schema validation (step 10), the read-only lint over a non-empty
 `aws/live/` (step 6), and a no-egress run under `--paranoid` (step 8).
 Byte-identical findings between GNU and BSD userlands is checked by `tools/daily-suite.sh`, not by
-CI - see "There is no hosted CI" below.
+CI - see "The hosted workflow is dormant, and a PR carries no automatic pass/fail" below.
 
-## There is no hosted CI, and a PR carries no automatic pass/fail
+## The hosted workflow is dormant, and a PR carries no automatic pass/fail
 
-**GitHub Actions is switched off for this repository. `.github/` does not exist.**
-Do not add a workflow, do not assume a check will run on a push, and do not read a green-looking PR as
-a tested one: there is no status check of any kind on a commit or a pull request, so a PR that breaks
-every suite looks exactly like one that breaks nothing.
+**`.github/workflows/ci.yml` exists, but hosted GitHub Actions cannot start a run on this account at
+all right now - a billing condition, not a workflow defect - so it produces no status check today.**
+It is kept, not deleted: the maintainer intends to make this repository public, which is what lifts that
+condition, and at that point the workflow starts running for real with nothing to reconstruct.
+Until then, do not assume a check will run on a push, and do not read a green-looking PR as a tested
+one: there is no status check of any kind on a commit or a pull request, so a PR that breaks every
+suite looks exactly like one that breaks nothing.
 Anyone merging is the check - run `tests/run-tests.sh` against the merge result, or confirm a
 `tools/daily-suite.sh` run *newer than the change* passed.
+See `docs/CI-RUNBOOK.md` for the full account, including what changes once the repository is public.
 
-What replaced it is `tools/daily-suite.sh`, a local runner on a `launchd` daily schedule.
+What actually runs today is `tools/daily-suite.sh`, a local runner on a `launchd` daily schedule.
 `docs/CI-RUNBOOK.md` is the authority for how it is installed, what it records, and how to read a
 result; three things are worth knowing before touching it:
 

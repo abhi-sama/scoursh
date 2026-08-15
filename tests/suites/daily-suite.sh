@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # tests/suites/daily-suite.sh - tools/daily-suite.sh, the local once-daily suite
-# runner that replaced this project's hosted CI (docs/CI-RUNBOOK.md).
+# runner that is this project's real fast path while the hosted workflow
+# (.github/workflows/ci.yml) stays dormant (docs/CI-RUNBOOK.md).
 #
-# WHAT THIS SUITE IS FOR.  With GitHub Actions switched off there is no red tick
-# on a pull request any more, so two properties of the runner carry the whole
-# weight that CI used to:
+# WHAT THIS SUITE IS FOR.  With hosted Actions unable to start a run there is no
+# red tick on a pull request today, so two properties of the local runner carry
+# the whole weight that CI used to:
 #
 #   1. It refuses to produce a result at all unless the userland it measured is
 #      genuinely BSD.  On this class of machine an interactive PATH resolves

@@ -52,8 +52,10 @@ exhaustively.*
 - **Deterministic output** - the same scan produces byte-identical findings whether it runs on
   Linux with GNU coreutils or macOS with a BSD userland. That equivalence is checked by
   `tools/daily-suite.sh`, which runs the whole suite on both userlands and diffs their findings
-  byte for byte; it runs on the maintainer's own machine on a daily schedule rather than in hosted
-  CI, so it does **not** gate a pull request ([`docs/CI-RUNBOOK.md`](docs/CI-RUNBOOK.md)).
+  byte for byte; it runs on the maintainer's own machine on a daily schedule, and today it is the
+  only thing that actually runs - the GitHub Actions workflow is dormant until the repository is
+  public, so no PR currently gets an automatic pass/fail either way
+  ([`docs/CI-RUNBOOK.md`](docs/CI-RUNBOOK.md)).
   Fingerprints survive reindentation and unrelated edits, so a diff or baseline never reports a
   false "fixed" or a false "new."
 - **A detector for egress, on Linux *and* macOS** - `--paranoid` watches the process's own outbound
@@ -519,9 +521,10 @@ suggest).
   architectural decision, with its resolution.
 - [`rules/RULE-FORMAT.md`](rules/RULE-FORMAT.md) - the frozen on-disk rule record format.
 - [`docs/ADAPTERS.md`](docs/ADAPTERS.md) - the convention for optional third-party engine adapters.
-- [`docs/CI-RUNBOOK.md`](docs/CI-RUNBOOK.md) - how this project's tests are actually run: there is
-  no hosted CI and no pull-request status check, so this is where the daily local suite run, its
-  schedule, and how to read its result are documented.
+- [`docs/CI-RUNBOOK.md`](docs/CI-RUNBOOK.md) - how this project's tests are actually run: the
+  GitHub Actions workflow is dormant until the repository is public, so there is no pull-request
+  status check today - this is where the daily local suite run, its schedule, and how to read its
+  result are documented, alongside what changes once the workflow goes live.
 - [`CLAUDE.md`](CLAUDE.md) - the contributor/agent guide: architecture, sharp edges, and build
   order.
 

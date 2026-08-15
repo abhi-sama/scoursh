@@ -1,32 +1,47 @@
 # Runbook: how this project's tests are actually run
 
-Audience: engineers contributing to scoursh (PR authors), and whoever administers the machine the suite runs on.
+Audience: engineers contributing to scoursh (PR authors), and whoever administers the machine the local suite runs on.
 
-## There is no hosted CI, and no pull-request check
+## Two paths, and which one actually runs right now
 
-**GitHub Actions is switched off for this repository.**
-`.github/workflows/ci.yml` is deleted; there is no workflow, no self-hosted runner, and no status check of any kind attached to a commit or a pull request.
+There are two ways this project's suite gets run: a local daily runner on the maintainer's own machine, and a GitHub Actions workflow (`.github/workflows/ci.yml`) that is committed to the repository but does not currently execute.
 
-Read that literally, because it changes what merging means:
+- **`tools/daily-suite.sh` is the maintainer's real path, and it runs today.**
+  It is described in full below: the BSD-userland assertion, the GNU leg via a container, the byte-for-byte cross-userland diff, and how to install its daily schedule.
+- **`.github/workflows/ci.yml` exists for contributors and forks, and is dormant until the repository is public.**
+  Hosted Actions currently cannot start a run on this repository at all (see "Why" below) - a self-hosted runner does not help either, there is simply no machine assigned. The workflow is kept in the repository rather than deleted so that publishing scoursh is a one-step act: a fork or an external contributor's PR gets a real check the moment Actions can run, with nothing to reconstruct from history. Until then it is inert - pushing or opening a PR produces no check of any kind, on GitHub or anywhere else.
+
+Read that literally, because it changes what merging means **today**, regardless of which path this file describes:
 
 - **A pull request carries no automatic pass/fail.**
-  There is no red tick, no green tick, and no "checks pending".
-  A PR that breaks every suite in the repository looks, on GitHub, exactly like one that breaks nothing.
-- **Nothing runs when you push.**
-  The only thing that runs the suite is the daily local run described below, and whatever you run yourself.
+  There is no red tick, no green tick, and no "checks pending" - the workflow file exists, but nothing schedules a run against it. A PR that breaks every suite in the repository looks, on GitHub, exactly like one that breaks nothing.
+- **Nothing runs when you push**, except the daily local run described below, and whatever you run yourself.
 - **Anyone merging is the check.**
   Before merging, either run `tests/run-tests.sh` against the merge result yourself, or confirm that a daily run *newer than the change* passed.
   An older green result says nothing about the commit in front of you - see "Reading a result" for why the runner reports staleness rather than letting an old PASS stand in for a current one.
 
 That is a real loss of a real control, stated here rather than papered over.
-What replaced it covers the *repository over time*; it does not cover *this pull request before it lands*.
+The local runner covers the *repository over time*; it does not cover *this pull request before it lands* - and the workflow does not either, while it cannot start.
 
 ### Why
 
 GitHub Actions stopped assigning machines to this repository on 2026-08-02: every run since then failed within seconds with no machine allocated and zero steps recorded, reproduced identically on a second private repository.
-That is an account-level compute-billing condition, not a fault in any workflow file.
-A self-hosted runner was registered as a way around that, and then abandoned: the operator's decision is that this repository runs no GitHub Actions at all, hosted or self-hosted, and the runner is being deregistered.
-If a runner is still listed under Settings > Actions > Runners, removing it is the remaining cleanup - it has nothing to run.
+That is an account-level compute-billing condition on *private* repositories, not a fault in any workflow file - a self-hosted runner was registered as a way around it and then deregistered, since it had nothing to run against either; a self-hosted runner still needs Actions itself to dispatch a job to it.
+
+Making the repository public removes that condition: hosted Actions is free for public repositories, and does not draw on the same private-repository minutes quota that is currently exhausted.
+That is the plan - the maintainer intends to make this repository public, and at that point `.github/workflows/ci.yml` starts running for real, giving forks and contributors, who do not have the maintainer's own machine, a real check with nothing to set up.
+The workflow's trigger was also part of why this account's Actions minutes were exhausted before that: it used to fire on both `push: ['**']` and `pull_request`, so every push to a branch with an open PR ran the whole matrix twice.
+It is now `push: [main]` plus `pull_request`, so a push to a branch with an open PR runs the matrix once, not twice, and a push to a branch with no PR runs it only if that branch is `main`.
+
+Two things decided rather than inherited once Actions can run again:
+
+- **The daily local runner stays.**
+  It is not redundant with a public-repository Actions run: it is the only thing that keeps working if Actions billing changes again, and it is what caught the missing BSD-userland assertion in the first place (see below) - a guarantee the retired hosted-CI matrix never checked for.
+- **Branch protection is still not enabled, and can't be yet.**
+  Both the classic branch-protection API and the rulesets API return `403 "Upgrade to GitHub Pro or make this repository public to enable this feature."` on a Free-plan private repository.
+  Admin permission and token scope were both confirmed and are not the problem.
+  Making the repository public removes that blocker too, at which point turning the workflow's job names into required status checks is the natural next step.
+  Until then, "changes land via PR only" is process discipline, not a server-side gate.
 
 ## What runs instead
 
@@ -193,24 +208,22 @@ None of these is a scoursh *runtime* dependency; they are what running its test 
 
 `SCOURSH_BASH` overrides bash selection and is **authoritative**: if it points at something below 4.2 the run fails rather than quietly picking a different interpreter, because a result produced by an interpreter nobody asked for is not the result that was asked for.
 
-## Switching back to hosted CI, if billing is restored
+## When the repository goes public
 
-Nothing in the repository has to change for the daily runner to keep working alongside a hosted pipeline - it has no GitHub dependency at all.
-Restoring hosted CI is a matter of adding a workflow back, and the shape of the one that was deleted is worth knowing before writing a new one:
+`.github/workflows/ci.yml` needs no rewriting to be ready for that: it is already the shape a public repository's CI should be.
 
 1. A matrix `suite` job over `ubuntu-latest` (GNU) and `macos-latest` (BSD), each installing a bash >= 4.2 and `shellcheck`, then running `tests/run-tests.sh` and uploading the suite log plus a normalised `findings.jsonl`.
-2. A `compare` job that downloads both legs' normalised findings and `diff -u`s them - the same assertion `tools/daily-suite.sh` now makes locally.
+2. A `compare` job that downloads both legs' normalised findings and `diff -u`s them - the same assertion `tools/daily-suite.sh` already makes locally, today.
 3. The check names GitHub displays are the jobs' `name:` fields, not the workflow name; read them off a real run before configuring them as required status checks.
 
-Two things to decide at that point rather than inherit:
+What actually changes at that point:
 
-- **Whether the daily local run stays.**
-  It is not redundant: it is the only thing that would keep running if Actions stopped again, and it is what caught that the retired pipeline had no equivalent of the BSD-userland assertion.
-- **Branch protection.**
-  It has never been enabled on this repository, and not for want of trying: both the classic branch-protection API and the rulesets API return `403 "Upgrade to GitHub Pro or make this repository public to enable this feature."` on a Free-plan private repository.
-  Admin permission and token scope were both confirmed and are not the problem.
-  Unblocking it needs a paid plan (or a GitHub Team org), or making the repository public - a product decision, not an infrastructure one.
-  Until then, "changes land via PR only" is process discipline, not a server-side gate.
+1. **Hosted Actions starts assigning machines again** (public repositories are free), so `pull_request` and pushes to `main` start producing real checks - no further workflow edit is needed, since the trigger fix above is already in place.
+2. **Branch protection becomes available**, per the 403 described above. Turning the `suite` and `compare` job names into required status checks is the natural next step once a few real runs exist to read the check names off.
+3. **This runbook's "no automatic pass/fail" warning stops being universally true.**
+   It becomes true only for pushes to non-default branches with no open PR, same as any other repository's Actions setup - reword the top of this file at that point rather than leave it describing a dormant workflow.
+
+Nothing about the daily local runner changes when this happens: it keeps running, alongside hosted Actions, as the maintainer's own fast path and as the only check that keeps working if Actions billing changes again.
 
 ## Checklist: adding a new suite or linter
 

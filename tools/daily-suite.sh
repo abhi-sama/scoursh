@@ -10,11 +10,13 @@
 #
 # WHY THIS EXISTS.  scoursh used to run `tests/run-tests.sh` on GitHub Actions,
 # on an ubuntu-latest (GNU) leg and a macos-latest (BSD) leg, and diff the two
-# legs' findings byte-for-byte.  GitHub Actions has been switched off for this
-# repository entirely, so there is no hosted CI and there is no pull-request
-# status check any more.  This script is the replacement, and the difference
-# that matters is that NOTHING ELSE WILL TELL YOU when it fails: there is no red
-# tick on a PR.  Every design decision below follows from that.
+# legs' findings byte-for-byte.  Hosted Actions cannot start a run on this
+# account right now (an account-level billing condition, not a workflow
+# defect - see docs/CI-RUNBOOK.md), so .github/workflows/ci.yml is dormant and
+# there is no pull-request status check today.  This script is the fast path
+# that actually runs, and the difference that matters is that NOTHING ELSE
+# WILL TELL YOU when it fails: there is no red tick on a PR.  Every design
+# decision below follows from that.
 #
 #   * The result is durable and dated.  A daily check whose output scrolls past
 #     in a terminal nobody was watching is not a check.
