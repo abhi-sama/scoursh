@@ -6,6 +6,32 @@
 #
 # Values are DATA and are never expanded or executed: `$HOME` here is five
 # literal bytes (docs/FOUNDATION.md tension 26).
+#
+# THE NETWORK KEYS BELOW ARE CLAMPED FOR A RUNNING-ENDPOINT (DAST) SCAN.
+# `requests-per-second`, `request-budget`, `circuit-breaker-failures` and
+# `circuit-breaker-window` are resolved as usual and then held to a
+# conservative module limit inside lib/http.sh, at the same chokepoint the
+# scope gate lives at, because the host this tool is pointed at is one it
+# cannot vet (docs/STEP5-DAST-PLAN.md, "Safety defaults and authorisation").
+# The effective DAST values are 4 requests/second and a per-run budget of
+# 5000, so the `request-budget: 20000` below is the schema default for the run
+# as a whole and is NOT what a DAST scan will actually spend: a DAST scan is
+# clamped to 5000 whatever this line says.  That clamp is SILENT, because the
+# value it clamps is the one an operator who never edited this file already
+# has; a network run states the numbers it will actually keep on one
+# informational line, and warns only about a value someone deliberately raised
+# above a limit.  The rate and breaker numbers below already equal their
+# limits, so they are never clamped as shipped.
+#
+# `circuit-breaker-window` is bounded at BOTH ends: shorter than 60 seconds is
+# raised to 60 (a shorter window counts fewer failures towards the same
+# threshold, which is the weaker breaker), and anything longer than 86400 is
+# lowered to a day, which for any real run is the same thing as a window that
+# never expires.
+#
+# The limits are not removable here: there is no config key, environment
+# variable, or flag that switches the budget or the breaker off, and no
+# schema-valid value of any of these four keys can disable either of them.
 
 id: scanner
 requests-per-second: 4

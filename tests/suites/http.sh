@@ -489,4 +489,711 @@ http_gate_url 'https://evil.example/x' >/dev/null || true
 assert_eq '' "$(cat "$TRANSPORT_LOG")" \
   'http_gate_url alone never reaches the transport in either the allow or deny case - only http_request does, and only after a successful gate check'
 
+# ===========================================================================
+# docs/FOUNDATION.md tension 16: the rate limiter, the per-run request budget
+# and the circuit breaker, all enforced at the http_request chokepoint.
+# ===========================================================================
+# These cases MEASURE behaviour - wall-clock elapsed time, exit status, and
+# whether the stub transport was reached - rather than reading the limiter's
+# own counters back.  A limiter asserted against its internal state passes
+# just as happily when it never sleeps, which is the specific defect
+# docs/FOUNDATION.md tension 24 / finding F14 already cost this repository
+# once (`read -t </dev/null` returns at EOF instantly and does not sleep).
+#
+# The cross-process cases are the ones that pin tension 16 itself.  Each runs
+# a FRESH bash process, exactly what `xargs -P "$JOBS"` produces, so any
+# state the limiter, budget or breaker kept in a shell variable is invisible
+# to it: `--jobs 8` would then admit 8x the request rate, an 8x budget, and a
+# breaker that never trips because each worker only ever sees its own share
+# of the failures.  Every cross-process case below names that reading as the
+# one it fails under, and each was confirmed to fail before the state files
+# existed (see this ticket's evidence).
+printf '\n-- tension 16: the shared rate limiter (measured, not asserted) --\n'
+
+LIMIT_DIR=$SCOURSH_SCRATCH/http-limits
+_limits_reset() { rm -rf "${LIMIT_DIR:?}"; }
+
+_now_ms() {
+  local ns
+  ns=$(now_epoch_ns)
+  printf '%s' $(( ns / 1000000 ))
+}
+
+# A floor, never a ceiling: an upper bound on elapsed time would be a race
+# against machine load, and the defect being pinned (no delay at all, or a
+# per-process bucket that N workers each get a private copy of) always shows
+# up as elapsed time that is too SMALL.
+assert_at_least_ms() {
+  local floor=$1 got=$2 msg=$3
+  if (( got >= floor )); then
+    _t_ok "$msg (measured ${got}ms, floor ${floor}ms)"
+  else
+    _t_no "$msg" "expected at least: [${floor}ms]" "measured: [${got}ms]"
+  fi
+}
+
+# still-good.fixture.example is in scope under target fixture-good and, unlike
+# good.fixture.example, the stub transport answers it 200 with no redirect, so
+# every request below costs exactly one token.
+RATE_URL='https://still-good.fixture.example/ok'
+
+_limits_reset
+: >"$TRANSPORT_LOG"
+T0=$(_now_ms)
+for _i in 1 2 3 4 5; do http_request GET "$RATE_URL" >/dev/null; done
+T1=$(_now_ms)
+assert_at_least_ms 950 $(( T1 - T0 )) \
+  'the limiter genuinely DELAYS: 5 requests at the default 4/s take at least (5-1)/4 = 1.0s of wall clock - FAILS if http_request has no limiter at all, and FAILS under a limiter that computes a wait and never actually sleeps (finding F14 shows an exit-status probe cannot tell those apart, so this is measured)'
+assert_eq 5 "$(wc -l <"$TRANSPORT_LOG" | tr -d ' ')" \
+  'and all five requests really were issued - the elapsed time above is a throttle, not five refusals'
+
+_limits_reset
+: >"$TRANSPORT_LOG"
+export SCOURSH_CONFIG_REQUESTS_PER_SECOND=100
+T0=$(_now_ms)
+for _i in 1 2 3 4 5; do http_request GET "$RATE_URL" >/dev/null; done
+T1=$(_now_ms)
+unset SCOURSH_CONFIG_REQUESTS_PER_SECOND
+assert_at_least_ms 950 $(( T1 - T0 )) \
+  'a requests-per-second of 100 is clamped to the conservative ceiling of 4/s before the limiter ever sees it, so the same 5 requests still take 1.0s - FAILS if the limiter reads the operator value straight out of config (100/s would finish in ~40ms), which is the ceiling docs/STEP5-DAST-PLAN.md puts at the chokepoint rather than in a module'
+
+printf '\n-- tension 16: the per-run request budget --\n'
+
+# The budget ceiling is the one conservative default that diverges from the
+# frozen rules/RULE-FORMAT.md §9.6.1 schema default (20000), so it is checked
+# directly: proving it end to end would cost 5000 real requests.
+_HTTP_EFF_LIMIT=MISSING
+_http_effective_limit_set request-budget 2>/dev/null
+assert_eq 5000 "$_HTTP_EFF_LIMIT" \
+  'the effective per-run budget is the conservative 5000, not the §9.6.1 schema default of 20000 - FAILS if the budget reads config_scanner_value without the module ceiling applied'
+
+export SCOURSH_CONFIG_REQUEST_BUDGET=100000
+_HTTP_EFF_LIMIT=MISSING
+_http_effective_limit_set request-budget 2>/dev/null
+unset SCOURSH_CONFIG_REQUEST_BUDGET
+assert_eq 5000 "$_HTTP_EFF_LIMIT" \
+  'raising the configured budget far above the ceiling does not raise the effective one - the budget is a tunable that can only be lowered without an affirmation, and is never an off switch (docs/STEP5-DAST-PLAN.md: "the number is raisable; the existence of a finite budget is not")'
+
+_limits_reset
+: >"$TRANSPORT_LOG"
+rm -rf "${W:?}/run.budget"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$W/run.budget"
+export SCOURSH_CONFIG_REQUEST_BUDGET=3
+rc=0
+budget_err=$( ( for _i in 1 2 3 4; do http_request GET "$RATE_URL" >/dev/null; done ) 2>&1 >/dev/null ) || rc=$?
+assert_eq 5 "$rc" \
+  'the run stops at the budget ceiling with exit 5 (docs/FOUNDATION.md tension 14: "per-run request budget exhausted" is an incomplete run) - FAILS if the budget is absent, in which case all four requests succeed and the run exits 0'
+assert_eq 3 "$(wc -l <"$TRANSPORT_LOG" | tr -d ' ')" \
+  'exactly the budgeted three requests reached the transport; the fourth was stopped before the network, not after it'
+assert_contains "$budget_err" 'budget' \
+  'the run says WHY it stopped rather than silently returning fewer results'
+assert_contains "$(cat "$SCOURSH_RUN_DIR/meta/incomplete_reason" 2>/dev/null || printf '')" 'budget' \
+  'and it is recorded durably as the run incomplete_reason, so a report consumer can tell a budget-truncated run from a clean one - FAILS if the budget just returns early instead of dying through die 5'
+unset SCOURSH_CONFIG_REQUEST_BUDGET
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+
+printf '\n-- tension 16: the circuit breaker --\n'
+
+# Status is chosen by PATH so a single transport stub can serve both the
+# failing and the succeeding request in one interleaved sequence.
+_test_transport_by_path() {
+  printf '%s %s\n' "$1" "$3" >>"$TRANSPORT_LOG"
+  case $5 in
+    /fail) printf '503\n\n' ;;
+    *) printf '200\n\n' ;;
+  esac
+}
+
+_limits_reset
+: >"$TRANSPORT_LOG"
+SCOURSH_HTTP_TRANSPORT=_test_transport_by_path
+# Lowering the threshold is a tunable in the SAFE direction (a more sensitive
+# breaker), which is why the ceiling clamps only upwards.  It keeps this case
+# to four requests instead of nineteen.
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=3
+rc=0
+http_request GET 'https://still-good.fixture.example/fail' >/dev/null || rc=$?
+assert_eq 0 "$rc" 'one 5xx is recorded, not fatal'
+rc=0
+http_request GET 'https://still-good.fixture.example/fail' >/dev/null || rc=$?
+assert_eq 0 "$rc" 'two 5xx responses, still below the configured threshold of 3, do not abort the run'
+rc=0
+http_request GET 'https://still-good.fixture.example/ok' >/dev/null || rc=$?
+assert_eq 0 "$rc" 'a successful request interleaved between the failures is served normally'
+rc=0
+( http_request GET 'https://still-good.fixture.example/fail' >/dev/null ) || rc=$?
+assert_eq 5 "$rc" \
+  'the THIRD failure inside the window trips the breaker and exits 5, even though a success was interleaved before it - FAILS under a consecutive-failures reading, where the interleaved success resets the counter and this request is only failure number one. docs/FOUNDATION.md tension 16 freezes a ROLLING WINDOW ("the rolling window counters"), and docs/STEP5-DAST-PLAN.md states it as "10 failures in a 60s window"'
+
+TRANSPORT_BEFORE=$(cat "$TRANSPORT_LOG")
+rc=0
+( http_request GET 'https://still-good.fixture.example/ok' >/dev/null ) || rc=$?
+assert_eq 5 "$rc" \
+  'once the breaker is open every later request in the run exits 5, including one that would have succeeded - tension 16 makes the abort flag a fan-out signal every worker checks BEFORE every request, not a per-caller return value'
+assert_eq "$TRANSPORT_BEFORE" "$(cat "$TRANSPORT_LOG")" \
+  'and that request never reached the transport - the breaker stops traffic, it does not merely report it'
+unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
+SCOURSH_HTTP_TRANSPORT=_test_transport
+
+printf '\n-- tension 16: the state is SHARED ACROSS PROCESSES, not per-worker --\n'
+
+# A fresh bash process per worker, which is what `xargs -P` gives: it inherits
+# SCOURSH_SCRATCH (and nothing else that matters) through the environment, so
+# file-backed state is shared and variable-backed state is not.  It never
+# creates or erases a scratch directory of its own, because scratch_init
+# returns early when it inherits one and SCOURSH_SCRATCH_OWNER is deliberately
+# not exported (docs/FOUNDATION.md tension 4 rule 5, finding F13).
+cat >"$W/limit-worker.sh" <<'WORKER_EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+W_ROOT=$1 W_SCOPE=$2 W_URL=$3 W_COUNT=$4 W_LOG=$5
+# shellcheck source=/dev/null
+source "$W_ROOT/lib/http.sh"
+_w_resolve() {
+  case $1 in
+    *.fixture.example) printf '93.184.216.34' ;;
+    *) return 1 ;;
+  esac
+}
+SCOURSH_HTTP_RESOLVE=_w_resolve
+_w_transport() {
+  printf '%s %s\n' "$1" "$3" >>"$W_LOG"
+  case $5 in
+    /fail) printf '503\n\n' ;;
+    *) printf '200\n\n' ;;
+  esac
+}
+SCOURSH_HTTP_TRANSPORT=_w_transport
+http_scope_load "$W_SCOPE"
+for (( w_i = 0; w_i < W_COUNT; w_i++ )); do
+  http_request GET "$W_URL" 0 fixture-good >/dev/null
+done
+WORKER_EOF
+
+_limits_reset
+: >"$W/wA.log"
+: >"$W/wB.log"
+T0=$(_now_ms)
+bash "$W/limit-worker.sh" "$ROOT" "$FIXTURE_SCOPE" "$RATE_URL" 5 "$W/wA.log" &
+PA=$!
+bash "$W/limit-worker.sh" "$ROOT" "$FIXTURE_SCOPE" "$RATE_URL" 5 "$W/wB.log" &
+PB=$!
+rcA=0; wait "$PA" || rcA=$?
+rcB=0; wait "$PB" || rcB=$?
+T1=$(_now_ms)
+assert_eq 0 "$rcA" 'the first concurrent worker process completed its requests'
+assert_eq 0 "$rcB" 'the second concurrent worker process completed its requests'
+assert_eq 10 "$(cat "$W/wA.log" "$W/wB.log" | wc -l | tr -d ' ')" \
+  'ten requests were issued in total, five from each of two independent processes'
+assert_at_least_ms 2000 $(( T1 - T0 )) \
+  'TWO CONCURRENT PROCESSES SHARE ONE BUCKET: 10 requests through one 4/s bucket take at least (10-1)/4 = 2.25s no matter how many workers issue them - FAILS under per-process limiter state, where each worker runs its own 5-request 4/s bucket in parallel and the pair finishes in about 1.0s. This is the assertion tension 16 exists for: with a shell-variable bucket, --jobs 8 means 8x the request rate against a live target'
+
+_limits_reset
+: >"$W/wA.log"
+: >"$W/wB.log"
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=3
+rcA=0
+bash "$W/limit-worker.sh" "$ROOT" "$FIXTURE_SCOPE" 'https://still-good.fixture.example/fail' 2 "$W/wA.log" || rcA=$?
+assert_eq 0 "$rcA" 'the first worker process records two failures, below the threshold, and exits cleanly'
+rcB=0
+bash "$W/limit-worker.sh" "$ROOT" "$FIXTURE_SCOPE" 'https://still-good.fixture.example/fail' 1 "$W/wB.log" || rcB=$?
+assert_eq 5 "$rcB" \
+  'a SECOND, INDEPENDENT process issuing the third failure trips the breaker and exits 5 - FAILS under per-process breaker state, where this process starts its count at zero, sees one failure, and never trips. That is tension 16 exactly: "eight workers each below threshold keep hammering a target that is comprehensively down"'
+unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
+
+_limits_reset
+: >"$W/wA.log"
+: >"$W/wB.log"
+export SCOURSH_CONFIG_REQUEST_BUDGET=3
+rcA=0
+bash "$W/limit-worker.sh" "$ROOT" "$FIXTURE_SCOPE" "$RATE_URL" 2 "$W/wA.log" || rcA=$?
+assert_eq 0 "$rcA" 'the first worker process spends two of the three budgeted requests and exits cleanly'
+rcB=0
+bash "$W/limit-worker.sh" "$ROOT" "$FIXTURE_SCOPE" "$RATE_URL" 2 "$W/wB.log" || rcB=$?
+assert_eq 5 "$rcB" \
+  'a SECOND, INDEPENDENT process draws down the SAME budget and exits 5 on the fourth request of the run - FAILS under per-process budget state, where each worker gets its own budget of 3 and both exit 0, which is tension 16'"'"'s "the per-run request budget is multiplied by 8"'
+assert_eq 1 "$(wc -l <"$W/wB.log" | tr -d ' ')" \
+  'and the second process issued exactly the one request the budget had left before being stopped'
+unset SCOURSH_CONFIG_REQUEST_BUDGET
+
+_limits_reset
+
+# ===========================================================================
+# The adversarial-review round on the tension-16 controls.
+#
+# Every case below reproduces a defect that the section above did NOT catch,
+# and each was watched failing against the code as it stood before the fix
+# beside it landed.  They are grouped here rather than merged into the
+# sections above so the "what did the first round miss" answer stays legible.
+# ===========================================================================
+
+printf '\n-- an absurd circuit-breaker-window cannot switch the breaker off --\n'
+
+# The window was clamped UP only (a floor of 60, because a SHORTER window is a
+# weaker breaker), with no upper bound at all, so a schema-valid value wider
+# than a 64-bit integer reached `cutoff=$(( now - window ))`.  Bash wraps the
+# oversized literal, the cutoff lands in the FUTURE, every stored failure
+# stamp prunes as out-of-window on every call, the count never reaches the
+# threshold, and the breaker never opens - the one input the length-safe
+# comparison was built for and the only one of the four it did not cover.
+_limits_reset
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_WINDOW=10000000000000000000
+_HTTP_EFF_LIMIT=MISSING
+_http_effective_limit_set circuit-breaker-window 2>/dev/null
+unset SCOURSH_CONFIG_CIRCUIT_BREAKER_WINDOW
+assert_eq 86400 "$_HTTP_EFF_LIMIT" \
+  'the breaker window is bounded from ABOVE as well as below: 60 is a floor, 86400 (a day) is the maximum, and any value beyond that is indistinguishable from a window that never expires - FAILS under an upper bound of "none", which is what let a config value reach the cutoff arithmetic unbounded'
+
+_limits_reset
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_WINDOW=5
+_HTTP_EFF_LIMIT=MISSING
+_http_effective_limit_set circuit-breaker-window 2>/dev/null
+unset SCOURSH_CONFIG_CIRCUIT_BREAKER_WINDOW
+assert_eq 60 "$_HTTP_EFF_LIMIT" \
+  'and adding that maximum did not disturb the floor: a window shorter than 60s is still raised to 60s, because a shorter window counts fewer failures towards the same threshold and is the weaker breaker'
+
+_limits_reset
+: >"$TRANSPORT_LOG"
+SCOURSH_HTTP_TRANSPORT=_test_transport_by_path
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=2
+# 10^19, above the signed-64-bit maximum of 9223372036854775807, and valid
+# against rules/RULE-FORMAT.md 9.6.1's `^(0|[1-9][0-9]*)$` shape for this key.
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_WINDOW=10000000000000000000
+rc=0
+( http_request GET 'https://still-good.fixture.example/fail' >/dev/null ) || rc=$?
+assert_eq 0 "$rc" 'the first failure under an absurd window is recorded, not fatal'
+rc=0
+( http_request GET 'https://still-good.fixture.example/fail' >/dev/null ) || rc=$?
+assert_eq 5 "$rc" \
+  'a circuit-breaker-window ABOVE the 64-bit range still trips the breaker at the configured threshold - FAILS while the window is clamped upwards only, where the oversized literal wraps, the rolling-window cutoff lands in the future, every stored failure stamp is pruned on every call, and one schema-valid config value silently disables the breaker entirely'
+unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES SCOURSH_CONFIG_CIRCUIT_BREAKER_WINDOW
+SCOURSH_HTTP_TRANSPORT=_test_transport
+
+printf '\n-- exit 5 and run.json can never disagree about a truncated run --\n'
+
+# The consumer surface is run.json, not the meta record.  On budget exhaustion
+# the run died with exit 5 without ever reaching the report writers, so in a
+# combined scan the run directory kept the run.json an EARLIER module had
+# already written: an empty incomplete_reason and a computed gate verdict, on
+# a run the exit code calls truncated.  docs/FOUNDATION.md tension 14 makes a
+# non-empty incomplete_reason exactly the exit-5 predicate, so the two must
+# never be able to disagree.
+cat >"$W/truncated-run.sh" <<'TRUNC_EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+T_ROOT=$1 T_RUNDIR=$2 T_SCOPE=$3
+# shellcheck source=/dev/null
+source "$T_ROOT/lib/report.sh"
+# shellcheck source=/dev/null
+source "$T_ROOT/lib/http.sh"
+_t_resolve() { case $1 in *.fixture.example) printf '93.184.216.34' ;; *) return 1 ;; esac; }
+SCOURSH_HTTP_RESOLVE=_t_resolve
+_t_transport() { printf '200\n\n'; }
+SCOURSH_HTTP_TRANSPORT=_t_transport
+http_scope_load "$T_SCOPE"
+run_init "$T_RUNDIR"
+# An earlier module of a combined scan finished and wrote the reports, exactly
+# as modules/sast/run.sh, modules/sca/run.sh and modules/iac/run.sh each do.
+report_all "$SCOURSH_RUN_DIR"
+# A later module then runs out of request budget partway through.
+for _t_i in 1 2 3 4 5; do
+  http_request GET 'https://still-good.fixture.example/ok' 0 fixture-good >/dev/null
+done
+TRUNC_EOF
+
+rm -rf "${W:?}/run.truncated"
+rc=0
+env -u SCOURSH_SCRATCH SCOURSH_CONFIG_REQUEST_BUDGET=3 \
+  bash "$W/truncated-run.sh" "$ROOT" "$W/run.truncated" "$FIXTURE_SCOPE" >/dev/null 2>&1 || rc=$?
+assert_eq 5 "$rc" 'the budget-truncated run really does exit 5'
+assert_file_exists "$W/run.truncated/run.json" \
+  'the run directory still carries the run.json an earlier module wrote'
+trunc_json=$(cat "$W/run.truncated/run.json" 2>/dev/null || printf '')
+assert_not_contains "$trunc_json" '"incomplete_reason": [],' \
+  'WHENEVER the exit code is 5, run.json - the consumer surface, not the internal meta record - carries a non-empty incomplete_reason - FAILS while the abort exits the process without re-running the report writers, which leaves the previous module report_all in place claiming a complete run while the exit code says truncated (docs/FOUNDATION.md tension 14: run.json always records every condition that held)'
+assert_contains "$trunc_json" 'budget' \
+  'and run.json names the budget as the reason, so a report consumer can tell a truncated run from a clean one without reading the exit code out of band'
+assert_contains "$(cat "$W/run.truncated/report.md" 2>/dev/null || printf '')" 'incomplete run' \
+  'the markdown report the earlier module wrote is refreshed too, so the human-readable surface does not keep claiming a complete run either'
+assert_contains "$(cat "$W/run.truncated/report.html" 2>/dev/null || printf '')" 'incomplete run' \
+  'and so is the HTML one'
+
+printf '\n-- K CONCURRENT worker processes race on one budget and one breaker --\n'
+
+# The cross-process cases above run their two workers SEQUENTIALLY, so they
+# prove the state is file-backed but can never observe a lost update: a
+# refuter deleted BOTH mutex acquire/release pairs from lib/http.sh in a
+# scratch copy and the whole suite still passed.  These cases race K workers
+# on the same counters through a start barrier, so an unguarded
+# read-modify-write really does lose updates, and each names that reading.
+# Releases every worker at ONE wall-clock instant, and is the whole reason
+# these cases can see a lost update at all.
+#
+# Process startup (sourcing lib/) costs far longer than an unguarded
+# read-modify-write window is wide, so workers left to start on their own
+# stagger themselves into an accidental serialisation and an unguarded counter
+# still looks correct.  A `while [[ ! -e $go ]]; do msleep 20; done` barrier is
+# not enough either: each poll forks a sleep, so the workers wake up spread
+# over tens of milliseconds, which is still an eternity next to that window.
+# Measured with that barrier alone, removing the mutex was caught in only 4
+# runs out of 6.
+#
+# So the release is a DEADLINE rather than a flag: the parent writes an
+# absolute epoch-millisecond time into the go file, every worker sleeps until
+# 40ms before it and then spins on the clock, and they cross the line together.
+# The spin is bounded by those 40ms, reads $EPOCHREALTIME directly so it costs
+# no fork, and is skipped entirely on a shell that does not have it.
+cat >"$W/race-barrier.sh" <<'BARRIER_EOF'
+# shellcheck shell=bash
+_race_barrier() {
+  local ready=$1 go=$2 at='' now spins=0 us
+  : >"$ready/$BASHPID"
+  while :; do
+    if [[ -s $go ]]; then
+      IFS= read -r at <"$go" || at=''
+      [[ $at =~ ^[0-9]+$ ]] && break
+    fi
+    msleep 20
+    spins=$(( spins + 1 ))
+    (( spins < 1500 )) || return 1
+  done
+  now=$(now_epoch_ns)
+  now=$(( now / 1000000 ))
+  if (( at - 40 > now )); then msleep $(( at - 40 - now )); fi
+  if [[ -n ${EPOCHREALTIME:-} && $EPOCHREALTIME =~ ^[0-9]+\.[0-9]+$ ]]; then
+    while :; do
+      us=${EPOCHREALTIME%.*}${EPOCHREALTIME#*.}
+      (( 10#$us / 1000 >= at )) && break
+    done
+  fi
+  return 0
+}
+BARRIER_EOF
+
+cat >"$W/race-worker.sh" <<'RACE_EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+W_ROOT=$1 W_SCOPE=$2 W_URL=$3 W_COUNT=$4 W_LOG=$5 W_READY=$6 W_GO=$7
+# shellcheck source=/dev/null
+source "$W_ROOT/lib/http.sh"
+# shellcheck source=/dev/null
+source "${BASH_SOURCE[0]%/*}/race-barrier.sh"
+_w_resolve() {
+  case $1 in
+    *.fixture.example) printf '93.184.216.34' ;;
+    *) return 1 ;;
+  esac
+}
+SCOURSH_HTTP_RESOLVE=_w_resolve
+_w_transport() {
+  printf '%s %s\n' "$1" "$3" >>"$W_LOG"
+  case $5 in
+    /fail) printf '503\n\n' ;;
+    *) printf '200\n\n' ;;
+  esac
+}
+SCOURSH_HTTP_TRANSPORT=_w_transport
+http_scope_load "$W_SCOPE"
+_race_barrier "$W_READY" "$W_GO"
+for (( w_i = 0; w_i < W_COUNT; w_i++ )); do
+  http_request GET "$W_URL" 0 fixture-good >/dev/null
+done
+RACE_EOF
+
+# A worker that already has its failing response in hand and is recording it,
+# which is the only part of a request that touches the breaker counter.  It
+# takes the same mutex through the same function a real 5xx does, and skipping
+# the transport is deliberate: the rate limiter would otherwise space these
+# calls 250ms apart, and a race whose participants are handed to the shared
+# counter one at a time is not a race.
+cat >"$W/brk-worker.sh" <<'BRK_EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+W_ROOT=$1 W_TH=$2 W_READY=$3 W_GO=$4
+# shellcheck source=/dev/null
+source "$W_ROOT/lib/http.sh"
+# shellcheck source=/dev/null
+source "${BASH_SOURCE[0]%/*}/race-barrier.sh"
+_race_barrier "$W_READY" "$W_GO"
+_http_breaker_record_failure fixture-good "$W_TH" 60
+BRK_EOF
+
+RACE_K=12
+# The worker count for the breaker counter race.  It is not bounded by the
+# conservative failure-threshold ceiling of 10, because these workers pass the
+# threshold to `_http_breaker_record_failure` directly rather than resolving it
+# from config, so the threshold can sit ABOVE the worker count.
+BRK_K=16
+BRK_TH=$(( BRK_K + 1 ))
+
+_race_ready_count() {
+  local -a f=("$W"/ready/*)
+  local n=0 p
+  for p in "${f[@]}"; do
+    [[ -e $p ]] || continue
+    n=$(( n + 1 ))
+  done
+  printf '%s' "$n"
+}
+
+# `_race_release K` - wait for K workers to report ready, then set the deadline.
+_race_release() {
+  local k=$1 spins=0 t
+  while (( $(_race_ready_count) < k )); do
+    msleep 20
+    spins=$(( spins + 1 ))
+    (( spins < 1500 )) || break
+  done
+  t=$(now_epoch_ns)
+  printf '%s\n' $(( t / 1000000 + 400 )) >"$W/go"
+}
+
+_race_reset() {
+  rm -rf "${W:?}/ready"
+  mkdir -p "$W/ready"
+  rm -f "${W:?}/go"
+}
+
+# `_race_run URL PER_WORKER` - K workers, all released at once, all waited on.
+_race_run() {
+  local url=$1 per=$2 k pid
+  local -a pids=()
+  _race_reset
+  rm -f "${W:?}"/race-*.log
+  for (( k = 0; k < RACE_K; k++ )); do
+    bash "$W/race-worker.sh" "$ROOT" "$FIXTURE_SCOPE" "$url" "$per" \
+      "$W/race-$k.log" "$W/ready" "$W/go" &
+    pids+=($!)
+  done
+  _race_release "$RACE_K"
+  for pid in "${pids[@]}"; do
+    wait "$pid" || true
+  done
+}
+
+_race_total() {
+  local -a f=("$W"/race-*.log)
+  local n=0 p line
+  for p in "${f[@]}"; do
+    [[ -e $p ]] || continue
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      n=$(( n + 1 ))
+    done <"$p"
+  done
+  printf '%s' "$n"
+}
+
+_limits_reset
+export SCOURSH_CONFIG_REQUEST_BUDGET=7
+_race_run "$RATE_URL" 3
+unset SCOURSH_CONFIG_REQUEST_BUDGET
+assert_eq 7 "$(_race_total)" \
+  "$RACE_K CONCURRENT worker processes released together against a per-run budget of 7 send EXACTLY 7 requests, out of the 36 they are between them trying to send - FAILS with the budget counter's mutex removed, where every worker reads the same remaining count in the same instant, every one of them writes the same decrement, and the run spends one unit of budget for each worker that raced instead of one for each request"
+
+# The breaker counter is raced with a threshold ABOVE the worker count, and the
+# assertion is on WHETHER THE BREAKER OPENS rather than on how much traffic it
+# let through.
+#
+# That is deliberate, and the traffic form was tried first and rejected on
+# measurement.  Asserting "exactly the threshold reached the transport" is
+# two-sided under an unguarded counter: lost updates send too many, but
+# concurrent whole-line rewrites of the state file can also make one worker
+# read a count that opens the breaker EARLY, so the broken run lands on the
+# right number by coincidence.  Measured, that coincidence happened in 2 runs
+# out of 8 - a test that certifies the defect green a quarter of the time pins
+# nothing.  Recording exactly threshold-minus-one failures and then asking
+# whether the next one opens the breaker is one-sided instead: a lost update
+# can only leave the count SHORT, and a short count cannot open it.
+_limits_reset
+_race_reset
+brk_pids=()
+for (( brk_k = 0; brk_k < BRK_K; brk_k++ )); do
+  bash "$W/brk-worker.sh" "$ROOT" "$BRK_TH" "$W/ready" "$W/go" &
+  brk_pids+=($!)
+done
+_race_release "$BRK_K"
+brk_ok=0
+for brk_pid in "${brk_pids[@]}"; do
+  brk_rc=0
+  wait "$brk_pid" || brk_rc=$?
+  if (( brk_rc == 0 )); then brk_ok=$(( brk_ok + 1 )); fi
+done
+assert_eq "$BRK_K" "$brk_ok" \
+  "all $BRK_K concurrent workers record their failure and none of them opens a breaker whose threshold is $BRK_TH"
+brk_rc=0
+( _http_breaker_record_failure fixture-good "$BRK_TH" 60 ) >/dev/null 2>&1 || brk_rc=$?
+assert_eq 5 "$brk_rc" \
+  "the very next failure is the ${BRK_TH}th and opens the breaker, which is only true if all $BRK_K concurrent workers' failures were actually counted - FAILS with the breaker counter's mutex removed, where their read-modify-writes overwrite each other, the rolling count is short by however many raced, and the breaker never opens: tension 16's \"eight workers each below threshold keep hammering a target that is comprehensively down\""
+: >"$TRANSPORT_LOG"
+brk_rc=0
+( http_request GET 'https://still-good.fixture.example/ok' >/dev/null ) || brk_rc=$?
+assert_eq 5 "$brk_rc" \
+  'and the run really is stopped afterwards: the next request to that target is refused'
+assert_eq '' "$(cat "$TRANSPORT_LOG")" \
+  'without reaching the transport'
+
+printf '\n-- a worker already queued for a token stops when the breaker opens --\n'
+
+# The abort flag was checked BEFORE the throttle wait and never again, so
+# every worker already parked for a token when the breaker opened still sent
+# its request: threshold plus workers-minus-one requests to a target that is
+# comprehensively down, not threshold.  The asymmetry is the evidence it was
+# an oversight - the BUDGET check sits inside the retry loop and is
+# re-evaluated after every sleep, so the budget is exact.
+cat >"$W/open-breaker.sh" <<'OPEN_EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+O_ROOT=$1
+# shellcheck source=/dev/null
+source "$O_ROOT/lib/http.sh"
+# A second worker that already has its failing response in hand and is
+# recording it.  Threshold 1, so this failure opens the breaker and writes the
+# fan-out abort flag, exactly as any worker crossing the threshold would.
+_http_breaker_record_failure fixture-good 1 60
+OPEN_EOF
+
+_limits_reset
+: >"$W/wA.log"
+# 0.5 requests/second, so the SECOND request of the parked worker waits two
+# full seconds for its token: a wide, deterministic window to open the breaker
+# underneath it.  Lowering the rate is a tunable in the safe direction, which
+# is why the ceiling clamps it downwards only.
+export SCOURSH_CONFIG_REQUESTS_PER_SECOND=0.5
+bash "$W/limit-worker.sh" "$ROOT" "$FIXTURE_SCOPE" "$RATE_URL" 2 "$W/wA.log" &
+PARKED=$!
+msleep 700
+rcOpen=0
+bash "$W/open-breaker.sh" "$ROOT" >/dev/null 2>&1 || rcOpen=$?
+rcParked=0
+wait "$PARKED" || rcParked=$?
+unset SCOURSH_CONFIG_REQUESTS_PER_SECOND
+assert_eq 5 "$rcOpen" 'the second process opens the breaker and exits 5'
+assert_eq 1 "$(wc -l <"$W/wA.log" | tr -d ' ')" \
+  'a worker already parked in a throttle wait when the breaker opens sends NOTHING further - FAILS while the abort flag is checked only before the wait, where every worker queued for a token during the window in which the breaker opens still reaches the transport, so a comprehensively-down target receives threshold plus workers-minus-one requests instead of threshold'
+assert_eq 5 "$rcParked" \
+  'and the parked worker exits 5 rather than completing, so its truncated coverage is stated rather than silent'
+
+printf '\n-- the clamp warns only when the OPERATOR raised something --\n'
+
+# The request-budget schema default is 20000 and the DAST ceiling is 5000, so
+# the clamp warned on every single run, including one with no config file at
+# all, and blamed a value the operator never wrote.
+_limits_reset
+_http_effective_limit_set request-budget 2>"$W/clamp.log"
+assert_eq 5000 "$_HTTP_EFF_LIMIT" \
+  'the effective budget is still the conservative 5000 even when the resolved value is the schema default'
+assert_eq '' "$(cat "$W/clamp.log")" \
+  'and the clamp prints NO warning when the value it clamped is the built-in schema default, i.e. when no operator ever asked for it - FAILS while the clamp warns on any difference between resolved and effective, which fires on every run of an unconfigured install and names a config nobody wrote'
+
+_limits_reset
+export SCOURSH_CONFIG_REQUEST_BUDGET=100000
+_http_effective_limit_set request-budget 2>"$W/clamp.log"
+unset SCOURSH_CONFIG_REQUEST_BUDGET
+clamp_out=$(cat "$W/clamp.log")
+assert_eq 5000 "$_HTTP_EFF_LIMIT" 'a raised budget is still clamped to the ceiling'
+assert_contains "$clamp_out" '100000' \
+  'a budget the operator actually raised DOES warn, and names the value that was refused - FAILS if suppressing the default-value warning also suppressed the one case the warning exists for'
+
+printf '\n-- a very slow rate is not refused as if it were zero --\n'
+
+_rate_refusal() {
+  local rc=0 out
+  out=$( ( _http_effective_rps_milli_set ) 2>&1 >/dev/null ) || rc=$?
+  printf '%s\n%s' "$rc" "$out"
+}
+
+export SCOURSH_CONFIG_REQUESTS_PER_SECOND=0
+rate_msg=$(_rate_refusal)
+unset SCOURSH_CONFIG_REQUESTS_PER_SECOND
+assert_contains "$rate_msg" 'permits no requests at all' \
+  'a genuinely zero rate is still refused as permitting no requests at all'
+
+export SCOURSH_CONFIG_REQUESTS_PER_SECOND=0.0005
+rate_msg=$(_rate_refusal)
+unset SCOURSH_CONFIG_REQUESTS_PER_SECOND
+assert_not_contains "$rate_msg" 'permits no requests at all' \
+  'a POSITIVE rate below the limiter resolution is not described as permitting no requests at all - FAILS while the rate is truncated to three decimal places before the zero test, which calls a deliberately very slow rate zero and then tells the operator to send MORE traffic'
+assert_contains "$rate_msg" '0.001' \
+  'and the refusal names the precision floor and the smallest supported rate, so the operator can act on it'
+
+printf '\n-- a refusal prints ONE message, not a second crash-shaped line --\n'
+
+# `die` inside a command substitution runs in a subshell, where clearing the
+# ERR trap only clears the subshell's; the parent's trap then fires on the
+# failed assignment and prints a "command failed" diagnostic after the real
+# message.  scan.sh already carries an explicit guard and a long comment about
+# exactly this, and the limit resolutions added four more such sites per
+# request.  They SET variables now, which removes the second line and the four
+# forks together.
+cat >"$W/one-message.sh" <<'ONE_EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+M_ROOT=$1 M_SCOPE=$2
+# shellcheck source=/dev/null
+source "$M_ROOT/lib/http.sh"
+_m_resolve() { case $1 in *.fixture.example) printf '93.184.216.34' ;; *) return 1 ;; esac; }
+SCOURSH_HTTP_RESOLVE=_m_resolve
+_m_transport() { printf '200\n\n'; }
+SCOURSH_HTTP_TRANSPORT=_m_transport
+http_scope_load "$M_SCOPE"
+http_request GET 'https://still-good.fixture.example/ok' 0 fixture-good >/dev/null
+ONE_EOF
+
+one_out=$(env -u SCOURSH_SCRATCH SCOURSH_CONFIG_REQUESTS_PER_SECOND=0 \
+  bash "$W/one-message.sh" "$ROOT" "$FIXTURE_SCOPE" 2>&1 >/dev/null || printf '')
+assert_contains "$one_out" 'permits no requests at all' \
+  'an unusable rate is refused with its real message'
+assert_not_contains "$one_out" 'command failed' \
+  'and NOTHING else - a refusal prints one message, never a second crash-shaped diagnostic naming an internal assignment - FAILS while the limit resolutions are read through $(...), where the die runs in a subshell whose cleared ERR trap is not the parent one'
+
+printf '\n-- a coarse clock is stated, not silently four times slower --\n'
+
+# On a host with no sub-second clock the capacity-one bucket can only refill
+# at a second boundary, so the effective rate becomes one per second rather
+# than the configured four.  The direction is safe; the silence is not.
+cat >"$W/coarse-clock.sh" <<'CLOCK_EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+C_ROOT=$1
+# shellcheck source=/dev/null
+source "$C_ROOT/lib/http.sh"
+_http_limit_dir_set
+CLOCK_EOF
+
+clock_out=$(env -u SCOURSH_SCRATCH SCOURSH_CAPS_PROBED='' SCOURSH_CAP_CLOCK=seconds SCOURSH_CLOCK_NS=0 \
+  bash "$W/coarse-clock.sh" "$ROOT" 2>&1 >/dev/null || printf '')
+assert_contains "$clock_out" 'whole seconds' \
+  'the limiter warns once at start when the host has no sub-second clock, because the capacity-one bucket can then only refill on a second boundary and the effective rate silently drops to one per second - FAILS while the fallback is undisclosed, which leaves a four-times-slower run with no stated cause'
+
+printf '\n-- several scope targets on ONE host are disclosed, not hidden --\n'
+
+# tension 16 freezes "one bucket per scope target", so N scope targets that
+# resolve to the same address each get their own full rate and that one host
+# receives N times the configured rate.  Two hostnames behind one load
+# balancer are two natural scope entries, so this is an ordinary
+# configuration rather than an exotic one.  The keying is the register's, and
+# is kept; what changes is that the run says so, at the moment it is true,
+# rather than leaving the operator-facing risk statement silent on the unsafe
+# direction.
+_limits_reset
+: >"$TRANSPORT_LOG"
+rm -rf "${W:?}/run.sharedaddr"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$W/run.sharedaddr"
+http_request GET 'https://still-good.fixture.example/ok' 0 fixture-good >/dev/null 2>"$W/sa1.log"
+http_request GET 'https://sub.wide.fixture.example/ok' 0 fixture-wide >/dev/null 2>"$W/sa2.log"
+shared_warn=$(cat "$W/sa2.log")
+assert_contains "$shared_warn" '93.184.216.34' \
+  'when a second scope target resolves to an address a first one is already rate-limited against, the run warns and names the shared address - FAILS while per-target bucket keying is left undisclosed, where one host quietly receives N times the configured rate for N scope entries pointing at it'
+assert_contains "$shared_warn" 'fixture-wide' \
+  'and names the targets that share it, so the operator can see which entries are multiplying the rate'
+shared_gap=$(cat "$SCOURSH_RUN_DIR/meta/coverage_gap" 2>/dev/null || printf '')
+assert_contains "$shared_gap" '93.184.216.34' \
+  'and it is recorded as a run-level coverage_gap, so run.json carries the disclosure rather than only a terminal that has scrolled'
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+
+_limits_reset
+
 t_summary 'http'

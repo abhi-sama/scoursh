@@ -73,20 +73,45 @@ perturb_case() {
 
 # A flipped status word: the exact shape of the three staleness bugs this
 # replaces ("Java and PHP have landed" written over a "still open" line).
-flip_status() {
-  local file=$1 line out=$WORK/flip.md inside=0 done_once=0
+#
+# _flip_first_row writes the perturbed copy and reports whether it found a row
+# to flip, so flip_status can try either direction.  Which direction is
+# available depends on the inventory, and BOTH have to be, because the
+# inventory is allowed to be COMPLETE: the moment `nosql.rules` and
+# `ldap.rules` landed, SAST reached 10 of 10 alongside SCA's and IaC's
+# existing 6 of 6, no `| not landed |` row remained anywhere in the block, and
+# this case died on its own `die` with no input left.  Finishing the catalog
+# is not a failure, and a guard that switches itself off the moment the
+# project completes its own inventory switches off at exactly the wrong time -
+# from then on nothing would prove the staleness check still bites.
+#
+# The overcount direction (`not landed` -> `landed`) stays FIRST because it is
+# the historical bug: a status word edited by hand to claim work that had not
+# shipped.  The undercount direction is the fallback and is always available,
+# since a landed row exists whenever the block has any content at all.  Either
+# perturbation yields a block that a fresh generation disagrees with, which is
+# the only thing perturb_case asserts.
+_flip_first_row() {                 # FILE FROM TO -> 0 if a row was flipped
+  local file=$1 from=$2 to=$3 line out=$WORK/flip.md inside=0 done_once=0
   : >"$out"
   while IFS= read -r line; do
     if [[ $line == '<!-- BEGIN GENERATED STATUS -->' ]]; then inside=1; fi
     if [[ $line == '<!-- END GENERATED STATUS -->' ]]; then inside=0; fi
-    if (( inside )) && (( done_once == 0 )) && [[ $line == *'| not landed |'* ]]; then
-      line=${line/| not landed |/| landed |}
+    if (( inside )) && (( done_once == 0 )) && [[ $line == *"$from"* ]]; then
+      line=${line/"$from"/"$to"}
       done_once=1
     fi
     printf '%s\n' "$line" >>"$out"
   done <"$file"
-  (( done_once )) || die "$SCOURSH_EXIT_INPUT" "no 'not landed' row to flip in $file"
-  cat -- "$out" >"$file"
+  (( done_once ))
+}
+
+flip_status() {
+  local file=$1
+  _flip_first_row "$file" '| not landed |' '| landed |' \
+    || _flip_first_row "$file" '| landed |' '| not landed |' \
+    || die "$SCOURSH_EXIT_INPUT" "no status row to flip in $file"
+  cat -- "$WORK/flip.md" >"$file"
 }
 
 # A deleted row: the undercount failure, where a real pack silently vanishes.

@@ -351,13 +351,13 @@ shipped here before.
 | `modules/sast/rules/injection.rules` | landed | 8 | `tests/suites/sast.sh` |
 | `modules/sast/rules/java.rules` | landed | 7 | `tests/suites/sast.sh` |
 | `modules/sast/rules/javascript.rules` | landed | 7 | `tests/suites/sast.sh` |
-| `modules/sast/rules/ldap.rules` | not landed | - | - |
-| `modules/sast/rules/nosql.rules` | not landed | - | - |
+| `modules/sast/rules/ldap.rules` | landed | 3 | `tests/suites/sast.sh` |
+| `modules/sast/rules/nosql.rules` | landed | 4 | `tests/suites/sast.sh` |
 | `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/sast.sh` |
 | `modules/sast/rules/secrets.rules` | landed | 5 | `tests/suites/records.sh` |
 | `modules/sast/history.sh` | landed | - | `tests/suites/sast-history.sh` |
 
-Landed 8 of 10.  Outstanding: `ldap.rules`, `nosql.rules`.
+Landed 10 of 10.  Outstanding: none.
 
 #### SCA ecosystems - `docs/DESIGN.md` §6.5 catalog -> `modules/sca/`
 
@@ -387,7 +387,7 @@ Landed 6 of 6.  Outstanding: none.
 
 #### Totals
 
-- Pattern packs on disk: **13** (`modules/sast/rules/` 7, `modules/iac/` 6).
+- Pattern packs on disk: **15** (`modules/sast/rules/` 9, `modules/iac/` 6).
 - Module directories present: `modules/iac/`, `modules/sast/`, `modules/sca/`.
 
 <!-- END GENERATED STATUS -->

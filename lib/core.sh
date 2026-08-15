@@ -114,11 +114,64 @@ die() {
   esac
   if (( code == SCOURSH_EXIT_INCOMPLETE )); then
     run_record incomplete_reason "$*"
+    run_json_refresh_incomplete
   fi
   log_error "$*"
   # An intentional exit is not an error to be re-reported by the ERR trap.
   trap - ERR
   exit "$code"
+}
+
+# The exit-5 half of tension 14, enforced on the CONSUMER SURFACE rather than
+# only on the internal meta record.
+#
+# `die 5` terminates the process, so a run that aborts partway through never
+# reaches scan.sh's own `report_run_json`.  In a combined scan the earlier
+# modules have each already called `report_all`, so the run directory is left
+# holding a `run.json`, `report.md` and `report.html` written by the PREVIOUS
+# module - an empty `incomplete_reason` and a computed gate verdict - while the
+# on-disk meta record says the run was truncated.  The exit code and the report
+# then contradict each other, and it is the report a consumer reads.
+# Re-running the run.json writer here closes that: whenever the exit code is 5,
+# `run.json`'s `incomplete_reason` is non-empty.
+#
+# Three guards, each load-bearing:
+#
+#   * ONLY the process that created the run directory writes.  `run.json` is
+#     written with a plain `>` redirect, so N `xargs -P` workers all aborting on
+#     one open breaker would tear the file between them.  A worker's own abort
+#     is still recorded, through the meta append `die` already made, and the
+#     run-owning process folds it in when it writes.
+#   * ONCE.  The latch is set before the call, so a `die` reached from inside
+#     the writer cannot recurse into it.
+#   * In a SUBSHELL with the ERR trap cleared, so a failure inside the writer
+#     can neither replace the original exit code nor print a crash-shaped
+#     second diagnostic over the real message.
+#
+# The writers run in that order, each in its own subshell, and run.json goes
+# FIRST on purpose: it is the one the exit-5 contract is stated over, so a
+# failure inside either of the heavier human-readable writers cannot cost the
+# guarantee.  The two findings writers are deliberately NOT re-run - they merge
+# every worker's shard, which is the one part of `report_all` that is unsafe
+# while other workers may still be mid-write, and neither of them is what
+# claims the run completed.
+#
+# These writers live in lib/report.sh, which lib/core.sh deliberately does not
+# source (the dependency runs the other way).  A run that never loaded them has
+# no report to contradict, so an absent function is a no-op rather than an
+# error.
+_SCOURSH_RUN_JSON_REFRESHED=0
+run_json_refresh_incomplete() {
+  local fn
+  (( _SCOURSH_RUN_JSON_REFRESHED == 0 )) || return 0
+  [[ -n ${SCOURSH_RUN_DIR:-} && -d ${SCOURSH_RUN_DIR:-}/meta ]] || return 0
+  [[ ${_SCOURSH_RUN_OWNER:-} == "$$" ]] || return 0
+  _SCOURSH_RUN_JSON_REFRESHED=1
+  for fn in report_run_json report_md report_html; do
+    declare -F "$fn" >/dev/null 2>&1 || continue
+    ( trap - ERR; "$fn" "$SCOURSH_RUN_DIR" ) || true
+  done
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -669,6 +722,13 @@ run_init() {
   SCOURSH_RUN_DIR=$(realpath_of "$dir")
   mkdir -p "$SCOURSH_RUN_DIR"/{shards,units,meta,inventory,locations}
   export SCOURSH_RUN_DIR
+  # Who owns the run's own report files.  Deliberately NOT exported, for the
+  # same reason SCOURSH_SCRATCH_OWNER is not: an `xargs -P` worker inherits
+  # SCOURSH_RUN_DIR and appends its own facts under meta/, but must never
+  # rewrite run.json underneath the process that is still running the scan
+  # (run_json_refresh_incomplete reads this).
+  _SCOURSH_RUN_OWNER=$$
+  _SCOURSH_RUN_JSON_REFRESHED=0
   : "${SCOURSH_RUN_ID:=$(basename -- "$SCOURSH_RUN_DIR")}"
   export SCOURSH_RUN_ID
   # One timestamp per run, shared by every finding it emits.  Per-finding
@@ -707,6 +767,40 @@ run_facts() {
 worker_id_set() {
   SCOURSH_WORKER_ID="$BASHPID-${SCOURSH_UNIT_INDEX:-0}"
   export SCOURSH_WORKER_ID
+}
+
+# `core_capture VARNAME CMD [ARGS...]` - run CMD with its stdout captured into
+# VARNAME, WITHOUT ever wrapping the call in `$(...)`.
+#
+# The distinction is load-bearing rather than stylistic, and it is the same one
+# `_scan_require_readable_path` in scan.sh documents at length: `die` inside a
+# command substitution runs in a SUBSHELL, so its `trap - ERR` clears only that
+# subshell's trap and its `exit` only ends the subshell.  The parent's ERR trap
+# then fires on the failed assignment and prints a crash-shaped "command
+# failed" diagnostic on top of the real message, and in a checked context
+# (`||`, an `if` condition) the abort is swallowed entirely.  A plain output
+# redirection does not fork a subshell, so CMD runs in the CURRENT shell and a
+# `die` inside it aborts for real.
+#
+# scan.sh's own `_scan_capture` is this same helper, written before lib/core.sh
+# had one; whoever next touches scan.sh should delete it and call this.
+core_capture() {
+  local __var=$1
+  shift
+  local __tmp=$SCOURSH_SCRATCH/_core_capture.$BASHPID
+  "$@" >"$__tmp"
+  # The config accessors print with `printf '%s'` and no trailing newline, for
+  # which `read` returns 1 at EOF even though it captured the line.  Appending
+  # one restores the normal contract without masking a real failure: CMD has
+  # already run, and would have died above if it failed.
+  printf '\n' >>"$__tmp"
+  # SC2229: "$__var" is deliberately the INDIRECT target - read into the
+  # variable NAMED by __var's value, the standard idiom for this (bash 4.2 has
+  # no `local -n` nameref, per tension 24's frozen minimum).
+  # shellcheck disable=SC2229
+  IFS= read -r "$__var" <"$__tmp"
+  rm -f "$__tmp"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -775,6 +869,9 @@ core_on_signal() {
   SCOURSH_SIGNALLED=$sig
   export SCOURSH_SIGNALLED
   run_record incomplete_reason "run interrupted by SIG$sig"
+  # Same exit-5 contract as `die`: an interrupted run must not leave a report
+  # claiming it completed (see run_json_refresh_incomplete).
+  run_json_refresh_incomplete
   # Exiting runs the EXIT trap, which is what erases the scratch dir; the run
   # directory (shards and the unit journal) is untouched, which is what makes
   # tension 18's resume possible at all (finding F12).
@@ -810,17 +907,47 @@ core_install_traps() {
 
 _mutex_dir() { printf '%s/mx/%s.lock' "$SCOURSH_SCRATCH" "$1"; }
 
+# Reads a lock's owner line into _LOCK_OWNER_LINE, or leaves it empty when the
+# file cannot be read for any reason.
+#
+# ONE operation, never a `[[ -r $d/owner ]]` test followed by a separate open.
+# That pair is a check-then-open race against the lock's own holder: releasing
+# a lock removes the whole directory, so under real contention the open lands
+# after the owner file is gone and bash reports the failed redirect on the
+# run's stderr - on a path that is otherwise entirely correct, because an
+# unreadable owner file is exactly the "published lock with no owner file yet"
+# case tension 16 already decides (fall through to the mtime branch, not
+# stale).  Measured before this was fixed: eight processes taking and
+# releasing one mutex 40 times each produced 16 such diagnostics across 6
+# runs, and lib/http.sh's rate limiter - the first code here to take this
+# mutex once per request from several processes - surfaced it on its first
+# concurrent run.
+#
+# The stderr redirect is on the GROUP, not on the `read`.  Redirections are
+# applied left to right, so a trailing `2>/dev/null` is established only after
+# the input redirect has already failed and does not suppress it; the two
+# failure shapes (a redirect that cannot open, and a `read` that cannot read
+# what it opened) also report through different paths, and the group catches
+# both.
+#
+# It SETS a variable rather than printing one, so it costs no fork on the
+# mutex's hot path - the same reason worker_id_set does.
+_lock_owner_line_set() {
+  _LOCK_OWNER_LINE=''
+  { IFS= read -r _LOCK_OWNER_LINE <"$1/owner"; } 2>/dev/null || true
+  return 0
+}
+
 # The identity token of a lock instance: the owner it published, or its
 # creation time when it has not published one yet.  Two different holders of one
 # lock path can never produce the same token.
 _lock_token() {
-  local d=$1 line='' mtime
-  if [[ -r $d/owner ]]; then
-    IFS= read -r line <"$d/owner" || true
-    if [[ -n $line ]]; then
-      printf 'owner:%s' "$line"
-      return 0
-    fi
+  local d=$1 line mtime
+  _lock_owner_line_set "$d"
+  line=$_LOCK_OWNER_LINE
+  if [[ -n $line ]]; then
+    printf 'owner:%s' "$line"
+    return 0
   fi
   mtime=$(stat_mtime "$d" 2>/dev/null || printf '%s' 0)
   printf 'noowner:%s' "${mtime:-0}"
@@ -844,19 +971,22 @@ _lock_token() {
 # holder; treating it as never stale would wedge the run if a holder died inside
 # that window.
 lock_is_stale() {
-  local d=$1 now line='' pid='' ts='' mtime
+  local d=$1 now line pid='' ts='' mtime
   [[ -d $d ]] || return 1
   now=$(now_epoch)
-  if [[ -r $d/owner ]]; then
-    IFS= read -r line <"$d/owner" || true
-    if [[ -n $line ]]; then
-      pid=${line%% *}
-      ts=${line##* }
-      [[ $pid =~ ^[0-9]+$ && $ts =~ ^[0-9]+$ ]] || return 1
-      (( now - ts >= SCOURSH_LOCK_STALE_SECONDS )) || return 1
-      proc_alive "$pid" && return 1
-      return 0
-    fi
+  # One read attempt, never a readability test followed by an open: see
+  # _lock_owner_line_set.  An empty line covers "no owner file", "the holder
+  # released it while we were looking", and "it could not be read", which the
+  # mtime branch below already decides identically.
+  _lock_owner_line_set "$d"
+  line=$_LOCK_OWNER_LINE
+  if [[ -n $line ]]; then
+    pid=${line%% *}
+    ts=${line##* }
+    [[ $pid =~ ^[0-9]+$ && $ts =~ ^[0-9]+$ ]] || return 1
+    (( now - ts >= SCOURSH_LOCK_STALE_SECONDS )) || return 1
+    proc_alive "$pid" && return 1
+    return 0
   fi
   mtime=$(stat_mtime "$d" 2>/dev/null || printf '%s' '')
   [[ $mtime =~ ^[0-9]+$ ]] || return 1

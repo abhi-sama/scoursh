@@ -1,0 +1,142 @@
+# modules/sast/rules/ldap.rules - docs/DESIGN.md §6.3 "ldap.rules ... LDAP
+# filters from unescaped input" seed catalog: a search filter built by
+# concatenation or interpolation, a distinguished name built the same way, and
+# a filter value taken straight from request-derived data with nothing escaped.
+#
+# The three checks are three distinct code shapes, not one pattern wearing
+# three names - the split modules/sast/rules/javascript.rules established for
+# prototype pollution.  A filter and a distinguished name are different
+# grammars with different metacharacters (RFC 4515's `( ) * \ NUL` against RFC
+# 4514's `, + " \ < > ;`) and different escaping helpers, and a filter arriving
+# whole from the request is a third shape that no amount of escaping inside the
+# application fixes.  They share one CWE because CWE-90 covers the whole family;
+# no narrower id exists for the distinguished-name half.
+#
+# The pack covers the LDAP clients for the three languages the shipped packs
+# already cover - python-ldap, JNDI, and ldapjs.  No new language is introduced
+# here.
+#
+# Every `files` glob is written as a plain extension pattern (`*.py`), never
+# `**/*.py`.  Per rules/RULE-FORMAT.md §9.1.2 an unanchored glob already
+# matches at any depth, whereas `**/` requires at least one directory
+# component and so silently MISSES a file at the scan root - invisible in a
+# fixture tree, where every path is nested by construction.
+#
+# SAST-LDAP-FILTER_CONCAT-01's `context-deny` is a SAME-LINE-INTENT guard and
+# therefore pins `context-window: 0`, exactly as rules/RULE-FORMAT.md §10.2 and
+# docs/FOUNDATION.md finding F4 require: the escaping helper belongs to the
+# expression that builds the filter, so it is on that line by construction
+# (`filter_format("(uid=%s)", [uid])`, `"(uid=" + escapeLDAPSearchFilter(u) +
+# ")"`).  A wider window would let an unrelated escaped filter two lines away
+# suppress a genuinely unescaped one, and tension 12 would then report the
+# suppressed finding `fixed` rather than `new` - a false negative wearing a
+# fix's clothes.  The accepted cost is the opposite direction: a value escaped
+# on an EARLIER line is reported, which is a visible false positive a reviewer
+# can dismiss.
+#
+# SAST-LDAP-DN_CONCAT-01 carries no `context-deny` at all, for the reason
+# javascript.rules gives for SAST-JS-UNSAFE_MERGE-01.  Its `context-require`
+# needs a window (a distinguished name is routinely assembled into a variable
+# one or two lines above the call that consumes it), and `context-window` is a
+# single value shared by require and deny, so a deny here could only exist at
+# that same widened window - the false-negative trade §10.2 forbids.  Not
+# attempting suppression is the only F4-safe choice, and the safe equivalent is
+# a genuinely different shape: read the entry's distinguished name back from
+# the directory rather than assembling it from a supplied value.
+#
+# SAST-LDAP-UNESCAPED_FILTER_INPUT-01's `context-require` exists because
+# `.search(` alone is not an LDAP call - it is also String.prototype.search and
+# a dozen other APIs.  Widening a require window only ever admits more lines to
+# satisfy a condition that must already hold, so its worst case is an extra
+# reviewable finding (§10.2); the window matches the 15 lines
+# modules/sast/rules/go.rules already uses for the same kind of anchor.
+#
+# The boundary against modules/sast/rules/nosql.rules is the subject matter
+# itself, and is asserted in both directions in tests/suites/sast.sh: no LDAP
+# check may attach to a NoSQL fixture, and no NoSQL check to an LDAP one.  The
+# two packs are each other's likeliest collision, because both match a query
+# call taking a concatenated quoted string.  What separates them is the
+# grammar each pattern anchors on - an LDAP filter's `(attr=` opener and a
+# distinguished name's `attr=` RDN here, a Mongo operator or a parsed document
+# there.
+
+id: SAST-LDAP-FILTER_CONCAT-01
+title: LDAP search filter built by concatenating or interpolating an unescaped value
+severity: critical
+confidence: medium
+cwe: CWE-90
+owasp: A05:2025
+pattern: \(([&|!][[:space:]]*)?\(?(uid|cn|sn|mail|givenName|sAMAccountName|userPrincipalName|objectClass|member|memberOf)=[^)]*(["'][[:space:]]*\+|\$\{|\.format\(|%[[:space:]]*[A-Za-z_(])
+dialect: ere
+context-deny: (escape_filter_chars|filter_format|escapeLDAPSearchFilter|filterEncode|encodeForLDAP|ldapEscape|escapeFilter)
+context-window: 0
+files: *.js
+files: *.jsx
+files: *.ts
+files: *.tsx
+files: *.mjs
+files: *.cjs
+files: *.py
+files: *.java
+tags: static
+tags: quick
+remediation: Escape every filter metacharacter in the value on the expression that builds
+  the filter, using the library's own helper (python-ldap's filter_format or
+  escape_filter_chars, Spring's LdapEncoder.filterEncode, ESAPI's encodeForLDAP), and keep
+  the filter itself a fixed template. An unescaped parenthesis or asterisk lets the
+  supplied value close the current assertion and add one of its own, turning a lookup for
+  one account into a match for every account.
+references: CWE-90
+
+id: SAST-LDAP-DN_CONCAT-01
+title: LDAP distinguished name built by concatenating an unescaped value
+severity: high
+confidence: medium
+cwe: CWE-90
+owasp: A05:2025
+pattern: ["'][^"'()]*\b(cn|uid|ou|dc)[[:space:]]*=[^"'()]*["'][[:space:]]*\+
+dialect: ere
+context-require: \.(lookup|bind|simple_bind_s|bind_s|search|search_s|modify|modify_s|add|add_s|rename|modrdn|unbind)[[:space:]]*\(|InitialDirContext|LdapContext|SearchRequest|BindRequest|distinguishedName
+context-window: 3
+files: *.js
+files: *.jsx
+files: *.ts
+files: *.tsx
+files: *.mjs
+files: *.cjs
+files: *.py
+files: *.java
+tags: static
+remediation: Look the entry up with an escaped search and use the distinguished name the
+  directory returns, rather than assembling one from a supplied value. Where a name really
+  must be built, escape each relative-distinguished-name value with the library's own
+  helper (python-ldap's escape_dn_chars, JNDI's Rdn.escapeValue). An unescaped comma or
+  plus sign lets the supplied value add relative components of its own and move the
+  operation to a different subtree - or, on a bind, to a different identity.
+references: CWE-90
+
+id: SAST-LDAP-UNESCAPED_FILTER_INPUT-01
+title: LDAP search filter taken directly from request-derived data
+severity: high
+confidence: medium
+cwe: CWE-90
+owasp: A05:2025
+pattern: \.(search_ext_s|search_ext|search_st|search_s|searchSubtree|searchSync|search)[[:space:]]*\([^)]*(req|request)\.(body|query|params|args|form|json)
+dialect: ere
+context-require: (ldap|Ldap|LDAP|DirContext|SearchControls|SearchRequest)
+context-window: 15
+files: *.js
+files: *.jsx
+files: *.ts
+files: *.tsx
+files: *.mjs
+files: *.cjs
+files: *.py
+files: *.java
+tags: static
+remediation: Keep the filter expression in the application and let the request supply only
+  a value, escaped with the library's own helper before it is placed into that fixed
+  template. A request that supplies the whole filter can read any attribute of any entry
+  the bound account can see, and no amount of escaping applied afterwards can recover the
+  structure the caller has already chosen.
+references: CWE-90

@@ -122,9 +122,9 @@ Take either side of the conflict and re-run `tools/gen-status.sh --write`: both 
 output, neither is more authoritative than a fresh generation, and hand-merging two generated tables is
 exactly how a wrong count gets committed with a straight face.
 
-**Current position: §13 steps 1, 2 and 4 are done - step 4 landed out of step order and in slices -
-step 3 is still short of its full §6.3 rule-pack catalog, and step 5 (DAST) is now the top priority
-ahead of steps 6, 7 and 10.**
+**Current position: §13 steps 1, 2, 3 and 4 are done - step 4 landed out of step order and in slices,
+and step 3's §6.3 rule-pack catalog is complete now that `nosql.rules` and `ldap.rules` have landed -
+so step 5 (DAST) is the top priority ahead of steps 6, 7 and 10, with nothing left gating it.**
 Which rule packs, SCA ecosystems and IaC packs have landed, and what remains of each, is in the
 generated block below - read it there rather than restating it here.
 The design notes the inventory cannot carry stay hand-written:
@@ -196,13 +196,13 @@ shipped here before.
 | `modules/sast/rules/injection.rules` | landed | 8 | `tests/suites/sast.sh` |
 | `modules/sast/rules/java.rules` | landed | 7 | `tests/suites/sast.sh` |
 | `modules/sast/rules/javascript.rules` | landed | 7 | `tests/suites/sast.sh` |
-| `modules/sast/rules/ldap.rules` | not landed | - | - |
-| `modules/sast/rules/nosql.rules` | not landed | - | - |
+| `modules/sast/rules/ldap.rules` | landed | 3 | `tests/suites/sast.sh` |
+| `modules/sast/rules/nosql.rules` | landed | 4 | `tests/suites/sast.sh` |
 | `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/sast.sh` |
 | `modules/sast/rules/secrets.rules` | landed | 5 | `tests/suites/records.sh` |
 | `modules/sast/history.sh` | landed | - | `tests/suites/sast-history.sh` |
 
-Landed 8 of 10.  Outstanding: `ldap.rules`, `nosql.rules`.
+Landed 10 of 10.  Outstanding: none.
 
 #### SCA ecosystems - `docs/DESIGN.md` §6.5 catalog -> `modules/sca/`
 
@@ -232,7 +232,7 @@ Landed 6 of 6.  Outstanding: none.
 
 #### Totals
 
-- Pattern packs on disk: **13** (`modules/sast/rules/` 7, `modules/iac/` 6).
+- Pattern packs on disk: **15** (`modules/sast/rules/` 9, `modules/iac/` 6).
 - Module directories present: `modules/iac/`, `modules/sast/`, `modules/sca/`.
 
 <!-- END GENERATED STATUS -->
@@ -322,18 +322,21 @@ limiter/budget/breaker piece (DAST-01) and everything under `modules/dast/` rema
 That plan, not this paragraph, is the authority for the sub-ticket sequence and for what each ticket
 depends on.
 **This block used to read "no DAST-0x ticket is picked up until step 3's outstanding rule packs and
-step 4's SCA half are both complete on `dev`"; step 4's SCA half is now complete, so that half of the
-gate is satisfied** - the generated block above reports SCA at 6 of 6 ecosystems with none outstanding,
-and it remains the live answer if this sentence is ever in doubt.
-The only item left of that gate is step 3's two outstanding rule packs, `nosql.rules` and `ldap.rules`,
-which the generated block above still lists as not landed.
-**That remaining item is a SEQUENCING preference inherited from `docs/DESIGN.md` §13's build order, not
-a technical dependency.**
+step 4's SCA half are both complete on `dev`"; BOTH halves of that gate are now discharged, so it is
+gone rather than narrowed.**
+The generated block above reports SCA at 6 of 6 ecosystems and SAST at 10 of 10 artifacts, each with
+none outstanding, and it remains the live answer if this paragraph is ever in doubt: `nosql.rules`
+(4 checks) and `ldap.rules` (3 checks) - the last item the gate was waiting on - are landed and
+exercised by `tests/suites/sast.sh`, which reports 130 passed, 0 failed.
+**The gate is recorded here rather than deleted because its reasoning held rather than evaporated: it
+was a SEQUENCING preference inherited from `docs/DESIGN.md` §13's build order, never a technical
+dependency, and it was discharged by the work landing rather than by being argued away.**
 No DAST ticket consumes a SAST rule pack, and DAST-01 - the tension-16 rate limiter with its per-run
 request budget and circuit breaker - touches `lib/http.sh` only, on top of `lib/core.sh`'s mkdir-mutex
-and scratch-dir primitives that shipped at step 1, so it can begin immediately.
-**One ordering constraint inside step 5 is genuine and is not a preference: DAST-01 must land before
-anything issues real HTTP traffic.**
+and scratch-dir primitives that shipped at step 1, so step 5 is startable now with nothing in front of
+it.
+**One ordering constraint remains, and it is internal to step 5 rather than a gate on starting it:
+DAST-01 must land before anything issues real HTTP traffic.**
 Until the limiter and the budget are hooked into `http_request`, `--jobs` multiplies the request rate
 against a live endpoint with no throttle at all - tension 16's own per-process-state failure, the same
 one that leaves the breaker unable to trip - which is why DAST-01 heads the plan's tier 0, and that
@@ -345,6 +348,14 @@ Shop container and provision two distinct throwaway identities in it, authorized
 `tests/e2e/dast-target-smoke.sh` as an opt-in (Docker- and network-requiring, so not in
 `tests/run-tests.sh`'s default list) end-to-end proof that the target is reachable, that `lib/http.sh`'s
 scope gate really does refuse everything else, and that the two identities' basket-IDOR case is real.
+**That smoke test has now been observed passing end to end for the first time: 19 of 19 assertions, 0
+failures, against a live local Juice Shop container.**
+The target served; the scope gate admitted the authorized target and refused both a different port on
+the same host (`DTT_PORT + 1`) and an unrelated host; `http_request` exited 3 (`SCOURSH_EXIT_SCOPE`)
+against an unauthorized host; and the two provisioned identities produced a real cross-user
+broken-access-control case for DAST-29 (`authz.sh`) to assert against once it exists.
+Until that run this tooling had been reviewed as code but never watched working, which is a weaker
+grade of evidence - do not write it back down to one.
 Target *acquisition* was the blocker that ticket closed, not step 3 or step 4 completion - but it means
 DAST-01 onward already has something to build and test against, and does not need to plan or authorize
 a target of its own.
@@ -393,10 +404,10 @@ it is not re-planned as new matching logic, only the still-missing `lib/awscli.s
 against, the exception-file seeding, and the negative-fixture test are (CLOUD-03). It also records that
 the one IaC ticket already landed on `origin/dev` (`modules/iac/`, "IaC: Terraform checks via the
 pattern-rule engine") is step 4's `docs/DESIGN.md` §8.2 work, not step 6's, and is out of this plan's
-scope for that reason. **No CLOUD-0x or POSTURE-0x ticket is picked up until step 3's remaining
-rule packs, step 4 (SCA + IaC), and step 5 (DAST) are all complete on `dev`** - step 6 is
-gated on the whole sequential chain in front of it, not just step 4, and this plan is a written
-breakdown for later, not permission to start now.
+scope for that reason. **No CLOUD-0x or POSTURE-0x ticket is picked up until step 5 (DAST) is
+complete on `dev`** - step 6 is gated on the whole sequential chain in front of it, and steps 3 and 4
+were the other two links in that chain, so step 5 is now the only one left; this plan is still a
+written breakdown for later, not permission to start now.
 
 **PARANOID-01 has now landed - `lib/paranoid.sh` implements `--paranoid` for real.**
 It builds the four-set allowlist tension 20's RESOLUTION specifies (`paranoid_allowlist_build`).
@@ -423,8 +434,8 @@ this project's own test harness before the fix.
 root-requiring ticket.
 
 **Step 9 (optional engine adapters) now has a real scaffold, out of its normal sequence and ahead of
-step 3's remaining `nosql`/`ldap` packs, step 5 (DAST), and step 6 (Cloud) - it shipped no per-engine
-logic and cost nothing those blocked steps.**
+step 3's then-remaining `nosql`/`ldap` packs, step 5 (DAST), and step 6 (Cloud) - it shipped no
+per-engine logic and cost nothing those blocked steps.**
 `docs/ADAPTERS.md` is the new normative, self-contained convention document (the same role
 `rules/RULE-FORMAT.md` plays for records): it defines the `modules/<module>/adapters/<engine>/`
 directory shape and the three-function `adapter.sh` contract (`<engine>_detect`/`<engine>_run`/
@@ -691,7 +702,8 @@ populates the `SAST-HIST-*` check family - including the `history` fingerprint p
 boundary test and tension 6 condition (b1) read once `state/` exists at step 7.
 `tests/suites/sast-history.sh` (295 lines) tests it.
 `modules/sast/` now has all three files `docs/DESIGN.md` §13 step 3 names for it: `engine.sh`, `run.sh`,
-and `history.sh`; what step 3 still owes under §6.3's catalog is in the generated block above.
+and `history.sh`; step 3's §6.3 rule-pack catalog is complete as of the `nosql.rules`/`ldap.rules`
+landing, per the generated block above.
 
 **Findings still open after 3a-3d and 3e, and the step each is inherited by:**
 
@@ -796,9 +808,9 @@ in this pack's `files:` list, per `docs/DESIGN.md` §3's original combined `cont
 being deliberately split one-format-per-file.
 Which §6.6 slices have landed, and the on-disk pattern-pack count that `tests/lint-rules.sh`'s E060
 fixture-coverage note reports, are both in the generated block above.
-These packs landed ahead of step 3's remaining rule packs and ahead of step 4's own SCA half, the same
-"land what's ready, out of strict step order" pattern as `lib/http.sh` above; step 4's SCA half has its
-own paragraph below.
+These packs landed ahead of step 3's then-remaining rule packs and ahead of step 4's own SCA half, the
+same "land what's ready, out of strict step order" pattern as `lib/http.sh` above; step 4's SCA half
+has its own paragraph below.
 
 **A third piece of step 4 has now landed, in five sub-tickets: `modules/sca/` (the SCA module's npm,
 Python, Ruby, Java, and PHP slices).**
@@ -921,8 +933,8 @@ rule pack, and `state/`.
 no-ops either and `_scan_apply_profile_filter` finds a non-empty registry for IaC checks too -
 `modules/iac/` is off the "do not exist yet" list accordingly.
 `modules/sca/` also landed out of sequence - see above.
-`lib/engines.sh` also landed out of sequence, ahead of step 5/6/step-3's remaining packs - see the
-paragraph above.
+`lib/engines.sh` also landed out of sequence, ahead of step 5/6/step-3's then-remaining packs - see
+the paragraph above.
 Of the original list, `lib/awscli.sh`, SARIF, the compliance report, and `state/` are
 still unbuilt; which module directories exist is in the generated block above.
 Every `scan_dispatch` call for a module other than `sast`, `iac`, or `sca` remains a logged

@@ -288,6 +288,262 @@ done
 unset JAVA_IDS _java_vuln_found _java_clean_found _want_id _safe_id
 
 # =============================================================================
+printf -- '\n-- nosql.rules / ldap.rules: helpers for the pair-based cross-fire cases --\n'
+# =============================================================================
+# _ids_and_paths_found RUNDIR - one "check_id@loc_path" token per finding.
+# Mirrors tests/suites/iac.sh's helper of the same name, and exists for the
+# same reason: the two halves of a cross-fire (still fires on the vulnerable
+# file / never fires on someone else's file) have to be asserted over pairs
+# from ONE scan, or a narrowing that makes the pack inert satisfies the
+# "stays quiet" half while silently breaking the other.
+_ids_and_paths_found() {
+  local rundir=$1 line
+  [[ -s $rundir/findings.fields ]] || return 0
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    finding_decode "$line"
+    printf '%s@%s\n' "${_DF[check_id]}" "${_DF[loc_path]}"
+  done <"$rundir/findings.fields"
+}
+
+# _scan_multi_pack FIXTURE RUNDIR PACK... - _scan_one_pack generalised past a
+# single pack (mirrors tests/suites/iac.sh's helper of the same name), so a
+# cross-pack scan runs several packs over one tree exactly as a real
+# `scan.sh sast` run does, with every pack in the registry at once.
+_scan_multi_pack() {
+  local fixture=$1 rundir=$2
+  shift 2
+  local -a packs=("$@")
+  rm -rf "$rundir"
+  run_init "$rundir"
+  SCOURSH_RUN_ID=sast-suite
+  SCOURSH_PATH_ROOT=$(path_root_cell "$fixture")
+  SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$fixture")
+  export SCOURSH_RUN_ID SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
+  SCOURSH_SAST_MAX_MATCHES_PER_FILE=200
+  local -a sets=()
+  local -a ids=()
+  local pack setname n i
+  for pack in "${packs[@]}"; do
+    setname="pkset_${pack//[^A-Za-z0-9_]/_}"
+    sets+=("$setname")
+    records_load "$ROOT/modules/sast/rules/$pack.rules" pattern-rule "$setname" >/dev/null
+  done
+  CHECKS_REGISTRY_SETS=("${sets[@]}")
+  sast_index_checks
+  for setname in "${sets[@]}"; do
+    n=$(records_count "$setname")
+    for (( i = 0; i < n; i++ )); do ids+=("$(records_id "$setname" "$i")"); done
+  done
+  sast_scan_tree "$fixture" "${ids[@]+"${ids[@]}"}"
+  findings_merge "$rundir"
+}
+
+# The six fixture files this ticket adds to the two SHARED trees.  Named once
+# here because both directions of the cross-fire cases below iterate them: the
+# new packs must not attach to anyone else's fixture, and no existing pack may
+# attach to one of these.
+NEW_FIXTURE_BASENAMES='nosql_app.js nosql_app.py nosql_app.java ldap_app.js ldap_app.py ldap_app.java'
+# _path_is_new_fixture PATH - true when a loc_path names one of the six files
+# above.  The negative half of the cross-fire cases is expressed as "every
+# finding lands on one of this ticket's own fixtures" rather than as a deny
+# list of the fixtures that existed before, because a deny list only ever
+# covers the shapes someone remembered: the shared trees also hold YAML, JSON,
+# Terraform, Dockerfile and docker-compose fixtures, and a pack that lost its
+# `files` globs would attach to those without tripping a basename list at all.
+_path_is_new_fixture() {
+  local p=$1 f
+  for f in $NEW_FIXTURE_BASENAMES; do
+    [[ $p == "tests/fixtures/vuln/$f" || $p == "tests/fixtures/clean/$f" ]] && return 0
+  done
+  return 1
+}
+
+NOSQL_IDS='SAST-NOSQL-WHERE_JS-01 SAST-NOSQL-SERVER_JS-01 SAST-NOSQL-OPERATOR_INJECTION-01 SAST-NOSQL-QUERY_CONCAT-01'
+LDAP_IDS='SAST-LDAP-FILTER_CONCAT-01 SAST-LDAP-DN_CONCAT-01 SAST-LDAP-UNESCAPED_FILTER_INPUT-01'
+
+# =============================================================================
+printf -- '\n-- nosql.rules: true-positive AND true-negative, per rule id (this ticket) --\n'
+# =============================================================================
+# nosql.rules (docs/DESIGN.md §6.3 "nosql.rules ... NoSQL query operators built
+# from user input") follows the javascript.rules/java.rules shape: one
+# true-positive fixture per rule id under tests/fixtures/vuln, one true-negative
+# (safe equivalent) per rule id under tests/fixtures/clean, across the three
+# languages the shipped packs already cover that have a MongoDB driver
+# (JavaScript, Python, Java).  Those two directories are also the ones the
+# whole-tree gate test at the bottom of this file scans with every shipped
+# pack, so a regression here would show up there too - this section pins WHICH
+# id is responsible, which the gate test alone cannot.
+_scan_one_pack nosql "$ROOT/tests/fixtures/vuln" "$W/run-nosql-vuln"
+_nosql_vuln_found=$(_ids_found "$W/run-nosql-vuln")
+for _want_id in $NOSQL_IDS; do
+  t_case "nosql: $_want_id true-positive detection"
+  assert_contains "$_nosql_vuln_found" "$_want_id" \
+    "$_want_id fires on tests/fixtures/vuln/nosql_app.{js,py,java} - fails if the pattern, files glob, or context directive silently drops the match"
+done
+
+_scan_one_pack nosql "$ROOT/tests/fixtures/clean" "$W/run-nosql-clean"
+_nosql_clean_found=$(_ids_found "$W/run-nosql-clean")
+for _safe_id in $NOSQL_IDS; do
+  t_case "nosql: $_safe_id stays quiet on its safe equivalent"
+  assert_not_contains "$_nosql_clean_found" "$_safe_id" \
+    "$_safe_id does NOT fire anywhere under tests/fixtures/clean/ - fails if the safe rewrite (a field equality match, native aggregation operators, a coerced scalar bound into the query document, a document built by the driver rather than parsed from concatenated text) still matches the pattern, or if it fires on an UNRELATED clean fixture"
+done
+
+t_case 'nosql: the clean tree produces ZERO findings from this pack, not merely none of the four ids'
+assert_eq '' "$(_ids_found "$W/run-nosql-clean")" \
+  'the whole clean tree is silent for nosql.rules - fails if a future id in this pack is added without a clean-tree fixture, which the per-id loop above cannot see'
+
+# =============================================================================
+printf -- '\n-- ldap.rules: true-positive AND true-negative, per rule id (this ticket) --\n'
+# =============================================================================
+# ldap.rules (docs/DESIGN.md §6.3 "ldap.rules ... LDAP filters from unescaped
+# input"), same shape as nosql.rules above, across python-ldap, JNDI, and
+# ldapjs.
+_scan_one_pack ldap "$ROOT/tests/fixtures/vuln" "$W/run-ldap-vuln"
+_ldap_vuln_found=$(_ids_found "$W/run-ldap-vuln")
+for _want_id in $LDAP_IDS; do
+  t_case "ldap: $_want_id true-positive detection"
+  assert_contains "$_ldap_vuln_found" "$_want_id" \
+    "$_want_id fires on tests/fixtures/vuln/ldap_app.{js,py,java} - fails if the pattern, files glob, or context directive silently drops the match"
+done
+
+_scan_one_pack ldap "$ROOT/tests/fixtures/clean" "$W/run-ldap-clean"
+_ldap_clean_found=$(_ids_found "$W/run-ldap-clean")
+for _safe_id in $LDAP_IDS; do
+  t_case "ldap: $_safe_id stays quiet on its safe equivalent"
+  assert_not_contains "$_ldap_clean_found" "$_safe_id" \
+    "$_safe_id does NOT fire anywhere under tests/fixtures/clean/ - fails if the safe rewrite (a filter template bound through the library's own escaping helper, a distinguished name read back from the directory rather than assembled, a filter owned by the application rather than supplied by the request) still matches the pattern, or if it fires on an UNRELATED clean fixture"
+done
+
+t_case 'ldap: the clean tree produces ZERO findings from this pack, not merely none of the three ids'
+assert_eq '' "$(_ids_found "$W/run-ldap-clean")" \
+  'the whole clean tree is silent for ldap.rules - fails if a future id in this pack is added without a clean-tree fixture, which the per-id loop above cannot see'
+
+t_case 'ldap: the clean fixtures really do exercise the same-line escaping guard, not merely avoid the pattern'
+# Without this case the "stays quiet" half above is satisfiable by a
+# context-deny so broad it suppresses everything, or by clean fixtures that
+# never resemble a filter at all.  tests/fixtures/clean/ldap_app.py's
+# filter_format("(uid=%s)", ...) line and ldap_app.java's
+# escapeLDAPSearchFilter(...) line BOTH match SAST-LDAP-FILTER_CONCAT-01's
+# pattern on their own; only the same-line (context-window: 0) deny keeps them
+# quiet.  Proving the pattern still matches those bytes is what makes the
+# suppression a measured guard rather than an accident of wording.
+records_load "$ROOT/modules/sast/rules/ldap.rules" pattern-rule ldapset >/dev/null
+_ldap_filter_pat=$(records_field ldapset "$(records_index_of_id ldapset SAST-LDAP-FILTER_CONCAT-01)" pattern)
+assert_status 0 'the shipped filter pattern DOES match the escaped python-ldap line - fails if the pattern were narrowed until the clean fixture no longer resembles a filter, making the deny decorative' \
+  scan_match "$W/ldap-pat-py" -e "$_ldap_filter_pat" -- "$ROOT/tests/fixtures/clean/ldap_app.py"
+assert_status 0 'the shipped filter pattern DOES match the escaped JNDI line - same reading' \
+  scan_match "$W/ldap-pat-java" -e "$_ldap_filter_pat" -- "$ROOT/tests/fixtures/clean/ldap_app.java"
+assert_eq 0 "$(records_field ldapset "$(records_index_of_id ldapset SAST-LDAP-FILTER_CONCAT-01)" context-window)" \
+  'the filter rule pins context-window: 0 for its deny - fails under a wider window, which rules/RULE-FORMAT.md §10.2 and docs/FOUNDATION.md finding F4 forbid for a same-line-intent guard because it trades a visible false positive for a silent false negative'
+unset _ldap_filter_pat
+
+# =============================================================================
+printf -- '\n-- nosql.rules / ldap.rules: cross-fire, both directions, one scan each --\n'
+# =============================================================================
+# AGENTS.md: tests/fixtures/{vuln,clean}/ are SHARED trees scanned wholesale,
+# so landing a pack changes what every existing pack is tested against AND what
+# every existing pack's fixtures test the new pack against.  kubernetes.rules
+# merged red on exactly this.
+#
+# Two failure modes have to be pinned, not one, because the obvious fix for
+# each is the other's bug:
+#
+#   - narrow too little and the new pack attaches to someone else's fixture
+#     (the negative half);
+#   - narrow too much - a files glob typo, a context-require that can never be
+#     satisfied - and the pack goes INERT, reporting nothing at all while every
+#     "stays quiet" assertion above goes green (the positive half).
+#
+# Both halves are asserted here over check_id@loc_path pairs from ONE scan of
+# the vuln tree with BOTH new packs registered together, so neither half can be
+# satisfied by breaking the other, and so the two new packs are also measured
+# against each other rather than only against the packs that came before.
+_scan_multi_pack "$ROOT/tests/fixtures/vuln" "$W/run-new-packs-vuln" nosql ldap
+_new_pairs=$(_ids_and_paths_found "$W/run-new-packs-vuln")
+
+for _pair in \
+  'SAST-NOSQL-WHERE_JS-01@tests/fixtures/vuln/nosql_app.js' \
+  'SAST-NOSQL-WHERE_JS-01@tests/fixtures/vuln/nosql_app.py' \
+  'SAST-NOSQL-WHERE_JS-01@tests/fixtures/vuln/nosql_app.java' \
+  'SAST-NOSQL-SERVER_JS-01@tests/fixtures/vuln/nosql_app.js' \
+  'SAST-NOSQL-SERVER_JS-01@tests/fixtures/vuln/nosql_app.py' \
+  'SAST-NOSQL-OPERATOR_INJECTION-01@tests/fixtures/vuln/nosql_app.js' \
+  'SAST-NOSQL-OPERATOR_INJECTION-01@tests/fixtures/vuln/nosql_app.py' \
+  'SAST-NOSQL-QUERY_CONCAT-01@tests/fixtures/vuln/nosql_app.js' \
+  'SAST-NOSQL-QUERY_CONCAT-01@tests/fixtures/vuln/nosql_app.py' \
+  'SAST-NOSQL-QUERY_CONCAT-01@tests/fixtures/vuln/nosql_app.java' \
+  'SAST-LDAP-FILTER_CONCAT-01@tests/fixtures/vuln/ldap_app.py' \
+  'SAST-LDAP-FILTER_CONCAT-01@tests/fixtures/vuln/ldap_app.java' \
+  'SAST-LDAP-DN_CONCAT-01@tests/fixtures/vuln/ldap_app.py' \
+  'SAST-LDAP-DN_CONCAT-01@tests/fixtures/vuln/ldap_app.java' \
+  'SAST-LDAP-UNESCAPED_FILTER_INPUT-01@tests/fixtures/vuln/ldap_app.js' \
+  ; do
+  t_case "cross-fire (positive half): $_pair"
+  assert_contains "$_new_pairs" "$_pair" \
+    "$_pair is present in one scan of the whole vuln tree with both new packs registered - fails if a narrowing aimed at the negative half below overshot and made the check inert on its own language's fixture, which every stays-quiet assertion in this file reports as green"
+done
+
+t_case 'cross-fire (negative half): every new-pack finding lands on a fixture this ticket added, and on nothing else in the shared tree'
+_bad_on_preexisting=''
+while IFS= read -r _pair; do
+  [[ -n $_pair ]] || continue
+  _path_is_new_fixture "${_pair#*@}" || _bad_on_preexisting+="$_pair "
+done <<<"$_new_pairs"
+assert_eq '' "$_bad_on_preexisting" \
+  "expected every new-pack finding to land on one of this ticket's own fixtures, found these elsewhere: $_bad_on_preexisting - the rest of that tree is SQL concatenation, template literals, dynamic require, JDBC, trust-all TLS, Terraform, CloudFormation, Kubernetes, Helm and docker-compose, none of which is a NoSQL query or an LDAP filter, so this fails the moment either pack's pattern or files glob widens past its own subject matter"
+
+t_case 'cross-fire (negative half): no NoSQL check lands on an LDAP fixture, and no LDAP check on a NoSQL one'
+_bad_between_new=''
+while IFS= read -r _pair; do
+  [[ -n $_pair ]] || continue
+  case $_pair in
+    SAST-NOSQL-*@tests/fixtures/vuln/ldap_app.*) _bad_between_new+="$_pair " ;;
+    SAST-LDAP-*@tests/fixtures/vuln/nosql_app.*) _bad_between_new+="$_pair " ;;
+  esac
+done <<<"$_new_pairs"
+assert_eq '' "$_bad_between_new" \
+  "expected zero NoSQL checks on an LDAP fixture and zero LDAP checks on a NoSQL fixture, found: $_bad_between_new - both packs match query-construction vocabulary (a .search(/.find( call, a concatenated quoted string), so this is the pair of packs most likely to collide with each other rather than with what came before"
+
+# The OPPOSITE direction: the six fixtures this ticket adds are now scanned by
+# every pack that came before, and a false positive there is exactly the shape
+# that put IAC-K8S-* findings on a docker-compose file.  One scan of each
+# shared tree with all six pre-existing packs whose globs can reach a
+# .js/.py/.java file, asserted over loc_path so a NEW id in any of those packs
+# is caught too, not only the ids enumerated earlier in this file.
+for _tree in vuln clean; do
+  _scan_multi_pack "$ROOT/tests/fixtures/$_tree" "$W/run-old-packs-$_tree" \
+    secrets crypto injection python javascript java
+  _old_pairs=$(_ids_and_paths_found "$W/run-old-packs-$_tree")
+  _bad_on_new=''
+  for _f in $NEW_FIXTURE_BASENAMES; do
+    while IFS= read -r _pair; do
+      [[ -n $_pair ]] || continue
+      case $_pair in
+        *@tests/fixtures/"$_tree"/"$_f") _bad_on_new+="$_pair " ;;
+      esac
+    done <<<"$_old_pairs"
+  done
+  t_case "cross-fire (reverse direction): no pre-existing pack fires on this ticket's fixtures under tests/fixtures/$_tree/"
+  assert_eq '' "$_bad_on_new" \
+    "expected zero findings from secrets/crypto/injection/python/javascript/java on the six files this ticket adds, found: $_bad_on_new - a fixture written for one pack that trips another is the cross-fire that merged kubernetes.rules red, and on the clean tree it also breaks every other pack's own stays-quiet assertion"
+  t_case "sanity: that same scan of tests/fixtures/$_tree/ is not vacuously empty"
+  if [[ $_tree == vuln ]]; then
+    assert_ne '' "$_old_pairs" \
+      'the six pre-existing packs still find their own true positives in the vuln tree - without this, the assertion above would pass on a scan that found nothing at all'
+  else
+    assert_eq '' "$_old_pairs" \
+      'the six pre-existing packs remain silent across the whole clean tree, including the six files this ticket adds to it'
+  fi
+done
+
+unset NOSQL_IDS LDAP_IDS NEW_FIXTURE_BASENAMES \
+  _nosql_vuln_found _nosql_clean_found _ldap_vuln_found _ldap_clean_found \
+  _new_pairs _old_pairs _bad_on_preexisting _bad_between_new _bad_on_new \
+  _pair _f _tree _want_id _safe_id
+
+# =============================================================================
 printf -- '\n-- occurrence ordinal and fingerprint (docs/FOUNDATION.md tension 5) --\n'
 # =============================================================================
 # tests/fixtures/vuln/app.py already carries three byte-identical eval()

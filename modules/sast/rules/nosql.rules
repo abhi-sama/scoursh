@@ -1,0 +1,147 @@
+# modules/sast/rules/nosql.rules - docs/DESIGN.md §6.3 "nosql.rules ... NoSQL
+# query operators built from user input (e.g. $where, object injection)" seed
+# catalog: the server-side JavaScript forms ($where, $function/$accumulator,
+# mapReduce), operator injection through a request-derived object, and a query
+# document assembled as text and parsed back.
+#
+# The catalog names MongoDB's own vocabulary and nothing else, so this pack
+# covers the MongoDB drivers for the three languages the shipped packs already
+# cover - the Node driver/Mongoose, PyMongo, and the Java driver.  No new
+# language is introduced here, and no other datastore's query language is
+# guessed at: a rule for a driver this repository has no fixture for would be a
+# check nothing measures.
+#
+# `db.eval(` is deliberately NOT re-declared under a SAST-NOSQL-* id.  Its
+# bytes already match SAST-JS-EVAL-01 (modules/sast/rules/javascript.rules) in
+# a .js file and SAST-PY-EVAL_EXEC-01 (modules/sast/rules/python.rules) in a
+# .py file, because both patterns anchor on `\beval\s*\(` and the `.` before
+# `eval` is a word boundary.  Minting a third id for the same bytes would fire
+# two check ids on one line for one root cause - the precedent java.rules set
+# for Runtime.exec and javascript.rules set for child_process.exec.
+#
+# Every `files` glob is written as a plain extension pattern (`*.py`), never
+# `**/*.py`.  Per rules/RULE-FORMAT.md §9.1.2 an unanchored glob already
+# matches at any depth, whereas `**/` requires at least one directory
+# component and so silently MISSES a file at the scan root - invisible in a
+# fixture tree, where every path is nested by construction.
+#
+# Unlike modules/sast/rules/injection.rules, which is deliberately unscoped
+# because its sinks are language-agnostic, this pack carries explicit globs.
+# tests/fixtures/{vuln,clean}/ are SHARED trees scanned wholesale, and the
+# query-construction vocabulary here (a `{` … `+` run, a `.find(` call) is
+# common enough in YAML, JSON, and Terraform fixtures that an unscoped pack
+# would be a cross-fire waiting to happen.  The boundary against
+# modules/sast/rules/ldap.rules is the subject matter itself and is asserted in
+# both directions in tests/suites/sast.sh: no NoSQL check may attach to an LDAP
+# fixture, and no LDAP check to a NoSQL one.
+#
+# SAST-NOSQL-OPERATOR_INJECTION-01 carries no `context-deny` for a coercion
+# helper, and that is deliberate.  A deny wide enough to see a String()/str()
+# call written a line earlier is exactly the false negative
+# rules/RULE-FORMAT.md §10.2 and docs/FOUNDATION.md finding F4 forbid, and a
+# same-line deny would suppress a genuinely vulnerable filter the moment one of
+# its OTHER fields happened to be coerced.  The safe equivalent is therefore a
+# genuinely different shape - coerce or validate the value into a scalar first,
+# then bind that scalar into the query document - which is what this pack's
+# clean fixtures use and what the remediation asks for.
+
+id: SAST-NOSQL-WHERE_JS-01
+title: MongoDB $where expression built from concatenated or interpolated input
+severity: critical
+confidence: medium
+cwe: CWE-95
+owasp: A05:2025
+pattern: \$where["']?[[:space:]]*[:,].*(["'][[:space:]]*\+|\$\{|\.format\(|%[[:space:]]*[A-Za-z_(])
+dialect: ere
+files: *.js
+files: *.jsx
+files: *.ts
+files: *.tsx
+files: *.mjs
+files: *.cjs
+files: *.py
+files: *.java
+tags: static
+tags: quick
+remediation: Express the condition with ordinary query operators ($eq, $gt, $regex with a
+  bound value) so the supplied value is compared as data. A $where clause is a JavaScript
+  expression the database server evaluates, so any value concatenated or interpolated into
+  it is executed, not compared. If the logic genuinely cannot be expressed without it,
+  disable server-side scripting instead and move the comparison into the application.
+references: CWE-95
+references: CWE-943
+
+id: SAST-NOSQL-SERVER_JS-01
+title: Server-side JavaScript evaluation requested from the database
+severity: medium
+confidence: low
+cwe: CWE-94
+owasp: A05:2025
+pattern: (\$function["']?[[:space:]]*[:,]|\$accumulator["']?[[:space:]]*[:,]|\.(mapReduce|map_reduce)[[:space:]]*\()
+dialect: ere
+files: *.js
+files: *.jsx
+files: *.ts
+files: *.tsx
+files: *.mjs
+files: *.cjs
+files: *.py
+files: *.java
+tags: static
+severity-floor: low
+remediation: Replace the JavaScript body with the aggregation pipeline's own operators,
+  which the server evaluates natively and cannot be made to execute a caller's code.
+  Every one of these features hands a JavaScript function to the database engine, so the
+  whole function body becomes a code-injection sink the moment any part of it is built
+  from data, and the feature is worth disabling on the server outright once nothing needs
+  it.
+references: CWE-94
+
+id: SAST-NOSQL-OPERATOR_INJECTION-01
+title: Request-derived value used directly inside a NoSQL query document
+severity: high
+confidence: medium
+cwe: CWE-943
+owasp: A05:2025
+pattern: \.(find_one_and_update|find_one_and_delete|findOneAndUpdate|findOneAndDelete|find_one|findOne|delete_one|deleteOne|delete_many|deleteMany|update_one|updateOne|update_many|updateMany|count_documents|countDocuments|aggregate|find)[[:space:]]*\([[:space:]]*(\{[^}]*)?(req|request)\.(body|query|params|json|args|form)
+dialect: ere
+files: *.js
+files: *.jsx
+files: *.ts
+files: *.tsx
+files: *.mjs
+files: *.cjs
+files: *.py
+files: *.java
+tags: static
+tags: quick
+remediation: Coerce or validate each request value into the scalar the field expects
+  before it reaches the query document, and bind that scalar rather than the raw value.
+  A request body or query string can decode to an object, so a caller who sends an
+  operator where a string was expected rewrites the filter itself - the shape that turns
+  a login lookup into an unconditional match.
+references: CWE-943
+
+id: SAST-NOSQL-QUERY_CONCAT-01
+title: NoSQL query document parsed from a concatenated string
+severity: high
+confidence: medium
+cwe: CWE-943
+owasp: A05:2025
+pattern: (JSON\.parse|json\.loads|Document\.parse|BasicDBObject\.parse|BsonDocument\.parse)[[:space:]]*\([^)]*\{[^)]*\+
+dialect: ere
+files: *.js
+files: *.jsx
+files: *.ts
+files: *.tsx
+files: *.mjs
+files: *.cjs
+files: *.py
+files: *.java
+tags: static
+remediation: Build the query as a document - an object literal, or the driver's own filter
+  builders - with each value bound as data, instead of assembling query text and parsing
+  it back. Concatenating into a document's serialized form lets a supplied value close its
+  string and add fields or operators of its own, which is the same weakness as
+  concatenating SQL text.
+references: CWE-943

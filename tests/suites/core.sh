@@ -230,6 +230,42 @@ mk_lock "$W/L" '' 0
 assert_true "$(lock_is_stale "$W/L" && echo 1 || echo 0)" \
   'the window between mkdir and the owner file: a fresh lock with no owner is NOT stale'
 
+t_case 'reading a lock owner is one operation, not a check followed by an open'
+# The defect, found by lib/http.sh's tension-16 rate limiter - the first code
+# in this repository to take this mutex from several processes at once, once
+# per request.  lock_is_stale and _lock_token both tested `[[ -r $d/owner ]]`
+# and THEN opened the file as a separate step.  Releasing a lock removes the
+# whole directory, so under real contention the open lands after the owner
+# file is gone, and bash reports the failed redirect on the run's stderr - on
+# a path that is otherwise entirely CORRECT, since an unreadable owner file is
+# exactly the "published lock with no owner file yet" case docs/FOUNDATION.md
+# tension 16 already decides (fall through to the mtime branch, not stale).
+# Measured before the fix: eight processes taking and releasing one mutex 40
+# times each produced 16 such diagnostics across 6 runs.
+#
+# That race is probabilistic, and a test that only usually fails pins nothing,
+# so the state it produces is reached here deterministically instead: an
+# `owner` path that passes `-r` and cannot be read.  It is the same defect -
+# readability was tested, the read still failed - and the fix (attempt the
+# read once, with the group's stderr discarded, and treat any failure as "no
+# owner line") is what both the stable case below and the field race need.
+# The eight-worker case further down never caught it because it discards
+# stderr and takes the lock once per worker.
+rm -rf "$W/R"
+mkdir -p "$W/R/owner"          # readable, and unopenable as a line of text
+lock_err=$W/lock-read.err
+: >"$lock_err"
+{ lock_is_stale "$W/R" && stale=1 || stale=0; } 2>"$lock_err"
+assert_eq 0 "$stale" \
+  'a lock whose owner line cannot be read falls through to the mtime branch and is NOT stale - the verdict was already right, which is why the noise below is the only observable defect'
+assert_eq '' "$(cat "$lock_err")" \
+  'and lock_is_stale prints NOTHING while doing it - FAILS under a `[[ -r $d/owner ]]` test followed by a separate `read < $d/owner`, which reports the failed read on the run stderr and makes a correct path look like an error in every --jobs scan'
+: >"$lock_err"
+{ _lock_token "$W/R" >/dev/null; } 2>"$lock_err"
+assert_eq '' "$(cat "$lock_err")" \
+  'and so does _lock_token, which carries the identical check-then-open pair - FAILS if only one of the two call sites is fixed'
+rm -rf "$W/R"
+
 t_case 'reclaim is single-winner and identity-bound: it cannot delete a LIVE lock'
 # The defect: two waiters both judge one lock stale; the first reclaims it and
 # acquires; the second, already past its check, `rm -rf`s the first's freshly

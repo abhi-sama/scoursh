@@ -183,7 +183,7 @@ That window closes the moment DAST-02 lands.
 |---|---|---|
 | `--intensity` ceiling | `passive` (read what the target already sends back; nothing injected) | `scan.sh`, ahead of `lib/checks.sh`'s existing type-tag ceiling filter |
 | requests per second | `4` (the `rules/RULE-FORMAT.md` §9.6.1 default, unchanged) | DAST-01's limiter, reading an already-clamped effective value |
-| concurrent DAST requests | `4` | DAST-01's limiter, same shared bucket that already defeats `--jobs` multiplication |
+| concurrent DAST requests | **not enforced by DAST-01** | nothing; see the row note below |
 | per-run request budget | `5000`, clamped down from the §9.6.1 default of `20000` | DAST-01's budget counter, reading an already-clamped effective value |
 | circuit breaker | 10 failures in a 60s window aborts the module | DAST-01's breaker |
 | side-effecting checks | off (`--allow-intrusive` absent) | `lib/checks.sh`'s existing `checks_intrusive_keeps` filter |
@@ -191,9 +191,32 @@ That window closes the moment DAST-02 lands.
 | credential brute forcing | none exists at any setting (§7.4's "weak-key detection, not a cracking rig") | the vendored, capped list itself |
 | bundled scan target | none, anywhere in a shipped file | DAST-35's lint |
 
-The rate and concurrency ceilings deliberately **equal the shipped defaults**, so an operator who never
+**The concurrency row is a correction, and it is the row most worth reading twice.**
+It previously read "`4`, enforced by DAST-01's limiter, same shared bucket that already defeats
+`--jobs` multiplication", and that is not true of a token bucket.
+A shared bucket bounds the request RATE; it does not bound how many requests are IN FLIGHT at once.
+Against a slow target where each request takes seconds, a high `jobs` value yields exactly that many
+simultaneous connections while the average rate stays under the ceiling, and nothing in DAST-01 clamps
+`jobs` at all - `scan.sh` resolves it into `SCOURSH_JOBS` and no ceiling is applied anywhere.
+Stating an unenforced number in an enforcement table is the failure mode this whole section exists to
+avoid, so the row now says what is actually true.
+**A real concurrency ceiling is a separate, unassigned piece of work**, not a line that can be added to
+DAST-01's clamp: bounding simultaneous requests needs an in-flight counter taken before the transport
+and released after it, at the same `lib/http.sh` chokepoint, plus a reclaim path for the slot a killed
+worker never releases - which is a mutex-and-liveness design of the same weight as
+`docs/FOUNDATION.md` tension 16's own lock reclaim, and it should be its own ticket rather than a
+retrofit.
+Until that ticket exists, the honest statement is the one in the table: rate is bounded, concurrency
+is not, and the operator's `jobs` value is what decides how many connections a target sees at once.
+
+The rate ceiling deliberately **equals the shipped default**, so an operator who never
 edited `config/scanner.conf` sees no clamp at all and no warning; the clamp exists only to stop a
 *raised* value applying to a host nobody vetted.
+The budget's clamp is silent for the same reason, even though its ceiling and its schema default
+differ: the value it refuses on an unedited install is the one the schema itself supplies, so warning
+about it would be blaming the operator for a config they never wrote.
+DAST-01 states the effective rate, budget and breaker numbers on one informational line per run
+instead, and warns only when a value was actually raised past a limit.
 The budget ceiling is the one number that diverges from the frozen schema default, and the arithmetic
 is the argument: 20000 requests at 4/s is 83 minutes of sustained traffic, while 5000 is about 21
 minutes and is still enough for a real passive assessment of a mid-size site.
@@ -212,8 +235,9 @@ a ceiling that lives in `modules/dast/run.sh` binds only callers that came throu
 parser"), calling `http_request GET "${DTT_URL}/rest/admin/application-version"`.
 `docs/FOUNDATION.md` tension 19 puts the gate at `http_request` precisely because callers must not be
 trusted to apply it, and a throughput ceiling has exactly the same property.
-So the resolved rate, concurrency and budget values that DAST-01's limiter reads are already clamped
+So the resolved rate and budget values that DAST-01's limiter reads are already clamped
 before it sees them, and the clamp lives with the limiter in `lib/http.sh`, not in the module.
+(`jobs` is not among them, per the concurrency row's note above: it is resolved and never clamped.)
 Only the `--intensity` ceiling stays in `scan.sh`, because intensity is check *selection* and never
 reaches the transport at all.
 
@@ -355,7 +379,7 @@ Three consequences of that honest valuation are load-bearing and easy to get bac
 |---|---|---|
 | The scope gate (`config/scope.conf` + `http_gate_url` on every hop) | **no** | The four reasons above. The guided mode may offer to write a record; the gate then re-reads the file and can still refuse. |
 | `--intensity` ceiling of `passive` | yes | This is the clean line: anything beyond reading what the target volunteers needs the affirmation. `safe` puts hundreds of 404s in someone's logs; `active` sends injection payloads. Neither is covered by permission to browse, and the Nmap finding is exactly a permission that covers one technique and excludes another. Costs nothing today, since `CHECKS_INTENSITY_DEFAULT` is already `passive`. |
-| requests per second, DAST concurrency | yes | Rate limiting is a condition of authorisation against a host the authors cannot vet. Against a host that genuinely is the operator's, a 4/s cap has no safety content and the worst case is that they degrade their own lab. |
+| requests per second, DAST concurrency | yes | Rate limiting is a condition of authorisation against a host the authors cannot vet. Against a host that genuinely is the operator's, a 4/s cap has no safety content and the worst case is that they degrade their own lab. (Concurrency has no ceiling to relax yet: DAST-01 bounds rate only, per the concurrency row's note in "The conservative defaults" above. This row describes what an affirmation would relax once one exists.) |
 | per-run request budget | **partially** | The number is raisable; the existence of a finite budget is not. The budget is what bounds the worst case of every *other* mistake in the tool - a crawler loop, a redirect cycle, a parameter-list bug. A control whose whole job is bounding unknown failures cannot be surrendered to an assertion about a known one. |
 | circuit breaker | **partially** | Threshold raisable, disabling never offered, and the argument is that disabling has no upside even on your own host: a target returning sustained 5xx produces no useful findings, so continuing to hammer it buys nothing. There is no honest case for a prompt that removes it. |
 | `--allow-intrusive` (live user enumeration, signup/reset probing, the burst probe) | **partially** | Requires the affirmation **and** its own separate opt-in, and must never be folded into the affirmation. Its blast radius escapes the target: §7.4 says these "create users and send messages", so the harmed parties are the target's *users*, and owning a host does not confer permission to do that to its users. |
