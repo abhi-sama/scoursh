@@ -38,6 +38,21 @@ Each matrix leg checks out the repo, installs a bash that meets the frozen 4.2 m
 
 **`shellcheck`** runs last, over `lib/`, `tests/`, `tools/`, `modules/`, `aws/`, `scan.sh`, if the binary is present.
 It is optional locally (an air-gapped host may not have it) but CI always installs it, so it is effectively required in CI even though `tests/run-tests.sh` itself treats it as best-effort.
+`-x` (follow `source`) always runs, on every file, on every path below - it is what makes the check thorough, and nothing here narrows or drops it.
+
+In CI (`GITHUB_ACTIONS=true`), the stage is unchanged from the original design: a fixed 2-way `xargs -P` batch, no memory cap, no watchdog, because a CI runner is ephemeral and a failed job costs nothing there.
+
+Locally, concurrency is sized by **memory, not core count**, and each `shellcheck` invocation checks exactly one file - never a batch - so a kill or a plain finding is always attributable to exactly one file.
+This exists because `-x`'s cost is dominated by how deep a file's own `source` graph goes, not by file size: a file that sources nothing can cost under 100MB, while a file that sources several `lib/*.sh` files that source further routinely measures several GB resident, and macOS offers no per-process memory ceiling to fall back on (`ulimit -v`/`-d`/`-m`/`-s` are all rejected, and shellcheck's own GHC runtime ignores `+RTS -M` in the shipped binary).
+An earlier version of this stage parallelised purely by core count and kernel-panicked a 64GB/18-core host twice, at which point concurrent `shellcheck -x` processes had reached far more memory in aggregate than any one of them would need alone.
+
+The local design has two independent safety layers, both watched every 0.4s against the currently-running processes, in addition to the concurrency itself already being sized from available memory (`(available-or-total GB / 2) / budget_gb`, clamped to `[1, detected core count]`):
+
+1. **Per-process budget** (`SCOURSH_SHELLCHECK_MEM_BUDGET_GB`, default 12GB): a single process exceeding its own budget is killed (`SIGTERM` then `SIGKILL`) and named in the failure output.
+2. **Free-memory floor** (`SCOURSH_SHELLCHECK_FREE_FLOOR_GB`, default 4GB): even when every process is individually within budget, several of them together can still starve the host if something *else* on the machine grows after the job count was sized from a one-time snapshot - so free memory is watched directly, and if it drops below the floor, the single largest active process is killed to relieve pressure, without failing every file that happened to be running alongside it.
+
+A failure is always attributable: the per-process kill and the free-floor kill each name the file directly, and a process that dies from **any** signal - including one this script did not send, such as a host-level OOM killer - is still detected (by exit status, not by output parsing) and reported with the file name and the signal number, never as a bare non-zero exit.
+The branch on success/failure is on real exit status throughout, not on parsed output, so a failure in any file - the first one launched or the last - still fails the stage.
 
 Each matrix leg finishes by running the fixture scan again, normalizing out the one field that legitimately differs between runs (`first_seen`/`last_seen` timestamps), and uploading `findings.normalised.jsonl` plus the full suite log as artifacts.
 
