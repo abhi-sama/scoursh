@@ -233,6 +233,46 @@ assert_eq '600' "$(stat_mode "$_DAST_AUTH_DIR/token")" 'the token file is 600'
 assert_eq '700' "$(stat_mode "$_DAST_AUTH_DIR")" 'and its directory is 700'
 
 # ---------------------------------------------------------------------------
+printf -- '\n-- the whole operator path: scan.sh dast --authed, against the live target --\n'
+# ---------------------------------------------------------------------------
+# Everything above drives the engine directly, which is the right layer for
+# most of these assertions and the wrong layer for this one: what an operator
+# actually runs is `scan.sh dast --target ... --authed`, and that path goes
+# through the CLI parser, the scope gate, scan_dispatch, modules/dast/run.sh and
+# dast_run_phase before any of the code above is reached.  A break anywhere in
+# that chain is invisible to every case above.
+t_case 'a real scan.sh dast --authed run authenticates and says so in its own artifacts'
+FIXROOT=$W/install-root
+mkdir -p "$FIXROOT/config"
+for e in lib modules rules data tools VERSION scan.sh; do
+  ln -sfn "$ROOT/$e" "$FIXROOT/$e"
+done
+cp "$SCOPE_FILE" "$FIXROOT/config/scope.conf"
+cp "$DTT_AUTH_CONF" "$FIXROOT/config/auth.conf"
+chmod 600 "$FIXROOT/config/auth.conf"
+
+_SCAN_RC=0
+SCOURSH_INSTALL_ROOT=$FIXROOT bash "$ROOT/scan.sh" dast \
+  --target "$TARGET_ID" --authed --out "$W/scanrun" >"$W/scanrun.log" 2>&1 || _SCAN_RC=$?
+assert_eq 0 "$_SCAN_RC" 'the run exits 0'
+SCAN_JSON=$(cat "$W/scanrun/run.json" 2>/dev/null || printf '')
+assert_contains "$SCAN_JSON" 'state=authenticated' \
+  'run.json records a real, live-acquired session - FAILS anywhere in the CLI -> dispatch -> phase chain, none of which the direct-engine cases above exercise'
+assert_contains "$SCAN_JSON" 'identity=a' 'and names the identity it acquired'
+assert_contains "$SCAN_JSON" 'identity=b' 'and the second one'
+assert_contains "$SCAN_JSON" 'config-derived half' \
+  'and states which half of the user-enumeration check ran (docs/DESIGN.md §7.4)'
+
+IFS= read -r LIVE_PW_A <"$DTT_STATE_DIR/identity-a.secret" || true
+: >"$W/leak2.out"
+if scan_match "$W/leak2.out" -r -F -e "$LIVE_PW_A" -- "$W/scanrun" 2>/dev/null; then
+  _t_no 'no credential appears anywhere in the run directory of a real authenticated scan' \
+    "found in: $(cat "$W/leak2.out")"
+else
+  _t_ok 'no credential appears anywhere in the run directory of a real authenticated scan - FAILS if any part of the login exchange is written into a finding, a meta record or a report'
+fi
+
+# ---------------------------------------------------------------------------
 printf -- '\n-- the target stops cleanly --\n'
 # ---------------------------------------------------------------------------
 t_case 'tools/dast-test-target.sh --stop leaves nothing running'

@@ -500,8 +500,8 @@ What's left, in priority order:
    all.
    The read-only AWS wrapper already exists ahead of schedule.
 
-Outside that ordering: container image scanning (scanning built image layers, not just Dockerfile/compose source) and
-network/host scanning are not currently part of the design plan at all.
+Outside that ordering: container image scanning (scanning built image layers, not just
+Dockerfile/compose source) and network/host scanning are not currently part of the design plan at all.
 
 See [`ROADMAP.md`](ROADMAP.md) for the fuller breakdown, including work that's already landed ahead
 of its normal turn (the optional engine adapters, the `--paranoid` connection observer, and the

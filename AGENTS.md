@@ -424,19 +424,22 @@ it are worth carrying here because a later ticket will otherwise rediscover them
   sentence every dependent check states.  What is forbidden, and is the whole point, is running those
   checks unauthenticated and reporting their silence as clean.
 
-**The live proof, and one pre-existing bug it turned up.**  `tests/e2e/dast-auth-live.sh` passes 25 of
-25 against a real, local Juice Shop container: both identities log in over real HTTP, the form-shape
+**The live proof, and one pre-existing bug it turned up.**  `tests/e2e/dast-auth-live.sh` passes 31 of
+31 against a real, local Juice Shop container: both identities log in over real HTTP, the form-shape
 probe picks the JSON shape (this target's urlencoded attempt is rejected, so a single hardcoded body
 would never have logged in at all), each session reaches its OWN object server-side, identity A reading
-identity B's object is the broken-access-control case DAST-29 will assert on, and a deliberately
-corrupted token produces a real 401 that is re-authenticated and retried once.
+identity B's object is the broken-access-control case DAST-29 will assert on, a deliberately corrupted
+token produces a real 401 that is re-authenticated and retried once, and a real
+`scan.sh dast --target ... --authed` run - the whole CLI -> dispatch -> phase chain an operator
+actually invokes, which none of the direct-engine cases exercise - acquires both sessions, records them
+in its own `run.json`, and leaves no credential anywhere in the run directory.
 Two facts measured there are worth keeping:
 
 - **This pinned Juice Shop image 400s on a duplicate registration**, and
   `tools/dast-test-identities.sh`'s header claimed the opposite as a measured fact ("accepting a repeat
-  registration rather than 400ing on a duplicate email - verified against bkimminich/juice-shop:v20.1.1").
-  Re-measured: first registration 201, same email again 400 `email must be unique`, login afterwards
-  200.  So running that script twice against one still-running container died, and every run after the
+  registration rather than 400ing on a duplicate email - verified against
+  bkimminich/juice-shop:v20.1.1").  Re-measured: first registration 201, same email again 400
+  `email must be unique`, login afterwards 200.  So running that script twice against one still-running container died, and every run after the
   first failed on a target that was in fact correctly provisioned.  `dti_provision` now treats a
   duplicate refusal as the success it is, but only after a login proves the persisted password still
   opens the account - "the email is taken" and "the email is taken by an account whose password we
@@ -449,8 +452,8 @@ Two facts measured there are worth keeping:
   such an endpoint as a failed session.
 
 Two things landed with it because the first phase script is what made them true.
-**E073 and E074 now have implementations** - both codes were reserved in `rules/RULE-FORMAT.md` §13 with
-none.  E074's mode-to-required-keys table lives in `lib/records.sh` in ONE copy, which
+**E073 and E074 now have implementations** - both codes were reserved in `rules/RULE-FORMAT.md` §13
+with none.  E074's mode-to-required-keys table lives in `lib/records.sh` in ONE copy, which
 `modules/dast/auth_engine.sh` consumes rather than restating, and E073 is enforced at runtime as well
 as by the linter (the file whose permissions matter is the operator's own; a lint that ran in this
 repository has said nothing about it), and a `secret-file` is held to the same 600 requirement.

@@ -580,6 +580,24 @@ assert_eq failed "$_DAST_AUTH_STATE" \
 assert_contains "$_DAST_AUTH_FAIL_REASON" 'neither a Set-Cookie nor a token' \
   'and the reason states exactly what was missing'
 
+t_case 'a target that answers nothing at all is a stated failure, not a crash'
+_reset
+_form_conf
+_down_transport() {
+  printf '%s %s\n' "$1" "$5" >>"$REQ_LOG"
+  return 1
+}
+SCOURSH_HTTP_TRANSPORT=_down_transport
+RC=0
+dast_auth_acquire auth-fixture a || RC=$?
+SCOURSH_HTTP_TRANSPORT=_auth_transport
+assert_eq 1 "$RC" 'acquisition reports failure rather than dying'
+assert_eq failed "$_DAST_AUTH_STATE" 'and the identity is marked failed'
+assert_eq 1 "$(_request_count)" \
+  'it gave up after the FIRST shape - FAILS if a transport failure is treated like a rejected shape, which would send the other two body shapes at a target that is not answering, on top of the breaker already counting the first as a failure'
+assert_contains "$_DAST_AUTH_FAIL_REASON" 'no response at all' \
+  'and the reason distinguishes "the target did not answer" from "the target said no" - fails under one shared message, which sends an operator looking at their credentials when the host is down'
+
 t_case 'a login that is rejected outright leaves a stated reason and does not abort the run'
 _reset
 _form_conf
