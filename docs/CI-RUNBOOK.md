@@ -9,12 +9,13 @@ There are two ways this project's suite gets run: a local daily runner on the ma
 - **`tools/daily-suite.sh` is the maintainer's real path, and it runs today.**
   It is described in full below: the BSD-userland assertion, the GNU leg via a container, the byte-for-byte cross-userland diff, and how to install its daily schedule.
 - **`.github/workflows/ci.yml` exists for contributors and forks, and is dormant until the repository is public.**
-  Hosted Actions currently cannot start a run on this repository at all (see "Why" below) - a self-hosted runner does not help either, there is simply no machine assigned. The workflow is kept in the repository rather than deleted so that publishing scoursh is a one-step act: a fork or an external contributor's PR gets a real check the moment Actions can run, with nothing to reconstruct from history. Until then it is inert - pushing or opening a PR produces no check of any kind, on GitHub or anywhere else.
+  Hosted Actions currently cannot start a run on this repository at all (see "Why" below) - a self-hosted runner does not help either, there is simply no machine assigned. The workflow is kept in the repository rather than deleted so that publishing scoursh is a one-step act: a fork or an external contributor's PR gets a real check the moment Actions can run, with nothing to reconstruct from history.
+  Dormant means genuinely inert, not "fires and fails": the `suite` job carries `if: ${{ !github.event.repository.private }}`, so on a private repository it is **skipped**, not attempted - the Actions scheduler evaluates that condition itself, before it ever asks for a runner, so the run never reaches the point where the missing-machine billing error would fire. Pushing or opening a PR produces no failing status of any kind, on GitHub or anywhere else - only a skipped one, which does not read as red. That condition flips to `false` (making the job real) automatically the moment the repository goes public; nothing here needs editing when that happens.
 
 Read that literally, because it changes what merging means **today**, regardless of which path this file describes:
 
 - **A pull request carries no automatic pass/fail.**
-  There is no red tick, no green tick, and no "checks pending" - the workflow file exists, but nothing schedules a run against it. A PR that breaks every suite in the repository looks, on GitHub, exactly like one that breaks nothing.
+  There is no red tick and no "checks pending" - only a skipped one, from the `if:` guard above. A PR that breaks every suite in the repository looks, on GitHub, exactly like one that breaks nothing.
 - **Nothing runs when you push**, except the daily local run described below, and whatever you run yourself.
 - **Anyone merging is the check.**
   Before merging, either run `tests/run-tests.sh` against the merge result yourself, or confirm that a daily run *newer than the change* passed.
@@ -218,7 +219,7 @@ None of these is a scoursh *runtime* dependency; they are what running its test 
 
 What actually changes at that point:
 
-1. **Hosted Actions starts assigning machines again** (public repositories are free), so `pull_request` and pushes to `main` start producing real checks - no further workflow edit is needed, since the trigger fix above is already in place.
+1. **`github.event.repository.private` flips to `false`**, so the `suite` job's `if:` guard stops skipping it and hosted Actions starts assigning machines again (public repositories are free) - `pull_request` and pushes to `main` start producing real checks, with no workflow edit needed at all.
 2. **Branch protection becomes available**, per the 403 described above. Turning the `suite` and `compare` job names into required status checks is the natural next step once a few real runs exist to read the check names off.
 3. **This runbook's "no automatic pass/fail" warning stops being universally true.**
    It becomes true only for pushes to non-default branches with no open PR, same as any other repository's Actions setup - reword the top of this file at that point rather than leave it describing a dormant workflow.
