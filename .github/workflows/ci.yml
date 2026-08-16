@@ -7,7 +7,7 @@ name: tests
 
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
 
 jobs:
@@ -20,6 +20,12 @@ jobs:
             userland: GNU coreutils
           - os: macos-latest
             userland: BSD
+    # Skip (not fail) while this repository is private: hosted Actions cannot
+    # currently start a run here at all (a billing condition, docs/CI-RUNBOOK.md),
+    # so every attempt fails with zero steps and a red X that has nothing to do
+    # with the code. This condition flips to true automatically the moment the
+    # repository goes public - no follow-up edit needed.
+    if: ${{ !github.event.repository.private }}
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os }} (${{ matrix.userland }})
     steps:

@@ -50,7 +50,12 @@ exhaustively.*
   lint fails the build if anything bypasses them, and a separate lint proves no AI/LLM provider is
   reachable from the shipped tool at all.
 - **Deterministic output** - the same scan produces byte-identical findings whether it runs on
-  Linux with GNU coreutils or macOS with a BSD userland, checked automatically in CI.
+  Linux with GNU coreutils or macOS with a BSD userland. That equivalence is checked by
+  `tools/daily-suite.sh`, which runs the whole suite on both userlands and diffs their findings
+  byte for byte; it runs on the maintainer's own machine on a daily schedule, and today it is the
+  only thing that actually runs - the GitHub Actions workflow is dormant until the repository is
+  public, so no PR currently gets an automatic pass/fail either way
+  ([`docs/CI-RUNBOOK.md`](docs/CI-RUNBOOK.md)).
   Fingerprints survive reindentation and unrelated edits, so a diff or baseline never reports a
   false "fixed" or a false "new."
 - **A detector for egress, on Linux *and* macOS** - `--paranoid` watches the process's own outbound
@@ -127,11 +132,11 @@ honest comparison:
 
 | | scoursh | semgrep |
 |---|---|---|
-| Network posture | Zero network calls at scan time, enforced by CI-checked lints and (on Linux) a kernel-level network-namespace guarantee | Rule registry fetches and telemetry contact home by default unless explicitly disabled |
+| Network posture | Zero network calls at scan time, enforced by lints in the test suite and (on Linux) a kernel-level network-namespace guarantee | Rule registry fetches and telemetry contact home by default unless explicitly disabled |
 | Scope | SAST + SCA + IaC + secrets, one tool, one report, one exit-code contract | Primarily SAST; dependency/supply-chain scanning is a separate paid product |
 | Matching engine | Regex/pattern-based; can optionally vendor semgrep itself for AST-aware matching | Full AST-aware, semantic pattern matching - more precise, broader language support |
 | Rule ecosystem | Small, hand-authored, project-owned rule set | Large community and commercial rule registry |
-| Determinism | Tested byte-identical across GNU and BSD userlands in CI | Not a stated design goal |
+| Determinism | Tested byte-identical across GNU and BSD userlands, by a scheduled local suite run rather than hosted CI | Not a stated design goal |
 | Maturity | Early-stage, single project, 4 languages | Mature, widely adopted, dozens of languages, IDE integrations |
 
 **Reach for scoursh** when the environment itself is the constraint - an air-gapped network, a
@@ -516,7 +521,10 @@ suggest).
   architectural decision, with its resolution.
 - [`rules/RULE-FORMAT.md`](rules/RULE-FORMAT.md) - the frozen on-disk rule record format.
 - [`docs/ADAPTERS.md`](docs/ADAPTERS.md) - the convention for optional third-party engine adapters.
-- [`docs/CI-RUNBOOK.md`](docs/CI-RUNBOOK.md) - what CI runs and why.
+- [`docs/CI-RUNBOOK.md`](docs/CI-RUNBOOK.md) - how this project's tests are actually run: the
+  GitHub Actions workflow is dormant until the repository is public, so there is no pull-request
+  status check today - this is where the daily local suite run, its schedule, and how to read its
+  result are documented, alongside what changes once the workflow goes live.
 - [`CLAUDE.md`](CLAUDE.md) - the contributor/agent guide: architecture, sharp edges, and build
   order.
 

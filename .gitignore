@@ -2,9 +2,12 @@
 reports/
 state/
 
-# Downloaded CI artifacts, never sources.
+# Suite-run artifacts, never sources.  tools/daily-suite.sh writes its own
+# results under $SCOURSH_DAILY_DIR (outside the checkout), but a leg run by hand
+# can still drop these here.
 suite.log
 findings-*/
+findings.normalised.jsonl
 
 # macOS Finder metadata.  An untracked .DS_Store was enough to make fleet
 # tooling refuse this clone as dirty.

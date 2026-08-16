@@ -107,7 +107,8 @@ Which rules to seed, per language, is unaffected; only the on-disk encoding of a
 **Consequence for the build.**
 `lib/records.sh` is the single parser and is written first, before any module that consumes rules
 (this reorders nothing in §13, since §13 step 3 is where the rule format lands).
-`tests/lint-rules.sh` implements the error codes in `rules/RULE-FORMAT.md` §13 and runs in CI.
+`tests/lint-rules.sh` implements the error codes in `rules/RULE-FORMAT.md` §13 and runs as part of
+`tests/run-tests.sh`.
 The format is frozen: it is reused for derived findings (tension 6), redaction rules (tension 9), and
 every human-authored config file (tension 26), so a change to it is a repository-wide breaking change,
 costed in `rules/RULE-FORMAT.md` §14.
@@ -3317,7 +3318,8 @@ There is also a real gap the grep cannot close in either direction: §8.1's mult
 2. *Lint the AWS CLI's own metadata for whether an operation mutates.*
    Rejected: it requires the CLI's service model on an air-gapped host and a JSON parse of it, and §1
    rules out that dependency.
-3. *Route every call through a wrapper, allowlist by operation prefix, enforce at runtime and in CI.*
+3. *Route every call through a wrapper, allowlist by operation prefix, enforce at runtime and with a
+   linter in the test suite.*
    **Chosen.**
 
 **RESOLUTION.**
@@ -3510,9 +3512,15 @@ scanner entirely.
 **Consequence for the build.**
 This is the first thing built in §13 step 1, ahead of everything else, since every later line depends on
 it.
-CI runs the full suite on Linux with GNU coreutils **and** on macOS with BSD userland, and the suite
-fails if a finding, a fingerprint, or a `findings.jsonl` byte differs between them, which is what turns
-this from a list of good intentions into a checked property.
+The full suite runs on Linux with GNU coreutils **and** on macOS with BSD userland, and fails if a
+finding, a fingerprint, or a `findings.jsonl` byte differs between them, which is what turns this from
+a list of good intentions into a checked property.
+That pair of runs used to be a hosted-CI matrix; GitHub Actions is switched off for this repository
+now, and `tools/daily-suite.sh` performs both legs and the byte-for-byte diff on the maintainer's own
+machine, on a daily schedule (`docs/CI-RUNBOOK.md`).
+It refuses to produce a result at all unless the userland it measured is genuinely BSD, because a leg
+that silently ran a shadowing ugrep would leave this property unchecked *while reporting that it had
+been checked*.
 
 ## Tension 25 - offline version matching for SCA
 
@@ -3680,8 +3688,8 @@ property §16 promises for rules.
 **Consequence for the build.**
 `lib/records.sh` is built at §13 step 1 and `scan.sh`'s config loading at step 2 uses it immediately, so
 no ad-hoc parser is ever written.
-`config/*.example` files ship in the frozen format, and the linter runs over them in CI so the examples
-cannot drift from the schema.
+`config/*.example` files ship in the frozen format, and the linter runs over them as part of
+`tests/run-tests.sh` so the examples cannot drift from the schema.
 `auth.conf` keeps its `600` permission requirement from §7.0, checked via `stat_mode` (tension 24), and
 its values are marked secret at the schema level so `redact` (tension 9) covers them everywhere.
 
@@ -3967,8 +3975,11 @@ Eight decisions here reach beyond their own tension and are collected so they ar
    `config/baseline.json`.
    They are printed in every report, and a mismatch makes the diff unusable and the gate fail-closed
    (tension 11 step 7).
-8. **CI runs the suite on both GNU and BSD userlands** (tension 24) and asserts byte-identical findings,
+8. **The suite runs on both GNU and BSD userlands** (tension 24) and asserts byte-identical findings,
    which is the check that keeps most of the resolutions above honest.
+   `tools/daily-suite.sh` is what runs it, on a daily local schedule; the hosted-CI workflow is
+   dormant until the repository is public, so there is no pull-request status check today
+   (`docs/CI-RUNBOOK.md`).
 
 ---
 
