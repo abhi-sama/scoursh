@@ -95,6 +95,23 @@ into `modules/<module>/adapters/<engine>/` by hand on a networked host; no engin
 to this repository, so on a stock checkout the flag produces a
 `coverage_reduction reason=engine_not_vendored` line and nothing else.
 
+### Log level and colour (`SCOURSH_LOG_LEVEL`, `SCOURSH_COLOR`, `NO_COLOR`)
+
+`SCOURSH_LOG_LEVEL` (`debug|info|warn|error|silent`, default `info`) sets the minimum level
+printed to stderr.
+
+Colour on stderr is resolved from `SCOURSH_COLOR` and `NO_COLOR`, checked in this order:
+
+- `SCOURSH_COLOR=never` - never colour.
+- `SCOURSH_COLOR=always` - always colour, even when stderr is not a terminal (piped into
+  `less -R`, or a CI log that renders ANSI).
+- `SCOURSH_COLOR=auto` or unset (the default) - colour only when stderr is a terminal **and**
+  `NO_COLOR` (https://no-color.org) is unset or empty.
+
+`SCOURSH_COLOR=always` wins even when `NO_COLOR` is also set: `NO_COLOR`'s own convention text
+allows an explicit user flag to override it, and `SCOURSH_COLOR` set to a specific value is exactly
+that - an operator who typed `always` gets `always`, not a value NO_COLOR silently downgraded.
+
 ## Accepted but not yet implemented
 
 Everything in this section parses, validates, and is accepted today.

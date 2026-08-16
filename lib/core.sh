@@ -75,6 +75,18 @@ _log_rank() {
 
 is_tty() { [[ -t 2 ]]; }
 
+# Precedence, deliberate: SCOURSH_COLOR=always wins even over NO_COLOR - an
+# explicit user flag is the case NO_COLOR's own convention says should
+# override it. SCOURSH_COLOR=never always wins over everything else. Only
+# the auto/unset case defers to NO_COLOR and the TTY check.
+_want_color() {
+  case ${SCOURSH_COLOR:-auto} in
+    never) return 1 ;;
+    always) return 0 ;;
+    *) [[ -z ${NO_COLOR:-} ]] && is_tty ;;
+  esac
+}
+
 _log() {
   local level=$1 colour=$2
   shift 2
@@ -83,7 +95,7 @@ _log() {
   cur=$(_log_rank "$SCOURSH_LOG_LEVEL")
   (( want >= cur )) || return 0
   local prefix='' suffix=''
-  if is_tty && [[ ${SCOURSH_COLOR:-auto} != never ]]; then
+  if _want_color; then
     prefix=$'\033['"$colour"'m'
     suffix=$'\033[0m'
   fi
