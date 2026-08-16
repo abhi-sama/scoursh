@@ -118,6 +118,12 @@ inject_urlencode() {
 # documents at length: in a real run this file is sourced from inside
 # `dast_run_phase`, so a declaration with no `-g` would create a local that dies
 # with the phase.
+#
+# SC2034: the local `cur`/`pcur` accumulator maps are passed BY NAME to
+# `_inject_flush_endpoint`/`_inject_flush_param`, which read them through
+# `${!...}` indirection (Bash 4.2 has no namerefs), so every read is invisible
+# to shellcheck here - exactly as crawl_engine.sh's own flush helpers.
+# shellcheck disable=SC2034
 inject_inventory_load() {
   local epf=${1:-${SCOURSH_DAST_ENDPOINTS:-}} pf=${2:-${SCOURSH_DAST_PARAMETERS:-}}
   local sep=$'\x1f' p type v idx key rest last_idx=''

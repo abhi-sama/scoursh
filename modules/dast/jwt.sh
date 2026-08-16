@@ -82,7 +82,6 @@ _dast_jwt_candidates() {
   local target=$1 file=$2
   [[ -r $file && -s $file ]] || return 0
   local sep=$'\x1f' p type v rest idx key last_idx='' m='' u='' t=''
-  local flush
   # A small closure-by-convention: emit the accumulated endpoint if it matches.
   while IFS=$'\t' read -r p type v; do
     [[ $p == endpoints* ]] || continue
