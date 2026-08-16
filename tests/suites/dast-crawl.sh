@@ -64,6 +64,11 @@ source "$ROOT/tests/lib/assert.sh"
 W=$SCOURSH_SCRATCH/dast-crawl
 rm -rf "$W"
 mkdir -p "$W"
+# Canonicalise (`cd && pwd -P`): lib/records.sh strips $SCOURSH_INSTALL_ROOT as a
+# literal prefix from each loaded rule file's realpath, so a fixture root reached
+# through macOS's /var -> /private/var $TMPDIR symlink would make the strip fail
+# and fire a spurious E081 (see tests/suites/scan.sh's ROOT_WITH_CHECKS).
+W=$(cd -- "$W" && pwd -P)
 FIXTURES=$ROOT/tests/fixtures/dast-crawl
 
 _slurp() {
@@ -402,11 +407,16 @@ esac
 STUBEOF
 chmod 0755 "$STUB_DIR/resolve"
 
-# A fixture install root: the real tree's code, its own config/.
+# A fixture install root: a real COPY of the tree's code, its own config/.
+# A copy, not a symlink: lib/records.sh resolves each loaded rule file through
+# realpath, which would follow a symlinked `modules/` back to the real repo -
+# outside $SCOURSH_INSTALL_ROOT - and fire a spurious E081 on
+# modules/dast/active/checks.rules, aborting the run.  `cp -RL` keeps each file's
+# realpath inside the canonical root ($W is canonical, see above).
 FIX=$W/root
 mkdir -p "$FIX/config"
 for e in lib modules rules data tools VERSION scan.sh; do
-  [[ -e $ROOT/$e ]] && ln -sfn "$ROOT/$e" "$FIX/$e"
+  [[ -e $ROOT/$e ]] && cp -RL "$ROOT/$e" "$FIX/$e"
 done
 cat >"$FIX/config/scope.conf" <<'EOF'
 id: crawl-fixture

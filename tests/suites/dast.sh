@@ -42,6 +42,12 @@ source "$ROOT/tests/lib/assert.sh"
 W=$SCOURSH_SCRATCH/dast
 rm -rf "$W"
 mkdir -p "$W"
+# Canonicalise (`cd && pwd -P`): lib/records.sh resolves every loaded file's
+# path via realpath and strips $SCOURSH_INSTALL_ROOT as a literal prefix, so a
+# fixture root reached through macOS's /var -> /private/var $TMPDIR symlink would
+# make the strip fail and every check under it fire a spurious E081 (see
+# tests/suites/scan.sh's ROOT_WITH_CHECKS, which documents the same fact).
+W=$(cd -- "$W" && pwd -P)
 
 # ---------------------------------------------------------------------------
 # Fixture install roots.
@@ -51,14 +57,24 @@ mkdir -p "$W"
 # repository ships config/scope.conf.example and no config/scope.conf, which is
 # the shipped default and is deliberately left that way - docs/STEP5-DAST-PLAN.md
 # "no shipped file names a third-party host as a scannable target").  So each
-# fixture root symlinks the real tree's code and owns its own config/.
+# fixture root holds a real COPY of the tree's code and owns its own config/.
+#
+# A copy, not a symlink: lib/records.sh resolves every loaded rule file's path
+# through realpath, which follows a symlinked `modules/` back to the real repo -
+# outside $SCOURSH_INSTALL_ROOT - so the moment a real `*.rules` file exists
+# under `modules/dast/` (modules/dast/active/checks.rules) the literal-prefix
+# strip in `_records_relpath` fails and every check fires a spurious E081,
+# aborting the whole `scan.sh dast` run.  A real copy keeps each file's realpath
+# genuinely inside the canonical root, so E081 is decided on where the file
+# actually sits.  `cp -RL` dereferences into plain files; `$W` is canonical (see
+# above) so the copies' realpaths are too.
 # ---------------------------------------------------------------------------
 _fixture_root() {
   local dir=$1 e
   mkdir -p "$dir/config"
   for e in lib modules rules data tools VERSION scan.sh; do
     [[ -e $ROOT/$e ]] || continue
-    ln -sfn "$ROOT/$e" "$dir/$e"
+    cp -RL "$ROOT/$e" "$dir/$e"
   done
 }
 
@@ -296,10 +312,11 @@ done
 t_case 'a phase above the run intensity is not sourced, even when its script exists'
 FIX_PHASE=$W/root-with-phase
 _fixture_root "$FIX_PHASE"
-# The symlinked modules/ is the real tree, so a fixture phase script has to
-# live in a modules/ of the fixture's own.  Copy the two dast files across and
-# leave the rest symlinked.
-rm -f "$FIX_PHASE/modules"
+# This case needs a modules/ of the fixture's OWN - just a controlled dast
+# run.sh/engine.sh, a fake active/sqli.sh, and a sast/engine.sh - so the copied
+# modules/ (a real directory now, not the former symlink) is replaced wholesale
+# with that minimal tree; hence `rm -rf`, not `rm -f`.
+rm -rf "$FIX_PHASE/modules"
 mkdir -p "$FIX_PHASE/modules/dast/active" "$FIX_PHASE/modules/sast"
 cp "$ROOT/modules/dast/run.sh" "$ROOT/modules/dast/engine.sh" "$FIX_PHASE/modules/dast/"
 ln -sfn "$ROOT/modules/sast/engine.sh" "$FIX_PHASE/modules/sast/engine.sh"
@@ -392,11 +409,18 @@ assert_eq "$W/run-full-inv/inventory/endpoints.json" \
 printf '\n-- what this ticket deliberately does not ship --\n'
 # =============================================================================
 
-t_case 'modules/dast/ registers no check, so nothing can be selected'
-assert_file_absent "$ROOT/modules/dast/checks.rules" \
-  'no checks.rules is shipped - fails under "register the phases now so the registry is warm", which would trip rules/RULE-FORMAT.md E072 (script must exist) on every one of them'
-assert_contains "$RUN_OK_JSON" 'reason=no_check_registry_on_disk_yet' \
-  'scan.sh still records the empty registry honestly, exactly as it did before this module landed'
+t_case 'modules/dast/ now registers its active-injection checks, recorded honestly'
+# DAST-14 ships the module's FIRST check registry, modules/dast/active/checks.rules
+# (the DAST-INJ-SQLI_* checks), nested under active/ rather than at the module
+# root.  Before it, modules/dast/ had none and a dast run recorded
+# reason=no_check_registry_on_disk_yet; that reason must no longer fire now that
+# the registry loads, and the registered checks must reach run.json.
+assert_file_exists "$ROOT/modules/dast/active/checks.rules" \
+  'the active-injection check registry is shipped (DAST-14)'
+assert_not_contains "$RUN_OK_JSON" 'reason=no_check_registry_on_disk_yet' \
+  'the empty-registry reason no longer fires once modules/dast/ ships a checks.rules - fails under "the reason is unconditional for dast", which would misreport a warm registry as absent'
+assert_contains "$RUN_OK_JSON" 'DAST-INJ-SQLI_ERROR-01' \
+  'the registered active-injection checks reach run.json - fails if checks_registry_load'"'"'s any-depth glob does not discover the nested modules/dast/active/checks.rules'
 
 # =============================================================================
 printf '\n-- DAST-32/33/34 end to end: the authorisation record a real run leaves --\n'

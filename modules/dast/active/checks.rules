@@ -1,0 +1,74 @@
+# modules/dast/active/checks.rules - the §7.3 active-injection script-check
+# registry (rules/RULE-FORMAT.md §9.5; docs/STEP5-DAST-PLAN.md tier 4).
+#
+# This is the first checks.rules the DAST module ships: auth.sh and crawl.sh
+# cover no check (they acquire a session and build the inventory), so this file
+# registers the first DAST checks tension 12 computes coverage over and
+# tension 15's filter chain filters. Every record here is a `script` check, not
+# a pattern - it names the shell script that implements it and carries
+# `coverage-scope: target`, DAST's cell (the config/scope.conf target id,
+# §9.5.1). checks_registry_load globs every *.rules under modules/dast/, so a
+# later injection probe's records may live in a sibling file or here; the linter
+# enforces one owning module (DAST) for all of them.
+#
+# The type tag is `active`, matching the phase table's `active/sqli.sh:active`
+# floor (modules/dast/engine.sh): SQL injection is reachable only at
+# `--intensity active`. It is NOT tagged `intrusive` - the payloads are
+# read-only and non-destructive (docs/DESIGN.md §7.3), so the active-intensity
+# opt-in is the gate, and requiring --allow-intrusive on top would be a second,
+# undocumented one. (The tests/fixtures/ copy tags an example SQLi check
+# `intrusive` only to exercise that filter arm; it is not this shipped catalog.)
+#
+# One check id per technique, because the DAST fingerprint (target, method,
+# path_template, param_location, param_name) does not carry the technique: a
+# single id would make an error-based and a time-based finding on the same
+# parameter collide and dedupe to one. rules/RULE-FORMAT.md §9.1.1 NAME allows
+# `_`, so the technique lives in NAME under the shared `INJ` family.
+
+id: DAST-INJ-SQLI_ERROR-01
+title: SQL injection (error-based) via request parameter
+script: active/sqli.sh
+severity: high
+confidence: high
+cwe: CWE-89
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Use parameterised queries (prepared statements) or an ORM that
+  binds request-derived values, so a request parameter is never interpolated
+  into SQL text. Return a generic error so a driver message never reaches the
+  client, and run under a least-privilege database account.
+references: CWE-89
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-SQLI_BOOLEAN-01
+title: SQL injection (boolean-based) via request parameter
+script: active/sqli.sh
+severity: critical
+confidence: medium
+cwe: CWE-89
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Use parameterised queries (prepared statements) or an ORM that
+  binds request-derived values, so a request parameter is never interpolated
+  into SQL text. Add server-side input validation and run under a
+  least-privilege database account.
+references: CWE-89
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-SQLI_TIME-01
+title: SQL injection (time-based blind) via request parameter
+script: active/sqli.sh
+severity: critical
+confidence: medium
+cwe: CWE-89
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Use parameterised queries (prepared statements) or an ORM that
+  binds request-derived values, so a request parameter is never interpolated
+  into SQL text. Add server-side input validation and run under a
+  least-privilege database account.
+references: CWE-89
+references: https://owasp.org/Top10/A03_2021-Injection/
