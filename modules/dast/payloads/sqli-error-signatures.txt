@@ -1,0 +1,50 @@
+# SQL database error signatures (docs/DESIGN.md §7.3 SQLi (a) error-based:
+# "inject ' / " and diff for DB error signatures").
+#
+# One ERE per line, matched case-insensitively against a response body through
+# scan_match (the frozen portable ERE subset, rules/RULE-FORMAT.md - no
+# backreferences, no PCRE). A match that appears in an injected response but not
+# in the benign baseline is the error-based signal. These describe error TEXT a
+# database driver emits; describing the shape rather than a specific product is
+# the same target-agnostic discipline the SAST/IaC rule packs follow.
+
+# --- MySQL / MariaDB ---
+SQL syntax.*MySQL
+Warning.*\bmysqli?_
+MySqlException
+valid MySQL result
+check the manual that corresponds to your (MySQL|MariaDB) server version
+You have an error in your SQL syntax
+Unknown column '[^']+' in 'field list'
+
+# --- PostgreSQL ---
+PostgreSQL.*ERROR
+pg_query\(\)
+PSQLException
+unterminated quoted string at or near
+syntax error at or near
+
+# --- Microsoft SQL Server ---
+Microsoft SQL (Server|Native Client)
+ODBC SQL Server Driver
+SQLServer JDBC Driver
+Unclosed quotation mark after the character string
+Incorrect syntax near
+System\.Data\.SqlClient\.SqlException
+
+# --- Oracle ---
+ORA-[0-9]{4,5}
+Oracle error
+quoted string not properly terminated
+PLS-[0-9]{4,5}
+
+# --- SQLite ---
+SQLite/JDBCDriver
+SQLite3::
+sqlite3\.OperationalError
+unrecognized token:
+SQL logic error
+
+# --- Cross-driver / generic ---
+Syntax error or access violation
+java\.sql\.SQLException

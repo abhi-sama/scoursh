@@ -1,0 +1,16 @@
+# Boolean-based SQLi payload pairs (docs/DESIGN.md §7.3: "send a tautology vs a
+# contradiction that are otherwise identical, flag if responses differ
+# meaningfully"). Each line is <true-template><TAB><false-template>: two
+# payloads identical apart from a condition that is always true versus always
+# false. %B is the baseline value. All AND-based (never OR-true), so the
+# tautology narrows nothing and the pair never widens a result set or changes an
+# authentication decision - read-only detection, not exploitation.
+#
+# Column 1 (true) should behave like the benign baseline; column 2 (false)
+# should change the response. The probe confirms the differential on a retest
+# before flagging.
+%B AND 1=1	%B AND 1=2
+%B' AND '1'='1	%B' AND '1'='2
+%B' AND 1=1-- -	%B' AND 1=2-- -
+%B") AND ("1"="1	%B") AND ("1"="2
+%B') AND ('1'='1	%B') AND ('1'='2

@@ -1,0 +1,11 @@
+# Error-based SQLi payloads (docs/DESIGN.md §7.3: "inject ' / " and diff for DB
+# error signatures"). %B is the parameter's baseline value. Each appends a
+# syntax-breaking token so a string- or numeric-context query that interpolates
+# the value un-parameterised throws a driver error the signatures file catches.
+# All read-only: a broken quote is not a data change.
+%B'
+%B"
+%B')
+%B"))
+%B'"
+%B\
