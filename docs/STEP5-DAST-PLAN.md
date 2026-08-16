@@ -724,6 +724,58 @@ segments) plus DAST-01/02, and land after tier 2/3 per §13's stated ordering.
 | DAST-24 | `active/hosthdr.sh` - spoofed `Host`/`X-Forwarded-Host` reflection |
 | DAST-25 | `active/protopollution.sh` - `__proto__`-style JSON param probing (JS backends) |
 
+**DAST-14 (`active/sqli.sh`) has landed - the first tier-4 injection probe, and the first DAST check
+that emits a finding at all.**
+It ships `modules/dast/active/inject_engine.sh` (the SHARED, pure library every §7.3 probe reuses: the
+tension-21 parameter-inventory reader, the per-location request composer, the request+timing helper,
+and the response-signal helpers) and `modules/dast/active/sqli.sh` (the phase script `dast_run_phase`
+sources at tier `active`), in the `engine.sh`/`run.sh` split `modules/sast/` established.  The three
+techniques `docs/DESIGN.md` §7.3 names are all implemented and each is its own check id -
+`DAST-INJ-SQLI_ERROR-01`, `DAST-INJ-SQLI_BOOLEAN-01`, `DAST-INJ-SQLI_TIME-01` in
+`modules/dast/active/checks.rules` (the module's first `checks.rules`; `coverage-scope: target`, type
+tag `active`).  Payloads are vendored and read from disk under `modules/dast/payloads/` (auditable, per
+§7.3), degrading a technique to a recorded `coverage_reduction` when its file is absent.
+`tests/suites/dast-sqli.sh` (35 assertions, no network, no Docker) is the mock-response proof.
+
+Six decisions here are easy to get backwards, and each is pinned by a test naming the reading it fails
+under; the first four are properties of the shared engine that every peer probe (DAST-15..DAST-25)
+inherits:
+
+- **Three techniques are three check ids, not one, because the technique is NOT part of the DAST
+  fingerprint** (target, method, path_template, param_location, param_name).  A single id would make an
+  error-based and a time-based finding on one parameter collide and dedupe to one - a parameter that is
+  vulnerable to all three produces three findings, and the suite pins exactly that.
+- **The probe injects where each parameter's `location` says** (query, body/formData, path, header,
+  cookie), not just top-level query strings (§7.3's own requirement).  A `graphql` location and a path
+  parameter with no template slot are honest "cannot inject", recorded as a coverage reduction, never
+  reported clean.  Body injection is proven end to end.
+- **Every request still goes through `http_request`.**  The engine composes the request off the
+  untrusted inventory and hands the whole thing to the chokepoint, which re-gates the URL on the way
+  out - a discovered endpoint is a candidate, never an authorisation, the same rule DAST-04's crawler
+  follows.  Nothing in `modules/dast/active/` touches the network directly.
+- **Time-based flags on a latency DELTA over the baseline floor, not on absolute time.**  The floor is
+  the MINIMUM of benign samples (the DAST-01 throttle inside `http_request` only ever ADDS delay, so the
+  minimum is the closest estimate of real server time), the injected time is likewise a minimum, and
+  the probe re-tests before flagging (§7.3: "time-based checks re-test to reduce false positives from
+  jitter").  A uniformly slow endpoint is NOT flagged; a sub-threshold delay is NOT flagged - both are
+  pinned, each failing under the naive absolute-time reading.  The suite drives this with a swappable
+  clock hook (`SCOURSH_INJECT_NOW_NS`), the same idiom `lib/http.sh`'s transport/resolver stubs use, so
+  the timing is deterministic with no real sleep.
+- **Boolean needs the tautology to behave like the baseline AND the contradiction to differ from it**,
+  confirmed on retest - a page that changes for both, or neither, is not a differential.  The injected
+  value is stripped from each body before the size comparison, so a reflected payload is not itself read
+  as the change.
+- **Non-destructive is a property of the vendored payloads, restated in the check records and the
+  ticket per the DAST-36 amendment**: every payload is read-only (a broken quote, an always-true/false
+  `AND`, a bounded `SLEEP`/`WAITFOR`), with no `DROP`/`DELETE`/`UPDATE`/`INSERT`, no stacked write, and
+  no exfiltration.  A suite assertion fails the moment a write verb is added to any payload file.
+
+**What DAST-14 deliberately did not build**, so the boundary is not rediscovered: it reuses DAST-03's
+session when `--authed` is given and a session exists (attaching the first authenticated identity), but
+like DAST-04's crawl it runs against the surface it has; the authenticated-crawl pass that would widen
+that surface is DAST-04's own stated follow-up, not this ticket's.  UNION-based and out-of-band SQLi are
+out of §7.3's error/boolean/time scope and are not built.
+
 ### Tier 5 - §7.4 auth, API, and access-control checks (5 scripts)
 
 | # | Ticket | Depends on |
