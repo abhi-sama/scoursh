@@ -857,8 +857,36 @@ interact, so take both sides.
 
 | # | Ticket | Depends on |
 |---|---|---|
-| DAST-12 | `active/discovery.sh` - content discovery | DAST-01/02/04. **No wordlist is committed to this repository** - this ticket vendors its own, in-repo and read from disk under §12's `tests/fixtures/`-style vendoring rule, so unlike DAST-09 it carries no `vendor-engines.sh` dependency and no missing-data degradation path. |
+| DAST-12 (**landed**) | `active/discovery.sh` - content discovery | DAST-01/02/04. **No wordlist is committed to this repository** - this ticket vendors its own, in-repo and read from disk under §12's `tests/fixtures/`-style vendoring rule, so unlike DAST-09 it carries no `vendor-engines.sh` dependency and no missing-data degradation path. |
 | DAST-13 | `active/methods.sh` - HTTP method enumeration | DAST-01/02/04 |
+
+**DAST-12 (`active/discovery.sh`) has landed - the first tier-3 (§7.2 safe-active) phase.**
+It ships `modules/dast/active/discovery.sh` (the phase script `dast_run_phase` sources at tier `safe`)
+and the four §7.2 checks in `modules/dast/active/checks.rules` (tag `safe-active`, coverage-scope
+`target`): `DAST-DISC-SENSITIVE-01` (CWE-538), `DAST-DISC-BACKUP-01` (CWE-530), `DAST-DISC-CONTENT-01`
+(CWE-200) and `DAST-DISC-DIRLIST-01` (CWE-548), all OWASP A05:2021.  Three candidate sources feed one
+soft-404-baseline + status/length heuristic: a small fixed in-code well-known-sensitive-path set
+(`.git/HEAD`, `.env`, `.htaccess`, ... - the two §7.2 names it explicitly), backup/temp variants
+DERIVED from the crawl inventory's endpoint paths by a fixed in-code suffix set (`.bak`, `~`, `.old`,
+...), and the VENDORED wordlist; any 200 hit whose body matches an autoindex signature also emits
+`DAST-DISC-DIRLIST-01`.
+
+**The wordlist vendoring is the part worth keeping in prose.**  No content-discovery wordlist ships in
+this repository (the no-egress rule; an online or unbounded list breaks both that premise and the
+request budget).  The probe reads its list from `modules/dast/wordlists/content-discovery.txt` by
+default (absent in a fresh clone - only a README lives there), overridable to any vendored file with
+`SCOURSH_DAST_DISCOVERY_WORDLIST`, and BOUNDED by `_DISCOVERY_MAX_WORDS` (500) plus an absolute
+`_DISCOVERY_MAX_REQUESTS` (600) request ceiling; each entry is validated as a safe relative path (a
+`..`, a scheme/absolute URL, or a control character is rejected, so a malicious vendored list cannot
+escape the authorised surface).  An ABSENT or EMPTY wordlist degrades ONLY the wordlist technique to a
+recorded `coverage_reduction`/`coverage_gap` and never errors (docs/DESIGN.md §15); the sensitive-path
+and backup techniques still run, since neither needs an external list.  Every request is a read-only
+GET through `lib/http.sh` (tension 19), non-destructive per §7.2's posture.  `tests/suites/dast-discovery.sh`
+(29 assertions, recorded responses, no network) pins the heuristic (including a soft-404 app that 200s
+every path yielding no false hits), the three source->family mapping, directory-listing detection,
+graceful degradation for an absent wordlist and an unreachable base-url, the read-only-GET posture, and
+the wordlist reader's rejection of unsafe entries.  `docs/STEP5-DAST-PLAN.md`'s own DAST-12 row above is
+the authority for the dependency; DAST-13 (`active/methods.sh`) is the only remaining tier-3 script.
 
 ### Tier 4 - active injection probes (§7.3, 11 scripts, "one file at a time, each with a mock-response test" per §13's own build-order text)
 
