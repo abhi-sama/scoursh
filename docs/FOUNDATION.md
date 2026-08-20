@@ -4371,7 +4371,7 @@ With both tier-1 tickets in, **tiers 2-5 are unblocked and nothing remains in fr
 authenticated crawl pass plugs into DAST-03's session rather than being stubbed.
 Work in those tiers has started, and out of tier order, since they are peers rather than a sequence:
 tier 4's DAST-14 (`active/sqli.sh`), tier 5's DAST-26 (`jwt.sh`) and tier 2's DAST-06
-(`passive/cookies.sh`) have landed.
+(`passive/cookies.sh`) and DAST-05 (`passive/headers.sh`) have landed.
 DAST-06 is the first §7.1 passive check and the first `modules/dast/passive/` file; two things about
 it are tension decisions rather than implementation detail.
 First, its `Set-Cookie` parser splits on `;` only OUTSIDE double quotes and never on `,` - both naive
@@ -4386,6 +4386,30 @@ two states with different remediations one finding whose meaning flips between r
 `docs/STEP5-DAST-PLAN.md`'s DAST-06 landing note carries the full detail, including the
 `SCOURSH_DAST_ENDPOINTS`-is-resolved-before-`crawl.sh`-runs defect it surfaced in
 `modules/dast/run.sh` and filed rather than widened into itself.
+**DAST-05 (`modules/dast/passive/headers.sh`) landed alongside it**, appending eleven
+`DAST-HDR-*` script checks to the shared `checks.rules` (CSP presence and content, HSTS
+missing/weak/malformed as three separate ids, framing protection, MIME sniffing, a leaky
+`Referrer-Policy`, and a configurable "recommended headers not set" roll-up), with
+`tests/suites/dast-headers.sh` proving them from recorded responses and no network.
+Their five remaining peers DAST-07..DAST-11 are open and unordered among themselves.
+Three things about it belong here rather than only in the plan, because each is a tension decision.
+First, tension 19 again: this phase issues real traffic and every request of it goes through
+`http_request`, with a NON-fatal `http_gate_url` pre-check ahead of each inventory-derived URL for
+exactly DAST-04's reason - one out-of-scope row written by another producer would otherwise abort the
+operator's whole run with exit 3.
+Second, tension 21's artifacts are consumed as OPTIONAL input and the phase degrades to the operator's
+own `base-url`, then to a recorded `coverage_gap`, rather than to silence; applicability is tracked per
+check so an inapplicable one (HSTS over plaintext, a CSP check against a JSON response) is DECLARED
+uncovered instead of counted in `checks_run`, which is tension 12's coverage question answered honestly
+rather than by execution.
+Third, the "configurable" roll-up is a vendored data file plus an environment seam, NOT a
+`config/scanner.conf` key: `rules/RULE-FORMAT.md` §9.6.1 is frozen and §14 item 2 prices a new key at
+`lib/records.sh` plus `tests/lint-rules.sh` moving together, which a tier-2 check should not spend on
+behalf of six parallel peers.
+It independently hit the same pre-existing `modules/dast/run.sh` defect DAST-06 filed, and
+likewise did not fix it in place: the inventory paths are exported BEFORE the phase loop while
+`crawl.sh` writes the files inside it, so `SCOURSH_DAST_ENDPOINTS` is empty on every first run
+and any consumer trusting it alone sees no surface - `modules/dast/active/inject_engine.sh` is one such consumer today.
 Two things about DAST-04 are worth carrying here rather than only in the plan, because both are
 tension decisions rather than implementation detail.
 First, the scope pre-check on a discovered link is **not** a second gate and never becomes one

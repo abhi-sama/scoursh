@@ -1,0 +1,41 @@
+# modules/dast/passive/recommended-headers.txt - the configurable input to
+# DAST-HDR-RECOMMENDED_MISSING-01, the "recommended headers not set" roll-up
+# docs/DESIGN.md §7.1 asks for.
+#
+# ONE FIELD NAME PER LINE.  Whole-line `#` comments and blank lines are ignored;
+# matching is case-insensitive.  Point SCOURSH_DAST_RECOMMENDED_HEADERS_FILE at
+# another file to use a different list, or edit this one - it is data, never
+# code, and nothing here is ever expanded or executed.
+#
+# WHAT BELONGS HERE, AND WHAT DOES NOT.  This list is for headers whose ABSENCE
+# is a hardening gap worth one shared, low-severity line in the report.  The four
+# headers this phase analyses in depth - Content-Security-Policy,
+# Strict-Transport-Security, X-Frame-Options and X-Content-Type-Options - have
+# their own check ids with their own remediation, and adding one of them here is
+# ignored deliberately (the run records that it was), because reporting the same
+# absence twice helps nobody.
+#
+# An empty list, or a file that cannot be read, is not an error: the roll-up is
+# then skipped with a recorded reason, exactly as a missing payload file degrades
+# one SQLi technique rather than failing the run.
+
+# Controls what the browser sends in `Referer` on a cross-origin request.  Its
+# ABSENCE is a gap rather than a leak - modern browsers default to
+# strict-origin-when-cross-origin - so it is reported here, while a value that
+# actively sends the full URL cross-origin is DAST-HDR-REFERRER_LEAKY-01.
+Referrer-Policy
+
+# Opt-in control over powerful browser features (camera, geolocation, payment,
+# and the rest) for the document and anything it embeds.
+Permissions-Policy
+
+# Cross-origin isolation.  COOP severs the opener relationship a cross-origin
+# window would otherwise use to reach into this one; CORP states who may embed
+# this resource at all; COEP is what makes the pair actually isolating.
+Cross-Origin-Opener-Policy
+Cross-Origin-Resource-Policy
+Cross-Origin-Embedder-Policy
+
+# Stops a legacy Adobe client from honouring a crossdomain.xml this site may not
+# even know it serves.
+X-Permitted-Cross-Domain-Policies
