@@ -4369,6 +4369,23 @@ endpoint and parameter inventory that all twenty-seven tickets in tiers 2-5 cons
 normative, frozen-in-intent shape in `docs/INVENTORY-FORMAT.md`.
 With both tier-1 tickets in, **tiers 2-5 are unblocked and nothing remains in front of them**; the
 authenticated crawl pass plugs into DAST-03's session rather than being stubbed.
+Work in those tiers has started, and out of tier order, since they are peers rather than a sequence:
+tier 4's DAST-14 (`active/sqli.sh`), tier 5's DAST-26 (`jwt.sh`) and tier 2's DAST-06
+(`passive/cookies.sh`) have landed.
+DAST-06 is the first §7.1 passive check and the first `modules/dast/passive/` file; two things about
+it are tension decisions rather than implementation detail.
+First, its `Set-Cookie` parser splits on `;` only OUTSIDE double quotes and never on `,` - both naive
+readings fail in the direction that reads as a pass (a comma split invents a phantom cookie out of an
+`Expires` date and strands the real one's attributes on it; a quote-blind `;` split reads a quoted
+word `Secure` as the attribute and passes a cookie that is missing it), and both were measured by
+writing the naive version and watching `tests/suites/dast-cookies.sh` go red rather than reasoned
+about.
+Second, an ABSENT `SameSite` and an explicitly weak one are two check ids rather than one check with
+two messages, because `check_id` is a fingerprint component (tension 5) and a single id would make
+two states with different remediations one finding whose meaning flips between runs.
+`docs/STEP5-DAST-PLAN.md`'s DAST-06 landing note carries the full detail, including the
+`SCOURSH_DAST_ENDPOINTS`-is-resolved-before-`crawl.sh`-runs defect it surfaced in
+`modules/dast/run.sh` and filed rather than widened into itself.
 Two things about DAST-04 are worth carrying here rather than only in the plan, because both are
 tension decisions rather than implementation detail.
 First, the scope pre-check on a discovered link is **not** a second gate and never becomes one

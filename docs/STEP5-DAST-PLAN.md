@@ -690,12 +690,87 @@ only that all of them come after DAST-04 (they need the endpoint list) and DAST-
 | # | Ticket | Extra notes beyond DAST-01/02/04 |
 |---|---|---|
 | DAST-05 | `passive/headers.sh` | CSP, HSTS, `X-Frame-Options`/`frame-ancestors`, `X-Content-Type-Options`, `Referrer-Policy`, "recommended headers not set" roll-up. |
-| DAST-06 | `passive/cookies.sh` | `Secure`/`HttpOnly`/`SameSite` per cookie. |
+| DAST-06 **(landed)** | `passive/cookies.sh` | `Secure`/`HttpOnly`/`SameSite` per cookie. See the landing note below the tier-2 table. |
 | DAST-07 | `passive/tls.sh` | Shells out to `openssl s_client`; the one documented exception to "every network call goes through `lib/http.sh`" (`docs/FOUNDATION.md` tension 19's neighbourhood notes this). Sequence close to DAST-30 (`transport.sh`), which complements it - not a hard code dependency, just worth landing in the same review window for a coherent report section. |
 | DAST-08 | `passive/cors.sh` | Origin-reflection probe. |
 | DAST-09 | `passive/banner.sh` | Framework/version disclosure matched against **`data/versions.db`**. The writer side is no longer a forward dependency: `tools/vendor-engines.sh advisories` landed ahead of step 5 and writes `data/versions.db` by the same call that writes `data/advisories.db` (tension 25). What is still missing is the data - no `data/versions.db` is committed to this repository, and populating one is an operator action on a networked box, never part of a scan. This ticket ships the matching logic and must degrade gracefully (skip that sub-check with a reason, not an error) when `data/versions.db` is missing or empty, which is the state of a fresh clone. |
 | DAST-10 | `passive/leakage.sh` | Verbose-error/stack-trace disclosure, upstream proxy header leakage, email disclosure, client-config leakage in served JS, CDN/third-party origin detection. Its "API key found in served JS" output is a later correlation input for DAST-27 (`graphql.sh`) at the derived-finding layer (tension 6), not a code dependency. |
 | DAST-11 | `passive/markup.sh` | Missing SRI, reverse tabnabbing, insecure external frame, CSRF-token absence in state-changing forms. |
+
+#### What DAST-06 (`passive/cookies.sh`) shipped, and the six things about it that are easy to get backwards
+
+**DAST-06 has landed, and it is the first tier-2 passive check.**
+It ships `modules/dast/passive/cookie_engine.sh` (the pure `Set-Cookie` parser and attribute
+analyser), `modules/dast/passive/cookies.sh` (the phase script `dast_run_phase` sources),
+`modules/dast/passive/checks.rules` (the §7.1 script-check registry, four records), and
+`tests/suites/dast-cookies.sh` (107 assertions, registered in `tests/run-tests.sh`, driven entirely
+from recorded responses through a stubbed transport - no network, no Docker).
+The engine/phase split is `modules/sast/`'s, reused verbatim, exactly as `auth_engine.sh` + `auth.sh`
+and `inject_engine.sh` + `sqli.sh` already do.
+
+- **A `Set-Cookie` header value is NEVER split on a comma, and that is the hazard with the highest
+  cost.** The generic RFC 7230 "a comma separates list members" rule is correct for `Accept` and
+  specifically wrong here (RFC 6265 §3), because `Expires=Wed, 09 Jun 2021 10:18:14 GMT` carries a
+  comma *inside one attribute*. Under the split, one correctly-flagged cookie becomes two: the real
+  one loses every attribute after the date and is reported with three findings it does not deserve,
+  and a phantom cookie is invented out of the expiry date. Measured, not asserted: a comma-splitting
+  extractor was written and the suite went red in five places, at the extraction layer and end to end.
+- **A `;` inside a quoted cookie-value does not split it either, and the naive reading here fails in
+  the direction that reads as a pass.** RFC 6265 §4.1.1 allows `DQUOTE *cookie-octet DQUOTE`, so
+  `pref="light; Secure; dark"; HttpOnly` is one cookie with no `Secure` attribute - but a naive `;`
+  split sees the quoted word `Secure` as an attribute and reports a cookie that IS missing `Secure`
+  as having it. A false negative, not a false positive. Also measured: the naive splitter turns two
+  assertions red, one unit and one end to end.
+- **`SameSite` ABSENT and `SameSite` EXPLICITLY WEAK are two check ids, not one check with two
+  messages.** Browsers do not agree on what an absent attribute means (Chromium applies `Lax`; other
+  engines have shipped both `Lax` and no restriction), so absence is a policy the *site did not
+  choose*; an explicit `SameSite=None` is one it did. `check_id` is a fingerprint component, so a
+  single id would make those two states one finding whose meaning flips between runs. An
+  unrecognised value (`SameSite=Bogus`, or an empty `SameSite=`) is a third parser state that maps
+  to the WEAK id and quotes the value verbatim - folding it into `absent` would tell the operator
+  the server stated no policy when it stated an unusable one, and so recommend the wrong fix.
+- **`Secure` and `HttpOnly` are set by the attribute's PRESENCE, never its value** (RFC 6265 §5.2.5
+  and §5.2.6 both discard the attribute-value), so `HttpOnly=false` is an HttpOnly cookie in every
+  browser. Reading the value reports a flag as missing on a cookie that has it.
+- **Only `GET` endpoints are requested.** §7.1's own first sentence is "No mutation of state", so a
+  `POST`/`PUT`/`PATCH`/`DELETE` endpoint in the inventory is not dialled - which costs real coverage,
+  because a login POST is exactly where the session cookie is usually set. That omission is a
+  recorded `coverage_reduction` (`cookies_non_get_endpoints_not_dialled`), never a silent skip; so is
+  an unauthenticated-only pass (`cookies_unauthenticated_only`), for the same reason.
+- **The endpoint walk is SORTED under `LC_ALL=C`, and that is not cosmetic.** `inject_inventory_load`
+  returns the endpoints in a bash *associative* array, whose iteration order is hash order. With a
+  per-phase cap (`SCOURSH_DAST_COOKIE_MAX_ENDPOINTS`, default 25) an unsorted walk would make *which*
+  endpoints a capped run inspects depend on hash order, so two runs over one surface could produce
+  different findings - the opposite of this repository's byte-reproducible-output property. Pinned by
+  a case that runs the capped phase twice and compares the request logs.
+
+**What DAST-06 deliberately did not build.** It writes no header reader, no inventory reader and no
+request composer: DAST-05..DAST-11 are peers being built in parallel, so this ticket added nothing
+another passive ticket also needs. The endpoint inventory is read through `inject_inventory_load`
+(`modules/dast/active/inject_engine.sh`), the shipped reader for that frozen artifact, rather than a
+second one - which is that file's own stated reason for existing. The live user-enumeration probe,
+`Domain`-scope analysis, cookie-prefix (`__Host-`/`__Secure-`) conformance and cookie-value entropy
+are all out of scope and unclaimed by any ticket.
+
+**One correction it surfaced but did not make, filed instead.** `modules/dast/run.sh` calls
+`dast_inventory_read` ONCE, before the phase loop, and exports `SCOURSH_DAST_ENDPOINTS` from what it
+found *then* - which on a fresh run is nothing, because `crawl.sh` is itself a phase and has not run
+yet. It writes `reports/<run>/inventory/endpoints.json` a few phases later in the same loop and
+nothing re-reads it, so any consumer trusting the exported variable alone sees an empty surface on
+precisely the ordinary run. `passive/cookies.sh` works around it locally (it falls back to
+`$SCOURSH_RUN_DIR/inventory/endpoints.json`, the same artifact by the same path, read after the
+producer wrote it) and says so in its own header. The general fix belongs to `modules/dast/run.sh`
+and affects every inventory consumer - `active/sqli.sh` reads the exported variable alone today - so
+it is filed as its own ticket rather than widened into this one.
+
+**One note on the frozen record format, so the next passive ticket does not repeat the attempt.**
+This ticket first shipped its registry as `modules/dast/passive/cookies.rules`, one pack per owning
+script, so that DAST-05..DAST-11 would not all edit one file. That is not available:
+`rules/RULE-FORMAT.md` §9's path table reserves the basename `checks.rules` repository-wide for the
+§9.5 schema, and a record file matching no row of that table is `E070` - which `tests/lint-rules.sh`
+duly reported. The tier therefore shares `modules/dast/passive/checks.rules`. A parallel passive
+ticket will meet a merge conflict there; it is an append-only conflict between records that do not
+interact, so take both sides.
 
 ### Tier 3 - safe active (§7.2, 2 scripts)
 
