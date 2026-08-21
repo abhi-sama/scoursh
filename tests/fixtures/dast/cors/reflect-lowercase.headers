@@ -1,0 +1,6 @@
+HTTP/2 200
+content-type: application/json
+access-control-allow-origin: https://scoursh-cors-probe.example
+access-control-allow-credentials: true
+vary: origin
+

@@ -733,7 +733,7 @@ only that all of them come after DAST-04 (they need the endpoint list) and DAST-
 | DAST-05 **(landed)** | `passive/headers.sh` | CSP, HSTS, `X-Frame-Options`/`frame-ancestors`, `X-Content-Type-Options`, `Referrer-Policy`, "recommended headers not set" roll-up. See the landing note below the tier-2 table. |
 | DAST-06 **(landed)** | `passive/cookies.sh` | `Secure`/`HttpOnly`/`SameSite` per cookie. See the landing note below the tier-2 table. |
 | DAST-07 | `passive/tls.sh` | Shells out to `openssl s_client`; the one documented exception to "every network call goes through `lib/http.sh`" (`docs/FOUNDATION.md` tension 19's neighbourhood notes this). Sequence close to DAST-30 (`transport.sh`), which complements it - not a hard code dependency, just worth landing in the same review window for a coherent report section. |
-| DAST-08 | `passive/cors.sh` | Origin-reflection probe. |
+| DAST-08 **(landed)** | `passive/cors.sh` | Origin-reflection probe. Landing note below. It created `modules/dast/passive/` and `modules/dast/passive/checks.rules`, the shared tier-2 script-check registry every other ticket in this table appends its own records to. |
 | DAST-09 | `passive/banner.sh` | Framework/version disclosure matched against **`data/versions.db`**. The writer side is no longer a forward dependency: `tools/vendor-engines.sh advisories` landed ahead of step 5 and writes `data/versions.db` by the same call that writes `data/advisories.db` (tension 25). What is still missing is the data - no `data/versions.db` is committed to this repository, and populating one is an operator action on a networked box, never part of a scan. This ticket ships the matching logic and must degrade gracefully (skip that sub-check with a reason, not an error) when `data/versions.db` is missing or empty, which is the state of a fresh clone. |
 | DAST-10 **(landed)** | `passive/leakage.sh` | Verbose-error/stack-trace disclosure, upstream proxy header leakage, email disclosure, client-config leakage in served JS, CDN/third-party origin detection. Its "API key found in served JS" output is a later correlation input for DAST-27 (`graphql.sh`) at the derived-finding layer (tension 6), not a code dependency. See the landing note below the tier-2 table. |
 | DAST-11 **(landed)** | `passive/markup.sh` | Missing SRI, reverse tabnabbing, insecure external frame, CSRF-token absence in state-changing forms. See the landing note below the tier-2 table. |
@@ -1096,6 +1096,103 @@ The `crossorigin`-parsed-and-never-read case (item 8 of the corrective ticket) i
 there: closing it means minting a new check id, which is a registry and fingerprint-identity change,
 so it is filed as its own ticket.
 
+
+**DAST-08 (`passive/cors.sh`) has landed - the first tier-2 passive check, and the ticket that
+created `modules/dast/passive/`.**
+It ships `modules/dast/passive/cors_engine.sh` (the pure half: the response-header reader, the
+`Access-Control-Allow-Origin` classifier, the credentials predicate, the probe and the finding
+emission) and `modules/dast/passive/cors.sh` (the phase script `dast_run_phase` sources at tier
+`passive`), in the `engine.sh`/`run.sh` split `modules/sast/` established and every DAST phase since has
+reused.  Three check ids in the new `modules/dast/passive/checks.rules` -
+`DAST-CORS-ORIGIN_REFLECTED-01` (medium, CWE-346), `DAST-CORS-REFLECTED_WITH_CREDENTIALS-01` (high,
+CWE-346) and `DAST-CORS-WILDCARD-01` (low, CWE-942), all `owasp: A05:2021`, type tag `passive`, profile
+tag `quick`, `coverage-scope: target`.  `tests/suites/dast-cors.sh` (91 assertions, no network, no
+Docker) drives the whole check from RECORDED response-header blocks under
+`tests/fixtures/dast/cors/`.
+
+`modules/dast/passive/checks.rules` is SHARED tier-2 scaffolding this ticket created and owns until a
+sibling appends to it.  `rules/RULE-FORMAT.md` §9 reserves the basename `checks.rules`
+repository-wide for the §9.5 schema, so a passive check's registry cannot be given a per-check
+filename; DAST-05, DAST-06, DAST-07, DAST-09, DAST-10 and DAST-11 each append their own records to this
+one file.  The records are blank-line-separated and order-independent, so two of those tickets landing
+in parallel conflict only on adjacent text.
+
+Five decisions here are easy to get backwards; each is pinned by a test naming the reading it fails
+under, and each was confirmed by deliberately breaking the implementation and watching the suite go red
+(nine such mutations were run; two assertions that survived their mutation were replaced with ones that
+do not).
+
+- **THIS CHECK SENDS A REQUEST AND IS STILL PASSIVE, AND THE TWO ARE NOT IN TENSION.**  §7.1's
+  contract is "No mutation of state", not "no traffic", and its own `cors.sh` bullet spells the probe
+  out as "`Origin: <sentinel>` -> check `Access-Control-Allow-Origin` + credentials".  Six properties
+  keep it inside that contract and each is asserted against a REQUEST LOG rather than a return value:
+  only GET/HEAD endpoints from the inventory are requested (a POST or DELETE route the crawler found is
+  never touched, and is never "downgraded" to a GET, which would be content discovery at the
+  safe-active tier); exactly one request per distinct route, with no retry and no `OPTIONS` preflight;
+  no request body; no response-body capture sink, so target content never enters the process or an
+  artifact; no redirect followed; and the request goes through `http_request`, so tension 19's gate,
+  DAST-01's limiter, the budget, the breaker and DAST-32's ceilings all bind it.
+- **A WILDCARD IS NOT A REFLECTION, AND THEY ARE THREE CHECK IDS RATHER THAN ONE.**  `*` says "any
+  origin may read this UNAUTHENTICATED" - the Fetch standard forbids a browser from honouring `*`
+  together with credentials at all - whereas reflection says "whatever origin asked is trusted", which
+  composes with cookies into a full cross-origin read of an authenticated response.  A check keying on
+  "an ACAO header came back" grades a public CSS asset the same as a reflecting API.  They must also be
+  separate ids mechanically: the DAST location profile (target, method, path_template, param_location,
+  param_name) carries no verdict component, so one shared id would make a wildcard and a reflection on
+  the same route collide and dedupe to a single finding.
+- **THE CREDENTIALED FINDING SUBSUMES THE PLAIN ONE; EXACTLY ONE FIRES PER ROUTE.**  Emitting
+  `ORIGIN_REFLECTED` and then separately noting credentials would report one root cause twice and make
+  the CORS finding count meaningless - the same discipline `jwt_engine.sh` applies when
+  `SIG_NOT_VERIFIED` subsumes its per-variant probes.
+- **A STATIC ALLOWLIST IS NOT A FINDING, AND REFLECTION IS EXACT EQUALITY.**  A server that answers its
+  own configured origin to our sentinel validated the Origin and refused it, which is correct
+  configuration; reporting it is a false positive on the thing we are asking operators to do.  And a
+  value that merely CONTAINS the sentinel (`<sentinel>.attacker.invalid`) is a different, suffix-match
+  bug and not a reflection of ours - a substring test calls it one.
+- **HEADER FIELD NAMES ARE MATCHED CASE-INSENSITIVELY, AND THE TRAILING CR IS STRIPPED.**  HTTP/2
+  (RFC 7540 §8.1.2) REQUIRES lowercase field names, so a check matching the RFC 6454 spelling
+  byte-for-byte reports every target behind an HTTP/2 edge clean; and every recorded fixture is
+  CRLF-terminated because that is what HTTP is, so a reader that keeps the `\r` compares
+  `"<origin>\r"` against the sentinel and calls a reflecting server clean.  These are the two ways this
+  check goes quietly blind in production while every "emits nothing" assertion stays green, which is
+  why the fixtures are recorded rather than composed inline.
+
+**The sentinel origin.**  It is `https://scoursh-cors-probe.example`, an RFC 2606 reserved name that
+can never be delegated, and it is a header VALUE only - no request is ever addressed to it, which the
+suite asserts against the request log.  It names no application, company, product or environment
+(AGENTS.md §1).  `SCOURSH_DAST_CORS_ORIGIN` overrides it for testing, the same swappable-seam idiom
+`lib/http.sh`'s transport and resolver hooks use; it is deliberately not a documented operator knob and
+has no config key.
+
+**Coverage is recorded for all three ids whenever a probe got a response, including the ids that fired
+nothing.**  One response answers all three verdicts at once, so recording only the ids that happened to
+fire would make coverage a function of the result and leave a genuinely clean target indistinguishable
+from an unscanned one.  The converse is pinned too: a run whose every probe failed at the transport
+level records NO `checks_run` and states that nothing was tested, because a breaker-opened run must
+never read as a clean target.
+
+**What DAST-08 deliberately did not build**, so the boundary is not rediscovered:
+
+- **An AUTHENTICATED probe pass.**  A CORS policy is frequently set only on the authenticated API
+  surface, so an unauthenticated probe can miss one.  That is a real bound and it is RECORDED
+  (`reason=cors_probe_is_unauthenticated`) on exactly the runs where a reader could expect otherwise -
+  `--authed` given and a session actually acquired.  It is not closed here because attaching the
+  session would mean sending the operator's credentials alongside a foreign `Origin` header, which is a
+  posture decision that wants its own ticket rather than a line in a passive check.
+- **An `OPTIONS` preflight probe.**  The actual-request response already carries the two headers §7.1
+  names; a preflight would double this check's request count to also read
+  `Access-Control-Allow-Methods`/`-Headers`, and HTTP method enumeration is DAST-13
+  (`active/methods.sh`) at the safe-active tier.
+- **`Access-Control-Allow-Origin: null` as a finding of its own.**  Reflecting the `null` origin is
+  separately exploitable from a sandboxed iframe, but detecting it needs a SECOND request carrying
+  `Origin: null`, which is a second probe per endpoint.  A `null` value classifies as `allowlisted`
+  today and produces no finding; that is a stated gap, filed as its own backlog ticket.
+- **`dast_check_selected`.**  `modules/dast/active/sqli.sh` (DAST-14) already calls this function
+  behind a `declare -F` guard, and it EXISTS NOWHERE IN THIS REPOSITORY - so tension 15's per-check
+  selection has never bound a DAST check, and `--profile-scan`/`--intensity` narrowing is inert for the
+  module today.  `cors.sh` uses the identical guard so it behaves exactly as its peer, and the gap is
+  filed as its own ticket rather than closed inside a check: the function belongs in
+  `modules/dast/engine.sh`, which every tier-2 peer is editing in parallel.
 
 ### Tier 3 - safe active (§7.2, 2 scripts)
 
