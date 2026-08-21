@@ -245,9 +245,12 @@ _dast_cookies_phase() {
       'internal: modules/dast/passive/cookies.sh was reached with no target; dast_run_phase publishes SCOURSH_DAST_TARGET'
   fi
 
-  # tension-15 per-check selection, guarded exactly as active/sqli.sh guards it:
-  # `dast_check_selected` does not exist on every path this file is reachable
-  # from, and absent it everything the tier already permitted runs.
+  # tension-15 per-check selection, guarded exactly as active/sqli.sh guards it.
+  # `dast_check_selected` (modules/dast/engine.sh) now exists, so on any run
+  # reached through `dast_run_phase` this narrows what is inspected for real;
+  # the guard is kept because this file is also reachable from a direct-engine
+  # test that never sources engine.sh, where an unguarded call would be exit 127
+  # and would deselect all four checks rather than none of them.
   local do_secure=1 do_httponly=1 do_ss_absent=1 do_ss_weak=1
   if declare -F dast_check_selected >/dev/null; then
     dast_check_selected DAST-COOKIE-NO_SECURE-01 || do_secure=0

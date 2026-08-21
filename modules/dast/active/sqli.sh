@@ -254,10 +254,16 @@ _dast_sqli_phase() {
   # tension-15 per-check selection: scan.sh's filter chain records which ids
   # survived --profile-scan/--intensity/--allow-intrusive and exports them as
   # SCOURSH_SELECTED_CHECKS; modules/dast/engine.sh's `dast_check_selected`
-  # answers it. Consulted only if that function exists (guarded like the auth
-  # wiring), so this file does not hard-depend on it: absent, everything the
-  # tier already permitted runs, which is the same "empty means all selected"
-  # fallback a direct-engine test relies on.
+  # answers it, and it now EXISTS - so a technique the operator filtered out
+  # genuinely sends no payload, which is the whole point of gating an OUTBOUND
+  # probe on the check set rather than only the report on it.
+  #
+  # The `declare -F` guard is KEPT deliberately: tests/suites/dast-sqli.sh
+  # sources this file with no modules/dast/engine.sh in the process, and an
+  # unguarded call there would be exit 127 - non-zero, so all three techniques
+  # would read as deselected and the phase would go inert while the suite
+  # stayed green.  Absent reader means all selected, exactly as an absent list
+  # does.
   if declare -F dast_check_selected >/dev/null; then
     dast_check_selected DAST-INJ-SQLI_ERROR-01 || do_error=0
     dast_check_selected DAST-INJ-SQLI_BOOLEAN-01 || do_boolean=0

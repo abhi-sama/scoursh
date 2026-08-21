@@ -570,4 +570,119 @@ assert_not_contains "$(_slurp "$W/run-authed-ok/report.md")" 'a-static-token-no-
 assert_contains "$RUN_AUTH_OK" 'need TWO' \
   'and the run states that one identity is not enough for a cross-user check - fails if the shortfall is discovered later by DAST-29 reporting a clean result it had no second identity to obtain'
 
+# =============================================================================
+printf '\n-- tension-15 per-check selection: dast_check_selected --\n'
+# =============================================================================
+# scan.sh's `_scan_apply_profile_filter` builds SCOURSH_SELECTED_CHECKS from
+# --profile-scan / --intensity / --allow-intrusive.  `dast_check_selected` is
+# the DAST side's reader, and every phase script that gates a check on the
+# operator's check set calls it.  Until it existed the four call sites were all
+# `declare -F`-guarded, so the filter chain narrowed the REGISTRY and narrowed
+# nothing a run actually SENT - forged JWTs and SQLi payloads went to the target
+# for checks the operator had filtered out.
+#
+# The permissive default is the load-bearing half.  Unset or empty MUST mean
+# "all selected", exactly as lib/findings.sh's `_derived_record_selected`
+# already reads it: every direct-engine suite (dast-cookies/headers/sqli/
+# discovery) sources a phase with no filter chain anywhere, so a fail-closed
+# default would make every DAST phase inert while every "stays quiet"
+# assertion in those suites still passed green - the worst possible failure,
+# because it is invisible from the test output.
+
+_sel_rc() {
+  local rc=0
+  dast_check_selected "$1" || rc=$?
+  printf '%s' "$rc"
+}
+
+t_case 'the function four phase scripts call actually exists'
+_HAVE_SEL=1
+declare -F dast_check_selected >/dev/null && _HAVE_SEL=0
+assert_eq 0 "$_HAVE_SEL" \
+  'modules/dast/engine.sh defines dast_check_selected - FAILS while every call site is a `declare -F` guard over a function nothing defines, which is a silent no-op rather than an error'
+
+t_case 'unset means all selected, not none'
+unset SCOURSH_SELECTED_CHECKS
+assert_eq 0 "$(_sel_rc DAST-INJ-SQLI_ERROR-01)" \
+  'an UNSET SCOURSH_SELECTED_CHECKS selects everything - FAILS under a fail-closed default, which would make every direct-engine DAST suite green while testing nothing'
+
+t_case 'empty means all selected too'
+SCOURSH_SELECTED_CHECKS=''
+assert_eq 0 "$(_sel_rc DAST-COOKIE-NO_SECURE-01)" \
+  'an EMPTY SCOURSH_SELECTED_CHECKS selects everything - fails if only the unset case is special-cased, which is the shape scan.sh actually exports (it exports the variable unconditionally, possibly empty)'
+
+t_case 'a populated list is honoured in both directions'
+SCOURSH_SELECTED_CHECKS=$'DAST-COOKIE-NO_SECURE-01\nDAST-HDR-CSP_MISSING-01\nDAST-INJ-SQLI_TIME-01'
+assert_eq 0 "$(_sel_rc DAST-COOKIE-NO_SECURE-01)" \
+  'the FIRST id in the list is selected - fails under a match that skips the first line (a leading-newline anchor bug)'
+assert_eq 0 "$(_sel_rc DAST-HDR-CSP_MISSING-01)" \
+  'a MIDDLE id is selected'
+assert_eq 0 "$(_sel_rc DAST-INJ-SQLI_TIME-01)" \
+  'the LAST id in the list is selected - fails under a match that skips the last line (a trailing-newline anchor bug)'
+assert_eq 1 "$(_sel_rc DAST-INJ-SQLI_ERROR-01)" \
+  'an id NOT in the list is refused - FAILS under "always 0", which is exactly what the missing definition produced through the `declare -F` guards, and is why an operator-filtered payload still reached the target'
+
+t_case 'membership is whole-line, never substring'
+SCOURSH_SELECTED_CHECKS=$'DAST-HDR-CSP_MISSING-01\nDAST-COOKIE-NO_HTTPONLY-01'
+assert_eq 1 "$(_sel_rc DAST-HDR-CSP)" \
+  'a PREFIX of a selected id is not itself selected - FAILS under a bare `*"$id"*` substring glob'
+assert_eq 1 "$(_sel_rc HTTPONLY-01)" \
+  'a SUFFIX of a selected id is not itself selected - fails under the same substring glob from the other end'
+SCOURSH_SELECTED_CHECKS=$'PRE-DAST-INJ-SQLI_ERROR-01\nDAST-HDR-CSP_MISSING-01'
+assert_eq 1 "$(_sel_rc DAST-INJ-SQLI_ERROR-01)" \
+  'an id that is only a SUFFIX OF ANOTHER LINE is not selected - fails under a substring glob, which would deliver a SQLi payload the operator filtered out because an unrelated id happened to end with the same bytes'
+
+t_case 'the reader does not mutate the list it reads'
+SCOURSH_SELECTED_CHECKS=$'DAST-HDR-CSP_MISSING-01\nDAST-HDR-HSTS_MISSING-01'
+_sel_rc DAST-HDR-CSP_MISSING-01 >/dev/null
+_sel_rc DAST-NOT-A-CHECK-01 >/dev/null
+assert_eq $'DAST-HDR-CSP_MISSING-01\nDAST-HDR-HSTS_MISSING-01' "$SCOURSH_SELECTED_CHECKS" \
+  'SCOURSH_SELECTED_CHECKS is unchanged after two lookups - fails if the reader normalises the list in place, which would let one phase narrow the set every later phase sees'
+unset SCOURSH_SELECTED_CHECKS
+
+# =============================================================================
+printf '\n-- and the filter chain reaches a phase end to end, through scan.sh --\n'
+# =============================================================================
+# Both directions on ONE fixture, because the naive fix for each is the other's
+# bug: a fail-closed default makes the "filtered" assertion pass for the wrong
+# reason, and an undefined (or unconsulted) reader makes the "not filtered" one
+# pass for the wrong reason.
+#
+# The fixture drops `tags: quick` from the DAST-COOKIE-* records ONLY, so
+# `--profile-scan quick` selects the three quick-tagged DAST-HDR-* ids and no
+# cookie id at all.  A profile that selected NOTHING would prove nothing: the
+# permissive default above (correctly) cannot distinguish "the filter chain ran
+# and kept nothing" from "there is no filter chain", so the selected set has to
+# stay non-empty for this to be a test of selection rather than of the fallback.
+FIX_SEL=$W/root-selection
+_fixture_root "$FIX_SEL"
+cp "$FIX_SCOPE/config/scope.conf" "$FIX_SEL/config/scope.conf"
+_SEL_RULES=$FIX_SEL/modules/dast/passive/checks.rules
+awk '
+  /^id: /       { id = $2 }
+  /^tags: quick$/ && id ~ /^DAST-COOKIE-/ { next }
+                { print }
+' "$_SEL_RULES" >"$_SEL_RULES.new"
+mv "$_SEL_RULES.new" "$_SEL_RULES"
+
+t_case 'every DAST-COOKIE-* check filtered out means the phase inspects nothing and says so'
+_dast_scan "$W/run-sel-quick" "$FIX_SEL" --target dast-fixture --profile-scan quick
+assert_eq 0 "$_RC" 'the filtered run still exits 0'
+RUN_SEL_QUICK=$(_slurp "$W/run-sel-quick/run.json")
+assert_contains "$RUN_SEL_QUICK" 'DAST-HDR-CSP_MISSING-01' \
+  'the selected set is genuinely non-empty - without this the case below would pass under the "empty means all" fallback instead of under real selection'
+assert_not_contains "$RUN_SEL_QUICK" 'checks_selected*DAST-COOKIE-NO_SECURE-01' \
+  'and the cookie ids are genuinely out of it'
+assert_contains "$RUN_SEL_QUICK" 'reason=cookies_no_check_selected' \
+  'the cookies phase consulted the operator'"'"'s check set and inspected NO response - FAILS while dast_check_selected is undefined, which is the bug this ticket fixes: the registry was narrowed and the phase still ran every check'
+
+t_case 'and with the same fixture unfiltered, the phase runs normally'
+_dast_scan "$W/run-sel-full" "$FIX_SEL" --target dast-fixture --profile-scan full
+assert_eq 0 "$_RC" 'the unfiltered run exits 0'
+RUN_SEL_FULL=$(_slurp "$W/run-sel-full/run.json")
+assert_not_contains "$RUN_SEL_FULL" 'reason=cookies_no_check_selected' \
+  'no "nothing selected" record under --profile-scan full - FAILS under a fail-closed default or an inverted membership test, either of which would make every DAST phase inert on an ordinary run'
+assert_contains "$RUN_SEL_FULL" 'inspected for cookie flags' \
+  'and the phase reached its ordinary per-target coverage statement instead - fails if "filtered" and "ran" produce the same silence'
+
 t_summary dast

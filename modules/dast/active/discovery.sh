@@ -505,8 +505,12 @@ _dast_discovery_phase() {
     return 0
   fi
 
-  # tension-15 per-check selection (guarded exactly as active/sqli.sh's, so this
-  # file does not hard-depend on `dast_check_selected` existing).
+  # tension-15 per-check selection (guarded exactly as active/sqli.sh's).
+  # `dast_check_selected` (modules/dast/engine.sh) now exists, so a discovery
+  # family the operator filtered out genuinely issues no request; the guard
+  # stays because tests/suites/dast-discovery.sh sources this file without
+  # engine.sh, where an unguarded call would be exit 127 and would deselect all
+  # four families instead of none.
   local do_content=1 do_backup=1 do_sensitive=1 do_dirlist=1
   if declare -F dast_check_selected >/dev/null; then
     dast_check_selected DAST-DISC-CONTENT-01   || do_content=0

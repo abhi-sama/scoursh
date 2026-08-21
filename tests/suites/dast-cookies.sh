@@ -54,6 +54,14 @@ source "$ROOT/modules/dast/engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
 
+# This suite DOES source modules/dast/engine.sh above, so `dast_check_selected`
+# is real here and the cookies phase will consult it.  Clear the list explicitly
+# rather than relying on the caller's environment: every case below asserts on
+# what the phase inspects, and an inherited SCOURSH_SELECTED_CHECKS would filter
+# checks out from under them.  Unset means "all selected" (modules/dast/
+# engine.sh section 3a), which is what these cases assume.
+unset SCOURSH_SELECTED_CHECKS
+
 W=$SCOURSH_SCRATCH/dast-cookies-workspace
 rm -rf "$W"; mkdir -p "$W"
 
