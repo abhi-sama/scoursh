@@ -1106,6 +1106,60 @@ change §7.3's non-destructive posture forbids at this tier; DOM XSS needs a Jav
 for crawling).  Neither is silently assumed covered - the probe reports on reflection into the
 response it actually received, and nothing else.
 
+**DAST-19 (`active/openredirect.sh`) has landed - the third tier-4 injection probe, built on
+DAST-14's shared `active/inject_engine.sh` rather than beside it.**
+It ships `modules/dast/active/openredirect.sh` (the phase script `dast_run_phase` sources at tier
+`active`), two vendored data files under `modules/dast/payloads/`
+(`openredirect-payloads.txt`, `openredirect-params.txt`), two `DAST-INJ-OPENREDIR_*` records appended
+to the shared `modules/dast/active/checks.rules`, and `tests/suites/dast-openredirect.sh`
+(62 assertions, no network and no Docker, every response composed by a recorded mock).
+Six decisions in it are easy to get backwards; each is pinned by a case naming the reading it fails
+under, and each was confirmed by MUTATING the implementation into that reading and watching the suite
+go red - ten mutations, ten reds, one green baseline.
+
+- **The signal is the AUTHORITY of the `Location` URL, never a substring of it.** The commonest safe
+  behaviour of a redirect parameter is to reflect it while redirecting ON-ORIGIN
+  (`Location: https://site/login?next=https://<sentinel>/`), so a substring test flags the single
+  most common non-defect on the surface. `_or_url_host` is the parser and everything rests on it.
+- **Userinfo is stripped at the LAST `@`, and a subdomain OF the sentinel is the sentinel's.** Both
+  are FALSE-NEGATIVE directions, which is the worse kind because they read as a pass:
+  `https://<site>@<sentinel>/` and `https://<site>.<sentinel>/` are exactly the two shapes that
+  defeat a `startsWith(ourHost)` allow-list, so a probe that cannot see them cannot see the filters
+  worth testing. The mirror image - `<sentinel>.<site>` - is the TARGET's own name and correctly does
+  not match; a substring test gets that one wrong in the other direction.
+- **The parser is never STRICTER than the browser that will follow the redirect.** `//host/`,
+  `https:/host/` and `/\host/` are all off-origin redirects in a real client (WHATWG URL folds `\` to
+  `/` and normalises one slash to two for a special scheme), so a parser that rejects them reports
+  safe on a live open redirect.
+- **The sentinel is a per-run RANDOM label under `.invalid` (RFC 6761 §6.4), and is deliberately not
+  configurable.** Random is what removes the baseline: a `Location` naming it can only have come from
+  this run's own request, so one response is sufficient evidence and no retest is needed. `.invalid`
+  is what keeps the tool target-agnostic (§1, DAST-35) and means an accidentally-followed redirect
+  reaches a name the DNS root is required never to answer for. A knob here would be a way to aim a
+  scan's redirects at a host somebody chose, which is the same argument DAST-31 makes for the
+  User-Agent product token being unremovable.
+- **The redirect is detected and NEVER followed**, via a new opt-in `_INJ_MAX_REDIRECTS=0`. The scope
+  gate would refuse the hop anyway, but relying on a control to FIRE is testing it rather than using
+  it - and the suite pins the difference on the gate's own "redirect not followed" warning, which is
+  the only observable the request log cannot see (no packet moves either way).
+- **Two check ids, and both sinks are evaluated on the SAME response before either breaks.** The DAST
+  fingerprint carries nothing naming the sink, so one id would make a `Location` finding and a
+  meta-refresh finding on one parameter collide and dedupe to one - and breaking out after the header
+  check reintroduces exactly that loss in control flow instead of in the fingerprint.
+
+**Two additive changes outside this ticket's own files, both opt-in and both defaulting to the
+pre-existing behaviour** (pinned by an assertion that fails if `active/sqli.sh`'s behaviour moved):
+`inject_engine.sh` gained `_INJ_WANT_HEADERS` (capture the response headers into `_INJ_HEADERS` -
+`http_request` publishes the `Location` to NO global, so the header capture is the only channel that
+carries it out) and `_INJ_MAX_REDIRECTS` (a per-probe hop count).
+
+**What DAST-19 deliberately did not build**: it probes a FILTERED SUBSET of the discovered parameters
+- those named like a redirect destination, or whose observed example is already an absolute URL - and
+records the count it declined as a `coverage_reduction`. Probing all of them would be six requests per
+discovered parameter. A JavaScript `location =` sink is out of scope: this probe reads the `Location`
+field and meta-refresh, which is the ticket's own wording, and a script-sink probe belongs with
+DAST-15's own reflection machinery.
+
 ### Tier 5 - §7.4 auth, API, and access-control checks (5 scripts)
 
 | # | Ticket | Depends on |

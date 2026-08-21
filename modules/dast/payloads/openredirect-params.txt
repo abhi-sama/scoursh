@@ -1,0 +1,69 @@
+# modules/dast/payloads/openredirect-params.txt - parameter names that commonly
+# carry a redirect destination (modules/dast/active/openredirect.sh, DAST-19,
+# docs/DESIGN.md §7.3).
+#
+# ONE NAME PER LINE. A line whose first byte is `#` is a comment; a blank line
+# is ignored. This is the same vendored, operator-editable, read-off-disk shape
+# modules/dast/payloads/sqli-*.txt and modules/dast/passive/recommended-headers.txt
+# already use, and for the same reason: it is auditable, it needs no network,
+# and an operator whose application spells the parameter something else edits a
+# data file instead of a script.
+#
+# HOW A NAME HERE IS MATCHED. The probe lowercases the discovered parameter's
+# name and removes `_`, `-` and `.` before comparing it to a line here, also
+# normalised the same way. So the single entry `returnurl` matches `returnUrl`,
+# `return_url`, `RETURN-URL` and `return.url`. Write entries in that normalised
+# form - a line with a `_` in it is normalised away and simply behaves as if it
+# had been written without one.
+#
+# WHY THIS LIST EXISTS AT ALL, AND WHAT IT COSTS. An open-redirect probe that
+# sent six payloads into every discovered parameter would multiply a large
+# crawl into a request storm for a defect that only lives in a parameter the
+# application feeds to a redirect. The name list plus the URL-shaped-example
+# rule (see the probe) is the filter. It is a REDUCTION IN COVERAGE and the
+# probe records it as one, naming the count it skipped, rather than letting a
+# parameter that was never tested read as a parameter that came back clean
+# (docs/DESIGN.md §15).
+
+url
+uri
+next
+target
+dest
+destination
+redirect
+redirecturl
+redirecturi
+redirto
+redir
+return
+returnurl
+returnuri
+returnto
+returnpath
+goto
+go
+continue
+continueurl
+forward
+forwardurl
+back
+backurl
+callback
+callbackurl
+successurl
+failureurl
+errorurl
+cancelurl
+logouturl
+loginredirect
+checkouturl
+image
+imageurl
+link
+location
+path
+out
+to
+r
+u

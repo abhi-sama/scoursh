@@ -1,0 +1,56 @@
+# modules/dast/payloads/openredirect-payloads.txt - the §7.3 open-redirect probe
+# values (modules/dast/active/openredirect.sh, DAST-19; docs/DESIGN.md §7.3).
+#
+# ONE PAYLOAD PER LINE. `#` starts a whole-line comment; a blank line is
+# ignored. See modules/dast/payloads/README.md for the shared format and the
+# non-destructive contract every file in this directory is held to.
+#
+# TWO PLACEHOLDERS, BOTH SUBSTITUTED BY THE PROBE BEFORE SENDING:
+#
+#   %S  the SENTINEL HOST - a per-run random label under the RFC 6761 §6.4
+#       `.invalid` special-use TLD, e.g. `scoursh-or-1a2b3c4d5e6f.invalid`.
+#       It is not a host the operator, this project, or anyone else controls:
+#       `.invalid` is guaranteed by the RFC never to resolve, so a redirect
+#       that is followed by accident reaches nothing. It is RANDOM PER RUN so
+#       a `Location` naming it can only have come from THIS run's own probe -
+#       which is what lets the finding be emitted with no baseline comparison
+#       at all, since no cached page, no unrelated redirect and no previous
+#       scan can be carrying that label.
+#   %T  the TARGET AUTHORITY of the endpoint under test (`host` or
+#       `host:port`), for the bypass classes whose whole trick is to make the
+#       hostile URL LOOK like it starts with the site's own name.
+#
+# NON-DESTRUCTIVE, RESTATED. Every line here is a URL and nothing else. It
+# changes no state, writes no data and exfiltrates nothing: the entire signal
+# is whether the target copies the value into a `Location` field or a
+# meta-refresh. The probe never follows what comes back (`_INJ_MAX_REDIRECTS=0`).
+#
+# WHY THESE SIX AND NOT ONE. A target with no filter at all is caught by the
+# first line, and the other five exist because a target WITH a filter is the
+# interesting case: each is a distinct, documented way of getting a hostile
+# authority past a filter that only looked at the start of the string.
+# Removing one narrows detection to the filters it defeated.
+
+# 1. The unfiltered base case - an absolute URL, nothing hidden.
+https://%S/
+# 2. Scheme-relative. A browser reads `//host/` as "same scheme, that host", so
+#    it redirects off-origin; a filter testing `value.startsWith("http")` does
+#    not see a URL at all and lets it through.
+//%S/
+# 3. Backslash-prefixed. WHATWG URL treats `\` as `/` in the authority position
+#    of a special scheme, so `/\host/` is `//host/` to a browser while a filter
+#    matching "starts with a single slash, therefore relative" reads it as a
+#    local path.
+/\%S/
+# 4. Single-slash scheme. Browsers normalise `https:/host/` to `https://host/`;
+#    a filter comparing against the literal `https://` prefix does not match.
+https:/%S/
+# 5. Userinfo. Everything before the LAST `@` is credentials, not the host, so
+#    this goes to the sentinel while reading left-to-right as the site's own
+#    name - the classic defeat of a `startsWith(ourHost)` allow-list.
+https://%T@%S/
+# 6. Target-prefixed subdomain. The authority genuinely BEGINS with the site's
+#    own name and is still wholly controlled by whoever owns the sentinel -
+#    the defeat of a `host.startsWith(ourHost)` or `value.contains(ourHost)`
+#    allow-list.
+https://%T.%S/

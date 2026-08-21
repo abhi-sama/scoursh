@@ -4370,7 +4370,8 @@ normative, frozen-in-intent shape in `docs/INVENTORY-FORMAT.md`.
 With both tier-1 tickets in, **tiers 2-5 are unblocked and nothing remains in front of them**; the
 authenticated crawl pass plugs into DAST-03's session rather than being stubbed.
 Work in those tiers has started, and out of tier order, since they are peers rather than a sequence:
-tier 4's DAST-14 (`active/sqli.sh`) and DAST-15 (`active/xss.sh`), tier 5's DAST-26 (`jwt.sh`) and
+tier 4's DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`) and DAST-19
+(`active/openredirect.sh`), tier 5's DAST-26 (`jwt.sh`) and
 tier 2's DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`) and DAST-11
 (`passive/markup.sh`) have landed.
 DAST-15 is the second tier-4 injection probe and the first to consume `active/inject_engine.sh`
@@ -4382,6 +4383,19 @@ Almost every parameter on a real application reflects something, so a probe that
 alone would be a false-positive generator, and the escaped case is the one that reads as a pass -
 which is why every context case in `tests/suites/dast-xss.sh` is a PAIR, the same marker escaped and
 raw, rather than a single positive.
+DAST-19 is the third tier-4 probe and likewise reused DAST-14's shared `active/inject_engine.sh`
+rather than forking it, adding two OPT-IN knobs there (`_INJ_WANT_HEADERS`, `_INJ_MAX_REDIRECTS`) that
+default to exactly the behaviour every probe written before them already had.
+Its one tension-relevant decision: an open-redirect signal is the AUTHORITY of the returned `Location`
+URL, parsed the way a browser parses it, and never a substring of the URL.
+Both naive readings fail in a direction that reads as a clean result - a substring test flags the
+commonest SAFE behaviour on the surface (an on-origin redirect that reflects the payload into its own
+query string), while ignoring userinfo or matching the sentinel host by exact equality alone misses
+`https://<site>@<sentinel>/` and `https://<site>.<sentinel>/`, which are precisely the two shapes that
+defeat a real allow-list and so the two worth probing for.
+Every one of those was measured by mutating the implementation into the rejected reading and watching
+`tests/suites/dast-openredirect.sh` go red, not reasoned about: ten mutations, ten reds, one green
+baseline.
 DAST-06 is the first §7.1 passive check and the first `modules/dast/passive/` file; two things about
 it are tension decisions rather than implementation detail.
 First, its `Set-Cookie` parser splits on `;` only OUTSIDE double quotes and never on `,` - both naive
