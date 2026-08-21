@@ -44,6 +44,10 @@ found and deliberately did not fix in place.
 **Tiers 2-5 are unblocked and nothing remains in front of them**: every check below needs the endpoint
 and parameter inventory DAST-04 writes, and the authenticated ones need the session DAST-03 acquires.
 Both are in.
+**Tier 3 has started** (DAST-12, `active/discovery.sh`), and **tier 4 has started too**: DAST-14
+(`active/sqli.sh`, which also shipped the shared `inject_engine.sh` every §7.3 probe reuses) and DAST-22
+(`active/ldapi.sh`) have both landed - see their landing notes under the tier-4 table.  Tier 5's DAST-26
+(`jwt.sh`) is in as well.  These tiers are peers once tier 1 is in, so they land out of tier order.
 What each shipped, and the things about them that are easy to get backwards, are stated in their own
 landing notes below the ticket table.
 The one ordering constraint tier 0 existed to impose has been met: no ticket may issue real HTTP
@@ -1159,6 +1163,39 @@ records the count it declined as a `coverage_reduction`. Probing all of them wou
 discovered parameter. A JavaScript `location =` sink is out of scope: this probe reads the `Location`
 field and meta-refresh, which is the ticket's own wording, and a script-sink probe belongs with
 DAST-15's own reflection machinery.
+
+**DAST-22 (`active/ldapi.sh`) has landed - a tier-4 injection probe built entirely on DAST-14's shared
+`inject_engine.sh`.**
+It ships `modules/dast/active/ldapi.sh` (the phase script `dast_run_phase` sources at tier `active`),
+two vendored payload files plus one signature file under `modules/dast/payloads/`
+(`ldapi-error-payloads.txt`, `ldapi-error-signatures.txt`, `ldapi-boolean-pairs.txt`), and two check
+records in `modules/dast/active/checks.rules` (`DAST-INJ-LDAP_ERROR-01` high/high,
+`DAST-INJ-LDAP_BOOLEAN-01` critical/medium; `CWE-90`, `A03:2021`, type tag `active`,
+`coverage-scope: target`).  `tests/suites/dast-ldapi.sh` (28 assertions, no network, no Docker, driven
+from recorded responses; registered in `tests/run-tests.sh`) is the mock-response proof.  The phase was
+already in `modules/dast/engine.sh`'s `_DAST_PHASES` table (`active/ldapi.sh:active`), so no
+registration edit was needed.
+
+Three decisions here are easy to get backwards, each pinned by a test naming the reading it fails under:
+
+- **TWO techniques, not three, and it is stated rather than silently short.**  §7.3 names LDAP
+  injection as "filter-breaking payloads, response/error differential" - an error signal and a boolean
+  differential.  There is deliberately no time-based technique: an LDAP search filter has no portable
+  sleep primitive (unlike SQL's `SLEEP`/`WAITFOR`/`pg_sleep`), so a time-based LDAP probe would invent a
+  signal the protocol does not offer.  A run records exactly the two checks it can perform and the suite
+  asserts `checks_run` names no `LDAP_TIME` check - claiming a third would be the overstated coverage
+  §15 forbids.
+- **The boolean pairs are well-formed filter clauses, not filter breaks.**  The "true" side closes the
+  value and appends a matching clause (`)(|(cn=*)`, a wildcard/`objectClass=*` that reproduces the
+  baseline result set rather than broadening past it); the "false" side is otherwise identical but
+  appends a never-matching sentinel (`scoursh-no-such-entry-zq`).  The probe reuses DAST-14's
+  `inject_body_sig` to strip the injected value before comparing lengths, so a page that merely reflects
+  the payload is not read as a differential - the suite's reflecting-endpoint control pins that.  Same
+  SQLi boolean model (true ~ baseline, false ≠ baseline, true ≠ false), confirmed on retest.
+- **Non-destructive by construction.**  Every payload is a SEARCH filter (a broken paren, a wildcard, an
+  always/never-matching clause); LDAP writes are `add`/`modify`/`delete`/`modrdn` LDIF operations and no
+  search filter can carry them, so the contract holds by shape.  A suite assertion fails the moment a
+  mutating LDIF verb appears in any `ldapi-*.txt` file.
 
 ### Tier 5 - §7.4 auth, API, and access-control checks (5 scripts)
 
