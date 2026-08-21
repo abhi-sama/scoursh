@@ -487,9 +487,16 @@ else
   # target resolves to loopback and does not set allow-private-addresses, so
   # lib/http.sh's resolution-pinning deny list must refuse it with exit 3 -
   # exactly as it would refuse an http_request, and through the same code.
+  # NO `set +e` HERE.  It is forbidden repository-wide (docs/FOUNDATION.md
+  # tension 4 rule 1) and tests/suites/core.sh asserts the string appears
+  # nowhere in the tree, so a suite that reaches for it fails a DIFFERENT
+  # suite - which is how this one was caught.  It is also unnecessary: the
+  # `|| rc=$?` on the subshell is what keeps the outer errexit from firing,
+  # and inside the subshell errexit is exactly what should stay on, because
+  # the case asserts that the gate's own `die 3` is the reason the phase
+  # stopped rather than any later command happening to return 3.
   rc=0
   (
-    set +e
     _fresh_run
     _phase_env tls-loopback
     source "$ROOT/modules/dast/passive/tls.sh"

@@ -273,6 +273,26 @@ _dast_tls_phase() {
     return 0
   fi
 
+  # WHY THIS READS `base-url` AND NOT DAST-04'S `inventory/endpoints.json`.
+  # Every other tier-2 check is per ENDPOINT, so reading the inventory is what
+  # it means for them to have a surface at all.  A transport property is not:
+  # the negotiated protocol, the negotiated cipher and the presented
+  # certificate belong to a LISTENER, `host:port`, and every endpoint in that
+  # inventory that shares a listener shares all three by construction.  Two
+  # consequences make the distinction load-bearing rather than stylistic.
+  # First, this phase's fingerprint (docs/FOUNDATION.md tension 5: target,
+  # method, path_template, param_location, param_name) has no component that
+  # differs between two endpoints on one listener, so iterating the inventory
+  # would emit N identical findings that findings_merge then dedups back to
+  # one - N-1 handshakes spent to reach the same output.  Second, it would
+  # spend N tokens of the tension-16 request budget for one measurement, on a
+  # check whose place in the `quick` profile is earned by costing exactly one.
+  # Hence `coverage-scope: target` on all six records in checks.rules.  The
+  # inventory is still the right input for a listener this target reaches that
+  # `base-url` does not name - a second origin the crawl discovered - and that
+  # is a real gap this check does not close; it is DAST-30 (`transport.sh`,
+  # §7.4) territory, which already owns the cross-origin transport question.
+  #
   # The scope RECORD SET is already loaded: modules/dast/run.sh calls
   # `config_scope_require` for every target before the phase loop runs, and
   # docs/DESIGN.md §7's "scope gate FIRST" is what puts it there.  Re-requiring
