@@ -118,6 +118,35 @@ declare -ga _DAST_PHASES=(
   'passive/banner.sh:passive'
   'passive/leakage.sh:passive'
   'passive/markup.sh:passive'
+  # passive/transport.sh (DAST-30) is listed HERE, at tier `passive`, and NOT in
+  # the tier-5 block below where docs/DESIGN.md §7.4 puts its bullet.  The row
+  # was `transport.sh:active` from DAST-02 until DAST-30 landed, transcribed
+  # from §7.4's section HEADING ("Active - auth, API, and access-control
+  # checks") like its four siblings; that transcription is right for them and
+  # wrong for this one, and moving it is the correction this file's own note
+  # above demands ("a later ticket whose checks legitimately carry a LOWER type
+  # tag than the tier its row declares here must change that row in the same
+  # change and say why").  The why, in short - the long form is in
+  # modules/dast/passive/transport.sh's header:
+  #
+  #   1. It mutates no target state.  Every request it sends is a plain GET to
+  #      the operator's own base-url or to an endpoint an earlier phase already
+  #      fetched; it submits no form and re-sends no discovered POST.  That is
+  #      §7.1's whole admission criterion.  What makes §7.4's other four scripts
+  #      active is their shared "prove the weakness with a signal" contract;
+  #      this one proves nothing by probing and reads what the target already
+  #      volunteers.
+  #   2. §7.4's own wording for this bullet calls it a complement to "the TLS
+  #      passive check".  Its placement in §7.4 is topical, not an intensity
+  #      claim.
+  #   3. At `active` it would never run: `--intensity` defaults to `passive` and
+  #      anything above it additionally requires `--i-own-target`, so a plain
+  #      `scan.sh dast --target <t>` would skip it and both exposure classes it
+  #      reports would be invisible on the ordinary run.
+  #
+  # Its records in modules/dast/passive/checks.rules carry the matching
+  # `passive` type tag, so the two gates tension 15 intersects agree.
+  'passive/transport.sh:passive'
   # Tier 3 - safe active, docs/DESIGN.md §7.2 (DAST-12, DAST-13)
   'active/discovery.sh:safe'
   'active/methods.sh:safe'
@@ -135,12 +164,12 @@ declare -ga _DAST_PHASES=(
   'active/hosthdr.sh:active'
   'active/protopollution.sh:active'
   # Tier 5 - auth, API and access-control checks, docs/DESIGN.md §7.4
-  # (DAST-26..DAST-30)
+  # (DAST-26..DAST-29; DAST-30's `transport.sh` is in the passive block above -
+  # see the note there for why it moved)
   'jwt.sh:active'
   'graphql.sh:active'
   'ratelimit.sh:active'
   'authz.sh:active'
-  'transport.sh:active'
 )
 
 # ---------------------------------------------------------------------------

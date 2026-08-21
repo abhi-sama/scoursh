@@ -41,11 +41,20 @@ open and unordered among themselves.  See each ticket's landing note under the t
 it shipped, and DAST-05's and DAST-06's for the one pre-existing `modules/dast/run.sh` defect they
 found and deliberately did not fix in place.
 
+**DAST-30 (`passive/transport.sh`) now also lives in this directory and runs at this tier**, appending
+its own `DAST-TRANSPORT-*` block to the same shared `modules/dast/passive/checks.rules`, even though it
+is a tier-5 §7.4 ticket - its landing note below states the reasoning, and `modules/dast/engine.sh`'s
+phase table carries the same note at the row itself.  It is not an additional tier-2 ticket and the
+tier-2 peer list above is unchanged by it; what moved is one intensity floor, not the ticket.
+
 **Tier 5 has started too: DAST-26 (`jwt.sh`) and DAST-29 (`authz.sh`) have both landed.**
 DAST-29 created `modules/dast/checks.rules`, the shared, append-only script-check registry for the
-tier-5 phases whose scripts sit at the top level of `modules/dast/`; DAST-27, DAST-28 and DAST-30
+tier-5 phases whose scripts sit at the top level of `modules/dast/`; DAST-27 and DAST-28
 append their own blocks to it and resolve a conflict in it by keeping both sides, exactly as
 `modules/dast/passive/checks.rules` records for its own peers.
+DAST-30 is NOT one of them: its script sits under `modules/dast/passive/` rather than at the top
+level, so its checks are registered in `modules/dast/passive/checks.rules` with the rest of that
+directory, per the paragraph above.
 DAST-29 is also the first consumer of DAST-03's labelled multi-identity plumbing, so the
 `requires-identities: 2` path in `rules/RULE-FORMAT.md` §9.5 now has a real implementation behind it.
 See its landing note under the tier-5 table.
@@ -1325,7 +1334,97 @@ Three decisions here are easy to get backwards, each pinned by a test naming the
 | DAST-27 | `graphql.sh` - introspection + correlated key-exposure | DAST-01/02, DAST-04 (needs the GraphQL endpoint in the inventory); soft data dependency on DAST-10's leakage finding for the correlated-key case, not a build blocker |
 | DAST-28 | `ratelimit.sh` - missing-throttling burst probe | DAST-01 (must draw down the *same* per-run request budget DAST-01 owns, since this is the one check §7.4 flags as intentionally multi-request) |
 | DAST-29 **(landed)** | `authz.sh` - IDOR / excessive data exposure | DAST-03 with `requires-identities: 2` (two labelled identities), DAST-04 (object-reference endpoints from the parameter inventory) |
-| DAST-30 | `transport.sh` - plaintext-exposure / mixed-content | DAST-04; sequence close to DAST-07 (`tls.sh`), which it complements, per the note under DAST-07 |
+| DAST-30 **(landed)** | `passive/transport.sh` - plaintext-exposure / mixed-content | DAST-04; sequence close to DAST-07 (`tls.sh`), which it complements, per the note under DAST-07 |
+
+**DAST-30 moved OUT of this tier's own intensity floor**: the script is
+`modules/dast/passive/transport.sh` at phase-table tier `passive`, not `transport.sh:active`.  See the
+landing note immediately below for why, and `modules/dast/engine.sh`'s own note at the row.  It is
+still §7.4 work and is still listed in this table; only its tier changed.
+
+#### What DAST-30 (`passive/transport.sh`) shipped, and the six things about it that are easy to get backwards
+
+**DAST-30 has landed.**  It ships `modules/dast/passive/transport_engine.sh` (the pure half: the
+sub-resource extractor, RFC 3986 reference resolution through `crawl_url_resolve`, the
+(scheme, path-template) endpoint chooser, the sensitivity scan and the redirect verdict),
+`modules/dast/passive/transport.sh` (the phase script `dast_run_phase` sources), and five
+`DAST-TRANSPORT-*` script checks appended to the shared
+`modules/dast/passive/checks.rules`.  `tests/suites/dast-transport.sh` is the proof - 109
+assertions, no network and no Docker, driven from recorded response heads AND bodies replayed
+into `lib/http.sh`'s own capture sinks.
+
+- **THE PHASE TABLE ROW MOVED, DELIBERATELY, FROM `transport.sh:active` TO
+  `passive/transport.sh:passive`.**  DAST-02 transcribed every tier-5 row from `docs/DESIGN.md`
+  §7.4's section HEADING ("Active - auth, API, and access-control checks"), which is right for
+  this section's other four scripts and wrong for this one.  `modules/dast/engine.sh`'s own phase
+  table already specified the remedy - "a later ticket whose checks legitimately carry a LOWER type
+  tag than the tier its row declares here must change that row in the same change and say why" - and
+  this is that change.  Three reasons, in the file's own note and in the script header: nothing here
+  mutates target state (every request is a plain GET to the operator's `base-url` or an endpoint an
+  earlier phase already fetched), §7.4's own wording for this bullet calls it a complement to "the
+  TLS **passive** check", and at `active` it would never run at all, since `--intensity` defaults to
+  `passive` and anything above it additionally requires `--i-own-target`.  The records carry the
+  matching `passive` type tag so tension 15's two gates agree.  `tests/suites/dast.sh`'s phase-table
+  coverage list moved with it, in the same change.
+- **A PLAINTEXT `<a href>` IS NOT MIXED CONTENT, AND THIS IS THE FALSE POSITIVE MOST WORTH
+  KNOWING ABOUT.**  A hyperlink loads nothing into the secure document; the user navigates away and
+  the address bar says so.  The naive reading - match `http://` anywhere in the body - fires on every
+  external link on every page, so a site with a plaintext footer link outranks one whose login bundle
+  is fetched over port 80.  The extractor emits `nav` references anyway, precisely so the suite can
+  assert their ABSENCE from the findings: a class that is never emitted cannot be tested for.  The
+  run records a `notes` line counting them, so an operator who can see the link in their own markup
+  knows the phase looked and decided rather than missed it.
+- **THE PLAINTEXT URL IS REQUESTED WITH `max_redirects` 0, AND THAT IS THE WHOLE MECHANISM OF THE
+  REDIRECT CHECK.**  `http_request` follows redirects internally and reports the FINAL status, so a
+  target that correctly 301s port 80 to HTTPS and one that serves the page on port 80 both come back
+  `200` - the two facts the check exists to separate become one string.  Two further readings are
+  pinned in the same section and each fails under the obvious "is it a 3xx" implementation: a 301 to
+  another `http://` URL (a host-canonicalising redirect) does not leave plaintext, and a
+  scheme-relative `Location` is resolved by the browser against the CURRENT scheme, so it redirects
+  http to http.
+- **THE ENDPOINT DEDUP KEY IS (SCHEME, PATH TEMPLATE), NOT `hdr_endpoints_load`'S PATH TEMPLATE
+  ALONE.**  `passive/headers.sh` is right to collapse `http://h/login` and `https://h/login` into one
+  candidate - it asks about a header the application sets once.  Here the two URLs are the entire
+  question, and borrowing that key drops whichever twin sorts second, so the check reports clean on
+  exactly the target that has the defect.  Everything else about the chooser is deliberately kept in
+  step with `hdr_endpoints_load` rather than re-argued.
+- **PLAINTEXT EXPOSURE AND A MISSING TLS REDIRECT ARE TWO CHECKS, NOT ONE AT TWO SEVERITIES.**
+  `NO_HTTPS_REDIRECT` is about the transport and is true of a plain marketing page;
+  `PLAINTEXT_SENSITIVE` requires an observed credential control, `Set-Cookie`, or authenticated
+  session, and its evidence names which.  Collapsing them makes every plaintext site a
+  high-severity data-exposure finding and drowns the ones that really are.  The active/passive
+  mixed-content split is the same kind of distinction rather than a severity opinion: browsers BLOCK
+  blockable mixed content and merely downgrade the padlock for the optionally-blockable kind.
+- **RESOLUTION IS PINNED ON THE ACCOUNTING, NOT ON THE FINDINGS, AND A MUTATION RUN IS WHAT FOUND
+  THAT.**  The obvious assertion - "a protocol-relative reference produces no finding" - passes under
+  BOTH resolving the reference and simply skipping anything with no scheme of its own, because only
+  an absolute `http://` reference can ever be mixed content on an https page.  It therefore pinned
+  nothing.  What discriminates is `_TR_REF_TOTAL`, "references this check could actually judge":
+  under the skip it silently becomes "references that happened to be written absolutely", so a page
+  whose sub-resources are all relative reports zero examined while looking exactly like a fully
+  inspected one.  The suite asserts the count, and the first draft's overclaiming wording was
+  corrected rather than left in.
+
+**What DAST-30 deliberately did not build**, so the boundary is not rediscovered:
+
+- **No TLS inspection of any kind.**  The handshake, the certificate and its dates and hostname
+  binding, the protocol version and the cipher suite are DAST-07 (`passive/tls.sh`) and this family
+  opens no connection of its own.  The two are complements, which is what §7.4's own sentence for
+  this bullet says.
+- **No HSTS check.**  `Strict-Transport-Security` is DAST-05's `DAST-HDR-HSTS_*` family.
+  `NO_HTTPS_REDIRECT`'s remediation names it as the companion control rather than restating it, and
+  the suite asserts no `DAST-TRANSPORT-HSTS*` id exists.
+- **No cookie-attribute check.**  The `Secure` attribute is DAST-06's `DAST-COOKIE-NO_SECURE-01`;
+  this family records only that a cookie was ALREADY sent in the clear, and says so in the evidence.
+- **No sub-resource is ever REQUESTED.**  A discovered `http://` script URL is classified from the
+  markup and never fetched, so the scope pre-check on it governs reportability of an off-target
+  reference rather than gating a request that is never made.  This is deliberate and is the honest
+  reading: a third-party CDN loaded over plaintext is the COMMONEST real mixed-content case and is
+  out of scope by definition, so dropping out-of-scope references would produce a false negative on
+  the case that matters most.  The document URLs the phase does request all go through
+  `http_gate_url` first and then `http_request`, which re-gates them.
+- **The client-rendered (SPA) gap applies here too and is inherited, not restated.**  A route or a
+  sub-resource injected by JavaScript is invisible to this check exactly as it is to `crawl.sh`, and
+  `crawl.sh`'s own recorded gap is the one that says so.
 
 **DAST-29 (`authz.sh`) has landed.**
 It ships `modules/dast/authz_engine.sh` (the pure half: candidate extraction from DAST-04's frozen
