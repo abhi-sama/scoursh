@@ -141,3 +141,68 @@ remediation: Disable automatic directory indexing (Apache `Options -Indexes`,
   403/404 so directory contents are never enumerated to clients.
 references: CWE-548
 references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+# --- DAST-15: reflected XSS (docs/DESIGN.md §7.3, `active/xss.sh`) -----------
+#
+# Three ids for the same defect class for the SAME reason sqli has three above:
+# the DAST location profile carries no component naming the CONTEXT a
+# reflection landed in, so a single id would make an HTML-text and an
+# attribute-value reflection on one parameter collide and dedupe to one. The
+# context is what decides whether a given raw character is dangerous - a raw
+# `"` is harmless in element text and a break-out inside a quoted attribute -
+# so it is the thing a reader needs and the thing the remediation differs on.
+#
+# `tags: active`, matching the phase table's `active/xss.sh:active` floor. NOT
+# `intrusive`: the probe sends one unique alphanumeric marker with `<`, `>`,
+# `"` and `'` appended and nothing else - no script, no event handler, no
+# `javascript:` URL, nothing that executes - so the value is inert wherever it
+# lands and the active-intensity opt-in is the right and only gate.
+
+id: DAST-INJ-XSS_REFLECTED_HTML-01
+title: Reflected cross-site scripting - unescaped reflection in HTML text
+script: active/xss.sh
+severity: high
+confidence: high
+cwe: CWE-79
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: HTML-entity-encode request-derived data where it is written into
+  element text, at the point of output rather than on input. Prefer a template
+  engine that escapes by default and do not disable it for this value. Add a
+  Content-Security-Policy without unsafe-inline as defence in depth.
+references: CWE-79
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-XSS_REFLECTED_ATTR-01
+title: Reflected cross-site scripting - unescaped reflection in an HTML attribute value
+script: active/xss.sh
+severity: high
+confidence: medium
+cwe: CWE-79
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Quote every attribute value and encode the quote character that
+  delimits it (and `<`, `>`, `&`) when writing request-derived data into an
+  attribute. Never build an attribute value by string concatenation in a
+  template, and never place request-derived data in an event-handler or a URL
+  attribute without a scheme allow-list.
+references: CWE-79
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-XSS_REFLECTED_JS-01
+title: Reflected cross-site scripting - unescaped reflection in a script block
+script: active/xss.sh
+severity: high
+confidence: medium
+cwe: CWE-79
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Do not interpolate request-derived data into JavaScript source.
+  Pass it to the page as data - a JSON payload the script reads, or a data-
+  attribute - and encode it for that carrier, so `<`, `>` and both quote
+  characters can never terminate a string literal or the script element itself.
+references: CWE-79
+references: https://owasp.org/Top10/A03_2021-Injection/
