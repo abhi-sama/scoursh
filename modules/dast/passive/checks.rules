@@ -111,3 +111,227 @@ remediation: Use SameSite=Lax or SameSite=Strict unless a third-party context
   regardless.
 references: CWE-1275
 references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+
+# DAST-05's block of this shared registry - the §7.1 security-header
+# script checks (rules/RULE-FORMAT.md §9.5; docs/STEP5-DAST-PLAN.md tier 2).
+#
+# THE BASENAME IS FORCED, AND THAT IS WHY THIS FILE IS SHARED GROUND.
+# rules/RULE-FORMAT.md §9's path table gives the §9.5 script-check schema to
+# "any file named `checks.rules`, at any depth" and makes every other path
+# `E070`, so a per-ticket `headers-checks.rules` is not a legal record file.
+# DAST-05..DAST-11 are peers built in parallel and each owns its own block of
+# records here; the file is append-only between them and a conflict in it is
+# resolved by keeping BOTH blocks, never by choosing a side.  This block is
+# DAST-05's and its ids are all `DAST-HDR-*`.
+#
+# `checks_registry_load` (lib/checks.sh) globs every *.rules under
+# modules/dast/ at any depth, so this file loads alongside
+# modules/dast/active/checks.rules with no registration step.
+#
+# THE TYPE TAG IS `passive`, matching the phase table's
+# `passive/headers.sh:passive` floor (modules/dast/engine.sh).  Both gates must
+# permit and neither widens the other (tension 15's intersection rule); reading
+# a response header mutates nothing, so `passive` is the honest tier and
+# `intrusive` would be a second, undocumented opt-in for a request a browser
+# makes anyway.
+#
+# ONE CHECK ID PER DEFECT, NOT PER HEADER.  The DAST finding location profile is
+# (target, method, path_template, param_location, param_name) and carries no
+# component naming the defect, so a single `DAST-HDR-MISCONFIG-01` would make a
+# missing CSP and a weak HSTS on the same page collide on one fingerprint and
+# dedupe to one finding.  HSTS is three ids for the same reason
+# docs/DESIGN.md §7.1 asks for them separately - missing, weak and malformed
+# are three different conversations with an operator, and only the third means
+# "you configured it and got nothing for it".
+
+id: DAST-HDR-CSP_MISSING-01
+title: No Content-Security-Policy on a document response
+script: passive/headers.sh
+severity: medium
+confidence: high
+cwe: CWE-1021
+owasp: A05:2021
+tags: passive
+tags: quick
+coverage-scope: target
+remediation: Serve a Content-Security-Policy header on every document response.
+  Start from a restrictive base such as `default-src 'self'; object-src 'none';
+  frame-ancestors 'none'; base-uri 'self'`, then widen it one source at a time
+  against a report-only deployment. A Content-Security-Policy-Report-Only header
+  collects violations but enforces nothing, so it does not close this gap on its
+  own.
+references: CWE-1021
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-HDR-CSP_UNSAFE-01
+title: Content-Security-Policy permits unsafe-inline or unsafe-eval for script
+script: passive/headers.sh
+severity: medium
+confidence: high
+cwe: CWE-79
+owasp: A03:2021
+tags: passive
+coverage-scope: target
+remediation: Remove 'unsafe-inline' and 'unsafe-eval' from the script fetch
+  directive. Move inline event handlers and inline `<script>` blocks into files,
+  or authorise the ones that must stay with a per-response nonce or a hash - a
+  directive carrying a nonce or hash makes browsers ignore 'unsafe-inline'
+  anyway, so the two are alternatives rather than complements. Replace
+  `eval`/`new Function`/string `setTimeout` so 'unsafe-eval' can go.
+references: CWE-79
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-HDR-CSP_DATA_SOURCE-01
+title: Content-Security-Policy allows a data: source for script or object content
+script: passive/headers.sh
+severity: medium
+confidence: medium
+cwe: CWE-79
+owasp: A03:2021
+tags: passive
+coverage-scope: target
+remediation: Drop `data:` from script-src, object-src and any default-src that
+  governs them. A `data:` URI is attacker-authorable in full, so allowing it as
+  a script source restores arbitrary script execution that the rest of the
+  policy exists to prevent. Where inline data really is needed, keep it to
+  img-src or font-src, which this check does not flag.
+references: CWE-79
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-HDR-CSP_WILDCARD-01
+title: Content-Security-Policy allows a wildcard host for active content
+script: passive/headers.sh
+severity: medium
+confidence: medium
+cwe: CWE-942
+owasp: A05:2021
+tags: passive
+coverage-scope: target
+remediation: Replace the wildcard host with the specific origins the page
+  actually loads from. A bare `*` allows any origin on the internet; a
+  `*.example` wildcard allows every subdomain, including any one an attacker can
+  get control of through a dangling DNS record or a shared hosting tenant.
+references: CWE-942
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-HDR-HSTS_MISSING-01
+title: No Strict-Transport-Security header on an HTTPS response
+script: passive/headers.sh
+severity: medium
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: passive
+tags: quick
+coverage-scope: target
+remediation: Send `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+  on every HTTPS response. Without it, a user's first request of a session - or
+  any request after the pin expires - can be downgraded to plaintext and
+  intercepted before the redirect to HTTPS is ever seen. Confirm every
+  subdomain is HTTPS-ready before adding includeSubDomains.
+references: CWE-319
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: DAST-HDR-HSTS_WEAK-01
+title: Strict-Transport-Security max-age is too short to be protective
+script: passive/headers.sh
+severity: low
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: passive
+coverage-scope: target
+remediation: Raise max-age to at least 31536000 (one year), the floor the
+  preload list requires. A short max-age narrows the window in which a browser
+  refuses plaintext to a few days or hours, and `max-age=0` actively clears an
+  existing pin - which is a rollback switch, not a policy. Ramp up gradually if
+  the site is still being migrated, then leave it at a year.
+references: CWE-319
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: DAST-HDR-HSTS_MALFORMED-01
+title: Strict-Transport-Security header is present but unusable
+script: passive/headers.sh
+severity: medium
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: passive
+coverage-scope: target
+remediation: Fix the header so it carries exactly one decimal `max-age`
+  directive, for example `max-age=31536000; includeSubDomains`. RFC 6797 makes
+  max-age required and tells the browser to ignore the whole header without it,
+  so a malformed value gives the same protection as sending nothing while
+  looking in a configuration review as though the control is in place.
+references: CWE-319
+references: https://tools.ietf.org/html/rfc6797
+
+id: DAST-HDR-CLICKJACKING-01
+title: Document response has no framing protection
+script: passive/headers.sh
+severity: medium
+confidence: high
+cwe: CWE-1021
+owasp: A05:2021
+tags: passive
+tags: quick
+coverage-scope: target
+remediation: Add `Content-Security-Policy: frame-ancestors 'none'` (or a list of
+  the origins genuinely allowed to frame the page) and keep
+  `X-Frame-Options: DENY` alongside it for older browsers. `ALLOW-FROM` is
+  obsolete and is honoured by no current browser, so a policy that relies on it
+  is not enforced anywhere.
+references: CWE-1021
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-HDR-NOSNIFF_MISSING-01
+title: No X-Content-Type-Options nosniff on the response
+script: passive/headers.sh
+severity: low
+confidence: high
+cwe: CWE-430
+owasp: A05:2021
+tags: passive
+coverage-scope: target
+remediation: Send `X-Content-Type-Options: nosniff` on every response. Without
+  it a browser may ignore the declared Content-Type and execute a user-uploaded
+  or user-influenced file as script or stylesheet on the basis of its bytes,
+  which turns an upload feature into a cross-site scripting vector.
+references: CWE-430
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-HDR-REFERRER_LEAKY-01
+title: Referrer-Policy sends the full URL to cross-origin destinations
+script: passive/headers.sh
+severity: low
+confidence: high
+cwe: CWE-200
+owasp: A01:2021
+tags: passive
+coverage-scope: target
+remediation: Set `Referrer-Policy: strict-origin-when-cross-origin` or
+  `no-referrer`. Under `unsafe-url` or `no-referrer-when-downgrade` the whole
+  URL - path, query string, and any password-reset or invitation token in it -
+  is sent to every third-party host the page links to or loads a resource from.
+references: CWE-200
+references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+
+id: DAST-HDR-RECOMMENDED_MISSING-01
+title: Recommended security headers are not set
+script: passive/headers.sh
+severity: info
+confidence: high
+cwe: CWE-693
+owasp: A05:2021
+tags: passive
+coverage-scope: target
+remediation: Add the headers named in this finding's evidence. Each is a defence
+  in depth rather than the fix for a specific defect, which is why they are one
+  finding and not several: Permissions-Policy withholds powerful browser
+  features from the document and anything it embeds, the Cross-Origin-*: trio
+  isolates the page from cross-origin windows and embedders, and
+  X-Permitted-Cross-Domain-Policies stops a legacy client honouring a
+  crossdomain.xml this site may not know it serves. The list is data, in
+  modules/dast/passive/recommended-headers.txt.
+references: CWE-693
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
