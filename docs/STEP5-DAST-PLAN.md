@@ -33,12 +33,13 @@ whoever picks it up first.
 | DAST-03 - `auth.sh`, authentication and session acquisition (§7.0) | landed |
 | DAST-04 - `crawl.sh`, crawling, parameter and spec discovery (§7.5) | landed |
 
-**Tier 2 has started: DAST-06 (`passive/cookies.sh`) and DAST-05 (`passive/headers.sh`) have both
-landed**, built in parallel - DAST-06 reached `dev` first and created `modules/dast/passive/` and the
-shared `checks.rules`, and DAST-05 appended the `DAST-HDR-*` block to it.  Their five remaining peers
-(DAST-07..DAST-11) are open and unordered among themselves.  See each ticket's landing note under the
-tier-2 table for what it shipped, and DAST-05's for the one pre-existing `modules/dast/run.sh` defect
-it found and deliberately did not fix in place.
+**Tier 2 has started: DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`) and DAST-11
+(`passive/markup.sh`) have all landed**, built in parallel - DAST-06 reached `dev` first and created
+`modules/dast/passive/` and the shared `checks.rules`, DAST-05 appended the `DAST-HDR-*` block to it,
+and DAST-11 appended the `DAST-MARKUP-*` block.  Their four remaining peers (DAST-07..DAST-10) are
+open and unordered among themselves.  See each ticket's landing note under the tier-2 table for what
+it shipped, and DAST-05's and DAST-06's for the one pre-existing `modules/dast/run.sh` defect they
+found and deliberately did not fix in place.
 
 **Tiers 2-5 are unblocked and nothing remains in front of them**: every check below needs the endpoint
 and parameter inventory DAST-04 writes, and the authenticated ones need the session DAST-03 acquires.
@@ -702,7 +703,7 @@ only that all of them come after DAST-04 (they need the endpoint list) and DAST-
 | DAST-08 | `passive/cors.sh` | Origin-reflection probe. |
 | DAST-09 | `passive/banner.sh` | Framework/version disclosure matched against **`data/versions.db`**. The writer side is no longer a forward dependency: `tools/vendor-engines.sh advisories` landed ahead of step 5 and writes `data/versions.db` by the same call that writes `data/advisories.db` (tension 25). What is still missing is the data - no `data/versions.db` is committed to this repository, and populating one is an operator action on a networked box, never part of a scan. This ticket ships the matching logic and must degrade gracefully (skip that sub-check with a reason, not an error) when `data/versions.db` is missing or empty, which is the state of a fresh clone. |
 | DAST-10 | `passive/leakage.sh` | Verbose-error/stack-trace disclosure, upstream proxy header leakage, email disclosure, client-config leakage in served JS, CDN/third-party origin detection. Its "API key found in served JS" output is a later correlation input for DAST-27 (`graphql.sh`) at the derived-finding layer (tension 6), not a code dependency. |
-| DAST-11 | `passive/markup.sh` | Missing SRI, reverse tabnabbing, insecure external frame, CSRF-token absence in state-changing forms. |
+| DAST-11 **(landed)** | `passive/markup.sh` | Missing SRI, reverse tabnabbing, insecure external frame, CSRF-token absence in state-changing forms. See the landing note below the tier-2 table. |
 
 #### What DAST-05 (`passive/headers.sh`) shipped, and the five things about it that are easy to get backwards
 
@@ -851,6 +852,78 @@ script, so that DAST-05..DAST-11 would not all edit one file. That is not availa
 duly reported. The tier therefore shares `modules/dast/passive/checks.rules`. A parallel passive
 ticket will meet a merge conflict there; it is an append-only conflict between records that do not
 interact, so take both sides.
+
+
+#### What DAST-11 (`passive/markup.sh`) shipped, and the six things about it that are easy to get backwards
+
+**DAST-11 (`passive/markup.sh`) has landed - a tier-2 check, built after its peers DAST-06 and
+DAST-05 and appending to the `modules/dast/passive/checks.rules` they already share.**
+It ships `markup_engine.sh` (the pure half: the tag tokenizer, the origin comparison, the token-list
+and anti-CSRF-name predicates, the sensitive-page classifier, the endpoint chooser), `markup.sh` (the
+phase script `dast_run_phase` sources), and six `DAST-MARKUP-*` script checks, all tagged `passive`.
+`tests/suites/dast-markup.sh` is the proof - 189 assertions, no network and no Docker, driven from
+recorded response bodies replayed into `lib/http.sh`'s own body sink.
+
+- **The record separator between the tokenizer and the phase is 0x1f, and a tab is a MEASURED bug
+  rather than a taste question.**  A tab is an IFS-*whitespace* character, so `read` folds a RUN of
+  them into ONE delimiter (POSIX XCU 2.6.5).  A `<link>` with neither `integrity` nor `crossorigin`
+  emits six fields of which two are empty, and a tab-separated reader collapses that to four - so
+  `rel` arrives in the `integrity` variable, the SRI check reads an attribute that was never sent,
+  and every unhashed cross-origin stylesheet on the internet passes.  That is what the first draft
+  did; the suite caught it, and it now pins the reading in both directions.  0x1f is what
+  `crawl_json_flatten` already uses, for the same reason.
+- **`rel` is a TOKEN LIST and both naive readings are wrong in opposite directions.**  A
+  whole-attribute comparison misses `rel="external noopener"`, which IS protection; a substring test
+  accepts `rel="noopenerx"`, which is not.  Same for `markup_link_takes_sri`: `rel="stylesheet
+  alternate"` takes SRI and `rel="icon"` does not, and flagging every `<link href>` puts a finding on
+  every favicon on the internet.
+- **`sandbox` is a BOOLEAN attribute, so presence is not the same question as a non-empty value.**
+  `sandbox` and `sandbox=""` are both the maximally restrictive sandbox; reading presence off the
+  value reports a fully sandboxed frame as unsandboxed.  The tokenizer has a separate
+  `attr_present()` for exactly this and the suite fails under the merged reading.
+- **The "weighted higher on login and redirect pages" requirement is expressed as a SECOND CHECK ID,
+  not as a severity a script raises at runtime.**  `severity` is a per-record property of the
+  registry (`rules/RULE-FORMAT.md` §9.5), and a phase that emitted a `base_severity` above what its
+  own record declares would put the report and the registry into disagreement -
+  `tests/suites/dast-markup.sh` asserts they always match.  `DAST-MARKUP-TABNABBING-01` is `low`,
+  `DAST-MARKUP-TABNABBING_SENSITIVE-01` is `medium`, and the page is classified sensitive by its path
+  OR by carrying an `<input type="password">`; the content signal is the stronger one and is what
+  catches a page that is not called `/login`.  The same argument splits insecure framing into a
+  transport defect and a missing-control defect, because `docs/DESIGN.md` §7.1 names two and one id
+  could only carry one remediation.
+- **The finding grain is per PAGE, which is deliberately NOT `headers.sh`'s per-target grain, and the
+  contrast is the argument.**  A security header is a server-configuration property that is the same
+  on every response, so collapsing it is right.  Markup is a TEMPLATE property: collapsing it would
+  tell an operator that "a page" on this target has a form with no CSRF token without saying which.
+  The location profile already carries `path_template` and the endpoint chooser has already deduped
+  by it, so the report is bounded by construction.  The offending elements go in the EVIDENCE and
+  never in the location - a CDN URL routinely carries a content hash, and putting one in the identity
+  would mint a new finding on every deploy and destroy the tension-12 diff `--fail-on-new` gates on.
+- **The parser's limits are stated in `markup_engine.sh`'s header, in both directions, and the
+  SPA one changes what a clean result means.**  Handled: multi-line attributes, all three quoting
+  styles, a `>` inside a quoted value, comments and `<script>`/`<style>`/`<textarea>`/`<template>`
+  bodies, mixed case, the five named character references.  Not handled: markup a script builds at
+  runtime, numeric references other than `&`, an unterminated quoted value (the tag AND the rest of
+  the document are abandoned rather than guessed at), nested forms, `<svg>` self-closing syntax,
+  XHTML CDATA, and anything past the 1 MiB cap.  Every one of those that bites on a real run is
+  emitted as a `coverage_gap` or `coverage_reduction`, and the client-rendered case gets both,
+  because for an SPA a clean markup result is the absence of a test rather than evidence of anything.
+
+**What DAST-11 deliberately did not build, and what it filed instead.**  It writes no shared
+`passive/response_engine.sh`.  `headers_engine.sh`'s own header invites a peer that needs the same
+endpoint chooser to LIFT it "with this file's tests moving with it ... a refactor with an owner, not
+a side effect of a peer landing", and doing that lift here would have moved `headers.sh`, its
+156-assertion suite and `cookies.sh` under a markup ticket.  So `markup_endpoints_load` is a second,
+STATED copy and the lift is filed as its own ticket.  It also does not re-use `crawl_html_extract`:
+that function's output stream carries no attribute detail, and every check here is about an
+attribute, so widening it would change a contract `docs/INVENTORY-FORMAT.md`'s consumers read - the
+scanner core is reused, the emitter is not.  A second, smaller gap was found and filed rather than
+worked around: `http_request` publishes `_HTTP_LAST_STATUS` and `_HTTP_LAST_CONTENT_TYPE` but NOT the
+final URL after a redirect, so a relative reference on a page that redirected is resolved against the
+REQUESTED URL rather than the delivered one.  Out of scope here and unclaimed: `<meta http-equiv>`
+refresh redirects, `formaction` overrides on a submit button, `autocomplete="off"` on credential
+fields, and the `crossorigin`-missing-beside-`integrity` case (which breaks the resource rather than
+weakening it, so it is named in the remediation instead of flagged).
 
 
 ### Tier 3 - safe active (§7.2, 2 scripts)
