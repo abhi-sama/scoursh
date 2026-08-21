@@ -82,6 +82,34 @@ source "${BASH_SOURCE[0]%/*}/../crawl_engine.sh"
 : "${_INJ_LEN_TOLERANCE_PCT:=3}"
 
 # ---------------------------------------------------------------------------
+# 0a. Two OPT-IN knobs a probe sets for itself (both default to the behaviour
+#     every probe written before them already had, so neither changes an
+#     existing caller by one byte).
+# ---------------------------------------------------------------------------
+# `_INJ_WANT_HEADERS` - 1 to have `inject_send` capture the RESPONSE HEADERS and
+# publish them in `_INJ_HEADERS`. Off by default because most §7.3 techniques
+# read only the body, and a capture nobody reads is a scratch file per request.
+# DAST-19 (`active/openredirect.sh`) needs it: its entire signal is a `Location`
+# field, which `http_request` publishes to NO global - `_HTTP_LAST_STATUS` and
+# `_HTTP_LAST_CONTENT_TYPE` are all it sets, and the Location it read stays a
+# local of the redirect loop. The header CAPTURE is the only channel that
+# carries it out, which is the same conclusion modules/dast/passive/headers.sh
+# reached for its own family.
+: "${_INJ_WANT_HEADERS:=0}"
+# `_INJ_MAX_REDIRECTS` - hops `inject_send` lets `http_request` follow. Empty
+# means "whatever SCOURSH_DAST_INJECT_MAX_REDIRECTS says, else 2", which is what
+# every caller got before this existed.
+#
+# A PROBE THAT SETS IT TO 0 IS MAKING A SAFETY STATEMENT, NOT AN OPTIMISATION.
+# An open-redirect probe's success condition is that the target hands back a
+# `Location` pointing somewhere the operator never authorised; following it is
+# the one thing the probe must not do, and "the scope gate would have refused
+# the hop anyway" is not a reason to ask - a control you rely on having to fire
+# is a control you are testing rather than using. Setting it to 0 means the
+# question never reaches the gate.
+: "${_INJ_MAX_REDIRECTS:=}"
+
+# ---------------------------------------------------------------------------
 # 1. Percent-encoding
 # ---------------------------------------------------------------------------
 # `inject_urlencode TEXT [KEEP_SLASH]` - sets `_INJ_ENC` to TEXT with every
@@ -260,7 +288,7 @@ inject_send() {
   local epid=${_INJ_EPID[$index]} inj_name=${_INJ_NAME[$index]} inj_loc=${_INJ_LOCATION[$index]}
   local method=${_INJ_METHOD[$index]} base=${_INJ_URL[$index]} tmpl_path=${_INJ_PATH[$index]}
   local target=${_INJ_TARGET[$index]:-${SCOURSH_DAST_TARGET:-}}
-  _INJ_STATUS='' _INJ_BODY='' _INJ_ELAPSED_NS=0 _INJ_SENT_URL=''
+  _INJ_STATUS='' _INJ_BODY='' _INJ_ELAPSED_NS=0 _INJ_SENT_URL='' _INJ_HEADERS=''
 
   # graphql is a body/operation shape DAST-25/DAST-27 own, not a scalar this
   # engine can substitute one field of; a path segment with no template slot to
@@ -356,9 +384,12 @@ inject_send() {
     http_request_body "${form[*]}"
   fi
 
-  local bodyf
+  local bodyf hdrf=''
   bodyf=$SCOURSH_SCRATCH/inj.$$.$index.body
-  http_request_capture "$bodyf" ''
+  # The header sink is created only when a probe asked for one (section 0a), so
+  # a probe that reads only bodies writes exactly the files it did before.
+  (( _INJ_WANT_HEADERS )) && hdrf=$SCOURSH_SCRATCH/inj.$$.$index.hdrs
+  http_request_capture "$bodyf" "$hdrf"
 
   # Timing is measured around http_request with the same clock the rest of the
   # codebase uses (now_epoch_ns, lib/core.sh), through a swappable hook so a
@@ -368,16 +399,17 @@ inject_send() {
   # too, which is why a probe never reads one elapsed as truth: it takes the
   # MINIMUM across samples (throttle only ever ADDS), so the floor is the real
   # server time. See modules/dast/active/sqli.sh's time-based section.
-  local t0 t1
+  local t0 t1 maxred=${_INJ_MAX_REDIRECTS:-${SCOURSH_DAST_INJECT_MAX_REDIRECTS:-2}}
+  [[ $maxred =~ ^[0-9]+$ ]] || maxred=2
   t0=$(_inject_now_ns)
   local rc=0
-  http_request "$method" "$url" "${SCOURSH_DAST_INJECT_MAX_REDIRECTS:-2}" "$target" || rc=$?
+  http_request "$method" "$url" "$maxred" "$target" || rc=$?
   t1=$(_inject_now_ns)
   _INJ_ELAPSED_NS=$(( t1 - t0 ))
   (( _INJ_ELAPSED_NS >= 0 )) || _INJ_ELAPSED_NS=0
 
   if (( rc != 0 )); then
-    rm -f "$bodyf"
+    rm -f "$bodyf" ${hdrf:+"$hdrf"}
     return 1
   fi
   _INJ_STATUS=$_HTTP_LAST_STATUS
@@ -387,7 +419,10 @@ inject_send() {
       _INJ_BODY=${_INJ_BODY:0:_INJ_MAX_BODY_BYTES}
     fi
   fi
-  rm -f "$bodyf"
+  if [[ -n $hdrf && -r $hdrf ]]; then
+    IFS= read -r -d '' _INJ_HEADERS <"$hdrf" || true
+  fi
+  rm -f "$bodyf" ${hdrf:+"$hdrf"}
   return 0
 }
 

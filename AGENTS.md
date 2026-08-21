@@ -118,6 +118,7 @@ Each has a full entry in `docs/FOUNDATION.md`.
   disagreement. Two ids is also the right identity: `check_id` is a fingerprint component (tension
   5), so the ordinary and the elevated case stay two findings rather than one whose meaning flips
   between runs - the same argument `cookies.rules` already records for absent-vs-weak `SameSite`.
+- **A URL a target hands back is judged by its AUTHORITY, parsed the way a browser parses it - never by a substring, a prefix, or exact host equality alone** (`modules/dast/active/openredirect.sh`'s `_or_url_host`/`_or_host_is_sentinel`, DAST-19). Every naive reading fails in a direction that reads as a clean result, which is why all three are pinned in both directions. A SUBSTRING test flags the commonest SAFE behaviour on the surface - an on-origin redirect that reflects the value into its own query string (`Location: https://site/login?next=https://<probe-host>/`). Ignoring USERINFO misses `https://<site>@<probe-host>/`, and matching the probe host by EXACT EQUALITY alone misses `https://<site>.<probe-host>/`: those two are the shapes that defeat a real `startsWith(ourHost)` allow-list, so a parser that cannot see them cannot see the filters worth testing, while the mirror image `<probe-host>.<site>` is the TARGET's own name and must not match. The split is on the LAST `@`, and `//host/`, `https:/host/` and `/\host/` all carry an authority - a parser STRICTER than the client that will follow the redirect reports safe on a live one. Any peer probe that reads a `Location`, an `Origin` or a `Host` back off a target (DAST-20's SSRF sentinel, DAST-23's CRLF, DAST-24's host header) wants this function rather than its own.
 - **`SCOURSH_DAST_ENDPOINTS` is resolved BEFORE `crawl.sh` runs, so it is empty on the ordinary run** (`modules/dast/run.sh` calls `dast_inventory_read` once, ahead of the phase loop). `crawl.sh` is itself a phase and writes `reports/<run>/inventory/endpoints.json` several phases later; nothing re-reads it. A consumer trusting the exported variable alone therefore sees an empty surface on precisely the run that has one - `active/sqli.sh` does exactly this today. Read `$SCOURSH_RUN_DIR/inventory/endpoints.json` as a fallback (the same artifact by the same path, read after the producer wrote it), as `passive/cookies.sh` does; the general fix in `run.sh` is filed as its own ticket.
 - **One `checks.rules` per module directory, never a per-script pack.** `rules/RULE-FORMAT.md` §9's path table reserves that BASENAME repository-wide for the §9.5 schema, and a record file matching no row is `E070` - so `modules/dast/passive/cookies.rules` is refused by `tests/lint-rules.sh` however sensible per-owner packs look when peers are being built in parallel. Peers share the file and resolve the append-only conflict by taking both sides.
 - **A per-subcommand `--help`'s "built" line is generated, never hand-typed, wherever a real check exists to generate it from** (`scan.sh`'s `scan_usage_for`). `_scan_module_built` reuses the exact file-existence check `scan_dispatch` itself makes (`modules/<cmd>/run.sh` on disk) for `sast`/`sca`/`iac`/`dast`/`cloud`; `dast`'s phase count walks `modules/dast/engine.sh`'s own `_DAST_PHASES` table against the same file paths `dast_run_phase` checks. `diff`/`report` are not modules and have no file to check, so `_scan_stateful_command_built` is the one function both scan_main's dispatch arm and `scan_usage_for` read - flip it in the same change that gives them a real engine (step 7's `state/`), never in one place alone. The accepted-flags list per command is generated from `_SCAN_FLAG_KIND`, the same map `scan_flag_kind` validates against, for the identical reason.
@@ -165,7 +166,8 @@ session acquisition) and DAST-04 (`modules/dast/crawl.sh`) have both landed, so 
 parameter inventory that all twenty-seven tickets in tiers 2-5 consume exists, and it can be built
 against an authenticated session.
 Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has started - tier 4's
-DAST-14 (`active/sqli.sh`) and DAST-15 (`active/xss.sh`), tier 5's DAST-26 (`jwt.sh`), tier 2's
+DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`) and DAST-19 (`active/openredirect.sh`), tier
+5's DAST-26 (`jwt.sh`), tier 2's
 DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`, the §7.1 security-header family) and
 DAST-11 (`passive/markup.sh`, the §7.1 HTML-markup family),
 and tier 3's DAST-12 (`active/discovery.sh`, §7.2 content discovery - the first safe-active phase; no
@@ -173,12 +175,17 @@ wordlist ships in this repository by design, see `modules/dast/wordlists/README.
 have landed, out of tier order, since the tiers are peers rather than a sequence once tier 1 is in.
 DAST-06, DAST-05 and DAST-11 each appended their own block to the shared
 `modules/dast/passive/checks.rules`; DAST-07..DAST-10 are open and unordered among themselves.
+`modules/dast/active/checks.rules` is the tier-4 equivalent and is under the identical append-only
+rule - both DAST-15 and DAST-19 appended to DAST-14's file rather than adding a sibling, because
+`rules/RULE-FORMAT.md` §9's path table reserves the `checks.rules` BASENAME repository-wide and makes
+a per-ticket `openredirect-checks.rules` an `E070`.
 **DAST-15 is the first ticket to consume `modules/dast/active/inject_engine.sh` WITHOUT extending
 it**, which is what makes DAST-14's shared half demonstrably shared rather than sqli-shaped - it
 added no line to that file, and appended its three `DAST-INJ-XSS_REFLECTED_*` checks to the shared
 `modules/dast/active/checks.rules` the same append-only way the passive peers share theirs.
-DAST-16..DAST-25 are open, unordered among themselves, and should reuse the engine the same way.
-The one thing worth carrying up here from its landing note: **that probe measures ESCAPING, not
+DAST-16..DAST-18 and DAST-20..DAST-25 are open, unordered among themselves, and should reuse the
+engine the same way.
+The one thing worth carrying up here from DAST-15's landing note: **that probe measures ESCAPING, not
 reflection.**  Almost every parameter on a real application reflects something, so a probe that
 flagged reflection alone is a false-positive generator - and the escaped case is the half that fails
 in the direction that reads as a pass, which is why every context case in `tests/suites/dast-xss.sh`
