@@ -1321,7 +1321,7 @@ Three decisions here are easy to get backwards, each pinned by a test naming the
 
 | # | Ticket | Depends on |
 |---|---|---|
-| DAST-26 | `jwt.sh` - `alg:none`, empty-secret HS256, weak-secret list, RS->HS confusion | DAST-01/02, DAST-03 (needs a sample/test-account token and a protected endpoint to replay against) |
+| DAST-26 **(landed)** | `jwt.sh` - `alg:none`, empty-secret HS256, weak-secret list, RS->HS confusion | DAST-01/02, DAST-03 (needs a sample/test-account token and a protected endpoint to replay against) |
 | DAST-27 | `graphql.sh` - introspection + correlated key-exposure | DAST-01/02, DAST-04 (needs the GraphQL endpoint in the inventory); soft data dependency on DAST-10's leakage finding for the correlated-key case, not a build blocker |
 | DAST-28 | `ratelimit.sh` - missing-throttling burst probe | DAST-01 (must draw down the *same* per-run request budget DAST-01 owns, since this is the one check §7.4 flags as intentionally multi-request) |
 | DAST-29 **(landed)** | `authz.sh` - IDOR / excessive data exposure | DAST-03 with `requires-identities: 2` (two labelled identities), DAST-04 (object-reference endpoints from the parameter inventory) |
@@ -1414,6 +1414,34 @@ live user-enumeration probe (still DAST-03's stated `--allow-intrusive` follow-u
 `modules/dast/run.sh`'s inventory-export ordering - it falls back to
 `$SCOURSH_RUN_DIR/inventory/endpoints.json` for itself, exactly as `passive/headers.sh` does, and
 leaves the export to the ticket that owns it.
+
+**`modules/dast/checks.rules` is the tier-5 shared registry, and DAST-27 through DAST-30 append to it
+rather than creating one of their own.**
+DAST-26 landed with `jwt.sh` but registered none of the five `DAST-JWT-*` ids it emits, so tension 12
+could compute no coverage for them and tension 15's filter chain could neither select nor drop them - a
+run that genuinely tested a target's JWT verification was indistinguishable, in `state/`, from one that
+never looked.
+A follow-up ticket closed that: `modules/dast/checks.rules` now carries all five records, and `jwt.sh`
+and `jwt_engine.sh` consult `dast_check_selected` so the records GATE the probes rather than only
+describing them.
+Three things about that file a tier-5 peer needs before touching it:
+
+- **It sits at `modules/dast/`, one level above `passive/` and `active/`, and it has to.**
+  `rules/RULE-FORMAT.md` §9's path table reserves the basename `checks.rules` repository-wide for the
+  §9.5 schema and makes every other path `E070`, so a per-ticket `jwt-checks.rules` is not a legal
+  record file; §9.5's `script` value is MODULE-relative, so `script: jwt.sh` resolves only from a
+  registry at this level, exactly as `script: passive/cookies.sh` resolves only from `modules/dast/`
+  as its root.
+  `graphql.sh`, `ratelimit.sh`, `authz.sh` and `transport.sh` are all tier-5 phases at that same
+  level, so all four belong here.
+- **It is APPEND-ONLY between peers.**  A merge conflict in it is resolved by keeping BOTH blocks,
+  never by choosing a side - the same rule `modules/dast/passive/checks.rules` already carries after
+  DAST-05 and DAST-06 landed in parallel and each appended its own block.
+- **The gate is `dast_check_selected`, which does not exist in the tree yet.**  Every call site guards
+  it with `declare -F dast_check_selected >/dev/null` and runs everything when it is absent, which is
+  the "empty means all selected" fallback every direct-engine test relies on; a fail-closed default
+  would make every DAST phase inert while every "stays quiet" assertion still passed green.
+  Defining it in `modules/dast/engine.sh` is filed as its own ticket.
 
 That is 30 tickets end to end (DAST-01 through DAST-30), matching this ticket's "~30-script scope"
 estimate for step 5.
