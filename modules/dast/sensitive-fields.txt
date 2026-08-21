@@ -1,0 +1,72 @@
+# modules/dast/sensitive-fields.txt - the configurable input to
+# DAST-AUTHZ-EXCESSIVE_DATA-01, the "far more fields than the view needs"
+# check docs/DESIGN.md §7.4 asks for ("configurable sensitive-field list:
+# tokens, internal IDs, other users' data").
+#
+# ONE ENTRY PER LINE.  Whole-line `#` comments and blank lines are ignored.
+# Point SCOURSH_DAST_SENSITIVE_FIELDS_FILE at another file to use a different
+# list, or edit this one - it is data, never code, and nothing here is ever
+# expanded, sourced or executed.
+#
+# THE MATCH IS A SUBSTRING ON A NORMALISED NAME, NOT A REGEX, ON PURPOSE.
+# A JSON field name is normalised by lowercasing it and deleting `_`, `-` and
+# `.`, so `password_hash`, `passwordHash` and `Password-Hash` are one string,
+# `passwordhash`.  A plain entry matches when it is a SUBSTRING of that; an
+# entry prefixed with `=` must equal it exactly.  Regexes were rejected here
+# because bash's `=~` uses the system regcomp and macOS/BSD supports none of
+# `\b`, `\w`, `\s` or `\d` (AGENTS.md, "Things measured on this codebase"), so
+# a list written on one userland would quietly match differently on the other.
+#
+# USE `=` WHENEVER THE BARE WORD IS A COMMON INNOCENT PREFIX.  `=salt` rather
+# than `salt` so `saltwater` is not a credential; `=admin` rather than `admin`
+# so `administrativearea` in a postal address is not a privilege flag.
+#
+# An empty list, or a file that cannot be read, is not an error: the check is
+# then skipped with a recorded reason, exactly as a missing payload file
+# degrades one SQLi technique rather than failing the run.
+#
+# THIS IS A HINT LIST, AND A HIT IS NOT A PROOF.  The check reports that a
+# response reached an authenticated client carrying a field whose NAME says it
+# is not view data; whether that field is genuinely over-exposed is a judgement
+# about the application. The finding says so, and the confidence is `medium`
+# for that reason. Never add a value here - only names.
+
+# --- Credentials and credential material -----------------------------------
+password
+passwd
+=pwd
+credential
+secret
+privatekey
+apikey
+apisecret
+clientsecret
+token
+=sessionid
+=salt
+=otp
+=totp
+=mfacode
+=recoverycode
+
+# --- Regulated personal data ------------------------------------------------
+# Present in a bootstrap or profile payload far more often than any view needs.
+=ssn
+socialsecurity
+creditcard
+cardnumber
+=cvv
+=iban
+passportnumber
+=taxid
+dateofbirth
+=dob
+
+# --- Internal state and privilege flags -------------------------------------
+# Not secrets, but not view data either: they tell a client what the server
+# thinks of it, and they are the fields an attacker reads first.
+=isadmin
+=admin
+=issuperuser
+=isstaff
+internalid

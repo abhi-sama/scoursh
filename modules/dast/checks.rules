@@ -1,0 +1,120 @@
+# modules/dast/checks.rules - the script-check registry for the §7.4 phases that
+# live at the TOP LEVEL of modules/dast/ (rules/RULE-FORMAT.md §9.5;
+# docs/STEP5-DAST-PLAN.md tier 5).
+#
+# WHY THIS FILE EXISTS AT THIS PATH, AND WHY IT IS SHARED.
+# rules/RULE-FORMAT.md §9's path table gives the §9.5 script-check schema to
+# "any file named `checks.rules`, at any depth", and makes every other record
+# path E070 - so a per-script `authz-checks.rules` is not a legal record file,
+# however tidy it would look while five tier-5 tickets are built in parallel.
+# modules/dast/passive/ and modules/dast/active/ each already have one, and this
+# is the third: the home for jwt.sh, graphql.sh, ratelimit.sh, authz.sh and
+# transport.sh, whose scripts sit at this level rather than in a sub-directory.
+# TREAT IT AS APPEND-ONLY.  A merge conflict in it is resolved by keeping BOTH
+# blocks, never by choosing a side, exactly as passive/checks.rules records for
+# its own peers.
+#
+# THE TYPE TAG IS `active`, matching the phase table's `authz.sh:active` floor
+# (modules/dast/engine.sh), so these checks are reachable only at
+# `--intensity active`.  They are NOT tagged `intrusive`: every request is a
+# read-only GET or HEAD of a reference the target itself published, nothing is
+# created, modified or deleted, and requiring --allow-intrusive on top of the
+# active-intensity opt-in would be a second, undocumented gate.
+#
+# `requires-identities: 2` is the key rules/RULE-FORMAT.md §9.5 froze with
+# `authz.sh` named in its own row.  Object-level authorization cannot be
+# established from one session, so a run with fewer than two AUTHENTICATED
+# identities skips these checks with a stated reason rather than running them
+# against one identity and reporting the result.
+#
+# FOUR IDS RATHER THAN ONE, because the DAST location profile is (target,
+# method, path_template, param_location, param_name) and carries nothing that
+# names the DEFECT: a confirmed cross-user read and an over-exposed field on the
+# same endpoint would otherwise hash to one fingerprint and findings_merge would
+# silently keep whichever sorted first.  IDOR and CROSS_IDENTITY_READ are split
+# for the same reason and additionally because they are different CLAIMS - see
+# modules/dast/authz_engine.sh's header for the oracle that separates them.
+
+id: DAST-AUTHZ-IDOR-01
+title: Object reference is readable by an identity that does not own it
+script: authz.sh
+severity: high
+confidence: high
+cwe: CWE-639
+owasp: A01:2021
+tags: active
+coverage-scope: target
+requires-config: config/auth.conf
+requires-identities: 2
+remediation: Authorize every request against the object it names, not merely
+  against the session. Load the object, then check that the authenticated
+  principal is entitled to it, in the same server-side code path for every
+  handler - a check performed in the client, in a route guard, or only on the
+  listing endpoint is not one. Making the identifier unguessable (a UUID
+  instead of a counter) narrows discovery but is not the fix: this finding is
+  evidence that a reference obtained by any means is honoured for the wrong
+  principal.
+references: CWE-639
+references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+
+id: DAST-AUTHZ-CROSS_IDENTITY_READ-01
+title: Two separate identities receive the identical non-public object
+script: authz.sh
+severity: medium
+confidence: medium
+cwe: CWE-639
+owasp: A01:2021
+tags: active
+coverage-scope: target
+requires-config: config/auth.conf
+requires-identities: 2
+remediation: Confirm whether this object is intended to be shared between all
+  authenticated users. If it is, no change is needed and this finding can be
+  baselined. If it is not, authorize the request against the object rather than
+  against the session, exactly as for a confirmed insecure direct object
+  reference. This check reports an observation rather than asserting a defect
+  because, unlike DAST-AUTHZ-IDOR-01, it saw no evidence anywhere on this
+  endpoint that per-object ownership is enforced at all.
+references: CWE-639
+references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+
+id: DAST-AUTHZ-EXCESSIVE_DATA-01
+title: Authenticated response carries fields beyond what the view needs
+script: authz.sh
+severity: medium
+confidence: medium
+cwe: CWE-213
+owasp: A01:2021
+tags: active
+coverage-scope: target
+requires-config: config/auth.conf
+requires-identities: 2
+remediation: Serialise a response from an explicit view model naming the fields
+  the client needs, rather than returning a database row or a domain object and
+  relying on the client to ignore the rest. A credential hash, an API token, a
+  privilege flag or a regulated personal-data field that reaches the browser is
+  disclosed to everything that can read that response - the page itself, an
+  injected script, an intermediary log, and the browser cache - whether or not
+  the interface renders it. The field list this check matches against is data,
+  in modules/dast/sensitive-fields.txt.
+references: CWE-213
+references: https://owasp.org/API-Security/editions/2023/en/0xa3-broken-object-property-level-authorization/
+
+id: DAST-AUTHZ-OTHER_IDENTITY_DATA-01
+title: Authenticated response contains another identity's identifier
+script: authz.sh
+severity: high
+confidence: medium
+cwe: CWE-200
+owasp: A01:2021
+tags: active
+coverage-scope: target
+requires-config: config/auth.conf
+requires-identities: 2
+remediation: Scope every query to the authenticated principal where the data is
+  fetched, not where it is rendered. A response carrying a second user
+  identifier usually means a listing or a join returned every row and the
+  filtering was left to the presentation layer, so the whole table is available
+  to anyone who reads the response body directly.
+references: CWE-200
+references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/

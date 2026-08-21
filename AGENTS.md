@@ -167,7 +167,8 @@ parameter inventory that all twenty-seven tickets in tiers 2-5 consume exists, a
 against an authenticated session.
 Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has started - tier 4's
 DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`) and DAST-19 (`active/openredirect.sh`), tier
-5's DAST-26 (`jwt.sh`), tier 2's
+5's DAST-26 (`jwt.sh`) and DAST-29 (`authz.sh`, the §7.4 object-level authorization and
+data-exposure family), tier 2's
 DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`, the §7.1 security-header family) and
 DAST-11 (`passive/markup.sh`, the §7.1 HTML-markup family),
 and tier 3's DAST-12 (`active/discovery.sh`, §7.2 content discovery - the first safe-active phase; no
@@ -191,6 +192,9 @@ flagged reflection alone is a false-positive generator - and the escaped case is
 in the direction that reads as a pass, which is why every context case in `tests/suites/dast-xss.sh`
 is a PAIR (the same marker into the same template, once escaped and once raw) rather than a single
 positive.
+DAST-29 created a THIRD such shared registry, `modules/dast/checks.rules`, for the tier-5 phases
+whose scripts sit at the top level of `modules/dast/`; DAST-27, DAST-28 and DAST-30 append to it and
+resolve a conflict in it by keeping both blocks, never by choosing a side.
 Step 5 remains the top priority ahead of steps 6, 7 and 10.**
 Which rule packs, SCA ecosystems and IaC packs have landed, and what remains of each, is in the
 generated block below - read it there rather than restating it here.
@@ -642,6 +646,69 @@ exactly the run that has just discovered one - and
 `active/sqli.sh` tests nothing on a standalone `scan.sh dast` run today.  `headers.sh` falls back to
 `$SCOURSH_RUN_DIR/inventory/endpoints.json` for itself and pins the fallback with a test; the export is
 `modules/dast/run.sh`'s to fix and is filed as its own ticket rather than changed under six peers.
+
+**DAST-29 (`modules/dast/authz.sh`) has landed - the §7.4 object-level authorization (IDOR) and
+excessive-data-exposure checks, and the first tier-5 phase whose script sits at the TOP LEVEL of
+`modules/dast/`.**
+It ships `authz_engine.sh` (the pure half: candidate extraction from DAST-04's frozen inventory, the
+oracle, the field scan), `authz.sh` (the phase `dast_run_phase` sources), the new shared
+`modules/dast/checks.rules` (four `DAST-AUTHZ-*` script checks, all `tags: active` and all
+`requires-identities: 2`), and the vendored, operator-editable `modules/dast/sensitive-fields.txt`.
+`tests/suites/dast-authz.sh` is the proof - 147 assertions, no network and no Docker, driven from a
+scripted SERVER keyed on (path, identity) rather than a canned-status queue, because the correctness
+of this check IS which identity is served which object and a queue lets a probe pass by asking for the
+wrong thing in the right order.
+Six things about it will otherwise be rediscovered the expensive way; each was measured by writing the
+wrong version and watching a named case go red, not reasoned about.
+
+- **"Public" is DIGEST EQUALITY with an identity's own response, never the anonymous status code.**
+  The anonymous control is required at all - without it every public object on the target is reported
+  as a cross-user read - but reading a 2xx as "public" silences every real finding on any application
+  that answers a logged-out request with a 200 login page, which is the overwhelmingly common shape.
+  That failure reads as a CLEAN REPORT, which is the direction that ships. Case C4 goes red under it.
+- **A shared object is TWO different check ids, and which one is decided by a refusal observed
+  ELSEWHERE under the same path template.** `DAST-AUTHZ-IDOR-01` (high confidence) needs a witness
+  that this endpoint enforces per-object ownership at all - one identity served a reference the other
+  was refused; without one it is `DAST-AUTHZ-CROSS_IDENTITY_READ-01` (medium), an observation about a
+  possibly-shared resource. One id is not an option: the DAST location profile carries nothing naming
+  the defect, so the two would hash to one fingerprint and `findings_merge` would keep whichever
+  sorted first. The whole group is therefore probed BEFORE anything is emitted, since the witness can
+  arrive on the last reference. Cases C1 and C2 fail under the opposite readings.
+- **Read-only is enforced at CANDIDATE SELECTION (`_authz_method_ok`), not at the call site.** A
+  POST/PUT/PATCH/DELETE inventory entry never becomes a candidate, so no code path can reach a
+  mutation even if a later edit forgets to check - and the guarantee is asserted over a REQUEST LOG,
+  the only form of the claim a test can falsify.
+- **What an object reference IS comes from `lib/findings.sh`'s `path_template_of`, and the suite
+  asserts the two AGAINST EACH OTHER rather than restating the four shapes.** Disagreement in either
+  direction is a real defect: probing a segment the fingerprint treats as a literal splits one
+  endpoint's findings, and skipping one it collapses leaves the check with no candidates on an
+  endpoint whose findings it would happily merge. A slug (`/users/jane`) is deliberately NOT a
+  reference - admitting path words spends the request budget on `/about` - and that narrowing is a
+  recorded gap, not a claim slug-keyed IDOR does not exist.
+- **The exposure pass reads FIELD NAMES and never field VALUES, and the "other identity" needle is a
+  pure-bash substring test rather than a `scan_match`.** The needle is an identifier out of
+  `config/auth.conf`, a mode-600 credential file, and every engine this repository wraps takes its
+  pattern on argv (tension 9 handling rule 1); bash function arguments are not argv. The needle is
+  never echoed into a finding either - the evidence names the identity LABEL. Both are pinned by
+  asserting the planted value appears NOWHERE in the shard, which is meaningful because the shard
+  escapes only backslash, tab, CR and LF, so a copied plain value really would be visible.
+- **Every skip path returns 0 with a RECORDED reason - the ticket's own "skip cleanly and say why, not
+  fail".** No `--authed`, one authenticated identity where two are configured, no inventory, an
+  unreadable field list: each records a `coverage_reduction` plus a human-readable `coverage_gap`, and
+  the suite asserts the exit status AND the reason for each, because silence here reads as "this
+  application enforces object-level authorization", the single most expensive way for this check to be
+  wrong.
+
+**One testing lesson from this ticket that is not specific to it: never assert a check id against raw
+shard text.**
+A finding carries its own remediation prose, and `DAST-AUTHZ-CROSS_IDENTITY_READ-01`'s deliberately
+NAMES `DAST-AUTHZ-IDOR-01` in it ("unlike DAST-AUTHZ-IDOR-01, it saw no evidence ...") so a reader
+knows which of the two they are holding.
+A substring test over the shard therefore finds the confirmed id on a run that emitted only the
+observation: `assert_not_contains` fails on correct behaviour, and - the expensive half -
+`assert_contains ... IDOR` would PASS on the rejected "always emit the confirmed id" implementation.
+`tests/suites/dast-authz.sh`'s `_shard_check_ids` decodes through `lib/findings.sh`'s own
+`finding_decode` for that reason; any suite asserting on ids should do the same.
 
 **This block used to read "no DAST-0x ticket is picked up until step 3's outstanding rule packs and
 step 4's SCA half are both complete on `dev`"; BOTH halves of that gate are now discharged, so it is

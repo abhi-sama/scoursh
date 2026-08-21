@@ -3,6 +3,19 @@
 # §13 step 3+ owns modules/dast/checks.rules for real.  One check per
 # --intensity tier, plus one `intrusive` check, so the filter chain's every
 # branch (docs/FOUNDATION.md tension 15) has a fixture to exercise it.
+#
+# EVERY ID HERE IS DELIBERATELY DISTINCT FROM EVERY SHIPPED ONE, because E019
+# scopes check-id uniqueness to the whole repository rather than to one file -
+# so a fixture that squats on an id a real pack later wants makes that pack
+# unlintable.  `DAST-HDR-CSP-01` and `DAST-INJ-SQLI-01` here are already the
+# placeholder siblings of the shipped `DAST-HDR-CSP_MISSING-01` and
+# `DAST-INJ-SQLI_ERROR-01`; `DAST-AUTHZ-OBJREF-01` was renamed from
+# `DAST-AUTHZ-IDOR-01` when DAST-29 landed the real check under that name.
+# Renaming an id here costs nothing (this registry emits no finding and reaches
+# no `state/`), and rules/RULE-FORMAT.md §9.1.1's "stable forever" rule and
+# rules/RETIRED.txt are about SHIPPED check ids, which these are not.  When a
+# real check needs one of these names, rename the fixture and its assertions in
+# tests/suites/checks.sh - do not contort the shipped id.
 
 id: DAST-HDR-CSP-01
 title: Content-Security-Policy header missing or unsafe
@@ -31,7 +44,7 @@ remediation: Set Strict-Transport-Security with a max-age of at least one year
   and includeSubDomains.
 references: CWE-319
 
-id: DAST-AUTHZ-IDOR-01
+id: DAST-AUTHZ-OBJREF-01
 title: Cross-user object reference not enforced
 script: safe-active/authz.sh
 severity: high
