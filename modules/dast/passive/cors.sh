@@ -299,7 +299,10 @@ _dast_cors_phase() {
 # SIG_NOT_VERIFIED subsumes its per-variant probes.
 _cors_emit_reflection() {
   local target=$1 method=$2 url=$3 path=$4
-  local vary_note=' The response also carried no `Vary: Origin`, so a shared cache may store the response minted for one origin and serve it to another.'
+  # No backticks in this sentence: it is single-quoted evidence prose, and a
+  # backtick run inside single quotes trips SC2016 for a command substitution
+  # that is not there.  The plain header name reads the same to an operator.
+  local vary_note=' The response also carried no Vary: Origin header, so a shared cache may store the response minted for one origin and serve it to another.'
   (( _CORS_VARY_ORIGIN )) && vary_note=''
 
   if cors_credentials_true "$_CORS_ACAC"; then

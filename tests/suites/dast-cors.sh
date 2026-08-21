@@ -416,13 +416,13 @@ assert_eq '' "$(_checks_run_text)" \
 
 _write_inventory
 _new_run
-SRV_MAP[/api/reflect]=reflect-plain.headers
-SRV_MAP[/api/creds]=reflect-credentials.headers
-SRV_MAP[/assets/site.css]=wildcard.headers
-SRV_MAP[/api/allowlisted]=allowlist.headers
-SRV_MAP[/plain]=none.headers
-SRV_MAP[/api/head]=reflect-lowercase.headers
-SRV_MAP['/orders/1']=none.headers
+SRV_MAP['/api/reflect']='reflect-plain.headers'
+SRV_MAP['/api/creds']='reflect-credentials.headers'
+SRV_MAP['/assets/site.css']='wildcard.headers'
+SRV_MAP['/api/allowlisted']='allowlist.headers'
+SRV_MAP['/plain']='none.headers'
+SRV_MAP['/api/head']='reflect-lowercase.headers'
+SRV_MAP['/orders/1']='none.headers'
 SCOURSH_DAST_ENDPOINTS=$W/endpoints.json
 export SCOURSH_DAST_ENDPOINTS
 _dast_cors_phase
@@ -533,7 +533,7 @@ assert_contains "$(_meta_text)" 'coverage bound, not a clean result' \
 
 t_case 'a transport failure is counted as untested, never as "no CORS header"'
 _new_run
-SRV_MAP[/api/reflect]=reflect-plain.headers
+SRV_MAP['/api/reflect']='reflect-plain.headers'
 SRV_FAIL_PATH=/api/creds
 SCOURSH_DAST_ENDPOINTS=$W/endpoints.json
 export SCOURSH_DAST_ENDPOINTS
@@ -589,7 +589,7 @@ assert_eq '' "$(_checks_run_text)" \
 
 t_case 'a wildcard beside credentials stays the wildcard finding, with the pairing explained'
 _new_run
-SRV_MAP[/assets/site.css]=wildcard-credentials.headers
+SRV_MAP['/assets/site.css']='wildcard-credentials.headers'
 SCOURSH_DAST_ENDPOINTS=$W/endpoints.json
 export SCOURSH_DAST_ENDPOINTS
 _dast_cors_phase
@@ -614,6 +614,12 @@ export SCOURSH_DAST_ENDPOINTS
 # Stand in for auth.sh having run: the phase consults it through the same
 # `declare -F` guard modules/dast/active/sqli.sh uses, so a stub is exactly what
 # a real authenticated run presents to it.
+#
+# SC2329 says this function is never invoked, which is true of this FILE and is
+# the whole point: the code under test discovers it with `declare -F` and calls
+# it by name, which is a call site no static reader can see.  Silenced with a
+# reason per AGENTS.md rather than left to the checker version.
+# shellcheck disable=SC2329
 dast_auth_authenticated_labels_set() { _DAST_AUTH_AUTHED_LABELS=(alice); }
 SCOURSH_DAST_AUTHED=true _dast_cors_phase
 unset -f dast_auth_authenticated_labels_set
@@ -646,8 +652,8 @@ printf '\n== F. a full round trip through every report format ==\n'
 # 10: evidence is untrusted target output and is escaped per emitter).
 t_case 'the findings survive findings_merge and reach every report surface'
 _new_run
-SRV_MAP[/api/creds]=reflect-credentials.headers
-SRV_MAP[/assets/site.css]=wildcard.headers
+SRV_MAP['/api/creds']='reflect-credentials.headers'
+SRV_MAP['/assets/site.css']='wildcard.headers'
 SCOURSH_DAST_ENDPOINTS=$W/endpoints.json
 export SCOURSH_DAST_ENDPOINTS
 _dast_cors_phase
