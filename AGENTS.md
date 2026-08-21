@@ -99,6 +99,25 @@ Each has a full entry in `docs/FOUNDATION.md`.
 - **A cross-fire fix needs a test in BOTH directions, because the naive fix for each is the other's bug.** Narrow too little and the false positives return; narrow too much and the pack goes inert - and an inert pack passes every "stays quiet" assertion in the suite, so the only thing that catches it is an assertion that the rules still FIRE. The kubernetes/docker-compose section of `tests/suites/iac.sh` pins both halves, and asserts them over `check_id@loc_path` pairs from a single scan of `tests/fixtures/iac-scope/` so neither half can be satisfied by breaking the other. That failure mode had already cost two tickets before it was tested.
 - **`findings.jsonl` and `run.json` are mandatory per-run records, never one of `--format`'s four values** (`json`/`sarif`/`html`/`md` is the whole enum both `scan.sh` and `lib/config.sh` validate against). `lib/report.sh`'s `report_all` writes both unconditionally and gates only `findings.json`/`report.md`/`report.html` behind `SCOURSH_FORMATS` (a CSV `scan.sh` resolves via `config_scanner_list` and exports before dispatch). `--format sarif` alone therefore writes only the two mandatory files today: there is still no SARIF emitter (step 10), so it selects nothing, exactly as before this was wired up - that gap is unchanged and tracked in `ROADMAP.md`, not silently hidden by the fix. A `report_all` caller that never sets `SCOURSH_FORMATS` (every direct call in this test suite) gets all four formats, matching `lib/config.sh`'s own documented default for no `--format` given - keep that fallback in step with that default rather than letting the two drift.
 - **A `Set-Cookie` header value is split on `;` OUTSIDE double quotes and NEVER on `,`** (`modules/dast/passive/cookie_engine.sh`, DAST-06). Both naive readings are shipped bugs, and both fail in the direction that reads as a pass. The generic RFC 7230 "a comma separates list members" rule is right for `Accept` and specifically wrong here (RFC 6265 §3): `Expires=Wed, 09 Jun 2021 10:18:14 GMT` carries a comma inside ONE attribute, so splitting on it strands every later attribute on a phantom cookie invented from the date, and reports three findings against a correctly-flagged cookie. A quote-blind `;` split is worse: `pref="light; Secure; dark"` makes it see a `Secure` attribute the server never sent, so a cookie that IS missing `Secure` passes. Attribute names are case-insensitive and unordered, and `Secure`/`HttpOnly` are set by the attribute's PRESENCE - RFC 6265 §5.2.5/§5.2.6 discard the value, so `HttpOnly=false` is an HttpOnly cookie. Every one of these was measured by writing the naive version and watching `tests/suites/dast-cookies.sh` go red, not reasoned about.
+- **A record stream between two processes is separated by 0x1f, NEVER by a tab, whenever a field can
+  legitimately be EMPTY** (`modules/dast/passive/markup_engine.sh`, DAST-11). A tab is an
+  IFS-*whitespace* character, so `read` folds a RUN of tabs into ONE delimiter and drops leading and
+  trailing ones (POSIX XCU 2.6.5) - which means a six-column record whose middle two columns are
+  empty arrives as four columns and every later value is silently shifted left. Measured here: a
+  `<link>` with neither `integrity` nor `crossorigin` put its `rel` into the `integrity` variable, so
+  the Subresource-Integrity check read an attribute the server never sent and every unhashed
+  cross-origin stylesheet passed. It reads as a clean result, which is the direction that costs the
+  most. `crawl_json_flatten` already uses 0x1f for the same reason; the emitter strips 0x1f out of
+  every value so target-derived text cannot forge a column. Note this does NOT make the existing
+  tab-separated readers in this tree wrong - `crawl_html_extract` and the inventory readers emit no
+  empty middle field - it makes the tab a hazard for any NEW stream that does.
+- **A severity that varies with context is a SECOND CHECK ID, never a `base_severity` a script raises
+  at runtime** (DAST-11's two `DAST-MARKUP-TABNABBING*` ids). `severity` is a per-record property of
+  the registry (`rules/RULE-FORMAT.md` §9.5) and every DAST suite asserts the emitting script and the
+  registry agree on it, so a phase that "weighted a finding higher" in place would put the two into
+  disagreement. Two ids is also the right identity: `check_id` is a fingerprint component (tension
+  5), so the ordinary and the elevated case stay two findings rather than one whose meaning flips
+  between runs - the same argument `cookies.rules` already records for absent-vs-weak `SameSite`.
 - **`SCOURSH_DAST_ENDPOINTS` is resolved BEFORE `crawl.sh` runs, so it is empty on the ordinary run** (`modules/dast/run.sh` calls `dast_inventory_read` once, ahead of the phase loop). `crawl.sh` is itself a phase and writes `reports/<run>/inventory/endpoints.json` several phases later; nothing re-reads it. A consumer trusting the exported variable alone therefore sees an empty surface on precisely the run that has one - `active/sqli.sh` does exactly this today. Read `$SCOURSH_RUN_DIR/inventory/endpoints.json` as a fallback (the same artifact by the same path, read after the producer wrote it), as `passive/cookies.sh` does; the general fix in `run.sh` is filed as its own ticket.
 - **One `checks.rules` per module directory, never a per-script pack.** `rules/RULE-FORMAT.md` §9's path table reserves that BASENAME repository-wide for the §9.5 schema, and a record file matching no row is `E070` - so `modules/dast/passive/cookies.rules` is refused by `tests/lint-rules.sh` however sensible per-owner packs look when peers are being built in parallel. Peers share the file and resolve the append-only conflict by taking both sides.
 - **A per-subcommand `--help`'s "built" line is generated, never hand-typed, wherever a real check exists to generate it from** (`scan.sh`'s `scan_usage_for`). `_scan_module_built` reuses the exact file-existence check `scan_dispatch` itself makes (`modules/<cmd>/run.sh` on disk) for `sast`/`sca`/`iac`/`dast`/`cloud`; `dast`'s phase count walks `modules/dast/engine.sh`'s own `_DAST_PHASES` table against the same file paths `dast_run_phase` checks. `diff`/`report` are not modules and have no file to check, so `_scan_stateful_command_built` is the one function both scan_main's dispatch arm and `scan_usage_for` read - flip it in the same change that gives them a real engine (step 7's `state/`), never in one place alone. The accepted-flags list per command is generated from `_SCAN_FLAG_KIND`, the same map `scan_flag_kind` validates against, for the identical reason.
@@ -147,12 +166,13 @@ parameter inventory that all twenty-seven tickets in tiers 2-5 consume exists, a
 against an authenticated session.
 Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has started - tier 4's
 DAST-14 (`active/sqli.sh`) and DAST-15 (`active/xss.sh`), tier 5's DAST-26 (`jwt.sh`), tier 2's
-DAST-06 (`passive/cookies.sh`) and DAST-05 (`passive/headers.sh`, the §7.1 security-header family),
+DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`, the §7.1 security-header family) and
+DAST-11 (`passive/markup.sh`, the §7.1 HTML-markup family),
 and tier 3's DAST-12 (`active/discovery.sh`, §7.2 content discovery - the first safe-active phase; no
 wordlist ships in this repository by design, see `modules/dast/wordlists/README.md`)
 have landed, out of tier order, since the tiers are peers rather than a sequence once tier 1 is in.
-DAST-06 and DAST-05 landed in parallel and each appended its own block to the shared
-`modules/dast/passive/checks.rules`; DAST-07..DAST-11 are open and unordered among themselves.
+DAST-06, DAST-05 and DAST-11 each appended their own block to the shared
+`modules/dast/passive/checks.rules`; DAST-07..DAST-10 are open and unordered among themselves.
 **DAST-15 is the first ticket to consume `modules/dast/active/inject_engine.sh` WITHOUT extending
 it**, which is what makes DAST-14's shared half demonstrably shared rather than sqli-shaped - it
 added no line to that file, and appended its three `DAST-INJ-XSS_REFLECTED_*` checks to the shared

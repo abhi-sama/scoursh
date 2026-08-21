@@ -4371,7 +4371,8 @@ With both tier-1 tickets in, **tiers 2-5 are unblocked and nothing remains in fr
 authenticated crawl pass plugs into DAST-03's session rather than being stubbed.
 Work in those tiers has started, and out of tier order, since they are peers rather than a sequence:
 tier 4's DAST-14 (`active/sqli.sh`) and DAST-15 (`active/xss.sh`), tier 5's DAST-26 (`jwt.sh`) and
-tier 2's DAST-06 (`passive/cookies.sh`) and DAST-05 (`passive/headers.sh`) have landed.
+tier 2's DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`) and DAST-11
+(`passive/markup.sh`) have landed.
 DAST-15 is the second tier-4 injection probe and the first to consume `active/inject_engine.sh`
 without extending it, which is the evidence that DAST-14's shared half really is shared rather than
 sqli-shaped.
@@ -4400,7 +4401,29 @@ two states with different remediations one finding whose meaning flips between r
 missing/weak/malformed as three separate ids, framing protection, MIME sniffing, a leaky
 `Referrer-Policy`, and a configurable "recommended headers not set" roll-up), with
 `tests/suites/dast-headers.sh` proving them from recorded responses and no network.
-Their five remaining peers DAST-07..DAST-11 are open and unordered among themselves.
+**DAST-11 (`modules/dast/passive/markup.sh`) landed after both**, appending six `DAST-MARKUP-*`
+script checks to the same shared `checks.rules` (missing Subresource Integrity, reverse tabnabbing as
+two ids, insecure framing as two ids, and an absent anti-CSRF token in a state-changing form), with
+`tests/suites/dast-markup.sh` proving them from recorded response bodies and no network.
+Two things about it are tension decisions rather than implementation detail.
+First, tension 5 again, in a shape the register had not previously recorded: a severity that varies
+with CONTEXT is expressed as a second check id, never as a `base_severity` the emitting script raises
+at run time.  This ticket's own requirement was that reverse tabnabbing be "weighted higher on login
+and redirect pages", and `severity` is a per-record property of the registry
+(`rules/RULE-FORMAT.md` §9.5) that every DAST suite asserts the script and the registry agree on - so
+a script that raised it in place would put the report and the registry into disagreement, and would
+also collapse two states with different remediations onto one fingerprint.  `DAST-MARKUP-TABNABBING-01`
+(`low`) and `DAST-MARKUP-TABNABBING_SENSITIVE-01` (`medium`) are the same argument
+`cookies.rules` already records for absent-versus-weak `SameSite`.
+Second, tension 24: the record stream between this phase's `awk` tokenizer and its bash reader is
+separated by 0x1f rather than by a tab, because a tab is an IFS-*whitespace* character and `read`
+folds a run of them into one delimiter - a six-column record with two empty middle columns arrives as
+four and shifts every later value left.  Measured, not reasoned about: it made the SRI check read an
+`integrity` attribute the server never sent, and it read as a clean result.
+`docs/STEP5-DAST-PLAN.md`'s DAST-11 landing note carries the full detail, including the parser's
+stated limits in both directions and the shared-`passive/response_engine.sh` lift it declined to make
+under a peer's file and filed instead.
+Their four remaining peers DAST-07..DAST-10 are open and unordered among themselves.
 Three things about it belong here rather than only in the plan, because each is a tension decision.
 First, tension 19 again: this phase issues real traffic and every request of it goes through
 `http_request`, with a NON-fatal `http_gate_url` pre-check ahead of each inventory-derived URL for
