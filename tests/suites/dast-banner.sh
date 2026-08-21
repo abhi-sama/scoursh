@@ -51,6 +51,23 @@
 # SC2030/SC2031: a prefix `VAR=val cmd` before a subprocess is DELIBERATELY
 #   scoped to that one invocation.
 # shellcheck disable=SC2016,SC2030,SC2031
+#
+# WHY EVERY `source .../banner.sh` BELOW CARRIES `# shellcheck source=/dev/null`,
+# AND WHY THAT IS NOT LAZINESS.  This suite sources the phase script five times,
+# once per scenario, which is the only way to exercise a phase `dast_run_phase`
+# reaches by `source` (a subshell would discard the findings - lib/core.sh's
+# `worker_id_set` lesson).  `shellcheck -x` follows `source` STATICALLY and has
+# no "already inlined" notion, so five sources of banner.sh means five full
+# inlinings of banner.sh + banner_engine.sh + crawl_engine.sh + lib/http.sh +
+# lib/core.sh + lib/findings.sh.  Measured on this file: 31 minutes and 3.6GB
+# resident and still climbing, against roughly 30 seconds for a normal file -
+# the same runaway AGENTS.md records for the modules/sca source cycle, and
+# enough to trip tests/run-tests.sh's shellcheck watchdog, whose kill reads as a
+# stage failure rather than as a slow file.
+# NOTHING IS LOST BY CUTTING IT: banner.sh is its own entry in the stage's file
+# list and is statically checked there, in full, exactly once.  The four
+# `# shellcheck source=` directives at the top of this file are the graph this
+# suite really needs walked, and they stay.
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
@@ -322,6 +339,7 @@ t_case 'no endpoint inventory: a recorded gap and no request at all'
 _fresh_run
 SCOURSH_DAST_VERSIONS_DB=$FIXDB
 _phase_env ''
+# shellcheck source=/dev/null  # cut the edge - see the header note
 source "$ROOT/modules/dast/passive/banner.sh"
 assert_contains "$(run_facts coverage_reduction)" 'reason=no_endpoint_inventory' 'the missing surface is a declared reduction'
 assert_contains "$(run_facts coverage_gap)" 'absence of a test' 'and a human-readable gap - fails under silence, which reads as a clean banner posture'
@@ -332,6 +350,7 @@ _fresh_run
 SCOURSH_DAST_VERSIONS_DB=$FIXDB
 SRV_CASE=basic
 _phase_env "$INV"
+# shellcheck source=/dev/null  # cut the edge - see the header note
 source "$ROOT/modules/dast/passive/banner.sh"
 FIND=$(_shard_text)
 assert_contains "$FIND" 'DAST-BANNER-VERSION_DISCLOSURE-01' 'a version disclosure is emitted'
@@ -363,6 +382,7 @@ _fresh_run
 SCOURSH_DAST_VERSIONS_DB=$ONLYSCA
 SRV_CASE=basic
 _phase_env "$INV"
+# shellcheck source=/dev/null  # cut the edge - see the header note
 source "$ROOT/modules/dast/passive/banner.sh"
 FIND=$(_shard_text)
 assert_contains "$(run_facts coverage_reduction)" 'reason=versions_db_no_banner_rows' 'the missing data is declared'
@@ -375,6 +395,7 @@ _fresh_run
 SCOURSH_DAST_VERSIONS_DB=$W/nope.db
 SRV_CASE=basic
 _phase_env "$INV"
+# shellcheck source=/dev/null  # cut the edge - see the header note
 source "$ROOT/modules/dast/passive/banner.sh"
 assert_contains "$(run_facts coverage_reduction)" 'reason=versions_db_absent' 'absent is reported as absent, not as no_banner_rows'
 assert_contains "$(_shard_text)" 'DAST-BANNER-VERSION_DISCLOSURE-01' 'the disclosure checks are unaffected'
@@ -384,6 +405,7 @@ _fresh_run
 SCOURSH_DAST_VERSIONS_DB=$FIXDB
 SRV_CASE=quiet
 _phase_env "$INV"
+# shellcheck source=/dev/null  # cut the edge - see the header note
 source "$ROOT/modules/dast/passive/banner.sh"
 FIND=$(_shard_text)
 assert_not_contains "$FIND" 'DAST-BANNER-' 'a quiet target yields no banner finding at all - fails if any channel reports on an empty response'
