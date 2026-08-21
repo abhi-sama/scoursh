@@ -147,7 +147,10 @@ parameter inventory that all twenty-seven tickets in tiers 2-5 consume exists, a
 against an authenticated session.
 Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has started - tier 4's
 DAST-14 (`active/sqli.sh`), tier 5's DAST-26 (`jwt.sh`) and tier 2's DAST-06 (`passive/cookies.sh`)
-have landed, out of tier order, since the tiers are peers rather than a sequence once tier 1 is in.
+and DAST-05 (`passive/headers.sh`, the §7.1 security-header family) have landed, out of tier order,
+since the tiers are peers rather than a sequence once tier 1 is in.
+DAST-06 and DAST-05 landed in parallel and each appended its own block to the shared
+`modules/dast/passive/checks.rules`; DAST-07..DAST-11 are open and unordered among themselves.
 Step 5 remains the top priority ahead of steps 6, 7 and 10.**
 Which rule packs, SCA ecosystems and IaC packs have landed, and what remains of each, is in the
 generated block below - read it there rather than restating it here.
@@ -542,6 +545,63 @@ One correction this ticket made outside its own files: `modules/dast/run.sh`'s i
 the crawl phase runs in the same run, so `run.json` contradicted itself, naming an empty surface in
 one record and 13 endpoints in another. It now says what is true (no inventory was available as
 INPUT) and points the reader at the file rather than the sentence.
+
+**DAST-05 (`modules/dast/passive/headers.sh`) has landed - a TIER 2 check, built in parallel with its
+peer DAST-06 (`passive/cookies.sh`), which reached `dev` first and is what actually created
+`modules/dast/passive/`.**
+It ships `headers_engine.sh` (the pure half: the response-header reader, the CSP/HSTS/Referrer-Policy
+parsers, the endpoint chooser), `headers.sh` (the phase script `dast_run_phase` sources),
+`checks.rules` (eleven `DAST-HDR-*` script checks, all tagged `passive`) and `recommended-headers.txt`
+(the vendored, operator-editable roll-up list).  `tests/suites/dast-headers.sh` is the proof - 153
+assertions, no network and no Docker, driven from recorded response heads replayed into
+`lib/http.sh`'s own capture sink.  `docs/STEP5-DAST-PLAN.md`'s own DAST-05 landing note is the
+authority for the detail; five things about it are worth carrying here because a peer ticket
+(DAST-07..DAST-11 are all building against the same surface) will otherwise rediscover them the
+expensive way.
+
+- **`http_request_capture`'s header sink ACCUMULATES every redirect hop, so a whole-file match reads
+  the WRONG response.**  A `grep '^strict-transport-security:'` over the capture finds the header the
+  302 set and reports it as the delivered page's - backwards for the one header whose absence on the
+  final response is the finding.  `hdr_parse_capture` resets on every `HTTP/x.y NNN` status line, so
+  only the last block survives; removing that reset turns two assertions red, which is how it is
+  known to be load-bearing rather than assumed.
+- **`modules/dast/passive/checks.rules` is SHARED between all seven tier-2 tickets, and the basename
+  is forced.**  `rules/RULE-FORMAT.md` §9's path table gives the §9.5 script-check schema to "any file
+  named `checks.rules`, at any depth" and makes every other path `E070`, so a per-ticket
+  `headers-checks.rules` is not a legal record file.  Treat it as append-only: a merge conflict in it
+  is resolved by keeping BOTH blocks, never by choosing a side.  The engine file is named
+  `headers_engine.sh` for the opposite reason - a `passive_engine.sh` would be shared scaffolding
+  three parallel tickets each believed they owned, so a peer that needs the same response reader
+  should LIFT it deliberately rather than fork it.
+- **One finding per check per target, located deterministically.**  A header is configured once per
+  application, so a per-endpoint emit reports one misconfiguration ten times.  Each check accumulates
+  across the (capped, path-template-deduped) endpoint set and emits ONCE, at the first endpoint in a
+  fixed order - the operator's own `base-url` first, then the inventory `LC_ALL=C`-sorted - with
+  "observed on N of M responses" in the evidence.  The determinism is what stops the fingerprint
+  churning when the crawl reorders.  Eleven check ids rather than one because the DAST location
+  profile carries no component naming the DEFECT, so a missing CSP and a weak HSTS on one page would
+  otherwise collide and dedupe to one finding.
+- **Applicability is tracked per check and an INAPPLICABLE check is never in `checks_run`.**  HSTS is
+  not evaluated at all on a plaintext response (RFC 6797 §7.2 has the browser ignore the header);
+  CSP-absence and framing are document-only, while `nosniff` is not.  A run that saw only plaintext
+  records `headers_check_not_applicable` naming the uncovered ids instead of reporting them tested.
+- **A "configurable" knob does NOT have to be a `config/scanner.conf` key, and here it deliberately is
+  not.**  §9.6.1's key set is frozen, so adding one moves `lib/records.sh` and `tests/lint-rules.sh`
+  together (§14 item 2) and widens a tier-2 ticket into a format change six peers then rebase onto.
+  The shape used instead is this module's existing one: a vendored, auditable data file plus a
+  documented environment seam (`SCOURSH_DAST_RECOMMENDED_HEADERS_FILE`), exactly as
+  `SCOURSH_DAST_SQLI_PAYLOAD_DIR` already does for payloads.
+
+**A pre-existing defect this ticket found and did NOT fix: `SCOURSH_DAST_ENDPOINTS` is EMPTY on every
+first run.**
+`modules/dast/run.sh` calls `dast_inventory_read` and exports the two inventory paths BEFORE the phase
+loop starts, while `crawl.sh` writes `reports/<run>/inventory/{endpoints,parameters}.json` several
+phases later in that same loop.  Any consumer that trusts the export alone therefore sees no surface on
+exactly the run that has just discovered one - and
+`modules/dast/active/inject_engine.sh`'s `inject_inventory_load` does trust it, which means
+`active/sqli.sh` tests nothing on a standalone `scan.sh dast` run today.  `headers.sh` falls back to
+`$SCOURSH_RUN_DIR/inventory/endpoints.json` for itself and pins the fallback with a test; the export is
+`modules/dast/run.sh`'s to fix and is filed as its own ticket rather than changed under six peers.
 
 **This block used to read "no DAST-0x ticket is picked up until step 3's outstanding rule packs and
 step 4's SCA half are both complete on `dev`"; BOTH halves of that gate are now discharged, so it is

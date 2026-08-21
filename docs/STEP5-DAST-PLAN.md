@@ -33,6 +33,13 @@ whoever picks it up first.
 | DAST-03 - `auth.sh`, authentication and session acquisition (§7.0) | landed |
 | DAST-04 - `crawl.sh`, crawling, parameter and spec discovery (§7.5) | landed |
 
+**Tier 2 has started: DAST-06 (`passive/cookies.sh`) and DAST-05 (`passive/headers.sh`) have both
+landed**, built in parallel - DAST-06 reached `dev` first and created `modules/dast/passive/` and the
+shared `checks.rules`, and DAST-05 appended the `DAST-HDR-*` block to it.  Their five remaining peers
+(DAST-07..DAST-11) are open and unordered among themselves.  See each ticket's landing note under the
+tier-2 table for what it shipped, and DAST-05's for the one pre-existing `modules/dast/run.sh` defect
+it found and deliberately did not fix in place.
+
 **Tiers 2-5 are unblocked and nothing remains in front of them**: every check below needs the endpoint
 and parameter inventory DAST-04 writes, and the authenticated ones need the session DAST-03 acquires.
 Both are in.
@@ -689,13 +696,86 @@ only that all of them come after DAST-04 (they need the endpoint list) and DAST-
 
 | # | Ticket | Extra notes beyond DAST-01/02/04 |
 |---|---|---|
-| DAST-05 | `passive/headers.sh` | CSP, HSTS, `X-Frame-Options`/`frame-ancestors`, `X-Content-Type-Options`, `Referrer-Policy`, "recommended headers not set" roll-up. |
+| DAST-05 **(landed)** | `passive/headers.sh` | CSP, HSTS, `X-Frame-Options`/`frame-ancestors`, `X-Content-Type-Options`, `Referrer-Policy`, "recommended headers not set" roll-up. See the landing note below the tier-2 table. |
 | DAST-06 **(landed)** | `passive/cookies.sh` | `Secure`/`HttpOnly`/`SameSite` per cookie. See the landing note below the tier-2 table. |
 | DAST-07 | `passive/tls.sh` | Shells out to `openssl s_client`; the one documented exception to "every network call goes through `lib/http.sh`" (`docs/FOUNDATION.md` tension 19's neighbourhood notes this). Sequence close to DAST-30 (`transport.sh`), which complements it - not a hard code dependency, just worth landing in the same review window for a coherent report section. |
 | DAST-08 | `passive/cors.sh` | Origin-reflection probe. |
 | DAST-09 | `passive/banner.sh` | Framework/version disclosure matched against **`data/versions.db`**. The writer side is no longer a forward dependency: `tools/vendor-engines.sh advisories` landed ahead of step 5 and writes `data/versions.db` by the same call that writes `data/advisories.db` (tension 25). What is still missing is the data - no `data/versions.db` is committed to this repository, and populating one is an operator action on a networked box, never part of a scan. This ticket ships the matching logic and must degrade gracefully (skip that sub-check with a reason, not an error) when `data/versions.db` is missing or empty, which is the state of a fresh clone. |
 | DAST-10 | `passive/leakage.sh` | Verbose-error/stack-trace disclosure, upstream proxy header leakage, email disclosure, client-config leakage in served JS, CDN/third-party origin detection. Its "API key found in served JS" output is a later correlation input for DAST-27 (`graphql.sh`) at the derived-finding layer (tension 6), not a code dependency. |
 | DAST-11 | `passive/markup.sh` | Missing SRI, reverse tabnabbing, insecure external frame, CSRF-token absence in state-changing forms. |
+
+#### What DAST-05 (`passive/headers.sh`) shipped, and the five things about it that are easy to get backwards
+
+**DAST-05 (`passive/headers.sh`) has landed - a tier-2 check, built in parallel with its peer
+DAST-06, which reached `dev` first and is what actually created `modules/dast/passive/`.**
+It ships four files: `modules/dast/passive/headers_engine.sh` (the pure half - the response-header
+reader, the CSP/HSTS/Referrer-Policy parsers, the endpoint chooser),
+`modules/dast/passive/headers.sh` (the phase script `dast_run_phase` sources),
+`modules/dast/passive/checks.rules` (eleven `DAST-HDR-*` script checks, all tagged `passive`), and
+`modules/dast/passive/recommended-headers.txt` (the vendored, operator-editable roll-up list).
+`tests/suites/dast-headers.sh` is the proof: 153 assertions, no network, no Docker, driven entirely
+from recorded response heads replayed into `lib/http.sh`'s own capture sink.
+
+Eight decisions in it are easy to get backwards; each is pinned by a test naming the reading it fails
+under, and four of them were confirmed by deliberately breaking the implementation and watching the
+suite go red.
+
+- **Only the FINAL hop's headers count, which is why the reader is not a `grep`.**
+  `http_request_capture`'s header sink ACCUMULATES every redirect hop by design (DAST-03 needed that
+  for a login's `Set-Cookie`), so a whole-file match for `^strict-transport-security:` happily reads
+  the REDIRECT's header and reports it as the delivered page's - exactly backwards for the one header
+  whose absence on the final response is the finding.  `hdr_parse_capture` resets on every
+  `HTTP/x.y NNN` status line.  Measured: with the reset removed, two assertions go red.
+- **The file is named `headers_engine.sh`, not `passive_engine.sh`.**  DAST-06..DAST-11 are peers
+  being built in parallel, and a tier-wide engine is shared scaffolding three tickets each believe
+  they own.  A later ticket that needs the same response-header reader should LIFT it into a shared
+  `passive/response_engine.sh` deliberately, with this suite moving with it.
+- **`modules/dast/passive/checks.rules` IS shared ground, and that is forced rather than chosen.**
+  `rules/RULE-FORMAT.md` §9's path table gives the §9.5 schema to "any file named `checks.rules`, at
+  any depth" and makes every other path `E070`, so a per-ticket `headers-checks.rules` is not a legal
+  record file.  The file is append-only between peers; a conflict in it is resolved by keeping BOTH
+  blocks, never by choosing a side.
+- **One finding per check per target, not one per endpoint.**  A header is configured once for an
+  application, so the per-endpoint shape reports one misconfiguration ten times.  Each check
+  accumulates and emits once, located at the first endpoint in a DETERMINISTIC order (the operator's
+  own `base-url` first, then the inventory's paths `LC_ALL=C`-sorted), with "observed on N of M
+  responses" in the evidence.  The determinism is what keeps the fingerprint from churning when the
+  crawl reorders.
+- **The eleven ids exist because the DAST fingerprint has no component naming the defect.**
+  (target, method, path_template, param_location, param_name) is the whole location profile, so a
+  single `DAST-HDR-MISCONFIG-01` would make a missing CSP and a weak HSTS on one page collide and
+  dedupe to one finding.  HSTS is three ids for the reason §7.1 asks for them separately: missing,
+  weak and malformed are three different conversations, and only the third means "you configured it
+  and got nothing for it".
+- **Four false-positive guards that a naive implementation gets wrong**, each with a control fixture:
+  `'unsafe-inline'` beside a nonce or hash is IGNORED by every CSP2+ browser and is not flagged;
+  `data:` in `img-src` is ordinary and only script/object/default context is flagged; a wildcard in a
+  source's PATH is not a domain wildcard; and `Referrer-Policy` is the LAST RECOGNISED token, so
+  `unsafe-url, strict-origin-when-cross-origin` is not a finding.  Conversely `frame-ancestors *` is
+  flagged even though the directive is present, because it permits every origin AND overrides an
+  `X-Frame-Options: DENY` sent beside it.
+- **Applicability is tracked per check, and an inapplicable check is NOT in `checks_run`.**  HSTS is
+  not evaluated on a plaintext response at all (RFC 6797 §7.2 has the browser ignore it); CSP-absence
+  and framing are document-only, while nosniff is not.  A run that only ever saw plaintext records
+  `headers_check_not_applicable` naming the uncovered ids rather than reporting them as tested.
+- **The roll-up is configurable through a vendored data file plus an environment seam
+  (`SCOURSH_DAST_RECOMMENDED_HEADERS_FILE`), not a `config/scanner.conf` key.**  §9.6.1's key set is
+  frozen, so a key moves `lib/records.sh` and `tests/lint-rules.sh` together (§14 item 2) and would
+  widen this ticket into a format change six peers then rebase onto.  A `config/scanner.conf` key
+  remains the better long-term home and is filed separately.  A name that already has its own check id
+  is dropped from the operator's list, with a `notes` record saying which - reporting one absence
+  twice helps nobody.
+
+**One pre-existing defect this ticket found and did NOT fix here.**
+`modules/dast/run.sh` calls `dast_inventory_read` and exports `SCOURSH_DAST_ENDPOINTS` /
+`SCOURSH_DAST_PARAMETERS` BEFORE the phase loop starts, but `crawl.sh` writes
+`reports/<run>/inventory/{endpoints,parameters}.json` several phases later in that same loop.  On a
+first run - the ordinary case - every consumer that trusts the export alone therefore sees an EMPTY
+inventory on exactly the run that has just discovered the surface, and
+`modules/dast/active/inject_engine.sh`'s `inject_inventory_load` does trust it.  `headers.sh` falls
+back to `$SCOURSH_RUN_DIR/inventory/endpoints.json` for itself and pins that fallback with a test; the
+export itself belongs to `modules/dast/run.sh`, which six peer tickets are editing around, so it is
+filed as its own ticket rather than changed here.
 
 #### What DAST-06 (`passive/cookies.sh`) shipped, and the six things about it that are easy to get backwards
 
@@ -771,6 +851,7 @@ script, so that DAST-05..DAST-11 would not all edit one file. That is not availa
 duly reported. The tier therefore shares `modules/dast/passive/checks.rules`. A parallel passive
 ticket will meet a merge conflict there; it is an append-only conflict between records that do not
 interact, so take both sides.
+
 
 ### Tier 3 - safe active (§7.2, 2 scripts)
 
