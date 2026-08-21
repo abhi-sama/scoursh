@@ -281,7 +281,9 @@ cookie_parse() {
 cookie_looks_session() {
   local n=${1,,}
   case $n in
-    *sess*|*sid|sid|*auth*|*token*|*jwt*|*login*|*remember*|*csrf*|*xsrf*) return 0 ;;
+    # A bare `sid` arm would be dead code here: `*sid` already matches it, and
+    # a duplicate arm is SC2221/SC2222.
+    *sess*|*sid|*auth*|*token*|*jwt*|*login*|*remember*|*csrf*|*xsrf*) return 0 ;;
   esac
   return 1
 }
