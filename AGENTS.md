@@ -201,6 +201,46 @@ Each has a full entry in `docs/FOUNDATION.md`.
   satisfied by breaking the other.
 - **A finding's `evidence` is HARD-CAPPED at `SCOURSH_EVIDENCE_MAX_BYTES` (512 by default, `lib/findings.sh`), and `_evidence_truncate` cuts the TAIL off silently.** Whatever a finding most needs the reader to see goes FIRST. Measured on `modules/dast/active/methods.sh`: a first draft wrote a paragraph per finding, and the two sentences that ticket existed to put in front of an operator - how acceptance was determined, and that the write method was never sent - were exactly the two the emitter dropped, because they sat at the end. Background prose belongs in `remediation`, which carries no cap.
 - **`modules/dast/active/methods.sh` (DAST-13) establishes method acceptance WITHOUT exercising it, and the only two methods that ever leave it are `OPTIONS` and `TRACE`** (both defined as having no effect on the resource, RFC 7231 §4.3.7/§4.3.8). `PUT`/`DELETE`/`PATCH`/`CONNECT` are read off the server's own `Allow` header - which a `405` is *required* to carry, RFC 7231 §6.5.5, so the rejection is a source and not only the 2xx - and are never sent, which is why those checks are `confidence: medium` and the measured TRACE check is `high`. Three things there are easy to get backwards and each is pinned by a mutation that was watched failing: the `Allow` match is anchored `^allow:`, because an unanchored one reads `Access-Control-Allow-Methods` (a CORS *browser* policy) as an endpoint acceptance claim; a bare `200` is not a TRACE echo, because a single-page app answers every unrouted request with its shell; and the measurement beats the advertisement in BOTH directions - a confirmed echo the server never named is still a finding, a named `TRACE` that answers `405` is not.
+- **A GraphQL introspection response is PARSED, never grepped, and the naive reading fails in the
+  direction that reads as a FINDING** (`modules/dast/graphql_engine.sh`, DAST-27).
+  A server with introspection correctly DISABLED answers `{"errors":[{"message":"GraphQL introspection
+  is not allowed, but the query contained __schema"}]}` - the literal string `__schema` appears,
+  quoted inside the very error message saying introspection is off, so `case $body in *__schema*)`
+  reports a critical misconfiguration against a correctly-configured server on the exact response that
+  proves the opposite.
+  Hardening the substring to also demand `types` or `queryType` does not help: an error message
+  routinely quotes back every field the document asked for.
+  The classifier goes through `crawl_json_flatten` and asks for a leaf at the STRUCTURAL path
+  `data.__schema.types.<n>.name`, which a JSON string's contents can never become.
+  Two smaller siblings in the same file, each measured the same way: the mount-path signal is a
+  LAST-SEGMENT match (a substring makes `/graphql-docs` an endpoint and spends a real request on it),
+  and the type count is over DISTINCT ARRAY INDICES (counting flattened leaves doubles it, because
+  each type carries both a `name` and a `kind`).
+  One more that is a real trap: `"mutationType": null` is decided by the PATH (it flattens to
+  `data/__schema/mutationType`, a different leaf entirely), so the `[[ $type == s ]]` guard is NOT
+  what handles it - what the guard defends is `"mutationType": {"name": null}`, which lands on the
+  same path a real name does.
+  A test written from the wrong belief about which case the guard covers passes under both readings
+  and pins nothing.
+- **Whether a DAST check has anything to do is decided from the INVENTORY, never by probing to find
+  out** (`modules/dast/graphql.sh`, DAST-27).
+  Sending an introspection query at every endpoint to see which one answers is unsolicited traffic
+  against an application that may have no GraphQL at all.
+  With no GraphQL endpoint in `endpoints.json` the phase sends ZERO requests and records a declared
+  `reason=no_graphql_endpoint` reduction plus a `coverage_gap`, because "this application has no
+  GraphQL" and "scoursh did not look" are different facts and a silent clean result cannot tell them
+  apart.
+- **§7.4's "correlated finding" belongs to the DERIVED layer, and a phase script that mints its own
+  composite check id is reimplementing it** (DAST-27).
+  `rules/RULE-FORMAT.md` §9.2's first line puts composites in `lib/findings.sh` and says "not scanner
+  scripts"; a phase could not do it correctly anyway, since it runs before the other module's
+  contributors are merged.
+  All a contributor owes is a populated `corr_target`, which `loc_target` supplies and which §9.2.2's
+  frozen table confirms is the only correlation key DAST can offer.
+  `rules/derived.rules` stays unseeded until DAST-10's leakage id exists (F5/F20, `E051`); prove the
+  input end with `derive_findings RUNDIR FIXTURE_FILE` - its second argument is the rule file -
+  against a composite written to SCRATCH, never under `tests/fixtures/`, which `tests/lint-rules.sh`
+  lints and which needs every fixture path registered in its own `fixture_schema_for`.
 - **`SCOURSH_DAST_ENDPOINTS` is resolved BEFORE `crawl.sh` runs, so it is empty on the ordinary run** (`modules/dast/run.sh` calls `dast_inventory_read` once, ahead of the phase loop). `crawl.sh` is itself a phase and writes `reports/<run>/inventory/endpoints.json` several phases later; nothing re-reads it. A consumer trusting the exported variable alone therefore sees an empty surface on precisely the run that has one - `active/sqli.sh` does exactly this today. Read `$SCOURSH_RUN_DIR/inventory/endpoints.json` as a fallback (the same artifact by the same path, read after the producer wrote it), as `passive/cookies.sh` does; the general fix in `run.sh` is filed as its own ticket.
 - **A DAST phase gates every outbound probe on `dast_check_selected` (`modules/dast/engine.sh` section 3a), and the `declare -F` guard around each call is KEPT deliberately** (tension 15). Unset or empty `SCOURSH_SELECTED_CHECKS` means ALL SELECTED, exactly as `lib/findings.sh`'s `_derived_record_selected` already reads it, and inverting that is the trap: `tests/suites/dast-{sqli,headers,discovery}.sh` each source a phase script with no `engine.sh` in the process, so a fail-closed default - or an UNguarded call, which is `command not found`, exit 127, non-zero, hence "deselected" - makes every phase inert while every "stays quiet" assertion in those suites still passes green. Membership is WHOLE-LINE, never a `*"$id"*` substring, because an id that is merely a suffix of another selected line would deliver a payload the operator filtered out. This mattering at all is why it is worth stating: four call sites called this function across three tickets before anything defined it, so `--profile-scan`/`--intensity` narrowed the DAST check REGISTRY and narrowed nothing a run actually SENT. One consequence is accepted rather than fixed: "the filter chain ran and kept nothing" is indistinguishable from "there is no filter chain", since both leave the variable empty.
 - **A phase attaches a session with `dast_auth_apply TARGET LABEL` - `auth_engine.sh`'s own public
@@ -269,7 +309,8 @@ parameter inventory that all twenty-seven tickets in tiers 2-5 consume exists, a
 against an authenticated session.
 Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has started - tier 4's
 DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`) and DAST-19 (`active/openredirect.sh`), tier
-5's DAST-26 (`jwt.sh`), DAST-28 (`ratelimit.sh`, the §7.4 missing-throttling burst probe),
+5's DAST-26 (`jwt.sh`), DAST-27 (`graphql.sh`, the §7.4 GraphQL introspection & key-exposure check),
+DAST-28 (`ratelimit.sh`, the §7.4 missing-throttling burst probe),
 DAST-29 (`authz.sh`, the §7.4 object-level authorization and
 data-exposure family) and DAST-30 (`passive/transport.sh`, the §7.4 plaintext-exposure and
 mixed-content family - a tier-5 ticket that RUNS at tier `passive` and lives under
@@ -305,8 +346,8 @@ is a PAIR (the same marker into the same template, once escaped and once raw) ra
 positive.
 DAST-29 created a THIRD such shared registry, `modules/dast/checks.rules`, for the tier-5 phases
 whose scripts sit at the top level of `modules/dast/`; DAST-28 has already appended its two
-`DAST-RATE-*` records to it, and DAST-27 appends the same way - a conflict in it is resolved by
-keeping both blocks, never by choosing a side.
+`DAST-RATE-*` records to it, and DAST-27 has appended its own `DAST-GQL-INTROSPECTION-01` record the
+same way - a conflict in it is resolved by keeping both blocks, never by choosing a side.
 DAST-30 is NOT one of them despite being a tier-5 ticket: its script sits under
 `modules/dast/passive/`, so its checks are registered in that directory - today in its own
 `modules/dast/passive/checks-transport.rules`, per tension 29's split.

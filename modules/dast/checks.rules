@@ -387,3 +387,56 @@ remediation: Send a Retry-After header on every 429 response, as either a
   client slow down before it is refused at all.
 references: CWE-770
 references: https://owasp.org/Top10/A04_2021-Insecure_Design/
+
+# --- graphql.sh (DAST-27, §7.4 GraphQL introspection & key exposure) --------
+#
+# graphql.sh is another §7.4 phase script sharing this append-only registry -
+# see this file's own header above for why a per-script pack is not legal here
+# and why a merge conflict in this section is resolved by taking both sides.
+#
+# The type tag is `active`, matching the phase table's `graphql.sh:active` floor
+# (modules/dast/engine.sh) - docs/DESIGN.md §7.4 is headed "Active - auth, API,
+# and access-control checks". Both gates must permit and neither widens the
+# other (tension 15's intersection rule).
+#
+# `intrusive` is deliberately NOT set. The probe sends one GraphQL `query`
+# operation, which that specification defines as side-effect free, and it never
+# constructs a `mutation` - so nothing here changes target state and the
+# active-intensity opt-in is the whole gate. Requiring --allow-intrusive on top
+# would be a second, undocumented one.
+#
+# ONE CHECK ID, NOT TWO, AND THE SECOND HALF OF §7.4's SENTENCE IS THE REASON.
+# §7.4 also asks that a long-lived API key found in served JS (§7.1) be reported
+# against an exposed schema "as a correlated finding". A correlated finding is
+# what §9.2's DERIVED layer computes in lib/findings.sh - "not scanner scripts",
+# per §9.2's own first line - as COMPOSITE-TOKEN-HIJACK, correlated on `target`,
+# which §9.2.2's capability table confirms is the one correlation key a DAST
+# finding can supply. The record below is that composite's DAST contributor; it
+# needs no extra key to be one, only a `loc_target`, which
+# modules/dast/graphql_engine.sh sets. rules/derived.rules stays unseeded until
+# DAST-10's leakage check id exists, because `E051` requires every requires/
+# any-of value to name an existing check - findings F5 and F20.
+
+id: DAST-GQL-INTROSPECTION-01
+title: GraphQL introspection is enabled and returns the full schema
+script: graphql.sh
+severity: medium
+confidence: high
+cwe: CWE-200
+owasp: A05:2021
+tags: active
+tags: compliance
+coverage-scope: target
+remediation: Disable introspection on production deployments - every GraphQL
+  server implementation has a switch for it, and a managed GraphQL service gates
+  it through the API authorisation mode. Introspection is a development
+  affordance: it hands a caller a complete map of every type, field, argument and
+  mutation, which is the reconnaissance step that precedes targeted field-level
+  abuse, and it is what turns a leaked long-lived API key from a credential into
+  a guided tour of the data behind it. Disabling it is not access control on its
+  own - pair it with per-field authorisation and query depth and complexity
+  limits, because a caller who already holds the schema is unaffected by hiding
+  it. Keep it enabled in development and staging, where the tooling that needs it
+  lives.
+references: CWE-200
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
