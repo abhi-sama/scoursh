@@ -149,6 +149,12 @@ _scanner_default() {
     # with status 0 is therefore correct, and is why this arm exists rather
     # than falling through to the `*) return 1` unknown-key refusal.
     contact) printf '%s' '' ;;
+    # docs/STEP5-DAST-PLAN.md DAST-07.  30 days is the notice period the
+    # public CA ecosystem itself operates on - ACME clients renew at 30 days
+    # remaining - so it is the window at which "expiring soon" first becomes
+    # actionable rather than noise, and it is a scanner-wide policy for the
+    # reason modules/dast/passive/tls.sh's header gives.
+    tls-expiry-warn-days) printf '%s' 30 ;;
     state-retain-runs) printf '%s' 30 ;;
     history-window-days) printf '%s' 365 ;;
     history-max-commits) printf '%s' 5000 ;;
@@ -181,6 +187,12 @@ _scanner_validate_value() {
       | history-window-days | history-max-commits | lock-stale-seconds \
       | mutex-timeout-seconds)
       [[ $val =~ ^[1-9][0-9]*$ ]] ;;
+    # Zero IS valid here, unlike every key above: `tls-expiry-warn-days: 0`
+    # means "warn about nothing that has not already expired", which is a
+    # coherent thing for an operator to want and is the only way to turn the
+    # expiring-soon check off without turning the expired check off with it.
+    tls-expiry-warn-days)
+      [[ $val =~ ^(0|[1-9][0-9]*)$ ]] ;;
     max-redirects | circuit-breaker-window)
       [[ $val =~ ^(0|[1-9][0-9]*)$ ]] ;;
     fail-on)

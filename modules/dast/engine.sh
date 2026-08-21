@@ -109,8 +109,13 @@ declare -ga _DAST_PHASES=(
   # Tier 2 - passive checks, docs/DESIGN.md §7.1 (DAST-05..DAST-11).
   # passive/tls.sh is the one documented exception to "every network call
   # goes through lib/http.sh" (docs/FOUNDATION.md tension 19): it shells out
-  # to `openssl s_client`, and tests/lint-shell.sh's no-bypass check gains its
-  # exemption on the day it lands, not before.
+  # to `openssl s_client`.  IT HAS NOW LANDED (DAST-07) and carries its
+  # exemption in tests/lint-shell.sh's no-bypass check, exempted BY PATH.
+  # That exemption is from the TRANSPORT alone: the phase still takes its
+  # authorization, its pinned address and its tension-16 limiter/budget/breaker
+  # spend from lib/http.sh's `http_authorize_raw_connection`, so a handshake
+  # is gated and budgeted exactly as a request is.  A future non-HTTP probe
+  # calls that function; it does not assemble its own subset of the gate.
   'passive/headers.sh:passive'
   'passive/cookies.sh:passive'
   'passive/tls.sh:passive'
