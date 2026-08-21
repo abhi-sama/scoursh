@@ -346,4 +346,51 @@ assert_not_contains "$JOINED" 'evil.example' \
 assert_not_contains "$JOINED" 'bad	path' \
   "a control-character (tab) entry is rejected - FAILS if CR/LF/control bytes reach a request"
 
+# ===========================================================================
+printf '== dast discovery: an inventory-derived path is held to the SAME safe-path rule ==\n'
+# ===========================================================================
+# The endpoints inventory is UNTRUSTED TARGET OUTPUT (docs/FOUNDATION.md tension
+# 10): its `path` values come from the scanned application's own markup or from
+# an operator-supplied specification, so a path there is strictly LESS trusted
+# than a vendored wordlist entry - which technique C already validates. These
+# cases pin that technique B applies the identical rule, and each FAILS under
+# the reading that a path already recorded in the inventory needs no validation.
+cat >"$W/endpoints-hostile.json" <<EOF
+{ "schema": "scoursh.inventory.endpoints/1", "endpoints": [
+  { "id": "ep_ok",   "target": "disc-fixture", "method": "GET", "url": "https://disc.fixture.example/config.php", "path": "/config.php" },
+  { "id": "ep_dots", "target": "disc-fixture", "method": "GET", "url": "https://disc.fixture.example/x",           "path": "/a/../../../../etc/passwd" },
+  { "id": "ep_ctl",  "target": "disc-fixture", "method": "GET", "url": "https://disc.fixture.example/y",           "path": "/inject\r\nX-Injected: 1" },
+  { "id": "ep_sch",  "target": "disc-fixture", "method": "GET", "url": "https://disc.fixture.example/z",           "path": "https://evil.example/pwn" }
+] }
+EOF
+_new_run hostile_inventory
+SCOURSH_DAST_ENDPOINTS=$W/endpoints-hostile.json
+SCOURSH_DAST_PARAMETERS=$W/parameters.json
+export SCOURSH_DAST_ENDPOINTS
+SCOURSH_HTTP_TRANSPORT=_disc_transport
+SCOURSH_DAST_DISCOVERY_WORDLIST=$WORDLIST _dast_discovery_phase
+REQS=$(cat "$REQ_LOG")
+
+assert_not_contains "$REQS" 'etc/passwd' \
+  "a '..' traversal in an inventory endpoint path is never probed - FAILS under the reading that only the WORDLIST needs the safe-relative-path rule, when target-derived inventory data is the less trusted of the two"
+assert_not_contains "$REQS" 'X-Injected' \
+  "a CR/LF-bearing inventory endpoint path is never probed - FAILS if control bytes from target output reach the request line, which is exactly the header/request-splitting shape the wordlist reader already refuses"
+assert_not_contains "$REQS" 'evil.example' \
+  "an inventory endpoint path that is itself an absolute URL contributes no candidate - FAILS if a scanned target can steer a probe by writing a scheme into its own inventory path"
+assert_contains "$REQS" '/config.php.bak' \
+  "the well-formed sibling endpoint in the SAME inventory still yields its backup candidates - FAILS if the guard is over-broad and makes technique B inert, which every 'stays quiet' assertion above would otherwise pass"
+
+# The same rule, asserted directly on the reader, so the guard is pinned
+# independently of what the transport happened to be asked for.
+# A rejection is a plain non-zero return, so each call carries `|| true`: the
+# suite runs under `set -Eeuo pipefail` with lib/core.sh's ERR trap installed,
+# and an unhandled 1 here would be reported as a command failure rather than as
+# the refusal it is.
+mapfile -t SAFE < <(_discovery_safe_rel 'config.php' || true; _discovery_safe_rel 'a/../../etc/passwd' || true; \
+  _discovery_safe_rel 'https://evil.example/pwn' || true; _discovery_safe_rel "$(printf 'inject\rX: 1')" || true)
+assert_eq 'config.php' "$(printf '%s' "${SAFE[0]:-}")" \
+  "_discovery_safe_rel passes a plain relative path through unchanged"
+assert_eq 1 "${#SAFE[@]}" \
+  "_discovery_safe_rel emits nothing for a traversal, a scheme URL, or a control character - FAILS if any of the three is merely normalised rather than dropped"
+
 t_summary dast-discovery

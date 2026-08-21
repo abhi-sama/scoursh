@@ -878,7 +878,15 @@ default (absent in a fresh clone - only a README lives there), overridable to an
 `SCOURSH_DAST_DISCOVERY_WORDLIST`, and BOUNDED by `_DISCOVERY_MAX_WORDS` (500) plus an absolute
 `_DISCOVERY_MAX_REQUESTS` (600) request ceiling; each entry is validated as a safe relative path (a
 `..`, a scheme/absolute URL, or a control character is rejected, so a malicious vendored list cannot
-escape the authorised surface).  An ABSENT or EMPTY wordlist degrades ONLY the wordlist technique to a
+escape the authorised surface).  **That safe-relative-path rule is ONE function
+(`_discovery_safe_rel`) and it is applied to the CRAWL INVENTORY as well as to the wordlist**, because
+an inventory `path` is untrusted target output (tension 10) and so is strictly LESS trusted than a file
+an operator vendored deliberately - validating only the vendored list draws the trust boundary
+backwards, and measurably did: an endpoint recorded as `/a/../../../../etc/passwd` produced real probe
+requests off the crawled surface until the guard was shared.  `http_request`'s gate is authority-scoped
+and would still refuse another HOST, so this is not the last line of defence; it is what keeps a target
+from choosing which paths on its own authority the scanner walks, and from spending the DAST-01 request
+budget on paths nobody discovered.  An ABSENT or EMPTY wordlist degrades ONLY the wordlist technique to a
 recorded `coverage_reduction`/`coverage_gap` and never errors (docs/DESIGN.md §15); the sensitive-path
 and backup techniques still run, since neither needs an external list.  Every request is a read-only
 GET through `lib/http.sh` (tension 19), non-destructive per §7.2's posture.  `tests/suites/dast-discovery.sh`

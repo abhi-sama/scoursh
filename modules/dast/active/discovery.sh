@@ -133,6 +133,45 @@ _discovery_sensitive_paths() {
 }
 
 # ---------------------------------------------------------------------------
+# 1a. The one safe-relative-path rule, applied to EVERY candidate source
+# ---------------------------------------------------------------------------
+# `_discovery_safe_rel REL` - prints REL as a safe relative candidate path, or
+# prints nothing and returns 1 when it is not one.  Rejected: a control
+# character (a CR/LF in a request line is the request/header-splitting shape),
+# an absolute or scheme-relative URL (a candidate contributes a PATH, never an
+# authority - the same rule modules/dast/crawl.sh applies to a specification's
+# `servers[].url`), a `..` traversal, and an over-long token.  A leading `/` is
+# stripped so the result always resolves UNDER the target's own base-url.
+#
+# IT IS DELIBERATELY APPLIED TO THE CRAWL INVENTORY AS WELL AS TO THE VENDORED
+# WORDLIST.  An inventory `path` is UNTRUSTED TARGET OUTPUT (docs/FOUNDATION.md
+# tension 10) - it comes from the scanned application's own markup, or from an
+# operator-supplied specification - so it is strictly LESS trusted than a file
+# an operator vendored deliberately.  Validating only the wordlist would have
+# been the trust boundary drawn backwards, and it measurably was: before this
+# guard, an endpoint recorded as `/a/../../../../etc/passwd` really did produce
+# probe requests off the crawled surface (pinned by tests/suites/dast-discovery.sh's
+# "an inventory-derived path is held to the SAME safe-path rule" section).
+# `http_request`'s gate is authority-scoped and would still have refused another
+# HOST, so this is not the last line of defence - it is the one that keeps a
+# target from choosing which paths on its own authority the scanner walks, and
+# from spending the DAST-01 request budget on paths nobody discovered.
+_discovery_safe_rel() {
+  local rel=$1
+  rel=${rel#"${rel%%[![:space:]]*}"}
+  rel=${rel%"${rel##*[![:space:]]}"}
+  [[ -n $rel ]] || return 1
+  [[ $rel == *[[:cntrl:]]* ]] && return 1
+  [[ $rel == *://* ]] && return 1
+  [[ $rel == //* ]] && return 1
+  [[ $rel == *..* ]] && return 1
+  rel=${rel#/}
+  [[ -n $rel ]] || return 1
+  (( ${#rel} <= _DISCOVERY_MAX_WORD_LEN )) || return 1
+  printf '%s\n' "$rel"
+}
+
+# ---------------------------------------------------------------------------
 # 2. Reading the vendored wordlist (technique C)
 # ---------------------------------------------------------------------------
 # `_discovery_read_wordlist FILE` - prints the file's candidate paths, one per
@@ -148,17 +187,10 @@ _discovery_read_wordlist() {
   [[ -r $f ]] || return 1
   while IFS= read -r line || [[ -n $line ]]; do
     [[ -z $line || ${line:0:1} == '#' ]] && continue
-    line=${line#"${line%%[![:space:]]*}"}
-    line=${line%"${line##*[![:space:]]}"}
-    [[ -n $line ]] || continue
-    [[ $line == *[[:cntrl:]]* ]] && continue
-    [[ $line == *://* ]] && continue
-    [[ $line == //* ]] && continue
-    [[ $line == *..* ]] && continue
-    line=${line#/}
-    [[ -n $line ]] || continue
-    (( ${#line} <= _DISCOVERY_MAX_WORD_LEN )) || continue
-    printf '%s\n' "$line"
+    # ONE rule, shared with the inventory-derived candidates - see
+    # `_discovery_safe_rel`. A second, hand-inlined copy here is how the two
+    # sources drifted apart in the first place.
+    _discovery_safe_rel "$line" || continue
   done <"$f"
 }
 
@@ -391,7 +423,12 @@ _discovery_backup_flush() {
   local pr="${arrname}[path]"
   local path=${!pr:-}
   [[ -n $path ]] || return 0
-  path=${path#/}
+  # An inventory path is untrusted target output, so it is held to the same
+  # safe-relative-path rule as a vendored wordlist entry (see
+  # `_discovery_safe_rel`). A rejected path contributes no candidate at all
+  # rather than being repaired - a repaired traversal is still a path the
+  # target chose, and there is no honest way to guess what it meant.
+  path=$(_discovery_safe_rel "$path") || return 0
   local basename=${path##*/}
   [[ -n $basename ]] || return 0
   local suffix
