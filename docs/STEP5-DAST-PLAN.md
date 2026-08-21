@@ -904,7 +904,7 @@ segments) plus DAST-01/02, and land after tier 2/3 per §13's stated ordering.
 | # | Ticket |
 |---|---|
 | DAST-14 | `active/sqli.sh` - error-based, boolean, and time-based SQL injection |
-| DAST-15 | `active/xss.sh` - marker-token unescaped-reflection detection |
+| DAST-15 **(landed)** | `active/xss.sh` - marker-token unescaped-reflection detection. See the landing note below. |
 | DAST-16 | `active/cmdi.sh` - bounded time-based command injection |
 | DAST-17 | `active/pathtraversal.sh` - benign read-only marker traversal |
 | DAST-18 | `active/ssti.sh` - arithmetic-expression template injection |
@@ -967,6 +967,71 @@ session when `--authed` is given and a session exists (attaching the first authe
 like DAST-04's crawl it runs against the surface it has; the authenticated-crawl pass that would widen
 that surface is DAST-04's own stated follow-up, not this ticket's.  UNION-based and out-of-band SQLi are
 out of §7.3's error/boolean/time scope and are not built.
+
+**DAST-15 (`active/xss.sh`) has landed - the second tier-4 injection probe, and the first ticket to
+consume `active/inject_engine.sh` without extending it.**
+That is the useful fact about it beyond XSS itself: DAST-14 shipped the shared engine while building
+the first probe on top of it, so nothing until now had tested whether the inventory reader, the
+per-location request composer and the send helper were genuinely reusable or merely sqli-shaped.  They
+were reusable - this ticket added no line to `inject_engine.sh`.
+It ships `modules/dast/active/xss.sh` (the phase script `dast_run_phase` sources at tier `active`),
+`modules/dast/payloads/xss-marker-chars.txt` (the vendored, operator-editable character ledger) and
+three `DAST-INJ-XSS_REFLECTED_{HTML,ATTR,JS}-01` checks appended to the shared
+`modules/dast/active/checks.rules`.  `tests/suites/dast-xss.sh` (115 assertions, no network, no
+Docker, driven entirely from recorded responses) is the mock-response proof.
+
+Five things about it are easy to get backwards, and each is pinned by a test naming the reading it
+fails under:
+
+- **The probe measures ESCAPING, not reflection, and that distinction is the whole ticket.**  Almost
+  every parameter on a real application reflects something, so a probe that flagged reflection alone
+  would be a false-positive generator.  Every context case in the suite is therefore a PAIR - the same
+  marker into the same template, once escaped and once raw - and the escaped half is the one that
+  fails in the direction that reads as a pass.
+- **The window walk is POSITIONAL, and a fixed-offset reading is the bug it prevents.**  An escaped
+  character shifts everything after it (the window reads `&lt;&gt;` where a raw one reads `<>`), so a
+  probe that looked at a fixed byte offset for the second character would read the `l` of `&lt;`.
+  `_xss_scan_window` consumes exactly what it matched - one byte for a raw character, the encoding's
+  own length for an escaped one, and NOTHING for a character a filter dropped - which keeps the cursor
+  aligned through any mixture of the three.  A dropped character is not raw, either.
+- **Three check ids, not one, for the reason sqli already has three.**  The DAST location profile
+  carries no component naming the CONTEXT, so an HTML-text and an attribute-value reflection on one
+  parameter would collide on a single shared id and dedupe to one finding.  The context is also what
+  the remediation differs on, so it is the thing a reader needs.
+- **Context decides which raw character is dangerous, and the rules are narrow on purpose.**  HTML
+  text needs BOTH `<` and `>` - a raw `<` whose `>` is escaped opens nothing.  A quoted attribute
+  needs the quote that DELIMITS THAT value, so a raw `"` inside a single-quoted value is just a
+  character; an unquoted value needs `>` instead, and is reported at medium confidence.  A script
+  block with both angle brackets raw is high confidence (the element can be closed outright); one with
+  only a raw quote is medium, because it depends on the marker actually sitting inside a string
+  literal, which this probe does not verify - and the evidence says so rather than hiding it.
+- **A raw reflection into a non-rendering Content-Type is NOT a finding, but IS counted.**  A `<`
+  echoed into `application/json` executes nowhere, so reporting it is a false positive - but skipping
+  it silently would be the overstated coverage §15 forbids, so the run records
+  `xss_non_rendering_content_type` with a count.  An EMPTY content type is treated as rendering, since
+  that is precisely the response a browser may content-sniff.
+
+**Two defects this ticket found and fixed in its own module, both worth recording because neither is
+XSS-specific.**  First, `_XSS_PROBE_SUFFIX` was referenced when composing the probe value and assigned
+nowhere, so under the mandatory `set -Eeuo pipefail` the phase aborted with "unbound variable" the
+first time it reached a parameter - the module had never been executed end to end.  It is now DERIVED
+from the ledger rather than written as a literal, so trimming a line from
+`xss-marker-chars.txt` narrows what is sent instead of leaving the probe sending a character its own
+context rules can no longer reason about.  Second, and the one with reach beyond this file: **bash 5.2
+made `&` in the REPLACEMENT half of `${var//pat/repl}` expand to the matched text**, sed-style, where
+bash 4.2 - this project's frozen minimum - treats it as a literal.  The suite's own entity-encoding
+helper was written unescaped and silently produced `%3Clt;` instead of `&lt;` on a modern macOS bash,
+which left every "correctly escaped" control fixture full of gibberish that contained no raw `<` and
+so still passed.  Three of the four cases stayed green; only the one whose `&` sat mid-string rather
+than at the front failed loudly, which is what exposed it.  Escape it as `\&` in any replacement that
+must stay literal.
+
+**What DAST-15 deliberately did not build**, so the boundary is not rediscovered: STORED XSS and
+DOM-based XSS.  Stored XSS needs a write followed by a read of a different page, which is a state
+change §7.3's non-destructive posture forbids at this tier; DOM XSS needs a JavaScript engine, which
+`scoursh` does not have and does not intend to (the same stated SPA limitation §7.5 already records
+for crawling).  Neither is silently assumed covered - the probe reports on reflection into the
+response it actually received, and nothing else.
 
 ### Tier 5 - §7.4 auth, API, and access-control checks (5 scripts)
 
