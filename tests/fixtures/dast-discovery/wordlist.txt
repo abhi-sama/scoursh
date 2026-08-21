@@ -1,0 +1,16 @@
+# tests/fixtures/dast-discovery/wordlist.txt - a small VENDORED wordlist for
+# tests/suites/dast-discovery.sh. This is a TEST FIXTURE, not a shipped list:
+# no content-discovery wordlist ships under modules/ (docs/DESIGN.md §1).
+# One candidate path per line; `#` comments and blanks ignored.
+admin
+files/
+secret-dir/
+bigpage
+nonexistent-thing
+
+# The following four lines are INVALID entries the reader must reject, so a
+# malicious or malformed vendored list cannot escape the authorised surface:
+../../etc/passwd
+http://evil.example/x
+//evil.example/x
+bad	path

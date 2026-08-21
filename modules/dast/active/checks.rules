@@ -1,5 +1,7 @@
-# modules/dast/active/checks.rules - the §7.3 active-injection script-check
-# registry (rules/RULE-FORMAT.md §9.5; docs/STEP5-DAST-PLAN.md tier 4).
+# modules/dast/active/checks.rules - the DAST active-tier script-check registry
+# (rules/RULE-FORMAT.md §9.5; docs/STEP5-DAST-PLAN.md tiers 3 and 4). It carries
+# the §7.2 safe-active content-discovery checks (DAST-DISC-*) and the §7.3
+# active-injection checks (DAST-INJ-*).
 #
 # This is the first checks.rules the DAST module ships: auth.sh and crawl.sh
 # cover no check (they acquire a session and build the inventory), so this file
@@ -8,16 +10,21 @@
 # a pattern - it names the shell script that implements it and carries
 # `coverage-scope: target`, DAST's cell (the config/scope.conf target id,
 # §9.5.1). checks_registry_load globs every *.rules under modules/dast/, so a
-# later injection probe's records may live in a sibling file or here; the linter
-# enforces one owning module (DAST) for all of them.
+# later probe's records may live in a sibling file or here; the linter enforces
+# one owning module (DAST) for all of them. Only a file named `checks.rules`
+# takes the script-check schema (lib/records.sh's path table), which is why the
+# §7.2 and §7.3 checks share this one file rather than each getting its own.
 #
-# The type tag is `active`, matching the phase table's `active/sqli.sh:active`
-# floor (modules/dast/engine.sh): SQL injection is reachable only at
-# `--intensity active`. It is NOT tagged `intrusive` - the payloads are
-# read-only and non-destructive (docs/DESIGN.md §7.3), so the active-intensity
-# opt-in is the gate, and requiring --allow-intrusive on top would be a second,
-# undocumented one. (The tests/fixtures/ copy tags an example SQLi check
-# `intrusive` only to exercise that filter arm; it is not this shipped catalog.)
+# The TYPE TAG is a per-check floor that must match the phase table's own tier
+# (modules/dast/engine.sh). The §7.2 discovery checks are tagged `safe-active`,
+# matching `active/discovery.sh:safe`, so they run at `--intensity safe` and up;
+# the §7.3 SQLi checks are tagged `active`, matching `active/sqli.sh:active`, so
+# they need `--intensity active`. Neither family is tagged `intrusive` - the
+# discovery probes are read-only GETs and the injection payloads are read-only
+# and non-destructive (docs/DESIGN.md §7.2/§7.3), so the intensity opt-in is the
+# gate, and requiring --allow-intrusive on top would be a second, undocumented
+# one. (The tests/fixtures/ copy tags an example SQLi check `intrusive` only to
+# exercise that filter arm; it is not this shipped catalog.)
 #
 # One check id per technique, because the DAST fingerprint (target, method,
 # path_template, param_location, param_name) does not carry the technique: a
@@ -72,3 +79,65 @@ remediation: Use parameterised queries (prepared statements) or an ORM that
   least-privilege database account.
 references: CWE-89
 references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-DISC-SENSITIVE-01
+title: Sensitive file or version-control metadata is web-accessible
+script: active/discovery.sh
+severity: high
+confidence: medium
+cwe: CWE-538
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: Remove the file from the web root, or block it at the server/CDN
+  (deny access to dotfiles, version-control directories, config and dump
+  files). Rotate any credential that may have been exposed, and add a
+  deployment check that fails when such a file is reachable.
+references: CWE-538
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-DISC-BACKUP-01
+title: Backup or temporary file is web-accessible
+script: active/discovery.sh
+severity: high
+confidence: medium
+cwe: CWE-530
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: Delete backup and editor temporary files from the web root and
+  stop deployments from copying them there; block the known suffixes (.bak, ~,
+  .old, .orig, .swp, ...) at the server or CDN, and rotate any secret the file
+  may have disclosed.
+references: CWE-530
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-DISC-CONTENT-01
+title: Undisclosed resource discovered via content discovery
+script: active/discovery.sh
+severity: low
+confidence: medium
+cwe: CWE-200
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: Confirm the resource is meant to be public; if not, remove it or
+  move it behind authentication. Ensure every reachable endpoint enforces its
+  own access control rather than relying on being unlinked.
+references: CWE-200
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-DISC-DIRLIST-01
+title: Directory listing is enabled
+script: active/discovery.sh
+severity: medium
+confidence: high
+cwe: CWE-548
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: Disable automatic directory indexing (Apache `Options -Indexes`,
+  nginx `autoindex off`, or the equivalent) and serve an explicit index or a
+  403/404 so directory contents are never enumerated to clients.
+references: CWE-548
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
