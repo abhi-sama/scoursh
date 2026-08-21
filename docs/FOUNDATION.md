@@ -4370,8 +4370,17 @@ normative, frozen-in-intent shape in `docs/INVENTORY-FORMAT.md`.
 With both tier-1 tickets in, **tiers 2-5 are unblocked and nothing remains in front of them**; the
 authenticated crawl pass plugs into DAST-03's session rather than being stubbed.
 Work in those tiers has started, and out of tier order, since they are peers rather than a sequence:
-tier 4's DAST-14 (`active/sqli.sh`), tier 5's DAST-26 (`jwt.sh`) and tier 2's DAST-06
-(`passive/cookies.sh`) and DAST-05 (`passive/headers.sh`) have landed.
+tier 4's DAST-14 (`active/sqli.sh`) and DAST-15 (`active/xss.sh`), tier 5's DAST-26 (`jwt.sh`) and
+tier 2's DAST-06 (`passive/cookies.sh`) and DAST-05 (`passive/headers.sh`) have landed.
+DAST-15 is the second tier-4 injection probe and the first to consume `active/inject_engine.sh`
+without extending it, which is the evidence that DAST-14's shared half really is shared rather than
+sqli-shaped.
+One decision in it is a tension matter rather than implementation detail: it tells a reflection that
+came back RAW from one that came back ESCAPED, and reports only the former.
+Almost every parameter on a real application reflects something, so a probe that flagged reflection
+alone would be a false-positive generator, and the escaped case is the one that reads as a pass -
+which is why every context case in `tests/suites/dast-xss.sh` is a PAIR, the same marker escaped and
+raw, rather than a single positive.
 DAST-06 is the first §7.1 passive check and the first `modules/dast/passive/` file; two things about
 it are tension decisions rather than implementation detail.
 First, its `Set-Cookie` parser splits on `;` only OUTSIDE double quotes and never on `,` - both naive

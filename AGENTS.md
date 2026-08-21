@@ -146,13 +146,24 @@ session acquisition) and DAST-04 (`modules/dast/crawl.sh`) have both landed, so 
 parameter inventory that all twenty-seven tickets in tiers 2-5 consume exists, and it can be built
 against an authenticated session.
 Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has started - tier 4's
-DAST-14 (`active/sqli.sh`), tier 5's DAST-26 (`jwt.sh`), tier 2's DAST-06 (`passive/cookies.sh`) and
-DAST-05 (`passive/headers.sh`, the §7.1 security-header family), and tier 3's DAST-12
-(`active/discovery.sh`, §7.2 content discovery - the first safe-active phase; no wordlist ships in
-this repository by design, see `modules/dast/wordlists/README.md`)
+DAST-14 (`active/sqli.sh`) and DAST-15 (`active/xss.sh`), tier 5's DAST-26 (`jwt.sh`), tier 2's
+DAST-06 (`passive/cookies.sh`) and DAST-05 (`passive/headers.sh`, the §7.1 security-header family),
+and tier 3's DAST-12 (`active/discovery.sh`, §7.2 content discovery - the first safe-active phase; no
+wordlist ships in this repository by design, see `modules/dast/wordlists/README.md`)
 have landed, out of tier order, since the tiers are peers rather than a sequence once tier 1 is in.
 DAST-06 and DAST-05 landed in parallel and each appended its own block to the shared
 `modules/dast/passive/checks.rules`; DAST-07..DAST-11 are open and unordered among themselves.
+**DAST-15 is the first ticket to consume `modules/dast/active/inject_engine.sh` WITHOUT extending
+it**, which is what makes DAST-14's shared half demonstrably shared rather than sqli-shaped - it
+added no line to that file, and appended its three `DAST-INJ-XSS_REFLECTED_*` checks to the shared
+`modules/dast/active/checks.rules` the same append-only way the passive peers share theirs.
+DAST-16..DAST-25 are open, unordered among themselves, and should reuse the engine the same way.
+The one thing worth carrying up here from its landing note: **that probe measures ESCAPING, not
+reflection.**  Almost every parameter on a real application reflects something, so a probe that
+flagged reflection alone is a false-positive generator - and the escaped case is the half that fails
+in the direction that reads as a pass, which is why every context case in `tests/suites/dast-xss.sh`
+is a PAIR (the same marker into the same template, once escaped and once raw) rather than a single
+positive.
 Step 5 remains the top priority ahead of steps 6, 7 and 10.**
 Which rule packs, SCA ecosystems and IaC packs have landed, and what remains of each, is in the
 generated block below - read it there rather than restating it here.
@@ -1534,6 +1545,7 @@ Recorded because the review rounds found several confidently-stated shell facts 
 - BSD awk evaluates the source constant `0x80` as `0`, so hex literals are a GNU extension. The UTF-8 validator is pure bash for that reason.
 - Bash's `=~` uses the system regcomp, which on macOS/BSD supports none of `\b`, `\w`, `\s`, `\d`. `grep -E` and `rg` support all four on both userlands. `redact()` therefore routes through the engine wrapper rather than matching in-process.
 - `-n -b -o` produces byte-identical output under ripgrep 15.1.0 and BSD grep 2.6.0-FreeBSD, which is what `rules/RULE-FORMAT.md` §10.3's per-match ordinal needs.
+- **`&` in the REPLACEMENT half of `${var//pattern/replacement}` expands to the MATCHED TEXT on bash 5.2 and later**, sed-style, where bash 4.2 - this project's frozen minimum - treats it as an ordinary character. So `${v//%3C/&lt;}` yields `%3Clt;` on a current macOS bash and `&lt;` on the oldest bash we support: the same line means two different things across the two userlands `tools/daily-suite.sh` deliberately runs. Write `\&` whenever the ampersand must stay literal. Measured in `tests/suites/dast-xss.sh`, where the unescaped spelling silently filled every "correctly HTML-escaped" control fixture with gibberish; because gibberish contains no raw `<` either, three of the four controls stayed GREEN and the mistake was caught only by the one case whose `&` sat mid-string rather than at the front. This is the failure shape to fear - a fixture that is wrong in the direction that still passes.
 - `printf '--- ...'` is parsed as options by bash's builtin printf; use `printf -- '--- ...'`.
 - `find` over a directory that does not exist fails, and under `pipefail` takes the whole pipeline with it.
 - ShellCheck versions disagree: Debian's reports `SC2119`/`SC2120` where 0.11.0 does not. The BSD leg runs whatever Homebrew installed and the GNU leg whatever the container image ships, so a finding is silenced with an explicit `# shellcheck disable=` and a reason rather than left to the version.

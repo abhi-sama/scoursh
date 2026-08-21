@@ -1,0 +1,37 @@
+# XSS marker-probe characters (docs/DESIGN.md §7.3: "inject a unique marker
+# token, check for unescaped reflection of that exact token in HTML/JS/attribute
+# context. Reflection = finding; no payload execution needed").
+#
+# THIS FILE IS NOT A PAYLOAD LIST.  It carries no script, no event-handler
+# attribute, no `javascript:` URL, and nothing that executes anywhere: the whole
+# probe modules/dast/active/xss.sh sends is a unique alphanumeric marker with
+# these four characters appended to it, in the order below.  That value is inert
+# in every context - it is a measuring stick, not an exploit.  What the probe
+# measures is which of these characters come back RAW rather than escaped, which
+# is the difference between a reflection that could be turned into script and
+# one the application already neutralised.
+#
+# Format: NAME<TAB>CHARACTER<TAB>comma-separated escaped forms
+#
+#   NAME       a short lowercase label the probe's context rules refer to.  The
+#              four names below (lt, gt, dq, sq) are the ones those rules know;
+#              an operator may reorder or trim lines, but a name the rules do
+#              not know contributes nothing.
+#   CHARACTER  the single byte appended to the marker, in FILE ORDER.  The probe
+#              walks the reflected window in that same order, so reordering
+#              these lines reorders the bytes sent.
+#   escapes    the encodings that mean "the application neutralised this
+#              character" - HTML entity (named, decimal, hex), percent-encoding,
+#              and the JS/JSON string escapes.  A character that is neither raw
+#              nor one of these was DROPPED by a filter, which is also not raw.
+#
+# A character absent from this file is never probed, and its context rule then
+# has nothing to decide on - which is why trimming a line narrows coverage
+# rather than making a target look clean.  The probe records a coverage
+# reduction and tests nothing at all when the file is absent or empty
+# (docs/DESIGN.md §15).
+
+lt	<	&lt;,&LT;,&#60;,&#060;,&#x3c;,&#x3C;,&#X3c;,&#X3C;,%3C,%3c,\u003c,\u003C,\x3c,\x3C,\074
+gt	>	&gt;,&GT;,&#62;,&#062;,&#x3e;,&#x3E;,&#X3e;,&#X3E;,%3E,%3e,\u003e,\u003E,\x3e,\x3E,\076
+dq	"	&quot;,&QUOT;,&#34;,&#034;,&#x22;,&#X22;,%22,\",\u0022,\x22,\042
+sq	'	&#39;,&#039;,&apos;,&APOS;,&#x27;,&#X27;,%27,\',\u0027,\x27,\047
