@@ -317,6 +317,7 @@ mixed-content family - a tier-5 ticket that RUNS at tier `passive` and lives und
 `modules/dast/passive/`, see its own section below), tier 2's
 DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`, the §7.1 security-header family),
 DAST-08 (`passive/cors.sh`, the §7.1 CORS origin-reflection family),
+DAST-09 (`passive/banner.sh`, the §7.1 server/framework/version-disclosure family),
 DAST-10 (`passive/leakage.sh`, the §7.1 information-disclosure family) and
 DAST-11 (`passive/markup.sh`, the §7.1 HTML-markup family),
 and tier 3's DAST-12 (`active/discovery.sh`, §7.2 content discovery - the first safe-active phase; no
@@ -324,12 +325,15 @@ wordlist ships in this repository by design, see `modules/dast/wordlists/README.
 (`active/methods.sh`, §7.2 HTTP method enumeration - the second safe-active phase, which completes
 tier 3)
 have landed, out of tier order, since the tiers are peers rather than a sequence once tier 1 is in.
-DAST-06, DAST-05, DAST-10, DAST-11 and DAST-30 each originally appended their own block to a shared
-`modules/dast/passive/checks.rules`; that file is now SPLIT six ways, one
+DAST-06, DAST-05, DAST-09, DAST-10, DAST-11 and DAST-30 each originally appended their own block to a
+shared `modules/dast/passive/checks.rules`; that file is now SPLIT six ways, one
 `checks-<name>.rules` per owner, per `docs/FOUNDATION.md` tension 29 - DAST-08 landed after that split
 and so was seeded directly into its own `modules/dast/passive/checks-cors.rules` rather than ever
-touching a shared file, and DAST-07 and DAST-09, which are open and unordered among themselves, will
-each write their own `modules/dast/passive/checks-<name>.rules` and append to nobody's file.
+touching a shared file. DAST-09 landed before the split and its three ids still sit in the shared
+`modules/dast/passive/checks.rules`; tension 29's own RESOLUTION leaves that legal ("nothing is
+required to move"), so it is not a defect to fix in a follow-up. DAST-07 is open and, whichever way it
+lands relative to the split, should follow whichever of the two shapes is in effect at the time rather
+than forcing a migration of its own.
 `modules/dast/active/checks.rules` is the tier-3/tier-4 equivalent and is under the identical
 append-only rule - DAST-15, DAST-19 and tier 3's DAST-13 all appended to DAST-14's file rather than
 adding a sibling, because `rules/RULE-FORMAT.md` §9's path table reserves the `checks.rules` BASENAME
@@ -353,6 +357,8 @@ same way - a conflict in it is resolved by keeping both blocks, never by choosin
 DAST-30 is NOT one of them despite being a tier-5 ticket: its script sits under
 `modules/dast/passive/`, so its checks are registered in that directory - today in its own
 `modules/dast/passive/checks-transport.rules`, per tension 29's split.
+`docs/STEP5-DAST-PLAN.md`'s own per-ticket tables are the authority for which of the thirty-odd remain;
+do not infer it from this sentence.
 Step 5 remains the top priority ahead of steps 6, 7 and 10.**
 Which rule packs, SCA ecosystems and IaC packs have landed, and what remains of each, is in the
 generated block below - read it there rather than restating it here.
@@ -1100,6 +1106,51 @@ bind every OTHER tier-2 ticket and so belong here rather than only there.
   its own `$BASHPID` and so plants a name the code under test never computes; that first draft passed
   against the vulnerable spelling, which is the failure mode this file's own testing rule exists to
   catch.
+
+**DAST-09 (`modules/dast/passive/banner.sh`) has also landed - a §7.1 passive check, and the ticket
+that creates `docs/VERSIONS-DB.md`.**
+`modules/dast/passive/` already existed by the time it landed (DAST-06 created it first, per above),
+and it lands after the tension-29 split above is already in effect for its peers, so its three check
+ids are seeded directly into their own `modules/dast/passive/checks-banner.rules` rather than a shared
+`checks.rules` - the same convention DAST-08's `checks-cors.rules` already follows, never the retired
+shared file `tests/suites/dast.sh` asserts is gone.
+The split is `modules/sast/`'s, one level down and identical to `auth.sh`/`crawl.sh`:
+`passive/banner_engine.sh` is the pure half (header/meta/bundle extraction, product-key normalisation,
+the `data/versions.db` lookup - no socket, no host named anywhere in it) and `passive/banner.sh` is the
+phase script `dast_run_phase` sources.
+Five things about it are worth carrying here, because a later ticket will otherwise rediscover them the
+expensive way:
+
+- **`docs/VERSIONS-DB.md` is the normative format for `data/versions.db`, and the file carries TWO
+  namespaces in one table.** Field 1 is an SCA ecosystem (`npm`, `pypi`, ...) for the rows
+  `tools/vendor-engines.sh advisories` writes, and the literal `banner` for the rows this check reads.
+  They coexist by construction rather than by luck: that writer replaces only the rows whose first field
+  equals the ecosystem it is writing, and `banner` sorts before every ecosystem name under `LC_ALL=C`,
+  so neither namespace can disturb the other's rows or the sort `db_lookup_exact` depends on. There is
+  no importer for the `banner` namespace yet; §5 of that document is the hand procedure, and it exists
+  because a list nobody can refresh becomes wrong quietly.
+- **The scanner does an exact table lookup and NOTHING else.** There is deliberately no "1.18.0 looks
+  older than 1.27.0" heuristic: that is version-range arithmetic, which tension 25 moved off the scanner
+  onto the networked box that has each ecosystem's real tooling. Do not add one here.
+- **A missing or `banner`-less list degrades ONE sub-check, never the phase.** `versions_db_absent` and
+  `versions_db_no_banner_rows` are distinct recorded reasons (a fresh clone is the second), the two
+  disclosure checks still run, and a discovered product with no row of any version is counted into one
+  `versions_db_product_unknown` roll-up - so "the list has never heard of this component" can never
+  render as "this component is fine". The out-of-date finding also carries the list's own `# generated:`
+  stamp, because a stale list produces false NEGATIVES, which is the failure mode that hides.
+- **Identity: the version is part of the finding's key for `OUTDATED_COMPONENT` and NOT for the two
+  disclosure checks**, and the asymmetry is the point. "This endpoint discloses its jQuery version"
+  survives an upgrade and must keep one identity; "this endpoint runs jQuery 3.4.1, which the list
+  names" is a claim about 3.4.1 and must go `fixed` when it changes. Three check ids rather than one for
+  the same reason the three SQLi techniques have three: the DAST location profile carries no "kind"
+  component, so one id would collide a name-only disclosure with a known-vulnerable-version hit on the
+  same endpoint and `findings_merge` would silently keep one.
+- **Passive means passive.** One plain GET per endpoint the DAST-04 inventory already recorded, GET/HEAD
+  only (a POST endpoint is counted and skipped, and the skip is reported), no crawling, no invented URL,
+  and every request through `http_request` - so the limiter, budget, breaker and DAST-32 ceilings all
+  bind it. `tests/suites/dast-banner.sh` (69 assertions) drives the whole thing from recorded responses
+  with a stubbed transport and asserts on the REQUEST LOG, so "it did not dial the POST endpoint" is
+  measured rather than asserted.
 
 **This block used to read "no DAST-0x ticket is picked up until step 3's outstanding rule packs and
 step 4's SCA half are both complete on `dev`"; BOTH halves of that gate are now discharged, so it is
