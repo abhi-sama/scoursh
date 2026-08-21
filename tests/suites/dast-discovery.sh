@@ -393,4 +393,68 @@ assert_eq 'config.php' "$(printf '%s' "${SAFE[0]:-}")" \
 assert_eq 1 "${#SAFE[@]}" \
   "_discovery_safe_rel emits nothing for a traversal, a scheme URL, or a control character - FAILS if any of the three is merely normalised rather than dropped"
 
+# ===========================================================================
+printf '== dast discovery: technique B in the REAL-RUN inventory shape ==\n'
+# ===========================================================================
+# THIS IS THE SHAPE AN ORDINARY `scan.sh dast` RUN HAS, and every backup case
+# above deliberately does NOT have it: they each set SCOURSH_DAST_ENDPOINTS
+# explicitly, which a real run never does usefully.
+#
+# modules/dast/run.sh calls `dast_inventory_read` ONCE, before the phase loop,
+# and exports SCOURSH_DAST_ENDPOINTS from what it found THEN - which on a fresh
+# run is the EMPTY STRING, because crawl.sh is itself a phase and has not run
+# yet. crawl.sh writes reports/<run>/inventory/endpoints.json a few phases later
+# in that same loop and nothing re-reads it. So a consumer trusting the exported
+# variable alone sees an empty surface on precisely the run that HAS one
+# (AGENTS.md records this as a named sharp edge; passive/cookies.sh:263-278
+# carries the same header).
+#
+# Each assertion below FAILS under the reading that SCOURSH_DAST_ENDPOINTS
+# alone is the inventory - which is the reading that makes the §7.2 backup/temp
+# technique inert on every ordinary run while still reporting its check as
+# covered.
+_new_run realshape
+mkdir -p "$SCOURSH_RUN_DIR/inventory"
+_write_inventory
+cp "$W/endpoints.json" "$SCOURSH_RUN_DIR/inventory/endpoints.json"
+SCOURSH_DAST_ENDPOINTS=''
+SCOURSH_DAST_PARAMETERS=''
+export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
+SCOURSH_HTTP_TRANSPORT=_disc_transport
+SCOURSH_DAST_DISCOVERY_WORDLIST=$WORDLIST _dast_discovery_phase
+REQS=$(cat "$REQ_LOG")
+
+assert_contains "$REQS" '/config.php.bak' \
+  "with SCOURSH_DAST_ENDPOINTS EMPTY and the inventory at its real run-dir path, the backup technique still probes - FAILS under the reading that the exported variable is the only inventory source, which is the shape every real run has"
+assert_eq 1 "$(_count_check_path DAST-DISC-BACKUP-01 /config.php.bak)" \
+  "a served, source-leaking backup file IS reported on a real-shaped run - FAILS if technique B contributed no candidate because it read the pre-crawl variable alone"
+assert_contains "$(run_facts checks_run)" 'DAST-DISC-BACKUP-01' \
+  "the backup check is recorded as covered on a run where it genuinely probed"
+
+# ===========================================================================
+printf '== dast discovery: NO inventory anywhere is a declared gap, not silent coverage ==\n'
+# ===========================================================================
+# The other half of the same rule, and the naive fix for each is the other's
+# bug: adding the fallback without this makes an inventory-less run keep
+# claiming DAST-DISC-BACKUP-01 coverage. docs/DESIGN.md §15 - a check that
+# probed nothing must never appear in checks_run, and its absence must be
+# stated. At step 7 this feeds state/'s (check, cell) coverage pairs, where a
+# falsely-covered check lets a prior run's real finding be inferred `fixed`
+# (docs/FOUNDATION.md tension 12).
+_new_run noinv
+SCOURSH_DAST_ENDPOINTS=''
+SCOURSH_DAST_PARAMETERS=''
+export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
+SCOURSH_HTTP_TRANSPORT=_disc_transport
+SCOURSH_DAST_DISCOVERY_WORDLIST=$WORDLIST _dast_discovery_phase
+
+assert_not_contains "$(run_facts checks_run)" 'DAST-DISC-BACKUP-01' \
+  "with no endpoint inventory readable by EITHER path, the backup check is NOT recorded in checks_run - FAILS under the reading that a technique which contributed zero candidates is still 'covered' because the phase sent some other technique's requests"
+assert_contains "$(run_facts coverage_gap)" 'no endpoint inventory' \
+  "the missing inventory is a stated coverage_gap the report renders - FAILS if the gap is silent, which is the overstated coverage docs/DESIGN.md §15 forbids"
+assert_contains "$(run_facts coverage_reduction)" 'discovery_no_endpoint_inventory' \
+  "and a machine-readable coverage_reduction names the reason, exactly as the absent-wordlist case already does"
+assert_contains "$(run_facts checks_run)" 'DAST-DISC-SENSITIVE-01' \
+  "the sensitive-path technique still ran and is still recorded - FAILS if the inventory gap is over-broad and takes the whole phase down with it"
+
 t_summary dast-discovery

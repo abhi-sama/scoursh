@@ -381,7 +381,31 @@ _discovery_emit() {
 # ---------------------------------------------------------------------------
 # 6. Backup derivation (technique B) - reads the endpoints inventory
 # ---------------------------------------------------------------------------
-# `_discovery_collect_backups` - append a `backup` candidate for every (endpoint
+# `_discovery_inventory_path` - print the readable endpoints inventory, or
+# return 1 when there is none.
+#
+# THE EXPORTED VARIABLE ALONE IS THE WRONG ANSWER, AND IT IS WRONG ON EXACTLY
+# THE ORDINARY RUN. modules/dast/run.sh calls `dast_inventory_read` ONCE, before
+# the phase loop, and exports SCOURSH_DAST_ENDPOINTS from what it found THEN -
+# which on a fresh run is the empty string, because crawl.sh is itself a phase
+# and has not run yet. crawl.sh writes reports/<run>/inventory/endpoints.json a
+# few phases later in that same loop and nothing re-reads it, so a consumer
+# trusting the exported variable sees an empty surface on precisely the run that
+# HAS one: technique (B) would send not one backup probe on any real scan while
+# still reporting DAST-DISC-BACKUP-01 as covered. This mirrors what
+# passive/cookies.sh already does (its own header states the same trap at
+# length) and what AGENTS.md records as a named sharp edge. It is the SAME
+# artifact by the SAME path, just read after the producer wrote it. The general
+# fix belongs to modules/dast/run.sh and affects every inventory consumer, so it
+# stays filed rather than widened into this ticket.
+_discovery_inventory_path() {
+  local epf=${SCOURSH_DAST_ENDPOINTS:-}
+  [[ -n $epf && -r $epf && -s $epf ]] || epf=${SCOURSH_RUN_DIR:-}/inventory/endpoints.json
+  [[ -n $epf && -r $epf && -s $epf ]] || return 1
+  printf '%s' "$epf"
+}
+
+# `_discovery_collect_backups EPFILE` - append a `backup` candidate for every (endpoint
 # path, backup suffix) pair, reading the endpoints inventory through
 # crawl_engine.sh's flattener.  Appends to the caller's `cats`/`rels` arrays,
 # which are in scope because this is sourced into the phase and bash is
@@ -394,7 +418,7 @@ _discovery_emit() {
 # inject_engine.sh's and crawl_engine.sh's own flush helpers.
 # shellcheck disable=SC2034
 _discovery_collect_backups() {
-  local epf=${SCOURSH_DAST_ENDPOINTS:-} sep=$'\x1f' p ptype v rest idx key
+  local epf=$1 sep=$'\x1f' p ptype v rest idx key
   local -A cur=()
   local last_idx=''
   [[ -n $epf && -r $epf && -s $epf ]] || return 0
@@ -504,8 +528,16 @@ _dast_discovery_phase() {
     done < <(_discovery_sensitive_paths)
   fi
 
-  # (B) backup/temp variants of every crawl-inventory endpoint path.
-  (( do_backup )) && _discovery_collect_backups
+  # (B) backup/temp variants of every crawl-inventory endpoint path. The
+  # inventory's presence is tracked so an absent one becomes a STATED gap below
+  # rather than a silently inert technique that still claims its check.
+  local inventory_state=absent invp=''
+  if (( do_backup )); then
+    if invp=$(_discovery_inventory_path); then
+      inventory_state=present
+      _discovery_collect_backups "$invp"
+    fi
+  fi
 
   # (C) the vendored wordlist.
   local wl=${SCOURSH_DAST_DISCOVERY_WORDLIST:-${SCOURSH_INSTALL_ROOT:-.}/modules/dast/wordlists/content-discovery.txt}
@@ -551,8 +583,15 @@ _dast_discovery_phase() {
   # no request is not reported as covered.
   if (( sent > 0 )); then
     (( do_sensitive )) && run_record checks_run DAST-DISC-SENSITIVE-01
-    (( do_backup ))    && run_record checks_run DAST-DISC-BACKUP-01
     (( do_dirlist ))   && run_record checks_run DAST-DISC-DIRLIST-01
+    # BACKUP is covered only when an inventory really supplied candidates. A
+    # technique that contributed nothing is not made covered by a sibling
+    # technique's requests: at step 7 checks_run feeds state/'s (check, cell)
+    # coverage pairs, where a falsely-covered check lets a prior run's real
+    # finding be inferred `fixed` (docs/FOUNDATION.md tension 12).
+    if (( do_backup )) && [[ $inventory_state == present ]]; then
+      run_record checks_run DAST-DISC-BACKUP-01
+    fi
     if (( do_content )) && [[ $wordlist_state == present ]]; then
       run_record checks_run DAST-DISC-CONTENT-01
     fi
@@ -562,6 +601,10 @@ _dast_discovery_phase() {
     run_record coverage_reduction "module=dast reason=discovery_wordlist_absent target=$target path=$(crawl_safe_text "$wl" 200) - no content-discovery wordlist is vendored at this path (none ships in this repository by design; vendor one offline and point SCOURSH_DAST_DISCOVERY_WORDLIST at it), so wordlist-based content discovery did not run. The backup/temp and sensitive-path techniques still ran."
     run_record coverage_gap "dast discovery: no content-discovery wordlist was available for target '$target', so the wordlist-based sweep tested nothing. This is a coverage gap, not a clean bill of health; the fixed sensitive-path and backup/temp checks still ran."
   fi
+  if (( do_backup )) && [[ $inventory_state == absent ]]; then
+    run_record coverage_reduction "module=dast reason=discovery_no_endpoint_inventory target=$target - no endpoint inventory (docs/INVENTORY-FORMAT.md) was readable at SCOURSH_DAST_ENDPOINTS or at \$SCOURSH_RUN_DIR/inventory/endpoints.json, so no backup/temp variant of a known endpoint path was derived or probed. The sensitive-path and wordlist techniques still ran."
+    run_record coverage_gap "dast discovery: no endpoint inventory was available for target '$target', so the backup/temp sweep (docs/DESIGN.md §7.2) derived no candidate and tested nothing - a served .bak/.old/~ file would not have been found. This is a coverage gap, not a clean bill of health; run the crawl phase (or supply a specification) so this technique has endpoint paths to vary."
+  fi
   if (( truncated_words > 0 )); then
     run_record coverage_gap "dast discovery: the vendored wordlist for target '$target' exceeded the per-run cap of $_DISCOVERY_MAX_WORDS entries, so $truncated_words entry(ies) were not probed. Their absence from this report is a coverage bound, not a clean result."
   fi
@@ -569,7 +612,7 @@ _dast_discovery_phase() {
     run_record coverage_gap "dast discovery: the candidate surface on target '$target' hit the per-run request ceiling of $_DISCOVERY_MAX_REQUESTS, so some candidates were not probed. Their absence from this report is a coverage bound, not a clean result."
   fi
 
-  log_info "dast discovery: target '$target' - probed $sent candidate path(s), $hits reachable (sensitive=$do_sensitive backup=$do_backup content=$do_content wordlist=$wordlist_state)"
+  log_info "dast discovery: target '$target' - probed $sent candidate path(s), $hits reachable (sensitive=$do_sensitive backup=$do_backup content=$do_content wordlist=$wordlist_state inventory=$inventory_state)"
   return 0
 }
 

@@ -146,9 +146,11 @@ session acquisition) and DAST-04 (`modules/dast/crawl.sh`) have both landed, so 
 parameter inventory that all twenty-seven tickets in tiers 2-5 consume exists, and it can be built
 against an authenticated session.
 Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has started - tier 4's
-DAST-14 (`active/sqli.sh`), tier 5's DAST-26 (`jwt.sh`) and tier 2's DAST-06 (`passive/cookies.sh`)
-and DAST-05 (`passive/headers.sh`, the §7.1 security-header family) have landed, out of tier order,
-since the tiers are peers rather than a sequence once tier 1 is in.
+DAST-14 (`active/sqli.sh`), tier 5's DAST-26 (`jwt.sh`), tier 2's DAST-06 (`passive/cookies.sh`) and
+DAST-05 (`passive/headers.sh`, the §7.1 security-header family), and tier 3's DAST-12
+(`active/discovery.sh`, §7.2 content discovery - the first safe-active phase; no wordlist ships in
+this repository by design, see `modules/dast/wordlists/README.md`)
+have landed, out of tier order, since the tiers are peers rather than a sequence once tier 1 is in.
 DAST-06 and DAST-05 landed in parallel and each appended its own block to the shared
 `modules/dast/passive/checks.rules`; DAST-07..DAST-11 are open and unordered among themselves.
 Step 5 remains the top priority ahead of steps 6, 7 and 10.**
