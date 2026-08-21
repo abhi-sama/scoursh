@@ -206,3 +206,62 @@ remediation: Do not interpolate request-derived data into JavaScript source.
   characters can never terminate a string literal or the script element itself.
 references: CWE-79
 references: https://owasp.org/Top10/A03_2021-Injection/
+
+# --- DAST-19, modules/dast/active/openredirect.sh (docs/DESIGN.md §7.3) ------
+# Appended by the open-redirect ticket. This file is SHARED by every tier-4
+# probe and is treated as APPEND-ONLY: a merge conflict in it is resolved by
+# keeping BOTH blocks, never by choosing a side (the same convention
+# modules/dast/passive/checks.rules records for its own parallel peers). The
+# basename is forced - rules/RULE-FORMAT.md §9's path table gives the §9.5
+# script-check schema to any file named `checks.rules` at any depth and makes
+# every other path E070, so a per-ticket `openredirect-checks.rules` is not a
+# legal record file.
+#
+# Two ids for one defect class because the DAST fingerprint (target, method,
+# path_template, param_location, param_name) carries nothing naming the SINK:
+# one id would make a `Location` finding and a meta-refresh finding on the same
+# parameter collide and dedupe to one. They are also different things to fix.
+#
+# Tagged `active`, matching the phase table's `active/openredirect.sh:active`
+# floor, and NOT `intrusive`: the payloads are URLs, the probe changes no state,
+# and it never follows the redirect it detects - so the active-intensity opt-in
+# is the gate, and requiring --allow-intrusive on top would be a second,
+# undocumented one.
+
+id: DAST-INJ-OPENREDIR_HEADER-01
+title: Open redirect via request parameter reflected into the Location header
+script: active/openredirect.sh
+severity: medium
+confidence: high
+cwe: CWE-601
+owasp: A01:2021
+tags: active
+coverage-scope: target
+remediation: Do not build a redirect destination from request-controlled
+  input. Redirect only to a server-side allow-list of paths or destination
+  ids, resolving the request value to an entry in that list. Where an absolute
+  URL is unavoidable, parse it and compare the resulting HOST against an
+  allow-list - never a prefix, substring or "starts with our domain" test,
+  each of which is defeated by userinfo, by a target-prefixed subdomain, and
+  by scheme-relative and backslash forms.
+references: CWE-601
+references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+
+id: DAST-INJ-OPENREDIR_META-01
+title: Open redirect via request parameter reflected into a meta-refresh
+script: active/openredirect.sh
+severity: medium
+confidence: high
+cwe: CWE-601
+owasp: A01:2021
+tags: active
+coverage-scope: target
+remediation: Do not build a client-side redirect destination from
+  request-controlled input. Emit a meta-refresh only to a server-side
+  allow-list of paths, and escape any request-derived value that reaches the
+  document so it cannot introduce a new destination. Parsing the host and
+  comparing it against an allow-list is the only safe check - a prefix or
+  substring test on the URL is defeated by userinfo and by a target-prefixed
+  subdomain.
+references: CWE-601
+references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
