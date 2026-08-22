@@ -4394,7 +4394,8 @@ With both tier-1 tickets in, **tiers 2-5 are unblocked and nothing remains in fr
 authenticated crawl pass plugs into DAST-03's session rather than being stubbed.
 Work in those tiers has started, and out of tier order, since they are peers rather than a sequence:
 tier 4's DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`) and DAST-19
-(`active/openredirect.sh`), tier 5's DAST-26 (`jwt.sh`) and DAST-29 (`authz.sh`) and
+(`active/openredirect.sh`), tier 5's DAST-26 (`jwt.sh`), DAST-29 (`authz.sh`) and DAST-30
+(`passive/transport.sh`) and
 tier 2's DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`) and DAST-11
 (`passive/markup.sh`) have landed.
 DAST-15 is the second tier-4 injection probe and the first to consume `active/inject_engine.sh`
@@ -4526,6 +4527,67 @@ phase and inverted for this one: this check asks one identity for another's obje
 successfully, at most once per identity per pass, and a still-401 retry is reported as a refusal
 without marking the identity `failed` - because otherwise one refused URL silently disabled every
 later check needing that identity.
+
+**DAST-30 (`modules/dast/passive/transport.sh`) has landed** - the §7.4 transport-exposure family,
+five `DAST-TRANSPORT-*` script checks appended to the same shared
+`modules/dast/passive/checks.rules` alongside the blocks DAST-06, DAST-05, DAST-10 and DAST-11 each
+appended to it, with `transport_engine.sh` as the pure half and
+`tests/suites/dast-transport.sh` proving them from recorded response heads AND bodies with no
+network.  It reports the two classes a TLS check cannot see: content that TRAVELS unencrypted
+(sensitive content over `http://`, and a plaintext origin that does not redirect to TLS) and content
+an encrypted page LOADS unencrypted (mixed content, split into blockable, optionally-blockable and
+form-action ids).  Four things about it are tension decisions rather than implementation detail.
+
+First, **its row in `modules/dast/engine.sh`'s phase table MOVED, from `transport.sh:active` to
+`passive/transport.sh:passive`, and that is tension 15's intersection rule being honoured rather than
+bent.**  DAST-02 transcribed every tier-5 row from `docs/DESIGN.md` §7.4's section heading, which is
+right for that section's other four scripts and wrong for this one; the phase table's own note
+already specified the remedy ("a later ticket whose checks legitimately carry a LOWER type tag than
+the tier its row declares here must change that row in the same change and say why"), and this is its
+first exercise.  Nothing here mutates target state - every request is a plain GET to the operator's
+`base-url` or to an endpoint an earlier phase already fetched - so §7.1's admission criterion is met;
+§7.4's own wording for this bullet calls it a complement to "the TLS **passive** check"; and at
+`active` it would never run at all, since `--intensity` defaults to `passive` and anything above it
+additionally requires `--i-own-target`.  A row left at `active` is not a conservative choice, it is a
+check that is dead code on every ordinary run.  The records carry the matching `passive` type tag, so
+both gates permit and neither widens the other.
+
+Second, **tension 19 again, and with a boundary the other passive phases do not have**: every request
+goes through `http_request` behind a NON-fatal `http_gate_url` pre-check, for DAST-04's reason.  But
+this family also DISCOVERS URLs - the sub-resources an HTTPS document references - and it never
+requests any of them.  They are classified from the markup alone.  That is deliberate and it is the
+honest reading rather than a shortcut: a third-party CDN loaded over plaintext is the commonest real
+mixed-content case and is out of scope by definition, so filtering discovered references by the scope
+gate would produce a false negative on exactly the case that matters most.  The gate governs what is
+REQUESTED; this phase requests only the documents the operator authorised.
+
+Third, **tension 12's coverage question is answered per class rather than per run.**  A
+mixed-content check needs a secure DOCUMENT to be applicable at all, and a plaintext check needs an
+unencrypted response; a run that saw neither did not test them.  Both directions record
+`transport_check_not_applicable` naming the uncovered ids and the counts that made them so, and an
+inapplicable check never enters `checks_run` - "nothing was mixed" and "nothing was testable" are
+different facts and the report must not render them the same.
+
+Fourth, **two of this family's decisions were found by MUTATION rather than by review, and the
+register records that because the pattern generalises.**  A plaintext `<a href>` is not mixed content
+in any browser - nothing is loaded into the secure document - and the naive "match `http://` anywhere
+in the body" reading floods the report with every external link on every page; the extractor emits
+navigation references anyway, so their ABSENCE from the findings can be asserted.  And the obvious
+assertion for reference resolution ("a protocol-relative reference produces no finding") pins
+NOTHING, because it passes under both resolving the reference and simply skipping anything with no
+scheme of its own - only an absolute `http://` reference can be mixed content on an https page at
+all.  What discriminates is the ACCOUNTING (`_TR_REF_TOTAL`, references the check could judge), which
+under the skip silently becomes "references that happened to be written absolutely".  This is
+`docs/DESIGN.md` §12's testing rule biting on a case that looked already covered, and the assertion
+was reworded rather than left claiming a discrimination it did not have.
+
+`docs/STEP5-DAST-PLAN.md`'s DAST-30 landing note carries the full detail, including the scope
+boundary against `passive/tls.sh` (the connection), `passive/headers.sh` (HSTS) and
+`passive/cookies.sh` (the `Secure` attribute), and the `lib/http.sh` gap it filed rather than widened
+into itself: `http_request` publishes no final post-redirect URL, so an `https://` endpoint that
+redirects to an in-scope `http://` one delivers a plaintext document this phase still counts as a
+secure context.
+
 Two things about DAST-04 are worth carrying here rather than only in the plan, because both are
 tension decisions rather than implementation detail.
 First, the scope pre-check on a discovered link is **not** a second gate and never becomes one

@@ -301,7 +301,8 @@ for _want in auth.sh crawl.sh passive/headers.sh passive/cookies.sh passive/tls.
   active/discovery.sh active/methods.sh active/sqli.sh active/xss.sh active/cmdi.sh \
   active/pathtraversal.sh active/ssti.sh active/openredirect.sh active/xxe_ssrf.sh \
   active/nosqli.sh active/ldapi.sh active/crlf.sh active/hosthdr.sh \
-  active/protopollution.sh jwt.sh graphql.sh ratelimit.sh authz.sh transport.sh; do
+  active/protopollution.sh jwt.sh graphql.sh ratelimit.sh authz.sh \
+  passive/transport.sh; do
   _found=0
   for _spec in "${_DAST_PHASES[@]+"${_DAST_PHASES[@]}"}"; do
     [[ ${_spec%%:*} == "$_want" ]] && _found=1
