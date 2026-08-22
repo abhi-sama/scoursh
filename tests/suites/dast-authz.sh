@@ -808,6 +808,274 @@ assert_eq 'authz.sh:active' "$_phase_row" \
   "authz.sh is a row in modules/dast/engine.sh's _DAST_PHASES at the 'active' floor, so scan_dispatch dast reaches it - fails if the row is dropped (every case above would then be testing a file nothing runs) or if its tier drifts from the registry tag asserted just above"
 
 # ===========================================================================
+# H. The six defects QA found on the first pass
+# ===========================================================================
+# Each case below names the SHIPPED implementation it fails under, not a
+# hypothetical one - every one of them was observed red against the code as it
+# stood at 21ad6a9 and green after the fix, which is the only grade of evidence
+# this repository accepts for a regression test.  Five of the six are false or
+# missing COVERAGE records rather than wrong findings, which is the defect class
+# that ships here: a scanner whose absent finding reads as a clean result is
+# worse than one that does not run.
+printf '\n== H. regressions from the first QA pass ==\n'
+
+# Every fingerprint emitted for CHECK, one per line.  `_finding_field` returns
+# only the first, which cannot express "these two findings are distinct".
+_finding_field_all() {
+  local check=$1 field=$2 f line
+  for f in "$SCOURSH_RUN_DIR"/shards/*.fields; do
+    [[ -f $f ]] || continue
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      finding_decode "$line"
+      [[ ${_DF[check_id]:-} == "$check" ]] && printf '%s\n' "${_DF[$field]:-}"
+    done <"$f"
+  done
+  return 0
+}
+
+t_case 'H1: loc_method is the method that was actually requested'
+# FAILS UNDER `finding_set loc_method GET`, the shipped line.  lib/findings.sh's
+# DAST profile is `target method path_template param_location param_name` and
+# `authz_group_key` discriminates on the method too, so a constant collapses two
+# groups the pass deliberately kept apart onto ONE fingerprint - and
+# `findings_merge` then keeps whichever sorts first and drops the other
+# silently.  Asserted on the FINGERPRINTS rather than on the field alone,
+# because the field being wrong is only interesting through the collision it
+# causes.
+_fresh_run; _srv_reset
+SCOURSH_DAST_TARGET=authz-fixture
+export SCOURSH_DAST_TARGET
+authz_emit DAST-AUTHZ-IDOR-01 GET https://authz.fixture.example/api/basket/1 \
+  /api/basket/1 path basket 'fixture evidence, GET'
+authz_emit DAST-AUTHZ-IDOR-01 HEAD https://authz.fixture.example/api/basket/1 \
+  /api/basket/1 path basket 'fixture evidence, HEAD'
+FPS=$(_finding_field_all DAST-AUTHZ-IDOR-01 fingerprint)
+assert_eq 2 "$(printf '%s\n' "$FPS" | wc -l | tr -d ' ')" 'two findings were emitted'
+assert_ne "$(printf '%s' "$FPS" | head -1)" "$(printf '%s' "$FPS" | tail -1)" \
+  'two methods over one path template are two fingerprints - fails under a hardcoded loc_method, where both hash identically and findings_merge keeps whichever sorts first. That is the exact collision modules/dast/checks.rules says these four ids exist to prevent'
+assert_eq $'GET\nHEAD' "$(_finding_field_all DAST-AUTHZ-IDOR-01 loc_method)" \
+  'each finding records the method it was requested with, in emission order - fails under a hardcoded loc_method, which also made the field contradict the finding OWN evidence prose, since that interpolates the real method'
+
+t_case 'H2a: HEAD is refused at selection, for its OWN stated reason'
+# FAILS UNDER `GET | HEAD | get | head) return 0`.  A HEAD response has no body
+# (RFC 7231 §4.3.2) and every oracle here compares response BYTES, so a HEAD
+# candidate spends two requests to reach a verdict that cannot exist - and
+# reaches it through the `-z $dA` arm, which the phase reports as "readable by
+# BOTH identities but returned different bytes to each".  That sentence is not
+# merely unhelpful for a HEAD, it is false.
+HEADEP=$W/h2/endpoints.json
+_write_endpoints "$HEADEP" \
+  'HEAD https://authz.fixture.example/api/basket/1 application/json' \
+  'HEAD https://authz.fixture.example/api/basket/2 application/json' \
+  'POST https://authz.fixture.example/api/basket/9 application/json'
+authz_candidates_set authz-fixture "$HEADEP" ''
+assert_eq 0 "${#_AUTHZ_CANDIDATES[@]}" 'no HEAD entry becomes a candidate'
+assert_eq 2 "$_AUTHZ_SKIPPED_HEAD" \
+  'the two HEAD entries are counted under their own reason - fails under folding them into the mutating-method count, which tells the operator a safe method was dropped for safety'
+assert_eq 1 "$_AUTHZ_SKIPPED_METHOD" 'and the POST is still counted as a write'
+
+t_case 'H2b: a mixed-case method is a candidate, not a reported rejection'
+MIXEP=$W/h2b/endpoints.json
+_write_endpoints "$MIXEP" 'Get https://authz.fixture.example/api/basket/1 application/json'
+authz_candidates_set authz-fixture "$MIXEP" ''
+assert_eq 1 "${#_AUTHZ_CANDIDATES[@]}" \
+  "'Get' is GET - fails under a case-sensitive match, which reports a perfectly idempotent entry to the operator as 'their method is not GET'"
+assert_eq 0 "$_AUTHZ_SKIPPED_METHOD" 'and nothing is counted as skipped'
+
+t_case 'H2c: a HEAD-only inventory produces neither false coverage record'
+_fresh_run; _srv_reset
+_identities alpha-user@example.test bravo-user@example.test a b
+SRV['/api/basket/1|a']=$'200\t'
+SRV['/api/basket/1|b']=$'200\t'
+_drive "$HEADEP"
+GAPS=$(run_facts coverage_gap)
+REDUCTIONS=$(run_facts coverage_reduction)
+assert_eq 0 "$(_request_count)" 'no request is spent on a probe that cannot conclude'
+assert_not_contains "$GAPS" 'returned different bytes to each' \
+  'the run does NOT claim the two identities saw different content - fails under admitting HEAD, where an empty digest on both sides lands in the differed arm and states something the run never observed'
+assert_not_contains "$REDUCTIONS" 'reason=response_too_large_to_field_scan' \
+  'and does NOT report a zero-byte body as one over the 512 KiB parse bound - the second false record from the same cause'
+assert_contains "$GAPS" 'use HEAD and were not examined' \
+  'it says what it did instead, naming the count and the reason'
+
+t_case 'H2d: an EMPTY response body is distinguished from an oversized one'
+# FAILS UNDER `authz_body_within_bounds`'s bare `-s` test doing double duty: it
+# is false for a zero-byte body AND for a 600 KiB one, so a caller that only
+# asks it reports a 204 as `response_too_large_to_field_scan cap=524288`.
+: >"$W/empty.body"
+assert_status 0 'an empty file is empty' authz_body_is_empty "$W/empty.body"
+assert_status 1 'a real body is not' authz_body_is_empty "$BODY"
+assert_status 1 'an oversized body is not empty either' authz_body_is_empty "$BIG"
+_fresh_run; _srv_reset
+_identities alpha-user@example.test bravo-user@example.test a b
+SRV['/api/profile|a']=$'200\t'
+_drive "$PROFILE"
+REDUCTIONS=$(run_facts coverage_reduction)
+assert_contains "$REDUCTIONS" 'reason=exposure_response_empty' \
+  'a body-less 200 is recorded as carrying no body'
+assert_not_contains "$REDUCTIONS" 'reason=response_too_large_to_field_scan' \
+  'and never as one too large to parse - a coverage record that is factually wrong about what it saw cannot be told from a real truncation'
+
+t_case 'H3: OTHER_IDENTITY_DATA is not in checks_run when it cannot execute'
+# FAILS UNDER the unconditional `run_record checks_run` pair.
+# rules/RULE-FORMAT.md §9.6.2 makes `username` optional and applicable only to
+# `form`/`oauth2-password`/`srp`, so a `bearer` or `api-key` identity - the
+# dominant shape for the API targets this check is aimed at - has no identifier
+# at all, the test never runs, and the shipped code recorded it as run with no
+# reason of any kind.  lib/records.sh defines `checks_run` expressly so a reader
+# can tell "ran and found nothing" from "never loaded".
+_fresh_run; _srv_reset
+rm -rf "$SCOURSH_SCRATCH/dast-auth"
+DAST_AUTH_LOADED=0
+records_clear auth 2>/dev/null || true
+: >"$AUTHCONF"
+chmod 600 "$AUTHCONF"
+{
+  printf 'id: authz-fixture.a\nmode: bearer\ntoken: TOK-A\n'
+  printf '\nid: authz-fixture.b\nmode: bearer\ntoken: TOK-B\n'
+} >"$AUTHCONF"
+dast_auth_load "$AUTHCONF"
+_seed_session authz-fixture a TOK-A
+_seed_session authz-fixture b TOK-B
+SRV['/api/profile|a']=$'200\t{"id":1,"displayName":"Alpha"}'
+_drive "$PROFILE"
+RAN=$(run_facts checks_run)
+assert_contains "$RAN" 'DAST-AUTHZ-EXCESSIVE_DATA-01' \
+  'the field-name arm really did execute and is recorded'
+assert_not_contains "$RAN" 'DAST-AUTHZ-OTHER_IDENTITY_DATA-01' \
+  'the cross-tenant arm is NOT claimed as run - fails under writing checks_run on entering the pass, which reports a check that structurally could not execute as having found nothing'
+REDUCTIONS=$(run_facts coverage_reduction)
+assert_contains "$REDUCTIONS" 'reason=identity_identifier_not_configured' \
+  'and the run names the missing input rather than staying silent'
+assert_contains "$(run_facts coverage_gap)" 'nothing looked for one identity' \
+  'in words the operator reads in the report'
+# Restore the identities the rest of the suite expects.
+_identities alpha-user@example.test bravo-user@example.test a b
+
+t_case 'H4: a write-only inventory does not report "no reference was found"'
+# FAILS UNDER the shipped `ncand == 0` branch, which stated that no entry
+# carried an object-reference-shaped value when the entries were dropped for
+# their METHOD before their path was ever inspected - and which lost the
+# deliberate "write endpoints were not assessed" gap entirely, because that gap
+# was recorded only in the else-branch.
+POSTONLY=$W/h4/endpoints.json
+_write_endpoints "$POSTONLY" \
+  'POST https://authz.fixture.example/api/basket/1 application/json' \
+  'DELETE https://authz.fixture.example/api/basket/2 application/json'
+_fresh_run; _srv_reset
+_identities alpha-user@example.test bravo-user@example.test a b
+_drive "$POSTONLY"
+REDUCTIONS=$(run_facts coverage_reduction)
+GAPS=$(run_facts coverage_gap)
+assert_contains "$REDUCTIONS" 'skipped_method=2' \
+  'the reason carries the counts, so "nothing was found" is qualified by "and two entries were never looked at"'
+assert_contains "$REDUCTIONS" 'permitted to EXAMINE' \
+  'and is phrased as a statement about what was examined, not about what exists'
+assert_contains "$GAPS" 'object-level authorization on write endpoints was NOT assessed' \
+  'the by-design write-endpoint gap is recorded on this path too - fails under recording it only when a candidate was found, which drops it on exactly the inventory where it is the only thing to say'
+
+t_case 'H5: the exposure-endpoint cap says what it dropped'
+# FAILS UNDER the bare `break`.  Every other bound in this phase reports its
+# truncation and this file's own header promises "reaching one is never silent"
+# (docs/INVENTORY-FORMAT.md §8), so this was the one bound that quietly reduced
+# the operator's coverage.
+MANY=$W/h5/endpoints.json
+_write_endpoints "$MANY" \
+  'GET https://authz.fixture.example/api/p1 application/json' \
+  'GET https://authz.fixture.example/api/p2 application/json' \
+  'GET https://authz.fixture.example/api/p3 application/json' \
+  'GET https://authz.fixture.example/api/p4 application/json' \
+  'GET https://authz.fixture.example/api/p5 application/json' \
+  'GET https://authz.fixture.example/api/p6 application/json' \
+  'GET https://authz.fixture.example/api/p7 application/json'
+_fresh_run; _srv_reset
+_identities alpha-user@example.test bravo-user@example.test a b
+for p in 1 2 3 4 5 6 7; do SRV["/api/p$p|a"]=$'200\t{"id":1}'; done
+_drive "$MANY"
+assert_eq 5 "$(_request_count)" 'exactly the capped number of endpoints is requested'
+assert_contains "$(run_facts coverage_reduction)" 'reason=exposure_endpoints_capped' \
+  'and the two it did not reach are declared - fails under `break`, which truncates silently'
+assert_contains "$(run_facts coverage_reduction)" 'dropped=2 cap=5' \
+  'with the numbers, so the operator can tell how much was not examined'
+
+t_case 'H6: a 401 refusal is a witness, and never kills the identity for the run'
+# FAILS UNDER routing the probe through `dast_auth_request`.  That function is
+# right everywhere else - a 401 there means "my session expired" - and exactly
+# inverted here, where this check DELIBERATELY asks one identity for another's
+# object.  Shipped, the first foreign reference answered 401 triggered a full
+# re-login, the retry 401 marked identity 'b' `failed` for the whole run, and
+# the probe returned 1 - so the enforcement witness was discarded, a real IDOR
+# was downgraded to the medium-confidence observation, and every later DAST
+# check needing that identity skipped.  On any token API that refuses with 401
+# rather than 403 that is a false clean result bought with a login storm, and it
+# left the `401` arm of `authz_status_refused` documented but unreachable.
+_fresh_run; _srv_reset
+_identities alpha-user@example.test bravo-user@example.test a b
+SRV['/api/basket/1|a']=$'200\tSHARED-BASKET-BODY'
+SRV['/api/basket/1|b']=$'200\tSHARED-BASKET-BODY'
+SRV['/api/basket/1|anon']=$'401\t'
+SRV['/api/basket/2|a']=$'200\tALPHA-OWN-BASKET'
+SRV['/api/basket/2|b']=$'401\t'
+_drive "$BASKETS"
+IDS=$(_shard_check_ids)
+assert_contains "$IDS" 'DAST-AUTHZ-IDOR-01' \
+  'the 401 on /api/basket/2 IS the enforcement witness, so the shared object is a confirmed IDOR - fails when the 401 is swallowed by the re-auth path, which downgrades it to the weaker id'
+assert_not_contains "$IDS" 'DAST-AUTHZ-CROSS_IDENTITY_READ-01' 'and not the observation'
+dast_auth_state authz-fixture b
+assert_eq authenticated "$_DAST_AUTH_STATE" \
+  "identity 'b' is STILL authenticated - fails under the shipped path, which marks it failed for the rest of the run because one URL refused it, silently skipping every later check that needs it"
+assert_not_contains "$(run_facts coverage_reduction)" 'reason=reauth_rejected' \
+  'and no re-authentication was attempted at all, because identity b had already read /api/basket/1 successfully, which proves its session live without spending a login'
+
+t_case 'H6b: a 401 with NO prior success does spend exactly one refresh'
+# The other half, and the naive fix for H6 is this one's bug: treating every 401
+# as a refusal outright would make a genuinely expired session read as an
+# application enforcing authorization on every reference, which is the same
+# false-clean result from the opposite direction.  §7.0's refresh still applies
+# when there is no evidence the session is live - once per identity per pass,
+# never per reference, because a loop is the account-lockout hazard
+# auth_engine.sh's own form probe is already bounded against.
+_fresh_run; _srv_reset
+_identities alpha-user@example.test bravo-user@example.test a b
+SRV['/api/basket/1|a']=$'200\tSHARED-BASKET-BODY'
+SRV['/api/basket/1|b']=$'401\t'
+SRV['/api/basket/2|a']=$'401\t'
+SRV['/api/basket/2|b']=$'401\t'
+SRV['/api/basket/3|a']=$'401\t'
+SRV['/api/basket/3|b']=$'401\t'
+_drive "$BASKETS"
+assert_contains "$(run_facts coverage_reduction)" 'reason=refusal_confirmed_after_reauth' \
+  'the refresh happened and is recorded, so a 401 was not simply assumed to be a refusal'
+assert_contains "$(run_facts coverage_reduction)" 'count=1' \
+  'ONCE for the whole pass, not once per reference - fails under refreshing per 401, which is a login storm against the operator\x27s identity provider'
+dast_auth_state authz-fixture b
+assert_eq authenticated "$_DAST_AUTH_STATE" \
+  'and even a confirmed-after-refresh refusal leaves the identity usable by later phases'
+
+t_case 'H7: a reference whose probe failed is not counted as probed'
+# Non-blocking on the QA pass, same class of defect: `_AUTHZ_REFS_TESTED` was
+# incremented BEFORE the two probes, so the phase reported references as
+# "probed" that produced no usable request at all.
+assert_true "$(( ${_AUTHZ_REFS_ATTEMPTED:-0} >= ${_AUTHZ_REFS_TESTED:-0} ? 0 : 1 ))" \
+  'attempts are never fewer than tests'
+assert_eq "$_AUTHZ_REFS_ATTEMPTED" "$(( _AUTHZ_REFS_TESTED + _AUTHZ_PROBE_FAILED ))" \
+  'and every attempt is either a completed test or a counted failure, so the two numbers add up to what the phase reports'
+
+t_case 'H8: a CSRF token field name is not reported as a credential'
+# `token` shipped as a bare SUBSTRING entry, so it claimed `csrfToken`,
+# `nextToken` and `antiforgeryToken` - the first of which ships on nearly every
+# JSON endpoint of nearly every framework, which would have fired
+# DAST-AUTHZ-EXCESSIVE_DATA-01 on almost any authenticated response.
+authz_sensitive_load "$ROOT/modules/dast/sensitive-fields.txt"
+assert_status 1 'a CSRF token is not a credential field' authz_field_matches csrftoken
+assert_status 1 'nor is a pagination cursor' authz_field_matches nexttoken
+assert_status 1 'nor an anti-forgery token' authz_field_matches antiforgerytoken
+assert_status 0 'a bare `token` field still is' authz_field_matches token
+assert_status 0 'and so is an access token' authz_field_matches accesstoken
+assert_status 0 'and a refresh token' authz_field_matches refreshtoken
+
+# ===========================================================================
 printf '\n== dast-authz: %d passed, %d failed ==\n' "$T_PASS" "$T_FAIL"
 # ===========================================================================
 (( T_FAIL == 0 ))

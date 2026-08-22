@@ -654,12 +654,16 @@ It ships `authz_engine.sh` (the pure half: candidate extraction from DAST-04's f
 oracle, the field scan), `authz.sh` (the phase `dast_run_phase` sources), the new shared
 `modules/dast/checks.rules` (four `DAST-AUTHZ-*` script checks, all `tags: active` and all
 `requires-identities: 2`), and the vendored, operator-editable `modules/dast/sensitive-fields.txt`.
-`tests/suites/dast-authz.sh` is the proof - 147 assertions, no network and no Docker, driven from a
+`tests/suites/dast-authz.sh` is the proof - 189 assertions, no network and no Docker, driven from a
 scripted SERVER keyed on (path, identity) rather than a canned-status queue, because the correctness
 of this check IS which identity is served which object and a queue lets a probe pass by asking for the
 wrong thing in the right order.
-Six things about it will otherwise be rediscovered the expensive way; each was measured by writing the
-wrong version and watching a named case go red, not reasoned about.
+Its section H is the six defects a QA pass found on the first landing; every one of them was observed
+red against the shipped code and green after the fix, and five of the six were false or missing
+COVERAGE records rather than wrong findings - which is this module's own most expensive failure class
+and is where to look first when changing it.
+Nine things about it will otherwise be rediscovered the expensive way; each was measured by writing
+the wrong version and watching a named case go red, not reasoned about.
 
 - **"Public" is DIGEST EQUALITY with an identity's own response, never the anonymous status code.**
   The anonymous control is required at all - without it every public object on the target is reported
@@ -678,6 +682,55 @@ wrong version and watching a named case go red, not reasoned about.
   POST/PUT/PATCH/DELETE inventory entry never becomes a candidate, so no code path can reach a
   mutation even if a later edit forgets to check - and the guarantee is asserted over a REQUEST LOG,
   the only form of the claim a test can falsify.
+- **HEAD is READ-ONLY AND STILL REFUSED, under its own counter, and folding it into the
+  mutating-method count is the mistake.** RFC 7231 §4.3.2 gives a HEAD response no body, and every
+  oracle here compares response BYTES, so a HEAD candidate spends two requests to reach a verdict that
+  cannot exist. Worse, it reached one: an empty digest on both sides landed in the "bytes differed"
+  arm, which the phase reports as "readable by BOTH identities but returned different bytes to each" -
+  false for a HEAD - while the exposure pass's `-s` test reported the same zero-byte body as
+  `response_too_large_to_field_scan cap=524288`. TWO factually wrong coverage records from one
+  admission. `authz_body_is_empty` now exists precisely so "no body" and "too big" are never the same
+  question; a 204 or an empty 200 on a GET hits the identical trap. Cases H2a-H2d.
+- **A 401 is an AUTHORIZATION REFUSAL here, and `dast_auth_request` must not be used for the probes.**
+  §7.0's transparent re-auth is right everywhere else - a 401 there means the session expired - and
+  exactly inverted in a check that deliberately asks one identity for another's object. Routed
+  through it, the first foreign reference answered 401 triggered a full re-login, the retry's 401
+  marked that identity `failed` for the WHOLE RUN, and the probe returned 1 - so the enforcement
+  witness was discarded, a real IDOR was downgraded to the medium-confidence observation, and every
+  later DAST check needing that identity skipped. On any token API that refuses with 401 rather than
+  403 that is a false clean result bought with a login storm, and it left the `401` arm of
+  `authz_status_refused` documented but unreachable. `authz_probe_as` discriminates instead: an
+  identity that has ALREADY received a 2xx this pass has a demonstrably live session, so its later 401
+  is a refusal and costs no login; otherwise §7.0's refresh applies ONCE per identity per pass, and a
+  retry that is 401 too is reported as a refusal WITHOUT marking the identity failed. Both halves are
+  pinned (H6, H6b) because the naive fix for each is the other's bug - treating every 401 as a refusal
+  makes an expired session read as an application enforcing authorization on every reference.
+- **`loc_method` is the method that was requested, never a constant.** The DAST location profile is
+  `target method path_template param_location param_name` and `authz_group_key` discriminates on the
+  method too, so a hardcoded `GET` collapses two groups this pass deliberately kept apart onto ONE
+  fingerprint and `findings_merge` drops whichever sorts second - the exact collision
+  `modules/dast/checks.rules` says the four ids exist to prevent. It also made the field contradict
+  the finding's own evidence prose, which interpolates the real method. H1 asserts it on the
+  FINGERPRINTS, not on the field alone.
+- **`checks_run` is written from the ids that EXECUTED, not from the passes that were entered.**
+  `lib/records.sh` defines it expressly so a reader can tell "this check ran and found nothing" from
+  "this check was never loaded", and `DAST-AUTHZ-OTHER_IDENTITY_DATA-01` defeated that: it was
+  recorded as run on every authenticated run with an inventory, including the ones where it could not
+  possibly run. `rules/RULE-FORMAT.md` §9.6.2 makes `username` optional and applicable only to
+  `form`/`oauth2-password`/`srp`, so a `bearer`, `api-key`, `oauth2-client` or `external` identity -
+  the dominant shape for the API targets this check is aimed at - supplies no identifier at all. The
+  passes now append to `_AUTHZ_CHECKS_EXECUTED` and `_dast_authz_record_checks_run` writes a
+  `check_not_executed` reduction for every id missing from it. H3.
+- **A count in a coverage record must describe what was EXAMINED, not what exists.** An inventory
+  entry is dropped for its method or its scope BEFORE its path is inspected, so on an inventory of
+  forty POST endpoints "no entry carried an object-reference-shaped value" is simply false - they were
+  never looked at. The `ncand == 0` reason now carries `skipped_method` / `skipped_head` /
+  `skipped_scope` and says so, and `_dast_authz_record_skips` runs on BOTH branches, because the
+  deliberate "object-level authorization on write endpoints was NOT assessed" gap used to be dropped
+  on exactly the inventory where it was the only true thing to say. H4. In the same family: the
+  exposure-endpoint cap used to `break` with no counter, the one bound in a file whose header promises
+  "reaching one is never silent" (H5), and `_AUTHZ_REFS_TESTED` was incremented before the probes, so
+  references that produced no usable request were reported as probed (H7).
 - **What an object reference IS comes from `lib/findings.sh`'s `path_template_of`, and the suite
   asserts the two AGAINST EACH OTHER rather than restating the four shapes.** Disagreement in either
   direction is a real defect: probing a segment the fingerprint treats as a literal splits one

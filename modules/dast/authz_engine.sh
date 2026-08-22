@@ -158,6 +158,43 @@ _AUTHZ_MAX_BODY_BYTES=524288
 _AUTHZ_MAX_FIELDS=2000
 _AUTHZ_MAX_HITS_REPORTED=12
 
+# Per-pass session bookkeeping for `authz_probe_as`'s 401 discrimination, and
+# the set of check ids a pass actually EXECUTED.
+#
+# `_AUTHZ_CHECKS_EXECUTED` exists because lib/records.sh defines `checks_run` as
+# the checks the run loaded AND EXECUTED, "so a reader could not tell 'this
+# check ran and found nothing' from 'this check was never loaded'".  Writing an
+# id there because the pass that owns it was entered is not that: a check whose
+# required input turned out to be absent, or which tension 15's filter chain
+# deselected, did not execute, and recording it as though it did is the one
+# failure mode this whole module is written against.  The passes append the ids
+# they really reached; the phase writes `checks_run` from this list and records
+# a reason for every id that is missing from it.
+declare -gA _AUTHZ_SESSION_OK=()
+declare -gA _AUTHZ_REAUTH_DONE=()
+declare -ga _AUTHZ_CHECKS_EXECUTED=()
+
+# `authz_pass_reset` - start-of-phase state.  Called by modules/dast/authz.sh
+# before either pass, and by any test driving a pass directly.
+authz_pass_reset() {
+  _AUTHZ_SESSION_OK=()
+  _AUTHZ_REAUTH_DONE=()
+  _AUTHZ_CHECKS_EXECUTED=()
+  _AUTHZ_REAUTH_FAILED=0
+  _AUTHZ_REFUSED_AFTER_REAUTH=0
+  return 0
+}
+
+# Append ID to `_AUTHZ_CHECKS_EXECUTED` once.
+_authz_mark_executed() {
+  local id=$1 e
+  for e in "${_AUTHZ_CHECKS_EXECUTED[@]+"${_AUTHZ_CHECKS_EXECUTED[@]}"}"; do
+    [[ $e == "$id" ]] && return 0
+  done
+  _AUTHZ_CHECKS_EXECUTED+=("$id")
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # 1. What an object reference is
 # ---------------------------------------------------------------------------
@@ -216,14 +253,53 @@ authz_ref_param_name() {
   fi
 }
 
-# Only GET and HEAD are ever candidates.  See this file's header: the read-only
-# guarantee is enforced HERE, at selection, so no later code path can reach a
-# mutating method at all.
+# Only GET is ever a candidate, and the status distinguishes the two reasons a
+# method can be rejected, because they are two different facts an operator needs
+# separately:
+#
+#   0 - GET.  A candidate.
+#   2 - HEAD.  READ-ONLY, AND STILL USELESS TO THIS CHECK, so it is dropped for
+#       its OWN reason rather than folded into the mutating-method count.  Every
+#       oracle in this file is a comparison of RESPONSE BYTES: RFC 7231 §4.3.2
+#       gives a HEAD response no body at all, so `authz_body_digest` returns ''
+#       for both identities and the comparison can never conclude anything.
+#       Admitting it spent two requests per reference to reach a verdict that
+#       does not exist, and - the expensive half - it reached that verdict
+#       through the `-z $dA` arm, which the phase reports to the operator as
+#       "readable by BOTH identities but returned different bytes to each".  For
+#       a HEAD that sentence is not merely unhelpful, it is FALSE.  The same
+#       response also failed `authz_body_within_bounds`'s `-s` test, which the
+#       exposure pass reported as `response_too_large_to_field_scan` on a
+#       zero-byte body.  Two factually wrong coverage records is strictly worse
+#       than one honest "not assessed", so HEAD is refused here and counted.
+#   1 - anything else.  The read-only guarantee, enforced at SELECTION so no
+#       later code path can reach a mutating method at all.
+#
+# The comparison is on the UPPERCASED method: an inventory producer is free to
+# write `Get`, and reporting that to the operator as "their method is not GET"
+# would be a coverage record that is wrong about its own input.
 _authz_method_ok() {
   case ${1:-GET} in
-    GET | HEAD | get | head) return 0 ;;
+    '') return 0 ;;
+  esac
+  case ${1^^} in
+    GET) return 0 ;;
+    HEAD) return 2 ;;
     *) return 1 ;;
   esac
+}
+
+# `_authz_method_reject METHOD` - 0 when METHOD is a candidate; otherwise 1,
+# having already counted the rejection under the right one of the two reasons.
+_authz_method_reject() {
+  local rc=0
+  _authz_method_ok "$1" || rc=$?
+  case $rc in
+    0) return 1 ;;
+    2) _AUTHZ_SKIPPED_HEAD=$(( ${_AUTHZ_SKIPPED_HEAD:-0} + 1 )) ;;
+    *) _AUTHZ_SKIPPED_METHOD=$(( ${_AUTHZ_SKIPPED_METHOD:-0} + 1 )) ;;
+  esac
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -294,10 +370,7 @@ _authz_emit_path_refs() {
   local target=$1 m=${2:-GET} u=$3 t=$4
   [[ -n $u ]] || return 0
   [[ -z $t || $t == "$target" ]] || return 0
-  if ! _authz_method_ok "$m"; then
-    _AUTHZ_SKIPPED_METHOD=$(( _AUTHZ_SKIPPED_METHOD + 1 ))
-    return 0
-  fi
+  _authz_method_reject "$m" && return 0
   if ! _authz_in_scope "$u"; then
     _AUTHZ_SKIPPED_SCOPE=$(( _AUTHZ_SKIPPED_SCOPE + 1 ))
     return 0
@@ -341,14 +414,19 @@ _authz_emit_query_ref() {
   [[ -z $t || $t == "$target" ]] || return 0
   authz_is_object_ref "$example" || return 0
   _authz_ref_name_ok "$name" || return 0
-  if ! _authz_method_ok "$m"; then
-    _AUTHZ_SKIPPED_METHOD=$(( _AUTHZ_SKIPPED_METHOD + 1 ))
-    return 0
-  fi
+  _authz_method_reject "$m" && return 0
   crawl_url_split "$u"
   local base=$_CRAWL_U_BASE path composed row
   path=$(_authz_path_of "$base")
-  composed="$base?$name=$example"
+  # PERCENT-ENCODED, because the name is target-derived (docs/FOUNDATION.md
+  # tension 10) and a raw `&`, `#` or space in it would compose a URL that means
+  # something other than "this parameter, this value".  `_dast_auth_urlencode`
+  # is the encoder this module already carries; the scope gate still re-checks
+  # the composed URL below either way.
+  local enc_name enc_value
+  _dast_auth_urlencode "$name"; enc_name=$_DAST_AUTH_ENC
+  _dast_auth_urlencode "$example"; enc_value=$_DAST_AUTH_ENC
+  composed="$base?$enc_name=$enc_value"
   if ! _authz_in_scope "$composed"; then
     _AUTHZ_SKIPPED_SCOPE=$(( _AUTHZ_SKIPPED_SCOPE + 1 ))
     return 0
@@ -391,6 +469,7 @@ authz_candidates_set() {
   local target=$1 epf=${2:-} pf=${3:-}
   _AUTHZ_CANDIDATES=()
   _AUTHZ_SKIPPED_METHOD=0
+  _AUTHZ_SKIPPED_HEAD=0
   _AUTHZ_SKIPPED_SCOPE=0
 
   local idx field value cur='' m='' u='' t=''
@@ -452,7 +531,9 @@ _authz_ep_collect() {
   local target=$1 m=${2:-GET} u=$3 t=$4 ct=$5 path row
   [[ -n $u ]] || return 0
   [[ -z $t || $t == "$target" ]] || return 0
-  _authz_method_ok "$m" || return 0
+  # The exposure pass field-scans a RESPONSE BODY, so HEAD is as useless here as
+  # it is to the IDOR oracle and is counted for its own reason there too.
+  _authz_method_reject "$m" && return 0
   _authz_in_scope "$u" || return 0
   crawl_url_split "$u"
   path=$(_authz_path_of "$_CRAWL_U_BASE")
@@ -469,6 +550,14 @@ _authz_ep_collect() {
 authz_idempotent_endpoints() {
   local target=$1 file=$2
   local idx field value cur='' m='' u='' t='' ct='' line
+  # `_authz_method_reject` counts into the same two globals the CANDIDATE pass
+  # publishes, and those counts are reported to the operator as a statement
+  # about object references.  This walk is a different question over the same
+  # inventory, so its rejections are counted separately and the candidate-pass
+  # totals are restored - otherwise one inventory entry is reported twice and
+  # the IDOR record's own numbers stop adding up.
+  local keep_method=${_AUTHZ_SKIPPED_METHOD:-0} keep_head=${_AUTHZ_SKIPPED_HEAD:-0}
+  _AUTHZ_SKIPPED_METHOD=0 _AUTHZ_SKIPPED_HEAD=0
   _AUTHZ_EP_JSON=() _AUTHZ_EP_OTHER=()
   while IFS=$'\t' read -r idx field value; do
     if [[ -n $cur && $idx != "$cur" ]]; then
@@ -484,6 +573,9 @@ authz_idempotent_endpoints() {
     esac
   done < <(_authz_walk_records "$file" endpoints)
   [[ -n $cur ]] && _authz_ep_collect "$target" "$m" "$u" "$t" "$ct"
+  _AUTHZ_EP_SKIPPED_METHOD=${_AUTHZ_SKIPPED_METHOD:-0}
+  _AUTHZ_EP_SKIPPED_HEAD=${_AUTHZ_SKIPPED_HEAD:-0}
+  _AUTHZ_SKIPPED_METHOD=$keep_method _AUTHZ_SKIPPED_HEAD=$keep_head
   for line in "${_AUTHZ_EP_JSON[@]+"${_AUTHZ_EP_JSON[@]}"}" \
     "${_AUTHZ_EP_OTHER[@]+"${_AUTHZ_EP_OTHER[@]}"}"; do
     printf '%s\n' "$line"
@@ -561,15 +653,38 @@ authz_field_matches() {
 # ---------------------------------------------------------------------------
 # 4. Reading an authenticated response body
 # ---------------------------------------------------------------------------
-# `authz_body_within_bounds FILE` - 0 when FILE is small enough to parse.  Uses
-# `wc -c` rather than a read: the whole point is to decide without loading it.
-authz_body_within_bounds() {
+# `authz_body_size FILE` - the byte count, 0 for an absent, unreadable or empty
+# file.  Uses `wc -c` rather than a read: the whole point is to decide without
+# loading it.
+authz_body_size() {
   local file=$1 size
-  [[ -r $file && -s $file ]] || return 1
+  [[ -r $file ]] || { printf '0'; return 0; }
   size=$(wc -c <"$file" 2>/dev/null || printf '0')
   size=${size//[[:space:]]/}
-  [[ $size =~ ^[0-9]+$ ]] || return 1
-  (( size <= _AUTHZ_MAX_BODY_BYTES ))
+  [[ $size =~ ^[0-9]+$ ]] || size=0
+  printf '%s' "$size"
+}
+
+# `authz_body_is_empty FILE` - 0 when there are no bytes to look at.
+#
+# SEPARATE FROM `authz_body_within_bounds` ON PURPOSE, AND THE SEPARATION IS THE
+# WHOLE POINT.  That predicate is false for an empty body AND for an oversized
+# one, so a caller that only asks it reports "no body" using whatever sentence
+# it reserved for "too big" - which is how a 204, a body-less 200 and (before
+# HEAD was refused at selection) every HEAD response came to be recorded as
+# `response_too_large_to_field_scan cap=524288` on a ZERO-byte response.  A
+# coverage record that is factually wrong about what it saw is worse than none,
+# because an operator cannot tell it from a real truncation.
+authz_body_is_empty() {
+  (( $(authz_body_size "$1") == 0 ))
+}
+
+# `authz_body_within_bounds FILE` - 0 when FILE has bytes AND is small enough to
+# parse.  Ask `authz_body_is_empty` FIRST if the two cases must be told apart.
+authz_body_within_bounds() {
+  local size
+  size=$(authz_body_size "$1")
+  (( size > 0 && size <= _AUTHZ_MAX_BODY_BYTES ))
 }
 
 # `authz_field_names FILE` - print each distinct JSON field name in FILE, in
@@ -673,19 +788,82 @@ authz_body_digest() {
 # be made AT ALL (no session, transport failure), which is a different fact from
 # a request that was refused and must never be read as one.
 #
-# It goes through `dast_auth_request`, not `http_request` directly, so §7.0's
-# "on 401 refresh once and retry" applies here exactly as it does everywhere
-# else - and so a 401 that is a genuine authorization refusal is separated from
-# a 401 that is an expired session by that one mechanism rather than by a second
-# copy of it here.
+# IT DOES NOT GO THROUGH `dast_auth_request`, AND THAT IS THIS FUNCTION'S WHOLE
+# REASON TO EXIST.  §7.0's transparent re-auth is right for every other phase,
+# where a 401 means "my session expired": it re-authenticates once, retries, and
+# if the retry is 401 too it marks the identity `failed` for THE REST OF THE RUN
+# (auth_engine.sh's own `reauth_rejected` arm).  Here that reading is exactly
+# inverted.  This check deliberately asks one identity for ANOTHER identity's
+# object, so a 401 is the correct, expected answer and is the enforcement
+# WITNESS that separates DAST-AUTHZ-IDOR-01 from the weaker observation.  Handed
+# to `dast_auth_request` it instead: (a) triggered a full re-login against the
+# operator's identity provider on the first foreign reference probed, (b) killed
+# that identity for every later DAST phase, and (c) returned 1, so the witness
+# was discarded and a real IDOR was downgraded or dropped - and the `401` arm of
+# `authz_status_refused` below became unreachable, documented but dead.  On any
+# API that refuses a foreign object with 401 rather than 403 - the ordinary
+# shape for token auth - that is a false clean result bought with a login storm.
+#
+# The discrimination is made HERE instead, and it is cheap and definitive:
+#
+#   * If this label has ALREADY received a 2xx on this target during this pass,
+#     its session is demonstrably live, so a later 401 is an authorization
+#     refusal.  No re-login is attempted at all.
+#   * Otherwise §7.0's refresh applies - ONCE per label per pass, never per
+#     reference, because a loop is the account-lockout hazard auth_engine.sh's
+#     form probe is already bounded against.  If the retry succeeds the original
+#     401 was a stale session and the retry's result is used.  If the retry is
+#     401 as well, the 401 is reported to the caller AS A REFUSAL and the
+#     identity is left `authenticated`: one URL refusing this principal is not
+#     evidence the credential is bad, which is precisely the inference
+#     `dast_auth_request` is entitled to make and this check is not.
+#
+# `dast_auth_apply` is still the only thing that attaches a credential, and
+# `http_request` is still the only thing that reaches the network (tension 19).
 authz_probe_as() {
   local target=$1 label=$2 method=$3 url=$4 bodyfile=$5
   _AUTHZ_STATUS='' _AUTHZ_DIGEST=''
   : >"$bodyfile"
-  dast_auth_request "$target" "$label" "$method" "$url" "$bodyfile" '' \
-    "${SCOURSH_MAX_REDIRECTS:-5}" || return 1
-  _AUTHZ_STATUS=${_DAST_AUTH_REQ_STATUS:-}
+  dast_auth_apply "$target" "$label" || return 1
+  http_request_capture "$bodyfile" ''
+  http_request "$method" "$url" "${SCOURSH_MAX_REDIRECTS:-5}" "$target" || return 1
+  _AUTHZ_STATUS=${_HTTP_LAST_STATUS:-}
+  if [[ $_AUTHZ_STATUS == 401 ]] && [[ -z ${_AUTHZ_SESSION_OK[$label]:-} ]]; then
+    _authz_reauth_once "$target" "$label" "$method" "$url" "$bodyfile" || return 1
+  fi
+  if authz_status_ok "$_AUTHZ_STATUS"; then
+    _AUTHZ_SESSION_OK[$label]=1
+  fi
   _AUTHZ_DIGEST=$(authz_body_digest "$bodyfile")
+  return 0
+}
+
+# The bounded §7.0 refresh described above.  Returns 1 only when the RETRY could
+# not be made at all; a retry that was made and refused is a successful probe
+# whose status happens to be 401.
+_authz_reauth_once() {
+  local target=$1 label=$2 method=$3 url=$4 bodyfile=$5
+  if [[ -n ${_AUTHZ_REAUTH_DONE[$label]:-} ]]; then
+    return 0
+  fi
+  _AUTHZ_REAUTH_DONE[$label]=1
+  log_info "dast authz: identity $target.$label received HTTP 401 with no prior successful read this pass; re-authenticating once (docs/DESIGN.md §7.0) before treating a 401 as an authorization refusal"
+  if ! dast_auth_acquire "$target" "$label"; then
+    # The refresh itself failed.  The 401 already observed is kept and reported
+    # as a refusal rather than discarded: `dast_auth_acquire` has recorded its
+    # own reason, and inventing a second verdict here would hide the first.
+    _AUTHZ_REAUTH_FAILED=$(( ${_AUTHZ_REAUTH_FAILED:-0} + 1 ))
+    return 0
+  fi
+  dast_auth_apply "$target" "$label" || return 0
+  : >"$bodyfile"
+  http_request_capture "$bodyfile" ''
+  http_request "$method" "$url" "${SCOURSH_MAX_REDIRECTS:-5}" "$target" || return 1
+  _AUTHZ_REQUESTS=$(( ${_AUTHZ_REQUESTS:-0} + 1 ))
+  _AUTHZ_STATUS=${_HTTP_LAST_STATUS:-}
+  if [[ $_AUTHZ_STATUS == 401 ]]; then
+    _AUTHZ_REFUSED_AFTER_REAUTH=$(( ${_AUTHZ_REFUSED_AFTER_REAUTH:-0} + 1 ))
+  fi
   return 0
 }
 
@@ -781,7 +959,7 @@ authz_selected() {
   dast_check_selected "$1"
 }
 
-# `authz_emit CHECK URL PATH PARAM_LOCATION PARAM_NAME EVIDENCE`
+# `authz_emit CHECK METHOD URL PATH PARAM_LOCATION PARAM_NAME EVIDENCE`
 #
 # `auth` is `user`, never `none`: every finding this file emits was established
 # from an authenticated session, and recording it as unauthenticated would let
@@ -789,8 +967,18 @@ authz_selected() {
 # reachable by anybody.  `sensitive_data` is true throughout, because in every
 # one of these four cases the thing observed IS data reaching a principal that
 # should not have it.
+#
+# METHOD IS A PARAMETER AND IS NEVER HARDCODED.  lib/findings.sh's DAST location
+# profile is `target method path_template param_location param_name`, and
+# `authz_group_key` discriminates groups on the method as well, so writing a
+# constant `GET` into `loc_method` makes two groups that this pass deliberately
+# kept apart collapse onto ONE fingerprint - and `findings_merge` then keeps
+# whichever sorted first and silently drops the other.  That is precisely the
+# collision modules/dast/checks.rules says these four ids exist to prevent, and
+# it also made the evidence (which interpolates the real method) contradict the
+# finding's own `loc_method` in the same record.
 authz_emit() {
-  local check=$1 url=$2 path=$3 ploc=$4 param_name=$5 evidence=$6
+  local check=$1 method=$2 url=$3 path=$4 ploc=$5 param_name=$6 evidence=$7
   local target=${SCOURSH_DAST_TARGET:-}
   _authz_catalog "$check" || return 0
 
@@ -808,7 +996,7 @@ authz_emit() {
   finding_set remediation "$_AUTHZC_REM"
   finding_set cell "${SCOURSH_DAST_CELL:-$target}"
   finding_set loc_target "$target"
-  finding_set loc_method GET
+  finding_set loc_method "${method:-GET}"
   finding_set loc_path_template "$(path_template_of "$path")"
   finding_set loc_param_location "$ploc"
   finding_set loc_param_name "$param_name"
@@ -837,15 +1025,25 @@ authz_emit() {
 # Counters published for the phase's coverage records:
 #   _AUTHZ_GROUPS_TESTED     groups actually probed
 #   _AUTHZ_GROUPS_TRUNCATED  groups the MAX_GROUPS bound dropped
-#   _AUTHZ_REFS_TESTED       object references probed
+#   _AUTHZ_REFS_ATTEMPTED    object references a probe was started for
+#   _AUTHZ_REFS_TESTED       references BOTH identities were successfully asked
+#                            for.  Deliberately not the same number: counting an
+#                            attempt as a test reports a reference as "probed"
+#                            when no usable request was ever made for it.
+#   _AUTHZ_PROBE_FAILED      references whose probe could not be completed
 #   _AUTHZ_REFS_TRUNCATED    references the per-group bound dropped
 #   _AUTHZ_PUBLIC_SKIPPED    references the anonymous control proved public
 #   _AUTHZ_DIGEST_DIFFERED   both identities read it, but the bytes differed
+#   _AUTHZ_NO_BODY           both identities read it and NEITHER response had a
+#                            body, so there was nothing to compare - a different
+#                            fact from the bytes differing, and reporting it as
+#                            that one is a false statement about the target
 #   _AUTHZ_REQUESTS          requests this pass issued
 authz_idor_run() {
   local target=$1 a=$2 b=$3 dir=$4
   _AUTHZ_GROUPS_TESTED=0 _AUTHZ_GROUPS_TRUNCATED=0
-  _AUTHZ_REFS_TESTED=0 _AUTHZ_REFS_TRUNCATED=0
+  _AUTHZ_REFS_TESTED=0 _AUTHZ_REFS_TRUNCATED=0 _AUTHZ_REFS_ATTEMPTED=0
+  _AUTHZ_PROBE_FAILED=0 _AUTHZ_NO_BODY=0
   _AUTHZ_PUBLIC_SKIPPED=0 _AUTHZ_DIGEST_DIFFERED=0 _AUTHZ_REQUESTS=0
 
   (( ${#_AUTHZ_CANDIDATES[@]} > 0 )) || return 0
@@ -878,6 +1076,21 @@ authz_idor_run() {
   done
   _AUTHZ_GROUPS_TESTED=$gi
   rm -f "$bodyA" "$bodyB" "$bodyN"
+
+  # EXECUTED means both identities really were asked for at least one reference,
+  # not merely that this pass was entered.  A run where every probe failed made
+  # no comparison, so neither id goes into `checks_run` and the phase records
+  # why instead - "this check ran and found nothing" and "this check never got
+  # to look" are the two states lib/records.sh's own definition exists to keep
+  # apart.
+  if (( _AUTHZ_REFS_TESTED > 0 )); then
+    local cid
+    for cid in DAST-AUTHZ-IDOR-01 DAST-AUTHZ-CROSS_IDENTITY_READ-01; do
+      if authz_selected "$cid"; then
+        _authz_mark_executed "$cid"
+      fi
+    done
+  fi
   return 0
 }
 
@@ -904,14 +1117,22 @@ _authz_group_probe() {
       continue
     fi
     n=$(( n + 1 ))
-    _AUTHZ_REFS_TESTED=$(( _AUTHZ_REFS_TESTED + 1 ))
+    _AUTHZ_REFS_ATTEMPTED=$(( _AUTHZ_REFS_ATTEMPTED + 1 ))
 
-    authz_probe_as "$target" "$a" "$method" "$url" "$bodyA" || continue
+    if ! authz_probe_as "$target" "$a" "$method" "$url" "$bodyA"; then
+      _AUTHZ_PROBE_FAILED=$(( _AUTHZ_PROBE_FAILED + 1 ))
+      continue
+    fi
     _AUTHZ_REQUESTS=$(( _AUTHZ_REQUESTS + 1 ))
     sA=$_AUTHZ_STATUS dA=$_AUTHZ_DIGEST
-    authz_probe_as "$target" "$b" "$method" "$url" "$bodyB" || continue
+    if ! authz_probe_as "$target" "$b" "$method" "$url" "$bodyB"; then
+      _AUTHZ_PROBE_FAILED=$(( _AUTHZ_PROBE_FAILED + 1 ))
+      continue
+    fi
     _AUTHZ_REQUESTS=$(( _AUTHZ_REQUESTS + 1 ))
     sB=$_AUTHZ_STATUS dB=$_AUTHZ_DIGEST
+    # Counted only now: both identities really were asked.
+    _AUTHZ_REFS_TESTED=$(( _AUTHZ_REFS_TESTED + 1 ))
 
     # The enforcement witness: one identity reads it, the other is refused it.
     # This is what separates the two check ids, and it is collected from EVERY
@@ -926,7 +1147,16 @@ _authz_group_probe() {
     if ! authz_status_ok "$sA" || ! authz_status_ok "$sB"; then
       continue
     fi
-    if [[ -z $dA || $dA != "$dB" ]]; then
+    if [[ -z $dA && -z $dB ]]; then
+      # BOTH responses were body-less (a 204, or a 200 with nothing in it).
+      # There is no evidence either way and - the part that matters - it is NOT
+      # the "different bytes to each identity" case: reporting it as that tells
+      # the operator this endpoint renders per-identity content, which is a
+      # statement about their application that this run did not observe.
+      _AUTHZ_NO_BODY=$(( _AUTHZ_NO_BODY + 1 ))
+      continue
+    fi
+    if [[ $dA != "$dB" ]]; then
       # Both read it but the bytes differ: either per-identity content (correct)
       # or a per-request nonce defeating the comparison (this file's stated
       # false-negative).  Counted, never reported as a finding.
@@ -961,7 +1191,7 @@ _authz_group_probe() {
       printf -v evi '%s' "identities '$a' and '$b' each requested $method $path (object reference '$ref', $ploc parameter '$param_name') and received a byte-identical response; an unauthenticated request for the same reference did not, so the object is not public. No reference under this path template was refused to either identity, so this endpoint may legitimately serve one shared resource to every authenticated user - confirm which it is. No response body is reproduced here and nothing was modified."
     fi
     authz_selected "$check" || continue
-    authz_emit "$check" "$url" "$path" "$ploc" "$param_name" "$evi"
+    authz_emit "$check" "$method" "$url" "$path" "$ploc" "$param_name" "$evi"
   done
   return 0
 }
@@ -980,12 +1210,34 @@ _authz_group_probe() {
 # below it the check declines to run rather than emitting a finding it cannot
 # stand behind.  The value itself is never logged, never put in a finding, and
 # never becomes an argument (see `authz_body_contains`).
+#
+# IT ALSO PUBLISHES WHY IT HAS NOTHING, IN `_AUTHZ_NEEDLE_REASON`, AND THE
+# COMMONEST ANSWER IS `absent`.  rules/RULE-FORMAT.md §9.6.2 makes `username`
+# OPTIONAL and applicable only to `form`, `oauth2-password` and `srp`, so for a
+# `bearer`, `api-key`, `oauth2-client` or `external` identity - which is the
+# dominant shape for exactly the API targets this check is aimed at - there is
+# no identifier configured at all and this arm CANNOT run.  Silently returning
+# '' and letting the caller skip the test is how DAST-AUTHZ-OTHER_IDENTITY_DATA-01
+# came to be written into `checks_run` on runs where it structurally could not
+# execute; the reason travels back so the phase can say so instead.
+# IT SETS `_AUTHZ_NEEDLE` AND `_AUTHZ_NEEDLE_REASON` RATHER THAN PRINTING.  A
+# side-effecting function called as `$(f)` runs in a subshell and every write it
+# makes is discarded (AGENTS.md, "Things measured on this codebase" - the same
+# trap `occurrence_next` and `worker_id_set` are written around), so a reason
+# published by a function whose value is captured would always read `absent`.
 authz_other_identity_needle() {
   local target=$1 label=$2 v=''
+  _AUTHZ_NEEDLE='' _AUTHZ_NEEDLE_REASON=absent
   _dast_auth_index_set "$target" "$label" || return 0
   v=$(_dast_auth_field username '')
-  [[ ${#v} -ge 5 ]] || return 0
-  printf '%s' "$v"
+  [[ -n $v ]] || return 0
+  if (( ${#v} < 5 )); then
+    _AUTHZ_NEEDLE_REASON=too_short
+    return 0
+  fi
+  _AUTHZ_NEEDLE=$v
+  _AUTHZ_NEEDLE_REASON=ok
+  return 0
 }
 
 # `authz_exposure_run TARGET LABEL_A LABEL_B ENDPOINTS_FILE SCRATCHDIR` -
@@ -1014,45 +1266,83 @@ authz_other_identity_needle() {
 authz_exposure_run() {
   local target=$1 a=$2 b=$3 file=$4 dir=$5
   _AUTHZ_EXPOSURE_TESTED=0 _AUTHZ_EXPOSURE_OVERSIZE=0 _AUTHZ_EXPOSURE_REQUESTS=0
+  _AUTHZ_EXPOSURE_ATTEMPTED=0 _AUTHZ_EXPOSURE_TRUNCATED=0
+  _AUTHZ_EXPOSURE_EMPTY=0 _AUTHZ_EXPOSURE_UNREADABLE=0
   mkdir -p "$dir"
-  local body=$dir/exposure.body needle line method url path evi joined
-  needle=$(authz_other_identity_needle "$target" "$b")
-  local needle_a
-  needle_a=$(authz_other_identity_needle "$target" "$a")
+  local body=$dir/exposure.body needle='' needle_a='' line method url path evi joined
+  authz_other_identity_needle "$target" "$b"
+  needle=$_AUTHZ_NEEDLE
+  local b_reason=$_AUTHZ_NEEDLE_REASON
+  authz_other_identity_needle "$target" "$a"
+  needle_a=$_AUTHZ_NEEDLE
   # An identifier that is a substring of identity A's OWN identifier proves
   # nothing: `alice` inside `alice2` would report A's own profile as carrying
   # B's data.  Refuse the test rather than emit a finding that is an artefact of
   # how the operator named two accounts.
+  _AUTHZ_NEEDLE_AMBIGUOUS=0
   if [[ -n $needle && -n $needle_a && ${needle_a,,} == *"${needle,,}"* ]]; then
     needle=''
     _AUTHZ_NEEDLE_AMBIGUOUS=1
+    _AUTHZ_NEEDLE_STATE=ambiguous
+  elif [[ -n $needle ]]; then
+    _AUTHZ_NEEDLE_STATE=available
   else
-    _AUTHZ_NEEDLE_AMBIGUOUS=0
+    _AUTHZ_NEEDLE_STATE=$b_reason
   fi
 
   while IFS=$'\t' read -r method url path; do
     [[ -n $url ]] || continue
-    (( _AUTHZ_EXPOSURE_TESTED >= _AUTHZ_MAX_EXPOSURE_ENDPOINTS )) && break
-    _AUTHZ_EXPOSURE_TESTED=$(( _AUTHZ_EXPOSURE_TESTED + 1 ))
-    authz_probe_as "$target" "$a" "$method" "$url" "$body" || continue
+    # THE CAP IS COUNTED, NOT `break`-ed.  Every other bound in this phase
+    # reports what it dropped (docs/INVENTORY-FORMAT.md §8, and this file's own
+    # header paragraph on the bounds says "reaching one is never silent"); a
+    # bare `break` here made this the one bound that truncated the operator's
+    # coverage without saying so, which is worse than the truncation.
+    if (( _AUTHZ_EXPOSURE_ATTEMPTED >= _AUTHZ_MAX_EXPOSURE_ENDPOINTS )); then
+      _AUTHZ_EXPOSURE_TRUNCATED=$(( _AUTHZ_EXPOSURE_TRUNCATED + 1 ))
+      continue
+    fi
+    _AUTHZ_EXPOSURE_ATTEMPTED=$(( _AUTHZ_EXPOSURE_ATTEMPTED + 1 ))
+    if ! authz_probe_as "$target" "$a" "$method" "$url" "$body"; then
+      _AUTHZ_EXPOSURE_UNREADABLE=$(( _AUTHZ_EXPOSURE_UNREADABLE + 1 ))
+      continue
+    fi
     _AUTHZ_EXPOSURE_REQUESTS=$(( _AUTHZ_EXPOSURE_REQUESTS + 1 ))
-    authz_status_ok "$_AUTHZ_STATUS" || continue
+    if ! authz_status_ok "$_AUTHZ_STATUS"; then
+      _AUTHZ_EXPOSURE_UNREADABLE=$(( _AUTHZ_EXPOSURE_UNREADABLE + 1 ))
+      continue
+    fi
+    # EMPTY IS ASKED FIRST, AND IT IS NOT THE SAME QUESTION AS OVERSIZE.  See
+    # `authz_body_is_empty`: folding the two reported a zero-byte body to the
+    # operator as `response_too_large_to_field_scan cap=524288`.
+    if authz_body_is_empty "$body"; then
+      _AUTHZ_EXPOSURE_EMPTY=$(( _AUTHZ_EXPOSURE_EMPTY + 1 ))
+      continue
+    fi
     if ! authz_body_within_bounds "$body"; then
       _AUTHZ_EXPOSURE_OVERSIZE=$(( _AUTHZ_EXPOSURE_OVERSIZE + 1 ))
       continue
     fi
+    # TESTED counts responses that were really field-scanned, so the phase's
+    # "examined N authenticated response(s)" is a count of examinations rather
+    # than of attempts.
+    _AUTHZ_EXPOSURE_TESTED=$(( _AUTHZ_EXPOSURE_TESTED + 1 ))
 
-    if authz_selected DAST-AUTHZ-EXCESSIVE_DATA-01 && authz_scan_body "$body"; then
-      joined=$(printf '%s, ' "${_AUTHZ_HITS[@]+"${_AUTHZ_HITS[@]}"}")
-      joined=${joined%, }
-      printf -v evi '%s' "the response to identity '$a' for $method $path carries $_AUTHZ_HIT_TOTAL field name(s) matching the sensitive-field list (modules/dast/sensitive-fields.txt): $joined. Only field NAMES were read and none of their values were read, digested or reproduced. Whether each field is genuinely over-exposed is a judgement about this application; what this check establishes is that the field reached an authenticated client."
-      authz_emit DAST-AUTHZ-EXCESSIVE_DATA-01 "$url" "$path" body 'response-body' "$evi"
+    if authz_selected DAST-AUTHZ-EXCESSIVE_DATA-01; then
+      _authz_mark_executed DAST-AUTHZ-EXCESSIVE_DATA-01
+      if authz_scan_body "$body"; then
+        joined=$(printf '%s, ' "${_AUTHZ_HITS[@]+"${_AUTHZ_HITS[@]}"}")
+        joined=${joined%, }
+        printf -v evi '%s' "the response to identity '$a' for $method $path carries $_AUTHZ_HIT_TOTAL field name(s) matching the sensitive-field list (modules/dast/sensitive-fields.txt): $joined. Only field NAMES were read and none of their values were read, digested or reproduced. Whether each field is genuinely over-exposed is a judgement about this application; what this check establishes is that the field reached an authenticated client."
+        authz_emit DAST-AUTHZ-EXCESSIVE_DATA-01 "$method" "$url" "$path" body 'response-body' "$evi"
+      fi
     fi
 
-    if [[ -n $needle ]] && authz_selected DAST-AUTHZ-OTHER_IDENTITY_DATA-01 \
-      && authz_body_contains "$body" "$needle"; then
-      printf -v evi '%s' "the response to identity '$a' for $method $path contains the identifier configured for the SEPARATE identity '$b'. The identifier itself is not reproduced here because it comes from config/auth.conf, which is a credential file. Identity '$a' was authenticated as itself for this request and asked for nothing belonging to '$b'."
-      authz_emit DAST-AUTHZ-OTHER_IDENTITY_DATA-01 "$url" "$path" body 'response-body' "$evi"
+    if [[ -n $needle ]] && authz_selected DAST-AUTHZ-OTHER_IDENTITY_DATA-01; then
+      _authz_mark_executed DAST-AUTHZ-OTHER_IDENTITY_DATA-01
+      if authz_body_contains "$body" "$needle"; then
+        printf -v evi '%s' "the response to identity '$a' for $method $path contains the identifier configured for the SEPARATE identity '$b'. The identifier itself is not reproduced here because it comes from config/auth.conf, which is a credential file. Identity '$a' was authenticated as itself for this request and asked for nothing belonging to '$b'."
+        authz_emit DAST-AUTHZ-OTHER_IDENTITY_DATA-01 "$method" "$url" "$path" body 'response-body' "$evi"
+      fi
     fi
   done < <(authz_idempotent_endpoints "$target" "$file")
   rm -f "$body"

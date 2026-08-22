@@ -1223,10 +1223,25 @@ inventory, the oracle, the sensitive-field scan), `modules/dast/authz.sh` (the p
 `tags: active` matching the phase table's own `authz.sh:active` floor, and all
 `requires-identities: 2`), and `modules/dast/sensitive-fields.txt` (the vendored, operator-editable
 field list, overridable through `SCOURSH_DAST_SENSITIVE_FIELDS_FILE`).
-`tests/suites/dast-authz.sh` is the proof: 147 assertions, no network and no Docker, driven from a
+`tests/suites/dast-authz.sh` is the proof: 189 assertions, no network and no Docker, driven from a
 scripted SERVER keyed on (path, identity) rather than a canned-status queue - the correctness of this
 check IS which identity is served which object, and a queue lets a probe pass by asking for the wrong
 thing in the right order.
+
+**A QA pass on the first landing found six defects, all now fixed and each pinned by a case in the
+suite's section H that was observed red against the shipped code and green after the fix.**
+Five of the six were false or missing COVERAGE records rather than wrong findings, which is this
+module's most expensive failure class, and the full account of each is in `AGENTS.md`'s DAST-29
+bullets rather than restated here. In short: `loc_method` was a hardcoded `GET` and collided two
+fingerprints (H1); `HEAD` was admitted as a candidate although the oracle compares response bytes,
+and produced two factually wrong coverage records including a zero-byte body reported as over the
+512 KiB parse bound (H2a-H2d); `DAST-AUTHZ-OTHER_IDENTITY_DATA-01` was written to `checks_run` on
+runs where it could not execute at all, which is every `bearer`/`api-key` identity (H3); the
+`no object reference` reason claimed entries carried none when they were never examined, and the
+by-design write-endpoint gap was lost on exactly that path (H4); the exposure-endpoint cap truncated
+silently (H5); and the `401` arm of `authz_status_refused` was unreachable because the probe went
+through `dast_auth_request`, whose 401 handling marked the identity `failed` for the whole run (H6,
+H6b).
 
 Seven decisions here are easy to get backwards.
 Each is pinned by a case naming the reading it fails under, and each was confirmed by writing the

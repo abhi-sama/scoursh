@@ -41,7 +41,21 @@ privatekey
 apikey
 apisecret
 clientsecret
-token
+# `token` on its own is a SUBSTRING entry, so it claims `csrfToken`,
+# `nextToken`, `antiforgeryToken` and `continuationToken` - none of which is a
+# credential, and the first of which ships on nearly every JSON endpoint of
+# nearly every framework.  That is the "common innocent prefix" case this
+# file's own header says to spell with `=`, applied to a suffix.  The credential
+# spellings are named instead; normalisation deletes `_`, `-` and `.`, so each
+# also covers the snake_case and kebab-case forms.
+=token
+accesstoken
+refreshtoken
+bearertoken
+authtoken
+sessiontoken
+idtoken
+apitoken
 =sessionid
 =salt
 =otp
