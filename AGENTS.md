@@ -169,13 +169,15 @@ Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has 
 DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`) and DAST-19 (`active/openredirect.sh`), tier
 5's DAST-26 (`jwt.sh`) and DAST-29 (`authz.sh`, the §7.4 object-level authorization and
 data-exposure family), tier 2's
-DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`, the §7.1 security-header family) and
+DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`, the §7.1 security-header family),
+DAST-10 (`passive/leakage.sh`, the §7.1 information-disclosure family) and
 DAST-11 (`passive/markup.sh`, the §7.1 HTML-markup family),
 and tier 3's DAST-12 (`active/discovery.sh`, §7.2 content discovery - the first safe-active phase; no
 wordlist ships in this repository by design, see `modules/dast/wordlists/README.md`)
 have landed, out of tier order, since the tiers are peers rather than a sequence once tier 1 is in.
-DAST-06, DAST-05 and DAST-11 each appended their own block to the shared
-`modules/dast/passive/checks.rules`; DAST-07..DAST-10 are open and unordered among themselves.
+DAST-06, DAST-05, DAST-10 and DAST-11 each appended their own block to the shared
+`modules/dast/passive/checks.rules`; DAST-07, DAST-08 and DAST-09 are open and unordered among
+themselves.
 `modules/dast/active/checks.rules` is the tier-4 equivalent and is under the identical append-only
 rule - both DAST-15 and DAST-19 appended to DAST-14's file rather than adding a sibling, because
 `rules/RULE-FORMAT.md` §9's path table reserves the `checks.rules` BASENAME repository-wide and makes
@@ -635,6 +637,68 @@ expensive way.
   The shape used instead is this module's existing one: a vendored, auditable data file plus a
   documented environment seam (`SCOURSH_DAST_RECOMMENDED_HEADERS_FILE`), exactly as
   `SCOURSH_DAST_SQLI_PAYLOAD_DIR` already does for payloads.
+
+**DAST-10 (`modules/dast/passive/leakage.sh`) has landed - the third tier-2 check, and the first whose
+whole design problem is FALSE POSITIVES rather than detection.**
+It ships `leakage_engine.sh` (the pure half), `leakage.sh` (the phase script `dast_run_phase` sources),
+five `DAST-LEAK-*` records appended to the shared `modules/dast/passive/checks.rules`, and
+`tests/suites/dast-leakage.sh` (154 assertions, no network and no Docker, driven from recorded
+head/body pairs replayed into `lib/http.sh`'s own two capture sinks).
+Five families, five check ids - a stack trace or debugger page (CWE-209), an infrastructure-disclosing
+response header (CWE-200), an email address outside a published contact link (CWE-200), a credential or
+internal URL in served JavaScript (CWE-540), and the third-party origin inventory (CWE-829,
+**informational**).
+Five ids rather than one because `check_id` is a fingerprint component and the DAST location profile
+carries no component naming the DEFECT, so two families firing on one path would collide on one
+fingerprint and `findings_merge` would keep whichever won the sort.
+Six things are worth carrying here.
+
+- **Every one of the five families is defined by what it REFUSES to report, and each refusal is pinned
+  by a negative fixture the naive reading flags.**  A stack trace needs a STRUCTURED FRAME - a source
+  file plus a line number - never a framework name or the word "error", because otherwise every branded
+  404 on the internet is a finding.  An infrastructure header needs its VALUE to name an unroutable
+  address or a reserved-internal DNS suffix; the header NAME alone only selects a candidate, so
+  `Via: 1.1 varnish` and a Fastly POP code `X-Served-By: cache-lhr7364-LHR` are NOT flagged - a dotless
+  token is genuinely ambiguous between a product name, a POP code and an internal hostname, and
+  flagging the shape would flag every CDN customer.  An email published as a `mailto:` link is
+  deliberate and is subtracted wherever else it appears; so are RFC 2142 role aliases and a "domain"
+  whose last label is a file extension (`logo@2x.png` in an `srcset` matches every naive email regex
+  ever written).  A JS-config finding subtracts a public-by-design ALLOW-LIST first - a Stripe
+  publishable key, a Google browser API key, an analytics id - because those are what a credential is
+  designed to look like.  A third-party origin subtracts the response's own host and its registrable
+  domain.
+- **The suite asserts the DIFFERENCE, not the absence.**  For each family it runs the naive reading
+  inline, asserts the naive reading DOES fire on the fixture, then asserts the shipped one does not,
+  then asserts the shipped one still fires on a real positive.  A test that only said "no finding"
+  would pass equally well against a check broken into silence.  Confirmed by measurement rather than
+  by reasoning: eight deliberate mutations - the naive keyword trace match, the dotless-token internal
+  host, the dropped `mailto:` subtraction, the dropped file-extension rejection, the dropped
+  public-key allow-list, the dropped same-site subtraction, a truncating body reader, and a header
+  reader that stops resetting per hop - each took the suite red (1 to 7 failures apiece).
+- **A candidate secret's VALUE never reaches the finding.**  Family 4 reports the key name, a
+  description of the matched shape and the value's LENGTH.  A finding that quotes the credential has
+  copied it into the report, into the run's shard file and into the operator's scrollback -
+  `rules/redaction.rules` would catch many of these on the way out, and not carrying the value is the
+  control that does not depend on that list being complete.
+- **A minified bundle is CHUNKED, never truncated at the line cap.**  A webpack bundle arrives as one
+  900 KiB line; a line-cap read inspects its first 4 KiB and silently declares the other 99% clean,
+  which is exactly the overstated coverage `docs/DESIGN.md` §15 forbids.  A token straddling a chunk
+  boundary is the accepted cost, and it can only cause a MISS, which is this family's stated bias.
+- **`leakage_engine.sh` SOURCES `headers_engine.sh` for its response-header reader rather than copying
+  it.**  `hdr_parse_capture` resets on every status line because the capture sink accumulates every
+  redirect hop, and a second implementation here would be re-earning that lesson and putting two copies
+  of it in one directory.  The "lift into a shared `passive/response_engine.sh`" that
+  `headers_engine.sh`'s own header asks for is a refactor moving a peer's file AND its tests, so it is
+  filed as its own ticket rather than performed under parallel peers.
+- **Two emission grains, deliberately.**  A stack trace and a bundled credential are properties of ONE
+  HANDLER, so they emit once per path and two leaking paths are two findings.  An internal proxy
+  header, the address set and the third-party origin set are properties of the APPLICATION, so they
+  accumulate and emit once with the affected/tested count - the same reasoning `passive/headers.sh`
+  applies to all of its checks.  Every family no fetched response was applicable to is recorded as a
+  `leakage_family_not_applicable` coverage_reduction and is kept OUT of `checks_run`, so a run that
+  only ever fetched images never reads as having tested served JavaScript.
+- **What DAST-10 deliberately did not build**: provoking an error to harvest its trace.  That raises
+  this family's recall and it is active probing, out of scope for §7.1 and for this ticket.
 
 **A pre-existing defect this ticket found and did NOT fix: `SCOURSH_DAST_ENDPOINTS` is EMPTY on every
 first run.**

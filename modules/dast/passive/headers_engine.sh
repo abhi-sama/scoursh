@@ -263,7 +263,9 @@ hdr_csp_effective() {
   fi
   if [[ -n ${_HDR_CSP_DIR[default-src]+set} ]]; then
     _HDR_CSP_SRC=${_HDR_CSP_DIR[default-src]}
-    _HDR_CSP_VIA=default-src
+    # Quoted: an unquoted `default-src` reads as arithmetic to a linter
+    # (SC2100), though bash assigns the literal string either way.
+    _HDR_CSP_VIA='default-src'
     return 0
   fi
   return 1
