@@ -18,7 +18,7 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$ROOT"
 
-SUITES=(records core config checks findings report http e2e scan sast sast-history sca iac dast dast-auth dast-cookies dast-crawl dast-discovery dast-headers dast-leakage dast-markup dast-sqli dast-ldapi dast-xss dast-openredirect dast-jwt dast-authz exit-code-matrix gate-mutation-proof ci-smoke netns paranoid vendor-engines vendor-engines-advisories engines sast-semgrep iac-trivy sast-gitleaks awscli aws-lint aws-fixtures lint-no-ai-selftest dast35-lint daily-suite color)
+SUITES=(records core config checks findings report http e2e scan sast sast-history sca iac dast dast-auth dast-cookies dast-crawl dast-discovery dast-headers dast-leakage dast-markup dast-transport dast-sqli dast-ldapi dast-xss dast-openredirect dast-jwt dast-authz exit-code-matrix gate-mutation-proof ci-smoke netns paranoid vendor-engines vendor-engines-advisories engines sast-semgrep iac-trivy sast-gitleaks awscli aws-lint aws-fixtures lint-no-ai-selftest dast35-lint daily-suite color)
 LINTERS=(lint-rules lint-shell lint-aws-readonly lint-status lint-no-ai)
 
 if [[ ${1:-} == --list ]]; then

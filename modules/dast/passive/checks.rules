@@ -610,3 +610,166 @@ remediation: This is an inventory rather than a defect: review the list and
   unreviewed change, is blocked rather than silently trusted.
 references: CWE-829
 references: https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/
+# ===========================================================================
+# DAST-30 - transport exposure (docs/DESIGN.md §7.4's `transport.sh` bullet;
+# docs/STEP5-DAST-PLAN.md DAST-30).  Appended to this shared file per the
+# header above: `checks.rules` is the basename rules/RULE-FORMAT.md §9's path
+# table reserves for the §9.5 schema, one per module directory, so the tier
+# shares one file and an append-only conflict in it is resolved by taking both
+# sides.
+#
+# THE SCOPE BOUNDARY, STATED HERE SO NEITHER PACK CAN REPORT THE SAME DEFECT
+# TWICE.  Three checks in this directory neighbour these five and each owns a
+# piece the DAST-TRANSPORT-* family must not claim:
+#
+#   passive/tls.sh (DAST-07) owns the CONNECTION - the handshake, the
+#     certificate chain and its dates and hostname binding, the negotiated
+#     protocol version and cipher suite.  Anything about whether the encryption
+#     is any good is a DAST-TLS-* finding and never one of these.  These five
+#     never inspect a certificate and never open a TLS connection of their own;
+#     they read what came back through `http_request` like every other passive
+#     check.  The two families are complements, which is what §7.4's own
+#     sentence for this bullet says, and the division is: tls.sh asks "is this
+#     encryption trustworthy", transport.sh asks "was it used at all".
+#
+#   passive/headers.sh (DAST-05) owns Strict-Transport-Security, all three of
+#     DAST-HDR-HSTS_MISSING-01, DAST-HDR-HSTS_WEAK-01 and
+#     DAST-HDR-HSTS_MALFORMED-01.  "This HTTPS response does not pin the
+#     browser to HTTPS" is that family.  DAST-TRANSPORT-NO_HTTPS_REDIRECT-01 is
+#     deliberately NOT that finding and does not restate it: HSTS is a promise
+#     made ON the secure response about FUTURE requests, and the redirect check
+#     is about what the plaintext origin does with the request in front of it.
+#     A target can have a perfect HSTS header and still serve port 80, and a
+#     target can redirect correctly and send no HSTS; the two findings have
+#     different fixes and both remediations name the other as the companion
+#     control rather than duplicating it.
+#
+#   passive/cookies.sh (DAST-06) owns the Secure ATTRIBUTE
+#     (DAST-COOKIE-NO_SECURE-01): whether a browser would send this cookie over
+#     plaintext in future.  DAST-TRANSPORT-PLAINTEXT_SENSITIVE-01 records that
+#     the server ALREADY sent one over plaintext, which no attribute can undo,
+#     and its evidence names DAST-COOKIE-NO_SECURE-01 explicitly as the separate
+#     subject rather than re-reporting it.
+#
+# FIVE IDS RATHER THAN ONE, because the DAST location profile
+# (target, method, path_template, param_location, param_name) carries NO
+# component naming the defect - so a single DAST-TRANSPORT-EXPOSURE-01 would
+# make a plaintext login page and a mixed script reference on the same path
+# collide on one fingerprint and dedupe to one finding.  The active/passive
+# mixed-content split is not a severity opinion either: browsers BLOCK
+# blockable mixed content and merely downgrade the padlock for the
+# optionally-blockable kind, so they are different facts about what a real
+# visitor experiences.
+#
+# The type tag is `passive`, matching the phase table's own
+# `passive/transport.sh:passive` floor (modules/dast/engine.sh, whose note there
+# records why this ticket moved that row out of the tier-5 block).  Nothing here
+# changes target state - every request is a plain GET to a URL the operator
+# configured or an earlier phase already fetched - so the passive tier is the
+# whole gate and `intrusive` is deliberately not set on any of them.
+
+id: DAST-TRANSPORT-PLAINTEXT_SENSITIVE-01
+title: Sensitive content is served over plaintext HTTP
+script: passive/transport.sh
+severity: high
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: passive
+tags: quick
+tags: compliance
+coverage-scope: target
+remediation: Serve this content over HTTPS only. Redirect the plaintext origin
+  to `https://` with a 301 before any body is written, then add
+  `Strict-Transport-Security: max-age=31536000; includeSubDomains` so a browser
+  that has visited once never attempts plaintext again. A redirect alone does
+  not undo this exposure: the first request, and anything it carried, was
+  already on the wire in the clear, so any credential or session token observed
+  here must be treated as compromised and rotated.
+references: CWE-319
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: DAST-TRANSPORT-NO_HTTPS_REDIRECT-01
+title: Plaintext HTTP endpoint does not redirect to HTTPS
+script: passive/transport.sh
+severity: medium
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: passive
+tags: quick
+tags: compliance
+coverage-scope: target
+remediation: Answer the plaintext origin with a 301 to the identical `https://`
+  URL and nothing else - no body, no cookie, no content negotiation. Serving
+  real content on port 80 means every visitor who types the bare hostname is
+  served over an unauthenticated channel that any network position can rewrite.
+  Follow the redirect with an HSTS header on the HTTPS response so the second
+  visit never touches port 80 at all; that header is
+  DAST-HDR-HSTS_MISSING-01's subject, and the two controls are companions
+  rather than substitutes.
+references: CWE-319
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: DAST-TRANSPORT-MIXED_ACTIVE-01
+title: HTTPS document loads active sub-resources over plaintext HTTP
+script: passive/transport.sh
+severity: high
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: passive
+tags: quick
+coverage-scope: target
+remediation: Change these references to `https://`, or to a protocol-relative
+  or root-relative form, both of which inherit the document scheme. Active
+  mixed content - script, stylesheet, iframe, object, embed - executes inside
+  the origin, so a network attacker who rewrites one of them owns the page
+  regardless of how good the TLS on the document itself is. Every current
+  browser blocks these outright, so the affected feature is already broken for
+  real users, not merely insecure. A
+  `Content-Security-Policy: upgrade-insecure-requests` header is a migration
+  aid, not a fix, because it protects only browsers that honour it.
+references: CWE-311
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: DAST-TRANSPORT-MIXED_PASSIVE-01
+title: HTTPS document loads passive sub-resources over plaintext HTTP
+script: passive/transport.sh
+severity: low
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: passive
+coverage-scope: target
+remediation: Change these references to `https://` or to a scheme-relative
+  form. Passive mixed content - images, audio, video, track files - is still
+  loaded by browsers rather than blocked, which is why it is reported
+  separately and at a lower severity than the active kind: nothing executes,
+  but the resource is unauthenticated so its bytes can be replaced in transit,
+  the request leaks the referring page to any observer, and the browser
+  withholds the secure padlock from the whole document.
+references: CWE-311
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: DAST-TRANSPORT-MIXED_FORM-01
+title: HTTPS document submits a form to a plaintext HTTP action
+script: passive/transport.sh
+severity: high
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: passive
+tags: quick
+tags: compliance
+coverage-scope: target
+remediation: Point the form action at the `https://` URL. A secure page
+  carrying an insecure form action is worse than an insecure page: the padlock
+  tells the user their input is protected while the submission itself - every
+  field, including any password or payment detail - is sent in the clear and
+  can be read or altered by any network position. Browsers show a separate
+  interstitial for exactly this reason. Fix the action rather than relying on a
+  server-side redirect, which happens only after the plaintext request has
+  already been sent.
+references: CWE-319
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
