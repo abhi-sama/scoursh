@@ -412,6 +412,18 @@ _discovery_inventory_path() {
 # dynamically scoped.  A path with no filename component (a bare directory) is
 # skipped - a backup suffix only makes sense on a file.
 #
+# IT REPORTS A COUNT, AND THE COUNT - NOT THE FILE - IS WHAT COVERAGE TURNS ON.
+# `_DISC_BACKUP_ADDED` is set to the number of candidates appended (0 when the
+# inventory lists no endpoint, or when every path it lists is rejected by
+# `_discovery_safe_rel` or carries no filename component). "A readable file
+# exists" and "a candidate was derived" are different facts, and only the second
+# is coverage: modules/dast/crawl.sh writes the endpoints envelope
+# unconditionally and crawl_engine.sh emits it with `"endpoints": []`, so a
+# crawl that found nothing still leaves a readable, non-empty inventory. Gating
+# DAST-DISC-BACKUP-01 on the file would mint a (check, cell) coverage pair for a
+# technique that sent zero probes, which is what lets step 7's state/ infer a
+# prior real finding `fixed` (docs/FOUNDATION.md tension 12).
+#
 # SC2034: the local `cur` accumulator map is passed BY NAME to
 # `_discovery_backup_flush`, which reads it through `${!...}` indirection (Bash
 # 4.2 has no namerefs), so the read is invisible to shellcheck here - exactly as
@@ -421,6 +433,9 @@ _discovery_collect_backups() {
   local epf=$1 sep=$'\x1f' p ptype v rest idx key
   local -A cur=()
   local last_idx=''
+  # Assigned WITHOUT `local`, so the caller's own variable is the one set (bash
+  # dynamic scope, the same mechanism `cats`/`rels` already rely on here).
+  _DISC_BACKUP_ADDED=0
   [[ -n $epf && -r $epf && -s $epf ]] || return 0
   while IFS=$'\t' read -r p ptype v; do
     [[ $p == endpoints* ]] || continue
@@ -458,6 +473,11 @@ _discovery_backup_flush() {
   local suffix
   while IFS= read -r suffix; do
     cats+=(backup); rels+=("${path}${suffix}")
+    # Counted where the candidate is actually appended, so the count and the
+    # array cannot drift apart - a count kept anywhere else would be a second
+    # statement of the same fact, and the two would disagree the first time an
+    # early `return 0` above was added.
+    _DISC_BACKUP_ADDED=$(( ${_DISC_BACKUP_ADDED:-0} + 1 ))
   done < <(_discovery_backup_suffixes)
   return 0
 }
@@ -528,14 +548,31 @@ _dast_discovery_phase() {
     done < <(_discovery_sensitive_paths)
   fi
 
-  # (B) backup/temp variants of every crawl-inventory endpoint path. The
-  # inventory's presence is tracked so an absent one becomes a STATED gap below
-  # rather than a silently inert technique that still claims its check.
-  local inventory_state=absent invp=''
+  # (B) backup/temp variants of every crawl-inventory endpoint path. What is
+  # tracked is whether the technique DERIVED A CANDIDATE, not whether an
+  # inventory file was readable - the three states stay distinct so a run that
+  # tested nothing says so, and says WHICH of the two ways it happened:
+  #
+  #   absent  - no inventory readable at either path;
+  #   empty   - an inventory was readable but yielded no usable endpoint path
+  #             (it lists none, or every one it lists was rejected by
+  #             `_discovery_safe_rel` / carried no filename component);
+  #   present - at least one candidate was derived.
+  #
+  # Only `present` may record DAST-DISC-BACKUP-01 below: at step 7 checks_run
+  # feeds state/'s (check, cell) coverage pairs, where a falsely-covered check
+  # lets a prior run's real finding be inferred `fixed` (docs/FOUNDATION.md
+  # tension 12). Collapsing `empty` into `absent` would be the other half of the
+  # same dishonesty - it would tell an operator to run a crawl that already ran.
+  local inventory_state=absent invp='' _DISC_BACKUP_ADDED=0
   if (( do_backup )); then
     if invp=$(_discovery_inventory_path); then
-      inventory_state=present
       _discovery_collect_backups "$invp"
+      if (( _DISC_BACKUP_ADDED > 0 )); then
+        inventory_state=present
+      else
+        inventory_state=empty
+      fi
     fi
   fi
 
@@ -584,7 +621,9 @@ _dast_discovery_phase() {
   if (( sent > 0 )); then
     (( do_sensitive )) && run_record checks_run DAST-DISC-SENSITIVE-01
     (( do_dirlist ))   && run_record checks_run DAST-DISC-DIRLIST-01
-    # BACKUP is covered only when an inventory really supplied candidates. A
+    # BACKUP is covered only when an inventory really supplied candidates -
+    # `inventory_state` is `present` only when _DISC_BACKUP_ADDED > 0, never
+    # merely because the inventory file was readable. A
     # technique that contributed nothing is not made covered by a sibling
     # technique's requests: at step 7 checks_run feeds state/'s (check, cell)
     # coverage pairs, where a falsely-covered check lets a prior run's real
@@ -604,6 +643,10 @@ _dast_discovery_phase() {
   if (( do_backup )) && [[ $inventory_state == absent ]]; then
     run_record coverage_reduction "module=dast reason=discovery_no_endpoint_inventory target=$target - no endpoint inventory (docs/INVENTORY-FORMAT.md) was readable at SCOURSH_DAST_ENDPOINTS or at \$SCOURSH_RUN_DIR/inventory/endpoints.json, so no backup/temp variant of a known endpoint path was derived or probed. The sensitive-path and wordlist techniques still ran."
     run_record coverage_gap "dast discovery: no endpoint inventory was available for target '$target', so the backup/temp sweep (docs/DESIGN.md §7.2) derived no candidate and tested nothing - a served .bak/.old/~ file would not have been found. This is a coverage gap, not a clean bill of health; run the crawl phase (or supply a specification) so this technique has endpoint paths to vary."
+  fi
+  if (( do_backup )) && [[ $inventory_state == empty ]]; then
+    run_record coverage_reduction "module=dast reason=discovery_inventory_yielded_no_candidate target=$target path=$(crawl_safe_text "$invp" 200) candidates=0 - an endpoint inventory (docs/INVENTORY-FORMAT.md) was readable at this path but yielded no usable endpoint path: it lists no endpoints, or every path it lists was rejected as unsafe (traversal, scheme URL, control byte) or named a bare directory with no filename component. No backup/temp variant was derived or probed. The sensitive-path and wordlist techniques still ran."
+    run_record coverage_gap "dast discovery: the endpoint inventory for target '$target' was readable but yielded no usable endpoint path, so the backup/temp sweep (docs/DESIGN.md §7.2) derived no candidate and tested nothing - a served .bak/.old/~ file would not have been found. This is a coverage gap, not a clean bill of health; the inventory exists, so re-run the crawl against a surface it can actually enumerate (a client-rendered application yields an empty one) or supply a specification."
   fi
   if (( truncated_words > 0 )); then
     run_record coverage_gap "dast discovery: the vendored wordlist for target '$target' exceeded the per-run cap of $_DISCOVERY_MAX_WORDS entries, so $truncated_words entry(ies) were not probed. Their absence from this report is a coverage bound, not a clean result."
