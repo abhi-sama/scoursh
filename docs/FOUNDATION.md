@@ -4394,7 +4394,7 @@ With both tier-1 tickets in, **tiers 2-5 are unblocked and nothing remains in fr
 authenticated crawl pass plugs into DAST-03's session rather than being stubbed.
 Work in those tiers has started, and out of tier order, since they are peers rather than a sequence:
 tier 4's DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`) and DAST-19
-(`active/openredirect.sh`), tier 5's DAST-26 (`jwt.sh`) and
+(`active/openredirect.sh`), tier 5's DAST-26 (`jwt.sh`) and DAST-29 (`authz.sh`) and
 tier 2's DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`) and DAST-11
 (`passive/markup.sh`) have landed.
 DAST-15 is the second tier-4 injection probe and the first to consume `active/inject_engine.sh`
@@ -4479,6 +4479,53 @@ It independently hit the same pre-existing `modules/dast/run.sh` defect DAST-06 
 likewise did not fix it in place: the inventory paths are exported BEFORE the phase loop while
 `crawl.sh` writes the files inside it, so `SCOURSH_DAST_ENDPOINTS` is empty on every first run
 and any consumer trusting it alone sees no surface - `modules/dast/active/inject_engine.sh` is one such consumer today.
+**DAST-29 (`modules/dast/authz.sh` plus `authz_engine.sh`) has also landed** - §7.4's object-level
+authorization (IDOR) and excessive-data-exposure checks, the first consumer of DAST-03's labelled
+multi-identity plumbing and the first tier-5 phase at the top level of `modules/dast/`, with the new
+shared `modules/dast/checks.rules` carrying its four `DAST-AUTHZ-*` ids and
+`tests/suites/dast-authz.sh` proving them from a scripted, no-network server keyed on
+(path, identity).
+Six things about it are tension decisions rather than implementation detail; the last two are
+corrections made after a QA pass on the first landing, and each is pinned by a case in that suite's
+section H which was observed red against the shipped code.
+First, tension 5 again: a shared object is `DAST-AUTHZ-IDOR-01` or
+`DAST-AUTHZ-CROSS_IDENTITY_READ-01` depending on whether a refusal was observed elsewhere under the
+same path template, and they are two ids rather than one check with two messages because `check_id`
+is a fingerprint component and the DAST location profile names nothing that distinguishes them, so a
+single id would make two claims with different remediations one finding whose meaning flips between
+runs - exactly DAST-06's absent-versus-weak-`SameSite` reasoning.
+Second, tension 9: the "other identity's data" arm tests for an identifier out of `config/auth.conf`,
+a mode-600 credential file, so it is a pure-bash substring test over a bounded read rather than a
+`scan_match` - every engine this repository wraps takes its pattern on argv - and the identifier is
+never echoed into the evidence, which names the identity LABEL instead.
+Third, tension 19 again, in DAST-04's shape: inventory-derived URLs get a NON-fatal `http_gate_url`
+pre-check and are then requested through `http_request`, which re-gates.
+Fourth, tension 14's declared-versus-unplanned distinction decides every skip: fewer than two LIVE
+sessions, no object reference in the inventory, and an unreadable field list are each a
+`coverage_reduction` plus a `coverage_gap` and a return of 0, never an exit code - a check whose
+silence would otherwise read as "this application enforces object-level authorization".
+Fifth, tension 5 once more, in the direction that is easy to miss: `loc_method` must carry the method
+that was actually requested and never a constant.  The DAST location profile includes the method and
+this phase's own group key discriminates on it, so a hardcoded `GET` made two groups it deliberately
+kept apart hash identically and `findings_merge` silently kept one - the very collision the four ids
+exist to avoid, reintroduced one field lower down.  In the same family, `HEAD` is now refused at
+candidate selection under its own counter: RFC 7231 §4.3.2 gives it no response body, so the
+byte-comparison oracle cannot conclude, and admitting it produced two coverage records that were
+false about their own input (a body-less response reported as "different bytes to each identity", and
+a zero-byte body reported as exceeding the 512 KiB parse bound).
+Sixth, tension 14's honesty requirement applied to `checks_run` itself, plus one place where §7.0's
+own rule is locally wrong.  `checks_run` is written from the ids a pass actually EXECUTED rather than
+from the passes that were entered, because `rules/RULE-FORMAT.md` §9.6.2 makes `username` optional
+and mode-restricted - so `DAST-AUTHZ-OTHER_IDENTITY_DATA-01` cannot run for a `bearer` or `api-key`
+identity, which is the ordinary shape, and recording it as run was exactly the "could not tell 'ran
+and found nothing' from 'never loaded'" state `lib/records.sh` defines the field to prevent.  And
+§7.0's "on 401 refresh once and retry, else mark the identity `failed`" is right for every other
+phase and inverted for this one: this check asks one identity for another's object on purpose, so a
+401 is the expected refusal and the enforcement witness.  `authz_probe_as` therefore does not call
+`dast_auth_request`; it refreshes only when the identity has not yet been seen to read anything
+successfully, at most once per identity per pass, and a still-401 retry is reported as a refusal
+without marking the identity `failed` - because otherwise one refused URL silently disabled every
+later check needing that identity.
 Two things about DAST-04 are worth carrying here rather than only in the plan, because both are
 tension decisions rather than implementation detail.
 First, the scope pre-check on a discovered link is **not** a second gate and never becomes one
