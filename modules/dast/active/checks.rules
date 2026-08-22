@@ -80,6 +80,40 @@ remediation: Use parameterised queries (prepared statements) or an ORM that
 references: CWE-89
 references: https://owasp.org/Top10/A03_2021-Injection/
 
+id: DAST-INJ-LDAP_ERROR-01
+title: LDAP injection (error-based) via request parameter
+script: active/ldapi.sh
+severity: high
+confidence: high
+cwe: CWE-90
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Escape LDAP filter metacharacters in request-derived values per
+  RFC 4515 (the client library's own escaping helper or a parameterised filter
+  builder), so a request parameter can never change the structure of an LDAP
+  search filter or DN. Return a generic error so a client-library message never
+  reaches the client, and bind the directory with a least-privilege account.
+references: CWE-90
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-LDAP_BOOLEAN-01
+title: LDAP injection (boolean-based) via request parameter
+script: active/ldapi.sh
+severity: critical
+confidence: medium
+cwe: CWE-90
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Escape LDAP filter metacharacters in request-derived values per
+  RFC 4515 (the client library's own escaping helper or a parameterised filter
+  builder), so a request parameter can never change the structure of an LDAP
+  search filter. Add server-side input validation and bind the directory with a
+  least-privilege account.
+references: CWE-90
+references: https://owasp.org/Top10/A03_2021-Injection/
+
 id: DAST-DISC-SENSITIVE-01
 title: Sensitive file or version-control metadata is web-accessible
 script: active/discovery.sh
