@@ -118,3 +118,196 @@ remediation: Scope every query to the authenticated principal where the data is
   to anyone who reads the response body directly.
 references: CWE-200
 references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+
+# DAST-26's block of this shared registry - the §7.4 JWT-weakness script checks
+# (rules/RULE-FORMAT.md §9.5; docs/DESIGN.md §7.4; docs/STEP5-DAST-PLAN.md
+# DAST-26, tier 5).  Its ids are all `DAST-JWT-*`.
+#
+# WHY THIS FILE IS AT modules/dast/ AND NOT modules/dast/passive/ OR
+# modules/dast/active/.  rules/RULE-FORMAT.md §9's path table reserves the
+# basename `checks.rules` repository-wide for the §9.5 schema and makes every
+# other path `E070`, so a `jwt-checks.rules` is not a legal record file.  §9.5.1's
+# frozen owning-module map then resolves `modules/dast/` to module `DAST`, so
+# `DAST-JWT-*` ids here raise neither `E018` (wrong owning module) nor `E081` (a
+# checks.rules outside every prefix in the map).  `jwt.sh` is a TIER 5 phase and
+# sits at `modules/dast/jwt.sh`, not under `passive/` or `active/`, and §9.5's
+# `script` value is MODULE-relative - so `script: jwt.sh` only resolves from a
+# registry at this level.  The tier-5 peers (graphql.sh, ratelimit.sh, authz.sh,
+# transport.sh) share this file for the same reason the §7.1 tier shares
+# modules/dast/passive/checks.rules: it is APPEND-ONLY between them, and a merge
+# conflict in it is resolved by keeping BOTH blocks, never by choosing a side.
+#
+# `checks_registry_load` (lib/checks.sh) runs `find modules/dast -name '*.rules'`
+# with no per-file allowlist, so this file loads alongside
+# modules/dast/passive/checks.rules and modules/dast/active/checks.rules with no
+# registration step anywhere.
+#
+# THE TYPE TAG IS `active`, matching the phase table's `jwt.sh:active` floor
+# (modules/dast/engine.sh).  Both gates must permit and neither widens the other
+# (tension 15's intersection rule).  `intrusive` is deliberately NOT set on any of
+# these: every probe is a GET/HEAD replay of the same claims the sample token
+# already carried, restricted to idempotent methods, and a forged token is sent
+# once and never persisted - nothing here mutates target state, so the
+# active-intensity opt-in is the whole gate and requiring --allow-intrusive on top
+# would be a second, undocumented one.  That is the same reading
+# modules/dast/active/checks.rules applies to the SQLi payloads.
+#
+# NO PROFILE TAG ON ANY RECORD, so all five run only in `full` (§9.1.3).  A JWT
+# forgery replay needs an authenticated session, a crawled protected endpoint and
+# an accept/reject oracle before it sends anything; that is not the shape of a
+# `quick` check, and `compliance` would claim a framework mapping this check does
+# not have.
+#
+# FIVE CHECK IDS, ONE PER FORGERY VARIANT, AND THAT IS FORCED BY THE FINGERPRINT.
+# The DAST location profile is (target, method, path_template, param_location,
+# param_name) and carries no component naming the DEFECT (lib/findings.sh).  Every
+# one of these findings lands on the same target, the same replay endpoint and the
+# same `Authorization` header, so a single `DAST-JWT-WEAKNESS-01` would make
+# alg:none and a weak HMAC secret on one endpoint collide on ONE fingerprint and
+# dedupe to one finding whose meaning flips between runs.  They are also five
+# different conversations with an operator: alg:none is a verifier bug, a weak
+# secret is a key-management failure, and RS->HS confusion is an unpinned
+# algorithm - the fixes do not overlap.
+#
+# EVERY RECORD CARRIES `cwe: CWE-347` AND `owasp: A02:2021` BECAUSE THAT IS WHAT
+# THE EMITTER ACTUALLY SETS, and the two must not disagree on one check id.
+# `jwt_emit_finding` (modules/dast/jwt_engine.sh) hardcodes that pair on all five
+# findings.  A more precise mapping is available for two of them - CWE-1391 (Use
+# of Weak Credentials) fits DAST-JWT-EMPTY_HMAC-01 and DAST-JWT-WEAK_HMAC-01
+# better than CWE-347 does, since the signature IS verified there and the key is
+# the defect - but refining it HERE alone would make the registry and the report
+# state different CWEs for the same `check_id`, which is worse than a slightly
+# broad mapping and is exactly the kind of silent inconsistency a compliance
+# reader cannot see.  Both halves move together or neither does; the refinement is
+# filed as its own ticket rather than done half-way here.
+#
+# `requires-cmd`, `requires-config` and `requires-identities` are declared rather
+# than left to the phase, so an absent input reads as a DECLARED skip with a
+# reason (§9.5) instead of an absent finding.  jwt.sh already records each of
+# these as a `coverage_reduction` at runtime; declaring them is what lets a reader
+# of the registry alone see that a clean JWT result depends on `--authed`, on
+# openssl, and on at least one authenticated identity.
+
+id: DAST-JWT-SIG_NOT_VERIFIED-01
+title: JWT signature is not verified
+script: jwt.sh
+severity: critical
+confidence: high
+cwe: CWE-347
+owasp: A02:2021
+tags: active
+coverage-scope: target
+requires-cmd: openssl
+requires-config: config/auth.conf
+requires-identities: 1
+remediation: Verify the JWT signature on every request, against the algorithm you
+  issue and the key that corresponds to it, before any claim in the token is
+  trusted. This endpoint accepted a token whose header and payload were intact but
+  whose signature was replaced with one the server cannot have produced, so it is
+  not checking the signature at all and anyone can mint a token for any user.
+  Decoding a token is not verifying it - a library call that only splits and
+  base64url-decodes the three segments (`decode` rather than `verify`) is the
+  usual cause. Reject the token when verification fails rather than falling
+  through to the claims, and fail closed on an error from the verifier.
+references: CWE-347
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+references: https://tools.ietf.org/html/rfc8725
+
+id: DAST-JWT-ALG_NONE-01
+title: JWT accepted with alg:none (unsigned token)
+script: jwt.sh
+severity: critical
+confidence: high
+cwe: CWE-347
+owasp: A02:2021
+tags: active
+coverage-scope: target
+requires-cmd: openssl
+requires-config: config/auth.conf
+requires-identities: 1
+remediation: Reject any token whose header `alg` is "none" in any capitalisation,
+  and any token with an empty signature segment. Do not let the token's own header
+  select the verification algorithm - pin it to the one you issue and pass that
+  algorithm explicitly to the verifier, which most libraries accept as an
+  allow-list parameter. A comparison against the lowercase literal "none" alone is
+  not enough: "None", "NONE" and mixed-case spellings reach the same code path in
+  a verifier that lowercases or case-folds later, which is why this check probes
+  all four. Accepting alg:none lets anyone forge a token for any user with no key
+  at all.
+references: CWE-347
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+references: https://tools.ietf.org/html/rfc8725
+
+id: DAST-JWT-EMPTY_HMAC-01
+title: JWT accepted when re-signed HS256 with an empty secret
+script: jwt.sh
+severity: critical
+confidence: high
+cwe: CWE-347
+owasp: A02:2021
+tags: active
+coverage-scope: target
+requires-cmd: openssl
+requires-config: config/auth.conf
+requires-identities: 1
+remediation: Sign tokens with a high-entropy secret of at least 256 bits, and
+  reject an empty or absent key at verification time rather than treating it as a
+  zero-length HMAC key. An empty secret is almost always an unset environment
+  variable reaching the verifier as the empty string, so fail closed at start-up
+  when the signing key is missing instead of starting a service that verifies
+  every forgery. Load the secret from a secrets manager, never from a default in
+  code or a committed config file, and rotate it once this is fixed, because every
+  token issued under the empty key must be treated as compromised.
+references: CWE-347
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+references: https://tools.ietf.org/html/rfc8725
+
+id: DAST-JWT-WEAK_HMAC-01
+title: JWT accepted when re-signed HS256 with a common weak secret
+script: jwt.sh
+severity: critical
+confidence: high
+cwe: CWE-347
+owasp: A02:2021
+tags: active
+coverage-scope: target
+requires-cmd: openssl
+requires-config: config/auth.conf
+requires-identities: 1
+remediation: Replace the signing secret with a high-entropy value of at least 256
+  bits drawn from a cryptographic random source and held in a secrets manager. The
+  current secret is a value shipped in framework examples, tutorials and public
+  word lists - this finding's evidence names the exact one that worked - so anyone
+  who has read those can mint a valid token for any user without ever seeing your
+  configuration. Rotate the key and invalidate every token issued under the old
+  one; changing the secret alone leaves existing forgeries valid until they
+  expire. Consider moving to an asymmetric algorithm so the verifying service
+  never holds a key that can also sign.
+references: CWE-347
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+references: https://tools.ietf.org/html/rfc8725
+
+id: DAST-JWT-ALG_CONFUSION-01
+title: JWT RS to HS algorithm confusion accepted
+script: jwt.sh
+severity: critical
+confidence: high
+cwe: CWE-347
+owasp: A02:2021
+tags: active
+coverage-scope: target
+requires-cmd: openssl
+requires-config: config/auth.conf
+requires-identities: 1
+remediation: Pin the verification algorithm to the one you issue and never let the
+  token header choose it. Pass the expected algorithm to the verifier explicitly
+  and reject a token that declares any other, rather than calling a generic
+  `verify(token, key)` that dispatches on the header's `alg`. A verifier that
+  accepts HS256 for an RS256-issued token treats the RSA PUBLIC key as an HMAC
+  secret, and that key is public by definition - it is served from a JWKS
+  endpoint, so the attacker already has it and needs nothing else to forge a token
+  for any user. Keep the signing and verification key material in types the
+  library cannot silently reinterpret as a symmetric key.
+references: CWE-347
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+references: https://tools.ietf.org/html/rfc8725
