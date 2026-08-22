@@ -457,4 +457,118 @@ assert_contains "$(run_facts coverage_reduction)" 'discovery_no_endpoint_invento
 assert_contains "$(run_facts checks_run)" 'DAST-DISC-SENSITIVE-01' \
   "the sensitive-path technique still ran and is still recorded - FAILS if the inventory gap is over-broad and takes the whole phase down with it"
 
+# ===========================================================================
+printf '== dast discovery: a READABLE inventory that yields no candidate is a gap too ==\n'
+# ===========================================================================
+# The narrower residual of the same overstatement. `_discovery_inventory_path`
+# answers "is a file readable and non-empty", which is NOT the question
+# DAST-DISC-BACKUP-01's coverage turns on - "did technique B derive and probe a
+# candidate". Both shapes below are reachable on an ordinary run, not
+# theoretical:
+#
+#   - modules/dast/crawl.sh calls crawl_inv_write_endpoints UNCONDITIONALLY and
+#     crawl_engine.sh emits the full envelope with `"endpoints": []`, so a crawl
+#     that found nothing still leaves a readable, non-empty endpoints.json;
+#   - an inventory WITH endpoints, every one of which `_discovery_safe_rel`
+#     rejects (traversal, scheme URL, control byte) or which carries no filename
+#     component, derives nothing either.
+#
+# In both, technique B sends zero probes. Recording DAST-DISC-BACKUP-01 anyway
+# mints the (check, cell) coverage pair that lets step 7's state/ infer a prior
+# real finding `fixed` (docs/FOUNDATION.md tension 12) - the exact failure
+# DAST-12 exists to close.
+#
+# Each assertion FAILS under the reading that a readable inventory FILE is
+# itself coverage. The distinct reason string is asserted in BOTH directions so
+# "no inventory" and "an inventory with nothing usable in it" cannot collapse
+# into one message.
+
+# (1) The envelope a zero-endpoint crawl writes, at the real run-dir path.
+_new_run inv_empty
+mkdir -p "$SCOURSH_RUN_DIR/inventory"
+printf '%s\n' '{ "schema": "scoursh.inventory.endpoints/1", "endpoints": [] }' \
+  >"$SCOURSH_RUN_DIR/inventory/endpoints.json"
+SCOURSH_DAST_ENDPOINTS=''
+SCOURSH_DAST_PARAMETERS=''
+export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
+SCOURSH_HTTP_TRANSPORT=_disc_transport
+SCOURSH_DAST_DISCOVERY_WORDLIST=$WORDLIST _dast_discovery_phase
+
+assert_not_contains "$(run_facts checks_run)" 'DAST-DISC-BACKUP-01' \
+  "a readable inventory listing ZERO endpoints does NOT make the backup check covered - FAILS under the reading that the inventory FILE existing is coverage, which is the shape every crawl-found-nothing run has (crawl.sh writes the envelope unconditionally)"
+assert_contains "$(run_facts coverage_reduction)" 'discovery_inventory_yielded_no_candidate' \
+  "the readable-but-useless inventory has its OWN machine-readable reason - FAILS if it is silent, and FAILS if it reuses the absent-inventory reason, which would tell an operator to run a crawl that already ran"
+assert_not_contains "$(run_facts coverage_reduction)" 'discovery_no_endpoint_inventory' \
+  "and it is NOT reported as an absent inventory - FAILS if the two shapes collapse into one message"
+assert_contains "$(run_facts coverage_gap)" 'yielded no usable endpoint path' \
+  "the gap the report renders states what actually happened - FAILS if a zero-candidate technique passes silently, which docs/DESIGN.md §15 forbids"
+assert_contains "$(run_facts checks_run)" 'DAST-DISC-SENSITIVE-01' \
+  "the sensitive-path technique still ran - FAILS if the empty-inventory gap is over-broad and takes the whole phase down with it"
+
+# (2) An inventory WITH endpoints, none of which survives validation.
+cat >"$W/endpoints-all-rejected.json" <<EOF
+{ "schema": "scoursh.inventory.endpoints/1", "endpoints": [
+  { "id": "ep_dots", "target": "disc-fixture", "method": "GET", "url": "https://disc.fixture.example/x", "path": "/a/../../../../etc/passwd" },
+  { "id": "ep_ctl",  "target": "disc-fixture", "method": "GET", "url": "https://disc.fixture.example/y", "path": "/inject\r\nX-Injected: 1" },
+  { "id": "ep_sch",  "target": "disc-fixture", "method": "GET", "url": "https://disc.fixture.example/z", "path": "https://evil.example/pwn" },
+  { "id": "ep_root", "target": "disc-fixture", "method": "GET", "url": "https://disc.fixture.example/",  "path": "/" }
+] }
+EOF
+_new_run inv_all_rejected
+SCOURSH_DAST_ENDPOINTS=$W/endpoints-all-rejected.json
+SCOURSH_DAST_PARAMETERS=$W/parameters.json
+export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
+SCOURSH_HTTP_TRANSPORT=_disc_transport
+SCOURSH_DAST_DISCOVERY_WORDLIST=$WORDLIST _dast_discovery_phase
+
+assert_not_contains "$(run_facts checks_run)" 'DAST-DISC-BACKUP-01' \
+  "an inventory whose every endpoint is rejected by the safe-path rule (or is a bare directory) does NOT make the backup check covered - FAILS under the reading that a non-empty endpoints array is coverage regardless of what survives validation"
+assert_contains "$(run_facts coverage_reduction)" 'discovery_inventory_yielded_no_candidate' \
+  "and it records the same readable-but-useless reason as the zero-endpoint case, since technique B derived exactly as much from both: nothing"
+
+# (3) The other direction, and the assertion that catches an INERT technique:
+# the well-formed inventory must STILL derive, probe and claim its check. Every
+# "stays quiet" assertion above passes against a technique B that was broken
+# outright, so this case is what makes the two above mean anything.
+_new_run inv_still_works
+mkdir -p "$SCOURSH_RUN_DIR/inventory"
+_write_inventory
+cp "$W/endpoints.json" "$SCOURSH_RUN_DIR/inventory/endpoints.json"
+SCOURSH_DAST_ENDPOINTS=''
+SCOURSH_DAST_PARAMETERS=''
+export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
+SCOURSH_HTTP_TRANSPORT=_disc_transport
+SCOURSH_DAST_DISCOVERY_WORDLIST=$WORDLIST _dast_discovery_phase
+REQS=$(cat "$REQ_LOG")
+
+assert_contains "$REQS" '/config.php.bak' \
+  "a well-formed inventory STILL derives and probes its backup candidates - FAILS if the candidate-count gate is over-broad and makes technique B inert"
+assert_eq 1 "$(_count_check_path DAST-DISC-BACKUP-01 /config.php.bak)" \
+  "and the served backup file is still reported - FAILS if the gate suppresses the finding as well as the coverage claim"
+assert_contains "$(run_facts checks_run)" 'DAST-DISC-BACKUP-01' \
+  "and the check IS recorded as covered on the run where it genuinely probed - FAILS if the gate never lets technique B be covered at all, which every assertion in (1) and (2) would still pass under"
+assert_not_contains "$(run_facts coverage_reduction)" 'discovery_inventory_yielded_no_candidate' \
+  "and no yielded-nothing reduction is recorded on a run that did yield candidates - FAILS if the reason is emitted unconditionally"
+
+# The mechanism itself, asserted directly on the collector, so the gate is
+# pinned independently of what the transport happened to be asked for.
+# `cats`/`rels` are the caller-scoped arrays the collector appends to (bash
+# dynamic scope); _DISC_BACKUP_ADDED is the count it reports.
+_disc_added_for() {
+  local -a cats=() rels=()
+  local _DISC_BACKUP_ADDED=0
+  _discovery_collect_backups "$1"
+  printf '%s %s' "$_DISC_BACKUP_ADDED" "${#rels[@]}"
+}
+printf '%s\n' '{ "schema": "scoursh.inventory.endpoints/1", "endpoints": [] }' >"$W/inv-empty.json"
+assert_eq '0 0' "$(_disc_added_for "$W/inv-empty.json")" \
+  "_discovery_collect_backups reports ZERO candidates appended for a zero-endpoint inventory - FAILS if the collector reports presence of a file rather than the count it derived"
+assert_eq '0 0' "$(_disc_added_for "$W/endpoints-all-rejected.json")" \
+  "and zero for an inventory whose every path is rejected - FAILS if a rejected path is counted as a contribution"
+ADDED=$(_disc_added_for "$W/endpoints.json")
+assert_eq "${ADDED%% *}" "${ADDED##* }" \
+  "the reported count equals the number of candidates actually appended - FAILS if the count and the array can drift apart"
+assert_ne 0 "${ADDED%% *}" \
+  "and a well-formed inventory reports a NON-ZERO count - FAILS if the collector reports zero for everything, under which both cases above pass vacuously"
+
 t_summary dast-discovery

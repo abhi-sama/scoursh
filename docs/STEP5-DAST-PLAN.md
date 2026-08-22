@@ -1065,6 +1065,34 @@ graceful degradation for an absent wordlist and an unreachable base-url, the rea
 the wordlist reader's rejection of unsafe entries.  `docs/STEP5-DAST-PLAN.md`'s own DAST-12 row above is
 the authority for the dependency; DAST-13 (`active/methods.sh`) is the only remaining tier-3 script.
 
+**A follow-up ticket then corrected technique B's coverage claim, and the correction is the general
+lesson, not a detail of this phase: `DAST-DISC-BACKUP-01` is recorded in `checks_run` on the number of
+candidates DERIVED, never on the inventory file being readable.**
+The two are different facts, and the gap between them is reachable on an ordinary run rather than
+theoretical: `modules/dast/crawl.sh` calls `crawl_inv_write_endpoints` UNCONDITIONALLY and
+`crawl_engine.sh` emits the full envelope with `"endpoints": []`, so a crawl that found nothing (a
+client-rendered application is the ordinary case, per DAST-04's own measured 13-endpoints/0-parameters
+result against Juice Shop) still leaves a readable, non-empty `reports/<run>/inventory/endpoints.json`.
+The same shape arises when the inventory has endpoints but every one is rejected by `_discovery_safe_rel`
+or names a bare directory with no filename component.
+In both, the technique sent zero probes while the phase reported the check as covered, which is exactly
+the (check, cell) coverage pair that lets step 7's `state/` infer a prior real finding `fixed`
+(`docs/FOUNDATION.md` tension 12).
+`_discovery_collect_backups` now reports a count (`_DISC_BACKUP_ADDED`, incremented where the candidate
+is appended so the count and the array cannot drift apart), and `inventory_state` carries THREE values
+rather than two: `absent`, `empty` and `present`.
+Keeping `empty` distinct from `absent` is the half that is easy to drop, and it is not cosmetic: the
+absent-inventory message tells an operator to run a crawl, which on the `empty` shape is advice to
+re-run something that already ran and succeeded, so the two shapes get their own
+`reason=discovery_no_endpoint_inventory` and `reason=discovery_inventory_yielded_no_candidate` lines.
+Per the cross-fire rule, the suite pins BOTH directions, because an over-broad gate makes technique B
+inert and every "stays quiet" assertion in this suite passes against an inert technique: a
+zero-endpoint inventory and an all-rejected inventory each yield no coverage plus both records, AND a
+well-formed inventory still derives, still probes `/config.php.bak`, still emits its finding and still
+claims its check.
+`tests/suites/dast-discovery.sh` is at 57 assertions with that section (the "29 assertions" above
+counts the original landing only).
+
 ### Tier 4 - active injection probes (§7.3, 11 scripts, "one file at a time, each with a mock-response test" per §13's own build-order text)
 
 All are peers of each other; all depend on DAST-04's parameter inventory (query/body/JSON/header/path
