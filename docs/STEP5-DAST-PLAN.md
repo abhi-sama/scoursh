@@ -41,6 +41,15 @@ open and unordered among themselves.  See each ticket's landing note under the t
 it shipped, and DAST-05's and DAST-06's for the one pre-existing `modules/dast/run.sh` defect they
 found and deliberately did not fix in place.
 
+**Tier 5 has started too: DAST-26 (`jwt.sh`) and DAST-29 (`authz.sh`) have both landed.**
+DAST-29 created `modules/dast/checks.rules`, the shared, append-only script-check registry for the
+tier-5 phases whose scripts sit at the top level of `modules/dast/`; DAST-27, DAST-28 and DAST-30
+append their own blocks to it and resolve a conflict in it by keeping both sides, exactly as
+`modules/dast/passive/checks.rules` records for its own peers.
+DAST-29 is also the first consumer of DAST-03's labelled multi-identity plumbing, so the
+`requires-identities: 2` path in `rules/RULE-FORMAT.md` §9.5 now has a real implementation behind it.
+See its landing note under the tier-5 table.
+
 **Tiers 2-5 are unblocked and nothing remains in front of them**: every check below needs the endpoint
 and parameter inventory DAST-04 writes, and the authenticated ones need the session DAST-03 acquires.
 Both are in.
@@ -1204,8 +1213,96 @@ Three decisions here are easy to get backwards, each pinned by a test naming the
 | DAST-26 | `jwt.sh` - `alg:none`, empty-secret HS256, weak-secret list, RS->HS confusion | DAST-01/02, DAST-03 (needs a sample/test-account token and a protected endpoint to replay against) |
 | DAST-27 | `graphql.sh` - introspection + correlated key-exposure | DAST-01/02, DAST-04 (needs the GraphQL endpoint in the inventory); soft data dependency on DAST-10's leakage finding for the correlated-key case, not a build blocker |
 | DAST-28 | `ratelimit.sh` - missing-throttling burst probe | DAST-01 (must draw down the *same* per-run request budget DAST-01 owns, since this is the one check §7.4 flags as intentionally multi-request) |
-| DAST-29 | `authz.sh` - IDOR / excessive data exposure | DAST-03 with `requires-identities: 2` (two labelled identities), DAST-04 (object-reference endpoints from the parameter inventory) |
+| DAST-29 **(landed)** | `authz.sh` - IDOR / excessive data exposure | DAST-03 with `requires-identities: 2` (two labelled identities), DAST-04 (object-reference endpoints from the parameter inventory) |
 | DAST-30 | `transport.sh` - plaintext-exposure / mixed-content | DAST-04; sequence close to DAST-07 (`tls.sh`), which it complements, per the note under DAST-07 |
+
+**DAST-29 (`authz.sh`) has landed.**
+It ships `modules/dast/authz_engine.sh` (the pure half: candidate extraction from DAST-04's frozen
+inventory, the oracle, the sensitive-field scan), `modules/dast/authz.sh` (the phase script
+`dast_run_phase` sources), `modules/dast/checks.rules` (four `DAST-AUTHZ-*` script checks, all
+`tags: active` matching the phase table's own `authz.sh:active` floor, and all
+`requires-identities: 2`), and `modules/dast/sensitive-fields.txt` (the vendored, operator-editable
+field list, overridable through `SCOURSH_DAST_SENSITIVE_FIELDS_FILE`).
+`tests/suites/dast-authz.sh` is the proof: 189 assertions, no network and no Docker, driven from a
+scripted SERVER keyed on (path, identity) rather than a canned-status queue - the correctness of this
+check IS which identity is served which object, and a queue lets a probe pass by asking for the wrong
+thing in the right order.
+
+**A QA pass on the first landing found six defects, all now fixed and each pinned by a case in the
+suite's section H that was observed red against the shipped code and green after the fix.**
+Five of the six were false or missing COVERAGE records rather than wrong findings, which is this
+module's most expensive failure class, and the full account of each is in `AGENTS.md`'s DAST-29
+bullets rather than restated here. In short: `loc_method` was a hardcoded `GET` and collided two
+fingerprints (H1); `HEAD` was admitted as a candidate although the oracle compares response bytes,
+and produced two factually wrong coverage records including a zero-byte body reported as over the
+512 KiB parse bound (H2a-H2d); `DAST-AUTHZ-OTHER_IDENTITY_DATA-01` was written to `checks_run` on
+runs where it could not execute at all, which is every `bearer`/`api-key` identity (H3); the
+`no object reference` reason claimed entries carried none when they were never examined, and the
+by-design write-endpoint gap was lost on exactly that path (H4); the exposure-endpoint cap truncated
+silently (H5); and the `401` arm of `authz_status_refused` was unreachable because the probe went
+through `dast_auth_request`, whose 401 handling marked the identity `failed` for the whole run (H6,
+H6b).
+
+Seven decisions here are easy to get backwards.
+Each is pinned by a case naming the reading it fails under, and each was confirmed by writing the
+wrong version and watching the suite go red rather than by reasoning about it.
+
+- **The unauthenticated control is required, and "public" is DIGEST EQUALITY with an identity's own
+  response rather than the anonymous status code.** Without the control every public object on the
+  target is reported as a cross-user read. With a status-only reading, an application that answers a
+  logged-out request with a 200 login page - the overwhelmingly common shape - suppresses every real
+  finding on itself, and that failure reads as a clean report. Case C4 is red under it.
+- **A shared object is TWO check ids, separated by a refusal observed ELSEWHERE under the same path
+  template, and the whole group is probed before either is emitted.** The refusal is the witness that
+  the endpoint enforces per-object ownership at all; with one, the shared object is
+  `DAST-AUTHZ-IDOR-01` at high confidence, without one it is `DAST-AUTHZ-CROSS_IDENTITY_READ-01` at
+  medium and the finding says so. One id is not available: the DAST location profile
+  (target, method, path_template, param_location, param_name) names nothing that distinguishes them,
+  so the two would share a fingerprint and `findings_merge` would keep whichever sorted first. Under
+  "always emit the confirmed id" case C2 goes red; under "always emit the observation" case C1 does.
+- **Read-only is enforced at CANDIDATE SELECTION, never at the call site.** A POST/PUT/PATCH/DELETE
+  inventory entry never becomes a candidate, so no later edit can reach a mutation by forgetting a
+  check, and the guarantee is asserted over a REQUEST LOG rather than a return value - the only form
+  of the claim a test can falsify.
+- **What counts as an object reference is `lib/findings.sh`'s `path_template_of`'s own four shapes,
+  and the suite asserts the two against each other rather than restating them.** Disagreement is a
+  real defect in both directions: probe a segment the fingerprint treats as a literal and one
+  endpoint's findings split; skip one it collapses and the check has no candidates on an endpoint
+  whose findings it would merge. A slug (`/users/jane`) is deliberately excluded, because admitting
+  arbitrary path words spends the request budget on `/about` and `/pricing` - a stated narrowing the
+  phase records, not a claim that slug-keyed IDOR does not exist.
+- **The exposure pass reads FIELD NAMES and never field values, and the "other identity" needle never
+  becomes a pattern argument.** The needle is an identifier out of `config/auth.conf`, a mode-600
+  credential file, so the test is a pure-bash substring comparison over a bounded read rather than a
+  `scan_match` (tension 9 handling rule 1: every engine takes its pattern on argv). It is never
+  echoed into the evidence either - the finding names the identity LABEL. An identifier that is a
+  substring of the other identity's own is refused with a recorded reason rather than reported.
+- **The digest comparison's cost is stated rather than assumed away.** A response embedding a
+  per-request nonce, CSRF token or timestamp never compares equal, so its IDOR goes unreported. That
+  is a false NEGATIVE, which is the direction to fail in for a check that accuses an application of
+  leaking one user's data to another, and the phase records a `coverage_gap` naming the count
+  whenever both identities read an object and the bytes differed.
+- **Every skip returns 0 with a recorded reason, per this ticket's own wording.** No `--authed`, one
+  authenticated identity where two are configured, no inventory, an unreadable field list: each
+  records a `coverage_reduction` and a human-readable `coverage_gap`, and the suite asserts the exit
+  status AND the reason for each. Silence would read as "this application enforces object-level
+  authorization", which is the most expensive way for this check to be wrong.
+
+**One testing lesson worth carrying beyond this ticket: never assert a check id against raw shard
+text.**
+`DAST-AUTHZ-CROSS_IDENTITY_READ-01`'s remediation deliberately NAMES `DAST-AUTHZ-IDOR-01`, so a
+substring test over the shard finds the confirmed id on a run that emitted only the observation -
+`assert_not_contains` then fails on correct behaviour, and `assert_contains` would PASS on the
+rejected implementation. `tests/suites/dast-authz.sh`'s `_shard_check_ids` decodes through
+`lib/findings.sh`'s own `finding_decode` for that reason.
+
+**What DAST-29 deliberately did not build**, so the boundary is not rediscovered: object-level
+authorization on WRITE endpoints (§7.4 restricts this check to read-only references, and the phase
+records how many inventory entries it passed over for that reason), slug-keyed references, a
+live user-enumeration probe (still DAST-03's stated `--allow-intrusive` follow-up), and any fix to
+`modules/dast/run.sh`'s inventory-export ordering - it falls back to
+`$SCOURSH_RUN_DIR/inventory/endpoints.json` for itself, exactly as `passive/headers.sh` does, and
+leaves the export to the ticket that owns it.
 
 That is 30 tickets end to end (DAST-01 through DAST-30), matching this ticket's "~30-script scope"
 estimate for step 5.

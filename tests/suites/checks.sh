@@ -98,7 +98,7 @@ _idx_of() { records_index_of_id "$DAST_SET" "$1"; }
 
 t_case 'checks_type_tag reads the single type tag off each fixture check'
 assert_eq passive "$(checks_type_tag "$DAST_SET" "$(_idx_of DAST-HDR-CSP-01)")" 'DAST-HDR-CSP-01 is passive'
-assert_eq safe-active "$(checks_type_tag "$DAST_SET" "$(_idx_of DAST-AUTHZ-IDOR-01)")" 'DAST-AUTHZ-IDOR-01 is safe-active'
+assert_eq safe-active "$(checks_type_tag "$DAST_SET" "$(_idx_of DAST-AUTHZ-OBJREF-01)")" 'DAST-AUTHZ-OBJREF-01 is safe-active'
 assert_eq active "$(checks_type_tag "$DAST_SET" "$(_idx_of DAST-INJ-SQLI-01)")" 'DAST-INJ-SQLI-01 is active'
 assert_eq config-read "$(checks_type_tag "$DAST_SET" "$(_idx_of DAST-DISC-CRAWL-01)")" 'DAST-DISC-CRAWL-01 is config-read'
 
@@ -130,13 +130,13 @@ assert_contains "$QUICK_SEL" 'DAST-HDR-CSP-01' 'DAST-HDR-CSP-01 (tags: passive, 
 assert_contains "$QUICK_SEL" 'DAST-DISC-CRAWL-01' 'DAST-DISC-CRAWL-01 (tags: config-read, quick) is selected'
 assert_not_contains "$QUICK_SEL" 'DAST-HDR-HSTS-01' \
   "DAST-HDR-HSTS-01 (tags: passive only) is NOT selected - fails under 'a rule with no profile tag runs under quick too'"
-assert_not_contains "$QUICK_SEL" 'DAST-AUTHZ-IDOR-01' 'the compliance-only check is not selected under quick'
+assert_not_contains "$QUICK_SEL" 'DAST-AUTHZ-OBJREF-01' 'the compliance-only check is not selected under quick'
 assert_not_contains "$QUICK_SEL" 'DAST-INJ-SQLI-01' 'the active/intrusive check is not selected under quick'
 
 t_case "'compliance' keeps only checks tagged compliance - finding F3, closed on the TAG reading"
 COMPLIANCE_SEL=$(checks_select compliance '' false "$DAST_SET")
-assert_contains "$COMPLIANCE_SEL" 'DAST-AUTHZ-IDOR-01' \
-  'DAST-AUTHZ-IDOR-01 (tags: safe-active, compliance; owasp: A01:2021; cis: 6.1) is selected'
+assert_contains "$COMPLIANCE_SEL" 'DAST-AUTHZ-OBJREF-01' \
+  'DAST-AUTHZ-OBJREF-01 (tags: safe-active, compliance; owasp: A01:2021; cis: 6.1) is selected'
 assert_not_contains "$COMPLIANCE_SEL" 'DAST-HDR-HSTS-01' \
   "DAST-HDR-HSTS-01 (owasp: A05:2021, a REAL non-none value, but NO compliance tag) is NOT selected - fails under the rejected 'non-empty cis-or-owasp field' reading from docs/FOUNDATION.md tension 15's original text, which this fixture is built to distinguish from the tag reading"
 assert_not_contains "$COMPLIANCE_SEL" 'DAST-DISC-CRAWL-01' \
@@ -166,13 +166,13 @@ t_case "'passive' keeps passive/config-read/posture/static and drops safe-active
 PASSIVE_SEL=$(checks_select full passive false "$DAST_SET")
 assert_contains "$PASSIVE_SEL" 'DAST-HDR-CSP-01' 'passive check kept under --intensity passive'
 assert_contains "$PASSIVE_SEL" 'DAST-DISC-CRAWL-01' 'config-read check kept under --intensity passive'
-assert_not_contains "$PASSIVE_SEL" 'DAST-AUTHZ-IDOR-01' \
+assert_not_contains "$PASSIVE_SEL" 'DAST-AUTHZ-OBJREF-01' \
   "safe-active check dropped under --intensity passive - fails under 'intensity only ceils active, not safe-active'"
 assert_not_contains "$PASSIVE_SEL" 'DAST-INJ-SQLI-01' 'active check dropped under --intensity passive'
 
 t_case "'safe' additionally keeps safe-active, still drops active"
 SAFE_SEL=$(checks_select full safe false "$DAST_SET")
-assert_contains "$SAFE_SEL" 'DAST-AUTHZ-IDOR-01' 'safe-active check kept under --intensity safe'
+assert_contains "$SAFE_SEL" 'DAST-AUTHZ-OBJREF-01' 'safe-active check kept under --intensity safe'
 assert_not_contains "$SAFE_SEL" 'DAST-INJ-SQLI-01' 'active check still dropped under --intensity safe'
 
 t_case "'active' keeps everything up to and including active"
@@ -290,7 +290,7 @@ t_case 'dropped checks landed in meta/skipped_checks with their reason'
 assert_file_exists "$W/run1/meta/skipped_checks" 'meta/skipped_checks was written'
 assert_contains "$(cat "$W/run1/meta/skipped_checks")" 'check=DAST-HDR-HSTS-01 skipped_by=profile-scan=quick' \
   'the full-only check is recorded with the profile-scan reason'
-assert_contains "$(cat "$W/run1/meta/skipped_checks")" 'check=DAST-AUTHZ-IDOR-01 skipped_by=profile-scan=quick' \
+assert_contains "$(cat "$W/run1/meta/skipped_checks")" 'check=DAST-AUTHZ-OBJREF-01 skipped_by=profile-scan=quick' \
   'the compliance-only check is ALSO dropped by profile-scan (not by intensity), naming the FIRST filter'
 assert_contains "$(cat "$W/run1/meta/skipped_checks")" 'check=DAST-INJ-SQLI-01 skipped_by=profile-scan=quick' \
   'the active/intrusive check is dropped by profile-scan first, even though intensity/allow-intrusive would also drop it'
