@@ -1,0 +1,19 @@
+# Error-based LDAP-injection payloads (docs/DESIGN.md §7.3: "filter-breaking
+# payloads, response/error differential"). %B is the parameter's baseline
+# value. Each appends LDAP filter metacharacters - an unbalanced parenthesis, a
+# stray filter operator, an escaped byte - so an application that interpolates
+# the value into an LDAP search filter un-escaped builds a malformed filter the
+# directory rejects with an error the signatures file catches.
+#
+# All read-only: a broken filter is a SEARCH that fails to parse, never a write.
+# LDAP has no INSERT/DELETE in a search filter, and none of these payloads is a
+# modify/add/delete operation - the non-destructive contract holds by construction
+# (modules/dast/payloads/README.md).
+%B)
+%B(
+%B*)(
+%B))
+%B\
+%B)(cn=*
+%B*))(|(cn=*
+%B)(|(objectClass=*

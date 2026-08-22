@@ -1,0 +1,22 @@
+# Boolean-based LDAP-injection payload pairs (docs/DESIGN.md §7.3: "filter-breaking
+# payloads, response/error differential"). Each line is
+# <true-template><TAB><false-template>: two payloads identical apart from a
+# condition that always matches versus one that never can, which is the LDAP
+# analogue of the SQLi "tautology vs contradiction that are otherwise identical".
+# %B is the baseline value.
+#
+# Column 1 (true) closes the value and appends a clause that matches (a `*`
+# wildcard, or `objectClass=*` which every entry has), so the filter still
+# returns the entries the benign baseline did. Column 2 (false) appends an
+# otherwise-identical clause that can never match (a sentinel value no entry
+# carries), so the filter returns nothing. The probe strips each injected value
+# from the body before comparing lengths (so a reflected payload is not read as
+# the change) and confirms the differential on a retest before flagging.
+#
+# Read-only detection, not exploitation: both sides are SEARCH filters. Neither
+# widens an authentication decision on its own - the pair exists to observe a
+# result-set differential, and the always-true side reproduces the baseline
+# rather than broadening past it.
+%B)(|(cn=*)	%B)(&(cn=scoursh-no-such-entry-zq))
+%B*)(|(objectClass=*)	%B*)(&(objectClass=scoursh-no-such-entry-zq))
+%B)(|(uid=*)	%B)(&(uid=scoursh-no-such-entry-zq))
