@@ -3581,6 +3581,29 @@ Lookup is `LC_ALL=C look` on the `ecosystem\tpackage\tversion\t` prefix, falling
 `data/versions.db` (§7.1's known-vulnerable-version list for banner-based detection) uses the same shape
 and the same rule.
 
+**Both databases are ABSENT by default in every checkout, and absence is their committed state - not a
+gap waiting to be filled in-tree.**
+`tools/vendor-engines.sh advisories` generates them on a networked box and never runs during a scan, so
+neither file is a source and neither is committed here; `.gitignore` names both, so a generated database
+cannot land by accident.
+The distinction this buys is the whole point: a consumer can tell **"nobody has run the vendoring
+pipeline"** (the file is absent) apart from **"it ran and this is what it knows"** (the file exists with
+rows).
+A committed database collapses those two facts into one, and does it in the direction that reads as a
+pass - anyone inspecting the tree to judge whether the pipeline has been run gets a false yes.
+
+This is recorded as a RESOLUTION rather than a convention because the tree already violated it once.
+`data/versions.db` was committed in `9b580c1` carrying four rows that were verification-run output, not
+advisory data - packages `goodpkg`, `uspkg`, `critpkg` and `lowpkg`, under `# bulk:` provenance headers
+that said so outright (`grade=unpinned-local-archive`, `source=local archive /tmp/adv-verify/bad/...`).
+That shipped fake vulnerability data in the release artifact, alongside machine-local scratch paths in a
+repository deliberately tidied of them.
+It was removed rather than reduced to its `#` headers: a header-only file still carries a `generated:`
+timestamp and per-ecosystem provenance lines, so it still reads as a database somebody produced, and
+stripping those to fix the machine-local paths leaves headers asserting nothing.
+**Absence is the only state that is unambiguous**, and it is the state `data/advisories.db` has always
+had, so the two files now behave identically rather than differently for no stated reason.
+
 **Name normalisation is frozen**, since an exact lookup is only as good as its key:
 
 | Ecosystem | Key |
