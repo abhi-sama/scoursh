@@ -40,7 +40,10 @@
 #      `hdr_endpoints_load`'s path-template-only key drops the plaintext twin of
 #      an HTTPS endpoint, which IS the finding.
 #   8. one finding per check per target, with the affected/tested count in the
-#      evidence - not one per endpoint.
+#      evidence - not one per endpoint.  BOTH endpoints in that case must
+#      actually exhibit the defect, or a per-endpoint emitter yields one finding
+#      too and the assertion is blind; the fixture and a `2 of the 3`
+#      precondition assertion now enforce that.
 #   9. a reference inside an HTML COMMENT is loaded by nothing and is not a
 #      finding.
 #  10. mixed-content checks are DOCUMENT-only; a JSON response over HTTPS makes
@@ -50,8 +53,11 @@
 #  12. an out-of-scope inventory URL is skipped, never handed to `http_request`
 #      (which would abort the whole run with exit 3).
 #  13. the phase is registered at tier `passive`, so a plain
-#      `scan.sh dast --target <t>` reaches it - it fails while the row says
-#      `active`, which is what the table carried before this ticket.
+#      `scan.sh dast --target <t>` reaches it.  Pinned by the _DAST_PHASES scan;
+#      the `dast_run_phase` pair beside it proves REACHABILITY at the default
+#      intensity and its `active` complement shows what the row would have cost,
+#      since that function takes its tier from the spec argument rather than
+#      from the table.
 #
 # shellcheck shell=bash
 #
@@ -245,14 +251,37 @@ HTML
 _body() {
   local host=$1 path=$2
   case $host:$path in
-    tr.fixture.example:/mixed) printf '%s' "$MIXED_ALL" ;;
+    # BOTH paths serve the mixed document, and the second one is not
+    # decoration: the "one finding per check per target" case below needs TWO
+    # endpoints that each EXHIBIT the defect, or a per-endpoint emitter produces
+    # exactly one finding too and the assertion passes under the very reading it
+    # claims to fail under.  A `case` arm is a glob, not a prefix, so
+    # `tr.fixture.example:/mixed` alone does NOT match `/mixed2` - it fell
+    # through to CLEAN_DOC, which is precisely how that assertion came to pin
+    # nothing.  `path_template_of` keeps the two paths distinct, so they survive
+    # tr_endpoints_load's dedup as two candidates.
+    tr.fixture.example:/mixed | tr.fixture.example:/mixed2) printf '%s' "$MIXED_ALL" ;;
     tr.fixture.example:/nav) printf '%s' "$NAV_ONLY" ;;
     tr.fixture.example:/based) printf '%s' "$BASE_RETARGET" ;;
     tr.fixture.example:/relative) printf '%s' "$RELATIVE_ONLY" ;;
     tr.fixture.example:/api | tr.fixture.example:/zjson) printf '%s' '{"ok":true,"note":"http://not-a-load.example/x"}' ;;
     tr.fixture.example:/login) printf '%s' "$PLAIN_LOGIN" ;;
     tr.fixture.example:/brochure) printf '%s' "$PLAIN_BROCHURE" ;;
-    api.fixture.example:*) printf '%s' '{"ok":true,"upstream":"http://internal.example/svc"}' ;;
+    # The JSON body deliberately EMBEDS HTML-shaped markup carrying two
+    # plaintext sub-resources.  A body with no markup at all would make the
+    # document-only assertions below pass for the WRONG REASON - tr_html_scan
+    # would emit nothing whether or not the hdr_is_document gate existed - so
+    # the gate itself would be untested.  With this body, removing the gate
+    # produces real findings and those assertions go red.
+    #
+    # The attributes are SINGLE-quoted, via a `tr` of a placeholder because this
+    # is inside a single-quoted shell string.  Writing them as JSON-escaped
+    # \" instead does not work and is worth knowing: the extractor then reads
+    # the value as an UNQUOTED attribute and captures the backslash-quote as
+    # part of the URL, so it no longer looks absolute, resolves relative to the
+    # document, and comes back https - which quietly restores the wrong-reason
+    # pass this fixture exists to remove.
+    api.fixture.example:*) printf '%s' '{"ok":true,"template":"<script src=@http://internal.example/svc.js@></script><img src=@http://internal.example/px.png@>"}' | tr '@' "'" ;;
     plain.fixture.example:/login) printf '%s' "$PLAIN_LOGIN" ;;
     plain.fixture.example:*) printf '%s' "$PLAIN_BROCHURE" ;;
     *) printf '%s' "$CLEAN_DOC" ;;
@@ -614,7 +643,31 @@ t_case 'a target that offered no URL at all is a coverage gap, not a clean run'
 # record parser instead of this check.
 tr_endpoints_load '' tr-fixture ''
 assert_eq 0 "$_TR_N" \
-  'no inventory and no base-url yields no candidate - the phase then records a gap rather than returning quietly'
+  'no inventory and no base-url yields no candidate'
+
+# And the PHASE branch itself, which the assertion above does not reach.
+# `base-url` is a required scope.conf field, so the only way a real run gets
+# here is the direct-engine configuration the phase already guards for with
+# `declare -F config_scope_field_or` - a caller that never loaded lib/config.sh.
+# That is a supported state, not an artificial one, so it is simulated by
+# removing the function for the duration rather than by writing a malformed
+# config (which would be testing the record parser instead of this branch).
+_tr_saved_cfg=$(declare -f config_scope_field_or)
+unset -f config_scope_field_or
+_new_run nobase tr-fixture
+SCOURSH_DAST_ENDPOINTS=''
+export SCOURSH_DAST_ENDPOINTS
+SCOURSH_DAST_TARGET=tr-fixture
+export SCOURSH_DAST_TARGET
+# shellcheck source=modules/dast/passive/transport.sh
+source "$ROOT/modules/dast/passive/transport.sh"
+eval "$_tr_saved_cfg"
+assert_contains "$(_meta coverage_gap)" 'offered no URL to request' \
+  'the phase records a GAP when it has nothing to ask for - FAILS under returning quietly, which reports a target that was never inspected as one with no transport problems'
+assert_contains "$(_meta coverage_reduction)" 'no_endpoint_to_inspect' 'and the machine-readable reduction alongside it'
+assert_eq 0 "$(_count_check DAST-TRANSPORT-NO_HTTPS_REDIRECT-01)" 'and emits nothing'
+assert_eq '' "$(_meta checks_run)" 'and records no check as run, because none was'
+assert_eq 0 "$(printf '%s' "$(cat "$REQ_LOG")" | wc -c | tr -d ' ')" 'and sent no request at all'
 
 t_case 'a target whose every URL fails to answer records a gap, not a clean result'
 _run_case dead tr-dead
@@ -648,13 +701,27 @@ assert_not_contains "$(cat "$REQ_LOG")" 'not-authorised.example' \
   'reading 12: the scope PRE-CHECK stops the URL before http_request sees it - FAILS under handing every inventory row straight to http_request, which die()s with exit 3 on an out-of-scope URL and would let one bad row abort the operator whole run'
 assert_contains "$(_meta coverage_reduction)" 'transport_endpoint_out_of_scope' \
   'and the skip is RECORDED, so a narrowed surface is never silent'
+assert_not_contains "$(_meta coverage_reduction)" 'declined by the scope gate' \
+  'the record carries the gate OWN reason, not the generic fallback - FAILS under reading _HTTP_GATE_REASON after the loop, which http_gate_url clears at entry on every call, so a run whose last gate call SUCCEEDED (the ordinary case) reports the fallback and the operator never learns why the URL was declined'
 
 t_case 'one finding per check per target, with the count in the evidence'
 _run_case perTarget tr-fixture 'https://tr.fixture.example/mixed' 'https://tr.fixture.example/mixed2'
+# BOTH endpoints must actually exhibit the defect for this to pin anything -
+# see the _body case arm above.  Asserted first, so a fixture regression that
+# silently stops serving the mixed document at one of them fails HERE, naming
+# the cause, rather than leaving the real assertion below quietly toothless.
+# THREE endpoints are fetched, not two: tr_endpoints_load always puts the
+# target's own base-url first (deliberately - see its header), and `/` serves
+# the CLEAN document.  So the honest reading of this run is "3 responses the
+# check applied to, 2 of which exhibited the defect".
+assert_eq 3 "$_TR_N" 'the two named endpoints plus the always-first base-url'
+assert_contains "$(_field_of DAST-TRANSPORT-MIXED_ACTIVE-01 evidence)" 'Observed on 2 of the 3' \
+  'TWO of the three responses exhibited it - this is the precondition that gives the next assertion its teeth, and it fails if the fixture serves the mixed document at only one of the two paths, which is exactly how this case previously pinned nothing'
 assert_eq 1 "$(_count_check DAST-TRANSPORT-MIXED_ACTIVE-01)" \
-  'reading 8: two endpoints exhibiting the same defect are ONE finding - FAILS under emitting per endpoint, which reports one deployment-wide misconfiguration once per page and buries everything else in the report'
-assert_contains "$(_field_of DAST-TRANSPORT-MIXED_ACTIVE-01 evidence)" 'Observed on ' \
-  'and the evidence carries the affected/tested count, because "1 of 10" and "10 of 10" are different facts about a target'
+  'reading 8: two endpoints EACH exhibiting the same defect are ONE finding - FAILS under emitting per endpoint, which reports one deployment-wide misconfiguration once per page and buries everything else in the report'
+assert_eq 1 "$(_count_check DAST-TRANSPORT-MIXED_PASSIVE-01)" 'and the same for the passive class, so the grain is the check rather than one lucky id'
+assert_eq '/mixed' "$(_field_of DAST-TRANSPORT-MIXED_ACTIVE-01 loc_path_template)" \
+  'and the one finding is located at the FIRST exhibiting endpoint in tr_endpoints_load deterministic order, which is what stops the fingerprint churning when the crawl reorders'
 
 # ===========================================================================
 printf '== E. registration, and the tier this ticket moved ==\n'
@@ -668,10 +735,21 @@ assert_eq 1 "$FOUND" \
   'reading 13: modules/dast/engine.sh names passive/transport.sh at tier `passive`, so a plain `scan.sh dast --target <t>` runs it - FAILS while the row reads `transport.sh:active`, which is what the table carried from DAST-02 until this ticket, and which --intensity`s passive default would skip on every ordinary run'
 
 t_case 'a passive-intensity run actually sources it'
+# `dast_run_phase` takes the tier from its SPEC ARGUMENT, not from _DAST_PHASES,
+# so this pair proves the script is on disk and that a passive-intensity run
+# sources it - it does NOT pin the table's row, and saying so would be claiming
+# a discrimination it does not have.  The table scan immediately above is what
+# pins the row; the pair below is what proves the row is reachable.
 SCOURSH_INSTALL_ROOT=$ROOT dast_run_phase 'passive/transport.sh:passive' passive tr-secure >/dev/null 2>&1 || true
 assert_eq 1 "$_DAST_PHASE_PRESENT" 'dast_run_phase finds the script on disk'
 assert_eq ran "$_DAST_PHASE_OUTCOME" \
-  'and the DEFAULT intensity permits it - FAILS at tier `active`, where the outcome would be skipped_intensity and the whole family would be dead code on an ordinary run'
+  'a run at the DEFAULT intensity sources a phase declared at tier passive'
+# And the complement, which is what makes the pair mean something: the SAME
+# script declared at `active` is refused by a default-intensity run.  This is
+# the concrete cost of leaving the table row where DAST-02 put it.
+SCOURSH_INSTALL_ROOT=$ROOT dast_run_phase 'passive/transport.sh:active' passive tr-secure >/dev/null 2>&1 || true
+assert_eq skipped_intensity "$_DAST_PHASE_OUTCOME" \
+  'the identical script declared at tier `active` is NOT run by a default-intensity run - which is why the table row had to move, and what the whole family would have cost had it not'
 
 t_case 'every check id this phase emits is in the registry, and the two copies agree'
 # THE FILE IS SHARED WITH THE OTHER TIER-2 TICKETS, so the id count below is
@@ -734,11 +812,14 @@ for c in "${_TR_CHECK_IDS[@]}"; do
 done
 
 t_case 'the family does not restate its three neighbours checks'
+# Asserted POSITIVELY, on the prefix every id must carry.  The previous shape
+# here was a `case` arm matching DAST-HDR-*/DAST-COOKIE-*/DAST-TLS-* inside a
+# loop over _TR_CHECK_IDS - whose entries are all DAST-TRANSPORT-* by
+# construction, so the body could never execute and the assertion could never
+# fail.  A test that cannot fail is not a test.
 for c in "${_TR_CHECK_IDS[@]}"; do
-  case $c in
-    DAST-HDR-* | DAST-COOKIE-* | DAST-TLS-*)
-      assert_eq '' "$c" 'a transport check must not carry a neighbouring family id' ;;
-  esac
+  assert_eq 'DAST-TRANSPORT-' "${c:0:15}" \
+    "$c carries this family's own prefix, so it can never collide with a DAST-HDR-*, DAST-COOKIE-* or DAST-TLS-* id"
 done
 assert_not_contains "$REG" 'DAST-TRANSPORT-HSTS' \
   'no HSTS check is minted here - Strict-Transport-Security is DAST-HDR-HSTS_*, and duplicating it is the boundary failure this ticket has to avoid'

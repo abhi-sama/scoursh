@@ -412,6 +412,15 @@ _dast_transport_phase() {
   fi
 
   local i url path scheme tested=0 refused=0 unreachable=0
+  # The gate's reason is captured AT REFUSAL TIME, never read after the loop.
+  # `http_gate_url` clears `_HTTP_GATE_REASON` at entry on every call
+  # (lib/http.sh), so by the time the loop ends it holds whatever the LAST call
+  # left - empty after a success, which is the ordinary case, so the roll-up
+  # would silently degrade to its generic fallback.  With more than one refusal
+  # it would also attribute one URL's reason to all of them.  Distinct reasons
+  # are collected and reported together.
+  local refused_reasons=''
+  declare -A _tr_reason_seen=()
   local http_seen=0 https_seen=0 https_doc_seen=0 nav_plaintext_total=0
   for (( i = 0; i < _TR_N; i++ )); do
     url=${_TR_URL[$i]}
@@ -429,6 +438,11 @@ _dast_transport_phase() {
     # every redirect hop.
     if ! http_gate_url "$url" "$target"; then
       refused=$(( refused + 1 ))
+      local why_gate=${_HTTP_GATE_REASON:-declined by the scope gate}
+      if [[ -z ${_tr_reason_seen[$why_gate]:-} ]]; then
+        _tr_reason_seen[$why_gate]=1
+        refused_reasons+="${refused_reasons:+; }$(hdr_safe_text "$why_gate" 120)"
+      fi
       continue
     fi
 
@@ -523,7 +537,7 @@ _dast_transport_phase() {
     run_record coverage_reduction "module=dast reason=transport_non_get_endpoint_skipped target=$target count=$_TR_SKIPPED_NON_GET - $_TR_SKIPPED_NON_GET discovered endpoint(s) are not GET. Re-sending them to read their transport would change target state, which docs/DESIGN.md §7.1 forbids at the passive tier, so they were not inspected."
   fi
   if (( refused > 0 )); then
-    run_record coverage_reduction "module=dast reason=transport_endpoint_out_of_scope target=$target count=$refused - $refused URL(s) in the inventory are not authorised by config/scope.conf and were not requested (${_HTTP_GATE_REASON:-declined by the scope gate})."
+    run_record coverage_reduction "module=dast reason=transport_endpoint_out_of_scope target=$target count=$refused - $refused URL(s) in the inventory are not authorised by config/scope.conf and were not requested (${refused_reasons:-declined by the scope gate})."
   fi
   if (( unreachable > 0 )); then
     run_record coverage_reduction "module=dast reason=transport_endpoint_unreachable target=$target count=$unreachable - $unreachable URL(s) returned no readable response, so their transport was not inspected."
