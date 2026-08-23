@@ -42,7 +42,12 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Sourcing the engine pulls in lib/http.sh -> lib/config.sh + lib/findings.sh ->
 # lib/records.sh -> lib/core.sh, which bootstraps the scratch dir and traps.
-# shellcheck source=modules/dast/active/inject_engine.sh
+# -x back-edge cut: modules/dast/active/inject_engine.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/inject_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
@@ -605,7 +610,12 @@ printf '== inject_engine: the two opt-in knobs leave every other probe alone ==\
 # behaviour every §7.3 probe written before them already had.
 if ( unset _INJ_WANT_HEADERS _INJ_MAX_REDIRECTS
      unset SCOURSH_DAST_INJECT_ENGINE_SOURCED
-     # shellcheck source=modules/dast/active/inject_engine.sh
+     # -x back-edge cut: modules/dast/active/inject_engine.sh
+     # is already inlined elsewhere in this file's own source graph, and shellcheck
+     # re-expands EVERY source edge it follows.  Cutting this one loses no checking
+     # and is what keeps the linter's memory bounded - see the shellcheck stage in
+     # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+     # shellcheck source=/dev/null
      source "$ROOT/modules/dast/active/inject_engine.sh"
      [[ ${_INJ_WANT_HEADERS} == 0 && -z ${_INJ_MAX_REDIRECTS} ]] ); then
   _t_ok 'inject_engine defaults are header-capture OFF and the redirect count unchanged - FAILS if this ticket changed what active/sqli.sh does'

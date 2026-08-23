@@ -39,9 +39,19 @@
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
-# shellcheck source=lib/http.sh
+# -x back-edge cut: lib/http.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/lib/http.sh"
-# shellcheck source=modules/dast/crawl_engine.sh
+# -x back-edge cut: modules/dast/crawl_engine.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/crawl_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
