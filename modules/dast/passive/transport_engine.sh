@@ -78,7 +78,12 @@ if [[ -z ${SCOURSH_DAST_HEADERS_ENGINE_SOURCED:-} ]]; then
   source "${BASH_SOURCE[0]%/*}/headers_engine.sh"
 fi
 if [[ -z ${SCOURSH_HTTP_SOURCED:-} ]]; then
-  # shellcheck source=lib/http.sh
+  # -x back-edge cut: lib/http.sh
+  # is already inlined elsewhere in this file's own source graph, and shellcheck
+  # re-expands EVERY source edge it follows.  Cutting this one loses no checking
+  # and is what keeps the linter's memory bounded - see the shellcheck stage in
+  # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+  # shellcheck source=/dev/null
   source "${BASH_SOURCE[0]%/*}/../../../lib/http.sh"
 fi
 # crawl_engine.sh supplies the frozen inventory reader (`crawl_json_flatten`/
@@ -88,7 +93,12 @@ fi
 # that wrote it, and a second URL resolver would be a second answer to "what
 # does this `src` actually point at".  Its own sourced-once guard makes this a
 # no-op on a run where the crawl already happened.
-# shellcheck source=modules/dast/crawl_engine.sh
+# -x back-edge cut: modules/dast/crawl_engine.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "${BASH_SOURCE[0]%/*}/../crawl_engine.sh"
 
 # ---------------------------------------------------------------------------
