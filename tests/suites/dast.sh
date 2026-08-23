@@ -671,8 +671,17 @@ assert_eq 0 "$_RC" 'the filtered run still exits 0'
 RUN_SEL_QUICK=$(_slurp "$W/run-sel-quick/run.json")
 assert_contains "$RUN_SEL_QUICK" 'DAST-HDR-CSP_MISSING-01' \
   'the selected set is genuinely non-empty - without this the case below would pass under the "empty means all" fallback instead of under real selection'
-assert_not_contains "$RUN_SEL_QUICK" 'checks_selected*DAST-COOKIE-NO_SECURE-01' \
-  'and the cookie ids are genuinely out of it'
+# On the ARTIFACT, not on run.json: `assert_not_contains` quotes its needle, so
+# a `checks_selected*DAST-COOKIE-NO_SECURE-01` glob is a LITERAL asterisk that
+# can never appear, so the earlier form of this assertion was vacuous: measured
+# green against a fixture deliberately mutated to leave every DAST-COOKIE-* id
+# IN the selected set, which is the precondition failure it exists to catch.
+# run.json cannot be asserted on bare either: it
+# also carries `skipped_checks`, where the cookie ids legitimately DO appear.
+# meta/checks_selected is the selected set alone, which is the precondition this
+# case actually needs; tests/suites/scan.sh:381 reads it the same way.
+assert_not_contains "$(cat "$W/run-sel-quick/meta/checks_selected")" 'DAST-COOKIE-NO_SECURE-01' \
+  'and the cookie ids are genuinely out of the selected set - FAILS if the fixture stops narrowing the registry, which would let the case below pass because the phase was never filtered rather than because it honoured the filter'
 assert_contains "$RUN_SEL_QUICK" 'reason=cookies_no_check_selected' \
   'the cookies phase consulted the operator'"'"'s check set and inspected NO response - FAILS while dast_check_selected is undefined, which is the bug this ticket fixes: the registry was narrowed and the phase still ran every check'
 
