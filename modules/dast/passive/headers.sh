@@ -400,10 +400,17 @@ _hdr_analyse_one() {
 # scan.sh's filter chain records which ids survived
 # --profile-scan/--intensity/--allow-intrusive and exports them as
 # SCOURSH_SELECTED_CHECKS; modules/dast/engine.sh's `dast_check_selected` is the
-# reader.  Consulted only if that function exists - it does not today, and
-# modules/dast/active/sqli.sh guards it the same way - so this file does not
-# hard-depend on it: absent, everything the tier already permitted runs, which
-# is the "empty means all selected" fallback a direct-engine test relies on.
+# reader, and it now EXISTS - so on any run reached through `dast_run_phase`
+# this really does narrow what the phase evaluates.
+#
+# THE `declare -F` GUARD IS KEPT ON PURPOSE, and is not dead weight now that the
+# function is defined.  tests/suites/dast-headers.sh sources THIS file directly
+# with no modules/dast/engine.sh anywhere in the process (so do dast-sqli.sh and
+# dast-discovery.sh for their own phases).  Without the guard the call would be
+# a `command not found`, exit 127, non-zero - so every check would read as
+# DESELECTED and the phase would go inert while every "stays quiet" assertion in
+# that suite still passed green.  Fail-open on an absent reader is the same
+# permissive default `dast_check_selected` itself applies to an absent list.
 _hdr_selected() {
   declare -F dast_check_selected >/dev/null || return 0
   dast_check_selected "$1"
