@@ -78,14 +78,24 @@
 # comment.  Go remains called last purely for a stable emission order.
 #
 # shellcheck shell=bash
-# shellcheck source=modules/sca/engine.sh
+# -x back-edge cut: modules/sca/engine.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "${BASH_SOURCE[0]%/*}/engine.sh"
 # php_engine.sh is also sourced transitively by engine.sh itself (guarded,
 # see both files' own headers); sourced again here, explicitly, purely so
 # this entry point stays self-documenting about which ecosystems it covers -
 # modules/sast/run.sh's own explicit source of history.sh alongside
 # engine.sh is the same convention.
-# shellcheck source=modules/sca/php_engine.sh
+# -x back-edge cut: modules/sca/php_engine.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "${BASH_SOURCE[0]%/*}/php_engine.sh"
 # go_engine.sh guards its own engine.sh source the same way, so the order of
 # these three lines does not matter; it is sourced explicitly here for the

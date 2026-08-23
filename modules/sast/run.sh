@@ -36,7 +36,12 @@
 # `_sast_run_gitleaks_adapter`'s own comment for its failure handling.
 #
 # shellcheck shell=bash
-# shellcheck source=modules/sast/engine.sh
+# -x back-edge cut: modules/sast/engine.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "${BASH_SOURCE[0]%/*}/engine.sh"
 # history.sh (docs/DESIGN.md §6.3, §13 step 3e) is the module that deliberately
 # DOES read git history; it is its own pure function library, sourced here

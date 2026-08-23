@@ -1686,10 +1686,13 @@ against a real CLI, since a stub that ignores the service name never would have 
 ## Tests
 
 ```
-tests/run-tests.sh                 # everything: every suite plus every linter
-tests/run-tests.sh --list          # the source of truth for exactly which suites and linters exist today
+tests/run-tests.sh                 # everything: every suite, every linter, then the shellcheck stage
+tests/run-tests.sh --list          # the source of truth for exactly which suites, linters and stages exist today
 tests/run-tests.sh <suite-name>    # one suite, e.g. tests/run-tests.sh sca
 tests/run-tests.sh lint-rules      # or one linter by name
+tests/run-tests.sh shellcheck      # or the whole-tree shellcheck STAGE alone (the slowest thing in a
+                                    # full run; it is neither a suite nor a linter file, so it lives in
+                                    # STAGES and is listed separately by --list)
 tests/lint-rules.sh                # record-format linter, error codes in rules/RULE-FORMAT.md §13
 tests/lint-shell.sh                # the tension 4, 9, 24 and 26 shell lints
 tests/lint-aws-readonly.sh         # read-only AWS lint, docs/FOUNDATION.md tension 23
@@ -1832,6 +1835,13 @@ Recorded because the review rounds found several confidently-stated shell facts 
 - ShellCheck versions disagree: Debian's reports `SC2119`/`SC2120` where 0.11.0 does not. The BSD leg runs whatever Homebrew installed and the GNU leg whatever the container image ships, so a finding is silenced with an explicit `# shellcheck disable=` and a reason rather than left to the version.
 - A comment line beginning `# shellcheck ` is parsed as a DIRECTIVE, so prose about shellcheck must not start a line with that word.
 - **`shellcheck -x` follows `source` STATICALLY, where a runtime "already sourced" guard does not exist, so two files that source each other are an unbounded cycle it inlines until it dies.** `modules/sca/engine.sh` and `modules/sca/php_engine.sh` do exactly that on purpose (each sets its flag before recursing, so at runtime the second attempt is a no-op). Measured on `shellcheck -x -s bash modules/sca/run.sh`: **43.6 GB peak RSS and 236 seconds** with the cycle followed, **4.6 GB and 16 seconds** with one `# shellcheck source=/dev/null` on the back-edge, and an OOM kill rather than a slow pass on any machine with less RAM - which is how it was found, when the Linux container leg of `tools/daily-suite.sh` died where the 64 GB macOS leg survived. Cut ONE edge; the entry point (`run.sh`) sources every file in the directory itself and stays the graph shellcheck walks, so nothing is lost.
+- **A CYCLE is not the only shape that blows `shellcheck -x` up, and the second shape - a DIAMOND in a perfectly acyclic graph - is the one this tree actually has.**
+  `-x` does not memoise: it re-expands a file EVERY time it is reached, so two paths to the same file cost twice, and the multipliers compound.
+  Measured here: `lib/http.sh` reaches `lib/records.sh` -> `lib/core.sh` through BOTH `lib/config.sh` and `lib/findings.sh`; `modules/dast/passive/cookies.sh` reaches `lib/http.sh` through both `inject_engine.sh` and `auth_engine.sh`; and `tests/suites/dast-cookies.sh` sourced `cookies.sh` six separate times on top of that - **156,852 inlined lines for one entry point, 91% duplicates, `lib/core.sh` inlined 29 times, 23.42 GB, unfinished after 29 minutes**, which the stage's own 12 GB watchdog killed.
+  While that stood `bash tests/run-tests.sh` could not exit 0 on `dev` or on any branch cut from it, so "merge when the suite is green" was unachievable.
+  The fix is the same one line applied to every edge whose target the entry point ALREADY reaches another way: **47 `# shellcheck source=/dev/null` directives across 25 files**, each *lossless* (the file is still inlined once, via the kept edge), taking that entry point to **34,881 lines and 8.4 GB, finishing in 173 s**.
+  Those directives are LOAD-BEARING - deleting one because it "looks unnecessary" puts the stage back over budget, and `tests/suites/dast-cookies.sh` / `tests/suites/dast-jwt.sh` are where that regression surfaces first.
+  Two traps when adding one: a comment line starting `# shellcheck ` is parsed as a directive, so the prose above a cut must not begin with that word (the first draft of these 47 blocks wrote `` `-x` `` in backticks inside a HEREDOC and minted `SC2006`/`SC2215` findings out of a comment); and a `source` line inside a heredoc or a quoted string is NOT an edge shellcheck follows, so a tool that counts it will call a cut "lossless" when it is not (that is exactly how a first pass wrongly cut `tests/suites/core.sh`'s only real edge and turned `SCOURSH_ENGINE` into a fresh `SC2034`).
 - **On Docker Desktop for macOS, a bind mount whose source and destination are the SAME absolute path is silently not mounted when written as `-v <path>:<path>:ro`** - the destination simply does not exist inside the container and `docker run` reports nothing. The identical read-only bind written as `--mount type=bind,src=<path>,dst=<path>,readonly` works. `-v <path>:<path>` (read-write) also works, so the `:ro` suffix is the trigger.
 - **A `git worktree` checkout's `.git` is a FILE holding an absolute path into the main repository**, so git does not work inside a container that mounts only the checkout. `tools/daily-suite.sh` mounts `git rev-parse --git-common-dir` as well, at its own path. Without it `git rev-parse --show-toplevel` fails, `lib/core.sh` falls back to the resolved `--path` as the scan root, and every finding's repository-relative `loc_path` changes - a whole class of "the rule pack broke" failures whose real cause is the scan root.
 

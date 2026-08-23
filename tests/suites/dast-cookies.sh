@@ -45,9 +45,19 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Sourcing the engine pulls in lib/core.sh (scratch dir, traps, the pattern
 # engine binding scan_match needs) via lib/findings.sh.
-# shellcheck source=modules/dast/passive/cookie_engine.sh
+# -x back-edge cut: modules/dast/passive/cookie_engine.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/passive/cookie_engine.sh"
-# shellcheck source=modules/dast/active/inject_engine.sh
+# -x back-edge cut: modules/dast/active/inject_engine.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/inject_engine.sh"
 # shellcheck source=modules/dast/engine.sh
 source "$ROOT/modules/dast/engine.sh"
@@ -174,10 +184,12 @@ assert_eq 2 "${#_COOKIE_ATTRS[@]}" \
   '`a=1;; Secure` is two attributes - FAILS under a bare IFS split, which yields an empty third part that is then analysed as an attribute'
 
 t_case 'the session-name hint recognises conventional names and does not gate anything'
-cookie_looks_session JSESSIONID && _t_ok 'JSESSIONID reads as a session cookie name' \
-  || _t_no 'session hint' 'JSESSIONID should match'
-cookie_looks_session csrftoken && _t_ok 'csrftoken reads as a session-class cookie name' \
-  || _t_no 'session hint' 'csrftoken should match'
+# `if/then/else`, not `A && _t_ok ... || _t_no ...` (SC2015): in the `&&`/`||`
+# spelling `_t_no` also runs whenever `_t_ok` itself exits non-zero, so a
+# passing case could record a failure as well as a pass.  The negative case
+# below already had this shape; all three now match.
+if cookie_looks_session JSESSIONID; then _t_ok 'JSESSIONID reads as a session cookie name'; else _t_no 'session hint' 'JSESSIONID should match'; fi
+if cookie_looks_session csrftoken; then _t_ok 'csrftoken reads as a session-class cookie name'; else _t_no 'session hint' 'csrftoken should match'; fi
 if cookie_looks_session theme; then _t_no 'session hint' '`theme` must not match'; else
   _t_ok '`theme` does not read as a session cookie name'; fi
 
@@ -366,8 +378,12 @@ _new_run() {
   run_record authorization_target cookie-fixture
   occurrence_reset_all
   _req_reset
-  SCOURSH_DAST_TARGET=cookie-fixture
-  SCOURSH_DAST_CELL=cookie-fixture
+  # Quoted, because `cookie-fixture` unquoted reads as the arithmetic
+  # expression `cookie - fixture` and shellcheck says so (SC2100).  The quotes
+  # are the fix rather than a suppression: they state that this is a literal
+  # string, which is what every other target/cell value in this tree is.
+  SCOURSH_DAST_TARGET='cookie-fixture'
+  SCOURSH_DAST_CELL='cookie-fixture'
   SCOURSH_DAST_AUTHED=false
   export SCOURSH_DAST_TARGET SCOURSH_DAST_CELL SCOURSH_DAST_AUTHED
 }
@@ -413,7 +429,12 @@ _meta_text() { run_facts "$1" 2>/dev/null || true; }
 _new_run main
 SCOURSH_DAST_COOKIE_ENDPOINTS=$FULL_INV
 export SCOURSH_DAST_COOKIE_ENDPOINTS
-# shellcheck source=modules/dast/passive/cookies.sh
+# -x back-edge cut: modules/dast/passive/cookies.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/passive/cookies.sh"
 
 t_case 'a cookie with no attributes at all yields all three findings'
@@ -511,7 +532,12 @@ t_case 'no endpoint inventory is a recorded gap, not a clean result and not an e
 _new_run noinv
 SCOURSH_DAST_COOKIE_ENDPOINTS=$W/absent-inventory.json
 export SCOURSH_DAST_COOKIE_ENDPOINTS
-# shellcheck source=modules/dast/passive/cookies.sh
+# -x back-edge cut: modules/dast/passive/cookies.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/passive/cookies.sh"
 assert_contains "$(_meta_text coverage_gap)" 'no known endpoint' \
   'the report says nothing was tested - FAILS under returning quietly, which produces a report with no cookie findings and no reason'
@@ -527,7 +553,12 @@ _new_run cap
 SCOURSH_DAST_COOKIE_ENDPOINTS=$FULL_INV
 SCOURSH_DAST_COOKIE_MAX_ENDPOINTS=2
 export SCOURSH_DAST_COOKIE_ENDPOINTS SCOURSH_DAST_COOKIE_MAX_ENDPOINTS
-# shellcheck source=modules/dast/passive/cookies.sh
+# -x back-edge cut: modules/dast/passive/cookies.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/passive/cookies.sh"
 _reqcount() { local n=0 l; while IFS= read -r l; do [[ -n $l ]] && n=$(( n + 1 )); done <"$REQ_LOG"; printf '%s' "$n"; }
 assert_eq 2 "$(_reqcount)" 'exactly the cap is requested'
@@ -541,7 +572,12 @@ _new_run cap2
 SCOURSH_DAST_COOKIE_ENDPOINTS=$FULL_INV
 SCOURSH_DAST_COOKIE_MAX_ENDPOINTS=2
 export SCOURSH_DAST_COOKIE_ENDPOINTS SCOURSH_DAST_COOKIE_MAX_ENDPOINTS
-# shellcheck source=modules/dast/passive/cookies.sh
+# -x back-edge cut: modules/dast/passive/cookies.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/passive/cookies.sh"
 assert_eq "$CAP1" "$(cat "$REQ_LOG")" \
   'two runs over the identical surface request the identical endpoints - FAILS under iterating the endpoint map in bash associative-array (hash) order, which makes WHICH endpoints a capped run inspects unpredictable and the output non-reproducible'
@@ -558,7 +594,12 @@ EOF
 _new_run postonly
 SCOURSH_DAST_COOKIE_ENDPOINTS=$POST_ONLY
 export SCOURSH_DAST_COOKIE_ENDPOINTS
-# shellcheck source=modules/dast/passive/cookies.sh
+# -x back-edge cut: modules/dast/passive/cookies.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/passive/cookies.sh"
 assert_eq '' "$(cat "$REQ_LOG")" 'no request is sent'
 assert_contains "$(_meta_text coverage_reduction)" 'cookies_no_get_endpoint' 'and the reason is recorded'

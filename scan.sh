@@ -131,7 +131,12 @@ unset -v _scan_found _scan_candidate 2>/dev/null || true
 SCOURSH_SCAN_SH_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=lib/report.sh
 source "$SCOURSH_SCAN_SH_DIR/lib/report.sh"
-# shellcheck source=lib/config.sh
+# -x back-edge cut: lib/config.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$SCOURSH_SCAN_SH_DIR/lib/config.sh"
 # lib/http.sh is sourced here, not only by modules/dast/, because THIS file is
 # what writes the run's authorisation record (docs/STEP5-DAST-PLAN.md DAST-32:
@@ -142,7 +147,12 @@ source "$SCOURSH_SCAN_SH_DIR/lib/config.sh"
 # a safety limit drift.  Sourcing it costs nothing at run time: at source time
 # lib/http.sh only defines functions, and its own two dependencies
 # (lib/config.sh, lib/findings.sh) are already loaded by the lines above.
-# shellcheck source=lib/http.sh
+# -x back-edge cut: lib/http.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$SCOURSH_SCAN_SH_DIR/lib/http.sh"
 # shellcheck source=lib/checks.sh
 source "$SCOURSH_SCAN_SH_DIR/lib/checks.sh"

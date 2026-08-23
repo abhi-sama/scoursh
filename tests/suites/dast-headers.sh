@@ -45,7 +45,12 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Sourcing the engine pulls in lib/http.sh -> lib/config.sh + lib/findings.sh ->
 # lib/records.sh -> lib/core.sh, which bootstraps the scratch dir and traps.
-# shellcheck source=modules/dast/passive/headers_engine.sh
+# -x back-edge cut: modules/dast/passive/headers_engine.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/passive/headers_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
