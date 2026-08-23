@@ -264,6 +264,57 @@ dast_inventory_read() {
 }
 
 # ---------------------------------------------------------------------------
+# 3a. Per-check selection (docs/FOUNDATION.md tension 15)
+# ---------------------------------------------------------------------------
+# `dast_check_selected ID` - 0 when a run at this --profile-scan / --intensity
+# / --allow-intrusive may run check ID, 1 when the operator's filter chain
+# excluded it.
+#
+# scan.sh's `_scan_apply_profile_filter` runs lib/checks.sh's filter chain over
+# every dispatched module's registry and joins the surviving ids into
+# SCOURSH_SELECTED_CHECKS, one per line.  This function is the DAST side's
+# reader of that list, and it is the ONLY one: a phase script never parses the
+# variable itself, for the same reason no phase parses config/scope.conf itself.
+#
+# WHY IT MATTERS MORE HERE THAN IN A PATTERN MODULE.  A filtered-out SAST check
+# that runs anyway costs a wasted regex over a file already on disk.  A
+# filtered-out DAST check that runs anyway puts a request on someone else's live
+# system - a forged JWT, a SQLi payload, a content-discovery sweep - for a check
+# the operator explicitly excluded.  Until this function existed the four call
+# sites were all guarded with `declare -F dast_check_selected`, so every one of
+# them silently no-opped: --profile-scan and --intensity narrowed the DAST check
+# REGISTRY and narrowed nothing a run actually SENT.
+#
+# THE UNSET/EMPTY FALLBACK IS PERMISSIVE, AND MUST STAY THAT WAY.  It is
+# lib/findings.sh's `_derived_record_selected` rule verbatim (tension 6
+# condition (a)): no filter chain means everything is selected.  scan.sh exports
+# the variable unconditionally and possibly empty, so BOTH the unset and the
+# empty case have to answer "selected" - and every direct-engine suite
+# (tests/suites/dast-{cookies,headers,sqli,discovery}.sh) sources a phase script
+# with no scan.sh anywhere in the process, so a fail-closed default would make
+# every DAST phase inert while every "stays quiet" assertion in those suites
+# still passed green.  That is the worst available failure: invisible from the
+# test output, and it reads as coverage.
+#
+# One consequence is deliberate and worth naming rather than fixing: "the filter
+# chain ran and kept nothing" is indistinguishable from "there is no filter
+# chain", because both leave the variable empty.  Distinguishing them needs a
+# second variable in scan.sh, which is a change to a shared contract three other
+# readers already agree on; the surviving reading is the same permissive one
+# lib/findings.sh has shipped since step 1, so nothing diverges.
+#
+# The membership test is WHOLE-LINE, never substring.  A bare `*"$id"*` glob
+# would select `DAST-INJ-SQLI_ERROR-01` because some other selected line ends
+# with those bytes, which is the failure that delivers a payload the operator
+# filtered out; wrapping both the list and the needle in newlines is what makes
+# the comparison line-anchored at both ends, including the first and last lines.
+dast_check_selected() {
+  local id=$1
+  [[ -n ${SCOURSH_SELECTED_CHECKS:-} ]] || return 0   # no filter chain: all selected
+  [[ $'\n'"$SCOURSH_SELECTED_CHECKS"$'\n' == *$'\n'"$id"$'\n'* ]]
+}
+
+# ---------------------------------------------------------------------------
 # 4. The one door into a phase script
 # ---------------------------------------------------------------------------
 # `dast_run_phase SPEC RUN_INTENSITY TARGET` - SPEC is one `_DAST_PHASES` row.

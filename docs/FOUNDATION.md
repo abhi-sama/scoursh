@@ -2352,6 +2352,45 @@ and `SCOURSH_SELECTED_CHECKS` - the LF-joined selected-id env var `lib/findings.
 `_derived_record_selected` already read from step 1, in anticipation of this filter chain - is wired
 from `scan.sh`, union'd across every module one invocation dispatches.
 
+**A module that emits SCRIPT checks needs its own READER of that variable, and DAST's is
+`dast_check_selected` (`modules/dast/engine.sh` section 3a).**
+A pattern module needs no reader: `checks_registry_load` gives `modules/sast/engine.sh` and
+`modules/iac/parse.sh` a filtered id set to iterate, so a deselected check is simply never evaluated.
+A DAST phase script has no such loop - it hardcodes the ids it implements - so the filter chain binds
+it only if the script asks.
+That gap shipped: four call sites across three tickets called `dast_check_selected` behind a
+`declare -F` guard before anything defined it, so `--profile-scan`/`--intensity` narrowed the DAST
+check REGISTRY and narrowed nothing a run actually SENT - a forged JWT, a SQLi payload or a
+content-discovery sweep still went to the operator's live target for a check they had excluded, which
+is a request the operator did not authorise by check set.
+Three properties of the reader are load-bearing, and each is pinned by a case in `tests/suites/dast.sh`
+that fails under the reading it rejects:
+
+1. **Unset OR empty means ALL SELECTED**, verbatim as `lib/findings.sh`'s `_derived_record_selected`
+   already reads it.
+   `scan.sh` exports the variable unconditionally and possibly empty, so both cases must answer
+   "selected", and every direct-engine DAST suite sources a phase script with no filter chain in the
+   process at all.
+   A fail-closed default would therefore make every DAST phase inert while every "stays quiet"
+   assertion in those suites still passed green - invisible from the test output, and it reads as
+   coverage.
+2. **Membership is WHOLE-LINE, never a `*"$id"*` substring.**
+   An id that is merely a prefix or suffix of another selected line would otherwise deliver a payload
+   the operator filtered out.
+3. **The `declare -F` guard at each call site is KEPT.**
+   An unguarded call in a process without `engine.sh` is `command not found`, exit 127, non-zero -
+   which reads as "deselected" and reproduces failure mode 1 by another route.
+
+One consequence is accepted rather than fixed: "the filter chain ran and kept nothing" is
+indistinguishable from "there is no filter chain", since both leave the variable empty.
+Distinguishing them needs a second variable in `scan.sh`, a change to a contract three other readers
+already agree on, and the surviving reading is the permissive one `lib/findings.sh` has shipped since
+step 1 - so nothing diverges.
+A corollary for whoever registers a new DAST check family: gate a probe on `dast_check_selected` only
+once its ids are in a `checks.rules` registry.
+An id no registry declares can never survive the filter chain, so gating it ahead of registration makes
+it inert on precisely the runs that pass a `--profile-scan`.
+
 ## Tension 16 - shared limiter, budget, breaker, and cache across processes
 
 **The tension.**
