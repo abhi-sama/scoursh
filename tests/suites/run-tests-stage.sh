@@ -212,4 +212,39 @@ E_STATUS=0
 bash "$RUNNER" no-such-thing-at-all >/dev/null 2>&1 || E_STATUS=$?
 assert_eq 2 "$E_STATUS" 'an unknown name is still a usage error, not a silently skipped stage'
 
+# ===========================================================================
+printf '== F: errexit is LIVE inside the stage body ==\n'
+# ===========================================================================
+# The stage used to be top-level code under `set -Eeuo pipefail`; turning it
+# into a function risked losing that, because bash disables errexit for the
+# WHOLE BODY of a function invoked in an `A || B` list - not just for the call
+# (bash manual, "The Set Builtin").  So `sc_stage` is invoked as a plain
+# command and reports through SC_STAGE_STATUS.
+#
+# This case proves the strictness is really there, by breaking something the
+# stage has no `||` guard on: a stub `mktemp` that always fails, so
+# `sc_shard_dir=$(mktemp -d)` returns non-zero.  Shipped, that aborts the
+# runner and the EXIT trap still names what happened.  Under the `||` call
+# site it does NOT abort - measured: the stage carries on with an empty
+# $sc_shard_dir, reports both files as "checked and reported findings" when
+# neither was ever checked (an AC5 violation manufactured out of thin air),
+# and the runner then prints `all green` and exits 0.
+mkdir -p "$W/bin-mktemp"
+cp "$W/bin/shellcheck" "$W/bin-mktemp/shellcheck"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$W/bin-mktemp/mktemp"
+chmod +x "$W/bin-mktemp/mktemp"
+
+F_STATUS=0
+F_OUT=$(PATH=$W/bin-mktemp:$PATH \
+        SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
+        bash "$RUNNER" shellcheck 2>&1) || F_STATUS=$?
+
+assert_ne 0 "$F_STATUS" \
+  'an unexpected internal non-zero aborts the runner - FAILS under `sc_stage || failed+=(...)`, which disables errexit for the whole body and lets the run finish `all green` with exit 0'
+assert_contains "$F_OUT" '--- shellcheck FAILED' 'and a verdict line is still printed'
+assert_contains "$F_OUT" 'an unexpected non-zero exit' \
+  'and the EXIT trap arm for it is REACHABLE and names the cause - FAILS under the `||` spelling, where that arm can never fire and the trap documents a protection that does not exist'
+assert_not_contains "$F_OUT" 'checked and reported findings' \
+  'and no file is claimed to have been checked - FAILS under the `||` spelling, which reported findings against two files shellcheck never ran on'
+
 t_summary run-tests-stage

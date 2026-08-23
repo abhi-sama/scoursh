@@ -52,13 +52,35 @@ run_one() {
 # ===========================================================================
 # The whole-tree shellcheck stage.
 # ===========================================================================
-# `sc_stage` returns 0 when every file was CHECKED and every one of them was
-# clean, and 1 otherwise.  It prints its own verdict line - and it prints one
-# on EVERY exit path, including the ones that do not reach the bottom of this
-# function: a `set -E` abort, an operator's ^C, and a host-level SIGTERM all
-# used to end the stage after nothing but its header, which reads exactly like
-# a stage that had nothing to say.  The verdict is therefore emitted from a
-# trap with a once-only guard, never only from the straight-line path.
+# `sc_stage` reports through the global `SC_STAGE_STATUS` - 0 when every file
+# was CHECKED and every one of them was clean, 1 otherwise - and ALWAYS returns
+# 0 itself.  That shape is deliberate and is the whole reason this function can
+# be strict:
+#
+#   * Calling it as `sc_stage || failed+=(shellcheck)` would put it in an
+#     `A || B` list, and bash then disables `errexit` for its ENTIRE BODY, not
+#     just for the call ("If a compound command or shell function executes in a
+#     context where -e is being ignored, none of the commands executed within
+#     the compound command or function body will be affected by the -e
+#     setting" - bash manual, "The Set Builtin").  This code ran at top level
+#     with `errexit` live before it was a function; that spelling would have
+#     silently stripped the strictness, and would have made the `EXIT` trap's
+#     own "an unexpected non-zero exit" arm unreachable - a trap documenting a
+#     protection that cannot fire.
+#   * Calling it as `sc_stage; sc_rc=$?` does not work either: a function
+#     returning non-zero as a plain command IS an errexit abort, so the runner
+#     would die before the assignment on any run where shellcheck reports
+#     anything.  Measured, both ways.
+#
+# So: always return 0, carry the verdict in a variable, and let the body run
+# under the same `set -Eeuo pipefail` the rest of this file does.
+#
+# It prints its own verdict line - and it prints one on EVERY exit path,
+# including the ones that do not reach the bottom of this function: a `set -E`
+# abort, an operator's ^C, and a host-level SIGTERM all used to end the stage
+# after nothing but its header, which reads exactly like a stage that had
+# nothing to say.  The verdict is therefore emitted from a trap with a
+# once-only guard, never only from the straight-line path.
 #
 # It also distinguishes a file that was CHECKED AND CLEAN from a file that
 # could not be checked at all (killed by the watchdog below, killed by
@@ -67,7 +89,9 @@ run_one() {
 # fails the stage, because "shellcheck said nothing about this file" and
 # "shellcheck found nothing wrong with this file" are different facts and only
 # the second one is evidence.
+SC_STAGE_STATUS=0
 sc_stage() {
+  SC_STAGE_STATUS=0
   # ShellCheck is optional: an air-gapped host may not have it, and the suite
   # must still be runnable there.  CI installs it, and so does tools/daily-suite.sh's GNU leg
   # (its BSD leg expects it installed on the machine already) - see docs/CI-RUNBOOK.md.
@@ -525,7 +549,8 @@ sc_stage() {
     fi
     _sc_verdict "$sc_status"
     trap - EXIT INT TERM
-    return "$sc_status"
+    SC_STAGE_STATUS=$sc_status
+    return 0
   else
     printf '\n=== linter: shellcheck (SKIPPED - not installed) ===\n'
     return 0
@@ -539,7 +564,10 @@ if [[ -n ${1:-} ]]; then
   elif [[ -f tests/$want.sh ]]; then
     run_one linter "$want" "tests/$want.sh"
   elif [[ " ${STAGES[*]} " == *" $want "* ]]; then
-    sc_stage || failed+=(shellcheck)
+    # A plain call, never `sc_stage || ...` - see sc_stage's own header for why
+    # the `||` spelling would disable `errexit` for the whole stage body.
+    sc_stage
+    if (( SC_STAGE_STATUS != 0 )); then failed+=(shellcheck); fi
   else
     printf 'no such suite, linter or stage: %s\n' "$want" >&2
     printf 'available: %s %s %s\n' "${SUITES[*]}" "${LINTERS[*]}" "${STAGES[*]}" >&2
@@ -552,7 +580,8 @@ else
   for l in "${LINTERS[@]}"; do
     run_one linter "$l" "tests/$l.sh"
   done
-  sc_stage || failed+=(shellcheck)
+  sc_stage
+  if (( SC_STAGE_STATUS != 0 )); then failed+=(shellcheck); fi
 fi
 
 printf '\n'

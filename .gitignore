@@ -34,3 +34,12 @@ findings.normalised.jsonl
 # deliberate `git add -f`, and only with real, pinned provenance.
 data/advisories.db
 data/versions.db
+
+# `pnpm test` / `pnpm build` byproducts.  package.json exists ONLY so those
+# conventional entry points reach tests/run-tests.sh (AGENTS.md: "no
+# dependencies, no lockfile, no node_modules, no build step"), so anything pnpm
+# writes here is an artifact of running the suite, never a source.  Both landed
+# untracked in a workspace after a reviewer ran `pnpm build`, and a committed
+# pnpm-lock.yaml would assert a Node dependency set this project does not have.
+node_modules/
+pnpm-lock.yaml

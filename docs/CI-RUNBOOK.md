@@ -99,10 +99,18 @@ Two things the container needs, both found by running it rather than by reasonin
   `shellcheck -x` does not memoise: it re-expands a file EVERY time it is reached, so a *diamond* in an acyclic graph multiplies just as a cycle does.
   Measured on this tree: `lib/http.sh` sources both `lib/config.sh` and `lib/findings.sh`, and both reach `lib/records.sh` -> `lib/core.sh`; `modules/dast/passive/cookies.sh` reaches `lib/http.sh` through `inject_engine.sh` *and* through `auth_engine.sh`; and `tests/suites/dast-cookies.sh` sourced `cookies.sh` six separate times on top of that.
   The compounded result was **156,852 inlined lines for that one entry point, 91% of them duplicates** - `lib/core.sh` inlined 29 times - which measured 23.42 GB and had not finished after 29 minutes, so the stage's own 12 GB watchdog killed it and `tests/run-tests.sh` could not exit 0 on any branch.
-  The fix is the same one line, applied to every edge whose target the entry point already reaches another way: **52 `# shellcheck source=/dev/null` directives across 29 files**, each one *lossless* (the file is still inlined once, via the kept edge), taking that entry point to **34,874 lines and 8.4 GB, finishing in 173 s**.
+  The fix is the same one line, applied to every edge whose target the entry point already reaches another way: **47 `# shellcheck source=/dev/null` directives across 25 files**, each one *lossless* (the file is still inlined once, via the kept edge), taking that entry point to **34,881 lines**.
   Cut a duplicate edge, never a file's only edge: the second is a real loss of analysis and shows up as new SC2154/SC2034 noise in the parent.
 
-  These directives are load-bearing.  Deleting one because it "looks unnecessary" puts the stage back over budget - `tests/suites/dast-cookies.sh` and `tests/suites/dast-jwt.sh` are the two closest to the ceiling and are where a regression will surface first.
+  Count them from the tree rather than from this sentence, and count the ADDED set rather than the total - six files carried such a directive before this work:
+
+  ```sh
+  git grep -c '# -x back-edge cut:' -- '*.sh' | awk -F: '{s+=$2} END {print s}'   # 47
+  git grep -l '# -x back-edge cut:' -- '*.sh' | wc -l                             # 25
+  ```
+
+  **Peak RSS varies with the host, and the honest figure is the larger one.**  `tests/suites/dast-cookies.sh` measured **8.42 GB / 173 s** on one machine and **9.87 GB / 217 s** on another (same commit, `/usr/bin/time -l`, one file at a time); `tests/suites/dast-jwt.sh` measured 8.55 GB and 8.86 GB.  Against the unchanged 12 GB per-process budget that is **~1.2x headroom, not 1.4x**, and **`dast-cookies.sh` is the file closest to the ceiling** - it is where a regression will surface first, followed by `dast-jwt.sh`.
+  These directives are load-bearing.  Deleting one because it "looks unnecessary" puts the stage back over budget.
 
 The container is ARM Linux on an Apple Silicon host, rather than the x86-64 Linux the retired hosted CI provided.
 For a GNU-versus-BSD *userland* comparison that is faithful: what tension 24 checks is coreutils/grep/sed/bash behaviour, none of which is architecture-dependent.
@@ -311,6 +319,14 @@ Collapsing them is the expensive mistake: it sends someone hunting for a defect 
 `--- shellcheck passed` / `--- shellcheck FAILED` used to sit only on the straight-line path, so a `set -E` abort, a `^C`, or a SIGTERM ended the stage after nothing but its `=== linter: shellcheck ===` header - which reads in a log exactly like a stage that ran and was happy.
 bash does not run an EXIT trap for an untrapped SIGINT/SIGTERM, so INT and TERM are trapped explicitly rather than left to EXIT.
 (One hypothesis about that missing verdict - that `[[ $sc_biggest_pid == "$pid" ]] && sc_biggest_pid=` aborted the script under `set -e` when the test was false - was **measured and refuted**: bash exempts a whole `A && B` list from `set -e` when `A` itself fails, at top level and inside a loop or `if` body alike.)
+
+**The `set -E` arm of that trap is only reachable because of how `sc_stage` is CALLED, and that is the fragile part of this design.**
+The stage body was top-level code before it became a function.
+bash disables `errexit` for the **entire body** of a function invoked in an `A || B` list, not merely for the call, so `sc_stage || failed+=(shellcheck)` would silently strip that strictness and leave the `EXIT` trap documenting a protection that can never fire.
+`sc_stage; sc_rc=$?` is not the alternative either - a function returning non-zero as a plain command *is* an errexit abort, so the runner would die on any run where shellcheck reports anything.
+The shipped shape is therefore: **`sc_stage` always returns 0 and reports through the global `SC_STAGE_STATUS`**, and the caller branches on that.
+Measured under the `||` spelling with a stub `mktemp` that fails: the stage continued with an empty `$sc_shard_dir`, reported two files as "checked and reported findings" when shellcheck had never run on either, and the runner then printed `all green` and exited **0**.
+`tests/suites/run-tests-stage.sh` section F pins this, and goes red under exactly that spelling.
 
 **Running the stage on its own:** `tests/run-tests.sh shellcheck`.
 It is a *stage*, not a suite or a linter file - it has no `tests/*.sh` of its own - so it is listed under `stages:` in `--list` and named in `STAGES`, not `SUITES`/`LINTERS`.
