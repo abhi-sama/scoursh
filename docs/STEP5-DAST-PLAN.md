@@ -59,6 +59,13 @@ DAST-29 is also the first consumer of DAST-03's labelled multi-identity plumbing
 `requires-identities: 2` path in `rules/RULE-FORMAT.md` §9.5 now has a real implementation behind it.
 See its landing note under the tier-5 table.
 
+**Tier 5 has started too: DAST-28 (`ratelimit.sh`, the §7.4 missing-throttling burst probe) has
+landed**, alongside DAST-26 (`jwt.sh`).  It is the ticket carrying this plan's one behavioural
+amendment (see "Amendments to DAST-01 through DAST-30" below), and it created
+`modules/dast/checks.rules` - the shared, APPEND-ONLY registry for every tier-5 phase that sits at the
+top of `modules/dast/` rather than under `passive/` or `active/`.  Its landing note is under the tier-5
+table.
+
 **Tiers 2-5 are unblocked and nothing remains in front of them**: every check below needs the endpoint
 and parameter inventory DAST-04 writes, and the authenticated ones need the session DAST-03 acquires.
 Both are in.
@@ -1541,6 +1548,60 @@ Three things about that file a tier-5 peer needs before touching it:
   the "empty means all selected" fallback every direct-engine test relies on; a fail-closed default
   would make every DAST phase inert while every "stays quiet" assertion still passed green.
   Defining it in `modules/dast/engine.sh` is filed as its own ticket.
+
+**DAST-28 (`ratelimit.sh`) has landed, and it is the ticket that carries this plan's one behavioural
+amendment.**
+It ships `modules/dast/ratelimit_engine.sh` (the pure half: the vendored rate-limit header family, the
+`Retry-After` usability test, the burst arithmetic and the verdict), `modules/dast/ratelimit.sh` (the
+phase script `dast_run_phase` sources) and `modules/dast/checks.rules` (two `DAST-RATE-*` script
+checks, both tagged `active`, both `coverage-scope: target`).
+`tests/suites/dast-ratelimit.sh` is the proof - 70 assertions, no network and no Docker, driven from
+recorded response heads replayed into `lib/http.sh`'s own capture sink, and registered in
+`tests/run-tests.sh`'s `SUITES` array.
+Seven things about it are worth carrying here, because a peer tier-5 ticket will otherwise rediscover
+them the expensive way.
+
+- **The amendment is enforced as FOUR gates, and the second is a strengthening this plan did not
+  state.**  The amendment says an unaffirmed run must not execute and must record a `coverage_gap`
+  naming the scanner's own rate ceiling; that is gate 1.  But the affirmation LIFTS the 4/s ceiling and
+  does not RAISE the rate, so an operator who affirms and leaves `requests-per-second` at its default
+  gets a fifty-request "burst" trickled out over twelve seconds - the identical silent false negative,
+  one step further in.  Gate 2 therefore refuses a run whose EFFECTIVE rate is still at or below 4/s
+  and names the config key to change.  Gate 3 is the budget, gate 4 an idempotent endpoint.  Every one
+  of them is asserted on a REQUEST LOG rather than on a return value, so "it refused" cannot be
+  satisfied by a phase that sent traffic and then returned 0.
+- **`--i-own-target` is compared against the target, not merely read.**  It is a key rather than a
+  switch (DAST-32's own wording), so an affirmation naming target A does not license a burst against
+  target B; a run that scoped both would otherwise burst the one the operator never affirmed.
+- **The budget is READ from `lib/http.sh`, never re-implemented, and the reader lives there.**
+  `http_budget_remaining_set` is new in that file's section 11, beside the counter it reads, for the
+  same reason tension 19 puts the gate at `http_request`.  Because every burst request goes through
+  `http_request`, the draw-down is not something the module has to remember to do - it is what the
+  chokepoint does with any request - so the amendment's "must draw down the *same* per-run request
+  budget DAST-01 owns" is structural rather than a convention.  What the module adds is spending at
+  most HALF of what is left: `lib/http.sh`'s budget refusal is fatal (exit 5), so a probe sized to the
+  whole remainder would end the run for every phase and every target after it.
+- **The read is not a reservation, and saying so is the point.**  Nothing takes budget out of
+  circulation; the only charge happens inside `_http_throttle`'s critical section.  Promoting it to a
+  reservation would leak budget for the rest of the run whenever a caller died mid-burst.
+- **A 503 is NOT throttling, and a rate-limit HEADER without a 429 is not a finding.**  A target that
+  collapses under the burst is the worse outcome, and counting its 503 as a throttle would turn that
+  into a clean bill of health for the very control being tested - `lib/http.sh`'s own breaker draws the
+  same line from the other side (a 5xx is a failure it counts; a 429 is not).  And a target that
+  publishes `RateLimit-*`/`X-RateLimit-*` on every response HAS a limiter this bounded burst simply did
+  not reach; folding that into the finding would fire this check against every correctly-configured API
+  in the world, while folding it the other way makes the check inert.  Both directions are pinned in
+  the same suite section, so neither half can be satisfied by breaking the other.
+- **The burst stops at the first 429 and at nothing else.**  Once the target has said "too many",
+  further requests can only confirm what is known, against a host that has just asked for less.  The
+  NEGATIVE case has no such exit: "no 429 in N requests" is only true of N, so it earns the full burst.
+- **Two check ids, not one.**  `DAST-RATE-NO_THROTTLE-01` (no throttle at all) and
+  `DAST-RATE-NO_RETRY_AFTER-01` (throttles, but the 429 carries no usable back-off) are different
+  defects with different severities and remediations; the DAST fingerprint carries no component naming
+  the defect, so one shared id would make them collide and `findings_merge` would silently keep one -
+  the identical argument `active/checks.rules` already records for the SQLi family.  A `Retry-After` a
+  client cannot parse counts as absent, and is in fact worse than absent, because a client that parses
+  it gets zero and retries immediately.
 
 That is 30 tickets end to end (DAST-01 through DAST-30), matching this ticket's "~30-script scope"
 estimate for step 5.
