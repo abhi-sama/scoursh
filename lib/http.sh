@@ -1300,6 +1300,57 @@ _http_rps_render() {
   printf '%s.%03d' $(( $1 / 1000 )) $(( $1 % 1000 ))
 }
 
+# `http_budget_remaining_set VARNAME` - how many requests of the per-run budget
+# are still unspent, into VARNAME, plus `_HTTP_BUDGET_TOTAL` (the effective
+# budget this run resolved) and `_HTTP_BUDGET_RPS_MILLI` (the effective rate)
+# alongside.
+#
+# IT LIVES HERE RATHER THAN IN THE ONE MODULE THAT NEEDS IT, and that is the
+# same argument tension 19 makes for the gate and this section makes for the
+# limiter.  `modules/dast/ratelimit.sh` (DAST-28) is the one check
+# docs/DESIGN.md §7.4 flags as intentionally multi-request, and
+# docs/STEP5-DAST-PLAN.md's own DAST-28 amendment requires it to draw down the
+# SAME budget rather than carry one of its own - "a burst probe that had its
+# own budget would double-spend the ceiling the whole tier depends on".  A
+# module-local reader would be a second definition of where the counter lives
+# and of what an absent counter means, and the two would drift the first time
+# this file changed the file name or the fallback.
+#
+# IT IS A READ, NEVER A RESERVATION, and the distinction is load-bearing.
+# Nothing here takes the budget out of circulation: the only place a request is
+# actually charged is `_http_throttle`, inside the one critical section that
+# also grants the token, and the only place exhaustion is enforced is the
+# `remaining <= 0` refusal there.  So a caller sizing a burst from this number
+# is sizing it from a value another worker may already have spent against, and
+# must leave headroom rather than treat the answer as a reservation it holds -
+# which is exactly why DAST-28 spends at most half of what this reports.
+# Promoting it to a reservation would mean a caller that died mid-burst leaked
+# budget for the rest of the run, which is the failure this section's own
+# "manufacture budget out of a crash" note rejects in the other direction.
+#
+# An absent or unparseable counter means the budget has not been OPENED yet,
+# never "unlimited" - the identical fallback `_http_throttle` applies, kept in
+# step with it deliberately.
+http_budget_remaining_set() {
+  local _hbr_out=$1 _hbr_file _hbr_remaining=''
+  _http_effective_limit_set request-budget
+  _HTTP_BUDGET_TOTAL=$_HTTP_EFF_LIMIT
+  _http_effective_rps_milli_set
+  _HTTP_BUDGET_RPS_MILLI=$_HTTP_EFF_RPS_MILLI
+  _http_limit_dir_set
+  _hbr_file=$_HTTP_LIMIT_DIR/budget.state
+  # Under the same mutex the decrement takes, so a caller never reads a
+  # half-written counter mid-update.
+  mutex_acquire "$_HTTP_LIMIT_MUTEX"
+  if [[ -r $_hbr_file ]]; then
+    IFS= read -r _hbr_remaining <"$_hbr_file" || true
+  fi
+  mutex_release "$_HTTP_LIMIT_MUTEX"
+  [[ $_hbr_remaining =~ ^[0-9]+$ ]] || _hbr_remaining=$_HTTP_BUDGET_TOTAL
+  printf -v "$_hbr_out" '%s' "$_hbr_remaining"
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # 11a. The run's authorisation record (docs/STEP5-DAST-PLAN.md DAST-32/33/34)
 # ---------------------------------------------------------------------------

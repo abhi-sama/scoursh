@@ -311,3 +311,65 @@ remediation: Pin the verification algorithm to the one you issue and never let t
 references: CWE-347
 references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
 references: https://tools.ietf.org/html/rfc8725
+
+# --- ratelimit.sh (DAST-28, §7.4 missing-throttling burst probe) -------------
+#
+# `checks_registry_load` globs every *.rules under modules/dast/ with no
+# per-pack allowlist, so every record here loads on any `scan.sh dast` run.
+#
+# TWO IDS FOR ONE BURST, and the reason is the same one active/checks.rules
+# records for the SQLi family: the DAST fingerprint profile is (target, method,
+# path_template, param_location, param_name) and carries no component naming
+# the DEFECT, so "no throttling at all" and "throttles but never says how to
+# back off" on one endpoint would hash identically and `findings_merge` would
+# silently keep one.  They are different defects, with different severities and
+# different remediations, so they are different checks.
+#
+# The type tag is `active`, matching modules/dast/engine.sh's own
+# `ratelimit.sh:active` phase-table floor: this check is reachable only at
+# `--intensity active`, and in practice at less than that, because it ALSO
+# refuses to run without the `--i-own-target` affirmation (DAST-32) - see
+# modules/dast/ratelimit.sh's own header for that gate and the three others.
+# It is NOT tagged `intrusive`: every request is a bare GET of a URL the
+# inventory already named, with no parameter, no body and no credential, so
+# nothing it sends is destructive.  What makes it special is the NUMBER of
+# requests, which the affirmation gate and the hard cap bound rather than the
+# intrusive flag.
+
+id: DAST-RATE-NO_THROTTLE-01
+title: No request throttling on an idempotent endpoint
+script: ratelimit.sh
+severity: medium
+confidence: medium
+cwe: CWE-770
+owasp: A04:2021
+tags: active
+coverage-scope: target
+remediation: Apply a rate limit to this endpoint at the edge (reverse proxy,
+  API gateway or WAF) and, where the limit is per-principal rather than
+  per-IP, in the application as well. Answer an exceeded limit with 429 and a
+  Retry-After a client can honour, and publish RateLimit-Limit,
+  RateLimit-Remaining and RateLimit-Reset so a well-behaved client can back off
+  before it is refused. Rate limiting is the control that bounds credential
+  stuffing, enumeration and resource exhaustion against an endpoint that is
+  otherwise behaving correctly.
+references: CWE-770
+references: https://owasp.org/Top10/A04_2021-Insecure_Design/
+
+id: DAST-RATE-NO_RETRY_AFTER-01
+title: Rate limit signalled without a usable back-off (429 with no Retry-After)
+script: ratelimit.sh
+severity: low
+confidence: medium
+cwe: CWE-770
+owasp: A04:2021
+tags: active
+coverage-scope: target
+remediation: Send a Retry-After header on every 429 response, as either a
+  delta-seconds value or an HTTP-date (RFC 9110 section 10.2.3), so a client
+  knows when the limit resets rather than retrying immediately and sustaining
+  the load the limit was imposed to shed. Publishing RateLimit-Limit,
+  RateLimit-Remaining and RateLimit-Reset alongside it lets a well-behaved
+  client slow down before it is refused at all.
+references: CWE-770
+references: https://owasp.org/Top10/A04_2021-Insecure_Design/

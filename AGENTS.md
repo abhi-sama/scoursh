@@ -119,6 +119,35 @@ Each has a full entry in `docs/FOUNDATION.md`.
   5), so the ordinary and the elevated case stay two findings rather than one whose meaning flips
   between runs - the same argument `cookies.rules` already records for absent-vs-weak `SameSite`.
 - **A URL a target hands back is judged by its AUTHORITY, parsed the way a browser parses it - never by a substring, a prefix, or exact host equality alone** (`modules/dast/active/openredirect.sh`'s `_or_url_host`/`_or_host_is_sentinel`, DAST-19). Every naive reading fails in a direction that reads as a clean result, which is why all three are pinned in both directions. A SUBSTRING test flags the commonest SAFE behaviour on the surface - an on-origin redirect that reflects the value into its own query string (`Location: https://site/login?next=https://<probe-host>/`). Ignoring USERINFO misses `https://<site>@<probe-host>/`, and matching the probe host by EXACT EQUALITY alone misses `https://<site>.<probe-host>/`: those two are the shapes that defeat a real `startsWith(ourHost)` allow-list, so a parser that cannot see them cannot see the filters worth testing, while the mirror image `<probe-host>.<site>` is the TARGET's own name and must not match. The split is on the LAST `@`, and `//host/`, `https:/host/` and `/\host/` all carry an authority - a parser STRICTER than the client that will follow the redirect reports safe on a live one. Any peer probe that reads a `Location`, an `Origin` or a `Host` back off a target (DAST-20's SSRF sentinel, DAST-23's CRLF, DAST-24's host header) wants this function rather than its own.
+- **The DAST-28 burst probe is the ONE check that cannot run without `--i-own-target`, and the
+  affirmation is checked in FOUR places rather than one** (`modules/dast/ratelimit.sh`). The
+  amendment `docs/STEP5-DAST-PLAN.md` records is that an unaffirmed run must not execute at all,
+  because under the conservative 4/s ceiling a burst "proves" only that the SCANNER was slow - a
+  clean result that is really the absence of a test. The non-obvious half is that the affirmation
+  LIFTS that ceiling and does not RAISE the rate, so an affirmed run left at the default 4/s has
+  exactly the same defect one step further in; that is a second gate, on the EFFECTIVE rate, and
+  refusing it is what stops the probe reporting a negative it did not earn. The affirmation is also
+  compared against the TARGET (it is a key, not a switch), so owning target A never licenses a burst
+  against target B. Every gate is asserted on a REQUEST LOG, never on a return value: "it refused"
+  must not be satisfiable by a phase that sent traffic and then returned 0.
+- **A burst probe draws down `lib/http.sh`'s OWN budget counter and spends at most HALF of what is
+  left; it never carries a budget of its own.** `http_budget_remaining_set` (lib/http.sh section 11)
+  is the only reader, placed beside the counter for the same reason tension 19 puts the gate at
+  `http_request` - a module-local copy would be a second definition of where the counter lives and of
+  what an absent one means. The draw-down itself is automatic (every request goes through the
+  chokepoint); the HALF is the deliberate part, because the budget refusal is fatal (exit 5), so a
+  probe sized to the whole remainder ends the run for every phase and target after it. The number it
+  reports is a READ, never a reservation: nothing is taken out of circulation until
+  `_http_throttle` charges it inside its own critical section.
+- **A 503 is not throttling, and a `RateLimit-*` header without a 429 is not a finding.** Both fail in
+  the direction that reads as a pass. Counting a 503 as a throttle turns "this endpoint collapses when
+  you ask for it fifty times" - the worse outcome - into a clean bill of health for the control being
+  tested; `lib/http.sh`'s own breaker draws the same line from the other side (a 5xx is a failure it
+  counts, a 429 is not). And a target publishing `RateLimit-*`/`X-RateLimit-*` on every response HAS a
+  limiter this bounded burst did not reach - fold that into the finding and the check fires against
+  every correctly-configured API in the world; fold it the other way and the check goes inert. Both
+  directions are pinned in one section of `tests/suites/dast-ratelimit.sh` so neither half can be
+  satisfied by breaking the other.
 - **`SCOURSH_DAST_ENDPOINTS` is resolved BEFORE `crawl.sh` runs, so it is empty on the ordinary run** (`modules/dast/run.sh` calls `dast_inventory_read` once, ahead of the phase loop). `crawl.sh` is itself a phase and writes `reports/<run>/inventory/endpoints.json` several phases later; nothing re-reads it. A consumer trusting the exported variable alone therefore sees an empty surface on precisely the run that has one - `active/sqli.sh` does exactly this today. Read `$SCOURSH_RUN_DIR/inventory/endpoints.json` as a fallback (the same artifact by the same path, read after the producer wrote it), as `passive/cookies.sh` does; the general fix in `run.sh` is filed as its own ticket.
 - **A DAST phase gates every outbound probe on `dast_check_selected` (`modules/dast/engine.sh` section 3a), and the `declare -F` guard around each call is KEPT deliberately** (tension 15). Unset or empty `SCOURSH_SELECTED_CHECKS` means ALL SELECTED, exactly as `lib/findings.sh`'s `_derived_record_selected` already reads it, and inverting that is the trap: `tests/suites/dast-{sqli,headers,discovery}.sh` each source a phase script with no `engine.sh` in the process, so a fail-closed default - or an UNguarded call, which is `command not found`, exit 127, non-zero, hence "deselected" - makes every phase inert while every "stays quiet" assertion in those suites still passes green. Membership is WHOLE-LINE, never a `*"$id"*` substring, because an id that is merely a suffix of another selected line would deliver a payload the operator filtered out. This mattering at all is why it is worth stating: four call sites called this function across three tickets before anything defined it, so `--profile-scan`/`--intensity` narrowed the DAST check REGISTRY and narrowed nothing a run actually SENT. One consequence is accepted rather than fixed: "the filter chain ran and kept nothing" is indistinguishable from "there is no filter chain", since both leave the variable empty.
 - **One `checks.rules` per module directory, never a per-script pack.** `rules/RULE-FORMAT.md` §9's path table reserves that BASENAME repository-wide for the §9.5 schema, and a record file matching no row is `E070` - so `modules/dast/passive/cookies.rules` is refused by `tests/lint-rules.sh` however sensible per-owner packs look when peers are being built in parallel. Peers share the file and resolve the append-only conflict by taking both sides.
@@ -168,7 +197,8 @@ parameter inventory that all twenty-seven tickets in tiers 2-5 consume exists, a
 against an authenticated session.
 Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has started - tier 4's
 DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`) and DAST-19 (`active/openredirect.sh`), tier
-5's DAST-26 (`jwt.sh`), DAST-29 (`authz.sh`, the §7.4 object-level authorization and
+5's DAST-26 (`jwt.sh`), DAST-28 (`ratelimit.sh`, the §7.4 missing-throttling burst probe),
+DAST-29 (`authz.sh`, the §7.4 object-level authorization and
 data-exposure family) and DAST-30 (`passive/transport.sh`, the §7.4 plaintext-exposure and
 mixed-content family - a tier-5 ticket that RUNS at tier `passive` and lives under
 `modules/dast/passive/`, see its own section below), tier 2's
@@ -198,8 +228,9 @@ in the direction that reads as a pass, which is why every context case in `tests
 is a PAIR (the same marker into the same template, once escaped and once raw) rather than a single
 positive.
 DAST-29 created a THIRD such shared registry, `modules/dast/checks.rules`, for the tier-5 phases
-whose scripts sit at the top level of `modules/dast/`; DAST-27 and DAST-28 append to it and
-resolve a conflict in it by keeping both blocks, never by choosing a side.
+whose scripts sit at the top level of `modules/dast/`; DAST-28 has already appended its two
+`DAST-RATE-*` records to it, and DAST-27 appends the same way - a conflict in it is resolved by
+keeping both blocks, never by choosing a side.
 DAST-30 is NOT one of them despite being a tier-5 ticket: its script sits under
 `modules/dast/passive/`, so its checks are registered in `modules/dast/passive/checks.rules` with the
 rest of that directory.
