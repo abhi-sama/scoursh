@@ -1043,7 +1043,65 @@ weakening it, so it is named in the remediation instead of flagged).
 | # | Ticket | Depends on |
 |---|---|---|
 | DAST-12 (**landed**) | `active/discovery.sh` - content discovery | DAST-01/02/04. **No wordlist is committed to this repository** - this ticket vendors its own, in-repo and read from disk under §12's `tests/fixtures/`-style vendoring rule, so unlike DAST-09 it carries no `vendor-engines.sh` dependency and no missing-data degradation path. |
-| DAST-13 | `active/methods.sh` - HTTP method enumeration | DAST-01/02/04 |
+| DAST-13 **(landed)** | `active/methods.sh` - HTTP method enumeration | DAST-01/02/04. See the landing note below. |
+
+#### What DAST-13 (`active/methods.sh`) shipped, and the four things about it that are easy to get backwards
+
+**DAST-13 has landed - the second tier-3 safe-active phase, after DAST-12 (`active/discovery.sh`),
+whose own landing note follows this one; with both in, tier 3 is complete.**
+It ships `modules/dast/active/method_engine.sh` (the pure parsing half: `Allow`-header extraction,
+comma-list splitting, method classification and TRACE confirmation) and
+`modules/dast/active/methods.sh` (the phase `dast_run_phase` sources at tier `safe`), registering
+`DAST-METHOD-TRACE_ENABLED-01`, `DAST-METHOD-WRITE_ADVERTISED-01` and
+`DAST-METHOD-CONNECT_ADVERTISED-01` in `modules/dast/active/checks.rules` - the same shared,
+append-only file `active/sqli.sh`'s records already live in, for the reason the tier-2 note above gives
+for its own directory.  `tests/suites/dast-methods.sh` (104 assertions, no network, no Docker) is the
+proof, and is named in `tests/run-tests.sh`.
+
+- **THE ONLY TWO METHODS THAT EVER LEAVE THIS PHASE ARE `OPTIONS` AND `TRACE`.**  `PUT`, `DELETE`,
+  `PATCH` and `CONNECT` are never sent, on any endpoint, under any flag: acceptance is established
+  from the server's own `Allow` header, which a `405` is *required* to carry (RFC 7231 §6.5.5), and
+  never by exercising the method - completing one would create, overwrite or delete a resource on a
+  target under audit.  That is why those two checks are `confidence: medium` and say so in their
+  evidence, while the measured TRACE check is `high`.  The suite asserts the absence of every write
+  method **on the request log**, over a fixture surface that advertises all of them.
+- **`Access-Control-Allow-Methods` IS NOT `Allow`, AND THE ANCHOR IS THE WHOLE DEFENCE.**  The
+  header-name match is `^allow:`; an unanchored, case-insensitive match for `allow` reads a CORS
+  preflight policy - what a BROWSER may send cross-origin - as what the ENDPOINT accepts, so every
+  API permitting a cross-origin `PUT` from its own front end is reported as accepting `PUT` from
+  anyone.  Measured: that mutation fails 7 assertions.  CORS analysis is a separate check family and
+  is out of this ticket's scope; the point is not doing a bad version of it by accident.
+- **THE MEASUREMENT BEATS THE ADVERTISEMENT, IN BOTH DIRECTIONS, AND ONE READING GETS EACH HALF
+  WRONG.**  A confirmed TRACE echo that the server names in NO `Allow` header is still a finding
+  (Apache's historical `TraceEnable` default is exactly that shape); a `TRACE` named in `Allow` that
+  the actual `TRACE` request answers `405` is NOT a finding, only a recorded contradiction.  And a
+  bare `200` is not an echo: a single-page app answers every unrouted request with its shell, so
+  "TRACE returned 200" fires on a great many servers with no TRACE handler - confirmation requires
+  `Content-Type: message/http` or a body echoing the request line (RFC 7231 §4.3.8).
+- **THIS PHASE DOES NOT FILTER THE INVENTORY TO ITS `GET` ROWS, UNLIKE `passive/cookies.sh`, AND THAT
+  IS NOT AN INCONSISTENCY.**  That phase dials each endpoint *with the method the crawler recorded*,
+  so a recorded `POST /login` had to be skipped.  This one never uses the recorded method as the
+  method to send, so a `POST` row is a safe thing to ask `OPTIONS` about - and skipping it would drop
+  exactly the write-shaped endpoints whose method surface is most worth knowing.
+
+- **THE AUTHENTICATED PASS ATTACHES ITS CREDENTIAL THROUGH `dast_auth_apply`, IMMEDIATELY BEFORE EVERY
+  REQUEST.**  Two readings of that sentence are wrong and both were measured failing here.  Reaching
+  into the session store for a cookie header - `dast_auth_cookie_header_set`, which does not exist;
+  the real helper is `_dast_auth_cookie_header_set` and it is private - means a `declare -F` guard
+  quietly skips it, so the run reports `authenticated_pass=1` while sending nothing, and a
+  cookie-only attachment would still send nothing for a `bearer`/`api-key` identity, which is the
+  majority shape for an API.  And attaching ONCE per endpoint is not enough: `http_request` consumes
+  lib/http.sh section 9a's per-request context at entry, so the `TRACE` that follows the `OPTIONS`
+  would go out anonymous.
+  Section E of the suite pins both, on the outbound header context at the transport boundary rather
+  than on anything the phase says about itself.
+  **`modules/dast/passive/cookies.sh` (DAST-06) carries the first of those two bugs verbatim** and is
+  filed as its own ticket rather than fixed here.
+
+One standing bound is recorded on every run that enumerated anything
+(`reason=methods_write_not_exercised`), because the absence of a write finding means "none was
+advertised", not "none is enabled": an endpoint that accepts `PUT` without saying so is outside what a
+non-destructive check can see, permanently and by design.
 
 **DAST-12 (`active/discovery.sh`) has landed - the first tier-3 (§7.2 safe-active) phase.**
 It ships `modules/dast/active/discovery.sh` (the phase script `dast_run_phase` sources at tier `safe`)
@@ -1079,7 +1137,8 @@ GET through `lib/http.sh` (tension 19), non-destructive per §7.2's posture.  `t
 every path yielding no false hits), the three source->family mapping, directory-listing detection,
 graceful degradation for an absent wordlist and an unreachable base-url, the read-only-GET posture, and
 the wordlist reader's rejection of unsafe entries.  `docs/STEP5-DAST-PLAN.md`'s own DAST-12 row above is
-the authority for the dependency; DAST-13 (`active/methods.sh`) is the only remaining tier-3 script.
+the authority for the dependency; DAST-13 (`active/methods.sh`), the other tier-3 script, has since
+landed too - see its own note above.
 
 **A follow-up ticket then corrected technique B's coverage claim, and the correction is the general
 lesson, not a detail of this phase: `DAST-DISC-BACKUP-01` is recorded in `checks_run` on the number of

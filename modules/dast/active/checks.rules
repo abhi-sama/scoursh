@@ -299,3 +299,106 @@ remediation: Do not build a client-side redirect destination from
   subdomain.
 references: CWE-601
 references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+
+# ---------------------------------------------------------------------------
+# §7.2 safe-active: HTTP method enumeration (DAST-13, active/methods.sh)
+# ---------------------------------------------------------------------------
+# These three share this file with the §7.3 injection records above rather than
+# taking a pack of their own, because rules/RULE-FORMAT.md §9's path table
+# reserves the basename `checks.rules` repository-wide for the §9.5 schema and a
+# `modules/dast/active/methods.rules` would be E070. Peers in this directory
+# share the file and resolve the append-only conflict by taking both sides.
+#
+# The type tag is `safe-active`, matching the phase table's
+# `active/methods.sh:safe` floor (modules/dast/engine.sh): lib/checks.sh's
+# `checks_intensity_keeps` admits `safe-active` from `--intensity safe` upward,
+# so these are reachable one tier below the SQLi records above and one tier
+# above the passive checks. Neither carries `intrusive`: the probe sends only
+# `OPTIONS` and `TRACE`, both defined as having no effect on the resource (RFC
+# 7231 §4.3.7, §4.3.8), and requiring --allow-intrusive on top of the safe-tier
+# opt-in would be a second, undocumented gate for a check that mutates nothing.
+#
+# WHY THE TWO ADVERTISEMENT CHECKS ARE `confidence: medium` AND THE TRACE CHECK
+# IS `high`, which is the substance of this ticket rather than a hedge: TRACE is
+# MEASURED - the probe sends it, because an echo changes no resource - so the
+# finding rests on a response this run received. `PUT`/`DELETE`/`PATCH`/`CONNECT`
+# are NEVER SENT, because completing one would create, overwrite or delete a
+# resource on a target under audit, so those findings rest on the server's own
+# `Allow` header. A claim is weaker evidence than a measurement and the record
+# says so, rather than presenting both at one confidence and letting the reader
+# guess which is which.
+#
+# One check id per method CLASS, not per method name. The DAST fingerprint
+# carries (target, method, path_template, param_location, param_name), and the
+# probe sets `loc_method` to the method being REPORTED - so `PUT` and `DELETE` on
+# one path are already two findings under one id, with no collision. Minting
+# `DAST-METHOD-PUT-01`, `_DELETE-01` and `_PATCH-01` separately would add three
+# ids whose remediation text is identical and whose only distinguishing
+# component the fingerprint already carries.
+
+id: DAST-METHOD-TRACE_ENABLED-01
+title: HTTP TRACE is enabled (Cross-Site Tracing)
+script: active/methods.sh
+severity: medium
+confidence: high
+cwe: CWE-693
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: Disable TRACE at the web server and at every proxy in front of it
+  (`TraceEnable off` in Apache httpd; an explicit rejection in nginx, which does
+  not implement TRACE but will pass it upstream), and disable IIS's TRACK in the
+  same change, since it is not covered by the TRACE setting. Do not rely on
+  HttpOnly to keep a session cookie away from page script while TRACE is
+  answered: the echo returns the cookie the browser attached. Verify at the edge
+  as well as the origin, because a CDN or load balancer that answers TRACE
+  itself reintroduces the issue after the origin is fixed.
+references: CWE-693
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+references: RFC 7231 section 4.3.8
+
+id: DAST-METHOD-WRITE_ADVERTISED-01
+title: A state-changing HTTP method (PUT, DELETE or PATCH) is advertised as allowed
+script: active/methods.sh
+severity: high
+confidence: medium
+cwe: CWE-749
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: Confirm the method is intended on this route. If it is not, refuse
+  it at the application router and at the web server or proxy in front of it
+  rather than relying on a framework default - PUT, DELETE and PATCH are
+  commonly left enabled by a permissive WebDAV, upload or REST module nobody
+  chose. If the method IS intended, check that it enforces authentication AND
+  per-object authorisation on every path that reaches it (an Allow header is a
+  routing fact and says nothing about who may act), that it validates the target
+  path against traversal, and that a written file can never be served back as
+  executable content. This check establishes acceptance from the server's own
+  advertisement and never sends the method, so confirm it yourself against a
+  resource you are willing to lose, or read the route table.
+references: CWE-749
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+references: RFC 7231 section 6.5.5
+
+id: DAST-METHOD-CONNECT_ADVERTISED-01
+title: HTTP CONNECT is advertised as allowed, which is an open-proxy shape
+script: active/methods.sh
+severity: high
+confidence: medium
+cwe: CWE-441
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: Unless this host is deliberately a forward proxy, refuse CONNECT
+  outright at the web server and at every proxy in front of it. If it IS a
+  forward proxy it must never be reachable from an untrusted network: bind it to
+  the interface its clients are on, require authentication, and restrict the
+  destination host and port set to an explicit allow list, since an unrestricted
+  CONNECT to port 25 is how a host ends up relaying mail. Confirm from
+  off-network that the port is not reachable, because a proxy intended for
+  internal use that is exposed by a cloud security-group default is the ordinary
+  way this happens.
+references: CWE-441
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+references: RFC 7231 section 4.3.6
