@@ -148,6 +148,8 @@ Each has a full entry in `docs/FOUNDATION.md`.
   every correctly-configured API in the world; fold it the other way and the check goes inert. Both
   directions are pinned in one section of `tests/suites/dast-ratelimit.sh` so neither half can be
   satisfied by breaking the other.
+- **A finding's `evidence` is HARD-CAPPED at `SCOURSH_EVIDENCE_MAX_BYTES` (512 by default, `lib/findings.sh`), and `_evidence_truncate` cuts the TAIL off silently.** Whatever a finding most needs the reader to see goes FIRST. Measured on `modules/dast/active/methods.sh`: a first draft wrote a paragraph per finding, and the two sentences that ticket existed to put in front of an operator - how acceptance was determined, and that the write method was never sent - were exactly the two the emitter dropped, because they sat at the end. Background prose belongs in `remediation`, which carries no cap.
+- **`modules/dast/active/methods.sh` (DAST-13) establishes method acceptance WITHOUT exercising it, and the only two methods that ever leave it are `OPTIONS` and `TRACE`** (both defined as having no effect on the resource, RFC 7231 §4.3.7/§4.3.8). `PUT`/`DELETE`/`PATCH`/`CONNECT` are read off the server's own `Allow` header - which a `405` is *required* to carry, RFC 7231 §6.5.5, so the rejection is a source and not only the 2xx - and are never sent, which is why those checks are `confidence: medium` and the measured TRACE check is `high`. Three things there are easy to get backwards and each is pinned by a mutation that was watched failing: the `Allow` match is anchored `^allow:`, because an unanchored one reads `Access-Control-Allow-Methods` (a CORS *browser* policy) as an endpoint acceptance claim; a bare `200` is not a TRACE echo, because a single-page app answers every unrouted request with its shell; and the measurement beats the advertisement in BOTH directions - a confirmed echo the server never named is still a finding, a named `TRACE` that answers `405` is not.
 - **`SCOURSH_DAST_ENDPOINTS` is resolved BEFORE `crawl.sh` runs, so it is empty on the ordinary run** (`modules/dast/run.sh` calls `dast_inventory_read` once, ahead of the phase loop). `crawl.sh` is itself a phase and writes `reports/<run>/inventory/endpoints.json` several phases later; nothing re-reads it. A consumer trusting the exported variable alone therefore sees an empty surface on precisely the run that has one - `active/sqli.sh` does exactly this today. Read `$SCOURSH_RUN_DIR/inventory/endpoints.json` as a fallback (the same artifact by the same path, read after the producer wrote it), as `passive/cookies.sh` does; the general fix in `run.sh` is filed as its own ticket.
 - **A DAST phase gates every outbound probe on `dast_check_selected` (`modules/dast/engine.sh` section 3a), and the `declare -F` guard around each call is KEPT deliberately** (tension 15). Unset or empty `SCOURSH_SELECTED_CHECKS` means ALL SELECTED, exactly as `lib/findings.sh`'s `_derived_record_selected` already reads it, and inverting that is the trap: `tests/suites/dast-{sqli,headers,discovery}.sh` each source a phase script with no `engine.sh` in the process, so a fail-closed default - or an UNguarded call, which is `command not found`, exit 127, non-zero, hence "deselected" - makes every phase inert while every "stays quiet" assertion in those suites still passes green. Membership is WHOLE-LINE, never a `*"$id"*` substring, because an id that is merely a suffix of another selected line would deliver a payload the operator filtered out. This mattering at all is why it is worth stating: four call sites called this function across three tickets before anything defined it, so `--profile-scan`/`--intensity` narrowed the DAST check REGISTRY and narrowed nothing a run actually SENT. One consequence is accepted rather than fixed: "the filter chain ran and kept nothing" is indistinguishable from "there is no filter chain", since both leave the variable empty.
 - **One `checks.rules` per module directory, never a per-script pack.** `rules/RULE-FORMAT.md` §9's path table reserves that BASENAME repository-wide for the §9.5 schema, and a record file matching no row is `E070` - so `modules/dast/passive/cookies.rules` is refused by `tests/lint-rules.sh` however sensible per-owner packs look when peers are being built in parallel. Peers share the file and resolve the append-only conflict by taking both sides.
@@ -206,15 +208,17 @@ DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`, the §7.1 securit
 DAST-10 (`passive/leakage.sh`, the §7.1 information-disclosure family) and
 DAST-11 (`passive/markup.sh`, the §7.1 HTML-markup family),
 and tier 3's DAST-12 (`active/discovery.sh`, §7.2 content discovery - the first safe-active phase; no
-wordlist ships in this repository by design, see `modules/dast/wordlists/README.md`)
+wordlist ships in this repository by design, see `modules/dast/wordlists/README.md`) and DAST-13
+(`active/methods.sh`, §7.2 HTTP method enumeration - the second safe-active phase, which completes
+tier 3)
 have landed, out of tier order, since the tiers are peers rather than a sequence once tier 1 is in.
 DAST-06, DAST-05, DAST-10, DAST-11 and DAST-30 each appended their own block to the shared
 `modules/dast/passive/checks.rules`; DAST-07, DAST-08 and DAST-09 are open and unordered among
 themselves.
-`modules/dast/active/checks.rules` is the tier-4 equivalent and is under the identical append-only
-rule - both DAST-15 and DAST-19 appended to DAST-14's file rather than adding a sibling, because
-`rules/RULE-FORMAT.md` §9's path table reserves the `checks.rules` BASENAME repository-wide and makes
-a per-ticket `openredirect-checks.rules` an `E070`.
+`modules/dast/active/checks.rules` is the tier-3/tier-4 equivalent and is under the identical
+append-only rule - DAST-15, DAST-19 and tier 3's DAST-13 all appended to DAST-14's file rather than
+adding a sibling, because `rules/RULE-FORMAT.md` §9's path table reserves the `checks.rules` BASENAME
+repository-wide and makes a per-ticket `openredirect-checks.rules` an `E070`.
 **DAST-15 is the first ticket to consume `modules/dast/active/inject_engine.sh` WITHOUT extending
 it**, which is what makes DAST-14's shared half demonstrably shared rather than sqli-shaped - it
 added no line to that file, and appended its three `DAST-INJ-XSS_REFLECTED_*` checks to the shared
