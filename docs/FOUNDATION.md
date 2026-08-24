@@ -4519,6 +4519,30 @@ It independently hit the same pre-existing `modules/dast/run.sh` defect DAST-06 
 likewise did not fix it in place: the inventory paths are exported BEFORE the phase loop while
 `crawl.sh` writes the files inside it, so `SCOURSH_DAST_ENDPOINTS` is empty on every first run
 and any consumer trusting it alone sees no surface - `modules/dast/active/inject_engine.sh` is one such consumer today.
+**Tier 5's DAST-28 (`modules/dast/ratelimit.sh`, the §7.4 missing-throttling burst probe) has landed
+too**, shipping two `DAST-RATE-*` script checks in the shared `modules/dast/checks.rules` and
+`tests/suites/dast-ratelimit.sh` (66 assertions, recorded responses, no network).
+Four tension decisions in it belong here rather than only in the plan.
+Tension 16 first: this is the one check `docs/DESIGN.md` §7.4 flags as intentionally multi-request, and
+it draws its burst down from the SAME per-run budget counter the limiter owns, through a new
+`http_budget_remaining_set` in `lib/http.sh` beside that counter - a module-local reader would be a
+second definition of where the budget lives, and `docs/STEP5-DAST-PLAN.md`'s own DAST-28 amendment
+requires the shared one.
+It spends at most half of what remains, because the budget refusal is fatal (exit 5) and a probe sized
+to the whole remainder would end the run for every phase and target after it; and the number it reads
+is a READ rather than a reservation, since nothing is charged until `_http_throttle` charges it inside
+its own critical section.
+Tension 19 again: every burst request goes through `http_request`, so the burst is rate-limited,
+budgeted, breaker-watched and scope-gated by the chokepoint rather than by the module, and a "burst"
+therefore means "as fast as this run's configured rate permits" - which is why the achieved rate is in
+the evidence of every finding it emits.
+Tension 14's honesty posture is what the four refusal gates implement: an unaffirmed run, an affirmed
+run whose rate was never actually raised, a budget too small to fund a meaningful burst, and a target
+with no idempotent endpoint each record a `coverage_reduction` and a `coverage_gap` and send nothing,
+so an absent throttling finding never reads as a clean result.
+Tension 5 explains the two check ids: the DAST fingerprint carries no component naming the defect, so
+"no throttle at all" and "throttles but offers no usable back-off" under one id would collide on one
+endpoint and `findings_merge` would silently keep one.
 **DAST-29 (`modules/dast/authz.sh` plus `authz_engine.sh`) has also landed** - §7.4's object-level
 authorization (IDOR) and excessive-data-exposure checks, the first consumer of DAST-03's labelled
 multi-identity plumbing and the first tier-5 phase at the top level of `modules/dast/`, with the new
