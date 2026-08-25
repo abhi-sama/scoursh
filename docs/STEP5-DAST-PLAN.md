@@ -973,8 +973,9 @@ DAST-05 and appending to the `modules/dast/passive/checks.rules` they already sh
 It ships `markup_engine.sh` (the pure half: the tag tokenizer, the origin comparison, the token-list
 and anti-CSRF-name predicates, the sensitive-page classifier, the endpoint chooser), `markup.sh` (the
 phase script `dast_run_phase` sources), and six `DAST-MARKUP-*` script checks, all tagged `passive`.
-`tests/suites/dast-markup.sh` is the proof - 189 assertions, no network and no Docker, driven from
-recorded response bodies replayed into `lib/http.sh`'s own body sink.
+`tests/suites/dast-markup.sh` is the proof - 189 assertions at landing and 211 after the corrective
+pass recorded below, no network and no Docker, driven from recorded response bodies replayed into
+`lib/http.sh`'s own body sink.
 
 - **The record separator between the tokenizer and the phase is 0x1f, and a tab is a MEASURED bug
   rather than a taste question.**  A tab is an IFS-*whitespace* character, so `read` folds a RUN of
@@ -1036,6 +1037,51 @@ REQUESTED URL rather than the delivered one.  Out of scope here and unclaimed: `
 refresh redirects, `formaction` overrides on a submit button, `autocomplete="off"` on credential
 fields, and the `crossorigin`-missing-beside-`integrity` case (which breaks the resource rather than
 weakening it, so it is named in the remediation instead of flagged).
+
+#### DAST-11 corrective pass - seven defects the 189-assertion suite could not reach
+
+**DAST-11 was approved, then the approval was reversed by an adversarial review; the corrective
+ticket landed the fixes and took the suite to 211 assertions.**
+Every one of the seven was silent in the direction that reads as a CLEAN SCAN RESULT, and none was
+reachable by the original suite - not because the assertions were weak, but because no case
+exercised the path at all.
+The security defect and the two honesty defects are recorded as sharp edges in `AGENTS.md`; what is
+worth keeping here is the pattern and the four smaller adjudications.
+
+- **`markup_tokens_have` glob-expanded a `rel` attribute against the scanner's cwd** (CWE-807), so a
+  target serving `rel="*"` suppressed its own `DAST-MARKUP-TABNABBING-01` finding on any host with a
+  file named `noopener` in the working directory, and `markup_link_takes_sri` inherited it.
+- **The tokenizer's exit status was discarded** (`... 2>/dev/null || true`) and `parsed` counted
+  documents ATTEMPTED, so a page nothing had read contributed four ids to `checks_run` (CWE-390).
+- **`_MK_FORMS_CROSS_ORIGIN` was a run-level counter declared in the per-page function**, so a
+  cross-origin POST form on any page but the last was excluded from the CSRF check and the exclusion
+  was never declared (CWE-778).
+- **A `<input type="password">` outside any `<form>` never became a `field` record**, because the
+  tokenizer gated those on an open form - which is exactly the single-page login shape, so those
+  pages were classified ordinary and downgraded from `TABNABBING_SENSITIVE-01` to `TABNABBING-01`.
+  The record contract is unchanged: a field belongs to the most recent unclosed `<form>`, and one
+  with no open form belongs to none.  `markup.sh` pass two still guards on the association itself;
+  pass one reads the same records for the document-wide signal.
+- **`<a href="..."target="_blank">` did not parse**, because `attr()` required `[ \t\r\n/]` before an
+  attribute name.  Browsers accept it and the check could not fire.  A quote is now a separator, in
+  `attr()` and `attr_present()` alike - the pair is pinned in both directions, since widening only
+  the first would invent a finding about a frame that IS sandboxed.
+- **`_mk_selected FRAME_INSECURE_SCHEME-01 || continue` skipped the whole record** rather than
+  falling through to the untrusted-frame arm, so deselecting one check silenced another the operator
+  had left selected.  Dormant when DAST-11 landed and no longer: `dast_check_selected` now exists.
+- **The two tabnabbing ids left `checks_run` whenever they found nothing**, alone among the six, so a
+  clean page and an untested page looked alike for them and tension 12 could never infer `fixed` -
+  the run that would prove the fix is the run that drops the coverage.  The condition is now "was a
+  page classified under this id", counted per page in `_MK_TAB_SEEN`, which still declines to claim
+  the sensitive id on a run that saw no authentication page.
+
+Two cosmetic items went with them: the scope-refusal reason is captured AT the refusal (`_HTTP_GATE_REASON`
+read after the loop holds the last gate call's value, routinely an ADMITTED URL), and
+`markup_html_extract` runs under `LC_ALL=C` so awk's `length()` counts bytes and `_MARKUP_MAX_BYTES`
+means what its name says - in a UTF-8 locale the "1 MiB" cap read up to 4 MiB of a hostile response.
+The `crossorigin`-parsed-and-never-read case (item 8 of the corrective ticket) is real and NOT fixed
+there: closing it means minting a new check id, which is a registry and fingerprint-identity change,
+so it is filed as its own ticket.
 
 
 ### Tier 3 - safe active (§7.2, 2 scripts)

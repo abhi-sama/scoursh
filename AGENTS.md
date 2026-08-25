@@ -111,6 +111,30 @@ Each has a full entry in `docs/FOUNDATION.md`.
   every value so target-derived text cannot forge a column. Note this does NOT make the existing
   tab-separated readers in this tree wrong - `crawl_html_extract` and the inventory readers emit no
   empty middle field - it makes the tab a hazard for any NEW stream that does.
+- **A DELIBERATE unquoted expansion of target-derived text still needs `set -f`, because word
+  splitting and PATHNAME EXPANSION are one switch and only the first one is ever wanted**
+  (`markup_tokens_have`, `modules/dast/passive/markup_engine.sh`, DAST-11; CWE-807). `rel` and
+  `crossorigin` are HTML token lists, so `local -a toks=($list)` is right - but `$list` is bytes
+  lifted verbatim out of a scanned response (tension 10), so a target serving `rel="*"` had that `*`
+  expanded against the SCANNER's cwd, and on a host with a file named `noopener` sitting there the
+  target switched off its own `DAST-MARKUP-TABNABBING-01` finding. Reproduced both ways before and
+  after. Two separate defects in one line: attacker-authorable text steering a security decision, and
+  a verdict that depends on where the scanner was started rather than on the response. `set -f` is
+  saved and restored BY HAND rather than with `local -`, which is bash 4.4 while `lib/core.sh`
+  enforces a 4.2 minimum - there `local -` scopes nothing and the `set -f` escapes into the rest of
+  the run. Any future function that word-splits a header, a `Location`, a `rel`, or any other
+  response-derived value wants the same three lines.
+- **`parsed`, `covered`, `checks_run` and every other honesty counter must count what SUCCEEDED, and
+  a run-level accumulator must not be declared inside a per-item function** (`markup.sh`, DAST-11;
+  CWE-390 and CWE-778). Both halves shipped here and both read as a CLEAN SCAN. `markup_html_extract`
+  was called as `... 2>/dev/null || true`, which is genuinely required under `set -Eeuo pipefail` but
+  discarded the status with it, so `parsed` counted documents ATTEMPTED: a page whose markup was
+  never tokenized produced zero findings, zero gaps and zero reductions while still putting four
+  check ids in `checks_run`. Capture the status into a variable instead of throwing it away, keep
+  stderr, and exclude the item from the success counter. Separately, `_MK_FORMS_CROSS_ORIGIN` was
+  `declare -g`'d inside the once-per-page analyse function and read after the page loop, so only the
+  LAST page's value survived and every earlier page's declared exclusion vanished. Run-level state
+  is initialised exactly once, in the phase; only per-item state belongs in the per-item reset.
 - **A severity that varies with context is a SECOND CHECK ID, never a `base_severity` a script raises
   at runtime** (DAST-11's two `DAST-MARKUP-TABNABBING*` ids). `severity` is a per-record property of
   the registry (`rules/RULE-FORMAT.md` §9.5) and every DAST suite asserts the emitting script and the
