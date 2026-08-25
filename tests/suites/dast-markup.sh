@@ -784,7 +784,7 @@ eval "$_doc_orig"
 # ===========================================================================
 # I. The registry and the catalog agree.
 # ===========================================================================
-# modules/dast/passive/checks.rules is what tension 12 computes coverage over
+# modules/dast/passive/checks-markup.rules is what tension 12 computes coverage over
 # and tension 15 filters; the `_mk_catalog` table is what a finding carries.
 # They are two copies on purpose (see markup.sh's own comment), so they are
 # pinned against each other here - counted over THIS script's own records,
@@ -808,7 +808,7 @@ while IFS= read -r _line || [[ -n $_line ]]; do
     coverage-scope) REG_SCOPE[$_cur_id]=$_val ;;
     tags) [[ -z ${REG_TAG[$_cur_id]:-} ]] && REG_TAG[$_cur_id]=$_val ;;
   esac
-done <"$ROOT/modules/dast/passive/checks.rules"
+done <"$ROOT/modules/dast/passive/checks-markup.rules"
 
 _reg_ids=''
 for _id in "${!REG_SCRIPT[@]}"; do

@@ -637,7 +637,7 @@ assert_true "$([[ $(cat "$REQ_LOG") == *"/late"* ]] && printf 0 || printf 1)" \
 printf '== K. the registry and the emitted finding agree ==\n'
 # ===========================================================================
 t_case 'registry agreement'
-# modules/dast/passive/checks.rules is the catalog tension 12 and tension 15
+# modules/dast/passive/checks-headers.rules is the catalog tension 12 and tension 15
 # read; `_hdr_catalog` is what a finding carries.  They are two copies, so they
 # are asserted equal here rather than assumed so.
 #
@@ -665,7 +665,7 @@ while IFS= read -r line || [[ -n $line ]]; do
     script) REG_SCRIPT[$_cur_id]=$_val ;;
     tags) [[ -z ${REG_TAG[$_cur_id]:-} ]] && REG_TAG[$_cur_id]=$_val ;;
   esac
-done <"$ROOT/modules/dast/passive/checks.rules"
+done <"$ROOT/modules/dast/passive/checks-headers.rules"
 
 for _id in "${!REG_SCRIPT[@]}"; do
   [[ ${REG_SCRIPT[$_id]} == 'passive/headers.sh' ]] && _reg_ids+="$_id "

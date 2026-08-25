@@ -195,7 +195,7 @@ Each has a full entry in `docs/FOUNDATION.md`.
   phase that believes it authenticated is exactly what all three defects produce. Do NOT reach for
   `dast_auth_request` here: its transparent 401 re-auth is right for an ordinary authenticated
   request and wrong wherever a 401 is itself the measurement (see the DAST-29 bullet above).
-- **One `checks.rules` per module directory, never a per-script pack.** `rules/RULE-FORMAT.md` §9's path table reserves that BASENAME repository-wide for the §9.5 schema, and a record file matching no row is `E070` - so `modules/dast/passive/cookies.rules` is refused by `tests/lint-rules.sh` however sensible per-owner packs look when peers are being built in parallel. Peers share the file and resolve the append-only conflict by taking both sides.
+- **A `.rules` file whose basename begins `checks` is a §9.5 script-check registry, wherever it lives - and a co-owner writes its OWN `checks-<name>.rules` rather than appending to a peer's file** (`docs/FOUNDATION.md` tension 29). `rules/RULE-FORMAT.md` §9's path table reserves BOTH `checks.rules` and `checks-<name>.rules` repository-wide for that schema, at any depth; a record file matching no row is still `E070`, so `modules/dast/passive/cookies.rules` and the SUFFIX spelling `headers-checks.rules` (DAST-05's rejected attempt) both remain illegal. The second row is additive: `checks.rules` is unchanged and still legal, both spellings may sit in one directory, and per §14 it trips item 2 alone, so there is no `format_version` bump and no `state/` migration. It needs no engine change either - `checks_registry_load` already globs every `*.rules` under a module directory with no per-file allowlist, exactly as `modules/iac/`'s six packs already rely on - and that is asserted on a real run's `checks_run` set, never on the glob alone. **A split is a byte-identical MOVE of records and never an edit of them**: §9.5.1's owning-module map keys on the DIRECTORY, so `E018`/`E081` still hold a moved id to the same module prefix, `E019` uniqueness stays repository-wide, and renaming an id would change a fingerprint (tension 5). `modules/dast/passive/` is split five ways accordingly. `modules/dast/active/checks.rules` and `modules/dast/checks.rules` are NOT split and stay append-only, resolved by keeping both sides - do not split one opportunistically under peers who are mid-flight, which recreates the conflict in a worse place.
 - **A per-subcommand `--help`'s "built" line is generated, never hand-typed, wherever a real check exists to generate it from** (`scan.sh`'s `scan_usage_for`). `_scan_module_built` reuses the exact file-existence check `scan_dispatch` itself makes (`modules/<cmd>/run.sh` on disk) for `sast`/`sca`/`iac`/`dast`/`cloud`; `dast`'s phase count walks `modules/dast/engine.sh`'s own `_DAST_PHASES` table against the same file paths `dast_run_phase` checks. `diff`/`report` are not modules and have no file to check, so `_scan_stateful_command_built` is the one function both scan_main's dispatch arm and `scan_usage_for` read - flip it in the same change that gives them a real engine (step 7's `state/`), never in one place alone. The accepted-flags list per command is generated from `_SCAN_FLAG_KIND`, the same map `scan_flag_kind` validates against, for the identical reason.
 
 ## Build order and where we are
@@ -255,9 +255,11 @@ wordlist ships in this repository by design, see `modules/dast/wordlists/README.
 (`active/methods.sh`, §7.2 HTTP method enumeration - the second safe-active phase, which completes
 tier 3)
 have landed, out of tier order, since the tiers are peers rather than a sequence once tier 1 is in.
-DAST-06, DAST-05, DAST-10, DAST-11 and DAST-30 each appended their own block to the shared
-`modules/dast/passive/checks.rules`; DAST-07, DAST-08 and DAST-09 are open and unordered among
-themselves.
+DAST-06, DAST-05, DAST-10, DAST-11 and DAST-30 each originally appended their own block to a shared
+`modules/dast/passive/checks.rules`; that file is now SPLIT five ways, one
+`checks-<name>.rules` per owner, per `docs/FOUNDATION.md` tension 29 - so DAST-07, DAST-08 and
+DAST-09, which are open and unordered among themselves, each write their own
+`modules/dast/passive/checks-<name>.rules` and append to nobody's file.
 `modules/dast/active/checks.rules` is the tier-3/tier-4 equivalent and is under the identical
 append-only rule - DAST-15, DAST-19 and tier 3's DAST-13 all appended to DAST-14's file rather than
 adding a sibling, because `rules/RULE-FORMAT.md` §9's path table reserves the `checks.rules` BASENAME
@@ -279,8 +281,8 @@ whose scripts sit at the top level of `modules/dast/`; DAST-28 has already appen
 `DAST-RATE-*` records to it, and DAST-27 appends the same way - a conflict in it is resolved by
 keeping both blocks, never by choosing a side.
 DAST-30 is NOT one of them despite being a tier-5 ticket: its script sits under
-`modules/dast/passive/`, so its checks are registered in `modules/dast/passive/checks.rules` with the
-rest of that directory.
+`modules/dast/passive/`, so its checks are registered in that directory - today in its own
+`modules/dast/passive/checks-transport.rules`, per tension 29's split.
 Step 5 remains the top priority ahead of steps 6, 7 and 10.**
 Which rule packs, SCA ecosystems and IaC packs have landed, and what remains of each, is in the
 generated block below - read it there rather than restating it here.
@@ -695,11 +697,15 @@ expensive way.
   final response is the finding.  `hdr_parse_capture` resets on every `HTTP/x.y NNN` status line, so
   only the last block survives; removing that reset turns two assertions red, which is how it is
   known to be load-bearing rather than assumed.
-- **`modules/dast/passive/checks.rules` is SHARED between all seven tier-2 tickets, and the basename
-  is forced.**  `rules/RULE-FORMAT.md` §9's path table gives the §9.5 script-check schema to "any file
-  named `checks.rules`, at any depth" and makes every other path `E070`, so a per-ticket
-  `headers-checks.rules` is not a legal record file.  Treat it as append-only: a merge conflict in it
-  is resolved by keeping BOTH blocks, never by choosing a side.  The engine file is named
+- **This directory's script-check registry USED to be a single shared `checks.rules` and is now one
+  `checks-<name>.rules` per owner** (`docs/FOUNDATION.md` tension 29; DAST-05's records live in
+  `modules/dast/passive/checks-headers.rules`).  When DAST-05 landed, §9's path table gave the §9.5
+  schema to "any file named `checks.rules`, at any depth" and made every other path `E070`, so this
+  ticket's own attempt at a per-ticket `headers-checks.rules` was refused - note that SUFFIX spelling
+  is *still* `E070` today; the row that was added legalises the `checks-` PREFIX only.  The
+  append-only "resolve a conflict by keeping BOTH blocks" rule that followed from the shared file is
+  retired for this directory, and still stands for `modules/dast/active/checks.rules` and
+  `modules/dast/checks.rules`, which were not split.  The engine file is named
   `headers_engine.sh` for the opposite reason - a `passive_engine.sh` would be shared scaffolding
   three parallel tickets each believed they owned, so a peer that needs the same response reader
   should LIFT it deliberately rather than fork it.
@@ -725,7 +731,8 @@ expensive way.
 **DAST-10 (`modules/dast/passive/leakage.sh`) has landed - the third tier-2 check, and the first whose
 whole design problem is FALSE POSITIVES rather than detection.**
 It ships `leakage_engine.sh` (the pure half), `leakage.sh` (the phase script `dast_run_phase` sources),
-five `DAST-LEAK-*` records appended to the shared `modules/dast/passive/checks.rules`, and
+five `DAST-LEAK-*` records in `modules/dast/passive/checks-leakage.rules` (appended to the
+directory's then-shared `checks.rules`; tension 29 has since split that file), and
 `tests/suites/dast-leakage.sh` (154 assertions, no network and no Docker, driven from recorded
 head/body pairs replayed into `lib/http.sh`'s own two capture sinks).
 Five families, five check ids - a stack trace or debugger page (CWE-209), an infrastructure-disclosing
@@ -915,7 +922,8 @@ observation: `assert_not_contains` fails on correct behaviour, and - the expensi
 `passive` and lives in `modules/dast/passive/`, which is the one thing about it most worth knowing.**
 It ships `transport_engine.sh` (the pure half: the sub-resource extractor, reference resolution, the
 endpoint chooser, the sensitivity scan and the redirect verdict), `transport.sh` (the phase script),
-and five `DAST-TRANSPORT-*` checks appended to the shared `modules/dast/passive/checks.rules`,
+and five `DAST-TRANSPORT-*` checks in `modules/dast/passive/checks-transport.rules` (appended to the
+directory's then-shared `checks.rules`; tension 29 has since split that file),
 alongside the blocks DAST-06, DAST-05, DAST-10 and DAST-11 each appended to the same file.
 `tests/suites/dast-transport.sh` is the proof
 (109 assertions, no network, no Docker, driven from recorded response heads AND bodies).

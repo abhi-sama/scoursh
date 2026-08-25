@@ -428,6 +428,45 @@ assert_not_contains "$RUN_OK_JSON" 'reason=no_check_registry_on_disk_yet' \
 assert_contains "$RUN_OK_JSON" 'DAST-INJ-SQLI_ERROR-01' \
   'the registered active-injection checks reach run.json - fails if checks_registry_load'"'"'s any-depth glob does not discover the nested modules/dast/active/checks.rules'
 
+t_case 'modules/dast/passive/ ships FIVE per-owner registries and all five load'
+# rules/RULE-FORMAT.md §9's `checks-<name>.rules` row replaced this directory's
+# single co-owned `checks.rules` with one file per owning phase script, so that
+# tier-2 peers built in parallel have no shared file to collide on.  The claim
+# that needs proving is not "the glob has no allowlist" - that is readable in
+# lib/checks.sh - but that a REAL RUN ends up with every one of the five files'
+# records in its registry.  So this asserts on run.json from the `run-ok`
+# subprocess above, one id per file, and on the TOTAL.
+#
+# The surface is `checks_selected`, deliberately, and NOT `checks_run`.  Those
+# are different sets (lib/report.sh's own note says so): `checks_run` is what
+# EXECUTED, and this fixture's target does not resolve, so no phase runs and
+# `checks_run` is empty by design - which the "nothing is claimed as executed"
+# case above already pins.  Asserting registry discovery on `checks_run` here
+# would therefore fail for a reason that has nothing to do with the glob, and
+# passing it by making the fixture reachable would put real traffic on the wire.
+for _f in checks-cookies checks-headers checks-markup checks-leakage checks-transport; do
+  assert_file_exists "$ROOT/modules/dast/passive/$_f.rules" \
+    "modules/dast/passive/$_f.rules is shipped"
+done
+assert_file_absent "$ROOT/modules/dast/passive/checks.rules" \
+  'the shared co-owned checks.rules is gone - fails if the split left a sixth file behind, which would silently double every id it still held'
+# One id per file.  A single id would pass with four of the five undiscovered.
+assert_contains "$RUN_OK_JSON" 'DAST-COOKIE-NO_SECURE-01'  'checks-cookies.rules loaded'
+assert_contains "$RUN_OK_JSON" 'DAST-HDR-CSP_MISSING-01'   'checks-headers.rules loaded'
+assert_contains "$RUN_OK_JSON" 'DAST-MARKUP-SRI_MISSING-01' 'checks-markup.rules loaded'
+assert_contains "$RUN_OK_JSON" 'DAST-LEAK-STACK_TRACE-01'  'checks-leakage.rules loaded'
+assert_contains "$RUN_OK_JSON" 'DAST-TRANSPORT-MIXED_ACTIVE-01' 'checks-transport.rules loaded'
+# The total, which is what catches a record LOST in the split rather than a
+# whole file lost: the shared checks.rules held 31 records (4 cookie + 11 header
+# + 6 markup + 5 leakage + 5 transport) and the five files must still hold 31
+# between them.  Counted off run.json rather than off the files, so it measures
+# what the loader produced and not what the directory contains.
+_PASSIVE_SELECTED=$(printf '%s' "$RUN_OK_JSON" \
+  | tr ',' '\n' \
+  | grep -cE '"DAST-(COOKIE|HDR|MARKUP|LEAK|TRANSPORT)-' || true)
+assert_eq 31 "$_PASSIVE_SELECTED" \
+  'all 31 records from the five per-owner files reach the registry - fails if the split dropped or duplicated a record, which a per-file existence check cannot see'
+
 # =============================================================================
 printf '\n-- DAST-32/33/34 end to end: the authorisation record a real run leaves --\n'
 # =============================================================================
@@ -662,7 +701,7 @@ printf '\n-- and the filter chain reaches a phase end to end, through scan.sh --
 FIX_SEL=$W/root-selection
 _fixture_root "$FIX_SEL"
 cp "$FIX_SCOPE/config/scope.conf" "$FIX_SEL/config/scope.conf"
-_SEL_RULES=$FIX_SEL/modules/dast/passive/checks.rules
+_SEL_RULES=$FIX_SEL/modules/dast/passive/checks-cookies.rules
 awk '
   /^id: /       { id = $2 }
   /^tags: quick$/ && id ~ /^DAST-COOKIE-/ { next }

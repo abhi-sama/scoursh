@@ -3998,6 +3998,105 @@ What changes is the label attached to a guarantee that was already real.
 
 ---
 
+## Tension 29 - the co-owned module check registry: one shared `checks.rules` versus one file per owner
+
+**The tension.**
+`rules/RULE-FORMAT.md` §9's path table reserved the basename `checks.rules` repository-wide for the §9.5
+script-check schema, and made a record file matching no row an `E070`.
+That reservation is what stops `modules/iac/*.rules` from capturing `modules/iac/checks.rules` and
+failing `E023` on every record in it for a missing `pattern`, so it is load-bearing and not incidental.
+But it also made the shared file the **only** legal name for a module directory's script-check registry,
+and a module directory's registry is co-owned: every ticket that adds a phase script to
+`modules/dast/passive/` must add its own records to the one file every peer is also adding to.
+`docs/STEP5-DAST-PLAN.md` leaves DAST-07..DAST-11 explicitly unordered among themselves, so any two of
+them dispatched in parallel produce an add/add or append/append conflict on that single file - not
+because either ticket is wrong, but because the file has one name and several simultaneous authors.
+
+**Why it bites.**
+1. It is a *scheduling* hazard wearing the costume of a code defect. Nothing about the records is in
+   conflict - the correct resolution is always "keep both blocks" - so every one of these conflicts is
+   pure overhead paid by an agent or a reviewer who has to recognise the shape first.
+2. "Resolve it by taking both sides" is a convention, and a convention is re-taught to every agent and
+   every reviewer that touches the directory. It is silently wrong exactly once before anyone notices,
+   and the failure mode is a **dropped block** - a check id that no longer loads, which reads as a check
+   that ran and found nothing rather than as a check that was never registered. That is `docs/DESIGN.md`
+   §15's overstated-coverage failure reached through a merge, and `checks_run` is the only place it
+   would show.
+3. It is already measured, three times over in `modules/dast/` alone: `passive/checks.rules`,
+   `active/checks.rules` and the top-level tier-5 `checks.rules` are each co-owned by several tickets,
+   and each carries its own hand-written "append-only, keep both sides" warning in `AGENTS.md` because
+   of it. DAST-05 and DAST-06 avoided a live collision only by happening to land sequentially.
+4. The prohibition had already been enforced against a real attempt: DAST-05's
+   `modules/dast/passive/headers-checks.rules` was refused on exactly these grounds, so the constraint
+   was known to bind rather than being theoretical.
+
+**Options considered.**
+1. *Keep the single shared file and add a foundational ticket every peer lists in `dependsOn`, so the
+   file exists before anyone appends to it.*
+   Rejected. It solves add/add and leaves append/append untouched: once the file exists, two peers
+   appending to its end still conflict, which is the commoner shape and the whole of what remains for
+   DAST-07..DAST-11. It also buys a permanent serialisation cost - every future co-owner of every future
+   module registry inherits a dependency edge - to work around a filename.
+2. *Keep the single shared file and rely on the convention, unchanged.*
+   Rejected as the status quo whose cost is item 2 above. The convention is correct and it is also
+   unenforceable: no linter can tell a deliberate deletion from a badly-resolved conflict, because both
+   arrive as a well-formed file with fewer records than one side had.
+3. *Retire `checks.rules` and require the per-owner spelling everywhere.*
+   Rejected. It forces every module directory to move in lockstep, and `rules/RULE-FORMAT.md` §14 item 1
+   makes a rewrite of every existing pack a versioned migration with a `state/` migration behind it -
+   a large, invalidating change bought for a scheduling convenience.
+4. *Add one additive row to §9's path table legalising `checks-<name>.rules` at any depth, leaving
+   `checks.rules` legal and unchanged, and split only where a directory wants to.* **Chosen.**
+
+**RESOLUTION.**
+§9's path table gains **one additive row**: any file named `checks-<name>.rules`, at any depth, takes the
+§9.5 script-check schema, sitting immediately below the `checks.rules` row and above the pattern-rule
+row. The rule a reader carries away is one sentence - **a `.rules` file whose basename begins `checks` is
+a §9.5 script-check registry, wherever it lives.**
+
+Five properties are what make this cheap, and each is asserted rather than assumed:
+
+- **It is additive, so it is not a versioned migration.** Every path that resolved to a schema before the
+  row resolves to the same schema after it; no existing file has a basename beginning `checks-`, and
+  `checks.rules` keeps its own row, first. Per §14's four-item test it trips item **2** (the parser and
+  the linter move) and nothing else, so there is **no `format_version` bump** and `state/` and
+  `config/baseline.json` stay valid. §14 now carries this as its second worked example, and generalises
+  the pair: an amendment that *adds* a legal spelling trips item 2 alone, while one that *retires,
+  renames or re-schemas* an existing spelling trips item 1 - which is precisely why option 3 was rejected.
+- **It needs no engine change.** `checks_registry_load` (`lib/checks.sh`) already globs every `*.rules`
+  file under a module directory with no per-file allowlist - which is how `modules/iac/`'s six packs
+  already load together - so a split registry requires no registration step. That claim is verified on a
+  real run's `checks_run` set (`tests/suites/dast.sh`), never on the glob in isolation, because the glob
+  being right and the registry actually loading are two different facts.
+- **Identity does not move with a record.** §9.5.1's owning-module map keys on the file's **directory**,
+  not its basename, so every id in `modules/dast/passive/checks-cookies.rules` is held to the same
+  `DAST-` prefix (`E018`, `E081`) it was held to in `checks.rules`; and a check id is unchanged by the
+  file it lives in, so `E019` namespace uniqueness stays repository-wide rather than becoming per file.
+  This is what makes a split a **byte-identical move of records and never an edit of them** - a move that
+  renamed an id would trip §14 item 3, since `check_id` is a fingerprint component (tension 5).
+- **It legalises one shape and does not open the extension up.** The glob is `checks-?*.rules`, so the
+  bare `checks-.rules` names no owner and stays `E070`; an arbitrary `*.rules` basename at a module path
+  is still `E070`, keeping `modules/dast/passive/cookies.rules` and the DAST-05 **suffix** spelling
+  `headers-checks.rules` both illegal. The match is on the **basename**, never a `*/`-prefixed glob:
+  bash's `*` matches `/` too, so `*/checks-?*.rules` would also match `a/checks-x/y.rules` and let a
+  *directory* named `checks-x` silently re-schema every `.rules` file beneath it.
+- **Splitting is optional and per-directory.** Both spellings are legal simultaneously and a directory
+  may hold `checks.rules` and `checks-<name>.rules` side by side. Nothing is required to move, which is
+  exactly the property option 3 lacked.
+
+**What this obliges of a co-owner from now on, and what it retires.** A ticket adding a phase script to a
+module directory creates **its own** `checks-<name>.rules` and does not append to a peer's file. The
+"append-only, resolve a conflict by keeping both sides" instruction in `AGENTS.md` is retired for
+`modules/dast/passive/`, whose five owners are split by this change; it still stands for
+`modules/dast/active/checks.rules` and `modules/dast/checks.rules`, which are **not** touched here and
+whose records must not be moved opportunistically - a split is a deliberate, tested change, and doing one
+under peers who are mid-flight recreates the conflict it exists to prevent, in a worse place.
+
+This resolution constrains every future module registry and not only this one directory, which is why it
+is recorded here rather than only in `rules/RULE-FORMAT.md`.
+
+---
+
 ## Cross-cutting consequences
 
 Eight decisions here reach beyond their own tension and are collected so they are not missed.
