@@ -800,7 +800,7 @@ done
 for id in DAST-COOKIE-NO_SECURE-01 DAST-COOKIE-NO_HTTPONLY-01 \
           DAST-COOKIE-SAMESITE_ABSENT-01 DAST-COOKIE-SAMESITE_WEAK-01; do
   assert_contains "$REG" "$id" \
-    "$id is registered in modules/dast/passive/checks.rules - FAILS if a check is emitted with no registry record, which leaves tension 12 unable to compute coverage for it and tension 15 unable to filter it"
+    "$id is registered in modules/dast/passive/checks-cookies.rules - FAILS if a check is emitted with no registry record, which leaves tension 12 unable to compute coverage for it and tension 15 unable to filter it"
 done
 
 t_summary dast-cookies

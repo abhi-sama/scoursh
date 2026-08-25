@@ -244,8 +244,11 @@ references: https://owasp.org/Top10/A03_2021-Injection/
 # --- DAST-19, modules/dast/active/openredirect.sh (docs/DESIGN.md §7.3) ------
 # Appended by the open-redirect ticket. This file is SHARED by every tier-4
 # probe and is treated as APPEND-ONLY: a merge conflict in it is resolved by
-# keeping BOTH blocks, never by choosing a side (the same convention
-# modules/dast/passive/checks.rules records for its own parallel peers). The
+# keeping BOTH blocks, never by choosing a side.  modules/dast/passive/ no longer
+# works this way - §9 now also reserves the `checks-` PREFIX and that directory
+# is split one file per owner (docs/FOUNDATION.md tension 29); splitting is
+# optional and per-directory, and this file is deliberately not split under
+# peers who are mid-flight.  The
 # basename is forced - rules/RULE-FORMAT.md §9's path table gives the §9.5
 # script-check schema to any file named `checks.rules` at any depth and makes
 # every other path E070, so a per-ticket `openredirect-checks.rules` is not a

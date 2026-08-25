@@ -156,19 +156,55 @@ records_schema_is_check_id() {
 }
 
 # rules/RULE-FORMAT.md §9 path table.  The first matching row wins, which is why
-# the `checks.rules` row is first: the basename is reserved repository-wide, and
+# the two `checks` rows are first: the basename is reserved repository-wide, and
 # without that reservation the `modules/iac/*.rules` glob would capture
 # `modules/iac/checks.rules` and fail E023 on every record in it.
 # The path is install-root-relative.
+#
+# The second row - `checks-<name>.rules` - is the per-owner spelling of the same
+# §9.5 script-check registry, so that peers adding phase scripts to one module
+# directory in parallel do not collide on a single co-owned file.  Three things
+# about the glob are deliberate and each is pinned in tests/suites/records.sh:
+#
+#   `checks-?*.rules`, not `checks-*.rules`, because `?*` requires at least one
+#   character - the bare `checks-.rules` names no owner and stays E070.
+#
+#   It sits ABOVE the pattern-rule rows for the same reason the `checks.rules`
+#   row does: `modules/iac/checks-terraform.rules` must resolve to the script
+#   check schema rather than being captured by `modules/iac/*.rules` and failing
+#   E023 on every record for a missing `pattern`.
+#
+#   It legalises exactly one shape and does not open the extension up.  An
+#   arbitrary `*.rules` at a module path is still E070, which is what keeps
+#   `modules/dast/passive/cookies.rules` (and `headers-checks.rules`, the
+#   DAST-05 attempt - the SUFFIX spelling, which this row does NOT legalise)
+#   illegal.
+#
+# Nothing about ownership or identity moves with a record between these two
+# rows: records_owning_module below keys on the DIRECTORY, so E018/E081 hold a
+# split file's ids to the same module prefix, and a check id is unchanged by the
+# file it lives in, so E019 uniqueness stays repository-wide.  That is what makes
+# a split a byte-identical move rather than a fingerprint change
+# (rules/RULE-FORMAT.md §14's second worked example).
 records_schema_for_path() {
   local p=$1
+  local base
   p=${p#./}
   # `config/*.example` files take the schema of the file they are an example of,
   # so the linter can run over them in CI and the examples cannot drift from the
   # schema (docs/FOUNDATION.md tension 26).
   p=${p%.example}
+  # The two `checks` rows are matched on the BASENAME, never with a `*/`-prefixed
+  # glob.  Bash's `*` matches `/` as well, so `*/checks-?*.rules` would also
+  # match `a/checks-x/y.rules` - a DIRECTORY called `checks-x` would silently
+  # turn every `.rules` file beneath it into a script-check registry.  Stripping
+  # to the basename first is what confines the reservation to a filename, and
+  # tests/suites/records.sh pins that nested case in both directions.
+  base=${p##*/}
+  case $base in
+    checks.rules | checks-?*.rules) printf '%s' script-check; return 0 ;;
+  esac
   case $p in
-    */checks.rules | checks.rules) printf '%s' script-check ;;
     modules/sast/rules/*.rules) printf '%s' pattern-rule ;;
     modules/iac/*.rules) printf '%s' pattern-rule ;;
     rules/derived.rules) printf '%s' derived ;;

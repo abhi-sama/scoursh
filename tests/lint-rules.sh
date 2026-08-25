@@ -31,7 +31,27 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 # shellcheck source=lib/records.sh
 source "$ROOT/lib/records.sh"
 
-cd "$ROOT"
+# Optional first argument SCAN_ROOT (default $ROOT), the same convention
+# tests/lint-aws-readonly.sh and tests/lint-shell.sh already establish, so this
+# linter can be run against a disposable fixture tree instead of the real
+# repository - which is what lets a meta-test assert that it ACCEPTS and REFUSES
+# the right paths without planting files in the working tree.
+#
+# $SCOURSH_INSTALL_ROOT is set to the scan root and not to $ROOT, and that is
+# load-bearing rather than tidiness: lib/records.sh's `_records_relpath` strips
+# it as a literal prefix from each file's own realpath, and §9.5.1's
+# module-ownership checks (E018, E081) resolve against the result.  Pointed at
+# the real repository while sweeping a fixture tree, every fixture file would
+# fail E081 for a reason that has nothing to do with its content - the same trap
+# the tests/fixtures/checks-registry/ comment below documents from the other
+# side.  It is canonicalised for the same reason lib/checks.sh canonicalises its
+# own copy: on macOS $TMPDIR resolves through a /var -> /private/var symlink, so
+# an uncanonicalised root makes the prefix strip silently fail.
+SCAN_ROOT=${1:-$ROOT}
+SCAN_ROOT=$(cd -- "$SCAN_ROOT" && pwd -P)
+export SCOURSH_INSTALL_ROOT="$SCAN_ROOT"
+
+cd "$SCAN_ROOT"
 
 FAILED=0
 note() { printf '%s\n' "$*"; }

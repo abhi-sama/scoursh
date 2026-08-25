@@ -1,0 +1,142 @@
+# modules/dast/passive/checks-leakage.rules - the §7.1 information-disclosure
+# script-check registry (rules/RULE-FORMAT.md §9.5; docs/STEP5-DAST-PLAN.md
+# DAST-10, tier 2).  Owned by modules/dast/passive/leakage.sh; ids are all
+# `DAST-LEAK-*`.
+#
+# ONE FILE PER OWNING PHASE SCRIPT, WHICH IS WHAT rules/RULE-FORMAT.md §9'S
+# `checks-<name>.rules` ROW EXISTS FOR.  This directory's registry used to be a
+# single co-owned `checks.rules` that every tier-2 passive ticket appended to,
+# because the §9 path table reserved only that one basename and any other name
+# was `E070` - measured, on `modules/dast/passive/cookies.rules`, by
+# `tests/lint-rules.sh` itself.  DAST-05..DAST-11 are peers with no ordering
+# between them, so any two built in parallel produced an add/add conflict on that
+# one file, and the mitigation ("take both sides") was a convention that has to be
+# re-taught to every author and is silently wrong exactly once before anyone
+# notices.  §9 now also reserves the `checks-` PREFIX, so each ticket owns its own
+# file and there is no shared file left to conflict on.
+#
+# Nothing about identity moved with these records.  §9.5.1's owning-module map
+# keys on the DIRECTORY, so E018/E081 still hold every id here to the `DAST-`
+# prefix; a check id is unchanged by the file it lives in, so E019 uniqueness is
+# still repository-wide; and `checks_registry_load` (lib/checks.sh) globs every
+# `*.rules` under `modules/dast/` at any depth with no per-file allowlist, so this
+# file loads alongside its siblings with no registration step.  The records below
+# were moved BYTE-IDENTICALLY out of the shared file: a check id feeds the finding
+# fingerprint (docs/FOUNDATION.md tension 5), so a split is a move and never an
+# edit.
+#
+#
+# FIVE IDS FOR FIVE FAMILIES, AND THAT IS NOT COSMETIC.  `check_id` is a
+# fingerprint component (docs/FOUNDATION.md tension 5) and the DAST location
+# profile carries no component naming the DEFECT, so a stack trace and a leaked
+# email on one path would collide on one fingerprint under a single id and
+# `findings_merge` would silently keep whichever won the sort.  They also carry
+# genuinely different severities, CWEs and remediations, which one record cannot
+# state.
+#
+# `intrusive` is deliberately NOT set on any of these: this phase issues plain
+# GETs to URLs an earlier phase already fetched and provokes nothing, so the
+# passive tier is the whole gate and requiring --allow-intrusive on top would be
+# a second, undocumented one.
+
+id: DAST-LEAK-STACK_TRACE-01
+title: Response body discloses a server stack trace or debugger page
+script: passive/leakage.sh
+severity: medium
+confidence: high
+cwe: CWE-209
+owasp: A05:2021
+tags: passive
+tags: quick
+coverage-scope: target
+remediation: Turn the framework debug flag off in every deployed environment and
+  serve a generic error document instead, with the detail written to a
+  server-side log the visitor cannot read. Treat this as a configuration default
+  rather than a per-page fix: the same flag governs every handler, and an
+  interactive debugger page frequently also exposes an evaluation console, which
+  turns disclosure into remote code execution. Verify by requesting a path that
+  is known to raise and confirming the response carries no filesystem path, no
+  line number and no framework version.
+references: CWE-209
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-LEAK-PROXY_HEADER-01
+title: Response header discloses internal infrastructure
+script: passive/leakage.sh
+severity: low
+confidence: high
+cwe: CWE-200
+owasp: A05:2021
+tags: passive
+tags: quick
+coverage-scope: target
+remediation: Strip the header at the edge before the response leaves the
+  perimeter, rather than at the application, so a route that bypasses the
+  application is covered too. Most reverse proxies add these for internal
+  debugging and have a directive to unset them on egress. An internal address or
+  an internal DNS name is reconnaissance for a later server-side request forgery
+  or a lateral move: it tells an attacker the private range in use, the naming
+  convention, and often the orchestration platform.
+references: CWE-200
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-LEAK-EMAIL-01
+title: Email address disclosed outside a published contact link
+script: passive/leakage.sh
+severity: low
+confidence: medium
+cwe: CWE-200
+owasp: A01:2021
+tags: passive
+coverage-scope: target
+remediation: Remove the address from the served bytes where it is incidental - a
+  leftover HTML comment, a serialised record in an embedded JSON blob, or a
+  bundled test fixture. A named individual address harvested this way is the raw
+  material for a targeted phishing or password-reset attempt, and it is also a
+  username on many systems. Where an address must be published, publish a role
+  alias on a contact page rather than an individual mailbox: this check
+  deliberately does not report addresses the site links as mailto:, which is the
+  publication route it treats as intentional.
+references: CWE-200
+references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+
+id: DAST-LEAK-JS_CONFIG-01
+title: Served JavaScript carries a credential or internal configuration value
+script: passive/leakage.sh
+severity: high
+confidence: medium
+cwe: CWE-540
+owasp: A05:2021
+tags: passive
+tags: compliance
+coverage-scope: target
+remediation: Treat the value as compromised and rotate it before anything else:
+  every visitor since the bundle was published has had it. Then move the secret
+  server-side and have the browser call an endpoint that holds it, rather than
+  shipping it. Audit the build pipeline for the cause, which is usually a whole
+  environment file inlined into the bundle rather than one deliberate variable -
+  so assume siblings. Keep only values a vendor documents as browser-safe (a
+  publishable key, an OAuth client id, an analytics id) in client code; this
+  check allow-lists those by name and by prefix and does not report them.
+references: CWE-540
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-LEAK-THIRD_PARTY_ORIGIN-01
+title: Page loads content from third-party origins
+script: passive/leakage.sh
+severity: info
+confidence: high
+cwe: CWE-829
+owasp: A08:2021
+tags: passive
+coverage-scope: target
+remediation: This is an inventory rather than a defect: review the list and
+  confirm each origin is one the application means to depend on. Each
+  third-party origin serving active content can execute script in this page
+  context, so its compromise is this application compromised. Reduce the list
+  where a dependency can be self-hosted, pin what remains with Subresource
+  Integrity, and constrain the set with a Content-Security-Policy that names
+  exactly these origins - so an origin added later, by an attacker or by an
+  unreviewed change, is blocked rather than silently trusted.
+references: CWE-829
+references: https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/

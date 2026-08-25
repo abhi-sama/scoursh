@@ -48,7 +48,7 @@
 #  10. the third-party family is INFORMATIONAL severity, and stays so.
 #  11. an out-of-scope inventory URL is skipped, never handed to `http_request`
 #      (which would abort the whole run with exit 3).
-#  12. the shell catalog and modules/dast/passive/checks.rules agree, field by
+#  12. the shell catalog and modules/dast/passive/checks-leakage.rules agree, field by
 #      field, on every one of the five ids.
 #  13. a candidate secret's VALUE never reaches the finding evidence.
 #
@@ -817,7 +817,7 @@ printf '== F. the shell catalog and checks.rules agree ==\n'
 # tension 15 filters; the shell catalog is what a finding actually carries.  Two
 # copies, on purpose - so they are asserted equal here rather than hoped equal.
 t_case 'catalog-registry-agreement'
-RULES=$ROOT/modules/dast/passive/checks.rules
+RULES=$ROOT/modules/dast/passive/checks-leakage.rules
 _rule_field() {
   # `_cur_id`, not `cur`: leakage_engine.sh uses `cur` as an associative array
   # and `shellcheck -x` follows the source into it.
@@ -844,14 +844,43 @@ assert_eq info "$(_rule_field DAST-LEAK-THIRD_PARTY_ORIGIN-01 severity)" \
   'the registry ALSO records the third-party family as informational, so the two copies cannot drift on this ticket own acceptance criterion'
 
 t_case 'peer-blocks-intact'
-# This ticket appends to a SHARED registry.  Asserting the peers survived is
-# what turns "take both sides of the merge conflict" from an instruction into a
-# checked property.
+# This case originally read the ONE shared modules/dast/passive/checks.rules and
+# asserted the peers' records were still in it, turning "take both sides of the
+# merge conflict" from an instruction into a checked property.  That registry is
+# now split one file per owning phase script (rules/RULE-FORMAT.md §9's
+# `checks-<name>.rules` row), so there is no shared file to append to and no
+# merge conflict to resolve - the hazard this case was written against is gone.
+#
+# The GUARANTEE it was really buying is not, so the case is re-aimed rather than
+# deleted: the peers' checks must still be discoverable, which after the split is
+# a property of the DIRECTORY and no longer of any single file.  It is asserted
+# over every record file in the directory, discovered by the same `*.rules` glob
+# shape checks_registry_load itself uses, so it holds however the directory is
+# arranged and would have passed unchanged both before the split and after it.
+# Reading a fixed filename is what made the original brittle; this reads none.
+# (The glob rather than checks_registry_load itself: this suite does not source
+# lib/checks.sh, and adding that edge would grow what `shellcheck -x` inlines
+# here for no gain the glob does not already give.)
+_LEAK_PEER_REG=''
+for _s in "$ROOT"/modules/dast/passive/*.rules; do
+  [[ -f $_s ]] || continue
+  while IFS= read -r _line; do
+    [[ $_line == 'id: '* ]] && _LEAK_PEER_REG+="${_line#id: } "
+  done <"$_s"
+done
+# Non-empty first: every assertion below is a substring test, so a registry that
+# failed to load would make them all fail for a reason none of them names.
+assert_ne '' "$_LEAK_PEER_REG" 'the passive registry directory yielded records at all'
 for _c in DAST-COOKIE-NO_SECURE-01 DAST-COOKIE-NO_HTTPONLY-01 \
   DAST-HDR-CSP_MISSING-01 DAST-HDR-HSTS_MISSING-01 DAST-HDR-RECOMMENDED_MISSING-01; do
-  assert_ne '' "$(_rule_field "$_c" severity)" \
-    "the peer record $_c is still present - this ticket appended to the shared tier registry rather than replacing a block"
+  assert_contains "$_LEAK_PEER_REG" "$_c" \
+    "the peer record $_c is still discoverable after the per-owner split - fails if a split dropped a peer's file, which no single-file read would notice"
 done
+# And this ticket's own records are in the same registry, from their own file -
+# without this the case above is satisfied by a registry that loaded every file
+# EXCEPT checks-leakage.rules.
+assert_contains "$_LEAK_PEER_REG" 'DAST-LEAK-STACK_TRACE-01' \
+  "this phase's own records load from checks-leakage.rules alongside the peers"
 
 # ===========================================================================
 printf '\n== dast-leakage: %d passed, %d failed ==\n' "$T_PASS" "$T_FAIL"
