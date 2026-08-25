@@ -1,0 +1,123 @@
+# modules/dast/passive/checks-cookies.rules - the §7.1 cookie-flag script-check
+# registry (rules/RULE-FORMAT.md §9.5; docs/STEP5-DAST-PLAN.md DAST-06, tier 2).
+# Owned by modules/dast/passive/cookies.sh; ids are all `DAST-COOKIE-*`.
+#
+# ONE FILE PER OWNING PHASE SCRIPT, WHICH IS WHAT rules/RULE-FORMAT.md §9'S
+# `checks-<name>.rules` ROW EXISTS FOR.  This directory's registry used to be a
+# single co-owned `checks.rules` that every tier-2 passive ticket appended to,
+# because the §9 path table reserved only that one basename and any other name
+# was `E070` - measured, on `modules/dast/passive/cookies.rules`, by
+# `tests/lint-rules.sh` itself.  DAST-05..DAST-11 are peers with no ordering
+# between them, so any two built in parallel produced an add/add conflict on that
+# one file, and the mitigation ("take both sides") was a convention that has to be
+# re-taught to every author and is silently wrong exactly once before anyone
+# notices.  §9 now also reserves the `checks-` PREFIX, so each ticket owns its own
+# file and there is no shared file left to conflict on.
+#
+# Nothing about identity moved with these records.  §9.5.1's owning-module map
+# keys on the DIRECTORY, so E018/E081 still hold every id here to the `DAST-`
+# prefix; a check id is unchanged by the file it lives in, so E019 uniqueness is
+# still repository-wide; and `checks_registry_load` (lib/checks.sh) globs every
+# `*.rules` under `modules/dast/` at any depth with no per-file allowlist, so this
+# file loads alongside its siblings with no registration step.  The records below
+# were moved BYTE-IDENTICALLY out of the shared file: a check id feeds the finding
+# fingerprint (docs/FOUNDATION.md tension 5), so a split is a move and never an
+# edit.
+# `passive/cookies.sh:passive` floor (modules/dast/engine.sh). Reading the
+# `Set-Cookie` headers of responses to plain GET requests mutates nothing, which
+# is the whole of docs/DESIGN.md §7.1's admission criterion.
+#
+# THREE ATTRIBUTES, FOUR CHECK IDS, AND THE FOURTH IS THE POINT. `SameSite` has
+# two failure states that are different facts with different fixes: the attribute
+# ABSENT (no policy stated, so the effective one is the visitor's browser default
+# - Chromium applies `Lax`, other engines have shipped both `Lax` and no
+# restriction at all) and the attribute PRESENT with a value that gives no
+# cross-site protection (`None`, or a token no browser recognises). One id could
+# only state one of them, and `check_id` is a fingerprint component, so a single
+# id would make those two states one finding whose meaning flips between runs.
+# The remaining components (target, method, path_template, param_location=cookie,
+# param_name=<cookie name>) are what make two flags missing on one cookie two
+# findings rather than one.
+#
+# `intrusive` is deliberately NOT set on any of these: nothing here changes target
+# state, so the passive tier is the whole gate and requiring --allow-intrusive on
+# top would be a second, undocumented one.
+
+
+id: DAST-COOKIE-NO_SECURE-01
+title: Cookie set without the Secure attribute
+script: passive/cookies.sh
+severity: medium
+confidence: high
+cwe: CWE-614
+owasp: A05:2021
+tags: passive
+tags: quick
+tags: compliance
+coverage-scope: target
+remediation: Set the Secure attribute on every cookie the application issues, so
+  a browser only ever sends it over TLS. Serve the site over HTTPS only and add
+  HSTS so the first, pre-redirect request cannot carry the cookie either. For a
+  session cookie set Secure, HttpOnly and an explicit SameSite together - each
+  defends a different attack and none substitutes for another.
+references: CWE-614
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-COOKIE-NO_HTTPONLY-01
+title: Cookie set without the HttpOnly attribute
+script: passive/cookies.sh
+severity: medium
+confidence: high
+cwe: CWE-1004
+owasp: A05:2021
+tags: passive
+tags: quick
+tags: compliance
+coverage-scope: target
+remediation: Set the HttpOnly attribute on every cookie no client-side script
+  legitimately needs to read, which for a session or authentication cookie is
+  always. If a script genuinely needs a value, put that value in a separate,
+  non-authenticating cookie and leave the session cookie HttpOnly. HttpOnly
+  limits the damage of a cross-site-scripting flaw and does not fix one.
+references: CWE-1004
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-COOKIE-SAMESITE_ABSENT-01
+title: Cookie set with no SameSite attribute
+script: passive/cookies.sh
+severity: low
+confidence: high
+cwe: CWE-1275
+owasp: A01:2021
+tags: passive
+tags: compliance
+coverage-scope: target
+remediation: State the policy explicitly rather than relying on a browser default
+  that differs between engines and changes between releases - SameSite=Lax for a
+  session cookie, which still survives ordinary top-level navigation to the site,
+  or SameSite=Strict where no cross-site entry point needs the cookie. Only use
+  SameSite=None for a cookie a third-party context genuinely requires, and pair
+  it with Secure. SameSite reduces cross-site request forgery exposure and is not
+  a substitute for an anti-CSRF token on a state-changing request.
+references: CWE-1275
+references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+
+id: DAST-COOKIE-SAMESITE_WEAK-01
+title: Cookie set with a SameSite value that gives no cross-site protection
+script: passive/cookies.sh
+severity: medium
+confidence: high
+cwe: CWE-1275
+owasp: A01:2021
+tags: passive
+tags: compliance
+coverage-scope: target
+remediation: Use SameSite=Lax or SameSite=Strict unless a third-party context
+  genuinely needs the cookie. If it does, SameSite=None is only honoured when
+  Secure is also set - modern browsers reject a None cookie without it outright,
+  so the cookie is silently dropped rather than merely unprotected. Correct an
+  unrecognised value rather than leaving it, because browsers do not agree on how
+  to treat one. Protect every state-changing endpoint with an anti-CSRF token
+  regardless.
+references: CWE-1275
+references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/

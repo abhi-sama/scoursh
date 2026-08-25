@@ -65,7 +65,7 @@ source "${BASH_SOURCE[0]%/*}/markup_engine.sh"
 # ---------------------------------------------------------------------------
 # The check catalog, in the shell
 # ---------------------------------------------------------------------------
-# modules/dast/passive/checks.rules is the REGISTRY - what tension 12 computes
+# modules/dast/passive/checks-markup.rules is the REGISTRY - what tension 12 computes
 # coverage over and tension 15's filter chain filters - and this table is what a
 # finding actually carries.  They are two copies on purpose and for the same
 # reason modules/dast/passive/headers.sh and modules/dast/active/sqli.sh each

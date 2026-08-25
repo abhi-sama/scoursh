@@ -41,13 +41,13 @@
 #      operator who did affirm ownership nothing they had not already granted.
 #
 # The row is now `passive/transport.sh:passive`, the records in
-# `passive/checks.rules` carry the matching `passive` type tag, and
+# `passive/checks-transport.rules` carry the matching `passive` type tag, and
 # tests/suites/dast-transport.sh section E asserts both halves agree - which is
 # tension 15's intersection rule: both gates must permit and neither can widen
 # the other.
 #
 # SCOPE BOUNDARY WITH ITS THREE NEIGHBOURS is stated at length in
-# transport_engine.sh's header and restated in passive/checks.rules; in one
+# transport_engine.sh's header and restated in passive/checks-transport.rules; in one
 # line: passive/tls.sh owns the CONNECTION, passive/headers.sh owns HSTS,
 # passive/cookies.sh owns the `Secure` ATTRIBUTE, and this file owns what
 # TRAVELS unencrypted and what an encrypted page LOADS unencrypted.
@@ -117,7 +117,7 @@ _tr_hit() {
 # ---------------------------------------------------------------------------
 # The check catalog, in the shell
 # ---------------------------------------------------------------------------
-# modules/dast/passive/checks.rules is the REGISTRY - what tension 12 computes
+# modules/dast/passive/checks-transport.rules is the REGISTRY - what tension 12 computes
 # coverage over and tension 15's filter chain filters - and this table is what a
 # finding actually carries.  They are two copies on purpose and for the reason
 # passive/headers.sh and active/sqli.sh already record: `finding_set` is fed by

@@ -83,7 +83,7 @@ _hdr_hit() {
 # ---------------------------------------------------------------------------
 # The check catalog, in the shell
 # ---------------------------------------------------------------------------
-# modules/dast/passive/checks.rules is the REGISTRY - what tension 12 computes
+# modules/dast/passive/checks-headers.rules is the REGISTRY - what tension 12 computes
 # coverage over and tension 15's filter chain filters - and this table is what a
 # finding actually carries.  They are two copies on purpose and for the same
 # reason modules/dast/active/sqli.sh carries its own: `finding_set` is fed by the

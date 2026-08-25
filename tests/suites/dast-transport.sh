@@ -789,7 +789,7 @@ while IFS= read -r line || [[ -n $line ]]; do
     script) REG_SCRIPT[$_cur_id]=$_val ;;
     tags) [[ -z ${REG_TAG[$_cur_id]:-} ]] && REG_TAG[$_cur_id]=$_val ;;
   esac
-done <"$ROOT/modules/dast/passive/checks.rules"
+done <"$ROOT/modules/dast/passive/checks-transport.rules"
 
 for _id in "${!REG_SCRIPT[@]}"; do
   [[ ${REG_SCRIPT[$_id]} == 'passive/transport.sh' ]] && _reg_ids+="$_id "

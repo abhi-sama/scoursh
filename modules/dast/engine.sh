@@ -144,7 +144,7 @@ declare -ga _DAST_PHASES=(
   #      `scan.sh dast --target <t>` would skip it and both exposure classes it
   #      reports would be invisible on the ordinary run.
   #
-  # Its records in modules/dast/passive/checks.rules carry the matching
+  # Its records in modules/dast/passive/checks-transport.rules carry the matching
   # `passive` type tag, so the two gates tension 15 intersects agree.
   'passive/transport.sh:passive'
   # Tier 3 - safe active, docs/DESIGN.md §7.2 (DAST-12, DAST-13)

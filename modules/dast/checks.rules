@@ -3,16 +3,24 @@
 # docs/STEP5-DAST-PLAN.md tier 5).
 #
 # WHY THIS FILE EXISTS AT THIS PATH, AND WHY IT IS SHARED.
-# rules/RULE-FORMAT.md §9's path table gives the §9.5 script-check schema to
-# "any file named `checks.rules`, at any depth", and makes every other record
-# path E070 - so a per-script `authz-checks.rules` is not a legal record file,
-# however tidy it would look while five tier-5 tickets are built in parallel.
-# modules/dast/passive/ and modules/dast/active/ each already have one, and this
-# is the third: the home for jwt.sh, graphql.sh, ratelimit.sh, authz.sh and
-# transport.sh, whose scripts sit at this level rather than in a sub-directory.
-# TREAT IT AS APPEND-ONLY.  A merge conflict in it is resolved by keeping BOTH
-# blocks, never by choosing a side, exactly as passive/checks.rules records for
-# its own peers.
+# When it was created, rules/RULE-FORMAT.md §9's path table gave the §9.5
+# script-check schema to "any file named `checks.rules`, at any depth" and made
+# every other record path E070 - so a per-script `authz-checks.rules` was not a
+# legal record file, however tidy it would have looked while five tier-5 tickets
+# were built in parallel.  It is the home for jwt.sh, graphql.sh, ratelimit.sh,
+# authz.sh and transport.sh, whose scripts sit at this level rather than in a
+# sub-directory.
+#
+# SINCE THEN §9 HAS GAINED A `checks-<name>.rules` ROW (docs/FOUNDATION.md
+# tension 29), so a per-owner registry IS now legal here - note the PREFIX, since
+# the `authz-checks.rules` SUFFIX spelling above is still E070.  Splitting is
+# deliberately optional and per-directory, and THIS FILE IS NOT SPLIT:
+# modules/dast/passive/ was, because its owners had all landed, whereas DAST-27
+# is still open against this one and splitting a registry under a peer who is
+# mid-flight recreates the very conflict the split exists to prevent.
+# SO TREAT IT AS APPEND-ONLY.  A merge conflict in it is resolved by keeping BOTH
+# blocks, never by choosing a side.  A NEW top-level tier-5 phase should prefer
+# its own `checks-<name>.rules` over appending here.
 #
 # THE TYPE TAG IS `active`, matching the phase table's `authz.sh:active` floor
 # (modules/dast/engine.sh), so these checks are reachable only at
@@ -133,14 +141,20 @@ references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
 # sits at `modules/dast/jwt.sh`, not under `passive/` or `active/`, and §9.5's
 # `script` value is MODULE-relative - so `script: jwt.sh` only resolves from a
 # registry at this level.  The tier-5 peers (graphql.sh, ratelimit.sh, authz.sh,
-# transport.sh) share this file for the same reason the §7.1 tier shares
-# modules/dast/passive/checks.rules: it is APPEND-ONLY between them, and a merge
+# transport.sh) share this file: it is APPEND-ONLY between them, and a merge
 # conflict in it is resolved by keeping BOTH blocks, never by choosing a side.
+# modules/dast/passive/ no longer works this way - rules/RULE-FORMAT.md §9 now
+# also reserves the `checks-` PREFIX, and that directory is split one
+# `checks-<name>.rules` per owning script (docs/FOUNDATION.md tension 29).
+# Splitting is optional and per-directory and THIS file is deliberately not
+# split: doing one under peers who are mid-flight recreates the very conflict it
+# exists to prevent.  A new tier-5 phase may still take its own
+# `checks-<name>.rules` here rather than appending, which is the cheaper path.
 #
 # `checks_registry_load` (lib/checks.sh) runs `find modules/dast -name '*.rules'`
 # with no per-file allowlist, so this file loads alongside
-# modules/dast/passive/checks.rules and modules/dast/active/checks.rules with no
-# registration step anywhere.
+# modules/dast/active/checks.rules and modules/dast/passive/checks-*.rules with
+# no registration step anywhere.
 #
 # THE TYPE TAG IS `active`, matching the phase table's `jwt.sh:active` floor
 # (modules/dast/engine.sh).  Both gates must permit and neither widens the other

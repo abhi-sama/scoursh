@@ -194,6 +194,49 @@ assert_eq scanner-config "$(records_schema_for_path config/scanner.conf)" 'scann
 assert_eq severity-modifier "$(records_schema_for_path data/severity-rubric.conf)" 'rubric'
 assert_status 1 'a file matching no row is E070' records_schema_for_path some/other/file.rules
 
+# --- §9's `checks-<name>.rules` row ----------------------------------------
+# The per-owner spelling of the §9.5 script-check registry, added so that peers
+# adding phase scripts to one module directory in parallel do not collide on a
+# single co-owned file.  Every assertion below names the reading it fails under,
+# because the row is only worth having if it legalises EXACTLY one shape: a
+# `checks-*` glob that also swallowed arbitrary `*.rules` names would silently
+# give the pattern-rule schema's files the script-check schema, and every record
+# in them would fail E023 for a missing `pattern`.
+t_case '§9 path table: the checks-<name>.rules row'
+assert_eq script-check "$(records_schema_for_path modules/dast/passive/checks-cookies.rules)" \
+  'checks-<name>.rules at a module path is a script check'
+assert_eq script-check "$(records_schema_for_path checks-top.rules)" \
+  'the checks- prefix is reserved repository-wide, including at the root'
+# Sits ABOVE the pattern-rule rows, exactly as the `checks.rules` row does: under
+# the opposite ordering this is captured by `modules/iac/*.rules` and every
+# record in it fails E023 for a missing `pattern`.
+assert_eq script-check "$(records_schema_for_path modules/iac/checks-terraform.rules)" \
+  'checks-<name>.rules beats the modules/iac/*.rules pattern-rule glob'
+# The negative direction, which is the half that matters: the row must not open
+# the extension up.  Both of these are real names this repository rejected.
+assert_status 1 'an arbitrary *.rules at a module path is still E070' \
+  records_schema_for_path modules/dast/passive/cookies.rules
+assert_status 1 'the SUFFIX spelling headers-checks.rules is still E070' \
+  records_schema_for_path modules/dast/passive/headers-checks.rules
+# `?*` rather than `*`: a bare `checks-.rules` names no owner.  Under a plain
+# `checks-*.rules` glob this assertion fails.
+assert_status 1 'checks-.rules names no owner and is E070' \
+  records_schema_for_path modules/dast/passive/checks-.rules
+# The reservation is on a FILENAME, not on a path segment.  Bash's `*` matches
+# `/` too, so a `*/checks-?*.rules` glob would also match this and turn every
+# `.rules` file under a directory called `checks-x` into a script-check
+# registry.  Matching on the basename is what confines it; this assertion fails
+# under the `*/`-prefixed spelling.
+assert_status 1 'a DIRECTORY named checks-x does not make its contents script checks' \
+  records_schema_for_path modules/dast/checks-x/arbitrary.rules
+# The pre-existing rows are unchanged by the addition - the amendment widens the
+# table and re-classifies nothing (rules/RULE-FORMAT.md §14's second worked
+# example turns on exactly this).
+assert_eq script-check "$(records_schema_for_path modules/dast/passive/checks.rules)" \
+  'the plain checks.rules row still resolves as it did before'
+assert_eq pattern-rule "$(records_schema_for_path modules/iac/terraform.rules)" \
+  'a pattern-rule pack is unaffected by the new row'
+
 t_case '§9 single-record config files (E071)'
 printf 'id: not-scanner\njobs: 4\n' >"$W/scanner.conf"
 try_parse "$W/scanner.conf" scanner-config || true

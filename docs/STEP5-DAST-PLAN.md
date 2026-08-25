@@ -41,8 +41,9 @@ open and unordered among themselves.  See each ticket's landing note under the t
 it shipped, and DAST-05's and DAST-06's for the one pre-existing `modules/dast/run.sh` defect they
 found and deliberately did not fix in place.
 
-**DAST-30 (`passive/transport.sh`) now also lives in this directory and runs at this tier**, appending
-its own `DAST-TRANSPORT-*` block to the same shared `modules/dast/passive/checks.rules`, even though it
+**DAST-30 (`passive/transport.sh`) now also lives in this directory and runs at this tier**, carrying
+its own `DAST-TRANSPORT-*` block in `modules/dast/passive/checks-transport.rules` (it appended to the
+directory's then-shared `checks.rules`; tension 29 has since split that file), even though it
 is a tier-5 §7.4 ticket - its landing note below states the reasoning, and `modules/dast/engine.sh`'s
 phase table carries the same note at the row itself.  It is not an additional tier-2 ticket and the
 tier-2 peer list above is unchanged by it; what moved is one intensity floor, not the ticket.
@@ -50,11 +51,14 @@ tier-2 peer list above is unchanged by it; what moved is one intensity floor, no
 **Tier 5 has started too: DAST-26 (`jwt.sh`) and DAST-29 (`authz.sh`) have both landed.**
 DAST-29 created `modules/dast/checks.rules`, the shared, append-only script-check registry for the
 tier-5 phases whose scripts sit at the top level of `modules/dast/`; DAST-27 and DAST-28
-append their own blocks to it and resolve a conflict in it by keeping both sides, exactly as
-`modules/dast/passive/checks.rules` records for its own peers.
-DAST-30 is NOT one of them: its script sits under `modules/dast/passive/` rather than at the top
-level, so its checks are registered in `modules/dast/passive/checks.rules` with the rest of that
-directory, per the paragraph above.
+append their own blocks to it and resolve a conflict in it by keeping both sides.
+That file is deliberately NOT split - `docs/FOUNDATION.md` tension 29 makes the per-owner
+`checks-<name>.rules` spelling legal everywhere but keeps splitting optional and per-directory, and
+doing one under peers who are mid-flight recreates the conflict it exists to prevent.
+`modules/dast/passive/` IS split, so it is no longer the precedent this paragraph used to cite.
+DAST-30 is NOT one of the top-level tier-5 phases: its script sits under `modules/dast/passive/`
+rather than at the top level, so its checks are registered in that directory with the rest of it -
+today in its own `modules/dast/passive/checks-transport.rules`, per the paragraph above.
 DAST-29 is also the first consumer of DAST-03's labelled multi-identity plumbing, so the
 `requires-identities: 2` path in `rules/RULE-FORMAT.md` §9.5 now has a real implementation behind it.
 See its landing note under the tier-5 table.
@@ -879,7 +883,8 @@ it is filed as its own ticket rather than widened into this one.
 POSITIVES rather than detection.**
 It ships `modules/dast/passive/leakage_engine.sh` (the pure half: the body reader, the five family
 decisions, the endpoint chooser), `modules/dast/passive/leakage.sh` (the phase script `dast_run_phase`
-sources), five `DAST-LEAK-*` records APPENDED to the shared `modules/dast/passive/checks.rules`, and
+sources), five `DAST-LEAK-*` records now in `modules/dast/passive/checks-leakage.rules` (APPENDED to
+the directory's then-shared `checks.rules`; tension 29 has since split that file), and
 `tests/suites/dast-leakage.sh` - 154 assertions, no network and no Docker, driven entirely from
 recorded head/body pairs replayed into `lib/http.sh`'s own two capture sinks.
 
@@ -956,14 +961,22 @@ error-based oracle `active/sqli.sh` (DAST-14) already owns, and matching them in
 report one defect under two check ids that the fingerprint cannot dedup.
 
 
-**One note on the frozen record format, so the next passive ticket does not repeat the attempt.**
+**One note on the frozen record format - AMENDED SINCE, so read the whole note before copying either
+half of it.**
 This ticket first shipped its registry as `modules/dast/passive/cookies.rules`, one pack per owning
-script, so that DAST-05..DAST-11 would not all edit one file. That is not available:
-`rules/RULE-FORMAT.md` §9's path table reserves the basename `checks.rules` repository-wide for the
+script, so that DAST-05..DAST-11 would not all edit one file. That was not available at the time:
+`rules/RULE-FORMAT.md` §9's path table reserved the basename `checks.rules` repository-wide for the
 §9.5 schema, and a record file matching no row of that table is `E070` - which `tests/lint-rules.sh`
-duly reported. The tier therefore shares `modules/dast/passive/checks.rules`. A parallel passive
-ticket will meet a merge conflict there; it is an append-only conflict between records that do not
-interact, so take both sides.
+duly reported. The tier therefore shared `modules/dast/passive/checks.rules`, and a parallel passive
+ticket met an append-only merge conflict there that was resolved by taking both sides.
+
+**That shared file no longer exists.** `docs/FOUNDATION.md` tension 29 added one additive row to §9's
+path table legalising `checks-<name>.rules` at any depth, and this directory is now split five ways -
+this ticket's four `DAST-COOKIE-*` records live in `modules/dast/passive/checks-cookies.rules`. A
+passive ticket from now on **creates its own `modules/dast/passive/checks-<name>.rules` and appends to
+nobody's file**, so there is no conflict to resolve. Note the shape precisely: the legal spelling is
+the `checks-` PREFIX, so this ticket's original `cookies.rules` and DAST-05's `headers-checks.rules`
+SUFFIX attempt are both still `E070`.
 
 
 #### What DAST-11 (`passive/markup.sh`) shipped, and the six things about it that are easy to get backwards
