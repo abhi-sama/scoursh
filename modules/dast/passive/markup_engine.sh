@@ -72,6 +72,9 @@
 #       `<form>`, which is what a browser does for well-formed markup and is
 #       wrong for nested `<form>` elements (which HTML forbids anyway) and for
 #       a control associated by the `form=` attribute rather than by nesting.
+#       A control with no open `<form>` above it is still EMITTED and belongs
+#       to no form - it is read for the document-wide password-field signal,
+#       which is the shape a single-page login page has.
 #     - `<svg>`/`<math>` foreign content is scanned as ordinary markup; its
 #       self-closing syntax is not modelled.
 #     - CDATA sections in XHTML are not recognised as such.
@@ -205,8 +208,18 @@ markup_safe_text() {
 # `field` records belong to the most recent `form` record, which is what lets a
 # caller in bash reconstruct the association without holding a DOM.  See this
 # file's header for exactly what that association does not model.
+# `LC_ALL=C` IS NOT DECORATION: IT IS WHAT MAKES `_MARKUP_MAX_BYTES` MEAN
+# BYTES.  The cap below is enforced with awk's `length()`, which counts
+# CHARACTERS, and in a UTF-8 locale a character is up to four bytes - so a
+# "1 MiB" cap would read up to 4 MiB of a hostile response before biting, which
+# is the opposite of what a resource bound is for.  In the C locale `length()`
+# is bytes and the constant means what its name says.  It also makes
+# `tolower`/`toupper` fold ASCII and nothing else, which is exactly HTML's own
+# ASCII-case-insensitive matching rule for tag and attribute names; every
+# pattern in this program is ASCII, and attribute VALUES are read out of the
+# original-case text and pass through as opaque bytes either way.
 markup_html_extract() {
-  awk -v maxbytes="${_MARKUP_MAX_BYTES:-1048576}" '
+  LC_ALL=C awk -v maxbytes="${_MARKUP_MAX_BYTES:-1048576}" '
     # HTML character references: the five named ones that matter in an
     # attribute value plus a numeric ampersand.  Same set, same reasoning, as
     # crawl_engine.sh - `&amp;` is not an optional nicety, it is the REQUIRED
@@ -226,8 +239,21 @@ markup_html_extract() {
     # the NAME, then read out of the ORIGINAL-case text from the same offset so
     # the VALUE keeps its case - a URL path is case-sensitive and lowercasing
     # it would change which resource the finding names.
+    #
+    # THE CHARACTER BEFORE THE NAME MAY BE A QUOTE, AND OMITTING THAT IS A
+    # SILENT FALSE NEGATIVE ON MARKUP EVERY BROWSER ACCEPTS.  HTML does not
+    # require whitespace after a quoted attribute value, so
+    # `<a href="..."target="_blank">` is one anchor with two attributes - but a
+    # class of only `[ \t\r\n/]` never matches that `target`, `attr()` returns
+    # "", the `_blank` test fails and the tabnabbing check CANNOT FIRE on it.
+    # A quote is therefore an attribute separator here as well.  The known cost
+    # is unchanged rather than new: this scanner is not quote-aware (it is
+    # crawl_engine.sh`s proven shape, see the header), so a value that itself
+    # contains ` name=` could already be misread, and admitting a quote only
+    # widens that same pre-existing case - it errs toward LOOKING at an
+    # element rather than toward silently skipping it.
     function attr(tag, name,   re, s, q, v, p) {
-      re = "[ \t\r\n/]" name "[ \t\r\n]*=[ \t\r\n]*"
+      re = "[ \t\r\n/\"" SQ "]" name "[ \t\r\n]*=[ \t\r\n]*"
       s = " " tolower(tag)
       p = match(s, re)
       if (p == 0) return ""
@@ -248,10 +274,11 @@ markup_html_extract() {
     # no sandbox attribute at all means it is not.  Reading presence off a
     # non-empty value would collapse the two and report a fully sandboxed frame
     # as unsandboxed - the false positive this function exists to prevent.
-    function attr_present(tag, name,   s) {
+    function attr_present(tag, name,   s, pre) {
       s = " " tolower(tag) " "
-      if (match(s, "[ \t\r\n/]" name "[ \t\r\n]*=")) return 1
-      if (match(s, "[ \t\r\n/]" name "[ \t\r\n/>]")) return 1
+      pre = "[ \t\r\n/\"" SQ "]"
+      if (match(s, pre name "[ \t\r\n]*=")) return 1
+      if (match(s, pre name "[ \t\r\n/>\"" SQ "]")) return 1
       return 0
     }
     function name_of(tag,   t) {
@@ -390,8 +417,26 @@ markup_html_extract() {
           informs = 1
           continue
         }
+        # A CONTROL IS EMITTED WHETHER OR NOT A FORM IS OPEN, AND GATING THIS ON
+        # `informs` WAS A FALSE NEGATIVE ON EXACTLY THE PAGE THAT MATTERS MOST.
+        # Two different consumers read a `field` record and only one of them is
+        # about forms.  markup.sh pass two associates controls with the most
+        # recent unclosed <form> and guards on that itself, so nothing there
+        # changes.  markup.sh pass ONE reads these records for a document-wide
+        # fact - does this page carry an <input type="password">, the CONTENT
+        # half of the sensitive-page signal (§5) - and a password box that is
+        # not nested in a <form> is the ordinary shape on a single-page
+        # application, where the submit is an XHR and there is no form element
+        # at all.  Suppressed here, that login page was classified as ordinary
+        # and its reverse-tabnabbing findings were downgraded from
+        # DAST-MARKUP-TABNABBING_SENSITIVE-01 to DAST-MARKUP-TABNABBING-01.
+        # The record contract is unchanged and is stated in this file header:
+        # a field belongs to the most recent unclosed <form>, and one with no
+        # open form belongs to no form.  (No apostrophe anywhere in this awk
+        # program, comment or code - it is inside a single-quoted shell string
+        # and one would end it; see the SQ note in BEGIN.)
         if (nm == "input" || nm == "select" || nm == "button") {
-          if (informs) emit("field", ln, attr(tag, "name"), tolower(attr(tag, "type")), (attr(tag, "value") != "") ? "1" : "0", nm)
+          emit("field", ln, attr(tag, "name"), tolower(attr(tag, "type")), (attr(tag, "value") != "") ? "1" : "0", nm)
           continue
         }
       }
@@ -461,13 +506,41 @@ markup_path_of() {
 # whole-attribute comparison gets wrong; and `rel="noopenerx"` must not, which
 # `[[ $rel == *noopener* ]]` gets wrong.  `rel` and `crossorigin` are defined as
 # token lists (HTML §2.4.7) and are read as ones.
+# THE WORD SPLIT IS DELIBERATE; THE PATHNAME EXPANSION THAT COMES WITH IT IS
+# NOT, AND DISABLING IT IS A SECURITY CONTROL RATHER THAN TIDINESS.  `$list` is
+# a `rel` or `crossorigin` attribute lifted verbatim out of a scanned response,
+# so it is attacker-authorable text (tension 10), and an unquoted expansion in
+# bash performs word splitting AND globbing.  A target serving `rel="*"` would
+# therefore have that `*` expanded against the scanner's CURRENT WORKING
+# DIRECTORY: on a host where a file named `noopener` happens to sit there, the
+# query for `noopener` succeeds and the target suppresses its own
+# DAST-MARKUP-TABNABBING-01 finding.  Two things are wrong with that and both
+# are fatal to the check - target-controlled text steering a security decision,
+# and a verdict that depends on where the scanner was started from rather than
+# on the response.  `markup_link_takes_sri` is built on this function, so the
+# SRI check inherits the identical hole.  Reproduced before the fix:
+#
+#     mkdir /tmp/g && touch /tmp/g/noopener && cd /tmp/g
+#     markup_tokens_have '*' noopener   # returned 0
+#
+# THE OPTION IS SAVED AND RESTORED BY HAND RATHER THAN WITH `local -`, WHICH IS
+# THE OBVIOUS SPELLING AND IS WRONG HERE.  `local -` is a bash 4.4 feature and
+# this project's frozen minimum is 4.2, which `lib/core.sh` enforces at load
+# time - so on the oldest bash we support it does not scope anything, and the
+# failure mode is the bad direction: `set -f` would ESCAPE this function and
+# leave pathname expansion disabled for the rest of the run.  The restore is
+# placed immediately after the split, which is the only glob-sensitive line, so
+# an early `return` out of the loop below cannot skip it.
 markup_tokens_have() {
-  local list=${1,,} want=${2,,} tok
+  local list=${1,,} want=${2,,} tok noglob_was=0
   list=${list//$'\t'/ }
   list=${list//$'\n'/ }
   list=${list//$'\r'/ }
+  [[ -o noglob ]] && noglob_was=1
+  set -f
   # shellcheck disable=SC2206  # deliberate word split: a token list is exactly that
   local -a toks=($list)
+  (( noglob_was )) || set +f
   for tok in "${toks[@]+"${toks[@]}"}"; do
     [[ $tok == "$want" ]] && return 0
   done

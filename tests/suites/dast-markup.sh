@@ -48,7 +48,15 @@
 # SC2016: assertion prose quotes HTML attribute syntax literally.
 # SC2030/SC2031: a `VAR=val cmd` prefix before a subprocess is deliberately
 #   scoped to that one invocation.
-# shellcheck disable=SC2016,SC2030,SC2031
+# SC2329: several cases REDEFINE `_doc` (and `markup_html_extract`) to stand in
+#   a one-off recorded response, then restore the original from a `declare -f`
+#   capture.  The replacement is reached only through the phase under test, so
+#   the linter cannot see the call and reports it as never invoked; silenced
+#   explicitly with a reason rather than left to the version, since this
+#   repository runs the linter on two userlands whose versions disagree about
+#   which findings exist at all.  (No line of prose here may BEGIN with the
+#   linter name - such a line is parsed as a directive, SC1072.)
+# shellcheck disable=SC2016,SC2030,SC2031,SC2329
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
@@ -825,6 +833,187 @@ done
 # a row at a higher tier would mean a check tagged `passive` never runs.
 assert_contains "$(cat "$ROOT/modules/dast/engine.sh")" 'passive/markup.sh:passive' \
   'modules/dast/engine.sh registers this phase at the passive tier, so scan_dispatch dast runs it'
+
+# ===========================================================================
+# J. The observability and false-negative defects a QA correction found.
+# ===========================================================================
+# Every case in this section was watched FAILING against the code as it shipped
+# before being written the right way round, and each names the reading it fails
+# under.  They are grouped because they share one shape: all seven are silent in
+# the direction that reads as a CLEAN SCAN RESULT, and none of the 189
+# assertions above exercises the path, which is how they survived a review.
+
+t_case 'J1: a run-level counter reset once per page'
+# THE READING THIS FAILS UNDER: `_MK_FORMS_CROSS_ORIGIN` declared inside
+# `_mk_analyse_one`, which runs once per PAGE, while it is read after the whole
+# page loop - so only the LAST page's value survives.  The cross-origin form
+# here is on the FIRST of two pages, so under that reading the count is 0 and
+# the reduction is never recorded: the form is still correctly EXCLUDED from
+# the CSRF check and the exclusion is silently lost, leaving the page reading
+# as though it HAD been evaluated for an anti-CSRF token.
+_run_case xopage mk-fixture "$B/forms" "$B/tab"
+assert_contains "$(_meta coverage_reduction)" 'markup_form_posts_cross_origin' \
+  'a cross-origin POST form on a page that is NOT the last one still declares its exclusion - FAILS when the counter is reset per page, where the last page (which has no form at all) zeroes it and the declaration vanishes'
+assert_contains "$(_meta coverage_reduction)" 'count=1' \
+  'and the count is the run total, not the last page total'
+
+t_case 'J2: a tokenizer that failed is not a document that is clean'
+# THE READING THIS FAILS UNDER: `markup_html_extract ... || true`, with the
+# status discarded and `parsed` incremented unconditionally.  Under it the page
+# yields an EMPTY record file that nothing guards on, so the run reports zero
+# findings, zero gaps, zero reductions - and still records four check ids in
+# `checks_run` as having executed against a page whose markup was never read.
+_mk_extract_orig=$(declare -f markup_html_extract)
+markup_html_extract() { printf 'markup_html_extract: simulated tokenizer failure\n' >&2; return 3; }
+_run_case tokfail mk-fixture "$B/tab" "$B/frames"
+eval "$_mk_extract_orig"
+assert_contains "$(_meta coverage_gap)" 'could not be tokenized' \
+  'a tokenizer that exits non-zero produces a coverage GAP naming the page - FAILS when the status is discarded, where a page with three real defects reports as tested-and-clean'
+assert_contains "$(_meta coverage_reduction)" 'markup_tokenizer_failed' \
+  'and a machine-readable reduction alongside it'
+assert_contains "$(_meta coverage_reduction)" 'simulated tokenizer failure' \
+  'and the tokenizer own stderr reaches the record - FAILS under 2>/dev/null, which throws away the only account of what went wrong'
+assert_not_contains "$(_meta checks_run)" 'DAST-MARKUP-SRI_MISSING-01' \
+  'and NOT ONE check id is recorded as having run - FAILS when `parsed` counts documents ATTEMPTED rather than documents TOKENIZED, which is the whole defect: checks_run is what modules/dast/run.sh honesty roll-up reads'
+assert_not_contains "$(_meta checks_run)" 'DAST-MARKUP-CSRF_TOKEN_ABSENT-01' \
+  'including the CSRF one'
+assert_eq 0 "$(_count_check DAST-MARKUP-TABNABBING-01)" \
+  'and no finding is invented from an empty record stream'
+
+t_case 'J3: a token list is never glob-expanded against the working directory'
+# THE READING THIS FAILS UNDER: `local -a toks=($list)` with pathname expansion
+# left ON.  `$list` is a `rel` attribute lifted verbatim out of a scanned
+# response, so a target serving rel="*" has that `*` expanded against the
+# scanner CURRENT WORKING DIRECTORY - and on a host where a file called
+# `noopener` happens to sit there, the target suppresses its own tabnabbing
+# finding.  The assertion is run from inside a directory containing exactly
+# such a file, which is what makes it discriminate: without it, both the
+# correct and the broken implementation return 1 and the case pins nothing.
+_globdir=$W/globtest
+rm -rf "$_globdir"; mkdir -p "$_globdir"
+: >"$_globdir/noopener"
+: >"$_globdir/stylesheet"
+_mk_glob_pwd=$PWD
+# `markup_tokens_have` returns a STATUS, so each case is turned into a word
+# first - `assert_true` takes a value, not a command string.
+_tok_says() { if markup_tokens_have "$1" "$2"; then printf 'matched'; else printf 'no'; fi; }
+_sri_says() { if markup_link_takes_sri "$1"; then printf 'matched'; else printf 'no'; fi; }
+cd "$_globdir"
+assert_eq no "$(_tok_says '*' noopener)" \
+  'rel="*" does NOT satisfy a query for noopener - FAILS with globbing on, where a file named noopener in the scanner cwd lets attacker-authorable text switch off a security check, and the verdict depends on where the scanner was started rather than on the response'
+assert_eq no "$(_tok_says 'external *' noopener)" \
+  'and neither does a glob sitting alongside a real token'
+assert_eq no "$(_sri_says '*')" \
+  'the SRI check inherits the same function, so rel="*" does not make a <link> look like a stylesheet either - FAILS with globbing on, which is a second check the same one-character response switches off'
+assert_eq matched "$(_tok_says 'external noopener' noopener)" \
+  'and a genuine token list still matches from that same directory - FAILS if the fix disables the WORD SPLIT rather than the pathname expansion, which would make every multi-token rel attribute stop matching'
+cd "$_mk_glob_pwd"
+_noglob_leaked=no; [[ -o noglob ]] && _noglob_leaked=yes
+assert_eq no "$_noglob_leaked" \
+  'and pathname expansion is left ON for the caller - FAILS if `set -f` escapes the function, which is exactly what `local -` does on bash 4.2 (this project frozen minimum, enforced in lib/core.sh) where it is not a scoping construct at all'
+
+t_case 'J4: a password field outside any form still marks the page sensitive'
+# THE READING THIS FAILS UNDER: the tokenizer emitting a `field` record only
+# `if (informs)`.  A single-page login page submits by XHR and has no <form>
+# element at all, so its password box is outside one - and suppressed, the
+# CONTENT half of the sensitive-page signal never fires and the page findings
+# are downgraded from TABNABBING_SENSITIVE-01 to TABNABBING-01.  The path here
+# is deliberately NOT sensitive-looking, so the path heuristic cannot rescue it
+# and the content signal is the only thing under test.  NO inventory is given,
+# so the only page fetched is the target own base-url `/` - an inventory entry
+# would be fetched IN ADDITION to it and served this same document, making the
+# expected finding count two and the case harder to read.
+_doc_orig=$(declare -f _doc)
+_doc() {
+  cat <<'H'
+<!DOCTYPE html><html><body>
+<div id="app">
+  <input type="text" name="user">
+  <input type="password" name="pw">
+  <button type="button">go</button>
+</div>
+<a href="https://out.example/help" target="_blank">help</a>
+</body></html>
+H
+}
+_run_case spapw mk-fixture
+eval "$_doc_orig"
+assert_eq 1 "$(_count_check DAST-MARKUP-TABNABBING_SENSITIVE-01)" \
+  'a page whose password box is NOT nested in a <form> is still an authentication page - FAILS when field records are gated on an open form, which is exactly the single-page-application shape this signal exists for'
+assert_eq 0 "$(_count_check DAST-MARKUP-TABNABBING-01)" \
+  'and it is NOT also reported under the ordinary id - the two are one finding carried by whichever id the page earns'
+
+t_case 'J5: an attribute with no separator before it still parses'
+# THE READING THIS FAILS UNDER: `attr()` requiring `[ \t\r\n/]` before the
+# attribute name.  HTML does not require whitespace after a quoted value, so
+# `<a href="..."target="_blank">` is markup every browser accepts - and under
+# that class the `target` is never found, the `_blank` test fails, and the
+# check cannot fire at all.
+_doc_orig=$(declare -f _doc)
+_doc() {
+  cat <<'H'
+<!DOCTYPE html><html><body>
+<a href="https://out.example/nosep"target="_blank">no separator before target</a>
+<iframe src="https://third.example/w"sandbox></iframe>
+</body></html>
+H
+}
+_run_case nosep mk-fixture
+eval "$_doc_orig"
+assert_eq 1 "$(_count_check DAST-MARKUP-TABNABBING-01)" \
+  'a target attribute written straight after a closing quote is read - FAILS when only whitespace and / count as separators, where the check is silently inert on markup browsers accept'
+assert_eq 0 "$(_count_check DAST-MARKUP-FRAME_UNTRUSTED-01)" \
+  'and a sandbox attribute written the same way is a sandbox - FAILS the other way, which would invent a finding about a frame that IS constrained'
+
+t_case 'J6: deselecting one check never silences another'
+# THE READING THIS FAILS UNDER: `_mk_selected FRAME_INSECURE_SCHEME || continue`
+# skipping the whole record rather than falling through to the untrusted-frame
+# arm.  The frame below is plaintext AND cross-origin AND unsandboxed; with the
+# plaintext id filtered out of the run, that reading emits NEITHER finding.
+# This was dormant only while `dast_check_selected` did not exist - it does now
+# (modules/dast/engine.sh), so it is reachable on any --profile-scan run.
+_doc_orig=$(declare -f _doc)
+_doc() { printf '%s\n' '<html><body><iframe src="http://plain.example/w"></iframe></body></html>'; }
+_new_run frameselect mk-fixture
+SCOURSH_DAST_ENDPOINTS='' SCOURSH_DAST_TARGET=mk-fixture SCOURSH_DAST_CELL=mk-fixture
+export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_TARGET SCOURSH_DAST_CELL
+# This suite sources markup_engine.sh alone, so modules/dast/engine.sh - where
+# `dast_check_selected` lives - is not in the process and `_mk_selected` takes
+# its documented "no filter chain: all selected" fallback.  The reader is
+# defined here EXACTLY as engine.sh defines it (whole-line membership, empty
+# means all selected) so this case exercises the real filtering rather than a
+# convenient approximation of it.
+dast_check_selected() {
+  local id=$1
+  [[ -n ${SCOURSH_SELECTED_CHECKS:-} ]] || return 0
+  [[ $'\n'"$SCOURSH_SELECTED_CHECKS"$'\n' == *$'\n'"$id"$'\n'* ]]
+}
+SCOURSH_SELECTED_CHECKS='DAST-MARKUP-FRAME_UNTRUSTED-01'
+export SCOURSH_SELECTED_CHECKS
+_dast_markup_phase
+unset SCOURSH_SELECTED_CHECKS
+unset -f dast_check_selected
+eval "$_doc_orig"
+assert_eq 0 "$(_count_check DAST-MARKUP-FRAME_INSECURE_SCHEME-01)" \
+  'the deselected check does not fire, which is tension 15 doing its job'
+assert_eq 1 "$(_count_check DAST-MARKUP-FRAME_UNTRUSTED-01)" \
+  'but the SELECTED check on that same element still does - FAILS when the plaintext arm `continue`s on being deselected, where filtering out one id silently switches off a different one the operator kept'
+
+t_case 'J7: a tabnabbing id that ran clean is still recorded as having run'
+# THE READING THIS FAILS UNDER: gating the two tabnabbing ids in `checks_run`
+# on `_MK_FIRED > 0` - did this id produce a FINDING.  `/` carries a
+# cross-origin target=_blank link that is correctly protected by
+# rel="noopener noreferrer", so the check ran and found nothing; under that
+# reading a clean page and an untested page look identical for these two ids
+# alone, and tension 12 can never infer `fixed` for them - the run that would
+# prove a fix is exactly the run that drops the coverage.
+_run_case tabclean mk-fixture
+assert_eq 0 "$(_count_check DAST-MARKUP-TABNABBING-01)" \
+  'the protected link on / is not a finding'
+assert_contains "$(_meta checks_run)" 'DAST-MARKUP-TABNABBING-01' \
+  'and the id is STILL in checks_run, because a page was classified under it and evaluated - FAILS when the condition is "did it fire", which makes a clean result indistinguishable from an untested one for these two ids and only these two'
+assert_not_contains "$(_meta checks_run)" 'DAST-MARKUP-TABNABBING_SENSITIVE-01' \
+  'while the sensitive id is NOT claimed, because no page on this run was an authentication page - FAILS if the gate is dropped entirely rather than moved, which would over-claim coverage the run never had'
 
 # ===========================================================================
 printf '\n== dast-markup: %d passed, %d failed ==\n' "$T_PASS" "$T_FAIL"
