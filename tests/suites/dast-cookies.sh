@@ -318,11 +318,24 @@ SCOURSH_HTTP_RESOLVE=_ck_resolve
 # which is the same file the phase then reads - so the phase is exercised through
 # the real capture path, not through a hand-fed string.
 REQ_LOG=$W/requests.log
-_req_reset() { : >"$REQ_LOG"; }
+# The REQUEST headers lib/http.sh was about to send, one `METHOD PATH<TAB>NAME:
+# VALUE` line each. They are logged separately from REQ_LOG so a request-count
+# assertion is never perturbed by a header, and they are read from
+# `_HTTP_TX_HEADERS` - section 9a's own outbound context, the array the real
+# curl config is built from - rather than from anything the phase told the test,
+# so "the credential was attached" is asserted at the transport boundary. That
+# distinction is the whole point of section E below: the defect it pins left the
+# phase reporting `authenticated_pass=1` while the wire carried nothing.
+REQ_HDR_LOG=$W/request-headers.log
+_req_reset() { : >"$REQ_LOG"; : >"$REQ_HDR_LOG"; }
 
 _ck_transport() {
   local method=$1 path=$5
   printf '%s %s\n' "$method" "$path" >>"$REQ_LOG"
+  local _h
+  for _h in "${_HTTP_TX_HEADERS[@]+"${_HTTP_TX_HEADERS[@]}"}"; do
+    printf '%s %s\t%s\n' "$method" "$path" "$_h" >>"$REQ_HDR_LOG"
+  done
   local -a sc=()
   case $path in
     /)         sc=('sid=abc; Path=/') ;;
@@ -622,6 +635,142 @@ source "$ROOT/modules/dast/passive/cookies.sh"
 assert_eq 1 "$(_count DAST-COOKIE-NO_SECURE-01 sid)" \
   'the endpoint after the failing one is still inspected - FAILS under aborting the phase on the first transport failure'
 assert_contains "$(_meta_text coverage_reduction)" 'cookies_request_failed' 'and the failure is recorded'
+
+# ===========================================================================
+printf '== E. the authenticated pass actually carries the credential ==\n'
+# ===========================================================================
+# A session cookie is frequently issued ONLY on an authenticated response, so an
+# authenticated pass that quietly sends nothing does not merely lose coverage -
+# it reports the LOGGED-OUT cookie surface as if it were the logged-in one, and
+# the run records `authenticated_pass=1` while it does so. That was the shipped
+# behaviour: the branch guarded on `dast_auth_cookie_header_set`, a name that
+# does not exist (the real one is `_dast_auth_cookie_header_set`, private), so
+# `declare -F` was false, the branch was skipped in silence, and the whole suite
+# stayed green because nothing here looked at the wire.
+#
+# EVERY ASSERTION BELOW READS `_HTTP_TX_HEADERS` AT THE TRANSPORT BOUNDARY,
+# never a note the phase wrote about itself - a phase that believes it
+# authenticated is exactly what the defect produced.
+#
+# A `bearer` identity is used for two reasons. It acquires with ZERO network
+# (the operator already handed us the token), so this stays a recorded-response
+# suite; and it is the mode a cookie-only attachment sends NOTHING for, which is
+# the second defect in the same block and the majority shape for an API.
+#
+# -x back-edge cut: modules/dast/auth_engine.sh
+# is already inlined elsewhere in this file's own source graph (every
+# modules/dast/passive/cookies.sh source above reaches it), and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - this suite is the file closest
+# to the shellcheck stage's ceiling, see tests/run-tests.sh and
+# docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
+source "$ROOT/modules/dast/auth_engine.sh"
+
+AUTH_CONF=$W/auth.conf
+: >"$AUTH_CONF"
+chmod 600 "$AUTH_CONF"
+printf 'id: cookie-fixture.op\nmode: bearer\ntoken: t0ken-c\n' >"$AUTH_CONF"
+
+# TWO GET endpoints, deliberately. One would pass under attaching the credential
+# once per phase, which is the second half of this fix: lib/http.sh consumes its
+# per-request context at entry (section 9a) and resets it, so an attachment made
+# above the loop rides only the first URL. Sorted under LC_ALL=C the phase walks
+# /good then /none, so /none is the one that goes out anonymous under that
+# reading.
+AUTH_INV=$W/endpoints-auth.json
+cat >"$AUTH_INV" <<'EOF'
+{ "schema": "scoursh.inventory.endpoints/1", "endpoints": [
+  { "id": "ep_good", "target": "cookie-fixture", "method": "GET", "url": "https://cookies.fixture.example/good", "path": "/good" },
+  { "id": "ep_none", "target": "cookie-fixture", "method": "GET", "url": "https://cookies.fixture.example/none", "path": "/none" }
+] }
+EOF
+
+t_case 'under --authed, every request this phase issues carries the session'
+_new_run authed
+dast_auth_load "$AUTH_CONF"
+dast_auth_acquire cookie-fixture op
+assert_eq authenticated "$_DAST_AUTH_STATE" \
+  'the fixture identity is authenticated with no request sent, so this section stays a recorded-response test'
+_req_reset
+SCOURSH_DAST_AUTHED=true
+SCOURSH_DAST_COOKIE_ENDPOINTS=$AUTH_INV
+export SCOURSH_DAST_AUTHED SCOURSH_DAST_COOKIE_ENDPOINTS
+# -x back-edge cut: modules/dast/passive/cookies.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
+source "$ROOT/modules/dast/passive/cookies.sh"
+
+HDRS=$(cat "$REQ_HDR_LOG")
+assert_contains "$HDRS" 'GET /good	Authorization: Bearer t0ken-c' \
+  'the first endpoint carries the identity - FAILS under the shipped reading, which guarded on `dast_auth_cookie_header_set`, a function that does not exist, so `declare -F` silently skipped the whole branch and the pass went out anonymous while still recording authenticated_pass=1; and FAILS again under attaching only a Cookie header, which sends nothing at all for a bearer identity'
+assert_contains "$HDRS" 'GET /none	Authorization: Bearer t0ken-c' \
+  'and so does the SECOND endpoint - FAILS under attaching the credential ONCE above the loop, since lib/http.sh consumes its per-request context at entry, so every request after the first goes out anonymous and its logged-out cookie surface is reported as the logged-in one'
+
+t_case 'an authenticated run does NOT claim it was unauthenticated-only'
+assert_contains "$(_meta_text notes)" 'authenticated_pass=1' \
+  'the run records that it made an authenticated pass'
+assert_not_contains "$(_meta_text coverage_reduction)" 'cookies_unauthenticated_only' \
+  'and the unauthenticated-only reduction is NOT recorded - FAILS under recording it unconditionally, which would tell an operator who did authenticate that the run did not'
+assert_not_contains "$(_meta_text coverage_reduction)" 'cookies_auth_not_attached' \
+  'and no request is reported as having lost its credential - FAILS under a phase that counts an attach failure it did not have, which would understate a pass that really was authenticated'
+
+t_case 'without --authed the same surface sends no credential at all'
+_new_run unauthed
+SCOURSH_DAST_AUTHED=false
+SCOURSH_DAST_COOKIE_ENDPOINTS=$AUTH_INV
+export SCOURSH_DAST_AUTHED SCOURSH_DAST_COOKIE_ENDPOINTS
+# -x back-edge cut: modules/dast/passive/cookies.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
+source "$ROOT/modules/dast/passive/cookies.sh"
+assert_not_contains "$(cat "$REQ_HDR_LOG")" 'Authorization:' \
+  'a run that did not ask to authenticate sends no credential - FAILS under attaching whatever session happens to be in the store, which would put a credential on the wire the operator never asked this run to use'
+assert_contains "$(_meta_text coverage_reduction)" 'cookies_unauthenticated_only' \
+  'and it says so, so its cookie findings are not read as the logged-in surface'
+unset SCOURSH_DAST_COOKIE_ENDPOINTS
+
+t_case 'a session that could not be attached is recorded, and the wire really is anonymous'
+# `dast_auth_apply` CAN refuse: auth_engine.sh section 8 returns 1 without
+# attaching anything when the identity is no longer authenticated, which is a
+# state that can change between the label scan above the loop and any one
+# request inside it. The phase still issues the request, so that response is the
+# logged-out surface - and a run holding an `authenticated_pass=1` note with
+# nothing to contradict it is the same class of defect as the one this section
+# exists for, one layer down.
+#
+# The refusal is produced by STUBBING `dast_auth_apply`, not by corrupting the
+# session store, because `dast_auth_authenticated_labels_set` reads that same
+# state: every real way of making the apply fail also empties the label list,
+# and then the branch is never entered and the counter can never be reached.
+_new_run authfail
+_AUTH_APPLY_REAL=$(declare -f dast_auth_apply)
+dast_auth_apply() { return 1; }
+SCOURSH_DAST_AUTHED=true
+SCOURSH_DAST_COOKIE_ENDPOINTS=$AUTH_INV
+export SCOURSH_DAST_AUTHED SCOURSH_DAST_COOKIE_ENDPOINTS
+# -x back-edge cut: modules/dast/passive/cookies.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
+source "$ROOT/modules/dast/passive/cookies.sh"
+assert_not_contains "$(cat "$REQ_HDR_LOG")" 'Authorization:' \
+  'no credential reached the wire, which is what makes the record below a true statement rather than defensive boilerplate'
+AUTHFAIL_RED=$(_meta_text coverage_reduction)
+assert_contains "$AUTHFAIL_RED" 'cookies_auth_not_attached' \
+  'and the run says so - FAILS under `dast_auth_apply ... || true`, which swallows the refusal and leaves authenticated_pass=1 as the only thing the run says about a pass that in fact sent no credential'
+assert_contains "$AUTHFAIL_RED" 'count=2' \
+  'counted per REQUEST, not once per phase - FAILS under a flag set on the first refusal, which understates how much of the reported surface is really the logged-out one'
+eval "$_AUTH_APPLY_REAL"
+unset SCOURSH_DAST_COOKIE_ENDPOINTS
 
 # ===========================================================================
 printf '== D. registration ==\n'

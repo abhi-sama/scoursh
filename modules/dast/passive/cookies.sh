@@ -352,16 +352,37 @@ _dast_cookies_phase() {
   # obtained a session this run. A session cookie is often only issued on an
   # authenticated response, so an unauthenticated-only cookie check has a real
   # hole - which is stated below when the run did not close it.
+  #
+  # THE CREDENTIAL IS ATTACHED BY `dast_auth_apply`, WHICH IS auth_engine.sh's
+  # OWN PUBLIC ENTRY POINT, AND NEVER BY READING THE SESSION STORE HERE. Two
+  # separate defects lived in this block and each one reads as a pass:
+  #
+  #   1. It guarded on, and called, `dast_auth_cookie_header_set` - a name that
+  #      does not exist. The real function is `_dast_auth_cookie_header_set`,
+  #      which is private. So the `declare -F` guard was FALSE on every run, the
+  #      branch was skipped in silence, and every request in the "authenticated"
+  #      pass went out with no credential while the run still recorded
+  #      `authenticated_pass=1`. An operator read the anonymous cookie surface
+  #      as the logged-in one, with no error, no log line and no coverage record
+  #      anywhere to say otherwise.
+  #   2. Even spelled correctly, a cookie-only attachment sends NOTHING for a
+  #      `bearer` or `api-key` identity, which is the majority shape for an API.
+  #      `dast_auth_apply` attaches BOTH halves of a session - the token in the
+  #      identity's own configured header and scheme, AND the cookie jar.
+  #
+  # It consumes lib/http.sh's per-request context (section 9a), which
+  # `http_request` reads and RESETS at entry, so it is called immediately before
+  # EVERY request rather than once here: a credential attached once would ride
+  # only the first endpoint's GET and every endpoint after it would go out
+  # anonymous - the silently half-authenticated pass, which reports a logged-out
+  # response as a logged-in one for all but the first URL.
   _COOKIES_AUTH_LABEL=''
-  local cookie_header=''
-  if [[ ${SCOURSH_DAST_AUTHED:-false} == true ]] && declare -F dast_auth_authenticated_labels_set >/dev/null; then
+  if [[ ${SCOURSH_DAST_AUTHED:-false} == true ]] \
+    && declare -F dast_auth_authenticated_labels_set >/dev/null \
+    && declare -F dast_auth_apply >/dev/null; then
     dast_auth_authenticated_labels_set "$target"
     if (( ${#_DAST_AUTH_AUTHED_LABELS[@]} >= 1 )); then
       _COOKIES_AUTH_LABEL=${_DAST_AUTH_AUTHED_LABELS[0]}
-      if declare -F dast_auth_cookie_header_set >/dev/null; then
-        dast_auth_cookie_header_set "$target" "$_COOKIES_AUTH_LABEL"
-        cookie_header=${_DAST_AUTH_COOKIE:-}
-      fi
       run_record notes "module=dast phase=cookies target=$target identity=$_COOKIES_AUTH_LABEL authenticated_pass=1"
     fi
   fi
@@ -376,10 +397,18 @@ _dast_cookies_phase() {
   declare -g _COOKIES_DO_SECURE=$do_secure _COOKIES_DO_HTTPONLY=$do_httponly
   declare -g _COOKIES_DO_SS_ABSENT=$do_ss_absent _COOKIES_DO_SS_WEAK=$do_ss_weak
   local hdrfile=${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/dast-cookies-hdr.$$
-  local fetched=0 failed=0
+  local fetched=0 failed=0 auth_apply_failed=0
   for url in "${urls[@]+"${urls[@]}"}"; do
     : >"$hdrfile"
-    [[ -n $cookie_header ]] && http_request_header Cookie "$cookie_header"
+    # Immediately before the request, never once above - see the block that
+    # selected the label. A failure here is COUNTED rather than swallowed: the
+    # request still goes out, but it goes out anonymous, and a run that says
+    # `authenticated_pass=1` while sending nothing is the exact defect this
+    # block was fixed for.
+    if [[ -n $_COOKIES_AUTH_LABEL ]]; then
+      dast_auth_apply "$target" "$_COOKIES_AUTH_LABEL" \
+        || auth_apply_failed=$(( auth_apply_failed + 1 ))
+    fi
     http_request_capture '' "$hdrfile"
     if ! http_request GET "$url" "${SCOURSH_MAX_REDIRECTS:-5}" "$target"; then
       failed=$(( failed + 1 ))
@@ -409,6 +438,9 @@ _dast_cookies_phase() {
   fi
   if (( failed > 0 )); then
     run_record coverage_reduction "module=dast reason=cookies_request_failed target=$target count=$failed - $failed endpoint request(s) failed at the transport, so any cookie those responses set was not inspected."
+  fi
+  if (( auth_apply_failed > 0 )); then
+    run_record coverage_reduction "module=dast reason=cookies_auth_not_attached target=$target identity=$_COOKIES_AUTH_LABEL count=$auth_apply_failed - the session for identity '$_COOKIES_AUTH_LABEL' could not be attached to $auth_apply_failed of the ${#urls[@]} request(s), which therefore went out UNAUTHENTICATED. The cookie flags read from those responses are the logged-out surface, not the logged-in one, whatever this phase's authenticated_pass note says."
   fi
   if (( fetched == 0 )); then
     run_record coverage_gap "dast cookies: every one of the ${#urls[@]} endpoint request(s) on target '$target' failed, so no response was inspected for cookie flags - a coverage gap, not a clean result."
