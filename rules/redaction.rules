@@ -91,3 +91,50 @@ title: API-key literal assignment
 pattern: (api[_-]?key|Api[_-]?Key|API[_-]?KEY|apiKey|apikey)[[:space:]]*[=:][[:space:]]*["'][^"'[:space:]]{8,}["']
 dialect: ere
 kind: API_KEY
+
+# The two rules below close the DAST half of the same gap.  The provenance layer
+# (lib/findings.sh section 8a) is scoped to `sast` and `iac`, where evidence is
+# BY CONSTRUCTION the raw bytes a secrets check matched.  A `dast` finding's
+# evidence is a composed sentence, so whole-field masking there would destroy
+# the finding and hide no credential - but the sentence, and the `url`,
+# `logical_fqn`, `loc_path_template` and `loc_param_name` fields beside it, are
+# built from bytes the TARGET chose, and a crawled URL is the ordinary place a
+# credential turns up incidentally.  Those fields all route through redact(),
+# so the right layer for them is a SHAPE rule that masks in place and leaves the
+# rest of the sentence readable.
+#
+# Both shapes were measured leaking, with `redact-secrets: true` in force, into
+# findings.jsonl, findings.json, findings.fields, report.md, report.html and the
+# per-worker shards - seven files - by a finding carrying a userinfo URL and one
+# carrying a credential-bearing query string.  Neither was masked by any rule
+# above: SAST-REDACT-PASSWORD-01 and SAST-REDACT-API_KEY-01 both REQUIRE the
+# value to be quoted, which a URL never is, and nothing here parsed an authority
+# at all.
+#
+# The userinfo rule is anchored on a real scheme (`s://`) rather than on a bare
+# `//`, so it cannot fire on a `// user:host` comment; the match deliberately
+# swallows the scheme, because the alternative - starting at `//` - is the
+# imprecise one and the scheme is still carried by `loc_target` regardless.
+# RFC 3986 §3.2.1 deprecates userinfo precisely because it is a credential, so
+# a password there is never a false positive.
+
+id: SAST-REDACT-URL_USERINFO-01
+title: Credential in a URL authority (userinfo)
+pattern: [A-Za-z][A-Za-z0-9+.-]*://[^:/?#[:space:]"'@]+:[^/?#[:space:]"'@]+@
+dialect: ere
+kind: URL_CREDENTIAL
+
+# The unquoted counterpart of SAST-REDACT-PASSWORD-01/API_KEY-01, for the query
+# string and form-body form (`?password=...`, `&token=...`), which carries no
+# quotes and so matched neither.  The value runs to the first URL delimiter.
+# `token` is left unanchored on purpose: it then also masks `access_token=` and
+# `refresh_token=`, leaving the readable prefix behind rather than needing a row
+# each.  Over-redaction costs a reader some evidence; under-redaction discloses
+# a credential, which is the same asymmetry the PEM body rule above is decided
+# by.
+
+id: SAST-REDACT-URL_PARAM_CREDENTIAL-01
+title: Credential in a URL query or form parameter
+pattern: (password|Password|PASSWORD|passwd|Passwd|PASSWD|pwd|Pwd|PWD|secret|Secret|SECRET|token|Token|TOKEN|api[_-]?key|Api[_-]?Key|API[_-]?KEY|apikey|apiKey|session|Session|SESSION)=[^&#;[:space:]"'<>]{4,}
+dialect: ere
+kind: URL_CREDENTIAL
