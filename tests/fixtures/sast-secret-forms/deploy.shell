@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# FAKE test values only - see README.md in this directory.
+set -euo pipefail
+
+export DB_PASSWORD="Tr0ub4dor3xK"          # [[P30]]
+export DB_PASSWORD=Tr0ub4dor3xK            # [[P31]]
+readonly API_KEY="s3cr3tT0kenV4lue0000"    # [[P32]]
+DB_PASSWORD=Tr0ub4dor3xK psql -h localhost # [[P33]]
+
+cat >/etc/app/app.env <<'CONF'
+DB_PASSWORD=Tr0ub4dor3xK # [[P34]]
+CONF
+
+# negative controls
+export DB_PASSWORD="$VAULT_DB_PASSWORD"    # [[N20]]
+export DB_PASSWORD="$(vault kv get -field=password secret/db)"  # [[N21]]
+PASSWORD_FILE="/run/secrets/db_password"   # [[N22]]
+read -rsp 'password: ' DB_PASSWORD         # [[N23]]
+if [[ -z ${DB_PASSWORD:-} ]]; then echo 'password: not set' >&2; fi  # [[N24]]

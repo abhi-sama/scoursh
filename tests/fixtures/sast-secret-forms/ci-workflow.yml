@@ -1,0 +1,11 @@
+# FAKE test values only - see README.md in this directory.
+jobs:
+  build:
+    env:
+      DB_PASSWORD: "Tr0ub4dor3xK"                 # [[P70]]
+      API_KEY: s3cr3tT0kenV4lue0000               # [[P71]]
+    steps:
+      - run: DEPLOY_TOKEN=s3cr3tT0kenV4lue0000 ./deploy   # [[P72]]
+      - env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}  # [[N70]]
+          API_KEY: $API_KEY                        # [[N71]]

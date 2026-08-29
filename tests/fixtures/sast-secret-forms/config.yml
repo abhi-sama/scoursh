@@ -1,0 +1,20 @@
+# FAKE test values only - see README.md in this directory.
+database:
+  password: "Tr0ub4dor3xK"            # [[P40]]
+  passwd: Tr0ub4dor3xK                # [[P41]]
+  PASSWORD: 'Tr0ub4dor3xK'            # [[P42]]
+api:
+  apiKey: "s3cr3tT0kenV4lue0000"      # [[P43]]
+  client_secret: s3cr3tT0kenV4lue0000 # [[P44]]
+env:
+  - DB_PASSWORD=Tr0ub4dor3xK          # [[P45]]
+  - name: DB_PASSWORD
+    value: "Tr0ub4dor3xK"             # [[N40]] value: alone names no credential
+negatives:
+  password: "{{ .Values.dbPassword }}"                            # [[N41]]
+  masterPassword: '{{resolve:secretsmanager:app/db/password}}'    # [[N42]]
+  password: !secret db_password                                   # [[N43]]
+  password: ${DB_PASSWORD}                                        # [[N44]]
+  automountServiceAccountToken: false                             # [[N45]]
+  passwordPolicy: strict                                          # [[N46]]
+  password:                                                       # [[N47]]
