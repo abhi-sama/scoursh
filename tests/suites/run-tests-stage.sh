@@ -140,12 +140,20 @@ assert_not_contains "$STAGE_OUT" 'checked and reported findings' \
   'and does NOT claim a finding was reported for it'
 
 # ===========================================================================
-printf '== C2: the watchdog kill is an unmeasured file, not a finding ==\n'
+printf '== C2: a HOST-PRESSURE kill names that cause, and is not a finding ==\n'
 # ===========================================================================
 # The free-memory floor is the cheaper of the stage's two kill paths to drive
 # deterministically: set the floor absurdly high and the biggest live process
 # is killed on the first sample, without this test having to allocate gigabytes
-# to trip the per-process budget.  Same kill, same bookkeeping.
+# to trip the per-process budget.
+#
+# The stage's two kill causes MUST be distinguishable in the output, which is
+# this ticket's acceptance criterion 3 - an unattributable kill is the defect,
+# not merely a symptom of it.  This case pins the HOST-PRESSURE arm; section H
+# pins the OVER-BUDGET arm, and each asserts the other's wording is ABSENT, so
+# neither can be satisfied by a stage that prints one generic message for both.
+# The pre-fix stage printed `watchdog killed pid N (file)` for both causes and
+# fails both halves.
 C2_ALIVE=$W/alive-c2
 rm -f "$C2_ALIVE"
 C2_OUT=$(PATH=$W/bin:$PATH \
@@ -157,7 +165,12 @@ if command -v ps >/dev/null 2>&1; then
   assert_contains "$C2_OUT" '--- shellcheck FAILED' 'a watchdog kill still reaches a verdict line'
   assert_contains "$C2_OUT" 'could NOT be checked' \
     'and the killed file is reported as unmeasured - FAILS under recording it as a shellcheck finding, which would send someone hunting for a defect in a file that was never analysed'
-  assert_contains "$C2_OUT" 'watchdog killed' 'and the watchdog states why it killed'
+  assert_contains "$C2_OUT" 'HOST MEMORY PRESSURE' \
+    'and the message names HOST MEMORY PRESSURE as the cause - FAILS under one generic "watchdog killed" line for both causes, which is the unattributable kill this ticket was filed for'
+  assert_not_contains "$C2_OUT" 'OVER BUDGET' \
+    'and does NOT blame the file for exceeding its own budget, which it did not - FAILS under attributing every kill to the file that happened to be running'
+  assert_contains "$C2_OUT" 'not this file' \
+    'and says in so many words that the file was not the cause'
 else
   printf 'SKIPPED (no ps on this host, so the stage runs with no watchdog at all)\n'
 fi
@@ -246,5 +259,243 @@ assert_contains "$F_OUT" 'an unexpected non-zero exit' \
   'and the EXIT trap arm for it is REACHABLE and names the cause - FAILS under the `||` spelling, where that arm can never fire and the trap documents a protection that does not exist'
 assert_not_contains "$F_OUT" 'checked and reported findings' \
   'and no file is claimed to have been checked - FAILS under the `||` spelling, which reported findings against two files shellcheck never ran on'
+
+# ===========================================================================
+printf '== G: available memory is AVAILABLE memory, not the free list ==\n'
+# ===========================================================================
+# THE ROOT CAUSE.  The stage used to read macOS `Pages free` as "available
+# memory".  That is the FREE LIST, which Darwin holds near a low-water mark and
+# refills lazily by reclaiming inactive pages - it does not grow with the size
+# of the machine.  Measured on the 64GB host this was fixed on: 6GB reported
+# where 36GB was genuinely available, and it stayed pinned near 6GB.  Every
+# number downstream inherited that 6x understatement, which is why an 8GB, a
+# 27GB and a 64GB host all failed in the same way.
+#
+# Driven here through a stub `vm_stat` so the numbers are fixed rather than
+# whatever this machine happens to be doing.  The stub reports 1GB free but
+# 20GB inactive, 1GB purgeable and 2GB speculative - all reclaimable on demand
+# - so the honest answer is 24GB and the old reading's answer is 1GB.
+if [[ -r /proc/meminfo ]]; then
+  printf 'SKIPPED (Linux: this host has /proc/meminfo, so MemAvailable is read and vm_stat is never consulted)\n'
+else
+  mkdir -p "$W/bin-vm"
+  cp "$W/bin/shellcheck" "$W/bin-vm/shellcheck"
+  # 16384-byte pages: 65536 pages = 1GB.
+  cat > "$W/bin-vm/vm_stat" <<'VMSTAT'
+#!/usr/bin/env bash
+cat <<'EOF'
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    65536.
+Pages active:                                1000000.
+Pages inactive:                              1310720.
+Pages speculative:                            131072.
+Pages throttled:                                   0.
+Pages wired down:                             200000.
+Pages purgeable:                               65536.
+EOF
+VMSTAT
+  chmod +x "$W/bin-vm/vm_stat"
+
+  G_OUT=$(PATH=$W/bin-vm:$PATH \
+          SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
+          SCOURSH_SHELLCHECK_FORCE_TOTAL_GB=64 \
+          STUB_PLAN='' bash "$RUNNER" shellcheck 2>&1) || true
+  assert_contains "$G_OUT" '24GB available' \
+    'free + inactive + purgeable + speculative is reported as available - FAILS under the shipped `Pages free` reading, which reports 1GB here and understated a real 64GB host by 6x'
+  assert_not_contains "$G_OUT" '1GB available' \
+    'and the free list alone is NOT what gets reported'
+fi
+
+# ===========================================================================
+printf '== H: an OVER-BUDGET kill names the FILE as the cause ==\n'
+# ===========================================================================
+# The other half of acceptance criterion 3, and the mirror of section C2.  The
+# real budgets are whole GB and a stub uses a few MB, so SCOURSH_SHELLCHECK_
+# BUDGET_KB is the seam that makes this arm reachable in a test at all; it is
+# never set by a real run.  Every process exceeds a 100KB budget, in both
+# passes, so both files end up over budget and neither is ever a finding.
+if command -v ps >/dev/null 2>&1; then
+  H_OUT=$(PATH=$W/bin:$PATH \
+          SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
+          SCOURSH_SHELLCHECK_BUDGET_KB=100 \
+          STUB_PLAN='alpha.sh:sleep beta.sh:sleep' STUB_ALIVE=$W/alive-h \
+          bash "$RUNNER" shellcheck 2>&1) || true
+  assert_contains "$H_OUT" 'OVER BUDGET' \
+    'the message names OVER BUDGET as the cause - FAILS under one generic kill message shared with host pressure'
+  assert_contains "$H_OUT" 'not host memory pressure' \
+    'and says explicitly that host pressure was NOT the cause, so the two are never confused'
+  assert_not_contains "$H_OUT" 'HOST MEMORY PRESSURE' \
+    'and does NOT claim host pressure - FAILS under a stage that attributes every kill to whichever cause it checks first'
+  assert_not_contains "$H_OUT" 'checked and reported findings' \
+    'and a killed file is never filed as a shellcheck finding'
+else
+  printf 'SKIPPED (no ps on this host, so the stage runs with no watchdog at all)\n'
+fi
+
+# ===========================================================================
+printf '== I: a file too big for this host is SKIPPED by name, and still exits 0 ==\n'
+# ===========================================================================
+# Acceptance criterion 5, and the ticket's own title.  A file this host cannot
+# supply the memory for is a fact about the MACHINE, the same class as
+# `shellcheck` not being installed - so it must be named, counted and carried
+# into the run's last line, but it must NOT fail the stage, because a stage
+# that can never exit 0 is the thing this ticket was filed to end.  Both
+# directions matter and each is the other's bug: report it as a failure and
+# `pnpm test` can never pass on a small host; report it as nothing and 19
+# unmeasured files read as 19 clean ones.
+if command -v ps >/dev/null 2>&1; then
+  I_STATUS=0
+  I_OUT=$(PATH=$W/bin:$PATH \
+          SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
+          SCOURSH_SHELLCHECK_BUDGET_KB=100 \
+          STUB_PLAN='alpha.sh:sleep beta.sh:sleep' STUB_ALIVE=$W/alive-i \
+          bash "$RUNNER" shellcheck 2>&1) || I_STATUS=$?
+  assert_eq 0 "$I_STATUS" \
+    'a host-capacity skip does NOT fail the stage - FAILS under the shipped stage, where an unmeasurable file always fails and so `tests/run-tests.sh` could never exit 0 on any host'
+  assert_contains "$I_OUT" 'SKIPPED' 'and the skip is announced'
+  assert_contains "$I_OUT" 'alpha.sh' 'and every skipped file is named'
+  assert_contains "$I_OUT" 'beta.sh' 'and every skipped file is named'
+  assert_contains "$I_OUT" 'were NOT checked' \
+    'and the stage states plainly that they were not checked - FAILS under a silent omission, which is the false green criterion 5 forbids'
+  assert_contains "$I_OUT" '--- shellcheck passed' 'the verdict line is a pass'
+  assert_contains "$I_OUT" 'host too small' 'but it carries the reason on the verdict line itself'
+  assert_contains "$I_OUT" 'NOT a full pass' \
+    "and the run's LAST line refuses to say a bare \`all green\` - FAILS under printing \`all green\` for a run that skipped files, which is the same false green one level up"
+  assert_not_contains "$I_OUT" 'could NOT be checked' \
+    'and a host-size skip is not filed under the unmeasured roll-up, which is for results this stage should have got and did not'
+else
+  printf 'SKIPPED (no ps on this host, so the stage runs with no watchdog at all)\n'
+fi
+
+# ===========================================================================
+printf '== J: jobs x budget <= headroom, on an 8GB, a 27GB and a 64GB host ==\n'
+# ===========================================================================
+# Acceptance criterion 2: "a fix that only works on the machine you tested is
+# not a fix".  SCOURSH_SHELLCHECK_FORCE_{TOTAL,AVAIL}_GB drive the arithmetic
+# over three host shapes from this one machine, and the invariant is checked by
+# PARSING the numbers the stage prints rather than by matching a fixed string -
+# so it cannot be satisfied by a stage that prints a plausible line and then
+# runs something else.
+#
+# The shipped arithmetic fails this: it divided by 2 and then by a fixed 12GB
+# budget, which yields 0 (clamped to 1 job) on every host under 24GB of
+# headroom, while leaving the budget at 12GB - promising one process 12GB on a
+# host with 3GB to give.  On the 8GB row below that is a 4x overcommit.
+_j_host() {
+  local total=$1 avail=$2 want_reserve=$3 want_headroom=$4 out line
+  out=$(PATH=$W/bin:$PATH \
+        SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
+        SCOURSH_SHELLCHECK_FORCE_TOTAL_GB=$total \
+        SCOURSH_SHELLCHECK_FORCE_AVAIL_GB=$avail \
+        STUB_PLAN='' bash "$RUNNER" shellcheck 2>&1) || true
+
+  assert_contains "$out" "host ${total}GB total, ${avail}GB available, ${want_reserve}GB reserved -> ${want_headroom}GB headroom" \
+    "${total}GB host: reserve is max(2, total/8) = ${want_reserve}GB and headroom is ${want_headroom}GB"
+
+  # Every pass line must satisfy jobs x budget <= headroom.
+  local seen=0
+  while IFS= read -r line; do
+    [[ $line == *"parallel x"* ]] || continue
+    seen=$(( seen + 1 ))
+    local jobs budget commit headroom
+    jobs=$(printf '%s\n' "$line" | sed -n 's/.*, \([0-9]*\) parallel x.*/\1/p')
+    budget=$(printf '%s\n' "$line" | sed -n 's/.*parallel x \([0-9]*\)GB.*/\1/p')
+    commit=$(printf '%s\n' "$line" | sed -n 's/.*= \([0-9]*\)GB of.*/\1/p')
+    headroom=$(printf '%s\n' "$line" | sed -n 's/.*of \([0-9]*\)GB headroom.*/\1/p')
+    assert_eq "$commit" "$(( jobs * budget ))" \
+      "${total}GB host: the committed total the stage prints really is jobs x budget"
+    if (( commit <= headroom )); then
+      _t_ok "${total}GB host: ${jobs} x ${budget}GB = ${commit}GB fits in ${headroom}GB headroom"
+    else
+      _t_no "${total}GB host: ${jobs} x ${budget}GB = ${commit}GB OVERCOMMITS ${headroom}GB headroom"
+    fi
+  done <<< "$out"
+  if (( seen > 0 )); then
+    _t_ok "${total}GB host: the stage printed its plan rather than running an unstated one"
+  else
+    _t_no "${total}GB host: no pass plan was printed at all"
+  fi
+}
+#        total avail reserve headroom
+_j_host      8     6       2        4
+_j_host     27    20       3       17
+_j_host     64    36       8       28
+
+# ===========================================================================
+printf '== K: a process that exits under the watchdog does not abort the stage ==\n'
+# ===========================================================================
+# THE "PRINTS NOTHING AT ALL" FACE of this ticket, and the one that survived
+# the memory-model rewrite because it is not a memory bug at all.
+#
+# The watchdog samples `ps -o rss= -p $pid` for each live process.  Written as
+# a bare assignment, `rss_kb=$(ps ...)` takes the command substitution's exit
+# status as its own, so when the process has exited in the microseconds since
+# the `kill -0` liveness check above it, `ps` exits 1, the assignment exits 1,
+# and `set -e` tears the stage down - past the watchdog roll-up, past the
+# verdict, leaving a log that ends at the header.  It is a RACE, so a run of
+# two stub files that both sleep never loses it and a run of 130 real files
+# loses it almost every time: measured on this tree at 9 of 130 files
+# unmeasured, each annotated "see the message below" with no message below,
+# and the stage ending on "an unexpected non-zero exit before it could reach
+# a verdict".
+#
+# Driven here by a stub `ps` that ALWAYS fails, which is the same status the
+# race produces and needs no timing luck to hit.  Under the bare-assignment
+# spelling this case gets the header and the abort verdict and nothing else;
+# under `|| rss_kb=` the sample is skipped, the stage runs to completion, and
+# both files are reported checked.
+if command -v ps >/dev/null 2>&1; then
+  mkdir -p "$W/bin-ps"
+  cp "$W/bin/shellcheck" "$W/bin-ps/shellcheck"
+  # Exits 1 with no output, exactly as the real `ps` does for a dead pid.
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$W/bin-ps/ps"
+  chmod +x "$W/bin-ps/ps"
+
+  K_STATUS=0
+  K_OUT=$(PATH=$W/bin-ps:$PATH \
+          SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
+          STUB_PLAN='alpha.sh:sleep beta.sh:sleep' STUB_ALIVE=$W/alive-k \
+          bash "$RUNNER" shellcheck 2>&1) || K_STATUS=$?
+
+  assert_eq 0 "$K_STATUS" \
+    'the stage survives a failing ps sample and exits 0 - FAILS under the bare `rss_kb=$(ps ...)` spelling, where set -e aborts the whole stage'
+  assert_not_contains "$K_OUT" 'unexpected non-zero exit' \
+    'and does NOT end on the abort trap - FAILS under the shipped spelling, which is how a run of the real tree ended with 9 files unmeasured and no explanation for any of them'
+  assert_contains "$K_OUT" '--- shellcheck passed' \
+    'and reaches a real verdict line rather than stopping after the header'
+  assert_contains "$K_OUT" '2 of 2 file(s) checked' \
+    'and both files are actually checked - a lost ps sample must cost the stage its watchdog for one tick, never a file its result'
+else
+  printf 'SKIPPED (no ps on this host, so the stage runs with no watchdog at all)\n'
+fi
+
+# ===========================================================================
+printf '== L: kill attribution survives an abort, because the verdict prints it ==\n'
+# ===========================================================================
+# Acceptance criteria 3 and 4 together.  Knowing WHICH file and WHICH cause is
+# what makes a kill actionable, and those messages used to be printed inline
+# only after both passes had finished - so any abort before that point threw
+# away the explanation for every kill already made, which is precisely what
+# left 9 files annotated "see the message below" with nothing below.  They are
+# emitted from _sc_verdict instead, the one function the EXIT/INT/TERM traps
+# all call, so no exit path can lose them.
+#
+# Driven by the free-floor seam (a real kill), with the stage then aborted by
+# a SIGTERM from outside - the same shape section D uses for the verdict line.
+if command -v ps >/dev/null 2>&1; then
+  L_ALIVE=$W/alive-l
+  rm -f "$L_ALIVE"
+  L_OUT=$(PATH=$W/bin:$PATH \
+          SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
+          SCOURSH_SHELLCHECK_FREE_FLOOR_GB=999999 \
+          STUB_PLAN='alpha.sh:sleep beta.sh:sleep' STUB_ALIVE=$L_ALIVE \
+          bash "$RUNNER" shellcheck 2>&1) || true
+  assert_contains "$L_OUT" 'HOST MEMORY PRESSURE' \
+    'the cause of every kill reaches the output'
+  assert_contains "$L_OUT" 'alpha.sh' \
+    'and names the file it killed - FAILS under a message that reports only a pid, which nobody can act on'
+else
+  printf 'SKIPPED (no ps on this host, so the stage runs with no watchdog at all)\n'
+fi
 
 t_summary run-tests-stage
