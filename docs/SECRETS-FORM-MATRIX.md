@@ -73,9 +73,16 @@ named:
   against scoursh's own tree. The cost is stated in the pack header: an unquoted
   all-lowercase hyphenated password is not reported. Quoting lifts the guard,
   because quoting is itself an authoring signal.
+- **A quoted value containing spaces** (a multi-word passphrase). Admitting a
+  space inside the quotes lets the match run from one string's opening quote to
+  a *later* string's quote on the same line, and no `context-deny` can tell that
+  apart from a real one. The pack header carries the same note.
 - **A credential-shaped value under no credential-naming identifier at all**
   (`x = "<VALUE>"`). Nothing distinguishes it from any other string constant, and
-  a rule that flags it flags every string in the repository.
+  a rule that flags it flags every string in the repository. That is entropy
+  detection - a different mechanism, and the job of the vendored gitleaks
+  adapter (`modules/sast/adapters/gitleaks/`), which this pack deliberately does
+  not duplicate.
 
 ## Precision, which is a cost and not an afterthought
 
