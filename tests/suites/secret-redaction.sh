@@ -537,4 +537,41 @@ bash -c '
 assert_eq 0 "$recur_rc" 'a log line survives a broken pattern engine'
 assert_contains "$(cat "$W/recur.err")" 'the engine is not bound' 'and is still printed'
 
+t_case 'I4. the scope gate does not print the credential it just rejected'
+# The real code path, not a synthetic finding.  lib/http.sh section 11a states
+# in its own comment that the raw and canonicalized values go through
+# finding_set_evidence, "tension 9: redacted, so a userinfo credential in the
+# rejected URL never lands in the report in the clear", and docs/FOUNDATION.md
+# tension 19's Auditability paragraph says the same.  Neither was true: nothing
+# in rules/redaction.rules matched userinfo, and _http_gate_audit's own
+# log_warn printed the raw URL besides.
+#
+# Measured before the fix: the credential printed in the clear on stderr TWICE,
+# by the gate's warn and by die's error.  A run refusing to talk to an
+# unauthorised host is precisely when a URL is most likely to be hostile, so
+# this is the worst place for it.
+#
+# Run as a subprocess because the gate exits 3 by design.
+CANARY_GATE=scourshFakeCanaryGate09
+gate_rc=0
+bash -c '
+  set -Eeuo pipefail
+  source "$1/lib/http.sh"
+  redaction_load "$1/rules/redaction.rules"
+  rubric_load "$1/data/severity-rubric.conf"
+  attribution_load "$1/tests/fixtures/config/scope.conf"
+  export SCOURSH_REDACT_SECRETS=true SCOURSH_SCOPE_FILE=$1/tests/fixtures/config/scope.conf
+  run_init "$2/run"
+  ( SCOURSH_HTTP_TRANSPORT=true http_request GET "https://admin:$3@evil.example/x" ) || true
+' _ "$ROOT" "$W/gate" "$CANARY_GATE" >"$W/gate.out" 2>"$W/gate.err" || gate_rc=$?
+assert_eq 0 "$gate_rc" 'the gate harness itself runs'
+# Guard against passing for the wrong reason: a gate that never rejected would
+# print nothing and satisfy the absence assertion on its own.
+assert_contains "$(cat "$W/gate.err")" 'scope gate rejected' 'the gate really did reject the URL'
+assert_not_contains "$(cat "$W/gate.err")$(cat "$W/gate.out")" "$CANARY_GATE" \
+  'and neither the warn nor the error printed the credential it rejected'
+assert_contains "$(cat "$W/gate.err")" 'evil.example' 'while still naming the host it refused'
+assert_not_contains "$(run_dir_bytes "$W/gate/run")" "$CANARY_GATE" \
+  'nor did the scope-violation finding carry it into any file'
+
 t_summary secret-redaction
