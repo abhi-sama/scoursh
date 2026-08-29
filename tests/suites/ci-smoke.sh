@@ -110,7 +110,7 @@ printf -- '\n-- profile x fixture matrix: sast against the minimal fixture repo 
 # running yet to find them. That is the CORRECT, honestly-asserted exit code
 # for THIS build, not a false negative dressed up as green; once
 # modules/sast/run.sh and the gate pipeline land, the "vuln" row below must
-# be revisited (tracked: see the crewban comment on this ticket).
+# be revisited.
 PROFILES=(quick full compliance)
 FIXTURE_TREES=(clean vuln)
 

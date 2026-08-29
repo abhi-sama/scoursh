@@ -187,7 +187,7 @@ PY-YAMLLD  | high     | CWE-502| A08 | yaml\.load\((?!.*Loader) | yaml.load with
 ```
 Loader in `run.sh` parses these; each match becomes a finding with file+line. Keep a `# context:` directive option to require/deny a neighboring pattern (cheap way to cut false positives, e.g. only flag `eval(` when `request`/`input`/`argv` appears within N lines).
 
-> NOTE (firstmate correction, see `docs/FOUNDATION.md` tension 1): the pipe-delimited format above is REPLACED
+> NOTE (correction, see `docs/FOUNDATION.md` tension 1): the pipe-delimited format above is REPLACED
 > by a blank-line-separated `key: value` block-record format, because any regex containing `|` silently
 > corrupts the field split. The rule *catalog* below (which rules to seed) stands; only the on-disk
 > format changes. See `rules/RULE-FORMAT.md` (frozen in the foundation).

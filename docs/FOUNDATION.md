@@ -2924,16 +2924,16 @@ before that implementation starts can check the contract itself rather than an i
 - `docs/FOUNDATION.md` still has exactly one `## Tension 19` heading and this document remains the sole
   owner of scope-gate semantics; `grep -rn "scope-gate\|scope gate" docs/` finding no second document
   making competing claims rules out the doc-fork the tech-lead review also flagged.
-- Sign-off itself is a board action, not a grep: this ticket is handed to `in_review` with this diff
-  attached so a human or the tech-lead role can record an explicit approve/request-changes verdict via
-  `crewban_move_ticket`, per AC3. No `lib/http.sh` or other network-call code is added by this change, so
+- Sign-off itself is a tracker action, not a grep: this ticket is handed to `in_review` with this diff
+  attached so a human or the tech-lead role can record an explicit approve/request-changes verdict in the
+  ticket tracker, per AC3. No `lib/http.sh` or other network-call code is added by this change, so
   the gate implementation gate ("§13 step 5 does not start until sign-off") is preserved by construction:
   there is nothing here to have jumped ahead of the sign-off.
 
 **Implementation.**
 The paragraph above is the record of the contract-definition ticket, before any code existed; it is left
 as written rather than rewritten, because it is the sign-off record this tension's own "Verification"
-section describes.  The follow-on ticket (`b3de331d-...`, "Implement the scope.conf authorization gate for
+section describes.  The follow-on ticket (`e3c8f1e`, "Implement the scope.conf authorization gate for
 DAST targets") landed the code this paragraph is a status update for: `lib/http.sh` now implements every
 mechanism this tension describes - `http_url_normalize` (steps 1-4), `http_scope_load`/`http_scope_match`
 (the tuple compare, the port-80 relaxation, `allow-subdomains`), `http_resolve_host` (resolution pinning,
