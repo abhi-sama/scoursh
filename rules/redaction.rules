@@ -112,11 +112,13 @@ kind: API_KEY
 # at all.
 #
 # The userinfo rule is anchored on a real scheme (`s://`) rather than on a bare
-# `//`, so it cannot fire on a `// user:host` comment; the match deliberately
-# swallows the scheme, because the alternative - starting at `//` - is the
-# imprecise one and the scheme is still carried by `loc_target` regardless.
-# RFC 3986 §3.2.1 deprecates userinfo precisely because it is a credential, so
-# a password there is never a false positive.
+# `//`, so it cannot fire on a `// user:host` comment.  The match runs to the
+# `@` and so deliberately swallows the scheme with it: the alternative, starting
+# at `//`, is the imprecise one, and what a reader needs to act - the HOST and
+# the PATH - is on the far side of the `@` and survives.  RFC 3986 §3.2.1
+# deprecates userinfo precisely because it is a credential, so a password there
+# is never a false positive; `https://user@host/` carries no password and is
+# left alone.
 
 id: SAST-REDACT-URL_USERINFO-01
 title: Credential in a URL authority (userinfo)
