@@ -95,6 +95,23 @@ Two things the container needs, both found by running it rather than by reasonin
   It used to need far more: `shellcheck -x` follows `source` directives statically, where the runtime "already sourced" guards do not exist, so `modules/sca/engine.sh` and `modules/sca/php_engine.sh` sourcing *each other* was an unbounded static cycle - 43.6 GB peak and 236 seconds on one file, which the 64 GB macOS leg survived and the container did not.
   One `# shellcheck source=/dev/null` on the back-edge (see `modules/sca/php_engine.sh`) cuts it to 4.6 GB and 16 seconds with no loss of analysis.
 
+  **A cycle is not the only shape that does this, and the second shape is the one this tree actually has.**
+  `shellcheck -x` does not memoise: it re-expands a file EVERY time it is reached, so a *diamond* in an acyclic graph multiplies just as a cycle does.
+  Measured on this tree: `lib/http.sh` sources both `lib/config.sh` and `lib/findings.sh`, and both reach `lib/records.sh` -> `lib/core.sh`; `modules/dast/passive/cookies.sh` reaches `lib/http.sh` through `inject_engine.sh` *and* through `auth_engine.sh`; and `tests/suites/dast-cookies.sh` sourced `cookies.sh` six separate times on top of that.
+  The compounded result was **156,852 inlined lines for that one entry point, 91% of them duplicates** - `lib/core.sh` inlined 29 times - which measured 23.42 GB and had not finished after 29 minutes, so the stage's own 12 GB watchdog killed it and `tests/run-tests.sh` could not exit 0 on any branch.
+  The fix is the same one line, applied to every edge whose target the entry point already reaches another way: **47 `# shellcheck source=/dev/null` directives across 25 files**, each one *lossless* (the file is still inlined once, via the kept edge), taking that entry point to **34,881 lines**.
+  Cut a duplicate edge, never a file's only edge: the second is a real loss of analysis and shows up as new SC2154/SC2034 noise in the parent.
+
+  Count them from the tree rather than from this sentence, and count the ADDED set rather than the total - six files carried such a directive before this work:
+
+  ```sh
+  git grep -c '# -x back-edge cut:' -- '*.sh' | awk -F: '{s+=$2} END {print s}'   # 47
+  git grep -l '# -x back-edge cut:' -- '*.sh' | wc -l                             # 25
+  ```
+
+  **Peak RSS varies with the host, and the honest figure is the larger one.**  `tests/suites/dast-cookies.sh` measured **8.42 GB / 173 s** on one machine and **9.87 GB / 217 s** on another (same commit, `/usr/bin/time -l`, one file at a time); `tests/suites/dast-jwt.sh` measured 8.55 GB and 8.86 GB.  Against the unchanged 12 GB per-process budget that is **~1.2x headroom, not 1.4x**, and **`dast-cookies.sh` is the file closest to the ceiling** - it is where a regression will surface first, followed by `dast-jwt.sh`.
+  These directives are load-bearing.  Deleting one because it "looks unnecessary" puts the stage back over budget.
+
 The container is ARM Linux on an Apple Silicon host, rather than the x86-64 Linux the retired hosted CI provided.
 For a GNU-versus-BSD *userland* comparison that is faithful: what tension 24 checks is coreutils/grep/sed/bash behaviour, none of which is architecture-dependent.
 Do not add `--platform` to force emulation.
@@ -233,7 +250,7 @@ Nothing about the daily local runner changes when this happens: it keeps running
    Each runs in its own process (`lib/core.sh` installs traps and owns a scratch directory per process; sharing a shell with another suite would not test what the tool actually does).
 2. **Name the reading each pinned test fails under**, in a comment on the assertion.
    This is a standing repository rule (see `AGENTS.md`'s Tests section): a test written after the rule, with no stated failing reading, can pass under both the correct and the rejected implementation and certify a defect green.
-3. **Register it** in `tests/run-tests.sh`'s `SUITES` or `LINTERS` array.
+3. **Register it** in `tests/run-tests.sh`'s `SUITES` or `LINTERS` array (`STAGES` is for the one thing that is neither - the whole-tree `shellcheck` run, which has no script of its own).
    Do not invoke it from anywhere else; `run-tests.sh` is the single entry point `pnpm test` and `tools/daily-suite.sh` both use, and `--list` must show the new name.
 4. **Nothing else needs editing to make it run daily.**
    Both legs of `tools/daily-suite.sh` run `tests/run-tests.sh` in full.
@@ -261,6 +278,7 @@ Per `docs/DESIGN.md` §12 and the resolutions in `docs/FOUNDATION.md`.
 | `exit-code-matrix` | Table-driven matrix over `scan.sh`'s six documented exit codes (0-5). |
 | `gate-mutation-proof` | Mutation-tests the non-bypassable safety gates by deleting the guarding line in a scratch copy and asserting the outcome actually changes - so a fixture that stopped discriminating pass from fail fails loudly instead of certifying a broken gate green. |
 | `daily-suite` | `tools/daily-suite.sh` itself: that the BSD-userland assertion aborts when the system grep is shadowed, and that a missing, stale or unfinished result never reports as a pass. |
+| `run-tests-stage` | `tests/run-tests.sh`'s own whole-tree `shellcheck` stage: that it prints a verdict line on every exit path (including a SIGTERM mid-run) and that a file it could not check is reported distinctly from one it checked and found clean. Drives the real stage as a subprocess against a stub `shellcheck` and a two-file fixture list, so it runs in seconds. |
 
 **Linters** (`tests/*.sh`):
 
@@ -290,6 +308,29 @@ The local design has two independent safety layers, both watched every 0.4s agai
 
 A failure is always attributable: the per-process kill and the free-floor kill each name the file directly, and a process that dies from **any** signal - including one this script did not send, such as a host-level OOM killer - is still detected (by exit status, not by output parsing) and reported with the file name and the signal number, never as a bare non-zero exit.
 The branch on success/failure is on real exit status throughout, not on parsed output, so a failure in any file - the first one launched or the last - still fails the stage.
+
+**An unmeasurable file never rounds up to a pass, and is reported separately from a real finding.**
+`shellcheck`'s exit 1 is the only status meaning "I checked this file and I have something to say".
+Exit 2 is "I could not process this file", 126/127 are "the linter could not be run at all", and 128+n is "died from signal n" (the watchdog, an OOM killer, an operator's `kill`).
+The stage keeps those apart, prints them as two separate roll-ups, and fails on either - because "shellcheck said nothing about this file" and "shellcheck found nothing wrong with this file" are different facts and only the second one is evidence.
+Collapsing them is the expensive mistake: it sends someone hunting for a defect in a file that was never analysed, or worse, lets an unanalysed file read as clean.
+
+**The verdict line is printed on every exit path, from a trap.**
+`--- shellcheck passed` / `--- shellcheck FAILED` used to sit only on the straight-line path, so a `set -E` abort, a `^C`, or a SIGTERM ended the stage after nothing but its `=== linter: shellcheck ===` header - which reads in a log exactly like a stage that ran and was happy.
+bash does not run an EXIT trap for an untrapped SIGINT/SIGTERM, so INT and TERM are trapped explicitly rather than left to EXIT.
+(One hypothesis about that missing verdict - that `[[ $sc_biggest_pid == "$pid" ]] && sc_biggest_pid=` aborted the script under `set -e` when the test was false - was **measured and refuted**: bash exempts a whole `A && B` list from `set -e` when `A` itself fails, at top level and inside a loop or `if` body alike.)
+
+**The `set -E` arm of that trap is only reachable because of how `sc_stage` is CALLED, and that is the fragile part of this design.**
+The stage body was top-level code before it became a function.
+bash disables `errexit` for the **entire body** of a function invoked in an `A || B` list, not merely for the call, so `sc_stage || failed+=(shellcheck)` would silently strip that strictness and leave the `EXIT` trap documenting a protection that can never fire.
+`sc_stage; sc_rc=$?` is not the alternative either - a function returning non-zero as a plain command *is* an errexit abort, so the runner would die on any run where shellcheck reports anything.
+The shipped shape is therefore: **`sc_stage` always returns 0 and reports through the global `SC_STAGE_STATUS`**, and the caller branches on that.
+Measured under the `||` spelling with a stub `mktemp` that fails: the stage continued with an empty `$sc_shard_dir`, reported two files as "checked and reported findings" when shellcheck had never run on either, and the runner then printed `all green` and exited **0**.
+`tests/suites/run-tests-stage.sh` section F pins this, and goes red under exactly that spelling.
+
+**Running the stage on its own:** `tests/run-tests.sh shellcheck`.
+It is a *stage*, not a suite or a linter file - it has no `tests/*.sh` of its own - so it is listed under `stages:` in `--list` and named in `STAGES`, not `SUITES`/`LINTERS`.
+`SCOURSH_SHELLCHECK_FILE_LIST` overrides the file list; it is a **test seam** used only by `tests/suites/run-tests-stage.sh` (which drives the real stage over a two-file fixture with a stub `shellcheck`, so the watchdog and the signal paths are exercised in seconds), and it is not a way to exclude files - a real run has it unset and still checks every `*.sh` in the tree.
 
 ## GNU/BSD: why the suite runs twice at all
 

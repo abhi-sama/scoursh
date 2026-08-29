@@ -1,0 +1,36 @@
+# LDAP directory / client error signatures (docs/DESIGN.md §7.3: "filter-breaking
+# payloads, response/error differential").
+#
+# One ERE per line, matched case-insensitively against a response body through
+# scan_match (the frozen portable ERE subset, rules/RULE-FORMAT.md - no
+# backreferences, no PCRE). A match that appears in an injected response but not
+# in the benign baseline is the error-based signal. These describe error TEXT an
+# LDAP client library or directory server emits when it is handed a malformed
+# search filter or DN; describing the shape rather than a specific product is the
+# same target-agnostic discipline the SAST/IaC rule packs follow.
+
+# --- Java / JNDI ---
+javax\.naming\.
+NamingException
+com\.sun\.jndi\.ldap
+LDAPException
+netscape\.ldap
+
+# --- PHP ---
+ldap_search\(\)
+ldap_(bind|search|list|read|modify)
+supplied argument is not a valid ldap
+
+# --- .NET / IPWorks / ADSI ---
+System\.DirectoryServices
+IPWorksASP\.LDAP
+Protocol error occurred
+The search filter is invalid
+
+# --- Directory server / protocol wording ---
+Bad search filter
+Invalid DN syntax
+Object class violation
+LDAP: error code [0-9]
+Search: Bad search filter
+Module Products\.LDAPMultiPlugins

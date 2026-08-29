@@ -118,6 +118,35 @@ declare -ga _DAST_PHASES=(
   'passive/banner.sh:passive'
   'passive/leakage.sh:passive'
   'passive/markup.sh:passive'
+  # passive/transport.sh (DAST-30) is listed HERE, at tier `passive`, and NOT in
+  # the tier-5 block below where docs/DESIGN.md §7.4 puts its bullet.  The row
+  # was `transport.sh:active` from DAST-02 until DAST-30 landed, transcribed
+  # from §7.4's section HEADING ("Active - auth, API, and access-control
+  # checks") like its four siblings; that transcription is right for them and
+  # wrong for this one, and moving it is the correction this file's own note
+  # above demands ("a later ticket whose checks legitimately carry a LOWER type
+  # tag than the tier its row declares here must change that row in the same
+  # change and say why").  The why, in short - the long form is in
+  # modules/dast/passive/transport.sh's header:
+  #
+  #   1. It mutates no target state.  Every request it sends is a plain GET to
+  #      the operator's own base-url or to an endpoint an earlier phase already
+  #      fetched; it submits no form and re-sends no discovered POST.  That is
+  #      §7.1's whole admission criterion.  What makes §7.4's other four scripts
+  #      active is their shared "prove the weakness with a signal" contract;
+  #      this one proves nothing by probing and reads what the target already
+  #      volunteers.
+  #   2. §7.4's own wording for this bullet calls it a complement to "the TLS
+  #      passive check".  Its placement in §7.4 is topical, not an intensity
+  #      claim.
+  #   3. At `active` it would never run: `--intensity` defaults to `passive` and
+  #      anything above it additionally requires `--i-own-target`, so a plain
+  #      `scan.sh dast --target <t>` would skip it and both exposure classes it
+  #      reports would be invisible on the ordinary run.
+  #
+  # Its records in modules/dast/passive/checks-transport.rules carry the matching
+  # `passive` type tag, so the two gates tension 15 intersects agree.
+  'passive/transport.sh:passive'
   # Tier 3 - safe active, docs/DESIGN.md §7.2 (DAST-12, DAST-13)
   'active/discovery.sh:safe'
   'active/methods.sh:safe'
@@ -135,12 +164,12 @@ declare -ga _DAST_PHASES=(
   'active/hosthdr.sh:active'
   'active/protopollution.sh:active'
   # Tier 5 - auth, API and access-control checks, docs/DESIGN.md §7.4
-  # (DAST-26..DAST-30)
+  # (DAST-26..DAST-29; DAST-30's `transport.sh` is in the passive block above -
+  # see the note there for why it moved)
   'jwt.sh:active'
   'graphql.sh:active'
   'ratelimit.sh:active'
   'authz.sh:active'
-  'transport.sh:active'
 )
 
 # ---------------------------------------------------------------------------
@@ -232,6 +261,57 @@ dast_inventory_read() {
     fi
   fi
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# 3a. Per-check selection (docs/FOUNDATION.md tension 15)
+# ---------------------------------------------------------------------------
+# `dast_check_selected ID` - 0 when a run at this --profile-scan / --intensity
+# / --allow-intrusive may run check ID, 1 when the operator's filter chain
+# excluded it.
+#
+# scan.sh's `_scan_apply_profile_filter` runs lib/checks.sh's filter chain over
+# every dispatched module's registry and joins the surviving ids into
+# SCOURSH_SELECTED_CHECKS, one per line.  This function is the DAST side's
+# reader of that list, and it is the ONLY one: a phase script never parses the
+# variable itself, for the same reason no phase parses config/scope.conf itself.
+#
+# WHY IT MATTERS MORE HERE THAN IN A PATTERN MODULE.  A filtered-out SAST check
+# that runs anyway costs a wasted regex over a file already on disk.  A
+# filtered-out DAST check that runs anyway puts a request on someone else's live
+# system - a forged JWT, a SQLi payload, a content-discovery sweep - for a check
+# the operator explicitly excluded.  Until this function existed the four call
+# sites were all guarded with `declare -F dast_check_selected`, so every one of
+# them silently no-opped: --profile-scan and --intensity narrowed the DAST check
+# REGISTRY and narrowed nothing a run actually SENT.
+#
+# THE UNSET/EMPTY FALLBACK IS PERMISSIVE, AND MUST STAY THAT WAY.  It is
+# lib/findings.sh's `_derived_record_selected` rule verbatim (tension 6
+# condition (a)): no filter chain means everything is selected.  scan.sh exports
+# the variable unconditionally and possibly empty, so BOTH the unset and the
+# empty case have to answer "selected" - and every direct-engine suite
+# (tests/suites/dast-{cookies,headers,sqli,discovery}.sh) sources a phase script
+# with no scan.sh anywhere in the process, so a fail-closed default would make
+# every DAST phase inert while every "stays quiet" assertion in those suites
+# still passed green.  That is the worst available failure: invisible from the
+# test output, and it reads as coverage.
+#
+# One consequence is deliberate and worth naming rather than fixing: "the filter
+# chain ran and kept nothing" is indistinguishable from "there is no filter
+# chain", because both leave the variable empty.  Distinguishing them needs a
+# second variable in scan.sh, which is a change to a shared contract three other
+# readers already agree on; the surviving reading is the same permissive one
+# lib/findings.sh has shipped since step 1, so nothing diverges.
+#
+# The membership test is WHOLE-LINE, never substring.  A bare `*"$id"*` glob
+# would select `DAST-INJ-SQLI_ERROR-01` because some other selected line ends
+# with those bytes, which is the failure that delivers a payload the operator
+# filtered out; wrapping both the list and the needle in newlines is what makes
+# the comparison line-anchored at both ends, including the first and last lines.
+dast_check_selected() {
+  local id=$1
+  [[ -n ${SCOURSH_SELECTED_CHECKS:-} ]] || return 0   # no filter chain: all selected
+  [[ $'\n'"$SCOURSH_SELECTED_CHECKS"$'\n' == *$'\n'"$id"$'\n'* ]]
 }
 
 # ---------------------------------------------------------------------------

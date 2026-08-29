@@ -43,7 +43,12 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Sourcing the engine pulls in lib/http.sh -> lib/config.sh + lib/findings.sh ->
 # lib/records.sh -> lib/core.sh, which bootstraps the scratch dir and traps.
-# shellcheck source=modules/dast/active/inject_engine.sh
+# -x back-edge cut: modules/dast/active/inject_engine.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/inject_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
@@ -93,18 +98,26 @@ CLOCKF=$W/clock.ns
 PENDF=$W/clock.pending
 _clock_reset() { printf '0' >"$CLOCKF"; printf '0' >"$PENDF"; }
 _sqli_now() {
-  # `|| true`, not `|| cur=0`: the state files carry no trailing newline, so
-  # `read` returns non-zero at EOF HAVING read the value - `|| cur=0` would then
-  # throw the value away (the same EOF-reader lesson lib/core.sh records).
-  local cur=0 pend=0
-  IFS= read -r cur <"$CLOCKF" 2>/dev/null || true
-  IFS= read -r pend <"$PENDF" 2>/dev/null || true
-  [[ $cur =~ ^[0-9]+$ ]] || cur=0
-  [[ $pend =~ ^[0-9]+$ ]] || pend=0
-  cur=$(( cur + pend ))
+  # `|| true`, not `|| now_ns=0`: the state files carry no trailing newline, so
+  # `read` returns non-zero at EOF HAVING read the value - `|| now_ns=0` would
+  # then throw the value away (the same EOF-reader lesson lib/core.sh records).
+  #
+  # The locals are `now_ns`/`pending_ns`, not the obvious `cur`/`pend`, because
+  # `shellcheck -x` inlines every sourced file into ONE namespace: several
+  # engines under modules/dast/ declare `local -A cur=()` inside their own
+  # functions, and a plain `local cur=0` here then trips SC2178 ("used as an
+  # array but is now assigned a string") against a variable in a different
+  # function in a different file.  Distinct names are the fix; a suppression
+  # would hide the same warning if it ever became real here.
+  local now_ns=0 pending_ns=0
+  IFS= read -r now_ns <"$CLOCKF" 2>/dev/null || true
+  IFS= read -r pending_ns <"$PENDF" 2>/dev/null || true
+  [[ $now_ns =~ ^[0-9]+$ ]] || now_ns=0
+  [[ $pending_ns =~ ^[0-9]+$ ]] || pending_ns=0
+  now_ns=$(( now_ns + pending_ns ))
   printf '0' >"$PENDF"
-  printf '%s' "$cur" >"$CLOCKF"
-  printf '%s' "$cur"
+  printf '%s' "$now_ns" >"$CLOCKF"
+  printf '%s' "$now_ns"
 }
 SCOURSH_INJECT_NOW_NS=_sqli_now
 
@@ -433,10 +446,19 @@ printf '== dast sqli: every request is non-destructive (read-only payloads) ==\n
 _new_run readonly
 _write_full_inventory
 _dast_sqli_phase
-REQTEXT=$(cat "$REQ_LOG" 2>/dev/null || true)
 # The request log records METHOD + PATH; the bodies/queries are what carry the
 # payload, so assert against everything the transport ever saw by re-scanning
 # the payload files directly: no shipped payload may carry a write verb.
+#
+# The log is still read first, for one reason: the payload-file scan below is
+# VACUOUSLY true on a run that sent nothing at all, so "the phase actually
+# issued requests" has to be asserted or a phase broken into silence would
+# certify itself non-destructive.  (This replaces a `REQTEXT=$(cat ...)` that
+# was assigned and never read - a dead variable shellcheck flagged as SC2034,
+# and the missing assertion it was evidently meant to carry.)
+REQTEXT=$(cat "$REQ_LOG" 2>/dev/null || true)
+assert_ne '' "$REQTEXT" \
+  'the read-only case really did send requests - FAILS if the phase goes silent, which would make the non-destructive assertion below vacuous'
 BADVERB=0
 for pf in "$ROOT"/modules/dast/payloads/sqli-*.txt; do
   if grep -Eiq '\b(DROP|DELETE|INSERT|UPDATE|TRUNCATE|ALTER|CREATE|GRANT|EXEC|xp_cmdshell)\b' "$pf"; then
@@ -454,8 +476,11 @@ assert_contains "$_INJ_ENC" '%27' "inject_urlencode percent-encodes a single quo
 assert_contains "$_INJ_ENC" 'SLEEP' "inject_urlencode leaves an unreserved word (SLEEP) intact"
 assert_not_contains "$_INJ_ENC" ' ' "inject_urlencode encodes spaces"
 
-inject_len_similar 500 501 && _t_ok "inject_len_similar: 500 vs 501 are the same size" \
-  || _t_no "len_similar 500/501" "should be within tolerance"
+# `if/then/else`, not `A && _t_ok ... || _t_no ...` (SC2015): in the `&&`/`||`
+# spelling `_t_no` also runs whenever `_t_ok` itself exits non-zero, so a
+# passing case could record a failure as well as a pass.  The negative case on
+# the next line already had this shape; both now match.
+if inject_len_similar 500 501; then _t_ok "inject_len_similar: 500 vs 501 are the same size"; else _t_no "len_similar 500/501" "should be within tolerance"; fi
 if inject_len_similar 500 60; then _t_no "len_similar 500/60" "500 vs 60 must NOT be similar"; else _t_ok "inject_len_similar: 500 vs 60 differ meaningfully"; fi
 
 inject_body_sig 'aXXXbXXXc' 'XXX'

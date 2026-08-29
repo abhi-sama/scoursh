@@ -17,3 +17,29 @@ findings.normalised.jsonl
 # secret-files and the auth.conf referencing them (tools/dast-test-identities.sh).
 # Machine-specific and regenerable; never sources, never committed.
 .dast-test-target/
+
+# The two vendored databases are GENERATED, on a networked box, by
+# `tools/vendor-engines.sh advisories` - never during a scan, and never in this
+# repository (docs/FOUNDATION.md tension 25).  Both are absent by default in
+# every checkout, which is what lets a consumer tell "nobody has run the
+# vendoring pipeline" apart from "it ran and found nothing" - two different
+# facts that a committed database collapses into one.
+#
+# data/versions.db was committed by accident once (commit 9b580c1), carrying
+# four fixture rows from somebody's local verification run - `goodpkg`,
+# `uspkg`, `critpkg`, `lowpkg`, with `# bulk:` provenance headers naming
+# /tmp scratch paths.  That shipped fake vulnerability data in the release
+# artifact and made a fresh clone read as a populated database.  These two
+# lines are why it cannot happen silently again; commit either file only by
+# deliberate `git add -f`, and only with real, pinned provenance.
+data/advisories.db
+data/versions.db
+
+# `pnpm test` / `pnpm build` byproducts.  package.json exists ONLY so those
+# conventional entry points reach tests/run-tests.sh (AGENTS.md: "no
+# dependencies, no lockfile, no node_modules, no build step"), so anything pnpm
+# writes here is an artifact of running the suite, never a source.  Both landed
+# untracked in a workspace after a reviewer ran `pnpm build`, and a committed
+# pnpm-lock.yaml would assert a Node dependency set this project does not have.
+node_modules/
+pnpm-lock.yaml

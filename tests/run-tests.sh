@@ -18,12 +18,22 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$ROOT"
 
-SUITES=(records core config checks findings report http e2e scan sast sast-history sca iac dast dast-auth dast-crawl dast-sqli dast-jwt exit-code-matrix gate-mutation-proof ci-smoke netns paranoid vendor-engines vendor-engines-advisories engines sast-semgrep iac-trivy sast-gitleaks secret-redaction awscli aws-lint aws-fixtures lint-no-ai-selftest dast35-lint daily-suite color)
+SUITES=(records core config checks findings report http e2e scan sast sast-history sca iac dast dast-auth dast-cookies dast-crawl dast-discovery dast-headers dast-leakage dast-markup dast-methods dast-ratelimit dast-transport dast-sqli dast-ldapi dast-xss dast-openredirect dast-jwt dast-authz exit-code-matrix gate-mutation-proof ci-smoke netns paranoid vendor-engines vendor-engines-advisories engines sast-semgrep iac-trivy sast-gitleaks secret-redaction awscli aws-lint aws-fixtures lint-no-ai-selftest dast35-lint lint-rules-paths daily-suite run-tests-stage color)
 LINTERS=(lint-rules lint-shell lint-aws-readonly lint-status lint-no-ai)
+# The whole-tree shellcheck run is a STAGE, not a suite and not a linter file:
+# it has no tests/*.sh of its own, it is the last thing a full run does, and it
+# is the slowest thing in the suite by a wide margin.  Run it alone with
+# `tests/run-tests.sh shellcheck`, so it can be iterated on without paying for
+# the other 50 checks first - which is exactly what nobody could do while it
+# was unable to finish at all.  (Note the wrapping: a comment line that BEGINS
+# with the word `shellcheck` is parsed as a directive and is an SC1072 error,
+# so prose about it must never start a line with it.)
+STAGES=(shellcheck)
 
 if [[ ${1:-} == --list ]]; then
   printf 'suites:  %s\n' "${SUITES[*]}"
   printf 'linters: %s\n' "${LINTERS[*]}"
+  printf 'stages:  %s\n' "${STAGES[*]}"
   exit 0
 fi
 
@@ -39,24 +49,49 @@ run_one() {
   fi
 }
 
-if [[ -n ${1:-} ]]; then
-  want=$1
-  if [[ -f tests/suites/$want.sh ]]; then
-    run_one suite "$want" "tests/suites/$want.sh"
-  elif [[ -f tests/$want.sh ]]; then
-    run_one linter "$want" "tests/$want.sh"
-  else
-    printf 'no such suite or linter: %s\n' "$want" >&2
-    printf 'available: %s %s\n' "${SUITES[*]}" "${LINTERS[*]}" >&2
-    exit 2
-  fi
-else
-  for s in "${SUITES[@]}"; do
-    run_one suite "$s" "tests/suites/$s.sh"
-  done
-  for l in "${LINTERS[@]}"; do
-    run_one linter "$l" "tests/$l.sh"
-  done
+# ===========================================================================
+# The whole-tree shellcheck stage.
+# ===========================================================================
+# `sc_stage` reports through the global `SC_STAGE_STATUS` - 0 when every file
+# was CHECKED and every one of them was clean, 1 otherwise - and ALWAYS returns
+# 0 itself.  That shape is deliberate and is the whole reason this function can
+# be strict:
+#
+#   * Calling it as `sc_stage || failed+=(shellcheck)` would put it in an
+#     `A || B` list, and bash then disables `errexit` for its ENTIRE BODY, not
+#     just for the call ("If a compound command or shell function executes in a
+#     context where -e is being ignored, none of the commands executed within
+#     the compound command or function body will be affected by the -e
+#     setting" - bash manual, "The Set Builtin").  This code ran at top level
+#     with `errexit` live before it was a function; that spelling would have
+#     silently stripped the strictness, and would have made the `EXIT` trap's
+#     own "an unexpected non-zero exit" arm unreachable - a trap documenting a
+#     protection that cannot fire.
+#   * Calling it as `sc_stage; sc_rc=$?` does not work either: a function
+#     returning non-zero as a plain command IS an errexit abort, so the runner
+#     would die before the assignment on any run where shellcheck reports
+#     anything.  Measured, both ways.
+#
+# So: always return 0, carry the verdict in a variable, and let the body run
+# under the same `set -Eeuo pipefail` the rest of this file does.
+#
+# It prints its own verdict line - and it prints one on EVERY exit path,
+# including the ones that do not reach the bottom of this function: a `set -E`
+# abort, an operator's ^C, and a host-level SIGTERM all used to end the stage
+# after nothing but its header, which reads exactly like a stage that had
+# nothing to say.  The verdict is therefore emitted from a trap with a
+# once-only guard, never only from the straight-line path.
+#
+# It also distinguishes a file that was CHECKED AND CLEAN from a file that
+# could not be checked at all (killed by the watchdog below, killed by
+# something else on the host, or refused by shellcheck itself).  An
+# unmeasurable file is never rounded up to a pass: it is named, counted, and
+# fails the stage, because "shellcheck said nothing about this file" and
+# "shellcheck found nothing wrong with this file" are different facts and only
+# the second one is evidence.
+SC_STAGE_STATUS=0
+sc_stage() {
+  SC_STAGE_STATUS=0
   # ShellCheck is optional: an air-gapped host may not have it, and the suite
   # must still be runnable there.  CI installs it, and so does tools/daily-suite.sh's GNU leg
   # (its BSD leg expects it installed on the machine already) - see docs/CI-RUNBOOK.md.
@@ -172,14 +207,80 @@ else
 
   if command -v shellcheck >/dev/null 2>&1; then
     printf '\n=== linter: shellcheck ===\n'
-    sc_dirs=()
-    for d in lib tests tools modules aws; do [[ -d $d ]] && sc_dirs+=("$d"); done
-    [[ -f scan.sh ]] && sc_dirs+=(scan.sh)
 
-    sc_file_list=()
-    while IFS= read -r sc_f; do
-      sc_file_list+=("$sc_f")
-    done < <(find "${sc_dirs[@]+"${sc_dirs[@]}"}" -name '*.sh' -type f | LC_ALL=C sort)
+    # --- the verdict, on every exit path ------------------------------------
+    #
+    # `sc_unchecked` names files this stage could not get a result for, as
+    # opposed to files it checked and found clean; `sc_findings` is the plain
+    # "shellcheck reported something" case.  Both fail the stage, and they are
+    # reported separately because only one of them is a defect in the tree.
+    sc_verdict_done=0
+    sc_unchecked=()
+    sc_findings=()
+    sc_shard_dir=
+
+    _sc_verdict() {
+      local rc=$1 detail=${2:-}
+      (( sc_verdict_done )) && return 0
+      sc_verdict_done=1
+      if (( ${#sc_unchecked[@]} > 0 )); then
+        printf 'shellcheck: %s of %s file(s) could NOT be checked - unmeasured, not clean:\n' \
+          "${#sc_unchecked[@]}" "${sc_total:-?}" >&2
+        local u
+        for u in "${sc_unchecked[@]}"; do printf '  - %s\n' "$u" >&2; done
+      fi
+      if (( ${#sc_findings[@]} > 0 )); then
+        printf 'shellcheck: %s of %s file(s) were checked and reported findings (above): %s\n' \
+          "${#sc_findings[@]}" "${sc_total:-?}" "${sc_findings[*]}" >&2
+      fi
+      if (( rc == 0 )); then
+        printf -- '--- shellcheck passed\n'
+      else
+        printf -- '--- shellcheck FAILED%s\n' "${detail:+ ($detail)}"
+      fi
+      return 0
+    }
+
+    # A `set -e` abort, a ^C and a SIGTERM all end this function without
+    # reaching its own verdict line.  Without these traps that produces a
+    # stage that printed its header and nothing else, which is indistinguishable
+    # from a clean one to anyone reading the log - the exact failure this
+    # ticket was filed for.  bash does not run an EXIT trap for an untrapped
+    # SIGINT/SIGTERM, so those two are trapped explicitly rather than left to
+    # EXIT to catch.
+    _sc_abort_verdict() {
+      local sig=$1
+      [[ -n $sc_shard_dir ]] && rm -rf "$sc_shard_dir"
+      _sc_verdict 1 "the stage itself ended on $sig before it could reach a verdict - no file's result from this run can be trusted"
+      return 0
+    }
+    trap '_sc_abort_verdict "an unexpected non-zero exit"' EXIT
+    trap '_sc_abort_verdict SIGINT; exit 130' INT
+    trap '_sc_abort_verdict SIGTERM; exit 143' TERM
+
+    # The file list is normally the whole tree.  SCOURSH_SHELLCHECK_FILE_LIST
+    # is a TEST SEAM (tests/suites/run-tests-stage.sh drives this stage over a
+    # two-file fixture with a stub `shellcheck`, which is the only way to
+    # exercise the watchdog and the abort paths in seconds instead of minutes).
+    # It is never set by a real run, and it is deliberately NOT a way to
+    # exclude files: a real run still checks every *.sh in the tree.
+    if [[ -n ${SCOURSH_SHELLCHECK_FILE_LIST:-} && -r ${SCOURSH_SHELLCHECK_FILE_LIST:-} ]]; then
+      sc_file_list=()
+      while IFS= read -r sc_f; do
+        [[ -n $sc_f ]] && sc_file_list+=("$sc_f")
+      done < "$SCOURSH_SHELLCHECK_FILE_LIST"
+      printf 'shellcheck: file list overridden by SCOURSH_SHELLCHECK_FILE_LIST (%s)\n' \
+        "$SCOURSH_SHELLCHECK_FILE_LIST"
+    else
+      sc_dirs=()
+      for d in lib tests tools modules aws; do [[ -d $d ]] && sc_dirs+=("$d"); done
+      [[ -f scan.sh ]] && sc_dirs+=(scan.sh)
+
+      sc_file_list=()
+      while IFS= read -r sc_f; do
+        sc_file_list+=("$sc_f")
+      done < <(find "${sc_dirs[@]+"${sc_dirs[@]}"}" -name '*.sh' -type f | LC_ALL=C sort)
+    fi
     sc_total=${#sc_file_list[@]}
 
     if (( sc_total == 0 )); then
@@ -192,8 +293,9 @@ else
       sc_batch=$(( (sc_total + sc_jobs - 1) / sc_jobs ))
       (( sc_batch < 1 )) && sc_batch=1
 
+      # No `trap ... EXIT` here: the stage-wide traps installed above already
+      # remove $sc_shard_dir, and re-arming EXIT would drop the verdict trap.
       sc_shard_dir=$(mktemp -d)
-      trap 'rm -rf "$sc_shard_dir"' EXIT
       export SC_SHARD_DIR=$sc_shard_dir
 
       # Each batch writes to its OWN file rather than shared stdout: appends
@@ -221,8 +323,14 @@ else
         fi
       done
       rm -rf "$sc_shard_dir"
-      trap - EXIT
+      sc_shard_dir=
       unset SC_SHARD_DIR
+      # Batched, so a finding cannot be attributed to one file here; the
+      # per-file attribution the local path gives is not available on CI and
+      # is not faked.  `sc_status` alone carries the verdict on this path.
+      if (( sc_status != 0 )); then
+        sc_findings=("(batched - see the output above)")
+      fi
     else
       # Local: cap concurrency by memory, not core count, and run one file
       # per shellcheck invocation so a watchdog kill - or a plain finding -
@@ -279,8 +387,8 @@ else
       printf 'shellcheck: %s files, %s parallel (%sGB/process budget, %sGB usable of %sGB, %s cores detected)\n' \
         "$sc_total" "$sc_jobs" "$sc_budget_gb" "$sc_usable_gb" "$sc_base_gb" "$sc_cores"
 
+      # No `trap ... EXIT` here either - see the CI branch's note above.
       sc_shard_dir=$(mktemp -d)
-      trap 'rm -rf "$sc_shard_dir"' EXIT
 
       sc_budget_kb=$(( sc_budget_gb * 1024 * 1024 ))
       sc_have_ps=0
@@ -335,7 +443,17 @@ else
               kill -KILL "$pid" 2>/dev/null || true
               sc_self_killed[$pid]=1
               sc_watch_msgs+=("shellcheck: watchdog killed pid $pid (${sc_pid_file[$pid]}) - exceeded the ${sc_budget_gb}GB memory budget")
-              [[ $sc_biggest_pid == "$pid" ]] && sc_biggest_pid=
+              # Spelled as an `if`, not `[[ ... ]] && sc_biggest_pid=`.  The
+              # ticket that rewrote this stage carried a hypothesis that the
+              # `&&` spelling aborted the script under `set -e` when the test
+              # was false, which would explain a stage that printed only its
+              # header.  MEASURED, and REFUTED: bash exempts a whole `A && B`
+              # list from `set -e` when A itself fails, at top level and
+              # inside a loop or an `if` body alike, so it never fired.  The
+              # `if` stays because it is clearer, not because it fixes
+              # anything - the missing verdict line is fixed by the traps
+              # above, which cover the abort paths that DO exist.
+              if [[ $sc_biggest_pid == "$pid" ]]; then sc_biggest_pid=; fi
             fi
           done
 
@@ -376,18 +494,27 @@ else
             wait "$pid" 2>/dev/null || sc_pid_exit=$?
             if (( sc_pid_exit != 0 )); then
               sc_status=1
-              # Attribute a signal death to its file even when nothing in
-              # this script did the killing - a host-level OOM killer, an
-              # operator's own `kill`, or some other watcher can take the
-              # linter's own process out from under us, and the failure
-              # must still name the file rather than surface as a bare
-              # non-zero exit with no explanation.  128+n is the shell's
-              # own convention for "died from signal n" (bash manual
-              # section "Exit Status"); our own watchdog kill above already
-              # logs its own message, so this only fires for a death THIS
-              # script did not cause.
-              if (( sc_pid_exit > 128 )) && [[ -z ${sc_self_killed[$pid]:-} ]]; then
+              # Exit 1 is the only status that means "this file WAS checked
+              # and shellcheck has something to say about it".  Everything
+              # else means the file was never actually checked, and those two
+              # outcomes are kept apart here rather than merged into one
+              # non-zero: shellcheck's own exit 2 is "could not process this
+              # file", 126/127 are the shell's "could not run the linter at
+              # all", and 128+n is "died from signal n" (bash manual, "Exit
+              # Status") - our own watchdog's kill, a host-level OOM killer,
+              # or an operator's `kill`.  Rounding any of them up to a clean
+              # result is the single most expensive way for this stage to be
+              # wrong, because an unmeasured file looks exactly like a clean
+              # one in the output.
+              if (( sc_pid_exit == 1 )); then
+                sc_findings+=("${sc_pid_file[$pid]}")
+              elif [[ -n ${sc_self_killed[$pid]:-} ]]; then
+                sc_unchecked+=("${sc_pid_file[$pid]} (killed by this stage's own watchdog - see the message below)")
+              elif (( sc_pid_exit > 128 )); then
+                sc_unchecked+=("${sc_pid_file[$pid]} (died from signal $(( sc_pid_exit - 128 )), not this stage's doing)")
                 sc_watch_msgs+=("shellcheck: ${sc_pid_file[$pid]} was killed (signal $(( sc_pid_exit - 128 ))) by something other than this stage's own watchdog - not a shellcheck finding, but the stage still fails since that file was never actually checked")
+              else
+                sc_unchecked+=("${sc_pid_file[$pid]} (shellcheck exited $sc_pid_exit - it never produced a result for this file)")
               fi
             fi
             unset "sc_active[$pid]"
@@ -411,19 +538,50 @@ else
       fi
 
       rm -rf "$sc_shard_dir"
-      trap - EXIT
+      sc_shard_dir=
       unset -f _sc_launch_one
     fi
 
-    if (( sc_status == 0 )); then
-      printf -- '--- shellcheck passed\n'
-    else
-      printf -- '--- shellcheck FAILED\n'
-      failed+=(shellcheck)
+    # A file that could not be checked fails the stage on its own, even when
+    # nothing that DID get checked reported anything.
+    if (( ${#sc_unchecked[@]} > 0 )); then
+      sc_status=1
     fi
+    _sc_verdict "$sc_status"
+    trap - EXIT INT TERM
+    SC_STAGE_STATUS=$sc_status
+    return 0
   else
     printf '\n=== linter: shellcheck (SKIPPED - not installed) ===\n'
+    return 0
   fi
+}
+
+if [[ -n ${1:-} ]]; then
+  want=$1
+  if [[ -f tests/suites/$want.sh ]]; then
+    run_one suite "$want" "tests/suites/$want.sh"
+  elif [[ -f tests/$want.sh ]]; then
+    run_one linter "$want" "tests/$want.sh"
+  elif [[ " ${STAGES[*]} " == *" $want "* ]]; then
+    # A plain call, never `sc_stage || ...` - see sc_stage's own header for why
+    # the `||` spelling would disable `errexit` for the whole stage body.
+    sc_stage
+    if (( SC_STAGE_STATUS != 0 )); then failed+=(shellcheck); fi
+  else
+    printf 'no such suite, linter or stage: %s\n' "$want" >&2
+    printf 'available: %s %s %s\n' "${SUITES[*]}" "${LINTERS[*]}" "${STAGES[*]}" >&2
+    exit 2
+  fi
+else
+  for s in "${SUITES[@]}"; do
+    run_one suite "$s" "tests/suites/$s.sh"
+  done
+  for l in "${LINTERS[@]}"; do
+    run_one linter "$l" "tests/$l.sh"
+  done
+  sc_stage
+  if (( SC_STAGE_STATUS != 0 )); then failed+=(shellcheck); fi
 fi
 
 printf '\n'

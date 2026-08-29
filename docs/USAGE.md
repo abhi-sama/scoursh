@@ -46,7 +46,7 @@ scan.sh <command> [options]
 | `sast` | `[--path DIR]` `[--lang py,js,go,java]` `[--history]` | live | Source code. `--history` replays secret checks across git history and requires `git` on `PATH`. |
 | `sca` | `[--path DIR]` | live, needs an advisory database | Dependency/lockfile CVEs. Lockfile parsing works for every supported ecosystem, but matching needs `data/advisories.db`, which this repository does not ship - without it the run exits `4` rather than reporting a clean project. See ["Dependency data"](#dependency-data-dataadvisoriesdb). |
 | `iac` | `[--path DIR]` | live | Cloud IaC plus container/Kubernetes manifests. |
-| `dast` | `--target NAME` `[--intensity passive\|safe\|active]` `[--authed]` `[--i-own-target NAME]` | inert as a scanner; its safety layer is live | The scope gate below is real and is enforced before anything else (see "The scope gate"), as are the conservative rate/budget/breaker ceilings and the `--i-own-target` affirmation (see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)). Past those, nothing happens: `modules/dast/run.sh` exists but ships no phase script, so the run records `module=dast reason=no_phase_scripts_on_disk_yet` plus a `coverage_gap` saying no request was sent, and exits 0. |
+| `dast` | `--target NAME` `[--intensity passive\|safe\|active]` `[--authed]` `[--i-own-target NAME]` | partially live - **it sends real requests** | The scope gate below is enforced before anything else (see "The scope gate"), as are the conservative rate/budget/breaker ceilings and the `--i-own-target` affirmation (see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)). Past those, a run now really does talk to the target: it authenticates if asked (`auth.sh`), crawls to build an endpoint inventory (`crawl.sh`), and runs the security-header checks (`passive/headers.sh`). At `--intensity active` it additionally runs the SQL-injection and JWT probes. Most of `docs/DESIGN.md` §7 is still unbuilt, so every phase script that is missing is recorded in `run.json` as a `coverage_gap`; read those, not this table, for what a given run actually covered. |
 | `cloud` | `[--live]` `[--profile NAME]` `[--regions all\|us-east-1,...]` `[--assume-role ARN]` | inert | `--live` requires the `aws` CLI on `PATH` and the run refuses (exit 4) if it is missing, which is a real check. No AWS call follows it: there is no `modules/cloud/`, so the run records `module=cloud reason=not_yet_built`. |
 | `all` | union of every module's own flags above | live | Runs sast, sca, iac unconditionally; runs dast only if `--target` is given and cloud only if `--live` is given, and those two do nothing when they run. Every module it skips is recorded in `run.json` as a `coverage_reduction` fact, not silently dropped. |
 | `diff` | `--against DIR` | inert | `DIR` must be a prior run's output directory (must contain `findings.jsonl` or `run.json`), and that check is enforced. Nothing is then compared. |
@@ -61,9 +61,9 @@ scan.sh <command> [options]
 | `--path DIR` | sast, sca, iac, all | live |
 | `--lang py,js,go,java` | sast, all | inert |
 | `--history` | sast, all | live |
-| `--target NAME` | dast, all | live as a gate; the scan it gates does not exist |
-| `--intensity passive\|safe\|active` | dast, all | live as a ceiling; the checks it would select do not exist |
-| `--authed` | dast, all | recorded in `run.json`'s authorization object; no authentication exists |
+| `--target NAME` | dast, all | live as a gate, and the scan it gates now runs |
+| `--intensity passive\|safe\|active` | dast, all | live as a ceiling; `passive` reaches the crawl and the security-header checks, `active` additionally reaches the SQLi and JWT probes |
+| `--authed` | dast, all | live - `auth.sh` acquires a session, and a failed login is a declared coverage reduction rather than an error |
 | `--i-own-target NAME` | dast, all | live |
 | `--live` | cloud, all | live as a precondition check only |
 | `--profile NAME` | cloud, all | inert |
@@ -308,9 +308,12 @@ The gate matches on the normalized `(scheme, host, port)` tuple from the target'
 Path is **not** part of the gate - it only bounds what the crawler will fetch, it is not a safety
 boundary.
 
-This gate is live and enforced, and it is worth being clear about what passing it currently buys you:
-nothing yet runs behind it.
-A `dast` run that satisfies the gate makes no requests, because the DAST module is unbuilt.
+This gate is live and enforced, and it is worth being clear about what passing it now buys you:
+**real HTTP requests to the host you listed.**
+A `dast` run that satisfies the gate crawls the target and inspects what comes back, so treat the entry
+you write as an authorisation you are prepared to stand behind.
+What it does NOT buy you is complete coverage: most of `docs/DESIGN.md` §7 is still unbuilt, and every
+absent check is recorded in `run.json` as a `coverage_gap` rather than passing silently.
 The repository also ships `config/scope.conf.example` rather than `config/scope.conf`, so on a fresh
 checkout every `dast` invocation refuses with exit 4 until you write the real file.
 

@@ -88,12 +88,22 @@
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
-# shellcheck source=modules/sca/engine.sh
+# -x back-edge cut: modules/sca/engine.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/sca/engine.sh"
 # Sourced explicitly too, even though engine.sh already pulls this in
 # (guarded, see both files' own headers) - self-documenting about which
 # ecosystems this suite covers, same convention modules/sca/run.sh uses.
-# shellcheck source=modules/sca/php_engine.sh
+# -x back-edge cut: modules/sca/php_engine.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/sca/php_engine.sh"
 # go_engine.sh is a separate file, not part of engine.sh - it must be sourced
 # for the Go section below to see sca_go_normalize_module/_sca_go_parse_mod/

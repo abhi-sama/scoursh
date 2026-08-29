@@ -338,6 +338,29 @@ jwt_status_is_success() {
 }
 
 # ---------------------------------------------------------------------------
+# 6a. tension-15 per-check selection
+# ---------------------------------------------------------------------------
+# scan.sh's filter chain records which ids survived
+# --profile-scan/--intensity/--allow-intrusive and exports them as
+# SCOURSH_SELECTED_CHECKS; modules/dast/engine.sh's `dast_check_selected` is the
+# reader.  Consulted only if that function exists - it does not today, and
+# modules/dast/passive/{cookies,headers}.sh and modules/dast/active/sqli.sh all
+# guard it the same way - so this file does not hard-depend on it: absent,
+# everything the tier already permitted runs, which is the "empty means all
+# selected" fallback every direct-engine test in tests/suites/dast-jwt.sh relies
+# on.
+#
+# THIS GATE IS WHAT MAKES modules/dast/checks.rules BIND RATHER THAN MERELY
+# DESCRIBE.  A registry record that nothing consults documents a check; one the
+# probe consults decides whether the request is sent at all - and for this phase
+# every variant is its OWN outbound request carrying a FORGED token, so a
+# deselected variant must not be probed, not merely not reported.
+_jwt_selected() {
+  declare -F dast_check_selected >/dev/null || return 0
+  dast_check_selected "$1"
+}
+
+# ---------------------------------------------------------------------------
 # 7. Emitting a finding
 # ---------------------------------------------------------------------------
 # One helper, so every JWT finding carries the same DAST location profile
@@ -407,7 +430,7 @@ jwt_emit_finding() {
 jwt_run() {
   local target=$1 method=$2 url=$3 base_token=$4
   local header=${5:-Authorization} scheme=${6:-Bearer} pubkey_file=${7:-}
-  local alg forged spelling secret status
+  local alg forged spelling secret
   _JWT_RUN_STATUS='' _JWT_RUN_REASON='' _JWT_RUN_RS_PUBKEY_MISSING=0
 
   if ! jwt_is_jwt "$base_token"; then
@@ -433,12 +456,23 @@ jwt_run() {
     # is strictly stronger than any single-variant weakness and would make every
     # per-variant probe below a trivial true-positive, so we report it once and
     # stop: a report with five findings that are all one root cause is noise.
-    run_record checks_run 'DAST-JWT-SIG_NOT_VERIFIED-01'
-    jwt_emit_finding 'DAST-JWT-SIG_NOT_VERIFIED-01' \
-      'JWT signature is not verified' critical \
-      "$target" "$method" "$url" "$header" \
-      "$method $url returned HTTP ${_JWT_PROBE_STATUS} for a token whose header and payload were left intact but whose signature was replaced with one computed under a key the server cannot hold; a conformant verifier rejects this, so the endpoint is not verifying the signature at all" \
-      'Verify the JWT signature on every request against the expected algorithm and key before trusting any claim in it. Reject a token whose signature does not verify, whose alg is not the one you issued, or that carries alg:none. This endpoint accepted a token with an invalid signature, which lets anyone mint a token for any user.'
+    #
+    # THE SELECTION GATE SUPPRESSES THE RECORD AND THE FINDING, NEVER THE ORACLE
+    # PROBE ABOVE, AND THAT ASYMMETRY IS THE POINT.  The wrong-signature replay
+    # is what proves this endpoint rejects a forgery, so the other four variants
+    # are meaningless without it: skipping it when DAST-JWT-SIG_NOT_VERIFIED-01
+    # is deselected would silently reduce every remaining check to "the endpoint
+    # returned 200", which is a false positive rather than a narrower scan.  The
+    # probe therefore always runs, and the run still stops here, because
+    # per-variant probing against a verifier that checks nothing tests nothing.
+    if _jwt_selected 'DAST-JWT-SIG_NOT_VERIFIED-01'; then
+      run_record checks_run 'DAST-JWT-SIG_NOT_VERIFIED-01'
+      jwt_emit_finding 'DAST-JWT-SIG_NOT_VERIFIED-01' \
+        'JWT signature is not verified' critical \
+        "$target" "$method" "$url" "$header" \
+        "$method $url returned HTTP ${_JWT_PROBE_STATUS} for a token whose header and payload were left intact but whose signature was replaced with one computed under a key the server cannot hold; a conformant verifier rejects this, so the endpoint is not verifying the signature at all" \
+        'Verify the JWT signature on every request against the expected algorithm and key before trusting any claim in it. Reject a token whose signature does not verify, whose alg is not the one you issued, or that carries alg:none. This endpoint accepted a token with an invalid signature, which lets anyone mint a token for any user.'
+    fi
     _JWT_RUN_STATUS=no_verify
     _JWT_RUN_REASON="the endpoint accepted a token with an invalid signature, so it does not verify signatures at all; the per-variant probes (alg:none, empty/weak HMAC, RS->HS) were not run because they would each be a duplicate of that one root cause"
     return 0
@@ -449,49 +483,61 @@ jwt_run() {
 
   # alg:none, including the case-variant spellings that slip past a check that
   # only string-compares against lowercase "none".
-  run_record checks_run 'DAST-JWT-ALG_NONE-01'
-  for spelling in none None NONE nOnE; do
-    forged=$(jwt_forge_alg_none "$base_token" "$spelling")
-    jwt_probe "$target" "$method" "$url" "$forged" "$header" "$scheme" || true
-    if jwt_status_is_success "${_JWT_PROBE_STATUS:-}"; then
-      jwt_emit_finding 'DAST-JWT-ALG_NONE-01' \
-        'JWT accepted with alg:none (unsigned token)' critical \
-        "$target" "$method" "$url" "$header" \
-        "$method $url returned HTTP ${_JWT_PROBE_STATUS} for an UNSIGNED token whose header set alg to '$spelling' and whose signature segment was empty; the server accepted a token it never signed" \
-        'Reject any token whose header alg is "none" (in any capitalisation) and any token with an empty signature. Pin the accepted algorithm to the one you issue and verify the signature with the corresponding key. Accepting alg:none lets anyone forge a token for any user with no key at all.'
-      break
-    fi
-  done
-
-  # empty-secret HS256.
-  run_record checks_run 'DAST-JWT-EMPTY_HMAC-01'
-  forged=$(jwt_forge_hs256 "$base_token" '')
-  jwt_probe "$target" "$method" "$url" "$forged" "$header" "$scheme" || true
-  if jwt_status_is_success "${_JWT_PROBE_STATUS:-}"; then
-    jwt_emit_finding 'DAST-JWT-EMPTY_HMAC-01' \
-      'JWT accepted when re-signed HS256 with an empty secret' critical \
-      "$target" "$method" "$url" "$header" \
-      "$method $url returned HTTP ${_JWT_PROBE_STATUS} for a token re-signed as HS256 with a zero-length key; the HMAC secret is empty" \
-      'Sign tokens with a high-entropy secret of at least 256 bits and reject an empty or absent key at verification time. An empty HMAC secret means anyone can mint a valid token.'
-  fi
-
-  # weak/guessable HS256 secret, from the bounded vendored list only.
-  run_record checks_run 'DAST-JWT-WEAK_HMAC-01'
-  if jwt_weak_secrets_load; then
-    for secret in "${_JWT_WEAK_SECRETS[@]+"${_JWT_WEAK_SECRETS[@]}"}"; do
-      forged=$(jwt_forge_hs256 "$base_token" "$secret")
+  #
+  # THE GATE WRAPS THE PROBE, NOT JUST THE EMIT.  Each of the four variants below
+  # is its own outbound request carrying a FORGED token, so a check the operator
+  # filtered out with --profile-scan/--intensity must not be SENT, not merely not
+  # reported - suppressing only the finding would leave the target receiving
+  # forgery traffic for a check that is not in this run's set.
+  if _jwt_selected 'DAST-JWT-ALG_NONE-01'; then
+    run_record checks_run 'DAST-JWT-ALG_NONE-01'
+    for spelling in none None NONE nOnE; do
+      forged=$(jwt_forge_alg_none "$base_token" "$spelling")
       jwt_probe "$target" "$method" "$url" "$forged" "$header" "$scheme" || true
       if jwt_status_is_success "${_JWT_PROBE_STATUS:-}"; then
-        jwt_emit_finding 'DAST-JWT-WEAK_HMAC-01' \
-          'JWT accepted when re-signed HS256 with a common weak secret' critical \
+        jwt_emit_finding 'DAST-JWT-ALG_NONE-01' \
+          'JWT accepted with alg:none (unsigned token)' critical \
           "$target" "$method" "$url" "$header" \
-          "$method $url returned HTTP ${_JWT_PROBE_STATUS} for a token re-signed as HS256 with the well-known weak secret '$secret' from scoursh's bounded vendored list; the signing key is a guessable value" \
-          'Replace the signing secret with a high-entropy value of at least 256 bits from a secrets manager, and rotate it. The current secret is a common value shipped in framework examples and documentation, so anyone who has read those can mint a valid token.'
+          "$method $url returned HTTP ${_JWT_PROBE_STATUS} for an UNSIGNED token whose header set alg to '$spelling' and whose signature segment was empty; the server accepted a token it never signed" \
+          'Reject any token whose header alg is "none" (in any capitalisation) and any token with an empty signature. Pin the accepted algorithm to the one you issue and verify the signature with the corresponding key. Accepting alg:none lets anyone forge a token for any user with no key at all.'
         break
       fi
     done
-  else
-    _JWT_RUN_REASON="the vendored weak-secret list could not be read, so the weak-HMAC check did not run"
+  fi
+
+  # empty-secret HS256.
+  if _jwt_selected 'DAST-JWT-EMPTY_HMAC-01'; then
+    run_record checks_run 'DAST-JWT-EMPTY_HMAC-01'
+    forged=$(jwt_forge_hs256 "$base_token" '')
+    jwt_probe "$target" "$method" "$url" "$forged" "$header" "$scheme" || true
+    if jwt_status_is_success "${_JWT_PROBE_STATUS:-}"; then
+      jwt_emit_finding 'DAST-JWT-EMPTY_HMAC-01' \
+        'JWT accepted when re-signed HS256 with an empty secret' critical \
+        "$target" "$method" "$url" "$header" \
+        "$method $url returned HTTP ${_JWT_PROBE_STATUS} for a token re-signed as HS256 with a zero-length key; the HMAC secret is empty" \
+        'Sign tokens with a high-entropy secret of at least 256 bits and reject an empty or absent key at verification time. An empty HMAC secret means anyone can mint a valid token.'
+    fi
+  fi
+
+  # weak/guessable HS256 secret, from the bounded vendored list only.
+  if _jwt_selected 'DAST-JWT-WEAK_HMAC-01'; then
+    run_record checks_run 'DAST-JWT-WEAK_HMAC-01'
+    if jwt_weak_secrets_load; then
+      for secret in "${_JWT_WEAK_SECRETS[@]+"${_JWT_WEAK_SECRETS[@]}"}"; do
+        forged=$(jwt_forge_hs256 "$base_token" "$secret")
+        jwt_probe "$target" "$method" "$url" "$forged" "$header" "$scheme" || true
+        if jwt_status_is_success "${_JWT_PROBE_STATUS:-}"; then
+          jwt_emit_finding 'DAST-JWT-WEAK_HMAC-01' \
+            'JWT accepted when re-signed HS256 with a common weak secret' critical \
+            "$target" "$method" "$url" "$header" \
+            "$method $url returned HTTP ${_JWT_PROBE_STATUS} for a token re-signed as HS256 with the well-known weak secret '$secret' from scoursh's bounded vendored list; the signing key is a guessable value" \
+            'Replace the signing secret with a high-entropy value of at least 256 bits from a secrets manager, and rotate it. The current secret is a common value shipped in framework examples and documentation, so anyone who has read those can mint a valid token.'
+          break
+        fi
+      done
+    else
+      _JWT_RUN_REASON="the vendored weak-secret list could not be read, so the weak-HMAC check did not run"
+    fi
   fi
 
   # RS->HS algorithm confusion: only when the token is asymmetric AND a public
@@ -501,21 +547,33 @@ jwt_run() {
   # reads as "tested and clean".
   case $alg in
     RS* | PS* | ES*)
-      run_record checks_run 'DAST-JWT-ALG_CONFUSION-01'
-      if [[ -n $pubkey_file && -r $pubkey_file ]]; then
-        local pubkey
-        pubkey=$(cat -- "$pubkey_file")
-        forged=$(jwt_forge_hs256 "$base_token" "$pubkey")
-        jwt_probe "$target" "$method" "$url" "$forged" "$header" "$scheme" || true
-        if jwt_status_is_success "${_JWT_PROBE_STATUS:-}"; then
-          jwt_emit_finding 'DAST-JWT-ALG_CONFUSION-01' \
-            'JWT RS->HS algorithm confusion accepted' critical \
-            "$target" "$method" "$url" "$header" \
-            "$method $url declared alg '$alg' (asymmetric) but accepted HTTP ${_JWT_PROBE_STATUS} for a token re-signed as HS256 using the server's own PUBLIC key as the HMAC secret; the verifier picks the algorithm from the attacker-controlled header instead of pinning it" \
-            'Pin the verification algorithm to the one you issue (RS256), and never let the token header choose it. A verifier that accepts alg:HS256 for an RS256-issued token can be forged with the public key alone, which is public by definition.'
+      # `case` is not a loop, so the gate is an `if` and never a `break`: a bare
+      # `break` here would either fall through to whatever loop happened to
+      # enclose the caller or do nothing at all, and under both readings the
+      # probe below would still run for a deselected check.
+      #
+      # The `run_record` stays OUTSIDE the pubkey branch, exactly where it was
+      # before this gate existed: an asymmetric token with no public key is a
+      # check that ran and reported a coverage_reduction, and moving the record
+      # inside would change what this run claims to have executed, which is a
+      # different ticket's decision to make.
+      if _jwt_selected 'DAST-JWT-ALG_CONFUSION-01'; then
+        run_record checks_run 'DAST-JWT-ALG_CONFUSION-01'
+        if [[ -n $pubkey_file && -r $pubkey_file ]]; then
+          local pubkey
+          pubkey=$(cat -- "$pubkey_file")
+          forged=$(jwt_forge_hs256 "$base_token" "$pubkey")
+          jwt_probe "$target" "$method" "$url" "$forged" "$header" "$scheme" || true
+          if jwt_status_is_success "${_JWT_PROBE_STATUS:-}"; then
+            jwt_emit_finding 'DAST-JWT-ALG_CONFUSION-01' \
+              'JWT RS->HS algorithm confusion accepted' critical \
+              "$target" "$method" "$url" "$header" \
+              "$method $url declared alg '$alg' (asymmetric) but accepted HTTP ${_JWT_PROBE_STATUS} for a token re-signed as HS256 using the server's own PUBLIC key as the HMAC secret; the verifier picks the algorithm from the attacker-controlled header instead of pinning it" \
+              'Pin the verification algorithm to the one you issue (RS256), and never let the token header choose it. A verifier that accepts alg:HS256 for an RS256-issued token can be forged with the public key alone, which is public by definition.'
+          fi
+        else
+          _JWT_RUN_RS_PUBKEY_MISSING=1
         fi
-      else
-        _JWT_RUN_RS_PUBKEY_MISSING=1
       fi
       ;;
   esac
