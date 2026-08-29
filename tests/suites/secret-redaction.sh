@@ -174,6 +174,24 @@ ev_c=$(finding_get evidence)
 assert_eq "$ev_a" "$ev_b" 'the same secret redacts to the same placeholder in two findings'
 assert_ne "$ev_a" "$ev_c" 'two distinct secrets redact to distinct placeholders'
 
+t_case 'C2. the provenance layer alone, on a shape no redaction rule matches'
+# Every case above this point would also pass on rules/redaction.rules alone,
+# because both layers now cover the shipped secrets checks' shapes.  This one
+# isolates the provenance layer: SHAPE_BLIND is a credential-shaped string that
+# redact() does not recognise, so if finding_set_secret_match stopped masking,
+# nothing else would.
+#
+# The premise is asserted rather than assumed.  If a future redaction rule
+# starts matching this shape, this case says so instead of quietly losing the
+# only thing it was pinning.
+SHAPE_BLIND='Xk9-Zq!Tp2Ww'
+assert_eq "$SHAPE_BLIND" "$(redact "$SHAPE_BLIND")" \
+  'premise: no rule in rules/redaction.rules matches this canary, so redact() is not what masks it'
+finding_new
+finding_set_secret_match "$SHAPE_BLIND"
+assert_not_contains "$(finding_get evidence)" "$SHAPE_BLIND" \
+  'and the setter masks it anyway - fails if the fix were rules/redaction.rules alone'
+
 # ---------------------------------------------------------------------------
 # D. The chokepoint backstop.  A future emitter that reaches for the ordinary
 #    finding_set_evidence with a secrets-family check id is still masked, by
@@ -201,6 +219,30 @@ finding_emit
 findings_merge "$SCOURSH_RUN_DIR"
 assert_not_contains "$(run_dir_bytes "$SCOURSH_RUN_DIR")" "$CANARY_PW" \
   'the backstop masked it anyway, in every file the run wrote'
+
+t_case 'D3. the backstop alone, on a shape no redaction rule matches'
+# The same isolation as C2, one layer down: a forgetful emitter, a canary
+# redact() cannot see, and the backstop as the only thing left to catch it.
+new_run backstop_blind
+finding_new
+finding_set check_id SAST-SEC-GENERIC_PASSWORD-01
+finding_set module sast
+finding_set title 'Hardcoded password literal'
+finding_set base_severity high
+finding_set cwe CWE-798
+finding_set owasp A07:2025
+finding_set loc_path creds.py
+finding_set loc_line 5
+finding_set cell "$W"
+finding_set logical_kind file
+finding_set logical_fqn creds.py:5
+finding_set_match "$SHAPE_BLIND"
+finding_set_evidence "$SHAPE_BLIND"          # the forgetful emitter again
+assert_eq "$SHAPE_BLIND" "$(finding_get evidence)" \
+  'premise: it survived the setter, so redact() really did not mask it'
+finding_emit
+assert_not_contains "$(finding_get evidence)" "$SHAPE_BLIND" \
+  'and finding_emit masked it - fails if the backstop were removed'
 
 t_case 'D2. the backstop leaves an already-redacted evidence string alone'
 # Fails under a backstop that masks unconditionally: it would double-wrap a
@@ -299,11 +341,20 @@ assert_contains "$(cat "$OFF/report.html")" 'Redaction is DISABLED for this run'
 # ---------------------------------------------------------------------------
 t_case 'G. a credential found in git history is not written in the clear either'
 # modules/sast/history.sh mints its own SAST-HIST-* ids through its own emitter,
-# so a fix applied to modules/sast/engine.sh alone leaves this path leaking -
-# the reading this case fails under.  It matters more than the working-tree one,
-# not less: a SAST-HIST-* finding reports a credential that is already committed
-# and already has to be treated as compromised, and its report is the artifact
-# most likely to be pasted into a ticket.
+# and this path matters more than the working-tree one, not less: a SAST-HIST-*
+# finding reports a credential that is already committed and already has to be
+# treated as compromised, and its report is the artifact most likely to be
+# pasted into a ticket.
+#
+# Like every other end-to-end case here, what this asserts is the GUARANTEE, not
+# which of the two layers delivered it - measured, not assumed: with the history
+# emitter reverted this case still passes, because the chokepoint backstop
+# catches it, and with the backstop ALSO removed it still passes, because
+# rules/redaction.rules now carries a pattern for this canary's shape.  That is
+# defence in depth doing its job, and it is exactly why section C2 and D3 below
+# exist: they use a canary NO redaction rule matches, so they fail if the
+# provenance layer is removed, and they check that premise rather than assuming
+# it.
 HREPO=$W/hist-repo
 rm -rf "$HREPO"
 mkdir -p "$HREPO"
