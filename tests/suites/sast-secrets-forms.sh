@@ -322,11 +322,30 @@ t_case 'the drift guard is looking at all four rules'
 assert_eq 4 "$_nrules" \
   'all four assignment rules were found by the extractor below - fails if a rename made the drift guard vacuous by matching nothing'
 
-_blocks=$(awk '
+# SHARED_DENY is the size of the common policy block.  It is compared
+# explicitly rather than "all deny lines in the rule", because
+# ENV_ASSIGNMENT deliberately carries ONE additional, rule-specific deny of
+# its own (the unquoted-only identifier/path guard) that its three siblings
+# must not have.  An earlier draft capped the comparison at a hardcoded 14
+# lines (one short of the real block), which silently truncated that extra line away and so passed for the
+# wrong reason - the guard agreed with itself rather than with the file.
+SHARED_DENY=15
+_blocks=$(awk -v want="$SHARED_DENY" '
   /^id: SAST-SEC-(GENERIC_API_KEY|GENERIC_PASSWORD|GENERIC_SECRET|ENV_ASSIGNMENT)-01$/ { inrule = 1; n = 0; blk = ""; next }
-  inrule && /^context-deny: / { n++; if (n <= 14) blk = blk $0 "\036" }
+  inrule && /^context-deny: / { n++; if (n <= want) blk = blk $0 "\036" }
   inrule && /^context-window: / { if (blk != "") print blk; inrule = 0 }
 ' "$SHIPPED" | LC_ALL=C sort -u | LC_ALL=C grep -c . || true)
+
+# The extra line is asserted to EXIST, so the truncation above can never again
+# be hiding a divergence rather than tolerating a known difference.
+_env_denies=$(awk '
+  /^id: SAST-SEC-ENV_ASSIGNMENT-01$/ { inrule = 1; n = 0; next }
+  inrule && /^context-deny: / { n++ }
+  inrule && /^context-window: / { print n; inrule = 0 }
+' "$SHIPPED" | head -1)
+t_case 'ENV_ASSIGNMENT keeps its own extra deny on top of the shared block'
+assert_eq "$(( SHARED_DENY + 1 ))" "$_env_denies" \
+  'ENV_ASSIGNMENT carries the shared block PLUS exactly one rule-specific deny (the unquoted-only identifier/path guard) - fails if that guard is dropped, and fails if a sibling deny leaks into this rule alone'
 
 t_case 'the shared deny block is byte-identical across all four assignment rules'
 assert_eq 1 "$_blocks" \
