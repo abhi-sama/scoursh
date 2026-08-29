@@ -111,6 +111,24 @@ which is where test credentials are supposed to live. Nothing in `lib/`,
 tree every pack asserts silence over - returns **zero** findings, so this pack
 starts no cross-fire.
 
+## What the widening costs in scan time
+
+Measured on this repository, one full `sast` walk with this pack alone:
+**17s before, 42s after** - roughly 2.5x. The pack goes from 5 records to 7,
+and the two new ones carry the widest patterns in it, so every file is read
+against two more expensive regexes.
+
+That cost is in the *primary patterns*, not in the precision guards, and this
+was measured rather than assumed: consolidating the 15 shared `context-deny`
+lines into 5 equivalent alternations - which cuts the per-candidate
+`scan_match` subprocess count by two thirds - moved the total from 42s to 41s
+and was reverted for that reason. Fifteen lines each denying one concern are
+far easier to audit than five dense alternations, and the trade only makes
+sense if it buys something. It does not.
+
+Anyone optimising this later should start from the two new records' patterns,
+and should re-measure rather than reasoning from the shape of the rule file.
+
 ## The full table
 
 Regenerate it by running `tests/suites/sast-secrets-forms.sh`, which asserts
