@@ -1456,7 +1456,7 @@ Three decisions here are easy to get backwards, each pinned by a test naming the
 | # | Ticket | Depends on |
 |---|---|---|
 | DAST-26 **(landed)** | `jwt.sh` - `alg:none`, empty-secret HS256, weak-secret list, RS->HS confusion | DAST-01/02, DAST-03 (needs a sample/test-account token and a protected endpoint to replay against) |
-| DAST-27 | `graphql.sh` - introspection + correlated key-exposure | DAST-01/02, DAST-04 (needs the GraphQL endpoint in the inventory); soft data dependency on DAST-10's leakage finding for the correlated-key case, not a build blocker |
+| DAST-27 **(landed)** | `graphql.sh` - introspection + correlated key-exposure | DAST-01/02, DAST-04 (needs the GraphQL endpoint in the inventory); the soft data dependency on DAST-10's leakage finding for the correlated-key case was never a build blocker and is discharged as a *contract* rather than as code: this ticket ships the DAST-side correlation input and DAST-10 supplies the other contributor. See the landing note under this table. |
 | DAST-28 | `ratelimit.sh` - missing-throttling burst probe | DAST-01 (must draw down the *same* per-run request budget DAST-01 owns, since this is the one check §7.4 flags as intentionally multi-request) |
 | DAST-29 **(landed)** | `authz.sh` - IDOR / excessive data exposure | DAST-03 with `requires-identities: 2` (two labelled identities), DAST-04 (object-reference endpoints from the parameter inventory) |
 | DAST-30 **(landed)** | `passive/transport.sh` - plaintext-exposure / mixed-content | DAST-04; sequence close to DAST-07 (`tls.sh`), which it complements, per the note under DAST-07 |
@@ -1720,6 +1720,66 @@ them the expensive way.
   the identical argument `active/checks.rules` already records for the SQLi family.  A `Retry-After` a
   client cannot parse counts as absent, and is in fact worse than absent, because a client that parses
   it gets zero and retries immediately.
+
+#### What DAST-27 (`graphql.sh`) shipped, and the four things about it that are easy to get backwards
+
+**DAST-27 has landed, and it is the second tier-5 check** (after DAST-26's `jwt.sh`).
+It ships `modules/dast/graphql_engine.sh` (the pure half: endpoint classification, the introspection
+document, the response classifier and the finding), `modules/dast/graphql.sh` (the phase script
+`dast_run_phase` sources), `modules/dast/checks.rules` (a NEW file - the §9.5 registry for the phase
+scripts that sit at `modules/dast/` top level, one record so far) and `tests/suites/dast-graphql.sh`
+(117 assertions, registered in `tests/run-tests.sh`, driven entirely from recorded responses through a
+stubbed transport - no network, no Docker).
+`modules/dast/engine.sh`'s phase table already carried `graphql.sh:active` from DAST-02, so **nothing in
+`engine.sh` needed editing**: the file landing IS the registration.
+
+- **Whether an endpoint is GraphQL is decided from the INVENTORY, never by probing.** The obvious
+  alternative - POST an introspection document at every endpoint and see which one answers - sends
+  unsolicited GraphQL traffic to every URL the crawler found, on a run whose application has no GraphQL
+  at all. The four signals are `source: graphql`, a GraphQL media type, the managed-GraphQL DNS shape
+  (§8.5), and the conventional mount path, strongest first. With none of them the phase sends **zero**
+  requests and records a declared `reason=no_graphql_endpoint` reduction plus a `coverage_gap` - because
+  "this application has no GraphQL" and "scoursh did not look" are different facts.
+- **The response is PARSED, never grepped, and the naive reading fails in the direction that reads as a
+  FINDING.** A server with introspection correctly DISABLED answers with
+  `{"errors":[{"message":"GraphQL introspection is not allowed, but the query contained __schema"}]}` -
+  the literal string `__schema` appears, quoted inside the very error message saying introspection is
+  off. `case $body in *__schema*)` therefore reports a misconfiguration against a correctly-configured
+  server, on the exact response that proves the opposite. The classifier goes through
+  `crawl_json_flatten` and asks for a leaf at the STRUCTURAL path `data.__schema.types.<n>.name`, which
+  an error message cannot fabricate. Measured, not reasoned about: the substring reading was written and
+  four assertions went red, including one where the error message quotes back every field the document
+  asked for, which defeats a substring reading hardened to also look for `types` or `queryType`.
+- **The mount-path signal is a SEGMENT match, and the type count is over DISTINCT ARRAY INDICES.** A
+  substring path match makes `/graphql-docs` and `/blog/a-graphql-primer` endpoints and spends a real
+  request on each; counting flattened leaves instead of indices doubles every type count, because each
+  type carries both a `name` and a `kind`. Both were written wrong on purpose and watched go red (3 and
+  1 assertions respectively).
+- **§7.4's "correlated finding" is the DERIVED layer's job and is deliberately NOT a second check id
+  here.** §9.2's own first line puts composites in `lib/findings.sh` and says "not scanner scripts", and
+  a second implementation could not work anyway: this phase runs before §7.1's leakage findings are
+  merged, and §8.5's AppSync key-expiry contributor comes from a different module. What a contributor
+  owes is ONE thing - a populated `corr_target`, which `loc_target` supplies and which §9.2.2's frozen
+  table confirms is the only correlation key DAST can offer. `rules/derived.rules` is still NOT seeded
+  (findings F5/F20: `E051` requires every contributor id to exist, and DAST-10's does not yet), so the
+  suite proves the input end by running the shipped finding through `derive_findings RUNDIR FIXTURE`
+  against a composite written to scratch, naming two REAL registered DAST ids rather than an invented
+  one - and asserts it does NOT fire on one contributor alone, nor when the two sit on different
+  targets.
+
+**What DAST-27 deliberately did not build**, so the boundary is not rediscovered: DAST-10's own key and
+secret leakage detection (this ticket supplies only the correlation input); mutation execution,
+batching/aliasing DoS probes and field-level authorization testing (every document it constructs is a
+`query`, which GraphQL specifies as side-effect free, which is what makes the POST verb read-only here);
+schema recovery by field-suggestion brute-forcing when introspection is off (a `disabled` classification
+is reported as the real negative it is and the phase stops); and any authenticated GraphQL pass beyond
+the session DAST-03 already provides, which it attaches through `dast_auth_apply`.
+
+**One pre-existing gap this ticket found and filed rather than absorbed:** `modules/dast/jwt_engine.sh`
+emits five `DAST-JWT-*` check ids that NO `checks.rules` registers, so tension 12 computes no coverage
+over them and tension 15's filter chain can neither select nor drop them. `modules/dast/checks.rules`
+now exists and is the right home for them, but their base severities and remediations are DAST-26's
+author's call, not this ticket's.
 
 That is 30 tickets end to end (DAST-01 through DAST-30), matching this ticket's "~30-script scope"
 estimate for step 5.

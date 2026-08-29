@@ -4625,7 +4625,8 @@ With both tier-1 tickets in, **tiers 2-5 are unblocked and nothing remains in fr
 authenticated crawl pass plugs into DAST-03's session rather than being stubbed.
 Work in those tiers has started, and out of tier order, since they are peers rather than a sequence:
 tier 4's DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`) and DAST-19
-(`active/openredirect.sh`), tier 5's DAST-26 (`jwt.sh`), DAST-29 (`authz.sh`) and DAST-30
+(`active/openredirect.sh`), tier 5's DAST-26 (`jwt.sh`), DAST-27 (`graphql.sh`, the §7.4 GraphQL
+introspection & key-exposure check), DAST-29 (`authz.sh`) and DAST-30
 (`passive/transport.sh`) and
 tier 2's DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`) and DAST-11
 (`passive/markup.sh`) have landed.
@@ -4651,6 +4652,13 @@ defeat a real allow-list and so the two worth probing for.
 Every one of those was measured by mutating the implementation into the rejected reading and watching
 `tests/suites/dast-openredirect.sh` go red, not reasoned about: ten mutations, ten reds, one green
 baseline.
+DAST-27's GraphQL introspection check (`modules/dast/graphql.sh`/`graphql_engine.sh`) parses the
+introspection response structurally via `crawl_json_flatten` rather than grepping for `__schema`: a
+server with introspection correctly DISABLED echoes that literal string back inside its own refusal
+error message, so a substring test reports a critical misconfiguration on the exact response proving
+the opposite. It also decides whether to probe at all from the crawled inventory rather than sending an
+introspection query at every endpoint to find out, and it contributes a `loc_target`-bearing finding for
+the DERIVED layer's `COMPOSITE-TOKEN-HIJACK` correlation rather than minting its own composite id.
 DAST-06 is the first §7.1 passive check and the first `modules/dast/passive/` file; two things about
 it are tension decisions rather than implementation detail.
 First, its `Set-Cookie` parser splits on `;` only OUTSIDE double quotes and never on `,` - both naive
