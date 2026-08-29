@@ -7,6 +7,31 @@
 # secrets apart and recognise the same secret across three findings without the
 # secret being present.
 #
+# THE DIGEST IS AN ORACLE, AND THAT IS THE COST OF THE PROPERTY ABOVE.
+# The hash is UNSALTED, which is what makes the same secret render identically
+# in two reports written months apart on two machines - the correlation that is
+# the whole point.  The price is that the digest CONFIRMS A GUESS: anyone
+# holding a candidate credential can compute its SHA-256 and compare the first
+# eight hex characters against a published report, and a match is a yes.  It
+# does not let an attacker RECOVER a secret they cannot already guess, and eight
+# hex characters is a 32-bit prefix, so an unrelated value collides now and
+# then - but against a small candidate set (a leaked password list, the handful
+# of keys a team actually uses, a value an insider already suspects) it is a
+# reliable confirmation.
+#
+# So "without the secret being present" above means exactly that and no more.
+# A redacted report is safe to circulate in a way an unredacted one is not; it
+# is NOT a document that reveals nothing about the credential, and on a PUBLIC
+# repository or a public issue tracker it should not be treated as one.
+# Rotate a credential a report names, rather than relying on the placeholder to
+# keep it secret.
+#
+# Salting was considered and rejected rather than overlooked: a per-run salt
+# destroys cross-report correlation, and a fixed shipped salt is public in this
+# repository and so buys nothing at all.  Truncating further trades the oracle
+# against collisions that would make two distinct secrets read as one, which is
+# the failure that misleads a reader instead of merely informing an attacker.
+#
 # Adding a new secret shape is a data change, per docs/DESIGN.md §16.
 #
 # AUTHORING NOTE.  These patterns are applied to in-memory strings, but through
@@ -58,9 +83,22 @@ pattern: eyJ[A-Za-z0-9_=-]+\.eyJ[A-Za-z0-9_=-]+\.[A-Za-z0-9_=-]+
 dialect: ere
 kind: JWT
 
+# The value charset excludes `=` except as TRAILING base64 padding, and that is a
+# correctness fix rather than a tightening for its own sake.  With `=` allowed
+# anywhere, the `[[:space:]]*` in front lets the match jump the space after a
+# bare `bearer` and swallow the NEXT `key=value` token: `mode=bearer
+# state=authenticated` matched, because `state=authenticated` is 19 characters
+# all of which were in the old class, and the whole tail was replaced - so a
+# structured record lost a field it never had a secret in.  Measured on
+# `modules/dast/auth.sh`'s own `run_record notes ... mode=bearer
+# state=authenticated`, which is exactly that shape.  It is a false positive in
+# EVIDENCE too, and always was; only redacting run_record made it visible.
+# Nothing real is lost: a bearer token is base64/base64url, where `=` is padding
+# and appears only at the end, and a JWT has its own rule above.
+
 id: SAST-REDACT-BEARER-01
 title: Bearer or API-key credential in a header or assignment
-pattern: ([Bb]earer|[Aa]uthorization:|api[_-]?[Kk]ey[[:space:]]*[=:])[[:space:]]*["']?[A-Za-z0-9._~+/=-]{16,}
+pattern: ([Bb]earer|[Aa]uthorization:|api[_-]?[Kk]ey[[:space:]]*[=:])[[:space:]]*["']?[A-Za-z0-9._~+/-]{16,}={0,2}
 dialect: ere
 kind: BEARER
 
