@@ -128,8 +128,24 @@ SHARD=$(cat "$SCOURSH_RUN_DIR"/shards/*.jsonl 2>/dev/null)
 assert_contains "$SHARD" '"check_id":"gitleaks:generic-api-key"' \
   'the finding check_id is namespaced gitleaks:<rule id> per rules/RULE-FORMAT.md §9.1.1a'
 assert_contains "$SHARD" '"module":"sast"' 'the finding module is sast'
-assert_contains "$SHARD" '"evidence":"sk_live_abcdefghijklmnopqrstuvwx"' \
-  'evidence is gitleaks'"'"'s own reported Secret field - the exact matched substring, not a re-derived whole line - which is what makes this adapter'"'"'s match_digest comparable to a native secrets.rules finding'"'"'s own (both hash just the matched bytes; see _gitleaks_match_text'"'"'s own comment for why this adapter differs from the semgrep one here)'
+# This case used to assert the cleartext secret in `evidence`, which is the
+# leak docs/FOUNDATION.md tension 9's amendment fixes: every gitleaks match is a
+# credential, so evidence is now a placeholder and never the raw bytes.
+#
+# What the case was really pinning is unchanged, and it moves to the field that
+# actually carries it: gitleaks' own reported `Secret` field - the exact matched
+# substring, not a re-derived whole line - is what makes this adapter's
+# match_digest comparable to a native secrets.rules finding's own, which is what
+# _gitleaks_dup_of_native_secret depends on.  Asserting the digest states that
+# directly instead of inferring it from a string that no longer has to be there.
+#
+# Fails under a reading that digests the MASKED text, and under one that
+# re-derives the whole line the way the semgrep adapter does - see
+# _gitleaks_match_text's own comment for why this adapter differs there.
+assert_contains "$SHARD" "\"match_digest\":\"$(fingerprint_digest 'sk_live_abcdefghijklmnopqrstuvwx')\"" \
+  'match_digest is the digest of gitleaks'"'"'s own reported Secret field, unchanged by the redaction'
+assert_not_contains "$SHARD" 'sk_live_abcdefghijklmnopqrstuvwx' \
+  'and the secret itself is nowhere in the emitted finding'
 assert_contains "$SHARD" '"cwe":"CWE-798"' 'cwe is fixed to CWE-798 (hardcoded credential), per this adapter'"'"'s own comment'
 assert_contains "$SHARD" '"owasp":"A07:2021"' 'owasp is fixed to A07:2021 (identification and authentication failures)'
 assert_contains "$SHARD" '"sensitive_data":true' 'every gitleaks finding is marked sensitive_data - never a heuristic, unlike semgrep_normalize'"'"'s substring guess'

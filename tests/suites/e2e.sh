@@ -54,8 +54,22 @@ assert_eq 3 "$n" 'the occurrence discriminator keeps distinct call sites apart'
 t_case 'two distinct secrets in one file are two findings with two digests'
 n=$(/usr/bin/grep -c '"check_id":"SAST-SEC-AWS_SECRET-01"' "$R1/findings.jsonl" || true)
 assert_eq 2 "$n" 'two findings'
-d=$(/usr/bin/grep -o '<redacted:AWS_SECRET:[0-9a-f]*>' "$R1/findings.jsonl" | LC_ALL=C sort -u | wc -l | tr -d ' ')
+# The placeholder reads SECRET rather than AWS_SECRET here, and that is the
+# fix for the cleartext-report leak rather than a regression.  A secrets-family
+# finding's evidence is now decided by PROVENANCE at lib/findings.sh's emission
+# chokepoint - the whole matched string is replaced, not just the sub-string
+# rules/redaction.rules happened to recognise - so no residue of the match
+# survives to be reasoned about.  The KIND is no loss here: `check_id` already
+# says exactly which kind of secret this is, which is not true of the
+# incidental matches redact() exists for.
+#
+# What this case pins is unchanged, and it is the digest: two distinct secrets
+# must not render identically.  Fails under a fix that writes one fixed string.
+d=$(/usr/bin/grep '"check_id":"SAST-SEC-AWS_SECRET-01"' "$R1/findings.jsonl" \
+  | /usr/bin/grep -o '<redacted:[A-Z_]*:[0-9a-f]*>' | LC_ALL=C sort -u | wc -l | tr -d ' ')
 assert_eq 2 "$d" 'and two distinct redaction digests, so a reader can tell them apart'
+assert_eq 0 "$(/usr/bin/grep -c 'wJalrXUtnFEMI' "$R1/findings.jsonl" || true)" \
+  'and neither secret survives in the clear anywhere in findings.jsonl'
 
 t_case 'the composite fires and its contributors are retained'
 assert_contains "$J" '"check_id":"COMPOSITE-FIXTURE-CHAIN"' 'the composite is present'

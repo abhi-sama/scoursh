@@ -7,6 +7,31 @@
 # secrets apart and recognise the same secret across three findings without the
 # secret being present.
 #
+# THE DIGEST IS AN ORACLE, AND THAT IS THE COST OF THE PROPERTY ABOVE.
+# The hash is UNSALTED, which is what makes the same secret render identically
+# in two reports written months apart on two machines - the correlation that is
+# the whole point.  The price is that the digest CONFIRMS A GUESS: anyone
+# holding a candidate credential can compute its SHA-256 and compare the first
+# eight hex characters against a published report, and a match is a yes.  It
+# does not let an attacker RECOVER a secret they cannot already guess, and eight
+# hex characters is a 32-bit prefix, so an unrelated value collides now and
+# then - but against a small candidate set (a leaked password list, the handful
+# of keys a team actually uses, a value an insider already suspects) it is a
+# reliable confirmation.
+#
+# So "without the secret being present" above means exactly that and no more.
+# A redacted report is safe to circulate in a way an unredacted one is not; it
+# is NOT a document that reveals nothing about the credential, and on a PUBLIC
+# repository or a public issue tracker it should not be treated as one.
+# Rotate a credential a report names, rather than relying on the placeholder to
+# keep it secret.
+#
+# Salting was considered and rejected rather than overlooked: a per-run salt
+# destroys cross-report correlation, and a fixed shipped salt is public in this
+# repository and so buys nothing at all.  Truncating further trades the oracle
+# against collisions that would make two distinct secrets read as one, which is
+# the failure that misleads a reader instead of merely informing an attacker.
+#
 # Adding a new secret shape is a data change, per docs/DESIGN.md §16.
 #
 # AUTHORING NOTE.  These patterns are applied to in-memory strings, but through
@@ -58,8 +83,98 @@ pattern: eyJ[A-Za-z0-9_=-]+\.eyJ[A-Za-z0-9_=-]+\.[A-Za-z0-9_=-]+
 dialect: ere
 kind: JWT
 
+# The value charset excludes `=` except as TRAILING base64 padding, and that is a
+# correctness fix rather than a tightening for its own sake.  With `=` allowed
+# anywhere, the `[[:space:]]*` in front lets the match jump the space after a
+# bare `bearer` and swallow the NEXT `key=value` token: `mode=bearer
+# state=authenticated` matched, because `state=authenticated` is 19 characters
+# all of which were in the old class, and the whole tail was replaced - so a
+# structured record lost a field it never had a secret in.  Measured on
+# `modules/dast/auth.sh`'s own `run_record notes ... mode=bearer
+# state=authenticated`, which is exactly that shape.  It is a false positive in
+# EVIDENCE too, and always was; only redacting run_record made it visible.
+# Nothing real is lost: a bearer token is base64/base64url, where `=` is padding
+# and appears only at the end, and a JWT has its own rule above.
+
 id: SAST-REDACT-BEARER-01
 title: Bearer or API-key credential in a header or assignment
-pattern: ([Bb]earer|[Aa]uthorization:|api[_-]?[Kk]ey[[:space:]]*[=:])[[:space:]]*["']?[A-Za-z0-9._~+/=-]{16,}
+pattern: ([Bb]earer|[Aa]uthorization:|api[_-]?[Kk]ey[[:space:]]*[=:])[[:space:]]*["']?[A-Za-z0-9._~+/-]{16,}={0,2}
 dialect: ere
 kind: BEARER
+
+# The two rules below close the gap that let a matched credential reach every
+# report format in the clear.  They are the SECOND of two layers and neither
+# subsumes the other: lib/findings.sh's `finding_set_secret_match` guarantees
+# that a SECRETS CHECK never writes its own match, whatever this file contains,
+# while these rules mask a credential that turns up INCIDENTALLY - in some other
+# check's evidence, in a crawled URL's query string, in a log line, or in an
+# adapter-supplied title or remediation - which the provenance layer cannot see.
+#
+# Adding these alone would have been the wrong fix, and adding neither leaves a
+# real hole; the two answer different questions.
+#
+# Case is spelled out rather than flagged, per §8.2: matching is case-sensitive
+# and `(?i)` is not in the portable subset.  The three spellings enumerated are
+# the ones that actually occur - all-lower, Capitalised, ALL-CAPS - because a
+# per-letter `[Pp][Aa]...` class costs legibility for shapes nobody writes.
+
+id: SAST-REDACT-PASSWORD-01
+title: Password literal assignment
+pattern: (password|Password|PASSWORD|passwd|Passwd|PASSWD|pwd|Pwd|PWD)[[:space:]]*[=:][[:space:]]*["'][^"'[:space:]]{6,}["']
+dialect: ere
+kind: PASSWORD
+
+id: SAST-REDACT-API_KEY-01
+title: API-key literal assignment
+pattern: (api[_-]?key|Api[_-]?Key|API[_-]?KEY|apiKey|apikey)[[:space:]]*[=:][[:space:]]*["'][^"'[:space:]]{8,}["']
+dialect: ere
+kind: API_KEY
+
+# The two rules below close the DAST half of the same gap.  The provenance layer
+# (lib/findings.sh section 8a) is scoped to `sast` and `iac`, where evidence is
+# BY CONSTRUCTION the raw bytes a secrets check matched.  A `dast` finding's
+# evidence is a composed sentence, so whole-field masking there would destroy
+# the finding and hide no credential - but the sentence, and the `url`,
+# `logical_fqn`, `loc_path_template` and `loc_param_name` fields beside it, are
+# built from bytes the TARGET chose, and a crawled URL is the ordinary place a
+# credential turns up incidentally.  Those fields all route through redact(),
+# so the right layer for them is a SHAPE rule that masks in place and leaves the
+# rest of the sentence readable.
+#
+# Both shapes were measured leaking, with `redact-secrets: true` in force, into
+# findings.jsonl, findings.json, findings.fields, report.md, report.html and the
+# per-worker shards - seven files - by a finding carrying a userinfo URL and one
+# carrying a credential-bearing query string.  Neither was masked by any rule
+# above: SAST-REDACT-PASSWORD-01 and SAST-REDACT-API_KEY-01 both REQUIRE the
+# value to be quoted, which a URL never is, and nothing here parsed an authority
+# at all.
+#
+# The userinfo rule is anchored on a real scheme (`s://`) rather than on a bare
+# `//`, so it cannot fire on a `// user:host` comment.  The match runs to the
+# `@` and so deliberately swallows the scheme with it: the alternative, starting
+# at `//`, is the imprecise one, and what a reader needs to act - the HOST and
+# the PATH - is on the far side of the `@` and survives.  RFC 3986 §3.2.1
+# deprecates userinfo precisely because it is a credential, so a password there
+# is never a false positive; `https://user@host/` carries no password and is
+# left alone.
+
+id: SAST-REDACT-URL_USERINFO-01
+title: Credential in a URL authority (userinfo)
+pattern: [A-Za-z][A-Za-z0-9+.-]*://[^:/?#[:space:]"'@]+:[^/?#[:space:]"'@]+@
+dialect: ere
+kind: URL_CREDENTIAL
+
+# The unquoted counterpart of SAST-REDACT-PASSWORD-01/API_KEY-01, for the query
+# string and form-body form (`?password=...`, `&token=...`), which carries no
+# quotes and so matched neither.  The value runs to the first URL delimiter.
+# `token` is left unanchored on purpose: it then also masks `access_token=` and
+# `refresh_token=`, leaving the readable prefix behind rather than needing a row
+# each.  Over-redaction costs a reader some evidence; under-redaction discloses
+# a credential, which is the same asymmetry the PEM body rule above is decided
+# by.
+
+id: SAST-REDACT-URL_PARAM_CREDENTIAL-01
+title: Credential in a URL query or form parameter
+pattern: (password|Password|PASSWORD|passwd|Passwd|PASSWD|pwd|Pwd|PWD|secret|Secret|SECRET|token|Token|TOKEN|api[_-]?key|Api[_-]?Key|API[_-]?KEY|apikey|apiKey|session|Session|SESSION)=[^&#;[:space:]"'<>]{4,}
+dialect: ere
+kind: URL_CREDENTIAL

@@ -123,9 +123,13 @@ _iac_emit_finding() {
   # exactly what IAC-TF-HARDCODED_SECRET-01 matches.
   if _sast_check_is_sensitive "$id"; then
     finding_set sensitive_data true
+    # ...and the match IS that secret, so it goes through the setter that never
+    # writes it in the clear (lib/findings.sh section 8a, tension 9).
+    finding_set_secret_match "$text"
+  else
+    finding_set_match "$text"
+    finding_set_evidence "$text"
   fi
-  finding_set_match "$text"
-  finding_set_evidence "$text"
   finding_emit
 }
 

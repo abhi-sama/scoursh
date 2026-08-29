@@ -541,12 +541,22 @@ _semgrep_emit_finding() {
   finding_set logical_kind file
   finding_set logical_fqn "$relpath:${line:-0}"
   local upper_id=${rule_id^^}
+  local is_secret=0
   if _sast_check_is_sensitive "$upper_id"; then
     finding_set sensitive_data true
+    is_secret=1
   fi
   finding_set remediation \
     "Review and remediate per semgrep rule '$rule_id': ${message:-no further detail reported}."
-  finding_set_match "$match_text"
-  finding_set_evidence "$match_text"
+  # semgrep is general-purpose, so this stays conditional: only a rule whose
+  # match IS a credential loses its evidence to a placeholder (lib/findings.sh
+  # section 8a, tension 9).  A non-secret rule keeps its match verbatim, which
+  # is the whole value of the adapter.
+  if (( is_secret )); then
+    finding_set_secret_match "$match_text"
+  else
+    finding_set_match "$match_text"
+    finding_set_evidence "$match_text"
+  fi
   finding_emit
 }

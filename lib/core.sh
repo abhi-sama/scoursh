@@ -87,6 +87,47 @@ _want_color() {
   esac
 }
 
+# `_redact_out TEXT` - docs/FOUNDATION.md tension 9 defines redact() as what is
+# written ANYWHERE, and names run.json and logs in the same breath as evidence.
+# Both writers in this file - `_log` and `run_record` - carry target-derived
+# bytes: modules/dast/ratelimit.sh logs the burst endpoint it lifted out of the
+# crawler's inventory, and a `coverage_gap` naming an endpoint it could not
+# probe is appended verbatim into meta/, which lib/report.sh renders into
+# run.json, report.md and report.html.  Measured before this helper existed: a
+# single run_record carrying a userinfo URL put the credential in the clear into
+# all three, plus meta/ itself.
+#
+# redact() lives in lib/findings.sh, which reaches this file through
+# lib/records.sh, so it cannot be called unconditionally from here - a caller
+# that loaded only lib/core.sh has no such function.  The `declare -F` guard is
+# therefore forced, and it is exactly the shape AGENTS.md warns about: a
+# misspelled name skips in SILENCE and leaves the credential in the clear, which
+# reads precisely like a redacted run.  tests/suites/secret-redaction.sh section
+# G pins the NAME by asserting, in a fully-loaded process, that run_record and
+# _log output really are masked - so a rename fails the suite rather than
+# quietly switching the net off.
+#
+# The reentrancy guard is not decoration.  redact() matches through
+# `scan_match_stdin`, which calls `die` on an engine failure, and `die` logs -
+# so an unguarded `_log` would recurse until the stack gave out on exactly the
+# error path a scanner most needs to be able to report.  The flag is set in this
+# shell and inherited by the `$(redact ...)` subshell, which is what makes the
+# inner call bail; a redact() that dies takes only that subshell with it and the
+# raw text is used, because a logger that aborts the run is worse than one that
+# fails open on its own error path.
+_REDACT_OUT_BUSY=0
+_redact_out() {
+  if (( _REDACT_OUT_BUSY )) || ! declare -F redact >/dev/null 2>&1; then
+    printf '%s' "$1"
+    return 0
+  fi
+  _REDACT_OUT_BUSY=1
+  local out
+  out=$(redact "$1") || out=$1
+  _REDACT_OUT_BUSY=0
+  printf '%s' "$out"
+}
+
 _log() {
   local level=$1 colour=$2
   shift 2
@@ -99,7 +140,7 @@ _log() {
     prefix=$'\033['"$colour"'m'
     suffix=$'\033[0m'
   fi
-  printf '%s %s%-5s%s %s\n' "$(now_iso)" "$prefix" "$level" "$suffix" "$*" >&2
+  printf '%s %s%-5s%s %s\n' "$(now_iso)" "$prefix" "$level" "$suffix" "$(_redact_out "$*")" >&2
 }
 
 log_debug() { _log debug '2;37' "$@"; }
@@ -759,7 +800,7 @@ run_record() {
   local key=$1
   shift
   [[ -n ${SCOURSH_RUN_DIR:-} && -d ${SCOURSH_RUN_DIR:-}/meta ]] || return 0
-  printf '%s\n' "$*" >>"$SCOURSH_RUN_DIR/meta/$key"
+  printf '%s\n' "$(_redact_out "$*")" >>"$SCOURSH_RUN_DIR/meta/$key"
   return 0
 }
 

@@ -295,11 +295,16 @@ sast_index_checks() {
 #    this ticket generalises: a secrets-family check id marks its findings
 #    sensitive_data=true, which the rubric (data/severity-rubric.conf) reads.)
 # ---------------------------------------------------------------------------
+#
+# The list itself now lives in lib/findings.sh as `finding_check_is_secret_family`,
+# and this delegates to it.  It is the same question in both places - "is this a
+# check whose match IS a credential" - and lib/findings.sh's own chokepoint
+# backstop has to ask it too (tension 9, section 8a there).  Two copies of a
+# list that must agree, with no way to notice when they stop agreeing, is
+# precisely the mechanism that put a matched password into every report format
+# in the first place; this file does not start a second instance of it.
 _sast_check_is_sensitive() {
-  case $1 in
-    *SECRET* | *PRIVATE_KEY* | *API_KEY* | *PASSWORD* | *AKID* | *JWT*) return 0 ;;
-    *) return 1 ;;
-  esac
+  finding_check_is_secret_family "$1"
 }
 
 # ---------------------------------------------------------------------------
@@ -355,7 +360,13 @@ sast_scan_file() {
     finding_set logical_fqn "$relpath:truncated"
     finding_set remediation 'No action on this entry itself; it records that scanning stopped early for this (check, file) pair. Split the file or raise max-matches-per-file in config/scanner.conf if the remaining matches matter.'
     finding_set_match "truncated at $SCOURSH_SAST_MAX_MATCHES_PER_FILE matches"
-    finding_set_evidence "truncated at $SCOURSH_SAST_MAX_MATCHES_PER_FILE matches"
+    # No evidence: this is a meta-finding wearing the TRUNCATED CHECK'S OWN id,
+    # so a truncated SAST-SEC-GENERIC_PASSWORD-01 scan emits one whose id is in
+    # the secrets family while its evidence is not a match at all.  Nothing at
+    # lib/findings.sh's chokepoint can tell those two apart from the outside,
+    # and the string this used to set - "truncated at N matches" - is already
+    # the title, verbatim, so carrying it twice bought a reader nothing and
+    # would now cost it a placeholder (tension 9, lib/findings.sh section 8a).
     finding_emit
   fi
 }
@@ -372,13 +383,20 @@ _sast_emit_finding() {
   finding_set cell "$SCOURSH_PATH_ROOT"
   finding_set logical_kind file
   finding_set logical_fqn "$relpath:$ln"
+  # The RAW matched text feeds the digest and evidence; nothing raw is kept
+  # beyond this call (docs/FOUNDATION.md tension 9).  For a secrets-family check
+  # the match IS the credential, so it goes through finding_set_secret_match,
+  # which keeps the identical digest and puts a placeholder - never the raw
+  # bytes - in evidence.  Routing it through finding_set_evidence instead left
+  # `password = "..."` and `API_KEY = "..."` literals in the clear in every
+  # report format, because rules/redaction.rules carries no pattern for either.
   if _sast_check_is_sensitive "$id"; then
     finding_set sensitive_data true
+    finding_set_secret_match "$text"
+  else
+    finding_set_match "$text"
+    finding_set_evidence "$text"
   fi
-  # The RAW matched text feeds the digest and evidence; nothing raw is kept
-  # beyond this call (docs/FOUNDATION.md tension 9).
-  finding_set_match "$text"
-  finding_set_evidence "$text"
   finding_emit
 }
 
