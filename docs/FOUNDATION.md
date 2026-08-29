@@ -1222,6 +1222,37 @@ URL's query string, in a log line, in an adapter-supplied title - which the prov
 see.
 The two layers answer different questions and neither subsumes the other.
 
+**Second amendment: the incidental layer had two holes of its own, and both were measured.**
+The provenance arm is scoped to modules `sast` and `iac`, correctly - a `dast` finding's evidence is a
+composed sentence, so masking the field whole would destroy the finding and hide no credential.
+That leaves `rules/redaction.rules` as the **only** layer over the twelve `dast` emitters, and its
+shape list did not cover a URL: `SAST-REDACT-PASSWORD-01` and `SAST-REDACT-API_KEY-01` both REQUIRE the
+value to be quoted, which a query string never is, and no rule parsed an authority at all.
+A finding carrying a crawled `https://user:pw@host` and one carrying `?password=...` wrote both values
+in the clear into `findings.jsonl`, `findings.json`, `findings.fields`, `report.md`, `report.html` and
+both per-worker shards - seven files, every report format.
+`SAST-REDACT-URL_USERINFO-01` and `SAST-REDACT-URL_PARAM_CREDENTIAL-01` close it.
+This also makes true, for the first time, a promise tension 19's own **Auditability** paragraph
+already made in this document: that "a userinfo credential embedded in the rejected URL is redacted
+(tension 9) rather than landing in the report in the clear."
+It was not - nothing matched userinfo - so that sentence described an intended property rather than an
+implemented one, and a scope-violation finding would have reported the credential it rejected.
+
+Separately, `finding_emit` is the single chokepoint for **findings** and is not the only **output
+path**.
+`run_record` (`lib/core.sh`) appends a run-level fact straight into `meta/<key>`, which `lib/report.sh`
+renders into `run.json`, `report.md` and `report.html`, and it is not a finding - so a canary planted
+through `finding_emit` can never reach it.
+Measured: one `run_record` carrying a userinfo URL put the credential in the clear into all four.
+Both `lib/core.sh` writers, `run_record` and `_log`, now route through `_redact_out`.
+Its two guards are each load-bearing rather than defensive: `redact()` lives in `lib/findings.sh`,
+which reaches `lib/core.sh` through `lib/records.sh`, so the `declare -F` guard is forced and is
+exactly the shape that fails SILENTLY on a rename - `tests/suites/secret-redaction.sh` section I
+therefore pins the name by asserting real masked output rather than a return value; and `redact()`
+matches through `scan_match_stdin`, which calls `die` on an engine failure, and `die` logs, so without
+the reentrancy flag `_log` recursed until the stack gave out on precisely the error path a scanner most
+needs to be able to report.
+
 **Nothing in the RESOLUTION above is reversed by this**, which is why it is an amendment rather than a
 new resolution.
 In particular, rejected option 1 stays rejected: `fingerprint_digest` still consumes the **raw**

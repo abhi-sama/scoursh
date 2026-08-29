@@ -443,6 +443,19 @@ It masks a credential that turns up incidentally, somewhere the first layer cann
 another check's evidence, in a crawled URL's query string, in a log line, or in a title or remediation
 supplied by a vendored engine.
 
+The two layers divide the modules between them rather than overlapping everywhere.
+`sast` and `iac` findings get both, because there the evidence *is* the matched bytes.
+A `dast` finding's evidence is a composed sentence built around bytes the target chose, so masking it
+whole would delete the finding and hide no credential - the shape layer is what covers `dast`, and it
+covers the two forms a URL actually carries a credential in: a userinfo authority
+(`https://user:pw@host`, RFC 3986 §3.2.1) and a credential-bearing query or form parameter
+(`?password=...`, `&token=...`).
+
+Redaction applies to every byte the run writes, not only to findings.
+That includes `run.json` and the `meta/` facts behind it, and the log lines on stderr - a DAST phase
+logs the endpoint it took from the crawler's inventory, and a coverage gap names the endpoint it could
+not reach, so both can carry whatever the crawl brought back.
+
 A masked value is rendered `<redacted:KIND:DDDDDDDD>`, where the eight hex characters are a prefix of
 the SHA-256 of the raw bytes.
 That is what keeps a redacted report actionable: the rule, the file, the line, the title and the
