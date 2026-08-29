@@ -406,7 +406,7 @@ file yet; those are called out in the Notes column.
 | `circuit-breaker-window` | non-negative integer (seconds) | `60` | live | Rolling window. Bounded at both ends - never below 60s, never above 86400 - and no affirmation lifts either bound. |
 | `fail-on` | severity name or `none` | `none` | live | |
 | `min-confidence` | `high\|medium\|low` | `low` | live | |
-| `redact-secrets` | `true`/`false` | `true` | live | |
+| `redact-secrets` | `true`/`false` | `true` | live | Governs whether a matched credential is written in the clear. See ["What `redact-secrets` covers"](#what-redact-secrets-covers). |
 | `formats` | repeatable, `json\|sarif\|html\|md` | all four | inert | See [`--format`](#--format-and-the-formats-config-key). |
 | `max-matches-per-file` | positive integer | `200` | live | Read by both the SAST and IaC scanners. |
 | `evidence-max-bytes` | positive integer | `512` | inert | Truncation is real, but reads `SCOURSH_EVIDENCE_MAX_BYTES`, not this file. |
@@ -419,3 +419,46 @@ file yet; those are called out in the Notes column.
 | `paranoid-allow` | repeatable, `addr:port` | empty | live | The fourth allowlist set for `--paranoid`. |
 | `contact` | one printable, space-free token | empty | live | Where a target owner can reach you. Rendered into the `User-Agent` every request carries; see ["The identifying `User-Agent`"](#the-identifying-user-agent). |
 | `notes` | free text (multi-line) | empty | inert by design | Free text for the operator; no code reads it, and none is meant to. |
+
+### What `redact-secrets` covers
+
+`redact-secrets: true` is the default, and it means the same thing in every output the run produces:
+**a check whose job is finding a credential never writes that credential.**
+
+It is enforced in two independent layers, because either one alone leaves a real hole.
+
+The first layer is *provenance*.
+A finding produced by a secrets check carries a placeholder rather than its matched bytes, decided at
+`lib/findings.sh`'s single emission chokepoint, so it holds for every format downstream of the merge -
+`findings.jsonl`, `findings.json`, `report.md`, `report.html`, the per-worker shards, and any emitter
+added later.
+This layer does not consult a pattern list at all, so a new secrets check is covered on the day it
+lands rather than on the day somebody remembers to describe its shape somewhere else.
+
+The second layer is *shape*, and it is `rules/redaction.rules`.
+It masks a credential that turns up incidentally, somewhere the first layer cannot see it: inside
+another check's evidence, in a crawled URL's query string, in a log line, or in a title or remediation
+supplied by a vendored engine.
+
+A masked value is rendered `<redacted:KIND:DDDDDDDD>`, where the eight hex characters are a prefix of
+the SHA-256 of the raw bytes.
+That is what keeps a redacted report actionable: the rule, the file, the line, the title and the
+remediation are all still there, two different credentials never render identically, and the same
+credential renders identically everywhere it appears, so a reader can say "this is the same secret in
+three places" without the secret being in front of them.
+
+#### `redact-secrets: false`
+
+Setting it to `false` writes the matched credential into every report in the clear.
+That is a deliberate mode, not a leftover of one code path serving both: an operator rotating a
+credential sometimes has to see the literal bytes to find it in a secret store, and a control whose
+only setting is "on" is not a control.
+
+It is not a quiet one.
+`run.json` records `"redact_secrets": false` for the run, and both `report.md` and `report.html` open
+with a warning that the report may contain live credentials and must not be circulated.
+An unredacted report is therefore never mistakable for a redacted one, whichever artifact a reader is
+handed.
+
+Treat a run's output directory as containing live credentials whenever this is set, and do not commit
+it, attach it to a ticket, or paste it into a chat.

@@ -63,3 +63,31 @@ title: Bearer or API-key credential in a header or assignment
 pattern: ([Bb]earer|[Aa]uthorization:|api[_-]?[Kk]ey[[:space:]]*[=:])[[:space:]]*["']?[A-Za-z0-9._~+/=-]{16,}
 dialect: ere
 kind: BEARER
+
+# The two rules below close the gap that let a matched credential reach every
+# report format in the clear.  They are the SECOND of two layers and neither
+# subsumes the other: lib/findings.sh's `finding_set_secret_match` guarantees
+# that a SECRETS CHECK never writes its own match, whatever this file contains,
+# while these rules mask a credential that turns up INCIDENTALLY - in some other
+# check's evidence, in a crawled URL's query string, in a log line, or in an
+# adapter-supplied title or remediation - which the provenance layer cannot see.
+#
+# Adding these alone would have been the wrong fix, and adding neither leaves a
+# real hole; the two answer different questions.
+#
+# Case is spelled out rather than flagged, per §8.2: matching is case-sensitive
+# and `(?i)` is not in the portable subset.  The three spellings enumerated are
+# the ones that actually occur - all-lower, Capitalised, ALL-CAPS - because a
+# per-letter `[Pp][Aa]...` class costs legibility for shapes nobody writes.
+
+id: SAST-REDACT-PASSWORD-01
+title: Password literal assignment
+pattern: (password|Password|PASSWORD|passwd|Passwd|PASSWD|pwd|Pwd|PWD)[[:space:]]*[=:][[:space:]]*["'][^"'[:space:]]{6,}["']
+dialect: ere
+kind: PASSWORD
+
+id: SAST-REDACT-API_KEY-01
+title: API-key literal assignment
+pattern: (api[_-]?key|Api[_-]?Key|API[_-]?KEY|apiKey|apikey)[[:space:]]*[=:][[:space:]]*["'][^"'[:space:]]{8,}["']
+dialect: ere
+kind: API_KEY

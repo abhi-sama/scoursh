@@ -556,13 +556,22 @@ _trivy_emit_finding() {
   finding_set logical_kind file
   finding_set logical_fqn "$relpath:${line:-0}"
   local upper_id=${rule_id^^}
+  local is_secret=0
   if _sast_check_is_sensitive "$upper_id"; then
     finding_set sensitive_data true
+    is_secret=1
   fi
   local remediation_text=$resolution
   [[ -n $remediation_text ]] || remediation_text="Review and remediate per trivy check '$rule_id': ${message:-no further detail reported}."
   finding_set remediation "$remediation_text"
-  finding_set_match "$match_text"
-  finding_set_evidence "$match_text"
+  # Conditional for the same reason semgrep's is: trivy is a general-purpose IaC
+  # scanner, and only a check whose match IS a credential trades its evidence
+  # for a placeholder (lib/findings.sh section 8a, tension 9).
+  if (( is_secret )); then
+    finding_set_secret_match "$match_text"
+  else
+    finding_set_match "$match_text"
+    finding_set_evidence "$match_text"
+  fi
   finding_emit
 }

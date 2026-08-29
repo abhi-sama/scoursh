@@ -496,8 +496,12 @@ _gitleaks_emit_finding() {
   finding_set sensitive_data true
   finding_set remediation \
     "Remove the secret from source and rotate it immediately (gitleaks rule '$rule_id'): ${description:-no further detail reported}. A committed secret must be treated as compromised even if the commit is reverted."
-  finding_set_match "$match_text"
-  finding_set_evidence "$match_text"
+  # Every gitleaks match is a credential, so evidence is never the raw bytes
+  # (lib/findings.sh section 8a, tension 9).  `loc_match_digest` is unchanged by
+  # this - finding_set_secret_match digests the same raw text finding_set_match
+  # did - which is what keeps _gitleaks_dup_of_native_secret above working: it
+  # dedups against a native secrets.rules finding by comparing that digest.
+  finding_set_secret_match "$match_text"
   finding_emit
   return 0
 }
