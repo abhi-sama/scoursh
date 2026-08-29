@@ -257,11 +257,19 @@ _sast_history_emit_finding() {
     finding_set oldest_reaching_commit_time "$_SAST_HIST_COMMIT_TIME"
   fi
   finding_set remediation 'Rotate the credential immediately - it must be treated as compromised even though it is absent from the working tree (docs/FOUNDATION.md tension 13). Purging history does not un-disclose it, so rotation comes first; then purge the blob from history (for example git filter-repo), force-push, and have every clone re-clone rather than pull.'
+  # Same split as modules/sast/engine.sh's own emitter: a secrets-family match
+  # IS the credential, so it never reaches evidence in the clear (tension 9).
+  # This path matters more than the working-tree one, not less - a SAST-HIST-*
+  # finding reports a credential that is already committed and already has to be
+  # treated as compromised, and its report is the artifact most likely to be
+  # pasted into a ticket.
   if _sast_check_is_sensitive "$hist_id"; then
     finding_set sensitive_data true
+    finding_set_secret_match "$text"
+  else
+    finding_set_match "$text"
+    finding_set_evidence "$text"
   fi
-  finding_set_match "$text"
-  finding_set_evidence "$text"
   finding_emit
 }
 

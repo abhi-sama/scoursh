@@ -1185,6 +1185,99 @@ A test asserts that a fixture containing a known key produces a report containin
 that key across all four output formats, and that two different keys in one fixture file yield two
 distinct fingerprints and two distinct redaction digests.
 
+**AMENDMENT - `redact()` alone does not deliver this RESOLUTION, and a second layer was added.**
+The RESOLUTION above makes `redact()` the thing that "produces what is written anywhere", and derives
+its behaviour from `rules/redaction.rules`.
+That is a *shape* test, and the shape list is maintained independently of the secrets checks in
+`modules/*/rules/*.rules` - so the two could drift, and did.
+`secrets.rules` matches a generic quoted `password = "..."` literal and an uppercase
+`API_KEY = "..."`; `redaction.rules` carried a pattern for neither; so with `redact-secrets: true` in
+force the raw credential was written in the clear into `findings.jsonl`, `findings.json`,
+`findings.fields`, `report.md`, `report.html` and the per-worker shards.
+Two further shapes - a bare `AKIA...` access key id and a lowercase `api_key = "..."` - were masked
+only *incidentally*, by the PEM-body and Bearer rules, under a `kind` that does not describe them,
+which is the same defect wearing a passing test.
+
+The "Consequence for the build" paragraph above is where this hid.
+Its test was written, and passes, over a fixture key whose shape `redaction.rules` already knew
+(`aws_secret_access_key = ...`), so it certified the property for the one case that could not fail it -
+the failure mode this register elsewhere insists on avoiding, a test that agrees with its author's
+reading rather than pinning it.
+
+**The correction is a second, independent layer, not another pattern.**
+Adding the two missing patterns would have closed those two holes and left the mechanism that produced
+them exactly as it was.
+A finding produced by a check whose whole purpose is finding a credential now never carries that
+credential as evidence, whatever `redaction.rules` contains: `finding_set_secret_match`
+(`lib/findings.sh`) is the setter such an emitter calls, and `_finding_secret_backstop`, called from
+`finding_emit` - the one point every finding passes through on its way to a shard - re-checks it, so
+the guarantee covers every format downstream of the merge including a SARIF emitter that does not
+exist yet.
+This is *provenance*, and it needs no list of shapes: a secrets check landing tomorrow is covered on
+the day it lands.
+
+`redact()` and `rules/redaction.rules` are unchanged in role and are still required.
+They are what mask a credential appearing *incidentally* - in another check's evidence, in a crawled
+URL's query string, in a log line, in an adapter-supplied title - which the provenance layer cannot
+see.
+The two layers answer different questions and neither subsumes the other.
+
+**Second amendment: the incidental layer had two holes of its own, and both were measured.**
+The provenance arm is scoped to modules `sast` and `iac`, correctly - a `dast` finding's evidence is a
+composed sentence, so masking the field whole would destroy the finding and hide no credential.
+That leaves `rules/redaction.rules` as the **only** layer over the twelve `dast` emitters, and its
+shape list did not cover a URL: `SAST-REDACT-PASSWORD-01` and `SAST-REDACT-API_KEY-01` both REQUIRE the
+value to be quoted, which a query string never is, and no rule parsed an authority at all.
+A finding carrying a crawled `https://user:pw@host` and one carrying `?password=...` wrote both values
+in the clear into `findings.jsonl`, `findings.json`, `findings.fields`, `report.md`, `report.html` and
+both per-worker shards - seven files, every report format.
+`SAST-REDACT-URL_USERINFO-01` and `SAST-REDACT-URL_PARAM_CREDENTIAL-01` close it.
+This also makes true, for the first time, a promise tension 19's own **Auditability** paragraph
+already made in this document: that "a userinfo credential embedded in the rejected URL is redacted
+(tension 9) rather than landing in the report in the clear."
+It was not - nothing matched userinfo - so that sentence described an intended property rather than an
+implemented one, and a scope-violation finding would have reported the credential it rejected.
+
+Separately, `finding_emit` is the single chokepoint for **findings** and is not the only **output
+path**.
+`run_record` (`lib/core.sh`) appends a run-level fact straight into `meta/<key>`, which `lib/report.sh`
+renders into `run.json`, `report.md` and `report.html`, and it is not a finding - so a canary planted
+through `finding_emit` can never reach it.
+Measured: one `run_record` carrying a userinfo URL put the credential in the clear into all four.
+Both `lib/core.sh` writers, `run_record` and `_log`, now route through `_redact_out`.
+Its two guards are each load-bearing rather than defensive: `redact()` lives in `lib/findings.sh`,
+which reaches `lib/core.sh` through `lib/records.sh`, so the `declare -F` guard is forced and is
+exactly the shape that fails SILENTLY on a rename - `tests/suites/secret-redaction.sh` section I
+therefore pins the name by asserting real masked output rather than a return value; and `redact()`
+matches through `scan_match_stdin`, which calls `die` on an engine failure, and `die` logs, so without
+the reentrancy flag `_log` recursed until the stack gave out on precisely the error path a scanner most
+needs to be able to report.
+
+**Nothing in the RESOLUTION above is reversed by this**, which is why it is an amendment rather than a
+new resolution.
+In particular, rejected option 1 stays rejected: `fingerprint_digest` still consumes the **raw**
+matched text, so two different keys in one file remain two findings, and `finding_set_secret_match`
+computes `loc_match_digest` byte-identically to `finding_set_match` - load-bearing, because
+`modules/sast/adapters/gitleaks/adapter.sh` dedups against native `SAST-SEC-*` findings by comparing
+that digest.
+Two distinct secrets still render as two distinct `<redacted:KIND:DDDDDDDD>` placeholders, for the
+reason the RESOLUTION gives.
+The `KIND` on a provenance-masked value reads `SECRET` rather than the shape name, and that costs a
+reader nothing here: `check_id` already says which kind of secret it is, which is precisely what is not
+true of the incidental matches `redact()` exists for.
+
+**Cost of the amendment.**
+One new setter and one backstop in `lib/findings.sh`; six emitters updated to call the setter
+(`modules/sast/engine.sh`, `modules/sast/history.sh`, `modules/iac/parse.sh`, and the gitleaks,
+semgrep and trivy adapters); `_sast_check_is_sensitive` reduced to a delegation so the family list
+exists once; and `modules/sast/engine.sh`'s match-count truncation notice no longer sets evidence,
+because it is a meta-finding wearing the truncated check's own id and the string it set was already
+its title verbatim.
+`tests/suites/secret-redaction.sh` is the register's own missing test, rewritten to assert the
+*property* - the planted value is absent from every byte the run wrote, over a recursive walk of the
+run directory - rather than any pattern being present, because a pattern assertion goes green again
+the next time the two lists drift.
+
 ## Tension 10 - untrusted evidence rendered into reports
 
 **The tension.**

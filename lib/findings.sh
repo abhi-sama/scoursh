@@ -1017,6 +1017,178 @@ finding_set_match() {
   _F[loc_match_digest]=$(fingerprint_digest "$1")
 }
 
+# ---------------------------------------------------------------------------
+# 8a. A secrets check never writes the credential it matched (tension 9).
+# ---------------------------------------------------------------------------
+# redact() masks by SHAPE, from rules/redaction.rules.  That list is maintained
+# independently of the secrets checks in modules/*/rules/*.rules, and the two
+# drifted: a generic quoted `password = "..."` literal and an uppercase
+# `API_KEY = "..."` are matched by secrets.rules and by nothing in
+# redaction.rules, so with `redact-secrets: true` in force the raw credential
+# was written in the clear into findings.jsonl, findings.json, findings.fields,
+# report.md, report.html and the per-worker shards.  Two more shapes - a bare
+# `AKIA...` access key id and a lowercase `api_key = "..."` - were masked only
+# incidentally, by the PEM-body and Bearer rules, under a `kind` that does not
+# describe them.
+#
+# The fix is PROVENANCE rather than one more pattern: a finding produced by a
+# check whose whole purpose is finding a credential never carries that
+# credential as evidence, whatever redaction.rules happens to contain.  Adding
+# the missing patterns alone would close today's two holes and leave the
+# mechanism that produced them - two lists that must agree and have no way to
+# notice when they stop agreeing - exactly as it was.
+#
+# rules/redaction.rules is still wanted, and still applies: it is what masks a
+# credential that turns up INCIDENTALLY, in some other check's evidence, in a
+# crawled URL, or in an adapter-supplied title.  The two layers answer different
+# questions and neither subsumes the other.
+
+# The canonical "is this check id one whose match IS a credential" predicate.
+# modules/sast/engine.sh's `_sast_check_is_sensitive` - which modules/iac,
+# modules/sast/history.sh and the semgrep and trivy adapters all already reuse -
+# delegates here, so there is ONE list rather than a second one to drift against
+# the first.
+#
+# The id is upper-cased first because an adapter mints its check id from the
+# engine's own rule id (docs/ADAPTERS.md §6, `<engine>:<engine's own rule id>`)
+# and those are conventionally lower case.
+#
+# `gitleaks:` gets an arm of its own because gitleaks is a secrets-only scanner:
+# every finding it produces is a credential by the engine's own purpose, and
+# none of its rule ids (`aws-access-token`, `stripe-access-token`, ...) contains
+# any of the substrings below.  semgrep and trivy get no such arm, because they
+# are general-purpose and their non-secret rules must keep their evidence.
+#
+# `*-SEC-*` is the NAMESPACE arm, and it is here because the substring list
+# below is a list maintained in parallel with modules/sast/rules/secrets.rules -
+# which is the exact failure mode this whole section exists to end, reappearing
+# one level up.  It did reappear: secrets.rules gained
+# `SAST-SEC-ENV_ASSIGNMENT-01`, whose id contains none of those substrings
+# (`SEC-ENV` is not `SECRET`), so four of its findings wrote the matched
+# credential in the clear into findings.jsonl, findings.json, findings.fields,
+# report.md, report.html and both shards - measured on
+# tests/fixtures/sast-secret-forms/, and NOT caught by the shape layer either,
+# because `passwd: x`, `API_KEY: x` and `DB_PASSWORD = x` are unquoted,
+# colon-separated or spaced and match no rule in rules/redaction.rules.
+#
+# `SAST-SEC-` is that pack's own id namespace, so keying on it covers the next
+# check the pack adds on the DAY IT LANDS rather than the day somebody remembers
+# to widen a glob here.  It is checked rather than assumed to be narrow: across
+# all 157 check ids shipped in this repository, `-SEC-` matches those seven and
+# nothing else - no `DAST-COOKIE-NO_SECURE-01`, no `IAC-*-HARDCODED_SECRET-01`
+# (those already match `*SECRET*` on their own and are unaffected).
+finding_check_is_secret_family() {
+  local id=${1^^}
+  case $id in
+    GITLEAKS:*) return 0 ;;
+    *-SEC-*) return 0 ;;
+    *SECRET* | *PRIVATE_KEY* | *API_KEY* | *PASSWORD* | *AKID* | *JWT*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# True when a string is already exactly one redaction placeholder, so the
+# backstop below can leave alone what redact() has already handled.
+#
+# Deliberately globs rather than using `[[ =~ ]]`: bash's `=~` goes to the
+# system regcomp, and `\<` - the obvious way to anchor the literal `<` - is a
+# GNU word-start extension there, so the pattern would mean something different
+# on the BSD userland this tool is developed on than on the GNU one it reaches
+# Windows through.  Neither a KIND nor a digest can contain `<` or `>`, so
+# "starts with the prefix, ends with `>`, and has no other `>`" identifies
+# exactly one placeholder and nothing else.
+_finding_is_redaction_placeholder() {
+  local s=$1
+  [[ $s == '<redacted:'*'>' ]] || return 1
+  [[ ${s%'>'} != *'>'* ]]
+}
+
+# The masked rendering: the same `<redacted:KIND:DDDDDDDD>` vocabulary redact()
+# already emits, with the same short-digest property, so a report speaks one
+# language whichever layer masked a given string.  The digest is the first eight
+# hex characters of the SHA-256 of the RAW bytes, which is what lets a reader
+# tell two secrets apart and recognise one secret across three findings without
+# the secret being present (rules/redaction.rules' own header states the trade).
+_finding_secret_placeholder() {
+  local d
+  d=$(printf '%s' "$1" | sha256_of)
+  printf '<redacted:SECRET:%s>' "${d:0:8}"
+}
+
+# `finding_set_secret_match TEXT` - the setter for an emitter whose TEXT is a
+# raw credential the scan just matched.  It does what finding_set_match and
+# finding_set_evidence do together, except that the raw bytes never reach
+# evidence while `redact-secrets` is on.
+#
+# loc_match_digest is computed EXACTLY as finding_set_match computes it, from
+# the raw bytes.  That is load-bearing rather than incidental:
+# modules/sast/adapters/gitleaks/adapter.sh dedups a gitleaks finding against a
+# native secrets.rules finding by comparing loc_match_digest at the same path,
+# so digesting the masked text here would silently defeat that dedup.
+#
+# With `redact-secrets: false` the raw text is written, exactly as it is today.
+# That is the declared meaning of the setting rather than a leftover of one code
+# path serving both: an operator rotating a credential has to be able to ask for
+# the literal bytes.  run.json records `redact_secrets: false`, and report.md
+# and report.html both carry a warning banner, so an unredacted report can never
+# be mistaken for a redacted one.
+#
+# Evidence is set through finding_set_evidence in BOTH arms, never by assigning
+# _F[evidence] here: that is the invariant tests/lint-shell.sh's "no direct
+# assignment to a redacted field" check enforces over this very file, and a
+# second way to write the field is what tension 9's handling rule 3 exists to
+# prevent.  Normalising the placeholder costs one no-op pass - no redaction rule
+# matches it, and it is short, control-free ASCII.
+finding_set_secret_match() {
+  local text=$1
+  _F[loc_match_digest]=$(fingerprint_digest "$text")
+  _F[_secret_match]=1
+  if [[ $SCOURSH_REDACT_SECRETS != true ]]; then
+    finding_set_evidence "$text"
+    return 0
+  fi
+  finding_set_evidence "$(_finding_secret_placeholder "$text")"
+}
+
+# The backstop, called from finding_emit - the ONE point every finding passes
+# through on its way to a shard, and therefore to every format downstream of the
+# merge, including a SARIF emitter that does not exist yet.  An emitter that
+# reaches for the ordinary finding_set_evidence with a credential in hand is
+# masked here anyway.
+#
+# The module condition is the load-bearing one, and it is an invariant rather
+# than a convenience: in `sast` and `iac`, evidence is BY CONSTRUCTION the raw
+# bytes matched in a file, so a secrets-family check's evidence is its
+# credential.  In `dast` it is a composed sentence - lib/paranoid.sh's egress
+# finding puts the observed destination there, and modules/dast/jwt_engine.sh
+# puts its one actionable sentence there under ids like `DAST-JWT-ALG_NONE`,
+# which match the *JWT* arm above.  Masking those would destroy the finding and
+# hide no credential.
+#
+# `sensitive_data` deliberately does NOT gate this.  It would have read as the
+# natural third condition, and it is the wrong one twice over: lib/http.sh and
+# lib/paranoid.sh set it on findings whose evidence is a destination address,
+# and a future sast emitter that forgot the secret setter would most likely
+# forget this flag in the same breath - so gating on it would switch the net off
+# in exactly the case the net exists for.  Erring towards masking is the trade
+# rules/redaction.rules' own header already states: over-redaction costs a
+# reader some evidence, under-redaction discloses a credential.
+_finding_secret_backstop() {
+  [[ $SCOURSH_REDACT_SECRETS == true ]] || return 0
+  [[ -z ${_F[_secret_match]:-} ]] || return 0
+  [[ -n ${_F[evidence]:-} ]] || return 0
+  case ${_F[module]:-} in
+    sast | iac) ;;
+    *) return 0 ;;
+  esac
+  finding_check_is_secret_family "${_F[check_id]:-}" || return 0
+  if _finding_is_redaction_placeholder "${_F[evidence]}"; then
+    return 0
+  fi
+  finding_set_evidence "$(_finding_secret_placeholder "${_F[evidence]}")"
+  return 0
+}
+
 # Populate a rule-derived finding's static fields from a parsed record.
 finding_from_record() {
   local set=$1 idx=$2
@@ -1085,6 +1257,11 @@ finding_emit() {
   done
   [[ -n ${SCOURSH_RUN_DIR:-} ]] || die "$SCOURSH_EXIT_INCOMPLETE" \
     "finding_emit: no run directory (call run_init first)"
+
+  # Before anything is serialised: a secrets check never writes the credential
+  # it matched, even if its emitter reached for the ordinary
+  # finding_set_evidence (section 8a).
+  _finding_secret_backstop
 
   local profile
   profile=$(_fp_profile_for "${_F[module]}" "${_F[check_id]}")
