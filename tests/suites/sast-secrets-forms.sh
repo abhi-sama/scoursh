@@ -296,4 +296,40 @@ assert_true "$_g_any" \
 assert_eq "$_g_total" "$_g_missed" \
   'every multi-line control is UNREPORTED, which is the stated architectural limit; if this ever fails the gap closed and rules/RULE-FORMAT.md §8.2 needs revisiting, not this assertion deleting'
 
+# =============================================================================
+printf -- '\n-- F. the shared precision guard has not drifted between rules --\n'
+# =============================================================================
+# The four assignment rules share one ~14-line `context-deny` block: the same
+# references, template syntaxes, name-about-a-credential suffixes and
+# placeholders have to be denied for a password, an api key, a secret and a
+# bare env assignment alike.  rules/RULE-FORMAT.md has no include mechanism -
+# values carry no escaping and a record is a flat key/value block - so that
+# block is necessarily DUPLICATED rather than shared, and duplication drifts.
+#
+# The realistic failure is not a typo: it is a later ticket adding one deny
+# line to the rule it was debugging and not to its three siblings, so the same
+# benign shape is quiet under `password` and noisy under `token`.  Nothing
+# else in the suite would catch that - the control tree would have to happen
+# to carry that exact shape under all four keywords.  So compare the blocks
+# directly.
+# Each rule's block is flattened onto ONE line before `sort -u`, because
+# `sort -u` dedupes LINES: emitted as multiple lines, four DIFFERING blocks
+# still collapse to one set of shared lines and the count stays 1 whatever
+# happens - an assertion that cannot fail.  Measured, not theorised: the first
+# draft did exactly that and passed against a deliberately perturbed block.
+_nrules=$(LC_ALL=C grep -c '^id: SAST-SEC-\(GENERIC_API_KEY\|GENERIC_PASSWORD\|GENERIC_SECRET\|ENV_ASSIGNMENT\)-01$' "$SHIPPED" || true)
+t_case 'the drift guard is looking at all four rules'
+assert_eq 4 "$_nrules" \
+  'all four assignment rules were found by the extractor below - fails if a rename made the drift guard vacuous by matching nothing'
+
+_blocks=$(awk '
+  /^id: SAST-SEC-(GENERIC_API_KEY|GENERIC_PASSWORD|GENERIC_SECRET|ENV_ASSIGNMENT)-01$/ { inrule = 1; n = 0; blk = ""; next }
+  inrule && /^context-deny: / { n++; if (n <= 14) blk = blk $0 "\036" }
+  inrule && /^context-window: / { if (blk != "") print blk; inrule = 0 }
+' "$SHIPPED" | LC_ALL=C sort -u | LC_ALL=C grep -c . || true)
+
+t_case 'the shared deny block is byte-identical across all four assignment rules'
+assert_eq 1 "$_blocks" \
+  'the four rules share ONE deny block - fails if a later change adds or edits a deny line in one rule and not its siblings, which would make the same benign shape quiet under one keyword and noisy under another'
+
 t_summary sast-secrets-forms
