@@ -1058,10 +1058,30 @@ finding_set_match() {
 # none of its rule ids (`aws-access-token`, `stripe-access-token`, ...) contains
 # any of the substrings below.  semgrep and trivy get no such arm, because they
 # are general-purpose and their non-secret rules must keep their evidence.
+#
+# `*-SEC-*` is the NAMESPACE arm, and it is here because the substring list
+# below is a list maintained in parallel with modules/sast/rules/secrets.rules -
+# which is the exact failure mode this whole section exists to end, reappearing
+# one level up.  It did reappear: secrets.rules gained
+# `SAST-SEC-ENV_ASSIGNMENT-01`, whose id contains none of those substrings
+# (`SEC-ENV` is not `SECRET`), so four of its findings wrote the matched
+# credential in the clear into findings.jsonl, findings.json, findings.fields,
+# report.md, report.html and both shards - measured on
+# tests/fixtures/sast-secret-forms/, and NOT caught by the shape layer either,
+# because `passwd: x`, `API_KEY: x` and `DB_PASSWORD = x` are unquoted,
+# colon-separated or spaced and match no rule in rules/redaction.rules.
+#
+# `SAST-SEC-` is that pack's own id namespace, so keying on it covers the next
+# check the pack adds on the DAY IT LANDS rather than the day somebody remembers
+# to widen a glob here.  It is checked rather than assumed to be narrow: across
+# all 157 check ids shipped in this repository, `-SEC-` matches those seven and
+# nothing else - no `DAST-COOKIE-NO_SECURE-01`, no `IAC-*-HARDCODED_SECRET-01`
+# (those already match `*SECRET*` on their own and are unaffected).
 finding_check_is_secret_family() {
   local id=${1^^}
   case $id in
     GITLEAKS:*) return 0 ;;
+    *-SEC-*) return 0 ;;
     *SECRET* | *PRIVATE_KEY* | *API_KEY* | *PASSWORD* | *AKID* | *JWT*) return 0 ;;
     *) return 1 ;;
   esac

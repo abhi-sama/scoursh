@@ -574,4 +574,67 @@ assert_contains "$(cat "$W/gate.err")" 'evil.example' 'while still naming the ho
 assert_not_contains "$(run_dir_bytes "$W/gate/run")" "$CANARY_GATE" \
   'nor did the scope-violation finding carry it into any file'
 
+# ---------------------------------------------------------------------------
+# J. Every form modules/sast/rules/secrets.rules DETECTS is also redacted.
+# ---------------------------------------------------------------------------
+t_case 'J. no credential form the secrets pack detects survives in the clear'
+# The two-lists defect one level up.  This suite's own canaries are a fixture
+# THIS ticket wrote, so they only ever exercised the shapes it thought of; the
+# detection pack is maintained separately and grew from 7 forms to 47, adding
+# the check id SAST-SEC-ENV_ASSIGNMENT-01 - whose id contains none of the
+# substrings finding_check_is_secret_family globbed for (`SEC-ENV` is not
+# `SECRET`), so it was not in the family at all.
+#
+# Measured before the fix: four of its findings wrote the matched credential in
+# the clear into findings.jsonl, findings.json, findings.fields, report.md,
+# report.html and both shards.  The shape layer did not save them either -
+# `passwd: x`, `API_KEY: x` and `DB_PASSWORD = x` are unquoted, colon-separated
+# or spaced and match no rule in rules/redaction.rules.
+#
+# So this case deliberately scans the DETECTION pack's own fixture tree rather
+# than a fixture of its own.  That is the point: it couples the two lists, so a
+# form added to secrets.rules is covered here on the day it lands, and a future
+# check id that escapes the family predicate fails HERE rather than shipping.
+# It fails under the reading that this suite's own canaries are representative.
+FORMS=$ROOT/tests/fixtures/sast-secret-forms
+assert_eq 0 "$([[ -d $FORMS ]] && echo 0 || echo 1)" \
+  'the detection pack ships its own fixture tree'
+FOUT=$W/forms
+rm -rf "$FOUT"
+f_rc=0
+( cd "$ROOT" && bash scan.sh sast --path "$FORMS" --format json,html,md --out "$FOUT" ) \
+  >"$W/forms.out" 2>"$W/forms.err" || f_rc=$?
+assert_eq 0 "$f_rc" 'the scan of the detection pack fixture succeeds'
+# Guard against passing for the wrong reason: a scan that found nothing leaks
+# nothing, and would satisfy every absence assertion below on its own.
+forms_n=$(grep -c 'SAST-SEC-' "$FOUT/findings.jsonl" || true)
+assert_eq 0 "$(( forms_n >= 40 ? 0 : 1 ))" \
+  "the pack really fired across the matrix (got $forms_n findings)"
+# Every FAKE credential value that fixture plants, per its own README.
+forms_bytes=$(run_dir_bytes "$FOUT")
+for v in Tr0ub4dor3xK hunter2 s3cr3tT0kenV4lue0000; do
+  assert_not_contains "$forms_bytes" "$v" "no file the run wrote carries the fixture value $v in the clear"
+  assert_not_contains "$(cat "$W/forms.out")$(cat "$W/forms.err")" "$v" "nor does stdout or stderr carry $v"
+done
+# And the findings stay actionable rather than being masked into uselessness.
+forms_jsonl=$(cat "$FOUT/findings.jsonl")
+assert_contains "$forms_jsonl" 'SAST-SEC-ENV_ASSIGNMENT-01' 'the env-assignment check still reports its findings'
+assert_contains "$forms_jsonl" 'dotenv.env' 'the file is still named'
+assert_contains "$forms_jsonl" 'redacted:SECRET' 'and the value is a digest placeholder, not a blank'
+
+t_case 'J2. the secrets pack id NAMESPACE is in the family, not just the substrings'
+# Pins the arm directly, so a refactor that drops it fails here with a clear
+# reason rather than only as four leaked values two sections up.
+_fam() { finding_check_is_secret_family "$1" && echo 0 || echo 1; }
+assert_eq 0 "$(_fam SAST-SEC-ENV_ASSIGNMENT-01)" \
+  'an id carrying no SECRET/PASSWORD/API_KEY substring is still in the family via SAST-SEC-'
+assert_eq 0 "$(_fam SAST-SEC-SOMETHING_NEW-01)" \
+  'and so is a hypothetical future one - fails under a fix that only added the one id that leaked'
+# The other direction: the arm must not swallow a general-purpose check, whose
+# evidence is its whole value.
+assert_eq 1 "$(_fam DAST-COOKIE-NO_SECURE-01)" \
+  'a cookie finding is NOT in the family - SECURE is not SECRET'
+assert_eq 1 "$(_fam SAST-INJ-OS_COMMAND-01)" \
+  'nor is an injection finding'
+
 t_summary secret-redaction
