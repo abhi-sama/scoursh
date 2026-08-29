@@ -46,7 +46,7 @@
 # through, resolves successfully, and reaches the stub transport (exit 0,
 # transport log non-empty) - a result these assertions correctly fail on.
 #
-# ADVERSARIAL SUITE ADDENDUM (crewban ticket "Adversarial test suite: attempt
+# ADVERSARIAL SUITE ADDENDUM (PR #9, "Adversarial test suite: attempt
 # to defeat the scope.conf gate"): the cases below marked "Adversarial:" add
 # coverage the sections above left as a real gap, each verified the same way
 # - copy lib/ to a scratch dir, break ONE specific mechanism, confirm the
