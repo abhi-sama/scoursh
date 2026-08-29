@@ -1396,7 +1396,7 @@ segments) plus DAST-01/02, and land after tier 2/3 per §13's stated ordering.
 |---|---|
 | DAST-14 | `active/sqli.sh` - error-based, boolean, and time-based SQL injection |
 | DAST-15 **(landed)** | `active/xss.sh` - marker-token unescaped-reflection detection. See the landing note below. |
-| DAST-16 | `active/cmdi.sh` - bounded time-based command injection |
+| DAST-16 **(landed)** | `active/cmdi.sh` - bounded time-based command injection. See the landing note below. |
 | DAST-17 **(landed)** | `active/pathtraversal.sh` - benign read-only marker traversal. See the landing note below. |
 | DAST-18 | `active/ssti.sh` - arithmetic-expression template injection |
 | DAST-19 | `active/openredirect.sh` - attacker-controlled `Location` host |
@@ -1523,6 +1523,43 @@ change §7.3's non-destructive posture forbids at this tier; DOM XSS needs a Jav
 `scoursh` does not have and does not intend to (the same stated SPA limitation §7.5 already records
 for crawling).  Neither is silently assumed covered - the probe reports on reflection into the
 response it actually received, and nothing else.
+
+**DAST-16 (`active/cmdi.sh`) has landed - the second tier-4 injection probe, built on the shared
+`inject_engine.sh` DAST-14 shipped.**
+It ships `modules/dast/active/cmdi.sh` (the phase script `dast_run_phase` sources at tier `active`),
+`modules/dast/payloads/cmdi-time-payloads.txt` (the vendored, read-from-disk payloads), and one check
+id `DAST-INJ-CMDI_TIME-01` (CWE-78, OWASP A03:2021, `severity: critical`, `confidence: medium`) in
+`modules/dast/active/checks.rules`.  `tests/suites/dast-cmdi.sh` (23 assertions, no network, no Docker,
+driven by the same fake-clock idiom as `dast-sqli.sh`) is the mock-response proof, and is registered in
+`tests/run-tests.sh`.
+
+Scope and the decisions worth keeping:
+
+- **Time-based ONLY, by design.**  A blind command injection has no reliable in-band signal (command
+  output is rarely reflected; an error page is indistinguishable from ordinary input rejection), so a
+  bounded injected DELAY - universal across shells, unambiguous against the benign baseline - is the one
+  signal this probe uses.  It reuses DAST-14's time-based mechanism verbatim: the baseline floor is the
+  MINIMUM of benign samples (the throttle only ever ADDS delay), the injected time is likewise a
+  minimum, the threshold is HALF the injected sleep, and the parameter is retested once before flagging.
+  The `/slow` control (uniformly 2s on every request) pins that it flags on the DELTA over the floor,
+  not absolute time.
+- **BOUNDED is load-bearing, and the bound is applied, not advisory.**  `_CMDI_SLEEP_N` is clamped into
+  1..10 seconds (default 3) BEFORE it is ever substituted into a payload, and every vendored payload is
+  a single fixed `sleep`/`timeout`/`Start-Sleep` of exactly `%N` seconds - no loop, no amplifier, no
+  hardcoded duration that could bypass the clamp.  So a probe delays an authorised target by at most a
+  few seconds per parameter and can never become a denial-of-service.  `SCOURSH_DAST_CMDI_SLEEP=999`
+  clamps to 10 and the sent surface never carries `999`; the suite pins both, and each fails under an
+  unbounded reading.
+- **Non-destructive, enforced by the payloads.**  A sleep reads nothing, writes nothing, exfiltrates
+  nothing.  The suite scans the payload lines (not the prose comments) and fails the moment a
+  destructive verb (`rm`/`curl`/`nc`/...) or an unbounded construct (`while`/`for`/`yes`/`fork`/...) is
+  added.
+- **Everything else is inherited from the shared engine**: injection where each parameter's `location`
+  says (query AND body proven), every request through `http_request`, graceful degradation to a recorded
+  `coverage_reduction`/`coverage_gap` on a missing payload file or an empty parameter surface, honest
+  `checks_run`, and the optional `--authed` pass.
+- **`active/cmdi.sh:active` was already in `modules/dast/engine.sh`'s `_DAST_PHASES` table**, so it runs
+  under `scan_dispatch dast` at `--intensity active` with no engine change.
 
 **DAST-17 (`active/pathtraversal.sh`) has landed - the third tier-4 injection probe, and it reuses
 `inject_engine.sh` unchanged, exactly as DAST-14 anticipated.**
