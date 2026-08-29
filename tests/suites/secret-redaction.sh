@@ -33,6 +33,11 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # shellcheck source=lib/findings.sh
 source "$ROOT/lib/findings.sh"
+# Sections H and I write a real report in-process rather than through scan.sh,
+# because a `dast` finding needs a live target and a run_record is not a finding
+# at all - neither is reachable from the sast fixture section A uses.
+# shellcheck source=lib/report.sh
+source "$ROOT/lib/report.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
 
@@ -385,5 +390,151 @@ assert_eq 0 "$h_rc" 'the history scan itself succeeds'
 assert_contains "$(cat "$H/findings.jsonl")" 'SAST-HIST-' 'the history walk actually found the committed credential'
 assert_not_contains "$(run_dir_bytes "$H")" "$CANARY_PW" 'and no file the history run wrote carries it in the clear'
 assert_not_contains "$(cat "$W/h.out")$(cat "$W/h.err")" "$CANARY_PW" 'nor its stdout or stderr'
+
+# ---------------------------------------------------------------------------
+# H. The `dast` module: a credential the TARGET put in a URL.
+# ---------------------------------------------------------------------------
+t_case 'H. a credential in a crawled URL is masked in every output path'
+# The provenance backstop is scoped to `sast` and `iac` on purpose - a dast
+# finding's evidence is a composed sentence, so masking the whole field would
+# destroy the finding and hide no credential.  That leaves rules/redaction.rules
+# as the ONLY layer covering the twelve dast emitters, and it carried no rule
+# for either shape a URL actually uses: SAST-REDACT-PASSWORD-01 and
+# SAST-REDACT-API_KEY-01 both REQUIRE the value to be quoted, and nothing parsed
+# an authority at all.
+#
+# Measured on the unfixed tree: seven files - findings.jsonl, findings.json,
+# findings.fields, report.md, report.html and both per-worker shards.
+#
+# This case fails under the reading that the dast exclusion is safe because
+# "dast evidence is composed prose": the prose is composed AROUND bytes the
+# target chose, and `url`, `loc_path_template` and `loc_param_name` are raw.
+CANARY_URL_PW=scourshFakeCanaryUrlPw05
+CANARY_QRY_PW=scourshFakeCanaryQueryPw06
+
+new_run dast
+
+_dast_probe_finding() { # check url evidence
+  finding_new
+  finding_set check_id "$1"
+  finding_set module dast
+  finding_set title 'Probe finding'
+  finding_set base_severity medium
+  finding_set cwe CWE-200
+  finding_set owasp A05:2021
+  finding_set exposure external
+  finding_set auth none
+  finding_set remediation 'Not a real finding; this is a redaction fixture.'
+  finding_set cell target
+  finding_set loc_target 'https://example.com'
+  finding_set loc_method GET
+  finding_set loc_path_template "$(path_template_of /probe)"
+  finding_set loc_param_location ''
+  finding_set loc_param_name ''
+  finding_set url "$2"
+  finding_set_evidence "$3"
+  finding_emit
+}
+
+# A userinfo authority (RFC 3986 §3.2.1) and a credential-bearing query string:
+# the two shapes a crawler routinely brings back, and a redirect `Location` the
+# open-redirect probe reads off the target carries the first one by design.
+_dast_probe_finding DAST-COOKIE-NO_SECURE-01 \
+  "https://admin:${CANARY_URL_PW}@example.com/dash" \
+  "the response to GET /dash redirected to 'https://admin:${CANARY_URL_PW}@example.com/dash'"
+_dast_probe_finding DAST-HDR-CSP_MISSING-01 \
+  "https://example.com/cb?password=${CANARY_QRY_PW}&x=1" \
+  "the crawled endpoint 'https://example.com/cb?password=${CANARY_QRY_PW}&x=1' returned no CSP header"
+
+findings_merge
+SCOURSH_FORMATS=json,html,md report_all >/dev/null 2>&1
+
+# Named individually so a regression reports WHICH format broke, then the whole
+# tree so a format added later is covered the day it appears.
+for f in findings.jsonl findings.json findings.fields report.md report.html run.json; do
+  body=''
+  [[ -f $SCOURSH_RUN_DIR/$f ]] && body=$(cat "$SCOURSH_RUN_DIR/$f")
+  assert_not_contains "$body" "$CANARY_URL_PW" "$f carries no cleartext URL-authority credential"
+  assert_not_contains "$body" "$CANARY_QRY_PW" "$f carries no cleartext query-parameter credential"
+done
+dast_bytes=$(run_dir_bytes "$SCOURSH_RUN_DIR")
+assert_not_contains "$dast_bytes" "$CANARY_URL_PW" 'no file anywhere in the dast run dir carries the URL-authority credential'
+assert_not_contains "$dast_bytes" "$CANARY_QRY_PW" 'no file anywhere in the dast run dir carries the query-parameter credential'
+
+# Acceptance criterion 3: masked is not the same as deleted.  Fails under a
+# "fix" that drops the finding, and under one that masks the whole sentence.
+dast_jsonl=$(cat "$SCOURSH_RUN_DIR/findings.jsonl")
+assert_contains "$dast_jsonl" 'DAST-COOKIE-NO_SECURE-01' 'the cookie finding survives redaction'
+assert_contains "$dast_jsonl" 'DAST-HDR-CSP_MISSING-01' 'the header finding survives redaction'
+assert_contains "$dast_jsonl" 'example.com/dash' 'the host and path are still readable'
+assert_contains "$dast_jsonl" 'returned no CSP header' 'the rest of the evidence sentence is still readable'
+assert_contains "$dast_jsonl" 'redacted:URL_CREDENTIAL' 'and the credential is a digest placeholder, not a blank'
+
+t_case 'H2. two different URL credentials do not mask to the same placeholder'
+# Fails under a fix that writes a fixed string such as <redacted>, which would
+# make a report unable to tell two exposed credentials apart.
+ph_a=$(redact "https://u:${CANARY_URL_PW}@h/")
+ph_b=$(redact "https://u:${CANARY_QRY_PW}@h/")
+assert_ne "$ph_a" "$ph_b" 'the two placeholders differ'
+assert_eq "$ph_a" "$(redact "https://u:${CANARY_URL_PW}@h/")" 'and the same credential masks stably across findings'
+
+# ---------------------------------------------------------------------------
+# I. run.json and the log lines are output paths, and were not covered.
+# ---------------------------------------------------------------------------
+t_case 'I. run_record does not write a credential into meta/ or run.json'
+# tension 9 defines redact() as what is written ANYWHERE and names run.json and
+# logs in the same breath as evidence, but lib/core.sh's run_record wrote its
+# argument verbatim.  modules/dast/ratelimit.sh records a coverage_gap naming
+# the endpoint it could not probe, and that endpoint comes out of the crawler's
+# inventory.
+#
+# Measured on the unfixed tree: meta/coverage_gap, run.json, report.md and
+# report.html - four paths section A's walk never reached, because it plants its
+# canary through a FINDING and run_record is not one.
+#
+# This case fails under the reading that finding_emit is the only chokepoint
+# that matters: it is the only chokepoint for FINDINGS, and run.json is not one.
+CANARY_RR=scourshFakeCanaryRunRecord07
+new_run runrecord
+run_record coverage_gap "dast ratelimit: the endpoint 'https://admin:${CANARY_RR}@example.com/x' is not in config/scope.conf, so nothing was sent."
+findings_merge
+SCOURSH_FORMATS=json,html,md report_all >/dev/null 2>&1
+rr_bytes=$(run_dir_bytes "$SCOURSH_RUN_DIR")
+assert_not_contains "$rr_bytes" "$CANARY_RR" 'no file the run wrote carries the run_record credential'
+for f in run.json report.md report.html meta/coverage_gap; do
+  body=''
+  [[ -f $SCOURSH_RUN_DIR/$f ]] && body=$(cat "$SCOURSH_RUN_DIR/$f")
+  assert_not_contains "$body" "$CANARY_RR" "$f carries no cleartext run_record credential"
+done
+# And the gap itself is still reported - masked, not dropped.
+assert_contains "$(cat "$SCOURSH_RUN_DIR/meta/coverage_gap")" 'not in config/scope.conf' 'the coverage gap is still recorded'
+
+t_case 'I2. a log line does not print a credential'
+# The other lib/core.sh writer.  Asserted on real stderr rather than on a return
+# value, because "it redacted" must not be satisfiable by a logger that printed
+# and then returned 0.
+CANARY_LOG=scourshFakeCanaryLog08
+log_err_file=$W/logline.err
+SCOURSH_LOG_LEVEL=info log_info "bursting GET at https://admin:${CANARY_LOG}@example.com/x" 2>"$log_err_file"
+assert_not_contains "$(cat "$log_err_file")" "$CANARY_LOG" 'stderr carries no cleartext credential'
+assert_contains "$(cat "$log_err_file")" 'example.com/x' 'and the log line still names the endpoint'
+
+t_case 'I3. the redaction of a log line cannot recurse'
+# redact() matches through scan_match_stdin, which calls die on an engine
+# failure, and die logs.  Without the reentrancy guard in _redact_out this
+# recurses until the stack gives out - on exactly the error path a scanner most
+# needs to be able to report.  Run as a real subprocess, because the failure
+# mode is a crash rather than a wrong value.
+recur_rc=0
+bash -c '
+  set -Eeuo pipefail
+  source "$1/lib/findings.sh"
+  redaction_load "$1/rules/redaction.rules"
+  export SCOURSH_REDACT_SECRETS=true
+  SCOURSH_GREP_PLAIN=()
+  log_warn "https://a:b@c/ the engine is not bound"
+' _ "$ROOT" >"$W/recur.out" 2>"$W/recur.err" || recur_rc=$?
+assert_eq 0 "$recur_rc" 'a log line survives a broken pattern engine'
+assert_contains "$(cat "$W/recur.err")" 'the engine is not bound' 'and is still printed'
 
 t_summary secret-redaction
