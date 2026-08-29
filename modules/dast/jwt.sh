@@ -133,6 +133,32 @@ _dast_jwt_phase() {
       'internal: modules/dast/jwt.sh was reached with no target; dast_run_phase publishes SCOURSH_DAST_TARGET'
   fi
 
+  # tension-15 per-check selection, guarded exactly as passive/cookies.sh and
+  # active/sqli.sh guard it: `dast_check_selected` does not exist on every path
+  # this file is reachable from, and absent it everything the tier already
+  # permitted runs.
+  #
+  # THIS IS THE WHOLE-PHASE ARM ONLY.  The per-variant arm lives in
+  # jwt_engine.sh's `jwt_run`, because that is where each forged request is
+  # actually sent; this one exists so that a run with every DAST-JWT-* id
+  # filtered out does not acquire a session, walk the inventory and establish an
+  # accept/reject oracle - three real requests - before discovering it has
+  # nothing to probe.  Both arms read the same registry
+  # (modules/dast/checks.rules) and neither widens the other.
+  if declare -F dast_check_selected >/dev/null; then
+    local any_selected=0 jid
+    for jid in DAST-JWT-SIG_NOT_VERIFIED-01 DAST-JWT-ALG_NONE-01 \
+               DAST-JWT-EMPTY_HMAC-01 DAST-JWT-WEAK_HMAC-01 \
+               DAST-JWT-ALG_CONFUSION-01; do
+      dast_check_selected "$jid" && any_selected=1
+    done
+    if (( any_selected == 0 )); then
+      run_record coverage_reduction "module=dast reason=jwt_no_check_selected target=$target - every DAST-JWT-* check was filtered out by --profile-scan/--intensity, so no session token was replayed and no forged token was sent."
+      run_record coverage_gap "dast jwt: no DAST-JWT-* check survived this run's check-set filter for target '$target', so its JWT verification was not tested. A clean result here is the absence of a test, not the absence of a problem."
+      return 0
+    fi
+  fi
+
   # A JWT replay needs a valid session token, so without --authed there is
   # nothing to forge from.  Recorded, not silent: "no JWT check ran" is a fact
   # about this run's coverage.

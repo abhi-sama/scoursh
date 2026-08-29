@@ -1,5 +1,7 @@
-# modules/dast/active/checks.rules - the §7.3 active-injection script-check
-# registry (rules/RULE-FORMAT.md §9.5; docs/STEP5-DAST-PLAN.md tier 4).
+# modules/dast/active/checks.rules - the DAST active-tier script-check registry
+# (rules/RULE-FORMAT.md §9.5; docs/STEP5-DAST-PLAN.md tiers 3 and 4). It carries
+# the §7.2 safe-active content-discovery checks (DAST-DISC-*) and the §7.3
+# active-injection checks (DAST-INJ-*).
 #
 # This is the first checks.rules the DAST module ships: auth.sh and crawl.sh
 # cover no check (they acquire a session and build the inventory), so this file
@@ -8,16 +10,21 @@
 # a pattern - it names the shell script that implements it and carries
 # `coverage-scope: target`, DAST's cell (the config/scope.conf target id,
 # §9.5.1). checks_registry_load globs every *.rules under modules/dast/, so a
-# later injection probe's records may live in a sibling file or here; the linter
-# enforces one owning module (DAST) for all of them.
+# later probe's records may live in a sibling file or here; the linter enforces
+# one owning module (DAST) for all of them. Only a file named `checks.rules`
+# takes the script-check schema (lib/records.sh's path table), which is why the
+# §7.2 and §7.3 checks share this one file rather than each getting its own.
 #
-# The type tag is `active`, matching the phase table's `active/sqli.sh:active`
-# floor (modules/dast/engine.sh): SQL injection is reachable only at
-# `--intensity active`. It is NOT tagged `intrusive` - the payloads are
-# read-only and non-destructive (docs/DESIGN.md §7.3), so the active-intensity
-# opt-in is the gate, and requiring --allow-intrusive on top would be a second,
-# undocumented one. (The tests/fixtures/ copy tags an example SQLi check
-# `intrusive` only to exercise that filter arm; it is not this shipped catalog.)
+# The TYPE TAG is a per-check floor that must match the phase table's own tier
+# (modules/dast/engine.sh). The §7.2 discovery checks are tagged `safe-active`,
+# matching `active/discovery.sh:safe`, so they run at `--intensity safe` and up;
+# the §7.3 SQLi checks are tagged `active`, matching `active/sqli.sh:active`, so
+# they need `--intensity active`. Neither family is tagged `intrusive` - the
+# discovery probes are read-only GETs and the injection payloads are read-only
+# and non-destructive (docs/DESIGN.md §7.2/§7.3), so the intensity opt-in is the
+# gate, and requiring --allow-intrusive on top would be a second, undocumented
+# one. (The tests/fixtures/ copy tags an example SQLi check `intrusive` only to
+# exercise that filter arm; it is not this shipped catalog.)
 #
 # One check id per technique, because the DAST fingerprint (target, method,
 # path_template, param_location, param_name) does not carry the technique: a
@@ -72,3 +79,329 @@ remediation: Use parameterised queries (prepared statements) or an ORM that
   least-privilege database account.
 references: CWE-89
 references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-LDAP_ERROR-01
+title: LDAP injection (error-based) via request parameter
+script: active/ldapi.sh
+severity: high
+confidence: high
+cwe: CWE-90
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Escape LDAP filter metacharacters in request-derived values per
+  RFC 4515 (the client library's own escaping helper or a parameterised filter
+  builder), so a request parameter can never change the structure of an LDAP
+  search filter or DN. Return a generic error so a client-library message never
+  reaches the client, and bind the directory with a least-privilege account.
+references: CWE-90
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-LDAP_BOOLEAN-01
+title: LDAP injection (boolean-based) via request parameter
+script: active/ldapi.sh
+severity: critical
+confidence: medium
+cwe: CWE-90
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Escape LDAP filter metacharacters in request-derived values per
+  RFC 4515 (the client library's own escaping helper or a parameterised filter
+  builder), so a request parameter can never change the structure of an LDAP
+  search filter. Add server-side input validation and bind the directory with a
+  least-privilege account.
+references: CWE-90
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-DISC-SENSITIVE-01
+title: Sensitive file or version-control metadata is web-accessible
+script: active/discovery.sh
+severity: high
+confidence: medium
+cwe: CWE-538
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: Remove the file from the web root, or block it at the server/CDN
+  (deny access to dotfiles, version-control directories, config and dump
+  files). Rotate any credential that may have been exposed, and add a
+  deployment check that fails when such a file is reachable.
+references: CWE-538
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-DISC-BACKUP-01
+title: Backup or temporary file is web-accessible
+script: active/discovery.sh
+severity: high
+confidence: medium
+cwe: CWE-530
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: Delete backup and editor temporary files from the web root and
+  stop deployments from copying them there; block the known suffixes (.bak, ~,
+  .old, .orig, .swp, ...) at the server or CDN, and rotate any secret the file
+  may have disclosed.
+references: CWE-530
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-DISC-CONTENT-01
+title: Undisclosed resource discovered via content discovery
+script: active/discovery.sh
+severity: low
+confidence: medium
+cwe: CWE-200
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: Confirm the resource is meant to be public; if not, remove it or
+  move it behind authentication. Ensure every reachable endpoint enforces its
+  own access control rather than relying on being unlinked.
+references: CWE-200
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-DISC-DIRLIST-01
+title: Directory listing is enabled
+script: active/discovery.sh
+severity: medium
+confidence: high
+cwe: CWE-548
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: Disable automatic directory indexing (Apache `Options -Indexes`,
+  nginx `autoindex off`, or the equivalent) and serve an explicit index or a
+  403/404 so directory contents are never enumerated to clients.
+references: CWE-548
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+# --- DAST-15: reflected XSS (docs/DESIGN.md §7.3, `active/xss.sh`) -----------
+#
+# Three ids for the same defect class for the SAME reason sqli has three above:
+# the DAST location profile carries no component naming the CONTEXT a
+# reflection landed in, so a single id would make an HTML-text and an
+# attribute-value reflection on one parameter collide and dedupe to one. The
+# context is what decides whether a given raw character is dangerous - a raw
+# `"` is harmless in element text and a break-out inside a quoted attribute -
+# so it is the thing a reader needs and the thing the remediation differs on.
+#
+# `tags: active`, matching the phase table's `active/xss.sh:active` floor. NOT
+# `intrusive`: the probe sends one unique alphanumeric marker with `<`, `>`,
+# `"` and `'` appended and nothing else - no script, no event handler, no
+# `javascript:` URL, nothing that executes - so the value is inert wherever it
+# lands and the active-intensity opt-in is the right and only gate.
+
+id: DAST-INJ-XSS_REFLECTED_HTML-01
+title: Reflected cross-site scripting - unescaped reflection in HTML text
+script: active/xss.sh
+severity: high
+confidence: high
+cwe: CWE-79
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: HTML-entity-encode request-derived data where it is written into
+  element text, at the point of output rather than on input. Prefer a template
+  engine that escapes by default and do not disable it for this value. Add a
+  Content-Security-Policy without unsafe-inline as defence in depth.
+references: CWE-79
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-XSS_REFLECTED_ATTR-01
+title: Reflected cross-site scripting - unescaped reflection in an HTML attribute value
+script: active/xss.sh
+severity: high
+confidence: medium
+cwe: CWE-79
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Quote every attribute value and encode the quote character that
+  delimits it (and `<`, `>`, `&`) when writing request-derived data into an
+  attribute. Never build an attribute value by string concatenation in a
+  template, and never place request-derived data in an event-handler or a URL
+  attribute without a scheme allow-list.
+references: CWE-79
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-XSS_REFLECTED_JS-01
+title: Reflected cross-site scripting - unescaped reflection in a script block
+script: active/xss.sh
+severity: high
+confidence: medium
+cwe: CWE-79
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Do not interpolate request-derived data into JavaScript source.
+  Pass it to the page as data - a JSON payload the script reads, or a data-
+  attribute - and encode it for that carrier, so `<`, `>` and both quote
+  characters can never terminate a string literal or the script element itself.
+references: CWE-79
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+# --- DAST-19, modules/dast/active/openredirect.sh (docs/DESIGN.md §7.3) ------
+# Appended by the open-redirect ticket. This file is SHARED by every tier-4
+# probe and is treated as APPEND-ONLY: a merge conflict in it is resolved by
+# keeping BOTH blocks, never by choosing a side.  modules/dast/passive/ no longer
+# works this way - §9 now also reserves the `checks-` PREFIX and that directory
+# is split one file per owner (docs/FOUNDATION.md tension 29); splitting is
+# optional and per-directory, and this file is deliberately not split under
+# peers who are mid-flight.  The
+# basename is forced - rules/RULE-FORMAT.md §9's path table gives the §9.5
+# script-check schema to any file named `checks.rules` at any depth and makes
+# every other path E070, so a per-ticket `openredirect-checks.rules` is not a
+# legal record file.
+#
+# Two ids for one defect class because the DAST fingerprint (target, method,
+# path_template, param_location, param_name) carries nothing naming the SINK:
+# one id would make a `Location` finding and a meta-refresh finding on the same
+# parameter collide and dedupe to one. They are also different things to fix.
+#
+# Tagged `active`, matching the phase table's `active/openredirect.sh:active`
+# floor, and NOT `intrusive`: the payloads are URLs, the probe changes no state,
+# and it never follows the redirect it detects - so the active-intensity opt-in
+# is the gate, and requiring --allow-intrusive on top would be a second,
+# undocumented one.
+
+id: DAST-INJ-OPENREDIR_HEADER-01
+title: Open redirect via request parameter reflected into the Location header
+script: active/openredirect.sh
+severity: medium
+confidence: high
+cwe: CWE-601
+owasp: A01:2021
+tags: active
+coverage-scope: target
+remediation: Do not build a redirect destination from request-controlled
+  input. Redirect only to a server-side allow-list of paths or destination
+  ids, resolving the request value to an entry in that list. Where an absolute
+  URL is unavoidable, parse it and compare the resulting HOST against an
+  allow-list - never a prefix, substring or "starts with our domain" test,
+  each of which is defeated by userinfo, by a target-prefixed subdomain, and
+  by scheme-relative and backslash forms.
+references: CWE-601
+references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+
+id: DAST-INJ-OPENREDIR_META-01
+title: Open redirect via request parameter reflected into a meta-refresh
+script: active/openredirect.sh
+severity: medium
+confidence: high
+cwe: CWE-601
+owasp: A01:2021
+tags: active
+coverage-scope: target
+remediation: Do not build a client-side redirect destination from
+  request-controlled input. Emit a meta-refresh only to a server-side
+  allow-list of paths, and escape any request-derived value that reaches the
+  document so it cannot introduce a new destination. Parsing the host and
+  comparing it against an allow-list is the only safe check - a prefix or
+  substring test on the URL is defeated by userinfo and by a target-prefixed
+  subdomain.
+references: CWE-601
+references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+
+# ---------------------------------------------------------------------------
+# §7.2 safe-active: HTTP method enumeration (DAST-13, active/methods.sh)
+# ---------------------------------------------------------------------------
+# These three share this file with the §7.3 injection records above rather than
+# taking a pack of their own, because rules/RULE-FORMAT.md §9's path table
+# reserves the basename `checks.rules` repository-wide for the §9.5 schema and a
+# `modules/dast/active/methods.rules` would be E070. Peers in this directory
+# share the file and resolve the append-only conflict by taking both sides.
+#
+# The type tag is `safe-active`, matching the phase table's
+# `active/methods.sh:safe` floor (modules/dast/engine.sh): lib/checks.sh's
+# `checks_intensity_keeps` admits `safe-active` from `--intensity safe` upward,
+# so these are reachable one tier below the SQLi records above and one tier
+# above the passive checks. Neither carries `intrusive`: the probe sends only
+# `OPTIONS` and `TRACE`, both defined as having no effect on the resource (RFC
+# 7231 §4.3.7, §4.3.8), and requiring --allow-intrusive on top of the safe-tier
+# opt-in would be a second, undocumented gate for a check that mutates nothing.
+#
+# WHY THE TWO ADVERTISEMENT CHECKS ARE `confidence: medium` AND THE TRACE CHECK
+# IS `high`, which is the substance of this ticket rather than a hedge: TRACE is
+# MEASURED - the probe sends it, because an echo changes no resource - so the
+# finding rests on a response this run received. `PUT`/`DELETE`/`PATCH`/`CONNECT`
+# are NEVER SENT, because completing one would create, overwrite or delete a
+# resource on a target under audit, so those findings rest on the server's own
+# `Allow` header. A claim is weaker evidence than a measurement and the record
+# says so, rather than presenting both at one confidence and letting the reader
+# guess which is which.
+#
+# One check id per method CLASS, not per method name. The DAST fingerprint
+# carries (target, method, path_template, param_location, param_name), and the
+# probe sets `loc_method` to the method being REPORTED - so `PUT` and `DELETE` on
+# one path are already two findings under one id, with no collision. Minting
+# `DAST-METHOD-PUT-01`, `_DELETE-01` and `_PATCH-01` separately would add three
+# ids whose remediation text is identical and whose only distinguishing
+# component the fingerprint already carries.
+
+id: DAST-METHOD-TRACE_ENABLED-01
+title: HTTP TRACE is enabled (Cross-Site Tracing)
+script: active/methods.sh
+severity: medium
+confidence: high
+cwe: CWE-693
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: Disable TRACE at the web server and at every proxy in front of it
+  (`TraceEnable off` in Apache httpd; an explicit rejection in nginx, which does
+  not implement TRACE but will pass it upstream), and disable IIS's TRACK in the
+  same change, since it is not covered by the TRACE setting. Do not rely on
+  HttpOnly to keep a session cookie away from page script while TRACE is
+  answered: the echo returns the cookie the browser attached. Verify at the edge
+  as well as the origin, because a CDN or load balancer that answers TRACE
+  itself reintroduces the issue after the origin is fixed.
+references: CWE-693
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+references: RFC 7231 section 4.3.8
+
+id: DAST-METHOD-WRITE_ADVERTISED-01
+title: A state-changing HTTP method (PUT, DELETE or PATCH) is advertised as allowed
+script: active/methods.sh
+severity: high
+confidence: medium
+cwe: CWE-749
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: Confirm the method is intended on this route. If it is not, refuse
+  it at the application router and at the web server or proxy in front of it
+  rather than relying on a framework default - PUT, DELETE and PATCH are
+  commonly left enabled by a permissive WebDAV, upload or REST module nobody
+  chose. If the method IS intended, check that it enforces authentication AND
+  per-object authorisation on every path that reaches it (an Allow header is a
+  routing fact and says nothing about who may act), that it validates the target
+  path against traversal, and that a written file can never be served back as
+  executable content. This check establishes acceptance from the server's own
+  advertisement and never sends the method, so confirm it yourself against a
+  resource you are willing to lose, or read the route table.
+references: CWE-749
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+references: RFC 7231 section 6.5.5
+
+id: DAST-METHOD-CONNECT_ADVERTISED-01
+title: HTTP CONNECT is advertised as allowed, which is an open-proxy shape
+script: active/methods.sh
+severity: high
+confidence: medium
+cwe: CWE-441
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: Unless this host is deliberately a forward proxy, refuse CONNECT
+  outright at the web server and at every proxy in front of it. If it IS a
+  forward proxy it must never be reachable from an untrusted network: bind it to
+  the interface its clients are on, require authentication, and restrict the
+  destination host and port set to an explicit allow list, since an unrestricted
+  CONNECT to port 25 is how a host ends up relaying mail. Confirm from
+  off-network that the port is not reachable, because a proxy intended for
+  internal use that is exposed by a cloud security-group default is the ordinary
+  way this happens.
+references: CWE-441
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+references: RFC 7231 section 4.3.6

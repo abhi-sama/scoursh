@@ -378,6 +378,7 @@ A parser cannot classify a line without its schema, because §7 consults *single
 | Path | Schema |
 |---|---|
 | any file named `checks.rules`, at any depth | **script check** (§9.5) |
+| any file named `checks-<name>.rules`, at any depth | **script check** (§9.5) |
 | `modules/sast/rules/*.rules`, `modules/iac/*.rules` | **pattern rule** (§9.1) |
 | `rules/derived.rules` | **derived finding** (§9.2) |
 | `rules/redaction.rules` | **redaction rule** (§9.3) |
@@ -388,13 +389,48 @@ A parser cannot classify a line without its schema, because §7 consults *single
 | `config/posture.conf` | **posture expectation** (§9.6.4) |
 | `data/severity-rubric.conf` | **severity modifier** (§9.6.5) |
 
-**The first matching row wins**, which is why the `checks.rules` row is first.
+**The first matching row wins**, which is why the two `checks` rows are first.
 The basename `checks.rules` is **reserved repository-wide**: it always takes the §9.5 schema regardless
 of directory.
 Without that reservation the `modules/iac/*.rules` glob would capture `modules/iac/checks.rules` and
 assign it the pattern-rule schema, so every script-check record in it would fail `E023` for a missing
 `pattern`.
 A file matching no row is `E070`.
+
+**The `checks-<name>.rules` row, and why the reservation is a PREFIX rather than a single basename.**
+`<name>` is one or more characters, so the bare `checks-.rules` matches no row and is `E070`; the
+reservation is on the `checks-` prefix together with the `.rules` extension, repository-wide and at any
+depth, exactly as the `checks.rules` row is.
+It sits **above** the `modules/sast/rules/*.rules` / `modules/iac/*.rules` pattern-rule row for the same
+reason the `checks.rules` row does: `modules/iac/checks-terraform.rules` must take the script-check
+schema rather than being captured by that directory glob and failing `E023` on every record for a
+missing `pattern`. The rule a reader should carry away is one sentence - **a `.rules` file whose
+basename begins `checks` is a §9.5 script-check registry, wherever it lives**.
+
+This row exists to remove a *scheduling* hazard, not a modelling one. A module directory's script-check
+registry is co-owned by every ticket that adds a phase script to it, and before this row the only legal
+name was the single shared `checks.rules`, so any two peers building in parallel produced an add/add or
+append/append conflict on one file. That was measured three times over in `modules/dast/` alone
+(`passive/`, `active/`, and the top-level tier-5 registry), and the mitigation - "resolve it by taking
+both sides" - is a convention that has to be re-taught to every agent and every reviewer, and that is
+silently wrong exactly once before anyone notices. A per-owner file has no such conflict to resolve.
+
+It does **not** weaken anything the single-basename reservation bought:
+
+- `checks_registry_load` (`lib/checks.sh`) already globs every `*.rules` under a module directory at any
+  depth with no per-file allowlist, so a split registry needs no registration step and no engine change.
+- §9.5.1's owning-module map keys on the file's **directory**, not its basename, so every check id in
+  `modules/dast/passive/checks-cookies.rules` is held to the same `DAST-` prefix (`E018`, `E081`) it was
+  held to in `checks.rules`.
+- A check id is unchanged by the file it lives in, so `E019` namespace uniqueness is still enforced
+  across the whole repository rather than per file.
+- An arbitrary `*.rules` basename at a module path is still `E070`: `modules/dast/passive/cookies.rules`
+  and `modules/dast/passive/headers-checks.rules` (the DAST-05 attempt) both remain illegal. The row
+  legalises one named shape, and does not open the extension up.
+
+Splitting an existing shared registry is **optional and per-directory**. Both spellings are legal
+simultaneously, so a directory may hold `checks.rules` and `checks-<name>.rules` side by side; nothing
+is required to move, and §14's own analysis of this amendment (see there) turns on exactly that.
 
 An unknown key in any schema is `E017`.
 Unknown keys are an error and not a warning, because a typo in `context-deny` would otherwise silently
@@ -1406,3 +1442,35 @@ trips item **2** and nothing else, so it needs **no `format_version` bump**:
 
 A key that were **required**, renamed, retyped, or removed would trip item 1 (every file rewritten) and
 IS a versioned migration.  The distinction is the optionality, not the size of the diff.
+
+**Which of the four an ADDITIVE PATH-TABLE ROW trips, checked the same way.**
+The `checks-<name>.rules` row in §9 is the worked example. It **widens** the set of legal paths: a path
+that resolved to a schema before this row still resolves to the same schema after it, because the row is
+inserted above only the pattern-rule row and no existing repository file has a basename beginning
+`checks-`. Like the additive optional key, it trips item **2** and nothing else, so it needs **no
+`format_version` bump**:
+
+1. **Does not apply.** No existing `.rules` pack or `config/*.conf` file is rewritten, and none *has* to
+   be. `checks.rules` keeps its own row, first, and still resolves to §9.5; a directory that never
+   splits its registry parses byte-for-byte as it did before. This is the load-bearing difference from a
+   *renaming* amendment, which would have retired the old spelling and forced every module to move in
+   lockstep - that would trip item 1 and would be a versioned migration.
+2. **Applies, and is discharged inside the same change.** `records_schema_for_path` in `lib/records.sh`
+   gains one `case` arm and `tests/lint-rules.sh` is re-run over every shipped record file. The consumer,
+   `checks_registry_load` in `lib/checks.sh`, needs no change at all - it already globs `*.rules` with no
+   per-file allowlist - and that claim is asserted on a real run's `checks_run` set rather than on the
+   glob in isolation (`tests/suites/dast.sh`).
+3. **Does not apply.** A record's schema, and therefore every field feeding the fingerprint, is decided
+   by the row it matches - and both rows are the same §9.5 schema. Moving a record between two files that
+   resolve to §9.5 changes no check id, no module prefix (§9.5.1's owning-module map keys on the
+   directory, which does not change) and no fingerprint input. `state/` and `config/baseline.json` stay
+   valid and no finding becomes `new`. **A move that also renamed an id would trip this item**, which is
+   why a split is a byte-identical move of records and never an edit of them.
+4. **Does not apply.** SARIF `ruleId` is the check id and `partialFingerprints` derives from the
+   fingerprint; item 3 establishes neither changes, so no previously-ingested result is orphaned.
+
+Generalising, since this is the second worked example and the pair is the actual rule: an amendment that
+**adds** a legal spelling, leaving every existing one valid and every existing file parsing unchanged,
+trips item 2 alone. An amendment that **retires, renames or re-schemas** an existing spelling trips item
+1, and items 3 and 4 with it whenever the re-schema reaches a check id. Only the second is a versioned
+migration.

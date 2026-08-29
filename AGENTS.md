@@ -103,6 +103,104 @@ Each has a full entry in `docs/FOUNDATION.md`.
 - **`tests/fixtures/{vuln,clean}/` are SHARED trees scanned wholesale, so landing a new `*.rules` pack changes what every existing pack is tested against - and what every existing pack's fixtures test the new one against.** Each pack asserts "stays quiet across the whole clean tree", so an overlapping `files:` glob is a cross-fire, not a local concern. `kubernetes.rules` (`bb75c9b`) landed **after** `docker-compose.rules` (`57d1cd1`) and its `tests/fixtures/clean/docker-compose.*.yml` fixtures, carried no compose guard, and so merged red: `tests/suites/iac.sh` reports `110 passed, 2 failed` at `bb75c9b` itself, and `dev` carried those two failures onward into every branch cut from it until they were fixed. `image:` and `privileged: true` are byte-identical vocabulary in the two schemas. A pack whose `files:` glob overlaps another's must state the boundary explicitly - `exclude-files` mirroring the owning pack's `files:` list where the shape has a conventional filename (docker-compose, Dockerfile), a content `context-deny` only where it does not (CloudFormation, Helm templates). Reach for `exclude-files` first: it cannot interact with a `context-window`, whereas a content deny on a check like `IAC-K8S-MUTABLE_TAG-01` forces widening a same-line-intent window that `rules/RULE-FORMAT.md` §10.2 requires to stay at `0`, trading a visible false positive for a silent false negative (finding F4).
 - **A cross-fire fix needs a test in BOTH directions, because the naive fix for each is the other's bug.** Narrow too little and the false positives return; narrow too much and the pack goes inert - and an inert pack passes every "stays quiet" assertion in the suite, so the only thing that catches it is an assertion that the rules still FIRE. The kubernetes/docker-compose section of `tests/suites/iac.sh` pins both halves, and asserts them over `check_id@loc_path` pairs from a single scan of `tests/fixtures/iac-scope/` so neither half can be satisfied by breaking the other. That failure mode had already cost two tickets before it was tested.
 - **`findings.jsonl` and `run.json` are mandatory per-run records, never one of `--format`'s four values** (`json`/`sarif`/`html`/`md` is the whole enum both `scan.sh` and `lib/config.sh` validate against). `lib/report.sh`'s `report_all` writes both unconditionally and gates only `findings.json`/`report.md`/`report.html` behind `SCOURSH_FORMATS` (a CSV `scan.sh` resolves via `config_scanner_list` and exports before dispatch). `--format sarif` alone therefore writes only the two mandatory files today: there is still no SARIF emitter (step 10), so it selects nothing, exactly as before this was wired up - that gap is unchanged and tracked in `ROADMAP.md`, not silently hidden by the fix. A `report_all` caller that never sets `SCOURSH_FORMATS` (every direct call in this test suite) gets all four formats, matching `lib/config.sh`'s own documented default for no `--format` given - keep that fallback in step with that default rather than letting the two drift.
+- **A `Set-Cookie` header value is split on `;` OUTSIDE double quotes and NEVER on `,`** (`modules/dast/passive/cookie_engine.sh`, DAST-06). Both naive readings are shipped bugs, and both fail in the direction that reads as a pass. The generic RFC 7230 "a comma separates list members" rule is right for `Accept` and specifically wrong here (RFC 6265 §3): `Expires=Wed, 09 Jun 2021 10:18:14 GMT` carries a comma inside ONE attribute, so splitting on it strands every later attribute on a phantom cookie invented from the date, and reports three findings against a correctly-flagged cookie. A quote-blind `;` split is worse: `pref="light; Secure; dark"` makes it see a `Secure` attribute the server never sent, so a cookie that IS missing `Secure` passes. Attribute names are case-insensitive and unordered, and `Secure`/`HttpOnly` are set by the attribute's PRESENCE - RFC 6265 §5.2.5/§5.2.6 discard the value, so `HttpOnly=false` is an HttpOnly cookie. Every one of these was measured by writing the naive version and watching `tests/suites/dast-cookies.sh` go red, not reasoned about.
+- **A record stream between two processes is separated by 0x1f, NEVER by a tab, whenever a field can
+  legitimately be EMPTY** (`modules/dast/passive/markup_engine.sh`, DAST-11). A tab is an
+  IFS-*whitespace* character, so `read` folds a RUN of tabs into ONE delimiter and drops leading and
+  trailing ones (POSIX XCU 2.6.5) - which means a six-column record whose middle two columns are
+  empty arrives as four columns and every later value is silently shifted left. Measured here: a
+  `<link>` with neither `integrity` nor `crossorigin` put its `rel` into the `integrity` variable, so
+  the Subresource-Integrity check read an attribute the server never sent and every unhashed
+  cross-origin stylesheet passed. It reads as a clean result, which is the direction that costs the
+  most. `crawl_json_flatten` already uses 0x1f for the same reason; the emitter strips 0x1f out of
+  every value so target-derived text cannot forge a column. Note this does NOT make the existing
+  tab-separated readers in this tree wrong - `crawl_html_extract` and the inventory readers emit no
+  empty middle field - it makes the tab a hazard for any NEW stream that does.
+- **A DELIBERATE unquoted expansion of target-derived text still needs `set -f`, because word
+  splitting and PATHNAME EXPANSION are one switch and only the first one is ever wanted**
+  (`markup_tokens_have`, `modules/dast/passive/markup_engine.sh`, DAST-11; CWE-807). `rel` and
+  `crossorigin` are HTML token lists, so `local -a toks=($list)` is right - but `$list` is bytes
+  lifted verbatim out of a scanned response (tension 10), so a target serving `rel="*"` had that `*`
+  expanded against the SCANNER's cwd, and on a host with a file named `noopener` sitting there the
+  target switched off its own `DAST-MARKUP-TABNABBING-01` finding. Reproduced both ways before and
+  after. Two separate defects in one line: attacker-authorable text steering a security decision, and
+  a verdict that depends on where the scanner was started rather than on the response. `set -f` is
+  saved and restored BY HAND rather than with `local -`, which is bash 4.4 while `lib/core.sh`
+  enforces a 4.2 minimum - there `local -` scopes nothing and the `set -f` escapes into the rest of
+  the run. Any future function that word-splits a header, a `Location`, a `rel`, or any other
+  response-derived value wants the same three lines.
+- **`parsed`, `covered`, `checks_run` and every other honesty counter must count what SUCCEEDED, and
+  a run-level accumulator must not be declared inside a per-item function** (`markup.sh`, DAST-11;
+  CWE-390 and CWE-778). Both halves shipped here and both read as a CLEAN SCAN. `markup_html_extract`
+  was called as `... 2>/dev/null || true`, which is genuinely required under `set -Eeuo pipefail` but
+  discarded the status with it, so `parsed` counted documents ATTEMPTED: a page whose markup was
+  never tokenized produced zero findings, zero gaps and zero reductions while still putting four
+  check ids in `checks_run`. Capture the status into a variable instead of throwing it away, keep
+  stderr, and exclude the item from the success counter. Separately, `_MK_FORMS_CROSS_ORIGIN` was
+  `declare -g`'d inside the once-per-page analyse function and read after the page loop, so only the
+  LAST page's value survived and every earlier page's declared exclusion vanished. Run-level state
+  is initialised exactly once, in the phase; only per-item state belongs in the per-item reset.
+- **A severity that varies with context is a SECOND CHECK ID, never a `base_severity` a script raises
+  at runtime** (DAST-11's two `DAST-MARKUP-TABNABBING*` ids). `severity` is a per-record property of
+  the registry (`rules/RULE-FORMAT.md` §9.5) and every DAST suite asserts the emitting script and the
+  registry agree on it, so a phase that "weighted a finding higher" in place would put the two into
+  disagreement. Two ids is also the right identity: `check_id` is a fingerprint component (tension
+  5), so the ordinary and the elevated case stay two findings rather than one whose meaning flips
+  between runs - the same argument `cookies.rules` already records for absent-vs-weak `SameSite`.
+- **A URL a target hands back is judged by its AUTHORITY, parsed the way a browser parses it - never by a substring, a prefix, or exact host equality alone** (`modules/dast/active/openredirect.sh`'s `_or_url_host`/`_or_host_is_sentinel`, DAST-19). Every naive reading fails in a direction that reads as a clean result, which is why all three are pinned in both directions. A SUBSTRING test flags the commonest SAFE behaviour on the surface - an on-origin redirect that reflects the value into its own query string (`Location: https://site/login?next=https://<probe-host>/`). Ignoring USERINFO misses `https://<site>@<probe-host>/`, and matching the probe host by EXACT EQUALITY alone misses `https://<site>.<probe-host>/`: those two are the shapes that defeat a real `startsWith(ourHost)` allow-list, so a parser that cannot see them cannot see the filters worth testing, while the mirror image `<probe-host>.<site>` is the TARGET's own name and must not match. The split is on the LAST `@`, and `//host/`, `https:/host/` and `/\host/` all carry an authority - a parser STRICTER than the client that will follow the redirect reports safe on a live one. Any peer probe that reads a `Location`, an `Origin` or a `Host` back off a target (DAST-20's SSRF sentinel, DAST-23's CRLF, DAST-24's host header) wants this function rather than its own.
+- **The DAST-28 burst probe is the ONE check that cannot run without `--i-own-target`, and the
+  affirmation is checked in FOUR places rather than one** (`modules/dast/ratelimit.sh`). The
+  amendment `docs/STEP5-DAST-PLAN.md` records is that an unaffirmed run must not execute at all,
+  because under the conservative 4/s ceiling a burst "proves" only that the SCANNER was slow - a
+  clean result that is really the absence of a test. The non-obvious half is that the affirmation
+  LIFTS that ceiling and does not RAISE the rate, so an affirmed run left at the default 4/s has
+  exactly the same defect one step further in; that is a second gate, on the EFFECTIVE rate, and
+  refusing it is what stops the probe reporting a negative it did not earn. The affirmation is also
+  compared against the TARGET (it is a key, not a switch), so owning target A never licenses a burst
+  against target B. Every gate is asserted on a REQUEST LOG, never on a return value: "it refused"
+  must not be satisfiable by a phase that sent traffic and then returned 0.
+- **A burst probe draws down `lib/http.sh`'s OWN budget counter and spends at most HALF of what is
+  left; it never carries a budget of its own.** `http_budget_remaining_set` (lib/http.sh section 11)
+  is the only reader, placed beside the counter for the same reason tension 19 puts the gate at
+  `http_request` - a module-local copy would be a second definition of where the counter lives and of
+  what an absent one means. The draw-down itself is automatic (every request goes through the
+  chokepoint); the HALF is the deliberate part, because the budget refusal is fatal (exit 5), so a
+  probe sized to the whole remainder ends the run for every phase and target after it. The number it
+  reports is a READ, never a reservation: nothing is taken out of circulation until
+  `_http_throttle` charges it inside its own critical section.
+- **A 503 is not throttling, and a `RateLimit-*` header without a 429 is not a finding.** Both fail in
+  the direction that reads as a pass. Counting a 503 as a throttle turns "this endpoint collapses when
+  you ask for it fifty times" - the worse outcome - into a clean bill of health for the control being
+  tested; `lib/http.sh`'s own breaker draws the same line from the other side (a 5xx is a failure it
+  counts, a 429 is not). And a target publishing `RateLimit-*`/`X-RateLimit-*` on every response HAS a
+  limiter this bounded burst did not reach - fold that into the finding and the check fires against
+  every correctly-configured API in the world; fold it the other way and the check goes inert. Both
+  directions are pinned in one section of `tests/suites/dast-ratelimit.sh` so neither half can be
+  satisfied by breaking the other.
+- **A finding's `evidence` is HARD-CAPPED at `SCOURSH_EVIDENCE_MAX_BYTES` (512 by default, `lib/findings.sh`), and `_evidence_truncate` cuts the TAIL off silently.** Whatever a finding most needs the reader to see goes FIRST. Measured on `modules/dast/active/methods.sh`: a first draft wrote a paragraph per finding, and the two sentences that ticket existed to put in front of an operator - how acceptance was determined, and that the write method was never sent - were exactly the two the emitter dropped, because they sat at the end. Background prose belongs in `remediation`, which carries no cap.
+- **`modules/dast/active/methods.sh` (DAST-13) establishes method acceptance WITHOUT exercising it, and the only two methods that ever leave it are `OPTIONS` and `TRACE`** (both defined as having no effect on the resource, RFC 7231 §4.3.7/§4.3.8). `PUT`/`DELETE`/`PATCH`/`CONNECT` are read off the server's own `Allow` header - which a `405` is *required* to carry, RFC 7231 §6.5.5, so the rejection is a source and not only the 2xx - and are never sent, which is why those checks are `confidence: medium` and the measured TRACE check is `high`. Three things there are easy to get backwards and each is pinned by a mutation that was watched failing: the `Allow` match is anchored `^allow:`, because an unanchored one reads `Access-Control-Allow-Methods` (a CORS *browser* policy) as an endpoint acceptance claim; a bare `200` is not a TRACE echo, because a single-page app answers every unrouted request with its shell; and the measurement beats the advertisement in BOTH directions - a confirmed echo the server never named is still a finding, a named `TRACE` that answers `405` is not.
+- **`SCOURSH_DAST_ENDPOINTS` is resolved BEFORE `crawl.sh` runs, so it is empty on the ordinary run** (`modules/dast/run.sh` calls `dast_inventory_read` once, ahead of the phase loop). `crawl.sh` is itself a phase and writes `reports/<run>/inventory/endpoints.json` several phases later; nothing re-reads it. A consumer trusting the exported variable alone therefore sees an empty surface on precisely the run that has one - `active/sqli.sh` does exactly this today. Read `$SCOURSH_RUN_DIR/inventory/endpoints.json` as a fallback (the same artifact by the same path, read after the producer wrote it), as `passive/cookies.sh` does; the general fix in `run.sh` is filed as its own ticket.
+- **A DAST phase gates every outbound probe on `dast_check_selected` (`modules/dast/engine.sh` section 3a), and the `declare -F` guard around each call is KEPT deliberately** (tension 15). Unset or empty `SCOURSH_SELECTED_CHECKS` means ALL SELECTED, exactly as `lib/findings.sh`'s `_derived_record_selected` already reads it, and inverting that is the trap: `tests/suites/dast-{sqli,headers,discovery}.sh` each source a phase script with no `engine.sh` in the process, so a fail-closed default - or an UNguarded call, which is `command not found`, exit 127, non-zero, hence "deselected" - makes every phase inert while every "stays quiet" assertion in those suites still passes green. Membership is WHOLE-LINE, never a `*"$id"*` substring, because an id that is merely a suffix of another selected line would deliver a payload the operator filtered out. This mattering at all is why it is worth stating: four call sites called this function across three tickets before anything defined it, so `--profile-scan`/`--intensity` narrowed the DAST check REGISTRY and narrowed nothing a run actually SENT. One consequence is accepted rather than fixed: "the filter chain ran and kept nothing" is indistinguishable from "there is no filter chain", since both leave the variable empty.
+- **A phase attaches a session with `dast_auth_apply TARGET LABEL` - `auth_engine.sh`'s own public
+  entry point - immediately before EVERY request, and the `declare -F` guard around it is the reason
+  a typo there is silent.** That guard is right for `dast_check_selected` (the bullet above) and it
+  is what let `modules/dast/passive/cookies.sh` ship a dead authenticated pass: it guarded on and
+  called `dast_auth_cookie_header_set`, which does not exist - the real one is
+  `_dast_auth_cookie_header_set`, private - so the branch was skipped in silence, every request went
+  out with NO credential, and the run still recorded `authenticated_pass=1`. An operator read the
+  logged-out cookie surface as the logged-in one, with no error, no log line and no coverage record.
+  Two further halves of the same shape, each pinned in both directions by
+  `tests/suites/dast-cookies.sh` section E and `tests/suites/dast-methods.sh` section E: a
+  COOKIE-ONLY attachment sends nothing at all for a `bearer` or `api-key` identity, the majority
+  shape for an API, whereas `dast_auth_apply` attaches the token in the identity's own configured
+  header and scheme AND the cookie jar; and `lib/http.sh` section 9a consumes its per-request context
+  at ENTRY and resets it, so an attachment made ONCE above the endpoint loop rides only the first
+  request and every one after it is anonymous. Assert it on the OUTBOUND HEADER CONTEXT
+  (`_HTTP_TX_HEADERS`) at the transport boundary, never on a note the phase wrote about itself - a
+  phase that believes it authenticated is exactly what all three defects produce. Do NOT reach for
+  `dast_auth_request` here: its transparent 401 re-auth is right for an ordinary authenticated
+  request and wrong wherever a 401 is itself the measurement (see the DAST-29 bullet above).
+- **A `.rules` file whose basename begins `checks` is a §9.5 script-check registry, wherever it lives - and a co-owner writes its OWN `checks-<name>.rules` rather than appending to a peer's file** (`docs/FOUNDATION.md` tension 29). `rules/RULE-FORMAT.md` §9's path table reserves BOTH `checks.rules` and `checks-<name>.rules` repository-wide for that schema, at any depth; a record file matching no row is still `E070`, so `modules/dast/passive/cookies.rules` and the SUFFIX spelling `headers-checks.rules` (DAST-05's rejected attempt) both remain illegal. The second row is additive: `checks.rules` is unchanged and still legal, both spellings may sit in one directory, and per §14 it trips item 2 alone, so there is no `format_version` bump and no `state/` migration. It needs no engine change either - `checks_registry_load` already globs every `*.rules` under a module directory with no per-file allowlist, exactly as `modules/iac/`'s six packs already rely on - and that is asserted on a real run's `checks_run` set, never on the glob alone. **A split is a byte-identical MOVE of records and never an edit of them**: §9.5.1's owning-module map keys on the DIRECTORY, so `E018`/`E081` still hold a moved id to the same module prefix, `E019` uniqueness stays repository-wide, and renaming an id would change a fingerprint (tension 5). `modules/dast/passive/` is split five ways accordingly. `modules/dast/active/checks.rules` and `modules/dast/checks.rules` are NOT split and stay append-only, resolved by keeping both sides - do not split one opportunistically under peers who are mid-flight, which recreates the conflict in a worse place.
 - **A per-subcommand `--help`'s "built" line is generated, never hand-typed, wherever a real check exists to generate it from** (`scan.sh`'s `scan_usage_for`). `_scan_module_built` reuses the exact file-existence check `scan_dispatch` itself makes (`modules/<cmd>/run.sh` on disk) for `sast`/`sca`/`iac`/`dast`/`cloud`; `dast`'s phase count walks `modules/dast/engine.sh`'s own `_DAST_PHASES` table against the same file paths `dast_run_phase` checks. `diff`/`report` are not modules and have no file to check, so `_scan_stateful_command_built` is the one function both scan_main's dispatch arm and `scan_usage_for` read - flip it in the same change that gives them a real engine (step 7's `state/`), never in one place alone. The accepted-flags list per command is generated from `_SCAN_FLAG_KIND`, the same map `scan_flag_kind` validates against, for the identical reason.
 
 ## Build order and where we are
@@ -147,7 +245,49 @@ stderr and in the report); and **TIER 1 IS NOW COMPLETE** - DAST-03 (`auth.sh`, 
 session acquisition) and DAST-04 (`modules/dast/crawl.sh`) have both landed, so the endpoint and
 parameter inventory that all twenty-seven tickets in tiers 2-5 consume exists, and it can be built
 against an authenticated session.
-Tiers 2-5 are unblocked; nothing in front of them remains.
+Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has started - tier 4's
+DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`) and DAST-19 (`active/openredirect.sh`), tier
+5's DAST-26 (`jwt.sh`), DAST-28 (`ratelimit.sh`, the §7.4 missing-throttling burst probe),
+DAST-29 (`authz.sh`, the §7.4 object-level authorization and
+data-exposure family) and DAST-30 (`passive/transport.sh`, the §7.4 plaintext-exposure and
+mixed-content family - a tier-5 ticket that RUNS at tier `passive` and lives under
+`modules/dast/passive/`, see its own section below), tier 2's
+DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`, the §7.1 security-header family),
+DAST-10 (`passive/leakage.sh`, the §7.1 information-disclosure family) and
+DAST-11 (`passive/markup.sh`, the §7.1 HTML-markup family),
+and tier 3's DAST-12 (`active/discovery.sh`, §7.2 content discovery - the first safe-active phase; no
+wordlist ships in this repository by design, see `modules/dast/wordlists/README.md`) and DAST-13
+(`active/methods.sh`, §7.2 HTTP method enumeration - the second safe-active phase, which completes
+tier 3)
+have landed, out of tier order, since the tiers are peers rather than a sequence once tier 1 is in.
+DAST-06, DAST-05, DAST-10, DAST-11 and DAST-30 each originally appended their own block to a shared
+`modules/dast/passive/checks.rules`; that file is now SPLIT five ways, one
+`checks-<name>.rules` per owner, per `docs/FOUNDATION.md` tension 29 - so DAST-07, DAST-08 and
+DAST-09, which are open and unordered among themselves, each write their own
+`modules/dast/passive/checks-<name>.rules` and append to nobody's file.
+`modules/dast/active/checks.rules` is the tier-3/tier-4 equivalent and is under the identical
+append-only rule - DAST-15, DAST-19 and tier 3's DAST-13 all appended to DAST-14's file rather than
+adding a sibling, because `rules/RULE-FORMAT.md` §9's path table reserves the `checks.rules` BASENAME
+repository-wide and makes a per-ticket `openredirect-checks.rules` an `E070`.
+**DAST-15 is the first ticket to consume `modules/dast/active/inject_engine.sh` WITHOUT extending
+it**, which is what makes DAST-14's shared half demonstrably shared rather than sqli-shaped - it
+added no line to that file, and appended its three `DAST-INJ-XSS_REFLECTED_*` checks to the shared
+`modules/dast/active/checks.rules` the same append-only way the passive peers share theirs.
+DAST-16..DAST-18 and DAST-20..DAST-25 are open, unordered among themselves, and should reuse the
+engine the same way.
+The one thing worth carrying up here from DAST-15's landing note: **that probe measures ESCAPING, not
+reflection.**  Almost every parameter on a real application reflects something, so a probe that
+flagged reflection alone is a false-positive generator - and the escaped case is the half that fails
+in the direction that reads as a pass, which is why every context case in `tests/suites/dast-xss.sh`
+is a PAIR (the same marker into the same template, once escaped and once raw) rather than a single
+positive.
+DAST-29 created a THIRD such shared registry, `modules/dast/checks.rules`, for the tier-5 phases
+whose scripts sit at the top level of `modules/dast/`; DAST-28 has already appended its two
+`DAST-RATE-*` records to it, and DAST-27 appends the same way - a conflict in it is resolved by
+keeping both blocks, never by choosing a side.
+DAST-30 is NOT one of them despite being a tier-5 ticket: its script sits under
+`modules/dast/passive/`, so its checks are registered in that directory - today in its own
+`modules/dast/passive/checks-transport.rules`, per tension 29's split.
 Step 5 remains the top priority ahead of steps 6, 7 and 10.**
 Which rule packs, SCA ecosystems and IaC packs have landed, and what remains of each, is in the
 generated block below - read it there rather than restating it here.
@@ -542,6 +682,311 @@ One correction this ticket made outside its own files: `modules/dast/run.sh`'s i
 the crawl phase runs in the same run, so `run.json` contradicted itself, naming an empty surface in
 one record and 13 endpoints in another. It now says what is true (no inventory was available as
 INPUT) and points the reader at the file rather than the sentence.
+
+**DAST-05 (`modules/dast/passive/headers.sh`) has landed - a TIER 2 check, built in parallel with its
+peer DAST-06 (`passive/cookies.sh`), which reached `dev` first and is what actually created
+`modules/dast/passive/`.**
+It ships `headers_engine.sh` (the pure half: the response-header reader, the CSP/HSTS/Referrer-Policy
+parsers, the endpoint chooser), `headers.sh` (the phase script `dast_run_phase` sources),
+`checks.rules` (eleven `DAST-HDR-*` script checks, all tagged `passive`) and `recommended-headers.txt`
+(the vendored, operator-editable roll-up list).  `tests/suites/dast-headers.sh` is the proof - 153
+assertions, no network and no Docker, driven from recorded response heads replayed into
+`lib/http.sh`'s own capture sink.  `docs/STEP5-DAST-PLAN.md`'s own DAST-05 landing note is the
+authority for the detail; five things about it are worth carrying here because a peer ticket
+(DAST-07..DAST-11 are all building against the same surface) will otherwise rediscover them the
+expensive way.
+
+- **`http_request_capture`'s header sink ACCUMULATES every redirect hop, so a whole-file match reads
+  the WRONG response.**  A `grep '^strict-transport-security:'` over the capture finds the header the
+  302 set and reports it as the delivered page's - backwards for the one header whose absence on the
+  final response is the finding.  `hdr_parse_capture` resets on every `HTTP/x.y NNN` status line, so
+  only the last block survives; removing that reset turns two assertions red, which is how it is
+  known to be load-bearing rather than assumed.
+- **This directory's script-check registry USED to be a single shared `checks.rules` and is now one
+  `checks-<name>.rules` per owner** (`docs/FOUNDATION.md` tension 29; DAST-05's records live in
+  `modules/dast/passive/checks-headers.rules`).  When DAST-05 landed, §9's path table gave the §9.5
+  schema to "any file named `checks.rules`, at any depth" and made every other path `E070`, so this
+  ticket's own attempt at a per-ticket `headers-checks.rules` was refused - note that SUFFIX spelling
+  is *still* `E070` today; the row that was added legalises the `checks-` PREFIX only.  The
+  append-only "resolve a conflict by keeping BOTH blocks" rule that followed from the shared file is
+  retired for this directory, and still stands for `modules/dast/active/checks.rules` and
+  `modules/dast/checks.rules`, which were not split.  The engine file is named
+  `headers_engine.sh` for the opposite reason - a `passive_engine.sh` would be shared scaffolding
+  three parallel tickets each believed they owned, so a peer that needs the same response reader
+  should LIFT it deliberately rather than fork it.
+- **One finding per check per target, located deterministically.**  A header is configured once per
+  application, so a per-endpoint emit reports one misconfiguration ten times.  Each check accumulates
+  across the (capped, path-template-deduped) endpoint set and emits ONCE, at the first endpoint in a
+  fixed order - the operator's own `base-url` first, then the inventory `LC_ALL=C`-sorted - with
+  "observed on N of M responses" in the evidence.  The determinism is what stops the fingerprint
+  churning when the crawl reorders.  Eleven check ids rather than one because the DAST location
+  profile carries no component naming the DEFECT, so a missing CSP and a weak HSTS on one page would
+  otherwise collide and dedupe to one finding.
+- **Applicability is tracked per check and an INAPPLICABLE check is never in `checks_run`.**  HSTS is
+  not evaluated at all on a plaintext response (RFC 6797 §7.2 has the browser ignore the header);
+  CSP-absence and framing are document-only, while `nosniff` is not.  A run that saw only plaintext
+  records `headers_check_not_applicable` naming the uncovered ids instead of reporting them tested.
+- **A "configurable" knob does NOT have to be a `config/scanner.conf` key, and here it deliberately is
+  not.**  §9.6.1's key set is frozen, so adding one moves `lib/records.sh` and `tests/lint-rules.sh`
+  together (§14 item 2) and widens a tier-2 ticket into a format change six peers then rebase onto.
+  The shape used instead is this module's existing one: a vendored, auditable data file plus a
+  documented environment seam (`SCOURSH_DAST_RECOMMENDED_HEADERS_FILE`), exactly as
+  `SCOURSH_DAST_SQLI_PAYLOAD_DIR` already does for payloads.
+
+**DAST-10 (`modules/dast/passive/leakage.sh`) has landed - the third tier-2 check, and the first whose
+whole design problem is FALSE POSITIVES rather than detection.**
+It ships `leakage_engine.sh` (the pure half), `leakage.sh` (the phase script `dast_run_phase` sources),
+five `DAST-LEAK-*` records in `modules/dast/passive/checks-leakage.rules` (appended to the
+directory's then-shared `checks.rules`; tension 29 has since split that file), and
+`tests/suites/dast-leakage.sh` (154 assertions, no network and no Docker, driven from recorded
+head/body pairs replayed into `lib/http.sh`'s own two capture sinks).
+Five families, five check ids - a stack trace or debugger page (CWE-209), an infrastructure-disclosing
+response header (CWE-200), an email address outside a published contact link (CWE-200), a credential or
+internal URL in served JavaScript (CWE-540), and the third-party origin inventory (CWE-829,
+**informational**).
+Five ids rather than one because `check_id` is a fingerprint component and the DAST location profile
+carries no component naming the DEFECT, so two families firing on one path would collide on one
+fingerprint and `findings_merge` would keep whichever won the sort.
+Six things are worth carrying here.
+
+- **Every one of the five families is defined by what it REFUSES to report, and each refusal is pinned
+  by a negative fixture the naive reading flags.**  A stack trace needs a STRUCTURED FRAME - a source
+  file plus a line number - never a framework name or the word "error", because otherwise every branded
+  404 on the internet is a finding.  An infrastructure header needs its VALUE to name an unroutable
+  address or a reserved-internal DNS suffix; the header NAME alone only selects a candidate, so
+  `Via: 1.1 varnish` and a Fastly POP code `X-Served-By: cache-lhr7364-LHR` are NOT flagged - a dotless
+  token is genuinely ambiguous between a product name, a POP code and an internal hostname, and
+  flagging the shape would flag every CDN customer.  An email published as a `mailto:` link is
+  deliberate and is subtracted wherever else it appears; so are RFC 2142 role aliases and a "domain"
+  whose last label is a file extension (`logo@2x.png` in an `srcset` matches every naive email regex
+  ever written).  A JS-config finding subtracts a public-by-design ALLOW-LIST first - a Stripe
+  publishable key, a Google browser API key, an analytics id - because those are what a credential is
+  designed to look like.  A third-party origin subtracts the response's own host and its registrable
+  domain.
+- **The suite asserts the DIFFERENCE, not the absence.**  For each family it runs the naive reading
+  inline, asserts the naive reading DOES fire on the fixture, then asserts the shipped one does not,
+  then asserts the shipped one still fires on a real positive.  A test that only said "no finding"
+  would pass equally well against a check broken into silence.  Confirmed by measurement rather than
+  by reasoning: eight deliberate mutations - the naive keyword trace match, the dotless-token internal
+  host, the dropped `mailto:` subtraction, the dropped file-extension rejection, the dropped
+  public-key allow-list, the dropped same-site subtraction, a truncating body reader, and a header
+  reader that stops resetting per hop - each took the suite red (1 to 7 failures apiece).
+- **A candidate secret's VALUE never reaches the finding.**  Family 4 reports the key name, a
+  description of the matched shape and the value's LENGTH.  A finding that quotes the credential has
+  copied it into the report, into the run's shard file and into the operator's scrollback -
+  `rules/redaction.rules` would catch many of these on the way out, and not carrying the value is the
+  control that does not depend on that list being complete.
+- **A minified bundle is CHUNKED, never truncated at the line cap.**  A webpack bundle arrives as one
+  900 KiB line; a line-cap read inspects its first 4 KiB and silently declares the other 99% clean,
+  which is exactly the overstated coverage `docs/DESIGN.md` §15 forbids.  A token straddling a chunk
+  boundary is the accepted cost, and it can only cause a MISS, which is this family's stated bias.
+- **`leakage_engine.sh` SOURCES `headers_engine.sh` for its response-header reader rather than copying
+  it.**  `hdr_parse_capture` resets on every status line because the capture sink accumulates every
+  redirect hop, and a second implementation here would be re-earning that lesson and putting two copies
+  of it in one directory.  The "lift into a shared `passive/response_engine.sh`" that
+  `headers_engine.sh`'s own header asks for is a refactor moving a peer's file AND its tests, so it is
+  filed as its own ticket rather than performed under parallel peers.
+- **Two emission grains, deliberately.**  A stack trace and a bundled credential are properties of ONE
+  HANDLER, so they emit once per path and two leaking paths are two findings.  An internal proxy
+  header, the address set and the third-party origin set are properties of the APPLICATION, so they
+  accumulate and emit once with the affected/tested count - the same reasoning `passive/headers.sh`
+  applies to all of its checks.  Every family no fetched response was applicable to is recorded as a
+  `leakage_family_not_applicable` coverage_reduction and is kept OUT of `checks_run`, so a run that
+  only ever fetched images never reads as having tested served JavaScript.
+- **What DAST-10 deliberately did not build**: provoking an error to harvest its trace.  That raises
+  this family's recall and it is active probing, out of scope for §7.1 and for this ticket.
+
+**A pre-existing defect this ticket found and did NOT fix: `SCOURSH_DAST_ENDPOINTS` is EMPTY on every
+first run.**
+`modules/dast/run.sh` calls `dast_inventory_read` and exports the two inventory paths BEFORE the phase
+loop starts, while `crawl.sh` writes `reports/<run>/inventory/{endpoints,parameters}.json` several
+phases later in that same loop.  Any consumer that trusts the export alone therefore sees no surface on
+exactly the run that has just discovered one - and
+`modules/dast/active/inject_engine.sh`'s `inject_inventory_load` does trust it, which means
+`active/sqli.sh` tests nothing on a standalone `scan.sh dast` run today.  `headers.sh` falls back to
+`$SCOURSH_RUN_DIR/inventory/endpoints.json` for itself and pins the fallback with a test; the export is
+`modules/dast/run.sh`'s to fix and is filed as its own ticket rather than changed under six peers.
+
+**DAST-29 (`modules/dast/authz.sh`) has landed - the §7.4 object-level authorization (IDOR) and
+excessive-data-exposure checks, and the first tier-5 phase whose script sits at the TOP LEVEL of
+`modules/dast/`.**
+It ships `authz_engine.sh` (the pure half: candidate extraction from DAST-04's frozen inventory, the
+oracle, the field scan), `authz.sh` (the phase `dast_run_phase` sources), the new shared
+`modules/dast/checks.rules` (four `DAST-AUTHZ-*` script checks, all `tags: active` and all
+`requires-identities: 2`), and the vendored, operator-editable `modules/dast/sensitive-fields.txt`.
+`tests/suites/dast-authz.sh` is the proof - 189 assertions, no network and no Docker, driven from a
+scripted SERVER keyed on (path, identity) rather than a canned-status queue, because the correctness
+of this check IS which identity is served which object and a queue lets a probe pass by asking for the
+wrong thing in the right order.
+Its section H is the six defects a QA pass found on the first landing; every one of them was observed
+red against the shipped code and green after the fix, and five of the six were false or missing
+COVERAGE records rather than wrong findings - which is this module's own most expensive failure class
+and is where to look first when changing it.
+Nine things about it will otherwise be rediscovered the expensive way; each was measured by writing
+the wrong version and watching a named case go red, not reasoned about.
+
+- **"Public" is DIGEST EQUALITY with an identity's own response, never the anonymous status code.**
+  The anonymous control is required at all - without it every public object on the target is reported
+  as a cross-user read - but reading a 2xx as "public" silences every real finding on any application
+  that answers a logged-out request with a 200 login page, which is the overwhelmingly common shape.
+  That failure reads as a CLEAN REPORT, which is the direction that ships. Case C4 goes red under it.
+- **A shared object is TWO different check ids, and which one is decided by a refusal observed
+  ELSEWHERE under the same path template.** `DAST-AUTHZ-IDOR-01` (high confidence) needs a witness
+  that this endpoint enforces per-object ownership at all - one identity served a reference the other
+  was refused; without one it is `DAST-AUTHZ-CROSS_IDENTITY_READ-01` (medium), an observation about a
+  possibly-shared resource. One id is not an option: the DAST location profile carries nothing naming
+  the defect, so the two would hash to one fingerprint and `findings_merge` would keep whichever
+  sorted first. The whole group is therefore probed BEFORE anything is emitted, since the witness can
+  arrive on the last reference. Cases C1 and C2 fail under the opposite readings.
+- **Read-only is enforced at CANDIDATE SELECTION (`_authz_method_ok`), not at the call site.** A
+  POST/PUT/PATCH/DELETE inventory entry never becomes a candidate, so no code path can reach a
+  mutation even if a later edit forgets to check - and the guarantee is asserted over a REQUEST LOG,
+  the only form of the claim a test can falsify.
+- **HEAD is READ-ONLY AND STILL REFUSED, under its own counter, and folding it into the
+  mutating-method count is the mistake.** RFC 7231 §4.3.2 gives a HEAD response no body, and every
+  oracle here compares response BYTES, so a HEAD candidate spends two requests to reach a verdict that
+  cannot exist. Worse, it reached one: an empty digest on both sides landed in the "bytes differed"
+  arm, which the phase reports as "readable by BOTH identities but returned different bytes to each" -
+  false for a HEAD - while the exposure pass's `-s` test reported the same zero-byte body as
+  `response_too_large_to_field_scan cap=524288`. TWO factually wrong coverage records from one
+  admission. `authz_body_is_empty` now exists precisely so "no body" and "too big" are never the same
+  question; a 204 or an empty 200 on a GET hits the identical trap. Cases H2a-H2d.
+- **A 401 is an AUTHORIZATION REFUSAL here, and `dast_auth_request` must not be used for the probes.**
+  §7.0's transparent re-auth is right everywhere else - a 401 there means the session expired - and
+  exactly inverted in a check that deliberately asks one identity for another's object. Routed
+  through it, the first foreign reference answered 401 triggered a full re-login, the retry's 401
+  marked that identity `failed` for the WHOLE RUN, and the probe returned 1 - so the enforcement
+  witness was discarded, a real IDOR was downgraded to the medium-confidence observation, and every
+  later DAST check needing that identity skipped. On any token API that refuses with 401 rather than
+  403 that is a false clean result bought with a login storm, and it left the `401` arm of
+  `authz_status_refused` documented but unreachable. `authz_probe_as` discriminates instead: an
+  identity that has ALREADY received a 2xx this pass has a demonstrably live session, so its later 401
+  is a refusal and costs no login; otherwise §7.0's refresh applies ONCE per identity per pass, and a
+  retry that is 401 too is reported as a refusal WITHOUT marking the identity failed. Both halves are
+  pinned (H6, H6b) because the naive fix for each is the other's bug - treating every 401 as a refusal
+  makes an expired session read as an application enforcing authorization on every reference.
+- **`loc_method` is the method that was requested, never a constant.** The DAST location profile is
+  `target method path_template param_location param_name` and `authz_group_key` discriminates on the
+  method too, so a hardcoded `GET` collapses two groups this pass deliberately kept apart onto ONE
+  fingerprint and `findings_merge` drops whichever sorts second - the exact collision
+  `modules/dast/checks.rules` says the four ids exist to prevent. It also made the field contradict
+  the finding's own evidence prose, which interpolates the real method. H1 asserts it on the
+  FINGERPRINTS, not on the field alone.
+- **`checks_run` is written from the ids that EXECUTED, not from the passes that were entered.**
+  `lib/records.sh` defines it expressly so a reader can tell "this check ran and found nothing" from
+  "this check was never loaded", and `DAST-AUTHZ-OTHER_IDENTITY_DATA-01` defeated that: it was
+  recorded as run on every authenticated run with an inventory, including the ones where it could not
+  possibly run. `rules/RULE-FORMAT.md` §9.6.2 makes `username` optional and applicable only to
+  `form`/`oauth2-password`/`srp`, so a `bearer`, `api-key`, `oauth2-client` or `external` identity -
+  the dominant shape for the API targets this check is aimed at - supplies no identifier at all. The
+  passes now append to `_AUTHZ_CHECKS_EXECUTED` and `_dast_authz_record_checks_run` writes a
+  `check_not_executed` reduction for every id missing from it. H3.
+- **A count in a coverage record must describe what was EXAMINED, not what exists.** An inventory
+  entry is dropped for its method or its scope BEFORE its path is inspected, so on an inventory of
+  forty POST endpoints "no entry carried an object-reference-shaped value" is simply false - they were
+  never looked at. The `ncand == 0` reason now carries `skipped_method` / `skipped_head` /
+  `skipped_scope` and says so, and `_dast_authz_record_skips` runs on BOTH branches, because the
+  deliberate "object-level authorization on write endpoints was NOT assessed" gap used to be dropped
+  on exactly the inventory where it was the only true thing to say. H4. In the same family: the
+  exposure-endpoint cap used to `break` with no counter, the one bound in a file whose header promises
+  "reaching one is never silent" (H5), and `_AUTHZ_REFS_TESTED` was incremented before the probes, so
+  references that produced no usable request were reported as probed (H7).
+- **What an object reference IS comes from `lib/findings.sh`'s `path_template_of`, and the suite
+  asserts the two AGAINST EACH OTHER rather than restating the four shapes.** Disagreement in either
+  direction is a real defect: probing a segment the fingerprint treats as a literal splits one
+  endpoint's findings, and skipping one it collapses leaves the check with no candidates on an
+  endpoint whose findings it would happily merge. A slug (`/users/jane`) is deliberately NOT a
+  reference - admitting path words spends the request budget on `/about` - and that narrowing is a
+  recorded gap, not a claim slug-keyed IDOR does not exist.
+- **The exposure pass reads FIELD NAMES and never field VALUES, and the "other identity" needle is a
+  pure-bash substring test rather than a `scan_match`.** The needle is an identifier out of
+  `config/auth.conf`, a mode-600 credential file, and every engine this repository wraps takes its
+  pattern on argv (tension 9 handling rule 1); bash function arguments are not argv. The needle is
+  never echoed into a finding either - the evidence names the identity LABEL. Both are pinned by
+  asserting the planted value appears NOWHERE in the shard, which is meaningful because the shard
+  escapes only backslash, tab, CR and LF, so a copied plain value really would be visible.
+- **Every skip path returns 0 with a RECORDED reason - the ticket's own "skip cleanly and say why, not
+  fail".** No `--authed`, one authenticated identity where two are configured, no inventory, an
+  unreadable field list: each records a `coverage_reduction` plus a human-readable `coverage_gap`, and
+  the suite asserts the exit status AND the reason for each, because silence here reads as "this
+  application enforces object-level authorization", the single most expensive way for this check to be
+  wrong.
+
+**One testing lesson from this ticket that is not specific to it: never assert a check id against raw
+shard text.**
+A finding carries its own remediation prose, and `DAST-AUTHZ-CROSS_IDENTITY_READ-01`'s deliberately
+NAMES `DAST-AUTHZ-IDOR-01` in it ("unlike DAST-AUTHZ-IDOR-01, it saw no evidence ...") so a reader
+knows which of the two they are holding.
+A substring test over the shard therefore finds the confirmed id on a run that emitted only the
+observation: `assert_not_contains` fails on correct behaviour, and - the expensive half -
+`assert_contains ... IDOR` would PASS on the rejected "always emit the confirmed id" implementation.
+`tests/suites/dast-authz.sh`'s `_shard_check_ids` decodes through `lib/findings.sh`'s own
+`finding_decode` for that reason; any suite asserting on ids should do the same.
+
+**DAST-30 (`modules/dast/passive/transport.sh`) has landed - a §7.4 TIER-5 check that RUNS AT TIER
+`passive` and lives in `modules/dast/passive/`, which is the one thing about it most worth knowing.**
+It ships `transport_engine.sh` (the pure half: the sub-resource extractor, reference resolution, the
+endpoint chooser, the sensitivity scan and the redirect verdict), `transport.sh` (the phase script),
+and five `DAST-TRANSPORT-*` checks in `modules/dast/passive/checks-transport.rules` (appended to the
+directory's then-shared `checks.rules`; tension 29 has since split that file),
+alongside the blocks DAST-06, DAST-05, DAST-10 and DAST-11 each appended to the same file.
+`tests/suites/dast-transport.sh` is the proof
+(109 assertions, no network, no Docker, driven from recorded response heads AND bodies).
+`docs/STEP5-DAST-PLAN.md`'s own DAST-30 landing note is the authority for the detail; five things are
+worth carrying here.
+
+- **The phase table row MOVED, from `transport.sh:active` to `passive/transport.sh:passive`, and this
+  is the first exercise of the mechanism `modules/dast/engine.sh`'s phase table always specified for
+  it** ("a later ticket whose checks legitimately carry a LOWER type tag than the tier its row
+  declares here must change that row in the same change and say why").  DAST-02 transcribed every
+  tier-5 row from `docs/DESIGN.md` §7.4's section HEADING, which is right for its other four scripts
+  and wrong for this one: nothing here mutates target state, §7.4's own wording for this bullet calls
+  it a complement to "the TLS **passive** check", and at `active` it would never run at all, because
+  `--intensity` defaults to `passive` and anything above it additionally requires `--i-own-target`.
+  A row left at `active` is not a conservative choice - it is a check that is dead code on every
+  ordinary run.  `tests/suites/dast.sh`'s phase-table coverage list names `passive/transport.sh` and
+  moved in the same change.
+- **A plaintext `<a href>` is NOT mixed content, and the naive reading is a flood rather than a
+  miss.**  A hyperlink loads nothing into the secure document.  Matching `http://` anywhere in the
+  body fires on every external link on every page, so a plaintext footer link outranks a login bundle
+  fetched over port 80.  The extractor emits `nav` references ANYWAY, so the suite can assert their
+  absence from the findings - a class that is never emitted cannot be tested for - and the run
+  records a `notes` count so an operator who sees the link in their own markup knows the phase
+  decided rather than missed.
+- **The plaintext URL is requested with `max_redirects` 0, and without that the redirect check cannot
+  exist.**  `http_request` follows redirects internally and reports the FINAL status, so a correct
+  301-to-HTTPS and a page served on port 80 both come back `200`.  Two neighbours fail the same way
+  under the obvious "is it a 3xx" test: a 301 to another `http://` URL does not leave plaintext, and a
+  scheme-relative `Location` is resolved by the browser against the CURRENT scheme.
+- **`crawl_html_extract` is deliberately NOT reused, and `hdr_endpoints_load`'s dedup key deliberately
+  IS NOT borrowed.**  The former skips `<script>`/`<style>` wholesale and emits nothing for `<img>`,
+  because it inventories NAVIGABLE endpoints - the archetypal mixed-content references are invisible
+  to it by design, and widening it would change a frozen inventory contract six tickets read.  The
+  latter dedupes by path template alone, which collapses `http://h/login` and `https://h/login` into
+  one candidate and so drops the plaintext twin that IS the finding; this phase keys on
+  (scheme, path template).  Everything else about the chooser is kept in step with it rather than
+  re-argued.  The response READER is reused unforked (`hdr_parse_capture` and friends), because its
+  reset-on-every-status-line is the most dangerous parse in the tier and two copies is two chances to
+  lose it; the shared-file lift `headers_engine.sh` asks for remains DAST-05's follow-up.
+- **A test that passes under both the correct and the rejected reading was found here by MUTATION,
+  not by review, and it is worth knowing which one.**  "A protocol-relative reference produces no
+  finding" pins nothing: it passes both when the reference is properly resolved AND when anything
+  without its own scheme is simply skipped, because only an absolute `http://` reference can be mixed
+  content on an https page at all.  What discriminates is the ACCOUNTING - `_TR_REF_TOTAL`,
+  "references this check could judge" - which under the skip silently becomes "references that
+  happened to be written absolutely".  Every decision in this family was re-checked by breaking the
+  implementation and watching the suite go red; three of the five needed no change and one assertion
+  had to be reworded because it claimed a discrimination it did not have.
+
+**What DAST-30 deliberately did not build**: any TLS inspection (DAST-07 owns the connection, the
+certificate and the cipher suite; this family opens no connection of its own), any HSTS check
+(`DAST-HDR-HSTS_*` is DAST-05's, and `NO_HTTPS_REDIRECT`'s remediation names it as the companion
+control rather than restating it), and any cookie-attribute check (`DAST-COOKIE-NO_SECURE-01` is
+DAST-06's; this family records only that a cookie was ALREADY sent in the clear).  It also REQUESTS no
+sub-resource: a discovered `http://` script URL is classified from the markup and never fetched, so an
+out-of-scope reference is still reported - a third-party CDN over plaintext is the commonest real
+mixed-content case and is out of scope by definition, so dropping it would be a false negative on
+exactly the case that matters most.
 
 **This block used to read "no DAST-0x ticket is picked up until step 3's outstanding rule packs and
 step 4's SCA half are both complete on `dev`"; BOTH halves of that gate are now discharged, so it is
@@ -1332,10 +1777,13 @@ against a real CLI, since a stub that ignores the service name never would have 
 ## Tests
 
 ```
-tests/run-tests.sh                 # everything: every suite plus every linter
-tests/run-tests.sh --list          # the source of truth for exactly which suites and linters exist today
+tests/run-tests.sh                 # everything: every suite, every linter, then the shellcheck stage
+tests/run-tests.sh --list          # the source of truth for exactly which suites, linters and stages exist today
 tests/run-tests.sh <suite-name>    # one suite, e.g. tests/run-tests.sh sca
 tests/run-tests.sh lint-rules      # or one linter by name
+tests/run-tests.sh shellcheck      # or the whole-tree shellcheck STAGE alone (the slowest thing in a
+                                    # full run; it is neither a suite nor a linter file, so it lives in
+                                    # STAGES and is listed separately by --list)
 tests/lint-rules.sh                # record-format linter, error codes in rules/RULE-FORMAT.md §13
 tests/lint-shell.sh                # the tension 4, 9, 24 and 26 shell lints
 tests/lint-aws-readonly.sh         # read-only AWS lint, docs/FOUNDATION.md tension 23
@@ -1472,11 +1920,21 @@ Recorded because the review rounds found several confidently-stated shell facts 
 - BSD awk evaluates the source constant `0x80` as `0`, so hex literals are a GNU extension. The UTF-8 validator is pure bash for that reason.
 - Bash's `=~` uses the system regcomp, which on macOS/BSD supports none of `\b`, `\w`, `\s`, `\d`. `grep -E` and `rg` support all four on both userlands. `redact()` therefore routes through the engine wrapper rather than matching in-process.
 - `-n -b -o` produces byte-identical output under ripgrep 15.1.0 and BSD grep 2.6.0-FreeBSD, which is what `rules/RULE-FORMAT.md` §10.3's per-match ordinal needs.
+- **`&` in the REPLACEMENT half of `${var//pattern/replacement}` expands to the MATCHED TEXT on bash 5.2 and later**, sed-style, where bash 4.2 - this project's frozen minimum - treats it as an ordinary character. So `${v//%3C/&lt;}` yields `%3Clt;` on a current macOS bash and `&lt;` on the oldest bash we support: the same line means two different things across the two userlands `tools/daily-suite.sh` deliberately runs. Write `\&` whenever the ampersand must stay literal. Measured in `tests/suites/dast-xss.sh`, where the unescaped spelling silently filled every "correctly HTML-escaped" control fixture with gibberish; because gibberish contains no raw `<` either, three of the four controls stayed GREEN and the mistake was caught only by the one case whose `&` sat mid-string rather than at the front. This is the failure shape to fear - a fixture that is wrong in the direction that still passes.
 - `printf '--- ...'` is parsed as options by bash's builtin printf; use `printf -- '--- ...'`.
 - `find` over a directory that does not exist fails, and under `pipefail` takes the whole pipeline with it.
 - ShellCheck versions disagree: Debian's reports `SC2119`/`SC2120` where 0.11.0 does not. The BSD leg runs whatever Homebrew installed and the GNU leg whatever the container image ships, so a finding is silenced with an explicit `# shellcheck disable=` and a reason rather than left to the version.
 - A comment line beginning `# shellcheck ` is parsed as a DIRECTIVE, so prose about shellcheck must not start a line with that word.
 - **`shellcheck -x` follows `source` STATICALLY, where a runtime "already sourced" guard does not exist, so two files that source each other are an unbounded cycle it inlines until it dies.** `modules/sca/engine.sh` and `modules/sca/php_engine.sh` do exactly that on purpose (each sets its flag before recursing, so at runtime the second attempt is a no-op). Measured on `shellcheck -x -s bash modules/sca/run.sh`: **43.6 GB peak RSS and 236 seconds** with the cycle followed, **4.6 GB and 16 seconds** with one `# shellcheck source=/dev/null` on the back-edge, and an OOM kill rather than a slow pass on any machine with less RAM - which is how it was found, when the Linux container leg of `tools/daily-suite.sh` died where the 64 GB macOS leg survived. Cut ONE edge; the entry point (`run.sh`) sources every file in the directory itself and stays the graph shellcheck walks, so nothing is lost.
+- **A CYCLE is not the only shape that blows `shellcheck -x` up, and the second shape - a DIAMOND in a perfectly acyclic graph - is the one this tree actually has.**
+  `-x` does not memoise: it re-expands a file EVERY time it is reached, so two paths to the same file cost twice, and the multipliers compound.
+  Measured here: `lib/http.sh` reaches `lib/records.sh` -> `lib/core.sh` through BOTH `lib/config.sh` and `lib/findings.sh`; `modules/dast/passive/cookies.sh` reaches `lib/http.sh` through both `inject_engine.sh` and `auth_engine.sh`; and `tests/suites/dast-cookies.sh` sourced `cookies.sh` six separate times on top of that - **156,852 inlined lines for one entry point, 91% duplicates, `lib/core.sh` inlined 29 times, 23.42 GB, unfinished after 29 minutes**, which the stage's own 12 GB watchdog killed.
+  While that stood `bash tests/run-tests.sh` could not exit 0 on `dev` or on any branch cut from it, so "merge when the suite is green" was unachievable.
+  The fix is the same one line applied to every edge whose target the entry point ALREADY reaches another way: **47 `# shellcheck source=/dev/null` directives across 25 files**, each *lossless* (the file is still inlined once, via the kept edge), taking that entry point to **34,881 lines**.
+  Count them from the tree rather than from this sentence - `git grep -c '# -x back-edge cut:' -- '*.sh'` - because six files carried an unrelated such directive before this work, so the TOTAL (71 across 31) is not the added set.
+  Peak RSS for it measured **8.42 GB / 173 s** on one host and **9.87 GB / 217 s** on another, same commit: against the 12 GB budget that is ~1.2x headroom, and `dast-cookies.sh` - not `dast-jwt.sh` (8.55-8.86 GB) - is the file closest to the ceiling.
+  Those directives are LOAD-BEARING - deleting one because it "looks unnecessary" puts the stage back over budget, and those two files are where that regression surfaces first.
+  Two traps when adding one: a comment line starting `# shellcheck ` is parsed as a directive, so the prose above a cut must not begin with that word (the first draft of these 47 blocks wrote `` `-x` `` in backticks inside a HEREDOC and minted `SC2006`/`SC2215` findings out of a comment); and a `source` line inside a heredoc or a quoted string is NOT an edge shellcheck follows, so a tool that counts it will call a cut "lossless" when it is not (that is exactly how a first pass wrongly cut `tests/suites/core.sh`'s only real edge and turned `SCOURSH_ENGINE` into a fresh `SC2034`).
 - **On Docker Desktop for macOS, a bind mount whose source and destination are the SAME absolute path is silently not mounted when written as `-v <path>:<path>:ro`** - the destination simply does not exist inside the container and `docker run` reports nothing. The identical read-only bind written as `--mount type=bind,src=<path>,dst=<path>,readonly` works. `-v <path>:<path>` (read-write) also works, so the `:ro` suffix is the trigger.
 - **A `git worktree` checkout's `.git` is a FILE holding an absolute path into the main repository**, so git does not work inside a container that mounts only the checkout. `tools/daily-suite.sh` mounts `git rev-parse --git-common-dir` as well, at its own path. Without it `git rev-parse --show-toplevel` fails, `lib/core.sh` falls back to the resolved `--path` as the scan root, and every finding's repository-relative `loc_path` changes - a whole class of "the rule pack broke" failures whose real cause is the scan root.
 

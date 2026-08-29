@@ -1,0 +1,177 @@
+# modules/dast/passive/checks-markup.rules - the §7.1 HTML-markup script-check
+# registry (rules/RULE-FORMAT.md §9.5; docs/STEP5-DAST-PLAN.md DAST-11, tier 2).
+# Owned by modules/dast/passive/markup.sh; ids are all `DAST-MARKUP-*`.
+#
+# ONE FILE PER OWNING PHASE SCRIPT, WHICH IS WHAT rules/RULE-FORMAT.md §9'S
+# `checks-<name>.rules` ROW EXISTS FOR.  This directory's registry used to be a
+# single co-owned `checks.rules` that every tier-2 passive ticket appended to,
+# because the §9 path table reserved only that one basename and any other name
+# was `E070` - measured, on `modules/dast/passive/cookies.rules`, by
+# `tests/lint-rules.sh` itself.  DAST-05..DAST-11 are peers with no ordering
+# between them, so any two built in parallel produced an add/add conflict on that
+# one file, and the mitigation ("take both sides") was a convention that has to be
+# re-taught to every author and is silently wrong exactly once before anyone
+# notices.  §9 now also reserves the `checks-` PREFIX, so each ticket owns its own
+# file and there is no shared file left to conflict on.
+#
+# Nothing about identity moved with these records.  §9.5.1's owning-module map
+# keys on the DIRECTORY, so E018/E081 still hold every id here to the `DAST-`
+# prefix; a check id is unchanged by the file it lives in, so E019 uniqueness is
+# still repository-wide; and `checks_registry_load` (lib/checks.sh) globs every
+# `*.rules` under `modules/dast/` at any depth with no per-file allowlist, so this
+# file loads alongside its siblings with no registration step.  The records below
+# were moved BYTE-IDENTICALLY out of the shared file: a check id feeds the finding
+# fingerprint (docs/FOUNDATION.md tension 5), so a split is a move and never an
+# edit.
+#
+#
+# The type tag is `passive`, matching the phase table's `passive/markup.sh:passive`
+# floor (modules/dast/engine.sh). Every one of these checks is decided entirely
+# from the bytes of a response to a plain GET; no form is ever submitted and no
+# discovered link is ever followed, which is the whole of docs/DESIGN.md §7.1's
+# admission criterion. `intrusive` is deliberately NOT set on any of them.
+#
+# SIX IDS FOR FOUR REQUESTED CHECKS, AND THE TWO SPLITS ARE THE POINT.
+# `check_id` is a fingerprint component, so an id is the only place a DIFFERENT
+# FACT ABOUT THE SAME LOCATION can live: two defects on one page under one id
+# would collide on one fingerprint and `findings_merge` would silently keep one.
+#   - Reverse tabnabbing splits by PAGE SENSITIVITY because this ticket asks for
+#     it to be "weighted higher on login and redirect pages", and severity is a
+#     per-record property of the registry rather than something an emitting
+#     script may invent at runtime - a phase that raised `base_severity` above
+#     what its own record declares would put the report and the registry into
+#     disagreement, which tests/suites/dast-markup.sh asserts cannot happen.
+#     Two ids is how a severity weighting is expressed here.
+#   - Insecure framing splits by DEFECT because docs/DESIGN.md §7.1 names two
+#     ("framing untrusted or http:// origins"): a plaintext frame is a transport
+#     failure fixed by changing a URL, an unsandboxed cross-origin frame is a
+#     missing control fixed by adding an attribute and a CSP directive. One id
+#     could only carry one remediation.
+
+id: DAST-MARKUP-SRI_MISSING-01
+title: Cross-origin script or stylesheet loaded without Subresource Integrity
+script: passive/markup.sh
+severity: medium
+confidence: high
+cwe: CWE-353
+owasp: A08:2021
+tags: passive
+tags: quick
+coverage-scope: target
+remediation: Add an integrity attribute carrying the sha384 (or sha256/sha512)
+  digest of the exact file, and a crossorigin attribute alongside it - without
+  crossorigin the response is opaque, the browser cannot verify the digest, and
+  it blocks the resource instead. Pin the version in the URL as well: an
+  integrity hash against a "latest" URL breaks on every upstream release, which
+  is what pushes teams to remove the attribute. Where a third party will not
+  serve a stable, hashable artifact, self-host the file instead; until then this
+  page executes whatever that origin serves it, with full access to this page's
+  DOM, cookies and storage.
+references: CWE-353
+references: https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/
+
+id: DAST-MARKUP-TABNABBING-01
+title: Cross-origin target=_blank link without rel=noopener
+script: passive/markup.sh
+severity: low
+confidence: high
+cwe: CWE-1022
+owasp: A01:2021
+tags: passive
+tags: quick
+coverage-scope: target
+remediation: Add rel="noopener noreferrer" to every link that opens a
+  cross-origin destination in a new browsing context. The opened page receives a
+  window.opener handle to this one and can navigate it anywhere it likes, so a
+  user who returns to the original tab may be looking at an attacker page at the
+  address they expected. Current Chromium, Firefox and Safari imply noopener for
+  target=_blank, so this is defence for older and embedded browsers and for any
+  code that opens the window with window.open - which is NOT covered by that
+  implicit default and needs the noopener feature string passed explicitly.
+references: CWE-1022
+references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+
+id: DAST-MARKUP-TABNABBING_SENSITIVE-01
+title: Cross-origin target=_blank link without rel=noopener on an authentication or redirect page
+script: passive/markup.sh
+severity: medium
+confidence: high
+cwe: CWE-1022
+owasp: A01:2021
+tags: passive
+tags: quick
+coverage-scope: target
+remediation: Add rel="noopener noreferrer" to every link that opens a
+  cross-origin destination in a new browsing context, and treat this page as the
+  priority: it is an authentication, credential or redirect page, so the tab an
+  attacker can rewrite through window.opener is the one the user is about to
+  type a password into or has just been handed control of. rel="noreferrer"
+  matters here beyond noopener as well - without it the full URL of this page,
+  including any single-use login, reset or continuation token in its query
+  string, is sent to the third-party destination as the Referer.
+references: CWE-1022
+references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
+
+id: DAST-MARKUP-FRAME_INSECURE_SCHEME-01
+title: Frame or embedded object loaded over plaintext HTTP
+script: passive/markup.sh
+severity: medium
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: passive
+tags: compliance
+coverage-scope: target
+remediation: Serve the framed document over https and change the src to match. A
+  plaintext frame is readable and rewritable by anyone on the network path, and
+  whatever the user types into it is too. Where the page itself is HTTPS this is
+  active mixed content, which current browsers block outright - so the frame is
+  not merely insecure, it does not load, and the feature it provides is silently
+  broken. Add a Content-Security-Policy with block-all-mixed-content or
+  upgrade-insecure-requests to catch the next one.
+references: CWE-319
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: DAST-MARKUP-FRAME_UNTRUSTED-01
+title: Cross-origin frame embedded without a sandbox attribute
+script: passive/markup.sh
+severity: low
+confidence: medium
+cwe: CWE-829
+owasp: A08:2021
+tags: passive
+coverage-scope: target
+remediation: Add a sandbox attribute naming only the capabilities the embedded
+  document genuinely needs, and constrain what may be framed at all with a
+  Content-Security-Policy frame-src directive listing the specific origins. An
+  unsandboxed cross-origin frame can navigate the top-level window, open dialogs
+  and run plugins in this page's context. Note that sandbox="allow-scripts
+  allow-same-origin" together defeats the sandbox for a same-origin document, so
+  do not reach for that pair as a default. This check reports the absence of a
+  control, not a compromised third party: a frame whose origin you own and trust
+  may legitimately carry no sandbox, which is why its confidence is medium.
+references: CWE-829
+references: https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/
+
+id: DAST-MARKUP-CSRF_TOKEN_ABSENT-01
+title: State-changing form served without an anti-CSRF token
+script: passive/markup.sh
+severity: medium
+confidence: medium
+cwe: CWE-352
+owasp: A01:2021
+tags: passive
+tags: compliance
+coverage-scope: target
+remediation: Issue a per-session (or per-form) synchroniser token, render it into
+  every state-changing form as a hidden field, and reject any POST whose token is
+  absent or does not match. Set SameSite=Lax or Strict on the session cookie as
+  well: it is a real second layer, and on its own it covers neither a same-site
+  subdomain an attacker controls nor a cross-origin request that carries the
+  credential some other way. This check reads only the markup as served, so it
+  cannot see a token a script injects at submit time, a double-submit cookie, or
+  an Origin/Referer check made server-side - which is why its confidence is
+  medium and why a finding here is a prompt to confirm the defence, not proof
+  there is none.
+references: CWE-352
+references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/

@@ -49,13 +49,33 @@
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
-# shellcheck source=lib/http.sh
+# -x back-edge cut: lib/http.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/lib/http.sh"
-# shellcheck source=modules/dast/jwt_engine.sh
+# -x back-edge cut: modules/dast/jwt_engine.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/jwt_engine.sh"
-# shellcheck source=modules/dast/auth_engine.sh
+# -x back-edge cut: modules/dast/auth_engine.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/auth_engine.sh"
-# shellcheck source=modules/dast/crawl_engine.sh
+# -x back-edge cut: modules/dast/crawl_engine.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/crawl_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
@@ -391,6 +411,12 @@ t_case 'without --authed the phase records a gap and sends nothing'
 _fresh_run; _srv_reset
 rm -rf "$SCOURSH_SCRATCH/dast-auth"
 _phase_env false ''
+# -x back-edge cut: modules/dast/jwt.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/jwt.sh"
 assert_contains "$(run_facts coverage_reduction)" 'reason=authed_not_requested' 'the no-session case is a declared reduction'
 assert_contains "$(run_facts coverage_gap)" 'was not tested' 'and a human-readable gap - fails under silence, which reads as a clean JWT posture'
@@ -405,6 +431,12 @@ printf 'id: jwt-fixture.a\nmode: bearer\ntoken: %s\n' "$(_mk_hs_token secret)" >
 dast_auth_load "$AUTHCONF"
 _seed_session jwt-fixture a "$(_mk_hs_token secret)"
 _phase_env true ''          # no endpoints file
+# -x back-edge cut: modules/dast/jwt.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/jwt.sh"
 assert_contains "$(run_facts coverage_reduction)" 'reason=no_protected_endpoint' 'the missing-endpoint case is declared'
 assert_contains "$(run_facts coverage_gap)" 'no idempotent protected endpoint' 'and named as the operator input DAST-26 needs'
@@ -419,6 +451,12 @@ dast_auth_load "$AUTHCONF"
 _seed_session jwt-fixture a 'opaque-reference-token'
 INV=$W/inv/endpoints.json; _write_inventory "$INV"
 _phase_env true "$INV"
+# -x back-edge cut: modules/dast/jwt.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/jwt.sh"
 assert_contains "$(run_facts coverage_reduction)" 'reason=session_token_not_jwt' 'an opaque session token is a declared reduction, not a silent skip'
 
@@ -434,10 +472,158 @@ _seed_session jwt-fixture a "$JWTTOK"
 SRV_SECRET=secret            # server signs/verifies with the weak secret
 INV=$W/inv2/endpoints.json; _write_inventory "$INV"
 _phase_env true "$INV"
+# -x back-edge cut: modules/dast/jwt.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/jwt.sh"
 FIND=$(_shard_text)
 assert_contains "$FIND" 'DAST-JWT-WEAK_HMAC-01' 'the phase drives the engine end to end and emits the weak-secret finding'
 # The POST /api/order endpoint must NOT have been probed: replay is idempotent-only.
 assert_not_contains "$(cat "$REQ_LOG")" '/api/order' 'a non-idempotent (POST) endpoint is never replayed against - the non-destructive guarantee'
+
+# ===========================================================================
+# D. registration and the tension-15 check-set gate
+# ===========================================================================
+printf '\n== D. registration and check-set selection ==\n'
+
+# modules/dast/engine.sh is a pure library with a sourced-once guard and no
+# side effect at source time (its own header), and it is what pulls in
+# lib/checks.sh's `checks_registry_load`.  It is sourced HERE rather than at the
+# top of the file so sections A-C keep running against exactly the surface they
+# ran against before this section existed.
+# shellcheck source=modules/dast/engine.sh
+source "$ROOT/modules/dast/engine.sh"
+
+t_case 'the phase table reaches this script, and only at active or above'
+FOUND=0
+for spec in "${_DAST_PHASES[@]}"; do
+  [[ $spec == 'jwt.sh:active' ]] && FOUND=1
+done
+assert_eq 1 "$FOUND" \
+  'modules/dast/engine.sh names jwt.sh at tier active, so scan_dispatch dast runs it only at --intensity active'
+
+t_case 'every check id this phase emits is in the registry'
+# THIS IS THE TICKET'S CORE ASSERTION AND IT FAILS ON THE UNFIXED TREE: before
+# modules/dast/checks.rules existed, `grep -rln DAST-JWT --include=*.rules .`
+# returned nothing, so tension 12 could compute NO coverage for any of these five
+# and tension 15's filter chain could neither select nor drop them.  An emitted
+# check with no registry record is indistinguishable, in state/, from a check
+# that never ran.
+SCOURSH_INSTALL_ROOT=$ROOT checks_registry_load dast DASTJWTCK
+REG=''
+for s in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
+  n=$(records_count "$s")
+  for (( ri = 0; ri < n; ri++ )); do
+    REG+=$(records_id "$s" "$ri")
+    REG+=' '
+  done
+done
+for id in DAST-JWT-SIG_NOT_VERIFIED-01 DAST-JWT-ALG_NONE-01 \
+          DAST-JWT-EMPTY_HMAC-01 DAST-JWT-WEAK_HMAC-01 \
+          DAST-JWT-ALG_CONFUSION-01; do
+  assert_contains "$REG" "$id" \
+    "$id is registered in modules/dast/checks.rules - FAILS if a check is emitted with no registry record, which leaves tension 12 unable to compute coverage for it and tension 15 unable to filter it"
+done
+
+t_case 'the registry ids are exactly the ids jwt_engine.sh emits, with no drift'
+# The reverse direction of the assertion above.  A record for an id the engine
+# never emits is a check the registry promises and the run can never cover, which
+# reads in state/ as a permanently-uncovered check rather than as a typo.
+ENGINE_IDS=$(grep -oE "DAST-JWT-[A-Z_]+-[0-9]+" "$ROOT/modules/dast/jwt_engine.sh" | LC_ALL=C sort -u)
+RULE_IDS=$(grep -oE "^id: (DAST-JWT-[A-Z_]+-[0-9]+)$" "$ROOT/modules/dast/checks.rules" \
+  | sed 's/^id: //' | LC_ALL=C sort -u)
+assert_eq "$ENGINE_IDS" "$RULE_IDS" \
+  'the emitted id set and the registered id set are identical - FAILS on a typo in either direction, which no other assertion here would catch'
+
+t_case 'with no dast_check_selected in scope, every variant still runs'
+# The fallback the whole guard depends on: `dast_check_selected` does not exist
+# on every path these files are reachable from (it exists nowhere in the tree
+# today), and absent it everything the tier already permitted must run.  Without
+# this case, a guard that returned false when the function is missing would make
+# the entire phase inert and every "stays quiet" assertion above would still pass.
+unset -f dast_check_selected 2>/dev/null || true
+_fresh_run; _srv_reset
+SRV_SECRET=secret
+TOK=$(_mk_hs_token secret)
+jwt_run jwt-fixture GET "$URL" "$TOK"
+UNGATED_REQS=$(_request_count)
+assert_contains "$(_shard_text)" 'DAST-JWT-WEAK_HMAC-01' \
+  'the weak-secret finding is still emitted with no selection function present - FAILS under a guard that fails closed on an absent dast_check_selected, which would silently disable the whole phase'
+assert_contains "$(run_facts checks_run)" 'DAST-JWT-EMPTY_HMAC-01' \
+  'and every variant is still recorded as exercised'
+
+t_case 'a deselected variant is NOT probed and NOT recorded'
+# The gate binding for real.  `dast_check_selected` is defined here because it
+# exists nowhere in the tree yet (modules/dast/passive/headers.sh says so in its
+# own comment); this proves the guard consults it the moment it does exist, which
+# is what makes modules/dast/checks.rules a control rather than documentation.
+#
+# Each variant is its own outbound request carrying a FORGED token, so the
+# assertion is on the REQUEST COUNT as well as on the findings: suppressing only
+# the emit would leave the target receiving forgery traffic for a check that is
+# not in this run's set, and a findings-only assertion passes under exactly that
+# bug.
+# SC2329 ("this function is never invoked") is a FALSE POSITIVE here, and the
+# reason is worth stating because three suites in this directory hit it.  This
+# double IS invoked - `modules/dast/jwt_engine.sh`'s `_jwt_selected` calls
+# `dast_check_selected` - but shellcheck credits a call site to the LAST
+# definition of a name only, and this file deliberately redefines the double
+# further down (`dast_check_selected() { return 1; }`, the whole-phase-skip
+# case).  Measured on a two-line fixture: with ONE definition the call is
+# credited and nothing is reported; add a second definition and the first is
+# reported as uninvoked, whether the call site is above or below it.  Deleting
+# or renaming either definition is not an option - the name is the contract
+# between the module and its test - so this is suppressed with its reason
+# rather than "fixed".
+# shellcheck disable=SC2329
+dast_check_selected() { [[ $1 == 'DAST-JWT-ALG_NONE-01' || $1 == 'DAST-JWT-SIG_NOT_VERIFIED-01' ]]; }
+_fresh_run; _srv_reset
+SRV_SECRET=secret
+TOK=$(_mk_hs_token secret)
+jwt_run jwt-fixture GET "$URL" "$TOK"
+GATED_REQS=$(_request_count)
+FIND=$(_shard_text)
+RUNCHECKS=$(run_facts checks_run)
+assert_not_contains "$FIND" 'DAST-JWT-WEAK_HMAC-01' \
+  'the deselected weak-secret check emits nothing against a server whose secret IS weak - FAILS on the ungated engine, which emits it regardless of the check set'
+assert_not_contains "$RUNCHECKS" 'DAST-JWT-WEAK_HMAC-01' \
+  'and it is not claimed in checks_run - FAILS under gating the emit alone, which would report coverage for a check that was filtered out'
+assert_not_contains "$RUNCHECKS" 'DAST-JWT-EMPTY_HMAC-01' \
+  'nor is the deselected empty-secret check'
+assert_contains "$RUNCHECKS" 'DAST-JWT-ALG_NONE-01' \
+  'the one selected variant did run - FAILS under a gate that refuses everything, which would pass every assertion above for the wrong reason'
+[[ $GATED_REQS -lt $UNGATED_REQS ]] && LESS=yes || LESS=no
+assert_eq yes "$LESS" \
+  "a deselected variant sends FEWER requests ($GATED_REQS < $UNGATED_REQS) - FAILS under gating the emit alone, where the forged tokens are still sent to the target and only the report is trimmed"
+
+t_case 'the phase skips entirely when no DAST-JWT-* check is selected'
+# The whole-phase arm, mirroring passive/cookies.sh's cookies_no_check_selected.
+# Without it a fully-filtered run still authenticates, walks the inventory and
+# establishes an oracle - three real requests - before finding nothing to probe.
+dast_check_selected() { return 1; }
+_fresh_run; _srv_reset
+rm -rf "$SCOURSH_SCRATCH/dast-auth"
+DAST_AUTH_LOADED=0; records_clear auth 2>/dev/null || true
+: >"$AUTHCONF"; chmod 600 "$AUTHCONF"
+JWTTOK=$(_mk_hs_token secret)
+printf 'id: jwt-fixture.a\nmode: bearer\ntoken: %s\n' "$JWTTOK" >"$AUTHCONF"
+dast_auth_load "$AUTHCONF"
+_seed_session jwt-fixture a "$JWTTOK"
+SRV_SECRET=secret
+INV=$W/inv3/endpoints.json; _write_inventory "$INV"
+_phase_env true "$INV"
+source "$ROOT/modules/dast/jwt.sh"
+assert_eq 0 "$(_request_count)" \
+  'not one request is sent when every DAST-JWT-* id is filtered out - FAILS on the ungated phase, which authenticates and probes the full variant set regardless of the check set'
+assert_contains "$(run_facts coverage_reduction)" 'reason=jwt_no_check_selected' \
+  'and the skip is a DECLARED reduction - FAILS under a silent return, which makes a filtered-out check indistinguishable from a clean JWT posture'
+assert_contains "$(run_facts coverage_gap)" 'was not tested' \
+  'with a human-readable gap naming what was not tested'
+assert_not_contains "$(_shard_text)" 'DAST-JWT-' \
+  'and no finding is emitted'
+unset -f dast_check_selected
 
 t_summary 'dast-jwt'
