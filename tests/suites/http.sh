@@ -1093,24 +1093,113 @@ source "$O_ROOT/lib/http.sh"
 _http_breaker_record_failure fixture-good 1 60
 OPEN_EOF
 
+# THE HANDOFF IS A RENDEZVOUS, NEVER A WALL CLOCK, and that is this case's own
+# hard-won lesson rather than a style preference.
+#
+# It used to be `msleep 700` in the parent: fork the worker, sleep, then open
+# the breaker, ASSUMING that within those 700ms the worker had started bash,
+# sourced lib/http.sh, parsed the scope file, sent its first request and parked
+# for the second.  Under CPU contention - which is the ordinary condition when
+# a parallel fleet runs this suite - that assumption is simply false.  Measured
+# on an 18-core host with 72 spinner processes: 11 failures in 20 runs of this
+# case alone, and EVERY ONE of them with `wA.log` EMPTY.  Empty means the
+# worker had not yet reached its first `_http_abort_check` when the flag was
+# written, saw it, and correctly refused to send anything at all.
+#
+# So the race was the TEST's, not the breaker's, and the log tells the two
+# apart with no ambiguity: 2 lines is the product defect this case exists to
+# catch (the flag read only before the wait), 1 line is correct, 0 lines is the
+# test having lost its own race.  Widening the 700ms would only have moved the
+# window; the window is the bug.
+#
+# The worker now announces on a FIFO that it is INSIDE the throttle's sleep,
+# blocks on a second FIFO until the parent has opened the breaker, and only
+# then lets that sleep run out.  That places the flag's appearance strictly
+# between the pre-throttle abort check and the post-sleep one, which is the
+# only window in which this assertion tests anything - and it is the window the
+# wall clock was trying, and failing, to hit.  No elapsed time anywhere in the
+# case decides its outcome.
+cat >"$W/parked-worker.sh" <<'PARKED_EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+P_ROOT=$1 P_SCOPE=$2 P_URL=$3 P_LOG=$4 P_PARKED=$5 P_GO=$6
+# shellcheck source=/dev/null
+source "$P_ROOT/lib/http.sh"
+_p_resolve() { case $1 in *.fixture.example) printf '93.184.216.34' ;; *) return 1 ;; esac; }
+SCOURSH_HTTP_RESOLVE=_p_resolve
+_p_transport() { printf '%s %s\n' "$1" "$3" >>"$P_LOG"; printf '200\n\n'; }
+SCOURSH_HTTP_TRANSPORT=_p_transport
+
+# The real msleep is RENAMED, not reimplemented, so the throttle still sleeps
+# through the product's own code (finding F14's FIFO read included) rather
+# than through a stand-in this file invented.
+_p_msleep_src=$(declare -f msleep)
+eval "${_p_msleep_src/#msleep/_p_real_msleep}"
+
+# Opened read-write, so the open itself never blocks and a parent that died
+# cannot wedge this worker; read with a timeout, so a worker that never
+# reaches the park fails the case rather than hanging the suite.  Neither is a
+# tolerance: no outcome of this case depends on either number.
+exec {P_GOFD}<>"$P_GO"
+
+# Armed for the SECOND request only.  `mutex_acquire` also calls msleep when
+# it finds the lock held, and a contended mutex during the FIRST request would
+# otherwise be mistaken for the throttle's own park.
+P_ARMED=0
+msleep() {
+  if (( P_ARMED )); then
+    P_ARMED=0
+    printf 'parked\n' >"$P_PARKED"
+    read -r -t 60 -u "$P_GOFD" _ || true
+    # The flag is on disk by the time this returns, so what remains of the
+    # throttle's wait cannot change the outcome - only that the loop takes its
+    # post-sleep branch at all, which it does either way.  A 1ms real sleep
+    # keeps the product's sleep in the path without paying the deliberately
+    # long token interval below.
+    _p_real_msleep 1
+    return 0
+  fi
+  _p_real_msleep "$@"
+}
+
+http_scope_load "$P_SCOPE"
+http_request GET "$P_URL" 0 fixture-good >/dev/null
+P_ARMED=1
+http_request GET "$P_URL" 0 fixture-good >/dev/null
+PARKED_EOF
+
 _limits_reset
 : >"$W/wA.log"
-# 0.5 requests/second, so the SECOND request of the parked worker waits two
-# full seconds for its token: a wide, deterministic window to open the breaker
-# underneath it.  Lowering the rate is a tunable in the safe direction, which
-# is why the ceiling clamps it downwards only.
-export SCOURSH_CONFIG_REQUESTS_PER_SECOND=0.5
-bash "$W/limit-worker.sh" "$ROOT" "$FIXTURE_SCOPE" "$RATE_URL" 2 "$W/wA.log" &
+rm -f "$W/parked.fifo" "$W/go.fifo"
+mkfifo "$W/parked.fifo" "$W/go.fifo"
+# Both ends are held open read-write by the parent for the whole case, so
+# neither side's open() can block on the other not having arrived yet.
+exec {PARKEDFD}<>"$W/parked.fifo"
+exec {GOFD}<>"$W/go.fifo"
+# 0.1 requests/second, so the second request's token is ten seconds away.  The
+# number is NOT a timing margin for the handoff - the rendezvous is what
+# guarantees the park is entered before the breaker opens.  It is there so the
+# bucket is unambiguously empty when the second request reads it: at a fast
+# rate a worker descheduled between its two requests could refill the bucket
+# and be granted a token without ever parking, which is the same wall-clock
+# assumption in a new place.  Lowering the rate is a tunable in the safe
+# direction, which is why the ceiling clamps it downwards only.
+export SCOURSH_CONFIG_REQUESTS_PER_SECOND=0.1
+bash "$W/parked-worker.sh" "$ROOT" "$FIXTURE_SCOPE" "$RATE_URL" \
+  "$W/wA.log" "$W/parked.fifo" "$W/go.fifo" &
 PARKED=$!
-msleep 700
+read -r -t 60 -u "$PARKEDFD" _ || true
 rcOpen=0
 bash "$W/open-breaker.sh" "$ROOT" >/dev/null 2>&1 || rcOpen=$?
+printf 'go\n' >&"$GOFD"
 rcParked=0
 wait "$PARKED" || rcParked=$?
 unset SCOURSH_CONFIG_REQUESTS_PER_SECOND
+exec {PARKEDFD}>&-
+exec {GOFD}>&-
 assert_eq 5 "$rcOpen" 'the second process opens the breaker and exits 5'
 assert_eq 1 "$(wc -l <"$W/wA.log" | tr -d ' ')" \
-  'a worker already parked in a throttle wait when the breaker opens sends NOTHING further - FAILS while the abort flag is checked only before the wait, where every worker queued for a token during the window in which the breaker opens still reaches the transport, so a comprehensively-down target receives threshold plus workers-minus-one requests instead of threshold'
+  'a worker already parked in a throttle wait when the breaker opens sends NOTHING further - FAILS with 2 while the abort flag is checked only before the wait, where every worker queued for a token during the window in which the breaker opens still reaches the transport, so a comprehensively-down target receives threshold plus workers-minus-one requests instead of threshold; a 0 here would mean the rendezvous above broke and the worker never reached its first request, which is a defect in this case rather than in the breaker'
 assert_eq 5 "$rcParked" \
   'and the parked worker exits 5 rather than completing, so its truncated coverage is stated rather than silent'
 
