@@ -189,7 +189,7 @@ _scanner_validate_value() {
       [[ $val =~ ^[1-9][0-9]*$ ]] ;;
     # Zero IS valid here, unlike every key above: `tls-expiry-warn-days: 0`
     # means "warn about nothing that has not already expired", which is a
-    # coherent thing for an operator to want and is the only way to turn the
+    # legitimate thing for an operator to want and is the only way to turn the
     # expiring-soon check off without turning the expired check off with it.
     tls-expiry-warn-days)
       [[ $val =~ ^(0|[1-9][0-9]*)$ ]] ;;
