@@ -4665,7 +4665,8 @@ With both tier-1 tickets in, **tiers 2-5 are unblocked and nothing remains in fr
 authenticated crawl pass plugs into DAST-03's session rather than being stubbed.
 Work in those tiers has started, and out of tier order, since they are peers rather than a sequence:
 tier 4's DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`), DAST-16 (`active/cmdi.sh`), DAST-17
-(`active/pathtraversal.sh`) and DAST-19 (`active/openredirect.sh`), tier 5's DAST-26 (`jwt.sh`),
+(`active/pathtraversal.sh`), DAST-19 (`active/openredirect.sh`) and DAST-20 (`active/xxe_ssrf.sh`),
+tier 5's DAST-26 (`jwt.sh`),
 DAST-27 (`graphql.sh`, the §7.4 GraphQL introspection & key-exposure check), DAST-29 (`authz.sh`) and
 DAST-30 (`passive/transport.sh`) and
 tier 2's DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`) and DAST-11
@@ -4700,6 +4701,18 @@ DAST-16 is bounded time-based OS command injection (`DAST-INJ-CMDI_TIME-01`, CWE
 DAST-14's shared `inject_engine.sh`: the injected sleep is clamped into 1..10s BEFORE substitution so a
 detection probe can never become a denial-of-service - the bound is load-bearing and applied at the
 point of substitution, not left advisory.
+DAST-20 (`active/xxe_ssrf.sh`) is the fifth tier-4 probe and the §7.3 XXE/SSRF family: three check ids
+(an internal-entity reflection with no network component, an external entity confirmed via a content
+signature independently fetched from the sentinel, and the identical sentinel sent as a plain parameter
+value). Its tension-19 relevant decision is where the SENTINEL comes from: `_xs_sentinel_set` reads it
+directly out of `lib/http.sh`'s own already-loaded scope-tuple set - an `extra-host` declared for the
+current target when the operator added one, else the target's own `base-url` as a self-referential
+fallback - never a host this probe invents or a flag substitutes. The two techniques that fetch the
+sentinel do so through the ordinary `http_request` chokepoint, exactly like every other probe's traffic;
+the actual SSRF/XXE connection is made by the target, not by scoursh, and the whole safety property
+rests on the payload never naming a host the operator has not already authorised this run to reach
+itself. A noisy baseline (one that already carries the sentinel's own content) SKIPS the follow-up probe
+entirely rather than sending it and discarding an unattributable result.
 DAST-27's GraphQL introspection check (`modules/dast/graphql.sh`/`graphql_engine.sh`) parses the
 introspection response structurally via `crawl_json_flatten` rather than grepping for `__schema`: a
 server with introspection correctly DISABLED echoes that literal string back inside its own refusal
