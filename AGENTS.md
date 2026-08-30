@@ -316,6 +316,7 @@ data-exposure family) and DAST-30 (`passive/transport.sh`, the §7.4 plaintext-e
 mixed-content family - a tier-5 ticket that RUNS at tier `passive` and lives under
 `modules/dast/passive/`, see its own section below), tier 2's
 DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`, the §7.1 security-header family),
+DAST-08 (`passive/cors.sh`, the §7.1 CORS origin-reflection family),
 DAST-10 (`passive/leakage.sh`, the §7.1 information-disclosure family) and
 DAST-11 (`passive/markup.sh`, the §7.1 HTML-markup family),
 and tier 3's DAST-12 (`active/discovery.sh`, §7.2 content discovery - the first safe-active phase; no
@@ -324,10 +325,11 @@ wordlist ships in this repository by design, see `modules/dast/wordlists/README.
 tier 3)
 have landed, out of tier order, since the tiers are peers rather than a sequence once tier 1 is in.
 DAST-06, DAST-05, DAST-10, DAST-11 and DAST-30 each originally appended their own block to a shared
-`modules/dast/passive/checks.rules`; that file is now SPLIT five ways, one
-`checks-<name>.rules` per owner, per `docs/FOUNDATION.md` tension 29 - so DAST-07, DAST-08 and
-DAST-09, which are open and unordered among themselves, each write their own
-`modules/dast/passive/checks-<name>.rules` and append to nobody's file.
+`modules/dast/passive/checks.rules`; that file is now SPLIT six ways, one
+`checks-<name>.rules` per owner, per `docs/FOUNDATION.md` tension 29 - DAST-08 landed after that split
+and so was seeded directly into its own `modules/dast/passive/checks-cors.rules` rather than ever
+touching a shared file, and DAST-07 and DAST-09, which are open and unordered among themselves, will
+each write their own `modules/dast/passive/checks-<name>.rules` and append to nobody's file.
 `modules/dast/active/checks.rules` is the tier-3/tier-4 equivalent and is under the identical
 append-only rule - DAST-15, DAST-19 and tier 3's DAST-13 all appended to DAST-14's file rather than
 adding a sibling, because `rules/RULE-FORMAT.md` §9's path table reserves the `checks.rules` BASENAME
@@ -1050,6 +1052,54 @@ sub-resource: a discovered `http://` script URL is classified from the markup an
 out-of-scope reference is still reported - a third-party CDN over plaintext is the commonest real
 mixed-content case and is out of scope by definition, so dropping it would be a false negative on
 exactly the case that matters most.
+**DAST-08 (`modules/dast/passive/cors.sh` plus `cors_engine.sh`) is tier 2's fifth check.**  Its own
+commit message describes creating `modules/dast/passive/` and a shared, appended-to `checks.rules` -
+true when the ticket was originally written, but DAST-06 reached `dev` first and already created the
+directory (see DAST-05's paragraph above), and tension 29's split (also above) already replaced the
+shared file by the time this ticket actually landed, so its three CORS check ids were seeded directly
+into `modules/dast/passive/checks-cors.rules` rather than into a shared file that no longer exists.
+`docs/STEP5-DAST-PLAN.md`'s DAST-08 landing note is the authority for the detail; three things about it
+bind every OTHER tier-2 ticket and so belong here rather than only there.
+
+- **`dast_check_selected` DOES NOT EXIST, in any file.**  `modules/dast/active/sqli.sh` calls it behind
+  a `declare -F dast_check_selected >/dev/null` guard and `modules/dast/passive/cors.sh` now does the
+  same, so both are inert: tension 15's per-check selection has never bound a DAST check, and
+  `--profile-scan`/`--intensity` narrowing does not reach the module's script checks today (the
+  PHASE-level intensity gate in `dast_run_phase` is a separate, working mechanism and is not affected).
+  Keep the guard rather than writing a local copy; the function belongs in `modules/dast/engine.sh`,
+  which is exactly the file a parallel tier-2 ticket is most likely to be editing.  It is filed as its
+  own ticket.
+- **A §7.1 check that sends a request is still passive, and the contract is "no mutation of state", not
+  "no traffic".**  `cors.sh` is the worked example: only GET/HEAD endpoints from the inventory are
+  requested, one request per distinct route, no request body, no response-body capture sink, no
+  redirect followed, and everything through `http_request`.  Assert those against a REQUEST LOG rather
+  than a return value - `tests/suites/dast-cors.sh` section D is the pattern, and it is what catches a
+  probe that quietly starts requesting a POST route.
+- **A response-header read is case-INSENSITIVE on the field name, and that is a coverage control
+  rather than a nicety - it binds DAST-05 and DAST-06 as much as this ticket.**  RFC 7230 §3.2 makes
+  field names case-insensitive and HTTP/2 (RFC 7540 §8.1.2) REQUIRES them lowercase on the wire, so a
+  target behind any HTTP/2 edge answers `access-control-allow-origin:` and a matcher spelling the RFC
+  6454 form byte-for-byte reports every one of them clean - a silent false negative on the most common
+  production deployment shape, indistinguishable from a genuinely absent header.  `cors_header_last`
+  passes `-i` through `scan_match` (never a bare grep, tension 4); both bound engines accept it
+  identically (`grep -E -i`, `rg -i`), the same way `scan_match_offsets` already passes `-b -o`.
+  DAST-08's first draft documented the property in a comment and omitted the flag from the pattern,
+  and only `tests/suites/dast-cors.sh`'s lowercase fixtures - one at the reader level, one end to end -
+  caught it; a suite that recorded only RFC-spelled fixtures would have certified it green.
+- **A scratch file in a DAST phase is created with `mktemp`, never with a name built from `$BASHPID`.**
+  Every one of these paths is spelled `${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/...`, and that fallback is
+  reached by every standalone-engine caller - including this repository's own suites - so a pid-derived
+  name is one a local user can predict and pre-create as a symlink that the process then writes
+  *through*: `scan_match` truncates whatever it points at, and a response-header capture sink deposits
+  the target's own headers wherever someone else chose (CWE-377 via CWE-59). `lib/http.sh`'s
+  `_http_transport_default` already had the right idiom (`mktemp ... XXXXXX` plus `chmod 600`); DAST-08
+  shipped the wrong one in both of `cors_engine.sh`'s scratch paths and corrected it in the same
+  ticket. `tests/suites/dast-cors.sh` section A2 pins it by PLANTING the pre-fix name as a symlink over
+  a canary and asserting the canary survives - and note that its `_plant_symlink` helper **sets** a
+  variable rather than printing one, because a `VICTIM=$(_plant_symlink ...)` runs in a subshell with
+  its own `$BASHPID` and so plants a name the code under test never computes; that first draft passed
+  against the vulnerable spelling, which is the failure mode this file's own testing rule exists to
+  catch.
 
 **This block used to read "no DAST-0x ticket is picked up until step 3's outstanding rule packs and
 step 4's SCA half are both complete on `dev`"; BOTH halves of that gate are now discharged, so it is
