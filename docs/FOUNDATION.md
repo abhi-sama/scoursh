@@ -4624,7 +4624,7 @@ normative, frozen-in-intent shape in `docs/INVENTORY-FORMAT.md`.
 With both tier-1 tickets in, **tiers 2-5 are unblocked and nothing remains in front of them**; the
 authenticated crawl pass plugs into DAST-03's session rather than being stubbed.
 Work in those tiers has started, and out of tier order, since they are peers rather than a sequence:
-tier 4's DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`), DAST-17
+tier 4's DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`), DAST-16 (`active/cmdi.sh`), DAST-17
 (`active/pathtraversal.sh`) and DAST-19 (`active/openredirect.sh`), tier 5's DAST-26 (`jwt.sh`),
 DAST-27 (`graphql.sh`, the §7.4 GraphQL introspection & key-exposure check), DAST-29 (`authz.sh`) and
 DAST-30 (`passive/transport.sh`) and
@@ -4656,6 +4656,10 @@ defeat a real allow-list and so the two worth probing for.
 Every one of those was measured by mutating the implementation into the rejected reading and watching
 `tests/suites/dast-openredirect.sh` go red, not reasoned about: ten mutations, ten reds, one green
 baseline.
+DAST-16 is bounded time-based OS command injection (`DAST-INJ-CMDI_TIME-01`, CWE-78), built on
+DAST-14's shared `inject_engine.sh`: the injected sleep is clamped into 1..10s BEFORE substitution so a
+detection probe can never become a denial-of-service - the bound is load-bearing and applied at the
+point of substitution, not left advisory.
 DAST-27's GraphQL introspection check (`modules/dast/graphql.sh`/`graphql_engine.sh`) parses the
 introspection response structurally via `crawl_json_flatten` rather than grepping for `__schema`: a
 server with introspection correctly DISABLED echoes that literal string back inside its own refusal

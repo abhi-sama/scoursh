@@ -308,7 +308,8 @@ session acquisition) and DAST-04 (`modules/dast/crawl.sh`) have both landed, so 
 parameter inventory that all twenty-seven tickets in tiers 2-5 consume exists, and it can be built
 against an authenticated session.
 Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has started - tier 4's
-DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`), DAST-17 (`active/pathtraversal.sh`) and
+DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`), DAST-16 (`active/cmdi.sh`),
+DAST-17 (`active/pathtraversal.sh`) and
 DAST-19 (`active/openredirect.sh`), tier
 5's DAST-26 (`jwt.sh`), DAST-27 (`graphql.sh`, the §7.4 GraphQL introspection & key-exposure check),
 DAST-28 (`ratelimit.sh`, the §7.4 missing-throttling burst probe),
@@ -336,19 +337,24 @@ required to move"), so it is not a defect to fix in a follow-up. DAST-07 is open
 lands relative to the split, should follow whichever of the two shapes is in effect at the time rather
 than forcing a migration of its own.
 `modules/dast/active/checks.rules` is the tier-3/tier-4 equivalent and is under the identical
-append-only rule - DAST-15, DAST-19 and tier 3's DAST-13 all appended to DAST-14's file rather than
-adding a sibling, because `rules/RULE-FORMAT.md` §9's path table reserves the `checks.rules` BASENAME
+append-only rule - DAST-15, DAST-16, DAST-19 and tier 3's DAST-13 all appended to DAST-14's file
+rather than adding a sibling, because `rules/RULE-FORMAT.md` §9's path table reserves the
+`checks.rules` BASENAME
 repository-wide and makes a per-ticket `openredirect-checks.rules` an `E070`.
 **DAST-15 is the first ticket to consume `modules/dast/active/inject_engine.sh` WITHOUT extending
 it**, which is what makes DAST-14's shared half demonstrably shared rather than sqli-shaped - it
 added no line to that file, and appended its three `DAST-INJ-XSS_REFLECTED_*` checks to the shared
 `modules/dast/active/checks.rules` the same append-only way the passive peers share theirs.
+**DAST-16 (`active/cmdi.sh`) has also landed**, tier 4's second injection probe: bounded time-based
+blind command injection (CWE-78), reusing DAST-14's shared `inject_engine.sh` and time-based mechanism
+verbatim - the injected sleep is clamped into 1..10s BEFORE substitution so the probe can never become
+a DoS (see `docs/STEP5-DAST-PLAN.md`'s DAST-16 landing note).
 **DAST-17 (`active/pathtraversal.sh`) has also landed**, tier 4's third injection probe: it reuses
 DAST-14's shared `inject_engine.sh` unchanged and is the first probe to fall back to reading
 `$SCOURSH_RUN_DIR/inventory/{endpoints,parameters}.json` directly when the
 `SCOURSH_DAST_ENDPOINTS`/`SCOURSH_DAST_PARAMETERS` exports are empty (the documented first-run state -
 see `docs/STEP5-DAST-PLAN.md`'s DAST-17 landing note).
-DAST-16, DAST-18 and DAST-20..DAST-25 are open, unordered among themselves, and should reuse the
+DAST-18 and DAST-20..DAST-25 are open, unordered among themselves, and should reuse the
 engine the same way.
 The one thing worth carrying up here from DAST-15's landing note: **that probe measures ESCAPING, not
 reflection.**  Almost every parameter on a real application reflects something, so a probe that
@@ -356,6 +362,11 @@ flagged reflection alone is a false-positive generator - and the escaped case is
 in the direction that reads as a pass, which is why every context case in `tests/suites/dast-xss.sh`
 is a PAIR (the same marker into the same template, once escaped and once raw) rather than a single
 positive.
+DAST-16 is bounded time-based OS command injection (`DAST-INJ-CMDI_TIME-01`, CWE-78): it reuses
+DAST-14's `inject_engine.sh` and time-based mechanism, adds
+`modules/dast/payloads/cmdi-time-payloads.txt`, and clamps the injected sleep into 1..10s BEFORE
+substitution so a probe can never become a DoS - the bound is load-bearing and applied, not advisory.
+`tests/suites/dast-cmdi.sh` (registered) proves it.
 DAST-29 created a THIRD such shared registry, `modules/dast/checks.rules`, for the tier-5 phases
 whose scripts sit at the top level of `modules/dast/`; DAST-28 has already appended its two
 `DAST-RATE-*` records to it, and DAST-27 has appended its own `DAST-GQL-INTROSPECTION-01` record the
