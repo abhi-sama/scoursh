@@ -1,15 +1,22 @@
-# modules/dast/passive/checks.rules - the §7.1 passive script-check registry
-# (rules/RULE-FORMAT.md §9.5; docs/STEP5-DAST-PLAN.md tier 2).
+# modules/dast/passive/checks-tls.rules - the §7.1 transport-security
+# script-check registry (rules/RULE-FORMAT.md §9.5; docs/STEP5-DAST-PLAN.md
+# DAST-07, tier 2).  Owned by modules/dast/passive/tls.sh; ids are all
+# `DAST-TLS-*`.
 #
-# checks_registry_load (lib/checks.sh) globs every *.rules under modules/dast/
-# with no per-file allowlist, so this file and modules/dast/active/checks.rules
-# load together on any `scan.sh dast` run; the linter enforces one owning module
-# (DAST) for every record in both.
-#
-# This file currently registers DAST-07's transport-security checks only.  The
-# other tier-2 passive tickets (DAST-05, 06, 08, 09, 10, 11) are peers with no
-# ordering between them and were run in parallel with this one, so each adds its
-# own records here rather than any of them owning the file.
+# ONE FILE PER OWNING PHASE SCRIPT, per rules/RULE-FORMAT.md §9's
+# `checks-<name>.rules` row (docs/FOUNDATION.md tension 29).  This registry
+# originally shipped as the shared `modules/dast/passive/checks.rules` - DAST-07
+# was written and reviewed before tension 29's split landed, so it carried the
+# pre-split shape for a time - and is renamed here to match every one of its
+# per-owner siblings in this directory (checks-banner, checks-cookies,
+# checks-cors, checks-headers, checks-leakage, checks-markup,
+# checks-transport), closing the gap AGENTS.md recorded as follow-up work
+# rather than forcing it into the split's own merge.
+# `checks_registry_load` (lib/checks.sh) globs every `*.rules` under
+# `modules/dast/` at any depth with no per-file allowlist, so this rename
+# needed no engine change; `tests/suites/dast.sh`'s "modules/dast/passive/
+# ships FIVE per-owner registries" case already asserted the shared
+# `checks.rules` was gone and is what caught this file still carrying it.
 #
 # THE TYPE TAG IS `passive`, MATCHING THE PHASE TABLE'S `passive/tls.sh:passive`
 # FLOOR (modules/dast/engine.sh).  Both gates must permit and neither can widen
