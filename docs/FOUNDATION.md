@@ -4898,6 +4898,31 @@ The client-rendered (SPA) limitation ships as a stated `coverage_gap` reaching `
 report formats, not as prose and not as a fix: scoursh executes no JavaScript, so a crawl of a real
 Angular target found 13 endpoints and 0 parameters and said so, which is the honest result
 `docs/DESIGN.md` §15 demands rather than a defect to tune away.
+**DAST-09 (`modules/dast/passive/banner.sh` plus `banner_engine.sh`) has landed**, a §7.1 passive check.
+`modules/dast/passive/` already existed by the time it landed (DAST-06 created it first), and its three
+check ids are seeded into their own `modules/dast/passive/checks-banner.rules` rather than a shared
+`checks.rules` - tension 29's split into one `checks-<name>.rules` per owner was already in effect for
+its peers, so this ticket follows that convention rather than reintroducing the retired shared file.
+`checks_registry_load` globs `*.rules` at any depth under `modules/dast/` regardless of which shape a
+given owner picked.
+Two things about it are tension decisions rather than implementation detail.
+First, tension 25 applies unchanged to a DAST version check: the scanner does an **exact table lookup**
+against the vendored `data/versions.db` and performs no version comparison and no range arithmetic at
+all, so "out of date" means "this exact version is named in the list" and never a guess - the expansion
+of an advisory range into exact versions stays on the networked box that has the tooling.
+`docs/VERSIONS-DB.md` is the normative format for that file and, per tension 25's own "a list nobody can
+refresh becomes wrong quietly", carries the refresh procedure as part of the format; the file's `banner`
+namespace and the SCA-ecosystem namespace `tools/vendor-engines.sh advisories` writes coexist in one
+table by construction (that writer replaces only its own ecosystem's rows, and `banner` sorts before
+every ecosystem name under `LC_ALL=C`).
+Second, an absent or `banner`-less list is a **declared coverage reduction of that one sub-check**, under
+tension 14's declared rows and `docs/DESIGN.md` §15, never an error and never a clean result: the two
+disclosure checks keep running, `versions_db_absent` and `versions_db_no_banner_rows` are distinct
+reasons, a product the list has never heard of is counted into a `versions_db_product_unknown` roll-up,
+and every out-of-date finding carries the list's own generation stamp - because a stale list produces
+false negatives, which is the failure mode that hides.
+Tier 4's DAST-14 (`active/sqli.sh`) and tier 5's DAST-26 (`jwt.sh`) also landed, out of tier order;
+`docs/STEP5-DAST-PLAN.md`'s per-ticket tables are the authority for what is in.
 `modules/cloud/` remains unbuilt and steps 6, 7 and 10 remain unstarted; step 5 is still the top
 priority ahead of them.
 `lib/awscli.sh` is a further out-of-sequence exception: a credential-less pass built it ahead of step
