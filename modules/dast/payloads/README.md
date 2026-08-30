@@ -42,6 +42,16 @@ from a condition that is always true versus always false, which is exactly the
 "tautology vs contradiction that are otherwise identical" `docs/DESIGN.md` §7.3
 asks for.
 
+The path-traversal files (DAST-17) use a third placeholder and a fourth line
+shape:
+
+- `%M` - a marker's relative path (`pathtraversal-markers.txt`), substituted
+  into a directory-climb template (`pathtraversal-sequences.txt`);
+- `pathtraversal-markers.txt` is `<marker's relative path><TAB><ERE
+  signature>` - the signature is matched against the response body, and must
+  be specific to the marker file's real CONTENTS so a page that merely echoes
+  the requested path back is not itself a match.
+
 ## Graceful degradation
 
 A probe that cannot read a payload file (absent or empty) records a
