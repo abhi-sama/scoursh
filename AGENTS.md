@@ -308,7 +308,8 @@ session acquisition) and DAST-04 (`modules/dast/crawl.sh`) have both landed, so 
 parameter inventory that all twenty-seven tickets in tiers 2-5 consume exists, and it can be built
 against an authenticated session.
 Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has started - tier 4's
-DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`) and DAST-19 (`active/openredirect.sh`), tier
+DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`), DAST-17 (`active/pathtraversal.sh`) and
+DAST-19 (`active/openredirect.sh`), tier
 5's DAST-26 (`jwt.sh`), DAST-27 (`graphql.sh`, the §7.4 GraphQL introspection & key-exposure check),
 DAST-28 (`ratelimit.sh`, the §7.4 missing-throttling burst probe),
 DAST-29 (`authz.sh`, the §7.4 object-level authorization and
@@ -342,7 +343,12 @@ repository-wide and makes a per-ticket `openredirect-checks.rules` an `E070`.
 it**, which is what makes DAST-14's shared half demonstrably shared rather than sqli-shaped - it
 added no line to that file, and appended its three `DAST-INJ-XSS_REFLECTED_*` checks to the shared
 `modules/dast/active/checks.rules` the same append-only way the passive peers share theirs.
-DAST-16..DAST-18 and DAST-20..DAST-25 are open, unordered among themselves, and should reuse the
+**DAST-17 (`active/pathtraversal.sh`) has also landed**, tier 4's third injection probe: it reuses
+DAST-14's shared `inject_engine.sh` unchanged and is the first probe to fall back to reading
+`$SCOURSH_RUN_DIR/inventory/{endpoints,parameters}.json` directly when the
+`SCOURSH_DAST_ENDPOINTS`/`SCOURSH_DAST_PARAMETERS` exports are empty (the documented first-run state -
+see `docs/STEP5-DAST-PLAN.md`'s DAST-17 landing note).
+DAST-16, DAST-18 and DAST-20..DAST-25 are open, unordered among themselves, and should reuse the
 engine the same way.
 The one thing worth carrying up here from DAST-15's landing note: **that probe measures ESCAPING, not
 reflection.**  Almost every parameter on a real application reflects something, so a probe that
