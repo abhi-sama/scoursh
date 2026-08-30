@@ -561,3 +561,65 @@ remediation: Never build a template string from request-derived data and never
 references: CWE-1336
 references: CWE-94
 references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-XXE_ENTITY-01
+title: XML parser processes a DOCTYPE-declared entity (candidate XXE sink)
+script: active/xxe_ssrf.sh
+severity: medium
+confidence: medium
+cwe: CWE-611
+owasp: A05:2021
+tags: active
+coverage-scope: target
+remediation: Disable DOCTYPE processing (or at minimum external general and
+  parameter entity resolution) in every XML parser this endpoint can reach.
+  For Java, set the JAXP/DocumentBuilderFactory/SAXParserFactory/
+  XMLInputFactory FEATURE_SECURE_PROCESSING and disallow-doctype-decl
+  features; for libxml2-based parsers (PHP, Python lxml, Ruby Nokogiri), do
+  not enable entity substitution or external entity loading; for .NET, use
+  XmlReaderSettings with DtdProcessing.Prohibit. A parser that still
+  substitutes an entity declared in the request body confirms these settings
+  are not applied, which is the precondition for XML External Entity (XXE)
+  attacks including SSRF and local file disclosure.
+references: CWE-611
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-INJ-XXE_SSRF-01
+title: XML external entity causes the server to fetch an in-scope URL (XXE-driven SSRF)
+script: active/xxe_ssrf.sh
+severity: critical
+confidence: high
+cwe: CWE-918
+owasp: A10:2021
+tags: active
+coverage-scope: target
+remediation: Disable external entity resolution in this endpoint's XML
+  parser (see DAST-INJ-XXE_ENTITY-01's remediation for the per-platform
+  settings) - this is the confirmed-impact case, not merely a candidate.
+  Independently, apply an SSRF allow-list to any code path that lets
+  request-derived data choose a server-side fetch destination: resolve the
+  destination server-side, then require the resolved address to match an
+  explicit allow-list of intended hosts before the fetch is issued, rejecting
+  private/loopback/link-local ranges and any redirect that leaves the
+  allow-listed set.
+references: CWE-918
+references: CWE-611
+references: https://owasp.org/Top10/A10_2021-Server-Side_Request_Forgery_%28SSRF%29/
+
+id: DAST-INJ-SSRF_PARAM-01
+title: Server-side request forgery via request parameter
+script: active/xxe_ssrf.sh
+severity: critical
+confidence: high
+cwe: CWE-918
+owasp: A10:2021
+tags: active
+coverage-scope: target
+remediation: Never let request-derived data choose a server-side fetch
+  destination directly. Resolve the destination host server-side and require
+  the RESOLVED address (not the string a client supplied) to match an
+  explicit allow-list of intended hosts before issuing the fetch, reject
+  private/loopback/link-local/CGN ranges outright, and re-validate on every
+  redirect hop rather than trusting the first check alone.
+references: CWE-918
+references: https://owasp.org/Top10/A10_2021-Server-Side_Request_Forgery_%28SSRF%29/
