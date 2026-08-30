@@ -35,11 +35,17 @@ findings.normalised.jsonl
 data/advisories.db
 data/versions.db
 
-# `pnpm test` / `pnpm build` byproducts.  package.json exists ONLY so those
-# conventional entry points reach tests/run-tests.sh (AGENTS.md: "no
-# dependencies, no lockfile, no node_modules, no build step"), so anything pnpm
-# writes here is an artifact of running the suite, never a source.  Both landed
-# untracked in a workspace after a reviewer ran `pnpm build`, and a committed
-# pnpm-lock.yaml would assert a Node dependency set this project does not have.
-node_modules/
-pnpm-lock.yaml
+# `pnpm test` / `npm test` drop these even though package.json declares no
+# dependency of any kind (see AGENTS.md: it exists ONLY so the conventional
+# entry point runs tests/run-tests.sh).  scoursh has no Node runtime dependency
+# and neither file is a source; an untracked one is enough to make fleet tooling
+# refuse this clone as dirty, exactly as .DS_Store above was.
+#
+# ANCHORED WITH A LEADING SLASH, and that is load-bearing rather than tidiness:
+# an unanchored `pnpm-lock.yaml` / `package-lock.json` matches at ANY depth, and
+# tests/fixtures/sca/ is full of lockfiles by those exact names.  Already-tracked
+# fixtures would survive, so the damage would be invisible until the next SCA
+# ticket's new fixture was silently never added.
+/node_modules/
+/pnpm-lock.yaml
+/package-lock.json

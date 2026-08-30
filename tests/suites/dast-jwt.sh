@@ -46,6 +46,24 @@
 # SC2030/SC2031: a prefix `VAR=val cmd` before a subprocess is DELIBERATELY
 #   scoped to that one invocation.
 # shellcheck disable=SC2016,SC2030,SC2031
+#
+# WHY EVERY `source .../jwt.sh` BELOW CARRIES `# shellcheck source=/dev/null`.
+# This suite sources the phase script four times, once per scenario, which is
+# the only way to exercise a phase `dast_run_phase` reaches by `source`.
+# `shellcheck -x` follows `source` STATICALLY and has no "already inlined"
+# notion, so four sources means four full inlinings of jwt.sh + jwt_engine.sh +
+# auth_engine.sh + crawl_engine.sh + lib/http.sh + lib/core.sh.  MEASURED on
+# this file before the cut: 10 minutes and 23.5GB resident and still climbing,
+# against roughly 45 seconds afterwards - the same runaway AGENTS.md records for
+# the modules/sca source cycle.  It is what trips the memory watchdog in
+# tests/run-tests.sh, and that watchdog then kills whatever OTHER file is in
+# flight when free memory hits the floor, so a stage failure blames an innocent
+# file and the real cause is invisible.  (Note the wording: a comment line whose
+# first word after `#` is the linter's own name is parsed as a DIRECTIVE, which
+# is SC1072/SC1073 rather than prose - AGENTS.md records that one too.)
+# NOTHING IS LOST: jwt.sh is its own entry in the stage's file list and is
+# statically checked there, in full, exactly once.  The directives at the top of
+# this file are the graph this suite really needs walked, and they stay.
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)

@@ -734,7 +734,7 @@ only that all of them come after DAST-04 (they need the endpoint list) and DAST-
 | DAST-06 **(landed)** | `passive/cookies.sh` | `Secure`/`HttpOnly`/`SameSite` per cookie. See the landing note below the tier-2 table. |
 | DAST-07 | `passive/tls.sh` | Shells out to `openssl s_client`; the one documented exception to "every network call goes through `lib/http.sh`" (`docs/FOUNDATION.md` tension 19's neighbourhood notes this). Sequence close to DAST-30 (`transport.sh`), which complements it - not a hard code dependency, just worth landing in the same review window for a coherent report section. |
 | DAST-08 **(landed)** | `passive/cors.sh` | Origin-reflection probe. Landing note below. It created `modules/dast/passive/` and `modules/dast/passive/checks.rules`, the shared tier-2 script-check registry every other ticket in this table appends its own records to. |
-| DAST-09 | `passive/banner.sh` | Framework/version disclosure matched against **`data/versions.db`**. The writer side is no longer a forward dependency: `tools/vendor-engines.sh advisories` landed ahead of step 5 and writes `data/versions.db` by the same call that writes `data/advisories.db` (tension 25). What is still missing is the data - no `data/versions.db` is committed to this repository, and populating one is an operator action on a networked box, never part of a scan. This ticket ships the matching logic and must degrade gracefully (skip that sub-check with a reason, not an error) when `data/versions.db` is missing or empty, which is the state of a fresh clone. |
+| DAST-09 **(landed)** | `passive/banner.sh` | Framework/version disclosure matched against **`data/versions.db`**, seeded into its own `modules/dast/passive/checks-banner.rules` (tension 29's per-owner split was already in effect for its peers by the time it landed). The writer side is no longer a forward dependency: `tools/vendor-engines.sh advisories` landed ahead of step 5 and writes `data/versions.db` by the same call that writes `data/advisories.db` (tension 25). `data/versions.db` is gitignored and absent by default in every checkout (an earlier accidental commit of it was reverted); populating one is an operator action on a networked box, never part of a scan. This ticket ships the matching logic, `docs/VERSIONS-DB.md`'s format and refresh procedure, and degrades gracefully (that sub-check alone becomes a recorded reason, never an error) when the list is missing or carries no `banner` row - the state of a fresh clone. See the landing note below the tier-2 table. |
 | DAST-10 **(landed)** | `passive/leakage.sh` | Verbose-error/stack-trace disclosure, upstream proxy header leakage, email disclosure, client-config leakage in served JS, CDN/third-party origin detection. Its "API key found in served JS" output is a later correlation input for DAST-27 (`graphql.sh`) at the derived-finding layer (tension 6), not a code dependency. See the landing note below the tier-2 table. |
 | DAST-11 **(landed)** | `passive/markup.sh` | Missing SRI, reverse tabnabbing, insecure external frame, CSRF-token absence in state-changing forms. See the landing note below the tier-2 table. |
 
@@ -1193,6 +1193,69 @@ never read as a clean target.
   module today.  `cors.sh` uses the identical guard so it behaves exactly as its peer, and the gap is
   filed as its own ticket rather than closed inside a check: the function belongs in
   `modules/dast/engine.sh`, which every tier-2 peer is editing in parallel.
+
+#### What DAST-09 (`passive/banner.sh`) shipped
+
+**DAST-09 (`passive/banner.sh`) has landed - a tier-2 check.**
+`modules/dast/passive/` and its shared script-check registry already existed by the time it landed
+(DAST-08's landing note above), so its three check ids are seeded into their own
+`modules/dast/passive/checks-banner.rules` following the tension-29 per-owner split, and it did not
+create `modules/dast/passive/` itself - only `docs/VERSIONS-DB.md`.
+
+It ships four artifacts plus one doc:
+
+- `modules/dast/passive/banner_engine.sh` - the pure, testable half. Header iteration over the capture
+  file `lib/http.sh` writes, `<meta name="generator">` extraction, versioned-bundle-filename extraction,
+  the frozen product-key normalisation (`banner_normalize_product`), and the `data/versions.db` lookup.
+  It opens no socket and names no host; every function is a pure function over bytes the caller already
+  has, which is what makes the whole detection surface testable from a recorded response.
+- `modules/dast/passive/banner.sh` - the phase script `dast_run_phase` sources, at tier `passive`, so it
+  runs on the default intensity. It reads `reports/<run>/inventory/endpoints.json` (DAST-04) and never
+  crawls; it dials GET/HEAD endpoints only and counts-and-reports the rest; every request goes through
+  `http_request`.
+- `modules/dast/passive/checks-banner.rules` - its own check registry, with three ids
+  (`DAST-BANNER-SERVER_DISCLOSURE-01` info/CWE-200/A05, `DAST-BANNER-VERSION_DISCLOSURE-01`
+  low/CWE-200/A05, `DAST-BANNER-OUTDATED_COMPONENT-01` high/CWE-1104/A06), each with remediation text.
+  It lands after tension 29's per-owner split was already in effect for its tier-2 peers, so it was
+  seeded directly into its own file rather than into a shared `checks.rules` - `checks_registry_load`
+  globs `*.rules` at any depth under `modules/dast/`, so which shape a given owner picked makes no
+  difference to what loads.
+- `tests/suites/dast-banner.sh` (69 assertions, registered in `tests/run-tests.sh`) plus
+  `tests/fixtures/dast/banner/` - recorded header/body pairs and a fixture `versions.db`. No network, no
+  Docker. Assertions are made on the REQUEST LOG where the claim is about traffic, so "the POST endpoint
+  was not dialled" is measured rather than asserted.
+- `docs/VERSIONS-DB.md` - the normative, self-contained format for `data/versions.db`, in the role
+  `docs/INVENTORY-FORMAT.md` plays for the crawl inventory.
+
+Five decisions worth stating here rather than leaving to the diff, each pinned by a test naming the
+reading it fails under:
+
+1. **Two namespaces, one table.** Field 1 is an SCA ecosystem for the rows `tools/vendor-engines.sh
+   advisories` writes and the literal `banner` for the rows this check reads. That writer replaces only
+   the rows whose first field equals the ecosystem it is writing, and `banner` sorts before every
+   ecosystem name under `LC_ALL=C`, so refreshing npm cannot delete the banner catalogue and adding a
+   banner row cannot disturb the sort `db_lookup_exact` needs.
+2. **Exact lookup only - no version comparison anywhere.** Deciding that 1.18.0 is behind 1.27.0 is range
+   arithmetic, which tension 25 moved off the scanner deliberately. "Out of date" means "this exact
+   version is named in the vendored list", never a guess.
+3. **Degradation is per-sub-check and named.** `versions_db_absent` and `versions_db_no_banner_rows` are
+   distinct reasons, the two disclosure checks keep running under both, and a discovered product with no
+   row of any version lands in one `versions_db_product_unknown` roll-up rather than one record per
+   product. The out-of-date finding carries the list's own `# generated:` stamp, because a stale list
+   produces false negatives and those are the ones that hide.
+4. **The version is in the finding's identity for `OUTDATED_COMPONENT` and out of it for the two
+   disclosure checks.** A disclosure survives an upgrade and must keep one identity; a
+   known-vulnerable-version claim is about that version and must go `fixed` when it changes.
+5. **Three ids, not one**, for the reason `modules/dast/active/checks.rules` already records for the
+   three SQLi techniques: the DAST location profile carries no "kind" component, so one id would collide
+   a name-only disclosure with a version hit on the same endpoint and `findings_merge` would keep one.
+
+**What DAST-09 deliberately did not build**, so the boundary is not rediscovered: any shared
+`passive/passive_engine.sh`. Six peer tickets are in flight and `banner_engine.sh`'s two header helpers
+are scoped to this file's own needs; a later passive ticket that wants them should LIFT them into a
+shared file in its own change and say so. Also not built: an importer for the `banner` namespace -
+`tools/vendor-engines.sh advisories` covers the SCA ecosystems only, and extending it is filed
+separately. `docs/VERSIONS-DB.md` §5 is the hand procedure until it lands.
 
 ### Tier 3 - safe active (§7.2, 2 scripts)
 
