@@ -18,7 +18,7 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$ROOT"
 
-SUITES=(records core config checks findings report http e2e scan sast sast-secrets-forms sast-history sca iac dast dast-auth dast-cookies dast-crawl dast-cors dast-discovery dast-headers dast-leakage dast-markup dast-methods dast-ratelimit dast-transport dast-sqli dast-pathtraversal dast-cmdi dast-ldapi dast-xss dast-openredirect dast-jwt dast-graphql dast-authz dast-banner dast-tls exit-code-matrix gate-mutation-proof ci-smoke netns paranoid vendor-engines vendor-engines-advisories engines sast-semgrep iac-trivy sast-gitleaks awscli aws-lint aws-fixtures lint-no-ai-selftest dast35-lint lint-rules-paths daily-suite run-tests-stage color secret-redaction)
+SUITES=(records core config checks findings report http e2e scan sast sast-secrets-forms sast-history sca iac dast dast-auth dast-cookies dast-crawl dast-cors dast-discovery dast-headers dast-leakage dast-markup dast-methods dast-ratelimit dast-transport dast-sqli dast-pathtraversal dast-cmdi dast-ldapi dast-ssti dast-xss dast-openredirect dast-jwt dast-graphql dast-authz dast-banner dast-tls exit-code-matrix gate-mutation-proof ci-smoke netns paranoid vendor-engines vendor-engines-advisories engines sast-semgrep iac-trivy sast-gitleaks awscli aws-lint aws-fixtures lint-no-ai-selftest dast35-lint lint-rules-paths daily-suite run-tests-stage color secret-redaction)
 LINTERS=(lint-rules lint-shell lint-aws-readonly lint-status lint-no-ai)
 # The whole-tree shellcheck run is a STAGE, not a suite and not a linter file:
 # it has no tests/*.sh of its own, it is the last thing a full run does, and it
