@@ -309,8 +309,8 @@ parameter inventory that all twenty-seven tickets in tiers 2-5 consume exists, a
 against an authenticated session.
 Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has started - tier 4's
 DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`), DAST-16 (`active/cmdi.sh`),
-DAST-17 (`active/pathtraversal.sh`), DAST-18 (`active/ssti.sh`) and
-DAST-19 (`active/openredirect.sh`), tier
+DAST-17 (`active/pathtraversal.sh`), DAST-18 (`active/ssti.sh`),
+DAST-19 (`active/openredirect.sh`) and DAST-20 (`active/xxe_ssrf.sh`), tier
 5's DAST-26 (`jwt.sh`), DAST-27 (`graphql.sh`, the §7.4 GraphQL introspection & key-exposure check),
 DAST-28 (`ratelimit.sh`, the §7.4 missing-throttling burst probe),
 DAST-29 (`authz.sh`, the §7.4 object-level authorization and
@@ -345,8 +345,8 @@ below) renamed it to `modules/dast/passive/checks-tls.rules`, matching every oth
 the directory; `tests/suites/dast.sh`'s "modules/dast/passive/ ships FIVE per-owner registries" case is
 what had been asserting the shared file's absence all along and is what caught it still present.
 `modules/dast/active/checks.rules` is the tier-3/tier-4 equivalent and is under the identical
-append-only rule - DAST-15, DAST-16, DAST-19 and tier 3's DAST-13 all appended to DAST-14's file
-rather than adding a sibling, because `rules/RULE-FORMAT.md` §9's path table reserves the
+append-only rule - DAST-15, DAST-16, DAST-19, DAST-20 and tier 3's DAST-13 all appended to DAST-14's
+file rather than adding a sibling, because `rules/RULE-FORMAT.md` §9's path table reserves the
 `checks.rules` BASENAME
 repository-wide and makes a per-ticket `openredirect-checks.rules` an `E070`.
 **DAST-15 is the first ticket to consume `modules/dast/active/inject_engine.sh` WITHOUT extending
@@ -365,7 +365,24 @@ see `docs/STEP5-DAST-PLAN.md`'s DAST-17 landing note).
 **DAST-18 (`active/ssti.sh`) has also landed**, tier 4's fourth injection probe: arithmetic-only
 server-side template injection (CWE-1336), reusing DAST-14's shared `inject_engine.sh` with no line
 added to it and DAST-17's run-directory inventory fallback verbatim.
-DAST-20..DAST-25 are open, unordered among themselves, and should reuse the
+**DAST-20 (`active/xxe_ssrf.sh`) has also landed**, tier 4's fifth injection probe and the §7.3
+XXE/SSRF family: three check ids (`DAST-INJ-XXE_ENTITY-01`, an internal-entity reflection with no
+network component at all; `DAST-INJ-XXE_SSRF-01`, an external entity naming the in-scope sentinel,
+confirmed by a content signature this run independently fetched from that exact URL; and
+`DAST-INJ-SSRF_PARAM-01`, the identical sentinel sent as a plain parameter value via DAST-14's
+`inject_send`, method-agnostic unlike the two XML techniques). **The sentinel is never invented**: it
+is read directly out of `lib/http.sh`'s own already-loaded scope-tuple set
+(`_HTTP_SCOPE_ID`/`_HTTP_SCOPE_HOST`/...) for the current target - an `extra-host` when the operator
+declared one (the "operator-declared sentinel" docs/DESIGN.md §7.3 calls for), else the target's own
+`base-url` (a safe, self-referential fallback so the probe still runs on the ordinary scope.conf that
+declares no extra-host). No flag or config key ever substitutes a different host; the two techniques
+that fetch the sentinel do so through the ordinary `http_request` chokepoint like every other probe's
+traffic, and the ACTUAL SSRF/XXE connection remains something only the target itself makes. The two
+XML-body techniques run only against POST/PUT/PATCH endpoints (a full body override, not a parameter
+substitution - RFC 7231 leaves GET/HEAD/DELETE body semantics undefined); the per-parameter technique
+has no such restriction, which is why its own fixture deliberately probes a GET endpoint.
+`tests/suites/dast-xxe-ssrf.sh` (34 assertions, registered) is the proof.
+DAST-21..DAST-25 are open, unordered among themselves, and should reuse the
 engine the same way.
 The one thing worth carrying up here from DAST-15's landing note: **that probe measures ESCAPING, not
 reflection.**  Almost every parameter on a real application reflects something, so a probe that

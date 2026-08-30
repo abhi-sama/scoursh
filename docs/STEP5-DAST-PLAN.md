@@ -1810,6 +1810,62 @@ discovered parameter. A JavaScript `location =` sink is out of scope: this probe
 field and meta-refresh, which is the ticket's own wording, and a script-sink probe belongs with
 DAST-15's own reflection machinery.
 
+**DAST-20 (`active/xxe_ssrf.sh`) has landed - the fifth tier-4 injection probe, and the §7.3 XXE/SSRF
+family.**
+It ships `modules/dast/active/xxe_ssrf.sh` (the phase script `dast_run_phase` sources at tier `active`;
+the `'active/xxe_ssrf.sh:active'` row was already in `_DAST_PHASES`, so no engine.sh edit was needed)
+and three check records appended to the shared `modules/dast/active/checks.rules`:
+`DAST-INJ-XXE_ENTITY-01` (medium/medium, CWE-611, A05:2021), `DAST-INJ-XXE_SSRF-01` (critical/high,
+CWE-918, A10:2021) and `DAST-INJ-SSRF_PARAM-01` (critical/high, CWE-918, A10:2021).
+`tests/suites/dast-xxe-ssrf.sh` (34 assertions, no network, no Docker, driven from recorded responses)
+is the proof.
+Unlike every other tier-4 probe, this one composes its OWN request for two of its three techniques
+rather than calling `inject_send`: `_xs_send_xml` is a full BODY OVERRIDE (Content-Type forced to
+`application/xml`, the body replaced wholesale) built the same way `inject_send` assembles a
+request's siblings, because the injection point for an XXE probe is the whole document, not one field
+of it. The third technique (`DAST-INJ-SSRF_PARAM-01`) reuses `inject_send` unmodified.
+
+**The sentinel, and how scope is enforced at probe time - the ticket's central constraint.**
+docs/DESIGN.md §7.3 requires "detection via safe internal sentinels only, and only against in-scope
+hosts," and the two things that make that concrete here are: (1) the value this probe ever puts into a
+payload - an entity's `SYSTEM` identifier, or a parameter's value - is drawn EXCLUSIVELY from
+`lib/http.sh`'s own already-loaded scope-tuple set (`_HTTP_SCOPE_ID`/`_HTTP_SCOPE_HOST`/...), never
+invented and never operator-suppliable through any flag; and (2) the two calls this script itself
+makes to the network - the ordinary request to the endpoint under test, and the one-shot "oracle"
+fetch of the sentinel's own content - both go through `http_request`, the same chokepoint every other
+probe's traffic uses. `_xs_sentinel_set` is the one function that chooses the host: an `extra-host`
+declared for the current target in `config/scope.conf` when the operator added one (the stronger,
+cross-host "operator-declared sentinel" case), else the target's own `base-url` (a self-referential
+fallback, still fully in scope, that keeps the probe usable on the ordinary scope.conf that declares no
+extra-host at all). The ACTUAL SSRF/XXE connection - the one that matters - is made by the TARGET, not
+by scoursh, and is never observed directly; the whole safety property rests on the payload never naming
+anything the operator has not already authorised this run to reach itself.
+
+**Confirmation is by CONTENT SIGNATURE, never by byte-length or status code alone.** `_xs_oracle_fetch`
+fetches the sentinel once per run and keeps a short (<=96 byte) slice of its body; a technique-2/3 hit
+requires that exact slice to appear in the endpoint's response AND be absent from that same endpoint's
+own baseline (the "noisy" check every other §7.3 probe already applies to its own signatures). The
+slice is taken from the MIDDLE of the body rather than the start, because a response's opening bytes
+are the most likely to be boilerplate shared site-wide - relevant precisely because the self-referential
+sentinel case makes "the sentinel's content" and "this endpoint's own ordinary content" the same
+application. Three ids rather than one because the DAST location profile names no defect class, and an
+internal-entity reflection, an XML-driven SSRF confirmation, and a plain-parameter SSRF confirmation are
+three different code paths with three different remediations.
+
+**A noisy baseline SKIPS the external-entity/parameter probe entirely, rather than sending it anyway
+and discarding the result.** Once the baseline already carries the oracle's signature, no response to
+the follow-up request could ever be attributed to it, so sending it would only spend a request (and the
+tension-16 budget) to learn nothing - `tests/suites/dast-xxe-ssrf.sh`'s `/formnoisy` fixture pins the
+exact request count this saves.
+
+**What DAST-20 deliberately did not build**: any attempt to reach a cloud metadata endpoint or any host
+the operator did not declare - docs/DESIGN.md §7.3 forbids it outright, and DAST-36's amendment for this
+ticket states plainly that no `--allow-intrusive`/`--i-own-target` affirmation widens what a payload may
+name; and any BLIND SSRF confirmation via timing (an unreachable-but-attempted destination would need an
+address outside scope to produce a measurable delay, which is exactly the boundary this ticket exists to
+hold). A blind SSRF that content-reflection cannot confirm is left as a named coverage_reduction, not
+reported as either a finding or a clean result.
+
 **DAST-22 (`active/ldapi.sh`) has landed - a tier-4 injection probe built entirely on DAST-14's shared
 `inject_engine.sh`.**
 It ships `modules/dast/active/ldapi.sh` (the phase script `dast_run_phase` sources at tier `active`),
