@@ -15,8 +15,11 @@
 # crawler calls `curl`, a language HTTP client, or any other transport
 # primitive directly.  tests/lint-shell.sh's "No bypass" check fails the
 # build the moment a second path to the network exists (lib/http.sh and the
-# documented `modules/dast/passive/tls.sh` exception, which does not exist
-# yet, are the only files exempted).
+# documented `modules/dast/passive/tls.sh` exception - DAST-07, which has now
+# landed - are the only files exempted).  That exception is exempted from the
+# TRANSPORT only: it still takes its authorization, its pinned address and its
+# tension-16 limiter/budget/breaker spend from `http_authorize_raw_connection`
+# in section 9b below, which is this file's only concession to it.
 #
 # `http_gate_url` is the pure predicate `http_request` gates on.  It is
 # exposed separately so tests can exercise the normalization/matching/deny-
@@ -673,6 +676,91 @@ _http_curl_cfg_quote() {
   s=${s//$'\r'/\\r}
   s=${s//$'\n'/\\n}
   _HTTP_CFG_Q=$s
+  return 0
+}
+
+
+# ---------------------------------------------------------------------------
+# 9b. The ONE documented non-HTTP caller (docs/FOUNDATION.md tension 19)
+# ---------------------------------------------------------------------------
+# `http_authorize_raw_connection URL [TARGET_ID]` - everything `http_request`
+# does EXCEPT sending an HTTP request: gate the URL, resolve and pin the
+# address, check the circuit breaker, and spend one token of the rate limiter
+# and the per-run request budget.  On success it publishes
+#
+#   _HTTP_RAW_ADDR    the resolved, gate-approved address to connect to
+#   _HTTP_RAW_HOST    the normalised hostname (what SNI must carry)
+#   _HTTP_RAW_PORT    the normalised port
+#   _HTTP_RAW_SCHEME  http | https
+#   _HTTP_RAW_BUCKET  the scope target id the spend was charged to
+#
+# and returns 0.  A scope violation is exit 3 through the same audit path
+# `http_request` uses, so the two can never disagree about what is authorised.
+#
+# WHY THIS EXISTS AT ALL, GIVEN THAT TENSION 19 SAYS THERE IS ONE CHOKEPOINT.
+# `modules/dast/passive/tls.sh` (docs/STEP5-DAST-PLAN.md DAST-07) is that
+# tension's single documented exception: a transport-security check needs a RAW
+# TLS HANDSHAKE and the certificate the server presents, which is not an HTTP
+# request and cannot be expressed as one.  The exception is narrow, and this
+# function is what keeps it narrow: the AUTHORIZATION half - the scope tuple
+# compare, the userinfo refusal, the resolution-pinning deny list, the
+# tension-16 limiter, budget and breaker, and the audit finding on refusal -
+# stays here, in this file, unforked.  What the exempted module owns is the wire
+# protocol and nothing else.
+#
+# Putting this here rather than letting the module call `http_gate_url` and
+# `_http_throttle` itself is the same argument tension 19 makes for the gate:
+# a control that each caller has to remember to apply is not a control.  A
+# second exempted caller, if one is ever justified, calls this and inherits
+# every one of them; it does not get to assemble its own subset.
+#
+# IT IS NOT A GENERAL ESCAPE HATCH, AND THE LINT IS WHAT KEEPS IT FROM BECOMING
+# ONE.  This function hands back an address; it opens nothing.  Anything that
+# then wants to talk to that address needs a transport primitive, and
+# tests/lint-shell.sh's "no bypass" check still fails the build for a bare
+# curl/wget/nc/`openssl s_client` in any file but the two it exempts by path.
+http_authorize_raw_connection() {
+  local url=$1 target=${2:-}
+  local rps_milli budget breaker_failures breaker_window
+  _HTTP_RAW_ADDR='' _HTTP_RAW_HOST='' _HTTP_RAW_PORT='' _HTTP_RAW_SCHEME=''
+  _HTTP_RAW_BUCKET=''
+
+  if ! http_gate_url "$url" "$target"; then
+    _http_gate_audit "$url" "${_HTTP_GATE_CANON:-$url}" "$_HTTP_GATE_REASON" 'TLS' "$target"
+    die "$SCOURSH_EXIT_SCOPE" "scope gate refused a raw TLS connection to $url: $_HTTP_GATE_REASON"
+  fi
+
+  local scheme=$_HN_SCHEME host=$_HN_HOST port=$_HN_PORT is_literal=$_HN_IS_LITERAL
+  local bucket=${_HTTP_MATCH_ID:-${target:-unattributed}}
+
+  _http_effective_rps_milli_set
+  rps_milli=$_HTTP_EFF_RPS_MILLI
+  _http_effective_limit_set request-budget
+  budget=$_HTTP_EFF_LIMIT
+  _http_effective_limit_set circuit-breaker-failures
+  breaker_failures=$_HTTP_EFF_LIMIT
+  _http_effective_limit_set circuit-breaker-window
+  breaker_window=$_HTTP_EFF_LIMIT
+  _http_limit_dir_set
+  _http_limit_announce_once "$rps_milli" "$budget" "$breaker_failures" "$breaker_window"
+
+  _http_abort_check "$bucket"
+  _http_throttle "$bucket" "$rps_milli" "$budget"
+  _http_abort_check "$bucket"
+
+  local addr
+  if [[ $is_literal == true ]]; then
+    addr=$host
+  elif ! addr=$(http_resolve_host "$host"); then
+    die "$SCOURSH_EXIT_SCOPE" "scope gate: DNS resolution failed for '$host' after the gate had approved it"
+  fi
+  _http_note_target_address "$bucket" "$addr"
+
+  _HTTP_RAW_ADDR=$addr
+  _HTTP_RAW_HOST=$host
+  _HTTP_RAW_PORT=$port
+  _HTTP_RAW_SCHEME=$scheme
+  _HTTP_RAW_BUCKET=$bucket
   return 0
 }
 

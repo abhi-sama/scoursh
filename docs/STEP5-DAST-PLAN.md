@@ -73,10 +73,17 @@ table.
 **Tiers 2-5 are unblocked and nothing remains in front of them**: every check below needs the endpoint
 and parameter inventory DAST-04 writes, and the authenticated ones need the session DAST-03 acquires.
 Both are in.
-**Tier 3 has started** (DAST-12, `active/discovery.sh`), and **tier 4 has started too**: DAST-14
-(`active/sqli.sh`, which also shipped the shared `inject_engine.sh` every §7.3 probe reuses) and DAST-22
-(`active/ldapi.sh`) have both landed - see their landing notes under the tier-4 table.  Tier 5's DAST-26
-(`jwt.sh`) is in as well.  These tiers are peers once tier 1 is in, so they land out of tier order.
+**Tier 2 has started** (DAST-07, `passive/tls.sh`), **tier 3 has started** (DAST-12,
+`active/discovery.sh`), and **tier 4 has started too**: DAST-14 (`active/sqli.sh`, which also shipped the
+shared `inject_engine.sh` every §7.3 probe reuses) and DAST-22 (`active/ldapi.sh`) have both landed - see
+their landing notes under the tier-4 table.  Tier 5's DAST-26 (`jwt.sh`) is in as well.  These tiers are
+peers once tier 1 is in, so they land out of tier order.
+Each ticket's own row in the tier tables below is the authority for whether it is in; this paragraph
+names only the tiers that have opened, so it does not become the second enumeration that went stale
+three times in `AGENTS.md`.
+DAST-07 is the one worth flagging outside its own row, because it is the ticket that made tension 19's
+single documented exception real: `lib/http.sh` gained `http_authorize_raw_connection`, and any future
+non-HTTP probe calls **that** rather than assembling its own subset of the gate.
 What each shipped, and the things about them that are easy to get backwards, are stated in their own
 landing notes below the ticket table.
 The one ordering constraint tier 0 existed to impose has been met: no ticket may issue real HTTP
@@ -732,7 +739,7 @@ only that all of them come after DAST-04 (they need the endpoint list) and DAST-
 |---|---|---|
 | DAST-05 **(landed)** | `passive/headers.sh` | CSP, HSTS, `X-Frame-Options`/`frame-ancestors`, `X-Content-Type-Options`, `Referrer-Policy`, "recommended headers not set" roll-up. See the landing note below the tier-2 table. |
 | DAST-06 **(landed)** | `passive/cookies.sh` | `Secure`/`HttpOnly`/`SameSite` per cookie. See the landing note below the tier-2 table. |
-| DAST-07 | `passive/tls.sh` | Shells out to `openssl s_client`; the one documented exception to "every network call goes through `lib/http.sh`" (`docs/FOUNDATION.md` tension 19's neighbourhood notes this). Sequence close to DAST-30 (`transport.sh`), which complements it - not a hard code dependency, just worth landing in the same review window for a coherent report section. |
+| DAST-07 **(landed)** | `passive/tls.sh` | Shells out to `openssl s_client`; the one documented exception to "every network call goes through `lib/http.sh`" (`docs/FOUNDATION.md` tension 19's neighbourhood notes this). Sequence close to DAST-30 (`transport.sh`), which complements it - not a hard code dependency, just worth landing in the same review window for a coherent report section. See the landing note below the tier-2 table. |
 | DAST-08 **(landed)** | `passive/cors.sh` | Origin-reflection probe. Landing note below. It created `modules/dast/passive/` and `modules/dast/passive/checks.rules`, the shared tier-2 script-check registry every other ticket in this table appends its own records to. |
 | DAST-09 **(landed)** | `passive/banner.sh` | Framework/version disclosure matched against **`data/versions.db`**, seeded into its own `modules/dast/passive/checks-banner.rules` (tension 29's per-owner split was already in effect for its peers by the time it landed). The writer side is no longer a forward dependency: `tools/vendor-engines.sh advisories` landed ahead of step 5 and writes `data/versions.db` by the same call that writes `data/advisories.db` (tension 25). `data/versions.db` is gitignored and absent by default in every checkout (an earlier accidental commit of it was reverted); populating one is an operator action on a networked box, never part of a scan. This ticket ships the matching logic, `docs/VERSIONS-DB.md`'s format and refresh procedure, and degrades gracefully (that sub-check alone becomes a recorded reason, never an error) when the list is missing or carries no `banner` row - the state of a fresh clone. See the landing note below the tier-2 table. |
 | DAST-10 **(landed)** | `passive/leakage.sh` | Verbose-error/stack-trace disclosure, upstream proxy header leakage, email disclosure, client-config leakage in served JS, CDN/third-party origin detection. Its "API key found in served JS" output is a later correlation input for DAST-27 (`graphql.sh`) at the derived-finding layer (tension 6), not a code dependency. See the landing note below the tier-2 table. |
@@ -1256,6 +1263,85 @@ are scoped to this file's own needs; a later passive ticket that wants them shou
 shared file in its own change and say so. Also not built: an importer for the `banner` namespace -
 `tools/vendor-engines.sh advisories` covers the SCA ecosystems only, and extending it is filed
 separately. `docs/VERSIONS-DB.md` §5 is the hand procedure until it lands.
+
+**DAST-07 (`passive/tls.sh`) has landed - a tier-2 check, and the ticket that turns tension 19's single
+documented exception from a sentence in a register into code.**
+It was written when it would have been the first script under `modules/dast/passive/`; its peers
+DAST-05, DAST-06 and DAST-08 through DAST-11 reached `dev` while it was in review, so DAST-08 is what
+actually created that directory, and this note is corrected here rather than left claiming a
+first-ness the landing order did not give it.
+It ships `modules/dast/passive/tls_engine.sh` (the pure library: the ASN.1-date-to-epoch converter, the
+`SSL-Session:` transcript parser, the DN normalizer, the SAN/CN reader, the expiry, self-signed and
+wildcard predicates, and the one `openssl s_client` invocation in the whole tool),
+`modules/dast/passive/tls.sh` (the phase script `dast_run_phase` sources at tier `passive`), and
+`modules/dast/passive/checks.rules` - this phase's own check records, carrying six ids:
+`DAST-TLS-WEAK_PROTOCOL-01`, `DAST-TLS-WEAK_CIPHER-01`, `DAST-TLS-CERT_EXPIRED-01`,
+`DAST-TLS-CERT_EXPIRING-01`, `DAST-TLS-SELF_SIGNED-01` and `DAST-TLS-WILDCARD_CERT-01`.
+`tests/suites/dast-tls.sh` (131 assertions, no network, no Docker) drives every case from recorded
+transcripts and committed fixture certificates under `tests/fixtures/dast/tls/`, whose own README states
+the provenance of each.
+
+Six decisions here are easy to get backwards, and each is pinned by a test naming the reading it fails
+under:
+
+- **The exemption is from the TRANSPORT and from nothing else, and `http_authorize_raw_connection`
+  (`lib/http.sh` section 9b) is what keeps it that narrow.**  That function does everything
+  `http_request` does except send a request - normalization, the scope tuple compare, the userinfo
+  refusal, the deny list, the pinned resolution, and the tension-16 limiter, budget and breaker spend -
+  and returns an address.  The phase connects to that address and never re-resolves the name.  The
+  alternative, letting the module call `http_gate_url` and `_http_throttle` for itself, was rejected on
+  tension 19's own argument: a control each caller must remember to apply is not a control.  Pinned by a
+  case asserting that a target the gate refuses is exit 3 **and** that no handshake was opened - the
+  gate is consulted before the probe, never after.
+- **`New, TLSv1/SSLv3, Cipher is ...` is a FAMILY LABEL, not the negotiated version.**  LibreSSL prints
+  it for a TLS 1.2 session, so a parser reading that line reports every LibreSSL-probed target as
+  speaking TLSv1 and fires the weak-protocol finding on all of them.  `Protocol  :` inside the
+  `SSL-Session:` block is authoritative on both userlands.  Pinned against a LibreSSL transcript that
+  carries both lines.
+- **A failed handshake still prints a filled-in `Protocol  :`, with `Cipher    : 0000`.**  A parser that
+  accepted a protocol alone would report the *offered* version as negotiated for a connection that
+  agreed on nothing.  `tls_parse_session` requires the cipher, and the fixture set carries that exact
+  transcript for it.
+- **Distinguished names come in two spellings and every comparison is made on the normalized form.**
+  OpenSSL 1.1/3.x prints `subject=CN = host, O = Org`; LibreSSL and OpenSSL 1.0 print
+  `subject=/O=Org/CN=host`.  A raw subject-versus-issuer comparison makes the self-signed check
+  userland-dependent, and a `CN=` prefix match finds nothing on the slash form.  The self-signed case is
+  deliberately tested from the LibreSSL transcript for that reason.
+- **`openssl x509 -ext subjectAltName` does not exist on LibreSSL** (it is an OpenSSL 1.1.1+ flag), so
+  the SAN list is read out of `-text`, which exists on both.
+- **"Wildcard certificate where a host-specific one is expected" is an EXPECTATION, not a verdict**, so
+  it is per target: `tls-expect-wildcard` in `config/scope.conf` (`rules/RULE-FORMAT.md` §9.4, default
+  `false`).  An estate legitimately has both shapes, and a scanner-wide answer would make a false
+  positive indistinguishable from a real finding.  Pinned in both directions on ONE certificate - the
+  same wildcard is a finding on a target that does not declare the expectation and is not on one that
+  does, and the satisfied expectation is RECORDED so a reader can see the check ran rather than
+  inferring it from an absent finding.
+
+**Expiry is decided by arithmetic this module owns, with `now` injectable, and `openssl x509 -checkend`
+was rejected for that.**  `checkend` hardcodes the system clock, so "expiring inside the window" could
+only be tested by minting a certificate at test time and "expired" only by committing one and waiting.
+Taking `now` as an argument makes `expired`, `expiring` and `ok` all reachable from one long-lived
+committed certificate, deterministically, forever.  The window is `tls-expiry-warn-days` in
+`config/scanner.conf` (§9.6.1, default 30 - the notice period the public CA ecosystem itself operates
+on); `0` is valid and disables the expiring-soon window without disabling the expired check.
+
+**Both userlands were verified for real, not only through transcripts.**  The transcripts pin the
+*parsing* of each userland's output; the `openssl x509` calls that read a certificate run against
+whatever `openssl` is on `PATH`, so the suite was run twice on one macOS host - once under **OpenSSL
+3.6.3** and once under the system **LibreSSL 3.3.6** - and reports 131 passed, 0 failed under each.
+What has **not** been verified is a GNU/Linux host: the OpenSSL 3.x leg here is a Homebrew build on
+macOS, so it exercises the OpenSSL output shape rather than the GNU userland around it.
+`tools/daily-suite.sh`'s container leg covers that gap on its next run; stating it is better than
+implying a coverage this ticket did not buy.
+
+**What DAST-07 deliberately did not build**, so the boundary is not rediscovered: it does not report
+plaintext exposure or mixed content - that is DAST-30 (`transport.sh`), and a target whose base URL is
+plain HTTP is recorded here as a declared gap NAMING DAST-30 rather than this check minting a second id
+for the same fact.  It does not validate the chain against a trust store beyond reading `openssl`'s own
+verify return code, does not check revocation (OCSP/CRL), does not check key size or signature
+algorithm, and does not enumerate the protocols and ciphers a listener *offers* - it reports the one
+session that was negotiated, because enumerating the offer surface means a handshake per candidate,
+which is not a passive check at §7.1's tier.
 
 ### Tier 3 - safe active (§7.2, 2 scripts)
 

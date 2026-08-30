@@ -1,0 +1,80 @@
+CONNECTED(00000003)
+depth=1 C=ZZ, O=scoursh fixture CA, CN=scoursh fixture root
+verify return:1
+depth=0 C=ZZ, O=Fixture Org, CN=*.fixture.example
+verify return:1
+---
+Certificate chain
+ 0 s:C=ZZ, O=Fixture Org, CN=*.fixture.example
+   i:C=ZZ, O=scoursh fixture CA, CN=scoursh fixture root
+-----BEGIN CERTIFICATE-----
+MIIDiTCCAnGgAwIBAgIULIK/1+WcjfL7pYWoilYnpWNu3GIwDQYJKoZIhvcNAQEL
+BQAwSTELMAkGA1UEBhMCWloxGzAZBgNVBAoMEnNjb3Vyc2ggZml4dHVyZSBDQTEd
+MBsGA1UEAwwUc2NvdXJzaCBmaXh0dXJlIHJvb3QwIBcNMjYwODIwMjMyODI2WhgP
+MjEyNjA3MjcyMzI4MjZaMD8xCzAJBgNVBAYTAlpaMRQwEgYDVQQKDAtGaXh0dXJl
+IE9yZzEaMBgGA1UEAwwRKi5maXh0dXJlLmV4YW1wbGUwggEiMA0GCSqGSIb3DQEB
+AQUAA4IBDwAwggEKAoIBAQCZa5ttvVB7G04EccCWGiYsw+CqfipLs00xxYkZZtUb
+z5jPPIJaDjTH0pCFGfPKw7cdc6/sssL4uK6z85t4xnGvES4wYv1fP2EpL+3hVqym
+3V+jrYTqNJ1J/xpUP06ONIhxlMo82/qT1/q0/sEC4IzUITi43WAFQvaKtDqrXrhH
+x+NDQWwEHCiAoWem7/7vBr9cvfgwHbRCAJF+nNu5EjuX2nQAojQLvctl5tFccTCx
+ZVXbpU6lmCs+ZFyo9hysNyK8pG3SFOacIFcQBBPKPfaLFpoun/VZnMdUeFS7ZjDf
+yUd1o0XTCa8MuFqV5iECpaLHux/skGqSRfcODHpbzov/AgMBAAGjcTBvMC0GA1Ud
+EQQmMCSCESouZml4dHVyZS5leGFtcGxlgg9maXh0dXJlLmV4YW1wbGUwHQYDVR0O
+BBYEFJXJtYpLOZeRaowJq08U2ICb1dtNMB8GA1UdIwQYMBaAFEg658Q1p2Nk++UL
+xgP8EACkJqg/MA0GCSqGSIb3DQEBCwUAA4IBAQCzSB1oBS0zaHnZfIta/ClTQ7JG
+ao5Ez6EQ9JyLLnhLh0+GHVj0936/Ysr2pnmvDcUFocqxajdPv/r3v4OJqbGxO510
+iH3qDb1bY5/40XsBcDatg3fQNjHsVIWmMTBaDDENDwqm6aZVN4/4v8JdqbAY0nda
+128po7Bu0OJvkd7/B+60UCU47TFKjUHNnXWLpAg6c3bQ3jfSRwKs/4tdnp/5o8YI
+6DFnYgzCysV3Lf2mzHYciW8iqpxkdTgQSzhDw3UM0NwR4kQW+7lZydNDR5dJLV9d
+v0dvAGGR3XIp4Mrr6Ce7e25xj3cb6qIvLr393MV0nwkmWL/03VLqySVf4ukW
+-----END CERTIFICATE-----
+---
+Server certificate
+-----BEGIN CERTIFICATE-----
+MIIDiTCCAnGgAwIBAgIULIK/1+WcjfL7pYWoilYnpWNu3GIwDQYJKoZIhvcNAQEL
+BQAwSTELMAkGA1UEBhMCWloxGzAZBgNVBAoMEnNjb3Vyc2ggZml4dHVyZSBDQTEd
+MBsGA1UEAwwUc2NvdXJzaCBmaXh0dXJlIHJvb3QwIBcNMjYwODIwMjMyODI2WhgP
+MjEyNjA3MjcyMzI4MjZaMD8xCzAJBgNVBAYTAlpaMRQwEgYDVQQKDAtGaXh0dXJl
+IE9yZzEaMBgGA1UEAwwRKi5maXh0dXJlLmV4YW1wbGUwggEiMA0GCSqGSIb3DQEB
+AQUAA4IBDwAwggEKAoIBAQCZa5ttvVB7G04EccCWGiYsw+CqfipLs00xxYkZZtUb
+z5jPPIJaDjTH0pCFGfPKw7cdc6/sssL4uK6z85t4xnGvES4wYv1fP2EpL+3hVqym
+3V+jrYTqNJ1J/xpUP06ONIhxlMo82/qT1/q0/sEC4IzUITi43WAFQvaKtDqrXrhH
+x+NDQWwEHCiAoWem7/7vBr9cvfgwHbRCAJF+nNu5EjuX2nQAojQLvctl5tFccTCx
+ZVXbpU6lmCs+ZFyo9hysNyK8pG3SFOacIFcQBBPKPfaLFpoun/VZnMdUeFS7ZjDf
+yUd1o0XTCa8MuFqV5iECpaLHux/skGqSRfcODHpbzov/AgMBAAGjcTBvMC0GA1Ud
+EQQmMCSCESouZml4dHVyZS5leGFtcGxlgg9maXh0dXJlLmV4YW1wbGUwHQYDVR0O
+BBYEFJXJtYpLOZeRaowJq08U2ICb1dtNMB8GA1UdIwQYMBaAFEg658Q1p2Nk++UL
+xgP8EACkJqg/MA0GCSqGSIb3DQEBCwUAA4IBAQCzSB1oBS0zaHnZfIta/ClTQ7JG
+ao5Ez6EQ9JyLLnhLh0+GHVj0936/Ysr2pnmvDcUFocqxajdPv/r3v4OJqbGxO510
+iH3qDb1bY5/40XsBcDatg3fQNjHsVIWmMTBaDDENDwqm6aZVN4/4v8JdqbAY0nda
+128po7Bu0OJvkd7/B+60UCU47TFKjUHNnXWLpAg6c3bQ3jfSRwKs/4tdnp/5o8YI
+6DFnYgzCysV3Lf2mzHYciW8iqpxkdTgQSzhDw3UM0NwR4kQW+7lZydNDR5dJLV9d
+v0dvAGGR3XIp4Mrr6Ce7e25xj3cb6qIvLr393MV0nwkmWL/03VLqySVf4ukW
+-----END CERTIFICATE-----
+subject=C=ZZ, O=Fixture Org, CN=*.fixture.example
+issuer=C=ZZ, O=scoursh fixture CA, CN=scoursh fixture root
+---
+No client certificate CA names sent
+Peer signing digest: SHA256
+Server Temp Key: X25519, 253 bits
+---
+SSL handshake has read 3186 bytes and written 396 bytes
+Verification: OK
+---
+New, TLSv1.2, Cipher is ECDHE-RSA-AES256-GCM-SHA384
+Server public key is 2048 bit
+Secure Renegotiation IS NOT supported
+Compression: NONE
+Expansion: NONE
+SSL-Session:
+    Protocol  : TLSv1.2
+    Cipher    : ECDHE-RSA-AES256-GCM-SHA384
+    Session-ID: 0000000000000000000000000000000000000000000000000000000000000000
+    Session-ID-ctx: 
+    Master-Key: 
+    Start Time: 1750000000
+    Timeout   : 7200 (sec)
+    Verify return code: 0 (ok)
+    Extended master secret: no
+---
+DONE
