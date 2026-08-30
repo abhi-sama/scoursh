@@ -4700,7 +4700,8 @@ four and shifts every later value left.  Measured, not reasoned about: it made t
 `docs/STEP5-DAST-PLAN.md`'s DAST-11 landing note carries the full detail, including the parser's
 stated limits in both directions and the shared-`passive/response_engine.sh` lift it declined to make
 under a peer's file and filed instead.
-Their four remaining peers DAST-07..DAST-10 are open and unordered among themselves.
+Their remaining peers DAST-07 and DAST-09 are open and unordered among themselves; DAST-08 (below) and
+DAST-10 have since landed too.
 Three things about it belong here rather than only in the plan, because each is a tension decision.
 First, tension 19 again: this phase issues real traffic and every request of it goes through
 `http_request`, with a NON-fatal `http_gate_url` pre-check ahead of each inventory-derived URL for
@@ -4850,6 +4851,38 @@ boundary against `passive/tls.sh` (the connection), `passive/headers.sh` (HSTS) 
 into itself: `http_request` publishes no final post-redirect URL, so an `https://` endpoint that
 redirects to an in-scope `http://` one delivers a plaintext document this phase still counts as a
 secure context.
+
+**DAST-08 (`modules/dast/passive/cors.sh` plus `cors_engine.sh`) has also landed** - the §7.1 CORS
+origin-reflection family, three check ids (`DAST-CORS-ORIGIN_REFLECTED-01`,
+`DAST-CORS-REFLECTED_WITH_CREDENTIALS-01`, `DAST-CORS-WILDCARD-01`) driven from recorded response
+headers by `tests/suites/dast-cors.sh`.  It lands after tension 29's split of the directory's registry
+(above), so its three ids were seeded directly into their own `modules/dast/passive/checks-cors.rules`
+rather than into the now-retired shared `checks.rules` its own commit message describes, and
+`modules/dast/passive/` itself already existed by the time it landed (DAST-06 created it first, per
+above).  It is the first §7.1 check to send a request at all, and it settles what that means: §7.1's
+contract is "no mutation of state", not "no traffic", so the probe is bounded by six properties
+asserted against a request log rather than claimed in prose - GET/HEAD inventory endpoints only, one
+request per distinct route, no request body, no response-body capture sink, no redirect followed, and
+everything through `http_request` so tension 19's gate and tension 16's limiter, budget and breaker all
+bind it.  Two further things about it are tension decisions rather than implementation detail.  First,
+tension 4: its response-header read is case-INSENSITIVE on the field name (`cors_header_last` passes
+`-i` through `scan_match`, never a bare grep), because RFC 7230 §3.2 makes header names
+case-insensitive and HTTP/2 (RFC 7540 §8.1.2) requires them lowercase on the wire, so a target behind
+any HTTP/2 edge answers `access-control-allow-origin:` and an RFC-6454-spelled matcher would report
+every one of them clean - a silent false negative on the commonest production deployment shape, caught
+only by `tests/suites/dast-cors.sh`'s dedicated lowercase fixtures.  Second, tension 4's `mktemp`
+discipline: `cors_engine.sh`'s two scratch paths were first spelled with a `$BASHPID`-derived name and
+corrected in the same ticket, since a predictable name under `${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}` is
+one a local user can pre-create as a symlink for `scan_match` or a response-header capture sink to
+write through (CWE-377 via CWE-59); `tests/suites/dast-cors.sh` section A2 plants that exact symlink
+and asserts a canary file survives.
+`docs/STEP5-DAST-PLAN.md`'s DAST-08 landing note carries the full detail.
+
+Tiers 4 and 5: **DAST-14 (`modules/dast/active/sqli.sh`) and DAST-26 (`modules/dast/jwt.sh`) both
+landed in `a656663`** without this section or its `AGENTS.md` mirror being updated in that commit range
+- the same process failure this document's own build-status rule exists to prevent, corrected here
+rather than left for a third rediscovery.
+`docs/STEP5-DAST-PLAN.md`'s per-ticket landing notes are the authority for all three.
 
 Two things about DAST-04 are worth carrying here rather than only in the plan, because both are
 tension decisions rather than implementation detail.
