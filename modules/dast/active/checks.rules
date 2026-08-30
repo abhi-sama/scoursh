@@ -405,3 +405,27 @@ remediation: Unless this host is deliberately a forward proxy, refuse CONNECT
 references: CWE-441
 references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
 references: RFC 7231 section 4.3.6
+
+# --- DAST-17, modules/dast/active/pathtraversal.sh (docs/DESIGN.md §7.3) -----
+# Appended by the path-traversal ticket, keeping this file's append-only
+# convention (see the DAST-19 note above): a merge conflict here is resolved
+# by keeping BOTH blocks, never by choosing a side.
+
+id: DAST-INJ-PATH_TRAVERSAL-01
+title: Path traversal via request parameter
+script: active/pathtraversal.sh
+severity: high
+confidence: high
+cwe: CWE-22
+owasp: A01:2021
+tags: active
+coverage-scope: target
+remediation: Resolve every request-derived filename against a fixed base
+  directory using the platform canonical-path check, and reject the request
+  when the resolved path escapes that directory, rather than filtering
+  "../" substrings. Prefer an indirect reference (an id looked up in a
+  server-side allowlist or database) over accepting a path or filename from
+  the client at all, and run the process under an account with no read
+  access outside the intended content directory.
+references: CWE-22
+references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/

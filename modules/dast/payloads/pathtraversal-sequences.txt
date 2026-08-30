@@ -1,0 +1,19 @@
+# Directory-climb templates for the §7.3 path-traversal probe
+# (docs/DESIGN.md §7.3; docs/STEP5-DAST-PLAN.md DAST-17). %M is the
+# placeholder the probe substitutes with one marker's relative path from
+# modules/dast/payloads/pathtraversal-markers.txt.
+#
+# Plain `../` only, at a handful of bounded depths (2 through 8) - enough to
+# climb out of a typical web root without an unbounded or adaptive climb.
+# This probe DETECTS a real defect; it does not evade a WAF, so no
+# double-encoding, null-byte, or case-mangling variant is vendored here. The
+# on-the-wire percent-encoding a query/body/path/cookie location actually
+# needs is applied automatically by inject_engine.sh's own request composer
+# (inject_urlencode), so this file stays literal.
+../../%M
+../../../%M
+../../../../%M
+../../../../../%M
+../../../../../../%M
+../../../../../../../%M
+../../../../../../../../%M

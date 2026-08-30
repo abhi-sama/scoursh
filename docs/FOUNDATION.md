@@ -4624,12 +4624,16 @@ normative, frozen-in-intent shape in `docs/INVENTORY-FORMAT.md`.
 With both tier-1 tickets in, **tiers 2-5 are unblocked and nothing remains in front of them**; the
 authenticated crawl pass plugs into DAST-03's session rather than being stubbed.
 Work in those tiers has started, and out of tier order, since they are peers rather than a sequence:
-tier 4's DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`) and DAST-19
-(`active/openredirect.sh`), tier 5's DAST-26 (`jwt.sh`), DAST-27 (`graphql.sh`, the §7.4 GraphQL
-introspection & key-exposure check), DAST-29 (`authz.sh`) and DAST-30
-(`passive/transport.sh`) and
+tier 4's DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`), DAST-17
+(`active/pathtraversal.sh`) and DAST-19 (`active/openredirect.sh`), tier 5's DAST-26 (`jwt.sh`),
+DAST-27 (`graphql.sh`, the §7.4 GraphQL introspection & key-exposure check), DAST-29 (`authz.sh`) and
+DAST-30 (`passive/transport.sh`) and
 tier 2's DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`) and DAST-11
 (`passive/markup.sh`) have landed.
+DAST-17 reuses DAST-14's shared `inject_engine.sh` unchanged; see `docs/STEP5-DAST-PLAN.md`'s DAST-17
+landing note for its one new decision - reading the parameter inventory from
+`$SCOURSH_RUN_DIR/inventory/*.json` directly rather than trusting the exported paths alone, since
+`modules/dast/run.sh` resolves those exports before `crawl.sh` writes the inventory they name.
 DAST-15 is the second tier-4 injection probe and the first to consume `active/inject_engine.sh`
 without extending it, which is the evidence that DAST-14's shared half really is shared rather than
 sqli-shaped.

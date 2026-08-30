@@ -1397,7 +1397,7 @@ segments) plus DAST-01/02, and land after tier 2/3 per §13's stated ordering.
 | DAST-14 | `active/sqli.sh` - error-based, boolean, and time-based SQL injection |
 | DAST-15 **(landed)** | `active/xss.sh` - marker-token unescaped-reflection detection. See the landing note below. |
 | DAST-16 | `active/cmdi.sh` - bounded time-based command injection |
-| DAST-17 | `active/pathtraversal.sh` - benign read-only marker traversal |
+| DAST-17 **(landed)** | `active/pathtraversal.sh` - benign read-only marker traversal. See the landing note below. |
 | DAST-18 | `active/ssti.sh` - arithmetic-expression template injection |
 | DAST-19 | `active/openredirect.sh` - attacker-controlled `Location` host |
 | DAST-20 | `active/xxe_ssrf.sh` - safe-sentinel-only XXE/SSRF detection, in-scope hosts only |
@@ -1524,7 +1524,53 @@ change §7.3's non-destructive posture forbids at this tier; DOM XSS needs a Jav
 for crawling).  Neither is silently assumed covered - the probe reports on reflection into the
 response it actually received, and nothing else.
 
-**DAST-19 (`active/openredirect.sh`) has landed - the third tier-4 injection probe, built on
+**DAST-17 (`active/pathtraversal.sh`) has landed - the third tier-4 injection probe, and it reuses
+`inject_engine.sh` unchanged, exactly as DAST-14 anticipated.**
+Unlike SQLi's three differential techniques it is a single check,
+`DAST-INJ-PATH_TRAVERSAL-01`, because §7.3's own path-traversal design is one technique - "request
+known-safe read-only markers ... and detect its signature; report access, don't harvest contents" -
+not a family of them.
+Two new vendored, tab/placeholder-format data files back it:
+`modules/dast/payloads/pathtraversal-sequences.txt` (bounded `../`-depth-2-through-8 climb templates,
+placeholder `%M`) and `modules/dast/payloads/pathtraversal-markers.txt` (`<marker's relative
+path><TAB><ERE content signature>`, two rows: `etc/passwd` and `windows/win.ini`, the single most
+universally-present read-only file on the two major server platforms).  Both degrade independently to
+a recorded `coverage_reduction` when absent, mirroring `active/sqli.sh`'s own per-payload-file
+degradation.
+`tests/suites/dast-pathtraversal.sh` (22 assertions, no network, no Docker) is the mock-response proof.
+
+Three decisions here are easy to get backwards, each pinned by a test naming the reading it fails
+under (confirmed by deliberately breaking the implementation and watching the suite go red before
+this ticket shipped):
+
+- **The signal is a match against the marker's own CONTENT signature, never the presence of the
+  traversal string in the response.**  A control endpoint that echoes the raw payload text back
+  (`/echo` in the suite) must NOT flag - only a body that actually contains passwd-shaped or
+  win.ini-shaped content does.  This is also why the finding's evidence names the signature that
+  matched rather than reproducing the response body: §7.3's own "report access, don't harvest
+  contents" is a property of what the evidence carries, not only of what the probe requests.
+- **A parameter whose BASELINE already carries a marker's signature is skipped, not flagged.**  The
+  signal has to appear only after injection to mean anything; a baseline check identical in spirit to
+  `active/sqli.sh`'s own error-technique baseline check, applied here to every vendored marker before
+  any traversal payload is sent.
+- **This is the first probe to read the parameter inventory from
+  `$SCOURSH_RUN_DIR/inventory/{endpoints,parameters}.json` directly, rather than trusting
+  `SCOURSH_DAST_ENDPOINTS`/`SCOURSH_DAST_PARAMETERS` alone.**  AGENTS.md and this plan's own DAST-14 row
+  already record that those two exports are resolved by `modules/dast/run.sh` BEFORE `crawl.sh` writes
+  the inventory, so they are empty on the ordinary first run; `active/sqli.sh` inherited that gap
+  un-worked-around.  `active/pathtraversal.sh` does not repeat it - it falls back to the run
+  directory's own artifacts, the identical pattern `passive/headers.sh` already established for its
+  endpoint file, extended here to the parameters file too.  The general fix still belongs to
+  `modules/dast/run.sh` and is unchanged by this ticket.
+
+**What DAST-17 deliberately did not build**: WAF-evasion encodings (double-encoding, null-byte, case
+mangling) - §7.3's own framing is "prove a vuln exists via a signal, don't exploit it", and this probe
+detects, it does not evade; a third or fourth marker file (e.g. `/etc/hosts`, `boot.ini`) beyond the two
+`docs/DESIGN.md` §7.3 example calls for; and an authenticated-session-aware crawl of new surface (it
+reuses whatever session `auth.sh` already obtained under `--authed`, the same DAST-14 pattern, but does
+not widen the crawl itself).
+
+**DAST-19 (`active/openredirect.sh`) has landed - the fourth tier-4 injection probe, built on
 DAST-14's shared `active/inject_engine.sh` rather than beside it.**
 It ships `modules/dast/active/openredirect.sh` (the phase script `dast_run_phase` sources at tier
 `active`), two vendored data files under `modules/dast/payloads/`
