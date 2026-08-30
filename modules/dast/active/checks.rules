@@ -455,3 +455,109 @@ remediation: Never pass request-derived data to a shell. Call the target program
   least-privilege account.
 references: CWE-78
 references: https://owasp.org/Top10/A03_2021-Injection/
+
+# ---------------------------------------------------------------------------
+# §7.3 active injection: server-side template injection (DAST-18, active/ssti.sh)
+# ---------------------------------------------------------------------------
+# Arithmetic-only template injection (CWE-1336, with CWE-94 as the code-injection
+# parent it specialises). Tagged `active`, matching the phase table's
+# `active/ssti.sh:active` floor. The probe sends ONE multiplication of two small
+# integers wrapped in one engine's delimiters and treats the EVALUATED product -
+# never the reflected expression - as the signal; it reads no file, runs no
+# command, walks no object graph, and mutates nothing, not even template-local
+# state. Payloads are vendored in modules/dast/payloads/ssti-expressions.txt.
+#
+# FOUR IDS, ONE PER TEMPLATE-ENGINE FAMILY, for the same reason the three SQLi
+# techniques above have three: the DAST location profile (target, method,
+# path_template, param_location, param_name) carries NO component naming the
+# engine, so one id would collide a Jinja2 hit and a FreeMarker hit on the same
+# parameter into a single fingerprint and findings_merge would silently keep
+# whichever sorted first. rules/RULE-FORMAT.md §9.1.1 NAME allows `_`, so the
+# family lives in NAME under the shared `INJ` family alongside its peers.
+#
+# Severity `critical` and confidence `high` together: an engine that compiled
+# request-derived text is normally a direct path to remote code execution, and
+# an evaluated arithmetic result is an unambiguous observation rather than an
+# inference from a differential (which is why the boolean/time-based peers above
+# carry `medium`).
+
+id: DAST-INJ-SSTI_BRACES-01
+title: Server-side template injection via a double-brace expression in a request parameter
+script: active/ssti.sh
+severity: critical
+confidence: high
+cwe: CWE-1336
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Never concatenate request-derived data into a template SOURCE
+  string. Render a fixed, developer-authored template and pass the user value
+  in as a CONTEXT VARIABLE, so the engine treats it as data rather than as
+  syntax to compile. Where user-authored templates are a product requirement,
+  render them in the sandbox the engine documents (Jinja2
+  SandboxedEnvironment, Twig SandboxExtension, Liquid's strict mode) with a
+  deny-by-default allow-list of exposed objects and methods, and treat that
+  sandbox as defence in depth rather than a boundary.
+references: CWE-1336
+references: CWE-94
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-SSTI_DOLLAR-01
+title: Server-side template injection via a dollar-brace expression in a request parameter
+script: active/ssti.sh
+severity: critical
+confidence: high
+cwe: CWE-1336
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Never concatenate request-derived data into a template SOURCE
+  string or into an expression the container evaluates. Render a fixed,
+  developer-authored template and pass the user value in as a CONTEXT
+  VARIABLE. On the JVM, set FreeMarker's TemplateClassResolver.SAFE_RESOLVER
+  and disable the new-object builtin, restrict Spring EL evaluation to a
+  SimpleEvaluationContext rather than a StandardEvaluationContext, and keep
+  request data out of any string a view resolver treats as a fragment or
+  template name.
+references: CWE-1336
+references: CWE-94
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-SSTI_ERB-01
+title: Server-side template injection via an ERB-style expression in a request parameter
+script: active/ssti.sh
+severity: critical
+confidence: high
+cwe: CWE-1336
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Never render a template whose SOURCE contains request-derived
+  data - in Ruby, never pass user input to ERB.new or Erubi, and in Node never
+  pass it to ejs.render as the template argument. Render a fixed,
+  developer-authored template file and supply the user value through the
+  locals/binding hash instead, so the engine treats it as data rather than as
+  code to compile.
+references: CWE-1336
+references: CWE-94
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-SSTI_SMARTY-01
+title: Server-side template injection via a single-brace expression in a request parameter
+script: active/ssti.sh
+severity: critical
+confidence: high
+cwe: CWE-1336
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Never build a template string from request-derived data and never
+  call Smarty's string resolver on it. Assign the user value with assign() and
+  render a fixed template file, so the engine treats it as data rather than as
+  syntax to compile. Where user-authored templates are a product requirement,
+  enable Smarty's secure mode with an explicit allow-list of permitted
+  modifiers, functions and PHP calls, and treat it as defence in depth rather
+  than a boundary.
+references: CWE-1336
+references: CWE-94
+references: https://owasp.org/Top10/A03_2021-Injection/

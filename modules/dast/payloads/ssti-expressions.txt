@@ -1,0 +1,64 @@
+# Server-side template-injection probes (docs/DESIGN.md §7.3; docs/STEP5-DAST-PLAN.md
+# DAST-18). One row per (template-engine family, payload):
+#
+#   <family><TAB><payload><TAB><ERE signature of the EVALUATED result>
+#
+# modules/dast/active/ssti.sh maps <family> to its own check id and sends
+# <payload> verbatim as one parameter's value; a response body matching
+# <signature> means the server EVALUATED the expression.
+#
+# ARITHMETIC ONLY. Every payload here is a single multiplication of two small
+# integers wrapped in one engine's delimiters, and nothing else. No payload
+# reads a file, spawns a process, walks an object graph, reaches a class loader,
+# or mutates any state - not even template-local state (that is why Velocity's
+# `#set(...)` form is deliberately absent; see ssti.sh's header). A template
+# engine evaluating `29*31` has done the whole of what this probe asks of it.
+# This is docs/DESIGN.md §7.3's non-destructive, evidence-only contract and the
+# DAST-36 amendment for DAST-14..DAST-25; see this directory's README.md.
+#
+# THE SENTINEL, AND WHY THE SIGNAL CANNOT BE A BARE ECHO OF THE INPUT.
+# A probe that flagged mere REFLECTION would fire on almost every parameter on
+# almost every application, so the signal has to be the RESULT and never the
+# payload text. Each payload is flanked by the literal sentinel `sstiqzx`, and
+# the signature is that sentinel wrapped around the PRODUCT:
+#
+#     sent:      sstiqzx{{29*31}}sstiqzx
+#     evaluated: sstiqzx899sstiqzx      <- the signature; a finding
+#     echoed:    sstiqzx{{29*31}}sstiqzx <- not the signature; NOT a finding
+#
+# The invariant that makes this airtight, and which tests/suites/dast-ssti.sh
+# asserts row by row rather than trusting this comment: THE DIGIT `8` OCCURS IN
+# EVERY SIGNATURE AND IN NO PAYLOAD. So no transformation that only deletes,
+# reorders, re-encodes or partially strips the payload's own bytes - a naive
+# sanitiser removing `{}`, an HTML-escaper, a percent-decoder - can manufacture
+# `899` out of what was sent. Only arithmetic can.
+#
+# WHY THE PRODUCT IS DELIBERATELY BELOW 1000. FreeMarker (and any engine that
+# formats numbers for a locale) renders `${9007*8117}` as `73,109,819`, with
+# grouping separators, from four digits up; a signature written as plain digits
+# would then MISS the very family it was aimed at, and a miss here reads as a
+# clean result. Three digits are never grouped by any of these engines, and the
+# sentinel - not the number - is what carries the specificity.
+#
+# Adding a row: keep it arithmetic, keep the product under 1000, keep the digits
+# of the product absent from the payload, and add the family to ssti.sh's
+# `_ssti_check_id_for_family` map plus a record in
+# modules/dast/active/checks.rules. A family with no check id is refused at
+# runtime and recorded, never sent silently.
+#
+# modules/dast/payloads/README.md's comment/blank-line rules apply. These rows
+# take NO `%B`/`%N` placeholder: a template expression is the whole value, not a
+# break-out from an existing one.
+
+# --- {{ ... }} : Jinja2, Django, Twig, Nunjucks, Liquid, Handlebars-alikes ---
+braces	sstiqzx{{29*31}}sstiqzx	sstiqzx899sstiqzx
+
+# --- ${ ... } : FreeMarker, Jakarta/JSP EL, Spring EL (SpEL), Mako, and
+#     server-side JavaScript template literals ---
+dollar	sstiqzx${29*31}sstiqzx	sstiqzx899sstiqzx
+
+# --- <%= ... %> : Ruby ERB (and Erubi/Erubis), Node EJS, classic ASP / ASP.NET ---
+erb	sstiqzx<%= 29*31 %>sstiqzx	sstiqzx899sstiqzx
+
+# --- { ... } : Smarty, and the single-brace PHP template engines modelled on it ---
+smarty	sstiqzx{29*31}sstiqzx	sstiqzx899sstiqzx

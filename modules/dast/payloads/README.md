@@ -52,6 +52,26 @@ shape:
   be specific to the marker file's real CONTENTS so a page that merely echoes
   the requested path back is not itself a match.
 
+The template-injection file (DAST-18) takes NO placeholder and a fifth line
+shape - a template expression is the whole parameter value, not a break-out
+from an existing one:
+
+- `ssti-expressions.txt` is `<template-engine family><TAB><payload><TAB><ERE
+  signature of the EVALUATED result>`.
+  The payload is one multiplication of two small integers wrapped in one
+  engine's delimiters and nothing else; the signature is a literal sentinel
+  wrapped around the PRODUCT, so an unevaluated echo of the payload can never
+  match it.
+  The invariant that makes that airtight, and which `tests/suites/dast-ssti.sh`
+  re-derives from the file row by row, is that the digit `8` appears in every
+  signature and in no payload - so no delete, reorder, re-encode or partial
+  strip of what was sent can manufacture the result.
+  The product is deliberately kept under 1000 because FreeMarker and every
+  other locale-formatting engine groups from four digits up, and a
+  plain-digit signature would then MISS the family it was aimed at.
+  A row whose family has no check id in `modules/dast/active/checks.rules` is
+  refused at runtime and recorded, never sent.
+
 ## Graceful degradation
 
 A probe that cannot read a payload file (absent or empty) records a
