@@ -309,7 +309,7 @@ parameter inventory that all twenty-seven tickets in tiers 2-5 consume exists, a
 against an authenticated session.
 Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has started - tier 4's
 DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`), DAST-16 (`active/cmdi.sh`),
-DAST-17 (`active/pathtraversal.sh`) and
+DAST-17 (`active/pathtraversal.sh`), DAST-18 (`active/ssti.sh`) and
 DAST-19 (`active/openredirect.sh`), tier
 5's DAST-26 (`jwt.sh`), DAST-27 (`graphql.sh`, the §7.4 GraphQL introspection & key-exposure check),
 DAST-28 (`ratelimit.sh`, the §7.4 missing-throttling burst probe),
@@ -362,7 +362,10 @@ DAST-14's shared `inject_engine.sh` unchanged and is the first probe to fall bac
 `$SCOURSH_RUN_DIR/inventory/{endpoints,parameters}.json` directly when the
 `SCOURSH_DAST_ENDPOINTS`/`SCOURSH_DAST_PARAMETERS` exports are empty (the documented first-run state -
 see `docs/STEP5-DAST-PLAN.md`'s DAST-17 landing note).
-DAST-18 and DAST-20..DAST-25 are open, unordered among themselves, and should reuse the
+**DAST-18 (`active/ssti.sh`) has also landed**, tier 4's fourth injection probe: arithmetic-only
+server-side template injection (CWE-1336), reusing DAST-14's shared `inject_engine.sh` with no line
+added to it and DAST-17's run-directory inventory fallback verbatim.
+DAST-20..DAST-25 are open, unordered among themselves, and should reuse the
 engine the same way.
 The one thing worth carrying up here from DAST-15's landing note: **that probe measures ESCAPING, not
 reflection.**  Almost every parameter on a real application reflects something, so a probe that
@@ -375,6 +378,29 @@ DAST-14's `inject_engine.sh` and time-based mechanism, adds
 `modules/dast/payloads/cmdi-time-payloads.txt`, and clamps the injected sleep into 1..10s BEFORE
 substitution so a probe can never become a DoS - the bound is load-bearing and applied, not advisory.
 `tests/suites/dast-cmdi.sh` (registered) proves it.
+**DAST-18 measures EVALUATION, not reflection, and the payload set is built so the two cannot be
+confused by accident.**
+Each of its four payloads (`modules/dast/payloads/ssti-expressions.txt`, one per engine family:
+`{{...}}` Jinja2/Twig/Nunjucks, `${...}` FreeMarker/JSP-EL/SpEL/Mako, `<%= ... %>` ERB/EJS/ASP,
+`{...}` Smarty) is a single multiplication flanked by the literal sentinel `sstiqzx`, and the
+signature is that sentinel wrapped around the PRODUCT.
+**The invariant the whole check rests on is that the digit `8` occurs in every signature and in no
+payload**, so no delete, reorder, re-encode or partial strip of the bytes that were sent can
+manufacture the result - only arithmetic can; `tests/suites/dast-ssti.sh` re-derives that from the
+shipped file row by row rather than trusting the comment.
+Two further things there are easy to get backwards, both measured by mutation: **the product is
+deliberately kept under 1000**, because FreeMarker and every other locale-formatting engine groups
+from four digits up, so a plain-digit signature for `9007*8117` would MISS the family it was aimed at
+and a miss reads as a clean result; and **the first confirmed family wins per parameter**, asserted by
+COMPARING request counts (a confirming endpoint costs 2 requests, a non-confirming one costs 5), which
+is what distinguishes "stopped early on a hit" from both "sent everything anyway" and the opposite
+defect of stopping early on a MISS.
+Its four check ids exist for the same reason SQLi's three do - the DAST location profile names no
+engine, so one id would collide a Jinja2 and a FreeMarker hit on one parameter onto a single
+fingerprint.
+It needed NO edit to `modules/dast/engine.sh`: the `'active/ssti.sh:active'` row has been in
+`_DAST_PHASES` since DAST-02, so landing the script alone flips the phase from `absent` to `ran`.
+
 DAST-29 created a THIRD such shared registry, `modules/dast/checks.rules`, for the tier-5 phases
 whose scripts sit at the top level of `modules/dast/`; DAST-28 has already appended its two
 `DAST-RATE-*` records to it, and DAST-27 has appended its own `DAST-GQL-INTROSPECTION-01` record the

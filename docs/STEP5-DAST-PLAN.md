@@ -1484,7 +1484,7 @@ segments) plus DAST-01/02, and land after tier 2/3 per §13's stated ordering.
 | DAST-15 **(landed)** | `active/xss.sh` - marker-token unescaped-reflection detection. See the landing note below. |
 | DAST-16 **(landed)** | `active/cmdi.sh` - bounded time-based command injection. See the landing note below. |
 | DAST-17 **(landed)** | `active/pathtraversal.sh` - benign read-only marker traversal. See the landing note below. |
-| DAST-18 | `active/ssti.sh` - arithmetic-expression template injection |
+| DAST-18 **(landed)** | `active/ssti.sh` - arithmetic-expression template injection. See the landing note below. |
 | DAST-19 | `active/openredirect.sh` - attacker-controlled `Location` host |
 | DAST-20 | `active/xxe_ssrf.sh` - safe-sentinel-only XXE/SSRF detection, in-scope hosts only |
 | DAST-21 | `active/nosqli.sh` - operator/object injection, boolean/error differential |
@@ -1692,6 +1692,69 @@ detects, it does not evade; a third or fourth marker file (e.g. `/etc/hosts`, `b
 `docs/DESIGN.md` §7.3 example calls for; and an authenticated-session-aware crawl of new surface (it
 reuses whatever session `auth.sh` already obtained under `--authed`, the same DAST-14 pattern, but does
 not widen the crawl itself).
+
+**DAST-18 (`active/ssti.sh`) has landed - server-side template injection, and it added no line to
+DAST-14's shared `active/inject_engine.sh`.**
+It ships `modules/dast/active/ssti.sh` (the phase script `dast_run_phase` sources at tier `active`),
+one vendored data file (`modules/dast/payloads/ssti-expressions.txt`), four `DAST-INJ-SSTI_*` records
+appended to the shared `modules/dast/active/checks.rules`, and `tests/suites/dast-ssti.sh`
+(91 assertions, no network and no Docker, every response composed by a recorded mock).
+The phase table needed no edit: `modules/dast/engine.sh` has carried `'active/ssti.sh:active'` since
+DAST-02, so landing the script alone flips `_DAST_PHASE_PRESENT` from `absent` to `ran`.
+Six decisions in it are easy to get backwards; each is pinned by a case naming the reading it fails
+under, and each was confirmed by MUTATING the implementation into that reading and watching the suite
+go red - six mutations, six reds (5, 2, 11, 9, 2 and 1 failing assertions), one green baseline.
+
+- **The signal is the EVALUATED result and never the reflection, and the payload is built so the two
+  cannot be confused by accident.** Almost every parameter on almost every application reflects
+  something, so a probe that flagged reflection is a false-positive generator - and the
+  reflected-but-not-evaluated case is the half that fails in the direction that reads as a pass, the
+  same lesson DAST-15 records for escaping. Each payload is flanked by the literal sentinel
+  `sstiqzx` and the signature is that sentinel wrapped around the PRODUCT (`sstiqzx899sstiqzx`).
+  **The invariant that makes it airtight is that the digit `8` occurs in every signature and in no
+  payload**, so no delete, reorder, re-encode or partial strip of the bytes that were sent can
+  manufacture the result - only arithmetic can. The suite re-derives that from the shipped file row
+  by row rather than trusting the comment, and pins it with a control endpoint that runs a naive
+  sanitiser (delete every template delimiter, echo the rest) and must stay silent.
+- **The product is deliberately under 1000, and the reason is a false NEGATIVE.** FreeMarker - and
+  any engine that formats numbers for a locale - renders `${9007*8117}` as `73,109,819`, with
+  grouping separators, from four digits up. A plain-digit signature would then MISS the very family
+  it was aimed at, and a miss reads as a clean result. Three digits are never grouped; the sentinel,
+  not the number, is what carries the specificity.
+- **Four check ids, one per engine family**, for the identical reason the three SQLi techniques have
+  three: the DAST location profile (target, method, path_template, param_location, param_name)
+  carries no component naming the engine, so one shared id would collide a Jinja2 hit and a
+  FreeMarker hit on the same parameter onto one fingerprint and `findings_merge` would keep whichever
+  sorted first. The suite asserts a `${...}`-evaluating endpoint yields the DOLLAR id and NOT the
+  BRACES id; collapsing the map took 11 assertions red.
+- **First confirmed family wins per parameter; the remaining families are not sent - and that is
+  asserted on the REQUEST LOG, not on the finding count.** An application renders through one engine,
+  so continuing spends requests against an authorised target to learn nothing. The discriminating
+  assertion is a COMPARISON: a confirming endpoint costs 2 requests (baseline + first family) while a
+  non-confirming one costs 5 (baseline + all four), so "stopped early on a hit" is distinguishable
+  from both "sent everything anyway" and the opposite defect, "stopped early on a MISS", which would
+  leave three engine families untested while still reading clean.
+- **`checks_run` carries only the family ids whose payload really went out**, and every shipped family
+  missing from that set gets its own `ssti_family_not_applicable` reduction naming it - DAST-29's H3
+  defect (the field written from the passes ENTERED rather than the ids that RAN) applied here before
+  it could ship. A run with one family selected records one id, not four.
+- **The per-family `dast_check_selected` gate is pinned in BOTH directions, because the naive fix for
+  each is the other's bug.** With the filter chain live, a deselected family sends zero requests
+  (asserted on the log, since a probe that dialled the target and then declined to report is exactly
+  what selection exists to prevent). With `dast_check_selected` ABSENT from the process - every
+  direct-engine suite in this tree - the `declare -F` guard must fall through to PERMISSIVE, or the
+  whole phase goes inert while every "stays quiet" assertion still passes green. This suite sources
+  the REAL `modules/dast/engine.sh` rather than stubbing the function, so the whole-line membership
+  test and the unset/empty fallback are the shipped ones.
+
+**What DAST-18 deliberately did not build**, so the boundary is not rediscovered: any non-arithmetic
+payload - no file read, no command execution, no sandbox escape, no object-traversal or class-loader
+gadget chain - so the probe confirms "the server did the sum" and never escalates that into the code
+execution it usually implies; Apache Velocity, whose VTL references are not expressions (`${29*31}`
+renders literally and arithmetic needs a `#set(...)` DIRECTIVE, which assigns template-context state
+and so sits outside the arithmetic-only contract); Thymeleaf's `__${...}__` preprocessing form; blind
+or time-based SSTI, which has no reflection channel at all; and client-side template injection. Each
+is a named gap in the module header rather than a silent absence.
 
 **DAST-19 (`active/openredirect.sh`) has landed - the fourth tier-4 injection probe, built on
 DAST-14's shared `active/inject_engine.sh` rather than beside it.**
