@@ -335,13 +335,15 @@ shared `modules/dast/passive/checks.rules`; that file is now SPLIT six ways, one
 and so was seeded directly into its own `modules/dast/passive/checks-cors.rules` rather than ever
 touching a shared file, and DAST-09's own ids sit in `modules/dast/passive/checks-banner.rules` for the
 same reason.
-**DAST-07 landed carrying the PRE-split shape.** It was written and reviewed before tension 29, so its
-six `DAST-TLS-*` ids ship in a generic `modules/dast/passive/checks.rules`, which is now the only
-non-per-owner rule file in that directory. That is legal rather than a defect - `rules/RULE-FORMAT.md`
-§9's path table still admits the `checks.rules` basename, tension 29's own RESOLUTION leaves it
-("nothing is required to move"), and `tests/lint-rules.sh` passes clean on it - but it is the one file
-in there a future passive peer could still collide on, so aligning it to `checks-tls.rules` is filed as
-follow-up work rather than forced into the merge that landed it.
+**DAST-07 landed carrying the PRE-split shape, and that has since been corrected.** It was written and
+reviewed before tension 29, so its six `DAST-TLS-*` ids originally shipped in a generic
+`modules/dast/passive/checks.rules` - legal rather than a defect (`rules/RULE-FORMAT.md` §9's path
+table still admits the `checks.rules` basename and tension 29's own RESOLUTION leaves it, "nothing is
+required to move"), but the one file in that directory a future passive peer could still collide on.
+A later fix (filed while resolving a DAST-07 merge conflict, alongside the `tls.sh` exit-3 correction
+below) renamed it to `modules/dast/passive/checks-tls.rules`, matching every other per-owner file in
+the directory; `tests/suites/dast.sh`'s "modules/dast/passive/ ships FIVE per-owner registries" case is
+what had been asserting the shared file's absence all along and is what caught it still present.
 `modules/dast/active/checks.rules` is the tier-3/tier-4 equivalent and is under the identical
 append-only rule - DAST-15, DAST-16, DAST-19 and tier 3's DAST-13 all appended to DAST-14's file
 rather than adding a sibling, because `rules/RULE-FORMAT.md` §9's path table reserves the

@@ -2939,6 +2939,24 @@ address, and anything wanting to talk to that address still needs a transport pr
 still watching for - and the exemption buys no relief from the request budget, so a TLS handshake
 spends a token exactly as a request does.
 
+**A follow-up correction: "exit 3 on refusal" used to collapse two different facts into one, and a
+DNS resolution failure is no longer one of them.**
+`http_gate_url` returns 1 for several reasons - the tuple has no `config/scope.conf` entry, the URL
+carried userinfo, the resolved address is on the private/loopback deny list, or the host simply did
+not resolve - and `http_authorize_raw_connection` used to `die "$SCOURSH_EXIT_SCOPE"` on every one of
+them alike.  "The operator did not authorise this host" is a config mistake and aborting the whole run
+over it is right; "this authorised host did not resolve right now" is not the same fact, and one
+unreachable target should not discard every other phase's findings and every other target's.
+`http_authorize_raw_connection` therefore takes an optional third argument, `DNS_FATAL` (default
+`true`, so every other refusal reason and the default for any future caller are unchanged): passing
+`false` turns ONLY the DNS-resolution-failure return of `http_gate_url`, and the equivalent re-resolve
+failure after the gate already approved the tuple, into a plain `return 1` with `_HTTP_RAW_REASON` set,
+never `die`.  `modules/dast/passive/tls.sh` is the one caller that passes `false`, and treats that
+return as a declared `coverage_reduction` (`reason=tls_host_unresolvable`) the same way it already
+treats an absent `openssl` or a failed handshake - the run continues, and the gap is recorded rather
+than silent.  A target the gate refuses for any OTHER reason - `tests/suites/dast-tls.sh`'s
+`tls-loopback` case is the pinned example - is still exit 3, through the same audit path, unchanged.
+
 **Normalization order.**
 Every URL `http_request` is given, whether authored in `scope.conf`, discovered by the crawler, or
 returned in a `Location` header, is put through the same pipeline **before** any gate comparison runs,

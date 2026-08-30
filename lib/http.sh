@@ -683,10 +683,10 @@ _http_curl_cfg_quote() {
 # ---------------------------------------------------------------------------
 # 9b. The ONE documented non-HTTP caller (docs/FOUNDATION.md tension 19)
 # ---------------------------------------------------------------------------
-# `http_authorize_raw_connection URL [TARGET_ID]` - everything `http_request`
-# does EXCEPT sending an HTTP request: gate the URL, resolve and pin the
-# address, check the circuit breaker, and spend one token of the rate limiter
-# and the per-run request budget.  On success it publishes
+# `http_authorize_raw_connection URL [TARGET_ID] [DNS_FATAL]` - everything
+# `http_request` does EXCEPT sending an HTTP request: gate the URL, resolve and
+# pin the address, check the circuit breaker, and spend one token of the rate
+# limiter and the per-run request budget.  On success it publishes
 #
 #   _HTTP_RAW_ADDR    the resolved, gate-approved address to connect to
 #   _HTTP_RAW_HOST    the normalised hostname (what SNI must carry)
@@ -694,8 +694,30 @@ _http_curl_cfg_quote() {
 #   _HTTP_RAW_SCHEME  http | https
 #   _HTTP_RAW_BUCKET  the scope target id the spend was charged to
 #
-# and returns 0.  A scope violation is exit 3 through the same audit path
-# `http_request` uses, so the two can never disagree about what is authorised.
+# and returns 0.  A scope violation - the host/port has no entry in
+# config/scope.conf, the URL carried userinfo, or the resolved address is on
+# the private/loopback deny list without `allow-private-addresses: true` - is
+# exit 3 through the same audit path `http_request` uses, so the two can never
+# disagree about what is authorised.  THIS HALF IS NEVER SOFTENED BY
+# DNS_FATAL: it distinguishes ONLY "the operator did not authorise this host"
+# from "this authorised host did not resolve", never the other refusal
+# reasons.
+#
+# `DNS_FATAL` (default `true`, so the fatal behaviour above is the default for
+# any future caller that does not opt out) governs ONLY a DNS resolution
+# failure on an otherwise-in-scope host - the case where `http_scope_match`
+# already accepted the (scheme, host, port) tuple and only the name lookup
+# itself failed.  A caller that passes `false` gets, on that one failure mode,
+# a plain `return 1` with `_HTTP_RAW_REASON` set to a human-readable reason,
+# never `die`.  This exists for `modules/dast/passive/tls.sh` (see its own
+# header and docs/FOUNDATION.md tension 19's DAST-07 correction): a target
+# that has not been authorised is an operator/config mistake and stays fatal
+# for the whole run, but a target that IS authorised and simply does not
+# resolve right now - the ordinary shape of "one of several targets is
+# temporarily unreachable" - is the same category tension 14's declared
+# coverage reductions already cover elsewhere (an absent `openssl`, a failed
+# handshake), and aborting every other phase and every other target over it
+# is disproportionate to what was actually learned.
 #
 # WHY THIS EXISTS AT ALL, GIVEN THAT TENSION 19 SAYS THERE IS ONE CHOKEPOINT.
 # `modules/dast/passive/tls.sh` (docs/STEP5-DAST-PLAN.md DAST-07) is that
@@ -720,13 +742,17 @@ _http_curl_cfg_quote() {
 # tests/lint-shell.sh's "no bypass" check still fails the build for a bare
 # curl/wget/nc/`openssl s_client` in any file but the two it exempts by path.
 http_authorize_raw_connection() {
-  local url=$1 target=${2:-}
+  local url=$1 target=${2:-} dns_fatal=${3:-true}
   local rps_milli budget breaker_failures breaker_window
   _HTTP_RAW_ADDR='' _HTTP_RAW_HOST='' _HTTP_RAW_PORT='' _HTTP_RAW_SCHEME=''
-  _HTTP_RAW_BUCKET=''
+  _HTTP_RAW_BUCKET='' _HTTP_RAW_REASON=''
 
   if ! http_gate_url "$url" "$target"; then
     _http_gate_audit "$url" "${_HTTP_GATE_CANON:-$url}" "$_HTTP_GATE_REASON" 'TLS' "$target"
+    if [[ $dns_fatal != true && $_HTTP_GATE_REASON == "DNS resolution failed for "* ]]; then
+      _HTTP_RAW_REASON=$_HTTP_GATE_REASON
+      return 1
+    fi
     die "$SCOURSH_EXIT_SCOPE" "scope gate refused a raw TLS connection to $url: $_HTTP_GATE_REASON"
   fi
 
@@ -752,6 +778,10 @@ http_authorize_raw_connection() {
   if [[ $is_literal == true ]]; then
     addr=$host
   elif ! addr=$(http_resolve_host "$host"); then
+    if [[ $dns_fatal != true ]]; then
+      _HTTP_RAW_REASON="DNS resolution failed for '$host' after the gate had approved it"
+      return 1
+    fi
     die "$SCOURSH_EXIT_SCOPE" "scope gate: DNS resolution failed for '$host' after the gate had approved it"
   fi
   _http_note_target_address "$bucket" "$addr"
