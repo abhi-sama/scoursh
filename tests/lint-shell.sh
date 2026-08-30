@@ -206,10 +206,23 @@ printf '\n== tension 19: no bypass - a single chokepoint for the network ==\n'
 # s_client anywhere else is a second, ungated path to the network - exactly
 # the bypass the scope gate exists to make impossible. lib/http.sh is where
 # the wrapper itself lives (it is expected to invoke curl); the documented
-# `modules/dast/passive/tls.sh` exception (docs/FOUNDATION.md tension 19)
-# does not exist yet, so it is not exempted here - add it the day it lands,
-# with the same comment tension 19 requires of it (host taken from the
-# already-resolved, gated tuple set).
+# `modules/dast/passive/tls.sh` exception (docs/FOUNDATION.md tension 19) has
+# NOW LANDED (docs/STEP5-DAST-PLAN.md DAST-07) and is exempted below, together
+# with the engine file that holds its single `openssl s_client` invocation.
+#
+# THAT EXEMPTION IS FROM THE TRANSPORT AND FROM NOTHING ELSE, which is what
+# keeps it from being a hole rather than an exception.  A raw TLS handshake is
+# the measurement a transport-security check makes - it is not an HTTP request
+# and curl does not expose the negotiated protocol, the negotiated cipher, or
+# the presented certificate - but that module still takes its authorization, its
+# PINNED address and its tension-16 limiter/budget/breaker spend from
+# lib/http.sh's `http_authorize_raw_connection`, so the scope gate, the
+# resolution-pinning deny list and the request budget all still bind it.  The
+# host it connects to comes from that already-resolved, gated tuple, never from
+# a raw URL and never from a second DNS lookup.  Exempt BY PATH, exactly as
+# tools/dast-test-target/scope.conf is in the DAST-35 checks below - never by
+# widening the pattern, which would exempt every future file that happened to
+# look similar.
 #
 # tools/vendor-engines.sh (docs/FOUNDATION.md tension 27) is the SECOND and
 # LAST documented exception, added by that ticket: it is the one script
@@ -222,7 +235,8 @@ printf '\n== tension 19: no bypass - a single chokepoint for the network ==\n'
 # anything under scan.sh's own dispatch path ever wires this script in.
 check 'no bypass: no curl/wget/nc/openssl s_client outside lib/http.sh' \
   '(^|[;&|(])[[:space:]]*(curl|wget|nc|ncat|netcat|openssl[[:space:]]+s_client)([[:space:]]|\$)' \
-  engine_files lib/http.sh tools/vendor-engines.sh
+  engine_files lib/http.sh tools/vendor-engines.sh \
+  modules/dast/passive/tls.sh modules/dast/passive/tls_engine.sh
 
 printf '\n== DAST-35: no bundled scan target - docs/STEP5-DAST-PLAN.md ==\n'
 # "A convenient example target" is a helpful-looking contribution that would

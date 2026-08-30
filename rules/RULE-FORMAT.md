@@ -722,6 +722,7 @@ control in the tool.
 | `extra-host` | optional | repeatable | no | `host[:port]` additionally in scope for this target. |
 | `allow-subdomains` | optional | single | no | `true` or `false`. Default `false`. |
 | `allow-private-addresses` | optional | single | no | `true` or `false`. Default `false`. Gates the link-local and loopback deny list. |
+| `tls-expect-wildcard` | optional | single | no | `true` or `false`. Default `false`. Declares that a wildcard certificate is the intended design for this target, so `DAST-TLS-WILDCARD_CERT-01` does not report one. Per target rather than scanner-wide because an estate legitimately has both shapes. |
 | `notes` | optional | single | yes | Free text. Now safely free text. |
 
 ### 9.5 Schema: script check
@@ -865,6 +866,7 @@ an absent file is equivalent to one containing only `id: scanner`.
 | `mutex-timeout-seconds` | single | no | Positive integer | `120` |
 | `paranoid-allow` | repeatable | no | `addr:port` | empty |
 | `contact` | single | no | One printable, space-free token a target owner can reach the operator at (an email address or a URL). `(`, `)` and `\` are excluded because the value is placed inside an RFC 7230 `User-Agent` comment. | empty |
+| `tls-expiry-warn-days` | single | no | Non-negative integer. How many days before `notAfter` `DAST-TLS-CERT_EXPIRING-01` starts reporting. `0` disables the expiring-soon window without disabling the expired check. | `30` |
 | `notes` | single | yes | Free text | empty |
 
 `contact` is the operator-configurable half of the identifying `User-Agent` every network request carries
@@ -872,6 +874,11 @@ an absent file is equivalent to one containing only `id: scanner`.
 Adding it is an **additive, optional** key: it trips §14 item 2 only (`lib/records.sh` and
 `tests/lint-rules.sh` move together) and none of items 1, 3 or 4, so it carries **no `format_version`
 bump** - see §14's own note on this.
+
+`tls-expiry-warn-days` (§9.6.1) and `tls-expect-wildcard` (§9.4) are the same shape and were added by the
+same reasoning, for `modules/dast/passive/tls.sh` (`docs/STEP5-DAST-PLAN.md` DAST-07).
+Both are additive and optional, so both trip §14 item 2 alone and neither bumps `format_version`; the
+full four-item accounting §14 works through for `contact` applies to them unchanged.
 
 `docs/DESIGN.md` §11 also lists "the named scan-profile check-sets (`quick`/`full`/`compliance`)" as
 living here.

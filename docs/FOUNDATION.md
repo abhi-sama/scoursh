@@ -2917,6 +2917,28 @@ A lint fails on any `curl`, `wget`, `nc`, or `openssl s_client` invocation outsi
 `modules/dast/passive/tls.sh`, the latter being the one documented exception, which takes its host from
 the same resolved, gated tuple set.
 
+**That exception has now landed (DAST-07), and the shape it landed in is the part worth keeping: it is
+an exemption from the TRANSPORT and from nothing else.**
+A transport-security check needs a raw TLS handshake and the certificate the server presents, which is
+not an HTTP request and cannot be expressed as one - curl exposes neither the negotiated protocol, the
+negotiated cipher, nor the presented chain.
+What the exempted module does **not** get is its own copy of the authorization: `lib/http.sh` gained
+`http_authorize_raw_connection` (section 9b), which does everything `http_request` does except send the
+request - the normalization pipeline below, the scope tuple compare, the userinfo refusal, the
+private/loopback deny list, the pinned resolution, the tension-16 limiter, per-run budget and circuit
+breaker, and the audit finding plus exit 3 on refusal - and hands back a resolved address.
+The module connects to **that** address, with SNI carrying the normalized host, and never re-resolves
+the name.
+Letting it call `http_gate_url` and `_http_throttle` itself was the rejected alternative, for the same
+reason this tension puts the gate inside `http_request` at all: a control each caller must remember to
+apply is not a control, and a second exempted caller would be free to assemble its own subset of them.
+The lint's exemption is **by path** (`modules/dast/passive/tls.sh` and its engine file), never by
+widening the pattern, so it cannot silently spread to the next file that happens to look similar.
+Two things follow that are easy to lose: `http_authorize_raw_connection` opens nothing - it returns an
+address, and anything wanting to talk to that address still needs a transport primitive the lint is
+still watching for - and the exemption buys no relief from the request budget, so a TLS handshake
+spends a token exactly as a request does.
+
 **Normalization order.**
 Every URL `http_request` is given, whether authored in `scope.conf`, discovered by the crawler, or
 returned in a `Location` header, is put through the same pipeline **before** any gate comparison runs,

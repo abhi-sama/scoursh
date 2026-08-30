@@ -318,6 +318,8 @@ data-exposure family) and DAST-30 (`passive/transport.sh`, the §7.4 plaintext-e
 mixed-content family - a tier-5 ticket that RUNS at tier `passive` and lives under
 `modules/dast/passive/`, see its own section below), tier 2's
 DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`, the §7.1 security-header family),
+DAST-07 (`passive/tls.sh`, the §7.1 transport-security family - the ticket that made tension 19's
+single documented exception real, see its own section below),
 DAST-08 (`passive/cors.sh`, the §7.1 CORS origin-reflection family),
 DAST-09 (`passive/banner.sh`, the §7.1 server/framework/version-disclosure family),
 DAST-10 (`passive/leakage.sh`, the §7.1 information-disclosure family) and
@@ -331,11 +333,15 @@ DAST-06, DAST-05, DAST-09, DAST-10, DAST-11 and DAST-30 each originally appended
 shared `modules/dast/passive/checks.rules`; that file is now SPLIT six ways, one
 `checks-<name>.rules` per owner, per `docs/FOUNDATION.md` tension 29 - DAST-08 landed after that split
 and so was seeded directly into its own `modules/dast/passive/checks-cors.rules` rather than ever
-touching a shared file. DAST-09 landed before the split and its three ids still sit in the shared
-`modules/dast/passive/checks.rules`; tension 29's own RESOLUTION leaves that legal ("nothing is
-required to move"), so it is not a defect to fix in a follow-up. DAST-07 is open and, whichever way it
-lands relative to the split, should follow whichever of the two shapes is in effect at the time rather
-than forcing a migration of its own.
+touching a shared file, and DAST-09's own ids sit in `modules/dast/passive/checks-banner.rules` for the
+same reason.
+**DAST-07 landed carrying the PRE-split shape.** It was written and reviewed before tension 29, so its
+six `DAST-TLS-*` ids ship in a generic `modules/dast/passive/checks.rules`, which is now the only
+non-per-owner rule file in that directory. That is legal rather than a defect - `rules/RULE-FORMAT.md`
+§9's path table still admits the `checks.rules` basename, tension 29's own RESOLUTION leaves it
+("nothing is required to move"), and `tests/lint-rules.sh` passes clean on it - but it is the one file
+in there a future passive peer could still collide on, so aligning it to `checks-tls.rules` is filed as
+follow-up work rather than forced into the merge that landed it.
 `modules/dast/active/checks.rules` is the tier-3/tier-4 equivalent and is under the identical
 append-only rule - DAST-15, DAST-16, DAST-19 and tier 3's DAST-13 all appended to DAST-14's file
 rather than adding a sibling, because `rules/RULE-FORMAT.md` §9's path table reserves the
@@ -377,6 +383,39 @@ DAST-30 is NOT one of them despite being a tier-5 ticket: its script sits under
 `docs/STEP5-DAST-PLAN.md`'s own per-ticket tables are the authority for which of the thirty-odd remain;
 do not infer it from this sentence.
 Step 5 remains the top priority ahead of steps 6, 7 and 10.**
+
+**DAST-07 made `docs/FOUNDATION.md` tension 19's single documented exception real, and the shape it
+landed in is what a future non-HTTP probe must copy.**
+`modules/dast/passive/tls.sh` needs a raw TLS handshake - not an HTTP request, and curl exposes neither
+the negotiated protocol, the negotiated cipher, nor the presented certificate - so it is exempted from
+the chokepoint's TRANSPORT and from nothing else.
+`lib/http.sh` gained `http_authorize_raw_connection` (section 9b): everything `http_request` does except
+send a request - normalization, the scope tuple compare, the userinfo refusal, the private/loopback deny
+list, the pinned resolution, and the tension-16 limiter, per-run budget and circuit breaker spend - and
+it hands back a resolved address the module connects to without ever re-resolving the name.
+A TLS handshake therefore spends a budget token exactly as a request does.
+Letting the module call `http_gate_url` and `_http_throttle` itself was the rejected alternative, on
+tension 19's own argument: a control each caller must remember to apply is not a control, and the next
+exempted caller would then be free to assemble its own subset.
+`tests/lint-shell.sh` exempts the two files **by path**, never by widening the pattern.
+Three userland facts it measured, each of which ships green on one userland and is silently wrong on the
+other: LibreSSL's `New, TLSv1/SSLv3, Cipher is ...` is a FAMILY LABEL and not the negotiated version (a
+parser reading it reports every LibreSSL-probed target as TLSv1); a FAILED handshake still prints a
+filled-in `Protocol  :` with `Cipher    : 0000`, so a parser that accepts a protocol alone reports the
+*offered* version as negotiated; and `openssl x509 -ext subjectAltName` does not exist on LibreSSL, so
+the SAN list is read out of `-text`.
+Distinguished names come in two spellings (`CN = h, O = o` versus `/O=o/CN=h`), so every comparison is
+made on a normalized form - a raw subject-versus-issuer compare makes the self-signed check
+userland-dependent.
+Expiry takes `now` as an ARGUMENT rather than calling `openssl x509 -checkend`, which hardcodes the
+system clock: injectable time is what lets one committed, long-lived fixture certificate reach
+`expired`, `expiring` and `ok` deterministically.
+"Wildcard where a host-specific certificate is expected" is an EXPECTATION, so it is the per-target
+`tls-expect-wildcard` in `config/scope.conf`, not a scanner-wide verdict - an estate legitimately has
+both shapes.
+The suite was run under real **OpenSSL 3.6.3** and real **LibreSSL 3.3.6** on one macOS host, 131
+passed 0 failed under each; a GNU/Linux host is NOT covered by that and is left to
+`tools/daily-suite.sh`'s container leg.
 Which rule packs, SCA ecosystems and IaC packs have landed, and what remains of each, is in the
 generated block below - read it there rather than restating it here.
 The design notes the inventory cannot carry stay hand-written:
