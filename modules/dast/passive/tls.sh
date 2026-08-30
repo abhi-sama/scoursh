@@ -328,8 +328,21 @@ _dast_tls_phase() {
 
   # THE GATE, THE PINNED ADDRESS AND THE TENSION-16 SPEND, ALL FROM lib/http.sh.
   # See this file's header: this call is what keeps the exemption narrow.  It
-  # dies with exit 3 on a scope refusal, exactly as http_request would.
-  http_authorize_raw_connection "$scheme://$host:$port/" "$target"
+  # still dies with exit 3 on a genuine scope refusal (not in config/scope.conf,
+  # userinfo, or the private/loopback deny list), exactly as http_request would.
+  #
+  # DNS_FATAL IS PASSED false, DELIBERATELY, AND ONLY HERE.  "the operator did
+  # not authorise this host" and "this authorised host does not resolve right
+  # now" are different facts (see this project's DAST-07 tls.sh fix), and only
+  # the first deserves to abort every other phase and every other target in
+  # this run.  A resolution failure is instead a declared coverage reduction
+  # below, the same vocabulary this phase already uses for an absent openssl
+  # or a failed handshake.
+  if ! http_authorize_raw_connection "$scheme://$host:$port/" "$target" false; then
+    run_record coverage_reduction "module=dast reason=tls_host_unresolvable check=tls target=$target endpoint=$endpoint - $_HTTP_RAW_REASON, so no transport property of this endpoint was assessed."
+    run_record coverage_gap "dast tls: '$endpoint' did not resolve ($_HTTP_RAW_REASON), so its protocol, cipher and certificate were NOT examined. A clean transport result here is the absence of a test, not the absence of a problem."
+    return 0
+  fi
 
   warn_days=$(config_scanner_value tls-expiry-warn-days)
   timeout_s=$(config_scanner_value http-timeout)

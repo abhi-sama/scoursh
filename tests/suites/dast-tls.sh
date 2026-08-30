@@ -44,6 +44,12 @@
 #      not from the authorization: an out-of-scope target is exit 3.
 #  10. EVERY DEGRADATION IS A RECORDED GAP - no openssl, a plain-http target, a
 #      failed probe, an unreadable date - never an error and never a silent pass.
+#  11. AN UNRESOLVABLE HOST IS NOT THE SAME REFUSAL AS AN OUT-OF-SCOPE ONE.  A
+#      target that IS authorised in config/scope.conf but whose host does not
+#      resolve is a recorded coverage reduction that lets the run continue -
+#      it fails under the reading that collapses it into decision 9's exit 3,
+#      which aborts every other phase and every other target over one
+#      unreachable host (this project's DAST-07 tls.sh fix).
 #
 # Every case that pins a decision names the reading it FAILS under, per this
 # repository's testing rule.
@@ -307,6 +313,13 @@ base-url: https://loopback.fixture.example/
 notes: Resolves to loopback and does NOT set allow-private-addresses, so
   lib/http.sh's resolution-pinning deny list must refuse it. Present so the
   suite can prove the scope gate still binds this phase.
+
+id: tls-unresolvable
+base-url: https://unresolvable.fixture.example/
+notes: An AUTHORISED target (it has a real entry here) whose host
+  _tls_resolve below does not know, so it does not resolve. Present so the
+  suite can prove that is a declared coverage reduction, not exit 3 - unlike
+  tls-loopback above, which IS an authorization refusal and must stay fatal.
 EOS
 
 SCANNERCONF=$W/scanner.conf
@@ -505,6 +518,31 @@ else
     'a target the gate refuses is SCOURSH_EXIT_SCOPE (3) - fails under any reading in which the tls exemption also exempts the authorization, the pinned resolution, or the deny list'
   assert_eq '0' "$(grep -c . "$PROBE_LOG" || true)" \
     'and NO handshake was opened - the gate is consulted before the probe, never after'
+
+  t_case 'an unresolvable but AUTHORISED host is a recorded gap, not exit 3 - decision 11'
+  # tls-unresolvable IS in config/scope.conf (unlike tls-loopback above, which
+  # the gate REFUSES): _tls_resolve simply does not know its host. This must
+  # NOT abort the run - it fails under the reading that collapses "does not
+  # resolve" into the same fatal path as "not authorised".
+  rc=0
+  (
+    _fresh_run
+    _phase_env tls-unresolvable
+    source "$ROOT/modules/dast/passive/tls.sh"
+  ) >/dev/null 2>&1 || rc=$?
+  assert_eq '0' "$rc" \
+    'an authorised target that does not resolve is NOT fatal - fails under the pre-fix reading, where this exits 3 (SCOURSH_EXIT_SCOPE) exactly as tls-loopback does'
+  _fresh_run
+  _phase_env tls-unresolvable
+  source "$ROOT/modules/dast/passive/tls.sh"
+  META=$(_meta_text); FIND=$(_shard_text)
+  assert_contains "$META" 'reason=tls_host_unresolvable' \
+    'the failure is a declared coverage_reduction, the same vocabulary this phase already uses for an absent openssl or a failed handshake'
+  assert_contains "$META" "DNS resolution failed for 'unresolvable.fixture.example'" \
+    'naming the actual reason rather than a generic one'
+  assert_contains "$META" 'absence of a test' 'and a human-readable coverage_gap says a clean result is the absence of a test'
+  assert_not_contains "$FIND" 'DAST-TLS-' 'and nothing is reported as clean'
+  assert_eq '0' "$(grep -c . "$PROBE_LOG" || true)" 'and NO handshake was attempted - the gate refused before the probe ran'
 
   t_case 'openssl absent is a recorded skip, never an error - decision 10'
   # `_have` is overridden rather than PATH being emptied.  Emptying PATH takes
