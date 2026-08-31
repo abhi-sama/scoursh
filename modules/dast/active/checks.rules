@@ -742,3 +742,45 @@ remediation: Never pass request-derived data straight into a recursive merge,
   already in memory.
 references: CWE-1321
 references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-HOSTHDR-REFLECTED_BODY-01
+title: Host header value reflected into the response body
+script: active/hosthdr.sh
+severity: medium
+confidence: high
+cwe: CWE-807
+owasp: A05:2021
+tags: active
+coverage-scope: target
+remediation: Do not build an absolute URL, a canonical link, an asset
+  reference or any other response content from the incoming Host or
+  X-Forwarded-Host header. Compute the application origin from a
+  server-side configuration value (or from a fixed, operator-set
+  allow-list of expected Host values, rejecting any request whose Host
+  does not match one) rather than from client-supplied transport headers.
+  Where a reverse proxy is expected to set X-Forwarded-Host, strip or
+  overwrite any value the client itself supplied before it reaches the
+  application, and never trust it from a request that did not traverse
+  that proxy.
+references: CWE-807
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: DAST-HOSTHDR-REFLECTED_LOCATION-01
+title: Host header value reflected into a redirect Location's authority
+script: active/hosthdr.sh
+severity: medium
+confidence: high
+cwe: CWE-807
+owasp: A05:2021
+tags: active
+coverage-scope: target
+remediation: Do not construct a redirect Location from the incoming Host
+  or X-Forwarded-Host header. Build the redirect against a server-side
+  configuration value for this application's own origin, never against a
+  client-supplied transport header, and apply the same fixed allow-list
+  of expected Host values recommended for response-body construction.
+  This is the same defect class that makes a password-reset link, a
+  cache key, or any other absolute URL the application builds from the
+  Host header poisonable by whoever sends the request.
+references: CWE-807
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
