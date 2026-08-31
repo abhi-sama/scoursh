@@ -293,7 +293,7 @@ That window closes the moment DAST-02 lands.
 |---|---|---|
 | `--intensity` ceiling | `passive` (read what the target already sends back; nothing injected) | `scan.sh`, ahead of `lib/checks.sh`'s existing type-tag ceiling filter |
 | requests per second | `4` (the `rules/RULE-FORMAT.md` §9.6.1 default, unchanged) | DAST-01's limiter, reading an already-clamped effective value |
-| concurrent DAST requests | **not enforced by DAST-01** | nothing; see the row note below |
+| concurrent DAST requests | `4` (the `rules/RULE-FORMAT.md` §9.6.1 `jobs` default, unchanged) | `lib/http.sh` section 11b's in-flight semaphore, reading an already-clamped effective value |
 | per-run request budget | `5000`, clamped down from the §9.6.1 default of `20000` | DAST-01's budget counter, reading an already-clamped effective value |
 | circuit breaker | 10 failures in a 60s window aborts the module | DAST-01's breaker |
 | side-effecting checks | off (`--allow-intrusive` absent) | `lib/checks.sh`'s existing `checks_intrusive_keeps` filter |
@@ -301,23 +301,68 @@ That window closes the moment DAST-02 lands.
 | credential brute forcing | none exists at any setting (§7.4's "weak-key detection, not a cracking rig") | the vendored, capped list itself |
 | bundled scan target | none, anywhere in a shipped file | DAST-35's lint |
 
-**The concurrency row is a correction, and it is the row most worth reading twice.**
-It previously read "`4`, enforced by DAST-01's limiter, same shared bucket that already defeats
+**The concurrency row has been corrected twice, and both corrections are worth reading.**
+It originally read "`4`, enforced by DAST-01's limiter, same shared bucket that already defeats
 `--jobs` multiplication", and that is not true of a token bucket.
 A shared bucket bounds the request RATE; it does not bound how many requests are IN FLIGHT at once.
 Against a slow target where each request takes seconds, a high `jobs` value yields exactly that many
 simultaneous connections while the average rate stays under the ceiling, and nothing in DAST-01 clamps
-`jobs` at all - `scan.sh` resolves it into `SCOURSH_JOBS` and no ceiling is applied anywhere.
+`jobs` at all.
 Stating an unenforced number in an enforcement table is the failure mode this whole section exists to
-avoid, so the row now says what is actually true.
-**A real concurrency ceiling is a separate, unassigned piece of work**, not a line that can be added to
-DAST-01's clamp: bounding simultaneous requests needs an in-flight counter taken before the transport
-and released after it, at the same `lib/http.sh` chokepoint, plus a reclaim path for the slot a killed
-worker never releases - which is a mutex-and-liveness design of the same weight as
-`docs/FOUNDATION.md` tension 16's own lock reclaim, and it should be its own ticket rather than a
-retrofit.
-Until that ticket exists, the honest statement is the one in the table: rate is bounded, concurrency
-is not, and the operator's `jobs` value is what decides how many connections a target sees at once.
+avoid, so the row was rewritten to say it was enforced by nothing, and the work of making it true was
+filed as its own ticket rather than retrofitted onto DAST-01's clamp.
+
+**That ticket has since landed, and the row now names a real mechanism.**
+`lib/http.sh` section 11b is an in-flight semaphore: a counter file of one `PID NONCE EPOCH` line per
+held slot, guarded by the same atomic-`mkdir` mutex the rate, budget and breaker state already take
+(`docs/FOUNDATION.md` tension 16), a slot taken immediately BEFORE the transport call and released
+immediately AFTER it.
+Three things about its shape are load-bearing and each is pinned in both directions by
+`tests/suites/http.sh`'s own section 11b cases, which assert on the OBSERVED simultaneous-connection
+count rather than on a return value - "it refused" must not be satisfiable by a path that opened the
+connections and then returned 0.
+
+- **The ceiling is the resolved `jobs` value, not a key of its own.**
+  `jobs` is the number an operator already sets and is already the thing that decides how many
+  connections a target sees at once; a second key would be two numbers to keep in step to get one
+  behaviour, and `rules/RULE-FORMAT.md` §9.6.1 is frozen besides.
+  It is clamped by DAST-32's existing asymmetry, unchanged: a file or default value above the ceiling
+  is clamped with one `log_warn` and a recorded `limits_clamped` delta, an explicit CLI or env value
+  above it is exit 2 naming `--i-own-target`, and the affirmation raises the ceiling and never removes
+  it (a positive integer is the schema's own shape, so "unbounded" is unrepresentable, exactly as it
+  is for the budget).
+  The ceiling equals `jobs`' own §9.6.1 default of 4, so an unedited install is never clamped and
+  never warned at - the same property the rate ceiling has.
+  A `scan.sh sast --jobs 16` run is untouched: it never reaches the chokepoint, and the ceiling is a
+  DAST ceiling rather than a change to what `jobs` means everywhere.
+- **The slot is taken AFTER the token, not before it.**
+  `_http_throttle` sleeps outside its own critical section while waiting for a token; a worker holding
+  a slot through that sleep occupies a connection it is not using, and `jobs` workers all parked for a
+  token would hold every slot in the run with zero connections open - a self-inflicted deadlock whose
+  cause is invisible from outside.
+- **A leaked slot is reclaimed only on BOTH age and non-liveness, and each half is the other's bug.**
+  Age alone takes a slot back from a live worker whose request is merely slow, which puts two
+  processes over the ceiling - the one outcome the semaphore exists to prevent.
+  Non-liveness alone frees a slot in the window between a worker recording it and that worker becoming
+  observable, making the ceiling depend on scheduling.
+  Requiring both has a stated cost in the other direction, the same one `lib/core.sh`'s mutex already
+  accepts: a recycled pid makes a dead worker's slot look held, so the run waits and then fails loud on
+  a bounded timeout rather than quietly exceeding the ceiling.
+  The reclaim is single-winner by construction rather than by a claim marker, because it happens
+  inside the mutex and the pruned set is written back before the mutex is released; and the release is
+  identity-bound on the NONCE rather than the pid, so a call can only ever give back the slot it took.
+
+**One path is deliberately not bounded, and it is named rather than left to be discovered.**
+`http_authorize_raw_connection` (`lib/http.sh` section 9b) hands an address back and opens nothing -
+the socket is opened by `modules/dast/passive/tls.sh`, tension 19's single documented transport
+exception - so a slot taken there could only be released by that module.
+A control the exempted caller has to remember to release is not a control; it is a slot leaked for the
+rest of the run the first time a code path returns early, which is the deadlock direction rather than
+the traffic direction.
+That path therefore resolves and announces the concurrency ceiling, and refuses an explicit
+over-ceiling `jobs` exactly as the request path does, without holding a slot.
+Closing it properly means giving `lib/http.sh` a transport primitive for a raw socket, which is a
+register question about tension 19's exception rather than a retrofit.
 
 The rate ceiling deliberately **equals the shipped default**, so an operator who never
 edited `config/scanner.conf` sees no clamp at all and no warning; the clamp exists only to stop a
@@ -347,7 +392,9 @@ parser"), calling `http_request GET "${DTT_URL}/rest/admin/application-version"`
 trusted to apply it, and a throughput ceiling has exactly the same property.
 So the resolved rate and budget values that DAST-01's limiter reads are already clamped
 before it sees them, and the clamp lives with the limiter in `lib/http.sh`, not in the module.
-(`jobs` is not among them, per the concurrency row's note above: it is resolved and never clamped.)
+(`jobs` is now among them, per the concurrency row's note above: section 11b's semaphore reads the same
+already-clamped effective value, and `scan.sh` resolving `--jobs` into `SCOURSH_JOBS` is what spawns the
+workers, never what bounds their traffic.)
 Only the `--intensity` ceiling stays in `scan.sh`, because intensity is check *selection* and never
 reaches the transport at all.
 
@@ -490,7 +537,7 @@ Three consequences of that honest valuation are load-bearing and easy to get bac
 | The scope gate (`config/scope.conf` + `http_gate_url` on every hop) | **no** | The four reasons above. The guided mode may offer to write a record; the gate then re-reads the file and can still refuse. |
 | `--intensity` ceiling of `passive` | yes | This is the clean line: anything beyond reading what the target volunteers needs the affirmation. `safe` puts hundreds of 404s in someone's logs; `active` sends injection payloads. Neither is covered by permission to browse, and the Nmap finding is exactly a permission that covers one technique and excludes another. Costs nothing today, since `CHECKS_INTENSITY_DEFAULT` is already `passive`. |
 | `circuit-breaker-window` (either bound) | **no** | Added by DAST-32's implementation, because this table did not say which way the window moves and both directions turn out to be refusals. The 60s FLOOR is not relaxable because a shorter window counts fewer failures towards the same threshold, so relaxing it reaches "the breaker never trips" by a different route than the disable switch the row above declines to offer. The 86400s MAXIMUM is not relaxable because it is not a safety limit at all - it is what keeps `now - window` inside 64-bit arithmetic, and no statement about who owns a host can make a wrapped integer mean what it says. |
-| requests per second, DAST concurrency | yes | Rate limiting is a condition of authorisation against a host the authors cannot vet. Against a host that genuinely is the operator's, a 4/s cap has no safety content and the worst case is that they degrade their own lab. (Concurrency has no ceiling to relax yet: DAST-01 bounds rate only, per the concurrency row's note in "The conservative defaults" above. This row describes what an affirmation would relax once one exists.) |
+| requests per second, DAST concurrency | yes | Rate limiting is a condition of authorisation against a host the authors cannot vet. Against a host that genuinely is the operator's, a 4/s cap has no safety content and the worst case is that they degrade their own lab. Concurrency is now a real ceiling and relaxes on the same terms: `lib/http.sh` section 11b bounds simultaneous connections to the resolved `jobs` value, and the affirmation raises that number without removing the bound - `jobs` is a positive integer by schema, so "unbounded concurrency" is unrepresentable exactly as "no budget" is. |
 | per-run request budget | **partially** | The number is raisable; the existence of a finite budget is not. The budget is what bounds the worst case of every *other* mistake in the tool - a crawler loop, a redirect cycle, a parameter-list bug. A control whose whole job is bounding unknown failures cannot be surrendered to an assertion about a known one. |
 | circuit breaker | **partially** | Threshold raisable, disabling never offered, and the argument is that disabling has no upside even on your own host: a target returning sustained 5xx produces no useful findings, so continuing to hammer it buys nothing. There is no honest case for a prompt that removes it. |
 | `--allow-intrusive` (live user enumeration, signup/reset probing, the burst probe) | **partially** | Requires the affirmation **and** its own separate opt-in, and must never be folded into the affirmation. Its blast radius escapes the target: §7.4 says these "create users and send messages", so the harmed parties are the target's *users*, and owning a host does not confer permission to do that to its users. |
@@ -587,17 +634,18 @@ The `scoursh/<version>` product token is never removable at any setting.
 A phase never composes, overrides or suppresses a `User-Agent`.
 
 **P4 - limits are clamped before a phase sees them.**
-The effective rate (4 req/s), per-run request budget (5000) and circuit breaker (10 failures in a
-60s window) are resolved and clamped at the `lib/http.sh` chokepoint.
+The effective rate (4 req/s), in-flight concurrency (4), per-run request budget (5000) and circuit
+breaker (10 failures in a 60s window) are resolved and clamped at the `lib/http.sh` chokepoint.
 A phase reads the effective value.
 A phase never reads `config_scanner_value` directly, never carries a budget of its own, and never
 re-implements a limiter.
 `--i-own-target` is a key, not a switch: it must equal `--target`, it is never persisted, and on its
 own it changes no limit.
-**Concurrency is not bounded today.**
-Rate is capped; simultaneous connections are whatever `--jobs` produces.
-Do not write a concurrency ceiling into any ticket's criteria until the in-flight-counter ticket
-named in the gaps below exists.
+**Concurrency IS bounded, and it is a separate control from the rate.**
+The clause used to read "concurrency is not bounded today"; `lib/http.sh` section 11b's in-flight
+semaphore closed that, and the concurrency row in "The conservative defaults" carries the design.
+A phase never counts its own in-flight requests and never opens a connection outside `http_request`;
+the one documented exception, `http_authorize_raw_connection`, is stated in that same row.
 
 **P5 - intensity is declared at the lowest tier that is true.**
 `--intensity` defaults to `passive`, and anything above it additionally requires `--i-own-target`.
@@ -646,10 +694,15 @@ the module under a doc-only ticket.
 
 Named rather than guessed, per `docs/DESIGN.md` §15.
 
-1. **Concurrency has no ceiling.**
-   The concurrency row in "The conservative defaults" says so, and the paragraph beneath it calls the
-   fix a separate, unassigned piece of work.
-   P4 states the gap instead of promising a limit; do not let a ticket's criteria imply otherwise.
+1. **A RAW connection is outside the concurrency ceiling.** (This entry used to read "concurrency has
+   no ceiling", which `lib/http.sh` section 11b's in-flight semaphore has closed for every caller of
+   `http_request`.  What is left of the gap is narrower and is stated where it applies.)
+   `http_authorize_raw_connection` spends a token, a unit of budget and a breaker outcome, and does not
+   hold an in-flight slot, because the socket is opened by `modules/dast/passive/tls.sh` rather than by
+   this file.
+   So a run's simultaneous TLS handshakes are bounded by the worker count rather than by the ceiling.
+   Closing it means giving `lib/http.sh` a raw-socket transport primitive, which is a register question
+   about tension 19's exception; do not close it by asking the exempted module to release a slot.
 2. **The affirmation is not a technical control.**
    It bounds *limits*, never *which hosts a run may reach* - the gate is file-wide, not
    `--target`-scoped.
