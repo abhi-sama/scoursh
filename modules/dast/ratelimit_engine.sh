@@ -76,14 +76,15 @@ SCOURSH_DAST_RATELIMIT_ENGINE_SOURCED=1
 # so this file needs neither directly.
 #
 # THIS IS THE ONE CONSUMER THAT STILL NAMES headers_engine.sh RATHER THAN THE
-# LEAF passive/response_engine.sh, AND THAT IS DELIBERATE.  The first three of
-# those four now live in `response_engine.sh`; `hdr_endpoints_load` does NOT,
-# because it depends on crawl_engine.sh and `path_template_of` and would have
-# put source edges back into a file whose whole purpose is to have none.  This
-# file genuinely uses both halves, so it sources the file that has both and gets
-# the reader through headers_engine.sh's own edge.  A future peer that needs the
-# READER ALONE should source `passive/response_engine.sh` instead of copying
-# this line.
+# LEAF passive/response_engine.sh, AND THAT IS DELIBERATE.  All four of those
+# now live in `response_engine.sh` in substance (`hdr_endpoints_load` is a
+# thin wrapper there over `resp_endpoints_load` - see that file's own ADR
+# block), but `hdr_endpoints_load` the NAME, and its `_HDR_*` globals, are
+# still `headers_engine.sh`'s to keep this file's call site unchanged.  This
+# file genuinely uses both the reader and the chooser, so it sources the file
+# that has both names and gets the reader through headers_engine.sh's own
+# edge.  A future peer that needs the READER ALONE should source
+# `passive/response_engine.sh` instead of copying this line.
 # shellcheck source=modules/dast/passive/headers_engine.sh
 source "${BASH_SOURCE[0]%/*}/passive/headers_engine.sh"
 
