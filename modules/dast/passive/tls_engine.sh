@@ -545,6 +545,23 @@ tls_probe() {
   "${SCOURSH_TLS_PROBE:-_tls_probe_default}" "$@"
 }
 
+# THE TRANSCRIPT SIZE CAP (CWE-400).  A real transcript - the committed
+# fixtures under tests/fixtures/dast/tls/ are 25-80 lines, a few KB at most -
+# is a chain of certificates plus a handful of session/verify lines.  This is
+# two orders of magnitude above the largest legitimate one, so it never
+# truncates a real handshake, while bounding what an authorised-but-hostile
+# listener can make the scanner buffer: `s_client` writes to OUT_FILE whatever
+# it receives, and a listener that accepts the connection and simply streams
+# bytes instead of completing a handshake - or completes one and then floods
+# post-handshake application data, which `s_client` decrypts and prints - was
+# previously bounded on TIME alone (`timeout_s` below) and not on BYTES, so a
+# fast link could park gigabytes in the scanner's scratch directory (and, per
+# config/scanner.conf.example's own tmpfs recommendation, in memory) for the
+# whole watchdog window.  Not a config/scanner.conf key: this is an
+# implementation ceiling, not an operator policy, per this ticket's own
+# instruction to keep the surface small.
+_TLS_TRANSCRIPT_CAP_BYTES=262144
+
 # THE ONE `openssl s_client` IN THE WHOLE TOOL.  tests/lint-shell.sh's tension-19
 # no-bypass check exempts this file and modules/dast/passive/tls.sh BY PATH and
 # nothing else; a second one anywhere fails the build.
@@ -569,9 +586,26 @@ tls_probe() {
 # Without one, a target that accepts a connection and never completes the
 # handshake parks the whole run indefinitely - and unlike an http_request, no
 # curl `--max-time` is standing behind this call.
+#
+# THE SAME LOOP ALSO ENFORCES THE BYTE CAP (CWE-400), REUSING THE KILL PATH
+# THAT WAS ALREADY THERE.  Each 100ms tick now checks OUT_FILE's size as well
+# as the clock, and `kill -TERM`s on either overrun - no pipeline, no new
+# exit-status interaction with the existing "non-zero exit is not failure on
+# its own" logic below.  Killing mid-write leaves a NON-EMPTY, truncated
+# transcript, which is deliberately treated exactly like a timeout kill: this
+# function still returns 0, and it is `tls_parse_session` in this same file
+# that decides whether what was captured amounts to a completed session.  A
+# listener that streams garbage instead of ever completing a handshake never
+# gets as far as an `SSL-Session:`/`Cipher` block within the cap, so
+# tls_parse_session fails exactly as it does for a genuine handshake failure,
+# and modules/dast/passive/tls.sh's existing `tls_handshake_failed`
+# coverage_reduction/coverage_gap path is what reports it - never a silent
+# clean result.  A listener that completes a real handshake and THEN floods
+# post-handshake data is unaffected: the session block lands in the transcript
+# long before the cap, and only trailing garbage is cut.
 _tls_probe_default() {
   local addr=$1 port=$2 servername=$3 timeout_s=$4 out=$5
-  local pid waited=0 limit_ms rc=0
+  local pid waited=0 limit_ms rc=0 size
   [[ $timeout_s =~ ^[0-9]+$ ]] || timeout_s=20
   limit_ms=$(( timeout_s * 1000 ))
   [[ $addr == *:* && $addr != \[* ]] && addr="[$addr]"
@@ -582,6 +616,13 @@ _tls_probe_default() {
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     if (( waited >= limit_ms )); then
+      kill -TERM "$pid" 2>/dev/null || true
+      break
+    fi
+    size=$(wc -c <"$out" 2>/dev/null) || size=0
+    size=${size//[[:space:]]/}
+    [[ $size =~ ^[0-9]+$ ]] || size=0
+    if (( size >= _TLS_TRANSCRIPT_CAP_BYTES )); then
       kill -TERM "$pid" 2>/dev/null || true
       break
     fi
