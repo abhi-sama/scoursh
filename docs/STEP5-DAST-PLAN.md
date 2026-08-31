@@ -1158,9 +1158,17 @@ is a separate ticket with a separate argument to make; the reader's landing does
 that function's output stream carries no attribute detail, and every check here is about an
 attribute, so widening it would change a contract `docs/INVENTORY-FORMAT.md`'s consumers read - the
 scanner core is reused, the emitter is not.  A second, smaller gap was found and filed rather than
-worked around: `http_request` publishes `_HTTP_LAST_STATUS` and `_HTTP_LAST_CONTENT_TYPE` but NOT the
-final URL after a redirect, so a relative reference on a page that redirected is resolved against the
-REQUESTED URL rather than the delivered one.  Out of scope here and unclaimed: `<meta http-equiv>`
+worked around at landing time: `http_request` published `_HTTP_LAST_STATUS` and
+`_HTTP_LAST_CONTENT_TYPE` but not the final URL after a redirect, so a relative reference on a page
+that redirected was resolved against the REQUESTED URL rather than the delivered one - **this has
+since been closed**.  `http_request` (lib/http.sh §12) now also publishes `_HTTP_LAST_URL`, the
+canonical URL of the hop that actually produced the returned response, set on every path that
+publishes a response including the "redirect not followed, gate declined" early return; `markup.sh`
+now seeds `_MK_BASE` (and the finding's own `url` field) from it instead of from the URL this phase
+first asked for, so a same-origin/cross-origin judgement on a page reached via redirect is made
+against the document that was actually served.  `<base href>`, when present, still overrides it and
+always made the case moot; a redirect with none of its own is what was silently wrong before and is
+correct now.  Out of scope here and unclaimed: `<meta http-equiv>`
 refresh redirects, `formaction` overrides on a submit button, `autocomplete="off"` on credential
 fields, and the `crossorigin`-missing-beside-`integrity` case (which breaks the resource rather than
 weakening it, so it is named in the remediation instead of flagged).
