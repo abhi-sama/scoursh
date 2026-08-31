@@ -140,7 +140,7 @@ _hdr_catalog() {
     DAST-HDR-RECOMMENDED_MISSING-01)
       _HDRC_TITLE='Recommended security headers are not set'
       _HDRC_SEV=info; _HDRC_CONF=high; _HDRC_CWE=CWE-693; _HDRC_OWASP=A05:2021
-      _HDRC_REM='Add the headers named in this finding evidence. Each is a defence in depth rather than the fix for a specific defect, which is why they are one finding and not several: Permissions-Policy withholds powerful browser features from the document and anything it embeds, the Cross-Origin-* trio isolates the page from cross-origin windows and embedders, and X-Permitted-Cross-Domain-Policies stops a legacy client honouring a crossdomain.xml this site may not know it serves. The list is data, in modules/dast/passive/recommended-headers.txt.' ;;
+      _HDRC_REM='Add the headers named in this finding evidence. Each is a defence in depth rather than the fix for a specific defect, which is why they are one finding and not several: Permissions-Policy withholds powerful browser features from the document and anything it embeds, the Cross-Origin-* trio isolates the page from cross-origin windows and embedders, and X-Permitted-Cross-Domain-Policies stops a legacy client honouring a crossdomain.xml this site may not know it serves. The list is data: the recommended-header key in config/scanner.conf, or modules/dast/passive/recommended-headers.txt.' ;;
     *) return 1 ;;
   esac
   return 0
@@ -474,7 +474,7 @@ _hdr_emit_rollup() {
   local evi="none of the $tested response(s) tested on this target set: $absent."
   (( inconsistent > 0 )) \
     && evi+=" A further $inconsistent recommended header(s) were set on some responses and not others ($inconsistent_names), which is a consistency problem rather than an absent control."
-  evi+=' The list is operator-configurable (modules/dast/passive/recommended-headers.txt).'
+  evi+=' The list is operator-configurable: the recommended-header key in config/scanner.conf, or modules/dast/passive/recommended-headers.txt.'
   _hdr_emit DAST-HDR-RECOMMENDED_MISSING-01 "$url" "$path" "$evi"
 }
 
@@ -521,7 +521,7 @@ _dast_headers_phase() {
   local do_rollup=1
   if ! hdr_load_recommended; then
     do_rollup=0
-    run_record coverage_reduction "module=dast reason=recommended_header_list_unavailable target=$target - the recommended-header list (modules/dast/passive/recommended-headers.txt, or SCOURSH_DAST_RECOMMENDED_HEADERS_FILE) is absent, unreadable or empty, so the 'recommended headers not set' roll-up did not run. This is a coverage reduction, not a clean result."
+    run_record coverage_reduction "module=dast reason=recommended_header_list_unavailable target=$target - the recommended-header list (config/scanner.conf's recommended-header key, SCOURSH_DAST_RECOMMENDED_HEADERS_FILE, or the vendored modules/dast/passive/recommended-headers.txt) is absent, unreadable or empty, so the 'recommended headers not set' roll-up did not run. This is a coverage reduction, not a clean result."
   fi
   _hdr_selected DAST-HDR-RECOMMENDED_MISSING-01 || do_rollup=0
   if (( ${#_HDR_RECOMMENDED_DROPPED[@]} > 0 )); then
