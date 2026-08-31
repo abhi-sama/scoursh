@@ -192,7 +192,7 @@ _dast_cmdi_phase() {
     return 0
   fi
 
-  inject_inventory_load
+  inject_inventory_load '' '' cmdi
   if (( _INJ_N == 0 )); then
     run_record coverage_reduction "module=dast reason=no_parameter_inventory target=$target - the crawler wrote no injectable parameter (docs/INVENTORY-FORMAT.md), so command injection had no request field to test. Feed a spec/HAR (config/discovery.conf) or run the crawl against an application with discoverable parameters."
     run_record coverage_gap "dast cmdi: target '$target' has no known request parameters (query/body/JSON/header/path), so no command-injection probe was sent. This is a coverage gap - nothing was tested - not a finding of safety."

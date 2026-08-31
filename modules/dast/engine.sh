@@ -320,6 +320,141 @@ dast_check_selected() {
 }
 
 # ---------------------------------------------------------------------------
+# 3b. The inventory scope pre-check (docs/FOUNDATION.md tensions 19 and 21)
+# ---------------------------------------------------------------------------
+# THE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED.  This is
+# modules/dast/crawl.sh's `_crawl_in_scope` reasoning, generalised from a
+# crawled link to an INVENTORY row, and it is the shared implementation the
+# per-phase copies in passive/{headers,leakage,markup,transport}.sh,
+# ratelimit.sh, active/discovery.sh and authz_engine.sh each grew for
+# themselves.
+#
+# `http_request` gates the URL it is handed FATALLY - `die "$SCOURSH_EXIT_SCOPE"`,
+# exit 3, aborting the whole run - because a caller is assumed to have reached
+# it with a URL it believes is authorised.  That assumption holds for an
+# operator-configured `base-url`.  It does NOT hold for a URL lifted out of
+# `reports/<run>/inventory/endpoints.json`: tension 21 makes that artifact a
+# cross-module contract that `crawl.sh`, SAST route extraction and
+# `modules/cloud/aws/live/apigw.sh` may each write, and that an operator may
+# supply by hand.  Any one of them emitting a single out-of-scope row would
+# turn an ordinary `scan.sh dast` run into an exit-3 abort rather than a
+# skipped endpoint plus a recorded reason.  That failure is fail-CLOSED
+# (safe, never a bypass) and it still kills the run over one row of a file the
+# scanner did not author.
+#
+# So this decides only whether a URL is worth ASKING FOR.  Everything that
+# survives still goes through `http_request`, which re-gates it and re-gates
+# every redirect hop.  DELETING EITHER HALF IS A REAL DEFECT, in opposite
+# directions: without the pre-check the run is fragile (one bad row aborts it),
+# without `http_request`'s own gate the run is unsafe (nothing re-checks a
+# redirect the target chose).  A test asserts this on the REQUEST LOG, never on
+# a return value - "it refused" must not be satisfiable by a phase that sent
+# the request and then returned non-zero.
+#
+# It is built on `http_gate_url`'s non-fatal return rather than on a second URL
+# parser, for tension 19's own reason: a second definition of "in scope" is a
+# second thing to keep in step with `config/scope.conf`, and the copy that
+# drifts is the one nobody re-reads.
+
+# `dast_endpoint_in_scope URL [TARGET]` - 0 when the URL is worth requesting,
+# 1 when the scope gate declines it, with `_DAST_SCOPE_REASON` set to the
+# gate's OWN reason.
+#
+# THE `declare -F` GUARD IS PERMISSIVE ON PURPOSE, and inverting it is the
+# trap.  `scan.sh` does not source `lib/http.sh` at all for a module that
+# issues no traffic, and every direct-engine suite in tests/suites/ sources a
+# phase script with no transport in the process; a fail-CLOSED default there
+# would make every inventory consumer inert while every "stays quiet"
+# assertion in those suites still passed green - invisible from the test
+# output and reading as coverage.  It is the same reading `dast_check_selected`
+# above and `_crawl_in_scope`, `_discovery_in_scope` and `_authz_in_scope`
+# already ship.  Nothing is made unsafe by it: with no `lib/http.sh` loaded
+# there is no `http_request` either, so nothing can send the URL this
+# function just waved through.
+dast_endpoint_in_scope() {
+  local url=$1 target=${2:-${SCOURSH_DAST_TARGET:-}}
+  _DAST_SCOPE_REASON=''
+  declare -F http_gate_url >/dev/null || return 0
+  if http_gate_url "$url" "$target"; then
+    return 0
+  fi
+  _DAST_SCOPE_REASON=${_HTTP_GATE_REASON:-declined by the scope gate}
+  return 1
+}
+
+# `dast_scope_skips_reset` - starts a fresh accumulation.  A phase calls this
+# before the loop it filters, so a second phase in the same process never
+# inherits the first one's count.
+dast_scope_skips_reset() {
+  declare -g _DAST_SCOPE_SKIPPED=0
+  declare -g _DAST_SCOPE_REASONS=''
+  declare -gA _DAST_SCOPE_REASON_SEEN=()
+  return 0
+}
+
+# `dast_endpoint_keep URL [TARGET]` - the predicate above, with the refusal
+# counted.  0 keep, 1 drop.  This is what a consumer's loop calls.
+#
+# THE REASON IS CAPTURED AT REFUSAL TIME, NEVER READ AFTER THE LOOP.
+# `http_gate_url` clears `_HTTP_GATE_REASON` at entry on EVERY call, so by the
+# time a loop ends it holds whatever the last call left - empty after a
+# success, which is the ordinary case, so a roll-up reading it afterwards
+# silently degrades to a generic fallback and the operator never learns why the
+# row was declined.  With more than one refusal it would also attribute one
+# URL's reason to all of them.  Distinct reasons are collected and reported
+# together instead; passive/transport.sh found this the expensive way and its
+# own suite pins it.
+dast_endpoint_keep() {
+  local url=$1 target=${2:-${SCOURSH_DAST_TARGET:-}} why
+  dast_endpoint_in_scope "$url" "$target" && return 0
+  [[ -n ${_DAST_SCOPE_SKIPPED:-} ]] || dast_scope_skips_reset
+  _DAST_SCOPE_SKIPPED=$(( _DAST_SCOPE_SKIPPED + 1 ))
+  why=$_DAST_SCOPE_REASON
+  if [[ -z ${_DAST_SCOPE_REASON_SEEN[$why]:-} ]]; then
+    _DAST_SCOPE_REASON_SEEN[$why]=1
+    _DAST_SCOPE_REASONS+="${_DAST_SCOPE_REASONS:+; }$(dast_scope_safe_text "$why")"
+  fi
+  return 1
+}
+
+# `dast_scope_safe_text TEXT [MAX]` - one line, printable, bounded.  A gate
+# reason interpolates a host lifted out of an artifact this scanner did not
+# author (tension 10's "evidence is untrusted target output", one artifact
+# further out), and it is written into a `run.json` record, so a raw newline or
+# control byte in it would forge a second record.
+dast_scope_safe_text() {
+  local s=$1 max=${2:-160} out='' i c
+  s=${s//$'\n'/ }
+  s=${s//$'\r'/ }
+  s=${s//$'\t'/ }
+  for (( i = 0; i < ${#s} && i < max; i++ )); do
+    c=${s:i:1}
+    case $c in
+      [[:print:]]) out+=$c ;;
+      *) out+='?' ;;
+    esac
+  done
+  (( ${#s} > max )) && out+='...'
+  printf '%s' "$out"
+}
+
+# `dast_scope_record_skips PHASE [TARGET]` - emits the one
+# `coverage_reduction` for everything `dast_endpoint_keep` dropped, and
+# nothing at all when it dropped nothing.
+#
+# A DROPPED ROW IS RECORDED, NEVER SILENT.  "this endpoint was out of scope so
+# it was not tested" and "this endpoint was tested and was clean" are different
+# facts, and a phase that drops rows quietly reports the second when only the
+# first is true - the overstated coverage docs/DESIGN.md §15 forbids.
+dast_scope_record_skips() {
+  local phase=$1 target=${2:-${SCOURSH_DAST_TARGET:-}}
+  (( ${_DAST_SCOPE_SKIPPED:-0} > 0 )) || return 0
+  declare -F run_record >/dev/null || return 0
+  run_record coverage_reduction "module=dast phase=$phase reason=inventory_endpoint_out_of_scope target=$target count=$_DAST_SCOPE_SKIPPED - that many rows from the cross-module inventory (docs/INVENTORY-FORMAT.md, docs/FOUNDATION.md tension 21) name a URL config/scope.conf does not authorise for this target, so they were NOT requested and nothing about them was tested. The count is of ROWS DROPPED, not of distinct URLs or of distinct hosts, so one out-of-scope host reachable from several rows is counted once per row - each row is a separate thing this run declined to compose a request from. The run continued; an out-of-scope row is a fact about the artifact's producer, not a reason to abandon every in-scope endpoint beside it. Gate reason(s): ${_DAST_SCOPE_REASONS:-declined by the scope gate}."
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # 4. The one door into a phase script
 # ---------------------------------------------------------------------------
 # `dast_run_phase SPEC RUN_INTENSITY TARGET` - SPEC is one `_DAST_PHASES` row.

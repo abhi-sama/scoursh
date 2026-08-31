@@ -134,13 +134,30 @@ inject_urlencode() {
 # ---------------------------------------------------------------------------
 # 2. The parameter inventory (docs/INVENTORY-FORMAT.md, tension 21)
 # ---------------------------------------------------------------------------
-# `inject_inventory_load [ENDPOINTS_FILE] [PARAMETERS_FILE]` - reads the two
-# frozen artifacts into the flat, parallel arrays a probe iterates. Defaults to
-# the paths modules/dast/run.sh exports (`SCOURSH_DAST_ENDPOINTS`,
+# `inject_inventory_load [ENDPOINTS_FILE] [PARAMETERS_FILE] [PHASE]` - reads the
+# two frozen artifacts into the flat, parallel arrays a probe iterates. Defaults
+# to the paths modules/dast/run.sh exports (`SCOURSH_DAST_ENDPOINTS`,
 # `SCOURSH_DAST_PARAMETERS`). Sets `_INJ_N` to the number of injectable
 # parameters found and returns 0 always - an absent, empty, or unusable
 # inventory is the normal state (docs/INVENTORY-FORMAT.md §1) and leaves `_INJ_N`
 # at 0, never an error.
+#
+# EVERY ROW IS SCOPE PRE-CHECKED HERE, AND THAT IS DELIBERATELY NOT LEFT TO THE
+# TWELVE CALLERS.  This function is the single door a dozen phase scripts reach
+# the endpoint inventory through (every §7.3 injection probe, plus
+# passive/cookies.sh and active/methods.sh), and each of them hands the URL it
+# gets back to `http_request`, which gates FATALLY - one out-of-scope row in an
+# artifact this scanner did not author would abort the whole run at exit 3.
+# `modules/dast/engine.sh`'s `dast_endpoint_keep` (section 3b) is the shared,
+# NON-fatal pre-check, and applying it at the load rather than at each of the
+# twelve request sites is tension 19's own argument one level down: a control
+# each caller must remember to apply is not a control, and the caller that
+# forgets is the one that ships. `http_request` still re-gates every URL it is
+# handed and every redirect hop - deleting either half is a real defect, in
+# opposite directions.
+#
+# PHASE names the recorded `coverage_reduction` and nothing else; it defaults to
+# `inject` so an existing two-argument caller is unchanged.
 #
 # `declare -g`, never bare, for the reason modules/dast/engine.sh's phase table
 # documents at length: in a real run this file is sourced from inside
@@ -154,11 +171,18 @@ inject_urlencode() {
 # shellcheck disable=SC2034
 inject_inventory_load() {
   local epf=${1:-${SCOURSH_DAST_ENDPOINTS:-}} pf=${2:-${SCOURSH_DAST_PARAMETERS:-}}
+  local phase=${3:-inject}
   local sep=$'\x1f' p type v idx key rest last_idx=''
   declare -gA _INJ_EP_METHOD=() _INJ_EP_URL=() _INJ_EP_PATH=()
   declare -ga _INJ_TARGET=() _INJ_METHOD=() _INJ_URL=() _INJ_PATH=()
   declare -ga _INJ_NAME=() _INJ_LOCATION=() _INJ_EXAMPLE=() _INJ_EPID=()
   declare -g _INJ_N=0 _INJ_TRUNCATED=0
+  # The accumulator is reset per load, so a second phase in the same process
+  # never inherits the first one's count. Guarded because a direct-engine suite
+  # sources this file with no modules/dast/engine.sh in the process.
+  if declare -F dast_scope_skips_reset >/dev/null; then
+    dast_scope_skips_reset
+  fi
 
   # A parameter without an endpoint to hang on cannot be composed into a
   # request, so the endpoints are read first into a by-id map the parameter
@@ -182,7 +206,17 @@ inject_inventory_load() {
     [[ -n $last_idx ]] && _inject_flush_endpoint cur
   fi
 
-  [[ -n $pf && -r $pf && -s $pf ]] || return 0
+  # The roll-up is recorded on BOTH exits, not only the one that reads a
+  # parameter file. passive/cookies.sh and active/methods.sh both call this with
+  # an empty PARAMETERS_FILE and so leave through the early return below - which
+  # is exactly where an endpoints-only consumer's dropped rows would otherwise go
+  # unrecorded, turning "out of scope, never asked" into a silent clean result.
+  if [[ -z $pf || ! -r $pf || ! -s $pf ]]; then
+    if declare -F dast_scope_record_skips >/dev/null; then
+      dast_scope_record_skips "$phase"
+    fi
+    return 0
+  fi
 
   local -A pcur=()
   last_idx=''
@@ -200,6 +234,9 @@ inject_inventory_load() {
     pcur[$key]=$v
   done < <(crawl_json_flatten <"$pf" 2>/dev/null)
   [[ -n $last_idx ]] && _inject_flush_param pcur
+  if declare -F dast_scope_record_skips >/dev/null; then
+    dast_scope_record_skips "$phase"
+  fi
   return 0
 }
 
@@ -211,6 +248,14 @@ _inject_flush_endpoint() {
   local idr="${arrname}[id]" mr="${arrname}[method]" ur="${arrname}[url]" pr="${arrname}[path]"
   local id=${!idr:-} m=${!mr:-GET} u=${!ur:-} pa=${!pr:-}
   [[ -n $id && -n $u ]] || return 0
+  # The scope pre-check, applied where the row enters the arrays rather than
+  # where the request leaves - see `inject_inventory_load`'s header. Guarded,
+  # and PERMISSIVE when absent, for modules/dast/engine.sh section 3b's reason:
+  # a direct-engine suite sources this file with no engine.sh and no
+  # lib/http.sh in the process, and there it cannot send the URL either.
+  if declare -F dast_endpoint_keep >/dev/null; then
+    dast_endpoint_keep "$u" || return 0
+  fi
   _INJ_EP_METHOD[$id]=$m
   _INJ_EP_URL[$id]=$u
   _INJ_EP_PATH[$id]=$pa
@@ -233,6 +278,14 @@ _inject_flush_param() {
     url=${_INJ_EP_URL[$epid]}
     path=${_INJ_EP_PATH[$epid]:-}
   elif [[ -n $u ]]; then
+    # This branch is the one path by which a URL reaches a request WITHOUT
+    # having passed `_inject_flush_endpoint`'s pre-check: the parameter's own
+    # `url` fallback, used when the endpoints file carried no row for the
+    # `endpoint_id` it names. It therefore needs the same check, and omitting it
+    # here would leave the whole mechanism reachable around.
+    if declare -F dast_endpoint_keep >/dev/null; then
+      dast_endpoint_keep "$u" || return 0
+    fi
     method=${m:-GET}
     url=$u
     path=''
