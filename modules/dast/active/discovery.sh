@@ -290,10 +290,23 @@ _discovery_probe() {
   fi
   _DISC_STATUS=${_HTTP_LAST_STATUS:-}
   if [[ -r $bodyf ]]; then
-    IFS= read -r -d '' _DISC_BODY <"$bodyf" || true
-    if (( ${#_DISC_BODY} > _DISCOVERY_MAX_BODY_BYTES )); then
-      _DISC_BODY=${_DISC_BODY:0:_DISCOVERY_MAX_BODY_BYTES}
-    fi
+    # Bounded AT READ TIME, not after a full slurp: `-N` stops once
+    # _DISCOVERY_MAX_BODY_BYTES characters (bytes, LC_ALL=C per lib/core.sh)
+    # have been read, whatever else remains on disk - so a multi-hundred-
+    # megabyte response never gets materialised into this variable before
+    # being trimmed, which is the memory hazard the cap above exists to
+    # prevent (docs/DESIGN.md §15) and the ONLY thing this change alters. A
+    # small body (the ordinary case - almost every real response is under the
+    # cap) hits EOF before N characters and `read -N` returns non-zero for
+    # that, exactly as `-d ''` did for its own ordinary case, so `|| true`
+    # stays required.  NUL bytes inside the body are still lost either way -
+    # bash variables cannot hold one - but where `-d ''` treated the first NUL
+    # as ITS OWN delimiter and silently dropped everything after it, `-N`
+    # reads through embedded NULs and keeps accumulating non-NUL bytes up to
+    # the cap; this is a narrower change in an already-lossy edge case for
+    # binary bodies, not a new one, and content past the cap was never kept
+    # under either reading.
+    IFS= read -r -N "$_DISCOVERY_MAX_BODY_BYTES" _DISC_BODY <"$bodyf" || true
   fi
   _DISC_LEN=${#_DISC_BODY}
   rm -f "$bodyf"
