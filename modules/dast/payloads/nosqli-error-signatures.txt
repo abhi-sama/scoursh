@@ -1,0 +1,52 @@
+# NoSQL directory/driver/runtime error signatures (docs/DESIGN.md §7.3:
+# "operator/object injection ... and syntax-error differentials").
+#
+# One ERE per line, matched case-insensitively against a response body through
+# scan_match (the frozen portable ERE subset, rules/RULE-FORMAT.md - no
+# backreferences, no PCRE). A match that appears in an injected response but
+# not in the benign baseline is the error-based signal. These describe error
+# TEXT a NoSQL driver, ODM, or the JS engine backing a MongoDB `$where`
+# expression emits when handed a malformed query fragment or an unparsable
+# operator/object literal; describing the shape rather than a specific
+# product is the same target-agnostic discipline the SAST/IaC rule packs and
+# ldapi-error-signatures.txt follow.
+
+# --- MongoDB native driver (Node.js) ---
+MongoError
+MongoServerError
+MongoParseError
+MongoNetworkError
+BSONError
+BSONTypeError
+
+# --- Mongoose (Node ODM) ---
+Mongoose(Validation|Cast)Error
+CastError
+ValidatorError
+
+# --- PHP MongoDB extension/driver ---
+MongoDB\\Driver\\Exception
+MongoDB\\BSON
+MongoException
+MongoCursorException
+
+# --- Python (PyMongo) ---
+pymongo\.errors
+InvalidDocument
+OperationFailure
+
+# --- Java (MongoDB Java driver) ---
+com\.mongodb\.Mongo
+org\.bson\.Bson
+
+# --- $where is evaluated as JS server-side, so a broken filter surfaces as a
+#     JS parse/runtime error rather than a driver-specific one. ---
+SyntaxError: Unexpected token
+ReferenceError:.*is not defined
+unterminated string literal
+unterminated string in expression
+
+# --- Protocol/generic wording ---
+Failed to parse query string
+invalid operator
+unknown top level operator

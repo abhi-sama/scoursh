@@ -623,3 +623,40 @@ remediation: Never let request-derived data choose a server-side fetch
   redirect hop rather than trusting the first check alone.
 references: CWE-918
 references: https://owasp.org/Top10/A10_2021-Server-Side_Request_Forgery_%28SSRF%29/
+
+id: DAST-INJ-NOSQLI_ERROR-01
+title: NoSQL injection (error-based) via request parameter
+script: active/nosqli.sh
+severity: high
+confidence: high
+cwe: CWE-943
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Never build a NoSQL query, $where expression, or filter object
+  directly from request-derived data. Use the driver's parameterised query
+  builder so a request value is always bound as a literal, never as an
+  operator key or JS fragment, and disable $where/server-side JS evaluation
+  entirely unless a specific query genuinely requires it. Return a generic
+  error so a driver/ODM message never reaches the client.
+references: CWE-943
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-NOSQLI_BOOLEAN-01
+title: NoSQL injection (operator/object injection, boolean-based) via request parameter
+script: active/nosqli.sh
+severity: critical
+confidence: medium
+cwe: CWE-943
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Never build a NoSQL query, $where expression, or filter object
+  directly from request-derived data. Reject a request parameter outright
+  when the field expects a scalar and the received value is an object/array
+  (an operator-injection object literal such as {"$ne":null} arriving where
+  a string is expected), validate every request value's type server-side
+  before it reaches the driver, and disable $where/server-side JS evaluation
+  entirely unless a specific query genuinely requires it.
+references: CWE-943
+references: https://owasp.org/Top10/A03_2021-Injection/
