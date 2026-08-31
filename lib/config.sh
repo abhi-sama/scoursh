@@ -56,7 +56,47 @@ if [[ -n ${SCOURSH_CONFIG_SOURCED:-} ]]; then
 fi
 SCOURSH_CONFIG_SOURCED=1
 
-# shellcheck source=lib/records.sh
+# ADR: cut lib/config.sh's shellcheck -x edge to lib/records.sh
+# Context: lib/http.sh sources BOTH lib/config.sh and lib/findings.sh, and
+#   both of those independently `source lib/records.sh` (which itself
+#   sources lib/core.sh) with real (non-/dev/null) shellcheck directives -
+#   an uncut diamond that inlines records.sh/core.sh TWICE for every one of
+#   the ~130+ files that reach lib/http.sh (most of modules/dast/ and its
+#   test suites), per the cost model AGENTS.md already records for the
+#   sca engine cycle and the dast/passive response-reader diamond.
+# Decision: cut THIS edge (lib/config.sh's), not lib/findings.sh's own.
+#   lib/http.sh sources config.sh before findings.sh (this file's own
+#   header before lib/http.sh's findings.sh source), so findings.sh's real
+#   edge still inlines records.sh once for every lib/http.sh consumer.
+#   lib/findings.sh is left untouched because it is ALSO sourced directly
+#   (not via this file) by lib/report.sh and half a dozen standalone test
+#   suites with no other path to records.sh - cutting it there measurably
+#   broke one of them (a real SC2034 on tests/suites/findings.sh's
+#   SCOURSH_RUN_ID, since records.sh/core.sh use it and shellcheck could no
+#   longer see that). Runtime is unaffected either way: the `source` call
+#   below still executes, and records.sh's own SCOURSH_RECORDS_SOURCED
+#   guard (and config.sh's own SCOURSH_CONFIG_SOURCED above) makes
+#   re-sourcing a no-op.
+# Alternatives considered: cutting lib/findings.sh's edge instead (the
+#   ticket's own first proposal) - rejected: findings.sh is a standalone
+#   entry point itself and is reached directly (not via config.sh) by
+#   lib/report.sh and 6 test suites, several with no other path to
+#   records.sh; fixing all of those by adding a defensive real
+#   `source lib/records.sh` to lib/report.sh would in turn create a NEW
+#   diamond in modules/sast/engine.sh and modules/sca/engine.sh, which
+#   source both lib/report.sh and lib/config.sh directly.
+# Consequences: every lib/http.sh consumer inlines records.sh/core.sh once
+#   instead of twice (measured: lib/http.sh alone drops from 1.16GB to
+#   0.85GB peak shellcheck -x RSS, ~27%). lib/config.sh's own standalone
+#   entry point (and tests/suites/config.sh, its only other direct
+#   consumer) no longer sees records.sh's declarations statically; verified
+#   empirically (see ticket) that this introduces no new finding today. A
+#   future edit to lib/config.sh that references an unassigned-looking
+#   records.sh/core.sh global could reintroduce a false SC2034 the way the
+#   findings.sh path did - if that happens, add a real
+#   `source lib/records.sh` ahead of this line rather than reverting it.
+# -x back-edge cut: lib/records.sh
+# shellcheck source=/dev/null
 source "${BASH_SOURCE[0]%/*}/records.sh"
 
 # ---------------------------------------------------------------------------
