@@ -102,10 +102,15 @@ source "${BASH_SOURCE[0]%/*}/inject_engine.sh"
 source "${BASH_SOURCE[0]%/*}/../auth_engine.sh"
 
 # `_ssti_read_lines_file FILE` - prints the file's non-comment, non-blank lines.
-# Returns 1 when the file is unreadable, so a caller degrades gracefully.
+# Prints nothing and returns 0 when the file is unreadable, so a caller
+# degrades gracefully by branching on the resulting empty array rather than on
+# this function's own exit status - it is called from inside a process
+# substitution (`< <(...)`), whose subshell is not itself wrapped in a tested
+# `||`/`if`, so a genuine `return 1` here would fire lib/core.sh's ERR trap
+# even on this designed degradation path.
 _ssti_read_lines_file() {
   local f=$1 line
-  [[ -r $f ]] || return 1
+  [[ -r $f ]] || return 0
   while IFS= read -r line || [[ -n $line ]]; do
     [[ -z $line || ${line:0:1} == '#' ]] && continue
     printf '%s\n' "$line"

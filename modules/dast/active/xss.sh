@@ -94,11 +94,14 @@ source "${BASH_SOURCE[0]%/*}/../auth_engine.sh"
 # 1. The vendored character ledger
 # ---------------------------------------------------------------------------
 # `_xss_read_records FILE` - prints the file's records (dropping whole-line `#`
-# comments and blanks).  Returns 1 when the file is unreadable, so a caller
-# degrades rather than erroring.
+# comments and blanks).  Prints nothing and returns 0 when the file is
+# unreadable, so a caller degrades by branching on the resulting empty array
+# rather than on this function's own exit status - it is called from inside a
+# process substitution (`< <(...)`), and a genuine `return 1` there fires
+# lib/core.sh's ERR trap even on this designed degradation path.
 _xss_read_records() {
   local f=$1 line
-  [[ -r $f ]] || return 1
+  [[ -r $f ]] || return 0
   while IFS= read -r line || [[ -n $line ]]; do
     [[ -z $line || ${line:0:1} == '#' ]] && continue
     printf '%s\n' "$line"

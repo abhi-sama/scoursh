@@ -491,7 +491,8 @@ printf '== dast ssti: missing payloads degrade to a recorded gap, not an error =
 mkdir -p "$W/empty-payloads"
 _new_run degrade
 rc=0
-SCOURSH_DAST_SSTI_PAYLOAD_DIR=$W/empty-payloads _dast_ssti_phase || rc=$?
+STDERR=$W/degrade.stderr
+SCOURSH_DAST_SSTI_PAYLOAD_DIR=$W/empty-payloads _dast_ssti_phase 2>"$STDERR" || rc=$?
 assert_eq 0 "$rc" \
   'an empty payload dir does NOT error - the phase degrades and returns 0 (docs/DESIGN.md §15)'
 assert_eq '' "$(_shard_text | tr -d '[:space:]')" 'no payloads means no finding is emitted'
@@ -502,6 +503,24 @@ assert_contains "$(run_facts coverage_gap)" 'no template-injection probe was sen
   'with no payloads a coverage_gap says so - a clean result here is not a clean bill of health'
 assert_eq '' "$(run_facts checks_run | tr -d '[:space:]')" \
   'checks_run does NOT claim the check ran when its payloads were absent'
+assert_not_contains "$(cat "$STDERR")" 'error scoursh:' \
+  'the missing-payload-file degradation path never fires lib/core.sh ERR trap on this whole-directory-absent case'
+
+# _ssti_read_payloads_file's own `[[ -r $f ]] || return 1` short-circuits
+# before ever reaching the process substitution above when the WHOLE
+# directory (and so the file) is absent, so the assertion just above cannot
+# fail under a buggy _ssti_read_lines_file - it never gets called on that
+# path. Pin the actual defect site directly: _ssti_read_lines_file is always
+# reached from inside a process substitution (`< <(...)`), whose subshell is
+# not itself wrapped in a tested `||`/`if`, so a bare `return 1` there fires
+# lib/core.sh's ERR trap even on this designed degradation path.
+STDERR=$W/read-lines.stderr
+: >"$STDERR"
+{
+  while IFS= read -r line; do :; done < <(_ssti_read_lines_file "$W/does-not-exist.txt")
+} 2>"$STDERR"
+assert_not_contains "$(cat "$STDERR")" 'error scoursh:' \
+  "_ssti_read_lines_file degrades an unreadable file silently - FAILS under the pre-fix bare \`return 1\`, which fires the ERR trap from inside this unguarded process substitution even though the function's own contract is to degrade rather than error"
 
 # ===========================================================================
 printf '== dast ssti: a payload row for an unregistered family is refused and recorded ==\n'
