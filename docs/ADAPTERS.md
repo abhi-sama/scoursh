@@ -251,3 +251,13 @@ being explicit about, so a future reader does not mistake generalization for con
   PyPI, Maven, Go, RubyGems, Composer) via OSV.dev, with every advisory id operator-supplied
   (`SCOURSH_ADVISORY_<ECOSYSTEM>_IDS`) rather than guessed - see `tools/vendor-engines.sh`'s own header
   and `tests/suites/vendor-engines-advisories.sh` for the fixture-driven proof.
+  A sibling command, `advisories banner`, does the same for `data/versions.db`'s OWN `banner`
+  namespace (`docs/VERSIONS-DB.md` §3-§5) - the known-vulnerable-version catalogue for a banner-matched
+  product with no SCA-ecosystem manifest at all (a bare web server, a TLS library, a CMS), which
+  `docs/FOUNDATION.md` tension 25 had named a stated, hand-maintained gap. It is deliberately **not**
+  one of `VENG_ADVISORY_REGISTRY`'s six entries (no `advisories --list`/`--all`/`bulk` path applies to
+  it - OSV.dev publishes no bulk export for a synthetic "banner" ecosystem), reads
+  `SCOURSH_ADVISORY_BANNER_IDS` in the identical operator-supplied shape, and normalises the product key
+  through `banner_normalize_product` (`modules/dast/passive/banner_engine.sh`) rather than an
+  `sca_*_normalize_name` function - a different frozen rule, in a different module, for a different
+  namespace. Rows land in `data/versions.db` only, never `data/advisories.db`.

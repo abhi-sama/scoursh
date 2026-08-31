@@ -1,0 +1,17 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-BANNER-1",
+  "summary": "fixture: request smuggling in Nginx-Fixture",
+  "database_specific": {"severity": "CRITICAL"},
+  "affected": [
+    {
+      "package": {"ecosystem": "Debian", "name": "Nginx-Fixture"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "1.19.0"}]}],
+      "versions": ["1.18.0"]
+    },
+    {
+      "package": {"ecosystem": "Alpine", "name": "Nginx-Fixture"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "1.19.0"}]}],
+      "versions": ["1.18.0"]
+    }
+  ]
+}

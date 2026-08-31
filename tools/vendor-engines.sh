@@ -361,34 +361,47 @@ usage: tools/vendor-engines.sh advisories <command>
 Resolves real SCA advisory data (docs/DESIGN.md §6.5's six ecosystems) via
 OSV.dev (https://osv.dev) into pre-expanded, exact-version rows for
 data/advisories.db and data/versions.db (docs/FOUNDATION.md tension 25's
-frozen TSV schema).  Run this BY HAND, ON A NETWORKED BOX, the same as
-every other command this script provides - see this file's own header.
+frozen TSV schema) - and, separately, data/versions.db's OWN `banner`
+namespace (docs/VERSIONS-DB.md §3-§5), the known-vulnerable-version catalogue
+modules/dast/passive/banner.sh reads for a banner-matched product with no
+SCA-ecosystem manifest at all (a bare web server, a TLS library, a CMS).  Run
+this BY HAND, ON A NETWORKED BOX, the same as every other command this script
+provides - see this file's own header.
 
 A SEPARATE command namespace from --list/--all/<engine> above: it never
 touches VENG_REGISTRY, and an ecosystem name here is never mistaken for a
 registered engine adapter name, or vice versa.
 
 Commands:
-  --list              list the six supported ecosystems
-  --all               expand every ecosystem (each one's own
+  --list              list the six supported SCA ecosystems (never includes
+                       'banner' - see below)
+  --all               expand every SCA ecosystem (each one's own
                        SCOURSH_ADVISORY_<ECOSYSTEM>_IDS must be set)
-  <ecosystem>          expand one ecosystem (npm, pypi, maven, Go,
+  <ecosystem>          expand one SCA ecosystem (npm, pypi, maven, Go,
                        RubyGems, composer)
-  bulk ...            import a WHOLE ecosystem's published OSV.dev export in
-                       one command, instead of naming advisory ids one at a
+  banner              expand data/versions.db's own 'banner' namespace from
+                       SCOURSH_ADVISORY_BANNER_IDS - the docs/VERSIONS-DB.md
+                       §5 importer.  Writes data/versions.db only, never
+                       data/advisories.db, and is deliberately not part of
+                       --list/--all/'bulk --all' (see veng_advisories_banner's
+                       own header for why).
+  bulk ...            import a WHOLE SCA ecosystem's published OSV.dev export
+                       in one command, instead of naming advisory ids one at a
                        time; run 'advisories bulk --help' for its own usage,
                        including how artifact integrity is handled.  This is
-                       the command that populates a usable database.
+                       the command that populates a usable database.  Scoped
+                       to the six SCA ecosystems; 'banner' has no bulk path.
   -h, --help          print this message and exit 0
 
-Every ecosystem reads its advisory ids from an operator-supplied env var -
+Every SCA ecosystem reads its advisory ids from an operator-supplied env var -
 SCOURSH_ADVISORY_NPM_IDS, SCOURSH_ADVISORY_PYPI_IDS,
 SCOURSH_ADVISORY_MAVEN_IDS, SCOURSH_ADVISORY_GO_IDS,
-SCOURSH_ADVISORY_RUBYGEMS_IDS, SCOURSH_ADVISORY_COMPOSER_IDS - a
+SCOURSH_ADVISORY_RUBYGEMS_IDS, SCOURSH_ADVISORY_COMPOSER_IDS - and 'banner'
+reads SCOURSH_ADVISORY_BANNER_IDS, the identical shape.  Each is a
 comma/space-separated list of real OSV.dev advisory ids (e.g.
-"GHSA-xxxx-xxxx-xxxx") the operator identified from that ecosystem's own
-advisory source.  This script never guesses or hardcodes which advisory to
-resolve (see this file's own header).
+"GHSA-xxxx-xxxx-xxxx", "CVE-2021-41773") the operator identified from that
+ecosystem's (or product's) own advisory source.  This script never guesses or
+hardcodes which advisory to resolve (see this file's own header).
 
 EXIT CODES: 0 ok, 2 bad usage, 4 unknown ecosystem or missing ids/tooling,
 5 the fetch itself failed.  Never anything outside 0-5.
@@ -415,12 +428,44 @@ _veng_advisories_load_normalizers() {
   _VENG_ADVISORIES_NORMALIZERS_LOADED=1
 }
 
+_VENG_ADVISORIES_BANNER_NORMALIZER_LOADED=0
+
+# _veng_advisories_load_banner_normalizer - lazily sources
+# modules/dast/passive/banner_engine.sh for `banner_normalize_product`, the
+# ONE frozen data/versions.db `banner`-namespace product-key rule
+# (docs/VERSIONS-DB.md §4).  Kept as its own loader, separate from
+# _veng_advisories_load_normalizers above: the banner catalogue is a
+# different namespace with a different frozen function in a different
+# module, and a plain `advisories --list`/`--help` (or a run that only
+# touches the six SCA ecosystems) must not source modules/dast/ or pay that
+# cost.  banner_engine.sh's own sourced-once guard makes this idempotent
+# with a real `scan.sh dast` process too, on the rare box that runs both.
+_veng_advisories_load_banner_normalizer() {
+  (( _VENG_ADVISORIES_BANNER_NORMALIZER_LOADED )) && return 0
+  local f=modules/dast/passive/banner_engine.sh
+  [[ -f "$VENG_DIR/$f" ]] || die "$SCOURSH_EXIT_INCOMPLETE" \
+    "vendor-engines: advisories: $VENG_DIR/$f is missing - modules/dast/ should ship it"
+  # shellcheck disable=SC1090
+  source "$VENG_DIR/$f"
+  _VENG_ADVISORIES_BANNER_NORMALIZER_LOADED=1
+}
+
 # _veng_advisories_osv_ecosystem DB_ECOSYSTEM - this project's own frozen
 # ecosystem string (as used in data/advisories.db and by
 # sca_lookup_exact/sca_package_known) -> OSV.dev's own `affected[].
 # package.ecosystem` string for the same ecosystem.  The two vocabularies
 # differ in exactly two spots (PyPI, Composer/Packagist); both sides are
 # named explicitly here rather than assumed identical.
+#
+# `banner` (docs/VERSIONS-DB.md's OTHER data/versions.db namespace, never
+# one of the six docs/DESIGN.md §6.5 SCA ecosystems above) maps to the
+# sentinel `*`: a banner-matched product - a bare web server, a TLS
+# library, a CMS with no SCA-ecosystem manifest at all - has no single OSV
+# ecosystem string to filter `affected[].package.ecosystem` against the way
+# an npm or PyPI advisory does, so `_veng_advisories_osv_extract_py`'s one
+# record walk (section 3) reads `*` as "match every affected[] entry that
+# names a package, regardless of ecosystem" rather than adding a second
+# extractor.
 _veng_advisories_osv_ecosystem() {
   case $1 in
     npm) printf 'npm' ;;
@@ -429,12 +474,15 @@ _veng_advisories_osv_ecosystem() {
     Go) printf 'Go' ;;
     RubyGems) printf 'RubyGems' ;;
     composer) printf 'Packagist' ;;
+    banner) printf '*' ;;
     *) die "$SCOURSH_EXIT_INPUT" "advisories: unknown ecosystem '$1'" ;;
   esac
 }
 
 # _veng_advisories_env_var DB_ECOSYSTEM - the operator-supplied advisory-id
 # env var name for this ecosystem (see veng_advisories_usage above).
+# `banner` mirrors the same SCOURSH_ADVISORY_<NAME>_IDS shape as the six SCA
+# ecosystems, per docs/VERSIONS-DB.md §5's importer requirement.
 _veng_advisories_env_var() {
   case $1 in
     npm) printf 'SCOURSH_ADVISORY_NPM_IDS' ;;
@@ -443,6 +491,7 @@ _veng_advisories_env_var() {
     Go) printf 'SCOURSH_ADVISORY_GO_IDS' ;;
     RubyGems) printf 'SCOURSH_ADVISORY_RUBYGEMS_IDS' ;;
     composer) printf 'SCOURSH_ADVISORY_COMPOSER_IDS' ;;
+    banner) printf 'SCOURSH_ADVISORY_BANNER_IDS' ;;
     *) die "$SCOURSH_EXIT_INPUT" "advisories: unknown ecosystem '$1'" ;;
   esac
 }
@@ -453,6 +502,12 @@ _veng_advisories_env_var() {
 # OSV package name already arrives as "groupId:artifactId"; it is split
 # once here so sca_maven_normalize_name (the single frozen join point,
 # modules/sca/engine.sh) still owns the actual join.
+#
+# `banner` dispatches to `banner_normalize_product`
+# (modules/dast/passive/banner_engine.sh), the ONE frozen product-key rule
+# docs/VERSIONS-DB.md §4 defines and modules/dast/passive/banner.sh reads
+# with - never re-implemented here, for the identical writer/reader-drift
+# reason the six sca_*_normalize_name calls above are reused verbatim.
 _veng_advisories_normalize_name() {
   local db_eco=$1 raw=$2
   case $db_eco in
@@ -465,6 +520,10 @@ _veng_advisories_normalize_name() {
       sca_maven_normalize_name "$group" "$artifact"
       ;;
     Go) sca_go_normalize_module "$raw" ;;
+    banner)
+      _veng_advisories_load_banner_normalizer
+      banner_normalize_product "$raw"
+      ;;
     *) die "$SCOURSH_EXIT_INPUT" "advisories: unknown ecosystem '$db_eco'" ;;
   esac
 }
@@ -481,23 +540,29 @@ _veng_advisories_normalize_version() {
   esac
 }
 
-# _veng_advisories_normalize_severity RAW - maps OSV's own severity
-# vocabulary (GHSA-backed sources use CRITICAL/HIGH/MODERATE/LOW; PYSEC and
-# the Go database frequently supply none at all, relying on a CVSS vector
-# this script does not attempt to score - a stated, not hidden, limitation)
-# onto this project's frozen five-word rubric (lib/records.sh
+# _veng_advisories_normalize_severity RAW [DEFAULT] - maps OSV's own
+# severity vocabulary (GHSA-backed sources use CRITICAL/HIGH/MODERATE/LOW;
+# PYSEC and the Go database frequently supply none at all, relying on a CVSS
+# vector this script does not attempt to score - a stated, not hidden,
+# limitation) onto this project's frozen five-word rubric (lib/records.sh
 # severity_rank/severity_name: info/low/medium/high/critical).  Empty or
-# unrecognised input maps to "medium" - a deliberately conservative
-# default rather than silently dropping the row (an absent severity is not
-# evidence of low risk).
+# unrecognised input maps to DEFAULT, which is "medium" unless the caller
+# names another - a deliberately conservative fallback rather than silently
+# dropping the row (an absent severity is not evidence of low risk).
+#
+# DEFAULT exists because the fallback itself is per-namespace, not global:
+# docs/VERSIONS-DB.md §3 freezes the `banner` row's own default at "high"
+# ("a row with none lands on high"), distinct from data/advisories.db's SCA
+# rows - veng_advisories_banner passes "high" explicitly; every SCA
+# ecosystem call site leaves DEFAULT unset and keeps "medium".
 _veng_advisories_normalize_severity() {
-  local raw=${1^^}
+  local raw=${1^^} default=${2:-medium}
   case $raw in
     CRITICAL) printf 'critical' ;;
     HIGH) printf 'high' ;;
     MODERATE | MEDIUM) printf 'medium' ;;
     LOW) printf 'low' ;;
-    *) printf 'medium' ;;
+    *) printf '%s' "$default" ;;
   esac
 }
 
@@ -643,7 +708,13 @@ def rows_for(data):
     out = []
     for affected in data.get("affected", []) or []:
         pkg = affected.get("package") or {}
-        if pkg.get("ecosystem") != eco:
+        # eco == "*" is the banner-namespace sentinel
+        # (_veng_advisories_osv_ecosystem's own "banner" case): a
+        # banner-matched product has no single OSV ecosystem string to
+        # filter on the way an npm/PyPI/... advisory does, so every
+        # affected[] entry that names a package is taken regardless of its
+        # own ecosystem field.
+        if eco != "*" and pkg.get("ecosystem") != eco:
             STATS["other_ecosystem_skipped"] += 1
             continue
         name = clean(pkg.get("name") or "")
@@ -779,7 +850,12 @@ _veng_advisories_expand_one() {
     [[ -n $name ]] || continue
     norm_name=$(_veng_advisories_normalize_name "$db_eco" "$name")
     norm_version=$(_veng_advisories_normalize_version "$db_eco" "$version")
-    norm_sev=$(_veng_advisories_normalize_severity "$severity")
+    if [[ $db_eco == banner ]]; then
+      # docs/VERSIONS-DB.md §3's own frozen default for this namespace.
+      norm_sev=$(_veng_advisories_normalize_severity "$severity" high)
+    else
+      norm_sev=$(_veng_advisories_normalize_severity "$severity")
+    fi
     _veng_advisories_reject_tab_lf package "$norm_name"
     _veng_advisories_reject_tab_lf version "$norm_version"
     _veng_advisories_reject_tab_lf advisory_id "$advisory_id"
@@ -875,10 +951,10 @@ _veng_advisories_write_db() {
 # into BOTH data/advisories.db and data/versions.db - tension 25's own
 # text ("data/versions.db ... uses the same shape and the same rule")
 # gives both files an identical schema and an identical write path here.
-# versions.db's OWN, separate banner-matching product catalog (services
-# with no SCA-ecosystem manifest at all, e.g. a bare web server or TLS
-# library) is a stated gap, not silently assumed covered - see this
-# ticket's own hand-off comment.
+# Scoped to the six docs/DESIGN.md §6.5 SCA ecosystems only:
+# veng_advisories_banner (below) is the versions.db-only `banner` namespace's
+# own driver, deliberately NOT this one, since modules/sca/ never reads a
+# `banner` row out of data/advisories.db.
 _veng_advisories_run() {
   local db_eco=$1
   _veng_advisories_load_normalizers
@@ -913,6 +989,62 @@ veng_advisories_maven()    { _veng_advisories_run maven; }
 veng_advisories_go()       { _veng_advisories_run Go; }
 veng_advisories_rubygems() { _veng_advisories_run RubyGems; }
 veng_advisories_composer() { _veng_advisories_run composer; }
+
+# veng_advisories_banner - the same per-ecosystem shape as _veng_advisories_run
+# above (operator-supplied ids -> fetch -> extract -> normalise -> write),
+# applied to data/versions.db's OTHER namespace: the `banner` catalogue
+# docs/VERSIONS-DB.md §3 defines for a banner-matched product (a bare web
+# server, a TLS library, a CMS - anything with no SCA-ecosystem manifest at
+# all).  docs/FOUNDATION.md tension 25 named this an open, hand-maintained
+# gap; this closes it.
+#
+# Deliberately NOT folded into _veng_advisories_run/VENG_ADVISORY_REGISTRY:
+#
+#   - it reads SCOURSH_ADVISORY_BANNER_IDS (via _veng_advisories_env_var's own
+#     "banner" case), the identical comma/space-separated-OSV-id shape every
+#     SCOURSH_ADVISORY_<ECOSYSTEM>_IDS var already uses, but "banner" is not
+#     one of docs/DESIGN.md §6.5's six SCA ecosystems, so it is reached from
+#     its own `banner` case in veng_advisories_main rather than
+#     VENG_ADVISORY_REGISTRY - joining that registry would also pull it into
+#     `advisories --list`/`--all` and `advisories bulk --all`, and OSV.dev
+#     publishes no per-ecosystem bulk-export zip for a synthetic "banner"
+#     ecosystem for the bulk path to fetch.
+#   - the product KEY is normalised through banner_normalize_product
+#     (_veng_advisories_normalize_name's own "banner" case, section 3 above),
+#     never one of the sca_*_normalize_name functions - a different frozen
+#     rule, in a different module, for a different namespace.
+#   - rows land in data/versions.db ONLY, under the literal ecosystem
+#     `banner` - never data/advisories.db, which docs/VERSIONS-DB.md §2's own
+#     table reserves for the six SCA ecosystems modules/sca/ actually reads
+#     there.  Writing a `banner` row into data/advisories.db too would cost
+#     nothing structurally (_veng_advisories_write_db is ecosystem-scoped
+#     either way) but would misstate what that file is for no reader's
+#     benefit.
+veng_advisories_banner() {
+  _veng_advisories_load_banner_normalizer
+
+  local env_var
+  env_var=$(_veng_advisories_env_var banner)
+  local ids=${!env_var:-}
+  [[ -n $ids ]] || die "$SCOURSH_EXIT_INPUT" \
+    "advisories: $env_var is not set - supply one or more real OSV.dev advisory ids (comma/space separated) for the banner-matched products your estate runs (a bare web server, a TLS library, a CMS - anything with no SCA-ecosystem manifest), e.g. $env_var='CVE-2021-41773'. This script never guesses or hardcodes an advisory id (see this file's own header)."
+
+  local -a id_list=()
+  IFS=$', \t' read -ra id_list <<<"$ids"
+  (( ${#id_list[@]} > 0 )) || die "$SCOURSH_EXIT_INPUT" "advisories: $env_var is set but names no ids"
+
+  local rows_new=$SCOURSH_SCRATCH/advisories/rows.banner.tsv
+  mkdir -p "$(dirname -- "$rows_new")"
+  : >"$rows_new"
+
+  local id
+  for id in "${id_list[@]+"${id_list[@]}"}"; do
+    [[ -n $id ]] || continue
+    _veng_advisories_expand_one banner "$id" "$rows_new"
+  done
+
+  _veng_advisories_write_db "$VENG_VERSIONS_DB" banner "$rows_new"
+}
 
 veng_advisories_list() {
   local name
@@ -1447,6 +1579,12 @@ veng_advisories_main() {
     bulk)
       shift
       veng_bulk_main "$@"
+      ;;
+    banner)
+      # A named command, not routed through veng_advisories_one/
+      # VENG_ADVISORY_REGISTRY - see veng_advisories_banner's own header for
+      # why "banner" is deliberately not one of the six SCA ecosystems.
+      veng_advisories_banner
       ;;
     --*)
       veng_advisories_usage >&2
