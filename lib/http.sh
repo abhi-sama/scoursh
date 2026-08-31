@@ -1838,8 +1838,20 @@ _http_breaker_record_failure() {
 # returns the last in-scope response instead of aborting the whole run over a
 # link the SCANNED SITE chose, not the operator.
 #
-# Sets _HTTP_LAST_STATUS and _HTTP_LAST_CONTENT_TYPE.  Never calls curl (or
-# any transport) for a URL that has not just passed http_gate_url.
+# Sets _HTTP_LAST_STATUS, _HTTP_LAST_CONTENT_TYPE and _HTTP_LAST_URL.  Never
+# calls curl (or any transport) for a URL that has not just passed
+# http_gate_url.
+#
+# `_HTTP_LAST_URL` is the CANONICAL URL of the hop that produced the returned
+# response - the delivered document's own URL per RFC 3986 §5.1.3, not the
+# URL the caller originally asked for.  A caller resolving a relative
+# reference found IN the response (a same-origin/cross-origin judgement, a
+# `<script src>`, a form `action`, ...) must resolve it against this, never
+# against the argument it passed in: a redirect changes what "this document's
+# own origin" means, and the argument does not move with it.  It is set on
+# both paths that publish a response - the ordinary final return and the
+# "redirect not followed, gate declined" early return - to the URL that hop
+# actually reached, never to a Location this call refused to follow.
 # The tension-16 controls sit between the gate and the transport, and inside
 # the redirect loop rather than ahead of it: a followed hop is a real request
 # and pays a real token, a real unit of budget, and a real breaker outcome.
@@ -1861,10 +1873,11 @@ http_request() {
   local method=$1 url=$2 max_redirects=${3:-5} target=${4:-}
   local cur=$url hop=0 addr out status location ctype bucket line
   local rps_milli budget breaker_failures breaker_window
-  local origin prev_origin='' item
+  local origin prev_origin='' item hop_url
   local -a req_headers=() kept=() outlines=()
 
   _HTTP_LAST_CONTENT_TYPE=''
+  _HTTP_LAST_URL=''
 
   req_headers=("${_HTTP_REQ_HEADERS[@]+"${_HTTP_REQ_HEADERS[@]}"}")
   local req_body=$_HTTP_REQ_BODY req_has_body=$_HTTP_REQ_HAS_BODY
@@ -1909,6 +1922,13 @@ http_request() {
 
   while :; do
     bucket=${_HTTP_MATCH_ID:-unattributed}
+    # Captured NOW, before anything later in this iteration can advance the
+    # gate to the NEXT hop's Location (line ~2016 below).  `_HTTP_GATE_CANON`
+    # is otherwise shared, mutable state: reading it directly at the point a
+    # response is published would report the hop that was about to be tried
+    # next, not the one that actually produced the response, on the
+    # "redirect not followed" early return.
+    hop_url=$_HTTP_GATE_CANON
 
     # AN `Authorization` HEADER IS BOUND TO THE ORIGIN IT WAS ISSUED FOR, AND
     # BOTH ORIGINS BEING IN SCOPE DOES NOT MAKE THEM THE SAME PRINCIPAL.  The
@@ -2017,6 +2037,7 @@ http_request() {
         _http_gate_audit "$cur" "${_HTTP_GATE_CANON:-$cur}" "$_HTTP_GATE_REASON" "$method" "$target"
         log_warn "redirect not followed (hop $hop): $cur"
         _HTTP_LAST_STATUS=$status
+        _HTTP_LAST_URL=$hop_url
         return 0
       fi
       # RFC 7231 §6.4.4: a 303 is re-issued as GET, always.  A 301 or 302 after
@@ -2050,6 +2071,7 @@ http_request() {
     fi
 
     _HTTP_LAST_STATUS=$status
+    _HTTP_LAST_URL=$hop_url
     return 0
   done
 }
