@@ -78,12 +78,16 @@
 # shellcheck disable=SC2016
 # shellcheck source=modules/dast/active/inject_engine.sh
 source "${BASH_SOURCE[0]%/*}/inject_engine.sh"
-# For the response-header reader (`hdr_parse_capture`/`hdr_present`) - see
-# that file's own header for why a later ticket that needs the same reader
-# should source it rather than growing a second copy. Its sourced-once guard
-# makes this a no-op when a passive header check already ran this process.
-# shellcheck source=modules/dast/passive/headers_engine.sh
-source "${BASH_SOURCE[0]%/*}/../passive/headers_engine.sh"
+# For the response-header reader (`hdr_parse_capture`/`hdr_present`). This used
+# to name passive/headers_engine.sh, whose own header asked a later ticket to
+# lift the reader into a shared file rather than let consumers grow a second
+# copy; that lift has happened, so this names passive/response_engine.sh - a
+# leaf module holding the reader alone, which sources nothing (lib/http.sh and
+# crawl_engine.sh arrive through inject_engine.sh above, as they already did).
+# Its sourced-once guard makes this a no-op when a passive check already ran
+# this process. No call site changed.
+# shellcheck source=modules/dast/passive/response_engine.sh
+source "${BASH_SOURCE[0]%/*}/../passive/response_engine.sh"
 # For an authenticated probe pass, when the run asked for one and a session
 # exists (its own sourced-once guard makes this cheap on a run where auth.sh
 # already ran). Consulted only under --authed; a passive/unauthed run

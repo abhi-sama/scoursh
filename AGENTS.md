@@ -298,6 +298,7 @@ Each has a full entry in `docs/FOUNDATION.md`.
   `dast_auth_request` here: its transparent 401 re-auth is right for an ordinary authenticated
   request and wrong wherever a 401 is itself the measurement (see the DAST-29 bullet above).
 - **A `.rules` file whose basename begins `checks` is a §9.5 script-check registry, wherever it lives - and a co-owner writes its OWN `checks-<name>.rules` rather than appending to a peer's file** (`docs/FOUNDATION.md` tension 29). `rules/RULE-FORMAT.md` §9's path table reserves BOTH `checks.rules` and `checks-<name>.rules` repository-wide for that schema, at any depth; a record file matching no row is still `E070`, so `modules/dast/passive/cookies.rules` and the SUFFIX spelling `headers-checks.rules` (DAST-05's rejected attempt) both remain illegal. The second row is additive: `checks.rules` is unchanged and still legal, both spellings may sit in one directory, and per §14 it trips item 2 alone, so there is no `format_version` bump and no `state/` migration. It needs no engine change either - `checks_registry_load` already globs every `*.rules` under a module directory with no per-file allowlist, exactly as `modules/iac/`'s six packs already rely on - and that is asserted on a real run's `checks_run` set, never on the glob alone. **A split is a byte-identical MOVE of records and never an edit of them**: §9.5.1's owning-module map keys on the DIRECTORY, so `E018`/`E081` still hold a moved id to the same module prefix, `E019` uniqueness stays repository-wide, and renaming an id would change a fingerprint (tension 5). `modules/dast/passive/` is split five ways accordingly. `modules/dast/active/checks.rules` and `modules/dast/checks.rules` are NOT split and stay append-only, resolved by keeping both sides - do not split one opportunistically under peers who are mid-flight, which recreates the conflict in a worse place.
+- **The shared response reader is `modules/dast/passive/response_engine.sh`, it is a LEAF in the source graph, and that is the property to preserve rather than the file's contents.** `hdr_parse_capture`/`hdr_present`/`hdr_value`/`hdr_first`/`hdr_is_document`/`hdr_safe_text`/`hdr_path_of`/`hdr_url_is_https` were DAST-05's, lived in `headers_engine.sh`, and six landed files came to need them - `passive/headers.sh`, `passive/leakage_engine.sh`, `passive/transport_engine.sh`, `active/crlf.sh`, `active/hosthdr_engine.sh` and `ratelimit_engine.sh` - so four of them dragged in that ticket's CSP/HSTS/Referrer parsers, its recommended-header loader, its endpoint chooser, `lib/http.sh` and `crawl_engine.sh` merely to read a header block. **A check that needs the READER ALONE sources `response_engine.sh`; one that also needs the parsers or `hdr_endpoints_load` sources `headers_engine.sh`, which sources the reader itself** - `ratelimit_engine.sh` is the single file in the second category today, and its own header says why. **That file sources NOTHING, deliberately**: `shellcheck -x` re-expands every source edge it follows and does not memoise (docs/CI-RUNBOOK.md, "the memory model"), so one edge added back to it is paid for once per consumer - measured on this tree, repointing the four reader-only consumers took `leakage_engine.sh` from 1.641 GB/5.8 s to 0.096 GB/0.3 s and `transport_engine.sh` from 1.689 GB/5.7 s to 0.057 GB/0.1 s under `shellcheck -x`. `tests/suites/dast-response-engine.sh` section A asserts the leaf property directly (`http_request`, `crawl_json_flatten` and `config_scanner_list` are all UNDEFINED after sourcing it), so restoring an edge goes red immediately instead of surfacing a year later as a slow linter. **Two things about the lift itself are worth knowing.** The `hdr_` prefix was KEPT rather than renamed to `resp_`: the published contract is not only the eight functions but the globals `_HDR_STATUS`/`_HDR_NAMES`/`_HDR_VALUE`/`_HDR_COUNT`/`_HDR_V` that consumers read directly, so a function-only rename half-renames the contract and a full one doubles the blast radius across eleven landed files for no behaviour. And `_HDR_MAX_EVIDENCE_FIELD` had to travel WITH `hdr_safe_text`, which reads it as a parameter default - leaving it behind is unbound under `set -u` for anyone sourcing the reader alone, it is the shape a lift most easily misses because the owning file's own tests never notice, and it is pinned by mutation.
 - **A per-subcommand `--help`'s "built" line is generated, never hand-typed, wherever a real check exists to generate it from** (`scan.sh`'s `scan_usage_for`). `_scan_module_built` reuses the exact file-existence check `scan_dispatch` itself makes (`modules/<cmd>/run.sh` on disk) for `sast`/`sca`/`iac`/`dast`/`cloud`; `dast`'s phase count walks `modules/dast/engine.sh`'s own `_DAST_PHASES` table against the same file paths `dast_run_phase` checks. `diff`/`report` are not modules and have no file to check, so `_scan_stateful_command_built` is the one function both scan_main's dispatch arm and `scan_usage_for` read - flip it in the same change that gives them a real engine (step 7's `state/`), never in one place alone. The accepted-flags list per command is generated from `_SCAN_FLAG_KIND`, the same map `scan_flag_kind` validates against, for the identical reason.
 
 ## Build order and where we are
@@ -1056,6 +1057,10 @@ expensive way.
   `headers_engine.sh` for the opposite reason - a `passive_engine.sh` would be shared scaffolding
   three parallel tickets each believed they owned, so a peer that needs the same response reader
   should LIFT it deliberately rather than fork it.
+  **That lift has since happened, and the reader now lives in
+  `modules/dast/passive/response_engine.sh`** - see its own ADR block, and the "the shared response
+  reader" bullet below.  `headers_engine.sh` keeps the CSP/HSTS/Referrer parsers, the
+  recommended-header loader and `hdr_endpoints_load`, and sources the reader like everyone else.
 - **One finding per check per target, located deterministically.**  A header is configured once per
   application, so a per-endpoint emit reports one misconfiguration ten times.  Each check accumulates
   across the (capped, path-template-deduped) endpoint set and emits ONCE, at the first endpoint in a
@@ -1126,12 +1131,13 @@ Six things are worth carrying here.
   900 KiB line; a line-cap read inspects its first 4 KiB and silently declares the other 99% clean,
   which is exactly the overstated coverage `docs/DESIGN.md` §15 forbids.  A token straddling a chunk
   boundary is the accepted cost, and it can only cause a MISS, which is this family's stated bias.
-- **`leakage_engine.sh` SOURCES `headers_engine.sh` for its response-header reader rather than copying
-  it.**  `hdr_parse_capture` resets on every status line because the capture sink accumulates every
+- **`leakage_engine.sh` SOURCES the shared response reader rather than copying it.**
+  `hdr_parse_capture` resets on every status line because the capture sink accumulates every
   redirect hop, and a second implementation here would be re-earning that lesson and putting two copies
-  of it in one directory.  The "lift into a shared `passive/response_engine.sh`" that
-  `headers_engine.sh`'s own header asks for is a refactor moving a peer's file AND its tests, so it is
-  filed as its own ticket rather than performed under parallel peers.
+  of it in one directory.  It used to source `headers_engine.sh` for it, and the "lift into a shared
+  `passive/response_engine.sh`" that file's own header asked for was filed as its own ticket rather
+  than performed under parallel peers; **that ticket has since landed** - see "the shared response
+  reader" bullet below.
 - **Two emission grains, deliberately.**  A stack trace and a bundled credential are properties of ONE
   HANDLER, so they emit once per path and two leaking paths are two findings.  An internal proxy
   header, the address set and the third-party origin set are properties of the APPLICATION, so they
@@ -1313,7 +1319,8 @@ worth carrying here.
   (scheme, path template).  Everything else about the chooser is kept in step with it rather than
   re-argued.  The response READER is reused unforked (`hdr_parse_capture` and friends), because its
   reset-on-every-status-line is the most dangerous parse in the tier and two copies is two chances to
-  lose it; the shared-file lift `headers_engine.sh` asks for remains DAST-05's follow-up.
+  lose it; the shared-file lift `headers_engine.sh` asked for was DAST-05's follow-up and **has since
+  landed** as `modules/dast/passive/response_engine.sh`, which this file now names directly.
 - **A test that passes under both the correct and the rejected reading was found here by MUTATION,
   not by review, and it is worth knowing which one.**  "A protocol-relative reference produces no
   finding" pins nothing: it passes both when the reference is properly resolved AND when anything

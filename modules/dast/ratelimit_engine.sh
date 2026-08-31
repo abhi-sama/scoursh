@@ -63,17 +63,27 @@ fi
 SCOURSH_DAST_RATELIMIT_ENGINE_SOURCED=1
 
 # modules/dast/passive/headers_engine.sh is LIFTED, not forked, for four things
-# it already owns and this check needs byte-identically: `hdr_parse_capture`
-# (the last-hop response-header reader - see its own note on why a whole-file
-# match reads the WRONG response when the capture sink has accumulated redirect
-# hops), `hdr_present`/`hdr_value`, `hdr_safe_text`, and `hdr_endpoints_load`
-# (the docs/INVENTORY-FORMAT.md reader, deduped by path template and sorted).
+# this check needs byte-identically: `hdr_parse_capture` (the last-hop
+# response-header reader - see its own note on why a whole-file match reads the
+# WRONG response when the capture sink has accumulated redirect hops),
+# `hdr_present`/`hdr_value`, `hdr_safe_text`, and `hdr_endpoints_load` (the
+# docs/INVENTORY-FORMAT.md reader, deduped by path template and sorted).
 # AGENTS.md states the rule this follows: "a peer that needs the same response
 # reader should LIFT it deliberately rather than fork it."  A second copy would
 # be a second answer to "which hop's headers are these", and this check's whole
 # verdict is a statement about response headers.  Sourcing it also pulls in
 # lib/http.sh and modules/dast/crawl_engine.sh through its own guarded sources,
 # so this file needs neither directly.
+#
+# THIS IS THE ONE CONSUMER THAT STILL NAMES headers_engine.sh RATHER THAN THE
+# LEAF passive/response_engine.sh, AND THAT IS DELIBERATE.  The first three of
+# those four now live in `response_engine.sh`; `hdr_endpoints_load` does NOT,
+# because it depends on crawl_engine.sh and `path_template_of` and would have
+# put source edges back into a file whose whole purpose is to have none.  This
+# file genuinely uses both halves, so it sources the file that has both and gets
+# the reader through headers_engine.sh's own edge.  A future peer that needs the
+# READER ALONE should source `passive/response_engine.sh` instead of copying
+# this line.
 # shellcheck source=modules/dast/passive/headers_engine.sh
 source "${BASH_SOURCE[0]%/*}/passive/headers_engine.sh"
 
