@@ -72,6 +72,19 @@ from an existing one:
   A row whose family has no check id in `modules/dast/active/checks.rules` is
   refused at runtime and recorded, never sent.
 
+The NoSQL-injection boolean-pair file (DAST-21) mixes two row shapes in one
+file, both still `<true-template><TAB><false-template>`:
+
+- `nosqli-boolean-pairs.txt` rows 1-2 use `%B` (a `$where` JS string-context
+  tautology, AND-based like `sqli-boolean-pairs.txt`); rows 3-4 carry NO `%B`
+  at all - each column is a whole, standalone comparison-operator object
+  literal (e.g. `{"$gte":""}`) that REPLACES the parameter's value outright,
+  for an application that deserialises the raw parameter string as a
+  query/filter fragment. Neither shape is `$where` combined with a modify
+  operator, and neither is a write operator (`$set`/`$unset`/`$push`/
+  `$pull`/`$inc`/`$rename`) - see the file's own header for the full
+  reasoning.
+
 ## Graceful degradation
 
 A probe that cannot read a payload file (absent or empty) records a
