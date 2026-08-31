@@ -428,35 +428,96 @@ hdr_referrer_leaks_full_url() {
 # ---------------------------------------------------------------------------
 # 6. The configurable recommended-header list
 # ---------------------------------------------------------------------------
-# `hdr_load_recommended [FILE]` - reads the vendored list into `_HDR_RECOMMENDED`
-# (lowercased, deduped, order preserved) and returns 1 when nothing usable was
-# read, so the caller degrades that one check rather than erroring.
+# `hdr_load_recommended [FILE]` - loads the operator's roll-up list into
+# `_HDR_RECOMMENDED` (lowercased, deduped, order preserved) and returns 1 when
+# nothing usable was found anywhere, so the caller degrades that one check
+# rather than erroring.
 #
-# WHY A FILE AND AN ENVIRONMENT OVERRIDE RATHER THAN A CONFIG KEY.
-# docs/DESIGN.md §7.1 asks for a "configurable" roll-up, and the obvious home -
-# a `config/scanner.conf` key - is not available cheaply: §9.6.1's key set is
-# FROZEN in rules/RULE-FORMAT.md, so adding one moves `lib/records.sh` and
-# `tests/lint-rules.sh` together (§14 item 2) and widens this ticket into a
-# format change three peer tickets would then rebase onto.  The shape used
-# instead is the one this module already established for exactly this problem:
-# a vendored, auditable data file read from disk (like modules/dast/payloads/,
-# docs/DESIGN.md §7.3's "payloads live in payloads/") plus a documented
-# environment seam to point at another one - the same idiom as
-# `SCOURSH_DAST_SQLI_PAYLOAD_DIR`.  A `config/scanner.conf` key remains the
-# better long-term home and is filed as its own ticket rather than smuggled in
-# here.
+# PRECEDENCE, THREE SOURCES, FIRST NON-EMPTY WINS:
 #
-# A NAME A DEDICATED CHECK ALREADY OWNS IS DROPPED FROM THE LIST.  Otherwise an
-# operator who adds `content-security-policy` to their file gets the same
-# absence reported twice, once as `DAST-HDR-CSP_MISSING-01` and once inside the
-# roll-up, and the second one carries no remediation specific to it.  The
-# dropped names are published in `_HDR_RECOMMENDED_DROPPED` so the phase can say
-# so rather than silently ignoring an operator's edit.
+#   1. config/scanner.conf's `recommended-header` key (rules/RULE-FORMAT.md
+#      §9.6.1), resolved through lib/config.sh's own `config_scanner_list` -
+#      which means CLI/`SCOURSH_CONFIG_RECOMMENDED_HEADER`/file precedence
+#      applies exactly as it does for every other repeatable scanner.conf key.
+#      Its stdout is captured through a PLAIN redirection into a scratch file,
+#      never `$(...)` or `<(...)`: both fork a subshell, and
+#      `config_scanner_list` calls `die()` on an invalid entry, whose `exit`
+#      then only ends THAT subshell - a first draft here captured it as
+#      `<(config_scanner_list ... 2>/dev/null || printf '')`, which silently
+#      discarded both the diagnostic and the abort, and fell through to FILE
+#      as though the key had never been set, instead of failing the run the
+#      way every sibling scanner.conf key already does (scan.sh's own
+#      `_scan_capture`/`_scan_capture_list` and lib/core.sh's `core_capture`
+#      document and fix the identical hazard - AGENTS.md's "Things measured on
+#      this codebase", the `var=$(cmd)`-under-`set -e` entry).  A plain `>`
+#      redirection does not fork a subshell, so a `die()` inside
+#      `config_scanner_list` aborts this process for real, and an invalid
+#      entry is refused the moment this phase first asks for the list rather
+#      than silently mis-reported as "not configured".
+#   2. FILE (the caller's explicit argument, for a test or a script that wants
+#      a specific list) or, absent that, `SCOURSH_DAST_RECOMMENDED_HEADERS_FILE`.
+#   3. The vendored `recommended-headers.txt` beside this file.
+#
+# WHY THE CONFIG KEY DID NOT LAND WITH DAST-05, AND WHY LEVELS 2-3 STILL EXIST.
+# §9.6.1's key set was FROZEN at the time: adding one moves `lib/records.sh`
+# and `tests/lint-rules.sh` together (§14 item 2) and would have widened that
+# tier-2 ticket into a format change five peer tickets then building in
+# parallel would have had to rebase onto.  The vendored-file-plus-environment-
+# seam shape (the same idiom as `SCOURSH_DAST_SQLI_PAYLOAD_DIR`) shipped
+# instead, and is KEPT rather than removed now that the key exists: it is a
+# strictly more forgiving path (a malformed LINE is skipped rather than dying
+# the whole run, unlike an invalid config-key entry), so an operator who
+# prefers editing a plain text file - or a script driving scoursh without a
+# scanner.conf of its own - still has that route, and a run reachable through
+# scan.sh's config loader (config_scanner_load) never has to have been called
+# for the roll-up to still say something.
+#
+# A NAME A DEDICATED CHECK ALREADY OWNS IS DROPPED FROM THE LIST, FROM EITHER
+# SOURCE.  Otherwise an operator who adds `content-security-policy` gets the
+# same absence reported twice, once as `DAST-HDR-CSP_MISSING-01` and once
+# inside the roll-up, and the second one carries no remediation specific to
+# it.  The dropped names are published in `_HDR_RECOMMENDED_DROPPED` so the
+# phase can say so rather than silently ignoring an operator's edit - true
+# whichever source supplied the name.
 hdr_load_recommended() {
-  local f=${1:-${SCOURSH_DAST_RECOMMENDED_HEADERS_FILE:-${BASH_SOURCE[0]%/*}/recommended-headers.txt}}
-  local line lower
+  local f=${1:-}
   declare -ga _HDR_RECOMMENDED=() _HDR_RECOMMENDED_DROPPED=()
   declare -gA _HDR_RECOMMENDED_SEEN=()
+
+  # -- 1. config/scanner.conf -------------------------------------------------
+  # `config_scanner_list` is always defined by this point: this file sources
+  # lib/http.sh (guarded against double-sourcing, not against never having
+  # run), which unconditionally sources lib/config.sh.  Its own default for
+  # this key is the empty list (lib/config.sh's `_scanner_default_list`), so
+  # "zero items back" means exactly "the operator did not set this key at any
+  # level" - CONFIG_SCANNER_LOADED being 0 (no config_scanner_load call this
+  # process, the ordinary case for a direct-engine test) falls through here
+  # the same way an operator who left the key out of a loaded file does.  See
+  # this function's own header comment for why the capture below is a plain
+  # redirection rather than `$(...)`/`<(...)`; the scratch path itself is
+  # `mktemp`, never a name built from `$BASHPID` - a DAST-phase scratch file
+  # with a predictable name is exactly `modules/dast/passive/cors_engine.sh`'s
+  # own `cors_header_last`/CWE-377-via-CWE-59 lesson (AGENTS.md, "sharp
+  # edges"), and this file falls back to a world-writable /tmp on every
+  # standalone-engine caller (including this repository's own test suite)
+  # whenever SCOURSH_SCRATCH is unset.
+  local _hdr_cfg_tmp
+  _hdr_cfg_tmp=$(mktemp "${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/hdr-recommended.XXXXXX")
+  chmod 600 "$_hdr_cfg_tmp" 2>/dev/null || true
+  config_scanner_list recommended-header >"$_hdr_cfg_tmp"
+  local item
+  while IFS= read -r item; do
+    [[ -n $item ]] && _hdr_recommended_add "$item"
+  done <"$_hdr_cfg_tmp"
+  rm -f "$_hdr_cfg_tmp"
+  if (( ${#_HDR_RECOMMENDED[@]} > 0 || ${#_HDR_RECOMMENDED_DROPPED[@]} > 0 )); then
+    (( ${#_HDR_RECOMMENDED[@]} > 0 ))
+    return
+  fi
+
+  # -- 2/3. the file, and its own shipped default ----------------------------
+  f=${f:-${SCOURSH_DAST_RECOMMENDED_HEADERS_FILE:-${BASH_SOURCE[0]%/*}/recommended-headers.txt}}
+  local line
   [[ -r $f ]] || return 1
   while IFS= read -r line || [[ -n $line ]]; do
     line=${line%$'\r'}
@@ -464,16 +525,27 @@ hdr_load_recommended() {
     line=${line%"${line##*[![:space:]]}"}
     [[ -z $line || ${line:0:1} == '#' ]] && continue
     [[ $line =~ ^[A-Za-z0-9!#\$%\&\'*+.^_\`|~-]+$ ]] || continue
-    lower=${line,,}
-    [[ -n ${_HDR_RECOMMENDED_SEEN[$lower]:-} ]] && continue
-    _HDR_RECOMMENDED_SEEN[$lower]=1
-    if hdr_recommended_is_owned "$lower"; then
-      _HDR_RECOMMENDED_DROPPED+=("$lower")
-      continue
-    fi
-    _HDR_RECOMMENDED+=("$lower")
+    _hdr_recommended_add "$line"
   done <"$f"
   (( ${#_HDR_RECOMMENDED[@]} > 0 ))
+}
+
+# `_hdr_recommended_add NAME` - lowercases, dedupes (case-insensitively) and
+# applies the owned-name drop, appending to `_HDR_RECOMMENDED` or
+# `_HDR_RECOMMENDED_DROPPED`.  Shared by both sources in `hdr_load_recommended`
+# so config-supplied and file-supplied names can never diverge on either rule -
+# the drop assertion in tests/suites/dast-headers.sh holds "whichever source
+# the list came from" only because there is exactly one place that decides it.
+_hdr_recommended_add() {
+  local lower=${1,,}
+  [[ -n $lower ]] || return 0
+  [[ -n ${_HDR_RECOMMENDED_SEEN[$lower]:-} ]] && return 0
+  _HDR_RECOMMENDED_SEEN[$lower]=1
+  if hdr_recommended_is_owned "$lower"; then
+    _HDR_RECOMMENDED_DROPPED+=("$lower")
+    return 0
+  fi
+  _HDR_RECOMMENDED+=("$lower")
 }
 
 # The four header names this phase reports on with a dedicated check id.

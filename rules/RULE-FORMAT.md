@@ -867,6 +867,7 @@ an absent file is equivalent to one containing only `id: scanner`.
 | `paranoid-allow` | repeatable | no | `addr:port` | empty |
 | `contact` | single | no | One printable, space-free token a target owner can reach the operator at (an email address or a URL). `(`, `)` and `\` are excluded because the value is placed inside an RFC 7230 `User-Agent` comment. | empty |
 | `tls-expiry-warn-days` | single | no | Non-negative integer. How many days before `notAfter` `DAST-TLS-CERT_EXPIRING-01` starts reporting. `0` disables the expiring-soon window without disabling the expired check. | `30` |
+| `recommended-header` | repeatable | no | An RFC 7230 header field-name token. `modules/dast/passive/headers.sh`'s DAST-HDR-RECOMMENDED_MISSING-01 roll-up reports whichever of these names it never saw set. A name a dedicated check already owns (`content-security-policy`, `strict-transport-security`, `x-frame-options`, `x-content-type-options`) is dropped rather than reported twice. | the shipped `modules/dast/passive/recommended-headers.txt` list |
 | `notes` | single | yes | Free text | empty |
 
 `contact` is the operator-configurable half of the identifying `User-Agent` every network request carries
@@ -879,6 +880,12 @@ bump** - see §14's own note on this.
 same reasoning, for `modules/dast/passive/tls.sh` (`docs/STEP5-DAST-PLAN.md` DAST-07).
 Both are additive and optional, so both trip §14 item 2 alone and neither bumps `format_version`; the
 full four-item accounting §14 works through for `contact` applies to them unchanged.
+
+`recommended-header` is the same shape again, added as a follow-up once DAST-05..DAST-11 (the tier-2
+peers that made adding a key to this frozen schema costly to land in parallel) had all landed - see
+`modules/dast/passive/headers_engine.sh`'s `hdr_load_recommended` header for the read precedence
+(config, then the vendored-file/environment-seam mechanism it replaces as the primary source but does
+not remove).  Additive and optional, so it too trips §14 item 2 alone with no `format_version` bump.
 
 `docs/DESIGN.md` §11 also lists "the named scan-profile check-sets (`quick`/`full`/`compliance`)" as
 living here.

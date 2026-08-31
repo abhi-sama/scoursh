@@ -99,6 +99,7 @@ _schema_def() {
         'history-max-commits:opt:single:sl' 'lock-stale-seconds:opt:single:sl' \
         'mutex-timeout-seconds:opt:single:sl' 'paranoid-allow:opt:repeatable:sl' \
         'contact:opt:single:sl' 'tls-expiry-warn-days:opt:single:sl' \
+        'recommended-header:opt:repeatable:sl' \
         'notes:opt:single:ml' 'format-version:opt:single:sl'
       ;;
     auth-identity)

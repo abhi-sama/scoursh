@@ -1033,12 +1033,16 @@ expensive way.
   not evaluated at all on a plaintext response (RFC 6797 §7.2 has the browser ignore the header);
   CSP-absence and framing are document-only, while `nosniff` is not.  A run that saw only plaintext
   records `headers_check_not_applicable` naming the uncovered ids instead of reporting them tested.
-- **A "configurable" knob does NOT have to be a `config/scanner.conf` key, and here it deliberately is
-  not.**  §9.6.1's key set is frozen, so adding one moves `lib/records.sh` and `tests/lint-rules.sh`
-  together (§14 item 2) and widens a tier-2 ticket into a format change six peers then rebase onto.
-  The shape used instead is this module's existing one: a vendored, auditable data file plus a
-  documented environment seam (`SCOURSH_DAST_RECOMMENDED_HEADERS_FILE`), exactly as
-  `SCOURSH_DAST_SQLI_PAYLOAD_DIR` already does for payloads.
+- **A "configurable" knob did not have to be a `config/scanner.conf` key at landing time, and a
+  follow-up ticket has since given it one anyway.**  DAST-05 shipped a vendored, auditable data file
+  plus a documented environment seam (`SCOURSH_DAST_RECOMMENDED_HEADERS_FILE`), exactly as
+  `SCOURSH_DAST_SQLI_PAYLOAD_DIR` does for payloads, because §9.6.1's key set was frozen and adding a
+  key then would have widened a tier-2 ticket into a format change six peers then building in parallel
+  would have had to rebase onto.  Once those peers had landed, "Give the DAST recommended-header
+  roll-up a config/scanner.conf key" added the `recommended-header` key (repeatable, §9.6.1) as the
+  now-primary source, with the vendored file and its environment seam kept as the fallback
+  `hdr_load_recommended` (`modules/dast/passive/headers_engine.sh`) reaches for when the key is unset -
+  see that function's own header for the exact precedence.
 
 **DAST-10 (`modules/dast/passive/leakage.sh`) has landed - the third tier-2 check, and the first whose
 whole design problem is FALSE POSITIVES rather than detection.**
