@@ -1912,18 +1912,15 @@ above; F16's `look` half as of `lib/core.sh`'s `db_lookup_exact` and its new `te
 test - see `docs/FOUNDATION.md`'s "Known follow-ups" for the full closure detail); do not re-flag any
 of them.
 
-**There is no `dev` branch today.** It was promoted into `main` and removed; `main` is this repository's
-sole and default branch, and every current and future landing happens directly on it. Historical
-narrative below that says a ticket "landed on `dev`" is describing what was true when it happened, before
-the promotion, and is left as written for that reason.
-The paragraph immediately below is kept as history too - the failure mode it describes (trusting a stale
-local checkout over the actual tip) is still real - but its specific advice to check `dev`'s tip no
-longer applies to a live workflow: check `main`'s own tip instead.
+**`dev` is the integration branch; `main` is the release branch.** Work lands on `dev` first (squash
+commits) and reaches `main` later in batches. Both branches exist on the remote; `main` is the default
+branch (`origin/HEAD -> origin/main`). Historical narrative that says a ticket "landed on `dev`" remains
+accurate. Do not assume `main` carries all the work that `dev` does.
 
-**`main` used to be able to lag `dev` - check the actual branch tip, not a stale local checkout, before
-declaring a dependency unlanded.** (Historical: this project developed on `dev` and merged to `main` in
-batches, so a checkout of `main` could be several merged tickets behind what `dev` already had, until
-`dev` was promoted into `main` and removed.)
+**`main` lags `dev` - check the actual branch tip, not a stale local checkout, before declaring a
+dependency unlanded.** This project develops on `dev` and merges to `main` in batches, so a checkout of
+`main` can be several merged tickets behind what `dev` already has. A stale local checkout of either
+branch makes that problem worse.
 An earlier agent run on the 3b ticket read a `main` checkout where `modules/` was genuinely still
 absent, concluded the 3a dependency (and this stale memory) meant the work hadn't landed, and moved the
 ticket to `blocked` - when 3a had in fact already merged to `dev`.
@@ -1958,8 +1955,9 @@ Anything else it reports is a real reference to a commit that does not exist, an
 
 **A branch marked done with no recorded landing commit is usually a bookkeeping gap, not stranded
 work - prove the work is really unlanded before rescuing it by hand.**
-(This project's default branch is `main`; there is no `dev` branch today, per the note above - the
-commands below target `origin/main`, not the `origin/dev` this paragraph used before that promotion.)
+(This project's default branch is `main`, but work lands on `dev` first. Check whether the work reached
+`dev` before concluding it is unlanded. The commands below show how to test against `dev`; adapt them as
+needed for the workflow.)
 Because every landing squashes, `git log origin/main..<branch>` reports "1 commit ahead" for a branch
 whose content is *already fully merged*, so commits-ahead is not evidence of anything.
 The test that actually discriminates is `git cherry origin/main origin/<branch>`: a leading `-` means the
