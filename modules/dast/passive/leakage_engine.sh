@@ -132,10 +132,20 @@ source "${BASH_SOURCE[0]%/*}/../crawl_engine.sh"
 # engine to get it.  `hdr_parse_capture`/`hdr_present`/`hdr_value`/`hdr_first`
 # live in `passive/response_engine.sh` - a leaf module that sources nothing and
 # holds the reader alone - so this file no longer pulls in DAST-05's
-# CSP/HSTS/Referrer parsers, its recommended-header loader or its endpoint
-# chooser, none of which it ever used.  No call site changed: the function and
-# global names are the same.  It is still a PURE function library with a
-# sourced-once guard and no side effects at source time.
+# CSP/HSTS/Referrer parsers or its recommended-header loader, neither of which
+# it ever used.  No call site changed: the function and global names are the
+# same.  It is still a PURE function library with a sourced-once guard and no
+# side effects at source time.
+#
+# THE ENDPOINT CHOOSER MOVED THERE TOO.  `leak_endpoints_load` below used to be
+# a byte-identical second copy of `hdr_endpoints_load` (differing only in its
+# own `_LEAK_MAX_ENDPOINTS` cap) - stated as such in its own comment rather
+# than hidden, per this file's own convention above.  It is now a thin wrapper
+# over `response_engine.sh`'s `resp_endpoints_load`, exactly as
+# `hdr_endpoints_load` and `markup_endpoints_load` already are; see
+# `response_engine.sh`'s own third ADR block for the full account of why this
+# one folded in as a THIRD identical caller rather than staying a tracked
+# duplicate.
 # shellcheck source=modules/dast/passive/response_engine.sh
 source "${BASH_SOURCE[0]%/*}/response_engine.sh"
 
@@ -967,93 +977,21 @@ leak_origins_in() {
 # list this phase requests in `_LEAK_URL[]`/`_LEAK_PATH[]`, and sets `_LEAK_N`,
 # `_LEAK_TRUNCATED` and `_LEAK_SKIPPED_NON_GET`.
 #
-# The four decisions are `hdr_endpoints_load`'s and are deliberately identical,
-# because they are properties of the tier rather than of a family: the
-# operator's own `base-url` is always first and outside the sort (it is
-# config-derived, it exists on every run, and being first keeps the finding
-# location - and therefore the fingerprint - stable when the crawl reorders);
-# GET only, because re-sending a discovered POST is a state change wearing a
-# passive check's name; deduped by PATH TEMPLATE, since `/order/1` and
-# `/order/2` are one handler; and sorted before the cap, so the chosen set is
-# reproducible across runs.
-#
-# It is a SECOND COPY of that logic and not a call into it, for the reason
-# headers_engine.sh's own header states: a shared `passive/*_engine.sh` is
-# scaffolding several parallel tickets would each believe they owned, and
-# lifting it is a refactor with an owner rather than a side effect of this
-# landing.  The one substantive difference is the cap - see `_LEAK_MAX_ENDPOINTS`
-# above for why leakage wants more endpoints than headers does.
+# A THIN WRAPPER over `response_engine.sh`'s `resp_endpoints_load`, exactly as
+# `hdr_endpoints_load` and `markup_endpoints_load` already are - see that
+# file's third ADR block.  The four decisions (base-url first and outside the
+# sort, GET only, deduped by path template, sorted then capped) are properties
+# of the tier rather than of this family, so this file keeps no logic of its
+# own; only the cap (`_LEAK_MAX_ENDPOINTS`, above) and the `_LEAK_*` global
+# names are this file's.  `leak_endpoints_load`'s name, its parameters and its
+# four output globals are UNCHANGED, so no call site in `leakage.sh` moves.
 leak_endpoints_load() {
   local epf=${1:-} target=${2:-} base=${3:-}
-  local sep=$'\x1f' p type v idx key rest last_idx=''
-  declare -ga _LEAK_URL=() _LEAK_PATH=()
-  declare -g _LEAK_N=0 _LEAK_TRUNCATED=0 _LEAK_SKIPPED_NON_GET=0
-  declare -gA _LEAK_TPL_SEEN=()
-
-  if [[ -n $base ]]; then
-    _leak_candidate_add "$base"
-  fi
-
-  if [[ -z $epf || ! -r $epf || ! -s $epf ]]; then
-    _LEAK_N=${#_LEAK_URL[@]}
-    return 0
-  fi
-
-  declare -ga _LEAK_ROWS=()
-  local -A cur=()
-  while IFS=$'\t' read -r p type v; do
-    [[ $p == endpoints* ]] || continue
-    rest=${p#endpoints}; rest=${rest#"$sep"}
-    idx=${rest%%"$sep"*}; key=${rest#*"$sep"}
-    [[ $idx =~ ^[0-9]+$ && $key != "$rest" ]] || continue
-    if [[ -n $last_idx && $idx != "$last_idx" ]]; then
-      _leak_row_collect "${cur[url]:-}" "${cur[method]:-GET}" "${cur[target]:-}" "$target"
-      cur=()
-    fi
-    last_idx=$idx
-    [[ $type == s ]] && v=$(crawl_json_unescape "$v")
-    cur[$key]=$v
-  done < <(crawl_json_flatten <"$epf" 2>/dev/null)
-  if [[ -n $last_idx ]]; then
-    _leak_row_collect "${cur[url]:-}" "${cur[method]:-GET}" "${cur[target]:-}" "$target"
-  fi
-
-  local row
-  while IFS= read -r row; do
-    [[ -n $row ]] || continue
-    _leak_candidate_add "$row"
-  done < <(printf '%s\n' "${_LEAK_ROWS[@]+"${_LEAK_ROWS[@]}"}" | LC_ALL=C sort -u)
-
-  _LEAK_N=${#_LEAK_URL[@]}
-  return 0
-}
-
-_leak_row_collect() {
-  local url=$1 method=$2 row_target=$3 want_target=$4
-  [[ -n $url ]] || return 0
-  if [[ -n $row_target && -n $want_target && $row_target != "$want_target" ]]; then
-    return 0
-  fi
-  if [[ ${method^^} != GET ]]; then
-    _LEAK_SKIPPED_NON_GET=$(( _LEAK_SKIPPED_NON_GET + 1 ))
-    return 0
-  fi
-  _LEAK_ROWS+=("$url")
-  return 0
-}
-
-_leak_candidate_add() {
-  local url=$1 path tpl
-  path=$(leak_path_of "$url")
-  tpl=$(path_template_of "$path")
-  [[ -n ${_LEAK_TPL_SEEN[$tpl]:-} ]] && return 0
-  if (( ${#_LEAK_URL[@]} >= _LEAK_MAX_ENDPOINTS )); then
-    _LEAK_TRUNCATED=$(( _LEAK_TRUNCATED + 1 ))
-    return 0
-  fi
-  _LEAK_TPL_SEEN[$tpl]=1
-  _LEAK_URL+=("$url")
-  _LEAK_PATH+=("$path")
+  resp_endpoints_load "$epf" "$target" "$base" "$_LEAK_MAX_ENDPOINTS"
+  declare -ga _LEAK_URL=("${_RESP_URL[@]+"${_RESP_URL[@]}"}")
+  declare -ga _LEAK_PATH=("${_RESP_PATH[@]+"${_RESP_PATH[@]}"}")
+  declare -g _LEAK_N=$_RESP_N _LEAK_TRUNCATED=$_RESP_TRUNCATED \
+    _LEAK_SKIPPED_NON_GET=$_RESP_SKIPPED_NON_GET
   return 0
 }
 

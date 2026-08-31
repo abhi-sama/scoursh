@@ -918,9 +918,12 @@ suite go red.
   **That lift has since landed**, once six files depended on the reader: it lives in
   `modules/dast/passive/response_engine.sh` (a leaf that sources nothing) and its unit cases moved
   to `tests/suites/dast-response-engine.sh`.  `headers_engine.sh` keeps the CSP/HSTS/Referrer
-  parsers, the recommended-header loader and `hdr_endpoints_load`, and sources the reader like every
-  other consumer.  The **endpoint chooser** was deliberately NOT part of it and its own lift is
-  still open - see the DAST-11 note below.
+  parsers and the recommended-header loader, and sources the reader like every other consumer.
+  The **endpoint chooser** lift landed too, in two steps: first for `headers_engine.sh` and
+  `markup_engine.sh` only, then - closing the gap this note and the DAST-11 note below used to
+  leave open - for `leakage_engine.sh` and `transport_engine.sh`.  `hdr_endpoints_load` is now a
+  thin wrapper over the shared `resp_endpoints_load`, exactly like its three siblings; see the
+  DAST-11 note below for the full account of why the other three took longer.
 - **`modules/dast/passive/checks.rules` IS shared ground, and that is forced rather than chosen.**
   `rules/RULE-FORMAT.md` §9's path table gives the §9.5 schema to "any file named `checks.rules`, at
   any depth" and makes every other path `E070`, so a per-ticket `headers-checks.rules` is not a legal
@@ -1200,14 +1203,22 @@ endpoint chooser to LIFT it "with this file's tests moving with it ... a refacto
 a side effect of a peer landing", and doing that lift here would have moved `headers.sh`, its
 156-assertion suite and `cookies.sh` under a markup ticket.  So `markup_endpoints_load` is a second,
 STATED copy and the lift is filed as its own ticket.
-**Read that precisely now that `passive/response_engine.sh` EXISTS: it holds the READER and only the
-reader, and the ENDPOINT CHOOSER lift this paragraph is about is still open.**  `hdr_endpoints_load`
-stays in `headers_engine.sh` deliberately - it has two callers rather than a shared need, and it
-depends on `crawl_engine.sh` and `path_template_of`, which would put source edges back into a file
-whose whole purpose is to have none.  `markup_endpoints_load` is therefore still a stated second
-copy, as are `transport_engine.sh`'s and `leakage_engine.sh`'s own choosers, each of which differs
-from `hdr_endpoints_load` in its dedup key for reasons its own header records.  A future chooser lift
-is a separate ticket with a separate argument to make; the reader's landing does not settle it.  It also does not re-use `crawl_html_extract`:
+**`passive/response_engine.sh` now exists, and the endpoint-chooser lift this paragraph is about has
+since landed too, in full - both halves of what used to be open here are closed.**  The reader
+lifted first, as its own ticket, once `hdr_parse_capture` and friends had six real consumers; that
+ticket deliberately left `hdr_endpoints_load` in `headers_engine.sh`, because moving it would have
+put `crawl_engine.sh` and `path_template_of`'s source edges back into a file whose whole purpose is
+to have none.  The chooser lift that followed solved that by having `resp_endpoints_load` call both
+BY NAME rather than by sourcing them - a caller that has not itself sourced `crawl_engine.sh` and
+`lib/http.sh` gets a plain `command not found`, never a silent wrong answer - and landed for
+`headers_engine.sh` and `markup_engine.sh` first, once `markup_endpoints_load` made the duplication a
+confirmed second real case.  `transport_engine.sh`'s and `leakage_engine.sh`'s own choosers were left
+as a further, NAMED follow-up rather than folded in silently under a ticket that had not asked for
+them - `leak_endpoints_load` turned out to be a byte-identical THIRD copy, and `tr_endpoints_load`'s
+one real difference (dedup key `(scheme, path template)`, never the path template alone, for the
+reason its own header always gave) became `resp_endpoints_load`'s one optional `DEDUP_KEY` parameter.
+All four choosers are thin wrappers over `resp_endpoints_load` today; see that file's own third ADR
+block for the full account.  It also does not re-use `crawl_html_extract`:
 that function's output stream carries no attribute detail, and every check here is about an
 attribute, so widening it would change a contract `docs/INVENTORY-FORMAT.md`'s consumers read - the
 scanner core is reused, the emitter is not.  A second, smaller gap was found and filed rather than

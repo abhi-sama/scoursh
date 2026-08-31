@@ -102,6 +102,55 @@
 #      explicitly rather than leaving it to be discovered by a `command not
 #      found`.
 #
+# ADR: the two remaining copies fold in too - one because it turned out to be a
+#      third identical case, the other by parameterising the one axis its own
+#      header always said was different.
+# Context: the ADR above landed `resp_endpoints_load` for `headers_engine.sh`
+#      and `markup_engine.sh` only, and named `passive/leakage_engine.sh`
+#      (`leak_endpoints_load`) and `passive/transport_engine.sh`
+#      (`tr_endpoints_load`) as real but OUT OF SCOPE, left for a ticket that
+#      asked for them rather than folded in silently.  `docs/STEP5-DAST-PLAN.md`
+#      (its DAST-05 and DAST-11 landing notes), `docs/FOUNDATION.md` (its
+#      DAST-11 paragraph) and `AGENTS.md` (the shared-response-reader bullet)
+#      each said so and each is corrected in the same change that lands this
+#      block.  Direct comparison confirmed `leak_endpoints_load` byte-identical
+#      to `hdr_endpoints_load` bar its own `_LEAK_MAX_ENDPOINTS` cap - a THIRD
+#      real case, not a hypothesis.  `tr_endpoints_load` differs in exactly the
+#      one place its own header always said it did and nowhere else: the dedup
+#      key is `(scheme, path template)`, because the plaintext and HTTPS twin
+#      of one path are the SAME candidate to every other caller and are the
+#      finding itself to this one.
+# Decision: `leak_endpoints_load` becomes a thin wrapper over
+#      `resp_endpoints_load`, identically to `hdr_endpoints_load` and
+#      `markup_endpoints_load` - it needed no new parameter, since its dedup
+#      key was already the default one.  `resp_endpoints_load` gains exactly
+#      one new, optional parameter, `DEDUP_KEY` (`template` by default,
+#      `scheme_template` the only other value), and `tr_endpoints_load`
+#      becomes a thin wrapper passing `scheme_template` - the one line that
+#      ever differed.  `tr_url_scheme` (the scheme extractor
+#      `scheme_template` needs) moves here as `resp_url_scheme`, for the same
+#      reason `hdr_path_of` already lives here rather than in every caller: it
+#      is pure, dependency-free, and the dedup mode needs it by name.
+#      `tr_url_scheme` stays in `transport_engine.sh` as a one-line wrapper, so
+#      `tr_url_origin` and the mixed-content scanner - which use it for
+#      reasons that have nothing to do with the chooser - do not change.
+# Alternatives considered: leave `tr_endpoints_load` and `leak_endpoints_load`
+#      as recorded, cross-linked duplicates (this ticket's own second honest
+#      outcome) - rejected, because the dedup key is the ONLY axis that varies
+#      across all four callers, so a one-parameter fork costs less to keep
+#      correct than four function bodies kept in step by hand and a header
+#      comment asking nicely.  Pass a whole dedup FUNCTION by name instead of a
+#      mode string - rejected as speculative generalisation: exactly two keys
+#      exist today, not an open set, and a mode string matches how this
+#      function's other per-caller knob (`MAX_ENDPOINTS`) already works.
+# Consequences: a dedup-key bug is fixed once for four callers instead of once
+#      for the `template` family and once more for `transport_engine.sh`, and
+#      `tests/suites/dast-response-engine.sh` section G is the one place that
+#      pins both keys against each other.  The cost is a parameter whose only
+#      real second value exists to serve one caller - accepted, since the
+#      alternative was a second, near-identical function to keep in step by
+#      hand.
+#
 # THE LOAD-BEARING PROPERTY IN THIS FILE IS `hdr_parse_capture`'S RESET.
 # `http_request_capture`'s header sink ACCUMULATES every redirect hop
 # (lib/http.sh section 9a), so a capture file for a request that redirected
@@ -292,6 +341,23 @@ hdr_url_is_https() {
   [[ ${1,,} == https://* ]]
 }
 
+# `resp_url_scheme URL` - prints the lowercased scheme for an absolute http(s)
+# URL, or nothing for anything else (relative, scheme-relative, or a scheme
+# this tool never requests).  Moved here from `transport_engine.sh`'s
+# `tr_url_scheme` once section 4's `scheme_template` dedup mode needed it by
+# name - see this file's third ADR block.  `transport_engine.sh` keeps
+# `tr_url_scheme` as a one-line wrapper, so `tr_url_origin` and the
+# mixed-content scanner, which use it for reasons unrelated to the chooser,
+# read identically to before.
+resp_url_scheme() {
+  local u=${1,,}
+  case $u in
+    https://*) printf 'https' ;;
+    http://*) printf 'http' ;;
+    *) printf '' ;;
+  esac
+}
+
 # ---------------------------------------------------------------------------
 # 4. Choosing what to request (docs/INVENTORY-FORMAT.md, tension 21)
 # ---------------------------------------------------------------------------
@@ -299,17 +365,18 @@ hdr_url_is_https() {
 # HEADER CLAIM.  `resp_endpoints_load` calls `crawl_json_flatten`/
 # `crawl_json_unescape` (modules/dast/crawl_engine.sh) and `path_template_of`
 # (lib/findings.sh) BY NAME.  This file sources NEITHER - see this file's own
-# ADR block for why - so a caller that has not itself sourced both before
+# ADR blocks for why - so a caller that has not itself sourced both before
 # calling this function gets a plain `command not found`, not a silent wrong
-# answer.  Every real caller already has: `headers_engine.sh` and
-# `markup_engine.sh` both source `lib/http.sh` (which pulls in
-# `lib/findings.sh`) and `crawl_engine.sh` before ever reaching this function.
+# answer.  Every real caller already has: `headers_engine.sh`,
+# `markup_engine.sh`, `leakage_engine.sh` and `transport_engine.sh` all source
+# `lib/http.sh` (which pulls in `lib/findings.sh`) and `crawl_engine.sh` before
+# ever reaching this function.
 #
-# `resp_endpoints_load ENDPOINTS_FILE TARGET BASE_URL MAX_ENDPOINTS` publishes
-# the URL list a passive check will request, in `_RESP_URL[]` with
+# `resp_endpoints_load ENDPOINTS_FILE TARGET BASE_URL MAX_ENDPOINTS [DEDUP_KEY]`
+# publishes the URL list a passive check will request, in `_RESP_URL[]` with
 # `_RESP_PATH[]` alongside, and sets `_RESP_N`, `_RESP_TRUNCATED` and
-# `_RESP_SKIPPED_NON_GET`.  Four decisions are baked in, identically for every
-# caller today, and each has a reason worth keeping:
+# `_RESP_SKIPPED_NON_GET`.  Four decisions are baked in for every caller, and
+# each has a reason worth keeping:
 #
 # 1. THE TARGET'S OWN `base-url` IS ALWAYS FIRST, when the caller supplies one.
 #    It is config-derived (the operator wrote it) rather than target-derived,
@@ -321,29 +388,47 @@ hdr_url_is_https() {
 #    read its headers or its markup is a state change dressed as a passive
 #    check.  Non-GET endpoints are counted and reported, never silently
 #    dropped.
-# 3. DEDUPED BY PATH TEMPLATE, not by URL.  `/order/1` and `/order/2` are one
-#    handler serving one response, and requesting both spends two units of the
-#    request budget to learn one fact.
+# 3. DEDUPED, by default on PATH TEMPLATE alone.  `/order/1` and `/order/2`
+#    are one handler serving one response, and requesting both spends two
+#    units of the request budget to learn one fact.
 # 4. SORTED, then capped.  A deterministic order is what makes the chosen set -
 #    and therefore the finding locations - reproducible across runs; an
 #    inventory-order walk would reshuffle them whenever the crawl did.
 #
+# DEDUP_KEY IS THE ONE AXIS THAT GENUINELY VARIES ACROSS CALLERS, AND IT IS THE
+# ONLY THING THIS FUNCTION PARAMETERISES.  It defaults to `template` (decision
+# 3 above), which is what `headers_engine.sh`, `markup_engine.sh` and
+# `leakage_engine.sh` all want: a security header, a page's markup and an
+# information-disclosure family are each configured once per HANDLER, so the
+# plaintext and HTTPS twin of one path are the same observation and dedupe to
+# one candidate.  `transport_engine.sh` passes `scheme_template` instead:
+# mixed-content and plaintext-exposure are properties of the SCHEME a document
+# was fetched over, so its own plaintext twin - the same handler, reached over
+# `http://` - is not a duplicate to collapse, it IS the finding.
+# `tests/suites/dast-response-engine.sh` section G pins both keys against the
+# same inventory, and `tests/suites/dast-transport.sh`'s "reading 7" case pins
+# it again at the phase grain: two candidates survive under `scheme_template`
+# where the `template` default would collapse them to one and drop the
+# plaintext twin that is the defect.
+#
 # MAX_ENDPOINTS IS A PARAMETER, NEVER A `: "${VAR:=N}"` DEFAULT IN THIS FILE.
-# `headers.sh` (cap 10) and `markup.sh` (cap 25) can both run within the same
-# `dast_run_phase` loop in one process, so a set-once-if-unset global would let
-# whichever phase runs first pin the cap for the second one too.  Each caller
-# keeps its own knob (`_HDR_MAX_ENDPOINTS`, `_MARKUP_MAX_ENDPOINTS`) and passes
-# it in explicitly.
+# `headers.sh` (cap 10), `markup.sh` (cap 25), `leakage.sh` (cap 20) and
+# `transport.sh` (cap 10) can all run within the same `dast_run_phase` loop in
+# one process, so a set-once-if-unset global would let whichever phase runs
+# first pin the cap for the rest.  Each caller keeps its own knob
+# (`_HDR_MAX_ENDPOINTS`, `_MARKUP_MAX_ENDPOINTS`, `_LEAK_MAX_ENDPOINTS`,
+# `_TR_MAX_ENDPOINTS`) and passes it in explicitly.
 #
 # An absent, empty or unreadable inventory is the NORMAL case
 # (docs/INVENTORY-FORMAT.md §1) and is never an error: with a base URL the
 # caller still has something true to say about the target's front door, and
 # without one `_RESP_N` is 0 and the caller records the gap.
 resp_endpoints_load() {
-  local epf=${1:-} target=${2:-} base=${3:-} max=${4:-10}
+  local epf=${1:-} target=${2:-} base=${3:-} max=${4:-10} dedup=${5:-template}
   local sep=$'\x1f' p type v idx key rest last_idx=''
   declare -ga _RESP_URL=() _RESP_PATH=()
-  declare -g _RESP_N=0 _RESP_TRUNCATED=0 _RESP_SKIPPED_NON_GET=0 _RESP_MAX=$max
+  declare -g _RESP_N=0 _RESP_TRUNCATED=0 _RESP_SKIPPED_NON_GET=0 _RESP_MAX=$max \
+    _RESP_DEDUP=$dedup
   declare -gA _RESP_TPL_SEEN=()
 
   # The base URL first, and outside the sort, for reason 1 above.
@@ -410,17 +495,30 @@ _resp_row_collect() {
   return 0
 }
 
-# Adds one URL if its path template is new and the cap has room.
+# Adds one URL if its dedup key is new and the cap has room.  The key is the
+# path template alone under the default `template` mode, or
+# `scheme<0x1f>template` under `scheme_template` - see section 4's own header
+# for why `transport_engine.sh` needs the second.  Under `scheme_template`, a
+# URL with no recognised http(s) scheme (relative, scheme-relative) is not
+# requestable at all and is skipped before it is counted against the cap -
+# `tr_endpoints_load`'s original behaviour, kept unchanged.
 _resp_candidate_add() {
-  local url=$1 path tpl
+  local url=$1 path tpl key scheme
   path=$(hdr_path_of "$url")
   tpl=$(path_template_of "$path")
-  [[ -n ${_RESP_TPL_SEEN[$tpl]:-} ]] && return 0
+  if [[ $_RESP_DEDUP == scheme_template ]]; then
+    scheme=$(resp_url_scheme "$url")
+    [[ -n $scheme ]] || return 0
+    key=$scheme$'\x1f'$tpl
+  else
+    key=$tpl
+  fi
+  [[ -n ${_RESP_TPL_SEEN[$key]:-} ]] && return 0
   if (( ${#_RESP_URL[@]} >= _RESP_MAX )); then
     _RESP_TRUNCATED=$(( _RESP_TRUNCATED + 1 ))
     return 0
   fi
-  _RESP_TPL_SEEN[$tpl]=1
+  _RESP_TPL_SEEN[$key]=1
   _RESP_URL+=("$url")
   _RESP_PATH+=("$path")
   return 0
