@@ -12,16 +12,32 @@
 # each still have a PHASE-level case that goes red if the last-hop reset is
 # removed, so the property is measured at both grains and in three places.
 #
-# NOTHING HERE TOUCHES THE NETWORK, AND UNLIKE EVERY OTHER dast-* SUITE IT
-# CANNOT.  It sources the file under test and tests/lib/assert.sh and nothing
-# else - no lib/http.sh, no lib/core.sh, no scratch dir, no stubbed transport,
-# no stubbed resolver.  That is not a convenience: section A asserts it, because
-# "response_engine.sh is a LEAF in the source graph" is the property the lift
-# bought (docs/CI-RUNBOOK.md, "the memory model": `shellcheck -x` re-expands
-# every source edge it follows, so a consumer that only wants the reader used to
-# pay for lib/http.sh, crawl_engine.sh and DAST-05's parsers to get it).  A
-# source edge added back to this file turns section A red rather than being
-# noticed a year later as a slow linter.
+# SECTIONS A-F TOUCH NO NETWORK, AND UNLIKE EVERY OTHER dast-* SUITE THEY
+# CANNOT.  Up to and including section F, this suite sources the file under
+# test and tests/lib/assert.sh and nothing else - no lib/http.sh, no
+# lib/core.sh, no scratch dir, no stubbed transport, no stubbed resolver.  That
+# is not a convenience: section A asserts it, because "response_engine.sh is a
+# LEAF in the source graph" is the property the reader lift bought
+# (docs/CI-RUNBOOK.md, "the memory model": `shellcheck -x` re-expands every
+# source edge it follows, so a consumer that only wants the reader used to pay
+# for lib/http.sh, crawl_engine.sh and DAST-05's parsers to get it).  A source
+# edge added back to response_engine.sh ITSELF turns section A red rather than
+# being noticed a year later as a slow linter.
+#
+# SECTION G IS DIFFERENT, AND SAYS SO WHERE IT STARTS.  It tests
+# `resp_endpoints_load`, the shared GET-endpoint chooser
+# (docs/STEP5-DAST-PLAN.md, "lift the shared passive endpoint chooser into
+# modules/dast/passive/response_engine.sh") - a function response_engine.sh
+# DEFINES but does not itself make callable, because it calls
+# `crawl_json_flatten`/`crawl_json_unescape` and `path_template_of` BY NAME
+# without sourcing the files that define them (see response_engine.sh's own
+# ADR block for why: sourcing them here would undo the reader lift's whole
+# point for the five reader-only consumers).  Exercising it for real therefore
+# needs `modules/dast/crawl_engine.sh` and `lib/findings.sh` sourced first,
+# which pulls in `lib/records.sh` -> `lib/core.sh` and its scratch
+# dir/traps - the section says so before it does it, so section A's "sourcing
+# response_engine.sh ALONE defines none of this" assertions, which run first,
+# are not contradicted by anything later in the file.
 #
 # Each case that pins a decision names the reading it FAILS under, per this
 # repository's testing rule - a test that passes under both the correct and the
@@ -78,7 +94,7 @@ assert_eq yes "$(_defined hdr_url_is_https)" 'hdr_url_is_https'
 assert_eq no "$(_defined http_request)" \
   'sourcing the reader defines NO transport - FAILS the moment a source edge back to lib/http.sh is added, which is the edge the lift removed and the one a future "just source http.sh here" change would restore'
 assert_eq no "$(_defined crawl_json_flatten)" \
-  'and no inventory flattener - FAILS under a source edge to crawl_engine.sh, which hdr_endpoints_load needs and is exactly why hdr_endpoints_load did NOT move into this file'
+  'and no inventory flattener - FAILS under a source edge to crawl_engine.sh, which resp_endpoints_load (below) calls BY NAME rather than by sourcing it, exactly so this stays no'
 assert_eq no "$(_defined config_scanner_list)" \
   'and no config loader'
 
@@ -92,7 +108,9 @@ assert_eq no "$(_defined hdr_hsts_parse)" 'so did the HSTS parser'
 assert_eq no "$(_defined hdr_referrer_effective)" 'so did the Referrer-Policy parser'
 assert_eq no "$(_defined hdr_load_recommended)" 'so did the recommended-header loader'
 assert_eq no "$(_defined hdr_endpoints_load)" \
-  'and so did the endpoint chooser - it has two callers rather than a shared need, and it depends on crawl_engine.sh, so moving it would have put a source edge back into the leaf'
+  'hdr_endpoints_load the NAME stayed in headers_engine.sh, as a thin wrapper, so no caller of it had to change - FAILS if the wrapper were deleted in favour of every caller reading resp_endpoints_load (below) directly'
+assert_eq yes "$(_defined resp_endpoints_load)" \
+  'the shared endpoint chooser IS here, under its own name, once markup_engine.sh shipped a second byte-identical copy of hdr_endpoints_load and made the duplication real rather than hypothetical (AGENTS.md: two real cases, not one)'
 
 assert_eq 200 "$_HDR_MAX_EVIDENCE_FIELD" \
   "hdr_safe_text's evidence cap travelled WITH it - FAILS under a lift that moves the function and leaves its default behind in headers_engine.sh, where it is unbound under set -u for anyone sourcing the reader alone"
@@ -257,6 +275,91 @@ assert_true "$(hdr_url_is_https HTTPS://h.example/ && printf 0 || printf 1)" \
   'the scheme is matched case-insensitively (RFC 3986 §3.1 makes it so) - FAILS under a byte compare, which reports an https target as plaintext and skips the HSTS evaluation entirely'
 assert_true "$(hdr_url_is_https 'https-not-a-scheme://h/' && printf 1 || printf 0)" \
   'and the match is anchored on the real scheme - FAILS under a substring test'
+
+# ===========================================================================
+printf '== G. resp_endpoints_load: the shared GET-endpoint chooser ==\n'
+# ===========================================================================
+# FROM HERE ON THIS SUITE IS NO LONGER A LEAF TEST - see this file's own header
+# for why testing this one function needs more than response_engine.sh alone.
+# shellcheck source=modules/dast/crawl_engine.sh
+source "$ROOT/modules/dast/crawl_engine.sh"
+# lib/findings.sh is sourced for `path_template_of` alone; it pulls in
+# lib/records.sh -> lib/core.sh, which bootstraps a scratch dir and traps as a
+# source-time side effect (AGENTS.md, "Things measured on this codebase" is not
+# about this specifically, but lib/core.sh's own `scratch_init`/
+# `core_install_traps` calls at its own top level are what do it).
+# shellcheck source=lib/findings.sh
+source "$ROOT/lib/findings.sh"
+t_case 'resp_endpoints_load'
+
+_g_inv() {
+  local name=$1; shift
+  local f=$W/$name.endpoints.json rows='' u m t i=0
+  while (( $# > 0 )); do
+    u=$1; m=$2; t=$3; shift 3
+    rows+="${rows:+,}"$'\n'"  { \"id\": \"e$i\", \"target\": \"$t\", \"method\": \"$m\", \"url\": \"$u\", \"path\": \"$(hdr_path_of "$u")\" }"
+    i=$(( i + 1 ))
+  done
+  printf '{ "schema": "scoursh.inventory.endpoints/1", "endpoints": [%s\n] }\n' "$rows" >"$f"
+  printf '%s' "$f"
+}
+
+# 1. base-url first, and outside the sort.
+INV=$(_g_inv base https://h.example/z GET t https://h.example/a GET t)
+resp_endpoints_load "$INV" t https://h.example/front 10
+assert_eq /front "${_RESP_PATH[0]}" \
+  "the operator's own base-url is candidate zero, ahead of every inventory row - FAILS under a plain sort of the combined set, which would put /a first"
+assert_eq 3 "$_RESP_N" 'the base-url plus the two distinct inventory rows'
+
+# 2. GET only; a non-GET row is counted and dropped, never requested.
+INV=$(_g_inv methods https://h.example/get GET t https://h.example/post POST t)
+resp_endpoints_load "$INV" t '' 10
+assert_eq 1 "$_RESP_N" 'only the GET row survives'
+assert_eq /get "${_RESP_PATH[0]}" 'and it is the GET one'
+assert_eq 1 "$_RESP_SKIPPED_NON_GET" \
+  'the POST row is COUNTED as skipped, not silently dropped - a caller reports this rather than staying quiet about it'
+
+# 3. deduped by PATH TEMPLATE, not by URL.
+INV=$(_g_inv dedupe https://h.example/order/1 GET t https://h.example/order/2 GET t)
+resp_endpoints_load "$INV" t '' 10
+assert_eq 1 "$_RESP_N" \
+  '/order/1 and /order/2 are one path template and cost one candidate - FAILS under a per-URL dedup, which would spend two'
+
+# 4. sorted, then capped, and the cap is a PARAMETER.
+INV=$(_g_inv cap https://h.example/p1 GET t https://h.example/p2 GET t \
+  https://h.example/p3 GET t https://h.example/p4 GET t)
+resp_endpoints_load "$INV" t '' 2
+assert_eq 2 "$_RESP_N" 'the cap is honoured'
+assert_eq 2 "$_RESP_TRUNCATED" 'and the two dropped candidates are counted, never silently absent'
+# The SAME inventory, a DIFFERENT cap, is what pins that MAX_ENDPOINTS is read
+# from the call rather than from a `: "${VAR:=N}"` global that only the FIRST
+# caller in a process could ever set - the shape that would matter the moment
+# headers.sh (cap 10) and markup.sh (cap 25) both run in one dast_run_phase
+# loop, which they do on every real scan.
+resp_endpoints_load "$INV" t '' 3
+assert_eq 3 "$_RESP_N" \
+  'a second call with a different MAX_ENDPOINTS gets its OWN cap - FAILS under a set-once default, which would still be pinned at 2 from the call above'
+
+# A target mismatch drops a row; a row with no target at all is kept.
+INV=$(_g_inv target https://h.example/mine GET t https://h.example/theirs GET other \
+  https://h.example/notarget GET '')
+resp_endpoints_load "$INV" t '' 10
+_paths="${_RESP_PATH[*]}"
+assert_contains "$_paths" /mine 'a row naming this target is kept'
+assert_not_contains "$_paths" /theirs \
+  "a row naming a DIFFERENT scope target is dropped - it belongs to that target's own cell"
+assert_contains "$_paths" /notarget \
+  'a row naming NO target at all is kept - an imported inventory may legitimately carry none, and http_request re-gates it regardless'
+
+# An absent, empty or unreadable inventory is the NORMAL case, never an error,
+# and the base-url alone is still a full answer.
+resp_endpoints_load "$W/does-not-exist.json" t https://h.example/only 10
+assert_eq 1 "$_RESP_N" 'no inventory: the base-url alone is candidate zero and the whole set'
+: >"$W/empty.json"
+resp_endpoints_load "$W/empty.json" t https://h.example/only 10
+assert_eq 1 "$_RESP_N" 'an empty inventory file behaves identically to no inventory at all'
+resp_endpoints_load '' t '' 10
+assert_eq 0 "$_RESP_N" 'no inventory and no base-url: nothing to request, and no error either'
 
 # ===========================================================================
 printf '\n== dast-response-engine: %d passed, %d failed ==\n' "$T_PASS" "$T_FAIL"

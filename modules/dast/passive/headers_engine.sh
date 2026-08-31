@@ -15,12 +15,19 @@
 # ASKED.  `hdr_parse_capture`, `hdr_present`, `hdr_value`, `hdr_first`,
 # `hdr_is_document`, `hdr_safe_text`, `hdr_path_of` and `hdr_url_is_https` now
 # live in `modules/dast/passive/response_engine.sh`, whose own ADR block records
-# why, why the `hdr_` prefix was kept, and why `hdr_endpoints_load` below did
-# NOT move with them.  Nothing about their behaviour changed and no call site
-# moved; this file sources that one, so a consumer that needs the parsers or the
-# chooser still gets the reader by sourcing this.  A consumer that needs the
-# READER ALONE should source `response_engine.sh` directly rather than this file
-# - that is the whole point of the split, and four already do.
+# why and why the `hdr_` prefix was kept.  Nothing about their behaviour
+# changed and no call site moved; this file sources that one, so a consumer
+# that needs the parsers still gets the reader by sourcing this.  A consumer
+# that needs the READER ALONE should source `response_engine.sh` directly
+# rather than this file - that is the whole point of the split, and five
+# already do.
+#
+# THE ENDPOINT CHOOSER MOVED THERE TOO, ONCE A SECOND REAL COPY EXISTED.
+# `hdr_endpoints_load` below is now a thin wrapper over
+# `response_engine.sh`'s `resp_endpoints_load`; see that file's own ADR block
+# for the full account of why this one stayed a wrapper (so no call site here
+# or in `ratelimit_engine.sh` had to change) rather than every caller reading
+# `_RESP_*` directly.
 #
 # THE ONE THING THIS FILE DOES NOT DO IS TALK TO THE NETWORK.  Every request the
 # phase sends goes through `http_request` (lib/http.sh) - docs/FOUNDATION.md
@@ -458,119 +465,33 @@ hdr_recommended_is_owned() {
 # ---------------------------------------------------------------------------
 # `hdr_endpoints_load [ENDPOINTS_FILE] [TARGET] [BASE_URL]` - publishes the URL
 # list this phase will request, in `_HDR_URL[]` with `_HDR_PATH[]` alongside, and
-# sets `_HDR_N`, `_HDR_TRUNCATED` and `_HDR_SKIPPED_NON_GET`.
+# sets `_HDR_N`, `_HDR_TRUNCATED` and `_HDR_SKIPPED_NON_GET`.  The four
+# decisions this makes (base-url first, GET only, deduped by path template,
+# sorted then capped) are documented once now, in
+# `response_engine.sh`'s `resp_endpoints_load` - not restated here to avoid
+# the two copies drifting the way the CODE itself used to.
 #
-# Four decisions are baked in here and each has a reason worth keeping:
-#
-# 1. THE TARGET'S OWN `base-url` IS ALWAYS FIRST, when the caller supplies one.
-#    It is config-derived (the operator wrote it) rather than target-derived, it
-#    is the one URL that exists on every run whatever the crawl found, and being
-#    first makes it the finding's location in the overwhelming majority of runs -
-#    which is what keeps a fingerprint from churning when the crawl's ordering
-#    changes between runs.
-# 2. GET ONLY.  §7.1 is "no mutation of state"; re-sending a discovered POST to
-#    read its headers is a state change dressed as a passive check.  Non-GET
-#    endpoints are counted and reported, never silently dropped.
-# 3. DEDUPED BY PATH TEMPLATE, not by URL.  `/order/1` and `/order/2` are one
-#    handler serving one set of headers, and requesting both spends two units of
-#    the request budget to learn one fact.
-# 4. SORTED, then capped.  A deterministic order is what makes the chosen set -
-#    and therefore the finding locations - reproducible across runs; an
-#    inventory-order walk would reshuffle them whenever the crawl did.
-#
-# An absent, empty or unreadable inventory is the NORMAL case
-# (docs/INVENTORY-FORMAT.md §1) and is never an error: with a base URL the phase
-# still has something true to say about the target's front door, and without one
-# `_HDR_N` is 0 and the caller records the gap.
+# A THIN WRAPPER over the shared chooser (response_engine.sh's own ADR block
+# has the full account of why the chooser lives there rather than here now).
+# `hdr_endpoints_load`'s name, its parameters and its four output globals
+# (`_HDR_URL`/`_HDR_PATH`/`_HDR_N`/`_HDR_TRUNCATED`/`_HDR_SKIPPED_NON_GET`) are
+# UNCHANGED, so `passive/headers.sh` and `ratelimit_engine.sh` (which sources
+# this file for both halves) call this exactly as before - the refactor moves
+# where the four decisions are decided, not what a caller of this function
+# sees.
 hdr_endpoints_load() {
   local epf=${1:-} target=${2:-} base=${3:-}
-  local sep=$'\x1f' p type v idx key rest last_idx=''
-  declare -ga _HDR_URL=() _HDR_PATH=()
-  declare -g _HDR_N=0 _HDR_TRUNCATED=0 _HDR_SKIPPED_NON_GET=0
-  declare -gA _HDR_TPL_SEEN=()
-
-  # The base URL first, and outside the sort, for reason 1 above.
-  if [[ -n $base ]]; then
-    _hdr_candidate_add "$base"
-  fi
-
-  if [[ -z $epf || ! -r $epf || ! -s $epf ]]; then
-    _HDR_N=${#_HDR_URL[@]}
-    return 0
-  fi
-
-  # One flattened record at a time, in the shape docs/INVENTORY-FORMAT.md §7
-  # freezes.  Collected into a sortable list first (reason 4), then added.
-  declare -ga _HDR_ROWS=()
-  local -A cur=()
-  while IFS=$'\t' read -r p type v; do
-    [[ $p == endpoints* ]] || continue
-    rest=${p#endpoints}; rest=${rest#"$sep"}
-    idx=${rest%%"$sep"*}; key=${rest#*"$sep"}
-    [[ $idx =~ ^[0-9]+$ && $key != "$rest" ]] || continue
-    if [[ -n $last_idx && $idx != "$last_idx" ]]; then
-      _hdr_row_collect "${cur[url]:-}" "${cur[method]:-GET}" "${cur[target]:-}" "$target"
-      cur=()
-    fi
-    last_idx=$idx
-    [[ $type == s ]] && v=$(crawl_json_unescape "$v")
-    cur[$key]=$v
-  done < <(crawl_json_flatten <"$epf" 2>/dev/null)
-  if [[ -n $last_idx ]]; then
-    _hdr_row_collect "${cur[url]:-}" "${cur[method]:-GET}" "${cur[target]:-}" "$target"
-  fi
-
-  local row
-  while IFS= read -r row; do
-    [[ -n $row ]] || continue
-    _hdr_candidate_add "$row"
-  done < <(printf '%s\n' "${_HDR_ROWS[@]+"${_HDR_ROWS[@]}"}" | LC_ALL=C sort -u)
-
-  _HDR_N=${#_HDR_URL[@]}
-  return 0
-}
-
-# Appends one inventory row's URL to `_HDR_ROWS` when it is a GET for this
-# target.  A module-scoped accumulator rather than a by-name parameter because
-# Bash 4.2 has no namerefs (tension 24's frozen minimum) and an `eval`-based
-# append would be evaluating target-derived text - which is exactly what
-# rules/RULE-FORMAT.md §11 ("record files are data, never code") forbids
-# elsewhere in this tool and there is no reason to make an exception for here.
-_hdr_row_collect() {
-  local url=$1 method=$2 row_target=$3 want_target=$4
-  [[ -n $url ]] || return 0
-  # An inventory entry that names a DIFFERENT scope target belongs to that
-  # target's cell, not this one (rules/RULE-FORMAT.md §9.5.1).  An entry with no
-  # target at all is accepted: an imported inventory may legitimately carry none,
-  # and http_request re-gates it on the way out regardless.
-  if [[ -n $row_target && -n $want_target && $row_target != "$want_target" ]]; then
-    return 0
-  fi
-  if [[ ${method^^} != GET ]]; then
-    _HDR_SKIPPED_NON_GET=$(( _HDR_SKIPPED_NON_GET + 1 ))
-    return 0
-  fi
-  _HDR_ROWS+=("$url")
-  return 0
-}
-
-# Adds one URL if its path template is new and the cap has room.
-_hdr_candidate_add() {
-  local url=$1 path tpl
-  path=$(hdr_path_of "$url")
-  tpl=$(path_template_of "$path")
-  [[ -n ${_HDR_TPL_SEEN[$tpl]:-} ]] && return 0
-  if (( ${#_HDR_URL[@]} >= _HDR_MAX_ENDPOINTS )); then
-    _HDR_TRUNCATED=$(( _HDR_TRUNCATED + 1 ))
-    return 0
-  fi
-  _HDR_TPL_SEEN[$tpl]=1
-  _HDR_URL+=("$url")
-  _HDR_PATH+=("$path")
+  resp_endpoints_load "$epf" "$target" "$base" "$_HDR_MAX_ENDPOINTS"
+  declare -ga _HDR_URL=("${_RESP_URL[@]+"${_RESP_URL[@]}"}")
+  declare -ga _HDR_PATH=("${_RESP_PATH[@]+"${_RESP_PATH[@]}"}")
+  declare -g _HDR_N=$_RESP_N _HDR_TRUNCATED=$_RESP_TRUNCATED \
+    _HDR_SKIPPED_NON_GET=$_RESP_SKIPPED_NON_GET
   return 0
 }
 
 # `hdr_path_of` and `hdr_url_is_https` moved to response_engine.sh with the
-# reader: `_hdr_candidate_add` above still calls the first of them, and
-# passive/headers.sh still calls the second, both unchanged, through the source
-# edge at the top of this file.
+# reader, and the endpoint chooser's own four decisions moved there with it
+# once a second real copy existed (`markup_engine.sh`'s `markup_endpoints_load`)
+# - see that file's own ADR block.  `passive/headers.sh` still calls
+# `hdr_url_is_https` unchanged, through the source edge at the top of this
+# file.
