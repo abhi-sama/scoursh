@@ -40,6 +40,13 @@
 #      recorded, never as "this route sends no CORS header".
 #   9. GRACEFUL DEGRADATION.  No inventory, or an inventory with no idempotent
 #      endpoint, is a RECORDED gap - never an error and never a silent pass.
+#  10. THE NULL-ORIGIN FOLLOW-UP (DAST-08 follow-up): a SECOND `Origin: null`
+#      probe fires only when the sentinel probe's own verdict was neither
+#      `reflected` nor `wildcard`, one route now costs up to TWO requests
+#      instead of one, and a server that reflects `null` back gets its own
+#      two check ids (plain / credentialed, the credentialed one subsuming the
+#      plain one) - pinned in section C2 and folded into section D's
+#      request-log counts.
 #
 # Every case that pins a decision names the reading it FAILS under, per this
 # repository's testing rule.
@@ -471,15 +478,117 @@ assert_contains "$SHARD" 'owasp=A05:2021' 'both map to OWASP A05:2021 Security M
 assert_contains "$SHARD" 'loc_param_location=header' 'the location profile names the request field this check varies'
 assert_contains "$SHARD" 'loc_param_name=Origin' 'and names it as Origin'
 
-t_case 'checks_run records all three ids once the probe ran, including the ones that found nothing'
+t_case 'checks_run records all three sentinel-probe ids once the probe ran, including the ones that found nothing'
 CR=$(_checks_run_text)
 assert_contains "$CR" 'DAST-CORS-ORIGIN_REFLECTED-01' 'the reflection id is covered'
 assert_contains "$CR" 'DAST-CORS-REFLECTED_WITH_CREDENTIALS-01' 'the credentialed id is covered'
 assert_contains "$CR" 'DAST-CORS-WILDCARD-01' 'the wildcard id is covered'
 
 # ===========================================================================
+printf '\n== C2. the null-origin follow-up (DAST-08 follow-up) ==\n'
+# ===========================================================================
+# A DEDICATED run and a DEDICATED, four-route inventory - never the one
+# section C/D/E share - so this section's assertions cannot perturb the
+# request-log counts section D pins, and so its own SRV_FAIL_ALL-free routes
+# (every response here is a real 200) cannot contribute to the circuit
+# breaker's cross-section failure count section E's own failure cases rely on.
+#
+# /api/nulltrust and /api/nulltrust-creds both answer `Access-Control-Allow-
+# Origin: null` REGARDLESS of which Origin was sent - the scripted server here
+# keys purely on path, exactly like a real misconfigured server that always
+# emits a fixed `null` value rather than validating the Origin at all - so the
+# SECOND, `Origin: null` probe observes the identical response the sentinel
+# probe did, and that is precisely the case this check exists to catch: the
+# sentinel probe alone classifies it `allowlisted` (a `null` value is not the
+# sentinel and not `*`) and produces no finding, so only the second probe can
+# tell that this server trusts the null origin specifically.
+# /api/already-reflects and /assets/already-wildcard exist so this section can
+# also pin, on its own isolated request log, that a route already shown to
+# reflect the sentinel or to be wildcard never receives the second probe.
+cat >"$W/null-inventory.json" <<'EOF'
+{ "schema": "scoursh.inventory.endpoints/1", "endpoints": [
+  { "id": "n1", "target": "cors-fixture", "method": "GET", "url": "https://cors.fixture.example/api/nulltrust" },
+  { "id": "n2", "target": "cors-fixture", "method": "GET", "url": "https://cors.fixture.example/api/nulltrust-creds" },
+  { "id": "n3", "target": "cors-fixture", "method": "GET", "url": "https://cors.fixture.example/api/already-reflects" },
+  { "id": "n4", "target": "cors-fixture", "method": "GET", "url": "https://cors.fixture.example/assets/already-wildcard" }
+] }
+EOF
+
+_new_run
+SRV_MAP['/api/nulltrust']='null.headers'
+SRV_MAP['/api/nulltrust-creds']='null-credentials.headers'
+SRV_MAP['/api/already-reflects']='reflect-plain.headers'
+SRV_MAP['/assets/already-wildcard']='wildcard.headers'
+SCOURSH_DAST_ENDPOINTS=$W/null-inventory.json
+export SCOURSH_DAST_ENDPOINTS
+_dast_cors_phase
+
+t_case 'a server that answers null classifies as allowlisted to the sentinel probe alone (the gap this ticket closes)'
+assert_eq 0 "$(_count_check_path DAST-CORS-ORIGIN_REFLECTED-01 /api/nulltrust)" \
+  'the sentinel-reflection id never fires on a null answer'
+assert_eq 0 "$(_count_check_path DAST-CORS-WILDCARD-01 /api/nulltrust)" \
+  'neither does the wildcard id'
+
+t_case 'the second, Origin: null probe catches what the sentinel probe alone cannot'
+assert_eq 1 "$(_count_check_path DAST-CORS-NULL_ORIGIN-01 /api/nulltrust)" \
+  'null-origin trust is reported on /api/nulltrust - FAILS if the follow-up probe is never sent, which is the exact gap this ticket exists to close'
+assert_eq 1 "$(_count_check_path DAST-CORS-NULL_ORIGIN_WITH_CREDENTIALS-01 /api/nulltrust-creds)" \
+  'and the credentialed variant fires on /api/nulltrust-creds, whose response also carries Access-Control-Allow-Credentials: true'
+
+t_case 'the credentialed null-origin finding SUBSUMES the plain one - exactly one finding on that route'
+assert_eq 0 "$(_count_check_path DAST-CORS-NULL_ORIGIN-01 /api/nulltrust-creds)" \
+  'no plain null-origin finding is emitted alongside the credentialed one - FAILS under "emit the plain finding, then separately note credentials", which reports one root cause twice, mirroring DAST-CORS-REFLECTED_WITH_CREDENTIALS-01s own discipline'
+assert_eq 0 "$(_count_check_path DAST-CORS-NULL_ORIGIN_WITH_CREDENTIALS-01 /api/nulltrust)" \
+  'and the credentialed id never fires on the route whose response carried no credentials header'
+
+t_case 'a route already known to reflect or to be wildcard never receives the second probe'
+LOG_C2=$(_req_log_text)
+N_REFLECT=0
+N_WILDCARD=0
+N_NULL_HEADER=0
+while IFS= read -r line; do
+  [[ $line == *$'\t'/api/already-reflects$'\t'* ]] && N_REFLECT=$(( N_REFLECT + 1 ))
+  [[ $line == *$'\t'/assets/already-wildcard$'\t'* ]] && N_WILDCARD=$(( N_WILDCARD + 1 ))
+  [[ $line == *origin=null* ]] && N_NULL_HEADER=$(( N_NULL_HEADER + 1 ))
+done <<<"$LOG_C2"
+assert_eq 1 "$N_REFLECT" \
+  'exactly one request reached /api/already-reflects - FAILS if a second, redundant Origin: null probe is sent to a route already shown to reflect an arbitrary sentinel, which is pure cost for no new information'
+assert_eq 1 "$N_WILDCARD" \
+  'exactly one request reached the wildcard route, for the identical reason'
+assert_eq 2 "$N_NULL_HEADER" \
+  'exactly two Origin: null probes were sent in this run - one for /api/nulltrust, one for /api/nulltrust-creds - never four routes worth, confirming the reflect/wildcard routes above really were skipped rather than merely under-counted'
+assert_eq 6 "$(_req_count)" \
+  'four routes, two of which (the reflecting one and the wildcard one) cost one request and two of which (the two null-trust routes) cost two - six requests total'
+
+t_case 'the evidence for a null-origin finding names the attacker-controlled contexts and the remediation'
+SHARD_NULL=$(_shard_text)
+assert_contains "$SHARD_NULL" 'sandboxed iframe' \
+  'the evidence names the sandboxed-iframe vector, so a reader is not left to guess where Origin: null comes from'
+assert_contains "$SHARD_NULL" 'DAST-CORS-NULL_ORIGIN' 'the null-origin check id reached the shard'
+
+t_case 'the null-origin checks_run ids are covered once the second probe actually ran'
+CR2=$(_checks_run_text)
+assert_contains "$CR2" 'DAST-CORS-NULL_ORIGIN-01' 'the plain null-origin id is covered'
+assert_contains "$CR2" 'DAST-CORS-NULL_ORIGIN_WITH_CREDENTIALS-01' 'the credentialed null-origin id is covered too'
+
+# ===========================================================================
 printf '\n== D. the passive contract, asserted against the REQUEST LOG ==\n'
 # ===========================================================================
+# Section C2 above ran its OWN dedicated `_new_run`, which reset REQ_LOG - so
+# re-run section C's inventory+probe one more time on a fresh run (SRV_MAP set
+# AFTER `_new_run`, which clears it) so this section's counts are independent
+# of whatever C2 just logged.
+_new_run
+SRV_MAP['/api/reflect']='reflect-plain.headers'
+SRV_MAP['/api/creds']='reflect-credentials.headers'
+SRV_MAP['/assets/site.css']='wildcard.headers'
+SRV_MAP['/api/allowlisted']='allowlist.headers'
+SRV_MAP['/plain']='none.headers'
+SRV_MAP['/api/head']='reflect-lowercase.headers'
+SRV_MAP['/orders/1']='none.headers'
+SCOURSH_DAST_ENDPOINTS=$W/endpoints.json
+export SCOURSH_DAST_ENDPOINTS
+_dast_cors_phase
 LOG=$(_req_log_text)
 
 t_case 'no non-idempotent endpoint is requested, under any method'
@@ -500,23 +609,29 @@ assert_contains "$LOG" "origin=$CORS_SENTINEL_ORIGIN" \
 assert_not_contains "$LOG" $'\tscoursh-cors-probe.example\t' \
   'no request is addressed to the sentinel host - FAILS if a future change ever treats the sentinel as a URL rather than a header value'
 
+t_case 'the second probe really carries the literal null origin, and nothing else'
+assert_contains "$LOG" 'origin=null' \
+  'a follow-up probe with Origin: null really was sent for at least one route - without this, section C2 above would be passing for the wrong reason (the second probe never firing at all)'
+
 t_case 'no request body is sent and no response body is captured'
 assert_not_contains "$LOG" 'has_body=true' \
   'no request carries a body - FAILS if a probe ever composes one'
 assert_not_contains "$LOG" 'body_sink=yes' \
   'no response body sink is set, so target content never enters this process or an artifact - FAILS under a copy of a probe that captures the body it does not read'
 
-t_case 'two URLs on one route are one probe, not two'
+t_case 'two URLs on one route are two probes (sentinel + null), never four'
 ORDERS=0
 while IFS= read -r line; do
   [[ $line == *$'\t'/orders/* ]] && ORDERS=$(( ORDERS + 1 ))
 done <<<"$LOG"
-assert_eq 1 "$ORDERS" \
-  '/orders/1 and /orders/2 are one route and are probed once - FAILS under per-URL dedup, which pays for a second request to learn an answer already held and then dedupes the two findings anyway'
+assert_eq 2 "$ORDERS" \
+  '/orders/1 and /orders/2 are one route, probed twice in total (the sentinel probe, plus the null-origin follow-up since the route answered no CORS header at all) - FAILS under per-URL dedup, which would pay for a second URL to learn an answer already held (and quadruple to four once the null follow-up is added), and FAILS under a reading that forgets a route can now cost two requests, which would expect one'
+assert_not_contains "$LOG" '/orders/2' \
+  'and neither of those two requests is ever addressed to the second URL on that route'
 
-t_case 'exactly one request per probed route'
-assert_eq 7 "$(_req_count)" \
-  'seven distinct idempotent routes yield exactly seven requests - FAILS if a preflight OPTIONS is sent alongside each probe (14), or if anything is retried'
+t_case 'exactly one or two requests per probed route, and the total reflects the null-probe follow-up'
+assert_eq 10 "$(_req_count)" \
+  'seven distinct idempotent routes yield ten requests: one sentinel probe each, plus a second Origin: null probe on every route whose sentinel verdict was neither reflected nor wildcard (allowlisted, plain/absent, and the merged orders route/absent - three of the seven) - FAILS at 7 if the null-origin follow-up never fires, and FAILS at 14 if it fires unconditionally on every route including the four that already reflect or are wildcard'
 
 # ===========================================================================
 printf '\n== E. bounds and failure paths ==\n'
@@ -526,8 +641,8 @@ _new_run
 SCOURSH_DAST_ENDPOINTS=$W/endpoints.json
 export SCOURSH_DAST_ENDPOINTS
 SCOURSH_DAST_CORS_MAX_ENDPOINTS=2 _dast_cors_phase
-assert_eq 2 "$(_req_count)" \
-  'the cap really bounds the traffic - FAILS if the cap is only applied to the findings, which would send every request anyway'
+assert_eq 4 "$(_req_count)" \
+  'the cap bounds ROUTES, not requests: two capped routes, each answering no CORS header at all, so each also draws its null-origin follow-up - four requests total, never more - FAILS if the cap is only applied to the findings (which would send every request anyway), and FAILS at 2 if the cap were mistaken for a request cap that forgot a route can now cost two'
 assert_contains "$(_meta_text)" 'coverage bound, not a clean result' \
   'the untested remainder is recorded as a bound - FAILS under a silent cap, which reports a partially-probed target with the same verdict as a fully-probed one'
 
@@ -553,12 +668,18 @@ _dast_cors_phase
 assert_eq 0 "$(_count_check DAST-CORS-ORIGIN_REFLECTED-01)" 'no reflection finding'
 assert_eq 0 "$(_count_check DAST-CORS-REFLECTED_WITH_CREDENTIALS-01)" 'no credentialed finding'
 assert_eq 0 "$(_count_check DAST-CORS-WILDCARD-01)" 'no wildcard finding'
+assert_eq 0 "$(_count_check DAST-CORS-NULL_ORIGIN-01)" \
+  'no null-origin finding either - every route answered no CORS header at all, including to the null-origin follow-up'
+assert_eq 0 "$(_count_check DAST-CORS-NULL_ORIGIN_WITH_CREDENTIALS-01)" 'and no credentialed null-origin finding'
 CLEAN_CR=$(_checks_run_text)
 assert_contains "$CLEAN_CR" 'DAST-CORS-ORIGIN_REFLECTED-01' \
-  'all three ids are still recorded in checks_run - FAILS under a reading that records only the ids that FIRED, which makes coverage a function of the result and leaves a genuinely clean target indistinguishable from an unscanned one'
+  'all five ids are still recorded in checks_run - FAILS under a reading that records only the ids that FIRED, which makes coverage a function of the result and leaves a genuinely clean target indistinguishable from an unscanned one'
 assert_contains "$CLEAN_CR" 'DAST-CORS-REFLECTED_WITH_CREDENTIALS-01' \
   'including the credentialed id, which one response answers at the same time as the plain one'
 assert_contains "$CLEAN_CR" 'DAST-CORS-WILDCARD-01' 'and the wildcard id'
+assert_contains "$CLEAN_CR" 'DAST-CORS-NULL_ORIGIN-01' \
+  'and the null-origin id - the follow-up probe genuinely ran on every route, since none of them reflected or were wildcard, so it is covered even though it found nothing'
+assert_contains "$CLEAN_CR" 'DAST-CORS-NULL_ORIGIN_WITH_CREDENTIALS-01' 'and its credentialed sibling too'
 
 t_case 'a run whose every probe fails covers NOTHING'
 _new_run
@@ -654,6 +775,7 @@ t_case 'the findings survive findings_merge and reach every report surface'
 _new_run
 SRV_MAP['/api/creds']='reflect-credentials.headers'
 SRV_MAP['/assets/site.css']='wildcard.headers'
+SRV_MAP['/plain']='null.headers'
 SCOURSH_DAST_ENDPOINTS=$W/endpoints.json
 export SCOURSH_DAST_ENDPOINTS
 _dast_cors_phase
@@ -669,6 +791,8 @@ assert_contains "$RJ" 'DAST-CORS-REFLECTED_WITH_CREDENTIALS-01' \
 FJ=$(cat "$SCOURSH_RUN_DIR/findings.json" 2>/dev/null || printf '')
 assert_contains "$FJ" 'DAST-CORS-REFLECTED_WITH_CREDENTIALS-01' 'the JSON report carries the credentialed finding'
 assert_contains "$FJ" 'DAST-CORS-WILDCARD-01' 'and the wildcard finding - FAILS if two findings on one target collide on the fingerprint and dedupe to one'
+assert_contains "$FJ" 'DAST-CORS-NULL_ORIGIN-01' \
+  'and the null-origin finding too - FAILS if it collides with one of the other three on the same location profile and dedupes away'
 
 MD=$(cat "$SCOURSH_RUN_DIR/report.md")
 assert_contains "$MD" 'CORS origin reflection with credentials allowed' 'the markdown report names the finding in prose a human reads'
