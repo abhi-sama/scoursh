@@ -1215,6 +1215,305 @@ assert_eq 1 "$(wc -l <"$W/wA.log" | tr -d ' ')" \
 assert_eq 5 "$rcParked" \
   'and the parked worker exits 5 rather than completing, so its truncated coverage is stated rather than silent'
 
+# ===========================================================================
+printf '\n-- section 11b: the IN-FLIGHT ceiling, measured on observed simultaneous connections --\n'
+# ===========================================================================
+# These cases assert on how many connections were OPEN AT ONCE, never on a
+# return value, because "it refused" must not be satisfiable by a path that
+# opened the connections and then returned 0.  The observation is made inside
+# the stub transport - the only interval in which a connection to the target
+# exists - by planting a marker directory, counting how many markers exist at
+# that instant, and holding the marker until every worker has arrived or a
+# bounded number of ticks has passed.  The maximum over every sample any
+# worker took is the run's observed concurrency.
+#
+# A rate limiter cannot be substituted for this measurement and that is the
+# whole point of the ticket: the shared bucket already spaces requests 250ms
+# apart at the default 4/s, and a transport that holds its connection for
+# longer than that puts several of them in flight simultaneously while the
+# average rate stays under the ceiling.  Every case below is therefore run
+# with a transport that HOLDS, because a transport that returns instantly
+# cannot tell a bounded run from an unbounded one.
+#
+# The counting is per WORKER file rather than one shared log, so no assertion
+# here can be decided by two processes interleaving their appends.
+
+INFLIGHT_MARKERS=$W/inflight-markers
+
+cat >"$W/inflight-worker.sh" <<'INFLIGHT_EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+I_LIB=$1 I_SCOPE=$2 I_URL=$3 I_MARK=$4 I_LOG=$5 I_READY=$6 I_GO=$7 I_K=$8 I_N=$9
+# shellcheck source=/dev/null
+source "$I_LIB/lib/http.sh"
+# shellcheck source=/dev/null
+source "${BASH_SOURCE[0]%/*}/race-barrier.sh"
+_i_resolve() { case $1 in *.fixture.example) printf '93.184.216.34' ;; *) return 1 ;; esac; }
+SCOURSH_HTTP_RESOLVE=_i_resolve
+
+_i_marker_count() {
+  local -a f=("$I_MARK"/*)
+  local n=0 p
+  for p in "${f[@]}"; do
+    if [[ -e $p ]]; then n=$(( n + 1 )); fi
+  done
+  printf '%s' "$n"
+}
+
+# Sampling on EVERY tick rather than only at plant time is what makes the
+# maximum a real maximum: the worker that planted first would otherwise report
+# 1 however many joined it afterwards, and the run would look bounded whatever
+# it did.
+_i_transport() {
+  local m spins=0
+  m=$(mktemp -d "$I_MARK/m.XXXXXX")
+  printf '%s\n' "$(_i_marker_count)" >>"$I_LOG"
+  while (( $(_i_marker_count) < I_K )); do
+    msleep 25
+    printf '%s\n' "$(_i_marker_count)" >>"$I_LOG"
+    spins=$(( spins + 1 ))
+    if (( spins >= 32 )); then break; fi
+  done
+  rmdir "$m"
+  printf '200\n\n'
+}
+SCOURSH_HTTP_TRANSPORT=_i_transport
+http_scope_load "$I_SCOPE"
+_race_barrier "$I_READY" "$I_GO"
+for (( i_i = 0; i_i < I_N; i_i++ )); do
+  http_request GET "$I_URL" 0 fixture-good >/dev/null
+done
+INFLIGHT_EOF
+
+# `_inflight_run LIBROOT K PER` - K fresh worker processes, released together
+# through the same deadline barrier the budget/breaker races use, each issuing
+# PER requests.  Sets `_INFLIGHT_MAX` (the largest simultaneous-connection
+# count any worker observed), `_INFLIGHT_SAMPLES` and `_INFLIGHT_FAILED`.
+_inflight_run() {
+  local lib=$1 k=$2 per=$3 i pid rc p line
+  local -a pids=() logs=()
+  rm -rf "${INFLIGHT_MARKERS:?}"
+  mkdir -p "$INFLIGHT_MARKERS"
+  rm -f "${W:?}"/inflight-*.log
+  _race_reset
+  _limits_reset
+  for (( i = 0; i < k; i++ )); do
+    bash "$W/inflight-worker.sh" "$lib" "$FIXTURE_SCOPE" "$RATE_URL" \
+      "$INFLIGHT_MARKERS" "$W/inflight-$i.log" "$W/ready" "$W/go" "$k" "$per" &
+    pids+=($!)
+  done
+  _race_release "$k"
+  _INFLIGHT_FAILED=0
+  for pid in "${pids[@]}"; do
+    rc=0
+    wait "$pid" || rc=$?
+    if (( rc != 0 )); then _INFLIGHT_FAILED=$(( _INFLIGHT_FAILED + 1 )); fi
+  done
+  _INFLIGHT_MAX=0
+  _INFLIGHT_SAMPLES=0
+  logs=("$W"/inflight-*.log)
+  for p in "${logs[@]}"; do
+    [[ -e $p ]] || continue
+    while IFS= read -r line; do
+      [[ $line =~ ^[0-9]+$ ]] || continue
+      _INFLIGHT_SAMPLES=$(( _INFLIGHT_SAMPLES + 1 ))
+      if (( line > _INFLIGHT_MAX )); then _INFLIGHT_MAX=$line; fi
+    done <"$p"
+  done
+  return 0
+}
+
+t_case 'the ceiling bites: 3 worker processes, jobs 1'
+export SCOURSH_CONFIG_JOBS=1
+_inflight_run "$ROOT" 3 1
+unset SCOURSH_CONFIG_JOBS
+assert_eq 1 "$_INFLIGHT_MAX" \
+  'THREE CONCURRENT WORKER PROCESSES SHARE ONE IN-FLIGHT SLOT: at no instant were two connections open at once - FAILS under a per-process counter, where each of the three workers holds its own private slot and `--jobs N` means N times the ceiling, which is the exact failure docs/FOUNDATION.md tension 16 exists for; and FAILS under no counter at all, which is what docs/STEP5-DAST-PLAN.md'"'"'s concurrency row said was enforced by nothing'
+assert_eq 0 "$_INFLIGHT_FAILED" \
+  'and all three workers completed rather than timing out - a ceiling that bites by wedging the run is not a ceiling'
+inflight_ok=false
+if (( _INFLIGHT_SAMPLES >= 3 )); then inflight_ok=true; fi
+assert_true "$inflight_ok" \
+  'and all three requests really reached the transport, so the bound above is a throttle rather than three refusals'
+
+# The refutation, run rather than asserted.  A `_INFLIGHT_MAX` of 1 above is
+# only evidence if the same fixture reports more than 1 when the slot is not
+# taken, and the identical shape of vacuity tests/suites/gate-mutation-proof.sh
+# exists for applies here: without this, a fixture whose workers happened never
+# to overlap would certify an absent semaphore green.
+INFLIGHT_LIB=$W/mut-inflight
+INFLIGHT_OLD='    _http_inflight_acquire "$bucket" "$inflight_max"'
+INFLIGHT_NEW='    : # MUTATED by tests/suites/http.sh: the in-flight slot is not taken'
+
+t_case 'the in-flight mutation guard'
+inflight_n=$(grep -c -F -- "$INFLIGHT_OLD" "$ROOT/lib/http.sh" 2>/dev/null || true)
+assert_eq 1 "$inflight_n" \
+  'exactly one occurrence of the acquire call in the REAL source - fails loudly if a refactor changed its text, rather than silently mutating nothing and certifying a stale proof green'
+
+rm -rf "${INFLIGHT_LIB:?}"
+mkdir -p "$INFLIGHT_LIB/lib"
+cp "$ROOT"/lib/*.sh "$INFLIGHT_LIB/lib/"
+inflight_content=$(cat "$INFLIGHT_LIB/lib/http.sh")
+inflight_content=${inflight_content/"$INFLIGHT_OLD"/"$INFLIGHT_NEW"}
+printf '%s\n' "$inflight_content" >"$INFLIGHT_LIB/lib/http.sh"
+inflight_n=$(grep -c -F -- "$INFLIGHT_OLD" "$INFLIGHT_LIB/lib/http.sh" 2>/dev/null || true)
+assert_eq 0 "$inflight_n" 'the scratch copy no longer takes an in-flight slot'
+
+t_case 'and the same fixture DOES observe three at once with the slot removed'
+export SCOURSH_CONFIG_JOBS=1
+_inflight_run "$INFLIGHT_LIB" 3 1
+unset SCOURSH_CONFIG_JOBS
+assert_eq 3 "$_INFLIGHT_MAX" \
+  'with `_http_inflight_acquire` removed, the identical three workers put THREE connections on the target at once while the 4/s rate limiter is untouched and still satisfied - which is the defect this section exists to close, and is what makes the assertion above a measurement rather than a coincidence'
+
+t_case 'the ceiling is the resolved number, not a constant, and does not over-serialise'
+export SCOURSH_CONFIG_JOBS=2
+_inflight_run "$ROOT" 4 1
+unset SCOURSH_CONFIG_JOBS
+assert_eq 2 "$_INFLIGHT_MAX" \
+  'four workers under jobs 2 reach EXACTLY two simultaneous connections - a 4 here means the ceiling did not bite, and a 1 means it serialised a run that was authorised to open two, which is the opposite bug and the one a "safer is always better" fix introduces'
+assert_eq 0 "$_INFLIGHT_FAILED" \
+  'and every worker finished: a run at or below its own ceiling never deadlocks and never times out waiting for a slot'
+inflight_ok=false
+if (( _INFLIGHT_SAMPLES >= 4 )); then inflight_ok=true; fi
+assert_true "$inflight_ok" \
+  'and all four requests were issued'
+
+printf '\n-- section 11b: `jobs` is clamped by DAST-32'"'"'s asymmetric policy, like every other limit --\n'
+
+_jobs_probe() {
+  local rc=0 out
+  out=$( ( _http_effective_limit_set jobs ) 2>&1 >/dev/null ) || rc=$?
+  printf '%s\n%s' "$rc" "$out"
+}
+
+_limits_reset
+config_scanner_load "$W/scanner-absent.conf"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+rm -rf "${W:?}/run.jobs"
+run_init "$W/run.jobs"
+
+t_case 'an unedited install resolves 4 and warns about nothing'
+_HTTP_EFF_LIMIT=MISSING
+_http_effective_limit_set jobs 2>"$W/jobs-clamp.log"
+assert_eq 4 "$_HTTP_EFF_LIMIT" 'the effective in-flight ceiling on an unedited install is the §9.6.1 default of 4'
+assert_eq '' "$(cat "$W/jobs-clamp.log")" \
+  'and nothing is warned about, because the ceiling equals the shipped default - FAILS if the concurrency ceiling is set below `jobs`'"'"' own default, which would clamp and scold on every run of an install nobody configured'
+
+t_case 'an explicit over-ceiling jobs value exits 2 rather than being silently lowered'
+export SCOURSH_CONFIG_JOBS=16
+jobs_probe=$(_jobs_probe)
+unset SCOURSH_CONFIG_JOBS
+assert_eq 2 "${jobs_probe%%$'\n'*}" \
+  'a jobs value of 16 in the environment exits 2 - FAILS under a SYMMETRIC clamp, which would run 4 connections while the operator believes they asked for 16, and this codebase treats an explicit invocation as authoritative or fatal, never rewritten'
+assert_contains "${jobs_probe#*$'\n'}" '--i-own-target' \
+  'and the refusal names the flag that resolves it'
+
+t_case 'a FILE value above the ceiling is clamped and warned about instead'
+cat >"$W/scanner-bigjobs.conf" <<'EOF'
+id: scanner
+jobs: 16
+EOF
+config_scanner_load "$W/scanner-bigjobs.conf"
+_HTTP_EFF_LIMIT=MISSING
+_http_effective_limit_set jobs 2>"$W/jobs-clamp.log"
+config_scanner_load "$W/scanner-absent.conf"
+jobs_clamp=$(cat "$W/jobs-clamp.log")
+assert_eq 4 "$_HTTP_EFF_LIMIT" 'a raised file value is clamped to the conservative ceiling'
+assert_contains "$jobs_clamp" '16' \
+  'and the warning names the value that was refused - FAILS under a uniformly fatal policy, which would make an operator affirm reflexively just to run an install whose config file they inherited'
+
+t_case 'the affirmation raises the concurrency ceiling and cannot remove it'
+run_record authorization_affirmed true
+run_record authorization_target fixture-good
+export SCOURSH_CONFIG_JOBS=16
+_HTTP_EFF_LIMIT=MISSING
+_http_effective_limit_set jobs 2>/dev/null
+unset SCOURSH_CONFIG_JOBS
+assert_eq 16 "$_HTTP_EFF_LIMIT" \
+  'with the per-run affirmation record present, the same explicit value that exited 2 above is honoured - FAILS if the concurrency ceiling is unconditional, in which case it is the one limit --i-own-target does not reach, contradicting docs/STEP5-DAST-PLAN.md'"'"'s own "requests per second, DAST concurrency" row'
+_HTTP_EFF_LIMIT=MISSING
+_http_effective_limit_set jobs 2>/dev/null
+inflight_ok=false
+if (( _HTTP_EFF_LIMIT >= 1 )); then inflight_ok=true; fi
+assert_true "$inflight_ok" \
+  'and there is no value of `jobs` that means unbounded: the §9.6.1 shape is a positive integer, so "no concurrency bound" is unrepresentable here exactly as "no budget" is'
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+_limits_reset
+
+printf '\n-- section 11b: a slot is reclaimed on age AND non-liveness, never on either alone --\n'
+
+# Both halves are load-bearing and each naive fix is the other'"'"'s bug, so both
+# are pinned.  Age alone takes a slot back from a live worker whose request is
+# merely slow, which puts two processes over the ceiling - the one outcome the
+# semaphore exists to prevent.  Liveness alone frees a slot in the window
+# between a worker recording it and that worker becoming observable, making the
+# answer depend on scheduling.
+
+# `_inflight_plant PID NONCE AGE_SECONDS` - one held slot, written straight
+# into the state file, so the reclaim rule can be exercised without having to
+# kill a real worker at exactly the right instant.
+_inflight_plant() {
+  local pid=$1 nonce=$2 age=$3 now
+  _http_limit_dir_set
+  now=$(now_epoch)
+  printf '%s %s %s\n' "$pid" "$nonce" "$(( now - age ))" >"$_HTTP_LIMIT_DIR/inflight.state"
+}
+
+# A pid that is certainly dead: started and reaped here, so nothing else in
+# this process tree can be holding it at the moment it is used.
+bash -c 'exit 0' &
+DEAD_PID=$!
+wait "$DEAD_PID" || true
+
+_limits_reset
+_inflight_plant "$DEAD_PID" 'ghost.1' 999
+rc=0
+( _http_inflight_acquire fixture-good 1 ) >/dev/null 2>&1 || rc=$?
+t_case 'a slot whose worker is gone AND whose entry is stale is reclaimed'
+assert_eq 0 "$rc" \
+  'a run whose only slot was leaked by a killed worker recovers rather than stalling for the rest of its life - FAILS with no reclaim path at all, which turns one SIGTERM into a permanently narrower run'
+
+_limits_reset
+_inflight_plant "$$" 'live.1' 999
+rc=0
+( SCOURSH_MUTEX_TIMEOUT_SECONDS=1 _http_inflight_acquire fixture-good 1 ) >/dev/null 2>&1 || rc=$?
+t_case 'a STALE slot held by a process that is still alive is NOT reclaimed'
+assert_eq 5 "$rc" \
+  'the acquire waits and then fails loud rather than taking the slot - FAILS under a reclaim on AGE ALONE, which takes a slot back from a live worker whose request is merely slower than the staleness threshold and so puts two processes over the ceiling, which is the single outcome this semaphore exists to prevent'
+assert_contains "$(cat "$_HTTP_LIMIT_DIR/inflight.state")" 'live.1' \
+  'and the live holder'"'"'s slot is still recorded afterwards, so nothing was stolen from it'
+
+_limits_reset
+_inflight_plant "$DEAD_PID" 'fresh-ghost.1' 0
+rc=0
+( SCOURSH_MUTEX_TIMEOUT_SECONDS=1 _http_inflight_acquire fixture-good 1 ) >/dev/null 2>&1 || rc=$?
+t_case 'a FRESH slot whose pid is not alive is NOT reclaimed either'
+assert_eq 5 "$rc" \
+  'age is required as well as non-liveness - FAILS under a reclaim on LIVENESS ALONE, which frees a slot in the microseconds between a worker recording it and that worker becoming observable, making the ceiling depend on scheduling rather than on the number'
+
+printf '\n-- section 11b: a release gives back the slot it took, and only that one --\n'
+
+_limits_reset
+_inflight_plant "$BASHPID" 'someone-else.7' 0
+_HTTP_INFLIGHT_NONCE='mine.1'
+_http_inflight_release
+t_case 'the release is identity-bound rather than pid-keyed'
+assert_contains "$(cat "$_HTTP_LIMIT_DIR/inflight.state")" 'someone-else.7' \
+  'a release whose nonce is absent from the file removes NOTHING, even though the file'"'"'s one entry carries this very process id - FAILS under a pid-keyed release, which would hand back a slot this call never took and let two processes past the ceiling, and which is exactly what a pid alone cannot distinguish after a pid is recycled'
+
+_limits_reset
+: >"$TRANSPORT_LOG"
+for _i in 1 2 3; do http_request GET "$RATE_URL" >/dev/null; done
+t_case 'an ordinary request leaves no slot behind'
+assert_eq '' "$(cat "$_HTTP_LIMIT_DIR/inflight.state" 2>/dev/null || printf '')" \
+  'three completed requests leave the in-flight file empty - FAILS if the release is skipped on any path, in which case a long run narrows itself one slot per request until it stalls'
+assert_eq 3 "$(wc -l <"$TRANSPORT_LOG" | tr -d ' ')" \
+  'and all three were actually sent, so the empty file above is a released slot rather than a request that never happened'
+
+_limits_reset
+config_scanner_load "$W/scanner-absent.conf"
+
 printf '\n-- the clamp warns only when the OPERATOR raised something --\n'
 
 # The request-budget schema default is 20000 and the DAST ceiling is 5000, so
