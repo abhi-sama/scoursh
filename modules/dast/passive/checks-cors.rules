@@ -40,6 +40,65 @@
 # and different remediation - see modules/dast/passive/cors_engine.sh's
 # `cors_classify` for the full argument - which is the same reasoning
 # modules/dast/active/checks.rules records for its own three SQLi ids.
+#
+# TWO MORE IDS ADDED BY THE DAST-08 FOLLOW-UP ("detect Access-Control-Allow-
+# Origin reflecting the null origin"): DAST-CORS-NULL_ORIGIN-01 and
+# DAST-CORS-NULL_ORIGIN_WITH_CREDENTIALS-01, from a SECOND, `Origin: null`
+# probe modules/dast/passive/cors.sh sends only when the sentinel probe's own
+# verdict was neither `reflected` nor `wildcard`.  The plain/credentialed
+# split mirrors DAST-CORS-ORIGIN_REFLECTED-01/-REFLECTED_WITH_CREDENTIALS-01
+# for the identical reason: severity is a fixed per-check-id registry field,
+# so a verdict whose severity depends on Access-Control-Allow-Credentials
+# cannot be one id with a severity raised at runtime - see
+# modules/dast/passive/cors_engine.sh's `cors_null_reflected`.
+
+id: DAST-CORS-NULL_ORIGIN-01
+title: CORS null-origin trust (arbitrary attacker-controlled context accepted)
+script: passive/cors.sh
+severity: medium
+confidence: high
+cwe: CWE-346
+owasp: A05:2021
+tags: passive
+tags: quick
+coverage-scope: target
+remediation: Do not treat the literal null origin as trusted in
+  Access-Control-Allow-Origin. A browser sends Origin: null for a sandboxed
+  iframe, a data: URL document, and several redirect shapes - contexts an
+  attacker fully controls - so accepting it is equivalent to accepting any
+  origin whatsoever. Compare the request Origin against a server-side
+  allowlist of exact origins and emit no CORS header at all (or the stored
+  allowlisted value) when the Origin is null or otherwise unrecognised; never
+  special-case null as an allowed value. Add Vary: Origin so a shared cache
+  cannot serve one origin the response minted for another.
+references: CWE-346
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+references: https://fetch.spec.whatwg.org/#http-cors-protocol
+references: https://developer.mozilla.org/en-US/docs/Web/Security/Same-origin_policy
+
+id: DAST-CORS-NULL_ORIGIN_WITH_CREDENTIALS-01
+title: CORS null-origin trust with credentials allowed
+script: passive/cors.sh
+severity: high
+confidence: high
+cwe: CWE-346
+owasp: A05:2021
+tags: passive
+tags: quick
+coverage-scope: target
+remediation: This route trusts the literal null origin AND allows
+  credentials, so any attacker-controlled context that sends Origin: null - a
+  sandboxed iframe, a data: URL document, several redirect shapes - can read
+  this response with the victim's cookies attached. Replace the null
+  special-case with a server-side allowlist of exact origins and emit the
+  stored value, never a default that admits null; keep
+  Access-Control-Allow-Credentials off for every origin that is not on that
+  allowlist. Add Vary: Origin so a shared cache cannot serve one origin the
+  response minted for another.
+references: CWE-346
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+references: https://fetch.spec.whatwg.org/#http-cors-protocol
+references: https://developer.mozilla.org/en-US/docs/Web/Security/Same-origin_policy
 
 id: DAST-CORS-ORIGIN_REFLECTED-01
 title: CORS origin reflection (arbitrary origin trusted)

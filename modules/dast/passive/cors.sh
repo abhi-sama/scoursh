@@ -43,12 +43,34 @@
 #     names; a preflight would double this check's request count for
 #     Access-Control-Allow-Methods/-Headers, and HTTP method enumeration is
 #     DAST-13 (`active/methods.sh`) at the safe-active tier.
-#   * `Access-Control-Allow-Origin: null` as a finding of its own.  Reflecting
-#     the `null` origin is separately exploitable from a sandboxed iframe, but
-#     detecting it needs a SECOND request carrying `Origin: null`, which is a
-#     second probe per endpoint and a scope this ticket did not take.  A `null`
-#     value classifies as `allowlisted` today and produces no finding; that is
-#     a stated gap, filed as its own backlog ticket, not an oversight.
+#
+# DAST-08 FOLLOW-UP: `Access-Control-Allow-Origin: null` NOW HAS ITS OWN
+# CHECK, via a SECOND request per candidate route.  The gap the paragraph
+# above used to describe is closed: reflecting the `null` origin is
+# separately exploitable from a sandboxed iframe (`<iframe sandbox=
+# "allow-scripts" srcdoc=...>`), a `data:` URL document, or several redirect
+# shapes, and it was previously invisible because `cors_classify` (correctly)
+# buckets a `null` answer to the SENTINEL probe as `allowlisted` - it says
+# nothing about how the server answers an ACTUAL `Origin: null` request.
+#
+#   * ONE ADDITIONAL REQUEST, AND ONLY WHEN IT CAN LEARN SOMETHING NEW.  The
+#     second, `Origin: null` probe is sent only when the first probe's verdict
+#     was NOT already `reflected` or `wildcard` - a route already shown to
+#     trust an arbitrary sentinel origin, or to be openly public, needs no
+#     second finding, and paying for a second request there is pure cost.
+#     `SCOURSH_DAST_CORS_MAX_ENDPOINTS` still bounds the number of ROUTES (as
+#     it always has); what changed is that a route counted against that cap
+#     can now cost up to TWO requests instead of one, which is why the
+#     truncation coverage_gap below states that explicitly.
+#   * TWO CHECK IDS, mirroring the plain/credentialed split
+#     `DAST-CORS-ORIGIN_REFLECTED-01`/`-REFLECTED_WITH_CREDENTIALS-01` already
+#     use, for the identical reason: `severity` is a fixed, per-check-id
+#     registry field (rules/RULE-FORMAT.md §9.5), so a verdict whose severity
+#     depends on whether credentials ride along cannot be one id with a
+#     runtime-raised base_severity - it has to be two ids, with the
+#     credentialed one SUBSUMING the plain one on the same route.  See
+#     `_cors_emit_null_origin` below and `cors_engine.sh`'s
+#     `cors_null_reflected`.
 #
 # shellcheck shell=bash
 # shellcheck source=modules/dast/passive/cors_engine.sh
@@ -166,12 +188,17 @@ _dast_cors_phase() {
   # than closed inside a check (see the ticket comment). Absent, everything the
   # tier already permitted runs, which is the same "empty means all selected"
   # fallback a direct-engine test relies on.
-  local do_reflect=1 do_wildcard=1
+  local do_reflect=1 do_wildcard=1 do_null=1
   if declare -F dast_check_selected >/dev/null; then
     dast_check_selected DAST-CORS-ORIGIN_REFLECTED-01 || do_reflect=0
     dast_check_selected DAST-CORS-WILDCARD-01 || do_wildcard=0
+    # Gating on the PLAIN null-origin id alone, exactly as do_reflect gates
+    # both DAST-CORS-ORIGIN_REFLECTED-01 and its credentialed sibling: the two
+    # null ids come from the same second probe, so there is no daylight
+    # between "the plain id is selected" and "the second probe should run".
+    dast_check_selected DAST-CORS-NULL_ORIGIN-01 || do_null=0
   fi
-  if (( do_reflect == 0 && do_wildcard == 0 )); then
+  if (( do_reflect == 0 && do_wildcard == 0 && do_null == 0 )); then
     run_record coverage_reduction "module=dast reason=all_cors_checks_deselected check=cors target=$target - every CORS check id was removed by the check-selection filters, so no Origin probe was sent."
     return 0
   fi
@@ -197,6 +224,15 @@ _dast_cors_phase() {
   # finding location profile templates the path, would produce two findings that
   # dedupe to one anyway - paying for traffic to learn nothing. The cap that
   # follows then bounds a genuinely wide surface.
+  #
+  # THIS CAP BOUNDS ROUTES, NOT REQUESTS, AND THAT DISTINCTION NOW MATTERS.
+  # Since the DAST-08 follow-up (the null-origin probe below), a single capped
+  # route can cost up to TWO requests: the original sentinel probe, plus a
+  # second `Origin: null` probe when the sentinel verdict was neither
+  # `reflected` nor `wildcard`.  $max still limits the ROUTE count exactly as
+  # before; it is the per-route request cost that doubled, which is why the
+  # truncation coverage_gap below states the up-to-two-requests-per-route cost
+  # explicitly rather than leaving a reader to assume 1:1.
   local max=${SCOURSH_DAST_CORS_MAX_ENDPOINTS:-25}
   [[ $max =~ ^[0-9]+$ ]] || max=25
   (( max < 1 )) && max=1
@@ -219,6 +255,7 @@ _dast_cors_phase() {
   _cors_record_unauthenticated_bound "$target"
 
   local tested=0 failed=0 reflected=0 credentialed=0 wildcard=0
+  local null_tested=0 null_failed=0 null_reflected=0 null_credentialed=0 null_skipped=0
   for line in "${probe[@]+"${probe[@]}"}"; do
     method=${line%%$'\t'*}
     url=${line#*$'\t'}
@@ -235,20 +272,49 @@ _dast_cors_phase() {
     cors_classify "$_CORS_ACAO_PRESENT" "$_CORS_ACAO" "$CORS_SENTINEL_ORIGIN"
     case $_CORS_POLICY in
       reflected)
-        (( do_reflect )) || continue
-        if cors_credentials_true "$_CORS_ACAC"; then
-          credentialed=$(( credentialed + 1 ))
-        else
-          reflected=$(( reflected + 1 ))
+        if (( do_reflect )); then
+          if cors_credentials_true "$_CORS_ACAC"; then
+            credentialed=$(( credentialed + 1 ))
+          else
+            reflected=$(( reflected + 1 ))
+          fi
+          _cors_emit_reflection "$target" "$method" "$url" "$path"
         fi
-        _cors_emit_reflection "$target" "$method" "$url" "$path"
         ;;
       wildcard)
-        (( do_wildcard )) || continue
-        wildcard=$(( wildcard + 1 ))
-        _cors_emit_wildcard "$target" "$method" "$url" "$path"
+        if (( do_wildcard )); then
+          wildcard=$(( wildcard + 1 ))
+          _cors_emit_wildcard "$target" "$method" "$url" "$path"
+        fi
         ;;
     esac
+
+    # THE SECOND, `Origin: null` PROBE (DAST-08 follow-up).  Sent only when
+    # do_null is selected AND the sentinel verdict just observed was NEITHER
+    # `reflected` NOR `wildcard` - a route that already trusts an arbitrary
+    # sentinel origin, or is openly public, needs no second finding, so a
+    # route in either state is counted as a deliberate SKIP rather than
+    # probed again.  This is evaluated regardless of do_reflect/do_wildcard's
+    # own selection state (a deselected reflection CHECK does not mean the
+    # route stopped reflecting), which is why the case above no longer
+    # `continue`s out of the loop on a deselected verdict.
+    if (( do_null )); then
+      if [[ $_CORS_POLICY == reflected || $_CORS_POLICY == wildcard ]]; then
+        null_skipped=$(( null_skipped + 1 ))
+      elif ! cors_probe "$target" "$method" "$url" null; then
+        null_failed=$(( null_failed + 1 ))
+      else
+        null_tested=$(( null_tested + 1 ))
+        if cors_null_reflected "$_CORS_ACAO_PRESENT" "$_CORS_ACAO"; then
+          if cors_credentials_true "$_CORS_ACAC"; then
+            null_credentialed=$(( null_credentialed + 1 ))
+          else
+            null_reflected=$(( null_reflected + 1 ))
+          fi
+          _cors_emit_null_origin "$target" "$method" "$url" "$path"
+        fi
+      fi
+    fi
   done
 
   # checks_run records the checks that LOADED AND EXECUTED (AGENTS.md's own
@@ -270,18 +336,29 @@ _dast_cors_phase() {
     fi
     (( do_wildcard )) && run_record checks_run DAST-CORS-WILDCARD-01
   fi
+  # Recorded from null_tested, not from tested: `checks_run` means "loaded AND
+  # EXECUTED" (AGENTS.md), and the second probe genuinely does not execute at
+  # all on a run where every route already came back reflected or wildcard -
+  # reporting coverage there would claim a probe that was never sent.
+  if (( null_tested > 0 && do_null )); then
+    run_record checks_run DAST-CORS-NULL_ORIGIN-01
+    run_record checks_run DAST-CORS-NULL_ORIGIN_WITH_CREDENTIALS-01
+  fi
 
   if (( truncated > 0 )); then
-    run_record coverage_gap "dast cors: the idempotent endpoint surface on target '$target' exceeded this check's per-run cap of $max distinct routes, so $truncated route(s) were not probed for origin reflection. Their absence from this report is a coverage bound, not a clean result."
+    run_record coverage_gap "dast cors: the idempotent endpoint surface on target '$target' exceeded this check's per-run cap of $max distinct routes, so $truncated route(s) were not probed for origin reflection (each covered route may cost up to two requests - the sentinel probe and, where applicable, a second Origin: null probe). Their absence from this report is a coverage bound, not a clean result."
   fi
   if (( failed > 0 )); then
     run_record coverage_reduction "module=dast reason=cors_probe_transport_failed check=cors target=$target count=$failed - $failed CORS probe(s) never received a response (the circuit breaker, the per-run request budget or name resolution stopped them), so those routes were not tested either way."
+  fi
+  if (( null_failed > 0 )); then
+    run_record coverage_reduction "module=dast reason=cors_null_probe_transport_failed check=cors target=$target count=$null_failed - $null_failed second, Origin: null CORS probe(s) never received a response, so whether those routes trust the null origin was not tested either way."
   fi
   if (( tested == 0 )); then
     run_record coverage_gap "dast cors: none of the ${#probe[@]} candidate route(s) on target '$target' returned a response, so no cross-origin policy was observed. Nothing was tested; this is not a finding of safety."
   fi
 
-  log_info "dast cors: target '$target' - probed $tested of ${#probe[@]} route(s) (reflection=$reflected reflection+credentials=$credentialed wildcard=$wildcard, ${failed} unreachable)"
+  log_info "dast cors: target '$target' - probed $tested of ${#probe[@]} route(s) (reflection=$reflected reflection+credentials=$credentialed wildcard=$wildcard, ${failed} unreachable; null-origin probe: tested=$null_tested reflected=$null_reflected reflected+credentials=$null_credentialed skipped=$null_skipped unreachable=$null_failed)"
   return 0
 }
 
@@ -324,6 +401,40 @@ _cors_emit_reflection() {
     "$target" "$method" "$url" "$path" \
     "$method $path echoed the probe's own Origin header back verbatim in Access-Control-Allow-Origin (HTTP $_CORS_STATUS), so the server performs no origin validation - it trusts whichever origin asks. Access-Control-Allow-Credentials was ${_CORS_ACAC:-not set}, so a cross-origin read is anonymous today; turning credentials on, or any change that starts serving user-specific data from this route, converts this into a full cross-origin read of authenticated responses.$vary_note" \
     "$(cors_remediation_reflection)" \
+    false
+  return 0
+}
+
+# `_cors_emit_null_origin` - the verdict from the SECOND probe (`Origin: null`,
+# DAST-08 follow-up), split by credentials the identical way
+# `_cors_emit_reflection` splits the sentinel-reflection verdict, and for the
+# identical reason: `severity` is fixed per check id in the registry, so the
+# credentialed case is a SEPARATE id that SUBSUMES the plain one on one route,
+# never a plain id with a severity raised at runtime.
+_cors_emit_null_origin() {
+  local target=$1 method=$2 url=$3 path=$4
+  local vary_note=' The response also carried no Vary: Origin header, so a shared cache may store the response minted for one origin and serve it to another.'
+  (( _CORS_VARY_ORIGIN )) && vary_note=''
+
+  if cors_credentials_true "$_CORS_ACAC"; then
+    cors_emit_finding \
+      DAST-CORS-NULL_ORIGIN_WITH_CREDENTIALS-01 \
+      'CORS null-origin trust with credentials allowed' \
+      high high CWE-346 \
+      "$target" "$method" "$url" "$path" \
+      "$method $path answered Access-Control-Allow-Origin: null to a request that carried Origin: null, and Access-Control-Allow-Credentials: $_CORS_ACAC (HTTP $_CORS_STATUS). The null origin is what a browser sends for a sandboxed iframe (<iframe sandbox=\"allow-scripts\" srcdoc=...>), a data: URL document, and several redirect shapes - all contexts an attacker fully controls - so a page that gets a victim into one of those can make a credentialed cross-origin request to this route and READ the response with the victim's cookies attached.$vary_note" \
+      "$(cors_remediation_null)" \
+      true
+    return 0
+  fi
+
+  cors_emit_finding \
+    DAST-CORS-NULL_ORIGIN-01 \
+    'CORS null-origin trust (arbitrary attacker-controlled context accepted)' \
+    medium high CWE-346 \
+    "$target" "$method" "$url" "$path" \
+    "$method $path answered Access-Control-Allow-Origin: null to a request that carried Origin: null (HTTP $_CORS_STATUS), so the server trusts the null origin - a value every browser sends for a sandboxed iframe, a data: URL document, and several redirect shapes, all of which an attacker can put a victim into. Access-Control-Allow-Credentials was ${_CORS_ACAC:-not set}, so a cross-origin read from one of those contexts is anonymous today; turning credentials on, or any change that starts serving user-specific data from this route, converts this into a full cross-origin read of authenticated responses.$vary_note" \
+    "$(cors_remediation_null)" \
     false
   return 0
 }

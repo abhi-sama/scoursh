@@ -35,3 +35,13 @@ a request destination, and it names no application, company or product
 | `none.headers` | No CORS header at all |
 | `duplicate.headers` | Two `Access-Control-Allow-Origin` headers; the last one wins |
 | `padded.headers` | Values wrapped in RFC 7230 optional whitespace |
+| `null.headers` | `Access-Control-Allow-Origin: null` answered to the second, `Origin: null` probe (DAST-08 follow-up: `DAST-CORS-NULL_ORIGIN-01`) |
+| `null-credentials.headers` | As above, plus `Access-Control-Allow-Credentials: true` (`DAST-CORS-NULL_ORIGIN_WITH_CREDENTIALS-01`) |
+
+The two `null*.headers` fixtures are answers to the SECOND probe
+(`cors_probe ... null`, `Origin: null`), not the sentinel probe every other
+fixture in this directory answers - a response to the sentinel probe never
+carries the literal string `null`, since `cors_classify` already routes a
+`null` value observed there into `allowlisted` (a real, distinct, and
+untested-by-that-probe policy question; see `cors_engine.sh`'s
+`cors_null_reflected` for why the two probes are kept separate).
