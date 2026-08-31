@@ -17,7 +17,7 @@
 # this phase sends is a plain GET to a URL that is either the operator's own
 # `base-url` or an endpoint some earlier phase already fetched.  IT NEVER
 # SUBMITS A FORM.  That bears saying twice for this phase in particular,
-# because one of its four checks is about forms: a CSRF check that proved its
+# because one of its five checks is about forms: a CSRF check that proved its
 # point by POSTing the form would be a state change wearing a passive check's
 # name, so the finding is made entirely out of the markup as served.
 #
@@ -84,6 +84,10 @@ _mk_catalog() {
       _MKC_TITLE='Cross-origin script or stylesheet loaded without Subresource Integrity'
       _MKC_SEV=medium; _MKC_CONF=high; _MKC_CWE=CWE-353; _MKC_OWASP=A08:2021
       _MKC_REM='Add an integrity attribute carrying the sha384 (or sha256/sha512) digest of the exact file, and a crossorigin attribute alongside it - without crossorigin the response is opaque, the browser cannot verify the digest, and it blocks the resource instead. Pin the version in the URL as well: an integrity hash against a "latest" URL breaks on every upstream release, which is what pushes teams to remove the attribute. Where a third party will not serve a stable, hashable artifact, self-host the file instead; until then this page executes whatever that origin serves it, with full access to this page DOM, cookies and storage.' ;;
+    DAST-MARKUP-SRI_OPAQUE-01)
+      _MKC_TITLE='Subresource Integrity attribute present without a crossorigin attribute'
+      _MKC_SEV=low; _MKC_CONF=high; _MKC_CWE=CWE-353; _MKC_OWASP=A08:2021
+      _MKC_REM='Add a crossorigin attribute (crossorigin="anonymous" is normally correct) alongside the integrity attribute this element already carries. A cross-origin fetch with no crossorigin attribute is made in no-cors mode, the response is opaque to the page, and a browser cannot compare an opaque response against a digest - so it does not silently skip the check, it BLOCKS the resource outright. The developer who added the integrity hash believed the resource was now protected; instead it does not load at all. This is distinct from DAST-MARKUP-SRI_MISSING-01: that check is an exposure (the page executes whatever the third party serves), this one fails closed (the resource never runs), so the two carry different severities and different fixes and must not be merged into one finding.' ;;
     DAST-MARKUP-TABNABBING-01)
       _MKC_TITLE='Cross-origin target=_blank link without rel=noopener'
       _MKC_SEV=low; _MKC_CONF=high; _MKC_CWE=CWE-1022; _MKC_OWASP=A01:2021
@@ -112,6 +116,7 @@ _mk_catalog() {
 # Every id this phase can emit, in report order.
 declare -ga _MK_CHECK_IDS=(
   DAST-MARKUP-SRI_MISSING-01
+  DAST-MARKUP-SRI_OPAQUE-01
   DAST-MARKUP-TABNABBING-01
   DAST-MARKUP-TABNABBING_SENSITIVE-01
   DAST-MARKUP-FRAME_INSECURE_SCHEME-01
@@ -259,7 +264,6 @@ _mk_analyse_one() {
   while IFS=$'\x1f' read -r kind ln a b c d; do
     case $kind in
       script | link)
-        _mk_selected DAST-MARKUP-SRI_MISSING-01 || continue
         # A <link> only takes SRI for a relationship that fetches something the
         # document then executes or applies; a favicon does not.
         if [[ $kind == link ]]; then
@@ -270,7 +274,29 @@ _mk_analyse_one() {
         # attribute defends against a THIRD PARTY serving something else, and
         # an origin that can already serve this page can serve anything.
         markup_same_origin "$abs" "$url" && continue
-        [[ -n $b ]] && continue
+        if [[ -n $b ]]; then
+          # An integrity attribute IS present. Whether it can ever be verified
+          # depends on crossorigin: with none, the fetch is made in no-cors
+          # mode, the response is opaque, and a browser cannot compare an
+          # opaque response against a digest - it blocks the resource instead
+          # of silently skipping the check. This is DAST-MARKUP-SRI_OPAQUE-01,
+          # a different defect from DAST-MARKUP-SRI_MISSING-01 (see this
+          # phase's own header on why the defect lives in the check id).
+          #
+          # THE PRECEDENCE IS BETWEEN TWO CHECKS, NOT BETWEEN A CHECK AND
+          # SILENCE - the identical argument the frame arm below makes for
+          # itself. `_mk_selected` is therefore consulted for THIS arm alone,
+          # rather than at the top of the case, so deselecting SRI_OPAQUE can
+          # never also silence SRI_MISSING on some OTHER element (and the
+          # reverse), because they no longer share one gate.
+          _mk_selected DAST-MARKUP-SRI_OPAQUE-01 || continue
+          markup_tokens_have "$c" anonymous && continue
+          markup_tokens_have "$c" use-credentials && continue
+          _mk_add DAST-MARKUP-SRI_OPAQUE-01 \
+            "line $ln: <$kind> loads $(markup_safe_text "$abs") with an integrity attribute but no crossorigin attribute (or an empty/invalid one) - fetched in no-cors mode the response is opaque, SRI cannot be verified, and the browser blocks the resource instead"
+          continue
+        fi
+        _mk_selected DAST-MARKUP-SRI_MISSING-01 || continue
         _mk_add DAST-MARKUP-SRI_MISSING-01 \
           "line $ln: <$kind> loads $(markup_safe_text "$abs") from another origin with no integrity attribute"
         ;;

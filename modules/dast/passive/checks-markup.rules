@@ -31,10 +31,20 @@
 # discovered link is ever followed, which is the whole of docs/DESIGN.md §7.1's
 # admission criterion. `intrusive` is deliberately NOT set on any of them.
 #
-# SIX IDS FOR FOUR REQUESTED CHECKS, AND THE TWO SPLITS ARE THE POINT.
+# SEVEN IDS FOR FIVE CHECKS, AND EVERY SPLIT IS THE POINT.
 # `check_id` is a fingerprint component, so an id is the only place a DIFFERENT
 # FACT ABOUT THE SAME LOCATION can live: two defects on one page under one id
 # would collide on one fingerprint and `findings_merge` would silently keep one.
+#   - SRI splits by DIRECTION OF FAILURE: DAST-MARKUP-SRI_MISSING-01 is an
+#     EXPOSURE (no integrity attribute at all, so the page executes whatever a
+#     third party serves it), and DAST-MARKUP-SRI_OPAQUE-01 is the opposite
+#     shape - an integrity attribute IS present but no crossorigin attribute
+#     accompanies it, so the fetch is opaque, SRI can never be evaluated, and
+#     the browser FAILS CLOSED (blocks the resource) rather than failing open.
+#     One id could not carry both a "your page is exposed" remediation and a
+#     "your page is broken" remediation, and the two are mutually exclusive per
+#     element anyway (one requires integrity absent, the other requires it
+#     present), so no element can ever earn both in one pass.
 #   - Reverse tabnabbing splits by PAGE SENSITIVITY because this ticket asks for
 #     it to be "weighted higher on login and redirect pages", and severity is a
 #     per-record property of the registry rather than something an emitting
@@ -67,6 +77,30 @@ remediation: Add an integrity attribute carrying the sha384 (or sha256/sha512)
   serve a stable, hashable artifact, self-host the file instead; until then this
   page executes whatever that origin serves it, with full access to this page's
   DOM, cookies and storage.
+references: CWE-353
+references: https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/
+
+id: DAST-MARKUP-SRI_OPAQUE-01
+title: Subresource Integrity attribute present without a crossorigin attribute
+script: passive/markup.sh
+severity: low
+confidence: high
+cwe: CWE-353
+owasp: A08:2021
+tags: passive
+tags: quick
+coverage-scope: target
+remediation: Add a crossorigin attribute (crossorigin="anonymous" is normally
+  correct) alongside the integrity attribute this element already carries. A
+  cross-origin fetch with no crossorigin attribute is made in no-cors mode, the
+  response is opaque to the page, and a browser cannot compare an opaque
+  response against a digest - so it does not silently skip the check, it BLOCKS
+  the resource outright. The developer who added the integrity hash believed
+  the resource was now protected; instead it does not load at all. This is
+  distinct from DAST-MARKUP-SRI_MISSING-01: that check is an exposure (the page
+  executes whatever the third party serves), this one fails closed (the
+  resource never runs), so the two carry different severities and different
+  fixes and must not be merged into one finding.
 references: CWE-353
 references: https://owasp.org/Top10/A08_2021-Software_and_Data_Integrity_Failures/
 
