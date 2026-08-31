@@ -103,29 +103,39 @@ Two consequences worth stating, because both have bitten this class of table bef
 The refresh is an **operator action on a networked box**.
 It is never part of a scan, and no code path in `modules/` or `lib/` writes this file.
 
-Today there is no importer for the `banner` namespace, and that gap is stated rather than papered over:
-`tools/vendor-engines.sh advisories` populates the SCA ecosystems only (its own header says so), and
-extending it to banner-matched products is filed as its own ticket.
-Until it lands, an operator maintains the banner rows by hand or with their own script, following exactly
-this procedure:
+**The importer**: `tools/vendor-engines.sh advisories banner` resolves an operator-supplied
+`SCOURSH_ADVISORY_BANNER_IDS` (comma/space-separated OSV.dev advisory ids, e.g. `CVE-2021-41773`) the
+identical way every SCA ecosystem's own `SCOURSH_ADVISORY_<ECOSYSTEM>_IDS` does, and writes the result
+into `data/versions.db`'s `banner` namespace **only** - never `data/advisories.db`, which
+`modules/sca/` reads and which has no use for a row with no SCA ecosystem.
+The product key is normalised through `banner_normalize_product` (§4) - the same frozen function
+`modules/dast/passive/banner.sh` reads with, sourced rather than re-implemented, so the writer and the
+reader can never drift apart.
+It is deliberately **not** one of `VENG_ADVISORY_REGISTRY`'s six SCA ecosystems: it is reached from its
+own `banner` command (`tools/vendor-engines.sh advisories banner`), it is not swept into
+`advisories --list`/`--all`, and it has no `advisories bulk` path, because OSV.dev publishes no
+per-ecosystem bulk-export archive for a synthetic "banner" ecosystem.
+Because a banner-matched product carries no single OSV ecosystem string the way an npm or PyPI
+advisory does, the importer takes every `affected[]` entry that names a package, regardless of its own
+`ecosystem` field (`tools/vendor-engines.sh`'s own `_veng_advisories_osv_ecosystem` "banner" case, the
+wildcard sentinel `*`) - so a CVE tracked under `Debian`, `Alpine`, or with no ecosystem field at all is
+still picked up.
+A missing severity on a `banner` row defaults to **`high`**, not the SCA rows' `medium` default: a
+deliberately more conservative fallback for a directly-exploitable, internet-facing product, frozen in
+§3 above.
 
-1. On a machine with network access, obtain the advisories for the products your estate actually runs -
-   from OSV.dev, the vendor's own advisory feed, or your distribution's security tracker.
-   Choose the products deliberately: a list of everything is a list nobody maintains.
-2. Expand each advisory's affected range into **exact versions**, using the product's real published
-   version list.
-   This is the step tension 25 moved off the scanner, and it stays off it: the box doing this has the
-   tooling, the scanner does not.
-3. Write one row per (product, exact version, advisory) in the §3 shape, with the product key normalised
-   per §4.
-4. Merge into `data/versions.db` and re-sort the whole file under `LC_ALL=C`, keeping the `#` header lines
-   at the top:
-   `{ grep '^#' data/versions.db; grep -v '^#' data/versions.db new-rows.tsv | LC_ALL=C sort -u; } > tmp && mv tmp data/versions.db`.
-5. Update the `# generated:` header line to the date of this refresh.
-   The check reads that stamp and puts it in the evidence of every out-of-date finding, so a report says
-   how old its vulnerability data is instead of implying it is current.
-6. Verify: `bash tests/run-tests.sh dast-banner` still passes, and a run against a target you know is
-   affected reports `DAST-BANNER-OUTDATED_COMPONENT-01`.
+Run it, on a networked box:
+
+```sh
+SCOURSH_ADVISORY_BANNER_IDS='CVE-2021-41773,CVE-2021-44228' tools/vendor-engines.sh advisories banner
+```
+
+`tests/suites/vendor-engines-advisories.sh` (section D2) is the fixture-driven proof, against
+hand-authored, OSV.dev-*shaped* fixtures under `tests/fixtures/vendor-engines/osv/` - never a live
+fetch, the same posture that suite already established for the six SCA ecosystems.
+
+Verify: `bash tests/run-tests.sh dast-banner` still passes, and a run against a target you know is
+affected reports `DAST-BANNER-OUTDATED_COMPONENT-01`.
 
 **A stale list produces false negatives, not false positives**, which is the failure mode that hides.
 That asymmetry is why the generation stamp is reported in the finding text and why a run with no banner
