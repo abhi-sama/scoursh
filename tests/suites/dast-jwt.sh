@@ -206,6 +206,44 @@ _shard_text() {
   printf '%s' "$out"
 }
 
+# The decoded value of FIELD on the first emitted finding whose check_id is
+# CHECK, or '' when the run emitted no such finding.  Decodes through
+# lib/findings.sh's own finding_decode rather than grepping the raw shard line,
+# because the shard is the escaped on-disk field format, not a value a test
+# should compare directly (tests/suites/dast-authz.sh's `_finding_field`
+# establishes this same pattern for the identical reason).
+_finding_field() {
+  local check=$1 field=$2 f line
+  for f in "$SCOURSH_RUN_DIR"/shards/*.fields; do
+    [[ -f $f ]] || continue
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      finding_decode "$line"
+      if [[ ${_DF[check_id]:-} == "$check" ]]; then
+        printf '%s' "${_DF[$field]:-}"
+        return 0
+      fi
+    done <"$f"
+  done
+  printf ''
+}
+
+# The value of FIELD on the checks.rules record whose id is ID, from a registry
+# already loaded into CHECKS_REGISTRY_SETS by checks_registry_load.
+_registry_field() {
+  local id=$1 field=$2 s n i
+  for s in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
+    n=$(records_count "$s")
+    for (( i = 0; i < n; i++ )); do
+      if [[ "$(records_id "$s" "$i")" == "$id" ]]; then
+        records_field "$s" "$i" "$field"
+        return 0
+      fi
+    done
+  done
+  printf ''
+}
+
 _request_count() {
   local n=0 line
   [[ -r $REQ_LOG ]] || { printf 0; return 0; }
@@ -555,6 +593,62 @@ RULE_IDS=$(grep -oE "^id: (DAST-JWT-[A-Z_]+-[0-9]+)$" "$ROOT/modules/dast/checks
   | sed 's/^id: //' | LC_ALL=C sort -u)
 assert_eq "$ENGINE_IDS" "$RULE_IDS" \
   'the emitted id set and the registered id set are identical - FAILS on a typo in either direction, which no other assertion here would catch'
+
+t_case 'the emitted cwe equals the registered cwe, for every DAST-JWT-* id'
+# jwt_emit_finding used to hardcode ONE cwe (CWE-347) on all five findings, and
+# modules/dast/checks.rules registered the same pair to match it - a refinement
+# to only one side would leave the emitted finding and the registry NAMING
+# DIFFERENT CWEs for the same check_id, an inconsistency a compliance reader
+# auditing by CWE cannot see (they read the finding or the registry, never both
+# at once). This drives jwt_run for real, once per id, and decodes the ACTUAL
+# emitted `cwe` field - never a grep of jwt_engine.sh's source - so it fails
+# equally on a drifted registry, a mis-set literal at a call site, or two call
+# sites' cwe arguments swapped.
+_jwt_assert_cwe_matches_registry() {
+  local id=$1 emitted registered
+  emitted=$(_finding_field "$id" cwe)
+  registered=$(_registry_field "$id" cwe)
+  assert_eq "$registered" "$emitted" \
+    "$id: emitted cwe ($emitted) equals the registered cwe ($registered) - FAILS if either is refined without the other"
+}
+
+_fresh_run; _srv_reset
+SRV_NO_VERIFY=1
+TOK=$(_mk_hs_token whatever)
+jwt_run jwt-fixture GET "$URL" "$TOK"
+_jwt_assert_cwe_matches_registry DAST-JWT-SIG_NOT_VERIFIED-01
+
+_fresh_run; _srv_reset
+SRV_SECRET='a-strong-random-secret'; SRV_ALLOW_NONE=1
+TOK=$(_mk_hs_token "$SRV_SECRET")
+jwt_run jwt-fixture GET "$URL" "$TOK"
+_jwt_assert_cwe_matches_registry DAST-JWT-ALG_NONE-01
+
+_fresh_run; _srv_reset
+SRV_SECRET=''
+TOK=$(_mk_hs_token '')
+jwt_run jwt-fixture GET "$URL" "$TOK"
+_jwt_assert_cwe_matches_registry DAST-JWT-EMPTY_HMAC-01
+
+_fresh_run; _srv_reset
+SRV_SECRET='secret'
+TOK=$(_mk_hs_token secret)
+jwt_run jwt-fixture GET "$URL" "$TOK"
+_jwt_assert_cwe_matches_registry DAST-JWT-WEAK_HMAC-01
+
+_fresh_run; _srv_reset
+CWE_PRIV=$W/cwe-rs-priv.pem CWE_PUB=$W/cwe-rs-pub.pem
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$CWE_PRIV" 2>/dev/null
+openssl rsa -in "$CWE_PRIV" -pubout -out "$CWE_PUB" 2>/dev/null
+CWE_RSH=$(printf '%s' '{"alg":"RS256","kid":"key-1","typ":"JWT"}' | jwt_b64url_encode)
+CWE_RSP=$(printf '%s' '{"sub":"1","user":"alice"}' | jwt_b64url_encode)
+CWE_RSSI=$CWE_RSH.$CWE_RSP
+CWE_RSSIG=$(printf '%s' "$CWE_RSSI" | openssl dgst -sha256 -sign "$CWE_PRIV" -binary | jwt_b64url_encode)
+CWE_RSTOK=$CWE_RSSI.$CWE_RSSIG
+SRV_REAL_RS=$CWE_RSTOK
+SRV_SECRET=$(cat "$CWE_PUB")
+jwt_run jwt-fixture GET "$URL" "$CWE_RSTOK" Authorization Bearer "$CWE_PUB"
+_jwt_assert_cwe_matches_registry DAST-JWT-ALG_CONFUSION-01
 
 t_case 'with no dast_check_selected in scope, every variant still runs'
 # The fallback the whole guard depends on: `dast_check_selected` does not exist
