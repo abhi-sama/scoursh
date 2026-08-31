@@ -413,6 +413,8 @@ assert_eq 301 "$_HTTP_LAST_STATUS" \
   'the last successfully-fetched response (the redirect itself) is what is returned, not a synthetic error'
 assert_eq "GET good.fixture.example" "$(cat "$TRANSPORT_LOG")" \
   'redirect-recheck parity: the out-of-scope Location (evil.example) is never handed to the transport - only the one in-scope hop was fetched'
+assert_eq 'https://good.fixture.example:443/x' "$_HTTP_LAST_URL" \
+  '_HTTP_LAST_URL on the "redirect not followed, gate declined" early return names the hop that actually produced the returned response, never the rejected Location - FAILS under code with no _HTTP_LAST_URL (empty), and would also fail under a naive "publish whatever http_gate_url last computed" implementation, since the rejected-Location gate call at that point has already overwritten _HTTP_GATE_CANON with the evil.example candidate'
 
 : >"$TRANSPORT_LOG"
 _test_transport_chain() {
@@ -427,6 +429,16 @@ http_request GET 'https://good.fixture.example/x'
 assert_eq 200 "$_HTTP_LAST_STATUS" 'a redirect chain that STAYS in scope is followed to completion'
 assert_eq "$(printf 'GET good.fixture.example\nGET still-good.fixture.example')" "$(cat "$TRANSPORT_LOG")" \
   'both in-scope hops were fetched, in order'
+# The ticket case: a redirect that crosses ORIGIN, landing on a response
+# `_HTTP_LAST_URL` must name - not the URL this call was first asked to
+# fetch.  Before lib/http.sh published this, a caller resolving a relative
+# reference on the delivered document (markup.sh's SRI/tabnabbing/CSRF
+# checks, cors.sh, leakage.sh) had only the requested URL available and
+# resolved against the WRONG origin on exactly this shape of redirect.
+assert_eq 'https://still-good.fixture.example:443/y' "$_HTTP_LAST_URL" \
+  '_HTTP_LAST_URL is the LANDING URL of a cross-origin redirect chain that stayed in scope, not the URL originally requested - FAILS under current code, where _HTTP_LAST_URL does not exist at all (empty/unbound)'
+assert_ne 'https://good.fixture.example:443/x' "$_HTTP_LAST_URL" \
+  '_HTTP_LAST_URL is NOT the originally-requested URL once a redirect has moved the response to a different origin - the naive "just use the URL the caller passed in" reading this ticket exists to replace'
 SCOURSH_HTTP_TRANSPORT=_test_transport
 
 # Adversarial: redirect-recheck parity (docs/FOUNDATION.md tension 19,

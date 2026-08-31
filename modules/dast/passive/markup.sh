@@ -155,7 +155,19 @@ _mk_add() {
 }
 
 # `_mk_abs REF` - the absolute form of one reference, resolved against this
-# page's `<base href>` if it declared one and against the page URL otherwise.
+# page's `<base href>` if it declared one and against the DELIVERED document's
+# own URL otherwise - `_MK_BASE` is seeded from the caller's `delivered_url`
+# (lib/http.sh's `_HTTP_LAST_URL`, the final hop, never the URL this phase
+# first asked for) precisely because RFC 3986 §5.1.3 resolves a document's
+# relative references against the URL that served it. A redirect with no
+# `<base href>` is the case that used to be silently wrong: a same-origin
+# `<script src="/x.js">` on a page delivered by a cross-origin redirect was
+# compared against the REQUESTED origin and read as same-origin when it was
+# not, which could hide a genuinely cross-origin unhashed script (a false
+# negative for DAST-MARKUP-SRI_MISSING-01), and the finding's own `url` field
+# named a page that never served the markup being described. A `<base href>`
+# present in the document overrides this and made the case moot even before
+# the fix; a redirect with none of its own is what this now gets right.
 # Returns 1 for a reference that is not a fetchable http(s) URL - `javascript:`,
 # `mailto:`, `data:`, a bare `#fragment` - which is `crawl_url_resolve`'s own
 # contract and is right for every check here: none of those loads a subresource,
@@ -519,6 +531,17 @@ _dast_markup_phase() {
       rm -f "$bodyfile"
       continue
     fi
+    # THE DELIVERED URL, NOT THE ONE THIS PHASE ASKED FOR.  `_HTTP_LAST_URL`
+    # (lib/http.sh §12) is the canonical URL of the hop that actually produced
+    # this response; a redirect between `$url` and it is an ordinary event
+    # (the endpoint chooser's own list is unauthenticated-crawl-derived and
+    # routinely names a pre-login or pre-canonicalisation path).  RFC 3986
+    # §5.1.3 resolves a document's relative references against the URL that
+    # DELIVERED it, not the one first requested, so this is the base every
+    # later same-origin/cross-origin judgement and the finding's own `url`
+    # field must use.  Falling back to `$url` is defensive only - a call that
+    # reached here already returned 0, so `http_request` always published one.
+    local delivered_url=${_HTTP_LAST_URL:-$url}
     if ! markup_is_html "${_HTTP_LAST_CONTENT_TYPE:-}"; then
       not_markup=$(( not_markup + 1 ))
       rm -f "$bodyfile"
@@ -569,12 +592,12 @@ _dast_markup_phase() {
     rm -f "$bodyfile"
 
     parsed=$(( parsed + 1 ))
-    _mk_analyse_one "$url" "$path" "$recfile"
+    _mk_analyse_one "$delivered_url" "$path" "$recfile"
     if [[ -n $_MK_TRUNC_REASONS ]]; then
       truncated_docs=$(( truncated_docs + 1 ))
       trunc_paths+="${trunc_paths:+ }$path($_MK_TRUNC_REASONS)"
     fi
-    _mk_emit_page "$url" "$path"
+    _mk_emit_page "$delivered_url" "$path"
     rm -f "$recfile"
   done
 
