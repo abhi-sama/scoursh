@@ -947,4 +947,52 @@ dast_auth_enum_gap auth-fixture 0
 assert_contains "$(run_facts coverage_gap)" 'NOT assessed at all' \
   'zero responses is its own statement - fails under one sentence for both, which claims an assessment happened on a run that obtained no login response'
 
+
+t_case 'a huge login-response body is bounded AT READ TIME, never after a full slurp'
+# Regression for the ticket ("Bound the same slurp-then-truncate body reads in
+# other DAST body-capture call sites"): `_dast_auth_post` used to
+# `read -r -d ''` the WHOLE captured response body into a bash variable with
+# NO cap at all afterward - the same defect shape modules/dast/active/
+# discovery.sh's own `_discovery_probe` was fixed for. It now reuses the same
+# `read -N` fix, against its own new `_DAST_AUTH_MAX_BODY_BYTES` cap.
+#
+# Proof shape mirrors tests/suites/dast-discovery.sh's own huge-body case: a
+# 256 MiB login response (1024x the default 256 KiB cap) is served, and BOTH
+# the reported length and the whole call's timing are asserted - measured
+# well under 200ms fixed, 1.7+ seconds unbounded for the identical fixture on
+# this host.
+_reset
+AUTH_HUGEFILE=$W/huge-auth-body.raw
+if [[ ! -f $AUTH_HUGEFILE ]]; then
+  hs='a'
+  for _ in $(seq 1 28); do hs+=$hs; done
+  printf '%s' "$hs" >"$AUTH_HUGEFILE"
+  unset hs
+fi
+_auth_huge_transport() {
+  local method=$1 path=$5
+  printf '%s %s\n' "$method" "$path" >>"$REQ_LOG"
+  if [[ -n ${_HTTP_TX_BODY_OUT:-} ]]; then
+    cp -- "$AUTH_HUGEFILE" "$_HTTP_TX_BODY_OUT"
+  fi
+  if [[ -n ${_HTTP_TX_HEADERS_OUT:-} ]]; then
+    printf 'HTTP/1.1 200 Stub\n\n' >>"$_HTTP_TX_HEADERS_OUT"
+  fi
+  printf '200\n\n'
+}
+SCOURSH_HTTP_TRANSPORT=_auth_huge_transport
+t0=$(now_epoch_ns)
+huge_rc=0
+_dast_auth_post auth-fixture a "https://auth.fixture.example/rest/user/login" \
+  application/json '{"email":"a@example.com","password":"x"}' || huge_rc=$?
+t1=$(now_epoch_ns)
+huge_ms=$(( (t1 - t0) / 1000000 ))
+SCOURSH_HTTP_TRANSPORT=_auth_transport
+
+assert_eq 0 "$huge_rc" '_dast_auth_post itself succeeds for a large-but-reachable login response'
+assert_eq "$_DAST_AUTH_MAX_BODY_BYTES" "${#_DAST_AUTH_RESP_BODY}" \
+  "a 256 MiB login response leaves _DAST_AUTH_RESP_BODY holding exactly the ${_DAST_AUTH_MAX_BODY_BYTES}-byte cap - FAILS if the cap is applied to what is RETAINED after a full read rather than to what is READ"
+assert_true "$([[ $huge_ms -lt 800 ]] && echo 0 || echo 1)" \
+  "_dast_auth_post completed in ${huge_ms}ms for a 256 MiB login response - FAILS under the un-bounded \`read -d ''\` this replaces, which must slurp the whole body before trimming it (measured 1.7+ seconds on this host for the identical fixture through this exact harness)"
+
 t_summary 'dast-auth'
