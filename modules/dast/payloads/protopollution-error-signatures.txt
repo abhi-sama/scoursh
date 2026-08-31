@@ -1,0 +1,32 @@
+# JavaScript runtime / merge-library error signatures a __proto__- or
+# constructor.prototype-shaped value can provoke when an unguarded recursive
+# merge/assign/clone (docs/DESIGN.md §7.3) tries to write onto, or walk
+# through, Object.prototype itself.
+#
+# One ERE per line, matched case-insensitively against a response body
+# through scan_match (the frozen portable ERE subset, rules/RULE-FORMAT.md -
+# no backreferences, no PCRE), the same convention nosqli-error-signatures.txt
+# and ldapi-error-signatures.txt already use. A match on the POLLUTE-column
+# response that is ABSENT from the shape-matched CONTROL-column response
+# (modules/dast/active/protopollution.sh's error-based technique) is the
+# signal - describing error TEXT a JS engine or a merge library emits, never
+# a specific product or target, per §1's target-agnostic discipline.
+
+# --- writing onto a frozen/non-configurable Object.prototype property
+#     (strict-mode assignment, or Object.defineProperty on a non-configurable
+#     descriptor) ---
+Cannot set propert(y|ies) [^"'<>]* of
+Cannot add property [^"'<>]* object is not extensible
+Cannot redefine property
+Cannot assign to read only property
+
+# --- a recursive merge that re-enters through the polluted prototype chain
+#     and never terminates ---
+Maximum call stack size exceeded
+RangeError: Maximum call stack
+
+# --- the polluted prototype surfacing directly in a stack trace or error
+#     message ---
+Object\.prototype
+Cannot convert object to primitive value
+TypeError: [^"'<>]*prototype

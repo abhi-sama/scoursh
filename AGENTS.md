@@ -314,7 +314,9 @@ DAST-19 (`active/openredirect.sh`), DAST-20 (`active/xxe_ssrf.sh`),
 DAST-21 (`active/nosqli.sh`, the §7.3 NoSQL-injection error/boolean differential), DAST-22
 (`active/ldapi.sh`, the §7.3 LDAP-injection error/boolean differential - it landed earlier without a
 note in this section or its own landing paragraph; both are corrected here in the same change that adds
-DAST-21), and DAST-23 (`active/crlf.sh`, the §7.3 encoded CR/LF header-split detection), tier
+DAST-21), DAST-23 (`active/crlf.sh`, the §7.3 encoded CR/LF header-split detection), and DAST-25
+(`active/protopollution.sh`, the §7.3 `__proto__`/`constructor.prototype`-shaped JSON parameter
+probe), tier
 5's DAST-26 (`jwt.sh`), DAST-27 (`graphql.sh`, the §7.4 GraphQL introspection & key-exposure check),
 DAST-28 (`ratelimit.sh`, the §7.4 missing-throttling burst probe),
 DAST-29 (`authz.sh`, the §7.4 object-level authorization and
@@ -457,8 +459,46 @@ generated rather than vendored. `tests/suites/dast-crlf.sh` (51 assertions, regi
 including a mock transport that locates the header/body boundary the same way a real HTTP client does
 (the first CRLFCRLF), so an injected blank line really does move it in the fixture exactly as it would
 against a real server.
-DAST-24..DAST-25 are open, unordered among themselves, and should reuse the
-engine the same way.
+**DAST-25 (`active/protopollution.sh`) has also landed**, tier 4's eighth injection probe and the
+§7.3 prototype-pollution family. It reuses DAST-14's shared `inject_engine.sh` unchanged and DAST-17's
+run-directory inventory fallback verbatim. Two techniques, matching the ticket's own "detection via
+differential; no destructive payload" wording, and each its own check id for the same reason every
+sibling probe's techniques are (the DAST location profile carries no component naming which technique
+fired):
+
+- **`DAST-INJ-PROTOPOLLUTION_ERROR-01` (error-based, high/high)** sends a `__proto__`- or
+  `constructor.prototype`-shaped JSON value that replaces the parameter's value outright (the same
+  whole-value "object injection" shape `nosqli-boolean-pairs.txt` rows 3-4 already use) and looks for a
+  JS-runtime/merge-library error signature (a write onto a frozen `Object.prototype` property, a
+  recursive-merge stack overflow, ...). **The signal is a DIFFERENTIAL against a SHAPE-MATCHED CONTROL,
+  never a bare 500**: `modules/dast/payloads/protopollution-error-pairs.txt` pairs each pollute template
+  with a control of the IDENTICAL nesting depth and an ordinary key in place of the special one, so a
+  response difference between the two isolates the special key as the cause rather than "this endpoint
+  errors on any nested object" - the control alone is what a bare-500 check could never distinguish. A
+  benign baseline that already matches one of `protopollution-error-signatures.txt`'s signatures marks
+  the endpoint noisy and skips it for this technique, the identical discipline
+  `modules/dast/active/nosqli.sh`'s own `_nosqli_try_error` already applies.
+- **`DAST-INJ-PROTOPOLLUTION_MARKER_REFLECTED-01` (marker-reflection, critical/high)** is the stronger,
+  directly-confirmed signal: a poisoning value carries a unique, per-run-random property name and value
+  (`_pp_marker_set`, the identical `$RANDOM`/`$$` idiom `modules/dast/active/crlf.sh`'s own
+  `_crlf_marker_set` uses), and a SEPARATE, entirely benign follow-up request to the SAME parameter -
+  one that never itself sends the marker - is asked whether that exact marker now appears in ITS OWN
+  response. **The check reads the FOLLOW-UP's response, never the poisoning request's own response** -
+  reading the immediate response would flag any endpoint that merely echoes its input, which proves
+  nothing about cross-request state. Confirmed with a SECOND, independent marker before being reported,
+  the identical retest discipline `modules/dast/active/nosqli.sh`'s own boolean technique already
+  applies, so a one-off coincidence (an echo endpoint, request-id logging) cannot fire it alone.
+
+CWE-1321 ("Improper Filtering of Special Elements") is MITRE's dedicated id for this class, distinct
+from the generic injection CWEs sibling probes use; OWASP mapping stays A03:2021, the same uniform
+choice every §7.3 injection check in this catalog makes. `tests/suites/dast-protopollution.sh` (50
+assertions, registered) is the proof, including a mutation-tested case that isolates the baseline-noise
+skip specifically (an endpoint whose benign baseline already matches ONE signature while the pollute
+value 500s with a DIFFERENT one and the control is clean - a shape that would look like a real
+differential if the baseline check alone were removed, even though the redundant control comparison
+also guards it) and a case proving a same-request-only echo is not mistaken for cross-request
+contamination.
+DAST-24 is open, and should reuse the engine the same way.
 The one thing worth carrying up here from DAST-15's landing note: **that probe measures ESCAPING, not
 reflection.**  Almost every parameter on a real application reflects something, so a probe that
 flagged reflection alone is a false-positive generator - and the escaped case is the half that fails
