@@ -1,0 +1,21 @@
+# Error-based NoSQL-injection payloads (docs/DESIGN.md §7.3: "operator/object
+# injection ... and syntax-error differentials"). %B is the parameter's
+# baseline value. Each appends or substitutes a syntax-breaking byte or
+# operator fragment - an unbalanced quote/brace, a NUL byte, a bare `$`
+# operator key - so an application that concatenates the value into a MongoDB
+# `$where` JS expression, a regex, or naively `JSON.parse()`s it builds a
+# malformed query the driver rejects with an error the signatures file
+# catches.
+#
+# All read-only: a broken query is a FIND/search that fails to parse or
+# execute, never a write. None of these payloads is an `$where` expression
+# that DOES anything on success - each one only ever provokes a parse or
+# runtime error, never a data change (modules/dast/payloads/README.md).
+%B'
+%B"
+%B\
+%B');
+%B";
+%B'||'
+%B{$where:'1'}
+%B[$ne]

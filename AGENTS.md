@@ -310,7 +310,11 @@ against an authenticated session.
 Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has started - tier 4's
 DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`), DAST-16 (`active/cmdi.sh`),
 DAST-17 (`active/pathtraversal.sh`), DAST-18 (`active/ssti.sh`),
-DAST-19 (`active/openredirect.sh`) and DAST-20 (`active/xxe_ssrf.sh`), tier
+DAST-19 (`active/openredirect.sh`), DAST-20 (`active/xxe_ssrf.sh`),
+DAST-21 (`active/nosqli.sh`, the §7.3 NoSQL-injection error/boolean differential) and DAST-22
+(`active/ldapi.sh`, the §7.3 LDAP-injection error/boolean differential - it landed earlier without a
+note in this section or its own landing paragraph; both are corrected here in the same change that adds
+DAST-21), tier
 5's DAST-26 (`jwt.sh`), DAST-27 (`graphql.sh`, the §7.4 GraphQL introspection & key-exposure check),
 DAST-28 (`ratelimit.sh`, the §7.4 missing-throttling burst probe),
 DAST-29 (`authz.sh`, the §7.4 object-level authorization and
@@ -382,7 +386,45 @@ XML-body techniques run only against POST/PUT/PATCH endpoints (a full body overr
 substitution - RFC 7231 leaves GET/HEAD/DELETE body semantics undefined); the per-parameter technique
 has no such restriction, which is why its own fixture deliberately probes a GET endpoint.
 `tests/suites/dast-xxe-ssrf.sh` (34 assertions, registered) is the proof.
-DAST-21..DAST-25 are open, unordered among themselves, and should reuse the
+**DAST-21 (`active/nosqli.sh`) has also landed**, tier 4's sixth injection probe and the §7.3
+NoSQL-injection family, matching that section's own wording ("operator/object injection ... and
+syntax-error differentials; boolean/response-diff detection") with the same two-technique shape
+`active/ldapi.sh` (DAST-22) already established: `DAST-INJ-NOSQLI_ERROR-01` (a syntax-breaking value -
+an unbalanced quote/brace, a bare `$`-operator key - provokes a MongoDB driver/ODM or `$where`-JS
+parse/runtime error the baseline did not) and `DAST-INJ-NOSQLI_BOOLEAN-01` (an always-matching
+condition behaves like the baseline while an otherwise-impossible one does not, confirmed on retest).
+CWE-943 (not CWE-89/CWE-90) is the correct mapping - MITRE's dedicated "Improper Neutralization of
+Special Elements used in a Data Query Logic" id for NoSQL/OQL injection, distinct from SQLi's CWE-89
+and LDAP's CWE-90.
+There is deliberately NO time-based technique, for the same reason `active/ldapi.sh` gives: claiming a
+third technique the probe cannot actually exercise across its full surface would be the overstated
+coverage `docs/DESIGN.md` §15 forbids (MongoDB's `$where` COULD sleep via arbitrary JS, but the
+comparison-operator-object shape - the more common real-world NoSQL API surface - has no such
+primitive, so a time-based check would test a narrower slice than the other two while claiming parity
+with them).
+**The boolean-pair payload file carries two genuinely different row shapes, and that split is the part
+most worth knowing before touching it.** Rows 1-2 of `modules/dast/payloads/nosqli-boolean-pairs.txt`
+are `%B`-anchored, AND-based `$where` JS string-context tautologies - the identical safety discipline
+`sqli-boolean-pairs.txt` documents (narrows nothing, never an OR-true that widens the result set),
+applied to MongoDB's server-side JS evaluation instead of SQL. Rows 3-4 carry **no** `%B` at all: each
+column is a whole, standalone comparison-operator object literal (`{"$gte":""}` vs
+`{"$eq":"scoursh-no-such-value-zq"}`) that **replaces** the parameter's value outright, for an
+application that deserialises the raw parameter string as a query/filter fragment - the "object
+injection" half of §7.3's own wording, and a shape `inject_engine.sh` already supported (DAST-18's
+`ssti-expressions.txt` established the precedent of a payload file with no `%B` placeholder at all).
+Both shapes are tried by the same `_nosqli_try_boolean` loop, in the same order the file lists them, so
+the safer AND-based rows are attempted before the broader operator-object rows.
+**A parameter-NAME injection technique (`param[$ne]=1`, the bracket-notation object injection several
+real NoSQL scanners lead with) is NOT implemented, and cannot be with the shared engine as it stands**:
+`inject_send` composes a request from a FIXED parameter name plus a substituted VALUE
+(`modules/dast/active/inject_engine.sh` section 3), so nothing in this probe can rename a key to
+`name[$ne]`. Widening `inject_send` to vary the NAME is a shared-engine change every sibling probe
+would need to tolerate, not a one-file fix, and is left as a stated gap rather than worked around
+locally.
+`tests/suites/dast-nosqli.sh` (29 assertions, registered) is the proof, including a case that
+specifically confirms the boolean technique fires from BOTH payload shapes on two different parameters
+- proving the probe is not `$where`-only.
+DAST-23..DAST-25 are open, unordered among themselves, and should reuse the
 engine the same way.
 The one thing worth carrying up here from DAST-15's landing note: **that probe measures ESCAPING, not
 reflection.**  Almost every parameter on a real application reflects something, so a probe that
