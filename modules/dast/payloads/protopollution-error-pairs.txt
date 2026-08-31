@@ -1,0 +1,26 @@
+# Prototype-pollution error-differential pairs (docs/DESIGN.md §7.3;
+# docs/STEP5-DAST-PLAN.md DAST-25). Each line is
+# <pollute-template><TAB><control-template>: two whole JSON object literals
+# that REPLACE the parameter's value outright (no %B - the same "object
+# injection" shape nosqli-boolean-pairs.txt rows 3-4 already use), identical
+# in nesting depth and differing ONLY in the top-of-chain key name.
+#
+# The pollute column names one of the two JS special keys that reach
+# Object.prototype through an unguarded recursive merge/assign/clone:
+# `__proto__` (the direct own-property alias most engines expose) and
+# `constructor.prototype` (the indirect route through an object's own
+# constructor function, used when a merge library defends against `__proto__`
+# by name but not against `constructor`). The control column is the SAME
+# shape - same nesting depth, same leaf key/value - with an ordinary,
+# non-special key substituted for the special one, so a response difference
+# between the two columns isolates the SPECIAL KEY as the cause rather than
+# "the endpoint errors on any nested object", which the control alone would
+# not distinguish (docs/DESIGN.md §15: a probe that cannot tell those two
+# apart overstates what it found).
+#
+# Read-only and non-destructive (modules/dast/payloads/README.md): every
+# value here is a plain read/merge attempt with an ordinary string leaf - no
+# write operator, no exfiltration, nothing that mutates data outside this
+# process's own in-memory object graph.
+{"__proto__":{"polluted":"1"}}	{"harmless":{"polluted":"1"}}
+{"constructor":{"prototype":{"polluted":"1"}}}	{"harmless":{"prototype":{"polluted":"1"}}}

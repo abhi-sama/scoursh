@@ -701,3 +701,44 @@ remediation: Never build a response header by concatenating request-derived
   exposure.
 references: CWE-113
 references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-PROTOPOLLUTION_ERROR-01
+title: Prototype pollution (error-based) via __proto__/constructor.prototype request parameter
+script: active/protopollution.sh
+severity: high
+confidence: high
+cwe: CWE-1321
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Never pass request-derived data straight into a recursive merge,
+  assign, extend, or deep-clone function. Reject or strip the keys
+  __proto__, constructor, and prototype from every level of any object built
+  from request data before it reaches a merge, and prefer JSON.parse with a
+  reviver that drops those keys over a naive parse-then-merge. Upgrade any
+  vulnerable merge library and call Object.freeze(Object.prototype) at
+  process startup as a defence in depth.
+references: CWE-1321
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-PROTOPOLLUTION_MARKER_REFLECTED-01
+title: Prototype pollution confirmed - a __proto__/constructor.prototype-injected property leaked into a later, unrelated response
+script: active/protopollution.sh
+severity: critical
+confidence: high
+cwe: CWE-1321
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Never pass request-derived data straight into a recursive merge,
+  assign, extend, or deep-clone function. This is the confirmed-impact case,
+  not merely a candidate - a value planted through one request was read back
+  by an unrelated later request, which means Object.prototype (or an
+  equivalently shared, long-lived object) is contaminated for every request
+  this process serves. Treat this as an urgent fix: reject or strip
+  __proto__/constructor/prototype keys from request-derived objects before
+  any merge, build request-derived option objects with Object.create(null),
+  and restart the affected process after patching to clear any pollution
+  already in memory.
+references: CWE-1321
+references: https://owasp.org/Top10/A03_2021-Injection/

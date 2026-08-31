@@ -1491,7 +1491,7 @@ segments) plus DAST-01/02, and land after tier 2/3 per §13's stated ordering.
 | DAST-22 | `active/ldapi.sh` - filter-breaking payloads, response/error differential |
 | DAST-23 **(landed)** | `active/crlf.sh` - encoded CR/LF header-split detection. See the landing note below. |
 | DAST-24 | `active/hosthdr.sh` - spoofed `Host`/`X-Forwarded-Host` reflection |
-| DAST-25 | `active/protopollution.sh` - `__proto__`-style JSON param probing (JS backends) |
+| DAST-25 **(landed)** | `active/protopollution.sh` - `__proto__`-style JSON param probing (JS backends). See AGENTS.md's own DAST-25 landing note. |
 
 **DAST-14 (`active/sqli.sh`) has landed - the first tier-4 injection probe, and the first DAST check
 that emits a finding at all.**
