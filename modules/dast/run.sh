@@ -153,8 +153,27 @@ _dast_run_module() {
     SCOURSH_DAST_TARGET=$target
     SCOURSH_DAST_CELL=$target
     SCOURSH_DAST_INTENSITY=$intensity
-    SCOURSH_DAST_ENDPOINTS=$_DAST_ENDPOINTS_FILE
-    SCOURSH_DAST_PARAMETERS=$_DAST_PARAMETERS_FILE
+    # THE FIXED PATH, NOT `_DAST_ENDPOINTS_FILE`/`_DAST_PARAMETERS_FILE` - and
+    # published UNCONDITIONALLY, whether or not a file sits there yet.
+    # `dast_inventory_read` above ran once, before this loop, to answer
+    # `_dast_record_inventory_gaps`' question ("was an inventory available as
+    # INPUT when this module started") - and on an ordinary run the honest
+    # answer to that is "no", because `crawl.sh` (DAST-04) is itself one of the
+    # phases the loop below is about to run and writes these two files partway
+    # through it. `_DAST_ENDPOINTS_FILE`/`_DAST_PARAMETERS_FILE` are '' in
+    # exactly that case, so exporting them left every later phase in this same
+    # loop believing the surface crawl.sh had just discovered did not exist
+    # (docs/FOUNDATION.md tension 21's consumer contract is "read the file
+    # docs/INVENTORY-FORMAT.md names", not "read whatever a snapshot taken
+    # before dispatch found"). The path itself is fixed by that document
+    # regardless of whether the file exists yet, so it is always the right
+    # answer to "where is it"; each consumer already answers "is there
+    # anything in it" for itself with its own `-r`/`-s` test at USE time
+    # (`inject_inventory_load`, `dast_inventory_read` itself, ...), which is
+    # what makes publishing the path unconditionally safe rather than
+    # optimistic.
+    SCOURSH_DAST_ENDPOINTS=$SCOURSH_RUN_DIR/inventory/endpoints.json
+    SCOURSH_DAST_PARAMETERS=$SCOURSH_RUN_DIR/inventory/parameters.json
     # A phase reads these rather than `SCAN_FLAGS`, which is scan.sh's own
     # global and is a LOCAL inside this function on the test path that declares
     # it here.  Published for the same reason SCOURSH_DAST_TARGET already is:
