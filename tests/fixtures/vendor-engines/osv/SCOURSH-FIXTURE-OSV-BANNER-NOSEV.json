@@ -1,0 +1,10 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-BANNER-NOSEV",
+  "summary": "fixture: unspecified-severity banner product issue",
+  "affected": [
+    {
+      "package": {"name": "Apache HTTP Server (Fixture)"},
+      "versions": ["2.4.49"]
+    }
+  ]
+}

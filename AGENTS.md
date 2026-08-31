@@ -1818,8 +1818,8 @@ box with real tooling, never in the egress-restricted scan-time path); per-ecosy
 `data/advisories.db` can never drift apart on the frozen normalisation table.
 `data/versions.db` is written by the identical `_veng_advisories_write_db` call, mirroring tension 25's
 own "the same shape and the same rule" - its own, separate banner-matching product catalog (a bare web
-server or TLS library with no SCA-ecosystem manifest at all) is a stated, filed gap, not silently assumed
-covered.
+server or TLS library with no SCA-ecosystem manifest at all) had been a stated, filed gap; a later
+ticket (below) closed it.
 `tests/suites/vendor-engines-advisories.sh` (85 assertions) is the fixture-driven proof, against
 hand-authored, OSV.dev-*shaped* (never live-fetched) fixtures under
 `tests/fixtures/vendor-engines/osv/` - the identical "no live network calls in CI" posture
@@ -1827,6 +1827,35 @@ hand-authored, OSV.dev-*shaped* (never live-fetched) fixtures under
 `docs/ADAPTERS.md` §10 and this script's own header are both updated in the same change to stop calling
 this responsibility unimplemented; `docs/FOUNDATION.md` tension 27's own section carries the mirror of
 this paragraph.
+
+**The banner-matching product catalog gap named just above has since been closed.**
+`veng_advisories_banner` (`tools/vendor-engines.sh`'s own §3) resolves an operator-supplied
+`SCOURSH_ADVISORY_BANNER_IDS` into `data/versions.db`'s `banner` namespace
+(`docs/VERSIONS-DB.md` §3-§5) - the known-vulnerable-version catalogue
+`modules/dast/passive/banner.sh` reads for a product with no SCA-ecosystem manifest at all.
+It is reached from its own `advisories banner` command, deliberately **not** a seventh
+`VENG_ADVISORY_REGISTRY` entry: `advisories --list`/`--all` and `advisories bulk --all` must not sweep
+it in, since OSV.dev publishes no per-ecosystem bulk-export archive for a synthetic "banner" ecosystem.
+Two things depart from the six-ecosystem shape: the OSV ecosystem argument passed to the shared
+extractor is the wildcard sentinel `*` (`_veng_advisories_osv_ecosystem`'s "banner" case), read as
+"take every `affected[]` entry that names a package, regardless of its own `ecosystem` field" - a
+banner-matched product has no single OSV ecosystem string to filter on the way an npm/PyPI/... advisory
+does; and a missing severity defaults to `high`, not the SCA rows' `medium` default
+(`docs/VERSIONS-DB.md` §3's own frozen text), via an optional second `DEFAULT` argument added to
+`_veng_advisories_normalize_severity` rather than a second function, so every SCA call site is
+unaffected.
+The product key is normalised through `banner_normalize_product`
+(`modules/dast/passive/banner_engine.sh`), sourced lazily, never re-implemented - the identical
+writer/reader-drift discipline the six SCA importers already apply to `sca_*_normalize_name`.
+Rows land in `data/versions.db` only, never `data/advisories.db`.
+`tests/suites/vendor-engines-advisories.sh` section D2 is the fixture-driven proof (against
+`tests/fixtures/vendor-engines/osv/SCOURSH-FIXTURE-OSV-BANNER-*.json`), including that the wildcard
+admits two different non-SCA ecosystem strings for one product and the writer still dedupes them into a
+single row, and that re-running `advisories banner` replaces the whole namespace - the same
+per-ecosystem replace semantics every SCA ecosystem already has - without touching any SCA ecosystem's
+rows or `data/advisories.db`.
+`docs/VERSIONS-DB.md` §5, `docs/ADAPTERS.md` §10 and `docs/FOUNDATION.md` tension 25's own section are
+all updated in the same change to carry the real command instead of the "no importer today" gap.
 
 **Step 3a-3d shipped the SAST module's rule packs and engine.**
 Four tickets landed, in this order:

@@ -4039,14 +4039,55 @@ scan-time path), and per-ecosystem name normalisation reuses `modules/sca/engine
 sourced, so the writer and the reader of `data/advisories.db` can never drift apart.
 `data/versions.db` is written by the identical `_veng_advisories_write_db` call, mirroring tension 25's
 own "the same shape and the same rule" - its own, separate banner-matching product catalog (a bare web
-server or TLS library with no SCA-ecosystem manifest at all) is a stated gap this ticket does not close,
-not silently assumed covered.
+server or TLS library with no SCA-ecosystem manifest at all) had been a stated gap this ticket did not
+close; a later ticket (below) closed it.
 `tests/suites/vendor-engines-advisories.sh` is the fixture-driven proof, against hand-authored,
 OSV.dev-*shaped* (never live-fetched) fixtures under `tests/fixtures/vendor-engines/osv/` - the identical
 "no live network calls in CI" posture `tests/fixtures/sca/advisories.db` already established for that
 data's READER side.
 `docs/ADAPTERS.md` §10 and this script's own header are both updated in the same change to stop calling
 this responsibility unimplemented.
+
+**The banner-matching product catalog gap named just above has since been closed** - a later ticket
+("Add a `banner` namespace importer to tools/vendor-engines.sh advisories") added `veng_advisories_banner`
+(`tools/vendor-engines.sh`'s own §3), reached from its own `advisories banner` command rather than a
+seventh `VENG_ADVISORY_REGISTRY` entry: a banner-matched product is not one of `docs/DESIGN.md` §6.5's
+six SCA ecosystems, `advisories --list`/`--all` and `advisories bulk --all` must not sweep it in, and
+OSV.dev publishes no per-ecosystem bulk-export archive for a synthetic "banner" ecosystem for the bulk
+path to fetch.
+It reads `SCOURSH_ADVISORY_BANNER_IDS` in the identical operator-supplied, comma/space-separated-id
+shape every `SCOURSH_ADVISORY_<ECOSYSTEM>_IDS` already uses, and writes exclusively into
+`data/versions.db`'s `banner` namespace - never `data/advisories.db`, which `modules/sca/` reads and
+which has no use for a row naming no SCA ecosystem.
+Two things about it depart from the six-ecosystem shape, both because a banner-matched product is not
+shaped like an SCA package:
+
+- **The OSV ecosystem argument passed to the shared extractor is the wildcard sentinel `*`**
+  (`_veng_advisories_osv_ecosystem`'s own "banner" case), read by `_veng_advisories_osv_extract_py`'s
+  ONE record walk (never a second parser) as "take every `affected[]` entry that names a package,
+  regardless of its own `ecosystem` field" - unlike npm/PyPI/Maven/Go/RubyGems/Composer, a banner
+  product has no single OSV ecosystem string to filter on: the identical CVE for, say, a web server may
+  be tracked under `Debian`, `Alpine`, or under no `package.ecosystem` field at all.
+- **A missing severity defaults to `high`, not the SCA rows' `medium` default** - `docs/VERSIONS-DB.md`
+  §3's own frozen text ("a row with none lands on `high`"), a deliberately more conservative fallback
+  for a directly-exploitable, internet-facing product. `_veng_advisories_normalize_severity` gained an
+  optional second `DEFAULT` argument for this rather than a second function, so every SCA call site
+  (which leaves it unset) is provably unaffected.
+
+The product key is normalised through `banner_normalize_product`
+(`modules/dast/passive/banner_engine.sh`), sourced lazily by its own
+`_veng_advisories_load_banner_normalizer` - never one of the `sca_*_normalize_name` functions, and never
+re-implemented, for the identical writer/reader-drift reason the six SCA importers already reuse those
+functions verbatim.
+`tests/suites/vendor-engines-advisories.sh` section D2 is the fixture-driven proof (against
+`tests/fixtures/vendor-engines/osv/SCOURSH-FIXTURE-OSV-BANNER-*.json`, never a live fetch), including
+that the wildcard admits entries under two different non-SCA ecosystem strings for the one product and
+the writer still dedupes them into a single row, that a second `advisories banner` run replaces the
+whole namespace (the same per-ecosystem replace semantics every SCA ecosystem already has) without
+disturbing any SCA ecosystem's rows or vice versa, and that `data/advisories.db` is never written by
+this path at all.
+`docs/VERSIONS-DB.md` §5 and `docs/ADAPTERS.md` §10 are both updated in the same change to carry the
+real command instead of the "no importer today" gap.
 
 ---
 
