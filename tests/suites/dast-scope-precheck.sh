@@ -66,10 +66,13 @@
 #   records for cutting an edge (`tests/suites/core.sh` minted a fresh SC2034
 #   the same way). The cuts are kept and the finding silenced with this reason
 #   rather than the reverse: with the edges followed, `shellcheck -x` on this
-#   one file measured 34 GB resident and had not finished after 11 minutes,
-#   which is above the stage's own 20 GB per-process budget and would be killed
-#   as a false failure. With them cut it is 7.4 s and 2.2 GB, measured on the
-#   same host.
+#   one file measured 34 GB resident and had not finished after 11 minutes -
+#   above the stage's per-process budget at the time (20 GB; since raised to
+#   50 GB, see docs/CI-RUNBOOK.md's "memory model") and would have been
+#   killed as a false failure. Cutting the edge is still the right call
+#   regardless of where the budget sits: it eliminates real duplicate
+#   inlining rather than merely tolerating a bigger ceiling. With them cut
+#   it is 7.4 s and 2.2 GB, measured on the same host.
 # shellcheck disable=SC2016,SC2030,SC2031,SC2034
 
 set -Eeuo pipefail

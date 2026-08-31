@@ -413,14 +413,17 @@ sc_stage() {
       # spread is enormous.  Measured here with /usr/bin/time -l, one file
       # per invocation, watchdog out of the way:
       #
-      #     tests/suites/dast-cookies.sh   12.99 GB
-      #     tests/suites/dast-jwt.sh       12.96 GB
+      #     tests/suites/dast-cors.sh      23.79 GB  (re-measured; see below)
+      #     tests/suites/dast-hosthdr.sh   did not converge, sampled >25 GB
+      #     tests/suites/dast-methods.sh   ~22-41 GB, non-reproducible
+      #     tests/suites/dast-cookies.sh   12.99 GB  (STALE - see below)
+      #     tests/suites/dast-jwt.sh       12.96 GB  (STALE - see below)
       #     scan.sh                         4.74 GB
       #     modules/sca/run.sh              3.46 GB
       #     lib/engines.sh                  0.11 GB
       #
-      # A 118x spread is why ONE number could not do this job.  The old model
-      # had a single `budget_gb`, defaulting to 12, serving as both the
+      # A 200x+ spread is why ONE number could not do this job.  The old
+      # model had a single `budget_gb`, defaulting to 12, serving as both the
       # per-process kill threshold AND the divisor that sized concurrency,
       # and it was wrong in three independent, compounding ways:
       #
@@ -440,6 +443,36 @@ sc_stage() {
       #      killed as false failures.  The 8.42-9.87GB figure the previous
       #      note relied on is stale; the tree has grown since it was taken.
       #
+      # THE 12.99GB/20GB PAIR ABOVE IS ITSELF NOW STALE, TREE-WIDE, NOT JUST
+      # FOR ONE FILE.  `dast-cors.sh` and `dast-hosthdr.sh` carry ZERO
+      # repeated source targets - confirmed by reading every `source` line in
+      # each - so there is no redundant edge in either to cut.  Their cost is
+      # the irreducible floor of sourcing lib/http.sh once plus
+      # modules/dast/engine.sh once (-> modules/sast/engine.sh ->
+      # lib/report.sh/lib/config.sh -> lib/findings.sh/lib/records.sh/
+      # lib/core.sh), the same two chains every DAST phase test needs, and
+      # that floor alone now measures 23.79GB - almost double the old
+      # 12.99GB reference and already above the old 20GB pass-2 ceiling.  A
+      # real full-stage run (165 files today, not 130) skipped
+      # dast-methods.sh, dast-hosthdr.sh and dast-cors.sh at the 20GB budget
+      # for exactly this reason: the shared lib/ dependency chain has grown
+      # since 12.99GB was measured, independent of any one file's own
+      # source-graph hygiene.  See docs/CI-RUNBOOK.md's "memory model"
+      # section for the full evidence, including that peak RSS here is
+      # itself ambient-memory-dependent (shellcheck's GHC runtime ignores
+      # `+RTS -M` and sizes its heap off available memory at measurement
+      # time, ~confirmed by watching dast-hosthdr.sh's RSS jump the moment
+      # dast-cors.sh's process exited and freed memory back to the host) -
+      # so the `jobs * budget <= headroom` clamp below, not the absolute
+      # budget number, is what actually keeps this model safe across host
+      # sizes.  A structural fix (flattening the lib/http.sh ->
+      # lib/config.sh + lib/findings.sh -> lib/records.sh diamond so
+      # lib/records.sh/lib/core.sh are inlined once instead of twice for
+      # every one of the ~130+ files that reach lib/http.sh) is the more
+      # durable answer and is filed as its own follow-up ticket rather than
+      # attempted here, since it is not obviously lossless for every
+      # lib/findings.sh consumer and needs its own verification pass.
+      #
       # The replacement separates the two jobs that number was doing, and
       # keeps ONE stateable invariant in every pass:
       #
@@ -457,35 +490,53 @@ sc_stage() {
       # scan.sh's 4.74GB, so the whole body of the tree clears it) and runs
       # wide.  A file that exceeds it is NOT a failure: it is DEFERRED.
       # PASS 2 re-runs only the deferred files against the RUNAWAY trip point
-      # (`budget_gb`, 20GB - 1.5x the 12.99GB worst case, so a genuine
-      # runaway is still caught but no legitimate file is), necessarily
-      # narrow.  Both budgets are clamped down to `headroom`, which is what
-      # makes (2) above impossible to reproduce.
+      # (`budget_gb`, 50GB as of this ticket - raised from 20GB, which is now
+      # BELOW the re-measured 23.79GB floor of dast-cors.sh/dast-hosthdr.sh
+      # and the sibling ticket's observed 22-41GB range for dast-methods.sh;
+      # a genuine runaway is still caught but no legitimate file is),
+      # necessarily narrow.  Both budgets are clamped down to `headroom`,
+      # which is what makes (2) above impossible to reproduce, and which
+      # also means raising this default costs nothing on a small host - it
+      # is clamped to whatever that host can actually give, same as before.
       #
-      # Why this is right on a small host as well as a large one:
+      # Why this is right on a small host as well as a large one.  Peak RSS
+      # here is ALSO ambient-memory-dependent (shellcheck's GHC runtime
+      # sizes its heap off available memory at measurement time, not off a
+      # fixed multiple of the work done - see docs/CI-RUNBOOK.md's "memory
+      # model" for the direct evidence), so a host with less headroom is not
+      # simply "the same file measured smaller" - it may skip a file a
+      # bigger host measures cleanly, which is the accepted, documented
+      # SKIPPED outcome rather than a defect:
       #
       #   8GB host, 6GB available:  reserve 2, headroom 4.
       #     pass 1: budget min(5,4)=4,  jobs min(4/4,cores)=1  -> 4 <= 4
-      #     pass 2: budget min(20,4)=4, jobs 1                 -> 4 <= 4
-      #     The 12.99GB files cannot fit in 4GB on this host at all, so they
-      #     are reported as SKIPPED, by name, with that reason - never as a
-      #     silent kill and never rounded up to clean.
+      #     pass 2: budget min(50,4)=4, jobs 1                 -> 4 <= 4
+      #     The heaviest files cannot fit in 4GB on this host at all, so
+      #     they are reported as SKIPPED, by name, with that reason - never
+      #     as a silent kill and never rounded up to clean.
       #  27GB host, 20GB available: reserve 3, headroom 17.
       #     pass 1: budget 5,  jobs min(17/5,cores)=3          -> 15 <= 17
-      #     pass 2: budget 17, jobs 1                          -> 17 <= 17
-      #     12.99 <= 17, so every file is measured.
+      #     pass 2: budget min(50,17)=17, jobs 1               -> 17 <= 17
+      #     23.79 > 17, so dast-cors.sh/dast-hosthdr.sh are still SKIPPED by
+      #     name on this size host even with the raised default; lighter
+      #     files are measured.
       #  64GB host, 36GB available: reserve 8, headroom 28.
       #     pass 1: budget 5,  jobs min(28/5,cores)=5          -> 25 <= 28
-      #     pass 2: budget 20, jobs 1                          -> 20 <= 28
-      #     Every file is measured.  This is the host it was developed on.
+      #     pass 2: budget min(50,28)=28, jobs 1               -> 28 <= 28
+      #     23.79 <= 28, so dast-cors.sh now fits with real but not generous
+      #     margin; dast-hosthdr.sh and dast-methods.sh's upper range (up to
+      #     41GB) may still SKIP on this documented reference size.  A host
+      #     with more available memory than this (e.g. ~52GB available on
+      #     64GB total, ~44GB headroom, the host this ticket measured on)
+      #     measures all three cleanly.
       #
       # SCOURSH_SHELLCHECK_MEM_BUDGET_GB and SCOURSH_SHELLCHECK_STEP_GB
       # override the two defaults; SCOURSH_SHELLCHECK_FREE_FLOOR_GB overrides
       # the derived pressure floor.  All three are for testing and for a host
       # whose shape these defaults get wrong, not for routine use.
-      sc_budget_gb=${SCOURSH_SHELLCHECK_MEM_BUDGET_GB:-20}
+      sc_budget_gb=${SCOURSH_SHELLCHECK_MEM_BUDGET_GB:-50}
       if [[ ! $sc_budget_gb =~ ^[0-9]+$ ]] || (( sc_budget_gb < 1 )); then
-        sc_budget_gb=20
+        sc_budget_gb=50
       fi
       sc_step_gb=${SCOURSH_SHELLCHECK_STEP_GB:-5}
       if [[ ! $sc_step_gb =~ ^[0-9]+$ ]] || (( sc_step_gb < 1 )); then

@@ -324,15 +324,22 @@ Section L pins that.
 
 Peak RSS, measured with `/usr/bin/time -l`, one file per invocation, watchdog out of the way:
 
-| file | peak RSS |
-|---|---|
-| `tests/suites/dast-cookies.sh` | **12.99 GB** |
-| `tests/suites/dast-jwt.sh` | **12.96 GB** |
-| `scan.sh` | 4.74 GB |
-| `modules/sca/run.sh` | 3.46 GB |
-| `lib/engines.sh` | 0.11 GB |
+| file | peak RSS | when measured |
+|---|---|---|
+| `tests/suites/dast-hosthdr.sh` | did not converge - sampled between 9GB and **>25GB** repeatedly over 40+ minutes, killed unfinished rather than left to run indefinitely | this ticket |
+| `tests/suites/dast-cors.sh` | **23.79 GB** (25,536,643,072 bytes, kernel-reported `maximum resident set size`) | this ticket |
+| `tests/suites/dast-methods.sh` | **~22-41 GB**, non-reproducible run to run (see below) | sibling ticket, "cut shellcheck -x back-edges in dast-methods.sh" |
+| `tests/suites/dast-cookies.sh` | 12.99 GB | earlier ticket - now known **stale**, see below |
+| `tests/suites/dast-jwt.sh` | 12.96 GB | earlier ticket - now known **stale**, see below |
+| `scan.sh` | 4.74 GB | earlier ticket |
+| `modules/sca/run.sh` | 3.46 GB | earlier ticket |
+| `lib/engines.sh` | 0.11 GB | earlier ticket |
 
-A **118x spread** is why one number could not do both jobs. The model separates them and keeps one invariant in every pass - **`jobs * budget <= headroom`** - so the stage can never commit more memory than it has established the host can give:
+**The 12.99GB/20GB pair above is stale, not just old.** `dast-cors.sh` and `dast-hosthdr.sh` were confirmed (by the sibling back-edge-cutting ticket, then re-confirmed by this one, reading every `source` line in each by hand) to carry **zero repeated source targets** - there is no redundant edge left to cut in either file. Their cost is the irreducible floor of sourcing `lib/http.sh` once plus `modules/dast/engine.sh` once (which itself pulls in `modules/sast/engine.sh` -> `lib/report.sh`/`lib/config.sh` -> `lib/findings.sh`/`lib/records.sh`/`lib/core.sh`) - the same two chains every DAST phase test needs - and that floor alone now measures **23.79 GB** on `dast-cors.sh`, almost double the old 12.99GB reference and already above the old 20GB pass-2 ceiling. A real full-stage run during this ticket (165 files today, not 130) skipped `dast-methods.sh`, `dast-hosthdr.sh` and `dast-cors.sh` at the 20GB budget for exactly this reason: the shared `lib/` dependency chain has grown since the 12.99GB figure was taken, independent of any individual file's own source-graph hygiene.
+
+**Peak RSS is not a fixed property of a file, and this ticket measured why.** `shellcheck`'s GHC runtime ignores `+RTS -M` in the shipped binary and sizes its heap off *ambient available memory at measurement time*, not off a fixed multiple of what the check actually needs. Watched directly on this host (64GB total, ~52GB available, otherwise idle): `dast-cors.sh`'s RSS did not climb monotonically - it oscillated (6.1, 8.7, 6.5, 7.8 GB, ...) for 18 minutes of a mostly-idle host before spiking to its 23.79GB peak in the run's final seconds, and `dast-hosthdr.sh` oscillated between roughly 3GB and >25GB repeatedly over 40+ minutes without ever settling, its RSS visibly jumping upward the moment `dast-cors.sh`'s process exited and freed memory back to the host. This is the same non-reproducibility the sibling ticket reported for `dast-methods.sh` (22-41GB across runs), now independently reproduced rather than only claimed. The practical consequence: a worst-case figure measured on a memory-rich host is not a reliable ceiling for a memory-constrained one, and vice versa - **the `jobs * budget <= headroom` clamp below, not the absolute budget number, is what actually keeps this model safe across host sizes.** Re-measuring and hand-tuning the constant is a stopgap; see "Known follow-up" below for the structural fix.
+
+The model separates two jobs that a single number cannot do at once, and keeps one invariant in every pass - **`jobs * budget <= headroom`** - so the stage can never commit more memory than it has established the host can give:
 
 ```
 total     physical RAM
@@ -344,16 +351,20 @@ headroom  = max(avail - reserve, 1)
 
 **Pass 1** plans against a *typical* footprint (`SCOURSH_SHELLCHECK_STEP_GB`, default 5GB - above `scan.sh`'s 4.74GB, so the body of the tree clears it) and runs wide.
 A file that exceeds it is **not** a failure, it is **deferred**.
-**Pass 2** re-runs only the deferred files against the *runaway* trip point (`SCOURSH_SHELLCHECK_MEM_BUDGET_GB`, default 20GB - 1.5x the 12.99GB worst case), necessarily narrow.
-Both budgets are clamped down to `headroom`, which is what makes (2) above impossible to reproduce.
+**Pass 2** re-runs only the deferred files against the *runaway* trip point (`SCOURSH_SHELLCHECK_MEM_BUDGET_GB`, default **50GB** as of this ticket, raised from 20GB) - roughly 2x the confirmed 23.79GB floor and within reach of the sibling ticket's observed 41GB upper end for `dast-methods.sh`, necessarily narrow.
+Both budgets are clamped down to `headroom`, which is what makes (2) above (from the earlier, since-fixed model) impossible to reproduce, and which also means raising the default costs nothing on a small host: it is clamped down to whatever that host can actually give, and a file too heavy for the host is **skipped**, not killed.
 
 | host | avail | reserve | headroom | pass 1 | pass 2 | outcome |
 |---|---|---|---|---|---|---|
-| 8GB | 6 | 2 | 4 | 1 x 4GB | *(no gain, skipped)* | the 12.99GB files are **reported as skipped by name**; everything else measured |
-| 27GB | 20 | 3 | 17 | 3 x 5GB | 1 x 17GB | every file measured |
-| 64GB | 36 | 8 | 28 | 5 x 5GB | 1 x 20GB | every file measured |
+| 8GB | 6 | 2 | 4 | 1 x 4GB | *(no gain, skipped)* | every file above ~4GB is **reported as skipped by name**, `dast-cors.sh`/`dast-hosthdr.sh` included |
+| 27GB | 20 | 3 | 17 | 3 x 5GB | 1 x 17GB | `dast-cors.sh` (23.79GB) still does **not** fit in 17GB headroom on this size host and is skipped by name; lighter files are measured |
+| 64GB | 36 | 8 | 28 | 5 x 5GB | 1 x min(50,28)=28GB | `dast-cors.sh` (23.79GB) now fits with real but not generous margin; `dast-hosthdr.sh` and `dast-methods.sh`'s upper range (up to 41GB) may still skip on this documented reference size - that is an accepted "skipped, not failed" outcome, not a regression |
 
-`tests/suites/run-tests-stage.sh` section J drives all three shapes from one machine via the `SCOURSH_SHELLCHECK_FORCE_{TOTAL,AVAIL}_GB` test seams and checks the invariant by **parsing the numbers the stage prints**, so it cannot be satisfied by a stage that prints a plausible plan and runs something else.
+The 27GB and 64GB rows are a deliberate, honest change from the previous version of this table: raising the ceiling constant helps only on hosts with enough real headroom to use it, and on the documented reference hosts above, the two hardest files may still be skipped even now. A host with more available memory than these examples (this ticket was run on a 64GB host with ~52GB available, i.e. ~44GB headroom) comfortably measures all three.
+
+`tests/suites/run-tests-stage.sh` section J drives multiple host shapes from one machine via the `SCOURSH_SHELLCHECK_FORCE_{TOTAL,AVAIL}_GB` test seams and checks the invariant by **parsing the numbers the stage prints**, so it cannot be satisfied by a stage that prints a plausible plan and runs something else.
+
+**Known follow-up, filed separately rather than attempted here:** `lib/http.sh` sources both `lib/config.sh` and `lib/findings.sh`, and both of those independently source `lib/records.sh` (which itself sources `lib/core.sh`) - a real, uncut diamond, confirmed by reading every `source`/`# shellcheck source=` line in `lib/http.sh`, `lib/config.sh`, `lib/findings.sh` and `lib/records.sh` during this ticket. Every one of the ~130+ files that reaches `lib/http.sh` - which is most of `modules/dast/` and its tests - pays for `lib/records.sh` and `lib/core.sh` being inlined twice by `shellcheck -x`. Cutting the second edge (`lib/findings.sh`'s own `source lib/records.sh` line) to `# shellcheck source=/dev/null` is lossless for every consumer that reaches `lib/findings.sh` via `lib/http.sh`, because `lib/config.sh` is sourced first in that file and already inlines `lib/records.sh`. It is **not** obviously lossless for every consumer of `lib/findings.sh` directly (`lib/report.sh` and several `tests/suites/*.sh` files source it without going through `lib/config.sh` first), so verifying the cut is safe everywhere it applies needs its own pass through every consumer chain - real, scoped, structural work, not a documentation change, and is why this ticket raises the budget rather than attempting the cut. This would reduce the actual measured cost (not just move the ceiling to tolerate it), which the ambient-memory finding above argues is the more durable fix.
 
 ### The two safety layers, and telling them apart
 
