@@ -1490,7 +1490,7 @@ segments) plus DAST-01/02, and land after tier 2/3 per §13's stated ordering.
 | DAST-21 | `active/nosqli.sh` - operator/object injection, boolean/error differential |
 | DAST-22 | `active/ldapi.sh` - filter-breaking payloads, response/error differential |
 | DAST-23 **(landed)** | `active/crlf.sh` - encoded CR/LF header-split detection. See the landing note below. |
-| DAST-24 | `active/hosthdr.sh` - spoofed `Host`/`X-Forwarded-Host` reflection |
+| DAST-24 **(landed)** | `active/hosthdr.sh` - spoofed `Host`/`X-Forwarded-Host` reflection. See the landing note below. |
 | DAST-25 **(landed)** | `active/protopollution.sh` - `__proto__`-style JSON param probing (JS backends). See AGENTS.md's own DAST-25 landing note. |
 
 **DAST-14 (`active/sqli.sh`) has landed - the first tier-4 injection probe, and the first DAST check
@@ -1940,6 +1940,44 @@ Four decisions here are easy to get backwards, each pinned by a test naming the 
   own placeholders (`%NL` for "insert one CRLF here", `%H`/`%K` for the per-run marker) and the probe
   expands them after reading, exactly as `ssti-expressions.txt` and `nosqli-boolean-pairs.txt` each
   established their own placeholder vocabulary for their own shape of payload.
+
+**DAST-24 (`active/hosthdr.sh`) has landed - docs/DESIGN.md §7.3's "Host-header injection" bullet, and
+the first tier-4 probe that is NOT built on DAST-14's shared `active/inject_engine.sh`.**
+It is endpoint-shaped rather than parameter-shaped (it varies a request HEADER, not a discovered
+parameter), so it reuses `passive/cors.sh`'s own candidate-list/dedupe pattern instead: it ships
+`modules/dast/active/hosthdr_engine.sh` (the pure half - the sentinel, URL-authority parsing for the
+`Location` sink, the body-substring sink, the probe, and finding emission) and
+`modules/dast/active/hosthdr.sh` (the phase script, which resolves the endpoint inventory and drives
+it), plus two `DAST-HOSTHDR-*` records appended to the shared `modules/dast/active/checks.rules`.
+`tests/suites/dast-hosthdr.sh` (49 assertions, no network, no Docker) is the mock-response proof.  The
+phase table needed no edit: `modules/dast/engine.sh` has carried `'active/hosthdr.sh:active'` since
+DAST-02.
+
+- **Two check ids, one per SINK (body vs. `Location`-authority), not one per HEADER TECHNIQUE.**  The
+  DAST location profile (target, method, path_template, param_location, param_name) already has a slot
+  for "which request field" - `loc_param_name` carries `Host` or `X-Forwarded-Host`, exactly as
+  `cors.sh` carries its own probe in `loc_param_name=Origin` - so the technique needs no id of its own.
+  The sink DOES need one: it is not part of the profile, so a body hit and a `Location` hit on one
+  endpoint would otherwise collide onto one fingerprint and `findings_merge` would keep whichever
+  sorted first, the same argument `openredirect.sh`'s own header/meta split makes.
+- **The body sink is a plain substring test; the `Location` sink is authority-only, and that asymmetry
+  is deliberate, not an oversight.**  The sentinel is injected ONLY as a header value never echoed
+  elsewhere in the request, so wherever it surfaces in the body it can only have been read off that
+  header - there is no realistic false-positive shape to guard against there, unlike
+  `openredirect.sh`'s own parameter-reflected payloads.  `Location` is different in kind: it has
+  exactly one authority, and the finding's own claim ("this redirects to a host we control") needs the
+  authority-only parser `openredirect.sh` already proved correct, reused as a duplicate (not a shared
+  call - `openredirect.sh` is a phase script that runs its own probe at source time, so there is no
+  engine-only file to source it from) rather than re-derived.  Pinned by mutation: replacing the
+  authority parse with a substring test breaks exactly the two assertions built for it.
+- **Non-destructive by construction, and the ticket's own posture ("report the reflection; do not
+  attempt cache poisoning") is read literally.**  Only GET/HEAD endpoints the crawler already
+  inventoried are probed - the identical restriction `cors.sh` applies to itself - no form is
+  submitted, and confirming the "reset-poisoning" sink §7.3's own bullet names would need a POST to a
+  real reset endpoint and, against a real target, a real outbound email; that is out of scope for a
+  detection-only probe (the same boundary DAST-03's own declined "live" enumeration probe draws), and
+  the body-reflection check is documented as the right-sized substitute, since a poisoned reset link
+  built from the Host header shares the identical root cause.
 
 ### Tier 5 - §7.4 auth, API, and access-control checks (5 scripts)
 

@@ -498,7 +498,27 @@ value 500s with a DIFFERENT one and the control is clean - a shape that would lo
 differential if the baseline check alone were removed, even though the redundant control comparison
 also guards it) and a case proving a same-request-only echo is not mistaken for cross-request
 contamination.
-DAST-24 is open, and should reuse the engine the same way.
+**DAST-24 (`active/hosthdr.sh`) has also landed**, docs/DESIGN.md §7.3's "Host-header injection"
+bullet - spoof `Host`/`X-Forwarded-Host` and flag reflection into the response body or into a
+redirect's `Location` authority.  It is the first tier-4 probe that does NOT build on
+`active/inject_engine.sh`: the check varies a request HEADER on an endpoint the crawler already
+inventoried, not a discovered parameter, so it reuses `passive/cors.sh`'s own
+candidate-list/dedupe/one-request-per-route shape instead.  It ships
+`modules/dast/active/hosthdr_engine.sh` (the sentinel, a duplicate - not a shared call, since
+`openredirect.sh` is a phase script with no engine-only file to source - of `openredirect.sh`'s own
+proven URL-authority parser for the `Location` sink, a plain-substring body-reflection sink, and
+finding emission) and `modules/dast/active/hosthdr.sh` (the phase script).  Two check ids,
+`DAST-HOSTHDR-REFLECTED_BODY-01` and `DAST-HOSTHDR-REFLECTED_LOCATION-01`, one per SINK rather than per
+header technique - the DAST location profile's `loc_param_name` already carries `Host` or
+`X-Forwarded-Host`, exactly as `cors.sh` carries `Origin`, so the technique needs no id of its own,
+while the sink does (the same argument `openredirect.sh`'s header/meta split makes).  Only GET/HEAD
+endpoints are probed and no form is ever submitted; confirming §7.3's own "reset-poisoning" sink would
+need a POST to a real password-reset endpoint and, live, a real outbound email, so that is a stated,
+deliberate gap (the same boundary DAST-03's declined "live" enumeration probe draws) and the
+body-reflection check is its documented substitute, since a poisoned reset link built from the Host
+header shares the identical root cause.  `tests/suites/dast-hosthdr.sh` (49 assertions, registered) is
+the proof, including a mutation-pinned case for the authority-vs-substring distinction on the
+`Location` sink.
 The one thing worth carrying up here from DAST-15's landing note: **that probe measures ESCAPING, not
 reflection.**  Almost every parameter on a real application reflects something, so a probe that
 flagged reflection alone is a false-positive generator - and the escaped case is the half that fails
