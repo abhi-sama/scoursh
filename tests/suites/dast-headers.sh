@@ -617,6 +617,62 @@ assert_true "$([[ $(_field_of DAST-HDR-RECOMMENDED_MISSING-01 evidence) == *cont
 assert_contains "$(_meta notes)" 'recommended_list_ignored' \
   'and the operator is told which of their entries was ignored, rather than it being silently discarded'
 
+# The roll-up list is ALSO configurable via config/scanner.conf's
+# recommended-header key (rules/RULE-FORMAT.md §9.6.1) - the discoverable home
+# docs/DESIGN.md §7.1's "configurable" asks for, added on top of the
+# file/environment mechanism above rather than in place of it.  A file override
+# naming a DIFFERENT header is left in place too, so this case pins the
+# precedence: config wins whenever the operator set at least one
+# recommended-header entry - FAILS under a reading that reads the file first.
+cat >"$W/scanner-rechdr.conf" <<'EOF'
+id: scanner
+requests-per-second: 5000
+request-budget: 20000
+circuit-breaker-failures: 100000
+recommended-header: X-Made-Up-Header
+recommended-header: content-security-policy
+EOF
+config_scanner_load "$W/scanner-rechdr.conf"
+printf 'X-Should-Not-Appear\n' >"$W/should-not-appear.txt"
+_new_run rechdrcfg hdr-bare
+SCOURSH_DAST_TARGET=hdr-bare SCOURSH_DAST_CELL=hdr-bare SCOURSH_DAST_ENDPOINTS=''
+export SCOURSH_DAST_TARGET SCOURSH_DAST_CELL SCOURSH_DAST_ENDPOINTS
+SCOURSH_DAST_RECOMMENDED_HEADERS_FILE=$W/should-not-appear.txt _dast_headers_phase
+assert_contains "$(_field_of DAST-HDR-RECOMMENDED_MISSING-01 evidence)" 'x-made-up-header' \
+  'the roll-up reports the headers config/scanner.conf listed'
+assert_true "$([[ $(_field_of DAST-HDR-RECOMMENDED_MISSING-01 evidence) == *content-security-policy* ]] && printf 1 || printf 0)" \
+  'a header that already has its own check id is dropped from the list rather than reported twice - holds whichever source the list came from'
+assert_contains "$(_meta notes)" 'recommended_list_ignored' \
+  'and the operator is told which of their entries was ignored, from the config source too'
+assert_true "$([[ $(_field_of DAST-HDR-RECOMMENDED_MISSING-01 evidence) == *x-should-not-appear* ]] && printf 1 || printf 0)" \
+  'config/scanner.conf, once it names at least one entry, wins over SCOURSH_DAST_RECOMMENDED_HEADERS_FILE entirely - FAILS if the file is consulted first'
+
+# A config list consisting ONLY of an already-owned header name still counts as
+# "the operator configured this key": it must not silently fall back to the
+# file/vendored default merely because the list is empty AFTER the drop - FAILS
+# under a reading that conflates "configured but empty after the drop" with
+# "not configured at all".
+cat >"$W/scanner-rechdr-onlyowned.conf" <<'EOF'
+id: scanner
+requests-per-second: 5000
+request-budget: 20000
+circuit-breaker-failures: 100000
+recommended-header: content-security-policy
+EOF
+config_scanner_load "$W/scanner-rechdr-onlyowned.conf"
+_new_run rechdronlyowned hdr-bare
+SCOURSH_DAST_TARGET=hdr-bare SCOURSH_DAST_CELL=hdr-bare SCOURSH_DAST_ENDPOINTS=''
+export SCOURSH_DAST_TARGET SCOURSH_DAST_CELL SCOURSH_DAST_ENDPOINTS
+SCOURSH_DAST_RECOMMENDED_HEADERS_FILE=$W/custom-rec.txt _dast_headers_phase
+assert_eq 0 "$(_count_check DAST-HDR-RECOMMENDED_MISSING-01)" \
+  'a config list of only an owned header name reports nothing, and does not fall back to the file'
+assert_contains "$(_meta coverage_reduction)" 'recommended_header_list_unavailable' \
+  'so the reduction is declared exactly as an absent list would be'
+
+# Restore the suite-wide scanner.conf (no recommended-header key) for every
+# case below, so this block's config load does not leak into them.
+config_scanner_load "$W/scanner.conf"
+
 # The run directory's own inventory is used when the export is empty, which is
 # the ordinary case: modules/dast/run.sh exports the path BEFORE crawl.sh writes
 # the file.

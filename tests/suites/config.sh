@@ -81,6 +81,8 @@ sarif
 html
 md' "$(config_scanner_list formats)" 'formats defaults to all four, in the documented order'
 assert_eq '' "$(config_scanner_list paranoid-allow)" 'paranoid-allow defaults to empty'
+assert_eq '' "$(config_scanner_list recommended-header)" \
+  'recommended-header defaults to empty here too - its shipped seven-entry default lives in modules/dast/passive/recommended-headers.txt, read by hdr_load_recommended only when this key resolves to nothing at every level'
 
 # ---------------------------------------------------------------------------
 printf '\n-- precedence: default < file < env < cli, one level at a time --\n'
@@ -173,6 +175,22 @@ _bad_cli_formats() {
 }
 assert_status 2 'a CLI-supplied "xml" format dies exit 2, not exit 4 - fails under "list validation always reports the file''s exit code regardless of source"' \
   _bad_cli_formats
+
+t_case 'recommended-header: a valid entry round-trips, an invalid one dies exit 4'
+_ok_file_recheader() {
+  printf 'id: scanner\nrecommended-header: Permissions-Policy\n' >"$W/scanner-recheader.conf"
+  config_scanner_load "$W/scanner-recheader.conf"
+  config_scanner_list recommended-header
+}
+assert_eq Permissions-Policy "$(_ok_file_recheader)" \
+  'a well-formed RFC 7230 token round-trips through the file unchanged (case is preserved here; hdr_load_recommended is what lowercases)'
+_bad_file_recheader() {
+  printf 'id: scanner\nrecommended-header: has a space\n' >"$W/scanner-recheader-bad.conf"
+  config_scanner_load "$W/scanner-recheader-bad.conf"
+  config_scanner_list recommended-header
+}
+assert_status 4 'a header name with a space is not an RFC 7230 token - dies exit 4, the same code every other malformed scanner.conf list entry dies' \
+  _bad_file_recheader
 
 t_case 'redact-secrets and fail-on enums'
 _bad_redact() {

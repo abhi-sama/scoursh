@@ -168,6 +168,13 @@ _scanner_default_list() {
   case $1 in
     formats) printf '%s\n' json sarif html md ;;
     paranoid-allow) printf '' ;;
+    # Empty, not the shipped seven-entry list: an empty result here is what
+    # tells modules/dast/passive/headers_engine.sh's hdr_load_recommended that
+    # the operator did not configure this key at all, so it falls through to
+    # its own file/vendored-default layer instead. The shipped list lives in
+    # modules/dast/passive/recommended-headers.txt, not here, so there is
+    # exactly one place that enumerates it.
+    recommended-header) printf '' ;;
     *) return 1 ;;
   esac
 }
@@ -239,6 +246,14 @@ _scanner_validate_list_item() {
   case $key in
     formats) [[ $val =~ ^(json|sarif|html|md)$ ]] ;;
     paranoid-allow) [[ $val =~ ^[^:[:space:]]+:[0-9]+$ ]] ;;
+    # An RFC 7230 field-name token - the identical bracket expression
+    # modules/dast/passive/headers_engine.sh's own file-based loader accepts
+    # (copied rather than re-derived: a bracket expression has no escape
+    # character in POSIX ERE, so re-deriving this by hand is exactly how a
+    # stray backslash ends up a literal member of the class instead of
+    # protecting the character after it from bash). Case is not constrained
+    # here: hdr_load_recommended lowercases on its way in.
+    recommended-header) [[ $val =~ ^[A-Za-z0-9!#\$%\&\'*+.^_\`|~-]+$ ]] ;;
     *) return 1 ;;
   esac
 }
