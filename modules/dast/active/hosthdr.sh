@@ -166,15 +166,12 @@ _dast_hosthdr_phase() {
     return 0
   fi
 
-  # THE ONE LIVE INPUT. `modules/dast/run.sh` resolves SCOURSH_DAST_ENDPOINTS
-  # before the phase loop starts while crawl.sh writes it several phases
-  # LATER in that same loop, so the export is empty on exactly the run that
-  # has just discovered a surface; the run-directory artifact is read as a
-  # fallback, the same fix (and the same paths) cors.sh and openredirect.sh
-  # already apply for themselves.
-  if [[ -z $endpoints_file && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/endpoints.json ]]; then
-    endpoints_file=$SCOURSH_RUN_DIR/inventory/endpoints.json
-  fi
+  # THE ONE LIVE INPUT. SCOURSH_DAST_ENDPOINTS is now always the fixed
+  # `$SCOURSH_RUN_DIR/inventory/endpoints.json` path (modules/dast/run.sh),
+  # published unconditionally whether or not crawl.sh has written it yet - so
+  # reading it alone is now enough; the per-file fallback to the run
+  # directory's own artifact (the general fix that landed instead) is no
+  # longer needed.
 
   local -a candidates=()
   while IFS= read -r line; do

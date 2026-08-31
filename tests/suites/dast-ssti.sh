@@ -447,26 +447,6 @@ eval "$_ssti_saved_sel"
 unset SCOURSH_SELECTED_CHECKS
 
 # ===========================================================================
-printf '== dast ssti: reads the run-directory inventory directly (the first-run state) ==\n'
-# ===========================================================================
-# modules/dast/run.sh exports SCOURSH_DAST_ENDPOINTS/PARAMETERS BEFORE crawl.sh
-# writes them, so on an ordinary run the export is EMPTY at the moment this
-# phase runs even though the inventory now exists on disk. A probe that trusted
-# the export alone would see no surface here and report a clean, untested run -
-# the exact overstated coverage docs/DESIGN.md §15 forbids.
-_new_run rundirect
-mkdir -p "$SCOURSH_RUN_DIR/inventory"
-_write_full_inventory "$SCOURSH_RUN_DIR/inventory"
-SCOURSH_DAST_ENDPOINTS=''
-SCOURSH_DAST_PARAMETERS=''
-_dast_ssti_phase
-assert_eq 1 "$(_count_finding DAST-INJ-SSTI_BRACES-01 bv)" \
-  'with SCOURSH_DAST_ENDPOINTS/PARAMETERS empty but reports/<run>/inventory/*.json present, the phase still finds and tests the parameters - FAILS under a reading that trusts the export alone and reports clean on the ordinary first run'
-SCOURSH_DAST_ENDPOINTS=$W/inv-main/endpoints.json
-SCOURSH_DAST_PARAMETERS=$W/inv-main/parameters.json
-export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
-
-# ===========================================================================
 printf '== dast ssti: no parameter surface degrades to a coverage gap ==\n'
 # ===========================================================================
 _new_run empty

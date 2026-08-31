@@ -401,23 +401,14 @@ _discovery_emit() {
 # `_discovery_inventory_path` - print the readable endpoints inventory, or
 # return 1 when there is none.
 #
-# THE EXPORTED VARIABLE ALONE IS THE WRONG ANSWER, AND IT IS WRONG ON EXACTLY
-# THE ORDINARY RUN. modules/dast/run.sh calls `dast_inventory_read` ONCE, before
-# the phase loop, and exports SCOURSH_DAST_ENDPOINTS from what it found THEN -
-# which on a fresh run is the empty string, because crawl.sh is itself a phase
-# and has not run yet. crawl.sh writes reports/<run>/inventory/endpoints.json a
-# few phases later in that same loop and nothing re-reads it, so a consumer
-# trusting the exported variable sees an empty surface on precisely the run that
-# HAS one: technique (B) would send not one backup probe on any real scan while
-# still reporting DAST-DISC-BACKUP-01 as covered. This mirrors what
-# passive/cookies.sh already does (its own header states the same trap at
-# length) and what AGENTS.md records as a named sharp edge. It is the SAME
-# artifact by the SAME path, just read after the producer wrote it. The general
-# fix belongs to modules/dast/run.sh and affects every inventory consumer, so it
-# stays filed rather than widened into this ticket.
+# SCOURSH_DAST_ENDPOINTS is now always the fixed
+# `$SCOURSH_RUN_DIR/inventory/endpoints.json` path (modules/dast/run.sh),
+# published unconditionally whether or not crawl.sh has written it yet - so
+# reading it alone, and testing it with `-r`/`-s` below, is now enough; the
+# per-file fallback to the run directory's own artifact (the general fix
+# that landed instead) is no longer needed.
 _discovery_inventory_path() {
   local epf=${SCOURSH_DAST_ENDPOINTS:-}
-  [[ -n $epf && -r $epf && -s $epf ]] || epf=${SCOURSH_RUN_DIR:-}/inventory/endpoints.json
   [[ -n $epf && -r $epf && -s $epf ]] || return 1
   printf '%s' "$epf"
 }
@@ -662,7 +653,7 @@ _dast_discovery_phase() {
     run_record coverage_gap "dast discovery: no content-discovery wordlist was available for target '$target', so the wordlist-based sweep tested nothing. This is a coverage gap, not a clean bill of health; the fixed sensitive-path and backup/temp checks still ran."
   fi
   if (( do_backup )) && [[ $inventory_state == absent ]]; then
-    run_record coverage_reduction "module=dast reason=discovery_no_endpoint_inventory target=$target - no endpoint inventory (docs/INVENTORY-FORMAT.md) was readable at SCOURSH_DAST_ENDPOINTS or at \$SCOURSH_RUN_DIR/inventory/endpoints.json, so no backup/temp variant of a known endpoint path was derived or probed. The sensitive-path and wordlist techniques still ran."
+    run_record coverage_reduction "module=dast reason=discovery_no_endpoint_inventory target=$target - no endpoint inventory (docs/INVENTORY-FORMAT.md) was readable at SCOURSH_DAST_ENDPOINTS, so no backup/temp variant of a known endpoint path was derived or probed. The sensitive-path and wordlist techniques still ran."
     run_record coverage_gap "dast discovery: no endpoint inventory was available for target '$target', so the backup/temp sweep (docs/DESIGN.md §7.2) derived no candidate and tested nothing - a served .bak/.old/~ file would not have been found. This is a coverage gap, not a clean bill of health; run the crawl phase (or supply a specification) so this technique has endpoint paths to vary."
   fi
   if (( do_backup )) && [[ $inventory_state == empty ]]; then

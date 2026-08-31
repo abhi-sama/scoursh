@@ -406,28 +406,18 @@ assert_eq 1 "${#SAFE[@]}" \
 # ===========================================================================
 printf '== dast discovery: technique B in the REAL-RUN inventory shape ==\n'
 # ===========================================================================
-# THIS IS THE SHAPE AN ORDINARY `scan.sh dast` RUN HAS, and every backup case
-# above deliberately does NOT have it: they each set SCOURSH_DAST_ENDPOINTS
-# explicitly, which a real run never does usefully.
-#
-# modules/dast/run.sh calls `dast_inventory_read` ONCE, before the phase loop,
-# and exports SCOURSH_DAST_ENDPOINTS from what it found THEN - which on a fresh
-# run is the EMPTY STRING, because crawl.sh is itself a phase and has not run
-# yet. crawl.sh writes reports/<run>/inventory/endpoints.json a few phases later
-# in that same loop and nothing re-reads it. So a consumer trusting the exported
-# variable alone sees an empty surface on precisely the run that HAS one
-# (AGENTS.md records this as a named sharp edge; passive/cookies.sh:263-278
-# carries the same header).
-#
-# Each assertion below FAILS under the reading that SCOURSH_DAST_ENDPOINTS
-# alone is the inventory - which is the reading that makes the §7.2 backup/temp
-# technique inert on every ordinary run while still reporting its check as
-# covered.
+# THIS IS THE SHAPE AN ORDINARY `scan.sh dast` RUN HAS: modules/dast/run.sh
+# resolves SCOURSH_DAST_ENDPOINTS to the fixed
+# `$SCOURSH_RUN_DIR/inventory/endpoints.json` path and exports it
+# unconditionally, whether or not crawl.sh has written the file yet - so this
+# phase is handed that exact path, which becomes readable once the file
+# lands.  Every backup case above instead points SCOURSH_DAST_ENDPOINTS at a
+# synthetic fixture under $W, which is not the shape a real run has.
 _new_run realshape
 mkdir -p "$SCOURSH_RUN_DIR/inventory"
 _write_inventory
 cp "$W/endpoints.json" "$SCOURSH_RUN_DIR/inventory/endpoints.json"
-SCOURSH_DAST_ENDPOINTS=''
+SCOURSH_DAST_ENDPOINTS=$SCOURSH_RUN_DIR/inventory/endpoints.json
 SCOURSH_DAST_PARAMETERS=''
 export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
 SCOURSH_HTTP_TRANSPORT=_disc_transport
@@ -435,9 +425,9 @@ SCOURSH_DAST_DISCOVERY_WORDLIST=$WORDLIST _dast_discovery_phase
 REQS=$(cat "$REQ_LOG")
 
 assert_contains "$REQS" '/config.php.bak' \
-  "with SCOURSH_DAST_ENDPOINTS EMPTY and the inventory at its real run-dir path, the backup technique still probes - FAILS under the reading that the exported variable is the only inventory source, which is the shape every real run has"
+  "with SCOURSH_DAST_ENDPOINTS at its real run-dir path, the backup technique probes - FAILS if the phase cannot read the inventory at the path modules/dast/run.sh actually publishes"
 assert_eq 1 "$(_count_check_path DAST-DISC-BACKUP-01 /config.php.bak)" \
-  "a served, source-leaking backup file IS reported on a real-shaped run - FAILS if technique B contributed no candidate because it read the pre-crawl variable alone"
+  "a served, source-leaking backup file IS reported on a real-shaped run"
 assert_contains "$(run_facts checks_run)" 'DAST-DISC-BACKUP-01' \
   "the backup check is recorded as covered on a run where it genuinely probed"
 
@@ -498,7 +488,7 @@ _new_run inv_empty
 mkdir -p "$SCOURSH_RUN_DIR/inventory"
 printf '%s\n' '{ "schema": "scoursh.inventory.endpoints/1", "endpoints": [] }' \
   >"$SCOURSH_RUN_DIR/inventory/endpoints.json"
-SCOURSH_DAST_ENDPOINTS=''
+SCOURSH_DAST_ENDPOINTS=$SCOURSH_RUN_DIR/inventory/endpoints.json
 SCOURSH_DAST_PARAMETERS=''
 export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
 SCOURSH_HTTP_TRANSPORT=_disc_transport
@@ -544,7 +534,7 @@ _new_run inv_still_works
 mkdir -p "$SCOURSH_RUN_DIR/inventory"
 _write_inventory
 cp "$W/endpoints.json" "$SCOURSH_RUN_DIR/inventory/endpoints.json"
-SCOURSH_DAST_ENDPOINTS=''
+SCOURSH_DAST_ENDPOINTS=$SCOURSH_RUN_DIR/inventory/endpoints.json
 SCOURSH_DAST_PARAMETERS=''
 export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
 SCOURSH_HTTP_TRANSPORT=_disc_transport
