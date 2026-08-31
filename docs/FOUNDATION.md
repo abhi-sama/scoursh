@@ -175,7 +175,7 @@ The `grep` fallback is `grep -E -n`.
 > `-r` is `--recursive` to `grep` and `--replace` to `ripgrep`:
 > `rg <pinned flags> -r 'eval' tree` consumes `eval` as a replacement string and
 > returns rc=1 having searched nothing, while `grep -E -n -r 'eval' tree`
-> recurses and matches (measured; commit `a28cba8`).
+> recurses and matches (measured).
 > A flag that means two different things to the two engines cannot live in a
 > shared wrapper whose whole purpose is that the two produce byte-identical
 > findings, so **file enumeration is the caller's job** and the wrapper is handed
