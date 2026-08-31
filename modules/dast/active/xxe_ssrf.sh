@@ -253,8 +253,20 @@ _xs_oracle_fetch() {
     return 1
   fi
   local body=''
+  # Bounded AT READ TIME via `read -N`, reusing inject_engine.sh's own
+  # `_INJ_MAX_BODY_BYTES` cap (this file sources inject_engine.sh, so it is
+  # already in scope) - this read previously carried NO bound at all, worse
+  # than the plain "trim after a full slurp" shape modules/dast/active/
+  # discovery.sh's own `_discovery_probe` fixed, since even the after-the-fact
+  # trim never ran here. The signature is a slice starting a QUARTER of the
+  # way into `body` (see the comment above this function), so capping the
+  # read changes what "a quarter of the way in" means only for a sentinel
+  # response larger than the cap - an edge case, and still a real,
+  # non-generic signature slice either way. `read -N` returns non-zero at EOF
+  # for the ordinary case (a body smaller than the cap), so `|| true` stays
+  # required, matching every other capped read in this codebase.
   if [[ -r $bodyf ]]; then
-    IFS= read -r -d '' body <"$bodyf" || true
+    IFS= read -r -N "$_INJ_MAX_BODY_BYTES" body <"$bodyf" || true
   fi
   rm -f "$bodyf"
 
@@ -370,9 +382,13 @@ _xs_send_xml() {
     return 1
   fi
   _XS_STATUS=$_HTTP_LAST_STATUS
+  # Bounded AT READ TIME via `read -N`, not by a full slurp trimmed
+  # afterward - see `_xs_oracle_fetch`'s identical comment above, and
+  # modules/dast/active/discovery.sh's own `_discovery_probe` for the fix
+  # this shape is copied from. `|| true` stays required for the ordinary
+  # under-cap case, which is EOF for `read -N`.
   if [[ -r $bodyf ]]; then
-    IFS= read -r -d '' _XS_BODY <"$bodyf" || true
-    (( ${#_XS_BODY} > _INJ_MAX_BODY_BYTES )) && _XS_BODY=${_XS_BODY:0:_INJ_MAX_BODY_BYTES}
+    IFS= read -r -N "$_INJ_MAX_BODY_BYTES" _XS_BODY <"$bodyf" || true
   fi
   rm -f "$bodyf"
   return 0

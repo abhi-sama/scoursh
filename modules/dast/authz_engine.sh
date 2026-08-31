@@ -759,6 +759,15 @@ authz_scan_body() {
 # that lets `printf '%s' "$x" | sha256_of` satisfy the same rule.  The file is
 # read whole rather than streamed because a needle can straddle a line boundary
 # in a single-line JSON document, which is what an API returns.
+#
+# AUDITED against the sibling slurp-then-truncate defect fixed elsewhere in
+# modules/dast/ (discovery.sh, inject_engine.sh, xxe_ssrf.sh, auth_engine.sh):
+# this is NOT that shape. `authz_body_within_bounds` computes FILE's size with
+# `wc -c` - a stat, never a slurp - and REFUSES (returns 1, no read at all) any
+# file over `_AUTHZ_MAX_BODY_BYTES` BEFORE this function's own `read -d ''`
+# ever runs, so the read below only ever executes on a body already known to
+# be at or under the cap. Do not "fix" this to `-N` without first removing
+# the pre-check - the two together would be redundant, not a bug.
 authz_body_contains() {
   local file=$1 needle=$2 body=''
   [[ -n $needle ]] || return 1

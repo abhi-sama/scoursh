@@ -74,6 +74,13 @@ source "${BASH_SOURCE[0]%/*}/../crawl_engine.sh"
 # whole bodies, so an unbounded read on a large download would be the memory
 # hazard the crawler's own 512 KiB parse bound guards against.
 : "${_INJ_MAX_BODY_BYTES:=262144}"
+# Bytes of the raw response-header capture read back for `_INJ_WANT_HEADERS`
+# probes (DAST-19's Location-header signal, and any sibling that reads
+# `_INJ_HEADERS`). A header block is normally a few hundred bytes to a few
+# KiB; 64 KiB is generous headroom for a target that returns an unusually
+# large or repeated header set while still being a real bound rather than none
+# at all.
+: "${_INJ_MAX_HEADERS_BYTES:=65536}"
 # The two lengths are treated as "the same size" when they differ by no more
 # than the LARGER of these two - an absolute floor for tiny pages and a
 # proportion for large ones - so a boolean differential is a real content
@@ -466,14 +473,25 @@ inject_send() {
     return 1
   fi
   _INJ_STATUS=$_HTTP_LAST_STATUS
+  # Both reads are bounded AT READ TIME via `read -N`, never by a full slurp
+  # trimmed afterward - the shared engine behind essentially every §7.3
+  # injection probe (sqli, xss, cmdi, pathtraversal, ssti, nosqli, ldapi,
+  # crlf, protopollution, and xxe/ssrf's parameter technique all call
+  # `inject_send`), so this one call site has the widest blast radius of any
+  # DAST body-capture site: the fix modules/dast/active/discovery.sh's own
+  # `_discovery_probe` applies to its single caller applies here to all of
+  # them at once. `read -N` returns non-zero at EOF for a response smaller
+  # than the cap (the ordinary case, exactly as `-d ''` did for its own
+  # ordinary case), so `|| true` stays required on both. NUL bytes are still
+  # lost either way - bash variables cannot hold one - but `-N` reads through
+  # an embedded NUL and keeps accumulating non-NUL bytes up to the cap, where
+  # `-d ''` stopped dead at the first one; narrower loss in an already-lossy
+  # edge case, not a new one.
   if [[ -r $bodyf ]]; then
-    IFS= read -r -d '' _INJ_BODY <"$bodyf" || true
-    if (( ${#_INJ_BODY} > _INJ_MAX_BODY_BYTES )); then
-      _INJ_BODY=${_INJ_BODY:0:_INJ_MAX_BODY_BYTES}
-    fi
+    IFS= read -r -N "$_INJ_MAX_BODY_BYTES" _INJ_BODY <"$bodyf" || true
   fi
   if [[ -n $hdrf && -r $hdrf ]]; then
-    IFS= read -r -d '' _INJ_HEADERS <"$hdrf" || true
+    IFS= read -r -N "$_INJ_MAX_HEADERS_BYTES" _INJ_HEADERS <"$hdrf" || true
   fi
   rm -f "$bodyf" ${hdrf:+"$hdrf"}
   return 0
