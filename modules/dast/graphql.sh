@@ -136,26 +136,15 @@ _dast_graphql_phase() {
     return 0
   fi
 
-  # THE ENDPOINT FILE IS RE-RESOLVED HERE RATHER THAN TAKEN FROM
-  # SCOURSH_DAST_ENDPOINTS ALONE, AND THAT IS NOT BELT-AND-BRACES.
-  # modules/dast/run.sh calls `dast_inventory_read` ONCE, before the phase loop,
-  # and exports SCOURSH_DAST_ENDPOINTS from what it found THEN - which on a
-  # fresh run is nothing, because crawl.sh is itself a phase and has not run
-  # yet.  It writes reports/<run>/inventory/endpoints.json a few phases later in
-  # the same loop and nothing re-reads it, so a consumer trusting the exported
-  # variable alone sees an EMPTY surface on precisely the ordinary run - which
-  # for this phase would mean reporting "no GraphQL endpoint" on every real run.
-  # This file therefore prefers the exported path when it is usable and falls
-  # back to the run directory's own artifact, the same file by the same path,
-  # read after the producer wrote it.  passive/cookies.sh does exactly this and
-  # records the general fix as belonging to modules/dast/run.sh; active/sqli.sh
-  # still has the bug.  SCOURSH_DAST_GQL_ENDPOINTS overrides both so the reader
-  # is testable against a fixture with no crawl.
-  local epf=${SCOURSH_DAST_GQL_ENDPOINTS:-}
-  if [[ -z $epf ]]; then
-    epf=${SCOURSH_DAST_ENDPOINTS:-}
-    [[ -n $epf && -r $epf && -s $epf ]] || epf=${SCOURSH_RUN_DIR:-}/inventory/endpoints.json
-  fi
+  # SCOURSH_DAST_ENDPOINTS is now always the fixed
+  # `$SCOURSH_RUN_DIR/inventory/endpoints.json` path (modules/dast/run.sh),
+  # published unconditionally whether or not crawl.sh has written it yet - so
+  # reading it alone, and testing it with `-r`/`-s` below, is now enough; the
+  # per-file fallback to the run directory's own artifact (the general fix
+  # that landed instead) is no longer needed.  SCOURSH_DAST_GQL_ENDPOINTS
+  # still overrides it, so this file stays testable against a fixture without
+  # a crawl.
+  local epf=${SCOURSH_DAST_GQL_ENDPOINTS:-${SCOURSH_DAST_ENDPOINTS:-}}
 
   if [[ ! -r $epf || ! -s $epf ]]; then
     run_record coverage_reduction "module=dast reason=no_endpoint_inventory check=graphql target=$target - no endpoint inventory (docs/INVENTORY-FORMAT.md) was readable, so scoursh could not tell whether this target has a GraphQL endpoint and sent no introspection query."

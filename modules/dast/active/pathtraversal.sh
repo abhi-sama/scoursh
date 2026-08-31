@@ -29,19 +29,12 @@
 # the report renders, exactly as modules/dast/active/sqli.sh does for its own
 # gaps.
 #
-# THE INVENTORY IS READ DIRECTLY FROM THE RUN DIRECTORY, NOT FROM THE EXPORT
-# ALONE. modules/dast/run.sh reads the inventory and exports
-# SCOURSH_DAST_ENDPOINTS/SCOURSH_DAST_PARAMETERS BEFORE the phase loop starts,
-# so on a first run - the ordinary case - both are EMPTY: crawl.sh writes
-# reports/<run>/inventory/{endpoints,parameters}.json a few phases later in
-# that same loop, and nothing re-reads the export afterwards. A phase that
-# trusted the export alone would therefore see no surface on exactly the run
-# that has just discovered one - the same pre-existing defect AGENTS.md
-# records against active/sqli.sh today. This phase does not repeat it: it
-# falls back to the run directory's own artifacts, the identical pattern
-# modules/dast/passive/headers.sh already established for its own endpoint
-# read. Fixing the export itself belongs to modules/dast/run.sh and is filed
-# as its own ticket, not changed here.
+# SCOURSH_DAST_ENDPOINTS/SCOURSH_DAST_PARAMETERS are now always the fixed
+# `$SCOURSH_RUN_DIR/inventory/{endpoints,parameters}.json` paths
+# (modules/dast/run.sh), published unconditionally whether or not crawl.sh
+# has written them yet - so reading them alone is now enough; the per-file
+# fallback to the run directory's own artifacts (the general fix that landed
+# instead) is no longer needed.
 #
 # shellcheck shell=bash
 #
@@ -195,18 +188,11 @@ _dast_pathtraversal_phase() {
     return 0
   fi
 
-  # THE INVENTORY PATH IS RESOLVED HERE, NOT TAKEN FROM THE EXPORT ALONE - see
-  # this file's own header for why. Falls back to the run directory's own
-  # artifacts, the same shape modules/dast/passive/headers.sh already uses for
-  # its endpoint file.
+  # See this file's own header: SCOURSH_DAST_ENDPOINTS/SCOURSH_DAST_PARAMETERS
+  # are always the fixed run-directory paths now, so reading them alone is
+  # enough.
   local epf=${SCOURSH_DAST_ENDPOINTS:-}
-  if [[ -z $epf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/endpoints.json ]]; then
-    epf=$SCOURSH_RUN_DIR/inventory/endpoints.json
-  fi
   local pf=${SCOURSH_DAST_PARAMETERS:-}
-  if [[ -z $pf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/parameters.json ]]; then
-    pf=$SCOURSH_RUN_DIR/inventory/parameters.json
-  fi
 
   inject_inventory_load "$epf" "$pf" pathtraversal
   if (( _INJ_N == 0 )); then

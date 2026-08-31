@@ -705,23 +705,6 @@ assert_contains "$(run_facts coverage_reduction)" 'xss_uninjectable_parameters' 
 assert_contains "$(run_facts coverage_gap)" 'none were in a location this probe could inject' \
   'and the run states that nothing was tested, rather than reporting the target clean'
 
-t_case 'degradation: the inventory is read from the RUN DIR when the export is empty'
-# modules/dast/run.sh resolves and exports the inventory paths BEFORE the phase
-# loop, while crawl.sh writes them several phases later - so on an ordinary
-# `scan.sh dast` run the exports are EMPTY on exactly the run that has a
-# surface.  This is the DAST-05 fallback; without it the probe would report "no
-# known request parameters" over an application with dozens.
-_new_run rundir
-mkdir -p "$SCOURSH_RUN_DIR/inventory"
-cp "$W/endpoints.json" "$SCOURSH_RUN_DIR/inventory/endpoints.json"
-cp "$W/parameters.json" "$SCOURSH_RUN_DIR/inventory/parameters.json"
-SCOURSH_DAST_ENDPOINTS='' SCOURSH_DAST_PARAMETERS='' _dast_xss_phase
-assert_eq 1 "$(_count_finding DAST-INJ-XSS_REFLECTED_HTML-01 q)" \
-  'the run directory artifact is consulted when the export is empty - FAILS if the export alone were trusted, which finds an empty surface on the run that has just discovered one'
-SCOURSH_DAST_ENDPOINTS=$W/endpoints.json
-SCOURSH_DAST_PARAMETERS=$W/parameters.json
-export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
-
 # ===========================================================================
 # H. The tension-15 check-set filter
 # ===========================================================================

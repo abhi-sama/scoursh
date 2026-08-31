@@ -488,21 +488,13 @@ _dast_headers_phase() {
       'internal: modules/dast/passive/headers.sh was reached with no target; dast_run_phase publishes SCOURSH_DAST_TARGET'
   fi
 
-  # THE INVENTORY PATH IS RESOLVED HERE, NOT TAKEN FROM THE EXPORT ALONE, AND
-  # THAT IS NOT BELT-AND-BRACES.  modules/dast/run.sh reads the inventory and
-  # exports SCOURSH_DAST_ENDPOINTS BEFORE the phase loop starts, so on a first
-  # run - the ordinary case - it is EMPTY, because crawl.sh writes
-  # reports/<run>/inventory/endpoints.json a few phases later in the same loop.
-  # A passive check that trusted the export alone would therefore see no
-  # endpoints on exactly the run that has just discovered them.  The run
-  # directory's own artifact is the authority (docs/INVENTORY-FORMAT.md §1), so
-  # it is consulted when the export is empty.  Fixing the export itself belongs
-  # to modules/dast/run.sh and is filed separately rather than changed here,
-  # where six peer tickets are editing the same tree.
+  # SCOURSH_DAST_ENDPOINTS is now always the fixed
+  # `$SCOURSH_RUN_DIR/inventory/endpoints.json` path (modules/dast/run.sh),
+  # published unconditionally whether or not crawl.sh has written it yet - so
+  # reading it alone is now enough; the per-file fallback to the run
+  # directory's own artifact (the general fix that landed instead) is no
+  # longer needed.
   local epf=${SCOURSH_DAST_ENDPOINTS:-}
-  if [[ -z $epf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/endpoints.json ]]; then
-    epf=$SCOURSH_RUN_DIR/inventory/endpoints.json
-  fi
 
   # The operator's own base-url, which is config-derived rather than
   # target-derived and is the one URL that exists whatever the crawl found.

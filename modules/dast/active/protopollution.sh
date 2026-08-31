@@ -293,19 +293,13 @@ _dast_protopollution_phase() {
     return 0
   fi
 
-  # modules/dast/run.sh resolves SCOURSH_DAST_ENDPOINTS/SCOURSH_DAST_PARAMETERS
-  # BEFORE the phase loop starts while modules/dast/crawl.sh writes them
-  # several phases LATER in that same loop, so on the ordinary run the
-  # exports are empty on exactly the run that has just discovered a surface.
-  # The run-directory artifact is read as a fallback, the same fix every
-  # sibling probe applies for itself.
+  # SCOURSH_DAST_ENDPOINTS/SCOURSH_DAST_PARAMETERS are now always the fixed
+  # `$SCOURSH_RUN_DIR/inventory/{endpoints,parameters}.json` paths
+  # (modules/dast/run.sh), published unconditionally whether or not crawl.sh
+  # has written them yet - so reading them alone is now enough; the per-file
+  # fallback to the run directory's own artifacts (the general fix that
+  # landed instead) is no longer needed.
   local epf=${SCOURSH_DAST_ENDPOINTS:-} pf=${SCOURSH_DAST_PARAMETERS:-}
-  if [[ -z $epf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/endpoints.json ]]; then
-    epf=$SCOURSH_RUN_DIR/inventory/endpoints.json
-  fi
-  if [[ -z $pf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/parameters.json ]]; then
-    pf=$SCOURSH_RUN_DIR/inventory/parameters.json
-  fi
   inject_inventory_load "$epf" "$pf" protopollution
   if (( _INJ_N == 0 )); then
     run_record coverage_reduction "module=dast reason=no_parameter_inventory target=$target - the crawler wrote no injectable parameter (docs/INVENTORY-FORMAT.md), so prototype-pollution probing had no request field to test. Feed a spec/HAR (config/discovery.conf) or run the crawl against an application with discoverable parameters."

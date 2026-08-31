@@ -153,19 +153,13 @@ _dast_ratelimit_phase() {
   local burst=$_RATE_BURST_N
 
   # ---- gate 4: an idempotent endpoint --------------------------------------
-  # THE INVENTORY PATH IS RESOLVED HERE RATHER THAN TAKEN FROM THE EXPORT
-  # ALONE.  modules/dast/run.sh reads the inventory and exports
-  # SCOURSH_DAST_ENDPOINTS BEFORE the phase loop starts, while crawl.sh writes
-  # reports/<run>/inventory/endpoints.json several phases later in that same
-  # loop - so on the ordinary run the export is empty on exactly the run that
-  # has a surface.  The run directory's own artifact is the authority
-  # (docs/INVENTORY-FORMAT.md §1).  Fixing the export is modules/dast/run.sh's
-  # own filed ticket, not this one's, and the same fallback is what
-  # modules/dast/passive/headers.sh already does.
+  # SCOURSH_DAST_ENDPOINTS is now always the fixed
+  # `$SCOURSH_RUN_DIR/inventory/endpoints.json` path (modules/dast/run.sh),
+  # published unconditionally whether or not crawl.sh has written it yet - so
+  # reading it alone is now enough; the per-file fallback to the run
+  # directory's own artifact (the general fix that landed instead) is no
+  # longer needed.
   local epf=${SCOURSH_DAST_ENDPOINTS:-}
-  if [[ -z $epf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/endpoints.json ]]; then
-    epf=$SCOURSH_RUN_DIR/inventory/endpoints.json
-  fi
   local base=''
   if declare -F config_scope_field_or >/dev/null; then
     base=$(config_scope_field_or "$target" base-url '' 2>/dev/null || printf '')

@@ -94,24 +94,14 @@ _dast_authz_phase() {
   fi
 
   # --- input 2: the inventory ----------------------------------------------
-  # THE INVENTORY PATH IS RESOLVED HERE, NOT TAKEN FROM THE EXPORT ALONE.
-  # modules/dast/run.sh reads the inventory and exports SCOURSH_DAST_ENDPOINTS /
-  # SCOURSH_DAST_PARAMETERS BEFORE the phase loop starts, while crawl.sh writes
-  # reports/<run>/inventory/*.json several phases later in that same loop - so
-  # on a first run, the ordinary case, the exports are EMPTY on exactly the run
-  # that has just discovered a surface.  The run directory's own artifact is the
-  # authority (docs/INVENTORY-FORMAT.md §1), so it is consulted when the export
-  # is empty.  modules/dast/passive/headers.sh does the same and pins it with a
-  # test; fixing the export itself belongs to modules/dast/run.sh and is filed
-  # separately rather than changed under a peer ticket.
+  # SCOURSH_DAST_ENDPOINTS/SCOURSH_DAST_PARAMETERS are now always the fixed
+  # `$SCOURSH_RUN_DIR/inventory/{endpoints,parameters}.json` paths
+  # (modules/dast/run.sh), published unconditionally whether or not crawl.sh
+  # has written them yet - so reading them alone is now enough; the per-file
+  # fallback to the run directory's own artifacts (the general fix that
+  # landed instead) is no longer needed.
   local epf=${SCOURSH_DAST_ENDPOINTS:-}
   local prf=${SCOURSH_DAST_PARAMETERS:-}
-  if [[ -z $epf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/endpoints.json ]]; then
-    epf=$SCOURSH_RUN_DIR/inventory/endpoints.json
-  fi
-  if [[ -z $prf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/parameters.json ]]; then
-    prf=$SCOURSH_RUN_DIR/inventory/parameters.json
-  fi
 
   local scratch=${SCOURSH_RUN_DIR:-${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}}/authz.$$
   mkdir -p "$scratch"

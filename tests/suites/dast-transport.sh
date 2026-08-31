@@ -692,24 +692,6 @@ assert_eq 0 "$(_count_check DAST-TRANSPORT-NO_HTTPS_REDIRECT-01)" 'and emits no 
 assert_not_contains "$(_meta checks_run)" 'DAST-TRANSPORT-NO_HTTPS_REDIRECT-01' \
   'and records no check as run, because none was'
 
-t_case 'the run-directory inventory is read when the export is empty'
-# The DAST-05 defect restated: modules/dast/run.sh resolves
-# SCOURSH_DAST_ENDPOINTS BEFORE the phase loop, so on a first run it is empty
-# while crawl.sh writes the artifact several phases later.  A phase trusting the
-# export alone sees no surface on exactly the run that has one.
-_new_run rundir tr-fixture
-mkdir -p "$SCOURSH_RUN_DIR/inventory"
-cp "$(_inv rundirinv tr-fixture 'http://tr.fixture.example/login')" \
-  "$SCOURSH_RUN_DIR/inventory/endpoints.json"
-SCOURSH_DAST_ENDPOINTS=''
-export SCOURSH_DAST_ENDPOINTS
-SCOURSH_DAST_TARGET=tr-fixture
-export SCOURSH_DAST_TARGET
-# shellcheck source=modules/dast/passive/transport.sh
-source "$ROOT/modules/dast/passive/transport.sh"
-assert_eq 1 "$(_count_check DAST-TRANSPORT-PLAINTEXT_SENSITIVE-01)" \
-  "reading: the phase falls back to \$SCOURSH_RUN_DIR/inventory/endpoints.json - FAILS under trusting SCOURSH_DAST_ENDPOINTS alone, which is EMPTY on the ordinary first run, so the phase would report clean on precisely the run that has a surface"
-
 t_case 'an out-of-scope inventory URL is skipped, never handed to http_request'
 _run_case oos tr-fixture 'https://tr.fixture.example/nav' 'https://not-authorised.example/evil'
 assert_not_contains "$(cat "$REQ_LOG")" 'not-authorised.example' \
