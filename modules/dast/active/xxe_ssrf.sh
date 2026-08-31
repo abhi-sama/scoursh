@@ -533,18 +533,14 @@ _dast_xxe_ssrf_phase() {
     return 0
   fi
 
-  # THE INVENTORY PATH IS RESOLVED HERE, NOT TAKEN FROM THE EXPORT ALONE -
-  # see active/ssti.sh's own header for why (modules/dast/run.sh exports the
-  # two paths before crawl.sh writes them, so the export is empty on the
-  # ordinary first run).
+  # SCOURSH_DAST_ENDPOINTS/SCOURSH_DAST_PARAMETERS are now always the fixed
+  # `$SCOURSH_RUN_DIR/inventory/{endpoints,parameters}.json` paths
+  # (modules/dast/run.sh), published unconditionally whether or not crawl.sh
+  # has written them yet - so reading them alone is now enough; the per-file
+  # fallback to the run directory's own artifacts (the general fix that
+  # landed instead) is no longer needed.
   local epf=${SCOURSH_DAST_ENDPOINTS:-}
-  if [[ -z $epf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/endpoints.json ]]; then
-    epf=$SCOURSH_RUN_DIR/inventory/endpoints.json
-  fi
   local pf=${SCOURSH_DAST_PARAMETERS:-}
-  if [[ -z $pf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/parameters.json ]]; then
-    pf=$SCOURSH_RUN_DIR/inventory/parameters.json
-  fi
   inject_inventory_load "$epf" "$pf" xxe_ssrf
 
   if (( _INJ_N == 0 )) && (( ${#_INJ_EP_METHOD[@]} == 0 )); then

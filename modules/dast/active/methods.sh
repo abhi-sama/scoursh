@@ -171,27 +171,15 @@ _dast_methods_phase() {
     return 0
   fi
 
-  # THE ENDPOINT FILE IS RE-RESOLVED HERE RATHER THAN TAKEN FROM
-  # SCOURSH_DAST_ENDPOINTS ALONE, AND THAT IS NOT BELT-AND-BRACES.
-  # modules/dast/run.sh calls `dast_inventory_read` ONCE, before the phase loop,
-  # and exports SCOURSH_DAST_ENDPOINTS from what it found THEN - which on a fresh
-  # run is nothing, because crawl.sh is a phase and has not run yet. It writes
-  # reports/<run>/inventory/endpoints.json a few phases later in the same loop
-  # and nothing re-reads it, so a consumer that trusts the exported variable
-  # alone sees an empty surface on precisely the ordinary run (active/sqli.sh
-  # does exactly that today). This file therefore prefers the exported path when
-  # it is usable and falls back to the run directory's own artifact - the file
-  # docs/INVENTORY-FORMAT.md names, the same artifact by the same path, just read
-  # after the producer wrote it. SCOURSH_DAST_METHOD_ENDPOINTS overrides both, so
-  # the reader is testable against a fixture without a crawl (the swappable-seam
-  # idiom lib/http.sh's own transport/resolver hooks use). The general fix belongs
-  # to modules/dast/run.sh and affects every inventory consumer, so it is filed
-  # rather than widened into this ticket.
-  local epf=${SCOURSH_DAST_METHOD_ENDPOINTS:-}
-  if [[ -z $epf ]]; then
-    epf=${SCOURSH_DAST_ENDPOINTS:-}
-    [[ -n $epf && -r $epf && -s $epf ]] || epf=${SCOURSH_RUN_DIR:-}/inventory/endpoints.json
-  fi
+  # SCOURSH_DAST_ENDPOINTS is now always the fixed
+  # `$SCOURSH_RUN_DIR/inventory/endpoints.json` path (modules/dast/run.sh),
+  # published unconditionally whether or not crawl.sh has written it yet - so
+  # reading it alone, and testing it with `-r`/`-s` below, is now enough; the
+  # per-file fallback to the run directory's own artifact (the general fix
+  # that landed instead) is no longer needed. SCOURSH_DAST_METHOD_ENDPOINTS
+  # still overrides it, so the reader is testable against a fixture without a
+  # crawl.
+  local epf=${SCOURSH_DAST_METHOD_ENDPOINTS:-${SCOURSH_DAST_ENDPOINTS:-}}
   if [[ ! -r $epf || ! -s $epf ]]; then
     run_record coverage_reduction "module=dast reason=no_endpoint_inventory target=$target - no endpoint inventory (docs/INVENTORY-FORMAT.md) was readable, so no endpoint's method surface was enumerated."
     run_record coverage_gap "dast methods: target '$target' has no known endpoint, so no endpoint was asked which HTTP methods it accepts. This is a coverage gap - nothing was tested - not a finding that no dangerous method is enabled."

@@ -479,21 +479,13 @@ _dast_openredirect_phase() {
   fi
 
   # `inject_inventory_load` defaults to SCOURSH_DAST_ENDPOINTS /
-  # SCOURSH_DAST_PARAMETERS, and modules/dast/run.sh resolves BOTH before the
-  # phase loop starts while modules/dast/crawl.sh writes them several phases
-  # LATER in that same loop - so on the ordinary run the exports are empty on
-  # exactly the run that has just discovered a surface. The run-directory
-  # artifact is read as a fallback, the same fix (and the same paths)
-  # modules/dast/passive/headers.sh already applies for itself; the export is
-  # modules/dast/run.sh's own to correct and is filed as its own ticket rather
-  # than changed under six parallel peers.
+  # SCOURSH_DAST_PARAMETERS, which are now always the fixed
+  # `$SCOURSH_RUN_DIR/inventory/{endpoints,parameters}.json` paths
+  # (modules/dast/run.sh), published unconditionally whether or not crawl.sh
+  # has written them yet - so reading them alone is now enough; the per-file
+  # fallback to the run directory's own artifacts (the general fix that
+  # landed instead) is no longer needed.
   local epf=${SCOURSH_DAST_ENDPOINTS:-} pf=${SCOURSH_DAST_PARAMETERS:-}
-  if [[ -z $epf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/endpoints.json ]]; then
-    epf=$SCOURSH_RUN_DIR/inventory/endpoints.json
-  fi
-  if [[ -z $pf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/parameters.json ]]; then
-    pf=$SCOURSH_RUN_DIR/inventory/parameters.json
-  fi
   inject_inventory_load "$epf" "$pf" openredirect
   if (( _INJ_N == 0 )); then
     run_record coverage_reduction "module=dast reason=no_parameter_inventory target=$target - the crawler wrote no injectable parameter (docs/INVENTORY-FORMAT.md), so the open-redirect probe had no request field to test. Feed a spec/HAR (config/discovery.conf) or run the crawl against an application with discoverable parameters."

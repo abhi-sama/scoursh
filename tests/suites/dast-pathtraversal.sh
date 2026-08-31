@@ -264,27 +264,6 @@ assert_contains "$CR" 'DAST-INJ-PATH_TRAVERSAL-01' \
   "checks_run records the check that executed over a parameter (AGENTS.md's own definition), so modules/dast/run.sh's honesty roll-up does not report covered-nothing"
 
 # ===========================================================================
-printf '== dast pathtraversal: reads the run-directory inventory directly (AC1) ==\n'
-# ===========================================================================
-# The documented first-run state: modules/dast/run.sh exports
-# SCOURSH_DAST_ENDPOINTS/PARAMETERS BEFORE crawl.sh writes them, so on an
-# ordinary run the export is EMPTY at the moment this phase runs even though
-# the inventory now exists on disk. A probe that trusted the export alone
-# would see no surface here and report a clean, untested run - the exact
-# overstated coverage docs/DESIGN.md §15 forbids.
-_new_run rundirect
-mkdir -p "$SCOURSH_RUN_DIR/inventory"
-_write_full_inventory "$SCOURSH_RUN_DIR/inventory"
-SCOURSH_DAST_ENDPOINTS=''
-SCOURSH_DAST_PARAMETERS=''
-_dast_pathtraversal_phase
-assert_eq 1 "$(_count_finding DAST-INJ-PATH_TRAVERSAL-01 file)" \
-  "with SCOURSH_DAST_ENDPOINTS/PARAMETERS empty but reports/<run>/inventory/*.json present, the phase still finds and tests the parameters - FAILS under a reading that trusts the export alone and reports clean on the ordinary first run"
-SCOURSH_DAST_ENDPOINTS=$W/inv-main/endpoints.json
-SCOURSH_DAST_PARAMETERS=$W/inv-main/parameters.json
-export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
-
-# ===========================================================================
 printf '== dast pathtraversal: no parameter surface degrades to a coverage gap ==\n'
 # ===========================================================================
 _new_run empty

@@ -662,22 +662,6 @@ assert_contains "$(_meta coverage_reduction)" 'recommended_header_list_unavailab
 # case below, so this block's config load does not leak into them.
 config_scanner_load "$W/scanner.conf"
 
-# The run directory's own inventory is used when the export is empty, which is
-# the ordinary case: modules/dast/run.sh exports the path BEFORE crawl.sh writes
-# the file.
-_new_run rundir hdr-bare
-mkdir -p "$SCOURSH_RUN_DIR/inventory"
-cat >"$SCOURSH_RUN_DIR/inventory/endpoints.json" <<'EOF'
-{ "schema": "scoursh.inventory.endpoints/1", "endpoints": [
-  { "id": "e1", "target": "hdr-bare", "method": "GET", "url": "https://bare.fixture.example/late", "path": "/late" }
-] }
-EOF
-SCOURSH_DAST_TARGET=hdr-bare SCOURSH_DAST_CELL=hdr-bare SCOURSH_DAST_ENDPOINTS=''
-export SCOURSH_DAST_TARGET SCOURSH_DAST_CELL SCOURSH_DAST_ENDPOINTS
-_dast_headers_phase
-assert_true "$([[ $(cat "$REQ_LOG") == *"/late"* ]] && printf 0 || printf 1)" \
-  "the run directory's own inventory is read when SCOURSH_DAST_ENDPOINTS is empty - FAILS under a reading that trusts the export alone, which is empty on every first run because crawl.sh writes the file later in the same loop"
-
 # ===========================================================================
 printf '== K. the registry and the emitted finding agree ==\n'
 # ===========================================================================

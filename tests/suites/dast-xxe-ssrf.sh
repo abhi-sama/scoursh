@@ -374,25 +374,6 @@ assert_contains "$CR" 'DAST-INJ-XXE_SSRF-01' "checks_run records the external-en
 assert_contains "$CR" 'DAST-INJ-SSRF_PARAM-01' "checks_run records the per-parameter technique, which really executed"
 
 # ===========================================================================
-printf '== dast xxe_ssrf: reads the run-directory inventory directly ==\n'
-# ===========================================================================
-# The documented first-run state: modules/dast/run.sh exports
-# SCOURSH_DAST_ENDPOINTS/PARAMETERS BEFORE crawl.sh writes them, so on an
-# ordinary run the export is EMPTY at the moment this phase runs even though
-# the inventory now exists on disk.
-_new_run rundirect
-mkdir -p "$SCOURSH_RUN_DIR/inventory"
-_write_full_inventory "$SCOURSH_RUN_DIR/inventory"
-SCOURSH_DAST_ENDPOINTS=''
-SCOURSH_DAST_PARAMETERS=''
-_dast_xxe_ssrf_phase
-assert_eq 1 "$(_count_check DAST-INJ-XXE_ENTITY-01)" \
-  "with SCOURSH_DAST_ENDPOINTS/PARAMETERS empty but reports/<run>/inventory/*.json present, the phase still finds and tests the endpoints - FAILS under a reading that trusts the export alone and reports clean on the ordinary first run"
-SCOURSH_DAST_ENDPOINTS=$W/inv-main/endpoints.json
-SCOURSH_DAST_PARAMETERS=$W/inv-main/parameters.json
-export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
-
-# ===========================================================================
 printf '== dast xxe_ssrf: no inventory at all degrades to a coverage gap ==\n'
 # ===========================================================================
 _new_run empty
