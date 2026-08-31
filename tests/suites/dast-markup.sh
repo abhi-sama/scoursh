@@ -286,7 +286,7 @@ _inv() {
   local name=$1 target=$2; shift 2
   local f=$W/$name.endpoints.json u i=0 rows=''
   for u in "$@"; do
-    rows+="${rows:+,}"$'\n'"  { \"id\": \"ep$i\", \"target\": \"$target\", \"method\": \"GET\", \"url\": \"$u\", \"path\": \"$(markup_path_of "$u")\" }"
+    rows+="${rows:+,}"$'\n'"  { \"id\": \"ep$i\", \"target\": \"$target\", \"method\": \"GET\", \"url\": \"$u\", \"path\": \"$(hdr_path_of "$u")\" }"
     i=$(( i + 1 ))
   done
   printf '{ "schema": "scoursh.inventory.endpoints/1", "endpoints": [%s\n] }\n' "$rows" >"$f"
