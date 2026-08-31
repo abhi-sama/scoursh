@@ -35,11 +35,21 @@
 #      neither half can be satisfied by breaking the other.
 #   7. the burst STOPS at the first 429 and does not stop for anything else.
 #   8. 503 is NOT throttling: a target that collapses under the burst must not
-#      be reported as one that defends itself.
+#      be reported as one that defends itself - pinned both at the
+#      `rate_status_is_throttle` predicate (section A) AND end to end through
+#      the phase against the `rl-503` fixture (section F), because a bare
+#      `Retry-After` on a 503 satisfies the OTHER predicate,
+#      `rate_signal_scan`, and reaches the identical `advertised` clean
+#      result through a different door (see reading 11).
 #   9. a 429 with no usable Retry-After is its own, separate check id, because
 #      the DAST fingerprint carries no component naming the defect.
 #  10. an inventory endpoint is preferred over the operator's base-url - the
 #      inverse of headers.sh's preference, and deliberately so.
+#  11. `retry-after` is excluded from `rate_signal_scan` on a 5xx status - it is
+#      the one rate-limit header this file's own comment names as "also sent
+#      on a 503" - while every other family member and a Retry-After on a
+#      non-5xx status are untouched, so a real limiter that announces itself
+#      pre-emptively still reads as `advertised`.
 #
 # shellcheck shell=bash
 #
@@ -293,6 +303,27 @@ assert_contains "$_fam" 'x-ratelimit-remaining' \
   'the de-facto X-RateLimit spelling is in it - FAILS under an RFC-only reading, which would report "no rate limiting" against a target that says otherwise on every response'
 assert_contains "$_fam" 'x-rate-limit-reset' 'the hyphenated de-facto spelling is in it too'
 
+t_case 'rate_signal_scan excludes a bare Retry-After from a 5xx, and only that'
+# `retry-after` is this file's own header names as "the only [signal header]
+# that is also sent on a 503" - a target falling over under load can carry it
+# with no limiter behind it at all, so counting it as a signal reaches
+# rate_verdict's `advertised` case (a clean result) for a target that
+# COLLAPSED, through the OTHER predicate than rate_status_is_throttle - the
+# exact reading that predicate's own header says must never happen.
+_cap=$W/predicate.head
+printf 'HTTP/1.1 503 X\r\nRetry-After: 120\r\n\r\n' >"$_cap"
+hdr_parse_capture "$_cap"
+assert_true "$(rate_signal_scan 503 && printf 1 || printf 0)" \
+  'a bare Retry-After on a 503 is NOT a signal - FAILS under the reading that any Retry-After means a limiter, which reports a target that collapsed under the burst as one that defends itself'
+printf 'HTTP/1.1 200 X\r\nRetry-After: 120\r\n\r\n' >"$_cap"
+hdr_parse_capture "$_cap"
+assert_true "$(rate_signal_scan 200 && printf 0 || printf 1)" \
+  'the identical Retry-After on a 200 (a limiter announcing itself pre-emptively) IS still a signal - FAILS under a reading that drops retry-after everywhere, which would silence a real advertised limiter too'
+printf 'HTTP/1.1 503 X\r\nX-RateLimit-Limit: 10\r\n\r\n' >"$_cap"
+hdr_parse_capture "$_cap"
+assert_true "$(rate_signal_scan 503 && printf 0 || printf 1)" \
+  'an X-RateLimit-* header on a 5xx is untouched by the exclusion - only retry-after is ambiguous with a plain failure, and narrowing the fix to it alone is what this case pins'
+
 # ===========================================================================
 printf '\n== B. sizing the burst against lib/http.sh own budget ==\n'
 # ===========================================================================
@@ -518,6 +549,25 @@ _scanner 5000 20000
 SCOURSH_DAST_RATELIMIT_BURST=12 _phase rl-open
 assert_eq '1' "$(_count_check DAST-RATE-NO_THROTTLE-01)" \
   'the check still fires on a target that advertises nothing - FAILS if the fix for the case above was widened into "never report anything"'
+
+t_case 'end to end: a target that COLLAPSES (503) is never verdict=advertised'
+# The `rl-503` target and the `down.fixture.example` transport arm above
+# (always 503, always carrying Retry-After: 120) existed before this ticket
+# with no case ever driving `_phase rl-503` - so the unit-level pin above was
+# the only place this reading was ever checked, and the phase's own
+# `advertised` notes sentence ("... so it has a limiter this probe did not
+# reach") was reachable against a target that never once answered 2xx.  This
+# case drives the real phase, through the real gates, exactly as
+# dast_run_phase would.
+_new_run collapse rl-503
+_scanner 5000 20000
+SCOURSH_DAST_RATELIMIT_BURST=12 _phase rl-503
+assert_eq '12' "$(_req_count)" \
+  'the whole burst runs: 503 is not a 429, so nothing stops it early'
+assert_not_contains "$(_meta notes)" 'verdict=advertised' \
+  'the target that collapsed on every request is never reported as one that defends itself - FAILS under the pre-fix reading, where the fixture own Retry-After: 120 satisfied rate_signal_scan on all twelve responses'
+assert_eq '1' "$(_count_check DAST-RATE-NO_THROTTLE-01)" \
+  'the missing-throttling finding fires instead: a target that never said 429, RateLimit-*, or a Retry-After untainted by a bare 5xx has demonstrated no throttling control on this endpoint'
 
 # ===========================================================================
 printf '\n== G. a target that DOES throttle ==\n'
