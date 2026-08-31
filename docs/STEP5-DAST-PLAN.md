@@ -23,7 +23,7 @@ whoever picks it up first.
 | DAST-33 - the authorisation record in `run.json` (and `use_engines`, the same gap) | landed |
 | DAST-34 - an unrestricted run stated on stderr and in the report | landed |
 | DAST-35 - the lint forbidding a bundled scan target | separate ticket; no ticket below is gated on it |
-| DAST-36 - folding this posture into DAST-01..30's own acceptance criteria | doc-only; not started |
+| DAST-36 - folding this posture into DAST-01..30's own acceptance criteria | doc-only; **landed** |
 | DAST-04 - `crawl.sh`, the endpoint/parameter inventory every later ticket reads | **landed** (tier 1) |
 
 **Tier 1 is now complete.**
@@ -65,7 +65,7 @@ See its landing note under the tier-5 table.
 
 **Tier 5 has started too: DAST-28 (`ratelimit.sh`, the §7.4 missing-throttling burst probe) has
 landed**, alongside DAST-26 (`jwt.sh`).  It is the ticket carrying this plan's one behavioural
-amendment (see "Amendments to DAST-01 through DAST-30" below), and it created
+amendment (see "Conservative-posture criteria, restated per ticket" below), and it created
 `modules/dast/checks.rules` - the shared, APPEND-ONLY registry for every tier-5 phase that sits at the
 top of `modules/dast/` rather than under `passive/` or `active/`.  Its landing note is under the tier-5
 table.
@@ -162,11 +162,10 @@ names these three pieces as the step-5 work it deliberately left for later.
 DAST-01 also blocks all of tiers 1-5 below, so starting it is what shortens step 5 rather than merely
 reordering it.
 
-Whoever picks up DAST-01 updates this section, and every build-order section named in "Doc-update
-process" below, in the same change.
-One known loose end until then: `docs/FOUNDATION.md` still states the old gate and still cites this
-section by its former name, "Status: blocked" - see "Doc-update process" for exactly what has to
-change there.
+DAST-01 has since landed, and the loose end this paragraph used to record is discharged:
+`docs/FOUNDATION.md` no longer states the old gate and no longer cites this section by its former
+name, "Status: blocked".
+Verified rather than assumed - that string does not appear in `docs/FOUNDATION.md` at all today.
 
 ## `lib/http.sh` has already shipped - do not re-plan it
 
@@ -515,7 +514,7 @@ DAST-01 does, despite their numbers.
 | DAST-33 | Render the authorisation record into `run.json`, and close the same gap for `use_engines` | DAST-32 | A safety prompt that leaves no trace is theatre, and there is an already-shipped instance of exactly that gap: `scan.sh` calls `run_record use_engines ...`, which writes `reports/<run>/meta/use_engines`, but `report_run_json`'s `_meta_array`/`_meta_array_unique` block in `lib/report.sh` never renders it (verified: no `use_engines` key exists in that block, and both suites that cover it - `tests/suites/sast-semgrep.sh` and `tests/suites/iac-trivy.sh` - assert against the meta **file**, not `run.json`). The tool's only shipped audit flag is half-recorded today. Fix both in one change, since the ticket is already inside `report.sh`. Full field list and the reasoning for each is in "What is recorded, and where" below. |
 | DAST-34 | State an unrestricted run in the report and on stderr | DAST-33 | One stderr line at run start when limits were relaxed, naming target, affirming operator, timestamp and the relaxations. Loud, once, not a wall. Plus a banner in the HTML and markdown reports and an entry in the limitations section `docs/DESIGN.md` §15 already requires. The reason is specific rather than decorative: an unrestricted run's **absence** of availability findings is not evidence, because a reader cannot tell whether "no throttling findings" means the target handles load or means the scanner was told to ignore its own limits - and DAST-28 makes that ambiguity concrete. §15's own framing applies: a scan that overstates coverage is worse than one that names its blind spots. The banner is plain text through the existing escaping path, since evidence is untrusted and the HTML report contains no `<script>` at all (tension 10). |
 | DAST-35 (**landed**) | Lint: no shipped scope target, no bundled scan host | none; can land immediately | Landed in `tests/lint-shell.sh` (not `tests/lint-rules.sh` - see the landing note below for why), in the same one-exemption-with-a-stated-reason shape the tension-19 no-bypass check already uses: `config/` contains no `scope.conf`, only `scope.conf.example`; `scope.conf.example`'s `base-url` uses a reserved example domain; and no shipped script, rule or config file carries a scope-target record naming a resolvable third-party host. `tools/dast-test-target/scope.conf` is exempt **by path**, with its reason named - it is never installed as `config/scope.conf` and is loaded only by the opt-in smoke test, exactly as its own header and `docs/DAST-TEST-TARGET-AUTHORIZATION.md` already record. This exists because "a convenient example target" is a helpful-looking contribution that would silently become the built-in demo host the research findings rule out. |
-| DAST-36 | Fold this posture into DAST-01 through DAST-30's own acceptance criteria | DAST-31, DAST-32 | Doc-only, no shell code. Restating the constraints inside each affected ticket rather than leaving them inherited by reference, because a ticket is implemented from its own acceptance criteria. The amendments are enumerated in the next subsection. Per this document's own "Doc-update process", whoever lands this also fixes `docs/FOUNDATION.md`'s stale step-5 gate sentence and its dangling "Status: blocked" cross-reference in the same change. |
+| DAST-36 (**landed**) | Fold this posture into DAST-01 through DAST-30's own acceptance criteria | DAST-31, DAST-32 | Doc-only, no shell code. Restating the constraints inside each affected ticket rather than leaving them inherited by reference, because a ticket is implemented from its own acceptance criteria. Landed as "Conservative-posture criteria, restated per ticket" below: seven numbered clauses plus a per-ticket table that assigns clauses to every ticket in DAST-01..30, replacing a five-bullet form that covered only seven of them. The `docs/FOUNDATION.md` obligation this row used to carry - the stale step-5 gate sentence and the dangling "Status: blocked" cross-reference - was checked and found already discharged; see the "Doc-update process" note for the verification. |
 
 **DAST-35 has landed, as its own three checks inside `tests/lint-shell.sh` rather than a new file or
 `tests/lint-rules.sh`.**
@@ -547,30 +546,122 @@ on a planted violation and passing once it is fixed, an `extra-host` violation a
 a reserved/non-routable literal (`169.254.169.254`) NOT tripping check 3, and the path exemption proven in
 both directions. `tests/run-tests.sh`'s `SUITES` array now names it.
 
-### Amendments to DAST-01 through DAST-30 (owned by DAST-36)
+### Conservative-posture criteria, restated per ticket (owned by DAST-36)
 
-- **DAST-01** gains the ceiling hook: the limiter, budget and breaker read an **effective** value that
-  DAST-32's clamp has already applied, and the clamp lives beside them in `lib/http.sh` rather than in
-  any module. DAST-01 and DAST-32 are arguably one thing and merging them is the implementer's call to
-  make; if they stay separate, DAST-01 must not ship a limiter that reads `config_scanner_value`
-  directly, or DAST-32 becomes a retrofit.
-- **DAST-12 (content discovery)** and **DAST-13 (method enumeration)** restate in their own criteria
-  that they are `safe`-intensity and therefore unreachable without an affirmation, and that the
-  wordlist is a bounded vendored file whose size no flag changes.
-- **DAST-14 through DAST-25 (the injection probes)** each restate the non-destructive constraint in
-  their own acceptance criteria: detection-only, no data modification, no exfiltration beyond minimal
-  confirming evidence. **DAST-20** additionally restates that SSRF/XXE sentinels are in-scope-only and
-  that no affirmation widens them.
-- **DAST-26 (`jwt.sh`)** restates that the weak-secret list is bounded and vendored and that no flag
-  expands it.
-- **DAST-28 (`ratelimit.sh`)** gets the one behavioural amendment in this list, and it closes a silent
-  false negative that neither design resolved. Under the conservative ceilings a burst probe cannot
-  establish either a positive or a true negative: it would report "no missing-throttling finding" from
-  a scanner that was itself throttled below any plausible threshold. **On an unaffirmed run DAST-28
-  does not execute, and emits a `coverage_gap` naming the scanner's own rate ceiling as the reason**,
-  using the mechanism `lib/report.sh` already ships. That makes the ceiling visible as a coverage fact
-  rather than as a clean bill of health.
-- **DAST-29 (`authz.sh`)** restates read-only object references only, no writes.
+DAST-31 through DAST-34 own the safety posture as *mechanism*.
+This section folds that posture into DAST-01 through DAST-30 as *acceptance criteria*, because a
+ticket is implemented from its own criteria and an inherited constraint is one nobody reads.
+Nothing here is new policy.
+Every clause restates a decision already made in "The conservative defaults, and the one place they
+are enforced", in "What may be relaxed by the affirmation, and what may never be", or in
+`docs/FOUNDATION.md` tension 19.
+
+This section replaces an earlier five-bullet form that named only DAST-01, DAST-12, DAST-13,
+DAST-14..25, DAST-26, DAST-28 and DAST-29.
+A reader picking up DAST-02..11, DAST-27 or DAST-30 found no posture line for their own ticket and
+had to reconstruct one from the central plan, which is exactly the failure this section exists to
+close.
+
+#### The seven clauses
+
+Every DAST ticket restates the clauses marked for it in the per-ticket table below.
+Restate them in the ticket's own acceptance criteria, by clause text, not by citing this section.
+
+**P1 - one path to the network.**
+Every request goes through `lib/http.sh`'s `http_request`.
+No module opens a socket, invokes `curl`, or composes a request line of its own.
+The single exception is a raw TLS handshake (`modules/dast/passive/tls.sh`), which goes through
+`http_authorize_raw_connection` and spends a budget token exactly as a request does.
+
+**P2 - the scope gate is the only authorisation.**
+A host is reachable if and only if `config/scope.conf` carries a record for it and every URL,
+including every redirect `Location`, passes `http_gate_url`.
+No flag, prompt, affirmation or environment variable authorises a target.
+A URL lifted off a scanned page is pre-checked before it is enqueued **and** still gated on the way
+out; the pre-check is not the gate.
+
+**P3 - the tool identifies itself.**
+Every request carries `scoursh/<version> (+<contact>)`, composed in `_http_transport_default` and
+nowhere else.
+The `scoursh/<version>` product token is never removable at any setting.
+A phase never composes, overrides or suppresses a `User-Agent`.
+
+**P4 - limits are clamped before a phase sees them.**
+The effective rate (4 req/s), per-run request budget (5000) and circuit breaker (10 failures in a
+60s window) are resolved and clamped at the `lib/http.sh` chokepoint.
+A phase reads the effective value.
+A phase never reads `config_scanner_value` directly, never carries a budget of its own, and never
+re-implements a limiter.
+`--i-own-target` is a key, not a switch: it must equal `--target`, it is never persisted, and on its
+own it changes no limit.
+**Concurrency is not bounded today.**
+Rate is capped; simultaneous connections are whatever `--jobs` produces.
+Do not write a concurrency ceiling into any ticket's criteria until the in-flight-counter ticket
+named in the gaps below exists.
+
+**P5 - intensity is declared at the lowest tier that is true.**
+`--intensity` defaults to `passive`, and anything above it additionally requires `--i-own-target`.
+A phase's row in `modules/dast/engine.sh`'s `_DAST_PHASES` table carries the lowest tier its checks
+actually need.
+A row left at `active` for a phase that mutates nothing is dead code on every ordinary run - see the
+DAST-30 landing note, where exactly that row had to move.
+
+**P6 - detection, never exploitation.**
+Prove a defect with a signal; do not exploit it.
+No `DROP`/`DELETE`, no stacked writes, no data modification, and no exfiltration beyond the minimal
+evidence that confirms the finding.
+No credential brute forcing at any setting.
+Any bounded vendored input - a wordlist, a weak-key list, a payload set - has a size no flag
+changes; the affirmation may raise the rate a bounded pass runs at, never its size.
+
+**P7 - a check that could not run says so.**
+A skipped, inapplicable or ceiling-blocked check records a `coverage_gap`/`coverage_reduction`
+naming the reason, and stays out of `checks_run`.
+Silence is never allowed to render as a clean result.
+
+#### Per-ticket restatement
+
+| Ticket | Clauses to restate | Ticket-specific wording it must add |
+|---|---|---|
+| DAST-01 (limiter/budget/breaker) | P4 | The limiter, budget and breaker read an **effective** value DAST-32's clamp has already applied, and the clamp lives beside them in `lib/http.sh`, not in any module. If DAST-01 and DAST-32 stay separate tickets, DAST-01 must not ship a limiter reading `config_scanner_value` directly, or DAST-32 becomes a retrofit. |
+| DAST-02 (`run.sh` dispatch) | P4, P5, P7 | Owns resolving `--target` against `scope.conf` and applying the `--intensity` gate before any phase is sourced. Its honesty roll-up keys on coverage (`checks_run`), never on "did a phase execute". |
+| DAST-03 (`auth.sh`) | P1, P2, P3, P6, P7 | A credential never reaches `argv` and never touches disk raw. A redirect crossing origin drops the caller's headers and body. A failed authentication is a declared coverage reduction, not a non-zero exit. The live user-enumeration probe requires `--allow-intrusive` on top of the affirmation and is not implemented. |
+| DAST-04 (`crawl.sh`) | P1, P2, P5, P7 | A specification contributes its paths, never its host. A form is inventoried, never submitted. The client-rendered (SPA) gap reaches `run.json`, `report.md` and `report.html`, not only prose. |
+| DAST-05..DAST-11 and DAST-30 (passive) | P1, P2, P3, P5, P7 | Passive means no mutation of target state, not no traffic. GET/HEAD only, one request per distinct route, no request body, no submitted form, no invented URL. A discovered sub-resource is classified from markup, never fetched. Every family no fetched response was applicable to is recorded and kept out of `checks_run`. |
+| DAST-12 (content discovery), DAST-13 (method enumeration) | P2, P4, P5, P6, P7 | Both are `safe`-intensity and therefore unreachable without an affirmation. The wordlist is a bounded vendored file whose size no flag changes, and no wordlist ships in this repository. DAST-13 establishes method acceptance without exercising it: only `OPTIONS` and `TRACE` are ever sent. |
+| DAST-14..DAST-25 and DAST-27 (injection and API probes) | P1, P2, P4, P5, P6, P7 | Detection-only. No data modification. No exfiltration beyond minimal confirming evidence. A time-based payload's sleep is clamped before substitution, so a probe can never become a denial of service. Whether a probe has anything to do is decided from the inventory, never by probing to find out. **DAST-20 additionally**: SSRF/XXE sentinels are in-scope-only and no affirmation widens them, because the host that gets hit is chosen by the target rather than named by the operator. |
+| DAST-26 (`jwt.sh`) | P4, P6 | The weak-secret list is bounded and vendored. No flag expands it. This is weak-key detection, not a cracking rig. |
+| DAST-28 (`ratelimit.sh`) | P2, P4, P5, P6, P7 | The one behavioural amendment in this section, and it closes a silent false negative neither design resolved. Under the conservative ceilings a burst probe establishes neither a positive nor a true negative: it would report "no missing-throttling finding" from a scanner that was itself throttled below any plausible threshold. **On an unaffirmed run DAST-28 does not execute**, and emits a `coverage_gap` naming the scanner's own rate ceiling as the reason, using the mechanism `lib/report.sh` already ships. The affirmation is additionally gated on the *effective* rate, because an affirmed run left at 4/s has the same defect one step further in. The probe draws down `lib/http.sh`'s own budget counter and spends at most half of what remains; it never carries a budget of its own. |
+| DAST-29 (`authz.sh`) | P1, P4, P6, P7 | Read-only object references only. Read-only is enforced at candidate selection, so no code path can reach a mutating method. Every skip path returns 0 with a recorded reason, because silence here reads as "this application enforces object-level authorization". |
+
+#### How this applies to the tickets that have already landed
+
+Most of DAST-01 through DAST-30 landed before this section existed.
+For those, the table is a **review checklist**, not a change order.
+Where a landed module already satisfies a clause, nothing happens.
+Where a landed module contradicts one, file it as its own ticket and cite the clause; do not amend
+the module under a doc-only ticket.
+
+#### Gaps this section does not close
+
+Named rather than guessed, per `docs/DESIGN.md` §15.
+
+1. **Concurrency has no ceiling.**
+   The concurrency row in "The conservative defaults" says so, and the paragraph beneath it calls the
+   fix a separate, unassigned piece of work.
+   P4 states the gap instead of promising a limit; do not let a ticket's criteria imply otherwise.
+2. **The affirmation is not a technical control.**
+   It bounds *limits*, never *which hosts a run may reach* - the gate is file-wide, not
+   `--target`-scoped.
+   Whether `http_scope_match` should be narrowed to the run's own target is a real open design
+   question and is deliberately not decided here.
+3. **`SCOURSH_DAST_ENDPOINTS` is empty on a first run.**
+   Any ticket whose criteria assume the export is populated is wrong; the fallback is
+   `$SCOURSH_RUN_DIR/inventory/endpoints.json`.
+   The fix in `modules/dast/run.sh` is filed separately.
+4. **DAST-18 and DAST-20 through DAST-25 are unlanded.**
+   Their criteria are the ones this section can still shape prospectively rather than
+   retrospectively.
 
 ## Dependency-ordered sub-ticket list
 
@@ -3147,21 +3238,18 @@ change, exactly as every §13 sub-step landing so far has had to. `docs/DESIGN.m
 the place build-order status is recorded; `AGENTS.md`/`CLAUDE.md` and this section of `docs/FOUNDATION.md`
 are.
 
-**The step-5 gate was written into two other documents; one is corrected, and `docs/FOUNDATION.md` is
-not.**
+**The step-5 gate was written into two other documents, and both are now corrected.**
 `AGENTS.md` (which `CLAUDE.md` is a symlink to) carried the sentence "No DAST-0x ticket is picked up
 until step 3's outstanding rule packs and step 4's SCA half are both complete on `dev`", and the change
 that retitled this section corrected it there in the same commit range.
-`docs/FOUNDATION.md` still carries that sentence verbatim in its "Where the build currently stands"
-section (line 4273 at the time of writing), and it is stale in exactly the way this document's "Status"
-section was: step 4's SCA half is complete, so the gate as that file states it no longer holds.
-The two lines immediately after it additionally cite this plan's own section by its old name, "Status:
-blocked", which this change has retitled, so that cross-reference is knowingly dangling until it is
-fixed.
-Whoever lands DAST-01 corrects that sentence and that cross-reference in `docs/FOUNDATION.md`, in the
-same change as the "Where the build currently stands" update named above.
-This is not cosmetic tidying: leave it and the two documents contradict each other on whether step 5
-may be started at all.
-One nearby citation is deliberately NOT part of this: `docs/FOUNDATION.md`'s other "Status: blocked"
-reference, in its step 6 paragraph, points at `docs/STEP6-CLOUD-PLAN.md`, which still carries that
-heading and is correct as written.
+`docs/FOUNDATION.md` carried the same sentence verbatim in its "Where the build currently stands"
+section, plus two lines citing this plan's own section by its old name, "Status: blocked".
+Both are gone: that section now records the gate as discharged, and the string "Status: blocked" does
+not appear in `docs/FOUNDATION.md` at all.
+DAST-36 verified this rather than assuming it, because the obligation had been carried in this
+document for long enough to outlive the work that satisfied it.
+The paragraph is kept rather than deleted for the reason it was written: leave the two documents
+disagreeing and they contradict each other on whether step 5 may be started at all, which is the
+failure this note exists to prevent recurring.
+`docs/STEP6-CLOUD-PLAN.md` and `docs/STEP7-STATE-PLAN.md` still carry their own "Status: blocked"
+headings and are correct as written; nothing here asks either to change.
