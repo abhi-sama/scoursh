@@ -541,7 +541,7 @@ assert_eq 0 "$(_req_count)" \
   'an inventory entry carrying another target id is not this target surface - FAILS if the target filter is dropped, which would attribute one target findings to another and break the coverage cell'
 assert_contains "$(_meta coverage_reduction)" 'reason=no_graphql_endpoint' 'and the run says it found nothing to probe'
 
-t_case 'every request goes through the scope gate, so an out-of-scope host is refused'
+t_case 'an out-of-scope inventory row is SKIPPED, and the run continues'
 OOS=$(_inv oos <<'EOF'
 { "schema": "scoursh.inventory.endpoints/1", "endpoints": [
   { "id": "o1", "target": "gql-fixture", "method": "POST", "url": "https://not-in-scope.invalid/graphql", "path": "/graphql", "source": "crawl" }
@@ -551,6 +551,17 @@ EOF
 _new_run oos
 SCOURSH_DAST_GQL_ENDPOINTS=$OOS
 export SCOURSH_DAST_GQL_ENDPOINTS
+# THIS CASE USED TO ASSERT EXIT 3, AND THAT WAS THE DEFECT RATHER THAN THE
+# CONTRACT. Handing an inventory-derived URL straight to `http_request` is
+# fail-CLOSED and still fatal, so ONE bad row in an artifact tension 21 lets
+# three other producers write - and lets an operator write by hand - ended the
+# whole scan instead of skipping one endpoint. The shared, NON-fatal pre-check
+# in modules/dast/engine.sh section 3b is what changed it; the gate itself is
+# untouched, and tests/suites/dast-scope-precheck.sh section D pins that
+# `http_request` still dies on a URL handed to it directly, which is what keeps
+# a redirect the target chose - and any future caller that forgets the
+# pre-check - gated.
+#
 # `|| GATE_RC=$?` rather than a bare call followed by `$?`: this suite runs under
 # `set -Eeuo pipefail`, so a subshell exiting non-zero outside a condition aborts
 # the WHOLE FILE. Written the bare way, this case never executed and the suite
@@ -558,9 +569,15 @@ export SCOURSH_DAST_GQL_ENDPOINTS
 # truncation, which is exactly the "a skipped suite is never a pass" hazard.
 # Measured, not reasoned about: the first draft did precisely that.
 GATE_RC=0
-( source "$ROOT/modules/dast/graphql.sh" ) >/dev/null 2>&1 || GATE_RC=$?
-assert_eq "$SCOURSH_EXIT_SCOPE" "$GATE_RC" \
-  'a URL lifted off the inventory is still re-gated by http_request and exits 3 - which is inside the frozen 0-5 range, and is the proof that this phase inherits the scope gate rather than reimplementing one (tension 19 "No bypass"). FAILS if the phase ever built its own transport'
+# shellcheck source=modules/dast/graphql.sh
+source "$ROOT/modules/dast/graphql.sh" || GATE_RC=$?
+assert_eq 0 "$GATE_RC" \
+  'the phase completes on an inventory whose only row is out of scope - FAILS on the pre-fix code, which handed the URL to http_request and died SCOURSH_EXIT_SCOPE (3), killing the run over one row of a file the scanner did not author'
+assert_eq 0 "$(_req_count)" \
+  'and it dialled nothing - asserted on the REQUEST LOG, so "it skipped" cannot be satisfied by a phase that sent the request and then returned non-zero'
+assert_contains "$(_meta coverage_reduction)" 'reason=inventory_endpoint_out_of_scope' \
+  'and it says WHY the row was not probed - FAILS under dropping it quietly, which reports a schema-exposure clean result for an endpoint that was never asked'
+assert_contains "$(_meta coverage_reduction)" 'phase=graphql' 'under this phase own name'
 
 # ===========================================================================
 printf '\n== E. the correlation input DAST-10 derived finding consumes ==\n'

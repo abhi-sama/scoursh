@@ -197,9 +197,22 @@ _dast_hosthdr_phase() {
   local -a probe=()
   local -A seen=()
   local truncated=0
+  # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - modules/dast/
+  # engine.sh section 3b carries the long form, and passive/cors.sh (whose
+  # candidate shape this file already reuses) applies it in the same place.
+  # `http_request` gates FATALLY, which is right for an operator-configured URL
+  # and exactly wrong for one lifted out of an inventory another module wrote,
+  # where one bad row aborts the whole run at exit 3. Applied before the dedupe
+  # and the cap, so an out-of-scope row cannot spend a bounded route slot.
+  if declare -F dast_scope_skips_reset >/dev/null; then
+    dast_scope_skips_reset
+  fi
   for line in "${candidates[@]+"${candidates[@]}"}"; do
     method=${line%%$'\t'*}
     url=${line#*$'\t'}
+    if declare -F dast_endpoint_keep >/dev/null; then
+      dast_endpoint_keep "$url" "$target" || continue
+    fi
     path=$(_hh_path_of "$url")
     key="$method $(path_template_of "$path")"
     [[ -n ${seen[$key]+set} ]] && continue
@@ -210,6 +223,10 @@ _dast_hosthdr_phase() {
     fi
     probe+=("$line")
   done
+
+  if declare -F dast_scope_record_skips >/dev/null; then
+    dast_scope_record_skips hosthdr "$target"
+  fi
 
   _hh_record_unauthenticated_bound "$target"
 

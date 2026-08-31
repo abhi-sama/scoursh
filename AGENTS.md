@@ -117,6 +117,41 @@ Each has a full entry in `docs/FOUNDATION.md`.
   Do not read "dast evidence is composed prose" as "dast evidence is safe": the prose is composed AROUND bytes the target chose, and the `url`, `logical_fqn`, `loc_path_template` and `loc_param_name` fields beside it are raw - which is why `_finding_redacted_field` exists and why `tests/lint-shell.sh` enforces that all seven are only ever written through their setter.
   `loc_target` is deliberately NOT in that list and does not need to be: it is the `config/scope.conf` target ID, an operator-chosen short name, never a URL.
 - **Evidence is untrusted target output** (tension 10). It goes through `finding_set_evidence` and is escaped per emitter; the HTML report contains no `<script>` at all.
+- **The same pre-check applies to a URL lifted out of the INVENTORY, it is SHARED rather than
+  per-phase, and it is applied where the row is READ rather than where the request is SENT.**
+  `modules/dast/engine.sh` section 3b owns it: `dast_endpoint_in_scope` (the non-fatal predicate,
+  built on `http_gate_url`'s return rather than a second URL parser), `dast_endpoint_keep` (the same
+  with the refusal counted) and `dast_scope_record_skips PHASE` (one `coverage_reduction`, reason
+  `inventory_endpoint_out_of_scope`, carrying the count and the gate's own distinct reasons).
+  `reports/<run>/inventory/endpoints.json` is a tension-21 cross-module artifact `crawl.sh`, SAST
+  route extraction and `aws/live/apigw.sh` may each write and an operator may write by hand, so one
+  out-of-scope row used to abort an ordinary `scan.sh dast` run at exit 3 - fail-CLOSED and never a
+  bypass, and still the whole run killed over one row of a file the scanner did not author.
+  Three things about the shape are worth knowing before changing it.
+  **It is applied at `inject_inventory_load`** (`modules/dast/active/inject_engine.sh`, in both
+  `_inject_flush_endpoint` and `_inject_flush_param`'s parameter-`url` FALLBACK, which is the one
+  other path a URL reaches a request by), because that function is the single door a dozen phase
+  scripts share - every §7.3 probe plus `passive/cookies.sh` and `active/methods.sh` - and tension
+  19's own argument applies one level down: a control each of twelve callers must remember is not a
+  control. The five consumers that do NOT go through it (`passive/banner.sh`, `passive/cors.sh`,
+  `active/hosthdr.sh`, `graphql.sh`, `jwt.sh`) each apply it at their own candidate-build step, and
+  `cors.sh`/`hosthdr.sh` do it BEFORE their dedupe and route cap so an out-of-scope row cannot spend
+  a bounded slot an in-scope route would have had. `jwt.sh` filters the LIST rather than the loop,
+  because its loop is nested inside the per-identity loop and a per-request check would report a
+  count that is a fact about the identity list.
+  **Every `declare -F` guard around these is PERMISSIVE when absent and inverting it is the trap** -
+  the identical reading `dast_check_selected` already ships: a fail-closed default (or an unguarded
+  call, which is exit 127, hence "refused") makes every direct-engine suite inert while every "stays
+  quiet" assertion in them still passes green. Nothing is unsafe about it, because with no
+  `lib/http.sh` loaded there is no `http_request` to send the URL either.
+  **The gate reason is captured AT REFUSAL TIME**: `http_gate_url` clears `_HTTP_GATE_REASON` at
+  entry on every call, so a roll-up reading it after the loop degrades to a generic fallback on
+  exactly the ordinary case where the last row was fine (`passive/transport.sh` found this first).
+  `tests/suites/dast-scope-precheck.sh` pins both halves, and its section C is the pre-fix code
+  reproduced - the pre-check shadowed away in a real subprocess, asserted to exit 3 - so "seen
+  failing before, passing after" is measured rather than claimed. One existing case had to change
+  with it: `tests/suites/dast-graphql.sh` asserted the exit-3 abort as if it were the contract, which
+  it was not.
 - **`modules/sast/rules/secrets.rules` ships NO `files:` glob, so it reads EVERY file in whatever tree it is pointed at - it is the pack most exposed to the cross-fire above, and the only defence is its own clean-tree assertion.** Widening it is therefore never a local change. What it catches is settled by MEASUREMENT against planted controls in `tests/fixtures/sast-secret-forms/`, never by reading a regex: the pack was measured at **7 of 47** assignment forms before the widening ticket and **47 of 47** after, with 0 of 32 negative controls flagged, and `docs/SECRETS-FORM-MATRIX.md` records that table plus which forms are deliberately out of scope. `tests/suites/sast-secrets-forms.sh` re-derives both halves on every run - it scans the same tree with the pack as it stood at `a656663` and asserts each newly-covered form was MISSED then - which is what keeps "seen failing before, passing after" true rather than a claim in a commit message, and which catches the opposite defect a "stays quiet" assertion cannot: a pack gone inert passes every silence check ever written. Four things about it that a later change will otherwise rediscover the expensive way:
   - **The four assignment records share ONE byte-identical `context-deny` block, duplicated on purpose.** `rules/RULE-FORMAT.md` has no include mechanism, so one policy about what a credential assignment is *not* has to exist as four copies. The realistic failure is not a typo but a later ticket adding a deny line to the record it was debugging and not its three siblings, leaving the same benign shape quiet under `password` and noisy under `token`; nothing in the control tree would catch that unless it happened to carry that exact shape under all four keywords. Section F of the suite compares the blocks directly.
   - **A rule file that SPELLS a credential-shaped example in its own header comment matches itself.** The engine has no comment awareness anywhere (the same lesson `cloudformation.rules` recorded), so `secrets.rules` reporting `secrets.rules` is a real, shipped outcome - it happened here twice. Describe the hazard, do not spell it; the suite asserts zero findings across `modules/sast/rules/`.

@@ -167,6 +167,25 @@ _dast_graphql_phase() {
     [[ -n $line ]] && candidates+=("$line")
   done < <(_dast_gql_candidates "$target" "$epf" | LC_ALL=C sort -u)
 
+  # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - modules/dast/
+  # engine.sh section 3b carries the long form. `http_request` gates FATALLY,
+  # which is right for an operator-configured URL and exactly wrong for one
+  # lifted out of an inventory another module wrote, where one bad row aborts
+  # the whole run at exit 3. It is applied to the candidate LIST, once, rather
+  # than in the probe loop, so the empty check and the cap below both see the
+  # surface this phase can actually reach. `graphql_probe` still goes through
+  # `http_request`, which re-gates the URL and every redirect hop.
+  if declare -F dast_endpoint_keep >/dev/null; then
+    dast_scope_skips_reset
+    local -a _gql_kept=()
+    for line in "${candidates[@]+"${candidates[@]}"}"; do
+      dast_endpoint_keep "${line%%$'\t'*}" "$target" || continue
+      _gql_kept+=("$line")
+    done
+    candidates=("${_gql_kept[@]+"${_gql_kept[@]}"}")
+    dast_scope_record_skips graphql "$target"
+  fi
+
   # THE FIRST ACCEPTANCE CRITERION, MADE CONCRETE: no GraphQL endpoint in the
   # inventory means a DECLARED coverage reduction and ZERO requests.  It is
   # deliberately not silence: "this application has no GraphQL" and "scoursh did

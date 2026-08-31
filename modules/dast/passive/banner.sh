@@ -213,8 +213,21 @@ _dast_banner_phase() {
   local i url method hname hvalue prod ver line pair key raw
   local requested=0 read_ok=0 disclosures=0 capped=0 unknown_n=0
 
+  # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - the shared
+  # implementation lives in modules/dast/engine.sh section 3b and its long form
+  # is there. In short: `http_request` gates FATALLY, which is right for the
+  # operator's own base-url and exactly wrong for a URL lifted out of an
+  # inventory some other module wrote, where one bad row would abort the whole
+  # run at exit 3. Everything that survives still goes through `http_request`,
+  # which re-gates it and re-gates every redirect hop.
+  if declare -F dast_scope_skips_reset >/dev/null; then
+    dast_scope_skips_reset
+  fi
   for (( i = 0; i < n; i++ )); do
     url=${_BANNER_EP_URL[$i]}
+    if declare -F dast_endpoint_keep >/dev/null; then
+      dast_endpoint_keep "$url" "$target" || continue
+    fi
     method=GET
     http_request_reset
     http_request_capture "$bodyf" "$hdrf"
@@ -263,6 +276,14 @@ _dast_banner_phase() {
     esac
   done
   rm -f -- "$bodyf" "$hdrf"
+
+  # Recorded BEFORE the `read_ok == 0` return below, not after it. A run whose
+  # every inventory row was out of scope reaches that branch with nothing read,
+  # and a roll-up placed after it would be the one case it never printed - the
+  # exact case it exists to explain.
+  if declare -F dast_scope_record_skips >/dev/null; then
+    dast_scope_record_skips banner "$target"
+  fi
 
   # `checks_run` records the checks that LOADED AND EXECUTED (AGENTS.md's own
   # definition), which is the honest input modules/dast/run.sh's roll-up reads.

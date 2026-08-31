@@ -238,9 +238,23 @@ _dast_cors_phase() {
   (( max < 1 )) && max=1
   local -a probe=()
   local truncated=0
+  # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - modules/dast/
+  # engine.sh section 3b carries the long form. `http_request` gates FATALLY,
+  # which is right for an operator-configured URL and exactly wrong for one
+  # lifted out of an inventory another module wrote, where one bad row aborts
+  # the whole run at exit 3. It is applied HERE, before the dedupe and the cap,
+  # so an out-of-scope row cannot spend a slot of a bounded route budget that an
+  # in-scope route would otherwise have had. Everything that survives still goes
+  # through `http_request`, which re-gates it and every redirect hop.
+  if declare -F dast_scope_skips_reset >/dev/null; then
+    dast_scope_skips_reset
+  fi
   for line in "${candidates[@]+"${candidates[@]}"}"; do
     method=${line%%$'\t'*}
     url=${line#*$'\t'}
+    if declare -F dast_endpoint_keep >/dev/null; then
+      dast_endpoint_keep "$url" "$target" || continue
+    fi
     path=$(_cors_path_of "$url")
     key="$method $(path_template_of "$path")"
     [[ -n ${seen[$key]+set} ]] && continue
@@ -251,6 +265,10 @@ _dast_cors_phase() {
     fi
     probe+=("$line")
   done
+
+  if declare -F dast_scope_record_skips >/dev/null; then
+    dast_scope_record_skips cors "$target"
+  fi
 
   _cors_record_unauthenticated_bound "$target"
 

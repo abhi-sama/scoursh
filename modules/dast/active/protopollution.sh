@@ -306,7 +306,7 @@ _dast_protopollution_phase() {
   if [[ -z $pf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/parameters.json ]]; then
     pf=$SCOURSH_RUN_DIR/inventory/parameters.json
   fi
-  inject_inventory_load "$epf" "$pf"
+  inject_inventory_load "$epf" "$pf" protopollution
   if (( _INJ_N == 0 )); then
     run_record coverage_reduction "module=dast reason=no_parameter_inventory target=$target - the crawler wrote no injectable parameter (docs/INVENTORY-FORMAT.md), so prototype-pollution probing had no request field to test. Feed a spec/HAR (config/discovery.conf) or run the crawl against an application with discoverable parameters."
     run_record coverage_gap "dast protopollution: target '$target' has no known request parameters (query/body/JSON/header/path), so no prototype-pollution probe was sent. This is a coverage gap - nothing was tested - not a finding of safety."
