@@ -138,6 +138,7 @@ H
 <!DOCTYPE html><html><head>
 <script src="https://cdn.example/bad.js"></script>
 <script src="https://cdn.example/good.js" integrity="sha384-AAA" crossorigin="anonymous"></script>
+<script src="https://cdn.example/opaque.js" integrity="sha384-CCC"></script>
 <script src="/own.js"></script>
 <script src="https://mk.fixture.example:443/explicit-port.js"></script>
 <link rel="stylesheet" href="https://cdn.example/bad.css">
@@ -563,10 +564,35 @@ assert_not_contains "$_evi" 'favicon.ico' \
 assert_not_contains "$_evi" 'canonical' 'nor does <link rel=canonical>'
 assert_not_contains "$_evi" 'in-a-string.js' \
   'a <script src> spelled out inside an inline script BODY is a string, not an element'
+assert_not_contains "$_evi" 'opaque.js' \
+  'an element WITH an integrity attribute is never counted under SRI_MISSING, whatever its crossorigin - that belongs to DAST-MARKUP-SRI_OPAQUE-01 instead'
 assert_eq 'mk-fixture' "$(_field_of DAST-MARKUP-SRI_MISSING-01 loc_target)" 'the finding is located on the target'
 assert_eq '/sri' "$(_field_of DAST-MARKUP-SRI_MISSING-01 loc_path_template)" 'and on the page that carries it'
 assert_eq 'CWE-353' "$(_field_of DAST-MARKUP-SRI_MISSING-01 cwe)" 'it carries its CWE'
 assert_eq 'A08:2021' "$(_field_of DAST-MARKUP-SRI_MISSING-01 owasp)" 'and its OWASP mapping'
+
+# DAST-MARKUP-SRI_OPAQUE-01: an integrity attribute present with no crossorigin
+# attribute alongside it - the fetch is opaque, SRI can never be evaluated, and
+# the browser fails CLOSED (blocks the resource) rather than failing open. This
+# is a different defect from SRI_MISSING-01 (an exposure) and must not collide
+# with it on one page: /sri carries exactly one opaque element (opaque.js) and
+# one properly-defended one (good.js, integrity AND crossorigin="anonymous").
+assert_eq 1 "$(_count_check DAST-MARKUP-SRI_OPAQUE-01)" \
+  'exactly one element on /sri has integrity with no crossorigin - FAILS under a shared gate with SRI_MISSING, which would either miss this element entirely or double-count it'
+_evi_opaque=$(_field_of DAST-MARKUP-SRI_OPAQUE-01 evidence)
+assert_contains "$_evi_opaque" 'cdn.example/opaque.js' 'the cross-origin script with integrity but no crossorigin is named'
+assert_not_contains "$_evi_opaque" 'good.js' \
+  'a cross-origin script with BOTH integrity and crossorigin="anonymous" is not opaque - FAILS under a bare non-empty test on the integrity column alone, which ignores crossorigin entirely'
+assert_not_contains "$_evi_opaque" 'bad.js' \
+  'a script with no integrity attribute at all is SRI_MISSING territory, not SRI_OPAQUE - the two are mutually exclusive per element'
+assert_not_contains "$_evi_opaque" '/own.js' \
+  'a same-origin script is out of scope for SRI altogether, opaque or not'
+assert_not_contains "$_evi_opaque" 'favicon.ico' \
+  'a <link rel=icon> does not take SRI, so an unrelated integrity-less icon link is not opaque either'
+assert_eq 'mk-fixture' "$(_field_of DAST-MARKUP-SRI_OPAQUE-01 loc_target)" 'the finding is located on the target'
+assert_eq '/sri' "$(_field_of DAST-MARKUP-SRI_OPAQUE-01 loc_path_template)" 'and on the page that carries it'
+assert_eq 'CWE-353' "$(_field_of DAST-MARKUP-SRI_OPAQUE-01 cwe)" 'it carries its CWE'
+assert_eq 'A08:2021' "$(_field_of DAST-MARKUP-SRI_OPAQUE-01 owasp)" 'and its OWASP mapping'
 assert_not_contains "$(cat "$REQ_LOG")" 'cdn.example' \
   'NOT ONE REQUEST WAS SENT TO A HOST NAMED IN THE MARKUP - this phase classifies references and never follows one (FAILS if a check fetches what it found, which is also out of scope and would abort the run)'
 
@@ -1014,6 +1040,40 @@ assert_contains "$(_meta checks_run)" 'DAST-MARKUP-TABNABBING-01' \
   'and the id is STILL in checks_run, because a page was classified under it and evaluated - FAILS when the condition is "did it fire", which makes a clean result indistinguishable from an untested one for these two ids and only these two'
 assert_not_contains "$(_meta checks_run)" 'DAST-MARKUP-TABNABBING_SENSITIVE-01' \
   'while the sensitive id is NOT claimed, because no page on this run was an authentication page - FAILS if the gate is dropped entirely rather than moved, which would over-claim coverage the run never had'
+
+t_case 'J8: deselecting one SRI check never silences the other'
+# THE SAME SHAPE AS J6, ONE ARM DOWN: a single shared `_mk_selected
+# DAST-MARKUP-SRI_MISSING-01 || continue` at the top of the script|link case
+# used to gate BOTH SRI checks, so deselecting SRI_MISSING (while leaving
+# SRI_OPAQUE selected) would skip the whole record before SRI_OPAQUE's own arm
+# ever ran - an integrity-without-crossorigin element would then produce
+# NEITHER finding, exactly the failure mode J6 already pins for the two frame
+# checks. The element below is cross-origin with an integrity attribute and no
+# crossorigin, so it is SRI_OPAQUE material only; SRI_MISSING has nothing to
+# say about it (integrity IS present) and is deselected here anyway, to prove
+# the gates are independent rather than merely inactive.
+_doc_orig=$(declare -f _doc)
+_doc() { printf '%s\n' '<html><head><script src="https://cdn.example/opaque2.js" integrity="sha384-DDD"></script></head><body></body></html>'; }
+_new_run sriselect mk-fixture
+SCOURSH_DAST_ENDPOINTS='' SCOURSH_DAST_TARGET=mk-fixture SCOURSH_DAST_CELL=mk-fixture
+export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_TARGET SCOURSH_DAST_CELL
+# Same stand-in dast_check_selected as J6 - this suite has no engine.sh in the
+# process, so define it locally rather than approximating the fallback.
+dast_check_selected() {
+  local id=$1
+  [[ -n ${SCOURSH_SELECTED_CHECKS:-} ]] || return 0
+  [[ $'\n'"$SCOURSH_SELECTED_CHECKS"$'\n' == *$'\n'"$id"$'\n'* ]]
+}
+SCOURSH_SELECTED_CHECKS='DAST-MARKUP-SRI_OPAQUE-01'
+export SCOURSH_SELECTED_CHECKS
+_dast_markup_phase
+unset SCOURSH_SELECTED_CHECKS
+unset -f dast_check_selected
+eval "$_doc_orig"
+assert_eq 0 "$(_count_check DAST-MARKUP-SRI_MISSING-01)" \
+  'the deselected check does not fire'
+assert_eq 1 "$(_count_check DAST-MARKUP-SRI_OPAQUE-01)" \
+  'but the SELECTED check on that same element still does - FAILS when a shared gate at the top of the script|link case continues on SRI_MISSING alone being deselected, which would silently switch off SRI_OPAQUE on every element with no integrity-absent counterpart to hide behind'
 
 # ===========================================================================
 printf '\n== dast-markup: %d passed, %d failed ==\n' "$T_PASS" "$T_FAIL"
