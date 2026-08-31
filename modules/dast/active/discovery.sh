@@ -180,11 +180,15 @@ _discovery_safe_rel() {
 # `..` traversal, or an over-long token is skipped rather than sent (the entry
 # is UNTRUSTED file content and a `..` would try to escape the authorised path
 # prefix a scope target may pin).  A leading `/` is stripped so every entry
-# resolves relative to the base-url.  Returns 1 when the file is unreadable, so
-# the caller degrades the technique rather than erroring.
+# resolves relative to the base-url.  Prints nothing and returns 0 when the
+# file is unreadable, so the caller degrades the technique by branching on the
+# resulting empty array rather than on this function's own exit status - it is
+# called from inside a process substitution (`< <(...)`), and a genuine
+# `return 1` there fires lib/core.sh's ERR trap even on this designed
+# degradation path.
 _discovery_read_wordlist() {
   local f=$1 line
-  [[ -r $f ]] || return 1
+  [[ -r $f ]] || return 0
   while IFS= read -r line || [[ -n $line ]]; do
     [[ -z $line || ${line:0:1} == '#' ]] && continue
     # ONE rule, shared with the inventory-derived candidates - see

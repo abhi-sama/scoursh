@@ -50,12 +50,15 @@ source "${BASH_SOURCE[0]%/*}/inject_engine.sh"
 source "${BASH_SOURCE[0]%/*}/../auth_engine.sh"
 
 # `_cmdi_read_payload_file FILE` - prints the file's payload lines (dropping
-# whole-line `#` comments and blanks). Returns 1 when the file is unreadable, so
-# a caller degrades the technique rather than erroring. One payload per line
-# (modules/dast/payloads/README.md).
+# whole-line `#` comments and blanks). Prints nothing and returns 0 when the
+# file is unreadable, so a caller degrades the technique by branching on the
+# resulting empty array rather than on this function's own exit status - it is
+# always called from inside a process substitution (`< <(...)`), and a genuine
+# `return 1` there fires lib/core.sh's ERR trap even on this designed
+# degradation path. One payload per line (modules/dast/payloads/README.md).
 _cmdi_read_payload_file() {
   local f=$1 line
-  [[ -r $f ]] || return 1
+  [[ -r $f ]] || return 0
   while IFS= read -r line || [[ -n $line ]]; do
     [[ -z $line || ${line:0:1} == '#' ]] && continue
     printf '%s\n' "$line"
