@@ -53,8 +53,14 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/inject_engine.sh"
+# The response-header reader crlf.sh reads its probe's response with. This
+# mirrors that file's own source line, which moved from
+# passive/headers_engine.sh to the lifted passive/response_engine.sh - a leaf
+# module holding the reader alone. Nothing in this suite calls an `hdr_*`
+# function directly; it is here so the suite's source graph matches the script
+# under test.
 # shellcheck source=/dev/null
-source "$ROOT/modules/dast/passive/headers_engine.sh"
+source "$ROOT/modules/dast/passive/response_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
 
@@ -64,7 +70,11 @@ rm -rf "$W"; mkdir -p "$W"
 # ---------------------------------------------------------------------------
 # Scope, resolver, scanner limits.
 # ---------------------------------------------------------------------------
-HOSTNAME_FIXTURE=crlf.fixture.example
+# This file has no `HOSTNAME_FIXTURE` variable, unlike its dast-openredirect.sh
+# and dast-hosthdr.sh siblings: it spells `crlf.fixture.example` out at every
+# use, so the copied declaration that used to sit here was dead. It was invisible
+# to the linter because the directive-parse error further down (fixed in the same
+# change as this line) stopped shellcheck parsing this file at all.
 SCOPE=$W/scope.conf
 cat >"$SCOPE" <<'EOF'
 id: crlf-fixture
@@ -587,7 +597,11 @@ if ( unset _INJ_WANT_HEADERS _INJ_MAX_REDIRECTS
      # inlined elsewhere in this file's own source graph, and shellcheck
      # re-expands EVERY source edge it follows. Cutting this one loses no
      # checking and is what keeps the linter's memory bounded - see the
-     # shellcheck stage in tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+     # whole-tree stage in tests/run-tests.sh, and docs/CI-RUNBOOK.md. (That
+     # sentence deliberately does not START the line with the linter's name: a
+     # comment line whose first word is that name is parsed as a DIRECTIVE, and
+     # this one was, which made the rest of this file unparseable - SC1072/
+     # SC1073 at this exact line, pre-existing before this ticket touched it.)
      # shellcheck source=/dev/null
      source "$ROOT/modules/dast/active/inject_engine.sh"
      [[ ${_INJ_WANT_HEADERS} == 0 && -z ${_INJ_MAX_REDIRECTS} ]] ); then

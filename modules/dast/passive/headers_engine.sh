@@ -4,16 +4,23 @@
 # tier 2).
 #
 # WHAT THIS FILE IS, AND WHY IT IS NAMED FOR ONE TICKET RATHER THAN FOR THE TIER.
-# DAST-05..DAST-11 are peers with no ordering between them and are built in
-# parallel, so a file called `passive/passive_engine.sh` would be shared
-# scaffolding three tickets each believed they owned.  Everything here is
-# header-analysis logic that only `passive/headers.sh` uses - the response-header
-# reader, the CSP/HSTS/Referrer-Policy parsers, and the endpoint chooser - and it
-# is named accordingly.  A later ticket that finds it needs the same
-# response-header reader should LIFT it deliberately (into a shared
-# `passive/response_engine.sh`, with this file's tests moving with it) rather
-# than growing a second copy; that is a refactor with an owner, not a side effect
-# of a peer landing.
+# DAST-05..DAST-11 are peers with no ordering between them and were built in
+# parallel, so a file called `passive/passive_engine.sh` would have been shared
+# scaffolding three tickets each believed they owned.  What is left here is the
+# header-analysis logic that only `passive/headers.sh` uses - the
+# CSP/HSTS/Referrer-Policy parsers, the recommended-header loader and the
+# endpoint chooser - and it is named accordingly.
+#
+# THE RESPONSE READER THAT USED TO LIVE HERE HAS BEEN LIFTED, AS THIS HEADER
+# ASKED.  `hdr_parse_capture`, `hdr_present`, `hdr_value`, `hdr_first`,
+# `hdr_is_document`, `hdr_safe_text`, `hdr_path_of` and `hdr_url_is_https` now
+# live in `modules/dast/passive/response_engine.sh`, whose own ADR block records
+# why, why the `hdr_` prefix was kept, and why `hdr_endpoints_load` below did
+# NOT move with them.  Nothing about their behaviour changed and no call site
+# moved; this file sources that one, so a consumer that needs the parsers or the
+# chooser still gets the reader by sourcing this.  A consumer that needs the
+# READER ALONE should source `response_engine.sh` directly rather than this file
+# - that is the whole point of the split, and four already do.
 #
 # THE ONE THING THIS FILE DOES NOT DO IS TALK TO THE NETWORK.  Every request the
 # phase sends goes through `http_request` (lib/http.sh) - docs/FOUNDATION.md
@@ -53,6 +60,11 @@ fi
 # guard makes this a no-op on a run where the crawl already happened.
 # shellcheck source=modules/dast/crawl_engine.sh
 source "${BASH_SOURCE[0]%/*}/../crawl_engine.sh"
+# response_engine.sh is the shared response reader this file used to hold.  It
+# sources nothing itself - it is a leaf in the static source graph - so this
+# edge is cheap under `shellcheck -x` and adds no runtime dependency.
+# shellcheck source=modules/dast/passive/response_engine.sh
+source "${BASH_SOURCE[0]%/*}/response_engine.sh"
 
 # ---------------------------------------------------------------------------
 # 0. Bounds and knobs
@@ -72,141 +84,25 @@ source "${BASH_SOURCE[0]%/*}/../crawl_engine.sh"
 # common industry floor.  Overridable so an operator with a documented shorter
 # policy can hold the scan to their own number rather than to this one.
 : "${SCOURSH_DAST_HSTS_MIN_MAX_AGE:=31536000}"
-# Bytes of any one header value carried into evidence.
-: "${_HDR_MAX_EVIDENCE_FIELD:=200}"
-
-# `hdr_safe_text TEXT [MAX]` - bounded, single-line target-derived text for a
-# diagnostic or an evidence sentence.  `finding_set_evidence` still does the
-# real escaping and redaction (tension 9/10); this only stops one pathological
-# header from dominating the sentence it appears in.
-hdr_safe_text() {
-  local s=$1 max=${2:-$_HDR_MAX_EVIDENCE_FIELD}
-  s=${s//$'\n'/ }
-  s=${s//$'\r'/ }
-  s=${s//$'\t'/ }
-  if (( ${#s} > max )); then
-    s="${s:0:max}..."
-  fi
-  printf '%s' "$s"
-}
+# `_HDR_MAX_EVIDENCE_FIELD` (the evidence field cap) moved to
+# response_engine.sh with `hdr_safe_text`, which reads it as a parameter
+# default: leaving it here would have left that function unbound under `set -u`
+# for any consumer that sources the reader alone.
 
 # ---------------------------------------------------------------------------
-# 1. The response-header reader
+# 1. The response-header reader - MOVED
 # ---------------------------------------------------------------------------
-# `hdr_parse_capture FILE` - reads a lib/http.sh header capture and publishes the
-# FINAL hop's response headers:
-#
-#   _HDR_STATUS              the final status line's code, '' when there is none
-#   _HDR_NAMES               the field names seen, lowercased, in arrival order
-#   _HDR_VALUE[name]         the value; several same-named headers join with LF
-#   _HDR_COUNT[name]         how many times the field appeared
-#
-# Returns 1 (leaving everything empty) when the file is unreadable or carries no
-# status line, so a caller can tell "no response" from "a response with no
-# headers" - a distinction the whole honesty story here rests on.
-#
-# ONLY THE FINAL HOP COUNTS, AND THAT IS THE WHOLE REASON THIS IS NOT A GREP.
-# `http_request_capture`'s header sink ACCUMULATES every hop (lib/http.sh §9a:
-# a 302 login sets its cookie on the hop that redirects), so a file for a
-# request that redirected holds two or more header blocks.  Matching
-# `^strict-transport-security:` across the whole file would happily read the
-# REDIRECT's header and report it as the delivered page's - which is exactly
-# backwards for the one header whose absence on the final response is the
-# finding.  The parse therefore resets on every `HTTP/x.y NNN` status line, so
-# what survives is the last block and nothing else.
-#
-# `declare -g`, never bare: in a real run this file is sourced from inside
-# `dast_run_phase`, so an undecorated `declare` would create a local that dies
-# with the phase (modules/dast/engine.sh's phase table documents this at length).
-hdr_parse_capture() {
-  local f=$1 line name value lower
-  declare -gA _HDR_VALUE=() _HDR_COUNT=()
-  declare -ga _HDR_NAMES=()
-  declare -g _HDR_STATUS=''
-  [[ -n $f && -r $f && -s $f ]] || return 1
-
-  local seen_status=0
-  while IFS= read -r line || [[ -n $line ]]; do
-    line=${line%$'\r'}
-    if [[ $line =~ ^HTTP/[0-9.]+[[:space:]]+([0-9]{3}) ]]; then
-      # A new hop: everything read so far belonged to a response that is not
-      # the one the caller received.
-      _HDR_STATUS=${BASH_REMATCH[1]}
-      _HDR_VALUE=() _HDR_COUNT=() _HDR_NAMES=()
-      seen_status=1
-      continue
-    fi
-    (( seen_status )) || continue
-    [[ $line == *:* ]] || continue
-    name=${line%%:*}
-    # A field name is an RFC 7230 token.  Anything else on a header line is not
-    # a header - a folded continuation, or garbage - and is dropped rather than
-    # guessed at.
-    [[ $name =~ ^[A-Za-z0-9!#\$%\&\'*+.^_\`|~-]+$ ]] || continue
-    value=${line#*:}
-    value=${value#"${value%%[![:space:]]*}"}
-    value=${value%"${value##*[![:space:]]}"}
-    lower=${name,,}
-    if [[ -n ${_HDR_COUNT[$lower]:-} ]]; then
-      _HDR_VALUE[$lower]="${_HDR_VALUE[$lower]}"$'\n'"$value"
-      _HDR_COUNT[$lower]=$(( _HDR_COUNT[$lower] + 1 ))
-    else
-      _HDR_VALUE[$lower]=$value
-      _HDR_COUNT[$lower]=1
-      _HDR_NAMES+=("$lower")
-    fi
-  done <"$f"
-
-  (( seen_status )) || return 1
-  return 0
-}
-
-# `hdr_present NAME` - 0 when the final response carried the (case-insensitive)
-# field at all.  A field present with an EMPTY value is present:
-# `X-Frame-Options:` with nothing after it is a misconfiguration, not an
-# absence, and the two get different sentences.
-hdr_present() {
-  local n=${1,,}
-  [[ -n ${_HDR_COUNT[$n]:-} ]]
-}
-
-# `hdr_value NAME` - sets `_HDR_V` to the field's value (LF-joined if repeated).
-hdr_value() {
-  local n=${1,,}
-  _HDR_V=${_HDR_VALUE[$n]:-}
-}
-
-# `hdr_first NAME` - sets `_HDR_V` to the FIRST value only, for the fields where
-# a repeat is itself the defect and the analysis wants one of them to talk about.
-hdr_first() {
-  local n=${1,,}
-  _HDR_V=${_HDR_VALUE[$n]:-}
-  _HDR_V=${_HDR_V%%$'\n'*}
-}
+# `hdr_parse_capture`, `hdr_present`, `hdr_value` and `hdr_first` now live in
+# modules/dast/passive/response_engine.sh, sourced above.  Read that file's ADR
+# block before changing any of them; the reset-on-every-status-line property is
+# the most dangerous parse in this tier and is pinned in three suites.
 
 # ---------------------------------------------------------------------------
-# 2. Content-Type classification
+# 2. Content-Type classification - MOVED
 # ---------------------------------------------------------------------------
-# `hdr_is_document CTYPE` - 0 for a media type a browser renders as a top-level
-# document, which is the only kind of response `Content-Security-Policy` and
-# `X-Frame-Options` govern.
-#
-# THIS GATE IS THE DIFFERENCE BETWEEN A REPORT AND A WALL OF NOISE, and it is
-# also the honest reading: a JSON API response is not framed and executes no
-# script, so "this endpoint has no CSP" is not a statement about it.  The gate
-# applies to CSP-absence and to clickjacking ONLY - `X-Content-Type-Options`,
-# `Strict-Transport-Security` and `Referrer-Policy` are evaluated on every
-# response, because sniffing, transport downgrade and referrer leakage are not
-# document-only problems.
-hdr_is_document() {
-  local ct=${1,,}
-  ct=${ct%%;*}
-  ct=${ct%"${ct##*[![:space:]]}"}
-  case $ct in
-    text/html | application/xhtml+xml | text/xml | application/xml) return 0 ;;
-    *) return 1 ;;
-  esac
-}
+# `hdr_is_document` moved to response_engine.sh with the reader.  This file's
+# own use of it is unchanged: passive/headers.sh gates CSP-absence and
+# clickjacking on it, and nothing else.
 
 # ---------------------------------------------------------------------------
 # 3. Content-Security-Policy
@@ -674,20 +570,7 @@ _hdr_candidate_add() {
   return 0
 }
 
-# The path component of a URL, query and fragment removed.  A URL with no path
-# is `/`.  Same helper, same reason, as modules/dast/active/sqli.sh's own.
-hdr_path_of() {
-  local url=$1 rest
-  url=${url%%#*}; url=${url%%\?*}
-  rest=${url#*://}
-  if [[ $rest == */* ]]; then printf '/%s' "${rest#*/}"; else printf '/'; fi
-}
-
-# `hdr_url_is_https URL` - 0 for an `https://` URL.  HSTS is meaningless on a
-# plaintext response (RFC 6797 §7.2: a UA MUST ignore an STS header received
-# over non-secure transport), so neither its absence nor its value is a finding
-# there - the cleartext transport is, and that is DAST-30's check, not this
-# one's.
-hdr_url_is_https() {
-  [[ ${1,,} == https://* ]]
-}
+# `hdr_path_of` and `hdr_url_is_https` moved to response_engine.sh with the
+# reader: `_hdr_candidate_add` above still calls the first of them, and
+# passive/headers.sh still calls the second, both unchanged, through the source
+# edge at the top of this file.

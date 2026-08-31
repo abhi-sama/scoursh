@@ -114,8 +114,9 @@ fi
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "${BASH_SOURCE[0]%/*}/../crawl_engine.sh"
-# headers_engine.sh for its RESPONSE-HEADER READER ALONE - `hdr_parse_capture`,
-# `hdr_present`, `hdr_value` and `hdr_first`.
+# response_engine.sh for the RESPONSE-HEADER READER - `hdr_parse_capture`,
+# `hdr_present`, `hdr_value` and `hdr_first`.  It used to be sourced out of
+# headers_engine.sh, DAST-05's own file, which is what the lift below corrects.
 #
 # THIS IS REUSE, AND THE ALTERNATIVE WAS A SECOND COPY OF THE ONE PARSER IN THIS
 # TIER THAT IS EASY TO GET WRONG.  `http_request_capture`'s header sink
@@ -127,16 +128,16 @@ source "${BASH_SOURCE[0]%/*}/../crawl_engine.sh"
 # writing a second one here would be re-earning that lesson, and would put two
 # implementations of it in one directory for a later change to fix in one place.
 #
-# It is a PURE function library with a sourced-once guard and no side effects at
-# source time, so sourcing it neither runs the header PHASE (that is
-# `passive/headers.sh`, a separate file `dast_run_phase` reaches on its own) nor
-# emits anything.  Sourcing it is deliberately NOT the "lift into a shared
-# passive/response_engine.sh" that headers_engine.sh's own header asks a later
-# ticket to do: that lift moves a peer's file AND its tests and is a refactor
-# with an owner, which this ticket files as its own follow-up rather than
-# performing under six parallel peers.
-# shellcheck source=modules/dast/passive/headers_engine.sh
-source "${BASH_SOURCE[0]%/*}/headers_engine.sh"
+# THAT LIFT HAS SINCE HAPPENED, so this file no longer sources a peer ticket's
+# engine to get it.  `hdr_parse_capture`/`hdr_present`/`hdr_value`/`hdr_first`
+# live in `passive/response_engine.sh` - a leaf module that sources nothing and
+# holds the reader alone - so this file no longer pulls in DAST-05's
+# CSP/HSTS/Referrer parsers, its recommended-header loader or its endpoint
+# chooser, none of which it ever used.  No call site changed: the function and
+# global names are the same.  It is still a PURE function library with a
+# sourced-once guard and no side effects at source time.
+# shellcheck source=modules/dast/passive/response_engine.sh
+source "${BASH_SOURCE[0]%/*}/response_engine.sh"
 
 # ---------------------------------------------------------------------------
 # 0. Bounds and knobs

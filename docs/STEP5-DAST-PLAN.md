@@ -771,6 +771,12 @@ suite go red.
   being built in parallel, and a tier-wide engine is shared scaffolding three tickets each believe
   they own.  A later ticket that needs the same response-header reader should LIFT it into a shared
   `passive/response_engine.sh` deliberately, with this suite moving with it.
+  **That lift has since landed**, once six files depended on the reader: it lives in
+  `modules/dast/passive/response_engine.sh` (a leaf that sources nothing) and its unit cases moved
+  to `tests/suites/dast-response-engine.sh`.  `headers_engine.sh` keeps the CSP/HSTS/Referrer
+  parsers, the recommended-header loader and `hdr_endpoints_load`, and sources the reader like every
+  other consumer.  The **endpoint chooser** was deliberately NOT part of it and its own lift is
+  still open - see the DAST-11 note below.
 - **`modules/dast/passive/checks.rules` IS shared ground, and that is forced rather than chosen.**
   `rules/RULE-FORMAT.md` §9's path table gives the §9.5 schema to "any file named `checks.rules`, at
   any depth" and makes every other path `E070`, so a per-ticket `headers-checks.rules` is not a legal
@@ -948,7 +954,9 @@ Six things about it are worth knowing before a peer ticket touches this director
   measured lesson and would put two copies of it in one directory.  This is deliberately NOT the "lift
   into a shared `passive/response_engine.sh`" that `headers_engine.sh`'s header asks a later ticket to
   do - that lift moves a peer's file AND its tests, so it is filed as its own ticket rather than
-  performed under parallel peers.
+  performed under parallel peers.  **That ticket has since landed**, and this file now sources
+  `passive/response_engine.sh` directly rather than a peer ticket's engine; no call site changed,
+  because the lift kept every function and global name.
 - **Two emission grains, deliberately.**  A stack trace and a bundled credential are properties of ONE
   HANDLER and emit once per path, so two leaking paths are two findings the operator fixes in two
   places.  An internal proxy header, the disclosed address set and the third-party origin set are
@@ -1047,7 +1055,15 @@ pass recorded below, no network and no Docker, driven from recorded response bod
 endpoint chooser to LIFT it "with this file's tests moving with it ... a refactor with an owner, not
 a side effect of a peer landing", and doing that lift here would have moved `headers.sh`, its
 156-assertion suite and `cookies.sh` under a markup ticket.  So `markup_endpoints_load` is a second,
-STATED copy and the lift is filed as its own ticket.  It also does not re-use `crawl_html_extract`:
+STATED copy and the lift is filed as its own ticket.
+**Read that precisely now that `passive/response_engine.sh` EXISTS: it holds the READER and only the
+reader, and the ENDPOINT CHOOSER lift this paragraph is about is still open.**  `hdr_endpoints_load`
+stays in `headers_engine.sh` deliberately - it has two callers rather than a shared need, and it
+depends on `crawl_engine.sh` and `path_template_of`, which would put source edges back into a file
+whose whole purpose is to have none.  `markup_endpoints_load` is therefore still a stated second
+copy, as are `transport_engine.sh`'s and `leakage_engine.sh`'s own choosers, each of which differs
+from `hdr_endpoints_load` in its dedup key for reasons its own header records.  A future chooser lift
+is a separate ticket with a separate argument to make; the reader's landing does not settle it.  It also does not re-use `crawl_html_extract`:
 that function's output stream carries no attribute detail, and every check here is about an
 attribute, so widening it would change a contract `docs/INVENTORY-FORMAT.md`'s consumers read - the
 scanner core is reused, the emitter is not.  A second, smaller gap was found and filed rather than

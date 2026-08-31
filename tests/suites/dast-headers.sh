@@ -3,6 +3,16 @@
 # modules/dast/passive/headers_engine.sh: the §7.1 security-header family
 # (docs/DESIGN.md §7.1; docs/STEP5-DAST-PLAN.md DAST-05, tier 2).
 #
+# THE SHARED RESPONSE READER IS NOT TESTED HERE ANY MORE.
+# `hdr_parse_capture`/`hdr_present`/`hdr_value`/`hdr_first`/`hdr_is_document`/
+# `hdr_safe_text`/`hdr_path_of`/`hdr_url_is_https` were lifted out of
+# headers_engine.sh into modules/dast/passive/response_engine.sh once six files
+# depended on them, and their unit cases moved with them to
+# tests/suites/dast-response-engine.sh - a shared component whose only tests
+# live in one consumer's suite is a component the next consumer is free to break
+# quietly.  What stays here is every case about the PHASE and about DAST-05's
+# own parsers, including the end-to-end pin of reading 1 below.
+#
 # NOTHING HERE TOUCHES THE NETWORK.  SCOURSH_HTTP_RESOLVE and
 # SCOURSH_HTTP_TRANSPORT are stubbed throughout and the whole suite is driven
 # from RECORDED RESPONSES - a table of header blocks this file writes, replayed
@@ -17,7 +27,12 @@
 #
 #   1. only the FINAL hop's headers count.  The capture sink accumulates every
 #      hop, so a redirect that sets HSTS and lands on a page that does not must
-#      still be reported as missing HSTS.
+#      still be reported as missing HSTS.  Pinned HERE at the PHASE level
+#      (section E's `redirect` case); the reader's own unit cases for it moved to
+#      tests/suites/dast-response-engine.sh when the reader was lifted out of
+#      headers_engine.sh into passive/response_engine.sh.  Both grains are
+#      wanted: the unit case catches a broken parse, this one catches a phase
+#      that stopped calling it.
 #   2. `unsafe-inline` beside a nonce or hash is IGNORED by browsers, so it is
 #      not a finding; beside neither, it is.
 #   3. `default-src` is the fallback for an absent `script-src`.
@@ -294,29 +309,6 @@ _new_run boot
 source "$ROOT/modules/dast/passive/headers.sh"
 
 # ===========================================================================
-printf '== A. the engine: the response reader ==\n'
-# ===========================================================================
-t_case 'reader'
-CAP=$W/cap.hdr
-printf 'HTTP/1.1 302 Found\r\nStrict-Transport-Security: max-age=31536000\r\nLocation: /final\r\n\r\nHTTP/1.1 200 OK\r\nContent-Type: text/html\r\nX-Content-Type-Options: nosniff\r\n\r\n' >"$CAP"
-hdr_parse_capture "$CAP"
-assert_eq 200 "$_HDR_STATUS" \
-  'the reader reports the FINAL hop status, not the redirect - FAILS if it stops at the first status line'
-assert_true "$(hdr_present x-content-type-options && printf 0 || printf 1)" \
-  'a header on the final hop is present'
-assert_true "$(hdr_present strict-transport-security && printf 1 || printf 0)" \
-  'HSTS set only on the REDIRECT hop is NOT reported as present on the final response - FAILS under a whole-file grep, which is the whole reason this reader exists'
-
-printf 'HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\n\r\n' >"$CAP"
-hdr_parse_capture "$CAP"
-assert_eq 2 "${_HDR_COUNT[set-cookie]}" \
-  'a repeated field is counted, not overwritten - the HSTS_MALFORMED duplicate case depends on it'
-
-: >"$CAP"
-assert_true "$(hdr_parse_capture "$CAP" && printf 1 || printf 0)" \
-  'an empty capture returns non-zero rather than reporting a response with no headers'
-
-# ===========================================================================
 printf '== A. the engine: CSP, HSTS and Referrer-Policy parsing ==\n'
 # ===========================================================================
 t_case 'parsers'
@@ -365,9 +357,6 @@ assert_true "$(hdr_referrer_leaks_full_url origin-when-cross-origin && printf 1 
   'origin-when-cross-origin sends only the origin and is NOT flagged - FAILS under "anything but strict-origin is leaky"'
 assert_true "$(hdr_referrer_leaks_full_url no-referrer-when-downgrade && printf 0 || printf 1)" \
   'no-referrer-when-downgrade sends the full URL to every cross-origin HTTPS destination and IS flagged'
-
-assert_true "$(hdr_is_document 'text/html; charset=utf-8' && printf 0 || printf 1)" 'text/html is a document'
-assert_true "$(hdr_is_document 'application/json' && printf 1 || printf 0)" 'application/json is not'
 
 # ===========================================================================
 printf '== B. a target with nothing set fires the absence checks ==\n'
