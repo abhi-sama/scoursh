@@ -567,4 +567,92 @@ else
 
 fi
 
+# ---------------------------------------------------------------------------
+# G. _tls_probe_default: the CWE-400 transcript-size cap
+# ---------------------------------------------------------------------------
+# THE ONLY SECTION IN THIS SUITE THAT EXERCISES `_tls_probe_default` DIRECTLY.
+# Every case above stubs SCOURSH_TLS_PROBE, so the one function that actually
+# shells out to `openssl s_client` is never reached - by design, per this
+# file's own header ("NOTHING HERE TOUCHES THE NETWORK"). This section still
+# touches no network and needs no REAL openssl at all: it PATH-shadows the
+# `openssl` NAME with a tiny script ahead of whatever real one is (or is not)
+# installed, so `_tls_probe_default` runs for real against a fake
+# `openssl s_client` that behaves like a hostile-but-authorised listener
+# instead of a TLS stack - exactly the gap this ticket names ("_tls_probe_
+# default ... is untested by design").
+printf '\n== G. _tls_probe_default: the transcript-size cap (CWE-400) ==\n'
+
+GBIN=$W/g-bin
+rm -rf "$GBIN"
+mkdir -p "$GBIN"
+OLD_PATH=$PATH
+
+# A LISTENER THAT NEVER COMPLETES A HANDSHAKE AND JUST STREAMS BYTES: 64KiB
+# every whole second (a PLAIN integer `sleep`, never a fractional one - BSD
+# and GNU sleep agree on integer seconds, and this suite runs on both).  Left
+# unbounded this writes 20 * 64KiB = 1.25MB over ~20s; the cap
+# ($_TLS_TRANSCRIPT_CAP_BYTES, 256KiB) is crossed after the 4th chunk, around
+# the 3-4 second mark - which the internal 100ms watchdog tick discovers and
+# kills within, at most, one more tick.  What this case pins is BOTH halves at
+# once: the FILE ON DISK is bounded, and the CALL RETURNS EARLY - and it fails
+# under a watchdog that checks only the clock (`timeout_s`, generous here at
+# 30s), which is exactly the code this ticket found: unmodified, this case
+# would run the full ~20s and land the full ~1.25MB in $TR.
+cat >"$GBIN/openssl" <<'EOS'
+#!/usr/bin/env bash
+if [[ $1 == s_client ]]; then
+  chunk=$(head -c 65536 /dev/zero | tr '\0' 'A')
+  n=0
+  while (( n < 20 )); do
+    printf '%s' "$chunk"
+    n=$(( n + 1 ))
+    sleep 1
+  done
+fi
+exit 0
+EOS
+chmod +x "$GBIN/openssl"
+
+t_case 'a listener that floods bytes instead of completing a handshake is capped, not just timed out'
+TR=$W/g-flood.transcript
+PATH="$GBIN:$OLD_PATH"
+SECONDS=0
+rc=0
+_tls_probe_default '198.51.100.9' 443 flood.fixture.example 30 "$TR" || rc=$?
+elapsed=$SECONDS
+PATH=$OLD_PATH
+size=$(wc -c <"$TR" 2>/dev/null) || size=0
+size=${size//[[:space:]]/}
+[[ $size =~ ^[0-9]+$ ]] || size=0
+
+assert_eq '0' "$rc" \
+  'a capped, truncated transcript is still reported as CAPTURED, matching the existing timeout-kill semantics this watchdog already had for a non-empty file - fails if truncation were (wrongly) treated as a probe failure of its own'
+assert_true "$( (( size > 0 && size < 2 * _TLS_TRANSCRIPT_CAP_BYTES )) && printf 0 || printf 1 )" \
+  "the transcript on disk is bounded to roughly the cap (got $size bytes, cap is $_TLS_TRANSCRIPT_CAP_BYTES) - fails under a clock-only watchdog, which would let this reach the unbounded flood's ~1.25MB"
+assert_true "$( (( elapsed < 12 )) && printf 0 || printf 1 )" \
+  "the probe returns in a handful of seconds, not the ~20s the unbounded flood would take (got ${elapsed}s) - fails under a clock-only watchdog with a 30s ceiling"
+
+t_case 'the capped, session-less transcript is reported as a failed handshake, never a silent clean result'
+assert_status 1 \
+  'tls_parse_session refuses the capped flood transcript - it never contains an SSL-Session/Cipher block, so this is the SAME path modules/dast/passive/tls.sh already takes for any failed handshake (the tls_handshake_failed coverage_reduction plus coverage_gap pinned in section F) - fails if a truncated-but-nonempty transcript were read as a completed session' \
+  tls_parse_session "$TR"
+
+t_case 'a small, legitimate transcript captured through the SAME code path is unaffected by the cap'
+cat >"$GBIN/openssl" <<EOS
+#!/usr/bin/env bash
+if [[ \$1 == s_client ]]; then
+  cat "$FIX/openssl3-tls13-host-specific.transcript"
+fi
+exit 0
+EOS
+chmod +x "$GBIN/openssl"
+TR2=$W/g-ok.transcript
+PATH="$GBIN:$OLD_PATH"
+rc=0
+_tls_probe_default '198.51.100.9' 443 api.fixture.example 30 "$TR2" || rc=$?
+PATH=$OLD_PATH
+assert_eq '0' "$rc" 'a normal, small transcript still probes successfully with the size cap in place'
+assert_status 0 'and it still parses as a completed session - the cap sits two orders of magnitude above any real transcript, so it never touches one' \
+  tls_parse_session "$TR2"
+
 t_summary 'dast-tls'
