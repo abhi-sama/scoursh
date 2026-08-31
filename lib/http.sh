@@ -743,7 +743,7 @@ _http_curl_cfg_quote() {
 # curl/wget/nc/`openssl s_client` in any file but the two it exempts by path.
 http_authorize_raw_connection() {
   local url=$1 target=${2:-} dns_fatal=${3:-true}
-  local rps_milli budget breaker_failures breaker_window
+  local rps_milli budget breaker_failures breaker_window inflight_max
   _HTTP_RAW_ADDR='' _HTTP_RAW_HOST='' _HTTP_RAW_PORT='' _HTTP_RAW_SCHEME=''
   _HTTP_RAW_BUCKET='' _HTTP_RAW_REASON=''
 
@@ -767,8 +767,14 @@ http_authorize_raw_connection() {
   breaker_failures=$_HTTP_EFF_LIMIT
   _http_effective_limit_set circuit-breaker-window
   breaker_window=$_HTTP_EFF_LIMIT
+  # Resolved here so the announced numbers are the whole set, and so an
+  # explicit over-ceiling `jobs` is refused on this path too.  The SLOT itself
+  # is deliberately not taken here; see section 11b's "The one path this does
+  # not bound" note.
+  _http_effective_limit_set jobs
+  inflight_max=$_HTTP_EFF_LIMIT
   _http_limit_dir_set
-  _http_limit_announce_once "$rps_milli" "$budget" "$breaker_failures" "$breaker_window"
+  _http_limit_announce_once "$rps_milli" "$budget" "$breaker_failures" "$breaker_window" "$inflight_max"
 
   _http_abort_check "$bucket"
   _http_throttle "$bucket" "$rps_milli" "$budget"
@@ -1076,18 +1082,28 @@ _http_decimal_is_zero() {
 # ceiling, which is what makes a caller that never went through scan.sh's
 # parser inherit the safe value rather than an unbounded one.
 #
-# Two of the four clamp in opposite directions, which is worth stating rather
-# than rediscovering: a HIGHER rate, a HIGHER budget and a HIGHER failure
-# threshold each mean more traffic to a host this repository's authors cannot
-# vet, so those clamp DOWN; a SHORTER breaker window counts fewer failures
-# towards the same threshold, weakening the breaker, so that one clamps UP.
-# Every clamp leaves the effective behaviour at least as conservative as the
-# shipped default.
+# One of the five clamps in the opposite direction, which is worth stating
+# rather than rediscovering: a HIGHER rate, a HIGHER budget, a HIGHER failure
+# threshold and MORE simultaneous connections each mean more traffic to a host
+# this repository's authors cannot vet, so those clamp DOWN; a SHORTER breaker
+# window counts fewer failures towards the same threshold, weakening the
+# breaker, so that one clamps UP.  Every clamp leaves the effective behaviour at
+# least as conservative as the shipped default.
+#
+# `jobs` is the concurrency ceiling and is the newest of the five.  It is the
+# §9.6.1 key an operator already sets, rather than a key invented for this file:
+# `--jobs` is the ONE number that decides how many connections a target sees at
+# once, section 11b bounds the in-flight count to the value resolved here, and a
+# second key would mean two numbers an operator has to keep in step with each
+# other to get one behaviour.  Its ceiling equals its own §9.6.1 default (4), so
+# an unedited install sees no clamp and no warning - the same property the rate
+# ceiling has, and for the same reason.
 #
 # Sets `_HTTP_LIMIT_CEIL`; returns 1 for a key with no ceiling defined.
 _http_limit_ceiling_set() {
   case $1 in
     requests-per-second) _HTTP_LIMIT_CEIL=4 ;;
+    jobs) _HTTP_LIMIT_CEIL=4 ;;
     request-budget) _HTTP_LIMIT_CEIL=5000 ;;
     circuit-breaker-failures) _HTTP_LIMIT_CEIL=10 ;;
     circuit-breaker-window) _HTTP_LIMIT_CEIL=60 ;;
@@ -1237,11 +1253,18 @@ _http_limit_warn_clamp() {
 # The rate has its own accessor below because it is the one decimal key.
 #
 # WHICH BOUNDS AN AFFIRMATION LIFTS, AND WHICH IT NEVER DOES.  The affirmation
-# raises the three UPPER bounds - rate, budget, breaker threshold - because
-# those are the numbers whose only justification is that this tool cannot vet
-# the host, and against a host that genuinely is the operator's, a 4/s cap has
-# no safety content.  It lifts NEITHER of `circuit-breaker-window`'s two
-# bounds, and both refusals have their own reason:
+# raises the four UPPER bounds - rate, concurrency, budget, breaker threshold -
+# because those are the numbers whose only justification is that this tool
+# cannot vet the host, and against a host that genuinely is the operator's, a
+# 4/s cap has no safety content.  Concurrency joins that list rather than the
+# never-relaxable one for exactly the reason docs/STEP5-DAST-PLAN.md's
+# "What may be relaxed" table already puts it beside the rate: simultaneous
+# connections are a politeness property of somebody else's host, and the worst
+# case against your own lab is that you degrade it.  An affirmation raises the
+# ceiling and never removes it - `jobs` is a positive integer by schema, so
+# "unbounded concurrency" is unrepresentable here, the same way the budget stays
+# finite.  It lifts NEITHER of `circuit-breaker-window`'s two bounds, and both
+# refusals have their own reason:
 #
 #   * The 60s FLOOR is not relaxable because a shorter window counts fewer
 #     failures towards the same threshold, so relaxing it is a way of weakening
@@ -1406,10 +1429,10 @@ _http_limit_warn_coarse_clock() {
 # difference between one fork per run and one fork per request.  The mkdir is
 # still what decides, because it is the part that is atomic between workers.
 _http_limit_announce_once() {
-  local rps_milli=$1 budget=$2 failures=$3 window=$4
+  local rps_milli=$1 budget=$2 failures=$3 window=$4 inflight=$5
   [[ -d $_HTTP_LIMIT_DIR/announced ]] && return 0
   mkdir "$_HTTP_LIMIT_DIR/announced" 2>/dev/null || return 0
-  log_info "request limiter armed for this run: $(_http_rps_render "$rps_milli") requests/second, a per-run budget of $budget requests, and a circuit breaker at $failures failed requests within ${window}s (docs/FOUNDATION.md tension 16)"
+  log_info "request limiter armed for this run: $(_http_rps_render "$rps_milli") requests/second, at most $inflight request(s) in flight at once, a per-run budget of $budget requests, and a circuit breaker at $failures failed requests within ${window}s (docs/FOUNDATION.md tension 16)"
   return 0
 }
 
@@ -1472,7 +1495,7 @@ http_budget_remaining_set() {
 # ---------------------------------------------------------------------------
 # 11a. The run's authorisation record (docs/STEP5-DAST-PLAN.md DAST-32/33/34)
 # ---------------------------------------------------------------------------
-# `http_limits_record` - resolve all four network limits ONCE, at run start,
+# `http_limits_record` - resolve all five network limits ONCE, at run start,
 # and write what actually happened to each into the run's own meta records, so
 # run.json can state it (DAST-33) and the report can banner it (DAST-34).
 #
@@ -1493,7 +1516,7 @@ http_budget_remaining_set() {
 # Dies (exit 2) for an explicit CLI/env value above a ceiling with no
 # affirmation, so it must be called directly and never through `$(...)`.
 http_limits_record() {
-  local rps_milli budget failures window contact
+  local rps_milli budget failures window inflight contact
   local rps_ceil='4.000'
 
   _http_effective_rps_milli_set
@@ -1505,6 +1528,10 @@ http_limits_record() {
       run_record limits_clamped "requests-per-second:$_HTTP_EFF_RPS_RAW->$rps_ceil reason=no_owner_affirmation source=$_HTTP_EFF_RPS_SRC"
     fi
   fi
+
+  _http_effective_limit_set jobs
+  inflight=$_HTTP_EFF_LIMIT
+  _http_limit_delta_record jobs 4 "$inflight"
 
   _http_effective_limit_set request-budget
   budget=$_HTTP_EFF_LIMIT
@@ -1522,6 +1549,7 @@ http_limits_record() {
   # not have done, and a list of what stayed on is the answer; without it a
   # reader has to reason from the version number.
   run_record limits_enforced "request-budget:$budget (finite, never removable)"
+  run_record limits_enforced "concurrency:$inflight-in-flight (bounded at the transport, never removable)"
   run_record limits_enforced "circuit-breaker:$failures-failures/${window}s (never disableable)"
   run_record limits_enforced 'scope-gate:config/scope.conf (every URL and every redirect hop; no affirmation authorises a target)'
   run_record limits_enforced 'payloads:detection-only (docs/DESIGN.md §7.3; no destructive payload exists at any setting)'
@@ -1811,6 +1839,262 @@ _http_breaker_record_failure() {
 }
 
 # ---------------------------------------------------------------------------
+# 11b. The in-flight concurrency semaphore
+# ---------------------------------------------------------------------------
+# ADR: bound simultaneous connections with a file-backed semaphore at the
+#      http_request chokepoint, keyed on the existing `jobs` config value.
+# Context: DAST-01's token bucket bounds the request RATE, not how many
+#      requests are IN FLIGHT.  Against a slow target each request holds a
+#      connection for seconds, so `--jobs 8` opens 8 simultaneous connections
+#      while the average rate stays under 4/s, and nothing clamped `jobs` at
+#      all - docs/STEP5-DAST-PLAN.md's own enforcement table had to be
+#      corrected to say the row was enforced by nothing.
+# Decision: a counter file of one `PID NONCE EPOCH` line per held slot, under
+#      lib/core.sh's atomic-mkdir mutex (tension 16), taken immediately before
+#      the transport and released immediately after it.  The ceiling is the
+#      RESOLVED, clamped `jobs` value, so DAST-32's asymmetric clamp policy and
+#      the own-your-target affirmation apply to it unchanged.
+# Alternatives considered: a per-process counter -> rejected, `--jobs 8` then
+#      gets 8x the ceiling, which is the exact failure tension 16 exists for.
+#      A new `max-concurrent-requests` config key -> rejected, `rules/
+#      RULE-FORMAT.md` §9.6.1 is frozen and two numbers an operator must keep
+#      in step to get one behaviour is worse than one.  A counting FIFO or
+#      `flock` -> rejected, tension 16 already weighed and refused both (FIFO
+#      framing across N writers; flock is absent on some BSD userlands).
+#      Bounding it in `modules/dast/` -> rejected on tension 19's own argument.
+# Consequences: every caller of http_request inherits the bound, including the
+#      e2e smoke test that never goes near scan.sh.  It costs one mutex
+#      acquisition per request on top of the throttle's own.  A slot whose
+#      holder was killed is reclaimed only once it is BOTH stale and dead, so a
+#      recycled pid makes the run wait rather than exceed the ceiling.
+#
+# WHAT IS AND IS NOT SHARED, AND WHY THE STATE IS A FILE.  `xargs -P "$JOBS"`
+# gives N independent processes, so a shell variable is invisible between them:
+# a variable-backed semaphore admits `jobs` connections PER WORKER, which is
+# `jobs` squared, and is a bound that reads as enforced while enforcing
+# nothing.  The file lives beside the rate, budget and breaker state under the
+# run scratch directory and is guarded by the SAME mutex they take, so a slot
+# grant and a budget spend can never be observed half-applied relative to each
+# other.
+#
+# WHY THE SLOT IS TAKEN AFTER THE THROTTLE AND NOT BEFORE IT.  `_http_throttle`
+# sleeps outside its critical section while it waits for a token.  A worker
+# holding a slot through that sleep would occupy a connection it is not using,
+# and `jobs` workers all parked for a token would hold every slot in the run
+# while zero connections were open - a self-inflicted deadlock whose cause is
+# invisible from the outside.  The slot covers the transport call and nothing
+# else, which is the only interval during which a connection actually exists.
+#
+# THE SLOT IS ITS OWN CRITICAL SECTION AND CANNOT BE FOLDED INTO THE TOKEN
+# GRANT'S, unlike the budget decrement, which tension 16 puts inside it
+# deliberately.  The budget is spent and never given back; a slot is
+# necessarily RELEASED after the transport, so its two ends bracket a call the
+# mutex must not be held across.  That costs one further mutex acquisition per
+# request on top of the throttle's own, and the ordering has one consequence
+# worth stating rather than rediscovering: a worker holds a token and a unit of
+# budget while it waits for a slot, so a worker that times out waiting has
+# spent budget on a request it never sent.  That direction is the safe one -
+# the run sends LESS traffic than the budget records - and it is the same
+# accounting the abort check already produces when a breaker opens between the
+# token grant and the send.
+#
+# THE ONE PATH THIS DOES NOT BOUND, STATED RATHER THAN LEFT TO BE DISCOVERED.
+# `http_authorize_raw_connection` (section 9b) hands an address back and opens
+# nothing; the socket is opened by `modules/dast/passive/tls.sh`, which is
+# tension 19's single documented transport exception.  A slot taken there could
+# only be released by that module, and a control the exempted caller has to
+# remember to release is not a control - it is a slot leaked for the rest of
+# the run the first time a code path returns early, which is the deadlock
+# direction rather than the traffic direction.  So the raw path resolves and
+# announces the concurrency ceiling (and refuses an explicit over-ceiling
+# `jobs` exactly as the request path does) and does not hold a slot.  What is
+# bounded there is what that path actually spends: a token, a unit of budget
+# and a breaker outcome.  Closing this properly means giving lib/http.sh a
+# transport primitive for a raw socket, which is a register question about
+# tension 19's exception, not a retrofit here.
+_HTTP_INFLIGHT_TICK_MS=25
+
+# The per-acquisition identity token.  A pid alone is not enough for either
+# half of the job: it cannot tell one process's two successive slots apart, and
+# after a pid is recycled it names a slot this process never took.  The nonce
+# is per (process, acquisition), so a release removes exactly the line this
+# call added, or nothing at all.
+_HTTP_INFLIGHT_SEQ=0
+_HTTP_INFLIGHT_NONCE=''
+
+# Declared at file scope so `set -u` is satisfied on every path, including one
+# that reads them before an acquire has ever run.
+_HTTP_INFLIGHT_LIVE=()
+_HTTP_INFLIGHT_RECLAIMED=0
+
+# Sets `_HTTP_INFLIGHT_LIVE` to the slot lines that are still held, dropping
+# the ones this call is entitled to reclaim, and `_HTTP_INFLIGHT_RECLAIMED` to
+# how many it dropped.  THE CALLER MUST HOLD `_HTTP_LIMIT_MUTEX`.
+#
+# The reclaim test is lib/core.sh's `lock_is_stale` rule applied to a slot, and
+# BOTH halves are required for the same reason tension 16 requires both of its:
+#
+#   (a) the slot is at least `lock-stale-seconds` old, and
+#   (b) the process that took it is no longer alive.
+#
+# Age alone would reclaim a slot from a LIVE worker that is merely slow - a
+# request against a target that takes longer than the threshold is ordinary,
+# not a fault - and that puts two processes over the ceiling, which is the one
+# outcome this whole section exists to prevent.  Liveness alone would reclaim a
+# slot in the microseconds between a worker recording it and that worker being
+# observable, and would make the answer depend on scheduling.
+#
+# Requiring both has a stated cost in the other direction: a recycled pid that
+# now belongs to some unrelated live process makes a dead worker's slot look
+# held forever, so the run waits and eventually fails loud on the timeout in
+# `_http_inflight_acquire` rather than quietly exceeding the ceiling.  That is
+# the same trade lib/core.sh's mutex already makes, deliberately and for the
+# same reason.
+#
+# The reclaim is SINGLE-WINNER by construction rather than by a claim marker:
+# it happens inside the mutex, and the pruned set is written back before the
+# mutex is released, so exactly one process can ever observe and drop a given
+# line.  lib/core.sh's `_lock_reclaim` needs its own marker only because it
+# reclaims the mutex itself and so cannot be holding it.
+#
+# A MALFORMED LINE IS DROPPED, and that is a decision rather than an oversight.
+# Every write to this file happens under the mutex and rewrites it whole, so a
+# torn line is not a state this code can produce; a line that is unparseable is
+# therefore corruption, and no release will ever match it. Keeping it would
+# consume a slot for the rest of the run with no owner able to free it.
+_http_inflight_live_set() {
+  local file=$1 now pid nonce ts
+  _HTTP_INFLIGHT_LIVE=()
+  _HTTP_INFLIGHT_RECLAIMED=0
+  [[ -r $file ]] || return 0
+  now=$(now_epoch)
+  while IFS=' ' read -r pid nonce ts; do
+    [[ $pid =~ ^[0-9]+$ && -n $nonce && $ts =~ ^[0-9]+$ ]] || continue
+    if (( now - ts >= SCOURSH_LOCK_STALE_SECONDS )) && ! proc_alive "$pid"; then
+      _HTTP_INFLIGHT_RECLAIMED=$(( _HTTP_INFLIGHT_RECLAIMED + 1 ))
+      continue
+    fi
+    _HTTP_INFLIGHT_LIVE+=("$pid $nonce $ts")
+  done <"$file"
+  return 0
+}
+
+# Rewrites the file whole from `_HTTP_INFLIGHT_LIVE`.  THE CALLER MUST HOLD
+# `_HTTP_LIMIT_MUTEX`.  Whole-file rewrite rather than append-plus-edit,
+# because the pruned set and the new set have to land together: a file that
+# gained a line without losing the reclaimed ones would put the run over the
+# ceiling by exactly the number reclaimed.
+_http_inflight_write() {
+  local file=$1 v out=''
+  for v in "${_HTTP_INFLIGHT_LIVE[@]+"${_HTTP_INFLIGHT_LIVE[@]}"}"; do
+    out+="$v"$'\n'
+  done
+  printf '%s' "$out" >"$file"
+  return 0
+}
+
+# One line per run, at the seam, when a slot had to be reclaimed.  A worker
+# that was killed mid-request is a real event an operator wants to know about -
+# it is the shape a SIGTERM'd `xargs -P` run leaves behind - but it is a fact
+# about the run rather than about each later request, so eight workers must not
+# each report it.  The marker is a directory because `mkdir` is atomic, which
+# is the idiom every other once-per-run notice in this file uses.
+_http_inflight_warn_reclaim() {
+  mkdir "$_HTTP_LIMIT_DIR/warned.inflight" 2>/dev/null || return 0
+  log_warn "reclaimed $1 in-flight request slot(s) whose worker process is gone and whose entry is older than ${SCOURSH_LOCK_STALE_SECONDS}s; a worker was killed mid-request, so this run's coverage may be short of what it attempted"
+  return 0
+}
+
+# `_http_inflight_acquire BUCKET CEILING` - block until a slot is free, then
+# take one.  The ceiling is passed in rather than resolved here, exactly as
+# `_http_throttle` takes its rate and budget: the resolution costs a fork
+# (`config_scanner_value` is die-capable and is read through `core_capture`),
+# it cannot change inside one request, and resolving it inside the wait loop
+# would pay that fork on every tick of the wait.
+#
+# The abort flag is re-checked at the top of every iteration, for the identical
+# reason `_http_throttle` does it: a worker can be parked here for as long as
+# another worker's request takes, and that is exactly the window in which the
+# breaker opens.  Checking only on the way in means every queued worker still
+# sends its request against a target the run has already decided to stop
+# talking to.  The check sits OUTSIDE the critical section because it dies, and
+# dying while holding the mutex parks every other worker until the staleness
+# reclaim fires.
+#
+# The wait is BOUNDED, and dying at the bound is the deliberate choice.  An
+# unbounded wait for a slot that a recycled pid has made unreclaimable is a
+# hang with no diagnosable cause, which is strictly worse than an exit that
+# names it: this repository's own mutex already makes that call
+# (`mutex_acquire` dies on timeout), and the bound is read from the same
+# `mutex-timeout-seconds` key so an operator has one number to change rather
+# than two.
+_http_inflight_acquire() {
+  local bucket=$1 ceiling=$2 file now waited=0 ticks
+  (( ceiling >= 1 )) || ceiling=1
+  _http_limit_dir_set
+  file=$_HTTP_LIMIT_DIR/inflight.state
+  _HTTP_INFLIGHT_SEQ=$(( _HTTP_INFLIGHT_SEQ + 1 ))
+  _HTTP_INFLIGHT_NONCE="$BASHPID.$_HTTP_INFLIGHT_SEQ"
+  ticks=$(( SCOURSH_MUTEX_TIMEOUT_SECONDS * 1000 / _HTTP_INFLIGHT_TICK_MS ))
+  (( ticks >= 1 )) || ticks=1
+
+  while :; do
+    _http_abort_check "$bucket"
+    mutex_acquire "$_HTTP_LIMIT_MUTEX"
+    _http_inflight_live_set "$file"
+    if (( ${#_HTTP_INFLIGHT_LIVE[@]} < ceiling )); then
+      now=$(now_epoch)
+      _HTTP_INFLIGHT_LIVE+=("$BASHPID $_HTTP_INFLIGHT_NONCE $now")
+      _http_inflight_write "$file"
+      mutex_release "$_HTTP_LIMIT_MUTEX"
+      (( _HTTP_INFLIGHT_RECLAIMED > 0 )) \
+        && _http_inflight_warn_reclaim "$_HTTP_INFLIGHT_RECLAIMED"
+      return 0
+    fi
+    # The prune is persisted even when it did not free enough, so the work is
+    # not redone by every waiter on every tick.
+    _http_inflight_write "$file"
+    mutex_release "$_HTTP_LIMIT_MUTEX"
+    (( _HTTP_INFLIGHT_RECLAIMED > 0 )) \
+      && _http_inflight_warn_reclaim "$_HTTP_INFLIGHT_RECLAIMED"
+    msleep "$_HTTP_INFLIGHT_TICK_MS"
+    waited=$(( waited + 1 ))
+    (( waited < ticks )) || die "$SCOURSH_EXIT_INCOMPLETE" \
+      "waited ${SCOURSH_MUTEX_TIMEOUT_SECONDS}s for one of $ceiling in-flight request slots and none came free; a slot is held by a process id that is still alive, so it is never reclaimed (docs/FOUNDATION.md tension 16), and this run stopped rather than opening more simultaneous connections than it is authorised to"
+  done
+}
+
+# `_http_inflight_release` - give back the slot THIS call took, and only that
+# one.  Matching on the nonce rather than on the pid is what makes it
+# identity-bound: if this process's slot was reclaimed while it was running
+# (its own pid having been observed dead is impossible, but a corrupted or
+# hand-edited state file is not), the nonce is simply absent and this removes
+# nothing, instead of deleting whichever line happens to carry the same pid.
+#
+# Idempotent and safe to call with no slot held, so a future path that is not
+# certain whether it acquired one cannot double-free.
+_http_inflight_release() {
+  local file want=$_HTTP_INFLIGHT_NONCE pid nonce ts
+  local -a keep=()
+  [[ -n $want ]] || return 0
+  _HTTP_INFLIGHT_NONCE=''
+  _http_limit_dir_set
+  file=$_HTTP_LIMIT_DIR/inflight.state
+  mutex_acquire "$_HTTP_LIMIT_MUTEX"
+  if [[ -r $file ]]; then
+    while IFS=' ' read -r pid nonce ts; do
+      [[ $pid =~ ^[0-9]+$ && -n $nonce && $ts =~ ^[0-9]+$ ]] || continue
+      [[ $nonce == "$want" ]] && continue
+      keep+=("$pid $nonce $ts")
+    done <"$file"
+  fi
+  _HTTP_INFLIGHT_LIVE=("${keep[@]+"${keep[@]}"}")
+  _http_inflight_write "$file"
+  mutex_release "$_HTTP_LIMIT_MUTEX"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # 12. http_request - THE chokepoint
 # ---------------------------------------------------------------------------
 # `http_request METHOD URL [MAX_REDIRECTS] [TARGET_ID]`.
@@ -1871,8 +2155,8 @@ _http_breaker_record_failure() {
 # `_HTTP_LAST_HEADER_FILE`, each empty when the caller asked for no capture.
 http_request() {
   local method=$1 url=$2 max_redirects=${3:-5} target=${4:-}
-  local cur=$url hop=0 addr out status location ctype bucket line
-  local rps_milli budget breaker_failures breaker_window
+  local cur=$url hop=0 addr out status location ctype bucket line tx_rc
+  local rps_milli budget breaker_failures breaker_window inflight_max
   local origin prev_origin='' item hop_url
   local -a req_headers=() kept=() outlines=()
 
@@ -1917,8 +2201,13 @@ http_request() {
   breaker_failures=$_HTTP_EFF_LIMIT
   _http_effective_limit_set circuit-breaker-window
   breaker_window=$_HTTP_EFF_LIMIT
+  # Resolved with the other four rather than inside `_http_inflight_acquire`
+  # alone, so an explicit over-ceiling `jobs` is refused before this call sends
+  # anything, and so the announced numbers are the complete set.
+  _http_effective_limit_set jobs
+  inflight_max=$_HTTP_EFF_LIMIT
   _http_limit_dir_set
-  _http_limit_announce_once "$rps_milli" "$budget" "$breaker_failures" "$breaker_window"
+  _http_limit_announce_once "$rps_milli" "$budget" "$breaker_failures" "$breaker_window" "$inflight_max"
 
   while :; do
     bucket=${_HTTP_MATCH_ID:-unattributed}
@@ -2002,9 +2291,23 @@ http_request() {
     # gets the sinks and never the request context, and the in-process default
     # transport - the only one that sends a credential - reads those globals in
     # this same process, where no fork is involved.
-    if ! out=$("${SCOURSH_HTTP_TRANSPORT:-_http_transport_default}" \
+    # THE IN-FLIGHT SLOT (section 11b) BRACKETS THE TRANSPORT AND NOTHING ELSE.
+    # It is taken here, after the token and the budget have already been
+    # granted, because this is the only interval in which a connection to the
+    # target actually exists; and it is released on the line after the call
+    # returns, before ANY path that can die - the breaker, the status parse -
+    # so no failure mode leaves a slot held by a process that is still running.
+    # The status is captured into `tx_rc` rather than tested with `if !`
+    # precisely so the release is unconditional: an early `return 1` between
+    # the two would leak a slot until the staleness reclaim fired, on the most
+    # ordinary failure a scan sees.
+    _http_inflight_acquire "$bucket" "$inflight_max"
+    tx_rc=0
+    out=$("${SCOURSH_HTTP_TRANSPORT:-_http_transport_default}" \
       "$method" "$_HN_SCHEME" "$_HN_HOST" "$_HN_PORT" "$_HN_PATH" "$addr" \
-      "$cap_body" "$cap_hdrs"); then
+      "$cap_body" "$cap_hdrs") || tx_rc=$?
+    _http_inflight_release
+    if (( tx_rc != 0 )); then
       # No usable response at all, which is the strongest evidence the breaker
       # gets; it is recorded before the failure is returned, so a caller that
       # swallows the non-zero status cannot also swallow the breaker.

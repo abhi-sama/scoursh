@@ -2601,7 +2601,11 @@ Prescribed tests, each naming the reading it fails under:
 | **Reclaim a stale lock, let a live holder take it, then reclaim again with the OLD token** | **the live lock survives** | **a bare `rm -rf` reclaim, which deletes it** |
 | 8 concurrent workers each entering the critical section | no overlap | any of the above |
 
-Four pieces of state, with their protocols:
+Five pieces of state, with their protocols.
+(The fifth, the in-flight semaphore, is an AMENDMENT rather than part of the original resolution: this
+section originally closed with "`--jobs` therefore has no effect on politeness", which is true of the
+request RATE and false of the number of connections a target sees AT ONCE.  See the corrected sentence
+below the list, and `docs/STEP5-DAST-PLAN.md`'s concurrency row for the full design.)
 
 - **Rate limiter.** One bucket per scope target (rate is a politeness property of the target), at
   `$SCRATCH/rate/<target>.state` holding `last_refill_ns tokens`.
@@ -2624,9 +2628,28 @@ Four pieces of state, with their protocols:
   a partial file.
   On a miss the reader takes a per-key mutex, re-checks (another worker may have filled it while it
   waited), then fetches, which prevents eight workers issuing the same call.
+- **In-flight semaphore** (amendment).  A counter at `$SCRATCH/http-limits/inflight.state`, one
+  `PID NONCE EPOCH` line per held slot, guarded by the same mutex as the three above.  A slot is taken
+  immediately BEFORE the transport call and released immediately AFTER it - never around the token
+  wait, because `_http_throttle` sleeps outside its critical section and a worker holding a slot
+  through that sleep occupies a connection it is not using.  The ceiling is the resolved, clamped
+  `jobs` value, so the DAST clamp policy and the own-your-target affirmation reach it unchanged.
+  A slot whose worker was killed is reclaimed under the **same two-condition rule as the lock above**,
+  and for the same reasons: BOTH at least `lock_stale_seconds` old AND its pid no longer alive.  Age
+  alone takes a slot from a live worker whose request is merely slow, which is double occupancy of the
+  ceiling; liveness alone frees a slot in the window before the recording worker is observable.  The
+  reclaim needs no claim marker - unlike `_lock_reclaim`, it happens INSIDE the mutex and writes the
+  pruned set back before releasing it, so it is single-winner by construction - and the release matches
+  on the NONCE rather than the pid, so a call can only ever give back the slot it took.  The prescribed
+  test is the lock table above with "lock" read as "slot", plus one that measures the OBSERVED
+  simultaneous-connection count of K worker processes rather than a return value.
 
-`--jobs` therefore has no effect on politeness: the shared bucket enforces the configured rate no matter
-how many workers exist.
+`--jobs` therefore has no effect on politeness, in EITHER of its two dimensions: the shared bucket
+enforces the configured rate no matter how many workers exist, and the shared in-flight semaphore
+enforces the configured concurrency the same way.
+The second half is the amendment: a token bucket bounds requests per unit time and says nothing about
+how many are open simultaneously, so against a target where each request takes seconds a high `--jobs`
+value opened exactly that many connections while the average rate stayed inside its ceiling.
 The interaction with resumability is decided in tension 18: a resumed run carries the remaining budget
 forward rather than resetting it.
 
