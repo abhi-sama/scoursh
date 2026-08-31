@@ -1489,7 +1489,7 @@ segments) plus DAST-01/02, and land after tier 2/3 per §13's stated ordering.
 | DAST-20 | `active/xxe_ssrf.sh` - safe-sentinel-only XXE/SSRF detection, in-scope hosts only |
 | DAST-21 | `active/nosqli.sh` - operator/object injection, boolean/error differential |
 | DAST-22 | `active/ldapi.sh` - filter-breaking payloads, response/error differential |
-| DAST-23 | `active/crlf.sh` - encoded CR/LF header-split detection |
+| DAST-23 **(landed)** | `active/crlf.sh` - encoded CR/LF header-split detection. See the landing note below. |
 | DAST-24 | `active/hosthdr.sh` - spoofed `Host`/`X-Forwarded-Host` reflection |
 | DAST-25 | `active/protopollution.sh` - `__proto__`-style JSON param probing (JS backends) |
 
@@ -1898,6 +1898,48 @@ Three decisions here are easy to get backwards, each pinned by a test naming the
   always/never-matching clause); LDAP writes are `add`/`modify`/`delete`/`modrdn` LDIF operations and no
   search filter can carry them, so the contract holds by shape.  A suite assertion fails the moment a
   mutating LDIF verb appears in any `ldapi-*.txt` file.
+
+**DAST-23 (`active/crlf.sh`) has landed - a tier-4 injection probe built on DAST-14's shared
+`inject_engine.sh`, plus one lift from tier 2.**
+It ships `modules/dast/active/crlf.sh` (the phase script `dast_run_phase` sources at tier `active`),
+one vendored payload file with exactly two templates (`modules/dast/payloads/crlf-payloads.txt`), and
+two check records in `modules/dast/active/checks.rules` (`DAST-INJ-CRLF_HEADER_INJECTION-01` high/high,
+`DAST-INJ-CRLF_RESPONSE_SPLITTING-01` critical/high; both `CWE-113`, `A03:2021`, type tag `active`,
+`coverage-scope: target`). Unlike every sibling probe, it also sources
+`modules/dast/passive/headers_engine.sh` for its response-header reader
+(`hdr_parse_capture`/`hdr_present`) rather than growing a second one - that file's own header invites
+exactly this lift for a later ticket that needs the same reader. `tests/suites/dast-crlf.sh` (51
+assertions, no network, no Docker, driven from a mock transport that locates the header/body boundary
+the same way a real HTTP client does - the first CRLFCRLF - so an injected blank line really does move
+it in the fixture; registered in `tests/run-tests.sh`) is the proof. The phase was already in
+`modules/dast/engine.sh`'s `_DAST_PHASES` table (`active/crlf.sh:active`), so no registration edit was
+needed.
+
+Four decisions here are easy to get backwards, each pinned by a test naming the reading it fails under:
+
+- **The marker is generated per run, never vendored, for the identical reason
+  `active/openredirect.sh`'s own sentinel is generated.** A header-name marker and a body sentinel are
+  drawn fresh from `$RANDOM`/`$$` every run; nothing but this run's own request could have put that
+  exact string in the response, so a single confirmed response is sufficient evidence with no benign
+  baseline to compare against.
+- **Two check ids for ONE root cause observed at two possible strengths, and they are mutually
+  exclusive per parameter - the opposite shape from `openredirect.sh`'s two genuinely independent
+  sinks, which both fire together.** The escalated payload (a forged status line plus a body sentinel
+  landing at the true front of the response body) is sent only after the bare payload already confirmed
+  the marker header, and whichever signal the escalation attempt actually produces is the one and only
+  finding reported for that parameter - never both, never the weaker one suppressed silently.
+- **A `header`-location parameter is never a candidate, and that is a correctness requirement rather
+  than a scope choice.** `inject_send` routes a `header`-location value straight to
+  `http_request_header`, which `die`s the WHOLE SCAN PROCESS the instant a value carries a CR or LF -
+  refused there as request smuggling against this scanner's OWN outbound request, a different and
+  unrelated protection from the one this probe tests for on the target. The suite proves the exclusion
+  by mutating it away and observing the whole test process abort with exit `4`
+  (`SCOURSH_EXIT_INPUT`), not merely one assertion going red.
+- **The payload file carries no raw CR or LF byte on disk.** A raw CR/LF cannot survive a line-oriented
+  `read -r` as DATA - an embedded LF is indistinguishable from the line ending - so the file uses its
+  own placeholders (`%NL` for "insert one CRLF here", `%H`/`%K` for the per-run marker) and the probe
+  expands them after reading, exactly as `ssti-expressions.txt` and `nosqli-boolean-pairs.txt` each
+  established their own placeholder vocabulary for their own shape of payload.
 
 ### Tier 5 - §7.4 auth, API, and access-control checks (5 scripts)
 

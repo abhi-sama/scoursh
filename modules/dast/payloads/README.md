@@ -85,6 +85,21 @@ file, both still `<true-template><TAB><false-template>`:
   `$pull`/`$inc`/`$rename`) - see the file's own header for the full
   reasoning.
 
+The CRLF / header-injection file (DAST-23) adds a fourth placeholder and
+carries no raw CR or LF byte on disk:
+
+- `crlf-payloads.txt` uses `%B` (the baseline value, as everywhere else),
+  `%NL` (this file's own stand-in for a literal CR LF pair, since a real one
+  cannot survive as DATA inside a line-oriented text file), and `%H`/`%K` -
+  this RUN's own random marker header line and body sentinel, generated once
+  by the probe and never vendored, for the identical per-run-random reason
+  `openredirect-payloads.txt`'s own `%S` sentinel host is generated rather
+  than vendored: nothing but this run's own request could have put that exact
+  string in the response, so one response is sufficient evidence with no
+  baseline. See the file's own header for the full reasoning, including why
+  its second template is sent only after the first already confirmed a
+  signal.
+
 ## Graceful degradation
 
 A probe that cannot read a payload file (absent or empty) records a
