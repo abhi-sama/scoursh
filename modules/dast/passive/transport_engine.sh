@@ -68,15 +68,19 @@ SCOURSH_DAST_TRANSPORT_ENGINE_SOURCED=1
 # on every `HTTP/x.y NNN` status line is the most dangerous parse in this tier -
 # a capture sink accumulates every redirect hop, so a whole-file match reads the
 # REDIRECT's headers and reports them as the delivered page's - and two copies
-# of it is two chances to lose that reset.  The shared-file lift remains
-# DAST-05's stated follow-up.
+# of it is two chances to lose that reset.  DAST-05's stated shared-file lift
+# HAS SINCE HAPPENED: the reader now lives in `passive/response_engine.sh`, a
+# leaf module that sources nothing and holds the reader alone, so this file
+# names that instead of DAST-05's own engine and no longer pulls in the
+# CSP/HSTS/Referrer parsers, the recommended-header loader or `hdr_endpoints_load`
+# - the last of which this file deliberately does not use anyway (see section 5's
+# own chooser, and why its dedup key differs).  No call site changed.
 #
-# lib/http.sh arrives transitively through headers_engine.sh, guarded there; the
-# guard is repeated rather than assumed so this file is sourceable on its own.
-if [[ -z ${SCOURSH_DAST_HEADERS_ENGINE_SOURCED:-} ]]; then
-  # shellcheck source=modules/dast/passive/headers_engine.sh
-  source "${BASH_SOURCE[0]%/*}/headers_engine.sh"
-fi
+# response_engine.sh sources nothing, so lib/http.sh no longer arrives through
+# it; the guarded source below is what supplies it, and was already present
+# rather than being added here.
+# shellcheck source=modules/dast/passive/response_engine.sh
+source "${BASH_SOURCE[0]%/*}/response_engine.sh"
 if [[ -z ${SCOURSH_HTTP_SOURCED:-} ]]; then
   # -x back-edge cut: lib/http.sh
   # is already inlined elsewhere in this file's own source graph, and shellcheck

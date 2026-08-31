@@ -4761,6 +4761,11 @@ four and shifts every later value left.  Measured, not reasoned about: it made t
 `docs/STEP5-DAST-PLAN.md`'s DAST-11 landing note carries the full detail, including the parser's
 stated limits in both directions and the shared-`passive/response_engine.sh` lift it declined to make
 under a peer's file and filed instead.
+That file now exists: the READER half of the lift has landed, as its own ticket, and
+`modules/dast/passive/response_engine.sh` is a leaf that sources nothing.
+The ENDPOINT CHOOSER half - the one DAST-11's `markup_endpoints_load` is a second copy of - is still
+open, and deliberately so: `hdr_endpoints_load` depends on `crawl_engine.sh` and `path_template_of`,
+so moving it would restore exactly the source edges the reader's lift removed.
 Their remaining peers DAST-07 and DAST-09 are open and unordered among themselves; DAST-08 (below) and
 DAST-10 have since landed too.
 Three things about it belong here rather than only in the plan, because each is a tension decision.

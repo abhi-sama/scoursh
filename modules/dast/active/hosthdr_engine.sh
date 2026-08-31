@@ -103,15 +103,17 @@ if [[ -z ${SCOURSH_HTTP_SOURCED:-} ]]; then
   # shellcheck source=lib/http.sh
   source "${BASH_SOURCE[0]%/*}/../../../lib/http.sh"
 fi
-# passive/headers_engine.sh for its response-header reader (hdr_parse_capture /
-# hdr_present / hdr_first). It resets on every `HTTP/x.y NNN` status line
-# because http_request_capture's header sink ACCUMULATES every redirect hop
-# (lib/http.sh §9a) - the identical trap cors_header_last and _or_location_of
-# each independently defend against. leakage_engine.sh already sources this
-# same file for the identical reason rather than writing a third copy of that
-# parse, and this file follows that precedent instead of adding a fourth.
-# shellcheck source=modules/dast/passive/headers_engine.sh
-source "${BASH_SOURCE[0]%/*}/../passive/headers_engine.sh"
+# passive/response_engine.sh for the shared response-header reader
+# (hdr_parse_capture / hdr_present / hdr_first). It resets on every
+# `HTTP/x.y NNN` status line because http_request_capture's header sink
+# ACCUMULATES every redirect hop (lib/http.sh §9a) - the identical trap
+# cors_header_last and _or_location_of each independently defend against. This
+# used to name passive/headers_engine.sh, DAST-05's own file; the reader has
+# since been lifted into a leaf module of its own that sources nothing, so an
+# active-tier probe that only reads a header block no longer drags in that
+# ticket's CSP/HSTS parsers and endpoint chooser to do it. No call site changed.
+# shellcheck source=modules/dast/passive/response_engine.sh
+source "${BASH_SOURCE[0]%/*}/../passive/response_engine.sh"
 
 # ---------------------------------------------------------------------------
 # 1. The sentinel
