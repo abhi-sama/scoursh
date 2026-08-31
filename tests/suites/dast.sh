@@ -558,14 +558,16 @@ assert_contains "$RUN_OK_JSON" 'DAST-LEAK-STACK_TRACE-01'  'checks-leakage.rules
 assert_contains "$RUN_OK_JSON" 'DAST-TRANSPORT-MIXED_ACTIVE-01' 'checks-transport.rules loaded'
 # The total, which is what catches a record LOST in the split rather than a
 # whole file lost: the shared checks.rules held 31 records (4 cookie + 11 header
-# + 6 markup + 5 leakage + 5 transport) and the five files must still hold 31
-# between them.  Counted off run.json rather than off the files, so it measures
-# what the loader produced and not what the directory contains.
+# + 6 markup + 5 leakage + 5 transport), DAST-MARKUP-SRI_OPAQUE-01 has since
+# added a seventh markup record (integrity present with no crossorigin - see
+# that ticket), and the five files must still hold 32 between them.  Counted
+# off run.json rather than off the files, so it measures what the loader
+# produced and not what the directory contains.
 _PASSIVE_SELECTED=$(printf '%s' "$RUN_OK_JSON" \
   | tr ',' '\n' \
   | grep -cE '"DAST-(COOKIE|HDR|MARKUP|LEAK|TRANSPORT)-' || true)
-assert_eq 31 "$_PASSIVE_SELECTED" \
-  'all 31 records from the five per-owner files reach the registry - fails if the split dropped or duplicated a record, which a per-file existence check cannot see'
+assert_eq 32 "$_PASSIVE_SELECTED" \
+  'all 32 records from the five per-owner files reach the registry - fails if the split dropped or duplicated a record, which a per-file existence check cannot see'
 
 # =============================================================================
 printf '\n-- DAST-32/33/34 end to end: the authorisation record a real run leaves --\n'
