@@ -483,4 +483,98 @@ assert_eq 1 "$_XS_SENTINEL_IS_SELF" "the self-referential case is recorded as su
 # Restore the main fixture scope for anything sourced after this point.
 http_scope_load "$SCOPE"
 
+
+# ===========================================================================
+printf '== dast xxe_ssrf: the ORACLE FETCH body read is bounded AT READ TIME, never after a full slurp ==\n'
+# ===========================================================================
+# Regression for the ticket ("Bound the same slurp-then-truncate body reads in
+# other DAST body-capture call sites"): `_xs_oracle_fetch` used to
+# `read -r -d ''` the WHOLE captured sentinel response into a bash variable
+# with NO cap at all afterward - worse than the plain "trim after a full
+# slurp" shape modules/dast/active/discovery.sh's own `_discovery_probe`
+# fixed, since even the after-the-fact trim never ran here. It now reuses
+# inject_engine.sh's own `_INJ_MAX_BODY_BYTES` cap via `read -N`, exactly as
+# `_xs_send_xml`'s own `_XS_BODY` already did (see the next section).
+#
+# Proof shape mirrors tests/suites/dast-discovery.sh's own huge-body case: a
+# 256 MiB sentinel response (1024x the default 256 KiB cap) is served, and
+# the whole call is timed against an 800ms ceiling - measured well under
+# 200ms fixed, 1.7+ seconds unbounded for the identical fixture on this host.
+XS_HUGEFILE=$W/xs-huge-oracle-body.raw
+if [[ ! -f $XS_HUGEFILE ]]; then
+  hs='a'
+  for _ in $(seq 1 28); do hs+=$hs; done
+  printf '%s' "$hs" >"$XS_HUGEFILE"
+  unset hs
+fi
+
+_xs_huge_oracle_transport() {
+  local method=$1 host=$3 path=$5
+  printf '%s %s\n' "$method" "$host" >>"$REQ_LOG"
+  if [[ -n ${_HTTP_TX_BODY_OUT:-} ]]; then
+    if [[ $host == "$XS_SENTINEL_HOST" ]]; then
+      cp -- "$XS_HUGEFILE" "$_HTTP_TX_BODY_OUT"
+    else
+      printf 'unexpected host' >"$_HTTP_TX_BODY_OUT"
+    fi
+  fi
+  printf '200\n\n%s\n' 'text/html'
+}
+
+_new_run xshuge
+SCOURSH_HTTP_TRANSPORT=_xs_huge_oracle_transport
+_XS_ORACLE_DONE=0 _XS_ORACLE_OK=0 _XS_ORACLE_SIG='' _XS_ORACLE_REASON=''
+_XS_ORACLE_MIN_BYTES=32
+_XS_ORACLE_SIG_LEN=96
+_XS_SENTINEL_URL="https://$XS_SENTINEL_HOST/"
+t0=$(now_epoch_ns)
+xshuge_rc=0
+_xs_oracle_fetch xs-fixture || xshuge_rc=$?
+t1=$(now_epoch_ns)
+xshuge_ms=$(( (t1 - t0) / 1000000 ))
+SCOURSH_HTTP_TRANSPORT=_xs_transport
+
+assert_eq 0 "$xshuge_rc" 'the oracle fetch itself succeeds for a large-but-reachable sentinel response'
+assert_eq 1 "$_XS_ORACLE_OK" 'and reports itself usable'
+assert_true "$([[ $xshuge_ms -lt 800 ]] && echo 0 || echo 1)" \
+  "the oracle fetch completed in ${xshuge_ms}ms for a 256 MiB sentinel response - FAILS under the un-bounded \`read -d ''\` this replaces, which must slurp the whole body before the signature can be sliced out of it (measured 1.7+ seconds on this host for the identical fixture through this exact harness)"
+
+# ===========================================================================
+printf '== dast xxe_ssrf: the XML-technique _XS_BODY read is bounded AT READ TIME, never after a full slurp ==\n'
+# ===========================================================================
+# `_xs_send_xml`'s own read used to slurp the whole captured body and only
+# THEN trim it to `_INJ_MAX_BODY_BYTES` - the same pre-fix shape
+# discovery.sh's ticket closed there. Driven directly against `_xs_send_xml`
+# (TARGET EPID XML), the function this suite's own DAST-INJ-XXE_ENTITY-01 and
+# DAST-INJ-XXE_SSRF-01 cases exercise only through the full phase.
+declare -gA _INJ_EP_METHOD=([xshugeep]=POST) _INJ_EP_URL=([xshugeep]="https://$XS_BASE_HOST/probe") _INJ_EP_PATH=([xshugeep]='')
+_INJ_N=0
+
+_xs_huge_body_transport() {
+  local method=$1 host=$3 path=$5
+  printf '%s %s\n' "$method" "$host" >>"$REQ_LOG"
+  if [[ -n ${_HTTP_TX_BODY_OUT:-} ]]; then
+    if [[ $host == "$XS_BASE_HOST" ]]; then
+      cp -- "$XS_HUGEFILE" "$_HTTP_TX_BODY_OUT"
+    else
+      printf 'unexpected host' >"$_HTTP_TX_BODY_OUT"
+    fi
+  fi
+  printf '200\n\n%s\n' 'text/html'
+}
+
+SCOURSH_HTTP_TRANSPORT=_xs_huge_body_transport
+t0=$(now_epoch_ns)
+xsbody_rc=0
+_xs_send_xml xs-fixture xshugeep '<x/>' || xsbody_rc=$?
+t1=$(now_epoch_ns)
+xsbody_ms=$(( (t1 - t0) / 1000000 ))
+SCOURSH_HTTP_TRANSPORT=_xs_transport
+
+assert_eq 0 "$xsbody_rc" '_xs_send_xml itself succeeds for a large-but-reachable body'
+assert_eq "$_INJ_MAX_BODY_BYTES" "${#_XS_BODY}" \
+  "a 256 MiB response leaves _XS_BODY holding exactly the ${_INJ_MAX_BODY_BYTES}-byte cap - FAILS if the cap is applied to what is RETAINED after a full read rather than to what is READ"
+assert_true "$([[ $xsbody_ms -lt 800 ]] && echo 0 || echo 1)" \
+  "_xs_send_xml completed in ${xsbody_ms}ms for a 256 MiB body - FAILS under the un-bounded \`read -d ''\` this replaces"
+
 t_summary dast-xxe-ssrf
