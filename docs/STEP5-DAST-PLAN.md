@@ -1290,9 +1290,21 @@ never read as a clean target.
 - **An AUTHENTICATED probe pass.**  A CORS policy is frequently set only on the authenticated API
   surface, so an unauthenticated probe can miss one.  That is a real bound and it is RECORDED
   (`reason=cors_probe_is_unauthenticated`) on exactly the runs where a reader could expect otherwise -
-  `--authed` given and a session actually acquired.  It is not closed here because attaching the
-  session would mean sending the operator's credentials alongside a foreign `Origin` header, which is a
-  posture decision that wants its own ticket rather than a line in a passive check.
+  `--authed` given and a session actually acquired.
+  **This has since been decided, not merely deferred** (the "DAST-08 follow-up: authenticated CORS
+  probe pass, or a decision that we will not send credentials cross-origin" ticket): scoursh will
+  NOT attach a session to this probe.  `cors.sh` runs at tier `passive`, which every `--intensity`
+  reaches with no `--i-own-target` affirmation gate, and sending a live credential on a request that
+  also carries an attacker-shaped `Origin` is the specific combination a WAF or fraud stack treats as
+  a credential-riding attack signature - a risk the passive contract never asks the operator to
+  accept.  `active/sqli.sh` and `jwt.sh`'s own authenticated passes are not a counter-example, since
+  neither ever forges `Origin` alongside the credential.  The failure mode is not even contained to
+  this check: a resulting account lockout would make DAST-03's transparent re-auth mark that identity
+  `failed` for the rest of the run, silently degrading every OTHER authenticated check (DAST-29,
+  DAST-26, the authenticated crawl pass, ...) that a passive check nobody opted into never should have
+  been able to touch.  The `cors_probe_is_unauthenticated` coverage_reduction stays as the permanent,
+  honest statement of the resulting gap - the same shape as DAST-04's SPA limitation.  See
+  `modules/dast/passive/cors.sh`'s own header for the same reasoning kept beside the code it binds.
 - **An `OPTIONS` preflight probe.**  The actual-request response already carries the two headers §7.1
   names; a preflight would double this check's request count to also read
   `Access-Control-Allow-Methods`/`-Headers`, and HTTP method enumeration is DAST-13

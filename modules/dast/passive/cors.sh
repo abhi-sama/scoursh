@@ -31,13 +31,39 @@
 #
 # WHAT THIS TICKET DELIBERATELY DID NOT BUILD, so the boundary is not
 # rediscovered:
-#   * An AUTHENTICATED probe pass.  A CORS policy is frequently set only on the
-#     authenticated API surface, so an unauthenticated probe can miss one - that
-#     is a real bound and it is RECORDED (see `_cors_record_unauthenticated_bound`
-#     below) rather than left to read as a clean result.  It is not closed here
-#     because attaching a session would mean sending the operator's credentials
-#     alongside a foreign Origin header, which is a posture decision that wants
-#     its own ticket rather than a line in a passive check.
+#   * An AUTHENTICATED probe pass.  DECIDED, NOT DEFERRED (DAST-08 follow-up,
+#     "authenticated CORS probe pass, or a decision that we will not send
+#     credentials cross-origin"): scoursh will not attach a session to this
+#     probe, ever, and that is permanent rather than a placeholder for a future
+#     ticket.  Three reasons, recorded here so a later change does not reopen
+#     this without re-deriving them:
+#       1. This check runs at tier `passive`, which every `--intensity` level
+#          reaches with NO `--i-own-target` gate.  That gate exists precisely so
+#          a run that raises risk needs an explicit operator affirmation
+#          (docs/FOUNDATION.md tension 16's ceiling-lift).  Sending a live
+#          credential on a request that ALSO carries an attacker-shaped `Origin`
+#          is exactly that kind of elevated risk - it is the specific request
+#          shape a WAF or a fraud stack treats as a credential-riding attack -
+#          and nothing in the passive contract asks the operator to accept it.
+#       2. `active/sqli.sh` and `jwt.sh`'s authenticated passes are not a valid
+#          precedent: neither ever attaches a foreign `Origin` alongside the
+#          credential.  A real session plus an attacker-controlled `Origin` in
+#          the SAME request is the specific new combination this ticket was
+#          asked to decide on, not "an authenticated DAST check" in general.
+#       3. The failure mode is not contained to this check.  If the target's
+#          WAF/fraud stack reacts by locking the test account, DAST-03's own
+#          transparent re-auth (auth_engine.sh) retries once and then marks
+#          that identity `failed` for the REST OF THE RUN - so a passive check
+#          nobody had to opt into could silently degrade every other
+#          authenticated check in the same run (DAST-29 authz, DAST-26 jwt, the
+#          authenticated crawl pass, ...) as collateral damage.
+#     The resulting gap stays real and stays RECORDED
+#     (`_cors_record_unauthenticated_bound` below) rather than silently
+#     dropped: a run with `--authed` and an acquired session is told plainly
+#     that the CORS probe still went out unauthenticated, so a clean result
+#     there is never misread as "the authenticated surface was checked too."
+#     See docs/STEP5-DAST-PLAN.md's DAST-08 landing note for the same decision
+#     recorded alongside the rest of that ticket's history.
 #   * An `OPTIONS` PREFLIGHT probe.  The actual-request response already carries
 #     Access-Control-Allow-Origin and -Allow-Credentials, which is what §7.1
 #     names; a preflight would double this check's request count for
