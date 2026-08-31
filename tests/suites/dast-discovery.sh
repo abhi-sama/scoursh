@@ -581,4 +581,109 @@ assert_eq "${ADDED%% *}" "${ADDED##* }" \
 assert_ne 0 "${ADDED%% *}" \
   "and a well-formed inventory reports a NON-ZERO count - FAILS if the collector reports zero for everything, under which both cases above pass vacuously"
 
+# ===========================================================================
+printf '== dast discovery: the body read is bounded AT READ TIME, never after a full slurp ==\n'
+# ===========================================================================
+# Regression for the ticket ("Bound the DAST discovery response-body read at
+# the cap instead of truncating after a full slurp"): `_discovery_probe` used
+# to `read -r -d ''` the WHOLE captured body into a bash variable and only
+# THEN trim it to _DISCOVERY_MAX_BODY_BYTES, so a target serving a large
+# response materialised it in full in this process before any cap applied -
+# exactly the memory hazard the cap comment at the top of this file names.
+# `read -r -N _DISCOVERY_MAX_BODY_BYTES` stops reading once the cap is
+# reached, whatever else remains on disk.
+#
+# Proof shape: a 256 MiB body (1024x the default 256 KiB cap) is served, and
+# BOTH the reported length and the actual variable content are asserted at
+# exactly the cap - and the whole probe (including the fixture transport's own
+# disk write of the body, so the timing floor is comparable under EITHER
+# reading) is timed.  Measured directly on this repository's own dev host,
+# through this exact harness: the fixed `-N` read finishes the whole probe in
+# under 200ms; reverting to the unbounded `read -d ''` this ticket replaces
+# takes 1.7+ seconds for the identical 256 MiB body - an order-of-magnitude
+# difference, not hardware-noise-sized - so the 800ms ceiling below FAILS
+# reliably under the un-bounded reading while leaving real headroom above the
+# fixed reading's own measured cost.
+HUGEFILE=$W/huge-body.raw
+if [[ ! -f $HUGEFILE ]]; then
+  # Built via in-process string doubling (2^28 = 268435456 bytes = 256 MiB)
+  # rather than `head -c ... | tr '\0' a`, measured ~2x slower for the same
+  # size - this is fixture SETUP, not the code under test, so speed here is
+  # only about keeping the suite itself fast.
+  hs='a'
+  for _ in $(seq 1 28); do hs+=$hs; done
+  printf '%s' "$hs" >"$HUGEFILE"
+  unset hs
+fi
+
+_disc_huge_transport() {
+  local method=$1 path=$5
+  local status=404
+  case $path in
+    /hugefile) status=200 ;;
+  esac
+  printf '%s %s\n' "$method" "$path" >>"$REQ_LOG"
+  if [[ -n ${_HTTP_TX_BODY_OUT:-} ]]; then
+    if [[ $path == /hugefile ]]; then
+      cp -- "$HUGEFILE" "$_HTTP_TX_BODY_OUT"
+    else
+      printf '%s' "$NOTFOUND" >"$_HTTP_TX_BODY_OUT"
+    fi
+  fi
+  printf '%s\n\n%s\n' "$status" 'text/html'
+}
+
+_new_run huge
+SCOURSH_HTTP_TRANSPORT=_disc_huge_transport
+t0=$(now_epoch_ns)
+huge_rc=0
+_discovery_probe "https://disc.fixture.example/hugefile" || huge_rc=$?
+t1=$(now_epoch_ns)
+huge_ms=$(( (t1 - t0) / 1000000 ))
+
+assert_eq 0 "$huge_rc" 'the probe itself succeeds for a large-but-reachable body'
+assert_eq "$_DISCOVERY_MAX_BODY_BYTES" "$_DISC_LEN" \
+  "a 256 MiB body (1024x the cap) is reported at exactly the ${_DISCOVERY_MAX_BODY_BYTES}-byte cap - FAILS if the cap is applied to what is RETAINED after a full read rather than to what is READ"
+assert_eq "$_DISCOVERY_MAX_BODY_BYTES" "${#_DISC_BODY}" \
+  "and _DISC_BODY itself holds exactly the cap's worth of bytes, never the full 256 MiB response"
+assert_true "$([[ $huge_ms -lt 800 ]] && echo 0 || echo 1)" \
+  "the whole probe (fixture write plus read) completed in ${huge_ms}ms for a 256 MiB body - FAILS under the un-bounded \`read -d ''\` this replaces, which must slurp the whole body before trimming it (measured 1.7+ seconds on this host for the identical fixture through this exact harness - an order-of-magnitude difference this 800ms ceiling reliably catches)"
+
+# ===========================================================================
+printf '== dast discovery: an embedded NUL byte does not abort the probe ==\n'
+# ===========================================================================
+# bash variables cannot hold a NUL byte under EITHER reading, so a binary body
+# is inherently lossy here - the shapes differ (old: everything after the
+# first NUL is dropped, as its own delimiter; new: NUL bytes are skipped but
+# reading continues, accumulating non-NUL bytes up to the cap) but neither is
+# new with this change. What must hold under the fix: the read still
+# completes cleanly (no abort under this suite's own `set -Eeuo pipefail`)
+# and the reported length never exceeds the cap.
+NULBODY_FILE=$W/nul-body.raw
+printf 'abc\x00def\x00ghi' >"$NULBODY_FILE"
+_disc_nul_transport() {
+  local method=$1 path=$5
+  local status=404
+  case $path in
+    /nulbody) status=200 ;;
+  esac
+  printf '%s %s\n' "$method" "$path" >>"$REQ_LOG"
+  if [[ -n ${_HTTP_TX_BODY_OUT:-} ]]; then
+    if [[ $path == /nulbody ]]; then
+      cp -- "$NULBODY_FILE" "$_HTTP_TX_BODY_OUT"
+    else
+      printf '%s' "$NOTFOUND" >"$_HTTP_TX_BODY_OUT"
+    fi
+  fi
+  printf '%s\n\n%s\n' "$status" 'text/html'
+}
+_new_run nulbody
+SCOURSH_HTTP_TRANSPORT=_disc_nul_transport
+nul_rc=0
+_discovery_probe "https://disc.fixture.example/nulbody" || nul_rc=$?
+assert_eq 0 "$nul_rc" \
+  'a body carrying embedded NUL bytes does not abort the probe - FAILS if the bounded read chokes on a NUL rather than just losing it'
+assert_true "$([[ $_DISC_LEN -le $_DISCOVERY_MAX_BODY_BYTES ]] && echo 0 || echo 1)" \
+  "the reported length (${_DISC_LEN}) still never exceeds the cap for a body containing embedded NULs"
+
 t_summary dast-discovery
