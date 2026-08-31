@@ -185,6 +185,32 @@ cors_credentials_true() {
   [[ ${v,,} == true ]]
 }
 
+# `cors_null_reflected ACAO_PRESENT ACAO_VALUE` - 0 when the response trusts the
+# literal `null` origin: Access-Control-Allow-Origin is present and, after
+# trimming RFC 7230 OWS, is the exact four-byte string `null` - the
+# serialization RFC 6454 §7 gives an origin that has no scheme/host/port,
+# which every browser sends as the Origin header of a sandboxed iframe
+# (`<iframe sandbox="allow-scripts" srcdoc=...>`), a `data:` URL document, and
+# several redirect shapes - all attacker-controllable contexts.
+#
+# THIS ANSWERS A DIFFERENT QUESTION THAN `cors_classify` DOES, deliberately not
+# folded into it.  `cors_classify` asks "does this response reflect the
+# SENTINEL origin we sent", which is only meaningful for a response to a probe
+# that actually carried that sentinel; a response that answers `null` to the
+# sentinel probe is not a null-origin finding at all - it is a static,
+# unrelated policy value, and `cors_classify` already (correctly) buckets it as
+# `allowlisted`. This function is for the response to the SECOND probe
+# (`cors_probe ... null`, DAST-08 follow-up), which actually asked with
+# `Origin: null` - only that response can say whether the server trusts the
+# null origin specifically.
+cors_null_reflected() {
+  local present=$1 value=${2:-}
+  [[ $present == 1 ]] || return 1
+  value=${value#"${value%%[![:space:]]*}"}
+  value=${value%"${value##*[![:space:]]}"}
+  [[ $value == null ]]
+}
+
 # ---------------------------------------------------------------------------
 # 3. Classifying an Access-Control-Allow-Origin value
 # ---------------------------------------------------------------------------
@@ -365,4 +391,8 @@ cors_remediation_reflection() {
 
 cors_remediation_wildcard() {
   printf '%s' 'Access-Control-Allow-Origin: * makes this response readable by script from every origin on the internet. That is correct for a genuinely public, unauthenticated asset and wrong for anything else: replace it with a server-side allowlist of the exact origins that need cross-origin access, and confirm the resource carries no user-specific or otherwise non-public data. Note that a browser will refuse to combine * with credentials, so a wildcard is not itself a route to authenticated data - but it is a statement that the resource is public, and it should only be present where that is deliberately true.'
+}
+
+cors_remediation_null() {
+  printf '%s' 'Do not treat the literal null origin as trusted in Access-Control-Allow-Origin. A browser sends Origin: null for a sandboxed iframe, a data: URL document, and several redirect shapes - contexts an attacker fully controls - so accepting it is equivalent to accepting any origin whatsoever. Compare the request Origin against a server-side allowlist of exact origins and emit no CORS header at all (or the stored allowlisted value) when the Origin is null or otherwise unrecognised; never special-case null as an allowed value, and if any origin must be trusted for an authenticated resource, keep Access-Control-Allow-Credentials off unless that specific origin is on the allowlist. Add Vary: Origin so a shared cache cannot serve one origin the response minted for another.'
 }
