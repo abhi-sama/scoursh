@@ -450,6 +450,68 @@ assert_eq "$W/run-full-inv/inventory/endpoints.json" \
   'dast_inventory_read publishes the endpoints path when the file is real - fails under "the reader only counts, so a later phase re-derives the path itself"'
 
 # =============================================================================
+printf '\n-- SCOURSH_DAST_ENDPOINTS/PARAMETERS survive a mid-loop producer (regression) --\n'
+# =============================================================================
+# modules/dast/run.sh calls dast_inventory_read ONCE, before the phase loop,
+# to answer "was an inventory available as INPUT when this module started"
+# (the case above). On an ordinary run that answer is "no" - crawl.sh is
+# itself one of the phases the loop is about to run, and writes both
+# inventory artifacts partway through it. The defect this ticket fixes: the
+# variables a phase reads to find that inventory (SCOURSH_DAST_ENDPOINTS /
+# SCOURSH_DAST_PARAMETERS) used to be set ONCE from that pre-loop snapshot,
+# so a phase reached LATER in the same loop - after a crawl-shaped producer
+# already wrote the file - still saw the pre-loop, unusable value. This is
+# asserted end to end, through a real `scan.sh dast` subprocess, with a fake
+# `crawl.sh` standing in for DAST-04's real one (isolating the orchestration
+# bug from crawl.sh's own real behaviour, which tests/suites/dast-crawl.sh
+# already covers) and a fake later phase that records what it actually saw.
+FIX_INV=$W/root-with-crawl-producer
+_fixture_root "$FIX_INV"
+rm -rf "$FIX_INV/modules"
+mkdir -p "$FIX_INV/modules/dast/passive" "$FIX_INV/modules/sast"
+cp "$ROOT/modules/dast/run.sh" "$ROOT/modules/dast/engine.sh" "$FIX_INV/modules/dast/"
+ln -sfn "$ROOT/modules/sast/engine.sh" "$FIX_INV/modules/sast/engine.sh"
+cp "$FIX_SCOPE/config/scope.conf" "$FIX_INV/config/scope.conf"
+
+# Stands in for crawl.sh:passive, the first producer of either artifact
+# (docs/INVENTORY-FORMAT.md).  It writes AFTER the loop has already started
+# and AFTER modules/dast/run.sh has already exported SCOURSH_DAST_ENDPOINTS -
+# exactly the ordering the real crawl.sh (DAST-04) uses.
+cat >"$FIX_INV/modules/dast/crawl.sh" <<'EOF'
+#!/usr/bin/env bash
+mkdir -p "$SCOURSH_RUN_DIR/inventory"
+printf '[{"id":"ep1","target":"dast-fixture","method":"GET","url":"https://dast.fixture.invalid/x","path":"/x"}]\n' \
+  >"$SCOURSH_RUN_DIR/inventory/endpoints.json"
+EOF
+
+# Stands in for any real phase reached LATER in _DAST_PHASES (passive/headers.sh
+# is a real row, tier passive, after crawl.sh's tier-1 row) - it never parses
+# the inventory itself, only proves whether SCOURSH_DAST_ENDPOINTS resolves to
+# something readable and non-empty AT THE TIME THIS PHASE RUNS.
+cat >"$FIX_INV/modules/dast/passive/headers.sh" <<'EOF'
+#!/usr/bin/env bash
+if [[ -r ${SCOURSH_DAST_ENDPOINTS:-} && -s ${SCOURSH_DAST_ENDPOINTS:-} ]]; then
+  printf 'nonempty\n' >>"$INV_CONSUMER_MARKER"
+else
+  printf 'empty\n' >>"$INV_CONSUMER_MARKER"
+fi
+EOF
+
+INV_CONSUMER_MARKER=$W/inv-consumer-seen
+rm -f "$INV_CONSUMER_MARKER"
+export INV_CONSUMER_MARKER
+
+t_case 'a phase reached later in the SAME loop sees an inventory a crawl-shaped phase wrote earlier in it'
+_dast_scan "$W/run-inv-mid-loop" "$FIX_INV" --target dast-fixture
+assert_eq 0 "$_RC" 'the run completes cleanly'
+assert_file_exists "$INV_CONSUMER_MARKER" \
+  'the later phase actually ran and recorded what it saw - if this is absent the case below is not testing anything'
+assert_eq nonempty "$(_slurp "$INV_CONSUMER_MARKER")" \
+  'the later phase read a populated endpoint inventory - FAILS on the pre-fix code, which resolves SCOURSH_DAST_ENDPOINTS to a snapshot taken BEFORE the phase loop (and therefore before crawl.sh has run), so every later phase saw the pre-loop empty value even though crawl.sh had by then written a real one'
+
+unset INV_CONSUMER_MARKER
+
+# =============================================================================
 printf '\n-- what this ticket deliberately does not ship --\n'
 # =============================================================================
 
