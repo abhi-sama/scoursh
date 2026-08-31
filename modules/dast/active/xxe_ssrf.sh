@@ -529,7 +529,7 @@ _dast_xxe_ssrf_phase() {
   if [[ -z $pf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/parameters.json ]]; then
     pf=$SCOURSH_RUN_DIR/inventory/parameters.json
   fi
-  inject_inventory_load "$epf" "$pf"
+  inject_inventory_load "$epf" "$pf" xxe_ssrf
 
   if (( _INJ_N == 0 )) && (( ${#_INJ_EP_METHOD[@]} == 0 )); then
     run_record coverage_reduction "module=dast reason=no_endpoint_inventory target=$target - the crawler wrote no endpoint or parameter (docs/INVENTORY-FORMAT.md), so XXE/SSRF had no request to compose. Feed a spec/HAR (config/discovery.conf) or run the crawl against an application with discoverable endpoints."

@@ -280,7 +280,7 @@ _dast_cookies_phase() {
     return 0
   fi
 
-  inject_inventory_load "$epf" ''
+  inject_inventory_load "$epf" '' cookies
 
   # THE ENDPOINT ORDER IS SORTED, AND THAT IS NOT COSMETIC. `_INJ_EP_URL` is a
   # bash ASSOCIATIVE array, whose iteration order is its internal hash order and
