@@ -660,3 +660,44 @@ remediation: Never build a NoSQL query, $where expression, or filter object
   entirely unless a specific query genuinely requires it.
 references: CWE-943
 references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-CRLF_HEADER_INJECTION-01
+title: CRLF injection - request parameter reaches raw HTTP response header construction
+script: active/crlf.sh
+severity: high
+confidence: high
+cwe: CWE-113
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Never build a response header by concatenating request-derived
+  data into raw header text. Use the web framework or HTTP library's own
+  header-setting API, which refuses or strips an embedded CR/LF, rather than
+  writing a header line by hand. Strip or reject CR and LF from any
+  request-derived value before it can reach header construction, and encode
+  values placed into a redirect target, a cookie, or any other reflected
+  header field.
+references: CWE-113
+references: https://owasp.org/Top10/A03_2021-Injection/
+
+id: DAST-INJ-CRLF_RESPONSE_SPLITTING-01
+title: CRLF injection allows a full forged second HTTP response (response splitting)
+script: active/crlf.sh
+severity: critical
+confidence: high
+cwe: CWE-113
+owasp: A03:2021
+tags: active
+coverage-scope: target
+remediation: Never build a response header by concatenating request-derived
+  data into raw header text. Use the web framework or HTTP library's own
+  header-setting API, which refuses or strips an embedded CR/LF, rather than
+  writing a header line by hand. This is the confirmed-impact case, not
+  merely a candidate - request-controlled input can forge a complete second
+  HTTP message, which any cache or proxy in front of this target may split
+  into and serve as a separate cached response (cache poisoning) or use to
+  smuggle a request past a front-end's own inspection. Treat this as an
+  urgent fix and audit any cache/CDN in front of the target for the same
+  exposure.
+references: CWE-113
+references: https://owasp.org/Top10/A03_2021-Injection/

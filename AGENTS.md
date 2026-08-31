@@ -311,10 +311,10 @@ Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has 
 DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`), DAST-16 (`active/cmdi.sh`),
 DAST-17 (`active/pathtraversal.sh`), DAST-18 (`active/ssti.sh`),
 DAST-19 (`active/openredirect.sh`), DAST-20 (`active/xxe_ssrf.sh`),
-DAST-21 (`active/nosqli.sh`, the §7.3 NoSQL-injection error/boolean differential) and DAST-22
+DAST-21 (`active/nosqli.sh`, the §7.3 NoSQL-injection error/boolean differential), DAST-22
 (`active/ldapi.sh`, the §7.3 LDAP-injection error/boolean differential - it landed earlier without a
 note in this section or its own landing paragraph; both are corrected here in the same change that adds
-DAST-21), tier
+DAST-21), and DAST-23 (`active/crlf.sh`, the §7.3 encoded CR/LF header-split detection), tier
 5's DAST-26 (`jwt.sh`), DAST-27 (`graphql.sh`, the §7.4 GraphQL introspection & key-exposure check),
 DAST-28 (`ratelimit.sh`, the §7.4 missing-throttling burst probe),
 DAST-29 (`authz.sh`, the §7.4 object-level authorization and
@@ -424,7 +424,40 @@ locally.
 `tests/suites/dast-nosqli.sh` (29 assertions, registered) is the proof, including a case that
 specifically confirms the boolean technique fires from BOTH payload shapes on two different parameters
 - proving the probe is not `$where`-only.
-DAST-23..DAST-25 are open, unordered among themselves, and should reuse the
+**DAST-23 (`active/crlf.sh`) has also landed**, tier 4's seventh injection probe and the §7.3 encoded
+CR/LF header-split family. It reuses DAST-14's shared `inject_engine.sh` unchanged and additionally
+sources `modules/dast/passive/headers_engine.sh` for its response-header reader
+(`hdr_parse_capture`/`hdr_present`) rather than growing a second one - that file's own header invites
+exactly this lift.
+**The signal needs no baseline, for the identical per-run-random reason `active/openredirect.sh`'s own
+sentinel needs none**: the probe generates a fresh header-name marker and a fresh body sentinel once per
+run (`_crlf_marker_set`) and asks only whether that EXACT string reached the response, so a single
+confirmed response is sufficient evidence.
+**Two check ids, not two independent sinks - this is one root cause observed at two possible
+strengths, and they are MUTUALLY EXCLUSIVE per parameter, unlike `openredirect.sh`'s two genuinely
+independent sinks that both fire together.** `DAST-INJ-CRLF_HEADER_INJECTION-01` (high) fires when the
+marker header alone survives into the response's header block; `DAST-INJ-CRLF_RESPONSE_SPLITTING-01`
+(critical) fires when it ADDITIONALLY forges a full second status line and a body sentinel lands at the
+true front of the response body - proof the header/body boundary itself moved, which is the escalated,
+cache-poisoning-capable case. The probe always tries the bare payload first and escalates to the
+full-split payload only after the bare one already confirmed a signal, so a parameter that is not even
+bare-vulnerable never receives the second, stronger payload.
+**A `header`-location parameter is the one candidate location this probe must never inject into, and
+that is a correctness requirement, not a style choice**: `inject_send` routes a `header`-location value
+straight to `http_request_header`, which `die`s the WHOLE PROCESS the instant a value carries a CR or
+LF (refused there as request smuggling against this scanner's OWN outbound request - a different,
+unrelated protection from the one this probe tests for on the target). Every other §7.3 probe can send
+that location fine because its payloads never contain a raw CR/LF byte; this one specifically excludes
+it before ever calling `inject_send`, and `tests/suites/dast-crlf.sh` proves the exclusion by mutating
+it away and observing the whole suite process abort with exit `4` (`SCOURSH_EXIT_INPUT`) rather than
+merely failing one assertion.
+`modules/dast/payloads/crlf-payloads.txt` ships exactly two templates and carries no raw CR or LF byte
+on disk - see that file's own header for its `%NL`/`%H`/`%K` placeholders and why the marker is
+generated rather than vendored. `tests/suites/dast-crlf.sh` (51 assertions, registered) is the proof,
+including a mock transport that locates the header/body boundary the same way a real HTTP client does
+(the first CRLFCRLF), so an injected blank line really does move it in the fixture exactly as it would
+against a real server.
+DAST-24..DAST-25 are open, unordered among themselves, and should reuse the
 engine the same way.
 The one thing worth carrying up here from DAST-15's landing note: **that probe measures ESCAPING, not
 reflection.**  Almost every parameter on a real application reflects something, so a probe that
