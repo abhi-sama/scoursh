@@ -96,6 +96,44 @@ EOF
 FIX_NO_SCOPE=$W/root-no-scope
 _fixture_root "$FIX_NO_SCOPE"
 
+# ---------------------------------------------------------------------------
+# SCOURSH_HTTP_RESOLVE, stubbed for every scan this suite runs - never the
+# host's real resolver.
+#
+# `dast.fixture.invalid` is RFC 2606 reserved and every existing case below
+# depends on it NOT resolving (the scope gate refuses it before a transport is
+# ever reached, which is what "makes no network call" and every
+# `url_not_requestable`/`endpoint_inventory_absent` assertion below rests on).
+# Relying on the host's real resolver to fail made that outcome a property of
+# whatever network this suite happens to run on rather than of the code - and
+# is what made this suite's result depend on lib/http.sh's DNS-failure path
+# staying a hard failure, the exact path commit a4f9f5e had to change.  This
+# stub makes the failure deterministic instead: it is a real executable, not a
+# bash function, because `_dast_scan` and every ad hoc `bash "$ROOT/scan.sh"`
+# call below spawn a genuine subprocess, and an exported bash function does
+# not propagate into a `bash <script>` child on this host (measured - see this
+# ticket).  `SCOURSH_HTTP_RESOLVE` accepts either a function name or a program
+# on PATH (lib/http.sh: `"${SCOURSH_HTTP_RESOLVE:-_http_resolve_default}"`
+# invoked as a plain command), so a script path works identically in-process
+# (the "module re-asserts the gate itself" case below) and across a fork -
+# tests/suites/dast-crawl.sh already establishes the same pattern.
+#
+# `dast-resolves.fixture.invalid` is the one host this stub DOES resolve, so
+# the opposite direction - a resolver that answers - has real, pinned coverage
+# too, in "the resolving direction is pinned too" below, rather than being
+# genuinely untested as this ticket found it.
+RESOLVE_STUB=$W/resolve-stub
+cat >"$RESOLVE_STUB" <<'STUBEOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+case $1 in
+  dast-resolves.fixture.invalid) printf '198.51.100.7' ;;
+  *) exit 1 ;;
+esac
+STUBEOF
+chmod 0755 "$RESOLVE_STUB"
+export SCOURSH_HTTP_RESOLVE=$RESOLVE_STUB
+
 # `_dast_scan RUNDIR INSTALL_ROOT [ARGS...]` - one real `scan.sh dast`
 # subprocess, the way an operator hits it.  Sets _RC and _LOG; the run
 # directory is the caller's to inspect.  Never `assert_status`, because these
@@ -737,5 +775,73 @@ assert_not_contains "$RUN_SEL_FULL" 'reason=cookies_no_check_selected' \
   'no "nothing selected" record under --profile-scan full - FAILS under a fail-closed default or an inverted membership test, either of which would make every DAST phase inert on an ordinary run'
 assert_contains "$RUN_SEL_FULL" 'inspected for cookie flags' \
   'and the phase reached its ordinary per-target coverage statement instead - fails if "filtered" and "ran" produce the same silence'
+
+# =============================================================================
+printf '\n-- the resolving direction is pinned too (this ticket) --\n'
+# =============================================================================
+# tests/suites/dast-crawl.sh already proves the crawl phase end to end against
+# a resolving, stubbed target; this suite's own job is narrower and
+# orchestration-level - proving that RESOLVE_STUB above really is consulted by
+# a real `scan.sh dast` SUBPROCESS (every case above only proves the FAILING
+# side of that, since dast.fixture.invalid never resolves), and that a host it
+# resolves takes a genuinely different, request-issuing path than
+# dast.fixture.invalid's refusal does.
+#
+# Both directions are asserted together because the naive fix for either is
+# the other's bug: a resolve stub that always fails leaves this direction as
+# untested as the host's real DNS did (this ticket's own finding), and a
+# resolve stub that always succeeds would silently make dast.fixture.invalid
+# resolve too and delete every `url_not_requestable`/`endpoint_inventory_absent`
+# case earlier in this file - which the second case below, re-checking
+# $RUN_OK_JSON, exists to catch.
+FIX_RESOLVES=$W/root-resolves
+_fixture_root "$FIX_RESOLVES"
+cat >"$FIX_RESOLVES/config/scope.conf" <<'EOF'
+id: dast-resolves
+base-url: https://dast-resolves.fixture.invalid/
+allow-subdomains: false
+notes: The one host RESOLVE_STUB above actually resolves. The transport is
+  ALSO stubbed (TRANSPORT_STUB below), so a real request still never reaches a
+  real network even though resolution succeeds.
+EOF
+
+TRANSPORT_STUB=$W/transport-stub
+cat >"$TRANSPORT_STUB" <<'STUBEOF'
+#!/usr/bin/env bash
+# METHOD SCHEME HOST PORT PATH ADDR [BODY_OUT] [HEADERS_OUT] - lib/http.sh's
+# transport contract (the same shape tests/suites/dast-crawl.sh's own stub
+# uses). Logs every request it is asked to make and serves a trivial,
+# uninteresting page, so this suite - which pins ORCHESTRATION, not phase
+# behaviour - stays quiet on every passive check.
+set -Eeuo pipefail
+method=$1; path=$5; bodyout=${7:-}
+printf '%s %s\n' "$method" "$path" >>"$RESOLVES_REQLOG"
+[[ -n $bodyout ]] && printf '<html></html>' >"$bodyout"
+printf '200\n\ntext/html\n'
+STUBEOF
+chmod 0755 "$TRANSPORT_STUB"
+
+t_case 'a host RESOLVE_STUB resolves is actually requested, end to end through a real subprocess'
+RESOLVES_REQLOG=$W/resolves-requests.log
+: >"$RESOLVES_REQLOG"
+_RC=0
+SCOURSH_INSTALL_ROOT=$FIX_RESOLVES SCOURSH_HTTP_TRANSPORT=$TRANSPORT_STUB \
+  RESOLVES_REQLOG=$RESOLVES_REQLOG \
+  bash "$ROOT/scan.sh" dast --target dast-resolves --out "$W/run-resolves" \
+  >"$W/run-resolves.log" 2>&1 || _RC=$?
+assert_eq 0 "$_RC" 'a run against a host this suite'"'"'s resolver stub resolves still exits 0'
+# The log is pre-touched empty above, so `assert_file_exists` alone would pass
+# whether or not a request was ever made - the content check below is the one
+# that actually pins that SCOURSH_HTTP_RESOLVE was honoured in a real
+# subprocess, which is the untested direction this ticket names.
+assert_contains "$(_slurp "$RESOLVES_REQLOG")" 'GET /' \
+  'a real request reached the stubbed transport, as the crawl'"'"'s own entry-point GET on the base URL - fails if SCOURSH_HTTP_RESOLVE is not actually honoured in a real scan.sh dast SUBPROCESS (as opposed to the in-process cases elsewhere in this file)'
+RUN_RESOLVES_JSON=$(_slurp "$W/run-resolves/run.json")
+assert_not_contains "$RUN_RESOLVES_JSON" 'reason=url_not_requestable' \
+  'and no url_not_requestable reduction is recorded for a host that DID resolve - fails under the mirror bug, a resolve stub that answers every host regardless of name, which would silently make dast.fixture.invalid resolve too'
+
+t_case 'dast.fixture.invalid still does not resolve - the stub is host-specific, not a blanket pass'
+assert_contains "$RUN_OK_JSON" 'reason=url_not_requestable' \
+  'the unresolvable fixture'"'"'s own earlier run still carries the refusal - fails if RESOLVE_STUB were a blanket success, which would delete this suite'"'"'s existing DNS-failure coverage while every case above still read green'
 
 t_summary dast
