@@ -37,6 +37,7 @@ a request destination, and it names no application, company or product
 | `padded.headers` | Values wrapped in RFC 7230 optional whitespace |
 | `null.headers` | `Access-Control-Allow-Origin: null` answered to the second, `Origin: null` probe (DAST-08 follow-up: `DAST-CORS-NULL_ORIGIN-01`) |
 | `null-credentials.headers` | As above, plus `Access-Control-Allow-Credentials: true` (`DAST-CORS-NULL_ORIGIN_WITH_CREDENTIALS-01`) |
+| `redirect-reflect.headers` | A 3xx with `Location:` a DIFFERENT origin, which ALSO reflects the sentinel on this (unfollowed) response - ticket aa50f056-9b18-4fc7-9416-bb455bc7b7b1's follow-up: `cors_probe` sends with `max_redirects` 0, so this is never followed, and the finding must stay anchored to the REQUESTED origin's own canonical form, never adopt the `Location`'s |
 
 The two `null*.headers` fixtures are answers to the SECOND probe
 (`cors_probe ... null`, `Origin: null`), not the sentinel probe every other

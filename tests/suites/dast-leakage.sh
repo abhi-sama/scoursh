@@ -51,6 +51,10 @@
 #  12. the shell catalog and modules/dast/passive/checks-leakage.rules agree, field by
 #      field, on every one of the five ids.
 #  13. a candidate secret's VALUE never reaches the finding evidence.
+#  14. a redirect that CROSSES ORIGIN is judged by the DELIVERED response's own
+#      host (`_HTTP_LAST_URL`, lib/http.sh §12), never the requested url - the
+#      third-party-origin family's "self" and the finding's own `url` field
+#      both use it (ticket aa50f056-9b18-4fc7-9416-bb455bc7b7b1's follow-up).
 #
 # shellcheck shell=bash
 #
@@ -94,10 +98,19 @@ rm -rf "$W"; mkdir -p "$W"
 #   leak-binary   every response is an image with no textual body, which is what
 #                 the "a family no response was applicable to is NOT covered"
 #                 case needs.
+#
+# `redirect-landing.example` is an EXTRA HOST on leak-fixture itself
+# (rules/RULE-FORMAT.md §9.4: no scheme of its own, inherits the target's
+# https), not a fourth target - the ticket case below needs a second, in-scope
+# ORIGIN a redirect can genuinely land on, and its own registrable domain
+# (`redirect-landing.example`, two labels) is deliberately unrelated to
+# leak.fixture.example's (`fixture.example`) so leak_same_site's own
+# last-two-labels approximation cannot accidentally call the two the same site.
 SCOPE=$W/scope.conf
 cat >"$SCOPE" <<'EOF'
 id: leak-fixture
 base-url: https://leak.fixture.example/
+extra-host: redirect-landing.example
 notes: Fixture target for tests/suites/dast-leakage.sh. Never dialled: both the
   resolver and the transport are stubbed.
 
@@ -121,7 +134,7 @@ config_scanner_load "$W/scanner.conf"
 
 _leak_resolve() {
   case $1 in
-    leak.fixture.example | binary.fixture.example) printf '93.184.216.34' ;;
+    leak.fixture.example | binary.fixture.example | redirect-landing.example) printf '93.184.216.34' ;;
     *) return 1 ;;
   esac
 }
@@ -270,6 +283,26 @@ _body() {
       printf '%s\n' "$pad"'var q={dbPassword:"pr0ductionPassw0rd!"};' ;;
     /redirect-final)
       printf '%s\n' '<!doctype html><html><body>landed</body></html>' ;;
+    /landing)
+      # The REDIRECT-ACROSS-ORIGIN ticket case (DAST-10 half of
+      # aa50f056-9b18-4fc7-9416-bb455bc7b7b1's follow-up).  This page is
+      # served BY redirect-landing.example, having been reached via a 302 from
+      # leak.fixture.example/redirect-cross.  It carries two independent
+      # positives:
+      #   - a script src naming leak.fixture.example (the ORIGINALLY REQUESTED
+      #     host): relative to the DELIVERING origin (redirect-landing.example)
+      #     that is a genuine third party; relative to the REQUESTED origin
+      #     (leak.fixture.example) it is "self" and would be silently
+      #     subtracted.
+      #   - a structured stack frame (family 1), which is a PER-PATH finding
+      #     whose own `url` field must name the page that actually served it,
+      #     not the pre-redirect url the phase first asked for.
+      printf '%s\n' '<!doctype html><html><head>' \
+        '<script src="https://leak.fixture.example/static/vendor.js"></script>' \
+        '</head><body><pre>Traceback (most recent call last):' \
+        '  File "/srv/app/landing.py", line 77, in render' \
+        '    raise ValueError(payload)' \
+        'ValueError: bad payload</pre></body></html>' ;;
     *)
       printf '%s\n' '<!doctype html><html><body>generic</body></html>' ;;
   esac
@@ -291,6 +324,13 @@ _leak_transport() {
     # not.  A reader matching across the whole accumulated capture would find it
     # here and report it as the delivered page's.
     head=$'Content-Type: text/html\r\nLocation: https://leak.fixture.example/redirect-final\r\nX-Backend-Server: 10.9.9.9\r\n'
+  elif [[ $host == leak.fixture.example && $path == /redirect-cross ]]; then
+    # The ticket case: a redirect that CROSSES ORIGIN, landing on
+    # redirect-landing.example (an extra-host on this same target, still
+    # in-scope, so the phase's own default max_redirects follows it).
+    status=302
+    location='https://redirect-landing.example/landing'
+    head=$'Content-Type: text/html\r\nLocation: https://redirect-landing.example/landing\r\n'
   else
     head=$(_head "$host" "$path")
   fi
@@ -702,6 +742,40 @@ t_case 'phase-final-hop-only'
 _run_case redirect leak-fixture https://leak.fixture.example/redirect
 assert_eq 0 "$(_count_check DAST-LEAK-PROXY_HEADER-01)" \
   'an infrastructure header set on the REDIRECT hop is not reported as the delivered page - FAILS under a whole-capture match, since the capture sink accumulates every hop by design'
+
+# READING 14 (aa50f056-9b18-4fc7-9416-bb455bc7b7b1's follow-up ticket): a
+# redirect that CROSSES ORIGIN.  leak.fixture.example/redirect-cross 302s to
+# https://redirect-landing.example/landing (an in-scope extra-host, so this
+# phase's own default max_redirects follows it), and the landing page names
+# leak.fixture.example - the ORIGINALLY REQUESTED host - as an absolute
+# script src.
+t_case 'phase-family-5-redirect-crosses-origin'
+_run_case redirect-cross leak-fixture https://leak.fixture.example/redirect-cross
+# First, the naive/old reading, run inline exactly as section C's five negative
+# fixtures do: "self" taken from the REQUESTED url calls leak.fixture.example
+# same-site with itself and SUBTRACTS the reference, so it reports nothing.
+_naive_self=$(leak_host_of https://leak.fixture.example/redirect-cross)
+leak_origins_reset
+leak_origins_in '<script src="https://leak.fixture.example/static/vendor.js"></script>' "$_naive_self"
+assert_eq 0 "${#_LEAK_ORIGINS[@]}" \
+  "the NAIVE reading (self = the REQUESTED url's host) DOES miss this: leak.fixture.example is compared against itself and subtracted, so a page actually delivered by redirect-landing.example is reported as loading no third party at all"
+# The shipped phase, driven end to end through the real redirect.
+assert_eq 1 "$(_count_check DAST-LEAK-THIRD_PARTY_ORIGIN-01)" \
+  'the shipped check DOES report a third-party origin on this response'
+_EV=$(_field_of DAST-LEAK-THIRD_PARTY_ORIGIN-01 evidence)
+assert_contains "$_EV" 'leak.fixture.example' \
+  "leak.fixture.example is named as a third party RELATIVE TO THE DELIVERING ORIGIN - FAILS under self=\$url (the requested url), which subtracts it as though the page were still being served by leak.fixture.example itself"
+# Family 1 (stack trace) is a PER-PATH finding, so - unlike family 5's
+# application-wide roll-up, which is deliberately located at the first
+# response inspected regardless of which one exhibited it - its own `url`
+# field names the exact response it came from, and must be the DELIVERED one.
+assert_eq 1 "$(_count_check DAST-LEAK-STACK_TRACE-01)" \
+  'the landing page also carries a structured stack frame, so family 1 fires too'
+_URL=$(_field_of DAST-LEAK-STACK_TRACE-01 url)
+assert_eq 'https://redirect-landing.example:443/landing' "$_URL" \
+  "the finding's own url field names the DELIVERED url (lib/http.sh's _HTTP_LAST_URL, canonical form with the port filled in) - FAILS under \$url (the REQUESTED https://leak.fixture.example/redirect-cross), the reading this ticket replaces"
+assert_ne 'https://leak.fixture.example/redirect-cross' "$_URL" \
+  'and it is NOT the originally-requested url once a redirect has moved the response to a different origin'
 
 t_case 'phase-family-3-email'
 _run_case email leak-fixture https://leak.fixture.example/contact https://leak.fixture.example/profile

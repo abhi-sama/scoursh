@@ -98,6 +98,19 @@
 #     `_cors_emit_null_origin` below and `cors_engine.sh`'s
 #     `cors_null_reflected`.
 #
+# DAST-08 FOLLOW-UP (audited alongside leakage.sh, per lib/http.sh §12's
+# `_HTTP_LAST_URL`): the finding's `url`/path fields are read off
+# `cors_probe`'s own `_CORS_LAST_URL` - the DELIVERED response's canonical
+# url - rather than the raw inventory literal.  Unlike markup.sh and
+# leakage.sh, this check can never actually OBSERVE a cross-origin delivery:
+# `cors_probe` sends with `max_redirects` 0 (passive property 5), so a 3xx
+# response is always returned as-is and `_CORS_LAST_URL` is always the
+# requested URL's own canonical form, same origin, every time.  See
+# cors_engine.sh's `cors_probe` for the full argument for switching anyway -
+# in short, it is the correct source even where it happens to equal the
+# literal today, and it stops being a silent trap if `max_redirects` here is
+# ever raised.
+#
 # shellcheck shell=bash
 # shellcheck source=modules/dast/passive/cors_engine.sh
 source "${BASH_SOURCE[0]%/*}/cors_engine.sh"
@@ -312,7 +325,17 @@ _dast_cors_phase() {
       continue
     fi
     tested=$(( tested + 1 ))
-    path=$(_cors_path_of "$url")
+    # THE DELIVERED URL, NOT THE ONE THIS PHASE ASKED FOR - `cors_probe`'s own
+    # `_CORS_LAST_URL` (cors_engine.sh, itself lib/http.sh's `_HTTP_LAST_URL`).
+    # This probe always sends with `max_redirects` 0, so in practice this is
+    # always the requested URL's own canonical form (same origin, default port
+    # filled in) rather than a genuinely different origin - see cors_engine.sh's
+    # own note on `cors_probe` for why that is structurally guaranteed here and
+    # is NOT true of markup.sh/leakage.sh, which do follow redirects.  Using it
+    # for the finding's location is still correct rather than merely harmless:
+    # it is the URL that actually delivered this response.
+    local delivered_url=${_CORS_LAST_URL:-$url}
+    path=$(_cors_path_of "$delivered_url")
     cors_classify "$_CORS_ACAO_PRESENT" "$_CORS_ACAO" "$CORS_SENTINEL_ORIGIN"
     case $_CORS_POLICY in
       reflected)
@@ -322,13 +345,13 @@ _dast_cors_phase() {
           else
             reflected=$(( reflected + 1 ))
           fi
-          _cors_emit_reflection "$target" "$method" "$url" "$path"
+          _cors_emit_reflection "$target" "$method" "$delivered_url" "$path"
         fi
         ;;
       wildcard)
         if (( do_wildcard )); then
           wildcard=$(( wildcard + 1 ))
-          _cors_emit_wildcard "$target" "$method" "$url" "$path"
+          _cors_emit_wildcard "$target" "$method" "$delivered_url" "$path"
         fi
         ;;
     esac
@@ -349,13 +372,20 @@ _dast_cors_phase() {
         null_failed=$(( null_failed + 1 ))
       else
         null_tested=$(( null_tested + 1 ))
+        # A fresh capture of the SECOND probe's own delivered url, not a reuse
+        # of the sentinel probe's - the two are separate `http_request` calls
+        # (both against the identical `$url` with `max_redirects` 0, so in
+        # practice this equals the first probe's `$delivered_url` too, but
+        # reading it off THIS probe's own `_CORS_LAST_URL` is what stays
+        # correct if that ever stops being true).
+        local null_delivered_url=${_CORS_LAST_URL:-$url}
         if cors_null_reflected "$_CORS_ACAO_PRESENT" "$_CORS_ACAO"; then
           if cors_credentials_true "$_CORS_ACAC"; then
             null_credentialed=$(( null_credentialed + 1 ))
           else
             null_reflected=$(( null_reflected + 1 ))
           fi
-          _cors_emit_null_origin "$target" "$method" "$url" "$path"
+          _cors_emit_null_origin "$target" "$method" "$null_delivered_url" "$(_cors_path_of "$null_delivered_url")"
         fi
       fi
     fi
