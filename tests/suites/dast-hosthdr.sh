@@ -114,10 +114,12 @@ SCOURSH_HTTP_RESOLVE=_hh_resolve
 # technique per candidate" assertions be made against a log rather than a
 # return value.
 REQ_LOG=$W/requests.log
+declare -A SRV_MAP=()
 SRV_FAIL_PATH=''
 SRV_FAIL_ALL=0
 
 _srv_reset() {
+  SRV_MAP=()
   SRV_FAIL_PATH=''
   SRV_FAIL_ALL=0
   : >"$REQ_LOG"
