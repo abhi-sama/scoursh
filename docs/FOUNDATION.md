@@ -4827,9 +4827,20 @@ stated limits in both directions and the shared-`passive/response_engine.sh` lif
 under a peer's file and filed instead.
 That file now exists: the READER half of the lift has landed, as its own ticket, and
 `modules/dast/passive/response_engine.sh` is a leaf that sources nothing.
-The ENDPOINT CHOOSER half - the one DAST-11's `markup_endpoints_load` is a second copy of - is still
-open, and deliberately so: `hdr_endpoints_load` depends on `crawl_engine.sh` and `path_template_of`,
-so moving it would restore exactly the source edges the reader's lift removed.
+The ENDPOINT CHOOSER half - the one DAST-11's `markup_endpoints_load` is a second copy of - has since
+landed too, in full.  It could not simply move `hdr_endpoints_load` in, since that function depends
+on `crawl_engine.sh` and `path_template_of` and moving it would have restored exactly the source
+edges the reader's lift removed; the shipped shape instead has `resp_endpoints_load` call both BY
+NAME, so a caller must source them itself first (every real caller already does).  It landed in two
+steps: first for `headers_engine.sh` and `markup_engine.sh`, once the latter's copy made the
+duplication a confirmed second real case rather than a hypothesis; then, closing a follow-up this
+paragraph used to leave open, for `passive/leakage_engine.sh` (`leak_endpoints_load`, confirmed
+byte-identical to `hdr_endpoints_load` bar its own endpoint cap - a third real case) and
+`passive/transport_engine.sh` (`tr_endpoints_load`, whose one real difference - a dedup key of
+`(scheme, path template)`, not the path template alone, because the plaintext and HTTPS twin of one
+path is that check's own finding rather than a duplicate - became `resp_endpoints_load`'s one
+optional `DEDUP_KEY` parameter).  All four choosers are now thin wrappers over one shared function;
+see `response_engine.sh`'s own third ADR block for the full account.
 Their remaining peers DAST-07 and DAST-09 are open and unordered among themselves; DAST-08 (below) and
 DAST-10 have since landed too.
 Three things about it belong here rather than only in the plan, because each is a tension decision.

@@ -109,8 +109,17 @@ assert_eq no "$(_defined hdr_referrer_effective)" 'so did the Referrer-Policy pa
 assert_eq no "$(_defined hdr_load_recommended)" 'so did the recommended-header loader'
 assert_eq no "$(_defined hdr_endpoints_load)" \
   'hdr_endpoints_load the NAME stayed in headers_engine.sh, as a thin wrapper, so no caller of it had to change - FAILS if the wrapper were deleted in favour of every caller reading resp_endpoints_load (below) directly'
+assert_eq no "$(_defined markup_endpoints_load)" 'markup_endpoints_load the NAME likewise stayed in markup_engine.sh, as a thin wrapper'
+assert_eq no "$(_defined leak_endpoints_load)" \
+  'leak_endpoints_load the NAME stayed in leakage_engine.sh too, once it was confirmed byte-identical to hdr_endpoints_load and folded in as a THIRD real caller rather than a hypothesis'
+assert_eq no "$(_defined tr_endpoints_load)" \
+  'tr_endpoints_load the NAME stayed in transport_engine.sh, as a thin wrapper passing its own scheme_template dedup mode - FAILS if the wrapper were deleted in favour of every caller reading resp_endpoints_load directly, which would scatter the one line that differs across four files again'
+assert_eq no "$(_defined tr_url_scheme)" \
+  'tr_url_scheme the NAME also stayed in transport_engine.sh, as a one-line wrapper over resp_url_scheme (below)'
 assert_eq yes "$(_defined resp_endpoints_load)" \
   'the shared endpoint chooser IS here, under its own name, once markup_engine.sh shipped a second byte-identical copy of hdr_endpoints_load and made the duplication real rather than hypothetical (AGENTS.md: two real cases, not one)'
+assert_eq yes "$(_defined resp_url_scheme)" \
+  'and so is the scheme extractor its scheme_template dedup mode needs by name, moved here from transport_engine.sh once a second mode needed it - FAILS if it stayed transport-only, which would leave this file calling an unsourced function defined only in one of its four callers'
 
 assert_eq 200 "$_HDR_MAX_EVIDENCE_FIELD" \
   "hdr_safe_text's evidence cap travelled WITH it - FAILS under a lift that moves the function and leaves its default behind in headers_engine.sh, where it is unbound under set -u for anyone sourcing the reader alone"
@@ -256,7 +265,7 @@ assert_eq 'abcde' "$(hdr_safe_text abcde 99)" 'an explicit cap above the length 
 assert_eq 'ab...' "$(hdr_safe_text abcde 2)" 'and an explicit cap below it wins over the default'
 
 # ===========================================================================
-printf '== F. hdr_path_of and hdr_url_is_https ==\n'
+printf '== F. hdr_path_of, hdr_url_is_https and resp_url_scheme ==\n'
 # ===========================================================================
 t_case 'url-helpers'
 assert_eq /a/b "$(hdr_path_of https://h.example/a/b)" 'the path of an absolute URL'
@@ -276,9 +285,29 @@ assert_true "$(hdr_url_is_https HTTPS://h.example/ && printf 0 || printf 1)" \
 assert_true "$(hdr_url_is_https 'https-not-a-scheme://h/' && printf 1 || printf 0)" \
   'and the match is anchored on the real scheme - FAILS under a substring test'
 
+# resp_url_scheme is the function moved here from transport_engine.sh's
+# tr_url_scheme once the scheme_template dedup mode (section G) needed it by
+# name; tr_url_scheme is now a one-line wrapper over it (asserted absent in
+# section A above).
+assert_eq https "$(resp_url_scheme https://h.example/x)" 'the lowercased scheme of an https URL'
+assert_eq http "$(resp_url_scheme http://h.example/x)" 'and of a plaintext one'
+assert_eq https "$(resp_url_scheme HTTPS://h.example/x)" 'matched case-insensitively, same as hdr_url_is_https'
+assert_eq '' "$(resp_url_scheme //h.example/x)" \
+  'a scheme-relative URL has no scheme - FAILS under a reading that treats it as inheriting https, which would let it dedupe against a real https candidate under scheme_template'
+assert_eq '' "$(resp_url_scheme /a/b)" 'and neither does a bare path'
+assert_eq '' "$(resp_url_scheme 'ftp://h.example/x')" \
+  'nor a scheme this tool never requests over - FAILS under a substring test on "://" alone'
+
 # ===========================================================================
 printf '== G. resp_endpoints_load: the shared GET-endpoint chooser ==\n'
 # ===========================================================================
+# THE SHARED CHOOSER FOR ALL FOUR PASSIVE CALLERS.  `headers_engine.sh`,
+# `markup_engine.sh` and `leakage_engine.sh` all call this with the DEDUP_KEY
+# argument omitted (the `template` default); `transport_engine.sh` is the one
+# caller that passes `scheme_template` explicitly, for the reason its own
+# comment gives - see the dedicated cases below, which pin BOTH keys against
+# the identical inventory so neither can be satisfied by breaking the other.
+#
 # FROM HERE ON THIS SUITE IS NO LONGER A LEAF TEST - see this file's own header
 # for why testing this one function needs more than response_engine.sh alone.
 # shellcheck source=modules/dast/crawl_engine.sh
@@ -319,11 +348,32 @@ assert_eq /get "${_RESP_PATH[0]}" 'and it is the GET one'
 assert_eq 1 "$_RESP_SKIPPED_NON_GET" \
   'the POST row is COUNTED as skipped, not silently dropped - a caller reports this rather than staying quiet about it'
 
-# 3. deduped by PATH TEMPLATE, not by URL.
+# 3. deduped by PATH TEMPLATE, not by URL - the DEFAULT dedup key, with the
+#    5th parameter omitted.
 INV=$(_g_inv dedupe https://h.example/order/1 GET t https://h.example/order/2 GET t)
 resp_endpoints_load "$INV" t '' 10
 assert_eq 1 "$_RESP_N" \
   '/order/1 and /order/2 are one path template and cost one candidate - FAILS under a per-URL dedup, which would spend two'
+
+# 3b. the DEDUP_KEY parameter: scheme_template is transport_engine.sh's own
+#     key, (scheme, path template), not the path template alone.  Same
+#     inventory shape as `tests/suites/dast-transport.sh`'s own "reading 7"
+#     phase-level case, at the unit grain.
+INV=$(_g_inv scheme_dedupe https://h.example/login GET t http://h.example/login GET t)
+resp_endpoints_load "$INV" t '' 10
+assert_eq 1 "$_RESP_N" \
+  'under the DEFAULT template key, the http:// and https:// twins of one path collapse to one candidate - the reading every OTHER caller wants'
+resp_endpoints_load "$INV" t '' 10 scheme_template
+assert_eq 2 "$_RESP_N" \
+  'under scheme_template, the SAME inventory yields TWO candidates - FAILS under the template default, which would drop the plaintext twin that is transport_engine.sh own finding'
+# A scheme_template candidate with no recognised http(s) scheme is not
+# requestable at all - dropped before it is counted against the cap, exactly
+# as tr_endpoints_load's own original behaviour was.
+INV=$(_g_inv scheme_norelative https://h.example/x GET t //h.example/y GET t)
+resp_endpoints_load "$INV" t '' 10 scheme_template
+assert_eq 1 "$_RESP_N" \
+  'a scheme-relative row has no scheme under scheme_template and is skipped, never counted as truncated - FAILS if it were admitted with an empty scheme, which would let it dedupe against a real candidate that happens to share the same path template'
+assert_eq 0 "$_RESP_TRUNCATED" 'and it does not consume a slot of the cap either'
 
 # 4. sorted, then capped, and the cap is a PARAMETER.
 INV=$(_g_inv cap https://h.example/p1 GET t https://h.example/p2 GET t \
