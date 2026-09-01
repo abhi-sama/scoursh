@@ -1,0 +1,7 @@
+HTTP/1.1 302 Found
+Date: Thu, 01 Jan 1970 00:00:00 GMT
+Content-Type: text/html
+Location: https://cors-redirect-landing.example/elsewhere
+Access-Control-Allow-Origin: https://scoursh-cors-probe.example
+Vary: Origin
+

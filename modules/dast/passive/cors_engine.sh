@@ -278,6 +278,10 @@ cors_classify() {
 # `Origin: <sentinel>` and set:
 #
 #   _CORS_STATUS         the HTTP status ('' on a transport-level failure)
+#   _CORS_LAST_URL       the DELIVERED url (lib/http.sh's `_HTTP_LAST_URL`) -
+#                        see the note below; falls back to URL on the
+#                        defensive-only case that `_HTTP_LAST_URL` came back
+#                        empty
 #   _CORS_ACAO_PRESENT   1/0
 #   _CORS_ACAO           the Access-Control-Allow-Origin value
 #   _CORS_ACAC           the Access-Control-Allow-Credentials value
@@ -287,6 +291,23 @@ cors_classify() {
 # failure), which the caller must treat as "not tested" and never as "no CORS
 # header" - the whole honesty argument of this repository in one branch.
 #
+# `_CORS_LAST_URL` IS THE CANONICAL delivered url, NOT PROOF THIS PROBE EVER
+# CROSSES ORIGIN - IT CANNOT.  This function calls `http_request` with
+# `max_redirects` 0 (passive property 5 above), so a 3xx response is always
+# returned AS-IS and never followed; `_HTTP_LAST_URL` on that path is therefore
+# always the requested URL's own canonical form (lib/http.sh normalises scheme
+# case, host case, and fills in the default port), same origin, every time -
+# unlike markup.sh and leakage.sh, which DO follow redirects and can genuinely
+# land on a different origin.  `cors.sh` still threads `_CORS_LAST_URL` through
+# to the finding's own `url`/path fields rather than the raw inventory literal,
+# for the same reason those two do: it is the URL that actually delivered this
+# response, canonical form included, and RFC 3986 §5.1.3's "resolve against the
+# URL that delivered the document" argument does not stop mattering just
+# because THIS check's own redirect policy happens to make the two identical in
+# practice - a future change that raised `max_redirects` here would then get
+# the origin-crossing case right for free, rather than silently wrong the way a
+# hardcoded `$url` would.
+#
 # EVERYTHING SAFE ABOUT THIS CHECK CONVERGES ON THIS ONE FUNCTION, exactly as
 # jwt_engine.sh's `jwt_probe` does for §7.4: it goes through `http_request`, it
 # attaches one header and no body, it captures ONLY headers, and it follows no
@@ -294,7 +315,7 @@ cors_classify() {
 cors_probe() {
   local target=$1 method=$2 url=$3 sentinel=${4:-$CORS_SENTINEL_ORIGIN}
   local hdrfile
-  _CORS_STATUS='' _CORS_ACAO='' _CORS_ACAC='' _CORS_ACAO_PRESENT=0 _CORS_VARY_ORIGIN=0
+  _CORS_STATUS='' _CORS_LAST_URL='' _CORS_ACAO='' _CORS_ACAC='' _CORS_ACAO_PRESENT=0 _CORS_VARY_ORIGIN=0
 
   # `mktemp`, for the reason `cors_header_last` states in full: a pid-derived
   # name under a world-writable fallback /tmp is a symlink target a local user
@@ -316,6 +337,7 @@ cors_probe() {
     return 1
   fi
   _CORS_STATUS=$_HTTP_LAST_STATUS
+  _CORS_LAST_URL=${_HTTP_LAST_URL:-$url}
 
   if cors_header_last "$hdrfile" 'Access-Control-Allow-Origin'; then
     _CORS_ACAO_PRESENT=1

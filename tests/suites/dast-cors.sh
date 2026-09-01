@@ -118,16 +118,23 @@ SCOURSH_HTTP_RESOLVE=_cors_resolve
 # The scripted SERVER.  A path -> recorded-fixture table, so every response this
 # suite sees is a file on disk rather than a string composed to agree with the
 # parser.  `SRV_FAIL_PATH` makes one path a transport-level failure, which is
-# how the "a failure is not a clean result" case is driven.
+# how the "a failure is not a clean result" case is driven.  `SRV_REDIRECT_PATH`
+# makes one path answer a 3xx with a cross-origin `Location:` instead of the
+# ordinary 200 - section G's redirect-across-origin case (ticket
+# aa50f056-9b18-4fc7-9416-bb455bc7b7b1's follow-up).
 REQ_LOG=$W/requests.log
 declare -A SRV_MAP=()
 SRV_FAIL_PATH=''
 SRV_FAIL_ALL=0
+SRV_REDIRECT_PATH=''
+SRV_REDIRECT_LOCATION=''
 
 _srv_reset() {
   SRV_MAP=()
   SRV_FAIL_PATH=''
   SRV_FAIL_ALL=0
+  SRV_REDIRECT_PATH=''
+  SRV_REDIRECT_LOCATION=''
   : >"$REQ_LOG"
 }
 
@@ -154,6 +161,10 @@ _cors_transport() {
   fixture=${SRV_MAP[$path]:-none.headers}
   if [[ -n ${_HTTP_TX_HEADERS_OUT:-} ]]; then
     cat -- "$FIX/$fixture" >>"$_HTTP_TX_HEADERS_OUT"
+  fi
+  if [[ -n $SRV_REDIRECT_PATH && $path == "$SRV_REDIRECT_PATH" ]]; then
+    printf '302\n%s\n\n' "$SRV_REDIRECT_LOCATION"
+    return 0
   fi
   printf '200\n\n'
 }
@@ -220,6 +231,26 @@ _count_check_path() {
     done <"$f"
   done
   printf '%s' "$n"
+}
+
+# The value of one field of the FIRST finding for a check id (mirrors
+# tests/suites/dast-leakage.sh's own `_field_of`).
+_field_of() {
+  local check=$1 want=$2 f line fld hit='' v=''
+  for f in "$SCOURSH_RUN_DIR"/shards/*.fields; do
+    [[ -f $f ]] || continue
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      hit='' v=''
+      local IFS=$'\t'
+      for fld in $line; do
+        [[ $fld == "check_id=$check" ]] && hit=1
+        [[ $fld == "$want="* ]] && v=${fld#"$want="}
+      done
+      [[ -n $hit ]] && { printf '%s' "$v"; return 0; }
+    done <"$f"
+  done
+  printf ''
 }
 
 _shard_text() {
@@ -802,5 +833,46 @@ HT=$(cat "$SCOURSH_RUN_DIR/report.html")
 assert_contains "$HT" 'DAST-CORS-WILDCARD-01' 'the HTML report carries the finding'
 assert_not_contains "$HT" '<script' \
   'and contains no script element at all, with this check evidence in it - docs/FOUNDATION.md tension 10'
+
+# ===========================================================================
+printf '\n== G. redirect-across-origin (ticket aa50f056-9b18-4fc7-9416-bb455bc7b7b1 follow-up) ==\n'
+# ===========================================================================
+# `cors_probe` sends every probe with `max_redirects` 0 (passive property 5),
+# so a 3xx response is ALWAYS returned as-is and never followed - unlike
+# markup.sh and leakage.sh, this check structurally cannot land on a different
+# origin.  This section proves both halves of that: the cross-origin
+# `Location` is never dialed (the request log), AND the finding's own `url`
+# field is the DELIVERED response's canonical form (cors_engine.sh's
+# `_CORS_LAST_URL`) rather than the raw inventory literal - which for THIS
+# check happens to be the requested url's own canonical form (default port
+# filled in), since no redirect is ever followed to change it.
+cat >"$W/redirect-endpoints.json" <<'EOF'
+{ "endpoints": [
+  { "id": "r1", "target": "cors-fixture", "method": "GET", "url": "https://cors.fixture.example/redirect-cross" }
+] }
+EOF
+
+t_case 'a cross-origin Location is never followed and never dialed'
+_new_run
+SRV_REDIRECT_PATH='/redirect-cross'
+SRV_REDIRECT_LOCATION='https://cors-redirect-landing.example/elsewhere'
+SRV_MAP['/redirect-cross']='redirect-reflect.headers'
+SCOURSH_DAST_ENDPOINTS=$W/redirect-endpoints.json
+export SCOURSH_DAST_ENDPOINTS
+_dast_cors_phase
+LOG=$(_req_log_text)
+assert_not_contains "$LOG" 'cors-redirect-landing.example' \
+  'the Location host is never dialed - FAILS under a probe that follows redirects, which would send a second request this check must never send'
+assert_contains "$LOG" $'GET\tcors.fixture.example\t/redirect-cross' \
+  'only the originally-requested host and path were ever requested'
+
+t_case "the finding's url field is the delivered (canonical) url, never the raw inventory literal, and never the Location's origin"
+assert_eq 1 "$(_count_check DAST-CORS-ORIGIN_REFLECTED-01)" \
+  'the 3xx response itself reflects the sentinel, so the check has a finding to locate'
+URL=$(_field_of DAST-CORS-ORIGIN_REFLECTED-01 url)
+assert_eq 'https://cors.fixture.example:443/redirect-cross' "$URL" \
+  "the url field is cors_probe's own _CORS_LAST_URL (lib/http.sh's _HTTP_LAST_URL), the DELIVERED response's canonical form with the default port filled in - FAILS under the raw inventory literal 'https://cors.fixture.example/redirect-cross' (no port), the reading this ticket replaces"
+assert_ne 'https://cors-redirect-landing.example/elsewhere' "$URL" \
+  "and it is emphatically NOT the Location this check correctly never followed - FAILS under any implementation that treats a 3xx's Location as the delivered url instead of the url that was actually requested"
 
 t_summary dast-cors
