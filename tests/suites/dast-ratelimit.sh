@@ -384,7 +384,7 @@ _cap_probe() {
   bash -c '
     set -Eeuo pipefail
     cd -- "$1"
-    # shellcheck source=modules/dast/ratelimit_engine.sh
+    # shellcheck source=/dev/null
     source modules/dast/ratelimit_engine.sh
     printf "id: scanner\nrequests-per-second: 5000\nrequest-budget: %s\ncircuit-breaker-failures: 100000\n" "$2" >"$3"
     config_scanner_load "$3"

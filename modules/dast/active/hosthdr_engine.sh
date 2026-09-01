@@ -139,6 +139,11 @@ HOSTHDR_SENTINEL=${SCOURSH_DAST_HOSTHDR_SENTINEL:-scoursh-hosthdr-probe.example}
 # The two header techniques §7.3's own bullet names, tried independently so a
 # server that trusts one and not the other is still caught. Order is the
 # order findings are considered in, and is otherwise not meaningful.
+#
+# SC2034: read only by this file's own consumers (hosthdr.sh's probe loop,
+# tests/suites/dast-hosthdr.sh's own case count assertion), never within this
+# file - invisible to shellcheck here since -x follows outgoing edges only.
+# shellcheck disable=SC2034
 declare -ga HOSTHDR_TECHNIQUES=(Host X-Forwarded-Host)
 
 # ---------------------------------------------------------------------------

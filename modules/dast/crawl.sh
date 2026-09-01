@@ -22,8 +22,8 @@
 #   where the URL came from.  Every `declare -F` guard stays permissive
 #   (engine.sh is reached at runtime with no `source` line, per
 #   `dast_run_phase`), and no module file gained a `source` line to it - see
-#   modules/dast/engine.sh section 3b and this ticket's own "watch the
-#   shellcheck budget" note.
+#   modules/dast/engine.sh section 3b and this ticket's own "watch the shellcheck
+#   budget" note.
 # Alternatives considered: force every consumer through `dast_scope_record_skips`
 #   verbatim -> rejected, it would report a crawled link or a derived wordlist
 #   candidate as an inventory row, which is a factually wrong coverage record.
