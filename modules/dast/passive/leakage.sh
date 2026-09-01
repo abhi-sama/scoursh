@@ -54,6 +54,12 @@
 #                        literal, or a vendor-declared secret value shape.
 #   THIRD_PARTY_ORIGIN   subtracts the response's own host and everything
 #                        sharing its registrable domain, and is INFORMATIONAL.
+#                        "The response's own host" is read off the DELIVERED
+#                        url (`_HTTP_LAST_URL`), not the one requested - a
+#                        redirect can cross origin (this phase follows up to
+#                        `SCOURSH_MAX_REDIRECTS:-5` of them), and subtracting
+#                        the pre-redirect host would over- or under-report
+#                        third parties on exactly that response.
 #
 # HONESTY.  A clean result here must never read as "tested and safe" when it is
 # "could not test".  No endpoint inventory and no base-url, an endpoint the scope
@@ -237,6 +243,11 @@ _leak_hit() {
 # ---------------------------------------------------------------------------
 # Reads the `_HDR_*` header state and the `_LEAK_LINES` body state already
 # published for one response, and feeds the accumulators.  Sends nothing itself.
+#
+# `url` MUST be the DELIVERED url (the phase loop's own `delivered_url`,
+# lib/http.sh's `_HTTP_LAST_URL`), never the one this phase first requested - a
+# redirect can cross origin, and this response's own `self` host (below) is
+# derived from it directly.
 _leak_analyse_one() {
   local url=$1 path=$2 kind=$3
   local sep=$'\x1f'
@@ -271,6 +282,9 @@ _leak_analyse_one() {
   # and must not be counted as one it was applicable to.
   (( _LEAK_NLINES > 0 )) || return 0
 
+  # `$url` is the DELIVERED url here (see this function's own header comment),
+  # so a redirect that crossed origin subtracts the origin that actually served
+  # this response, not the one the phase loop first asked for.
   self=$(leak_host_of "$url")
 
   # -- Family 1: stack trace / debugger page ------------------------------
@@ -410,6 +424,26 @@ _dast_leakage_phase() {
     fi
     tested=$(( tested + 1 ))
 
+    # THE DELIVERED URL, NOT THE ONE THIS PHASE ASKED FOR.  `_HTTP_LAST_URL`
+    # (lib/http.sh §12) is the canonical URL of the hop that actually produced
+    # this response; a redirect between `$url` and it is an ordinary event (the
+    # endpoint chooser's own list is unauthenticated-crawl-derived and routinely
+    # names a pre-login or pre-canonicalisation path).  This phase calls
+    # `http_request` with `${SCOURSH_MAX_REDIRECTS:-5}`, not 0, so a redirect
+    # really can land on a different origin - and `_leak_analyse_one`'s Family 5
+    # (third-party origins) computes "this response's own host" from whatever
+    # URL it is handed via `leak_host_of`.  Handing it the REQUESTED url on a
+    # redirect that crossed origin would subtract the wrong host from the
+    # third-party set: a genuinely third-party origin that happens to equal the
+    # pre-redirect host would be silently treated as first-party (a false
+    # negative), and/or the true delivering host would never be subtracted at
+    # all (a false positive against the page's own CDN).  Every other family
+    # threads this same value through purely for the finding's own `url`
+    # evidence field, for the identical reason markup.sh's `delivered_url`
+    # does. Falling back to `$url` is defensive only - a call that reached here
+    # already returned 0, so `http_request` always published one.
+    local delivered_url=${_HTTP_LAST_URL:-$url}
+
     # The body is optional: family 2 works on headers alone, so a response with
     # no readable body is still a tested response for that family and an
     # untested one for the other four.
@@ -424,7 +458,7 @@ _dast_leakage_phase() {
     (( ${_LEAK_BODY_TRUNCATED:-0} )) && truncated=$(( truncated + 1 ))
     rm -f "$bodyfile" "$hdrfile"
 
-    _leak_analyse_one "$url" "$path" "$kind"
+    _leak_analyse_one "$delivered_url" "$path" "$kind"
   done
 
   if (( tested == 0 )); then

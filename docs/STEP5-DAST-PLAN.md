@@ -1237,6 +1237,25 @@ refresh redirects, `formaction` overrides on a submit button, `autocomplete="off
 fields, and the `crossorigin`-missing-beside-`integrity` case (which breaks the resource rather than
 weakening it, so it is named in the remediation instead of flagged).
 
+**The two other consumers that ticket's own rationale named - `passive/cors.sh` (DAST-08) and
+`passive/leakage.sh` (DAST-10) - have since been audited and fixed too.**
+`leakage.sh` is the real case: its own `http_request` call follows up to `${SCOURSH_MAX_REDIRECTS:-5}`
+redirects (unlike `cors.sh`, see below), so a redirect genuinely can land family 5 (third-party
+origins) on a different origin - `leak_host_of` computing "this response's own host" from the
+REQUESTED url rather than `_HTTP_LAST_URL` could subtract the wrong host from the third-party set on
+exactly that response.  The phase loop now captures `delivered_url=${_HTTP_LAST_URL:-$url}` right
+after `http_request` returns and threads it through `_leak_analyse_one`, so every family's own `url`
+evidence and family 5's `self` host are both read off the delivered response.  `cors.sh` audited
+differently: `cors_probe` sends every probe with `max_redirects` 0 (a passive-contract property, not
+an oversight - see `cors_engine.sh`'s own header), so a 3xx is always returned as-is and `_HTTP_LAST_URL`
+on that path is always the requested url's own canonical form, same origin, every time - this check
+cannot actually observe a cross-origin delivery.  It still threads `_CORS_LAST_URL` (its own
+capture of `_HTTP_LAST_URL`) into the finding's `url`/path fields rather than the raw inventory
+literal, because that is still the URL that delivered the response (canonical form, default port
+filled in) and stops being a silent trap if `max_redirects` here is ever raised.  Both are pinned by a
+redirect-across-origin case in their own suites that fails under the pre-fix reading, mirroring
+`tests/suites/http.sh`'s own case for `_HTTP_LAST_URL` itself.
+
 #### DAST-11 corrective pass - seven defects the 189-assertion suite could not reach
 
 **DAST-11 was approved, then the approval was reversed by an adversarial review; the corrective
