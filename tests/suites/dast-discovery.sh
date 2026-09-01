@@ -53,6 +53,14 @@ source "$ROOT/lib/http.sh"
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "$ROOT/modules/dast/crawl_engine.sh"
+# This file's own scope pre-check now lives in modules/dast/engine.sh section
+# 3b (`dast_endpoint_keep` and friends) rather than a local copy of
+# `http_gate_url` - sourced for real here (measured cost is in the same
+# ballpark as tests/suites/dast-headers.sh's own +~2 GB, well inside the 50 GB
+# per-process budget - see docs/CI-RUNBOOK.md's "the memory model") so the
+# out-of-scope case below exercises the real predicate.
+# shellcheck source=modules/dast/engine.sh
+source "$ROOT/modules/dast/engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
 
@@ -675,5 +683,50 @@ assert_eq 0 "$nul_rc" \
   'a body carrying embedded NUL bytes does not abort the probe - FAILS if the bounded read chokes on a NUL rather than just losing it'
 assert_true "$([[ $_DISC_LEN -le $_DISCOVERY_MAX_BODY_BYTES ]] && echo 0 || echo 1)" \
   "the reported length (${_DISC_LEN}) still never exceeds the cap for a body containing embedded NULs"
+
+# ===========================================================================
+printf '== dast discovery: dast_endpoint_keep is a SECOND, independent gate ==\n'
+# ===========================================================================
+# `_discovery_safe_rel` (this file's own §7.2 candidate validator) already
+# rejects every absolute or scheme-relative entry BEFORE it ever becomes a
+# candidate, for every one of the three sources (sensitive paths, a vendored
+# wordlist, and a backup/temp derivation of an inventory path) - see that
+# function's own header. So under normal operation a discovery candidate can
+# never actually reach `dast_endpoint_keep` out of scope: this phase resolves
+# every candidate against the operator's OWN base-url, which is by
+# construction the one entry config/scope.conf already authorised for this
+# target. `dast_endpoint_keep` (modules/dast/engine.sh section 3b) is
+# converged onto here anyway, as DELIBERATE belt-and-braces depth - exactly
+# the same reasoning modules/dast/crawl.sh's frontier re-check applies to its
+# own root URL.
+#
+# That layering is what this section proves, rather than a scenario that
+# cannot occur through the normal candidate path: with `_discovery_safe_rel`
+# shadowed to admit everything (simulating a defect in THAT layer), the
+# second, independent layer - `dast_endpoint_keep` - still catches an
+# absolute out-of-scope URL and the run still does not abort.
+_disc_orig_safe_rel=$(declare -f _discovery_safe_rel)
+_discovery_safe_rel() { printf '%s\n' "${1#/}"; return 0; }
+OOSWL=$W/oos-wordlist.txt
+cat >"$OOSWL" <<'EOF'
+https://not-authorised.example/evil
+inscope-path
+EOF
+_new_run oosdisc
+SCOURSH_DAST_ENDPOINTS='' SCOURSH_DAST_PARAMETERS=''
+export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
+SCOURSH_HTTP_TRANSPORT=_disc_transport
+rc=0
+SCOURSH_DAST_DISCOVERY_WORDLIST=$OOSWL _dast_discovery_phase || rc=$?
+eval "$_disc_orig_safe_rel"
+assert_eq 0 "$rc" \
+  'an out-of-scope candidate does not abort the run - FAILS if handed straight to http_request, whose gate is fatal (exit 3)'
+assert_not_contains "$(cat "$REQ_LOG")" 'not-authorised.example' \
+  'and no request was ever sent to it - asserted on the REQUEST LOG, proving dast_endpoint_keep filtered it independently of the (here, disabled) safe-path validator'
+DISC_RED=$(run_facts coverage_reduction)
+assert_contains "$DISC_RED" 'discovery_candidate_out_of_scope' \
+  'the drop is declared in this file own words, never the shared roll-up "inventory row" wording - a discovery candidate was DERIVED, not read off an inventory'
+assert_contains "$DISC_RED" 'phase=discovery' 'and names this phase'
+assert_contains "$DISC_RED" 'not-authorised.example' 'and the gate own reason'
 
 t_summary dast-discovery

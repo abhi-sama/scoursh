@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# ADR pointer: this file's scope pre-check is converged onto
+# modules/dast/engine.sh section 3b - see the ADR block at the top of
+# modules/dast/crawl.sh for the decision and the alternatives.
+#
 # modules/dast/authz_engine.sh - the pure half of the §7.4 object-level
 # authorization and data-exposure checks
 # (docs/DESIGN.md §7.4; docs/STEP5-DAST-PLAN.md DAST-29).
@@ -343,10 +347,26 @@ _authz_walk_records() {
 # exit 3 - would let one stray entry abort the operator's whole run.  This
 # decides only whether a candidate is worth KEEPING; everything that survives is
 # still requested through `http_request`, which applies the real gate again on
-# the way out and on every redirect hop.  Exactly modules/dast/crawl.sh's
-# `_crawl_in_scope` reasoning, and the same both-halves-required property.
+# the way out and on every redirect hop.
+#
+# Delegates to the shared `dast_endpoint_keep` (modules/dast/engine.sh section
+# 3b), which is now the ONE place this decision is made, and which captures
+# the gate's own reason AT REFUSAL TIME (`_DAST_SCOPE_REASON`) rather than
+# this file re-reading `_HTTP_GATE_REASON` after the fact.  `_AUTHZ_SKIPPED_SCOPE`
+# stays a local counter (rather than reading the shared `_DAST_SCOPE_SKIPPED`
+# directly) because it is reported alongside `_AUTHZ_SKIPPED_METHOD` and
+# `_AUTHZ_SKIPPED_HEAD` as one family of "not examined" reasons in
+# modules/dast/authz.sh's own coverage_gap - the shared accumulator counts
+# only this one reason and could not merge with those two.  The `declare -F`
+# guard is permissive on purpose, exactly as it was on the direct
+# `http_gate_url` call this replaces: several suites source this file with no
+# engine.sh in the process.
 _authz_in_scope() {
   local url=$1
+  if declare -F dast_endpoint_keep >/dev/null; then
+    dast_endpoint_keep "$url" "${SCOURSH_DAST_TARGET:-}" >/dev/null 2>&1 || return 1
+    return 0
+  fi
   declare -F http_gate_url >/dev/null || return 0
   http_gate_url "$url" "${SCOURSH_DAST_TARGET:-}" >/dev/null 2>&1
 }
@@ -471,6 +491,12 @@ authz_candidates_set() {
   _AUTHZ_SKIPPED_METHOD=0
   _AUTHZ_SKIPPED_HEAD=0
   _AUTHZ_SKIPPED_SCOPE=0
+  # Resets the SHARED scope-skip accumulator too, so `_authz_in_scope`'s own
+  # `_DAST_SCOPE_REASONS` (read by modules/dast/authz.sh's coverage_gap) never
+  # carries a reason left over from an earlier phase in the same process.
+  if declare -F dast_scope_skips_reset >/dev/null; then
+    dast_scope_skips_reset
+  fi
 
   local idx field value cur='' m='' u='' t=''
 

@@ -67,6 +67,14 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "$ROOT/modules/dast/passive/headers_engine.sh"
+# This file's own scope pre-check now lives in modules/dast/engine.sh section
+# 3b (`dast_endpoint_keep` and friends) rather than a local copy of
+# `http_gate_url` - sourced for real here (measured: +~2 GB peak under
+# `shellcheck -x`, well inside the 50 GB per-process budget - see
+# docs/CI-RUNBOOK.md's "the memory model") so section I below exercises the
+# real predicate rather than its permissive absent-engine fallback.
+# shellcheck source=modules/dast/engine.sh
+source "$ROOT/modules/dast/engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
 
@@ -515,8 +523,10 @@ assert_contains "$(_meta coverage_reduction)" 'headers_non_get_endpoint_skipped'
 
 # An out-of-scope inventory URL is skipped, and the run continues.  Handing it
 # straight to http_request would abort the whole run with exit 3, which is
-# exactly what the pre-check exists to prevent (modules/dast/crawl.sh's own
-# `_crawl_in_scope` reasoning).
+# exactly what the pre-check exists to prevent (modules/dast/engine.sh section
+# 3b's `dast_endpoint_keep` reasoning - this file now routes through that
+# shared helper rather than a local copy of `http_gate_url`, and a mutation
+# that removes the pre-check is proven to make this phase exit 3 below).
 OOSINV=$W/oos.endpoints.json
 cat >"$OOSINV" <<'EOF'
 { "schema": "scoursh.inventory.endpoints/1", "endpoints": [
@@ -533,8 +543,63 @@ assert_eq 0 "$rc" \
   'an out-of-scope URL in the inventory does not abort the run - FAILS if a discovered URL is handed straight to http_request, whose gate is fatal'
 assert_true "$([[ $(cat "$REQ_LOG") == *not-authorised* ]] && printf 1 || printf 0)" \
   'and no request is sent to it - asserted on the REQUEST LOG, not on a return value'
-assert_contains "$(_meta coverage_reduction)" 'headers_endpoint_out_of_scope' \
-  'the refused URL is declared'
+RED=$(_meta coverage_reduction)
+assert_contains "$RED" 'inventory_endpoint_out_of_scope' \
+  'the refused URL is declared - now the shared roll-up reason (modules/dast/engine.sh section 3b), converged onto the same wording every other inventory-driven DAST phase uses'
+assert_contains "$RED" 'phase=headers' 'and names this phase, not a generic default'
+assert_contains "$RED" 'count=1' 'and the row count'
+assert_contains "$RED" 'not-authorised.invalid' 'and the gate own reason, naming the host'
+
+# ---------------------------------------------------------------------------
+# WITHOUT the shared pre-check, the same inventory kills the whole run.
+# ---------------------------------------------------------------------------
+# THE MUTATION.  Run in a REAL SUBPROCESS with `dast_endpoint_keep` shadowed to
+# keep everything - byte-for-byte the behaviour before modules/dast/engine.sh
+# section 3b existed, and before this ticket converged this file onto it - and
+# the process is asserted to die with exit 3.  A subprocess because the
+# failure being reproduced is `die`, which ends the process.
+MUT=$W/mutation.sh
+cat >"$MUT" <<'EOM'
+set -Eeuo pipefail
+ROOT=$1 W=$2 INV=$3 SCOPE=$4 LOG=$5
+source "$ROOT/modules/dast/engine.sh"
+source "$ROOT/modules/dast/passive/headers_engine.sh"
+http_scope_load "$SCOPE"
+config_scope_load "$SCOPE"
+config_scanner_load "$W/scanner.conf"
+_m_resolve() { printf '93.184.216.34'; }
+SCOURSH_HTTP_RESOLVE=_m_resolve
+_m_transport() {
+  printf '%s %s://%s%s\n' "$1" "$2" "$3" "$5" >>"$LOG"
+  if [[ -n ${_HTTP_TX_HEADERS_OUT:-} ]]; then
+    printf 'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n' >>"$_HTTP_TX_HEADERS_OUT"
+  fi
+  printf '200\n\ntext/html\n'
+}
+SCOURSH_HTTP_TRANSPORT=_m_transport
+# THE MUTATION ITSELF: the pre-check keeps every row.
+dast_endpoint_keep() { return 0; }
+run_init "$W/run.mutation"
+run_record authorization_affirmed true
+run_record authorization_target hdr-bare
+SCOURSH_DAST_TARGET=hdr-bare
+SCOURSH_DAST_CELL=hdr-bare
+export SCOURSH_DAST_TARGET SCOURSH_DAST_CELL
+SCOURSH_DAST_ENDPOINTS=$INV
+export SCOURSH_DAST_ENDPOINTS
+source "$ROOT/modules/dast/passive/headers.sh"
+EOM
+
+MUT_LOG=$W/mutation-requests.log
+: >"$MUT_LOG"
+MUT_RC=0
+bash "$MUT" "$ROOT" "$W" "$OOSINV" "$SCOPE" "$MUT_LOG" >"$W/mutation.out" 2>&1 || MUT_RC=$?
+
+t_case 'WITHOUT the pre-check the same inventory kills the whole run'
+assert_eq 3 "$MUT_RC" \
+  'the mutated phase exits SCOURSH_EXIT_SCOPE (3) - this is the defect the shared pre-check exists to remove, reproduced rather than described. If this case ever reports 0, the pre-check has stopped being load-bearing and the section above is passing for some other reason.'
+assert_not_contains "$(cat "$MUT_LOG")" 'not-authorised' \
+  'and it never even reached the unauthorised host - the gate inside http_request refuses BEFORE the transport'
 
 # Two URLs that differ only in a volatile path segment are ONE handler.
 _run_case dedupe hdr-bare https://bare.fixture.example/order/1 https://bare.fixture.example/order/2

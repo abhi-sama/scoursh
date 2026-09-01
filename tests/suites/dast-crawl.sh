@@ -475,6 +475,68 @@ assert_not_contains "$LOG" 'off-target.example.invalid' \
 assert_eq 0 "$_RC" \
   'and the run still completed cleanly - FAILS under "let http_request die 3 on it", which lets any scanned site abort its own scan by linking to a search engine'
 assert_not_contains "$EPJSON" 'off-target' 'nor did it reach the inventory'
+NOTES=$(_slurp "$W/run-basic/meta/notes")
+assert_contains "$NOTES" 'scope_refused_links=1' \
+  'the drop is declared (module=dast/engine.sh section 3b'"'"'s dast_endpoint_keep, converged onto here) as a `notes` record, not a coverage_reduction: this is a crawled LINK, not an inventory row, and refusing one is the tool working rather than a hole in what it examined'
+assert_contains "$NOTES" 'off-target.example.invalid' 'and it carries the gate own reason, naming the host'
+
+# ---------------------------------------------------------------------------
+# WITHOUT the shared pre-check, the same off-target link kills the whole run.
+# ---------------------------------------------------------------------------
+MUT=$W/mutation.sh
+cat >"$MUT" <<'EOM'
+set -Eeuo pipefail
+ROOT=$1 FIX=$2 PAGES=$3 LOG=$4
+source "$ROOT/modules/dast/engine.sh"
+source "$ROOT/lib/http.sh"
+source "$ROOT/modules/dast/crawl_engine.sh"
+http_scope_load "$FIX/config/scope.conf"
+config_scope_load "$FIX/config/scope.conf"
+cat >"$FIX/config/scanner.conf" <<'EOS'
+id: scanner
+requests-per-second: 5000
+request-budget: 20000
+circuit-breaker-failures: 100000
+EOS
+config_scanner_load "$FIX/config/scanner.conf"
+_m_resolve() {
+  case $1 in
+    crawl.fixture.invalid) printf '93.184.216.34' ;;
+    off-target.example.invalid) printf '93.184.216.35' ;;
+    *) return 1 ;;
+  esac
+}
+SCOURSH_HTTP_RESOLVE=_m_resolve
+_m_transport() {
+  local method=$1 host=$3 path=$5 bodyout=${7:-}
+  printf '%s %s %s\n' "$method" "$host" "$path" >>"$LOG"
+  case $path in
+    /) [[ -n $bodyout ]] && cat -- "$PAGES/index.html" >"$bodyout"; printf '200\n\ntext/html\n' ;;
+    *) printf '404\n\ntext/html\n' ;;
+  esac
+}
+SCOURSH_HTTP_TRANSPORT=_m_transport
+# THE MUTATION ITSELF: the pre-check keeps every row, byte-for-byte the
+# behaviour before modules/dast/engine.sh section 3b existed.
+dast_endpoint_keep() { return 0; }
+dast_endpoint_in_scope() { return 0; }
+run_init "$FIX/run.mutation"
+run_record authorization_affirmed true
+run_record authorization_target crawl-fixture
+SCOURSH_DAST_TARGET=crawl-fixture
+export SCOURSH_DAST_TARGET
+source "$ROOT/modules/dast/crawl.sh"
+EOM
+MUT_LOG=$W/mutation-requests.log
+: >"$MUT_LOG"
+MUT_RC=0
+bash "$MUT" "$ROOT" "$FIX" "$FIXTURES/pages" "$MUT_LOG" >"$W/mutation.out" 2>&1 || MUT_RC=$?
+
+t_case 'WITHOUT the pre-check the same off-target link kills the whole run'
+assert_eq 3 "$MUT_RC" \
+  'the mutated phase exits SCOURSH_EXIT_SCOPE (3) - this is the defect the shared pre-check exists to remove, reproduced rather than described. If this case ever reports 0, the pre-check has stopped being load-bearing and the section above is passing for some other reason.'
+assert_not_contains "$(cat "$MUT_LOG")" 'off-target' \
+  'and it never even reached the unauthorised host - the gate inside http_request refuses BEFORE the transport'
 
 t_case 'a page-relative link resolves against the page, not against the root'
 assert_contains "$LOG" 'GET crawl.fixture.invalid /deep1.html' \
