@@ -94,12 +94,14 @@ SCOURSH_DAST_TRANSPORT_ENGINE_SOURCED=1
 # shellcheck source=modules/dast/passive/response_engine.sh
 source "${BASH_SOURCE[0]%/*}/response_engine.sh"
 if [[ -z ${SCOURSH_HTTP_SOURCED:-} ]]; then
-  # -x back-edge cut: lib/http.sh
-  # is already inlined elsewhere in this file's own source graph, and shellcheck
-  # re-expands EVERY source edge it follows.  Cutting this one loses no checking
-  # and is what keeps the linter's memory bounded - see the shellcheck stage in
-  # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
-  # shellcheck source=/dev/null
+  # Real edge, matching modules/dast/passive/headers_engine.sh's own
+  # convention: neither of this file's two consumers (this module's own
+  # transport.sh phase script, and tests/suites/dast-transport.sh) has
+  # another real edge to lib/http.sh anywhere else in their source graph, so
+  # cutting this one to /dev/null would leave
+  # SCOURSH_HTTP_RESOLVE/SCOURSH_HTTP_TRANSPORT genuinely invisible to shellcheck
+  # for both - measured via tests/lint-source-graph.sh's own walker, not assumed.
+  # shellcheck source=lib/http.sh
   source "${BASH_SOURCE[0]%/*}/../../../lib/http.sh"
 fi
 # crawl_engine.sh supplies the frozen inventory reader (`crawl_json_flatten`/

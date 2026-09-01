@@ -51,15 +51,17 @@
 # SC2016: assertion prose quotes header and method syntax literally.
 # SC2030/SC2031: a `VAR=val cmd` prefix before a subprocess is deliberately
 #   scoped to that one invocation.
-# shellcheck disable=SC2016,SC2030,SC2031
+# SC2100: `target=method-fixture` and `cell=method-fixture` are plain strings,
+#   not the arithmetic subtraction the hyphenated shape suggests.
+# shellcheck disable=SC2016,SC2030,SC2031,SC2100
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Sourcing the engine pulls in lib/core.sh (scratch dir, traps, the pattern
 # engine binding scan_match needs).
-# shellcheck source=modules/dast/active/method_engine.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/method_engine.sh"
-# shellcheck source=modules/dast/active/inject_engine.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/inject_engine.sh"
 # shellcheck source=modules/dast/engine.sh
 source "$ROOT/modules/dast/engine.sh"
@@ -494,7 +496,7 @@ RUN1=$(cat "$REQ_LOG")
 _new_run repeat
 SCOURSH_DAST_METHOD_ENDPOINTS=$FULL_INV
 export SCOURSH_DAST_METHOD_ENDPOINTS
-# shellcheck source=modules/dast/active/methods.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/methods.sh"
 assert_eq "$RUN1" "$(cat "$REQ_LOG")" \
   'two runs over the identical surface issue the identical requests in the identical order - FAILS under iterating the endpoint map in bash associative-array (hash) order, which makes a capped run`s coverage unpredictable and the output non-reproducible'
@@ -506,7 +508,7 @@ t_case 'no endpoint inventory is a recorded gap, not a clean result and not an e
 _new_run noinv
 SCOURSH_DAST_METHOD_ENDPOINTS=$W/absent-inventory.json
 export SCOURSH_DAST_METHOD_ENDPOINTS
-# shellcheck source=modules/dast/active/methods.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/methods.sh"
 assert_contains "$(_meta_text coverage_gap)" 'no known endpoint' \
   'the report says nothing was tested - FAILS under returning quietly, which produces a report with no method findings and no reason'
@@ -523,7 +525,7 @@ EOS
 _new_run emptyinv
 SCOURSH_DAST_METHOD_ENDPOINTS=$EMPTY_INV
 export SCOURSH_DAST_METHOD_ENDPOINTS
-# shellcheck source=modules/dast/active/methods.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/methods.sh"
 assert_eq '' "$(cat "$REQ_LOG")" 'no request is sent for an inventory with an empty endpoint list'
 assert_contains "$(_meta_text coverage_reduction)" 'no_endpoint_inventory' 'and the reason is recorded'
@@ -534,7 +536,7 @@ _new_run cap
 SCOURSH_DAST_METHOD_ENDPOINTS=$FULL_INV
 SCOURSH_DAST_METHOD_MAX_ENDPOINTS=2
 export SCOURSH_DAST_METHOD_ENDPOINTS SCOURSH_DAST_METHOD_MAX_ENDPOINTS
-# shellcheck source=modules/dast/active/methods.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/methods.sh"
 _paths() { local l out=''; while IFS= read -r l; do [[ -n $l ]] && out+="${l##* }"$'\n'; done <"$REQ_LOG"; printf '%s' "$out" | LC_ALL=C sort -u | tr '\n' ' '; }
 assert_eq 2 "$(_paths | wc -w | tr -d ' ')" 'exactly the cap of 2 distinct endpoints is enumerated'
@@ -555,7 +557,7 @@ EOS
 _new_run failcase
 SCOURSH_DAST_METHOD_ENDPOINTS=$FAILINV
 export SCOURSH_DAST_METHOD_ENDPOINTS
-# shellcheck source=modules/dast/active/methods.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/methods.sh"
 assert_eq 1 "$(_count DAST-METHOD-WRITE_ADVERTISED-01 PUT /upload)" \
   'the endpoint after the failing one is still enumerated - FAILS under aborting the phase on the first transport failure'
@@ -571,7 +573,7 @@ EOS
 _new_run quiet
 SCOURSH_DAST_METHOD_ENDPOINTS=$QUIET_INV
 export SCOURSH_DAST_METHOD_ENDPOINTS
-# shellcheck source=modules/dast/active/methods.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/methods.sh"
 assert_contains "$(_meta_text coverage_gap)" 'UNKNOWN, not clean' \
   'a target where no endpoint named a single method is reported as unknown - FAILS under emitting nothing, which is indistinguishable from a target that answered fully and cleanly'
@@ -589,7 +591,7 @@ printf '== E. the authenticated pass actually carries the credential ==\n'
 # operator already handed us the token), so this stays a recorded-response
 # suite. It is asserted on the outbound header context at the transport
 # boundary, not on anything the phase reports about itself.
-# shellcheck source=modules/dast/auth_engine.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/auth_engine.sh"
 
 AUTH_CONF=$W/auth.conf
@@ -614,7 +616,7 @@ _req_reset
 SCOURSH_DAST_AUTHED=true
 SCOURSH_DAST_METHOD_ENDPOINTS=$AUTH_INV
 export SCOURSH_DAST_AUTHED SCOURSH_DAST_METHOD_ENDPOINTS
-# shellcheck source=modules/dast/active/methods.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/methods.sh"
 
 assert_contains "$(cat "$REQ_HDR_LOG")" 'OPTIONS /echo	Authorization: Bearer t0ken-m' \
@@ -632,7 +634,7 @@ _req_reset
 SCOURSH_DAST_AUTHED=false
 SCOURSH_DAST_METHOD_ENDPOINTS=$AUTH_INV
 export SCOURSH_DAST_AUTHED SCOURSH_DAST_METHOD_ENDPOINTS
-# shellcheck source=modules/dast/active/methods.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/methods.sh"
 assert_not_contains "$(cat "$REQ_HDR_LOG")" 'Authorization:' \
   'a run that did not ask to authenticate sends no credential - FAILS under attaching whatever session happens to be in the store, which would put a credential on the wire the operator never asked this run to use'

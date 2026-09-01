@@ -68,15 +68,14 @@
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
-# Sourcing the engine pulls in headers_engine.sh -> lib/http.sh -> lib/config.sh
-# + lib/findings.sh -> lib/records.sh -> lib/core.sh, which bootstraps the
-# scratch dir and traps.
-# -x back-edge cut: modules/dast/passive/transport_engine.sh
-# is already inlined elsewhere in this file's own source graph, and shellcheck
-# re-expands EVERY source edge it follows.  Cutting this one loses no checking
-# and is what keeps the linter's memory bounded - see the shellcheck stage in
-# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
-# shellcheck source=/dev/null
+# Sourcing the engine pulls in lib/http.sh -> lib/config.sh + lib/findings.sh
+# -> lib/records.sh -> lib/core.sh, which bootstraps the scratch dir and
+# traps. Real edge: every OTHER mention of transport_engine.sh/transport.sh
+# in this file is either already a /dev/null cut or sits inside the
+# mutation-script heredoc below (an unanalysed string, not a followed edge),
+# so this is the only real copy - measured via tests/lint-source-graph.sh's
+# own walker, not assumed.
+# shellcheck source=modules/dast/passive/transport_engine.sh
 source "$ROOT/modules/dast/passive/transport_engine.sh"
 # modules/dast/engine.sh supplies the phase table (`_DAST_PHASES`) and
 # `dast_run_phase`, which section E asserts this ticket's row against.  It is
