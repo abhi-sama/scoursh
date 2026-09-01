@@ -95,12 +95,14 @@ SCOURSH_DAST_LEAKAGE_ENGINE_SOURCED=1
 # first phase that issues traffic sources it, guarded exactly as
 # modules/dast/passive/headers_engine.sh and modules/dast/auth_engine.sh do.
 if [[ -z ${SCOURSH_HTTP_SOURCED:-} ]]; then
-  # -x back-edge cut: lib/http.sh
-  # is already inlined elsewhere in this file's own source graph, and shellcheck
-  # re-expands EVERY source edge it follows.  Cutting this one loses no checking
-  # and is what keeps the linter's memory bounded - see the shellcheck stage in
-  # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
-  # shellcheck source=/dev/null
+  # Real edge, matching modules/dast/passive/headers_engine.sh's own
+  # convention: neither of this file's two consumers (this module's own
+  # leakage.sh phase script, and tests/suites/dast-leakage.sh) has another
+  # real edge to lib/http.sh anywhere else in their source graph, so cutting
+  # this one to /dev/null would leave SCOURSH_HTTP_RESOLVE/SCOURSH_HTTP_TRANSPORT
+  # genuinely invisible to shellcheck for both - measured via
+  # tests/lint-source-graph.sh's own walker, not assumed.
+  # shellcheck source=lib/http.sh
   source "${BASH_SOURCE[0]%/*}/../../../lib/http.sh"
 fi
 # crawl_engine.sh for the frozen inventory flattener
@@ -924,19 +926,18 @@ leak_origins_reset() {
 # a relative path does not, because it is same-origin by construction.
 leak_origins_in() {
   local line=$1 self=$2
-  local i n=${#line} c host scheme origin
+  local i n=${#line} c host
   for (( i = 0; i < n; i++ )); do
-    scheme=''
     if [[ ${line:i:8} == 'https://' ]]; then
-      scheme=https; i=$(( i + 8 ))
+      i=$(( i + 8 ))
     elif [[ ${line:i:7} == 'http://' ]]; then
-      scheme=http; i=$(( i + 7 ))
+      i=$(( i + 7 ))
     elif [[ ${line:i:2} == '//' ]]; then
       # Scheme-relative, but only when what precedes it is a quote or an
       # attribute boundary - otherwise every `https://` already consumed above
       # and every `//` comment in the bundle would match.
       if (( i == 0 )) || [[ ${line:i-1:1} == '"' || ${line:i-1:1} == "'" || ${line:i-1:1} == '=' || ${line:i-1:1} == '(' ]]; then
-        scheme=rel; i=$(( i + 2 ))
+        i=$(( i + 2 ))
       else
         continue
       fi
@@ -960,9 +961,6 @@ leak_origins_in() {
       _LEAK_ORIGINS_SAMESITE=$(( _LEAK_ORIGINS_SAMESITE + 1 ))
       continue
     fi
-    [[ $scheme == rel ]] && scheme='//'
-    origin="$scheme://$host"
-    [[ $scheme == '//' ]] && origin="//$host"
     [[ -n ${_LEAK_ORIGIN_SEEN[${host,,}]:-} ]] && continue
     _LEAK_ORIGIN_SEEN[${host,,}]=1
     _LEAK_ORIGINS+=("${host,,}")

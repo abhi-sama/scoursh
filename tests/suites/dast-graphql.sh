@@ -381,7 +381,7 @@ t_case 'no endpoint inventory at all is a different, equally declared reduction'
 _new_run noinv
 SCOURSH_DAST_GQL_ENDPOINTS=$W/absent-inventory.json
 export SCOURSH_DAST_GQL_ENDPOINTS
-# shellcheck source=modules/dast/graphql.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/graphql.sh"
 assert_eq 0 "$(_req_count)" 'still zero requests'
 assert_contains "$(_meta coverage_reduction)" 'reason=no_endpoint_inventory' \
@@ -399,7 +399,7 @@ t_case 'introspection enabled: one finding, with the DAST location profile'
 _new_run on
 SCOURSH_DAST_GQL_ENDPOINTS=$ON_INV
 export SCOURSH_DAST_GQL_ENDPOINTS
-# shellcheck source=modules/dast/graphql.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/graphql.sh"
 assert_eq 1 "$(_count DAST-GQL-INTROSPECTION-01)" 'exactly one finding for the one exposed endpoint'
 assert_eq 1 "$(_req_count)" \
@@ -444,7 +444,7 @@ t_case 'introspection disabled: no finding, but the check IS recorded as covered
 _new_run off
 SCOURSH_DAST_GQL_ENDPOINTS=$OFF_INV
 export SCOURSH_DAST_GQL_ENDPOINTS
-# shellcheck source=modules/dast/graphql.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/graphql.sh"
 assert_eq 0 "$(_count DAST-GQL-INTROSPECTION-01)" \
   'a server that refuses introspection produces NO finding - FAILS under the substring reading of the response, whose refusal message quotes `__schema`, end to end through the real phase rather than only in the classifier'
@@ -465,7 +465,7 @@ EOF
 _new_run notreally
 SCOURSH_DAST_GQL_ENDPOINTS=$NOTREALLY
 export SCOURSH_DAST_GQL_ENDPOINTS
-# shellcheck source=modules/dast/graphql.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/graphql.sh"
 assert_eq 0 "$(_count DAST-GQL-INTROSPECTION-01)" 'no finding is invented from a 404-shaped body'
 assert_contains "$(_meta coverage_reduction)" 'reason=graphql_response_not_graphql' \
@@ -483,7 +483,7 @@ EOF
 _new_run fail
 SCOURSH_DAST_GQL_ENDPOINTS=$FAILINV
 export SCOURSH_DAST_GQL_ENDPOINTS
-# shellcheck source=modules/dast/graphql.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/graphql.sh"
 assert_eq 0 "$(_count DAST-GQL-INTROSPECTION-01)" 'no finding'
 assert_contains "$(_meta coverage_reduction)" 'reason=graphql_request_failed' 'the failure is declared'
@@ -495,7 +495,7 @@ _new_run fallback
 SRV_405_UNTIL_GET=1
 SCOURSH_DAST_GQL_ENDPOINTS=$ON_INV
 export SCOURSH_DAST_GQL_ENDPOINTS
-# shellcheck source=modules/dast/graphql.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/graphql.sh"
 assert_eq 1 "$(_count DAST-GQL-INTROSPECTION-01)" \
   'a server that serves queries over GET and refuses POST is still covered - FAILS with no fallback, where such a server classifies as "not GraphQL" and the check silently never ran against it'
@@ -518,7 +518,7 @@ _new_run cap
 SCOURSH_DAST_GQL_ENDPOINTS=$MANY
 SCOURSH_DAST_GQL_MAX_ENDPOINTS=1
 export SCOURSH_DAST_GQL_ENDPOINTS SCOURSH_DAST_GQL_MAX_ENDPOINTS
-# shellcheck source=modules/dast/graphql.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/graphql.sh"
 assert_eq 1 "$(_req_count)" 'the cap really bounds the requests sent'
 assert_contains "$(_meta coverage_gap)" 'were not probed' \
@@ -535,7 +535,7 @@ EOF
 _new_run othertarget
 SCOURSH_DAST_GQL_ENDPOINTS=$OTHER
 export SCOURSH_DAST_GQL_ENDPOINTS
-# shellcheck source=modules/dast/graphql.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/graphql.sh"
 assert_eq 0 "$(_req_count)" \
   'an inventory entry carrying another target id is not this target surface - FAILS if the target filter is dropped, which would attribute one target findings to another and break the coverage cell'
@@ -569,7 +569,7 @@ export SCOURSH_DAST_GQL_ENDPOINTS
 # truncation, which is exactly the "a skipped suite is never a pass" hazard.
 # Measured, not reasoned about: the first draft did precisely that.
 GATE_RC=0
-# shellcheck source=modules/dast/graphql.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/graphql.sh" || GATE_RC=$?
 assert_eq 0 "$GATE_RC" \
   'the phase completes on an inventory whose only row is out of scope - FAILS on the pre-fix code, which handed the URL to http_request and died SCOURSH_EXIT_SCOPE (3), killing the run over one row of a file the scanner did not author'
@@ -643,7 +643,7 @@ t_case 'the introspection finding carries corr_target, which is the whole contra
 _new_run corr
 SCOURSH_DAST_GQL_ENDPOINTS=$ON_INV
 export SCOURSH_DAST_GQL_ENDPOINTS
-# shellcheck source=modules/dast/graphql.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/graphql.sh"
 findings_merge "$SCOURSH_RUN_DIR"
 assert_contains "$(cat "$SCOURSH_RUN_DIR/findings.fields")" 'corr_target=gql-fixture' \
@@ -658,7 +658,7 @@ t_case 'with both contributors on the same target, the composite fires'
 _new_run corr2
 SCOURSH_DAST_GQL_ENDPOINTS=$ON_INV
 export SCOURSH_DAST_GQL_ENDPOINTS
-# shellcheck source=modules/dast/graphql.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/graphql.sh"
 _emit_stand_in gql-fixture
 findings_merge "$SCOURSH_RUN_DIR"
@@ -672,7 +672,7 @@ t_case 'contributors on DIFFERENT targets do not correlate'
 _new_run corr3
 SCOURSH_DAST_GQL_ENDPOINTS=$ON_INV
 export SCOURSH_DAST_GQL_ENDPOINTS
-# shellcheck source=modules/dast/graphql.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/graphql.sh"
 _emit_stand_in a-different-target
 findings_merge "$SCOURSH_RUN_DIR"

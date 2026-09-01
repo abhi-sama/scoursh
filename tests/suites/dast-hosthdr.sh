@@ -54,7 +54,10 @@
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
-# shellcheck source=lib/http.sh
+# lib/http.sh is already inlined via modules/dast/active/hosthdr_engine.sh below
+# (hosthdr_engine.sh:103-104), so this direct edge is a pure -x cost with no
+# static-knowledge loss - see docs/FOUNDATION.md's shellcheck-memory note.
+# shellcheck source=/dev/null
 source "$ROOT/lib/http.sh"
 if [[ -z ${SCOURSH_REPORT_SOURCED:-} ]]; then
   # shellcheck source=lib/report.sh
@@ -111,12 +114,10 @@ SCOURSH_HTTP_RESOLVE=_hh_resolve
 # technique per candidate" assertions be made against a log rather than a
 # return value.
 REQ_LOG=$W/requests.log
-declare -A SRV_MAP=()
 SRV_FAIL_PATH=''
 SRV_FAIL_ALL=0
 
 _srv_reset() {
-  SRV_MAP=()
   SRV_FAIL_PATH=''
   SRV_FAIL_ALL=0
   : >"$REQ_LOG"
