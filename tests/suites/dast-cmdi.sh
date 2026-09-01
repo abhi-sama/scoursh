@@ -77,22 +77,15 @@ CLOCKF=$W/clock.ns
 PENDF=$W/clock.pending
 _clock_reset() { printf '0' >"$CLOCKF"; printf '0' >"$PENDF"; }
 _cmdi_now() {
-  # `cur_ns`/`pend_ns`, not the obvious `cur`/`pend` - see
-  # tests/suites/dast-sqli.sh's own `_sqli_now` for why: `shellcheck -x`
-  # inlines every sourced file into one namespace, several engines under
-  # modules/dast/ declare `local -A cur=()` inside their own functions, and a
-  # plain `local cur=0` here then trips SC2178 against a variable in a
-  # different function in a different file. Distinct names are the fix; a
-  # suppression would hide the same warning if it ever became real here.
-  local cur_ns=0 pend_ns=0
-  IFS= read -r cur_ns <"$CLOCKF" 2>/dev/null || true
-  IFS= read -r pend_ns <"$PENDF" 2>/dev/null || true
-  [[ $cur_ns =~ ^[0-9]+$ ]] || cur_ns=0
-  [[ $pend_ns =~ ^[0-9]+$ ]] || pend_ns=0
-  cur_ns=$(( cur_ns + pend_ns ))
+  local cur=0 pend=0
+  IFS= read -r cur <"$CLOCKF" 2>/dev/null || true
+  IFS= read -r pend <"$PENDF" 2>/dev/null || true
+  [[ $cur =~ ^[0-9]+$ ]] || cur=0
+  [[ $pend =~ ^[0-9]+$ ]] || pend=0
+  cur=$(( cur + pend ))
   printf '0' >"$PENDF"
-  printf '%s' "$cur_ns" >"$CLOCKF"
-  printf '%s' "$cur_ns"
+  printf '%s' "$cur" >"$CLOCKF"
+  printf '%s' "$cur"
 }
 SCOURSH_INJECT_NOW_NS=_cmdi_now
 

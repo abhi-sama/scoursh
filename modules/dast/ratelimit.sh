@@ -193,19 +193,11 @@ _dast_ratelimit_phase() {
   if declare -F dast_scope_skips_reset >/dev/null; then
     dast_scope_skips_reset
   fi
-  # `endpoint_in_scope`, not the obvious `kept` - `shellcheck -x` inlines
-  # every sourced file into one namespace, and lib/http.sh declares two
-  # unrelated functions' own `local -a kept=()`, which then trips SC2178
-  # ("used as an array but is now assigned a string") against a scalar of the
-  # same name in a different function in a different file - the same
-  # cross-file collision tests/suites/dast-sqli.sh's own `_sqli_now` names.
-  # Distinct names are the fix; a suppression would hide the same warning if
-  # it ever became real here.
-  local endpoint_in_scope=1
+  local kept=1
   if declare -F dast_endpoint_keep >/dev/null; then
-    dast_endpoint_keep "$url" "$target" || endpoint_in_scope=0
+    dast_endpoint_keep "$url" "$target" || kept=0
   fi
-  if (( ! endpoint_in_scope )); then
+  if (( ! kept )); then
     run_record coverage_reduction "module=dast reason=burst_endpoint_out_of_scope check=ratelimit target=$target - the chosen endpoint is not authorised by config/scope.conf (${_DAST_SCOPE_REASONS:-declined by the scope gate}) and was not requested."
     run_record coverage_gap "dast ratelimit: the endpoint chosen for the burst probe on target '$target' is not in config/scope.conf, so nothing was sent and the check is uncovered."
     return 0

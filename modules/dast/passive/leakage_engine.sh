@@ -926,18 +926,19 @@ leak_origins_reset() {
 # a relative path does not, because it is same-origin by construction.
 leak_origins_in() {
   local line=$1 self=$2
-  local i n=${#line} c host
+  local i n=${#line} c host scheme origin
   for (( i = 0; i < n; i++ )); do
+    scheme=''
     if [[ ${line:i:8} == 'https://' ]]; then
-      i=$(( i + 8 ))
+      scheme=https; i=$(( i + 8 ))
     elif [[ ${line:i:7} == 'http://' ]]; then
-      i=$(( i + 7 ))
+      scheme=http; i=$(( i + 7 ))
     elif [[ ${line:i:2} == '//' ]]; then
       # Scheme-relative, but only when what precedes it is a quote or an
       # attribute boundary - otherwise every `https://` already consumed above
       # and every `//` comment in the bundle would match.
       if (( i == 0 )) || [[ ${line:i-1:1} == '"' || ${line:i-1:1} == "'" || ${line:i-1:1} == '=' || ${line:i-1:1} == '(' ]]; then
-        i=$(( i + 2 ))
+        scheme=rel; i=$(( i + 2 ))
       else
         continue
       fi
@@ -961,6 +962,9 @@ leak_origins_in() {
       _LEAK_ORIGINS_SAMESITE=$(( _LEAK_ORIGINS_SAMESITE + 1 ))
       continue
     fi
+    [[ $scheme == rel ]] && scheme='//'
+    origin="$scheme://$host"
+    [[ $scheme == '//' ]] && origin="//$host"
     [[ -n ${_LEAK_ORIGIN_SEEN[${host,,}]:-} ]] && continue
     _LEAK_ORIGIN_SEEN[${host,,}]=1
     _LEAK_ORIGINS+=("${host,,}")
