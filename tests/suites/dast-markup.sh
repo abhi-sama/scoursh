@@ -69,6 +69,14 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "$ROOT/modules/dast/passive/markup_engine.sh"
+# This file's own scope pre-check now lives in modules/dast/engine.sh section
+# 3b (`dast_endpoint_keep` and friends) rather than a local copy of
+# `http_gate_url` - sourced for real here (measured cost is in the same
+# ballpark as tests/suites/dast-headers.sh's own +~2 GB, well inside the 50 GB
+# per-process budget - see docs/CI-RUNBOOK.md's "the memory model") so the
+# out-of-scope case below exercises the real predicate.
+# shellcheck source=modules/dast/engine.sh
+source "$ROOT/modules/dast/engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
 
@@ -744,10 +752,57 @@ t_case 'gaps: an out-of-scope inventory URL'
 _run_case oos mk-fixture 'https://not-authorised.example/page' "$B/tab"
 assert_not_contains "$(cat "$REQ_LOG")" 'not-authorised.example' \
   'an inventory URL the scope gate declines is never handed to http_request - FAILS without the pre-check, where http_request exits 3 and one bad inventory row aborts the whole run'
-assert_contains "$(_meta coverage_reduction)" 'markup_endpoint_out_of_scope' \
-  'and the refusal is declared'
+MK_RED=$(_meta coverage_reduction)
+assert_contains "$MK_RED" 'inventory_endpoint_out_of_scope' \
+  'and the refusal is declared - now the shared roll-up reason (modules/dast/engine.sh section 3b)'
+assert_contains "$MK_RED" 'phase=markup' 'and names this phase'
 assert_eq 1 "$(_count_check DAST-MARKUP-TABNABBING-01)" \
   'while the in-scope URL alongside it is still tested'
+
+# ---------------------------------------------------------------------------
+# WITHOUT the shared pre-check, the same inventory kills the whole run.
+# ---------------------------------------------------------------------------
+MUT=$W/mutation.sh
+cat >"$MUT" <<'EOM'
+set -Eeuo pipefail
+ROOT=$1 W=$2 INV=$3 SCOPE=$4 LOG=$5
+source "$ROOT/modules/dast/engine.sh"
+source "$ROOT/modules/dast/passive/markup_engine.sh"
+http_scope_load "$SCOPE"
+config_scope_load "$SCOPE"
+config_scanner_load "$W/scanner.conf"
+_m_resolve() { printf '93.184.216.34'; }
+SCOURSH_HTTP_RESOLVE=_m_resolve
+_m_transport() {
+  printf '%s %s://%s%s\n' "$1" "$2" "$3" "$5" >>"$LOG"
+  if [[ -n ${_HTTP_TX_BODY_OUT:-} ]]; then
+    printf '<html><body></body></html>' >"$_HTTP_TX_BODY_OUT"
+  fi
+  printf '200\n\ntext/html\n'
+}
+SCOURSH_HTTP_TRANSPORT=_m_transport
+dast_endpoint_keep() { return 0; }
+run_init "$W/run.mutation"
+run_record authorization_affirmed true
+run_record authorization_target mk-fixture
+SCOURSH_DAST_TARGET=mk-fixture
+SCOURSH_DAST_CELL=mk-fixture
+export SCOURSH_DAST_TARGET SCOURSH_DAST_CELL
+SCOURSH_DAST_ENDPOINTS=$INV
+export SCOURSH_DAST_ENDPOINTS
+source "$ROOT/modules/dast/passive/markup.sh"
+EOM
+OOSINV=$(_inv oosmut mk-fixture 'https://not-authorised.example/page')
+MUT_LOG=$W/mutation-requests.log
+: >"$MUT_LOG"
+MUT_RC=0
+bash "$MUT" "$ROOT" "$W" "$OOSINV" "$SCOPE" "$MUT_LOG" >"$W/mutation.out" 2>&1 || MUT_RC=$?
+
+t_case 'WITHOUT the pre-check the same inventory kills the whole run'
+assert_eq 3 "$MUT_RC" \
+  'the mutated phase exits SCOURSH_EXIT_SCOPE (3) - reproduced rather than described, proving the pre-check above is load-bearing'
+assert_not_contains "$(cat "$MUT_LOG")" 'not-authorised' \
+  'and it never even reached the unauthorised host'
 
 t_case 'gaps: a non-GET endpoint'
 _new_run nonget mk-fixture

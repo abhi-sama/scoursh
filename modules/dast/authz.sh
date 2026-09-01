@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# ADR pointer: this file's `_AUTHZ_SKIPPED_SCOPE` gap message now carries the
+# scope gate's own reason, sourced from modules/dast/engine.sh section 3b's
+# shared accumulator via authz_engine.sh's `_authz_in_scope` - see the ADR
+# block at the top of modules/dast/crawl.sh for the decision and the
+# alternatives.
+#
 # modules/dast/authz.sh - the §7.4 object-level authorization and
 # data-exposure PHASE (docs/DESIGN.md §7.4; docs/STEP5-DAST-PLAN.md DAST-29).
 #
@@ -200,7 +206,7 @@ _dast_authz_record_skips() {
     run_record coverage_gap "dast authz: ${_AUTHZ_SKIPPED_HEAD} inventory entry(ies) for target '$target' use HEAD and were not examined. HEAD is read-only and safe, but RFC 7231 §4.3.2 gives its response no body, and every oracle in this check is a comparison of response BYTES - so a HEAD probe spends requests to reach a verdict that cannot exist. Those endpoints were not assessed; if they also answer GET, an inventory that records the GET will cover them."
   fi
   if (( ${_AUTHZ_SKIPPED_SCOPE:-0} > 0 )); then
-    run_record coverage_gap "dast authz: ${_AUTHZ_SKIPPED_SCOPE} inventory entry(ies) for target '$target' were skipped because their URL is not authorised by config/scope.conf. An inventory URL is chosen by the scanned target, not by the operator, so it is dropped here rather than allowed to abort the run."
+    run_record coverage_gap "dast authz: ${_AUTHZ_SKIPPED_SCOPE} inventory entry(ies) for target '$target' were skipped because their URL is not authorised by config/scope.conf. An inventory URL is chosen by the scanned target, not by the operator, so it is dropped here rather than allowed to abort the run. Gate reason(s): ${_DAST_SCOPE_REASONS:-declined by the scope gate}."
   fi
   return 0
 }

@@ -1,4 +1,46 @@
 #!/usr/bin/env bash
+# ADR: Converge the eight hand-rolled DAST scope pre-checks onto the ONE
+#   decision in modules/dast/engine.sh section 3b, without forcing one grain.
+# Context: Eight DAST consumers (this file, active/discovery.sh,
+#   authz_engine.sh, passive/headers.sh, passive/leakage.sh, passive/markup.sh,
+#   passive/transport.sh, ratelimit.sh) each grew their own inline copy of the
+#   same non-fatal `http_gate_url` pre-check ahead of the shared helper
+#   (commit 0efd731) landing - four had already drifted on reason-capture
+#   (reading `_HTTP_GATE_REASON` after a loop, which the gate clears on every
+#   call) and none of them agreed on wording.  This file is the hardest case:
+#   `_crawl_in_scope` guards THREE different sources (the frontier URL, a
+#   crawled `<a href>`, a form action), two of which are NOT an inventory row.
+# Decision: Every call site now decides through `dast_endpoint_in_scope` /
+#   `dast_endpoint_keep` (modules/dast/engine.sh), so there is one predicate
+#   and one reason-capture-at-refusal-time property.  Five of the eight
+#   consumers additionally converge their ROLL-UP onto the shared
+#   `dast_scope_record_skips PHASE`, whose fixed wording is correct because
+#   their URLs really are docs/INVENTORY-FORMAT.md rows.  This file's crawled
+#   link/form case and active/discovery.sh's derived candidate do NOT: their
+#   own `notes`/`coverage_reduction` wording is kept, because the shared
+#   roll-up's text ("a row from the cross-module inventory") would misstate
+#   where the URL came from.  Every `declare -F` guard stays permissive
+#   (engine.sh is reached at runtime with no `source` line, per
+#   `dast_run_phase`), and no module file gained a `source` line to it - see
+#   modules/dast/engine.sh section 3b and this ticket's own "watch the
+#   shellcheck budget" note.
+# Alternatives considered: force every consumer through `dast_scope_record_skips`
+#   verbatim -> rejected, it would report a crawled link or a derived wordlist
+#   candidate as an inventory row, which is a factually wrong coverage record.
+#   Leave the four degraded (post-loop reason read) copies as-is -> rejected,
+#   that is the drift this ticket exists to close.
+# Consequences: one place decides "in scope" for every DAST phase and one
+#   place decides how the reason is captured; a future ninth consumer copies
+#   this pattern rather than `http_gate_url` directly.  What it does not buy:
+#   a single coverage_reduction WORDING - the emission grain still belongs to
+#   each phase, deliberately, because the source of the URL differs.
+# Pointer: modules/dast/active/discovery.sh, modules/dast/authz_engine.sh,
+#   modules/dast/authz.sh, modules/dast/passive/headers.sh,
+#   modules/dast/passive/leakage.sh, modules/dast/passive/markup.sh,
+#   modules/dast/passive/transport.sh and modules/dast/ratelimit.sh each carry
+#   a short pointer comment back to this block at their own converged call
+#   site.
+#
 # modules/dast/crawl.sh - the crawling / parameter / specification discovery
 # phase (docs/DESIGN.md §7.5, §13 step 5; docs/STEP5-DAST-PLAN.md DAST-04).
 #
@@ -188,8 +230,27 @@ _crawl_fetch() {
 # every redirect hop.  Deleting this function would make the crawler fragile;
 # deleting the `http_request` call would make it unsafe, and only one of those
 # two is a gate.
+#
+# Delegates to the shared, non-counting predicate `dast_endpoint_in_scope`
+# (modules/dast/engine.sh section 3b) rather than calling `http_gate_url`
+# directly, so every DAST consumer's reading of "in scope" is the same one.
+# This is the bare PREDICATE, used where this file keeps its OWN counter
+# (`_CRAWL_UNREACHABLE`, below) rather than the shared one - a crawled link or
+# form action uses the shared counting wrapper `dast_endpoint_keep` instead,
+# because that is a genuinely different source (a URL the SCANNED SITE chose)
+# from the frontier URL this predicate guards, and the two are reported in
+# different words for that reason (see the "every bound that bit" block near
+# the end of `_crawl_run_phase`, which reads `_DAST_SCOPE_SKIPPED` rather than
+# a local counter). The `declare -F` guard is permissive on purpose -
+# engine.sh is reached by every phase through `dast_run_phase` at runtime
+# WITHOUT a `source` line, and several suites source this file with no
+# engine.sh in the process.
 _crawl_in_scope() {
   local url=$1
+  if declare -F dast_endpoint_in_scope >/dev/null; then
+    dast_endpoint_in_scope "$url" "${SCOURSH_DAST_TARGET:-}"
+    return $?
+  fi
   http_gate_url "$url" "${SCOURSH_DAST_TARGET:-}"
 }
 
@@ -211,7 +272,6 @@ _crawl_static() {
   local form_method='' form_action='' formurl='' formep=''
 
   _CRAWL_PAGES=0
-  _CRAWL_OFFSCOPE=0
   _CRAWL_PAGECAP=0
   _CRAWL_DEPTHCAP=0
   _CRAWL_NONHTML=0
@@ -219,6 +279,15 @@ _crawl_static() {
   _CRAWL_FORMS=0
   _CRAWL_UNREACHABLE=0
   _CRAWL_GATE_REASON=''
+  # A crawled link or form action is dropped through the shared counting
+  # wrapper `dast_endpoint_keep` (modules/dast/engine.sh section 3b), reset
+  # once for the whole static crawl so `_DAST_SCOPE_SKIPPED`/
+  # `_DAST_SCOPE_REASONS` below counts every page's discoveries together.
+  # `_CRAWL_OFFSCOPE` no longer exists as a separate counter for this - it IS
+  # `_DAST_SCOPE_SKIPPED` now.
+  if declare -F dast_scope_skips_reset >/dev/null; then
+    dast_scope_skips_reset
+  fi
 
   printf '%s\n' "$base" >"$frontier"
 
@@ -328,8 +397,9 @@ _crawl_static() {
           link)
             local abs
             if ! abs=$(crawl_url_resolve "$url" "$a"); then continue; fi
-            if ! _crawl_in_scope "$abs"; then
-              _CRAWL_OFFSCOPE=$(( _CRAWL_OFFSCOPE + 1 ))
+            if declare -F dast_endpoint_keep >/dev/null; then
+              dast_endpoint_keep "$abs" "${SCOURSH_DAST_TARGET:-}" || continue
+            elif ! _crawl_in_scope "$abs"; then
               continue
             fi
             crawl_url_split "$abs"
@@ -356,8 +426,9 @@ _crawl_static() {
             # gateway, an SSO provider) and it is NOT this run's to submit or
             # to inventory.  Dropped and counted, exactly like an off-target
             # link.
-            if ! _crawl_in_scope "$fabs"; then
-              _CRAWL_OFFSCOPE=$(( _CRAWL_OFFSCOPE + 1 ))
+            if declare -F dast_endpoint_keep >/dev/null; then
+              dast_endpoint_keep "$fabs" "${SCOURSH_DAST_TARGET:-}" || continue
+            elif ! _crawl_in_scope "$fabs"; then
               continue
             fi
             crawl_url_split "$fabs"
@@ -581,12 +652,19 @@ _crawl_run_phase() {
   run_record notes "module=dast phase=crawl target=$(crawl_safe_text "$target" 80) pages=$_CRAWL_PAGES endpoints=$nep parameters=$npar imported=$imported spec_endpoints=$spec_count spec_kinds=[$(crawl_safe_text "${spec_kinds% }" 80)] forms=$_CRAWL_FORMS"
 
   # -- 6. every bound that bit, on the surface a reader sees -----------------
-  if (( _CRAWL_OFFSCOPE > 0 )); then
-    # NOT a coverage_gap: refusing an out-of-scope host is the tool working,
-    # not a hole in what it examined.  It is recorded because "we saw N links
-    # we were not authorised to follow" is a fact an operator reviewing a
-    # scan's blast radius genuinely wants.
-    run_record notes "module=dast phase=crawl scope_refused_links=$_CRAWL_OFFSCOPE target=$(crawl_safe_text "$target" 80) (each was dropped before any request; docs/FOUNDATION.md tension 19)"
+  # A crawled link or form action, not an inventory row - dropped through the
+  # shared counting wrapper `dast_endpoint_keep` (modules/dast/engine.sh
+  # section 3b), whose accumulator (`_DAST_SCOPE_SKIPPED`/`_DAST_SCOPE_REASONS`)
+  # is what this reads. Deliberately NOT the shared roll-up
+  # (`dast_scope_record_skips`) and NOT a coverage_gap: that helper's fixed
+  # wording names "the cross-module inventory" (docs/INVENTORY-FORMAT.md),
+  # which would misstate where this URL came from - a page the scanner itself
+  # fetched chose it, not a producer of endpoints.json. And refusing an
+  # out-of-scope host is the tool working, not a hole in what it examined; it
+  # is recorded because "we saw N links we were not authorised to follow" is a
+  # fact an operator reviewing a scan's blast radius genuinely wants.
+  if (( ${_DAST_SCOPE_SKIPPED:-0} > 0 )); then
+    run_record notes "module=dast phase=crawl scope_refused_links=$_DAST_SCOPE_SKIPPED target=$(crawl_safe_text "$target" 80) reasons=[$(crawl_safe_text "${_DAST_SCOPE_REASONS:-declined by the scope gate}" 200)] (each was dropped before any request; docs/FOUNDATION.md tension 19)"
   fi
   if (( _CRAWL_PAGECAP > 0 )); then
     run_record coverage_gap "dast/crawl: the crawl stopped at its page ceiling of $_CRAWL_MAX_PAGES for target '$(crawl_safe_text "$target" 80)' with $_CRAWL_PAGECAP more page(s) still queued, so part of this target was never fetched and nothing below tested it"

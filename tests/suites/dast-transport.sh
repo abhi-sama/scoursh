@@ -696,10 +696,57 @@ t_case 'an out-of-scope inventory URL is skipped, never handed to http_request'
 _run_case oos tr-fixture 'https://tr.fixture.example/nav' 'https://not-authorised.example/evil'
 assert_not_contains "$(cat "$REQ_LOG")" 'not-authorised.example' \
   'reading 12: the scope PRE-CHECK stops the URL before http_request sees it - FAILS under handing every inventory row straight to http_request, which die()s with exit 3 on an out-of-scope URL and would let one bad row abort the operator whole run'
-assert_contains "$(_meta coverage_reduction)" 'transport_endpoint_out_of_scope' \
-  'and the skip is RECORDED, so a narrowed surface is never silent'
-assert_not_contains "$(_meta coverage_reduction)" 'declined by the scope gate' \
+TR_RED=$(_meta coverage_reduction)
+assert_contains "$TR_RED" 'inventory_endpoint_out_of_scope' \
+  'and the skip is RECORDED, so a narrowed surface is never silent - now the shared roll-up reason (modules/dast/engine.sh section 3b) this file originally built the reason-capture-at-refusal-time property for'
+assert_contains "$TR_RED" 'phase=transport' 'and names this phase'
+assert_not_contains "$TR_RED" 'declined by the scope gate' \
   'the record carries the gate OWN reason, not the generic fallback - FAILS under reading _HTTP_GATE_REASON after the loop, which http_gate_url clears at entry on every call, so a run whose last gate call SUCCEEDED (the ordinary case) reports the fallback and the operator never learns why the URL was declined'
+
+# ---------------------------------------------------------------------------
+# WITHOUT the shared pre-check, the same inventory kills the whole run.
+# ---------------------------------------------------------------------------
+MUT=$W/mutation.sh
+cat >"$MUT" <<'EOM'
+set -Eeuo pipefail
+ROOT=$1 W=$2 INV=$3 SCOPE=$4 LOG=$5
+source "$ROOT/modules/dast/engine.sh"
+source "$ROOT/modules/dast/passive/transport_engine.sh"
+http_scope_load "$SCOPE"
+config_scope_load "$SCOPE"
+config_scanner_load "$W/scanner.conf"
+_m_resolve() { printf '93.184.216.34'; }
+SCOURSH_HTTP_RESOLVE=_m_resolve
+_m_transport() {
+  printf '%s %s://%s%s\n' "$1" "$2" "$3" "$5" >>"$LOG"
+  if [[ -n ${_HTTP_TX_HEADERS_OUT:-} ]]; then
+    printf 'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n' >>"$_HTTP_TX_HEADERS_OUT"
+  fi
+  printf '200\n\ntext/html\n'
+}
+SCOURSH_HTTP_TRANSPORT=_m_transport
+dast_endpoint_keep() { return 0; }
+run_init "$W/run.mutation"
+run_record authorization_affirmed true
+run_record authorization_target tr-fixture
+SCOURSH_DAST_TARGET=tr-fixture
+SCOURSH_DAST_CELL=tr-fixture
+export SCOURSH_DAST_TARGET SCOURSH_DAST_CELL
+SCOURSH_DAST_ENDPOINTS=$INV
+export SCOURSH_DAST_ENDPOINTS
+source "$ROOT/modules/dast/passive/transport.sh"
+EOM
+OOSINV=$(_inv oosmut tr-fixture 'https://not-authorised.example/evil')
+MUT_LOG=$W/mutation-requests.log
+: >"$MUT_LOG"
+MUT_RC=0
+bash "$MUT" "$ROOT" "$W" "$OOSINV" "$SCOPE" "$MUT_LOG" >"$W/mutation.out" 2>&1 || MUT_RC=$?
+
+t_case 'WITHOUT the pre-check the same inventory kills the whole run'
+assert_eq 3 "$MUT_RC" \
+  'the mutated phase exits SCOURSH_EXIT_SCOPE (3) - reproduced rather than described, proving the pre-check above is load-bearing'
+assert_not_contains "$(cat "$MUT_LOG")" 'not-authorised' \
+  'and it never even reached the unauthorised host'
 
 t_case 'one finding per check per target, with the count in the evidence'
 _run_case perTarget tr-fixture 'https://tr.fixture.example/mixed' 'https://tr.fixture.example/mixed2'

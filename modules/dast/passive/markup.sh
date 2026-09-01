@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# ADR pointer: this file's scope pre-check is converged onto
+# modules/dast/engine.sh section 3b's `dast_endpoint_keep` /
+# `dast_scope_record_skips` - see the ADR block at the top of
+# modules/dast/crawl.sh for the decision and the alternatives.
+#
 # modules/dast/passive/markup.sh - the §7.1 HTML-MARKUP phase
 # (docs/DESIGN.md §7.1; docs/STEP5-DAST-PLAN.md DAST-11, tier 2).
 #
@@ -509,29 +514,31 @@ _dast_markup_phase() {
     return 0
   fi
 
-  local i url path parsed=0 refused=0 unreachable=0 not_markup=0 spa=0 truncated_docs=0
+  local i url path parsed=0 unreachable=0 not_markup=0 spa=0 truncated_docs=0
   local spa_paths='' trunc_paths=''
-  local tok_failed=0 tok_paths='' tok_detail='' refused_reason=''
+  local tok_failed=0 tok_paths='' tok_detail=''
+  # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - modules/dast/
+  # engine.sh section 3b (`dast_endpoint_keep`) carries the long form and is
+  # the ONE place this decision is made now, rather than a local copy of
+  # `http_gate_url` here.  `http_request` gates FATALLY (an out-of-scope URL
+  # there is a caller bug, exit 3), which is right for the operator's own
+  # base-url and exactly wrong for a URL lifted out of an inventory some other
+  # module wrote: one bad row would abort the whole run.  This decides only
+  # whether the URL is worth ASKING FOR; everything that survives still goes
+  # through http_request, which re-gates it and re-gates every redirect hop.
+  # The shared helper captures the gate reason AT REFUSAL TIME itself, which
+  # this file used to do by hand (`refused_reason`) - see modules/dast/
+  # engine.sh's `dast_endpoint_keep` header for why reading it after the loop
+  # is the trap.
+  if declare -F dast_scope_skips_reset >/dev/null; then
+    dast_scope_skips_reset
+  fi
   for (( i = 0; i < _MARKUP_N; i++ )); do
     url=${_MARKUP_URL[$i]}
     path=${_MARKUP_PATH[$i]}
 
-    # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - the identical
-    # split modules/dast/crawl.sh's `_crawl_in_scope` records.  `http_request`
-    # gates FATALLY (an out-of-scope URL there is a caller bug, exit 3), which
-    # is right for the operator's own base-url and exactly wrong for a URL
-    # lifted out of an inventory some other module wrote: one bad row would
-    # abort the whole run.  This decides only whether the URL is worth ASKING
-    # FOR; everything that survives still goes through http_request, which
-    # re-gates it and re-gates every redirect hop.
-    if ! http_gate_url "$url" "$target"; then
-      refused=$(( refused + 1 ))
-      # Captured HERE, at the refusal, and not read after the loop: these
-      # globals hold the LAST gate call's value, and the last call on a run
-      # with any refusal at all is routinely a URL that was ADMITTED - so the
-      # roll-up quoted a reason belonging to a different URL.
-      [[ -n $refused_reason ]] || refused_reason=${_HTTP_GATE_REASON:-}
-      continue
+    if declare -F dast_endpoint_keep >/dev/null; then
+      dast_endpoint_keep "$url" "$target" || continue
     fi
 
     local bodyfile=$SCOURSH_SCRATCH/dast-markup.$$.$i.body
@@ -628,7 +635,7 @@ _dast_markup_phase() {
   fi
 
   if (( parsed == 0 )); then
-    run_record coverage_gap "dast markup: none of the $_MARKUP_N URL(s) selected on target '$target' produced a markup document this phase could parse ($refused declined by the scope gate, $unreachable did not answer, $not_markup answered with something that is not HTML, $tok_failed could not be tokenized), so NO page's markup was inspected. A clean result here is the absence of a test."
+    run_record coverage_gap "dast markup: none of the $_MARKUP_N URL(s) selected on target '$target' produced a markup document this phase could parse (${_DAST_SCOPE_SKIPPED:-0} declined by the scope gate, $unreachable did not answer, $not_markup answered with something that is not HTML, $tok_failed could not be tokenized), so NO page's markup was inspected. A clean result here is the absence of a test."
     return 0
   fi
 
@@ -680,8 +687,8 @@ _dast_markup_phase() {
   if (( _MARKUP_SKIPPED_NON_GET > 0 )); then
     run_record coverage_reduction "module=dast reason=markup_non_get_endpoint_skipped target=$target count=$_MARKUP_SKIPPED_NON_GET - $_MARKUP_SKIPPED_NON_GET discovered endpoint(s) are not GET. Re-sending them to read the markup they return would change target state, which docs/DESIGN.md §7.1 forbids at the passive tier, so their markup was not inspected."
   fi
-  if (( refused > 0 )); then
-    run_record coverage_reduction "module=dast reason=markup_endpoint_out_of_scope target=$target count=$refused - $refused URL(s) in the inventory are not authorised by config/scope.conf and were not requested (${refused_reason:-declined by the scope gate})."
+  if declare -F dast_scope_record_skips >/dev/null; then
+    dast_scope_record_skips markup "$target"
   fi
   if (( unreachable > 0 )); then
     run_record coverage_reduction "module=dast reason=markup_endpoint_unreachable target=$target count=$unreachable - $unreachable URL(s) returned no readable response, so their markup was not inspected."

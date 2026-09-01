@@ -367,10 +367,14 @@ dast_check_selected() {
 # would make every inventory consumer inert while every "stays quiet"
 # assertion in those suites still passed green - invisible from the test
 # output and reading as coverage.  It is the same reading `dast_check_selected`
-# above and `_crawl_in_scope`, `_discovery_in_scope` and `_authz_in_scope`
-# already ship.  Nothing is made unsafe by it: with no `lib/http.sh` loaded
-# there is no `http_request` either, so nothing can send the URL this
-# function just waved through.
+# above and every consumer's own guard around `dast_endpoint_in_scope` /
+# `dast_endpoint_keep` already ship - `modules/dast/crawl.sh`'s `_crawl_in_scope`,
+# `modules/dast/authz_engine.sh`'s `_authz_in_scope`, and the direct call sites
+# in `modules/dast/active/discovery.sh`, `passive/headers.sh`,
+# `passive/leakage.sh`, `passive/markup.sh`, `passive/transport.sh` and
+# `ratelimit.sh` among them.  Nothing is made unsafe by it: with no
+# `lib/http.sh` loaded there is no `http_request` either, so nothing can send
+# the URL this function just waved through.
 dast_endpoint_in_scope() {
   local url=$1 target=${2:-${SCOURSH_DAST_TARGET:-}}
   _DAST_SCOPE_REASON=''
