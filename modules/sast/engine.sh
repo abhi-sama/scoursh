@@ -290,6 +290,45 @@ sast_index_checks() {
   done
 }
 
+# sast_record_coverage CELL ID... - docs/STEP7-STATE-PLAN.md STATE-02: records
+# path-root coverage (docs/FOUNDATION.md tension 12's frozen table - SAST and
+# IaC both use `path-root`) for a list of checks that have ALREADY run to
+# completion.  Reused unchanged by modules/iac/run.sh for the identical
+# reason sast_index_checks/sast_evaluate_gate already are: despite its name,
+# nothing here is SAST-specific - it only reads `_SAST_CHECK_LOC` (built by
+# sast_index_checks above, which both modules call) and `lib/state.sh`'s
+# builder API.
+#
+# The caller decides "ran to completion" by WHERE it calls this from: both
+# modules/sast/run.sh and modules/iac/run.sh call it only on the line right
+# after their own scan-tree call returns, which under `set -Eeuo pipefail` is
+# only reached when that call did not die - so an id enumerated into the
+# caller's own `ids` list but never reaching this function (a mid-walk engine
+# failure, tension 4's `scan_match` distinguishing no-match from a real
+# error) is correctly never marked covered, per tension 12's own six
+# non-completion cases.
+#
+# Guarded on `declare -F state_add_covered`, exactly the "an absent function
+# is a no-op" contract lib/core.sh's own run_json_refresh_incomplete already
+# uses for report_run_json/report_md/report_html: a test that sources this
+# file standalone, without ever sourcing lib/state.sh (most of
+# tests/suites/sast.sh and tests/suites/iac.sh), must not fail merely because
+# it never asked for coverage recording.
+sast_record_coverage() {
+  declare -F state_add_covered >/dev/null 2>&1 || return 0
+  local cell=$1
+  shift
+  local id loc set idx digest
+  for id in "$@"; do
+    loc=${_SAST_CHECK_LOC[$id]:-}
+    [[ -n $loc ]] || continue
+    read -r set idx <<<"$loc"
+    digest=$(records_digest "$set" "$idx")
+    state_add_covered "$id" "$digest" path-root "$cell"
+  done
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # 5. Sensitive-data heuristic (mirrors tests/e2e/fixture-scan.sh's own, which
 #    this ticket generalises: a secrets-family check id marks its findings

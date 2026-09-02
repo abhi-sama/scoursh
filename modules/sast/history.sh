@@ -434,4 +434,36 @@ _sast_history_scan() {
 
   run_record history_boundary \
     "oldest_commit=$oldest_commit oldest_commit_time=$oldest_commit_time objects_scanned=$objects_scanned bound_by=$bound_by"
+
+  _sast_history_record_coverage "$secretsset" "$oldest_commit" "$oldest_commit_time" "$objects_scanned" "$bound_by"
+}
+
+# ---------------------------------------------------------------------------
+# 9. docs/STEP7-STATE-PLAN.md STATE-02: path-root coverage for every
+#    SAST-HIST-* check, plus its history_boundary block (tension 13).
+#    Reached only from the tail of _sast_history_scan above, i.e. only once
+#    the WHOLE bounded blob walk has finished - the same "the caller decides
+#    completion by where it calls this from" discipline
+#    modules/sast/engine.sh's sast_record_coverage documents, applied here
+#    because every SAST-HIST-* check shares one walk over one materialised
+#    blob set rather than each having its own scan-tree call to return from.
+#    Every record in `secretsset` becomes a covered SAST-HIST-* id: the walk
+#    evaluates every one of them against every blob it visits (see
+#    _sast_history_scan_blob), so "the walk completed" is "every check in the
+#    pack completed", uniformly.
+# ---------------------------------------------------------------------------
+_sast_history_record_coverage() {
+  declare -F state_add_covered >/dev/null 2>&1 || return 0
+  local secretsset=$1 oldest_commit=$2 oldest_commit_time=$3 objects_scanned=$4 bound_by=$5
+  local n idx hist_id digest
+  n=$(records_count "$secretsset")
+  for (( idx = 0; idx < n; idx++ )); do
+    hist_id=$(_sast_hist_check_id "$(records_id "$secretsset" "$idx")")
+    digest=$(records_digest "$secretsset" "$idx")
+    state_add_covered "$hist_id" "$digest" path-root "$SCOURSH_PATH_ROOT"
+    if declare -F state_add_history_boundary >/dev/null 2>&1; then
+      state_add_history_boundary "$hist_id" "$oldest_commit" "$oldest_commit_time" "$objects_scanned" "$bound_by"
+    fi
+  done
+  return 0
 }

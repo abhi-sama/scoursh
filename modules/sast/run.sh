@@ -122,6 +122,10 @@ _sast_run_module() {
       run_record coverage_reduction 'module=sast reason=no_checks_selected'
     else
       sast_scan_tree "$path" "${ids[@]+"${ids[@]}"}"
+      # docs/STEP7-STATE-PLAN.md STATE-02: reached only when sast_scan_tree
+      # returned without dying, so every id in `ids` genuinely ran to
+      # completion over this run's one path-root cell.
+      sast_record_coverage "$SCOURSH_PATH_ROOT" "${ids[@]+"${ids[@]}"}"
     fi
 
     # tension 16's parallel workers (rate limiter, request budget, circuit

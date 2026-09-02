@@ -688,6 +688,39 @@ regeneration from the current snapshot - `findings_write_jsonl`/`report_md`/`rep
 truncate-then-rebuild discipline - rather than an unbounded append, and the same real subprocess
 now lands exactly 2. SARIF-03 is now unblocked.
 
+**STATE-02 (per-(check, cell) coverage recording, and persist-on-every-run wiring) has also landed**,
+for the same "its own scope does not need the `account-region` producer" reason STATE-01 was authorised
+ahead of step 6.
+A (check, cell) pair enters `covered_checks` **only on completion**, never at selection: every module
+that already emits findings (SAST, `SAST-HIST-*`, IaC, SCA, DAST) records its coverage on the line
+immediately after its own scan-tree/walk call RETURNS, which under `set -Eeuo pipefail` is reached only
+on success - so a check merely enumerated/selected but never completed (a profile/intensity filter drop,
+a missing dependency such as SCA's `data/advisories.db`, an engine failure, a circuit-breaker trip) is
+never marked covered.
+`modules/sast/engine.sh` gained `sast_record_coverage`, reused unchanged by `modules/iac/run.sh` exactly
+as `sast_index_checks`/`sast_evaluate_gate` already are; `modules/sast/history.sh` records every
+`SAST-HIST-*` check plus its `history_boundary` block once the whole bounded blob walk finishes;
+`modules/sca/run.sh` records its six fixed check ids with a stable hash of the check id itself as
+`rule_digest` (SCA ships no `*.rules` record to hash, and `lib/state.sh`'s own loader rejects an empty
+`rule_digest` as malformed - measured while building this ticket); `modules/dast/run.sh` derives its own
+coverage from the run-wide `checks_run` fact (already this repository's "the check finished" signal),
+filtered to `DAST-*` ids and sliced to the lines appended since the current target's own phase loop
+started, so an earlier module's ids in a `scan.sh all` run can never be misattributed to a DAST target
+cell.
+`scan.sh` wires `state_reset`/`state_set_run` right after `run_init` and `state_write` at the very end
+alongside `report_run_json`; `lib/core.sh`'s existing exit-5 recovery path (`run_json_refresh_incomplete`,
+which already re-runs the three report writers on a `die 5`) now also persists `state/<run-id>.json` when
+`state_set_run` had already run for this process (`state_run_pending`, the one small, purely additive
+accessor added to `lib/state.sh` - nothing in STATE-01's own schema, builder, or loader changed) - so a
+run that dies mid-flight still leaves real coverage behind for whatever completed before the abort.
+`tests/suites/state-coverage.sh` proves all six of tension 12's non-completion cases (module not
+selected, profile/intensity filter dropped, missing dependency, breaker-style abort, a resumed run never
+reaching a unit, a run never visiting a cell) as well as the positive completed-pair case for two module
+kinds, each naming the reading it fails under - several are built specifically to catch a coverage
+recorder that copied `modules/sast/run.sh`'s/`modules/iac/run.sh`'s own `run_record checks_run "$id"`
+placement (which runs BEFORE the scan-tree call, since `checks_run` answers "loaded and executed", not
+"ran to completion") instead of gating on completion the way this ticket actually does.
+
 Step 6 (Cloud) remains unstarted.
 
 **DAST-07 made `docs/FOUNDATION.md` tension 19's single documented exception real, and the shape it

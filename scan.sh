@@ -160,6 +160,12 @@ source "$SCOURSH_SCAN_SH_DIR/lib/checks.sh"
 source "$SCOURSH_SCAN_SH_DIR/lib/paranoid.sh"
 # shellcheck source=lib/engines.sh
 source "$SCOURSH_SCAN_SH_DIR/lib/engines.sh"
+# docs/STEP7-STATE-PLAN.md STATE-02: state/<run-id>.json persist-on-every-run
+# wiring.  lib/state.sh (STATE-01) has no prior consumer, so this is a fresh
+# edge, not a duplicate one - no back-edge cut is needed the way lib/config.sh
+# and lib/http.sh above need one (AGENTS.md "Sharp edges" on shellcheck -x).
+# shellcheck source=lib/state.sh
+source "$SCOURSH_SCAN_SH_DIR/lib/state.sh"
 
 # -----------------------------------------------------------------------------
 # 2. The §5 grammar, encoded as data rather than a chain of if/elif.
@@ -882,6 +888,33 @@ scan_dispatch() {
 # `scan.sh all` must union sast+sca+iac+dast+cloud's selections, not just the
 # last module filtered, or a composite whose contributors span modules would
 # be judged against only one of them.
+# -----------------------------------------------------------------------------
+# 6a. docs/STEP7-STATE-PLAN.md STATE-02: persist-on-every-run wiring.
+# -----------------------------------------------------------------------------
+# `_scan_state_begin` - initialises this run's in-memory state/ builder
+# (lib/state.sh) BEFORE any module dispatch, so a module's own coverage
+# recording (modules/sast/engine.sh's sast_record_coverage, and its
+# siblings) has somewhere to write.  Called once right after `run_init`,
+# using a cwd-derived scan_root_id/path_root as the fallback every command
+# without a `--path` (dast, cloud, diff, report) keeps - the identical
+# recipe tension 12 freezes for `--path .`, just computed unconditionally
+# rather than only when a flag is missing.  `sast`/`sca`/`iac`/`all` each
+# call `state_set_run` a SECOND time, right after they resolve the real
+# `_SCAN_RESOLVED_PATH`-based value, which safely OVERWRITES this fallback
+# before any module can call `state_add_covered` (`state_set_run` never
+# clears already-recorded coverage; `state_reset` does, and only this first
+# call makes that one, since scan_main may run more than once in one
+# process).
+_scan_state_begin() {
+  local root
+  root=$(realpath_of .)
+  SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$root")
+  SCOURSH_PATH_ROOT=$(path_root_cell "$root")
+  export SCOURSH_SCAN_ROOT_ID SCOURSH_PATH_ROOT
+  state_reset
+  state_set_run "$SCOURSH_RUN_ID" "$SCOURSH_SCAN_ROOT_ID" "$FP_SCHEMA" "$(scoursh_version)"
+}
+
 _scan_apply_profile_filter() {
   local module=$1
   local profile=${SCAN_FLAGS[profile-scan]:-$CHECKS_PROFILE_DEFAULT}
@@ -1027,6 +1060,7 @@ scan_main() {
   # calls scan_main repeatedly), and _scan_apply_profile_filter only ever
   # APPENDS to this variable.
   SCOURSH_SELECTED_CHECKS=''
+  _scan_state_begin
 
   # 8a. The config loader runs before any dispatch (this ticket's third
   # acceptance criterion, verbatim): scanner.conf is resolved through the
@@ -1124,6 +1158,10 @@ scan_main() {
       # SAST-HIST-* finding's loc_path still resolve in the working tree".
       SCOURSH_SCAN_ROOT_PATH=$(scan_root_of "$_SCAN_RESOLVED_PATH")
       export SCOURSH_SCAN_ROOT_ID SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_PATH
+      # docs/STEP7-STATE-PLAN.md STATE-02: replaces _scan_state_begin's
+      # cwd-derived fallback with the real --path-based scan_root_id, before
+      # any module can call state_add_covered.
+      state_set_run "$SCOURSH_RUN_ID" "$SCOURSH_SCAN_ROOT_ID" "$FP_SCHEMA" "$(scoursh_version)"
       _scan_apply_profile_filter "$SCAN_COMMAND"
       scan_dispatch "$SCAN_COMMAND"
       ;;
@@ -1154,6 +1192,10 @@ scan_main() {
       SCOURSH_PATH_ROOT=$(path_root_cell "$_SCAN_RESOLVED_PATH")
       SCOURSH_SCAN_ROOT_PATH=$(scan_root_of "$_SCAN_RESOLVED_PATH")
       export SCOURSH_SCAN_ROOT_ID SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_PATH
+      # docs/STEP7-STATE-PLAN.md STATE-02: see the identical call in the
+      # sast|sca|iac arm above for why this replaces the cwd-derived
+      # fallback before dispatch.
+      state_set_run "$SCOURSH_RUN_ID" "$SCOURSH_SCAN_ROOT_ID" "$FP_SCHEMA" "$(scoursh_version)"
       _scan_apply_profile_filter sast
       scan_dispatch sast
       _scan_apply_profile_filter sca
@@ -1211,6 +1253,17 @@ scan_main() {
   fi
 
   report_run_json "$SCOURSH_RUN_DIR"
+
+  # docs/STEP7-STATE-PLAN.md STATE-02: persist-on-every-run.  Reached on
+  # every normal completion of scan_main - a clean run, a gated one
+  # (SCOURSH_EXIT_GATE), and an incomplete one that still reached this line
+  # rather than dying mid-flight (lib/core.sh's run_json_refresh_incomplete
+  # is the identical persistence for the die()-exit-5 case that never
+  # reaches here).
+  local _scan_state_retain
+  _scan_capture _scan_state_retain config_scanner_value state-retain-runs ''
+  state_write '' "$_scan_state_retain"
+
   log_info "scan complete in $(( SECONDS - _scan_t0 ))s - report: $SCOURSH_RUN_DIR"
 
   local code

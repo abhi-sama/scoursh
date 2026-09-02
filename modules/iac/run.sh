@@ -81,6 +81,11 @@ _iac_run_module() {
       run_record coverage_reduction 'module=iac reason=no_checks_selected'
     else
       iac_scan_tree "$path" "${ids[@]+"${ids[@]}"}"
+      # docs/STEP7-STATE-PLAN.md STATE-02: sast_record_coverage
+      # (modules/sast/engine.sh) is reused unchanged, exactly like
+      # sast_index_checks/sast_evaluate_gate above - reached only when
+      # iac_scan_tree returned without dying.
+      sast_record_coverage "$SCOURSH_PATH_ROOT" "${ids[@]+"${ids[@]}"}"
     fi
 
     # tension 16's parallel workers (rate limiter, request budget, circuit

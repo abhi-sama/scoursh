@@ -118,12 +118,52 @@ source "${BASH_SOURCE[0]%/*}/go_engine.sh"
 # shellcheck source=modules/sast/engine.sh
 source "${BASH_SOURCE[0]%/*}/../sast/engine.sh"
 
+# _sca_record_coverage CELL ID... - docs/STEP7-STATE-PLAN.md STATE-02:
+# path-root coverage (tension 12's frozen table lists SCA under path-root,
+# the same scope SAST/history/IaC use) for a list of SCA check ids that have
+# already run to completion.  Unlike modules/sast/engine.sh's
+# sast_record_coverage, SCA ships no `*.rules` registry at all (it is a
+# table lookup against data/advisories.db, not a pattern-rule engine - this
+# file's own header), so there is no rule RECORD to hash the way
+# `records_digest` does for a pattern check - matching every SCA finding
+# already shipped today, which likewise never calls `finding_set
+# rule_digest` (modules/sca/engine.sh's _sca_emit_finding).
+#
+# `rule_digest` is still REQUIRED to be non-empty here, though: unlike a
+# finding (which carries no `rule_digest` field in tension 12's frozen shape
+# at all), a `covered_checks` ENTRY does, and lib/state.sh's own loader
+# (STATE-01, `_state_validate`) rejects the WHOLE state file as malformed
+# when one is empty - measured directly, not assumed: an empty string here
+# failed `state_load_file` with "missing rule_digest" and made every OTHER
+# module's coverage in the same run unreadable too.  A stable hash of the
+# check id itself is what is used instead: SCA's checks are defined in code
+# (this file, modules/sca/engine.sh and its siblings), not in an editable
+# rule record, so there is no "the rule changed" event to detect the way
+# tension 12's own rule_digest note describes for a pattern check - the id
+# hash is constant for as long as the id itself is, which is the accurate
+# statement to make here rather than an empty placeholder the loader cannot
+# accept.  This does not touch lib/state.sh's own validation, which is
+# reused exactly as STATE-01 shipped it.
+_sca_record_coverage() {
+  declare -F state_add_covered >/dev/null 2>&1 || return 0
+  local cell=$1
+  shift
+  local id digest
+  for id in "$@"; do
+    digest=$(printf '%s' "$id" | sha256_of)
+    state_add_covered "$id" "$digest" path-root "$cell"
+  done
+  return 0
+}
+
 # _sca_npm_run - npm/yarn/pnpm, RubyGems (Gemfile.lock) AND, as of the
 # PHP/Composer ticket, composer.lock: all three live inside the single
 # shared sca_scan_tree call, per the header above.
 _sca_npm_run() {
   local path=${_SCAN_RESOLVED_PATH:-.}
   sca_scan_tree "$path"
+  _sca_record_coverage "$SCOURSH_PATH_ROOT" \
+    SCA-NPM-VULNERABLE_DEP-01 SCA-RUBY-VULNERABLE_DEP-01 SCA-PHP-VULNERABLE_DEP-01
 }
 
 # _sca_py_run - the Python sibling ecosystem this file's own header
@@ -137,6 +177,7 @@ _sca_npm_run() {
 _sca_py_run() {
   local path=${_SCAN_RESOLVED_PATH:-.}
   sca_scan_python_tree "$path"
+  _sca_record_coverage "$SCOURSH_PATH_ROOT" SCA-PY-VULNERABLE_DEP-01
 }
 
 # _sca_java_run - Java (pom.xml/build.gradle), landed by this ticket alongside
@@ -148,6 +189,7 @@ _sca_py_run() {
 _sca_java_run() {
   local path=${_SCAN_RESOLVED_PATH:-.}
   sca_scan_java_tree "$path"
+  _sca_record_coverage "$SCOURSH_PATH_ROOT" SCA-JAVA-VULNERABLE_DEP-01
 }
 
 # _sca_go_run - Go (go.mod/go.sum), the fourth call and the first whose
@@ -158,6 +200,7 @@ _sca_java_run() {
 _sca_go_run() {
   local path=${_SCAN_RESOLVED_PATH:-.}
   sca_go_scan_tree "$path"
+  _sca_record_coverage "$SCOURSH_PATH_ROOT" SCA-GO-VULNERABLE_DEP-01
 }
 
 _sca_run_module() {
