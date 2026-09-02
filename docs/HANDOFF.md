@@ -72,7 +72,7 @@ work, not as a to-do list):
 | Injection probes | DAST-14 to DAST-25 | yes |
 | Auth, API, access control | DAST-26 to DAST-29 | yes |
 | Safety defaults | DAST-31 to DAST-36 | yes |
-| Guided interactive mode | GUIDE-01 to GUIDE-07 | **not built** - genuinely still open, see `docs/STEP5-DAST-PLAN.md`'s own section |
+| Guided interactive mode | GUIDE-01 to GUIDE-07 | **not built** - genuinely still open, and unclaimed rather than blocked; see `docs/STEP-GUIDE-PLAN.md` |
 
 DAST-04 (the crawler) shipped exactly as scoped: it sends real traffic through the landed rate
 limiter/budget/breaker, and it records the JavaScript-rendered-app limitation as a `coverage_gap` in
