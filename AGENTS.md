@@ -604,16 +604,39 @@ landed; that table, not this sentence, is the authority if this is ever in doubt
 **Step 5 is therefore complete.**
 Steps 8 (`--paranoid` / `tools/run-in-netns.sh`) and 9 (optional engine adapters) have also landed, out
 of sequence - see their own sections below.
-Steps 6 (Cloud), 7 (persistent state), and 10 (SARIF plus the compliance report) remain unstarted; per
-`docs/STEP6-CLOUD-PLAN.md` and `docs/STEP7-STATE-PLAN.md`, the stated priority order among them, now
-that step 5 has cleared, is step 7 first, then step 10, then step 6 last.
+Steps 6 (Cloud), 7 (persistent state), and 10 (SARIF plus the compliance report) were, per
+`docs/STEP6-CLOUD-PLAN.md` and `docs/STEP7-STATE-PLAN.md`, in the stated priority order step 7 first,
+then step 10, then step 6 last, now that step 5 has cleared.
 All three now have a written sub-ticket plan, step 10's being `docs/STEP10-SARIF-PLAN.md`
 (SARIF-01..06 plus COMPLIANCE-01..04).
 **Read that one before treating step 10's queue position as a dependency**: it establishes, against
 the tree, that step 10 is three deliverables rather than one - the SARIF emitter is unblocked today
 and needs neither step 6 nor step 7, the compliance report's OWASP half is unblocked too while only
 its CIS half waits on step 6, and the `--fail-on` CI gate that `docs/DESIGN.md` §13 item 10 bundles
-with them shipped back at step 3 and carries no ticket at all.**
+with them shipped back at step 3 and carries no ticket at all.
+
+**Step 7 (persistent run state) has now started**, ahead of step 6 (Cloud) and step 10 (SARIF plus the
+compliance report), matching `docs/STEP7-STATE-PLAN.md`'s stated priority order: **STATE-01
+(`lib/state.sh`) has landed** - the frozen `state/<run-id>.json` schema (tension 12: `fp_schema`,
+`tool_version`, `run_id`, `completed_at`, `scan_root_id`, `covered_checks`, `findings`), a writer
+(`state_set_run`/`state_add_covered`/`state_add_history_boundary`/`state_add_finding`, then
+`state_write`) that persists write-then-rename and prunes to a retain count (default 30, mirroring
+`rules/RULE-FORMAT.md` §9.6.1's `state-retain-runs`), and a loader (`state_load_file`/
+`state_load_latest`) that treats a missing or unparsable state file as "no prior state" while
+REJECTING a structurally malformed record outright - a duplicate fingerprint, a finding missing a
+required field, an invalid `scope` value, a non-boolean `suppressed`, an empty `cells` array - rather
+than half-loading it, two of those rejections proven by mutation.
+It implements the schema and the persistence primitives ONLY: no coverage recording (STATE-02), no
+classification (STATE-03 through STATE-05), and no `diff` command wiring (STATE-06) - `scan.sh`, every
+module's coverage behaviour, and the `diff` subcommand stub are all byte-for-byte unchanged by this
+ticket.
+**One coverage-scope kind, `account-region`, has no real producer yet**: cloud (step 6) has not landed,
+so `tests/suites/state.sh`'s `account-region` coverage is schema-only, against a hand-authored fixture,
+proving the writer and loader treat that scope kind correctly in isolation - not that it round-trips a
+real cloud finding, which needs step 6 to exist first (`lib/state.sh`'s own header and
+`docs/STEP7-STATE-PLAN.md`'s "Status" section both record this as a known, tracked gap rather than
+silently-assumed coverage).
+Steps 6 (Cloud) and 10 (SARIF plus the compliance report) remain unstarted.
 
 **DAST-07 made `docs/FOUNDATION.md` tension 19's single documented exception real, and the shape it
 landed in is what a future non-HTTP probe must copy.**
