@@ -82,7 +82,7 @@ scan.sh <command> [options]
 | `--contact VALUE` | one printable, space-free token | from `config/scanner.conf` (`contact`), else none | live |
 | `--user-agent-suffix TOKEN` | one printable, space-free token | none | live |
 | `--jobs N` | positive integer | from `config/scanner.conf` (`4`) | inert |
-| `--format` | CSV of `json,sarif,html,md` | all four | inert |
+| `--format` | CSV of `json,sarif,html,md` | all four | live, except `sarif`, which selects nothing |
 | `--fail-on` | `critical\|high\|medium\|low\|info\|none` | from `config/scanner.conf` (`none`) | live |
 | `--fail-on-new` | boolean; **requires `--fail-on`**, usage error otherwise | off | inert |
 | `--min-confidence` | `high\|medium\|low` | from `config/scanner.conf` (`low`) | live |
@@ -153,13 +153,18 @@ Baseline suppression needs the not-yet-built `state/` layer.
 ### `--format` and the `formats` config key
 
 The list is validated, resolved through the full CLI-over-environment-over-file-over-default chain,
-and then discarded.
-Every scan - `sast`, `sca`, `iac`, `all` - writes exactly the same five files regardless of what is
-passed: `findings.json`, `findings.jsonl`, `report.md`, `report.html`, and `run.json`.
+and then honoured: `lib/report.sh`'s `report_all` gates `findings.json`, `report.md` and
+`report.html` on it, so `--format md` writes the Markdown report and neither of the other two.
 
-`sarif` is accepted as a value, and no SARIF is produced.
-There is no SARIF writer anywhere in the tool; the name is a legal config value and nothing more.
+`findings.jsonl` and `run.json` are **not** `--format` values.
+They are mandatory per-run records - the incremental ledger and the audit record - and are written on
+every run whatever `--format` asked for, so they are not evidence that the flag was ignored.
+
+`sarif` is the one accepted value that still selects nothing.
+There is no SARIF writer anywhere in the tool; the name is a legal config value and nothing more, so
+`--format sarif` on its own writes only the two mandatory records above.
 Do not point a SARIF-consuming CI step at a `scoursh` run yet.
+[`docs/STEP10-SARIF-PLAN.md`](STEP10-SARIF-PLAN.md) is the sub-ticket plan that closes this.
 
 ### `--jobs N` and the `jobs` config key
 

@@ -462,11 +462,15 @@ the tool rather than in a pipeline:
   checked.
   It is listed here because it is a setup step you have to know about, not because it can be mistaken
   for a passing scan.
-- **`--format` does nothing.**
-  Every run writes all five artifacts - `findings.json`, `findings.jsonl`, `report.md`,
-  `report.html`, and `run.json` - whatever `--format` is given, so `--format md` still writes the
-  HTML report.
-  `--format sarif` is accepted too, and nothing anywhere in the tree emits SARIF yet.
+- **`--format sarif` selects nothing.**
+  `--format` itself is live: it gates `findings.json`, `report.md` and `report.html`, so
+  `--format md` writes the Markdown report and no HTML.
+  `findings.jsonl` and `run.json` are mandatory per-run records rather than `--format` values and are
+  written on every run regardless.
+  `sarif` is the one accepted value with no emitter behind it, so `--format sarif` alone writes only
+  those two mandatory files.
+  Do not point a SARIF-consuming CI step at a `scoursh` run yet; see
+  [`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md).
 - **`--baseline FILE` is parsed and never read.**
   Baseline suppression arrives with persistent run state.
   A path that does not exist is accepted with no error, no warning, and no record of the flag in

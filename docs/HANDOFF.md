@@ -83,6 +83,12 @@ Angular-based test target with `spa_shaped=1` recorded).
 With DAST complete, three steps are next in the queue rather than gated behind it: persistent run
 state (step 7), live cloud scanning (step 6), and SARIF plus the compliance report (step 10). See
 `ROADMAP.md` for the current priority ordering among them.
+All three now have a written sub-ticket plan: [`docs/STEP7-STATE-PLAN.md`](STEP7-STATE-PLAN.md),
+[`docs/STEP6-CLOUD-PLAN.md`](STEP6-CLOUD-PLAN.md) and
+[`docs/STEP10-SARIF-PLAN.md`](STEP10-SARIF-PLAN.md).
+Step 10's is the one worth reading before assuming the queue order is a dependency order: it
+establishes that the SARIF emitter is unblocked today, that the compliance report's OWASP half is
+too, and that the `--fail-on` gate §13 item 10 bundles with them has already shipped.
 
 ## 3. Traps that cost real time this week
 

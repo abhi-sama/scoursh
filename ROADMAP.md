@@ -66,6 +66,15 @@ and the compliance report, and live cloud scanning.
    No STATE-0x ticket has been picked up.
 2. **Step 10 (SARIF output + compliance report)** - `--format sarif` is accepted today, but no SARIF
    emitter exists anywhere in the tree; same for the CIS/OWASP compliance report.
+   A complete sub-ticket breakdown exists in
+   [`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md) (tickets SARIF-01 through SARIF-06 plus
+   COMPLIANCE-01 through COMPLIANCE-04).
+   That plan's own central finding is that this step is three deliverables with three different
+   readiness states, not one: the SARIF emitter is **unblocked today** and depends on neither step 6
+   nor step 7, the compliance report's OWASP half is likewise unblocked while only its CIS half waits
+   on step 6, and the `--fail-on` CI gate §13 item 10 also names is **already shipped in full** and
+   carries no ticket.
+   Its position at number 2 here is therefore a priority choice, not a technical block.
 3. **Step 6 (live cloud / CSPM scanning)** - `scan.sh cloud` is a no-op today, with or without
    `--live`.
    There is no `modules/cloud/`, so the dispatch records a `not_yet_built` coverage reduction
