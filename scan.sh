@@ -1119,7 +1119,11 @@ scan_main() {
       _scan_require_readable_path "$path"
       SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$_SCAN_RESOLVED_PATH")
       SCOURSH_PATH_ROOT=$(path_root_cell "$_SCAN_RESOLVED_PATH")
-      export SCOURSH_SCAN_ROOT_ID SCOURSH_PATH_ROOT
+      # SARIF-02 / tension 22 case 3: the only absolute path
+      # report_locations' filesystem test needs, to answer "does a
+      # SAST-HIST-* finding's loc_path still resolve in the working tree".
+      SCOURSH_SCAN_ROOT_PATH=$(scan_root_of "$_SCAN_RESOLVED_PATH")
+      export SCOURSH_SCAN_ROOT_ID SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_PATH
       _scan_apply_profile_filter "$SCAN_COMMAND"
       scan_dispatch "$SCAN_COMMAND"
       ;;
@@ -1148,7 +1152,8 @@ scan_main() {
       _scan_require_readable_path "$path"
       SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$_SCAN_RESOLVED_PATH")
       SCOURSH_PATH_ROOT=$(path_root_cell "$_SCAN_RESOLVED_PATH")
-      export SCOURSH_SCAN_ROOT_ID SCOURSH_PATH_ROOT
+      SCOURSH_SCAN_ROOT_PATH=$(scan_root_of "$_SCAN_RESOLVED_PATH")
+      export SCOURSH_SCAN_ROOT_ID SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_PATH
       _scan_apply_profile_filter sast
       scan_dispatch sast
       _scan_apply_profile_filter sca
