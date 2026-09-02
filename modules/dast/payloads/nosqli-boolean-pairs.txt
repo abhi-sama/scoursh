@@ -1,0 +1,31 @@
+# Boolean-based NoSQL-injection payload pairs (docs/DESIGN.md §7.3:
+# "operator/object injection (e.g. always-true operators) ... boolean/
+# response-diff detection"). Each line is
+# <true-template><TAB><false-template>: two payloads that behave like an
+# always-matching condition versus an always-impossible one.
+#
+# Rows 1-2 are %B-anchored, AND-based JS string-context tautologies for an
+# app that concatenates the value into a `$where` predicate (e.g.
+# `this.field == '<value>'`) - the same "AND-based, narrows nothing, never an
+# OR-true that widens the result set" safety discipline
+# sqli-boolean-pairs.txt documents, applied to MongoDB's `$where` JS
+# evaluation. %B is the baseline value.
+#
+# Rows 3-4 carry NO %B: each is a whole, standalone MongoDB comparison-operator
+# object literal (never `$where`, never a write operator) that REPLACES the
+# parameter's value outright, for an application that deserialises the raw
+# parameter string as a query/filter fragment (e.g. `JSON.parse(req.query.x)`
+# fed straight into a driver call) - the "object injection" half of the
+# ticket. The true side is a comparison operator that matches the field's
+# existing value shape (`$gte` an empty string, `$exists: true`); the false
+# side is an equality test against a sentinel no real record carries. Neither
+# is `$where` or a modify/remove operator, so a hit changes the query's
+# result set, never the data (modules/dast/payloads/README.md).
+#
+# The probe strips each injected value from the body before comparing lengths
+# (so a reflected payload is not read as the differential) and confirms the
+# differential on a retest before flagging.
+%B' && '1'=='1	%B' && '1'=='2
+%B" && "1"=="1	%B" && "1"=="2
+{"$gte":""}	{"$eq":"scoursh-no-such-value-zq"}
+{"$exists":true}	{"$eq":"scoursh-no-such-value-zq"}

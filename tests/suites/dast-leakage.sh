@@ -51,6 +51,10 @@
 #  12. the shell catalog and modules/dast/passive/checks-leakage.rules agree, field by
 #      field, on every one of the five ids.
 #  13. a candidate secret's VALUE never reaches the finding evidence.
+#  14. a redirect that CROSSES ORIGIN is judged by the DELIVERED response's own
+#      host (`_HTTP_LAST_URL`, lib/http.sh §12), never the requested url - the
+#      third-party-origin family's "self" and the finding's own `url` field
+#      both use it (ticket aa50f056-9b18-4fc7-9416-bb455bc7b7b1's follow-up).
 #
 # shellcheck shell=bash
 #
@@ -70,6 +74,14 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "$ROOT/modules/dast/passive/leakage_engine.sh"
+# This file's own scope pre-check now lives in modules/dast/engine.sh section
+# 3b (`dast_endpoint_keep` and friends) rather than a local copy of
+# `http_gate_url` - sourced for real here (measured cost is in the same
+# ballpark as tests/suites/dast-headers.sh's own +~2 GB, well inside the 50 GB
+# per-process budget - see docs/CI-RUNBOOK.md's "the memory model") so the
+# out-of-scope case below exercises the real predicate.
+# shellcheck source=modules/dast/engine.sh
+source "$ROOT/modules/dast/engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
 
@@ -86,10 +98,19 @@ rm -rf "$W"; mkdir -p "$W"
 #   leak-binary   every response is an image with no textual body, which is what
 #                 the "a family no response was applicable to is NOT covered"
 #                 case needs.
+#
+# `redirect-landing.example` is an EXTRA HOST on leak-fixture itself
+# (rules/RULE-FORMAT.md §9.4: no scheme of its own, inherits the target's
+# https), not a fourth target - the ticket case below needs a second, in-scope
+# ORIGIN a redirect can genuinely land on, and its own registrable domain
+# (`redirect-landing.example`, two labels) is deliberately unrelated to
+# leak.fixture.example's (`fixture.example`) so leak_same_site's own
+# last-two-labels approximation cannot accidentally call the two the same site.
 SCOPE=$W/scope.conf
 cat >"$SCOPE" <<'EOF'
 id: leak-fixture
 base-url: https://leak.fixture.example/
+extra-host: redirect-landing.example
 notes: Fixture target for tests/suites/dast-leakage.sh. Never dialled: both the
   resolver and the transport are stubbed.
 
@@ -113,7 +134,7 @@ config_scanner_load "$W/scanner.conf"
 
 _leak_resolve() {
   case $1 in
-    leak.fixture.example | binary.fixture.example) printf '93.184.216.34' ;;
+    leak.fixture.example | binary.fixture.example | redirect-landing.example) printf '93.184.216.34' ;;
     *) return 1 ;;
   esac
 }
@@ -262,6 +283,26 @@ _body() {
       printf '%s\n' "$pad"'var q={dbPassword:"pr0ductionPassw0rd!"};' ;;
     /redirect-final)
       printf '%s\n' '<!doctype html><html><body>landed</body></html>' ;;
+    /landing)
+      # The REDIRECT-ACROSS-ORIGIN ticket case (DAST-10 half of
+      # aa50f056-9b18-4fc7-9416-bb455bc7b7b1's follow-up).  This page is
+      # served BY redirect-landing.example, having been reached via a 302 from
+      # leak.fixture.example/redirect-cross.  It carries two independent
+      # positives:
+      #   - a script src naming leak.fixture.example (the ORIGINALLY REQUESTED
+      #     host): relative to the DELIVERING origin (redirect-landing.example)
+      #     that is a genuine third party; relative to the REQUESTED origin
+      #     (leak.fixture.example) it is "self" and would be silently
+      #     subtracted.
+      #   - a structured stack frame (family 1), which is a PER-PATH finding
+      #     whose own `url` field must name the page that actually served it,
+      #     not the pre-redirect url the phase first asked for.
+      printf '%s\n' '<!doctype html><html><head>' \
+        '<script src="https://leak.fixture.example/static/vendor.js"></script>' \
+        '</head><body><pre>Traceback (most recent call last):' \
+        '  File "/srv/app/landing.py", line 77, in render' \
+        '    raise ValueError(payload)' \
+        'ValueError: bad payload</pre></body></html>' ;;
     *)
       printf '%s\n' '<!doctype html><html><body>generic</body></html>' ;;
   esac
@@ -283,6 +324,13 @@ _leak_transport() {
     # not.  A reader matching across the whole accumulated capture would find it
     # here and report it as the delivered page's.
     head=$'Content-Type: text/html\r\nLocation: https://leak.fixture.example/redirect-final\r\nX-Backend-Server: 10.9.9.9\r\n'
+  elif [[ $host == leak.fixture.example && $path == /redirect-cross ]]; then
+    # The ticket case: a redirect that CROSSES ORIGIN, landing on
+    # redirect-landing.example (an extra-host on this same target, still
+    # in-scope, so the phase's own default max_redirects follows it).
+    status=302
+    location='https://redirect-landing.example/landing'
+    head=$'Content-Type: text/html\r\nLocation: https://redirect-landing.example/landing\r\n'
   else
     head=$(_head "$host" "$path")
   fi
@@ -695,6 +743,40 @@ _run_case redirect leak-fixture https://leak.fixture.example/redirect
 assert_eq 0 "$(_count_check DAST-LEAK-PROXY_HEADER-01)" \
   'an infrastructure header set on the REDIRECT hop is not reported as the delivered page - FAILS under a whole-capture match, since the capture sink accumulates every hop by design'
 
+# READING 14 (aa50f056-9b18-4fc7-9416-bb455bc7b7b1's follow-up ticket): a
+# redirect that CROSSES ORIGIN.  leak.fixture.example/redirect-cross 302s to
+# https://redirect-landing.example/landing (an in-scope extra-host, so this
+# phase's own default max_redirects follows it), and the landing page names
+# leak.fixture.example - the ORIGINALLY REQUESTED host - as an absolute
+# script src.
+t_case 'phase-family-5-redirect-crosses-origin'
+_run_case redirect-cross leak-fixture https://leak.fixture.example/redirect-cross
+# First, the naive/old reading, run inline exactly as section C's five negative
+# fixtures do: "self" taken from the REQUESTED url calls leak.fixture.example
+# same-site with itself and SUBTRACTS the reference, so it reports nothing.
+_naive_self=$(leak_host_of https://leak.fixture.example/redirect-cross)
+leak_origins_reset
+leak_origins_in '<script src="https://leak.fixture.example/static/vendor.js"></script>' "$_naive_self"
+assert_eq 0 "${#_LEAK_ORIGINS[@]}" \
+  "the NAIVE reading (self = the REQUESTED url's host) DOES miss this: leak.fixture.example is compared against itself and subtracted, so a page actually delivered by redirect-landing.example is reported as loading no third party at all"
+# The shipped phase, driven end to end through the real redirect.
+assert_eq 1 "$(_count_check DAST-LEAK-THIRD_PARTY_ORIGIN-01)" \
+  'the shipped check DOES report a third-party origin on this response'
+_EV=$(_field_of DAST-LEAK-THIRD_PARTY_ORIGIN-01 evidence)
+assert_contains "$_EV" 'leak.fixture.example' \
+  "leak.fixture.example is named as a third party RELATIVE TO THE DELIVERING ORIGIN - FAILS under self=\$url (the requested url), which subtracts it as though the page were still being served by leak.fixture.example itself"
+# Family 1 (stack trace) is a PER-PATH finding, so - unlike family 5's
+# application-wide roll-up, which is deliberately located at the first
+# response inspected regardless of which one exhibited it - its own `url`
+# field names the exact response it came from, and must be the DELIVERED one.
+assert_eq 1 "$(_count_check DAST-LEAK-STACK_TRACE-01)" \
+  'the landing page also carries a structured stack frame, so family 1 fires too'
+_URL=$(_field_of DAST-LEAK-STACK_TRACE-01 url)
+assert_eq 'https://redirect-landing.example:443/landing' "$_URL" \
+  "the finding's own url field names the DELIVERED url (lib/http.sh's _HTTP_LAST_URL, canonical form with the port filled in) - FAILS under \$url (the REQUESTED https://leak.fixture.example/redirect-cross), the reading this ticket replaces"
+assert_ne 'https://leak.fixture.example/redirect-cross' "$_URL" \
+  'and it is NOT the originally-requested url once a redirect has moved the response to a different origin'
+
 t_case 'phase-family-3-email'
 _run_case email leak-fixture https://leak.fixture.example/contact https://leak.fixture.example/profile
 assert_eq 1 "$(_count_check DAST-LEAK-EMAIL-01)" 'one roll-up finding for the target'
@@ -788,8 +870,56 @@ assert_eq 1 "$(_count_check DAST-LEAK-STACK_TRACE-01)" \
   'the in-scope URL is still inspected: an out-of-scope inventory row does not abort the run'
 assert_not_contains "$(cat "$REQ_LOG")" 'not-authorised.fixture.example' \
   'and no request was ever sent to the unauthorised host - asserted on the REQUEST LOG, not on a return value'
-assert_contains "$(_meta coverage_reduction)" 'leakage_endpoint_out_of_scope' \
-  'the skipped URL is recorded rather than silently dropped'
+LEAK_RED=$(_meta coverage_reduction)
+assert_contains "$LEAK_RED" 'inventory_endpoint_out_of_scope' \
+  'the skipped URL is recorded rather than silently dropped - now the shared roll-up reason (modules/dast/engine.sh section 3b)'
+assert_contains "$LEAK_RED" 'phase=leakage' 'and names this phase'
+assert_contains "$LEAK_RED" 'count=1' 'and the row count'
+
+# ---------------------------------------------------------------------------
+# WITHOUT the shared pre-check, the same inventory kills the whole run.
+# ---------------------------------------------------------------------------
+MUT=$W/mutation.sh
+cat >"$MUT" <<'EOM'
+set -Eeuo pipefail
+ROOT=$1 W=$2 INV=$3 SCOPE=$4 LOG=$5
+source "$ROOT/modules/dast/engine.sh"
+source "$ROOT/modules/dast/passive/leakage_engine.sh"
+http_scope_load "$SCOPE"
+config_scope_load "$SCOPE"
+config_scanner_load "$W/scanner.conf"
+_m_resolve() { printf '93.184.216.34'; }
+SCOURSH_HTTP_RESOLVE=_m_resolve
+_m_transport() {
+  printf '%s %s://%s%s\n' "$1" "$2" "$3" "$5" >>"$LOG"
+  if [[ -n ${_HTTP_TX_HEADERS_OUT:-} ]]; then
+    printf 'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n' >>"$_HTTP_TX_HEADERS_OUT"
+  fi
+  printf '200\n\ntext/html\n'
+}
+SCOURSH_HTTP_TRANSPORT=_m_transport
+dast_endpoint_keep() { return 0; }
+run_init "$W/run.mutation"
+run_record authorization_affirmed true
+run_record authorization_target leak-fixture
+SCOURSH_DAST_TARGET=leak-fixture
+SCOURSH_DAST_CELL=leak-fixture
+export SCOURSH_DAST_TARGET SCOURSH_DAST_CELL
+SCOURSH_DAST_ENDPOINTS=$INV
+export SCOURSH_DAST_ENDPOINTS
+source "$ROOT/modules/dast/passive/leakage.sh"
+EOM
+OOSINV=$(_inv oosmut leak-fixture https://not-authorised.fixture.example/x)
+MUT_LOG=$W/mutation-requests.log
+: >"$MUT_LOG"
+MUT_RC=0
+bash "$MUT" "$ROOT" "$W" "$OOSINV" "$SCOPE" "$MUT_LOG" >"$W/mutation.out" 2>&1 || MUT_RC=$?
+
+t_case 'WITHOUT the pre-check the same inventory kills the whole run'
+assert_eq 3 "$MUT_RC" \
+  'the mutated phase exits SCOURSH_EXIT_SCOPE (3) - reproduced rather than described, proving the pre-check above is load-bearing'
+assert_not_contains "$(cat "$MUT_LOG")" 'not-authorised' \
+  'and it never even reached the unauthorised host'
 
 t_case 'coverage-non-get-endpoint'
 _NG=$W/nonget.endpoints.json

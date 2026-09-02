@@ -3,6 +3,16 @@
 # modules/dast/passive/headers_engine.sh: the §7.1 security-header family
 # (docs/DESIGN.md §7.1; docs/STEP5-DAST-PLAN.md DAST-05, tier 2).
 #
+# THE SHARED RESPONSE READER IS NOT TESTED HERE ANY MORE.
+# `hdr_parse_capture`/`hdr_present`/`hdr_value`/`hdr_first`/`hdr_is_document`/
+# `hdr_safe_text`/`hdr_path_of`/`hdr_url_is_https` were lifted out of
+# headers_engine.sh into modules/dast/passive/response_engine.sh once six files
+# depended on them, and their unit cases moved with them to
+# tests/suites/dast-response-engine.sh - a shared component whose only tests
+# live in one consumer's suite is a component the next consumer is free to break
+# quietly.  What stays here is every case about the PHASE and about DAST-05's
+# own parsers, including the end-to-end pin of reading 1 below.
+#
 # NOTHING HERE TOUCHES THE NETWORK.  SCOURSH_HTTP_RESOLVE and
 # SCOURSH_HTTP_TRANSPORT are stubbed throughout and the whole suite is driven
 # from RECORDED RESPONSES - a table of header blocks this file writes, replayed
@@ -17,7 +27,12 @@
 #
 #   1. only the FINAL hop's headers count.  The capture sink accumulates every
 #      hop, so a redirect that sets HSTS and lands on a page that does not must
-#      still be reported as missing HSTS.
+#      still be reported as missing HSTS.  Pinned HERE at the PHASE level
+#      (section E's `redirect` case); the reader's own unit cases for it moved to
+#      tests/suites/dast-response-engine.sh when the reader was lifted out of
+#      headers_engine.sh into passive/response_engine.sh.  Both grains are
+#      wanted: the unit case catches a broken parse, this one catches a phase
+#      that stopped calling it.
 #   2. `unsafe-inline` beside a nonce or hash is IGNORED by browsers, so it is
 #      not a finding; beside neither, it is.
 #   3. `default-src` is the fallback for an absent `script-src`.
@@ -52,6 +67,14 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "$ROOT/modules/dast/passive/headers_engine.sh"
+# This file's own scope pre-check now lives in modules/dast/engine.sh section
+# 3b (`dast_endpoint_keep` and friends) rather than a local copy of
+# `http_gate_url` - sourced for real here (measured: +~2 GB peak under
+# `shellcheck -x`, well inside the 50 GB per-process budget - see
+# docs/CI-RUNBOOK.md's "the memory model") so section I below exercises the
+# real predicate rather than its permissive absent-engine fallback.
+# shellcheck source=modules/dast/engine.sh
+source "$ROOT/modules/dast/engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
 
@@ -294,29 +317,6 @@ _new_run boot
 source "$ROOT/modules/dast/passive/headers.sh"
 
 # ===========================================================================
-printf '== A. the engine: the response reader ==\n'
-# ===========================================================================
-t_case 'reader'
-CAP=$W/cap.hdr
-printf 'HTTP/1.1 302 Found\r\nStrict-Transport-Security: max-age=31536000\r\nLocation: /final\r\n\r\nHTTP/1.1 200 OK\r\nContent-Type: text/html\r\nX-Content-Type-Options: nosniff\r\n\r\n' >"$CAP"
-hdr_parse_capture "$CAP"
-assert_eq 200 "$_HDR_STATUS" \
-  'the reader reports the FINAL hop status, not the redirect - FAILS if it stops at the first status line'
-assert_true "$(hdr_present x-content-type-options && printf 0 || printf 1)" \
-  'a header on the final hop is present'
-assert_true "$(hdr_present strict-transport-security && printf 1 || printf 0)" \
-  'HSTS set only on the REDIRECT hop is NOT reported as present on the final response - FAILS under a whole-file grep, which is the whole reason this reader exists'
-
-printf 'HTTP/1.1 200 OK\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\n\r\n' >"$CAP"
-hdr_parse_capture "$CAP"
-assert_eq 2 "${_HDR_COUNT[set-cookie]}" \
-  'a repeated field is counted, not overwritten - the HSTS_MALFORMED duplicate case depends on it'
-
-: >"$CAP"
-assert_true "$(hdr_parse_capture "$CAP" && printf 1 || printf 0)" \
-  'an empty capture returns non-zero rather than reporting a response with no headers'
-
-# ===========================================================================
 printf '== A. the engine: CSP, HSTS and Referrer-Policy parsing ==\n'
 # ===========================================================================
 t_case 'parsers'
@@ -365,9 +365,6 @@ assert_true "$(hdr_referrer_leaks_full_url origin-when-cross-origin && printf 1 
   'origin-when-cross-origin sends only the origin and is NOT flagged - FAILS under "anything but strict-origin is leaky"'
 assert_true "$(hdr_referrer_leaks_full_url no-referrer-when-downgrade && printf 0 || printf 1)" \
   'no-referrer-when-downgrade sends the full URL to every cross-origin HTTPS destination and IS flagged'
-
-assert_true "$(hdr_is_document 'text/html; charset=utf-8' && printf 0 || printf 1)" 'text/html is a document'
-assert_true "$(hdr_is_document 'application/json' && printf 1 || printf 0)" 'application/json is not'
 
 # ===========================================================================
 printf '== B. a target with nothing set fires the absence checks ==\n'
@@ -526,8 +523,10 @@ assert_contains "$(_meta coverage_reduction)" 'headers_non_get_endpoint_skipped'
 
 # An out-of-scope inventory URL is skipped, and the run continues.  Handing it
 # straight to http_request would abort the whole run with exit 3, which is
-# exactly what the pre-check exists to prevent (modules/dast/crawl.sh's own
-# `_crawl_in_scope` reasoning).
+# exactly what the pre-check exists to prevent (modules/dast/engine.sh section
+# 3b's `dast_endpoint_keep` reasoning - this file now routes through that
+# shared helper rather than a local copy of `http_gate_url`, and a mutation
+# that removes the pre-check is proven to make this phase exit 3 below).
 OOSINV=$W/oos.endpoints.json
 cat >"$OOSINV" <<'EOF'
 { "schema": "scoursh.inventory.endpoints/1", "endpoints": [
@@ -544,8 +543,63 @@ assert_eq 0 "$rc" \
   'an out-of-scope URL in the inventory does not abort the run - FAILS if a discovered URL is handed straight to http_request, whose gate is fatal'
 assert_true "$([[ $(cat "$REQ_LOG") == *not-authorised* ]] && printf 1 || printf 0)" \
   'and no request is sent to it - asserted on the REQUEST LOG, not on a return value'
-assert_contains "$(_meta coverage_reduction)" 'headers_endpoint_out_of_scope' \
-  'the refused URL is declared'
+RED=$(_meta coverage_reduction)
+assert_contains "$RED" 'inventory_endpoint_out_of_scope' \
+  'the refused URL is declared - now the shared roll-up reason (modules/dast/engine.sh section 3b), converged onto the same wording every other inventory-driven DAST phase uses'
+assert_contains "$RED" 'phase=headers' 'and names this phase, not a generic default'
+assert_contains "$RED" 'count=1' 'and the row count'
+assert_contains "$RED" 'not-authorised.invalid' 'and the gate own reason, naming the host'
+
+# ---------------------------------------------------------------------------
+# WITHOUT the shared pre-check, the same inventory kills the whole run.
+# ---------------------------------------------------------------------------
+# THE MUTATION.  Run in a REAL SUBPROCESS with `dast_endpoint_keep` shadowed to
+# keep everything - byte-for-byte the behaviour before modules/dast/engine.sh
+# section 3b existed, and before this ticket converged this file onto it - and
+# the process is asserted to die with exit 3.  A subprocess because the
+# failure being reproduced is `die`, which ends the process.
+MUT=$W/mutation.sh
+cat >"$MUT" <<'EOM'
+set -Eeuo pipefail
+ROOT=$1 W=$2 INV=$3 SCOPE=$4 LOG=$5
+source "$ROOT/modules/dast/engine.sh"
+source "$ROOT/modules/dast/passive/headers_engine.sh"
+http_scope_load "$SCOPE"
+config_scope_load "$SCOPE"
+config_scanner_load "$W/scanner.conf"
+_m_resolve() { printf '93.184.216.34'; }
+SCOURSH_HTTP_RESOLVE=_m_resolve
+_m_transport() {
+  printf '%s %s://%s%s\n' "$1" "$2" "$3" "$5" >>"$LOG"
+  if [[ -n ${_HTTP_TX_HEADERS_OUT:-} ]]; then
+    printf 'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n' >>"$_HTTP_TX_HEADERS_OUT"
+  fi
+  printf '200\n\ntext/html\n'
+}
+SCOURSH_HTTP_TRANSPORT=_m_transport
+# THE MUTATION ITSELF: the pre-check keeps every row.
+dast_endpoint_keep() { return 0; }
+run_init "$W/run.mutation"
+run_record authorization_affirmed true
+run_record authorization_target hdr-bare
+SCOURSH_DAST_TARGET=hdr-bare
+SCOURSH_DAST_CELL=hdr-bare
+export SCOURSH_DAST_TARGET SCOURSH_DAST_CELL
+SCOURSH_DAST_ENDPOINTS=$INV
+export SCOURSH_DAST_ENDPOINTS
+source "$ROOT/modules/dast/passive/headers.sh"
+EOM
+
+MUT_LOG=$W/mutation-requests.log
+: >"$MUT_LOG"
+MUT_RC=0
+bash "$MUT" "$ROOT" "$W" "$OOSINV" "$SCOPE" "$MUT_LOG" >"$W/mutation.out" 2>&1 || MUT_RC=$?
+
+t_case 'WITHOUT the pre-check the same inventory kills the whole run'
+assert_eq 3 "$MUT_RC" \
+  'the mutated phase exits SCOURSH_EXIT_SCOPE (3) - this is the defect the shared pre-check exists to remove, reproduced rather than described. If this case ever reports 0, the pre-check has stopped being load-bearing and the section above is passing for some other reason.'
+assert_not_contains "$(cat "$MUT_LOG")" 'not-authorised' \
+  'and it never even reached the unauthorised host - the gate inside http_request refuses BEFORE the transport'
 
 # Two URLs that differ only in a volatile path segment are ONE handler.
 _run_case dedupe hdr-bare https://bare.fixture.example/order/1 https://bare.fixture.example/order/2
@@ -617,21 +671,61 @@ assert_true "$([[ $(_field_of DAST-HDR-RECOMMENDED_MISSING-01 evidence) == *cont
 assert_contains "$(_meta notes)" 'recommended_list_ignored' \
   'and the operator is told which of their entries was ignored, rather than it being silently discarded'
 
-# The run directory's own inventory is used when the export is empty, which is
-# the ordinary case: modules/dast/run.sh exports the path BEFORE crawl.sh writes
-# the file.
-_new_run rundir hdr-bare
-mkdir -p "$SCOURSH_RUN_DIR/inventory"
-cat >"$SCOURSH_RUN_DIR/inventory/endpoints.json" <<'EOF'
-{ "schema": "scoursh.inventory.endpoints/1", "endpoints": [
-  { "id": "e1", "target": "hdr-bare", "method": "GET", "url": "https://bare.fixture.example/late", "path": "/late" }
-] }
+# The roll-up list is ALSO configurable via config/scanner.conf's
+# recommended-header key (rules/RULE-FORMAT.md §9.6.1) - the discoverable home
+# docs/DESIGN.md §7.1's "configurable" asks for, added on top of the
+# file/environment mechanism above rather than in place of it.  A file override
+# naming a DIFFERENT header is left in place too, so this case pins the
+# precedence: config wins whenever the operator set at least one
+# recommended-header entry - FAILS under a reading that reads the file first.
+cat >"$W/scanner-rechdr.conf" <<'EOF'
+id: scanner
+requests-per-second: 5000
+request-budget: 20000
+circuit-breaker-failures: 100000
+recommended-header: X-Made-Up-Header
+recommended-header: content-security-policy
 EOF
+config_scanner_load "$W/scanner-rechdr.conf"
+printf 'X-Should-Not-Appear\n' >"$W/should-not-appear.txt"
+_new_run rechdrcfg hdr-bare
 SCOURSH_DAST_TARGET=hdr-bare SCOURSH_DAST_CELL=hdr-bare SCOURSH_DAST_ENDPOINTS=''
 export SCOURSH_DAST_TARGET SCOURSH_DAST_CELL SCOURSH_DAST_ENDPOINTS
-_dast_headers_phase
-assert_true "$([[ $(cat "$REQ_LOG") == *"/late"* ]] && printf 0 || printf 1)" \
-  "the run directory's own inventory is read when SCOURSH_DAST_ENDPOINTS is empty - FAILS under a reading that trusts the export alone, which is empty on every first run because crawl.sh writes the file later in the same loop"
+SCOURSH_DAST_RECOMMENDED_HEADERS_FILE=$W/should-not-appear.txt _dast_headers_phase
+assert_contains "$(_field_of DAST-HDR-RECOMMENDED_MISSING-01 evidence)" 'x-made-up-header' \
+  'the roll-up reports the headers config/scanner.conf listed'
+assert_true "$([[ $(_field_of DAST-HDR-RECOMMENDED_MISSING-01 evidence) == *content-security-policy* ]] && printf 1 || printf 0)" \
+  'a header that already has its own check id is dropped from the list rather than reported twice - holds whichever source the list came from'
+assert_contains "$(_meta notes)" 'recommended_list_ignored' \
+  'and the operator is told which of their entries was ignored, from the config source too'
+assert_true "$([[ $(_field_of DAST-HDR-RECOMMENDED_MISSING-01 evidence) == *x-should-not-appear* ]] && printf 1 || printf 0)" \
+  'config/scanner.conf, once it names at least one entry, wins over SCOURSH_DAST_RECOMMENDED_HEADERS_FILE entirely - FAILS if the file is consulted first'
+
+# A config list consisting ONLY of an already-owned header name still counts as
+# "the operator configured this key": it must not silently fall back to the
+# file/vendored default merely because the list is empty AFTER the drop - FAILS
+# under a reading that conflates "configured but empty after the drop" with
+# "not configured at all".
+cat >"$W/scanner-rechdr-onlyowned.conf" <<'EOF'
+id: scanner
+requests-per-second: 5000
+request-budget: 20000
+circuit-breaker-failures: 100000
+recommended-header: content-security-policy
+EOF
+config_scanner_load "$W/scanner-rechdr-onlyowned.conf"
+_new_run rechdronlyowned hdr-bare
+SCOURSH_DAST_TARGET=hdr-bare SCOURSH_DAST_CELL=hdr-bare SCOURSH_DAST_ENDPOINTS=''
+export SCOURSH_DAST_TARGET SCOURSH_DAST_CELL SCOURSH_DAST_ENDPOINTS
+SCOURSH_DAST_RECOMMENDED_HEADERS_FILE=$W/custom-rec.txt _dast_headers_phase
+assert_eq 0 "$(_count_check DAST-HDR-RECOMMENDED_MISSING-01)" \
+  'a config list of only an owned header name reports nothing, and does not fall back to the file'
+assert_contains "$(_meta coverage_reduction)" 'recommended_header_list_unavailable' \
+  'so the reduction is declared exactly as an absent list would be'
+
+# Restore the suite-wide scanner.conf (no recommended-header key) for every
+# case below, so this block's config load does not leak into them.
+config_scanner_load "$W/scanner.conf"
 
 # ===========================================================================
 printf '== K. the registry and the emitted finding agree ==\n'

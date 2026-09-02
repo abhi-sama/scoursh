@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# ADR pointer: this file's scope pre-check is converged onto
+# modules/dast/engine.sh section 3b's `dast_endpoint_keep` /
+# `dast_scope_record_skips` - see the ADR block at the top of
+# modules/dast/crawl.sh for the decision and the alternatives.
+#
 # modules/dast/passive/headers.sh - the §7.1 SECURITY-HEADER phase
 # (docs/DESIGN.md §7.1; docs/STEP5-DAST-PLAN.md DAST-05, tier 2).
 #
@@ -140,7 +145,7 @@ _hdr_catalog() {
     DAST-HDR-RECOMMENDED_MISSING-01)
       _HDRC_TITLE='Recommended security headers are not set'
       _HDRC_SEV=info; _HDRC_CONF=high; _HDRC_CWE=CWE-693; _HDRC_OWASP=A05:2021
-      _HDRC_REM='Add the headers named in this finding evidence. Each is a defence in depth rather than the fix for a specific defect, which is why they are one finding and not several: Permissions-Policy withholds powerful browser features from the document and anything it embeds, the Cross-Origin-* trio isolates the page from cross-origin windows and embedders, and X-Permitted-Cross-Domain-Policies stops a legacy client honouring a crossdomain.xml this site may not know it serves. The list is data, in modules/dast/passive/recommended-headers.txt.' ;;
+      _HDRC_REM='Add the headers named in this finding evidence. Each is a defence in depth rather than the fix for a specific defect, which is why they are one finding and not several: Permissions-Policy withholds powerful browser features from the document and anything it embeds, the Cross-Origin-* trio isolates the page from cross-origin windows and embedders, and X-Permitted-Cross-Domain-Policies stops a legacy client honouring a crossdomain.xml this site may not know it serves. The list is data: the recommended-header key in config/scanner.conf, or modules/dast/passive/recommended-headers.txt.' ;;
     *) return 1 ;;
   esac
   return 0
@@ -474,7 +479,7 @@ _hdr_emit_rollup() {
   local evi="none of the $tested response(s) tested on this target set: $absent."
   (( inconsistent > 0 )) \
     && evi+=" A further $inconsistent recommended header(s) were set on some responses and not others ($inconsistent_names), which is a consistency problem rather than an absent control."
-  evi+=' The list is operator-configurable (modules/dast/passive/recommended-headers.txt).'
+  evi+=' The list is operator-configurable: the recommended-header key in config/scanner.conf, or modules/dast/passive/recommended-headers.txt.'
   _hdr_emit DAST-HDR-RECOMMENDED_MISSING-01 "$url" "$path" "$evi"
 }
 
@@ -488,21 +493,13 @@ _dast_headers_phase() {
       'internal: modules/dast/passive/headers.sh was reached with no target; dast_run_phase publishes SCOURSH_DAST_TARGET'
   fi
 
-  # THE INVENTORY PATH IS RESOLVED HERE, NOT TAKEN FROM THE EXPORT ALONE, AND
-  # THAT IS NOT BELT-AND-BRACES.  modules/dast/run.sh reads the inventory and
-  # exports SCOURSH_DAST_ENDPOINTS BEFORE the phase loop starts, so on a first
-  # run - the ordinary case - it is EMPTY, because crawl.sh writes
-  # reports/<run>/inventory/endpoints.json a few phases later in the same loop.
-  # A passive check that trusted the export alone would therefore see no
-  # endpoints on exactly the run that has just discovered them.  The run
-  # directory's own artifact is the authority (docs/INVENTORY-FORMAT.md §1), so
-  # it is consulted when the export is empty.  Fixing the export itself belongs
-  # to modules/dast/run.sh and is filed separately rather than changed here,
-  # where six peer tickets are editing the same tree.
+  # SCOURSH_DAST_ENDPOINTS is now always the fixed
+  # `$SCOURSH_RUN_DIR/inventory/endpoints.json` path (modules/dast/run.sh),
+  # published unconditionally whether or not crawl.sh has written it yet - so
+  # reading it alone is now enough; the per-file fallback to the run
+  # directory's own artifact (the general fix that landed instead) is no
+  # longer needed.
   local epf=${SCOURSH_DAST_ENDPOINTS:-}
-  if [[ -z $epf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/endpoints.json ]]; then
-    epf=$SCOURSH_RUN_DIR/inventory/endpoints.json
-  fi
 
   # The operator's own base-url, which is config-derived rather than
   # target-derived and is the one URL that exists whatever the crawl found.
@@ -521,7 +518,7 @@ _dast_headers_phase() {
   local do_rollup=1
   if ! hdr_load_recommended; then
     do_rollup=0
-    run_record coverage_reduction "module=dast reason=recommended_header_list_unavailable target=$target - the recommended-header list (modules/dast/passive/recommended-headers.txt, or SCOURSH_DAST_RECOMMENDED_HEADERS_FILE) is absent, unreadable or empty, so the 'recommended headers not set' roll-up did not run. This is a coverage reduction, not a clean result."
+    run_record coverage_reduction "module=dast reason=recommended_header_list_unavailable target=$target - the recommended-header list (config/scanner.conf's recommended-header key, SCOURSH_DAST_RECOMMENDED_HEADERS_FILE, or the vendored modules/dast/passive/recommended-headers.txt) is absent, unreadable or empty, so the 'recommended headers not set' roll-up did not run. This is a coverage reduction, not a clean result."
   fi
   _hdr_selected DAST-HDR-RECOMMENDED_MISSING-01 || do_rollup=0
   if (( ${#_HDR_RECOMMENDED_DROPPED[@]} > 0 )); then
@@ -535,22 +532,31 @@ _dast_headers_phase() {
     return 0
   fi
 
-  local i url path tested=0 refused=0 unreachable=0
+  local i url path tested=0 unreachable=0
+  # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - modules/dast/
+  # engine.sh section 3b (`dast_endpoint_keep`) carries the long form and is
+  # the ONE place this decision is made now, rather than a local copy of
+  # `http_gate_url` here.  `http_request` gates FATALLY (an out-of-scope URL
+  # there is a caller bug, exit 3), which is right for the operator's own
+  # base-url and exactly wrong for a URL lifted out of an inventory some other
+  # module wrote: one bad row would abort the whole run.  This decides only
+  # whether the URL is worth ASKING FOR; everything that survives still goes
+  # through http_request, which re-gates it and re-gates every redirect hop.
+  #
+  # The `declare -F` guard is permissive on purpose (modules/dast/engine.sh's
+  # own header on `dast_endpoint_in_scope` states why): this file is sourced
+  # with no engine.sh in the process by several suites, and a fail-closed
+  # default there would make every one of them inert while every "stays
+  # quiet" assertion still passed green.
+  if declare -F dast_scope_skips_reset >/dev/null; then
+    dast_scope_skips_reset
+  fi
   for (( i = 0; i < _HDR_N; i++ )); do
     url=${_HDR_URL[$i]}
     path=${_HDR_PATH[$i]}
 
-    # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - the identical
-    # split modules/dast/crawl.sh's `_crawl_in_scope` records.  `http_request`
-    # gates FATALLY (an out-of-scope URL there is a caller bug, exit 3), which is
-    # right for the operator's own base-url and exactly wrong for a URL lifted
-    # out of an inventory some other module wrote: one bad row would abort the
-    # whole run.  This decides only whether the URL is worth ASKING FOR;
-    # everything that survives still goes through http_request, which re-gates it
-    # and re-gates every redirect hop.
-    if ! http_gate_url "$url" "$target"; then
-      refused=$(( refused + 1 ))
-      continue
+    if declare -F dast_endpoint_keep >/dev/null; then
+      dast_endpoint_keep "$url" "$target" || continue
     fi
 
     local hdrfile=$SCOURSH_SCRATCH/dast-headers.$$.$i.hdr
@@ -574,7 +580,7 @@ _dast_headers_phase() {
   done
 
   if (( tested == 0 )); then
-    run_record coverage_gap "dast headers: none of the $_HDR_N URL(s) selected on target '$target' produced a response this phase could read ($refused declined by the scope gate, $unreachable did not answer), so NO security header was inspected. A clean result here is the absence of a test."
+    run_record coverage_gap "dast headers: none of the $_HDR_N URL(s) selected on target '$target' produced a response this phase could read (${_DAST_SCOPE_SKIPPED:-0} declined by the scope gate, $unreachable did not answer), so NO security header was inspected. A clean result here is the absence of a test."
     return 0
   fi
 
@@ -612,8 +618,8 @@ _dast_headers_phase() {
   if (( _HDR_SKIPPED_NON_GET > 0 )); then
     run_record coverage_reduction "module=dast reason=headers_non_get_endpoint_skipped target=$target count=$_HDR_SKIPPED_NON_GET - $_HDR_SKIPPED_NON_GET discovered endpoint(s) are not GET. Re-sending them to read their response headers would change target state, which docs/DESIGN.md §7.1 forbids at the passive tier, so their headers were not inspected."
   fi
-  if (( refused > 0 )); then
-    run_record coverage_reduction "module=dast reason=headers_endpoint_out_of_scope target=$target count=$refused - $refused URL(s) in the inventory are not authorised by config/scope.conf and were not requested (${_HTTP_GATE_REASON:-declined by the scope gate})."
+  if declare -F dast_scope_record_skips >/dev/null; then
+    dast_scope_record_skips headers "$target"
   fi
   if (( unreachable > 0 )); then
     run_record coverage_reduction "module=dast reason=headers_endpoint_unreachable target=$target count=$unreachable - $unreachable URL(s) returned no readable response, so their headers were not inspected."

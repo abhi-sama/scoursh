@@ -1,0 +1,27 @@
+# Prototype-pollution marker-reflection templates (docs/DESIGN.md §7.3;
+# docs/STEP5-DAST-PLAN.md DAST-25). modules/dast/active/protopollution.sh's
+# marker-reflection technique substitutes %K (a per-run-random property NAME)
+# and %V (a per-run-random property VALUE) it generates itself - never
+# vendored, for the identical per-run-random reason
+# modules/dast/payloads/crlf-payloads.txt's own %H/%K markers and
+# openredirect-payloads.txt's %S sentinel are generated rather than vendored:
+# nothing but THIS run's own poisoning request can have put that exact
+# key/value pair anywhere a later, unrelated response could read it back, so
+# one confirmed reflection (reproduced on a second, independent marker) is
+# sufficient evidence with no vendored value that could collide with
+# something the target already carries for its own reasons.
+#
+# TWO TEMPLATES, THE SAME TWO ROUTES TO Object.prototype
+# protopollution-error-pairs.txt uses: the direct `__proto__` own-property
+# alias, and the indirect `constructor.prototype` route for a merge library
+# that defends against the name `__proto__` but not against `constructor`.
+# Each REPLACES the parameter's value outright (no %B) - the same whole-value
+# "object injection" shape the sibling error-pairs file and
+# nosqli-boolean-pairs.txt rows 3-4 already use.
+#
+# Read-only and non-destructive (modules/dast/payloads/README.md): the leaf
+# value is an ordinary string with no write operator, no file path, no
+# process/network side effect - if a target is not vulnerable this is
+# indistinguishable from merging any other harmless nested object.
+{"__proto__":{"%K":"%V"}}
+{"constructor":{"prototype":{"%K":"%V"}}}

@@ -11,9 +11,9 @@ step 5.
 ## Status: blocked, and last in the current priority order
 
 **No step 6 ticket (any of CLOUD-01 through CLOUD-34 or POSTURE-01 through POSTURE-04 below) is picked
-up until every earlier `docs/DESIGN.md` §13 step is complete on `main`** (this repository's sole
-branch; earlier references to `dev` below predate `dev` being promoted into `main` and removed, and
-describe history as it was at the time).
+up until every earlier `docs/DESIGN.md` §13 step is complete on `main`.** Work lands on `dev` first and
+reaches `main` in batches; earlier references to `dev` in this document reflect the current, ongoing
+workflow, not historical phases.
 The build order (§13) is strictly sequential, so step 6 waits behind the tail of step 3 and all of
 step 5, and it waited behind all of step 4 - the step immediately before it, and the one this ticket's
 own acceptance criteria call out by name - until step 4 completed:

@@ -326,7 +326,9 @@ Global:
                               whose only function is hiding this tool's
                               identity is a switch for scanning something you
                               do not own.)
-  --jobs N
+  --jobs N                  (worker parallelism; on a network module it is
+                              also the ceiling on simultaneous connections and
+                              is held to 4 without --i-own-target)
   --format json,sarif,html,md
   --fail-on SEVERITY        (critical|high|medium|low|info|none)
   --fail-on-new             (requires --fail-on; usage error otherwise)

@@ -195,6 +195,26 @@ _dast_jwt_phase() {
     [[ -n $line ]] && candidates+=("$line")
   done < <(_dast_jwt_candidates "$target" "$endpoints_file")
 
+  # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - modules/dast/
+  # engine.sh section 3b carries the long form. `http_request` gates FATALLY,
+  # which is right for an operator-configured URL and exactly wrong for one
+  # lifted out of an inventory another module wrote, where one bad row aborts
+  # the whole run at exit 3. It is applied to the candidate LIST, once, and NOT
+  # inside the probe loop: that loop is nested inside the per-identity loop, so
+  # a per-request check would count one out-of-scope row once per identity and
+  # report a count that is a fact about the identity list rather than about the
+  # inventory. `jwt_probe` still goes through `http_request`, which re-gates.
+  if declare -F dast_endpoint_keep >/dev/null; then
+    dast_scope_skips_reset
+    local -a _jwt_kept=()
+    for line in "${candidates[@]+"${candidates[@]}"}"; do
+      dast_endpoint_keep "${line#*$'\t'}" "$target" || continue
+      _jwt_kept+=("$line")
+    done
+    candidates=("${_jwt_kept[@]+"${_jwt_kept[@]}"}")
+    dast_scope_record_skips jwt "$target"
+  fi
+
   if (( ${#candidates[@]} == 0 )); then
     run_record coverage_reduction "module=dast reason=no_protected_endpoint check=jwt target=$target - the JWT checks replay against a protected endpoint, and no idempotent (GET/HEAD) endpoint was available in the inventory (${endpoints_file:-none}) to establish the accept/reject oracle."
     run_record coverage_gap "dast jwt: no idempotent protected endpoint was available for target '$target' (docs/INVENTORY-FORMAT.md endpoints.json was ${endpoints_file:-absent}), so there was nowhere to replay forged tokens and prove whether they are accepted. Supply an authenticated crawl or an OpenAPI/HAR spec that lists a GET endpoint this identity's token is authorised for (docs/STEP5-DAST-PLAN.md DAST-26). The JWT verification of this target was not tested."

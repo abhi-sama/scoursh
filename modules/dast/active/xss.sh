@@ -94,11 +94,14 @@ source "${BASH_SOURCE[0]%/*}/../auth_engine.sh"
 # 1. The vendored character ledger
 # ---------------------------------------------------------------------------
 # `_xss_read_records FILE` - prints the file's records (dropping whole-line `#`
-# comments and blanks).  Returns 1 when the file is unreadable, so a caller
-# degrades rather than erroring.
+# comments and blanks).  Prints nothing and returns 0 when the file is
+# unreadable, so a caller degrades by branching on the resulting empty array
+# rather than on this function's own exit status - it is called from inside a
+# process substitution (`< <(...)`), and a genuine `return 1` there fires
+# lib/core.sh's ERR trap even on this designed degradation path.
 _xss_read_records() {
   local f=$1 line
-  [[ -r $f ]] || return 1
+  [[ -r $f ]] || return 0
   while IFS= read -r line || [[ -n $line ]]; do
     [[ -z $line || ${line:0:1} == '#' ]] && continue
     printf '%s\n' "$line"
@@ -489,32 +492,14 @@ _dast_xss_phase() {
     return 0
   fi
 
-  # THE INVENTORY PATHS ARE RESOLVED HERE, NOT TAKEN FROM THE EXPORT ALONE, AND
-  # THAT IS NOT BELT-AND-BRACES.  modules/dast/run.sh reads the inventory and
-  # exports SCOURSH_DAST_ENDPOINTS/SCOURSH_DAST_PARAMETERS BEFORE the phase loop
-  # starts, so on an ordinary `scan.sh dast` run they are EMPTY, because crawl.sh
-  # writes reports/<run>/inventory/{endpoints,parameters}.json several phases
-  # later in that same loop.  A probe that trusted the export alone would
-  # therefore see NO parameter surface on exactly the run that has just
-  # discovered one, and would then record "no known request parameters" over an
-  # application that has dozens - the overstated-coverage failure docs/DESIGN.md
-  # §15 forbids, wearing a coverage_gap's clothing.  The run directory's own
-  # artifact is the authority (docs/INVENTORY-FORMAT.md §1), so it is consulted
-  # when the export is empty, exactly as modules/dast/passive/headers.sh already
-  # does.  Fixing the export itself belongs to modules/dast/run.sh and is filed
-  # separately rather than changed here, under peers editing the same tree.
+  # SCOURSH_DAST_ENDPOINTS/SCOURSH_DAST_PARAMETERS are now always the fixed
+  # `$SCOURSH_RUN_DIR/inventory/{endpoints,parameters}.json` paths
+  # (modules/dast/run.sh), published unconditionally whether or not crawl.sh
+  # has written them yet - so reading them alone is now enough; the per-file
+  # fallback to the run directory's own artifacts (the general fix that
+  # landed instead) is no longer needed.
   local epf=${SCOURSH_DAST_ENDPOINTS:-} pmf=${SCOURSH_DAST_PARAMETERS:-}
-  # Two plain `if`s, never `[[ ... ]] && assign`: under `set -Eeuo pipefail` a
-  # trailing `&&` chain whose test is false is a FAILING last command in the
-  # block, which takes the whole run with it on the ordinary path where the
-  # export was already set.
-  if [[ -z $epf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/endpoints.json ]]; then
-    epf=$SCOURSH_RUN_DIR/inventory/endpoints.json
-  fi
-  if [[ -z $pmf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/parameters.json ]]; then
-    pmf=$SCOURSH_RUN_DIR/inventory/parameters.json
-  fi
-  inject_inventory_load "$epf" "$pmf"
+  inject_inventory_load "$epf" "$pmf" xss
   if (( _INJ_N == 0 )); then
     run_record coverage_reduction "module=dast reason=no_parameter_inventory target=$target - the crawler wrote no injectable parameter (docs/INVENTORY-FORMAT.md), so reflected XSS had no request field to test. Feed a spec/HAR (config/discovery.conf) or run the crawl against an application with discoverable parameters."
     run_record coverage_gap "dast xss: target '$target' has no known request parameters (query/body/JSON/header/path), so no reflected-XSS probe was sent. This is a coverage gap - nothing was tested - not a finding of safety."

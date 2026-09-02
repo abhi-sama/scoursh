@@ -53,11 +53,15 @@ source "${BASH_SOURCE[0]%/*}/inject_engine.sh"
 source "${BASH_SOURCE[0]%/*}/../auth_engine.sh"
 
 # `_ldapi_read_payload_file FILE` - prints the file's payload lines (dropping
-# whole-line `#` comments and blanks). Returns 1 when the file is unreadable, so
-# a caller degrades the technique rather than erroring.
+# whole-line `#` comments and blanks). Prints nothing and returns 0 when the
+# file is unreadable, so a caller degrades the technique by branching on the
+# resulting empty array rather than on this function's own exit status - it is
+# always called from inside a process substitution (`< <(...)`), and a genuine
+# `return 1` there fires lib/core.sh's ERR trap even on this designed
+# degradation path.
 _ldapi_read_payload_file() {
   local f=$1 line
-  [[ -r $f ]] || return 1
+  [[ -r $f ]] || return 0
   while IFS= read -r line || [[ -n $line ]]; do
     [[ -z $line || ${line:0:1} == '#' ]] && continue
     printf '%s\n' "$line"
@@ -249,7 +253,7 @@ _dast_ldapi_phase() {
     return 0
   fi
 
-  inject_inventory_load
+  inject_inventory_load '' '' ldapi
   if (( _INJ_N == 0 )); then
     run_record coverage_reduction "module=dast reason=no_parameter_inventory target=$target - the crawler wrote no injectable parameter (docs/INVENTORY-FORMAT.md), so LDAP injection had no request field to test. Feed a spec/HAR (config/discovery.conf) or run the crawl against an application with discoverable parameters."
     run_record coverage_gap "dast ldapi: target '$target' has no known request parameters (query/body/JSON/header/path), so no LDAP-injection probe was sent. This is a coverage gap - nothing was tested - not a finding of safety."

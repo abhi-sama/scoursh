@@ -35,11 +35,21 @@
 #      neither half can be satisfied by breaking the other.
 #   7. the burst STOPS at the first 429 and does not stop for anything else.
 #   8. 503 is NOT throttling: a target that collapses under the burst must not
-#      be reported as one that defends itself.
+#      be reported as one that defends itself - pinned both at the
+#      `rate_status_is_throttle` predicate (section A) AND end to end through
+#      the phase against the `rl-503` fixture (section F), because a bare
+#      `Retry-After` on a 503 satisfies the OTHER predicate,
+#      `rate_signal_scan`, and reaches the identical `advertised` clean
+#      result through a different door (see reading 11).
 #   9. a 429 with no usable Retry-After is its own, separate check id, because
 #      the DAST fingerprint carries no component naming the defect.
 #  10. an inventory endpoint is preferred over the operator's base-url - the
 #      inverse of headers.sh's preference, and deliberately so.
+#  11. `retry-after` is excluded from `rate_signal_scan` on a 5xx status - it is
+#      the one rate-limit header this file's own comment names as "also sent
+#      on a 503" - while every other family member and a Retry-After on a
+#      non-5xx status are untouched, so a real limiter that announces itself
+#      pre-emptively still reads as `advertised`.
 #
 # shellcheck shell=bash
 #
@@ -59,6 +69,14 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # lib/core.sh, which bootstraps the scratch dir and the traps.
 # shellcheck source=modules/dast/ratelimit_engine.sh
 source "$ROOT/modules/dast/ratelimit_engine.sh"
+# This file's own scope pre-check now lives in modules/dast/engine.sh section
+# 3b (`dast_endpoint_keep` and friends) rather than a local copy of
+# `http_gate_url` - sourced for real here (measured cost is in the same
+# ballpark as tests/suites/dast-headers.sh's own +~2 GB, well inside the 50 GB
+# per-process budget - see docs/CI-RUNBOOK.md's "the memory model") so section
+# E's out-of-scope case below exercises the real predicate.
+# shellcheck source=modules/dast/engine.sh
+source "$ROOT/modules/dast/engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
 
@@ -293,6 +311,27 @@ assert_contains "$_fam" 'x-ratelimit-remaining' \
   'the de-facto X-RateLimit spelling is in it - FAILS under an RFC-only reading, which would report "no rate limiting" against a target that says otherwise on every response'
 assert_contains "$_fam" 'x-rate-limit-reset' 'the hyphenated de-facto spelling is in it too'
 
+t_case 'rate_signal_scan excludes a bare Retry-After from a 5xx, and only that'
+# `retry-after` is this file's own header names as "the only [signal header]
+# that is also sent on a 503" - a target falling over under load can carry it
+# with no limiter behind it at all, so counting it as a signal reaches
+# rate_verdict's `advertised` case (a clean result) for a target that
+# COLLAPSED, through the OTHER predicate than rate_status_is_throttle - the
+# exact reading that predicate's own header says must never happen.
+_cap=$W/predicate.head
+printf 'HTTP/1.1 503 X\r\nRetry-After: 120\r\n\r\n' >"$_cap"
+hdr_parse_capture "$_cap"
+assert_true "$(rate_signal_scan 503 && printf 1 || printf 0)" \
+  'a bare Retry-After on a 503 is NOT a signal - FAILS under the reading that any Retry-After means a limiter, which reports a target that collapsed under the burst as one that defends itself'
+printf 'HTTP/1.1 200 X\r\nRetry-After: 120\r\n\r\n' >"$_cap"
+hdr_parse_capture "$_cap"
+assert_true "$(rate_signal_scan 200 && printf 0 || printf 1)" \
+  'the identical Retry-After on a 200 (a limiter announcing itself pre-emptively) IS still a signal - FAILS under a reading that drops retry-after everywhere, which would silence a real advertised limiter too'
+printf 'HTTP/1.1 503 X\r\nX-RateLimit-Limit: 10\r\n\r\n' >"$_cap"
+hdr_parse_capture "$_cap"
+assert_true "$(rate_signal_scan 503 && printf 0 || printf 1)" \
+  'an X-RateLimit-* header on a 5xx is untouched by the exclusion - only retry-after is ambiguous with a plain failure, and narrowing the fix to it alone is what this case pins'
+
 # ===========================================================================
 printf '\n== B. sizing the burst against lib/http.sh own budget ==\n'
 # ===========================================================================
@@ -345,7 +384,7 @@ _cap_probe() {
   bash -c '
     set -Eeuo pipefail
     cd -- "$1"
-    # shellcheck source=modules/dast/ratelimit_engine.sh
+    # shellcheck source=/dev/null
     source modules/dast/ratelimit_engine.sh
     printf "id: scanner\nrequests-per-second: 5000\nrequest-budget: %s\ncircuit-breaker-failures: 100000\n" "$2" >"$3"
     config_scanner_load "$3"
@@ -494,6 +533,50 @@ assert_eq '0' "$(_req_count)" 'nothing is requested'
 assert_contains "$(_meta coverage_reduction)" 'burst_endpoint_out_of_scope' \
   'and the run continues with a recorded reduction - FAILS if the URL is handed straight to http_request, which gates fatally (exit 3) and would abort the whole run on one bad inventory row'
 
+# ---------------------------------------------------------------------------
+# WITHOUT the shared pre-check, the same inventory kills the whole run.
+# ---------------------------------------------------------------------------
+MUT=$W/mutation.sh
+cat >"$MUT" <<'EOM'
+set -Eeuo pipefail
+ROOT=$1 W=$2 INV=$3 SCOPE=$4 LOG=$5
+source "$ROOT/modules/dast/engine.sh"
+source "$ROOT/modules/dast/ratelimit_engine.sh"
+http_scope_load "$SCOPE"
+config_scope_load "$SCOPE"
+config_scanner_load "$W/scanner.conf"
+_m_resolve() { printf '93.184.216.34'; }
+SCOURSH_HTTP_RESOLVE=_m_resolve
+_m_transport() {
+  printf '%s %s://%s%s\n' "$1" "$2" "$3" "$5" >>"$LOG"
+  if [[ -n ${_HTTP_TX_HEADERS_OUT:-} ]]; then
+    printf 'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n' >>"$_HTTP_TX_HEADERS_OUT"
+  fi
+  printf '200\n\ntext/html\n'
+}
+SCOURSH_HTTP_TRANSPORT=_m_transport
+dast_endpoint_keep() { return 0; }
+run_init "$W/run.mutation"
+run_record authorization_affirmed true
+run_record authorization_target rl-open
+SCOURSH_DAST_TARGET=rl-open
+export SCOURSH_DAST_TARGET
+SCOURSH_DAST_ENDPOINTS=$INV
+export SCOURSH_DAST_ENDPOINTS
+source "$ROOT/modules/dast/ratelimit.sh"
+EOM
+OOSINV=$(_inv oosmut rl-open 'https://elsewhere.invalid/api/orders')
+MUT_LOG=$W/mutation-requests.log
+: >"$MUT_LOG"
+MUT_RC=0
+bash "$MUT" "$ROOT" "$W" "$OOSINV" "$SCOPE" "$MUT_LOG" >"$W/mutation.out" 2>&1 || MUT_RC=$?
+
+t_case 'WITHOUT the pre-check the same inventory kills the whole run'
+assert_eq 3 "$MUT_RC" \
+  'the mutated phase exits SCOURSH_EXIT_SCOPE (3) - reproduced rather than described, proving the pre-check above is load-bearing'
+assert_not_contains "$(cat "$MUT_LOG")" 'elsewhere.invalid' \
+  'and it never even reached the unauthorised host'
+
 # ===========================================================================
 printf '\n== F. a limiter that announces itself is NOT a finding ==\n'
 # ===========================================================================
@@ -518,6 +601,25 @@ _scanner 5000 20000
 SCOURSH_DAST_RATELIMIT_BURST=12 _phase rl-open
 assert_eq '1' "$(_count_check DAST-RATE-NO_THROTTLE-01)" \
   'the check still fires on a target that advertises nothing - FAILS if the fix for the case above was widened into "never report anything"'
+
+t_case 'end to end: a target that COLLAPSES (503) is never verdict=advertised'
+# The `rl-503` target and the `down.fixture.example` transport arm above
+# (always 503, always carrying Retry-After: 120) existed before this ticket
+# with no case ever driving `_phase rl-503` - so the unit-level pin above was
+# the only place this reading was ever checked, and the phase's own
+# `advertised` notes sentence ("... so it has a limiter this probe did not
+# reach") was reachable against a target that never once answered 2xx.  This
+# case drives the real phase, through the real gates, exactly as
+# dast_run_phase would.
+_new_run collapse rl-503
+_scanner 5000 20000
+SCOURSH_DAST_RATELIMIT_BURST=12 _phase rl-503
+assert_eq '12' "$(_req_count)" \
+  'the whole burst runs: 503 is not a 429, so nothing stops it early'
+assert_not_contains "$(_meta notes)" 'verdict=advertised' \
+  'the target that collapsed on every request is never reported as one that defends itself - FAILS under the pre-fix reading, where the fixture own Retry-After: 120 satisfied rate_signal_scan on all twelve responses'
+assert_eq '1' "$(_count_check DAST-RATE-NO_THROTTLE-01)" \
+  'the missing-throttling finding fires instead: a target that never said 429, RateLimit-*, or a Retry-After untainted by a bare 5xx has demonstrated no throttling control on this endpoint'
 
 # ===========================================================================
 printf '\n== G. a target that DOES throttle ==\n'

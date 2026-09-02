@@ -263,34 +263,24 @@ _dast_cookies_phase() {
     return 0
   fi
 
-  # THE ENDPOINT FILE IS RE-RESOLVED HERE RATHER THAN TAKEN FROM
-  # SCOURSH_DAST_ENDPOINTS ALONE, AND THAT IS NOT BELT-AND-BRACES.
-  # modules/dast/run.sh calls `dast_inventory_read` ONCE, before the phase loop,
-  # and exports SCOURSH_DAST_ENDPOINTS from what it found THEN - which on a fresh
-  # run is nothing, because crawl.sh is a phase and has not run yet. It writes
-  # reports/<run>/inventory/endpoints.json a few phases later in the same loop and
-  # nothing re-reads it, so a consumer that trusts the exported variable alone
-  # sees an empty surface on precisely the ordinary run. This file therefore
-  # prefers the exported path when it is usable and falls back to the run
-  # directory's own artifact - the file docs/INVENTORY-FORMAT.md names - which is
-  # the same artifact by the same path, just read after the producer wrote it.
-  # SCOURSH_DAST_COOKIE_ENDPOINTS overrides both, so the reader is testable
-  # against a fixture without a crawl (the swappable-seam idiom lib/http.sh's own
-  # transport/resolver hooks use). The general fix belongs to modules/dast/run.sh
-  # and affects every inventory consumer, so it is filed rather than widened into
-  # this ticket.
-  local epf=${SCOURSH_DAST_COOKIE_ENDPOINTS:-}
-  if [[ -z $epf ]]; then
-    epf=${SCOURSH_DAST_ENDPOINTS:-}
-    [[ -n $epf && -r $epf && -s $epf ]] || epf=${SCOURSH_RUN_DIR:-}/inventory/endpoints.json
-  fi
+  # SCOURSH_DAST_ENDPOINTS is now always the fixed
+  # `$SCOURSH_RUN_DIR/inventory/endpoints.json` path (modules/dast/run.sh),
+  # published unconditionally whether or not crawl.sh has written it yet - so
+  # reading it alone, and testing it with `-r`/`-s` below, is now enough; a
+  # local re-derivation of the same path is no longer needed (this used to
+  # fall back to `$SCOURSH_RUN_DIR/inventory/endpoints.json` by hand, which is
+  # the general fix that landed instead). SCOURSH_DAST_COOKIE_ENDPOINTS still
+  # overrides it, so this file stays testable against a fixture without a
+  # crawl (the swappable-seam idiom lib/http.sh's own transport/resolver hooks
+  # use).
+  local epf=${SCOURSH_DAST_COOKIE_ENDPOINTS:-${SCOURSH_DAST_ENDPOINTS:-}}
   if [[ ! -r $epf || ! -s $epf ]]; then
     run_record coverage_reduction "module=dast reason=no_endpoint_inventory target=$target - no endpoint inventory (docs/INVENTORY-FORMAT.md) was readable, so the cookie check had no response to inspect."
     run_record coverage_gap "dast cookies: target '$target' has no known endpoint, so no response was inspected for \`Secure\`/\`HttpOnly\`/\`SameSite\`. This is a coverage gap - nothing was tested - not a finding that the application's cookies are correctly flagged."
     return 0
   fi
 
-  inject_inventory_load "$epf" ''
+  inject_inventory_load "$epf" '' cookies
 
   # THE ENDPOINT ORDER IS SORTED, AND THAT IS NOT COSMETIC. `_INJ_EP_URL` is a
   # bash ASSOCIATIVE array, whose iteration order is its internal hash order and

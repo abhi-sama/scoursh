@@ -68,22 +68,40 @@ SCOURSH_DAST_TRANSPORT_ENGINE_SOURCED=1
 # on every `HTTP/x.y NNN` status line is the most dangerous parse in this tier -
 # a capture sink accumulates every redirect hop, so a whole-file match reads the
 # REDIRECT's headers and reports them as the delivered page's - and two copies
-# of it is two chances to lose that reset.  The shared-file lift remains
-# DAST-05's stated follow-up.
+# of it is two chances to lose that reset.  DAST-05's stated shared-file lift
+# HAS SINCE HAPPENED: the reader now lives in `passive/response_engine.sh`, a
+# leaf module that sources nothing and holds the reader alone, so this file
+# names that instead of DAST-05's own engine and no longer pulls in the
+# CSP/HSTS/Referrer parsers or the recommended-header loader, neither of which
+# it ever used.  No call site changed.
 #
-# lib/http.sh arrives transitively through headers_engine.sh, guarded there; the
-# guard is repeated rather than assumed so this file is sourceable on its own.
-if [[ -z ${SCOURSH_DAST_HEADERS_ENGINE_SOURCED:-} ]]; then
-  # shellcheck source=modules/dast/passive/headers_engine.sh
-  source "${BASH_SOURCE[0]%/*}/headers_engine.sh"
-fi
+# THE ENDPOINT CHOOSER HAS SINCE MOVED THERE TOO.  `tr_endpoints_load` below
+# used to be a fourth, near-identical copy of `hdr_endpoints_load`, differing
+# in exactly one place: its dedup key is `(scheme, path template)`, not the
+# path template alone (see section 4's own chooser comment below for why -
+# that reasoning is unchanged and still governs this file's behaviour).  It is
+# now a thin wrapper over `response_engine.sh`'s `resp_endpoints_load`, which
+# takes that one difference as an explicit `scheme_template` parameter rather
+# than staying a forked function body - see `response_engine.sh`'s own third
+# ADR block.  `tr_url_scheme` (below) is likewise now a one-line wrapper over
+# that file's `resp_url_scheme`, which the `scheme_template` dedup mode needs
+# by name; `tr_url_origin` and the mixed-content scanner, which use it for
+# reasons unrelated to the chooser, are unaffected.
+#
+# response_engine.sh sources nothing, so lib/http.sh no longer arrives through
+# it; the guarded source below is what supplies it, and was already present
+# rather than being added here.
+# shellcheck source=modules/dast/passive/response_engine.sh
+source "${BASH_SOURCE[0]%/*}/response_engine.sh"
 if [[ -z ${SCOURSH_HTTP_SOURCED:-} ]]; then
-  # -x back-edge cut: lib/http.sh
-  # is already inlined elsewhere in this file's own source graph, and shellcheck
-  # re-expands EVERY source edge it follows.  Cutting this one loses no checking
-  # and is what keeps the linter's memory bounded - see the shellcheck stage in
-  # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
-  # shellcheck source=/dev/null
+  # Real edge, matching modules/dast/passive/headers_engine.sh's own
+  # convention: neither of this file's two consumers (this module's own
+  # transport.sh phase script, and tests/suites/dast-transport.sh) has
+  # another real edge to lib/http.sh anywhere else in their source graph, so
+  # cutting this one to /dev/null would leave
+  # SCOURSH_HTTP_RESOLVE/SCOURSH_HTTP_TRANSPORT genuinely invisible to shellcheck
+  # for both - measured via tests/lint-source-graph.sh's own walker, not assumed.
+  # shellcheck source=lib/http.sh
   source "${BASH_SOURCE[0]%/*}/../../../lib/http.sh"
 fi
 # crawl_engine.sh supplies the frozen inventory reader (`crawl_json_flatten`/
@@ -123,14 +141,13 @@ source "${BASH_SOURCE[0]%/*}/../crawl_engine.sh"
 # 2. URL shape helpers
 # ---------------------------------------------------------------------------
 # `tr_url_scheme URL` - prints the lowercased scheme, or nothing for a string
-# that is not an absolute http(s) URL.
+# that is not an absolute http(s) URL.  A one-line wrapper over
+# `response_engine.sh`'s `resp_url_scheme`, which the shared chooser's
+# `scheme_template` dedup mode needs by name (see this file's own header and
+# `response_engine.sh`'s third ADR block); kept under its historic name so
+# `tr_url_origin` and the mixed-content scanner below do not change.
 tr_url_scheme() {
-  local u=${1,,}
-  case $u in
-    https://*) printf 'https' ;;
-    http://*) printf 'http' ;;
-    *) printf '' ;;
-  esac
+  resp_url_scheme "$1"
 }
 
 # `tr_url_origin URL` - prints `scheme://host[:port]`, the RFC 6454 origin, or
@@ -356,113 +373,40 @@ tr_html_scan() {
 # list this phase will request in `_TR_URL[]`, with `_TR_PATH[]` alongside, and
 # sets `_TR_N`, `_TR_TRUNCATED` and `_TR_SKIPPED_NON_GET`.
 #
-# It is deliberately NOT `hdr_endpoints_load`, and the difference is one line
-# that matters: THE DEDUP KEY IS (SCHEME, PATH TEMPLATE), NOT THE PATH TEMPLATE
-# ALONE.  `passive/headers.sh` is right to collapse `http://h/login` and
+# A THIN WRAPPER over `response_engine.sh`'s `resp_endpoints_load`, exactly as
+# `hdr_endpoints_load`, `markup_endpoints_load` and `leak_endpoints_load`
+# already are - see that file's third ADR block.  This file's own difference
+# from every OTHER caller is the one thing it still passes explicitly:
+# THE DEDUP KEY IS (SCHEME, PATH TEMPLATE), NOT THE PATH TEMPLATE ALONE.
+# `passive/headers.sh` is right to collapse `http://h/login` and
 # `https://h/login` into one candidate - it asks about a header the application
 # sets once, and either of the two answers it.  Here the two URLs are the entire
 # question: the plaintext twin of an HTTPS endpoint IS the finding, and a
 # path-template-only dedup drops whichever of the pair sorts second, so the
 # check would report clean on exactly the target that has the defect.  The suite
 # pins this with an inventory carrying both schemes of one path and an assertion
-# that fails under the borrowed key.
+# that fails under the borrowed key.  `resp_endpoints_load`'s `scheme_template`
+# mode IS that key; this file supplies it as a call-time argument rather than
+# a forked function body.
 #
-# The other three decisions are `hdr_endpoints_load`'s, kept deliberately in
-# step with it rather than re-argued: the operator's own `base-url` first and
-# outside the sort (config-derived, present on every run, and being first is
-# what keeps a fingerprint from churning when the crawl reorders); GET only
-# (§7.1's "no mutation of state" - re-sending a discovered POST to read its body
-# is a state change wearing a passive check's name); sorted, then capped, so the
-# chosen set is reproducible across runs.
+# The other three decisions are `resp_endpoints_load`'s defaults, unchanged
+# from before this file called it directly: the operator's own `base-url`
+# first and outside the sort (config-derived, present on every run, and being
+# first is what keeps a fingerprint from churning when the crawl reorders);
+# GET only (§7.1's "no mutation of state" - re-sending a discovered POST to
+# read its body is a state change wearing a passive check's name); sorted,
+# then capped, so the chosen set is reproducible across runs.
 #
-# An absent, empty or unreadable inventory is the NORMAL case
-# (docs/INVENTORY-FORMAT.md §1) and is never an error.
+# `tr_endpoints_load`'s name, its parameters and its three output globals
+# (`_TR_URL`/`_TR_PATH`/`_TR_N`/`_TR_TRUNCATED`/`_TR_SKIPPED_NON_GET`) are
+# UNCHANGED, so no call site in `transport.sh` moves.
 tr_endpoints_load() {
   local epf=${1:-} target=${2:-} base=${3:-}
-  local sep=$'\x1f' p type v idx key rest last_idx=''
-  declare -ga _TR_URL=() _TR_PATH=()
-  declare -g _TR_N=0 _TR_TRUNCATED=0 _TR_SKIPPED_NON_GET=0
-  declare -gA _TR_KEY_SEEN=()
-
-  if [[ -n $base ]]; then
-    _tr_candidate_add "$base"
-  fi
-
-  if [[ -z $epf || ! -r $epf || ! -s $epf ]]; then
-    _TR_N=${#_TR_URL[@]}
-    return 0
-  fi
-
-  declare -ga _TR_ROWS=()
-  local -A cur=()
-  while IFS=$'\t' read -r p type v; do
-    [[ $p == endpoints* ]] || continue
-    rest=${p#endpoints}; rest=${rest#"$sep"}
-    idx=${rest%%"$sep"*}; key=${rest#*"$sep"}
-    [[ $idx =~ ^[0-9]+$ && $key != "$rest" ]] || continue
-    if [[ -n $last_idx && $idx != "$last_idx" ]]; then
-      _tr_row_collect "${cur[url]:-}" "${cur[method]:-GET}" "${cur[target]:-}" "$target"
-      cur=()
-    fi
-    last_idx=$idx
-    [[ $type == s ]] && v=$(crawl_json_unescape "$v")
-    cur[$key]=$v
-  done < <(crawl_json_flatten <"$epf" 2>/dev/null)
-  if [[ -n $last_idx ]]; then
-    _tr_row_collect "${cur[url]:-}" "${cur[method]:-GET}" "${cur[target]:-}" "$target"
-  fi
-
-  local row
-  while IFS= read -r row; do
-    [[ -n $row ]] || continue
-    _tr_candidate_add "$row"
-  done < <(printf '%s\n' "${_TR_ROWS[@]+"${_TR_ROWS[@]}"}" | LC_ALL=C sort -u)
-
-  _TR_N=${#_TR_URL[@]}
-  return 0
-}
-
-# Appends one inventory row's URL to `_TR_ROWS` when it is a GET for this
-# target.  A module-scoped accumulator rather than a by-name parameter for the
-# reason `_hdr_row_collect` records: Bash 4.2 has no namerefs (tension 24's
-# frozen minimum) and an `eval`-based append would be evaluating target-derived
-# text, which rules/RULE-FORMAT.md §11 forbids elsewhere in this tool.
-_tr_row_collect() {
-  local url=$1 method=$2 row_target=$3 want_target=$4
-  [[ -n $url ]] || return 0
-  # An inventory entry naming a DIFFERENT scope target belongs to that target's
-  # cell, not this one (rules/RULE-FORMAT.md §9.5.1).  An entry with no target
-  # at all is accepted: an imported inventory may legitimately carry none, and
-  # http_request re-gates it on the way out regardless.
-  if [[ -n $row_target && -n $want_target && $row_target != "$want_target" ]]; then
-    return 0
-  fi
-  if [[ ${method^^} != GET ]]; then
-    _TR_SKIPPED_NON_GET=$(( _TR_SKIPPED_NON_GET + 1 ))
-    return 0
-  fi
-  _TR_ROWS+=("$url")
-  return 0
-}
-
-# Adds one URL if its (scheme, path template) pair is new and the cap has room.
-_tr_candidate_add() {
-  local url=$1 path tpl scheme key
-  scheme=$(tr_url_scheme "$url")
-  # A row whose URL is not an absolute http(s) URL is not requestable and is not
-  # counted against the cap; `http_request` would refuse it anyway.
-  [[ -n $scheme ]] || return 0
-  path=$(hdr_path_of "$url")
-  tpl=$(path_template_of "$path")
-  key=$scheme$'\x1f'$tpl
-  [[ -n ${_TR_KEY_SEEN[$key]:-} ]] && return 0
-  if (( ${#_TR_URL[@]} >= _TR_MAX_ENDPOINTS )); then
-    _TR_TRUNCATED=$(( _TR_TRUNCATED + 1 ))
-    return 0
-  fi
-  _TR_KEY_SEEN[$key]=1
-  _TR_URL+=("$url")
-  _TR_PATH+=("$path")
+  resp_endpoints_load "$epf" "$target" "$base" "$_TR_MAX_ENDPOINTS" scheme_template
+  declare -ga _TR_URL=("${_RESP_URL[@]+"${_RESP_URL[@]}"}")
+  declare -ga _TR_PATH=("${_RESP_PATH[@]+"${_RESP_PATH[@]}"}")
+  declare -g _TR_N=$_RESP_N _TR_TRUNCATED=$_RESP_TRUNCATED \
+    _TR_SKIPPED_NON_GET=$_RESP_SKIPPED_NON_GET
   return 0
 }
 

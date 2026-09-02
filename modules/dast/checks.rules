@@ -183,17 +183,26 @@ references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
 # secret is a key-management failure, and RS->HS confusion is an unpinned
 # algorithm - the fixes do not overlap.
 #
-# EVERY RECORD CARRIES `cwe: CWE-347` AND `owasp: A02:2021` BECAUSE THAT IS WHAT
-# THE EMITTER ACTUALLY SETS, and the two must not disagree on one check id.
-# `jwt_emit_finding` (modules/dast/jwt_engine.sh) hardcodes that pair on all five
-# findings.  A more precise mapping is available for two of them - CWE-1391 (Use
-# of Weak Credentials) fits DAST-JWT-EMPTY_HMAC-01 and DAST-JWT-WEAK_HMAC-01
-# better than CWE-347 does, since the signature IS verified there and the key is
-# the defect - but refining it HERE alone would make the registry and the report
-# state different CWEs for the same `check_id`, which is worse than a slightly
-# broad mapping and is exactly the kind of silent inconsistency a compliance
-# reader cannot see.  Both halves move together or neither does; the refinement is
-# filed as its own ticket rather than done half-way here.
+# EVERY RECORD'S `cwe` MATCHES WHAT THE EMITTER ACTUALLY SETS FOR THAT ID,
+# BECAUSE THE TWO MUST NOT DISAGREE ON ONE CHECK ID.  `jwt_emit_finding`
+# (modules/dast/jwt_engine.sh) takes `cwe` as its 10th positional argument, set
+# per call site in `jwt_run` rather than hardcoded once - three findings
+# (SIG_NOT_VERIFIED, ALG_NONE, ALG_CONFUSION) carry `CWE-347` (Improper
+# Verification of Cryptographic Signature: the verifier itself is broken or
+# bypassed), and two (EMPTY_HMAC, WEAK_HMAC) carry `CWE-1391` (Use of Weak
+# Credentials: the signature IS verified correctly there, and the defect is the
+# key, not the verification step) - so a reader triaging by CWE routes the
+# latter two to key management rather than to the token-verification code path.
+# `owasp: A02:2021` (Cryptographic Failures) stays uniform across all five: a
+# guessable or empty signing key is a cryptographic failure under that
+# category's own text just as an unverified signature is.
+# tests/suites/dast-jwt.sh section D asserts the emitted `cwe` equals the
+# registered `cwe` for every id here, so the two can never drift apart silently
+# again - refining ONE side alone (as a first landing of this registry did, on
+# purpose, while the emitter still hardcoded one constant) would leave the
+# registry and the report stating different CWEs for the same `check_id`, which
+# a compliance reader auditing by CWE cannot see because they read one output or
+# the other, never both at once.
 #
 # `requires-cmd`, `requires-config` and `requires-identities` are declared rather
 # than left to the phase, so an absent input reads as a DECLARED skip with a
@@ -257,7 +266,7 @@ title: JWT accepted when re-signed HS256 with an empty secret
 script: jwt.sh
 severity: critical
 confidence: high
-cwe: CWE-347
+cwe: CWE-1391
 owasp: A02:2021
 tags: active
 coverage-scope: target
@@ -272,7 +281,7 @@ remediation: Sign tokens with a high-entropy secret of at least 256 bits, and
   every forgery. Load the secret from a secrets manager, never from a default in
   code or a committed config file, and rotate it once this is fixed, because every
   token issued under the empty key must be treated as compromised.
-references: CWE-347
+references: CWE-1391
 references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
 references: https://tools.ietf.org/html/rfc8725
 
@@ -281,7 +290,7 @@ title: JWT accepted when re-signed HS256 with a common weak secret
 script: jwt.sh
 severity: critical
 confidence: high
-cwe: CWE-347
+cwe: CWE-1391
 owasp: A02:2021
 tags: active
 coverage-scope: target
@@ -297,7 +306,7 @@ remediation: Replace the signing secret with a high-entropy value of at least 25
   one; changing the secret alone leaves existing forgeries valid until they
   expire. Consider moving to an asymmetric algorithm so the verifying service
   never holds a key that can also sign.
-references: CWE-347
+references: CWE-1391
 references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
 references: https://tools.ietf.org/html/rfc8725
 
@@ -387,3 +396,56 @@ remediation: Send a Retry-After header on every 429 response, as either a
   client slow down before it is refused at all.
 references: CWE-770
 references: https://owasp.org/Top10/A04_2021-Insecure_Design/
+
+# --- graphql.sh (DAST-27, §7.4 GraphQL introspection & key exposure) --------
+#
+# graphql.sh is another §7.4 phase script sharing this append-only registry -
+# see this file's own header above for why a per-script pack is not legal here
+# and why a merge conflict in this section is resolved by taking both sides.
+#
+# The type tag is `active`, matching the phase table's `graphql.sh:active` floor
+# (modules/dast/engine.sh) - docs/DESIGN.md §7.4 is headed "Active - auth, API,
+# and access-control checks". Both gates must permit and neither widens the
+# other (tension 15's intersection rule).
+#
+# `intrusive` is deliberately NOT set. The probe sends one GraphQL `query`
+# operation, which that specification defines as side-effect free, and it never
+# constructs a `mutation` - so nothing here changes target state and the
+# active-intensity opt-in is the whole gate. Requiring --allow-intrusive on top
+# would be a second, undocumented one.
+#
+# ONE CHECK ID, NOT TWO, AND THE SECOND HALF OF §7.4's SENTENCE IS THE REASON.
+# §7.4 also asks that a long-lived API key found in served JS (§7.1) be reported
+# against an exposed schema "as a correlated finding". A correlated finding is
+# what §9.2's DERIVED layer computes in lib/findings.sh - "not scanner scripts",
+# per §9.2's own first line - as COMPOSITE-TOKEN-HIJACK, correlated on `target`,
+# which §9.2.2's capability table confirms is the one correlation key a DAST
+# finding can supply. The record below is that composite's DAST contributor; it
+# needs no extra key to be one, only a `loc_target`, which
+# modules/dast/graphql_engine.sh sets. rules/derived.rules stays unseeded until
+# DAST-10's leakage check id exists, because `E051` requires every requires/
+# any-of value to name an existing check - findings F5 and F20.
+
+id: DAST-GQL-INTROSPECTION-01
+title: GraphQL introspection is enabled and returns the full schema
+script: graphql.sh
+severity: medium
+confidence: high
+cwe: CWE-200
+owasp: A05:2021
+tags: active
+tags: compliance
+coverage-scope: target
+remediation: Disable introspection on production deployments - every GraphQL
+  server implementation has a switch for it, and a managed GraphQL service gates
+  it through the API authorisation mode. Introspection is a development
+  affordance: it hands a caller a complete map of every type, field, argument and
+  mutation, which is the reconnaissance step that precedes targeted field-level
+  abuse, and it is what turns a leaked long-lived API key from a credential into
+  a guided tour of the data behind it. Disabling it is not access control on its
+  own - pair it with per-field authorisation and query depth and complexity
+  limits, because a caller who already holds the schema is unaffected by hiding
+  it. Keep it enabled in development and staging, where the tooling that needs it
+  lives.
+references: CWE-200
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/

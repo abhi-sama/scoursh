@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# ADR pointer: this file's scope pre-check is converged onto
+# modules/dast/engine.sh section 3b - see the ADR block at the top of
+# modules/dast/crawl.sh for the decision, the alternatives, and why the
+# roll-up wording stays this file's own rather than the shared one's.
+#
 # modules/dast/active/discovery.sh - the §7.2 SAFE-ACTIVE content-discovery
 # PHASE (docs/DESIGN.md §7.2; docs/STEP5-DAST-PLAN.md DAST-12, tier 3).
 #
@@ -180,11 +185,15 @@ _discovery_safe_rel() {
 # `..` traversal, or an over-long token is skipped rather than sent (the entry
 # is UNTRUSTED file content and a `..` would try to escape the authorised path
 # prefix a scope target may pin).  A leading `/` is stripped so every entry
-# resolves relative to the base-url.  Returns 1 when the file is unreadable, so
-# the caller degrades the technique rather than erroring.
+# resolves relative to the base-url.  Prints nothing and returns 0 when the
+# file is unreadable, so the caller degrades the technique by branching on the
+# resulting empty array rather than on this function's own exit status - it is
+# called from inside a process substitution (`< <(...)`), and a genuine
+# `return 1` there fires lib/core.sh's ERR trap even on this designed
+# degradation path.
 _discovery_read_wordlist() {
   local f=$1 line
-  [[ -r $f ]] || return 1
+  [[ -r $f ]] || return 0
   while IFS= read -r line || [[ -n $line ]]; do
     [[ -z $line || ${line:0:1} == '#' ]] && continue
     # ONE rule, shared with the inventory-derived candidates - see
@@ -274,10 +283,14 @@ _discovery_body_is_dirlisting() {
 # `_DISC_STATUS`, `_DISC_LEN`, `_DISC_BODY` (up to _DISCOVERY_MAX_BODY_BYTES).
 # Returns 1 on a transport failure, leaving `_DISC_STATUS` empty.  Does NOT
 # gate: `http_request` gates, fatally, and re-gates every redirect hop; the
-# caller pre-filters an off-surface candidate with `_discovery_in_scope` for the
-# reason modules/dast/crawl.sh's `_crawl_in_scope` header states at length.
-# max_redirects is 0 so a 3xx is REPORTED (a redirect is a discovery signal),
-# not chased onto a path the scanned target chose.
+# caller pre-filters an off-surface candidate with `dast_endpoint_keep`
+# (modules/dast/engine.sh section 3b) for the reason that function's own
+# header states at length.  A discovery candidate is a path this phase
+# DERIVED (a wordlist entry, a well-known sensitive path, a backup/temp
+# variant), never an inventory row, so the drop is reported below in this
+# file's own words rather than through the shared roll-up's inventory
+# wording. max_redirects is 0 so a 3xx is REPORTED (a redirect is a discovery
+# signal), not chased onto a path the scanned target chose.
 _discovery_probe() {
   local url=$1 target=${SCOURSH_DAST_TARGET:-} rc=0 bodyf
   _DISC_STATUS='' _DISC_LEN=0 _DISC_BODY=''
@@ -290,21 +303,27 @@ _discovery_probe() {
   fi
   _DISC_STATUS=${_HTTP_LAST_STATUS:-}
   if [[ -r $bodyf ]]; then
-    IFS= read -r -d '' _DISC_BODY <"$bodyf" || true
-    if (( ${#_DISC_BODY} > _DISCOVERY_MAX_BODY_BYTES )); then
-      _DISC_BODY=${_DISC_BODY:0:_DISCOVERY_MAX_BODY_BYTES}
-    fi
+    # Bounded AT READ TIME, not after a full slurp: `-N` stops once
+    # _DISCOVERY_MAX_BODY_BYTES characters (bytes, LC_ALL=C per lib/core.sh)
+    # have been read, whatever else remains on disk - so a multi-hundred-
+    # megabyte response never gets materialised into this variable before
+    # being trimmed, which is the memory hazard the cap above exists to
+    # prevent (docs/DESIGN.md §15) and the ONLY thing this change alters. A
+    # small body (the ordinary case - almost every real response is under the
+    # cap) hits EOF before N characters and `read -N` returns non-zero for
+    # that, exactly as `-d ''` did for its own ordinary case, so `|| true`
+    # stays required.  NUL bytes inside the body are still lost either way -
+    # bash variables cannot hold one - but where `-d ''` treated the first NUL
+    # as ITS OWN delimiter and silently dropped everything after it, `-N`
+    # reads through embedded NULs and keeps accumulating non-NUL bytes up to
+    # the cap; this is a narrower change in an already-lossy edge case for
+    # binary bodies, not a new one, and content past the cap was never kept
+    # under either reading.
+    IFS= read -r -N "$_DISCOVERY_MAX_BODY_BYTES" _DISC_BODY <"$bodyf" || true
   fi
   _DISC_LEN=${#_DISC_BODY}
   rm -f "$bodyf"
   return 0
-}
-
-# `_discovery_in_scope URL` - the pre-filter (NOT the gate).  Decides only
-# whether a URL is worth REQUESTING; everything that survives is still sent
-# through `http_request`, which applies the real gate again.
-_discovery_in_scope() {
-  http_gate_url "$1" "${SCOURSH_DAST_TARGET:-}"
 }
 
 # ---------------------------------------------------------------------------
@@ -384,23 +403,14 @@ _discovery_emit() {
 # `_discovery_inventory_path` - print the readable endpoints inventory, or
 # return 1 when there is none.
 #
-# THE EXPORTED VARIABLE ALONE IS THE WRONG ANSWER, AND IT IS WRONG ON EXACTLY
-# THE ORDINARY RUN. modules/dast/run.sh calls `dast_inventory_read` ONCE, before
-# the phase loop, and exports SCOURSH_DAST_ENDPOINTS from what it found THEN -
-# which on a fresh run is the empty string, because crawl.sh is itself a phase
-# and has not run yet. crawl.sh writes reports/<run>/inventory/endpoints.json a
-# few phases later in that same loop and nothing re-reads it, so a consumer
-# trusting the exported variable sees an empty surface on precisely the run that
-# HAS one: technique (B) would send not one backup probe on any real scan while
-# still reporting DAST-DISC-BACKUP-01 as covered. This mirrors what
-# passive/cookies.sh already does (its own header states the same trap at
-# length) and what AGENTS.md records as a named sharp edge. It is the SAME
-# artifact by the SAME path, just read after the producer wrote it. The general
-# fix belongs to modules/dast/run.sh and affects every inventory consumer, so it
-# stays filed rather than widened into this ticket.
+# SCOURSH_DAST_ENDPOINTS is now always the fixed
+# `$SCOURSH_RUN_DIR/inventory/endpoints.json` path (modules/dast/run.sh),
+# published unconditionally whether or not crawl.sh has written it yet - so
+# reading it alone, and testing it with `-r`/`-s` below, is now enough; the
+# per-file fallback to the run directory's own artifact (the general fix
+# that landed instead) is no longer needed.
 _discovery_inventory_path() {
   local epf=${SCOURSH_DAST_ENDPOINTS:-}
-  [[ -n $epf && -r $epf && -s $epf ]] || epf=${SCOURSH_RUN_DIR:-}/inventory/endpoints.json
   [[ -n $epf && -r $epf && -s $epf ]] || return 1
   printf '%s' "$epf"
 }
@@ -519,16 +529,34 @@ _dast_discovery_phase() {
     dast_check_selected DAST-DISC-DIRLIST-01   || do_dirlist=0
   fi
 
+  # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - modules/dast/
+  # engine.sh section 3b (`dast_endpoint_keep`) is the ONE place this decision
+  # is made now.  A discovery candidate is not an inventory row - it is a path
+  # this phase DERIVED (a vendored wordlist entry, a well-known sensitive
+  # path, or a backup/temp variant of one), resolved against the target's own
+  # base-url - so a drop here is reported in this file's own words below
+  # rather than through the shared roll-up's "inventory row" wording, which
+  # would misname where the URL came from.  Reset once for the whole phase so
+  # the baseline probe and the candidate sweep share one accumulator.
+  if declare -F dast_scope_skips_reset >/dev/null; then
+    dast_scope_skips_reset
+  fi
+
   # Establish the soft-404 baseline from a random path.  If even this cannot be
   # requested, the base-url itself is unreachable and there is nothing to
   # discover against - a coverage_gap, not a clean result.
-  local rnd rurl
+  local rnd rurl kept_baseline=1
   rnd=$(_discovery_random_path)
   rurl=$(crawl_url_resolve "$base" "$rnd") || rurl=''
   _DISC_BASE_STATUS='' _DISC_BASE_LEN=0
-  if [[ -n $rurl ]] && _discovery_in_scope "$rurl" && _discovery_probe "$rurl"; then
-    _DISC_BASE_STATUS=$_DISC_STATUS
-    _DISC_BASE_LEN=$_DISC_LEN
+  if [[ -n $rurl ]]; then
+    if declare -F dast_endpoint_keep >/dev/null; then
+      dast_endpoint_keep "$rurl" "$target" || kept_baseline=0
+    fi
+    if (( kept_baseline )) && _discovery_probe "$rurl"; then
+      _DISC_BASE_STATUS=$_DISC_STATUS
+      _DISC_BASE_LEN=$_DISC_LEN
+    fi
   fi
   if [[ -z $_DISC_BASE_STATUS ]]; then
     run_record coverage_reduction "module=dast reason=discovery_baseline_unreachable target=$target - the base-url could not be requested to establish a not-found baseline, so the status/length heuristic has no reference and no content discovery ran"
@@ -606,7 +634,9 @@ _dast_discovery_phase() {
     url=$(crawl_url_resolve "$base" "$rel") || continue
     [[ -n ${seen[$url]:-} ]] && continue
     seen[$url]=1
-    _discovery_in_scope "$url" || continue
+    if declare -F dast_endpoint_keep >/dev/null; then
+      dast_endpoint_keep "$url" "$target" || continue
+    fi
     _discovery_probe "$url" || continue
     sent=$(( sent + 1 ))
     if _discovery_is_hit "$_DISC_STATUS" "$_DISC_LEN"; then
@@ -645,7 +675,7 @@ _dast_discovery_phase() {
     run_record coverage_gap "dast discovery: no content-discovery wordlist was available for target '$target', so the wordlist-based sweep tested nothing. This is a coverage gap, not a clean bill of health; the fixed sensitive-path and backup/temp checks still ran."
   fi
   if (( do_backup )) && [[ $inventory_state == absent ]]; then
-    run_record coverage_reduction "module=dast reason=discovery_no_endpoint_inventory target=$target - no endpoint inventory (docs/INVENTORY-FORMAT.md) was readable at SCOURSH_DAST_ENDPOINTS or at \$SCOURSH_RUN_DIR/inventory/endpoints.json, so no backup/temp variant of a known endpoint path was derived or probed. The sensitive-path and wordlist techniques still ran."
+    run_record coverage_reduction "module=dast reason=discovery_no_endpoint_inventory target=$target - no endpoint inventory (docs/INVENTORY-FORMAT.md) was readable at SCOURSH_DAST_ENDPOINTS, so no backup/temp variant of a known endpoint path was derived or probed. The sensitive-path and wordlist techniques still ran."
     run_record coverage_gap "dast discovery: no endpoint inventory was available for target '$target', so the backup/temp sweep (docs/DESIGN.md §7.2) derived no candidate and tested nothing - a served .bak/.old/~ file would not have been found. This is a coverage gap, not a clean bill of health; run the crawl phase (or supply a specification) so this technique has endpoint paths to vary."
   fi
   if (( do_backup )) && [[ $inventory_state == empty ]]; then
@@ -654,6 +684,16 @@ _dast_discovery_phase() {
   fi
   if (( truncated_words > 0 )); then
     run_record coverage_gap "dast discovery: the vendored wordlist for target '$target' exceeded the per-run cap of $_DISCOVERY_MAX_WORDS entries, so $truncated_words entry(ies) were not probed. Their absence from this report is a coverage bound, not a clean result."
+  fi
+  # A discovery candidate is a path this phase DERIVED (a wordlist entry, a
+  # well-known sensitive path, a backup/temp variant of a known endpoint), not
+  # an inventory row - so this is worded in this file's own terms rather than
+  # through the shared roll-up (`dast_scope_record_skips`), whose fixed text
+  # names "the cross-module inventory" and would misstate where the URL came
+  # from (this is the same distinction modules/dast/crawl.sh's own crawled-link
+  # case makes for the identical reason).
+  if (( ${_DAST_SCOPE_SKIPPED:-0} > 0 )); then
+    run_record coverage_reduction "module=dast phase=discovery reason=discovery_candidate_out_of_scope target=$target count=$_DAST_SCOPE_SKIPPED - that many derived content-discovery candidate(s) (a wordlist entry, a well-known sensitive path, or a backup/temp variant, resolved against the target's own base-url) named a URL config/scope.conf does not authorise, so they were NOT requested. Gate reason(s): ${_DAST_SCOPE_REASONS:-declined by the scope gate}."
   fi
   if (( over )); then
     run_record coverage_gap "dast discovery: the candidate surface on target '$target' hit the per-run request ceiling of $_DISCOVERY_MAX_REQUESTS, so some candidates were not probed. Their absence from this report is a coverage bound, not a clean result."

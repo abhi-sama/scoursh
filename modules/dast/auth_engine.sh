@@ -605,9 +605,21 @@ _dast_auth_form_body_set() {
   return 0
 }
 
+# Bytes of a login-response body read back for the token/enumeration parsers
+# below.  A login endpoint is still a URL an operator authorised, not a
+# trusted one, so an unbounded read would materialise whatever it chose to
+# send - a memory hazard, not a correctness one, since every parser here reads
+# a top-level JSON field or a short substring that is overwhelmingly likely to
+# sit well inside this cap. Mirrors modules/dast/active/inject_engine.sh's own
+# `_INJ_MAX_BODY_BYTES` default for the identical reason: 256 KiB is generous
+# for a login response and small enough that a hostile one cannot turn this
+# into the memory hazard docs/DESIGN.md §15 warns about.
+: "${_DAST_AUTH_MAX_BODY_BYTES:=262144}"
+
 # `_dast_auth_post TARGET LABEL URL CTYPE BODY` - one credential-bearing POST
 # through the chokepoint, with the response body and headers captured into the
-# session directory.  Sets `_DAST_AUTH_STATUS` and `_DAST_AUTH_RESP_BODY`.
+# session directory.  Sets `_DAST_AUTH_STATUS` and `_DAST_AUTH_RESP_BODY`
+# (bounded to `_DAST_AUTH_MAX_BODY_BYTES`).
 #
 # Returns 1 for a transport failure, in which case the status is empty; a 4xx is
 # a normal RESULT here, not a failure, because probing for the right body shape
@@ -629,11 +641,20 @@ _dast_auth_post() {
     return 1
   fi
   _DAST_AUTH_STATUS=$_HTTP_LAST_STATUS
-  # `read -d ''` consumes to NUL, i.e. the whole file, and returns non-zero at
-  # EOF having read it - the same `|| true` every newline-less reader in this
-  # repository carries.
+  # Bounded AT READ TIME, not after a full slurp: `-N` stops once
+  # _DAST_AUTH_MAX_BODY_BYTES bytes have been read, whatever else remains on
+  # disk, so a target answering a login POST with a multi-hundred-MB body
+  # never gets materialised into this variable before being trimmed - the
+  # same fix shape modules/dast/active/discovery.sh's own `_discovery_probe`
+  # applies to its own capped read. `read -N` returns non-zero at EOF for a
+  # body smaller than the cap (the ordinary case), exactly as `-d ''` did for
+  # its own ordinary case, so `|| true` stays required. NUL bytes in the body
+  # are still lost either way - bash variables cannot hold one - but where
+  # `-d ''` stopped dead at the first NUL, `-N` reads through embedded NULs
+  # and keeps accumulating non-NUL bytes up to the cap; narrower loss in an
+  # already-lossy edge case, not a new one.
   if [[ -r $bodyf ]]; then
-    IFS= read -r -d '' _DAST_AUTH_RESP_BODY <"$bodyf" || true
+    IFS= read -r -N "$_DAST_AUTH_MAX_BODY_BYTES" _DAST_AUTH_RESP_BODY <"$bodyf" || true
   fi
   _dast_auth_cookies_absorb "$target" "$label" "$hdrf"
 

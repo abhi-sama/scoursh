@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# ADR pointer: this file's scope pre-check is converged onto
+# modules/dast/engine.sh section 3b's `dast_endpoint_keep` /
+# `dast_scope_record_skips` - see the ADR block at the top of
+# modules/dast/crawl.sh for the decision and the alternatives.
+#
 # modules/dast/passive/markup.sh - the §7.1 HTML-MARKUP phase
 # (docs/DESIGN.md §7.1; docs/STEP5-DAST-PLAN.md DAST-11, tier 2).
 #
@@ -17,7 +22,7 @@
 # this phase sends is a plain GET to a URL that is either the operator's own
 # `base-url` or an endpoint some earlier phase already fetched.  IT NEVER
 # SUBMITS A FORM.  That bears saying twice for this phase in particular,
-# because one of its four checks is about forms: a CSRF check that proved its
+# because one of its five checks is about forms: a CSRF check that proved its
 # point by POSTing the form would be a state change wearing a passive check's
 # name, so the finding is made entirely out of the markup as served.
 #
@@ -84,6 +89,10 @@ _mk_catalog() {
       _MKC_TITLE='Cross-origin script or stylesheet loaded without Subresource Integrity'
       _MKC_SEV=medium; _MKC_CONF=high; _MKC_CWE=CWE-353; _MKC_OWASP=A08:2021
       _MKC_REM='Add an integrity attribute carrying the sha384 (or sha256/sha512) digest of the exact file, and a crossorigin attribute alongside it - without crossorigin the response is opaque, the browser cannot verify the digest, and it blocks the resource instead. Pin the version in the URL as well: an integrity hash against a "latest" URL breaks on every upstream release, which is what pushes teams to remove the attribute. Where a third party will not serve a stable, hashable artifact, self-host the file instead; until then this page executes whatever that origin serves it, with full access to this page DOM, cookies and storage.' ;;
+    DAST-MARKUP-SRI_OPAQUE-01)
+      _MKC_TITLE='Subresource Integrity attribute present without a crossorigin attribute'
+      _MKC_SEV=low; _MKC_CONF=high; _MKC_CWE=CWE-353; _MKC_OWASP=A08:2021
+      _MKC_REM='Add a crossorigin attribute (crossorigin="anonymous" is normally correct) alongside the integrity attribute this element already carries. A cross-origin fetch with no crossorigin attribute is made in no-cors mode, the response is opaque to the page, and a browser cannot compare an opaque response against a digest - so it does not silently skip the check, it BLOCKS the resource outright. The developer who added the integrity hash believed the resource was now protected; instead it does not load at all. This is distinct from DAST-MARKUP-SRI_MISSING-01: that check is an exposure (the page executes whatever the third party serves), this one fails closed (the resource never runs), so the two carry different severities and different fixes and must not be merged into one finding.' ;;
     DAST-MARKUP-TABNABBING-01)
       _MKC_TITLE='Cross-origin target=_blank link without rel=noopener'
       _MKC_SEV=low; _MKC_CONF=high; _MKC_CWE=CWE-1022; _MKC_OWASP=A01:2021
@@ -112,6 +121,7 @@ _mk_catalog() {
 # Every id this phase can emit, in report order.
 declare -ga _MK_CHECK_IDS=(
   DAST-MARKUP-SRI_MISSING-01
+  DAST-MARKUP-SRI_OPAQUE-01
   DAST-MARKUP-TABNABBING-01
   DAST-MARKUP-TABNABBING_SENSITIVE-01
   DAST-MARKUP-FRAME_INSECURE_SCHEME-01
@@ -155,7 +165,19 @@ _mk_add() {
 }
 
 # `_mk_abs REF` - the absolute form of one reference, resolved against this
-# page's `<base href>` if it declared one and against the page URL otherwise.
+# page's `<base href>` if it declared one and against the DELIVERED document's
+# own URL otherwise - `_MK_BASE` is seeded from the caller's `delivered_url`
+# (lib/http.sh's `_HTTP_LAST_URL`, the final hop, never the URL this phase
+# first asked for) precisely because RFC 3986 §5.1.3 resolves a document's
+# relative references against the URL that served it. A redirect with no
+# `<base href>` is the case that used to be silently wrong: a same-origin
+# `<script src="/x.js">` on a page delivered by a cross-origin redirect was
+# compared against the REQUESTED origin and read as same-origin when it was
+# not, which could hide a genuinely cross-origin unhashed script (a false
+# negative for DAST-MARKUP-SRI_MISSING-01), and the finding's own `url` field
+# named a page that never served the markup being described. A `<base href>`
+# present in the document overrides this and made the case moot even before
+# the fix; a redirect with none of its own is what this now gets right.
 # Returns 1 for a reference that is not a fetchable http(s) URL - `javascript:`,
 # `mailto:`, `data:`, a bare `#fragment` - which is `crawl_url_resolve`'s own
 # contract and is right for every check here: none of those loads a subresource,
@@ -247,7 +269,6 @@ _mk_analyse_one() {
   while IFS=$'\x1f' read -r kind ln a b c d; do
     case $kind in
       script | link)
-        _mk_selected DAST-MARKUP-SRI_MISSING-01 || continue
         # A <link> only takes SRI for a relationship that fetches something the
         # document then executes or applies; a favicon does not.
         if [[ $kind == link ]]; then
@@ -258,7 +279,29 @@ _mk_analyse_one() {
         # attribute defends against a THIRD PARTY serving something else, and
         # an origin that can already serve this page can serve anything.
         markup_same_origin "$abs" "$url" && continue
-        [[ -n $b ]] && continue
+        if [[ -n $b ]]; then
+          # An integrity attribute IS present. Whether it can ever be verified
+          # depends on crossorigin: with none, the fetch is made in no-cors
+          # mode, the response is opaque, and a browser cannot compare an
+          # opaque response against a digest - it blocks the resource instead
+          # of silently skipping the check. This is DAST-MARKUP-SRI_OPAQUE-01,
+          # a different defect from DAST-MARKUP-SRI_MISSING-01 (see this
+          # phase's own header on why the defect lives in the check id).
+          #
+          # THE PRECEDENCE IS BETWEEN TWO CHECKS, NOT BETWEEN A CHECK AND
+          # SILENCE - the identical argument the frame arm below makes for
+          # itself. `_mk_selected` is therefore consulted for THIS arm alone,
+          # rather than at the top of the case, so deselecting SRI_OPAQUE can
+          # never also silence SRI_MISSING on some OTHER element (and the
+          # reverse), because they no longer share one gate.
+          _mk_selected DAST-MARKUP-SRI_OPAQUE-01 || continue
+          markup_tokens_have "$c" anonymous && continue
+          markup_tokens_have "$c" use-credentials && continue
+          _mk_add DAST-MARKUP-SRI_OPAQUE-01 \
+            "line $ln: <$kind> loads $(markup_safe_text "$abs") with an integrity attribute but no crossorigin attribute (or an empty/invalid one) - fetched in no-cors mode the response is opaque, SRI cannot be verified, and the browser blocks the resource instead"
+          continue
+        fi
+        _mk_selected DAST-MARKUP-SRI_MISSING-01 || continue
         _mk_add DAST-MARKUP-SRI_MISSING-01 \
           "line $ln: <$kind> loads $(markup_safe_text "$abs") from another origin with no integrity attribute"
         ;;
@@ -442,22 +485,13 @@ _dast_markup_phase() {
       'internal: modules/dast/passive/markup.sh was reached with no target; dast_run_phase publishes SCOURSH_DAST_TARGET'
   fi
 
-  # THE INVENTORY PATH IS RESOLVED HERE, NOT TAKEN FROM THE EXPORT ALONE, AND
-  # THAT IS NOT BELT-AND-BRACES.  modules/dast/run.sh reads the inventory and
-  # exports SCOURSH_DAST_ENDPOINTS BEFORE the phase loop starts, so on a first
-  # run - the ordinary case - it is EMPTY, because crawl.sh writes
-  # reports/<run>/inventory/endpoints.json a few phases later in that same
-  # loop.  A passive check that trusted the export alone would therefore see no
-  # endpoints on exactly the run that has just discovered them; this ticket's
-  # whole surface IS that endpoint list.  The run directory's own artifact is
-  # the authority (docs/INVENTORY-FORMAT.md §1), so it is consulted when the
-  # export is empty - the same fallback, for the same reason,
-  # modules/dast/passive/headers.sh and cookies.sh already carry.  Fixing the
-  # export itself belongs to modules/dast/run.sh and is filed separately.
+  # SCOURSH_DAST_ENDPOINTS is now always the fixed
+  # `$SCOURSH_RUN_DIR/inventory/endpoints.json` path (modules/dast/run.sh),
+  # published unconditionally whether or not crawl.sh has written it yet - so
+  # reading it alone is now enough; the per-file fallback to the run
+  # directory's own artifact (the general fix that landed instead) is no
+  # longer needed.
   local epf=${SCOURSH_DAST_ENDPOINTS:-}
-  if [[ -z $epf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/endpoints.json ]]; then
-    epf=$SCOURSH_RUN_DIR/inventory/endpoints.json
-  fi
 
   # The operator's own base-url, which is config-derived rather than
   # target-derived and is the one URL that exists whatever the crawl found.
@@ -480,29 +514,31 @@ _dast_markup_phase() {
     return 0
   fi
 
-  local i url path parsed=0 refused=0 unreachable=0 not_markup=0 spa=0 truncated_docs=0
+  local i url path parsed=0 unreachable=0 not_markup=0 spa=0 truncated_docs=0
   local spa_paths='' trunc_paths=''
-  local tok_failed=0 tok_paths='' tok_detail='' refused_reason=''
+  local tok_failed=0 tok_paths='' tok_detail=''
+  # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - modules/dast/
+  # engine.sh section 3b (`dast_endpoint_keep`) carries the long form and is
+  # the ONE place this decision is made now, rather than a local copy of
+  # `http_gate_url` here.  `http_request` gates FATALLY (an out-of-scope URL
+  # there is a caller bug, exit 3), which is right for the operator's own
+  # base-url and exactly wrong for a URL lifted out of an inventory some other
+  # module wrote: one bad row would abort the whole run.  This decides only
+  # whether the URL is worth ASKING FOR; everything that survives still goes
+  # through http_request, which re-gates it and re-gates every redirect hop.
+  # The shared helper captures the gate reason AT REFUSAL TIME itself, which
+  # this file used to do by hand (`refused_reason`) - see modules/dast/
+  # engine.sh's `dast_endpoint_keep` header for why reading it after the loop
+  # is the trap.
+  if declare -F dast_scope_skips_reset >/dev/null; then
+    dast_scope_skips_reset
+  fi
   for (( i = 0; i < _MARKUP_N; i++ )); do
     url=${_MARKUP_URL[$i]}
     path=${_MARKUP_PATH[$i]}
 
-    # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - the identical
-    # split modules/dast/crawl.sh's `_crawl_in_scope` records.  `http_request`
-    # gates FATALLY (an out-of-scope URL there is a caller bug, exit 3), which
-    # is right for the operator's own base-url and exactly wrong for a URL
-    # lifted out of an inventory some other module wrote: one bad row would
-    # abort the whole run.  This decides only whether the URL is worth ASKING
-    # FOR; everything that survives still goes through http_request, which
-    # re-gates it and re-gates every redirect hop.
-    if ! http_gate_url "$url" "$target"; then
-      refused=$(( refused + 1 ))
-      # Captured HERE, at the refusal, and not read after the loop: these
-      # globals hold the LAST gate call's value, and the last call on a run
-      # with any refusal at all is routinely a URL that was ADMITTED - so the
-      # roll-up quoted a reason belonging to a different URL.
-      [[ -n $refused_reason ]] || refused_reason=${_HTTP_GATE_REASON:-}
-      continue
+    if declare -F dast_endpoint_keep >/dev/null; then
+      dast_endpoint_keep "$url" "$target" || continue
     fi
 
     local bodyfile=$SCOURSH_SCRATCH/dast-markup.$$.$i.body
@@ -519,6 +555,17 @@ _dast_markup_phase() {
       rm -f "$bodyfile"
       continue
     fi
+    # THE DELIVERED URL, NOT THE ONE THIS PHASE ASKED FOR.  `_HTTP_LAST_URL`
+    # (lib/http.sh §12) is the canonical URL of the hop that actually produced
+    # this response; a redirect between `$url` and it is an ordinary event
+    # (the endpoint chooser's own list is unauthenticated-crawl-derived and
+    # routinely names a pre-login or pre-canonicalisation path).  RFC 3986
+    # §5.1.3 resolves a document's relative references against the URL that
+    # DELIVERED it, not the one first requested, so this is the base every
+    # later same-origin/cross-origin judgement and the finding's own `url`
+    # field must use.  Falling back to `$url` is defensive only - a call that
+    # reached here already returned 0, so `http_request` always published one.
+    local delivered_url=${_HTTP_LAST_URL:-$url}
     if ! markup_is_html "${_HTTP_LAST_CONTENT_TYPE:-}"; then
       not_markup=$(( not_markup + 1 ))
       rm -f "$bodyfile"
@@ -569,12 +616,12 @@ _dast_markup_phase() {
     rm -f "$bodyfile"
 
     parsed=$(( parsed + 1 ))
-    _mk_analyse_one "$url" "$path" "$recfile"
+    _mk_analyse_one "$delivered_url" "$path" "$recfile"
     if [[ -n $_MK_TRUNC_REASONS ]]; then
       truncated_docs=$(( truncated_docs + 1 ))
       trunc_paths+="${trunc_paths:+ }$path($_MK_TRUNC_REASONS)"
     fi
-    _mk_emit_page "$url" "$path"
+    _mk_emit_page "$delivered_url" "$path"
     rm -f "$recfile"
   done
 
@@ -588,7 +635,7 @@ _dast_markup_phase() {
   fi
 
   if (( parsed == 0 )); then
-    run_record coverage_gap "dast markup: none of the $_MARKUP_N URL(s) selected on target '$target' produced a markup document this phase could parse ($refused declined by the scope gate, $unreachable did not answer, $not_markup answered with something that is not HTML, $tok_failed could not be tokenized), so NO page's markup was inspected. A clean result here is the absence of a test."
+    run_record coverage_gap "dast markup: none of the $_MARKUP_N URL(s) selected on target '$target' produced a markup document this phase could parse (${_DAST_SCOPE_SKIPPED:-0} declined by the scope gate, $unreachable did not answer, $not_markup answered with something that is not HTML, $tok_failed could not be tokenized), so NO page's markup was inspected. A clean result here is the absence of a test."
     return 0
   fi
 
@@ -640,8 +687,8 @@ _dast_markup_phase() {
   if (( _MARKUP_SKIPPED_NON_GET > 0 )); then
     run_record coverage_reduction "module=dast reason=markup_non_get_endpoint_skipped target=$target count=$_MARKUP_SKIPPED_NON_GET - $_MARKUP_SKIPPED_NON_GET discovered endpoint(s) are not GET. Re-sending them to read the markup they return would change target state, which docs/DESIGN.md §7.1 forbids at the passive tier, so their markup was not inspected."
   fi
-  if (( refused > 0 )); then
-    run_record coverage_reduction "module=dast reason=markup_endpoint_out_of_scope target=$target count=$refused - $refused URL(s) in the inventory are not authorised by config/scope.conf and were not requested (${refused_reason:-declined by the scope gate})."
+  if declare -F dast_scope_record_skips >/dev/null; then
+    dast_scope_record_skips markup "$target"
   fi
   if (( unreachable > 0 )); then
     run_record coverage_reduction "module=dast reason=markup_endpoint_unreachable target=$target count=$unreachable - $unreachable URL(s) returned no readable response, so their markup was not inspected."

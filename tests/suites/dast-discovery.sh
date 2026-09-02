@@ -53,6 +53,14 @@ source "$ROOT/lib/http.sh"
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "$ROOT/modules/dast/crawl_engine.sh"
+# This file's own scope pre-check now lives in modules/dast/engine.sh section
+# 3b (`dast_endpoint_keep` and friends) rather than a local copy of
+# `http_gate_url` - sourced for real here (measured cost is in the same
+# ballpark as tests/suites/dast-headers.sh's own +~2 GB, well inside the 50 GB
+# per-process budget - see docs/CI-RUNBOOK.md's "the memory model") so the
+# out-of-scope case below exercises the real predicate.
+# shellcheck source=modules/dast/engine.sh
+source "$ROOT/modules/dast/engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
 
@@ -406,28 +414,18 @@ assert_eq 1 "${#SAFE[@]}" \
 # ===========================================================================
 printf '== dast discovery: technique B in the REAL-RUN inventory shape ==\n'
 # ===========================================================================
-# THIS IS THE SHAPE AN ORDINARY `scan.sh dast` RUN HAS, and every backup case
-# above deliberately does NOT have it: they each set SCOURSH_DAST_ENDPOINTS
-# explicitly, which a real run never does usefully.
-#
-# modules/dast/run.sh calls `dast_inventory_read` ONCE, before the phase loop,
-# and exports SCOURSH_DAST_ENDPOINTS from what it found THEN - which on a fresh
-# run is the EMPTY STRING, because crawl.sh is itself a phase and has not run
-# yet. crawl.sh writes reports/<run>/inventory/endpoints.json a few phases later
-# in that same loop and nothing re-reads it. So a consumer trusting the exported
-# variable alone sees an empty surface on precisely the run that HAS one
-# (AGENTS.md records this as a named sharp edge; passive/cookies.sh:263-278
-# carries the same header).
-#
-# Each assertion below FAILS under the reading that SCOURSH_DAST_ENDPOINTS
-# alone is the inventory - which is the reading that makes the §7.2 backup/temp
-# technique inert on every ordinary run while still reporting its check as
-# covered.
+# THIS IS THE SHAPE AN ORDINARY `scan.sh dast` RUN HAS: modules/dast/run.sh
+# resolves SCOURSH_DAST_ENDPOINTS to the fixed
+# `$SCOURSH_RUN_DIR/inventory/endpoints.json` path and exports it
+# unconditionally, whether or not crawl.sh has written the file yet - so this
+# phase is handed that exact path, which becomes readable once the file
+# lands.  Every backup case above instead points SCOURSH_DAST_ENDPOINTS at a
+# synthetic fixture under $W, which is not the shape a real run has.
 _new_run realshape
 mkdir -p "$SCOURSH_RUN_DIR/inventory"
 _write_inventory
 cp "$W/endpoints.json" "$SCOURSH_RUN_DIR/inventory/endpoints.json"
-SCOURSH_DAST_ENDPOINTS=''
+SCOURSH_DAST_ENDPOINTS=$SCOURSH_RUN_DIR/inventory/endpoints.json
 SCOURSH_DAST_PARAMETERS=''
 export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
 SCOURSH_HTTP_TRANSPORT=_disc_transport
@@ -435,9 +433,9 @@ SCOURSH_DAST_DISCOVERY_WORDLIST=$WORDLIST _dast_discovery_phase
 REQS=$(cat "$REQ_LOG")
 
 assert_contains "$REQS" '/config.php.bak' \
-  "with SCOURSH_DAST_ENDPOINTS EMPTY and the inventory at its real run-dir path, the backup technique still probes - FAILS under the reading that the exported variable is the only inventory source, which is the shape every real run has"
+  "with SCOURSH_DAST_ENDPOINTS at its real run-dir path, the backup technique probes - FAILS if the phase cannot read the inventory at the path modules/dast/run.sh actually publishes"
 assert_eq 1 "$(_count_check_path DAST-DISC-BACKUP-01 /config.php.bak)" \
-  "a served, source-leaking backup file IS reported on a real-shaped run - FAILS if technique B contributed no candidate because it read the pre-crawl variable alone"
+  "a served, source-leaking backup file IS reported on a real-shaped run"
 assert_contains "$(run_facts checks_run)" 'DAST-DISC-BACKUP-01' \
   "the backup check is recorded as covered on a run where it genuinely probed"
 
@@ -498,7 +496,7 @@ _new_run inv_empty
 mkdir -p "$SCOURSH_RUN_DIR/inventory"
 printf '%s\n' '{ "schema": "scoursh.inventory.endpoints/1", "endpoints": [] }' \
   >"$SCOURSH_RUN_DIR/inventory/endpoints.json"
-SCOURSH_DAST_ENDPOINTS=''
+SCOURSH_DAST_ENDPOINTS=$SCOURSH_RUN_DIR/inventory/endpoints.json
 SCOURSH_DAST_PARAMETERS=''
 export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
 SCOURSH_HTTP_TRANSPORT=_disc_transport
@@ -544,7 +542,7 @@ _new_run inv_still_works
 mkdir -p "$SCOURSH_RUN_DIR/inventory"
 _write_inventory
 cp "$W/endpoints.json" "$SCOURSH_RUN_DIR/inventory/endpoints.json"
-SCOURSH_DAST_ENDPOINTS=''
+SCOURSH_DAST_ENDPOINTS=$SCOURSH_RUN_DIR/inventory/endpoints.json
 SCOURSH_DAST_PARAMETERS=''
 export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
 SCOURSH_HTTP_TRANSPORT=_disc_transport
@@ -580,5 +578,155 @@ assert_eq "${ADDED%% *}" "${ADDED##* }" \
   "the reported count equals the number of candidates actually appended - FAILS if the count and the array can drift apart"
 assert_ne 0 "${ADDED%% *}" \
   "and a well-formed inventory reports a NON-ZERO count - FAILS if the collector reports zero for everything, under which both cases above pass vacuously"
+
+# ===========================================================================
+printf '== dast discovery: the body read is bounded AT READ TIME, never after a full slurp ==\n'
+# ===========================================================================
+# Regression for the ticket ("Bound the DAST discovery response-body read at
+# the cap instead of truncating after a full slurp"): `_discovery_probe` used
+# to `read -r -d ''` the WHOLE captured body into a bash variable and only
+# THEN trim it to _DISCOVERY_MAX_BODY_BYTES, so a target serving a large
+# response materialised it in full in this process before any cap applied -
+# exactly the memory hazard the cap comment at the top of this file names.
+# `read -r -N _DISCOVERY_MAX_BODY_BYTES` stops reading once the cap is
+# reached, whatever else remains on disk.
+#
+# Proof shape: a 256 MiB body (1024x the default 256 KiB cap) is served, and
+# BOTH the reported length and the actual variable content are asserted at
+# exactly the cap - and the whole probe (including the fixture transport's own
+# disk write of the body, so the timing floor is comparable under EITHER
+# reading) is timed.  Measured directly on this repository's own dev host,
+# through this exact harness: the fixed `-N` read finishes the whole probe in
+# under 200ms; reverting to the unbounded `read -d ''` this ticket replaces
+# takes 1.7+ seconds for the identical 256 MiB body - an order-of-magnitude
+# difference, not hardware-noise-sized - so the 800ms ceiling below FAILS
+# reliably under the un-bounded reading while leaving real headroom above the
+# fixed reading's own measured cost.
+HUGEFILE=$W/huge-body.raw
+if [[ ! -f $HUGEFILE ]]; then
+  # Built via in-process string doubling (2^28 = 268435456 bytes = 256 MiB)
+  # rather than `head -c ... | tr '\0' a`, measured ~2x slower for the same
+  # size - this is fixture SETUP, not the code under test, so speed here is
+  # only about keeping the suite itself fast.
+  hs='a'
+  for _ in $(seq 1 28); do hs+=$hs; done
+  printf '%s' "$hs" >"$HUGEFILE"
+  unset hs
+fi
+
+_disc_huge_transport() {
+  local method=$1 path=$5
+  local status=404
+  case $path in
+    /hugefile) status=200 ;;
+  esac
+  printf '%s %s\n' "$method" "$path" >>"$REQ_LOG"
+  if [[ -n ${_HTTP_TX_BODY_OUT:-} ]]; then
+    if [[ $path == /hugefile ]]; then
+      cp -- "$HUGEFILE" "$_HTTP_TX_BODY_OUT"
+    else
+      printf '%s' "$NOTFOUND" >"$_HTTP_TX_BODY_OUT"
+    fi
+  fi
+  printf '%s\n\n%s\n' "$status" 'text/html'
+}
+
+_new_run huge
+SCOURSH_HTTP_TRANSPORT=_disc_huge_transport
+t0=$(now_epoch_ns)
+huge_rc=0
+_discovery_probe "https://disc.fixture.example/hugefile" || huge_rc=$?
+t1=$(now_epoch_ns)
+huge_ms=$(( (t1 - t0) / 1000000 ))
+
+assert_eq 0 "$huge_rc" 'the probe itself succeeds for a large-but-reachable body'
+assert_eq "$_DISCOVERY_MAX_BODY_BYTES" "$_DISC_LEN" \
+  "a 256 MiB body (1024x the cap) is reported at exactly the ${_DISCOVERY_MAX_BODY_BYTES}-byte cap - FAILS if the cap is applied to what is RETAINED after a full read rather than to what is READ"
+assert_eq "$_DISCOVERY_MAX_BODY_BYTES" "${#_DISC_BODY}" \
+  "and _DISC_BODY itself holds exactly the cap's worth of bytes, never the full 256 MiB response"
+assert_true "$([[ $huge_ms -lt 800 ]] && echo 0 || echo 1)" \
+  "the whole probe (fixture write plus read) completed in ${huge_ms}ms for a 256 MiB body - FAILS under the un-bounded \`read -d ''\` this replaces, which must slurp the whole body before trimming it (measured 1.7+ seconds on this host for the identical fixture through this exact harness - an order-of-magnitude difference this 800ms ceiling reliably catches)"
+
+# ===========================================================================
+printf '== dast discovery: an embedded NUL byte does not abort the probe ==\n'
+# ===========================================================================
+# bash variables cannot hold a NUL byte under EITHER reading, so a binary body
+# is inherently lossy here - the shapes differ (old: everything after the
+# first NUL is dropped, as its own delimiter; new: NUL bytes are skipped but
+# reading continues, accumulating non-NUL bytes up to the cap) but neither is
+# new with this change. What must hold under the fix: the read still
+# completes cleanly (no abort under this suite's own `set -Eeuo pipefail`)
+# and the reported length never exceeds the cap.
+NULBODY_FILE=$W/nul-body.raw
+printf 'abc\x00def\x00ghi' >"$NULBODY_FILE"
+_disc_nul_transport() {
+  local method=$1 path=$5
+  local status=404
+  case $path in
+    /nulbody) status=200 ;;
+  esac
+  printf '%s %s\n' "$method" "$path" >>"$REQ_LOG"
+  if [[ -n ${_HTTP_TX_BODY_OUT:-} ]]; then
+    if [[ $path == /nulbody ]]; then
+      cp -- "$NULBODY_FILE" "$_HTTP_TX_BODY_OUT"
+    else
+      printf '%s' "$NOTFOUND" >"$_HTTP_TX_BODY_OUT"
+    fi
+  fi
+  printf '%s\n\n%s\n' "$status" 'text/html'
+}
+_new_run nulbody
+SCOURSH_HTTP_TRANSPORT=_disc_nul_transport
+nul_rc=0
+_discovery_probe "https://disc.fixture.example/nulbody" || nul_rc=$?
+assert_eq 0 "$nul_rc" \
+  'a body carrying embedded NUL bytes does not abort the probe - FAILS if the bounded read chokes on a NUL rather than just losing it'
+assert_true "$([[ $_DISC_LEN -le $_DISCOVERY_MAX_BODY_BYTES ]] && echo 0 || echo 1)" \
+  "the reported length (${_DISC_LEN}) still never exceeds the cap for a body containing embedded NULs"
+
+# ===========================================================================
+printf '== dast discovery: dast_endpoint_keep is a SECOND, independent gate ==\n'
+# ===========================================================================
+# `_discovery_safe_rel` (this file's own §7.2 candidate validator) already
+# rejects every absolute or scheme-relative entry BEFORE it ever becomes a
+# candidate, for every one of the three sources (sensitive paths, a vendored
+# wordlist, and a backup/temp derivation of an inventory path) - see that
+# function's own header. So under normal operation a discovery candidate can
+# never actually reach `dast_endpoint_keep` out of scope: this phase resolves
+# every candidate against the operator's OWN base-url, which is by
+# construction the one entry config/scope.conf already authorised for this
+# target. `dast_endpoint_keep` (modules/dast/engine.sh section 3b) is
+# converged onto here anyway, as DELIBERATE belt-and-braces depth - exactly
+# the same reasoning modules/dast/crawl.sh's frontier re-check applies to its
+# own root URL.
+#
+# That layering is what this section proves, rather than a scenario that
+# cannot occur through the normal candidate path: with `_discovery_safe_rel`
+# shadowed to admit everything (simulating a defect in THAT layer), the
+# second, independent layer - `dast_endpoint_keep` - still catches an
+# absolute out-of-scope URL and the run still does not abort.
+_disc_orig_safe_rel=$(declare -f _discovery_safe_rel)
+_discovery_safe_rel() { printf '%s\n' "${1#/}"; return 0; }
+OOSWL=$W/oos-wordlist.txt
+cat >"$OOSWL" <<'EOF'
+https://not-authorised.example/evil
+inscope-path
+EOF
+_new_run oosdisc
+SCOURSH_DAST_ENDPOINTS='' SCOURSH_DAST_PARAMETERS=''
+export SCOURSH_DAST_ENDPOINTS SCOURSH_DAST_PARAMETERS
+SCOURSH_HTTP_TRANSPORT=_disc_transport
+rc=0
+SCOURSH_DAST_DISCOVERY_WORDLIST=$OOSWL _dast_discovery_phase || rc=$?
+eval "$_disc_orig_safe_rel"
+assert_eq 0 "$rc" \
+  'an out-of-scope candidate does not abort the run - FAILS if handed straight to http_request, whose gate is fatal (exit 3)'
+assert_not_contains "$(cat "$REQ_LOG")" 'not-authorised.example' \
+  'and no request was ever sent to it - asserted on the REQUEST LOG, proving dast_endpoint_keep filtered it independently of the (here, disabled) safe-path validator'
+DISC_RED=$(run_facts coverage_reduction)
+assert_contains "$DISC_RED" 'discovery_candidate_out_of_scope' \
+  'the drop is declared in this file own words, never the shared roll-up "inventory row" wording - a discovery candidate was DERIVED, not read off an inventory'
+assert_contains "$DISC_RED" 'phase=discovery' 'and names this phase'
+assert_contains "$DISC_RED" 'not-authorised.example' 'and the gate own reason'
 
 t_summary dast-discovery

@@ -421,6 +421,7 @@ file yet; those are called out in the Notes column.
 | `mutex-timeout-seconds` | positive integer | `120` | inert | The timeout is real, but reads `SCOURSH_MUTEX_TIMEOUT_SECONDS`. |
 | `paranoid-allow` | repeatable, `addr:port` | empty | live | The fourth allowlist set for `--paranoid`. |
 | `contact` | one printable, space-free token | empty | live | Where a target owner can reach you. Rendered into the `User-Agent` every request carries; see ["The identifying `User-Agent`"](#the-identifying-user-agent). |
+| `recommended-header` | repeatable, an RFC 7230 header field-name | the shipped `modules/dast/passive/recommended-headers.txt` list | live | The `passive/headers.sh` `DAST-HDR-RECOMMENDED_MISSING-01` roll-up. Any entry here replaces the shipped list entirely, rather than adding to it; a name a dedicated check already owns is dropped. Falls back to `SCOURSH_DAST_RECOMMENDED_HEADERS_FILE`, then the shipped list, when unset here. |
 | `notes` | free text (multi-line) | empty | inert by design | Free text for the operator; no code reads it, and none is meant to. |
 
 ### What `redact-secrets` covers

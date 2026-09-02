@@ -13,6 +13,12 @@ id: example-target
 base-url: https://target.example/app
 allow-subdomains: false
 allow-private-addresses: false
-notes: Free text, safely. A pipe | a colon: a hash # and a "quote" are all
+tls-expect-wildcard: false
+notes: tls-expect-wildcard declares that a wildcard certificate is the
+  INTENDED design for this target, so modules/dast/passive/tls.sh does not
+  report one. Leave it false for a host-specific service. It is per target,
+  not scanner-wide, because an estate legitimately has both shapes and one
+  global answer would make a false positive indistinguishable from a real
+  finding. Free text, safely. A pipe | a colon: a hash # and a "quote" are all
   ordinary bytes here, which is the whole reason config/scope.conf uses the
   block-record format instead of `name | base_url | notes`.

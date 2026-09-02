@@ -378,9 +378,21 @@ _jwt_selected() {
 # and the body may echo the claims, so neither belongs in an artifact.  The weak
 # secret IS named, because it is a public dictionary word and naming which one
 # signed the token is the actionable remediation, not a disclosure.
+#
+# `cwe` is the 10th positional arg rather than a hardcoded constant, because the
+# five DAST-JWT-* findings are NOT one root cause: SIG_NOT_VERIFIED, ALG_NONE and
+# ALG_CONFUSION are the signature check itself failing (CWE-347, Improper
+# Verification of Cryptographic Signature), while EMPTY_HMAC and WEAK_HMAC verify
+# the signature correctly and fail on the KEY (CWE-1391, Use of Weak
+# Credentials).  Each `jwt_run` call site passes its own check's value; the
+# registry in modules/dast/checks.rules records the identical pair per id, and
+# tests/suites/dast-jwt.sh section D asserts the emitted and registered `cwe`
+# never drift apart for any id (see that file's own header comment for why: a
+# reader auditing by CWE sees the finding OR the registry, never both at once, so
+# a disagreement between them is invisible rather than merely broad).
 jwt_emit_finding() {
   local check_id=$1 title=$2 severity=$3 target=$4 method=$5 path=$6
-  local param_name=$7 evidence=$8 remediation=$9
+  local param_name=$7 evidence=$8 remediation=$9 cwe=${10}
 
   finding_new
   finding_set check_id "$check_id"
@@ -388,7 +400,7 @@ jwt_emit_finding() {
   finding_set title "$title"
   finding_set base_severity "$severity"
   finding_set confidence high
-  finding_set cwe CWE-347
+  finding_set cwe "$cwe"
   finding_set owasp A02:2021
   finding_set exposure external
   finding_set auth none
@@ -471,7 +483,8 @@ jwt_run() {
         'JWT signature is not verified' critical \
         "$target" "$method" "$url" "$header" \
         "$method $url returned HTTP ${_JWT_PROBE_STATUS} for a token whose header and payload were left intact but whose signature was replaced with one computed under a key the server cannot hold; a conformant verifier rejects this, so the endpoint is not verifying the signature at all" \
-        'Verify the JWT signature on every request against the expected algorithm and key before trusting any claim in it. Reject a token whose signature does not verify, whose alg is not the one you issued, or that carries alg:none. This endpoint accepted a token with an invalid signature, which lets anyone mint a token for any user.'
+        'Verify the JWT signature on every request against the expected algorithm and key before trusting any claim in it. Reject a token whose signature does not verify, whose alg is not the one you issued, or that carries alg:none. This endpoint accepted a token with an invalid signature, which lets anyone mint a token for any user.' \
+        CWE-347
     fi
     _JWT_RUN_STATUS=no_verify
     _JWT_RUN_REASON="the endpoint accepted a token with an invalid signature, so it does not verify signatures at all; the per-variant probes (alg:none, empty/weak HMAC, RS->HS) were not run because they would each be a duplicate of that one root cause"
@@ -499,7 +512,8 @@ jwt_run() {
           'JWT accepted with alg:none (unsigned token)' critical \
           "$target" "$method" "$url" "$header" \
           "$method $url returned HTTP ${_JWT_PROBE_STATUS} for an UNSIGNED token whose header set alg to '$spelling' and whose signature segment was empty; the server accepted a token it never signed" \
-          'Reject any token whose header alg is "none" (in any capitalisation) and any token with an empty signature. Pin the accepted algorithm to the one you issue and verify the signature with the corresponding key. Accepting alg:none lets anyone forge a token for any user with no key at all.'
+          'Reject any token whose header alg is "none" (in any capitalisation) and any token with an empty signature. Pin the accepted algorithm to the one you issue and verify the signature with the corresponding key. Accepting alg:none lets anyone forge a token for any user with no key at all.' \
+          CWE-347
         break
       fi
     done
@@ -515,7 +529,8 @@ jwt_run() {
         'JWT accepted when re-signed HS256 with an empty secret' critical \
         "$target" "$method" "$url" "$header" \
         "$method $url returned HTTP ${_JWT_PROBE_STATUS} for a token re-signed as HS256 with a zero-length key; the HMAC secret is empty" \
-        'Sign tokens with a high-entropy secret of at least 256 bits and reject an empty or absent key at verification time. An empty HMAC secret means anyone can mint a valid token.'
+        'Sign tokens with a high-entropy secret of at least 256 bits and reject an empty or absent key at verification time. An empty HMAC secret means anyone can mint a valid token.' \
+        CWE-1391
     fi
   fi
 
@@ -531,7 +546,8 @@ jwt_run() {
             'JWT accepted when re-signed HS256 with a common weak secret' critical \
             "$target" "$method" "$url" "$header" \
             "$method $url returned HTTP ${_JWT_PROBE_STATUS} for a token re-signed as HS256 with the well-known weak secret '$secret' from scoursh's bounded vendored list; the signing key is a guessable value" \
-            'Replace the signing secret with a high-entropy value of at least 256 bits from a secrets manager, and rotate it. The current secret is a common value shipped in framework examples and documentation, so anyone who has read those can mint a valid token.'
+            'Replace the signing secret with a high-entropy value of at least 256 bits from a secrets manager, and rotate it. The current secret is a common value shipped in framework examples and documentation, so anyone who has read those can mint a valid token.' \
+            CWE-1391
           break
         fi
       done
@@ -569,7 +585,8 @@ jwt_run() {
               'JWT RS->HS algorithm confusion accepted' critical \
               "$target" "$method" "$url" "$header" \
               "$method $url declared alg '$alg' (asymmetric) but accepted HTTP ${_JWT_PROBE_STATUS} for a token re-signed as HS256 using the server's own PUBLIC key as the HMAC secret; the verifier picks the algorithm from the attacker-controlled header instead of pinning it" \
-              'Pin the verification algorithm to the one you issue (RS256), and never let the token header choose it. A verifier that accepts alg:HS256 for an RS256-issued token can be forged with the public key alone, which is public by definition.'
+              'Pin the verification algorithm to the one you issue (RS256), and never let the token header choose it. A verifier that accepts alg:HS256 for an RS256-issued token can be forged with the public key alone, which is public by definition.' \
+              CWE-347
           fi
         else
           _JWT_RUN_RS_PUBKEY_MISSING=1

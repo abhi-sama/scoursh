@@ -10,20 +10,22 @@
 # records the same reasoning for itself.  Everything here is markup-analysis
 # logic that only `passive/markup.sh` uses, and it is named accordingly.
 #
-# TWO THINGS IN HERE ARE A SECOND COPY OF SOMETHING A PEER ALREADY HAS, AND
-# BOTH ARE DELIBERATE RATHER THAN OVERLOOKED:
+# ONE THING IN HERE USED TO BE A SECOND COPY OF SOMETHING A PEER ALREADY HAD,
+# AND HAS SINCE BEEN LIFTED OUT; ONE STILL IS, DELIBERATELY:
 #
-#   1. `markup_endpoints_load` chooses GET endpoints out of the frozen
-#      inventory, which `headers_engine.sh`'s `hdr_endpoints_load` also does.
-#      That file's own header states that a peer needing the same thing should
-#      LIFT it into a shared `passive/response_engine.sh` "with this file's
-#      tests moving with it ... a refactor with an owner, not a side effect of
-#      a peer landing".  Doing that lift here would move headers.sh, its
-#      153-assertion suite and cookies.sh under a markup ticket, so it is filed
-#      as its own ticket instead and the second copy is STATED here rather than
-#      hidden.  The two are also not identical: this one fetches and parses
-#      response BODIES and skips any response that is not markup, and carries
-#      no HSTS/CSP concept at all.
+#   1. `markup_endpoints_load` used to choose GET endpoints out of the frozen
+#      inventory with its own copy of `headers_engine.sh`'s
+#      `hdr_endpoints_load` logic (differing only in variable prefix).  That
+#      duplication was stated here rather than hidden, and the ticket it named
+#      ("lift the shared passive endpoint chooser into
+#      modules/dast/passive/response_engine.sh") has since landed: the four
+#      decisions now live once, in `response_engine.sh`'s `resp_endpoints_load`
+#      - see that file's own ADR block - and `markup_endpoints_load` below is a
+#      thin wrapper over it, exactly as `hdr_endpoints_load` is.  Markup's own
+#      extra concerns (fetching and parsing response BODIES, skipping any
+#      response that is not markup, and carrying no HSTS/CSP concept) live in
+#      `markup.sh`'s phase loop and in this file's parser, untouched by that
+#      lift.
 #   2. The tag tokenizer is not `crawl_engine.sh`'s `crawl_html_extract`.  That
 #      function's output stream is `base`/`link`/`form`/`input`/`formend`
 #      records carrying no attribute detail, and every check here is ABOUT an
@@ -123,6 +125,13 @@ fi
 # crawl already happened.
 # shellcheck source=modules/dast/crawl_engine.sh
 source "${BASH_SOURCE[0]%/*}/../crawl_engine.sh"
+# response_engine.sh is the shared GET-endpoint chooser this file used to
+# carry its own copy of (`markup_endpoints_load`, see this file's own header).
+# It sources nothing itself - it is a leaf in the static source graph - so
+# this edge is cheap under `shellcheck -x` and adds no runtime dependency
+# beyond what crawl_engine.sh and lib/http.sh above already brought in.
+# shellcheck source=modules/dast/passive/response_engine.sh
+source "${BASH_SOURCE[0]%/*}/response_engine.sh"
 
 # ---------------------------------------------------------------------------
 # 0. Bounds and knobs
@@ -486,14 +495,11 @@ markup_is_plaintext_url() {
   [[ ${1,,} == http://* ]]
 }
 
-# The path component of a URL, query and fragment removed.  A URL with no path
-# is `/`.  Same helper, same reason, as modules/dast/active/sqli.sh's own.
-markup_path_of() {
-  local url=$1 rest
-  url=${url%%#*}; url=${url%%\?*}
-  rest=${url#*://}
-  if [[ $rest == */* ]]; then printf '/%s' "${rest#*/}"; else printf '/'; fi
-}
+# `markup_path_of` (the path component of a URL, query and fragment removed)
+# used to live here as a byte-identical copy of `hdr_path_of`.  It was removed
+# when the endpoint chooser moved to response_engine.sh: `hdr_path_of` (sourced
+# above via response_engine.sh) is the same function under the name it always
+# had there, and it was the only caller of this one.
 
 # ---------------------------------------------------------------------------
 # 3. Token lists
@@ -663,106 +669,22 @@ markup_is_html() {
 # `markup_endpoints_load [ENDPOINTS_FILE] [TARGET] [BASE_URL]` - publishes the
 # URL list this phase will request in `_MARKUP_URL[]` with `_MARKUP_PATH[]`
 # alongside, and sets `_MARKUP_N`, `_MARKUP_TRUNCATED` and
-# `_MARKUP_SKIPPED_NON_GET`.
+# `_MARKUP_SKIPPED_NON_GET`.  The four decisions this makes (base-url first,
+# GET only, deduped by path template, sorted then capped) are `hdr_endpoints_
+# load`'s, and are now documented exactly once, in `response_engine.sh`'s
+# `resp_endpoints_load` - this file's own header records why the two used to
+# be separate copies and why they no longer are.
 #
-# The four decisions are `hdr_endpoints_load`'s, for the same four reasons; this
-# file's header records why this is a second copy rather than a lift.
-#
-# 1. THE TARGET'S OWN `base-url` IS ALWAYS FIRST, when the caller supplies one.
-#    It is config-derived rather than target-derived, it exists on every run
-#    whatever the crawl found, and being first keeps a finding's location - and
-#    therefore its fingerprint - stable when the crawl's ordering changes.
-# 2. GET ONLY.  §7.1 is "no mutation of state"; re-sending a discovered POST to
-#    read its markup is a state change dressed as a passive check.  Non-GET
-#    endpoints are counted and reported, never silently dropped.
-# 3. DEDUPED BY PATH TEMPLATE.  `/order/1` and `/order/2` are one template
-#    rendered twice; fetching both spends two units of the request budget to
-#    parse one page's markup.
-# 4. SORTED, then capped, so the chosen set is reproducible across runs.
-#
-# An absent, empty or unreadable inventory is the NORMAL case
-# (docs/INVENTORY-FORMAT.md §1) and is never an error.
+# A THIN WRAPPER over the shared chooser, for the identical reason
+# `headers_engine.sh`'s own `hdr_endpoints_load` is: no call site in
+# `markup.sh` had to change, and `_MARKUP_MAX_ENDPOINTS` stays this file's own
+# knob rather than becoming a second reader of a global the chooser owns.
 markup_endpoints_load() {
   local epf=${1:-} target=${2:-} base=${3:-}
-  local sep=$'\x1f' p type v idx key rest last_idx=''
-  declare -ga _MARKUP_URL=() _MARKUP_PATH=()
-  declare -g _MARKUP_N=0 _MARKUP_TRUNCATED=0 _MARKUP_SKIPPED_NON_GET=0
-  declare -gA _MARKUP_TPL_SEEN=()
-
-  if [[ -n $base ]]; then
-    _markup_candidate_add "$base"
-  fi
-
-  if [[ -z $epf || ! -r $epf || ! -s $epf ]]; then
-    _MARKUP_N=${#_MARKUP_URL[@]}
-    return 0
-  fi
-
-  declare -ga _MARKUP_ROWS=()
-  local -A cur=()
-  while IFS=$'\t' read -r p type v; do
-    [[ $p == endpoints* ]] || continue
-    rest=${p#endpoints}; rest=${rest#"$sep"}
-    idx=${rest%%"$sep"*}; key=${rest#*"$sep"}
-    [[ $idx =~ ^[0-9]+$ && $key != "$rest" ]] || continue
-    if [[ -n $last_idx && $idx != "$last_idx" ]]; then
-      _markup_row_collect "${cur[url]:-}" "${cur[method]:-GET}" "${cur[target]:-}" "$target"
-      cur=()
-    fi
-    last_idx=$idx
-    [[ $type == s ]] && v=$(crawl_json_unescape "$v")
-    cur[$key]=$v
-  done < <(crawl_json_flatten <"$epf" 2>/dev/null)
-  if [[ -n $last_idx ]]; then
-    _markup_row_collect "${cur[url]:-}" "${cur[method]:-GET}" "${cur[target]:-}" "$target"
-  fi
-
-  local row
-  while IFS= read -r row; do
-    [[ -n $row ]] || continue
-    _markup_candidate_add "$row"
-  done < <(printf '%s\n' "${_MARKUP_ROWS[@]+"${_MARKUP_ROWS[@]}"}" | LC_ALL=C sort -u)
-
-  _MARKUP_N=${#_MARKUP_URL[@]}
-  return 0
-}
-
-# Appends one inventory row's URL to `_MARKUP_ROWS` when it is a GET for this
-# target.  A module-scoped accumulator rather than a by-name parameter because
-# Bash 4.2 has no namerefs (tension 24's frozen minimum) and an `eval`-based
-# append would be evaluating target-derived text - which is exactly what
-# rules/RULE-FORMAT.md §11 ("record files are data, never code") forbids
-# elsewhere in this tool.
-_markup_row_collect() {
-  local url=$1 method=$2 row_target=$3 want_target=$4
-  [[ -n $url ]] || return 0
-  # An inventory entry naming a DIFFERENT scope target belongs to that target's
-  # cell (rules/RULE-FORMAT.md §9.5.1).  An entry with no target at all is
-  # accepted: an imported inventory may legitimately carry none, and
-  # http_request re-gates it on the way out regardless.
-  if [[ -n $row_target && -n $want_target && $row_target != "$want_target" ]]; then
-    return 0
-  fi
-  if [[ ${method^^} != GET ]]; then
-    _MARKUP_SKIPPED_NON_GET=$(( _MARKUP_SKIPPED_NON_GET + 1 ))
-    return 0
-  fi
-  _MARKUP_ROWS+=("$url")
-  return 0
-}
-
-# Adds one URL if its path template is new and the cap has room.
-_markup_candidate_add() {
-  local url=$1 path tpl
-  path=$(markup_path_of "$url")
-  tpl=$(path_template_of "$path")
-  [[ -n ${_MARKUP_TPL_SEEN[$tpl]:-} ]] && return 0
-  if (( ${#_MARKUP_URL[@]} >= _MARKUP_MAX_ENDPOINTS )); then
-    _MARKUP_TRUNCATED=$(( _MARKUP_TRUNCATED + 1 ))
-    return 0
-  fi
-  _MARKUP_TPL_SEEN[$tpl]=1
-  _MARKUP_URL+=("$url")
-  _MARKUP_PATH+=("$path")
+  resp_endpoints_load "$epf" "$target" "$base" "$_MARKUP_MAX_ENDPOINTS"
+  declare -ga _MARKUP_URL=("${_RESP_URL[@]+"${_RESP_URL[@]}"}")
+  declare -ga _MARKUP_PATH=("${_RESP_PATH[@]+"${_RESP_PATH[@]}"}")
+  declare -g _MARKUP_N=$_RESP_N _MARKUP_TRUNCATED=$_RESP_TRUNCATED \
+    _MARKUP_SKIPPED_NON_GET=$_RESP_SKIPPED_NON_GET
   return 0
 }

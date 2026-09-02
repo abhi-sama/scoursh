@@ -1,0 +1,48 @@
+# Recorded CORS responses (`tests/suites/dast-cors.sh`)
+
+Each `*.headers` file is a **recorded** response-header block, in the exact shape
+`lib/http.sh`'s header-capture sink writes: a status line, CRLF-terminated
+header lines, then a blank line.
+`tests/suites/dast-cors.sh` serves these through a stub `SCOURSH_HTTP_TRANSPORT`,
+so the whole DAST-08 check - probe, header read, classify, emit - is exercised
+with no network, no Docker and no live target (`docs/DESIGN.md` §12).
+
+**CRLF is deliberate and load-bearing.**
+It is what HTTP is on the wire, and a header reader that does not strip the
+trailing `\r` compares `"<origin>\r"` against the sentinel, finds them unequal,
+and reports a reflecting server clean.
+Do not "normalise" these files to LF.
+
+**The sentinel origin is the shipped default**
+(`modules/dast/passive/cors_engine.sh`'s `CORS_SENTINEL_ORIGIN`).
+The suite asserts that value matches what these files were recorded against and
+says so in the failure message, so changing the sentinel fails loudly here
+rather than silently turning every reflection case into a non-finding.
+It is an RFC 2606 reserved `.example` name: it resolves to nothing, it is never
+a request destination, and it names no application, company or product
+(AGENTS.md §1).
+
+| File | What it records |
+|---|---|
+| `reflect-plain.headers` | Origin echoed, credentials NOT allowed |
+| `reflect-credentials.headers` | Origin echoed **and** `Access-Control-Allow-Credentials: true` |
+| `reflect-nocache.headers` | As above, `TRUE` in a different case and no `Vary: Origin` |
+| `reflect-lowercase.headers` | The same, with HTTP/2's mandatory lowercase field names |
+| `wildcard.headers` | Literal `*` |
+| `wildcard-credentials.headers` | Literal `*` plus credentials (a browser refuses to honour this pair) |
+| `allowlist.headers` | A correctly-configured server: a static allowlisted origin that is not the sentinel |
+| `suffix-trap.headers` | A value that CONTAINS the sentinel and is not equal to it |
+| `none.headers` | No CORS header at all |
+| `duplicate.headers` | Two `Access-Control-Allow-Origin` headers; the last one wins |
+| `padded.headers` | Values wrapped in RFC 7230 optional whitespace |
+| `null.headers` | `Access-Control-Allow-Origin: null` answered to the second, `Origin: null` probe (DAST-08 follow-up: `DAST-CORS-NULL_ORIGIN-01`) |
+| `null-credentials.headers` | As above, plus `Access-Control-Allow-Credentials: true` (`DAST-CORS-NULL_ORIGIN_WITH_CREDENTIALS-01`) |
+| `redirect-reflect.headers` | A 3xx with `Location:` a DIFFERENT origin, which ALSO reflects the sentinel on this (unfollowed) response - ticket aa50f056-9b18-4fc7-9416-bb455bc7b7b1's follow-up: `cors_probe` sends with `max_redirects` 0, so this is never followed, and the finding must stay anchored to the REQUESTED origin's own canonical form, never adopt the `Location`'s |
+
+The two `null*.headers` fixtures are answers to the SECOND probe
+(`cors_probe ... null`, `Origin: null`), not the sentinel probe every other
+fixture in this directory answers - a response to the sentinel probe never
+carries the literal string `null`, since `cors_classify` already routes a
+`null` value observed there into `allowlisted` (a real, distinct, and
+untested-by-that-probe policy question; see `cors_engine.sh`'s
+`cors_null_reflected` for why the two probes are kept separate).

@@ -175,7 +175,7 @@ The `grep` fallback is `grep -E -n`.
 > `-r` is `--recursive` to `grep` and `--replace` to `ripgrep`:
 > `rg <pinned flags> -r 'eval' tree` consumes `eval` as a replacement string and
 > returns rc=1 having searched nothing, while `grep -E -n -r 'eval' tree`
-> recurses and matches (measured; commit `a28cba8`).
+> recurses and matches (measured).
 > A flag that means two different things to the two engines cannot live in a
 > shared wrapper whose whole purpose is that the two produce byte-identical
 > findings, so **file enumeration is the caller's job** and the wrapper is handed
@@ -2601,7 +2601,11 @@ Prescribed tests, each naming the reading it fails under:
 | **Reclaim a stale lock, let a live holder take it, then reclaim again with the OLD token** | **the live lock survives** | **a bare `rm -rf` reclaim, which deletes it** |
 | 8 concurrent workers each entering the critical section | no overlap | any of the above |
 
-Four pieces of state, with their protocols:
+Five pieces of state, with their protocols.
+(The fifth, the in-flight semaphore, is an AMENDMENT rather than part of the original resolution: this
+section originally closed with "`--jobs` therefore has no effect on politeness", which is true of the
+request RATE and false of the number of connections a target sees AT ONCE.  See the corrected sentence
+below the list, and `docs/STEP5-DAST-PLAN.md`'s concurrency row for the full design.)
 
 - **Rate limiter.** One bucket per scope target (rate is a politeness property of the target), at
   `$SCRATCH/rate/<target>.state` holding `last_refill_ns tokens`.
@@ -2624,9 +2628,28 @@ Four pieces of state, with their protocols:
   a partial file.
   On a miss the reader takes a per-key mutex, re-checks (another worker may have filled it while it
   waited), then fetches, which prevents eight workers issuing the same call.
+- **In-flight semaphore** (amendment).  A counter at `$SCRATCH/http-limits/inflight.state`, one
+  `PID NONCE EPOCH` line per held slot, guarded by the same mutex as the three above.  A slot is taken
+  immediately BEFORE the transport call and released immediately AFTER it - never around the token
+  wait, because `_http_throttle` sleeps outside its critical section and a worker holding a slot
+  through that sleep occupies a connection it is not using.  The ceiling is the resolved, clamped
+  `jobs` value, so the DAST clamp policy and the own-your-target affirmation reach it unchanged.
+  A slot whose worker was killed is reclaimed under the **same two-condition rule as the lock above**,
+  and for the same reasons: BOTH at least `lock_stale_seconds` old AND its pid no longer alive.  Age
+  alone takes a slot from a live worker whose request is merely slow, which is double occupancy of the
+  ceiling; liveness alone frees a slot in the window before the recording worker is observable.  The
+  reclaim needs no claim marker - unlike `_lock_reclaim`, it happens INSIDE the mutex and writes the
+  pruned set back before releasing it, so it is single-winner by construction - and the release matches
+  on the NONCE rather than the pid, so a call can only ever give back the slot it took.  The prescribed
+  test is the lock table above with "lock" read as "slot", plus one that measures the OBSERVED
+  simultaneous-connection count of K worker processes rather than a return value.
 
-`--jobs` therefore has no effect on politeness: the shared bucket enforces the configured rate no matter
-how many workers exist.
+`--jobs` therefore has no effect on politeness, in EITHER of its two dimensions: the shared bucket
+enforces the configured rate no matter how many workers exist, and the shared in-flight semaphore
+enforces the configured concurrency the same way.
+The second half is the amendment: a token bucket bounds requests per unit time and says nothing about
+how many are open simultaneously, so against a target where each request takes seconds a high `--jobs`
+value opened exactly that many connections while the average rate stayed inside its ceiling.
 The interaction with resumability is decided in tension 18: a resumed run carries the remaining budget
 forward rather than resetting it.
 
@@ -2916,6 +2939,46 @@ There is no raw-URL flag.
 A lint fails on any `curl`, `wget`, `nc`, or `openssl s_client` invocation outside `lib/http.sh` and
 `modules/dast/passive/tls.sh`, the latter being the one documented exception, which takes its host from
 the same resolved, gated tuple set.
+
+**That exception has now landed (DAST-07), and the shape it landed in is the part worth keeping: it is
+an exemption from the TRANSPORT and from nothing else.**
+A transport-security check needs a raw TLS handshake and the certificate the server presents, which is
+not an HTTP request and cannot be expressed as one - curl exposes neither the negotiated protocol, the
+negotiated cipher, nor the presented chain.
+What the exempted module does **not** get is its own copy of the authorization: `lib/http.sh` gained
+`http_authorize_raw_connection` (section 9b), which does everything `http_request` does except send the
+request - the normalization pipeline below, the scope tuple compare, the userinfo refusal, the
+private/loopback deny list, the pinned resolution, the tension-16 limiter, per-run budget and circuit
+breaker, and the audit finding plus exit 3 on refusal - and hands back a resolved address.
+The module connects to **that** address, with SNI carrying the normalized host, and never re-resolves
+the name.
+Letting it call `http_gate_url` and `_http_throttle` itself was the rejected alternative, for the same
+reason this tension puts the gate inside `http_request` at all: a control each caller must remember to
+apply is not a control, and a second exempted caller would be free to assemble its own subset of them.
+The lint's exemption is **by path** (`modules/dast/passive/tls.sh` and its engine file), never by
+widening the pattern, so it cannot silently spread to the next file that happens to look similar.
+Two things follow that are easy to lose: `http_authorize_raw_connection` opens nothing - it returns an
+address, and anything wanting to talk to that address still needs a transport primitive the lint is
+still watching for - and the exemption buys no relief from the request budget, so a TLS handshake
+spends a token exactly as a request does.
+
+**A follow-up correction: "exit 3 on refusal" used to collapse two different facts into one, and a
+DNS resolution failure is no longer one of them.**
+`http_gate_url` returns 1 for several reasons - the tuple has no `config/scope.conf` entry, the URL
+carried userinfo, the resolved address is on the private/loopback deny list, or the host simply did
+not resolve - and `http_authorize_raw_connection` used to `die "$SCOURSH_EXIT_SCOPE"` on every one of
+them alike.  "The operator did not authorise this host" is a config mistake and aborting the whole run
+over it is right; "this authorised host did not resolve right now" is not the same fact, and one
+unreachable target should not discard every other phase's findings and every other target's.
+`http_authorize_raw_connection` therefore takes an optional third argument, `DNS_FATAL` (default
+`true`, so every other refusal reason and the default for any future caller are unchanged): passing
+`false` turns ONLY the DNS-resolution-failure return of `http_gate_url`, and the equivalent re-resolve
+failure after the gate already approved the tuple, into a plain `return 1` with `_HTTP_RAW_REASON` set,
+never `die`.  `modules/dast/passive/tls.sh` is the one caller that passes `false`, and treats that
+return as a declared `coverage_reduction` (`reason=tls_host_unresolvable`) the same way it already
+treats an absent `openssl` or a failed handshake - the run continues, and the gap is recorded rather
+than silent.  A target the gate refuses for any OTHER reason - `tests/suites/dast-tls.sh`'s
+`tls-loopback` case is the pinned example - is still exit 3, through the same audit path, unchanged.
 
 **Normalization order.**
 Every URL `http_request` is given, whether authored in `scope.conf`, discovered by the crawler, or
@@ -3999,14 +4062,55 @@ scan-time path), and per-ecosystem name normalisation reuses `modules/sca/engine
 sourced, so the writer and the reader of `data/advisories.db` can never drift apart.
 `data/versions.db` is written by the identical `_veng_advisories_write_db` call, mirroring tension 25's
 own "the same shape and the same rule" - its own, separate banner-matching product catalog (a bare web
-server or TLS library with no SCA-ecosystem manifest at all) is a stated gap this ticket does not close,
-not silently assumed covered.
+server or TLS library with no SCA-ecosystem manifest at all) had been a stated gap this ticket did not
+close; a later ticket (below) closed it.
 `tests/suites/vendor-engines-advisories.sh` is the fixture-driven proof, against hand-authored,
 OSV.dev-*shaped* (never live-fetched) fixtures under `tests/fixtures/vendor-engines/osv/` - the identical
 "no live network calls in CI" posture `tests/fixtures/sca/advisories.db` already established for that
 data's READER side.
 `docs/ADAPTERS.md` §10 and this script's own header are both updated in the same change to stop calling
 this responsibility unimplemented.
+
+**The banner-matching product catalog gap named just above has since been closed** - a later ticket
+("Add a `banner` namespace importer to tools/vendor-engines.sh advisories") added `veng_advisories_banner`
+(`tools/vendor-engines.sh`'s own §3), reached from its own `advisories banner` command rather than a
+seventh `VENG_ADVISORY_REGISTRY` entry: a banner-matched product is not one of `docs/DESIGN.md` §6.5's
+six SCA ecosystems, `advisories --list`/`--all` and `advisories bulk --all` must not sweep it in, and
+OSV.dev publishes no per-ecosystem bulk-export archive for a synthetic "banner" ecosystem for the bulk
+path to fetch.
+It reads `SCOURSH_ADVISORY_BANNER_IDS` in the identical operator-supplied, comma/space-separated-id
+shape every `SCOURSH_ADVISORY_<ECOSYSTEM>_IDS` already uses, and writes exclusively into
+`data/versions.db`'s `banner` namespace - never `data/advisories.db`, which `modules/sca/` reads and
+which has no use for a row naming no SCA ecosystem.
+Two things about it depart from the six-ecosystem shape, both because a banner-matched product is not
+shaped like an SCA package:
+
+- **The OSV ecosystem argument passed to the shared extractor is the wildcard sentinel `*`**
+  (`_veng_advisories_osv_ecosystem`'s own "banner" case), read by `_veng_advisories_osv_extract_py`'s
+  ONE record walk (never a second parser) as "take every `affected[]` entry that names a package,
+  regardless of its own `ecosystem` field" - unlike npm/PyPI/Maven/Go/RubyGems/Composer, a banner
+  product has no single OSV ecosystem string to filter on: the identical CVE for, say, a web server may
+  be tracked under `Debian`, `Alpine`, or under no `package.ecosystem` field at all.
+- **A missing severity defaults to `high`, not the SCA rows' `medium` default** - `docs/VERSIONS-DB.md`
+  §3's own frozen text ("a row with none lands on `high`"), a deliberately more conservative fallback
+  for a directly-exploitable, internet-facing product. `_veng_advisories_normalize_severity` gained an
+  optional second `DEFAULT` argument for this rather than a second function, so every SCA call site
+  (which leaves it unset) is provably unaffected.
+
+The product key is normalised through `banner_normalize_product`
+(`modules/dast/passive/banner_engine.sh`), sourced lazily by its own
+`_veng_advisories_load_banner_normalizer` - never one of the `sca_*_normalize_name` functions, and never
+re-implemented, for the identical writer/reader-drift reason the six SCA importers already reuse those
+functions verbatim.
+`tests/suites/vendor-engines-advisories.sh` section D2 is the fixture-driven proof (against
+`tests/fixtures/vendor-engines/osv/SCOURSH-FIXTURE-OSV-BANNER-*.json`, never a live fetch), including
+that the wildcard admits entries under two different non-SCA ecosystem strings for the one product and
+the writer still dedupes them into a single row, that a second `advisories banner` run replaces the
+whole namespace (the same per-ecosystem replace semantics every SCA ecosystem already has) without
+disturbing any SCA ecosystem's rows or vice versa, and that `data/advisories.db` is never written by
+this path at all.
+`docs/VERSIONS-DB.md` §5 and `docs/ADAPTERS.md` §10 are both updated in the same change to carry the
+real command instead of the "no importer today" gap.
 
 ---
 
@@ -4624,11 +4728,17 @@ normative, frozen-in-intent shape in `docs/INVENTORY-FORMAT.md`.
 With both tier-1 tickets in, **tiers 2-5 are unblocked and nothing remains in front of them**; the
 authenticated crawl pass plugs into DAST-03's session rather than being stubbed.
 Work in those tiers has started, and out of tier order, since they are peers rather than a sequence:
-tier 4's DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`) and DAST-19
-(`active/openredirect.sh`), tier 5's DAST-26 (`jwt.sh`), DAST-29 (`authz.sh`) and DAST-30
-(`passive/transport.sh`) and
+tier 4's DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`), DAST-16 (`active/cmdi.sh`), DAST-17
+(`active/pathtraversal.sh`), DAST-19 (`active/openredirect.sh`) and DAST-20 (`active/xxe_ssrf.sh`),
+tier 5's DAST-26 (`jwt.sh`),
+DAST-27 (`graphql.sh`, the §7.4 GraphQL introspection & key-exposure check), DAST-29 (`authz.sh`) and
+DAST-30 (`passive/transport.sh`) and
 tier 2's DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`) and DAST-11
 (`passive/markup.sh`) have landed.
+DAST-17 reuses DAST-14's shared `inject_engine.sh` unchanged; see `docs/STEP5-DAST-PLAN.md`'s DAST-17
+landing note for its one new decision - reading the parameter inventory from
+`$SCOURSH_RUN_DIR/inventory/*.json` directly rather than trusting the exported paths alone, since
+`modules/dast/run.sh` resolves those exports before `crawl.sh` writes the inventory they name.
 DAST-15 is the second tier-4 injection probe and the first to consume `active/inject_engine.sh`
 without extending it, which is the evidence that DAST-14's shared half really is shared rather than
 sqli-shaped.
@@ -4651,6 +4761,29 @@ defeat a real allow-list and so the two worth probing for.
 Every one of those was measured by mutating the implementation into the rejected reading and watching
 `tests/suites/dast-openredirect.sh` go red, not reasoned about: ten mutations, ten reds, one green
 baseline.
+DAST-16 is bounded time-based OS command injection (`DAST-INJ-CMDI_TIME-01`, CWE-78), built on
+DAST-14's shared `inject_engine.sh`: the injected sleep is clamped into 1..10s BEFORE substitution so a
+detection probe can never become a denial-of-service - the bound is load-bearing and applied at the
+point of substitution, not left advisory.
+DAST-20 (`active/xxe_ssrf.sh`) is the fifth tier-4 probe and the §7.3 XXE/SSRF family: three check ids
+(an internal-entity reflection with no network component, an external entity confirmed via a content
+signature independently fetched from the sentinel, and the identical sentinel sent as a plain parameter
+value). Its tension-19 relevant decision is where the SENTINEL comes from: `_xs_sentinel_set` reads it
+directly out of `lib/http.sh`'s own already-loaded scope-tuple set - an `extra-host` declared for the
+current target when the operator added one, else the target's own `base-url` as a self-referential
+fallback - never a host this probe invents or a flag substitutes. The two techniques that fetch the
+sentinel do so through the ordinary `http_request` chokepoint, exactly like every other probe's traffic;
+the actual SSRF/XXE connection is made by the target, not by scoursh, and the whole safety property
+rests on the payload never naming a host the operator has not already authorised this run to reach
+itself. A noisy baseline (one that already carries the sentinel's own content) SKIPS the follow-up probe
+entirely rather than sending it and discarding an unattributable result.
+DAST-27's GraphQL introspection check (`modules/dast/graphql.sh`/`graphql_engine.sh`) parses the
+introspection response structurally via `crawl_json_flatten` rather than grepping for `__schema`: a
+server with introspection correctly DISABLED echoes that literal string back inside its own refusal
+error message, so a substring test reports a critical misconfiguration on the exact response proving
+the opposite. It also decides whether to probe at all from the crawled inventory rather than sending an
+introspection query at every endpoint to find out, and it contributes a `loc_target`-bearing finding for
+the DERIVED layer's `COMPOSITE-TOKEN-HIJACK` correlation rather than minting its own composite id.
 DAST-06 is the first §7.1 passive check and the first `modules/dast/passive/` file; two things about
 it are tension decisions rather than implementation detail.
 First, its `Set-Cookie` parser splits on `;` only OUTSIDE double quotes and never on `,` - both naive
@@ -4692,7 +4825,24 @@ four and shifts every later value left.  Measured, not reasoned about: it made t
 `docs/STEP5-DAST-PLAN.md`'s DAST-11 landing note carries the full detail, including the parser's
 stated limits in both directions and the shared-`passive/response_engine.sh` lift it declined to make
 under a peer's file and filed instead.
-Their four remaining peers DAST-07..DAST-10 are open and unordered among themselves.
+That file now exists: the READER half of the lift has landed, as its own ticket, and
+`modules/dast/passive/response_engine.sh` is a leaf that sources nothing.
+The ENDPOINT CHOOSER half - the one DAST-11's `markup_endpoints_load` is a second copy of - has since
+landed too, in full.  It could not simply move `hdr_endpoints_load` in, since that function depends
+on `crawl_engine.sh` and `path_template_of` and moving it would have restored exactly the source
+edges the reader's lift removed; the shipped shape instead has `resp_endpoints_load` call both BY
+NAME, so a caller must source them itself first (every real caller already does).  It landed in two
+steps: first for `headers_engine.sh` and `markup_engine.sh`, once the latter's copy made the
+duplication a confirmed second real case rather than a hypothesis; then, closing a follow-up this
+paragraph used to leave open, for `passive/leakage_engine.sh` (`leak_endpoints_load`, confirmed
+byte-identical to `hdr_endpoints_load` bar its own endpoint cap - a third real case) and
+`passive/transport_engine.sh` (`tr_endpoints_load`, whose one real difference - a dedup key of
+`(scheme, path template)`, not the path template alone, because the plaintext and HTTPS twin of one
+path is that check's own finding rather than a duplicate - became `resp_endpoints_load`'s one
+optional `DEDUP_KEY` parameter).  All four choosers are now thin wrappers over one shared function;
+see `response_engine.sh`'s own third ADR block for the full account.
+Their remaining peers DAST-07 and DAST-09 are open and unordered among themselves; DAST-08 (below) and
+DAST-10 have since landed too.
 Three things about it belong here rather than only in the plan, because each is a tension decision.
 First, tension 19 again: this phase issues real traffic and every request of it goes through
 `http_request`, with a NON-fatal `http_gate_url` pre-check ahead of each inventory-derived URL for
@@ -4843,6 +4993,38 @@ into itself: `http_request` publishes no final post-redirect URL, so an `https:/
 redirects to an in-scope `http://` one delivers a plaintext document this phase still counts as a
 secure context.
 
+**DAST-08 (`modules/dast/passive/cors.sh` plus `cors_engine.sh`) has also landed** - the §7.1 CORS
+origin-reflection family, three check ids (`DAST-CORS-ORIGIN_REFLECTED-01`,
+`DAST-CORS-REFLECTED_WITH_CREDENTIALS-01`, `DAST-CORS-WILDCARD-01`) driven from recorded response
+headers by `tests/suites/dast-cors.sh`.  It lands after tension 29's split of the directory's registry
+(above), so its three ids were seeded directly into their own `modules/dast/passive/checks-cors.rules`
+rather than into the now-retired shared `checks.rules` its own commit message describes, and
+`modules/dast/passive/` itself already existed by the time it landed (DAST-06 created it first, per
+above).  It is the first §7.1 check to send a request at all, and it settles what that means: §7.1's
+contract is "no mutation of state", not "no traffic", so the probe is bounded by six properties
+asserted against a request log rather than claimed in prose - GET/HEAD inventory endpoints only, one
+request per distinct route, no request body, no response-body capture sink, no redirect followed, and
+everything through `http_request` so tension 19's gate and tension 16's limiter, budget and breaker all
+bind it.  Two further things about it are tension decisions rather than implementation detail.  First,
+tension 4: its response-header read is case-INSENSITIVE on the field name (`cors_header_last` passes
+`-i` through `scan_match`, never a bare grep), because RFC 7230 §3.2 makes header names
+case-insensitive and HTTP/2 (RFC 7540 §8.1.2) requires them lowercase on the wire, so a target behind
+any HTTP/2 edge answers `access-control-allow-origin:` and an RFC-6454-spelled matcher would report
+every one of them clean - a silent false negative on the commonest production deployment shape, caught
+only by `tests/suites/dast-cors.sh`'s dedicated lowercase fixtures.  Second, tension 4's `mktemp`
+discipline: `cors_engine.sh`'s two scratch paths were first spelled with a `$BASHPID`-derived name and
+corrected in the same ticket, since a predictable name under `${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}` is
+one a local user can pre-create as a symlink for `scan_match` or a response-header capture sink to
+write through (CWE-377 via CWE-59); `tests/suites/dast-cors.sh` section A2 plants that exact symlink
+and asserts a canary file survives.
+`docs/STEP5-DAST-PLAN.md`'s DAST-08 landing note carries the full detail.
+
+Tiers 4 and 5: **DAST-14 (`modules/dast/active/sqli.sh`) and DAST-26 (`modules/dast/jwt.sh`) both
+landed in `a656663`** without this section or its `AGENTS.md` mirror being updated in that commit range
+- the same process failure this document's own build-status rule exists to prevent, corrected here
+rather than left for a third rediscovery.
+`docs/STEP5-DAST-PLAN.md`'s per-ticket landing notes are the authority for all three.
+
 Two things about DAST-04 are worth carrying here rather than only in the plan, because both are
 tension decisions rather than implementation detail.
 First, the scope pre-check on a discovered link is **not** a second gate and never becomes one
@@ -4857,6 +5039,31 @@ The client-rendered (SPA) limitation ships as a stated `coverage_gap` reaching `
 report formats, not as prose and not as a fix: scoursh executes no JavaScript, so a crawl of a real
 Angular target found 13 endpoints and 0 parameters and said so, which is the honest result
 `docs/DESIGN.md` §15 demands rather than a defect to tune away.
+**DAST-09 (`modules/dast/passive/banner.sh` plus `banner_engine.sh`) has landed**, a §7.1 passive check.
+`modules/dast/passive/` already existed by the time it landed (DAST-06 created it first), and its three
+check ids are seeded into their own `modules/dast/passive/checks-banner.rules` rather than a shared
+`checks.rules` - tension 29's split into one `checks-<name>.rules` per owner was already in effect for
+its peers, so this ticket follows that convention rather than reintroducing the retired shared file.
+`checks_registry_load` globs `*.rules` at any depth under `modules/dast/` regardless of which shape a
+given owner picked.
+Two things about it are tension decisions rather than implementation detail.
+First, tension 25 applies unchanged to a DAST version check: the scanner does an **exact table lookup**
+against the vendored `data/versions.db` and performs no version comparison and no range arithmetic at
+all, so "out of date" means "this exact version is named in the list" and never a guess - the expansion
+of an advisory range into exact versions stays on the networked box that has the tooling.
+`docs/VERSIONS-DB.md` is the normative format for that file and, per tension 25's own "a list nobody can
+refresh becomes wrong quietly", carries the refresh procedure as part of the format; the file's `banner`
+namespace and the SCA-ecosystem namespace `tools/vendor-engines.sh advisories` writes coexist in one
+table by construction (that writer replaces only its own ecosystem's rows, and `banner` sorts before
+every ecosystem name under `LC_ALL=C`).
+Second, an absent or `banner`-less list is a **declared coverage reduction of that one sub-check**, under
+tension 14's declared rows and `docs/DESIGN.md` §15, never an error and never a clean result: the two
+disclosure checks keep running, `versions_db_absent` and `versions_db_no_banner_rows` are distinct
+reasons, a product the list has never heard of is counted into a `versions_db_product_unknown` roll-up,
+and every out-of-date finding carries the list's own generation stamp - because a stale list produces
+false negatives, which is the failure mode that hides.
+Tier 4's DAST-14 (`active/sqli.sh`) and tier 5's DAST-26 (`jwt.sh`) also landed, out of tier order;
+`docs/STEP5-DAST-PLAN.md`'s per-ticket tables are the authority for what is in.
 `modules/cloud/` remains unbuilt and steps 6, 7 and 10 remain unstarted; step 5 is still the top
 priority ahead of them.
 `lib/awscli.sh` is a further out-of-sequence exception: a credential-less pass built it ahead of step

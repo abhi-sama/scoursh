@@ -1,0 +1,61 @@
+# modules/dast/payloads/crlf-payloads.txt - the §7.3 CRLF / header-injection
+# probe suffixes (modules/dast/active/crlf.sh, DAST-23; docs/DESIGN.md §7.3).
+#
+# ONE TEMPLATE PER LINE. `#` starts a whole-line comment; a blank line is
+# ignored. See modules/dast/payloads/README.md for the shared format and the
+# non-destructive contract every file in this directory is held to.
+#
+# WHY THIS FILE CARRIES NO RAW CR OR LF, AND WHAT %NL MEANS. A raw CR/LF byte
+# cannot live inside one line of this file as DATA: the reader uses `read -r`,
+# which stops at the first LF it sees, so an embedded LF is indistinguishable
+# from the line ending, and an embedded CR would survive only by accident of
+# whatever tool or checkout setting last touched this file. `%NL` is this
+# file's OWN placeholder for "insert one CR LF pair here", expanded by the
+# probe AFTER the line is read - it is never a literal byte on disk, unlike
+# the raw CR/LF bytes the probe actually sends on the wire (which reach the
+# wire only as the automatic percent-encoding modules/dast/active/
+# inject_engine.sh's `inject_urlencode` already applies to every query/body/
+# cookie/path value - the "encoded CR/LF" docs/DESIGN.md §7.3 asks for).
+#
+# %B is the parameter's baseline value, exactly as every other file in this
+# directory uses it - the payload breaks out of the same value shape the
+# endpoint normally sees rather than replacing it outright.
+#
+# %H AND %K ARE DELIBERATELY NOT VENDORED VALUES. Both are this RUN's own
+# random marker (a header line and a body sentinel, respectively) that
+# modules/dast/active/crlf.sh generates once per run - the same per-run-random
+# argument modules/dast/active/openredirect.sh's own sentinel host makes:
+# nothing but THIS run's own request could have put that exact header name or
+# that exact sentinel string in the response, which is what lets a single
+# response be sufficient evidence with no baseline comparison at all. A fixed,
+# vendored header name here would either be guessable, or collide with a name
+# the target already sends for its own reasons (`Set-Cookie` is the obvious
+# example), or need a second, separate baseline request this probe does not
+# otherwise need.
+#
+# TWO TEMPLATES, NOT ONE, BECAUSE THEY PROVE TWO DIFFERENT THINGS.
+#
+# 1. A bare extra header. The base case: does an arbitrary, uniquely-named
+#    header survive into the response's header block at all? Confirms
+#    CWE-113 (CRLF reaches header construction unescaped) and nothing more.
+#
+# 2. A full second status line, closed with its own blank line, followed by a
+#    body sentinel the probe checks for at the very FRONT of the captured
+#    response body. If the sentinel is there, the transport's own header/body
+#    boundary moved to where THIS PAYLOAD put it - proof that request-
+#    controlled data can forge a complete second HTTP message: the "response
+#    splitting" case that is exploitable by any cache or proxy in front of the
+#    target, not merely by this one scanning process. This is the stronger,
+#    more severely rated signal, and modules/dast/active/crlf.sh reports at
+#    most one finding per parameter - the escalated signal subsumes the bare
+#    one on the same parameter, the same discipline
+#    modules/dast/passive/cors_engine.sh's own header states for its
+#    credentialed-subsumes-plain case.
+#
+# Template 2 is sent only AFTER template 1 has already confirmed the header
+# survives at all, never as a first probe on its own - escalating a payload
+# that has not even cleared the bare case yet would spend a second request on
+# a parameter template 1 already showed is not vulnerable.
+
+%B%NL%H
+%B%NLHTTP/1.1 200 OK%NL%H%NL%NL%K

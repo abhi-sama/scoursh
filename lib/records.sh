@@ -72,6 +72,7 @@ _schema_def() {
       printf '%s\n' \
         'id:req:single:sl' 'base-url:req:single:sl' 'extra-host:opt:repeatable:sl' \
         'allow-subdomains:opt:single:sl' 'allow-private-addresses:opt:single:sl' \
+        'tls-expect-wildcard:opt:single:sl' \
         'notes:opt:single:ml' 'format-version:opt:single:sl'
       ;;
     script-check)
@@ -97,7 +98,8 @@ _schema_def() {
         'state-retain-runs:opt:single:sl' 'history-window-days:opt:single:sl' \
         'history-max-commits:opt:single:sl' 'lock-stale-seconds:opt:single:sl' \
         'mutex-timeout-seconds:opt:single:sl' 'paranoid-allow:opt:repeatable:sl' \
-        'contact:opt:single:sl' \
+        'contact:opt:single:sl' 'tls-expiry-warn-days:opt:single:sl' \
+        'recommended-header:opt:repeatable:sl' \
         'notes:opt:single:ml' 'format-version:opt:single:sl'
       ;;
     auth-identity)
@@ -809,6 +811,7 @@ _records_validate_record() {
   _records_check_enum "$set" "$i" "$path" "$line" "$id" severity-ceiling critical high medium low info
   _records_check_enum "$set" "$i" "$path" "$line" "$id" allow-subdomains true false
   _records_check_enum "$set" "$i" "$path" "$line" "$id" allow-private-addresses true false
+  _records_check_enum "$set" "$i" "$path" "$line" "$id" tls-expect-wildcard true false
   _records_check_enum "$set" "$i" "$path" "$line" "$id" redact-secrets true false
   _records_check_enum "$set" "$i" "$path" "$line" "$id" expect present absent equals at-least at-most
   _records_check_enum "$set" "$i" "$path" "$line" "$id" fact exposure auth sensitive-data confidence

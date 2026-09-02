@@ -410,7 +410,8 @@ SCOURSH_DAST_ENDPOINTS=$W/endpoints.json
 SCOURSH_DAST_PARAMETERS=$W/parameters.json
 _write_full_inventory
 rc=0
-SCOURSH_DAST_SQLI_PAYLOAD_DIR=$W/empty-payloads _dast_sqli_phase || rc=$?
+STDERR=$W/degrade.stderr
+SCOURSH_DAST_SQLI_PAYLOAD_DIR=$W/empty-payloads _dast_sqli_phase 2>"$STDERR" || rc=$?
 assert_eq 0 "$rc" \
   "an empty payload dir does NOT error - the phase degrades and returns 0 (docs/DESIGN.md §15)"
 assert_eq '' "$(_shard_text | tr -d '[:space:]')" \
@@ -419,6 +420,8 @@ assert_contains "$(run_facts coverage_reduction)" 'sqli_payloads_missing' \
   "each technique's absent payload file is a recorded coverage_reduction, not a silent skip"
 assert_contains "$(run_facts coverage_gap)" 'no SQL-injection payloads are available' \
   "with every technique's payloads gone, a coverage_gap says so - a clean result here is not a clean bill of health"
+assert_not_contains "$(cat "$STDERR")" 'error scoursh:' \
+  "the missing-payload-file degradation path never fires lib/core.sh's ERR trap - FAILS under _sqli_read_payload_file's pre-fix bare \`return 1\`, which reaches the trap from inside an unguarded process substitution and prints 'error scoursh: command failed' even though every assertion above already reads as a clean, non-erroring degrade"
 
 # A single missing technique degrades ONLY that technique. Give the override dir
 # just the boolean payloads and the error signatures+payloads; drop the time file.

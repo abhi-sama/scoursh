@@ -63,17 +63,28 @@ fi
 SCOURSH_DAST_RATELIMIT_ENGINE_SOURCED=1
 
 # modules/dast/passive/headers_engine.sh is LIFTED, not forked, for four things
-# it already owns and this check needs byte-identically: `hdr_parse_capture`
-# (the last-hop response-header reader - see its own note on why a whole-file
-# match reads the WRONG response when the capture sink has accumulated redirect
-# hops), `hdr_present`/`hdr_value`, `hdr_safe_text`, and `hdr_endpoints_load`
-# (the docs/INVENTORY-FORMAT.md reader, deduped by path template and sorted).
+# this check needs byte-identically: `hdr_parse_capture` (the last-hop
+# response-header reader - see its own note on why a whole-file match reads the
+# WRONG response when the capture sink has accumulated redirect hops),
+# `hdr_present`/`hdr_value`, `hdr_safe_text`, and `hdr_endpoints_load` (the
+# docs/INVENTORY-FORMAT.md reader, deduped by path template and sorted).
 # AGENTS.md states the rule this follows: "a peer that needs the same response
 # reader should LIFT it deliberately rather than fork it."  A second copy would
 # be a second answer to "which hop's headers are these", and this check's whole
 # verdict is a statement about response headers.  Sourcing it also pulls in
 # lib/http.sh and modules/dast/crawl_engine.sh through its own guarded sources,
 # so this file needs neither directly.
+#
+# THIS IS THE ONE CONSUMER THAT STILL NAMES headers_engine.sh RATHER THAN THE
+# LEAF passive/response_engine.sh, AND THAT IS DELIBERATE.  All four of those
+# now live in `response_engine.sh` in substance (`hdr_endpoints_load` is a
+# thin wrapper there over `resp_endpoints_load` - see that file's own ADR
+# block), but `hdr_endpoints_load` the NAME, and its `_HDR_*` globals, are
+# still `headers_engine.sh`'s to keep this file's call site unchanged.  This
+# file genuinely uses both the reader and the chooser, so it sources the file
+# that has both names and gets the reader through headers_engine.sh's own
+# edge.  A future peer that needs the READER ALONE should source
+# `passive/response_engine.sh` instead of copying this line.
 # shellcheck source=modules/dast/passive/headers_engine.sh
 source "${BASH_SOURCE[0]%/*}/passive/headers_engine.sh"
 
@@ -148,7 +159,9 @@ _RATE_BUDGET_DIVISOR=2
 #
 #   retry-after            RFC 9110 §10.2.3.  The back-off signal §7.4 names
 #                          explicitly, and the only one that is also sent on a
-#                          503.
+#                          503 - which is why `rate_signal_scan` below excludes
+#                          it from the scan on a 5xx response rather than
+#                          reading it as a limiter's own signal.
 #   ratelimit-*            RFC 9745-era IETF `RateLimit` header fields
 #                          (`ratelimit`, `ratelimit-policy`, and the older
 #                          draft's split `limit`/`remaining`/`reset` triple).
@@ -177,16 +190,36 @@ rate_signal_headers() {
     x-rate-limit-reset
 }
 
-# `rate_signal_scan` - reads the headers `hdr_parse_capture` last published and
-# sets `_RATE_SIGNALS` to the LC_ALL=C-sorted, comma-joined list of rate-limit
-# field names this response carried, or empty.  Deterministic order, because
-# the list reaches a finding's evidence and an evidence sentence that reorders
-# between runs is a diff nobody asked for.
+# `rate_signal_scan [STATUS]` - reads the headers `hdr_parse_capture` last
+# published and sets `_RATE_SIGNALS` to the LC_ALL=C-sorted, comma-joined list
+# of rate-limit field names this response carried, or empty.  Deterministic
+# order, because the list reaches a finding's evidence and an evidence
+# sentence that reorders between runs is a diff nobody asked for.
+#
+# `retry-after` IS EXCLUDED FROM THE SCAN WHEN `STATUS` IS A 5xx, and that
+# exclusion is the reading DAST-28's own QA pass found unpinned.
+# `rate_status_is_throttle`'s own header already states the target design
+# position - "a 503 under load is the target falling over, not the target
+# defending itself" - and a bare `retry-after` on a 5xx is that same collapse,
+# not a limiter: this file's own header on the header family names
+# `retry-after` as "the only one that is also sent on a 503", so a
+# `Retry-After: 120` next to a 503 reached `rate_verdict` as an `advertised`
+# signal and reported a target that COLLAPSED under the burst as one that
+# defends itself - the exact reading `rate_status_is_throttle`'s header says
+# must never happen, just reached through the OTHER predicate instead of that
+# one.  The `ratelimit-*`/`x-ratelimit-*` families carry no such ambiguity -
+# nothing serves them from a generic error page - so only `retry-after` is
+# excluded, and only on a 5xx; a 200 (or any non-5xx) carrying it is untouched,
+# which is what keeps a real limiter's own `Retry-After` still reading as
+# `advertised`.  Pinned in both directions in tests/suites/dast-ratelimit.sh
+# section A2, and end-to-end through the phase in section H2 (the `rl-503`
+# fixture, previously written but never driven by any case).
 rate_signal_scan() {
-  local n
+  local status=${1:-} n
   local -a found=()
   _RATE_SIGNALS=''
   while IFS= read -r n; do
+    [[ $n == retry-after && $status == 5* ]] && continue
     hdr_present "$n" && found+=("$n")
   done < <(rate_signal_headers | LC_ALL=C sort)
   (( ${#found[@]} > 0 )) || return 1
@@ -340,7 +373,7 @@ rate_burst_run() {
     _rate_status_note "$status"
 
     if hdr_parse_capture "$cap_hdrs"; then
-      if rate_signal_scan && (( _RATE_SIGNAL_AT == 0 )); then
+      if rate_signal_scan "$status" && (( _RATE_SIGNAL_AT == 0 )); then
         _RATE_SIGNAL_AT=$i
         _RATE_SIGNALS_SEEN=$_RATE_SIGNALS
       fi

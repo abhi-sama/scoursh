@@ -8,20 +8,31 @@
 # literal bytes (docs/FOUNDATION.md tension 26).
 #
 # THE NETWORK KEYS BELOW ARE CLAMPED FOR A RUNNING-ENDPOINT (DAST) SCAN.
-# `requests-per-second`, `request-budget`, `circuit-breaker-failures` and
-# `circuit-breaker-window` are resolved as usual and then held to a
+# `requests-per-second`, `jobs`, `request-budget`, `circuit-breaker-failures`
+# and `circuit-breaker-window` are resolved as usual and then held to a
 # conservative module limit inside lib/http.sh, at the same chokepoint the
 # scope gate lives at, because the host this tool is pointed at is one it
 # cannot vet (docs/STEP5-DAST-PLAN.md, "Safety defaults and authorisation").
-# The effective DAST values are 4 requests/second and a per-run budget of
-# 5000, so the `request-budget: 20000` below is the schema default for the run
-# as a whole and is NOT what a DAST scan will actually spend: a DAST scan is
-# clamped to 5000 whatever this line says.  That clamp is SILENT, because the
-# value it clamps is the one an operator who never edited this file already
-# has; a network run states the numbers it will actually keep on one
-# informational line, and warns only about a value someone deliberately raised
-# above a limit.  The rate and breaker numbers below already equal their
-# limits, so they are never clamped as shipped.
+# The effective DAST values are 4 requests/second, at most 4 requests in flight
+# at once, and a per-run budget of 5000, so the `request-budget: 20000` below
+# is the schema default for the run as a whole and is NOT what a DAST scan will
+# actually spend: a DAST scan is clamped to 5000 whatever this line says.  That
+# clamp is SILENT, because the value it clamps is the one an operator who never
+# edited this file already has; a network run states the numbers it will
+# actually keep on one informational line, and warns only about a value someone
+# deliberately raised above a limit.  The rate, concurrency and breaker numbers
+# below already equal their limits, so they are never clamped as shipped.
+#
+# `jobs` is the CONCURRENCY key, and it means two different things in two
+# different places, which is worth knowing before raising it.  For a
+# file-scanning module it is worker parallelism and nothing bounds it here; for
+# a network module it is additionally the number of connections a target may
+# see AT ONCE, so lib/http.sh holds it to the same conservative limit as the
+# rest of this list.  Rate and concurrency are not the same control: a token
+# bucket spaces requests out over time, and against a target where each request
+# takes seconds a high `jobs` value still opens that many simultaneous
+# connections while the average rate stays inside its ceiling.  A `scan.sh
+# sast` run is unaffected by this clamp - it never reaches the chokepoint.
 #
 # `circuit-breaker-window` is bounded at BOTH ends: shorter than 60 seconds is
 # raised to 60 (a shorter window counts fewer failures towards the same
@@ -38,7 +49,9 @@
 # left at its default, is clamped down to the conservative limit with one
 # warning; a value given explicitly on the command line or in a
 # SCOURSH_CONFIG_* environment variable is refused outright (exit 2), because
-# scoursh does not run at a number other than the one you asked for.  To
+# scoursh does not run at a number other than the one you asked for.  That
+# applies to `--jobs` too on a network run: `--jobs 16` against an unaffirmed
+# DAST target is exit 2, not a silently-lowered 4.  To
 # actually raise one, affirm that you own the target:
 #
 #   scan.sh dast --target NAME --i-own-target NAME
@@ -54,6 +67,21 @@
 # token, no spaces - an email address or a URL.  `--contact` is the flag form.
 #
 #   contact: security@example.org
+#
+# `recommended-header` is the DAST security-header roll-up list
+# (modules/dast/passive/headers.sh's DAST-HDR-RECOMMENDED_MISSING-01):
+# repeatable, one RFC 7230 header field-name per entry.  Set here, it replaces
+# the shipped default entirely rather than adding to it - list every header you
+# want reported, including any of the seven the shipped
+# modules/dast/passive/recommended-headers.txt carries that you still want. A
+# name a dedicated check already owns (content-security-policy,
+# strict-transport-security, x-frame-options, x-content-type-options) is
+# dropped from whichever list supplies it, since that absence already has its
+# own finding. Left unset here, the roll-up falls back to
+# SCOURSH_DAST_RECOMMENDED_HEADERS_FILE, then to the shipped list.
+#
+#   recommended-header: permissions-policy
+#   recommended-header: cross-origin-opener-policy
 
 id: scanner
 requests-per-second: 4
@@ -77,6 +105,7 @@ history-window-days: 365
 history-max-commits: 5000
 lock-stale-seconds: 30
 mutex-timeout-seconds: 120
+tls-expiry-warn-days: 30
 notes: scratch-dir is best pointed at a tmpfs. Overwrite-based erasure is not
   effective on APFS, journalled ext4, or any SSD with wear levelling, so a
   memory-backed scratch directory is the real control for the raw matched lines

@@ -56,7 +56,47 @@ if [[ -n ${SCOURSH_CONFIG_SOURCED:-} ]]; then
 fi
 SCOURSH_CONFIG_SOURCED=1
 
-# shellcheck source=lib/records.sh
+# ADR: cut lib/config.sh's shellcheck -x edge to lib/records.sh
+# Context: lib/http.sh sources BOTH lib/config.sh and lib/findings.sh, and
+#   both of those independently `source lib/records.sh` (which itself
+#   sources lib/core.sh) with real (non-/dev/null) shellcheck directives -
+#   an uncut diamond that inlines records.sh/core.sh TWICE for every one of
+#   the ~130+ files that reach lib/http.sh (most of modules/dast/ and its
+#   test suites), per the cost model AGENTS.md already records for the
+#   sca engine cycle and the dast/passive response-reader diamond.
+# Decision: cut THIS edge (lib/config.sh's), not lib/findings.sh's own.
+#   lib/http.sh sources config.sh before findings.sh (this file's own
+#   header before lib/http.sh's findings.sh source), so findings.sh's real
+#   edge still inlines records.sh once for every lib/http.sh consumer.
+#   lib/findings.sh is left untouched because it is ALSO sourced directly
+#   (not via this file) by lib/report.sh and half a dozen standalone test
+#   suites with no other path to records.sh - cutting it there measurably
+#   broke one of them (a real SC2034 on tests/suites/findings.sh's
+#   SCOURSH_RUN_ID, since records.sh/core.sh use it and shellcheck could no
+#   longer see that). Runtime is unaffected either way: the `source` call
+#   below still executes, and records.sh's own SCOURSH_RECORDS_SOURCED
+#   guard (and config.sh's own SCOURSH_CONFIG_SOURCED above) makes
+#   re-sourcing a no-op.
+# Alternatives considered: cutting lib/findings.sh's edge instead (the
+#   ticket's own first proposal) - rejected: findings.sh is a standalone
+#   entry point itself and is reached directly (not via config.sh) by
+#   lib/report.sh and 6 test suites, several with no other path to
+#   records.sh; fixing all of those by adding a defensive real
+#   `source lib/records.sh` to lib/report.sh would in turn create a NEW
+#   diamond in modules/sast/engine.sh and modules/sca/engine.sh, which
+#   source both lib/report.sh and lib/config.sh directly.
+# Consequences: every lib/http.sh consumer inlines records.sh/core.sh once
+#   instead of twice (measured: lib/http.sh alone drops from 1.16GB to
+#   0.85GB peak shellcheck -x RSS, ~27%). lib/config.sh's own standalone
+#   entry point (and tests/suites/config.sh, its only other direct
+#   consumer) no longer sees records.sh's declarations statically; verified
+#   empirically (see ticket) that this introduces no new finding today. A
+#   future edit to lib/config.sh that references an unassigned-looking
+#   records.sh/core.sh global could reintroduce a false SC2034 the way the
+#   findings.sh path did - if that happens, add a real
+#   `source lib/records.sh` ahead of this line rather than reverting it.
+# -x back-edge cut: lib/records.sh
+# shellcheck source=/dev/null
 source "${BASH_SOURCE[0]%/*}/records.sh"
 
 # ---------------------------------------------------------------------------
@@ -149,6 +189,12 @@ _scanner_default() {
     # with status 0 is therefore correct, and is why this arm exists rather
     # than falling through to the `*) return 1` unknown-key refusal.
     contact) printf '%s' '' ;;
+    # docs/STEP5-DAST-PLAN.md DAST-07.  30 days is the notice period the
+    # public CA ecosystem itself operates on - ACME clients renew at 30 days
+    # remaining - so it is the window at which "expiring soon" first becomes
+    # actionable rather than noise, and it is a scanner-wide policy for the
+    # reason modules/dast/passive/tls.sh's header gives.
+    tls-expiry-warn-days) printf '%s' 30 ;;
     state-retain-runs) printf '%s' 30 ;;
     history-window-days) printf '%s' 365 ;;
     history-max-commits) printf '%s' 5000 ;;
@@ -162,6 +208,13 @@ _scanner_default_list() {
   case $1 in
     formats) printf '%s\n' json sarif html md ;;
     paranoid-allow) printf '' ;;
+    # Empty, not the shipped seven-entry list: an empty result here is what
+    # tells modules/dast/passive/headers_engine.sh's hdr_load_recommended that
+    # the operator did not configure this key at all, so it falls through to
+    # its own file/vendored-default layer instead. The shipped list lives in
+    # modules/dast/passive/recommended-headers.txt, not here, so there is
+    # exactly one place that enumerates it.
+    recommended-header) printf '' ;;
     *) return 1 ;;
   esac
 }
@@ -181,6 +234,12 @@ _scanner_validate_value() {
       | history-window-days | history-max-commits | lock-stale-seconds \
       | mutex-timeout-seconds)
       [[ $val =~ ^[1-9][0-9]*$ ]] ;;
+    # Zero IS valid here, unlike every key above: `tls-expiry-warn-days: 0`
+    # means "warn about nothing that has not already expired", which is a
+    # legitimate thing for an operator to want and is the only way to turn the
+    # expiring-soon check off without turning the expired check off with it.
+    tls-expiry-warn-days)
+      [[ $val =~ ^(0|[1-9][0-9]*)$ ]] ;;
     max-redirects | circuit-breaker-window)
       [[ $val =~ ^(0|[1-9][0-9]*)$ ]] ;;
     fail-on)
@@ -227,6 +286,14 @@ _scanner_validate_list_item() {
   case $key in
     formats) [[ $val =~ ^(json|sarif|html|md)$ ]] ;;
     paranoid-allow) [[ $val =~ ^[^:[:space:]]+:[0-9]+$ ]] ;;
+    # An RFC 7230 field-name token - the identical bracket expression
+    # modules/dast/passive/headers_engine.sh's own file-based loader accepts
+    # (copied rather than re-derived: a bracket expression has no escape
+    # character in POSIX ERE, so re-deriving this by hand is exactly how a
+    # stray backslash ends up a literal member of the class instead of
+    # protecting the character after it from bash). Case is not constrained
+    # here: hdr_load_recommended lowercases on its way in.
+    recommended-header) [[ $val =~ ^[A-Za-z0-9!#\$%\&\'*+.^_\`|~-]+$ ]] ;;
     *) return 1 ;;
   esac
 }

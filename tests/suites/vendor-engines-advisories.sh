@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # tests/suites/vendor-engines-advisories.sh - tools/vendor-engines.sh's
 # `advisories` command namespace (docs/FOUNDATION.md tension 25): resolving
-# data/advisories.db/data/versions.db from real SCA advisory data.
+# data/advisories.db/data/versions.db from real SCA advisory data - and
+# (section D2) data/versions.db's OWN `banner` namespace
+# (docs/VERSIONS-DB.md §3-§5), the known-vulnerable-version catalogue for a
+# banner-matched product with no SCA-ecosystem manifest at all.
 #
 # Sibling suite to tests/suites/vendor-engines.sh, not an extension of it -
 # that suite's own header already explains why each concrete capability
@@ -169,7 +172,8 @@ assert_contains "$out" "unknown ecosystem 'nonexistent-eco'" 'the error names th
 
 t_case 'exit codes never leave 0-5 (tension 14, finding F16)'
 for args in 'advisories' 'advisories --help' 'advisories --list' 'advisories --all' \
-  'advisories --bogus' 'advisories npm' 'advisories nonexistent-eco'; do
+  'advisories --bogus' 'advisories npm' 'advisories nonexistent-eco' \
+  'advisories banner' 'advisories bulk banner --accept-unverified'; do
   rc=0
   # shellcheck disable=SC2086
   PATH=$NO_NET_PATH bash "$TOOL" $args >/dev/null 2>&1 || rc=$?
@@ -372,6 +376,114 @@ assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$rc" \
   '_veng_advisories_reject_tab_lf catches the poisoned fixed_versions field end to end and refuses (exit 5) - fails under a reading that trusts OSV output verbatim'
 assert_not_contains "$(cat "$DB")" 'poison-fixture' \
   'nothing from the poisoned advisory was written to data/advisories.db'
+
+# ---------------------------------------------------------------------------
+# -- section D2: the `banner` namespace (docs/VERSIONS-DB.md §3-§5;
+#    docs/FOUNDATION.md tension 25's own "its own, separate banner-matching
+#    product catalog" gap).  Deliberately NOT one of VENG_ADVISORY_REGISTRY's
+#    six SCA ecosystems - see veng_advisories_banner's own header comment in
+#    tools/vendor-engines.sh for why - so this is its own parallel story
+#    rather than a seventh row in section D above.
+# ---------------------------------------------------------------------------
+run_banner() {
+  # Same shape as run_ecosystem above, reached through its own `banner`
+  # case in veng_advisories_main rather than veng_advisories_one.
+  ( PATH="$FAKE_BIN:$PATH" \
+    FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
+    SCOURSH_SCA_ADVISORIES_DB="$DB" \
+    SCOURSH_SCA_VERSIONS_DB="$VDB" \
+    bash "$TOOL" advisories banner ) >"$W/run-banner.out" 2>&1
+}
+
+t_case 'veng_advisories_banner is not one of VENG_ADVISORY_REGISTRY'"'"'s six entries'
+assert_eq 6 "${#VENG_ADVISORY_REGISTRY[@]}" \
+  'the registry still holds exactly six entries - adding banner support must never grow it'
+rc=0
+( veng_advisories_one banner ) >"$W/banner-not-registered.out" 2>&1 || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
+  "veng_advisories_one (the registry-dispatch path) refuses 'banner' - it is reached only through advisories_main's own explicit 'banner' case, never VENG_ADVISORY_REGISTRY"
+assert_contains "$(cat "$W/banner-not-registered.out")" "unknown ecosystem 'banner'" \
+  'the refusal names banner, proving it genuinely is not in the registry rather than silently matching by accident'
+
+t_case '_veng_advisories_osv_ecosystem: banner is the "*" wildcard sentinel, never a real OSV ecosystem string'
+assert_eq '*' "$(_veng_advisories_osv_ecosystem banner)" \
+  'this is what tells the shared extractor (section 3) to skip the ecosystem filter entirely for banner'
+
+t_case '_veng_advisories_env_var: banner mirrors the SCOURSH_ADVISORY_<NAME>_IDS shape'
+assert_eq 'SCOURSH_ADVISORY_BANNER_IDS' "$(_veng_advisories_env_var banner)" \
+  'the env var name follows the identical pattern every SCA ecosystem already uses'
+
+t_case '_veng_advisories_normalize_severity: the banner-only "high" default (docs/VERSIONS-DB.md §3), never disturbing the SCA default'
+assert_eq high "$(_veng_advisories_normalize_severity '' high)" \
+  'an absent severity, with the banner default requested, lands on high'
+assert_eq medium "$(_veng_advisories_normalize_severity '')" \
+  'the SAME call with no default argument still lands on medium - adding a banner-only default must not change any SCA call site'
+assert_eq critical "$(_veng_advisories_normalize_severity CRITICAL high)" \
+  'a RECOGNISED severity is unaffected by the default argument either way'
+
+t_case '_veng_advisories_normalize_name: banner dispatches to banner_normalize_product, never an sca_* function'
+_veng_advisories_load_banner_normalizer
+assert_eq 'nginx-fixture' "$(_veng_advisories_normalize_name banner 'Nginx-Fixture')" \
+  'reuses banner_normalize_product (modules/dast/passive/banner_engine.sh) verbatim - the same function modules/dast/passive/banner.sh reads with'
+assert_eq 'apache-http-server-fixture' "$(_veng_advisories_normalize_name banner 'Apache HTTP Server (Fixture)')" \
+  'punctuation and whitespace all collapse to single dashes, matching docs/VERSIONS-DB.md §4'
+
+t_case 'advisories banner, no operator-supplied ids: refuses (exit 4), never touches curl'
+rc=0
+out=$(PATH=$NO_NET_PATH bash "$TOOL" advisories banner 2>&1) || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" 'advisories banner with no ids set is exit 4 - curl is entirely absent from PATH'
+assert_contains "$out" 'SCOURSH_ADVISORY_BANNER_IDS' \
+  'the refusal names the exact env var, mirroring every SCA ecosystem refusal'
+
+t_case 'advisories bulk banner: refused (exit 4) - banner has no OSV.dev bulk-export ecosystem, and no bulk path'
+rc=0
+out=$(PATH=$NO_NET_PATH bash "$TOOL" advisories bulk banner --accept-unverified 2>&1) || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
+  "bulk stays scoped to VENG_ADVISORY_REGISTRY's six SCA ecosystems - 'banner' is refused there exactly like any other unknown ecosystem, never silently accepted"
+assert_contains "$out" "unknown ecosystem 'banner'" 'the bulk refusal names banner directly'
+
+t_case 'advisories --list / --all are unaffected by banner'
+out=$(PATH=$NO_NET_PATH bash "$TOOL" advisories --list 2>&1)
+assert_not_contains "$out" banner \
+  '--list still reports only the six SCA ecosystems - banner is a separate command, never a seventh list entry, and so is never swept into --all or bulk --all either'
+
+t_case 'end-to-end: banner - OSV-ecosystem wildcard match, product-key normalisation, dedup across ecosystems, missing-severity default, data/versions.db ONLY'
+: >"$W/db/advisories.db"
+: >"$W/db/versions.db"
+# Both operator-supplied ids in ONE run, the same shape a real operator uses
+# (SCOURSH_ADVISORY_BANNER_IDS names every id for this catalogue at once) -
+# exactly like every SCA ecosystem end-to-end test above.  Running banner
+# TWICE, once per id, would not accumulate: like every other ecosystem
+# (proven below in section E), a second run REPLACES the whole 'banner'
+# namespace rather than adding to it - that replace behaviour is its own
+# test further down, not this one.
+SCOURSH_ADVISORY_BANNER_IDS='SCOURSH-FIXTURE-OSV-BANNER-1,SCOURSH-FIXTURE-OSV-BANNER-NOSEV' run_banner
+assert_eq '' "$(cat "$DB" 2>/dev/null || true)" \
+  'data/advisories.db (scratch) was left completely untouched (still empty, from this test'"'"'s own reset above) - banner never writes there'
+assert_file_exists "$VDB" 'data/versions.db (scratch) was written'
+assert_contains "$(cat "$VDB")" \
+  "$(printf 'banner\tnginx-fixture\t1.18.0\tSCOURSH-FIXTURE-OSV-BANNER-1\tcritical\t1.19.0\tfixture: request smuggling in Nginx-Fixture')" \
+  'the banner row lands under the literal "banner" ecosystem with the product key normalised (Nginx-Fixture -> nginx-fixture)'
+line_count=$(grep -c -F 'SCOURSH-FIXTURE-OSV-BANNER-1' "$VDB")
+assert_eq 1 "$line_count" \
+  'the fixture carries TWO affected[] entries (Debian, Alpine) for the identical product+version+fix - both are admitted by the wildcard, but the writer dedupes them into exactly ONE row, never two'
+assert_contains "$(cat "$VDB")" \
+  "$(printf 'banner\tapache-http-server-fixture\t2.4.49\tSCOURSH-FIXTURE-OSV-BANNER-NOSEV\thigh\t\tfixture: unspecified-severity banner product issue')" \
+  'no severity anywhere in this second OSV record (no database_specific.severity, no per-affected override) - the banner-only default (high, docs/VERSIONS-DB.md §3) applies, distinct from every SCA row default (medium)'
+
+t_case 'merge: re-running banner replaces the WHOLE banner namespace (like any other ecosystem), and never disturbs an unrelated SCA ecosystem'
+SCOURSH_ADVISORY_BANNER_IDS='SCOURSH-FIXTURE-OSV-BANNER-1' run_banner
+after_replace=$(cat "$VDB")
+assert_contains "$after_replace" 'nginx-fixture' 'the re-run'"'"'s own id is present'
+assert_not_contains "$after_replace" 'apache-http-server-fixture' \
+  "a second 'advisories banner' run REPLACES the banner namespace rather than accumulating - the same per-ecosystem semantics section E proves for npm - so the first run's other id is gone, not merged"
+SCOURSH_ADVISORY_NPM_IDS='SCOURSH-FIXTURE-OSV-NPM-1' run_ecosystem npm
+after_npm=$(cat "$VDB")
+assert_contains "$after_npm" 'nginx-fixture' \
+  'the banner row survives an unrelated npm run - _veng_advisories_write_db replaces only the ecosystem it was called with (npm), never touching banner rows'
+assert_contains "$after_npm" 'left-pad-fixture' 'and the npm row landed as normal'
+assert_not_contains "$(cat "$DB")" banner \
+  'data/advisories.db (scratch) STILL carries no banner row even after other ecosystems have since written real rows to it - banner never reaches this file at all'
 
 # ---------------------------------------------------------------------------
 # -- section E: merge behaviour - re-running one ecosystem replaces ONLY

@@ -1,0 +1,160 @@
+# modules/dast/passive/checks-tls.rules - the §7.1 transport-security
+# script-check registry (rules/RULE-FORMAT.md §9.5; docs/STEP5-DAST-PLAN.md
+# DAST-07, tier 2).  Owned by modules/dast/passive/tls.sh; ids are all
+# `DAST-TLS-*`.
+#
+# ONE FILE PER OWNING PHASE SCRIPT, per rules/RULE-FORMAT.md §9's
+# `checks-<name>.rules` row (docs/FOUNDATION.md tension 29).  This registry
+# originally shipped as the shared `modules/dast/passive/checks.rules` - DAST-07
+# was written and reviewed before tension 29's split landed, so it carried the
+# pre-split shape for a time - and is renamed here to match every one of its
+# per-owner siblings in this directory (checks-banner, checks-cookies,
+# checks-cors, checks-headers, checks-leakage, checks-markup,
+# checks-transport), closing the gap AGENTS.md recorded as follow-up work
+# rather than forcing it into the split's own merge.
+# `checks_registry_load` (lib/checks.sh) globs every `*.rules` under
+# `modules/dast/` at any depth with no per-file allowlist, so this rename
+# needed no engine change; `tests/suites/dast.sh`'s "modules/dast/passive/
+# ships FIVE per-owner registries" case already asserted the shared
+# `checks.rules` was gone and is what caught this file still carrying it.
+#
+# THE TYPE TAG IS `passive`, MATCHING THE PHASE TABLE'S `passive/tls.sh:passive`
+# FLOOR (modules/dast/engine.sh).  Both gates must permit and neither can widen
+# the other - the intersection rule docs/FOUNDATION.md tension 15 froze.  These
+# checks are genuinely passive: one TLS handshake per target is opened, no
+# application data is sent, no request is made, and nothing on the target
+# changes.  None of them carries `intrusive`.
+#
+# `quick` and `compliance` are on every record here.  `quick` because the whole
+# family costs ONE handshake for the target regardless of how many of them fire
+# - the cheapest real coverage a dast run can buy - and `compliance` because
+# certificate validity and protocol/cipher strength are the transport controls
+# every framework in docs/DESIGN.md §8.7's list enumerates.
+#
+# ONE CHECK ID PER PROPERTY, not one per phase.  The DAST fingerprint
+# (docs/FOUNDATION.md tension 5) is (target, method, path_template,
+# param_location, param_name) plus the check id; a TLS finding's location is the
+# listener rather than a request, so every finding this phase emits for one
+# endpoint shares all five location components.  The check id is therefore the
+# ONLY thing that keeps an expired certificate and a weak protocol on the same
+# listener from colliding into one finding, which is why "expired" and
+# "expiring soon" are two ids rather than one id with two severities.
+
+id: DAST-TLS-WEAK_PROTOCOL-01
+title: TLS endpoint negotiated a deprecated protocol version
+script: passive/tls.sh
+severity: high
+confidence: high
+cwe: CWE-327
+owasp: A02:2021
+tags: passive
+tags: quick
+tags: compliance
+coverage-scope: target
+requires-cmd: openssl
+remediation: Disable SSLv2, SSLv3, TLS 1.0 and TLS 1.1 on this listener and
+  offer TLS 1.2 and TLS 1.3 only (RFC 8996). Where a client genuinely cannot be
+  upgraded, terminate its traffic on a separate listener with its own hostname
+  so the deprecated version is not offered to every client of this one.
+references: CWE-327
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+references: https://www.rfc-editor.org/rfc/rfc8996
+
+id: DAST-TLS-WEAK_CIPHER-01
+title: TLS endpoint negotiated a weak cipher suite
+script: passive/tls.sh
+severity: high
+confidence: high
+cwe: CWE-327
+owasp: A02:2021
+tags: passive
+tags: quick
+tags: compliance
+coverage-scope: target
+requires-cmd: openssl
+remediation: Restrict the listener cipher list to AEAD suites with forward
+  secrecy (ECDHE or DHE key exchange with AES-GCM or ChaCha20-Poly1305). Remove
+  every NULL, anonymous, export, RC4, single-DES, 3DES, IDEA, SEED and MD5
+  suite. On TLS 1.3 leave the default suite set alone and fix the TLS 1.2 list
+  instead.
+references: CWE-327
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: DAST-TLS-CERT_EXPIRED-01
+title: TLS certificate has expired
+script: passive/tls.sh
+severity: critical
+confidence: high
+cwe: CWE-324
+owasp: A02:2021
+tags: passive
+tags: quick
+tags: compliance
+coverage-scope: target
+requires-cmd: openssl
+remediation: Renew the certificate and reload the listener. Automate renewal
+  (ACME or the platform certificate manager) and alert on the remaining
+  lifetime, so the next renewal is not a manual step that can be missed again.
+references: CWE-324
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: DAST-TLS-CERT_EXPIRING-01
+title: TLS certificate expires soon
+script: passive/tls.sh
+severity: medium
+confidence: high
+cwe: CWE-324
+owasp: A02:2021
+tags: passive
+tags: quick
+tags: compliance
+coverage-scope: target
+requires-cmd: openssl
+remediation: Renew the certificate before it expires and confirm the listener
+  picks up the new one. If renewal is already automated, check that the
+  automation is running and that its own alerting fires - a silent renewal
+  failure looks exactly like a working one until the day it expires. The
+  warning window is config/scanner.conf's tls-expiry-warn-days, default 30.
+references: CWE-324
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: DAST-TLS-SELF_SIGNED-01
+title: TLS certificate is self-signed and chains to no trusted issuer
+script: passive/tls.sh
+severity: high
+confidence: high
+cwe: CWE-295
+owasp: A02:2021
+tags: passive
+tags: quick
+tags: compliance
+coverage-scope: target
+requires-cmd: openssl
+remediation: Replace the certificate with one issued by a certificate authority
+  the intended clients already trust, and serve the full intermediate chain. If
+  this endpoint is internal and must use a private CA, distribute that CA to the
+  clients and keep them verifying - never disable verification in the client,
+  which is the change this finding usually provokes and is strictly worse than
+  the certificate it works around.
+references: CWE-295
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: DAST-TLS-WILDCARD_CERT-01
+title: TLS endpoint serves a wildcard certificate where a host-specific one is expected
+script: passive/tls.sh
+severity: medium
+confidence: high
+cwe: CWE-693
+owasp: A02:2021
+tags: passive
+tags: quick
+coverage-scope: target
+requires-cmd: openssl
+remediation: Issue a certificate whose subjectAltName names this host
+  specifically, so a compromise of its private key cannot impersonate every
+  sibling host under the wildcard label. If a wildcard is genuinely the intended
+  design for this target, record that by setting tls-expect-wildcard true on its
+  config/scope.conf entry, which makes the expectation explicit and reviewable
+  rather than making this finding disappear silently.
+references: CWE-693
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/

@@ -1,0 +1,19 @@
+# Path-traversal marker files (docs/DESIGN.md §7.3: "request known-safe
+# read-only markers ... and detect its signature; report access, don't
+# harvest contents"). Format: <marker's relative path><TAB><ERE signature>.
+#
+# Two markers only, chosen for being the single most universally-present,
+# read-only file on the two major server platforms, so a positive match is a
+# strong signal rather than a guess: /etc/passwd on every Unix-like host, and
+# windows/win.ini on every Windows host. The signature must be specific to
+# the file's real CONTENTS, not to the traversal string itself - a page that
+# merely echoes the requested path back must NOT match (pinned by
+# tests/suites/dast-pathtraversal.sh).
+#
+# /etc/passwd's first (and every root) line is colon-delimited with UID/GID
+# 0 in fields 3/4 - a shape no ordinary HTML/JSON response produces by
+# accident.
+etc/passwd	root:[^\n:]*:0:0:
+# win.ini is an INI file; every stock copy on every Windows version since 3.1
+# opens with a [fonts] or [extensions] section header.
+windows/win.ini	\[(fonts|extensions)\]

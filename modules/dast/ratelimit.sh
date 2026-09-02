@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# modules/dast/ratelimit.sh - the §7.4 missing-throttling burst PHASE
-# (docs/DESIGN.md §7.4; docs/STEP5-DAST-PLAN.md DAST-28, tier 5).
+# ADR pointer: this file's scope pre-check is converged onto
+# modules/dast/engine.sh section 3b's `dast_endpoint_keep` - see the ADR
+# block at the top of modules/dast/crawl.sh for the decision and the
+# alternatives, including why this file KEEPS its own bespoke
+# coverage_reduction wording (a single chosen burst endpoint, not an
+# N-row roll-up) rather than calling `dast_scope_record_skips`.
 #
 # This is a PHASE SCRIPT: modules/dast/engine.sh's `dast_run_phase` reaches it
 # with a plain `source`, so it inherits the whole run context and anything it
@@ -153,19 +157,13 @@ _dast_ratelimit_phase() {
   local burst=$_RATE_BURST_N
 
   # ---- gate 4: an idempotent endpoint --------------------------------------
-  # THE INVENTORY PATH IS RESOLVED HERE RATHER THAN TAKEN FROM THE EXPORT
-  # ALONE.  modules/dast/run.sh reads the inventory and exports
-  # SCOURSH_DAST_ENDPOINTS BEFORE the phase loop starts, while crawl.sh writes
-  # reports/<run>/inventory/endpoints.json several phases later in that same
-  # loop - so on the ordinary run the export is empty on exactly the run that
-  # has a surface.  The run directory's own artifact is the authority
-  # (docs/INVENTORY-FORMAT.md §1).  Fixing the export is modules/dast/run.sh's
-  # own filed ticket, not this one's, and the same fallback is what
-  # modules/dast/passive/headers.sh already does.
+  # SCOURSH_DAST_ENDPOINTS is now always the fixed
+  # `$SCOURSH_RUN_DIR/inventory/endpoints.json` path (modules/dast/run.sh),
+  # published unconditionally whether or not crawl.sh has written it yet - so
+  # reading it alone is now enough; the per-file fallback to the run
+  # directory's own artifact (the general fix that landed instead) is no
+  # longer needed.
   local epf=${SCOURSH_DAST_ENDPOINTS:-}
-  if [[ -z $epf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/endpoints.json ]]; then
-    epf=$SCOURSH_RUN_DIR/inventory/endpoints.json
-  fi
   local base=''
   if declare -F config_scope_field_or >/dev/null; then
     base=$(config_scope_field_or "$target" base-url '' 2>/dev/null || printf '')
@@ -178,15 +176,29 @@ _dast_ratelimit_phase() {
   fi
   local url=$_RATE_URL path=$_RATE_PATH
 
-  # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - the identical
-  # split modules/dast/crawl.sh's `_crawl_in_scope` and headers.sh both record.
+  # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - modules/dast/
+  # engine.sh section 3b (`dast_endpoint_keep`) is the ONE place this decision
+  # is made now, rather than a local copy of `http_gate_url` here.
   # `http_request` gates FATALLY (exit 3), which is right for a URL the
   # operator configured and wrong for one lifted out of an inventory another
   # module wrote: one bad row must not abort the run, let alone fifty times
   # over inside a burst.  Everything that survives this is still requested
   # through `http_request`, which re-gates it and every redirect hop.
-  if ! http_gate_url "$url" "$target"; then
-    run_record coverage_reduction "module=dast reason=burst_endpoint_out_of_scope check=ratelimit target=$target - the chosen endpoint is not authorised by config/scope.conf (${_HTTP_GATE_REASON:-declined by the scope gate}) and was not requested."
+  #
+  # This is still ONE endpoint, not a loop over an inventory - the shared
+  # counter/reason accumulator is reset around this single call so a stale
+  # count from an earlier phase in the same process can never leak in, and the
+  # coverage message stays this file's OWN grain ("the one endpoint chosen for
+  # the burst"), not the shared helper's "N inventory rows dropped" wording.
+  if declare -F dast_scope_skips_reset >/dev/null; then
+    dast_scope_skips_reset
+  fi
+  local endpoint_in_scope=1
+  if declare -F dast_endpoint_keep >/dev/null; then
+    dast_endpoint_keep "$url" "$target" || endpoint_in_scope=0
+  fi
+  if (( ! endpoint_in_scope )); then
+    run_record coverage_reduction "module=dast reason=burst_endpoint_out_of_scope check=ratelimit target=$target - the chosen endpoint is not authorised by config/scope.conf (${_DAST_SCOPE_REASONS:-declined by the scope gate}) and was not requested."
     run_record coverage_gap "dast ratelimit: the endpoint chosen for the burst probe on target '$target' is not in config/scope.conf, so nothing was sent and the check is uncovered."
     return 0
   fi

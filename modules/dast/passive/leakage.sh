@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# ADR pointer: this file's scope pre-check is converged onto
+# modules/dast/engine.sh section 3b's `dast_endpoint_keep` /
+# `dast_scope_record_skips` - see the ADR block at the top of
+# modules/dast/crawl.sh for the decision and the alternatives.
+#
 # modules/dast/passive/leakage.sh - the §7.1 INFORMATION-DISCLOSURE phase
 # (docs/DESIGN.md §7.1; docs/STEP5-DAST-PLAN.md DAST-10, tier 2).
 #
@@ -49,6 +54,12 @@
 #                        literal, or a vendor-declared secret value shape.
 #   THIRD_PARTY_ORIGIN   subtracts the response's own host and everything
 #                        sharing its registrable domain, and is INFORMATIONAL.
+#                        "The response's own host" is read off the DELIVERED
+#                        url (`_HTTP_LAST_URL`), not the one requested - a
+#                        redirect can cross origin (this phase follows up to
+#                        `SCOURSH_MAX_REDIRECTS:-5` of them), and subtracting
+#                        the pre-redirect host would over- or under-report
+#                        third parties on exactly that response.
 #
 # HONESTY.  A clean result here must never read as "tested and safe" when it is
 # "could not test".  No endpoint inventory and no base-url, an endpoint the scope
@@ -232,6 +243,11 @@ _leak_hit() {
 # ---------------------------------------------------------------------------
 # Reads the `_HDR_*` header state and the `_LEAK_LINES` body state already
 # published for one response, and feeds the accumulators.  Sends nothing itself.
+#
+# `url` MUST be the DELIVERED url (the phase loop's own `delivered_url`,
+# lib/http.sh's `_HTTP_LAST_URL`), never the one this phase first requested - a
+# redirect can cross origin, and this response's own `self` host (below) is
+# derived from it directly.
 _leak_analyse_one() {
   local url=$1 path=$2 kind=$3
   local sep=$'\x1f'
@@ -266,6 +282,9 @@ _leak_analyse_one() {
   # and must not be counted as one it was applicable to.
   (( _LEAK_NLINES > 0 )) || return 0
 
+  # `$url` is the DELIVERED url here (see this function's own header comment),
+  # so a redirect that crossed origin subtracts the origin that actually served
+  # this response, not the one the phase loop first asked for.
   self=$(leak_host_of "$url")
 
   # -- Family 1: stack trace / debugger page ------------------------------
@@ -340,22 +359,13 @@ _dast_leakage_phase() {
       'internal: modules/dast/passive/leakage.sh was reached with no target; dast_run_phase publishes SCOURSH_DAST_TARGET'
   fi
 
-  # THE INVENTORY PATH IS RESOLVED HERE, NOT TAKEN FROM THE EXPORT ALONE, AND
-  # THAT IS NOT BELT-AND-BRACES.  modules/dast/run.sh reads the inventory and
-  # exports SCOURSH_DAST_ENDPOINTS BEFORE the phase loop starts, so on a first
-  # run - the ordinary case - it is EMPTY, because crawl.sh writes
-  # reports/<run>/inventory/endpoints.json a few phases later in the same loop.
-  # A passive check that trusted the export alone would therefore see no
-  # endpoints on exactly the run that has just discovered them.  The run
-  # directory's own artifact is the authority (docs/INVENTORY-FORMAT.md §1), so
-  # it is consulted when the export is empty - the identical fallback, by the
-  # identical path, that modules/dast/passive/headers.sh and cookies.sh already
-  # make.  Fixing the export itself belongs to modules/dast/run.sh and is filed
-  # separately rather than changed here.
+  # SCOURSH_DAST_ENDPOINTS is now always the fixed
+  # `$SCOURSH_RUN_DIR/inventory/endpoints.json` path (modules/dast/run.sh),
+  # published unconditionally whether or not crawl.sh has written it yet - so
+  # reading it alone is now enough; the per-file fallback to the run
+  # directory's own artifact (the general fix that landed instead) is no
+  # longer needed.
   local epf=${SCOURSH_DAST_ENDPOINTS:-}
-  if [[ -z $epf && -n ${SCOURSH_RUN_DIR:-} && -s $SCOURSH_RUN_DIR/inventory/endpoints.json ]]; then
-    epf=$SCOURSH_RUN_DIR/inventory/endpoints.json
-  fi
 
   # The operator's own base-url, which is config-derived rather than
   # target-derived and is the one URL that exists whatever the crawl found.
@@ -374,23 +384,26 @@ _dast_leakage_phase() {
     return 0
   fi
 
-  local i url path tested=0 refused=0 unreachable=0 nobody=0 truncated=0
+  local i url path tested=0 unreachable=0 nobody=0 truncated=0
   local sep=$'\x1f'
+  # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - modules/dast/
+  # engine.sh section 3b (`dast_endpoint_keep`) carries the long form and is
+  # the ONE place this decision is made now, rather than a local copy of
+  # `http_gate_url` here.  `http_request` gates FATALLY (an out-of-scope URL
+  # there is a caller bug, exit 3), which is right for the operator's own
+  # base-url and exactly wrong for a URL lifted out of an inventory some other
+  # module wrote: one bad row would abort the whole run.  This decides only
+  # whether the URL is worth ASKING FOR; everything that survives still goes
+  # through http_request, which re-gates it and re-gates every redirect hop.
+  if declare -F dast_scope_skips_reset >/dev/null; then
+    dast_scope_skips_reset
+  fi
   for (( i = 0; i < _LEAK_N; i++ )); do
     url=${_LEAK_URL[$i]}
     path=${_LEAK_PATH[$i]}
 
-    # THE SCOPE PRE-CHECK IS NOT THE GATE, AND BOTH ARE REQUIRED - the identical
-    # split modules/dast/crawl.sh's `_crawl_in_scope` records.  `http_request`
-    # gates FATALLY (an out-of-scope URL there is a caller bug, exit 3), which is
-    # right for the operator's own base-url and exactly wrong for a URL lifted
-    # out of an inventory some other module wrote: one bad row would abort the
-    # whole run.  This decides only whether the URL is worth ASKING FOR;
-    # everything that survives still goes through http_request, which re-gates it
-    # and re-gates every redirect hop.
-    if ! http_gate_url "$url" "$target"; then
-      refused=$(( refused + 1 ))
-      continue
+    if declare -F dast_endpoint_keep >/dev/null; then
+      dast_endpoint_keep "$url" "$target" || continue
     fi
 
     local bodyfile=$SCOURSH_SCRATCH/dast-leakage.$$.$i.body
@@ -411,6 +424,26 @@ _dast_leakage_phase() {
     fi
     tested=$(( tested + 1 ))
 
+    # THE DELIVERED URL, NOT THE ONE THIS PHASE ASKED FOR.  `_HTTP_LAST_URL`
+    # (lib/http.sh §12) is the canonical URL of the hop that actually produced
+    # this response; a redirect between `$url` and it is an ordinary event (the
+    # endpoint chooser's own list is unauthenticated-crawl-derived and routinely
+    # names a pre-login or pre-canonicalisation path).  This phase calls
+    # `http_request` with `${SCOURSH_MAX_REDIRECTS:-5}`, not 0, so a redirect
+    # really can land on a different origin - and `_leak_analyse_one`'s Family 5
+    # (third-party origins) computes "this response's own host" from whatever
+    # URL it is handed via `leak_host_of`.  Handing it the REQUESTED url on a
+    # redirect that crossed origin would subtract the wrong host from the
+    # third-party set: a genuinely third-party origin that happens to equal the
+    # pre-redirect host would be silently treated as first-party (a false
+    # negative), and/or the true delivering host would never be subtracted at
+    # all (a false positive against the page's own CDN).  Every other family
+    # threads this same value through purely for the finding's own `url`
+    # evidence field, for the identical reason markup.sh's `delivered_url`
+    # does. Falling back to `$url` is defensive only - a call that reached here
+    # already returned 0, so `http_request` always published one.
+    local delivered_url=${_HTTP_LAST_URL:-$url}
+
     # The body is optional: family 2 works on headers alone, so a response with
     # no readable body is still a tested response for that family and an
     # untested one for the other four.
@@ -425,11 +458,11 @@ _dast_leakage_phase() {
     (( ${_LEAK_BODY_TRUNCATED:-0} )) && truncated=$(( truncated + 1 ))
     rm -f "$bodyfile" "$hdrfile"
 
-    _leak_analyse_one "$url" "$path" "$kind"
+    _leak_analyse_one "$delivered_url" "$path" "$kind"
   done
 
   if (( tested == 0 )); then
-    run_record coverage_gap "dast leakage: none of the $_LEAK_N URL(s) selected on target '$target' produced a response this phase could read ($refused declined by the scope gate, $unreachable did not answer), so NONE of the five information-disclosure families was evaluated. A clean result here is the absence of a test."
+    run_record coverage_gap "dast leakage: none of the $_LEAK_N URL(s) selected on target '$target' produced a response this phase could read (${_DAST_SCOPE_SKIPPED:-0} declined by the scope gate, $unreachable did not answer), so NONE of the five information-disclosure families was evaluated. A clean result here is the absence of a test."
     return 0
   fi
 
@@ -453,8 +486,8 @@ _dast_leakage_phase() {
   if (( _LEAK_SKIPPED_NON_GET > 0 )); then
     run_record coverage_reduction "module=dast reason=leakage_non_get_endpoint_skipped target=$target count=$_LEAK_SKIPPED_NON_GET - $_LEAK_SKIPPED_NON_GET discovered endpoint(s) are not GET. Re-sending them to read their responses would change target state, which docs/DESIGN.md §7.1 forbids at the passive tier, so they were not inspected."
   fi
-  if (( refused > 0 )); then
-    run_record coverage_reduction "module=dast reason=leakage_endpoint_out_of_scope target=$target count=$refused - $refused URL(s) in the inventory are not authorised by config/scope.conf and were not requested (${_HTTP_GATE_REASON:-declined by the scope gate})."
+  if declare -F dast_scope_record_skips >/dev/null; then
+    dast_scope_record_skips leakage "$target"
   fi
   if (( unreachable > 0 )); then
     run_record coverage_reduction "module=dast reason=leakage_endpoint_unreachable target=$target count=$unreachable - $unreachable URL(s) returned no readable response, so they were not inspected."
