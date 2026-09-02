@@ -1544,10 +1544,11 @@ against, the exception-file seeding, and the negative-fixture test are (CLOUD-03
 the one IaC ticket already landed on `origin/dev` (`modules/iac/`, "IaC: Terraform checks via the
 pattern-rule engine") is step 4's `docs/DESIGN.md` §8.2 work, not step 6's, and is out of this plan's
 scope for that reason. **No CLOUD-0x or POSTURE-0x ticket is picked up until step 5 (DAST) is
-complete on `main`** (this repository's sole branch; there is no `dev` branch today, see "There is no
-`dev` branch today" above) - step 6 is gated on the whole sequential chain in front of it, and steps 3
-and 4 were the other two links in that chain, so step 5 is now the only one left; this plan is still a
-written breakdown for later, not permission to start now.
+complete on `dev`** - `dev` is the live integration branch and `main` lags it (see "`main` lags `dev`"
+below), so gating on `main`'s own tip would read work that has already landed as still outstanding -
+step 6 is gated on the whole sequential chain in front of it, and steps 3 and 4 were the other two
+links in that chain, so step 5 is now the only one left; this plan is still a written breakdown for
+later, not permission to start now.
 
 **PARANOID-01 has now landed - `lib/paranoid.sh` implements `--paranoid` for real.**
 It builds the four-set allowlist tension 20's RESOLUTION specifies (`paranoid_allowlist_build`).
