@@ -224,6 +224,24 @@ run_json_refresh_incomplete() {
     declare -F "$fn" >/dev/null 2>&1 || continue
     ( trap - ERR; "$fn" "$SCOURSH_RUN_DIR" ) || true
   done
+  # docs/STEP7-STATE-PLAN.md STATE-02: `state/<run-id>.json` is persisted on
+  # EVERY run, not only a clean or gated one - the identical "an incomplete
+  # run still leaves a real report behind" argument the three writers above
+  # already make, applied to state/.  `state_run_pending` (lib/state.sh) is
+  # the one thing read from that file here, exactly as `declare -F` above is
+  # the one thing checked before calling it - a run that never loaded
+  # lib/state.sh (a caller that sources only lib/core.sh, or a die() that
+  # fired before scan_main ever called state_set_run) leaves it undefined or
+  # false, and both are a silent no-op rather than an error, the same
+  # contract this function's own header already states for report_run_json.
+  # Only whatever coverage individual modules had ALREADY recorded via
+  # state_add_covered before the abort is written - nothing here tries to
+  # salvage partial credit for the module that was mid-flight when the abort
+  # happened, which is the conservative, fail-safe direction (tension 12: a
+  # (check, cell) pair not yet marked covered stays uncovered).
+  if declare -F state_run_pending >/dev/null 2>&1 && state_run_pending; then
+    ( trap - ERR; state_write ) || true
+  fi
   return 0
 }
 

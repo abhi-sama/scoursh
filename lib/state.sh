@@ -923,3 +923,14 @@ state_finding_field() {
     *) return 1 ;;
   esac
 }
+
+# ---------------------------------------------------------------------------
+# 5. STATE-02 glue (docs/STEP7-STATE-PLAN.md STATE-02): a single, purely
+#    additive accessor over the write-side builder above, so a caller outside
+#    this file (lib/core.sh's exit-5 recovery path, see its own
+#    run_json_refresh_incomplete) can tell "has state_set_run already been
+#    called for THIS run" without reaching into `_STATE_W` directly. Nothing
+#    above this line changes: the frozen schema, the builder API, and the
+#    loader are exactly what STATE-01 shipped.
+# ---------------------------------------------------------------------------
+state_run_pending() { [[ -n ${_STATE_W[run_id]:-} ]]; }

@@ -69,6 +69,34 @@ _dast_record_inventory_gaps() {
   return 0
 }
 
+# _dast_record_coverage TARGET SINCE_LINE - docs/STEP7-STATE-PLAN.md
+# STATE-02: `target` coverage (docs/FOUNDATION.md tension 12's frozen table)
+# for every DAST check that completed since line SINCE_LINE of the run-wide
+# `checks_run` fact.  Only `DAST-*` ids are ever considered, so a run that
+# also dispatched sast/iac/sca before this (`scan.sh all`) cannot have their
+# ids misattributed to a DAST target cell.  Guarded on `declare -F
+# state_add_covered`, the same "an absent function is a no-op" contract
+# modules/sast/engine.sh's sast_record_coverage already documents.
+_dast_record_coverage() {
+  declare -F state_add_covered >/dev/null 2>&1 || return 0
+  local target=$1 since=${2:-0}
+  local line id set idx digest
+  local -A seen=()
+  while IFS= read -r line; do
+    [[ -n $line && $line == DAST-* ]] || continue
+    [[ -z ${seen[$line]:-} ]] || continue
+    seen[$line]=1
+    id=$line
+    for set in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
+      idx=$(records_index_of_id "$set" "$id" 2>/dev/null) || continue
+      digest=$(records_digest "$set" "$idx")
+      state_add_covered "$id" "$digest" target "$target"
+      break
+    done
+  done < <(run_facts checks_run | tail -n "+$(( since + 1 ))")
+  return 0
+}
+
 _dast_run_module() {
   # SCAN_FLAGS is scan.sh's own global associative array.  When this module is
   # exercised without scan.sh (tests/suites/dast.sh sources this file directly
@@ -186,6 +214,18 @@ _dast_run_module() {
 
     run_record notes "module=dast target=$target coverage-scope=target cell=$target intensity=$intensity authed=$authed"
 
+    # docs/STEP7-STATE-PLAN.md STATE-02: the line count of `checks_run`
+    # BEFORE this target's own phase loop, so _dast_record_coverage below
+    # reads only the ids THIS target's phases actually completed - never a
+    # prior target's (or, in `scan.sh all`, an earlier module's) ids that
+    # happen to share the same shared, run-wide `checks_run` fact file.
+    # Grammar allows exactly one --target today (docs/DESIGN.md §5), so this
+    # is inert in practice; it is correct now rather than a latent bug for
+    # whenever "the target set, not the flag" (this file's own header)
+    # widens to more than one.
+    local _dast_checks_run_before
+    _dast_checks_run_before=$(run_facts checks_run | wc -l | tr -d '[:space:]')
+
     ran=0 absent=0 above=0
     above_names=()
     for phase in "${_DAST_PHASES[@]+"${_DAST_PHASES[@]}"}"; do
@@ -262,6 +302,20 @@ _dast_run_module() {
       fi
       run_record coverage_gap "dast covered nothing on target '$target': $why and no property of the running endpoint was tested - a clean result here is the absence of a test, not the absence of a problem"
     fi
+
+    # docs/STEP7-STATE-PLAN.md STATE-02: reached only when every phase for
+    # THIS target returned without dying (a breaker or budget trip inside a
+    # phase - lib/http.sh, tension 16 - calls die() directly from inside the
+    # sourced phase script, which aborts the whole process before this line
+    # is ever reached, so an aborted target correctly records zero coverage
+    # here rather than crediting checks that had already fired earlier in
+    # the same target's phase loop).  `target` (docs/FOUNDATION.md tension
+    # 12's frozen `target` coverage-scope) is DAST's cell, and every check id
+    # this target's phases actually completed is already sitting in
+    # `checks_run` by construction - each phase calls `run_record checks_run
+    # <id>` only once its own evaluation of that check has finished, never
+    # before.
+    _dast_record_coverage "$target" "$_dast_checks_run_before"
   done
 
   # The same four calls, in the same order, that modules/sast/run.sh and
