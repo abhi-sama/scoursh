@@ -8,30 +8,29 @@ Every design decision this plan sequences is already committed.
 Tension 11 (the frozen nine-stage pipeline, the fail-closed `diff_usable` gate, the `baseline.json` object schema), tension 12 ((check, scope-cell) coverage, the classification table, the `scan_root_id` gate), tension 13 (the per-finding history boundary), and tension 6 (the composite three-condition rule) each carry a RESOLUTION, and the tickets below implement those resolutions rather than re-litigating them.
 A ticket that finds itself disagreeing with one of those resolutions changes the register deliberately and costs the change, per `AGENTS.md`; it does not quietly diverge in code.
 
-## Status: blocked, and now second in the priority order
+## Status: blocked on step 6 alone; every earlier gate has cleared
 
-**No step 7 ticket (any of STATE-01 through STATE-08 below) is picked up until every earlier `docs/DESIGN.md` §13 step is complete on `main`.** Work lands on `dev` first and reaches `main` in batches; earlier references to `dev` in this document reflect the current, ongoing workflow, not historical phases.
-The build order (§13) is strictly sequential, so step 7 waits behind:
+**No step 7 ticket (any of STATE-01 through STATE-08 below) is picked up until every earlier `docs/DESIGN.md` §13 step is complete on `dev`.** `dev` is the integration branch (`main` is the release branch; both exist on the remote, and work lands on `dev` first).
+The build order (§13) is strictly sequential, so step 7 waited behind:
 
 1. **§13 step 3 (SAST) finishes**: the `nosql.rules` and `ldap.rules` packs land.
-   **Still outstanding**: the generated status block in `AGENTS.md` reports SAST at 8 of 10, with exactly those two outstanding.
+   **CLEARED.** The generated status block in `AGENTS.md` reports SAST at `Landed 10 of 10`, `Outstanding: none`.
 2. **§13 step 4 (SCA + IaC) completes.**
-   **This was a real blocker and it is now CLEARED**, recorded here rather than deleted so that a reader can see the gate held and was discharged rather than quietly dropped.
+   **CLEARED.**
    The generated status block reports both halves complete: SCA 6 of 6 ecosystems, IaC 6 of 6 packs, with nothing outstanding in either.
 3. **§13 step 5 (DAST) completes.**
-   **Still outstanding**: zero of DAST-01 through DAST-30 (`docs/STEP5-DAST-PLAN.md`) has landed and `modules/dast/` does not exist.
+   **CLEARED.** Every DAST-01 through DAST-36 ticket has landed (`docs/STEP5-DAST-PLAN.md`'s own status section); `modules/dast/` exists in full.
 4. **§13 step 6 (Cloud) completes.**
    **Still outstanding**: zero of CLOUD-01 through CLOUD-34 / POSTURE-01 through POSTURE-04 (`docs/STEP6-CLOUD-PLAN.md`) has landed and `modules/cloud/` does not exist.
    `lib/awscli.sh` is the one exception, and its absence must not be cited as evidence here, because it is no longer absent: the `aws_ro` chokepoint landed ahead of step 6 in a credential-less pass (`AGENTS.md`, "AWS module: what exists ahead of step 6"), leaving `modules/cloud/` as the thing that says step 6 is unstarted.
 
 The generated status block in `AGENTS.md` (mirrored in `README.md` and `docs/FOUNDATION.md`) is what says whether these gates have lifted - read it there, not this snapshot.
 The gate matters more for step 7 than for any earlier step: tension 12's coverage-cell table spans every module's scope kind (`path-root`, `target`, `account-region`, `scope-key`), and building classification before the `target` and `account-region` producers exist would leave those arms of the table untestable against real emitters.
+`target` cells now have a real producer (DAST landed), so only the `account-region` arm still lacks one; that is what keeps gate item 4 (step 6) open.
 Steps 8 and 9 are explicitly NOT in this gate: both have landed early, out of step order, and step 7 neither depends on them nor waits for anything behind them.
 
-**Step 7 now sits SECOND in the project's priority order**, behind step 5 (DAST) and ahead of both step 10 (SARIF plus the compliance report) and step 6 (live cloud scanning).
-That priority order is in genuine tension with gate item 4 above, and this plan does not pretend to resolve it: the owner's order puts step 7 ahead of step 6, while §13's sequential build order puts step 6 first, and the paragraph above gives a technical reason - not merely a sequencing preference - for wanting step 6's `account-region` producer to exist before classification is built and tested against it.
-Whoever picks up STATE-01 has to settle that explicitly, rather than reading either the priority order or the gate as having silently overridden the other.
-Note that the same question does not arise for gate item 3: step 5 is both ahead of step 7 in the build order and ahead of it in priority, so it blocks step 7 either way.
+**Step 7's place in the project's priority order, now that DAST has landed, is a question for `ROADMAP.md` to settle rather than this plan** - see that document for the current ordering.
+The technical tension this section used to flag between step 7's priority and step 6's sequential gate (wanting step 6's `account-region` producer to exist before classification is tested against it) is unchanged: whoever picks up STATE-01 while step 6 is still open inherits that same open question for the `account-region` arm specifically, even though the `target` arm is now unblocked by DAST.
 
 Whoever lifts this block should update the "Status" line above, and the two build-order sections named in "Doc-update process" below, in the same change that starts STATE-01.
 

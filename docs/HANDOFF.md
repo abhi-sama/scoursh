@@ -1,6 +1,12 @@
 # Handoff
 
 A cold-start brief, written 2026-08-15.
+**Sections 1 and 2 describe a point-in-time snapshot from before DAST (`docs/DESIGN.md` §13 step 5)
+existed; DAST has since landed in full (`docs/STEP5-DAST-PLAN.md`'s own status section, mirrored in
+`AGENTS.md`'s "Build order and where we are"), so most of both sections is now historical rather than
+current. They are corrected in place below rather than deleted, since the traps and lessons around them
+still hold; for current build state, read `AGENTS.md`'s "Build order and where we are" instead of this
+file.**
 
 This document does not restate the plan.
 [`ROADMAP.md`](../ROADMAP.md) owns what is left at the project level, [`docs/STEP5-DAST-PLAN.md`](STEP5-DAST-PLAN.md) owns the running-endpoint scanner's 36-ticket sequence, and [`AGENTS.md`](../AGENTS.md) owns the build order and the sharp edges.
@@ -37,42 +43,46 @@ Before this week that tooling had been reviewed as code but never observed worki
 Aggregate request rate measured flat from 1 to 32 concurrent worker processes and never reaching the ceiling.
 This matters because the failure mode is invisible in single-process tests: per-process state means `--jobs 8` sends eight times the traffic.
 
-**`scan.sh dast` dispatches for real** and honestly reports covering nothing, because no phase script exists yet.
+**`scan.sh dast` dispatches for real, and now covers everything the plan named.**
+At the time this brief was written no phase script existed yet; every DAST-01 through DAST-36 ticket
+has since landed, so a `scan.sh dast` run against an authorized target exercises auth/crawl, every
+passive/safe-active/injection check, and the tier-5 application-layer checks (see
+`docs/STEP5-DAST-PLAN.md` for the full per-ticket record).
 
-**Not verified by execution**, and worth knowing:
-`--paranoid`'s live sampling path has never been exercised against a real kernel socket table on any platform.
-Its parsers are tested against recorded output and its abort logic against a scripted sampler.
-The macOS CI leg passes green because every test routes through stubs.
+**`--paranoid`'s live sampling path has since been exercised against a real kernel socket table**,
+which it had not been at the time this section was written.
+`tests/suites/paranoid.sh`'s "REAL lsof" section runs the real sampler, unmocked, against sockets the
+test itself opens - including a real `scan_main --paranoid` run whose descendant process holds a real
+out-of-allowlist socket, observed by the real `lsof` and aborted with exit 3 end to end.
+It stays a no-egress test (connected UDP sockets record a peer without a packet leaving the machine),
+and it is what makes the macOS CI leg's green result trustworthy rather than an artifact of every test
+routing through stubs.
 
 ## 2. What comes next
 
-The running-endpoint scanner is the priority and both of its blockers are discharged.
-Two of 36 tickets are done.
+**All 36 DAST tickets shipped** (this section originally tracked "2 of 36 done" and DAST-04 as the
+next thing to build; both are stale - the table below is kept only as a record of the shape of that
+work, not as a to-do list):
 
-The critical path is short and the tail is wide:
-
-| Stage | Tickets | Parallel |
+| Stage | Tickets | Landed |
 |---|---|---|
-| Session and crawling | DAST-03, DAST-04 | mostly |
-| Passive checks | DAST-05 to DAST-11 | all seven are peers |
-| Safe active | DAST-12, DAST-13 | both |
-| Injection probes | DAST-14 to DAST-25 | all twelve are peers |
-| Auth, API, access control | DAST-26 to DAST-30 | mostly |
-| Safety defaults | DAST-31 to DAST-36 | see the plan |
-| Guided interactive mode | GUIDE-01 to GUIDE-07 | see the plan |
+| Session and crawling | DAST-03, DAST-04 | yes |
+| Passive checks | DAST-05 to DAST-11 (plus DAST-30) | yes |
+| Safe active | DAST-12, DAST-13 | yes |
+| Injection probes | DAST-14 to DAST-25 | yes |
+| Auth, API, access control | DAST-26 to DAST-29 | yes |
+| Safety defaults | DAST-31 to DAST-36 | yes |
+| Guided interactive mode | GUIDE-01 to GUIDE-07 | **not built** - genuinely still open, see `docs/STEP5-DAST-PLAN.md`'s own section |
 
-**DAST-04, the crawler, is the next thing to build.**
-Its output, the endpoint and parameter inventory, is what all 26 remaining checks consume, so its shape matters more than its speed.
-Two things it must get right:
+DAST-04 (the crawler) shipped exactly as scoped: it sends real traffic through the landed rate
+limiter/budget/breaker, and it records the JavaScript-rendered-app limitation as a `coverage_gap` in
+`run.json` and the report rather than reporting a thin crawl as clean (see `AGENTS.md`'s "DAST-04...
+has landed" paragraph for the measured detail: 13 endpoints/0 parameters against the local
+Angular-based test target with `spa_shaped=1` recorded).
 
-- It is the first ticket that sends real traffic.
-  The rate limiter, budget and breaker are landed and measured, so use them; do not add a second network path.
-- It must ship an honest hole.
-  scoursh cannot crawl a JavaScript-rendered application, and the plan accepts that as a stated limitation rather than something to solve.
-  A crawl that finds three endpoints in a hundred-endpoint single-page app and reports success is a silent false negative.
-  The ticket's own acceptance criteria require that gap to appear in `run.json` and the report, not merely in prose.
-
-Three whole steps are unstarted and are gated behind DAST: persistent run state (step 7), SARIF and the compliance report (step 10), and live cloud scanning (step 6).
+With DAST complete, three steps are next in the queue rather than gated behind it: persistent run
+state (step 7), live cloud scanning (step 6), and SARIF plus the compliance report (step 10). See
+`ROADMAP.md` for the current priority ordering among them.
 
 ## 3. Traps that cost real time this week
 
@@ -120,24 +130,35 @@ An inert pack passes every "stays quiet" assertion, so a pack needs an assertion
 
 Ordered by what a user notices first.
 
-**Advisory severities are silently misgraded.**
-The bulk importer reads only a vendor-specific severity field and never OSV's standard top-level CVSS array, which is the normal shape for several ecosystems.
-Everything it cannot read defaults to medium with no count and no warning.
-For a tool whose `--fail-on` gates on severity, that quietly misgrades a large slice of the database.
-This is the most consequential open defect.
+**Advisory severity for CVSS-only sources is still not scored, but it's a documented default now, not a silent one.**
+The importer reads `database_specific.severity` (the vendor field GHSA-backed sources use) and never
+attempts to score OSV's standard top-level CVSS vector, which is the normal shape for PyPI/Go sources -
+`tools/vendor-engines.sh`'s own header states this is a "stated, not hidden, limitation" and defaults
+an unreadable severity to `medium` deliberately (a conservative floor, not "absent is low risk").
+No count of how many rows hit that default is recorded anywhere, which is a real, still-open gap for a
+tool whose `--fail-on` gates on severity.
 
-**One malformed record aborts a whole ecosystem import** and the operator is given no way to find the offending advisory.
+**One malformed record still aborts a whole ecosystem import, but the operator can now find it.**
+`tools/vendor-engines.sh` prints the specific archive member name in its failure message before
+exiting; the import still stops rather than skipping the one bad record and continuing.
 
-**Five flags are accepted and do nothing**: `--format`, `--baseline`, `--jobs`, `--authed`, and `--fail-on-new`, which is currently identical to `--fail-on`.
-All are documented as inert in README's known-gaps section.
+**Four flags are accepted and do nothing**: `--format`, `--baseline`, `--jobs`, and `--fail-on-new`,
+which is currently identical to `--fail-on`.
+`--authed` is no longer in this list - `modules/dast/authz.sh` and the crawl/injection phases spend
+the session it acquires. All four remaining inert flags are documented in README's known-gaps section.
 
 **There is no per-subcommand help**, so nothing warns an operator that a command is unbuilt.
 
-**Two ecosystems' coverage warnings collide.**
-When a project has both npm and Python dependencies, both emit a "could not check these versions" roll-up with an identical fingerprint, so deduplication drops one and the survivor reports only npm's count.
+**Two ecosystems' coverage-warning collision is fixed.**
+`modules/sca/engine.sh`'s shared roll-up accumulator (its own "section 8a") now merges the
+"could not check these versions" roll-up across all ecosystems into one finding whose breakdown names
+each of them, rather than emitting one per ecosystem that then collide and dedupe down to one.
 
-**`--paranoid` is Linux-only in practice** and refuses the whole scan with exit 4 elsewhere.
-Either it gets a macOS backend or the limitation is stated in the docs; that decision is open.
+**`--paranoid` now has a macOS backend (`lsof`) and no longer refuses the scan there.**
+`lib/paranoid.sh` tries `ss`, then `strace -f -e trace=connect`, then `lsof` in order; the first two are
+Linux-only and `lsof` is what macOS ships. It still refuses with exit 4 only when none of the three is
+usable. `tools/run-in-netns.sh` (the stronger, guarantee-tier mechanism) remains Linux-only with no
+macOS equivalent - that gap is real and documented, not the `--paranoid` gap this note originally named.
 
 **Two prose debts from the rate limiter.**
 The register question about rate buckets being keyed per scope target rather than per resolved host, and a risk-list entry for the clock-granularity fallback that silently quarters the effective rate.
@@ -145,10 +166,13 @@ Both conditions warn at runtime and land in `run.json`; the written record is wh
 
 ## 5. Not ours
 
-**CI has been failing on billing since 2026-08-02.**
-Jobs are created and marked failed within two seconds with zero steps executed.
-Everything landed since then is verified by local runs only, and that is now a substantial amount of code.
-The CI runbook still asserts in the present tense that three required checks run on every push.
-
-Clearing that is an account action, not a code change.
-It is the single highest-value thing an operator can do for this project right now, because the local suite is thorough but runs on one platform, and the whole point of the dual-runner matrix is catching GNU versus BSD divergence that a single machine cannot see.
+**CI is dormant rather than failing, and that framing has changed since this brief was written.**
+At the time of writing, hosted jobs were created and marked failed within two seconds with zero steps
+executed. `.github/workflows/ci.yml`'s `suite` job now carries `if: ${{ !github.event.repository.private }}`,
+which the Actions scheduler evaluates before ever requesting a runner - so on this private repository
+the job is **skipped**, not attempted, and a push or PR produces no failing status at all, only a
+skipped one. `docs/CI-RUNBOOK.md` documents this accurately today (it no longer asserts required
+checks run on every push); everything landed continues to be verified by local runs only
+(`tools/daily-suite.sh`, on a schedule), and by standing captain instruction CI does not gate merges on
+this repository. The condition flips to real, hosted, gating checks automatically the moment the
+repository goes public - no workflow edit needed.

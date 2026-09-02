@@ -5,10 +5,10 @@
 `scoursh` is an egress-restricted, shell-based security scanner - meaning it has no back-channel to
 anyone. It never phones home, never checks for updates, never fetches its own rules or advisories
 from a server, and never sends telemetry to its maintainers or anyone else. One tool, one entry
-point, one report - covering source code (SAST), dependencies (SCA), and infrastructure-as-code
-(IaC) today, all three with **zero network calls of any kind**. A running-endpoint scanner (DAST)
-and live cloud posture checking (CSPM) are already designed and next in line; by nature, those two
-have to talk to *something* - but only ever to a target *you* explicitly pre-authorized, never
+point, one report - covering source code (SAST), dependencies (SCA), infrastructure-as-code (IaC),
+and a running endpoint (DAST) today, all with **zero network calls except the ones you explicitly
+authorized**. Live cloud posture checking (CSPM) is already designed and next in line; by nature, it
+has to talk to *something* - but only ever to a target *you* explicitly pre-authorized, never
 anywhere scoursh decided on its own. See [Why egress-restricted, not air-gapped](#why-egress-restricted-not-air-gapped)
 for exactly where the line is drawn and why.
 
@@ -39,8 +39,8 @@ exhaustively.*
 
 ## Features
 
-- **Four scan surfaces in one tool** - source code, dependencies, infrastructure-as-code, and
-  secrets, sharing one CLI, one exit-code contract, and one report.
+- **Five scan surfaces in one tool** - source code, dependencies, infrastructure-as-code, secrets,
+  and a running endpoint (DAST), sharing one CLI, one exit-code contract, and one report.
 - **Egress-restricted, enforced by destination, precisely defined** - scoursh itself has no
   back-channel to anyone: no update check, no telemetry, no rule registry to fetch from. SAST, SCA,
   and IaC make zero network calls, full stop. The only traffic that ever leaves the host at all is to
@@ -89,14 +89,14 @@ lifecycle they run:
 | **SCA** | Open source dependencies | Build / CI-CD pipeline | ✅ Available - `scan.sh sca`, once you have built an advisory database ([Installation](#installation)); see also [Known gaps](#known-gaps) |
 | **IaC** | Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose | CI-CD pipeline | ✅ Available - `scan.sh iac` |
 | **Secret detection** | Git repositories / files | Commit / pre-commit | ✅ Available - built into `sast` (`--history` replays across git history) |
-| **DAST** | A running application | Staging / production | 🚧 Designed, not built - the CLI grammar and scope gate exist; no scan engine yet |
+| **DAST** | A running application | Staging / production | ✅ Available - `scan.sh dast`, once you authorize a target in `config/scope.conf` |
 | **CSPM** | Live cloud infrastructure | Production / runtime | 🚧 Designed, not built - the read-only AWS wrapper exists ahead of schedule; `scan.sh cloud` does nothing yet, with or without `--live` |
 | **Container image scanning** | Built Docker images (layers, installed packages) | Build / registry | ⛔ Not planned - `scoursh` lints Dockerfile/compose *source* as IaC, not built image layers |
 | **Network / host scanning** | Servers, ports, OS patches | Operations / maintenance | ⛔ Not planned |
 
-So today, `scoursh` covers everything on the *static* side of that list - before anything ever
-runs, and before any code ships - in a single pass over a local checkout.
-The dependency half of that coverage stays inert until you build `data/advisories.db` yourself
+So today, `scoursh` covers everything on that list except live cloud posture (CSPM) - static
+analysis of a local checkout, and dynamic testing of a running endpoint you've authorized.
+The dependency half of the static coverage stays inert until you build `data/advisories.db` yourself
 ([Installation](#installation)).
 See [What's next](#whats-next) for the rest.
 
@@ -118,6 +118,17 @@ See [What's next](#whats-next) for the rest.
   critical findings; it is fixed, and covered by a regression test.
 - **IaC** (`modules/iac/`) - six rule packs: Terraform, Kubernetes manifests, Helm chart sources,
   CloudFormation templates, Dockerfile, and docker-compose.
+- **DAST** (`modules/dast/`) - crawls and tests a running endpoint you've authorized in
+  `config/scope.conf`: authentication/session handling, passive checks (security headers, cookies,
+  TLS, CORS, information leakage, mixed content), safe-active checks (content discovery, method
+  enumeration), injection probes (SQLi, XSS, command injection, path traversal, SSTI, NoSQLi, LDAPi,
+  CRLF, XXE/SSRF, prototype pollution, open redirect, host-header injection), and application-layer
+  checks (GraphQL introspection, rate limiting, JWT, object-level authorization/IDOR). All of it is
+  bound by a rate limiter, a per-run request budget, and a circuit breaker, and every intrusive tier
+  requires `--i-own-target` naming the exact target. This module isn't covered by the generated
+  status table below - that table tracks only `docs/DESIGN.md`'s §6.3/§6.5/§6.6/§8.2 static-analysis
+  catalog - see [`docs/STEP5-DAST-PLAN.md`](docs/STEP5-DAST-PLAN.md) for its own per-check landing
+  record.
 
 The exact, generated breakdown of every rule pack and ecosystem - how many checks each carries and
 what's still outstanding - is in [Build status](#build-status) below; it's regenerated from the
@@ -339,12 +350,13 @@ given - the run is unaffected, only the coverage gap is logged.
 
 ## Build status
 
-Three modules are available today and produce real findings: `sast`, `iac`, and `sca` - the last of
-those once you have built `data/advisories.db` ([Installation](#installation)).
-`dast` and `cloud` are designed but not built; see [What's next](#whats-next).
+Four modules are available today and produce real findings: `sast`, `iac`, `sca` - the last of those
+once you have built `data/advisories.db` ([Installation](#installation)) - and `dast`, once you
+authorize a target. `cloud` is designed but not built; see [What's next](#whats-next).
 
-Exactly which rule packs and ecosystems those three modules cover is generated below straight from
-the repository tree, so it can't drift out of sync with what's actually on disk. In this table,
+Exactly which rule packs and ecosystems the three static-analysis modules cover is generated below
+straight from the repository tree, so it can't drift out of sync with what's actually on disk (`dast`
+isn't part of this table - see the DAST bullet above). In this table,
 **landed** is the generator's own term for "built and covered by a passing test" - everything else
 follows from that.
 
@@ -464,12 +476,12 @@ the tool rather than in a pipeline:
   against, so there is nothing yet for it to narrow the gate down to.
 - **`--jobs N` is parsed and ignored.**
   Every scan is single-worker and records `single_worker_no_parallel_scan_yet` in its own output.
-- **`--authed` works, but only the session half of what it implies exists yet.**
-  It belongs to `dast`, and `modules/dast/auth.sh` now reads it: with a `config/auth.conf`
-  (`config/auth.conf.example` is the annotated template) it really does log in, keep a session, and
-  re-authenticate once on a `401`.  What does not exist yet is any check that USES that session - the
-  cross-user and API checks arrive later in step 5 - so an `--authed` run acquires a session, records
-  that it did, and then has nothing to spend it on.
+- **`--authed` works, and DAST's checks use the session it acquires.**
+  It belongs to `dast`, and `modules/dast/auth.sh` reads it: with a `config/auth.conf`
+  (`config/auth.conf.example` is the annotated template) it logs in, keeps a session, and
+  re-authenticates once on a `401`. `modules/dast/authz.sh` (object-level authorization / IDOR) and
+  the crawl/injection phases spend that session directly; with two configured identities, `authz.sh`
+  also probes cross-user access.
 - **There is no per-subcommand help.**
   `scan.sh dast --help`, `scan.sh cloud --help`, `scan.sh diff --help`, and `scan.sh sca --help` all
   print the same global usage and exit 0, so nothing there tells you a subcommand is unbuilt.
@@ -483,23 +495,17 @@ The full, dependency-ordered build plan lives in [`docs/DESIGN.md`](docs/DESIGN.
 running account of progress in [`CLAUDE.md`](CLAUDE.md)'s "Build order and where we are" section.
 What's left, in priority order:
 
-1. **DAST** (`scan.sh dast`) - the running-endpoint scanner, and now the top priority.
-   A full, dependency-ordered ticket plan already exists
-   ([`docs/STEP5-DAST-PLAN.md`](docs/STEP5-DAST-PLAN.md)), the CLI grammar and the scope gate are in
-   place, and the HTTP chokepoint (`lib/http.sh`) is complete and tested - including the rate limiter,
-   the per-run request budget and the circuit breaker every DAST request pays.
-   Tier 0 (that safety layer) is complete, and tier 1 is half done: `modules/dast/auth.sh` -
-   authentication and session acquisition - has landed, and is exercised both against mock responses
-   and against a real, local, self-hosted test target (`tools/dast-test-target.sh`).
-   What is still missing is the part that finds things: the crawler (`crawl.sh`) that builds the
-   endpoint inventory, and every check that reads it.
-   Everything that originally sat in front of step 5 is cleared.
-2. **Persistent run state** (`state/`) - needed before `--baseline` suppression, a `--fail-on-new` that
+**DAST is done** - `scan.sh dast` (`modules/dast/`) is a complete engine: authentication, crawling,
+every passive/safe-active/injection/application-layer check `docs/STEP5-DAST-PLAN.md` planned, and
+the tension-16 rate limiter/budget/circuit breaker every request pays. What remains, in priority
+order:
+
+1. **Persistent run state** (`state/`) - needed before `--baseline` suppression, a `--fail-on-new` that
    means anything, and the `diff`/`report` subcommands do real work; all are currently no-ops.
    A full ticket plan exists here too ([`docs/STEP7-STATE-PLAN.md`](docs/STEP7-STATE-PLAN.md)).
-3. **SARIF output** - `--format sarif` is accepted but nothing emits it yet.
-4. **The compliance-mapping report.**
-5. **Live cloud/CSPM scanning** (`scan.sh cloud`) - also fully planned
+2. **SARIF output** - `--format sarif` is accepted but nothing emits it yet.
+3. **The compliance-mapping report.**
+4. **Live cloud/CSPM scanning** (`scan.sh cloud`) - fully planned
    ([`docs/STEP6-CLOUD-PLAN.md`](docs/STEP6-CLOUD-PLAN.md)), and last in the queue.
    The subcommand is inert today with or without `--live`; there is no `modules/cloud/` in the tree at
    all.
