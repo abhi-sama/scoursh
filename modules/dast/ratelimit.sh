@@ -193,11 +193,11 @@ _dast_ratelimit_phase() {
   if declare -F dast_scope_skips_reset >/dev/null; then
     dast_scope_skips_reset
   fi
-  local kept=1
+  local endpoint_in_scope=1
   if declare -F dast_endpoint_keep >/dev/null; then
-    dast_endpoint_keep "$url" "$target" || kept=0
+    dast_endpoint_keep "$url" "$target" || endpoint_in_scope=0
   fi
-  if (( ! kept )); then
+  if (( ! endpoint_in_scope )); then
     run_record coverage_reduction "module=dast reason=burst_endpoint_out_of_scope check=ratelimit target=$target - the chosen endpoint is not authorised by config/scope.conf (${_DAST_SCOPE_REASONS:-declined by the scope gate}) and was not requested."
     run_record coverage_gap "dast ratelimit: the endpoint chosen for the burst probe on target '$target' is not in config/scope.conf, so nothing was sent and the check is uncovered."
     return 0
