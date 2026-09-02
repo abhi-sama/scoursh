@@ -1,0 +1,71 @@
+{
+  "run_id": "2026-06-01T09-00-00Z",
+  "scan_root_id": "git-remote:https://example.invalid/org/proj",
+  "fp_schema": "fp/1",
+  "tool_version": "0.9.0",
+  "completed_at": "2026-06-01T09:05:00Z",
+  "covered_checks": {
+    "SAST-PY-EVAL-01": {
+      "scope": "path-root",
+      "cells": ["src", "."],
+      "rule_digest": "digestA"
+    },
+    "SAST-HIST-AWSKEY-01": {
+      "rule_digest": "digestB",
+      "cells": ["."],
+      "history_boundary": {
+        "bound_by": "window-days",
+        "objects_scanned": 12345,
+        "oldest_commit_time": "2025-08-01T00:00:00Z",
+        "oldest_commit": "deadbeef"
+      },
+      "scope": "path-root"
+    },
+    "DAST-XSS-REFLECT-01": {
+      "scope": "target",
+      "cells": ["staging"],
+      "rule_digest": "digestC"
+    },
+    "CLOUD-EC2-SG_OPEN-01": {
+      "scope": "account-region",
+      "cells": ["123456789012/us-east-1", "123456789012/eu-west-1"],
+      "rule_digest": "digestD"
+    },
+    "POSTURE-SAML-ENFORCED-01": {
+      "scope": "scope-key",
+      "cells": ["prod-sso"],
+      "rule_digest": "digestE"
+    }
+  },
+  "findings": [
+    {
+      "check_id": "SAST-PY-EVAL-01",
+      "fingerprint": "fp-ordinary-1",
+      "severity": "high",
+      "cell": "src",
+      "first_seen": "2026-05-01T00:00:00Z",
+      "last_seen": "2026-06-01T09:05:00Z",
+      "suppressed": false
+    },
+    {
+      "fingerprint": "fp-history-1",
+      "check_id": "SAST-HIST-AWSKEY-01",
+      "cell": ".",
+      "severity": "critical",
+      "first_seen": "2026-04-01T00:00:00Z",
+      "last_seen": "2026-06-01T09:05:00Z",
+      "suppressed": true,
+      "oldest_reaching_commit_time": "2025-08-15T00:00:00Z"
+    },
+    {
+      "fingerprint": "fp-composite-1",
+      "check_id": "COMPOSITE-TOKEN-HIJACK",
+      "cell": null,
+      "severity": "critical",
+      "first_seen": "2026-06-01T00:00:00Z",
+      "last_seen": "2026-06-01T09:05:00Z",
+      "suppressed": false,
+      "contributors": ["fp-ordinary-1", "fp-history-1"]
+    }
+  ]
+}

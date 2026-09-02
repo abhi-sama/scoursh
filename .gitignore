@@ -1,6 +1,13 @@
 # Run output and run-to-run state are artifacts, never sources.
-reports/
-state/
+#
+# ANCHORED WITH A LEADING SLASH, same reasoning as /pnpm-lock.yaml below: an
+# unanchored `state/` matches at ANY depth and silently swallowed this
+# ticket's own tests/fixtures/state/ fixtures (STATE-01, lib/state.sh) until
+# it was anchored - already-tracked fixtures would have survived, so the
+# damage would have stayed invisible until the next state/ fixture was
+# silently never added.
+/reports/
+/state/
 
 # Suite-run artifacts, never sources.  tools/daily-suite.sh writes its own
 # results under $SCOURSH_DAILY_DIR (outside the checkout), but a leg run by hand

@@ -5346,6 +5346,24 @@ section and this ticket's description - **that gate is now fully discharged: ste
 complete**, so step 6 remains not-started only for want of anyone picking up CLOUD-01, not because it
 is still blocked.
 
+**Step 7 (persistent run state) has now started: STATE-01 (`lib/state.sh`) has landed**, ahead of step
+6, per `docs/STEP7-STATE-PLAN.md`'s own status - that plan's gate blocks *classification*
+(STATE-03 through STATE-05) on step 6's `account-region` producer existing, and STATE-01 makes no
+classification decision at all, so the gate does not reach it.
+It ships the frozen `state/<run-id>.json` shape this tension's own RESOLUTION specifies (`fp_schema`,
+`tool_version`, `run_id`, `completed_at`, `scan_root_id`, `covered_checks`, `findings`), a write-then-rename
+persisting writer that prunes to a retain count, and a loader that treats a missing or unparsable file as
+"no prior state" while rejecting a structurally malformed record - a duplicate fingerprint, a finding
+missing a required field, an invalid `scope`, a non-boolean `suppressed`, an empty `cells` array - rather
+than half-loading it.
+`tests/suites/state.sh` exercises all four coverage-scope kinds this section's own table names, including
+`account-region` - schema-only, against a hand-authored fixture, since no real cloud emitter exists yet to
+produce one, a gap recorded explicitly in `lib/state.sh`'s own header rather than silently assumed
+covered.
+STATE-01 wires into nothing: `scan.sh`, every module's coverage behaviour, and the `diff` command stub
+are unchanged - coverage recording (STATE-02) and the classification engine (STATE-03 through STATE-05)
+remain unbuilt.
+
 **Step 9 (optional engine adapters) now has a real scaffold - `docs/ADAPTERS.md` and
 `tools/vendor-engines.sh` both exist - landed out of sequence, ahead of step 3's then-remaining
 `nosql`/`ldap` packs and steps 5/6, because it cost nothing those blocked steps and ships no per-engine
@@ -5469,7 +5487,8 @@ landed early, out of its normal step-9 sequence, as part of this ticket (immedia
 `lib/awscli.sh` landed early too, out of its normal step-6 sequence, as part of a credential-less pass
 that advanced only what needed no AWS account (see "AWS module: what exists ahead of step 6" in
 `AGENTS.md`), so the read-only chokepoint exists while `modules/cloud/aws/live/*.sh` and the rest of
-step 6 do not; and SARIF, the compliance report, and `state/` remain unbuilt.
+step 6 do not; `state/` now has its schema, writer and loader (`lib/state.sh`, STATE-01, above) but no
+coverage recording or classification yet; and SARIF and the compliance report remain unbuilt.
 
 <!-- BEGIN GENERATED STATUS -->
 <!--
