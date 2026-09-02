@@ -5289,6 +5289,21 @@ to offer; the 86400s maximum stays because it is arithmetic rather than safety -
 (step 6), persistent run state (step 7), and SARIF plus the compliance report (step 10).
 `docs/STEP5-DAST-PLAN.md`, not this entry, is the authority for the per-ticket landing detail.
 
+**Step 10's first ticket, SARIF-01, has landed.** `lib/findings.sh` gained `_finding_default_logical`,
+called from `finding_emit` immediately before the fingerprint is computed: it populates
+`logical_kind`/`logical_fqn` from the profile's own `loc_*` fields wherever the emitter has not already
+set them - `path`/`history` get `kind=file`, `fqn=<loc_path>:<loc_line>`; `dast` gets `kind=endpoint`,
+`fqn=<loc_target>:<loc_method> <loc_path_template>#<loc_param_name>` (this tension's shape, verbatim);
+`cloud` gets `kind=resource`, `fqn=<loc_resource_key>`; `posture` gets `kind=control`,
+`fqn=<loc_control_id>`.  `sca` and `derived` are untouched, since `modules/sca/` and the composite path
+already set their own identity before `finding_emit` runs.  Neither field is a member of
+`_fp_components_for` for any profile, so no fingerprint moves; `tests/suites/findings.sh` proves it by
+recomputing `finding_fingerprint` after the default runs and asserting it against the value already
+written, for every profile, plus a single run emitting five profiles at once asserting none is left
+empty - the reading a per-module setter (rather than this one control point in `finding_emit`) fails
+under.  `docs/STEP10-SARIF-PLAN.md`'s own status section is the authority for the per-ticket landing
+detail; SARIF-02 (the generated location artifact writer) is now unblocked.
+
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is complete: both NETNS-01 and PARANOID-01 have
 shipped.**
 `docs/STEP8-PARANOID-PLAN.md` split `docs/DESIGN.md` §13 step 8 per tension 20's RESOLUTION into
@@ -5488,7 +5503,8 @@ landed early, out of its normal step-9 sequence, as part of this ticket (immedia
 that advanced only what needed no AWS account (see "AWS module: what exists ahead of step 6" in
 `AGENTS.md`), so the read-only chokepoint exists while `modules/cloud/aws/live/*.sh` and the rest of
 step 6 do not; `state/` now has its schema, writer and loader (`lib/state.sh`, STATE-01, above) but no
-coverage recording or classification yet; and SARIF and the compliance report remain unbuilt.
+coverage recording or classification yet; SARIF-01 has since landed (above) while the rest of the SARIF
+emitter and the compliance report remain unbuilt.
 
 <!-- BEGIN GENERATED STATUS -->
 <!--

@@ -673,4 +673,315 @@ out=$(classify_derived COMPOSITE-TEST-CHAIN . false '' "$PS" "$CN" "$CP" '')
 assert_eq unknown "${out%%$'\t'*}" 'nothing was learned, so nothing is claimed'
 assert_contains "$out" contributors-unavailable 'and the reason is recorded'
 
+# ---------------------------------------------------------------------------
+printf '\n-- tension 22 / SARIF-01: a profile-driven logical-identity default --\n'
+# ---------------------------------------------------------------------------
+# _finding_default_logical (lib/findings.sh) fills logical_kind/logical_fqn
+# ONCE in finding_emit, for whichever profile the emitter left unset.  Every
+# case below is written to fail under the reading the plan names as the real
+# risk: a per-module setter that reaches only one profile and leaves the rest
+# empty, or a default that reaches into a field _fp_components_for actually
+# hashes.
+#
+# The fingerprint check in each case is "recompute finding_fingerprint from
+# the CURRENT _F state, right after finding_emit populated logical_kind/fqn,
+# and assert it matches the fingerprint finding_emit already wrote" - since
+# _fp_components_for never names logical_kind/logical_fqn, that recomputation
+# is only ever identical to the emitted value if the default touched nothing
+# a profile's fingerprint reads.  This is the executable form of "the merged
+# findings.jsonl is byte-identical before and after": a manual comparison of
+# tests/e2e/fixture-scan.sh's real output before and after this change (every
+# one of its findings already sets logical_kind itself, so the guard below
+# never fires for it) confirmed findings.jsonl, findings.fields,
+# findings.json, report.md and report.html are byte-identical modulo
+# first_seen/last_seen/started_at/completed_at; the case below exercises the
+# opposite path - an emitter that does NOT set the field, which is what every
+# real sast/dast/cloud/posture emitter in the tree does today.
+
+t_case 'path profile (sast, non-history): kind=file, fqn=<loc_path>:<loc_line>'
+new_run sarif01-path
+d=$SCOURSH_RUN_DIR
+occurrence_reset_unit app.py
+finding_new
+finding_set check_id SAST-X-Y-01
+finding_set module sast
+finding_set title t
+finding_set base_severity high
+finding_set cwe none
+finding_set owasp none
+finding_set loc_path app.py
+finding_set loc_line 12
+finding_set cell .
+finding_set_match 'eval(x)'
+finding_set_evidence 'eval(x)'
+finding_emit
+assert_eq "${_F[fingerprint]}" "$(finding_fingerprint)" \
+  'recomputing the fingerprint after logical_kind/fqn are populated reproduces the same value (fails if the default touches a component field)'
+findings_merge "$d"
+finding_decode "$(/usr/bin/grep 'check_id=SAST-X-Y-01' "$d/findings.fields")"
+assert_eq file "${_DF[logical_kind]}" 'defaults to kind=file'
+assert_eq 'app.py:12' "${_DF[logical_fqn]}" 'defaults to fqn=<loc_path>:<loc_line>'
+
+t_case 'history profile (SAST-HIST-*): kind=file, fqn=<loc_path>:<loc_line>'
+new_run sarif01-history
+d=$SCOURSH_RUN_DIR
+finding_new
+finding_set check_id SAST-HIST-AWSKEY-01
+finding_set module sast
+finding_set title t
+finding_set base_severity critical
+finding_set cwe CWE-798
+finding_set owasp A07:2021
+finding_set loc_blob_sha 1111111111111111111111111111111111111111
+finding_set loc_path app.py
+finding_set loc_line 3
+finding_set cell .
+finding_set_match secret
+finding_set_evidence secret
+finding_emit
+assert_eq "${_F[fingerprint]}" "$(finding_fingerprint)" \
+  'the history fingerprint (blob_sha match_digest occurrence) is untouched by the logical default'
+findings_merge "$d"
+finding_decode "$(/usr/bin/grep 'check_id=SAST-HIST-AWSKEY-01' "$d/findings.fields")"
+assert_eq file "${_DF[logical_kind]}" 'history also defaults to kind=file (tension 22 does not distinguish it from path)'
+assert_eq 'app.py:3' "${_DF[logical_fqn]}" 'and to the same <loc_path>:<loc_line> shape'
+
+t_case 'dast profile: kind=endpoint, fqn=<target>:<method> <path_template>#<param>'
+new_run sarif01-dast
+d=$SCOURSH_RUN_DIR
+finding_new
+finding_set check_id DAST-A-B-01
+finding_set module dast
+finding_set title t
+finding_set base_severity medium
+finding_set cwe CWE-79
+finding_set owasp A03:2021
+finding_set loc_target api.example
+finding_set loc_method GET
+finding_set loc_path_template '/users/{id}'
+finding_set loc_param_location query
+finding_set loc_param_name q
+finding_set cell api.example
+finding_set_evidence e
+finding_emit
+assert_eq "${_F[fingerprint]}" "$(finding_fingerprint)" \
+  'the dast fingerprint (target method path_template param_location param_name) is untouched'
+findings_merge "$d"
+finding_decode "$(/usr/bin/grep 'check_id=DAST-A-B-01' "$d/findings.fields")"
+assert_eq endpoint "${_DF[logical_kind]}" 'defaults to kind=endpoint'
+assert_eq 'api.example:GET /users/{id}#q' "${_DF[logical_fqn]}" \
+  'defaults to the exact tension-22 shape, verbatim'
+
+t_case 'a dast fqn built from target-supplied data is redacted exactly like any other field (tension 9)'
+new_run sarif01-dast-redact
+d=$SCOURSH_RUN_DIR
+finding_new
+finding_set check_id DAST-A-B-01
+finding_set module dast
+finding_set title t
+finding_set base_severity medium
+finding_set cwe CWE-79
+finding_set owasp A03:2021
+finding_set loc_target api.example
+finding_set loc_method GET
+finding_set loc_path_template '/users/{id}'
+finding_set loc_param_location query
+finding_set loc_param_name 'Bearer FQNREDACTTOKEN0123456789abcdef'
+finding_set cell api.example
+finding_set_evidence e
+finding_emit
+findings_merge "$d"
+finding_decode "$(/usr/bin/grep 'check_id=DAST-A-B-01' "$d/findings.fields")"
+assert_not_contains "${_DF[logical_fqn]}" 'FQNREDACTTOKEN' \
+  'a credential composed into the default fqn never survives (fails if the default writes _F[logical_fqn] directly instead of through finding_set)'
+assert_contains "${_DF[logical_fqn]}" '<redacted:BEARER:' 'and the redaction placeholder is present in its place'
+
+t_case 'cloud profile: kind=resource, fqn=<loc_resource_key>'
+new_run sarif01-cloud
+d=$SCOURSH_RUN_DIR
+finding_new
+finding_set check_id CLOUD-A-B-01
+finding_set module cloud
+finding_set title t
+finding_set base_severity medium
+finding_set cwe CWE-798
+finding_set owasp A07:2021
+finding_set loc_account_id 123456789012
+finding_set loc_region us-east-1
+finding_set loc_resource_key 'arn:aws:s3:::example-bucket'
+finding_set loc_sub_key none
+finding_set cell '123456789012/us-east-1'
+finding_set_evidence e
+finding_emit
+assert_eq "${_F[fingerprint]}" "$(finding_fingerprint)" \
+  'the cloud fingerprint (account_id region resource_key sub_key) is untouched'
+findings_merge "$d"
+finding_decode "$(/usr/bin/grep 'check_id=CLOUD-A-B-01' "$d/findings.fields")"
+assert_eq resource "${_DF[logical_kind]}" 'defaults to kind=resource'
+assert_eq 'arn:aws:s3:::example-bucket' "${_DF[logical_fqn]}" \
+  'defaults to the ARN alone (docs/STEP6-CLOUD-PLAN.md), not the full account/region/sub_key tuple'
+
+t_case 'posture profile: kind=control, fqn=<loc_control_id>'
+new_run sarif01-posture
+d=$SCOURSH_RUN_DIR
+finding_new
+finding_set check_id POSTURE-A-B-01
+finding_set module posture
+finding_set title t
+finding_set base_severity low
+finding_set cwe none
+finding_set owasp none
+finding_set loc_control_id POSTURE-EDGE-WAF_GEO-01
+finding_set loc_scope_key target-a
+finding_set cell target-a
+finding_set_evidence e
+finding_emit
+assert_eq "${_F[fingerprint]}" "$(finding_fingerprint)" \
+  'the posture fingerprint (control_id scope_key) is untouched'
+findings_merge "$d"
+finding_decode "$(/usr/bin/grep 'check_id=POSTURE-A-B-01' "$d/findings.fields")"
+assert_eq control "${_DF[logical_kind]}" 'defaults to kind=control'
+assert_eq POSTURE-EDGE-WAF_GEO-01 "${_DF[logical_fqn]}" 'defaults to <loc_control_id>'
+
+t_case 'sca profile: an emitters own logical identity is never overwritten'
+new_run sarif01-sca
+d=$SCOURSH_RUN_DIR
+finding_new
+finding_set check_id SCA-A-B-01
+finding_set module sca
+finding_set title t
+finding_set base_severity high
+finding_set cwe CWE-1395
+finding_set owasp A06:2021
+finding_set loc_ecosystem pypi
+finding_set loc_package example
+finding_set loc_advisory_id FIXTURE-1
+finding_set path requirements.txt
+finding_set cell .
+finding_set logical_kind dependency
+finding_set logical_fqn 'pypi:example@1.0.0'
+finding_set_evidence e
+finding_emit
+findings_merge "$d"
+finding_decode "$(/usr/bin/grep 'check_id=SCA-A-B-01' "$d/findings.fields")"
+assert_eq dependency "${_DF[logical_kind]}" 'kept exactly as modules/sca/ set it'
+assert_eq 'pypi:example@1.0.0' "${_DF[logical_fqn]}" \
+  'and the fqn is untouched too (fails if the guard checks the wrong field, or checks none)'
+
+t_case 'derived profile: an emitters own logical identity (kind=composite) is never overwritten'
+new_run sarif01-derived
+d=$SCOURSH_RUN_DIR
+occurrence_reset_unit sameunit.py
+emit_match "$d" SAST-A-A-01 sameunit.py 1 one
+emit_match "$d" SAST-B-B-01 sameunit.py 2 two
+findings_merge "$d"
+mk_derived "$W/sarif01.rules" file SAST-A-A-01 SAST-B-B-01
+derive_findings "$d" "$W/sarif01.rules"
+finding_decode "$(/usr/bin/grep 'check_id=COMPOSITE-TEST-CHAIN' "$d/findings.fields")"
+assert_eq composite "${_DF[logical_kind]}" 'kept exactly as the composite path set it'
+assert_eq 'COMPOSITE-TEST-CHAIN@sameunit.py' "${_DF[logical_fqn]}" 'and the fqn (check_id@correlation) is untouched'
+
+# ---------------------------------------------------------------------------
+t_case 'a single run emitting five profiles leaves none of them with an empty logical identity'
+# ---------------------------------------------------------------------------
+# The reading this fails under: a per-module setter added to, say, only
+# modules/dast/ would pass every case above in isolation (each new_run only
+# ever emits one profile) and still leave sast/cloud/posture/sca findings
+# empty in a real run that emits more than one profile at once - exactly the
+# shape of an ordinary `scan.sh all`.
+new_run sarif01-multi
+d=$SCOURSH_RUN_DIR
+occurrence_reset_unit multi.py
+
+finding_new
+finding_set check_id SAST-M-A-01
+finding_set module sast
+finding_set title t
+finding_set base_severity high
+finding_set cwe none
+finding_set owasp none
+finding_set loc_path multi.py
+finding_set loc_line 1
+finding_set cell .
+finding_set_match m
+finding_set_evidence m
+finding_emit
+
+finding_new
+finding_set check_id DAST-M-A-01
+finding_set module dast
+finding_set title t
+finding_set base_severity medium
+finding_set cwe CWE-79
+finding_set owasp A03:2021
+finding_set loc_target api.example
+finding_set loc_method GET
+finding_set loc_path_template /a
+finding_set loc_param_location query
+finding_set loc_param_name p
+finding_set cell api.example
+finding_set_evidence e
+finding_emit
+
+finding_new
+finding_set check_id CLOUD-M-A-01
+finding_set module cloud
+finding_set title t
+finding_set base_severity medium
+finding_set cwe CWE-798
+finding_set owasp A07:2021
+finding_set loc_account_id 123456789012
+finding_set loc_region us-east-1
+finding_set loc_resource_key 'arn:aws:s3:::multi-bucket'
+finding_set loc_sub_key none
+finding_set cell '123456789012/us-east-1'
+finding_set_evidence e
+finding_emit
+
+finding_new
+finding_set check_id POSTURE-M-A-01
+finding_set module posture
+finding_set title t
+finding_set base_severity low
+finding_set cwe none
+finding_set owasp none
+finding_set loc_control_id POSTURE-M-A-01
+finding_set loc_scope_key target-m
+finding_set cell target-m
+finding_set_evidence e
+finding_emit
+
+finding_new
+finding_set check_id SCA-M-A-01
+finding_set module sca
+finding_set title t
+finding_set base_severity high
+finding_set cwe CWE-1395
+finding_set owasp A06:2021
+finding_set loc_ecosystem pypi
+finding_set loc_package multi-pkg
+finding_set loc_advisory_id FIXTURE-M
+finding_set path requirements.txt
+finding_set cell .
+finding_set logical_kind dependency
+finding_set logical_fqn 'pypi:multi-pkg@1.0.0'
+finding_set_evidence e
+finding_emit
+
+findings_merge "$d"
+empty_kinds=0
+fp_mismatches=0
+while IFS= read -r line; do
+  [[ -n $line ]] || continue
+  finding_decode "$line"
+  [[ -n ${_DF[logical_kind]:-} ]] || empty_kinds=$(( empty_kinds + 1 ))
+  finding_adopt_decoded
+  [[ $(finding_fingerprint) == "${_DF[fingerprint]}" ]] || fp_mismatches=$(( fp_mismatches + 1 ))
+done <"$d/findings.fields"
+assert_eq 5 "$(wc -l <"$d/findings.fields" | tr -d ' ')" 'sanity: all five findings landed'
+assert_eq 0 "$empty_kinds" \
+  'every finding across sast/dast/cloud/posture/sca carries a non-empty logical_kind (fails under a per-module setter reaching only one of them)'
+assert_eq 0 "$fp_mismatches" \
+  'every merged fingerprint still matches what finding_fingerprint independently computes from the (now logical-populated) record - the executable form of "the merged findings.jsonl is byte-identical before and after"'
+
 t_summary findings

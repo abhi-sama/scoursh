@@ -1248,6 +1248,51 @@ finding_fingerprint() {
   fingerprint_compute "${parts[@]+"${parts[@]}"}"
 }
 
+# tension 22 / SARIF-01: a profile-driven default logical identity, computed
+# ONCE here rather than by each of the ~30 emitting scripts - the same "a
+# control every caller must remember is not a control" argument AGENTS.md
+# already makes for dast_check_selected and dast_auth_apply.  Applied only
+# when the emitter has not already set logical_kind, so modules/sca/,
+# modules/iac/ and the derived composite path (which all set their own
+# identity before finding_emit runs) keep it unchanged.
+#
+# logical_kind/logical_fqn are deliberately absent from _fp_components_for for
+# every profile above, so nothing here can move a fingerprint - and the
+# reverse must stay true too: this function must never assign to a field that
+# IS a fingerprint component (e.g. loc_target, loc_path), only to
+# logical_kind/logical_fqn themselves.
+#
+# fqn goes through finding_set, not a direct _F[] assignment, because
+# logical_fqn is a _finding_redacted_field (tension 9): a dast fqn is built
+# from target-supplied method and parameter data and must be redacted exactly
+# as it is today.
+_finding_default_logical() {
+  local profile=$1
+  [[ -z ${_F[logical_kind]:-} ]] || return 0
+  case $profile in
+    path | history)
+      finding_set logical_kind file
+      finding_set logical_fqn "${_F[loc_path]:-}:${_F[loc_line]:-}"
+      ;;
+    dast)
+      finding_set logical_kind endpoint
+      finding_set logical_fqn \
+        "${_F[loc_target]:-}:${_F[loc_method]:-} ${_F[loc_path_template]:-}#${_F[loc_param_name]:-}"
+      ;;
+    cloud)
+      finding_set logical_kind resource
+      finding_set logical_fqn "${_F[loc_resource_key]:-}"
+      ;;
+    posture)
+      finding_set logical_kind control
+      finding_set logical_fqn "${_F[loc_control_id]:-}"
+      ;;
+    # sca and derived always set their own logical identity before
+    # finding_emit is called (modules/sca/, the composite path in this file) -
+    # nothing to default.
+  esac
+}
+
 finding_emit() {
   findings_ensure_loaded
   local k
@@ -1290,6 +1335,7 @@ finding_emit() {
 
   : "${_F[first_seen]:=${SCOURSH_RUN_TIMESTAMP:-$(now_iso)}}"
   : "${_F[last_seen]:=${SCOURSH_RUN_TIMESTAMP:-$(now_iso)}}"
+  _finding_default_logical "$profile"
   _F[fingerprint]=$(finding_fingerprint)
 
   local shard

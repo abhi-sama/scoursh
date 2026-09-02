@@ -604,21 +604,21 @@ landed; that table, not this sentence, is the authority if this is ever in doubt
 **Step 5 is therefore complete.**
 Steps 8 (`--paranoid` / `tools/run-in-netns.sh`) and 9 (optional engine adapters) have also landed, out
 of sequence - see their own sections below.
-Steps 6 (Cloud), 7 (persistent state), and 10 (SARIF plus the compliance report) were, per
-`docs/STEP6-CLOUD-PLAN.md` and `docs/STEP7-STATE-PLAN.md`, in the stated priority order step 7 first,
-then step 10, then step 6 last, now that step 5 has cleared.
+Steps 6 (Cloud), 7 (persistent state) and 10 (SARIF plus the compliance report) have each now started -
+see below - per `docs/STEP6-CLOUD-PLAN.md` and `docs/STEP7-STATE-PLAN.md`'s stated priority order among
+the three, now that step 5 has cleared: step 7 first, then step 10, then step 6 last.
 All three now have a written sub-ticket plan, step 10's being `docs/STEP10-SARIF-PLAN.md`
 (SARIF-01..06 plus COMPLIANCE-01..04).
 **Read that one before treating step 10's queue position as a dependency**: it establishes, against
 the tree, that step 10 is three deliverables rather than one - the SARIF emitter is unblocked today
 and needs neither step 6 nor step 7, the compliance report's OWASP half is unblocked too while only
 its CIS half waits on step 6, and the `--fail-on` CI gate that `docs/DESIGN.md` §13 item 10 bundles
-with them shipped back at step 3 and carries no ticket at all.
+with them shipped back at step 3 and carries no ticket at all.**
 
-**Step 7 (persistent run state) has now started**, ahead of step 6 (Cloud) and step 10 (SARIF plus the
-compliance report), matching `docs/STEP7-STATE-PLAN.md`'s stated priority order: **STATE-01
-(`lib/state.sh`) has landed** - the frozen `state/<run-id>.json` schema (tension 12: `fp_schema`,
-`tool_version`, `run_id`, `completed_at`, `scan_root_id`, `covered_checks`, `findings`), a writer
+**Step 7 (persistent run state) has now started**, ahead of step 6 (Cloud) and matching
+`docs/STEP7-STATE-PLAN.md`'s stated priority order: **STATE-01 (`lib/state.sh`) has landed** - the
+frozen `state/<run-id>.json` schema (tension 12: `fp_schema`, `tool_version`, `run_id`, `completed_at`,
+`scan_root_id`, `covered_checks`, `findings`), a writer
 (`state_set_run`/`state_add_covered`/`state_add_history_boundary`/`state_add_finding`, then
 `state_write`) that persists write-then-rename and prunes to a retain count (default 30, mirroring
 `rules/RULE-FORMAT.md` §9.6.1's `state-retain-runs`), and a loader (`state_load_file`/
@@ -636,7 +636,26 @@ proving the writer and loader treat that scope kind correctly in isolation - not
 real cloud finding, which needs step 6 to exist first (`lib/state.sh`'s own header and
 `docs/STEP7-STATE-PLAN.md`'s "Status" section both record this as a known, tracked gap rather than
 silently-assumed coverage).
-Steps 6 (Cloud) and 10 (SARIF plus the compliance report) remain unstarted.
+
+**Step 10's first ticket, SARIF-01, has also landed**: `lib/findings.sh` gained
+`_finding_default_logical`, called from `finding_emit` immediately before the fingerprint is computed,
+which populates `logical_kind`/`logical_fqn` from the profile's own `loc_*` fields for `path`/`history`
+(`kind=file`, `fqn=<loc_path>:<loc_line>`), `dast` (`kind=endpoint`,
+`fqn=<loc_target>:<loc_method> <loc_path_template>#<loc_param_name>`, tension 22's shape verbatim),
+`cloud` (`kind=resource`, `fqn=<loc_resource_key>`) and `posture` (`kind=control`,
+`fqn=<loc_control_id>`) - the two emitter groups (SAST, DAST) and the two not-yet-built modules
+(cloud, posture) tension 22's own "empty on every module" finding named.
+`sca` and `derived` are untouched, since `modules/sca/` and the composite path already set their own
+identity before `finding_emit` runs, and the function is a no-op wherever `logical_kind` is already
+non-empty.
+`logical_kind`/`logical_fqn` are absent from `_fp_components_for` for every profile, so no fingerprint
+moves; `tests/suites/findings.sh` proves it by recomputing `finding_fingerprint` after the default
+runs and asserting it against the value `finding_emit` already wrote, for every profile, plus a
+single run emitting five profiles at once asserting none is left with an empty `logical_kind` - the
+reading a per-module setter (rather than this one control point in `finding_emit`) fails under.
+SARIF-02 (the generated location artifact writer) is now unblocked.
+
+Step 6 (Cloud) remains unstarted.
 
 **DAST-07 made `docs/FOUNDATION.md` tension 19's single documented exception real, and the shape it
 landed in is what a future non-HTTP probe must copy.**
