@@ -77,15 +77,15 @@ CLOCKF=$W/clock.ns
 PENDF=$W/clock.pending
 _clock_reset() { printf '0' >"$CLOCKF"; printf '0' >"$PENDF"; }
 _cmdi_now() {
-  local cur=0 pend=0
-  IFS= read -r cur <"$CLOCKF" 2>/dev/null || true
-  IFS= read -r pend <"$PENDF" 2>/dev/null || true
-  [[ $cur =~ ^[0-9]+$ ]] || cur=0
-  [[ $pend =~ ^[0-9]+$ ]] || pend=0
-  cur=$(( cur + pend ))
+  local cur_ns=0 pend_ns=0
+  IFS= read -r cur_ns <"$CLOCKF" 2>/dev/null || true
+  IFS= read -r pend_ns <"$PENDF" 2>/dev/null || true
+  [[ $cur_ns =~ ^[0-9]+$ ]] || cur_ns=0
+  [[ $pend_ns =~ ^[0-9]+$ ]] || pend_ns=0
+  cur_ns=$(( cur_ns + pend_ns ))
   printf '0' >"$PENDF"
-  printf '%s' "$cur" >"$CLOCKF"
-  printf '%s' "$cur"
+  printf '%s' "$cur_ns" >"$CLOCKF"
+  printf '%s' "$cur_ns"
 }
 SCOURSH_INJECT_NOW_NS=_cmdi_now
 
