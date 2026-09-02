@@ -3064,8 +3064,10 @@ subsection above), not just a non-zero exit, so the audit trail is pinned by the
 rejection itself.
 
 **Verification.**
-This resolution is a contract, not yet code (`lib/http.sh` lands at §13 step 5); a reviewer signing off
-before that implementation starts can check the contract itself rather than an implementation:
+This resolution started as a contract ahead of its implementation; `lib/http.sh` has since landed and
+is tested by the `http` suite (`tests/run-tests.sh`'s `SUITES` array). The checklist below is what a
+reviewer checked against the contract before that implementation existed, and still holds as a check
+against the contract itself:
 
 - `grep -n "Entry point\." docs/FOUNDATION.md` finds the callout naming `http_request` as the single
   chokepoint (AC1).
@@ -5064,8 +5066,9 @@ and every out-of-date finding carries the list's own generation stamp - because 
 false negatives, which is the failure mode that hides.
 Tier 4's DAST-14 (`active/sqli.sh`) and tier 5's DAST-26 (`jwt.sh`) also landed, out of tier order;
 `docs/STEP5-DAST-PLAN.md`'s per-ticket tables are the authority for what is in.
-`modules/cloud/` remains unbuilt and steps 6, 7 and 10 remain unstarted; step 5 is still the top
-priority ahead of them.
+`modules/cloud/` remains unbuilt and steps 6, 7 and 10 remain unstarted; step 5 (DAST) has since landed
+in full - see the generated status block below, and `ROADMAP.md`, for the current priority order among
+the steps still open.
 `lib/awscli.sh` is a further out-of-sequence exception: a credential-less pass built it ahead of step
 6, so the chokepoint exists while `modules/cloud/aws/live/*.sh` and everything else step 6 names are
 still unbuilt - see "AWS module: what exists ahead of step 6" in `AGENTS.md`.
@@ -5282,17 +5285,16 @@ would reach "the breaker never trips" by a different route than the disable swit
 to offer; the 86400s maximum stays because it is arithmetic rather than safety - it is what keeps
 `now - window` inside 64-bit arithmetic, which no assertion about who owns a host can change.
 
-**Step 5 is still this project's top priority**, ahead of live cloud scanning (step 6), persistent run
-state (step 7), and SARIF plus the compliance report (step 10).
-`docs/STEP5-DAST-PLAN.md`, not this entry, is the authority for which tickets remain.
+**Step 5 (DAST) is complete** - every tier (0 through 5) has landed, ahead of live cloud scanning
+(step 6), persistent run state (step 7), and SARIF plus the compliance report (step 10).
+`docs/STEP5-DAST-PLAN.md`, not this entry, is the authority for the per-ticket landing detail.
 
-**Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01
-has not.**
+**Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is complete: both NETNS-01 and PARANOID-01 have
+shipped.**
 `docs/STEP8-PARANOID-PLAN.md` split `docs/DESIGN.md` §13 step 8 per tension 20's RESOLUTION into
 **PARANOID-01** (the `--paranoid` connection-observer and abort-on-out-of-scope enforcement) and
 **NETNS-01** (`tools/run-in-netns.sh`, the network-namespace runner - optional and root-requiring,
 stated directly in that ticket's own filed description).
-**NETNS-01 has now landed.**
 `tools/run-in-netns.sh` is a Linux-only, root/CAP_NET_ADMIN+CAP_SYS_ADMIN-requiring wrapper: it builds a
 network namespace whose route table admits only two IPv4 address sets - tension 19's pinned resolution
 cache (read via `lib/http.sh`'s own `http_scope_load`/`http_resolve_host`, never re-implemented) for
@@ -5300,7 +5302,7 @@ scoursh's in-scope targets, and the nameservers parsed from `/etc/resolv.conf` (
 3") - installs no default route inside the namespace, and execs the wrapped command inside it via
 `ip netns exec`, so a connection attempt to anything outside those two sets has no route and fails at
 the kernel level before a packet is sent, rather than being sampled or logged after the fact the way
-`--paranoid` (PARANOID-01, still unbuilt) would. Namespace/veth/NAT/`ip_forward` teardown runs from the
+`--paranoid` (PARANOID-01) does. Namespace/veth/NAT/`ip_forward` teardown runs from the
 tool's own EXIT trap on every exit path, success or failure, and every failure path (bad usage, wrong
 host, missing privilege, a plumbing step itself failing) goes through `lib/core.sh`'s `die`, staying
 inside the 0-5 exit contract; the one exit path deliberately NOT forced through `die` is the wrapped
@@ -5317,13 +5319,17 @@ non-Linux and no-privilege paths run as real subprocess invocations (whichever a
 suite runs on); and the one claim that genuinely needs a privileged Linux kernel - an out-of-scope
 connection attempt actually failing - is a real end-to-end case gated behind a genuine capability probe,
 recorded as SKIPPED rather than a silent pass when that probe fails.
-**PARANOID-01 remains unimplemented** and is unaffected by NETNS-01 landing; the two were never
-interdependent, so PARANOID-01 may still be picked up on its own. This planning ticket's own acceptance
-criteria named `lib/http.sh` (tension 19) as step 8's blocker, and confirmed it present on `dev` before
-either sub-ticket started - it shipped early, out of its normal step-5 sequence, exactly as noted
-below - and tension 20's RESOLUTION already states that `lib/http.sh`'s pinned resolution cache was
-step 8's only real dependency ("so the ordering already works"), which NETNS-01 landing now confirms in
-practice as well as in plan. Steps 6, 7, 9, and 10 remain un-landed and are not touched by this.
+**PARANOID-01 has also landed** and is unaffected by NETNS-01 landing separately; the two were never
+interdependent. This planning ticket's own acceptance criteria named `lib/http.sh` (tension 19) as step
+8's blocker, and confirmed it present on `dev` before either sub-ticket started - it shipped early, out
+of its normal step-5 sequence, exactly as noted below - and tension 20's RESOLUTION already states that
+`lib/http.sh`'s pinned resolution cache was step 8's only real dependency ("so the ordering already
+works"), which NETNS-01 landing confirmed in practice as well as in plan.
+`lib/paranoid.sh` implements `--paranoid`: the four-set allowlist, the `ss`/`strace`/`lsof` backend
+probe, the exit-3 abort and exit-4 missing-backend paths, and the deterministic `tests/suites/paranoid.sh`
+fixture all exist on `dev`, wired into `scan.sh`'s `scan_main` right after config loads and before any
+module dispatch. Tension 20's own "Implementation" paragraph above carries the full mechanism detail.
+Steps 6, 7, 9, and 10 remain un-landed and are not touched by this.
 
 **Step 6 (Cloud/AWS) also now has a written, dependency-ordered sub-ticket plan
 (`docs/STEP6-CLOUD-PLAN.md`), but no implementation ticket has started.**
@@ -5334,20 +5340,11 @@ at step 1 as a no-op stub over an empty set of call sites and removes its matchi
 "still to write" list - `lib/awscli.sh` has since landed too, so what is left of CLOUD-03 is seeding
 `tests/aws-readonly-allow.txt`, adding a negative-fixture test, and re-verifying the lint's checks
 against the first real `aws_ro` call sites once the live scripts start landing - and states that the
-landed IaC work (`modules/iac/`) is §8.2/step 4 work, out of this plan's scope. **No CLOUD-0x or
-POSTURE-0x ticket is picked up until step 3, step 4 (SCA + IaC), and step 5 (DAST) are all complete on
-`dev`** - step 6 is gated on the whole sequential chain ahead of it, not step 4 alone, per that plan's
-own status section and this ticket's description.
-Steps 3 and 4 are now complete, so step 5 is the only link in that chain still open.
-
-**PARANOID-01 has landed: `lib/paranoid.sh` now implements `--paranoid` for real.**
-Full detail lives in tension 20's own "Implementation" paragraph above, since that is where this
-register already keeps the mechanism's contract; this entry exists only so this section does not go
-stale the way the process note below warns against.
-In short: the four-set allowlist, the `ss`/`strace` backend probe, the exit-3 abort and exit-4
-missing-backend paths, and the deterministic `tests/suites/paranoid.sh` fixture all now exist on
-`dev`.
-`tools/run-in-netns.sh` (NETNS-01) remains unimplemented, as scoped.
+landed IaC work (`modules/iac/`) is §8.2/step 4 work, out of this plan's scope. Step 6 was gated on
+step 3, step 4 (SCA + IaC), and step 5 (DAST) all being complete on `dev`, per that plan's own status
+section and this ticket's description - **that gate is now fully discharged: steps 3, 4, and 5 are all
+complete**, so step 6 remains not-started only for want of anyone picking up CLOUD-01, not because it
+is still blocked.
 
 **Step 9 (optional engine adapters) now has a real scaffold - `docs/ADAPTERS.md` and
 `tools/vendor-engines.sh` both exist - landed out of sequence, ahead of step 3's then-remaining
@@ -5465,9 +5462,9 @@ That sentence describes step 1's own historical boundary and is unaffected by la
 was step 1's placeholder and is now built by step 2 (above); `modules/sast/`, `modules/iac/` and
 `modules/sca/` are now built by steps 3 and 4, the latter landed out of sequence (above), and the
 generated block below is what says which of their packs and ecosystems are in; `lib/http.sh` landed
-early, out of its normal step-5 sequence (tension 19), and step 5 as a whole now has a written
-sub-ticket plan (`docs/STEP5-DAST-PLAN.md`, above) whose first ticket, DAST-01, is under way while
-everything under `modules/dast/` is still unbuilt; `lib/engines.sh` also
+early, out of its normal step-5 sequence (tension 19), and step 5 as a whole has since landed in full -
+every ticket in `docs/STEP5-DAST-PLAN.md` (DAST-01 through DAST-36) has shipped, and `modules/dast/`
+is a complete engine, not the thing this sentence originally described as still unbuilt; `lib/engines.sh` also
 landed early, out of its normal step-9 sequence, as part of this ticket (immediately above);
 `lib/awscli.sh` landed early too, out of its normal step-6 sequence, as part of a credential-less pass
 that advanced only what needed no AWS account (see "AWS module: what exists ahead of step 6" in

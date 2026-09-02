@@ -8,55 +8,29 @@ small, independently reviewable tickets the moment its blockers clear, instead o
 `docs/DESIGN.md` §8 from scratch by whoever picks it up first, mirroring `docs/STEP5-DAST-PLAN.md` for
 step 5.
 
-## Status: blocked, and last in the current priority order
+## Status: not started, but every sequential blocker is now cleared
 
-**No step 6 ticket (any of CLOUD-01 through CLOUD-34 or POSTURE-01 through POSTURE-04 below) is picked
-up until every earlier `docs/DESIGN.md` §13 step is complete on `main`.** Work lands on `dev` first and
-reaches `main` in batches; earlier references to `dev` in this document reflect the current, ongoing
-workflow, not historical phases.
-The build order (§13) is strictly sequential, so step 6 waits behind the tail of step 3 and all of
-step 5, and it waited behind all of step 4 - the step immediately before it, and the one this ticket's
-own acceptance criteria call out by name - until step 4 completed:
+**The build order (§13) is strictly sequential, and every step ahead of step 6 - step 3 (SAST), step 4
+(SCA + IaC), and step 5 (DAST) - is now complete on `dev`.** `dev` is the integration branch (`main` is
+the release branch; work lands on `dev` first and reaches `main` in batches - both exist on the
+remote).
 
-1. **§13 step 3 (SAST) finishes**: the `nosql` and `ldap` rule packs
-   (`modules/sast/rules/nosql.rules`, `modules/sast/rules/ldap.rules`) land.
-   **Still outstanding.**
-   `dev` has shipped `secrets`, `crypto`, `injection`, `python`, `go`, `javascript`, `java`, and
-   `history.sh` (sub-steps 3a-3e); only `nosql`/`ldap` remain, and the generated status block in
-   `AGENTS.md` reports SAST at 8 of 10 with exactly those two outstanding.
-2. **§13 step 4 (SCA + IaC) completes.**
-   **This was a real blocker and it is now CLEARED.**
-   It is recorded here rather than deleted so that a reader can see the gate held and was discharged,
-   rather than quietly dropped.
-   When this plan was written the IaC half had a single ticket landed on `origin/dev`
-   (`modules/iac/run.sh`, `parse.sh`, `terraform.rules` - "IaC: Terraform checks via the pattern-rule
-   engine", commit `5de4460`) and the SCA half (lockfile parse -> `data/advisories.db` matching,
-   `modules/sca/`) had not started at all - no `modules/sca/` directory existed on `dev` or
-   `origin/dev` - so step 4 as a whole was not complete, and this plan's acceptance criteria required
-   it to say so explicitly, matching the precedent `docs/STEP5-DAST-PLAN.md` already set for step 5's
-   DAST-0x tickets.
-   Both halves have since landed.
-   `modules/sca/` exists and covers all six `docs/DESIGN.md` §6.5
+1. **§13 step 3 (SAST).** **Complete.** All ten catalog artifacts (`secrets`, `crypto`, `injection`,
+   `python`, `go`, `javascript`, `java`, `nosql`, `ldap`, and `history.sh`) have landed; the generated
+   status block in `AGENTS.md` reports SAST at `Landed 10 of 10`, `Outstanding: none`.
+2. **§13 step 4 (SCA + IaC).** **Complete.** `modules/sca/` covers all six `docs/DESIGN.md` §6.5
    ecosystems, and `modules/iac/` carries all six rule packs; the generated status block in `AGENTS.md`
    reports `Landed 6 of 6` with `Outstanding: none` for each of them.
-   That generated block, not this paragraph, is the live answer if this is ever in doubt.
-3. **§13 step 5 (DAST) completes.**
-   **Still outstanding.**
-   DAST has only a written plan (`docs/STEP5-DAST-PLAN.md`); zero of DAST-01 through DAST-30 has landed
-   and `modules/dast/` does not exist.
-   Step 6 comes after step 5 in the same sequential order, so it is
-   gated on step 5 independently of step 4's status - which is why clearing step 4 unblocks nothing
-   here.
+3. **§13 step 5 (DAST).** **Complete.** Every DAST-01 through DAST-36 ticket has landed
+   (`docs/STEP5-DAST-PLAN.md`'s own status section); `modules/dast/` exists in full.
 
-**Step 6 is not the next step in the queue, and nothing below should be read as though it were.**
-The current priority order is step 5 (DAST) first, then step 7 (persistent run state,
-`docs/STEP7-STATE-PLAN.md`), then step 10 (SARIF plus the compliance report), and live cloud scanning
-last of those four.
-Step 6 is therefore the furthest out of the unstarted steps: it still has unmet blockers in front of it
-(step 3's tail and all of step 5), and it has additionally been placed behind two steps that do not
-block it at all.
-This plan stays a written breakdown for whenever step 6 is picked up; it is not a signal that step 6 is
-close.
+**No CLOUD-0x or POSTURE-0x ticket has been picked up yet, but that is no longer because step 6 is
+blocked - it is simply next in an unclaimed queue.**
+Once step 5 landed, the priority order this project has been using put step 7 (persistent run state,
+`docs/STEP7-STATE-PLAN.md`) and step 10 (SARIF plus the compliance report) ahead of step 6 for
+sequencing reasons rather than a technical dependency - see `ROADMAP.md` for the current priority
+ordering, which is the live answer if this paragraph and that document ever disagree.
+This plan stays a written breakdown for whenever step 6 is picked up.
 
 This applies to the whole module - both the `CLOUD-*` per-service tickets and the `POSTURE-*` tickets
 below, since `docs/DESIGN.md` §13 names them as one step ("6. **Cloud**: ... + `posture/` checks.").
@@ -164,7 +138,7 @@ against the AC's estimate.
 | CLOUD-01 | `lib/awscli.sh` - the `aws_ro` read-only chokepoint (`docs/FOUNDATION.md` tension 23) - **largely landed already; see the Notes** | `lib/core.sh` (`scan_match`, scratch-dir mutex primitives, shipped step 1); `lib/http.sh` as the sibling chokepoint precedent (shipped) | **The chokepoint itself is on `dev` already**, landed out of sequence by the credential-less pass described above: `aws_ro <service> <operation> [args...]` validates `<operation>` against the frozen prefix allowlist (`^(describe\|list\|get\|search\|lookup\|select\|head\|batch-get\|preview\|estimate\|simulate)(-\|$)`) before executing; a non-matching operation aborts with exit `3` (`SCOURSH_EXIT_SCOPE`), logged as a scope violation - same class as an out-of-scope host; `--cli-input-json`/`--cli-input-yaml`/`--output` are refused outright from a caller; and the pin is `AWS_PAGER='' ... --output json` rather than `--no-cli-pager --output json`, because finding F17 measured that `--no-cli-pager` is CLI-v2-only and fails argument parsing on a v1 host before the call is attempted. It is exercised by `tests/suites/awscli.sh` (stub `aws`, no network) and the opt-in `tests/localstack/run.sh`, and has no shipped caller yet. **What remains of this ticket** is the per-`(service, region, account, operation, args)` response cache (§10, tension 16's note) so multiple checks reading the same `describe-*` do not re-fetch, which is not implemented, and seeding `tests/aws-readonly-allow.txt` with `sts assume-role` (needed by CLOUD-02's `--assume-role`) and `sts get-caller-identity` (already covered by the prefix, listed for clarity), per tension 23 item 4 - the file is still deliberately absent. Read `lib/awscli.sh` before writing anything here. |
 | CLOUD-02 | `modules/cloud/aws/regions.sh` - multi-region / multi-account iteration | CLOUD-01 | `account get-regions` / EC2 `describe-regions` to enumerate enabled regions; optional `--assume-role ARN` iterates a read-only role across an Org. Every per-service script below is called once per enabled region unless the ticket says the service is global (`iam`, `route53`, `cloudfront`, `s3`'s bucket-list call). Findings cite region + account per §8.1's own requirement (see the per-ticket Notes column below). |
 | CLOUD-03 | Finish the read-only-verb CI lint (tension 23) - **the standalone lint ticket this plan's AC requires** | CLOUD-01 | `tests/lint-aws-readonly.sh` already exists and already implements all four tension-23 checks (see the section above) but currently passes over an empty set. This ticket does not write new matching logic, and it no longer waits on the chokepoint either, since `lib/awscli.sh` has landed - the lint skips that one file by name, so the empty set is the still-absent `aws/live/*.sh` call sites. It (a) verifies the lint's checks 1-3 fire correctly against real `aws_ro` call sites, which arrive once CLOUD-05+ start landing, (b) seeds `tests/aws-readonly-allow.txt` (CLOUD-01 does the actual seeding; this ticket verifies check 4 against it), and (c) adds the negative-fixture test tension 23's "Consequence for the build" paragraph requires: a throwaway script calling `aws_ro ec2 create-security-group` (or similar), asserted to fail **both** the lint and `aws_ro`'s own runtime guard. Kept as its own ticket per this plan's AC, sequenced right after CLOUD-01 so there is something real to lint. |
-| CLOUD-04 | `modules/cloud/aws/run.sh` - `scan_dispatch cloud` entry point | CLOUD-01, CLOUD-02, `lib/checks.sh` registry loader (shipped, step 2) | Mirrors `modules/sast/run.sh`/`modules/dast/run.sh`'s split (the latter per `docs/STEP5-DAST-PLAN.md` DAST-02, not yet built but already specified): resolves `--regions`/`--assume-role`, loads `modules/cloud/aws/live/checks.rules` via `checks_registry_load cloud cloud`, calls CLOUD-02 for the region/account list, then invokes each `aws/live/*.sh` script below in any order (they are peers). Owns writing the `account-region` coverage cells `rules/RULE-FORMAT.md` §9.5.1 defines for module `CLOUD`, and tolerates zero live scripts existing yet, the same way SAST's dispatch was a no-op before 3a. |
+| CLOUD-04 | `modules/cloud/aws/run.sh` - `scan_dispatch cloud` entry point | CLOUD-01, CLOUD-02, `lib/checks.sh` registry loader (shipped, step 2) | Mirrors `modules/sast/run.sh`/`modules/dast/run.sh`'s split (the latter shipped as `docs/STEP5-DAST-PLAN.md` DAST-02): resolves `--regions`/`--assume-role`, loads `modules/cloud/aws/live/checks.rules` via `checks_registry_load cloud cloud`, calls CLOUD-02 for the region/account list, then invokes each `aws/live/*.sh` script below in any order (they are peers). Owns writing the `account-region` coverage cells `rules/RULE-FORMAT.md` §9.5.1 defines for module `CLOUD`, and tolerates zero live scripts existing yet, the same way SAST's dispatch was a no-op before 3a. |
 
 ### Tier 1 - identity, storage & key management (peers; all depend on CLOUD-01/02/04)
 
@@ -211,8 +185,8 @@ exists.
 |---|---|---|---|
 | CLOUD-20 | `aws/live/cognito.sh` (§8.3) | CLOUD-01/02/04 | User-pool password policy/MFA/advanced-security/`PreventUserExistenceErrors`/self-registration/account-recovery checks; app-client auth-flow/OAuth/callback-URL/token-lifetime/writable-attribute checks; identity-pool `AllowUnauthenticatedIdentities` (inspect the unauth role for over-permissiveness as its own high-severity finding, not a note), `AllowClassicFlow`, unauth `GetCredentialsForIdentity`. Uses `cognito-idp` + `cognito-identity`, both covered by one script per §8.3's own text. Prefer config-derived detection of user-enumeration/self-signup over live probing, exactly as §8.3's closing paragraph says. Findings must cite ARN, region, account id, CIS control id. |
 | CLOUD-21 | `aws/live/lambda.sh` (§8.6) | CLOUD-01/02/04 | Over-permissive execution role (wildcard actions/resources or sensitive-service grants), public function URL (`AuthType: NONE`) or `*`-principal resource policy, secrets in plaintext/unencrypted env vars. Generic across "AI/agent/bedrock-style" deployments - no product name in the check. Findings must cite ARN, region, account id, CIS control id. |
-| CLOUD-22 | `aws/live/apigw.sh` (§8.4) | CLOUD-01/02/04 | `get-rest-apis` + `get-resources` for the route list, `get-api-keys` (existence only, never values), per-method authorizer presence -> flag open-auth routes. Also writes `reports/<run>/inventory/endpoints.json` per §8.4/tension 21's inventory-merge contract, tolerating the fact that `modules/dast/crawl.sh` (DAST-04) does not exist yet - same "write it, and let a later consumer show up" pattern DAST-04's own ticket used for the reverse direction. Findings must cite ARN, region, account id, CIS control id. |
-| CLOUD-23 | `aws/live/appsync.sh` (§8.5) | CLOUD-01/02/04 | API-key auth in use and key expiry (`list-graphql-apis` -> `list-api-keys`); flag long/far-future-expiry keys and APIs whose default auth is a plain API key rather than IAM/Cognito. Per §8.5's own text, correlate with DAST's `passive/leakage.sh` (`docs/STEP5-DAST-PLAN.md` DAST-10) and `graphql.sh` (DAST-27) at the derived-finding layer (tension 6) once those exist - a long-lived key present in served JS plus introspection enabled is the schema/content-exposure chain those tickets flag; this is a soft data correlation, not a build dependency on either. Findings must cite ARN, region, account id, CIS control id. |
+| CLOUD-22 | `aws/live/apigw.sh` (§8.4) | CLOUD-01/02/04 | `get-rest-apis` + `get-resources` for the route list, `get-api-keys` (existence only, never values), per-method authorizer presence -> flag open-auth routes. Also writes `reports/<run>/inventory/endpoints.json` per §8.4/tension 21's inventory-merge contract - `modules/dast/crawl.sh` (DAST-04) has since landed and reads that same file, the "write it, and let a later consumer show up" pattern DAST-04's own ticket used for the reverse direction, now realized in both directions. Findings must cite ARN, region, account id, CIS control id. |
+| CLOUD-23 | `aws/live/appsync.sh` (§8.5) | CLOUD-01/02/04 | API-key auth in use and key expiry (`list-graphql-apis` -> `list-api-keys`); flag long/far-future-expiry keys and APIs whose default auth is a plain API key rather than IAM/Cognito. Per §8.5's own text, correlate with DAST's `passive/leakage.sh` (`docs/STEP5-DAST-PLAN.md` DAST-10) and `graphql.sh` (DAST-27) at the derived-finding layer (tension 6) - both have since landed, so only this ticket's own script is the remaining unbuilt contributor - a long-lived key present in served JS plus introspection enabled is the schema/content-exposure chain those tickets flag; this is a soft data correlation, not a build dependency on either. Findings must cite ARN, region, account id, CIS control id. |
 
 ### Tier 5 - CDN (peer; depends on CLOUD-01/02/04)
 

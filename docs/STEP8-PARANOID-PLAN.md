@@ -1,6 +1,14 @@
 # Step 8 (`--paranoid` / netns) sub-ticket plan
 
-This is a planning document only.
+**Step 8 is complete: both PARANOID-01 and NETNS-01 have landed.**
+`lib/paranoid.sh` implements `--paranoid` (wired into `scan.sh`'s `scan_main`) and
+`tools/run-in-netns.sh` implements the network-namespace runner; both are exercised by
+`tests/suites/paranoid.sh` and `tests/suites/netns.sh` respectively (`tests/run-tests.sh`'s `SUITES`
+array registers both). See `AGENTS.md`'s "Build order and where we are" for the landing detail. The
+rest of this document is preserved as the planning record that led to both tickets being filed; it
+describes the pre-landing state and is historical from "## Status" onward.
+
+This is a planning document only, as originally written.
 It contains no shell code and changes no behavior.
 It exists so that step 8 - `docs/DESIGN.md` §13's "`--paranoid` enforcement + `tools/run-in-netns.sh`" -
 can be picked up as two clean, independently reviewable tickets instead of being re-derived from
@@ -34,7 +42,7 @@ Because the two mechanisms have different implementers' concerns (a sampling obs
 degradation vs. a privileged, optional, Linux-only wrapper script), they are independently schedulable
 and are split into two tickets below rather than landed as one.
 
-## Status: dependency satisfied, both tickets ready to schedule
+## Status: dependency satisfied, both tickets ready to schedule (historical - both have since landed)
 
 This ticket's own acceptance criteria named `lib/http.sh` (the tension-19 scope-gate chokepoint) as the
 blocker on opening step 8's sub-tickets. That dependency is **satisfied**: `lib/http.sh` shipped on
