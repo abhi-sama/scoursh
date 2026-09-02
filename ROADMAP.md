@@ -76,6 +76,13 @@ and the compliance report, and live cloud scanning.
    `docs/STEP6-CLOUD-PLAN.md`'s own build-order gate is now fully cleared too (step 3's tail and all
    of step 5 have both landed); it is placed last here on priority, not on any remaining technical
    block.
+4. **Guided interactive mode (`scan.sh --guided`)** - a mode that asks the operator what to scan and
+   composes the equivalent flags, with a DAST affirmation flow before conservative request limits are
+   lifted. It is not one of `docs/DESIGN.md` §13's ten build steps and carries no build-order gate at
+   all (see [`docs/STEP-GUIDE-PLAN.md`](docs/STEP-GUIDE-PLAN.md)'s Status section - GUIDE-01 can start
+   immediately), but it adds no new scan coverage or output format of its own, only an easier way to
+   invoke what already exists, so it sits last here on priority despite being the most fully unblocked
+   item in this list. No GUIDE-0x ticket has been picked up.
 
 Outside that ordering:
 
