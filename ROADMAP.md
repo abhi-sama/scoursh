@@ -31,6 +31,13 @@ This file is a shorter, reader-facing summary of the same information, and is ha
 - **Step 9 (optional engine adapters)** - three adapters shipped ahead of schedule: `semgrep` and
   `gitleaks` for `sast`, `trivy config` for `iac`. The advisory-database expansion tooling
   (`tools/vendor-engines.sh advisories ...`) has also landed.
+- **Step 5 (DAST)** - complete: every ticket from DAST-01 through DAST-36 has landed (see
+  [`docs/STEP5-DAST-PLAN.md`](docs/STEP5-DAST-PLAN.md)'s own status table).
+  `scan.sh dast` runs the full engine described in `docs/DESIGN.md` §7 - session acquisition and
+  crawling, every passive check, every safe-active and injection check, and the §7.4 tier-5 checks
+  (JWT, GraphQL introspection, rate-limiting, object-level authorization, plaintext/mixed-content
+  exposure) - subject to `--intensity`/`--authed`/`--i-own-target` gating the design always called for.
+  It is no longer a no-op of any kind.
 - `lib/http.sh` (the scope-gate chokepoint, normally part of step 5) and `lib/awscli.sh` (the
   read-only AWS wrapper, normally part of step 6) both landed early since neither depends on the
   steps in front of them.
@@ -46,40 +53,35 @@ This file is a shorter, reader-facing summary of the same information, and is ha
 ## Not yet started
 
 Ordered by priority, highest first.
-The running-endpoint scanner is now the top priority feature, ahead of persistent run state,
-SARIF and the compliance report, and live cloud scanning.
+With step 5 (DAST) now complete, persistent run state is the top priority feature, ahead of SARIF
+and the compliance report, and live cloud scanning.
 
-1. **Step 5 (DAST)** - `scan.sh dast` currently parses its full flag grammar and
-   enforces the scope gate, but has no scan engine behind it; it is a logged no-op.
-   A complete, dependency-ordered sub-ticket breakdown already exists in
-   [`docs/STEP5-DAST-PLAN.md`](docs/STEP5-DAST-PLAN.md) (tickets DAST-01 through DAST-30, following
-   `docs/DESIGN.md` §13's `lib/http.sh -> auth.sh -> crawl.sh -> passive -> safe-active -> injection`
-   sequence).
-   Two things gated step 5 when that plan was written, and **both are now cleared**: step 4
-   (SCA + IaC) and step 3 (SAST) are each complete, so nothing stands in front of the module.
-   Neither was ever a technical dependency - DAST-01 (the rate limiter, the per-run request budget,
-   and the circuit breaker) touches `lib/http.sh` only and depends on no SAST rule pack whatsoever -
-   but the sequencing preference they represented is discharged rather than argued away.
-2. **Step 7 (`state/` - persistent coverage tracking)** - needed before `--baseline` suppression and
+1. **Step 7 (`state/` - persistent coverage tracking)** - needed before `--baseline` suppression and
    the `diff`/`report` subcommands do real work.
    The two subcommands no-op with a stated reason in `run.json`, while `--baseline` records nothing
    at all (see Known defects below).
-3. **Step 10 (SARIF output + compliance report)** - `--format sarif` is accepted today, but no SARIF
+   Of `docs/STEP7-STATE-PLAN.md`'s four build-order gate items, three (SAST, SCA/IaC, DAST) are now
+   cleared; the fourth - step 6, which supplies the `account-region` coverage-cell producer tension
+   12's classification table needs - remains open, so step 7 is not fully unblocked yet either way.
+   No STATE-0x ticket has been picked up.
+2. **Step 10 (SARIF output + compliance report)** - `--format sarif` is accepted today, but no SARIF
    emitter exists anywhere in the tree; same for the CIS/OWASP compliance report.
-4. **Step 6 (live cloud / CSPM scanning)** - `scan.sh cloud` is a no-op today, with or without
+3. **Step 6 (live cloud / CSPM scanning)** - `scan.sh cloud` is a no-op today, with or without
    `--live`.
    There is no `modules/cloud/`, so the dispatch records a `not_yet_built` coverage reduction
    whichever form is used, and all `--live` adds is a check that the `aws` CLI is installed.
    A complete sub-ticket breakdown exists in
    [`docs/STEP6-CLOUD-PLAN.md`](docs/STEP6-CLOUD-PLAN.md) (tickets CLOUD-01 through CLOUD-34 plus
    POSTURE-01 through POSTURE-04).
-   Gated on step 5 (DAST) completing.
+   `docs/STEP6-CLOUD-PLAN.md`'s own build-order gate is now fully cleared too (step 3's tail and all
+   of step 5 have both landed); it is placed last here on priority, not on any remaining technical
+   block.
 
 Outside that ordering:
 
 - Two derived/composite findings (`COMPOSITE-TOKEN-HIJACK` and its dependents) are intentionally
-  not seeded yet, because their contributing checks don't exist until DAST (step 5) and cloud (step
-  6) land.
+  not seeded yet. DAST (step 5) now supplies one contributor, but the composite also needs a step 6
+  (cloud) contributor that does not exist yet, so it remains unseeded until cloud lands.
 - IPv6 / dual-stack routing support for `tools/run-in-netns.sh` was explicitly scoped out of that
   ticket and filed as a separate follow-up.
 
@@ -89,13 +91,16 @@ These are not unbuilt steps.
 They are features that ship today and are wrong, incomplete, or inert, and each one has to be
 scheduled on its own.
 
-- **Three flags are accepted and do nothing.**
+- **Two flags are accepted and do nothing.**
   `--baseline FILE` is parsed and never read, and a path that does not exist is accepted with no
-  error, no warning, and no record in `run.json`.
-  `--authed` is parsed and appears in the help text, but nothing reads it and it is not recorded in
-  `run.json` either.
+  error, no warning, and no record in `run.json` (step 7's gap).
   `--jobs N` is documented with a default of 4 and changes nothing; every scan is single-worker and
-  records `single_worker_no_parallel_scan_yet`.
+  the SAST/IaC modules record `single_worker_no_parallel_scan_yet` (no `scan.sh` module spawns
+  `xargs -P` workers today, though `lib/http.sh`'s rate limiter, budget and breaker are already built
+  to be safe under them once one does).
+  (`--authed` used to be a third such flag; it no longer is - DAST's `auth.sh`/`crawl.sh` and every
+  authenticated check now read it, and `scan.sh` records it as `run.json`'s `authorization.authed`
+  field.)
   (`--format` used to be a fourth: it was parsed and the resolved format list was then discarded, so
   every run wrote the same five artifacts whatever was asked for.  Fixed - see "Landed" above.
   `findings.jsonl` and `run.json` are mandatory per-run records rather than one of the four
@@ -106,10 +111,14 @@ scheduled on its own.
   Every finding is created with `status=new`, because the diff classification that would mark
   anything otherwise belongs to step 7, so `--fail-on-new` behaves identically to plain
   `--fail-on`.
-- **`--paranoid` is Linux-only in practice.**
-  Both of its connection-observer backends, `ss` and `strace`, are Linux-only.
-  On macOS it does not degrade to a warning: it refuses the entire scan with exit 4 before any
-  module runs.
+- **`--paranoid` has a real macOS backend, but no macOS *guarantee*.**
+  Of its three connection-observer backends, `ss` and `strace` are Linux-only; `lsof` was added as a
+  third, measured-usable backend specifically so `--paranoid` runs on macOS too, and it is a genuine
+  detector there, not a refusal.
+  What macOS still lacks is `tools/run-in-netns.sh` (step 8's *guarantee* tier, a Linux network
+  namespace): on macOS `--paranoid`'s sampling detector is the only egress control available, with no
+  stronger mechanism behind it.
+  A host with none of the three backends still exits 4 before any module runs.
 
 ## Recently fixed
 

@@ -8,11 +8,20 @@ mock-response test -> §7.4 auth/API/authz checks" - can be picked up as a clean
 independently reviewable tickets, instead of being re-derived from `docs/DESIGN.md` §7 from scratch by
 whoever picks it up first.
 
-## Status: top priority - tiers 0 and 1 are both complete
+## Status: step 5 is complete - every tier (0 through 5) has landed
 
-**Every gate this section used to record is now discharged, and the whole of tier 0 has landed.**
+**Step 5 (DAST) is done.** Every ticket named in this document, DAST-01 through DAST-36 plus DAST-31
+through DAST-35's safety controls, has landed on `dev`. The tier-by-tier narrative below is preserved
+as the historical build-out record - it describes the order things actually shipped in, and each
+ticket's own landing note (further down, under its tier's table) is still the authority for what that
+ticket delivered and the sharp edges it found. Where a ticket table row below does not carry its own
+`(landed)` marker, that is a presentation gap in this document, not a sign the ticket is outstanding -
+cross-check `modules/dast/` and `tests/suites/dast-*.sh` (or `AGENTS.md`'s "Build order and where we
+are") for the authoritative state.
+
 `docs/DESIGN.md` §13 step 3 finished (`nosql.rules` and `ldap.rules` landed), step 4 finished (SCA at
-6 of 6 ecosystems, IaC at 6 of 6 packs), and step 5's own tier-0 tickets are in:
+6 of 6 ecosystems, IaC at 6 of 6 packs), and step 5's own tier-0 tickets landed first, unblocking
+everything after them:
 
 | Ticket | State |
 |---|---|
@@ -22,73 +31,32 @@ whoever picks it up first.
 | DAST-32 - the conservative ceilings and the `--i-own-target` affirmation | landed |
 | DAST-33 - the authorisation record in `run.json` (and `use_engines`, the same gap) | landed |
 | DAST-34 - an unrestricted run stated on stderr and in the report | landed |
-| DAST-35 - the lint forbidding a bundled scan target | separate ticket; no ticket below is gated on it |
-| DAST-36 - folding this posture into DAST-01..30's own acceptance criteria | doc-only; **landed** |
-| DAST-04 - `crawl.sh`, the endpoint/parameter inventory every later ticket reads | **landed** (tier 1) |
+| DAST-35 - the lint forbidding a bundled scan target | landed (separate ticket; no ticket below was gated on it) |
+| DAST-36 - folding this posture into DAST-01..30's own acceptance criteria | landed (doc-only) |
 
-**Tier 1 is now complete.**
+**Tier 1 (DAST-03 `auth.sh`, DAST-04 `crawl.sh`) landed next**, giving every later tier the
+authentication session and the endpoint/parameter inventory it reads.
 
-| Ticket | State |
-|---|---|
-| DAST-03 - `auth.sh`, authentication and session acquisition (§7.0) | landed |
-| DAST-04 - `crawl.sh`, crawling, parameter and spec discovery (§7.5) | landed |
+**Tiers 2 through 5 have all since landed too**, out of strict tier order (they became peers once
+tier 1 was in): tier 2's passive checks (DAST-05 through DAST-11, plus DAST-30 which lives under
+`modules/dast/passive/` and runs at this tier despite being a tier-5 §7.4 ticket - see its own landing
+note for why), tier 3's safe-active checks (DAST-12, DAST-13), tier 4's injection probes (DAST-14
+through DAST-25), and tier 5's application-layer checks (DAST-26 through DAST-29).
 
-**Tier 2 has started: DAST-06 (`passive/cookies.sh`), DAST-05 (`passive/headers.sh`) and DAST-11
-(`passive/markup.sh`) have all landed**, built in parallel - DAST-06 reached `dev` first and created
-`modules/dast/passive/` and the shared `checks.rules`, DAST-05 appended the `DAST-HDR-*` block to it,
-and DAST-11 appended the `DAST-MARKUP-*` block.  Their four remaining peers (DAST-07..DAST-10) are
-open and unordered among themselves.  See each ticket's landing note under the tier-2 table for what
-it shipped, and DAST-05's and DAST-06's for the one pre-existing `modules/dast/run.sh` defect they
-found and deliberately did not fix in place.
-
-**DAST-30 (`passive/transport.sh`) now also lives in this directory and runs at this tier**, carrying
-its own `DAST-TRANSPORT-*` block in `modules/dast/passive/checks-transport.rules` (it appended to the
-directory's then-shared `checks.rules`; tension 29 has since split that file), even though it
-is a tier-5 §7.4 ticket - its landing note below states the reasoning, and `modules/dast/engine.sh`'s
-phase table carries the same note at the row itself.  It is not an additional tier-2 ticket and the
-tier-2 peer list above is unchanged by it; what moved is one intensity floor, not the ticket.
-
-**Tier 5 has started too: DAST-26 (`jwt.sh`) and DAST-29 (`authz.sh`) have both landed.**
 DAST-29 created `modules/dast/checks.rules`, the shared, append-only script-check registry for the
-tier-5 phases whose scripts sit at the top level of `modules/dast/`; DAST-27 and DAST-28
-append their own blocks to it and resolve a conflict in it by keeping both sides.
-That file is deliberately NOT split - `docs/FOUNDATION.md` tension 29 makes the per-owner
-`checks-<name>.rules` spelling legal everywhere but keeps splitting optional and per-directory, and
-doing one under peers who are mid-flight recreates the conflict it exists to prevent.
-`modules/dast/passive/` IS split, so it is no longer the precedent this paragraph used to cite.
-DAST-30 is NOT one of the top-level tier-5 phases: its script sits under `modules/dast/passive/`
-rather than at the top level, so its checks are registered in that directory with the rest of it -
-today in its own `modules/dast/passive/checks-transport.rules`, per the paragraph above.
-DAST-29 is also the first consumer of DAST-03's labelled multi-identity plumbing, so the
-`requires-identities: 2` path in `rules/RULE-FORMAT.md` §9.5 now has a real implementation behind it.
-See its landing note under the tier-5 table.
+tier-5 phases whose scripts sit at the top level of `modules/dast/`; DAST-27 and DAST-28 appended their
+own blocks to it. That file is deliberately NOT split - `docs/FOUNDATION.md` tension 29 makes the
+per-owner `checks-<name>.rules` spelling legal everywhere but keeps splitting optional and per-directory.
+`modules/dast/passive/` IS split, one `checks-<name>.rules` per owner. DAST-29 is also the first
+consumer of DAST-03's labelled multi-identity plumbing, so the `requires-identities: 2` path in
+`rules/RULE-FORMAT.md` §9.5 has a real implementation behind it.
 
-**Tier 5 has started too: DAST-28 (`ratelimit.sh`, the §7.4 missing-throttling burst probe) has
-landed**, alongside DAST-26 (`jwt.sh`).  It is the ticket carrying this plan's one behavioural
-amendment (see "Conservative-posture criteria, restated per ticket" below), and it created
-`modules/dast/checks.rules` - the shared, APPEND-ONLY registry for every tier-5 phase that sits at the
-top of `modules/dast/` rather than under `passive/` or `active/`.  Its landing note is under the tier-5
-table.
-
-**Tiers 2-5 are unblocked and nothing remains in front of them**: every check below needs the endpoint
-and parameter inventory DAST-04 writes, and the authenticated ones need the session DAST-03 acquires.
-Both are in.
-**Tier 2 has started** (DAST-07, `passive/tls.sh`), **tier 3 has started** (DAST-12,
-`active/discovery.sh`), and **tier 4 has started too**: DAST-14 (`active/sqli.sh`, which also shipped the
-shared `inject_engine.sh` every §7.3 probe reuses) and DAST-22 (`active/ldapi.sh`) have both landed - see
-their landing notes under the tier-4 table.  Tier 5's DAST-26 (`jwt.sh`) is in as well.  These tiers are
-peers once tier 1 is in, so they land out of tier order.
-Each ticket's own row in the tier tables below is the authority for whether it is in; this paragraph
-names only the tiers that have opened, so it does not become the second enumeration that went stale
-three times in `AGENTS.md`.
-DAST-07 is the one worth flagging outside its own row, because it is the ticket that made tension 19's
-single documented exception real: `lib/http.sh` gained `http_authorize_raw_connection`, and any future
+DAST-07 is worth flagging outside its own row, because it is the ticket that made tension 19's single
+documented exception real: `lib/http.sh` gained `http_authorize_raw_connection`, and any future
 non-HTTP probe calls **that** rather than assembling its own subset of the gate.
-What each shipped, and the things about them that are easy to get backwards, are stated in their own
-landing notes below the ticket table.
-The one ordering constraint tier 0 existed to impose has been met: no ticket may issue real HTTP
+The one ordering constraint tier 0 existed to impose was met throughout: no ticket issued real HTTP
 traffic until the limiter, the budget, the breaker, the identified `User-Agent` and the conservative
-ceilings are all in `lib/http.sh`, and they are.
+ceilings were all in `lib/http.sh`, and they were, from DAST-01 onward.
 
 What DAST-31 through DAST-34 actually shipped, stated once here rather than left to be read out of
 the diff:
@@ -1690,15 +1658,15 @@ segments) plus DAST-01/02, and land after tier 2/3 per §13's stated ordering.
 
 | # | Ticket |
 |---|---|
-| DAST-14 | `active/sqli.sh` - error-based, boolean, and time-based SQL injection |
+| DAST-14 **(landed)** | `active/sqli.sh` - error-based, boolean, and time-based SQL injection |
 | DAST-15 **(landed)** | `active/xss.sh` - marker-token unescaped-reflection detection. See the landing note below. |
 | DAST-16 **(landed)** | `active/cmdi.sh` - bounded time-based command injection. See the landing note below. |
 | DAST-17 **(landed)** | `active/pathtraversal.sh` - benign read-only marker traversal. See the landing note below. |
 | DAST-18 **(landed)** | `active/ssti.sh` - arithmetic-expression template injection. See the landing note below. |
-| DAST-19 | `active/openredirect.sh` - attacker-controlled `Location` host |
-| DAST-20 | `active/xxe_ssrf.sh` - safe-sentinel-only XXE/SSRF detection, in-scope hosts only |
-| DAST-21 | `active/nosqli.sh` - operator/object injection, boolean/error differential |
-| DAST-22 | `active/ldapi.sh` - filter-breaking payloads, response/error differential |
+| DAST-19 **(landed)** | `active/openredirect.sh` - attacker-controlled `Location` host |
+| DAST-20 **(landed)** | `active/xxe_ssrf.sh` - safe-sentinel-only XXE/SSRF detection, in-scope hosts only |
+| DAST-21 **(landed)** | `active/nosqli.sh` - operator/object injection, boolean/error differential |
+| DAST-22 **(landed)** | `active/ldapi.sh` - filter-breaking payloads, response/error differential |
 | DAST-23 **(landed)** | `active/crlf.sh` - encoded CR/LF header-split detection. See the landing note below. |
 | DAST-24 **(landed)** | `active/hosthdr.sh` - spoofed `Host`/`X-Forwarded-Host` reflection. See the landing note below. |
 | DAST-25 **(landed)** | `active/protopollution.sh` - `__proto__`-style JSON param probing (JS backends). See AGENTS.md's own DAST-25 landing note. |
@@ -2195,7 +2163,7 @@ DAST-02.
 |---|---|---|
 | DAST-26 **(landed)** | `jwt.sh` - `alg:none`, empty-secret HS256, weak-secret list, RS->HS confusion | DAST-01/02, DAST-03 (needs a sample/test-account token and a protected endpoint to replay against) |
 | DAST-27 **(landed)** | `graphql.sh` - introspection + correlated key-exposure | DAST-01/02, DAST-04 (needs the GraphQL endpoint in the inventory); the soft data dependency on DAST-10's leakage finding for the correlated-key case was never a build blocker and is discharged as a *contract* rather than as code: this ticket ships the DAST-side correlation input and DAST-10 supplies the other contributor. See the landing note under this table. |
-| DAST-28 | `ratelimit.sh` - missing-throttling burst probe | DAST-01 (must draw down the *same* per-run request budget DAST-01 owns, since this is the one check §7.4 flags as intentionally multi-request) |
+| DAST-28 **(landed)** | `ratelimit.sh` - missing-throttling burst probe | DAST-01 (must draw down the *same* per-run request budget DAST-01 owns, since this is the one check §7.4 flags as intentionally multi-request) |
 | DAST-29 **(landed)** | `authz.sh` - IDOR / excessive data exposure | DAST-03 with `requires-identities: 2` (two labelled identities), DAST-04 (object-reference endpoints from the parameter inventory) |
 | DAST-30 **(landed)** | `passive/transport.sh` - plaintext-exposure / mixed-content | DAST-04; sequence close to DAST-07 (`tls.sh`), which it complements, per the note under DAST-07 |
 
@@ -3354,5 +3322,8 @@ document for long enough to outlive the work that satisfied it.
 The paragraph is kept rather than deleted for the reason it was written: leave the two documents
 disagreeing and they contradict each other on whether step 5 may be started at all, which is the
 failure this note exists to prevent recurring.
-`docs/STEP6-CLOUD-PLAN.md` and `docs/STEP7-STATE-PLAN.md` still carry their own "Status: blocked"
-headings and are correct as written; nothing here asks either to change.
+`docs/STEP6-CLOUD-PLAN.md` and `docs/STEP7-STATE-PLAN.md` each had their own step-3/4/5 gate language,
+which was stale for the same reason this section's used to be (step 5 landing discharged it); both have
+since been corrected in place - `docs/STEP6-CLOUD-PLAN.md`'s status heading no longer says "blocked" at
+all, since every sequential blocker ahead of step 6 is now cleared, while `docs/STEP7-STATE-PLAN.md`'s
+still does, since step 7 remains genuinely gated on step 6.

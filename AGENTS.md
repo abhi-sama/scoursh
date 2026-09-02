@@ -43,7 +43,7 @@ This single constraint explains most of the architecture, so do not "improve" a 
 | Document | Role |
 |---|---|
 | `docs/DESIGN.md` | The handoff spec. **Preserved verbatim**; its wording is load-bearing. Do not rewrite, re-order, summarise, or "improve" it. |
-| `docs/FOUNDATION.md` | The design-tension register. 26 tensions, each with a committed RESOLUTION. **Where it contradicts the letter of `docs/DESIGN.md`, it wins**, and it says so explicitly at each point. |
+| `docs/FOUNDATION.md` | The design-tension register. 29 tensions, each with a committed RESOLUTION. **Where it contradicts the letter of `docs/DESIGN.md`, it wins**, and it says so explicitly at each point. |
 | `rules/RULE-FORMAT.md` | The **FROZEN** on-disk record format. Normative and self-contained. |
 
 Read all three before changing anything structural.
@@ -344,14 +344,16 @@ stderr and in the report); and **TIER 1 IS NOW COMPLETE** - DAST-03 (`auth.sh`, 
 session acquisition) and DAST-04 (`modules/dast/crawl.sh`) have both landed, so the endpoint and
 parameter inventory that all twenty-seven tickets in tiers 2-5 consume exists, and it can be built
 against an authenticated session.
-Tiers 2-5 are unblocked; nothing in front of them remains, and work in them has started - tier 4's
+Tiers 2-5 are now COMPLETE - every DAST ticket from DAST-01 through DAST-36 has landed, and nothing in
+this step remains outstanding. tier 4's
 DAST-14 (`active/sqli.sh`), DAST-15 (`active/xss.sh`), DAST-16 (`active/cmdi.sh`),
 DAST-17 (`active/pathtraversal.sh`), DAST-18 (`active/ssti.sh`),
 DAST-19 (`active/openredirect.sh`), DAST-20 (`active/xxe_ssrf.sh`),
 DAST-21 (`active/nosqli.sh`, the §7.3 NoSQL-injection error/boolean differential), DAST-22
 (`active/ldapi.sh`, the §7.3 LDAP-injection error/boolean differential - it landed earlier without a
 note in this section or its own landing paragraph; both are corrected here in the same change that adds
-DAST-21), DAST-23 (`active/crlf.sh`, the §7.3 encoded CR/LF header-split detection), and DAST-25
+DAST-21), DAST-23 (`active/crlf.sh`, the §7.3 encoded CR/LF header-split detection), DAST-24
+(`active/hosthdr.sh`, the §7.3 Host-header injection family - see its own paragraph below), and DAST-25
 (`active/protopollution.sh`, the §7.3 `__proto__`/`constructor.prototype`-shaped JSON parameter
 probe), tier
 5's DAST-26 (`jwt.sh`), DAST-27 (`graphql.sh`, the §7.4 GraphQL introspection & key-exposure check),
@@ -597,9 +599,14 @@ same way - a conflict in it is resolved by keeping both blocks, never by choosin
 DAST-30 is NOT one of them despite being a tier-5 ticket: its script sits under
 `modules/dast/passive/`, so its checks are registered in that directory - today in its own
 `modules/dast/passive/checks-transport.rules`, per tension 29's split.
-`docs/STEP5-DAST-PLAN.md`'s own per-ticket tables are the authority for which of the thirty-odd remain;
-do not infer it from this sentence.
-Step 5 remains the top priority ahead of steps 6, 7 and 10.**
+`docs/STEP5-DAST-PLAN.md`'s own per-ticket status table records every one of DAST-01 through DAST-36 as
+landed; that table, not this sentence, is the authority if this is ever in doubt.
+**Step 5 is therefore complete.**
+Steps 8 (`--paranoid` / `tools/run-in-netns.sh`) and 9 (optional engine adapters) have also landed, out
+of sequence - see their own sections below.
+Steps 6 (Cloud), 7 (persistent state), and 10 (SARIF plus the compliance report) remain unstarted; per
+`docs/STEP6-CLOUD-PLAN.md` and `docs/STEP7-STATE-PLAN.md`, the stated priority order among them, now
+that step 5 has cleared, is step 7 first, then step 10, then step 6 last.**
 
 **DAST-07 made `docs/FOUNDATION.md` tension 19's single documented exception real, and the shape it
 landed in is what a future non-HTTP probe must copy.**
@@ -1543,12 +1550,11 @@ it is not re-planned as new matching logic, only the still-missing `lib/awscli.s
 against, the exception-file seeding, and the negative-fixture test are (CLOUD-03). It also records that
 the one IaC ticket already landed on `origin/dev` (`modules/iac/`, "IaC: Terraform checks via the
 pattern-rule engine") is step 4's `docs/DESIGN.md` §8.2 work, not step 6's, and is out of this plan's
-scope for that reason. **No CLOUD-0x or POSTURE-0x ticket is picked up until step 5 (DAST) is
-complete on `dev`** - `dev` is the live integration branch and `main` lags it (see "`main` lags `dev`"
-below), so gating on `main`'s own tip would read work that has already landed as still outstanding -
-step 6 is gated on the whole sequential chain in front of it, and steps 3 and 4 were the other two
-links in that chain, so step 5 is now the only one left; this plan is still a written breakdown for
-later, not permission to start now.
+scope for that reason. Step 6 was gated on step 5 (DAST) completing - `dev` is the live integration
+branch and `main` lags it (see "`main` lags `dev`" below), so gating on `main`'s own tip would read
+work that has already landed as still outstanding - and step 5 has since landed in full (see "Current
+position" above), so that gate is discharged; step 6 remains not started only because no CLOUD-0x or
+POSTURE-0x ticket has been picked up yet, not because it is still blocked.
 
 **PARANOID-01 has now landed - `lib/paranoid.sh` implements `--paranoid` for real.**
 It builds the four-set allowlist tension 20's RESOLUTION specifies (`paranoid_allowlist_build`).
@@ -1906,16 +1912,16 @@ landing, per the generated block above.
 
 **Findings still open after 3a-3d and 3e, and the step each is inherited by:**
 
-- **F5 and F20** - `rules/derived.rules` still does not seed `COMPOSITE-TOKEN-HIJACK`, because its
-  contributors do not exist until steps 5 and 6.
+- **F5 and F20** - `rules/derived.rules` still does not seed `COMPOSITE-TOKEN-HIJACK`.
+  Step 5 (DAST) has since landed in full and supplies one contributor, but the composite also needs a
+  step 6 (cloud) contributor that does not exist yet, so it remains unseeded until step 6.
   Seeding it now is a guaranteed `E051`/`E060` lint failure.
-- **F17** - `aws_ro` pins `--no-cli-pager`, which AWS CLI v1 rejects.
-  Lands with step 6 (cloud), when `lib/awscli.sh`'s first real caller ships.
 
-F3, F4, F8, and F16's `look` half are closed (F3 and F8 as of step 2's `lib/checks.sh`; F4 as of 3a
-above; F16's `look` half as of `lib/core.sh`'s `db_lookup_exact` and its new `tests/suites/core.sh`
-test - see `docs/FOUNDATION.md`'s "Known follow-ups" for the full closure detail); do not re-flag any
-of them.
+F3, F4, F8, F17, and F16's `look` half are closed (F3 and F8 as of step 2's `lib/checks.sh`; F4 as of 3a
+above; F17 as of `lib/awscli.sh` landing - `aws_ro` sets `AWS_PAGER=''` rather than `--no-cli-pager`, see
+"AWS module: what exists ahead of step 6" below; F16's `look` half as of `lib/core.sh`'s
+`db_lookup_exact` and its new `tests/suites/core.sh` test - see `docs/FOUNDATION.md`'s "Known follow-ups"
+for the full closure detail); do not re-flag any of them.
 
 **`dev` is the integration branch; `main` is the release branch.** Work lands on `dev` first (squash
 commits) and reaches `main` later in batches. Both branches exist on the remote; `main` is the default
@@ -2187,8 +2193,8 @@ composite under `tests/fixtures/rules/derived.rules`.
 Six findings remain open (F4, F3, F5, F20, F8, F17, plus F16's `look` half); all are cheap corrections
 that cost nothing to defer, and each names the step it must land before.
 This is a snapshot from before step 2 landed and is kept for history; it is stale on its own.
-F3, F4, and F8 have since closed (see "Findings still open after 3a-3d and 3e" above for the current list:
-only F5, F20, F17, and F16's `look` half remain).
+F3, F4, and F8 have since closed, and F17 has since closed too (see "Findings still open after 3a-3d and 3e"
+above for the current list: only F5, F20, and F16's `look` half remain).
 
 Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start:
 
