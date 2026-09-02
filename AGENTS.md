@@ -655,6 +655,39 @@ single run emitting five profiles at once asserting none is left with an empty `
 reading a per-module setter (rather than this one control point in `finding_emit`) fails under.
 SARIF-02 (the generated location artifact writer) is now unblocked.
 
+**SARIF-02 has also landed**: `report_locations` (`lib/report.sh`) writes
+`reports/<run>/locations/<module>.txt` - one line per finding whose profile carries no usable real
+file, keyed on the finding's own `logical_fqn` - called unconditionally from `report_all` (never
+gated on `--format sarif`) before `findings_write_jsonl`/`findings_write_json`/`report_md`/
+`report_html`, so every one of those emitters sees the write-back it makes. It rewrites
+`findings.fields` in place, the `findings_mark_suppressed` read-decode-mutate-reencode-rewrite
+shape: case 4 (`dast`, `cloud`, `posture`, `derived`) always gets a line; case 3 (`SAST-HIST-*`)
+gets one only when a real filesystem test against the scan root shows `loc_path` no longer
+resolves, and that fallback line carries `loc_blob_sha` and `commit` so a reader can `git show` it;
+case 1 (a real working-tree file) and case 2 (`sca`, whose own `path` field already names a real
+lockfile) are untouched. The assigned line number is written back onto `loc_line` - the field
+SARIF-04's own mapping table already sends to `region.startLine` - so that ticket needs no
+per-case location logic of its own. Ordering is exactly `findings.fields`'s own
+`(module, check_id, fingerprint)` order under `LC_ALL=C`, undisturbed by `derive_findings`' later
+re-sort, so two runs over one fixture assign the same line to the same finding and produce
+byte-identical location files. `SCOURSH_SCAN_ROOT_PATH` is a new variable `scan.sh` exports
+alongside `SCOURSH_SCAN_ROOT_ID`/`SCOURSH_PATH_ROOT` for `sast`/`sca`/`iac`/`all` - the one absolute
+path the case-3 filesystem test needs; unset is treated as "cannot resolve", never as "resolves",
+the fabrication-avoiding default tension 22 requires. `tests/suites/sarif-locations.sh` (33
+assertions) is the proof, including a real git-repo fixture for case 3 (one committed-and-deleted
+blob, one committed-and-still-present blob) and two independent runs over one fixture proving
+byte-identical output.
+**`report_all` runs more than once per run directory** - `scan.sh all` calls `sast`/`sca`/`iac`
+(and `dast`, with `--target`)'s own `run.sh` in sequence, and each independently calls
+`findings_merge` (rebuilding `findings.fields` from every shard emitted so far) then `report_all`
+- so `report_locations` sees an earlier pass's findings again on every later call.  Reproduced with
+a real `scan.sh all --history` subprocess (three `report_all` calls landed 4 lines in
+`locations/sast.txt` for 2 real history findings) before the fix: it now truncates a module's
+artifact file the first time a given CALL touches it, making every call a full, idempotent
+regeneration from the current snapshot - `findings_write_jsonl`/`report_md`/`report_html`'s own
+truncate-then-rebuild discipline - rather than an unbounded append, and the same real subprocess
+now lands exactly 2. SARIF-03 is now unblocked.
+
 Step 6 (Cloud) remains unstarted.
 
 **DAST-07 made `docs/FOUNDATION.md` tension 19's single documented exception real, and the shape it

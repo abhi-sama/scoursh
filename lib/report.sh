@@ -819,7 +819,118 @@ _html_foot() {
 }
 
 # ---------------------------------------------------------------------------
-# 5. Everything
+# 5. Generated location artifacts (tension 22 option 3, SARIF-02)
+# ---------------------------------------------------------------------------
+# `reports/<run>/locations/<module>.txt`: one line per finding whose profile
+# carries no real, currently-resolvable file - docs/STEP10-SARIF-PLAN.md's
+# four-case location table, case 3's fallback and case 4.  The line is the
+# finding's own logical identity (SARIF-01's `logical_fqn`), so the file
+# reads on its own and a future SARIF-04 click-through lands on a line that
+# describes the resource in question, never a source file the finding is not
+# about.
+#
+# The assigned line NUMBER is written back onto the finding's own `loc_line`
+# - exactly the field SARIF-04's own mapping table already sends to
+# `region.startLine` - so that ticket needs no case-3/4-specific location
+# logic of its own; it can treat every profile identically once this has run.
+#
+# Case 1 (a real working-tree file: SAST native/adapters, IaC/adapters,
+# containers) and case 2 (sca, whose own `path` field already names a real,
+# committed lockfile) are untouched: no artifact line, no loc_line write.
+# Case 3 (`SAST-HIST-*`) is a genuine filesystem test at write time - see
+# `_locations_history_resolves` - never an assumption that a historical path
+# still exists.
+#
+# Runs from `report_all`, BEFORE `findings_write_jsonl`/`findings_write_json`/
+# `report_md`/`report_html`, and rewrites `findings.fields` in place - the
+# same read-decode-mutate-reencode-rewrite shape `findings_mark_suppressed`
+# already uses - so every one of those emitters, called after it, sees the
+# write-back without re-deriving it.
+#
+# Written UNCONDITIONALLY by `report_all`, never gated on `--format sarif`:
+# it is a real, cheap artifact of the run, and gating it would make the
+# (still unbuilt) SARIF emitter's own behaviour depend on a file some OTHER
+# format's flag decided to write.
+#
+# Ordering is exactly the order `findings.fields` is already in when this
+# runs - (module, check_id, fingerprint) under `LC_ALL=C`, `findings_merge`'s
+# own order, undisturbed by `derive_findings`' later re-sort - so two runs
+# over the same input assign the same line to the same finding and produce
+# byte-identical location files, with no second sort needed here.  A
+# run-to-run reorder would churn every `startLine` SARIF-04 will read, even
+# though `partialFingerprints` stays stable (tension 5).
+report_locations() {
+  local rundir=${1:-$SCOURSH_RUN_DIR}
+  [[ -s $rundir/findings.fields ]] || return 0
+
+  # `report_all` - and therefore this - runs once per module dispatched in
+  # one run directory (`scan.sh all` calls modules/sast/run.sh's own
+  # report_all, then modules/sca/run.sh's, then modules/iac/run.sh's, ...,
+  # each after `findings_merge` has rebuilt findings.fields from EVERY
+  # shard emitted so far - so a later call sees an earlier call's findings
+  # again, not just its own).  `_loc_seen` truncates a module's artifact
+  # file the FIRST time this call touches it, so every call is a full,
+  # idempotent regeneration from the current findings.fields snapshot -
+  # the same truncate-then-rebuild discipline findings_write_jsonl and
+  # report_md/report_html already use - rather than an unbounded append
+  # that would duplicate every earlier pass's lines and strand loc_line
+  # pointing at the wrong row once the file had grown past it.
+  local -A _loc_n=() _loc_seen=()
+  local tmp=$SCOURSH_SCRATCH/locations.$$ line
+  : >"$tmp"
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    finding_decode "$line"
+    local mod=${_DF[module]:-} check=${_DF[check_id]:-} write=0 fallback=0
+    case $mod in
+      dast | cloud | posture | derived) write=1 ;;
+      sast)
+        if [[ $check == SAST-HIST-* ]] \
+          && ! _locations_history_resolves "${_DF[loc_path]:-}"; then
+          write=1
+          fallback=1
+        fi
+        ;;
+    esac
+    if (( write )); then
+      if [[ -z ${_loc_seen[$mod]:-} ]]; then
+        _loc_seen[$mod]=1
+        : >"$rundir/locations/$mod.txt"
+      fi
+      local n=$(( ${_loc_n[$mod]:-0} + 1 ))
+      _loc_n[$mod]=$n
+      if (( fallback )); then
+        printf '%s (blob=%s commit=%s)\n' \
+          "${_DF[logical_fqn]:-}" "${_DF[loc_blob_sha]:-}" "${_DF[commit]:-}" \
+          >>"$rundir/locations/$mod.txt"
+      else
+        printf '%s\n' "${_DF[logical_fqn]:-}" >>"$rundir/locations/$mod.txt"
+      fi
+      _DF[loc_line]=$n
+    fi
+    _reencode_decoded >>"$tmp"
+    printf '\n' >>"$tmp"
+  done <"$rundir/findings.fields"
+  mv "$tmp" "$rundir/findings.fields"
+}
+
+# Case 3's filesystem test: true only when `loc_path` still resolves to a
+# real file under THIS run's scan root.  `SCOURSH_SCAN_ROOT_PATH` is exported
+# by `scan.sh` alongside `SCOURSH_SCAN_ROOT_ID`/`SCOURSH_PATH_ROOT`, for the
+# `sast`, `sca`, `iac` and `all` commands - the only commands that can ever
+# emit a `SAST-HIST-*` finding in the first place.  Unset (a direct
+# `report_locations`/`report_all` call outside `scan_main`, or a run with no
+# `--path` at all) is treated as "cannot resolve": claiming a path resolves
+# without knowing where the scan root is would be exactly the fabrication
+# tension 22 forbids, so the safer default is the fallback artifact.
+_locations_history_resolves() {
+  local relpath=$1 root=${SCOURSH_SCAN_ROOT_PATH:-}
+  [[ -n $root && -n $relpath ]] || return 1
+  [[ -f $root/$relpath ]]
+}
+
+# ---------------------------------------------------------------------------
+# 6. Everything
 # ---------------------------------------------------------------------------
 # `report_all [RUNDIR]` writes every artifact this run's resolved --format
 # list selects (docs/DESIGN.md §5: `--format json,sarif,html,md`), plus two
@@ -856,6 +967,10 @@ report_all() {
     [[ -n $_rpt_f ]] && _rpt_want[$_rpt_f]=1
   done
 
+  # Unconditional, per its own header comment above: it runs whatever
+  # --format asked for, so every later emitter in this function sees the
+  # loc_line write-back.
+  report_locations "$rundir"
   findings_write_jsonl "$rundir"
   [[ -z ${_rpt_want[json]:-} ]] || findings_write_json "$rundir"
   [[ -z ${_rpt_want[md]:-} ]] || report_md "$rundir"
