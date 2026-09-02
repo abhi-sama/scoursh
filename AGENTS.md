@@ -606,7 +606,14 @@ Steps 8 (`--paranoid` / `tools/run-in-netns.sh`) and 9 (optional engine adapters
 of sequence - see their own sections below.
 Steps 6 (Cloud), 7 (persistent state), and 10 (SARIF plus the compliance report) remain unstarted; per
 `docs/STEP6-CLOUD-PLAN.md` and `docs/STEP7-STATE-PLAN.md`, the stated priority order among them, now
-that step 5 has cleared, is step 7 first, then step 10, then step 6 last.**
+that step 5 has cleared, is step 7 first, then step 10, then step 6 last.
+All three now have a written sub-ticket plan, step 10's being `docs/STEP10-SARIF-PLAN.md`
+(SARIF-01..06 plus COMPLIANCE-01..04).
+**Read that one before treating step 10's queue position as a dependency**: it establishes, against
+the tree, that step 10 is three deliverables rather than one - the SARIF emitter is unblocked today
+and needs neither step 6 nor step 7, the compliance report's OWASP half is unblocked too while only
+its CIS half waits on step 6, and the `--fail-on` CI gate that `docs/DESIGN.md` §13 item 10 bundles
+with them shipped back at step 3 and carries no ticket at all.**
 
 **DAST-07 made `docs/FOUNDATION.md` tension 19's single documented exception real, and the shape it
 landed in is what a future non-HTTP probe must copy.**
