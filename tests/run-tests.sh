@@ -357,51 +357,160 @@ sc_stage() {
     if (( sc_total == 0 )); then
       sc_status=0
     elif [[ ${GITHUB_ACTIONS:-} == true ]]; then
-      # CI: ephemeral runner, a failed job is harmless - keep a fixed 2-way
-      # batch (the prior core-count-derived batching, pinned rather than
-      # host-detected), no memory cap, no watchdog.
-      sc_jobs=2
-      sc_batch=$(( (sc_total + sc_jobs - 1) / sc_jobs ))
-      (( sc_batch < 1 )) && sc_batch=1
+      # CI: ONE FILE PER `shellcheck` INVOCATION, and every file must produce
+      # a result.
+      #
+      # WHAT THIS REPLACES, AND WHY IT COULD NOT WORK.  This branch used to
+      # split the tree into `sc_jobs` BATCHES and hand each whole batch to a
+      # single `shellcheck -x` process - 85 files per process at today's tree
+      # size.  `shellcheck` holds every file it was given, plus each one's
+      # whole `-x` source closure, in one heap, so that process's peak is
+      # roughly the SUM over its batch rather than the MAX over it.  Measured
+      # consequences, on the two runners this workflow actually targets:
+      #
+      #   ubuntu-latest (16GB)  killed - the JOB died with exit 143 and
+      #                         "The runner has received a shutdown signal"
+      #                         about five minutes into the stage, with no
+      #                         stage output at all and not even the
+      #                         `if: always()` log-upload step reached.  That
+      #                         is the runner going down under memory
+      #                         pressure, not a finding.
+      #   macos-latest  (7GB)   completed, in 41m45s (21:24:56 -> 22:06:41 on
+      #                         run 33677872951), by swapping the whole time.
+      #
+      # Both are the same defect.  One file per invocation makes the stage's
+      # peak the MAX over the tree instead of the SUM over a batch, which is
+      # the number the tree's own `-x` hygiene (tests/lint-source-graph.sh)
+      # actually bounds.
+      #
+      # TWO PROPERTIES HERE ARE DELIBERATELY NOT THE LOCAL PATH'S.
+      #
+      #   * There is NO watchdog.  The local watchdog exists because macOS
+      #     offers no per-process memory ceiling and a runaway kernel-panicked
+      #     a contributor's machine twice; a hosted runner is ephemeral, so
+      #     nothing needs defending, and a watchdog here could only turn a
+      #     check that would have completed into a false failure.
+      #   * There is NO `skipped` outcome.  "This host is too small for this
+      #     file" is a legitimate answer about a contributor's laptop and is
+      #     never a legitimate answer on CI: the runner IS the target, so a
+      #     file that cannot be checked here is a FAILURE and lands in
+      #     `sc_unchecked`.  That is what keeps a green CI run from meaning
+      #     "every file we felt like checking was clean".
+      #
+      # `sc_jobs` is derived from the runner's own memory rather than pinned,
+      # because the two runners differ by more than 2x (16GB vs 7GB) and one
+      # constant cannot be right for both.  It is clamped to the core count
+      # and to 4, since a hosted runner has 3-4 cores and more processes than
+      # cores only adds contention and concurrent peaks.
+      sc_ci_total_gb=${SCOURSH_SHELLCHECK_FORCE_TOTAL_GB:-}
+      if [[ ! $sc_ci_total_gb =~ ^[0-9]+$ ]] || (( sc_ci_total_gb < 1 )); then
+        sc_ci_total_gb=$(_sc_mem_total_gb)
+      fi
+      sc_ci_avail_gb=${SCOURSH_SHELLCHECK_FORCE_AVAIL_GB:-}
+      if [[ ! $sc_ci_avail_gb =~ ^[0-9]+$ ]] || (( sc_ci_avail_gb < 1 )); then
+        sc_ci_avail_gb=$(_sc_mem_avail_gb) || sc_ci_avail_gb=$(( sc_ci_total_gb / 2 ))
+      fi
+      if [[ ! $sc_ci_avail_gb =~ ^[0-9]+$ ]] || (( sc_ci_avail_gb < 1 )); then
+        sc_ci_avail_gb=1
+      fi
+      # THE PER-FILE ALLOWANCE HERE IS THE TREE'S WORST FILE, NOT THE LOCAL
+      # PATH'S `step_gb`, AND THE DIFFERENCE IS NOT A TUNING CHOICE.  Locally,
+      # `step_gb` is a TYPICAL footprint and a file that exceeds it is
+      # DEFERRED to a second, narrower pass - so planning wide against a
+      # typical figure is safe, because the heavy tail is caught later.  This
+      # path has no second pass: every file runs in the one pass, so the
+      # allowance has to cover the HEAVIEST file or the plan is
+      # over-committed exactly when several heavy files land together.
+      # Measured worst on this tree is 5.75GB (tests/suites/dast-methods.sh),
+      # so the allowance is 6.  With the local 5GB step this came out at 3
+      # jobs on a 16GB runner - 3 x 5.75 = 17.25GB against 16GB of RAM, which
+      # is the same over-commitment as the batching it replaces, just smaller.
+      sc_ci_worst_gb=${SCOURSH_SHELLCHECK_CI_WORST_GB:-6}
+      if [[ ! $sc_ci_worst_gb =~ ^[0-9]+$ ]] || (( sc_ci_worst_gb < 1 )); then
+        sc_ci_worst_gb=6
+      fi
+      # Same reserve/headroom shape as the local model, for the same reason:
+      # never plan against memory the OS and the rest of the job also need.
+      sc_ci_reserve_gb=$(( sc_ci_total_gb / 8 ))
+      (( sc_ci_reserve_gb < 2 )) && sc_ci_reserve_gb=2
+      sc_ci_headroom_gb=$(( sc_ci_avail_gb - sc_ci_reserve_gb ))
+      (( sc_ci_headroom_gb < 1 )) && sc_ci_headroom_gb=1
+      sc_ci_cores=$(_sc_detect_cores)
+      sc_jobs=$(( sc_ci_headroom_gb / sc_ci_worst_gb ))
+      (( sc_jobs < 1 )) && sc_jobs=1
+      (( sc_jobs > sc_ci_cores )) && sc_jobs=$sc_ci_cores
+      (( sc_jobs > 4 )) && sc_jobs=4
+
+      # Worked, on the two runners this workflow targets:
+      #   ubuntu-latest  16GB total, ~15 avail, reserve 2 -> headroom 13
+      #                  13 / 6 = 2 jobs; 2 x 5.75 = 11.5GB <= 13.  Fits.
+      #   macos-latest    7GB total,  ~5 avail, reserve 2 -> headroom  3
+      #                   3 / 6 = 0 -> clamped to 1 job; 5.75GB on a 7GB
+      #                  machine.  Tight, and one file at a time is the
+      #                  narrowest this can be made without dropping a file,
+      #                  which is not on offer here.
+      printf 'shellcheck: %s files; CI runner %sGB total, %sGB available, %sGB reserved -> %sGB headroom, %s cores -> %s parallel x 1 file per invocation (%sGB allowed each)\n' \
+        "$sc_total" "$sc_ci_total_gb" "$sc_ci_avail_gb" "$sc_ci_reserve_gb" \
+        "$sc_ci_headroom_gb" "$sc_ci_cores" "$sc_jobs" "$sc_ci_worst_gb"
 
       # No `trap ... EXIT` here: the stage-wide traps installed above already
       # remove $sc_shard_dir, and re-arming EXIT would drop the verdict trap.
       sc_shard_dir=$(mktemp -d)
       export SC_SHARD_DIR=$sc_shard_dir
 
-      # Each batch writes to its OWN file rather than shared stdout: appends
-      # above PIPE_BUF interleave (tension 17 - the same reason scan workers
-      # write to their own shard files, not a shared findings.jsonl).
-      # `-x` is unchanged: it still follows every `source`, per batch.
+      # Each invocation writes to its OWN file rather than shared stdout:
+      # appends above PIPE_BUF interleave (tension 17 - the same reason scan
+      # workers write to their own shard files, not a shared findings.jsonl).
+      # The shard is NAMED AFTER THE FILE (path separators folded to `_`), so
+      # unlike the batched shape this replaces, a finding and a failure are
+      # both attributable to exactly one file here, the same as locally.
+      # `-x` is unchanged: it still follows every `source`.
       #
-      # xargs -P's own aggregate exit status is what `if` branches on here -
-      # 123 if any invocation exited 1-125, so a failure in any ONE batch,
-      # first or last, still fails the stage.  Nothing here re-derives
-      # success from output content or discards an individual invocation's
-      # status.
+      # The per-invocation exit status is recorded next to the shard rather
+      # than inferred later: `shellcheck` exits 1 for "I have findings" and 2
+      # for "I could not process this file", and those two are a defect in the
+      # tree and a defect in the run respectively - collapsing them is exactly
+      # what the `sc_unchecked`/`sc_findings` split above exists to prevent.
+      # The shard NAME is a percent-encoding of the path (`%` -> `%25` first,
+      # then `/` -> `%2F`), not a `tr / _` fold: folding is not injective, so
+      # `a/b.sh` and `a_b.sh` would collide on one shard and one of the two
+      # files would silently take the other's result.
       # shellcheck disable=SC2016
-      if printf '%s\n' "${sc_file_list[@]}" \
-        | xargs -P "$sc_jobs" -n "$sc_batch" sh -c \
-          'shellcheck -x -s bash "$@" >"$(mktemp "$SC_SHARD_DIR/shard-XXXXXX")" 2>&1' _; then
-        sc_status=0
-      else
-        sc_status=$?
-      fi
+      printf '%s\n' "${sc_file_list[@]}" \
+        | xargs -P "$sc_jobs" -n 1 sh -c \
+          'sc_out=$SC_SHARD_DIR/$(printf "%s" "$1" | sed -e "s/%/%25/g" -e "s|/|%2F|g")
+           shellcheck -x -s bash -- "$1" >"$sc_out" 2>&1
+           printf "%s" "$?" >"$sc_out.rc"' _ || true
 
-      for sc_shard in "$sc_shard_dir"/shard-*; do
-        if [[ -e $sc_shard ]]; then
-          cat -- "$sc_shard"
+      # Every file in the list must have left a status behind.  A missing
+      # `.rc` means that invocation never ran to completion - the runner
+      # killed it, `sh` could not start it, or `xargs` gave up - and that is
+      # an unchecked file, never a clean one.
+      sc_status=0
+      for sc_f in "${sc_file_list[@]}"; do
+        sc_out=$sc_shard_dir/$(printf '%s' "$sc_f" | sed -e 's/%/%25/g' -e 's|/|%2F|g')
+        sc_rc=
+        [[ -r $sc_out.rc ]] && sc_rc=$(cat -- "$sc_out.rc")
+        if [[ ! $sc_rc =~ ^[0-9]+$ ]]; then
+          sc_unchecked+=("$sc_f (no result - the invocation did not complete; on a hosted runner this is almost always the job running out of memory)")
+          sc_status=1
+          continue
         fi
+        if (( sc_rc == 0 )); then
+          continue
+        fi
+        [[ -s $sc_out ]] && cat -- "$sc_out"
+        if (( sc_rc == 1 )); then
+          sc_findings+=("$sc_f")
+        else
+          sc_unchecked+=("$sc_f (shellcheck exited $sc_rc - it never produced a result for this file)")
+        fi
+        sc_status=1
       done
+
       rm -rf "$sc_shard_dir"
       sc_shard_dir=
       unset SC_SHARD_DIR
-      # Batched, so a finding cannot be attributed to one file here; the
-      # per-file attribution the local path gives is not available on CI and
-      # is not faked.  `sc_status` alone carries the verdict on this path.
-      if (( sc_status != 0 )); then
-        sc_findings=("(batched - see the output above)")
-      fi
     else
       # Local: cap concurrency by memory, not core count, and run one file
       # per shellcheck invocation so a watchdog kill - or a plain finding -
@@ -413,12 +522,12 @@ sc_stage() {
       # spread is enormous.  Measured here with /usr/bin/time -l, one file
       # per invocation, watchdog out of the way:
       #
-      #     tests/suites/dast-cors.sh      23.79 GB  (re-measured; see below)
-      #     tests/suites/dast-hosthdr.sh   did not converge, sampled >25 GB
-      #     tests/suites/dast-methods.sh   ~22-41 GB, non-reproducible
-      #     tests/suites/dast-cookies.sh   12.99 GB  (STALE - see below)
-      #     tests/suites/dast-jwt.sh       12.96 GB  (STALE - see below)
-      #     scan.sh                         4.74 GB
+      #     tests/suites/dast-methods.sh    5.75 GB   (hub sum 17)
+      #     tests/suites/dast-cookies.sh    5.44 GB   (hub sum 16)
+      #     tests/suites/state-coverage.sh  5.34 GB   (hub sum 12)
+      #     scan.sh                         4.41 GB   (hub sum 12)
+      #     tests/suites/dast-hosthdr.sh    4.07 GB   (hub sum 13)
+      #     tests/suites/dast-cors.sh       2.82 GB   (hub sum 13)
       #     modules/sca/run.sh              3.46 GB
       #     lib/engines.sh                  0.11 GB
       #
@@ -443,21 +552,25 @@ sc_stage() {
       #      killed as false failures.  The 8.42-9.87GB figure the previous
       #      note relied on is stale; the tree has grown since it was taken.
       #
-      # THE 12.99GB/20GB PAIR ABOVE IS ITSELF NOW STALE, TREE-WIDE, NOT JUST
-      # FOR ONE FILE.  `dast-cors.sh` and `dast-hosthdr.sh` carry ZERO
-      # repeated source targets - confirmed by reading every `source` line in
-      # each - so there is no redundant edge in either to cut.  Their cost is
-      # the irreducible floor of sourcing lib/http.sh once plus
-      # modules/dast/engine.sh once (-> modules/sast/engine.sh ->
-      # lib/report.sh/lib/config.sh -> lib/findings.sh/lib/records.sh/
-      # lib/core.sh), the same two chains every DAST phase test needs, and
-      # that floor alone now measures 23.79GB - almost double the old
-      # 12.99GB reference and already above the old 20GB pass-2 ceiling.  A
-      # real full-stage run (165 files today, not 130) skipped
-      # dast-methods.sh, dast-hosthdr.sh and dast-cors.sh at the 20GB budget
-      # for exactly this reason: the shared lib/ dependency chain has grown
-      # since 12.99GB was measured, independent of any one file's own
-      # source-graph hygiene.  See docs/CI-RUNBOOK.md's "memory model"
+      # THE TABLE ABOVE IS THE POST-CUT TREE, AND THE FIGURES IT REPLACES
+      # WERE NOT AN IRREDUCIBLE FLOOR.  The previous note recorded
+      # `dast-cors.sh` at 23.79GB and asserted that it and `dast-hosthdr.sh`
+      # carried "ZERO repeated source targets ... no redundant edge in either
+      # to cut", so their cost was the irreducible floor of the shared lib/
+      # chain.  That was measured correctly and concluded wrongly: the
+      # repeated expansions were not DIRECT repeats inside those files, they
+      # were reached TRANSITIVELY, and they were cuttable.  `dast-cors.sh`
+      # sourced lib/http.sh directly AND again through
+      # modules/dast/passive/cors_engine.sh AND a third time through
+      # modules/dast/passive/cors.sh; cutting the two edges whose target the
+      # file already reached another way took it from hub sum 18 to 13 and
+      # from 22.86GB to 2.82GB, re-measured here, with `shellcheck -x`
+      # reporting byte-identical (empty) output before and after.  Eleven
+      # such cuts across nine entry points took the tree's worst file from
+      # 22.86GB to 5.75GB.  A structural flattening of the lib/http.sh ->
+      # lib/config.sh + lib/findings.sh -> lib/records.sh diamond would
+      # reduce what is left and remains its own filed follow-up.
+      # See docs/CI-RUNBOOK.md's "memory model"
       # section for the full evidence, including that peak RSS here is
       # itself ambient-memory-dependent (shellcheck's GHC runtime ignores
       # `+RTS -M` and sizes its heap off available memory at measurement
@@ -487,14 +600,17 @@ sc_stage() {
       #     headroom  = max(avail - reserve, 1)
       #
       # PASS 1 plans against a TYPICAL footprint (`step_gb`, 5GB - above
-      # scan.sh's 4.74GB, so the whole body of the tree clears it) and runs
-      # wide.  A file that exceeds it is NOT a failure: it is DEFERRED.
+      # scan.sh's 4.41GB, so the body of the tree clears it) and runs wide.
+      # A file that exceeds it is NOT a failure: it is DEFERRED.  Three files
+      # exceed it today (5.75, 5.44 and 5.34GB) and are checked in pass 2.
       # PASS 2 re-runs only the deferred files against the RUNAWAY trip point
-      # (`budget_gb`, 50GB as of this ticket - raised from 20GB, which is now
-      # BELOW the re-measured 23.79GB floor of dast-cors.sh/dast-hosthdr.sh
-      # and the sibling ticket's observed 22-41GB range for dast-methods.sh;
-      # a genuine runaway is still caught but no legitimate file is),
-      # necessarily narrow.  Both budgets are clamped down to `headroom`,
+      # (`budget_gb`, 50GB).  That default is left where it was even though
+      # the tree's worst file is now 5.75GB rather than 22.86GB: it is a
+      # RUNAWAY trip point, not a size estimate, peak RSS here is
+      # ambient-memory-dependent (below), and it is clamped down to
+      # `headroom` on every host anyway, so lowering it would buy nothing and
+      # could only turn a legitimate file into a false SKIP on a big host.
+      # Both budgets are clamped down to `headroom`,
       # which is what makes (2) above impossible to reproduce, and which
       # also means raising this default costs nothing on a small host - it
       # is clamped to whatever that host can actually give, same as before.
@@ -511,24 +627,19 @@ sc_stage() {
       #   8GB host, 6GB available:  reserve 2, headroom 4.
       #     pass 1: budget min(5,4)=4,  jobs min(4/4,cores)=1  -> 4 <= 4
       #     pass 2: budget min(50,4)=4, jobs 1                 -> 4 <= 4
-      #     The heaviest files cannot fit in 4GB on this host at all, so
-      #     they are reported as SKIPPED, by name, with that reason - never
-      #     as a silent kill and never rounded up to clean.
+      #     The three files above 4GB cannot fit on this host, so they are
+      #     reported as SKIPPED, by name, with that reason - never as a
+      #     silent kill and never rounded up to clean.
       #  27GB host, 20GB available: reserve 3, headroom 17.
       #     pass 1: budget 5,  jobs min(17/5,cores)=3          -> 15 <= 17
       #     pass 2: budget min(50,17)=17, jobs 1               -> 17 <= 17
-      #     23.79 > 17, so dast-cors.sh/dast-hosthdr.sh are still SKIPPED by
-      #     name on this size host even with the raised default; lighter
-      #     files are measured.
+      #     5.75 <= 17, so every file in the tree is measured on this size
+      #     host.  Before the back-edge cuts in this same change the worst
+      #     file was 22.86GB and three files SKIPPED here.
       #  64GB host, 36GB available: reserve 8, headroom 28.
       #     pass 1: budget 5,  jobs min(28/5,cores)=5          -> 25 <= 28
       #     pass 2: budget min(50,28)=28, jobs 1               -> 28 <= 28
-      #     23.79 <= 28, so dast-cors.sh now fits with real but not generous
-      #     margin; dast-hosthdr.sh and dast-methods.sh's upper range (up to
-      #     41GB) may still SKIP on this documented reference size.  A host
-      #     with more available memory than this (e.g. ~52GB available on
-      #     64GB total, ~44GB headroom, the host this ticket measured on)
-      #     measures all three cleanly.
+      #     Every file is measured, with a wide margin.
       #
       # SCOURSH_SHELLCHECK_MEM_BUDGET_GB and SCOURSH_SHELLCHECK_STEP_GB
       # override the two defaults; SCOURSH_SHELLCHECK_FREE_FLOOR_GB overrides

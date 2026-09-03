@@ -2412,7 +2412,7 @@ edit to `SUITES=(...)` in `tests/run-tests.sh` itself (`docs/CI-RUNBOOK.md` chec
 doc has no way of tracking automatically. Run `tests/run-tests.sh --list` to see what actually exists;
 do not hand-maintain a duplicate enumeration here or trust one written before your current checkout.
 
-See `docs/CI-RUNBOOK.md` for how the suite is actually run while the hosted workflow is dormant: the daily local runner, how to install and remove its schedule, how to read a result, the GNU/BSD dual-userland rationale, and the checklist for adding a new suite or linter.
+See `docs/CI-RUNBOOK.md` for how the suite is run: the hosted workflow, the daily local runner, how to install and remove its schedule, how to read a result, the GNU/BSD dual-userland rationale, and the checklist for adding a new suite or linter.
 
 `package.json` at the repository root exists **only** so the conventional `pnpm test` / `npm test`
 entry point runs the real suite above.
@@ -2454,27 +2454,41 @@ What the suite covers now, per `docs/DESIGN.md` §12 and the resolutions above:
 Still to come with their steps: SARIF schema validation (step 10), the read-only lint over a non-empty
 `aws/live/` (step 6), and a no-egress run under `--paranoid` (step 8).
 Byte-identical findings between GNU and BSD userlands is checked by `tools/daily-suite.sh`, not by
-CI - see "The hosted workflow is dormant, and a PR carries no automatic pass/fail" below.
+CI - see "The hosted workflow RUNS now - the repository went public - but it does not gate merges" below.
 
-## The hosted workflow is dormant, and a PR carries no automatic pass/fail
+## The hosted workflow RUNS now - the repository went public - but it does not gate merges
 
-**`.github/workflows/ci.yml` exists, but hosted GitHub Actions cannot start a run on this account at
-all right now - a billing condition, not a workflow defect - so it produces no status check today.**
-It is kept, not deleted: the maintainer intends to make this repository public, which is what lifts that
-condition, and at that point the workflow starts running for real with nothing to reconstruct.
-**Restoring the file alone is not enough to make that true**: without a guard, GitHub still schedules
-the `suite` job on every push and PR, and it fails within seconds with zero steps recorded - a real red
-X, not "no check at all" - because the account has no machine to assign. The `suite` job therefore
-carries `if: ${{ !github.event.repository.private }}`, which the Actions scheduler evaluates itself
-before ever requesting a runner, so it reports `skipped` instead. That flips to `false` and the job
-becomes real automatically the moment the repository goes public - no edit needed. Do not remove this
-guard when troubleshooting a "why didn't CI run" question; it is working as intended.
-Until then, do not assume a check will run on a push, and do not read a green-looking PR as a tested
-one: there is no *failing* status of any kind on a commit or a pull request (only a skipped one), so a
-PR that breaks every suite looks exactly like one that breaks nothing.
-Anyone merging is the check - run `tests/run-tests.sh` against the merge result, or confirm a
-`tools/daily-suite.sh` run *newer than the change* passed.
-See `docs/CI-RUNBOOK.md` for the full account, including what changes once the repository is public.
+**This section used to say the workflow was dormant. It is not: `abhi-sama/scoursh` is public, so the
+`suite` job's `if: ${{ !github.event.repository.private }}` guard evaluates true and both legs
+(`ubuntu-latest` GNU, `macos-latest` BSD) really execute on every pull request.**
+That guard is still correct and still wanted - it is what made the job report `skipped` rather than a
+red X with zero steps while the repository was private and the account had no runner to assign - so do
+not remove it when troubleshooting a "why didn't CI run" question.
+
+Two things follow, and they pull in opposite directions:
+
+- **A red check is now real information**, not an artefact of a billing condition. When this section
+  was written CI had been red on `dev` on BOTH legs for a long time, and the cause was the
+  whole-tree `shellcheck` stage rather than any defect in the tree - see "the memory model" in
+  `docs/CI-RUNBOOK.md` and the CI-path notes in `tests/run-tests.sh`.
+- **CI still does not gate merges**, by standing maintainer instruction. The verification gate for a
+  change here remains a real local `bash tests/run-tests.sh` run, reported honestly. Do not read a
+  green check as a substitute for it, and do not block on a red one without reading what failed.
+
+**The one thing about the CI shellcheck stage that must not be undone: it runs ONE `shellcheck`
+invocation per FILE, never a batch.** `shellcheck` holds every file it is given plus each one's whole
+`-x` closure in a single heap, so a batched invocation's peak is the **sum** over its batch rather
+than the **max** over it. The stage used to hand `(files + 1) / 2` files - 85 of them - to each of two
+processes, which killed the `ubuntu-latest` job outright (exit 143, "The runner has received a
+shutdown signal", no stage output and not even the `if: always()` log upload) and made `macos-latest`
+swap for 41m45s to do the same work. Batching looks like an obvious speed-up and is the single change
+that breaks CI hardest; `tests/suites/run-tests-stage.sh` section M asserts the per-file contract from
+inside the stub `shellcheck`, because a batched run and a per-file run print an identical verdict and
+nothing in the stage's own output can tell them apart. Two further properties of that path are
+deliberate: there is **no watchdog** (a hosted runner is ephemeral, and a watchdog could only turn a
+completable check into a false failure) and **no `skipped` outcome** (on CI the runner IS the target,
+so a file that cannot be checked FAILS rather than being dropped - which is what keeps a green CI run
+from meaning "every file we felt like checking was clean").
 
 What actually runs today is `tools/daily-suite.sh`, a local runner on a `launchd` daily schedule.
 `docs/CI-RUNBOOK.md` is the authority for how it is installed, what it records, and how to read a
@@ -2536,7 +2550,7 @@ Recorded because the review rounds found several confidently-stated shell facts 
   The fix is the same one line applied to every edge whose target the entry point ALREADY reaches another way: **47 `# shellcheck source=/dev/null` directives across 25 files**, each *lossless* (the file is still inlined once, via the kept edge), taking that entry point to **34,881 lines**.
   Count them from the tree rather than from this sentence - `git grep -c '# -x back-edge cut:' -- '*.sh'` - because six files carried an unrelated such directive before this work, so the TOTAL (71 across 31) is not the added set.
   Peak RSS for it measured **8.42 GB / 173 s** on one host and **9.87 GB / 217 s** on another, same commit; **re-measured later on the grown tree it reached 12.99 GB**, with `dast-jwt.sh` at 12.96 GB - so `dast-cookies.sh` is the file closest to the ceiling, and **these figures go stale as the tree grows: re-measure rather than trusting the number written here.** That drift is not academic - the stage's per-process budget sat at 12 GB, *below* the real worst case, and killed both files as false failures until it was raised to 20 GB.
-  **That 20 GB figure has since gone stale too, tree-wide rather than for one file, and the budget is now 50 GB.** `tests/suites/dast-cors.sh` and `tests/suites/dast-hosthdr.sh` carry zero repeated source targets - there is nothing left to back-edge-cut in either - yet `dast-cors.sh` alone re-measured at **23.79 GB**, and a real full-stage run skipped all three of `dast-methods.sh`/`dast-hosthdr.sh`/`dast-cors.sh` at the old 20 GB ceiling. That run also confirmed peak RSS here is itself ambient-memory-dependent (shellcheck's GHC runtime sizes its heap off available memory at measurement time, not a fixed multiple of the work done - `dast-hosthdr.sh`'s RSS visibly jumped the moment `dast-cors.sh`'s process exited and freed memory back to the host), so the `jobs * budget <= headroom` clamp, not the absolute number, is what actually keeps the model safe across host sizes - see `docs/CI-RUNBOOK.md`, "The memory model", for the full evidence. The still-open structural fix is flattening the `lib/http.sh` -> `lib/config.sh` + `lib/findings.sh` -> `lib/records.sh` diamond documented two paragraphs above: it was never cut by the 47-directive pass this paragraph describes, and is filed as its own follow-up ticket rather than attempted opportunistically.
+  **"There is nothing left to back-edge-cut" was WRONG, and it is the mistake most worth not repeating here.** This paragraph used to record that `tests/suites/dast-cors.sh` and `tests/suites/dast-hosthdr.sh` carried zero repeated source targets, confirmed twice by reading every `source` line in each by hand, and that `dast-cors.sh`'s 23.79 GB was therefore an irreducible floor. The reads were accurate; the conclusion was not. **A hub expansion is a property of the TRANSITIVE graph, not of a file's own `source` lines** - `dast-cors.sh` reached `lib/http.sh` three times (directly, via `cors_engine.sh`, and via `cors.sh` which sources `cors_engine.sh` again), which no by-hand read of that one file can see and which `tests/lint-source-graph.sh`'s own walker computes in milliseconds. Cutting the two edges whose target the file already reached another way took it from hub sum 18 to 13 and from **22.86 GB to 2.82 GB**; eleven such cuts across nine entry points took the tree's worst file from **22.86 GB to 5.75 GB** (`tests/suites/dast-methods.sh`). Each was verified individually rather than argued: with the tree clean, a lossy cut can only ADD findings, so every cut was applied and then `shellcheck -x` re-run on that entry point and required to still exit 0 with zero output. **Use the walker to find cuts; never conclude from reading one file that there are none.** The 50 GB budget default is unchanged, deliberately - it is a runaway trip point rather than a size estimate, and it is clamped to `headroom` on every host anyway. `tests/lint-source-graph.sh`'s cap is now **17**, the tree's measured worst, rather than 20: the old slack is exactly what let a 22.86 GB file exist against a 16 GB runner. That run also confirmed peak RSS here is itself ambient-memory-dependent (shellcheck's GHC runtime sizes its heap off available memory at measurement time, not a fixed multiple of the work done - `dast-hosthdr.sh`'s RSS visibly jumped the moment `dast-cors.sh`'s process exited and freed memory back to the host), so the `jobs * budget <= headroom` clamp, not the absolute number, is what actually keeps the model safe across host sizes - see `docs/CI-RUNBOOK.md`, "The memory model", for the full evidence. The still-open structural fix is flattening the `lib/http.sh` -> `lib/config.sh` + `lib/findings.sh` -> `lib/records.sh` diamond documented two paragraphs above: it was never cut by the 47-directive pass this paragraph describes, and is filed as its own follow-up ticket rather than attempted opportunistically.
   Those directives are LOAD-BEARING - deleting one because it "looks unnecessary" puts the stage back over budget, and those two files are where that regression surfaces first.
   Two traps when adding one: a comment line starting `# shellcheck ` is parsed as a directive, so the prose above a cut must not begin with that word (the first draft of these 47 blocks wrote `` `-x` `` in backticks inside a HEREDOC and minted `SC2006`/`SC2215` findings out of a comment); and a `source` line inside a heredoc or a quoted string is NOT an edge shellcheck follows, so a tool that counts it will call a cut "lossless" when it is not (that is exactly how a first pass wrongly cut `tests/suites/core.sh`'s only real edge and turned `SCOURSH_ENGINE` into a fresh `SC2034`).
   **The `lib/http.sh` -> `lib/records.sh` diamond this paragraph names was left UNCUT by the 47-directive pass above** - it names the shape as measured, not as closed, and a later ticket confirmed by re-reading every `source`/`# shellcheck source=` line in `lib/http.sh`, `lib/config.sh`, `lib/findings.sh` and `lib/records.sh` that it was still real. It is now cut, and the cut landed on `lib/config.sh`'s edge, not `lib/findings.sh`'s: `lib/http.sh` sources `config.sh` before `findings.sh`, so `findings.sh`'s own (kept, real) edge to `records.sh` still supplies it once for every `lib/http.sh` consumer. `lib/findings.sh`'s edge was the ticket's own first proposal and was rejected after measurement: `findings.sh` is also a standalone shellcheck entry point in its own right, and is reached directly - not via `config.sh` - by `lib/report.sh` and half a dozen test suites (`tests/suites/{findings,dast-response-engine,secret-redaction,aws-fixtures,dast-banner,gate-mutation-proof}.sh`), several with no other path to `records.sh`. Cutting there measurably broke one of them: `tests/suites/findings.sh` picked up a real `SC2034` on `SCOURSH_RUN_ID`, because `records.sh`/`core.sh` are what use that variable and shellcheck could no longer see it. Patching that by giving `lib/report.sh` its own defensive real edge to `records.sh` would in turn have opened a NEW diamond in `modules/sast/engine.sh` and `modules/sca/engine.sh`, which source both `lib/report.sh` and `lib/config.sh` directly - so the smaller, cleaner cut is the one on the side with only two direct consumers (`lib/config.sh` itself and `tests/suites/config.sh`, both confirmed clean by direct measurement) rather than the side with eight. Measured: `lib/http.sh` alone drops from 1.16 GB to 0.85 GB peak `shellcheck -x` RSS (-27%); `tests/suites/dast-inject-engine.sh`, a real entry point, drops from 2.22 GB to 1.49 GB (-33%).

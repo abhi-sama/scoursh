@@ -20,11 +20,13 @@ jobs:
             userland: GNU coreutils
           - os: macos-latest
             userland: BSD
-    # Skip (not fail) while this repository is private: hosted Actions cannot
-    # currently start a run here at all (a billing condition, docs/CI-RUNBOOK.md),
-    # so every attempt fails with zero steps and a red X that has nothing to do
-    # with the code. This condition flips to true automatically the moment the
-    # repository goes public - no follow-up edit needed.
+    # The repository is PUBLIC, so this evaluates true and the job runs for
+    # real. The guard is kept rather than deleted: on a private repository
+    # hosted Actions cannot start a run here at all (a billing condition,
+    # docs/CI-RUNBOOK.md), and without this the job would fail with zero steps
+    # and a red X that has nothing to do with the code. It keeps the workflow
+    # safe to carry in a fork, or if this repository is ever made private
+    # again.
     if: ${{ !github.event.repository.private }}
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os }} (${{ matrix.userland }})
@@ -49,6 +51,36 @@ jobs:
           grep --version 2>&1 | head -1 || true
           command -v shred || echo 'no shred (expected on macOS)'
           command -v rg || echo 'no ripgrep'
+
+      # The whole-tree `shellcheck` stage now runs ONE invocation per file, so
+      # its peak is the MAX over the tree rather than the SUM over a batch.
+      # That max is the number that decides whether the stage fits a runner at
+      # all, so publish it per runner rather than inferring it from a
+      # contributor's laptop.  `tests/suites/dast-methods.sh` is the tree's
+      # heaviest entry point (hub sum 17, the cap in
+      # tests/lint-source-graph.sh).  This step can never fail the job: it is
+      # a measurement, not an assertion, and a runner image without
+      # `/usr/bin/time` must not turn that into a red X.
+      - name: Measure peak shellcheck -x RSS for the tree's heaviest file
+        continue-on-error: true
+        run: |
+          f=tests/suites/dast-methods.sh
+          if ! command -v /usr/bin/time >/dev/null 2>&1; then
+            echo "no /usr/bin/time on this image - skipping the measurement"; exit 0
+          fi
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            # BSD `time -l` reports maximum RSS in BYTES, in field 1.
+            /usr/bin/time -l shellcheck -x -s bash "$f" 2>&1 \
+              | awk '/maximum resident set size/ {printf "%s: peak RSS %.2f GB\n", "'"$f"'", $1/1024/1024/1024}'
+          else
+            # GNU `time -v` reports it in KILOBYTES, in field 6.
+            /usr/bin/time -v shellcheck -x -s bash "$f" 2>&1 \
+              | awk '/Maximum resident set size/ {printf "%s: peak RSS %.2f GB\n", "'"$f"'", $6/1024/1024}'
+          fi
+          echo "--- runner memory for comparison:"
+          if [ -r /proc/meminfo ]; then grep -E 'MemTotal|MemAvailable' /proc/meminfo; else
+            sysctl -n hw.memsize | awk '{printf "hw.memsize: %.1f GB\n", $1/1024/1024/1024}'
+          fi
 
       - name: Run the suite
         run: |

@@ -8,9 +8,9 @@ There are two ways this project's suite gets run: a local daily runner on the ma
 
 - **`tools/daily-suite.sh` is the maintainer's real path, and it runs today.**
   It is described in full below: the BSD-userland assertion, the GNU leg via a container, the byte-for-byte cross-userland diff, and how to install its daily schedule.
-- **`.github/workflows/ci.yml` exists for contributors and forks, and is dormant until the repository is public.**
-  Hosted Actions currently cannot start a run on this repository at all (see "Why" below) - a self-hosted runner does not help either, there is simply no machine assigned. The workflow is kept in the repository rather than deleted so that publishing scoursh is a one-step act: a fork or an external contributor's PR gets a real check the moment Actions can run, with nothing to reconstruct from history.
-  Dormant means genuinely inert, not "fires and fails": the `suite` job carries `if: ${{ !github.event.repository.private }}`, so on a private repository it is **skipped**, not attempted - the Actions scheduler evaluates that condition itself, before it ever asks for a runner, so the run never reaches the point where the missing-machine billing error would fire. Pushing or opening a PR produces no failing status of any kind, on GitHub or anywhere else - only a skipped one, which does not read as red. That condition flips to `false` (making the job real) automatically the moment the repository goes public; nothing here needs editing when that happens.
+- **`.github/workflows/ci.yml` RUNS. The repository is public now, so both legs execute on every pull request.**
+  This bullet used to say the workflow was dormant, and the mechanism it described was correct while it lasted: the `suite` job carries `if: ${{ !github.event.repository.private }}`, which the Actions scheduler evaluates before ever asking for a runner, so on a private repository the job was **skipped** rather than attempted - no red X from the missing-machine billing condition described under "Why" below. `abhi-sama/scoursh` is public, that condition is `false`, and the guard now lets the job through exactly as designed. **Keep the guard**: it is what makes the workflow safe to carry in a fork or if the repository is ever made private again.
+  A red check is therefore real information now. It is still **not** a merge gate - see the next bullet.
 
 Read that literally, because it changes what merging means **today**, regardless of which path this file describes:
 
@@ -110,7 +110,8 @@ Two things the container needs, both found by running it rather than by reasonin
   ```
 
   **Peak RSS varies with the host and with how much the tree has grown since, and the honest figure is the larger one.**  `tests/suites/dast-cookies.sh` measured **8.42 GB / 173 s** on one machine and **9.87 GB / 217 s** on another when those cuts landed; **re-measured later on the tree as it then stood it reached 12.99 GB**, with `tests/suites/dast-jwt.sh` at 12.96 GB (same method throughout: `/usr/bin/time -l`, one file at a time).  **`dast-cookies.sh` is the file closest to the ceiling** - it is where a regression will surface first, followed by `dast-jwt.sh`.
-  Two lessons from that drift, both of which cost a ticket: these figures **go stale as the tree grows**, so re-measure rather than trusting the number written here; and the per-process budget was for a while set *below* the real worst case, which killed those two files as false failures.  The budget is now 20 GB against a 12.99 GB worst case (see "The memory model" below) rather than 12 GB against a stale 9.87 GB one.
+  Two lessons from that drift, both of which cost a ticket: these figures **go stale as the tree grows**, so re-measure rather than trusting the number written here; and the per-process budget was for a while set *below* the real worst case, which killed those two files as false failures.
+  **Every figure in this bullet is historical.** A later ticket cut eleven more back-edges and re-measured the whole heavy tail; `dast-cookies.sh` is now 5.44 GB and the tree's worst file is 5.75 GB. See "The memory model" below for the current table, and read this bullet only as the account of how those earlier cuts were found.
   These directives are load-bearing.  Deleting one because it "looks unnecessary" puts the stage back over budget.
 
 The container is ARM Linux on an Apple Silicon host, rather than the x86-64 Linux the retired hosted CI provided.
@@ -227,20 +228,20 @@ None of these is a scoursh *runtime* dependency; they are what running its test 
 
 `SCOURSH_BASH` overrides bash selection and is **authoritative**: if it points at something below 4.2 the run fails rather than quietly picking a different interpreter, because a result produced by an interpreter nobody asked for is not the result that was asked for.
 
-## When the repository goes public
+## The repository IS public - what that changed
 
-`.github/workflows/ci.yml` needs no rewriting to be ready for that: it is already the shape a public repository's CI should be.
+This section used to be written in the future tense ("when the repository goes public"). It has happened. `.github/workflows/ci.yml` needed no rewriting for it, exactly as this section predicted: it was already the shape a public repository's CI should be.
 
 1. A matrix `suite` job over `ubuntu-latest` (GNU) and `macos-latest` (BSD), each installing a bash >= 4.2 and `shellcheck`, then running `tests/run-tests.sh` and uploading the suite log plus a normalised `findings.jsonl`.
 2. A `compare` job that downloads both legs' normalised findings and `diff -u`s them - the same assertion `tools/daily-suite.sh` already makes locally, today.
 3. The check names GitHub displays are the jobs' `name:` fields, not the workflow name; read them off a real run before configuring them as required status checks.
 
-What actually changes at that point:
+What it changed:
 
-1. **`github.event.repository.private` flips to `false`**, so the `suite` job's `if:` guard stops skipping it and hosted Actions starts assigning machines again (public repositories are free) - `pull_request` and pushes to `main` start producing real checks, with no workflow edit needed at all.
-2. **Branch protection becomes available**, per the 403 described above. Turning the `suite` and `compare` job names into required status checks is the natural next step once a few real runs exist to read the check names off.
-3. **This runbook's "no automatic pass/fail" warning stops being universally true.**
-   It becomes true only for pushes to non-default branches with no open PR, same as any other repository's Actions setup - reword the top of this file at that point rather than leave it describing a dormant workflow.
+1. **`github.event.repository.private` is `false`**, so the `suite` job's `if:` guard stops skipping it and hosted Actions assigns machines (public repositories are free). `pull_request` and pushes to `main` produce real checks, with no workflow edit needed - and the first thing those real checks found was that the whole-tree `shellcheck` stage did not fit a hosted runner at all (see "the memory model" below).
+2. **Branch protection becomes available**, per the 403 described above. Turning the `suite` and `compare` job names into required status checks is a natural next step, but it has NOT been done: by standing maintainer instruction CI does not gate merges here, and the verification gate remains a real local `bash tests/run-tests.sh` run.
+3. **"No automatic pass/fail" is no longer universally true.**
+   It is now true only for pushes to non-default branches with no open PR, same as any other repository's Actions setup.
 
 Nothing about the daily local runner changes when this happens: it keeps running, alongside hosted Actions, as the maintainer's own fast path and as the only check that keeps working if Actions billing changes again.
 
@@ -296,7 +297,37 @@ It is optional locally (an air-gapped host may not have it) and skipped with a n
 CI always installs it, so it is effectively required in CI even though `tests/run-tests.sh` itself treats it as best-effort.
 `-x` (follow `source`) always runs, on every file, on every path below - it is what makes the check thorough, and nothing here narrows or drops it.
 
-In CI (`GITHUB_ACTIONS=true`), the stage is unchanged from the original design: a fixed 2-way `xargs -P` batch, no memory cap, no watchdog, because a CI runner is ephemeral and a failed job costs nothing there.
+In CI (`GITHUB_ACTIONS=true`), the stage runs **one `shellcheck` invocation per file**, `sc_jobs` of them in parallel, with no memory cap and no watchdog.
+
+**This replaced a fixed 2-way `xargs -P` BATCH, and that batch is what made CI red on both legs.**
+The batched shape handed `(files + jobs - 1) / jobs` files - 85 of them at the tree size when this was written - to a *single* `shellcheck -x` process.
+`shellcheck` holds every file it is given, plus each one's whole `-x` source closure, in one heap, so that process's peak is the **sum** over its batch rather than the **max** over it.
+Measured on the two runners this workflow actually targets, on run `33677872951`:
+
+| leg | outcome |
+|---|---|
+| `ubuntu-latest` (16GB) | the **job** was killed: exit 143, `The runner has received a shutdown signal`, about 5.5 minutes into the stage (21:11:34 -> 21:17:06), with no stage output at all - not even the `if: always()` log-upload step ran, which is why no `suite.log` artifact exists for that leg |
+| `macos-latest` (7GB) | completed, but took **41m45s** (21:24:56 -> 22:06:41) by swapping throughout |
+
+One file per invocation makes the stage's peak the max over the tree rather than the sum over a batch, which is the number `tests/lint-source-graph.sh` actually bounds.
+Two properties here are deliberately **not** the local path's, and both are about honesty rather than speed:
+
+* **No watchdog.** The local watchdog exists because macOS has no per-process memory ceiling and a runaway kernel-panicked a contributor's machine twice. A hosted runner is ephemeral, so there is nothing to defend, and a watchdog here could only convert a check that would have completed into a false failure.
+* **No `skipped` outcome.** "This host is too small for this file" is a legitimate answer about a contributor's laptop and is never a legitimate answer on CI, where the runner *is* the target. A file that cannot be checked on CI lands in `sc_unchecked` and **fails** the stage. That is what keeps a green CI run from meaning "every file we felt like checking was clean".
+
+`sc_jobs` is derived from the runner's own available memory (clamped to the core count, and to 4) rather than pinned at 2, because the two runners differ by more than 2x in RAM and one constant cannot be right for both.
+The arithmetic mirrors the local model's `reserve`/`headroom` shape, but the **per-file allowance is the tree's WORST file (6GB, `SCOURSH_SHELLCHECK_CI_WORST_GB`), not the local path's typical `step_gb` (5GB)** - and that difference is structural rather than a tuning preference.
+Locally a file that exceeds `step_gb` is *deferred to a second, narrower pass*, so planning wide against a typical figure is safe because the heavy tail is caught later; this path has no second pass, so the allowance has to cover the heaviest file or the plan is over-committed exactly when two heavy files land together.
+A first draft used the local 5GB step and planned **3** jobs on a 16GB runner - 3 x the 5.75GB worst file is 17.25GB against 16GB of RAM, the batching defect again in miniature.
+
+| runner | total | avail | reserve | headroom | plan | worst case |
+|---|---|---|---|---|---|---|
+| `ubuntu-latest` | 16GB | ~15GB | 2GB | 13GB | **2** x 1 file | 2 x 5.75 = 11.5GB, inside 13GB |
+| `macos-latest` | 7GB | ~5GB | 2GB | 3GB | **1** x 1 file | 5.75GB on a 7GB machine - tight, and one file at a time is as narrow as this can be made without dropping a file, which is not on offer |
+
+Both rows are asserted, not just documented: section **M** drives the stage over each shape with `SCOURSH_SHELLCHECK_FORCE_{TOTAL,AVAIL}_GB` and checks the plan it prints.
+`tests/suites/run-tests-stage.sh` section **M** covers this path; it asserts the one-file-per-invocation contract from inside the stub `shellcheck` (via `STUB_ARGC_LOG`), because a batched run and a per-file run print the *same* verdict and nothing in the stage's own output can tell them apart.
+That section is measured against both readings: it reports 8 failures against the batched branch and 0 against the fixed one.
 
 Locally, concurrency is sized by **memory, not core count**, and each `shellcheck` invocation checks exactly one file - never a batch - so a kill or a plain finding is always attributable to exactly one file.
 This exists because `-x`'s cost is dominated by how deep a file's own `source` graph goes, not by file size: a file that sources nothing can cost under 100MB, while a file that sources several `lib/*.sh` files that source further routinely measures several GB resident, and macOS offers no per-process memory ceiling to fall back on (`ulimit -v`/`-d`/`-m`/`-s` are all rejected, and shellcheck's own GHC runtime ignores `+RTS -M` in the shipped binary).
@@ -324,20 +355,34 @@ Section L pins that.
 
 Peak RSS, measured with `/usr/bin/time -l`, one file per invocation, watchdog out of the way:
 
-| file | peak RSS | when measured |
-|---|---|---|
-| `tests/suites/dast-hosthdr.sh` | did not converge - sampled between 9GB and **>25GB** repeatedly over 40+ minutes, killed unfinished rather than left to run indefinitely | this ticket |
-| `tests/suites/dast-cors.sh` | **23.79 GB** (25,536,643,072 bytes, kernel-reported `maximum resident set size`) | this ticket |
-| `tests/suites/dast-methods.sh` | **~22-41 GB**, non-reproducible run to run (see below) | sibling ticket, "cut shellcheck -x back-edges in dast-methods.sh" |
-| `tests/suites/dast-cookies.sh` | 12.99 GB | earlier ticket - now known **stale**, see below |
-| `tests/suites/dast-jwt.sh` | 12.96 GB | earlier ticket - now known **stale**, see below |
-| `scan.sh` | 4.74 GB | earlier ticket |
-| `modules/sca/run.sh` | 3.46 GB | earlier ticket |
-| `lib/engines.sh` | 0.11 GB | earlier ticket |
+| file | peak RSS BEFORE the cuts | peak RSS AFTER | hub sum after |
+|---|---|---|---|
+| `tests/suites/dast-methods.sh` | ~22-41 GB, non-reproducible | **5.75 GB** | 17 |
+| `tests/suites/dast-cookies.sh` | 12.99 GB | **5.44 GB** | 16 |
+| `tests/suites/state-coverage.sh` | not previously measured | **5.34 GB** | 12 |
+| `scan.sh` | 4.74 GB | **4.41 GB** | 12 |
+| `tests/suites/dast-hosthdr.sh` | did not converge; sampled 9GB to >25GB over 40+ minutes | **4.07 GB** | 13 |
+| `tests/suites/dast-cors.sh` | **22.86 GB** (re-measured this ticket; 23.79 GB previously) | **2.82 GB** | 13 |
+| `modules/sca/run.sh` | 3.46 GB | 3.46 GB (untouched) | 5 |
+| `lib/engines.sh` | 0.11 GB | 0.11 GB (untouched) | 0 |
 
-**The 12.99GB/20GB pair above is stale, not just old.** `dast-cors.sh` and `dast-hosthdr.sh` were confirmed (by the sibling back-edge-cutting ticket, then re-confirmed by this one, reading every `source` line in each by hand) to carry **zero repeated source targets** - there is no redundant edge left to cut in either file. Their cost is the irreducible floor of sourcing `lib/http.sh` once plus `modules/dast/engine.sh` once (which itself pulls in `modules/sast/engine.sh` -> `lib/report.sh`/`lib/config.sh` -> `lib/findings.sh`/`lib/records.sh`/`lib/core.sh`) - the same two chains every DAST phase test needs - and that floor alone now measures **23.79 GB** on `dast-cors.sh`, almost double the old 12.99GB reference and already above the old 20GB pass-2 ceiling. A real full-stage run during this ticket (165 files today, not 130) skipped `dast-methods.sh`, `dast-hosthdr.sh` and `dast-cors.sh` at the 20GB budget for exactly this reason: the shared `lib/` dependency chain has grown since the 12.99GB figure was taken, independent of any individual file's own source-graph hygiene.
+**The tree's worst file went from 22.86 GB to 5.75 GB**, which is what lets the stage fit a 16GB runner at all.
 
-**Peak RSS is not a fixed property of a file, and this ticket measured why.** `shellcheck`'s GHC runtime ignores `+RTS -M` in the shipped binary and sizes its heap off *ambient available memory at measurement time*, not off a fixed multiple of what the check actually needs. Watched directly on this host (64GB total, ~52GB available, otherwise idle): `dast-cors.sh`'s RSS did not climb monotonically - it oscillated (6.1, 8.7, 6.5, 7.8 GB, ...) for 18 minutes of a mostly-idle host before spiking to its 23.79GB peak in the run's final seconds, and `dast-hosthdr.sh` oscillated between roughly 3GB and >25GB repeatedly over 40+ minutes without ever settling, its RSS visibly jumping upward the moment `dast-cors.sh`'s process exited and freed memory back to the host. This is the same non-reproducibility the sibling ticket reported for `dast-methods.sh` (22-41GB across runs), now independently reproduced rather than only claimed. The practical consequence: a worst-case figure measured on a memory-rich host is not a reliable ceiling for a memory-constrained one, and vice versa - **the `jobs * budget <= headroom` clamp below, not the absolute budget number, is what actually keeps this model safe across host sizes.** Re-measuring and hand-tuning the constant is a stopgap; see "Known follow-up" below for the structural fix.
+**"There is no redundant edge left to cut" was wrong, and correcting it is what fixed CI.**
+The paragraph this replaces recorded that `dast-cors.sh` and `dast-hosthdr.sh` had been confirmed - twice, by two tickets, reading every `source` line in each by hand - to carry **zero repeated source targets**, and concluded that their cost was the irreducible floor of the shared `lib/` chain.
+The measurement was right and the conclusion was not.
+The repeated expansions were not *direct* repeats visible in the file's own `source` lines; they were reached **transitively**, which is precisely what a by-hand read of one file cannot see and what `tests/lint-source-graph.sh`'s own walker computes in milliseconds.
+
+`tests/suites/dast-cors.sh` reached `lib/http.sh` **three** times: once directly, once through `modules/dast/passive/cors_engine.sh`, and a third time through `modules/dast/passive/cors.sh` (which sources `cors_engine.sh` again).
+Each of those pulled `lib/findings.sh` and `lib/config.sh`, which pulled `lib/records.sh`, which pulled `lib/core.sh` - hub sum 18.
+Cutting the two edges whose target the file **already reached another way** took it to hub sum 13 and from **22.86 GB to 2.82 GB**.
+
+Eleven such cuts across nine entry points took the tree's worst file from 22.86 GB to 5.75 GB.
+Each one is lossless *by construction* - the target is still inlined once, via the kept edge - and each was **verified individually**: with the tree clean, a lossy cut can only ever ADD findings (it removes definitions, so `SC2154`/`SC2034` appear), so every cut was applied and then `shellcheck -x` was re-run on that entry point and required to still exit 0 with zero bytes of output. Any cut that changed that was reverted; none did.
+
+The lesson worth keeping: **a hub expansion is a property of the transitive graph, not of the file's own source lines.** Use `tests/lint-source-graph.sh`'s walker to find them; do not read one file and conclude there is nothing to cut.
+
+**Peak RSS is not a fixed property of a file, and this was measured rather than assumed.** `shellcheck`'s GHC runtime sizes its heap off *ambient available memory at measurement time*, not off a fixed multiple of what the check actually needs, and there is no way to tell it otherwise: re-confirmed on ShellCheck 0.11.0, `shellcheck +RTS -M2g -RTS` prints `Most RTS options are disabled. Link with -rtsopts to enable them.`, and `GHCRTS=-M2g shellcheck` is **fatal** - the binary refuses to start (exit 1) rather than warning and continuing. So an external limit (a cgroup, a container `--memory`, this stage's own watchdog) is the only ceiling available. The figures below this line are historical, from before the back-edge cuts above. Watched directly on this host (64GB total, ~52GB available, otherwise idle): `dast-cors.sh`'s RSS did not climb monotonically - it oscillated (6.1, 8.7, 6.5, 7.8 GB, ...) for 18 minutes of a mostly-idle host before spiking to its 23.79GB peak in the run's final seconds, and `dast-hosthdr.sh` oscillated between roughly 3GB and >25GB repeatedly over 40+ minutes without ever settling, its RSS visibly jumping upward the moment `dast-cors.sh`'s process exited and freed memory back to the host. This is the same non-reproducibility the sibling ticket reported for `dast-methods.sh` (22-41GB across runs), now independently reproduced rather than only claimed. The practical consequence: a worst-case figure measured on a memory-rich host is not a reliable ceiling for a memory-constrained one, and vice versa - **the `jobs * budget <= headroom` clamp below, not the absolute budget number, is what actually keeps this model safe across host sizes.** Re-measuring and hand-tuning the constant is a stopgap; see "Known follow-up" below for the structural fix.
 
 The model separates two jobs that a single number cannot do at once, and keeps one invariant in every pass - **`jobs * budget <= headroom`** - so the stage can never commit more memory than it has established the host can give:
 
@@ -351,14 +396,15 @@ headroom  = max(avail - reserve, 1)
 
 **Pass 1** plans against a *typical* footprint (`SCOURSH_SHELLCHECK_STEP_GB`, default 5GB - above `scan.sh`'s 4.74GB, so the body of the tree clears it) and runs wide.
 A file that exceeds it is **not** a failure, it is **deferred**.
-**Pass 2** re-runs only the deferred files against the *runaway* trip point (`SCOURSH_SHELLCHECK_MEM_BUDGET_GB`, default **50GB** as of this ticket, raised from 20GB) - roughly 2x the confirmed 23.79GB floor and within reach of the sibling ticket's observed 41GB upper end for `dast-methods.sh`, necessarily narrow.
+**Pass 2** re-runs only the deferred files against the *runaway* trip point (`SCOURSH_SHELLCHECK_MEM_BUDGET_GB`, default **50GB**), necessarily narrow.
+That default is left where it was even though the tree's worst file is now 5.75 GB rather than 22.86 GB: it is a runaway trip point rather than a size estimate, peak RSS here is ambient-memory-dependent (above), and it is clamped down to `headroom` on every host anyway - so lowering it would buy nothing and could only turn a legitimate file into a false skip on a large host.
 Both budgets are clamped down to `headroom`, which is what makes (2) above (from the earlier, since-fixed model) impossible to reproduce, and which also means raising the default costs nothing on a small host: it is clamped down to whatever that host can actually give, and a file too heavy for the host is **skipped**, not killed.
 
 | host | avail | reserve | headroom | pass 1 | pass 2 | outcome |
 |---|---|---|---|---|---|---|
 | 8GB | 6 | 2 | 4 | 1 x 4GB | *(no gain, skipped)* | every file above ~4GB is **reported as skipped by name**, `dast-cors.sh`/`dast-hosthdr.sh` included |
-| 27GB | 20 | 3 | 17 | 3 x 5GB | 1 x 17GB | `dast-cors.sh` (23.79GB) still does **not** fit in 17GB headroom on this size host and is skipped by name; lighter files are measured |
-| 64GB | 36 | 8 | 28 | 5 x 5GB | 1 x min(50,28)=28GB | `dast-cors.sh` (23.79GB) now fits with real but not generous margin; `dast-hosthdr.sh` and `dast-methods.sh`'s upper range (up to 41GB) may still skip on this documented reference size - that is an accepted "skipped, not failed" outcome, not a regression |
+| 27GB | 20 | 3 | 17 | 3 x 5GB | 1 x 17GB | every file fits (worst 5.75GB); before the cuts, three files were skipped by name here |
+| 64GB | 36 | 8 | 28 | 5 x 5GB | 1 x min(50,28)=28GB | every file fits with a wide margin |
 
 The 27GB and 64GB rows are a deliberate, honest change from the previous version of this table: raising the ceiling constant helps only on hosts with enough real headroom to use it, and on the documented reference hosts above, the two hardest files may still be skipped even now. A host with more available memory than these examples (this ticket was run on a 64GB host with ~52GB available, i.e. ~44GB headroom) comfortably measures all three.
 

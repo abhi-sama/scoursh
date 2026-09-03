@@ -130,6 +130,44 @@ _inj_huge_body_transport() {
   printf '%s\n\n%s\n' "$status" 'text/html'
 }
 
+# ---------------------------------------------------------------------------
+# THE TIME CEILING BELOW IS CALIBRATED ON THIS HOST, NOT AN ABSOLUTE CONSTANT.
+#
+# The body case asserts that the read is bounded AT READ TIME by timing it,
+# and an absolute millisecond ceiling cannot be right on two machines an order
+# of magnitude apart in CPU and I/O.  The 800ms constant this replaces was
+# calibrated on a contributor's Mac; on `macos-latest` this case measured
+# 801ms and failed the whole job by one millisecond (run 33677872951) with the
+# property under test entirely intact.  A ceiling that fails on a slow machine
+# for being slow is testing the machine.
+#
+# So the ceiling is derived here from the cost of the shape the fix REPLACED,
+# measured on whatever host is running: copy the fixture into place and slurp
+# the whole of it with the un-bounded `read -d ''` the engine used to use.
+# The bounded read pays the copy and then reads a fixed 256 KiB cap, so it
+# lands far under half that figure; the un-bounded read pays the copy AND the
+# slurp, so it cannot - which is what keeps this assertion failing under the
+# implementation it exists to reject, on a fast host and a slow one alike.
+# The 800ms floor keeps the ceiling from ever becoming TIGHTER than the
+# constant it replaces.
+_prefix_slurp_cost_ms() {   # $1 fixture -> ms for `cp` plus a full un-bounded slurp
+  local src=$1 dst=$W/timing-calibration.raw t0 t1 _slurped
+  t0=$(now_epoch_ns)
+  cp -- "$src" "$dst"
+  # The pre-fix shape, verbatim: no `-N`, so this reads to EOF.  `read` exits
+  # non-zero at EOF, which is the normal case here and not a failure.
+  IFS= read -r -d '' _slurped <"$dst" || true
+  t1=$(now_epoch_ns)
+  rm -f -- "$dst"
+  printf '%s' "$(( (t1 - t0) / 1000000 ))"
+}
+_bounded_read_ceiling_ms() {  # $1 fixture -> half the pre-fix cost, never under 800
+  local c
+  c=$(( $(_prefix_slurp_cost_ms "$1") / 2 ))
+  (( c < 800 )) && c=800
+  printf '%s' "$c"
+}
+
 _inj_set_candidate GET query
 SCOURSH_HTTP_TRANSPORT=_inj_huge_body_transport
 t0=$(now_epoch_ns)
@@ -141,8 +179,9 @@ huge_ms=$(( (t1 - t0) / 1000000 ))
 assert_eq 0 "$huge_rc" 'inject_send itself succeeds for a large-but-reachable body'
 assert_eq "$_INJ_MAX_BODY_BYTES" "${#_INJ_BODY}" \
   "a 256 MiB body (1024x the cap) leaves _INJ_BODY holding exactly the ${_INJ_MAX_BODY_BYTES}-byte cap - FAILS if the cap is applied to what is RETAINED after a full read rather than to what is READ"
-assert_true "$([[ $huge_ms -lt 800 ]] && echo 0 || echo 1)" \
-  "inject_send completed in ${huge_ms}ms for a 256 MiB body - FAILS under the un-bounded \`read -d ''\` this replaces, which must slurp the whole body before trimming it (measured 1.7+ seconds on this host for the identical fixture through this exact harness)"
+huge_ceiling_ms=$(_bounded_read_ceiling_ms "$HUGEFILE")
+assert_true "$([[ $huge_ms -lt $huge_ceiling_ms ]] && echo 0 || echo 1)" \
+  "inject_send completed in ${huge_ms}ms for a 256 MiB body, inside this host's own ${huge_ceiling_ms}ms ceiling - FAILS under the un-bounded \`read -d ''\` this replaces, which must slurp the whole body before trimming it and so cannot come in under half its own measured cost"
 
 # ===========================================================================
 printf '== dast inject_engine: the response HEADER read (opt-in via _INJ_WANT_HEADERS) is ALSO bounded AT READ TIME ==\n'
