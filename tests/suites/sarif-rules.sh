@@ -92,7 +92,7 @@ assert_contains "$RAW" '"name": "scoursh"' 'tool.driver.name is scoursh'
 assert_contains "$RAW" '"informationUri": "https://github.com/abhi-sama/scoursh"' \
   'tool.driver.informationUri names this project'
 assert_contains "$RAW" '"results": []' \
-  'results stays empty - SARIF-03 ships the skeleton only, FAILS under an implementation that already maps findings into results (SARIF-04 scope creep)'
+  'this fixture run emitted zero findings, so results[] is correctly empty - SARIF-04 (docs/STEP10-SARIF-PLAN.md) is the ticket that maps findings into results; tests/suites/sarif-results.sh is its own proof that a run WITH findings populates it'
 
 if command -v python3 >/dev/null 2>&1; then
   t_case 'the document is well-formed JSON'
@@ -356,6 +356,7 @@ printf '\n-- determinism: two runs over the same fixture are byte-identical --\n
 # ===========================================================================
 export SCOURSH_INSTALL_ROOT=$FIXTURE_ROOT
 _new_rundir det1
+occurrence_reset_all
 finding_new
 finding_set check_id SAST-GEN-DEMO_QUICK-01
 finding_set module sast
@@ -375,6 +376,14 @@ report_all "$D"
 DET1=$(cat "$D/report.sarif")
 
 _new_rundir det2
+# Without this, the SAME (unit, check_id, match_digest) key from det1 above
+# is still in the process-global occurrence table (lib/findings.sh's _OCC),
+# so this identical-looking finding would silently take occurrence=1 instead
+# of 0 - a DIFFERENT fingerprint from det1's, defeating the very determinism
+# this section exists to prove. This only became observable once SARIF-04
+# put partialFingerprints into results[]; SARIF-03's own "results": [] never
+# had a fingerprint in it to disagree.
+occurrence_reset_all
 finding_new
 finding_set check_id SAST-GEN-DEMO_QUICK-01
 finding_set module sast
@@ -395,13 +404,18 @@ DET2=$(cat "$D/report.sarif")
 unset SCOURSH_INSTALL_ROOT
 
 # started_at/endTimeUtc are wall-clock and legitimately differ between two
-# separate run_init calls, so strip the one line that carries them before
-# comparing - everything else, including rules[] ordering, must be identical.
-STRIP1=$(printf '%s' "$DET1" | grep -v '"startTimeUtc"')
-STRIP2=$(printf '%s' "$DET2" | grep -v '"startTimeUtc"')
-t_case 'two runs over the same fixture produce byte-identical report.sarif (modulo the wall-clock invocation timestamp)'
+# separate run_init calls, so strip the one line that carries them, and
+# normalise results[]'s own per-finding firstSeen/lastSeen (SARIF-04, also
+# derived from the per-run SCOURSH_RUN_TIMESTAMP) the same way - everything
+# else, including rules[] ordering and every field of results[] besides
+# those two timestamps, must be identical.
+STRIP1=$(printf '%s' "$DET1" | grep -v '"startTimeUtc"' \
+  | sed -E 's/"(firstSeen|lastSeen)":"[^"]*"/"\1":"NORMALISED"/g')
+STRIP2=$(printf '%s' "$DET2" | grep -v '"startTimeUtc"' \
+  | sed -E 's/"(firstSeen|lastSeen)":"[^"]*"/"\1":"NORMALISED"/g')
+t_case 'two runs over the same fixture produce byte-identical report.sarif (modulo wall-clock timestamps)'
 assert_eq "$STRIP1" "$STRIP2" \
-  'identical - FAILS under a reading whose rules[] order depends on associative-array iteration order rather than the LC_ALL=C sort'
+  'identical - FAILS under a reading whose rules[] or results[] order depends on associative-array iteration order rather than the LC_ALL=C sort'
 
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 

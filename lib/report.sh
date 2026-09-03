@@ -9,7 +9,8 @@
 #   docs/FOUNDATION.md tension 21 (coverage_gap rendered in the limitations section)
 #   cross-cutting consequence 6 (run.json is load-bearing, not decorative)
 #
-# SARIF 2.1.0 and the compliance-mapping report are §13 step 10 and are not here.
+# SARIF 2.1.0 (docs/STEP10-SARIF-PLAN.md Track A) lives here as of SARIF-03/04;
+# the compliance-mapping report (Track B) is still §13 step 10 and not here.
 #
 # shellcheck shell=bash
 
@@ -1196,6 +1197,203 @@ _sarif_run_incomplete() {
   return 1
 }
 
+# ---------------------------------------------------------------------------
+# 5b. SARIF 2.1.0 results[] (docs/STEP10-SARIF-PLAN.md SARIF-04)
+# ---------------------------------------------------------------------------
+# The per-finding mapping. The field-by-field table and the four-case
+# location table in docs/STEP10-SARIF-PLAN.md ARE the specification; this
+# section implements them and does not re-derive them. Every finding is read
+# through finding_decode (never a hand-rolled parse of findings.fields),
+# exactly as findings_write_json and every other emitter in this file already
+# do - which is also what keeps this emitter inside the redaction guarantee,
+# since finding_emit is the single chokepoint every finding passes through
+# and _finding_secret_backstop has already run by then.
+#
+# Deliberately does NOT emit `security-severity`: cvss_vector_of takes
+# exposure/auth/sensitive_data/confidence and NONE of them is a severity, so
+# the CVSS score scoursh computes is an audit trail for how the rubric moved
+# severity, not an independent score - a critical and an info finding with
+# identical rubric facts carry the SAME cvss score. Publishing that as
+# `security-severity` would have GitHub code scanning (which reads that
+# property and IGNORES result.level) display a severity that contradicts
+# result.level, run.json, the HTML report and the --fail-on gate. severity
+# maps to result.level instead (five-to-four, _sarif_level_for, reused
+# unchanged from SARIF-03's rule-level mapping - same table, same function),
+# and cvss is carried in result.properties for audit only.
+
+# The four-case location table. Sets _SARIF_LOC_URI (never empty for a
+# well-formed finding) and _SARIF_LOC_LINE (empty string when the profile
+# carries no line at all - sca, case 2 - so the caller omits `region`
+# entirely rather than defaulting it to 1).
+#
+# Case 1 (path profile: sast native/adapters, iac, iac adapters, containers)
+# and the resolving half of case 3 (history) both point at the real,
+# scan-root-relative loc_path with loc_line untouched. Case 2 (sca) points at
+# the finding's own `path` field (the lockfile), which is NOT loc_path and
+# NOT a fingerprint component (tension 5/25: adding it to the sca profile
+# would change every shipped SCA check id's fingerprint) - and carries no
+# line at all. The non-resolving half of case 3, and case 4 (dast, cloud,
+# posture, derived) point at report_locations' own generated artifact,
+# `locations/<module>.txt`, with loc_line the line SARIF-02 already wrote
+# back onto the finding - so this function needs no line bookkeeping of its
+# own, only the URI decision the table describes.
+#
+# The case-3 test is the exact same filesystem test report_locations already
+# made when it decided whether to write the fallback line
+# (_locations_history_resolves): re-running it here, rather than trusting a
+# separate marker, is what keeps this function correct even if a caller
+# invokes report_sarif without SCOURSH_SCAN_ROOT_PATH having been exported
+# the same way report_locations saw it - both then agree the path "cannot be
+# resolved" and both choose the same fallback, per that function's own
+# fabrication-avoiding default.
+declare -g _SARIF_LOC_URI='' _SARIF_LOC_LINE=''
+_sarif_result_location() {
+  local module=${_DF[module]:-} check_id=${_DF[check_id]:-} profile
+  _SARIF_LOC_URI=''
+  _SARIF_LOC_LINE=''
+  profile=$(_fp_profile_for "$module" "$check_id") || profile=''
+  case $profile in
+    sca)
+      _SARIF_LOC_URI=${_DF[path]:-}
+      ;;
+    history)
+      if _locations_history_resolves "${_DF[loc_path]:-}"; then
+        _SARIF_LOC_URI=${_DF[loc_path]:-}
+      else
+        _SARIF_LOC_URI="locations/$module.txt"
+      fi
+      _SARIF_LOC_LINE=${_DF[loc_line]:-}
+      ;;
+    dast | cloud | posture | derived)
+      _SARIF_LOC_URI="locations/$module.txt"
+      _SARIF_LOC_LINE=${_DF[loc_line]:-}
+      ;;
+    *)
+      # The path profile (sast native/adapters, iac, containers), and the
+      # fallback for a module _fp_profile_for does not recognise: the
+      # safest reading is still "a real file", never a fabricated one.
+      _SARIF_LOC_URI=${_DF[loc_path]:-}
+      _SARIF_LOC_LINE=${_DF[loc_line]:-}
+      ;;
+  esac
+}
+
+# `evidence` -> message.text continuation, or region.snippet.text (the
+# mapping table's own wording). When the location carries a region (a real
+# line to attach a snippet to), evidence becomes that region's snippet and
+# message.text stays the bare title; when it does not (sca, case 2, which
+# has no region at all), evidence is appended to message.text as a
+# continuation instead, since there is nowhere else to put it. Must run
+# AFTER _sarif_result_location, which decides which of the two applies.
+declare -g _SARIF_MSG_TEXT='' _SARIF_MSG_SNIPPET=''
+_sarif_message_for() {
+  _SARIF_MSG_TEXT=${_DF[title]:-}
+  _SARIF_MSG_SNIPPET=''
+  local ev=${_DF[evidence]:-}
+  [[ -n $ev ]] || return 0
+  if [[ -n $_SARIF_LOC_LINE ]]; then
+    _SARIF_MSG_SNIPPET=$ev
+  else
+    _SARIF_MSG_TEXT+=$'\n\n'"$ev"
+  fi
+}
+
+# The severity-provenance gap (docs/STEP10-SARIF-PLAN.md SARIF-04, "the
+# honest fix"): data/advisories.db carries no marker distinguishing a
+# genuinely medium-rated advisory from OSV's no-severity-published fallback,
+# which _veng_advisories_normalize_severity also defaults to "medium" - so
+# the two are byte-indistinguishable in the db row this run reads, and
+# result.properties.severityProvenance is never emitted for ANY sca finding
+# rather than guess. Recorded once per RUN DIRECTORY (never a bare
+# once-per-process flag: report_sarif runs once per module under
+# `scan.sh all` against the SAME rundir, where firing once is correct, but a
+# test process that calls report_all against several different rundirs in
+# one process must see it recorded independently for each one it is true
+# for) and only when it could actually matter - an sca finding whose
+# base_severity is exactly "medium", the one value both a real advisory and
+# the fallback can produce.
+declare -gA _SARIF_SCA_GAP_RECORDED=()
+_sarif_maybe_record_sca_severity_gap() {
+  local rundir=$1
+  [[ -z ${_SARIF_SCA_GAP_RECORDED[$rundir]:-} ]] || return 0
+  _SARIF_SCA_GAP_RECORDED[$rundir]=1
+  run_record coverage_reduction \
+    'module=sca reason=sarif_severity_provenance_unavailable - data/advisories.db does not record whether a medium severity came from a real advisory or the unscored fallback default, so report.sarif never emits result.properties.severityProvenance for an SCA finding'
+}
+
+# One `result` object for the finding currently decoded into _DF. Requires
+# _DF to already hold a decoded finding (finding_decode); does not adopt it
+# into _F, since nothing here needs the current-finding API.
+_sarif_print_one_result() {
+  local rundir=$1
+  local cid=${_DF[check_id]:-} level
+  level=$(_sarif_level_for "${_DF[severity]:-}")
+
+  _sarif_result_location
+  _sarif_message_for
+
+  printf '{'
+  printf '"ruleId":%s' "$(json_string "$cid")"
+  printf ',"level":%s' "$(json_string "$level")"
+  printf ',"message":{"text":%s}' "$(json_string "$_SARIF_MSG_TEXT")"
+  printf ',"locations":[{'
+  printf '"physicalLocation":{"artifactLocation":{"uri":%s}' "$(json_string "$_SARIF_LOC_URI")"
+  if [[ -n $_SARIF_LOC_LINE ]]; then
+    printf ',"region":{"startLine":%s' "$(json_number "$_SARIF_LOC_LINE")"
+    [[ -z $_SARIF_MSG_SNIPPET ]] || printf ',"snippet":{"text":%s}' "$(json_string "$_SARIF_MSG_SNIPPET")"
+    printf '}'
+  fi
+  printf '}'
+  printf ',"logicalLocations":[{"kind":%s,"fullyQualifiedName":%s}]' \
+    "$(json_string "${_DF[logical_kind]:-}")" "$(json_string "${_DF[logical_fqn]:-}")"
+  printf '}]'
+  printf ',"partialFingerprints":{"scourshFingerprint/v1":%s}' "$(json_string "${_DF[fingerprint]:-}")"
+  printf ',"properties":{'
+  printf '"module":%s' "$(json_string "${_DF[module]:-}")"
+  printf ',"status":%s' "$(json_string "${_DF[status]:-}")"
+  printf ',"confidence":%s' "$(json_string "${_DF[confidence]:-}")"
+  printf ',"baseSeverity":%s' "$(json_string "${_DF[base_severity]:-}")"
+  printf ',"cvss":{"vector":%s,"score":%s}' \
+    "$(json_string "${_DF[_cvss_vector]:-}")" "$(json_number "${_DF[_cvss_score]:-}")"
+  if [[ -n ${_DF[cell]+set} ]]; then
+    printf ',"cell":%s' "$(json_string "${_DF[cell]}")"
+  else
+    printf ',"cell":null'
+  fi
+  printf ',"firstSeen":%s' "$(json_string "${_DF[first_seen]:-}")"
+  printf ',"lastSeen":%s' "$(json_string "${_DF[last_seen]:-}")"
+  printf '}'
+  if [[ ${_DF[suppressed]:-} == true ]]; then
+    printf ',"suppressions":[{"kind":"external","justification":%s}]' \
+      "$(json_string "${_DF[suppressed_by]:-}")"
+  fi
+  printf '}'
+
+  if [[ ${_DF[module]:-} == sca && ${_DF[base_severity]:-} == medium ]]; then
+    _sarif_maybe_record_sca_severity_gap "$rundir"
+  fi
+}
+
+# `runs[0].results[]`, in the same (module, check_id, fingerprint) order
+# findings.fields is already sorted in - findings_merge's own order,
+# unaffected by anything this function does - so two runs over the same
+# fixture produce a byte-identical results[] array, matching every other
+# emitter in this file.
+_sarif_print_results() {
+  local rundir=$1 line first=1
+  printf '['
+  if [[ -s $rundir/findings.fields ]]; then
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      finding_decode "$line"
+      (( first )) || printf ','
+      first=0
+      _sarif_print_one_result "$rundir"
+    done <"$rundir/findings.fields"
+  fi
+  printf ']'
+}
+
 # `runs[0].invocations[0]` - startTimeUtc/endTimeUtc mirror run.json's own
 # started_at and "now" (report_run_json's identical reading).
 # executionSuccessful/exitCode are necessarily a snapshot at THIS report_all
@@ -1222,9 +1420,10 @@ _sarif_print_invocations() {
   printf '}]'
 }
 
-# `report_sarif [RUNDIR]` - the SARIF-03 skeleton: document, tool.driver
-# (name/version/informationUri/rules[]), artifacts[], invocations[], and an
-# empty results[] (SARIF-04's own).  `informationUri` is this project's own
+# `report_sarif [RUNDIR]` - the full SARIF 2.1.0 document: document,
+# tool.driver (name/version/informationUri/rules[] - SARIF-03), artifacts[]
+# and invocations[] (SARIF-03), and results[] (SARIF-04, section 5b above).
+# `informationUri` is this project's own
 # canonical repository URL (README.md's own clone instructions cite the same
 # string) - a static string naming the tool, never fetched by anything, so it
 # is not egress and is not a scan target (tests/lint-shell.sh's DAST-35 "no
@@ -1261,7 +1460,9 @@ report_sarif() {
     printf '      "artifacts": '
     _sarif_print_artifacts "$rundir"
     printf ',\n'
-    printf '      "results": [],\n'
+    printf '      "results": '
+    _sarif_print_results "$rundir"
+    printf ',\n'
     printf '      "invocations": '
     _sarif_print_invocations "$rundir"
     printf '\n    }\n'
@@ -1316,10 +1517,9 @@ report_all() {
   [[ -z ${_rpt_want[json]:-} ]] || findings_write_json "$rundir"
   [[ -z ${_rpt_want[md]:-} ]] || report_md "$rundir"
   [[ -z ${_rpt_want[html]:-} ]] || report_html "$rundir"
-  # docs/STEP10-SARIF-PLAN.md SARIF-03: report_sarif writes the SARIF-2.1.0
-  # skeleton (tool.driver/rules[]/artifacts[]/invocations[], results: []).
-  # SARIF-04 owns results[]; until it lands this is valid SARIF describing a
-  # run that found nothing, not yet a complete feed of this run's findings.
+  # docs/STEP10-SARIF-PLAN.md SARIF-03/04: report_sarif writes the full
+  # SARIF-2.1.0 document (tool.driver/rules[]/artifacts[]/invocations[], and
+  # results[] mapped from this run's own findings).
   [[ -z ${_rpt_want[sarif]:-} ]] || report_sarif "$rundir"
   report_run_json "$rundir"
 }

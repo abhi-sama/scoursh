@@ -160,7 +160,7 @@ Each has a full entry in `docs/FOUNDATION.md`.
   - **A value on a different line from its keyword is unreachable by ANY pattern rule**, because `rules/RULE-FORMAT.md` §8.2 freezes matching as line-oriented. It is an architectural limit, not a rule defect, and closing it is a register change. It is pinned as the `[[G01]]`-`[[G03]]` controls, tagged `G` rather than `P` so the gap stays visible instead of being silently assumed covered - and so the suite fails if it ever stops being documented.
 - **`tests/fixtures/{vuln,clean}/` are SHARED trees scanned wholesale, so landing a new `*.rules` pack changes what every existing pack is tested against - and what every existing pack's fixtures test the new one against.** Each pack asserts "stays quiet across the whole clean tree", so an overlapping `files:` glob is a cross-fire, not a local concern. `kubernetes.rules` (`bb75c9b`) landed **after** `docker-compose.rules` (`57d1cd1`) and its `tests/fixtures/clean/docker-compose.*.yml` fixtures, carried no compose guard, and so merged red: `tests/suites/iac.sh` reports `110 passed, 2 failed` at `bb75c9b` itself, and `dev` carried those two failures onward into every branch cut from it until they were fixed. `image:` and `privileged: true` are byte-identical vocabulary in the two schemas. A pack whose `files:` glob overlaps another's must state the boundary explicitly - `exclude-files` mirroring the owning pack's `files:` list where the shape has a conventional filename (docker-compose, Dockerfile), a content `context-deny` only where it does not (CloudFormation, Helm templates). Reach for `exclude-files` first: it cannot interact with a `context-window`, whereas a content deny on a check like `IAC-K8S-MUTABLE_TAG-01` forces widening a same-line-intent window that `rules/RULE-FORMAT.md` §10.2 requires to stay at `0`, trading a visible false positive for a silent false negative (finding F4).
 - **A cross-fire fix needs a test in BOTH directions, because the naive fix for each is the other's bug.** Narrow too little and the false positives return; narrow too much and the pack goes inert - and an inert pack passes every "stays quiet" assertion in the suite, so the only thing that catches it is an assertion that the rules still FIRE. The kubernetes/docker-compose section of `tests/suites/iac.sh` pins both halves, and asserts them over `check_id@loc_path` pairs from a single scan of `tests/fixtures/iac-scope/` so neither half can be satisfied by breaking the other. That failure mode had already cost two tickets before it was tested.
-- **`findings.jsonl` and `run.json` are mandatory per-run records, never one of `--format`'s four values** (`json`/`sarif`/`html`/`md` is the whole enum both `scan.sh` and `lib/config.sh` validate against). `lib/report.sh`'s `report_all` writes both unconditionally and gates `findings.json`/`report.md`/`report.html`/`report.sarif` behind `SCOURSH_FORMATS` (a CSV `scan.sh` resolves via `config_scanner_list` and exports before dispatch). `--format sarif` alone therefore writes `report.sarif` plus the two mandatory files: `report_sarif` (SARIF-03, `lib/report.sh` section 5a) now exists and writes a real SARIF 2.1.0 skeleton (`tool.driver`/`rules[]`/`artifacts[]`/`invocations[]`), but `runs[0].results[]` stays empty until SARIF-04's per-finding mapping lands - that narrower gap is unchanged and tracked in `ROADMAP.md`, not silently hidden by this ticket. A `report_all` caller that never sets `SCOURSH_FORMATS` (every direct call in this test suite) gets all four formats, matching `lib/config.sh`'s own documented default for no `--format` given - keep that fallback in step with that default rather than letting the two drift.
+- **`findings.jsonl` and `run.json` are mandatory per-run records, never one of `--format`'s four values** (`json`/`sarif`/`html`/`md` is the whole enum both `scan.sh` and `lib/config.sh` validate against). `lib/report.sh`'s `report_all` writes both unconditionally and gates `findings.json`/`report.md`/`report.html`/`report.sarif` behind `SCOURSH_FORMATS` (a CSV `scan.sh` resolves via `config_scanner_list` and exports before dispatch). `--format sarif` alone therefore writes `report.sarif` plus the two mandatory files: `report_sarif` (`lib/report.sh` section 5a/5b) writes a complete SARIF 2.1.0 document - `tool.driver`/`rules[]`/`artifacts[]`/`invocations[]` (SARIF-03) and a fully-mapped `runs[0].results[]` (SARIF-04). A `report_all` caller that never sets `SCOURSH_FORMATS` (every direct call in this test suite) gets all four formats, matching `lib/config.sh`'s own documented default for no `--format` given - keep that fallback in step with that default rather than letting the two drift.
 - **A `Set-Cookie` header value is split on `;` OUTSIDE double quotes and NEVER on `,`** (`modules/dast/passive/cookie_engine.sh`, DAST-06). Both naive readings are shipped bugs, and both fail in the direction that reads as a pass. The generic RFC 7230 "a comma separates list members" rule is right for `Accept` and specifically wrong here (RFC 6265 §3): `Expires=Wed, 09 Jun 2021 10:18:14 GMT` carries a comma inside ONE attribute, so splitting on it strands every later attribute on a phantom cookie invented from the date, and reports three findings against a correctly-flagged cookie. A quote-blind `;` split is worse: `pref="light; Secure; dark"` makes it see a `Secure` attribute the server never sent, so a cookie that IS missing `Secure` passes. Attribute names are case-insensitive and unordered, and `Secure`/`HttpOnly` are set by the attribute's PRESENCE - RFC 6265 §5.2.5/§5.2.6 discard the value, so `HttpOnly=false` is an HttpOnly cookie. Every one of these was measured by writing the naive version and watching `tests/suites/dast-cookies.sh` go red, not reasoned about.
 - **A record stream between two processes is separated by 0x1f, NEVER by a tab, whenever a field can
   legitimately be EMPTY** (`modules/dast/passive/markup_engine.sh`, DAST-11). A tab is an
@@ -726,6 +726,71 @@ cutting is verified lossless for `shellcheck -x` too by checking every entry poi
 `tests/suites/sarif-rules.sh` (53 assertions) is the proof, including two cases confirmed by mutation
 (the full-registry claim, and `descriptorSource` never appearing on a registry-backed descriptor) -
 each watched failing under the reading it names before the fix landed.
+
+**SARIF-04 has also landed: `runs[0].results[]`, the per-finding mapping - `report_sarif` now writes a
+complete SARIF 2.1.0 document rather than a skeleton with an always-empty `results: []`.**
+`docs/STEP10-SARIF-PLAN.md`'s field-by-field mapping table, four-case location table and five-to-four
+`level` mapping are the specification, implemented rather than re-derived, in a new `lib/report.sh`
+section 5b (`_sarif_result_location`, `_sarif_message_for`, `_sarif_print_one_result`,
+`_sarif_print_results`). Every finding is read through `finding_decode`, never a hand-rolled parse of
+`findings.fields` - the same discipline every emitter in that file already follows, and what keeps the
+SARIF inside the redaction guarantee, since `finding_emit`'s `_finding_secret_backstop` has already run
+by the time a shard reaches this reader.
+`severity` maps to `result.level` (`_sarif_level_for`, unchanged and reused verbatim from SARIF-03's own
+rule-level mapping - one function, two callers) and `base_severity`/`confidence`/`module`/`cvss`/`cell`/
+`status`/`first_seen`/`last_seen` land in `result.properties`; `check_id` is `result.ruleId`, joining a
+`tool.driver.rules[]` descriptor SARIF-03 already guarantees exists (registry-backed or synthesised)
+for every id a finding can carry.
+**`security-severity` is deliberately never emitted** - the reason is the one this document's "the
+severity trap" section already gives (`cvss_vector_of` takes exposure/auth/sensitive_data/confidence and
+none of them is a severity, so a critical and an info finding with identical rubric facts carry the
+*same* CVSS score; publishing it as `security-severity` would have GitHub code scanning, which reads
+that property and ignores `result.level`, display a severity that contradicts `result.level`, `run.json`,
+the HTML report and the `--fail-on` gate).
+The four-case location table is implemented by re-running, at emit time, the exact same filesystem test
+`report_locations` (SARIF-02) already made when it decided whether to write a case-3 fallback line
+(`_locations_history_resolves`) - never a separate marker - so a `path`/resolving-`history` finding
+points at its own real `loc_path`/`loc_line`, an `sca` finding points at its own `path` field (never
+`loc_path`, which it does not carry, and never a fingerprint component per tension 5/25) with **no
+`region` key at all** rather than a fabricated `startLine: 1`, and a non-resolving-`history`/`dast`/
+`cloud`/`posture`/`derived` finding points at `report_locations`' own generated
+`locations/<module>.txt` artifact with the `loc_line` that ticket already wrote back - so this ticket
+needed no line bookkeeping of its own, exactly as SARIF-02's own header promised.
+`evidence` goes to `region.snippet.text` when a region exists to attach it to, and is appended to
+`message.text` as a continuation when it does not (the `sca` case, which has no region) - the mapping
+table's own wording, made concrete.
+`suppressed`/`suppressed_by` become `result.suppressions[0]` with `kind: "external"` and a
+`justification`, **present only on a genuinely suppressed finding** - never an empty array on a live
+one, and never a dropped result on a suppressed one, per tension 22's "the consumer sees the accepted
+risk instead of a gap".
+**The SCA severity-provenance gap (the ticket's own "honest fix") is recorded rather than guessed
+around**: `data/advisories.db` carries no marker distinguishing a genuinely medium-rated advisory from
+OSV's no-severity-published fallback (which also defaults to `medium`), so the two are
+byte-indistinguishable in the row this run reads - `result.properties.severityProvenance` is therefore
+never emitted for *any* SCA finding, and `_sarif_maybe_record_sca_severity_gap` instead writes one
+`coverage_reduction` fact into `run.json`, keyed per RUN DIRECTORY (an associative array, not a bare
+once-per-process flag, so a `scan.sh all` run recording it once across several `report_sarif` calls
+against the same rundir and a test process building many different rundirs in one process both get the
+right answer) and only when it could actually matter - a finding whose `base_severity` is exactly
+`medium`, the one value both a real advisory and the fallback can produce; a `critical`/`high`/`low` SCA
+finding can never be the fallback, so nothing is recorded for it.
+`tests/suites/sarif-results.sh` (49 assertions) is the proof: the full field-by-field mapping; the
+five-to-four level table including `info` deliberately not collapsing to `none`; all four location
+cases plus case 3's resolving and non-resolving halves (a real git-repo fixture, the same shape
+`sarif-locations.sh` already established); suppressions present only when true; `security-severity`
+absent from the whole document; the SCA gap firing for `medium` and not for `critical`; this ticket's
+own two named acceptance criteria - no `result.ruleId` lacking a descriptor across a run emitting five
+profiles and both ungoverned id families at once, and a redacted secret (plus the tension-10 hostile-
+evidence fixture: a script tag, a raw ANSI byte, a raw newline, invalid UTF-8, a backtick run) staying
+redacted and JSON-valid in `report.sarif`.
+**Landing this surfaced a latent bug in SARIF-03's own determinism test**, invisible until now because
+`results: []` carried nothing for it to disagree on: `sarif-rules.sh`'s two-runs-are-byte-identical
+section built its `det2` finding without an intervening `occurrence_reset_all`, so the still-populated
+process-global occurrence table from `det1` gave the identical-looking `det2` finding occurrence `1`
+instead of `0` - a genuinely different fingerprint the moment `partialFingerprints` made it visible in
+`results[]`. Fixed with the `occurrence_reset_all` call every other section in that file already has,
+plus normalising `results[]`'s own per-finding `firstSeen`/`lastSeen` (also wall-clock, like the
+`invocations[]` timestamp that section already stripped) before comparing.
 
 **STATE-02 (per-(check, cell) coverage recording, and persist-on-every-run wiring) has also landed**,
 for the same "its own scope does not need the `account-region` producer" reason STATE-01 was authorised
