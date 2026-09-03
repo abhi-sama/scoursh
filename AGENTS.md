@@ -794,6 +794,43 @@ Several cases deliberately plant a coverage entry a naive/rejected reading would
 not a coincidental absence - is what is proven to block a false `fixed`; two guard mutations were run
 against the suite and watched fail before being reverted, per this project's testing rule.
 
+**STATE-04 (the `SAST-HIST-*` per-finding history boundary refinement, tension 13's second layer) has
+also landed.**
+It extends `findings_classify_absent` (STATE-03, `lib/findings.sh` section 17) with two new, optional
+trailing arguments - `PRIOR_OLDEST_REACHING_COMMIT_TIME` and `THIS_RUN_OLDEST_COMMIT_TIME` - rather than
+adding a second function: every non-history caller (IaC, SCA, DAST, working-tree SAST) omits both and is
+byte-for-byte unaffected, since the new block only ever runs for a `SAST-HIST-*` check id.
+**Layer 1 (STATE-03's (check, cell) coverage test) is unchanged and still runs first**: an uncovered cell
+is `unknown` without the new block ever being reached at all.
+Only inside an already-covered cell, for the `SAST-HIST-*` family specifically, does the new layer
+compare the absent finding's own persisted `oldest_reaching_commit_time` against this run's resolved
+`history_boundary.oldest_commit_time` for that check id: at or after it, the blob was inside the range
+this run actually walked, so `fixed` stands; before it, this run could not have seen it whatever the
+config said, so `fixed` is downgraded to `unknown\thistory_boundary_receded`.
+**The boundary is compared as a plain value beside the cell, and is deliberately never folded into the
+cell string** - tension 13's own named trap: a boundary-in-cell reading makes two runs with different
+(ordinary, rolling) boundaries describe two different cells, so layer 1's own coverage test fails and
+every prior history finding reads `unknown` forever.
+`tests/suites/state-history-classify.sh` proves this both by direct assertion and by construction: it
+builds the rejected boundary-in-cell reading inline and shows it gives `unknown` on the exact case
+(tension 13's row 6 - a blob genuinely purged, whose boundary has moved, but whose own
+`oldest_reaching_commit_time` is still at or after the new boundary) where the real implementation gives
+`fixed`, so the two readings are shown to disagree rather than merely asserted to.
+Every layer-1 guard (`fp_schema_mismatch`, `scan_root_id_mismatch`, an uncovered pair) was also proven to
+stay `unknown` even when the boundary arguments passed would satisfy layer 2 on their own - the direction
+proof this ticket's own acceptance criterion asks for: layer 2 can only narrow a `fixed` to `unknown`,
+never promote an `unknown` back to `fixed`.
+Rows 3-6 of tension 13's own eight-row fixture table are this suite's own (rows 1, 2, 7 and 8 are about
+`history.sh`'s finding IDENTITY - fingerprint/occurrence - which this ticket does not touch, and which
+`tests/suites/findings.sh` and `tests/suites/sast-history.sh` already pin); every assertion in the new
+rows was run against the PRE-refinement code and watched fail (rows 3 and 4 specifically - a
+settings-narrowed or time-advanced boundary reported `fixed` before this ticket, since no boundary
+comparison existed at all) before the fix landed, per this project's testing rule.
+STATE-05 (the derived-finding refinement) is the next tier-1 ticket; it depends on this one, since a
+composite's `SAST-HIST-*` contributor is judged by the identical "covered by the test that would let its
+own finding be `fixed`" rule `lib/findings.sh`'s existing `_contributor_covered` (b1) branch already
+applies, unchanged by this ticket.
+
 Step 6 (Cloud) remains unstarted.
 
 **DAST-07 made `docs/FOUNDATION.md` tension 19's single documented exception real, and the shape it

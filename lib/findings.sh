@@ -2192,7 +2192,9 @@ findings_classify_present() {
   printf 'new'
 }
 
-# `findings_classify_absent CHECK_ID CELL SCOPE GUARD COVERED_NOW_FILE`
+# `findings_classify_absent CHECK_ID CELL SCOPE GUARD COVERED_NOW_FILE
+#                           [PRIOR_OLDEST_REACHING_COMMIT_TIME]
+#                           [THIS_RUN_OLDEST_COMMIT_TIME]`
 #
 # Classifies ONE PRIOR finding ABSENT from this run's findings.fields.
 # COVERED_NOW_FILE is `check_id \t cell` lines, this run's own covered pairs
@@ -2200,10 +2202,46 @@ findings_classify_present() {
 # and `_pair_covered` above is reused unchanged - one coverage test, one
 # owner, for an ordinary finding and a composite contributor alike).
 #
+# The two trailing, optional arguments implement tension 13's SECOND layer
+# (docs/STEP7-STATE-PLAN.md STATE-04), for the SAST-HIST-* family only.
+# Every other caller - IaC, SCA, DAST, working-tree SAST - passes neither and
+# is byte-for-byte unaffected: CHECK_ID never matches `SAST-HIST-*` for them,
+# so the block below never runs.
+#
+# Layer 1, above, is unchanged and runs FIRST: an uncovered (check, cell)
+# pair is `unknown` without ever consulting the boundary - tension 13's own
+# words, "an uncovered path root gives unknown without ever consulting this
+# rule".  Layer 2 only ever narrows a layer-1 `fixed` verdict to `unknown`
+# for a history finding whose own blob predates what this run's bounded walk
+# could see; it never turns an `unknown` into a `fixed`, so the two layers
+# can never disagree (tension 13's closing line).
+#
+# PRIOR_OLDEST_REACHING_COMMIT_TIME is the absent finding's own persisted
+# `oldest_reaching_commit_time` (state/'s per-finding field).
+# THIS_RUN_OLDEST_COMMIT_TIME is THIS run's `history_boundary.oldest_commit_time`
+# for CHECK_ID (state/'s per-covered-check field) - the resolved boundary of
+# the walk that just ran, never the configured window (tension 13: "coverage
+# is measured on the commits actually reached, not on the config").
+#
+# The boundary is compared here, as a PLAIN VALUE, and is deliberately never
+# folded into CELL: a cell carries only the path root (tension 13's own
+# words), so two runs with different boundaries still describe the SAME
+# cell and layer 1 still finds it covered.  Folding the boundary into the
+# cell string is the rejected reading tension 13 case 6 exists to catch - it
+# would make cell equality fail whenever the (rolling) boundary moves, which
+# is the ordinary shape on any active repository, and so make every history
+# finding `unknown` forever.
+#
+# Either time value being empty leaves layer 2 a no-op (falls through to the
+# plain layer-1 `fixed`) rather than a comparison against nothing: a caller
+# that omits them (every non-history caller, and any test exercising layer 1
+# alone) gets layer 1's own answer unchanged.
+#
 # Prints '<status>\t<reason>'.  status is 'fixed' or 'unknown'; reason is
 # empty for 'fixed'.
 findings_classify_absent() {
   local check_id=$1 cell=$2 coverage_scope=$3 guard=$4 covered_now=$5
+  local prior_oldest=${6:-} this_oldest_commit_time=${7:-}
   case $guard in
     fp_schema_mismatch)
       printf 'unknown\tfp_schema_mismatch'
@@ -2224,11 +2262,20 @@ findings_classify_absent() {
       fi
       ;;
   esac
-  if _pair_covered "$check_id" "$cell" "$covered_now"; then
-    printf 'fixed\t'
-  else
+  if ! _pair_covered "$check_id" "$cell" "$covered_now"; then
     printf 'unknown\tnot-covered-this-run'
+    return 0
   fi
+  if [[ $check_id == SAST-HIST-* && -n $prior_oldest && -n $this_oldest_commit_time ]]; then
+    if [[ $prior_oldest < $this_oldest_commit_time ]]; then
+      # This run's bounded walk could not have reached the blob that produced
+      # the prior finding, so its absence proves nothing - not a rescan of a
+      # remediated blob, but a boundary that receded past it.
+      printf 'unknown\thistory_boundary_receded'
+      return 0
+    fi
+  fi
+  printf 'fixed\t'
 }
 
 # `findings_rule_digest_changed PRIOR_DIGEST THIS_DIGEST` -> 'true'/'false'.
