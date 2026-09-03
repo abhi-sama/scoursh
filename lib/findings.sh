@@ -2061,15 +2061,23 @@ _contributor_covered() {
   # `scan_root_id_mismatch` exactly as an ordinary finding for that check
   # would be - the guard classify_derived's own top-level switch deliberately
   # does not apply to the composite itself.
-  local fp found=0 line c_check c_cell c_time scope status
+  #
+  # The local is spelled `coverage_scope`, never the shorter `scope` - the
+  # same measured reason `findings_classify_present`/`findings_classify_absent`
+  # above already state theirs that way: a `scope` local here produced two
+  # false SC2100 findings on an unrelated file
+  # (`tests/suites/dast-scope-precheck.sh`) under a whole-tree `shellcheck -x`
+  # run, some coincidence in how `-x` merges this file's inlined source graph
+  # with that one's.  Do not rename it back.
+  local fp found=0 line c_check c_cell c_time coverage_scope status
   while IFS= read -r fp; do
     [[ -n $fp ]] || continue
     while IFS=$'\t' read -r line c_check c_cell c_time; do
       [[ $line == "$fp" ]] || continue
       [[ $c_check == "$check" ]] || continue
       found=1
-      scope=$(_derived_contributor_scope "$check")
-      status=$(findings_classify_absent "$check" "$c_cell" "$scope" "$guard" \
+      coverage_scope=$(_derived_contributor_scope "$check")
+      status=$(findings_classify_absent "$check" "$c_cell" "$coverage_scope" "$guard" \
         "$covered_now" "$c_time" "$oldest_commit_time")
       [[ ${status%%$'\t'*} == fixed ]] || return 1
     done <"$prior_state"
