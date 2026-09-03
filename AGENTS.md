@@ -160,7 +160,7 @@ Each has a full entry in `docs/FOUNDATION.md`.
   - **A value on a different line from its keyword is unreachable by ANY pattern rule**, because `rules/RULE-FORMAT.md` §8.2 freezes matching as line-oriented. It is an architectural limit, not a rule defect, and closing it is a register change. It is pinned as the `[[G01]]`-`[[G03]]` controls, tagged `G` rather than `P` so the gap stays visible instead of being silently assumed covered - and so the suite fails if it ever stops being documented.
 - **`tests/fixtures/{vuln,clean}/` are SHARED trees scanned wholesale, so landing a new `*.rules` pack changes what every existing pack is tested against - and what every existing pack's fixtures test the new one against.** Each pack asserts "stays quiet across the whole clean tree", so an overlapping `files:` glob is a cross-fire, not a local concern. `kubernetes.rules` (`bb75c9b`) landed **after** `docker-compose.rules` (`57d1cd1`) and its `tests/fixtures/clean/docker-compose.*.yml` fixtures, carried no compose guard, and so merged red: `tests/suites/iac.sh` reports `110 passed, 2 failed` at `bb75c9b` itself, and `dev` carried those two failures onward into every branch cut from it until they were fixed. `image:` and `privileged: true` are byte-identical vocabulary in the two schemas. A pack whose `files:` glob overlaps another's must state the boundary explicitly - `exclude-files` mirroring the owning pack's `files:` list where the shape has a conventional filename (docker-compose, Dockerfile), a content `context-deny` only where it does not (CloudFormation, Helm templates). Reach for `exclude-files` first: it cannot interact with a `context-window`, whereas a content deny on a check like `IAC-K8S-MUTABLE_TAG-01` forces widening a same-line-intent window that `rules/RULE-FORMAT.md` §10.2 requires to stay at `0`, trading a visible false positive for a silent false negative (finding F4).
 - **A cross-fire fix needs a test in BOTH directions, because the naive fix for each is the other's bug.** Narrow too little and the false positives return; narrow too much and the pack goes inert - and an inert pack passes every "stays quiet" assertion in the suite, so the only thing that catches it is an assertion that the rules still FIRE. The kubernetes/docker-compose section of `tests/suites/iac.sh` pins both halves, and asserts them over `check_id@loc_path` pairs from a single scan of `tests/fixtures/iac-scope/` so neither half can be satisfied by breaking the other. That failure mode had already cost two tickets before it was tested.
-- **`findings.jsonl` and `run.json` are mandatory per-run records, never one of `--format`'s four values** (`json`/`sarif`/`html`/`md` is the whole enum both `scan.sh` and `lib/config.sh` validate against). `lib/report.sh`'s `report_all` writes both unconditionally and gates only `findings.json`/`report.md`/`report.html` behind `SCOURSH_FORMATS` (a CSV `scan.sh` resolves via `config_scanner_list` and exports before dispatch). `--format sarif` alone therefore writes only the two mandatory files today: there is still no SARIF emitter (step 10), so it selects nothing, exactly as before this was wired up - that gap is unchanged and tracked in `ROADMAP.md`, not silently hidden by the fix. A `report_all` caller that never sets `SCOURSH_FORMATS` (every direct call in this test suite) gets all four formats, matching `lib/config.sh`'s own documented default for no `--format` given - keep that fallback in step with that default rather than letting the two drift.
+- **`findings.jsonl` and `run.json` are mandatory per-run records, never one of `--format`'s four values** (`json`/`sarif`/`html`/`md` is the whole enum both `scan.sh` and `lib/config.sh` validate against). `lib/report.sh`'s `report_all` writes both unconditionally and gates `findings.json`/`report.md`/`report.html`/`report.sarif` behind `SCOURSH_FORMATS` (a CSV `scan.sh` resolves via `config_scanner_list` and exports before dispatch). `--format sarif` alone therefore writes `report.sarif` plus the two mandatory files: `report_sarif` (SARIF-03, `lib/report.sh` section 5a) now exists and writes a real SARIF 2.1.0 skeleton (`tool.driver`/`rules[]`/`artifacts[]`/`invocations[]`), but `runs[0].results[]` stays empty until SARIF-04's per-finding mapping lands - that narrower gap is unchanged and tracked in `ROADMAP.md`, not silently hidden by this ticket. A `report_all` caller that never sets `SCOURSH_FORMATS` (every direct call in this test suite) gets all four formats, matching `lib/config.sh`'s own documented default for no `--format` given - keep that fallback in step with that default rather than letting the two drift.
 - **A `Set-Cookie` header value is split on `;` OUTSIDE double quotes and NEVER on `,`** (`modules/dast/passive/cookie_engine.sh`, DAST-06). Both naive readings are shipped bugs, and both fail in the direction that reads as a pass. The generic RFC 7230 "a comma separates list members" rule is right for `Accept` and specifically wrong here (RFC 6265 §3): `Expires=Wed, 09 Jun 2021 10:18:14 GMT` carries a comma inside ONE attribute, so splitting on it strands every later attribute on a phantom cookie invented from the date, and reports three findings against a correctly-flagged cookie. A quote-blind `;` split is worse: `pref="light; Secure; dark"` makes it see a `Secure` attribute the server never sent, so a cookie that IS missing `Secure` passes. Attribute names are case-insensitive and unordered, and `Secure`/`HttpOnly` are set by the attribute's PRESENCE - RFC 6265 §5.2.5/§5.2.6 discard the value, so `HttpOnly=false` is an HttpOnly cookie. Every one of these was measured by writing the naive version and watching `tests/suites/dast-cookies.sh` go red, not reasoned about.
 - **A record stream between two processes is separated by 0x1f, NEVER by a tab, whenever a field can
   legitimately be EMPTY** (`modules/dast/passive/markup_engine.sh`, DAST-11). A tab is an
@@ -687,6 +687,37 @@ artifact file the first time a given CALL touches it, making every call a full, 
 regeneration from the current snapshot - `findings_write_jsonl`/`report_md`/`report_html`'s own
 truncate-then-rebuild discipline - rather than an unbounded append, and the same real subprocess
 now lands exactly 2. SARIF-03 is now unblocked.
+
+**SARIF-03 has also landed**: `report_sarif` (`lib/report.sh` section 5a) writes
+`reports/<run>/report.sarif` - `$schema`/`version: "2.1.0"`, `runs[0].tool.driver`
+(`name`/`version`/`informationUri`), `runs[0].tool.driver.rules[]`, `runs[0].artifacts[]`,
+`runs[0].invocations[0]`, and `runs[0].results: []` (SARIF-04's own). `report_all` now selects it like
+every other `--format` value, replacing the stand-in comment. `rules[]` is tension 22's "the full
+loaded check registry, keyed by `check_id`": `_sarif_build_registry` calls `checks_registry_load`
+(`lib/checks.sh`, now sourced by `lib/report.sh`) across `sast`/`sca`/`iac`/`dast`/`cloud` and
+accumulates every record into one map, so a check with no finding this run still gets a
+`reportingDescriptor`. **The ticket's own named trap - three id families a finding can carry with no
+`*.rules` record (SCA ids, `<engine>:...` adapter ids, and derived/composite ids, since
+`rules/derived.rules` is deliberately unseeded) - is closed by unioning the registry ids with this
+run's own DISTINCT finding `check_id`s**: an id with no registry record gets a descriptor synthesised
+from a finding of that id (`id`, `name` from `title`, `help.text` from `remediation`,
+`defaultConfiguration.level` from `base_severity`) and `properties.descriptorSource: "synthesised"`; a
+registry-backed descriptor never carries that property - proven against a finding that deliberately
+disagrees with its own record on every shared field, so the record winning is observable rather than
+assumed. A registry-backed descriptor additionally carries `properties.ruleDigest`
+(`records_digest`) and `properties.tags` (`external/cwe/<id>`, `external/owasp/<id>`,
+`external/cis/<id>` per non-`none` value), with `help.text`/`helpUri` built from the record's own
+`remediation`/`references[]`. `artifacts[]` lists exactly the `locations/<module>.txt` files this
+run's `report_locations` actually wrote, never a real source file or SCA lockfile and never an
+untouched module. `invocations[0]`'s `executionSuccessful`/`exitCode` read the same
+non-empty-`incomplete_reason` signal this file already calls "exactly the exit-5 predicate" - a real
+but necessarily incomplete signal at this point, since `scan.sh` sets `SCOURSH_GATE_RESULT` only
+after every module's own `report_all` call has already run, so a `--fail-on` gate failure is not yet
+distinguishable from a clean run here. `_sarif_build_registry` runs DIRECTLY, never through `$(...)`,
+for the identical `die()`-in-a-subshell reason `checks_registry_load`'s own header gives.
+`tests/suites/sarif-rules.sh` (53 assertions) is the proof, including two cases confirmed by mutation
+(the full-registry claim, and `descriptorSource` never appearing on a registry-backed descriptor) -
+each watched failing under the reading it names before the fix landed.
 
 **STATE-02 (per-(check, cell) coverage recording, and persist-on-every-run wiring) has also landed**,
 for the same "its own scope does not need the `account-region` producer" reason STATE-01 was authorised

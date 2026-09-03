@@ -82,7 +82,7 @@ scan.sh <command> [options]
 | `--contact VALUE` | one printable, space-free token | from `config/scanner.conf` (`contact`), else none | live |
 | `--user-agent-suffix TOKEN` | one printable, space-free token | none | live |
 | `--jobs N` | positive integer | from `config/scanner.conf` (`4`) | inert |
-| `--format` | CSV of `json,sarif,html,md` | all four | live, except `sarif`, which selects nothing |
+| `--format` | CSV of `json,sarif,html,md` | all four | live; `sarif` writes a document whose `results[]` is still empty |
 | `--fail-on` | `critical\|high\|medium\|low\|info\|none` | from `config/scanner.conf` (`none`) | live |
 | `--fail-on-new` | boolean; **requires `--fail-on`**, usage error otherwise | off | inert |
 | `--min-confidence` | `high\|medium\|low` | from `config/scanner.conf` (`low`) | live |
@@ -153,16 +153,17 @@ Baseline suppression needs the not-yet-built `state/` layer.
 ### `--format` and the `formats` config key
 
 The list is validated, resolved through the full CLI-over-environment-over-file-over-default chain,
-and then honoured: `lib/report.sh`'s `report_all` gates `findings.json`, `report.md` and
-`report.html` on it, so `--format md` writes the Markdown report and neither of the other two.
+and then honoured: `lib/report.sh`'s `report_all` gates `findings.json`, `report.md`, `report.html`
+and `report.sarif` on it, so `--format md` writes the Markdown report and none of the other three.
 
 `findings.jsonl` and `run.json` are **not** `--format` values.
 They are mandatory per-run records - the incremental ledger and the audit record - and are written on
 every run whatever `--format` asked for, so they are not evidence that the flag was ignored.
 
-`sarif` is the one accepted value that still selects nothing.
-There is no SARIF writer anywhere in the tool; the name is a legal config value and nothing more, so
-`--format sarif` on its own writes only the two mandatory records above.
+`sarif` now writes a real SARIF 2.1.0 document, `report.sarif`: `$schema`/`version`, `tool.driver`
+(including the full loaded check registry as `rules[]`), `artifacts[]`, and `invocations[]`.
+`runs[0].results[]` is still empty, because the per-finding mapping has not landed yet, so the document
+describes a run that found nothing rather than carrying this run's actual findings.
 Do not point a SARIF-consuming CI step at a `scoursh` run yet.
 [`docs/STEP10-SARIF-PLAN.md`](STEP10-SARIF-PLAN.md) is the sub-ticket plan that closes this.
 
