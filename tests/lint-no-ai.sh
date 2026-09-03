@@ -41,14 +41,28 @@ report() {
 
 # Every shipped file: the whole tree except .git, and except documentation
 # (*.md anywhere, which is prose ABOUT this rule, not code that could violate
-# it) and this linter's own two files (this script and its self-test suite,
-# which both have to name what they look for in order to test/implement it).
+# it), this linter's own two files (this script and its self-test suite,
+# which both have to name what they look for in order to test/implement it),
+# and the two vendored SCA databases (data/advisories.db, data/versions.db).
+# Those two are .gitignore'd, generated locally by
+# `tools/vendor-engines.sh advisories` from real OSV.dev advisory data, and
+# NEVER shipped (docs/FOUNDATION.md tension 25) - but they are real package
+# names, not code, and OSV's own npm corpus alone names dozens of real and
+# malicious packages containing "anthropic"/"openai"/... as a substring
+# (`spring-ai-anthropic`, a real Maven artifact; `anthropic-toolkit`, a real
+# MAL-* typosquat listing).  Scanning them made an ordinary first run - build
+# the database per the README, then run this suite to confirm the install
+# worked - fail on a security lint that has nothing to do with the change:
+# the match is in third-party advisory PROSE this scanner looks up, not in
+# anything scoursh itself can call.
 shipped_files() {
   find . \
     -path ./.git -prune -o \
     -name '*.md' -prune -o \
     -path './tests/lint-no-ai.sh' -prune -o \
     -path './tests/suites/lint-no-ai-selftest.sh' -prune -o \
+    -path './data/advisories.db' -prune -o \
+    -path './data/versions.db' -prune -o \
     -type f -print \
     | LC_ALL=C sort
 }

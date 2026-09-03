@@ -243,9 +243,22 @@ reason and finding, and leaves the exit code to the modules that did run.)
 
 You build it on a networked box with `tools/vendor-engines.sh`, which resolves advisories from
 [OSV.dev](https://osv.dev) into the pre-expanded rows the scanner looks up.
-There are two ways to do it.
 
-**Bulk, which is what you almost certainly want.**
+**If you just want it working, this is the one command:**
+
+```sh
+tools/vendor-engines.sh advisories bulk --accept-unverified --all
+```
+
+Measured on a clean checkout: **~2 minutes**, **~290 MB downloaded** (OSV.dev's six per-ecosystem export archives), **~940 MB written** to `data/advisories.db` and `data/versions.db` combined.
+The archives themselves are not kept - they live under `$SCOURSH_SCRATCH` and are erased when the command exits, successfully or not.
+It ends by printing a per-ecosystem table (ecosystem, grade, rows imported, and a `range_only_skipped` percentage) - that table, not silence, is how you know it worked.
+A failed ecosystem is marked `FAILED` there and the command exits non-zero, rather than leaving you with a database that silently covers less than it claims.
+
+There are two ways to build it - bulk, above, which is what you almost certainly want, and one advisory
+at a time, below, when you already know the specific IDs you care about.
+
+**Bulk.**
 `advisories bulk` imports a whole ecosystem's published export in one command, or all six with
 `--all`, so you do not have to know in advance which advisories matter - which is the thing a
 dependency scanner is supposed to tell you.
@@ -254,15 +267,23 @@ import whose content was not verified refuses until you pass `--accept-unverifie
 Every import prints the integrity grade it achieved and records the digest of exactly what it
 fetched into the database header, so you can pin that digest with `--sha256` next time.
 
+**Read the `range_only_skipped` percentage in that table - it is coverage, not a progress bar.**
+OSV.dev's own advisory records do not all carry an explicit list of affected versions.
+Where one lists only a semver *range* instead, tension 25's design (`docs/FOUNDATION.md`) refuses to guess a concrete version from it, so that advisory is not represented in the database at all.
+The percentage is exactly how much of that ecosystem was left out for this reason - it is not an import problem.
+Measured on a full `--all` import: **npm ~89%** and **Go ~98%** of the affected-package entries OSV.dev publishes for those two ecosystems are range-only and absent from the database, versus **RubyGems ~0%**, **Composer ~9%**, **Maven ~13%**, and **PyPI ~23%**.
+Concretely, a fresh npm import is dominated by single-version malicious-package listings (OSV's `MAL-*` ids), not classic CVEs in popular packages: of npm's own rows, over 99% are `MAL-*` and under 1% are `GHSA-*`/`CVE-*`, covering a few hundred distinct legitimate packages.
+An npm-only scan against a real project is very unlikely to flag an outdated dependency with a well-known CVE, even immediately after a fresh, successful import - that is a limitation of npm's own OSV.dev export today, not a broken build.
+
 **One advisory at a time**, when you already know the specific IDs you care about.
 You supply them per ecosystem and `advisories <ecosystem>` resolves just those.
 Here `--all` means "every ecosystem you have supplied an ID list for", not "every known advisory".
 
 ```sh
-# Bulk: every advisory OSV publishes for an ecosystem, in one command.
-tools/vendor-engines.sh advisories bulk --accept-unverified npm
-# ...or all six ecosystems at once.
+# The one command above, spelled out: all six ecosystems in one shot.
 tools/vendor-engines.sh advisories bulk --accept-unverified --all
+# ...or just the one ecosystem you care about right now.
+tools/vendor-engines.sh advisories bulk --accept-unverified npm
 # ...or pin the exact bytes, once you know the digest you want.
 tools/vendor-engines.sh advisories bulk --sha256 <hex> npm
 
@@ -462,6 +483,13 @@ the tool rather than in a pipeline:
   checked.
   It is listed here because it is a setup step you have to know about, not because it can be mistaken
   for a passing scan.
+- **A populated `data/advisories.db` still covers npm and Go poorly** - see
+  [Installation](#installation) for the measured numbers.
+  OSV.dev's own npm export is dominated by malicious-package listings rather than CVEs in popular
+  packages, and both npm and Go publish most of their real advisories as a semver range rather than an
+  explicit affected-version list, which tension 25's design deliberately does not guess from.
+  A fresh `bulk --all` import prints exactly how much of each ecosystem this leaves out; it is not a
+  failed import, and there is no flag that changes it.
 - **`--format sarif` selects nothing.**
   `--format` itself is live: it gates `findings.json`, `report.md` and `report.html`, so
   `--format md` writes the Markdown report and no HTML.

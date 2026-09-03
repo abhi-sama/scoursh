@@ -244,11 +244,27 @@ records_owning_module() {
 # ---------------------------------------------------------------------------
 # 2. Schema lookup helpers
 # ---------------------------------------------------------------------------
-declare -A _SCHEMA_LOADED=()
-declare -A _SCHEMA_REQ=()
-declare -A _SCHEMA_CARD=()
-declare -A _SCHEMA_ML=()
-declare -A _SCHEMA_KEYS=()
+# `declare -gA`, never a bare `declare -A`, for the reason
+# modules/dast/engine.sh's own `_DAST_PHASES` comment documents at length:
+# this file is normally sourced at a script's true top level (scan.sh does,
+# before scan_dispatch is ever called), where plain and `-g` are identical -
+# but tools/vendor-engines.sh's advisories bootstrap lazily sources this file
+# (via modules/sca/engine.sh -> lib/findings.sh) from INSIDE a short-lived
+# loader function, so a bare `declare -A` here becomes local to that
+# function and is gone the instant it returns.  Measured: every `log_info`/
+# `log_warn` call for the rest of that process then died with
+# "records.sh: line N: <schema>: unbound variable" from inside `redact()`'s
+# own `_schema_ensure` call, because `_SCHEMA_LOADED` no longer existed -
+# `SCOURSH_RECORDS_SOURCED` above (a plain assignment, always global) is
+# what let the sourced-once guard survive while these did not.  Every
+# top-level associative array in this file is genuine process-wide cache
+# state by design, so all of them carry `-g`, not just the ones this path
+# happened to touch first.
+declare -gA _SCHEMA_LOADED=()
+declare -gA _SCHEMA_REQ=()
+declare -gA _SCHEMA_CARD=()
+declare -gA _SCHEMA_ML=()
+declare -gA _SCHEMA_KEYS=()
 
 _schema_ensure() {
   local schema=$1 line key req card ml
@@ -419,15 +435,15 @@ _records_check_utf8() {
 # ---------------------------------------------------------------------------
 # Records live in a named SET so two files can be loaded at once (findings.sh
 # holds the redaction rules and the severity rubric simultaneously).
-declare -A _REC_S=()      # set|idx|key -> scalar value
-declare -A _REC_L=()      # set|idx|key -> LF-joined repeated values
-declare -A _REC_ORDER=()  # set|idx     -> LF-joined key order
-declare -A _REC_LINE=()   # set|idx     -> line number the record starts at
-declare -A _REC_N=()      # set         -> record count
-declare -A _REC_PATH=()   # set         -> source path
-declare -A _REC_SCHEMA=() # set         -> schema name
-declare -A _REC_BYID=()   # set|id      -> idx
-declare -A _REC_DIGEST=() # set|idx     -> rule_digest, computed lazily
+declare -gA _REC_S=()      # set|idx|key -> scalar value
+declare -gA _REC_L=()      # set|idx|key -> LF-joined repeated values
+declare -gA _REC_ORDER=()  # set|idx     -> LF-joined key order
+declare -gA _REC_LINE=()   # set|idx     -> line number the record starts at
+declare -gA _REC_N=()      # set         -> record count
+declare -gA _REC_PATH=()   # set         -> source path
+declare -gA _REC_SCHEMA=() # set         -> schema name
+declare -gA _REC_BYID=()   # set|id      -> idx
+declare -gA _REC_DIGEST=() # set|idx     -> rule_digest, computed lazily
 
 records_count() { printf '%s' "${_REC_N[$1]:-0}"; }
 records_path() { printf '%s' "${_REC_PATH[$1]:-}"; }
