@@ -461,9 +461,9 @@ sc_stage() {
       # Each invocation writes to its OWN file rather than shared stdout:
       # appends above PIPE_BUF interleave (tension 17 - the same reason scan
       # workers write to their own shard files, not a shared findings.jsonl).
-      # The shard is NAMED AFTER THE FILE (path separators folded to `_`), so
-      # unlike the batched shape this replaces, a finding and a failure are
-      # both attributable to exactly one file here, the same as locally.
+      # The shard is NAMED AFTER THE FILE, so unlike the batched shape this
+      # replaces, a finding and a failure are both attributable to exactly one
+      # file here, the same as locally.
       # `-x` is unchanged: it still follows every `source`.
       #
       # The per-invocation exit status is recorded next to the shard rather
