@@ -5304,6 +5304,23 @@ empty - the reading a per-module setter (rather than this one control point in `
 under.  `docs/STEP10-SARIF-PLAN.md`'s own status section is the authority for the per-ticket landing
 detail; SARIF-02 (the generated location artifact writer) is now unblocked.
 
+**SARIF-02 through SARIF-05 have since landed too, completing Track A of step 10 except for
+documentation (SARIF-06).**
+`report_locations` (SARIF-02) writes this tension's own generated location artifact,
+`reports/<run>/locations/<module>.txt`; `report_sarif` (SARIF-03) writes the full SARIF 2.1.0 document
+skeleton plus `tool.driver.rules[]` (a registry-backed or synthesised descriptor for every check id a
+finding can carry - SCA, adapter, and derived ids have no on-disk record, and are handled explicitly
+rather than left to collide); `runs[0].results[]` (SARIF-04) implements this tension's own
+logical-plus-physical-location requirement, `partialFingerprints`, and `suppressions[]` field-by-field;
+and SARIF-05 makes this tension's own strengthened validation requirement real - `report.sarif` is
+validated against the vendored OASIS SARIF 2.1.0 schema AND every result's `locations[0]`
+`.physicalLocation.artifactLocation.uri` is asserted, filesystem-backed, to resolve to a real path -
+closing the exact "a schema validator may accept [locations] real ingesters reject" gap this tension's
+own "Why it bites" section names, and fixing a pre-existing skip-as-pass defect in
+`tests/suites/report.sh`'s JSON well-formedness check along the way (`AGENTS.md`'s own SARIF-05 landing
+paragraph carries the full detail; `docs/STEP10-SARIF-PLAN.md`'s status table is the per-ticket
+authority).
+
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is complete: both NETNS-01 and PARANOID-01 have
 shipped.**
 `docs/STEP8-PARANOID-PLAN.md` split `docs/DESIGN.md` §13 step 8 per tension 20's RESOLUTION into
@@ -5503,8 +5520,9 @@ landed early, out of its normal step-9 sequence, as part of this ticket (immedia
 that advanced only what needed no AWS account (see "AWS module: what exists ahead of step 6" in
 `AGENTS.md`), so the read-only chokepoint exists while `modules/cloud/aws/live/*.sh` and the rest of
 step 6 do not; `state/` now has its schema, writer and loader (`lib/state.sh`, STATE-01, above) but no
-coverage recording or classification yet; SARIF-01 has since landed (above) while the rest of the SARIF
-emitter and the compliance report remain unbuilt.
+coverage recording or classification yet; SARIF-01 through SARIF-05 have since landed (above), so Track
+A of step 10's SARIF emitter is complete except for its documentation ticket (SARIF-06), while the
+compliance report (Track B) remains unbuilt.
 
 <!-- BEGIN GENERATED STATUS -->
 <!--

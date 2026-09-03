@@ -792,6 +792,48 @@ instead of `0` - a genuinely different fingerprint the moment `partialFingerprin
 plus normalising `results[]`'s own per-finding `firstSeen`/`lastSeen` (also wall-clock, like the
 `invocations[]` timestamp that section already stripped) before comparing.
 
+**SARIF-05 has also landed: `docs/DESIGN.md` §12's "validates JSON/SARIF schema" promise is now real,
+both halves.**
+`tests/fixtures/sarif/sarif-schema-2.1.0.json` vendors the OASIS SARIF 2.1.0 schema (the errata01
+revision, fetched from `docs.oasis-open.org` - the standards body's own hosted copy, and the more
+authoritative source in any case, since the `oasis-tcs/sarif-spec` GitHub URL `report_sarif`'s own
+`$schema` field cites has since had its default branch renamed away from the path that URL names;
+provenance and a refresh procedure are in `tests/fixtures/sarif/README.md`, the same discipline
+`docs/VERSIONS-DB.md` §5 already sets for a vendored reference table).
+`tests/lib/sarif_validate.py` is a small, purpose-built JSON Schema validator over exactly the
+draft-04/07 keywords that one schema uses - **not** a dependency on the `jsonschema` PyPI package, which
+is not part of the standard library and is not installed by default even on a host that has `python3`
+(measured on this project's own dev host): depending on it would have reintroduced the exact
+skip-as-pass failure this ticket exists to close, on nearly every host rather than the rare one, so the
+validator keeps the existing "python3 present, or a reported skip" contract as the only condition rather
+than adding a second, harder-to-satisfy one underneath it. It also implements tension 22's own
+strengthened extra condition as a `--check-locations RUNDIR SCANROOT` mode: every
+`results[*].locations[0].physicalLocation.artifactLocation.uri` must be non-empty and resolve to a real
+file under the run directory or the scanned tree, checked with `os.path.exists` - never by re-trusting
+the emitter's own string, which is the exact gap a schema-only pass cannot close (a syntactically fine
+`uri` naming nothing at all is still `type: string`).
+`tests/suites/sarif-schema.sh` (14 assertions) is the proof: one fixture run deliberately built rich
+rather than minimal - all four location-table cases, both a registry-backed and a synthesised rule
+descriptor, a suppressed finding, and the tension-10 hostile-evidence fixture, in a SINGLE document -
+because a trivial one-result document validates under any reading, including a validator that does
+nothing, so only a rich fixture can prove the validator is doing real work. Four deliberately malformed
+copies of that same real document (a missing required `version` key, a property `additionalProperties:
+false` forbids, an out-of-enum `level` value, and a `uri` resolving to nothing) are each confirmed still
+well-formed JSON and each confirmed rejected - the demonstration that a well-formedness-only check
+(`json.load` alone, this project's own pre-SARIF-05 defect) would have passed every one of them, and that
+the location condition specifically requires `--check-locations` to catch (schema-only validation still
+passes the fourth mutation, by design: nothing about its JSON shape changed).
+**The second half fixes a pre-existing defect in `tests/suites/report.sh`**: its `python3`-absent branch
+called `_t_ok 'python3 unavailable, JSON schema validation skipped'`, so a host with no `python3` had
+JSON validation reported as a PASS when it never ran - the exact shape this file's own standing rule
+forbids ("a skipped or unrun suite is NEVER reported as a pass"). It now prints a loud
+`NOTICE ... This is a SKIP, not a pass.` and records nothing, matching the convention
+`tests/suites/dast-tls.sh`, `tests/suites/netns.sh` and `tests/suites/paranoid.sh` already use for the
+identical shape. Verified both ways: with `python3` on `PATH`, the suite's real assertion count is
+unchanged (93 passed); with a `PATH` built to contain every other tool the suite needs but no `python3`
+anywhere on it, the suite still exits 0, prints both `NOTICE` lines, and its passed-count is honestly
+lower (89) rather than inflated by the removed fake pass.
+
 **STATE-02 (per-(check, cell) coverage recording, and persist-on-every-run wiring) has also landed**,
 for the same "its own scope does not need the `account-region` producer" reason STATE-01 was authorised
 ahead of step 6.
@@ -2439,8 +2481,10 @@ no-ops either and `_scan_apply_profile_filter` finds a non-empty registry for Ia
 `modules/sca/` also landed out of sequence - see above.
 `lib/engines.sh` also landed out of sequence, ahead of step 5/6/step-3's then-remaining packs - see
 the paragraph above.
-Of the original list, `lib/awscli.sh`, SARIF, the compliance report, and `state/` are
-still unbuilt; which module directories exist is in the generated block above.
+Of the original list, `lib/awscli.sh` and the compliance report are still unbuilt (SARIF has since
+landed in full - see the SARIF-01 through SARIF-05 landing paragraphs above - and `state/` has since
+landed too, per `docs/STEP7-STATE-PLAN.md`); which module directories exist is in the generated block
+above.
 Every `scan_dispatch` call for a module other than `sast`, `iac`, or `sca` remains a logged
 `coverage_reduction` no-op (`reason=not_yet_built`); `scan_dispatch sca` is no longer one of them, since
 `modules/sca/run.sh` now does real work for npm/yarn/pnpm, Python, RubyGems, Maven, Composer, and Go.
@@ -2626,8 +2670,9 @@ What the suite covers now, per `docs/DESIGN.md` §12 and the resolutions above:
 - Byte-reproducible `findings.jsonl` across two runs.
 - The five closed findings, each with a test that fails under the original implementation.
 
-Still to come with their steps: SARIF schema validation (step 10), the read-only lint over a non-empty
-`aws/live/` (step 6), and a no-egress run under `--paranoid` (step 8).
+Still to come with its step: the read-only lint over a non-empty `aws/live/` (step 6). SARIF schema
+validation (step 10) is done - see `tests/suites/sarif-schema.sh`, docs/STEP10-SARIF-PLAN.md's SARIF-05 -
+and a no-egress run under `--paranoid` (step 8) is done - see `tests/suites/paranoid.sh`.
 Byte-identical findings between GNU and BSD userlands is checked by `tools/daily-suite.sh`, not by
 CI - see "The hosted workflow RUNS now - the repository went public - but it does not gate merges" below.
 
