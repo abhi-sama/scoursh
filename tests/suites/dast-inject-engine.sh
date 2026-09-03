@@ -42,6 +42,8 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 source "$ROOT/modules/dast/active/inject_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
+# shellcheck source=tests/lib/bounded-read.sh
+source "$ROOT/tests/lib/bounded-read.sh"
 
 W=$SCOURSH_SCRATCH/dast-inject-engine-workspace
 rm -rf "$W"; mkdir -p "$W"
@@ -105,6 +107,7 @@ printf '== dast inject_engine: the response BODY read is bounded AT READ TIME, n
 # directly on this host, through this exact harness: the fixed `-N` read
 # finishes in well under 200ms; the un-bounded `read -d ''` this replaces
 # takes 1.7+ seconds for the identical 256 MiB body).
+INJ_HUGE_MARKER=$W/huge-producer-finished
 HUGEFILE=$W/huge-body.raw
 if [[ ! -f $HUGEFILE ]]; then
   hs='a'
@@ -122,7 +125,9 @@ _inj_huge_body_transport() {
   printf '%s %s\n' "$method" "$path" >>"$REQ_LOG"
   if [[ -n ${_HTTP_TX_BODY_OUT:-} ]]; then
     if [[ $path == /probe* ]]; then
-      cp -- "$HUGEFILE" "$_HTTP_TX_BODY_OUT"
+      # Served through a FIFO so the PRODUCER'S own progress, not a clock,
+      # reports whether the whole body was read - see tests/lib/bounded-read.sh.
+      bounded_read_serve_fifo "$_HTTP_TX_BODY_OUT" "$HUGEFILE" "$INJ_HUGE_MARKER"
     else
       printf 'not found' >"$_HTTP_TX_BODY_OUT"
     fi
@@ -130,58 +135,19 @@ _inj_huge_body_transport() {
   printf '%s\n\n%s\n' "$status" 'text/html'
 }
 
-# ---------------------------------------------------------------------------
-# THE TIME CEILING BELOW IS CALIBRATED ON THIS HOST, NOT AN ABSOLUTE CONSTANT.
-#
-# The body case asserts that the read is bounded AT READ TIME by timing it,
-# and an absolute millisecond ceiling cannot be right on two machines an order
-# of magnitude apart in CPU and I/O.  The 800ms constant this replaces was
-# calibrated on a contributor's Mac; on `macos-latest` this case measured
-# 801ms and failed the whole job by one millisecond (run 33677872951) with the
-# property under test entirely intact.  A ceiling that fails on a slow machine
-# for being slow is testing the machine.
-#
-# So the ceiling is derived here from the cost of the shape the fix REPLACED,
-# measured on whatever host is running: copy the fixture into place and slurp
-# the whole of it with the un-bounded `read -d ''` the engine used to use.
-# The bounded read pays the copy and then reads a fixed 256 KiB cap, so it
-# lands far under half that figure; the un-bounded read pays the copy AND the
-# slurp, so it cannot - which is what keeps this assertion failing under the
-# implementation it exists to reject, on a fast host and a slow one alike.
-# The 800ms floor keeps the ceiling from ever becoming TIGHTER than the
-# constant it replaces.
-_prefix_slurp_cost_ms() {   # $1 fixture -> ms for `cp` plus a full un-bounded slurp
-  local src=$1 dst=$W/timing-calibration.raw t0 t1 _slurped
-  t0=$(now_epoch_ns)
-  cp -- "$src" "$dst"
-  # The pre-fix shape, verbatim: no `-N`, so this reads to EOF.  `read` exits
-  # non-zero at EOF, which is the normal case here and not a failure.
-  IFS= read -r -d '' _slurped <"$dst" || true
-  t1=$(now_epoch_ns)
-  rm -f -- "$dst"
-  printf '%s' "$(( (t1 - t0) / 1000000 ))"
-}
-_bounded_read_ceiling_ms() {  # $1 fixture -> half the pre-fix cost, never under 800
-  local c
-  c=$(( $(_prefix_slurp_cost_ms "$1") / 2 ))
-  (( c < 800 )) && c=800
-  printf '%s' "$c"
-}
-
 _inj_set_candidate GET query
 SCOURSH_HTTP_TRANSPORT=_inj_huge_body_transport
-t0=$(now_epoch_ns)
 huge_rc=0
 inject_send 0 'x' || huge_rc=$?
-t1=$(now_epoch_ns)
-huge_ms=$(( (t1 - t0) / 1000000 ))
+huge_finished=1
+bounded_read_producer_finished "$INJ_HUGE_MARKER" || huge_finished=0
+bounded_read_reap
 
 assert_eq 0 "$huge_rc" 'inject_send itself succeeds for a large-but-reachable body'
 assert_eq "$_INJ_MAX_BODY_BYTES" "${#_INJ_BODY}" \
   "a 256 MiB body (1024x the cap) leaves _INJ_BODY holding exactly the ${_INJ_MAX_BODY_BYTES}-byte cap - FAILS if the cap is applied to what is RETAINED after a full read rather than to what is READ"
-huge_ceiling_ms=$(_bounded_read_ceiling_ms "$HUGEFILE")
-assert_true "$([[ $huge_ms -lt $huge_ceiling_ms ]] && echo 0 || echo 1)" \
-  "inject_send completed in ${huge_ms}ms for a 256 MiB body, inside this host's own ${huge_ceiling_ms}ms ceiling - FAILS under the un-bounded \`read -d ''\` this replaces, which must slurp the whole body before trimming it and so cannot come in under half its own measured cost"
+assert_eq 0 "$huge_finished" \
+  "the producer serving the 256 MiB body was still parked mid-write when inject_send returned, so the body was never read whole - FAILS under the un-bounded \`read -d ''\` this replaces, which drains the pipe to EOF and lets the producer finish. This was an 800ms wall-clock ceiling calibrated on one machine; see tests/lib/bounded-read.sh"
 
 # ===========================================================================
 printf '== dast inject_engine: the response HEADER read (opt-in via _INJ_WANT_HEADERS) is ALSO bounded AT READ TIME ==\n'
@@ -192,6 +158,7 @@ printf '== dast inject_engine: the response HEADER read (opt-in via _INJ_WANT_HE
 # signal; a target answering with an oversized or pathologically repeated
 # header block would otherwise be slurped whole here on every probe that
 # reads it.
+INJ_HDR_MARKER=$W/huge-headers-producer-finished
 HUGEHDRFILE=$W/huge-headers.raw
 if [[ ! -f $HUGEHDRFILE ]]; then
   # ~5 MiB of header lines (80x the default 64 KiB _INJ_MAX_HEADERS_BYTES
@@ -221,7 +188,7 @@ _inj_huge_headers_transport() {
     printf 'ok' >"$_HTTP_TX_BODY_OUT"
   fi
   if [[ -n ${_HTTP_TX_HEADERS_OUT:-} ]]; then
-    cp -- "$HUGEHDRFILE" "$_HTTP_TX_HEADERS_OUT"
+    bounded_read_serve_fifo "$_HTTP_TX_HEADERS_OUT" "$HUGEHDRFILE" "$INJ_HDR_MARKER"
   fi
   printf '%s\n\n%s\n' "$status" 'text/html'
 }
@@ -229,18 +196,18 @@ _inj_huge_headers_transport() {
 _inj_set_candidate GET query
 _INJ_WANT_HEADERS=1
 SCOURSH_HTTP_TRANSPORT=_inj_huge_headers_transport
-t0=$(now_epoch_ns)
 hdr_rc=0
 inject_send 0 'x' || hdr_rc=$?
-t1=$(now_epoch_ns)
-hdr_ms=$(( (t1 - t0) / 1000000 ))
+hdr_finished=1
+bounded_read_producer_finished "$INJ_HDR_MARKER" || hdr_finished=0
+bounded_read_reap
 _INJ_WANT_HEADERS=0
 
 assert_eq 0 "$hdr_rc" 'inject_send succeeds for a large header block'
 assert_eq "$_INJ_MAX_HEADERS_BYTES" "${#_INJ_HEADERS}" \
   "a ~4 MiB header block (64x the cap) leaves _INJ_HEADERS holding exactly the ${_INJ_MAX_HEADERS_BYTES}-byte cap - FAILS if the read has no cap at all (the pre-fix shape) or if the cap were only applied after a full slurp"
-assert_true "$([[ $hdr_ms -lt 800 ]] && echo 0 || echo 1)" \
-  "inject_send completed in ${hdr_ms}ms for the oversized header block - an unbounded \`read -d ''\` over the same fixture is measured well past this ceiling on this host"
+assert_eq 0 "$hdr_finished" \
+  "the producer serving the oversized header block was still parked mid-write when inject_send returned, so the header block was never read whole - FAILS under the un-bounded \`read -d ''\` this replaces. This was an 800ms wall-clock ceiling, and it was DECORATION: measured, the un-bounded read of this ~5 MiB fixture completes in 208ms, so no time ceiling above that can tell the two readings apart - only the byte-exact cap assertion above caught the mutation. See tests/lib/bounded-read.sh"
 
 # ===========================================================================
 printf '== dast inject_engine: an embedded NUL byte in the body does not abort inject_send ==\n'

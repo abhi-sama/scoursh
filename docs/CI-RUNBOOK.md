@@ -295,6 +295,20 @@ Per `docs/DESIGN.md` §12 and the resolutions in `docs/FOUNDATION.md`.
 **`shellcheck`** runs last, over `lib/`, `tests/`, `tools/`, `modules/`, `aws/`, `scan.sh`, if the binary is present.
 It is optional locally (an air-gapped host may not have it) and skipped with a notice if absent - so on a machine without it, the daily run still reports `PASS` while having linted nothing. Install it.
 CI always installs it, so it is effectively required in CI even though `tests/run-tests.sh` itself treats it as best-effort.
+
+**CI pins an EXACT shellcheck version on both legs, and the stage prints the version next to its verdict.**
+`shellcheck`'s findings are not version-stable, and installing it from `apt` on Linux and `brew` on macOS meant two versions on the two legs and a third on whatever a contributor had.
+The first CI run that got far enough to reach a verdict reported **56 findings across 18 files** on `ubuntu-latest` that neither `macos-latest` nor any local run could reproduce over the identical tree.
+Measured, not inferred - `shellcheck -x` over 14 of those 18 files:
+
+| version | SC2119 | SC2317 | SC2002 | SC2120 | SC2015 | total |
+|---|---|---|---|---|---|---|
+| 0.9.0 (Ubuntu apt) | 17 | 14 | 6 | 4 | 2 | **43** |
+| 0.11.0 (pinned) | 0 | 0 | 0 | 0 | 0 | **0** |
+
+SC2317 ("command appears unreachable") is the bulk of it, and it is exactly what this codebase provokes by design: traps, and the `SCOURSH_HTTP_TRANSPORT` / `SCOURSH_PARANOID_*` seams, invoke functions indirectly.
+The workflow installs the official release tarball rather than a package manager because that is the only source that gives the *same binary* on both runners, prepends it via `GITHUB_PATH` so it beats anything the runner image ships, and asserts `version: 0.11.0` in its own step.
+**Before "fixing" a finding that appears only on CI, read the version line the stage prints.**
 `-x` (follow `source`) always runs, on every file, on every path below - it is what makes the check thorough, and nothing here narrows or drops it.
 
 In CI (`GITHUB_ACTIONS=true`), the stage runs **one `shellcheck` invocation per file**, `sc_jobs` of them in parallel, with no memory cap and no watchdog.
@@ -400,6 +414,14 @@ headroom  = max(avail - reserve, 1)
 
 **Pass 1** plans against a *typical* footprint (`SCOURSH_SHELLCHECK_STEP_GB`, default 5GB - above `scan.sh`'s 4.74GB, so the body of the tree clears it) and runs wide.
 A file that exceeds it is **not** a failure, it is **deferred**.
+**On a host too small for a second pass, the two kill causes must stay apart.**
+Pass 2 only exists when it can offer a *bigger* budget than pass 1; when the whole headroom is already committed to one process there is nothing to retry into and the stage short-circuits.
+That branch used to file every deferred file under `skipped` - including files killed for HOST PRESSURE, which it had just reported as "its own RSS was within the budget, so this is the host's doing and not this file's", and then contradicted one line later with "needs more than the 1GB this host's headroom can give one process".
+Worse, it turned a stage that **failed to measure a file** into a **pass**.
+This is not a hypothetical host: `macos-latest` is 7GB total with about 3GB available, so reserve 2 leaves headroom 1 and pass 1's budget is already all of it - `tests/suites/run-tests-stage.sh` section C2 failed there and only there, on a pre-change and a post-change run alike.
+The two are now split by cause, the same way they already were after pass 2: **over budget** is a host capability limit (SKIPPED, still a pass), **pressure** is this stage failing to get a result with no retry available (UNCHECKED, and it fails).
+Section **N** pins both directions at that exact host shape via `SCOURSH_SHELLCHECK_FORCE_{TOTAL,AVAIL}_GB`: 4 failures against the pre-fix code, 0 after.
+
 **Pass 2** re-runs only the deferred files against the *runaway* trip point (`SCOURSH_SHELLCHECK_MEM_BUDGET_GB`, default **50GB**), necessarily narrow.
 That default is left where it was even though the tree's worst file is now 5.75 GB rather than 22.86 GB: it is a runaway trip point rather than a size estimate, peak RSS here is ambient-memory-dependent (above), and it is clamped down to `headroom` on every host anyway - so lowering it would buy nothing and could only turn a legitimate file into a false skip on a large host.
 Both budgets are clamped down to `headroom`, which is what makes (2) above (from the earlier, since-fixed model) impossible to reproduce, and which also means raising the default costs nothing on a small host: it is clamped down to whatever that host can actually give, and a file too heavy for the host is **skipped**, not killed.

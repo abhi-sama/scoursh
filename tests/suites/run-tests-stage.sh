@@ -67,6 +67,15 @@ printf '%s\n%s\n' "$W/tree/alpha.sh" "$W/tree/beta.sh" > "$W/filelist"
 # exits 0.
 cat > "$W/bin/shellcheck" <<'STUB'
 #!/usr/bin/env bash
+# The stage probes `shellcheck --version` once, to record it next to the
+# verdict.  That probe carries no file and must not be counted as one: it is
+# what made section M's argc probe read 7 invocations for 6 files.
+for a in "$@"; do
+  if [ "$a" = --version ]; then
+    printf 'ShellCheck - shell script analysis tool\nversion: 0.0.0-stub\n'
+    exit 0
+  fi
+done
 f=
 nf=0
 skip=0
@@ -585,6 +594,8 @@ STUB_PLAN='' _stage_ci
 assert_eq 0 "$STAGE_STATUS" 'a clean CI-path stage exits 0'
 assert_contains "$STAGE_OUT" '1 file per invocation' \
   'and says how it batched, so a log reader can tell which shape ran'
+assert_contains "$STAGE_OUT" 'shellcheck: 0.0.0-stub' \
+  'and records the shellcheck VERSION next to the verdict - findings are not version-stable (0.9.0 reports SC2119/SC2120 where 0.11.0 reports nothing), and a CI run once reported 56 findings no local run could reproduce with no way to see why from the log'
 CI_INVOCATIONS=$(wc -l <"$W/argc.log" | tr -d ' ')
 CI_MAXARGC=$(sort -rn <"$W/argc.log" | head -1)
 assert_eq 6 "$CI_INVOCATIONS" \
@@ -639,5 +650,67 @@ STUB_PLAN='' _stage_ci_host 7 5
 assert_contains "$STAGE_OUT" '2GB reserved -> 3GB headroom'   'macos-latest shape (7GB total, 5GB available): reserve 2GB, headroom 3GB'
 assert_contains "$STAGE_OUT" '1 parallel x 1 file per invocation'   'and 3GB of headroom plans exactly ONE job rather than zero - a runner smaller than one file still has to check every file, so the floor is 1 and never a skip'
 assert_eq 6 "$(wc -l <"$W/argc.log" | tr -d ' ')"   'and one job still means six invocations for six files, not one batch of six'
+
+# ===========================================================================
+printf '== N: on a host too small for a SECOND pass, the two kill causes stay apart ==\n'
+# ===========================================================================
+# Pass 2 only exists when it can offer a BIGGER budget than pass 1.  On a host
+# whose whole headroom is already committed to one process there is nothing to
+# retry into, and the stage short-circuits.  That branch used to file every
+# deferred file under `skipped` - including the ones killed for HOST PRESSURE,
+# which had just been reported as "its own RSS was within the budget, so this
+# is the host's doing and not this file's".  The stage therefore contradicted
+# itself one line later with "needs more than the 1GB this host's headroom can
+# give one process", and - the expensive half - turned a stage that FAILED to
+# measure a file into a PASS.
+#
+# This is not a hypothetical small host: `macos-latest` is 7GB total with
+# about 3GB available, so reserve 2 leaves headroom 1 and pass 1's budget is
+# already the whole of it.  Section C2 above failed there and only there, on
+# both a pre-change and a post-change CI run, because on any host with real
+# headroom pass 2 exists and the post-pass-2 split already handled this.
+#
+# Both directions are driven, because the naive fix for each is the other's
+# bug: file everything as `unchecked` and a genuinely-too-small host can never
+# report a clean pass again; file everything as `skipped` and a stage that
+# failed to measure a file reports success.
+_stage_small_host() {   # $1 free-floor GB (9999999 forces PRESSURE), $2 budget KB
+  local out status=0
+  out=$(PATH=$W/bin:$PATH \
+        GITHUB_ACTIONS='' \
+        SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
+        SCOURSH_SHELLCHECK_FREE_FLOOR_GB=$1 \
+        SCOURSH_SHELLCHECK_BUDGET_KB=$2 \
+        SCOURSH_SHELLCHECK_FORCE_TOTAL_GB=7 \
+        SCOURSH_SHELLCHECK_FORCE_AVAIL_GB=3 \
+        STUB_PLAN='alpha.sh:sleep beta.sh:sleep' \
+        bash "$RUNNER" shellcheck 2>&1) || status=$?
+  STAGE_OUT=$out
+  STAGE_STATUS=$status
+}
+
+# HOST PRESSURE on a host with no second pass: unmeasured, and it FAILS.
+_stage_small_host 9999999 ''
+assert_contains "$STAGE_OUT" '1GB headroom' \
+  'the macos-latest shape really does leave pass 1 holding the whole headroom, so the short-circuit branch is the one under test'
+assert_eq 1 "$STAGE_STATUS" \
+  'a host-pressure kill with no larger budget to retry at FAILS the stage - FAILS under filing it as a host-size skip, which reports a file the stage never measured as a clean pass'
+assert_contains "$STAGE_OUT" '--- shellcheck FAILED' \
+  'and reaches the FAILED verdict line'
+assert_contains "$STAGE_OUT" 'could NOT be checked' \
+  'and is reported as unmeasured'
+assert_not_contains "$STAGE_OUT" 'SKIPPED - this host does not have the memory' \
+  'and is NOT reported as a host-capacity skip - the stage had just said its RSS was within budget, so claiming it needs more memory contradicts its own kill message'
+
+# OVER BUDGET on the same host: that IS a capacity limit, and it still passes.
+_stage_small_host 1 100
+assert_eq 0 "$STAGE_STATUS" \
+  'an over-budget kill on the same too-small host still PASSES - FAILS under filing every deferred file as unchecked, which would leave a genuinely small host unable to report a clean run at all'
+assert_contains "$STAGE_OUT" 'SKIPPED' \
+  'and is reported as a host-capacity skip'
+assert_contains "$STAGE_OUT" 'can give one process' \
+  'naming the budget it could not be given'
+assert_not_contains "$STAGE_OUT" 'could NOT be checked' \
+  'and is NOT filed as unmeasured, which is for results this stage should have got and did not'
 
 t_summary run-tests-stage

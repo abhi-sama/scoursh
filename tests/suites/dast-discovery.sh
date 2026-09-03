@@ -63,6 +63,8 @@ source "$ROOT/modules/dast/crawl_engine.sh"
 source "$ROOT/modules/dast/engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
+# shellcheck source=tests/lib/bounded-read.sh
+source "$ROOT/tests/lib/bounded-read.sh"
 
 W=$SCOURSH_SCRATCH/dast-discovery-workspace
 rm -rf "$W"; mkdir -p "$W"
@@ -602,6 +604,7 @@ printf '== dast discovery: the body read is bounded AT READ TIME, never after a 
 # difference, not hardware-noise-sized - so the 800ms ceiling below FAILS
 # reliably under the un-bounded reading while leaving real headroom above the
 # fixed reading's own measured cost.
+DISC_HUGE_MARKER=$W/huge-producer-finished
 HUGEFILE=$W/huge-body.raw
 if [[ ! -f $HUGEFILE ]]; then
   # Built via in-process string doubling (2^28 = 268435456 bytes = 256 MiB)
@@ -623,7 +626,9 @@ _disc_huge_transport() {
   printf '%s %s\n' "$method" "$path" >>"$REQ_LOG"
   if [[ -n ${_HTTP_TX_BODY_OUT:-} ]]; then
     if [[ $path == /hugefile ]]; then
-      cp -- "$HUGEFILE" "$_HTTP_TX_BODY_OUT"
+      # Served through a FIFO so the PRODUCER'S own progress, not a clock,
+      # reports whether the whole body was read - see tests/lib/bounded-read.sh.
+      bounded_read_serve_fifo "$_HTTP_TX_BODY_OUT" "$HUGEFILE" "$DISC_HUGE_MARKER"
     else
       printf '%s' "$NOTFOUND" >"$_HTTP_TX_BODY_OUT"
     fi
@@ -631,53 +636,21 @@ _disc_huge_transport() {
   printf '%s\n\n%s\n' "$status" 'text/html'
 }
 
-# THE CEILING IS CALIBRATED ON THIS HOST, NOT A CONSTANT.  An absolute
-# millisecond figure cannot be right on two machines an order of magnitude
-# apart: the 800ms this replaces was calibrated on a contributor's Mac, and
-# its sibling ceiling in tests/suites/dast-inject-engine.sh failed the whole
-# `macos-latest` job by ONE millisecond (801ms, run 33677872951) with the
-# property under test entirely intact.  A ceiling that fails a slow machine
-# for being slow is testing the machine.  This one is derived instead from
-# what the shape the fix REPLACED costs on whatever host is running - copy the
-# fixture into place, then slurp all of it with the un-bounded `read -d ''` -
-# and set at half of it.  The bounded probe pays the copy and then reads a
-# fixed cap, so it lands well under that half; the un-bounded one pays the
-# copy AND the slurp, so it cannot.  The 800ms floor keeps the ceiling from
-# ever becoming TIGHTER than the constant it replaces.
-_prefix_slurp_cost_ms() {   # $1 fixture -> ms for `cp` plus a full un-bounded slurp
-  local src=$1 dst=$W/timing-calibration.raw t0 t1 _slurped
-  t0=$(now_epoch_ns)
-  cp -- "$src" "$dst"
-  # The pre-fix shape, verbatim: no `-N`, so this reads to EOF.  `read` exits
-  # non-zero at EOF, which is the normal case here and not a failure.
-  IFS= read -r -d '' _slurped <"$dst" || true
-  t1=$(now_epoch_ns)
-  rm -f -- "$dst"
-  printf '%s' "$(( (t1 - t0) / 1000000 ))"
-}
-_bounded_read_ceiling_ms() {  # $1 fixture -> half the pre-fix cost, never under 800
-  local c
-  c=$(( $(_prefix_slurp_cost_ms "$1") / 2 ))
-  (( c < 800 )) && c=800
-  printf '%s' "$c"
-}
-
 _new_run huge
 SCOURSH_HTTP_TRANSPORT=_disc_huge_transport
-t0=$(now_epoch_ns)
 huge_rc=0
 _discovery_probe "https://disc.fixture.example/hugefile" || huge_rc=$?
-t1=$(now_epoch_ns)
-huge_ms=$(( (t1 - t0) / 1000000 ))
+huge_finished=1
+bounded_read_producer_finished "$DISC_HUGE_MARKER" || huge_finished=0
+bounded_read_reap
 
 assert_eq 0 "$huge_rc" 'the probe itself succeeds for a large-but-reachable body'
 assert_eq "$_DISCOVERY_MAX_BODY_BYTES" "$_DISC_LEN" \
   "a 256 MiB body (1024x the cap) is reported at exactly the ${_DISCOVERY_MAX_BODY_BYTES}-byte cap - FAILS if the cap is applied to what is RETAINED after a full read rather than to what is READ"
 assert_eq "$_DISCOVERY_MAX_BODY_BYTES" "${#_DISC_BODY}" \
   "and _DISC_BODY itself holds exactly the cap's worth of bytes, never the full 256 MiB response"
-huge_ceiling_ms=$(_bounded_read_ceiling_ms "$HUGEFILE")
-assert_true "$([[ $huge_ms -lt $huge_ceiling_ms ]] && echo 0 || echo 1)" \
-  "the whole probe (fixture write plus read) completed in ${huge_ms}ms for a 256 MiB body, inside this host's own ${huge_ceiling_ms}ms ceiling - FAILS under the un-bounded \`read -d ''\` this replaces, which must slurp the whole body before trimming it and so cannot come in under half its own measured cost"
+assert_eq 0 "$huge_finished" \
+  "the producer serving the 256 MiB body was still parked mid-write when the probe returned, so the body was never read whole - FAILS under the un-bounded \`read -d ''\` this replaces, which drains the pipe to EOF and lets the producer finish. This was an 800ms wall-clock ceiling calibrated on one machine; see tests/lib/bounded-read.sh"
 
 # ===========================================================================
 printf '== dast discovery: an embedded NUL byte does not abort the probe ==\n'

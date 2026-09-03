@@ -39,9 +39,60 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install bash
 
-      - name: Install shellcheck
+      # PIN THE EXACT shellcheck VERSION, AND PIN IT ON BOTH LEGS.
+      #
+      # This used to be `apt-get install shellcheck` on Linux and `brew install
+      # shellcheck` on macOS, which is two different versions on the two legs
+      # and a third one on whatever a contributor has locally. The whole-tree
+      # stage's verdict is not version-stable, so that made a red CI check
+      # unactionable: the first run that got far enough to reach a verdict
+      # reported 56 findings across 18 files on `ubuntu-latest`
+      # (SC2317 x23, SC2119 x21, SC2002 x6, SC2120 x4, SC2015 x2) while
+      # `macos-latest` and every local run over the identical tree reported
+      # none. Measured directly rather than inferred: shellcheck 0.9.0 (what
+      # Ubuntu's apt ships) reports SC2120 on lib/state.sh and SC2119/SC2120
+      # on modules/dast/run.sh, and 0.11.0 reports nothing on either. SC2317
+      # ("command appears unreachable") is the bulk of it and is exactly the
+      # check this codebase provokes by design, since traps and the
+      # SCOURSH_HTTP_TRANSPORT / SCOURSH_PARANOID_* seams invoke functions
+      # indirectly; later releases narrowed it.
+      #
+      # The official release tarball is used rather than a package manager
+      # because it is the only source that gives the SAME binary on both
+      # runners. Nothing here is scan-time network access - docs/DESIGN.md
+      # §9's rule is about a scan, and this is CI provisioning.
+      #
+      # The version is printed, and the stage prints it too, so a future skew
+      # is visible in the log instead of being inferred from the findings.
+      - name: Install shellcheck (pinned)
+        env:
+          SHELLCHECK_VERSION: v0.11.0
         run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then brew install shellcheck; else sudo apt-get update -qq && sudo apt-get install -y shellcheck; fi
+          set -euo pipefail
+          case "$RUNNER_OS-$(uname -m)" in
+            Linux-x86_64)  plat=linux.x86_64 ;;
+            Linux-aarch64) plat=linux.aarch64 ;;
+            macOS-arm64)   plat=darwin.aarch64 ;;
+            macOS-x86_64)  plat=darwin.x86_64 ;;
+            *) echo "no pinned shellcheck build mapped for $RUNNER_OS-$(uname -m)" >&2; exit 1 ;;
+          esac
+          url="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.${plat}.tar.xz"
+          curl -fsSL --retry 3 "$url" -o "$RUNNER_TEMP/shellcheck.tar.xz"
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          mkdir -p "$RUNNER_TEMP/sc-bin"
+          install -m 0755 "$RUNNER_TEMP/shellcheck-${SHELLCHECK_VERSION}/shellcheck" "$RUNNER_TEMP/sc-bin/shellcheck"
+          # Prepended via GITHUB_PATH rather than installed into /usr/local/bin,
+          # so this wins over any shellcheck the runner image already ships
+          # whatever order the image happens to put directories in.
+          echo "$RUNNER_TEMP/sc-bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/sc-bin/shellcheck" --version
+
+      - name: Confirm the pinned shellcheck is the one on PATH
+        run: |
+          set -euo pipefail
+          command -v shellcheck
+          shellcheck --version
+          shellcheck --version | grep -qx 'version: 0.11.0'
 
       - name: Report the userland
         run: |

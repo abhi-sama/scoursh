@@ -230,6 +230,18 @@ sc_stage() {
   if command -v shellcheck >/dev/null 2>&1; then
     printf '\n=== linter: shellcheck ===\n'
 
+    # THE VERSION IS PART OF THE VERDICT, so it is recorded next to it.
+    # `shellcheck`'s findings are not version-stable: measured on this tree,
+    # 0.9.0 (Ubuntu apt's build) reports SC2119/SC2120 where 0.11.0 reports
+    # nothing, and 0.9.0's SC2317 fires on functions this codebase invokes
+    # indirectly by design (traps, and the SCOURSH_HTTP_TRANSPORT /
+    # SCOURSH_PARANOID_* seams).  A CI run once reported 56 findings across 18
+    # files that no local run could reproduce, and the log gave no way to see
+    # why.  .github/workflows/ci.yml pins the version; this line is what makes
+    # a future skew visible in any log rather than inferred from the findings.
+    sc_version=$(shellcheck --version 2>/dev/null | awk '/^version:/{print $2}') || sc_version=
+    printf 'shellcheck: %s\n' "${sc_version:-<version unreadable>}"
+
     # --- the verdict, on every exit path ------------------------------------
     #
     # `sc_unchecked` names files this stage could not get a result for, as
@@ -945,8 +957,35 @@ sc_stage() {
           # to one process, so a second pass would run at the same ceiling
           # and be killed at the same point.  Say so, by name, rather than
           # burning the time and reporting the same kill twice.
-          for sc_f in "${sc_queue[@]}"; do
+          #
+          # THE TWO CATEGORIES ARE SPLIT HERE FOR THE SAME REASON THEY ARE
+          # SPLIT AFTER PASS 2, AND LUMPING THEM WAS A REAL DEFECT.  This
+          # branch used to file EVERY deferred file under `skipped`, including
+          # the ones killed for HOST PRESSURE - so the stage printed
+          # "HOST MEMORY PRESSURE ... its own RSS was within the budget, so
+          # this is the host's doing and not this file's" and then, one line
+          # later, "needs more than the 1GB this host's headroom can give one
+          # process", which is the opposite claim about the same file.  It
+          # also turned a stage that failed to measure a file into a PASS.
+          # Reproduced on a `macos-latest` runner (7GB total, 3GB available,
+          # so headroom 1GB and pass 1's budget already the whole of it):
+          # `tests/suites/run-tests-stage.sh` section C2 failed there and only
+          # there, on both a pre-change and a post-change run, because on any
+          # host with real headroom pass 2 exists and the split below applies.
+          #
+          #   OVER BUDGET  the file genuinely wants more than this host can
+          #                give one process.  A host capability limit -
+          #                SKIPPED by name, and not a failure.
+          #   PRESSURE     the file was within its budget and was killed
+          #                because something else on the machine took the
+          #                memory.  That is this stage failing to measure it,
+          #                with no retry available - UNCHECKED, and it FAILS.
+          for sc_f in "${sc_pass_over[@]+"${sc_pass_over[@]}"}"; do
             sc_skipped+=("$sc_f (needs more than the ${sc_pass1_budget_gb}GB this host's ${sc_headroom_gb}GB headroom can give one process)")
+          done
+          for sc_f in "${sc_pass_pressure[@]+"${sc_pass_pressure[@]}"}"; do
+            sc_status=1
+            sc_unchecked+=("$sc_f (killed for host memory pressure, and this host's ${sc_headroom_gb}GB headroom is already committed to one process, so there is no larger budget to retry it at - something else on this machine is competing for memory)")
           done
           sc_queue=()
         else
