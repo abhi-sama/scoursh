@@ -1,0 +1,77 @@
+scan.sh <command> [options]
+
+Commands:
+  sast     [--path DIR] [--lang py,js,go,java] [--history]
+  sca      [--path DIR]
+  iac      [--path DIR]
+  dast     --target <name-from-scope> [--intensity passive|safe|active] [--authed]
+           [--i-own-target <same-name>]
+                                        (--intensity default: passive)
+                                        (--intensity above passive, and
+                                         --allow-intrusive, each require
+                                         --i-own-target)
+  cloud    [--live] [--profile <p>] [--regions all|us-east-1,...] [--assume-role ARN]
+  all      run every module for which inputs are configured
+  diff     --against <prior-run-dir>
+  report   --from <prior-run-dir>
+
+Global:
+  --profile-scan quick|full|compliance   (default: full - see lib/checks.sh)
+  --verbose                 (also print rule-authoring lint warnings, e.g.
+                              W033, that a normal run keeps out of your way -
+                              see rules/RULE-FORMAT.md for what they mean)
+  --paranoid                (connection DETECTOR, not a guarantee - aborts
+                              (exit 3) on the first connection outside the
+                              run's allowlist; exits 4 if none of `ss`,
+                              a usable `strace`, or `lsof` is available.
+                              `lsof` is what makes this work on macOS. A
+                              sufficiently short-lived connection can still
+                              evade detection - tools/run-in-netns.sh is the
+                              actual guarantee, and it is Linux-only with no
+                              macOS equivalent. See docs/FOUNDATION.md
+                              tension 20.)
+  --use-engines             (opt in to optional vendored engine adapters,
+                              e.g. semgrep for sast - docs/ADAPTERS.md. Only
+                              runs an adapter whose own vendored binary +
+                              ruleset is actually present on disk
+                              (bin/, rules/ under
+                              modules/<module>/adapters/<engine>/); absent
+                              or not vendored is a silent, native-only
+                              continue with a logged coverage_reduction,
+                              never an error. Nothing is fetched at scan
+                              time - see tools/vendor-engines.sh.)
+  --allow-intrusive         (side-effecting checks: live user enumeration,
+                              signup/reset probing, the burst probe. On `dast`
+                              - and on `all` with a --target - this requires
+                              --i-own-target as well, because the blast radius
+                              escapes the target: these checks create users and
+                              send messages, so the harmed parties are the
+                              target's USERS, and owning a host does not confer
+                              permission to do that to them.)
+  --contact VALUE           (an email address or URL a target owner can reach
+                              you at. It is placed in the User-Agent every
+                              request carries. Also settable as `contact` in
+                              config/scanner.conf; the flag wins, per the usual
+                              CLI > env > file > default chain.)
+  --user-agent-suffix TOKEN (append one extra product token to the User-Agent.
+                              It APPENDS: the `scoursh/<version>` prefix is
+                              never replaceable at any setting, because an
+                              authorised scan has no need to be unidentifiable
+                              and an unauthorised one has every need - a switch
+                              whose only function is hiding this tool's
+                              identity is a switch for scanning something you
+                              do not own.)
+  --jobs N                  (worker parallelism; on a network module it is
+                              also the ceiling on simultaneous connections and
+                              is held to 4 without --i-own-target)
+  --format json,sarif,html,md
+  --fail-on SEVERITY        (critical|high|medium|low|info|none)
+  --fail-on-new             (requires --fail-on; usage error otherwise)
+  --min-confidence LEVEL    (high|medium|low; default low)
+  --baseline FILE
+  --out DIR                 (default: reports/<timestamp>)
+
+Exit codes: 0 clean/below gate * 1 findings at/above --fail-on *
+2 usage error * 3 scope violation * 4 missing required input *
+5 incomplete run (circuit breaker / aborted mid-flight).
+<TIMESTAMP> error no command given

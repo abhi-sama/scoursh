@@ -199,6 +199,19 @@ declare -A _SCAN_FLAG_KIND=(
   [global:contact]=value
   [global:user-agent-suffix]=value
 
+  # docs/STEP-GUIDE-PLAN.md GUIDE-02: `--guided` turns the interactive
+  # questionnaire ON (scan_main's own routing, section 4c below, decides
+  # eligibility - lib/guide.sh's guide_may_prompt never reads SCAN_FLAGS at
+  # all); `--print-command` (GUIDE-06's own flag, added here rather than
+  # there because both new keys belong in one change to this map) will
+  # eventually print the guided flow's composed command and exit instead of
+  # running it.  Both are global bools for the identical reason
+  # --allow-intrusive is: a command-scoped guided/print-command pair would
+  # have to be repeated across every one of SCAN_COMMANDS' eight entries for
+  # no behavioural difference between them.
+  [global:guided]=bool
+  [global:print-command]=bool
+
   [sast:path]=value
   [sast:lang]=value
   [sast:history]=bool
@@ -648,8 +661,38 @@ scan_parse_args() {
     esac
   done
 
-  # Cross-flag and required-flag checks that need the whole flag set, not
-  # just one flag in isolation.
+  # The required-flag and cross-flag block that used to end this function
+  # (docs/STEP-GUIDE-PLAN.md GUIDE-02) now lives in `_scan_check_required`,
+  # section 4a below, called by scan_main AFTER its guided-mode routing
+  # (section 4c) rather than from here.  This is what lets
+  # `scan.sh dast --guided` PARSE cleanly with no --target given: this
+  # function stops at shape-validating whatever was actually typed, and
+  # never itself decides whether the result is complete enough to run.
+  # scan_parse_args stays a pure function that never reads a terminal - see
+  # this function's own header - which is exactly the property a required-
+  # flag check evaluated here, before a guided pass had any chance to fill a
+  # gap, would not have needed and would not have honoured.
+  #
+  # `_scan_check_affirmation` is NOT part of that moved block and stays
+  # called from here, unchanged: its rules (docs/STEP5-DAST-PLAN.md DAST-32)
+  # read whatever combination of `--i-own-target`/`--target`/`--intensity`/
+  # `--allow-intrusive` was ACTUALLY typed and are already correct when none
+  # of them were - see that function's own comment - so a guided pass filling
+  # them in later changes what it reads, never what it checks.
+  _scan_check_affirmation
+}
+
+# -----------------------------------------------------------------------------
+# 4a. Required-flag and cross-flag checks moved out of scan_parse_args
+#     (docs/STEP-GUIDE-PLAN.md GUIDE-02).  Called by scan_main AFTER its
+#     guided-mode routing (section 4c below), so a future guided pass that
+#     fills a missing --target/--against/--from before this runs changes
+#     what this function finds, never what it enforces.  Rules and exit-2
+#     message text are UNCHANGED from scan_parse_args's own former copy -
+#     see tests/suites/scan.sh's four retargeted assertions, named by their
+#     t_case labels in that ticket's own row rather than by line number.
+# -----------------------------------------------------------------------------
+_scan_check_required() {
   if [[ ${SCAN_FLAGS[fail-on-new]:-} == true && -z ${SCAN_FLAGS[fail-on]:-} ]]; then
     scan_die_usage '--fail-on-new requires --fail-on (docs/FOUNDATION.md tension 14)'
   fi
@@ -661,11 +704,11 @@ scan_parse_args() {
     [[ -n ${SCAN_FLAGS[$_scan_req]:-} ]] \
       || scan_die_usage "'$SCAN_COMMAND' requires --$_scan_req"
   fi
-  _scan_check_affirmation
+  return 0
 }
 
 # -----------------------------------------------------------------------------
-# 4a. The own-your-target affirmation (docs/STEP5-DAST-PLAN.md DAST-32)
+# 4b. The own-your-target affirmation (docs/STEP5-DAST-PLAN.md DAST-32)
 # -----------------------------------------------------------------------------
 # THE AFFIRMATION IS A KEY, NOT A SWITCH.  It makes the higher settings
 # AVAILABLE; it never itself selects one.  `--i-own-target` on its own changes
@@ -728,6 +771,49 @@ _scan_check_affirmation() {
     scan_die_usage "--allow-intrusive turns on side-effecting checks that create users and send messages, so the parties they can harm are the TARGET'S USERS rather than the target. Owning a host does not confer permission to do that to them, which is why this needs the affirmation as well as its own opt-in: re-run with '--i-own-target $target' if you accept that."
   fi
   return 0
+}
+
+# -----------------------------------------------------------------------------
+# 4c. Guided-mode routing (docs/STEP-GUIDE-PLAN.md GUIDE-02)
+# -----------------------------------------------------------------------------
+# scan_main (section 8 below) is the ONLY caller of guide_may_prompt in this
+# file, and it calls it from exactly two places - never from
+# scan_parse_args, which must stay pure (see that function's own header):
+#
+#   1. Before scan_parse_args ever runs, for a bare `scan.sh` ($# == 0) -
+#      scan_parse_args's own first line dies "no command given" the instant
+#      it is called with zero arguments, so the zero-argument branch of the
+#      plan's "asked for" condition has to be caught here, before that call.
+#   2. Right after scan_parse_args returns, by reading SCAN_FLAGS[guided] -
+#      by then `--guided` is just an ordinary already-parsed global bool
+#      flag (this ticket's own addition to _SCAN_FLAG_KIND), so there is no
+#      need to re-scan argv for the literal token a second time.
+#
+# Both call sites share this one helper for what happens once guided mode is
+# actually eligible.  docs/STEP-GUIDE-PLAN.md's own GUIDE-02 row is explicit
+# that this ticket ships NO menu (G1 onward is GUIDE-03's job) - so there is,
+# on purpose, nothing yet for an eligible invocation to hand control to.
+# Silently falling through to run an unconfigured scan would be exactly the
+# "silent fallback to a default scan" the plan calls "a worse outcome than a
+# clear refusal"; this states plainly that the feature the operator asked
+# for is not built in this version yet, the same discipline this project
+# already applies to an unbuilt module (`scan.sh dast --help`'s own "not
+# built yet" text) or a missing advisory database (SCA-COV-NO_ADVISORY_DB-01)
+# - an absence here is not a clean scan, so it must not exit 0 as if it
+# considered one.  Exit 2 (usage): nothing was run, and nothing is waiting
+# for input, the identical vocabulary the plan uses for the ineligible case.
+_scan_guided_not_yet_available() {
+  scan_usage >&2
+  {
+    printf '\n'
+    printf '%s\n' 'Guided interactive setup (--guided, or a bare scan.sh) is not built in this'
+    printf '%s\n' 'version of scoursh yet (docs/STEP-GUIDE-PLAN.md GUIDE-03 onward).  Nothing was'
+    printf '%s\n' 'run and nothing is waiting for input.'
+    printf '\n'
+    printf '%s\n' 'Use flags directly instead - see the command list above, or:'
+    printf '%s\n' '  scan.sh <command> --help'
+  } >&2
+  die "$SCOURSH_EXIT_USAGE" 'guided mode is not built in this version; nothing was run and nothing is waiting for input'
 }
 
 # -----------------------------------------------------------------------------
@@ -1055,7 +1141,54 @@ _scan_announce_unrestricted() {
 # -----------------------------------------------------------------------------
 scan_main() {
   local _scan_t0=$SECONDS
+
+  # docs/STEP-GUIDE-PLAN.md GUIDE-02: the zero-argument branch of guided-mode
+  # routing (section 4c above).  A bare `scan.sh` is "asked for" per the
+  # plan's condition 1, but scan_parse_args's own first line dies "no
+  # command given" the instant $# is 0 - before any flag, including
+  # --guided, could ever be parsed - so this case has to be caught here,
+  # BEFORE that call, or it could never be routed at all.
+  #
+  # When guided mode is INeligible (no terminal, a CI marker, ...), this
+  # deliberately does nothing and falls straight through to the unmodified
+  # `scan_parse_args "$@"` call below, which reproduces TODAY's exit-2 "no
+  # command given" usage error byte-for-byte - the ticket's own named
+  # non-regression test (tests/suites/scan.sh).  That silence is correct
+  # specifically because a bare `scan.sh` was never an EXPLICIT ask the way
+  # `--guided` is: the plan's own "must not prompt" list names only the
+  # terminal-and-eligible case for this loud "not built yet" refusal.
+  if (( $# == 0 )) && guide_may_prompt true; then
+    _scan_guided_not_yet_available
+  fi
+
   scan_parse_args "$@"
+
+  # docs/STEP-GUIDE-PLAN.md GUIDE-02: the `--guided` branch of guided-mode
+  # routing.  By this point `--guided` is just an ordinary already-parsed
+  # global bool flag (this ticket's own addition to _SCAN_FLAG_KIND) rather
+  # than a token scan_main has to look for itself, since scan_parse_args
+  # accepts and shape-validates it exactly like any other flag - it never
+  # reads a terminal to do so, keeping that function pure.  Unlike the
+  # zero-argument branch above, `--guided` typed explicitly IS the plan's
+  # "explicitly requested" case, so an ineligible gate here is never silent:
+  # it fails loudly with the concrete reason, before _scan_check_required
+  # (and everything after it) ever runs.
+  if [[ ${SCAN_FLAGS[guided]:-} == true ]]; then
+    if guide_may_prompt true; then
+      _scan_guided_not_yet_available
+    else
+      scan_usage >&2
+      die "$SCOURSH_EXIT_USAGE" \
+        "--guided: $(guide_ineligible_reason); nothing was run and nothing is waiting for input"
+    fi
+  fi
+
+  # The required-flag and cross-flag block scan_parse_args used to end with
+  # (docs/STEP-GUIDE-PLAN.md GUIDE-02) runs HERE, after both guided-mode
+  # branches above - see _scan_check_required's own header for why the
+  # ordering matters even though no real prompt exists yet to change what it
+  # finds.
+  _scan_check_required
 
   core_require_baseline
   [[ ${SCAN_FLAGS[history]:-} != true ]] || require_cmd git

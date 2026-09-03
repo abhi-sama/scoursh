@@ -101,6 +101,19 @@ dast_scope_files() {
   } | LC_ALL=C sort
 }
 
+# docs/STEP-GUIDE-PLAN.md GUIDE-02: everything under lib/ and modules/ -
+# deliberately NOT scan.sh, which is the one and only place `guide_*` may be
+# called from (its own scan_main routing, sections 4c and 8).  lib/guide.sh
+# itself is exempted below, at the `check` call site, the same
+# one-exemption-with-a-stated-reason shape the tension-19 "no bypass" check
+# above already uses for lib/http.sh.
+guide_isolation_files() {
+  local dirs=() d
+  for d in lib modules; do [[ -d $d ]] && dirs+=("$d"); done
+  (( ${#dirs[@]} > 0 )) || return 0
+  find "${dirs[@]}" -type f -name '*.sh' | LC_ALL=C sort
+}
+
 # `check NAME PATTERN FILE-LIST-FN [EXEMPT...]` - fails when PATTERN matches.
 check() {
   local name=$1 pattern=$2 lister=$3
@@ -495,6 +508,41 @@ printf '\n== tension 27: tools/vendor-engines.sh is never wired into a scan ==\n
 check 'no wiring of tools/vendor-engines.sh into the scan-time dispatch path' \
   '(^|[;&|(])[[:space:]]*(source|\.|eval|bash|sh)[[:space:]]+.*vendor-engines\.sh' \
   dispatch_path_files
+
+printf '\n== docs/STEP-GUIDE-PLAN.md GUIDE-02: guided mode stays isolated to lib/guide.sh ==\n'
+# `select` and `read -p` are exactly the two builtins that can silently hang
+# a pipeline if gated wrong (lib/guide.sh's own header), which is why
+# lib/guide.sh absorbs every measured edge of both ONCE (docs/STEP-GUIDE-PLAN.md
+# "select, measured rather than assumed") rather than leaving each future
+# module or library free to reimplement its own prompt and re-derive those
+# edges the expensive way. A module or library reaching for `guide_may_prompt`
+# (or any other `guide_*`/`_guide_*` primitive), `select`, or `read -p`
+# directly is a second, ungated prompt path - exactly the kind of bypass the
+# tension-19 "no bypass" check above already polices for the network, applied
+# here to the terminal. scan.sh is the one place these are meant to be
+# called from (its own scan_main routing) and is deliberately absent from
+# guide_isolation_files above, so it needs no exemption; lib/guide.sh itself
+# is the one exemption below, for the identical reason lib/http.sh is
+# exempted from the "no bypass" check - it is the file that DEFINES the
+# primitives, not a caller of them.
+#
+# Matched at COMMAND position (start of line, or after `;`/`&`/`|`/`(`, or
+# inside a `$(...)` substitution), with a trailing space-or-end-of-line
+# boundary required too - the same discipline the "no bypass" and
+# tension-27 checks above already use - so an English comment mentioning
+# "guide.sh" in prose, or a word like "guidepost", cannot false-positive
+# this the way an unanchored substring match would.
+check 'no guide_*/_guide_* function call outside lib/guide.sh' \
+  '(^|[;&|(]|\$\()[[:space:]]*_?guide_[A-Za-z0-9_]+([[:space:]]|$)' \
+  guide_isolation_files lib/guide.sh
+
+check 'no `select` builtin outside lib/guide.sh' \
+  '(^|[;&|(])[[:space:]]*select[[:space:]]' \
+  guide_isolation_files lib/guide.sh
+
+check 'no `read -p` outside lib/guide.sh' \
+  'read[[:space:]].*-p([[:space:]]|$)' \
+  guide_isolation_files lib/guide.sh
 
 printf '\n'
 if (( FAILED )); then
