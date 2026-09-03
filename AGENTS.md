@@ -715,6 +715,14 @@ but necessarily incomplete signal at this point, since `scan.sh` sets `SCOURSH_G
 after every module's own `report_all` call has already run, so a `--fail-on` gate failure is not yet
 distinguishable from a clean run here. `_sarif_build_registry` runs DIRECTLY, never through `$(...)`,
 for the identical `die()`-in-a-subshell reason `checks_registry_load`'s own header gives.
+Sourcing `lib/checks.sh` from `lib/report.sh` is a real diamond with `modules/dast/engine.sh`'s own
+pre-existing edge to it: `tests/suites/dast-methods.sh` (any entry point reaching both a DAST module
+and `lib/report.sh`) went from hub sum 17 to 19 against `tests/lint-source-graph.sh`'s cap of 17,
+found by the lint itself rather than assumed.  `lib/report.sh`'s own edge to `lib/checks.sh` carries
+the standard `# shellcheck source=/dev/null` back-edge cut - the runtime `source` is unaffected, and
+cutting is verified lossless for `shellcheck -x` too by checking every entry point that needs
+`lib/checks.sh`'s declarations from that specific edge (`tests/suites/report.sh`, `sarif-locations.sh`,
+`sarif-rules.sh`) standalone, before and after.
 `tests/suites/sarif-rules.sh` (53 assertions) is the proof, including two cases confirmed by mutation
 (the full-registry claim, and `descriptorSource` never appearing on a registry-backed descriptor) -
 each watched failing under the reading it names before the fix landed.

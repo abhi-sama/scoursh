@@ -21,8 +21,24 @@ SCOURSH_REPORT_SOURCED=1
 # shellcheck source=lib/findings.sh
 source "${BASH_SOURCE[0]%/*}/findings.sh"
 # SARIF-03's tool.driver.rules[] needs checks_registry_load
-# (lib/checks.sh); no cycle - checks.sh sources only records.sh.
-# shellcheck source=lib/checks.sh
+# (lib/checks.sh), sourced here so a standalone lib/report.sh consumer (this
+# file's own test suites) has it without a second wiring step - every real
+# caller already has it too, since scan.sh sources both directly and every
+# modules/*/run.sh reaches modules/dast/engine.sh -> lib/checks.sh before
+# report_all ever runs.
+# -x back-edge cut: an entry point that reaches BOTH this file and a DAST
+# module (modules/dast/engine.sh has its own real edge to lib/checks.sh)
+# would otherwise re-expand lib/checks.sh's own dependency chain a second
+# time - exactly the diamond shape tests/lint-source-graph.sh's hub-sum cap
+# exists to catch, and it did: tests/suites/dast-methods.sh went from 17 to
+# 19 (cap 17) with this edge real. The runtime `source` on the next line is
+# unaffected (its SCOURSH_CHECKS_SOURCED guard makes a repeat a no-op
+# either way); only shellcheck -x's static follow is cut. Verified this
+# loses no real checking for the entry points that need lib/checks.sh's
+# declarations from THIS edge specifically - tests/suites/report.sh,
+# sarif-locations.sh and sarif-rules.sh, none of which reach lib/checks.sh
+# any other way - by shellchecking each standalone before and after.
+# shellcheck source=/dev/null
 source "${BASH_SOURCE[0]%/*}/checks.sh"
 
 # ---------------------------------------------------------------------------
