@@ -721,6 +721,40 @@ recorder that copied `modules/sast/run.sh`'s/`modules/iac/run.sh`'s own `run_rec
 placement (which runs BEFORE the scan-tree call, since `checks_run` answers "loaded and executed", not
 "ran to completion") instead of gating on completion the way this ticket actually does.
 
+**STATE-03 (the classification engine: `new`/`recurring`/`fixed`/`unknown` + `diff_usable`) has also
+landed**, for the identical "its own scope does not need the `account-region` producer" reason STATE-01
+and STATE-02 were authorised ahead of step 6 - tension 12's frozen JSON shape is one shape regardless of
+which module produced a given entry, so a hand-authored `account-region` fixture proves the engine's
+guard and coverage logic correctly for that scope kind without a real cloud emitter existing.
+It is five pure functions added to `lib/findings.sh`'s own new section 17, immediately after
+`classify_derived`'s section 16: `findings_classify_guard` (the two guards - an `fp_schema` mismatch or a
+`scan_root_id` mismatch, printing `usable`/`no_prior_state`/`fp_schema_mismatch`/`scan_root_id_mismatch`),
+`findings_diff_usable` (that guard reduced to the boolean the gate reads), `findings_classify_present`
+(new/recurring for a finding THIS run found), `findings_classify_absent` (fixed/unknown for a PRIOR
+finding this run did not, reusing `_pair_covered` - the identical coverage test `classify_derived`'s own
+(b2) branch already uses, rather than a second copy), and `findings_rule_digest_changed` (the "rule
+changed" report flag, which never itself alters a status).
+Like `classify_derived`, none of it sources `lib/state.sh` or touches its arrays - every input is a
+plain scalar or a line-oriented file, the same shapes `classify_derived`'s own `COVERED_THIS_RUN` already
+established - so there is no new `shellcheck -x` source edge, and this ticket wires into nothing:
+`scan_main`, `scan.sh diff`, and the report are byte-for-byte unchanged.
+Converting a REAL loaded `state/latest.json` and a real run's findings into these shapes is STATE-06's
+job, mirroring the division of labour STATE-05 inherits for `classify_derived`.
+A derived finding (JSON `null` cell) is out of scope here; `classify_derived` is unchanged.
+`tests/suites/state-classify.sh` proves the plain four-row table with no guard active, both guards and
+`findings_diff_usable` in isolation - including that a `scan_root_id` mismatch excludes only
+`path-root`-scoped prior findings (leaving `target`/`account-region`/`scope-key` findings classified
+normally) and that a run with no path-root coverage at all cannot be invalidated by an unrelated
+`scan_root_id` difference - and tension 12's own eight-row fixture matrix in full: the three
+module/check/region/target-scoped rows via hand-authored coverage files, and the five scan-root-identity
+rows (non-git path collision, nested git repo collision, cwd-independence, two-checkout portability, and
+full/shallow/single-branch-clone-of-an-orphan-branch-carrying-repo identity) against REAL directories and
+REAL `git` repositories, feeding `scan_root_id_of`/`path_root_cell`'s own live output into the
+classification functions.
+Several cases deliberately plant a coverage entry a naive/rejected reading would accept, so the guard -
+not a coincidental absence - is what is proven to block a false `fixed`; two guard mutations were run
+against the suite and watched fail before being reverted, per this project's testing rule.
+
 Step 6 (Cloud) remains unstarted.
 
 **DAST-07 made `docs/FOUNDATION.md` tension 19's single documented exception real, and the shape it

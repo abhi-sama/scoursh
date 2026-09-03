@@ -2052,3 +2052,181 @@ _derived_record_selected() {
   [[ -n ${SCOURSH_SELECTED_CHECKS:-} ]] || return 0    # no filter chain: all selected
   [[ $'\n'"$SCOURSH_SELECTED_CHECKS"$'\n' == *$'\n'"$id"$'\n'* ]]
 }
+
+# ---------------------------------------------------------------------------
+# 17. Classifying an ORDINARY (non-derived) finding against state/
+#     (docs/STEP7-STATE-PLAN.md STATE-03; tension 12's four-row table and its
+#     two guards; tension 11 stage 5)
+# ---------------------------------------------------------------------------
+# This is the classification ENGINE only: pure functions over plain scalars
+# and line-oriented files, in the same tradition `classify_derived` above
+# already established for the composite case (a caller with real state/ -
+# lib/state.sh's loader and this run's own write-side coverage builder -
+# converts them into these shapes; nothing here sources lib/state.sh or
+# reaches into its arrays, so there is no new shellcheck -x source edge
+# added here - see AGENTS.md's "Sharp edges" for why that graph is guarded).
+# This ticket wires nothing into scan_main, scan.sh diff, or the report:
+# that is STATE-06 (docs/STEP7-STATE-PLAN.md), which converts a REAL loaded
+# state/latest.json and this run's real findings.fields into the inputs
+# below and applies the result.
+#
+# A derived finding (cell is JSON null) is NOT handled here - it has no
+# coverage cell, so tension 12's (check, cell) test does not apply to it at
+# all, and its own three-condition rule is `classify_derived` above
+# (STATE-05, not this ticket).  A caller filters null-cell findings out
+# before reaching any function below.
+#
+# The four-row table (tension 12), for a prior finding with check_id C and
+# cell K, is:
+#
+#   | Prior finding | This run | Status                                    |
+#   |----------------|----------|------------------------------------------|
+#   | present, (C,K) covered | present | recurring                         |
+#   | present, (C,K) covered | absent  | fixed                             |
+#   | present, (C,K) NOT covered | absent | unknown, carried fwd w/ first_seen|
+#   | absent         | present | new                                      |
+#
+# A finding PRESENT this run implies its own (check_id, cell) was covered
+# this run by construction - it cannot have been emitted otherwise - so the
+# "present | present" row's coverage qualifier needs no separate test: only
+# fingerprint membership in the prior set decides new versus recurring.
+# Coverage matters only on the "prior present, this run absent" side, which
+# is `findings_classify_absent` below.
+
+# `findings_classify_guard THIS_FP_SCHEMA THIS_SCAN_ROOT_ID THIS_HAS_PATH_ROOT
+#                          PRIOR_FP_SCHEMA PRIOR_SCAN_ROOT_ID`
+#
+# PRIOR_FP_SCHEMA empty means no prior state was loaded at all (the ordinary
+# first-run case - lib/state.sh's `state_loaded` returning false), handled
+# identically to a real mismatch: both make the prior set (or the relevant
+# slice of it) incomparable.
+# THIS_HAS_PATH_ROOT is 'true' when this run's OWN covered_checks include at
+# least one path-root-scoped check - i.e. its selected modules are ones
+# whose findings live in path-root cells (SAST/IaC/SCA/history).  A run that
+# never touches a path-root cell cannot be invalidated by a scan_root_id
+# mismatch, because nothing it classifies depends on scan_root_id at all
+# (tension 12: "the gate is scoped to path-root cells and to nothing else").
+#
+# Prints one of: usable | no_prior_state | fp_schema_mismatch |
+#                scan_root_id_mismatch
+findings_classify_guard() {
+  local this_fp_schema=$1 this_scan_root_id=$2 this_has_path_root=$3
+  local prior_fp_schema=$4 prior_scan_root_id=$5
+  if [[ -z $prior_fp_schema ]]; then
+    printf 'no_prior_state'
+    return 0
+  fi
+  if [[ $prior_fp_schema != "$this_fp_schema" ]]; then
+    printf 'fp_schema_mismatch'
+    return 0
+  fi
+  if [[ $this_has_path_root == true && $prior_scan_root_id != "$this_scan_root_id" ]]; then
+    printf 'scan_root_id_mismatch'
+    return 0
+  fi
+  printf 'usable'
+}
+
+# `findings_diff_usable GUARD` -> 'true' or 'false'.
+# Tension 11 stage 5: diff_usable governs the GATE only and never overrides a
+# `status` - every status below is decided by the table above and by nothing
+# else, including on a first run (no prior state), whose findings are still
+# `new`, not `unknown` (tension 11's own withdrawn-earlier-draft note).
+findings_diff_usable() {
+  if [[ $1 == usable ]]; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+# `findings_classify_present FINGERPRINT GUARD SCOPE PRIOR_FINGERPRINTS_FILE`
+#
+# Classifies ONE finding PRESENT in this run's findings.fields.
+# PRIOR_FINGERPRINTS_FILE is one fingerprint per line (lib/state.sh's
+# `state_finding_fingerprints`, unfiltered - the exclusion below is applied
+# HERE, by scope, never by pre-filtering the file, so one file always
+# represents the whole prior set).  SCOPE is this finding's own
+# coverage-scope (path-root/target/account-region/scope-key), needed only
+# to decide whether the scan_root_id guard applies to IT specifically.
+#
+# Prints 'new' or 'recurring'.
+findings_classify_present() {
+  local fp=$1 guard=$2 scope=$3 prior_file=$4
+  case $guard in
+    fp_schema_mismatch | no_prior_state)
+      printf 'new'
+      return 0
+      ;;
+    scan_root_id_mismatch)
+      if [[ $scope == path-root ]]; then
+        printf 'new'
+        return 0
+      fi
+      ;;
+  esac
+  local pfp
+  while IFS= read -r pfp; do
+    [[ -n $pfp ]] || continue
+    if [[ $pfp == "$fp" ]]; then
+      printf 'recurring'
+      return 0
+    fi
+  done <"$prior_file"
+  printf 'new'
+}
+
+# `findings_classify_absent CHECK_ID CELL SCOPE GUARD COVERED_NOW_FILE`
+#
+# Classifies ONE PRIOR finding ABSENT from this run's findings.fields.
+# COVERED_NOW_FILE is `check_id \t cell` lines, this run's own covered pairs
+# (the identical format `classify_derived`'s COVERED_THIS_RUN already uses,
+# and `_pair_covered` above is reused unchanged - one coverage test, one
+# owner, for an ordinary finding and a composite contributor alike).
+#
+# Prints '<status>\t<reason>'.  status is 'fixed' or 'unknown'; reason is
+# empty for 'fixed'.
+findings_classify_absent() {
+  local check_id=$1 cell=$2 scope=$3 guard=$4 covered_now=$5
+  case $guard in
+    fp_schema_mismatch)
+      printf 'unknown\tfp_schema_mismatch'
+      return 0
+      ;;
+    no_prior_state)
+      # Unreachable in ordinary use: no prior state means no prior findings
+      # to classify as absent in the first place.  Guarded here anyway so a
+      # caller that reaches this function out of order fails safe rather
+      # than falling through to a coverage test against nothing.
+      printf 'unknown\tno_prior_state'
+      return 0
+      ;;
+    scan_root_id_mismatch)
+      if [[ $scope == path-root ]]; then
+        printf 'unknown\tscan_root_id_mismatch'
+        return 0
+      fi
+      ;;
+  esac
+  if _pair_covered "$check_id" "$cell" "$covered_now"; then
+    printf 'fixed\t'
+  else
+    printf 'unknown\tnot-covered-this-run'
+  fi
+}
+
+# `findings_rule_digest_changed PRIOR_DIGEST THIS_DIGEST` -> 'true'/'false'.
+# Tension 12: "a rule_digest change classifies normally but flags 'rule
+# changed' in the report."  Classification itself (above) does not read this
+# at all - a rule edit is not a reason to withhold fixed/recurring/unknown,
+# only a reason to annotate the report once STATE-06 wires that in.  An
+# empty PRIOR_DIGEST (the check did not exist in the prior run at all) is
+# not a change to flag - there is nothing to compare against yet.
+findings_rule_digest_changed() {
+  local prior_digest=$1 this_digest=$2
+  if [[ -n $prior_digest && $prior_digest != "$this_digest" ]]; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
