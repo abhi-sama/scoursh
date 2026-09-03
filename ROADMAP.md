@@ -90,10 +90,11 @@ and the compliance report, and live cloud scanning.
 4. **Guided interactive mode (`scan.sh --guided`)** - a mode that asks the operator what to scan and
    composes the equivalent flags, with a DAST affirmation flow before conservative request limits are
    lifted. It is not one of `docs/DESIGN.md` §13's ten build steps and carries no build-order gate at
-   all (see [`docs/STEP-GUIDE-PLAN.md`](docs/STEP-GUIDE-PLAN.md)'s Status section - GUIDE-01 can start
-   immediately), but it adds no new scan coverage or output format of its own, only an easier way to
-   invoke what already exists, so it sits last here on priority despite being the most fully unblocked
-   item in this list. No GUIDE-0x ticket has been picked up.
+   all (see [`docs/STEP-GUIDE-PLAN.md`](docs/STEP-GUIDE-PLAN.md)'s Status section), but it adds no new
+   scan coverage or output format of its own, only an easier way to invoke what already exists, so it
+   sits last here on priority despite being the most fully unblocked item in this list.
+   GUIDE-01 (`lib/guide.sh` - the prompt gate, the signal trap, the menu primitives) has landed;
+   GUIDE-02 through GUIDE-07 remain unclaimed, and nothing in `scan.sh` calls any of it yet.
 
 Outside that ordering:
 

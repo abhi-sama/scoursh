@@ -23,11 +23,22 @@ No design decision changes in this move; see "Relationship to the ten-step build
 one genuinely new thing this document adds - a stated position on whether guided mode is one of
 `docs/DESIGN.md` §13's ten steps.
 
-## Status: unclaimed and fully unblocked - nothing here is gated on another step
+## Status: GUIDE-01 landed; GUIDE-02 through GUIDE-07 remain unclaimed
 
-**No GUIDE-0x ticket has landed. `lib/guide.sh` does not exist, and `scan.sh` accepts neither `--guided`
-nor `--print-command` today** (verified against the tree, 2026-09-02: `ls lib/guide.sh` finds nothing,
-and `scan.sh` has no `guided` or `print-command` key in `_SCAN_FLAG_KIND`).
+**GUIDE-01 has landed.** `lib/guide.sh` exists and ships `guide_may_prompt`, `guide_menu`, `guide_ask`,
+`guide_confirm`, and `_guide_shquote`, plus the guided-scope `INT`/`TERM` signal trap and the test-only
+`SCOURSH_GUIDE_FORCE_TTY` hook, all exactly as this row specifies below.
+`scan.sh` now sources `lib/guide.sh` (so a later ticket's `scan_main` routing needs no new source line),
+but calls none of it: `scan.sh` still accepts neither `--guided` nor `--print-command`, and no menu is
+wired to any real scan.
+`tests/suites/guide.sh` (70 assertions) is the proof, and per this row's own instruction it proves the
+**refusals** - piped stdin, each of the nine non-interactive environment markers, `SCOURSH_NO_PROMPT`,
+EOF mid-flow, and SIGINT mid-flow - each exiting non-zero (or 0 for the SIGINT cancel path) without
+blocking and without creating a run directory, including reproducing the pre-existing SIGINT-under-
+`core_on_signal` exit-5 defect first and then showing `guide_menu`'s own trap fixing it.
+GUIDE-02 through GUIDE-07 remain unclaimed and are otherwise unaffected by this landing (verified
+against the tree: `scan.sh` has no `guided` or `print-command` key in `_SCAN_FLAG_KIND`, and no
+`modules/` or `lib/` file outside `lib/guide.sh` calls a `guide_*` function).
 
 Unlike step 6 or step 7, this work carries **no build-order gate at all** - it was never blocked on SAST,
 SCA/IaC, or DAST completing, and nothing here waits on step 6 (cloud) or step 7 (state) either.
@@ -55,9 +66,10 @@ The only dependencies are internal, ticket-to-ticket:
 - **GUIDE-07** (documentation: the guided quickstart, the flag table, the honest status column) depends
   on GUIDE-06.
 
-**In short: this is a single unclaimed chain, GUIDE-01 through GUIDE-07 in that order (GUIDE-04 and
-GUIDE-05 can run in parallel once GUIDE-02/GUIDE-03 land), and every "blocked" reading this design once
-carried while DAST was still unbuilt is stale.**
+**In short: this is a single chain, GUIDE-01 through GUIDE-07 in that order (GUIDE-04 and GUIDE-05 can
+run in parallel once GUIDE-02/GUIDE-03 land) - GUIDE-01 has now landed, and GUIDE-02 through GUIDE-07
+remain unclaimed - and every "blocked" reading this design once carried while DAST was still unbuilt is
+stale.**
 The old framing (visible in `docs/STEP5-DAST-PLAN.md`'s edit history) treated GUIDE-04 as waiting on DAST
 completing; DAST is now complete, so the honest statement of what blocks GUIDE-04 today is "GUIDE-02
 hasn't landed," the same as every other ticket in the chain past GUIDE-01.

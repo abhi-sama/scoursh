@@ -166,6 +166,14 @@ source "$SCOURSH_SCAN_SH_DIR/lib/engines.sh"
 # and lib/http.sh above need one (AGENTS.md "Sharp edges" on shellcheck -x).
 # shellcheck source=lib/state.sh
 source "$SCOURSH_SCAN_SH_DIR/lib/state.sh"
+# docs/STEP-GUIDE-PLAN.md GUIDE-01: lib/guide.sh (the guided-interactive-mode
+# prompt gate, signal trap and menu primitives) is sourced here so a later
+# ticket's scan_main routing needs no new source line - this ticket itself
+# wires no call site into scan_main.
+# -x back-edge cut: lib/core.sh is already inlined elsewhere in this file's
+# own source graph (see the lib/config.sh/lib/http.sh notes above).
+# shellcheck source=/dev/null
+source "$SCOURSH_SCAN_SH_DIR/lib/guide.sh"
 
 # -----------------------------------------------------------------------------
 # 2. The §5 grammar, encoded as data rather than a chain of if/elif.
