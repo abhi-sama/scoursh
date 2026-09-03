@@ -60,7 +60,11 @@
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
-# shellcheck source=lib/http.sh
+# -x back-edge cut (lib/http.sh): this file already reaches that
+# target through another edge, so following it here only re-expands the
+# lib/ hub chain a second time - which is what peak RSS is made of. See
+# docs/CI-RUNBOOK.md, "the memory model".
+# shellcheck source=/dev/null
 source "$ROOT/lib/http.sh"
 # lib/report.sh for section F's round trip: in a real run scan.sh sources it at
 # top level before scan_dispatch, so the phase never needs it - it is
@@ -70,9 +74,17 @@ if [[ -z ${SCOURSH_REPORT_SOURCED:-} ]]; then
   # shellcheck source=lib/report.sh
   source "$ROOT/lib/report.sh"
 fi
-# shellcheck source=modules/dast/passive/cors_engine.sh
+# -x back-edge cut (modules/dast/passive/cors_engine.sh): this file already reaches that
+# target through another edge, so following it here only re-expands the
+# lib/ hub chain a second time - which is what peak RSS is made of. See
+# docs/CI-RUNBOOK.md, "the memory model".
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/passive/cors_engine.sh"
-# shellcheck source=modules/dast/crawl_engine.sh
+# -x back-edge cut (modules/dast/crawl_engine.sh): this file already reaches that
+# target through another edge, so following it here only re-expands the
+# lib/ hub chain a second time - which is what peak RSS is made of. See
+# docs/CI-RUNBOOK.md, "the memory model".
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/crawl_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"

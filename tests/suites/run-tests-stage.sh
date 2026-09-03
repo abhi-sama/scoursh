@@ -67,9 +67,34 @@ printf '%s\n%s\n' "$W/tree/alpha.sh" "$W/tree/beta.sh" > "$W/filelist"
 # exits 0.
 cat > "$W/bin/shellcheck" <<'STUB'
 #!/usr/bin/env bash
+# The stage probes `shellcheck --version` once, to record it next to the
+# verdict.  That probe carries no file and must not be counted as one: it is
+# what made section M's argc probe read 7 invocations for 6 files.
+for a in "$@"; do
+  if [ "$a" = --version ]; then
+    printf 'ShellCheck - shell script analysis tool\nversion: 0.0.0-stub\n'
+    exit 0
+  fi
+done
 f=
-for a in "$@"; do case $a in -*|--) ;; *) f=$a ;; esac; done
+nf=0
+skip=0
+for a in "$@"; do
+  # `-s bash` takes a VALUE, and counting that value as a file is how the
+  # first draft of section M's argc probe read every one-file invocation as
+  # carrying two.
+  if [[ $skip == 1 ]]; then skip=0; continue; fi
+  case $a in
+    -s) skip=1 ;;
+    -*|--) ;;
+    *) f=$a; nf=$((nf + 1)) ;;
+  esac
+done
 b=${f##*/}
+# One line per invocation recording how many FILES it was handed.  Section K
+# reads this: "one file per shellcheck invocation" is a property of the CALL,
+# and nothing in the stage's own output can distinguish it from a batch.
+[[ -n ${STUB_ARGC_LOG:-} ]] && printf '%s\n' "$nf" >>"$STUB_ARGC_LOG"
 for entry in ${STUB_PLAN:-}; do
   name=${entry%%:*}; action=${entry#*:}
   if [[ $name == "$b" ]]; then
@@ -90,9 +115,22 @@ chmod +x "$W/bin/shellcheck"
 # Runs the real runner's stage with the stub in front of PATH.  Captures
 # combined output (the verdict goes to stdout, the roll-ups to stderr) and the
 # exit status, and never lets a non-zero status abort this suite.
+#
+# GITHUB_ACTIONS IS CLEARED ON EVERY ONE OF THESE INVOCATIONS, AND THAT IS
+# LOAD-BEARING RATHER THAN TIDINESS.  The stage has two paths - the
+# memory-derived, watchdog-guarded model a contributor gets, and the
+# no-watchdog/no-skip model a hosted runner gets - and it picks between them
+# by reading GITHUB_ACTIONS.  Everything from here to section J tests the
+# FIRST of those, so when this suite itself runs ON CI it would otherwise
+# silently drive the SECOND and assert the first one's contract against it.
+# That is not hypothetical: it is why `macos-latest` exited 1 on run
+# 33677872951 with 13 failures in this file while the stage it was testing
+# was working correctly.  Section K below drives the CI path deliberately,
+# with GITHUB_ACTIONS set, so neither path is left untested.
 _stage() {
   local out status=0
   out=$(PATH=$W/bin:$PATH \
+        GITHUB_ACTIONS='' \
         SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
         bash "$RUNNER" shellcheck 2>&1) || status=$?
   STAGE_OUT=$out
@@ -157,6 +195,7 @@ printf '== C2: a HOST-PRESSURE kill names that cause, and is not a finding ==\n'
 C2_ALIVE=$W/alive-c2
 rm -f "$C2_ALIVE"
 C2_OUT=$(PATH=$W/bin:$PATH \
+      GITHUB_ACTIONS='' \
       SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
       SCOURSH_SHELLCHECK_FREE_FLOOR_GB=9999999 \
       STUB_PLAN='beta.sh:sleep' STUB_ALIVE=$C2_ALIVE \
@@ -189,6 +228,7 @@ rm -f "$D_ALIVE"
 D_OUT=$W/d.out
 : > "$D_OUT"
 PATH=$W/bin:$PATH \
+  GITHUB_ACTIONS='' \
   SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
   STUB_PLAN='alpha.sh:sleep' STUB_ALIVE=$D_ALIVE \
   bash "$RUNNER" shellcheck >"$D_OUT" 2>&1 &
@@ -249,6 +289,7 @@ chmod +x "$W/bin-mktemp/mktemp"
 
 F_STATUS=0
 F_OUT=$(PATH=$W/bin-mktemp:$PATH \
+        GITHUB_ACTIONS='' \
         SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
         bash "$RUNNER" shellcheck 2>&1) || F_STATUS=$?
 
@@ -297,6 +338,7 @@ VMSTAT
   chmod +x "$W/bin-vm/vm_stat"
 
   G_OUT=$(PATH=$W/bin-vm:$PATH \
+          GITHUB_ACTIONS='' \
           SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
           SCOURSH_SHELLCHECK_FORCE_TOTAL_GB=64 \
           STUB_PLAN='' bash "$RUNNER" shellcheck 2>&1) || true
@@ -316,6 +358,7 @@ printf '== H: an OVER-BUDGET kill names the FILE as the cause ==\n'
 # passes, so both files end up over budget and neither is ever a finding.
 if command -v ps >/dev/null 2>&1; then
   H_OUT=$(PATH=$W/bin:$PATH \
+          GITHUB_ACTIONS='' \
           SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
           SCOURSH_SHELLCHECK_BUDGET_KB=100 \
           STUB_PLAN='alpha.sh:sleep beta.sh:sleep' STUB_ALIVE=$W/alive-h \
@@ -346,6 +389,7 @@ printf '== I: a file too big for this host is SKIPPED by name, and still exits 0
 if command -v ps >/dev/null 2>&1; then
   I_STATUS=0
   I_OUT=$(PATH=$W/bin:$PATH \
+          GITHUB_ACTIONS='' \
           SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
           SCOURSH_SHELLCHECK_BUDGET_KB=100 \
           STUB_PLAN='alpha.sh:sleep beta.sh:sleep' STUB_ALIVE=$W/alive-i \
@@ -384,6 +428,7 @@ printf '== J: jobs x budget <= headroom, on an 8GB, a 27GB and a 64GB host ==\n'
 _j_host() {
   local total=$1 avail=$2 want_reserve=$3 want_headroom=$4 out line
   out=$(PATH=$W/bin:$PATH \
+        GITHUB_ACTIONS='' \
         SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
         SCOURSH_SHELLCHECK_FORCE_TOTAL_GB=$total \
         SCOURSH_SHELLCHECK_FORCE_AVAIL_GB=$avail \
@@ -453,6 +498,7 @@ if command -v ps >/dev/null 2>&1; then
 
   K_STATUS=0
   K_OUT=$(PATH=$W/bin-ps:$PATH \
+          GITHUB_ACTIONS='' \
           SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
           STUB_PLAN='alpha.sh:sleep beta.sh:sleep' STUB_ALIVE=$W/alive-k \
           bash "$RUNNER" shellcheck 2>&1) || K_STATUS=$?
@@ -486,6 +532,7 @@ if command -v ps >/dev/null 2>&1; then
   L_ALIVE=$W/alive-l
   rm -f "$L_ALIVE"
   L_OUT=$(PATH=$W/bin:$PATH \
+          GITHUB_ACTIONS='' \
           SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
           SCOURSH_SHELLCHECK_FREE_FLOOR_GB=999999 \
           STUB_PLAN='alpha.sh:sleep beta.sh:sleep' STUB_ALIVE=$L_ALIVE \
@@ -497,5 +544,173 @@ if command -v ps >/dev/null 2>&1; then
 else
   printf 'SKIPPED (no ps on this host, so the stage runs with no watchdog at all)\n'
 fi
+
+# ===========================================================================
+printf '== M: the CI path checks ONE FILE PER INVOCATION, and never SKIPS ==\n'
+# ===========================================================================
+# Everything above drives the memory-model path a contributor gets.  This
+# section drives the OTHER one - the branch the stage takes when
+# GITHUB_ACTIONS is set - because it had no coverage at all, and what it did
+# instead was hand `(files + 1) / 2` files to a SINGLE `shellcheck -x`
+# process: 85 of them at the tree size current when this was written.
+# `shellcheck` holds every file it is given, plus each one's whole `-x`
+# closure, in one heap, so that process's peak is the SUM over its batch
+# rather than the MAX over it.  That killed the `ubuntu-latest` job outright
+# (exit 143, "The runner has received a shutdown signal", no stage output at
+# all) and made `macos-latest` swap for 41m45s to finish the same work.
+#
+# Two properties are asserted, and the first is the one that CANNOT be seen in
+# the stage's own output - a batched run and a per-file run print the same
+# verdict, which is why this needed a probe inside the stub rather than a
+# string match on stdout.
+_stage_ci() {
+  local out status=0
+  : > "$W/argc.log"
+  out=$(PATH=$W/bin:$PATH \
+        GITHUB_ACTIONS=true \
+        STUB_ARGC_LOG=$W/argc.log \
+        SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist-ci \
+        bash "$RUNNER" shellcheck 2>&1) || status=$?
+  STAGE_OUT=$out
+  STAGE_STATUS=$status
+}
+
+# SIX files, not the two the rest of this suite uses, and that is the whole
+# point of the fixture.  The batched shape computed `(files + jobs - 1) / jobs`
+# per invocation, so at TWO files it produced `(2 + 1) / 2 = 1` file per
+# invocation - byte-for-byte the behaviour this section exists to require.
+# A first draft of this section used the shared two-file list and its two
+# central assertions passed against the batched branch as happily as against
+# the fixed one, which is a test that pins nothing.  At six files the old
+# shape produces 2 invocations of 3 files and the new one 6 of 1, so the two
+# readings are finally distinguishable.
+: > "$W/filelist-ci"
+for _ci_n in 1 2 3 4 5 6; do
+  printf '#!/usr/bin/env bash\ntrue\n' > "$W/tree/ci$_ci_n.sh"
+  printf '%s\n' "$W/tree/ci$_ci_n.sh" >> "$W/filelist-ci"
+done
+
+STUB_PLAN='' _stage_ci
+assert_eq 0 "$STAGE_STATUS" 'a clean CI-path stage exits 0'
+assert_contains "$STAGE_OUT" '1 file per invocation' \
+  'and says how it batched, so a log reader can tell which shape ran'
+assert_contains "$STAGE_OUT" 'shellcheck: 0.0.0-stub' \
+  'and records the shellcheck VERSION next to the verdict - findings are not version-stable (0.9.0 reports SC2119/SC2120 where 0.11.0 reports nothing), and a CI run once reported 56 findings no local run could reproduce with no way to see why from the log'
+CI_INVOCATIONS=$(wc -l <"$W/argc.log" | tr -d ' ')
+CI_MAXARGC=$(sort -rn <"$W/argc.log" | head -1)
+assert_eq 6 "$CI_INVOCATIONS" \
+  'six files produce SIX shellcheck invocations - FAILS under the batched shape this replaces, which produced two invocations carrying three files each'
+assert_eq 1 "$CI_MAXARGC" \
+  'and no invocation is handed more than ONE file - FAILS under the batched shape, whose peak memory is the SUM over its batch rather than the MAX over the tree, which is what took the ubuntu-latest runner down'
+
+# Per-file attribution, which the batched shape explicitly could not do: it
+# reported `(batched - see the output above)` in place of a filename.
+STUB_PLAN='ci4.sh:1' _stage_ci
+assert_eq 1 "$STAGE_STATUS" 'a CI-path finding fails the stage'
+assert_contains "$STAGE_OUT" 'ci4.sh' \
+  'and the failing file is named - FAILS under the batched shape, which could only say "(batched - see the output above)"'
+assert_not_contains "$STAGE_OUT" 'batched' \
+  'and no placeholder stands in for a filename'
+
+# `shellcheck` exit 2 is "I could not process this file", which is a different
+# fact from a finding and must not be rounded up to one.
+STUB_PLAN='ci2.sh:2' _stage_ci
+assert_eq 1 "$STAGE_STATUS" 'a CI-path file that could not be processed fails the stage'
+assert_contains "$STAGE_OUT" 'could NOT be checked' \
+  'and is reported as unmeasured rather than as a finding'
+assert_contains "$STAGE_OUT" 'ci2.sh' 'and is named'
+
+# THE PROPERTY THAT MAKES A GREEN CI RUN MEAN SOMETHING.  On a contributor's
+# machine "this host is too small for this file" is a legitimate answer and
+# the stage SKIPS by name and still passes.  On CI the runner IS the target,
+# so there is no such answer: every file must produce a result, and the CI
+# path has no skip path at all to reach.
+assert_not_contains "$STAGE_OUT" 'SKIPPED' \
+  'the CI path never reports a file as SKIPPED - a hosted runner being too small is a failure to report, not a file to quietly drop'
+
+# The plan arithmetic, driven over the two runner shapes this workflow
+# actually targets, the same way section J drives the local model over an 8GB,
+# a 27GB and a 64GB host.  Written as comments these were just claims; the
+# first draft of this branch used the LOCAL path's 5GB step and came out at 3
+# jobs on the 16GB shape - 3 x the tree's 5.75GB worst file is 17.25GB against
+# 16GB of RAM, which is the batching defect again in miniature.
+_stage_ci_host() {   # $1 total GB, $2 available GB
+  local out status=0
+  : > "$W/argc.log"
+  out=$(PATH=$W/bin:$PATH         GITHUB_ACTIONS=true         STUB_ARGC_LOG=$W/argc.log         SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist-ci         SCOURSH_SHELLCHECK_FORCE_TOTAL_GB=$1         SCOURSH_SHELLCHECK_FORCE_AVAIL_GB=$2         bash "$RUNNER" shellcheck 2>&1) || status=$?
+  STAGE_OUT=$out
+  STAGE_STATUS=$status
+}
+
+STUB_PLAN='' _stage_ci_host 16 15
+assert_contains "$STAGE_OUT" '2GB reserved -> 13GB headroom'   'ubuntu-latest shape (16GB total, 15GB available): reserve is max(2, total/8) = 2GB and headroom is 13GB'
+assert_contains "$STAGE_OUT" '2 parallel x 1 file per invocation (6GB allowed each)'   'and 13GB of headroom at a 6GB worst-file allowance plans TWO jobs - 2 x the 5.75GB worst file is 11.5GB, inside 13GB; FAILS under the local path 5GB step, which plans 3 and over-commits a 16GB runner'
+
+STUB_PLAN='' _stage_ci_host 7 5
+assert_contains "$STAGE_OUT" '2GB reserved -> 3GB headroom'   'macos-latest shape (7GB total, 5GB available): reserve 2GB, headroom 3GB'
+assert_contains "$STAGE_OUT" '1 parallel x 1 file per invocation'   'and 3GB of headroom plans exactly ONE job rather than zero - a runner smaller than one file still has to check every file, so the floor is 1 and never a skip'
+assert_eq 6 "$(wc -l <"$W/argc.log" | tr -d ' ')"   'and one job still means six invocations for six files, not one batch of six'
+
+# ===========================================================================
+printf '== N: on a host too small for a SECOND pass, the two kill causes stay apart ==\n'
+# ===========================================================================
+# Pass 2 only exists when it can offer a BIGGER budget than pass 1.  On a host
+# whose whole headroom is already committed to one process there is nothing to
+# retry into, and the stage short-circuits.  That branch used to file every
+# deferred file under `skipped` - including the ones killed for HOST PRESSURE,
+# which had just been reported as "its own RSS was within the budget, so this
+# is the host's doing and not this file's".  The stage therefore contradicted
+# itself one line later with "needs more than the 1GB this host's headroom can
+# give one process", and - the expensive half - turned a stage that FAILED to
+# measure a file into a PASS.
+#
+# This is not a hypothetical small host: `macos-latest` is 7GB total with
+# about 3GB available, so reserve 2 leaves headroom 1 and pass 1's budget is
+# already the whole of it.  Section C2 above failed there and only there, on
+# both a pre-change and a post-change CI run, because on any host with real
+# headroom pass 2 exists and the post-pass-2 split already handled this.
+#
+# Both directions are driven, because the naive fix for each is the other's
+# bug: file everything as `unchecked` and a genuinely-too-small host can never
+# report a clean pass again; file everything as `skipped` and a stage that
+# failed to measure a file reports success.
+_stage_small_host() {   # $1 free-floor GB (9999999 forces PRESSURE), $2 budget KB
+  local out status=0
+  out=$(PATH=$W/bin:$PATH \
+        GITHUB_ACTIONS='' \
+        SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
+        SCOURSH_SHELLCHECK_FREE_FLOOR_GB=$1 \
+        SCOURSH_SHELLCHECK_BUDGET_KB=$2 \
+        SCOURSH_SHELLCHECK_FORCE_TOTAL_GB=7 \
+        SCOURSH_SHELLCHECK_FORCE_AVAIL_GB=3 \
+        STUB_PLAN='alpha.sh:sleep beta.sh:sleep' \
+        bash "$RUNNER" shellcheck 2>&1) || status=$?
+  STAGE_OUT=$out
+  STAGE_STATUS=$status
+}
+
+# HOST PRESSURE on a host with no second pass: unmeasured, and it FAILS.
+_stage_small_host 9999999 ''
+assert_contains "$STAGE_OUT" '1GB headroom' \
+  'the macos-latest shape really does leave pass 1 holding the whole headroom, so the short-circuit branch is the one under test'
+assert_eq 1 "$STAGE_STATUS" \
+  'a host-pressure kill with no larger budget to retry at FAILS the stage - FAILS under filing it as a host-size skip, which reports a file the stage never measured as a clean pass'
+assert_contains "$STAGE_OUT" '--- shellcheck FAILED' \
+  'and reaches the FAILED verdict line'
+assert_contains "$STAGE_OUT" 'could NOT be checked' \
+  'and is reported as unmeasured'
+assert_not_contains "$STAGE_OUT" 'SKIPPED - this host does not have the memory' \
+  'and is NOT reported as a host-capacity skip - the stage had just said its RSS was within budget, so claiming it needs more memory contradicts its own kill message'
+
+# OVER BUDGET on the same host: that IS a capacity limit, and it still passes.
+_stage_small_host 1 100
+assert_eq 0 "$STAGE_STATUS" \
+  'an over-budget kill on the same too-small host still PASSES - FAILS under filing every deferred file as unchecked, which would leave a genuinely small host unable to report a clean run at all'
+assert_contains "$STAGE_OUT" 'SKIPPED' \
+  'and is reported as a host-capacity skip'
+assert_contains "$STAGE_OUT" 'can give one process' \
+  'naming the budget it could not be given'
+assert_not_contains "$STAGE_OUT" 'could NOT be checked' \
+  'and is NOT filed as unmeasured, which is for results this stage should have got and did not'
 
 t_summary run-tests-stage

@@ -63,9 +63,17 @@ if [[ -z ${SCOURSH_REPORT_SOURCED:-} ]]; then
   # shellcheck source=lib/report.sh
   source "$ROOT/lib/report.sh"
 fi
-# shellcheck source=modules/dast/active/hosthdr_engine.sh
+# -x back-edge cut (modules/dast/active/hosthdr_engine.sh): this file already reaches that
+# target through another edge, so following it here only re-expands the
+# lib/ hub chain a second time - which is what peak RSS is made of. See
+# docs/CI-RUNBOOK.md, "the memory model".
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/hosthdr_engine.sh"
-# shellcheck source=modules/dast/crawl_engine.sh
+# -x back-edge cut (modules/dast/crawl_engine.sh): this file already reaches that
+# target through another edge, so following it here only re-expands the
+# lib/ hub chain a second time - which is what peak RSS is made of. See
+# docs/CI-RUNBOOK.md, "the memory model".
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/crawl_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"

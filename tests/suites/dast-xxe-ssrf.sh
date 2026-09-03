@@ -46,7 +46,11 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # Sourcing the engine pulls in lib/http.sh -> lib/config.sh + lib/findings.sh ->
 # lib/records.sh -> lib/core.sh, which bootstraps the scratch dir and traps.
-# shellcheck source=modules/dast/active/inject_engine.sh
+# -x back-edge cut (modules/dast/active/inject_engine.sh): this file already reaches that
+# target through another edge, so following it here only re-expands the
+# lib/ hub chain a second time - which is what peak RSS is made of. See
+# docs/CI-RUNBOOK.md, "the memory model".
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/active/inject_engine.sh"
 # The REAL dast_check_selected (modules/dast/engine.sh section 3a), rather
 # than a stub of it - see tests/suites/dast-ssti.sh's identical comment for
@@ -62,6 +66,8 @@ source "$ROOT/modules/dast/active/inject_engine.sh"
 source "$ROOT/modules/dast/engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
+# shellcheck source=tests/lib/bounded-read.sh
+source "$ROOT/tests/lib/bounded-read.sh"
 
 W=$SCOURSH_SCRATCH/dast-xxe-ssrf-workspace
 rm -rf "$W"; mkdir -p "$W"
@@ -481,6 +487,7 @@ printf '== dast xxe_ssrf: the ORACLE FETCH body read is bounded AT READ TIME, ne
 # 256 MiB sentinel response (1024x the default 256 KiB cap) is served, and
 # the whole call is timed against an 800ms ceiling - measured well under
 # 200ms fixed, 1.7+ seconds unbounded for the identical fixture on this host.
+XS_HUGE_MARKER=$W/xs-huge-producer-finished
 XS_HUGEFILE=$W/xs-huge-oracle-body.raw
 if [[ ! -f $XS_HUGEFILE ]]; then
   hs='a'
@@ -494,7 +501,9 @@ _xs_huge_oracle_transport() {
   printf '%s %s\n' "$method" "$host" >>"$REQ_LOG"
   if [[ -n ${_HTTP_TX_BODY_OUT:-} ]]; then
     if [[ $host == "$XS_SENTINEL_HOST" ]]; then
-      cp -- "$XS_HUGEFILE" "$_HTTP_TX_BODY_OUT"
+      # Served through a FIFO, so the PRODUCER'S own progress reports whether
+      # the whole body was read - see tests/lib/bounded-read.sh.
+      bounded_read_serve_fifo "$_HTTP_TX_BODY_OUT" "$XS_HUGEFILE" "$XS_HUGE_MARKER"
     else
       printf 'unexpected host' >"$_HTTP_TX_BODY_OUT"
     fi
@@ -508,17 +517,17 @@ _XS_ORACLE_DONE=0 _XS_ORACLE_OK=0 _XS_ORACLE_SIG='' _XS_ORACLE_REASON=''
 _XS_ORACLE_MIN_BYTES=32
 _XS_ORACLE_SIG_LEN=96
 _XS_SENTINEL_URL="https://$XS_SENTINEL_HOST/"
-t0=$(now_epoch_ns)
 xshuge_rc=0
 _xs_oracle_fetch xs-fixture || xshuge_rc=$?
-t1=$(now_epoch_ns)
-xshuge_ms=$(( (t1 - t0) / 1000000 ))
+xshuge_finished=1
+bounded_read_producer_finished "$XS_HUGE_MARKER" || xshuge_finished=0
+bounded_read_reap
 SCOURSH_HTTP_TRANSPORT=_xs_transport
 
 assert_eq 0 "$xshuge_rc" 'the oracle fetch itself succeeds for a large-but-reachable sentinel response'
 assert_eq 1 "$_XS_ORACLE_OK" 'and reports itself usable'
-assert_true "$([[ $xshuge_ms -lt 800 ]] && echo 0 || echo 1)" \
-  "the oracle fetch completed in ${xshuge_ms}ms for a 256 MiB sentinel response - FAILS under the un-bounded \`read -d ''\` this replaces, which must slurp the whole body before the signature can be sliced out of it (measured 1.7+ seconds on this host for the identical fixture through this exact harness)"
+assert_eq 0 "$xshuge_finished" \
+  "the producer serving the 256 MiB sentinel response was still parked mid-write when the oracle fetch returned, so the body was never read whole - FAILS under the un-bounded \`read -d ''\` this replaces, which drains the pipe to EOF before the signature can be sliced out of it. This used to be a 1220ms-on-CI wall-clock ceiling calibrated on one machine; see tests/lib/bounded-read.sh"
 
 # ===========================================================================
 printf '== dast xxe_ssrf: the XML-technique _XS_BODY read is bounded AT READ TIME, never after a full slurp ==\n'
@@ -536,7 +545,7 @@ _xs_huge_body_transport() {
   printf '%s %s\n' "$method" "$host" >>"$REQ_LOG"
   if [[ -n ${_HTTP_TX_BODY_OUT:-} ]]; then
     if [[ $host == "$XS_BASE_HOST" ]]; then
-      cp -- "$XS_HUGEFILE" "$_HTTP_TX_BODY_OUT"
+      bounded_read_serve_fifo "$_HTTP_TX_BODY_OUT" "$XS_HUGEFILE" "$XS_HUGE_MARKER"
     else
       printf 'unexpected host' >"$_HTTP_TX_BODY_OUT"
     fi
@@ -545,17 +554,17 @@ _xs_huge_body_transport() {
 }
 
 SCOURSH_HTTP_TRANSPORT=_xs_huge_body_transport
-t0=$(now_epoch_ns)
 xsbody_rc=0
 _xs_send_xml xs-fixture xshugeep '<x/>' || xsbody_rc=$?
-t1=$(now_epoch_ns)
-xsbody_ms=$(( (t1 - t0) / 1000000 ))
+xsbody_finished=1
+bounded_read_producer_finished "$XS_HUGE_MARKER" || xsbody_finished=0
+bounded_read_reap
 SCOURSH_HTTP_TRANSPORT=_xs_transport
 
 assert_eq 0 "$xsbody_rc" '_xs_send_xml itself succeeds for a large-but-reachable body'
 assert_eq "$_INJ_MAX_BODY_BYTES" "${#_XS_BODY}" \
   "a 256 MiB response leaves _XS_BODY holding exactly the ${_INJ_MAX_BODY_BYTES}-byte cap - FAILS if the cap is applied to what is RETAINED after a full read rather than to what is READ"
-assert_true "$([[ $xsbody_ms -lt 800 ]] && echo 0 || echo 1)" \
-  "_xs_send_xml completed in ${xsbody_ms}ms for a 256 MiB body - FAILS under the un-bounded \`read -d ''\` this replaces"
+assert_eq 0 "$xsbody_finished" \
+  "the producer serving the 256 MiB body was still parked mid-write when _xs_send_xml returned, so the body was never read whole - FAILS under the un-bounded \`read -d ''\` this replaces. This used to be a 1215ms-on-CI wall-clock ceiling calibrated on one machine; see tests/lib/bounded-read.sh"
 
 t_summary dast-xxe-ssrf
