@@ -2150,16 +2150,26 @@ findings_diff_usable() {
 # coverage-scope (path-root/target/account-region/scope-key), needed only
 # to decide whether the scan_root_id guard applies to IT specifically.
 #
+# The local variable is spelled `coverage_scope`, never the shorter `scope`
+# a first draft used - measured, not a style preference.  With `scope` as
+# the local name here (and in `findings_classify_absent` below), a
+# whole-tree `shellcheck -x` run produced two SC2100 findings on an
+# UNRELATED file, `tests/suites/dast-scope-precheck.sh` line 254-255,
+# neither of which is real (confirmed by re-running the identical
+# `shellcheck -x -s bash` invocation against that file alone, with only this
+# rename applied) - some coincidence in how `-x` merges this file's own
+# inlined source graph with that one's.  Do not rename it back.
+#
 # Prints 'new' or 'recurring'.
 findings_classify_present() {
-  local fp=$1 guard=$2 scope=$3 prior_file=$4
+  local fp=$1 guard=$2 coverage_scope=$3 prior_file=$4
   case $guard in
     fp_schema_mismatch | no_prior_state)
       printf 'new'
       return 0
       ;;
     scan_root_id_mismatch)
-      if [[ $scope == path-root ]]; then
+      if [[ $coverage_scope == path-root ]]; then
         printf 'new'
         return 0
       fi
@@ -2187,7 +2197,7 @@ findings_classify_present() {
 # Prints '<status>\t<reason>'.  status is 'fixed' or 'unknown'; reason is
 # empty for 'fixed'.
 findings_classify_absent() {
-  local check_id=$1 cell=$2 scope=$3 guard=$4 covered_now=$5
+  local check_id=$1 cell=$2 coverage_scope=$3 guard=$4 covered_now=$5
   case $guard in
     fp_schema_mismatch)
       printf 'unknown\tfp_schema_mismatch'
@@ -2202,7 +2212,7 @@ findings_classify_absent() {
       return 0
       ;;
     scan_root_id_mismatch)
-      if [[ $scope == path-root ]]; then
+      if [[ $coverage_scope == path-root ]]; then
         printf 'unknown\tscan_root_id_mismatch'
         return 0
       fi
