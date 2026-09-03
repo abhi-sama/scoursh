@@ -156,23 +156,147 @@ t_case 'a non-numeric --jobs'
 assert_status 2 "'--jobs abc' is not a positive integer" \
   scan_parse_args sast --jobs abc --path .
 
+# docs/STEP-GUIDE-PLAN.md GUIDE-02 moved the required-flag and cross-flag
+# block these four assertions pin out of scan_parse_args and into its own
+# `_scan_check_required`, called by scan_main AFTER its guided-mode routing
+# rather than from scan_parse_args itself - see that function's own header
+# for why. `scan_parse_args` ALONE no longer dies for any of these cases (a
+# bare `scan.sh dast` now parses cleanly, with no --target); this helper
+# runs the two in the same order scan_main does, so the four assertions
+# below keep pinning the exact same rules and exit-2 text they always did.
+_parse_and_require() {
+  scan_parse_args "$@"
+  _scan_check_required
+}
+
 t_case '--fail-on-new requires --fail-on in the SAME invocation'
 assert_status 2 '--fail-on-new with no --fail-on dies exit 2 (docs/FOUNDATION.md tension 14, the missing-gate-flags paragraph)' \
-  scan_parse_args sast --fail-on-new --path .
+  _parse_and_require sast --fail-on-new --path .
 scan_parse_args sast --fail-on-new --fail-on high --path .
 assert_eq true "${SCAN_FLAGS[fail-on-new]}" '--fail-on-new with --fail-on present parses cleanly'
 
 t_case "'dast' requires --target"
 assert_status 2 "'scan.sh dast' with no --target dies exit 2" \
+  _parse_and_require dast
+assert_status 0 \
+  "'scan.sh dast' with no --target parses cleanly through scan_parse_args ALONE - fails under 'the required-flag block never moved', which is exactly what would break 'scan.sh dast --guided' (docs/STEP-GUIDE-PLAN.md GUIDE-02)" \
   scan_parse_args dast
 
 t_case "'diff' requires --against, 'report' requires --from"
-assert_status 2 "'scan.sh diff' with no --against dies exit 2" scan_parse_args diff
-assert_status 2 "'scan.sh report' with no --from dies exit 2" scan_parse_args report
+assert_status 2 "'scan.sh diff' with no --against dies exit 2" _parse_and_require diff
+assert_status 2 "'scan.sh report' with no --from dies exit 2" _parse_and_require report
 
 t_case 'an unexpected positional argument'
 assert_status 2 'no documented command takes a bare positional (docs/DESIGN.md §5 is entirely flag-based)' \
   scan_parse_args sast extra-arg --path .
+
+# =============================================================================
+printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-02: the guided-flow settable-flag registry --\n'
+# =============================================================================
+# GUIDE_SETTABLE_FLAGS lives in lib/guide.sh (scan.sh sources it), and is the
+# single source of truth every later GUIDE-0x ticket appends a flag NAME to
+# as it wires a real prompt. This is what makes "a guided prompt's flag must
+# already be legal for the parser" structural rather than a convention - see
+# that array's own header comment for why it is empty today (GUIDE-02 wires
+# no real prompt: G1 onward is GUIDE-03's job).
+t_case 'every entry in GUIDE_SETTABLE_FLAGS names a real _SCAN_FLAG_KIND key'
+if (( ${#GUIDE_SETTABLE_FLAGS[@]} == 0 )); then
+  _t_ok 'GUIDE_SETTABLE_FLAGS is empty - GUIDE-02 wires no real prompt yet, so there is nothing to check against _SCAN_FLAG_KIND, and a for loop over it below would run zero iterations either way'
+else
+  for _guide_flag in "${GUIDE_SETTABLE_FLAGS[@]}"; do
+    _guide_flag_found=0
+    for _guide_key in "${!_SCAN_FLAG_KIND[@]}"; do
+      [[ $_guide_key == *":$_guide_flag" ]] && _guide_flag_found=1 && break
+    done
+    if (( _guide_flag_found )); then
+      _t_ok "GUIDE_SETTABLE_FLAGS entry '$_guide_flag' matches a real _SCAN_FLAG_KIND key"
+    else
+      _t_no "GUIDE_SETTABLE_FLAGS entry '$_guide_flag' matches a real _SCAN_FLAG_KIND key" \
+        "no '*:$_guide_flag' key exists in _SCAN_FLAG_KIND - a guided prompt would compose a flag the parser itself refuses"
+    fi
+  done
+fi
+unset _guide_flag _guide_key _guide_flag_found
+
+t_case "--guided and --print-command (this ticket's own two additions) parse as ordinary global bool flags"
+scan_parse_args sast --guided --path .
+assert_eq true "${SCAN_FLAGS[guided]}" '--guided parses to true on an arbitrary command, since it is declared global'
+scan_parse_args sast --print-command --path .
+assert_eq true "${SCAN_FLAGS[print-command]}" '--print-command parses to true the same way'
+
+# =============================================================================
+printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-02: guided-mode routing in scan_main --\n'
+# =============================================================================
+# Every case here runs scan_main FOR REAL, through _run_main, never
+# scan_parse_args alone - the routing this ticket adds lives in scan_main
+# itself, both before and after the scan_parse_args call (see scan_main's
+# own comments at its top). assert_status already redirects both stdout and
+# stderr to /dev/null (tests/lib/assert.sh's own `( "$@" ) >/dev/null 2>&1`),
+# which alone makes stderr non-a-terminal for every case below, exactly as
+# tests/suites/scan.sh's own `_bin_run` helper already relies on further
+# down this file; SCOURSH_GUIDE_FORCE_TTY is the only way to force the
+# ELIGIBLE branch under that redirection, the identical hook
+# tests/suites/guide.sh already uses for lib/guide.sh's own gate.
+
+t_case 'bare scan.sh (zero arguments) with no terminal is UNCHANGED: today''s "no command given" usage error, never a guided-mode message'
+rm -rf "$W/run-guide-bare-noterm"
+assert_status 2 \
+  'zero arguments with no terminal falls straight through to the unmodified scan_parse_args call - the dedicated byte-identical non-regression case further below in this file proves the text itself never changed' \
+  _run_main --out "$W/run-guide-bare-noterm"
+assert_status 2 'and genuinely zero arguments (not even --out) behaves the same way' _run_main
+assert_file_absent "$W/run-guide-bare-noterm" 'no run directory was created for a refused invocation'
+
+t_case 'bare scan.sh (zero arguments) with a forced terminal: guided mode is eligible, and refuses honestly rather than running an unconfigured scan'
+rm -rf "$W/run-guide-bare-tty"
+SCOURSH_GUIDE_FORCE_TTY=true assert_status 2 \
+  "eligible zero-arg guided mode dies exit 2 stating guided setup is not built in this version - fails under 'fall back to silently running today's usage error', indistinguishable from the ineligible case above, and under 'silently run some default scan', which the plan calls a worse outcome than a clear refusal" \
+  _run_main --out "$W/run-guide-bare-tty"
+assert_file_absent "$W/run-guide-bare-tty" 'no run directory was created'
+
+t_case '--guided explicitly given with no terminal: fails LOUDLY with the concrete reason, before any required-flag check ever runs'
+rm -rf "$W/run-guide-explicit-noterm"
+assert_status 2 \
+  '--guided with no terminal dies exit 2, even though `dast` was given no --target at all - fails if the moved required-flag check still ran first and reported the wrong reason' \
+  _run_main dast --guided --out "$W/run-guide-explicit-noterm"
+GUIDE_NOTERM_OUT=$W/guide-noterm.out
+( _run_main dast --guided --out "$W/run-guide-explicit-noterm2" ) >"$GUIDE_NOTERM_OUT" 2>&1 || true
+assert_contains "$(cat "$GUIDE_NOTERM_OUT")" 'standard input is not a terminal' \
+  'the concrete reason is named, not a generic refusal - fails under a message that cannot distinguish "no terminal" from "a CI marker is set" from "SCOURSH_NO_PROMPT is set"'
+assert_file_absent "$W/run-guide-explicit-noterm" 'no run directory was created'
+
+t_case '--guided explicitly given with a forced terminal: eligible, and refuses honestly (same as the bare-terminal case)'
+rm -rf "$W/run-guide-explicit-tty"
+SCOURSH_GUIDE_FORCE_TTY=true assert_status 2 \
+  '--guided with a forced terminal and no CI marker dies exit 2, stating guided setup is not built' \
+  _run_main dast --guided --out "$W/run-guide-explicit-tty"
+assert_file_absent "$W/run-guide-explicit-tty" 'no run directory was created'
+
+t_case 'a CI marker refuses --guided even with a forced terminal - the environment layer can only ever turn prompting OFF, never on'
+rm -rf "$W/run-guide-ci"
+CI=1 SCOURSH_GUIDE_FORCE_TTY=true assert_status 2 \
+  "'CI' set in the environment refuses --guided even though the terminal checks would pass - fails under 'a pty-allocating CI runner is interactive', exactly the shape docs/STEP-GUIDE-PLAN.md's condition 4 exists to catch" \
+  _run_main dast --guided --out "$W/run-guide-ci"
+GUIDE_CI_OUT=$W/guide-ci.out
+( CI=1 SCOURSH_GUIDE_FORCE_TTY=true _run_main dast --guided --out "$W/run-guide-ci2" ) >"$GUIDE_CI_OUT" 2>&1 || true
+assert_contains "$(cat "$GUIDE_CI_OUT")" "'CI' is set in the environment" \
+  'the CI marker itself is named as the concrete reason'
+assert_file_absent "$W/run-guide-ci" 'no run directory was created'
+
+t_case 'SCOURSH_NO_PROMPT refuses --guided even with a forced terminal and no CI marker - the one documented way to force guided mode off'
+rm -rf "$W/run-guide-noprompt"
+SCOURSH_NO_PROMPT=1 SCOURSH_GUIDE_FORCE_TTY=true assert_status 2 \
+  'SCOURSH_NO_PROMPT refuses --guided' \
+  _run_main dast --guided --out "$W/run-guide-noprompt"
+assert_file_absent "$W/run-guide-noprompt" 'no run directory was created'
+
+t_case 'a fully-flagged command with no --guided is silent even on a forced terminal - guided mode never runs unless it was asked for'
+mkdir -p "$W/guide-silent-tree"
+printf 'print("hello")\n' >"$W/guide-silent-tree/x.py"
+rm -rf "$W/run-guide-silent"
+SCOURSH_INSTALL_ROOT=$ROOT_OK_SCANNER SCOURSH_GUIDE_FORCE_TTY=true assert_status 0 \
+  "sast --path with everything it needs and no --guided runs normally on a 'terminal' - fails under 'guided mode fires whenever a terminal is present', which would make an ordinary interactive invocation impossible without a flag to suppress it" \
+  _run_main sast --path "$W/guide-silent-tree" --out "$W/run-guide-silent"
+assert_file_exists "$W/run-guide-silent/run.json" 'the run actually happened - this is not another refusal that merely exits 0'
 
 # =============================================================================
 printf '\n-- the own-your-target affirmation (docs/STEP5-DAST-PLAN.md DAST-32) --\n'
@@ -416,6 +540,32 @@ _bin_run() {
   bash "$ROOT/scan.sh" "$@" >"$W/bin.out" 2>&1 || rc=$?
   return "$rc"
 }
+
+t_case "GUIDE-02 non-regression: bare scan.sh with no terminal keeps today's exit-2 usage text byte-identically"
+# The direct non-regression test docs/STEP-GUIDE-PLAN.md GUIDE-02 names by
+# name: a script piping scan.sh with no arguments today must see NO change
+# whatsoever once guided-mode routing lands. tests/fixtures/scan-usage/
+# no-command-given.txt is the real output of THIS repository's scan.sh,
+# captured before any GUIDE-02 code existed, with only the wall-clock
+# timestamp normalised to a fixed placeholder (die()'s message is otherwise
+# static and untouched by this ticket - see scan_usage's own heredoc and
+# scan_die_usage, neither of which this ticket edits). A real subprocess,
+# never the sourced function, and stdin explicitly redirected from
+# /dev/null so this assertion holds regardless of whether the process
+# running the suite itself has a terminal attached.
+GUIDE02_BASELINE=$ROOT/tests/fixtures/scan-usage/no-command-given.txt
+GUIDE02_ACTUAL=$W/guide02-bare.out
+GUIDE02_RC=0
+bash "$ROOT/scan.sh" >"$GUIDE02_ACTUAL" 2>&1 </dev/null || GUIDE02_RC=$?
+assert_eq 2 "$GUIDE02_RC" 'bare scan.sh with no terminal still exits 2'
+GUIDE02_NORM=$W/guide02-bare.norm
+sed -E 's/^[0-9TZ:-]{20} error/<TIMESTAMP> error/' "$GUIDE02_ACTUAL" >"$GUIDE02_NORM"
+if diff -q "$GUIDE02_BASELINE" "$GUIDE02_NORM" >/dev/null 2>&1; then
+  _t_ok 'output is byte-identical (modulo the wall-clock timestamp) to the frozen pre-GUIDE-02 fixture - fails under any change to what a piped, argument-less scan.sh prints or how it exits'
+else
+  _t_no 'output is byte-identical (modulo the wall-clock timestamp) to the frozen pre-GUIDE-02 fixture' \
+    "diff: $(diff "$GUIDE02_BASELINE" "$GUIDE02_NORM" || true)"
+fi
 
 t_case '--help exits 0 and prints the documented grammar'
 assert_status 0 './scan.sh --help exits 0' _bin_run --help

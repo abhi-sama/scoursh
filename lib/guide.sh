@@ -172,6 +172,37 @@ guide_may_prompt() {
   return 0
 }
 
+# `guide_ineligible_reason` - names the FIRST condition (in the plan's own
+# order) of `guide_may_prompt`'s five-condition gate that is currently
+# failing, in one sentence fragment scan_main's own exit-2 usage message can
+# interpolate ("fail loudly and immediately ... naming the concrete reason",
+# docs/STEP-GUIDE-PLAN.md GUIDE-02).  Deliberately a SEPARATE function from
+# `guide_may_prompt` rather than a second return value: that function's own
+# header states it "never prints", and this one's whole job is printing, so
+# splitting them keeps both contracts honest.  A caller reaches for this only
+# after `guide_may_prompt true` has already returned non-zero - condition 1
+# ("asked for") is therefore not re-diagnosed here, since a caller that got
+# this far already knows it was asked for.  Re-checks `_guide_stdin_is_tty`/
+# `_guide_stderr_is_tty` (never a raw `[[ -t 0 ]]`) so the
+# SCOURSH_GUIDE_FORCE_TTY test hook applies here exactly as it does to the
+# gate itself.
+guide_ineligible_reason() {
+  _guide_stdin_is_tty || { printf '%s' 'standard input is not a terminal'; return 0; }
+  _guide_stderr_is_tty || { printf '%s' 'standard error is not a terminal'; return 0; }
+  local marker
+  for marker in "${_GUIDE_ENV_MARKERS[@]+"${_GUIDE_ENV_MARKERS[@]}"}"; do
+    if [[ -n ${!marker:-} ]]; then
+      printf "'%s' is set in the environment" "$marker"
+      return 0
+    fi
+  done
+  if [[ -n ${SCOURSH_NO_PROMPT:-} ]]; then
+    printf '%s' 'SCOURSH_NO_PROMPT is set'
+    return 0
+  fi
+  printf '%s' 'guided mode is not available'
+}
+
 # ---------------------------------------------------------------------------
 # 2. The guided-scope INT/TERM trap
 # ---------------------------------------------------------------------------
@@ -349,3 +380,28 @@ _guide_shquote() {
   out+="'"
   printf '%s' "$out"
 }
+
+# ---------------------------------------------------------------------------
+# 5. The settable-flag registry (docs/STEP-GUIDE-PLAN.md GUIDE-02)
+# ---------------------------------------------------------------------------
+
+# GUIDE_SETTABLE_FLAGS is the single source of truth for "every flag NAME a
+# real guided-mode prompt writes into scan.sh's SCAN_FLAGS", the shell form of
+# the plan's own "Flag equivalence" table.  GUIDE-02 wires no prompt at all
+# (its own row: "no menus"; that is GUIDE-03 onward) - `--guided` and
+# `--print-command` are inputs TO the guided flow, not flags a prompt inside
+# it sets, so this starts empty rather than seeded with those two.  Every
+# later GUIDE-0x ticket that lands a real prompt (G1's scan type, G2's
+# --path/--lang/--history, G3's --target, ...) appends the flag name it sets
+# HERE, in the SAME change that wires the prompt.
+#
+# tests/suites/scan.sh's own case walks this array against `_SCAN_FLAG_KIND`
+# (declared in scan.sh, which sources this file, so both are in scope by the
+# time that test runs) and fails loudly on any entry with no matching
+# `<scope>:<flag>` key - this is what makes "a prompt's flag must already be
+# legal for the parser" STRUCTURAL rather than a convention a future ticket
+# has to remember unassisted.  A `for` loop over an empty array runs zero
+# iterations and asserts nothing yet, which is the correct, honest state of
+# this check before any prompt exists - not a weaker version of the check,
+# just an earlier one.
+readonly -a GUIDE_SETTABLE_FLAGS=()

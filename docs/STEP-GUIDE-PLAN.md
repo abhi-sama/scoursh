@@ -23,22 +23,72 @@ No design decision changes in this move; see "Relationship to the ten-step build
 one genuinely new thing this document adds - a stated position on whether guided mode is one of
 `docs/DESIGN.md` §13's ten steps.
 
-## Status: GUIDE-01 landed; GUIDE-02 through GUIDE-07 remain unclaimed
+## Status: GUIDE-01 and GUIDE-02 landed; GUIDE-03 through GUIDE-07 remain unclaimed
 
 **GUIDE-01 has landed.** `lib/guide.sh` exists and ships `guide_may_prompt`, `guide_menu`, `guide_ask`,
 `guide_confirm`, and `_guide_shquote`, plus the guided-scope `INT`/`TERM` signal trap and the test-only
 `SCOURSH_GUIDE_FORCE_TTY` hook, all exactly as this row specifies below.
-`scan.sh` now sources `lib/guide.sh` (so a later ticket's `scan_main` routing needs no new source line),
-but calls none of it: `scan.sh` still accepts neither `--guided` nor `--print-command`, and no menu is
-wired to any real scan.
 `tests/suites/guide.sh` (70 assertions) is the proof, and per this row's own instruction it proves the
 **refusals** - piped stdin, each of the nine non-interactive environment markers, `SCOURSH_NO_PROMPT`,
 EOF mid-flow, and SIGINT mid-flow - each exiting non-zero (or 0 for the SIGINT cancel path) without
 blocking and without creating a run directory, including reproducing the pre-existing SIGINT-under-
 `core_on_signal` exit-5 defect first and then showing `guide_menu`'s own trap fixing it.
-GUIDE-02 through GUIDE-07 remain unclaimed and are otherwise unaffected by this landing (verified
-against the tree: `scan.sh` has no `guided` or `print-command` key in `_SCAN_FLAG_KIND`, and no
-`modules/` or `lib/` file outside `lib/guide.sh` calls a `guide_*` function).
+
+**GUIDE-02 has now landed too.**
+`scan.sh` adds `[global:guided]=bool` and `[global:print-command]=bool` to `_SCAN_FLAG_KIND`.
+`scan_main` routes both the zero-argument and the `--guided` branches itself, in two places: before
+`scan_parse_args` ever runs (for a bare `scan.sh`, since that function's own first line dies "no command
+given" the instant it sees zero arguments - so this case has to be caught before that call, never inside
+it), and immediately after `scan_parse_args` returns, by reading the now-ordinary `SCAN_FLAGS[guided]`
+boolean (no second argv scan needed for that half).
+`scan_parse_args` itself gained no terminal-reading code at all and stays pure, exactly as the plan
+requires.
+The required-flag and cross-flag block it used to end with now lives in `_scan_check_required`, called by
+`scan_main` right after both guided-mode branches, with the rules and exit-2 message text byte-for-byte
+unchanged (proof: `scan.sh dast` with no `--target` now parses cleanly through `scan_parse_args` ALONE -
+a new assertion - and still dies exit 2 once `_scan_check_required` runs, exactly as before).
+`_scan_check_affirmation` deliberately did **not** move with that block and is still called from inside
+`scan_parse_args`, since its rules read whatever combination of DAST-32 flags was actually typed and are
+unaffected by where in the pipeline they are evaluated.
+
+This ticket ships **no menu** (G1 onward is GUIDE-03's job, per its own row below), so an ELIGIBLE guided
+invocation - a real terminal, no CI marker, `SCOURSH_NO_PROMPT` unset - has nothing yet to hand control
+to.
+`_scan_guided_not_yet_available` states plainly that guided setup is not built in this version and exits
+2, rather than either silently falling back to today's usage error (indistinguishable from the
+INELIGIBLE case) or silently running some default scan (the plan's own "worse outcome than a clear
+refusal").
+An INELIGIBLE-but-explicitly-requested `--guided` fails loudly with the concrete reason
+(`guide_ineligible_reason`, a new `lib/guide.sh` function alongside `guide_may_prompt` - deliberately
+separate, since that function's own header says it "never prints") - "standard input is not a terminal",
+"'CI' is set in the environment", "SCOURSH_NO_PROMPT is set", naming whichever of the plan's five
+conditions fails first, in the plan's own order.
+
+Both of this ticket's own lints are in place.
+`tests/lint-shell.sh` gained a `guide_isolation_files` lister (everything under `lib/` and `modules/`,
+deliberately excluding `scan.sh` itself, which is the one place these are meant to be called from) and
+three checks - no `guide_*`/`_guide_*` function call, no `select` builtin, no `read -p` - each exempting
+`lib/guide.sh` by path, the identical one-exemption-with-a-stated-reason shape the tension-19 "no bypass"
+check already uses.
+Each was proven to fail on a planted violation (a `guide_may_prompt` call spliced into `lib/http.sh`, a
+`select` and a `read -p` spliced into `modules/dast/run.sh`) and to pass once removed, per this project's
+own testing rule.
+`lib/guide.sh` also gained `GUIDE_SETTABLE_FLAGS`, the single source of truth for "every flag name a real
+guided-mode prompt sets" - empty today, since this ticket wires no such prompt (`--guided` and
+`--print-command` are inputs TO the flow, not outputs of it).
+`tests/suites/scan.sh` gained the case that walks it against `_SCAN_FLAG_KIND` and fails on any entry
+with no matching key; a zero-length array today means zero iterations and nothing asserted YET, which is
+the correct, honest state of that check before GUIDE-03 lands a real prompt to register.
+
+The direct non-regression test the plan names is in place too.
+`tests/fixtures/scan-usage/no-command-given.txt` freezes the exact byte content (modulo the wall-clock
+timestamp, normalised to a placeholder) a bare, piped `scan.sh` printed BEFORE any of this ticket's code
+existed, and `tests/suites/scan.sh` diffs a real subprocess invocation against it on every run.
+
+`tests/suites/scan.sh` is the proof for everything above.
+GUIDE-03 through GUIDE-07 remain unclaimed and are otherwise unaffected by this landing (verified against
+the tree: no menu screen exists, `--guided` and `--print-command` do nothing beyond eligibility routing,
+and `GUIDE_SETTABLE_FLAGS` is still empty).
 
 Unlike step 6 or step 7, this work carries **no build-order gate at all** - it was never blocked on SAST,
 SCA/IaC, or DAST completing, and nothing here waits on step 6 (cloud) or step 7 (state) either.
@@ -46,8 +96,8 @@ The only dependencies are internal, ticket-to-ticket:
 
 - **GUIDE-01** (`lib/guide.sh` - the prompt gate, the signal trap, the menu primitives) has **no
   dependency of any kind** and can start immediately.
-- **GUIDE-02** (`--guided`, `scan_main` routing, the `_scan_check_required` split) depends only on
-  GUIDE-01.
+- **GUIDE-02** (`--guided`, `scan_main` routing, the `_scan_check_required` split) depended only on
+  GUIDE-01, and has now **landed** - see the Status section above for the detail.
 - **GUIDE-03** (the scan-type menu, local-surface follow-ups, prerequisite honesty) depends only on
   GUIDE-02.
 - **GUIDE-04** (the DAST branch and the affirmation) depends on GUIDE-02 and, structurally, on DAST-32
@@ -67,12 +117,12 @@ The only dependencies are internal, ticket-to-ticket:
   on GUIDE-06.
 
 **In short: this is a single chain, GUIDE-01 through GUIDE-07 in that order (GUIDE-04 and GUIDE-05 can
-run in parallel once GUIDE-02/GUIDE-03 land) - GUIDE-01 has now landed, and GUIDE-02 through GUIDE-07
-remain unclaimed - and every "blocked" reading this design once carried while DAST was still unbuilt is
-stale.**
+run in parallel once GUIDE-03 lands) - GUIDE-01 and GUIDE-02 have now landed, and GUIDE-03 through
+GUIDE-07 remain unclaimed - and every "blocked" reading this design once carried while DAST was still
+unbuilt is stale.**
 The old framing (visible in `docs/STEP5-DAST-PLAN.md`'s edit history) treated GUIDE-04 as waiting on DAST
-completing; DAST is now complete, so the honest statement of what blocks GUIDE-04 today is "GUIDE-02
-hasn't landed," the same as every other ticket in the chain past GUIDE-01.
+completing; DAST is now complete, so the honest statement of what blocks GUIDE-04 today is "GUIDE-03
+hasn't landed," the same as every other ticket in the chain past GUIDE-02.
 See `ROADMAP.md` for where this plan sits in the project's overall priority order relative to step 6,
 step 7 and step 10 - that ordering, not this status section, is the one to check first.
 
