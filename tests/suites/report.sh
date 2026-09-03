@@ -102,7 +102,7 @@ print(n)" 2>/dev/null || printf 'ERR')
   python3 -c "import json; json.load(open('$D/run.json'))" 2>/dev/null \
     && _t_ok 'run.json parses' || _t_no 'run.json parses' 'invalid JSON'
 else
-  _t_ok 'python3 unavailable, JSON schema validation skipped'
+  printf '  NOTICE python3 is not on PATH: JSON well-formedness validation did NOT run.  This is a SKIP, not a pass.\n'
 fi
 
 t_case 'HTML'
@@ -263,7 +263,7 @@ if command -v python3 >/dev/null 2>&1; then
   assert_eq 0 "$rc" \
     'run.json parses as JSON with the nested authorization object present - FAILS on a stray or missing comma in the nested block, which no string-containment assertion above would catch'
 else
-  printf '  skip JSON parse check: no python3 on this host\n'
+  printf '  NOTICE python3 is not on PATH: this JSON parse check did NOT run.  This is a SKIP, not a pass.\n'
 fi
 
 t_case 'an affirmed run renders the deltas it was granted'
