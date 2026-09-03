@@ -1906,10 +1906,30 @@ _sorted_keys_of_DF() {
 
 # ---------------------------------------------------------------------------
 # 16. Classifying a prior composite that did not fire this run (tension 6)
+#     (docs/STEP7-STATE-PLAN.md STATE-05: wires this against real prior state
+#     by threading tension 12's own GUARD through it, and by making (b1)'s
+#     "fixed-eligible" test literally CALL findings_classify_absent - the
+#     same function that decides whether an ordinary finding is `fixed`
+#     (STATE-03) plus its SAST-HIST-* boundary extension (STATE-04) - rather
+#     than reimplementing a second copy of that test here.  Getting (b) wrong
+#     in the lenient direction (a contributor reported "covered" when its
+#     prior state is not actually comparable) is the same false-reassurance
+#     class tension 12 exists to prevent for ordinary findings, so a
+#     composite's contributors must not be exempt from the two guards that
+#     protect them.)
 # ---------------------------------------------------------------------------
-# `classify_derived CHECK_ID CORRELATION FIRED PRIOR_CONTRIBUTORS
+# `classify_derived CHECK_ID CORRELATION FIRED PRIOR_CONTRIBUTORS GUARD
 #                   PRIOR_STATE_FILE COVERED_THIS_RUN_FILE PRIOR_COVERED_FILE
 #                   THIS_RUN_OLDEST_COMMIT_TIME`
+#
+# GUARD is tension 12's own guard result for THIS run - the same value
+# `findings_classify_guard` produces and every ordinary finding is classified
+# against (`usable` / `no_prior_state` / `fp_schema_mismatch` /
+# `scan_root_id_mismatch`).  It is computed once per run and passed in here
+# unchanged, exactly as it is passed to `findings_classify_present`/
+# `findings_classify_absent` - a composite is not a second, ungoverned path
+# to a `fixed` verdict off state that the rest of the run has already
+# decided is unusable.
 #
 # Prints `fixed` or `unknown` (with a reason on the second field).
 #
@@ -1929,8 +1949,28 @@ _sorted_keys_of_DF() {
 #   COVERED_THIS_RUN     check_id \t cell
 #   PRIOR_COVERED        check_id \t cell
 classify_derived() {
-  local check_id=$1 correlation=$2 fired=$3 prior_contributors=$4
-  local prior_state=$5 covered_now=$6 covered_prior=$7 oldest_commit_time=${8:-}
+  local check_id=$1 correlation=$2 fired=$3 prior_contributors=$4 guard=$5
+  local prior_state=$6 covered_now=$7 covered_prior=$8 oldest_commit_time=${9:-}
+
+  # A whole-state guard (fp_schema bumped, or no prior state to begin with)
+  # makes the ENTIRE prior set incomparable, composite included - checked
+  # first, exactly as `findings_classify_present`/`findings_classify_absent`
+  # check GUARD before doing any fingerprint or coverage work.
+  # `scan_root_id_mismatch` is deliberately NOT handled here: a composite's
+  # own cell is JSON null, not `path-root` (tension 12: "the gate is scoped
+  # to path-root cells and to nothing else"), so it cannot invalidate the
+  # composite's OWN classification - it can only invalidate a path-root-scoped
+  # CONTRIBUTOR, which (b1) below applies it to via findings_classify_absent.
+  case $guard in
+    fp_schema_mismatch)
+      printf 'unknown\tfp_schema_mismatch'
+      return 0
+      ;;
+    no_prior_state)
+      printf 'unknown\tno_prior_state'
+      return 0
+      ;;
+  esac
 
   # (a) Own selection.  A composite has no coverage cell, so tension 12's
   # (check, cell) test cannot protect it, and nothing else asks whether the
@@ -1966,7 +2006,7 @@ classify_derived() {
   local c uncovered=''
   while IFS= read -r c; do
     [[ -n $c ]] || continue
-    if ! _contributor_covered "$c" "$prior_contributors" "$prior_state" \
+    if ! _contributor_covered "$c" "$prior_contributors" "$guard" "$prior_state" \
       "$covered_now" "$covered_prior" "$oldest_commit_time"; then
       uncovered="${uncovered:+$uncovered,}$c"
     fi
@@ -1985,32 +2025,53 @@ classify_derived() {
   printf 'fixed\tchain-broken'
 }
 
+# A contributor check id's own coverage-scope, derived from the module that
+# owns it - the same module-prefix table `lib/records.sh`'s
+# `_records_check_coverage_scope` enforces at lint time (E079), so a
+# contributor's declared `coverage-scope` can never legally disagree with
+# what this function computes.  Deriving it here, rather than threading a
+# fifth column through PRIOR_STATE_FILE, keeps that file's shape unchanged
+# and keeps this the same information STATE-06's real caller would read off
+# `covered_checks[<check>].scope` (`lib/state.sh`'s `state_covered_scope`).
+_derived_contributor_scope() {
+  local mod=${1%%-*}
+  case $mod in
+    SAST | SCA | IAC) printf 'path-root' ;;
+    DAST) printf 'target' ;;
+    CLOUD) printf 'account-region' ;;
+    POSTURE) printf 'scope-key' ;;
+    *) printf '' ;;
+  esac
+}
+
 # (b) has two branches because contributors divide into two kinds.
 _contributor_covered() {
-  local check=$1 prior_contributors=$2 prior_state=$3
-  local covered_now=$4 covered_prior=$5 oldest_commit_time=$6
+  local check=$1 prior_contributors=$2 guard=$3 prior_state=$4
+  local covered_now=$5 covered_prior=$6 oldest_commit_time=$7
 
   # (b1) A check that produced a prior contributor finding.  Its (check_id,
-  # cell) pair is read from state/ and must be covered this run.  Additionally
-  # that contributor must itself be `fixed`-ELIGIBLE, not merely cell-covered:
-  # the rule is general, not a SAST-HIST-* special case - a contributor counts
-  # as covered only under the same test that would let its own finding be
-  # classified `fixed`.
-  local fp found=0 line c_check c_cell c_time
+  # cell) pair is read from state/ and must be covered this run.
+  # `findings_classify_absent` IS that test - the same function an ordinary
+  # finding for this check would be classified through - so calling it here,
+  # rather than re-testing `_pair_covered` and re-deriving the SAST-HIST-*
+  # boundary comparison locally, is what makes "a contributor counts as
+  # covered only under the same test that would let its own finding be
+  # classified `fixed`" literally true instead of merely intended.  It also
+  # means a contributor whose OWN scope is `path-root` is protected by
+  # `scan_root_id_mismatch` exactly as an ordinary finding for that check
+  # would be - the guard classify_derived's own top-level switch deliberately
+  # does not apply to the composite itself.
+  local fp found=0 line c_check c_cell c_time scope status
   while IFS= read -r fp; do
     [[ -n $fp ]] || continue
     while IFS=$'\t' read -r line c_check c_cell c_time; do
       [[ $line == "$fp" ]] || continue
       [[ $c_check == "$check" ]] || continue
       found=1
-      _pair_covered "$check" "$c_cell" "$covered_now" || return 1
-      if [[ $check == SAST-HIST-* ]]; then
-        # tension 13: a covered cell is necessary but not sufficient.  Reading
-        # only the cell would let a composite be `fixed` while the history
-        # contributor it depends on is itself correctly `unknown`.
-        [[ -n $c_time && -n $oldest_commit_time ]] || return 1
-        [[ $c_time > $oldest_commit_time || $c_time == "$oldest_commit_time" ]] || return 1
-      fi
+      scope=$(_derived_contributor_scope "$check")
+      status=$(findings_classify_absent "$check" "$c_cell" "$scope" "$guard" \
+        "$covered_now" "$c_time" "$oldest_commit_time")
+      [[ ${status%%$'\t'*} == fixed ]] || return 1
     done <"$prior_state"
   done <<<"${prior_contributors//,/$'\n'}"
   (( found )) && return 0

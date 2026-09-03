@@ -261,7 +261,7 @@ printf 'SAST-A-A-01\t.\nSAST-B-B-01\t.\nSAST-C-C-01\t.\n' >"$CN"
 # is docs/FOUNDATION.md's "scan.sh all --intensity active drops every
 # composite" case, the one condition (a) exists to catch.
 SCOURSH_SELECTED_CHECKS='SAST-A-A-01' \
-  classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' "$PS" "$CN" "$CP" ''
+  classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' usable "$PS" "$CN" "$CP" ''
 PROBE_EOF
 
 t_case 'the UNMUTATED classifier reports a dropped composite as unknown, not fixed'
