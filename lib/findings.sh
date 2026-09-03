@@ -201,7 +201,13 @@ path_template_of() {
 # SAST history (tension 13): scoping it to a path instead would reintroduce
 # per-commit duplication, since the same content is reachable under a renamed
 # path.
-declare -A _OCC=()
+#
+# Every top-level associative/indexed array in this file is `declare -g`,
+# never bare - see lib/records.sh's `_SCHEMA_LOADED` comment for the measured
+# failure (tools/vendor-engines.sh's advisories bootstrap sources this file,
+# transitively, from inside a short-lived function) that this defends
+# against.
+declare -gA _OCC=()
 OCCURRENCE_RESULT=0
 
 # Clears every ordinal space.  A real run is one process, so this is normally
@@ -268,8 +274,8 @@ _REDACTION_COMBINED=''
 # finding and are identical across every finding of that check, and each miss
 # costs an engine fork.  Evidence is usually longer and usually unique, so the
 # size cap keeps the cache small.
-declare -A _REDACT_MEMO=()
-declare -a _REDACTION_IDS=()
+declare -gA _REDACT_MEMO=()
+declare -ga _REDACTION_IDS=()
 
 # The path argument is optional and defaults to the shipped file.  Callers that
 # pass one - the fixture harness and the test suites - live outside this file and
@@ -511,7 +517,7 @@ md_fence_for() {
 # host state, no network, no ordering.  Facts absent from a finding take their
 # documented default, so the function is total and never depends on whether a
 # module bothered to set a field.
-declare -A _RUBRIC=()
+declare -gA _RUBRIC=()
 _RUBRIC_LOADED=0
 
 # The path argument is optional and defaults to the shipped file.  Callers that
@@ -643,8 +649,8 @@ cvss_score_of() {
 # never a fingerprint input: putting it into a cloud finding's identity would
 # make every cloud finding churn to `new` the moment an operator edited
 # config/scope.conf, which is the instability tension 5 exists to prevent.
-declare -A _ATTR_HOST=()      # host -> LF-joined target ids
-declare -A _ATTR_SUBDOMAIN=() # target -> LF-joined hosts allowing subdomains
+declare -gA _ATTR_HOST=()      # host -> LF-joined target ids
+declare -gA _ATTR_SUBDOMAIN=() # target -> LF-joined hosts allowing subdomains
 _ATTR_LOADED=0
 
 # The path argument is optional and defaults to the shipped file.  Callers that
@@ -908,7 +914,7 @@ _dec() {
 # ---------------------------------------------------------------------------
 # 11. The finding record
 # ---------------------------------------------------------------------------
-declare -A _F=()
+declare -gA _F=()
 
 # The complete field set.  An unknown field is an error rather than a silent
 # no-op, because a typo in a module would otherwise drop a fact the rubric or
@@ -1490,7 +1496,7 @@ _sorted_keys_of_F() {
 # Decoded findings land in the dedicated global _DF.  Namerefs (`local -n`) are
 # deliberately not used anywhere in this repository: `declare -n` arrived in bash
 # 4.3 and tension 24 freezes the minimum interpreter at 4.2.
-declare -A _DF=()
+declare -gA _DF=()
 
 finding_decode() {
   local line=$1 pair k v
@@ -1722,9 +1728,9 @@ derive_findings() {
   fi
 }
 
-declare -A _DERIVE_PRESENT=()
-declare -A _DERIVE_SEV=()
-declare -A _DERIVE_BACKREF=()
+declare -gA _DERIVE_PRESENT=()
+declare -gA _DERIVE_SEV=()
+declare -gA _DERIVE_BACKREF=()
 
 # The correlation value of the last decoded finding, for one correlation key.
 _corr_value_of() {

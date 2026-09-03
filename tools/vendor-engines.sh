@@ -673,6 +673,7 @@ STATS = {
     "advisories_read": 0,
     "rows_extracted": 0,
     "range_only_skipped": 0,
+    "versioned_entries": 0,
     "other_ecosystem_skipped": 0,
 }
 
@@ -748,6 +749,15 @@ def rows_for(data):
             # reported rather than approximated.
             STATS["range_only_skipped"] += 1
             continue
+        # Counted in the same unit as range_only_skipped (per affected
+        # PACKAGE entry, not per advisory and not per row): one advisory
+        # can list many affected packages, and one package can list many
+        # exact versions, so neither range_only_skipped nor rows_extracted
+        # is a sound denominator for "what fraction of this ecosystem's
+        # advisories are missing" on its own, so this is counted separately -
+        # the bash caller can then report an honest coverage percentage
+        # instead of one that can exceed 100%.
+        STATS["versioned_entries"] += 1
         for version in versions:
             v = clean(version)
             if not v:
@@ -1418,13 +1428,14 @@ _veng_bulk_one() {
     || die "$SCOURSH_EXIT_INCOMPLETE" \
       "advisories: bulk: $db_eco: the export failed validation and NOTHING was written (see the reason above)"
 
-  local advisories_read=0 rows_extracted=0 range_only_skipped=0 other_ecosystem_skipped=0
+  local advisories_read=0 rows_extracted=0 range_only_skipped=0 versioned_entries=0 other_ecosystem_skipped=0
   local line
   while IFS= read -r line || [[ -n $line ]]; do
     case $line in
       advisories_read=*) advisories_read=${line#*=} ;;
       rows_extracted=*) rows_extracted=${line#*=} ;;
       range_only_skipped=*) range_only_skipped=${line#*=} ;;
+      versioned_entries=*) versioned_entries=${line#*=} ;;
       other_ecosystem_skipped=*) other_ecosystem_skipped=${line#*=} ;;
     esac
   done <"$stats"
@@ -1451,12 +1462,38 @@ _veng_bulk_one() {
   _veng_advisories_write_db "$VENG_ADVISORIES_DB" "$db_eco" "$tsv" "$provenance"
   _veng_advisories_write_db "$VENG_VERSIONS_DB" "$db_eco" "$tsv" "$provenance"
 
-  printf 'grade=%s advisories_read=%s rows=%s range_only_skipped=%s other_ecosystem_skipped=%s\n' \
-    "$_VENG_BULK_GRADE" "$advisories_read" "$rows" "$range_only_skipped" "$other_ecosystem_skipped" \
+  # A raw skip COUNT does not tell a first-time operator how much of the
+  # ecosystem they actually got - measured here: npm's own OSV.dev export is
+  # 90%+ range-only (GHSA npm advisories overwhelmingly ship as a semver
+  # range rather than an explicit version list), so "207444 skipped" reads
+  # as a footnote where "90% of npm's affected-package entries are NOT in
+  # this database" reads as the caveat it is.
+  #
+  # The denominator is versioned_entries, NOT advisories_read: one OSV
+  # advisory can list many affected PACKAGES (each independently range-only
+  # or versioned), so range_only_skipped and advisories_read are counted in
+  # different units and range_only_skipped can legitimately exceed
+  # advisories_read - measured on Go, where one advisory can list dozens of
+  # affected module variants (advisories_read=9048 but
+  # range_only_skipped=13804, a skip/read ratio that reads as "152%" and is
+  # simply wrong).  versioned_entries is counted in the SAME unit as
+  # range_only_skipped (per affected-package entry), so this ratio is
+  # mathematically bounded to [0,100] regardless of how many packages one
+  # advisory names.  Integer percent, no bc dependency, consistent with
+  # every other percentage this script prints.
+  local skip_pct=0
+  local skip_denominator=$(( range_only_skipped + versioned_entries ))
+  (( skip_denominator > 0 )) && skip_pct=$(( range_only_skipped * 100 / skip_denominator ))
+
+  printf 'grade=%s advisories_read=%s rows=%s range_only_skipped=%s (%s%%) other_ecosystem_skipped=%s\n' \
+    "$_VENG_BULK_GRADE" "$advisories_read" "$rows" "$range_only_skipped" "$skip_pct" "$other_ecosystem_skipped" \
     >"$summary"
-  log_info "vendor-engines: advisories: bulk: $db_eco: imported: advisories_read=$advisories_read rows=$rows range_only_skipped=$range_only_skipped other_ecosystem_skipped=$other_ecosystem_skipped"
+  log_info "vendor-engines: advisories: bulk: $db_eco: imported: advisories_read=$advisories_read rows=$rows range_only_skipped=$range_only_skipped ($skip_pct% of affected packages) other_ecosystem_skipped=$other_ecosystem_skipped"
   if (( range_only_skipped > 0 )); then
-    log_warn "vendor-engines: advisories: bulk: $db_eco: $range_only_skipped advisory entr(y/ies) published no explicit affected-version list and are NOT represented in the database - this ecosystem's coverage is smaller than its advisory count by exactly that much (tension 25 requires exact versions, never a guessed range)"
+    log_warn "vendor-engines: advisories: bulk: $db_eco: $range_only_skipped affected-package entr(y/ies) ($skip_pct% of the $skip_denominator this export named for $db_eco) published no explicit affected-version list and are NOT represented in the database - this ecosystem's coverage is smaller than that by exactly that much (tension 25 requires exact versions, never a guessed range)"
+  fi
+  if (( skip_pct >= 50 )); then
+    log_warn "vendor-engines: advisories: bulk: $db_eco: MORE THAN HALF of the affected packages $db_eco's OSV.dev export names are range-only and absent from this database - a scan against $db_eco dependencies will miss most real-world CVEs in this ecosystem even with a freshly-built database; this is a known limitation of $db_eco's own OSV.dev export, not a failed import"
   fi
 }
 
