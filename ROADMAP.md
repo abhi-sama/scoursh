@@ -64,8 +64,10 @@ and the compliance report, and live cloud scanning.
    cleared; the fourth - step 6, which supplies the `account-region` coverage-cell producer tension
    12's classification table needs - remains open, so step 7 is not fully unblocked yet either way.
    No STATE-0x ticket has been picked up.
-2. **Step 10 (SARIF output + compliance report)** - `--format sarif` is accepted today, but no SARIF
-   emitter exists anywhere in the tree; same for the CIS/OWASP compliance report.
+2. **Step 10 (SARIF output + compliance report)** - `--format sarif` now writes a real SARIF 2.1.0
+   document (`report_sarif`, SARIF-03): `tool.driver`/`rules[]`/`artifacts[]`/`invocations[]`, but
+   `runs[0].results[]` is still empty until SARIF-04 lands, so it does not yet carry this run's
+   findings; the CIS/OWASP compliance report still has no emitter anywhere in the tree.
    A complete sub-ticket breakdown exists in
    [`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md) (tickets SARIF-01 through SARIF-06 plus
    COMPLIANCE-01 through COMPLIANCE-04).
@@ -120,9 +122,10 @@ scheduled on its own.
   (`--format` used to be a fourth: it was parsed and the resolved format list was then discarded, so
   every run wrote the same five artifacts whatever was asked for.  Fixed - see "Landed" above.
   `findings.jsonl` and `run.json` are mandatory per-run records rather than one of the four
-  `--format` values, and are written on every run regardless of what `--format` asked for; `sarif` is
-  accepted and validated but still selects nothing, because no SARIF emitter exists yet - that part of
-  the gap is step 10's, not this one's, and remains listed above.)
+  `--format` values, and are written on every run regardless of what `--format` asked for; `sarif`
+  now selects `report_sarif` (SARIF-03) like every other value, but the document's `results[]` is
+  still empty until SARIF-04 lands - that part of the gap is step 10's, not this one's, and remains
+  listed above.)
 - **`--fail-on-new` is currently a tautology.**
   Every finding is created with `status=new`, because the diff classification that would mark
   anything otherwise belongs to step 7, so `--fail-on-new` behaves identically to plain

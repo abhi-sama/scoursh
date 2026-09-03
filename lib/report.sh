@@ -20,6 +20,26 @@ SCOURSH_REPORT_SOURCED=1
 
 # shellcheck source=lib/findings.sh
 source "${BASH_SOURCE[0]%/*}/findings.sh"
+# SARIF-03's tool.driver.rules[] needs checks_registry_load
+# (lib/checks.sh), sourced here so a standalone lib/report.sh consumer (this
+# file's own test suites) has it without a second wiring step - every real
+# caller already has it too, since scan.sh sources both directly and every
+# modules/*/run.sh reaches modules/dast/engine.sh -> lib/checks.sh before
+# report_all ever runs.
+# -x back-edge cut: an entry point that reaches BOTH this file and a DAST
+# module (modules/dast/engine.sh has its own real edge to lib/checks.sh)
+# would otherwise re-expand lib/checks.sh's own dependency chain a second
+# time - exactly the diamond shape tests/lint-source-graph.sh's hub-sum cap
+# exists to catch, and it did: tests/suites/dast-methods.sh went from 17 to
+# 19 (cap 17) with this edge real. The runtime `source` on the next line is
+# unaffected (its SCOURSH_CHECKS_SOURCED guard makes a repeat a no-op
+# either way); only shellcheck -x's static follow is cut. Verified this
+# loses no real checking for the entry points that need lib/checks.sh's
+# declarations from THIS edge specifically - tests/suites/report.sh,
+# sarif-locations.sh and sarif-rules.sh, none of which reach lib/checks.sh
+# any other way - by shellchecking each standalone before and after.
+# shellcheck source=/dev/null
+source "${BASH_SOURCE[0]%/*}/checks.sh"
 
 # ---------------------------------------------------------------------------
 # 1. Counting
@@ -930,6 +950,327 @@ _locations_history_resolves() {
 }
 
 # ---------------------------------------------------------------------------
+# 5a. SARIF 2.1.0 (docs/STEP10-SARIF-PLAN.md SARIF-03; docs/DESIGN.md §4;
+#     docs/FOUNDATION.md tension 22)
+# ---------------------------------------------------------------------------
+# The static half of the document only: `$schema`/`version`, `tool.driver`
+# (`name`, `version`, `informationUri`, `rules[]`), `artifacts[]`,
+# `invocations[]`, and `results: []`.  SARIF-04 owns the per-finding mapping
+# into `results[]`.
+#
+# `tool.driver.rules[]` is tension 22's "the full loaded check registry, keyed
+# by check_id" - but three id families a finding can legitimately carry have
+# no on-disk record at all (SARIF-03's own "trap"): SCA ids (`modules/sca/`
+# ships no `*.rules` file by design - a table lookup, not a pattern-rule
+# engine), adapter ids (`<engine>:<engine's own rule id>`, minted at runtime
+# by `<engine>_normalize`, docs/ADAPTERS.md §6), and derived/composite ids
+# (`rules/derived.rules` is deliberately unseeded, findings F5/F20).  A SARIF
+# consumer rejects a `result.ruleId` with no matching `reportingDescriptor`,
+# so `rules[]` also has to cover every check id THIS RUN's findings actually
+# carry, not only what `checks_registry_load` found on disk - even though
+# `results[]` itself stays empty until SARIF-04.  For the three ungoverned
+# families the descriptor is SYNTHESISED from the finding's own fields (id,
+# `name` from `title`, `help.text` from `remediation`,
+# `defaultConfiguration.level` from `base_severity`) and carries
+# `properties.descriptorSource: "synthesised"`, so the difference from a
+# registry-backed descriptor is visible in the document rather than hidden.
+# A registry-backed descriptor is never marked this way.
+
+# `severity`/`base_severity` -> SARIF `level`.  SARIF 2.1.0 has four levels;
+# scoursh has five severities, so this necessarily collapses two pairs
+# (critical/high -> error, low/info -> note) - `info` is deliberately NOT
+# `none`, because `none` means "this rule did not evaluate to a problem",
+# which is not what an `info` finding says.  SARIF-04's `result.level`
+# mapping is the same table; this is `reportingDescriptor.defaultConfiguration
+# .level`, the check's own BASE severity rather than a per-result one.
+_sarif_level_for() {
+  case ${1:-} in
+    critical | high) printf 'error' ;;
+    medium) printf 'warning' ;;
+    low | info) printf 'note' ;;
+    *) printf 'note' ;;
+  esac
+}
+
+# Populates the global _SARIF_REG_LOC[check_id]="set idx" map from every
+# on-disk `*.rules` file `checks_registry_load` finds under sast/sca/iac/dast/
+# cloud (posture nests under `modules/cloud/`, so its own checks.rules is
+# covered by the `cloud` call; rules/derived.rules and rules/redaction.rules
+# live outside modules/ entirely and are never loaded here - the former is
+# deliberately unseeded, the latter's ids are never a finding's check_id).
+# Called DIRECTLY, never through $(...): checks_registry_load's own die() on a
+# malformed registry file must abort the run, exactly as it does for the
+# module-level callers in modules/*/run.sh, and a die() inside a command
+# substitution does not reliably do that (checks.sh's own comment on
+# CHECKS_REGISTRY_SETS).  Each call resets CHECKS_REGISTRY_SETS, so results
+# are accumulated into _SARIF_REG_LOC across the five module calls rather than
+# read from that global once at the end.
+declare -A _SARIF_REG_LOC=()
+_sarif_build_registry() {
+  _SARIF_REG_LOC=()
+  local module set idx n cid
+  for module in sast sca iac dast cloud; do
+    checks_registry_load "$module" "_sarif_reg_$module"
+    for set in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
+      n=$(records_count "$set")
+      for (( idx = 0; idx < n; idx++ )); do
+        cid=$(records_id "$set" "$idx")
+        [[ -n $cid ]] || continue
+        _SARIF_REG_LOC[$cid]="$set $idx"
+      done
+    done
+  done
+}
+
+# Populates the globals _SARIF_FIND_TITLE/_SARIF_FIND_REMEDIATION/
+# _SARIF_FIND_BASESEV[check_id], one entry per DISTINCT check_id this run's
+# findings.fields carries, from the FIRST finding of that check_id in file
+# order.  This is what makes a synthesised descriptor possible at all for the
+# three ungoverned families: their only source of a title/remediation/
+# severity is the finding itself, since no record exists for them.
+declare -A _SARIF_FIND_TITLE=()
+declare -A _SARIF_FIND_REMEDIATION=()
+declare -A _SARIF_FIND_BASESEV=()
+_sarif_index_findings() {
+  local rundir=$1 line cid
+  _SARIF_FIND_TITLE=()
+  _SARIF_FIND_REMEDIATION=()
+  _SARIF_FIND_BASESEV=()
+  [[ -s $rundir/findings.fields ]] || return 0
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    finding_decode "$line"
+    cid=${_DF[check_id]:-}
+    [[ -n $cid ]] || continue
+    [[ -n ${_SARIF_FIND_TITLE[$cid]+set} ]] && continue
+    _SARIF_FIND_TITLE[$cid]=${_DF[title]:-}
+    _SARIF_FIND_REMEDIATION[$cid]=${_DF[remediation]:-}
+    _SARIF_FIND_BASESEV[$cid]=${_DF[base_severity]:-}
+  done <"$rundir/findings.fields"
+}
+
+# One reportingDescriptor for a registry-backed check id (`set idx` into
+# lib/records.sh).  Carries the check's own remediation, references, cwe,
+# owasp, cis and rule_digest - never `properties.descriptorSource`, which is
+# reserved for the synthesised case so its presence alone marks the
+# difference.
+_sarif_descriptor_registry() {  # set idx
+  local set=$1 idx=$2 cid title sev cwe owasp remediation digest
+  cid=$(records_id "$set" "$idx")
+  title=$(records_field "$set" "$idx" title)
+  sev=$(records_field "$set" "$idx" severity)
+  cwe=$(records_field_or "$set" "$idx" cwe none)
+  owasp=$(records_field_or "$set" "$idx" owasp none)
+  remediation=$(records_field "$set" "$idx" remediation)
+  digest=$(records_digest "$set" "$idx")
+
+  local help=$remediation uri='' ref refs
+  refs=$(records_list "$set" "$idx" references)
+  if [[ -n $refs ]]; then
+    help+=$'\n\nReferences:'
+    while IFS= read -r ref; do
+      [[ -n $ref ]] || continue
+      help+=$'\n- '"$ref"
+      if [[ -z $uri && $ref =~ ^https?:// ]]; then
+        uri=$ref
+      fi
+    done <<<"$refs"
+  fi
+
+  printf '{'
+  printf '"id":%s' "$(json_string "$cid")"
+  printf ',"name":%s' "$(json_string "$title")"
+  printf ',"help":{"text":%s}' "$(json_string "$help")"
+  [[ -z $uri ]] || printf ',"helpUri":%s' "$(json_string "$uri")"
+  printf ',"defaultConfiguration":{"level":%s}' "$(json_string "$(_sarif_level_for "$sev")")"
+  printf ',"properties":{'
+  printf '"ruleDigest":%s' "$(json_string "$digest")"
+  printf ',"tags":['
+  local tfirst=1 cisv cislist
+  if [[ $cwe != none ]]; then
+    printf '%s' "$(json_string "external/cwe/$cwe")"
+    tfirst=0
+  fi
+  if [[ $owasp != none ]]; then
+    (( tfirst )) || printf ','
+    printf '%s' "$(json_string "external/owasp/$owasp")"
+    tfirst=0
+  fi
+  cislist=$(records_list "$set" "$idx" cis)
+  if [[ -n $cislist ]]; then
+    while IFS= read -r cisv; do
+      [[ -n $cisv ]] || continue
+      (( tfirst )) || printf ','
+      printf '%s' "$(json_string "external/cis/$cisv")"
+      tfirst=0
+    done <<<"$cislist"
+  fi
+  printf ']'
+  printf '}'
+  printf '}'
+}
+
+# One reportingDescriptor synthesised from a finding, for a check id in one of
+# the three families no *.rules record covers.  Exactly the fields the plan
+# names - id, name, help, defaultConfiguration.level - and nothing a registry
+# record would otherwise supply (no cwe/owasp/cis tags, no rule_digest): there
+# is no check record to take them from, and inventing them would be exactly
+# the fabrication tension 22 forbids elsewhere in this file.
+_sarif_descriptor_synth() {  # check_id
+  local cid=$1
+  printf '{'
+  printf '"id":%s' "$(json_string "$cid")"
+  printf ',"name":%s' "$(json_string "${_SARIF_FIND_TITLE[$cid]:-}")"
+  printf ',"help":{"text":%s}' "$(json_string "${_SARIF_FIND_REMEDIATION[$cid]:-}")"
+  printf ',"defaultConfiguration":{"level":%s}' \
+    "$(json_string "$(_sarif_level_for "${_SARIF_FIND_BASESEV[$cid]:-}")")"
+  printf ',"properties":{"descriptorSource":"synthesised"}'
+  printf '}'
+}
+
+# Prints `tool.driver.rules[]` directly to stdout (never captured through
+# $(...) - see _sarif_build_registry's own comment on why).  Requires
+# _sarif_build_registry and _sarif_index_findings to have already run for this
+# rundir.  The id set is the union of the on-disk registry and this run's
+# findings, sorted LC_ALL=C for a deterministic, byte-reproducible document -
+# the same discipline every other emitter in this file follows.
+_sarif_print_rules() {
+  local ids cid loc set idx first=1
+  ids=$(
+    { for cid in "${!_SARIF_REG_LOC[@]}"; do printf '%s\n' "$cid"; done
+      for cid in "${!_SARIF_FIND_TITLE[@]}"; do printf '%s\n' "$cid"; done
+    } | LC_ALL=C sort -u
+  )
+  printf '['
+  while IFS= read -r cid; do
+    [[ -n $cid ]] || continue
+    (( first )) || printf ','
+    first=0
+    if [[ -n ${_SARIF_REG_LOC[$cid]:-} ]]; then
+      loc=${_SARIF_REG_LOC[$cid]}
+      set=${loc% *}
+      idx=${loc##* }
+      _sarif_descriptor_registry "$set" "$idx"
+    else
+      _sarif_descriptor_synth "$cid"
+    fi
+  done <<<"$ids"
+  printf ']'
+}
+
+# `runs[0].artifacts[]` - tension 22: the SARIF-02 generated location artifact
+# "is included in the SARIF artifacts array".  One entry per
+# `locations/<module>.txt` this run actually wrote (report_locations creates a
+# module's file only the first time it has a finding needing the fallback), a
+# real file `report_sarif`'s own writer creates alongside, so a relative URI
+# resolves against the SARIF document's own location.  Never lists a real
+# working-tree source file (case 1) or an SCA lockfile (case 2): those already
+# exist independent of this run, and tension 22's artifacts-array requirement
+# names the GENERATED artifact specifically.
+_sarif_print_artifacts() {
+  local rundir=$1 f base first=1
+  printf '['
+  if [[ -d $rundir/locations ]]; then
+    while IFS= read -r f; do
+      [[ -n $f ]] || continue
+      base=${f#"$rundir"/}
+      (( first )) || printf ','
+      first=0
+      printf '{"location":{"uri":%s}}' "$(json_string "$base")"
+    done < <(find "$rundir/locations" -maxdepth 1 -type f -name '*.txt' 2>/dev/null | LC_ALL=C sort)
+  fi
+  printf ']'
+}
+
+# True (0) when this run recorded at least one `incomplete_reason` line - the
+# same non-empty-incomplete_reason test report.sh's own header already names
+# as "exactly the exit-5 predicate".  `invocations[0].executionSuccessful` is
+# about whether the TOOL completed, not about a --fail-on gate verdict, so
+# this is the honest signal for it independent of call-stack position.
+_sarif_run_incomplete() {
+  local rundir=$1 line
+  [[ -r $rundir/meta/incomplete_reason ]] || return 1
+  while IFS= read -r line; do
+    [[ -n $line ]] && return 0
+  done <"$rundir/meta/incomplete_reason"
+  return 1
+}
+
+# `runs[0].invocations[0]` - startTimeUtc/endTimeUtc mirror run.json's own
+# started_at and "now" (report_run_json's identical reading).
+# executionSuccessful/exitCode are necessarily a snapshot at THIS report_all
+# call, same limitation run.json's own `gate` field already carries and
+# documents (scan.sh sets SCOURSH_GATE_RESULT only after every module's own
+# report_all has already run - see scan.sh's own comment on that ordering):
+# --fail-on gate failures and required-input failures (exit 1 and 4) are not
+# yet visible here, so only the incomplete-run case (exit 5) is distinguished
+# from a clean 0.  A later ticket that reorders report_all relative to gate
+# evaluation makes this exact, without changing this function's shape.
+_sarif_print_invocations() {
+  local rundir=$1 started ended success=true exitcode=$SCOURSH_EXIT_OK
+  started=$(_meta_first "$rundir" started_at)
+  ended=$(now_iso)
+  if _sarif_run_incomplete "$rundir"; then
+    success=false
+    exitcode=$SCOURSH_EXIT_INCOMPLETE
+  fi
+  printf '[{'
+  printf '"startTimeUtc":%s' "$(json_string "$started")"
+  printf ',"endTimeUtc":%s' "$(json_string "$ended")"
+  printf ',"executionSuccessful":%s' "$(json_bool "$success")"
+  printf ',"exitCode":%s' "$(json_number "$exitcode")"
+  printf '}]'
+}
+
+# `report_sarif [RUNDIR]` - the SARIF-03 skeleton: document, tool.driver
+# (name/version/informationUri/rules[]), artifacts[], invocations[], and an
+# empty results[] (SARIF-04's own).  `informationUri` is this project's own
+# canonical repository URL (README.md's own clone instructions cite the same
+# string) - a static string naming the tool, never fetched by anything, so it
+# is not egress and is not a scan target (tests/lint-shell.sh's DAST-35 "no
+# bundled scan target" checks are not in play for it).
+#
+# _sarif_build_registry runs DIRECTLY, before the { ... } block below even
+# opens, and never through $(...) - see its own comment.  Everything after
+# that point prints straight into the redirected block, matching this file's
+# own convention (report_run_json, report_md, report_html all write this way)
+# rather than assembling giant strings through nested command substitution.
+# SC2016 fires on the literal JSON key "$schema" below; report_md's own
+# header disables the identical false positive for the same reason.
+# shellcheck disable=SC2016
+report_sarif() {
+  local rundir=${1:-$SCOURSH_RUN_DIR}
+  _sarif_build_registry
+  _sarif_index_findings "$rundir"
+  {
+    printf '{\n'
+    printf '  "$schema": %s,\n' \
+      "$(json_string 'https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json')"
+    printf '  "version": "2.1.0",\n'
+    printf '  "runs": [\n'
+    printf '    {\n'
+    printf '      "tool": {\n'
+    printf '        "driver": {\n'
+    printf '          "name": "scoursh",\n'
+    printf '          "version": %s,\n' "$(json_string "$(scoursh_version)")"
+    printf '          "informationUri": %s,\n' "$(json_string 'https://github.com/abhi-sama/scoursh')"
+    printf '          "rules": '
+    _sarif_print_rules
+    printf '\n        }\n'
+    printf '      },\n'
+    printf '      "artifacts": '
+    _sarif_print_artifacts "$rundir"
+    printf ',\n'
+    printf '      "results": [],\n'
+    printf '      "invocations": '
+    _sarif_print_invocations "$rundir"
+    printf '\n    }\n'
+    printf '  ]\n'
+    printf '}\n'
+  } >"$rundir/report.sarif"
+}
+
+# ---------------------------------------------------------------------------
 # 6. Everything
 # ---------------------------------------------------------------------------
 # `report_all [RUNDIR]` writes every artifact this run's resolved --format
@@ -975,10 +1316,10 @@ report_all() {
   [[ -z ${_rpt_want[json]:-} ]] || findings_write_json "$rundir"
   [[ -z ${_rpt_want[md]:-} ]] || report_md "$rundir"
   [[ -z ${_rpt_want[html]:-} ]] || report_html "$rundir"
-  # sarif: accepted by the CLI parser, no emitter exists yet
-  # (docs/DESIGN.md §13 step 10; ROADMAP.md "Not yet started") - requesting
-  # it selects nothing here, same as it always has, and that gap is tracked
-  # on the roadmap rather than papered over with an emitter this ticket does
-  # not own.
+  # docs/STEP10-SARIF-PLAN.md SARIF-03: report_sarif writes the SARIF-2.1.0
+  # skeleton (tool.driver/rules[]/artifacts[]/invocations[], results: []).
+  # SARIF-04 owns results[]; until it lands this is valid SARIF describing a
+  # run that found nothing, not yet a complete feed of this run's findings.
+  [[ -z ${_rpt_want[sarif]:-} ]] || report_sarif "$rundir"
   report_run_json "$rundir"
 }

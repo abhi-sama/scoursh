@@ -490,13 +490,13 @@ the tool rather than in a pipeline:
   explicit affected-version list, which tension 25's design deliberately does not guess from.
   A fresh `bulk --all` import prints exactly how much of each ecosystem this leaves out; it is not a
   failed import, and there is no flag that changes it.
-- **`--format sarif` selects nothing.**
-  `--format` itself is live: it gates `findings.json`, `report.md` and `report.html`, so
-  `--format md` writes the Markdown report and no HTML.
-  `findings.jsonl` and `run.json` are mandatory per-run records rather than `--format` values and are
-  written on every run regardless.
-  `sarif` is the one accepted value with no emitter behind it, so `--format sarif` alone writes only
-  those two mandatory files.
+- **`--format sarif` writes a document with no findings in it yet.**
+  `--format` itself is live: it gates `findings.json`, `report.md`, `report.html`, and now
+  `report.sarif`, so `--format sarif` alone writes `report.sarif` plus the two mandatory records
+  (`findings.jsonl`, `run.json`) and none of the other three.
+  `report.sarif` is a real SARIF 2.1.0 document - `tool.driver` (including the full loaded check
+  registry as `rules[]`), `artifacts[]`, `invocations[]` - but `runs[0].results[]` is still empty,
+  because the per-finding mapping (SARIF-04) has not landed.
   Do not point a SARIF-consuming CI step at a `scoursh` run yet; see
   [`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md).
 - **`--baseline FILE` is parsed and never read.**
@@ -535,7 +535,9 @@ order:
 1. **Persistent run state** (`state/`) - needed before `--baseline` suppression, a `--fail-on-new` that
    means anything, and the `diff`/`report` subcommands do real work; all are currently no-ops.
    A full ticket plan exists here too ([`docs/STEP7-STATE-PLAN.md`](docs/STEP7-STATE-PLAN.md)).
-2. **SARIF output** - `--format sarif` is accepted but nothing emits it yet.
+2. **SARIF output** - `--format sarif` now writes a real SARIF 2.1.0 document (`tool.driver`,
+   `rules[]`, `artifacts[]`, `invocations[]`), but `results[]` is still empty - it does not yet carry
+   this run's findings.
 3. **The compliance-mapping report.**
 4. **Live cloud/CSPM scanning** (`scan.sh cloud`) - fully planned
    ([`docs/STEP6-CLOUD-PLAN.md`](docs/STEP6-CLOUD-PLAN.md)), and last in the queue.
