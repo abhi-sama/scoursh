@@ -355,18 +355,22 @@ Section L pins that.
 
 Peak RSS, measured with `/usr/bin/time -l`, one file per invocation, watchdog out of the way:
 
-| file | peak RSS BEFORE the cuts | peak RSS AFTER | hub sum after |
-|---|---|---|---|
-| `tests/suites/dast-methods.sh` | ~22-41 GB, non-reproducible | **5.75 GB** | 17 |
-| `tests/suites/dast-cookies.sh` | 12.99 GB | **5.44 GB** | 16 |
-| `tests/suites/state-coverage.sh` | not previously measured | **5.34 GB** | 12 |
-| `scan.sh` | 4.74 GB | **4.41 GB** | 12 |
-| `tests/suites/dast-hosthdr.sh` | did not converge; sampled 9GB to >25GB over 40+ minutes | **4.07 GB** | 13 |
-| `tests/suites/dast-cors.sh` | **22.86 GB** (re-measured this ticket; 23.79 GB previously) | **2.82 GB** | 13 |
-| `modules/sca/run.sh` | 3.46 GB | 3.46 GB (untouched) | 5 |
-| `lib/engines.sh` | 0.11 GB | 0.11 GB (untouched) | 0 |
+**Read the provenance column before quoting a number from this table.** Only two files were cut by the ticket that produced these figures; the rest are measured here so the tree-wide *maximum* is a measured fact rather than an inference, and their earlier figures in this document had already been superseded by earlier tickets. Presenting an untouched file's stale historical figure as a "before" would credit this change with a reduction it did not make.
 
-**The tree's worst file went from 22.86 GB to 5.75 GB**, which is what lets the stage fit a 16GB runner at all.
+| file | peak RSS | provenance |
+|---|---|---|
+| `tests/suites/dast-methods.sh` | **5.75 GB** (hub 17) | **untouched here.** An earlier ticket already cut it and recorded 5.70 GB; this is a re-measurement, not an improvement. The `~22-41 GB` figure that stood in `tests/run-tests.sh` was stale when this ticket started. |
+| `tests/suites/dast-cookies.sh` | **5.44 GB** (hub 16) | **untouched here.** Its 12.99 GB figure was likewise already stale. |
+| `tests/suites/state-coverage.sh` | **5.34 GB** (hub 12) | **untouched here**; never previously measured. |
+| `scan.sh` | **4.41 GB** (hub 12) | **untouched here**; 4.74 GB previously. |
+| `tests/suites/dast-hosthdr.sh` | 5.90 GB → **4.07 GB** (hub 13) | **cut here** (2 edges). The 5.90 GB baseline is an earlier ticket's recorded figure, not one re-measured immediately before these cuts. |
+| `tests/suites/dast-cors.sh` | **22.86 GB → 2.82 GB** (hub 13) | **cut here** (2 edges). Both ends measured back to back on one host in one session - the only row where the before and after are directly comparable. |
+| `modules/sca/run.sh` | 3.46 GB | untouched; earlier ticket's figure. |
+| `lib/engines.sh` | 0.11 GB | untouched; earlier ticket's figure. |
+
+**The claim this table supports is tree-wide, not per-file: the worst file in the tree was `dast-cors.sh` at 22.86 GB and is now `dast-methods.sh` at 5.75 GB.**
+That maximum is the number the CI stage's plan is sized against, and it is what lets the stage fit a 16GB runner at all.
+The other seven cuts (on `dast-banner`, `dast-cmdi`, `dast-graphql`, `dast-pathtraversal`, `dast-ratelimit`, `dast-ssti`, `dast-xxe-ssrf`) were applied and verified the same way but were not separately RSS-measured: none of those files was ever the tree maximum, so the measurement would not have changed any decision.
 
 **"There is no redundant edge left to cut" was wrong, and correcting it is what fixed CI.**
 The paragraph this replaces recorded that `dast-cors.sh` and `dast-hosthdr.sh` had been confirmed - twice, by two tickets, reading every `source` line in each by hand - to carry **zero repeated source targets**, and concluded that their cost was the irreducible floor of the shared `lib/` chain.

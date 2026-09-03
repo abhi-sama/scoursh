@@ -522,13 +522,18 @@ sc_stage() {
       # spread is enormous.  Measured here with /usr/bin/time -l, one file
       # per invocation, watchdog out of the way:
       #
-      #     tests/suites/dast-methods.sh    5.75 GB   (hub sum 17)
-      #     tests/suites/dast-cookies.sh    5.44 GB   (hub sum 16)
-      #     tests/suites/state-coverage.sh  5.34 GB   (hub sum 12)
-      #     scan.sh                         4.41 GB   (hub sum 12)
-      #     tests/suites/dast-hosthdr.sh    4.07 GB   (hub sum 13)
-      #     tests/suites/dast-cors.sh       2.82 GB   (hub sum 13)
+      #     tests/suites/dast-methods.sh    5.75 GB   (hub 17)  <- tree max
+      #     tests/suites/dast-cookies.sh    5.44 GB   (hub 16)
+      #     tests/suites/state-coverage.sh  5.34 GB   (hub 12)
+      #     scan.sh                         4.41 GB   (hub 12)
+      #     tests/suites/dast-hosthdr.sh    4.07 GB   (hub 13)
+      #     tests/suites/dast-cors.sh       2.82 GB   (hub 13)
       #     modules/sca/run.sh              3.46 GB
+      #
+      # These are CURRENT figures, not before/after pairs: only dast-cors.sh
+      # and dast-hosthdr.sh were cut by the change that took them, and the
+      # earlier figures for the others were already superseded.  See
+      # docs/CI-RUNBOOK.md's table, which carries the provenance per row.
       #     lib/engines.sh                  0.11 GB
       #
       # A 200x+ spread is why ONE number could not do this job.  The old
@@ -566,8 +571,10 @@ sc_stage() {
       # file already reached another way took it from hub sum 18 to 13 and
       # from 22.86GB to 2.82GB, re-measured here, with `shellcheck -x`
       # reporting byte-identical (empty) output before and after.  Eleven
-      # such cuts across nine entry points took the tree's worst file from
-      # 22.86GB to 5.75GB.  A structural flattening of the lib/http.sh ->
+      # such cuts across nine entry points were made; the claim they support
+      # is TREE-WIDE rather than per-file - the worst file in the tree was
+      # dast-cors.sh at 22.86GB and is now dast-methods.sh at 5.75GB, which
+      # is the number this stage's plan is sized against.  A structural flattening of the lib/http.sh ->
       # lib/config.sh + lib/findings.sh -> lib/records.sh diamond would
       # reduce what is left and remains its own filed follow-up.
       # See docs/CI-RUNBOOK.md's "memory model"
