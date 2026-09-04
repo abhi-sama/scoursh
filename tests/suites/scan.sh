@@ -98,6 +98,54 @@ _run_main_answers() {
   scan_main "$@" < <(printf '%s' "$answers")
 }
 
+# `_guide_env [NAME=VALUE...] CMD...` - STATE the environment a guided case
+# needs instead of inheriting it from whatever machine the suite runs on.
+#
+# lib/guide.sh's five-condition gate reads NINE non-interactive environment
+# markers, and a hosted CI runner sets two of them (`CI` and `GITHUB_ACTIONS`)
+# for every process it starts.  `SCOURSH_GUIDE_FORCE_TTY` forces ONLY the two
+# terminal checks - deliberately, per that file's own header, so that a case
+# proving "the marker refuses even when the terminal check would pass" really
+# exercises the marker rather than re-proving the terminal gate - so it does
+# NOT make guided mode eligible on a runner, and a case that needs
+# ELIGIBILITY has to clear those markers for itself.  Inheriting eligibility
+# from "a developer's terminal happens not to be a CI runner" is an ambient
+# fact, and depending on it is what made this whole section pass at a
+# terminal and fail 13 assertions on BOTH `ubuntu-latest` and `macos-latest`
+# (identical counts on two userlands is what identifies it as an environment
+# difference rather than a GNU/BSD one).
+#
+# The clear-then-override order is what makes the two REFUSAL cases below
+# discriminating rather than vacuous: `_guide_env CI=1 ...` proves the `CI`
+# marker refuses because every other marker was removed first, and
+# `_guide_env SCOURSH_NO_PROMPT=1 ...` proves SCOURSH_NO_PROMPT refuses for
+# the same reason.  Run unchanged on a runner, each of those would have
+# passed off the runner's OWN inherited `CI`, certifying green whatever the
+# variable it names actually did.
+#
+# The marker list is read from lib/guide.sh's own `_GUIDE_ENV_MARKERS`, never
+# a second copy here: a copy would drift silently from the gate it exists to
+# mirror, and the drift would show up as this exact failure again.
+#
+# Every caller runs this inside a subshell - `assert_status`'s own `( "$@" )`,
+# or an explicit `( ... ) >file 2>&1` capture - so the unsets and exports are
+# contained and one case can never alter the next.
+_guide_env() {
+  local _m
+  for _m in "${_GUIDE_ENV_MARKERS[@]+"${_GUIDE_ENV_MARKERS[@]}"}"; do
+    unset -v "$_m"
+  done
+  unset -v SCOURSH_NO_PROMPT
+  # Leading NAME=VALUE tokens only; the scan stops at the first token that is
+  # not one, which is the command to run.  Every command below is a `_run_main*`
+  # helper name, so there is no token this could mistake for an assignment.
+  while [[ ${1-} == [A-Za-z_]*=* ]]; do
+    export "${1?}"
+    shift
+  done
+  "$@"
+}
+
 # Portability (docs/FOUNDATION.md tension 24) is a structural property, not
 # something a text scan of the source can pin: `getopts` (the bash builtin)
 # has no long-option support, and GNU getopt's long-option parsing is not
@@ -267,8 +315,26 @@ printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-02: guided-mode routing in scan_main 
 # which alone makes stderr non-a-terminal for every case below, exactly as
 # tests/suites/scan.sh's own `_bin_run` helper already relies on further
 # down this file; SCOURSH_GUIDE_FORCE_TTY is the only way to force the
-# ELIGIBLE branch under that redirection, the identical hook
+# TERMINAL half of the gate under that redirection, the identical hook
 # tests/suites/guide.sh already uses for lib/guide.sh's own gate.
+#
+# The terminal half is not the whole gate, and every case below goes through
+# `_guide_env` (defined above with the other `_run_main*` helpers) for the
+# rest of it: whether guided mode is eligible, ineligible-for-the-terminal,
+# or ineligible-for-a-named-marker is stated per case rather than inherited
+# from the machine.  Nothing here reads as "eligible" merely because the
+# developer running it is not sitting inside a CI runner.  Read that
+# function's own header for the measured failure this shape exists to
+# prevent.
+#
+# STDIN IS STATED TOO, not inherited.  tests/run-tests.sh runs each suite as
+# `bash <path>` with no stdin redirection, so at a real developer terminal a
+# suite file's stdin IS a tty while on a headless runner it is not - and
+# `assert_status`/`( ... ) >file 2>&1` redirect stdout and stderr but never
+# stdin.  A case whose expected REASON is the stdin check therefore has to
+# attach its own stdin (`_run_main_in /dev/null`), or it names whichever
+# condition the ambient stdin happens to leave failing - the mirror image of
+# the marker problem, failing at a terminal and passing on a runner.
 
 t_case 'bare scan.sh (zero arguments) with no terminal is UNCHANGED: today''s "no command given" usage error, never a guided-mode message'
 # Genuinely ZERO arguments, on purpose - `--out X` alone makes `$#` 2, which
@@ -284,54 +350,76 @@ cd "$ROOT"
 
 t_case 'bare scan.sh (zero arguments) with a forced terminal: guided mode is eligible and reaches the real G1 menu (docs/STEP-GUIDE-PLAN.md GUIDE-03) - EOF at G1 refuses honestly rather than running an unconfigured scan'
 cd "$W"
-SCOURSH_GUIDE_FORCE_TTY=true assert_status 2 \
+assert_status 2 \
   "eligible zero-arg guided mode with no scripted answer hits EOF at G1's own menu and dies exit 2 - fails under 'fall back to silently running today's usage error', indistinguishable from the ineligible case above, and under 'silently run some default scan', which the plan calls a worse outcome than a clear refusal" \
-  _run_main_in /dev/null
+  _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_in /dev/null
 cd "$ROOT"
 assert_file_absent "$W/reports" 'a refused zero-argument invocation - eligible or not - never reaches run_init, so no default reports/<timestamp> directory was created under the cwd it ran from'
 
 t_case '--guided explicitly given with no terminal: fails LOUDLY with the concrete reason, before any required-flag check ever runs'
+# `_guide_env` with no override and `_run_main_in /dev/null` between them make
+# stdin the ONE failing condition: no marker is set, and stdin is a file.  That
+# is what makes the assertion below discriminating, since `guide_ineligible_reason`
+# names the FIRST failing condition in the gate's own order - with the ambient
+# stdin of a developer's terminal it would name stderr instead, and with a
+# runner's inherited `CI` left in place "no terminal" and "a CI marker is set"
+# would be indistinguishable, which is exactly what that assertion claims to
+# rule out.
 rm -rf "$W/run-guide-explicit-noterm"
 assert_status 2 \
   '--guided with no terminal dies exit 2, even though `dast` was given no --target at all - fails if the moved required-flag check still ran first and reported the wrong reason' \
-  _run_main dast --guided --out "$W/run-guide-explicit-noterm"
+  _guide_env _run_main_in /dev/null dast --guided --out "$W/run-guide-explicit-noterm"
 GUIDE_NOTERM_OUT=$W/guide-noterm.out
-( _run_main dast --guided --out "$W/run-guide-explicit-noterm2" ) >"$GUIDE_NOTERM_OUT" 2>&1 || true
+( _guide_env _run_main_in /dev/null dast --guided --out "$W/run-guide-explicit-noterm2" ) >"$GUIDE_NOTERM_OUT" 2>&1 || true
 assert_contains "$(cat "$GUIDE_NOTERM_OUT")" 'standard input is not a terminal' \
   'the concrete reason is named, not a generic refusal - fails under a message that cannot distinguish "no terminal" from "a CI marker is set" from "SCOURSH_NO_PROMPT is set"'
 assert_file_absent "$W/run-guide-explicit-noterm" 'no run directory was created'
 
 t_case '--guided explicitly given with a forced terminal: eligible, skips G1 (the command was already typed) and reaches G8 - EOF there refuses honestly (same "nothing ran" outcome as the bare-terminal case)'
 rm -rf "$W/run-guide-explicit-tty"
-SCOURSH_GUIDE_FORCE_TTY=true assert_status 2 \
+assert_status 2 \
   '--guided with a forced terminal and no CI marker, and no scripted answer, hits EOF at G8 (dast has no G2 follow-ups) and dies exit 2' \
-  _run_main_in /dev/null dast --guided --out "$W/run-guide-explicit-tty"
+  _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_in /dev/null dast --guided --out "$W/run-guide-explicit-tty"
 assert_file_absent "$W/run-guide-explicit-tty" 'no run directory was created'
 
 t_case 'a CI marker refuses --guided even with a forced terminal - the environment layer can only ever turn prompting OFF, never on'
 rm -rf "$W/run-guide-ci"
-CI=1 SCOURSH_GUIDE_FORCE_TTY=true assert_status 2 \
+assert_status 2 \
   "'CI' set in the environment refuses --guided even though the terminal checks would pass - fails under 'a pty-allocating CI runner is interactive', exactly the shape docs/STEP-GUIDE-PLAN.md's condition 4 exists to catch" \
-  _run_main dast --guided --out "$W/run-guide-ci"
+  _guide_env CI=1 SCOURSH_GUIDE_FORCE_TTY=true _run_main dast --guided --out "$W/run-guide-ci"
 GUIDE_CI_OUT=$W/guide-ci.out
-( CI=1 SCOURSH_GUIDE_FORCE_TTY=true _run_main dast --guided --out "$W/run-guide-ci2" ) >"$GUIDE_CI_OUT" 2>&1 || true
+( _guide_env CI=1 SCOURSH_GUIDE_FORCE_TTY=true _run_main dast --guided --out "$W/run-guide-ci2" ) >"$GUIDE_CI_OUT" 2>&1 || true
 assert_contains "$(cat "$GUIDE_CI_OUT")" "'CI' is set in the environment" \
   'the CI marker itself is named as the concrete reason'
 assert_file_absent "$W/run-guide-ci" 'no run directory was created'
 
 t_case 'SCOURSH_NO_PROMPT refuses --guided even with a forced terminal and no CI marker - the one documented way to force guided mode off'
 rm -rf "$W/run-guide-noprompt"
-SCOURSH_NO_PROMPT=1 SCOURSH_GUIDE_FORCE_TTY=true assert_status 2 \
+assert_status 2 \
   'SCOURSH_NO_PROMPT refuses --guided' \
-  _run_main dast --guided --out "$W/run-guide-noprompt"
+  _guide_env SCOURSH_NO_PROMPT=1 SCOURSH_GUIDE_FORCE_TTY=true _run_main_in /dev/null dast --guided --out "$W/run-guide-noprompt"
+# The exit status ALONE does not pin this, and did not before `_guide_env`
+# either: an ELIGIBLE `--guided` that reads EOF at G8 also dies exit 2, so a
+# gate that ignored SCOURSH_NO_PROMPT entirely would still satisfy the status
+# assertion above.  Measured, not reasoned: with `guide_may_prompt` mutated to
+# drop its environment layer, the sibling `CI` case below went red on its own
+# reason assertion and this case stayed green until this one was added.  The
+# reason is what discriminates, exactly as it does for `CI`.
+GUIDE_NOPROMPT_OUT=$W/guide-noprompt.out
+( _guide_env SCOURSH_NO_PROMPT=1 SCOURSH_GUIDE_FORCE_TTY=true \
+    _run_main_in /dev/null dast --guided --out "$W/run-guide-noprompt2" ) >"$GUIDE_NOPROMPT_OUT" 2>&1 || true
+assert_contains "$(cat "$GUIDE_NOPROMPT_OUT")" 'SCOURSH_NO_PROMPT is set' \
+  'SCOURSH_NO_PROMPT itself is named as the concrete reason - fails under a gate that dropped its environment layer, where the exit-2 status alone would still pass off the EOF an eligible run reaches at G8'
 assert_file_absent "$W/run-guide-noprompt" 'no run directory was created'
+assert_file_absent "$W/run-guide-noprompt2" 'and none for the reason probe either'
 
 t_case 'a fully-flagged command with no --guided is silent even on a forced terminal - guided mode never runs unless it was asked for'
 mkdir -p "$W/guide-silent-tree"
 printf 'print("hello")\n' >"$W/guide-silent-tree/x.py"
 rm -rf "$W/run-guide-silent"
-SCOURSH_INSTALL_ROOT=$ROOT_OK_SCANNER SCOURSH_GUIDE_FORCE_TTY=true assert_status 0 \
+assert_status 0 \
   "sast --path with everything it needs and no --guided runs normally on a 'terminal' - fails under 'guided mode fires whenever a terminal is present', which would make an ordinary interactive invocation impossible without a flag to suppress it" \
+  _guide_env SCOURSH_INSTALL_ROOT="$ROOT_OK_SCANNER" SCOURSH_GUIDE_FORCE_TTY=true \
   _run_main sast --path "$W/guide-silent-tree" --out "$W/run-guide-silent"
 assert_file_exists "$W/run-guide-silent/run.json" 'the run actually happened - this is not another refusal that merely exits 0'
 
@@ -389,15 +477,15 @@ GUIDE_CLOUD_LOOP_DIR=$W/guide-cloud-loop
 rm -rf "$GUIDE_CLOUD_LOOP_DIR"
 mkdir -p "$GUIDE_CLOUD_LOOP_DIR"
 cd "$GUIDE_CLOUD_LOOP_DIR"
-SCOURSH_GUIDE_FORCE_TTY=true assert_status 0 \
+assert_status 0 \
   "item 5 (cloud, not built) explains and returns to G1; item 7 (quit) then exits 0 with nothing scanned - fails if the menu numbering shifted an unavailable item out of its fixed slot, or if picking it dispatched anyway" \
-  _run_main_answers $'5\n7\n'
+  _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n7\n'
 cd "$ROOT"
 assert_file_absent "$GUIDE_CLOUD_LOOP_DIR/reports" 'quitting from the guided flow never creates a run directory'
 
 GUIDE_CLOUD_LOOP_OUT=$W/guide-cloud-loop.out
 cd "$GUIDE_CLOUD_LOOP_DIR"
-( SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n7\n' ) >"$GUIDE_CLOUD_LOOP_OUT" 2>&1 || true
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n7\n' ) >"$GUIDE_CLOUD_LOOP_OUT" 2>&1 || true
 cd "$ROOT"
 assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'not built yet in this version of' \
   'the loop-back explanation names the module as not built - fails under a message that cannot distinguish this from an ordinary refusal'
@@ -411,7 +499,7 @@ mkdir -p "$GUIDE_SCA_DIR"
 GUIDE_SCA_OUT=$W/guide-sca.out
 GUIDE_SCA_RC=0
 cd "$GUIDE_SCA_DIR"
-( SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'2\n\n1\n' ) >"$GUIDE_SCA_OUT" 2>&1 || GUIDE_SCA_RC=$?
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'2\n\n1\n' ) >"$GUIDE_SCA_OUT" 2>&1 || GUIDE_SCA_RC=$?
 cd "$ROOT"
 assert_eq 2 "$GUIDE_SCA_RC" 'sca proceeds through G2/G8 to the "no G9 yet" refusal, never a loop-back, even with no advisories.db'
 assert_contains "$(cat "$GUIDE_SCA_OUT")" 'No advisory database is installed' \
@@ -427,7 +515,7 @@ mkdir -p "$GUIDE_DAST_DIR"
 GUIDE_DAST_OUT=$W/guide-dast.out
 GUIDE_DAST_RC=0
 cd "$GUIDE_DAST_DIR"
-( SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'4\n1\n' ) >"$GUIDE_DAST_OUT" 2>&1 || GUIDE_DAST_RC=$?
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'4\n1\n' ) >"$GUIDE_DAST_OUT" 2>&1 || GUIDE_DAST_RC=$?
 cd "$ROOT"
 assert_eq 2 "$GUIDE_DAST_RC" 'two answers only (scan type, then the CI gate) reach the "no G9 yet" refusal - fails if G2 were asked for dast, which needs a third answer that is not here'
 assert_contains "$(cat "$GUIDE_DAST_OUT")" 'guided setup beyond the scan type' \
@@ -443,7 +531,7 @@ mkdir -p "$GUIDE_BADPATH_DIR"
 GUIDE_BADPATH_OUT=$W/guide-badpath.out
 GUIDE_BADPATH_RC=0
 cd "$GUIDE_BADPATH_DIR"
-( SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'1\n/no/such/dir-scoursh-guide-test\n/still/bad-scoursh-guide-test\n7\n' ) >"$GUIDE_BADPATH_OUT" 2>&1 || GUIDE_BADPATH_RC=$?
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'1\n/no/such/dir-scoursh-guide-test\n/still/bad-scoursh-guide-test\n7\n' ) >"$GUIDE_BADPATH_OUT" 2>&1 || GUIDE_BADPATH_RC=$?
 cd "$ROOT"
 assert_eq 0 "$GUIDE_BADPATH_RC" 'two bad paths return to G1, where quit (item 7) exits 0 - fails under scan_parse_args-style die() on a bad guided-mode path answer'
 assert_contains "$(cat "$GUIDE_BADPATH_OUT")" 'does not exist, or is not readable' \
@@ -459,7 +547,7 @@ mkdir -p "$GUIDE_SAST_DIR/guide-sast-tree"
 GUIDE_SAST_OUT=$W/guide-sast.out
 GUIDE_SAST_RC=0
 cd "$GUIDE_SAST_DIR"
-( SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'1\nguide-sast-tree\npy,js\n2\n4\n' ) >"$GUIDE_SAST_OUT" 2>&1 || GUIDE_SAST_RC=$?
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'1\nguide-sast-tree\npy,js\n2\n4\n' ) >"$GUIDE_SAST_OUT" 2>&1 || GUIDE_SAST_RC=$?
 cd "$ROOT"
 assert_eq 2 "$GUIDE_SAST_RC" 'sast through G1/G2 (path, languages, git history) and G8 (fail-on) reaches the "no G9 yet" refusal'
 GUIDE_SAST_TEXT=$(cat "$GUIDE_SAST_OUT")
@@ -472,7 +560,7 @@ mkdir -p "$W/guide-sast-tree"
 t_case '`scan.sh sast --path X --guided` skips G1 (the command was already typed) and G2''s path question (--path was already given) - docs/STEP-GUIDE-PLAN.md: "'"'"'--guided'"'"' only ever fills flags that were not supplied on the command line"'
 GUIDE_PRESET_OUT=$W/guide-preset.out
 GUIDE_PRESET_RC=0
-( SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'\n1\n1\n' sast --path "$W/guide-sast-tree" --guided --out "$W/run-guide-preset" ) >"$GUIDE_PRESET_OUT" 2>&1 || GUIDE_PRESET_RC=$?
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'\n1\n1\n' sast --path "$W/guide-sast-tree" --guided --out "$W/run-guide-preset" ) >"$GUIDE_PRESET_OUT" 2>&1 || GUIDE_PRESET_RC=$?
 assert_eq 2 "$GUIDE_PRESET_RC" 'three answers (languages default, no history, no gate) are enough - a fourth for --path would mean G1 or the path question ran unexpectedly'
 assert_contains "$(cat "$GUIDE_PRESET_OUT")" "scan.sh sast --out $W/run-guide-preset --path $W/guide-sast-tree" \
   'the already-typed --path (and --out, also already typed) survive into the composed preview unchanged, alphabetically sorted'
@@ -483,7 +571,7 @@ assert_file_absent "$W/run-guide-preset" 'no run directory was created'
 t_case 'a fully-flagged `--guided` invocation asks nothing at all and degrades to just the preview - docs/STEP-GUIDE-PLAN.md: "this is also how it degrades to a no-op"'
 GUIDE_FULL_OUT=$W/guide-full.out
 GUIDE_FULL_RC=0
-( SCOURSH_GUIDE_FORCE_TTY=true _run_main_in /dev/null sast --path "$W/guide-sast-tree" --lang py --history --fail-on high --guided --out "$W/run-guide-full" ) >"$GUIDE_FULL_OUT" 2>&1 || GUIDE_FULL_RC=$?
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_in /dev/null sast --path "$W/guide-sast-tree" --lang py --history --fail-on high --guided --out "$W/run-guide-full" ) >"$GUIDE_FULL_OUT" 2>&1 || GUIDE_FULL_RC=$?
 assert_eq 2 "$GUIDE_FULL_RC" 'every flag G1/G2/G8 could have asked about was already supplied, so /dev/null stdin (immediate EOF) never gets read at all - fails if any question were still asked, which would die exit 2 with a DIFFERENT message ("input ended...") instead of reaching the composed preview'
 assert_contains "$(cat "$GUIDE_FULL_OUT")" "scan.sh sast --fail-on high --history --lang py --out $W/run-guide-full --path $W/guide-sast-tree" \
   'the preview is exactly what was typed, byte for byte'
