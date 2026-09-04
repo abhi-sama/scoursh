@@ -318,6 +318,13 @@ Each has a full entry in `docs/FOUNDATION.md`.
   in `lib/guide.sh`'s OWN `_GUIDE_ENV_MARKERS` array (never a second copy, which would drift back
   into this same failure) plus `SCOURSH_NO_PROMPT`, then applies the caller's overrides, then runs
   the command - always inside a subshell, so one case can never alter the next.
+  **This was never a new convention, which is the sharpest part of the lesson**: `tests/suites/guide.sh`
+  has shipped the identical `_GUIDE_TEST_CONTROLLED_VARS`/`_guide_test_prompt` pair since GUIDE-01,
+  and its own comment states the reason in as many words - "so a real CI runner's own
+  CI=true/GITHUB_ACTIONS=true (this suite may genuinely be running under one) never leaks into a
+  'should allow' case". That suite passed on CI; the later cases one file over, which did not adopt
+  it, did not. A guided case added to `tests/suites/scan.sh` goes through `_guide_env`, and a change
+  to the gate's condition list goes into `_GUIDE_ENV_MARKERS`, which both helpers read.
   **Clear-then-override is what makes the REFUSAL cases mean anything**: run unmodified on a
   runner, both `CI=1 ...` and `SCOURSH_NO_PROMPT=1 ...` refuse off the runner's own inherited `CI`
   and would certify green whatever the variable they name actually did.

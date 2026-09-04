@@ -127,6 +127,16 @@ _run_main_answers() {
 # a second copy here: a copy would drift silently from the gate it exists to
 # mirror, and the drift would show up as this exact failure again.
 #
+# NONE OF THIS IS A NEW CONVENTION.  tests/suites/guide.sh has shipped the
+# identical shape since GUIDE-01 - `_GUIDE_TEST_CONTROLLED_VARS` plus
+# `_guide_test_prompt`, whose own comment already states the reason in as many
+# words ("so a real CI runner's own CI=true/GITHUB_ACTIONS=true ... never leaks
+# into a 'should allow' case").  This file's guided cases simply did not adopt
+# it, and the difference is the whole bug: that suite passed on CI and this one
+# did not.  A guided case added here later belongs in `_guide_env` for the same
+# reason, and a change to the gate's own condition list belongs in
+# `_GUIDE_ENV_MARKERS`, which both helpers read.
+#
 # Every caller runs this inside a subshell - `assert_status`'s own `( "$@" )`,
 # or an explicit `( ... ) >file 2>&1` capture - so the unsets and exports are
 # contained and one case can never alter the next.
