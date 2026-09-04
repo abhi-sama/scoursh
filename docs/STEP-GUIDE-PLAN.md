@@ -23,7 +23,7 @@ No design decision changes in this move; see "Relationship to the ten-step build
 one genuinely new thing this document adds - a stated position on whether guided mode is one of
 `docs/DESIGN.md` §13's ten steps.
 
-## Status: GUIDE-01 through GUIDE-03 landed; GUIDE-04 through GUIDE-07 remain unclaimed
+## Status: GUIDE-01 through GUIDE-04 landed; GUIDE-05 through GUIDE-07 remain unclaimed
 
 **GUIDE-01 has landed.** `lib/guide.sh` exists and ships `guide_may_prompt`, `guide_menu`, `guide_ask`,
 `guide_confirm`, and `_guide_shquote`, plus the guided-scope `INT`/`TERM` signal trap and the test-only
@@ -94,7 +94,12 @@ Both of GUIDE-02's own eligible-guided-mode call sites (`scan_main`'s bare-zero-
 blanket `_scan_guided_not_yet_available` refusal, which is now dead code and has been removed.
 G3 through G7 and G9 - the DAST branch and its affirmation, the `config/scope.conf` writer, cloud's own
 screen, and the review/run screen that actually hands the composed argv to `scan_parse_args` - remain
-GUIDE-04 through GUIDE-06's job, exactly as this row always scoped them.
+GUIDE-04 through GUIDE-06's job, exactly as this row always scoped them.  **Correction, made when
+GUIDE-04 landed on top of this ticket:** G3, G5 and G6 (the DAST branch and its affirmation) have since
+landed too, as `lib/guide.sh`'s `guide_dast_configure` - see GUIDE-04's own paragraph below for the
+detail.  It is not yet wired into this ticket's own `_scan_guide_run`, so picking `dast` at G1 still
+reaches G8 directly rather than G3, exactly as described two paragraphs below; wiring that hand-off is
+GUIDE-06's job, not a gap this correction reopens.
 Without G9 there is nowhere for this ticket's own flow to hand off to, so it ends by printing the
 composed command (shell-quoted with `_guide_shquote`, the same quoting GUIDE-06's own review screen will
 reuse) and refusing loudly with the same "nothing was run and nothing is waiting for input" vocabulary
@@ -142,7 +147,58 @@ retargeted at the new EOF-at-menu outcome rather than left asserting stale text.
 a real prompt sets as of this ticket - and `tests/suites/scan.sh`'s own walk of that array against
 `_SCAN_FLAG_KIND` (GUIDE-02's own case, which ran zero iterations before this ticket) now actually
 asserts something.
-GUIDE-04 through GUIDE-07 remain unclaimed.
+GUIDE-05, GUIDE-06 and GUIDE-07 remain unclaimed - see GUIDE-04's own paragraph immediately below,
+which landed on top of this ticket.
+
+**GUIDE-04 has now landed too** - steps G3 (the DAST target menu), G5 (intensity) and G6 (the limits
+router, the affirmation, and each raised limit as its own menu), all in `lib/guide.sh` section 6.
+`guide_dast_configure` is the one public entry point (G3 -> G5 -> G6 in order), and
+`guide_dast_argv_build` turns its five `GUIDE_DAST_*` outputs into `GUIDE_DAST_ARGV`, the composed
+`dast` argv a future G1/G2 caller appends verbatim.
+Per this ticket's own scope, nothing here is wired into `scan_main` - GUIDE-03's own `_scan_guide_run`
+(G1/G2) landed separately and does not call `guide_dast_configure`, so picking `dast` at G1 today still
+reaches G8 directly rather than this ticket's own G3 (see GUIDE-03's paragraph above, and its own
+correction note); wiring that hand-off, plus G4/G9 (writing a new `config/scope.conf` record; the final
+review screen), are GUIDE-05 and GUIDE-06's own tickets - so `guide_dast_configure` has no caller yet,
+exactly as GUIDE-01's own primitives had none until GUIDE-02 landed.
+`tests/suites/guide.sh` gained 57 new assertions (127 total) exercising every one of these functions
+directly with a scripted stdin stream, per this file's own testing convention; the acceptance test this
+row names verbatim is one of them (`guide_dast_configure` given "target 1, then passive" at every fixed
+menu produces `GUIDE_DAST_ARGV=(--target <id>)` and nothing else - no `--i-own-target`, no
+`--allow-intrusive`, no raised limit), and `tests/suites/scan.sh` gained a further 12 covering the two
+new CLI flags below and a round-trip of a fully-raised composed argv through the real
+`scan_parse_args`/`_scan_check_affirmation`.
+
+Two things worth carrying here because they are not obvious from the row above alone.
+
+- **`--requests-per-second`/`--request-budget` did not already exist as CLI flags**, despite the plan's
+  own dependency note above saying DAST-32 supplied "the flags a DAST prompt would emit" - verified
+  against the tree rather than assumed, and it was only half true: DAST-32 gave both keys a conservative
+  ceiling and an asymmetric clamp (`_http_effective_rps_milli_set`/`_http_effective_limit_set`,
+  `lib/http.sh`), but neither ever gained a `_SCAN_FLAG_KIND` entry or a `config_scanner_value` call site
+  that accepts a CLI value - `_http_effective_rps_milli_set` calls `config_scanner_value
+  requests-per-second` with **no** second argument, so before this ticket the value could only ever come
+  from env/file/default, never from an operand `scan.sh` itself parsed.  This ticket adds both as real
+  `[dast:...]`/`[all:...]` flags, and reaches DAST-32's clamp through
+  `SCOURSH_CONFIG_REQUESTS_PER_SECOND`/`SCOURSH_CONFIG_REQUEST_BUDGET` - that resolver's own documented
+  environment-override level (`docs/USAGE.md`, "environment variable > file > built-in default") - rather
+  than editing `lib/http.sh`'s chokepoint itself, since DAST-32's own clamp already treats an explicit
+  `cli`/`env` value identically (both refuse an over-ceiling value with no `--i-own-target`).  `scan_main`
+  exports the flag's value under that name when given, and otherwise restores whatever a snapshot taken
+  once at `scan.sh` source time recorded - never a blind `unset` - so a genuine operator-set
+  `SCOURSH_CONFIG_REQUESTS_PER_SECOND` survives an invocation that gives no `--requests-per-second` at
+  all, and nothing leaks from one `scan_main` call into a second one in the same process (`tests/suites/
+  scan.sh` calls it repeatedly).
+- **The plan's own "0 for no limit" reading does not match the shipped rate limiter, and this ticket
+  does not implement it that way.**  Measured against `lib/http.sh` rather than assumed:
+  `_http_rps_milli_set`/`_http_decimal_is_zero` refuse a genuinely-zero `requests-per-second` outright
+  ("permits no requests at all") - a considered DAST-01 decision, not an oversight, on the reasoning that
+  waiting forever for a token that can never arrive would look like a hang.  Emitting a literal `0` for
+  the rate menu's "No limit" item would therefore turn the safest-reading menu choice into a dead run,
+  which is worse than the plan's own wording, not a faithful implementation of it.  `lib/guide.sh` uses
+  the limiter's own maximum REPRESENTABLE rate instead (`_GUIDE_DAST_RPS_UNLIMITED=999999999` -
+  `_http_rps_milli_set` refuses only an integer part longer than 9 digits), which is schema-legal and,
+  for any real target, indistinguishable from "as fast as the target answers."
 
 Unlike step 6 or step 7, this work carries **no build-order gate at all** - it was never blocked on SAST,
 SCA/IaC, or DAST completing, and nothing here waits on step 6 (cloud) or step 7 (state) either.
@@ -154,15 +210,11 @@ The only dependencies are internal, ticket-to-ticket:
   GUIDE-01, and has now **landed** - see the Status section above for the detail.
 - **GUIDE-03** (the scan-type menu, local-surface follow-ups, prerequisite honesty) depended only on
   GUIDE-02, and has now **landed** - see the Status section above for the detail.
-- **GUIDE-04** (the DAST branch and the affirmation) depends on GUIDE-02 and, structurally, on DAST-32
-  (the flags a DAST prompt would emit have to exist before the prompt can emit them).
-  **The DAST half of that dependency is already cleared**: DAST-32 landed as part of step 5, which
-  completed in full (`docs/STEP5-DAST-PLAN.md`'s own status section; `docs/AGENTS.md`'s generated status
-  block).
-  Verified directly rather than taken on the status section's word: `lib/http.sh` already enforces the
-  conservative ceilings and refers operators to `--i-own-target` by name (`lib/http.sh` around line
-  1168).
-  GUIDE-03 has since landed too, so GUIDE-04 today is blocked on nothing.
+- **GUIDE-04** (the DAST branch and the affirmation) depended on GUIDE-02 and, structurally, on DAST-32
+  (the flags a DAST prompt would emit have to exist before the prompt can emit them), and has now
+  **landed** too - see the Status section above for the detail, including the one correction it made to
+  this row's own DAST-32 dependency note (`--requests-per-second`/`--request-budget` needed a new CLI
+  flag, not only the ceiling/clamp DAST-32 already supplied).
 - **GUIDE-05** (the `config/scope.conf` record writer) depends on GUIDE-02, GUIDE-03, and
   `lib/records.sh`, which shipped at step 1 and needs nothing further.
 - **GUIDE-06** (the review screen, `--print-command`, the argv round-trip) depends on GUIDE-03, GUIDE-04
@@ -170,13 +222,16 @@ The only dependencies are internal, ticket-to-ticket:
 - **GUIDE-07** (documentation: the guided quickstart, the flag table, the honest status column) depends
   on GUIDE-06.
 
-**In short: this is a single chain, GUIDE-01 through GUIDE-07 in that order (GUIDE-04 and GUIDE-05 can
-run in parallel now that GUIDE-03 has landed) - GUIDE-01 through GUIDE-03 have now landed, and GUIDE-04
-through GUIDE-07 remain unclaimed - and every "blocked" reading this design once carried while DAST was
-still unbuilt is stale.**
+**In short: this is a single chain, GUIDE-01 through GUIDE-07 in that order (GUIDE-04 and GUIDE-05 could
+have run in parallel once GUIDE-03 landed) - GUIDE-01 through GUIDE-04 have now landed, and GUIDE-05,
+GUIDE-06 and GUIDE-07 remain unclaimed - and every "blocked" reading this design once carried while DAST
+was still unbuilt is stale.**
 The old framing (visible in `docs/STEP5-DAST-PLAN.md`'s edit history) treated GUIDE-04 as waiting on DAST
-completing; DAST is now complete and GUIDE-03 has landed, so GUIDE-04 and GUIDE-05 are both startable
-today with nothing in front of either.
+completing; DAST is now complete and both GUIDE-03 and GUIDE-04 have since landed on top of it, so the
+honest statement of what blocks the FLOW (an operator reaching the DAST branch through a real menu)
+today is "GUIDE-06 hasn't landed" - GUIDE-03's own `_scan_guide_run` does not yet call GUIDE-04's
+`guide_dast_configure` (see GUIDE-03's own correction note in the Status section above), and wiring that
+hand-off is GUIDE-06's job. GUIDE-05 is startable today with nothing in front of it.
 See `ROADMAP.md` for where this plan sits in the project's overall priority order relative to step 6,
 step 7 and step 10 - that ordering, not this status section, is the one to check first.
 
