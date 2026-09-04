@@ -23,7 +23,7 @@ No design decision changes in this move; see "Relationship to the ten-step build
 one genuinely new thing this document adds - a stated position on whether guided mode is one of
 `docs/DESIGN.md` §13's ten steps.
 
-## Status: GUIDE-01 through GUIDE-05 landed; GUIDE-06 and GUIDE-07 remain unclaimed
+## Status: GUIDE-01 through GUIDE-06 landed; GUIDE-07 remains unclaimed
 
 **GUIDE-01 has landed.** `lib/guide.sh` exists and ships `guide_may_prompt`, `guide_menu`, `guide_ask`,
 `guide_confirm`, and `_guide_shquote`, plus the guided-scope `INT`/`TERM` signal trap and the test-only
@@ -286,18 +286,115 @@ The only dependencies are internal, ticket-to-ticket:
 - **GUIDE-07** (documentation: the guided quickstart, the flag table, the honest status column) depends
   on GUIDE-06.
 
+**GUIDE-06 has now landed too: the review screen (G9), `--print-command`, the argv round-trip, and both
+of the hand-offs the Status section above named as still missing.**
+`scan.sh`'s `_scan_guide_run` (section 4d) now calls `lib/guide.sh`'s `guide_dast_configure` when `dast`
+is chosen at G1 (or given explicitly as `scan.sh dast --guided`) and no dast-specific flag was already
+typed on the command line - `--target`, `--intensity`, `--i-own-target`, `--requests-per-second`,
+`--request-budget`, and `--allow-intrusive` are checked as a GROUP, per the plan's own "must not prompt,
+ever" rule: DAST's questions are interdependent (a target, then an intensity, then the affirmation gate
+over every raised limit) in a way G2's independent path/lang/history questions are not, so there is no
+sound way to ask only the missing subset - any one of them already present means the operator made this
+decision by hand, and the ordinary parser validates the result exactly as it would a hand-typed
+invocation.  The second hand-off - GUIDE-04's own G3 "Authorise a new target" item, which still called a
+GUIDE-05-not-landed-yet stub - now calls GUIDE-05's real `guide_g4_authorize_target` (a new
+`_guide_dast_authorise_new_target` wrapper in `lib/guide.sh`): a successful write selects the freshly
+authorised target directly, rather than looping back through the menu to make the operator pick what
+they just typed a second time; a cancelled write (blank URL, malformed URL, a mismatched confirmation)
+loops back to the same target menu, exactly as the pre-GUIDE-06 stub did.
+
+G9 itself (`_scan_guide_run`'s own closing block, plus three new helpers - `_guide_g9_describe`,
+`_guide_g9_describe_dast`, and `_guide_g9_affirmation_restatement`) prints the composed command, a
+plain-language "This will:" statement (varying by command and, for dast, by the chosen target's real
+base-url and intensity), and the affirmation restatement when `--i-own-target` is part of the composed
+flags, then offers "Run it" / "Print the command and exit without running" / "Cancel" - the plan's own
+action-menu ordering, "Run it" first for stable muscle memory.  "Run it" calls `scan_parse_args` on the
+composed array and returns control to `scan_main`, which is the plan's own architectural decision made
+concrete: guided mode never runs a scan itself, it hands the SAME array it printed to the ORDINARY
+parser, so every existing validation (`scan_flag_kind`, `scan_validate_flag_value`,
+`_scan_check_affirmation`) runs unmoved and nothing downstream can tell the run was configured
+interactively.  `_scan_compose_argv` is the single renderer both G9 and the standalone `--print-command`
+flag (`_scan_print_command_and_exit`, wired into `scan_main` right after `_scan_check_required`) read -
+"the printed command cannot drift from what ran ... no second renderer to keep in sync", so `--print-command`
+against a plain hand-typed invocation and picking "Print the command" at the end of a guided run for the
+identical flags print byte-identical text.  `scan_main` itself gained one small structural change to make
+"Run it" possible for the bare zero-argument path: a `_SCAN_GUIDE_RAN` guard skips the unconditional
+`scan_parse_args "$@"` call that would otherwise re-parse the (empty) original argv and silently wipe out
+what "Run it" had just parsed.
+
+**Architectural note on `authorization.affirmation_source`, worth stating because it looks like a gap on
+a first read.** `lib/report.sh`'s own comment records a THIRD vocabulary value, `interactive-guided`,
+"reserved for the guided mode" - GUIDE-06 deliberately does NOT wire that value in.  The load-bearing
+test this row names (below) requires the guided flow's own `run.json` and the identical hand-typed
+command's `run.json` to render BYTE-IDENTICAL `authorization` objects; since "Run it" hands the SAME
+composed array to the SAME `scan_parse_args`/`_scan_check_affirmation`/`_scan_record_authorization`
+path a hand-typed invocation goes through, with nothing marking that path as having been reached via a
+menu, `affirmation_source` reads `flag` in both cases - which is exactly "the one architectural
+decision everything else follows from" (nothing downstream can tell the run was configured
+interactively) rather than an oversight.  A future ticket that wants to distinguish a human's live
+terminal confirmation from a flag pasted into a CI file would have to thread that distinction through
+`SCAN_FLAGS` itself (a new, guided-only flag `scan_parse_args` accepts and validates) rather than
+inferring it from the call site, and doing so would need its own review of whether it is worth the
+byte-identical guarantee this ticket's own test pins.
+
+**run.json also gained a `config` object** (`lib/report.sh`'s `_report_config_json`, written by a new
+`scan.sh` `_scan_record_config` called once, unconditionally, for every command - not only `dast` - right
+after `config_scanner_load` resolves): `scanner_conf_sha256` alongside `authorization`'s own
+`scope_conf_sha256`, and for every `config/scanner.conf` key (all twenty single-cardinality keys plus the
+three repeatable ones) the effective value, the resolution source (`cli`/`env`/`file`/`default`), and -
+for a repeatable key - the value as a JSON array rather than a flattened scalar.  This is the plan's own
+"reproducibility is stated as 'this argv against these two digests', never as 'this argv'" made
+concrete: `http-timeout`, `max-redirects`, `circuit-breaker-failures`, `circuit-breaker-window`,
+`max-matches-per-file`, `evidence-max-bytes`, `redact-secrets` and the rest resolve from the environment
+or from `config/scanner.conf` alone, invisibly to a reader of the printed command, so the SAME argv can
+still produce a materially different scan on a different machine - the `config` object is what makes
+that fact checkable rather than assumed.  It is a recording change, not a new mechanism:
+`config_scanner_value` already computed its own resolution source in `CONFIG_SCANNER_LAST_SOURCE`; this
+ticket added the identical `CONFIG_SCANNER_LIST_LAST_SOURCE` to `config_scanner_list` for the three
+repeatable keys, which had no equivalent before.  Key order in the rendered object is one fixed,
+alphabetically-sorted (`LC_ALL=C`) list shared between the writer's own key enumeration and the reader,
+so two runs that resolved the same settings render byte-identical bytes regardless of which key happened
+to resolve first.
+
+**The load-bearing test, in the plan's own words: "run the guided flow with a scripted answer stream,
+then run the rendered command non-interactively, and assert the two runs' run.json flag facts,
+authorization object and config object are byte-identical."** `tests/suites/scan.sh`'s own
+"GUIDE-06: the load-bearing round-trip test" section is this, literally: two REAL `bash scan.sh ...`
+subprocesses (never the sourced `_run_main` helpers this file uses everywhere else, because the claim
+under test is specifically that a printed command survives being typed by a human in a fresh shell) - one
+driven through the full guided flow (`dast --guided` with a scripted answer stream ending in "Run it" at
+G9) against a target that refuses every connection instantly (`http://127.0.0.1:1/`, nothing listens
+there) with the rate raised to "No limit", so the run always ends the same way, in well under a second,
+when `lib/http.sh`'s own circuit breaker opens at its default threshold; the second is that first run's
+own PRINTED command, typed as a plain, non-guided invocation in a fresh process.  Both `authorization`
+and `config` objects are asserted byte-identical (modulo the one genuinely wall-clock field,
+`affirmed_at`, explicitly normalised before comparing - two separate processes cannot share a
+timestamp), including the specific numeric delta the raised rate produced and which resolution source
+each `config` key carries.  This is the test the plan's own row states the reading it must fail under:
+"the printed command is a best-effort summary" - it does not, here, because both fixture roots resolve
+the identical settings from the identical files.  `tests/suites/scan.sh`'s $ROOT_WITH_SCOPE_AND_MODULES
+and this test's own `$RT_ROOT1`/`$RT_ROOT2` fixtures COPY `modules/` rather than symlinking it, for a
+reason worth carrying here: `lib/records.sh` resolves every loaded file's path via `realpath` and strips
+`$SCOURSH_INSTALL_ROOT` as a literal prefix, which a symlinked `modules/` defeats (`realpath` follows the
+symlink to the REAL tree, so the strip silently fails and every real check-registry load - not a mere G1
+reachability probe - fires a spurious E081); measured directly building this fixture, the same failure
+mode `tests/suites/scan.sh`'s own `$ROOT_WITH_CHECKS` fixture already canonicalises
+(`cd -- DIR && pwd -P`) to avoid on the `/tmp` -> `/private/tmp` macOS symlink chain.
+
+`tests/suites/report.sh` carries the config object's own unit tests (a recorded key rendering both its
+value and source, a never-recorded key still rendering as an honest empty pair rather than being
+dropped, a repeatable key rendering as a JSON array in recorded order, and the fixed alphabetical key
+order), independent of any real scan.sh invocation - the byte-identical ROUND-TRIP claim itself belongs
+to `tests/suites/scan.sh`, per the split above; this file's job is only "the renderer renders what was
+recorded, completely and correctly".  `tests/suites/guide.sh` gained the G3 -> G4 hand-off's own cases:
+picking "Authorise a new target" now reaches the real preview screen and, on a successful write, selects
+that target directly (asserted against `GUIDE_DAST_TARGET` and against `config/scope.conf`'s own new
+bytes); a cancelled write still loops back to the same target menu, matching the pre-GUIDE-06 stub's own
+behaviour for that one case.
+
 **In short: this is a single chain, GUIDE-01 through GUIDE-07 in that order (GUIDE-04 and GUIDE-05 ran
-in parallel once GUIDE-03 landed) - GUIDE-01 through GUIDE-05 have now landed, and GUIDE-06 and GUIDE-07
-remain unclaimed - and every "blocked" reading this design once carried while DAST was still unbuilt is
-stale.**
-The old framing (visible in `docs/STEP5-DAST-PLAN.md`'s edit history) treated GUIDE-04 as waiting on DAST
-completing; DAST is now complete and both GUIDE-03 and GUIDE-04 have since landed on top of it, so the
-honest statement of what blocks the FLOW (an operator reaching the DAST branch through a real menu, with
-"Authorise a new target" writing a real record) today is "GUIDE-06 hasn't landed" - GUIDE-03's own
-`_scan_guide_run` does not yet call GUIDE-04's `guide_dast_configure`, and GUIDE-04's own G3 target menu
-does not yet call GUIDE-05's `guide_g4_authorize_target` (see GUIDE-03's own correction note in the
-Status section above), and wiring both hand-offs is GUIDE-06's job.  GUIDE-06 now has both GUIDE-04's
-DAST branch and GUIDE-05's landed writer to build its review screen against.
+in parallel once GUIDE-03 landed) - GUIDE-01 through GUIDE-06 have now landed, and only GUIDE-07
+(documentation) remains unclaimed.**
 See `ROADMAP.md` for where this plan sits in the project's overall priority order relative to step 6,
 step 7 and step 10 - that ordering, not this status section, is the one to check first.
 

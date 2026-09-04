@@ -876,20 +876,18 @@ _scan_check_affirmation() {
 # -----------------------------------------------------------------------------
 # 4d. The guided menu flow (docs/STEP-GUIDE-PLAN.md GUIDE-03): G1 (scan
 #     type), G2 (the local-surface follow-ups: path, languages, git history)
-#     and G8 (the CI gate).  G3 through G7 and G9 - the DAST branch and its
-#     affirmation, cloud's own screen, and the review/run screen that
-#     actually hands the composed argv to scan_parse_args - are later
-#     tickets (GUIDE-04 through GUIDE-06) and are deliberately NOT
-#     implemented here (this ticket's own scope line: "not the DAST branch
-#     or affirmation, not the scope.conf writer").  Without G9 there is no
-#     confirmation screen to hand off through, and G1's own header text
-#     below promises "Nothing is scanned until you confirm at the end"
-#     (docs/STEP-GUIDE-PLAN.md's own G1 mockup) - so this flow ends by
-#     PRINTING the composed command it would have offered to run and
-#     refusing loudly, the same "not built in this version yet, nothing was
-#     run" vocabulary `_scan_guided_not_yet_available` used for the whole
-#     feature before this ticket landed, rather than either running the
-#     command unconfirmed or silently discarding the operator's answers.
+#     and G8 (the CI gate).
+#
+# CORRECTION, GUIDE-06: G3/G5/G6 (the DAST target, intensity and affirmation
+# screens - `lib/guide.sh`'s `guide_dast_configure`, landed by GUIDE-04) and
+# G9 (the review/run screen, `_scan_compose_argv` plus the "Run it / Print /
+# Cancel" menu below) are now wired in.  Picking `dast` at G1 (or typing
+# `scan.sh dast --guided` with no dast-specific flag already given) now
+# reaches a real target menu instead of the "guided setup for this is
+# partial" note that used to follow it - see `_guide_g1_status`'s own
+# dast/cloud split and `_guide_g1_note_guided_setup_partial`'s header, both
+# updated in the same change.  `cloud` (G7) is unchanged: no
+# `modules/cloud/aws/run.sh` exists yet, so it still gets that note.
 #
 # AVAILABILITY LABELS come from the SAME probe scan_dispatch itself uses,
 # through ONE shared function per prerequisite - this ticket's own
@@ -904,31 +902,9 @@ _scan_check_affirmation() {
 #   - `_have aws` for `cloud --live` - the same call scan_main's own cloud
 #     dispatch arm already makes (`command -v aws`; `_have` is its exact
 #     definition).
-#   - `config_scope_load` plus `records_count scope` for DAST's target list.
-#     Reserved for GUIDE-04's own G3 screen; this ticket does not read it,
-#     since G1/G2/G8 never need to know how many targets exist, only
-#     whether the dast MODULE itself is built.
-#
-# A NOTE ON DAST'S LABEL, AND WHY IT DIFFERS FROM THIS PLAN'S OWN MOCKUP.
-# docs/STEP-GUIDE-PLAN.md's G1 mockup shows item 4 (dast) as "not built yet
-# in this version" - true when that mockup was written, but step 5 (DAST)
-# has SINCE landed in full (AGENTS.md "Current position"): modules/dast/run.sh
-# exists on disk today, so `_scan_module_built dast` is true, and repeating
-# the mockup's stale text here would be exactly the false "not built" claim
-# the shared module-built probe exists to prevent - the same "prerequisite
-# honesty" this ticket's own title names, applied to a fact that changed
-# after the plan was written rather than one the plan got wrong.  What is
-# honestly still true is narrower: GUIDE-04 (G3 target selection, G5
-# intensity, G6 the affirmation) has not landed, so guided mode cannot yet
-# COLLECT a --target.  Picking "dast" here therefore skips G2 (none of its
-# follow-ups apply to dast anyway - see _SCAN_FLAG_KIND) and says so plainly
-# via `_guide_g1_note_guided_setup_partial` rather than silently composing a
-# `scan.sh dast` with no --target that `_scan_check_required` would refuse
-# the instant it was ever actually run.  `cloud` is handled by the identical
-# path, purely for forward-compatibility: it is not built today
-# (`_scan_module_built cloud` is false), so this branch is unreached in
-# practice until a future ticket lands `modules/cloud/aws/run.sh` - at which
-# point it behaves like dast does today rather than needing a second fix.
+#   - `guide_dast_target_menu` (lib/guide.sh) itself reads
+#     config/scope.conf's target list, through `http_scope_load` - the same
+#     pipeline the real gate uses - so this file never re-derives it.
 # -----------------------------------------------------------------------------
 
 # `_guide_g1_reachable CMD` - 0 when picking CMD at G1 should proceed past the
@@ -957,10 +933,14 @@ _guide_sca_advisories_ready() {
 }
 
 # `_guide_g1_status CMD` - the trailing status word(s) for CMD's menu row.
+# `dast` joined the plain sast/iac case at docs/STEP-GUIDE-PLAN.md GUIDE-06:
+# `guide_dast_configure` (G3/G5/G6) is wired into `_scan_guide_run` below, so
+# picking it here reaches a real target menu rather than the "partial" note -
+# only `cloud` still has no guided target flow of its own.
 _guide_g1_status() {
   local cmd=$1
   case $cmd in
-    sast | iac)
+    sast | iac | dast)
       if _guide_g1_reachable "$cmd"; then printf 'ready'; else printf 'not built yet in this version'; fi
       ;;
     sca)
@@ -972,7 +952,7 @@ _guide_g1_status() {
         printf 'no advisory database installed'
       fi
       ;;
-    dast | cloud)
+    cloud)
       if _guide_g1_reachable "$cmd"; then
         printf 'ready (guided setup for this is partial - see below)'
       else
@@ -1026,22 +1006,23 @@ _guide_g1_explain_sca_db_missing() {
   } >&2
 }
 
-# `_guide_g1_note_guided_setup_partial CMD` - dast/cloud only: the module is
-# built, but GUIDE-04 (dast's target/intensity/affirmation screens) or a
-# future cloud ticket has not landed, so guided mode can compose only
-# CMD's --fail-on today.  Not a refusal - the menu still proceeds - only
-# the prerequisite-honesty note this ticket's own title promises.
+# `_guide_g1_note_guided_setup_partial CMD` - cloud only, as of
+# docs/STEP-GUIDE-PLAN.md GUIDE-06: a future cloud ticket has not landed, so
+# guided mode can compose only cloud's --fail-on today.  Not a refusal - the
+# menu still proceeds - only the prerequisite-honesty note this ticket's own
+# title promises.  dast USED to be handled by this same function
+# (GUIDE-04's target/intensity/affirmation screens had not been wired into
+# `_scan_guide_run` yet); GUIDE-06 is what wires
+# `guide_dast_configure` (G3/G5/G6) into the flow below, so picking dast at
+# G1 now reaches a real target menu rather than this note - see
+# `_guide_g1_status`'s own dast/cloud split for the matching menu-row change.
 _guide_g1_note_guided_setup_partial() {
-  local cmd=$1 example
-  case $cmd in
-    dast) example='--target NAME' ;;
-    cloud) example='--live' ;;
-  esac
+  local cmd=cloud example=--live
   {
     printf '\n'
     printf '  %s scanning is built, but its guided setup beyond the scan type and the\n' "$cmd"
     printf '  CI gate is not wired into --guided yet in this version\n'
-    printf '  (docs/STEP-GUIDE-PLAN.md GUIDE-04 onward).  Only --fail-on is asked below.\n'
+    printf '  (docs/STEP-GUIDE-PLAN.md, a future cloud ticket).  Only --fail-on is asked below.\n'
     printf '  Once you have a target, run it directly:  scan.sh %s %s ...\n\n' "$cmd" "$example"
   } >&2
 }
@@ -1094,7 +1075,6 @@ _guide_g1_scan_type() {
         ;;
       4)
         if _guide_g1_reachable dast; then
-          _guide_g1_note_guided_setup_partial dast
           GUIDE_G1_COMMAND=dast
           return 0
         fi
@@ -1102,7 +1082,7 @@ _guide_g1_scan_type() {
         ;;
       5)
         if _guide_g1_reachable cloud; then
-          _guide_g1_note_guided_setup_partial cloud
+          _guide_g1_note_guided_setup_partial
           GUIDE_G1_COMMAND=cloud
           return 0
         fi
@@ -1235,19 +1215,183 @@ _guide_g8_ci_gate() {
   esac
 }
 
+# `_scan_compose_argv CMD` - the SINGLE renderer for "the composed command",
+# read by both G9 below and the standalone `--print-command` flag
+# (`_scan_print_command_and_exit`).  docs/STEP-GUIDE-PLAN.md's own
+# architectural decision is "the printed command cannot drift from what ran,
+# because it IS what ran ... no second renderer to keep in sync" - so there
+# is exactly one place this array/string pair is built, ever.
+#
+# Reads the caller's own `local -A flags` by BASH'S DYNAMIC SCOPING, the
+# identical PRESET contract `_guide_g2_local_followups`/`_guide_g8_ci_gate`
+# already use (bash 4.2, this project's frozen minimum, has no `local -n`
+# nameref for an associative array - see those functions' own header for the
+# full reasoning).  Sets two globals rather than printing one, for the same
+# `die`-through-`$(...)` reason `guide_menu` is written that way:
+#   `_SCAN_ARGV`      - the RAW args after CMD (no `scan.sh`, no quoting) -
+#                       what actually gets handed to scan_parse_args on
+#                       "Run it".
+#   `_SCAN_ARGV_LINE` - the human-readable, `_guide_shquote`d preview line
+#                       ("scan.sh CMD --flag val ..."), safe to paste into a
+#                       shell.
+_SCAN_ARGV=()
+_SCAN_ARGV_LINE=''
+_scan_compose_argv() {
+  local cmd=$1
+  # A deterministic key order - `mapfile` would discard `sort`'s own exit
+  # status (tension 4 rule 4, lint-shell.sh), so this reads it back the same
+  # `while read` way `_scan_capture_list` above does.
+  local -a sorted_keys=()
+  if (( ${#flags[@]} > 0 )); then
+    local _cak
+    while IFS= read -r _cak; do
+      [[ -n $_cak ]] && sorted_keys+=("$_cak")
+    done < <(printf '%s\n' "${!flags[@]}" | LC_ALL=C sort)
+  fi
+  _SCAN_ARGV=()
+  _SCAN_ARGV_LINE="scan.sh $cmd"
+  local _cak2
+  for _cak2 in "${sorted_keys[@]+"${sorted_keys[@]}"}"; do
+    _SCAN_ARGV+=("--$_cak2")
+    _SCAN_ARGV_LINE+=" --$_cak2"
+    if [[ ${flags[$_cak2]} != true ]]; then
+      _SCAN_ARGV+=("${flags[$_cak2]}")
+      _SCAN_ARGV_LINE+=" $(_guide_shquote "${flags[$_cak2]}")"
+    fi
+  done
+  return 0
+}
+
+# `_guide_g9_describe_dast` - the DAST-specific half of G9's "This will:"
+# bullets (docs/STEP-GUIDE-PLAN.md's own G9 mockup).  Reads `flags`
+# (dynamic scoping, as above) and the target's normalised base-url straight
+# out of config/scope.conf - never re-derived, and guarded against a target
+# that does not (yet) resolve to a real record, since G9 can be reached with
+# a --target the operator TYPED but that `_scan_check_required`/
+# `config_scope_require` have not validated yet (this preview must never be
+# the thing that dies on a bad target; the ordinary gate still will).
+_guide_g9_describe_dast() {
+  local target=${flags[target]:-} base_url=''
+  if [[ -n $target ]]; then
+    http_scope_load
+    if records_index_of_id scope "$target" >/dev/null 2>&1; then
+      base_url=$(config_scope_field "$target" base-url)
+    fi
+  fi
+  case ${flags[intensity]:-$CHECKS_INTENSITY_DEFAULT} in
+    active)
+      printf '  - send injection payloads to %s\n' "${base_url:-$target}" >&2
+      ;;
+    safe)
+      printf '  - probe %s for open paths and accepted HTTP methods\n' "${base_url:-$target}" >&2
+      ;;
+    *)
+      printf '  - read-only checks against %s (headers, cookies, TLS, markup, served\n' "${base_url:-$target}" >&2
+      printf '    JavaScript): nothing is injected\n' >&2
+      ;;
+  esac
+  if [[ -n ${flags[requests-per-second]:-} ]]; then
+    if [[ ${flags[requests-per-second]} == "$_GUIDE_DAST_RPS_UNLIMITED" ]]; then
+      printf '  - as fast as %s answers' "${base_url:-$target}" >&2
+    else
+      printf '  - at up to %s requests/second' "${flags[requests-per-second]}" >&2
+    fi
+    if [[ -n ${flags[request-budget]:-} ]]; then
+      printf ', stopping after %s requests\n' "${flags[request-budget]}" >&2
+    else
+      printf '\n' >&2
+    fi
+  elif [[ -n ${flags[request-budget]:-} ]]; then
+    printf '  - stopping after %s requests\n' "${flags[request-budget]}" >&2
+  fi
+  if [[ ${flags[allow-intrusive]:-} == true ]]; then
+    printf '  - including checks that may email or create real users\n' >&2
+  fi
+}
+
+# `_guide_g9_describe CMD` - the plain-language "This will:" statement G9's
+# own mockup shows.  Reads `flags` by dynamic scoping, as above.
+_guide_g9_describe() {
+  local cmd=$1
+  case $cmd in
+    sast)
+      printf '  - scan source code under %s for secrets, crypto, injection and\n' "${flags[path]:-.}" >&2
+      printf '    language-specific issues\n' >&2
+      [[ -n ${flags[lang]:-} ]] && printf '  - limited to: %s\n' "${flags[lang]}" >&2
+      [[ ${flags[history]:-} == true ]] && printf '  - and replay the secret checks across git history too\n' >&2
+      ;;
+    sca)
+      printf '  - scan dependency lockfiles under %s against the vendored advisory\n' "${flags[path]:-.}" >&2
+      printf '    database\n' >&2
+      ;;
+    iac)
+      printf '  - scan infrastructure-as-code files under %s for misconfiguration\n' "${flags[path]:-.}" >&2
+      ;;
+    dast)
+      _guide_g9_describe_dast
+      ;;
+    cloud)
+      printf '  - read the AWS account configured for this checkout, read-only\n' >&2
+      ;;
+    all)
+      printf '  - run every scan surface this checkout can actually do (source code,\n' >&2
+      printf '    dependencies, infrastructure-as-code, and DAST when a --target is set)\n' >&2
+      [[ -n ${flags[target]:-} ]] && _guide_g9_describe_dast
+      ;;
+  esac
+  if [[ -n ${flags[fail-on]:-} ]]; then
+    printf '  - and exit 1 if it finds anything %s or above\n' "${flags[fail-on]}" >&2
+  else
+    printf '  - and always exit 0 regardless of findings (no CI gate was set)\n' >&2
+  fi
+}
+
+# `_guide_g9_affirmation_restatement CMD` - the affirmation restatement G9's
+# own mockup shows ("Authorisation affirmed for 'staging-api' by abhi at
+# ...").  Only printed when `flags[i-own-target]` is actually set - a
+# conservative composed argv (nothing raised) has no affirmation to restate.
+# The timestamp here is PREVIEW TEXT, not the audit record: the real
+# `authorized_at` this run.json will carry is stamped later, at
+# `_scan_record_authorization` time, once the composed argv has actually run
+# through `scan_parse_args`/`_scan_check_affirmation` - this line only tells
+# the operator, before they confirm, what they are about to affirm.
+_guide_g9_affirmation_restatement() {
+  local cmd=$1
+  [[ $cmd == dast || $cmd == all ]] || return 0
+  [[ -n ${flags[i-own-target]:-} ]] || return 0
+  local operator
+  operator=${SCOURSH_OPERATOR:-$(id -un 2>/dev/null)}
+  [[ -n $operator ]] || operator='(unknown)'
+  {
+    printf "Authorisation affirmed for '%s' by %s at %s.\n" "${flags[i-own-target]}" "$operator" "$(now_iso)"
+    printf "That affirmation, and every limit it raised, is recorded in this run's\n"
+    printf 'run.json.\n\n'
+  } >&2
+}
+
 # `_scan_guide_run [CMD]` - the orchestrator scan_main calls once guided mode
 # is eligible (section 8 below).  CMD is empty for the bare zero-argument
 # path (nothing was typed at all, so G1 always runs and no flag can already
 # be present) and the already-parsed SCAN_COMMAND for `scan.sh CMD --guided`
 # (docs/STEP-GUIDE-PLAN.md: "scan.sh dast --guided must work" - the command
 # was already given explicitly, so G1 is skipped, and SCAN_FLAGS is this
-# invocation's own already-typed flags, threaded through G2/G8 as PRESET so
-# neither re-asks a question the command line already answered).  Runs G2 for
-# whichever command accepts a --path, then G8, then the "no G9 yet" refusal
-# this section's own header explains.  Composes the preview command with
-# `_guide_shquote`, the same quoting GUIDE-06's own review screen will
-# eventually use, so the preview text an operator sees today is already
-# byte-for-byte what a later ticket will actually execute.
+# invocation's own already-typed flags, threaded through G2/G3/G5/G6/G8 as
+# PRESET so nothing re-asks a question the command line already answered).
+#
+# docs/STEP-GUIDE-PLAN.md GUIDE-06 wires G3/G5/G6 (`guide_dast_configure`,
+# GUIDE-04) and G9 (the review/run screen) into this orchestrator.  A `dast`
+# selection with NO dast-specific flag already on the command line runs the
+# full target/intensity/affirmation flow; ANY of `--target`/`--intensity`/
+# `--i-own-target`/`--requests-per-second`/`--request-budget`/
+# `--allow-intrusive` already present skips it entirely (docs/STEP-GUIDE-PLAN.md's
+# own "'--guided' only ever fills flags that were not supplied on the command
+# line") - DAST's questions are interdependent (target, then intensity, then
+# the affirmation gate every raised limit), unlike G2's independent
+# path/lang/history questions, so there is no sound way to ask only the
+# missing subset; an operator who already typed one of these flags is treated
+# as having made this decision by hand, and `_scan_check_required`/
+# `_scan_check_affirmation` validate the result exactly as they would a
+# hand-typed invocation.
 _scan_guide_run() {
   local cmd=${1:-}
   local -A preset=()
@@ -1259,17 +1403,29 @@ _scan_guide_run() {
     done
   fi
 
+  local dast_preset=false
+  local dk
+  for dk in target intensity i-own-target requests-per-second request-budget allow-intrusive; do
+    [[ -z ${preset[$dk]+set} ]] || dast_preset=true
+  done
+
   if [[ -z $cmd ]]; then
     while :; do
       _guide_g1_scan_type
       cmd=$GUIDE_G1_COMMAND
-      if scan_flag_kind "$cmd" path >/dev/null 2>&1; then
+      if [[ $cmd == dast ]]; then
+        guide_dast_configure && break
+        continue
+      elif scan_flag_kind "$cmd" path >/dev/null 2>&1; then
         _guide_g2_local_followups "$cmd" && break
         printf '  Returning to the scan-type menu.\n' >&2
         continue
       fi
       break
     done
+  elif [[ $cmd == dast && $dast_preset == false ]]; then
+    guide_dast_configure \
+      || die "$SCOURSH_EXIT_USAGE" "no DAST target was chosen; nothing was run and nothing is waiting for input - re-run with a valid --target instead"
   elif scan_flag_kind "$cmd" path >/dev/null 2>&1; then
     _guide_g2_local_followups "$cmd" \
       || die "$SCOURSH_EXIT_USAGE" "--path was asked twice and neither answer resolved to a readable directory; nothing was run and nothing is waiting for input - re-run with a valid --path instead"
@@ -1284,36 +1440,107 @@ _scan_guide_run() {
     flags[$k]=${GUIDE_G2_FLAGS[$k]}
   done
 
+  # Fold guide_dast_configure's own GUIDE_DAST_ARGV (--target X --intensity Y
+  # ...) into the SAME flags map G2/G8 build into, so G9 below and
+  # _scan_compose_argv see ONE composed set regardless of which step supplied
+  # which flag.  `scan_flag_kind` (never a hardcoded name) decides bool-vs-
+  # value, the identical single source of truth scan_parse_args itself
+  # defers to - GUIDE_DAST_ARGV's only bool member is --allow-intrusive.
+  if [[ $cmd == dast && $dast_preset == false ]]; then
+    local -a dargv=("${GUIDE_DAST_ARGV[@]+"${GUIDE_DAST_ARGV[@]}"}")
+    local di=0 dfk dkind
+    while (( di < ${#dargv[@]} )); do
+      dfk=${dargv[di]#--}
+      dkind=$(scan_flag_kind "$cmd" "$dfk")
+      if [[ $dkind == bool ]]; then
+        flags[$dfk]=true
+        di=$(( di + 1 ))
+      else
+        flags[$dfk]=${dargv[di + 1]}
+        di=$(( di + 2 ))
+      fi
+    done
+  fi
+
   _guide_g8_ci_gate
   for k in "${!GUIDE_G8_FLAGS[@]}"; do
     flags[$k]=${GUIDE_G8_FLAGS[$k]}
   done
 
-  # A deterministic key order for the preview only - `mapfile` would discard
-  # `sort`'s own exit status (tension 4 rule 4, lint-shell.sh), so this reads
-  # it back the same `while read` way `_scan_capture_list` above does.
-  local -a sorted_keys=()
-  if (( ${#flags[@]} > 0 )); then
-    local _guide_sk
-    while IFS= read -r _guide_sk; do
-      [[ -n $_guide_sk ]] && sorted_keys+=("$_guide_sk")
-    done < <(printf '%s\n' "${!flags[@]}" | LC_ALL=C sort)
-  fi
-  local -a argv=(scan.sh "$cmd")
-  for k in "${sorted_keys[@]+"${sorted_keys[@]}"}"; do
-    argv+=("--$k")
-    [[ ${flags[$k]} == true ]] || argv+=("$(_guide_shquote "${flags[$k]}")")
-  done
+  _scan_compose_argv "$cmd"
 
+  # G9 - review, and the exit (docs/STEP-GUIDE-PLAN.md's own G9 mockup).
   {
     printf '\nReady.\n\n'
-    printf '  %s\n\n' "${argv[*]}"
-    printf 'The review-and-run screen (docs/STEP-GUIDE-PLAN.md GUIDE-06) is not built in\n'
-    printf 'this version of scoursh yet.  Nothing was run and nothing is waiting for\n'
-    printf 'input.  Run the command above directly, or see:\n'
-    printf '  scan.sh %s --help\n' "$cmd"
+    printf '  %s\n\n' "$_SCAN_ARGV_LINE"
+    printf 'This will:\n'
   } >&2
-  die "$SCOURSH_EXIT_USAGE" 'the guided review/run screen is not built in this version; nothing was run and nothing is waiting for input'
+  _guide_g9_describe "$cmd"
+  printf '\n' >&2
+  _guide_g9_affirmation_restatement "$cmd"
+
+  # Item ordering here differs from every other screen on purpose (the plan's
+  # own note): this is an action menu, not a settings menu, so "Run it" stays
+  # at 1 for stable muscle memory - all of the safety work already happened
+  # upstream.
+  guide_menu 'pick a number> ' \
+    'Run it' \
+    'Print the command and exit without running' \
+    'Cancel'
+  case $GUIDE_MENU_REPLY in
+    1)
+      # "The guided mode never runs a scan.  It ... hands that argv to the
+      # ordinary scan_parse_args path." (docs/STEP-GUIDE-PLAN.md's own
+      # architectural decision) - this is that hand-off: the SAME function
+      # every hand-typed invocation goes through, on the SAME composed
+      # array G9 just showed, so every existing validation
+      # (scan_flag_kind, scan_validate_flag_value, _scan_check_affirmation)
+      # runs unmoved, and nothing downstream can tell this run was
+      # configured interactively.  Returning 0 (never exiting) lets
+      # scan_main continue past this call exactly as it would after
+      # parsing a hand-typed "$@" - see that function's own
+      # `_SCAN_GUIDE_RAN` guard for why the bare zero-argument call site
+      # must not re-parse the (empty) original argv afterward.
+      scan_parse_args "$cmd" "${_SCAN_ARGV[@]+"${_SCAN_ARGV[@]}"}"
+      _SCAN_GUIDE_RAN=true
+      return 0
+      ;;
+    2)
+      # Writes to STDOUT (so it pipes and copies) and exits 0 with no run
+      # directory created - the plan's own wording, and the identical
+      # contract the standalone --print-command flag gives ANY invocation
+      # (_scan_print_command_and_exit below), guided or not.
+      printf '%s\n' "$_SCAN_ARGV_LINE"
+      exit "$SCOURSH_EXIT_OK"
+      ;;
+    3)
+      _guide_on_cancel
+      ;;
+  esac
+}
+
+# `_scan_print_command_and_exit` - the non-interactive twin of G9's own
+# "Print the command and exit without running" item, and `--print-command`'s
+# whole implementation: renders the fully resolved invocation for ANY
+# invocation (guided or not) and exits 0 without running
+# (docs/STEP-GUIDE-PLAN.md's own wording).  Reuses `_scan_compose_argv`, the
+# SAME renderer G9 uses, so a plain `scan.sh dast --target X --print-command`
+# and picking item 2 at the end of a guided run for the identical target
+# print the identical line - there is exactly one place this text is built.
+# Called from scan_main AFTER `_scan_check_required` (section 8 below), so an
+# invocation --print-command cannot itself validate (a missing --target, an
+# unmatched affirmation) still dies with the ordinary usage error rather than
+# printing a command that would only die a moment later if actually run.
+_scan_print_command_and_exit() {
+  local -A flags=()
+  local k
+  for k in "${!SCAN_FLAGS[@]}"; do
+    [[ $k == guided || $k == print-command ]] && continue
+    flags[$k]=${SCAN_FLAGS[$k]}
+  done
+  _scan_compose_argv "$SCAN_COMMAND"
+  printf '%s\n' "$_SCAN_ARGV_LINE"
+  exit "$SCOURSH_EXIT_OK"
 }
 
 # -----------------------------------------------------------------------------
@@ -1612,6 +1839,91 @@ _scan_scope_conf_sha256() {
   cat -- "$f" | sha256_of
 }
 
+# As _scan_scope_conf_sha256, for config/scanner.conf - docs/STEP-GUIDE-PLAN.md
+# GUIDE-06's own "config" audit object needs a way to say "was this run's
+# scanner.conf the same file a reviewer is looking at now", the identical
+# question scope_conf_sha256 already answers for the scope gate.
+_scan_scanner_conf_sha256() {
+  local f=$SCOURSH_INSTALL_ROOT/config/scanner.conf
+  [[ -r $f ]] || { printf '%s' ''; return 0; }
+  # shellcheck disable=SC2002
+  cat -- "$f" | sha256_of
+}
+
+# -----------------------------------------------------------------------------
+# 7b. The run's config record (docs/STEP-GUIDE-PLAN.md GUIDE-06, "What is
+#     recorded for audit", item 2)
+# -----------------------------------------------------------------------------
+# `run.json`'s `invocation` is not the run's only input: `config_scanner_value`
+# resolves every scanner.conf setting through CLI > env > file > default, and
+# the CLI layer covers only a subset of those keys (jobs, fail-on,
+# min-confidence, contact, format, requests-per-second, request-budget) -
+# `http-timeout`, `max-redirects`, `circuit-breaker-failures`,
+# `circuit-breaker-window`, `max-matches-per-file`, `evidence-max-bytes`,
+# `redact-secrets` and the rest resolve from the environment or from
+# config/scanner.conf alone, invisibly to anyone reading only the printed
+# command.  The SAME printed command therefore produces a materially different
+# scan on a different machine.  This records the effective value AND the
+# resolution source for EVERY scanner.conf key, so reproducibility is stated
+# honestly as "this argv against these two digests", never as "this argv"
+# alone (the plan's own wording).
+#
+# This is a RECORDING change, not a new resolution mechanism:
+# `config_scanner_value`/`config_scanner_list` already compute exactly this in
+# their own `CONFIG_SCANNER_LAST_SOURCE`/`CONFIG_SCANNER_LIST_LAST_SOURCE`
+# (lib/config.sh); this function's only job is to read those back and persist
+# them, once, for every command - unconditionally, unlike the DAST-only
+# authorisation record above, because every command resolves scanner.conf
+# whether or not it ever reaches a network.
+#
+# The CLI value passed to each call is this invocation's own already-parsed
+# SCAN_FLAGS entry where one exists, so a key an operator DID type on the
+# command line is correctly reported as "source": "cli" here too, rather than
+# as "env" merely because scan_main also re-exports requests-per-second/
+# request-budget as SCOURSH_CONFIG_* for lib/http.sh's own DAST-32 clamp (see
+# that export's own comment above) - this is a SEPARATE resolution, purely for
+# the record, and reads SCAN_FLAGS directly rather than the export.
+_scan_record_config() {
+  local key val cli
+  local -a single_keys=(
+    circuit-breaker-failures circuit-breaker-window contact evidence-max-bytes
+    fail-on history-max-commits history-window-days http-timeout jobs
+    lock-stale-seconds max-matches-per-file max-redirects min-confidence
+    mutex-timeout-seconds redact-secrets request-budget requests-per-second
+    scratch-dir state-retain-runs tls-expiry-warn-days
+  )
+  for key in "${single_keys[@]+"${single_keys[@]}"}"; do
+    case $key in
+      contact) cli=${SCAN_FLAGS[contact]:-} ;;
+      fail-on) cli=${SCAN_FLAGS[fail-on]:-} ;;
+      jobs) cli=${SCAN_FLAGS[jobs]:-} ;;
+      min-confidence) cli=${SCAN_FLAGS[min-confidence]:-} ;;
+      request-budget) cli=${SCAN_FLAGS[request-budget]:-} ;;
+      requests-per-second) cli=${SCAN_FLAGS[requests-per-second]:-} ;;
+      *) cli='' ;;
+    esac
+    _scan_capture val config_scanner_value "$key" "$cli"
+    run_record "config_value_$key" "$val"
+    run_record "config_source_$key" "$CONFIG_SCANNER_LAST_SOURCE"
+  done
+
+  local -a list_keys=(formats paranoid-allow recommended-header)
+  for key in "${list_keys[@]+"${list_keys[@]}"}"; do
+    case $key in
+      formats) cli=${SCAN_FLAGS[format]:-} ;;
+      *) cli='' ;;
+    esac
+    while IFS= read -r val; do
+      [[ -n $val ]] && run_record "config_value_$key" "$val"
+    done < <(config_scanner_list "$key" "$cli")
+    run_record "config_source_$key" "$CONFIG_SCANNER_LIST_LAST_SOURCE"
+  done
+
+  run_record config_scanner_conf_sha256 "$(_scan_scanner_conf_sha256)"
+  run_record config_scope_conf_sha256 "$(_scan_scope_conf_sha256)"
+  return 0
+}
+
 # DAST-34: ONE stderr line at run start when limits were actually relaxed.
 # Loud, once, not a wall.
 #
@@ -1658,15 +1970,27 @@ scan_main() {
   # `--guided` is: the plan's own "must not prompt" list names only the
   # terminal-and-eligible case for this loud "not built yet" refusal.
   #
-  # docs/STEP-GUIDE-PLAN.md GUIDE-03: `_scan_guide_run` (section 4d above)
-  # replaces GUIDE-02's blanket `_scan_guided_not_yet_available` refusal with
-  # the real G1/G2/G8 menu flow now that one exists - see that function's own
-  # header for why it still ends in a refusal of its own (G9 has not landed).
+  # docs/STEP-GUIDE-PLAN.md GUIDE-03/GUIDE-06: `_scan_guide_run` (section 4d
+  # above) replaces GUIDE-02's blanket `_scan_guided_not_yet_available`
+  # refusal with the real G1-G9 menu flow.  `_SCAN_GUIDE_RAN` is set true
+  # only on "Run it" (`_scan_guide_run`'s own comment on that branch): every
+  # other path out of it exits the process directly (Cancel, "Print the
+  # command", any die()), so reaching the line after this `if` with the flag
+  # still false always means _scan_guide_run never ran at all - the case a
+  # plain `scan.sh` on a real terminal is INELIGIBLE for guided mode falls
+  # into.  On "Run it", `_scan_guide_run` has ALREADY called scan_parse_args
+  # itself, on the composed argv - calling it again here on the ORIGINAL
+  # (empty, for this branch) "$@" would silently reset SCAN_FLAGS/
+  # SCAN_COMMAND back to nothing and die "no command given", so this second
+  # call is guarded on the flag rather than being unconditional.
+  local _SCAN_GUIDE_RAN=false
   if (( $# == 0 )) && guide_may_prompt true; then
     _scan_guide_run
   fi
 
-  scan_parse_args "$@"
+  if [[ $_SCAN_GUIDE_RAN != true ]]; then
+    scan_parse_args "$@"
+  fi
 
   # docs/STEP-GUIDE-PLAN.md GUIDE-02: the `--guided` branch of guided-mode
   # routing.  By this point `--guided` is just an ordinary already-parsed
@@ -1677,7 +2001,10 @@ scan_main() {
   # zero-argument branch above, `--guided` typed explicitly IS the plan's
   # "explicitly requested" case, so an ineligible gate here is never silent:
   # it fails loudly with the concrete reason, before _scan_check_required
-  # (and everything after it) ever runs.
+  # (and everything after it) ever runs.  `_scan_guide_run "$SCAN_COMMAND"`
+  # here re-parses SCAN_FLAGS on "Run it" too (this branch runs strictly
+  # after the one `scan_parse_args "$@"` call above, never before it), so no
+  # second `_SCAN_GUIDE_RAN` guard is needed on this call site.
   if [[ ${SCAN_FLAGS[guided]:-} == true ]]; then
     if guide_may_prompt true; then
       _scan_guide_run "$SCAN_COMMAND"
@@ -1694,6 +2021,16 @@ scan_main() {
   # ordering matters even though no real prompt exists yet to change what it
   # finds.
   _scan_check_required
+
+  # docs/STEP-GUIDE-PLAN.md GUIDE-06: `--print-command` - the non-interactive
+  # twin of G9's own "Print the command and exit" item, for ANY invocation.
+  # Placed after `_scan_check_required` (an invocation that could not itself
+  # validate still gets the ordinary usage error, never a command that would
+  # only die a moment later if actually run) and before `run_init` (no run
+  # directory is ever created for it).
+  if [[ ${SCAN_FLAGS[print-command]:-} == true ]]; then
+    _scan_print_command_and_exit
+  fi
 
   core_require_baseline
   [[ ${SCAN_FLAGS[history]:-} != true ]] || require_cmd git
@@ -1769,6 +2106,12 @@ scan_main() {
   _scan_capture_list SCOURSH_FORMATS config_scanner_list formats "${SCAN_FLAGS[format]:-}"
   export SCOURSH_JOBS SCOURSH_FAIL_ON SCOURSH_MIN_CONFIDENCE SCOURSH_REDACT_SECRETS \
     SCOURSH_SHOW_RULE_WARNINGS SCOURSH_FORMATS
+
+  # docs/STEP-GUIDE-PLAN.md GUIDE-06: run.json's `config` object.  Recorded
+  # here, right after config_scanner_load and every scanner.conf key this
+  # section already resolved, and unconditionally for every command - see
+  # _scan_record_config's own header for why.
+  _scan_record_config
 
   # 8b. --paranoid (docs/FOUNDATION.md tension 20; lib/paranoid.sh): attached
   # AFTER config is loaded (paranoid_allow, the fourth allowlist set, comes

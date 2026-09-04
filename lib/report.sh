@@ -229,6 +229,7 @@ report_run_json() {
     # distinguish "not given" from "this version does not record it".
     printf '  "use_engines": %s,\n' "$(json_bool "$(_meta_first "$rundir" use_engines)")"
     _report_authorization_json "$rundir"
+    _report_config_json "$rundir"
     printf '  "gate": %s,\n' "$(json_string "${SCOURSH_GATE_RESULT:-not-evaluated}")"
     printf '  "gated_findings": %s,\n' "$(json_number "${SCOURSH_GATED_FINDINGS:-0}")"
     printf '  "diff_usable": %s,\n' "$(json_bool "${SCOURSH_DIFF_USABLE:-false}")"
@@ -290,6 +291,67 @@ _report_authorization_json() {
   _meta_array "$rundir" limits_relaxed 'limits_relaxed' '    '
   _meta_array "$rundir" limits_clamped 'limits_clamped' '    '
   _meta_array "$rundir" limits_enforced 'limits_enforced' '    ' 1
+  printf '  },\n'
+}
+
+# The run's config record (docs/STEP-GUIDE-PLAN.md GUIDE-06, "What is
+# recorded for audit", item 2).  Rendered on EVERY run, unlike `authorization`
+# above: every command resolves config/scanner.conf, whether or not it ever
+# reaches a network.
+#
+# `_REPORT_CONFIG_KEYS` is the single, alphabetically-sorted (LC_ALL=C) list
+# of every scanner.conf key, so the rendered object's key order - and
+# therefore its bytes - is deterministic across two runs that resolved the
+# same settings, which is exactly what docs/STEP-GUIDE-PLAN.md GUIDE-06's own
+# load-bearing round-trip test needs: two runs configured by different routes
+# (a scripted guided answer stream, and the rendered command typed directly)
+# but resolving the identical settings must produce a byte-identical `config`
+# object.  scan.sh's `_scan_record_config` is the writer; this is the only
+# reader, so the two can never drift on which keys exist.
+readonly -a _REPORT_CONFIG_KEYS=(
+  circuit-breaker-failures circuit-breaker-window contact evidence-max-bytes
+  fail-on formats history-max-commits history-window-days http-timeout jobs
+  lock-stale-seconds max-matches-per-file max-redirects min-confidence
+  mutex-timeout-seconds paranoid-allow recommended-header redact-secrets
+  request-budget requests-per-second scratch-dir state-retain-runs
+  tls-expiry-warn-days
+)
+
+_report_config_is_list_key() {
+  case $1 in
+    formats | paranoid-allow | recommended-header) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_report_config_json() {
+  local rundir=$1 key first=1 line first2
+  printf '  "config": {\n'
+  printf '    "scanner_conf_sha256": %s,\n' "$(json_string "$(_meta_first "$rundir" config_scanner_conf_sha256)")"
+  printf '    "scope_conf_sha256": %s,\n' "$(json_string "$(_meta_first "$rundir" config_scope_conf_sha256)")"
+  printf '    "settings": {\n'
+  for key in "${_REPORT_CONFIG_KEYS[@]+"${_REPORT_CONFIG_KEYS[@]}"}"; do
+    (( first )) || printf ',\n'
+    first=0
+    printf '      %s: {"value": ' "$(json_string "$key")"
+    if _report_config_is_list_key "$key"; then
+      printf '['
+      first2=1
+      if [[ -r $rundir/meta/config_value_$key ]]; then
+        while IFS= read -r line; do
+          [[ -n $line ]] || continue
+          (( first2 )) || printf ','
+          first2=0
+          printf '%s' "$(json_string "$line")"
+        done <"$rundir/meta/config_value_$key"
+      fi
+      printf ']'
+    else
+      printf '%s' "$(json_string "$(_meta_first "$rundir" "config_value_$key")")"
+    fi
+    printf ', "source": %s}' "$(json_string "$(_meta_first "$rundir" "config_source_$key")")"
+  done
+  printf '\n    }\n'
   printf '  },\n'
 }
 

@@ -372,10 +372,22 @@ config_scanner_value() {
 # (`formats`, `paranoid-allow`).  CLI_CSV and the matching env var are
 # comma-separated, matching the `--format json,sarif,html,md` grammar in
 # docs/DESIGN.md §5.  Prints one entry per line, in resolution order.
+#
+# Publishes which level won in `CONFIG_SCANNER_LIST_LAST_SOURCE`, the identical
+# contract `config_scanner_value`'s own `CONFIG_SCANNER_LAST_SOURCE` documents -
+# a separate variable rather than the same one, since a caller resolving both a
+# scalar and a list key in sequence (docs/STEP-GUIDE-PLAN.md GUIDE-06's own
+# run.json `config` object, which records every scanner.conf key's value AND
+# source) must be able to read each one back without either call clobbering the
+# other's answer.  Deliberately NOT exported, for the identical reason.
+# shellcheck disable=SC2034
+CONFIG_SCANNER_LIST_LAST_SOURCE=''
+
 config_scanner_list() {
   local key=$1 cli_csv=${2:-}
   local env_name env_val src item list
   local -a items=()
+  CONFIG_SCANNER_LIST_LAST_SOURCE=''
 
   if [[ -n $cli_csv ]]; then
     src=cli
@@ -413,6 +425,8 @@ config_scanner_list() {
     fi
   done
 
+  # shellcheck disable=SC2034  # read by lib/report.sh's config object (GUIDE-06)
+  CONFIG_SCANNER_LIST_LAST_SOURCE=$src
   printf '%s\n' "${items[@]+"${items[@]}"}"
 }
 
