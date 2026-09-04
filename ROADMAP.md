@@ -93,9 +93,12 @@ and the compliance report, and live cloud scanning.
    all (see [`docs/STEP-GUIDE-PLAN.md`](docs/STEP-GUIDE-PLAN.md)'s Status section), but it adds no new
    scan coverage or output format of its own, only an easier way to invoke what already exists, so it
    sits last here on priority despite being the most fully unblocked item in this list.
-   GUIDE-01 (`lib/guide.sh` - the prompt gate, the signal trap, the menu primitives) and GUIDE-02
-   (`--guided`/`--print-command` flags, `scan_main` routing, the `_scan_check_required` split) have
-   landed; GUIDE-03 through GUIDE-07 remain unclaimed, and no menu is wired to any real scan yet.
+   GUIDE-01 (`lib/guide.sh` - the prompt gate, the signal trap, the menu primitives), GUIDE-02
+   (`--guided`/`--print-command` flags, `scan_main` routing, the `_scan_check_required` split) and
+   GUIDE-03 (the G1 scan-type menu, the G2 local-surface follow-ups, the G8 CI gate) have landed;
+   GUIDE-04 through GUIDE-07 remain unclaimed. A guided run can now compose a local (sast/sca/iac/all)
+   command through a real menu, but nothing hands the composed command off to a real scan yet - that is
+   GUIDE-06's review/run screen.
 
 Outside that ordering:
 

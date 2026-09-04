@@ -23,7 +23,7 @@ No design decision changes in this move; see "Relationship to the ten-step build
 one genuinely new thing this document adds - a stated position on whether guided mode is one of
 `docs/DESIGN.md` §13's ten steps.
 
-## Status: GUIDE-01 and GUIDE-02 landed; GUIDE-03 through GUIDE-07 remain unclaimed
+## Status: GUIDE-01 through GUIDE-03 landed; GUIDE-04 through GUIDE-07 remain unclaimed
 
 **GUIDE-01 has landed.** `lib/guide.sh` exists and ships `guide_may_prompt`, `guide_menu`, `guide_ask`,
 `guide_confirm`, and `_guide_shquote`, plus the guided-scope `INT`/`TERM` signal trap and the test-only
@@ -86,9 +86,63 @@ timestamp, normalised to a placeholder) a bare, piped `scan.sh` printed BEFORE a
 existed, and `tests/suites/scan.sh` diffs a real subprocess invocation against it on every run.
 
 `tests/suites/scan.sh` is the proof for everything above.
-GUIDE-03 through GUIDE-07 remain unclaimed and are otherwise unaffected by this landing (verified against
-the tree: no menu screen exists, `--guided` and `--print-command` do nothing beyond eligibility routing,
-and `GUIDE_SETTABLE_FLAGS` is still empty).
+
+**GUIDE-03 has now landed too: the G1 scan-type menu, the G2 local-surface follow-ups (path, languages,
+git history), and the G8 CI gate.**
+Both of GUIDE-02's own eligible-guided-mode call sites (`scan_main`'s bare-zero-argument branch and its
+`--guided`-explicit branch) now route to `_scan_guide_run` (`scan.sh`, new section 4d) instead of the
+blanket `_scan_guided_not_yet_available` refusal, which is now dead code and has been removed.
+G3 through G7 and G9 - the DAST branch and its affirmation, the `config/scope.conf` writer, cloud's own
+screen, and the review/run screen that actually hands the composed argv to `scan_parse_args` - remain
+GUIDE-04 through GUIDE-06's job, exactly as this row always scoped them.
+Without G9 there is nowhere for this ticket's own flow to hand off to, so it ends by printing the
+composed command (shell-quoted with `_guide_shquote`, the same quoting GUIDE-06's own review screen will
+reuse) and refusing loudly with the same "nothing was run and nothing is waiting for input" vocabulary
+`_scan_guided_not_yet_available` used for the whole feature before this ticket landed - never running the
+command unconfirmed, and never silently discarding the operator's answers, per the plan's own "Nothing is
+scanned until you confirm at the end."
+
+**Availability labels are derived through one shared function per prerequisite, reusing the real code
+path's own check rather than a second, separately-typed judgement** - this ticket's own acceptance
+criterion. `_scan_module_built` (already existed, `scan_usage_for`'s own check) decides whether each of
+sast/sca/iac/dast/cloud is looped back at G1 with an explanation; `sca_advisories_db_readable`
+(`modules/sca/engine.sh`) decides SCA's "no advisory database installed" label; `_have git` (the same
+primitive `require_cmd git` is built on) decides whether G2 even asks about `--history`; and `_have aws`
+is reserved for a future `cloud --live` screen, wired the identical way, though unreached today since
+`cloud` is not yet built.  `tests/suites/scan.sh` proves the acceptance criterion directly: `_guide_g1_reachable`
+(the shared function) is asserted equal to "has a `run.sh` on disk" both against the real tree and
+against a fixture tree naming an arbitrary subset, so the assertion discriminates rather than coincides.
+
+**One thing genuinely changed since this plan's own G1 mockup was written, and it is corrected here
+rather than reproduced stale: DAST landed (step 5 completed) after this plan's G1 screen was drafted, so
+`modules/dast/run.sh` exists on disk today and `_scan_module_built dast` is true.**
+Repeating the mockup's "planned but not built yet in this version" text for item 4 would itself be the
+false "not built" claim the shared probe exists to prevent - the exact "prerequisite honesty" this
+ticket's own title names, applied to a fact that changed after the plan was written rather than one the
+plan got wrong.  Picking dast at G1 therefore proceeds (no loop-back) with a note that guided target
+selection (GUIDE-04's G3) is not wired into `--guided` yet, skips G2 entirely (none of its follow-ups have
+a flag equivalent for `dast` - see `_SCAN_FLAG_KIND`), and reaches G8 directly.  `cloud` is handled by the
+identical code path for forward-compatibility, unreached in practice until a future ticket lands
+`modules/cloud/aws/run.sh`.
+
+**`scan.sh CMD --guided` skips G1 (the command was already typed), and every flag already supplied on the
+command line is never re-asked about at G2/G8** - the plan's own "must not prompt, ever" list ("'--guided'
+only ever fills flags that were not supplied on the command line ... this is also how it degrades to a
+no-op").  `_scan_guide_run`'s already-parsed `SCAN_FLAGS` becomes a `local -A preset`, read by G2/G8
+through bash's dynamic scoping rather than passed as a parameter (bash 4.2, this project's frozen minimum,
+has no `local -n` nameref for an associative array) - a fully-flagged `--guided` invocation therefore asks
+nothing at all and degrades straight to the composed-command preview, proven with `/dev/null` stdin so a
+real prompt would abort the test rather than pass by accident.
+
+`tests/suites/scan.sh` is the proof for this ticket too - the whole file, not only its own new section,
+since the two pre-existing "bare terminal" assertions this ticket's landing necessarily changed the
+behaviour of (an eligible guided invocation now reaches a real menu instead of an immediate refusal) are
+retargeted at the new EOF-at-menu outcome rather than left asserting stale text.
+`lib/guide.sh`'s `GUIDE_SETTABLE_FLAGS` now names `path`, `lang`, `history` and `fail-on` - the four flags
+a real prompt sets as of this ticket - and `tests/suites/scan.sh`'s own walk of that array against
+`_SCAN_FLAG_KIND` (GUIDE-02's own case, which ran zero iterations before this ticket) now actually
+asserts something.
+GUIDE-04 through GUIDE-07 remain unclaimed.
 
 Unlike step 6 or step 7, this work carries **no build-order gate at all** - it was never blocked on SAST,
 SCA/IaC, or DAST completing, and nothing here waits on step 6 (cloud) or step 7 (state) either.
@@ -98,8 +152,8 @@ The only dependencies are internal, ticket-to-ticket:
   dependency of any kind** and can start immediately.
 - **GUIDE-02** (`--guided`, `scan_main` routing, the `_scan_check_required` split) depended only on
   GUIDE-01, and has now **landed** - see the Status section above for the detail.
-- **GUIDE-03** (the scan-type menu, local-surface follow-ups, prerequisite honesty) depends only on
-  GUIDE-02.
+- **GUIDE-03** (the scan-type menu, local-surface follow-ups, prerequisite honesty) depended only on
+  GUIDE-02, and has now **landed** - see the Status section above for the detail.
 - **GUIDE-04** (the DAST branch and the affirmation) depends on GUIDE-02 and, structurally, on DAST-32
   (the flags a DAST prompt would emit have to exist before the prompt can emit them).
   **The DAST half of that dependency is already cleared**: DAST-32 landed as part of step 5, which
@@ -108,7 +162,7 @@ The only dependencies are internal, ticket-to-ticket:
   Verified directly rather than taken on the status section's word: `lib/http.sh` already enforces the
   conservative ceilings and refers operators to `--i-own-target` by name (`lib/http.sh` around line
   1168).
-  So GUIDE-04 today is blocked on GUIDE-02 alone, not on any DAST work.
+  GUIDE-03 has since landed too, so GUIDE-04 today is blocked on nothing.
 - **GUIDE-05** (the `config/scope.conf` record writer) depends on GUIDE-02, GUIDE-03, and
   `lib/records.sh`, which shipped at step 1 and needs nothing further.
 - **GUIDE-06** (the review screen, `--print-command`, the argv round-trip) depends on GUIDE-03, GUIDE-04
@@ -117,12 +171,12 @@ The only dependencies are internal, ticket-to-ticket:
   on GUIDE-06.
 
 **In short: this is a single chain, GUIDE-01 through GUIDE-07 in that order (GUIDE-04 and GUIDE-05 can
-run in parallel once GUIDE-03 lands) - GUIDE-01 and GUIDE-02 have now landed, and GUIDE-03 through
-GUIDE-07 remain unclaimed - and every "blocked" reading this design once carried while DAST was still
-unbuilt is stale.**
+run in parallel now that GUIDE-03 has landed) - GUIDE-01 through GUIDE-03 have now landed, and GUIDE-04
+through GUIDE-07 remain unclaimed - and every "blocked" reading this design once carried while DAST was
+still unbuilt is stale.**
 The old framing (visible in `docs/STEP5-DAST-PLAN.md`'s edit history) treated GUIDE-04 as waiting on DAST
-completing; DAST is now complete, so the honest statement of what blocks GUIDE-04 today is "GUIDE-03
-hasn't landed," the same as every other ticket in the chain past GUIDE-02.
+completing; DAST is now complete and GUIDE-03 has landed, so GUIDE-04 and GUIDE-05 are both startable
+today with nothing in front of either.
 See `ROADMAP.md` for where this plan sits in the project's overall priority order relative to step 6,
 step 7 and step 10 - that ordering, not this status section, is the one to check first.
 

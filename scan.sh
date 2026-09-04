@@ -802,18 +802,452 @@ _scan_check_affirmation() {
 # - an absence here is not a clean scan, so it must not exit 0 as if it
 # considered one.  Exit 2 (usage): nothing was run, and nothing is waiting
 # for input, the identical vocabulary the plan uses for the ineligible case.
-_scan_guided_not_yet_available() {
-  scan_usage >&2
+# Superseded by `_scan_guide_run` below (docs/STEP-GUIDE-PLAN.md GUIDE-03):
+# once a real G1 menu exists, an eligible invocation has somewhere real to go
+# rather than this blanket refusal - see that function's own header for why
+# it still ends in a refusal of its own, just a later and more specific one.
+
+# -----------------------------------------------------------------------------
+# 4d. The guided menu flow (docs/STEP-GUIDE-PLAN.md GUIDE-03): G1 (scan
+#     type), G2 (the local-surface follow-ups: path, languages, git history)
+#     and G8 (the CI gate).  G3 through G7 and G9 - the DAST branch and its
+#     affirmation, cloud's own screen, and the review/run screen that
+#     actually hands the composed argv to scan_parse_args - are later
+#     tickets (GUIDE-04 through GUIDE-06) and are deliberately NOT
+#     implemented here (this ticket's own scope line: "not the DAST branch
+#     or affirmation, not the scope.conf writer").  Without G9 there is no
+#     confirmation screen to hand off through, and G1's own header text
+#     below promises "Nothing is scanned until you confirm at the end"
+#     (docs/STEP-GUIDE-PLAN.md's own G1 mockup) - so this flow ends by
+#     PRINTING the composed command it would have offered to run and
+#     refusing loudly, the same "not built in this version yet, nothing was
+#     run" vocabulary `_scan_guided_not_yet_available` used for the whole
+#     feature before this ticket landed, rather than either running the
+#     command unconfirmed or silently discarding the operator's answers.
+#
+# AVAILABILITY LABELS come from the SAME probe scan_dispatch itself uses,
+# through ONE shared function per prerequisite - this ticket's own
+# acceptance criterion, so the menu can never advertise a capability dispatch
+# will not deliver:
+#   - `_scan_module_built` (section 2b above) - exactly the check
+#     scan_dispatch makes before sourcing a module's run.sh.
+#   - `sca_advisories_db_readable` (modules/sca/engine.sh) for SCA's
+#     data/advisories.db - the same predicate modules/sca/run.sh gates on.
+#   - `_have git` (lib/core.sh) for --history - the same primitive
+#     scan_main's own `require_cmd git` call (section 8 below) is built on.
+#   - `_have aws` for `cloud --live` - the same call scan_main's own cloud
+#     dispatch arm already makes (`command -v aws`; `_have` is its exact
+#     definition).
+#   - `config_scope_load` plus `records_count scope` for DAST's target list.
+#     Reserved for GUIDE-04's own G3 screen; this ticket does not read it,
+#     since G1/G2/G8 never need to know how many targets exist, only
+#     whether the dast MODULE itself is built.
+#
+# A NOTE ON DAST'S LABEL, AND WHY IT DIFFERS FROM THIS PLAN'S OWN MOCKUP.
+# docs/STEP-GUIDE-PLAN.md's G1 mockup shows item 4 (dast) as "not built yet
+# in this version" - true when that mockup was written, but step 5 (DAST)
+# has SINCE landed in full (AGENTS.md "Current position"): modules/dast/run.sh
+# exists on disk today, so `_scan_module_built dast` is true, and repeating
+# the mockup's stale text here would be exactly the false "not built" claim
+# the shared module-built probe exists to prevent - the same "prerequisite
+# honesty" this ticket's own title names, applied to a fact that changed
+# after the plan was written rather than one the plan got wrong.  What is
+# honestly still true is narrower: GUIDE-04 (G3 target selection, G5
+# intensity, G6 the affirmation) has not landed, so guided mode cannot yet
+# COLLECT a --target.  Picking "dast" here therefore skips G2 (none of its
+# follow-ups apply to dast anyway - see _SCAN_FLAG_KIND) and says so plainly
+# via `_guide_g1_note_guided_setup_partial` rather than silently composing a
+# `scan.sh dast` with no --target that `_scan_check_required` would refuse
+# the instant it was ever actually run.  `cloud` is handled by the identical
+# path, purely for forward-compatibility: it is not built today
+# (`_scan_module_built cloud` is false), so this branch is unreached in
+# practice until a future ticket lands `modules/cloud/aws/run.sh` - at which
+# point it behaves like dast does today rather than needing a second fix.
+# -----------------------------------------------------------------------------
+
+# `_guide_g1_reachable CMD` - 0 when picking CMD at G1 should proceed past the
+# menu (the underlying module actually exists), 1 when it must loop back with
+# an explanation.  Literally `_scan_module_built` - see this section's own
+# header for why a second, separately-typed judgement here would be exactly
+# the drift the acceptance criterion guards against.
+_guide_g1_reachable() {
+  _scan_module_built "$1"
+}
+
+# `_guide_sca_advisories_ready` - true only when the sca module is built AND
+# its data/advisories.db is readable.  Sources modules/sca/engine.sh purely
+# for its function definitions (the identical guarded-source-for-probing-only
+# idiom `_scan_dast_phase_status` above already uses for
+# modules/dast/engine.sh) - never modules/sca/run.sh, which docs/DESIGN.md's
+# own build-order note and that file's own header both state plainly has NO
+# "sourced once" guard and does real scan work on every source.
+_guide_sca_advisories_ready() {
+  _guide_g1_reachable sca || return 1
+  if [[ -z ${SCOURSH_SCA_ENGINE_SOURCED:-} && -f $SCOURSH_INSTALL_ROOT/modules/sca/engine.sh ]]; then
+    # shellcheck disable=SC1091
+    source "$SCOURSH_INSTALL_ROOT/modules/sca/engine.sh"
+  fi
+  declare -F sca_advisories_db_readable >/dev/null && sca_advisories_db_readable
+}
+
+# `_guide_g1_status CMD` - the trailing status word(s) for CMD's menu row.
+_guide_g1_status() {
+  local cmd=$1
+  case $cmd in
+    sast | iac)
+      if _guide_g1_reachable "$cmd"; then printf 'ready'; else printf 'not built yet in this version'; fi
+      ;;
+    sca)
+      if ! _guide_g1_reachable sca; then
+        printf 'not built yet in this version'
+      elif _guide_sca_advisories_ready; then
+        printf 'ready'
+      else
+        printf 'no advisory database installed'
+      fi
+      ;;
+    dast | cloud)
+      if _guide_g1_reachable "$cmd"; then
+        printf 'ready (guided setup for this is partial - see below)'
+      else
+        printf 'not built yet in this version'
+      fi
+      ;;
+  esac
+}
+
+# `_guide_g1_line DESC CMDTEXT STATUS` - one aligned menu row.
+_guide_g1_line() {
+  printf '%-44s %-15s %s' "$1" "$2" "$3"
+}
+
+# `_guide_g1_explain_not_built CMD` - the plan's own G1 mockup explanation
+# ("planned but not built yet in this version"), generalised to whichever
+# item was actually picked rather than hardcoded to dast/cloud, since which
+# modules are built is exactly the fact this whole section derives at
+# menu-build time instead of assuming.
+_guide_g1_explain_not_built() {
+  local cmd=$1 label
+  case $cmd in
+    sast) label='Source code scanning (sast)' ;;
+    sca) label='Dependency and lockfile scanning (sca)' ;;
+    iac) label='Infrastructure-as-code scanning (iac)' ;;
+    dast) label='A running web application (dast)' ;;
+    cloud) label='An AWS account, read-only (cloud)' ;;
+  esac
   {
     printf '\n'
-    printf '%s\n' 'Guided interactive setup (--guided, or a bare scan.sh) is not built in this'
-    printf '%s\n' 'version of scoursh yet (docs/STEP-GUIDE-PLAN.md GUIDE-03 onward).  Nothing was'
-    printf '%s\n' 'run and nothing is waiting for input.'
-    printf '\n'
-    printf '%s\n' 'Use flags directly instead - see the command list above, or:'
-    printf '%s\n' '  scan.sh <command> --help'
+    printf '  %s is planned but not built yet in this version of\n' "$label"
+    printf '  scoursh.  Nothing runs for it, and walking through questions for a scan\n'
+    printf '  that cannot do anything yet would only waste your time - so this returns\n'
+    printf '  you to the menu instead.\n\n'
   } >&2
-  die "$SCOURSH_EXIT_USAGE" 'guided mode is not built in this version; nothing was run and nothing is waiting for input'
+}
+
+# `_guide_g1_explain_sca_db_missing` - docs/STEP-GUIDE-PLAN.md's own G1
+# wording: absence here means unknown, never safe, and the operator may
+# still proceed since the module already emits its own coverage_reduction.
+_guide_g1_explain_sca_db_missing() {
+  {
+    printf '\n'
+    printf '  No advisory database is installed (data/advisories.db), so a dependency\n'
+    printf '  scan has nothing to match a package against.  A run that finds nothing\n'
+    printf '  because its data is missing is not a run that found nothing wrong -\n'
+    printf '  absence here means unknown, never safe.\n\n'
+    printf '  To install it on a networked machine:\n'
+    printf '    tools/vendor-engines.sh advisories --all\n\n'
+    printf '  You can still proceed; the run will record this as a coverage gap.\n\n'
+  } >&2
+}
+
+# `_guide_g1_note_guided_setup_partial CMD` - dast/cloud only: the module is
+# built, but GUIDE-04 (dast's target/intensity/affirmation screens) or a
+# future cloud ticket has not landed, so guided mode can compose only
+# CMD's --fail-on today.  Not a refusal - the menu still proceeds - only
+# the prerequisite-honesty note this ticket's own title promises.
+_guide_g1_note_guided_setup_partial() {
+  local cmd=$1 example
+  case $cmd in
+    dast) example='--target NAME' ;;
+    cloud) example='--live' ;;
+  esac
+  {
+    printf '\n'
+    printf '  %s scanning is built, but its guided setup beyond the scan type and the\n' "$cmd"
+    printf '  CI gate is not wired into --guided yet in this version\n'
+    printf '  (docs/STEP-GUIDE-PLAN.md GUIDE-04 onward).  Only --fail-on is asked below.\n'
+    printf '  Once you have a target, run it directly:  scan.sh %s %s ...\n\n' "$cmd" "$example"
+  } >&2
+}
+
+# G1 - docs/STEP-GUIDE-PLAN.md's own scan-type menu.  Sets GUIDE_G1_COMMAND
+# (never prints it - guide_menu's own header explains why a die-capable
+# function must never be read through `$(...)`) and returns 0 once a
+# proceedable command has been chosen, or exits directly (Quit, or any
+# die() a called primitive raises).  Menu items are FIXED in number and
+# order, per the plan's own "The menu flow" section - only the trailing
+# status text and what happens on selection are derived.
+GUIDE_G1_COMMAND=''
+_guide_g1_scan_type() {
+  {
+    printf 'scoursh %s - guided setup\n' "$(scoursh_version)"
+    printf -- '--------------------------------\n\n'
+    printf '  This asks a few questions and then shows you the exact command it would\n'
+    printf '  run, so you can paste it into CI next time.  Nothing is scanned until you\n'
+    printf '  confirm at the end, and every answer here has a command-line flag.\n\n'
+    printf '  Press Enter at any menu to see the list again.\n'
+    printf '  To skip this and use flags directly:  scan.sh --help\n'
+    printf '  To turn it off permanently:           export SCOURSH_NO_PROMPT=1\n'
+  } >&2
+  while :; do
+    local -a items=(
+      "$(_guide_g1_line 'Source code' 'scan.sh sast' "$(_guide_g1_status sast)")"
+      "$(_guide_g1_line 'Dependencies and lockfiles' 'scan.sh sca' "$(_guide_g1_status sca)")"
+      "$(_guide_g1_line 'Infrastructure as code' 'scan.sh iac' "$(_guide_g1_status iac)")"
+      "$(_guide_g1_line 'A running web application over HTTP' 'scan.sh dast' "$(_guide_g1_status dast)")"
+      "$(_guide_g1_line 'An AWS account, read-only' 'scan.sh cloud' "$(_guide_g1_status cloud)")"
+      "$(_guide_g1_line 'Everything this checkout can actually do' 'scan.sh all' 'runs every ready surface')"
+      'Quit without scanning'
+    )
+    printf '\nWhat do you want to scan?\n\n' >&2
+    guide_menu 'pick a number> ' "${items[@]+"${items[@]}"}"
+    case $GUIDE_MENU_REPLY in
+      1)
+        if _guide_g1_reachable sast; then GUIDE_G1_COMMAND=sast; return 0; fi
+        _guide_g1_explain_not_built sast
+        ;;
+      2)
+        if ! _guide_g1_reachable sca; then _guide_g1_explain_not_built sca; continue; fi
+        _guide_sca_advisories_ready || _guide_g1_explain_sca_db_missing
+        GUIDE_G1_COMMAND=sca
+        return 0
+        ;;
+      3)
+        if _guide_g1_reachable iac; then GUIDE_G1_COMMAND=iac; return 0; fi
+        _guide_g1_explain_not_built iac
+        ;;
+      4)
+        if _guide_g1_reachable dast; then
+          _guide_g1_note_guided_setup_partial dast
+          GUIDE_G1_COMMAND=dast
+          return 0
+        fi
+        _guide_g1_explain_not_built dast
+        ;;
+      5)
+        if _guide_g1_reachable cloud; then
+          _guide_g1_note_guided_setup_partial cloud
+          GUIDE_G1_COMMAND=cloud
+          return 0
+        fi
+        _guide_g1_explain_not_built cloud
+        ;;
+      6)
+        GUIDE_G1_COMMAND=all
+        return 0
+        ;;
+      7)
+        printf '%s\n' 'Cancelled.  Nothing was scanned.' >&2
+        exit "$SCOURSH_EXIT_OK"
+        ;;
+    esac
+  done
+}
+
+# G2 - docs/STEP-GUIDE-PLAN.md's own local-surface follow-ups: path, then
+# languages, then git history.  Only asked for a command that actually
+# accepts the matching flag (`scan_flag_kind` is the same membership test
+# the parser itself uses), which is what keeps sca/iac from being asked a
+# --lang/--history question neither command's own _SCAN_FLAG_KIND entry
+# accepts - "every prompt has a flag equivalent" (docs/STEP-GUIDE-PLAN.md,
+# "The one architectural decision everything else follows from") forbids
+# asking one that does not.
+#
+# PRESET is `_scan_guide_run`'s own `local -A preset` (its already-parsed
+# SCAN_FLAGS from `scan.sh CMD --guided ...`), read here by BASH'S DYNAMIC
+# SCOPING rather than passed as a parameter: bash 4.2 (this project's frozen
+# minimum, tension 24) has no `local -n` nameref, so an associative array
+# cannot cross a function boundary by name the way a scalar can via the
+# `_scan_capture`-style indirect-assignment idiom - the identical
+# dynamic-scoping contract scan.sh's own header already documents for
+# `input`/`gate` between scan_main and a sourced module's run.sh.  This
+# function is therefore called ONLY from `_scan_guide_run`, which declares
+# `preset` immediately above every call - never `local preset` a second time
+# here, which would shadow it with an unrelated empty variable instead of
+# reading the caller's.
+#
+# The plan's own "'--guided' only ever fills flags that were not supplied on
+# the command line" rule (docs/STEP-GUIDE-PLAN.md, "must not prompt, ever"):
+# a key present in PRESET is never asked about here at all; `_scan_guide_run`
+# already carries it into the composed preview straight from PRESET, so
+# skipping it here is what keeps `scan.sh sast --path /x --guided` from
+# re-asking a question the operator just answered on the command line.  An
+# empty PRESET (the bare zero-argument `scan.sh` path, where no flag of any
+# kind was typed) asks every question below unconditionally.
+#
+# Sets GUIDE_G2_FLAGS (flag name -> value; a bool's value is the literal
+# string "true") to exactly what THIS function asked and was told - never a
+# copy of PRESET, which `_scan_guide_run` already has.  Returns 1 - never
+# dies - when a bad --path was re-asked once and is still bad; PRESET empty
+# means "go back to G1" (the plan's own G2 row); PRESET non-empty means there
+# is no G1 to go back to (the command was already given explicitly), and the
+# caller turns that into an ordinary refusal instead.
+declare -A GUIDE_G2_FLAGS=()
+_guide_g2_local_followups() {
+  local cmd=$1
+  GUIDE_G2_FLAGS=()
+
+  if [[ -z ${preset[path]+set} ]]; then
+    local path='' resolved='' attempts=0
+    while :; do
+      guide_ask 'Where should scoursh look?  [.]: ' '.'
+      path=$GUIDE_ASK_REPLY
+      resolved=$(realpath_of "$path")
+      [[ -e $resolved && -r $resolved ]] && break
+      attempts=$(( attempts + 1 ))
+      printf "  '%s' does not exist, or is not readable.\n" "$path" >&2
+      if (( attempts >= 2 )); then
+        return 1
+      fi
+    done
+    [[ $path == . ]] || GUIDE_G2_FLAGS[path]=$path
+  fi
+
+  if scan_flag_kind "$cmd" lang >/dev/null 2>&1 && [[ -z ${preset[lang]+set} ]]; then
+    while :; do
+      guide_ask 'Limit to which languages?  (py,js,go,java, comma-separated)  [all]: ' ''
+      [[ -z $GUIDE_ASK_REPLY ]] && break
+      if scan_validate_flag_value lang "$GUIDE_ASK_REPLY"; then
+        GUIDE_G2_FLAGS[lang]=$GUIDE_ASK_REPLY
+        break
+      fi
+      printf "  '%s' is not a valid language list (py, js, go, java only).\n" "$GUIDE_ASK_REPLY" >&2
+    done
+  fi
+
+  if scan_flag_kind "$cmd" history >/dev/null 2>&1 && [[ -z ${preset[history]+set} ]]; then
+    if _have git; then
+      printf '\nReplay the secret checks across this repository'\''s git history too?\n\n' >&2
+      guide_menu 'pick a number> ' \
+        'No  - just scan the working tree' \
+        'Yes - also replay the secret checks across git history'
+      [[ $GUIDE_MENU_REPLY == 2 ]] && GUIDE_G2_FLAGS[history]=true
+    else
+      printf '\n  --history is unavailable here: git was not found on PATH.\n' >&2
+    fi
+  fi
+  return 0
+}
+
+# G8 - docs/STEP-GUIDE-PLAN.md's own CI gate: whether the run should exit
+# non-zero on findings, and at what severity.  Item 1 (no gate at all) is
+# the conservative option and matches config_scanner_value's own "none"
+# default (lib/config.sh) - the plan's own "the conservative option is item
+# 1 on every fixed menu" rule.  PRESET is the same caller's-`local`,
+# read-by-dynamic-scoping array G2 reads - see that function's own header for
+# why it is never a parameter on a bash 4.2 minimum - for the identical
+# "never re-ask a flag already supplied" reason.  Sets GUIDE_G8_FLAGS the
+# same way G2 sets GUIDE_G2_FLAGS.
+declare -A GUIDE_G8_FLAGS=()
+_guide_g8_ci_gate() {
+  GUIDE_G8_FLAGS=()
+  [[ -z ${preset[fail-on]+set} ]] || return 0
+  printf '\nShould this fail the build (a non-zero exit) when it finds something?\n\n' >&2
+  guide_menu 'pick a number> ' \
+    'No  - just report; always exit 0 regardless of findings' \
+    'Yes - fail at critical' \
+    'Yes - fail at high or above' \
+    'Yes - fail at medium or above' \
+    'Yes - fail at low or above' \
+    'Yes - fail at info or above (fails if anything at all was found)'
+  case $GUIDE_MENU_REPLY in
+    2) GUIDE_G8_FLAGS[fail-on]=critical ;;
+    3) GUIDE_G8_FLAGS[fail-on]=high ;;
+    4) GUIDE_G8_FLAGS[fail-on]=medium ;;
+    5) GUIDE_G8_FLAGS[fail-on]=low ;;
+    6) GUIDE_G8_FLAGS[fail-on]=info ;;
+  esac
+}
+
+# `_scan_guide_run [CMD]` - the orchestrator scan_main calls once guided mode
+# is eligible (section 8 below).  CMD is empty for the bare zero-argument
+# path (nothing was typed at all, so G1 always runs and no flag can already
+# be present) and the already-parsed SCAN_COMMAND for `scan.sh CMD --guided`
+# (docs/STEP-GUIDE-PLAN.md: "scan.sh dast --guided must work" - the command
+# was already given explicitly, so G1 is skipped, and SCAN_FLAGS is this
+# invocation's own already-typed flags, threaded through G2/G8 as PRESET so
+# neither re-asks a question the command line already answered).  Runs G2 for
+# whichever command accepts a --path, then G8, then the "no G9 yet" refusal
+# this section's own header explains.  Composes the preview command with
+# `_guide_shquote`, the same quoting GUIDE-06's own review screen will
+# eventually use, so the preview text an operator sees today is already
+# byte-for-byte what a later ticket will actually execute.
+_scan_guide_run() {
+  local cmd=${1:-}
+  local -A preset=()
+  if [[ -n $cmd ]]; then
+    local k
+    for k in "${!SCAN_FLAGS[@]}"; do
+      [[ $k == guided || $k == print-command ]] && continue
+      preset[$k]=${SCAN_FLAGS[$k]}
+    done
+  fi
+
+  if [[ -z $cmd ]]; then
+    while :; do
+      _guide_g1_scan_type
+      cmd=$GUIDE_G1_COMMAND
+      if scan_flag_kind "$cmd" path >/dev/null 2>&1; then
+        _guide_g2_local_followups "$cmd" && break
+        printf '  Returning to the scan-type menu.\n' >&2
+        continue
+      fi
+      break
+    done
+  elif scan_flag_kind "$cmd" path >/dev/null 2>&1; then
+    _guide_g2_local_followups "$cmd" \
+      || die "$SCOURSH_EXIT_USAGE" "--path was asked twice and neither answer resolved to a readable directory; nothing was run and nothing is waiting for input - re-run with a valid --path instead"
+  fi
+
+  local -A flags=()
+  local k
+  for k in "${!preset[@]}"; do
+    flags[$k]=${preset[$k]}
+  done
+  for k in "${!GUIDE_G2_FLAGS[@]}"; do
+    flags[$k]=${GUIDE_G2_FLAGS[$k]}
+  done
+
+  _guide_g8_ci_gate
+  for k in "${!GUIDE_G8_FLAGS[@]}"; do
+    flags[$k]=${GUIDE_G8_FLAGS[$k]}
+  done
+
+  # A deterministic key order for the preview only - `mapfile` would discard
+  # `sort`'s own exit status (tension 4 rule 4, lint-shell.sh), so this reads
+  # it back the same `while read` way `_scan_capture_list` above does.
+  local -a sorted_keys=()
+  if (( ${#flags[@]} > 0 )); then
+    local _guide_sk
+    while IFS= read -r _guide_sk; do
+      [[ -n $_guide_sk ]] && sorted_keys+=("$_guide_sk")
+    done < <(printf '%s\n' "${!flags[@]}" | LC_ALL=C sort)
+  fi
+  local -a argv=(scan.sh "$cmd")
+  for k in "${sorted_keys[@]+"${sorted_keys[@]}"}"; do
+    argv+=("--$k")
+    [[ ${flags[$k]} == true ]] || argv+=("$(_guide_shquote "${flags[$k]}")")
+  done
+
+  {
+    printf '\nReady.\n\n'
+    printf '  %s\n\n' "${argv[*]}"
+    printf 'The review-and-run screen (docs/STEP-GUIDE-PLAN.md GUIDE-06) is not built in\n'
+    printf 'this version of scoursh yet.  Nothing was run and nothing is waiting for\n'
+    printf 'input.  Run the command above directly, or see:\n'
+    printf '  scan.sh %s --help\n' "$cmd"
+  } >&2
+  die "$SCOURSH_EXIT_USAGE" 'the guided review/run screen is not built in this version; nothing was run and nothing is waiting for input'
 }
 
 # -----------------------------------------------------------------------------
@@ -1157,8 +1591,13 @@ scan_main() {
   # specifically because a bare `scan.sh` was never an EXPLICIT ask the way
   # `--guided` is: the plan's own "must not prompt" list names only the
   # terminal-and-eligible case for this loud "not built yet" refusal.
+  #
+  # docs/STEP-GUIDE-PLAN.md GUIDE-03: `_scan_guide_run` (section 4d above)
+  # replaces GUIDE-02's blanket `_scan_guided_not_yet_available` refusal with
+  # the real G1/G2/G8 menu flow now that one exists - see that function's own
+  # header for why it still ends in a refusal of its own (G9 has not landed).
   if (( $# == 0 )) && guide_may_prompt true; then
-    _scan_guided_not_yet_available
+    _scan_guide_run
   fi
 
   scan_parse_args "$@"
@@ -1175,7 +1614,7 @@ scan_main() {
   # (and everything after it) ever runs.
   if [[ ${SCAN_FLAGS[guided]:-} == true ]]; then
     if guide_may_prompt true; then
-      _scan_guided_not_yet_available
+      _scan_guide_run "$SCAN_COMMAND"
     else
       scan_usage >&2
       die "$SCOURSH_EXIT_USAGE" \
