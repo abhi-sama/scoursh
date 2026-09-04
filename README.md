@@ -490,15 +490,24 @@ the tool rather than in a pipeline:
   explicit affected-version list, which tension 25's design deliberately does not guess from.
   A fresh `bulk --all` import prints exactly how much of each ecosystem this leaves out; it is not a
   failed import, and there is no flag that changes it.
-- **`--format sarif` writes a document with no findings in it yet.**
-  `--format` itself is live: it gates `findings.json`, `report.md`, `report.html`, and now
-  `report.sarif`, so `--format sarif` alone writes `report.sarif` plus the two mandatory records
-  (`findings.jsonl`, `run.json`) and none of the other three.
-  `report.sarif` is a real SARIF 2.1.0 document - `tool.driver` (including the full loaded check
-  registry as `rules[]`), `artifacts[]`, `invocations[]` - but `runs[0].results[]` is still empty,
-  because the per-finding mapping (SARIF-04) has not landed.
-  Do not point a SARIF-consuming CI step at a `scoursh` run yet; see
-  [`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md).
+- **`--format sarif` writes a complete SARIF document, and it deliberately omits `security-severity`.**
+  `--format` itself is live: it gates `findings.json`, `report.md`, `report.html`, and `report.sarif`,
+  so `--format sarif` alone writes `report.sarif` plus the two mandatory records (`findings.jsonl`,
+  `run.json`) and none of the other three.
+  `report.sarif` is a real, schema-validated SARIF 2.1.0 document that carries this run's actual
+  findings - `tool.driver` (including the full loaded check registry as `rules[]`), `artifacts[]`,
+  `invocations[]`, and a fully-mapped `runs[0].results[]`, each result carrying both a physical and a
+  logical location.
+  It is safe to point a code-scanning CI step at it.
+  What it deliberately never emits is `security-severity` - the field most consumers read first -
+  because scoursh's CVSS score is an audit trail for how the rubric adjusted severity, not a second
+  severity measurement, and publishing it there would contradict `result.level`; see
+  [`docs/USAGE.md`'s SARIF output section](docs/USAGE.md#sarif-output) for the full reasoning and for
+  what is deliberately excluded.
+  Two things still trail the rest of the run's honesty story rather than SARIF's own scope: every
+  result reads `status: "new"` and `suppressions[]` is always empty, because both need the
+  not-yet-built persistent run state and baseline suppression (see the `state/` items below);
+  `partialFingerprints` is what lets a consumer do its own tracking in the meantime.
 - **`--baseline FILE` is parsed and never read.**
   Baseline suppression arrives with persistent run state.
   A path that does not exist is accepted with no error, no warning, and no record of the flag in
@@ -535,11 +544,13 @@ order:
 1. **Persistent run state** (`state/`) - needed before `--baseline` suppression, a `--fail-on-new` that
    means anything, and the `diff`/`report` subcommands do real work; all are currently no-ops.
    A full ticket plan exists here too ([`docs/STEP7-STATE-PLAN.md`](docs/STEP7-STATE-PLAN.md)).
-2. **SARIF output** - `--format sarif` now writes a real SARIF 2.1.0 document (`tool.driver`,
-   `rules[]`, `artifacts[]`, `invocations[]`), but `results[]` is still empty - it does not yet carry
-   this run's findings.
-3. **The compliance-mapping report.**
-4. **Live cloud/CSPM scanning** (`scan.sh cloud`) - fully planned
+2. **The compliance-mapping report.**
+   The SARIF half of step 10 is done - see [`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md)'s
+   status table (SARIF-01 through SARIF-06, all landed).
+   What remains of step 10 is grouping findings by OWASP Top 10 and CIS AWS Benchmark control id; the
+   OWASP half is unblocked today, and the CIS half needs live cloud scanning (below) for anything to
+   group.
+3. **Live cloud/CSPM scanning** (`scan.sh cloud`) - fully planned
    ([`docs/STEP6-CLOUD-PLAN.md`](docs/STEP6-CLOUD-PLAN.md)), and last in the queue.
    The subcommand is inert today with or without `--live`; there is no `modules/cloud/` in the tree at
    all.
