@@ -606,14 +606,14 @@ t_case 'case 3: does not fire, every prior contributor pair covered -> fixed'
 printf 'fpA\tSAST-A-A-01\t.\t\nfpC\tSAST-C-C-01\t.\t\n' >"$PS"
 printf 'SAST-A-A-01\t.\nSAST-B-B-01\t.\nSAST-C-C-01\t.\n' >"$CN"
 printf 'SAST-A-A-01\t.\nSAST-B-B-01\t.\nSAST-C-C-01\t.\n' >"$CP"
-out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' "$PS" "$CN" "$CP" '')
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' usable "$PS" "$CN" "$CP" '')
 assert_eq fixed "${out%%$'\t'*}" 'the chain is broken and every contributor was reassessed'
 
 t_case 'case 4: one prior contributor cell not visited (--regions narrowed) -> unknown'
 # Fails under classification keyed on the bare check id ("ran somewhere").
 printf 'fpA\tSAST-A-A-01\tus-east-1\t\nfpC\tSAST-C-C-01\teu-west-1\t\n' >"$PS"
 printf 'SAST-A-A-01\tus-east-1\nSAST-B-B-01\tus-east-1\nSAST-C-C-01\tus-east-1\n' >"$CN"
-out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' "$PS" "$CN" "$CP" '')
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' usable "$PS" "$CN" "$CP" '')
 assert_eq unknown "${out%%$'\t'*}" 'the cell where the contributor could have fired was never revisited'
 
 t_case 'case 5: the composite record itself was dropped by a filter -> unknown'
@@ -627,7 +627,7 @@ t_case 'case 5: the composite record itself was dropped by a filter -> unknown'
 # 5 note says the same.
 printf 'fpA\tSAST-A-A-01\t.\t\nfpC\tSAST-C-C-01\t.\t\n' >"$PS"
 printf 'SAST-A-A-01\t.\nSAST-B-B-01\t.\nSAST-C-C-01\t.\n' >"$CN"
-out=$(SCOURSH_SELECTED_CHECKS='SAST-A-A-01' classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' "$PS" "$CN" "$CP" '')
+out=$(SCOURSH_SELECTED_CHECKS='SAST-A-A-01' classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' usable "$PS" "$CN" "$CP" '')
 assert_eq unknown "${out%%$'\t'*}" 'a composite that was not selected is unknown'
 assert_contains "$out" composite-not-selected 'and run.json says why'
 
@@ -638,7 +638,7 @@ t_case 'case 6: a listed any-of alternative whose prior cells were not all revis
 printf 'fpA\tSAST-A-A-01\tus-east-1\t\nfpB\tSAST-B-B-01\tus-east-1\t\n' >"$PS"
 printf 'SAST-A-A-01\tus-east-1\nSAST-B-B-01\tus-east-1\nSAST-C-C-01\tus-east-1\n' >"$CN"
 printf 'SAST-C-C-01\tus-east-1\nSAST-C-C-01\teu-west-1\n' >"$CP"
-out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpB' "$PS" "$CN" "$CP" '')
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpB' usable "$PS" "$CN" "$CP" '')
 assert_eq unknown "${out%%$'\t'*}" 'the prior cell set is not a subset of this run cells'
 
 t_case 'case 9: an alternative never covered in EITHER run -> unknown'
@@ -650,7 +650,7 @@ t_case 'case 9: an alternative never covered in EITHER run -> unknown'
 printf 'fpA\tSAST-A-A-01\t.\t\nfpB\tSAST-B-B-01\t.\t\n' >"$PS"
 printf 'SAST-A-A-01\t.\nSAST-B-B-01\t.\n' >"$CN"      # C has NO entry at all
 : >"$CP"
-out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpB' "$PS" "$CN" "$CP" '')
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpB' usable "$PS" "$CN" "$CP" '')
 assert_eq unknown "${out%%$'\t'*}" 'a check with no entry in this run covered_checks is never covered'
 
 t_case 'case 7: a SAST-HIST-* contributor inside a covered cell whose boundary receded -> unknown'
@@ -662,16 +662,58 @@ records_load "$W/hist.rules" derived derivedset >/dev/null 2>&1
 printf 'fpH\tSAST-HIST-K-01\t.\t2025-01-01T00:00:00Z\nfpB\tSAST-B-B-01\t.\t\n' >"$PS"
 printf 'SAST-HIST-K-01\t.\nSAST-B-B-01\t.\n' >"$CN"
 : >"$CP"
-out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpH,fpB' "$PS" "$CN" "$CP" '2026-01-01T00:00:00Z')
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpH,fpB' usable "$PS" "$CN" "$CP" '2026-01-01T00:00:00Z')
 assert_eq unknown "${out%%$'\t'*}" 'the contributor could not have been seen by this run walk'
-out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpH,fpB' "$PS" "$CN" "$CP" '2024-01-01T00:00:00Z')
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpH,fpB' usable "$PS" "$CN" "$CP" '2024-01-01T00:00:00Z')
 assert_eq fixed "${out%%$'\t'*}" 'and it IS fixed when the boundary still reaches it'
 
 t_case 'case 8: a prior composite with no recorded contributors -> unknown'
 # Fails under the "covered in at least one cell" fallback applied to this branch.
-out=$(classify_derived COMPOSITE-TEST-CHAIN . false '' "$PS" "$CN" "$CP" '')
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false '' usable "$PS" "$CN" "$CP" '')
 assert_eq unknown "${out%%$'\t'*}" 'nothing was learned, so nothing is claimed'
 assert_contains "$out" contributors-unavailable 'and the reason is recorded'
+
+# ---------------------------------------------------------------------------
+printf '\n-- STATE-05: classify_derived wired against real prior state (GUARD) --\n'
+# ---------------------------------------------------------------------------
+# `classify_derived` used to know nothing about tension 12's own guard - the
+# same fp_schema/scan_root_id incomparability that protects every ORDINARY
+# finding never reached a composite's contributors at all, so a composite was
+# a second, ungoverned path to `fixed` off state the rest of the run had
+# already decided was unusable.  Every case below reuses case 3's fixture
+# (every prior contributor pair covered, nothing else wrong - `fixed` under
+# `usable`), varying only GUARD, so each one fails under the pre-refactor
+# reading that never consulted GUARD at all.
+records_load "$W/d4.rules" derived derivedset >/dev/null 2>&1
+printf 'fpA\tSAST-A-A-01\t.\t\nfpC\tSAST-C-C-01\t.\t\n' >"$PS"
+printf 'SAST-A-A-01\t.\nSAST-B-B-01\t.\nSAST-C-C-01\t.\n' >"$CN"
+printf 'SAST-A-A-01\t.\nSAST-B-B-01\t.\nSAST-C-C-01\t.\n' >"$CP"
+
+t_case 'fp_schema_mismatch invalidates the whole prior state, composite included -> unknown'
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' fp_schema_mismatch "$PS" "$CN" "$CP" '')
+assert_eq unknown "${out%%$'\t'*}" 'an fp_schema bump makes the prior set incomparable, composite included, even though every contributor pair is (coincidentally) still covered'
+assert_contains "$out" fp_schema_mismatch 'and the reason names the guard, not a contributor'
+
+t_case 'no_prior_state -> unknown'
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' no_prior_state "$PS" "$CN" "$CP" '')
+assert_eq unknown "${out%%$'\t'*}" 'no prior state at all means nothing here can be classified fixed'
+assert_contains "$out" no_prior_state 'and the reason names the guard'
+
+t_case 'scan_root_id_mismatch: a path-root contributor is NOT covered even though its cell string still matches -> unknown'
+# The acceptance case this ticket names explicitly: a contributor "simply not
+# covered this run" - here because a scan_root_id change makes its prior cell
+# dishonest to compare, not because the string differs (it is identical, ".",
+# on both sides).  Fails under the pre-refactor _contributor_covered, which
+# tested only `_pair_covered` - a bare string match - and never consulted
+# GUARD, so a scan-root change and a coincidentally-matching path both read as
+# `fixed`.  Threading GUARD through into `findings_classify_absent` (STATE-04
+# built the function; STATE-05's contribution is that b1 now calls it) is
+# what closes this: SAST-A-A-01/SAST-C-C-01 both resolve to `path-root` scope
+# via `_derived_contributor_scope`, which is exactly the scope
+# `scan_root_id_mismatch` gates.
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' scan_root_id_mismatch "$PS" "$CN" "$CP" '')
+assert_eq unknown "${out%%$'\t'*}" 'a path-root contributor cell is not comparable across a scan_root_id change'
+assert_contains "$out" contributor-not-covered 'and the composite records the contributor(s) as not covered'
 
 # ---------------------------------------------------------------------------
 printf '\n-- tension 22 / SARIF-01: a profile-driven logical-identity default --\n'

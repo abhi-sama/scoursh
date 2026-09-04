@@ -973,10 +973,38 @@ Rows 3-6 of tension 13's own eight-row fixture table are this suite's own (rows 
 rows was run against the PRE-refinement code and watched fail (rows 3 and 4 specifically - a
 settings-narrowed or time-advanced boundary reported `fixed` before this ticket, since no boundary
 comparison existed at all) before the fix landed, per this project's testing rule.
-STATE-05 (the derived-finding refinement) is the next tier-1 ticket; it depends on this one, since a
-composite's `SAST-HIST-*` contributor is judged by the identical "covered by the test that would let its
-own finding be `fixed`" rule `lib/findings.sh`'s existing `_contributor_covered` (b1) branch already
-applies, unchanged by this ticket.
+**STATE-05 (the derived-finding refinement: the composite three-condition rule) has also landed.**
+`classify_derived`'s (a)/(b1)/(b2)/(c) rule was already pure and fixture-tested against tension 6's whole
+nine-case table at step 1, well before STATE-01 through STATE-04 existed, so this ticket added no new
+`classify_derived` *behaviour* for the plain `usable`-guard case - every one of those nine cases still
+passes unchanged.
+What it closed is that `classify_derived` had no notion of tension 12's own GUARD at all: an
+`fp_schema_mismatch` or `no_prior_state` run left the entire prior state incomparable for every ORDINARY
+finding (STATE-03), yet a composite's contributor-coverage test read straight through `prior_state`/
+`covered_now` regardless - a composite was a second, ungoverned path to `fixed` off state the rest of the
+run had already decided was unusable.
+`classify_derived` now takes GUARD as a parameter, checked first: `fp_schema_mismatch`/`no_prior_state`
+short-circuit the whole composite to `unknown` before condition (a) is even reached.
+`scan_root_id_mismatch` is deliberately NOT handled at that top level - a composite's own cell is JSON
+`null`, never `path-root`, and tension 12 gates only `path-root` cells - so it is threaded one level
+deeper instead: (b1)'s per-contributor test (`_contributor_covered`, `lib/findings.sh`) now literally
+CALLS `findings_classify_absent` - the same function that would classify that contributor's own ordinary
+finding, built by STATE-03 and extended with the `SAST-HIST-*` boundary comparison by STATE-04 - rather
+than re-testing `_pair_covered` and re-deriving that boundary comparison locally, which is what makes "a
+contributor counts as covered only under the same test that would let its own finding be classified
+`fixed`" literally true instead of merely intended, and what makes `scan_root_id_mismatch` protect a
+`path-root`-scoped contributor (every worked composite example's SAST/SAST-HIST contributors) exactly as
+it would protect that contributor's own finding.
+A new pure helper, `_derived_contributor_scope`, maps a contributor check id's module prefix to its
+coverage-scope for this - the identical mapping `lib/records.sh`'s `_records_check_coverage_scope`
+already enforces at lint time (E079) - rather than threading a fifth column through `PRIOR_STATE_FILE`.
+`tests/suites/findings.sh` gains three new cases (`fp_schema_mismatch`, `no_prior_state`,
+`scan_root_id_mismatch`) proving each fails under the pre-refactor reading that never consulted GUARD at
+all; the `scan_root_id_mismatch` case is this ticket's own acceptance criterion, a contributor "simply
+not covered this run" because a scan-root change makes its prior cell dishonest to compare even though
+the cell STRING still matches.
+`tests/suites/gate-mutation-proof.sh`'s condition-(a) mutation proof was updated for the new parameter
+and still passes unchanged.
 
 Step 6 (Cloud) remains unstarted.
 
