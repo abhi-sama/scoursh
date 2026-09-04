@@ -95,9 +95,9 @@
 # SC2329: every function in this file is public API, called only from
 # lib/guide.sh's `guide_g4_authorize_target` and from
 # tests/suites/guide-scope.sh - neither of which shellcheck's per-file `-x`
-# check sees when THIS file is the analysis target (tests/run-tests.sh's
-# shellcheck stage checks every lib/*.sh file standalone, not only as part of
-# a larger entry point's graph).
+# check sees when THIS file is the analysis target: tests/run-tests.sh's
+# whole-tree stage checks every lib/*.sh file standalone, not only as part
+# of a larger entry point's graph.
 # SC2034: GUIDE_SCOPE_SCHEME/HOST/PORT/IS_LITERAL/RESOLVED are the SET-A-
 # VARIABLE output of guide_scope_parse/guide_scope_resolve (the same
 # guide_menu/guide_ask idiom lib/guide.sh's own header documents - a `die`
