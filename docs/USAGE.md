@@ -17,7 +17,7 @@ It has two values, sometimes followed by a short qualifier:
 An inert flag is not a usage error and does not print a warning.
 It is accepted, the run exits normally, and in most cases nothing in `run.json` records that the flag
 was ever given.
-That is the trap this column exists to close: `--baseline /typo/path.json` and `--format sarif` both
+That is the trap this column exists to close: `--baseline /typo/path.json` and `--jobs 8` both
 look exactly like they worked.
 
 [Accepted but not yet implemented](#accepted-but-not-yet-implemented) gives the precise behaviour of
@@ -82,7 +82,7 @@ scan.sh <command> [options]
 | `--contact VALUE` | one printable, space-free token | from `config/scanner.conf` (`contact`), else none | live |
 | `--user-agent-suffix TOKEN` | one printable, space-free token | none | live |
 | `--jobs N` | positive integer | from `config/scanner.conf` (`4`) | inert |
-| `--format` | CSV of `json,sarif,html,md` | all four | live; `sarif` writes a document whose `results[]` is still empty |
+| `--format` | CSV of `json,sarif,html,md` | all four | live; `sarif` writes a complete, schema-validated document - see [SARIF output](#sarif-output) |
 | `--fail-on` | `critical\|high\|medium\|low\|info\|none` | from `config/scanner.conf` (`none`) | live |
 | `--fail-on-new` | boolean; **requires `--fail-on`**, usage error otherwise | off | inert |
 | `--min-confidence` | `high\|medium\|low` | from `config/scanner.conf` (`low`) | live |
@@ -111,6 +111,105 @@ Colour on stderr is resolved from `SCOURSH_COLOR` and `NO_COLOR`, checked in thi
 `SCOURSH_COLOR=always` wins even when `NO_COLOR` is also set: `NO_COLOR`'s own convention text
 allows an explicit user flag to override it, and `SCOURSH_COLOR` set to a specific value is exactly
 that - an operator who typed `always` gets `always`, not a value NO_COLOR silently downgraded.
+
+## `--format` and the `formats` config key
+
+The list is validated, resolved through the full CLI-over-environment-over-file-over-default chain,
+and then honoured: `lib/report.sh`'s `report_all` gates `findings.json`, `report.md`, `report.html`
+and `report.sarif` on it, so `--format md` writes the Markdown report and none of the other three.
+
+`findings.jsonl` and `run.json` are **not** `--format` values.
+They are mandatory per-run records - the incremental ledger and the audit record - and are written on
+every run whatever `--format` asked for, so they are not evidence that the flag was ignored.
+
+`--format sarif` writes `report.sarif`, documented in full in the next section.
+
+## SARIF output
+
+`--format sarif` (or `sarif` in a multi-value `--format`/`formats` list) writes
+`reports/<run>/report.sarif`, a complete SARIF 2.1.0 document carrying this run's actual findings.
+It is validated in the test suite against the vendored OASIS `sarif-schema-2.1.0.json` schema, plus
+an extra condition a schema alone cannot express: every result's
+`locations[0].physicalLocation.artifactLocation.uri` is asserted to resolve to a real, existing file
+(`tests/suites/sarif-schema.sh`; the full rationale is `docs/FOUNDATION.md` tension 22).
+Point a code-scanning CI step at that file today - there is nothing further to wait for.
+
+### What is in the document
+
+- **`runs[0].tool.driver.rules[]`** - the full loaded check registry, one `reportingDescriptor` per
+  check id, whether or not that check produced a finding this run. A check id with no on-disk
+  `*.rules` record - an SCA id, an `<engine>:...` optional-engine-adapter id, or a derived/composite
+  id - gets a descriptor synthesised from the finding itself instead, marked
+  `properties.descriptorSource: "synthesised"` so the distinction is visible rather than hidden.
+- **`runs[0].results[]`** - one entry per finding. Every result carries **both** a physical location
+  and a logical location (`logicalLocations[0].fullyQualifiedName`), never only one - see "The
+  location model" below for what the physical location points at when a finding has no source file
+  (a cloud resource, a DAST endpoint, a posture control).
+- **`result.partialFingerprints["scourshFingerprint/v1"]`** - scoursh's own stable finding
+  fingerprint. It never includes a line number, so it survives reindentation and unrelated edits. Use
+  it, not the result's message text or line, to track one finding across runs of your own.
+- **`result.properties`** - `module`, `status`, `confidence`, `baseSeverity`, `severity`, `cvss`
+  (`vector`/`score`, an audit trail - see "What is deliberately never in it" below), `suppressed`,
+  `cell`, `firstSeen`/`lastSeen`.
+- **`result.suppressions[]`** - present with `kind: "external"` for a finding suppressed by
+  `config/baseline.json`, never a dropped result, so a suppressed-but-still-real finding stays visible
+  to a consumer that wants to see accepted risk. This array is always empty today: baseline
+  suppression itself is not built yet (`--baseline FILE` is inert - see below). The mapping is written
+  and tested against a hand-authored fixture, so it emits correctly the moment baseline suppression
+  lands; nothing about the SARIF document itself needs to change.
+- **`result.properties.status`** - always `"new"` today, for the same not-yet-built reason: the
+  new/recurring/fixed classification needs persistent run state
+  ([`docs/STEP7-STATE-PLAN.md`](STEP7-STATE-PLAN.md)). `partialFingerprints` is what lets a consumer
+  do its own new/fixed tracking in the meantime.
+- **`runs[0].artifacts[]` / `runs[0].invocations[0]`** - the generated location artifacts this run
+  actually wrote (see below), and the run-level audit facts `run.json` already records
+  (`startTimeUtc`/`endTimeUtc`/`executionSuccessful`).
+
+### What is deliberately never in it
+
+- **`security-severity`.** This is the field a GitHub-code-scanning user looks for first, and
+  scoursh deliberately does not emit it. `result.properties.cvss` is a CVSS vector and score, but it
+  is computed purely as an audit trail for how the severity rubric adjusted a finding's severity -
+  its inputs are exposure/authentication/data-sensitivity/confidence, **never the severity itself** -
+  so a `critical` finding and an `info` finding with the same exposure/auth/sensitivity/confidence
+  carry the identical CVSS score. Publishing that score as `security-severity` would have GitHub code
+  scanning (which reads that field and re-derives its own displayed severity from it, ignoring
+  `result.level`) show a severity that contradicts `result.level`, `run.json`, the HTML report, and
+  the `--fail-on` gate - all of which agree with each other today. `severity` maps to `result.level`
+  instead: `critical`/`high` -> `error`, `medium` -> `warning`, `low`/`info` -> `note` (never `none`,
+  which SARIF reserves for "this rule did not evaluate to a problem"). The original five-value
+  severity survives in `result.properties.severity` for anything that wants the finer distinction
+  `level` alone loses.
+- **`codeFlows`/`threadFlows`/`graphs`/`taintFlows`.** scoursh's native checks are pattern-grade and
+  carry no data-flow model; emitting an empty or single-step flow would overstate the analysis.
+- **`fixes[]`.** `remediation` is prose guidance, not a machine-applicable patch.
+- **`result.rank`, `automationDetails`, `runAggregates`, `baselineGuid`,
+  `versionControlProvenance`.** Each would mint a second, competing notion of severity or run
+  identity ahead of the persistent-state work that owns that story.
+- **Multiple `runs[]`.** One scan is one run, even under `scan.sh all`; `result.properties.module`
+  distinguishes the findings inside it.
+
+One provenance gap worth knowing if you consume SCA (dependency) findings: `data/advisories.db`
+cannot today distinguish a genuinely medium-rated advisory from one an upstream source published with
+no severity at all - both land on `medium` - so `result.properties.severityProvenance` is never
+emitted for any SCA finding. `run.json` instead carries a `coverage_reduction` fact
+(`reason=sarif_severity_provenance_unavailable`) when a `medium`-severity SCA finding is present in
+the run, so the gap is recorded rather than silently guessed around.
+
+### The location model
+
+Every result's physical location points at a file that genuinely exists - never a fabricated or
+guessed path:
+
+| Case | Findings | Physical location points at |
+|---|---|---|
+| Real source file | SAST, IaC (native and optional-engine-adapter) | The real file and line in the scanned tree. |
+| Real file, outside the fingerprint | SCA (dependency) | The real, committed lockfile. |
+| Real file that may no longer exist | Git-history secrets (`SAST-HIST-*`) | The file at its current path, if that path still resolves in the working tree; otherwise the generated artifact below, whose line carries the blob sha and commit so you can `git show` it. |
+| No file at all | DAST, cloud, posture | A generated `reports/<run>/locations/<module>.txt` artifact - one line per finding, containing that finding's logical identity, included in the SARIF `artifacts[]` array. Clicking through in a code-scanning UI lands on a line describing the resource (an ARN, a URL and parameter, a control id), never on an unrelated source file. |
+
+`docs/FOUNDATION.md` tension 22 has the full rationale for why a generated artifact was chosen over
+either omitting the location or fabricating one.
 
 ## Accepted but not yet implemented
 
@@ -149,23 +248,6 @@ Nothing is suppressed by it.
 The concrete failure this invites: a CI pipeline with a typo in the baseline path gets a clean exit
 and no trace anywhere that suppression never ran.
 Baseline suppression needs the not-yet-built `state/` layer.
-
-### `--format` and the `formats` config key
-
-The list is validated, resolved through the full CLI-over-environment-over-file-over-default chain,
-and then honoured: `lib/report.sh`'s `report_all` gates `findings.json`, `report.md`, `report.html`
-and `report.sarif` on it, so `--format md` writes the Markdown report and none of the other three.
-
-`findings.jsonl` and `run.json` are **not** `--format` values.
-They are mandatory per-run records - the incremental ledger and the audit record - and are written on
-every run whatever `--format` asked for, so they are not evidence that the flag was ignored.
-
-`sarif` now writes a real SARIF 2.1.0 document, `report.sarif`: `$schema`/`version`, `tool.driver`
-(including the full loaded check registry as `rules[]`), `artifacts[]`, and `invocations[]`.
-`runs[0].results[]` is still empty, because the per-finding mapping has not landed yet, so the document
-describes a run that found nothing rather than carrying this run's actual findings.
-Do not point a SARIF-consuming CI step at a `scoursh` run yet.
-[`docs/STEP10-SARIF-PLAN.md`](STEP10-SARIF-PLAN.md) is the sub-ticket plan that closes this.
 
 ### `--jobs N` and the `jobs` config key
 
@@ -416,7 +498,7 @@ file yet; those are called out in the Notes column.
 | `fail-on` | severity name or `none` | `none` | live | |
 | `min-confidence` | `high\|medium\|low` | `low` | live | |
 | `redact-secrets` | `true`/`false` | `true` | live | Governs whether a matched credential is written in the clear. See ["What `redact-secrets` covers"](#what-redact-secrets-covers). |
-| `formats` | repeatable, `json\|sarif\|html\|md` | all four | inert | See [`--format`](#--format-and-the-formats-config-key). |
+| `formats` | repeatable, `json\|sarif\|html\|md` | all four | live | Resolved through the same chain as `--format`. See [SARIF output](#sarif-output). |
 | `max-matches-per-file` | positive integer | `200` | live | Read by both the SAST and IaC scanners. |
 | `evidence-max-bytes` | positive integer | `512` | inert | Truncation is real, but reads `SCOURSH_EVIDENCE_MAX_BYTES`, not this file. |
 | `scratch-dir` | absolute path | `${TMPDIR:-/tmp}` | inert | The scratch directory follows `SCOURSH_SCRATCH_BASE`, else `TMPDIR`. |

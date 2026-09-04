@@ -53,8 +53,9 @@ This file is a shorter, reader-facing summary of the same information, and is ha
 ## Not yet started
 
 Ordered by priority, highest first.
-With step 5 (DAST) now complete, persistent run state is the top priority feature, ahead of SARIF
-and the compliance report, and live cloud scanning.
+With step 5 (DAST) now complete, persistent run state is the top priority feature, ahead of the
+compliance report and live cloud scanning. The SARIF emitter (step 10's other deliverable) has
+already landed in full - see below.
 
 1. **Step 7 (`state/` - persistent coverage tracking)** - needed before `--baseline` suppression and
    the `diff`/`report` subcommands do real work.
@@ -64,19 +65,21 @@ and the compliance report, and live cloud scanning.
    cleared; the fourth - step 6, which supplies the `account-region` coverage-cell producer tension
    12's classification table needs - remains open, so step 7 is not fully unblocked yet either way.
    No STATE-0x ticket has been picked up.
-2. **Step 10 (SARIF output + compliance report)** - `--format sarif` now writes a real SARIF 2.1.0
-   document (`report_sarif`, SARIF-03): `tool.driver`/`rules[]`/`artifacts[]`/`invocations[]`, but
-   `runs[0].results[]` is still empty until SARIF-04 lands, so it does not yet carry this run's
-   findings; the CIS/OWASP compliance report still has no emitter anywhere in the tree.
+2. **Step 10 (SARIF output + compliance report)** - the SARIF half is **done**: `--format sarif`
+   writes a complete, schema-validated SARIF 2.1.0 document (`report_sarif`, SARIF-01 through
+   SARIF-06) - `tool.driver`/`rules[]`/`artifacts[]`/`invocations[]` and a fully-mapped
+   `runs[0].results[]` carrying this run's actual findings. What remains of step 10 is the CIS/OWASP
+   compliance report, which still has no emitter anywhere in the tree.
    A complete sub-ticket breakdown exists in
-   [`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md) (tickets SARIF-01 through SARIF-06 plus
-   COMPLIANCE-01 through COMPLIANCE-04).
+   [`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md) (tickets SARIF-01 through SARIF-06, all
+   landed, plus COMPLIANCE-01 through COMPLIANCE-04, not started).
    That plan's own central finding is that this step is three deliverables with three different
-   readiness states, not one: the SARIF emitter is **unblocked today** and depends on neither step 6
-   nor step 7, the compliance report's OWASP half is likewise unblocked while only its CIS half waits
-   on step 6, and the `--fail-on` CI gate §13 item 10 also names is **already shipped in full** and
-   carries no ticket.
-   Its position at number 2 here is therefore a priority choice, not a technical block.
+   readiness states, not one: the SARIF emitter **has landed**, unblocked from the start by neither
+   step 6 nor step 7; the compliance report's OWASP half is likewise unblocked while only its CIS half
+   waits on step 6; and the `--fail-on` CI gate §13 item 10 also names is **already shipped in full**
+   and carries no ticket.
+   Its position at number 2 here, for what is left of it, is therefore a priority choice, not a
+   technical block.
 3. **Step 6 (live cloud / CSPM scanning)** - `scan.sh cloud` is a no-op today, with or without
    `--live`.
    There is no `modules/cloud/`, so the dispatch records a `not_yet_built` coverage reduction
@@ -128,9 +131,8 @@ scheduled on its own.
   every run wrote the same five artifacts whatever was asked for.  Fixed - see "Landed" above.
   `findings.jsonl` and `run.json` are mandatory per-run records rather than one of the four
   `--format` values, and are written on every run regardless of what `--format` asked for; `sarif`
-  now selects `report_sarif` (SARIF-03) like every other value, but the document's `results[]` is
-  still empty until SARIF-04 lands - that part of the gap is step 10's, not this one's, and remains
-  listed above.)
+  selects `report_sarif` like every other value and, as of SARIF-06, writes a complete document -
+  see "Recently fixed" below and [`docs/USAGE.md`'s SARIF output section](docs/USAGE.md#sarif-output).)
 - **`--fail-on-new` is currently a tautology.**
   Every finding is created with `status=new`, because the diff classification that would mark
   anything otherwise belongs to step 7, so `--fail-on-new` behaves identically to plain
@@ -149,6 +151,15 @@ scheduled on its own.
 Entries that used to sit under "Known defects" above, kept for a release or two so a reader who knew the
 old behaviour can see what replaced it.
 
+- **`--format sarif` wrote a SARIF document with no findings in it.**
+  `report_sarif` used to write the document skeleton only - `tool.driver`/`rules[]`/`artifacts[]`/
+  `invocations[]` - with `runs[0].results[]` always empty, because the per-finding mapping (SARIF-04)
+  had not landed yet.
+  SARIF-04 through SARIF-06 (`docs/STEP10-SARIF-PLAN.md`) landed the mapping, the real schema
+  validation (against the vendored OASIS SARIF 2.1.0 schema, plus a filesystem-backed check that every
+  result's location resolves to a real file), and the operator documentation.
+  `report.sarif` now carries this run's actual findings and is safe to point a code-scanning CI step
+  at; see [`docs/USAGE.md`'s SARIF output section](docs/USAGE.md#sarif-output).
 - **Dependency scanning skipped the scan entirely without an advisory database, and reported that as clean.**
   `data/advisories.db` still does not exist in this repository - the only advisory database in the tree
   is `tests/fixtures/sca/advisories.db`, a test fixture - and populating it is still the operator's job

@@ -101,7 +101,7 @@ Each has a full entry in `docs/FOUNDATION.md`.
   Do not close a hole here by adding one more pattern: that is what leaves the mechanism intact.
   An emitter whose match IS a credential calls `finding_set_secret_match` (`lib/findings.sh` section 8a), which keeps `finding_set_match`'s digest **byte-identical** - `modules/sast/adapters/gitleaks/adapter.sh` dedups against native `SAST-SEC-*` findings by comparing `loc_match_digest`, so digesting the masked text instead would silently defeat that dedup - and puts a `<redacted:SECRET:DDDDDDDD>` placeholder in evidence.
   `finding_check_is_secret_family` (also `lib/findings.sh`) is the ONE list; `modules/sast/engine.sh`'s `_sast_check_is_sensitive` delegates to it rather than starting a second one.
-  `_finding_secret_backstop` re-checks at `finding_emit` - the single point every finding passes through on its way to a shard, and therefore to every format downstream of the merge including a SARIF emitter that does not exist yet - so a future emitter that reaches for the plain `finding_set_evidence` is masked anyway.
+  `_finding_secret_backstop` re-checks at `finding_emit` - the single point every finding passes through on its way to a shard, and therefore to every format downstream of the merge including the SARIF emitter (`report_sarif`, `lib/report.sh`) - so a future emitter that reaches for the plain `finding_set_evidence` is masked anyway.
   Three things about the backstop are easy to get backwards: it is scoped to modules `sast` and `iac`, where evidence is BY CONSTRUCTION the raw bytes matched in a file (in `dast` it is composed prose - `lib/paranoid.sh`'s egress finding puts the observed destination there, and `modules/dast/jwt_engine.sh` puts its one actionable sentence there under ids like `DAST-JWT-ALG_NONE`, which match the `*JWT*` arm); it deliberately does **not** gate on `sensitive_data`, because `lib/http.sh` and `lib/paranoid.sh` set that on findings whose evidence is a destination address, and an emitter that forgot the secret setter would most likely forget the flag in the same breath, switching the net off in exactly the case it exists for; and `modules/sast/engine.sh`'s match-count truncation notice therefore sets **no evidence at all**, because it is a meta-finding wearing the truncated check's own id and the string it used to set was already its title, verbatim.
   `rules/redaction.rules` is still wanted and still applies - it is what masks a credential that turns up INCIDENTALLY, in another check's evidence, a crawled URL, a log line, or an adapter-supplied title - so the two layers answer different questions and neither subsumes the other.
   `redact-secrets: false` writes the match in the clear DELIBERATELY (an operator rotating a credential has to be able to see the literal bytes); `run.json` records `redact_secrets`, and `report.md` and `report.html` each open with their own warning banner, whose exact wording differs between the two formats.
@@ -650,10 +650,13 @@ the three, now that step 5 has cleared: step 7 first, then step 10, then step 6 
 All three now have a written sub-ticket plan, step 10's being `docs/STEP10-SARIF-PLAN.md`
 (SARIF-01..06 plus COMPLIANCE-01..04).
 **Read that one before treating step 10's queue position as a dependency**: it establishes, against
-the tree, that step 10 is three deliverables rather than one - the SARIF emitter is unblocked today
-and needs neither step 6 nor step 7, the compliance report's OWASP half is unblocked too while only
-its CIS half waits on step 6, and the `--fail-on` CI gate that `docs/DESIGN.md` §13 item 10 bundles
-with them shipped back at step 3 and carries no ticket at all.**
+the tree, that step 10 is three deliverables rather than one - the SARIF emitter needed neither step 6
+nor step 7, the compliance report's OWASP half is unblocked too while only its CIS half waits on step
+6, and the `--fail-on` CI gate that `docs/DESIGN.md` §13 item 10 bundles with them shipped back at
+step 3 and carries no ticket at all.**
+**Track A of step 10 (the SARIF emitter, SARIF-01 through SARIF-06) is now complete**, including its
+own documentation ticket - see the SARIF-01 through SARIF-06 landing paragraphs below. Only step 10's
+compliance-mapping report (Track B, COMPLIANCE-01 through COMPLIANCE-04) remains unstarted.
 
 **Step 7 (persistent run state) has now started**, ahead of step 6 (Cloud) and matching
 `docs/STEP7-STATE-PLAN.md`'s stated priority order: **STATE-01 (`lib/state.sh`) has landed** - the
@@ -873,6 +876,26 @@ identical shape. Verified both ways: with `python3` on `PATH`, the suite's real 
 unchanged (93 passed); with a `PATH` built to contain every other tool the suite needs but no `python3`
 anywhere on it, the suite still exits 0, prints both `NOTICE` lines, and its passed-count is honestly
 lower (89) rather than inflated by the removed fake pass.
+
+**SARIF-06 has also landed, completing Track A of step 10.**
+Documentation only, per its own row in `docs/STEP10-SARIF-PLAN.md`: a new "SARIF output" section in
+`docs/USAGE.md` documents `report.sarif` for an operator - what the document carries, what it
+deliberately never carries (`security-severity` and why, `codeFlows`/`fixes[]`/`result.rank` and the
+rest of tension 22's out-of-scope list), the four-case location model, and how `partialFingerprints`
+lets a consumer track a finding across runs while `status` stays `"new"` and `suppressions[]` stays
+empty until step 7 lands. It replaced every place in the tree that still said no SARIF writer exists,
+found by searching rather than trusting any single list, per this ticket's own instructions: three
+were the plan's own named list (`README.md`'s "Known gaps" entry, `docs/USAGE.md`'s `--format` flag
+table row, and `docs/USAGE.md`'s `--format`/`formats` writeup), and four more turned up on search -
+this same "does not exist yet" phrase here and in `docs/FOUNDATION.md`'s tension 9 entry (both
+corrected in the same change as this paragraph), and `ROADMAP.md`'s "Not yet started"/"Known defects"
+entries for `--format sarif`'s previously-empty `results[]`. `docs/USAGE.md`'s `formats` config-key row
+was also corrected from `inert` to `live`, a pre-existing staleness independent of SARIF that fell
+under this ticket's own "correcting the stale `--format` prose" mandate. Two stale mentions were found
+and deliberately left alone, reported as findings rather than fixed, since this ticket's scope is
+documentation only: `lib/report.sh` and `lib/findings.sh` each carry one source comment still reading
+"a SARIF emitter that does not exist yet", and `tests/suites/scan.sh`'s `--format sarif` test case
+carries a stale description and asserts nothing about `report.sarif` itself.
 
 **STATE-02 (per-(check, cell) coverage recording, and persist-on-every-run wiring) has also landed**,
 for the same "its own scope does not need the `account-region` producer" reason STATE-01 was authorised
