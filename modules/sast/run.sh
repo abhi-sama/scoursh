@@ -43,6 +43,27 @@
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "${BASH_SOURCE[0]%/*}/engine.sh"
+# docs/STEP7-STATE-PLAN.md STATE-06: diff_classify_run (called below, between
+# derive_findings and sast_evaluate_gate) lives in lib/diff.sh, sourced here
+# rather than from modules/sast/engine.sh - that file is reached by every
+# DAST phase test too, and lib/diff.sh's own lib/state.sh edge is genuinely
+# new content there (not a diamond a back-edge cut could remove for free),
+# which pushed tests/suites/dast-methods.sh over its shellcheck -x memory
+# budget and killed a CI run.  Confining this source line to the four run.sh
+# files that actually call diff_classify_run keeps that cost off every
+# phase-level test that has nothing to do with it.
+# Guarded exactly like modules/sast/engine.sh's own lib/report.sh/lib/config.sh
+# sources above: a real `scan.sh` subprocess has ALREADY sourced lib/diff.sh
+# via its own absolute path before scan_dispatch ever runs, and skipping the
+# self-relative resolution here is not just an optimisation - this file is
+# copied into fixture roots that carry no `lib/` sibling at all
+# (tests/suites/sast.sh's own ROOT_REAL_REGISTRY), where the unconditional
+# form's `source` would fail to even LOCATE the file, before its own
+# internal guard ever gets a chance to make the load a no-op.
+if [[ -z ${SCOURSH_DIFF_SOURCED:-} ]]; then
+  # shellcheck source=lib/diff.sh
+  source "${BASH_SOURCE[0]%/*}/../../lib/diff.sh"
+fi
 # history.sh (docs/DESIGN.md §6.3, §13 step 3e) is the module that deliberately
 # DOES read git history; it is its own pure function library, sourced here
 # exactly like engine.sh, and its real work only happens when
@@ -160,6 +181,10 @@ _sast_run_module() {
 
   findings_merge "$SCOURSH_RUN_DIR"
   derive_findings "$SCOURSH_RUN_DIR"
+  # docs/STEP7-STATE-PLAN.md STATE-06: classify (tension 11 stage 5) runs
+  # strictly after derive (4) and before the gate (7) - lib/diff.sh's own
+  # header states the frozen stage order this call site follows.
+  diff_classify_run "$SCOURSH_RUN_DIR"
   sast_evaluate_gate "$SCOURSH_RUN_DIR"
   report_all "$SCOURSH_RUN_DIR"
 }

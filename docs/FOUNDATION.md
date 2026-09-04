@@ -5399,6 +5399,34 @@ STATE-01 wires into nothing: `scan.sh`, every module's coverage behaviour, and t
 are unchanged - coverage recording (STATE-02) and the classification engine (STATE-03 through STATE-05)
 remain unbuilt.
 
+**STATE-02 through STATE-06 have since landed, and step 7 is now visible to an operator for the first
+time: every normal run classifies itself, and `scan.sh diff --against <dir>` is a real command.**
+STATE-02 wired per-(check, cell) coverage recording into every module and `state_write` into
+`scan_main`'s own end-of-run persistence; STATE-03/04/05 wired tension 12's four-row table, tension 13's
+`SAST-HIST-*` boundary refinement, and tension 6's composite rule against real (still hand-authored)
+fixture state, with no scanner integration yet.  STATE-06 (`lib/diff.sh`) is that integration: a new
+`diff_classify_run` call, inserted into every module's own `run.sh` between `derive_findings` (stage 4)
+and its gate call (stage 7) - the exact stage-5 slot this tension's own pipeline freezes - loads
+`state/latest.json`, computes the guard, rewrites `status`/`first_seen` on every present finding in
+place, and records the resulting `state_add_finding` calls so a FUTURE run has something real to
+classify against (nothing before this ticket ever called `state_add_finding` for a live scan's own
+findings, which would otherwise have left `findings` permanently empty in every persisted state file).
+Absent prior findings are classified via the identical `findings_classify_absent`/`classify_derived`
+functions and written to a small ledger (`meta/diff_absent`, 0x1f-separated - never a tab, since `reason`
+is empty for `fixed` and a tab is IFS whitespace that `read` folds across an empty field, silently
+shifting every later column) that `lib/report.sh`'s `report_md`/`report_html` render as a "Since last
+scan" section leading the report, with `Fixed since last scan` and `Not assessed this run` always two
+separate headings - the literal wording this tension's own closing line requires so a reader can tell
+"we checked and it is gone" from "we never looked".  The standalone `diff` command
+(`diff_render_against`) performs no scan of its own: it classifies `state/latest.json` (the most
+recently completed real run) against the state recorded for an explicit `--against <prior-run-dir>`,
+matched to its own `state/<run-id>.json` by run id (`SCOURSH_RUN_ID` already defaults to the reports
+directory's own basename).  One correctness fix rides along: `diff`/`report` dispatch no module and add
+no coverage of their own, so `scan_main`'s end-of-run `state_write` is now gated to the six scanning
+commands only - calling it unconditionally (STATE-02's original wiring) would have let every `diff`
+invocation overwrite `state/latest.json` with an empty snapshot, silently erasing the very history the
+next real scan needs to classify against.  `tests/suites/state-diff.sh` is the proof.
+
 **Step 9 (optional engine adapters) now has a real scaffold - `docs/ADAPTERS.md` and
 `tools/vendor-engines.sh` both exist - landed out of sequence, ahead of step 3's then-remaining
 `nosql`/`ldap` packs and steps 5/6, because it cost nothing those blocked steps and ships no per-engine
@@ -5522,8 +5550,10 @@ landed early, out of its normal step-9 sequence, as part of this ticket (immedia
 `lib/awscli.sh` landed early too, out of its normal step-6 sequence, as part of a credential-less pass
 that advanced only what needed no AWS account (see "AWS module: what exists ahead of step 6" in
 `AGENTS.md`), so the read-only chokepoint exists while `modules/cloud/aws/live/*.sh` and the rest of
-step 6 do not; `state/` now has its schema, writer and loader (`lib/state.sh`, STATE-01, above) but no
-coverage recording or classification yet; SARIF-01 through SARIF-06 have since landed (above), so Track
+step 6 do not; `state/` now has its schema, writer, loader, coverage recording, and real per-run
+classification wired into every module and the `diff` command (`lib/state.sh`/`lib/diff.sh`, STATE-01
+through STATE-06, above) - only baseline suppression (STATE-07) and the `--fail-on-new` gate carve-out
+(STATE-08) remain of step 7; SARIF-01 through SARIF-06 have since landed (above), so Track
 A of step 10's SARIF emitter is complete, documentation included, while the compliance report
 (Track B) remains unbuilt.
 

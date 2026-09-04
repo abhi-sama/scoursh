@@ -49,6 +49,16 @@ if [[ -z ${SCOURSH_CONFIG_SOURCED:-} ]]; then
   # shellcheck source=lib/config.sh
   source "${BASH_SOURCE[0]%/*}/../../lib/config.sh"
 fi
+# docs/STEP7-STATE-PLAN.md STATE-06: `diff_classify_run` is NOT sourced here.
+# This file is reached by every DAST phase test (modules/dast/engine.sh's own
+# real edge to it), not only the four run.sh files that actually call
+# diff_classify_run - sourcing lib/diff.sh here would add its lib/state.sh
+# edge (genuinely new content, not a diamond a back-edge cut could remove) to
+# every one of them, which is what pushed tests/suites/dast-methods.sh over
+# its own already-tight shellcheck -x memory budget (AGENTS.md "Sharp edges")
+# and killed a CI run. Each of the four run.sh files sources lib/diff.sh
+# itself instead, at its own top, exactly where it already sources this file -
+# see modules/sast/run.sh's own comment on it.
 
 # ---------------------------------------------------------------------------
 # 1. Directory walk

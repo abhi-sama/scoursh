@@ -85,6 +85,14 @@
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "${BASH_SOURCE[0]%/*}/engine.sh"
+# docs/STEP7-STATE-PLAN.md STATE-06: see modules/sast/run.sh's own comment on
+# why this is sourced directly here (rather than from modules/sast/engine.sh)
+# AND why it is guarded (a fixture root with no lib/ sibling makes the
+# unconditional form fail to even locate the file).
+if [[ -z ${SCOURSH_DIFF_SOURCED:-} ]]; then
+  # shellcheck source=lib/diff.sh
+  source "${BASH_SOURCE[0]%/*}/../../lib/diff.sh"
+fi
 # php_engine.sh is also sourced transitively by engine.sh itself (guarded,
 # see both files' own headers); sourced again here, explicitly, purely so
 # this entry point stays self-documenting about which ecosystems it covers -
@@ -275,6 +283,10 @@ _sca_run_module() {
 
   findings_merge "$SCOURSH_RUN_DIR"
   derive_findings "$SCOURSH_RUN_DIR"
+  # docs/STEP7-STATE-PLAN.md STATE-06: classify (tension 11 stage 5) runs
+  # strictly after derive (4) and before the gate (7) - lib/diff.sh's own
+  # header states the frozen stage order this call site follows.
+  diff_classify_run "$SCOURSH_RUN_DIR"
   # sast_evaluate_gate (modules/sast/engine.sh, sourced at the top of this
   # file) is called here rather than reimplemented as an "sca_evaluate_gate":
   # nothing in its body is SAST-specific despite the prefix - it re-reads

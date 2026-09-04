@@ -1029,6 +1029,69 @@ the cell STRING still matches.
 `tests/suites/gate-mutation-proof.sh`'s condition-(a) mutation proof was updated for the new parameter
 and still passes unchanged.
 
+**STATE-06 (the `diff` command, automatic per-run classification, and the report delta) has also
+landed - the ticket where step 7 becomes visible to an operator for the first time.**
+`lib/diff.sh` is the wiring: STATE-01 through STATE-05 built and fixture-tested every piece of the
+classification engine but called none of it from a real run.
+`diff_classify_run RUNDIR` is now called from every module's own `run.sh` (sast, iac, sca, dast), between
+`derive_findings` (tension 11 stage 4) and its own gate call (stage 7) - the exact stage-5 slot the
+frozen pipeline reserves - and tolerates being called more than once per process, since `scan.sh all`
+calls it once per module over the same, growing `findings.fields`.
+It loads `state/latest.json`, computes the guard from the real `FP_SCHEMA`/`SCOURSH_SCAN_ROOT_ID` against
+the loaded prior's own fields, rewrites every present finding's `status` (new/recurring) in place, and -
+for a recurring one - restores its persisted `first_seen` over today's fresh stamp (tension 11 stage 8's
+"with their first_seen preserved", which nothing before this ticket implemented: every finding stamped
+`first_seen` at emission time, unconditionally, so a finding present in ten consecutive runs looked
+"first seen today" in all ten).
+Absent prior findings are classified via the identical `findings_classify_absent` (ordinary) or
+`classify_derived` (composite, dispatched on whether the persisted `contributors` field is present) and
+written to `meta/diff_absent`.
+**A gap no earlier STATE-0x ticket's own scope covered had to be closed in this one**: nothing before
+this ticket ever called `state_add_finding` for a live scan's own findings, so `state_write` (wired at
+STATE-02) would have persisted a `findings` array that stayed permanently empty forever - coverage would
+accumulate run over run while nothing was ever `recurring` or `fixed` again, silently defeating the whole
+mechanism the moment it reached a real scan. `diff_classify_run` now calls `state_add_finding` for every
+present finding, guarded by a new `state_write_has_finding` accessor so a repeated call within one
+`scan.sh all` run never re-adds a fingerprint and trips `state_add_finding`'s own duplicate-fingerprint
+`die`.
+**A second, independent defect surfaced and was fixed alongside it, measured rather than assumed**: the
+absent-finding ledger's first draft separated fields with a tab, and a tab is an IFS-*whitespace*
+character - `read` folds a run of them into ONE delimiter and drops an empty field (`reason` is empty for
+a `fixed` status; `cell` is empty for a derived finding), silently shifting every later column. A `fixed`
+row read back as nothing until the ledger was changed to 0x1f-separated instead - the identical fix
+`AGENTS.md`'s own "Sharp edges" entry already documents for `markup_engine.sh`'s unrelated DAST-11 record
+stream, for the identical reason.
+`lib/report.sh`'s `report_md`/`report_html` render a new "Since last scan" section leading the report
+(tension 11 stage 9's own instruction, and `_html_summary`'s own tiles for it were already scaffolded at
+step 1 waiting for real counts), with the guard's own reason spelled out in prose when it fired and
+`Fixed since last scan`/`Not assessed this run` always rendered as two separate headings - the literal
+distinction this ticket's own acceptance criterion required a test to prove in rendered text, not only in
+`run.json`.
+The standalone `scan.sh diff --against <prior-run-dir>` command (`diff_render_against`) performs no scan
+of its own: `--against` names a REPORTS directory, never a `state/` file directly, so its matching
+`state/<run-id>.json` is found by the one thing tying the two together - `SCOURSH_RUN_ID` already
+defaults to the reports directory's own basename (`lib/core.sh`'s `run_init`) - and "this run" is
+`state/latest.json` (the most recently completed real scan), never a fresh one.
+**A third correctness fix rides along, found while wiring the standalone command**: `scan_main`'s
+end-of-run `state_write` call was unconditional (STATE-02's own wiring), so a `diff`/`report` invocation -
+neither dispatches a module, so `_scan_state_begin`'s write-side builder is genuinely empty for both -
+would persist an empty `state/<run-id>.json` and, worse, overwrite `state/latest.json` with it, corrupting
+the one reference point every future run's automatic classification depends on.
+`state_write` is now gated to the six scanning commands (`sast`/`sca`/`iac`/`dast`/`cloud`/`all`) only.
+**This ticket's own classification going live also exposed a real, previously-dormant hazard in two
+pre-existing suites**: `tests/suites/sast.sh` and `tests/suites/iac.sh` each already ran a real
+`bash scan.sh ... --fail-on-new` subprocess with no isolated `SCOURSH_INSTALL_ROOT`, meaning `state/`
+lived under the real repository checkout - harmless while classification was inert (every finding was
+unconditionally `new`), but a live hazard now, since a finding either fixture had already produced in
+some earlier local run would classify `recurring` and silently stop tripping the gate. Both now run
+against a fresh, isolated install-root copy for exactly those two assertions, guaranteeing
+`no_prior_state` and so `new`, matching each test's own original assumption rather than a coincidence.
+`tests/suites/state-diff.sh` is the proof: the four-row table, both guards (including that a
+`target`-scoped prior finding is unaffected by a `path-root` `scan_root_id` mismatch), the `SAST-HIST-*`
+boundary refinement, `rule_changed_checks`, the composite rule (against the same fixture
+`tests/fixtures/rules/derived.rules` STATE-03/04/05's own suites already use), and the report-text
+acceptance case, each naming the reading it fails under.
+
 Step 6 (Cloud) remains unstarted.
 
 **DAST-07 made `docs/FOUNDATION.md` tension 19's single documented exception real, and the shape it

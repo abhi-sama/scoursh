@@ -688,14 +688,45 @@ unset SCAN_FLAGS SCOURSH_FAIL_ON SCOURSH_MIN_CONFIDENCE GATEGUARD_RUNDIR
 # =============================================================================
 printf -- '\n-- exit-code flip (this ticket''s last acceptance criterion) --\n'
 # =============================================================================
+# docs/STEP7-STATE-PLAN.md STATE-06: `--fail-on-new` gates on `status == new`
+# (unchanged - the real carve-out is STATE-08's), and status now comes from
+# REAL classification against state/latest.json rather than every finding
+# defaulting to `new`.  A bare `SCOURSH_INSTALL_ROOT=$ROOT` subprocess (this
+# suite's own convention everywhere else) would read and write the REAL
+# repository's `$ROOT/state/` - shared, accumulating scratch across every
+# suite this test machine has ever run - so a finding this exact fixture
+# already produced in some earlier run would classify `recurring`, not `new`,
+# and this gate would silently stop firing.  An isolated install root with no
+# `state/` of its own guarantees `no_prior_state`, under which every finding
+# is `new` (tension 11: a first run's findings are new, never unknown) -
+# exactly this test's own pre-STATE-06 assumption, preserved rather than
+# coincidentally true.
+GATE_ISOLATED_ROOT=$W/root-gate-isolated
+rm -rf "$GATE_ISOLATED_ROOT"
+mkdir -p "$GATE_ISOLATED_ROOT/config"
+for _e in lib modules rules data tools VERSION scan.sh; do
+  [[ -e "$ROOT/$_e" ]] || continue
+  cp -RL "$ROOT/$_e" "$GATE_ISOLATED_ROOT/$_e"
+done
+unset _e
+# Canonicalise AFTER populating (this file's own ROOT_REAL_REGISTRY above does
+# the same): lib/records.sh resolves every loaded rule file's path through
+# realpath, and on macOS $TMPDIR/$SCOURSH_SCRATCH itself sits under
+# /var/folders/..., which is a symlink to /private/var/folders/... - so an
+# uncanonicalised SCOURSH_INSTALL_ROOT string never equals the prefix a rule
+# file's own realpath actually resolves to, and every check misfires E070.
+GATE_ISOLATED_ROOT=$(cd -- "$GATE_ISOLATED_ROOT" && pwd -P)
+
 t_case 'scan.sh sast tests/fixtures/vuln --fail-on high --fail-on-new now exits non-zero'
 assert_status "$SCOURSH_EXIT_GATE" \
   'a real subprocess against the vuln fixture, gated on high+, exits the GATE code - fails under the pre-ticket reading where scan_dispatch sast was a no-op and every gate stayed 0' \
+  env SCOURSH_INSTALL_ROOT="$GATE_ISOLATED_ROOT" \
   bash "$ROOT/scan.sh" sast --path "$ROOT/tests/fixtures/vuln" --fail-on high --fail-on-new --out "$W/run-gate"
 
 t_case 'the SAME command against the clean fixture still exits 0 - the gate is not a blanket failure'
 assert_status 0 \
   'no findings at/above high on the clean fixture, so the gate does not trip' \
+  env SCOURSH_INSTALL_ROOT="$GATE_ISOLATED_ROOT" \
   bash "$ROOT/scan.sh" sast --path "$ROOT/tests/fixtures/clean" --fail-on high --fail-on-new --out "$W/run-gate-clean"
 
 t_case 'without --fail-on, the vuln fixture still exits 0 - the gate is opt-in, never ambient'

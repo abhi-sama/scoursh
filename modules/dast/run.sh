@@ -43,6 +43,18 @@
 # shellcheck shell=bash
 # shellcheck source=modules/dast/engine.sh
 source "${BASH_SOURCE[0]%/*}/engine.sh"
+# docs/STEP7-STATE-PLAN.md STATE-06: see modules/sast/run.sh's own comment on
+# why this is sourced directly here rather than from modules/sast/engine.sh -
+# this file's own dozens of sibling phase-script test suites (dast-*.sh) each
+# source modules/dast/engine.sh or a single phase script directly, never this
+# file, so confining the edge here keeps their shellcheck -x cost unchanged.
+# Guarded for the identical reason modules/sast/run.sh's own copy of this is:
+# a fixture root with no lib/ sibling makes the unconditional form fail to
+# even locate the file, before its own internal guard could no-op it.
+if [[ -z ${SCOURSH_DIFF_SOURCED:-} ]]; then
+  # shellcheck source=lib/diff.sh
+  source "${BASH_SOURCE[0]%/*}/../../lib/diff.sh"
+fi
 
 # `_dast_record_inventory_gaps` - one coverage_gap per inventory artifact that
 # is not usable input (docs/FOUNDATION.md tension 21).  Absence is the normal
@@ -329,6 +341,10 @@ _dast_run_module() {
   # with no phases would end up with no report saying so.
   findings_merge "$SCOURSH_RUN_DIR"
   derive_findings "$SCOURSH_RUN_DIR"
+  # docs/STEP7-STATE-PLAN.md STATE-06: classify (tension 11 stage 5) runs
+  # strictly after derive (4) and before the gate (7) - lib/diff.sh's own
+  # header states the frozen stage order this call site follows.
+  diff_classify_run "$SCOURSH_RUN_DIR"
   sast_evaluate_gate "$SCOURSH_RUN_DIR"
   report_all "$SCOURSH_RUN_DIR"
 }
