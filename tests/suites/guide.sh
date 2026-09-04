@@ -473,15 +473,30 @@ rc=0
 _guide_dast_with_root "$DW/two-targets" guide_dast_target_menu < <(printf '4\n') 2>/dev/null || rc=$?
 assert_eq 1 "$rc" 'FAILS if Back were treated as a selection'
 
-t_case '"Authorise a new target" (GUIDE-05, not built here) refuses with one line and loops back to the same menu'
-out=$(_guide_dast_with_root "$DW/two-targets" guide_dast_target_menu < <(printf '3\n4\n') 2>&1) || true
+t_case 'docs/STEP-GUIDE-PLAN.md GUIDE-06: "Authorise a new target" is wired to the real GUIDE-05 writer (guide_g4_authorize_target), and a SUCCESSFUL write selects that target directly rather than re-looping through the menu'
+NEWTARGET_DIR=$W/dast/two-targets-newtarget
+rm -rf "$NEWTARGET_DIR"
+cp -R "$DW/two-targets" "$NEWTARGET_DIR"
+out=$(_guide_dast_with_root "$NEWTARGET_DIR" guide_dast_target_menu \
+  < <(printf '3\nhttps://new-target.fixture.example/\nnew-target.fixture.example\n') 2>&1) || true
+_guide_dast_with_root "$NEWTARGET_DIR" guide_dast_target_menu \
+  < <(printf '3\nhttps://new-target.fixture.example/\nnew-target.fixture.example\n') 2>/dev/null
+assert_eq new-target-fixture-example-443 "$GUIDE_DAST_TARGET" \
+  'FAILS under the pre-GUIDE-06 stub, which never sets GUIDE_DAST_TARGET at all - the deterministic id lib/guide_scope.sh derives from the confirmed host:port'
+assert_contains "$out" 'This will be appended to' \
+  'the real G4 preview screen was shown, never the "not built" stub'
+assert_contains "$(cat "$NEWTARGET_DIR/config/scope.conf")" 'id: new-target-fixture-example-443' \
+  'the record was actually written to config/scope.conf, not merely composed for display'
+
+t_case 'a CANCELLED "Authorise a new target" (a blank URL) loops back to the SAME target menu rather than selecting anything'
+out=$(_guide_dast_with_root "$DW/two-targets" guide_dast_target_menu < <(printf '3\n\n4\n') 2>&1) || true
 rc=0
-_guide_dast_with_root "$DW/two-targets" guide_dast_target_menu < <(printf '3\n4\n') 2>/dev/null || rc=$?
-assert_contains "$out" 'not built in this version of' \
-  'the refusal explains that authorising a target is not built yet'
+_guide_dast_with_root "$DW/two-targets" guide_dast_target_menu < <(printf '3\n\n4\n') 2>/dev/null || rc=$?
+assert_contains "$out" 'Cancelled.  Nothing was written.' \
+  'a blank Base URL cancels guide_g4_authorize_target cleanly (its own documented "leave blank to cancel" contract)'
 assert_contains "$out" 'Which target?' \
-  'FAILS if the refusal did not loop back to redisplay the SAME target menu (the second answer, "4" = Back, only makes sense against a second, real menu prompt)'
-assert_eq 1 "$rc" 'the loop-back menu still honours a real "Back" answered after the refusal'
+  'FAILS if the cancel did not loop back to redisplay the SAME target menu (the third answer, "4" = Back, only makes sense against a second, real menu prompt)'
+assert_eq 1 "$rc" 'the loop-back menu still honours a real "Back" answered after the cancel'
 
 t_case 'a scope.conf naming no targets at all collapses to the "authorise / back / quit" menu'
 out=$(_guide_dast_with_root "$DW/no-targets" guide_dast_target_menu < <(printf '2\n') 2>&1) || true

@@ -299,6 +299,81 @@ assert_contains "$J4" 'request-budget:5000->20000' 'and the budget delta'
 assert_eq '' "$(printf '%s' "$J4" | grep -o '"operator": "[^"]\+"' || true)" \
   'and NO operator identity is attached when SCOURSH_OPERATOR is unset - FAILS if it is harvested from `id -un` and the hostname, which quietly attaches a username and machine name to an artifact frequently handed to a third party'
 
+# =============================================================================
+printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-06: run.json'"'"'s config object --\n'
+# =============================================================================
+# scan.sh's `_scan_record_config` is the writer (one `config_value_<key>`/
+# `config_source_<key>` meta-fact pair per scanner.conf key, plus the two
+# sha256 facts); `_report_config_json` here is the only reader.  These cases
+# drive the reader directly against hand-written meta facts, the same way the
+# authorization-object cases above do, rather than through a real scan.sh
+# invocation - the ROUND-TRIP claim itself (that two different routes to the
+# SAME flags render the SAME object) is tests/suites/scan.sh's own
+# load-bearing case; this file's job is only "the renderer renders what was
+# recorded, completely and correctly".
+D7=$SCOURSH_SCRATCH/rpt-config
+rm -rf "$D7"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$D7"
+D7=$SCOURSH_RUN_DIR
+run_record config_scanner_conf_sha256 def456
+run_record config_scope_conf_sha256 abc123
+run_record config_value_jobs 4
+run_record config_source_jobs default
+run_record config_value_fail-on medium
+run_record config_source_fail-on cli
+run_record config_value_requests-per-second 20
+run_record config_source_requests-per-second cli
+run_record config_value_formats json
+run_record config_value_formats html
+run_record config_source_formats file
+report_run_json "$D7"
+J7=$(cat "$D7/run.json")
+
+t_case 'the config object is present, with both sha256 digests'
+assert_contains "$J7" '"config": {' 'run.json carries a config object'
+assert_contains "$J7" '"scanner_conf_sha256": "def456"' \
+  'ties the run to the exact config/scanner.conf bytes - FAILS under "the argv alone is reproducible", which the plan explicitly rejects: the same argv against a different scanner.conf is a materially different scan'
+assert_contains "$J7" '"scope_conf_sha256": "abc123"' 'and to config/scope.conf too, alongside authorization'"'"'s own copy of the same digest'
+
+t_case 'a recorded key renders its value AND its resolution source'
+assert_contains "$J7" '"jobs": {"value": "4", "source": "default"}' \
+  'a default-sourced key renders both fields'
+assert_contains "$J7" '"fail-on": {"value": "medium", "source": "cli"}' \
+  'a CLI-sourced key too - FAILS under recording the value alone, which is exactly the gap the plan names: "the SAME printed command therefore produces a materially different scan on a different machine" is only detectable if the SOURCE is visible, not only the value'
+assert_contains "$J7" '"requests-per-second": {"value": "20", "source": "cli"}' \
+  'the one key GUIDE-04 already gave a CLI flag renders identically to any other'
+
+t_case 'a key never recorded for this run still renders, as an honest empty value/source pair'
+assert_contains "$J7" '"http-timeout": {"value": "", "source": ""}' \
+  'FAILS under a key silently dropped from the object, which would make "every scanner key" a claim this run.json cannot back up - an absent key is ambiguous between "resolved to empty" and "this version forgot to ask"'
+
+t_case 'a list-cardinality key (formats) renders as a JSON array, in RECORDED order'
+assert_contains "$J7" '"formats": {"value": ["json","html"], "source": "file"}' \
+  'FAILS if a repeatable key were flattened to a single scalar the way every other key is'
+
+t_case 'a list key never recorded renders as an empty array, not a missing key or a null'
+assert_contains "$J7" '"paranoid-allow": {"value": [], "source": ""}' \
+  'the same honesty rule as the scalar case above, applied to the list shape'
+
+t_case 'keys render in one fixed, alphabetically-sorted order - byte order is part of the reproducibility claim'
+assert_contains "$J7" '"circuit-breaker-failures"' 'spot check: an early key in the sort order is present'
+CFG_BLOCK=$(sed -n '/^  "config": {$/,/^  },$/p' "$D7/run.json")
+JOBS_POS=$(printf '%s' "$CFG_BLOCK" | grep -n '"jobs":' | head -1 | cut -d: -f1)
+FAILON_POS=$(printf '%s' "$CFG_BLOCK" | grep -n '"fail-on":' | head -1 | cut -d: -f1)
+assert_eq 1 "$(( FAILON_POS < JOBS_POS ))" \
+  '"fail-on" sorts before "jobs" (LC_ALL=C) - FAILS under an unsorted or recording-order rendering, which would make the SAME resolved settings produce two different-looking (though logically equal) config objects depending on which key happened to resolve first'
+
+t_case 'the rendered run.json (config object included) is still valid JSON'
+if command -v python3 >/dev/null 2>&1; then
+  rc=0
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$D7/run.json" || rc=$?
+  assert_eq 0 "$rc" \
+    'FAILS on a stray or missing comma anywhere in the config object, which no string-containment assertion above would catch'
+else
+  printf '  NOTICE python3 is not on PATH: this JSON parse check did NOT run.  This is a SKIP, not a pass.\n'
+fi
+
 printf '\n-- DAST-34: an unrestricted run says so where a human will read it --\n'
 
 t_case 'the markdown and HTML reports both banner the relaxations'

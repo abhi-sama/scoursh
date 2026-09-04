@@ -90,36 +90,35 @@
 # shellcheck shell=bash
 #
 # SC2329: `guide_may_prompt`, `guide_menu`, `guide_ask`, `guide_confirm` and
-# `_guide_shquote` are this ticket's public surface for a scan_main routing
-# layer that does not exist yet (GUIDE-02 onward); until that lands, the
-# only caller in this project's own source graph is tests/suites/guide.sh,
-# which shellcheck's `-x` follow does not traverse from this file's own
-# check. `_guide_trap_install`/`_guide_trap_restore`/`_guide_on_cancel` are
-# reached only through the three prompt primitives above and through the
-# INT/TERM trap itself, neither of which is a literal call shellcheck's
-# static graph can follow.  `guide_g4_authorize_target` (section 7,
-# docs/STEP-GUIDE-PLAN.md GUIDE-05) is the identical shape: its own caller
-# would be docs/STEP-GUIDE-PLAN.md GUIDE-04's G3 target menu, which still
-# calls `_guide_dast_authorise_not_built` rather than this function (wiring
-# the two together is not this ticket's scope), so today it is reached only
-# by tests/suites/guide.sh.
+# `_guide_shquote` are called only indirectly (through case statements and
+# other functions scattered across this file and scan.sh) - a shape the
+# static call graph a linter builds does not always follow, so this disable
+# stays file-wide rather than being narrowed per function as new real
+# callers land.  `_guide_trap_install`/`_guide_trap_restore`/
+# `_guide_on_cancel` are reached only through the three prompt primitives
+# above and through the INT/TERM trap itself, neither of which is a literal
+# call that graph can follow.
+#
+# CORRECTION, docs/STEP-GUIDE-PLAN.md GUIDE-06: `guide_g4_authorize_target`
+# (section 7) and `guide_dast_configure` (section 6) both have real callers
+# now - `guide_dast_target_menu`'s own `_guide_dast_authorise_new_target`
+# calls the former, and scan.sh's `_scan_guide_run` calls the latter - so
+# this paragraph's older claim that both were reached only by
+# tests/suites/guide.sh no longer holds for either.  The disable is left in
+# place regardless: it is file-wide, and the call shapes above (case
+# statements, `&&`-chained calls) are exactly what SC2329 still misses.
 #
 # SC2034: GUIDE_MENU_REPLY, GUIDE_MENU_CHOICE and GUIDE_ASK_REPLY are the
 # deliberate SET-A-VARIABLE output of guide_menu/guide_ask (see those
 # functions' own comments for why - the short version is that a caller
-# reading them via `$(...)` would swallow this file's own `die`), read only
-# by a future scan_main routing layer (GUIDE-02 onward) and by
-# tests/suites/guide.sh - neither of which is a caller shellcheck's `-x`
-# follow from scan.sh reaches yet, since scan.sh does not call any of this
-# file's functions until that later ticket lands.  GUIDE_G4_TARGET_ID is the
-# same idiom for `guide_g4_authorize_target`.
+# reading them via `$(...)` would swallow this file's own `die`), read by
+# scan.sh's guided-menu flow and by tests/suites/guide.sh.  GUIDE_G4_TARGET_ID
+# is the same idiom for `guide_g4_authorize_target`.
 #
-# Section 6 (GUIDE-04, the DAST branch) is in the identical position:
-# `guide_dast_configure` and its own GUIDE_DAST_* output globals have no
-# caller in scan_main yet either (G1/G2's menu entry point is GUIDE-03's job,
-# not this ticket's - see that section's own header), so the same two SC
-# codes apply to it for the same reason, and are not re-disabled per
-# function below.
+# Section 6 (GUIDE-04, the DAST branch) carries the same two SC codes for the
+# identical shape reason (case statements and cross-function calls, not a
+# missing caller - see the correction above), and they are not re-disabled
+# per function below.
 # shellcheck disable=SC2329,SC2034
 
 if [[ -n ${SCOURSH_GUIDE_SOURCED:-} ]]; then
@@ -560,26 +559,28 @@ _guide_dast_target_banner() {
   } >&2
 }
 
-# G4 (writing a new config/scope.conf record) is GUIDE-05's ticket, not
-# this one - so picking "Authorise a new target" here is a fixed menu item
-# whose module is not built, per this plan's own "Menu items on fixed
-# menus" rule: labelled and refused with one line if picked, rather than
-# dropped from the menu (renumbering would mean "answer 3" meant different
-# things on different checkouts).  It returns to the SAME menu rather than
-# exiting, matching G1's own "picking 4 or 5 ... returns here" precedent for
-# an unbuilt module.
-_guide_dast_authorise_not_built() {
-  {
-    printf '\n'
-    printf '%s\n' '  Authorising a new target from this menu is not built in this version of'
-    printf '%s\n' '  scoursh yet (docs/STEP-GUIDE-PLAN.md GUIDE-05).  Nothing was written to'
-    printf '%s\n' '  config/scope.conf, and nothing was scanned.'
-    printf '\n'
-    printf '%s\n' '  To authorise a target today, add a scope-target record to'
-    printf '%s\n' '  config/scope.conf by hand - see config/scope.conf.example and'
-    printf '%s\n' '  rules/RULE-FORMAT.md for the record shape.'
-    printf '\n'
-  } >&2
+# G4 (writing a new config/scope.conf record) was GUIDE-05's ticket, and
+# GUIDE-05 shipped it as `guide_g4_authorize_target` (section 7 below) as a
+# complete, independently-callable function with no caller of its own -
+# wiring THIS menu's "Authorise a new target" item to it is docs/STEP-GUIDE-
+# PLAN.md GUIDE-06's own job (its Status section's "wiring both hand-offs is
+# GUIDE-06's job", the second of the two this ticket owns alongside
+# `_scan_guide_run` -> `guide_dast_configure` in scan.sh).
+#
+# `_guide_dast_authorise_new_target` - on a SUCCESSFUL write, the freshly
+# authorised target becomes the SELECTED one for this run directly (never a
+# re-loop back through the menu to make the operator pick what they just
+# typed a second time); on a cancel/refusal (blank URL, malformed URL, a
+# mismatched confirmation - `guide_g4_authorize_target` returns 1, never
+# dies, for every one of those), the caller loops back into
+# `guide_dast_target_menu` so the operator can try again, pick an existing
+# target, or Back/Quit.  Sets GUIDE_DAST_TARGET and returns 0 only on
+# success; returns 1 on a cancel, mirroring `guide_g4_authorize_target`'s own
+# contract so both of this function's call sites can read it the same way.
+_guide_dast_authorise_new_target() {
+  guide_g4_authorize_target || return 1
+  GUIDE_DAST_TARGET=$GUIDE_G4_TARGET_ID
+  return 0
 }
 
 # `guide_dast_target_menu` - sets GUIDE_DAST_TARGET and returns 0 on a real
@@ -596,7 +597,7 @@ guide_dast_target_menu() {
     guide_menu 'pick a number> ' 'Authorise a target now' 'Back' 'Quit'
     case $GUIDE_MENU_REPLY in
       1)
-        _guide_dast_authorise_not_built
+        _guide_dast_authorise_new_target && return 0
         guide_dast_target_menu
         return $?
         ;;
@@ -616,7 +617,7 @@ guide_dast_target_menu() {
   guide_menu 'pick a number> ' "${items[@]+"${items[@]}"}"
 
   if (( GUIDE_MENU_REPLY == n + 1 )); then
-    _guide_dast_authorise_not_built
+    _guide_dast_authorise_new_target && return 0
     guide_dast_target_menu
     return $?
   elif (( GUIDE_MENU_REPLY == n + 2 )); then

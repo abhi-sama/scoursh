@@ -47,6 +47,24 @@ ROOT_WITH_SCOPE=$W/root-with-scope
 mkdir -p "$ROOT_WITH_SCOPE/config"
 cp "$ROOT/tests/fixtures/config/scope.conf" "$ROOT_WITH_SCOPE/config/scope.conf"
 
+# docs/STEP-GUIDE-PLAN.md GUIDE-06: as $ROOT_WITH_SCOPE above, plus a real
+# `modules/` - `_guide_g1_reachable` looks for `modules/<cmd>/run.sh` ON DISK
+# at G1 menu-build time, which $ROOT_WITH_SCOPE deliberately lacks (its own
+# dispatch-level tests rely on a missing module degrading to a harmless
+# coverage_reduction no-op, so it never needed one); a guided-menu case that
+# must actually REACH G3 needs `dast` to read as built, not only as
+# dispatchable.  COPIED, never symlinked, and canonicalised
+# (`cd && pwd -P`, matching $ROOT_WITH_CHECKS below): lib/records.sh resolves
+# every loaded file's path via realpath and strips $SCOURSH_INSTALL_ROOT as a
+# literal prefix, which a symlinked `modules/` defeats (realpath follows the
+# symlink to the REAL tree, so the strip fails and every real check-registry
+# load - anything that actually DISPATCHES, not merely a G1 reachability
+# probe - fires a spurious E081); measured directly building this fixture.
+ROOT_WITH_SCOPE_AND_MODULES=$(cd -- "$W" && mkdir -p root-with-scope-and-modules/config \
+  && cp "$ROOT/tests/fixtures/config/scope.conf" root-with-scope-and-modules/config/scope.conf \
+  && cp -R "$ROOT/modules" root-with-scope-and-modules/modules \
+  && cd -- root-with-scope-and-modules && pwd -P)
+
 ROOT_NO_SCOPE=$W/root-no-scope
 mkdir -p "$ROOT_NO_SCOPE/config"
 
@@ -521,21 +539,151 @@ assert_contains "$(cat "$GUIDE_SCA_OUT")" 'scan.sh sca' \
   'and the composed preview still names sca, proving it was not bounced back to G1'
 assert_file_absent "$GUIDE_SCA_DIR/reports" 'no run directory was created (G9 does not exist yet)'
 
-t_case 'dast (module built, guided target setup not landed) proceeds past G1 with a note, skips G2 entirely, and only asks G8'
+t_case 'docs/STEP-GUIDE-PLAN.md GUIDE-06: dast (module built) proceeds past G1 straight into the real G3 target menu, skips G2 entirely (dast has no --path/--lang/--history), and reaches G9'
 GUIDE_DAST_DIR=$W/guide-dast-dir
 rm -rf "$GUIDE_DAST_DIR"
 mkdir -p "$GUIDE_DAST_DIR"
 GUIDE_DAST_OUT=$W/guide-dast.out
 GUIDE_DAST_RC=0
 cd "$GUIDE_DAST_DIR"
-( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'4\n1\n' ) >"$GUIDE_DAST_OUT" 2>&1 || GUIDE_DAST_RC=$?
+# G1 "4" (dast) -> G3 "1" (the first of three fixture targets, fixture-target)
+# -> G5 "1" (passive, the conservative default: guide_dast_limits_flow then
+# asks NOTHING further, per its own header - no affirmation, no rate/budget)
+# -> G8 "1" (no CI gate) -> G9 "2" (print the command and exit).  Five
+# answers exactly - a sixth would mean G2 or the affirmation flow were asked
+# unexpectedly for a conservative-intensity dast run.
+( _guide_env SCOURSH_INSTALL_ROOT="$ROOT_WITH_SCOPE_AND_MODULES" SCOURSH_GUIDE_FORCE_TTY=true \
+    _run_main_answers $'4\n1\n1\n1\n2\n' ) >"$GUIDE_DAST_OUT" 2>&1 || GUIDE_DAST_RC=$?
 cd "$ROOT"
-assert_eq 2 "$GUIDE_DAST_RC" 'two answers only (scan type, then the CI gate) reach the "no G9 yet" refusal - fails if G2 were asked for dast, which needs a third answer that is not here'
-assert_contains "$(cat "$GUIDE_DAST_OUT")" 'guided setup beyond the scan type' \
-  'the prerequisite-honesty note names the real gap (GUIDE-04 not landed), never the stale "not built" text this plan'"'"'s own G1 mockup used before DAST landed'
-assert_contains "$(cat "$GUIDE_DAST_OUT")" 'scan.sh dast' \
-  'the composed preview names dast with no --path/--lang/--history, since none of those flags exist for dast'
-assert_file_absent "$GUIDE_DAST_DIR/reports" 'no run directory was created'
+assert_eq 0 "$GUIDE_DAST_RC" \
+  'G9''s own "Print the command and exit" item exits 0 - fails if G3/G5/G6 were still the pre-GUIDE-06 "not wired in" stub, which would die exit 2 well before a sixth prompt'
+GUIDE_DAST_TEXT=$(cat "$GUIDE_DAST_OUT")
+assert_contains "$GUIDE_DAST_TEXT" 'DAST only ever talks to a host you have authorised in config/scope.conf' \
+  'the real G3 target-menu banner was shown - fails under the pre-GUIDE-06 "guided setup beyond the scan type is not wired in" note, which this ticket removes for dast'
+assert_contains "$GUIDE_DAST_TEXT" 'scan.sh dast --target fixture-target' \
+  'the composed command names the chosen target and carries no --intensity/--i-own-target/--requests-per-second/--request-budget/--allow-intrusive, since item 1 was picked at every menu'
+assert_not_contains "$GUIDE_DAST_TEXT" '--intensity' \
+  'passive is the unspoken default - fails if choosing it at G5 still emitted an explicit --intensity passive'
+assert_contains "$GUIDE_DAST_TEXT" 'read-only checks against https://app.fixture.invalid/' \
+  'G9''s plain-language "This will:" statement describes the passive, read-only case for the CHOSEN target'"'"'s real base-url, read out of config/scope.conf - fails under prose that never varies with the answers given'
+assert_not_contains "$GUIDE_DAST_TEXT" 'Authorisation affirmed' \
+  'no affirmation was made on the conservative path, so G9 restates none'
+assert_file_absent "$GUIDE_DAST_DIR/reports" 'no run directory was created - "Print the command" never runs a scan'
+
+t_case 'the same G9 "Print the command" choice writes ONLY the command to stdout, per docs/STEP-GUIDE-PLAN.md'"'"'s own "so it pipes and copies"'
+GUIDE_DAST_STDOUT=$W/guide-dast.stdout
+cd "$GUIDE_DAST_DIR"
+( _guide_env SCOURSH_INSTALL_ROOT="$ROOT_WITH_SCOPE_AND_MODULES" SCOURSH_GUIDE_FORCE_TTY=true \
+    _run_main_answers $'4\n1\n1\n1\n2\n' ) >"$GUIDE_DAST_STDOUT" 2>/dev/null || true
+cd "$ROOT"
+assert_eq 'scan.sh dast --target fixture-target' "$(cat "$GUIDE_DAST_STDOUT")" \
+  'stdout carries EXACTLY the composed command and nothing else - fails if any of the review-screen prose (the "Ready."/"This will:" text, which belongs on stderr) leaked onto stdout, which would break piping the output straight into a shell'
+
+# =============================================================================
+printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-06: the load-bearing round-trip test --\n'
+# =============================================================================
+# "Run the guided flow with a scripted answer stream, then run the rendered
+# command non-interactively, and assert the two runs' run.json flag facts,
+# authorization object and config object are byte-identical.  It must fail
+# under the reading 'the printed command is a best-effort summary'."
+#
+# Two REAL processes (`bash scan.sh ...`, not the sourced `_run_main`
+# helpers): the claim under test is that the printed command IS what ran, so
+# the second invocation is typed as an operator would actually type it - a
+# plain, non-guided `scan.sh dast --target ... --i-own-target ... ...`, spawned
+# fresh, with no guided-mode machinery anywhere near it.
+#
+# The target (http://169.254.1.1:1/, a link-local literal - `tests/lint-shell.sh`'s
+# DAST-35 check admits link-local/private/CGNAT/TEST-NET literals anywhere in
+# the tree, unlike loopback, which it restricts to `tools/dast-test-target/`'s
+# own path exemption) refuses every connection INSTANTLY: nothing listens on
+# TCP port 1, and no interface on this host is configured on that link-local
+# subnet, so the kernel refuses it without a single packet leaving the
+# machine (measured: `rc=7`, 0ms, vs. a TEST-NET literal like 192.0.2.1, which
+# is safe by the identical lint rule but is actually ROUTED off-host and so
+# blocks for the full `http-timeout` per attempt instead of failing
+# immediately - the wrong choice for a test that needs to stay fast).
+# `--requests-per-second` is raised to "No limit" so nothing here is bounded
+# by wall-clock rate - the run therefore always ends the same way, in well
+# under a second: `lib/http.sh`'s own circuit breaker opens at its default
+# threshold (10 failed requests within its window) and the run stops itself.
+# That determinism is what keeps this test fast and non-flaky while still
+# exercising a REAL `scan_dispatch dast` from end to end - not merely
+# `scan_parse_args` in isolation, the way the earlier `guide_dast_configure`
+# round-trip cases above already do.
+#
+# Both fixture roots get their OWN COPY of modules/ (never a symlink - see
+# $ROOT_WITH_SCOPE_AND_MODULES's own header above for why a symlinked
+# modules/ fires a spurious E081 the instant a real check registry loads)
+# and are canonicalised (`cd && pwd -P`) for the identical
+# $ROOT_WITH_CHECKS reason.
+RT_ROOT1=$(cd -- "$W" && mkdir -p rt-root1/config && cp -R "$ROOT/modules" rt-root1/modules \
+  && cd -- rt-root1 && pwd -P)
+RT_ROOT2=$(cd -- "$W" && mkdir -p rt-root2/config && cp -R "$ROOT/modules" rt-root2/modules \
+  && cd -- rt-root2 && pwd -P)
+cat >"$RT_ROOT1/config/scope.conf" <<'EOF'
+id: roundtrip-target
+base-url: http://169.254.1.1:1/
+allow-subdomains: false
+allow-private-addresses: true
+EOF
+cp "$RT_ROOT1/config/scope.conf" "$RT_ROOT2/config/scope.conf"
+
+t_case 'RUN 1: the guided flow, with a scripted answer stream, actually runs the scan ("Run it" at G9)'
+# `dast --guided` below already names the command, so G1 is skipped and the
+# FIRST scripted answer goes straight to G3: "1" (the only target) -> G5 "3"
+# (active) -> G6 confirm "roundtrip-target" -> G6 rate "4" (No limit) -> G6
+# budget "1" (unchanged from the ceiling) -> G6 intrusive "1" (No) -> G8 "1"
+# (no CI gate) -> G9 "1" (Run it).
+RT_ANSWERS=$'1\n3\nroundtrip-target\n4\n1\n1\n1\n1\n'
+RT_LOG1=$W/rt-run1.log
+( _guide_env SCOURSH_INSTALL_ROOT="$RT_ROOT1" SCOURSH_GUIDE_FORCE_TTY=true \
+    bash "$ROOT/scan.sh" dast --guided --out "$RT_ROOT1/out" <<<"$RT_ANSWERS" ) >"$RT_LOG1" 2>&1 || true
+assert_file_exists "$RT_ROOT1/out/run.json" \
+  'FAILS if the guided "Run it" path never reached scan_parse_args/run_init at all - a run this test cannot compare against anything'
+RT_PRINTED=$(grep '^  scan\.sh dast' "$RT_LOG1" | head -1)
+RT_PRINTED=${RT_PRINTED#  }
+assert_contains "$RT_PRINTED" 'scan.sh dast' \
+  'the composed command was actually printed on the review screen before "Run it" ran it'
+
+t_case 'RUN 2: that EXACT printed line, typed as a plain non-guided invocation in a fresh process'
+RT_ARGS=${RT_PRINTED#scan.sh }
+RT_ARGS=${RT_ARGS//"$RT_ROOT1/out"/"$RT_ROOT2/out"}
+RT_LOG2=$W/rt-run2.log
+# SC2086: RT_ARGS is deliberately unquoted here - it is a space-separated
+# argv line (flag tokens plus their values), and the whole point of this
+# case is to feed it to a fresh shell the way an operator pasting the
+# printed command would, which means real word splitting rather than one
+# giant single argument.
+# shellcheck disable=SC2086
+( _guide_env SCOURSH_INSTALL_ROOT="$RT_ROOT2" bash "$ROOT/scan.sh" $RT_ARGS ) </dev/null >"$RT_LOG2" 2>&1 || true
+assert_file_exists "$RT_ROOT2/out/run.json" \
+  'FAILS if the plain, non-guided invocation of the printed command could not even complete a run.json - the two runs would then have nothing to compare'
+
+t_case 'the load-bearing assertion: run.json'"'"'s authorization object is byte-identical between the two runs (modulo the wall-clock affirmed_at timestamp)'
+_rt_block() { sed -n "/^  \"$2\": {\$/,/^  },\$/p" "$1"; }
+RT_AUTH1=$(_rt_block "$RT_ROOT1/out/run.json" authorization | sed -E 's/"affirmed_at": "[^"]*"/"affirmed_at": "<TS>"/')
+RT_AUTH2=$(_rt_block "$RT_ROOT2/out/run.json" authorization | sed -E 's/"affirmed_at": "[^"]*"/"affirmed_at": "<TS>"/')
+assert_eq "$RT_AUTH1" "$RT_AUTH2" \
+  'FAILS under the reading "the printed command is a best-effort summary" - if the guided flow recorded anything (an affirmation_source, a limits_relaxed entry, an intensity) that the identical typed command did not reproduce, this is where it would show up'
+assert_contains "$RT_AUTH1" '"affirmed": true' \
+  'the comparison above is not vacuously true on two empty/unaffirmed objects - a real affirmation with real relaxed limits is what both runs actually recorded'
+assert_contains "$RT_AUTH1" 'requests-per-second:4.000->999999999.000' \
+  'and the specific numeric delta G6''s rate menu raised is part of what round-tripped identically'
+
+t_case 'the load-bearing assertion: run.json'"'"'s config object is byte-identical between the two runs'
+RT_CFG1=$(_rt_block "$RT_ROOT1/out/run.json" config)
+RT_CFG2=$(_rt_block "$RT_ROOT2/out/run.json" config)
+assert_eq "$RT_CFG1" "$RT_CFG2" \
+  'every scanner.conf key (not only the two the guided flow set) resolved to the identical value AND source in both runs, including scope_conf_sha256 tying both runs to the SAME authorisation-file bytes'
+assert_contains "$RT_CFG1" '"requests-per-second": {"value": "999999999", "source": "cli"}' \
+  'the raised rate is recorded as CLI-sourced in both, not merely present'
+
+t_case 'the load-bearing assertion: a "flag fact" (targets) is byte-identical between the two runs too'
+RT_TGT1=$(grep '"targets":' "$RT_ROOT1/out/run.json")
+RT_TGT2=$(grep '"targets":' "$RT_ROOT2/out/run.json")
+assert_eq '  "targets": ["roundtrip-target"],' "$RT_TGT1" 'RUN 1 recorded the chosen target'
+assert_eq "$RT_TGT1" "$RT_TGT2" 'and RUN 2 recorded the identical fact'
 
 t_case 'a bad --path is re-asked once, then returns to G1 (never dies) - docs/STEP-GUIDE-PLAN.md'"'"'s own G2 row'
 GUIDE_BADPATH_DIR=$W/guide-badpath-dir
