@@ -23,7 +23,7 @@ No design decision changes in this move; see "Relationship to the ten-step build
 one genuinely new thing this document adds - a stated position on whether guided mode is one of
 `docs/DESIGN.md` §13's ten steps.
 
-## Status: GUIDE-01 through GUIDE-04 landed; GUIDE-05 through GUIDE-07 remain unclaimed
+## Status: GUIDE-01 through GUIDE-05 landed; GUIDE-06 and GUIDE-07 remain unclaimed
 
 **GUIDE-01 has landed.** `lib/guide.sh` exists and ships `guide_may_prompt`, `guide_menu`, `guide_ask`,
 `guide_confirm`, and `_guide_shquote`, plus the guided-scope `INT`/`TERM` signal trap and the test-only
@@ -147,7 +147,7 @@ retargeted at the new EOF-at-menu outcome rather than left asserting stale text.
 a real prompt sets as of this ticket - and `tests/suites/scan.sh`'s own walk of that array against
 `_SCAN_FLAG_KIND` (GUIDE-02's own case, which ran zero iterations before this ticket) now actually
 asserts something.
-GUIDE-05, GUIDE-06 and GUIDE-07 remain unclaimed - see GUIDE-04's own paragraph immediately below,
+GUIDE-06 and GUIDE-07 remain unclaimed - see GUIDE-04's own paragraph immediately below,
 which landed on top of this ticket.
 
 **GUIDE-04 has now landed too** - steps G3 (the DAST target menu), G5 (intensity) and G6 (the limits
@@ -200,6 +200,69 @@ Two things worth carrying here because they are not obvious from the row above a
   `_http_rps_milli_set` refuses only an integer part longer than 9 digits), which is schema-legal and,
   for any real target, indistinguishable from "as fast as the target answers."
 
+**GUIDE-05 has now landed too: the `config/scope.conf` record writer, step G4 - "the most dangerous
+thing in this design."**
+It ships as two files, split the way every `lib/guide.sh`-adjacent piece of this feature is: the PURE
+half (`lib/guide_scope.sh` - id derivation, record-text rendering, the deny-list check reused from
+`lib/http.sh`, and the validate-in-a-temp-file-then-rename writer) has no terminal I/O and calls no
+`guide_*` primitive, so `tests/lint-shell.sh`'s guide-isolation check (GUIDE-02) needs no exemption for
+it; the interactive screen itself (`guide_g4_authorize_target`) lives in `lib/guide.sh`, the one other
+file that check already exempts.
+This ticket does **not** wire either into `scan.sh` - the G3 target menu that reaches "Authorise a new
+target" is GUIDE-04's own row (G3, G5, G6), which GUIDE-05 depends on nothing from; the deliverable here
+is `guide_g4_authorize_target` as a complete, independently callable and independently tested function,
+ready for GUIDE-04 to call once it lands.
+
+Four things from the plan's own G4 section are enforced structurally rather than left to a caller's
+discipline, and each is worth knowing before touching this code again:
+
+- **The preview and the write render the SAME text.**  `guide_scope_record_text` is called once, and its
+  output is both what `guide_g4_authorize_target` prints inside the confirmation screen and what
+  `guide_scope_append` writes to disk - there is no second renderer for either to drift from.
+- **`allow-subdomains` has no question anywhere in this flow.**  It is a literal `false` baked into
+  `guide_scope_record_text`, matching the plan's own "widening the gate should mean editing the gate."
+- **`allow-private-addresses: true` is reachable only through an IP-literal `base-url`.**  A hostname
+  that currently resolves into `lib/http.sh`'s own deny list (loopback/link-local/CGNAT/`0.0.0.0/8`, and
+  the IPv6 equivalents - `guide_scope_addr_denied` reuses `_http_ipv4_denied`/`_http_ipv6_denied`
+  directly rather than re-deriving the ranges) is never authorised as a hostname; the operator is offered
+  a retype as the literal address instead, once, and only a confirmed literal ever reaches the
+  allow-private-addresses question.
+- **The append-only guarantee is `records_load`'s own duplicate-id detection (E019), not a second,
+  hand-rolled uniqueness check.**  `guide_scope_unique_id`'s disambiguation (base id, then `-2`, `-3`, ...
+  against whatever `config_scope_load` already reads out of the target file) is what keeps that refusal
+  from firing in ordinary use - the SAME derivation source (the normalised `host:port`, not the raw typed
+  bytes) is what makes "the same URL always yields the same id" true, per the plan's own wording.
+  `tests/suites/guide-scope.sh` proves the refusal directly, bypassing the disambiguation layer, and
+  proves the original file is byte-identical after a refused write.
+
+**The plan's own required suite case - "a suite case must prove the post-write gate behaviour is
+identical to a hand-edited file" - is `tests/suites/guide-scope.sh` section G.**  It writes one target
+through `guide_scope_append` and hand-authors an equivalent record as a literal heredoc in the test file
+itself (never produced by any function under test), then asserts `http_gate_url` makes the identical
+allow/refuse decision against both files: the exact authorised host is allowed in both, an unrelated host
+is refused in both, and a subdomain is refused in both (`allow-subdomains: false` in both) - proving a
+guided write is never more permissive than the hand-edited file it is designed to be indistinguishable
+from.
+
+**The `config/scope.conf` `.gitignore` decision this ticket owns**: `config/scope.conf` stays **out** of
+`.gitignore`, unchanged from before this ticket.  A guided write is byte-identical in effect to a hand
+edit - the whole point of the identical-to-hand-edited proof above - and this plan's own G4 text frames
+the non-interactive equivalent of this screen as "editing config/scope.conf - the same act with the same
+reviewability"; ignoring the file would sever that story and make a guided authorisation strictly less
+durable than a hand-typed one.  The cost - an operator's internal hostnames can appear in `git
+status`/`git diff` for a checkout that tracks this file - is accepted and stated in `lib/guide_scope.sh`'s
+own header, in the same place a reader of that file would look for it, rather than solved by making the
+guided path behave differently from a hand edit.
+
+`tests/suites/guide-scope.sh` (53 assertions - id derivation including the `t-` prefix and multi-level
+collision disambiguation, the reused deny-list check, record-text rendering with the base-url carried
+through verbatim, the append writer's fresh-file/with-trailing-newline/without-trailing-newline/
+duplicate-id-refusal/malformed-directory/malformed-schema cases, and the identical-to-hand-edited-file
+proof) and a new section of `tests/suites/guide.sh` (12 further cases: the happy path, a blank-URL
+cancel, a malformed-URL cancel, a mismatched-confirmation cancel, EOF at the first prompt, the
+private-hostname literal-retype offer both accepted and declined, a literal typed directly with the
+allow-private-addresses question declined, and an end-to-end `-2` collision) are the proof.
+
 Unlike step 6 or step 7, this work carries **no build-order gate at all** - it was never blocked on SAST,
 SCA/IaC, or DAST completing, and nothing here waits on step 6 (cloud) or step 7 (state) either.
 The only dependencies are internal, ticket-to-ticket:
@@ -215,23 +278,26 @@ The only dependencies are internal, ticket-to-ticket:
   **landed** too - see the Status section above for the detail, including the one correction it made to
   this row's own DAST-32 dependency note (`--requests-per-second`/`--request-budget` needed a new CLI
   flag, not only the ceiling/clamp DAST-32 already supplied).
-- **GUIDE-05** (the `config/scope.conf` record writer) depends on GUIDE-02, GUIDE-03, and
-  `lib/records.sh`, which shipped at step 1 and needs nothing further.
+- **GUIDE-05** (the `config/scope.conf` record writer) depended on GUIDE-02, GUIDE-03, and
+  `lib/records.sh`, which shipped at step 1 and needed nothing further, and has now **landed** - see
+  the Status section above for the detail.
 - **GUIDE-06** (the review screen, `--print-command`, the argv round-trip) depends on GUIDE-03, GUIDE-04
   and GUIDE-05.
 - **GUIDE-07** (documentation: the guided quickstart, the flag table, the honest status column) depends
   on GUIDE-06.
 
-**In short: this is a single chain, GUIDE-01 through GUIDE-07 in that order (GUIDE-04 and GUIDE-05 could
-have run in parallel once GUIDE-03 landed) - GUIDE-01 through GUIDE-04 have now landed, and GUIDE-05,
-GUIDE-06 and GUIDE-07 remain unclaimed - and every "blocked" reading this design once carried while DAST
-was still unbuilt is stale.**
+**In short: this is a single chain, GUIDE-01 through GUIDE-07 in that order (GUIDE-04 and GUIDE-05 ran
+in parallel once GUIDE-03 landed) - GUIDE-01 through GUIDE-05 have now landed, and GUIDE-06 and GUIDE-07
+remain unclaimed - and every "blocked" reading this design once carried while DAST was still unbuilt is
+stale.**
 The old framing (visible in `docs/STEP5-DAST-PLAN.md`'s edit history) treated GUIDE-04 as waiting on DAST
 completing; DAST is now complete and both GUIDE-03 and GUIDE-04 have since landed on top of it, so the
-honest statement of what blocks the FLOW (an operator reaching the DAST branch through a real menu)
-today is "GUIDE-06 hasn't landed" - GUIDE-03's own `_scan_guide_run` does not yet call GUIDE-04's
-`guide_dast_configure` (see GUIDE-03's own correction note in the Status section above), and wiring that
-hand-off is GUIDE-06's job. GUIDE-05 is startable today with nothing in front of it.
+honest statement of what blocks the FLOW (an operator reaching the DAST branch through a real menu, with
+"Authorise a new target" writing a real record) today is "GUIDE-06 hasn't landed" - GUIDE-03's own
+`_scan_guide_run` does not yet call GUIDE-04's `guide_dast_configure`, and GUIDE-04's own G3 target menu
+does not yet call GUIDE-05's `guide_g4_authorize_target` (see GUIDE-03's own correction note in the
+Status section above), and wiring both hand-offs is GUIDE-06's job.  GUIDE-06 now has both GUIDE-04's
+DAST branch and GUIDE-05's landed writer to build its review screen against.
 See `ROADMAP.md` for where this plan sits in the project's overall priority order relative to step 6,
 step 7 and step 10 - that ordering, not this status section, is the one to check first.
 
