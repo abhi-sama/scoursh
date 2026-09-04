@@ -66,6 +66,38 @@ printf 'id: scanner\njobs: 2\n' >"$ROOT_OK_SCANNER/config/scanner.conf"
 # its own subshell.
 _run_main() { scan_main "$@"; }
 
+# docs/STEP-GUIDE-PLAN.md GUIDE-03: `_run_main` alone is no longer safe for a
+# guided-eligible case now that a real G1/G2/G8 menu exists to block on -
+# `assert_status`'s own `( "$@" ) >/dev/null 2>&1` redirects stdout/stderr
+# but never stdin (AGENTS.md: "tests/run-tests.sh runs each suite as `bash
+# <path>` with no stdin ... redirection, and at a developer's terminal a
+# suite file therefore has stdin ... on a tty"), so an un-redirected guided
+# call here would try to read THIS suite's own real terminal.  `_run_main_in`
+# attaches STDIN (a here-string, a file, or /dev/null) directly to the
+# `scan_main` invocation itself - never through `$(...)`, which would let a
+# `die()` inside it escape only the subshell rather than the process, the
+# same hazard `_scan_require_readable_path`'s own comment documents at
+# length - so every guided case below that could reach a real prompt states
+# exactly what it feeds it rather than leaving that to chance.
+_run_main_in() {
+  local stdin_src=$1
+  shift
+  scan_main "$@" <"$stdin_src"
+}
+
+# `_run_main_answers ANSWERS CMD...` - the scripted-answer-stream sibling of
+# `_run_main_in`, for a case that must actually walk through G1/G2/G8 rather
+# than hit EOF immediately.  ANSWERS is fed via process substitution, the
+# same `< <(printf ...)` idiom tests/suites/guide.sh's own `guide_menu`
+# cases already use, for the identical reason: attaching the redirect
+# directly to the `scan_main` call keeps it OUT of any `$(...)` a die() could
+# only half-escape.
+_run_main_answers() {
+  local answers=$1
+  shift
+  scan_main "$@" < <(printf '%s' "$answers")
+}
+
 # Portability (docs/FOUNDATION.md tension 24) is a structural property, not
 # something a text scan of the source can pin: `getopts` (the bash builtin)
 # has no long-option support, and GNU getopt's long-option parsing is not
@@ -239,19 +271,24 @@ printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-02: guided-mode routing in scan_main 
 # tests/suites/guide.sh already uses for lib/guide.sh's own gate.
 
 t_case 'bare scan.sh (zero arguments) with no terminal is UNCHANGED: today''s "no command given" usage error, never a guided-mode message'
-rm -rf "$W/run-guide-bare-noterm"
+# Genuinely ZERO arguments, on purpose - `--out X` alone makes `$#` 2, which
+# never satisfies scan_main's own `(( $# == 0 ))` guided-mode test and so
+# would exercise "unknown command: '--out'" instead of the case this claims
+# to test; both dead ends exit 2, which is exactly how that mistake would
+# stay invisible if made here.
+cd "$W"
 assert_status 2 \
   'zero arguments with no terminal falls straight through to the unmodified scan_parse_args call - the dedicated byte-identical non-regression case further below in this file proves the text itself never changed' \
-  _run_main --out "$W/run-guide-bare-noterm"
-assert_status 2 'and genuinely zero arguments (not even --out) behaves the same way' _run_main
-assert_file_absent "$W/run-guide-bare-noterm" 'no run directory was created for a refused invocation'
+  _run_main
+cd "$ROOT"
 
-t_case 'bare scan.sh (zero arguments) with a forced terminal: guided mode is eligible, and refuses honestly rather than running an unconfigured scan'
-rm -rf "$W/run-guide-bare-tty"
+t_case 'bare scan.sh (zero arguments) with a forced terminal: guided mode is eligible and reaches the real G1 menu (docs/STEP-GUIDE-PLAN.md GUIDE-03) - EOF at G1 refuses honestly rather than running an unconfigured scan'
+cd "$W"
 SCOURSH_GUIDE_FORCE_TTY=true assert_status 2 \
-  "eligible zero-arg guided mode dies exit 2 stating guided setup is not built in this version - fails under 'fall back to silently running today's usage error', indistinguishable from the ineligible case above, and under 'silently run some default scan', which the plan calls a worse outcome than a clear refusal" \
-  _run_main --out "$W/run-guide-bare-tty"
-assert_file_absent "$W/run-guide-bare-tty" 'no run directory was created'
+  "eligible zero-arg guided mode with no scripted answer hits EOF at G1's own menu and dies exit 2 - fails under 'fall back to silently running today's usage error', indistinguishable from the ineligible case above, and under 'silently run some default scan', which the plan calls a worse outcome than a clear refusal" \
+  _run_main_in /dev/null
+cd "$ROOT"
+assert_file_absent "$W/reports" 'a refused zero-argument invocation - eligible or not - never reaches run_init, so no default reports/<timestamp> directory was created under the cwd it ran from'
 
 t_case '--guided explicitly given with no terminal: fails LOUDLY with the concrete reason, before any required-flag check ever runs'
 rm -rf "$W/run-guide-explicit-noterm"
@@ -264,11 +301,11 @@ assert_contains "$(cat "$GUIDE_NOTERM_OUT")" 'standard input is not a terminal' 
   'the concrete reason is named, not a generic refusal - fails under a message that cannot distinguish "no terminal" from "a CI marker is set" from "SCOURSH_NO_PROMPT is set"'
 assert_file_absent "$W/run-guide-explicit-noterm" 'no run directory was created'
 
-t_case '--guided explicitly given with a forced terminal: eligible, and refuses honestly (same as the bare-terminal case)'
+t_case '--guided explicitly given with a forced terminal: eligible, skips G1 (the command was already typed) and reaches G8 - EOF there refuses honestly (same "nothing ran" outcome as the bare-terminal case)'
 rm -rf "$W/run-guide-explicit-tty"
 SCOURSH_GUIDE_FORCE_TTY=true assert_status 2 \
-  '--guided with a forced terminal and no CI marker dies exit 2, stating guided setup is not built' \
-  _run_main dast --guided --out "$W/run-guide-explicit-tty"
+  '--guided with a forced terminal and no CI marker, and no scripted answer, hits EOF at G8 (dast has no G2 follow-ups) and dies exit 2' \
+  _run_main_in /dev/null dast --guided --out "$W/run-guide-explicit-tty"
 assert_file_absent "$W/run-guide-explicit-tty" 'no run directory was created'
 
 t_case 'a CI marker refuses --guided even with a forced terminal - the environment layer can only ever turn prompting OFF, never on'
@@ -297,6 +334,159 @@ SCOURSH_INSTALL_ROOT=$ROOT_OK_SCANNER SCOURSH_GUIDE_FORCE_TTY=true assert_status
   "sast --path with everything it needs and no --guided runs normally on a 'terminal' - fails under 'guided mode fires whenever a terminal is present', which would make an ordinary interactive invocation impossible without a flag to suppress it" \
   _run_main sast --path "$W/guide-silent-tree" --out "$W/run-guide-silent"
 assert_file_exists "$W/run-guide-silent/run.json" 'the run actually happened - this is not another refusal that merely exits 0'
+
+# =============================================================================
+printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-03: the G1 scan-type menu --\n'
+# =============================================================================
+# This ticket's own acceptance criterion, verbatim: "a suite case asserting
+# the menu's ready set equals the set of modules with a run.sh on disk,
+# because a shared-function convention is a thing a future edit can break."
+# Two proofs, not one: against the REAL tree (where this project's own
+# build-order state decides the answer, and is worth pinning as of this
+# ticket - sast/sca/iac/dast all landed, cloud has not), and against a
+# FIXTURE tree built to name an arbitrary subset, so the assertion is
+# discriminating rather than a coincidence of what this checkout happens to
+# have on disk right now.
+t_case "_guide_g1_reachable equals _scan_module_built (\"the same probe scan_dispatch uses\") on the real tree"
+for _guide_mod in sast sca iac dast cloud; do
+  _guide_on_disk=0
+  [[ -f $(_scan_module_script "$_guide_mod") ]] && _guide_on_disk=1
+  _guide_reachable=0
+  _guide_g1_reachable "$_guide_mod" && _guide_reachable=1
+  assert_eq "$_guide_on_disk" "$_guide_reachable" \
+    "guided-menu reachability for '$_guide_mod' matches modules/$_guide_mod/run.sh (or, for cloud, modules/cloud/aws/run.sh) on disk"
+done
+unset _guide_mod _guide_on_disk _guide_reachable
+
+t_case '_guide_g1_reachable tracks an arbitrary fixture set of run.sh files, not a hardcoded list - fails under a hardcoded true/false per module name'
+ROOT_GUIDE_SUBSET=$W/root-guide-subset
+rm -rf "$ROOT_GUIDE_SUBSET"
+mkdir -p "$ROOT_GUIDE_SUBSET/modules/sast" "$ROOT_GUIDE_SUBSET/modules/iac"
+printf '#!/usr/bin/env bash\n' >"$ROOT_GUIDE_SUBSET/modules/sast/run.sh"
+printf '#!/usr/bin/env bash\n' >"$ROOT_GUIDE_SUBSET/modules/iac/run.sh"
+for _guide_mod in sast sca iac dast cloud; do
+  _guide_want=0
+  [[ $_guide_mod == sast || $_guide_mod == iac ]] && _guide_want=1
+  _guide_got=0
+  SCOURSH_INSTALL_ROOT=$ROOT_GUIDE_SUBSET _guide_g1_reachable "$_guide_mod" && _guide_got=1
+  assert_eq "$_guide_want" "$_guide_got" \
+    "on a fixture tree with only sast/iac run.sh present, '$_guide_mod' reachability matches"
+done
+unset _guide_mod _guide_want _guide_got
+
+# The five cases below all pick a scan type AT G1, which is only reachable
+# through the bare-zero-argument branch (docs/STEP-GUIDE-PLAN.md's own
+# `--guided` skips G1 whenever a command was already typed - see the preset
+# case further below).  Genuinely zero arguments means no `--out` either
+# (the earlier "bare scan.sh" cases above already establish why one more
+# token, even `--out X`, defeats scan_main's own `(( $# == 0 ))` test and
+# would exercise "unknown command" instead of the guided menu) - so each
+# case `cd`s into its own scratch directory instead, letting the default
+# `reports/<timestamp>` fall there if it were ever created, and always
+# `cd`s back out afterward.
+t_case "picking an item whose module has no run.sh loops back to G1, and picking one that does proceeds - the menu's fixed 7 items never reorder"
+GUIDE_CLOUD_LOOP_DIR=$W/guide-cloud-loop
+rm -rf "$GUIDE_CLOUD_LOOP_DIR"
+mkdir -p "$GUIDE_CLOUD_LOOP_DIR"
+cd "$GUIDE_CLOUD_LOOP_DIR"
+SCOURSH_GUIDE_FORCE_TTY=true assert_status 0 \
+  "item 5 (cloud, not built) explains and returns to G1; item 7 (quit) then exits 0 with nothing scanned - fails if the menu numbering shifted an unavailable item out of its fixed slot, or if picking it dispatched anyway" \
+  _run_main_answers $'5\n7\n'
+cd "$ROOT"
+assert_file_absent "$GUIDE_CLOUD_LOOP_DIR/reports" 'quitting from the guided flow never creates a run directory'
+
+GUIDE_CLOUD_LOOP_OUT=$W/guide-cloud-loop.out
+cd "$GUIDE_CLOUD_LOOP_DIR"
+( SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n7\n' ) >"$GUIDE_CLOUD_LOOP_OUT" 2>&1 || true
+cd "$ROOT"
+assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'not built yet in this version of' \
+  'the loop-back explanation names the module as not built - fails under a message that cannot distinguish this from an ordinary refusal'
+assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'Cancelled.  Nothing was scanned.' \
+  'quit (item 7) reached after the loop-back prints the ordinary cancellation message, never a guided-specific one'
+
+t_case 'sca with no advisories.db explains and still proceeds - the operator may proceed, per this ticket'"'"'s own G1 wording'
+GUIDE_SCA_DIR=$W/guide-sca-dir
+rm -rf "$GUIDE_SCA_DIR"
+mkdir -p "$GUIDE_SCA_DIR"
+GUIDE_SCA_OUT=$W/guide-sca.out
+GUIDE_SCA_RC=0
+cd "$GUIDE_SCA_DIR"
+( SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'2\n\n1\n' ) >"$GUIDE_SCA_OUT" 2>&1 || GUIDE_SCA_RC=$?
+cd "$ROOT"
+assert_eq 2 "$GUIDE_SCA_RC" 'sca proceeds through G2/G8 to the "no G9 yet" refusal, never a loop-back, even with no advisories.db'
+assert_contains "$(cat "$GUIDE_SCA_OUT")" 'No advisory database is installed' \
+  'the missing-db explanation is shown - fails under sca silently being treated as ready'
+assert_contains "$(cat "$GUIDE_SCA_OUT")" 'scan.sh sca' \
+  'and the composed preview still names sca, proving it was not bounced back to G1'
+assert_file_absent "$GUIDE_SCA_DIR/reports" 'no run directory was created (G9 does not exist yet)'
+
+t_case 'dast (module built, guided target setup not landed) proceeds past G1 with a note, skips G2 entirely, and only asks G8'
+GUIDE_DAST_DIR=$W/guide-dast-dir
+rm -rf "$GUIDE_DAST_DIR"
+mkdir -p "$GUIDE_DAST_DIR"
+GUIDE_DAST_OUT=$W/guide-dast.out
+GUIDE_DAST_RC=0
+cd "$GUIDE_DAST_DIR"
+( SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'4\n1\n' ) >"$GUIDE_DAST_OUT" 2>&1 || GUIDE_DAST_RC=$?
+cd "$ROOT"
+assert_eq 2 "$GUIDE_DAST_RC" 'two answers only (scan type, then the CI gate) reach the "no G9 yet" refusal - fails if G2 were asked for dast, which needs a third answer that is not here'
+assert_contains "$(cat "$GUIDE_DAST_OUT")" 'guided setup beyond the scan type' \
+  'the prerequisite-honesty note names the real gap (GUIDE-04 not landed), never the stale "not built" text this plan'"'"'s own G1 mockup used before DAST landed'
+assert_contains "$(cat "$GUIDE_DAST_OUT")" 'scan.sh dast' \
+  'the composed preview names dast with no --path/--lang/--history, since none of those flags exist for dast'
+assert_file_absent "$GUIDE_DAST_DIR/reports" 'no run directory was created'
+
+t_case 'a bad --path is re-asked once, then returns to G1 (never dies) - docs/STEP-GUIDE-PLAN.md'"'"'s own G2 row'
+GUIDE_BADPATH_DIR=$W/guide-badpath-dir
+rm -rf "$GUIDE_BADPATH_DIR"
+mkdir -p "$GUIDE_BADPATH_DIR"
+GUIDE_BADPATH_OUT=$W/guide-badpath.out
+GUIDE_BADPATH_RC=0
+cd "$GUIDE_BADPATH_DIR"
+( SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'1\n/no/such/dir-scoursh-guide-test\n/still/bad-scoursh-guide-test\n7\n' ) >"$GUIDE_BADPATH_OUT" 2>&1 || GUIDE_BADPATH_RC=$?
+cd "$ROOT"
+assert_eq 0 "$GUIDE_BADPATH_RC" 'two bad paths return to G1, where quit (item 7) exits 0 - fails under scan_parse_args-style die() on a bad guided-mode path answer'
+assert_contains "$(cat "$GUIDE_BADPATH_OUT")" 'does not exist, or is not readable' \
+  'the re-ask explanation is shown'
+assert_contains "$(cat "$GUIDE_BADPATH_OUT")" 'Returning to the scan-type menu' \
+  'and the second bad answer sends the operator back to G1 rather than a third re-ask'
+assert_file_absent "$GUIDE_BADPATH_DIR/reports" 'no run directory was created'
+
+t_case 'the full local-surface path (docs/STEP-GUIDE-PLAN.md G1+G2+G8) composes the expected flags into the preview'
+GUIDE_SAST_DIR=$W/guide-sast-dir
+rm -rf "$GUIDE_SAST_DIR"
+mkdir -p "$GUIDE_SAST_DIR/guide-sast-tree"
+GUIDE_SAST_OUT=$W/guide-sast.out
+GUIDE_SAST_RC=0
+cd "$GUIDE_SAST_DIR"
+( SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'1\nguide-sast-tree\npy,js\n2\n4\n' ) >"$GUIDE_SAST_OUT" 2>&1 || GUIDE_SAST_RC=$?
+cd "$ROOT"
+assert_eq 2 "$GUIDE_SAST_RC" 'sast through G1/G2 (path, languages, git history) and G8 (fail-on) reaches the "no G9 yet" refusal'
+GUIDE_SAST_TEXT=$(cat "$GUIDE_SAST_OUT")
+assert_contains "$GUIDE_SAST_TEXT" 'scan.sh sast --fail-on medium --history --lang py,js --path guide-sast-tree' \
+  'the composed preview names every answered flag, alphabetically sorted, with the boolean --history carrying no value token - fails under a preview that drops an answer or mis-renders a bool as a value flag'
+assert_file_absent "$GUIDE_SAST_DIR/reports" 'no run directory was created'
+
+mkdir -p "$W/guide-sast-tree"
+
+t_case '`scan.sh sast --path X --guided` skips G1 (the command was already typed) and G2''s path question (--path was already given) - docs/STEP-GUIDE-PLAN.md: "'"'"'--guided'"'"' only ever fills flags that were not supplied on the command line"'
+GUIDE_PRESET_OUT=$W/guide-preset.out
+GUIDE_PRESET_RC=0
+( SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'\n1\n1\n' sast --path "$W/guide-sast-tree" --guided --out "$W/run-guide-preset" ) >"$GUIDE_PRESET_OUT" 2>&1 || GUIDE_PRESET_RC=$?
+assert_eq 2 "$GUIDE_PRESET_RC" 'three answers (languages default, no history, no gate) are enough - a fourth for --path would mean G1 or the path question ran unexpectedly'
+assert_contains "$(cat "$GUIDE_PRESET_OUT")" "scan.sh sast --out $W/run-guide-preset --path $W/guide-sast-tree" \
+  'the already-typed --path (and --out, also already typed) survive into the composed preview unchanged, alphabetically sorted'
+assert_not_contains "$(cat "$GUIDE_PRESET_OUT")" 'What do you want to scan?' \
+  'G1 never printed - the command line already named the scan type'
+assert_file_absent "$W/run-guide-preset" 'no run directory was created'
+
+t_case 'a fully-flagged `--guided` invocation asks nothing at all and degrades to just the preview - docs/STEP-GUIDE-PLAN.md: "this is also how it degrades to a no-op"'
+GUIDE_FULL_OUT=$W/guide-full.out
+GUIDE_FULL_RC=0
+( SCOURSH_GUIDE_FORCE_TTY=true _run_main_in /dev/null sast --path "$W/guide-sast-tree" --lang py --history --fail-on high --guided --out "$W/run-guide-full" ) >"$GUIDE_FULL_OUT" 2>&1 || GUIDE_FULL_RC=$?
+assert_eq 2 "$GUIDE_FULL_RC" 'every flag G1/G2/G8 could have asked about was already supplied, so /dev/null stdin (immediate EOF) never gets read at all - fails if any question were still asked, which would die exit 2 with a DIFFERENT message ("input ended...") instead of reaching the composed preview'
+assert_contains "$(cat "$GUIDE_FULL_OUT")" "scan.sh sast --fail-on high --history --lang py --out $W/run-guide-full --path $W/guide-sast-tree" \
+  'the preview is exactly what was typed, byte for byte'
 
 # =============================================================================
 printf '\n-- the own-your-target affirmation (docs/STEP5-DAST-PLAN.md DAST-32) --\n'

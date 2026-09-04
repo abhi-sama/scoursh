@@ -404,4 +404,11 @@ _guide_shquote() {
 # iterations and asserts nothing yet, which is the correct, honest state of
 # this check before any prompt exists - not a weaker version of the check,
 # just an earlier one.
-readonly -a GUIDE_SETTABLE_FLAGS=()
+#
+# docs/STEP-GUIDE-PLAN.md GUIDE-03 is the first ticket to land a real prompt:
+# G2 (the local-surface follow-ups) sets `path`, `lang` and `history`, and G8
+# (the CI gate) sets `fail-on` - see scan.sh's own "guided menu flow" section
+# for where each is set.  `guided`/`print-command` stay off this list on
+# purpose (GUIDE-02's own header comment): they are inputs TO the flow, never
+# outputs a prompt inside it writes.
+readonly -a GUIDE_SETTABLE_FLAGS=(path lang history fail-on)
