@@ -160,19 +160,24 @@ source "$SCOURSH_SCAN_SH_DIR/lib/checks.sh"
 source "$SCOURSH_SCAN_SH_DIR/lib/paranoid.sh"
 # shellcheck source=lib/engines.sh
 source "$SCOURSH_SCAN_SH_DIR/lib/engines.sh"
-# docs/STEP7-STATE-PLAN.md STATE-02: state/<run-id>.json persist-on-every-run
-# wiring.  lib/state.sh (STATE-01) has no prior consumer, so this is a fresh
-# edge, not a duplicate one - no back-edge cut is needed the way lib/config.sh
-# and lib/http.sh above need one (AGENTS.md "Sharp edges" on shellcheck -x).
-# shellcheck source=lib/state.sh
-source "$SCOURSH_SCAN_SH_DIR/lib/state.sh"
 # docs/STEP7-STATE-PLAN.md STATE-06: the `diff` command and automatic
-# per-run classification.  lib/diff.sh sources lib/state.sh (already loaded
-# just above) and lib/report.sh (already loaded at the top of this section),
-# so this is a fresh edge, not a duplicate one - no back-edge cut needed the
-# way lib/config.sh and lib/http.sh above need one.
+# per-run classification.  lib/diff.sh itself sources lib/state.sh (STATE-01)
+# and lib/report.sh, so THIS is the real edge that supplies state.sh's own
+# content to this file's graph - the direct `source lib/state.sh` line that
+# used to sit here was a genuine diamond (both paths landing on lib/state.sh
+# in this same file), measured at 10.55 GB peak `shellcheck -x` RSS against a
+# documented 4.41 GB baseline for this entry point, over the 6 GB per-file CI
+# budget and the actual cause of a runner-killing OOM on the ubuntu-latest
+# leg.  The direct edge is cut below instead of this one, because lib/diff.sh
+# is also sourced (with no other path to lib/state.sh at all) from all four
+# `modules/*/run.sh` files - cutting there would silently lose real checking
+# for those four entry points, where this file has none.
 # shellcheck source=lib/diff.sh
 source "$SCOURSH_SCAN_SH_DIR/lib/diff.sh"
+# -x back-edge cut: lib/state.sh is already inlined just above via
+# lib/diff.sh's own real edge to it - see that comment.
+# shellcheck source=/dev/null
+source "$SCOURSH_SCAN_SH_DIR/lib/state.sh"
 # docs/STEP-GUIDE-PLAN.md GUIDE-01: lib/guide.sh (the guided-interactive-mode
 # prompt gate, signal trap and menu primitives) is sourced here so a later
 # ticket's scan_main routing needs no new source line - this ticket itself
