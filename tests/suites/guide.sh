@@ -625,5 +625,133 @@ t_case "guide_dast_configure returns 1 on G3's own Back, before ever reaching G5
 rc=0
 _guide_dast_with_root "$DW/two-targets" guide_dast_configure < <(printf '4\n') 2>/dev/null || rc=$?
 assert_eq 1 "$rc" 'FAILS if G5 (intensity) were reached after Back at G3'
+# ---------------------------------------------------------------------------
+# guide_g4_authorize_target (docs/STEP-GUIDE-PLAN.md GUIDE-05, step G4) - the
+# interactive screen.  The pure half it delegates to (id derivation, record
+# rendering, the append-only writer) is tested directly, with no terminal
+# I/O at all, in tests/suites/guide-scope.sh; this section drives only the
+# prompting - what gets asked, in what order, and what a cancel/EOF/mismatch
+# does - each case named for the reading it fails under, per AGENTS.md.
+# ---------------------------------------------------------------------------
+printf '\n-- guide_g4_authorize_target --\n'
+
+G4W=$SCOURSH_SCRATCH/guide-g4
+mkdir -p "$G4W"
+
+# No test here ever resolves a real name: pub.fixture.example is a stand-in
+# public host, internal.fixture.example a stand-in that resolves private.
+_g4_test_resolve() {
+  case $1 in
+    pub.fixture.example) printf '93.184.216.34' ;;
+    internal.fixture.example) printf '127.0.0.1' ;;
+    *) return 1 ;;
+  esac
+}
+SCOURSH_HTTP_RESOLVE=_g4_test_resolve
+
+t_case 'happy path: a public host is written, confirmed by its own hostname'
+happy=$G4W/happy.conf
+rc=0
+guide_g4_authorize_target "$happy" \
+  < <(printf 'https://pub.fixture.example/\npub.fixture.example\n') \
+  >"$G4W/happy.out" 2>"$G4W/happy.err" || rc=$?
+assert_eq '0' "$rc" 'a correct confirmation succeeds'
+assert_eq 'pub-fixture-example-443' "$GUIDE_G4_TARGET_ID" \
+  'FAILS if the id derivation is not wired through: dots and the port colon become dashes'
+records_clear scope
+config_scope_load "$happy"
+assert_eq '1' "$(records_count scope)" 'exactly one record was written'
+assert_eq 'https://pub.fixture.example/' "$(records_field scope 0 base-url)" \
+  'base-url is written verbatim, the exact bytes typed at the first prompt'
+assert_eq 'false' "$(records_field_or scope 0 allow-subdomains false)" 'allow-subdomains is always false'
+assert_eq 'false' "$(records_field_or scope 0 allow-private-addresses false)" \
+  'a public host never sets allow-private-addresses'
+
+t_case 'a blank URL cancels cleanly - return 1, nothing written'
+blank=$G4W/blank.conf
+rc=0
+guide_g4_authorize_target "$blank" < <(printf '\n') >/dev/null 2>&1 || rc=$?
+assert_eq '1' "$rc" 'a blank answer is a clean cancel, never fatal'
+assert_file_absent "$blank" 'no file is created for a cancelled authorisation'
+
+t_case 'a URL that does not parse cancels cleanly'
+malformed=$G4W/malformed.conf
+rc=0
+guide_g4_authorize_target "$malformed" < <(printf 'not-a-url-at-all\n') >/dev/null 2>&1 || rc=$?
+assert_eq '1' "$rc" 'an unparseable URL is refused, not fatal'
+assert_file_absent "$malformed" 'nothing is written'
+
+t_case 'a confirmation that does not match the host name cancels, and writes nothing'
+mismatch=$G4W/mismatch.conf
+rc=0
+guide_g4_authorize_target "$mismatch" \
+  < <(printf 'https://pub.fixture.example/\nnope\n') >/dev/null 2>&1 || rc=$?
+assert_eq '1' "$rc" \
+  'FAILS if a non-matching confirmation is treated as yes: G4 is "the most dangerous screen in the whole design"'
+assert_file_absent "$mismatch" 'a mismatched confirmation writes nothing'
+
+t_case 'EOF at the very first prompt is exit 2, never a silent abort'
+# guide_ask's own EOF path calls `die`, which is a real `exit` - calling
+# guide_g4_authorize_target directly in THIS process would kill the whole
+# suite before `|| rc=$?` ever ran, exactly like guide_ask/guide_confirm's
+# own EOF cases above; a subprocess is what lets the exit be observed.
+eofcase=$G4W/eof.conf
+rc=0
+bash -c 'source "'"$ROOT"'/lib/guide.sh"; guide_g4_authorize_target "$1"' _ "$eofcase" \
+  </dev/null >/dev/null 2>&1 || rc=$?
+assert_eq "$SCOURSH_EXIT_USAGE" "$rc" 'guide_ask''s own EOF handling applies here too'
+assert_file_absent "$eofcase" 'nothing is written on EOF'
+
+t_case 'a hostname that resolves private is offered the literal instead, and accepting it may set allow-private-addresses'
+privoffer=$G4W/privoffer.conf
+rc=0
+guide_g4_authorize_target "$privoffer" \
+  < <(printf 'https://internal.fixture.example/\nhttps://127.0.0.1/\nyes\n127.0.0.1\n') \
+  >"$G4W/privoffer.out" 2>"$G4W/privoffer.err" || rc=$?
+assert_eq '0' "$rc" 'accepting the literal substitution and then the private-address confirmation succeeds'
+assert_eq 't-127-0-0-1-443' "$GUIDE_G4_TARGET_ID" \
+  'the WRITTEN target is the literal, never the original hostname'
+records_clear scope
+config_scope_load "$privoffer"
+assert_eq 'https://127.0.0.1/' "$(records_field scope 0 base-url)" \
+  'FAILS if the original hostname URL is written instead of the retyped literal (docs/STEP-GUIDE-PLAN.md G4 correction 4)'
+assert_eq 'true' "$(records_field_or scope 0 allow-private-addresses false)" \
+  'the operator explicitly typed yes to allow it'
+
+t_case 'declining the literal-retype offer cancels cleanly - a hostname is NEVER written with allow-private-addresses'
+privdecline=$G4W/privdecline.conf
+rc=0
+guide_g4_authorize_target "$privdecline" \
+  < <(printf 'https://internal.fixture.example/\n\n') >/dev/null 2>&1 || rc=$?
+assert_eq '1' "$rc" 'a blank answer to the retype offer is a clean cancel'
+assert_file_absent "$privdecline" 'nothing is written'
+
+t_case 'a literal typed directly, with the private-address question declined, still writes - just with allow-private-addresses: false'
+privliteral=$G4W/privliteral.conf
+rc=0
+guide_g4_authorize_target "$privliteral" \
+  < <(printf 'https://127.0.0.1:9443/\nno\n127.0.0.1\n') \
+  >/dev/null 2>"$G4W/privliteral.err" || rc=$?
+assert_eq '0' "$rc" 'declining allow-private-addresses does not cancel the whole write'
+records_clear scope
+config_scope_load "$privliteral"
+assert_eq 'false' "$(records_field_or scope 0 allow-private-addresses false)" \
+  'FAILS if a declined confirmation is read as yes'
+
+t_case 'a collision with an id already in the file is disambiguated with -2, end to end'
+collide=$G4W/collide.conf
+cat >"$collide" <<'EOF'
+id: pub-fixture-example-443
+base-url: https://pub.fixture.example
+allow-subdomains: false
+allow-private-addresses: false
+EOF
+rc=0
+guide_g4_authorize_target "$collide" \
+  < <(printf 'https://pub.fixture.example/other\npub.fixture.example\n') \
+  >/dev/null 2>&1 || rc=$?
+assert_eq '0' "$rc" 'a coincidental id collision is disambiguated, not refused'
+assert_eq 'pub-fixture-example-443-2' "$GUIDE_G4_TARGET_ID" \
+  'FAILS if the -2 disambiguation is not reached from the interactive path'
 
 t_summary guide

@@ -97,7 +97,12 @@
 # check. `_guide_trap_install`/`_guide_trap_restore`/`_guide_on_cancel` are
 # reached only through the three prompt primitives above and through the
 # INT/TERM trap itself, neither of which is a literal call shellcheck's
-# static graph can follow.
+# static graph can follow.  `guide_g4_authorize_target` (section 7,
+# docs/STEP-GUIDE-PLAN.md GUIDE-05) is the identical shape: its own caller
+# would be docs/STEP-GUIDE-PLAN.md GUIDE-04's G3 target menu, which still
+# calls `_guide_dast_authorise_not_built` rather than this function (wiring
+# the two together is not this ticket's scope), so today it is reached only
+# by tests/suites/guide.sh.
 #
 # SC2034: GUIDE_MENU_REPLY, GUIDE_MENU_CHOICE and GUIDE_ASK_REPLY are the
 # deliberate SET-A-VARIABLE output of guide_menu/guide_ask (see those
@@ -106,7 +111,8 @@
 # by a future scan_main routing layer (GUIDE-02 onward) and by
 # tests/suites/guide.sh - neither of which is a caller shellcheck's `-x`
 # follow from scan.sh reaches yet, since scan.sh does not call any of this
-# file's functions until that later ticket lands.
+# file's functions until that later ticket lands.  GUIDE_G4_TARGET_ID is the
+# same idiom for `guide_g4_authorize_target`.
 #
 # Section 6 (GUIDE-04, the DAST branch) is in the identical position:
 # `guide_dast_configure` and its own GUIDE_DAST_* output globals have no
@@ -896,5 +902,163 @@ guide_dast_configure() {
   guide_dast_intensity_menu "$GUIDE_DAST_TARGET"
   guide_dast_limits_flow "$GUIDE_DAST_TARGET" "$GUIDE_DAST_INTENSITY"
   guide_dast_argv_build
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# 7. G4 - authorising a new config/scope.conf target (docs/STEP-GUIDE-PLAN.md
+#    GUIDE-05)
+# ---------------------------------------------------------------------------
+# The interactive half of "the most dangerous thing in this design" - the
+# PURE half (id derivation, record-text rendering, the deny-list reuse, and
+# the validate-in-a-temp-file-then-rename writer) lives in
+# lib/guide_scope.sh, which this function calls but which itself calls no
+# `guide_*` primitive (tests/lint-shell.sh's guide-isolation check confines
+# every such call to this file and scan.sh; `guide_g4_authorize_target`
+# below is what keeps that true for G4).
+#
+# This function is deliberately NOT wired into `scan.sh`'s G3 target menu -
+# that menu, and the "Authorise a new target" call site that reaches this
+# function, are docs/STEP-GUIDE-PLAN.md GUIDE-04's job (its own row: G3, G5,
+# G6), which GUIDE-05 depends on nothing from and does not anticipate here.
+# `guide_g4_authorize_target` is this ticket's complete, independently
+# callable and independently tested deliverable for step G4 alone.
+#
+# THREE OF THE PLAN'S FOUR G4 CORRECTIONS ARE ENFORCED HERE, STRUCTURALLY:
+#
+# 1. The preview shows the raw bytes (the record text, built from what the
+#    operator typed - lib/guide_scope.sh's own header, rule 2), the
+#    normalised (scheme, host, port) tuple the gate will actually match, and
+#    the currently-resolved address (or "does not resolve right now" - never
+#    invented).  An operator confirming this screen is confirming the
+#    tool's PARSE, which is why both the tuple and the address are shown
+#    (docs/STEP-GUIDE-PLAN.md's own reasoning for this correction).
+# 2. `allow-subdomains` has no question here at all - it is always `false`,
+#    baked into `guide_scope_record_text`.
+# 3. A hostname that currently resolves into the deny list is never written
+#    with `allow-private-addresses: true`; this function offers to retype
+#    the URL as the literal address instead (once - a second bad answer
+#    cancels, matching G2's own bounded-retry shape in scan.sh) and only
+#    asks the allow-private-addresses question once an IP LITERAL is what is
+#    about to be written.
+#
+# EOF at any prompt is exit 2 via `guide_ask`/`guide_confirm` themselves,
+# exactly as every other guided screen; a non-EOF "no" (a blank URL, a typed
+# line that does not match the confirmation) is a clean, non-fatal
+# cancellation - this function returns 1, never dies, so a future G3 caller
+# can return to its own menu rather than aborting the whole guided run.
+#
+# shellcheck source=lib/guide_scope.sh
+source "${BASH_SOURCE[0]%/*}/guide_scope.sh"
+
+GUIDE_G4_TARGET_ID=''
+guide_g4_authorize_target() {
+  local scope_path=${1:-$SCOURSH_INSTALL_ROOT/config/scope.conf}
+  GUIDE_G4_TARGET_ID=''
+
+  {
+    printf '\n  DAST only ever talks to a host you have authorised in config/scope.conf.\n'
+    printf "  That file is the tool's authorisation record.  This menu cannot override\n"
+    printf '  it: answering a question here never grants permission to scan anything.\n\n'
+  } >&2
+
+  guide_ask 'Base URL to authorise (https://host[:port][/path]), or leave blank to cancel: '
+  local raw=$GUIDE_ASK_REPLY
+  if [[ -z $raw ]]; then
+    printf '  Cancelled.  Nothing was written.\n' >&2
+    return 1
+  fi
+
+  if ! guide_scope_parse "$raw"; then
+    printf "  '%s' does not parse as an absolute http:// or https:// URL.  Nothing was written.\n" "$raw" >&2
+    return 1
+  fi
+  local scheme=$GUIDE_SCOPE_SCHEME host=$GUIDE_SCOPE_HOST port=$GUIDE_SCOPE_PORT
+  local is_literal=$GUIDE_SCOPE_IS_LITERAL
+
+  local addr='' addr_known=false
+  if [[ $is_literal == true ]]; then
+    addr=$host
+    addr_known=true
+  elif guide_scope_resolve "$host"; then
+    addr=$GUIDE_SCOPE_RESOLVED
+    addr_known=true
+  fi
+
+  # Correction 4: a HOSTNAME that resolves private is never authorised with
+  # allow-private-addresses - offer the literal instead, once.
+  if [[ $is_literal == false && $addr_known == true ]] && guide_scope_addr_denied "$addr"; then
+    {
+      printf "\n  '%s' currently resolves to '%s', which is loopback, link-local, or\n" "$host" "$addr"
+      printf '  otherwise private.  scoursh never authorises a HOSTNAME for a private\n'
+      printf '  address: a DNS answer can change after this record is written, and only\n'
+      printf '  an IP literal you type yourself is ever authorised for one.\n\n'
+    } >&2
+    guide_ask "Retype as the literal address (${addr}) to authorise exactly that, or leave blank to cancel: "
+    raw=$GUIDE_ASK_REPLY
+    if [[ -z $raw ]]; then
+      printf '  Cancelled.  Nothing was written.\n' >&2
+      return 1
+    fi
+    if ! guide_scope_parse "$raw"; then
+      printf "  '%s' does not parse as an absolute http:// or https:// URL.  Nothing was written.\n" "$raw" >&2
+      return 1
+    fi
+    scheme=$GUIDE_SCOPE_SCHEME host=$GUIDE_SCOPE_HOST port=$GUIDE_SCOPE_PORT
+    is_literal=$GUIDE_SCOPE_IS_LITERAL
+    if [[ $is_literal != true ]]; then
+      printf "  '%s' is not an IP literal.  Nothing was written.\n" "$raw" >&2
+      return 1
+    fi
+    addr=$host
+    addr_known=true
+  fi
+
+  local allow_private=false
+  if [[ $is_literal == true ]] && guide_scope_addr_denied "$addr"; then
+    {
+      printf "\n  '%s' is loopback, link-local, or otherwise private.  scoursh refuses to\n" "$addr"
+      printf '  connect to it unless allow-private-addresses is set for this target.\n\n'
+    } >&2
+    if guide_confirm "Type 'yes' to allow it, or anything else to leave it refused: " 'yes'; then
+      allow_private=true
+    fi
+  fi
+
+  local id
+  id=$(guide_scope_unique_id "$(guide_scope_id_base "$host" "$port")" "$scope_path")
+
+  local notes record
+  notes=$(guide_scope_notes_text)
+  record=$(guide_scope_record_text "$id" "$raw" "$allow_private" "$notes")
+
+  {
+    printf '\n  This will be appended to %s:\n\n' "$scope_path"
+    printf '  --------------------------------------------------------------------\n'
+    while IFS= read -r _g4l; do printf '  %s\n' "$_g4l"; done <<<"$record"
+    printf '  --------------------------------------------------------------------\n\n'
+    printf '  The gate will match exactly:  %s://%s:%s\n' "$scheme" "$host" "$port"
+    if [[ $addr_known == true ]]; then
+      printf '  which resolves right now to:  %s\n\n' "$addr"
+    else
+      printf '  which does not resolve right now (the DNS lookup failed).\n\n'
+    fi
+    printf '  This authorises that host for EVERY scoursh run on this machine, not just\n'
+    printf '  this one, until you remove the record.\n\n'
+    printf "  This is plain data in scoursh's record format.  scoursh never executes a\n"
+    printf '  config file, so nothing written here can run.\n\n'
+  } >&2
+
+  local confirm_prompt="Type the host name  ${host}  to write this, or anything else
+to cancel.
+> "
+  if ! guide_confirm "$confirm_prompt" "$host"; then
+    printf '  Cancelled.  Nothing was written.\n' >&2
+    return 1
+  fi
+
+  guide_scope_append "$record" "$scope_path"
+  GUIDE_G4_TARGET_ID=$id
+  printf "  Wrote target '%s' to %s.\n" "$id" "$scope_path" >&2
   return 0
 }
