@@ -52,8 +52,18 @@ source "${BASH_SOURCE[0]%/*}/engine.sh"
 # budget and killed a CI run.  Confining this source line to the four run.sh
 # files that actually call diff_classify_run keeps that cost off every
 # phase-level test that has nothing to do with it.
-# shellcheck source=lib/diff.sh
-source "${BASH_SOURCE[0]%/*}/../../lib/diff.sh"
+# Guarded exactly like modules/sast/engine.sh's own lib/report.sh/lib/config.sh
+# sources above: a real `scan.sh` subprocess has ALREADY sourced lib/diff.sh
+# via its own absolute path before scan_dispatch ever runs, and skipping the
+# self-relative resolution here is not just an optimisation - this file is
+# copied into fixture roots that carry no `lib/` sibling at all
+# (tests/suites/sast.sh's own ROOT_REAL_REGISTRY), where the unconditional
+# form's `source` would fail to even LOCATE the file, before its own
+# internal guard ever gets a chance to make the load a no-op.
+if [[ -z ${SCOURSH_DIFF_SOURCED:-} ]]; then
+  # shellcheck source=lib/diff.sh
+  source "${BASH_SOURCE[0]%/*}/../../lib/diff.sh"
+fi
 # history.sh (docs/DESIGN.md §6.3, §13 step 3e) is the module that deliberately
 # DOES read git history; it is its own pure function library, sourced here
 # exactly like engine.sh, and its real work only happens when

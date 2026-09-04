@@ -31,9 +31,13 @@
 # shellcheck source=modules/iac/parse.sh
 source "${BASH_SOURCE[0]%/*}/parse.sh"
 # docs/STEP7-STATE-PLAN.md STATE-06: see modules/sast/run.sh's own comment on
-# why this is sourced directly here rather than from modules/sast/engine.sh.
-# shellcheck source=lib/diff.sh
-source "${BASH_SOURCE[0]%/*}/../../lib/diff.sh"
+# why this is sourced directly here (rather than from modules/sast/engine.sh)
+# AND why it is guarded (a fixture root with no lib/ sibling makes the
+# unconditional form fail to even locate the file).
+if [[ -z ${SCOURSH_DIFF_SOURCED:-} ]]; then
+  # shellcheck source=lib/diff.sh
+  source "${BASH_SOURCE[0]%/*}/../../lib/diff.sh"
+fi
 
 # _iac_run_trivy_adapter ROOT - runs the vendored trivy adapter
 # (modules/iac/adapters/trivy/adapter.sh, sourced by `has_engine`'s own call
