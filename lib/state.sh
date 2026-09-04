@@ -1001,3 +1001,24 @@ state_covered_now_history_boundary_time() { printf '%s' "${_STATE_W_HB_TIME[$1]:
 # right for a genuine caller bug and wrong for this ordinary repeat-call
 # shape, so the caller checks first.
 state_write_has_finding() { [[ -n ${_STATE_W_F_CHECK[$1]+set} ]]; }
+
+# ---------------------------------------------------------------------------
+# 7. STATE-07 glue (docs/STEP7-STATE-PLAN.md STATE-07): baseline suppression,
+#    tension 11 stage 6, mutates an ALREADY-ADDED write-side finding in place.
+# ---------------------------------------------------------------------------
+# `lib/diff.sh`'s `diff_classify_run` (stage 5) calls `state_add_finding` for
+# every one of THIS run's present findings using the `suppressed` value
+# `findings.fields` carries AT THAT MOMENT - which is always `false`, since
+# baseline suppression (stage 6) has not run yet at stage 5.  Stage 6 mutates
+# `findings.fields` afterwards via `findings_mark_suppressed`, and tension 11
+# stage 8 requires the PERSISTED state to say `suppressed: true` for the exact
+# set the report does - so the write-side record `state_add_finding` already
+# created needs updating too, in place, rather than a second, competing write
+# path.  A no-op for a fingerprint never added this run (a caller's bug to
+# avoid, not this file's to guess at - the identical contract
+# `state_write_has_finding` above already documents for its own caller).
+state_set_finding_suppressed() {
+  local fingerprint=$1 suppressed=$2
+  [[ -n ${_STATE_W_F_CHECK[$fingerprint]+set} ]] || return 0
+  _STATE_W_F_SUPPRESSED[$fingerprint]=$suppressed
+}

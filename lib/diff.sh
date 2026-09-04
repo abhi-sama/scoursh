@@ -43,14 +43,28 @@
 #     file plays "prior", never "this run", since a standalone diff performs
 #     no new scan to be "this run".
 #
+# A THIRD entry point, `baseline_apply RUNDIR` (STATE-07, section 4 below),
+# implements tension 11 stage 6 (suppress) - it lives in this file rather
+# than a sibling one because it runs at the SAME four call sites as
+# `diff_classify_run`, strictly after it and strictly before each module's
+# own `sast_evaluate_gate` call (stage 5 -> 6 -> 7, tension 11's frozen
+# order), and because its own JSON parsing reuses `lib/state.sh`'s already-
+# sourced, already-tested `_state_json_flatten`/`_state_json_unescape`
+# (section 1 there) rather than a fifth "own copy" of the identical
+# technique - the same cross-file reuse `_derived_contributor_scope`
+# (lib/findings.sh) already establishes for a function this file calls with
+# no source edge of its own added by either reuse.
+#
 # ======================= WHAT THIS FILE DOES NOT DO ==========================
 #   * It does not redefine tension 12's four-row table, its two guards, or
 #     tension 6's three-condition composite rule.  Those are
 #     lib/findings.sh's job (STATE-03/04/05); this file only supplies them
 #     real inputs.
-#   * It does not implement baseline suppression (STATE-07) or
-#     `--fail-on-new`'s carve-out (STATE-08).  `findings_mark_suppressed`
-#     already exists and is untouched; nothing here calls it.
+#   * It does not implement `--fail-on-new`'s real carve-out (STATE-08).
+#     `modules/sast/engine.sh`'s `sast_evaluate_gate` still reads a bare
+#     `status == new` today; that predicate's `diff_usable` carve-out is a
+#     separate ticket, sequenced after this one only because both touch the
+#     same four call sites, never because of a data dependency.
 #
 # shellcheck shell=bash
 # SC2153: `$FP_SCHEMA` is lib/findings.sh's real, readonly constant (tension
@@ -563,4 +577,327 @@ diff_render_against() {
   # here, since SCOURSH_DIFF_USABLE/SCOURSH_DIFF_GUARD and the meta/diff_*
   # ledgers above are already in place by then.
   [[ -z ${SCOURSH_FORMATS:-} || $SCOURSH_FORMATS == *md* ]] && report_md "$rundir"
+}
+
+# ---------------------------------------------------------------------------
+# 4. Baseline suppression (STATE-07)
+# ---------------------------------------------------------------------------
+# Tension 11 stage 6: "for each finding matching a baseline entry, set
+# suppressed: true and suppressed_by: <reason>.  Never delete."  `baseline_apply
+# RUNDIR` is called at the SAME four call sites as `diff_classify_run` above
+# (modules/sast/run.sh and its three siblings), strictly AFTER it - stage 5
+# (classify) before stage 6 (suppress) - and strictly BEFORE each module's own
+# `sast_evaluate_gate` call - stage 6 before stage 7 (gate).  That function
+# already reads `suppressed == false` unchanged (modules/sast/engine.sh), so a
+# finding suppressed here is excluded from `--fail-on`/`--fail-on-new` with no
+# gate-side edit at all.
+#
+# Like `diff_classify_run`, this is SAFE TO CALL MORE THAN ONCE in one
+# process: `scan.sh all` calls it once per module over the SAME, growing
+# findings.fields, and each call is a full, correct re-evaluation rather than
+# an incremental patch - only the LAST call's counts matter, which is why
+# every meta/baseline_* file below is TRUNCATED at the start of each call
+# (`diff_classify_run`'s own meta/diff_absent ledger is the identical
+# precedent; `run_record`'s append-forever convention is deliberately NOT
+# used here for that reason).
+#
+# `config/baseline.json`'s frozen object schema (tension 11):
+#   [ "<bare fingerprint>",
+#     {"fingerprint": "…", "reason": "…", "added": "2026-07-30", "expires": "2026-10-30"} ]
+# A bare string is `{fingerprint, reason: "", added: null, expires: null}`, so
+# the §11 shape still loads.  `--baseline FILE` REPLACES the default
+# `config/baseline.json` (tension 11's own wording), never adds to it, so
+# exactly one file is ever consulted per run.
+#
+# THE FAILURE MODE THIS SECTION EXISTS TO CLOSE (docs/USAGE.md's own named
+# example): "a CI pipeline with a typo in the baseline path gets a clean exit
+# and no trace anywhere that suppression never ran."  An operator-typed
+# `--baseline` path that does not exist, or ANY baseline file (default or
+# explicit) that exists but cannot be read or is not a valid, well-formed
+# baseline, `die`s loudly (SCOURSH_EXIT_INPUT) rather than being treated as
+# "no baseline".  This is a DELIBERATE departure from `lib/state.sh`'s own
+# `state_load_file` convention (a malformed state/ is gracefully "no prior
+# state", failing closed at the gate via `diff_usable` rather than aborting
+# the run) - state/ is a tool-generated file whose corruption the gate itself
+# already handles safely, where `config/baseline.json` is a human-edited
+# accept-risk list whose silent misfire in EITHER direction (suppressing
+# everything, or suppressing nothing) is exactly what this ticket's own brief
+# calls out as the failure to guard against.  Only the ORDINARY case - no
+# `--baseline` given and no `config/baseline.json` on disk, the default state
+# of every fresh checkout - is a quiet, honest no-op.
+
+# `_state_json_flatten`/`_state_json_unescape` (lib/state.sh section 1) are
+# reused directly rather than duplicated: this file already sources
+# lib/state.sh for the state/ writer/loader above, so calling them adds no
+# new shellcheck -x source edge, and reimplementing a second hand-rolled JSON
+# tokenizer for one more fixed, known schema is exactly the risk a proven,
+# already-tested one exists to avoid - the same reasoning `_derived_
+# contributor_scope` (lib/findings.sh) already applies to this file calling
+# INTO a sibling module's own "private" helper with no fork of its logic.
+
+_BASELINE_EXPLICIT=false
+_BASELINE_FILE=''
+
+# `_baseline_resolve_file_set` - SETS `_BASELINE_FILE` (the file to read, or a
+# path that may not exist) and `_BASELINE_EXPLICIT` (so the caller can tell
+# "an operator typed this path" from "this is the ordinary, absent-by-default
+# install file" - only the former is an error when it does not exist).
+# Deliberately a SETTER rather than a `printf`-and-`$(...)`-capture function:
+# `file=$(_baseline_resolve_file)` would run this function in a SUBSHELL, and
+# `_BASELINE_EXPLICIT`'s assignment inside it would never escape that
+# subshell - exactly the "a side-effecting function called as $(f) runs in a
+# subshell and its writes are discarded" pitfall AGENTS.md's own "Things
+# measured on this codebase" section documents for `occurrence_next`/
+# `worker_id_set`, measured again here directly: a first draft using
+# `$(...)` always read back `_BASELINE_EXPLICIT=false`, so an operator-typed
+# `--baseline` path that does not exist silently fell through to the
+# "ordinary absent default" branch instead of dying - the exact silent
+# failure this ticket exists to close.
+#
+# Guarded exactly like `modules/sast/engine.sh`'s `sast_evaluate_gate` (right
+# beside the call site this wires into) guards its own
+# `${SCAN_FLAGS[fail-on-new]:-}` read, and for the identical reason: a
+# standalone caller (this ticket's own test suite) may never have declared
+# `SCAN_FLAGS` at all, and `${SCAN_FLAGS[baseline]:-}` against a wholly
+# undeclared associative array is not a safe "unset" read under `set -u` -
+# bash instead parses the hyphenated subscript as arithmetic and dies on the
+# first bare word in it.  No `-g`: a caller that HAS already declared the
+# real global must see it unshadowed for the rest of this function, which is
+# exactly what omitting `-g` here preserves (the `||` short-circuits before
+# anything is declared at all in that case).
+_baseline_resolve_file_set() {
+  declare -p SCAN_FLAGS &>/dev/null || declare -A SCAN_FLAGS=()
+  if [[ -n ${SCAN_FLAGS[baseline]:-} ]]; then
+    _BASELINE_EXPLICIT=true
+    _BASELINE_FILE=${SCAN_FLAGS[baseline]}
+  else
+    _BASELINE_EXPLICIT=false
+    _BASELINE_FILE="$SCOURSH_INSTALL_ROOT/config/baseline.json"
+  fi
+}
+
+# `_baseline_is_expired EXPIRES` - true once TODAY is strictly past EXPIRES
+# (an entry is valid THROUGH its own expires date, expired starting the day
+# after).  Compared as plain YYYY-MM-DD integers under `10#` (never bash's
+# locale-dependent `[[ str > str ]]`, and never octal-vulnerable on a
+# leading-zero month/day) rather than any `date`-parsing call, mirroring
+# `modules/dast/passive/tls_engine.sh`'s own `10#` idiom for the identical
+# leading-zero hazard.  EXPIRES='' (no expiry given) never expires.
+_baseline_is_expired() {
+  local expires=$1 today
+  [[ -n $expires ]] || return 1
+  today=$(now_iso)
+  today=${today//-/}
+  today=${today:0:8}
+  expires=${expires//-/}
+  expires=${expires:0:8}
+  (( 10#$today > 10#$expires ))
+}
+
+# `_baseline_load FILE OUT` - parses and validates FILE against tension 11's
+# frozen schema, `die`ing loudly on ANY structural problem (see this
+# section's own header for why this differs from lib/state.sh's graceful
+# degradation).  OUT is written 0x1f-separated, one line per entry, in the
+# file's own order: `fingerprint \x1f reason \x1f added \x1f expires` - never
+# a tab, for the identical reason every other multi-field record stream in
+# this codebase uses 0x1f (AGENTS.md "Sharp edges"): `reason`/`added`/
+# `expires` are routinely empty and a tab is IFS *whitespace*, which `read`
+# collapses across an empty field.
+#
+# ONE KNOWN, DELIBERATE GAP: a bare `{}` array element flattens to zero
+# lines (an empty object has no keys to emit), so it leaves no trace in the
+# parse below and is silently treated as if it were not there at all - never
+# counted, never suppressing, never reported malformed.  Closing this needs a
+# bracket-aware top-level array splitter, which is a strictly riskier thing
+# to hand-write correctly than the reuse this function already leans on; a
+# literal `{}` in a hand-edited accept-risk list carries no fingerprint to
+# suppress anything by, so the failure mode this leaves open is "one static
+# entry" rather than a security regression in either direction stage 6
+# renders this diff/list of directions the brief actually asks be guarded
+# against.
+_baseline_load() {
+  local file=$1 out=$2
+  local firstbytes
+  firstbytes=$(LC_ALL=C head -c 4096 -- "$file" | tr -d ' \t\r\n')
+  [[ ${firstbytes:0:1} == '[' ]] || \
+    die "$SCOURSH_EXIT_INPUT" "baseline $file: top-level value must be a JSON array"
+
+  local flat=$SCOURSH_SCRATCH/baseline-flat.$$
+  local err=$SCOURSH_SCRATCH/baseline-err.$$
+  if ! _state_json_flatten <"$file" >"$flat" 2>"$err"; then
+    local first_err=''
+    IFS= read -r first_err <"$err" || true
+    first_err=${first_err#__JSON_ERROR__$'\t'}
+    rm -f -- "$flat" "$err"
+    die "$SCOURSH_EXIT_INPUT" "baseline $file is not valid JSON: ${first_err:-invalid JSON}"
+  fi
+  rm -f -- "$err"
+
+  local -A idx_fp=() idx_reason=() idx_added=() idx_expires=() idx_bare=() idx_seen=()
+  local path type val idx key
+  local -a segs
+  while IFS=$'\t' read -r path type val; do
+    [[ -n $path ]] || continue
+    IFS=$'\x1f' read -ra segs <<<"$path"
+    idx=${segs[0]:-}
+    [[ $idx =~ ^[0-9]+$ ]] || \
+      die "$SCOURSH_EXIT_INPUT" "baseline $file: unexpected top-level shape at '$path'"
+    idx_seen[$idx]=1
+    if (( ${#segs[@]} == 1 )); then
+      [[ $type == s ]] || \
+        die "$SCOURSH_EXIT_INPUT" "baseline $file: entry $idx must be a string or an object, not a JSON $type"
+      idx_bare[$idx]=$(_state_json_unescape "$val")
+    elif (( ${#segs[@]} == 2 )); then
+      key=${segs[1]}
+      case $key in
+        fingerprint)
+          [[ $type == s ]] || \
+            die "$SCOURSH_EXIT_INPUT" "baseline $file: entry $idx.fingerprint must be a string"
+          idx_fp[$idx]=$(_state_json_unescape "$val")
+          ;;
+        reason)
+          case $type in
+            z) idx_reason[$idx]='' ;;
+            s) idx_reason[$idx]=$(_state_json_unescape "$val") ;;
+            *) die "$SCOURSH_EXIT_INPUT" "baseline $file: entry $idx.reason must be a string or null" ;;
+          esac
+          ;;
+        added)
+          case $type in
+            z) idx_added[$idx]='' ;;
+            s) idx_added[$idx]=$(_state_json_unescape "$val") ;;
+            *) die "$SCOURSH_EXIT_INPUT" "baseline $file: entry $idx.added must be a string or null" ;;
+          esac
+          ;;
+        expires)
+          case $type in
+            z) idx_expires[$idx]='' ;;
+            s) idx_expires[$idx]=$(_state_json_unescape "$val") ;;
+            *) die "$SCOURSH_EXIT_INPUT" "baseline $file: entry $idx.expires must be a string or null" ;;
+          esac
+          ;;
+        *) die "$SCOURSH_EXIT_INPUT" "baseline $file: entry $idx has an unrecognized field '$key'" ;;
+      esac
+    else
+      die "$SCOURSH_EXIT_INPUT" "baseline $file: entry $idx has a nested value, which is not allowed"
+    fi
+  done <"$flat"
+  rm -f -- "$flat"
+
+  : >"$out"
+  local -A fp_dup=()
+  local fp reason added expires
+  while IFS= read -r idx; do
+    [[ -n $idx ]] || continue
+    if [[ -n ${idx_bare[$idx]+set} ]]; then
+      fp=${idx_bare[$idx]}
+      reason=''
+      added=''
+      expires=''
+    else
+      fp=${idx_fp[$idx]:-}
+      reason=${idx_reason[$idx]:-}
+      added=${idx_added[$idx]:-}
+      expires=${idx_expires[$idx]:-}
+    fi
+    [[ -n $fp ]] || die "$SCOURSH_EXIT_INPUT" "baseline $file: entry $idx has no fingerprint"
+    if [[ -n $expires && ! $expires =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2} ]]; then
+      die "$SCOURSH_EXIT_INPUT" "baseline $file: entry $idx has an unparseable expires date '$expires'"
+    fi
+    if [[ -n $added && ! $added =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2} ]]; then
+      die "$SCOURSH_EXIT_INPUT" "baseline $file: entry $idx has an unparseable added date '$added'"
+    fi
+    if [[ -n ${fp_dup[$fp]:-} ]]; then
+      die "$SCOURSH_EXIT_INPUT" "baseline $file: duplicate fingerprint '$fp' (entries ${fp_dup[$fp]} and $idx)"
+    fi
+    fp_dup[$fp]=$idx
+    printf '%s\x1f%s\x1f%s\x1f%s\n' "$fp" "$reason" "$added" "$expires" >>"$out"
+  done < <(printf '%s\n' "${!idx_seen[@]}" | sort -n)
+}
+
+# `baseline_apply [RUNDIR]` - the public entry point; see this section's own
+# header for the pipeline placement and the call-more-than-once contract.
+#
+# THREE-WAY classification per entry, in one pass over findings.fields -
+# "stale" is decided BEFORE "expired", deliberately: a finding that was
+# genuinely fixed AND whose baseline entry has also since expired is still
+# reported "stale" (prune this entry), never "expired" (this still needs your
+# attention) - the two words answer different questions, and a fingerprint
+# absent this run answers neither "still needs suppressing" one.  This is
+# also what makes tension 11's own "a baselined finding that gets fixed is
+# still reported fixed, with a note to prune the entry" true for free: the
+# `stale` list IS that note, and `diff_classify_run`'s own absent-finding
+# classification (already run before this function, at the same call site)
+# never reads `suppressed` at all, so a suppressed-then-fixed finding is
+# reported `fixed` exactly as an unsuppressed one would be (tension 11's own
+# "suppressed-can-still-be-fixed" ordering hazard).
+baseline_apply() {
+  local rundir=${1:-$SCOURSH_RUN_DIR}
+  _baseline_resolve_file_set
+  local file=$_BASELINE_FILE
+
+  : >"$rundir/meta/baseline_stale"
+  : >"$rundir/meta/baseline_expired"
+
+  if [[ ! -e $file ]]; then
+    if [[ $_BASELINE_EXPLICIT == true ]]; then
+      die "$SCOURSH_EXIT_INPUT" "--baseline $file: no such file"
+    fi
+    printf 'false\n' >"$rundir/meta/baseline_used"
+    printf '\n' >"$rundir/meta/baseline_file"
+    printf '0\n' >"$rundir/meta/baseline_entries"
+    SCOURSH_BASELINE_FILE=''
+    export SCOURSH_BASELINE_FILE
+    return 0
+  fi
+  [[ -r $file ]] || die "$SCOURSH_EXIT_INPUT" "baseline $file exists but is not readable"
+
+  local resolved
+  resolved=$(realpath_of "$file")
+  SCOURSH_BASELINE_FILE=$resolved
+  export SCOURSH_BASELINE_FILE
+
+  local entries=$SCOURSH_SCRATCH/baseline-entries.$$
+  _baseline_load "$file" "$entries"
+
+  local n=0
+  if [[ -s $entries ]]; then
+    n=$(wc -l <"$entries")
+    n=${n//[[:space:]]/}
+  fi
+
+  printf 'true\n' >"$rundir/meta/baseline_used"
+  printf '%s\n' "$resolved" >"$rundir/meta/baseline_file"
+  printf '%s\n' "$n" >"$rundir/meta/baseline_entries"
+
+  if (( n == 0 )); then
+    rm -f -- "$entries"
+    return 0
+  fi
+
+  local -A present=()
+  local line
+  if [[ -s $rundir/findings.fields ]]; then
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      finding_decode "$line"
+      present[${_DF[fingerprint]}]=1
+    done <"$rundir/findings.fields"
+  fi
+
+  local fp reason added expires
+  while IFS=$'\x1f' read -r fp reason added expires; do
+    [[ -n $fp ]] || continue
+    if [[ -z ${present[$fp]:-} ]]; then
+      printf '%s\x1f%s\n' "$fp" "$reason" >>"$rundir/meta/baseline_stale"
+      continue
+    fi
+    if _baseline_is_expired "$expires"; then
+      printf '%s\x1f%s\x1f%s\n' "$fp" "$reason" "$expires" >>"$rundir/meta/baseline_expired"
+      continue
+    fi
+    findings_mark_suppressed "$rundir" "$fp" "$reason"
+    state_set_finding_suppressed "$fp" true
+  done <"$entries"
+  rm -f -- "$entries"
 }
