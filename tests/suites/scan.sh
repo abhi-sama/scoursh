@@ -287,8 +287,11 @@ printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-02: the guided-flow settable-flag reg
 # single source of truth every later GUIDE-0x ticket appends a flag NAME to
 # as it wires a real prompt. This is what makes "a guided prompt's flag must
 # already be legal for the parser" structural rather than a convention - see
-# that array's own header comment for why it is empty today (GUIDE-02 wires
-# no real prompt: G1 onward is GUIDE-03's job).
+# that array's own header comment for the full contract. It is no longer
+# empty as of GUIDE-04 (G3/G5/G6's own `target`/`intensity`/`i-own-target`/
+# `requests-per-second`/`request-budget`/`allow-intrusive`), so the `for`
+# loop below now actually asserts something on every run rather than the
+# zero-iteration no-op it was under GUIDE-02 alone.
 t_case 'every entry in GUIDE_SETTABLE_FLAGS names a real _SCAN_FLAG_KIND key'
 if (( ${#GUIDE_SETTABLE_FLAGS[@]} == 0 )); then
   _t_ok 'GUIDE_SETTABLE_FLAGS is empty - GUIDE-02 wires no real prompt yet, so there is nothing to check against _SCAN_FLAG_KIND, and a for loop over it below would run zero iterations either way'
@@ -651,6 +654,109 @@ t_case '--i-own-target is not offered where it would only become boilerplate'
 assert_status 2 \
   '--i-own-target is not a valid flag on sast - fails if it is declared global, which invites it into CI files for runs that never touch a host' \
   scan_parse_args sast --i-own-target host-a --path .
+
+# =============================================================================
+printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-04: --requests-per-second / --request-budget --\n'
+# =============================================================================
+# DAST-32 already reads both as config/scanner.conf keys with a conservative
+# ceiling; this ticket is what gives the guided flow's G6 rate/budget prompts
+# (lib/guide.sh) a real flag to emit, per this plan's own "every prompt has a
+# flag equivalent" rule.
+
+t_case '--requests-per-second/--request-budget parse on dast and all, same shape lib/config.sh already enforces'
+scan_parse_args dast --target host-a --requests-per-second 20 --request-budget 20000
+assert_eq 20 "${SCAN_FLAGS[requests-per-second]}" 'requests-per-second parses'
+assert_eq 20000 "${SCAN_FLAGS[request-budget]}" 'request-budget parses'
+scan_parse_args all --requests-per-second 0.5 --request-budget 100000 --path .
+assert_eq 0.5 "${SCAN_FLAGS[requests-per-second]}" 'a fractional rate parses on all too (rules/RULE-FORMAT.md §9.6.1 allows a decimal)'
+assert_status 2 \
+  '--requests-per-second is not a valid flag on sast - it has nothing to throttle' \
+  scan_parse_args sast --requests-per-second 4 --path .
+assert_status 2 \
+  '--request-budget rejects zero - unlike requests-per-second, a budget of nothing is never legal (there is always a budget)' \
+  scan_parse_args dast --target host-a --request-budget 0
+assert_status 2 \
+  '--request-budget rejects a non-integer' \
+  scan_parse_args dast --target host-a --request-budget 4.5
+scan_parse_args dast --target host-a --requests-per-second 0
+assert_eq 0 "${SCAN_FLAGS[requests-per-second]}" \
+  'requests-per-second 0 is schema-legal at the CLI shape-validation layer - lib/http.sh is what actually refuses it, at run start, not the parser (see lib/guide.sh, "the limiter has no literal unbounded sentinel")'
+
+t_case 'a guided-composed dast argv round-trips through the real parser and the real affirmation check'
+DW=$SCOURSH_SCRATCH/scan-guide-roundtrip
+mkdir -p "$DW/config"
+cat >"$DW/config/scope.conf" <<'EOF'
+id: staging-api
+base-url: https://staging-api.fixture.example
+allow-subdomains: false
+allow-private-addresses: false
+EOF
+_scan_with_root() {
+  local SCOURSH_INSTALL_ROOT=$1
+  shift
+  "$@"
+}
+_scan_with_root "$DW" guide_dast_configure < <(printf '1\n3\nstaging-api\n2\n1\n2\n') 2>/dev/null
+assert_eq '--target staging-api --intensity active --i-own-target staging-api --requests-per-second 20 --request-budget 5000 --allow-intrusive' \
+  "${GUIDE_DAST_ARGV[*]}" 'the guided flow composed the expected argv (mirrors tests/suites/guide.sh'"'"'s own identical case)'
+_scan_guide_argv=("${GUIDE_DAST_ARGV[@]}")
+scan_parse_args dast "${_scan_guide_argv[@]}"
+assert_eq staging-api "${SCAN_FLAGS[target]}" 'round-trip: target'
+assert_eq active "${SCAN_FLAGS[intensity]}" 'round-trip: intensity'
+assert_eq staging-api "${SCAN_FLAGS[i-own-target]}" 'round-trip: i-own-target'
+assert_eq 20 "${SCAN_FLAGS[requests-per-second]}" 'round-trip: requests-per-second'
+assert_eq 5000 "${SCAN_FLAGS[request-budget]}" 'round-trip: request-budget'
+assert_eq true "${SCAN_FLAGS[allow-intrusive]}" 'round-trip: allow-intrusive'
+_scan_check_affirmation
+_t_ok '_scan_check_affirmation accepts the composed argv with no die (i-own-target matches target; intensity and allow-intrusive are both covered by it)'
+
+t_case 'the two-header form of the item-1-everywhere acceptance test round-trips to an unaffirmed, unraised parse too'
+_scan_with_root "$DW" guide_dast_configure < <(printf '1\n1\n') 2>/dev/null
+_scan_guide_argv=("${GUIDE_DAST_ARGV[@]}")
+scan_parse_args dast "${_scan_guide_argv[@]}"
+assert_eq '' "${SCAN_FLAGS[i-own-target]:-}" 'no affirmation on the conservative path'
+assert_eq '' "${SCAN_FLAGS[intensity]:-}" 'no --intensity flag at all - passive is the unspoken default'
+_scan_check_affirmation
+_t_ok '_scan_check_affirmation accepts the conservative composed argv with no die - nothing here needed an affirmation'
+
+t_case 'the two SCOURSH_CONFIG_* env vars reflect the CLI flag and are restored (never leaked) across a second scan_main-shaped call'
+(
+  unset SCOURSH_CONFIG_REQUESTS_PER_SECOND SCOURSH_CONFIG_REQUEST_BUDGET
+  _SCAN_ENV_RPS_PRISTINE='' _SCAN_ENV_RPS_PRISTINE_SET=''
+  _SCAN_ENV_BUDGET_PRISTINE='' _SCAN_ENV_BUDGET_PRISTINE_SET=''
+  SCAN_FLAGS=([requests-per-second]=20 [request-budget]=20000)
+  if [[ -n ${SCAN_FLAGS[requests-per-second]:-} ]]; then
+    export SCOURSH_CONFIG_REQUESTS_PER_SECOND=${SCAN_FLAGS[requests-per-second]}
+  elif [[ -n $_SCAN_ENV_RPS_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_REQUESTS_PER_SECOND=$_SCAN_ENV_RPS_PRISTINE
+  else
+    unset SCOURSH_CONFIG_REQUESTS_PER_SECOND
+  fi
+  [[ ${SCOURSH_CONFIG_REQUESTS_PER_SECOND:-} == 20 ]] || exit 1
+  # A SECOND "call" giving neither flag must restore the pristine (unset) state.
+  SCAN_FLAGS=()
+  if [[ -n ${SCAN_FLAGS[requests-per-second]:-} ]]; then
+    export SCOURSH_CONFIG_REQUESTS_PER_SECOND=${SCAN_FLAGS[requests-per-second]}
+  elif [[ -n $_SCAN_ENV_RPS_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_REQUESTS_PER_SECOND=$_SCAN_ENV_RPS_PRISTINE
+  else
+    unset SCOURSH_CONFIG_REQUESTS_PER_SECOND
+  fi
+  [[ -z ${SCOURSH_CONFIG_REQUESTS_PER_SECOND+set} ]] || exit 2
+)
+rc=$?
+assert_eq 0 "$rc" \
+  'FAILS if the first "call"'"'"'s export leaked into the second, flagless one (exit 2), or if the export never took effect at all (exit 1) - scan_main can run more than once in one process (tests/suites/scan.sh calls it repeatedly), so a leaked SCOURSH_CONFIG_REQUESTS_PER_SECOND would silently change an unrelated later run'
+
+t_case 'the real scan_main-run pristine-snapshot variables exist and reflect this process'"'"'s own environment at source time'
+assert_eq "${SCOURSH_CONFIG_REQUESTS_PER_SECOND-}" "$_SCAN_ENV_RPS_PRISTINE" \
+  '_SCAN_ENV_RPS_PRISTINE was captured once, at the top of scan.sh, before any flag was parsed'
+assert_eq "${SCOURSH_CONFIG_REQUEST_BUDGET-}" "$_SCAN_ENV_BUDGET_PRISTINE" \
+  '_SCAN_ENV_BUDGET_PRISTINE likewise'
+
+t_case 'the two flags are in GUIDE_SETTABLE_FLAGS, which the earlier section already proved matches _SCAN_FLAG_KIND'
+assert_contains "${GUIDE_SETTABLE_FLAGS[*]}" 'requests-per-second' 'requests-per-second is guided-settable'
+assert_contains "${GUIDE_SETTABLE_FLAGS[*]}" 'request-budget' 'request-budget is guided-settable'
 
 t_case 'the two User-Agent inputs refuse a header-injecting value'
 assert_status 2 \

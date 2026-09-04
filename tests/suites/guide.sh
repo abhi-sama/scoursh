@@ -416,4 +416,214 @@ EOF
   assert_file_absent "$W/reports" 'nothing in this whole section ever calls run_init'
 fi
 
+# =============================================================================
+printf '\n== docs/STEP-GUIDE-PLAN.md GUIDE-04: the DAST branch and the affirmation ==\n'
+# =============================================================================
+# G3 (target), G5 (intensity) and G6 (the limits router, the affirmation, and
+# each raised limit as its own menu).  `_guide_dast_with_root` shadows
+# SCOURSH_INSTALL_ROOT with `local` for the duration of one call - never a
+# subshell, which would discard every GUIDE_DAST_* output write this file's
+# own header comment warns a `$(...)` wrapper would swallow.
+_guide_dast_with_root() {
+  local SCOURSH_INSTALL_ROOT=$1
+  shift
+  "$@"
+}
+
+DW=$W/dast
+mkdir -p "$DW/two-targets/config" "$DW/no-targets/config" "$DW/with-scanner-conf/config"
+
+cat >"$DW/two-targets/config/scope.conf" <<'EOF'
+id: staging-api
+base-url: https://STAGING-API.fixture.example
+allow-subdomains: false
+allow-private-addresses: false
+
+id: staging-web
+base-url: https://staging-web.fixture.example:8443
+allow-subdomains: false
+allow-private-addresses: false
+EOF
+
+cp "$DW/two-targets/config/scope.conf" "$DW/with-scanner-conf/config/scope.conf"
+cat >"$DW/with-scanner-conf/config/scanner.conf" <<'EOF'
+id: scanner
+request-budget: 20000
+EOF
+
+printf '\n-- G3: guide_dast_target_menu --\n'
+
+t_case 'a well-formed multi-target scope.conf: item 1 selects the first id'
+out=$(_guide_dast_with_root "$DW/two-targets" guide_dast_target_menu < <(printf '1\n') 2>&1) || true
+_guide_dast_with_root "$DW/two-targets" guide_dast_target_menu < <(printf '1\n') 2>/dev/null
+assert_eq staging-api "$GUIDE_DAST_TARGET" 'GUIDE_DAST_TARGET is the first configured id'
+
+t_case 'the displayed tuple is the NORMALISED scheme://host:port, not the raw base-url string'
+assert_contains "$out" 'staging-api    https://staging-api.fixture.example:443' \
+  'FAILS if the raw (uppercase-host) base-url were printed verbatim instead of the http_url_normalize output - the plan requires the normalised tuple specifically so the menu and the gate can never disagree'
+assert_contains "$out" 'staging-web    https://staging-web.fixture.example:8443' \
+  'a non-default port survives normalisation into the displayed tuple'
+
+t_case 'item 2 selects the second id'
+_guide_dast_with_root "$DW/two-targets" guide_dast_target_menu < <(printf '2\n') 2>/dev/null
+assert_eq staging-web "$GUIDE_DAST_TARGET" 'GUIDE_DAST_TARGET is the second configured id'
+
+t_case '"Back" (the last-but-one item) returns 1 rather than selecting a target'
+rc=0
+_guide_dast_with_root "$DW/two-targets" guide_dast_target_menu < <(printf '4\n') 2>/dev/null || rc=$?
+assert_eq 1 "$rc" 'FAILS if Back were treated as a selection'
+
+t_case '"Authorise a new target" (GUIDE-05, not built here) refuses with one line and loops back to the same menu'
+out=$(_guide_dast_with_root "$DW/two-targets" guide_dast_target_menu < <(printf '3\n4\n') 2>&1) || true
+rc=0
+_guide_dast_with_root "$DW/two-targets" guide_dast_target_menu < <(printf '3\n4\n') 2>/dev/null || rc=$?
+assert_contains "$out" 'not built in this version of' \
+  'the refusal explains that authorising a target is not built yet'
+assert_contains "$out" 'Which target?' \
+  'FAILS if the refusal did not loop back to redisplay the SAME target menu (the second answer, "4" = Back, only makes sense against a second, real menu prompt)'
+assert_eq 1 "$rc" 'the loop-back menu still honours a real "Back" answered after the refusal'
+
+t_case 'a scope.conf naming no targets at all collapses to the "authorise / back / quit" menu'
+out=$(_guide_dast_with_root "$DW/no-targets" guide_dast_target_menu < <(printf '2\n') 2>&1) || true
+assert_contains "$out" 'no target of any kind' \
+  'states plainly that scoursh ships with no target and no demo host'
+rc=0
+_guide_dast_with_root "$DW/no-targets" guide_dast_target_menu < <(printf '2\n') 2>/dev/null || rc=$?
+assert_eq 1 "$rc" '"Back" on the empty-scope-conf menu also returns 1'
+
+t_case '"Quit" on the empty-scope-conf menu exits 0 with the cancellation message and creates no run directory'
+assert_status "$SCOURSH_EXIT_OK" 'FAILS if Quit propagated a non-zero exit or blocked' \
+  bash -c 'source "'"$ROOT"'/lib/guide.sh"; SCOURSH_INSTALL_ROOT="'"$DW"'/no-targets"; guide_dast_target_menu' \
+  < <(printf '3\n')
+err=$(bash -c 'source "'"$ROOT"'/lib/guide.sh"; SCOURSH_INSTALL_ROOT="'"$DW"'/no-targets"; guide_dast_target_menu' \
+  < <(printf '3\n') 2>&1 1>/dev/null)
+assert_contains "$err" 'Cancelled.  Nothing was scanned.' 'the shared cancellation message, not a bespoke one'
+assert_file_absent "$DW/no-targets/reports" 'no run directory materialised from Quit'
+
+printf '\n-- G5: guide_dast_intensity_menu --\n'
+
+t_case 'item order is CHECKS_INTENSITIES verbatim: 1=passive, 2=safe, 3=active'
+guide_dast_intensity_menu staging-api < <(printf '1\n') 2>/dev/null
+assert_eq passive "$GUIDE_DAST_INTENSITY" 'item 1 is passive'
+guide_dast_intensity_menu staging-api < <(printf '2\n') 2>/dev/null
+assert_eq safe "$GUIDE_DAST_INTENSITY" 'item 2 is safe'
+guide_dast_intensity_menu staging-api < <(printf '3\n') 2>/dev/null
+assert_eq active "$GUIDE_DAST_INTENSITY" 'item 3 is active'
+
+t_case 'the target name is interpolated into the intensity prompt'
+out=$(guide_dast_intensity_menu 'my-target-xyz' < <(printf '1\n') 2>&1)
+assert_contains "$out" "push 'my-target-xyz'" 'FAILS if the target were hardcoded or omitted'
+
+printf '\n-- G6: the limits router - passive asks NOTHING, structurally --\n'
+
+t_case 'intensity=passive: guide_dast_limits_flow reads no further input and raises nothing'
+guide_dast_limits_flow staging-api passive < /dev/null
+assert_eq passive "$GUIDE_DAST_INTENSITY" 'intensity is unchanged'
+assert_eq '' "$GUIDE_DAST_I_OWN_TARGET" 'no affirmation was ever asked'
+assert_eq '' "$GUIDE_DAST_REQUESTS_PER_SECOND" 'no rate menu ran'
+assert_eq '' "$GUIDE_DAST_REQUEST_BUDGET" 'no budget menu ran'
+assert_eq false "$GUIDE_DAST_ALLOW_INTRUSIVE" 'no side-effecting-checks question ran'
+
+printf '\n-- G6: the affirmation - numbers are interpolated from the same constants DAST-32 reads --\n'
+
+_http_limit_ceiling_set requests-per-second
+RPS_CEIL=$_HTTP_LIMIT_CEIL
+_http_limit_ceiling_set request-budget
+BUDGET_CEIL=$_HTTP_LIMIT_CEIL
+
+t_case 'the rate menu offers the LIVE ceiling as its conservative default item, not a typed literal'
+out=$(_guide_dast_with_root "$DW/two-targets" guide_dast_rate_menu staging-api < <(printf '1\n') 2>&1)
+assert_contains "$out" "1) $RPS_CEIL " \
+  "FAILS if this were prose (\"4\") rather than \$(_guide_dast_rps_ceiling) - the ceiling read here is $RPS_CEIL"
+_guide_dast_with_root "$DW/two-targets" guide_dast_rate_menu staging-api < <(printf '1\n') 2>/dev/null
+assert_eq "$RPS_CEIL" "$GUIDE_DAST_REQUESTS_PER_SECOND" 'item 1 resolves to the live ceiling value'
+
+t_case 'the budget menu offers the LIVE ceiling too'
+out=$(_guide_dast_with_root "$DW/two-targets" guide_dast_budget_menu staging-api < <(printf '1\n') 2>&1)
+assert_contains "$out" "1) $BUDGET_CEIL " \
+  "FAILS if this were prose (\"5000\") rather than \$(_guide_dast_budget_ceiling) - the ceiling read here is $BUDGET_CEIL"
+_guide_dast_with_root "$DW/two-targets" guide_dast_budget_menu staging-api < <(printf '1\n') 2>/dev/null
+assert_eq "$BUDGET_CEIL" "$GUIDE_DAST_REQUEST_BUDGET" 'item 1 resolves to the live ceiling value'
+
+t_case '"No limit" (rate item 4) never emits a literal 0'
+_guide_dast_with_root "$DW/two-targets" guide_dast_rate_menu staging-api < <(printf '4\n') 2>/dev/null
+assert_eq "$_GUIDE_DAST_RPS_UNLIMITED" "$GUIDE_DAST_REQUESTS_PER_SECOND" \
+  "FAILS if this were literal 0 - lib/http.sh's own _http_rps_milli_set/_http_decimal_is_zero refuse a genuinely-zero rate outright (\"permits no requests at all\"), so 0 here would turn the safest-reading menu choice into a dead run"
+assert_ne 0 "$GUIDE_DAST_REQUESTS_PER_SECOND" 'never literal zero'
+
+t_case "the budget menu's config/scanner.conf item appears only when the file sets a value different from the ceiling"
+out=$(_guide_dast_with_root "$DW/with-scanner-conf" guide_dast_budget_menu staging-api < <(printf '2\n') 2>&1)
+assert_contains "$out" '20000   - the value in your config/scanner.conf' \
+  "the file's own request-budget: 20000 is offered as item 2"
+_guide_dast_with_root "$DW/with-scanner-conf" guide_dast_budget_menu staging-api < <(printf '2\n') 2>/dev/null
+assert_eq 20000 "$GUIDE_DAST_REQUEST_BUDGET" 'item 2 resolves to the file value'
+out=$(_guide_dast_with_root "$DW/two-targets" guide_dast_budget_menu staging-api < <(printf '2\n') 2>&1)
+assert_not_contains "$out" 'your config/scanner.conf' \
+  'no scanner.conf at all: the dynamic item is absent, and item 2 is the fixed 100000 choice'
+
+t_case 'the intrusive-checks question defaults to No (item 1) and Yes is item 2'
+guide_dast_intrusive_menu staging-api < <(printf '1\n') 2>/dev/null
+assert_eq false "$GUIDE_DAST_ALLOW_INTRUSIVE" 'item 1 is No'
+guide_dast_intrusive_menu staging-api < <(printf '2\n') 2>/dev/null
+assert_eq true "$GUIDE_DAST_ALLOW_INTRUSIVE" 'item 2 is Yes'
+
+t_case 'the affirmation trailing lines state what raising the limits does NOT do (this ticket''s own deliverable, not decoration)'
+out=$(_guide_dast_with_root "$DW/two-targets" guide_dast_limits_flow staging-api active \
+  < <(printf 'nope\n') 2>&1)
+assert_contains "$out" 'This does NOT remove the request budget' 'the budget stays finite'
+assert_contains "$out" 'This does NOT disable the failure-rate circuit breaker' 'the breaker stays on'
+assert_contains "$out" 'This does NOT let scoursh talk to any host outside config/scope.conf' 'the scope gate is unaffected'
+assert_contains "$out" 'This does NOT send a destructive payload' 'detection-only, unconditionally'
+assert_contains "$out" 'This does NOT turn on side-effecting checks' 'that is a separate question'
+
+printf '\n-- G6: guide_dast_limits_flow - the matched/unmatched affirmation router --\n'
+
+t_case 'an UNMATCHED affirmation reverts intensity to passive and asks nothing further - no retry loop'
+_guide_dast_with_root "$DW/two-targets" guide_dast_limits_flow staging-api active < <(printf 'nope\n') 2>/dev/null
+assert_eq passive "$GUIDE_DAST_INTENSITY" 'FAILS if a second attempt at the affirmation were offered instead of reverting'
+assert_eq '' "$GUIDE_DAST_I_OWN_TARGET" 'no affirmation was recorded'
+assert_eq '' "$GUIDE_DAST_REQUESTS_PER_SECOND" 'the rate menu never ran'
+assert_eq '' "$GUIDE_DAST_REQUEST_BUDGET" 'the budget menu never ran'
+assert_eq false "$GUIDE_DAST_ALLOW_INTRUSIVE" 'the intrusive-checks question never ran'
+
+t_case 'a MATCHED affirmation at intensity=safe unlocks the rate and budget menus but never the intrusive question'
+_guide_dast_with_root "$DW/two-targets" guide_dast_limits_flow staging-api safe \
+  < <(printf 'staging-api\n1\n1\n') 2>/dev/null
+assert_eq safe "$GUIDE_DAST_INTENSITY" 'intensity is unchanged on a match'
+assert_eq staging-api "$GUIDE_DAST_I_OWN_TARGET" 'the affirmation is recorded'
+assert_eq "$RPS_CEIL" "$GUIDE_DAST_REQUESTS_PER_SECOND" 'the rate menu ran (item 1: the live ceiling)'
+assert_eq "$BUDGET_CEIL" "$GUIDE_DAST_REQUEST_BUDGET" 'the budget menu ran (item 1: the live ceiling)'
+assert_eq false "$GUIDE_DAST_ALLOW_INTRUSIVE" "FAILS if the intrusive question ran at intensity=safe - the plan requires it 'only when intensity is active'"
+
+t_case 'a MATCHED affirmation at intensity=active additionally asks the intrusive-checks question'
+_guide_dast_with_root "$DW/two-targets" guide_dast_limits_flow staging-api active \
+  < <(printf 'staging-api\n1\n1\n2\n') 2>/dev/null
+assert_eq true "$GUIDE_DAST_ALLOW_INTRUSIVE" 'the fourth answer (item 2 = Yes) reached the intrusive question'
+
+printf '\n-- guide_dast_configure: the whole G3->G5->G6 flow, and the acceptance test named in the plan --\n'
+
+t_case "THE ACCEPTANCE TEST: picking item 1 at every FIXED menu (target #1, then passive) produces an argv with no --i-own-target, no --allow-intrusive and no raised limit"
+_guide_dast_with_root "$DW/two-targets" guide_dast_configure < <(printf '1\n1\n') 2>/dev/null
+assert_eq '--target staging-api' "${GUIDE_DAST_ARGV[*]}" \
+  'FAILS if any raised flag leaked through on the path of least resistance - the whole point of the router (section 6c) is that G6 asks nothing at all when intensity stays passive'
+assert_not_contains "${GUIDE_DAST_ARGV[*]}" '--i-own-target' 'no affirmation flag'
+assert_not_contains "${GUIDE_DAST_ARGV[*]}" '--allow-intrusive' 'no intrusive flag'
+assert_not_contains "${GUIDE_DAST_ARGV[*]}" '--requests-per-second' 'no rate flag'
+assert_not_contains "${GUIDE_DAST_ARGV[*]}" '--request-budget' 'no budget flag'
+assert_not_contains "${GUIDE_DAST_ARGV[*]}" '--intensity' 'passive is the default and is never spelled out'
+
+t_case 'a fully raised, affirmed, intrusive run composes every flag exactly once, in a scan_parse_args-legal shape'
+_guide_dast_with_root "$DW/two-targets" guide_dast_configure \
+  < <(printf '1\n3\nstaging-api\n2\n1\n2\n') 2>/dev/null
+assert_eq '--target staging-api --intensity active --i-own-target staging-api --requests-per-second 20 --request-budget 5000 --allow-intrusive' \
+  "${GUIDE_DAST_ARGV[*]}" 'the exact composed argv for target 1, intensity active, matched affirmation, rate item 2, budget item 1, intrusive yes'
+# The round-trip of this exact argv through scan_parse_args/_scan_check_affirmation
+# is asserted in tests/suites/scan.sh instead (scan_parse_args lives in scan.sh,
+# which this suite deliberately does not source - it tests lib/guide.sh alone).
+
+t_case "guide_dast_configure returns 1 on G3's own Back, before ever reaching G5"
+rc=0
+_guide_dast_with_root "$DW/two-targets" guide_dast_configure < <(printf '4\n') 2>/dev/null || rc=$?
+assert_eq 1 "$rc" 'FAILS if G5 (intensity) were reached after Back at G3'
+
 t_summary guide

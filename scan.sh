@@ -229,6 +229,21 @@ declare -A _SCAN_FLAG_KIND=(
   # a host has nothing to say on a `sast` run and offering it there would be
   # inviting it into CI boilerplate that never scans anything.
   [dast:i-own-target]=value
+  # docs/STEP-GUIDE-PLAN.md GUIDE-04's own "Flag equivalence" table (G6 rate,
+  # G6 budget).  DAST-32 already reads both as `config/scanner.conf` keys
+  # (`_http_effective_rps_milli_set`/`_http_effective_limit_set`, lib/http.sh)
+  # with a conservative ceiling and an asymmetric clamp, but never gained a
+  # dedicated CLI parameter the way `jobs`/`fail-on` did - this pair of flags
+  # is what closes that gap, so the guided flow's rate/budget prompts (which
+  # this plan's own "one architectural decision" section requires to have a
+  # flag) have something real to emit.  Same key names `config/scanner.conf`
+  # already uses, so no second vocabulary is invented.  Reaches DAST-32's
+  # clamp via `SCOURSH_CONFIG_REQUESTS_PER_SECOND`/`SCOURSH_CONFIG_REQUEST_BUDGET`
+  # (the resolver's own documented env-override level, docs/USAGE.md) rather
+  # than a change to lib/http.sh's chokepoint - see scan_main's own comment
+  # where those are exported for the full reasoning.
+  [dast:requests-per-second]=value
+  [dast:request-budget]=value
 
   [cloud:live]=bool
   [cloud:profile]=value
@@ -257,6 +272,8 @@ declare -A _SCAN_FLAG_KIND=(
   [all:intensity]=value
   [all:authed]=bool
   [all:i-own-target]=value
+  [all:requests-per-second]=value
+  [all:request-budget]=value
   [all:live]=bool
   [all:profile]=value
   [all:regions]=value
@@ -558,7 +575,19 @@ scan_validate_flag_value() {
     intensity) checks_valid_intensity "$val" ;;
     fail-on) [[ $val =~ ^(critical|high|medium|low|info|none)$ ]] ;;
     min-confidence) [[ $val =~ ^(high|medium|low)$ ]] ;;
-    jobs) [[ $val =~ ^[1-9][0-9]*$ ]] ;;
+    jobs | request-budget) [[ $val =~ ^[1-9][0-9]*$ ]] ;;
+    # Copied verbatim from lib/config.sh's `_scanner_validate_value` (the same
+    # duplication `jobs`/`fail-on`/`min-confidence` above already accept:
+    # there is no cross-file regex-sharing mechanism in this codebase, and the
+    # two layers - CLI shape and config-key shape - are deliberately
+    # independent checks). `0` is schema-legal here but is refused later, at
+    # the DAST-32 chokepoint itself (`_http_rps_milli_set`/
+    # `_http_decimal_is_zero`, lib/http.sh): a genuinely zero rate means "wait
+    # forever for a token that can never arrive", which that function treats
+    # as a real usage error rather than "unlimited" - this validator only
+    # checks the value is a well-formed non-negative decimal, not that it is
+    # runnable.
+    requests-per-second) [[ $val =~ ^(0|[1-9][0-9]*)(\.[0-9]+)?$ ]] ;;
     format) _scan_validate_csv "$val" '^(json|sarif|html|md)$' ;;
     lang) _scan_validate_csv "$val" '^(py|js|go|java)$' ;;
     regions) [[ $val == all ]] || _scan_validate_csv "$val" '^[a-zA-Z0-9-]+$' ;;
@@ -573,6 +602,25 @@ scan_validate_flag_value() {
     *) [[ -n $val ]] ;;   # every other value-flag: non-empty is the whole contract
   esac
 }
+
+# docs/STEP-GUIDE-PLAN.md GUIDE-04: a snapshot, taken once at source time
+# (before any scan_main call), of whatever `SCOURSH_CONFIG_REQUESTS_PER_SECOND`
+# / `SCOURSH_CONFIG_REQUEST_BUDGET` the CALLER'S OWN shell environment already
+# carried - the documented env-override level of DAST-32's clamp
+# (docs/USAGE.md "environment variable > file > built-in default").  scan_main
+# exports these two under `--requests-per-second`/`--request-budget` (see its
+# own comment for why), and `scan_main` can run more than once in one process
+# (every test in tests/suites/scan.sh does exactly that) - so a run that gives
+# neither flag must restore whatever the environment held BEFORE this file's
+# own code ever touched it, never a blind `unset`, or a genuine operator-set
+# `SCOURSH_CONFIG_REQUESTS_PER_SECOND=10 scan.sh dast ...` would be destroyed
+# by scan.sh's own second invocation in the same test process.  The `+set`
+# form is `${var+set}` (bash 4.2, no `-v` test needed): it distinguishes
+# "unset" from "set to the empty string", which `-n` alone cannot.
+_SCAN_ENV_RPS_PRISTINE=${SCOURSH_CONFIG_REQUESTS_PER_SECOND-}
+_SCAN_ENV_RPS_PRISTINE_SET=${SCOURSH_CONFIG_REQUESTS_PER_SECOND+set}
+_SCAN_ENV_BUDGET_PRISTINE=${SCOURSH_CONFIG_REQUEST_BUDGET-}
+_SCAN_ENV_BUDGET_PRISTINE_SET=${SCOURSH_CONFIG_REQUEST_BUDGET+set}
 
 # -----------------------------------------------------------------------------
 # 4. The parser.  Hand-rolled rather than `getopts`/`getopt`: `getopts` (the
@@ -1655,6 +1703,39 @@ scan_main() {
   # version a CI image happens to ship.
   # shellcheck disable=SC2119
   config_scanner_load
+
+  # docs/STEP-GUIDE-PLAN.md GUIDE-04: `--requests-per-second`/`--request-budget`
+  # have no dedicated CLI-capture call site inside lib/http.sh the way
+  # `jobs`/`fail-on`/`min-confidence` do above - DAST-32's clamp
+  # (`_http_effective_rps_milli_set`/`_http_effective_limit_set`, lib/http.sh)
+  # calls `config_scanner_value` with NO CLI argument at all, so it only ever
+  # sees env/file/default.  `SCOURSH_CONFIG_<KEY>` is that resolver's own
+  # documented environment-override level (lib/config.sh's `_scanner_env_name`;
+  # docs/USAGE.md "environment variable > file > built-in default"), and
+  # DAST-32's asymmetric clamp treats `cli`/`env` identically - both die exit 2
+  # on an explicit over-ceiling value with no `--i-own-target`
+  # (`_http_limit_refuse_or_clamp`'s `case $src in cli | env)`), so exporting
+  # the flag's value under that name reaches the clamp with the exact same
+  # authority a dedicated CLI parameter would have, with no change to
+  # lib/http.sh's chokepoint required.  An invocation that gives neither flag
+  # restores whatever `_SCAN_ENV_*_PRISTINE` recorded at source time (a real
+  # operator env override, or unset) rather than leaving a prior scan_main
+  # call's export behind - see that snapshot's own comment above.
+  if [[ -n ${SCAN_FLAGS[requests-per-second]:-} ]]; then
+    export SCOURSH_CONFIG_REQUESTS_PER_SECOND=${SCAN_FLAGS[requests-per-second]}
+  elif [[ -n $_SCAN_ENV_RPS_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_REQUESTS_PER_SECOND=$_SCAN_ENV_RPS_PRISTINE
+  else
+    unset SCOURSH_CONFIG_REQUESTS_PER_SECOND
+  fi
+  if [[ -n ${SCAN_FLAGS[request-budget]:-} ]]; then
+    export SCOURSH_CONFIG_REQUEST_BUDGET=${SCAN_FLAGS[request-budget]}
+  elif [[ -n $_SCAN_ENV_BUDGET_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_REQUEST_BUDGET=$_SCAN_ENV_BUDGET_PRISTINE
+  else
+    unset SCOURSH_CONFIG_REQUEST_BUDGET
+  fi
+
   _scan_capture SCOURSH_JOBS config_scanner_value jobs "${SCAN_FLAGS[jobs]:-}"
   _scan_capture SCOURSH_FAIL_ON config_scanner_value fail-on "${SCAN_FLAGS[fail-on]:-}"
   _scan_capture SCOURSH_MIN_CONFIDENCE config_scanner_value min-confidence "${SCAN_FLAGS[min-confidence]:-}"
