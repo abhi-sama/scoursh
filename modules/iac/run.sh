@@ -109,6 +109,10 @@ _iac_run_module() {
 
   findings_merge "$SCOURSH_RUN_DIR"
   derive_findings "$SCOURSH_RUN_DIR"
+  # docs/STEP7-STATE-PLAN.md STATE-06: classify (tension 11 stage 5) runs
+  # strictly after derive (4) and before the gate (7) - lib/diff.sh's own
+  # header states the frozen stage order this call site follows.
+  diff_classify_run "$SCOURSH_RUN_DIR"
   # sast_evaluate_gate (modules/sast/engine.sh) is reused unchanged rather
   # than forked into an "iac_evaluate_gate": despite its name it is already
   # module-agnostic - it re-reads every finding currently in

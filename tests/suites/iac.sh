@@ -830,14 +830,39 @@ unset _checks_run _id
 # =============================================================================
 printf -- '\n-- exit-code flip (mirrors sast.sh''s own last section) --\n'
 # =============================================================================
+# docs/STEP7-STATE-PLAN.md STATE-06: see tests/suites/sast.sh's identical note
+# on its own GATE_ISOLATED_ROOT.  `--fail-on-new` gates on `status == new`,
+# which now comes from real classification against state/latest.json rather
+# than every finding defaulting to `new` - a bare `SCOURSH_INSTALL_ROOT=$ROOT`
+# subprocess would read/write the real repository's shared, accumulating
+# `$ROOT/state/`, and a finding this fixture already produced in some earlier
+# run would classify `recurring` and silently stop tripping this gate.
+GATE_ISOLATED_ROOT=$W/root-gate-isolated
+rm -rf "$GATE_ISOLATED_ROOT"
+mkdir -p "$GATE_ISOLATED_ROOT/config"
+for _e in lib modules rules data tools VERSION scan.sh; do
+  [[ -e "$ROOT/$_e" ]] || continue
+  cp -RL "$ROOT/$_e" "$GATE_ISOLATED_ROOT/$_e"
+done
+unset _e
+# Canonicalise AFTER populating: lib/records.sh resolves every loaded rule
+# file's path through realpath, and on macOS $TMPDIR/$SCOURSH_SCRATCH itself
+# sits under /var/folders/..., a symlink to /private/var/folders/... - so an
+# uncanonicalised SCOURSH_INSTALL_ROOT string never equals the prefix a rule
+# file's own realpath actually resolves to, and every check misfires E070
+# (the identical lesson tests/suites/dast.sh's own _fixture_root documents).
+GATE_ISOLATED_ROOT=$(cd -- "$GATE_ISOLATED_ROOT" && pwd -P)
+
 t_case 'scan.sh iac tests/fixtures/vuln --fail-on high --fail-on-new now exits non-zero'
 assert_status "$SCOURSH_EXIT_GATE" \
   'a real subprocess against the vuln fixture, gated on high+, exits the GATE code - fails if scan_dispatch iac were still a no-op (every gate would stay 0)' \
+  env SCOURSH_INSTALL_ROOT="$GATE_ISOLATED_ROOT" \
   bash "$ROOT/scan.sh" iac --path "$ROOT/tests/fixtures/vuln" --fail-on high --fail-on-new --out "$W/run-gate"
 
 t_case 'the SAME command against the clean fixture still exits 0 - the gate is not a blanket failure'
 assert_status 0 \
   'no findings at/above high on the clean fixture, so the gate does not trip' \
+  env SCOURSH_INSTALL_ROOT="$GATE_ISOLATED_ROOT" \
   bash "$ROOT/scan.sh" iac --path "$ROOT/tests/fixtures/clean" --fail-on high --fail-on-new --out "$W/run-gate-clean"
 
 t_case 'without --fail-on, the vuln fixture still exits 0 - the gate is opt-in, never ambient'

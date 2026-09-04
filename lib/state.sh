@@ -887,6 +887,20 @@ state_covered_has_cell() {
   [[ $'\n'"$existing"$'\n' == *$'\n'"$cell"$'\n'* ]]
 }
 
+# True when at least one check the loaded state recorded as covered declares
+# SCOPE - the read-side mirror of `state_covered_now_has_scope` below
+# (docs/STEP7-STATE-PLAN.md STATE-06), used where a caller needs the
+# question asked of an already-persisted run rather than THIS run's
+# in-progress write-side builder (`lib/diff.sh`'s standalone `diff --against`
+# command, which loads a second, already-completed run's own state).
+state_covered_has_scope() {
+  local scope=$1 id
+  for id in "${_STATE_C_IDS[@]+"${_STATE_C_IDS[@]}"}"; do
+    [[ ${_STATE_C_SCOPE[$id]:-} == "$scope" ]] && return 0
+  done
+  return 1
+}
+
 state_history_boundary_field() {
   local id=$1 field=$2
   case $field in
@@ -934,3 +948,56 @@ state_finding_field() {
 #    loader are exactly what STATE-01 shipped.
 # ---------------------------------------------------------------------------
 state_run_pending() { [[ -n ${_STATE_W[run_id]:-} ]]; }
+
+# ---------------------------------------------------------------------------
+# 6. STATE-06 glue (docs/STEP7-STATE-PLAN.md STATE-06): read-only accessors
+#    over the SAME write-side builder above, so `lib/diff.sh`'s automatic
+#    per-run classification can ask "what has THIS run covered so far" -
+#    tension 12's guard and its (check, cell) coverage test both need it -
+#    without reaching into `_STATE_W_*` directly.  Purely additive, exactly
+#    like `state_run_pending` above: nothing about the frozen schema, the
+#    builder API, or the loader changes here, and every accessor below only
+#    ever READS what `state_add_covered`/`state_add_history_boundary` were
+#    already given.
+# ---------------------------------------------------------------------------
+state_covered_now_ids() { printf '%s\n' "${_STATE_W_COVERED_IDS[@]+"${_STATE_W_COVERED_IDS[@]}"}"; }
+state_covered_now_rule_digest() { printf '%s' "${_STATE_W_COVERED_RULE_DIGEST[$1]:-}"; }
+state_covered_now_scope() { printf '%s' "${_STATE_W_COVERED_SCOPE[$1]:-}"; }
+
+# One cell per line for a check id this run has covered so far; empty output
+# (status 0) for a check id not yet covered - "not covered yet" is data, not
+# an error, the same convention the read-side `state_covered_cells` documents.
+state_covered_now_cells() {
+  local existing=${_STATE_W_COVERED_CELLS[$1]:-}
+  [[ -n $existing ]] && printf '%s\n' "$existing"
+  return 0
+}
+
+# True when at least one check this run has covered so far declares SCOPE -
+# tension 12's own THIS_HAS_PATH_ROOT test ("a run that never touches a
+# path-root cell cannot be invalidated by a scan_root_id mismatch"),
+# generalised to any scope so a future caller never has to special-case
+# path-root.
+state_covered_now_has_scope() {
+  local scope=$1 id
+  for id in "${_STATE_W_COVERED_IDS[@]+"${_STATE_W_COVERED_IDS[@]}"}"; do
+    [[ ${_STATE_W_COVERED_SCOPE[$id]:-} == "$scope" ]] && return 0
+  done
+  return 1
+}
+
+state_covered_now_history_boundary_time() { printf '%s' "${_STATE_W_HB_TIME[$1]:-}"; }
+
+# True once `state_add_finding` has already recorded FINGERPRINT this run.
+# `lib/diff.sh`'s automatic classification calls `state_add_finding` for
+# every one of THIS run's own findings so `state_write` (STATE-02) actually
+# persists them for a FUTURE run to classify against - without it,
+# `covered_checks` would keep accumulating but `findings` would stay
+# permanently empty, and nothing would ever classify `recurring` or `fixed`
+# again.  `scan.sh all` calls `diff_classify_run` once per module over the
+# SAME, growing findings.fields (its own header note), so a finding already
+# added by an earlier call in this run must be skipped rather than re-added -
+# `state_add_finding` itself `die`s on a duplicate fingerprint, which is
+# right for a genuine caller bug and wrong for this ordinary repeat-call
+# shape, so the caller checks first.
+state_write_has_finding() { [[ -n ${_STATE_W_F_CHECK[$1]+set} ]]; }

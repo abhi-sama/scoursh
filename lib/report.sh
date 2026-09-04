@@ -91,6 +91,30 @@ report_count() {
     _RPT_STATUS[$st]=$(( ${_RPT_STATUS[$st]:-0} + 1 ))
     _RPT_OWASP[$ow]=$(( ${_RPT_OWASP[$ow]:-0} + 1 ))
   done <"$rundir/findings.fields"
+
+  # docs/STEP7-STATE-PLAN.md STATE-06: `fixed`/`unknown` never appear as a
+  # LIVE finding above - they are prior findings ABSENT this run, so there is
+  # nothing in findings.fields to have counted them from.  `lib/diff.sh`
+  # writes their count into this small, separate ledger instead
+  # (meta/diff_absent: one `status \t reason \t ...` line per prior finding
+  # this run did not reproduce).  `meta/diff_present` is its mirror for the
+  # standalone `diff` command, which has no findings.fields of its own at all
+  # (it performs no scan) and so supplies new/recurring the identical way.
+  local ledger_line st2
+  if [[ -r $rundir/meta/diff_present ]]; then
+    while IFS= read -r ledger_line; do
+      [[ -n $ledger_line ]] || continue
+      st2=${ledger_line%%$'\x1f'*}
+      _RPT_STATUS[$st2]=$(( ${_RPT_STATUS[$st2]:-0} + 1 ))
+    done <"$rundir/meta/diff_present"
+  fi
+  if [[ -r $rundir/meta/diff_absent ]]; then
+    while IFS= read -r ledger_line; do
+      [[ -n $ledger_line ]] || continue
+      st2=${ledger_line%%$'\x1f'*}
+      _RPT_STATUS[$st2]=$(( ${_RPT_STATUS[$st2]:-0} + 1 ))
+    done <"$rundir/meta/diff_absent"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -207,7 +231,18 @@ report_run_json() {
     _report_authorization_json "$rundir"
     printf '  "gate": %s,\n' "$(json_string "${SCOURSH_GATE_RESULT:-not-evaluated}")"
     printf '  "gated_findings": %s,\n' "$(json_number "${SCOURSH_GATED_FINDINGS:-0}")"
-    printf '  "diff_usable": %s\n' "$(json_bool "${SCOURSH_DIFF_USABLE:-false}")"
+    printf '  "diff_usable": %s,\n' "$(json_bool "${SCOURSH_DIFF_USABLE:-false}")"
+    _meta_array_unique "$rundir" rule_changed_checks 'rule_changed_checks'
+    # docs/STEP7-STATE-PLAN.md STATE-06: which of fp_schema/scan_root_id
+    # changed, when the guard fired - `diff_usable` alone answers "may the
+    # gate trust this", never "why not", and an operator staring at a
+    # permanently-unusable diff needs the second question answered too
+    # (tension 12's own "recorded in run.json so an operator ... can see
+    # why").  `not-evaluated` is the honest value for a run that never
+    # reached classification at all (docs/DESIGN.md §5's `report` command,
+    # still a stub - STATE-06's own scope is `diff` and automatic
+    # classification only).  Last field: no trailing comma.
+    printf '  "diff_guard": %s\n' "$(json_string "${SCOURSH_DIFF_GUARD:-not-evaluated}")"
     printf '}\n'
   } >"$rundir/run.json"
 }
@@ -327,6 +362,7 @@ report_md() {
       printf '> live credentials and must not be circulated.\n\n'
     fi
     _md_unrestricted_banner "$rundir"
+    _md_diff_delta "$rundir"
     printf '## Severity\n\n| severity | live | accepted risk |\n|---|---|---|\n'
     local k
     for k in critical high medium low info; do
@@ -350,6 +386,85 @@ report_md() {
     fi
     _md_limitations "$rundir"
   } >"$rundir/report.md"
+}
+
+# `_md_diff_delta RUNDIR` - docs/STEP7-STATE-PLAN.md STATE-06; tension 11
+# stage 9 ("the report leads with this delta").  Reads `_RPT_STATUS`
+# (`report_count`, already called by `report_md`/`report_html` before this)
+# for the four counts and `$rundir/meta/diff_absent` for the per-finding
+# fixed/unknown listing; `SCOURSH_DIFF_GUARD`/`SCOURSH_DIFF_USABLE` are
+# `lib/diff.sh`'s own exported result of this run's classification.
+#
+# The one sentence this function exists to make unmistakable, per this
+# ticket's own acceptance criterion: `fixed` means this run looked and found
+# nothing there any more; `unknown` ("not assessed this run") means this run
+# never looked, so nothing was verified either way.  Rendering both under one
+# undifferentiated heading is exactly the blur tension 12 was written to
+# prevent, so they are always two headings, never one.
+# SC2016: the Markdown code spans below are literal output, not command
+# substitution.
+# shellcheck disable=SC2016
+_md_diff_delta() {
+  local rundir=$1
+  printf '## Since last scan\n\n'
+  if [[ ${SCOURSH_DIFF_GUARD:-not-evaluated} != usable ]]; then
+    case ${SCOURSH_DIFF_GUARD:-not-evaluated} in
+      no_prior_state)
+        printf '> This is the first recorded run - everything below is `new`.\n\n' ;;
+      fp_schema_mismatch)
+        printf '> **The fingerprint schema changed since the prior run.** Prior findings are\n'
+        printf '> carried forward as `not assessed this run`, never `fixed`, and a baseline\n'
+        printf '> rebuild is required.\n\n' ;;
+      scan_root_id_mismatch)
+        printf '> **The scan root identity changed since the prior run** for path-scoped\n'
+        printf '> findings (SAST/SCA/IaC/history). Those prior findings are carried forward as\n'
+        printf '> `not assessed this run`, never `fixed`, and a baseline rebuild is required\n'
+        printf '> for them.\n\n' ;;
+      *)
+        printf '> Prior state is not usable for classification (`%s`).\n\n' "${SCOURSH_DIFF_GUARD:-not-evaluated}" ;;
+    esac
+  fi
+  printf -- '- **%s** new\n' "${_RPT_STATUS[new]:-0}"
+  printf -- '- **%s** recurring\n' "${_RPT_STATUS[recurring]:-0}"
+  printf -- '- **%s** fixed\n' "${_RPT_STATUS[fixed]:-0}"
+  printf -- '- **%s** not assessed this run\n\n' "${_RPT_STATUS[unknown]:-0}"
+  _md_diff_ledger "$rundir/meta/diff_absent" fixed \
+    'Fixed since last scan' \
+    'Reported in a prior run and absent from this one, in a check and location this run actually covered - remediation is verified.' \
+    '| check | cell | severity | first seen |' '|---|---|---|---|' false
+  _md_diff_ledger "$rundir/meta/diff_absent" unknown \
+    'Not assessed this run' \
+    'Reported in a prior run, but this run did not cover their check and location - so status is **unknown, not verified fixed**. Appearing here is not evidence of remediation; it means this run never looked.' \
+    '| check | cell | severity | first seen | reason |' '|---|---|---|---|---|' true
+}
+
+# `_md_diff_ledger LEDGER_FILE WANT_STATUS HEADING BLURB TABLE_HEADER
+#                  TABLE_RULE SHOW_REASON`
+# SC2016: the Markdown code spans below are literal output, not command
+# substitution.
+# shellcheck disable=SC2016
+_md_diff_ledger() {
+  local ledger=$1 want=$2 heading=$3 blurb=$4 thead=$5 trule=$6 show_reason=$7
+  [[ -r $ledger ]] || return 0
+  local status reason check cell severity first_seen fp any=0
+  while IFS=$'\x1f' read -r status reason check cell severity first_seen fp; do
+    [[ $status == "$want" ]] || continue
+    any=1
+    break
+  done <"$ledger"
+  (( any )) || return 0
+  printf '### %s\n\n%s\n\n' "$heading" "$blurb"
+  printf '%s\n%s\n' "$thead" "$trule"
+  while IFS=$'\x1f' read -r status reason check cell severity first_seen fp; do
+    [[ $status == "$want" ]] || continue
+    if [[ $show_reason == true ]]; then
+      printf '| `%s` | `%s` | %s | %s | %s |\n' "$check" "${cell:--}" "$severity" "$first_seen" \
+        "${reason:-not-covered-this-run}"
+    else
+      printf '| `%s` | `%s` | %s | %s |\n' "$check" "${cell:--}" "$severity" "$first_seen"
+    fi
+  done <"$ledger"
+  printf '\n'
 }
 
 # `_md_findings RUNDIR live|suppressed`
@@ -627,6 +742,67 @@ details.f { scroll-margin-top: 1rem; }
 HTML
 }
 
+# docs/STEP7-STATE-PLAN.md STATE-06.  Mirrors `_md_diff_delta`'s own guard
+# banner (lib/report.sh section 3) - see that function's comment for the
+# reasoning; escaped through `html_escape` on principle even though every
+# value here is this tool's own internal vocabulary, never target-derived.
+_html_diff_guard_banner() {
+  local guard=${SCOURSH_DIFF_GUARD:-not-evaluated}
+  [[ $guard != usable ]] || return 0
+  local msg
+  case $guard in
+    no_prior_state)
+      msg='This is the first recorded run - everything below is <code>new</code>.' ;;
+    fp_schema_mismatch)
+      msg='<strong>The fingerprint schema changed since the prior run.</strong> Prior findings are carried forward as <code>not assessed this run</code>, never <code>fixed</code>, and a baseline rebuild is required.' ;;
+    scan_root_id_mismatch)
+      msg='<strong>The scan root identity changed since the prior run</strong> for path-scoped findings (SAST/SCA/IaC/history). Those prior findings are carried forward as <code>not assessed this run</code>, never <code>fixed</code>, and a baseline rebuild is required for them.' ;;
+    *)
+      msg="Prior state is not usable for classification (<code>$(html_escape "$guard")</code>)." ;;
+  esac
+  printf '<p class="sub">%s</p>\n' "$msg"
+}
+
+# `_html_diff_delta RUNDIR` - the fixed/unknown listing, tables mirroring
+# `_md_diff_ledger`'s own two headings.  Read straight from
+# `$rundir/meta/diff_absent`; every value is escaped even though none of it
+# is target-derived (tension 10's discipline applied uniformly rather than
+# selectively).
+_html_diff_delta() {
+  local rundir=$1
+  local ledger=$rundir/meta/diff_absent
+  [[ -r $ledger ]] || return 0
+  local status reason check cell severity first_seen fp any_fixed=0 any_unknown=0
+  while IFS=$'\x1f' read -r status reason check cell severity first_seen fp; do
+    [[ $status == fixed ]] && any_fixed=1
+    [[ $status == unknown ]] && any_unknown=1
+  done <"$ledger"
+  if (( any_fixed )); then
+    printf '<h3>Fixed since last scan</h3>\n'
+    printf '<p class="sub">Reported in a prior run and absent from this one, in a check and location this run actually covered - remediation is verified.</p>\n'
+    printf '<table><tr><th>check</th><th>cell</th><th>severity</th><th>first seen</th></tr>\n'
+    while IFS=$'\x1f' read -r status reason check cell severity first_seen fp; do
+      [[ $status == fixed ]] || continue
+      printf '<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>\n' \
+        "$(html_escape "$check")" "$(html_escape "${cell:--}")" "$(html_escape "$severity")" \
+        "$(html_escape "$first_seen")"
+    done <"$ledger"
+    printf '</table>\n'
+  fi
+  if (( any_unknown )); then
+    printf '<h3>Not assessed this run</h3>\n'
+    printf '<p class="sub">Reported in a prior run, but this run did not cover their check and location - so status is <strong>unknown, not verified fixed</strong>. Appearing here is not evidence of remediation; it means this run never looked.</p>\n'
+    printf '<table><tr><th>check</th><th>cell</th><th>severity</th><th>first seen</th><th>reason</th></tr>\n'
+    while IFS=$'\x1f' read -r status reason check cell severity first_seen fp; do
+      [[ $status == unknown ]] || continue
+      printf '<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>\n' \
+        "$(html_escape "$check")" "$(html_escape "${cell:--}")" "$(html_escape "$severity")" \
+        "$(html_escape "$first_seen")" "$(html_escape "${reason:-not-covered-this-run}")"
+    done <"$ledger"
+    printf '</table>\n'
+  fi
+}
+
 _html_summary() {
   local rundir=${1:-$SCOURSH_RUN_DIR}
   printf '<h1 id="top">scoursh scan report</h1>\n'
@@ -660,12 +836,15 @@ _html_summary() {
     done
     printf '.</p>\n'
   fi
-  printf '<h2 id="since-last-scan">Since the last scan</h2>\n<div class="tiles">\n'
+  printf '<h2 id="since-last-scan">Since the last scan</h2>\n'
+  _html_diff_guard_banner
+  printf '<div class="tiles">\n'
   for k in new recurring fixed unknown; do
     printf '<div class="tile"><div class="n">%s</div><div class="l">%s</div></div>\n' \
       "${_RPT_STATUS[$k]:-0}" "$k"
   done
   printf '</div>\n'
+  _html_diff_delta "$rundir"
   if (( ${#_RPT_MODULE[@]} > 0 )); then
     printf '<h2 id="by-module">By module</h2>\n<table><tr><th>module</th><th>findings</th></tr>\n'
     while IFS= read -r k; do

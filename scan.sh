@@ -166,6 +166,13 @@ source "$SCOURSH_SCAN_SH_DIR/lib/engines.sh"
 # and lib/http.sh above need one (AGENTS.md "Sharp edges" on shellcheck -x).
 # shellcheck source=lib/state.sh
 source "$SCOURSH_SCAN_SH_DIR/lib/state.sh"
+# docs/STEP7-STATE-PLAN.md STATE-06: the `diff` command and automatic
+# per-run classification.  lib/diff.sh sources lib/state.sh (already loaded
+# just above) and lib/report.sh (already loaded at the top of this section),
+# so this is a fresh edge, not a duplicate one - no back-edge cut needed the
+# way lib/config.sh and lib/http.sh above need one.
+# shellcheck source=lib/diff.sh
+source "$SCOURSH_SCAN_SH_DIR/lib/diff.sh"
 # docs/STEP-GUIDE-PLAN.md GUIDE-01: lib/guide.sh (the guided-interactive-mode
 # prompt gate, signal trap and menu primitives) is sourced here so a later
 # ticket's scan_main routing needs no new source line - this ticket itself
@@ -443,14 +450,20 @@ _scan_dast_phase_status() {
 # `_scan_stateful_command_built CMD` - `diff` and `report` are not modules
 # (scan_main's own case block handles both inline, never through
 # scan_dispatch), so there is no run.sh on disk to check the way there is for
-# every other command.  Both need docs/DESIGN.md §13 step 7's persistent
-# state/ tracking, which has not landed; this is the ONE function both
-# scan_main's diff/report case arms AND scan_usage_for read for that fact, so
-# landing step 7 and flipping this to real logic keeps the real dispatch and
-# this help text in agreement by construction rather than by remembering to
-# edit both.
+# every other command.  Both needed docs/DESIGN.md §13 step 7's persistent
+# state/ tracking; `diff` has it now (docs/STEP7-STATE-PLAN.md STATE-06:
+# lib/diff.sh's `diff_render_against`, wired into scan_main's own `diff` case
+# arm) and `report` still does not (regenerating a report from a prior run's
+# findings.json is explicitly out of STATE-06's scope - it needs no
+# classification at all, only re-emission, and is its own, unstarted piece of
+# work).  This stays the ONE function scan_main's diff/report case arms AND
+# scan_usage_for both read, so a future ticket that lands `report` flips one
+# case here rather than two places silently drifting apart.
 _scan_stateful_command_built() {
-  return 1
+  case $1 in
+    diff) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 scan_usage_for() {
@@ -520,7 +533,7 @@ scan_usage_for() {
       ;;
     diff)
       if _scan_stateful_command_built diff; then
-        printf '%s\n' 'built.'
+        printf '%s\n' 'built - classifies state/latest.json (the most recently completed run) against the named --against run and renders the delta into a fresh report directory (run.json, report.md); performs no new scan.'
       else
         printf '%s\n' 'NOT built - diff classification needs the persistent state/ tracking of docs/DESIGN.md §13 step 7, which has not landed. This command validates --against and then records a declared no-op.'
       fi
@@ -1883,8 +1896,7 @@ scan_main() {
       ;;
     diff)
       _scan_require_prior_run against "${SCAN_FLAGS[against]}"
-      run_record coverage_reduction 'module=diff reason=not_yet_built'
-      log_warn "'diff' has no engine yet (docs/FOUNDATION.md tension 12 lands with state/, step 7)"
+      diff_render_against "${SCAN_FLAGS[against]}" "$SCOURSH_RUN_DIR"
       ;;
     report)
       _scan_require_prior_run from "${SCAN_FLAGS[from]}"
@@ -1921,9 +1933,25 @@ scan_main() {
   # rather than dying mid-flight (lib/core.sh's run_json_refresh_incomplete
   # is the identical persistence for the die()-exit-5 case that never
   # reaches here).
-  local _scan_state_retain
-  _scan_capture _scan_state_retain config_scanner_value state-retain-runs ''
-  state_write '' "$_scan_state_retain"
+  #
+  # docs/STEP7-STATE-PLAN.md STATE-06's own correctness fix: `diff` and
+  # `report` dispatch no module and add no coverage or findings to the
+  # write-side builder `_scan_state_begin` reset at the top of this
+  # invocation, so persisting it here would write a genuinely empty
+  # state/<run-id>.json and - far worse - overwrite state/latest.json with
+  # it, corrupting the one reference point automatic per-run classification
+  # (lib/diff.sh's diff_classify_run) reads on every future scan.  Before
+  # `diff` was a real command this was a latent defect with no observable
+  # effect (the stub state_write'd an equally empty snapshot); making it real
+  # is what turns "nobody happened to see this" into "half the point of this
+  # feature quietly breaks itself", so it is fixed in the same change.
+  case $SCAN_COMMAND in
+    sast | sca | iac | dast | cloud | all)
+      local _scan_state_retain
+      _scan_capture _scan_state_retain config_scanner_value state-retain-runs ''
+      state_write '' "$_scan_state_retain"
+      ;;
+  esac
 
   log_info "scan complete in $(( SECONDS - _scan_t0 ))s - report: $SCOURSH_RUN_DIR"
 

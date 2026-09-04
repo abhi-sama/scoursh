@@ -275,6 +275,10 @@ _sca_run_module() {
 
   findings_merge "$SCOURSH_RUN_DIR"
   derive_findings "$SCOURSH_RUN_DIR"
+  # docs/STEP7-STATE-PLAN.md STATE-06: classify (tension 11 stage 5) runs
+  # strictly after derive (4) and before the gate (7) - lib/diff.sh's own
+  # header states the frozen stage order this call site follows.
+  diff_classify_run "$SCOURSH_RUN_DIR"
   # sast_evaluate_gate (modules/sast/engine.sh, sourced at the top of this
   # file) is called here rather than reimplemented as an "sca_evaluate_gate":
   # nothing in its body is SAST-specific despite the prefix - it re-reads

@@ -49,6 +49,19 @@ if [[ -z ${SCOURSH_CONFIG_SOURCED:-} ]]; then
   # shellcheck source=lib/config.sh
   source "${BASH_SOURCE[0]%/*}/../../lib/config.sh"
 fi
+# docs/STEP7-STATE-PLAN.md STATE-06: every module's own run.sh calls
+# diff_classify_run between derive_findings and its own gate call
+# (lib/diff.sh's header states the frozen stage order), and all four
+# (sast/run.sh directly, iac/parse.sh, sca/run.sh, dast/engine.sh) reach THIS
+# file - so sourcing lib/diff.sh here, guarded exactly like lib/report.sh and
+# lib/config.sh above, covers every one of them in one place rather than
+# four.  A real `scan.sh` run has already sourced it (scan.sh section 1)
+# before scan_dispatch ever runs, so this is a no-op there; it is load-bearing
+# only for a test that sources an engine/run.sh file standalone.
+if [[ -z ${SCOURSH_DIFF_SOURCED:-} ]]; then
+  # shellcheck source=lib/diff.sh
+  source "${BASH_SOURCE[0]%/*}/../../lib/diff.sh"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Directory walk

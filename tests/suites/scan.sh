@@ -1077,12 +1077,17 @@ assert_contains "$CLOUD_HELP" 'NOT built' 'cloud states plainly that it is not b
 assert_contains "$CLOUD_HELP" 'modules/cloud/aws/run.sh does not exist' \
   'the reason is the real, checkable fact scan_dispatch itself acts on, not a hand-typed claim'
 
-t_case 'diff --help exits 0 with no --against given, and states plainly it is not built'
+# docs/STEP7-STATE-PLAN.md STATE-06: `diff` is a real command now
+# (lib/diff.sh's diff_render_against), so its --help text says "built",
+# never "NOT built" - this test's own pre-STATE-06 assumption is updated
+# rather than left pinning a defect that no longer exists.
+t_case 'diff --help exits 0 with no --against given, and states plainly it IS built'
 assert_status 0 './scan.sh diff --help exits 0 with no --against' _bin_run diff --help
 DIFF_HELP=$(cat "$W/bin.out")
 assert_contains "$DIFF_HELP" 'scan.sh diff [options]' 'command-specific header'
-assert_contains "$DIFF_HELP" 'NOT built' 'diff states plainly that it is not built'
-assert_contains "$DIFF_HELP" 'state/' 'the reason names the real step-7 dependency, not a vague "later"'
+assert_contains "$DIFF_HELP" 'Status: built' \
+  'diff is real (lib/diff.sh) and says so, distinctly from a NOT-built command'
+assert_contains "$DIFF_HELP" 'state/latest.json' 'the status line names what it actually does'
 
 t_case 'sca --help exits 0 and states plainly it IS built'
 assert_status 0 './scan.sh sca --help exits 0' _bin_run sca --help
