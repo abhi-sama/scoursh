@@ -85,6 +85,10 @@
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "${BASH_SOURCE[0]%/*}/engine.sh"
+# docs/STEP7-STATE-PLAN.md STATE-06: see modules/sast/run.sh's own comment on
+# why this is sourced directly here rather than from modules/sast/engine.sh.
+# shellcheck source=lib/diff.sh
+source "${BASH_SOURCE[0]%/*}/../../lib/diff.sh"
 # php_engine.sh is also sourced transitively by engine.sh itself (guarded,
 # see both files' own headers); sourced again here, explicitly, purely so
 # this entry point stays self-documenting about which ecosystems it covers -

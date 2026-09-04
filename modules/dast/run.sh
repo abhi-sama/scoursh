@@ -43,6 +43,13 @@
 # shellcheck shell=bash
 # shellcheck source=modules/dast/engine.sh
 source "${BASH_SOURCE[0]%/*}/engine.sh"
+# docs/STEP7-STATE-PLAN.md STATE-06: see modules/sast/run.sh's own comment on
+# why this is sourced directly here rather than from modules/sast/engine.sh -
+# this file's own dozens of sibling phase-script test suites (dast-*.sh) each
+# source modules/dast/engine.sh or a single phase script directly, never this
+# file, so confining the edge here keeps their shellcheck -x cost unchanged.
+# shellcheck source=lib/diff.sh
+source "${BASH_SOURCE[0]%/*}/../../lib/diff.sh"
 
 # `_dast_record_inventory_gaps` - one coverage_gap per inventory artifact that
 # is not usable input (docs/FOUNDATION.md tension 21).  Absence is the normal

@@ -17,6 +17,13 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # shellcheck source=modules/sast/engine.sh
 source "$ROOT/modules/sast/engine.sh"
+# lib/diff.sh is sourced directly by the four run.sh files that call
+# diff_classify_run, not by modules/sast/engine.sh itself (see
+# modules/sast/run.sh's own comment on why) - this suite calls
+# diff_classify_run/diff_render_against without going through any of them, so
+# it needs its own explicit source.
+# shellcheck source=lib/diff.sh
+source "$ROOT/lib/diff.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
 

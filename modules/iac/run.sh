@@ -30,6 +30,10 @@
 # shellcheck shell=bash
 # shellcheck source=modules/iac/parse.sh
 source "${BASH_SOURCE[0]%/*}/parse.sh"
+# docs/STEP7-STATE-PLAN.md STATE-06: see modules/sast/run.sh's own comment on
+# why this is sourced directly here rather than from modules/sast/engine.sh.
+# shellcheck source=lib/diff.sh
+source "${BASH_SOURCE[0]%/*}/../../lib/diff.sh"
 
 # _iac_run_trivy_adapter ROOT - runs the vendored trivy adapter
 # (modules/iac/adapters/trivy/adapter.sh, sourced by `has_engine`'s own call

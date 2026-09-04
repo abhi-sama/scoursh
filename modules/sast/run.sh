@@ -43,6 +43,17 @@
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "${BASH_SOURCE[0]%/*}/engine.sh"
+# docs/STEP7-STATE-PLAN.md STATE-06: diff_classify_run (called below, between
+# derive_findings and sast_evaluate_gate) lives in lib/diff.sh, sourced here
+# rather than from modules/sast/engine.sh - that file is reached by every
+# DAST phase test too, and lib/diff.sh's own lib/state.sh edge is genuinely
+# new content there (not a diamond a back-edge cut could remove for free),
+# which pushed tests/suites/dast-methods.sh over its shellcheck -x memory
+# budget and killed a CI run.  Confining this source line to the four run.sh
+# files that actually call diff_classify_run keeps that cost off every
+# phase-level test that has nothing to do with it.
+# shellcheck source=lib/diff.sh
+source "${BASH_SOURCE[0]%/*}/../../lib/diff.sh"
 # history.sh (docs/DESIGN.md §6.3, §13 step 3e) is the module that deliberately
 # DOES read git history; it is its own pure function library, sourced here
 # exactly like engine.sh, and its real work only happens when
