@@ -810,6 +810,8 @@ crawl_inv_reset() {
   declare -gA _CRAWL_PARAM_SEEN=()
   declare -g _CRAWL_EP_TRUNCATED=0
   declare -g _CRAWL_PARAM_TRUNCATED=0
+  declare -g _CRAWL_PARAM_INVALID_LOCATION=0
+  declare -g _CRAWL_PARAM_INVALID_HEADER_NAME=0
 }
 
 # `crawl_id KEY` - the 12-hex join key an endpoint and its parameters share.
@@ -887,12 +889,35 @@ crawl_add_endpoint() {
 # best available, and the residual gap - an unrecognised secret in an
 # unsuggestive parameter - is stated here rather than assumed away.
 _CRAWL_SECRETISH_NAME='^(pass|passwd|password|pwd|secret|token|api[-_]?key|apikey|auth|authorization|session|sessionid|sid|jwt|bearer|credential|creds|otp|mfa|totp|pin|private[-_]?key|client[-_]?secret|refresh[-_]?token|access[-_]?token|csrf|xsrf|signature|sig)$'
+
+# The frozen parameter-location vocabulary (docs/INVENTORY-FORMAT.md §3).
+# `inject_engine.sh`'s `inject_send` has no arm for anything outside this set;
+# admitting one anyway would let a hostile spec produce a row that later
+# reports as "tested" while nothing is ever sent (IMPORT-05, report §7b).
+_CRAWL_PARAM_LOCATIONS='^(query|body|path|header|cookie|formData|graphql)$'
+
+# The RFC 7230 header-field-name token - the exact character class
+# `lib/http.sh`'s `http_request_header` enforces at SEND time (and `die`s the
+# whole run, exit 5, on a mismatch). A `header`-location parameter name is
+# validated against the identical class HERE, at import time, so a hostile
+# spec's malformed field name is skipped with a counted reduction instead of
+# reaching that `die` and aborting the entire scan (IMPORT-05, report §7a).
+_CRAWL_HEADER_TOKEN_RE='^[A-Za-z0-9!#$%&'"'"'*+.^_`|~-]+$'
+
 crawl_add_param() {
   local epid=$1 target=$2 method=$3 url=$4 name=$5 location=$6 source=$7 example=${8:-}
   local key id lname
   method=${method^^}
-  key="$epid|$location|$name"
   [[ -n $name ]] || return 0
+  if [[ ! $location =~ $_CRAWL_PARAM_LOCATIONS ]]; then
+    _CRAWL_PARAM_INVALID_LOCATION=$(( _CRAWL_PARAM_INVALID_LOCATION + 1 ))
+    return 0
+  fi
+  if [[ $location == header && ! $name =~ $_CRAWL_HEADER_TOKEN_RE ]]; then
+    _CRAWL_PARAM_INVALID_HEADER_NAME=$(( _CRAWL_PARAM_INVALID_HEADER_NAME + 1 ))
+    return 0
+  fi
+  key="$epid|$location|$name"
   [[ -z ${_CRAWL_PARAM_SEEN[$key]:-} ]] || return 0
   if (( ${#_CRAWL_PARAM[@]} >= _CRAWL_MAX_PARAMS )); then
     _CRAWL_PARAM_TRUNCATED=$(( _CRAWL_PARAM_TRUNCATED + 1 ))

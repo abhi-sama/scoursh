@@ -300,6 +300,69 @@ assert_not_contains "$PARAMS" 'email|graphql' \
   'a field of an ordinary type is not an operation - FAILS under "match the literal type name Query", which misses a schema whose root is called RootQuery and is wrong for one that has a non-root type called Query'
 
 # ===========================================================================
+printf -- '\n-- IMPORT-05: import-time hardening of untrusted param name + location (crawl_engine.sh §6) --\n'
+# ===========================================================================
+# Two pre-existing defects a hostile spec/HAR/hand-written inventory can trip
+# (the api-surface-import scout report §7), fixed at the one place every
+# producer already funnels through: crawl_add_param.
+#
+#   (a) A header-location name that is not an RFC 7230 token reaches
+#       http_request_header, which `die`s the WHOLE PROCESS (exit 5,
+#       lib/http.sh:625-630) - reproduced end to end, in an isolated
+#       subprocess, in tests/suites/dast-inject-engine.sh, since that is
+#       where the crash actually happens. Proven HERE: crawl_add_param never
+#       admits the name in the first place.
+#   (b) A `location` outside docs/INVENTORY-FORMAT.md §3's seven-value
+#       vocabulary was stored as-is (only non-empty name + dedup were
+#       checked), and inject_send had no arm for it - "tested clean" for a
+#       parameter nothing was ever sent for (also reproduced in
+#       tests/suites/dast-inject-engine.sh, against a byte copy of the
+#       pre-fix file).
+
+t_case 'a header-location parameter whose name is not an RFC 7230 token is never admitted'
+crawl_inv_reset
+crawl_add_param ep1 crawl-fixture GET "$TGT/x" 'X Bad Name' header openapi ''
+assert_eq 0 "${#_CRAWL_PARAM[@]}" \
+  'the row is not stored - FAILS if crawl_add_param validates only non-empty name (its pre-IMPORT-05 shape), which is exactly what let this name become a header inventory row'
+assert_eq 1 "${_CRAWL_PARAM_INVALID_HEADER_NAME:-0}" \
+  'and the refusal is counted, so it can reach run.json as a coverage_reduction rather than vanishing silently'
+
+t_case 'a VALID header-location name is unaffected - this is a token check, not a header ban'
+crawl_inv_reset
+crawl_add_param ep1 crawl-fixture GET "$TGT/x" 'X-Trace-Id' header openapi ''
+assert_eq 1 "${#_CRAWL_PARAM[@]}" 'the row IS stored'
+assert_eq 0 "${_CRAWL_PARAM_INVALID_HEADER_NAME:-0}" 'and nothing was counted as invalid'
+
+t_case 'a non-header location is never held to the header token rule'
+crawl_inv_reset
+crawl_add_param ep1 crawl-fixture GET "$TGT/x" 'not a token either' query openapi ''
+assert_eq 1 "${#_CRAWL_PARAM[@]}" \
+  'a query parameter with the identical unfriendly name is stored anyway - FAILS if the token check applied regardless of location, which would reject query parameter names no rule requires to be tokens at all'
+
+t_case 'a location outside the frozen seven-value vocabulary is never stored'
+crawl_inv_reset
+crawl_add_param ep1 crawl-fixture GET "$TGT/x" name json openapi ''
+assert_eq 0 "${#_CRAWL_PARAM[@]}" \
+  'the row is not stored - FAILS if crawl_add_param stores whatever location string it is handed, which inject_send then has no arm for and silently drops while still reporting the send as clean'
+assert_eq 1 "${_CRAWL_PARAM_INVALID_LOCATION:-0}" 'and the refusal is counted'
+
+t_case 'every value in the frozen vocabulary is still accepted'
+crawl_inv_reset
+for loc in query body path header cookie formData graphql; do
+  name=n_$loc
+  [[ $loc == header ]] && name=X-Ok
+  crawl_add_param ep1 crawl-fixture GET "$TGT/x" "$name" "$loc" openapi ''
+done
+assert_eq 7 "${#_CRAWL_PARAM[@]}" \
+  'all seven land - FAILS if the vocabulary check is stricter than docs/INVENTORY-FORMAT.md §3 actually declares'
+assert_eq 0 "${_CRAWL_PARAM_INVALID_LOCATION:-0}" 'none of them were counted as invalid'
+
+# The end-to-end proof (a hostile spec, through a real scan.sh dast crawl
+# phase) needs $FIX and _crawl_scan, which the stubbed-transport section below
+# defines - see 'a hostile OpenAPI header-parameter name is dropped end to
+# end' further down, right after the crawl-depth case.
+
+# ===========================================================================
 printf -- '\n-- the tension-21 inventory merge (crawl_engine.sh §7) --\n'
 # ===========================================================================
 
@@ -557,6 +620,21 @@ assert_not_contains "$LOG" '/deep2.html' \
 RUNJSON=$(_slurp "$W/run-depth1/run.json")
 assert_contains "$RUNJSON" 'reason=crawl_depth_reached' \
   'and the links it cost are recorded - FAILS under "the operator set the depth, so they know", which is indistinguishable in the report from a site that really had no more pages'
+rm -f "$FIX/config/discovery.conf"
+
+t_case 'IMPORT-05: a hostile OpenAPI header-parameter name is dropped end to end, and the scan degrades rather than dies'
+cat >"$FIX/config/discovery.conf" <<EOF
+id: crawl-fixture
+openapi-path: $FIXTURES/specs/openapi-hostile-params.json
+EOF
+_crawl_scan "$W/run-hostile-header"
+assert_eq 0 "$_RC" \
+  'the run completes cleanly - FAILS under the pre-IMPORT-05 reading, in which this exact parameter reaches inject_send on a later active run and dies exit 5 (reproduced in tests/suites/dast-inject-engine.sh)'
+PARJSON=$(_slurp "$W/run-hostile-header/inventory/parameters.json")
+assert_not_contains "$PARJSON" 'X Bad Name' 'the malformed name never reaches the inventory at all'
+assert_contains "$PARJSON" 'X-Good-Name' 'but its well-formed sibling on the same operation still does'
+RUNJSON=$(_slurp "$W/run-hostile-header/run.json")
+assert_contains "$RUNJSON" 'reason=param_invalid_header_name' 'and the drop is a counted coverage_reduction, not a silent one'
 rm -f "$FIX/config/discovery.conf"
 
 # ===========================================================================

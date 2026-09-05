@@ -687,6 +687,14 @@ _crawl_run_phase() {
   if (( ${_CRAWL_EP_TRUNCATED:-0} > 0 || ${_CRAWL_PARAM_TRUNCATED:-0} > 0 )); then
     run_record coverage_gap "dast/crawl: the inventory hit its own ceiling on target '$(crawl_safe_text "$target" 80)' - ${_CRAWL_EP_TRUNCATED:-0} endpoint(s) and ${_CRAWL_PARAM_TRUNCATED:-0} parameter(s) were discovered and DISCARDED (ceilings $_CRAWL_MAX_ENDPOINTS / $_CRAWL_MAX_PARAMS), so they are absent from every later check"
   fi
+  if (( ${_CRAWL_PARAM_INVALID_LOCATION:-0} > 0 )); then
+    run_record coverage_gap "dast/crawl: $_CRAWL_PARAM_INVALID_LOCATION parameter(s) on target '$(crawl_safe_text "$target" 80)' named a location outside docs/INVENTORY-FORMAT.md §3's frozen vocabulary and were DISCARDED rather than stored, so they are absent from every later check"
+    run_record coverage_reduction "module=dast phase=crawl reason=param_invalid_location target=$(crawl_safe_text "$target" 80) count=${_CRAWL_PARAM_INVALID_LOCATION:-0}"
+  fi
+  if (( ${_CRAWL_PARAM_INVALID_HEADER_NAME:-0} > 0 )); then
+    run_record coverage_gap "dast/crawl: $_CRAWL_PARAM_INVALID_HEADER_NAME header-location parameter(s) on target '$(crawl_safe_text "$target" 80)' carried a name that is not an RFC 7230 token and were DISCARDED rather than stored, so they are absent from every later check"
+    run_record coverage_reduction "module=dast phase=crawl reason=param_invalid_header_name target=$(crawl_safe_text "$target" 80) count=${_CRAWL_PARAM_INVALID_HEADER_NAME:-0}"
+  fi
 
   # -- 7. the SPA gap, which is this ticket's own acceptance criterion -------
   if [[ -z $spec_kinds ]]; then

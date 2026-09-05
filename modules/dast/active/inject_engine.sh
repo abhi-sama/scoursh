@@ -336,8 +336,9 @@ inject_benign_value() {
 # to its benign value, so the request is valid apart from the one field under
 # test. Sets `_INJ_STATUS`, `_INJ_BODY` (up to _INJ_MAX_BODY_BYTES),
 # `_INJ_ELAPSED_NS`, and `_INJ_SENT_URL`. Returns 0 on a usable response, 1 on
-# a transport failure OR a location this engine cannot inject (graphql, or a
-# path parameter with no `{name}` slot), leaving `_INJ_STATUS` empty.
+# a transport failure OR a location this engine cannot inject (graphql, a path
+# parameter with no `{name}` slot, or a `location` outside the seven-value
+# vocabulary), leaving `_INJ_STATUS` empty.
 #
 # THE INJECTED VALUE GOES WHERE THE PARAMETER'S `location` SAYS, which is the
 # whole point of docs/INVENTORY-FORMAT.md §3's location vocabulary and
@@ -353,10 +354,19 @@ inject_send() {
   # graphql is a body/operation shape DAST-25/DAST-27 own, not a scalar this
   # engine can substitute one field of; a path segment with no template slot to
   # replace cannot be injected either. Both are honest "cannot test", not
-  # "tested and clean".
+  # "tested and clean". The trailing `*)` is the same honesty applied to
+  # anything OUTSIDE docs/INVENTORY-FORMAT.md §3's seven-value vocabulary: with
+  # no default arm here, an unrecognised `location` (a future value, a typo, a
+  # hand-written parameters.json) fell through to the dispatch loop below,
+  # matched none of its cases, sent no payload, and still returned 0 - every
+  # probe recorded it as "tested" while nothing was ever sent (IMPORT-05,
+  # report §7b). `crawl_add_param` now rejects an out-of-vocabulary location at
+  # import time, so this is a second, independent refusal for defence in depth.
   case $inj_loc in
     graphql) return 1 ;;
     path) [[ ${tmpl_path:-} == *"{$inj_name}"* || $base == *"{$inj_name}"* ]] || return 1 ;;
+    query | body | formData | header | cookie) ;;
+    *) return 1 ;;
   esac
 
   # Gather this endpoint's parameters, injecting into the one under test and
