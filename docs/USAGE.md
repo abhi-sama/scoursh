@@ -102,9 +102,20 @@ to this repository, so on a stock checkout the flag produces a
 
 ## Guided mode (`--guided`)
 
-`scan.sh --guided`, or a bare `scan.sh` with no arguments at all, launches an interactive
-questionnaire.
-It asks what to scan, then a handful of follow-up questions specific to that surface, and always
+Two invocations reach guided mode: a bare `scan.sh` with no arguments at all, and
+`scan.sh <command> --guided` (e.g. `scan.sh dast --guided`).
+Both launch the interactive questionnaire only when run on an interactive terminal - see "When it
+prompts, and when it refuses" below for the exact conditions.
+Off a terminal (or in CI), a bare `scan.sh` falls through to the ordinary `no command given` usage
+error, and `scan.sh <command> --guided` fails loudly naming the reason - see the table below for both.
+
+**`scan.sh --guided` with no command is not a valid invocation, on a terminal or off one.**
+`--guided` is parsed as a flag on whichever command precedes it, so with no command before it,
+`--guided` is read as the command itself and the parser fails immediately with
+`unknown command: '--guided'` - a plain usage error, not a guided-mode refusal, and it happens even on
+a real terminal since it never reaches the eligibility check below.
+
+The questionnaire asks what to scan, then a handful of follow-up questions specific to that surface, and always
 ends on a review screen that prints the exact command it would run and offers to run it, print it,
 or cancel.
 Nothing is scanned before that final confirmation.
@@ -119,8 +130,10 @@ interactively.
 Prompting is gated on five conditions (`lib/guide.sh`'s `guide_may_prompt`), checked in this order,
 and **all five** must hold:
 
-1. It was actually asked for - `--guided` was given, or the invocation was a bare `scan.sh` with
-   zero arguments.
+1. It was actually asked for - the invocation was a bare `scan.sh` with zero arguments, or `--guided`
+   was given as a flag on a command (`scan.sh <command> --guided`). `--guided` with no command in
+   front of it never reaches this check at all: the parser reads it as the command itself and dies
+   `unknown command: '--guided'` first (see above).
 2. Standard input is a terminal.
 3. Standard error is a terminal - `select`'s own menu and prompt text go to stderr, not stdout, so a
    run whose stderr is redirected to a logfile is exactly the case a menu must not block on.
