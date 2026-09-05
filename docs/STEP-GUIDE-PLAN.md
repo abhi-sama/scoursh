@@ -2,8 +2,9 @@
 
 This is a planning document only.
 It contains no shell code and changes no behavior.
-It exists so that the guided interactive mode - `scan.sh --guided`, a mode that asks the operator
-what to scan and composes the equivalent flags rather than requiring them to be typed - can be
+It exists so that the guided interactive mode - `--guided` (a bare `scan.sh`, or
+`scan.sh <command> --guided`), a mode that asks the operator what to scan and composes the equivalent
+flags rather than requiring them to be typed - can be
 picked up as a clean sequence of small, independently reviewable tickets (GUIDE-01 through
 GUIDE-07) the moment it is claimed, instead of being re-derived from scratch by whoever picks it up
 first, mirroring `docs/STEP5-DAST-PLAN.md`, `docs/STEP6-CLOUD-PLAN.md` and `docs/STEP7-STATE-PLAN.md`

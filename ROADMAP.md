@@ -90,7 +90,7 @@ already landed in full - see below.
    `docs/STEP6-CLOUD-PLAN.md`'s own build-order gate is now fully cleared too (step 3's tail and all
    of step 5 have both landed); it is placed last here on priority, not on any remaining technical
    block.
-4. **Guided interactive mode (`scan.sh --guided`)** - a mode that asks the operator what to scan and
+4. **Guided interactive mode** (a bare `scan.sh`, or `scan.sh <command> --guided`) - a mode that asks the operator what to scan and
    composes the equivalent flags, with a DAST affirmation flow before conservative request limits are
    lifted. It is not one of `docs/DESIGN.md` §13's ten build steps and carries no build-order gate at
    all (see [`docs/STEP-GUIDE-PLAN.md`](docs/STEP-GUIDE-PLAN.md)'s Status section), but it adds no new
