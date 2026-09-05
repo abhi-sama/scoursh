@@ -14,30 +14,29 @@ jobs:
   suite:
     strategy:
       fail-fast: false
+      # The `matrix` context is not available in a job-level `if:` (only
+      # `github`, `inputs`, `needs` and `vars` are - actionlint catches this,
+      # a real schema violation the first version of this change shipped and
+      # that silently zeroed out every job on every trigger), so narrowing a
+      # single matrix leg by trigger has to happen in the matrix itself.
+      #
+      # A `pull_request` run gets the `ubuntu-latest` entry alone: that leg
+      # (~1.5h) is what a PR waits on, by maintainer-directed change, and the
+      # macOS leg (~2.5h) - the pole every PR used to wait on - is not even
+      # generated as a job on that trigger, rather than generated and skipped.
+      # Every other trigger (a `push` to `main` or `dev`) still gets both
+      # legs, so a macOS-only regression is caught there before `dev` is
+      # promoted to `main`.
       matrix:
-        include:
-          - os: ubuntu-latest
-            userland: GNU coreutils
-          - os: macos-latest
-            userland: BSD
-    # The repository is PUBLIC, so the first half evaluates true and the job
-    # runs for real. The guard is kept rather than deleted: on a private
-    # repository hosted Actions cannot start a run here at all (a billing
-    # condition, docs/CI-RUNBOOK.md), and without this the job would fail with
-    # zero steps and a red X that has nothing to do with the code. It keeps
-    # the workflow safe to carry in a fork, or if this repository is ever made
-    # private again.
-    #
-    # The second half is a maintainer-directed merge-gate change: the ubuntu leg is
-    # what a PR waits on (~1.5h), and the macOS leg (~2.5h) is not - it is
-    # deliberately skipped on `pull_request` so it stops being the pole every
-    # PR waits on, and moves to running on every `push` to `dev` instead, so a
-    # macOS-only regression is still caught before `dev` is promoted to
-    # `main`. `!(A && B)` skips exactly the macOS leg of a pull_request run;
-    # every other combination (ubuntu on a PR, either leg on a push) is
-    # unaffected. A skipped matrix leg reports neutral, not failing, so it
-    # does not block the PR it is skipped on.
-    if: ${{ !github.event.repository.private && !(github.event_name == 'pull_request' && matrix.os == 'macos-latest') }}
+        include: ${{ github.event_name == 'pull_request' && fromJSON('[{"os":"ubuntu-latest","userland":"GNU coreutils"}]') || fromJSON('[{"os":"ubuntu-latest","userland":"GNU coreutils"},{"os":"macos-latest","userland":"BSD"}]') }}
+    # The repository is PUBLIC, so this evaluates true and the job runs for
+    # real. The guard is kept rather than deleted: on a private repository
+    # hosted Actions cannot start a run here at all (a billing condition,
+    # docs/CI-RUNBOOK.md), and without this the job would fail with zero steps
+    # and a red X that has nothing to do with the code. It keeps the workflow
+    # safe to carry in a fork, or if this repository is ever made private
+    # again.
+    if: ${{ !github.event.repository.private }}
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os }} (${{ matrix.userland }})
     steps:
@@ -186,9 +185,9 @@ jobs:
     # tension 24's actual requirement: the suite fails if a finding, a
     # fingerprint, or a findings.jsonl byte differs between the two userlands.
     # It has nothing to compare on a `pull_request` run, since the macOS leg
-    # above is deliberately skipped there - so this job is skipped too, rather
-    # than failing on a missing macOS artifact. It still runs on every `push`
-    # to `dev` or `main`, where both legs did.
+    # above is not generated there - so this job is skipped too, rather than
+    # failing on a missing macOS artifact. It still runs on every `push` to
+    # `dev` or `main`, where both legs did.
     needs: suite
     if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
