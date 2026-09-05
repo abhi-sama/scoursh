@@ -525,17 +525,27 @@ sast_scan_tree() {
 }
 
 # ---------------------------------------------------------------------------
-# 8. Gate evaluation - docs/FOUNDATION.md tension 14: "the gate itself lands
-#    in step 10 but its inputs exist from step 2".  What is implemented here
-#    is exactly what is decidable with no state/ (step 7) and no diff engine
-#    (step 10) on disk yet: every finding this run produces is `status: new`
-#    by construction (finding_new's own default, never overwritten - nothing
-#    before step 7 exists that could set anything else), so on the first-ever
-#    run tension 12's own table already says `new` is the correct status, and
-#    `--fail-on-new` therefore degenerates to exactly `--fail-on` rather than
-#    needing diff_usable / unknown-exclusion, neither of which has an input to
-#    read yet.  This function does not anticipate step 10's refinements; it
-#    computes the one case that is already fully determined.
+# 8. Gate evaluation - docs/FOUNDATION.md tension 14, refined by
+#    docs/STEP7-STATE-PLAN.md STATE-08 (tension 11 stage 7's carve-out).
+#    `--fail-on-new`'s status filter applies IF AND ONLY IF `diff_usable` is
+#    true (`$SCOURSH_DIFF_USABLE`, set by lib/diff.sh's `diff_classify_run`
+#    immediately before this function is called at every one of its four
+#    call sites - sast/run.sh, iac/run.sh, sca/run.sh, and dast/run.sh, all
+#    of which reuse this function unchanged).  When `diff_usable` is
+#    false - no prior state, an `fp_schema` mismatch, or a `scan_root_id`
+#    mismatch on a run with `path-root` findings - a finding's `status` was
+#    computed against state this run cannot trust, so the gate considers
+#    ALL findings regardless of status rather than trusting a stale-or-absent
+#    classification.  This is NOT optional wording: a bare `status == new`
+#    test happens to gate correctly on a first run or after an `fp_schema`
+#    bump (everything really is `new` then), but FAILS OPEN the moment prior
+#    state exists and is merely stale in part - a finding classified
+#    `recurring`/`unknown` off state the guard has already declared unusable
+#    would silently pass the bare test even though its status is not
+#    trustworthy this run. That is not hypothetical: it is how the fail-open
+#    shipped once, per this project's own tension register, which is why the
+#    carve-out is tested here as its own case rather than assumed to follow
+#    from the four-row classification table.
 sast_evaluate_gate() {
   local rundir=${1:-$SCOURSH_RUN_DIR}
   # SCAN_FLAGS is scan.sh's own global associative array; when this module is
@@ -581,7 +591,11 @@ sast_evaluate_gate() {
       finding_decode "$line"
       [[ ${_DF[suppressed]:-false} != true ]] || continue
       if [[ $fail_on_new == true ]]; then
-        [[ ${_DF[status]:-new} == new ]] || continue
+        # STATE-08's carve-out: only trust `status` when this run's prior
+        # state was usable at all - see this function's own header comment.
+        if [[ ${SCOURSH_DIFF_USABLE:-false} == true ]]; then
+          [[ ${_DF[status]:-new} == new ]] || continue
+        fi
       fi
       (( $(severity_rank "${_DF[severity]:-info}") >= threshold )) || continue
       (( $(_sast_confidence_rank "${_DF[confidence]:-medium}") >= conf_threshold )) || continue

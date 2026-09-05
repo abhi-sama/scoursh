@@ -5427,6 +5427,64 @@ commands only - calling it unconditionally (STATE-02's original wiring) would ha
 invocation overwrite `state/latest.json` with an empty snapshot, silently erasing the very history the
 next real scan needs to classify against.  `tests/suites/state-diff.sh` is the proof.
 
+**STATE-07 (`config/baseline.json` suppression, tension 11 stages 6 and 9) has now landed.**
+`lib/diff.sh` gains `baseline_apply RUNDIR`, called from every module's own `run.sh` between
+`diff_classify_run` (stage 5) and the gate call (stage 7) - suppression is a late ANNOTATION, never a
+diff input, so it runs strictly between classification and the gate.
+`config/baseline.json`'s frozen array schema is a bare fingerprint string (sugar for `{fingerprint,
+reason: "", added: null, expires: null}`) or the full object; `--baseline FILE` replaces the default
+file rather than adding to it.
+**An unusable baseline dies loudly** (`SCOURSH_EXIT_INPUT`) rather than degrading gracefully the way
+`lib/state.sh` does for corrupt `state/`: a typo'd `--baseline` path, an unreadable file, unparsable
+JSON, a bare top-level object, a missing `fingerprint` key, a misspelled key, a duplicate fingerprint, or
+a garbage `expires` value are all real errors, because a human-edited accept-risk list misfiring silently
+in either direction (suppressing everything, or suppressing nothing) is the exact failure this ticket
+closes - only no `--baseline` and no `config/baseline.json` on disk at all is a quiet, honest no-op.
+Every suppressed finding goes through the already-shipped `findings_mark_suppressed`
+(`suppressed=true`/`suppressed_by=<reason>`) and is persisted via `state_set_finding_suppressed`;
+`lib/report.sh` renders a collapsed "accepted risk" section and counts suppressed findings separately.
+Tension 11's four ordering hazards are each pinned: unsuppressing does not fabricate a `new` finding; a
+suppressed finding that genuinely disappears is still reported `fixed`; an entry past its own `expires`
+stops suppressing (distinctly from an entry matching nothing, `stale`); and a stale entry is reported,
+never silently dropped.
+`tests/suites/state-baseline.sh` is the proof (52 assertions at landing).
+One known, deliberate gap: a bare `{}` array element flattens to zero lines in the shared JSON-flatten
+walk it reuses, so it is silently treated as absent rather than malformed - it carries no fingerprint to
+suppress anything by, so the failure mode is "one static entry ignored," never a suppression regression.
+
+**STATE-08 (the `--fail-on-new` gate carve-out, tension 11 stage 7) has now landed.**
+`modules/sast/engine.sh`'s `sast_evaluate_gate` - reused unchanged by `modules/iac/run.sh`,
+`modules/sca/run.sh`, and `modules/dast/run.sh` - replaces its bare `status == new` test with the frozen
+predicate: the status filter applies only when `SCOURSH_DIFF_USABLE` is true (set by `lib/diff.sh`'s
+`diff_classify_run`, which runs immediately before the gate at every one of those four call sites); when
+`diff_usable` is false, the gate considers ALL findings regardless of status, exactly as this section's
+own stage-7 text specifies.
+This is the carve-out this register calls "not optional wording": a bare status test happens to gate
+correctly on a first run or right after an `fp_schema` bump (everything really is `new` then, so gating
+only `new` findings and gating everything are the same set), which is precisely why it needs a mutation
+proof and not only an ordinary fixture - the bug only shows up once prior state exists and the guard has
+already declared it unusable, and a bare test would silently let a stale-but-non-`new` finding through
+untested.
+`tests/suites/gate-mutation-proof.sh` gained a fourth mutation for exactly this: it copies
+`modules/sast/engine.sh`, textually reverts the carve-out's own `if` to `if true; then` (reproducing the
+old unconditional bare-status reading), and proves the two readings disagree on an identical
+stale-partial input - one status-`old` finding with `SCOURSH_DIFF_USABLE=false` - where the real gate
+reports `fail 1` and the mutated one silently reports `pass 0`, the exact fail-open this register already
+recorded as having shipped once.
+`tests/suites/sast.sh`'s own in-process `sast_evaluate_gate` section gained the identical case (plus the
+`SCOURSH_DIFF_USABLE=true` cases it previously left implicit, now stated explicitly since the variable is
+now load-bearing rather than merely unread).
+No exit code changed: the gate still produces `SCOURSH_EXIT_GATE` (1) under tension 14's existing
+precedence.
+**STATE-07 landed while this ticket was in review, and it was rebased onto that rather than merged
+independently - closing a gap the mutation and fixture tests above could not**: every one of them proves
+the ORDER of the suppressed-check versus the diff_usable carve-out against a hand-set `suppressed`
+field, never that the field `sast_evaluate_gate` reads is the one STATE-07's `baseline_apply` actually
+writes.  `tests/suites/state-baseline.sh` gained a case with a real `config/baseline.json`, a real
+`baseline_apply` call, `SCOURSH_DIFF_USABLE` forced false, and the gate still passing - confirmed by
+mutation (renaming the field the gate reads turns it red).
+**Step 7 is complete**: STATE-01 through STATE-08 have all landed.
+
 **Step 9 (optional engine adapters) now has a real scaffold - `docs/ADAPTERS.md` and
 `tools/vendor-engines.sh` both exist - landed out of sequence, ahead of step 3's then-remaining
 `nosql`/`ldap` packs and steps 5/6, because it cost nothing those blocked steps and ships no per-engine
@@ -5552,8 +5610,9 @@ that advanced only what needed no AWS account (see "AWS module: what exists ahea
 `AGENTS.md`), so the read-only chokepoint exists while `modules/cloud/aws/live/*.sh` and the rest of
 step 6 do not; `state/` now has its schema, writer, loader, coverage recording, and real per-run
 classification wired into every module and the `diff` command (`lib/state.sh`/`lib/diff.sh`, STATE-01
-through STATE-06, above) - only baseline suppression (STATE-07) and the `--fail-on-new` gate carve-out
-(STATE-08) remain of step 7; SARIF-01 through SARIF-06 have since landed (above), so Track
+through STATE-06, above), baseline suppression is real (STATE-07, above), and the `--fail-on-new` gate
+carries its real `diff_usable` carve-out (STATE-08, above) - **step 7 is complete**; SARIF-01 through
+SARIF-06 have since landed (above), so Track
 A of step 10's SARIF emitter is complete, documentation included, while the compliance report
 (Track B) remains unbuilt.
 

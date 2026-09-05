@@ -663,10 +663,14 @@ printf 'confidence=high\tseverity=high\tstatus=old\tsuppressed=false\n' >>"$GATE
 t_case 'sast_evaluate_gate honors a real global SCAN_FLAGS[fail-on-new]=true set directly, not via scan.sh'
 # A REAL global, declared at this file's top level (exactly the pattern
 # tests/suites/sast-history.sh already uses for the identical hazard) -
-# never scan.sh's --fail-on-new CLI flag.
+# never scan.sh's --fail-on-new CLI flag.  SCOURSH_DIFF_USABLE=true is set
+# explicitly (docs/STEP7-STATE-PLAN.md STATE-08's carve-out): this test is
+# about the status filter itself, not the diff_usable guard, which has its
+# own dedicated section below.
 declare -A SCAN_FLAGS=([fail-on-new]=true)
 SCOURSH_FAIL_ON=high
 SCOURSH_MIN_CONFIDENCE=low
+SCOURSH_DIFF_USABLE=true
 unset SCOURSH_GATE_RESULT SCOURSH_GATED_FINDINGS
 sast_evaluate_gate "$GATEGUARD_RUNDIR"
 assert_eq 1 "$SCOURSH_GATED_FINDINGS" \
@@ -678,12 +682,62 @@ t_case 'sanity: the SAME two findings with fail-on-new=false gate on both, provi
 declare -A SCAN_FLAGS=([fail-on-new]=false)
 SCOURSH_FAIL_ON=high
 SCOURSH_MIN_CONFIDENCE=low
+SCOURSH_DIFF_USABLE=true
 unset SCOURSH_GATE_RESULT SCOURSH_GATED_FINDINGS
 sast_evaluate_gate "$GATEGUARD_RUNDIR"
 assert_eq 2 "$SCOURSH_GATED_FINDINGS" \
   'without fail-on-new, status is never consulted, so both the new and the old finding gate - confirms the =1 result above is the status filter at work, not an artefact of the fixture'
 
-unset SCAN_FLAGS SCOURSH_FAIL_ON SCOURSH_MIN_CONFIDENCE GATEGUARD_RUNDIR
+# ---------------------------------------------------------------------------
+# docs/STEP7-STATE-PLAN.md STATE-08: the diff_usable carve-out itself.
+#
+# The bare `status == new` test above happens to be correct on a first run
+# or right after an `fp_schema` bump - everything really is `new` then - but
+# FAILS OPEN the moment prior state exists and is only PARTLY stale: a
+# finding classified `old` (standing in here for `recurring`/`unknown`,
+# since this suite has no real state/ to classify against) off state the
+# guard has already declared unusable would silently pass the bare test
+# even though nothing this run can vouch for that classification.  STATE-08
+# closes that by having the status filter apply ONLY when
+# `SCOURSH_DIFF_USABLE` is true; when it is false, ALL findings gate
+# regardless of status - fail-closed on stale-partial prior state, not
+# fail-open.
+t_case 'STATE-08: SCOURSH_DIFF_USABLE=false gates BOTH findings even though only one is status=new'
+declare -A SCAN_FLAGS=([fail-on-new]=true)
+SCOURSH_FAIL_ON=high
+SCOURSH_MIN_CONFIDENCE=low
+SCOURSH_DIFF_USABLE=false
+unset SCOURSH_GATE_RESULT SCOURSH_GATED_FINDINGS
+sast_evaluate_gate "$GATEGUARD_RUNDIR"
+assert_eq 2 "$SCOURSH_GATED_FINDINGS" \
+  'diff_usable=false means this run cannot trust ANY status, so the status=old finding gates too, not just status=new - fails under a bare status==new predicate (STATE-06-era), which would gate only 1 and let the status=old finding through untested'
+assert_eq fail "$SCOURSH_GATE_RESULT" \
+  'and the gate result reflects it: the run fails closed rather than silently passing on stale-partial prior state'
+
+STALE_RUNDIR=$W/run-gate-stale-partial
+rm -rf "$STALE_RUNDIR"
+mkdir -p "$STALE_RUNDIR"
+# The scenario named in the ticket itself: prior state exists and classified
+# this finding as something other than `new` (here, `old`, standing in for
+# `recurring`) but the guard has ALREADY decided that classification is not
+# usable this run (an fp_schema bump, a scan_root_id change) - so
+# SCOURSH_DIFF_USABLE is false even though a status other than `new` is on
+# disk. A naive reading ("diff_usable only matters when nothing is prior
+# state at all") would still read status=old here and pass this finding
+# through untested; this is what proves the carve-out keys off diff_usable
+# itself, not off whether a status field happens to be present.
+printf 'confidence=high\tseverity=high\tstatus=old\tsuppressed=false\n' >"$STALE_RUNDIR/findings.fields"
+SCOURSH_FAIL_ON=high
+SCOURSH_MIN_CONFIDENCE=low
+SCOURSH_DIFF_USABLE=false
+unset SCOURSH_GATE_RESULT SCOURSH_GATED_FINDINGS
+sast_evaluate_gate "$STALE_RUNDIR"
+assert_eq 1 "$SCOURSH_GATED_FINDINGS" \
+  'the ONLY finding on disk is status=old, yet it still gates under diff_usable=false - fails under a bare status==new predicate, which would gate 0 and exit clean on a run that could not actually vouch for that status'
+assert_eq fail "$SCOURSH_GATE_RESULT" \
+  'a fail-closed result, not a silent pass, on stale-partial prior state'
+
+unset SCAN_FLAGS SCOURSH_FAIL_ON SCOURSH_MIN_CONFIDENCE SCOURSH_DIFF_USABLE GATEGUARD_RUNDIR STALE_RUNDIR
 
 # =============================================================================
 printf -- '\n-- exit-code flip (this ticket''s last acceptance criterion) --\n'

@@ -274,6 +274,61 @@ assert_eq 0 "$SCOURSH_GATED_FINDINGS" 'zero findings counted toward the gate'
 unset SCAN_FLAGS SCOURSH_FAIL_ON
 
 # ---------------------------------------------------------------------------
+printf '\n-- STATE-08 integration: a REAL baseline-suppressed finding still wins under --fail-on-new, even when diff_usable=false forces the gate to consider every status --\n'
+# ---------------------------------------------------------------------------
+# docs/STEP7-STATE-PLAN.md STATE-08's carve-out makes sast_evaluate_gate
+# consider ALL findings regardless of status whenever diff_usable is false -
+# and the `suppressed` check runs BEFORE that carve-out is ever consulted.
+# Every STATE-08 test in tests/suites/sast.sh and
+# tests/suites/gate-mutation-proof.sh hand-writes `suppressed=false` (or
+# leaves it defaulted) into a synthetic findings.fields line, which proves
+# the ORDER of the two checks but never that the value sast_evaluate_gate
+# reads is the one THIS ticket's own baseline_apply actually writes - the
+# two could drift (a rename, a second copy of the field) with every one of
+# those tests still green. This exercises the real path end to end instead:
+# a real config/baseline.json, a real baseline_apply call, and only then the
+# gate - with diff_usable forced false the same way the other STATE-08
+# suites do, since the point here is not to re-prove diff_usable's own
+# semantics (they already do) but to prove real suppression survives the one
+# branch that would otherwise gate this finding on severity alone.
+
+rm -f "$DEFAULT_BASELINE"
+t_case 'a real baseline-suppressed finding stays excluded from --fail-on-new even when diff_usable=false forces the gate to ignore status'
+new_run gated-fon
+d=$SCOURSH_RUN_DIR
+occurrence_reset_unit gated_fon.py
+finding_new
+finding_set check_id SAST-BASE-GATE-FON-01
+finding_set module sast
+finding_set title t
+finding_set base_severity critical
+finding_set cwe none
+finding_set owasp none
+finding_set loc_path gated_fon.py
+finding_set loc_line 1
+finding_set cell .
+finding_set_match gF
+finding_set_evidence gF
+finding_emit
+findings_merge "$d"
+FP4=$(fp_of_check "$d" SAST-BASE-GATE-FON-01)
+write_baseline "$DEFAULT_BASELINE" "[\"$FP4\"]"
+diff_classify_run "$d"
+baseline_apply "$d"
+assert_eq true "$(suppressed_of "$d" SAST-BASE-GATE-FON-01)" \
+  'sanity: baseline_apply really did mark it suppressed on disk before the gate ever runs'
+SCOURSH_DIFF_USABLE=false
+declare -A SCAN_FLAGS=([fail-on-new]=true)
+SCOURSH_FAIL_ON=critical
+SCOURSH_MIN_CONFIDENCE=low
+export SCOURSH_FAIL_ON SCOURSH_MIN_CONFIDENCE
+sast_evaluate_gate "$d"
+assert_eq pass "$SCOURSH_GATE_RESULT" \
+  'the only finding this run is a critical finding that diff_usable=false would otherwise force into the gate regardless of status - passing proves the REAL suppressed field baseline_apply wrote on disk is what sast_evaluate_gate reads, not a copy or a stale default'
+assert_eq 0 "$SCOURSH_GATED_FINDINGS" 'zero findings counted toward the gate'
+unset SCAN_FLAGS SCOURSH_FAIL_ON SCOURSH_MIN_CONFIDENCE SCOURSH_DIFF_USABLE
+
+# ---------------------------------------------------------------------------
 printf '\n-- tension 11'"'"'s four ordering hazards --\n'
 # ---------------------------------------------------------------------------
 

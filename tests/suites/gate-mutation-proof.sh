@@ -81,8 +81,9 @@ source "$ROOT/tests/lib/assert.sh"
 
 W=$SCOURSH_SCRATCH/gate-mutation-proof
 rm -rf "$W"
-mkdir -p "$W/mut/lib"
+mkdir -p "$W/mut/lib" "$W/mut/modules/sast"
 cp "$ROOT"/lib/*.sh "$W/mut/lib/"
+cp "$ROOT/modules/sast/engine.sh" "$W/mut/modules/sast/engine.sh"
 
 FIXTURE_HTTP_SCOPE=$ROOT/tests/fixtures/config/http-scope.conf
 FIXTURE_SCOPE=$ROOT/tests/fixtures/config/scope.conf
@@ -274,6 +275,77 @@ t_case 'the MUTATED classifier (condition a short-circuited) reports it fixed in
 out=$(bash "$W/probe_findings.sh" "$W/mut/lib" "$DERIVED_RULES")
 assert_eq fixed "${out%%$'\t'*}" \
   'with condition (a) disabled, the SAME inputs now classify the dropped composite fixed (chain broken) - the exact false remediation FOUNDATION.md tension 6 documents, proving condition (a) alone is what prevented it, not some other filter in the same function'
+
+# =============================================================================
+printf '\n-- mutation 4: modules/sast/engine.sh, sast_evaluate_gate'"'"'s STATE-08 diff_usable carve-out --\n'
+# =============================================================================
+# docs/STEP7-STATE-PLAN.md STATE-08 (tension 11 stage 7): `--fail-on-new`'s
+# status filter applies IF AND ONLY IF `diff_usable` is true; when false, the
+# gate must consider ALL findings regardless of status. The pre-STATE-08
+# reading - a bare `status == new` test applied unconditionally whenever
+# `--fail-on-new` is given - happens to gate correctly on a first run (every
+# finding is `new` anyway), which is exactly why this needs a mutation proof
+# rather than an ordinary fixture: the bug only shows up once prior state
+# exists and the guard has ALREADY declared it unusable, at which point the
+# bare test silently lets a non-`new` finding through untested - the fail-open
+# this project's own tension register records as having shipped once.
+ENGINE_OLD='        if [[ ${SCOURSH_DIFF_USABLE:-false} == true ]]; then'
+ENGINE_NEW='        if true; then # MUTATED by gate-mutation-proof.sh: diff_usable carve-out removed'
+
+t_case 'mutation 4 guard'
+_assert_mutation_landed "$ROOT/modules/sast/engine.sh" "$ENGINE_OLD" \
+  'modules/sast/engine.sh sast_evaluate_gate diff_usable carve-out'
+
+content=$(cat "$W/mut/modules/sast/engine.sh")
+content=${content/"$ENGINE_OLD"/"$ENGINE_NEW"}
+printf '%s\n' "$content" >"$W/mut/modules/sast/engine.sh"
+
+t_case 'mutation 4 applied'
+n=$(grep -c -F -- "$ENGINE_OLD" "$W/mut/modules/sast/engine.sh" 2>/dev/null || true)
+assert_eq 0 "$n" 'the scratch copy no longer carries the diff_usable check unconditionally'
+
+# The probe sources the REAL lib/report.sh and lib/config.sh directly (never
+# part of this mutation) so that modules/sast/engine.sh's own guarded
+# self-relative `source "${BASH_SOURCE[0]%/*}/../../lib/..."` lines - which
+# would not resolve from a lone copy of engine.sh sitting with no lib/
+# sibling two directories up - see SCOURSH_REPORT_SOURCED/SCOURSH_CONFIG_SOURCED
+# already set and skip themselves, exactly as tests/suites/sast.sh's own
+# header comment on that mechanism describes.
+cat >"$W/probe_gate.sh" <<'PROBE_EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+REALLIB=$1 ENGINEFILE=$2 RUNDIR=$3 DIFFUSABLE=$4
+# shellcheck source=/dev/null
+source "$REALLIB/report.sh"
+# shellcheck source=/dev/null
+source "$REALLIB/config.sh"
+# shellcheck source=/dev/null
+source "$ENGINEFILE"
+declare -A SCAN_FLAGS=([fail-on-new]=true)
+SCOURSH_FAIL_ON=high
+SCOURSH_MIN_CONFIDENCE=low
+SCOURSH_DIFF_USABLE=$DIFFUSABLE
+sast_evaluate_gate "$RUNDIR"
+printf '%s %s\n' "$SCOURSH_GATE_RESULT" "$SCOURSH_GATED_FINDINGS"
+PROBE_EOF
+
+# One finding, status=old (standing in for `recurring`/`unknown`), otherwise
+# clearing every other threshold on its own - severity and confidence cannot
+# be what tells the two readings apart, only the carve-out can.
+GATE4_RUNDIR=$W/run-gate-mutation4
+rm -rf "$GATE4_RUNDIR"
+mkdir -p "$GATE4_RUNDIR"
+printf 'confidence=high\tseverity=high\tstatus=old\tsuppressed=false\n' >"$GATE4_RUNDIR/findings.fields"
+
+t_case 'the UNMUTATED gate (real modules/sast/engine.sh) still gates the status=old finding when diff_usable=false'
+out=$(bash "$W/probe_gate.sh" "$ROOT/lib" "$ROOT/modules/sast/engine.sh" "$GATE4_RUNDIR" false)
+assert_eq 'fail 1' "$out" \
+  'the real engine still fails closed on stale-partial prior state - the baseline this mutation test compares against; fails if the carve-out itself has drifted out of sync with this probe'"'"'s reading of SCOURSH_GATE_RESULT/SCOURSH_GATED_FINDINGS'
+
+t_case 'the MUTATED gate (carve-out removed, bare status==new applied unconditionally) silently lets it through'
+out=$(bash "$W/probe_gate.sh" "$ROOT/lib" "$W/mut/modules/sast/engine.sh" "$GATE4_RUNDIR" false)
+assert_eq 'pass 0' "$out" \
+  'with the carve-out removed, the IDENTICAL stale-partial run (diff_usable=false, one status=old finding) now reports pass/0 - the exact fail-open this project'"'"'s tension register records as having shipped once, proving the carve-out line alone is what prevents it'
 
 t_summary 'gate-mutation-proof' || FAILED=1
 exit "${FAILED:-0}"

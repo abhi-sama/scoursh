@@ -99,18 +99,20 @@ printf -- '\n-- profile x fixture matrix: sast against the minimal fixture repo 
 # here rather than duplicated so there is exactly one "clean" and one
 # "vuln-shaped" tree to keep in sync with the record schema and rule shapes.
 #
-# docs/DESIGN.md section 13's build order has not shipped modules/sast/run.sh
-# yet (AGENTS.md "Build order and where we are"): scan_dispatch is a logged
-# coverage_reduction no-op for every module, and scan_main hard-codes
-# `local incomplete=0 gate=0` with nothing that ever reassigns either
-# (tests/suites/exit-code-matrix.sh's own _row_gate makes the same point for
-# the precedence function). A scan of tests/fixtures/vuln - which contains a
-# real eval() sink and two distinct hardcoded AWS secrets - therefore exits 0
-# TODAY, the same as a scan of tests/fixtures/clean: there is no rule engine
-# running yet to find them. That is the CORRECT, honestly-asserted exit code
-# for THIS build, not a false negative dressed up as green; once
-# modules/sast/run.sh and the gate pipeline land, the "vuln" row below must
-# be revisited.
+# docs/STEP7-STATE-PLAN.md STATE-08 has since landed `modules/sast/run.sh`,
+# the real pattern engine, AND the `--fail-on-new` gate carve-out - this row
+# used to document a build with no rule engine at all, where a scan of
+# tests/fixtures/vuln (a real eval() sink and two hardcoded AWS secrets)
+# exited 0 for the honest reason that nothing could find them yet. That is no
+# longer true: this build DOES find them (`checks_run`/`findings.jsonl` are
+# real). It still exits 0 here for a completely different, and still
+# correct, reason - **the gate is opt-in and none of these invocations pass
+# `--fail-on`** (`SCOURSH_FAIL_ON` defaults to `none`, `sast_evaluate_gate`
+# returns `not-evaluated` unconditionally), so a real finding sitting
+# unevaluated is not a false negative. `tests/suites/sast.sh`'s own
+# "exit-code flip" section is what proves the gate actually fires when
+# `--fail-on`/`--fail-on-new` ARE given; this row is deliberately not that
+# test.
 PROFILES=(quick full compliance)
 FIXTURE_TREES=(clean vuln)
 
@@ -118,7 +120,7 @@ for _profile in "${PROFILES[@]}"; do
   for _tree in "${FIXTURE_TREES[@]}"; do
     t_case "sast --profile-scan $_profile against tests/fixtures/$_tree"
     assert_status 0 \
-      "profile=$_profile tree=$_tree exits 0 as a real subprocess - fails under a reading where --profile-scan is rejected as an unknown flag, or where scanning the vuln-shaped tree trips a gate this build does not implement yet" \
+      "profile=$_profile tree=$_tree exits 0 as a real subprocess - fails under a reading where --profile-scan is rejected as an unknown flag, or where scanning the vuln-shaped tree trips a gate even though no --fail-on was given" \
       _bin_run sast --path "$ROOT/tests/fixtures/$_tree" --profile-scan "$_profile" --out "$W/run-$_profile-$_tree"
   done
 done
