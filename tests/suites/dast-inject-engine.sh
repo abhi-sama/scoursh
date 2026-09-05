@@ -243,4 +243,142 @@ assert_eq 0 "$nul_rc" \
 assert_true "$([[ ${#_INJ_BODY} -le $_INJ_MAX_BODY_BYTES ]] && echo 0 || echo 1)" \
   "_INJ_BODY (${#_INJ_BODY} bytes) still never exceeds the cap for a body containing embedded NULs"
 
+# ===========================================================================
+printf '== dast inject_engine: IMPORT-05 - unsendable/out-of-vocabulary locations are refused, never "tested clean" ==\n'
+# ===========================================================================
+# Two pre-existing defects a hostile import can trip (the api-surface-import
+# scout report §7), closed by (a) crawl_add_param validating at IMPORT time
+# (tests/suites/dast-crawl.sh owns that half) and (b) inject_send gaining an
+# explicit `*)` refusal arm, right here.
+#
+#   (a) A header-location parameter whose NAME is not an RFC 7230 token
+#       reaches http_request_header, which `die`s the WHOLE PROCESS (exit 5,
+#       lib/http.sh:625-630). Calling that in-process would kill this whole
+#       test run, so the reproduction below is an isolated subprocess - the
+#       proof that the crash crawl_add_param exists to keep unreachable is
+#       real, not merely theoretical.
+#   (b) inject_send's location dispatch had NO DEFAULT ARM, so a `location`
+#       outside the seven-value vocabulary (docs/INVENTORY-FORMAT.md §3) fell
+#       through every case, sent nothing, and still returned 0 - every probe
+#       recorded it as "tested" while the payload was never on the wire. The
+#       reproduction sources a byte copy of THIS FILE with the two lines this
+#       ticket adds stripped back out, so it exercises the actual pre-fix
+#       logic rather than a hand-written stand-in for it.
+
+t_case '(a) reproduction: a header-location candidate whose name is not an RFC 7230 token kills the WHOLE PROCESS, exit 5'
+HDRNAME_SCRIPT=$W/hdrname-repro.sh
+cat >"$HDRNAME_SCRIPT" <<EOS
+set -Eeuo pipefail
+source "$ROOT/modules/dast/active/inject_engine.sh"
+_INJ_N=1
+_INJ_TARGET=(inj-fixture)
+_INJ_METHOD=(GET)
+_INJ_URL=(https://inj.fixture.example/probe)
+_INJ_PATH=('')
+_INJ_NAME=('X Bad Name')
+_INJ_LOCATION=(header)
+_INJ_EXAMPLE=(1)
+_INJ_EPID=(ep1)
+inject_send 0 payload
+EOS
+HDRNAME_RC=0
+bash "$HDRNAME_SCRIPT" >"$W/hdrname-repro.out" 2>&1 || HDRNAME_RC=$?
+assert_eq 5 "$HDRNAME_RC" \
+  'a header parameter name carrying a space really does die exit 5 when it reaches inject_send - this is the crash modules/dast/crawl_engine.sh:crawl_add_param must keep unreachable from any spec, HAR, or hand-written inventory; the fix is import-time validation, never a change to http_request_header itself, which is correct as it stands'
+assert_contains "$(cat "$W/hdrname-repro.out")" 'not a valid HTTP header field name' \
+  'and the reason is the one lib/http.sh already gives, unmodified by this ticket'
+
+t_case '(b) reproduction against a byte copy of the file as it shipped before IMPORT-05: an out-of-vocabulary location returns 0 with the payload sent nowhere'
+PREROOT=$W/pre-import05-root
+rm -rf "$PREROOT"
+mkdir -p "$PREROOT"
+cp -RL "$ROOT/lib" "$PREROOT/lib"
+cp -RL "$ROOT/modules" "$PREROOT/modules"
+# Strip the two lines THIS TICKET adds, reproducing the shipped pre-fix
+# dispatch exactly rather than trusting a hand-written stand-in for it.
+sed -i.bak \
+  -e '/query | body | formData | header | cookie) ;;/d' \
+  -e '/\*) return 1 ;;/d' \
+  "$PREROOT/modules/dast/active/inject_engine.sh"
+rm -f "$PREROOT/modules/dast/active/inject_engine.sh.bak"
+VOCAB_ARM_COUNT=$(grep -c 'query | body | formData | header | cookie) ;;' "$PREROOT/modules/dast/active/inject_engine.sh" || true)
+assert_eq 0 "${VOCAB_ARM_COUNT:-0}" 'sanity: the reproduction copy really lost the vocabulary arm this ticket adds'
+DEFAULT_ARM_COUNT=$(grep -c '\*) return 1 ;;' "$PREROOT/modules/dast/active/inject_engine.sh" || true)
+assert_eq 0 "${DEFAULT_ARM_COUNT:-0}" 'sanity: and the default-refusal arm too'
+
+PREREQLOG=$PREROOT/requests.log
+: >"$PREREQLOG"
+PRESCRIPT=$W/prefix-repro.sh
+cat >"$PRESCRIPT" <<'EOS'
+set -Eeuo pipefail
+PATCHROOT=$1
+REQLOG=$2
+source "$PATCHROOT/modules/dast/active/inject_engine.sh"
+cat >"$PATCHROOT/scope.conf" <<'EOF'
+id: repro-fixture
+base-url: https://repro.fixture.invalid/
+notes: IMPORT-05 pre-fix reproduction target. Never dialled - the transport is stubbed.
+EOF
+http_scope_load "$PATCHROOT/scope.conf"
+config_scope_load "$PATCHROOT/scope.conf"
+cat >"$PATCHROOT/scanner.conf" <<'EOF'
+id: scanner
+requests-per-second: 5000
+request-budget: 20000
+circuit-breaker-failures: 100000
+EOF
+config_scanner_load "$PATCHROOT/scanner.conf"
+_repro_resolve() {
+  case $1 in
+    repro.fixture.invalid) printf '203.0.113.77' ;;
+    *) return 1 ;;
+  esac
+}
+SCOURSH_HTTP_RESOLVE=_repro_resolve
+_repro_transport() {
+  local method=$1 path=$5
+  printf '%s %s\n' "$method" "$path" >>"$REQLOG"
+  printf '200\n\ntext/html\n'
+}
+SCOURSH_HTTP_TRANSPORT=_repro_transport
+_INJ_N=1
+_INJ_TARGET=(repro-fixture)
+_INJ_METHOD=(GET)
+_INJ_URL=(https://repro.fixture.invalid/probe)
+_INJ_PATH=('')
+_INJ_NAME=(q)
+_INJ_LOCATION=(json)
+_INJ_EXAMPLE=(1)
+_INJ_EPID=(ep1)
+rc=0
+inject_send 0 'PAYLOAD-MARKER' || rc=$?
+printf 'RC=%s\n' "$rc"
+printf 'SENT_URL=%s\n' "$_INJ_SENT_URL"
+EOS
+PREOUT=$W/prefix-repro.out
+bash "$PRESCRIPT" "$PREROOT" "$PREREQLOG" >"$PREOUT" 2>&1
+PRE_RC=$(grep '^RC=' "$PREOUT" | cut -d= -f2)
+assert_eq 0 "$PRE_RC" \
+  'the pre-fix code returns 0 for an out-of-vocabulary location - reported as a normal, tested send'
+assert_contains "$(cat "$PREREQLOG")" 'GET /probe' \
+  'and a real request WAS sent - this is not "nothing happened", it is "something happened and was called clean"'
+assert_not_contains "$(cat "$PREOUT")$(cat "$PREREQLOG")" 'PAYLOAD-MARKER' \
+  'yet the payload itself is nowhere in what was sent or logged - the exact "tested clean" false negative the scout report describes'
+
+t_case '(b) hardened: the shipped inject_send refuses an out-of-vocabulary location - "cannot test", never "tested clean"'
+_inj_set_candidate GET json
+: >"$REQ_LOG"
+_inj_noop_transport() {
+  local method=$1 path=$5
+  printf '%s %s\n' "$method" "$path" >>"$REQ_LOG"
+  printf '200\n\ntext/html\n'
+}
+SCOURSH_HTTP_TRANSPORT=_inj_noop_transport
+json_rc=0
+inject_send 0 'PAYLOAD-MARKER' || json_rc=$?
+assert_eq 1 "$json_rc" \
+  'the call is refused (return 1) - FAILS under the pre-fix reading proven above, which returned 0'
+assert_eq '' "$(cat "$REQ_LOG")" \
+  'and NO request was sent at all - FAILS under the pre-fix reading proven above, which sent a real request with the payload nowhere in it'
+
 t_summary 'dast-inject-engine'
