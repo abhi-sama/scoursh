@@ -1,0 +1,9 @@
+[
+  "replace-with-a-real-fingerprint-copied-from-findings-json",
+  {
+    "fingerprint": "another-real-fingerprint-copied-from-findings-json",
+    "reason": "accepted: internal-only, tracked in TICKET-123",
+    "added": "2026-01-01",
+    "expires": "2026-12-31"
+  }
+]

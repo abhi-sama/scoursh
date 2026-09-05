@@ -17,7 +17,7 @@ It has two values, sometimes followed by a short qualifier:
 An inert flag is not a usage error and does not print a warning.
 It is accepted, the run exits normally, and in most cases nothing in `run.json` records that the flag
 was ever given.
-That is the trap this column exists to close: `--baseline /typo/path.json` and `--jobs 8` both
+That is the trap this column exists to close: `--jobs 8` and `--lang py,js,go,java` both
 look exactly like they worked.
 
 [Accepted but not yet implemented](#accepted-but-not-yet-implemented) gives the precise behaviour of
@@ -88,7 +88,7 @@ scan.sh <command> [options]
 | `--fail-on` | `critical\|high\|medium\|low\|info\|none` | from `config/scanner.conf` (`none`) | live |
 | `--fail-on-new` | boolean; **requires `--fail-on`**, usage error otherwise | off | inert |
 | `--min-confidence` | `high\|medium\|low` | from `config/scanner.conf` (`low`) | live |
-| `--baseline FILE` | path | none | inert |
+| `--baseline FILE` | path | none | live |
 | `--out DIR` | path | `reports/<timestamp>` | live |
 | `--guided` | boolean | off | live |
 | `--print-command` | boolean | off | live |
@@ -278,14 +278,17 @@ Point a code-scanning CI step at that file today - there is nothing further to w
   `cell`, `firstSeen`/`lastSeen`.
 - **`result.suppressions[]`** - present with `kind: "external"` for a finding suppressed by
   `config/baseline.json`, never a dropped result, so a suppressed-but-still-real finding stays visible
-  to a consumer that wants to see accepted risk. This array is always empty today: baseline
-  suppression itself is not built yet (`--baseline FILE` is inert - see below). The mapping is written
-  and tested against a hand-authored fixture, so it emits correctly the moment baseline suppression
-  lands; nothing about the SARIF document itself needs to change.
-- **`result.properties.status`** - always `"new"` today, for the same not-yet-built reason: the
-  new/recurring/fixed classification needs persistent run state
-  ([`docs/STEP7-STATE-PLAN.md`](STEP7-STATE-PLAN.md)). `partialFingerprints` is what lets a consumer
-  do its own new/fixed tracking in the meantime.
+  to a consumer that wants to see accepted risk. Baseline suppression is live (`--baseline FILE` - see
+  below), so this array is now populated for real by the same finding data every other emitter reads;
+  it was written and tested against a hand-authored fixture ahead of that landing, so nothing about
+  the SARIF document itself needed to change once it did.
+- **`result.properties.status`** - `new` or `recurring`, the real classification against persistent
+  run state ([`docs/STEP7-STATE-PLAN.md`](STEP7-STATE-PLAN.md)) for every finding this run actually
+  produced. `fixed`/`unknown` never appear here: those describe a PRIOR finding absent from this run,
+  which has no SARIF result of its own to carry a status - see `run.json`'s own `counts.by_status` and
+  the Markdown/HTML report's "Since last scan" section for that half of the picture.
+  `partialFingerprints` is still what lets a consumer do its own tracking independent of this tool's
+  own `state/`.
 - **`runs[0].artifacts[]` / `runs[0].invocations[0]`** - the generated location artifacts this run
   actually wrote (see below), and the run-level audit facts `run.json` already records
   (`startTimeUtc`/`endTimeUtc`/`executionSuccessful`).
@@ -366,13 +369,27 @@ Until it does, keep the output directory a run produced, or scan again.
 
 ### `--baseline FILE`
 
-Accepted as a value flag with no validation beyond being non-empty, and then never read.
-A path that does not exist is accepted with no error and no warning, the file is never opened, and
-the value is not recorded in `run.json`.
-Nothing is suppressed by it.
-The concrete failure this invites: a CI pipeline with a typo in the baseline path gets a clean exit
-and no trace anywhere that suppression never ran.
-Baseline suppression needs the not-yet-built `state/` layer.
+Suppresses findings whose fingerprint matches an entry in `config/baseline.json`, or in FILE when
+`--baseline` is given (which REPLACES the default file rather than adding to it).
+An entry is either a bare fingerprint string, or an object
+`{"fingerprint": "…", "reason": "…", "added": "YYYY-MM-DD", "expires": "YYYY-MM-DD"}`
+(`docs/FOUNDATION.md` tension 11's frozen schema; a bare string is `reason: ""`, `added`/`expires:
+null`).
+Suppression is an annotation, never a deletion: a matched finding still appears in every output
+format, with `suppressed: true` and its reason, in a collapsed "accepted risk" section, and is
+excluded from every count and from `--fail-on`/`--fail-on-new`.
+An entry whose `expires` date has passed stops suppressing, and the report says so; an entry that
+matches no finding this run is reported `stale` in `run.json` and in the report, which is also how a
+finding that was baselined and then genuinely fixed is still reported `fixed` rather than silently
+staying suppressed forever.
+The concrete failure this used to invite, now closed: a `--baseline` path that does not exist is a
+real error (`exit 4`), not a clean exit with suppression silently never having run; a default
+`config/baseline.json` that is simply absent - the ordinary case for a fresh checkout - is not an
+error at all.
+A baseline file that exists but cannot be read, or is not well-formed, is also a real error, rather
+than being treated as an empty baseline - unlike this tool's own `state/`, which degrades gracefully
+on corruption, because `config/baseline.json` is a human-edited accept-risk list and silently
+misreading it, in either direction, is the one outcome this mechanism exists to rule out.
 
 ### `--jobs N` and the `jobs` config key
 

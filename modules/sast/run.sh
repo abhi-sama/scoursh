@@ -43,15 +43,16 @@
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "${BASH_SOURCE[0]%/*}/engine.sh"
-# docs/STEP7-STATE-PLAN.md STATE-06: diff_classify_run (called below, between
-# derive_findings and sast_evaluate_gate) lives in lib/diff.sh, sourced here
-# rather than from modules/sast/engine.sh - that file is reached by every
-# DAST phase test too, and lib/diff.sh's own lib/state.sh edge is genuinely
-# new content there (not a diamond a back-edge cut could remove for free),
-# which pushed tests/suites/dast-methods.sh over its shellcheck -x memory
-# budget and killed a CI run.  Confining this source line to the four run.sh
-# files that actually call diff_classify_run keeps that cost off every
-# phase-level test that has nothing to do with it.
+# docs/STEP7-STATE-PLAN.md STATE-06/STATE-07: diff_classify_run and
+# baseline_apply (called below, between derive_findings and
+# sast_evaluate_gate) both live in lib/diff.sh, sourced here rather than from
+# modules/sast/engine.sh - that file is reached by every DAST phase test too,
+# and lib/diff.sh's own lib/state.sh edge is genuinely new content there (not
+# a diamond a back-edge cut could remove for free), which pushed
+# tests/suites/dast-methods.sh over its shellcheck -x memory budget and
+# killed a CI run.  Confining this source line to the four run.sh files that
+# actually call these two functions keeps that cost off every phase-level
+# test that has nothing to do with either.
 # Guarded exactly like modules/sast/engine.sh's own lib/report.sh/lib/config.sh
 # sources above: a real `scan.sh` subprocess has ALREADY sourced lib/diff.sh
 # via its own absolute path before scan_dispatch ever runs, and skipping the
@@ -185,6 +186,10 @@ _sast_run_module() {
   # strictly after derive (4) and before the gate (7) - lib/diff.sh's own
   # header states the frozen stage order this call site follows.
   diff_classify_run "$SCOURSH_RUN_DIR"
+  # docs/STEP7-STATE-PLAN.md STATE-07: suppress (tension 11 stage 6) runs
+  # strictly after classify (5) and before the gate (7) - lib/diff.sh's own
+  # baseline_apply already documents why it lives beside diff_classify_run.
+  baseline_apply "$SCOURSH_RUN_DIR"
   sast_evaluate_gate "$SCOURSH_RUN_DIR"
   report_all "$SCOURSH_RUN_DIR"
 }

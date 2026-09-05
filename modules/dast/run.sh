@@ -330,7 +330,7 @@ _dast_run_module() {
     _dast_record_coverage "$target" "$_dast_checks_run_before"
   done
 
-  # The same four calls, in the same order, that modules/sast/run.sh and
+  # The same five calls, in the same order, that modules/sast/run.sh and
   # modules/iac/run.sh both end with.  They run even though this module emitted
   # nothing: findings_merge and derive_findings are no-ops over an empty shard
   # set, sast_evaluate_gate is what makes `--fail-on` apply to DAST findings
@@ -345,6 +345,9 @@ _dast_run_module() {
   # strictly after derive (4) and before the gate (7) - lib/diff.sh's own
   # header states the frozen stage order this call site follows.
   diff_classify_run "$SCOURSH_RUN_DIR"
+  # docs/STEP7-STATE-PLAN.md STATE-07: suppress (tension 11 stage 6) runs
+  # strictly after classify (5) and before the gate (7).
+  baseline_apply "$SCOURSH_RUN_DIR"
   sast_evaluate_gate "$SCOURSH_RUN_DIR"
   report_all "$SCOURSH_RUN_DIR"
 }

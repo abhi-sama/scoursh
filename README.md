@@ -508,10 +508,15 @@ the tool rather than in a pipeline:
   result reads `status: "new"` and `suppressions[]` is always empty, because both need the
   not-yet-built persistent run state and baseline suppression (see the `state/` items below);
   `partialFingerprints` is what lets a consumer do its own tracking in the meantime.
-- **`--baseline FILE` is parsed and never read.**
-  Baseline suppression arrives with persistent run state.
-  A path that does not exist is accepted with no error, no warning, and no record of the flag in
-  `run.json`.
+- **`--baseline FILE` is live.**
+  `config/baseline.json` (or the file `--baseline` names, which replaces the default rather than
+  adding to it) suppresses matching findings by exact fingerprint: `suppressed: true` plus the
+  entry's own reason, never a deletion, and never counted toward `--fail-on`/`--fail-on-new`. A
+  path that does not exist is a real error when given explicitly (`--baseline /typo/path.json`
+  now exits non-zero rather than silently doing nothing); a missing default `config/baseline.json`
+  is the ordinary, no-baseline-configured case. An expired entry stops suppressing and an entry
+  matching nothing this run is reported `stale`, both in `run.json` and in the report, so a baseline
+  that has drifted from reality is visible rather than silently wrong in either direction.
 - **`--fail-on-new` currently behaves identically to `--fail-on`.**
   Every finding is emitted with `status=new` until there is persistent run state to compare a run
   against, so there is nothing yet for it to narrow the gate down to.
@@ -541,9 +546,14 @@ every passive/safe-active/injection/application-layer check `docs/STEP5-DAST-PLA
 the tension-16 rate limiter/budget/circuit breaker every request pays. What remains, in priority
 order:
 
-1. **Persistent run state** (`state/`) - needed before `--baseline` suppression, a `--fail-on-new` that
-   means anything, and the `diff`/`report` subcommands do real work; all are currently no-ops.
-   A full ticket plan exists here too ([`docs/STEP7-STATE-PLAN.md`](docs/STEP7-STATE-PLAN.md)).
+1. **Persistent run state** (`state/`) **is done**, and so is what it unblocks: every normal run
+   automatically classifies findings `new`/`recurring`/`fixed`/`unknown` against the prior one, the
+   `scan.sh diff --against <dir>` subcommand does real work, and `--baseline FILE` suppression is
+   live (see [Known gaps](#known-gaps) above). What remains of step 7 is `--fail-on-new`'s own
+   real carve-out - it exists as a flag today but still behaves identically to `--fail-on`, since it
+   has not yet been wired to the `diff_usable` fail-closed rule the rest of the mechanism now
+   computes. See [`docs/STEP7-STATE-PLAN.md`](docs/STEP7-STATE-PLAN.md)'s own status table for the
+   full per-ticket detail.
 2. **The compliance-mapping report.**
    The SARIF half of step 10 is done - see [`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md)'s
    status table (SARIF-01 through SARIF-06, all landed).

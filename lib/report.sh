@@ -242,8 +242,9 @@ report_run_json() {
     # why").  `not-evaluated` is the honest value for a run that never
     # reached classification at all (docs/DESIGN.md §5's `report` command,
     # still a stub - STATE-06's own scope is `diff` and automatic
-    # classification only).  Last field: no trailing comma.
-    printf '  "diff_guard": %s\n' "$(json_string "${SCOURSH_DIFF_GUARD:-not-evaluated}")"
+    # classification only).
+    printf '  "diff_guard": %s,\n' "$(json_string "${SCOURSH_DIFF_GUARD:-not-evaluated}")"
+    _report_baseline_json "$rundir"
     printf '}\n'
   } >"$rundir/run.json"
 }
@@ -353,6 +354,60 @@ _report_config_json() {
   done
   printf '\n    }\n'
   printf '  },\n'
+}
+
+# The run's baseline-suppression object (docs/STEP7-STATE-PLAN.md STATE-07;
+# tension 11 stages 6 and 9).  Rendered on EVERY run, not only one that
+# actually used a baseline, for the identical reason `_report_authorization_json`
+# above always renders: an absent key would be ambiguous between "no baseline
+# configured" and "this version does not record it".  `lib/diff.sh`'s
+# `baseline_apply` writes these five meta files fresh on every call (it is
+# called once per module for `scan.sh all`, over the SAME growing
+# findings.fields, and only the LAST call's counts are authoritative - its own
+# header states why they are truncated rather than appended), so a run that
+# never reached it at all (any command besides sast/iac/sca/dast/all) reads
+# every field here as its honest empty default.
+#
+# `stale` (tension 11: "an entry that matched nothing this run is reported as
+# stale ... so the list shrinks under normal use") and `expired` (tension 11:
+# "after that date the entry stops suppressing and the report says so") are
+# each rendered as their own object per entry, never a bare fingerprint
+# string, because the `reason` (and, for an expired entry, the `expires`
+# date) is exactly what an operator needs to decide whether to prune it -
+# `_meta_array`'s plain-string rendering is the wrong shape for that reason,
+# not reused here.
+_report_baseline_json() {
+  local rundir=$1
+  printf '  "baseline": {\n'
+  printf '    "used": %s,\n' "$(json_bool "$(_meta_first "$rundir" baseline_used)")"
+  printf '    "file": %s,\n' "$(json_string "$(_meta_first "$rundir" baseline_file)")"
+  printf '    "entries": %s,\n' "$(json_number "$(_meta_first "$rundir" baseline_entries)")"
+  local first=1 fp reason expires
+  printf '    "stale": ['
+  if [[ -r $rundir/meta/baseline_stale ]]; then
+    while IFS=$'\x1f' read -r fp reason; do
+      [[ -n $fp ]] || continue
+      (( first )) || printf ','
+      first=0
+      printf '\n      {"fingerprint":%s,"reason":%s}' "$(json_string "$fp")" "$(json_string "$reason")"
+    done <"$rundir/meta/baseline_stale"
+  fi
+  (( first )) || printf '\n    '
+  printf '],\n'
+  first=1
+  printf '    "expired": ['
+  if [[ -r $rundir/meta/baseline_expired ]]; then
+    while IFS=$'\x1f' read -r fp reason expires; do
+      [[ -n $fp ]] || continue
+      (( first )) || printf ','
+      first=0
+      printf '\n      {"fingerprint":%s,"reason":%s,"expires":%s}' \
+        "$(json_string "$fp")" "$(json_string "$reason")" "$(json_string "$expires")"
+    done <"$rundir/meta/baseline_expired"
+  fi
+  (( first )) || printf '\n    '
+  printf ']\n'
+  printf '  }\n'
 }
 
 _meta_first() {
@@ -624,6 +679,29 @@ _md_limitations() {
       any=1
       printf -- '- declared reduced coverage: %s\n' "$line"
     done <"$rundir/meta/coverage_reduction"
+  fi
+  # docs/STEP7-STATE-PLAN.md STATE-07; tension 11 "an entry that matched
+  # nothing this run is reported as stale ... so the list shrinks under
+  # normal use" and "after that date the entry stops suppressing and the
+  # report says so".  A stale entry is ALSO what makes tension 11's "a
+  # baselined finding that gets fixed is still reported fixed, with a note to
+  # prune the entry" true in the report a human reads, not only in run.json.
+  local fp reason expires
+  if [[ -r $rundir/meta/baseline_stale ]]; then
+    while IFS=$'\x1f' read -r fp reason; do
+      [[ -n $fp ]] || continue
+      any=1
+      printf -- '- baseline entry matched nothing this run, consider removing it: `%s`%s\n' \
+        "$fp" "${reason:+ (reason: $reason)}"
+    done <"$rundir/meta/baseline_stale"
+  fi
+  if [[ -r $rundir/meta/baseline_expired ]]; then
+    while IFS=$'\x1f' read -r fp reason expires; do
+      [[ -n $fp ]] || continue
+      any=1
+      printf -- '- baseline entry expired on %s and no longer suppresses its finding: `%s`%s\n' \
+        "$expires" "$fp" "${reason:+ (reason: $reason)}"
+    done <"$rundir/meta/baseline_expired"
   fi
   if [[ -r $rundir/meta/skipped_checks ]]; then
     while IFS= read -r line; do
@@ -1054,6 +1132,26 @@ _html_limitations() {
       any=1
       printf '<li>declared reduced coverage: %s</li>\n' "$(html_escape "$line")"
     done <"$rundir/meta/coverage_reduction"
+  fi
+  # docs/STEP7-STATE-PLAN.md STATE-07 - see _md_limitations's own comment on
+  # this identical pair of blocks for the tension-11 wording both mirror.
+  local fp reason expires
+  if [[ -r $rundir/meta/baseline_stale ]]; then
+    while IFS=$'\x1f' read -r fp reason; do
+      [[ -n $fp ]] || continue
+      any=1
+      printf '<li>baseline entry matched nothing this run, consider removing it: <code>%s</code>%s</li>\n' \
+        "$(html_escape "$fp")" "$([[ -n $reason ]] && printf ' (reason: %s)' "$(html_escape "$reason")")"
+    done <"$rundir/meta/baseline_stale"
+  fi
+  if [[ -r $rundir/meta/baseline_expired ]]; then
+    while IFS=$'\x1f' read -r fp reason expires; do
+      [[ -n $fp ]] || continue
+      any=1
+      printf '<li>baseline entry expired on %s and no longer suppresses its finding: <code>%s</code>%s</li>\n' \
+        "$(html_escape "$expires")" "$(html_escape "$fp")" \
+        "$([[ -n $reason ]] && printf ' (reason: %s)' "$(html_escape "$reason")")"
+    done <"$rundir/meta/baseline_expired"
   fi
   if [[ -r $rundir/meta/skipped_checks ]]; then
     while IFS= read -r line; do

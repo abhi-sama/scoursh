@@ -121,6 +121,9 @@ _iac_run_module() {
   # strictly after derive (4) and before the gate (7) - lib/diff.sh's own
   # header states the frozen stage order this call site follows.
   diff_classify_run "$SCOURSH_RUN_DIR"
+  # docs/STEP7-STATE-PLAN.md STATE-07: suppress (tension 11 stage 6) runs
+  # strictly after classify (5) and before the gate (7).
+  baseline_apply "$SCOURSH_RUN_DIR"
   # sast_evaluate_gate (modules/sast/engine.sh) is reused unchanged rather
   # than forked into an "iac_evaluate_gate": despite its name it is already
   # module-agnostic - it re-reads every finding currently in
