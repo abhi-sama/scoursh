@@ -1,0 +1,50 @@
+# scoursh discovery input - rules/RULE-FORMAT.md §9.6.3
+#
+# OPTIONAL for every scan type; only `dast` reads it. A crawl-only DAST run
+# works with no config/discovery.conf at all - that is the ordinary case,
+# never an error - but a client-rendered (SPA) application's real routes and
+# XHR/fetch endpoints are invisible to a static crawl (docs/DESIGN.md §7.5).
+# This file feeds the crawler an application's REAL API surface from a
+# document you already have: an OpenAPI/Swagger document, a GraphQL schema, a
+# Postman collection, or a HAR capture of real browser traffic. All four are
+# independent and optional - supply only the ones you have.
+#
+# Copy this file to config/discovery.conf and edit it.
+#
+# WHAT THIS FILE CAN NEVER DO: name a host. Every key below is either a LOCAL
+# FILE PATH or a bare integer/glob; there is no `base-url`, `host`, or
+# `extra-host` key anywhere in this schema (contrast config/scope.conf.example,
+# which is the ONLY place a target's host is ever named). A URL named INSIDE
+# a supplied document - an OpenAPI `servers[].url`, a Postman request URL, a
+# HAR entry's `request.url` - is discarded down to its PATH; scoursh rebuilds
+# every request on the `base-url` your config/scope.conf already authorised
+# for this target. A spec that names a different host, or a HAR captured
+# against a CDN or a third-party analytics endpoint, can never widen scope to
+# it (docs/FOUNDATION.md tension 19; pinned by tests/suites/dast-crawl.sh's
+# "a specification's own host is never scanned" cases). This file decides
+# WHAT to test on a target you already authorised, never WHICH host to test.
+#
+# ONE RECORD PER TARGET. `id` MUST name a target your config/scope.conf
+# already defines (rules/RULE-FORMAT.md E080).
+#
+# Every path below is resolved relative to scoursh's OWN INSTALL ROOT - not
+# the scan target, not your current working directory - when it is not
+# already absolute; the same convention every other config/*.conf path key
+# follows. Nothing below is a default and no host or path named here exists:
+# every value is a placeholder you replace with your own.
+
+id: example-target
+openapi-path: specs/example-target-openapi.json
+graphql-schema-path: specs/example-target-schema.graphql
+postman-path: specs/example-target.postman_collection.json
+har-path: captures/example-target.har
+crawl-depth: 3
+include-path: /api/**
+include-path: /rest/**
+exclude-path: /admin/**
+notes: Every endpoint and parameter a specification or capture contributes
+  lands in the SAME inventory (reports/<run>/inventory/endpoints.json and
+  parameters.json) a plain crawl produces, tagged with the source it came
+  from - a spec and a crawl of the same target are additive, not either/or.
+  See docs/USAGE.md's "config/discovery.conf" section for how to obtain each
+  document type, and rules/RULE-FORMAT.md §9.6.3 for the frozen field list.

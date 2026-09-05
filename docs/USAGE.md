@@ -604,12 +604,12 @@ overstates what the flag proved.
 
 ## Configuration
 
-Both config files use the same on-disk record format: blank-line-separated `key: value` blocks, one
+These config files use the same on-disk record format: blank-line-separated `key: value` blocks, one
 `#`-prefixed comment per line, no escaping in values.
 Never hand-edit these with tooling that assumes shell syntax - the loader parses them as data and never
 `source`s them.
-Neither file is committed to this repository; `config/` ships `scope.conf.example` and
-`scanner.conf.example`, which you copy and edit.
+None of them is committed to this repository; `config/` ships `scope.conf.example`,
+`scanner.conf.example`, `auth.conf.example`, and `discovery.conf.example`, which you copy and edit.
 
 ### `config/scope.conf` - required only for `dast`
 
@@ -627,6 +627,55 @@ One record per target.
 Every key here that affects behaviour is live: `id`, `base-url`, `extra-host`, `allow-subdomains`, and
 `allow-private-addresses` are all consumed by the scope gate, which is enforced today.
 `notes` is free text that no code reads, exactly as intended.
+
+### `config/discovery.conf` - optional; feeds `dast`'s crawler an application's real API surface
+
+A DAST scan crawls whatever it can reach by following links, which is enough for a server-rendered
+site but blind to a client-rendered (SPA) application's routes and its XHR/fetch endpoints - they
+are simply never linked from any HTML the crawler can see.
+`config/discovery.conf` closes that gap by importing a document you already have, so the checks that
+need a real parameter to test - the whole `active/*.sh` injection family - have one.
+An absent file is the ordinary case, not an error: it means "crawl with the documented defaults", and
+a run without one records why in `run.json` (`reason=no_specification_supplied`) rather than silently
+reporting a thin surface as complete.
+
+One record per target, `id` matching a `config/scope.conf` target you have already authorised.
+
+| Key | Required | Repeatable | Default | Value |
+|---|---|---|---|---|
+| `id` | yes | no | - | Must name a `config/scope.conf` target. Must be the first field. |
+| `openapi-path` | no | no | none | Path to an OpenAPI or Swagger document (JSON or YAML; 2.0, 3.0, 3.1). |
+| `graphql-schema-path` | no | no | none | Path to a GraphQL schema. |
+| `postman-path` | no | no | none | Path to a Postman collection. |
+| `har-path` | no | no | none | Path to a HAR capture of real browser traffic. |
+| `crawl-depth` | no | no | `3` | Non-negative integer; how many link-hops the static crawl follows. |
+| `include-path` | no | yes | none (all reachable paths) | Glob, matched against the target-relative request path, of paths the crawl is allowed to request. |
+| `exclude-path` | no | yes | none | Same glob syntax; a match here is never requested, even if `include-path` would also match it. |
+| `notes` | no | no (multi-line) | empty | Free text. |
+
+All four document keys are independent - supply only the ones you have - and every one of them adds
+to the *same* inventory (`reports/<run>/inventory/endpoints.json` and `parameters.json`) a plain crawl
+already writes, so a supplied spec and a crawl of the same target are additive, not either/or.
+Every path is resolved relative to scoursh's own install root, not the scan target and not your
+current working directory, when it is not already absolute.
+
+**How to obtain one.** An OpenAPI/Swagger document is usually served by the application itself (a
+common path is `/openapi.json`, `/swagger.json`, or embedded in a Swagger UI page's own JavaScript);
+export a GraphQL schema with any GraphQL introspection tool pointed at your own authorised instance;
+export a Postman collection from Postman itself; and a HAR capture comes from your browser's own
+DevTools Network panel ("Save all as HAR") while you exercise the application by hand, or from
+"Copy as HAR" on Chrome's Network tab.
+Whichever you use, capture it against a system you are authorised to scan - this file supplies
+*content* scoursh reads from local disk, never a live fetch of your own.
+
+**Only paths, never hosts.** This schema has no `base-url`, `host`, or `extra-host` key - the host a
+target is scanned on is decided exclusively by `config/scope.conf` (above), and this file cannot
+override it. A URL that appears *inside* a supplied document - an OpenAPI `servers[].url`, a Postman
+request's absolute URL, a HAR entry's `request.url` - is read for its **path only**; its host is
+discarded and every request scoursh actually sends is rebuilt on the target's own authorised
+`base-url`. A spec that names a production host, or a HAR capturing a call to a CDN or a third-party
+analytics endpoint, therefore contributes at most a path to test on the host you already
+authorised - it can never become a way to scan a host you did not (docs/FOUNDATION.md tension 19).
 
 ### `config/scanner.conf` - optional; an absent file behaves as if it contained only `id: scanner`
 

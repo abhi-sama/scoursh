@@ -330,7 +330,7 @@ printf '\n-- the shipped record files parse and validate --\n'
 # ---------------------------------------------------------------------------
 t_case 'repository record files'
 for f in rules/redaction.rules data/severity-rubric.conf \
-  config/scanner.conf.example config/scope.conf.example \
+  config/scanner.conf.example config/scope.conf.example config/discovery.conf.example \
   tests/fixtures/rules/fixture.rules tests/fixtures/rules/context.rules \
   tests/fixtures/rules/derived.rules tests/fixtures/config/scope.conf; do
   records_reset_diagnostics
@@ -347,6 +347,30 @@ for f in rules/redaction.rules data/severity-rubric.conf \
     _t_no "$f parses and validates" "$(diags)"
   fi
 done
+
+t_case 'config/discovery.conf.example resolves to the discovery-input schema, by path, not by luck'
+assert_eq 'discovery-input' "$(records_schema_for_path config/discovery.conf.example)" \
+  'the §9 path table maps the .example file to the same schema as the real config/discovery.conf - FAILS if a future path-table edit stops stripping the .example suffix, which would make the "it parses" case above pass under a different, silently-wrong schema'
+records_load "$ROOT/config/discovery.conf.example" '' discovery_ex >/dev/null 2>&1
+assert_eq 1 "$(records_count discovery_ex)" 'the shipped example is exactly one worked record, matching every other config/*.example file'
+assert_eq 'example-target' "$(records_id discovery_ex 0)" 'its id names the same placeholder target config/scope.conf.example uses'
+assert_ne '' "$(records_field_or discovery_ex 0 openapi-path '')" 'openapi-path is set'
+assert_ne '' "$(records_field_or discovery_ex 0 graphql-schema-path '')" 'graphql-schema-path is set'
+assert_ne '' "$(records_field_or discovery_ex 0 postman-path '')" 'postman-path is set'
+assert_ne '' "$(records_field_or discovery_ex 0 har-path '')" 'har-path is set'
+assert_eq '3' "$(records_field_or discovery_ex 0 crawl-depth '')" 'crawl-depth is set'
+assert_contains "$(records_list discovery_ex 0 include-path)" '/api/**' 'include-path is set (repeatable)'
+assert_contains "$(records_list discovery_ex 0 exclude-path)" '/admin/**' 'exclude-path is set (repeatable)'
+# A grep for the bare words `base-url`/`extra-host` would also match this
+# file's own explanatory prose, which discusses them BY NAME to say they are
+# absent; the real question is whether either is a RECORD KEY (line-anchored,
+# as rules/RULE-FORMAT.md requires - §8.2), never whether the word appears.
+if grep -qE '^(base-url|extra-host):' "$ROOT/config/discovery.conf.example"; then
+  _t_no 'no scope-target host anywhere in this file' \
+    'found a base-url or extra-host record - FAILS if a future edit adds a base-url/host shortcut here, which would give discovery.conf a second, undocumented way to name a target host outside config/scope.conf'
+else
+  _t_ok 'no scope-target host anywhere in this file (no base-url/extra-host record key)'
+fi
 
 t_case 'the §10 context directive round-trips through the parser'
 records_load "$ROOT/tests/fixtures/rules/context.rules" pattern-rule ctx >/dev/null 2>&1
