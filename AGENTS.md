@@ -1092,6 +1092,88 @@ boundary refinement, `rule_changed_checks`, the composite rule (against the same
 `tests/fixtures/rules/derived.rules` STATE-03/04/05's own suites already use), and the report-text
 acceptance case, each naming the reading it fails under.
 
+**STATE-07 (`config/baseline.json` suppression, tension 11 stages 6 and 9) has also landed.**
+It closes the gap where `--baseline FILE` was parsed at step 2 and never read: a nonexistent path was
+accepted with no error, no warning, and no record in `run.json`.
+`lib/diff.sh` gains `baseline_apply RUNDIR`, called from every module's own `run.sh` (sast, iac, sca,
+dast) between `diff_classify_run` (stage 5) and the gate call (stage 7) - suppression is a late
+ANNOTATION, never a diff input, so it runs strictly after classification and strictly before the gate.
+`config/baseline.json`'s frozen array schema (tension 11) is a bare fingerprint string (sugar for
+`{fingerprint, reason: "", added: null, expires: null}`) or the full object with `reason`/`added`/
+`expires`; `--baseline FILE` REPLACES the default `config/baseline.json` rather than adding to it, so
+exactly one file is ever consulted per run.
+**A baseline file that exists but is unusable dies loudly (`SCOURSH_EXIT_INPUT`), a deliberate departure
+from `lib/state.sh`'s own graceful-degradation convention**: an operator-typed `--baseline` path that
+does not exist, a file that cannot be opened, unparsable JSON, a bare object at the top level, an entry
+missing its `fingerprint` key, a misspelled key, a duplicate fingerprint, or a garbage `expires` value
+are all real errors - `state/`'s corruption is a tool-generated fact the gate already handles safely via
+`diff_usable`, where `config/baseline.json` is a human-edited accept-risk list whose silent misfire in
+EITHER direction (suppressing everything, or suppressing nothing) is exactly the failure this ticket
+exists to close.  Only the ORDINARY case - no `--baseline` given and no `config/baseline.json` on disk,
+the default state of every fresh checkout - is a quiet, honest no-op.
+Every suppressed finding is annotated via the already-shipped `findings_mark_suppressed`
+(`suppressed=true`, `suppressed_by=<reason>`) and persisted into `state/` via `state_set_finding_
+suppressed`, so a later run's own classification sees the same fact; `lib/report.sh` renders a
+collapsed "accepted risk" section (the reason in prose) and counts suppressed findings separately in
+every summary.
+Tension 11's four ordering hazards are each pinned: removing a baseline entry does not fabricate a `new`
+finding (suppression was never a diff input); a suppressed finding that genuinely disappears is still
+reported `fixed`, never silently dropped from that ledger; an entry past its own `expires` date stops
+suppressing and the run records why, distinctly from an entry matching nothing at all (`stale`); and a
+stale entry is reported, never silently ignored, so an operator has something to prune.
+`tests/suites/state-baseline.sh` is the proof (52 assertions at landing), including a real
+`config/baseline.json` parse/validate round-trip for every rejection above, `baseline_apply` called more
+than once in one process (`scan.sh all`'s own shape, proving the ledger is recomputed each call rather
+than accumulated), and each of the four ordering hazards.
+**One known, deliberate gap**: a bare `{}` array element flattens to zero lines in the shared
+`_state_json_flatten` walk it reuses (an empty object has no keys to emit), so it is silently treated as
+absent rather than malformed - a literal `{}` in a hand-edited accept-risk list carries no fingerprint to
+suppress anything by, so the failure mode left open is "one static entry ignored," never a suppression
+security regression in either direction.
+
+**STATE-08 (`--fail-on-new`'s `diff_usable` carve-out, tension 11 stage 7) has also landed.**
+`modules/sast/engine.sh`'s `sast_evaluate_gate` - reused unchanged by `modules/iac/run.sh`,
+`modules/sca/run.sh`, and `modules/dast/run.sh`, all four call sites - replaces its bare
+`status == new` test with the frozen predicate: the status filter applies only when
+`SCOURSH_DIFF_USABLE` is true (set by `lib/diff.sh`'s `diff_classify_run`, which every one of those
+four call sites runs immediately before the gate); when `diff_usable` is false, the gate considers ALL
+findings regardless of status.
+**This is not a cosmetic change even though it is a two-line diff**: a bare status test happens to gate
+correctly on a first run or right after an `fp_schema` bump, since every finding really is `new` then
+(gating "new only" and gating "everything" are the identical set) - which is exactly why the carve-out
+needs its own mutation proof rather than an ordinary fixture. The bug only shows up once prior state
+exists and the guard has already declared it unusable (a later `fp_schema` bump, a `scan_root_id`
+change), at which point a bare test would silently let a finding classified off state the run cannot
+trust through untested - `docs/FOUNDATION.md`'s own tension-11 text records this as how the fail-open
+shipped once.
+`tests/suites/gate-mutation-proof.sh` gained a fourth mutation: it copies `modules/sast/engine.sh`,
+textually reverts the carve-out's own `if [[ ${SCOURSH_DIFF_USABLE:-false} == true ]]; then` to
+`if true; then` (reproducing the pre-STATE-08 unconditional bare-status reading), and proves the two
+readings disagree on an identical stale-partial input - one `status=old` finding with
+`SCOURSH_DIFF_USABLE=false` - where the real gate reports `fail 1` and the mutated one silently reports
+`pass 0`.
+`tests/suites/sast.sh`'s own in-process `sast_evaluate_gate` section gained the same stale-partial case
+(both the whole-run and the single-finding shape), plus explicit `SCOURSH_DIFF_USABLE=true` on its
+pre-existing status-filter cases, which previously left the variable unset and relied on it being unread
+- true before this ticket, no longer true after.
+No exit code changed: the gate still produces `SCOURSH_EXIT_GATE` (1) under tension 14's existing
+precedence, and `tests/suites/ci-smoke.sh`'s vuln-tree fixture-matrix comment (previously stale - it
+described a build with no rule engine at all) is corrected to state the real, still-correct reason those
+invocations exit 0: the gate is opt-in and none of them pass `--fail-on`.
+**STATE-07 landed on `dev` while this ticket was in review, and this branch was rebased onto it rather
+than merged independently**, closing one real gap that a green run against a hand-crafted
+`suppressed=false` fixture could not: every STATE-08 assertion up to that point set `suppressed` directly
+in a synthetic `findings.fields` line, which proves the ORDER of the suppressed-check versus the
+diff_usable carve-out but never that the field `sast_evaluate_gate` reads is the one STATE-07's own
+`baseline_apply` actually writes - the two could drift (a rename, a second copy of the field) with every
+existing test still green.  `tests/suites/state-baseline.sh` gained a case that closes exactly that gap:
+a REAL `config/baseline.json`, a real `baseline_apply` call, `SCOURSH_DIFF_USABLE` then forced false (the
+one branch that would otherwise gate on severity alone regardless of status), and the gate still passes
+- proving the real, on-disk `suppressed` field baseline_apply wrote is what the carve-out's own
+suppression check reads, ahead of the carve-out ever being consulted.  Confirmed by mutation: renaming
+the field the gate reads (simulating exactly the drift the test guards against) turns this case red.
+**Step 7 is therefore complete**: STATE-01 through STATE-08 have all landed.
+
 Step 6 (Cloud) remains unstarted.
 
 **DAST-07 made `docs/FOUNDATION.md` tension 19's single documented exception real, and the shape it
