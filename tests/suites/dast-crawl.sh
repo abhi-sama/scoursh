@@ -195,6 +195,55 @@ for ref in '#top' 'javascript:alert(1)' 'mailto:a@b.example' 'data:text/html,x' 
 done
 
 # ===========================================================================
+printf -- '\n-- content-type-absent markup sniffing (crawl_engine.sh, crawl_body_looks_like_markup) --\n'
+# ===========================================================================
+# A real active scan printed "hosthdr_engine.sh: line 286: warning: command
+# substitution: ignored null byte in input" to stderr from the sibling
+# hh_body_reflects, because a fetched response body is arbitrary
+# target-controlled bytes and hh_body_reflects used to load it into a bash
+# string via `body=$(cat ...)`/`body=$(head -c ...)`.  crawl.sh's own
+# no-Content-Type sniff (used to decide whether a headerless response is fed
+# to the tag scanner) had the identical `sniff=$(head -c 512 -- "$body")`
+# shape and the identical exposure, so crawl_body_looks_like_markup replaces
+# it the same way: matched on the file, through scan_match, never by reading
+# the body into a bash string.
+CS=$SCOURSH_SCRATCH/dast-crawl-sniff
+rm -rf "$CS"
+mkdir -p "$CS"
+
+t_case 'a NUL-containing body that also carries an HTML marker still looks like markup'
+CSF1=$CS/nul-with-marker.bin
+printf 'AAAA\x00BBBB<a href="/x">link</a>CCCC' >"$CSF1"
+CSF1_ERR=$CS/nul-with-marker.stderr
+RC1=0
+crawl_body_looks_like_markup "$CSF1" >/dev/null 2>"$CSF1_ERR" || RC1=$?
+assert_eq 0 "$RC1" 'the <a > marker is still found past the NUL byte'
+CSF1_ERR_TEXT=$(cat -- "$CSF1_ERR" 2>/dev/null || printf '')
+assert_not_contains "$CSF1_ERR_TEXT" 'ignored null byte' \
+  'no "ignored null byte" warning reaches stderr - FAILS against the pre-fix $(head -c ...) implementation'
+
+t_case 'a NUL-containing body with no HTML marker does not look like markup'
+CSF2=$CS/nul-clean.bin
+printf 'AAAA\x00BBBBnothing interesting hereCCCC' >"$CSF2"
+CSF2_ERR=$CS/nul-clean.stderr
+RC2=0
+crawl_body_looks_like_markup "$CSF2" >/dev/null 2>"$CSF2_ERR" || RC2=$?
+assert_eq 1 "$RC2" 'no marker, no NUL warning either, is reported as non-markup'
+CSF2_ERR_TEXT=$(cat -- "$CSF2_ERR" 2>/dev/null || printf '')
+assert_not_contains "$CSF2_ERR_TEXT" 'ignored null byte' \
+  'no warning on the negative NUL case either'
+
+t_case 'an ordinary plain-text body with no marker at all does not look like markup'
+CSF3=$CS/plain.bin
+printf 'plain text, nothing markup-shaped here' >"$CSF3"
+assert_status 1 'a plain body is not markup' crawl_body_looks_like_markup "$CSF3"
+
+t_case 'an ordinary HTML body with no NUL byte still looks like markup'
+CSF4=$CS/plain-html.bin
+printf '<!DOCTYPE html><html><body>hi</body></html>' >"$CSF4"
+assert_status 0 'a real HTML document is recognised' crawl_body_looks_like_markup "$CSF4"
+
+# ===========================================================================
 printf -- '\n-- specification ingestion (crawl_engine.sh §8) --\n'
 # ===========================================================================
 TGT=https://crawl.fixture.invalid

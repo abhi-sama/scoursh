@@ -263,29 +263,63 @@ hh_location_reflects() {
 # as a hard cap rather than a chunk walk because a page this check reads is
 # ordinarily whole-document HTML rather than a multi-megabyte bundle).
 #
-# A PLAIN BASH SUBSTRING TEST, NOT `scan_match`. The sentinel is this file's
-# own literal (never target-derived text, tension 9/10's concern is about the
-# opposite direction), so there is no regex-injection risk to guard against
-# by routing it through the pattern engine, and `[[ $body == *"$sentinel"* ]]`
-# is the same literal-substring idiom openredirect.sh's own candidate filter
-# and cors_engine.sh's classifier already use for a fixed, self-authored
-# needle. Case-folded because a hostname is case-insensitive by definition and
-# a target may lowercase (or, per HTTP/2, be required to lowercase) a header
-# value before it echoes it.
+# MATCHED ON THE FILE, THROUGH `scan_match`, NEVER BY READING BODY_FILE INTO A
+# BASH STRING. A response body is arbitrary target-controlled bytes and can
+# legitimately contain a NUL; `body=$(cat -- "$f")` (the shape this function
+# used to have, and the same shape openredirect.sh's candidate filter and
+# cors_engine.sh's classifier use for their own in-memory needles) runs the
+# file through command substitution, which silently drops every NUL byte AND
+# prints `warning: command substitution: ignored null byte in input` to
+# stderr on the bash versions this project supports - a warning an operator
+# running a real scan must never see, and a byte-loss that (in principle) can
+# make an otherwise-non-contiguous body accidentally read as one contiguous
+# string. Reading the file with `read`/`mapfile` instead would silence the
+# warning but not the byte loss - bash variables are C strings internally and
+# cannot hold an embedded NUL by any route - so the fix is to never lift the
+# body into a bash string at all: `-a`/`--text` on both bound engines (tension
+# 2's `core_bind_engine`) forces byte-for-byte text-mode matching straight off
+# the file, which is what a NUL in the body needs, since rg's DEFAULT binary
+# heuristic (a NUL anywhere) would otherwise report only "binary file X
+# matches" with no offsets (see this function's own truncation temp file
+# for where the bound is applied - also by redirecting `head -c` straight to a
+# file, never through a variable, for the identical reason). `-F` (fixed
+# string) is a belt-and-suspenders addition, not a requirement of this fix:
+# the sentinel is this file's own literal and carries no regex-injection risk
+# either way (tension 9/10's concern is the opposite direction), but `-F`
+# means an operator-overridden `SCOURSH_DAST_HOSTHDR_SENTINEL` containing a
+# regex metacharacter is still matched literally rather than as a pattern.
+# `-i` keeps the case-fold the old `${body,,}`/`${HOSTHDR_SENTINEL,,}` compare
+# had, because a hostname is case-insensitive by definition and a target may
+# lowercase (or, per HTTP/2, be required to lowercase) a header value before
+# it echoes it. `scan_match`'s own 0/1 contract (0 matched, 1 no match, >=2 a
+# hard engine failure that `die`s) is exactly this function's own contract, so
+# its exit status is returned unchanged.
 hh_body_reflects() {
-  local f=$1 size body
+  local f=$1 size target boundfile='' mf rc=0
   _HH_BODY_TRUNCATED=0
   [[ -s $f ]] || return 1
   size=$(wc -c <"$f" 2>/dev/null) || size=0
   size=${size//[[:space:]]/}
   [[ $size =~ ^[0-9]+$ ]] || size=0
+
+  target=$f
   if (( size > _HH_MAX_BODY_BYTES )); then
     _HH_BODY_TRUNCATED=1
-    body=$(head -c "$_HH_MAX_BODY_BYTES" -- "$f" 2>/dev/null) || body=''
-  else
-    body=$(cat -- "$f" 2>/dev/null) || body=''
+    # mktemp, chmod 600: the same CWE-377/CWE-59 discipline hh_probe's own
+    # scratch files use - this receives the target's own response bytes.
+    boundfile=$(mktemp "${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/hosthdr-bound.XXXXXX")
+    chmod 600 "$boundfile" 2>/dev/null || true
+    head -c "$_HH_MAX_BODY_BYTES" -- "$f" >"$boundfile" 2>/dev/null || : >"$boundfile"
+    target=$boundfile
   fi
-  [[ ${body,,} == *"${HOSTHDR_SENTINEL,,}"* ]]
+
+  mf=$(mktemp "${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/hosthdr-match.XXXXXX")
+  chmod 600 "$mf" 2>/dev/null || true
+  scan_match "$mf" -a -i -F -e "$HOSTHDR_SENTINEL" -- "$target" || rc=$?
+
+  rm -f "$mf"
+  [[ -n $boundfile ]] && rm -f "$boundfile"
+  return "$rc"
 }
 
 # ---------------------------------------------------------------------------
