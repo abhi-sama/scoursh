@@ -282,18 +282,56 @@ hh_location_reflects() {
 # heuristic (a NUL anywhere) would otherwise report only "binary file X
 # matches" with no offsets (see this function's own truncation temp file
 # for where the bound is applied - also by redirecting `head -c` straight to a
-# file, never through a variable, for the identical reason). `-F` (fixed
-# string) is a belt-and-suspenders addition, not a requirement of this fix:
-# the sentinel is this file's own literal and carries no regex-injection risk
-# either way (tension 9/10's concern is the opposite direction), but `-F`
-# means an operator-overridden `SCOURSH_DAST_HOSTHDR_SENTINEL` containing a
-# regex metacharacter is still matched literally rather than as a pattern.
-# `-i` keeps the case-fold the old `${body,,}`/`${HOSTHDR_SENTINEL,,}` compare
-# had, because a hostname is case-insensitive by definition and a target may
-# lowercase (or, per HTTP/2, be required to lowercase) a header value before
-# it echoes it. `scan_match`'s own 0/1 contract (0 matched, 1 no match, >=2 a
-# hard engine failure that `die`s) is exactly this function's own contract, so
-# its exit status is returned unchanged.
+# file, never through a variable, for the identical reason).
+#
+# NO `-F`, EVEN THOUGH THE SENTINEL IS A FIXED LITERAL - MEASURED, NOT
+# ASSUMED. A first version of this fix added `-F` (fixed-string) on top of
+# the engine array's own already-bound `-E` (`SCOURSH_GREP=(grep -E -n)` on
+# the no-`rg` fallback path), which passed on macOS - both BSD grep and
+# ripgrep silently let the LAST type flag given win - and FAILED ON LINUX CI:
+# real GNU grep (3.8, Debian bookworm; also current on Ubuntu) treats
+# `-E`/`-F`/`-G` as mutually exclusive "matchers" and exits 2 with
+# `grep: conflicting matchers specified` the instant more than one is given -
+# `scan_match` then treats that rc as a hard engine failure and `die`s, which
+# is exactly what turned two ordinary positive-match assertions red in CI
+# while the identical suite passed locally (reproduced in a real
+# `debian:bookworm-slim` container with GNU grep 3.8 and no `rg` installed,
+# matching the no-`rg` fallback this project's own GNU dockerfile ships).
+# `inject_body_has_signature` (modules/dast/active/inject_engine.sh) already
+# carries the general form of this lesson for the mirror case ("passing
+# grep's own -E to rg is an error"): never add a type-selection flag on top
+# of what the bound array already carries. The fix is `_hh_ere_escape`,
+# below - it turns the sentinel into an ERE pattern that matches only
+# itself, so no `-F` is needed and the same call works identically across
+# GNU grep, BSD grep and ripgrep. `-i` keeps the case-fold the old
+# `${body,,}`/`${HOSTHDR_SENTINEL,,}` compare had, because a hostname is
+# case-insensitive by definition and a target may lowercase (or, per HTTP/2,
+# be required to lowercase) a header value before it echoes it.
+# `scan_match`'s own 0/1 contract (0 matched, 1 no match, >=2 a hard engine
+# failure that `die`s) is exactly this function's own contract, so its exit
+# status is returned unchanged.
+#
+# `_hh_ere_escape TEXT` - prints TEXT with every ERE metacharacter
+# backslash-escaped, so the result matches TEXT and only TEXT as a
+# `scan_match -e PATTERN` argument, with no `-F` needed. The sentinel's
+# default value carries one literal `.` (which as a bare ERE matches ANY
+# character - a harmless widening for the shipped default, but not for an
+# operator-overridden `SCOURSH_DAST_HOSTHDR_SENTINEL`, which is why this
+# escapes rather than relying on the default happening to be nearly literal
+# already).
+_hh_ere_escape() {
+  local s=$1 out='' c i
+  for (( i = 0; i < ${#s}; i++ )); do
+    c=${s:i:1}
+    case $c in
+      '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '^' | '$' | $'\\')
+        out+="\\$c" ;;
+      *)
+        out+="$c" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
 hh_body_reflects() {
   local f=$1 size target boundfile='' mf rc=0
   _HH_BODY_TRUNCATED=0
@@ -315,7 +353,7 @@ hh_body_reflects() {
 
   mf=$(mktemp "${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/hosthdr-match.XXXXXX")
   chmod 600 "$mf" 2>/dev/null || true
-  scan_match "$mf" -a -i -F -e "$HOSTHDR_SENTINEL" -- "$target" || rc=$?
+  scan_match "$mf" -a -i -e "$(_hh_ere_escape "$HOSTHDR_SENTINEL")" -- "$target" || rc=$?
 
   rm -f "$mf"
   [[ -n $boundfile ]] && rm -f "$boundfile"

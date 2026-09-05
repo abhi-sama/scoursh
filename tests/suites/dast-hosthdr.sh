@@ -40,6 +40,16 @@
 #   8. BOTH TECHNIQUES ARE TRIED INDEPENDENTLY. A route that trusts
 #      X-Forwarded-Host but not Host is still caught, and the finding's
 #      loc_param_name names which header technique fired.
+#   9. hh_body_reflects MATCHES THROUGH scan_match WITH NO EXTRA TYPE FLAG ON
+#      TOP OF THE BOUND ENGINE ARRAY'S OWN `-E`. A `-F` (fixed-string) added
+#      alongside it passed on macOS (BSD grep and ripgrep silently let the
+#      LAST type flag given win) and made real GNU grep exit 2
+#      ("conflicting matchers specified") on every call, which `scan_match`
+#      treats as a hard failure and aborts the whole suite process over -
+#      reproduced directly in a `debian:bookworm-slim` container with GNU
+#      grep 3.8 and no `rg` on PATH, the configuration that failed on hosted
+#      Ubuntu CI. Section C's NUL-byte-plus-sentinel case pins this
+#      independently of the NUL-byte regression it was written for.
 #
 # Every case that pins a decision names the reading it FAILS under, per this
 # repository's testing rule.
@@ -352,6 +362,24 @@ assert_eq 1 "$_HH_BODY_TRUNCATED" 'the truncation is recorded so the phase can r
 # `body=$(cat -- "$f" 2>/dev/null)` shape, which prints the warning to stderr
 # regardless of the inner `2>/dev/null` (that redirect only silences `cat`'s
 # own stderr, not bash's own warning about the substitution it performed).
+# This same case (a NUL byte AND the sentinel in one body) also pins a
+# SECOND, independent regression this fix's first draft introduced: that
+# draft added `-F` (fixed-string) on top of the already-`-E`-bound engine
+# array. BSD grep and ripgrep both silently let the LAST type flag given
+# win, so it passed locally on macOS - but real GNU grep (3.8, Debian
+# bookworm; also current on Ubuntu) treats `-E`/`-F`/`-G` as mutually
+# exclusive "matchers" and exits 2 ("conflicting matchers specified") the
+# instant more than one is given, which `scan_match` treats as a hard engine
+# failure and `die`s on - aborting the WHOLE suite process outright rather
+# than just failing one assertion, since `die` calls `exit` unconditionally
+# regardless of the calling command's `||`/`if` context. Reproduced directly
+# in a real `debian:bookworm-slim` container with GNU grep 3.8 and no `rg`
+# on PATH: this exact call (`hh_body_reflects` on this exact NUL+sentinel
+# fixture) exited 5 under the `-F` draft and exits 0 under the shipped fix -
+# FAILS under that draft on GNU userland, on this case alone, with no NUL
+# byte required to trigger it (any sentinel match on GNU grep would die the
+# same way; the NUL byte here is incidental to THIS regression and is what
+# the case was originally written for).
 BFNUL=$W/body-nullbyte.txt
 printf 'AAAA\x00BBBB see https://%s/path for details CCCC' "$HOSTHDR_SENTINEL" >"$BFNUL"
 BFNUL_ERR=$W/body-nullbyte.stderr
