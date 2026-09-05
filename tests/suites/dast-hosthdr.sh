@@ -339,6 +339,43 @@ assert_eq 1 "$RC_LATE" \
   'a sentinel past the scan cap is NOT found - the honest cost of the bound this file documents'
 assert_eq 1 "$_HH_BODY_TRUNCATED" 'the truncation is recorded so the phase can report the coverage_reduction'
 
+# A real active scan printed
+# "hosthdr_engine.sh: line 286: warning: command substitution: ignored null
+# byte in input" to stderr, because a response body is arbitrary
+# target-controlled bytes and hh_body_reflects used to load it into a bash
+# string via `body=$(cat -- "$f")` / `body=$(head -c ... -- "$f")`. Bash
+# strings cannot hold an embedded NUL, so command substitution both drops the
+# byte AND warns about doing so on the shell's own stderr - a warning an
+# operator running a real scan must never see. This regression case proves
+# both halves: the sentinel is still found on a body containing a NUL, and no
+# such warning reaches stderr - FAILS under the pre-fix
+# `body=$(cat -- "$f" 2>/dev/null)` shape, which prints the warning to stderr
+# regardless of the inner `2>/dev/null` (that redirect only silences `cat`'s
+# own stderr, not bash's own warning about the substitution it performed).
+BFNUL=$W/body-nullbyte.txt
+printf 'AAAA\x00BBBB see https://%s/path for details CCCC' "$HOSTHDR_SENTINEL" >"$BFNUL"
+BFNUL_ERR=$W/body-nullbyte.stderr
+RC_NUL=0
+hh_body_reflects "$BFNUL" >/dev/null 2>"$BFNUL_ERR" || RC_NUL=$?
+assert_eq 0 "$RC_NUL" \
+  'a body containing a NUL byte before the sentinel still reflects'
+NUL_ERR_TEXT=$(cat -- "$BFNUL_ERR" 2>/dev/null || printf '')
+assert_not_contains "$NUL_ERR_TEXT" 'ignored null byte' \
+  'no "ignored null byte" warning reaches stderr - FAILS against the pre-fix $(cat ...)/$(head -c ...) implementation'
+
+# The fix must not turn every NUL-containing (i.e. every "binary-shaped")
+# body into a false positive: a body with a NUL and NO sentinel must still
+# report no reflection.
+BFNUL2=$W/body-nullbyte-clean.txt
+printf 'AAAA\x00BBBBnothing interesting hereCCCC' >"$BFNUL2"
+BFNUL2_ERR=$W/body-nullbyte-clean.stderr
+RC_NUL2=0
+hh_body_reflects "$BFNUL2" >/dev/null 2>"$BFNUL2_ERR" || RC_NUL2=$?
+assert_eq 1 "$RC_NUL2" 'a NUL-containing body with no sentinel does not reflect'
+NUL2_ERR_TEXT=$(cat -- "$BFNUL2_ERR" 2>/dev/null || printf '')
+assert_not_contains "$NUL2_ERR_TEXT" 'ignored null byte' \
+  'no warning on the negative NUL case either'
+
 printf '\n== D. hh_location_reflects - authority only, decision 2 ==\n'
 HF=$W/hdr-authority.txt
 printf 'HTTP/1.1 302 Found\r\nLocation: https://%s/dashboard\r\n\r\n' "$HOSTHDR_SENTINEL" >"$HF"

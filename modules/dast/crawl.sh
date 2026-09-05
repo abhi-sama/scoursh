@@ -367,12 +367,13 @@ _crawl_static() {
       if [[ -z ${_CRAWL_CTYPE} ]]; then
         # No Content-Type at all: parse only if the bytes actually look like
         # markup, so a headerless binary is still not fed to the scanner.
-        local sniff
-        sniff=$(head -c 512 -- "$body" 2>/dev/null || true)
-        case ${sniff,,} in
-          *'<html'* | *'<!doctype html'* | *'<body'* | *'<a '* | *'<form'*) ;;
-          *) _CRAWL_NONHTML=$(( _CRAWL_NONHTML + 1 )); continue ;;
-        esac
+        # crawl_body_looks_like_markup matches on the file directly (never by
+        # reading it into a bash string) because a response body is arbitrary
+        # target-controlled bytes and can legitimately contain a NUL - see
+        # that function's own header for the full defect this avoids.
+        if ! crawl_body_looks_like_markup "$body"; then
+          _CRAWL_NONHTML=$(( _CRAWL_NONHTML + 1 )); continue
+        fi
       fi
 
       # The SPA heuristic is sampled on the ROOT page only - the one page whose
