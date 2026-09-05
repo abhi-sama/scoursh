@@ -422,5 +422,67 @@ assert_not_contains "$HT6" '<script>alert(1)</script>' \
 assert_contains "$HT6" '&lt;script&gt;' 'and it is rendered escaped rather than dropped, so the reader still sees what was recorded'
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 
+# ===========================================================================
+# scoursh-spa-no-params-loud: zero discovered injection parameters (the
+# single-page-app / API-behind-JavaScript case) is loud where a human reads
+# results, not only a per-phase coverage_gap buried at the bottom of the
+# report.
+# ===========================================================================
+printf '\n-- zero discovered parameters: the injection suite says so loudly, at the top --\n'
+
+t_case 'zero parameters on every injection probe renders the full "nothing was injected" banner'
+D9=$SCOURSH_SCRATCH/rpt-zero-params
+rm -rf "$D9"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$D9"
+D9=$SCOURSH_RUN_DIR
+run_record coverage_reduction 'module=dast reason=no_parameter_inventory target=t1 - the crawler wrote no injectable parameter (docs/INVENTORY-FORMAT.md), so SQL injection had no request field to test. Feed a spec/HAR (config/discovery.conf) or run the crawl against an application with discoverable parameters.'
+run_record coverage_reduction 'module=dast reason=no_parameter_inventory target=t1 - the crawler wrote no injectable parameter (docs/INVENTORY-FORMAT.md), so reflected XSS had no request field to test. Feed a spec/HAR (config/discovery.conf) or run the crawl against an application with discoverable parameters.'
+run_record coverage_reduction 'module=dast reason=no_parameter_inventory target=t1 - the crawler wrote no injectable parameter (docs/INVENTORY-FORMAT.md), so server-side template injection had no request field to test. Feed a spec/HAR (config/discovery.conf) or run the crawl against an application with discoverable parameters.'
+report_all "$D9"
+MD9=$(cat "$D9/report.md")
+HT9=$(cat "$D9/report.html")
+assert_contains "$MD9" 'No injection test was actually sent' \
+  'report.md leads with the loud zero-parameter banner - FAILS against current code, which only writes each phase'"'"'s own coverage_gap into the bottom-of-report Limitations section'
+assert_contains "$MD9" 'this is NOT a clean result' \
+  'the wording distinguishes "not tested" from "not vulnerable", the acceptance criterion this ticket exists for'
+assert_contains "$MD9" 'config/discovery.conf' 'and names the concrete, verified way to supply the missing surface'
+assert_contains "$MD9" 'openapi-path' 'naming the actual config/discovery.conf keys, not an invented flag'
+assert_contains "$HT9" 'No injection test was actually sent' 'report.html carries the same banner'
+assert_contains "$HT9" 'config/discovery.conf' 'and the same actionable pointer'
+assert_not_contains "$HT9" '<script' 'the banner is plain text, no <script> anywhere in the report (tension 10)'
+
+t_case 'a run with real discovered parameters does NOT show the zero-parameter banner'
+D10=$SCOURSH_SCRATCH/rpt-real-params
+rm -rf "$D10"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$D10"
+D10=$SCOURSH_RUN_DIR
+run_record checks_run DAST-INJ-SQLI_ERROR-01
+run_record checks_run DAST-INJ-XSS_REFLECTED_HTML-01
+report_all "$D10"
+assert_not_contains "$(cat "$D10/report.md")" 'No injection test was actually sent' \
+  'a run whose injection checks actually ran against real parameters gets no banner'
+assert_not_contains "$(cat "$D10/report.html")" 'No injection test was actually sent' 'same, in HTML'
+
+t_case 'a partial-coverage run reports the truth, not a blanket claim'
+D11=$SCOURSH_SCRATCH/rpt-partial-params
+rm -rf "$D11"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$D11"
+D11=$SCOURSH_RUN_DIR
+run_record coverage_reduction 'module=dast reason=no_parameter_inventory target=t1 - the crawler wrote no injectable parameter (docs/INVENTORY-FORMAT.md), so command injection had no request field to test. Feed a spec/HAR (config/discovery.conf) or run the crawl against an application with discoverable parameters.'
+run_record checks_run DAST-INJ-SQLI_ERROR-01
+run_record checks_run DAST-INJ-SQLI_BOOLEAN-01
+report_all "$D11"
+MD11=$(cat "$D11/report.md")
+assert_contains "$MD11" 'Partial injection coverage' \
+  'a run that tested SOME parameters and missed others says so - FAILS under a blanket "nothing was tested" claim, which would misdescribe a run that has real injection findings'
+assert_not_contains "$MD11" 'No injection test was actually sent' \
+  'the full "nothing at all" wording must not also appear - the two claims are mutually exclusive'
+assert_contains "$MD11" '1 of the discovered-parameter probes' 'and the count is the real, recorded one - one phase had zero parameters'
+assert_contains "$MD11" '2 check(s)' 'against the real number that DID run - two distinct DAST-INJ-* ids in checks_run'
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+
 
 t_summary report
