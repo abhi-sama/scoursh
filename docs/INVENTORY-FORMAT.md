@@ -72,6 +72,7 @@ lost the routes another module contributed.
 | `depth` | number | Crawl depth at which it was found; `0` for anything not found by following a link. |
 | `status` | string | The observed HTTP status, or `""` when nothing was requested. |
 | `content_type` | string | The observed `Content-Type`, or `""`. |
+| `request_body_type` | string | **Optional.** `json` or `form`; absent or anything else means `form`. See §3's "JSON pointer names" for what this changes about `body`-location parameters. Added by IMPORT-02 as an additive optional field - `schema` stays `scoursh.inventory.endpoints/1` per §9. |
 
 `source` is **never rewritten**.
 An endpoint that arrived as `imported` stays `imported` even if the crawler later reaches the same URL,
@@ -112,6 +113,30 @@ claims and tension 21 requires imported inventory to keep its audit trail.
 
 `docs/DESIGN.md` §7.3 requires every injection probe to iterate "query params, body/JSON fields,
 headers, and path segments - not just top-level query strings", which is what `location` is for.
+
+### 3a. `name` as a JSON pointer, on a `json` endpoint (IMPORT-02)
+
+When the parameter's endpoint has `request_body_type: json` (§2), a `body`-location parameter's `name`
+is not a form field name - it is an **RFC 6901 JSON pointer** naming where in the one composed request
+body its value belongs, so a producer can describe a nested field the way `crawl_spec_openapi`'s
+`requestBody` and `crawl_spec_har`'s `postData.text` actually shape one:
+
+- `/email` places the value at the top-level `email` key: `{"email": "<value>"}`.
+- `/orderLines/0/productId` nests through an object, an array, and another object:
+  `{"orderLines": [{"productId": "<value>"}]}`. A segment that is a canonical non-negative integer
+  (`0`, `12` - never `01`) makes its level an array; any other segment makes an object.
+- A `name` with no leading `/` is not a pointer at all and is treated as a single top-level key, so a
+  flat parameter (`email`) needs no rewrite to keep working.
+- The two RFC 6901 escapes apply inside a segment: `~1` decodes to a literal `/`, `~0` to a literal `~`
+  (decoded in that order, so `~01` is the one-character `~1`).
+
+Every `body`-location parameter for the same endpoint contributes to the **same** document - the
+payload under test at its own pointer, every sibling at its benign value at its own pointer
+(`modules/dast/active/inject_engine.sh`'s `inject_send`, section 2a) - and every value is written
+through `json_string` (§6), exactly like every other producer-written string in these two files.
+
+On a `form` endpoint (the default), `name` is unchanged: a plain form-field name, exactly as before this
+field existed.
 
 ## 4. Why the query string is not part of an endpoint
 
