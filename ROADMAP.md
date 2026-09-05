@@ -96,17 +96,23 @@ already landed in full - see below.
    all (see [`docs/STEP-GUIDE-PLAN.md`](docs/STEP-GUIDE-PLAN.md)'s Status section), but it adds no new
    scan coverage or output format of its own, only an easier way to invoke what already exists, so it
    sits last here on priority despite being the most fully unblocked item in this list.
-   GUIDE-01 through GUIDE-06 have all landed: GUIDE-01 (`lib/guide.sh` - the prompt gate, the signal
-   trap, the menu primitives), GUIDE-02 (`--guided`/`--print-command` flags, `scan_main` routing, the
-   `_scan_check_required` split), GUIDE-03 (the G1 scan-type menu, the G2 local-surface follow-ups,
-   the G8 CI gate), GUIDE-04 (the G3 DAST target menu, G5 intensity menu, and the G6 affirmation -
-   `--requests-per-second`/`--request-budget` now exist as real flags too), GUIDE-05 (the
-   `config/scope.conf` record writer, `guide_g4_authorize_target`), and GUIDE-06 (the G9 review/run
-   screen, wiring both the `_scan_guide_run` -> `guide_dast_configure` and the G3
-   "Authorise a new target" -> `guide_g4_authorize_target` hand-offs, `--print-command`, and run.json's
-   new `config` object). Only GUIDE-07 (documentation) remains unclaimed. A guided run can now compose
+   **GUIDE-01 through GUIDE-07 have all landed; the guided track is complete.** GUIDE-01
+   (`lib/guide.sh` - the prompt gate, the signal trap, the menu primitives), GUIDE-02
+   (`--guided`/`--print-command` flags, `scan_main` routing, the `_scan_check_required` split), GUIDE-03
+   (the G1 scan-type menu, the G2 local-surface follow-ups, the G8 CI gate), GUIDE-04 (the G3 DAST
+   target menu, G5 intensity menu, and the G6 affirmation - `--requests-per-second`/`--request-budget`
+   now exist as real flags too), GUIDE-05 (the `config/scope.conf` record writer,
+   `guide_g4_authorize_target`), GUIDE-06 (the G9 review/run screen, wiring both the `_scan_guide_run`
+   -> `guide_dast_configure` and the G3 "Authorise a new target" -> `guide_g4_authorize_target`
+   hand-offs, `--print-command`, and run.json's new `config` object), and GUIDE-07
+   (`docs/USAGE.md`'s "Guided mode" section: the five prompt conditions, the exit code for every
+   refusal path, and the flag-equivalence table, with new Status rows for `--guided`, `--print-command`,
+   `--requests-per-second` and `--request-budget`; `config/scanner.conf.example` documents that
+   `--guided`/`--print-command` have no config-file key of their own). A guided run can now compose
    AND RUN a local or DAST command end to end through the real menu, with the printed command
-   guaranteed (by a byte-identical round-trip test) to be exactly what "Run it" executes.
+   guaranteed (by a byte-identical round-trip test) to be exactly what "Run it" executes. `cloud` is the
+   one surface guided mode refuses outright rather than configuring, since `modules/cloud/` does not
+   exist yet - see `docs/STEP-GUIDE-PLAN.md`'s own Status section for the verified, current detail.
 
 Outside that ordering:
 

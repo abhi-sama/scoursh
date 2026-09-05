@@ -65,6 +65,8 @@ scan.sh <command> [options]
 | `--intensity passive\|safe\|active` | dast, all | live as a ceiling; `passive` reaches the crawl and the security-header checks, `active` additionally reaches the SQLi and JWT probes |
 | `--authed` | dast, all | live - `auth.sh` acquires a session, and a failed login is a declared coverage reduction rather than an error |
 | `--i-own-target NAME` | dast, all | live |
+| `--requests-per-second N` | dast, all | live; raising it above the conservative ceiling needs `--i-own-target` (see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)) |
+| `--request-budget N` | dast, all | live; same as above |
 | `--live` | cloud, all | live as a precondition check only |
 | `--profile NAME` | cloud, all | inert |
 | `--regions all\|us-east-1,...` | cloud, all | inert |
@@ -88,12 +90,135 @@ scan.sh <command> [options]
 | `--min-confidence` | `high\|medium\|low` | from `config/scanner.conf` (`low`) | live |
 | `--baseline FILE` | path | none | inert |
 | `--out DIR` | path | `reports/<timestamp>` | live |
+| `--guided` | boolean | off | live |
+| `--print-command` | boolean | off | live |
 
 `--verbose` also prints the rule-authoring lint warnings a normal run keeps out of the way.
 `--use-engines` is fully wired, but it only has an effect once an optional engine has been vendored
 into `modules/<module>/adapters/<engine>/` by hand on a networked host; no engine binary is committed
 to this repository, so on a stock checkout the flag produces a
 `coverage_reduction reason=engine_not_vendored` line and nothing else.
+`--guided` and `--print-command` are covered in full in ["Guided mode"](#guided-mode---guided) below.
+
+## Guided mode (`--guided`)
+
+`scan.sh --guided`, or a bare `scan.sh` with no arguments at all, launches an interactive
+questionnaire.
+It asks what to scan, then a handful of follow-up questions specific to that surface, and always
+ends on a review screen that prints the exact command it would run and offers to run it, print it,
+or cancel.
+Nothing is scanned before that final confirmation.
+Every question maps to a flag - see "Flag equivalence" below - so a guided session and its printed
+command are two views of the same input, never two different mechanisms: "Run it" hands the composed
+argv to the same `scan_parse_args` / `scan_validate_flag_value` / `_scan_check_affirmation` path a
+hand-typed invocation goes through, and nothing downstream can tell a run was configured
+interactively.
+
+### When it prompts, and when it refuses
+
+Prompting is gated on five conditions (`lib/guide.sh`'s `guide_may_prompt`), checked in this order,
+and **all five** must hold:
+
+1. It was actually asked for - `--guided` was given, or the invocation was a bare `scan.sh` with
+   zero arguments.
+2. Standard input is a terminal.
+3. Standard error is a terminal - `select`'s own menu and prompt text go to stderr, not stdout, so a
+   run whose stderr is redirected to a logfile is exactly the case a menu must not block on.
+4. None of these environment variables is set: `CI`, `CONTINUOUS_INTEGRATION`, `BUILD_NUMBER`,
+   `JENKINS_URL`, `TEAMCITY_VERSION`, `GITHUB_ACTIONS`, `GITLAB_CI`, `BUILDKITE`, `TF_BUILD`.
+5. `SCOURSH_NO_PROMPT` is unset.
+
+The environment layer can only ever turn prompting **off**; nothing in it can force interactive mode
+onto a non-terminal.
+
+What a refusal looks like depends on how prompting was asked for, because only an *explicit* ask
+gets a loud refusal:
+
+| Invocation | Any of conditions 2-5 fails | Exit code |
+|---|---|---|
+| Bare `scan.sh`, no arguments | Silent fall-through to the ordinary `no command given` usage error - a bare `scan.sh` was never an explicit ask the way `--guided` is | `2` |
+| `scan.sh <cmd> --guided ...` | Loud refusal naming the first failing condition, e.g. `--guided: 'CI' is set in the environment; nothing was run and nothing is waiting for input` | `2` |
+
+Mid-flow, once a session has actually started, every way out has its own exit code:
+
+| Event | Exit code |
+|---|---|
+| `Ctrl-C` (SIGINT) or SIGTERM at any prompt - `Cancelled.  Nothing was scanned.` | `0` |
+| Picking "Cancel" at the final review screen - the identical message and code as the signal case | `0` |
+| Stdin hits EOF (piped from `/dev/null`, or a here-doc runs out) at any menu or free-text prompt - `input ended before the scan was configured; nothing ran` | `2` |
+| Ten consecutive unusable menu answers - `too many unusable answers; nothing ran` | `2` |
+| An unreadable `--path` typed twice in a row - `--path was asked twice and neither answer resolved to a readable directory; nothing was run and nothing is waiting for input - re-run with a valid --path instead` | `2` |
+| `scan.sh dast --guided` with no DAST target ever selected - `no DAST target was chosen; nothing was run and nothing is waiting for input - re-run with a valid --target instead` | `2` |
+
+No prompt in this flow ever times out - `select` cannot, and a `read -t` fallback was deliberately
+rejected: it would make identical answers produce a different scan depending on typing speed, which
+breaks determinism outright.
+A session that is genuinely stuck has to be interrupted (`Ctrl-C`, exit `0`), not waited out.
+
+### What each scan type's guided flow can actually configure
+
+This is the same **Status** discipline this whole document uses, applied to the questionnaire
+itself: which surfaces guided mode wires up completely, and which one it refuses outright rather than
+walking through questions for a scan that cannot do anything yet.
+
+| Scan type | Guided today | Notes |
+|---|---|---|
+| Source code (`sast`) | **fully wired end to end** | Asks path, languages, and - only if `git` is on `PATH` - whether to also replay secret checks across git history. |
+| Dependencies/lockfiles (`sca`) | **fully wired end to end** | Asks path only. If `data/advisories.db` is missing it says so and explains the run will still proceed as a declared coverage gap - the identical honesty `scan.sh sca` already gives outside guided mode. |
+| Infrastructure as code (`iac`) | **fully wired end to end** | Asks path only. |
+| A running web application (`dast`) | **fully wired end to end** | Target, then intensity, then - only above `passive` - the own-your-target affirmation and each raised limit. Picking `passive` asks nothing further: no affirmation, no rate/budget menus, no side-effecting-checks question. |
+| An AWS account, read-only (`cloud`) | **not reachable at all** | There is no `modules/cloud/run.sh` in this checkout (`docs/DESIGN.md` step 6 has not started). Picking this item explains that cloud scanning is not built yet in this version and returns to the menu; nothing is asked and nothing runs - the same refusal any not-yet-built surface gets here. |
+| Everything this checkout can actually do (`all`) | **partially wired** | Asks path/languages/history exactly like `sast` (when not already given), then the CI gate. It does **not** route through the `dast` target/intensity/affirmation questions at all: `scan.sh all` only runs `dast` when `--target` was already given on the command line before `--guided`, and only runs `cloud` when `--live` was already given - otherwise both are recorded as declared `coverage_reduction` facts, exactly as a non-guided `scan.sh all` with neither flag already does. A guided `all` session is therefore never how an operator first authorises a DAST target; that has to happen through `scan.sh dast --guided` (or its own "Authorise a new target" menu item) first. |
+
+**There is no live gap today where guided mode walks through configuring a surface and then runs
+something not wired up** - the one unbuilt surface (`cloud`) is refused at the door, before a single
+question is asked.
+The source does carry a forward-looking status string for a *future*, partial `cloud` guided flow
+(asking only the CI gate, once `modules/cloud/run.sh` exists); that path is unreachable on this tree
+today and is worth re-checking against this table the day a `cloud` module lands, so it does not
+quietly become the trap this table exists to rule out.
+
+### Flag equivalence
+
+Every guided prompt has a command-line flag equivalent, so "Print the command and exit without
+running" - and the standalone `--print-command` flag, which renders the fully resolved invocation for
+**any** command, guided or not, without ever opening a session - always produces a complete,
+pasteable replacement for the questionnaire.
+
+| Prompt | Flag |
+|---|---|
+| Scan type | the subcommand: `sast` \| `sca` \| `iac` \| `dast` \| `cloud` \| `all` |
+| Path | `--path DIR` |
+| Languages | `--lang py,js,go,java` |
+| Git history | `--history` |
+| DAST target | `--target NAME` |
+| Authorise a new target | none, deliberately - the non-interactive equivalent is editing `config/scope.conf` directly |
+| DAST intensity | `--intensity passive\|safe\|active` |
+| Own-your-target affirmation | `--i-own-target NAME` (must equal `--target`; a mismatch is exit `2`) |
+| Request rate | `--requests-per-second N` |
+| Request budget | `--request-budget N` |
+| Side-effecting checks | `--allow-intrusive` |
+| CI gate | `--fail-on critical\|high\|medium\|low\|info\|none` |
+| Print and exit | `--print-command` |
+| (turn the whole thing on) | `--guided` |
+| (turn the whole thing off) | `SCOURSH_NO_PROMPT=1` |
+
+**One correction to this table, worth stating because `docs/STEP-GUIDE-PLAN.md`'s own version of it
+says otherwise:** the request-rate menu's "No limit" item does **not** map to
+`--requests-per-second 0`.
+Verified against the shipped limiter rather than assumed: `lib/http.sh` refuses a genuinely-zero rate
+outright (exit `4`, "permits no requests at all") rather than treating it as unlimited, because a
+limiter waiting forever for a token that can never arrive would look like a hang.
+"No limit" instead emits the largest schema-legal rate, `999999999` - for any real target that is
+indistinguishable from "send as fast as it answers", and the run's request budget and circuit
+breaker still bound it either way.
+
+Two flags the guided flow deliberately never asks about, because they belong to a CI setup written
+once rather than to a menu: `--fail-on-new` (which requires `--fail-on`) and `--paranoid`.
+
+Every audited run's `run.json` carries an `authorization` object regardless of how it was configured,
+and a guided run's is byte-identical to the same flags typed by hand: nothing marks
+`authorization.affirmation_source` as having come from a menu, so it reads `flag` either way.
 
 ### Log level and colour (`SCOURSH_LOG_LEVEL`, `SCOURSH_COLOR`, `NO_COLOR`)
 
@@ -375,10 +500,11 @@ Checked in this fixed order - the first true condition wins, never "worst findin
 | `4` | Missing required input (unreadable path, missing config file, missing required command, or `sca` with no `data/advisories.db` - see ["Dependency data"](#dependency-data-dataadvisoriesdb)). |
 | `5` | Incomplete run (circuit breaker tripped or the run aborted mid-flight). A run that both trips the breaker and has gated findings exits `5`, not `1` - an incomplete run cannot assert a clean gate result either way. |
 
-One caveat on `5`: the rate limiter, request budget, and circuit breaker are not built yet, and no
-module records an aborted-mid-flight reason, so no scan trips either half of that description today.
-The code is currently produced only by an internal consistency failure, which should never happen and
-is a bug if it does.
+The rate limiter, request budget, and circuit breaker described in
+["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target) are real and live: a `dast`
+run whose target stops answering trips the circuit breaker and exits `5` naming the failure count and
+window, and one that spends its whole request budget exits `5` naming that too. Both are per scope
+target, checked at every request through `lib/http.sh`'s single chokepoint.
 
 ## The scope gate (`dast`)
 
