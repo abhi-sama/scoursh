@@ -61,6 +61,17 @@
 # raises nothing by itself - it is a key that makes the higher settings
 # available, not a switch that selects one.
 #
+# `--guided` (the interactive questionnaire) and `--print-command` (print the
+# resolved command and exit) are CLI-only flags with no config/scanner.conf key
+# of their own, deliberately: guided mode only ever fills in flags that were
+# not already given, and every question it asks maps to one of the flags this
+# file's own keys already back (`requests-per-second`, `request-budget`,
+# `contact`, ...) or to a flag with no persisted equivalent at all
+# (`--i-own-target`, above).  There is nothing to set here that turns guided
+# mode on or off by default - see docs/USAGE.md, "Guided mode", for the full
+# flag-equivalence table, the five conditions that gate prompting, and the
+# exit code for every refusal path.
+#
 # `contact` is what a target owner who notices your traffic uses to reach you.
 # Every request carries `scoursh/<version> (+<contact>)`; with no contact set,
 # the request still identifies the tool but cannot identify you.  One printable

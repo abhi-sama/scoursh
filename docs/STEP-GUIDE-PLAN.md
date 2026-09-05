@@ -23,7 +23,7 @@ No design decision changes in this move; see "Relationship to the ten-step build
 one genuinely new thing this document adds - a stated position on whether guided mode is one of
 `docs/DESIGN.md` §13's ten steps.
 
-## Status: GUIDE-01 through GUIDE-06 landed; GUIDE-07 remains unclaimed
+## Status: GUIDE-01 through GUIDE-07 landed; the guided track is complete
 
 **GUIDE-01 has landed.** `lib/guide.sh` exists and ships `guide_may_prompt`, `guide_menu`, `guide_ask`,
 `guide_confirm`, and `_guide_shquote`, plus the guided-scope `INT`/`TERM` signal trap and the test-only
@@ -392,9 +392,40 @@ that target directly (asserted against `GUIDE_DAST_TARGET` and against `config/s
 bytes); a cancelled write still loops back to the same target menu, matching the pre-GUIDE-06 stub's own
 behaviour for that one case.
 
-**In short: this is a single chain, GUIDE-01 through GUIDE-07 in that order (GUIDE-04 and GUIDE-05 ran
-in parallel once GUIDE-03 landed) - GUIDE-01 through GUIDE-06 have now landed, and only GUIDE-07
-(documentation) remains unclaimed.**
+**In short: this was a single chain, GUIDE-01 through GUIDE-07 in that order (GUIDE-04 and GUIDE-05 ran
+in parallel once GUIDE-03 landed) - GUIDE-01 through GUIDE-07 have all now landed, and the guided
+track is complete.**
+
+**GUIDE-07 has now landed too: `docs/USAGE.md` gained a "Guided mode" section (the five prompt
+conditions verbatim, the full non-interactive environment-marker list, the exit code for every
+refusal path - the ineligible-bare-invocation, ineligible-explicit-`--guided`, EOF, unusable-answer-cap,
+bad-`--path`-retry, no-DAST-target, SIGINT/SIGTERM-cancel and explicit-Cancel cases - and the
+flag-equivalence table), plus new Status-column rows for `--guided`, `--print-command`,
+`--requests-per-second` and `--request-budget`.
+`--i-own-target` and `--contact` already had accurate rows before this ticket - verified against the
+tree rather than assumed, so nothing needed adding there, only cross-referencing to the new section.
+`config/scanner.conf.example` gained a comment block stating plainly that `--guided`/`--print-command`
+have no `config/scanner.conf` key of their own, by design.
+
+**The honest answer this row asked for: there is no live gap today where guided mode walks through
+configuring a surface and then runs something not wired up.** `sast`, `sca`, `iac` and `dast` are each
+fully wired end to end (verified by reading `scan.sh`'s `_scan_guide_run`/G1-G9 and `lib/guide.sh`'s
+`guide_dast_configure`, not assumed from this document's own older wording). `cloud` is refused at the
+door - `_guide_g1_reachable cloud` is false on this tree because `modules/cloud/run.sh` does not exist,
+so G1 explains it is not built yet and loops back, asking nothing - the same treatment any other
+not-yet-built surface already gets here, not a special case invented for this ticket. `all` is honest in
+a different way worth stating precisely: it never reaches the `dast`/`cloud`-specific menus at all, so it
+only actually runs those two surfaces when `--target`/`--live` were already given on the command line
+before `--guided`, identically to non-guided `scan.sh all` - this is a real, user-facing gap in what "all"
+guided actually configures, and `docs/USAGE.md`'s new table says so rather than letting the menu's own
+"Everything this checkout can actually do" wording overstate it. This section's own older text above
+("guided mode is live even while DAST is inert") predates GUIDE-04 through GUIDE-06 landing and is now
+stale on that specific point - DAST's own guided wiring is complete, and `cloud` (not `dast`) is the
+surface this document's own honesty requirement is actually about today. One thing to re-verify the day
+a `cloud` module lands: `scan.sh`'s own `_guide_g1_status`/`_guide_g1_note_guided_setup_partial` already
+carry a forward-looking "guided setup for this is partial" message for that case, dormant because
+`cloud` is unreachable today - `docs/USAGE.md`'s table names this explicitly so it is not missed.
+
 See `ROADMAP.md` for where this plan sits in the project's overall priority order relative to step 6,
 step 7 and step 10 - that ordering, not this status section, is the one to check first.
 
@@ -942,7 +973,7 @@ guided mode itself needs; the rest already exist or arrive with DAST-32, which h
 | G4 authorise a new target | **none, deliberately** - the non-interactive equivalent is editing `config/scope.conf` |
 | G5 intensity | `--intensity passive\|safe\|active` |
 | G6 affirmation | `--i-own-target NAME` (must equal `--target`; mismatch is exit 2) |
-| G6 rate | `--requests-per-second N`, or `0` for no limit (the same key name `config/scanner.conf` already uses, so no second vocabulary is invented) |
+| G6 rate | `--requests-per-second N`, or `0` for no limit (the same key name `config/scanner.conf` already uses, so no second vocabulary is invented) - **corrected by GUIDE-04's own shipped implementation, see that ticket's landing note above: a literal `0` is refused (exit 4, "permits no requests at all"), and "No limit" instead emits the limiter's largest schema-legal rate, `999999999`** |
 | G6 budget | `--request-budget N` |
 | G6 side-effecting checks | `--allow-intrusive` |
 | G7 cloud live | `--live` (with `--profile`, `--regions`, `--assume-role` left at their defaults) |
