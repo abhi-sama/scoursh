@@ -8,8 +8,9 @@ There are two ways this project's suite gets run: a local daily runner on the ma
 
 - **`tools/daily-suite.sh` is the maintainer's real path, and it runs today.**
   It is described in full below: the BSD-userland assertion, the GNU leg via a container, the byte-for-byte cross-userland diff, and how to install its daily schedule.
-- **`.github/workflows/ci.yml` RUNS. The repository is public now, so both legs execute on every pull request.**
+- **`.github/workflows/ci.yml` RUNS. The repository is public now, but a `pull_request` run is Ubuntu-only.**
   This bullet used to say the workflow was dormant, and the mechanism it described was correct while it lasted: the `suite` job carries `if: ${{ !github.event.repository.private }}`, which the Actions scheduler evaluates before ever asking for a runner, so on a private repository the job was **skipped** rather than attempted - no red X from the missing-machine billing condition described under "Why" below. `abhi-sama/scoursh` is public, that condition is `false`, and the guard now lets the job through exactly as designed. **Keep the guard**: it is what makes the workflow safe to carry in a fork or if the repository is ever made private again.
+  By later, maintainer-directed change, the `suite` job's `if:` also skips the `macos-latest` leg specifically on a `pull_request` run (`matrix.os == 'macos-latest' && github.event_name == 'pull_request'`), because that leg (~2.5h) was the pole every PR waited on while the captain merges on the Ubuntu leg (~1.5h) alone. A `push` to `main` or `dev` still runs both legs, so a macOS-only regression is caught on `dev` before it is promoted to `main` - just after merge, not before it. The `compare` job (below) follows the same rule: it needs both legs' findings, so it is skipped (not failed) on a `pull_request` run and only runs on a `push`.
   A red check is therefore real information now. It is still **not** a merge gate - see the next bullet.
 
 Read that literally, because it changes what merging means **today**, regardless of which path this file describes:
@@ -32,7 +33,8 @@ That is an account-level compute-billing condition on *private* repositories, no
 Making the repository public removes that condition: hosted Actions is free for public repositories, and does not draw on the same private-repository minutes quota that is currently exhausted.
 That is the plan - the maintainer intends to make this repository public, and at that point `.github/workflows/ci.yml` starts running for real, giving forks and contributors, who do not have the maintainer's own machine, a real check with nothing to set up.
 The workflow's trigger was also part of why this account's Actions minutes were exhausted before that: it used to fire on both `push: ['**']` and `pull_request`, so every push to a branch with an open PR ran the whole matrix twice.
-It is now `push: [main]` plus `pull_request`, so a push to a branch with an open PR runs the matrix once, not twice, and a push to a branch with no PR runs it only if that branch is `main`.
+It became `push: [main]` plus `pull_request`, so a push to a branch with an open PR ran the matrix once, not twice, and a push to a branch with no PR ran it only if that branch was `main`.
+It is now `push: [main, dev]` plus `pull_request`, with the matrix itself split by trigger (see the bullet above): `pull_request` runs the Ubuntu leg only, and `push` to `main` or `dev` runs both legs. A push to a branch with an open PR still runs the matrix once per event, not twice - it is the same event that used to run the full matrix that now runs Ubuntu-only, and the fuller `push`-triggered run only happens once that branch's commits land on `dev`.
 
 Two things decided rather than inherited once Actions can run again:
 
@@ -238,7 +240,7 @@ This section used to be written in the future tense ("when the repository goes p
 
 What it changed:
 
-1. **`github.event.repository.private` is `false`**, so the `suite` job's `if:` guard stops skipping it and hosted Actions assigns machines (public repositories are free). `pull_request` and pushes to `main` produce real checks, with no workflow edit needed - and the first thing those real checks found was that the whole-tree `shellcheck` stage did not fit a hosted runner at all (see "the memory model" below).
+1. **`github.event.repository.private` is `false`**, so the `suite` job's `if:` guard stops skipping it and hosted Actions assigns machines (public repositories are free). `pull_request` and pushes to `main` produce real checks, with no workflow edit needed - and the first thing those real checks found was that the whole-tree `shellcheck` stage did not fit a hosted runner at all (see "the memory model" below). A later, maintainer-directed change split the matrix by trigger: `pull_request` runs `ubuntu-latest` only (and `compare` is skipped, since it needs both legs' findings), and `push` to `main` or `dev` runs both `ubuntu-latest` and `macos-latest` plus `compare`. The PR wait time this halves, and the macOS coverage this preserves on every commit that lands on `dev`, are both stated directly in `.github/workflows/ci.yml`'s own comments.
 2. **Branch protection becomes available**, per the 403 described above. Turning the `suite` and `compare` job names into required status checks is a natural next step, but it has NOT been done: by standing maintainer instruction CI does not gate merges here, and the verification gate remains a real local `bash tests/run-tests.sh` run.
 3. **"No automatic pass/fail" is no longer universally true.**
    It is now true only for pushes to non-default branches with no open PR, same as any other repository's Actions setup.

@@ -2916,11 +2916,22 @@ CI - see "The hosted workflow RUNS now - the repository went public - but it doe
 ## The hosted workflow RUNS now - the repository went public - but it does not gate merges
 
 **This section used to say the workflow was dormant. It is not: `abhi-sama/scoursh` is public, so the
-`suite` job's `if: ${{ !github.event.repository.private }}` guard evaluates true and both legs
-(`ubuntu-latest` GNU, `macos-latest` BSD) really execute on every pull request.**
+`suite` job's `if: ${{ !github.event.repository.private }}` guard evaluates true and the job really
+executes - but a `pull_request` run is now Ubuntu-only, not both legs.**
 That guard is still correct and still wanted - it is what made the job report `skipped` rather than a
 red X with zero steps while the repository was private and the account had no runner to assign - so do
 not remove it when troubleshooting a "why didn't CI run" question.
+
+**By later, maintainer-directed change, a PR waits on the Ubuntu leg alone.** The `suite` job's `if:`
+also skips the `macos-latest` leg specifically when `github.event_name == 'pull_request'`
+(`.github/workflows/ci.yml`), because that leg (~2.5h) was the pole every PR waited on while the
+maintainer merges on the Ubuntu leg (~1.5h). `push` to `main` or `dev` still runs both legs - `push`
+gained `dev` alongside `main` for exactly this - so a macOS-only regression is still caught on `dev`
+before it is promoted to `main`, just after merge rather than before it. The `compare` job (the
+tension-24 GNU/BSD findings diff) needs both legs' artifacts, so it carries the mirror condition
+(`if: github.event_name != 'pull_request'`) and is skipped, not failed, on a `pull_request` run. A
+skipped matrix leg or job reports neutral on GitHub, so this does not turn into a red X on the PR it is
+skipped on. Neither leg's own checks were weakened - only when the macOS leg and `compare` run moved.
 
 Two things follow, and they pull in opposite directions:
 
