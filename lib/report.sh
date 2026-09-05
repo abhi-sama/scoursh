@@ -59,6 +59,46 @@ declare -A _RPT_SEV_SUP=()
 _RPT_TOTAL=0
 _RPT_SUPPRESSED=0
 _RPT_LIVE=0
+_RPT_DAST_ZP_PHASES=0
+_RPT_DAST_INJ_TESTED=0
+
+# `_report_dast_injection_gap_state RUNDIR` - the counts behind the SPA/
+# zero-parameter banner (`_md_zero_injection_banner`/`_html_zero_injection_banner`
+# below): how many of this run's parameter-injection probes
+# (modules/dast/active/{sqli,xss,ssti,cmdi,pathtraversal,ldapi,nosqli,
+# protopollution,crlf,openredirect}.sh) found zero discovered request
+# parameters on their target, and how many distinct `DAST-INJ-*` checks (the
+# same family's own check-id namespace) DID run against a real one. Both are
+# read from facts those scripts already record - this adds no new run.json
+# field and changes nothing about what a check does, only what a reader is
+# told and where.
+#
+# `reason=no_parameter_inventory` is deliberately the ONLY string matched.
+# `reason=no_endpoint_inventory` is a distinct, separately-recorded reason
+# shared with non-injection phases (passive/cookies.sh, passive/banner.sh,
+# passive/cors.sh, active/hosthdr.sh, active/methods.sh, authz.sh,
+# graphql.sh) that operate on endpoints rather than discovered PARAMETERS and
+# run correctly against a thin endpoint surface - folding those in would flag
+# an ordinary passive-only run that never needed a parameter at all.
+_report_dast_injection_gap_state() {
+  local rundir=$1 line
+  _RPT_DAST_ZP_PHASES=0
+  _RPT_DAST_INJ_TESTED=0
+  if [[ -r $rundir/meta/coverage_reduction ]]; then
+    while IFS= read -r line; do
+      [[ $line == *'module=dast reason=no_parameter_inventory'* ]] || continue
+      _RPT_DAST_ZP_PHASES=$(( _RPT_DAST_ZP_PHASES + 1 ))
+    done <"$rundir/meta/coverage_reduction"
+  fi
+  if (( _RPT_DAST_ZP_PHASES > 0 )) && [[ -r $rundir/meta/checks_run ]]; then
+    local -A seen=()
+    while IFS= read -r line; do
+      [[ -n $line && $line == DAST-INJ-* && -z ${seen[$line]:-} ]] || continue
+      seen[$line]=1
+      _RPT_DAST_INJ_TESTED=$(( _RPT_DAST_INJ_TESTED + 1 ))
+    done <"$rundir/meta/checks_run"
+  fi
+}
 
 report_count() {
   local rundir=${1:-$SCOURSH_RUN_DIR} line
@@ -70,6 +110,7 @@ report_count() {
   _RPT_TOTAL=0
   _RPT_SUPPRESSED=0
   _RPT_LIVE=0
+  _report_dast_injection_gap_state "$rundir"
   [[ -s $rundir/findings.fields ]] || return 0
   local sev mod st ow
   while IFS= read -r line; do
@@ -479,6 +520,7 @@ report_md() {
       printf '> live credentials and must not be circulated.\n\n'
     fi
     _md_unrestricted_banner "$rundir"
+    _md_zero_injection_banner
     _md_diff_delta "$rundir"
     printf '## Severity\n\n| severity | live | accepted risk |\n|---|---|---|\n'
     local k
@@ -620,6 +662,56 @@ _md_findings() {
       printf '%s\n\n' "${_DF[remediation]}"
     fi
   done <"$rundir/findings.fields"
+}
+
+# `_md_zero_injection_banner` - the human-readable, top-of-report half of the
+# SPA/API-behind-JavaScript gap: a target whose crawl found endpoints but zero
+# discovered request PARAMETERS gets every injection probe (SQL injection,
+# XSS, SSTI, command/path/LDAP/NoSQL injection, CRLF, open redirect, prototype
+# pollution) reporting a clean severity table for a reason that has nothing to
+# do with the target's security. Each probe already records its own
+# `coverage_reduction`/`coverage_gap` (docs/FOUNDATION.md tension 21), but
+# those only reach run.json and the bottom-of-report Limitations section
+# (`_md_limitations`) - this restates the same, already-true fact where a
+# reader sees it BEFORE the severity table, in `_md_unrestricted_banner`'s own
+# blockquote style. Uses only integers computed by
+# `_report_dast_injection_gap_state` (via `report_count`, already called by
+# every caller of this file's own `report_md`/`report_html`), so nothing here
+# needs escaping.
+#
+# Two distinct messages, never one, because a run that tested SOME parameters
+# is not the same claim as a run that tested NONE - see the acceptance
+# criterion this exists for: "a partial-coverage run reports the truth, not a
+# blanket claim".
+# SC2016: the Markdown code spans below are literal output, not command
+# substitution - the same note report_md itself already carries.
+# shellcheck disable=SC2016
+_md_zero_injection_banner() {
+  (( ${_RPT_DAST_ZP_PHASES:-0} > 0 )) || return 0
+  if (( ${_RPT_DAST_INJ_TESTED:-0} == 0 )); then
+    printf '> **No injection test was actually sent - this is NOT a clean result.**\n'
+    printf '> %s discovered-parameter probe(s) in this run (SQL injection, XSS, command\n' \
+      "$_RPT_DAST_ZP_PHASES"
+    printf '> injection, path/LDAP/NoSQL injection, SSTI, CRLF, open redirect, prototype\n'
+    printf '> pollution) found ZERO request parameters on this target and sent no payload\n'
+    printf '> at all. A quiet severity table below means these checks never ran, not that\n'
+    printf '> they ran and found nothing - the common cause is a single-page application\n'
+    printf '> whose real API is reached only by in-browser JavaScript, invisible to the\n'
+    printf '> static crawler (docs/DESIGN.md §7.5). To fix: point `config/discovery.conf`\n'
+    printf '> at an OpenAPI spec, GraphQL schema, Postman collection, or HAR capture of\n'
+    printf '> real traffic for this target (the\n'
+    printf '> `openapi-path`/`graphql-schema-path`/`postman-path`/`har-path` keys,\n'
+    printf '> `rules/RULE-FORMAT.md` §9.6.3), then re-run.\n\n'
+  else
+    printf '> **Partial injection coverage.** %s of the discovered-parameter probes in\n' \
+      "$_RPT_DAST_ZP_PHASES"
+    printf '> this run found zero parameters to test on this target, while %s check(s)\n' \
+      "$_RPT_DAST_INJ_TESTED"
+    printf '> ran against real ones. The severity table below reflects only what was\n'
+    printf '> actually tested - see "Limitations and coverage" for exactly which probes\n'
+    printf '> were skipped and why, and consider supplying `config/discovery.conf`\n'
+    printf '> (OpenAPI/GraphQL/Postman/HAR) to close the gap.\n\n'
+  fi
 }
 
 # DAST-34's report half.  The banner is plain text through the ordinary
@@ -953,6 +1045,7 @@ _html_summary() {
     printf '<p class="banner">Redaction is DISABLED for this run. This report may contain live credentials and must not be circulated.</p>\n'
   fi
   _html_unrestricted_banner "$rundir"
+  _html_zero_injection_banner
   printf '<nav class="toc"><p>On this page</p><ul>\n'
   printf '<li><a href="#severity">Severity</a></li>\n'
   printf '<li><a href="#since-last-scan">Since the last scan</a></li>\n'
@@ -1098,6 +1191,23 @@ _html_unrestricted_banner() {
   done <"$rundir/meta/limits_relaxed"
   (( any )) && printf '</ul></div>\n'
   return 0
+}
+
+# The HTML twin of `_md_zero_injection_banner` - same condition, same two
+# messages, same reused `.banner` class, and the same "read this before the
+# severity table" placement `_html_unrestricted_banner` already established.
+# The two integers it prints come only from `_report_dast_injection_gap_state`
+# (via `report_count`), so nothing here is target-derived and nothing needs
+# `html_escape`.
+_html_zero_injection_banner() {
+  (( ${_RPT_DAST_ZP_PHASES:-0} > 0 )) || return 0
+  if (( ${_RPT_DAST_INJ_TESTED:-0} == 0 )); then
+    printf '<div class="banner"><p><strong>No injection test was actually sent - this is NOT a clean result.</strong> %s discovered-parameter probe(s) in this run (SQL injection, XSS, command injection, path/LDAP/NoSQL injection, SSTI, CRLF, open redirect, prototype pollution) found ZERO request parameters on this target and sent no payload at all. A quiet severity table below means these checks never ran, not that they ran and found nothing - the common cause is a single-page application whose real API is reached only by in-browser JavaScript, invisible to the static crawler (docs/DESIGN.md &sect;7.5). To fix: point <code>config/discovery.conf</code> at an OpenAPI spec, GraphQL schema, Postman collection, or HAR capture of real traffic for this target (the <code>openapi-path</code>/<code>graphql-schema-path</code>/<code>postman-path</code>/<code>har-path</code> keys, <code>rules/RULE-FORMAT.md</code> &sect;9.6.3), then re-run.</p></div>\n' \
+      "$_RPT_DAST_ZP_PHASES"
+  else
+    printf '<div class="banner"><p><strong>Partial injection coverage.</strong> %s of the discovered-parameter probes in this run found zero parameters to test on this target, while %s check(s) ran against real ones. The severity table below reflects only what was actually tested - see "Limitations and coverage" for exactly which probes were skipped and why, and consider supplying <code>config/discovery.conf</code> (OpenAPI/GraphQL/Postman/HAR) to close the gap.</p></div>\n' \
+      "$_RPT_DAST_ZP_PHASES" "$_RPT_DAST_INJ_TESTED"
+  fi
 }
 
 _html_limitations() {
