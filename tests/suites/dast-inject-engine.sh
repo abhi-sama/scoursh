@@ -481,4 +481,82 @@ assert_contains "$FORM_LOG" 'ctype=application/x-www-form-urlencoded' \
 assert_contains "$FORM_LOG" 'body=email=PAYLOAD&password=1' \
   'the form body is unchanged, byte for byte, from before IMPORT-02 - FAILS under a reading where the new JSON composer is consulted even for a form (non-json) endpoint'
 
+# ===========================================================================
+printf '== dast inject_engine: IMPORT-03/04 - an IMPORTED json-body parameter reaches inject_send end to end ==\n'
+# ===========================================================================
+# Everything above drives inject_send directly, by hand-populating its own
+# _INJ_* arrays - proof that the SENDER composes correctly, given the right
+# input. What is proven here is the other half: that crawl_spec_openapi's OWN
+# written endpoints.json/parameters.json - the artifact an operator's spec
+# actually produces (docs/INVENTORY-FORMAT.md) - is read back by
+# inject_inventory_load into exactly the input the sender needs. This is the
+# api-surface-import scout report's own closing ask: "prove an imported
+# parameter reaches an injection check", against the report's own Juice Shop
+# reproduction shape (a nested requestBody field, resolved through $ref).
+IMPORT_SPEC=$W/import-order-spec.json
+cat >"$IMPORT_SPEC" <<'EOF'
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/orders": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/Order"}
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Order": {
+        "type": "object",
+        "properties": {
+          "orderLines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "productId": {"type": "string", "example": "p1"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+EOF
+IMPORT_INV=$W/import-inventory
+mkdir -p "$IMPORT_INV"
+crawl_inv_reset
+crawl_spec_openapi "$IMPORT_SPEC" inj-fixture https://inj.fixture.example \
+  || _t_no 'the fixture requestBody parsed' "$_CRAWL_SPEC_ERROR"
+crawl_inv_write_endpoints "$IMPORT_INV/endpoints.json"
+crawl_inv_write_parameters "$IMPORT_INV/parameters.json"
+
+_INJ_N=0
+inject_inventory_load "$IMPORT_INV/endpoints.json" "$IMPORT_INV/parameters.json"
+
+assert_eq 1 "$_INJ_N" \
+  'the written, then re-read, inventory carries exactly the one body parameter the requestBody schema resolved to - FAILS if inject_inventory_load reads a different shape than crawl_inv_write_endpoints/write_parameters actually write'
+assert_eq '/orderLines/0/productId' "${_INJ_NAME[0]:-}" 'its name is the RFC 6901 pointer the OpenAPI resolver built'
+assert_eq json "${_INJ_EP_BODY_TYPE[${_INJ_EPID[0]}]:-}" \
+  'and the endpoint it joins to is read back as request_body_type=json - FAILS if the field written by crawl_inv_write_endpoints and the key inject_inventory_load reads have drifted apart'
+
+: >"$REQ_LOG"
+SCOURSH_HTTP_TRANSPORT=_inj_json_transport
+import_rc=0
+inject_send 0 PAYLOAD || import_rc=$?
+IMPORT_LOG=$(cat "$REQ_LOG")
+
+assert_eq 0 "$import_rc" 'the imported parameter sends successfully'
+assert_contains "$IMPORT_LOG" 'ctype=application/json' \
+  'Content-Type is application/json, read from the IMPORTED request_body_type field rather than assumed'
+assert_contains "$IMPORT_LOG" 'body={"orderLines":[{"productId":"PAYLOAD"}]}' \
+  'the payload lands nested at the exact pointer the requestBody schema described - this is the api-surface-import scout report'"'"'s own §1b reproduction, now reaching a live probe instead of finding zero parameters to test'
+
 t_summary 'dast-inject-engine'
