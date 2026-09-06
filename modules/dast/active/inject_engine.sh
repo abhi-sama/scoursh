@@ -180,9 +180,9 @@ inject_inventory_load() {
   local epf=${1:-${SCOURSH_DAST_ENDPOINTS:-}} pf=${2:-${SCOURSH_DAST_PARAMETERS:-}}
   local phase=${3:-inject}
   local sep=$'\x1f' p type v idx key rest last_idx=''
-  declare -gA _INJ_EP_METHOD=() _INJ_EP_URL=() _INJ_EP_PATH=()
+  declare -gA _INJ_EP_METHOD=() _INJ_EP_URL=() _INJ_EP_PATH=() _INJ_EP_BODY_TYPE=()
   declare -ga _INJ_TARGET=() _INJ_METHOD=() _INJ_URL=() _INJ_PATH=()
-  declare -ga _INJ_NAME=() _INJ_LOCATION=() _INJ_EXAMPLE=() _INJ_EPID=()
+  declare -ga _INJ_NAME=() _INJ_LOCATION=() _INJ_EXAMPLE=() _INJ_EPID=() _INJ_BODY_TYPE=()
   declare -g _INJ_N=0 _INJ_TRUNCATED=0
   # The accumulator is reset per load, so a second phase in the same process
   # never inherits the first one's count. Guarded because a direct-engine suite
@@ -253,7 +253,8 @@ inject_inventory_load() {
 _inject_flush_endpoint() {
   local arrname=$1
   local idr="${arrname}[id]" mr="${arrname}[method]" ur="${arrname}[url]" pr="${arrname}[path]"
-  local id=${!idr:-} m=${!mr:-GET} u=${!ur:-} pa=${!pr:-}
+  local btr="${arrname}[request_body_type]"
+  local id=${!idr:-} m=${!mr:-GET} u=${!ur:-} pa=${!pr:-} bt=${!btr:-form}
   [[ -n $id && -n $u ]] || return 0
   # The scope pre-check, applied where the row enters the arrays rather than
   # where the request leaves - see `inject_inventory_load`'s header. Guarded,
@@ -263,9 +264,19 @@ _inject_flush_endpoint() {
   if declare -F dast_endpoint_keep >/dev/null; then
     dast_endpoint_keep "$u" || return 0
   fi
+  # `request_body_type` (IMPORT-02, docs/INVENTORY-FORMAT.md §3): an OPTIONAL
+  # endpoint field, additive to `scoursh.inventory.endpoints/1` (§9 - removing
+  # or repurposing a field is a major bump; adding one is not). Absent, or
+  # anything other than the literal `json`, degrades to `form` - the behaviour
+  # every endpoint had before this field existed - rather than rejecting the
+  # row or guessing: an unrecognised value here is exactly the "out-of-
+  # vocabulary input from an untrusted producer" shape docs/INVENTORY-FORMAT.md
+  # §6 already treats as fail-safe-degrade, not fail-closed.
+  [[ $bt == json ]] || bt=form
   _INJ_EP_METHOD[$id]=$m
   _INJ_EP_URL[$id]=$u
   _INJ_EP_PATH[$id]=$pa
+  _INJ_EP_BODY_TYPE[$id]=$bt
 }
 
 _inject_flush_param() {
@@ -279,11 +290,12 @@ _inject_flush_param() {
   # trust), so it is skipped rather than guessed at. The parameter's own `url`
   # is a fallback for the location/method, since a HAR/OpenAPI parameter carries
   # both even when its endpoint row was dropped.
-  local method url path
+  local method url path body_type
   if [[ -n $epid && -n ${_INJ_EP_URL[$epid]:-} ]]; then
     method=${_INJ_EP_METHOD[$epid]:-GET}
     url=${_INJ_EP_URL[$epid]}
     path=${_INJ_EP_PATH[$epid]:-}
+    body_type=${_INJ_EP_BODY_TYPE[$epid]:-form}
   elif [[ -n $u ]]; then
     # This branch is the one path by which a URL reaches a request WITHOUT
     # having passed `_inject_flush_endpoint`'s pre-check: the parameter's own
@@ -296,6 +308,9 @@ _inject_flush_param() {
     method=${m:-GET}
     url=$u
     path=''
+    # No endpoint row means no `request_body_type` to read either; default to
+    # `form`, the same fail-safe `_inject_flush_endpoint` applies.
+    body_type=form
   else
     return 0
   fi
@@ -311,6 +326,7 @@ _inject_flush_param() {
   _INJ_LOCATION+=("$loc")
   _INJ_EXAMPLE+=("$ex")
   _INJ_EPID+=("${epid:-}")
+  _INJ_BODY_TYPE+=("$body_type")
   _INJ_N=$(( _INJ_N + 1 ))
 }
 
@@ -329,6 +345,172 @@ inject_benign_value() {
 }
 
 # ---------------------------------------------------------------------------
+# 2a. The JSON request-body model (IMPORT-02, docs/INVENTORY-FORMAT.md §3)
+# ---------------------------------------------------------------------------
+# A `request_body_type=json` endpoint sends ONE JSON document composed from
+# every `body`-location parameter, rather than the flat form-urlencoded blob
+# every endpoint gets today. A parameter's `name` is then not a form field but
+# an RFC 6901 JSON pointer (`/email`, `/orderLines/0/productId`) naming where
+# in that document its value belongs; a bare name with no leading `/` is
+# treated as a single top-level key, so `email` keeps meaning exactly what it
+# always did. This mirrors `_xs_send_xml` (`xxe_ssrf.sh`): compose one body,
+# set its own Content-Type, and never let a second body model coexist in the
+# same request.
+#
+# The three functions below build the document from the flat leaf list
+# `inject_send` accumulates per request (`_INJ_JB_PATH`/`_INJ_JB_VAL`,
+# reset every call): `_inject_json_node` decides, PER LEVEL, whether that
+# level is a JSON array or a JSON object - an array iff every immediate child
+# key at it is a canonical RFC 6901 array index (`0`, `12`, never `01`) -
+# and recurses; `_inject_json_child` is a leaf's own value when one exists
+# exactly there, else the nested node under it. Every value passes through
+# `json_string` (lib/core.sh), the repository's one JSON-string writer
+# (docs/INVENTORY-FORMAT.md §6), because a parameter's payload is exactly the
+# kind of attacker/probe-controlled text that writer exists for.
+
+# `_inject_json_pointer_split POINTER` - splits an RFC 6901 pointer into
+# `_INJ_PTR_SEGS`, decoding the two pointer escapes in the RFC's own order
+# (`~1` -> `/` first, then `~0` -> `~`, so `~01` decodes to the one-character
+# `~1` rather than a stray `/`). A NAME with no leading `/` is not a pointer
+# at all - treated as one top-level key, so a flat body parameter (`email`)
+# never has to be rewritten as `/email` to keep working.
+_inject_json_pointer_split() {
+  local ptr=$1
+  _INJ_PTR_SEGS=()
+  if [[ -z $ptr ]]; then
+    return 0
+  fi
+  if [[ ${ptr:0:1} != / ]]; then
+    _INJ_PTR_SEGS=("$ptr")
+    return 0
+  fi
+  local rest=${ptr#/}
+  local IFS=/
+  read -r -a _INJ_PTR_SEGS <<<"$rest"
+  local i seg
+  for (( i = 0; i < ${#_INJ_PTR_SEGS[@]}; i++ )); do
+    seg=${_INJ_PTR_SEGS[$i]}
+    seg=${seg//~1//}
+    seg=${seg//~0/~}
+    _INJ_PTR_SEGS[i]=$seg
+  done
+}
+
+# `_inject_json_leaf_add NAME VALUE` - records one `body`-location parameter's
+# resolved value (the payload under test, or a sibling's benign value) at its
+# JSON pointer, into the flat leaf tables `_inject_json_build` renders from.
+# Segments are joined by 0x1f, the same separator `crawl_json_flatten` already
+# uses for a path (docs/INVENTORY-FORMAT.md §7), so a segment containing a
+# literal `/` (already decoded out of `~1` above) can never be confused with a
+# path boundary.
+_inject_json_leaf_add() {
+  local name=$1 val=$2
+  _inject_json_pointer_split "$name"
+  (( ${#_INJ_PTR_SEGS[@]} > 0 )) || return 0
+  local joined='' seg first=1
+  for seg in "${_INJ_PTR_SEGS[@]+"${_INJ_PTR_SEGS[@]}"}"; do
+    if (( first )); then joined=$seg; first=0; else joined+=$'\x1f'"$seg"; fi
+  done
+  _INJ_JB_PATH+=("$joined")
+  _INJ_JB_VAL+=("$val")
+  _INJ_JB_N=$(( _INJ_JB_N + 1 ))
+}
+
+# `_inject_json_child CHILDPREFIX` - prints a leaf's own value when
+# CHILDPREFIX names one exactly, else the nested object/array under it.
+_inject_json_child() {
+  local childprefix=$1
+  local i
+  for (( i = 0; i < _INJ_JB_N; i++ )); do
+    if [[ ${_INJ_JB_PATH[$i]} == "$childprefix" ]]; then
+      json_string "${_INJ_JB_VAL[$i]}"
+      return 0
+    fi
+  done
+  _inject_json_node "$childprefix"
+}
+
+# `_inject_json_node PREFIX` - prints the JSON value built from every
+# `_INJ_JB_PATH` entry immediately or transitively under PREFIX (empty for
+# the document root). See the section header above for the array/object
+# decision.
+_inject_json_node() {
+  local prefix=$1
+  local -a child_keys=()
+  local -A seen=()
+  local i path relative first
+  for (( i = 0; i < _INJ_JB_N; i++ )); do
+    path=${_INJ_JB_PATH[$i]}
+    if [[ -z $prefix ]]; then
+      relative=$path
+    else
+      case $path in
+        "$prefix"$'\x1f'*) relative=${path#"$prefix"$'\x1f'} ;;
+        *) continue ;;
+      esac
+    fi
+    [[ -n $relative ]] || continue
+    first=${relative%%$'\x1f'*}
+    if [[ -z ${seen[$first]+x} ]]; then
+      seen[$first]=1
+      child_keys+=("$first")
+    fi
+  done
+
+  if (( ${#child_keys[@]} == 0 )); then
+    printf 'null'
+    return 0
+  fi
+
+  # A level is an array iff EVERY immediate child key at it is a canonical
+  # non-negative integer (RFC 6901's own array-index grammar - `0`, `12`,
+  # never `01` or anything non-numeric). One non-numeric key anywhere at a
+  # level makes the whole level an object instead, which is the same rule a
+  # human reading a mixed set of keys would apply.
+  local is_array=1
+  for first in "${child_keys[@]+"${child_keys[@]}"}"; do
+    [[ $first =~ ^(0|[1-9][0-9]*)$ ]] || { is_array=0; break; }
+  done
+
+  local out sep='' childprefix
+  if (( is_array )); then
+    local -a sorted=()
+    while IFS= read -r first; do
+      [[ -n $first ]] && sorted+=("$first")
+    done < <(printf '%s\n' "${child_keys[@]+"${child_keys[@]}"}" | sort -n)
+    out='['
+    for first in "${sorted[@]+"${sorted[@]}"}"; do
+      [[ -z $prefix ]] && childprefix=$first || childprefix="$prefix"$'\x1f'"$first"
+      out+="$sep$(_inject_json_child "$childprefix")"
+      sep=','
+    done
+    out+=']'
+  else
+    out='{'
+    for first in "${child_keys[@]+"${child_keys[@]}"}"; do
+      [[ -z $prefix ]] && childprefix=$first || childprefix="$prefix"$'\x1f'"$first"
+      out+="$sep$(json_string "$first"):$(_inject_json_child "$childprefix")"
+      sep=','
+    done
+    out+='}'
+  fi
+  printf '%s' "$out"
+}
+
+# `_inject_json_build` - sets `_INJ_JSON_DOC` to the document rendered from
+# the current `_INJ_JB_*` leaf tables, or `{}` when the endpoint carried no
+# `body`-location parameter at all. A JSON endpoint with nothing to inject
+# still needs SOME valid JSON body to send; an empty object is the
+# conservative choice, never invented content.
+_inject_json_build() {
+  if (( _INJ_JB_N == 0 )); then
+    _INJ_JSON_DOC='{}'
+    return 0
+  fi
+  _INJ_JSON_DOC=$(_inject_json_node "")
+}
+
+# ---------------------------------------------------------------------------
 # 3. Request composition + send (the one door to the network)
 # ---------------------------------------------------------------------------
 # `inject_send INDEX VALUE` - send endpoint `_INJ_*[INDEX]` with its own
@@ -343,13 +525,21 @@ inject_benign_value() {
 # THE INJECTED VALUE GOES WHERE THE PARAMETER'S `location` SAYS, which is the
 # whole point of docs/INVENTORY-FORMAT.md §3's location vocabulary and
 # docs/DESIGN.md §7.3's "query params, body/JSON fields, headers, and path
-# segments - not just top-level query strings".
+# segments - not just top-level query strings". A `body`-location parameter on
+# an endpoint whose `request_body_type` is `json` (IMPORT-02) is composed into
+# ONE JSON document instead of the flat form-urlencoded body every other
+# endpoint gets - see section 2a.
 inject_send() {
   local index=$1 value=$2
   local epid=${_INJ_EPID[$index]} inj_name=${_INJ_NAME[$index]} inj_loc=${_INJ_LOCATION[$index]}
   local method=${_INJ_METHOD[$index]} base=${_INJ_URL[$index]} tmpl_path=${_INJ_PATH[$index]}
   local target=${_INJ_TARGET[$index]:-${SCOURSH_DAST_TARGET:-}}
+  local body_type=${_INJ_BODY_TYPE[$index]:-form}
   _INJ_STATUS='' _INJ_BODY='' _INJ_ELAPSED_NS=0 _INJ_SENT_URL='' _INJ_HEADERS=''
+  # Reset every call (IMPORT-02): these never carry over from a prior
+  # inject_send invocation, exactly like every other `_INJ_*` scratch state
+  # reset above.
+  _INJ_JB_PATH=() _INJ_JB_VAL=() _INJ_JB_N=0 _INJ_JSON_DOC=''
 
   # graphql is a body/operation shape DAST-25/DAST-27 own, not a scalar this
   # engine can substitute one field of; a path segment with no template slot to
@@ -389,9 +579,27 @@ inject_send() {
         inject_urlencode "$jv"; enc=$_INJ_ENC
         inject_urlencode "$jn"; query+=("$_INJ_ENC=$enc")
         ;;
-      body|formData)
-        inject_urlencode "$jv"; enc=$_INJ_ENC
-        inject_urlencode "$jn"; form+=("$_INJ_ENC=$enc")
+      body)
+        # IMPORT-02: on a `json` endpoint, `name` is an RFC 6901 pointer into
+        # ONE composed document rather than a form field - see section 2a.
+        if [[ $body_type == json ]]; then
+          _inject_json_leaf_add "$jn" "$jv"
+        else
+          inject_urlencode "$jv"; enc=$_INJ_ENC
+          inject_urlencode "$jn"; form+=("$_INJ_ENC=$enc")
+        fi
+        ;;
+      formData)
+        # A `json` endpoint sends ONE body; a `formData` sibling is dropped
+        # rather than merged into the JSON document, the same "two body
+        # models cannot coexist in one request" rule `_xs_send_xml` already
+        # applies to an XML body's own `body`/`formData` siblings.
+        if [[ $body_type == json ]]; then
+          :
+        else
+          inject_urlencode "$jv"; enc=$_INJ_ENC
+          inject_urlencode "$jn"; form+=("$_INJ_ENC=$enc")
+        fi
         ;;
       header)
         # A header value carrying CR/LF is refused by http_request_header as
@@ -448,7 +656,16 @@ inject_send() {
     http_request_header "${hdr_names[$hi]}" "${hdr_values[$hi]}"
   done
   [[ -n $cookie ]] && http_request_header Cookie "$cookie"
-  if (( ${#form[@]} > 0 )); then
+  # IMPORT-02: a `json` endpoint always sends the composed document (even an
+  # empty `{}` when it had no `body`-location parameter) and the form arm is
+  # suppressed outright, never merely skipped-when-empty - two body models
+  # cannot coexist in one request, mirroring `_xs_send_xml`. A `form`
+  # endpoint is byte-identical to before this ticket.
+  if [[ $body_type == json ]]; then
+    _inject_json_build
+    http_request_header Content-Type application/json
+    http_request_body "$_INJ_JSON_DOC"
+  elif (( ${#form[@]} > 0 )); then
     http_request_header Content-Type application/x-www-form-urlencoded
     local IFS='&'
     http_request_body "${form[*]}"

@@ -381,4 +381,104 @@ assert_eq 1 "$json_rc" \
 assert_eq '' "$(cat "$REQ_LOG")" \
   'and NO request was sent at all - FAILS under the pre-fix reading proven above, which sent a real request with the payload nowhere in it'
 
+# ===========================================================================
+printf '== dast inject_engine: IMPORT-02 - a json endpoint composes ONE application/json body ==\n'
+# ===========================================================================
+# `request_body_type=json` (docs/INVENTORY-FORMAT.md §2/§3) turns every
+# `body`-location sibling into leaves of ONE JSON document instead of a flat
+# form-urlencoded blob, with the payload under test at its own pointer and
+# every sibling at its benign value. `_inj_json_transport` logs the outgoing
+# Content-Type (read off `_HTTP_TX_HEADERS`, the same globals
+# `_http_transport_default` itself sends from) and the outgoing body
+# (`_HTTP_TX_BODY`) so the assertions below read what was actually composed,
+# not a return value.
+_inj_json_transport() {
+  local method=$1 path=$5
+  printf '%s %s ' "$method" "$path" >>"$REQ_LOG"
+  local h
+  for h in "${_HTTP_TX_HEADERS[@]}"; do
+    [[ $h == Content-Type:* ]] && printf 'ctype=%s ' "${h#Content-Type: }" >>"$REQ_LOG"
+  done
+  printf 'body=%s\n' "$_HTTP_TX_BODY" >>"$REQ_LOG"
+  [[ -n ${_HTTP_TX_BODY_OUT:-} ]] && printf 'ok' >"$_HTTP_TX_BODY_OUT"
+  printf '200\n\ntext/plain\n'
+}
+
+: >"$REQ_LOG"
+_INJ_N=2
+_INJ_TARGET=(inj-fixture inj-fixture)
+_INJ_METHOD=(POST POST)
+_INJ_URL=(https://inj.fixture.example/login https://inj.fixture.example/login)
+_INJ_PATH=('' '')
+_INJ_NAME=(/email /password)
+_INJ_LOCATION=(body body)
+_INJ_EXAMPLE=('' '')
+_INJ_EPID=(ep-json ep-json)
+_INJ_BODY_TYPE=(json json)
+
+SCOURSH_HTTP_TRANSPORT=_inj_json_transport
+json_rc=0
+inject_send 0 PAYLOAD || json_rc=$?
+JSON_LOG=$(cat "$REQ_LOG")
+
+assert_eq 0 "$json_rc" 'a json endpoint sends successfully'
+assert_contains "$JSON_LOG" 'ctype=application/json' \
+  'Content-Type is application/json - FAILS if request_body_type is ignored and the old form-urlencoded Content-Type is sent instead'
+assert_contains "$JSON_LOG" 'body={"email":"PAYLOAD","password":"1"}' \
+  'the composed document has the payload at /email and the sibling benign value at /password, as ONE JSON object - FAILS under the old flat reading, which would send "email=PAYLOAD&password=1" as a form-urlencoded body instead'
+
+# ===========================================================================
+printf '== dast inject_engine: IMPORT-02 - a nested RFC 6901 pointer nests the payload, never flattens it ==\n'
+# ===========================================================================
+: >"$REQ_LOG"
+_INJ_N=1
+_INJ_TARGET=(inj-fixture)
+_INJ_METHOD=(POST)
+_INJ_URL=(https://inj.fixture.example/orders)
+_INJ_PATH=('')
+_INJ_NAME=(/orderLines/0/productId)
+_INJ_LOCATION=(body)
+_INJ_EXAMPLE=('')
+_INJ_EPID=(ep-nested)
+_INJ_BODY_TYPE=(json)
+
+SCOURSH_HTTP_TRANSPORT=_inj_json_transport
+nested_rc=0
+inject_send 0 PAYLOAD || nested_rc=$?
+NESTED_LOG=$(cat "$REQ_LOG")
+
+assert_eq 0 "$nested_rc" 'a nested-pointer json endpoint sends successfully'
+assert_contains "$NESTED_LOG" 'body={"orderLines":[{"productId":"PAYLOAD"}]}' \
+  'the pointer /orderLines/0/productId nests the payload inside an array of one object at the right key - FAILS under a flattening reading, which would send a single top-level key literally named "orderLines/0/productId" (or a dotted "orderLines.0.productId" string) instead of a nested structure'
+
+# ===========================================================================
+printf '== dast inject_engine: IMPORT-02 - a form endpoint (the default) is byte-identical to before ==\n'
+# ===========================================================================
+# request_body_type defaults to `form`, so an endpoint that never set the
+# field - every endpoint before this ticket - must behave exactly as it did:
+# the same Content-Type, the same urlencoded body, and the JSON composer is
+# never even consulted.
+: >"$REQ_LOG"
+_INJ_N=2
+_INJ_TARGET=(inj-fixture inj-fixture)
+_INJ_METHOD=(POST POST)
+_INJ_URL=(https://inj.fixture.example/login https://inj.fixture.example/login)
+_INJ_PATH=('' '')
+_INJ_NAME=(email password)
+_INJ_LOCATION=(body body)
+_INJ_EXAMPLE=('' '')
+_INJ_EPID=(ep-form ep-form)
+_INJ_BODY_TYPE=()
+
+SCOURSH_HTTP_TRANSPORT=_inj_json_transport
+form_rc=0
+inject_send 0 PAYLOAD || form_rc=$?
+FORM_LOG=$(cat "$REQ_LOG")
+
+assert_eq 0 "$form_rc" 'a plain (non-json) endpoint still sends successfully'
+assert_contains "$FORM_LOG" 'ctype=application/x-www-form-urlencoded' \
+  'a form endpoint still gets the classic form-urlencoded Content-Type - FAILS if json became the default and every existing probe silently switched body models'
+assert_contains "$FORM_LOG" 'body=email=PAYLOAD&password=1' \
+  'the form body is unchanged, byte for byte, from before IMPORT-02 - FAILS under a reading where the new JSON composer is consulted even for a form (non-json) endpoint'
+
 t_summary 'dast-inject-engine'
