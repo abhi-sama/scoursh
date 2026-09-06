@@ -7,19 +7,28 @@ name: tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
 
 jobs:
   suite:
     strategy:
       fail-fast: false
+      # The `matrix` context is not available in a job-level `if:` (only
+      # `github`, `inputs`, `needs` and `vars` are - actionlint catches this,
+      # a real schema violation the first version of this change shipped and
+      # that silently zeroed out every job on every trigger), so narrowing a
+      # single matrix leg by trigger has to happen in the matrix itself.
+      #
+      # A `pull_request` run gets the `ubuntu-latest` entry alone: that leg
+      # (~1.5h) is what a PR waits on, by maintainer-directed change, and the
+      # macOS leg (~2.5h) - the pole every PR used to wait on - is not even
+      # generated as a job on that trigger, rather than generated and skipped.
+      # Every other trigger (a `push` to `main` or `dev`) still gets both
+      # legs, so a macOS-only regression is caught there before `dev` is
+      # promoted to `main`.
       matrix:
-        include:
-          - os: ubuntu-latest
-            userland: GNU coreutils
-          - os: macos-latest
-            userland: BSD
+        include: ${{ github.event_name == 'pull_request' && fromJSON('[{"os":"ubuntu-latest","userland":"GNU coreutils"}]') || fromJSON('[{"os":"ubuntu-latest","userland":"GNU coreutils"},{"os":"macos-latest","userland":"BSD"}]') }}
     # The repository is PUBLIC, so this evaluates true and the job runs for
     # real. The guard is kept rather than deleted: on a private repository
     # hosted Actions cannot start a run here at all (a billing condition,
@@ -175,7 +184,12 @@ jobs:
   compare:
     # tension 24's actual requirement: the suite fails if a finding, a
     # fingerprint, or a findings.jsonl byte differs between the two userlands.
+    # It has nothing to compare on a `pull_request` run, since the macOS leg
+    # above is not generated there - so this job is skipped too, rather than
+    # failing on a missing macOS artifact. It still runs on every `push` to
+    # `dev` or `main`, where both legs did.
     needs: suite
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
