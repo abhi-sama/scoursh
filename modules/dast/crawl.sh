@@ -696,6 +696,26 @@ _crawl_run_phase() {
     run_record coverage_gap "dast/crawl: $_CRAWL_PARAM_INVALID_HEADER_NAME header-location parameter(s) on target '$(crawl_safe_text "$target" 80)' carried a name that is not an RFC 7230 token and were DISCARDED rather than stored, so they are absent from every later check"
     run_record coverage_reduction "module=dast phase=crawl reason=param_invalid_header_name target=$(crawl_safe_text "$target" 80) count=${_CRAWL_PARAM_INVALID_HEADER_NAME:-0}"
   fi
+  # IMPORT-03: an OpenAPI/Swagger requestBody's $ref chain that loops or nests
+  # past the resolver's bound, and a 3.1 oneOf/anyOf resolved from only its
+  # first subschema, both cost a real body field - counted rather than the
+  # silent drop the resolver's own header describes.
+  if (( ${_CRAWL_SPEC_REF_UNRESOLVED:-0} > 0 )); then
+    run_record coverage_gap "dast/crawl: ${_CRAWL_SPEC_REF_UNRESOLVED} \$ref chain(s) in the OpenAPI/Swagger document for target '$(crawl_safe_text "$target" 80)' could not be resolved - a loop, an external/unsupported reference target, or nesting past the resolver's depth bound - so the body field(s) they would have described are absent from this run's inventory"
+    run_record coverage_reduction "module=dast phase=crawl reason=openapi_ref_unresolved target=$(crawl_safe_text "$target" 80) count=${_CRAWL_SPEC_REF_UNRESOLVED}"
+  fi
+  if (( ${_CRAWL_SPEC_POLY_UNSUPPORTED:-0} > 0 )); then
+    run_record coverage_gap "dast/crawl: ${_CRAWL_SPEC_POLY_UNSUPPORTED} OpenAPI 3.1 oneOf/anyOf construct(s) for target '$(crawl_safe_text "$target" 80)' were resolved using only their FIRST subschema, so a body field that exists only in a later branch is absent from this run's inventory"
+    run_record coverage_reduction "module=dast phase=crawl reason=openapi_polymorphism_first_subschema target=$(crawl_safe_text "$target" 80) count=${_CRAWL_SPEC_POLY_UNSUPPORTED}"
+  fi
+  # IMPORT-04: a HAR entry naming a non-http(s) scheme, or one this run could
+  # not re-base onto its own authorised base-url, used to be a silent
+  # `continue` - now counted the same way an invalid location or header name
+  # already is above.
+  if (( ${_CRAWL_HAR_DROPPED:-0} > 0 )); then
+    run_record coverage_gap "dast/crawl: ${_CRAWL_HAR_DROPPED} HAR entrie(s) for target '$(crawl_safe_text "$target" 80)' named a non-http(s) URL or one this run could not re-base onto '$(crawl_safe_text "$base" 80)' and were DISCARDED rather than inventoried"
+    run_record coverage_reduction "module=dast phase=crawl reason=har_entry_unusable target=$(crawl_safe_text "$target" 80) count=${_CRAWL_HAR_DROPPED}"
+  fi
 
   # -- 7. the SPA gap, which is this ticket's own acceptance criterion -------
   if [[ -z $spec_kinds ]]; then

@@ -18,6 +18,39 @@
       "get": {"summary": "read"},
       "delete": {"summary": "remove"}
     },
-    "/never-linked-from-anywhere": {"get": {"summary": "unreachable by crawl"}}
+    "/never-linked-from-anywhere": {"get": {"summary": "unreachable by crawl"}},
+    "/orders": {
+      "post": {
+        "summary": "IMPORT-03: a real API whose ENTIRE surface is in requestBody, mirroring the Juice Shop reproduction in the api-surface-import scout report §1a/§1b",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/Order"}
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Order": {
+        "type": "object",
+        "properties": {
+          "customerReference": {"type": "string", "example": "cust-42"},
+          "orderLines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "productId": {"type": "string", "example": "p1"},
+                "quantity": {"type": "number", "example": 2}
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }

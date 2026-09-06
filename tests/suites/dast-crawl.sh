@@ -77,6 +77,15 @@ _slurp() {
   cat -- "$f"
 }
 
+# `_run_dir_grep NEEDLE DIR` - true iff NEEDLE appears, literally, in ANY file
+# under DIR. Used where `_slurp` (one file) is not enough: a redaction
+# property is a claim about the WHOLE run's output, not about parameters.json
+# alone.
+_run_dir_grep() {
+  local needle=$1 dir=$2
+  grep -RIF -- "$needle" "$dir" >/dev/null 2>&1
+}
+
 # ===========================================================================
 printf -- '\n-- the JSON flattener (crawl_engine.sh §2) --\n'
 # ===========================================================================
@@ -248,13 +257,27 @@ printf -- '\n-- specification ingestion (crawl_engine.sh §8) --\n'
 # ===========================================================================
 TGT=https://crawl.fixture.invalid
 
+# `_CRAWL_EP`/`_CRAWL_PARAM` entries are US(0x1f)-separated, not tab - a tab
+# is an IFS-*whitespace* character, so a run of empty fields (routine here:
+# `status`/`content_type` are both empty for every spec-added endpoint) folds
+# into one delimiter under `IFS=$'\t' read` and shifts every later field left
+# (the DAST-11 lesson, reproduced and fixed in crawl_engine.sh itself). `cut`
+# has no such folding - it is delimiter-exact - so `-d $'\x1f'` here is enough.
+_EPSEP=$'\x1f'
 _ep_lines() {
   local r
-  for r in "${_CRAWL_EP[@]+"${_CRAWL_EP[@]}"}"; do printf '%s|%s|%s\n' "$(printf '%s' "$r" | cut -f3)" "$(printf '%s' "$r" | cut -f4)" "$(printf '%s' "$r" | cut -f7)"; done
+  for r in "${_CRAWL_EP[@]+"${_CRAWL_EP[@]}"}"; do printf '%s|%s|%s\n' "$(printf '%s' "$r" | cut -d "$_EPSEP" -f3)" "$(printf '%s' "$r" | cut -d "$_EPSEP" -f4)" "$(printf '%s' "$r" | cut -d "$_EPSEP" -f7)"; done
 }
 _param_lines() {
   local r
-  for r in "${_CRAWL_PARAM[@]+"${_CRAWL_PARAM[@]}"}"; do printf '%s|%s|%s|%s\n' "$(printf '%s' "$r" | cut -f6)" "$(printf '%s' "$r" | cut -f7)" "$(printf '%s' "$r" | cut -f8)" "$(printf '%s' "$r" | cut -f9)"; done
+  for r in "${_CRAWL_PARAM[@]+"${_CRAWL_PARAM[@]}"}"; do printf '%s|%s|%s|%s\n' "$(printf '%s' "$r" | cut -d "$_EPSEP" -f6)" "$(printf '%s' "$r" | cut -d "$_EPSEP" -f7)" "$(printf '%s' "$r" | cut -d "$_EPSEP" -f8)" "$(printf '%s' "$r" | cut -d "$_EPSEP" -f9)"; done
+}
+# `url|request_body_type` - IMPORT-02/03/04's field, the 11th of
+# crawl_add_endpoint's tuple (`_ep_lines` above deliberately doesn't carry it,
+# so every existing 3-field assertion is unaffected).
+_ep_body_type_lines() {
+  local r
+  for r in "${_CRAWL_EP[@]+"${_CRAWL_EP[@]}"}"; do printf '%s|%s\n' "$(printf '%s' "$r" | cut -d "$_EPSEP" -f4)" "$(printf '%s' "$r" | cut -d "$_EPSEP" -f11)"; done
 }
 
 t_case 'an OpenAPI 3 document yields every operation, including one nothing links to'
@@ -287,6 +310,68 @@ assert_contains "$EPS" "GET|$TGT/v1/users|openapi" 'basePath is the Swagger 2 sp
 assert_contains "$EPS" "POST|$TGT/v1/users|openapi" 'and a second method on it'
 assert_contains "$EPS" "GET|$TGT/v1/users/{userId}|openapi" 'and a templated path'
 assert_contains "$(_param_lines)" 'page|query|openapi' 'its parameters land too'
+
+t_case 'IMPORT-03: a Swagger 2.0 in:body parameter'"'"'s schema is resolved into real field parameters'
+assert_contains "$(_param_lines)" '/username|body|openapi|alice' \
+  'the body parameter'"'"'s own name ("body") is a human label, not a field name - FAILS under the pre-IMPORT-03 reading, which stores that label itself as a bogus parameter instead of resolving its schema'
+assert_not_contains "$(_param_lines)" 'body|body|openapi' \
+  'and the label itself never becomes a parameter beside the real field - FAILS if Pass 4 is not taught to skip location=body once Pass 3 has already resolved its schema'
+assert_contains "$(_ep_body_type_lines)" "$TGT/v1/users|json" \
+  'the endpoint is flagged request_body_type=json purely from the in:body parameter existing - Swagger 2.0 has no requestBody/content to read a media type off'
+
+# ===========================================================================
+printf -- '\n-- IMPORT-03: OpenAPI requestBody + $ref/components resolution (crawl_engine.sh §8a) --\n'
+# ===========================================================================
+# The api-surface-import scout report's own §1a/§1b reproduction: an
+# application whose entire attack surface sits in requestBody, with a $ref to
+# a components.schemas entry, produced ZERO parameters before this ticket.
+
+t_case 'a requestBody whose schema is entirely a $ref yields nested body parameters, not zero'
+crawl_inv_reset
+crawl_spec_openapi "$FIXTURES/specs/openapi.json" crawl-fixture "$TGT" || _t_no 'openapi parsed' "$_CRAWL_SPEC_ERROR"
+EPS=$(_ep_lines)
+PARAMS=$(_param_lines)
+assert_contains "$EPS" "POST|$TGT/api/v2/orders|openapi" 'the requestBody-only operation is still an endpoint'
+assert_contains "$(_ep_body_type_lines)" "$TGT/api/v2/orders|json" \
+  'and it is flagged request_body_type=json - FAILS under the pre-IMPORT-03 reading, in which every body-location parameter is sent as flat form-urlencoded regardless of what the spec declared'
+assert_contains "$PARAMS" '/customerReference|body|openapi|cust-42' 'a top-level $ref-resolved field, named by its RFC 6901 pointer'
+assert_contains "$PARAMS" '/orderLines/0/productId|body|openapi|p1' \
+  'a field nested through an array and another object - FAILS under a reading that only reads requestBody.content.*.schema.properties one level deep, which is exactly the shape docs/INVENTORY-FORMAT.md §3a documents this as needing to reach'
+assert_contains "$PARAMS" '/orderLines/0/quantity|body|openapi|2' 'and its sibling field'
+assert_ne 0 "$(printf '%s\n' "$PARAMS" | grep -c '|body|openapi|')" \
+  'parameters>0 for a spec whose surface is ENTIRELY in requestBody - the exact §1b reproduction this ticket exists to close'
+
+t_case 'the servers[].url host is STILL discarded, requestBody or not'
+assert_not_contains "$EPS" 'spec-declared-host' \
+  'FAILS if requestBody resolution reads a host from anywhere in the document rather than trusting only the BASE_URL argument - the identical property dast-crawl.sh already pins for the non-requestBody paths above'
+
+t_case 'a $ref chain that loops back on itself is dropped, counted, and does not hang the scan'
+crawl_inv_reset
+crawl_spec_openapi "$FIXTURES/specs/openapi-refs.json" crawl-fixture "$TGT" || _t_no 'refs fixture parsed' "$_CRAWL_SPEC_ERROR"
+PARAMS=$(_param_lines)
+assert_contains "$PARAMS" '/name|body|openapi|n1' 'the non-cyclic sibling field still resolves'
+assert_not_contains "$PARAMS" '/child' \
+  'the self-referencing field never resolves to an infinite pointer - FAILS under "follow every $ref", which never terminates'
+assert_eq 1 "${_CRAWL_SPEC_REF_UNRESOLVED:-0}" \
+  'and the drop is COUNTED rather than merely absent - FAILS under a reading that silently gives up with no coverage_reduction to show for it'
+
+t_case 'a 3.1 oneOf/anyOf resolves the FIRST subschema, and the pick is counted'
+assert_contains "$PARAMS" '/a|body|openapi|x' 'the first oneOf branch'"'"'s field is resolved'
+assert_not_contains "$PARAMS" '/b' \
+  'the second branch is NOT also resolved - a schema is one shape, and merging both would describe a body the API never accepts'
+assert_eq 1 "${_CRAWL_SPEC_POLY_UNSUPPORTED:-0}" \
+  'and picking only the first branch is counted, per the ticket'"'"'s own "record a reduction rather than silently dropping" - FAILS if oneOf/anyOf is resolved with no trace of the narrowing'
+
+t_case 'a JSON-pointer-named credential field is still covered by the secretish-name control'
+crawl_inv_reset
+crawl_add_param ep-json crawl-fixture POST "$TGT/x" /password body openapi hunter2
+crawl_add_param ep-json crawl-fixture POST "$TGT/x" /user/token body openapi abc123
+PARAMS=$(_param_lines)
+assert_contains "$PARAMS" '/password|body|openapi|' \
+  'the pointer /password is still recognised as a credential by its LAST segment - FAILS under the anchored ^password$ match alone, which never matches a string starting with "/" and would leave a real password sitting in example'
+assert_contains "$PARAMS" '/user/token|body|openapi|' 'a nested pointer'"'"'s last segment is tested the same way'
+assert_not_contains "$PARAMS" 'hunter2' 'the captured password value appears nowhere'
+assert_not_contains "$PARAMS" 'abc123' 'nor does the captured token value'
 
 t_case 'a YAML spec using an unsupported construct fails LOUDLY, with a reason'
 crawl_inv_reset
@@ -326,6 +411,56 @@ t_case 'a credential-named parameter keeps its NAME and loses its VALUE'
 assert_contains "$PARAMS" 'password|body|har|' \
   'the password parameter is still inventoried, with an EMPTY example - FAILS under "redact() covers it", which it provably cannot: no redaction rule can classify an arbitrary human-chosen password by shape, so a real captured password would land on disk'
 assert_not_contains "$PARAMS" 'correct-horse-battery' 'the captured value appears nowhere'
+
+# ===========================================================================
+printf -- '\n-- IMPORT-04: HAR JSON body + headers + path-template dedup (crawl_engine.sh §8) --\n'
+# ===========================================================================
+# The api-surface-import scout report's own §1c reproduction: a Chrome-shaped
+# HAR of real XHRs lost every JSON body and every header before this ticket,
+# and a numbered listing inflated the surface into one endpoint per number.
+
+t_case 'postData.text on a JSON entry is flattened into RFC 6901 body parameters'
+assert_contains "$(_ep_body_type_lines)" "$TGT/xhr/register|json" \
+  'the entry is flagged request_body_type=json from postData.mimeType - FAILS under "only postData.params is ever read", which is the pre-IMPORT-04 shape and produces zero body parameters for a JSON XHR'
+assert_contains "$PARAMS" '/email|body|har|new@example.invalid' 'a top-level JSON field, named by its RFC 6901 pointer'
+assert_contains "$PARAMS" '/profile/age|body|har|30' \
+  'a field nested inside an object - FAILS under a reading that only reads postData.text as one opaque string rather than re-flattening the decoded body'
+assert_not_contains "$PARAMS" 'hunter2' 'the credential-named nested field never leaks its captured value'
+assert_contains "$PARAMS" '/password|body|har|' \
+  'and the /password pointer is still recognised as a credential by its last segment, keeping its NAME with an EMPTY example - the identical secretish-pointer control IMPORT-03 needs for OpenAPI'
+
+t_case 'the classic form login (postData.params) is byte-for-byte unaffected by the JSON-body path landing beside it'
+assert_contains "$PARAMS" 'email|body|har|someone@example.invalid' 'the un-prefixed flat form field name is unchanged'
+assert_not_contains "$(_ep_body_type_lines)" "$TGT/xhr/login|json" \
+  'and that endpoint is NOT flagged json - it posted application/x-www-form-urlencoded, never JSON'
+
+t_case 'request.headers[] lands through a bounded allowlist, still redaction-controlled'
+assert_contains "$PARAMS" 'Authorization|header|har|' \
+  'Authorization is on the allowlist and inventoried, with an EMPTY example - FAILS under "headers are never read", the exact §1c gap, and under "redact() alone", which cannot classify an arbitrary bearer token by shape as reliably as the name-based control does'
+assert_not_contains "$PARAMS" 'har-payload' 'the captured bearer token value appears nowhere'
+assert_not_contains "$PARAMS" 'Accept|header' 'Accept is boilerplate on every request and is not on the allowlist'
+assert_not_contains "$PARAMS" 'User-Agent|header' \
+  'nor is User-Agent - FAILS under "allowlist means RFC-7230-token", which both of these already are, so only an explicit NAME list keeps them out'
+
+t_case 'a numbered listing collapses onto ONE endpoint with a {id}-style path'
+EPS=$(_ep_lines)
+assert_contains "$EPS" "GET|$TGT/api/BasketItems/{id}|har" \
+  'FAILS under "one endpoint per literal URL", which is the exact §1c gap: a numbered listing inflates the surface and every later check re-tests the identical handler once per number'
+assert_not_contains "$EPS" '/api/BasketItems/1' 'the literal /1 path is not its own endpoint'
+assert_not_contains "$EPS" '/api/BasketItems/2' 'nor is /2 - both collapsed into the templated one above'
+
+t_case 'a third-party HAR entry still has its host discarded, and its JSON body still parses'
+assert_contains "$EPS" "POST|$TGT/collect|har" \
+  'the third-party analytics call is re-based onto this run'"'"'s own target - the scope safety property (§4a) - contributing only its path'
+assert_not_contains "$EPS" 'collector.example.invalid' 'the third-party host itself never appears in any endpoint'
+assert_contains "$PARAMS" '/cid|body|har|abc123' \
+  'and its JSON body is STILL parsed even though the entry was re-based - FAILS under a reading that only flattens postData.text for entries that kept their original host'
+
+t_case 'a non-http(s) HAR entry is dropped, counted, and produces no endpoint'
+assert_not_contains "$EPS" 'chrome-extension' \
+  'a chrome-extension:// entry contributes nothing - this run has no authorised host to re-base it onto'
+assert_eq 1 "${_CRAWL_HAR_DROPPED:-0}" \
+  'and the drop is COUNTED - FAILS under the pre-IMPORT-04 shape, a bare `continue` with nothing to show for it in run.json'
 
 t_case 'a GraphQL SDL schema yields one endpoint and one parameter per root field'
 crawl_inv_reset
@@ -684,6 +819,45 @@ assert_not_contains "$PARJSON" 'X Bad Name' 'the malformed name never reaches th
 assert_contains "$PARJSON" 'X-Good-Name' 'but its well-formed sibling on the same operation still does'
 RUNJSON=$(_slurp "$W/run-hostile-header/run.json")
 assert_contains "$RUNJSON" 'reason=param_invalid_header_name' 'and the drop is a counted coverage_reduction, not a silent one'
+rm -f "$FIX/config/discovery.conf"
+
+t_case 'IMPORT-03: an unresolved $ref chain and a first-subschema oneOf pick both reach run.json as coverage_reductions, end to end'
+cat >"$FIX/config/discovery.conf" <<EOF
+id: crawl-fixture
+openapi-path: $FIXTURES/specs/openapi-refs.json
+EOF
+_crawl_scan "$W/run-openapi-refs"
+assert_eq 0 "$_RC" 'the run completes cleanly - a $ref cycle degrades coverage, it does not fail the scan'
+RUNJSON=$(_slurp "$W/run-openapi-refs/run.json")
+assert_contains "$RUNJSON" 'reason=openapi_ref_unresolved' \
+  'the cyclic $ref is recorded - FAILS under a reading that silently drops the field with nothing in run.json to show an operator the coverage they lost'
+assert_contains "$RUNJSON" 'reason=openapi_polymorphism_first_subschema' 'and the oneOf narrowing is recorded too'
+PARJSON=$(_slurp "$W/run-openapi-refs/inventory/parameters.json")
+assert_contains "$PARJSON" '"name": "/name"' 'the non-cyclic sibling field is in the real written inventory, as an RFC 6901 pointer'
+assert_contains "$PARJSON" '"name": "/a"' 'and the first oneOf branch'"'"'s field too'
+EPJSON=$(_slurp "$W/run-openapi-refs/inventory/endpoints.json")
+assert_contains "$EPJSON" '"request_body_type": "json"' \
+  'endpoints.json really does carry the field through the real crawl.sh -> scan.sh path, not only through the direct-engine calls above'
+rm -f "$FIX/config/discovery.conf"
+
+t_case 'IMPORT-04: a HAR import, end to end through a real scan.sh dast run - the drop is counted and no captured secret reaches any output file'
+cat >"$FIX/config/discovery.conf" <<EOF
+id: crawl-fixture
+har-path: $FIXTURES/specs/capture.har
+EOF
+_crawl_scan "$W/run-har"
+assert_eq 0 "$_RC" 'the run completes cleanly'
+RUNJSON=$(_slurp "$W/run-har/run.json")
+assert_contains "$RUNJSON" 'reason=har_entry_unusable' 'the dropped chrome-extension:// entry is a counted coverage_reduction, not a silent continue'
+EPJSON=$(_slurp "$W/run-har/inventory/endpoints.json")
+PARJSON=$(_slurp "$W/run-har/inventory/parameters.json")
+assert_contains "$EPJSON" '"url": "https://crawl.fixture.invalid/api/BasketItems/{id}"' \
+  'the numbered listing collapsed onto one templated endpoint in the REAL written inventory, not only in the in-memory accumulator the direct-engine tests above read'
+assert_contains "$PARJSON" '"name": "/email"' 'a JSON body field reached the written inventory as an RFC 6901 pointer'
+assert_status 1 'the JSON-body password value reaches no file this run wrote - FAILS if the secretish-pointer fix is not wired through the real crawl.sh path' \
+  _run_dir_grep hunter2 "$W/run-har"
+assert_status 1 'nor does the captured Authorization bearer token' _run_dir_grep har-payload "$W/run-har"
+assert_status 1 'nor the classic form password, unchanged from before this ticket' _run_dir_grep correct-horse-battery "$W/run-har"
 rm -f "$FIX/config/discovery.conf"
 
 # ===========================================================================
