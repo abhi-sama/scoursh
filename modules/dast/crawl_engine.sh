@@ -635,6 +635,37 @@ crawl_html_extract() {
   '
 }
 
+# `crawl_body_looks_like_markup FILE` - 0 when the first 512 bytes of FILE
+# contain a case-folded HTML/markup marker. Used only when a fetched response
+# carried no Content-Type at all, so a headerless binary is not fed to the tag
+# scanner (crawl.sh's own caller comment explains why).
+#
+# Matched on the FILE, through scan_match, never by reading FILE into a bash
+# string. A fetched response body is arbitrary target-controlled bytes and can
+# legitimately contain a NUL; `sniff=$(head -c 512 -- "$file")` (the shape
+# this used to have) runs the file through command substitution, which
+# silently drops every NUL byte AND prints bash's own "warning: command
+# substitution: ignored null byte in input" to stderr - a warning an operator
+# running a real scan must never see. `-a`/`--text` on both bound pattern
+# engines (tension 2's `core_bind_engine`) forces byte-for-byte text-mode
+# matching straight off the file, bypassing rg's default NUL-triggered
+# "binary file matches" heuristic, which would otherwise report no offsets at
+# all. See modules/dast/active/hosthdr_engine.sh's `hh_body_reflects` for the
+# fuller account of the same defect and the identical fix.
+crawl_body_looks_like_markup() {
+  local file=$1
+  local bounded=$SCOURSH_SCRATCH/crawl-sniff.$BASHPID
+  local hits=$SCOURSH_SCRATCH/crawl-sniff-hits.$BASHPID
+  local rc=0
+  [[ -s $file ]] || return 1
+  head -c 512 -- "$file" >"$bounded" 2>/dev/null || : >"$bounded"
+  scan_match "$hits" -a -i \
+    -e '<html' -e '<!doctype html' -e '<body' -e '<a ' -e '<form' \
+    -- "$bounded" || rc=$?
+  rm -f "$bounded" "$hits"
+  return "$rc"
+}
+
 # `crawl_html_looks_client_rendered FILE` - a bounded, stated heuristic, used
 # ONLY to sharpen the wording of a coverage_gap that is emitted either way.
 #
