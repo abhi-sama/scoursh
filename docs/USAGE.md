@@ -67,6 +67,10 @@ scan.sh <command> [options]
 | `--i-own-target NAME` | dast, all | live |
 | `--requests-per-second N` | dast, all | live; raising it above the conservative ceiling needs `--i-own-target` (see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)) |
 | `--request-budget N` | dast, all | live; same as above |
+| `--openapi FILE` | dast, all | live - an ephemeral, this-run-only override of `config/discovery.conf`'s `openapi-path` for `--target`; nothing is written to that file. Requires `--target`, exit 2 otherwise. |
+| `--har FILE` | dast, all | live; same as above, for `har-path` |
+| `--postman FILE` | dast, all | live; same as above, for `postman-path` |
+| `--graphql-schema FILE` | dast, all | live; same as above, for `graphql-schema-path` |
 | `--live` | cloud, all | live as a precondition check only |
 | `--profile NAME` | cloud, all | inert |
 | `--regions all\|us-east-1,...` | cloud, all | inert |
@@ -676,6 +680,14 @@ discarded and every request scoursh actually sends is rebuilt on the target's ow
 `base-url`. A spec that names a production host, or a HAR capturing a call to a CDN or a third-party
 analytics endpoint, therefore contributes at most a path to test on the host you already
 authorised - it can never become a way to scan a host you did not (docs/FOUNDATION.md tension 19).
+
+**A one-off run without editing this file.** `--openapi`/`--har`/`--postman`/`--graphql-schema` (see
+["Per-command flags"](#per-command-flags)) override the matching key above for a single invocation,
+ephemerally - nothing is written to `config/discovery.conf`. Each requires `--target` naming the
+target the override applies to (exit 2 otherwise, the same rule `--i-own-target` enforces), and a
+relative path is resolved against the install root exactly as this file's own paths are. Prefer the
+file for anything you want to keep re-running the same way; reach for a flag when you are trying one
+spec or capture once.
 
 ### `config/scanner.conf` - optional; an absent file behaves as if it contained only `id: scanner`
 

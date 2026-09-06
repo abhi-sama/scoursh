@@ -61,6 +61,53 @@ _RPT_SUPPRESSED=0
 _RPT_LIVE=0
 _RPT_DAST_ZP_PHASES=0
 _RPT_DAST_INJ_TESTED=0
+declare -A _RPT_DAST_SURFACE_EP_SRC=()
+declare -A _RPT_DAST_SURFACE_PAR_SRC=()
+_RPT_DAST_SURFACE_EP_TOTAL=0
+_RPT_DAST_SURFACE_PAR_TOTAL=0
+
+# `_report_dast_surface_state RUNDIR` - IMPORT-06: the structured surface-
+# provenance counts `modules/dast/crawl.sh`'s `_crawl_record_surface_provenance`
+# writes, one `source<US>count` line per (target, source) pair. Summed here
+# rather than read once, because a multi-target run appends one block per
+# target and the honest total is every target's contribution together - the
+# same reasoning `_RPT_MODULE` already applies to per-module finding counts.
+_report_dast_surface_state() {
+  local rundir=$1 line src count
+  _RPT_DAST_SURFACE_EP_SRC=()
+  _RPT_DAST_SURFACE_PAR_SRC=()
+  _RPT_DAST_SURFACE_EP_TOTAL=0
+  _RPT_DAST_SURFACE_PAR_TOTAL=0
+  if [[ -r $rundir/meta/dast_surface_endpoints_by_source ]]; then
+    while IFS=$'\x1f' read -r src count; do
+      [[ -n $src && $count =~ ^[0-9]+$ ]] || continue
+      _RPT_DAST_SURFACE_EP_SRC[$src]=$(( ${_RPT_DAST_SURFACE_EP_SRC[$src]:-0} + count ))
+      _RPT_DAST_SURFACE_EP_TOTAL=$(( _RPT_DAST_SURFACE_EP_TOTAL + count ))
+    done <"$rundir/meta/dast_surface_endpoints_by_source"
+  fi
+  if [[ -r $rundir/meta/dast_surface_parameters_by_source ]]; then
+    while IFS=$'\x1f' read -r src count; do
+      [[ -n $src && $count =~ ^[0-9]+$ ]] || continue
+      _RPT_DAST_SURFACE_PAR_SRC[$src]=$(( ${_RPT_DAST_SURFACE_PAR_SRC[$src]:-0} + count ))
+      _RPT_DAST_SURFACE_PAR_TOTAL=$(( _RPT_DAST_SURFACE_PAR_TOTAL + count ))
+    done <"$rundir/meta/dast_surface_parameters_by_source"
+  fi
+}
+
+# `_dast_surface_source_label SOURCE` - the human-readable half of a
+# `docs/INVENTORY-FORMAT.md` §2/§3 `source` value, shared by the Markdown and
+# HTML renderers below so the two prose forms cannot drift on wording.
+_dast_surface_source_label() {
+  case $1 in
+    openapi) printf 'an openapi spec you supplied' ;;
+    postman) printf 'a postman collection you supplied' ;;
+    har) printf 'a HAR capture you supplied' ;;
+    graphql) printf 'a GraphQL schema you supplied' ;;
+    crawl) printf 'the static crawl' ;;
+    imported) printf 'a cross-module inventory import' ;;
+    *) printf 'source %s' "$1" ;;
+  esac
+}
 
 # `_report_dast_injection_gap_state RUNDIR` - the counts behind the SPA/
 # zero-parameter banner (`_md_zero_injection_banner`/`_html_zero_injection_banner`
@@ -111,6 +158,7 @@ report_count() {
   _RPT_SUPPRESSED=0
   _RPT_LIVE=0
   _report_dast_injection_gap_state "$rundir"
+  _report_dast_surface_state "$rundir"
   [[ -s $rundir/findings.fields ]] || return 0
   local sev mod st ow
   while IFS= read -r line; do
@@ -285,9 +333,51 @@ report_run_json() {
     # still a stub - STATE-06's own scope is `diff` and automatic
     # classification only).
     printf '  "diff_guard": %s,\n' "$(json_string "${SCOURSH_DIFF_GUARD:-not-evaluated}")"
+    _report_dast_surface_json "$rundir"
     _report_baseline_json "$rundir"
     printf '}\n'
   } >"$rundir/run.json"
+}
+
+# The run's DAST surface-provenance object (IMPORT-06, docs/DESIGN.md §15's
+# honesty standard applied to run.json rather than only to `notes[]` prose).
+# Rendered on EVERY run, not only a DAST one, for the identical reason
+# `_report_authorization_json` and `_report_baseline_json` above always
+# render: an absent key would be ambiguous between "no surface discovered"
+# and "this version does not record it". A non-DAST run's own zero/empty
+# defaults are a true and complete statement about it.
+#
+# `endpoints_by_source`/`parameters_by_source` are rendered key-sorted
+# (`LC_ALL=C`), matching `report_run_json`'s own `by_module` object, so two
+# runs that discovered the identical surface produce byte-identical JSON
+# regardless of bash's own associative-array iteration order.
+_report_dast_surface_json() {
+  local rundir=$1 first=1 k
+  printf '  "dast_surface": {\n'
+  printf '    "endpoints_total": %s,\n' "$(json_number "${_RPT_DAST_SURFACE_EP_TOTAL:-0}")"
+  printf '    "endpoints_by_source": {'
+  if (( ${#_RPT_DAST_SURFACE_EP_SRC[@]} > 0 )); then
+    while IFS= read -r k; do
+      [[ -n $k ]] || continue
+      (( first )) || printf ','
+      first=0
+      printf '%s:%s' "$(json_string "$k")" "$(json_number "${_RPT_DAST_SURFACE_EP_SRC[$k]}")"
+    done <<<"$(printf '%s\n' "${!_RPT_DAST_SURFACE_EP_SRC[@]}" | LC_ALL=C sort)"
+  fi
+  printf '},\n'
+  printf '    "parameters_total": %s,\n' "$(json_number "${_RPT_DAST_SURFACE_PAR_TOTAL:-0}")"
+  printf '    "parameters_by_source": {'
+  first=1
+  if (( ${#_RPT_DAST_SURFACE_PAR_SRC[@]} > 0 )); then
+    while IFS= read -r k; do
+      [[ -n $k ]] || continue
+      (( first )) || printf ','
+      first=0
+      printf '%s:%s' "$(json_string "$k")" "$(json_number "${_RPT_DAST_SURFACE_PAR_SRC[$k]}")"
+    done <<<"$(printf '%s\n' "${!_RPT_DAST_SURFACE_PAR_SRC[@]}" | LC_ALL=C sort)"
+  fi
+  printf '}\n'
+  printf '  },\n'
 }
 
 # The run's authorisation object (docs/STEP5-DAST-PLAN.md DAST-33).
@@ -521,6 +611,7 @@ report_md() {
     fi
     _md_unrestricted_banner "$rundir"
     _md_zero_injection_banner
+    _md_surface_summary
     _md_diff_delta "$rundir"
     printf '## Severity\n\n| severity | live | accepted risk |\n|---|---|---|\n'
     local k
@@ -712,6 +803,41 @@ _md_zero_injection_banner() {
     printf '> were skipped and why, and consider supplying `config/discovery.conf`\n'
     printf '> (OpenAPI/GraphQL/Postman/HAR) to close the gap.\n\n'
   fi
+}
+
+# `_md_surface_summary` - IMPORT-06's own acceptance criterion: a reader sees
+# "surface: N endpoints (M from an openapi spec you supplied)" as a rendered
+# line rather than having to substring-scrape the `notes[]` prose `crawl.sh`
+# already writes (kept unchanged). Reads only `_RPT_DAST_SURFACE_EP_TOTAL`/
+# `_RPT_DAST_SURFACE_PAR_TOTAL` and the two per-source maps
+# (`report_count`, via `_report_dast_surface_state`) - integers and the fixed
+# `source` vocabulary's own labels - so nothing here needs escaping.
+_md_surface_summary() {
+  (( ${_RPT_DAST_SURFACE_EP_TOTAL:-0} > 0 || ${_RPT_DAST_SURFACE_PAR_TOTAL:-0} > 0 )) || return 0
+  local k v first ep_break='' par_break=''
+  first=1
+  if (( ${#_RPT_DAST_SURFACE_EP_SRC[@]} > 0 )); then
+    while IFS= read -r k; do
+      [[ -n $k ]] || continue
+      v=${_RPT_DAST_SURFACE_EP_SRC[$k]:-0}
+      (( first )) || ep_break+=', '
+      first=0
+      ep_break+="$v from $(_dast_surface_source_label "$k")"
+    done <<<"$(printf '%s\n' "${!_RPT_DAST_SURFACE_EP_SRC[@]}" | LC_ALL=C sort)"
+  fi
+  first=1
+  if (( ${#_RPT_DAST_SURFACE_PAR_SRC[@]} > 0 )); then
+    while IFS= read -r k; do
+      [[ -n $k ]] || continue
+      v=${_RPT_DAST_SURFACE_PAR_SRC[$k]:-0}
+      (( first )) || par_break+=', '
+      first=0
+      par_break+="$v from $(_dast_surface_source_label "$k")"
+    done <<<"$(printf '%s\n' "${!_RPT_DAST_SURFACE_PAR_SRC[@]}" | LC_ALL=C sort)"
+  fi
+  printf -- '- surface: %s endpoint(s)%s, %s parameter(s)%s\n\n' \
+    "${_RPT_DAST_SURFACE_EP_TOTAL:-0}" "${ep_break:+ ($ep_break)}" \
+    "${_RPT_DAST_SURFACE_PAR_TOTAL:-0}" "${par_break:+ ($par_break)}"
 }
 
 # DAST-34's report half.  The banner is plain text through the ordinary
@@ -1046,6 +1172,7 @@ _html_summary() {
   fi
   _html_unrestricted_banner "$rundir"
   _html_zero_injection_banner
+  _html_surface_summary
   printf '<nav class="toc"><p>On this page</p><ul>\n'
   printf '<li><a href="#severity">Severity</a></li>\n'
   printf '<li><a href="#since-last-scan">Since the last scan</a></li>\n'
@@ -1208,6 +1335,45 @@ _html_zero_injection_banner() {
     printf '<div class="banner"><p><strong>Partial injection coverage.</strong> %s of the discovered-parameter probes in this run found zero parameters to test on this target, while %s check(s) ran against real ones. The severity table below reflects only what was actually tested - see "Limitations and coverage" for exactly which probes were skipped and why, and consider supplying <code>config/discovery.conf</code> (OpenAPI/GraphQL/Postman/HAR) to close the gap.</p></div>\n' \
       "$_RPT_DAST_ZP_PHASES" "$_RPT_DAST_INJ_TESTED"
   fi
+}
+
+# The HTML twin of `_md_surface_summary` - same integers, same source labels
+# (`_dast_surface_source_label`), rendered as a plain paragraph rather than a
+# `.banner` (this is a fact about coverage, not a warning). The integers are
+# never target-derived, but the label IS, for its fallback `*)` arm: an
+# endpoint's `source` field is not validated against the closed vocabulary at
+# import time (only a parameter's `location` and a header name are,
+# IMPORT-05), so a foreign `endpoints.json` (tension 21 - a hand-written or
+# cross-module producer) could in principle carry an arbitrary string there.
+# `html_escape` applies to the composed label for that reason, uniformly,
+# even though the five known values never need it (docs/FOUNDATION.md
+# tension 10's "escape on the way out" discipline applied without exception).
+_html_surface_summary() {
+  (( ${_RPT_DAST_SURFACE_EP_TOTAL:-0} > 0 || ${_RPT_DAST_SURFACE_PAR_TOTAL:-0} > 0 )) || return 0
+  local k v first ep_break='' par_break=''
+  first=1
+  if (( ${#_RPT_DAST_SURFACE_EP_SRC[@]} > 0 )); then
+    while IFS= read -r k; do
+      [[ -n $k ]] || continue
+      v=${_RPT_DAST_SURFACE_EP_SRC[$k]:-0}
+      (( first )) || ep_break+=', '
+      first=0
+      ep_break+="$v from $(html_escape "$(_dast_surface_source_label "$k")")"
+    done <<<"$(printf '%s\n' "${!_RPT_DAST_SURFACE_EP_SRC[@]}" | LC_ALL=C sort)"
+  fi
+  first=1
+  if (( ${#_RPT_DAST_SURFACE_PAR_SRC[@]} > 0 )); then
+    while IFS= read -r k; do
+      [[ -n $k ]] || continue
+      v=${_RPT_DAST_SURFACE_PAR_SRC[$k]:-0}
+      (( first )) || par_break+=', '
+      first=0
+      par_break+="$v from $(html_escape "$(_dast_surface_source_label "$k")")"
+    done <<<"$(printf '%s\n' "${!_RPT_DAST_SURFACE_PAR_SRC[@]}" | LC_ALL=C sort)"
+  fi
+  printf '<p class="sub">surface: %s endpoint(s)%s, %s parameter(s)%s</p>\n' \
+    "${_RPT_DAST_SURFACE_EP_TOTAL:-0}" "${ep_break:+ ($ep_break)}" \
+    "${_RPT_DAST_SURFACE_PAR_TOTAL:-0}" "${par_break:+ ($par_break)}"
 }
 
 _html_limitations() {

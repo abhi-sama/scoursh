@@ -106,6 +106,9 @@ claims and tension 21 requires imported inventory to keep its audit trail.
 |---|---|---|
 | `id` | string | 12 hex characters of the SHA-256 of `"<endpoint_id>|<location>|<name>"`. |
 | `endpoint_id` | string | The `endpoints.json` entry this parameter belongs to. |
+| `target` | string | The `config/scope.conf` target id, as for an endpoint. Falls back to `SCOURSH_DAST_TARGET` when a producer left it blank (`inject_engine.sh`'s `_inject_flush_param`). |
+| `method` | string | Uppercase HTTP method - the endpoint's own when its row is present, else this field, else `GET`. |
+| `url` | string | Absolute URL, query string and fragment removed, as for an endpoint. **Load-bearing as a fallback**: when `endpoint_id` names no row in `endpoints.json`, `_inject_flush_param` composes the request from this field instead of dropping the parameter. |
 | `name` | string | The parameter name, verbatim from the target or the specification. **Untrusted.** |
 | `location` | string | One of `query`, `body`, `path`, `header`, `cookie`, `formData`, `graphql`. |
 | `source` | string | As for an endpoint. |

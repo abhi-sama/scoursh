@@ -6,10 +6,24 @@ Commands:
   iac      [--path DIR]
   dast     --target <name-from-scope> [--intensity passive|safe|active] [--authed]
            [--i-own-target <same-name>]
+           [--openapi FILE] [--har FILE] [--postman FILE] [--graphql-schema FILE]
                                         (--intensity default: passive)
                                         (--intensity above passive, and
                                          --allow-intrusive, each require
                                          --i-own-target)
+                                        (--openapi/--har/--postman/--graphql-schema:
+                                         IMPORT-07 - an ephemeral, this-run-only
+                                         override of the matching
+                                         config/discovery.conf key for --target;
+                                         nothing is written to that file. A
+                                         relative path is resolved against the
+                                         install root, exactly as the config
+                                         file's own paths are - not against
+                                         your current directory. Each requires
+                                         --target, exit 2 otherwise - same
+                                         rule as --i-own-target. Prefer
+                                         config/discovery.conf for anything you
+                                         want to keep re-running the same way.)
   cloud    [--live] [--profile <p>] [--regions all|us-east-1,...] [--assume-role ARN]
   all      run every module for which inputs are configured
   diff     --against <prior-run-dir>

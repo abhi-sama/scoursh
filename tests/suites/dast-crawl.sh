@@ -706,6 +706,15 @@ assert_contains "$EPJSON" '"url": "https://crawl.fixture.invalid/search"' \
 assert_contains "$PARJSON" '"name": "q"' 'and its query parameter is in parameters.json instead'
 assert_contains "$PARJSON" '"name": "page"' 'both of them'
 
+t_case 'the crawl phase records structured per-source surface counts (IMPORT-06), not only the notes[] prose'
+SURF_EP=$(_slurp "$W/run-basic/meta/dast_surface_endpoints_by_source")
+SURF_PAR=$(_slurp "$W/run-basic/meta/dast_surface_parameters_by_source")
+assert_contains "$SURF_EP" 'crawl' \
+  'a structured "source<US>count" fact exists per source discovered - FAILS if only the notes[] prose line carries the breakdown, which a consumer would have to substring-scrape (report §6'"'"'s own gap)'
+assert_contains "$SURF_PAR" 'crawl' 'the same structured breakdown exists for parameters'
+assert_not_contains "$SURF_EP" $'\t' \
+  'the field separator is US (0x1f), never a tab - FAILS under a tab-delimited line, which AGENTS.md'"'"'s DAST-11 lesson already names as unsafe once a value could legitimately be empty or contain a space'
+
 t_case 'a form is an endpoint and its inputs are parameters, with nothing submitted'
 assert_contains "$EPJSON" '"url": "https://crawl.fixture.invalid/login"' 'the form action is an endpoint'
 assert_contains "$EPJSON" '"method": "POST"' 'recorded at the form'"'"'s own method'
