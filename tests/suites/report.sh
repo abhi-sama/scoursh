@@ -484,5 +484,64 @@ assert_contains "$MD11" '1 of the discovered-parameter probes' 'and the count is
 assert_contains "$MD11" '2 check(s)' 'against the real number that DID run - two distinct DAST-INJ-* ids in checks_run'
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 
+# ===========================================================================
+# IMPORT-06: structured surface provenance in run.json - the endpoint/
+# parameter surface broken down by `source`, as JSON keys a consumer can read
+# rather than the `notes[]` prose (`spec_endpoints=N spec_kinds=[...]`)
+# `modules/dast/crawl.sh` already wrote before this ticket, which is kept
+# unchanged and NOT asserted against here.
+# ===========================================================================
+printf '\n-- IMPORT-06: structured surface provenance --\n'
+
+t_case 'run.json renders per-source endpoint/parameter counts as structured keys, summed across every target this run recorded'
+D12=$SCOURSH_SCRATCH/rpt-surface
+rm -rf "$D12"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$D12"
+D12=$SCOURSH_RUN_DIR
+# Two targets' worth of crawl.sh facts for the SAME source (openapi) - the
+# honest total is their SUM, never just the first-seen line's value.
+run_record dast_surface_endpoints_by_source "openapi"$'\x1f'"40"
+run_record dast_surface_endpoints_by_source "openapi"$'\x1f'"2"
+run_record dast_surface_endpoints_by_source "crawl"$'\x1f'"3"
+run_record dast_surface_parameters_by_source "openapi"$'\x1f'"210"
+run_record dast_surface_parameters_by_source "crawl"$'\x1f'"7"
+report_all "$D12"
+J12=$(cat "$D12/run.json")
+assert_contains "$J12" '"dast_surface": {' 'run.json carries a dast_surface object'
+assert_contains "$J12" '"endpoints_total": 45' \
+  'the total SUMS every target'"'"'s contribution for a repeated source (40+2) plus the other source (3) - FAILS under a reader that keeps only the first-seen line per key (_meta_first), which would report 43'
+assert_contains "$J12" '"endpoints_by_source": {"crawl":3,"openapi":42}' \
+  'per-source counts are summed across targets AND rendered key-sorted (LC_ALL=C), matching the by_module object'"'"'s own convention, so two runs discovering the identical surface produce byte-identical JSON'
+assert_contains "$J12" '"parameters_total": 217' 'and the same summing for parameters'
+assert_contains "$J12" '"parameters_by_source": {"crawl":7,"openapi":210}' 'per-source parameter counts, sorted the same way'
+
+t_case 'the rendered run.json is still valid JSON with the dast_surface object in it'
+if command -v python3 >/dev/null 2>&1; then
+  rc=0
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$D12/run.json" || rc=$?
+  if [[ $rc -eq 0 ]]; then
+    _t_ok 'run.json parses with dast_surface present'
+  else
+    _t_no 'run.json parses with dast_surface present' 'invalid JSON - FAILS on a stray or missing comma around the new object'
+  fi
+fi
+
+t_case 'report.md renders a structured surface line a reader can see without scraping notes[]'
+MD12=$(cat "$D12/report.md")
+assert_contains "$MD12" 'surface: 45 endpoint(s)' 'the total endpoint count is rendered as prose'
+assert_contains "$MD12" '3 from the static crawl' 'naming the crawl-sourced share'
+assert_contains "$MD12" '42 from an openapi spec you supplied' \
+  'and the openapi-sourced share, matching the ticket'"'"'s own acceptance criterion wording'
+assert_contains "$MD12" '217 parameter(s)' 'and the parameter total alongside it'
+HT12=$(cat "$D12/report.html")
+assert_contains "$HT12" 'surface: 45 endpoint(s)' 'report.html carries the identical summary'
+assert_not_contains "$HT12" '<script' 'still no <script> anywhere in the report (tension 10)'
+
+t_case 'a run with no discovered surface renders no surface line at all'
+assert_not_contains "$MD9" 'surface:' \
+  'FAILS if the summary unconditionally prints a "surface: 0 endpoint(s)" line, which would misreport a run this ticket does not touch (the zero-parameter-banner fixture above, which never recorded any dast_surface_* fact) as one where the concept applies'
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+
 
 t_summary report

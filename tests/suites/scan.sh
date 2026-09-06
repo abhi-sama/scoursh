@@ -804,6 +804,36 @@ assert_status 2 \
   scan_parse_args sast --i-own-target host-a --path .
 
 # =============================================================================
+printf '\n-- IMPORT-07: --openapi/--har/--postman/--graphql-schema require --target --\n'
+# =============================================================================
+t_case 'each discovery-input flag with no --target dies exit 2, matching --i-own-target'"'"'s own precedent'
+assert_status 2 \
+  '--openapi with no --target dies exit 2 - fails under a silent no-op, which would read as "the flag did nothing" rather than the accidental-misuse case this refuses' \
+  scan_parse_args dast --openapi spec.json
+assert_status 2 '--har with no --target dies exit 2 too' \
+  scan_parse_args dast --har capture.har
+assert_status 2 '--postman with no --target dies exit 2 too' \
+  scan_parse_args dast --postman collection.json
+assert_status 2 '--graphql-schema with no --target dies exit 2 too' \
+  scan_parse_args dast --graphql-schema schema.graphql
+assert_status 2 \
+  'the same holds on "all", which has no --target by default either' \
+  scan_parse_args all --openapi spec.json --path .
+
+t_case 'a discovery-input flag WITH --target parses cleanly and round-trips through SCAN_FLAGS'
+scan_parse_args dast --target host-a --openapi spec.json
+assert_eq spec.json "${SCAN_FLAGS[openapi]}" 'the flag'"'"'s value reaches SCAN_FLAGS unchanged'
+scan_parse_args dast --target host-a --har capture.har --postman collection.json --graphql-schema schema.graphql
+assert_eq capture.har "${SCAN_FLAGS[har]}" 'har round-trips'
+assert_eq collection.json "${SCAN_FLAGS[postman]}" 'postman round-trips'
+assert_eq schema.graphql "${SCAN_FLAGS[graphql-schema]}" 'graphql-schema round-trips'
+
+t_case 'the four discovery-input flags are not offered where they would only become boilerplate'
+assert_status 2 \
+  '--openapi is not a valid flag on sast - fails if it were declared global, which invites a spec path into a run that never crawls anything' \
+  scan_parse_args sast --openapi spec.json --path .
+
+# =============================================================================
 printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-04: --requests-per-second / --request-budget --\n'
 # =============================================================================
 # DAST-32 already reads both as config/scanner.conf keys with a conservative

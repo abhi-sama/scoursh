@@ -256,6 +256,18 @@ declare -A _SCAN_FLAG_KIND=(
   # where those are exported for the full reasoning.
   [dast:requests-per-second]=value
   [dast:request-budget]=value
+  # IMPORT-07: an ephemeral, --target-scoped override of the matching
+  # config/discovery.conf key (rules/RULE-FORMAT.md §9.6.3's openapi-path/
+  # har-path/postman-path/graphql-schema-path) - never persisted, and never a
+  # second ingestion mechanism: `modules/dast/crawl.sh`'s
+  # `_crawl_discovery_load` writes these into the SAME `_CRAWL_D_*` variables
+  # the config file would. Valid on `dast` and `all` only, matching
+  # `i-own-target`'s own scoping reasoning - a spec/HAR path has nothing to
+  # say on a `sast` run.
+  [dast:openapi]=value
+  [dast:har]=value
+  [dast:postman]=value
+  [dast:graphql-schema]=value
 
   [cloud:live]=bool
   [cloud:profile]=value
@@ -286,6 +298,10 @@ declare -A _SCAN_FLAG_KIND=(
   [all:i-own-target]=value
   [all:requests-per-second]=value
   [all:request-budget]=value
+  [all:openapi]=value
+  [all:har]=value
+  [all:postman]=value
+  [all:graphql-schema]=value
   [all:live]=bool
   [all:profile]=value
   [all:regions]=value
@@ -327,10 +343,24 @@ Commands:
   iac      [--path DIR]
   dast     --target <name-from-scope> [--intensity passive|safe|active] [--authed]
            [--i-own-target <same-name>]
+           [--openapi FILE] [--har FILE] [--postman FILE] [--graphql-schema FILE]
                                         (--intensity default: passive)
                                         (--intensity above passive, and
                                          --allow-intrusive, each require
                                          --i-own-target)
+                                        (--openapi/--har/--postman/--graphql-schema:
+                                         IMPORT-07 - an ephemeral, this-run-only
+                                         override of the matching
+                                         config/discovery.conf key for --target;
+                                         nothing is written to that file. A
+                                         relative path is resolved against the
+                                         install root, exactly as the config
+                                         file's own paths are - not against
+                                         your current directory. Each requires
+                                         --target, exit 2 otherwise - same
+                                         rule as --i-own-target. Prefer
+                                         config/discovery.conf for anything you
+                                         want to keep re-running the same way.)
   cloud    [--live] [--profile <p>] [--regions all|us-east-1,...] [--assume-role ARN]
   all      run every module for which inputs are configured
   diff     --against <prior-run-dir>
@@ -746,6 +776,7 @@ scan_parse_args() {
   # of them were - see that function's own comment - so a guided pass filling
   # them in later changes what it reads, never what it checks.
   _scan_check_affirmation
+  _scan_check_discovery_flags
 }
 
 # -----------------------------------------------------------------------------
@@ -836,6 +867,39 @@ _scan_check_affirmation() {
   if [[ $intrusive == true && -z $affirm ]]; then
     scan_die_usage "--allow-intrusive turns on side-effecting checks that create users and send messages, so the parties they can harm are the TARGET'S USERS rather than the target. Owning a host does not confer permission to do that to them, which is why this needs the affirmation as well as its own opt-in: re-run with '--i-own-target $target' if you accept that."
   fi
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# 4b-1. IMPORT-07's own validation: a discovery-input flag with no --target
+# -----------------------------------------------------------------------------
+# `--openapi`/`--har`/`--postman`/`--graphql-schema` are an ephemeral, this-
+# run-only override of a config/discovery.conf record (rules/RULE-FORMAT.md
+# §9.6.3), and that record is keyed on the `--target` id - there is no
+# "targetless" discovery input, on either the file-based or the CLI-flag
+# path. Refusing here, in `scan_parse_args`, follows `_scan_check_affirmation`'s
+# own precedent immediately above: a stale command or a copied CI invocation
+# that dropped `--target` is exactly the accidental-misuse case a usage error
+# (exit 2, `scan_die_usage`) is for, rather than a silent no-op that reads as
+# "the flag did nothing" (docs/DESIGN.md §15's honesty standard applied to
+# the CLI itself, not only to a run's findings).
+#
+# Deliberately does NOT check whether `--target` actually names an entry in
+# config/scope.conf - that is `config_scope_require`'s own, already-fatal gate
+# (exit 3, `SCOURSH_EXIT_SCOPE`) later in dispatch, and duplicating it here
+# would mean loading scope.conf inside what `_scan_check_affirmation`'s own
+# header establishes must stay a PURE, config-free function.
+#
+# Pure for the identical reason: reads SCAN_FLAGS and dies, touches no run
+# directory, so it runs inside scan_parse_args and is unit-testable without a
+# run.
+_scan_check_discovery_flags() {
+  local target=${SCAN_FLAGS[target]:-} flag
+  for flag in openapi har postman graphql-schema; do
+    [[ -n ${SCAN_FLAGS[$flag]:-} ]] || continue
+    [[ -n $target ]] \
+      || scan_die_usage "--$flag was given but this run has no --target, so there is no target's discovery input to override (config/discovery.conf, rules/RULE-FORMAT.md §9.6.3)"
+  done
   return 0
 }
 

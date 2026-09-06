@@ -127,25 +127,67 @@ _crawl_discovery_load() {
   declare -ga _CRAWL_D_EXCLUDE=()
   _CRAWL_D_PRESENT=0
 
-  config_load_if_present "$path" discovery-input discovery || return 0
-  idx=$(records_index_of_id discovery "$target") || return 0
-  _CRAWL_D_PRESENT=1
+  if config_load_if_present "$path" discovery-input discovery; then
+    if idx=$(records_index_of_id discovery "$target"); then
+      _CRAWL_D_PRESENT=1
+      _CRAWL_D_OPENAPI=$(records_field_or discovery "$idx" openapi-path '')
+      _CRAWL_D_GRAPHQL=$(records_field_or discovery "$idx" graphql-schema-path '')
+      _CRAWL_D_POSTMAN=$(records_field_or discovery "$idx" postman-path '')
+      _CRAWL_D_HAR=$(records_field_or discovery "$idx" har-path '')
+      _CRAWL_D_DEPTH=$(records_field_or discovery "$idx" crawl-depth 3)
+      [[ $_CRAWL_D_DEPTH =~ ^[0-9]+$ ]] || _CRAWL_D_DEPTH=3
 
-  _CRAWL_D_OPENAPI=$(records_field_or discovery "$idx" openapi-path '')
-  _CRAWL_D_GRAPHQL=$(records_field_or discovery "$idx" graphql-schema-path '')
-  _CRAWL_D_POSTMAN=$(records_field_or discovery "$idx" postman-path '')
-  _CRAWL_D_HAR=$(records_field_or discovery "$idx" har-path '')
-  _CRAWL_D_DEPTH=$(records_field_or discovery "$idx" crawl-depth 3)
-  [[ $_CRAWL_D_DEPTH =~ ^[0-9]+$ ]] || _CRAWL_D_DEPTH=3
+      local g
+      while IFS= read -r g; do
+        [[ -n $g ]] && _CRAWL_D_INCLUDE+=("$g")
+      done <<<"$(records_list discovery "$idx" include-path)"
+      while IFS= read -r g; do
+        [[ -n $g ]] && _CRAWL_D_EXCLUDE+=("$g")
+      done <<<"$(records_list discovery "$idx" exclude-path)"
+    fi
+  fi
 
-  local g
-  while IFS= read -r g; do
-    [[ -n $g ]] && _CRAWL_D_INCLUDE+=("$g")
-  done <<<"$(records_list discovery "$idx" include-path)"
-  while IFS= read -r g; do
-    [[ -n $g ]] && _CRAWL_D_EXCLUDE+=("$g")
-  done <<<"$(records_list discovery "$idx" exclude-path)"
+  # A missing file, or one with no record for this target, is still the
+  # normal case here - it means "no CLI override either" and falls through
+  # to the function below, which sets nothing when none of the four flags
+  # were given.  This is why the two blocks above no longer `return 0` early:
+  # a `--openapi` flag with no config/discovery.conf record at all is exactly
+  # what IMPORT-07 exists to make usable.
+  _crawl_discovery_apply_cli_overrides
   return 0
+}
+
+# `_crawl_discovery_apply_cli_overrides` (IMPORT-07) - an ephemeral, this-run-
+# only override of the four discovery.conf keys, resolved through
+# `scan.sh`'s own `_SCAN_FLAG_KIND` + `SCAN_FLAGS` chain (`--openapi`/`--har`/
+# `--postman`/`--graphql-schema`), NEVER a second ingestion mechanism: it
+# writes into the identical `_CRAWL_D_*` variables the config-file branch
+# above populates, so every consumer below this point (the four
+# `crawl_spec_*` calls in `_crawl_run_phase`) cannot tell which source a path
+# came from and needs no change. A flag wins over a config/discovery.conf
+# entry for the same key - the more specific, single-run instruction - and
+# nothing is ever written back to that file. `scan.sh`'s own
+# `_scan_check_discovery_flags` has already refused a flag given with no
+# `--target` (exit 2) before this ever runs, so `SCAN_FLAGS[target]` here, if
+# read, would always equal `$target` - it is not re-checked.
+_crawl_discovery_apply_cli_overrides() {
+  declare -p SCAN_FLAGS &>/dev/null || declare -A SCAN_FLAGS=()
+  if [[ -n ${SCAN_FLAGS[openapi]:-} ]]; then
+    _CRAWL_D_OPENAPI=${SCAN_FLAGS[openapi]}
+    _CRAWL_D_PRESENT=1
+  fi
+  if [[ -n ${SCAN_FLAGS[graphql-schema]:-} ]]; then
+    _CRAWL_D_GRAPHQL=${SCAN_FLAGS[graphql-schema]}
+    _CRAWL_D_PRESENT=1
+  fi
+  if [[ -n ${SCAN_FLAGS[postman]:-} ]]; then
+    _CRAWL_D_POSTMAN=${SCAN_FLAGS[postman]}
+    _CRAWL_D_PRESENT=1
+  fi
+  if [[ -n ${SCAN_FLAGS[har]:-} ]]; then
+    _CRAWL_D_HAR=${SCAN_FLAGS[har]}
+    _CRAWL_D_PRESENT=1
+  fi
 }
 
 # A specification path is resolved relative to the INSTALL ROOT when it is not
@@ -504,6 +546,54 @@ _crawl_record_spa_gap() {
 }
 
 # ---------------------------------------------------------------------------
+# 5a. Structured surface provenance (IMPORT-06)
+# ---------------------------------------------------------------------------
+# The `notes` record below already carries `spec_endpoints=N spec_kinds=[...]`,
+# but as prose inside a string array a consumer has to substring-scrape it -
+# report §6's own gap. This records the identical breakdown as STRUCTURED
+# per-source counts, one `source<US>count` line per (target, source) pair, so
+# lib/report.sh's `report_run_json` can render "N endpoints, M from an
+# openapi spec you supplied" without parsing prose. US (0x1f), never a space
+# or a tab, because a foreign inventory's `source` field (tension 21 - a
+# hand-written parameters.json, or a future SAST/apigw producer) is operator-
+# or producer-supplied text, not one of this file's own five literal values,
+# and the AGENTS.md DAST-11 lesson (a tab folds an empty field; a space is no
+# safer once the value itself may contain one) applies to it identically.
+# Never a total-only line: a total with no breakdown is exactly the "the scan
+# found nothing" ambiguity this ticket exists to close.
+_crawl_record_surface_provenance() {
+  local rec id target method url host path source depth status ctype body_type
+  local epid ptarget pmethod purl name location pexample
+  local -A ep_src=() par_src=()
+  for rec in "${_CRAWL_EP[@]+"${_CRAWL_EP[@]}"}"; do
+    # Every positional field of the tuple must be read to keep `source` (the
+    # only one this loop uses) aligned with `_CRAWL_EP`'s own field order.
+    # shellcheck disable=SC2034
+    IFS=$'\x1f' read -r id target method url host path source depth status ctype body_type <<<"$rec"
+    ep_src[$source]=$(( ${ep_src[$source]:-0} + 1 ))
+  done
+  for rec in "${_CRAWL_PARAM[@]+"${_CRAWL_PARAM[@]}"}"; do
+    # Same reason: `source` is the only field this loop uses.
+    # shellcheck disable=SC2034
+    IFS=$'\x1f' read -r id epid ptarget pmethod purl name location source pexample <<<"$rec"
+    par_src[$source]=$(( ${par_src[$source]:-0} + 1 ))
+  done
+  local s
+  if (( ${#ep_src[@]} > 0 )); then
+    while IFS= read -r s; do
+      [[ -n $s ]] || continue
+      run_record dast_surface_endpoints_by_source "$s"$'\x1f'"${ep_src[$s]}"
+    done <<<"$(printf '%s\n' "${!ep_src[@]}" | LC_ALL=C sort)"
+  fi
+  if (( ${#par_src[@]} > 0 )); then
+    while IFS= read -r s; do
+      [[ -n $s ]] || continue
+      run_record dast_surface_parameters_by_source "$s"$'\x1f'"${par_src[$s]}"
+    done <<<"$(printf '%s\n' "${!par_src[@]}" | LC_ALL=C sort)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # 6. The phase body
 # ---------------------------------------------------------------------------
 _crawl_run_phase() {
@@ -651,6 +741,7 @@ _crawl_run_phase() {
 
   local nep=${#_CRAWL_EP[@]} npar=${#_CRAWL_PARAM[@]}
   run_record notes "module=dast phase=crawl target=$(crawl_safe_text "$target" 80) pages=$_CRAWL_PAGES endpoints=$nep parameters=$npar imported=$imported spec_endpoints=$spec_count spec_kinds=[$(crawl_safe_text "${spec_kinds% }" 80)] forms=$_CRAWL_FORMS"
+  _crawl_record_surface_provenance
 
   # -- 6. every bound that bit, on the surface a reader sees -----------------
   # A crawled link or form action, not an inventory row - dropped through the
