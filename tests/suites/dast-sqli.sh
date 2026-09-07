@@ -472,6 +472,164 @@ assert_eq 0 "$BADVERB" \
   "no vendored SQLi payload carries a destructive/write verb - FAILS the moment a DROP/DELETE/UPDATE/INSERT is added, which docs/DESIGN.md §7.3's non-destructive contract forbids"
 
 # ===========================================================================
+printf '== dast sqli: boolean-based fires on the AUTH-BYPASS polarity too (false ~ baseline, true differs) ==\n'
+# ===========================================================================
+# A login/gate endpoint's baseline is a FAILED credential check (the false
+# state already). The classic comment-stripping bypass (row 3 of
+# sqli-boolean-pairs.txt: `%B' AND 1=1-- -` / `%B' AND 1=2-- -`) makes the
+# TRUE payload diverge (login succeeds) and the FALSE payload match the
+# baseline (still denied) - the polarity a "true must match baseline" reading
+# rejects. A plain AND-only pair with no comment stripping (row 1: `%B AND
+# 1=1` / `%B AND 1=2`) ANDs onto an already-false WHERE clause and produces NO
+# differential at all (false AND anything = false), which must NOT flag under
+# either polarity.
+cat >"$W/endpoints.json" <<'EOF'
+{ "schema": "scoursh.inventory.endpoints/1", "endpoints": [
+  { "id": "ep_authbypass", "target": "sqli-fixture", "method": "POST", "url": "https://sqli.fixture.example/login2", "path": "/login2" }
+] }
+EOF
+cat >"$W/parameters.json" <<'EOF'
+{ "schema": "scoursh.inventory.parameters/1", "parameters": [
+  { "id": "pb1", "endpoint_id": "ep_authbypass", "target": "sqli-fixture", "name": "email", "location": "body", "example": "admin@example.test" },
+  { "id": "pb2", "endpoint_id": "ep_authbypass", "target": "sqli-fixture", "name": "denyall", "location": "body", "example": "d1" },
+  { "id": "pb3", "endpoint_id": "ep_authbypass", "target": "sqli-fixture", "name": "flipboth", "location": "body", "example": "f1" }
+] }
+EOF
+DENIED='<html><body>Invalid email or password.</body></html>'
+WELCOME='<html><body>{"authentication":{"token":"eyJ...","umail":"admin@example.test"}}</body></html>'
+# All three body params ride in the SAME request (siblings sent at their
+# benign value while one is mutated), so the mock must read each field's OWN
+# value rather than grep the whole body - a whole-body substring match would
+# see 'denyall's or 'flipboth's injected marker and misattribute it to
+# 'email' just because that field name happens to appear elsewhere in the
+# same body.
+_field_val() {
+  local body=$1 name=$2 rest
+  rest=${body#*"$name="}
+  [[ $rest == "$body" ]] && return 0
+  rest=${rest%%&*}
+  printf '%s' "$rest"
+}
+_authbypass_transport() {
+  local method=$1 path=$5 body=${_HTTP_TX_BODY:-}
+  local status=401 out=$DENIED u ev dv fv
+  u=${body^^}
+  ev=$(_field_val "$u" EMAIL)
+  dv=$(_field_val "$u" DENYALL)
+  fv=$(_field_val "$u" FLIPBOTH)
+  if [[ $ev == *"1%3D1--"* ]]; then
+    # Only the comment-stripped tautology (row 3) flips the WHERE clause;
+    # every other AND-based pair (rows 1/2/4/5, no `--` comment marker) stays
+    # denied - FAILS a reading that flags on ANY true/false response
+    # difference rather than on a real baseline-relative differential.
+    status=200; out=$WELCOME
+  elif [[ $ev == *"1%3D2--"* ]]; then
+    status=401; out=$DENIED
+  elif [[ $dv != D1 ]]; then
+    # 'denyall' is the field under test (its value no longer matches its own
+    # unmutated baseline "d1"). A control where every variant matches the
+    # baseline (denied) - proves the new "false ~ baseline" polarity does not
+    # fire on its own; it still requires the OTHER side to differ.
+    status=401; out=$DENIED
+  elif [[ $fv != F1 ]]; then
+    # 'flipboth' is the field under test. A control where every variant
+    # DIFFERS from the baseline (both true and false payloads happen to
+    # change the page) - ambiguous, and must NOT be read as a signal under
+    # either polarity, since neither side matches the baseline at all.
+    status=200; out=$WELCOME
+  fi
+  printf '%s %s\n' "$method" "$path" >>"$REQ_LOG"
+  [[ -n ${_HTTP_TX_BODY_OUT:-} ]] && printf '%s' "$out" >"$_HTTP_TX_BODY_OUT"
+  printf '%s\n\n%s\n' "$status" 'text/html'
+}
+_new_run authbypass
+SCOURSH_HTTP_TRANSPORT=_authbypass_transport
+_dast_sqli_phase
+SCOURSH_HTTP_TRANSPORT=_sqli_transport
+assert_eq 1 "$(_count_finding DAST-INJ-SQLI_BOOLEAN-01 email)" \
+  "the comment-stripping auth-bypass pair fires a boolean finding - FAILS under a reading that only accepts 'true ~ baseline, false differs' and rejects the mirror-image 'false ~ baseline, true differs' polarity a login endpoint's own baseline (a failed/denied state) produces"
+assert_eq 0 "$(_count_finding DAST-INJ-SQLI_BOOLEAN-01 denyall)" \
+  "a param where every payload matches the baseline (denied) does NOT flag - FAILS if 'false ~ baseline' alone were treated as sufficient without also requiring the true side to differ"
+assert_eq 0 "$(_count_finding DAST-INJ-SQLI_BOOLEAN-01 flipboth)" \
+  "a param where every payload differs from the baseline (ambiguous, neither side matches) does NOT flag - FAILS if the true/false-differ-from-each-other check alone were treated as sufficient"
+
+# ===========================================================================
+printf '== dast sqli: time-based fires with a SQLite-safe payload (no built-in SLEEP) ==\n'
+# ===========================================================================
+# SQLite has no SLEEP()/PG_SLEEP()/WAITFOR/DBMS_PIPE - every one of those
+# provokes an immediate error (undefined function), not a delay. A bounded
+# recursive-CTE payload is the SQLite-safe technique: it costs real CPU time
+# proportional to a small, capped iteration count and produces no error.
+cat >"$W/endpoints.json" <<'EOF'
+{ "schema": "scoursh.inventory.endpoints/1", "endpoints": [
+  { "id": "ep_sqlitetime", "target": "sqli-fixture", "method": "GET", "url": "https://sqli.fixture.example/sqlitetime", "path": "/sqlitetime" }
+] }
+EOF
+cat >"$W/parameters.json" <<'EOF'
+{ "schema": "scoursh.inventory.parameters/1", "parameters": [
+  { "id": "pc1", "endpoint_id": "ep_sqlitetime", "target": "sqli-fixture", "name": "q", "location": "query", "example": "1" }
+] }
+EOF
+_sqlitetime_transport() {
+  local method=$1 path=$5 body=${_HTTP_TX_BODY:-}
+  local surface="$path?$body" status=200 out=$LONG u
+  u=${surface^^}
+  case $path in
+    /sqlitetime*)
+      if [[ $u == *SLEEP* || $u == *WAITFOR* || $u == *RECEIVE_MESSAGE* ]]; then
+        # SQLite: no such function - an immediate error, never a delay.
+        status=500; out='<html><body>SQL logic error</body></html>'
+      elif [[ $u == *RECURSIVE* ]]; then
+        printf '3000000000' >"$PENDF"
+      fi
+      ;;
+  esac
+  printf '%s %s\n' "$method" "$path" >>"$REQ_LOG"
+  [[ -n ${_HTTP_TX_BODY_OUT:-} ]] && printf '%s' "$out" >"$_HTTP_TX_BODY_OUT"
+  printf '%s\n\n%s\n' "$status" 'text/html'
+}
+_new_run sqlitetime
+SCOURSH_HTTP_TRANSPORT=_sqlitetime_transport
+_dast_sqli_phase
+SCOURSH_HTTP_TRANSPORT=_sqli_transport
+assert_eq 1 "$(_count_finding DAST-INJ-SQLI_TIME-01 q)" \
+  "a SQLite target with no SLEEP/WAITFOR/PG_SLEEP/DBMS_PIPE support still gets a time-based finding via the bounded recursive-CTE payload - FAILS under the pre-fix payload set, which ships nothing that delays a genuinely SQLite-backed target at all"
+
+# ===========================================================================
+printf '== dast sqli: error-based fires on a bare stack-trace 500 page (no driver message text) ==\n'
+# ===========================================================================
+# A dev-mode Express/Node default error handler renders a bare stack trace
+# with file paths and no driver err.message at all - confirmed real behavior
+# against Juice Shop 20.1.1 (a Sequelize/SQLite crash). The pre-fix signature
+# list only matches driver MESSAGE text (`SQLite3::`, `sqlite3\.OperationalError`,
+# `SQL logic error`, ...), none of which ever appears on this page shape.
+cat >"$W/endpoints.json" <<'EOF'
+{ "schema": "scoursh.inventory.endpoints/1", "endpoints": [
+  { "id": "ep_stacktrace", "target": "sqli-fixture", "method": "POST", "url": "https://sqli.fixture.example/stacktrace", "path": "/stacktrace" }
+] }
+EOF
+cat >"$W/parameters.json" <<'EOF'
+{ "schema": "scoursh.inventory.parameters/1", "parameters": [
+  { "id": "pd1", "endpoint_id": "ep_stacktrace", "target": "sqli-fixture", "name": "email", "location": "body", "example": "admin@example.test" }
+] }
+EOF
+STACKTRACE='<html><body><h2><em>500</em> Error</h2><ul id="stacktrace"><li> &nbsp; &nbsp;at Database.&lt;anonymous&gt; (/juice-shop/node_modules/sequelize/lib/dialects/sqlite/query.js:185:27)</li></ul></body></html>'
+_stacktrace_transport() {
+  local method=$1 path=$5 body=${_HTTP_TX_BODY:-}
+  local surface="$path?$body" status=200 out=$LONG
+  if [[ $surface == *%27* || $surface == *%22* ]]; then status=500; out=$STACKTRACE; fi
+  printf '%s %s\n' "$method" "$path" >>"$REQ_LOG"
+  [[ -n ${_HTTP_TX_BODY_OUT:-} ]] && printf '%s' "$out" >"$_HTTP_TX_BODY_OUT"
+  printf '%s\n\n%s\n' "$status" 'text/html'
+}
+_new_run stacktrace
+SCOURSH_HTTP_TRANSPORT=_stacktrace_transport
+_dast_sqli_phase
+SCOURSH_HTTP_TRANSPORT=_sqli_transport
+assert_eq 1 "$(_count_finding DAST-INJ-SQLI_ERROR-01 email)" \
+  "a bare Sequelize/SQLite stack-trace 500 (file paths only, no driver message text) still fires the error-based check - FAILS under the pre-fix signature list, which matches only driver MESSAGE text and never a bare stack trace"
+
+# ===========================================================================
 printf '== inject_engine: unit checks ==\n'
 # ===========================================================================
 inject_urlencode "1' AND SLEEP(3)-- -"

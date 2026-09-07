@@ -932,6 +932,96 @@ assert_eq "${SCOURSH_CONFIG_REQUESTS_PER_SECOND-}" "$_SCAN_ENV_RPS_PRISTINE" \
 assert_eq "${SCOURSH_CONFIG_REQUEST_BUDGET-}" "$_SCAN_ENV_BUDGET_PRISTINE" \
   '_SCAN_ENV_BUDGET_PRISTINE likewise'
 
+# =============================================================================
+printf '\n-- DAST detector-gap fix: --circuit-breaker-failures --\n'
+# =============================================================================
+# A target that answers an unmatched path with 5xx (not 404) can trip the
+# breaker's default 10-failures/60s ceiling during discovery/methods before
+# the injection phase ever runs (docs/FOUNDATION.md tension 16's own DAST
+# note). This flag gives an owning operator the same raise mechanism
+# --requests-per-second/--request-budget already have - FAILS under the
+# pre-fix parser, which has no '[dast:circuit-breaker-failures]' key in
+# _SCAN_FLAG_KIND at all, so the flag is simply unrecognized (exit 2).
+
+t_case '--circuit-breaker-failures parses on dast and all, same positive-integer shape jobs/request-budget already enforce'
+scan_parse_args dast --target host-a --circuit-breaker-failures 50
+assert_eq 50 "${SCAN_FLAGS[circuit-breaker-failures]}" 'circuit-breaker-failures parses on dast'
+scan_parse_args all --circuit-breaker-failures 30 --path .
+assert_eq 30 "${SCAN_FLAGS[circuit-breaker-failures]}" 'circuit-breaker-failures parses on all too'
+assert_status 2 \
+  '--circuit-breaker-failures is not a valid flag on sast - it has no breaker to raise' \
+  scan_parse_args sast --circuit-breaker-failures 50 --path .
+assert_status 2 \
+  '--circuit-breaker-failures rejects zero - a breaker of nothing is never legal, matching jobs/request-budget' \
+  scan_parse_args dast --target host-a --circuit-breaker-failures 0
+assert_status 2 \
+  '--circuit-breaker-failures rejects a non-integer' \
+  scan_parse_args dast --target host-a --circuit-breaker-failures 4.5
+
+t_case 'SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES reflects the CLI flag and is restored (never leaked) across a second scan_main-shaped call'
+(
+  unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
+  _SCAN_ENV_BREAKER_PRISTINE='' _SCAN_ENV_BREAKER_PRISTINE_SET=''
+  SCAN_FLAGS=([circuit-breaker-failures]=50)
+  if [[ -n ${SCAN_FLAGS[circuit-breaker-failures]:-} ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=${SCAN_FLAGS[circuit-breaker-failures]}
+  elif [[ -n $_SCAN_ENV_BREAKER_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=$_SCAN_ENV_BREAKER_PRISTINE
+  else
+    unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
+  fi
+  [[ ${SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES:-} == 50 ]] || exit 1
+  # A SECOND "call" giving no flag must restore the pristine (unset) state.
+  SCAN_FLAGS=()
+  if [[ -n ${SCAN_FLAGS[circuit-breaker-failures]:-} ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=${SCAN_FLAGS[circuit-breaker-failures]}
+  elif [[ -n $_SCAN_ENV_BREAKER_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=$_SCAN_ENV_BREAKER_PRISTINE
+  else
+    unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
+  fi
+  [[ -z ${SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES+set} ]] || exit 2
+)
+rc=$?
+assert_eq 0 "$rc" \
+  'FAILS if the first "call"'"'"'s export leaked into the second, flagless one (exit 2), or if the export never took effect at all (exit 1) - mirrors the identical requests-per-second/request-budget proof above'
+
+t_case 'the real scan_main-run pristine-snapshot variable for circuit-breaker-failures exists and reflects this process'"'"'s own environment at source time'
+assert_eq "${SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES-}" "$_SCAN_ENV_BREAKER_PRISTINE" \
+  '_SCAN_ENV_BREAKER_PRISTINE was captured once, at the top of scan.sh, before any flag was parsed'
+
+t_case 'a real scan_dispatch dast subprocess with --circuit-breaker-failures raises the breaker exactly like requests-per-second/request-budget do, per run.json'"'"'s own authorization record'
+# The same instantly-refusing link-local target the round-trip case above
+# uses (0ms per attempt, no packet leaves the host), so this stays fast: with
+# the DEFAULT ceiling (10) the breaker opens after 10 failed connections; with
+# --circuit-breaker-failures 50 it tolerates 50 before opening, which is what
+# run.json's authorization object is checked for - not that the run finishes
+# cleanly (it cannot, against a target that refuses every connection), only
+# that the RAISE itself was recorded, the identical proof the round-trip case
+# above uses for requests-per-second.
+rm -rf "$SCOURSH_SCRATCH/scan-circuit-breaker-flag"
+CBW=$(cd -- "$SCOURSH_SCRATCH" && mkdir -p scan-circuit-breaker-flag/config \
+  && cp -R "$ROOT/modules" scan-circuit-breaker-flag/modules \
+  && cd -- scan-circuit-breaker-flag && pwd -P)
+mkdir -p "$CBW/out"
+cat >"$CBW/config/scope.conf" <<'EOF'
+id: breaker-fixture
+base-url: http://169.254.1.1:1/
+allow-subdomains: false
+allow-private-addresses: true
+EOF
+( _guide_env SCOURSH_INSTALL_ROOT="$CBW" bash "$ROOT/scan.sh" dast --target breaker-fixture \
+    --i-own-target breaker-fixture --circuit-breaker-failures 50 \
+    --out "$CBW/out" ) </dev/null >"$CBW/run.log" 2>&1 || true
+assert_file_exists "$CBW/out/run.json" \
+  'the subprocess reached run_init and wrote run.json at all - FAILS if the new flag were rejected at parse time (a usage-error exit before any output)'
+CBW_AUTH=$(_rt_block "$CBW/out/run.json" authorization)
+assert_contains "$CBW_AUTH" 'circuit-breaker-failures:10->50' \
+  'the raised breaker ceiling is recorded as a limits_relaxed delta in run.json, the identical mechanism requests-per-second/request-budget already use - FAILS under the pre-fix code, where lib/http.sh never sees a raised value because scan.sh never exported SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES for it'
+CBW_CFG=$(_rt_block "$CBW/out/run.json" config)
+assert_contains "$CBW_CFG" '"circuit-breaker-failures": {"value": "50", "source": "cli"}' \
+  'the raised value is recorded as CLI-sourced in the config object too'
+
 t_case 'the two flags are in GUIDE_SETTABLE_FLAGS, which the earlier section already proved matches _SCAN_FLAG_KIND'
 assert_contains "${GUIDE_SETTABLE_FLAGS[*]}" 'requests-per-second' 'requests-per-second is guided-settable'
 assert_contains "${GUIDE_SETTABLE_FLAGS[*]}" 'request-budget' 'request-budget is guided-settable'

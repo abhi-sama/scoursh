@@ -256,6 +256,22 @@ declare -A _SCAN_FLAG_KIND=(
   # where those are exported for the full reasoning.
   [dast:requests-per-second]=value
   [dast:request-budget]=value
+  # DAST detector-gap fix (docs/FOUNDATION.md tension 16): `circuit-breaker-
+  # failures` had a config/scanner.conf key and DAST-32's own asymmetric
+  # clamp/relax-under-affirmation already applied to it generically
+  # (lib/http.sh's `_http_effective_limit_set` treats every non-window integer
+  # key alike), but - unlike `requests-per-second`/`request-budget` above - it
+  # had no dedicated CLI flag, so an operator who owns a target that answers
+  # unmatched paths with 5xx (rather than 404) had no first-class way to raise
+  # it without hand-editing config/scanner.conf or knowing the undocumented
+  # SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES env-override name. This flag closes
+  # exactly that gap, mirroring the pair above byte-for-byte: it changes NOTHING
+  # for a run that never passes it (the ceiling stays 10/60s, unraisable without
+  # an explicit value + --i-own-target, exactly as before), and an explicit
+  # value above the ceiling with no --i-own-target is refused (exit 2) exactly
+  # as the other two are - see scan_main's own comment where all three are
+  # exported as SCOURSH_CONFIG_* for lib/http.sh's DAST-32 clamp.
+  [dast:circuit-breaker-failures]=value
   # IMPORT-07: an ephemeral, --target-scoped override of the matching
   # config/discovery.conf key (rules/RULE-FORMAT.md §9.6.3's openapi-path/
   # har-path/postman-path/graphql-schema-path) - never persisted, and never a
@@ -298,6 +314,7 @@ declare -A _SCAN_FLAG_KIND=(
   [all:i-own-target]=value
   [all:requests-per-second]=value
   [all:request-budget]=value
+  [all:circuit-breaker-failures]=value
   [all:openapi]=value
   [all:har]=value
   [all:postman]=value
@@ -623,7 +640,7 @@ scan_validate_flag_value() {
     intensity) checks_valid_intensity "$val" ;;
     fail-on) [[ $val =~ ^(critical|high|medium|low|info|none)$ ]] ;;
     min-confidence) [[ $val =~ ^(high|medium|low)$ ]] ;;
-    jobs | request-budget) [[ $val =~ ^[1-9][0-9]*$ ]] ;;
+    jobs | request-budget | circuit-breaker-failures) [[ $val =~ ^[1-9][0-9]*$ ]] ;;
     # Copied verbatim from lib/config.sh's `_scanner_validate_value` (the same
     # duplication `jobs`/`fail-on`/`min-confidence` above already accept:
     # there is no cross-file regex-sharing mechanism in this codebase, and the
@@ -669,6 +686,12 @@ _SCAN_ENV_RPS_PRISTINE=${SCOURSH_CONFIG_REQUESTS_PER_SECOND-}
 _SCAN_ENV_RPS_PRISTINE_SET=${SCOURSH_CONFIG_REQUESTS_PER_SECOND+set}
 _SCAN_ENV_BUDGET_PRISTINE=${SCOURSH_CONFIG_REQUEST_BUDGET-}
 _SCAN_ENV_BUDGET_PRISTINE_SET=${SCOURSH_CONFIG_REQUEST_BUDGET+set}
+# The same pristine-snapshot treatment for --circuit-breaker-failures, added
+# alongside its two siblings above for the identical reason (a second
+# scan_main call in one process, tests/suites/scan.sh's own pattern, must not
+# destroy a genuine operator-set SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES).
+_SCAN_ENV_BREAKER_PRISTINE=${SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES-}
+_SCAN_ENV_BREAKER_PRISTINE_SET=${SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES+set}
 
 # -----------------------------------------------------------------------------
 # 4. The parser.  Hand-rolled rather than `getopts`/`getopt`: `getopts` (the
@@ -1944,9 +1967,10 @@ _scan_scanner_conf_sha256() {
 # SCAN_FLAGS entry where one exists, so a key an operator DID type on the
 # command line is correctly reported as "source": "cli" here too, rather than
 # as "env" merely because scan_main also re-exports requests-per-second/
-# request-budget as SCOURSH_CONFIG_* for lib/http.sh's own DAST-32 clamp (see
-# that export's own comment above) - this is a SEPARATE resolution, purely for
-# the record, and reads SCAN_FLAGS directly rather than the export.
+# request-budget/circuit-breaker-failures as SCOURSH_CONFIG_* for lib/http.sh's
+# own DAST-32 clamp (see that export's own comment above) - this is a SEPARATE
+# resolution, purely for the record, and reads SCAN_FLAGS directly rather than
+# the export.
 _scan_record_config() {
   local key val cli
   local -a single_keys=(
@@ -1964,6 +1988,7 @@ _scan_record_config() {
       min-confidence) cli=${SCAN_FLAGS[min-confidence]:-} ;;
       request-budget) cli=${SCAN_FLAGS[request-budget]:-} ;;
       requests-per-second) cli=${SCAN_FLAGS[requests-per-second]:-} ;;
+      circuit-breaker-failures) cli=${SCAN_FLAGS[circuit-breaker-failures]:-} ;;
       *) cli='' ;;
     esac
     _scan_capture val config_scanner_value "$key" "$cli"
@@ -2124,6 +2149,7 @@ scan_main() {
   config_scanner_load
 
   # docs/STEP-GUIDE-PLAN.md GUIDE-04: `--requests-per-second`/`--request-budget`
+  # (and, by the identical construction, `--circuit-breaker-failures` below)
   # have no dedicated CLI-capture call site inside lib/http.sh the way
   # `jobs`/`fail-on`/`min-confidence` do above - DAST-32's clamp
   # (`_http_effective_rps_milli_set`/`_http_effective_limit_set`, lib/http.sh)
@@ -2153,6 +2179,19 @@ scan_main() {
     export SCOURSH_CONFIG_REQUEST_BUDGET=$_SCAN_ENV_BUDGET_PRISTINE
   else
     unset SCOURSH_CONFIG_REQUEST_BUDGET
+  fi
+  # --circuit-breaker-failures: the third member of this trio (see the
+  # comment above), closing the gap docs/FOUNDATION.md tension 16 names - a
+  # target that answers unmatched paths with 5xx (rather than 404) can trip
+  # the breaker's default 10-failures/60s ceiling during discovery/methods
+  # before the injection phase ever runs. An owning operator can now raise it
+  # the same way as rate/budget: an explicit value here plus --i-own-target.
+  if [[ -n ${SCAN_FLAGS[circuit-breaker-failures]:-} ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=${SCAN_FLAGS[circuit-breaker-failures]}
+  elif [[ -n $_SCAN_ENV_BREAKER_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=$_SCAN_ENV_BREAKER_PRISTINE
+  else
+    unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
   fi
 
   _scan_capture SCOURSH_JOBS config_scanner_value jobs "${SCAN_FLAGS[jobs]:-}"
