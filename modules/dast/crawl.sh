@@ -817,6 +817,21 @@ _crawl_run_phase() {
     run_record coverage_gap "dast/crawl: $_CRAWL_PARAM_INVALID_HEADER_NAME header-location parameter(s) on target '$(crawl_safe_text "$target" 80)' carried a name that is not an RFC 7230 token and were DISCARDED rather than stored, so they are absent from every later check"
     run_record coverage_reduction "module=dast phase=crawl reason=param_invalid_header_name target=$(crawl_safe_text "$target" 80) count=${_CRAWL_PARAM_INVALID_HEADER_NAME:-0}"
   fi
+  # A control byte (C0 or DEL) in a name/value/method/URL/source lifted out of
+  # an OpenAPI/HAR/Postman document would corrupt the 0x1f delimiter the
+  # in-memory endpoint/parameter tuple uses internally once `crawl_json_unescape`
+  # turns its JSON escape into the raw byte - shifting every field after it and,
+  # left unchecked, reaching `http_request_header` and aborting the whole run
+  # (exit 5). `crawl_add_endpoint`/`crawl_add_param` reject such a row before it
+  # is ever built rather than silently rewriting it.
+  if (( ${_CRAWL_EP_CONTROL_BYTE:-0} > 0 )); then
+    run_record coverage_gap "dast/crawl: $_CRAWL_EP_CONTROL_BYTE endpoint(s) on target '$(crawl_safe_text "$target" 80)' carried a C0 control byte or DEL in their method, URL, source, status, or content-type and were DISCARDED rather than stored, so they are absent from every later check"
+    run_record coverage_reduction "module=dast phase=crawl reason=endpoint_control_byte target=$(crawl_safe_text "$target" 80) count=${_CRAWL_EP_CONTROL_BYTE:-0}"
+  fi
+  if (( ${_CRAWL_PARAM_CONTROL_BYTE:-0} > 0 )); then
+    run_record coverage_gap "dast/crawl: $_CRAWL_PARAM_CONTROL_BYTE parameter(s) on target '$(crawl_safe_text "$target" 80)' carried a C0 control byte or DEL in their name, value, method, URL, or source and were DISCARDED rather than stored, so they are absent from every later check"
+    run_record coverage_reduction "module=dast phase=crawl reason=param_control_byte target=$(crawl_safe_text "$target" 80) count=${_CRAWL_PARAM_CONTROL_BYTE:-0}"
+  fi
   # IMPORT-03: an OpenAPI/Swagger requestBody's $ref chain that loops or nests
   # past the resolver's bound, and a 3.1 oneOf/anyOf resolved from only its
   # first subschema, both cost a real body field - counted rather than the

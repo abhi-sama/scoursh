@@ -1,0 +1,15 @@
+{
+  "openapi": "3.0.3",
+  "info": {"title": "control-byte hostile-parameter fixture (audit finding A1)", "version": "1.0"},
+  "paths": {
+    "/import-cb": {
+      "get": {
+        "summary": "a query parameter whose name carries a JSON-escaped C0 control byte (0x1f, the unit separator scoursh own inventory tuple uses internally), beside a well-formed sibling",
+        "parameters": [
+          {"name": "Bad Name\u001fheader", "in": "query"},
+          {"name": "X-Good-Name", "in": "query"}
+        ]
+      }
+    }
+  }
+}
