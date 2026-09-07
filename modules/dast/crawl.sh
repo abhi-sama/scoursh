@@ -543,6 +543,36 @@ _crawl_record_spa_gap() {
   fi
   run_record coverage_gap "dast/crawl: no OpenAPI, GraphQL schema, Postman collection or HAR capture was supplied for target '$(crawl_safe_text "$target" 80)' (config/discovery.conf, rules/RULE-FORMAT.md §9.6.3), so the surface below is only what a static crawl could reach by following links: $pages page(s) fetched, $endpoints endpoint(s) known$shape. scoursh executes no JavaScript and has no browser, so a client-rendered application's routes and its XHR/fetch endpoints are INVISIBLE here and every later DAST check will report clean for them because it never saw them - that is the absence of a test, not the absence of a problem (docs/DESIGN.md §7.5). To close this, supply a spec or a HAR capture of real usage in config/discovery.conf; failing that, a SAST route extraction merged through reports/<run>/inventory/endpoints.json covers the server-side half (docs/FOUNDATION.md tension 21)."
   run_record coverage_reduction "module=dast phase=crawl reason=no_specification_supplied target=$(crawl_safe_text "$target" 80) pages=$pages endpoints=$endpoints spa_shaped=${_CRAWL_SPA_SHAPED:-0}"
+  _crawl_nudge_spa_import "$target"
+}
+
+# ---------------------------------------------------------------------------
+# 5b. The SPA nudge (2026-09-06 captain decision: no auto-discovery, lower
+# friction on the import path instead - data/scoursh-spa-har-nudge)
+# ---------------------------------------------------------------------------
+# Fires ONLY when the root-page heuristic actually fired (`_CRAWL_SPA_SHAPED`),
+# which is a strictly NARROWER condition than the coverage_gap above (that one
+# is recorded for every no-spec run, SPA-shaped or not). Telling an operator
+# scanning an ordinary multi-page site "this looks like a single-page app"
+# would be wrong and is exactly the kind of overstated claim §15 forbids, so
+# this reuses the same heuristic the wording above already gates on, never a
+# broader "no spec" trigger.
+#
+# This is advice, not a finding or a coverage change: it is a SECOND
+# `coverage_gap` line (so it reaches report.md/report.html's existing
+# limitations section unchanged) plus a `log_warn` (so it reaches the
+# terminal the operator is already watching, the same channel every other
+# crawl warning in this file uses). Nothing here calls `finding_emit`, alters
+# `checks_run`/`coverage_reduction` counts, or can change `scan_exit_code`'s
+# inputs - it is prose appended to a run.json/report surface that already
+# exists and was already going to be non-empty on this exact run.
+_crawl_nudge_spa_import() {
+  (( ${_CRAWL_SPA_SHAPED:-0} )) || return 0
+  local target=$1
+  local nudge
+  nudge="dast/crawl: target '$(crawl_safe_text "$target" 80)' looks like a single-page app, so its API is not reachable by following links - the only way to test it is to import a real capture of its traffic. Re-run with --har <capture> or --openapi <spec> (or set har-path/openapi-path in config/discovery.conf, rules/RULE-FORMAT.md §9.6.3); docs/USAGE.md's 'config/discovery.conf' section has the full reference. To capture a HAR in about 30 seconds: open the target in Chrome, open DevTools (F12 or Cmd+Option+I) and select the Network tab, tick 'Preserve log', browse or log in through the app as you normally would to generate traffic, then right-click any row in the request list and choose 'Save all as HAR' (or use the panel's own down-arrow export icon) to save it; then re-run scoursh with --har pointed at that file. This is guidance only: it does not add a finding, change any coverage number, or affect this run's exit code."
+  run_record coverage_gap "$nudge"
+  log_warn "$nudge"
 }
 
 # ---------------------------------------------------------------------------
