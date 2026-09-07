@@ -68,7 +68,7 @@ scan.sh <command> [options]
 | `--requests-per-second N` | dast, all | live; raising it above the conservative ceiling needs `--i-own-target` (see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)) |
 | `--request-budget N` | dast, all | live; same as above |
 | `--circuit-breaker-failures N` | dast, all | live; same as above - useful for a target that answers an unmatched path with 5xx rather than 404, which can otherwise trip the default 10-failures/60s ceiling during discovery/methods before the injection phase runs |
-| `--openapi FILE` | dast, all | live - an ephemeral, this-run-only override of `config/discovery.conf`'s `openapi-path` for `--target`; nothing is written to that file. Requires `--target`, exit 2 otherwise. |
+| `--openapi FILE` | dast, all | live - an ephemeral, this-run-only override of `config/discovery.conf`'s `openapi-path` for `--target`; nothing is written to that file. Requires `--target`, exit 2 otherwise. See ["`config/discovery.conf`"](#configdiscoveryconf---optional-feeds-dasts-crawler-an-applications-real-api-surface) if a run told you the target "looks like a single-page app". |
 | `--har FILE` | dast, all | live; same as above, for `har-path` |
 | `--postman FILE` | dast, all | live; same as above, for `postman-path` |
 | `--graphql-schema FILE` | dast, all | live; same as above, for `graphql-schema-path` |
@@ -646,6 +646,13 @@ need a real parameter to test - the whole `active/*.sh` injection family - have 
 An absent file is the ordinary case, not an error: it means "crawl with the documented defaults", and
 a run without one records why in `run.json` (`reason=no_specification_supplied`) rather than silently
 reporting a thin surface as complete.
+
+**Ran a `dast` scan and its report or terminal output said the target "looks like a single-page app"?**
+That is this gap, and scoursh has already told you the fix rather than silently reporting a thin
+endpoint list as complete (docs/DESIGN.md §7.5). See "How to obtain one" a few paragraphs down for the
+30-second HAR-capture recipe, then re-run with `--har FILE` (or `--openapi FILE`, if you have a spec
+instead - see ["Per-command flags"](#per-command-flags)), or set `har-path`/`openapi-path` below to
+keep re-running the same way.
 
 One record per target, `id` matching a `config/scope.conf` target you have already authorised.
 

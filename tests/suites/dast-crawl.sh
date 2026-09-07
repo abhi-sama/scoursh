@@ -686,7 +686,7 @@ _crawl_scan() {
     SCOURSH_HTTP_TRANSPORT=$STUB_DIR/transport \
     SCOURSH_HTTP_RESOLVE=$STUB_DIR/resolve \
     CRAWL_STUB_LOG=$REQLOG \
-    CRAWL_STUB_PAGES=$FIXTURES/pages \
+    CRAWL_STUB_PAGES=${CRAWL_STUB_PAGES:-$FIXTURES/pages} \
     bash "$ROOT/scan.sh" dast --target crawl-fixture --out "$rundir" "$@" \
     >"$_LOG" 2>&1 || _RC=$?
   return 0
@@ -891,6 +891,59 @@ assert_not_contains "$REPORTHTML" '<script' \
 t_case 'the gap names the mitigations, so it is actionable rather than an apology'
 assert_contains "$RUNJSON" 'config/discovery.conf' 'it names where to supply a spec'
 assert_contains "$RUNJSON" 'tension 21' 'and the SAST-route mitigation for the server-side half'
+
+# ===========================================================================
+printf -- '\n-- the SPA HAR-import nudge (data/scoursh-spa-har-nudge): guidance only --\n'
+# ===========================================================================
+# The captain'"'"'s decision (2026-09-06) rejected static-JS auto-discovery and
+# asked instead for a clear, actionable nudge toward --har/--openapi whenever
+# the crawler'"'"'s own SPA heuristic actually fires. This is a narrower trigger
+# than "no specification was supplied" above: index.html (used by run-nospec
+# and run-basic) has 5 links and 1 <script>, so crawl_html_looks_client_rendered
+# never sets _CRAWL_SPA_SHAPED for it, and the nudge must stay silent there -
+# telling an operator scanning an ordinary multi-page site "this looks like an
+# SPA" would itself be an overstated, misleading claim (docs/DESIGN.md §15).
+
+t_case 'the SPA-specific HAR/OpenAPI nudge is ABSENT on a normal run with discovered parameters'
+assert_not_contains "$RUNJSON" 'single-page app' \
+  'run-nospec'"'"'s root page (index.html) is NOT client-rendered by the crawler'"'"'s own heuristic (5 links, 1 script) - FAILS if the nudge fires on every no-spec run rather than only when the SPA heuristic itself fired, which would misdescribe an ordinary server-rendered site'
+BASICRUNJSON=$(_slurp "$W/run-basic/run.json")
+BASICLOG=$(_slurp "$W/run-basic.log")
+assert_contains "$(_slurp "$W/run-basic/inventory/parameters.json")" '"name": "username"' \
+  'sanity: run-basic really is "a normal run with discovered parameters" (form inputs were inventoried)'
+assert_not_contains "$BASICRUNJSON" 'single-page app' \
+  'and the nudge is absent there too - the same run whose report already documents real discovered parameters must not also claim the target is an SPA'
+assert_not_contains "$BASICLOG" 'single-page app' 'nor does it reach that run'"'"'s terminal output'
+
+t_case 'WHEN the crawler-own SPA heuristic actually fires, the nudge appears in run.json, both reports, AND the terminal output - and nothing else changes'
+CRAWL_STUB_PAGES=$FIXTURES/pages-spa _crawl_scan "$W/run-spa-nudge"
+assert_eq 0 "$_RC" \
+  'the run completes cleanly - the nudge is guidance, not a finding, and must never affect the exit code'
+SPARUNJSON=$(_slurp "$W/run-spa-nudge/run.json")
+SPAREPORTMD=$(_slurp "$W/run-spa-nudge/report.md")
+SPAREPORTHTML=$(_slurp "$W/run-spa-nudge/report.html")
+SPALOG=$(_slurp "$W/run-spa-nudge.log")
+assert_contains "$SPARUNJSON" 'reason=no_specification_supplied' 'the pre-existing SPA-gap coverage_reduction still fires'
+assert_contains "$SPARUNJSON" 'spa_shaped=1' 'and it still records that the root page looked client-rendered, unchanged by this ticket'
+assert_contains "$SPARUNJSON" 'single-page app' \
+  'the new nudge reached run.json - FAILS if it is only a log line, which docs/STEP5-DAST-PLAN.md-style acceptance already rejects for the sibling SPA gap above'
+assert_contains "$SPARUNJSON" '--har' 'it names --har by flag'
+assert_contains "$SPARUNJSON" '--openapi' 'and --openapi as the alternative'
+assert_contains "$SPARUNJSON" 'Save all as HAR' 'and gives the concrete, copy-pasteable DevTools capture step - not just "supply a HAR"'
+assert_contains "$SPARUNJSON" 'docs/USAGE.md' 'and points at the authoritative doc rather than duplicating its full reference table'
+assert_contains "$SPAREPORTMD" 'single-page app' 'the human-readable report.md carries the nudge too'
+assert_contains "$SPAREPORTHTML" 'single-page app' 'so does report.html'
+assert_not_contains "$SPAREPORTHTML" '<script' \
+  'and the HTML report still contains no script tag, with target-derived text (docs/FOUNDATION.md tension 10) - this nudge is scanner-authored prose, but the invariant must not regress'
+assert_contains "$SPALOG" 'single-page app' \
+  'and the SAME sentence reached the terminal output (log_warn -> stderr, captured here) - FAILS if the nudge is report-only and an operator watching the run live never sees it'
+
+t_case 'the nudge changes no finding and no coverage number'
+SPAFINDINGS=$(_slurp "$W/run-spa-nudge/findings.jsonl" 2>/dev/null || printf '')
+assert_not_contains "$SPAFINDINGS" 'single-page app' \
+  'the nudge never became a finding - FAILS if it were emitted via finding_emit instead of run_record coverage_gap/log_warn, which would let operator guidance masquerade as a scanner verdict'
+assert_contains "$SPARUNJSON" 'endpoints=1' \
+  'the endpoint count the SPA gap itself reports is untouched by the nudge (one endpoint: the root document a two-script, zero-link page yields) - FAILS if the nudge text were folded into the counted sentence instead of appended as its own record'
 
 t_case 'WITH a specification supplied, the SPA gap is ABSENT'
 cat >"$FIX/config/discovery.conf" <<EOF

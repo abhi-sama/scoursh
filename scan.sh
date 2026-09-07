@@ -377,7 +377,13 @@ Commands:
                                          --target, exit 2 otherwise - same
                                          rule as --i-own-target. Prefer
                                          config/discovery.conf for anything you
-                                         want to keep re-running the same way.)
+                                         want to keep re-running the same way.
+                                         If a run's report or terminal output
+                                         says a target "looks like a single-page
+                                         app", this is the fix - see
+                                         docs/USAGE.md's config/discovery.conf
+                                         section for a 30-second HAR-capture
+                                         recipe.)
   cloud    [--live] [--profile <p>] [--regions all|us-east-1,...] [--assume-role ARN]
   all      run every module for which inputs are configured
   diff     --against <prior-run-dir>
