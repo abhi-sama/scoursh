@@ -543,5 +543,133 @@ assert_not_contains "$MD9" 'surface:' \
   'FAILS if the summary unconditionally prints a "surface: 0 endpoint(s)" line, which would misreport a run this ticket does not touch (the zero-parameter-banner fixture above, which never recorded any dast_surface_* fact) as one where the concept applies'
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 
+# ===========================================================================
+printf -- '\n-- report-audit.html: the scoursh-audit-report coverage report --\n'
+# ===========================================================================
+# Captain decisions (scoursh-audit-report ticket):
+#   1. ALONGSIDE - a NEW report-audit.html, report.html unchanged.
+#   2. FULL not-covered detail - every not-run check listed by id, with its
+#      own reason, never a count alone.
+#   3. checks_run semantics fixed FIRST (modules/sast/engine.sh's
+#      sast_record_checks_run, tested directly in tests/suites/sast.sh and
+#      tests/suites/iac.sh) - this suite tests the RENDERER reading that
+#      honest data, not the semantics fix itself.
+#
+# SCOURSH_INSTALL_ROOT is set to the real repo root so `checks_registry_load`
+# resolves REAL check ids/titles (modules/sast/rules/secrets.rules,
+# crypto.rules, python.rules, javascript.rules) - this is what proves the
+# renderer against real run data rather than invented fixture ids.
+D13=$SCOURSH_SCRATCH/rpt-audit
+rm -rf "$D13"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$D13"
+D13=$SCOURSH_RUN_DIR
+SCOURSH_INSTALL_ROOT=$ROOT
+
+# A hostile evidence payload on the one finding that DOES fire, reusing the
+# same tension-10 vectors report.html's own suite already proves against
+# (script-close, an onerror image, and a run of backticks that would break a
+# naive fenced-code-block escape). The FIRING check is deliberately NOT a
+# secrets-family id (`finding_check_is_secret_family`, lib/findings.sh):
+# tension 9's `_finding_secret_backstop` redacts evidence at `finding_emit`
+# for any check matching `*-SEC-*`/`*SECRET*`/`*API_KEY*`/... REGARDLESS of
+# which setter was called, so a hostile payload set on e.g.
+# SAST-SEC-AWS_AKID-01 would be replaced with a `<redacted:SECRET:...>`
+# placeholder before this test ever saw it - the correct, intended behaviour
+# of that backstop, and the wrong check id to use for proving THIS report's
+# own escaping path. SAST-CRY-HARDCODED_IV-01 (crypto family, not secrets)
+# is unaffected by it.
+HOSTILE13=$(printf '</script><img src=x onerror=alert(7)>``````fence')
+finding_new
+finding_set check_id SAST-CRY-HARDCODED_IV-01
+finding_set module sast
+finding_set title 'Hardcoded initialization vector or salt'
+finding_set base_severity medium
+finding_set cwe CWE-329
+finding_set owasp A04:2025
+finding_set loc_path app.py
+finding_set loc_line 9
+finding_set cell .
+finding_set_match 'iv = "0102030405060708090a0b0c0d0e0f10"'
+finding_set_evidence "$HOSTILE13"
+finding_set remediation 'Generate the IV fresh per operation.'
+finding_emit
+findings_merge "$D13"
+
+# The honest per-check bookkeeping a real scan.sh sast run would leave behind
+# (this suite tests the RENDERER; tests/suites/sast.sh proves the ENGINE
+# writes exactly this shape). Four real ids, one per bucket:
+#   SAST-CRY-HARDCODED_IV-01 found    (the finding above)
+#   SAST-SEC-AWS_AKID-01     clean    (selected, ran, nothing fired)
+#   SAST-PY-EVAL_EXEC-01     not run  (filtered out before dispatch)
+#   SAST-JS-EVAL-01          not run  (evaluated as not applicable - the
+#                                       checks_run semantics fix's own
+#                                       no_matching_files reduction shape)
+run_record checks_selected SAST-CRY-HARDCODED_IV-01
+run_record checks_selected SAST-SEC-AWS_AKID-01
+run_record checks_selected SAST-JS-EVAL-01
+run_record checks_run SAST-CRY-HARDCODED_IV-01
+run_record checks_run SAST-SEC-AWS_AKID-01
+run_record skipped_checks 'check=SAST-PY-EVAL_EXEC-01 skipped_by=profile-scan=quick'
+run_record coverage_reduction 'module=sast reason=no_matching_files checks=[SAST-JS-EVAL-01] - none of the files under this scan root matched this check'"'"'s files: glob, so its pattern was never evaluated. It is NOT covered by this run.'
+
+report_all "$D13"
+
+t_case 'report-audit.html is opt-in: report_all with the default format list does NOT write it'
+assert_file_absent "$D13/report-audit.html" \
+  'SCOURSH_FORMATS was never set, so the default json,sarif,html,md list applies - fails if audit were ever added to the default list, which would make it non-opt-in'
+
+t_case 'captain decision 1: report.html is byte-for-byte unaffected by the audit report existing'
+H13_BEFORE=$(cat "$D13/report.html")
+SCOURSH_FORMATS=json,sarif,html,md,audit report_all "$D13"
+assert_file_exists "$D13/report-audit.html" 'requesting the audit format writes report-audit.html'
+assert_eq "$H13_BEFORE" "$(cat "$D13/report.html")" \
+  'report.html renders identically whether or not audit was also requested - fails if report_audit shared any state or CSS/markup with report_html'
+
+A13=$(cat "$D13/report-audit.html")
+
+t_case 'no <script>, and the CSP/self-contained posture report.html already proves, holds here too'
+assert_not_contains "$A13" '<script' 'no script element anywhere in report-audit.html'
+assert_contains "$A13" 'Content-Security-Policy' 'the CSP meta tag is present'
+assert_contains "$A13" "default-src 'none'" 'default-src none'
+assert_not_contains "$A13" 'http://' 'no external http reference'
+assert_not_contains "$A13" 'https://' 'no external https reference'
+
+t_case 'XSS-safe escaping: the hostile evidence on the one real finding is escaped into a text node, and never appears raw'
+assert_contains "$A13" '&lt;/script&gt;&lt;img src=x onerror=alert(7)&gt;' \
+  'the hostile evidence is HTML-escaped - fails if report_audit re-derived evidence instead of reading it through the real finding_decode/html_escape path this file also uses for report.html'
+assert_not_contains "$A13" '<img src=x onerror' 'and no live onerror-bearing tag reaches the document'
+assert_not_contains "$A13" '</script><img' 'and no live script-closing sequence reaches the document either'
+
+t_case 'coverage matrix: the four real ids land in exactly the four states the design calls for'
+assert_contains "$A13" '<table class="matrix">' 'the coverage matrix table renders'
+assert_contains "$A13" '<td class="num">4</td><td class="num">2</td><td class="num">1</td><td class="num">1</td><td class="num">2</td><td class="num">0</td>' \
+  'sast row reads reg=4 (2 selected+run, 1 selected-not-applicable, 1 skipped) ran=2 found=1 clean=1 not-run=2 unaccounted=0 - fails under a reader that folds the not-applicable id into "unaccounted" instead of "not run", which would report unacc=1 here instead of 0'
+assert_contains "$A13" '<span class="strength strong">strong</span>' \
+  'SAST is now labelled strong-strength ran (the checks_run semantics fix), not weak'
+
+t_case 'captain decision 2: FULL not-covered detail - both not-run reasons are listed BY ID, never only a count'
+assert_contains "$A13" '<td class="id">SAST-PY-EVAL_EXEC-01</td>' 'the profile-filtered check is named'
+assert_contains "$A13" 'Use of eval() or exec() on request-derived data' \
+  'with its real registry title, so a quiet/absent check still says what it looks for'
+assert_contains "$A13" 'profile-scan=quick' 'and its own real skipped_by reason, not a generic label'
+assert_contains "$A13" '<td class="id">SAST-JS-EVAL-01</td>' 'the not-applicable check is ALSO named'
+assert_contains "$A13" 'reason=no_matching_files' \
+  'with the real coverage_reduction reason token naming it - the same convention modules/dast/passive/headers.sh already established for its own not-applicable checks'
+assert_not_contains "$A13" '<span class="tag gap">Unaccounted</span>' \
+  'the Unaccounted block does not render at all here - every registered check has a named reason, so there is nothing in that bucket to warn about'
+
+t_case 'found and clean checks render with their real registry titles'
+assert_contains "$A13" '<code>SAST-CRY-HARDCODED_IV-01</code>' 'the fired check is named in the Found issues group'
+assert_contains "$A13" 'Hardcoded initialization vector or salt' 'with its real registry title'
+assert_contains "$A13" '<td class="id">SAST-SEC-AWS_AKID-01</td>' 'the clean check is named in the Clean table'
+assert_contains "$A13" 'Hardcoded AWS access key id' 'with ITS real registry title too'
+
+t_case 'the DAST/IaC/SCA/Cloud sections still render for a sast-only run, declaring they did not run'
+assert_contains "$A13" 'id="cat-dast"' 'the DAST section exists'
+assert_contains "$A13" 'id="cat-cloud"' 'the Cloud / AWS section exists'
+assert_contains "$A13" 'This category did not run.' 'and at least one of them says so plainly'
+
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID='' SCOURSH_FORMATS=''
 
 t_summary report

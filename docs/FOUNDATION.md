@@ -5655,14 +5655,14 @@ shipped here before.
 
 | Artifact | Status | Checks | Exercised by |
 | --- | --- | --- | --- |
-| `modules/sast/rules/crypto.rules` | landed | 5 | `tests/suites/sast.sh` |
+| `modules/sast/rules/crypto.rules` | landed | 5 | `tests/suites/report.sh` |
 | `modules/sast/rules/go.rules` | landed | 5 | `tests/suites/sast.sh` |
 | `modules/sast/rules/injection.rules` | landed | 8 | `tests/suites/sast.sh` |
 | `modules/sast/rules/java.rules` | landed | 7 | `tests/suites/sast.sh` |
-| `modules/sast/rules/javascript.rules` | landed | 7 | `tests/suites/sast.sh` |
+| `modules/sast/rules/javascript.rules` | landed | 7 | `tests/suites/report.sh` |
 | `modules/sast/rules/ldap.rules` | landed | 3 | `tests/suites/sast.sh` |
 | `modules/sast/rules/nosql.rules` | landed | 4 | `tests/suites/sast.sh` |
-| `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/sast.sh` |
+| `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/report.sh` |
 | `modules/sast/rules/secrets.rules` | landed | 7 | `tests/suites/records.sh` |
 | `modules/sast/history.sh` | landed | - | `tests/suites/sast-history.sh` |
 

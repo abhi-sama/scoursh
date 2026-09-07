@@ -82,7 +82,6 @@ _iac_run_module() {
     for id in "${CHECKS_LAST_SELECTED_IDS[@]+"${CHECKS_LAST_SELECTED_IDS[@]}"}"; do
       [[ -n ${_SAST_CHECK_LOC[$id]:-} ]] || continue
       ids+=("$id")
-      run_record checks_run "$id"
     done
 
     if (( ${#ids[@]} == 0 )); then
@@ -94,6 +93,13 @@ _iac_run_module() {
       # sast_index_checks/sast_evaluate_gate above - reached only when
       # iac_scan_tree returned without dying.
       sast_record_coverage "$SCOURSH_PATH_ROOT" "${ids[@]+"${ids[@]}"}"
+      # `checks_run` is recorded AFTER the walk, from `_SAST_CHECK_EVAL`
+      # (populated by iac_scan_tree during the walk that just returned) via
+      # the shared modules/sast/engine.sh helper - byte-identical reasoning to
+      # modules/sast/run.sh's own call (the AGENTS.md "checks_run semantics
+      # fix"): a check whose `files:` glob matched nothing in this tree is a
+      # declared coverage_reduction, never a silent `checks_run` entry.
+      sast_record_checks_run iac "${ids[@]+"${ids[@]}"}"
     fi
 
     # tension 16's parallel workers (rate limiter, request budget, circuit

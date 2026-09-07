@@ -300,6 +300,57 @@ sast_index_checks() {
   done
 }
 
+# ---------------------------------------------------------------------------
+# 4a. Per-check applicability counter (docs/FOUNDATION.md tension 5's sibling
+#     honesty rule, AGENTS.md "the checks_run semantics fix"): mirrors DAST's
+#     `_HDRF_EVAL` (modules/dast/passive/headers.sh) so `checks_run` means the
+#     SAME thing in every module - "at least one thing this check applies to
+#     was actually inspected" - rather than "selected and present in the rule
+#     index".  `sast_scan_tree`/`iac_scan_tree` mark a check here the instant
+#     `sast_rule_matches_file` says a real file is in scope for it, BEFORE the
+#     pattern itself is ever evaluated - a check that ran over the file and
+#     matched nothing is still "ran"; a check whose `files:` glob matched
+#     nothing in this tree is not.
+# ---------------------------------------------------------------------------
+declare -gA _SAST_CHECK_EVAL=()
+
+sast_eval_reset() {
+  _SAST_CHECK_EVAL=()
+}
+
+sast_eval_mark() {
+  local id=$1
+  _SAST_CHECK_EVAL[$id]=$(( ${_SAST_CHECK_EVAL[$id]:-0} + 1 ))
+}
+
+# sast_record_checks_run MODULE ID... - the single place either module.sh
+# writes `checks_run`, called once, AFTER the tree walk returns (never before
+# it, which is the bug this function exists to close).  An id evaluated
+# against >=1 file (per `_SAST_CHECK_EVAL`, populated during the walk that
+# just completed) is genuinely "run"; one whose `files:` glob matched nothing
+# under this scan root is declared instead, by name, as a coverage_reduction
+# `checks=[...]` list - the exact convention
+# modules/dast/passive/headers.sh's own `headers_check_not_applicable`
+# reduction already established, which this report's own coverage renderer
+# already parses. Never silently dropped into the unaccounted residual: a
+# reason is always recorded for a selected-but-unevaluated check.
+sast_record_checks_run() {
+  local module=$1
+  shift
+  local id
+  local -a not_applicable=()
+  for id in "$@"; do
+    if (( ${_SAST_CHECK_EVAL[$id]:-0} > 0 )); then
+      run_record checks_run "$id"
+    else
+      not_applicable+=("$id")
+    fi
+  done
+  if (( ${#not_applicable[@]} > 0 )); then
+    run_record coverage_reduction "module=$module reason=no_matching_files checks=[${not_applicable[*]}] - none of the files under this scan root matched this check's files: glob, so its pattern was never evaluated. It is NOT covered by this run."
+  fi
+}
+
 # sast_record_coverage CELL ID... - docs/STEP7-STATE-PLAN.md STATE-02: records
 # path-root coverage (docs/FOUNDATION.md tension 12's frozen table - SAST and
 # IaC both use `path-root`) for a list of checks that have ALREADY run to
@@ -480,6 +531,11 @@ sast_scan_tree() {
   shift
   local -a ids=("$@")
   _sast_capture_max_matches
+  # Fresh per call (this function is the whole run's one tree walk for its
+  # module): a stale count from an earlier scan_main invocation in the same
+  # process (tests/suites/scan.sh calls it repeatedly) must never let a check
+  # ride to `checks_run` on a walk it was not actually part of.
+  sast_eval_reset
   # Every file's identity (`files`/`exclude-files` matching, §9.1.2, AND
   # `loc_path` - a fingerprint component, tension 5) is relative to the SCAN
   # ROOT (the git toplevel, or the resolved path when not a git repo -
@@ -516,6 +572,7 @@ sast_scan_tree() {
       [[ -n $loc ]] || continue
       read -r set idx <<<"$loc"
       sast_rule_matches_file "$set" "$idx" "$rel" || continue
+      sast_eval_mark "$id"
       sast_scan_file "$set" "$idx" "$rel" "$abspath"
     done
   done <<<"$files"

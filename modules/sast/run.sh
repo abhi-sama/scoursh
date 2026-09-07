@@ -137,7 +137,6 @@ _sast_run_module() {
     for id in "${CHECKS_LAST_SELECTED_IDS[@]+"${CHECKS_LAST_SELECTED_IDS[@]}"}"; do
       [[ -n ${_SAST_CHECK_LOC[$id]:-} ]] || continue
       ids+=("$id")
-      run_record checks_run "$id"
     done
 
     if (( ${#ids[@]} == 0 )); then
@@ -148,6 +147,12 @@ _sast_run_module() {
       # returned without dying, so every id in `ids` genuinely ran to
       # completion over this run's one path-root cell.
       sast_record_coverage "$SCOURSH_PATH_ROOT" "${ids[@]+"${ids[@]}"}"
+      # `checks_run` is recorded AFTER the walk, from `_SAST_CHECK_EVAL`
+      # (populated by sast_scan_tree during the walk that just returned), not
+      # from the selection list above - a check whose `files:` glob matched
+      # nothing in this tree is a declared coverage_reduction, never a silent
+      # `checks_run` entry (the AGENTS.md "checks_run semantics fix").
+      sast_record_checks_run sast "${ids[@]+"${ids[@]}"}"
     fi
 
     # tension 16's parallel workers (rate limiter, request budget, circuit

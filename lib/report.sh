@@ -1455,6 +1455,806 @@ _html_foot() {
 }
 
 # ---------------------------------------------------------------------------
+# 4a. Audit-grade coverage report (report-audit.html) - the scoursh-audit-report
+#     ticket.  Captain decision: ship ALONGSIDE report.html, never replacing
+#     or editing it - a separate self-contained page, its own <style>, no
+#     shared markup or CSS classes with the one above.
+#
+#     Every REGISTERED check lands in exactly one of four states per category
+#     (sast/sca/iac/dast/cloud): it found something, it ran and found
+#     nothing, it did not run and the run says why, or it is unaccounted -
+#     registered, not run, no reason recorded.  The fourth bucket is never
+#     folded into "clean": doing so is exactly the overstated coverage
+#     docs/DESIGN.md §15 forbids.  Captain decision: FULL not-covered detail
+#     - every not-run check is listed by id with its reason, never a count
+#     alone.
+#
+#     "Ran" now means the SAME thing in every category, per the companion
+#     checks_run-semantics fix above (modules/sast/engine.sh's
+#     sast_record_checks_run, called from modules/sast/run.sh and
+#     modules/iac/run.sh right after their own tree walk returns): a check is
+#     `run` only once something it applies to was actually inspected - a
+#     check whose `files:` glob matched zero files this run is a declared
+#     `coverage_reduction reason=no_matching_files checks=[...]`, never a
+#     silent `checks_run` entry.  modules/dast/passive/headers.sh's own
+#     `_HDRF_EVAL` established the identical contract earlier; this report
+#     states the exact file:line predicate per category rather than trusting
+#     the reader to already know it.
+#
+#     SCA ships no on-disk `*.rules` registry at all (a table lookup against
+#     data/advisories.db, not a pattern engine - modules/sca/run.sh's own
+#     header), so it has no true denominator; this report falls back to
+#     "what ran" for it rather than ever claiming a coverage fraction it
+#     cannot know - the identical fallback the design scout's prototype used.
+# ---------------------------------------------------------------------------
+declare -A _RPTC_CAT_LABEL=( [sast]='SAST' [sca]='SCA' [iac]='IaC' [dast]='DAST' [cloud]='Cloud / AWS' )
+declare -A _RPTC_CAT_DESCR=(
+  [sast]='Static analysis of source code - pattern rule packs over the scan root.'
+  [sca]='Dependency composition analysis - lockfile parsing against the vendored advisory table.'
+  [iac]='Infrastructure-as-code - pattern rule packs over Terraform, CloudFormation, Kubernetes, Helm, Docker.'
+  [dast]='Dynamic analysis - live probes against an authorised target in config/scope.conf.'
+  [cloud]='Live read-only AWS configuration review plus posture checks.'
+)
+# strong/medium/weak/none - the per-category semantic strength of "ran" this
+# report states as a first-class field rather than a footnote.
+declare -A _RPTC_RANSEM=( [sast]=strong [iac]=strong [sca]=medium [dast]=strong [cloud]=none )
+# SC2016: the backticks below are literal prose (code-span-style quoting of
+# `run`/`files:`), not command substitution.
+# shellcheck disable=SC2016
+declare -A _RPTC_RANSEM_TEXT=(
+  [sast]='Recorded AFTER the tree walk (sast_record_checks_run, modules/sast/engine.sh, called from modules/sast/run.sh once sast_scan_tree returns): a check is `run` only once its `files:` glob matched >=1 file in this tree and its pattern was actually evaluated against it. A check with zero matching files is a declared coverage_reduction, listed by id below, never a silent checks_run entry.'
+  [iac]='Recorded AFTER the tree walk (the same sast_record_checks_run, called from modules/iac/run.sh once iac_scan_tree returns) - byte-identical predicate to SAST, since both share one engine.'
+  [sca]='Recorded when at least one manifest of that ecosystem was located and walked (e.g. modules/sca/engine.sh), before its package loop. It ships no on-disk check registry, so this report cannot state a coverage fraction for it - only what ran.'
+  [dast]='Recorded AFTER evaluation, gated on at least one response or request the check was applicable to actually happening (e.g. modules/dast/passive/headers.sh:_HDRF_EVAL). This is the category the other two were brought up to match.'
+  [cloud]='modules/cloud/ does not exist on disk yet (docs/DESIGN.md §13 step 6). Nothing ran.'
+)
+
+_rptc_prefix_grep() {
+  # Emits the matching lines of FILE for CATEGORY's id prefix(es). `cloud`
+  # is the one category with two (docs/DESIGN.md §13's CLOUD-*/POSTURE-*
+  # split, both step-6 work) - kept as one egrep alternation rather than two
+  # separate greps so a caller never has to know that.
+  local cat=$1 file=$2
+  [[ -r $file ]] || return 0
+  case $cat in
+    cloud) grep -E '^(CLOUD-|POSTURE-)' "$file" 2>/dev/null || true ;;
+    *) grep "^${cat^^}-" "$file" 2>/dev/null || true ;;
+  esac
+}
+
+# _report_coverage_registry_load - loads every module's on-disk check
+# registry (title:/severity: only) into `_RPTC_TITLE`/`_RPTC_SEV`, keyed by
+# check id, so a QUIET check can still say what it looks for (design
+# decision 3 in the report design: "a category with zero findings still
+# shows what it verified"). Reuses checks_registry_load (lib/checks.sh)
+# rather than a second registry reader - it is the one function that already
+# honours the frozen record format's multi-line prose fields and validates
+# each file, exactly as scan.sh's own dispatch does.
+#
+# CHECKS_REGISTRY_SETS is a global `checks_registry_load` REPLACES on every
+# call (its own header), so the caller's own in-flight set (the currently
+# dispatching module's registry, mid-run) is saved and restored around this -
+# report_all/report_audit run at the END of a module's own *_run_module
+# function, after that module's own use of CHECKS_REGISTRY_SETS is done, but
+# saving/restoring costs nothing and removes any dependency on that ordering
+# staying true.
+#
+# Memoized on `SCOURSH_INSTALL_ROOT`: `scan.sh all` calls report_all once per
+# module (five times in one process, per docs/DESIGN.md's own dispatch
+# order), and every *.rules file's own registry content is fixed for the
+# life of a process, so reloading and re-validating ~180 checks on every one
+# of those five calls is pure waste - keyed on the install root rather than
+# an unconditional once-per-process flag so a test suite that legitimately
+# points `SCOURSH_INSTALL_ROOT` at a different fixture registry between
+# cases (tests/suites/sast.sh's own ROOT_REAL_REGISTRY/ROOT_JS_REGISTRY
+# pattern) still reloads when it should.
+declare -g _RPTC_REGISTRY_LOADED_ROOT=''
+_report_coverage_registry_load() {
+  if [[ -n ${_RPTC_REGISTRY_LOADED_ROOT:-} && ${_RPTC_REGISTRY_LOADED_ROOT} == "${SCOURSH_INSTALL_ROOT:-}" ]]; then
+    return 0
+  fi
+  local -a _rptc_saved_sets=("${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}")
+  declare -gA _RPTC_TITLE=() _RPTC_SEV=()
+  local m set n i id
+  for m in sast sca iac dast cloud; do
+    checks_registry_load "$m" "_rptcreg_$m"
+    for set in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
+      n=$(records_count "$set")
+      for (( i = 0; i < n; i++ )); do
+        id=$(records_id "$set" "$i")
+        _RPTC_TITLE[$id]=$(records_field "$set" "$i" title)
+        _RPTC_SEV[$id]=$(records_field "$set" "$i" severity)
+      done
+    done
+  done
+  CHECKS_REGISTRY_SETS=("${_rptc_saved_sets[@]+"${_rptc_saved_sets[@]}"}")
+  _RPTC_REGISTRY_LOADED_ROOT=${SCOURSH_INSTALL_ROOT:-}
+}
+
+# _report_coverage_state RUNDIR - the per-category set arithmetic (design
+# decision: pure set arithmetic over meta/, ported from the design scout's
+# verified prototype). Populates every `_RPTC_*` array below; called once by
+# report_audit before any rendering.
+_report_coverage_state() {
+  local rundir=$1
+  declare -gA _RPTC_REG=() _RPTC_RAN=() _RPTC_FIRED=() _RPTC_CLEAN=() _RPTC_SKIP=() _RPTC_NOTRUN=() _RPTC_UNACC=() _RPTC_NAPP=()
+  declare -gA _RPTC_RAN_SET=() _RPTC_FIRED_SET=() _RPTC_CLEAN_SET=() _RPTC_SKIP_ROWS=() _RPTC_NAPP_SET=() _RPTC_UNACC_SET=()
+  declare -gA _RPTC_NAPP_REASON=() _RPTC_FIRED_LINES=() _RPTC_FIRED_COUNT=()
+  _RPTC_TOT_REG=0; _RPTC_TOT_RAN=0; _RPTC_TOT_FIRED=0; _RPTC_TOT_CLEAN=0; _RPTC_TOT_SKIP=0; _RPTC_TOT_UNACC=0
+
+  local t=$SCOURSH_SCRATCH/rpt-audit.$$
+  rm -rf "$t"
+  mkdir -p "$t"
+
+  LC_ALL=C sort -u "$rundir/meta/checks_run" 2>/dev/null >"$t/ran" || : >"$t/ran"
+  LC_ALL=C sort -u "$rundir/meta/checks_selected" 2>/dev/null >"$t/selected" || : >"$t/selected"
+  # `check=<id> skipped_by=<reason>` (lib/checks.sh:353) - structured and
+  # parseable, unlike coverage_reduction's own key=value-plus-prose shape
+  # (§3.1's own "two format warnings" - never one parser for both).
+  sed -n 's/^check=\([^ ]*\) skipped_by=\(.*\)$/\1\t\2/p' "$rundir/meta/skipped_checks" 2>/dev/null \
+    | LC_ALL=C sort -u >"$t/skipped" || : >"$t/skipped"
+  cut -f1 "$t/skipped" 2>/dev/null | LC_ALL=C sort -u >"$t/skipped_ids" || : >"$t/skipped_ids"
+
+  # ids named inside a coverage_reduction's own `checks=[A B C]` list - the
+  # "evaluated as not applicable to this target/tree" set. Every reduction
+  # naming such a list is scanned (not only this fix's own `no_matching_files`
+  # one), so a DAST `headers_check_not_applicable` reduction is picked up the
+  # same way; the FIRST reduction naming a given id wins its reason, so a
+  # reader always sees one concrete sentence rather than none.
+  : >"$t/napp"
+  if [[ -r $rundir/meta/coverage_reduction ]]; then
+    local _crline _crmod _crreason _crids _crid
+    while IFS= read -r _crline; do
+      [[ -n $_crline ]] || continue
+      _crids=$(sed -n 's/.*checks=\[\([^]]*\)\].*/\1/p' <<<"$_crline")
+      [[ -n $_crids ]] || continue
+      _crmod=$(sed -n 's/^module=\([^ ]*\).*/\1/p' <<<"$_crline")
+      _crreason=$(sed -n 's/.*reason=\([^ ]*\).*/\1/p' <<<"$_crline")
+      for _crid in $_crids; do
+        [[ -n $_crid ]] || continue
+        printf '%s\n' "$_crid" >>"$t/napp"
+        [[ -n ${_RPTC_NAPP_REASON[$_crid]:-} ]] \
+          || _RPTC_NAPP_REASON[$_crid]="module=${_crmod:-?} reason=${_crreason:-?}"
+      done
+    done <"$rundir/meta/coverage_reduction"
+  fi
+  LC_ALL=C sort -u "$t/napp" -o "$t/napp"
+
+  # Findings: read `findings.fields` through the real `finding_decode`
+  # (lib/findings.sh) - never a re-parse of findings.jsonl. The design
+  # scout's own first draft parsed JSON with a `sed` alternation BSD sed does
+  # not support and silently produced empty evidence on every finding; the
+  # sidecar format is TAB-separated key=value with defined escaping and is
+  # what every other renderer in this file already consumes.
+  : >"$t/fired"
+  if [[ -s $rundir/findings.fields ]]; then
+    local _fline _fid
+    while IFS= read -r _fline; do
+      [[ -n $_fline ]] || continue
+      finding_decode "$_fline"
+      _fid=${_DF[check_id]:-}
+      [[ -n $_fid ]] || continue
+      printf '%s\n' "$_fid" >>"$t/fired"
+      _RPTC_FIRED_COUNT[$_fid]=$(( ${_RPTC_FIRED_COUNT[$_fid]:-0} + 1 ))
+      if [[ -n ${_RPTC_FIRED_LINES[$_fid]:-} ]]; then
+        _RPTC_FIRED_LINES[$_fid]+=$'\n'"$_fline"
+      else
+        _RPTC_FIRED_LINES[$_fid]=$_fline
+      fi
+    done <"$rundir/findings.fields"
+  fi
+  LC_ALL=C sort -u "$t/fired" -o "$t/fired"
+
+  local c sel skp ran fired napp reg clean notrun unacc regall acct
+  for c in sast sca iac dast cloud; do
+    sel=$(_rptc_prefix_grep "$c" "$t/selected" | grep -c . || true); sel=${sel:-0}
+    skp=$(_rptc_prefix_grep "$c" "$t/skipped_ids" | grep -c . || true); skp=${skp:-0}
+    ran=$(_rptc_prefix_grep "$c" "$t/ran" | grep -c . || true); ran=${ran:-0}
+    fired=$(_rptc_prefix_grep "$c" "$t/fired" | grep -c . || true); fired=${fired:-0}
+    napp=$(_rptc_prefix_grep "$c" "$t/napp" | grep -c . || true); napp=${napp:-0}
+    reg=$(( sel + skp ))
+    # SCA has no on-disk registry (modules/sca/run.sh's own header): its
+    # denominator is the set of ids its bash actually mints, so the row never
+    # claims a coverage fraction it cannot know.
+    (( reg == 0 && ran > 0 )) && reg=$ran
+    clean=$(( ran - fired )); (( clean < 0 )) && clean=0
+    # "not run, reason given" is BOTH buckets the category section below lists
+    # in full detail - filtered-out-before-dispatch (skp) AND
+    # evaluated-as-not-applicable (napp) - never skp alone: a check napp
+    # explains is not unaccounted, and counting it as unaccounted here would
+    # contradict the very row this report's own "Not run" table renders for
+    # it two sections down.
+    notrun=$(( skp + napp ))
+    unacc=$(( reg - ran - notrun )); (( unacc < 0 )) && unacc=0
+    _RPTC_REG[$c]=$reg; _RPTC_RAN[$c]=$ran; _RPTC_FIRED[$c]=$fired
+    _RPTC_CLEAN[$c]=$clean; _RPTC_SKIP[$c]=$skp; _RPTC_NOTRUN[$c]=$notrun
+    _RPTC_UNACC[$c]=$unacc; _RPTC_NAPP[$c]=$napp
+    _RPTC_TOT_REG=$(( _RPTC_TOT_REG + reg )); _RPTC_TOT_RAN=$(( _RPTC_TOT_RAN + ran ))
+    _RPTC_TOT_FIRED=$(( _RPTC_TOT_FIRED + fired )); _RPTC_TOT_CLEAN=$(( _RPTC_TOT_CLEAN + clean ))
+    _RPTC_TOT_SKIP=$(( _RPTC_TOT_SKIP + notrun )); _RPTC_TOT_UNACC=$(( _RPTC_TOT_UNACC + unacc ))
+
+    _RPTC_RAN_SET[$c]=$(_rptc_prefix_grep "$c" "$t/ran")
+    _RPTC_FIRED_SET[$c]=$(_rptc_prefix_grep "$c" "$t/fired")
+    _RPTC_SKIP_ROWS[$c]=$(_rptc_prefix_grep "$c" "$t/skipped")
+    _RPTC_NAPP_SET[$c]=$(_rptc_prefix_grep "$c" "$t/napp")
+    _RPTC_CLEAN_SET[$c]=$(comm -23 <(printf '%s\n' "${_RPTC_RAN_SET[$c]}" | grep . || true) \
+                                    <(printf '%s\n' "${_RPTC_FIRED_SET[$c]}" | grep . || true) 2>/dev/null || true)
+
+    regall=$(cat <(_rptc_prefix_grep "$c" "$t/selected") <(_rptc_prefix_grep "$c" "$t/skipped_ids") \
+              | grep . | LC_ALL=C sort -u || true)
+    acct=$(cat <(printf '%s\n' "${_RPTC_RAN_SET[$c]}") <(_rptc_prefix_grep "$c" "$t/skipped_ids") \
+               <(printf '%s\n' "${_RPTC_NAPP_SET[$c]}") | grep . | LC_ALL=C sort -u || true)
+    _RPTC_UNACC_SET[$c]=$(comm -23 <(printf '%s\n' "$regall" | grep . || true) \
+                                    <(printf '%s\n' "$acct" | grep . || true) 2>/dev/null || true)
+  done
+
+  rm -rf "$t"
+}
+
+# Highest severity actually OBSERVED across a check's own findings, never the
+# registry's declared `severity:` - the two legitimately differ (the rubric,
+# lib/findings.sh §8, adjusts base severity per finding) and a group header
+# showing `low` above a `medium` finding reads as a rendering bug (design
+# decision 4).
+_rptc_group_severity() {
+  local id=$1 line sev best=info
+  local -A rank=( [critical]=5 [high]=4 [medium]=3 [low]=2 [info]=1 )
+  [[ -n ${_RPTC_FIRED_LINES[$id]:-} ]] || { printf '%s' info; return 0; }
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    finding_decode "$line"
+    sev=${_DF[severity]:-info}
+    if (( ${rank[$sev]:-0} > ${rank[$best]:-0} )); then
+      best=$sev
+    fi
+  done <<<"${_RPTC_FIRED_LINES[$id]}"
+  printf '%s' "$best"
+}
+
+_html_audit_head() {
+  cat <<'HTML'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+<title>scoursh coverage &amp; assurance report</title>
+<style>
+:root{
+  color-scheme: light dark;
+  --bg:#fbfbfc; --fg:#16181d; --muted:#5b6270; --faint:#868d9b; --line:#dce0e7;
+  --card:#fff; --card2:#f4f6f9; --accent:#274b8f; --accent-bg:#eaf0fb;
+  --critical:#8a1220; --high:#a44608; --medium:#8a6d09; --low:#35566f; --info:#5b6270;
+  --pass:#1f6b45; --pass-bg:#e6f4ec;
+  --skip:#8a6d09; --skip-bg:#fbf3dc;
+  --gap:#6b4fa8; --gap-bg:#efe9fa;
+  --unk:#767d8b;
+  --radius:.55rem;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#111318; --fg:#e6e8ec; --muted:#9aa2b1; --faint:#79808e; --line:#2b3038;
+    --card:#191c22; --card2:#1f232a; --accent:#8fb0ee; --accent-bg:#1b2434;
+    --critical:#ff8b98; --high:#ffb27a; --medium:#ecd07a; --low:#a8c8dd; --info:#9aa2b1;
+    --pass:#6bd6a0; --pass-bg:#16281f;
+    --skip:#ecd07a; --skip-bg:#2a2517;
+    --gap:#c0a8f0; --gap-bg:#221c33;
+    --unk:#8a919f;
+  }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:15px/1.6 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-text-size-adjust:100%}
+main{max-width:74rem;margin:0 auto;padding:0 1.25rem 5rem}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.86em}
+a{color:var(--accent)}
+h1{font-size:1.5rem;margin:0 0 .3rem;letter-spacing:-.015em}
+h2{font-size:1rem;margin:0 0 1rem;text-transform:uppercase;letter-spacing:.08em;
+   color:var(--muted);font-weight:650}
+h3{font-size:.95rem;margin:1.6rem 0 .6rem;font-weight:650}
+p{margin:.5rem 0}
+.sub{color:var(--muted);font-size:.88rem;margin:0}
+.topbar{position:sticky;top:0;z-index:50;background:var(--bg);
+  border-bottom:1px solid var(--line);padding:.55rem 0;margin-bottom:1.5rem}
+.topbar .in{max-width:74rem;margin:0 auto;padding:0 1.25rem;
+  display:flex;flex-wrap:wrap;gap:.4rem;align-items:center}
+.brand{font-weight:700;letter-spacing:-.01em;margin-right:.5rem;white-space:nowrap}
+.pill{display:inline-flex;align-items:center;gap:.4rem;text-decoration:none;
+  border:1px solid var(--line);background:var(--card);border-radius:2rem;
+  padding:.2rem .65rem;font-size:.8rem;color:var(--fg);white-space:nowrap}
+.pill:hover{border-color:var(--accent);background:var(--accent-bg)}
+.pill .c{font-variant-numeric:tabular-nums;color:var(--muted);font-size:.75rem}
+.pill.off{opacity:.5}
+.masthead{padding:1.5rem 0 .5rem}
+.runmeta{display:flex;flex-wrap:wrap;gap:.35rem .5rem;margin:.9rem 0 0}
+.kv{background:var(--card2);border:1px solid var(--line);border-radius:.35rem;
+  padding:.18rem .5rem;font-size:.78rem;color:var(--muted)}
+.kv b{color:var(--fg);font-weight:600;font-family:ui-monospace,Menlo,monospace}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+  padding:1.1rem 1.2rem;margin:1.5rem 0}
+.note{border-left:3px solid var(--accent);background:var(--accent-bg);
+  border-radius:.35rem;padding:.7rem .9rem;font-size:.87rem;margin:.9rem 0}
+.warn{border-left:3px solid var(--high);background:var(--card2);
+  border-radius:.35rem;padding:.7rem .9rem;font-size:.87rem;margin:.9rem 0}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(8.5rem,1fr));gap:.65rem}
+.tile{border:1px solid var(--line);border-radius:.45rem;padding:.7rem .8rem;background:var(--card2)}
+.tile .n{font-size:1.65rem;font-weight:680;line-height:1.05;font-variant-numeric:tabular-nums}
+.tile .l{font-size:.7rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-top:.15rem}
+.tile.crit .n{color:var(--critical)} .tile.pass .n{color:var(--pass)}
+.tile.skip .n{color:var(--skip)} .tile.gap .n{color:var(--gap)}
+.matrix{width:100%;border-collapse:collapse;font-size:.87rem}
+.matrix th{text-align:left;font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--muted);font-weight:650;padding:.5rem .7rem;border-bottom:1px solid var(--line)}
+.matrix td{padding:.6rem .7rem;border-bottom:1px solid var(--line);vertical-align:middle}
+.matrix tr:last-child td{border-bottom:none}
+.matrix td.num{font-variant-numeric:tabular-nums;text-align:right;width:3.5rem}
+.matrix a.cat{font-weight:650;text-decoration:none}
+.bar{display:flex;height:.85rem;border-radius:.2rem;overflow:hidden;
+  background:var(--card2);border:1px solid var(--line);min-width:9rem}
+.bar span{display:block}
+.bar .b-fired{background:var(--critical)}
+.bar .b-clean{background:var(--pass)}
+.bar .b-skip{background:var(--skip)}
+.bar .b-unacc{background:repeating-linear-gradient(45deg,var(--unk),var(--unk) 3px,transparent 3px,transparent 6px);
+  border-left:1px solid var(--unk)}
+.legend{display:flex;flex-wrap:wrap;gap:.3rem .9rem;font-size:.76rem;color:var(--muted);margin-top:.8rem}
+.legend i{display:inline-block;width:.65rem;height:.65rem;border-radius:.15rem;margin-right:.3rem;vertical-align:-1px}
+.legend .l-fired i{background:var(--critical)} .legend .l-clean i{background:var(--pass)}
+.legend .l-skip i{background:var(--skip)}
+.legend .l-unacc i{background:repeating-linear-gradient(45deg,var(--unk),var(--unk) 2px,transparent 2px,transparent 4px);border:1px solid var(--unk)}
+.strength{display:inline-block;font-size:.66rem;font-weight:700;text-transform:uppercase;
+  letter-spacing:.06em;padding:.1rem .4rem;border-radius:.25rem;border:1px solid currentColor}
+.strength.strong{color:var(--pass)} .strength.medium{color:var(--medium)}
+.strength.weak{color:var(--high)} .strength.none{color:var(--muted)}
+.cat{margin:3rem 0 0;scroll-margin-top:4rem}
+.cat > header{border-bottom:2px solid var(--line);padding-bottom:.7rem;margin-bottom:1rem}
+.cat h2{font-size:1.15rem;text-transform:none;letter-spacing:-.01em;color:var(--fg);margin:0}
+.cat .desc{color:var(--muted);font-size:.87rem;margin:.3rem 0 0}
+.notbuilt{color:var(--muted);font-style:italic}
+details.grp{border:1px solid var(--line);border-radius:.45rem;margin:.6rem 0;background:var(--card)}
+details.grp > summary{cursor:pointer;padding:.6rem .85rem;list-style:none;
+  display:flex;align-items:center;gap:.5rem;font-size:.9rem}
+details.grp > summary::-webkit-details-marker{display:none}
+details.grp > summary::before{content:"\25B8";color:var(--muted);font-size:.75rem;
+  transition:transform .12s ease;display:inline-block}
+details.grp[open] > summary::before{transform:rotate(90deg)}
+details.grp > summary:hover{background:var(--card2)}
+details.grp .inner{padding:.2rem .85rem .85rem;border-top:1px solid var(--line)}
+.count{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--muted);font-size:.8rem}
+.tag{font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+  padding:.1rem .4rem;border-radius:.25rem}
+.tag.pass{color:var(--pass);background:var(--pass-bg)}
+.tag.fired{color:var(--critical);background:var(--card2)}
+.tag.skip{color:var(--skip);background:var(--skip-bg)}
+.tag.gap{color:var(--gap);background:var(--gap-bg)}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table.checks{width:100%;border-collapse:collapse;font-size:.84rem;min-width:34rem}
+table.checks th{text-align:left;font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--muted);font-weight:650;padding:.4rem .6rem .4rem 0;border-bottom:1px solid var(--line)}
+table.checks td{padding:.35rem .6rem .35rem 0;border-bottom:1px solid var(--line);vertical-align:top}
+table.checks tr:last-child td{border-bottom:none}
+table.checks td.id{font-family:ui-monospace,Menlo,monospace;font-size:.79rem;white-space:nowrap}
+table.checks td.why{color:var(--muted);font-size:.8rem}
+details.chk{border-bottom:1px solid var(--line);margin:0}
+details.chk:last-child{border-bottom:none}
+details.chk > summary{cursor:pointer;padding:.5rem .2rem;list-style:none;
+  display:flex;align-items:center;gap:.5rem;font-size:.86rem;flex-wrap:wrap}
+details.chk > summary::-webkit-details-marker{display:none}
+details.chk > summary::before{content:"\25B8";color:var(--muted);font-size:.7rem;
+  transition:transform .12s ease;display:inline-block;flex:0 0 auto}
+details.chk[open] > summary::before{transform:rotate(90deg)}
+details.chk > summary:hover{background:var(--card2)}
+details.chk > summary code{font-weight:650}
+.chkbody{padding:.1rem 0 .7rem 1.1rem}
+details.f{border:1px solid var(--line);border-left-width:3px;border-radius:.4rem;
+  margin:.45rem 0;background:var(--card)}
+details.f > summary{cursor:pointer;padding:.55rem .8rem;list-style:none}
+details.f > summary::-webkit-details-marker{display:none}
+details.f[data-sev="critical"]{border-left-color:var(--critical)}
+details.f[data-sev="high"]{border-left-color:var(--high)}
+details.f[data-sev="medium"]{border-left-color:var(--medium)}
+details.f[data-sev="low"]{border-left-color:var(--low)}
+details.f[data-sev="info"]{border-left-color:var(--info)}
+.sev{font-size:.66rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+  padding:.1rem .4rem;border:1px solid currentColor;border-radius:.25rem}
+.sev.critical{color:var(--critical)} .sev.high{color:var(--high)}
+.sev.medium{color:var(--medium)} .sev.low{color:var(--low)} .sev.info{color:var(--info)}
+.loc{color:var(--muted);font-family:ui-monospace,Menlo,monospace;font-size:.76rem;
+  margin-left:.4rem;word-break:break-all}
+.fbody{padding:0 .8rem .8rem;border-top:1px solid var(--line)}
+.meta{color:var(--muted);font-size:.8rem;margin:.5rem 0;word-break:break-word}
+pre.ev{background:var(--bg);border:1px solid var(--line);border-radius:.3rem;
+  padding:.55rem .65rem;overflow-x:auto;margin:.5rem 0;white-space:pre-wrap;word-break:break-word;
+  font-size:.79rem;max-height:22rem}
+ul.prose{margin:.4rem 0;padding-left:1.1rem}
+ul.prose li{margin:.35rem 0;font-size:.85rem;color:var(--fg)}
+ul.prose li .why{color:var(--muted)}
+.reason{font-family:ui-monospace,Menlo,monospace;font-size:.78rem;color:var(--gap)}
+.filter{display:flex;flex-wrap:wrap;gap:.3rem;align-items:center;margin:.9rem 0 0}
+.filter .lbl{font-size:.7rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
+  font-weight:650;margin-right:.2rem}
+.filter input{position:absolute;opacity:0;width:0;height:0}
+.filter label{border:1px solid var(--line);background:var(--card);border-radius:2rem;
+  padding:.18rem .6rem;font-size:.78rem;cursor:pointer;user-select:none}
+.filter label:hover{border-color:var(--accent)}
+#sv-all:checked   ~ .filter label[for="sv-all"],
+#sv-crit:checked  ~ .filter label[for="sv-crit"],
+#sv-high:checked  ~ .filter label[for="sv-high"],
+#sv-med:checked   ~ .filter label[for="sv-med"],
+#sv-low:checked   ~ .filter label[for="sv-low"]{
+  background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+@media (prefers-color-scheme: dark){
+  #sv-all:checked ~ .filter label[for="sv-all"],
+  #sv-crit:checked ~ .filter label[for="sv-crit"],
+  #sv-high:checked ~ .filter label[for="sv-high"],
+  #sv-med:checked ~ .filter label[for="sv-med"],
+  #sv-low:checked ~ .filter label[for="sv-low"]{color:#111318}
+}
+body:has(#sv-crit:checked) details.f:not([data-sev="critical"]),
+body:has(#sv-high:checked) details.f:not([data-sev="critical"]):not([data-sev="high"]),
+body:has(#sv-med:checked)  details.f:not([data-sev="critical"]):not([data-sev="high"]):not([data-sev="medium"]),
+body:has(#sv-low:checked)  details.f[data-sev="info"]{display:none}
+.filterhint{font-size:.74rem;color:var(--faint);margin-left:.4rem}
+footer{margin-top:3.5rem;padding-top:1rem;border-top:1px solid var(--line);
+  color:var(--muted);font-size:.8rem}
+@media print{
+  .topbar,.filter{display:none}
+  details.grp,details.f{break-inside:avoid}
+  details.grp[open] .inner,details.f .fbody{display:block}
+  body{background:#fff}
+}
+</style>
+</head>
+<body>
+HTML
+  printf '<input type="radio" name="sv" id="sv-all" class="fsv" checked>\n'
+  printf '<input type="radio" name="sv" id="sv-crit" class="fsv">\n'
+  printf '<input type="radio" name="sv" id="sv-high" class="fsv">\n'
+  printf '<input type="radio" name="sv" id="sv-med" class="fsv">\n'
+  printf '<input type="radio" name="sv" id="sv-low" class="fsv">\n'
+}
+
+_html_audit_nav() {
+  local c ran fired off
+  printf '<div class="topbar"><div class="in"><span class="brand">scoursh</span>\n'
+  printf '<a class="pill" href="#summary">Summary</a>\n'
+  for c in sast sca iac dast cloud; do
+    ran=${_RPTC_RAN[$c]:-0}
+    fired=${_RPTC_FIRED[$c]:-0}
+    off=''; [[ $ran == 0 && $fired == 0 ]] && off=' off'
+    printf '<a class="pill%s" href="#cat-%s">%s <span class="c">%s ran &middot; %s found</span></a>\n' \
+      "$off" "$c" "$(html_escape "${_RPTC_CAT_LABEL[$c]}")" "$ran" "$fired"
+  done
+  printf '<a class="pill" href="#limitations">Limitations</a>\n'
+  printf '</div></div>\n<main>\n'
+}
+
+_html_audit_summary() {
+  local rundir=$1
+  local run_id started command targets path_root toolv duration intensity authed
+  run_id=$(basename "$rundir")
+  started=$(_meta_first "$rundir" started_at)
+  # `command=$SCAN_COMMAND` (scan.sh's own `run_record notes`) is one line
+  # among possibly several in meta/notes; sed on a possibly-absent file can
+  # exit non-zero, and under this file's own `set -Eeuo pipefail` an
+  # unguarded `var=$(cmd)` assignment aborts the whole report on that alone
+  # (AGENTS.md's own "measured, not assumed" rule) - `|| true` is required,
+  # not decorative.
+  command=$( { sed -n 's/^command=//p' "$rundir/meta/notes" 2>/dev/null || true; } | head -n1 || true)
+  targets=$(LC_ALL=C sort -u "$rundir/meta/targets" 2>/dev/null | paste -sd', ' - || true)
+  # path_root is a run PARAMETER (SCOURSH_PATH_ROOT), never a meta/ fact -
+  # report_run_json's own "path_root" JSON field reads the identical
+  # variable (lib/report.sh above) rather than a file, for the same reason.
+  path_root=${SCOURSH_PATH_ROOT:-}
+  toolv=$(scoursh_version)
+  # duration_seconds is likewise computed at report_run_json emission time,
+  # never stored as a meta/ fact - best-effort read of a run.json this
+  # process may have already written (report_all calls report_audit before
+  # report_run_json, so on this run's FIRST report_all call there is no
+  # run.json yet and this is correctly empty).
+  duration=$(sed -n 's/.*"duration_seconds": *\([0-9]*\).*/\1/p' "$rundir/run.json" 2>/dev/null | head -n1 || true)
+  intensity=$(_meta_first "$rundir" authorization_intensity)
+  authed=$(_meta_first "$rundir" authorization_authed)
+
+  printf '<div class="masthead">\n<h1>Coverage &amp; assurance report</h1>\n'
+  printf '<p class="sub">What this scan checked, what it verified clean, and what it did not look at.</p>\n'
+  printf '<div class="runmeta">\n'
+  printf '<span class="kv">run <b>%s</b></span>\n' "$(html_escape "$run_id")"
+  [[ -n $command ]] && printf '<span class="kv">command <b>%s</b></span>\n' "$(html_escape "$command")"
+  [[ -n $path_root ]] && printf '<span class="kv">scan root <b>%s</b></span>\n' "$(html_escape "$path_root")"
+  [[ -n $targets ]] && printf '<span class="kv">target <b>%s</b></span>\n' "$(html_escape "$targets")"
+  [[ -n $intensity ]] && printf '<span class="kv">intensity <b>%s</b></span>\n' "$(html_escape "$intensity")"
+  [[ -n $authed ]] && printf '<span class="kv">authenticated <b>%s</b></span>\n' "$(html_escape "$authed")"
+  [[ -n $duration ]] && printf '<span class="kv">duration <b>%ss</b></span>\n' "$(html_escape "$duration")"
+  printf '<span class="kv">tool <b>%s</b></span>\n' "$(html_escape "$toolv")"
+  printf '</div>\n</div>\n'
+
+  local nfind ngap nred
+  nfind=$(wc -l <"$rundir/findings.jsonl" 2>/dev/null | tr -d ' ' || echo 0)
+  ngap=$(grep -c . "$rundir/meta/coverage_gap" 2>/dev/null || true); ngap=${ngap:-0}
+  nred=$(grep -c . "$rundir/meta/coverage_reduction" 2>/dev/null || true); nred=${nred:-0}
+
+  printf '<section id="summary" class="panel">\n<h2>Assurance summary</h2>\n<div class="tiles">\n'
+  printf '<div class="tile"><div class="n">%s</div><div class="l">checks registered</div></div>\n' "$_RPTC_TOT_REG"
+  printf '<div class="tile"><div class="n">%s</div><div class="l">checks ran</div></div>\n' "$_RPTC_TOT_RAN"
+  printf '<div class="tile pass"><div class="n">%s</div><div class="l">ran, nothing found</div></div>\n' "$_RPTC_TOT_CLEAN"
+  printf '<div class="tile crit"><div class="n">%s</div><div class="l">checks with findings</div></div>\n' "$_RPTC_TOT_FIRED"
+  printf '<div class="tile skip"><div class="n">%s</div><div class="l">not run (reason given)</div></div>\n' "$_RPTC_TOT_SKIP"
+  printf '<div class="tile gap"><div class="n">%s</div><div class="l">unaccounted</div></div>\n' "$_RPTC_TOT_UNACC"
+  printf '</div>\n'
+
+  printf '<div class="note"><strong>How to read this.</strong> A check appears in exactly one of four states per category: it <em>found something</em>, it <em>ran and found nothing</em>, it <em>did not run and the run says why</em>, or it is <em>unaccounted</em> - registered, not run, and no reason recorded. The last column is deliberately not folded into the others: rolling it into "clean" would be the overstatement <code>docs/DESIGN.md</code> &sect;15 forbids.</div>\n'
+
+  printf '<h3>Coverage by category</h3>\n<div class="scroll">\n'
+  printf '<table class="matrix"><tr><th>category</th><th>coverage</th><th class="num">reg</th><th class="num">ran</th><th class="num">found</th><th class="num">clean</th><th class="num">not run</th><th class="num">unacc</th><th>&ldquo;ran&rdquo; means</th></tr>\n'
+  local c reg ran fired clean notrun unacc
+  for c in sast sca iac dast cloud; do
+    reg=${_RPTC_REG[$c]:-0}; ran=${_RPTC_RAN[$c]:-0}; fired=${_RPTC_FIRED[$c]:-0}
+    clean=${_RPTC_CLEAN[$c]:-0}; notrun=${_RPTC_NOTRUN[$c]:-0}; unacc=${_RPTC_UNACC[$c]:-0}
+    printf '<tr><td><a class="cat" href="#cat-%s">%s</a></td><td>' "$c" "$(html_escape "${_RPTC_CAT_LABEL[$c]}")"
+    if (( reg > 0 )); then
+      printf '<div class="bar">'
+      local pair cls n
+      for pair in "b-fired:$fired" "b-clean:$clean" "b-skip:$notrun" "b-unacc:$unacc"; do
+        cls=${pair%%:*}; n=${pair#*:}
+        (( n > 0 )) && printf '<span class="%s" style="flex:%s"></span>' "$cls" "$n"
+      done
+      printf '</div>'
+    else
+      printf '<span class="notbuilt">not built</span>'
+    fi
+    printf '</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td>' \
+      "$reg" "$ran" "$fired" "$clean" "$notrun" "$unacc"
+    printf '<td><span class="strength %s">%s</span></td></tr>\n' \
+      "${_RPTC_RANSEM[$c]}" "$(html_escape "${_RPTC_RANSEM[$c]}")"
+  done
+  printf '</table>\n</div>\n'
+  printf '<div class="legend"><span class="l-fired"><i></i>found issues</span><span class="l-clean"><i></i>ran, nothing found</span><span class="l-skip"><i></i>not run, reason recorded</span><span class="l-unacc"><i></i>unaccounted</span></div>\n'
+  printf '<div class="warn"><strong>&ldquo;Ran&rdquo; is not one thing.</strong> The strength column above is load-bearing: it names the exact predicate this run used to decide a check was covered. Treat a weak- or medium-strength clean count with the caveat printed in that category&rsquo;s own section below.</div>\n'
+
+  printf '<h3>Findings and declared limits</h3>\n<div class="tiles">\n'
+  printf '<div class="tile crit"><div class="n">%s</div><div class="l">findings</div></div>\n' "$nfind"
+  printf '<div class="tile gap"><div class="n">%s</div><div class="l">coverage gaps</div></div>\n' "$ngap"
+  printf '<div class="tile skip"><div class="n">%s</div><div class="l">declared reductions</div></div>\n' "$nred"
+  printf '</div>\n</section>\n'
+
+  printf '<div class="filter"><span class="lbl">Severity filter</span>'
+  printf '<label for="sv-all">All</label><label for="sv-crit">Critical</label>'
+  printf '<label for="sv-high">High+</label><label for="sv-med">Medium+</label><label for="sv-low">Low+</label>'
+  printf '<span class="filterhint">applies to every finding below &mdash; no JavaScript</span></div>\n'
+}
+
+# One finding, in the shape §4.4 (XSS-safe escaping) requires: every
+# interpolated value is target-derived and goes through html_escape into a
+# text node only; `data-sev` takes only this tool's own closed severity
+# vocabulary. Reuses `_location_summary` (already defined above) rather than
+# a second location renderer.
+_html_audit_one_finding() {
+  local line=$1
+  finding_decode "$line"
+  local sev=${_DF[severity]:-info} loc
+  loc=$(_location_summary)
+  printf '<details class="f" data-sev="%s"><summary><span class="sev %s">%s</span> <strong>%s</strong> &mdash; %s<span class="loc">%s</span></summary>\n' \
+    "$(html_escape "$sev")" "$(html_escape "$sev")" "$(html_escape "$sev")" \
+    "$(html_escape "${_DF[check_id]:-}")" "$(html_escape "${_DF[title]:-}")" \
+    "$(html_escape "$loc")"
+  printf '<div class="fbody">\n'
+  printf '<p class="meta">%s &middot; %s &middot; confidence %s &middot; status %s &middot; CVSS %s</p>\n' \
+    "$(html_escape "${_DF[cwe]:-none}")" "$(html_escape "${_DF[owasp]:-none}")" \
+    "$(html_escape "${_DF[confidence]:-medium}")" "$(html_escape "${_DF[status]:-new}")" \
+    "$(html_escape "${_DF[_cvss_score]:-—}")"
+  [[ -n ${_DF[evidence]:-} ]] && printf '<pre class="ev">%s</pre>\n' "$(html_escape "${_DF[evidence]}")"
+  [[ -n ${_DF[remediation]:-} ]] && printf '<p class="meta">%s</p>\n' "$(html_escape "${_DF[remediation]}")"
+  printf '<p class="meta">fingerprint <code>%s</code></p>\n' "$(html_escape "${_DF[fingerprint]:-}")"
+  printf '</div></details>\n'
+}
+
+_html_audit_category() {
+  local rundir=$1 c=$2
+  local p_reg=${_RPTC_REG[$c]:-0} p_ran=${_RPTC_RAN[$c]:-0}
+  printf '<section class="cat" id="cat-%s">\n<header>\n' "$c"
+  printf '<h2>%s</h2>\n<p class="desc">%s</p>\n</header>\n' \
+    "$(html_escape "${_RPTC_CAT_LABEL[$c]}")" "$(html_escape "${_RPTC_CAT_DESCR[$c]}")"
+
+  if (( p_reg == 0 && p_ran == 0 )); then
+    printf '<div class="warn"><strong>This category did not run.</strong> '
+    local red
+    red=$(grep "module=$c " "$rundir/meta/coverage_reduction" 2>/dev/null || true)
+    if [[ -n $red ]]; then
+      printf 'The run recorded:</div>\n<ul class="prose">\n'
+      while IFS= read -r l; do [[ -n $l ]] && printf '<li>%s</li>\n' "$(html_escape "$l")"; done <<<"$red"
+      printf '</ul>\n'
+    else
+      printf 'No coverage was recorded for it.</div>\n'
+    fi
+    printf '</section>\n'
+    return 0
+  fi
+
+  printf '<div class="note"><span class="strength %s">%s</span> &nbsp;<strong>What &ldquo;ran&rdquo; means here:</strong> %s</div>\n' \
+    "${_RPTC_RANSEM[$c]}" "$(html_escape "${_RPTC_RANSEM[$c]}")" "$(html_escape "${_RPTC_RANSEM_TEXT[$c]}")"
+
+  # -- 1. Found issues, grouped by check --
+  local fired_ids n id nf openattr gsev
+  fired_ids=${_RPTC_FIRED_SET[$c]}
+  n=$(printf '%s\n' "$fired_ids" | grep -c . || true); [[ -z $fired_ids ]] && n=0
+  printf '<details class="grp" open><summary><span class="tag fired">Found issues</span> Checks that reported a finding<span class="count">%s check(s)</span></summary><div class="inner">\n' "$n"
+  if (( n > 0 )); then
+    while IFS= read -r id; do
+      [[ -n $id ]] || continue
+      nf=${_RPTC_FIRED_COUNT[$id]:-0}
+      openattr=''; (( nf <= 3 )) && openattr=' open'
+      gsev=$(_rptc_group_severity "$id")
+      printf '<details class="chk"%s><summary><span class="sev %s">%s</span> <code>%s</code> &mdash; %s<span class="count">%s finding(s)</span></summary><div class="chkbody">\n' \
+        "$openattr" "$(html_escape "$gsev")" "$(html_escape "$gsev")" \
+        "$(html_escape "$id")" "$(html_escape "${_RPTC_TITLE[$id]:-—}")" "$nf"
+      while IFS= read -r fl; do
+        [[ -n $fl ]] && _html_audit_one_finding "$fl"
+      done <<<"${_RPTC_FIRED_LINES[$id]:-}"
+      printf '</div></details>\n'
+    done <<<"$fired_ids"
+  else
+    printf '<p class="sub">No check in this category reported a finding.</p>\n'
+  fi
+  printf '</div></details>\n'
+
+  # -- 2. Clean: ran, found nothing --
+  local clean_ids
+  clean_ids=${_RPTC_CLEAN_SET[$c]}
+  n=$(printf '%s\n' "$clean_ids" | grep -c . || true); [[ -z $clean_ids ]] && n=0
+  printf '<details class="grp"><summary><span class="tag pass">Clean</span> Checks that ran and reported nothing<span class="count">%s check(s)</span></summary><div class="inner">\n' "$n"
+  if (( n > 0 )); then
+    printf '<p class="sub">Read this list with the strength badge above: it is the evidence that this scan looked for these specific conditions.</p>\n'
+    printf '<div class="scroll"><table class="checks"><tr><th>check</th><th>what it looks for</th><th>severity if found</th></tr>\n'
+    while IFS= read -r id; do
+      [[ -n $id ]] || continue
+      printf '<tr><td class="id">%s</td><td>%s</td><td>%s</td></tr>\n' \
+        "$(html_escape "$id")" "$(html_escape "${_RPTC_TITLE[$id]:-—}")" "$(html_escape "${_RPTC_SEV[$id]:-—}")"
+    done <<<"$clean_ids"
+    printf '</table></div>\n'
+  else
+    printf '<p class="sub">None.</p>\n'
+  fi
+  printf '</div></details>\n'
+
+  # -- 3. Not run, FULL DETAIL (captain decision: every check, its own reason,
+  #    never a count alone) --
+  local skip_rows napp_ids ns nn why
+  skip_rows=${_RPTC_SKIP_ROWS[$c]}
+  napp_ids=${_RPTC_NAPP_SET[$c]}
+  ns=$(printf '%s\n' "$skip_rows" | grep -c . || true); [[ -z $skip_rows ]] && ns=0
+  nn=$(printf '%s\n' "$napp_ids" | grep -c . || true); [[ -z $napp_ids ]] && nn=0
+  printf '<details class="grp" open><summary><span class="tag skip">Not run</span> Checks that did not run, with the reason recorded<span class="count">%s check(s)</span></summary><div class="inner">\n' "$(( ns + nn ))"
+  if (( ns > 0 )); then
+    printf '<h3>Filtered out before dispatch</h3>\n'
+    printf '<p class="sub">Dropped by the check-selection chain (lib/checks.sh) - an intensity/profile filter, a missing requires-cmd/requires-config, or an explicit exclude.</p>\n'
+    printf '<div class="scroll"><table class="checks"><tr><th>check</th><th>what it looks for</th><th>dropped by</th></tr>\n'
+    while IFS=$'\t' read -r id why; do
+      [[ -n $id ]] || continue
+      printf '<tr><td class="id">%s</td><td>%s</td><td class="why"><span class="reason">%s</span></td></tr>\n' \
+        "$(html_escape "$id")" "$(html_escape "${_RPTC_TITLE[$id]:-—}")" "$(html_escape "$why")"
+    done <<<"$skip_rows"
+    printf '</table></div>\n'
+  fi
+  if (( nn > 0 )); then
+    printf '<h3>Evaluated as not applicable, or ran with nothing this check applies to</h3>\n'
+    printf '<p class="sub">Selected and dispatched, but nothing this run inspected was something they apply to - a missing input, an intensity gate, or (for sast/iac) a files: glob with no match in this tree. Each row below carries the exact declared reason. They are <strong>not covered</strong>; their silence is the absence of a test.</p>\n'
+    printf '<div class="scroll"><table class="checks"><tr><th>check</th><th>what it looks for</th><th>reason</th></tr>\n'
+    while IFS= read -r id; do
+      [[ -n $id ]] || continue
+      printf '<tr><td class="id">%s</td><td>%s</td><td class="why"><span class="reason">%s</span></td></tr>\n' \
+        "$(html_escape "$id")" "$(html_escape "${_RPTC_TITLE[$id]:-—}")" \
+        "$(html_escape "${_RPTC_NAPP_REASON[$id]:-not applicable}")"
+    done <<<"$napp_ids"
+    printf '</table></div>\n'
+  fi
+  (( ns + nn == 0 )) && printf '<p class="sub">None &mdash; every registered check in this category was dispatched.</p>\n'
+  printf '</div></details>\n'
+
+  # -- 4. Unaccounted --
+  local unacc_ids
+  unacc_ids=${_RPTC_UNACC_SET[$c]}
+  n=$(printf '%s\n' "$unacc_ids" | grep -c . || true); [[ -z $unacc_ids ]] && n=0
+  if (( n > 0 )); then
+    printf '<details class="grp" open><summary><span class="tag gap">Unaccounted</span> Registered, not run, and no per-check reason recorded<span class="count">%s check(s)</span></summary><div class="inner">\n' "$n"
+    printf '<div class="warn">These checks were selected for this run and never executed, and the run recorded no reason naming them. A prose coverage record below may explain them as a group, but nothing ties that prose to these ids. <strong>Do not read their silence as a clean result.</strong> This is the one bucket an auditor should push back on.</div>\n'
+    printf '<div class="scroll"><table class="checks"><tr><th>check</th><th>what it looks for</th><th>severity if found</th></tr>\n'
+    while IFS= read -r id; do
+      [[ -n $id ]] || continue
+      printf '<tr><td class="id">%s</td><td>%s</td><td>%s</td></tr>\n' \
+        "$(html_escape "$id")" "$(html_escape "${_RPTC_TITLE[$id]:-—}")" "$(html_escape "${_RPTC_SEV[$id]:-—}")"
+    done <<<"$unacc_ids"
+    printf '</table></div>\n</div></details>\n'
+  fi
+
+  # -- 5. Declared reductions + gaps for this category --
+  local red gap nr ng
+  red=$(grep "module=$c" "$rundir/meta/coverage_reduction" 2>/dev/null || true)
+  nr=$(printf '%s\n' "$red" | grep -c . || true); [[ -z $red ]] && nr=0
+  gap=$(grep "^${c}[ :/]" "$rundir/meta/coverage_gap" 2>/dev/null || true)
+  ng=$(printf '%s\n' "$gap" | grep -c . || true); [[ -z $gap ]] && ng=0
+  if (( nr + ng > 0 )); then
+    printf '<details class="grp"><summary><span class="tag gap">Coverage record</span> What this category declared it did not cover<span class="count">%s entr(ies)</span></summary><div class="inner">\n' "$(( nr + ng ))"
+    if (( nr > 0 )); then
+      printf '<h3>Declared reductions</h3>\n<ul class="prose">\n'
+      local l r rest
+      while IFS= read -r l; do
+        [[ -n $l ]] || continue
+        r=$(sed -n 's/.*reason=\([^ ]*\).*/\1/p' <<<"$l")
+        rest=${l#*reason=}; rest=${rest#* }
+        printf '<li><span class="reason">%s</span> <span class="why">%s</span></li>\n' \
+          "$(html_escape "${r:-—}")" "$(html_escape "$rest")"
+      done <<<"$red"
+      printf '</ul>\n'
+    fi
+    if (( ng > 0 )); then
+      printf '<h3>Coverage gaps</h3>\n<ul class="prose">\n'
+      while IFS= read -r l; do
+        [[ -n $l ]] && printf '<li>%s</li>\n' "$(html_escape "$l")"
+      done <<<"$gap"
+      printf '</ul>\n'
+    fi
+    printf '</div></details>\n'
+  fi
+  printf '</section>\n'
+}
+
+_html_audit_limitations() {
+  local rundir=$1
+  printf '<section class="cat" id="limitations"><header><h2>Run-level limitations</h2>\n'
+  printf '<p class="desc">Facts about this run as a whole, not attributable to one category.</p></header>\n'
+  printf '<ul class="prose">\n'
+  local any=0 k l
+  for k in limits_relaxed limits_clamped incomplete_reason; do
+    [[ -r $rundir/meta/$k ]] || continue
+    while IFS= read -r l; do
+      [[ -n $l ]] || continue
+      any=1
+      printf '<li><span class="reason">%s</span> %s</li>\n' "$(html_escape "$k")" "$(html_escape "$l")"
+    done <"$rundir/meta/$k"
+  done
+  if [[ -r $rundir/meta/coverage_gap ]]; then
+    while IFS= read -r l; do
+      [[ -n $l ]] || continue
+      case $l in sast*|sca*|iac*|dast*|cloud*) continue ;; esac
+      any=1; printf '<li>%s</li>\n' "$(html_escape "$l")"
+    done <"$rundir/meta/coverage_gap"
+  fi
+  (( any )) || printf '<li class="sub">None recorded for this run.</li>\n'
+  printf '</ul>\n</section>\n'
+}
+
+_html_audit_foot() {
+  printf '<footer>Generated by scoursh %s from run <code>%s</code>. Self-contained: no external assets, no scripts, no network requests at view time.</footer>\n' \
+    "$(html_escape "$(scoursh_version)")" "$(html_escape "$(basename "$1")")"
+  printf '</main>\n</body>\n</html>\n'
+}
+
+# report_audit RUNDIR - the entry point, gated behind `--format audit` (opt-in,
+# never in the default format list - captain decision: ship alongside
+# report.html without changing its own default behaviour). Writes
+# report-audit.html unconditionally alongside whatever else report_all wrote.
+report_audit() {
+  local rundir=${1:-$SCOURSH_RUN_DIR}
+  _report_coverage_registry_load
+  _report_coverage_state "$rundir"
+  {
+    _html_audit_head
+    _html_audit_nav
+    _html_audit_summary "$rundir"
+    local c
+    for c in sast sca iac dast cloud; do
+      _html_audit_category "$rundir" "$c"
+    done
+    _html_audit_limitations "$rundir"
+    _html_audit_foot "$rundir"
+  } >"$rundir/report-audit.html"
+}
+
+# ---------------------------------------------------------------------------
 # 5. Generated location artifacts (tension 22 option 3, SARIF-02)
 # ---------------------------------------------------------------------------
 # `reports/<run>/locations/<module>.txt`: one line per finding whose profile
@@ -2090,9 +2890,10 @@ report_sarif() {
 # 6. Everything
 # ---------------------------------------------------------------------------
 # `report_all [RUNDIR]` writes every artifact this run's resolved --format
-# list selects (docs/DESIGN.md §5: `--format json,sarif,html,md`), plus two
-# records this project treats as mandatory rather than format-selectable,
-# neither of which is even in that four-value enum
+# list selects (docs/DESIGN.md §5's `--format json,sarif,html,md`, since
+# extended with a fifth, opt-in `audit` value - report_audit, §4a above),
+# plus two records this project treats as mandatory rather than
+# format-selectable, neither of which is even in that enum
 # (`_scan_validate_csv`/`_scanner_validate_list_item`, scan.sh and
 # lib/config.sh):
 #
@@ -2136,5 +2937,11 @@ report_all() {
   # SARIF-2.1.0 document (tool.driver/rules[]/artifacts[]/invocations[], and
   # results[] mapped from this run's own findings).
   [[ -z ${_rpt_want[sarif]:-} ]] || report_sarif "$rundir"
+  # `audit` is a fifth, OPT-IN format value (never in the default list
+  # above): report_audit writes report-audit.html ALONGSIDE report.html,
+  # never replacing or editing it (captain decision, scoursh-audit-report
+  # ticket) - an audit-grade per-category coverage report with full
+  # not-covered detail, §4a above.
+  [[ -z ${_rpt_want[audit]:-} ]] || report_audit "$rundir"
   report_run_json "$rundir"
 }

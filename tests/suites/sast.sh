@@ -632,6 +632,51 @@ assert_contains "$(cat "$W/run-full-profile/meta/checks_run" 2>/dev/null)" 'SAST
   'full-only check ALSO runs under the default - fails under "no --profile-scan silently narrows the scan"'
 
 # =============================================================================
+printf -- '\n-- checks_run semantics: recorded AFTER the walk, only for checks actually evaluated --\n'
+# =============================================================================
+# docs/FOUNDATION.md/AGENTS.md's "checks_run semantics fix": before this fix,
+# modules/sast/run.sh recorded `checks_run "$id"` from the SELECTION list,
+# BEFORE sast_scan_tree ever ran - so a check whose `files:` glob matched zero
+# files in the scanned tree was still reported as "run". This section adds
+# javascript.rules (files: *.js/*.jsx/*.ts/*.tsx/*.mjs/*.cjs) to a registry
+# scanned against $FIXTURES (tests/fixtures/sast), which contains ONLY *.py
+# and one extensionless snippet file - no JS/TS file anywhere in it - so
+# SAST-JS-EVAL-01 is selected but has nothing to evaluate.
+#
+# This is the test that FAILS under the pre-fix reading: recording checks_run
+# from the selection list (before the walk) puts SAST-JS-EVAL-01 in
+# checks_run regardless of the tree's contents, so the first assertion below
+# would fail (assert_not_contains would find it present).
+ROOT_JS_REGISTRY=$W/root-js-registry
+mkdir -p "$ROOT_JS_REGISTRY/config" "$ROOT_JS_REGISTRY/modules/sast/rules"
+printf 'id: scanner\n' >"$ROOT_JS_REGISTRY/config/scanner.conf"
+cp "$ROOT/modules/sast/run.sh" "$ROOT/modules/sast/engine.sh" "$ROOT/modules/sast/history.sh" \
+  "$ROOT_JS_REGISTRY/modules/sast/"
+cp "$ROOT/modules/sast/rules/secrets.rules" "$ROOT_JS_REGISTRY/modules/sast/rules/secrets.rules"
+cp "$ROOT/modules/sast/rules/javascript.rules" "$ROOT_JS_REGISTRY/modules/sast/rules/javascript.rules"
+ROOT_JS_REGISTRY=$(cd -- "$ROOT_JS_REGISTRY" && pwd -P)
+
+t_case 'checks_run semantics: a check whose files: glob matched nothing in this tree is NOT recorded as run'
+rm -rf "$W/run-js-not-applicable"
+SCOURSH_INSTALL_ROOT=$ROOT_JS_REGISTRY bash "$ROOT/scan.sh" sast --path "$FIXTURES" \
+  --out "$W/run-js-not-applicable" >/dev/null 2>&1
+_js_checks_run=$(cat "$W/run-js-not-applicable/meta/checks_run" 2>/dev/null || true)
+assert_not_contains "$_js_checks_run" 'SAST-JS-EVAL-01' \
+  'SAST-JS-EVAL-01 (files: *.js/*.jsx/*.ts/*.tsx/*.mjs/*.cjs) is NOT in checks_run over a tree with no such file - fails under the pre-fix reading, which records checks_run from the selection list before the tree walk ever runs, so this id would appear regardless of what the tree contains'
+
+t_case 'checks_run semantics: a check that WAS evaluated (its files: glob matched a real file, or it carries none) still IS recorded as run'
+assert_contains "$_js_checks_run" 'SAST-SEC-AWS_AKID-01' \
+  'SAST-SEC-AWS_AKID-01 (no files: restriction, so applicable to every file) is still recorded as run in the SAME scan - proves the fix narrows to unevaluated checks specifically, not to every check in a registry containing an inapplicable one'
+
+t_case 'checks_run semantics: the unevaluated check is declared, by id, as a coverage_reduction - never silently unaccounted'
+_js_reductions=$(cat "$W/run-js-not-applicable/meta/coverage_reduction" 2>/dev/null || true)
+assert_contains "$_js_reductions" 'module=sast reason=no_matching_files' \
+  'a coverage_reduction names the reason no_matching_files for module=sast'
+assert_contains "$_js_reductions" 'SAST-JS-EVAL-01' \
+  'that reduction names SAST-JS-EVAL-01 specifically, inside its checks=[...] list - the same convention modules/dast/passive/headers.sh already established for a DAST check no fetched response was applicable to'
+unset _js_checks_run _js_reductions ROOT_JS_REGISTRY
+
+# =============================================================================
 printf -- '\n-- sast_evaluate_gate: the SCAN_FLAGS declaredness guard itself --\n'
 # =============================================================================
 # This module is sourced standalone by this very suite (line 29 above), never
