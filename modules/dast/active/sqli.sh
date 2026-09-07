@@ -108,19 +108,45 @@ _sqli_try_error() {
 # ---------------------------------------------------------------------------
 # Technique (b): boolean-based
 # ---------------------------------------------------------------------------
-# `_sqli_bool_signal INDEX VT VF BASE_STATUS BASE_SIG` - 0 when the true payload
-# behaves like the baseline, the false payload differs from the baseline, and
-# the two differ from each other. Sends two requests.
+# `_sqli_bool_signal INDEX VT VF BASE_STATUS BASE_SIG` - 0 when the true and
+# false payloads differ from each other AND exactly one of them matches the
+# baseline. Sends two requests.
+#
+# EITHER of two polarities is a valid signal, and which one applies depends on
+# what the baseline itself already is:
+#   data-listing shape:  true ~ baseline, false differs. The baseline already
+#     matches real rows, so an AND-true tautology preserves it and an AND-false
+#     contradiction empties it.
+#   auth-bypass shape:   false ~ baseline, true differs. The baseline on a
+#     login/gate endpoint IS the false/denied state (wrong credentials), so a
+#     comment-stripping tautology (`' AND 1=1-- -`) flips the WHERE clause and
+#     the request SUCCEEDS, diverging from the baseline, while the paired
+#     contradiction (`' AND 1=2-- -`) still fails and matches the baseline.
+# A reading that only accepts the first polarity rejects the exact,
+# unambiguous authentication-bypass evidence this shape produces (docs/
+# FOUNDATION.md, DAST SQLi boolean-signal polarity): the comment-based bypass
+# makes the TRUE case diverge and the FALSE case match baseline, which is
+# backwards from "true ~ baseline" alone. Accepting either polarity closes that
+# gap without weakening the data-listing case: a pair where BOTH sides match
+# the baseline (an AND-only payload ANDed onto an already-false WHERE clause,
+# which stays false regardless of the injected truth value) or where NEITHER
+# side matches it satisfies neither polarity and is correctly rejected.
 _sqli_bool_signal() {
   local i=$1 vt=$2 vf=$3 base_status=$4 base_sig=$5 st sf sig_t sig_f
+  local t_matches_base=1 f_matches_base=1
   inject_send "$i" "$vt" || return 1
   st=$_INJ_STATUS; inject_body_sig "$_INJ_BODY" "$vt"; sig_t=$_INJ_SIG_LEN
   inject_send "$i" "$vf" || return 1
   sf=$_INJ_STATUS; inject_body_sig "$_INJ_BODY" "$vf"; sig_f=$_INJ_SIG_LEN
-  _sqli_similar "$st" "$sig_t" "$base_status" "$base_sig" || return 1   # true ~ baseline
-  _sqli_similar "$sf" "$sig_f" "$base_status" "$base_sig" && return 1   # false must differ from baseline
-  _sqli_similar "$st" "$sig_t" "$sf" "$sig_f" && return 1              # true must differ from false
-  return 0
+
+  _sqli_similar "$st" "$sig_t" "$sf" "$sig_f" && return 1   # true must differ from false
+
+  _sqli_similar "$st" "$sig_t" "$base_status" "$base_sig" && t_matches_base=0
+  _sqli_similar "$sf" "$sig_f" "$base_status" "$base_sig" && f_matches_base=0
+
+  (( t_matches_base == 0 && f_matches_base == 1 )) && return 0   # data-listing polarity
+  (( f_matches_base == 0 && t_matches_base == 1 )) && return 0   # auth-bypass polarity
+  return 1
 }
 
 _sqli_try_boolean() {

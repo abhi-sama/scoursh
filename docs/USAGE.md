@@ -67,6 +67,7 @@ scan.sh <command> [options]
 | `--i-own-target NAME` | dast, all | live |
 | `--requests-per-second N` | dast, all | live; raising it above the conservative ceiling needs `--i-own-target` (see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)) |
 | `--request-budget N` | dast, all | live; same as above |
+| `--circuit-breaker-failures N` | dast, all | live; same as above - useful for a target that answers an unmatched path with 5xx rather than 404, which can otherwise trip the default 10-failures/60s ceiling during discovery/methods before the injection phase runs |
 | `--openapi FILE` | dast, all | live - an ephemeral, this-run-only override of `config/discovery.conf`'s `openapi-path` for `--target`; nothing is written to that file. Requires `--target`, exit 2 otherwise. |
 | `--har FILE` | dast, all | live; same as above, for `har-path` |
 | `--postman FILE` | dast, all | live; same as above, for `postman-path` |
@@ -487,7 +488,10 @@ Four things about that flag are worth knowing before reaching for it.
 Two bounds no affirmation lifts: `circuit-breaker-window` cannot go below 60 seconds (a shorter window
 counts fewer failures towards the same threshold, which is a weaker breaker) or above 86400 (that one
 is arithmetic, not safety).  The budget can be raised but never removed, and the breaker can have its
-threshold raised but never be disabled.
+threshold raised but never be disabled - `--circuit-breaker-failures N` plus `--i-own-target` is the
+flag for that, useful against a target that answers an unmatched path with a 5xx rather than a 404
+(the default 10-failures/60s ceiling can otherwise trip during discovery/methods before the injection
+phase ever runs, on an application that is healthy but idiosyncratic rather than actually failing).
 
 A run that did relax something says so on stderr at run start, banners it in the HTML and Markdown
 reports, and records the from->to deltas in `run.json`'s `authorization` object - because an
@@ -710,7 +714,7 @@ file yet; those are called out in the Notes column.
 | `http-timeout` | positive integer (seconds) | `20` | inert | The HTTP layer's timeout reads `SCOURSH_HTTP_TIMEOUT`, never this file. |
 | `max-redirects` | non-negative integer | `5` | inert | The redirect cap is a caller-supplied argument defaulting to 5, never read from this file. |
 | `request-budget` | positive integer, per run | `20000` | live | Per-run, shared across workers; exhausting it stops the run at exit 5. Clamped to 5000 for a DAST scan without `--i-own-target`, so this default is not what a DAST run spends. |
-| `circuit-breaker-failures` | positive integer | `10` | live | Failures (transport failure or 5xx) within the window below; reaching it aborts the run at exit 5. Never disableable. |
+| `circuit-breaker-failures` | positive integer | `10` | live | Failures (transport failure or 5xx) within the window below; reaching it aborts the run at exit 5. Never disableable, but raisable under `--i-own-target` - `--circuit-breaker-failures N` is the dedicated CLI flag for `dast`/`all` (same shape as `--requests-per-second`/`--request-budget`, exported as `SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES`). |
 | `circuit-breaker-window` | non-negative integer (seconds) | `60` | live | Rolling window. Bounded at both ends - never below 60s, never above 86400 - and no affirmation lifts either bound. |
 | `fail-on` | severity name or `none` | `none` | live | |
 | `min-confidence` | `high\|medium\|low` | `low` | live | |
