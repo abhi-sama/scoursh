@@ -848,6 +848,41 @@ crawl_inv_reset() {
   declare -g _CRAWL_PARAM_TRUNCATED=0
   declare -g _CRAWL_PARAM_INVALID_LOCATION=0
   declare -g _CRAWL_PARAM_INVALID_HEADER_NAME=0
+  declare -g _CRAWL_EP_CONTROL_BYTE=0
+  declare -g _CRAWL_PARAM_CONTROL_BYTE=0
+}
+
+# `crawl_has_control_byte TEXT` - true (exit 0) when TEXT contains a C0
+# control byte (0x01-0x1f) or DEL (0x7f), the identical class `crawl_safe_text`
+# already strips for report output (section 1 above).
+#
+# `crawl_add_endpoint`/`crawl_add_param` join their fields with US (0x1f) to
+# build one tuple string per row (sections 5/5a below), and that byte is the
+# ONLY thing separating one field from the next when the tuple is later
+# re-split with `IFS=$'\x1f' read`.  `crawl_json_unescape` (section 2 above)
+# will happily turn a JSON `` escape - or any other `\u00XX` C0 escape -
+# in an OpenAPI/HAR/Postman-supplied name, value, method or URL into that
+# exact raw byte, which then shifts every field after it onto the wrong
+# position once the row is re-split: a name meant for one column reappears as
+# a location, a source, or a header name the IMPORT-05 token guard (below)
+# never saw, because that guard runs against the PRE-corruption variable.
+# The result ranges from a forged inventory row to `http_request_header`
+# `die`-ing the whole run (exit 5) on a header name assembled from the
+# shifted fragments - a hostile spec turning scoursh's own internal
+# delimiter into denial-of-scan.
+#
+# Every field this function's two callers below receive from untrusted
+# specification/HAR/Postman input is checked against it BEFORE the tuple is
+# built, and a hit is REJECTED with a counted `coverage_reduction` rather
+# than silently stripped: a control byte in a real header/parameter/method
+# name or URL is never legitimate, so nothing real is lost, and rejecting
+# keeps the record format's own "skip malformed input and say so" posture
+# rather than quietly rewriting what a hostile document claimed.  This is
+# also what closes a CRLF (0x0d/0x0a, both in the same C0 range) smuggled
+# into a HAR entry's `request.method`.
+crawl_has_control_byte() {
+  local text=$1
+  [[ $text == *[$'\x01'-$'\x1f'$'\x7f']* ]]
 }
 
 # `crawl_id KEY` - the 12-hex join key an endpoint and its parameters share.
@@ -885,6 +920,14 @@ crawl_add_endpoint() {
   local target=$1 method=$2 url=$3 source=$4 depth=${5:-0} status=${6:-} ctype=${7:-}
   local body_type=${8:-}
   local key id host path
+  if crawl_has_control_byte "$target" || crawl_has_control_byte "$method" ||
+     crawl_has_control_byte "$url" || crawl_has_control_byte "$source" ||
+     crawl_has_control_byte "$status" || crawl_has_control_byte "$ctype" ||
+     crawl_has_control_byte "$body_type"; then
+    _CRAWL_EP_CONTROL_BYTE=$(( _CRAWL_EP_CONTROL_BYTE + 1 ))
+    _CRAWL_LAST_EP_ID=''
+    return 0
+  fi
   crawl_url_split "$url"
   url=$_CRAWL_U_BASE
   method=${method^^}
@@ -964,6 +1007,12 @@ crawl_add_param() {
   local key id lname
   method=${method^^}
   [[ -n $name ]] || return 0
+  if crawl_has_control_byte "$target" || crawl_has_control_byte "$method" ||
+     crawl_has_control_byte "$url" || crawl_has_control_byte "$name" ||
+     crawl_has_control_byte "$source" || crawl_has_control_byte "$example"; then
+    _CRAWL_PARAM_CONTROL_BYTE=$(( _CRAWL_PARAM_CONTROL_BYTE + 1 ))
+    return 0
+  fi
   if [[ ! $location =~ $_CRAWL_PARAM_LOCATIONS ]]; then
     _CRAWL_PARAM_INVALID_LOCATION=$(( _CRAWL_PARAM_INVALID_LOCATION + 1 ))
     return 0

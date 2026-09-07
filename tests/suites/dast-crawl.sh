@@ -547,6 +547,100 @@ assert_eq 0 "${_CRAWL_PARAM_INVALID_LOCATION:-0}" 'none of them were counted as 
 # end' further down, right after the crawl-depth case.
 
 # ===========================================================================
+printf -- '\n-- security audit finding A1: a JSON-escaped C0 control byte cannot forge the 0x1f tuple delimiter (crawl_engine.sh §6) --\n'
+# ===========================================================================
+# `crawl_json_unescape` decodes a JSON `` (or any other `\u00XX` C0)
+# escape in an untrusted name/value/method/URL into the RAW byte - which is
+# the exact US (0x1f) `crawl_add_endpoint`/`crawl_add_param` use to join their
+# own tuple. A raw control byte smuggled into one field therefore shifts
+# every field after it once the tuple is re-split with `IFS=$'\x1f' read`
+# (`crawl_inv_write_endpoints`/`crawl_inv_write_parameters` above), forging
+# whichever field the shift lands on - reproduced concretely below, before
+# testing that `crawl_has_control_byte` rejects the row outright instead.
+
+t_case 'crawl_has_control_byte recognises every C0 byte and DEL, and nothing else'
+CTL=$(printf '\x1f')
+assert_status 0 'the unit separator itself (0x1f)' crawl_has_control_byte "a${CTL}b"
+assert_status 0 'a bare CR' crawl_has_control_byte "$(printf 'a\rb')"
+assert_status 0 'a bare LF' crawl_has_control_byte "$(printf 'a\nb')"
+assert_status 0 'DEL (0x7f)' crawl_has_control_byte "$(printf 'a\x7fb')"
+assert_status 1 'an ordinary space is NOT a control byte' crawl_has_control_byte 'a b'
+assert_status 1 'an ordinary token is clean' crawl_has_control_byte 'X-Good-Name'
+
+t_case 'WITHOUT the guard, an embedded 0x1f in a parameter NAME forges the written LOCATION field'
+# The exact mechanism this ticket closes, reproduced directly against
+# crawl_inv_write_parameters rather than described: `crawl_has_control_byte`
+# is mutated out in a subshell (bash function tables do not escape a
+# subshell, so the real function is untouched for every later case), and the
+# forged output is asserted, not merely a return code.
+(
+  crawl_has_control_byte() { return 1; }
+  crawl_inv_reset
+  crawl_add_param ep1 crawl-fixture GET "$TGT/x" "Bad Name${CTL}header" query openapi ''
+  crawl_inv_write_parameters "$W/mut-cb-parameters.json"
+)
+MUTPARAMS=$(_slurp "$W/mut-cb-parameters.json")
+assert_contains "$MUTPARAMS" '"location": "header"' \
+  'the embedded byte shifts the tuple so the WRITTEN row claims location=header - the row was validated as location=query, and the IMPORT-05 header-token check never ran because that check only fires for location==header AT CALL TIME, before the corruption exists. This is the forgery finding A1 describes, reproduced end to end against the real writer - FAILS (i.e. does not reproduce) if crawl_inv_write_parameters stops re-splitting on 0x1f, which would mean this whole class of defect no longer applies'
+assert_not_contains "$MUTPARAMS" '"location": "query"' \
+  'the real location is gone, overwritten by the shift rather than merely duplicated'
+assert_contains "$MUTPARAMS" '"name": "Bad Name"' \
+  'and the name itself is truncated at the injected byte, rather than raising any error - a forged row, not a crash, which is exactly why it would otherwise reach the inventory silently'
+
+t_case 'WITH the guard, the identical embedded 0x1f is rejected before the tuple is ever built'
+crawl_inv_reset
+crawl_add_param ep1 crawl-fixture GET "$TGT/x" "Bad Name${CTL}header" query openapi ''
+assert_eq 0 "${#_CRAWL_PARAM[@]}" \
+  'the row is not stored at all - FAILS under the mutated reading directly above, which is the point of pairing the two cases'
+assert_eq 1 "${_CRAWL_PARAM_CONTROL_BYTE:-0}" 'and the refusal is counted, so it can reach run.json as a coverage_reduction'
+
+t_case 'a control byte in an endpoint field (method/url/source/status/content-type) is rejected the same way'
+crawl_inv_reset
+crawl_add_endpoint crawl-fixture "GE${CTL}T" "$TGT/cb" crawl 0 200 text/html
+assert_eq 0 "${#_CRAWL_EP[@]}" 'the endpoint is not stored'
+assert_eq 1 "${_CRAWL_EP_CONTROL_BYTE:-0}" 'and the refusal is counted'
+crawl_add_endpoint crawl-fixture GET "$TGT/clean" crawl 0 200 text/html
+assert_eq 1 "${#_CRAWL_EP[@]}" 'a clean endpoint alongside it is unaffected'
+
+t_case 'a control byte does not survive a round trip through crawl_json_unescape into crawl_add_param'
+# The realistic path: crawl_json_unescape (crawl_engine.sh §2) is what turns
+# the SIX-character JSON escape into the raw byte in the first place - this
+# is the actual decoder finding A1 names, not a hand-built raw byte.
+crawl_inv_reset
+# SC1003: one literal backslash is exactly what this needs to hold.
+# shellcheck disable=SC1003
+BS=$(printf '\\')
+DECODED_NAME=$(crawl_json_unescape "Bad Name${BS}u001fheader")
+assert_eq "Bad Name${CTL}header" "$DECODED_NAME" \
+  'sanity: the JSON escape really does decode to the raw delimiter byte'
+crawl_add_param ep1 crawl-fixture GET "$TGT/x" "$DECODED_NAME" query openapi ''
+assert_eq 0 "${#_CRAWL_PARAM[@]}" 'the decoded, now-hostile name is still rejected'
+assert_eq 1 "${_CRAWL_PARAM_CONTROL_BYTE:-0}" 'and counted'
+
+t_case 'an OpenAPI document with the escaped byte in one parameter name imports the well-formed sibling and drops only the hostile one'
+crawl_inv_reset
+crawl_spec_openapi "$FIXTURES/specs/openapi-control-byte.json" crawl-fixture "$TGT" \
+  || _t_no 'openapi parsed' "$_CRAWL_SPEC_ERROR"
+PARAMS=$(_param_lines)
+assert_contains "$PARAMS" 'X-Good-Name|query|openapi' 'the sibling parameter, on the same operation, is unaffected'
+assert_not_contains "$PARAMS" 'Bad Name' 'the hostile name never reaches the inventory, whole or truncated'
+assert_eq 1 "${_CRAWL_PARAM_CONTROL_BYTE:-0}" 'and the drop is counted'
+
+t_case 'a HAR entry whose request.method carries CRLF is dropped, closing the CRLF-in-HAR-method observation in the same change'
+crawl_inv_reset
+crawl_spec_har "$FIXTURES/specs/har-control-byte.har" crawl-fixture "$TGT" \
+  || _t_no 'har parsed' "$_CRAWL_SPEC_ERROR"
+EPS=$(_ep_lines)
+assert_contains "$EPS" "GET|$TGT/xhr/good|har" 'the well-formed sibling entry is unaffected'
+assert_not_contains "$EPS" '/xhr/cb' 'the CRLF-carrying entry never reaches the inventory'
+assert_eq 1 "${_CRAWL_EP_CONTROL_BYTE:-0}" 'and the drop is counted'
+
+# The end-to-end proof (both fixtures, through a real scan.sh dast crawl
+# phase) needs $FIX and _crawl_scan - see 'A1: a hostile OpenAPI parameter
+# name with an embedded control byte degrades rather than forges or aborts'
+# further down, right after the IMPORT-05 end-to-end case.
+
+# ===========================================================================
 printf -- '\n-- the tension-21 inventory merge (crawl_engine.sh §7) --\n'
 # ===========================================================================
 
@@ -828,6 +922,38 @@ assert_not_contains "$PARJSON" 'X Bad Name' 'the malformed name never reaches th
 assert_contains "$PARJSON" 'X-Good-Name' 'but its well-formed sibling on the same operation still does'
 RUNJSON=$(_slurp "$W/run-hostile-header/run.json")
 assert_contains "$RUNJSON" 'reason=param_invalid_header_name' 'and the drop is a counted coverage_reduction, not a silent one'
+rm -f "$FIX/config/discovery.conf"
+
+t_case 'A1: a hostile OpenAPI parameter name with an embedded control byte degrades rather than forges or aborts'
+cat >"$FIX/config/discovery.conf" <<EOF
+id: crawl-fixture
+openapi-path: $FIXTURES/specs/openapi-control-byte.json
+EOF
+_crawl_scan "$W/run-control-byte-openapi"
+assert_eq 0 "$_RC" \
+  'the run completes cleanly, exit 0 - FAILS under the pre-fix reading, in which the escaped 0x1f decodes to the raw tuple delimiter, forges the written LOCATION field to "header", and (with a name that is not an RFC 7230 token) reaches http_request_header on a later active run and dies exit 5 - the denial-of-scan finding A1 describes'
+PARJSON=$(_slurp "$W/run-control-byte-openapi/inventory/parameters.json")
+assert_not_contains "$PARJSON" 'Bad Name' 'the hostile name never reaches the written inventory, whole or truncated'
+assert_not_contains "$PARJSON" '"location": "header"' \
+  'and no row was forged to claim location=header - this is the secondary, inventory-forgery half of finding A1'
+assert_contains "$PARJSON" 'X-Good-Name' 'but the well-formed sibling on the same operation still does'
+RUNJSON=$(_slurp "$W/run-control-byte-openapi/run.json")
+assert_contains "$RUNJSON" 'reason=param_control_byte' 'and the drop is a counted coverage_reduction, not a silent one'
+rm -f "$FIX/config/discovery.conf"
+
+t_case 'A1: a hostile HAR request.method carrying CRLF degrades rather than forges or aborts'
+cat >"$FIX/config/discovery.conf" <<EOF
+id: crawl-fixture
+har-path: $FIXTURES/specs/har-control-byte.har
+EOF
+_crawl_scan "$W/run-control-byte-har"
+assert_eq 0 "$_RC" \
+  'the run completes cleanly, exit 0 - closing the CRLF-in-HAR-method observation the same way as the escaped-0x1f case above, since CR and LF are both in the same C0 range'
+EPJSON=$(_slurp "$W/run-control-byte-har/inventory/endpoints.json")
+assert_not_contains "$EPJSON" '/xhr/cb' 'the CRLF-carrying entry never reaches the written inventory'
+assert_contains "$EPJSON" '/xhr/good' 'but the well-formed sibling entry still does'
+RUNJSON=$(_slurp "$W/run-control-byte-har/run.json")
+assert_contains "$RUNJSON" 'reason=endpoint_control_byte' 'and the drop is a counted coverage_reduction, not a silent one'
 rm -f "$FIX/config/discovery.conf"
 
 t_case 'IMPORT-03: an unresolved $ref chain and a first-subschema oneOf pick both reach run.json as coverage_reductions, end to end'
