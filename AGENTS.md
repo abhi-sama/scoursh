@@ -2862,6 +2862,72 @@ step 2 is next" above.
   `tests/suites/awscli.sh` reproduces F17's failure mode against a real AWS CLI v1 install
   (`aws-cli/1.44.x`, measured) in `tests/localstack/run.sh`, not just a stub - the flag really does
   reject at parsing, and `AWS_PAGER` really does not.
+- **`aws_ro` now CLASSIFIES its failures, and that is the honesty-critical half of the chokepoint
+  rather than a convenience.** It used to exec the CLI and return its status, classifying nothing:
+  a read-only role missing one permission produced an `AccessDenied`, the check saw no resources,
+  and the run reported CLEAN - the exact shape of the `data/advisories.db` defect this project
+  already paid for once, and WORSE here, because a least-privilege role legitimately lacks
+  permissions and an opt-in region legitimately refuses, so the misleading run is the ORDINARY one.
+  Every call now leaves a frozen outcome in `SCOURSH_AWS_RO_OUTCOME` (`SCOURSH_AWS_RO_OUTCOMES`
+  is the whole list), and `aws_ro_outcome_is_coverage_loss` is the ONE predicate that separates
+  "we looked" from "we did not" - do not re-derive that judgement at a call site.  Four things
+  about it a caller will otherwise get wrong:
+  - **`not_found` is an ANSWER, not a coverage loss.** `NoSuchBucketPolicy` means the bucket has no
+    policy, which is exactly what was asked; `truncated` IS a loss, because a partial list reported
+    as complete is the same lie by a different route.
+  - **The AWS error CODE decides, never a substring of the message.** The message quotes back
+    caller-supplied resource names, so a substring reader calls a `NoSuchBucket` on a bucket named
+    `access-denied-logs` a permission failure, and the mirror image hides a real denial whose
+    message happens to contain `NoSuchBucketPolicy`. Both directions are pinned in
+    `tests/suites/awscli.sh`, and the naive spelling was measured taking 21 assertions red.
+  - **`region_not_enabled` and `endpoint_unreachable` are kept apart deliberately.** A non-enabled
+    opt-in region can present as either, and labelling a genuine network failure "region off" is a
+    confident wrong answer where an honest "could not reach it" is available.
+  - **A failure returns 1, never the CLI's own 252-255**, which are outside tension 14's frozen
+    0-5 contract; the raw status is kept in `SCOURSH_AWS_RO_STATUS`.
+- **Never write `body=$(aws_ro ...)`.** A command substitution is a subshell, so every outcome
+  global is set in a process that then exits and the caller reads the values from before the call -
+  which reintroduces the whole gap above through the calling convention alone. Use `aws_ro_into
+  FILE ...` or a plain `aws_ro ... >file`. Same subshell hazard `core_capture` documents for `die`.
+- **A truncated `list-*` must never read as a complete one.** `--output json` hands back one page
+  plus a continuation token for any operation the CLI has no paginator for; `aws_ro` detects that
+  and reports `truncated`, and `aws_ro_paged DIR TOKEN_FLAG SERVICE OP ...` walks the pages into
+  one file each. Three readings fail in the direction that reads as a pass and are each pinned:
+  `"NextToken": null` is the LAST page (AWS emits it there), `"IsTruncated": false` is not
+  truncation, and a bare `"NextToken"` string ELEMENT of an array is content - detection is on a
+  quoted key FOLLOWED BY A COLON, which is what tells the two apart. `TOKEN_FLAG` is the caller's
+  because which flag resumes an operation is a fact about that operation, and nothing here merges
+  page JSON, because which key holds the list is another such fact.
+- **The response cache is `$SCRATCH/awscache/<sha256(service|region|account|op|args)>.json`**
+  (tension 16's fourth piece of state): mktemp-then-`mv` in the same directory, a per-key mutex with
+  a RE-CHECK inside it, and **only successful responses are cached** - caching a throttle would
+  replay a transient condition as a permanent hole for the rest of the run. `aws_ro_identity_forget`
+  drops the cache, and that is required for correctness rather than tidiness: identity resolution is
+  the one call whose key cannot carry an account (the account is what it resolves), so after an
+  assume-role the new principal's `sts get-caller-identity` hashes identically to the old one's and
+  is served straight back. Measured; the `account` key component is belt-and-braces beside it.
+- **A fixture-driven check test that varies the response for an IDENTICAL call must reset the
+  cache, and `tests/lib/aws-fixtures.sh`'s `aws_fixture_response_set` is where that lives.** The
+  stub `aws` deliberately does not inspect service/operation/args - one fixture file is one canned
+  response - so the fixture's identity is the `AWS_FIXTURE_RESPONSE` variable, while the cache keys
+  on `sha256(service|region|account|op|args)`, which is byte-identical across a known-bad and a
+  known-good case calling the same operation. Setting the variable alone serves the second case the
+  FIRST case's body, so a known-good fixture is judged against known-bad bytes and the check reports
+  a finding its own fixture does not contain - measured, `tests/suites/aws-fixtures.sh`'s known-good
+  case went red the moment the cache landed. That is not a cache defect (in a real run two identical
+  calls genuinely have one answer, which is what tension 16 is for); it is a property of a harness
+  whose response varies under a fixed key, which is why the reset sits in the harness every step-6
+  check's own suite copies from rather than in one suite. `SCOURSH_AWS_CACHE=0` disables the cache
+  outright, but prefer the setter: a suite that wants to prove the cache itself still can.
+- **`--profile` and `--region` are now REACHABLE and still not WIRED.** `aws_ro_use_profile` /
+  `aws_ro_use_region` set the ambient values and `aws_ro` applies whichever the caller did not
+  supply, never duplicating a flag the caller passed (two `--region`s makes the winner a property of
+  the CLI's argument parser). `scan.sh`'s `SCAN_FLAGS[profile]` still has zero readers, so
+  `--profile staging` end to end is `modules/cloud/aws/run.sh`'s to close - the defect is narrowed
+  to one wiring site, not fixed.
+- **`sts get-caller-identity` needs NO entry in `tests/aws-readonly-allow.txt`** - the frozen `get`
+  prefix already admits it, and an entry no code needs is what the lint's check 4 exists to reject.
+  That file is still deliberately absent and is seeded by the `--assume-role` PR, not before.
 - `tests/lint-aws-readonly.sh` gained an optional scan-root and allow-file override (used only by
   its own meta-test) and three real fixes, found while proving it fails on a planted mutating call:
   check 3 used to accept ANY `readonly`-declared variable regardless of what its literals were,
@@ -3087,6 +3153,7 @@ Recorded because the review rounds found several confidently-stated shell facts 
 - **The exit status of `var=$(cmd)` IS `cmd`'s, so under `set -e` a bare assignment from a command substitution is an abort waiting for its first failure** - and where the command is a *probe* of something transient, that failure is a race rather than an error, so it shows up in production and never in a test. Measured in `tests/run-tests.sh`'s shellcheck watchdog: `rss_kb=$(ps -o rss= -p "$pid" 2>/dev/null)` sampled a process the loop had just confirmed alive with `kill -0`, but a `shellcheck` finishing in that window made `ps` exit 1, which took the whole stage down past its own roll-up and verdict - so 9 of 130 files came back unmeasured with the messages explaining them never printed. Two stub files never lose that race; 130 real ones lose it almost every run. Write `|| var=` (or `|| true`) on any assignment whose command is allowed to fail, and be aware `2>/dev/null` silences the *message*, not the *status* - it is what makes this shape look safe. The same applies to `local var=$(cmd)`, in the opposite direction and worse: `local` is itself a command, so its own status wins and the failure is swallowed silently instead.
 - Bash resets trapped `EXIT` actions in subshells. `xargs -P` workers are fresh processes and DO run them.
 - A side-effecting function called as `$(f)` runs in a subshell and its writes are discarded. `occurrence_next` and `worker_id_set` therefore SET a variable rather than printing one; getting this wrong silently collapses every repeated match onto one fingerprint.
+- **A `*_set VARNAME` helper must name every one of its own locals with a `__` prefix**, because `local` SHADOWS: a helper whose internal variable happens to share the caller's chosen output name writes to its own copy, and the caller reads a variable that was never set. Measured on `aws_ro_account_id_set`, whose internal `local acct` silently defeated `aws_ro_account_id_set acct` - under `set -u` that surfaced as an unbound-variable abort in the CALLER, pointing at a line that was correct. `run_fact_first_set` already used the prefix for this reason; every setter in `lib/awscli.sh` now does.
 - **This project's own `"${arr[@]+"${arr[@]}"}"` empty-array guard (tension 24) does NOT extend to the KEYS form.** `"${!arr[@]+"${!arr[@]}"}"` on a genuinely empty associative array yields ONE empty-string element under bash 5.x, not zero - `for k in "${!arr[@]+"${!arr[@]}"}"; do ...; done` then runs its body once with `k=''`, and `${arr[$k]}`/`arr[$k]=...` on that empty key dies "bad array subscript". Measured building the GUIDE-03 guided-menu flow (`scan.sh`'s `_scan_guide_run`). Every existing associative-array key loop in this tree (`grep -n 'for .* in "\${!'`) already uses the bare, unguarded `"${!arr[@]}"` for this reason - `${!arr[@]}` on an empty array is fine under `set -u` on its own, and needs no `+` guard at all. Only the VALUES form, `"${arr[@]}"`, needs the guard.
 - BSD awk evaluates the source constant `0x80` as `0`, so hex literals are a GNU extension. The UTF-8 validator is pure bash for that reason.
 - Bash's `=~` uses the system regcomp, which on macOS/BSD supports none of `\b`, `\w`, `\s`, `\d`. `grep -E` and `rg` support all four on both userlands. `redact()` therefore routes through the engine wrapper rather than matching in-process.

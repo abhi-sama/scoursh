@@ -66,7 +66,7 @@ _example_check_s3_public_read_acl() {
 printf '\n-- the harness: known-bad flags, known-good does not, fully offline --\n'
 # ---------------------------------------------------------------------------
 t_case 'a bucket ACL granting AllUsers is flagged'
-AWS_FIXTURE_RESPONSE=$(aws_fixture_path example-s3-public-read-acl bad)
+aws_fixture_response_set "$(aws_fixture_path example-s3-public-read-acl bad)"
 if _example_check_s3_public_read_acl demo-bucket; then
   assert_eq EXAMPLE-S3-PUBLIC-READ-ACL "$(finding_get check_id)" \
     'the finding carries the check_id the reference check sets'
@@ -77,7 +77,7 @@ else
 fi
 
 t_case 'the identical bucket with a private ACL is not flagged'
-AWS_FIXTURE_RESPONSE=$(aws_fixture_path example-s3-public-read-acl good)
+aws_fixture_response_set "$(aws_fixture_path example-s3-public-read-acl good)"
 rc=0
 _example_check_s3_public_read_acl demo-bucket || rc=$?
 assert_eq 1 "$rc" 'known-good fixture produces no finding'
