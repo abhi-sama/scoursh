@@ -4,7 +4,7 @@
 steps. Steps do not always land in strict numeric order - anything with no dependency on a blocked
 step is pulled forward when it's ready - so "current position" below is a snapshot of what's
 actually landed, not a claim that steps finish in order.
-The fullest running account lives in [`CLAUDE.md`](CLAUDE.md)'s "Build order and where we are"
+The fullest running account lives in [`AGENTS.md`](AGENTS.md)'s "Build order and where we are"
 section, and the generated module status block it carries is the mechanically checked part of it.
 This file is a shorter, reader-facing summary of the same information, and is hand-maintained
 (see [Maintenance note](#maintenance-note-this-file-is-not-generated) at the end).
@@ -45,27 +45,38 @@ This file is a shorter, reader-facing summary of the same information, and is ha
   `scan.sh <cmd> --format <fmt>` writes exactly the artifacts `<fmt>` implies; `findings.jsonl` and
   `run.json` are written on every run regardless, as mandatory per-run records rather than
   `--format`-selectable artifacts.
-  The no-`--format` default is unchanged (all five artifacts, same as before).
+  The no-`--format` default is unchanged (all four selectable formats, same as before).
   `scan.sh <command> --help` now prints that command's own accepted flags (generated from the
   parser's own flag table, so it cannot list a flag the parser would reject) and a plainly-stated
   build status, derived from the same on-disk check `scan_dispatch` itself uses wherever one exists.
+- **`--format audit` - a fifth, opt-in format value.** `report_audit` writes `report-audit.html`
+  alongside `report.html`, never replacing it: a per-category (sast/sca/iac/dast/cloud) coverage
+  report that lists every registered check in exactly one of four states - found something, ran and
+  found nothing, did not run (with the recorded reason), or unaccounted - with full not-covered
+  detail rather than a count alone, so a registered-but-silent check can never read as "clean."
+- **Step 7 (`state/` - persistent coverage tracking) is complete.** STATE-01 through STATE-08 have
+  all landed (see [`docs/STEP7-STATE-PLAN.md`](docs/STEP7-STATE-PLAN.md)'s own status table): every
+  normal run persists `state/<run-id>.json` and automatically classifies findings
+  `new`/`recurring`/`fixed`/`unknown` against the prior run, `scan.sh diff --against DIR` does real
+  classification against a named prior run, `config/baseline.json` (or `--baseline FILE`) suppression
+  is live, and `--fail-on-new` now really is a carve-out - it gates on `status == new` only when the
+  diff was usable, and falls back to every finding otherwise - rather than a synonym for `--fail-on`.
+  `report --from DIR` (regenerating reports from a prior run's own findings, distinct from producing
+  them during a scan) is not part of this and remains unbuilt.
+- **Guided mode is complete.** GUIDE-01 through GUIDE-07 have all landed (see
+  [`docs/STEP-GUIDE-PLAN.md`](docs/STEP-GUIDE-PLAN.md)'s own status section): a bare `scan.sh`, or
+  `scan.sh <command> --guided`, walks an operator through composing a real command - including the
+  DAST target/intensity/affirmation flow - and `--print-command` prints the exact equivalent
+  non-interactive invocation, verified byte-identical to what "Run it" actually executes. `cloud` is
+  the one surface guided mode refuses outright, since `modules/cloud/` does not exist.
 
 ## Not yet started
 
 Ordered by priority, highest first.
-With step 5 (DAST) now complete, persistent run state is the top priority feature, ahead of the
-compliance report and live cloud scanning. The SARIF emitter (step 10's other deliverable) has
-already landed in full - see below.
+With step 5 (DAST) and step 7 (persistent run state) both complete, the compliance report is the top
+priority feature, ahead of live cloud scanning.
 
-1. **Step 7 (`state/` - persistent coverage tracking)** - needed before `--baseline` suppression and
-   the `diff`/`report` subcommands do real work.
-   The two subcommands no-op with a stated reason in `run.json`, while `--baseline` records nothing
-   at all (see Known defects below).
-   Of `docs/STEP7-STATE-PLAN.md`'s four build-order gate items, three (SAST, SCA/IaC, DAST) are now
-   cleared; the fourth - step 6, which supplies the `account-region` coverage-cell producer tension
-   12's classification table needs - remains open, so step 7 is not fully unblocked yet either way.
-   No STATE-0x ticket has been picked up.
-2. **Step 10 (SARIF output + compliance report)** - the SARIF half is **done**: `--format sarif`
+1. **Step 10 (SARIF output + compliance report)** - the SARIF half is **done**: `--format sarif`
    writes a complete, schema-validated SARIF 2.1.0 document (`report_sarif`, SARIF-01 through
    SARIF-06) - `tool.driver`/`rules[]`/`artifacts[]`/`invocations[]` and a fully-mapped
    `runs[0].results[]` carrying this run's actual findings. What remains of step 10 is the CIS/OWASP
@@ -78,9 +89,9 @@ already landed in full - see below.
    step 6 nor step 7; the compliance report's OWASP half is likewise unblocked while only its CIS half
    waits on step 6; and the `--fail-on` CI gate §13 item 10 also names is **already shipped in full**
    and carries no ticket.
-   Its position at number 2 here, for what is left of it, is therefore a priority choice, not a
+   Its position at number 1 here, for what is left of it, is therefore a priority choice, not a
    technical block.
-3. **Step 6 (live cloud / CSPM scanning)** - `scan.sh cloud` is a no-op today, with or without
+2. **Step 6 (live cloud / CSPM scanning)** - `scan.sh cloud` is a no-op today, with or without
    `--live`.
    There is no `modules/cloud/`, so the dispatch records a `not_yet_built` coverage reduction
    whichever form is used, and all `--live` adds is a check that the `aws` CLI is installed.
@@ -90,29 +101,6 @@ already landed in full - see below.
    `docs/STEP6-CLOUD-PLAN.md`'s own build-order gate is now fully cleared too (step 3's tail and all
    of step 5 have both landed); it is placed last here on priority, not on any remaining technical
    block.
-4. **Guided interactive mode** (a bare `scan.sh`, or `scan.sh <command> --guided`) - a mode that asks the operator what to scan and
-   composes the equivalent flags, with a DAST affirmation flow before conservative request limits are
-   lifted. It is not one of `docs/DESIGN.md` §13's ten build steps and carries no build-order gate at
-   all (see [`docs/STEP-GUIDE-PLAN.md`](docs/STEP-GUIDE-PLAN.md)'s Status section), but it adds no new
-   scan coverage or output format of its own, only an easier way to invoke what already exists, so it
-   sits last here on priority despite being the most fully unblocked item in this list.
-   **GUIDE-01 through GUIDE-07 have all landed; the guided track is complete.** GUIDE-01
-   (`lib/guide.sh` - the prompt gate, the signal trap, the menu primitives), GUIDE-02
-   (`--guided`/`--print-command` flags, `scan_main` routing, the `_scan_check_required` split), GUIDE-03
-   (the G1 scan-type menu, the G2 local-surface follow-ups, the G8 CI gate), GUIDE-04 (the G3 DAST
-   target menu, G5 intensity menu, and the G6 affirmation - `--requests-per-second`/`--request-budget`
-   now exist as real flags too), GUIDE-05 (the `config/scope.conf` record writer,
-   `guide_g4_authorize_target`), GUIDE-06 (the G9 review/run screen, wiring both the `_scan_guide_run`
-   -> `guide_dast_configure` and the G3 "Authorise a new target" -> `guide_g4_authorize_target`
-   hand-offs, `--print-command`, and run.json's new `config` object), and GUIDE-07
-   (`docs/USAGE.md`'s "Guided mode" section: the five prompt conditions, the exit code for every
-   refusal path, and the flag-equivalence table, with new Status rows for `--guided`, `--print-command`,
-   `--requests-per-second` and `--request-budget`; `config/scanner.conf.example` documents that
-   `--guided`/`--print-command` have no config-file key of their own). A guided run can now compose
-   AND RUN a local or DAST command end to end through the real menu, with the printed command
-   guaranteed (by a byte-identical round-trip test) to be exactly what "Run it" executes. `cloud` is the
-   one surface guided mode refuses outright rather than configuring, since `modules/cloud/` does not
-   exist yet - see `docs/STEP-GUIDE-PLAN.md`'s own Status section for the verified, current detail.
 
 Outside that ordering:
 
@@ -128,26 +116,23 @@ These are not unbuilt steps.
 They are features that ship today and are wrong, incomplete, or inert, and each one has to be
 scheduled on its own.
 
-- **Two flags are accepted and do nothing.**
-  `--baseline FILE` is parsed and never read, and a path that does not exist is accepted with no
-  error, no warning, and no record in `run.json` (step 7's gap).
-  `--jobs N` is documented with a default of 4 and changes nothing; every scan is single-worker and
-  the SAST/IaC modules record `single_worker_no_parallel_scan_yet` (no `scan.sh` module spawns
-  `xargs -P` workers today, though `lib/http.sh`'s rate limiter, budget and breaker are already built
-  to be safe under them once one does).
-  (`--authed` used to be a third such flag; it no longer is - DAST's `auth.sh`/`crawl.sh` and every
+- **`--jobs N` is accepted and changes nothing about worker parallelism.**
+  It is documented with a default of 4; every scan is single-worker regardless, and the SAST/SCA/IaC
+  modules each record `single_worker_no_parallel_scan_yet` (no `scan.sh` module spawns `xargs -P`
+  workers today). The one exception is DAST: `lib/http.sh`'s tension-16 in-flight connection ceiling
+  reads the resolved `jobs` value as how many simultaneous connections a target may see, held to 4
+  without `--i-own-target` - so `--jobs` is live there as a concurrency ceiling even though it does
+  not, and cannot yet, spawn additional workers.
+  (`--authed` used to be a second such flag; it no longer is - DAST's `auth.sh`/`crawl.sh` and every
   authenticated check now read it, and `scan.sh` records it as `run.json`'s `authorization.authed`
-  field.)
-  (`--format` used to be a fourth: it was parsed and the resolved format list was then discarded, so
+  field. `--baseline FILE` and `--fail-on-new` used to be a third and fourth; both are now live - see
+  "Recently fixed" below.)
+  (`--format` used to be a fifth: it was parsed and the resolved format list was then discarded, so
   every run wrote the same five artifacts whatever was asked for.  Fixed - see "Landed" above.
   `findings.jsonl` and `run.json` are mandatory per-run records rather than one of the four
   `--format` values, and are written on every run regardless of what `--format` asked for; `sarif`
   selects `report_sarif` like every other value and, as of SARIF-06, writes a complete document -
   see "Recently fixed" below and [`docs/USAGE.md`'s SARIF output section](docs/USAGE.md#sarif-output).)
-- **`--fail-on-new` is currently a tautology.**
-  Every finding is created with `status=new`, because the diff classification that would mark
-  anything otherwise belongs to step 7, so `--fail-on-new` behaves identically to plain
-  `--fail-on`.
 - **`--paranoid` has a real macOS backend, but no macOS *guarantee*.**
   Of its three connection-observer backends, `ss` and `strace` are Linux-only; `lsof` was added as a
   third, measured-usable backend specifically so `--paranoid` runs on macOS too, and it is a genuine
@@ -162,6 +147,16 @@ scheduled on its own.
 Entries that used to sit under "Known defects" above, kept for a release or two so a reader who knew the
 old behaviour can see what replaced it.
 
+- **`--baseline FILE` was parsed and never read; `--fail-on-new` was a tautology.**
+  Both needed the step 7 persistent-state work, which has since landed in full
+  (`docs/STEP7-STATE-PLAN.md`, STATE-01 through STATE-08). `--baseline FILE` (or the default
+  `config/baseline.json`) now really suppresses a matching finding by fingerprint - `suppressed: true`
+  plus its reason, never a deletion, and excluded from every count and from `--fail-on`/
+  `--fail-on-new`; an explicit path that does not exist is now a real error (`exit 4`) rather than a
+  silent no-op. `--fail-on-new` now gates on `status == new` only when this run's diff against the
+  prior one was usable, and falls back to every finding when it was not (a first run, a schema
+  mismatch, or a `scan_root_id` mismatch), rather than behaving identically to `--fail-on` in every
+  case.
 - **`--format sarif` wrote a SARIF document with no findings in it.**
   `report_sarif` used to write the document skeleton only - `tool.driver`/`rules[]`/`artifacts[]`/
   `invocations[]` - with `runs[0].results[]` always empty, because the per-finding mapping (SARIF-04)
