@@ -163,7 +163,15 @@ _dast_jwt_phase() {
   # nothing to forge from.  Recorded, not silent: "no JWT check ran" is a fact
   # about this run's coverage.
   if [[ $authed != true ]]; then
-    run_record coverage_reduction "module=dast reason=authed_not_requested check=jwt target=$target - the JWT weakness checks replay a real session token, and --authed was not given, so no token was acquired and none was tested. No forged token was sent."
+    # Name the ids, so `lib/report.sh`'s coverage report can attribute this
+    # reason to them instead of leaving them in its `unaccounted` residual
+    # (docs/DESIGN.md §15).  Narrowed to what this run actually SELECTED:
+    # an id the filter chain already dropped was declared once by
+    # lib/checks.sh:353 and naming it twice corrupts that report's own
+    # arithmetic - see dast_selected_narrow (modules/dast/engine.sh).
+    local _nc='DAST-JWT-SIG_NOT_VERIFIED-01 DAST-JWT-ALG_NONE-01 DAST-JWT-EMPTY_HMAC-01 DAST-JWT-WEAK_HMAC-01 DAST-JWT-ALG_CONFUSION-01'
+    declare -F dast_selected_narrow >/dev/null && dast_selected_narrow _nc
+    run_record coverage_reduction "module=dast reason=authed_not_requested check=jwt target=$target${_nc:+ checks=[$_nc]} - the JWT weakness checks replay a real session token, and --authed was not given, so no token was acquired and none was tested. No forged token was sent."
     run_record coverage_gap "dast jwt: --authed was not given for target '$target', so no session token exists to derive alg:none/weak-HMAC/algorithm-confusion variants from. The JWT verification of this target was not tested; a clean result is the absence of a test, not the absence of a problem."
     return 0
   fi

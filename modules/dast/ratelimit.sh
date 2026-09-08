@@ -143,7 +143,15 @@ _dast_ratelimit_phase() {
   _http_effective_rps_milli_set
   local eff_rps_milli=$_HTTP_EFF_RPS_MILLI
   if (( eff_rps_milli <= 4000 )); then
-    run_record coverage_reduction "module=dast reason=burst_rate_not_raised check=ratelimit target=$target rate=$(_http_rps_render "$eff_rps_milli") - this run IS affirmed, but 'requests-per-second' is still $(_http_rps_render "$eff_rps_milli"), at or below the 4/s the affirmation exists to lift. The scanner would have been the bottleneck rather than the target, so no burst was sent."
+    # Name the ids, so `lib/report.sh`'s coverage report can attribute this
+    # reason to them instead of leaving them in its `unaccounted` residual
+    # (docs/DESIGN.md §15).  Narrowed to what this run actually SELECTED:
+    # an id the filter chain already dropped was declared once by
+    # lib/checks.sh:353 and naming it twice corrupts that report's own
+    # arithmetic - see dast_selected_narrow (modules/dast/engine.sh).
+    local _nc='DAST-RATE-NO_THROTTLE-01 DAST-RATE-NO_RETRY_AFTER-01'
+    declare -F dast_selected_narrow >/dev/null && dast_selected_narrow _nc
+    run_record coverage_reduction "module=dast reason=burst_rate_not_raised check=ratelimit target=$target${_nc:+ checks=[$_nc]} rate=$(_http_rps_render "$eff_rps_milli") - this run IS affirmed, but 'requests-per-second' is still $(_http_rps_render "$eff_rps_milli"), at or below the 4/s the affirmation exists to lift. The scanner would have been the bottleneck rather than the target, so no burst was sent."
     run_record coverage_gap "dast ratelimit: the burst probe did NOT run on target '$target'. The '--i-own-target' affirmation LIFTS the 4 requests/second ceiling; it does not raise the rate, and this run is still configured at $(_http_rps_render "$eff_rps_milli") requests/second. A burst throttled by the scanner itself cannot show whether the target throttles. Raise 'requests-per-second' in config/scanner.conf (rules/RULE-FORMAT.md §9.6.1) to a rate you are willing to send at this target."
     return 0
   fi

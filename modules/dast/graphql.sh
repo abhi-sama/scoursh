@@ -181,7 +181,15 @@ _dast_graphql_phase() {
   # not look for GraphQL" are different facts and an operator reading a clean
   # report cannot tell them apart unless the run says which one happened.
   if (( ${#candidates[@]} == 0 )); then
-    run_record coverage_reduction "module=dast reason=no_graphql_endpoint check=graphql target=$target inventory=$epf - the endpoint inventory carries no GraphQL or AppSync endpoint, so no introspection query was sent. Nothing was requested."
+    # Name the ids, so `lib/report.sh`'s coverage report can attribute this
+    # reason to them instead of leaving them in its `unaccounted` residual
+    # (docs/DESIGN.md §15).  Narrowed to what this run actually SELECTED:
+    # an id the filter chain already dropped was declared once by
+    # lib/checks.sh:353 and naming it twice corrupts that report's own
+    # arithmetic - see dast_selected_narrow (modules/dast/engine.sh).
+    local _nc='DAST-GQL-INTROSPECTION-01'
+    declare -F dast_selected_narrow >/dev/null && dast_selected_narrow _nc
+    run_record coverage_reduction "module=dast reason=no_graphql_endpoint check=graphql target=$target${_nc:+ checks=[$_nc]} inventory=$epf - the endpoint inventory carries no GraphQL or AppSync endpoint, so no introspection query was sent. Nothing was requested."
     run_record coverage_gap "dast graphql: no GraphQL or AppSync endpoint was identified for target '$target' in the endpoint inventory (docs/INVENTORY-FORMAT.md), so introspection was not tested. scoursh identifies one by an ingested GraphQL schema, a GraphQL media type, the managed-GraphQL DNS shape, or the conventional mount path; a GraphQL API served somewhere else is invisible to a static crawl and needs an OpenAPI/GraphQL schema or a HAR capture in config/discovery.conf to be seen (docs/DESIGN.md §7.5). The absence of a GraphQL finding here is the absence of a test, not the absence of a problem."
     return 0
   fi

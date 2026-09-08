@@ -313,7 +313,15 @@ _dast_ssti_phase() {
 
   inject_inventory_load "$epf" "$pf" ssti
   if (( _INJ_N == 0 )); then
-    run_record coverage_reduction "module=dast reason=no_parameter_inventory target=$target - the crawler wrote no injectable parameter (docs/INVENTORY-FORMAT.md), so server-side template injection had no request field to test. Feed a spec/HAR (config/discovery.conf) or run the crawl against an application with discoverable parameters."
+    # Name the ids, so `lib/report.sh`'s coverage report can attribute this
+    # reason to them instead of leaving them in its `unaccounted` residual
+    # (docs/DESIGN.md §15).  Narrowed to what this run actually SELECTED:
+    # an id the filter chain already dropped was declared once by
+    # lib/checks.sh:353 and naming it twice corrupts that report's own
+    # arithmetic - see dast_selected_narrow (modules/dast/engine.sh).
+    local _nc='DAST-INJ-SSTI_BRACES-01 DAST-INJ-SSTI_DOLLAR-01 DAST-INJ-SSTI_ERB-01 DAST-INJ-SSTI_SMARTY-01'
+    declare -F dast_selected_narrow >/dev/null && dast_selected_narrow _nc
+    run_record coverage_reduction "module=dast reason=no_parameter_inventory target=$target${_nc:+ checks=[$_nc]} - the crawler wrote no injectable parameter (docs/INVENTORY-FORMAT.md), so server-side template injection had no request field to test. Feed a spec/HAR (config/discovery.conf) or run the crawl against an application with discoverable parameters."
     run_record coverage_gap "dast ssti: target '$target' has no known request parameters (query/body/JSON/header/path), so no template-injection probe was sent. This is a coverage gap - nothing was tested - not a finding of safety."
     return 0
   fi

@@ -75,7 +75,15 @@ _dast_authz_phase() {
 
   # --- input 1: two live sessions ------------------------------------------
   if [[ $authed != true ]]; then
-    run_record coverage_reduction "module=dast reason=authed_not_requested check=authz target=$target - the object-level authorization checks compare what two authenticated identities can read, and --authed was not given, so no session was acquired and nothing was compared. No request was sent."
+    # Name the ids, so `lib/report.sh`'s coverage report can attribute this
+    # reason to them instead of leaving them in its `unaccounted` residual
+    # (docs/DESIGN.md §15).  Narrowed to what this run actually SELECTED:
+    # an id the filter chain already dropped was declared once by
+    # lib/checks.sh:353 and naming it twice corrupts that report's own
+    # arithmetic - see dast_selected_narrow (modules/dast/engine.sh).
+    local _nc='DAST-AUTHZ-IDOR-01 DAST-AUTHZ-CROSS_IDENTITY_READ-01 DAST-AUTHZ-EXCESSIVE_DATA-01 DAST-AUTHZ-OTHER_IDENTITY_DATA-01'
+    declare -F dast_selected_narrow >/dev/null && dast_selected_narrow _nc
+    run_record coverage_reduction "module=dast reason=authed_not_requested check=authz target=$target${_nc:+ checks=[$_nc]} - the object-level authorization checks compare what two authenticated identities can read, and --authed was not given, so no session was acquired and nothing was compared. No request was sent."
     run_record coverage_gap "dast authz: --authed was not given for target '$target', so the §7.4 object-level authorization (IDOR) and excessive-data-exposure checks did not run. They need two labelled identities in config/auth.conf (rules/RULE-FORMAT.md §9.6.2) and a run with --authed. A clean result here is the absence of a test, not the absence of a problem."
     return 0
   fi
