@@ -328,6 +328,13 @@ _dast_run_module() {
     # <id>` only once its own evaluation of that check has finished, never
     # before.
     _dast_record_coverage "$target" "$_dast_checks_run_before"
+
+    # The honesty net, LAST for this target - after every phase has had its
+    # chance to record its own, better reason, so this one only ever speaks for
+    # a check no phase spoke for.  Placed beside _dast_record_coverage rather
+    # than after the target loop for the same reason that one is: the residual
+    # is a statement about a target, and `target` is DAST's coverage cell.
+    dast_record_unaccounted "$target"
   done
 
   # The same five calls, in the same order, that modules/sast/run.sh and
