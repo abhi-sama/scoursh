@@ -159,6 +159,7 @@ report_count() {
   _RPT_LIVE=0
   _report_dast_injection_gap_state "$rundir"
   _report_dast_surface_state "$rundir"
+  _report_owasp_state "$rundir"
   [[ -s $rundir/findings.fields ]] || return 0
   local sev mod st ow
   while IFS= read -r line; do
@@ -203,6 +204,262 @@ report_count() {
       st2=${ledger_line%%$'\x1f'*}
       _RPT_STATUS[$st2]=$(( ${_RPT_STATUS[$st2]:-0} + 1 ))
     done <"$rundir/meta/diff_absent"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 1a. OWASP Top 10 compliance view (docs/STEP10-SARIF-PLAN.md Track B,
+#     COMPLIANCE-01 / COMPLIANCE-02)
+# ---------------------------------------------------------------------------
+# COMPLIANCE-01: rules/RULE-FORMAT.md §9.1's `owasp` field row promises "the
+# report expands it to the full label"; nothing implemented that until this
+# section.  `data/owasp-categories.conf` (§9.6.6) is the vendored table, read
+# from disk exactly as `data/severity-rubric.conf` is (lib/findings.sh
+# section 8) rather than compiled into a `case`, for the identical reason:
+# reviewable and diffable against the published standard.
+declare -gA _OWASP_LABEL=()
+_OWASP_LABEL_LOADED=0
+
+# The path argument exists for the fixture harness and test suites, exactly
+# as rubric_load's does; shellcheck's SC2120 disagreement across versions is
+# the same one documented on rubric_load, so it is silenced the same way.
+# shellcheck disable=SC2120
+owasp_categories_load() {
+  local path=${1:-$SCOURSH_INSTALL_ROOT/data/owasp-categories.conf}
+  _OWASP_LABEL=()
+  _OWASP_LABEL_LOADED=1
+  [[ -r $path ]] || return 0
+  records_load "$path" owasp-category owasplbl \
+    || die "$SCOURSH_EXIT_INPUT" "data/owasp-categories.conf failed to parse"
+  local n i id cat
+  n=$(records_count owasplbl)
+  for (( i = 0; i < n; i++ )); do
+    id=$(records_id owasplbl "$i")
+    cat=$(records_field owasplbl "$i" category)
+    _OWASP_LABEL[$id]=$cat
+  done
+}
+
+# owasp_category_label ID - expands an `owasp` field value to its published
+# category name.  `none` is a legal, non-missing value (a check that
+# genuinely maps to no OWASP category) and always expands to "Not
+# categorised" - never looked up in the table, per §9.6.6's own text.  An id
+# with no row (a different edition's id, or one this table has simply never
+# been given a row for) renders as the bare id plus a fixed, visible reason:
+# never blank, never an invented label, so a reader scanning the report
+# cannot mistake "this table has never heard of this category" for "this
+# category was assessed and is clean".
+owasp_category_label() {
+  local id=${1:-none}
+  (( _OWASP_LABEL_LOADED )) || owasp_categories_load
+  if [[ $id == none ]]; then
+    printf '%s' 'Not categorised'
+    return 0
+  fi
+  if [[ -n ${_OWASP_LABEL[$id]+set} ]]; then
+    printf '%s' "${_OWASP_LABEL[$id]}"
+    return 0
+  fi
+  printf '%s (no published label on file for this id)' "$id"
+}
+
+# owasp_category_known ID - `known` (has a table row), `none` (the fixed
+# "not categorised" literal) or `unknown` (matches E026 but has no row).
+# Callers use this rather than re-deriving it from owasp_category_label's
+# output, which is prose meant for a report and not meant to be parsed back.
+owasp_category_known() {
+  local id=${1:-none}
+  (( _OWASP_LABEL_LOADED )) || owasp_categories_load
+  if [[ $id == none ]]; then
+    printf 'none'
+  elif [[ -n ${_OWASP_LABEL[$id]+set} ]]; then
+    printf 'known'
+  else
+    printf 'unknown'
+  fi
+}
+
+# COMPLIANCE-02: the check_id -> owasp registry map, across every module that
+# ships an on-disk *.rules registry (sast/iac/dast/cloud; sca ships none, by
+# design - modules/sca/run.sh's own header - and simply contributes nothing
+# here, exactly as it contributes nothing to `_sarif_build_registry`/
+# `_report_coverage_registry_load`, the two existing precedents this mirrors).
+# Memoized on $SCOURSH_INSTALL_ROOT for the identical reason
+# `_report_coverage_registry_load` above is: every *.rules file's content is
+# fixed for the life of a process, and `scan.sh all` calls report_all once per
+# module.
+declare -gA _RPTOW_CHECK_OWASP=()
+declare -g _RPTOW_REGISTRY_LOADED_ROOT=''
+_report_owasp_registry_load() {
+  if [[ -n ${_RPTOW_REGISTRY_LOADED_ROOT:-} && ${_RPTOW_REGISTRY_LOADED_ROOT} == "${SCOURSH_INSTALL_ROOT:-}" ]]; then
+    return 0
+  fi
+  local -a _rptow_saved_sets=("${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}")
+  _RPTOW_CHECK_OWASP=()
+  local m set n i id ow
+  for m in sast sca iac dast cloud; do
+    checks_registry_load "$m" "_rptowreg_$m"
+    for set in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
+      n=$(records_count "$set")
+      for (( i = 0; i < n; i++ )); do
+        id=$(records_id "$set" "$i")
+        [[ -n $id ]] || continue
+        ow=$(records_field_or "$set" "$i" owasp none)
+        _RPTOW_CHECK_OWASP[$id]=$ow
+      done
+    done
+  done
+  CHECKS_REGISTRY_SETS=("${_rptow_saved_sets[@]+"${_rptow_saved_sets[@]}"}")
+  _RPTOW_REGISTRY_LOADED_ROOT=${SCOURSH_INSTALL_ROOT:-}
+}
+
+# _report_owasp_state RUNDIR - the per-run facts a compliance view needs to
+# tell three things apart that a bare finding count cannot (Appendix B; this
+# ticket's own acceptance criteria): a category that is in scope and
+# genuinely produced no finding, a category no check in this build targets
+# at all, and a category whose checks exist but were filtered out of THIS
+# run by the tension-15 chain (--profile-scan/--intensity/--allow-intrusive).
+# All three are read from facts already written - `meta/checks_run` and
+# `meta/skipped_checks` (`check=<id> skipped_by=<reason>`,
+# lib/checks.sh:checks_record_run_selection) - rather than a fourth counter
+# invented for this view, and rather than a hardcoded per-category tier
+# transcribed from Appendix B's own prose: Appendix B was written before
+# DAST-28 seeded two A04 checks, so a hardcoded "A04 is out of scope" reads
+# as correct against the design doc and false against the shipped registry -
+# this view answers from the registry as it stands today, and Appendix B's
+# own prose is quoted separately, as what it is: the tool's own documented
+# design-level coverage claim, not a live measurement.
+declare -gA _RPTOW_REG_HAS=() _RPTOW_RAN=() _RPTOW_FILTERED_SET=() _RPTOW_LINES=()
+_report_owasp_state() {
+  local rundir=$1
+  (( _OWASP_LABEL_LOADED )) || owasp_categories_load
+  _report_owasp_registry_load
+  _RPTOW_REG_HAS=() ; _RPTOW_RAN=() ; _RPTOW_FILTERED_SET=() ; _RPTOW_LINES=()
+
+  local cid ow
+  for cid in "${!_RPTOW_CHECK_OWASP[@]}"; do
+    ow=${_RPTOW_CHECK_OWASP[$cid]}
+    [[ $ow == none ]] || _RPTOW_REG_HAS[$ow]=1
+  done
+
+  local -A ran_ids=()
+  if [[ -r $rundir/meta/checks_run ]]; then
+    while IFS= read -r cid; do
+      [[ -n $cid ]] || continue
+      ran_ids[$cid]=1
+    done <"$rundir/meta/checks_run"
+  fi
+  # A bare `"${!ran_ids[@]}"` (never the `${arr[@]+alt}` guard idiom used for
+  # an INDEXED array elsewhere in this file) is what a genuinely empty
+  # associative array needs here: nested inside that guard, `${!ran_ids[@]}`
+  # on an empty associative array does not expand to zero words the way
+  # `${arr[@]}` does for an indexed one - it yields one spurious empty-string
+  # element, and `${_RPTOW_CHECK_OWASP[$cid]}` with `cid=''` is itself a bash
+  # "bad array subscript" error on an associative array (unlike a numeric
+  # one), not a harmless empty read. Measured directly by reproducing it.
+  for cid in "${!ran_ids[@]}"; do
+    [[ -n $cid ]] || continue
+    ow=${_RPTOW_CHECK_OWASP[$cid]:-}
+    [[ -n $ow && $ow != none ]] || continue
+    _RPTOW_RAN[$ow]=1
+  done
+
+  # `check=<id> skipped_by=<reason>` - only a category with NO check that ran
+  # is ever offered a "filtered" reason, so a category with a mix of a
+  # filtered check and a run one always reads as assessed (`_RPTOW_RAN`),
+  # never as filtered - the run genuinely did look at that category.
+  if [[ -r $rundir/meta/skipped_checks ]]; then
+    local line skid reason
+    while IFS= read -r line; do
+      [[ $line =~ ^check=([^\ ]+)\ skipped_by=(.*)$ ]] || continue
+      skid=${BASH_REMATCH[1]}
+      reason=${BASH_REMATCH[2]}
+      ow=${_RPTOW_CHECK_OWASP[$skid]:-}
+      [[ -n $ow && $ow != none ]] || continue
+      _RPTOW_FILTERED_SET["$ow|$reason"]=1
+    done <"$rundir/meta/skipped_checks"
+  fi
+
+  if [[ -s $rundir/findings.fields ]]; then
+    local fline fow
+    while IFS= read -r fline; do
+      [[ -n $fline ]] || continue
+      finding_decode "$fline"
+      [[ ${_DF[suppressed]:-false} == true ]] && continue
+      fow=${_DF[owasp]:-none}
+      if [[ -n ${_RPTOW_LINES[$fow]:-} ]]; then
+        _RPTOW_LINES[$fow]+=$'\n'"$fline"
+      else
+        _RPTOW_LINES[$fow]=$fline
+      fi
+    done <"$rundir/findings.fields"
+  fi
+}
+
+# _owasp_bucket ID - one of `findings` / `clean` / `out_of_scope` /
+# `filtered` / `not_run`, in that priority order.  `_RPT_OWASP` (report_count,
+# already run before this is ever consulted) supplies the live count.
+_owasp_bucket() {
+  local id=$1 count=${_RPT_OWASP[$1]:-0}
+  if (( count > 0 )); then
+    printf 'findings'
+  elif [[ -z ${_RPTOW_REG_HAS[$id]:-} ]]; then
+    printf 'out_of_scope'
+  elif [[ -n ${_RPTOW_RAN[$id]:-} ]]; then
+    printf 'clean'
+  else
+    local k
+    for k in "${!_RPTOW_FILTERED_SET[@]}"; do
+      [[ -n $k ]] || continue
+      if [[ $k == "$id|"* ]]; then
+        printf 'filtered'
+        return 0
+      fi
+    done
+    printf 'not_run'
+  fi
+}
+
+# _owasp_filtered_reasons ID - the distinct `skipped_by` reasons behind the
+# `filtered` bucket above, comma-joined, `LC_ALL=C` sorted for determinism
+# across two runs of the same fixture.
+_owasp_filtered_reasons() {
+  local id=$1 k reason out='' list
+  list=$(
+    for k in "${!_RPTOW_FILTERED_SET[@]}"; do
+      [[ -n $k ]] || continue
+      [[ $k == "$id|"* ]] && printf '%s\n' "${k#"$id|"}"
+    done | LC_ALL=C sort -u
+  )
+  while IFS= read -r reason; do
+    [[ -n $reason ]] || continue
+    if [[ -n $out ]]; then out+=", $reason"; else out=$reason; fi
+  done <<<"$list"
+  printf '%s' "$out"
+}
+
+# _owasp_render_order - every id `data/owasp-categories.conf` has a row for,
+# `LC_ALL=C` sorted (which is also correct numeric-id order: `A01:2021` <
+# `A02:2021` < ... < `A10:2021` lexically, since both fields are zero-padded),
+# followed by any id this run's own findings carry that the table has NEVER
+# heard of (drift, or a future edition) - never dropped, never reordered in
+# ahead of the canonical set. `none` is never in this list; callers render it,
+# if at all, as their own final, separately-labelled section.
+_owasp_render_order() {
+  (( _OWASP_LABEL_LOADED )) || owasp_categories_load
+  local k
+  if (( ${#_OWASP_LABEL[@]} > 0 )); then
+    printf '%s\n' "${!_OWASP_LABEL[@]}" | LC_ALL=C sort
+  fi
+  local -a extra=()
+  for k in "${!_RPT_OWASP[@]}"; do
+    [[ -n $k ]] || continue
+    [[ $k == none ]] && continue
+    [[ -n ${_OWASP_LABEL[$k]+set} ]] && continue
+    extra+=("$k")
+  done
+  if (( ${#extra[@]} > 0 )); then
+    printf '%s\n' "${extra[@]}" | LC_ALL=C sort -u
   fi
 }
 
@@ -634,6 +891,7 @@ report_md() {
       printf 'counts above and from the CI gate. They are still reported, never deleted.\n\n'
       _md_findings "$rundir" suppressed
     fi
+    _md_owasp_compliance "$rundir"
     _md_limitations "$rundir"
   } >"$rundir/report.md"
 }
@@ -753,6 +1011,72 @@ _md_findings() {
       printf '%s\n\n' "${_DF[remediation]}"
     fi
   done <"$rundir/findings.fields"
+}
+
+# `_md_owasp_compliance RUNDIR` - COMPLIANCE-02: report.md has no OWASP
+# section at all today; this adds one. Groups the findings themselves by
+# category (never merely counts them - `_html_summary`'s existing
+# `_RPT_OWASP` table already does that), and renders, per category, one of
+# three honestly distinct facts a bare "no findings" cannot tell apart:
+# assessed-and-clean, out-of-scope-by-design (no check anywhere in this
+# build targets it), or excluded from THIS run by --profile-scan/--intensity
+# (`_owasp_bucket`, section 1a above - built from `checks_run` and
+# `skipped_checks`, already written, never a hardcoded per-category tier).
+# SC2016: the Markdown code spans below are literal output, not command
+# substitution.
+# shellcheck disable=SC2016
+_md_owasp_compliance() {
+  local rundir=$1
+  printf '## OWASP Top 10 compliance\n\n'
+  printf '> docs/DESIGN.md Appendix B'\''s own honest summary: "strong automated\n'
+  printf '> coverage of the testable Top 10, explicit and labeled gaps on A04/A08/A09\n'
+  printf '> and the manual-review portion of A01 - not a substitute for a human pentest\n'
+  printf '> or an ASVS audit." That is the tool'\''s documented design-level claim. The\n'
+  printf '> table below is this run'\''s own status per category, measured from this\n'
+  printf '> run'\''s `checks_run`/`skipped_checks` records rather than copied from that\n'
+  printf '> prose, and will differ from it as coverage grows.\n\n'
+  local id label count bucket line
+  while IFS= read -r id; do
+    [[ -n $id ]] || continue
+    label=$(owasp_category_label "$id")
+    count=${_RPT_OWASP[$id]:-0}
+    bucket=$(_owasp_bucket "$id")
+    printf '### %s - %s\n\n' "$id" "$label"
+    case $bucket in
+      findings)
+        printf -- '- **%s** live finding(s) this run\n\n' "$count"
+        printf '| check | title | severity | status |\n|---|---|---|---|\n'
+        while IFS= read -r line; do
+          [[ -n $line ]] || continue
+          finding_decode "$line"
+          printf '| `%s` | %s | %s | %s |\n' \
+            "${_DF[check_id]}" "${_DF[title]}" "${_DF[severity]}" "${_DF[status]}"
+        done <<<"${_RPTOW_LINES[$id]:-}"
+        printf '\nSee [Findings](#findings) above for full detail and remediation.\n\n'
+        ;;
+      clean)
+        printf 'Assessed this run - no findings.\n\n' ;;
+      out_of_scope)
+        printf 'No check in this build of scoursh targets this category yet.\n\n' ;;
+      filtered)
+        printf 'Checks for this category exist but were excluded from this run (%s).\n\n' \
+          "$(_owasp_filtered_reasons "$id")" ;;
+      not_run)
+        printf 'Checks for this category exist but did not run this scan; no reason was recorded.\n\n' ;;
+    esac
+  done <<<"$(_owasp_render_order)"
+  if (( ${_RPT_OWASP[none]:-0} > 0 )); then
+    printf '### none - Not categorised\n\n'
+    printf -- '- **%s** live finding(s) this run map to no OWASP category\n\n' "${_RPT_OWASP[none]}"
+    printf '| check | title | severity | status |\n|---|---|---|---|\n'
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      finding_decode "$line"
+      printf '| `%s` | %s | %s | %s |\n' \
+        "${_DF[check_id]}" "${_DF[title]}" "${_DF[severity]}" "${_DF[status]}"
+    done <<<"${_RPTOW_LINES[none]:-}"
+    printf '\n'
+  fi
 }
 
 # `_md_zero_injection_banner` - the human-readable, top-of-report half of the
@@ -993,6 +1317,7 @@ report_html() {
     _html_head
     _html_summary "$rundir"
     _html_findings "$rundir"
+    _html_owasp_compliance "$rundir"
     _html_limitations "$rundir"
     _html_foot
   } >"$rundir/report.html"
@@ -1234,6 +1559,7 @@ _html_summary() {
   (( ${#_RPT_OWASP[@]} > 0 )) && printf '<li><a href="#by-owasp">By OWASP category</a></li>\n'
   printf '<li><a href="#findings">Findings (%s)</a></li>\n' "$_RPT_LIVE"
   (( _RPT_SUPPRESSED > 0 )) && printf '<li><a href="#accepted-risk">Accepted risk (%s)</a></li>\n' "$_RPT_SUPPRESSED"
+  printf '<li><a href="#owasp-compliance">OWASP Top 10 compliance</a></li>\n'
   printf '<li><a href="#limitations">Limitations and coverage</a></li>\n'
   printf '</ul></nav>\n'
   printf '<h2 id="severity">Severity</h2>\n<div class="tiles">\n'
@@ -1268,10 +1594,11 @@ _html_summary() {
     printf '</table></div>\n'
   fi
   if (( ${#_RPT_OWASP[@]} > 0 )); then
-    printf '<h2 id="by-owasp">By OWASP category</h2>\n<div class="scroll"><table><tr><th>category</th><th>findings</th></tr>\n'
+    printf '<h2 id="by-owasp">By OWASP category</h2>\n<div class="scroll"><table><tr><th>category</th><th>label</th><th>findings</th></tr>\n'
     while IFS= read -r k; do
       [[ -n $k ]] || continue
-      printf '<tr><td>%s</td><td>%s</td></tr>\n' "$(html_escape "$k")" "${_RPT_OWASP[$k]}"
+      printf '<tr><td>%s</td><td>%s</td><td>%s</td></tr>\n' \
+        "$(html_escape "$k")" "$(html_escape "$(owasp_category_label "$k")")" "${_RPT_OWASP[$k]}"
     done <<<"$(printf '%s\n' "${!_RPT_OWASP[@]}" | LC_ALL=C sort)"
     printf '</table></div>\n'
   fi
@@ -1401,6 +1728,65 @@ _html_findings() {
   done
 
   _html_accepted_risk "$rundir"
+}
+
+# `_html_owasp_compliance RUNDIR` - COMPLIANCE-02's HTML twin of
+# `_md_owasp_compliance`; see that function's own header for the design this
+# mirrors. Each category is a collapsible group carrying its own status
+# (findings/clean/out-of-scope/filtered/not-run); a `findings` group links
+# into the existing per-finding anchors (`_html_one_finding`'s `f-<fp>` ids)
+# rather than re-rendering full evidence/remediation a second time, keeping
+# this section a compact index rather than a duplicate of "Findings" above.
+_html_owasp_compliance() {
+  local rundir=$1
+  printf '<h2 id="owasp-compliance">OWASP Top 10 compliance</h2>\n'
+  printf '<p class="sub">docs/DESIGN.md Appendix B&#39;s own honest summary: &quot;strong automated coverage of the testable Top 10, explicit and labeled gaps on A04/A08/A09 and the manual-review portion of A01 - not a substitute for a human pentest or an ASVS audit.&quot; That is the tool&#39;s documented design-level claim. The table below is this run&#39;s own status per category, measured from this run&#39;s <code>checks_run</code>/<code>skipped_checks</code> records rather than copied from that prose, and will differ from it as coverage grows.</p>\n'
+  local id label count bucket line status_class status_text reasons
+  while IFS= read -r id; do
+    [[ -n $id ]] || continue
+    label=$(owasp_category_label "$id")
+    count=${_RPT_OWASP[$id]:-0}
+    bucket=$(_owasp_bucket "$id")
+    case $bucket in
+      findings) status_class=findings; status_text="$count finding(s)" ;;
+      clean) status_class=clean; status_text='assessed - no findings' ;;
+      out_of_scope) status_class=outofscope; status_text='out of scope - no check targets this category yet' ;;
+      filtered)
+        reasons=$(_owasp_filtered_reasons "$id")
+        status_class=filtered; status_text="excluded from this run ($reasons)" ;;
+      not_run) status_class=notrun; status_text='did not run this scan - no reason recorded' ;;
+    esac
+    printf '<details class="modgrp" id="owasp-%s"><summary><span class="modlabel">%s - %s</span><span class="count owstat-%s">%s</span></summary>\n' \
+      "$(html_escape "$id")" "$(html_escape "$id")" "$(html_escape "$label")" \
+      "$(html_escape "$status_class")" "$(html_escape "$status_text")"
+    printf '<div class="modbody">\n'
+    if [[ $bucket == findings ]]; then
+      printf '<ul>\n'
+      while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        finding_decode "$line"
+        printf '<li><a href="#f-%s"><code>%s</code></a> %s - <span class="sev %s">%s</span>, %s</li>\n' \
+          "$(html_escape "${_DF[fingerprint]}")" "$(html_escape "${_DF[check_id]}")" \
+          "$(html_escape "${_DF[title]}")" "$(html_escape "${_DF[severity]}")" \
+          "$(html_escape "${_DF[severity]}")" "$(html_escape "${_DF[status]}")"
+      done <<<"${_RPTOW_LINES[$id]:-}"
+      printf '</ul>\n'
+    fi
+    printf '</div>\n</details>\n'
+  done <<<"$(_owasp_render_order)"
+  if (( ${_RPT_OWASP[none]:-0} > 0 )); then
+    printf '<details class="modgrp" id="owasp-none"><summary><span class="modlabel">none - Not categorised</span><span class="count">%s</span></summary>\n<div class="modbody">\n<ul>\n' \
+      "${_RPT_OWASP[none]}"
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      finding_decode "$line"
+      printf '<li><a href="#f-%s"><code>%s</code></a> %s - <span class="sev %s">%s</span>, %s</li>\n' \
+        "$(html_escape "${_DF[fingerprint]}")" "$(html_escape "${_DF[check_id]}")" \
+        "$(html_escape "${_DF[title]}")" "$(html_escape "${_DF[severity]}")" \
+        "$(html_escape "${_DF[severity]}")" "$(html_escape "${_DF[status]}")"
+    done <<<"${_RPTOW_LINES[none]:-}"
+    printf '</ul>\n</div>\n</details>\n'
+  fi
 }
 
 # Suppressed findings render in a separate collapsed "accepted risk" section

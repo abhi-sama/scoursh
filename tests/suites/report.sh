@@ -830,4 +830,141 @@ assert_contains "$H14" '.scroll { overflow-x: auto;' 'and the CSS backing that b
 
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 
+# ===========================================================================
+# docs/STEP10-SARIF-PLAN.md Track B - COMPLIANCE-01 (the OWASP category label
+# table and its expansion) and COMPLIANCE-02 (the OWASP compliance view in
+# report.md and report.html).
+# ===========================================================================
+printf -- '\n-- COMPLIANCE-01: the OWASP category label table and its expansion --\n'
+
+t_case 'a known id expands to its published Top 10 2021 category label'
+assert_eq 'Broken Access Control' "$(owasp_category_label A01:2021)" \
+  'A01:2021 is the OWASP Top 10 2021 label data/owasp-categories.conf carries'
+assert_eq 'known' "$(owasp_category_known A01:2021)" 'and its state is `known`'
+
+t_case '`none` is a legal value, counted separately from an unknown id - never a table lookup'
+assert_eq 'Not categorised' "$(owasp_category_label none)" \
+  '`none` expands directly, per §9.6.6 - it is never looked up in the table'
+assert_eq 'none' "$(owasp_category_known none)" \
+  'and its state is the distinct literal `none`, not `unknown`'
+
+t_case 'an id with no row degrades visibly - never blank, never an invented label'
+UNKNOWN_LABEL=$(owasp_category_label A99:2099)
+assert_contains "$UNKNOWN_LABEL" 'A99:2099' \
+  'the bare id survives into the rendered label - FAILS under a blank expansion, which would be indistinguishable from a rendering bug'
+assert_ne '' "$UNKNOWN_LABEL" 'never blank'
+assert_ne 'Not categorised' "$UNKNOWN_LABEL" \
+  'and never confused with `none` - a category the table has never heard of is a different fact from "not categorised"'
+assert_eq 'unknown' "$(owasp_category_known A99:2099)" \
+  'its state is `unknown`, distinct from both `known` and the `none` literal'
+
+printf -- '\n-- COMPLIANCE-02: the OWASP compliance view in report.md and report.html --\n'
+# A fixture registry (tests/fixtures/checks-registry), not the real, growing
+# catalog: this proves the three-way honesty split against KNOWN registry
+# contents rather than coupling the test to today's snapshot of every shipped
+# rule pack.  Its owasp values are fixed: A01:2021 (DAST-AUTHZ-OBJREF-01),
+# A03:2021 (SAST-GEN-DEMO_QUICK-01, DAST-INJ-SQLI-01), A05:2021
+# (DAST-HDR-CSP-01, DAST-HDR-HSTS-01), none (SAST-GEN-DEMO_FULL-01,
+# DAST-DISC-CRAWL-01) - every OTHER OWASP Top 10 2021 id, A02/A04/A06/A07/
+# A08/A09/A10, has ZERO checks in this fixture, so any one of them is a
+# deterministic "out of scope" case.
+D15=$SCOURSH_SCRATCH/rpt-owasp-compliance
+rm -rf "$D15"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+SCOURSH_INSTALL_ROOT=$ROOT/tests/fixtures/checks-registry
+run_init "$D15"
+D15=$SCOURSH_RUN_DIR
+
+# A03:2021 - a live finding: the "findings" bucket, grouped by category.
+finding_new
+finding_set check_id DAST-INJ-SQLI-01
+finding_set module dast
+finding_set title 'SQL injection via request parameter'
+finding_set base_severity critical
+finding_set cwe CWE-89
+finding_set owasp A03:2021
+finding_set loc_target t1
+finding_set loc_method GET
+finding_set path /search
+finding_set loc_param_location query
+finding_set loc_param_name q
+finding_set cell t1
+finding_set remediation 'Use parameterised queries.'
+finding_set_evidence 'q=1 OR 1=1'
+finding_emit
+
+# `none` - a live finding mapping to no OWASP category: its own tail section.
+finding_new
+finding_set check_id SAST-GEN-DEMO_FULL-01
+finding_set module sast
+finding_set title 'Fixture full-only rule'
+finding_set base_severity low
+finding_set cwe none
+finding_set owasp none
+finding_set loc_path app.py
+finding_set loc_line 4
+finding_set cell .
+finding_set_match 'demo_noop()'
+finding_set remediation 'No fix required; this is a fixture.'
+finding_emit
+
+findings_merge "$D15"
+
+# A05:2021 - assessed this run, no findings: the "clean" bucket.  Only ONE of
+# its two registry checks needs to have run for the whole category to read
+# assessed.
+run_record checks_run DAST-HDR-CSP-01
+
+# A01:2021 - filtered out of THIS run by the tension-15 chain: the "filtered"
+# bucket, distinct from both "clean" and "out of scope".
+run_record skipped_checks 'check=DAST-AUTHZ-OBJREF-01 skipped_by=intensity=passive'
+
+report_all "$D15"
+MD15=$(cat "$D15/report.md")
+HT15=$(cat "$D15/report.html")
+
+t_case 'report.md has an OWASP Top 10 compliance section, where it had none before'
+assert_contains "$MD15" '## OWASP Top 10 compliance' 'the section heading is present'
+assert_contains "$MD15" 'A01:2021' 'and every category id renders, including one with no live finding'
+
+t_case 'report.md groups the findings themselves under their category, not merely a count'
+assert_contains "$MD15" '### A03:2021 - Injection' 'A03:2021 carries its published label'
+assert_contains "$MD15" 'DAST-INJ-SQLI-01' \
+  'and the live finding'"'"'s own check id appears under that heading - FAILS under a summary that only counts'
+
+t_case 'a category with a check that ran and found nothing reads assessed, not silently clean'
+assert_contains "$MD15" '### A05:2021 - Security Misconfiguration' 'A05:2021 carries its published label'
+assert_contains "$MD15" 'Assessed this run - no findings.' \
+  'FAILS if this bucket were indistinguishable from "out of scope" or "filtered"'
+
+t_case 'a category filtered out of this run by --profile-scan/--intensity renders that fact, not "clean"'
+assert_contains "$MD15" '### A01:2021 - Broken Access Control' 'A01:2021 carries its published label'
+assert_contains "$MD15" 'excluded from this run (intensity=passive)' \
+  'names the real skipped_by reason - FAILS if a filtered category read the same as an assessed-clean one'
+
+t_case 'a category with no check anywhere in this build targets it renders "out of scope", never a fabricated clean bill'
+assert_contains "$MD15" '### A09:2021 - Security Logging and Monitoring Failures' 'A09:2021 carries its published label'
+assert_contains "$MD15" 'No check in this build of scoursh targets this category yet.' \
+  'FAILS if a category with zero registry checks read identically to one that was assessed and found nothing'
+
+t_case 'a live finding mapping to `none` renders in its own, separately labelled section'
+assert_contains "$MD15" '### none - Not categorised' 'the section exists'
+assert_contains "$MD15" 'SAST-GEN-DEMO_FULL-01' 'and the finding itself appears under it'
+
+t_case 'report.html carries the equivalent compliance section'
+assert_contains "$HT15" 'id="owasp-compliance"' 'the section anchor exists'
+assert_contains "$HT15" 'OWASP Top 10 compliance' 'with its heading'
+assert_contains "$HT15" 'Broken Access Control' 'and every category label renders, not only the bare id'
+assert_contains "$HT15" 'Security Logging and Monitoring Failures' 'including a category with no live finding at all'
+assert_not_contains "$HT15" '<script' 'still no <script> element anywhere (tension 10)'
+
+t_case 'the existing "By OWASP category" count table gains the label column, and keeps counting'
+assert_contains "$HT15" '<th>category</th><th>label</th><th>findings</th>' \
+  'the header names both the raw id and the label, side by side'
+assert_contains "$HT15" '<td>A03:2021</td><td>Injection</td>' \
+  'FAILS if the count table were replaced instead of kept, per this ticket'"'"'s own instruction'
+
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+SCOURSH_INSTALL_ROOT=$ROOT
+
 t_summary report

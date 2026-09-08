@@ -664,7 +664,8 @@ of sequence - see their own sections below.
 **Step 6 (Cloud) remains not started** - no `modules/cloud/` directory exists yet.
 **Step 7 (persistent run state, `state/` plus `diff`) is complete.**
 Step 10 (SARIF plus the compliance report) is partially landed: Track A (the SARIF emitter) is
-complete and Track B (the compliance-mapping report) has not started.
+complete, and Track B (the compliance-mapping report) has its unblocked OWASP half landed
+(COMPLIANCE-01/02) - only its CIS half (COMPLIANCE-03/04, blocked on step 6) remains unstarted.
 All three have a written sub-ticket plan - `docs/STEP6-CLOUD-PLAN.md`, `docs/STEP7-STATE-PLAN.md`,
 and step 10's `docs/STEP10-SARIF-PLAN.md` (SARIF-01..06 plus COMPLIANCE-01..04) - and step 7 and
 step 10's SARIF track landed ahead of step 6 per `docs/STEP7-STATE-PLAN.md`'s stated priority order
@@ -675,8 +676,10 @@ needed neither step 6 nor step 7, the compliance report's OWASP half is unblocke
 CIS half waits on step 6, and the `--fail-on` CI gate that `docs/DESIGN.md` §13 item 10 bundles with
 them shipped back at step 3 and carries no ticket at all.
 **Track A of step 10 (the SARIF emitter, SARIF-01 through SARIF-06) is complete**, including its own
-documentation ticket - see the SARIF-01 through SARIF-06 landing paragraphs below. Only step 10's
-compliance-mapping report (Track B, COMPLIANCE-01 through COMPLIANCE-04) remains unstarted.
+documentation ticket - see the SARIF-01 through SARIF-06 landing paragraphs below. **Track B's OWASP
+half (COMPLIANCE-01 and COMPLIANCE-02) has also landed** - see that landing paragraph below, after
+SARIF-06's. Only Track B's CIS half (COMPLIANCE-03, COMPLIANCE-04 - the latter blocked on step 6)
+remains unstarted.
 
 **Step 7 (persistent run state) is complete: STATE-01 through STATE-08 have all landed**, matching
 `docs/STEP7-STATE-PLAN.md`'s own "Status" line.
@@ -922,6 +925,46 @@ and deliberately left alone, reported as findings rather than fixed, since this 
 documentation only: `lib/report.sh` and `lib/findings.sh` each carry one source comment still reading
 "a SARIF emitter that does not exist yet", and `tests/suites/scan.sh`'s `--format sarif` test case
 carries a stale description and asserts nothing about `report.sarif` itself.
+
+**COMPLIANCE-01 and COMPLIANCE-02 (`docs/STEP10-SARIF-PLAN.md` Track B's unblocked OWASP half) have
+now landed; COMPLIANCE-03 and COMPLIANCE-04 (the CIS half) remain unstarted and are step 6's to pick
+up, per that plan's own dependency table.**
+COMPLIANCE-01 is `data/owasp-categories.conf` (§9.6.6, a new record schema, additive per §14's second
+worked example - no `format_version` bump), a vendored table mapping each OWASP Top 10 2021 id to its
+published category name, read from disk exactly as `data/severity-rubric.conf` is rather than compiled
+into a `case`. `lib/report.sh`'s `owasp_category_label`/`owasp_category_known` are the expansion: `none`
+is a fixed literal ("Not categorised"), never a table lookup; an id the table has no row for (a
+different edition's id, or one this table has simply never been given a row for) renders as the bare id
+plus a visible reason, never blank, never invented. That degradation path is exercised by real, already
+-shipped data: several `modules/iac/*.rules` packs (`cloudformation.rules`, `docker-compose.rules`,
+`dockerfile.rules`, `helm.rules`, ...) carry `owasp: A0N:2025` values, an edition this table does not
+cover, so the compliance view already renders real `unknown` ids on an ordinary `scan.sh iac` run rather
+than only a synthetic test fixture.
+COMPLIANCE-02 is the OWASP compliance view itself: `report.md` gains a new "OWASP Top 10 compliance"
+section (it had none before), and `report.html` gains an equivalent `#owasp-compliance` section plus a
+`label` column on the pre-existing `_RPT_OWASP` count table (kept, per the ticket's own instruction,
+not replaced). Both **group the findings themselves** by category, not merely count them. Per-category
+status is one of five, computed from `meta/checks_run` and `meta/skipped_checks` (already written by the
+tension-15 filter chain, `lib/checks.sh:checks_record_run_selection`) against the full loaded check
+registry (`lib/report.sh`'s new `_report_owasp_registry_load`, the identical `checks_registry_load`
+sweep `_sarif_build_registry`/`_report_coverage_registry_load` already do) - never a per-category tier
+hardcoded from `docs/DESIGN.md` Appendix B's own prose, which the A04 case above already proves would be
+wrong the moment the registry moves (Appendix B says A04 is "not covered - inherent, design category";
+DAST-28 seeded two real `DAST-RATE-*` checks under `A04:2021` afterward, so a hardcoded tier would read
+as correct against the design doc and false against the shipped registry). The five states: `findings`
+(grouped, linking into the existing per-finding anchors rather than re-rendering evidence a second
+time), `clean` (a registry check for this category ran and found nothing), `out_of_scope` (no check
+anywhere in this build targets it), `filtered` (a registry check exists but every one was excluded from
+THIS run by `--profile-scan`/`--intensity`/`--allow-intrusive`), and `not_run` (a registry check exists,
+none ran, and none of the above explains why - a fourth, honestly-named bucket this ticket added beyond
+the three the plan named, for the same reason `report-audit.html`'s own "unaccounted" bucket exists:
+silence here would read as "assessed and clean"). Appendix B's own one-line coverage summary is quoted
+verbatim in both formats, attributed as the tool's documented design-level claim, explicitly distinct
+from the per-run measured table beneath it. `tests/suites/report.sh` (27 new assertions: direct
+label-expansion cases for `known`/`none`/`unknown`, plus an end-to-end section against
+`tests/fixtures/checks-registry` - not the real, growing catalog - proving all three run-level buckets
+plus the fourth against KNOWN registry contents) and `tests/suites/records.sh` (the new schema's path
+mapping and id-form validation) are the proof.
 
 **STATE-02 (per-(check, cell) coverage recording, and persist-on-every-run wiring) has also landed**,
 for the same "its own scope does not need the `account-region` producer" reason STATE-01 was authorised

@@ -79,18 +79,22 @@ priority feature, ahead of live cloud scanning.
 1. **Step 10 (SARIF output + compliance report)** - the SARIF half is **done**: `--format sarif`
    writes a complete, schema-validated SARIF 2.1.0 document (`report_sarif`, SARIF-01 through
    SARIF-06) - `tool.driver`/`rules[]`/`artifacts[]`/`invocations[]` and a fully-mapped
-   `runs[0].results[]` carrying this run's actual findings. What remains of step 10 is the CIS/OWASP
-   compliance report, which still has no emitter anywhere in the tree.
+   `runs[0].results[]` carrying this run's actual findings. The OWASP half of the compliance report is
+   **also done** (COMPLIANCE-01/02): `data/owasp-categories.conf` expands every `owasp` id to its
+   published Top 10 2021 label, and `report.md`/`report.html` both group findings by category with an
+   honest per-category status (assessed-clean, out-of-scope, or filtered out of this run by
+   `--profile-scan`/`--intensity`). What remains of step 10 is the CIS half of the compliance report,
+   which still has no emitter anywhere in the tree.
    A complete sub-ticket breakdown exists in
-   [`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md) (tickets SARIF-01 through SARIF-06, all
-   landed, plus COMPLIANCE-01 through COMPLIANCE-04, not started).
+   [`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md) (tickets SARIF-01 through SARIF-06 and
+   COMPLIANCE-01/02, all landed; COMPLIANCE-03/04 not started).
    That plan's own central finding is that this step is three deliverables with three different
    readiness states, not one: the SARIF emitter **has landed**, unblocked from the start by neither
-   step 6 nor step 7; the compliance report's OWASP half is likewise unblocked while only its CIS half
-   waits on step 6; and the `--fail-on` CI gate §13 item 10 also names is **already shipped in full**
-   and carries no ticket.
-   Its position at number 1 here, for what is left of it, is therefore a priority choice, not a
-   technical block.
+   step 6 nor step 7; the compliance report's OWASP half **has also landed**, likewise unblocked, while
+   only its CIS half waits on step 6; and the `--fail-on` CI gate §13 item 10 also names is **already
+   shipped in full** and carries no ticket.
+   Its position at number 1 here, for what is left of it (the CIS half alone now), is therefore a
+   priority choice, not a technical block.
 2. **Step 6 (live cloud / CSPM scanning)** - `scan.sh cloud` is a no-op today, with or without
    `--live`.
    There is no `modules/cloud/`, so the dispatch records a `not_yet_built` coverage reduction
