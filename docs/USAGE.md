@@ -528,14 +528,32 @@ Until it does, keep the output directory a run produced, or scan again.
 
 ### `--jobs N` and the `jobs` config key
 
-Validated as a positive integer, resolved, and exported. For `sast`/`sca`/`iac` it is read by no
-module: every run is single-worker, and each module says so in `run.json` with a
-`coverage_reduction reason=single_worker_no_parallel_scan_yet` fact, at every value of the flag.
-For `dast`, it is read for real - `lib/http.sh`'s tension-16 in-flight-connection ceiling uses the
-resolved `jobs` value as how many simultaneous connections a target may see (held to 4 without
-`--i-own-target`) - but since no DAST phase spawns additional workers yet, that ceiling has nothing to
-actually bound above 1 concurrent connection today either. Raising `--jobs` above 4 for a DAST scan
-therefore still needs `--i-own-target`, and still does not make the scan any more parallel.
+**Live for `sast`, `sca` and `iac`.** The resolved value (default 4) is the number of workers the
+tree walk fans out over: `sast` and `iac` split the file list, `sca` splits the manifest/lockfile
+list, and each worker writes its own finding shard. Never more workers than there are units of work,
+so a two-file scan at `--jobs 8` runs two workers rather than forking six with nothing to do.
+
+**The output does not depend on the width.** A run at `--jobs 4` produces byte-identical
+`findings.jsonl`, `findings.json` and rendered findings to the same run at `--jobs 1` - the merge
+sorts every shard together under `LC_ALL=C` by (module, check id, fingerprint), so neither the
+partition nor the scheduling can reach the bytes. `run.json` and the two reports do differ in one
+place, deliberately: they record how wide the fan-out actually was, as
+`coverage_reduction module=<m> reason=single_worker jobs=1 ...` on a single-worker run and
+`notes module=<m> parallel scan: N workers over ...` on a parallel one. (The flat
+`single_worker_no_parallel_scan_yet` reduction those replaced is gone.)
+
+**A worker that dies is reported, not swallowed.** Part of the tree going unscanned would otherwise
+look exactly like a clean result, so a lost worker makes the run exit `5`
+(`SCOURSH_EXIT_INCOMPLETE`) with an `incomplete_reason` naming `parallel_worker_failed`, and the run
+records no coverage for that cell - a cell a worker abandoned must never let a later run infer the
+findings it never reached as `fixed`. The report is still written.
+
+For `dast`, the same number means something different and is unchanged by any of the above:
+`lib/http.sh`'s tension-16 in-flight-connection ceiling uses the resolved `jobs` value as how many
+simultaneous connections a target may see (held to 4 without `--i-own-target`). Since no DAST phase
+spawns additional workers, that ceiling still has nothing to bound above 1 concurrent connection
+today. Raising `--jobs` above 4 for a DAST scan therefore still needs `--i-own-target`, and still
+does not make the scan any more parallel.
 
 ### `--lang py,js,go,java`
 

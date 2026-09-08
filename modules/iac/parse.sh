@@ -60,7 +60,16 @@ iac_scan_file() {
   pattern=$(records_field "$set" "$idx" pattern)
   id=$(records_id "$set" "$idx")
 
-  local hits=$SCOURSH_SCRATCH/iac-hits.$$
+  # `$BASHPID`, NEVER `$$`: this file is scanned by lib/parallel.sh's forked
+  # workers under `--jobs N`, and inside a subshell bash keeps `$$` as the
+  # PARENT's pid, so a `$$`-named scratch file is ONE file shared by every
+  # worker - each one truncating it while a sibling reads it and `rm -f`ing it
+  # out from under the others on the way out.  Measured on this codebase before
+  # it was fixed: "No such file or directory" on the match file, then an
+  # arithmetic error on a line number read back out of a half-written one, then
+  # a dead worker and an incomplete run.  `$BASHPID` is the real pid in every
+  # shell including the top-level one, so the single-worker path is unchanged.
+  local hits=$SCOURSH_SCRATCH/iac-hits.$BASHPID
   if ! scan_match_offsets "$hits" "$pattern" "$abspath"; then
     rm -f "$hits"
     return 0
@@ -146,36 +155,12 @@ iac_scan_tree() {
   # reset here so a stale IaC count from an earlier scan_main invocation in
   # this process never rides to `checks_run` on a walk it was not part of.
   sast_eval_reset
-  local scan_root
-  scan_root=$(scan_root_of "$root")
-  local abspath rel id loc set idx
-  local files total n
-  files=$(sast_walk_files "$root")
-  total=0
-  if [[ -n $files ]]; then
-    total=$(wc -l <<<"$files")
-    total=${total// /}
-  fi
-  log_info "iac: scanning $total files under $root"
-  n=0
-  while IFS= read -r abspath; do
-    [[ -n $abspath ]] || continue
-    n=$(( n + 1 ))
-    if is_tty; then
-      printf '\r  %d / %d files scanned' "$n" "$total" >&2
-    fi
-    rel=$(sast_relpath "$scan_root" "$abspath")
-    occurrence_reset_unit "$rel"
-    for id in "${ids[@]+"${ids[@]}"}"; do
-      loc=${_SAST_CHECK_LOC[$id]:-}
-      [[ -n $loc ]] || continue
-      read -r set idx <<<"$loc"
-      sast_rule_matches_file "$set" "$idx" "$rel" || continue
-      sast_eval_mark "$id"
-      iac_scan_file "$set" "$idx" "$rel" "$abspath"
-    done
-  done <<<"$files"
-  if is_tty && (( total > 0 )); then
-    printf '\r  %d / %d files scanned\n' "$n" "$total" >&2
-  fi
+  # `--jobs N`'s bounded worker fan-out is shared with sast_scan_tree, not
+  # forked: `_sast_walk_parallel` (modules/sast/engine.sh, sourced at the top of
+  # this file) takes the per-file scan function as a parameter for exactly this
+  # reason, so the walk, the block partition, the per-worker coverage-mark fold
+  # and the honest single-worker/parallel record all have one implementation.
+  # It returns non-zero when a worker failed; iac_scan_tree propagates that to
+  # modules/iac/run.sh, which decides what the run may still claim.
+  _sast_walk_parallel iac "$root" iac_scan_file "${ids[@]+"${ids[@]}"}"
 }

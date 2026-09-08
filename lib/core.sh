@@ -837,11 +837,30 @@ run_init() {
 # Append a run-level fact.  Workers may call this concurrently, so each fact is
 # its own file under meta/ and each append is a single short line, well below
 # PIPE_BUF (tension 17's reasoning applied to a much smaller record).
+#
+# `SCOURSH_META_DIR` OVERRIDES WHERE THAT LINE LANDS, and exists for exactly one
+# caller: lib/parallel.sh points each of its forked workers at a private
+# directory so their appends never interleave in the shared meta/.  Being below
+# PIPE_BUF makes a concurrent append ATOMIC - no line is ever torn - but says
+# nothing about the ORDER lines arrive in, and lib/report.sh renders several
+# meta keys (`coverage_reduction`, `coverage_gap`, `notes`,
+# `incomplete_reason`) in file order rather than sorted, so interleaved appends
+# alone are enough to make run.json stop being byte-reproducible across runs.
+# The parent folds the per-worker directories back in, in worker order, once
+# every worker has exited - see lib/parallel.sh's own determinism contract.
+# Unset (the default, and every caller outside a worker) means meta/ itself.
+#
+# The `-d $SCOURSH_RUN_DIR/meta` guard is deliberately kept as the test for
+# "is there a run to record against", rather than being moved onto the resolved
+# directory: a worker's private directory existing is not what makes a run
+# recordable, and a caller with no run directory at all must stay a no-op.
 run_record() {
   local key=$1
   shift
   [[ -n ${SCOURSH_RUN_DIR:-} && -d ${SCOURSH_RUN_DIR:-}/meta ]] || return 0
-  printf '%s\n' "$(_redact_out "$*")" >>"$SCOURSH_RUN_DIR/meta/$key"
+  local dir=${SCOURSH_META_DIR:-$SCOURSH_RUN_DIR/meta}
+  [[ -d $dir ]] || dir=$SCOURSH_RUN_DIR/meta
+  printf '%s\n' "$(_redact_out "$*")" >>"$dir/$key"
   return 0
 }
 

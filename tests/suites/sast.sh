@@ -833,5 +833,179 @@ assert_status 0 \
   'no --fail-on given means not-evaluated, never a silent gate - fails if the gate fired without being asked' \
   bash "$ROOT/scan.sh" sast --path "$ROOT/tests/fixtures/vuln" --out "$W/run-no-gate"
 
+
+# =============================================================================
+printf -- '\n-- --jobs N: real bounded parallelism, byte-identical to --jobs 1 --\n'
+# =============================================================================
+# `--jobs N` was accepted, validated and exported since step 2 and read by no
+# module: every scan was single-worker and said so with a
+# `single_worker_no_parallel_scan_yet` coverage_reduction.  It is real now
+# (lib/parallel.sh, driven from modules/sast/engine.sh's `_sast_walk_parallel`),
+# and the ONE property that makes it safe to turn on is that turning it on
+# changes nothing an operator reads: the same tree at `--jobs 4` must produce
+# the same findings, in the same order, as at `--jobs 1`.
+#
+# THE ASSERTION IS THE DIFFERENCE, NOT THE ABSENCE.  A test that only said "the
+# two runs match" would pass just as happily against a parallel walk that
+# scanned nothing at all - which is the failure this whole area fails toward,
+# since an empty result reads as a clean report.  So the count is asserted to be
+# NON-ZERO first, and matched second.
+PAR_ROOT=$W/par-root
+rm -rf "$PAR_ROOT"
+mkdir -p "$PAR_ROOT/config" "$PAR_ROOT/modules/sast/rules"
+printf 'id: scanner\n' >"$PAR_ROOT/config/scanner.conf"
+cp "$ROOT/modules/sast/run.sh" "$ROOT/modules/sast/engine.sh" "$ROOT/modules/sast/history.sh" \
+  "$PAR_ROOT/modules/sast/"
+cp "$ROOT/modules/sast/rules/secrets.rules" "$ROOT/modules/sast/rules/crypto.rules" \
+  "$PAR_ROOT/modules/sast/rules/"
+PAR_ROOT=$(cd -- "$PAR_ROOT" && pwd -P)
+
+# A MANY-FILE tree, generated rather than committed: the point is to have more
+# files than workers, spread so that every worker's block carries real findings
+# (a partition where only worker 0 ever finds anything would let a dropped block
+# pass unnoticed) and enough repetition that a lost or duplicated file shows up
+# as a changed count rather than as a reordering.
+PAR_TREE=$W/par-tree
+rm -rf "$PAR_TREE"
+mkdir -p "$PAR_TREE/a" "$PAR_TREE/b" "$PAR_TREE/c"
+for _i in $(seq -w 1 20); do
+  printf 'aws_key = "AKIA%sABCDEFGHIJ"\n' "$_i" >"$PAR_TREE/a/k$_i.py"
+  printf 'import hashlib\nh = hashlib.md5(data)\n' >"$PAR_TREE/b/h$_i.py"
+  printf 'def ok_%s():\n    return 1\n' "$_i" >"$PAR_TREE/c/plain$_i.py"
+done
+
+# `state/` lives under $SCOURSH_INSTALL_ROOT, so the second run would otherwise
+# see the first one's state and classify every finding `recurring` where the
+# first said `new`.  That is a real difference between the two runs and has
+# nothing to do with parallelism, so it is removed rather than normalised away.
+_par_scan() {
+  local jobs=$1 out=$2
+  rm -rf "$out"
+  rm -f "$PAR_ROOT"/state/*.json
+  SCOURSH_INSTALL_ROOT=$PAR_ROOT bash "$ROOT/scan.sh" sast --path "$PAR_TREE" \
+    --jobs "$jobs" --out "$out" >/dev/null 2>&1
+}
+# One run timestamp is shared by every finding of a run, so normalising that
+# single value is all that is needed to compare two runs byte for byte - the
+# same normalisation tests/suites/e2e.sh's own tension-17 case already uses.
+_par_norm() {
+  sed -e 's/"first_seen":"[^"]*"/"first_seen":"T"/g' \
+      -e 's/"last_seen":"[^"]*"/"last_seen":"T"/g' "$1"
+}
+
+_par_scan 1 "$W/par-j1"
+_par_scan 4 "$W/par-j4"
+
+t_case '--jobs 4 finds the same findings as --jobs 1, and neither finds nothing'
+PAR_N1=$(grep -c '' <"$W/par-j1/findings.jsonl" 2>/dev/null || printf 0)
+PAR_N4=$(grep -c '' <"$W/par-j4/findings.jsonl" 2>/dev/null || printf 0)
+PAR_OK=1; (( PAR_N1 > 10 )) && PAR_OK=0
+assert_true "$PAR_OK" \
+  "the single-worker baseline found $PAR_N1 findings - asserted non-trivially non-zero FIRST, so a walk that scanned nothing cannot satisfy the equality below"
+assert_eq "$PAR_N1" "$PAR_N4" \
+  'the same number of findings at 4 workers - fails if a block was dropped (fewer) or scanned twice (the dedup would hide it, but checks_run and the shard count would not)'
+
+t_case 'findings.jsonl is BYTE-IDENTICAL between --jobs 1 and --jobs 4'
+assert_eq "$(_par_norm "$W/par-j1/findings.jsonl")" "$(_par_norm "$W/par-j4/findings.jsonl")" \
+  'sorted by (module, check_id, fingerprint) under LC_ALL=C from per-worker shards, so neither the partition nor the scheduling can reach the bytes'
+
+t_case 'findings.json is byte-identical too - every findings-derived artifact, not just the JSONL'
+assert_eq "$(_par_norm "$W/par-j1/findings.json")" "$(_par_norm "$W/par-j4/findings.json")" 'findings.json'
+
+# `report.md`, `report.html` and `run.json` are audit records of the RUN, not
+# only of its findings, so they legitimately carry the one thing that really did
+# differ between these two invocations: how wide the fan-out was.  Asserting
+# them byte-identical outright would therefore be asserting that run.json stops
+# recording a flag it has recorded since step 2 - and skipping them entirely
+# would leave the whole rendering layer uncovered by this section.  So the
+# parallelism declaration is normalised out BY NAME and the rest is compared
+# whole: everything else in the report - every finding, every count, every
+# other coverage record, in the same order - has to match exactly.
+_par_norm_report() {
+  _par_norm "$1" \
+    | sed -e '/reason=single_worker jobs=/d' \
+          -e '/parallel scan: [0-9]* workers/d' \
+          -e "s|$W/par-j[14]|OUT|g" \
+          -e 's|par-j[14]|RUN|g'
+}
+t_case 'report.md and report.html differ ONLY in the run'"'"'s own parallelism record'
+assert_eq "$(_par_norm_report "$W/par-j1/report.md")" "$(_par_norm_report "$W/par-j4/report.md")" \
+  'every rendered finding, count and other coverage record matches once the jobs/worker declaration is normalised away'
+assert_eq "$(_par_norm_report "$W/par-j1/report.html")" "$(_par_norm_report "$W/par-j4/report.html")" \
+  'and the same for the HTML report'
+
+t_case 'checks_run is the same set - a worker'"'"'s coverage marks are folded back into the parent, not lost with it'
+assert_eq "$(LC_ALL=C sort -u "$W/par-j1/meta/checks_run")" "$(LC_ALL=C sort -u "$W/par-j4/meta/checks_run")" \
+  'FAILS if sast_eval_absorb is dropped: _SAST_CHECK_EVAL lives in the worker'"'"'s own memory and dies with it, so every check would be declared not-applicable and checks_run would come back empty'
+
+t_case 'run.json states honestly which of the two it was'
+assert_contains "$(cat "$W/par-j1/run.json")" 'module=sast reason=single_worker jobs=1' \
+  'a single-worker run still declares itself one - the old flat single_worker_no_parallel_scan_yet is gone, but "one worker" is still a real reduction an operator must be able to read off run.json'
+assert_not_contains "$(cat "$W/par-j1/run.json")" 'single_worker_no_parallel_scan_yet' \
+  'and the retired reason is not still being recorded alongside it'
+assert_contains "$(cat "$W/par-j4/run.json")" 'parallel scan: 4 workers' \
+  'the 4-way run says so, with the worker count - fails if the fan-out silently fell back to one worker while still reporting success'
+
+t_case 'the fan-out really did fork: --jobs 4 wrote more than one shard, --jobs 1 wrote exactly one'
+PAR_S1=$(find "$W/par-j1/shards" -name '*.fields' 2>/dev/null | grep -c '' || printf 0)
+PAR_S4=$(find "$W/par-j4/shards" -name '*.fields' 2>/dev/null | grep -c '' || printf 0)
+assert_eq 1 "$PAR_S1" 'one worker, one shard'
+PAR_OK=1; (( PAR_S4 > 1 )) && PAR_OK=0
+assert_true "$PAR_OK" \
+  "4 workers wrote $PAR_S4 shards - this is what distinguishes real parallelism from a `--jobs` value that is merely recorded, and it is asserted on the FILESYSTEM rather than on the note the run wrote about itself"
+
+# ---------------------------------------------------------------------------
+printf -- '\n-- --jobs N: a worker failure is surfaced, never silently dropped --\n'
+# ---------------------------------------------------------------------------
+# The direction that matters.  A lost worker means part of the tree was never
+# scanned, and the whole hazard of fanning out is that the run still finishes,
+# still writes a report, and still exits 0 - a clean result that is really the
+# absence of a scan.  docs/FOUNDATION.md tension 14 puts this at exit 5
+# (SCOURSH_EXIT_INCOMPLETE), whose exact predicate is a non-empty
+# `incomplete_reason`.
+#
+# The failure is injected by overriding `sast_scan_file` in a COPY of engine.sh
+# inside a throwaway install root - the real per-file scan is still reached for
+# every other file, so this is a run that genuinely half-succeeded rather than
+# one that never started.
+PAR_FAIL_ROOT=$W/par-fail-root
+rm -rf "$PAR_FAIL_ROOT"
+mkdir -p "$PAR_FAIL_ROOT/config" "$PAR_FAIL_ROOT/modules/sast/rules"
+printf 'id: scanner\n' >"$PAR_FAIL_ROOT/config/scanner.conf"
+cp "$ROOT/modules/sast/run.sh" "$ROOT/modules/sast/history.sh" "$PAR_FAIL_ROOT/modules/sast/"
+cp "$ROOT/modules/sast/rules/secrets.rules" "$PAR_FAIL_ROOT/modules/sast/rules/"
+cp "$ROOT/modules/sast/engine.sh" "$PAR_FAIL_ROOT/modules/sast/engine.sh"
+cat >>"$PAR_FAIL_ROOT/modules/sast/engine.sh" <<'PARFAIL'
+
+# --- test injection (tests/suites/sast.sh): one file's scan aborts its worker.
+eval "_par_scan_file_real() $(declare -f sast_scan_file | tail -n +2)"
+sast_scan_file() {
+  [[ ${3##*/} != poison.py ]] || die "$SCOURSH_EXIT_INCOMPLETE" 'injected worker failure'
+  _par_scan_file_real "$@"
+}
+PARFAIL
+PAR_FAIL_ROOT=$(cd -- "$PAR_FAIL_ROOT" && pwd -P)
+cp "$PAR_TREE/a/k01.py" "$PAR_TREE/c/poison.py"
+
+t_case 'a run whose worker dies exits SCOURSH_EXIT_INCOMPLETE rather than 0'
+rm -rf "$W/par-fail"
+assert_status "$SCOURSH_EXIT_INCOMPLETE" \
+  'FAILS under a bare `wait`, under `wait || true`, and under any shape that folds a worker'"'"'s status into the happy path - each of which turns a partly-scanned tree into a clean report' \
+  env SCOURSH_INSTALL_ROOT="$PAR_FAIL_ROOT" \
+  bash "$ROOT/scan.sh" sast --path "$PAR_TREE" --jobs 4 --out "$W/par-fail"
+
+t_case 'and says so in run.json, by name'
+assert_contains "$(cat "$W/par-fail/run.json" 2>/dev/null)" 'parallel_worker_failed' \
+  'incomplete_reason names the cause - tension 14'"'"'s own predicate for exit 5, so the code and the record cannot disagree'
+
+t_case 'a failed walk records NO coverage - a cell a worker abandoned must never look visited'
+assert_not_contains "$(cat "$W/par-fail/run.json" 2>/dev/null)" '"covered_checks"' \
+  'no covered_checks at all on an incomplete walk (tension 12): claiming the cell would let the NEXT run report every finding this one never reached as fixed'
+
+t_case 'the report is still written - an incomplete run reports what it did find'
+assert_file_exists "$W/par-fail/findings.jsonl" 'findings.jsonl exists despite the failure'
+assert_file_exists "$W/par-fail/report.md" 'report.md too - the run degrades, it does not vanish'
+rm -f "$PAR_TREE/c/poison.py"
+
 t_summary 'sast' || FAILED=1
 exit "${FAILED:-0}"

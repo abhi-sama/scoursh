@@ -840,9 +840,17 @@ assert_contains "$E2E_PY_RUNJSON" '"sca":3' \
   'run.json by_module counts 3 live findings for sca on this fixture - requests + urllib3 (vulnerable) plus the one roll-up'
 
 t_case 'run.json: the module-level coverage_reduction facts (db-absent/single-worker/gate) are recorded exactly ONCE, not duplicated by the Python pass'
-_SINGLE_WORKER_COUNT=$(printf '%s' "$E2E_PY_RUNJSON" | grep -o 'single_worker_no_parallel_scan_yet' | wc -l | tr -d ' ')
+# The fact this counts used to be `single_worker_no_parallel_scan_yet`, recorded
+# from inside sca_scan_tree.  `--jobs N` is real now (lib/parallel.sh), so the
+# module-level record moved to modules/sca/run.sh's `_sca_scan_parallel`, names
+# the resolved jobs value, and is made once for the RUN rather than once per
+# walk - which is what this case has always been asserting.  The default is 4,
+# but a tree this size has fewer manifests than that, so the fan-out is capped
+# at the unit count and the exact width is not what is under test here: the
+# COUNT is.
+_SINGLE_WORKER_COUNT=$(printf '%s' "$E2E_PY_RUNJSON" | grep -o 'reason=single_worker \|parallel scan: ' | wc -l | tr -d ' ')
 assert_eq 1 "$_SINGLE_WORKER_COUNT" \
-  'exactly one occurrence - fails if sca_scan_python_tree independently re-recorded the module-level fact npm'"'"'s pass already owns'
+  'exactly one occurrence - fails if a walk (or a worker) independently re-recorded the module-level fact _sca_scan_parallel owns'
 
 # =============================================================================
 printf -- '\n-- end-to-end: Ruby (Gemfile.lock), through the real scan.sh entry point --\n'
@@ -1502,6 +1510,88 @@ SINGLE_ROLLUPS=$(printf '%s\n' "$SINGLE_FINDINGS" | grep -c 'SCA-COV-UNKNOWN_VER
 assert_eq 1 "$SINGLE_ROLLUPS" 'exactly one roll-up for a pypi-only tree'
 assert_contains "$SINGLE_FINDINGS" 'by ecosystem: pypi: 1' \
   'and it reports pypi'"'"'s own real count - fails if the shared accumulator leaked a count from an earlier run or dropped this one'
+
+
+# =============================================================================
+printf -- '\n-- --jobs N: real bounded parallelism over MANIFESTS, byte-identical to --jobs 1 --\n'
+# =============================================================================
+# SCA's scanning unit is one manifest/lockfile (one go.mod/go.sum DIRECTORY for
+# Go), NOT one ecosystem walk: every walk runs in every worker and each asks
+# `sca_unit_selected` whether a given manifest is its own.  Fanning out over the
+# four walks instead would cap at four however high `--jobs` goes and would give
+# a monorepo with two hundred lockfiles under one ecosystem no speed-up at all -
+# see modules/sca/run.sh's `_sca_scan_parallel` header.
+#
+# The four-ecosystem fixture is the one that makes this worth asserting: its
+# manifests span npm, pypi, maven and Go, so a 4-way run genuinely splits them
+# across workers and the unknown-version roll-up genuinely has to be reassembled
+# from four separate per-worker tables.
+_scapar_scan() {
+  local jobs=$1 out=$2
+  rm -rf "$out"
+  rm -f "$ROOT"/state/*.json
+  env SCOURSH_SCA_ADVISORIES_DB="$DB" bash "$ROOT/scan.sh" sca \
+    --path "$FIXTURES/mixed-four-ecosystems" --jobs "$jobs" --out "$out" >/dev/null 2>&1 || true
+}
+_scapar_norm() {
+  sed -e 's/"first_seen":"[^"]*"/"first_seen":"T"/g' \
+      -e 's/"last_seen":"[^"]*"/"last_seen":"T"/g' "$1"
+}
+_scapar_scan 1 "$W/par-j1"
+_scapar_scan 4 "$W/par-j4"
+
+t_case 'sca --jobs 4 finds the same findings as --jobs 1, and neither finds nothing'
+SCAPAR_N1=$(grep -c '' <"$W/par-j1/findings.jsonl" 2>/dev/null || printf 0)
+SCAPAR_N4=$(grep -c '' <"$W/par-j4/findings.jsonl" 2>/dev/null || printf 0)
+SCAPAR_OK=1; (( SCAPAR_N1 > 0 )) && SCAPAR_OK=0
+assert_true "$SCAPAR_OK" \
+  "the single-worker baseline found $SCAPAR_N1 finding(s) - asserted non-zero FIRST, so a partitioned walk that skipped every manifest cannot satisfy the equality below"
+assert_eq "$SCAPAR_N1" "$SCAPAR_N4" \
+  'same count at 4 workers - fails if a manifest fell in nobody'"'"'s block, or in two'
+
+# The COUNT is a weak non-vacuity guard on this fixture and deliberately not the
+# one relied on: every dependency here that matches at all matches through the
+# roll-up, so the whole run is ONE finding and "1 == 1" would hold just as well
+# if three of the four ecosystems had been silently skipped.  What cannot hold
+# under a dropped block is the roll-up's own BREAKDOWN, which names each
+# ecosystem that contributed - so that is what is asserted to be non-trivial
+# before the two runs are compared against each other below.
+t_case 'the baseline roll-up names MORE THAN ONE ecosystem - the guard that makes the comparison below meaningful'
+SCAPAR_ECOS=$(grep -o 'by ecosystem: [^"]*' "$W/par-j1/findings.jsonl" 2>/dev/null | head -1)
+SCAPAR_NECO=$(printf '%s' "$SCAPAR_ECOS" | tr ',' '\n' | grep -c ':' || true)
+SCAPAR_OK=1; (( SCAPAR_NECO > 1 )) && SCAPAR_OK=0
+assert_true "$SCAPAR_OK" \
+  "the single-worker baseline's roll-up covers $SCAPAR_NECO ecosystems ($SCAPAR_ECOS) - so a 4-way run that scanned only one worker's block would produce a DIFFERENT breakdown and fail the comparison below, which a bare finding-count equality on this fixture would not catch"
+
+t_case 'sca findings.jsonl is BYTE-IDENTICAL between --jobs 1 and --jobs 4'
+assert_eq "$(_scapar_norm "$W/par-j1/findings.jsonl")" "$(_scapar_norm "$W/par-j4/findings.jsonl")" \
+  'per-worker shards merged and sorted under LC_ALL=C, so the partition cannot reach the bytes'
+
+t_case 'the unknown-version roll-up is reassembled from every worker, not just one'
+SCAPAR_R1=$(grep 'SCA-COV-UNKNOWN_VERSION-01' "$W/par-j1/findings.jsonl" 2>/dev/null || true)
+SCAPAR_R4=$(grep 'SCA-COV-UNKNOWN_VERSION-01' "$W/par-j4/findings.jsonl" 2>/dev/null || true)
+assert_eq "$(printf '%s\n' "$SCAPAR_R1" | grep -c 'SCA-COV' || true)" '1' \
+  'still exactly one roll-up at --jobs 1'
+assert_eq "$(printf '%s\n' "$SCAPAR_R4" | grep -c 'SCA-COV' || true)" '1' \
+  'and exactly one at --jobs 4 - fails if each worker flushed its own, which the shared fingerprint would then dedup down to whichever won the sort'
+assert_eq "$(printf '%s\n' "$SCAPAR_R1" | sed -n 's/.*"evidence":"\([^"]*\)".*/\1/p')" \
+  "$(printf '%s\n' "$SCAPAR_R4" | sed -n 's/.*"evidence":"\([^"]*\)".*/\1/p')" \
+  'and the per-ecosystem breakdown is the same total, not one worker'"'"'s share - THE assertion this section exists for: a worker'"'"'s table lives in its own memory and dies with it, so without sca_rollup_dump/absorb the operator is told a smaller number than the truth, which is the exact defect the shared accumulator was built to fix'
+
+t_case 'sca run.json declares which of the two it was, and the retired reason is gone'
+assert_contains "$(cat "$W/par-j4/run.json")" 'parallel scan: 4 workers' 'the 4-way run says so'
+assert_not_contains "$(cat "$W/par-j1/run.json")" 'single_worker_no_parallel_scan_yet' \
+  'the flat pre-parallelism declaration is retired'
+assert_contains "$(cat "$W/par-j1/run.json")" 'module=sca reason=single_worker jobs=1' \
+  'replaced by one naming the resolved jobs value'
+
+t_case 'Go'"'"'s unresolved replace/exclude limitation is stated ONCE, at either width'
+SCAPAR_G1=$(grep -o 'go_replace_exclude_directives_not_resolved' "$W/par-j1/run.json" 2>/dev/null | grep -c '' || true)
+SCAPAR_G4=$(grep -o 'go_replace_exclude_directives_not_resolved' "$W/par-j4/run.json" 2>/dev/null | grep -c '' || true)
+assert_eq 1 "$SCAPAR_G1" \
+  'once at --jobs 1 - FAILS under a parent-side emit gated on `PARALLEL_WORKERS > 1`, which drops it from every single-worker run (a partition is installed on the inline path too); that shipped for one measurement and reads as a cleaner result'
+assert_eq 1 "$SCAPAR_G4" \
+  'and once at --jobs 4 - FAILS if it is left to sca_go_scan_tree under a partition, which would state it once per worker and read as four separate limitations'
 
 t_summary 'sca' || FAILED=1
 exit "${FAILED:-0}"

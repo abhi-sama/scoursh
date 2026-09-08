@@ -138,6 +138,22 @@ source "$SCOURSH_SCAN_SH_DIR/lib/report.sh"
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "$SCOURSH_SCAN_SH_DIR/lib/config.sh"
+# lib/parallel.sh is `--jobs N`'s bounded worker fan-out, consumed by
+# modules/{sast,iac,sca}'s tree walks.  It is sourced HERE, from the real
+# install root's own `lib/`, rather than left to modules/sast/engine.sh's own
+# guarded self-relative fallback, for the reason that file's neighbouring
+# lib/report.sh and lib/config.sh sources are also mirrored here: `run.sh` and
+# `engine.sh` are copied into fixture roots that carry no `lib/` sibling at all
+# (tests/suites/sast.sh's ROOT_REAL_REGISTRY), where the self-relative form
+# cannot even LOCATE the file and the `source` fails before any guard can make
+# it a no-op.  Sourcing it before dispatch sets the guard so the module-side
+# fallback is never reached in a real run - and that fallback still exists, and
+# is still needed, for a suite that sources engine.sh directly with no scan.sh
+# anywhere in the process.  It is a LEAF (it sources nothing at all,
+# deliberately - see its own header), so this edge costs one file and no
+# subtree in the `shellcheck -x` expansion.
+# shellcheck source=lib/parallel.sh
+source "$SCOURSH_SCAN_SH_DIR/lib/parallel.sh"
 # lib/http.sh is sourced here, not only by modules/dast/, because THIS file is
 # what writes the run's authorisation record (docs/STEP5-DAST-PLAN.md DAST-32:
 # "scan.sh writes the affirmation as a per-run record under the run directory
