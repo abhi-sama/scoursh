@@ -142,23 +142,35 @@ _sast_run_module() {
     if (( ${#ids[@]} == 0 )); then
       run_record coverage_reduction 'module=sast reason=no_checks_selected'
     else
+      # `--jobs N` is real for this module: sast_scan_tree fans out over the
+      # file list at the resolved width.  The call is BARE and the outcome is
+      # read from `SCOURSH_WALK_FAILED` afterwards, never from its exit status
+      # via `|| walk_ok=0` - bash suspends `set -e` for the whole call tree of a
+      # command whose status is being tested, and on the single-worker path that
+      # tree is the entire walk, so the shape that reads as careful error
+      # handling would switch `set -Eeuo pipefail` off for every per-file scan
+      # under it.  See `_sast_walk_parallel`'s own header for the measurement.
       sast_scan_tree "$path" "${ids[@]+"${ids[@]}"}"
-      # docs/STEP7-STATE-PLAN.md STATE-02: reached only when sast_scan_tree
-      # returned without dying, so every id in `ids` genuinely ran to
-      # completion over this run's one path-root cell.
-      sast_record_coverage "$SCOURSH_PATH_ROOT" "${ids[@]+"${ids[@]}"}"
+      if (( SCOURSH_WALK_FAILED == 0 )); then
+        # docs/STEP7-STATE-PLAN.md STATE-02: reached only when sast_scan_tree
+        # returned without dying AND every worker finished, so every id in
+        # `ids` genuinely ran to completion over this run's one path-root
+        # cell.  A walk that lost a worker never reaches this line: coverage
+        # is what a later run's `fixed` inference is computed against
+        # (tension 12), so claiming a cell a worker abandoned would let the
+        # next run report the findings it never got to as remediated.
+        sast_record_coverage "$SCOURSH_PATH_ROOT" "${ids[@]+"${ids[@]}"}"
+      else
+        _sast_record_walk_failure sast
+      fi
       # `checks_run` is recorded AFTER the walk, from `_SAST_CHECK_EVAL`
-      # (populated by sast_scan_tree during the walk that just returned), not
-      # from the selection list above - a check whose `files:` glob matched
-      # nothing in this tree is a declared coverage_reduction, never a silent
+      # (populated by sast_scan_tree during the walk that just returned, and
+      # folded back in from every worker by `sast_eval_absorb`), not from the
+      # selection list above - a check whose `files:` glob matched nothing in
+      # this tree is a declared coverage_reduction, never a silent
       # `checks_run` entry (the AGENTS.md "checks_run semantics fix").
       sast_record_checks_run sast "${ids[@]+"${ids[@]}"}"
     fi
-
-    # tension 16's parallel workers (rate limiter, request budget, circuit
-    # breaker) land at §13 step 5; this run is single-worker, honestly declared
-    # rather than silently claimed as parallel.
-    run_record coverage_reduction 'module=sast reason=single_worker_no_parallel_scan_yet'
   fi
 
   # Independent of the working-tree registry above: history.sh replays only

@@ -908,5 +908,55 @@ assert_status 0 \
   'no --fail-on given means not-evaluated, never a silent gate - fails if the gate fired without being asked' \
   bash "$ROOT/scan.sh" iac --path "$ROOT/tests/fixtures/vuln" --out "$W/run-no-gate"
 
+
+# =============================================================================
+printf -- '\n-- --jobs N: real bounded parallelism, byte-identical to --jobs 1 --\n'
+# =============================================================================
+# IaC reuses SAST's whole fan-out - `iac_scan_tree` calls the SAME
+# `_sast_walk_parallel` (modules/sast/engine.sh) with `iac_scan_file` as its
+# per-file scan function, exactly as it already reused sast_walk_files and
+# sast_rule_matches_file.  What that means for THIS suite is that the mechanism
+# is covered by tests/suites/sast.sh and what has to be covered here is the
+# wiring: that `iac_scan_tree` really is on the parallel path, and that IaC's
+# own findings survive it unchanged.  GATE_ISOLATED_ROOT above is reused - it is
+# already a full copy of the tree with its own state/ directory, which is what
+# keeps the second run from classifying the first run's findings `recurring`.
+_iacpar_scan() {
+  local jobs=$1 out=$2
+  rm -rf "$out"
+  rm -f "$GATE_ISOLATED_ROOT"/state/*.json
+  SCOURSH_INSTALL_ROOT=$GATE_ISOLATED_ROOT bash "$ROOT/scan.sh" iac \
+    --path "$ROOT/tests/fixtures/vuln" --jobs "$jobs" --out "$out" >/dev/null 2>&1
+}
+_iacpar_norm() {
+  sed -e 's/"first_seen":"[^"]*"/"first_seen":"T"/g' \
+      -e 's/"last_seen":"[^"]*"/"last_seen":"T"/g' "$1"
+}
+_iacpar_scan 1 "$W/par-j1"
+_iacpar_scan 4 "$W/par-j4"
+
+t_case 'iac --jobs 4 finds the same findings as --jobs 1, and neither finds nothing'
+IACPAR_N1=$(grep -c '' <"$W/par-j1/findings.jsonl" 2>/dev/null || printf 0)
+IACPAR_N4=$(grep -c '' <"$W/par-j4/findings.jsonl" 2>/dev/null || printf 0)
+IACPAR_OK=1; (( IACPAR_N1 > 0 )) && IACPAR_OK=0
+assert_true "$IACPAR_OK" \
+  "the single-worker baseline found $IACPAR_N1 IaC findings - asserted non-zero FIRST, so a parallel walk that scanned nothing cannot satisfy the equality below"
+assert_eq "$IACPAR_N1" "$IACPAR_N4" 'same count at 4 workers'
+
+t_case 'iac findings.jsonl is BYTE-IDENTICAL between --jobs 1 and --jobs 4'
+assert_eq "$(_iacpar_norm "$W/par-j1/findings.jsonl")" "$(_iacpar_norm "$W/par-j4/findings.jsonl")" \
+  'the merge sorts every shard together under LC_ALL=C, so which worker found which file cannot reach the bytes'
+
+t_case 'iac checks_run survives the fan-out - the workers'"'"' coverage marks are folded back in'
+assert_eq "$(LC_ALL=C sort -u "$W/par-j1/meta/checks_run")" "$(LC_ALL=C sort -u "$W/par-j4/meta/checks_run")" \
+  'FAILS if _SAST_CHECK_EVAL is left to die with each worker: every IaC check would be declared not-applicable'
+
+t_case 'iac run.json declares which of the two it was, and the retired reason is gone'
+assert_contains "$(cat "$W/par-j4/run.json")" 'parallel scan: 4 workers' 'the 4-way run says so'
+assert_not_contains "$(cat "$W/par-j1/run.json")" 'single_worker_no_parallel_scan_yet' \
+  'the flat pre-parallelism declaration is retired, replaced by one that names the resolved jobs value'
+assert_contains "$(cat "$W/par-j1/run.json")" 'module=iac reason=single_worker jobs=1' \
+  'and a single-worker run still declares itself one'
+
 t_summary 'iac' || FAILED=1
 exit "${FAILED:-0}"

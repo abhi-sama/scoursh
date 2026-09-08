@@ -574,4 +574,153 @@ assert_eq '"\u0001"' "$(json_string "$(printf '\001')")" 'a C0 control becomes \
 assert_eq "$(printf '"caf\xc3\xa9"')" "$(json_string "$(printf 'caf\xc3\xa9')")" \
   'multi-byte UTF-8 passes through unescaped'
 
+# ---------------------------------------------------------------------------
+printf '\n-- lib/parallel.sh: bounded fan-out for --jobs N --\n'
+# ---------------------------------------------------------------------------
+# lib/parallel.sh is a LEAF (it sources nothing at all, deliberately - see its
+# own header), so it can be exercised here on top of lib/core.sh alone.
+# shellcheck source=lib/parallel.sh
+source "$ROOT/lib/parallel.sh"
+
+t_case 'parallel_workers_for: never more workers than units, never more than jobs'
+parallel_workers_for 4 100; assert_eq 4 "$PARALLEL_WORKERS" 'jobs is the cap when there is plenty of work'
+parallel_workers_for 8 3;   assert_eq 3 "$PARALLEL_WORKERS" \
+  'FAILS under a bare `PARALLEL_WORKERS=$jobs`: 8 workers over 3 units means five forks with nothing to do'
+parallel_workers_for 1 100; assert_eq 1 "$PARALLEL_WORKERS" '--jobs 1 is one worker'
+parallel_workers_for 4 0;   assert_eq 1 "$PARALLEL_WORKERS" 'no units is still a valid single-worker answer, not zero'
+
+t_case 'parallel_workers_for: a non-numeric or absent jobs falls back to 1, never to the documented default of 4'
+parallel_workers_for '' 100;    assert_eq 1 "$PARALLEL_WORKERS" 'unset'
+parallel_workers_for 'x' 100;   assert_eq 1 "$PARALLEL_WORKERS" 'not a number'
+parallel_workers_for '0' 100;   assert_eq 1 "$PARALLEL_WORKERS" 'zero'
+parallel_workers_for '-2' 100;  assert_eq 1 "$PARALLEL_WORKERS" \
+  'negative - FAILS under a plain assignment, which would then produce a negative block count'
+
+# THE honesty property of the partition, and the one worth a real test: every
+# unit is assigned to exactly one worker.  A unit assigned twice is a
+# double-counted file whose duplicate findings the fingerprint dedup would then
+# hide; a unit assigned to nobody is a silent false negative - a file the run
+# reports nothing about because it never opened it.  Neither is visible in the
+# output, which is why it is asserted directly here rather than inferred from a
+# scan.
+t_case 'parallel_block_bounds: the blocks partition the unit list exactly - no gap, no overlap'
+_pb_check() {
+  local total=$1 nw=$2 i expect=0 bad=''
+  for (( i = 0; i < nw; i++ )); do
+    parallel_block_bounds "$total" "$nw" "$i"
+    [[ $PARALLEL_BLOCK_START == "$expect" ]] || bad="worker $i starts at $PARALLEL_BLOCK_START, expected $expect"
+    expect=$(( PARALLEL_BLOCK_START + PARALLEL_BLOCK_COUNT ))
+  done
+  [[ -z $bad ]] || { printf '%s' "$bad"; return 0; }
+  [[ $expect == "$total" ]] || { printf 'blocks cover %s of %s units' "$expect" "$total"; return 0; }
+  printf 'ok'
+}
+for _case in '100 4' '100 7' '7 4' '4 4' '1 1' '5 3' '2 2' '13 5'; do
+  # shellcheck disable=SC2086
+  assert_eq ok "$(_pb_check $_case)" "total/workers = $_case: contiguous, complete, non-overlapping"
+done
+
+t_case 'parallel_block_bounds: contiguous blocks, not round-robin - worker 0 owns the FIRST units'
+parallel_block_bounds 100 4 0
+assert_eq 0 "$PARALLEL_BLOCK_START" 'worker 0 starts at 0'
+assert_eq 25 "$PARALLEL_BLOCK_COUNT" 'and owns a run of 25'
+parallel_block_bounds 100 4 3
+assert_eq 75 "$PARALLEL_BLOCK_START" 'worker 3 starts where worker 2 ended'
+# Contiguity is not cosmetic: it is what makes the parent's worker-ordered fold
+# of the per-worker meta directories reproduce the single-worker append order.
+# A round-robin partition passes the "exactly once" test above and still breaks
+# run.json's byte-reproducibility, so it needs its own assertion.
+
+t_case 'parallel_map: one worker runs INLINE, in the current shell, with no fork and no aux directory'
+_pm_inline() {
+  _PM_PID=$BASHPID
+  _PM_AUX=empty
+  [[ -z ${SCOURSH_WORKER_AUX:-} ]] || _PM_AUX=$SCOURSH_WORKER_AUX
+  _PM_ARGS="$1 $2 $3"
+}
+_PM_PID=''; _PM_AUX=''; _PM_ARGS=''
+parallel_map 1 10 _pm_inline tag
+assert_eq "$BASHPID" "$_PM_PID" \
+  'FAILS if the single-worker path forks: the callback must run in THIS shell, so `--jobs 1` is byte-for-byte the code path the module always had'
+assert_eq empty "$_PM_AUX" 'and gets no aux directory, which is what tells it to update in-process state directly'
+assert_eq '0 10 tag' "$_PM_ARGS" 'called once with the whole range'
+assert_eq 1 "$PARALLEL_WORKERS" 'reported as one worker'
+
+t_case 'parallel_map: N workers each get their own private meta directory, and the parent folds them in worker order'
+_PM_RUN=$W/pmrun
+rm -rf "$_PM_RUN"; mkdir -p "$_PM_RUN/meta"
+_pm_worker() {
+  local start=$1 count=$2 i
+  for (( i = start; i < start + count; i++ )); do
+    run_record pmkey "unit-$i"
+  done
+}
+# NOT in a subshell: parallel_map reports through globals (PARALLEL_WORKERS,
+# PARALLEL_FAILED), and a subshell would throw them away - the same measured
+# trap lib/findings.sh's `occurrence_next` header documents for `$(...)`.
+_PM_SAVED_RUN_DIR=${SCOURSH_RUN_DIR:-}
+SCOURSH_RUN_DIR=$_PM_RUN
+parallel_map 4 8 _pm_worker
+SCOURSH_RUN_DIR=$_PM_SAVED_RUN_DIR
+assert_eq 4 "$PARALLEL_WORKERS" 'four workers over eight units'
+_PM_EXPECT=$(for i in 0 1 2 3 4 5 6 7; do printf 'unit-%s\n' "$i"; done)
+assert_eq "$_PM_EXPECT" "$(cat "$_PM_RUN/meta/pmkey")" \
+  'FAILS if workers append straight to meta/ (their appends interleave by scheduling) and FAILS if the parent folds them in any order but worker 0 first - either way run.json stops being byte-reproducible'
+
+t_case 'parallel_map: a failed worker is SURFACED, never silently dropped'
+_pm_boom() {
+  local start=$1
+  (( start != 0 )) || return 0
+  false
+}
+rc=0
+parallel_map 4 8 _pm_boom || rc=$?
+assert_eq 3 "$PARALLEL_FAILED" \
+  'FAILS under a bare `wait` whose status is thrown away, or under `wait || true` - the shape that turns a half-scanned tree into a clean report - and says HOW MANY, so the module can name it in incomplete_reason'
+assert_eq 0 "$rc" \
+  'and parallel_map itself still returns 0 - deliberately, because a non-zero return forces every caller into `|| rc=1`, and bash suspends set -e for the whole call tree of a command whose status is tested, which on the single-worker path is the entire walk (measured below)'
+
+t_case 'set -e really is suspended through a checked call - the measurement the return-0 contract rests on'
+_se_inner() { false; _SE_REACHED=1; return 0; }
+_se_outer() { _se_inner; }
+_SE_REACHED=0
+_se_rc=0
+_se_outer || _se_rc=1
+assert_eq 1 "$_SE_REACHED" \
+  'a bare `false` deep inside a function invoked in a `||` context does NOT abort under set -Eeuo pipefail - which is why parallel_map, _sast_walk_parallel and the tree walks all signal failure through a global and are called bare'
+
+t_case 'parallel_map: every worker succeeding reports none failed'
+_pm_fine() { return 0; }
+rc=0
+parallel_map 4 8 _pm_fine || rc=$?
+assert_eq 0 "$rc" 'the happy path is not accidentally the failure path'
+assert_eq 0 "$PARALLEL_FAILED" 'nothing failed'
+parallel_cleanup
+
+t_case 'parallel_aux_read: worker side-channel files come back in worker order, and inline yields nothing'
+_pm_aux() {
+  local start=$1
+  [[ -z ${SCOURSH_WORKER_AUX:-} ]] || printf 'from-%s\n' "$start" >"$SCOURSH_WORKER_AUX/probe"
+}
+parallel_map 4 8 _pm_aux
+assert_eq "$(printf 'from-0\nfrom-2\nfrom-4\nfrom-6')" "$(parallel_aux_read probe)" \
+  'worker 0 first - the same ordering guarantee the meta fold relies on'
+parallel_cleanup
+parallel_map 1 8 _pm_aux
+assert_eq '' "$(parallel_aux_read probe)" \
+  'an inline callback has no aux directory at all, so the parent must read nothing rather than a stale pool'
+
+t_case 'run_record: SCOURSH_META_DIR redirects the append, and an unset one still means meta/'
+_MD_RUN=$W/mdrun
+rm -rf "$_MD_RUN"; mkdir -p "$_MD_RUN/meta" "$_MD_RUN/private"
+(
+  SCOURSH_RUN_DIR=$_MD_RUN
+  run_record mdkey 'to the run'
+  SCOURSH_META_DIR=$_MD_RUN/private
+  run_record mdkey 'to the worker'
+)
+assert_eq 'to the run' "$(cat "$_MD_RUN/meta/mdkey")" 'unset means meta/, exactly as before'
+assert_eq 'to the worker' "$(cat "$_MD_RUN/private/mdkey")" \
+  'FAILS if run_record ignores the override - which is what lets N workers interleave in one file'
+
 t_summary core

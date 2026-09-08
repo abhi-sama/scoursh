@@ -2728,6 +2728,57 @@ byte-reproducible.
 
 "Incrementally" is preserved in the sense §10 actually needs: findings are durable on disk as they are
 produced, so an interrupted run loses nothing and a resumed run (tension 18) reads the prior shards.
+
+> **AMENDMENT, from the ticket that made `--jobs N` real for `sast`/`sca`/`iac` (`lib/parallel.sh`).**
+> Two things were learned by actually fanning out, and both are recorded here rather than left to
+> diverge quietly in code.
+>
+> **The fan-out is forked subshells (`( ) &`), not `xargs -P`.**  Nothing in this RESOLUTION depends on
+> which of the two it is - the shard is owned exclusively either way, and the worker id is still
+> `$BASHPID` plus the work-unit index - and the choice is made on cost: a subshell inherits the already
+> loaded rule registry, check index and parsed config, so a worker costs one `fork`, where an
+> `xargs -P` worker is a fresh process that must re-bootstrap `scan.sh` before it can scan a single
+> file.  For a walk whose whole purpose is to be faster, most of the speed-up would have gone on
+> start-up.  Two consequences are worth stating because each is easy to get backwards: bash does not run
+> a trapped `EXIT` action in a subshell (measured, and re-measured for this change), which is what stops
+> a worker firing `core_cleanup` and erasing the shared scratch directory - and note that the guard
+> which protects an `xargs -P` worker is a DIFFERENT one, since `$$` stays the parent's pid inside a
+> subshell and `SCOURSH_SCRATCH_OWNER` is inherited, so `scratch_is_owned_here` would answer *true*
+> there; and the `ERR` trap and `set -Eeuo pipefail` ARE inherited, which is what makes a failed worker
+> visible to the parent's `wait` at all.  Concurrency is bounded by forking exactly the resolved worker
+> count and waiting for all of them, because `wait -n` is bash 4.3 and tension 24 freezes the minimum at
+> 4.2.
+>
+> **`meta/` needed the same treatment as `shards/`, and this RESOLUTION did not anticipate it.**  The
+> argument above is about `findings.jsonl`, and `run_record` looked safe by the same reasoning that
+> makes it safe: each fact is its own file and each append is a single short line, well below
+> `PIPE_BUF`.  That makes an append ATOMIC - no line is ever torn - and says nothing about the ORDER
+> lines arrive in, which is the *second, quieter problem* named above rather than the first.
+> `lib/report.sh` renders `coverage_reduction`, `coverage_gap`, `notes` and `incomplete_reason` in FILE
+> order (`_meta_array`, as against the sorted `_meta_array_unique`), so N workers appending concurrently
+> is enough on its own to make `run.json` stop being byte-reproducible across two identical scans.
+> `run_record` therefore honours a `SCOURSH_META_DIR` override, each worker is pointed at a private
+> directory, and the parent folds them back in worker order once every worker has exited.  That fold
+> reproduces the single-worker sequence only because the partition is CONTIGUOUS BLOCKS of the
+> already-sorted unit list rather than round-robin - block partitioning makes the property true by
+> construction, for every key, with no per-line ordinal to sort on afterwards, at the accepted cost of
+> load imbalance when unit sizes are skewed.
+>
+> **A worker that dies is tension 14's exit 5, not a silent partial scan.**  The module records an
+> `incomplete_reason` naming `parallel_worker_failed`, sets `scan_main`'s `incomplete` local, and
+> records NO coverage for the cell, because a cell a worker abandoned would let the next run infer
+> everything this one never reached as `fixed` (tension 12).  The report is still written.
+>
+> **That failure is signalled through a GLOBAL and not through an exit status, and the obvious
+> alternative is a measured bug.**  `parallel_map`, `_sast_walk_parallel` and the tree walks all return
+> 0 unconditionally and set `PARALLEL_FAILED` / `SCOURSH_WALK_FAILED` instead.  Returning non-zero would
+> force every caller to write `walk ... || rc=1`, and bash SUSPENDS `set -e` for the entire call tree of
+> a command whose status is being tested - so on the single-worker path, where the whole walk runs in
+> the caller's own shell, the shape that reads as careful error handling switches `set -Eeuo pipefail`
+> off for every per-file scan under it.  Measured on this codebase: under `outer || rc=1`, a bare
+> `false` inside a function `outer` calls does not abort and execution continues past it.  Keeping the
+> `--jobs 1` path exactly as strict as it was before any of this landed is the point, and this is what
+> buys it.
 What is deferred to the merge is only the *ordering*, not the *persistence*.
 That claim is now true rather than contradicted two paragraphs earlier, which is what finding F12 was.
 

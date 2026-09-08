@@ -87,12 +87,25 @@ _iac_run_module() {
     if (( ${#ids[@]} == 0 )); then
       run_record coverage_reduction 'module=iac reason=no_checks_selected'
     else
+      # `--jobs N` is real for this module too, through the SAME
+      # `_sast_walk_parallel` iac_scan_tree calls (modules/sast/engine.sh) - see
+      # modules/sast/run.sh's own copy of this block for why the call is BARE
+      # and the outcome comes from `SCOURSH_WALK_FAILED` rather than from the
+      # walk's exit status, and what a lost worker means for the run.
       iac_scan_tree "$path" "${ids[@]+"${ids[@]}"}"
-      # docs/STEP7-STATE-PLAN.md STATE-02: sast_record_coverage
-      # (modules/sast/engine.sh) is reused unchanged, exactly like
-      # sast_index_checks/sast_evaluate_gate above - reached only when
-      # iac_scan_tree returned without dying.
-      sast_record_coverage "$SCOURSH_PATH_ROOT" "${ids[@]+"${ids[@]}"}"
+      if (( SCOURSH_WALK_FAILED == 0 )); then
+        # docs/STEP7-STATE-PLAN.md STATE-02: sast_record_coverage
+        # (modules/sast/engine.sh) is reused unchanged, exactly like
+        # sast_index_checks/sast_evaluate_gate above - reached only when
+        # iac_scan_tree returned without dying AND every worker finished.
+        sast_record_coverage "$SCOURSH_PATH_ROOT" "${ids[@]+"${ids[@]}"}"
+      else
+        # `_sast_record_walk_failure` lives in modules/sast/engine.sh, beside
+        # `_sast_walk_parallel` itself, rather than in either run.sh: a
+        # `scan.sh iac` run never sources modules/sast/run.sh, so the shared
+        # engine is the one file both entry points already have.
+        _sast_record_walk_failure iac
+      fi
       # `checks_run` is recorded AFTER the walk, from `_SAST_CHECK_EVAL`
       # (populated by iac_scan_tree during the walk that just returned) via
       # the shared modules/sast/engine.sh helper - byte-identical reasoning to
@@ -101,12 +114,6 @@ _iac_run_module() {
       # declared coverage_reduction, never a silent `checks_run` entry.
       sast_record_checks_run iac "${ids[@]+"${ids[@]}"}"
     fi
-
-    # tension 16's parallel workers (rate limiter, request budget, circuit
-    # breaker) land at §13 step 5; this run is single-worker, honestly
-    # declared rather than silently claimed as parallel - same declaration
-    # modules/sast/run.sh makes for itself.
-    run_record coverage_reduction 'module=iac reason=single_worker_no_parallel_scan_yet'
   fi
 
   # Independent of the working-tree registry above, for the same reason

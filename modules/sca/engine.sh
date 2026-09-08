@@ -1167,6 +1167,117 @@ dependencies_checked: 0"
 declare -gA _SCA_UNKNOWN_COUNT=()
 declare -g _SCA_ROLLUP_DEFERRED=0
 
+# ---------------------------------------------------------------------------
+# 8a-bis. Unit partitioning for `--jobs N` (docs/DESIGN.md §5, lib/parallel.sh)
+# ---------------------------------------------------------------------------
+# SCA's scanning UNIT is one manifest/lockfile (one go.mod/go.sum DIRECTORY for
+# Go, which is what that ecosystem's own walk iterates).  Rather than teach each
+# of the six per-ecosystem loops how to fan out, every loop asks one question -
+# "is this unit mine?" - and lib/parallel.sh's worker decides the answer by
+# installing its own block of the run's unit list first.
+#
+# THE UNPARTITIONED ANSWER IS YES, and that direction is the load-bearing one.
+# Every unit test in tests/suites/sca.sh calls a walk directly, with no
+# partition installed anywhere in the process; a fail-closed default there would
+# make every one of those cases scan nothing while every "found the vulnerable
+# dependency" assertion in them went on passing against a stale expectation -
+# the same reading `dast_check_selected`'s own `declare -F` guard already ships
+# for the identical reason.
+#
+# THE UNIT LIST IS ENUMERATED IN WALK ORDER (`sca_enumerate_units` below) AND
+# THE PARTITION IS CONTIGUOUS BLOCKS.  Together those two facts are what make
+# the parallel run's `meta/` byte-identical to the single-worker run's: each
+# worker still visits its own units in walk order, and worker i's units all
+# precede worker i+1's, so the parent's worker-ordered concatenation of their
+# private meta directories reproduces exactly the sequence one walk would have
+# appended.  Changing either half - enumerating in a different order from the
+# walks, or partitioning round-robin - silently breaks that.
+declare -gA _SCA_UNIT_SET=()
+declare -g _SCA_UNIT_PARTITIONED=0
+
+# sca_unit_partition_set LISTFILE START COUNT - install this worker's block.
+sca_unit_partition_set() {
+  local listfile=$1 start=$2 count=$3 unit
+  _SCA_UNIT_SET=()
+  _SCA_UNIT_PARTITIONED=1
+  while IFS= read -r unit; do
+    [[ -n $unit ]] || continue
+    _SCA_UNIT_SET[$unit]=1
+  done < <(sed -n "$(( start + 1 )),$(( start + count ))p" "$listfile")
+  return 0
+}
+
+sca_unit_partition_clear() {
+  _SCA_UNIT_SET=()
+  _SCA_UNIT_PARTITIONED=0
+  return 0
+}
+
+# sca_unit_selected UNIT - see the "unpartitioned answer is yes" note above.
+sca_unit_selected() {
+  (( _SCA_UNIT_PARTITIONED )) || return 0
+  [[ -n ${_SCA_UNIT_SET[$1]:-} ]]
+}
+
+# sca_enumerate_units ROOT - every unit this module would visit, one per line,
+# IN THE ORDER THE WALKS VISIT THEM: npm, then RubyGems, then Composer (the
+# three inside sca_scan_tree, in its own order), then Python, then Java, then
+# Go.  A Go unit is a DIRECTORY, and only one that actually carries a go.mod or
+# a go.sum - the same predicate sca_go_scan_tree applies before it counts a
+# directory as processed, so "units assigned to Go" and "directories Go
+# processed" are the same number rather than nearly the same.
+sca_enumerate_units() {
+  local root=$1
+  sca_walk_npm_lockfiles "$root"
+  sca_walk_gemfile_locks "$root"
+  sca_walk_composer_lockfiles "$root"
+  sca_walk_python_manifests "$root"
+  sca_walk_java_manifests "$root"
+  sca_enumerate_go_units "$root"
+  return 0
+}
+
+# sca_enumerate_go_units ROOT - the Go half of the list above, on its own so
+# modules/sca/run.sh can also ask "did this run have any Go units at all"
+# without re-deriving the go.mod/go.sum predicate and risking the two answers
+# drifting apart.
+sca_enumerate_go_units() {
+  local root=$1 d
+  while IFS= read -r d; do
+    [[ -n $d ]] || continue
+    [[ -f $d/go.mod || -f $d/go.sum ]] || continue
+    printf '%s\n' "$d"
+  done < <(_sca_go_manifest_dirs "$root")
+  return 0
+}
+
+# sca_rollup_dump / sca_rollup_absorb - the unknown-version accumulator crosses
+# the worker boundary as `ecosystem<TAB>count` lines.  A worker's table lives in
+# its own memory and dies with it, so it is written to the aux directory on the
+# way out and the parent folds every worker's back in before the single flush.
+# Summing is exact because lib/parallel.sh assigns each unit to exactly one
+# worker: no manifest is counted twice and none is dropped, which is the whole
+# reason this roll-up exists to be honest about.
+sca_rollup_dump() {
+  local eco
+  (( ${#_SCA_UNKNOWN_COUNT[@]} > 0 )) || return 0
+  while IFS= read -r eco; do
+    [[ -n $eco ]] || continue
+    printf '%s\t%s\n' "$eco" "${_SCA_UNKNOWN_COUNT[$eco]}"
+  done < <(printf '%s\n' "${!_SCA_UNKNOWN_COUNT[@]}" | LC_ALL=C sort)
+  return 0
+}
+
+sca_rollup_absorb() {
+  local eco cnt
+  while IFS=$'\t' read -r eco cnt; do
+    [[ -n $eco ]] || continue
+    [[ $cnt =~ ^[0-9]+$ ]] || cnt=1
+    sca_rollup_add "$eco" "$cnt"
+  done < <(parallel_aux_read sca_rollup)
+  return 0
+}
+
 # sca_rollup_begin - open a deferred window: the walks accumulate, nobody
 # flushes until sca_rollup_flush is called.  Resets the table, so a window
 # never inherits a count from an earlier run in the same process.
@@ -1418,9 +1529,10 @@ sca_scan_tree() {
   sca_advisories_db_readable "$db" || return 0
 
   local lockfile relpath fmt row name ver direct hits
-  hits=$SCOURSH_SCRATCH/sca-hits.$$
+  hits=$SCOURSH_SCRATCH/sca-hits.$BASHPID
   while IFS= read -r lockfile; do
     [[ -n $lockfile ]] || continue
+    sca_unit_selected "$lockfile" || continue
     # SC2100 false positive: `fmt=package-lock.json` below is a plain string
     # assignment (that case arm's own label), not an arithmetic expression -
     # the linter's own hyphen heuristic misreads it.  Same false positive
@@ -1476,6 +1588,7 @@ sca_scan_tree() {
   # after every ecosystem, rather than per ecosystem.
   while IFS= read -r lockfile; do
     [[ -n $lockfile ]] || continue
+    sca_unit_selected "$lockfile" || continue
     relpath=$(sca_relpath "$root" "$lockfile")
     run_record checks_run SCA-RUBY-VULNERABLE_DEP-01
 
@@ -1499,6 +1612,7 @@ sca_scan_tree() {
   # computed once, after every ecosystem, rather than per ecosystem.
   while IFS= read -r lockfile; do
     [[ -n $lockfile ]] || continue
+    sca_unit_selected "$lockfile" || continue
     relpath=$(sca_relpath "$root" "$lockfile")
     run_record checks_run SCA-PHP-VULNERABLE_DEP-01
 
@@ -1523,11 +1637,19 @@ sca_scan_tree() {
   # flushes one roll-up for the whole run.
   _sca_rollup_autoflush
 
-  # tension 16's parallel workers (rate limiter, request budget, circuit
-  # breaker) land at §13 step 5, same as modules/sast/run.sh's identical
-  # note; this run is single-worker, honestly declared rather than silently
-  # claimed as parallel.
-  run_record coverage_reduction 'module=sca reason=single_worker_no_parallel_scan_yet'
+  # The module-level "was this run parallel at all" record used to be made
+  # here, as a flat `single_worker_no_parallel_scan_yet`.  It has moved to
+  # modules/sca/run.sh, which is the only layer that knows how wide the fan-out
+  # actually was: this walk is now one of four a worker runs over its own block
+  # of the unit list, so a record made here would be made once per worker and
+  # would describe a walk rather than the run.
+  #
+  # The explicit `return 0` restores what that removed `run_record` incidentally
+  # supplied: this function is called BARE from `_sca_scan_block` under
+  # `set -Eeuo pipefail`, so its status is the walk's, and leaving it to be
+  # whatever `_sca_rollup_autoflush` happened to end on would make a worker's
+  # survival depend on a roll-up detail that has nothing to do with the scan.
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -2028,9 +2150,10 @@ sca_scan_python_tree() {
   sca_advisories_db_readable "$db" || return 0
 
   local manifest relpath fmt name ver direct hits
-  hits=$SCOURSH_SCRATCH/sca-py-hits.$$
+  hits=$SCOURSH_SCRATCH/sca-py-hits.$BASHPID
   while IFS= read -r manifest; do
     [[ -n $manifest ]] || continue
+    sca_unit_selected "$manifest" || continue
     case ${manifest##*/} in
       requirements.txt) fmt=requirements.txt ;;
       poetry.lock) fmt=poetry.lock ;;
@@ -2406,9 +2529,10 @@ sca_scan_java_tree() {
   sca_advisories_db_readable "$db" || return 0
 
   local manifest relpath fmt row name ver direct hits
-  hits=$SCOURSH_SCRATCH/sca-java-hits.$$
+  hits=$SCOURSH_SCRATCH/sca-java-hits.$BASHPID
   while IFS= read -r manifest; do
     [[ -n $manifest ]] || continue
+    sca_unit_selected "$manifest" || continue
     case ${manifest##*/} in
       pom.xml) fmt=pom.xml ;;
       build.gradle) fmt=build.gradle ;;

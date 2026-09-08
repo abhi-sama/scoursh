@@ -116,17 +116,11 @@ These are not unbuilt steps.
 They are features that ship today and are wrong, incomplete, or inert, and each one has to be
 scheduled on its own.
 
-- **`--jobs N` is accepted and changes nothing about worker parallelism.**
-  It is documented with a default of 4; every scan is single-worker regardless, and the SAST/SCA/IaC
-  modules each record `single_worker_no_parallel_scan_yet` (no `scan.sh` module spawns `xargs -P`
-  workers today). The one exception is DAST: `lib/http.sh`'s tension-16 in-flight connection ceiling
-  reads the resolved `jobs` value as how many simultaneous connections a target may see, held to 4
-  without `--i-own-target` - so `--jobs` is live there as a concurrency ceiling even though it does
-  not, and cannot yet, spawn additional workers.
-  (`--authed` used to be a second such flag; it no longer is - DAST's `auth.sh`/`crawl.sh` and every
-  authenticated check now read it, and `scan.sh` records it as `run.json`'s `authorization.authed`
-  field. `--baseline FILE` and `--fail-on-new` used to be a third and fourth; both are now live - see
-  "Recently fixed" below.)
+- **Flags that were accepted and then ignored.**
+  `--authed` used to be one - it no longer is: DAST's `auth.sh`/`crawl.sh` and every authenticated
+  check now read it, and `scan.sh` records it as `run.json`'s `authorization.authed` field.
+  `--baseline FILE`, `--fail-on-new` and `--jobs N` were three more; all three are now live - see
+  "Recently fixed" below.
   (`--format` used to be a fifth: it was parsed and the resolved format list was then discarded, so
   every run wrote the same five artifacts whatever was asked for.  Fixed - see "Landed" above.
   `findings.jsonl` and `run.json` are mandatory per-run records rather than one of the four
@@ -147,6 +141,21 @@ scheduled on its own.
 Entries that used to sit under "Known defects" above, kept for a release or two so a reader who knew the
 old behaviour can see what replaced it.
 
+- **`--jobs N` was accepted, validated, exported and read by no module.**
+  It is documented with a default of 4 and every `sast`/`sca`/`iac` scan was single-worker
+  regardless, each module recording a flat `single_worker_no_parallel_scan_yet` coverage_reduction at
+  every value of the flag. It is real now: `lib/parallel.sh` is the shared bounded fan-out, `sast`
+  and `iac` split the file list through `_sast_walk_parallel` and `sca` splits the manifest list
+  through `_sca_scan_parallel`, each worker writing its own finding shard (tension 17). A run at
+  `--jobs 4` produces byte-identical findings to the same run at `--jobs 1`, because the merge sorts
+  every shard together under `LC_ALL=C` and each worker's `run_record` appends land in a private
+  directory the parent folds back in worker order rather than interleaving in `meta/`. The old flat
+  reduction is replaced by one that names the resolved value
+  (`reason=single_worker jobs=N ...`) or, on a parallel run, a `notes` line naming the worker count.
+  A worker that dies exits `5` with an `incomplete_reason` naming `parallel_worker_failed` and
+  records no coverage for the cell, rather than letting a half-scanned tree read as a clean report.
+  DAST is unchanged and was never part of this defect: `lib/http.sh` reads the same number as an
+  in-flight *connection* ceiling, which is a different meaning of it.
 - **`--baseline FILE` was parsed and never read; `--fail-on-new` was a tautology.**
   Both needed the step 7 persistent-state work, which has since landed in full
   (`docs/STEP7-STATE-PLAN.md`, STATE-01 through STATE-08). `--baseline FILE` (or the default
