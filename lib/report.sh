@@ -279,6 +279,103 @@ owasp_category_known() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# 1b. CIS control label table (docs/STEP10-SARIF-PLAN.md Track B,
+#     COMPLIANCE-03)
+# ---------------------------------------------------------------------------
+# COMPLIANCE-03 lands the FORMAT and the TABLE (rules/RULE-FORMAT.md §9.6.7,
+# data/cis-mappings, docs/CIS-MAPPINGS.md) and the id -> label loader/lookup
+# below; it renders NOTHING.  Nothing in report_all/report_md/report_html
+# calls any function in this section - that is COMPLIANCE-04's job, blocked
+# on modules/cloud/ existing so there is a real cis-carrying finding to build
+# the view against (docs/STEP10-SARIF-PLAN.md's own COMPLIANCE-03/
+# COMPLIANCE-04 rows).  This mirrors exactly how COMPLIANCE-01's
+# owasp_category_label/owasp_category_known above landed ahead of
+# COMPLIANCE-02's report sections.
+#
+# `data/cis-mappings` is an id -> label REFERENCE table, never a source of
+# control ids (the captain's D4 decision; docs/CIS-MAPPINGS.md §1): a check's
+# `cis` field is authored on the check record itself, and this table only
+# expands an id already on a finding into its published short title.
+declare -gA _CIS_LABEL=()
+declare -g _CIS_LABEL_LOADED=0
+declare -g _CIS_BENCHMARK_NAME='' _CIS_BENCHMARK_VERSION=''
+
+# The path argument exists for the fixture harness and test suites, exactly
+# as owasp_categories_load's does; shellcheck's SC2120 disagreement across
+# versions is the same one documented there, so it is silenced the same way.
+# shellcheck disable=SC2120
+cis_mappings_load() {
+  local path=${1:-$SCOURSH_INSTALL_ROOT/data/cis-mappings}
+  _CIS_LABEL=()
+  _CIS_BENCHMARK_NAME=''
+  _CIS_BENCHMARK_VERSION=''
+  _CIS_LABEL_LOADED=1
+  [[ -r $path ]] || return 0
+  records_load "$path" cis-mapping cismap \
+    || die "$SCOURSH_EXIT_INPUT" "data/cis-mappings failed to parse"
+  local n i id ttl
+  n=$(records_count cismap)
+  for (( i = 0; i < n; i++ )); do
+    id=$(records_id cismap "$i")
+    ttl=$(records_field cismap "$i" title)
+    _CIS_LABEL[$id]=$ttl
+  done
+  # benchmark/benchmark-version are meaningful only on the first record
+  # (rules/RULE-FORMAT.md §9.6.7, docs/CIS-MAPPINGS.md §3), exactly as
+  # format-version is.
+  if (( n > 0 )); then
+    _CIS_BENCHMARK_NAME=$(records_field_or cismap 0 benchmark '')
+    _CIS_BENCHMARK_VERSION=$(records_field_or cismap 0 benchmark-version '')
+  fi
+}
+
+# cis_control_label ID - expands a `cis` field value to its published short
+# title.  An id with no row (a control this table has not yet been given a
+# row for, per docs/CIS-MAPPINGS.md §4's stated gaps) renders as the bare id
+# plus a fixed, visible reason: never blank, never an invented title - the
+# identical degrade-visibly shape owasp_category_label uses for an unknown
+# `owasp` id.
+cis_control_label() {
+  local id=${1:-}
+  (( _CIS_LABEL_LOADED )) || cis_mappings_load
+  if [[ -n ${_CIS_LABEL[$id]+set} ]]; then
+    printf '%s' "${_CIS_LABEL[$id]}"
+    return 0
+  fi
+  printf '%s (no published label on file for this id)' "$id"
+}
+
+# cis_control_known ID - `known` (has a table row) or `unknown` (this table
+# has never been given a row for it).  Unlike owasp_category_known, there is
+# no `none` literal here: `cis` carries no fixed "not applicable" sentinel
+# (rules/RULE-FORMAT.md §9.1/§9.2/§9.5), it is simply absent from a record
+# that cites no CIS control.
+cis_control_known() {
+  local id=${1:-}
+  (( _CIS_LABEL_LOADED )) || cis_mappings_load
+  if [[ -n ${_CIS_LABEL[$id]+set} ]]; then
+    printf 'known'
+  else
+    printf 'unknown'
+  fi
+}
+
+# cis_benchmark_name / cis_benchmark_version - the benchmark name/version
+# data/cis-mappings' first record carries (docs/CIS-MAPPINGS.md §3).  Exposed
+# now so COMPLIANCE-04 can state them at the head of its report section
+# without re-deriving the first-record-only convention itself; empty when the
+# table is absent or carries no rows.
+cis_benchmark_name() {
+  (( _CIS_LABEL_LOADED )) || cis_mappings_load
+  printf '%s' "$_CIS_BENCHMARK_NAME"
+}
+
+cis_benchmark_version() {
+  (( _CIS_LABEL_LOADED )) || cis_mappings_load
+  printf '%s' "$_CIS_BENCHMARK_VERSION"
+}
+
 # COMPLIANCE-02: the check_id -> owasp registry map, across every module that
 # ships an on-disk *.rules registry (sast/iac/dast/cloud; sca ships none, by
 # design - modules/sca/run.sh's own header - and simply contributes nothing

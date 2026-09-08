@@ -194,6 +194,8 @@ assert_eq scanner-config "$(records_schema_for_path config/scanner.conf)" 'scann
 assert_eq severity-modifier "$(records_schema_for_path data/severity-rubric.conf)" 'rubric'
 assert_eq owasp-category "$(records_schema_for_path data/owasp-categories.conf)" \
   'the COMPLIANCE-01 OWASP category label table (§9.6.6)'
+assert_eq cis-mapping "$(records_schema_for_path data/cis-mappings)" \
+  'the COMPLIANCE-03 CIS control label table (§9.6.7)'
 assert_status 1 'a file matching no row is E070' records_schema_for_path some/other/file.rules
 
 # --- §9's `checks-<name>.rules` row ----------------------------------------
@@ -284,6 +286,21 @@ assert_contains "$(val vow2.conf 'id: a01:2021\ncategory: Broken Access Control\
   'E027 owasp-category id form rejects the generic lowercase-kebab id'
 assert_contains "$(val vow3.conf 'id: A01:2021\n' owasp-category)" E023 \
   'E023 owasp-category missing required category'
+# cis-mapping (§9.6.7, COMPLIANCE-03): the id is the benchmark's own
+# dotted-decimal control number, never the generic lowercase-kebab fallback
+# every other non-check-id schema uses.
+assert_eq '' "$(val vcis1 'id: 1.4\ntitle: Ensure no root user access key exists\n' cis-mapping)" \
+  'a well-formed cis-mapping record validates cleanly'
+assert_contains "$(val vcis2 'id: one-four\ntitle: t\n' cis-mapping)" E027 \
+  'E027 cis-mapping id form rejects the generic lowercase-kebab id'
+assert_contains "$(val vcis3 'id: 1.4\n' cis-mapping)" E023 \
+  'E023 cis-mapping missing required title'
+assert_eq '' "$(val vcis4 'id: 1.4\ntitle: t\n' cis-mapping)" \
+  'a bare single-segment-free dotted id like 1.4 is a legal cis-mapping id'
+assert_eq '' "$(val vcis5 'id: 2.1.1\ntitle: t\n' cis-mapping)" \
+  'a three-segment dotted id like 2.1.1 is also legal'
+assert_contains "$(val vcis6 'id: 1\ntitle: t\n' cis-mapping)" E027 \
+  'E027 a single undotted segment is not a control id (at least one dot required)'
 assert_contains "$(val v5.rules 'id: SAST-PY-EVAL-01\ntitle: t\nseverity: high\ncwe: none\nowasp: none\npattern: x\ntags: static\n' pattern-rule)" E023 \
   'E023 a missing required key'
 assert_contains "$(val v6.rules "${base}severity-floor: critical\nseverity-ceiling: low\n" pattern-rule)" E029 \
@@ -340,7 +357,8 @@ assert_ne "$(records_digest d1 0)" "$(records_digest d3 0)" 'changing a value do
 printf '\n-- the shipped record files parse and validate --\n'
 # ---------------------------------------------------------------------------
 t_case 'repository record files'
-for f in rules/redaction.rules data/severity-rubric.conf \
+for f in rules/redaction.rules data/severity-rubric.conf data/owasp-categories.conf \
+  data/cis-mappings \
   config/scanner.conf.example config/scope.conf.example config/discovery.conf.example \
   tests/fixtures/rules/fixture.rules tests/fixtures/rules/context.rules \
   tests/fixtures/rules/derived.rules tests/fixtures/config/scope.conf; do
