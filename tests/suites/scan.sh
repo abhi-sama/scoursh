@@ -1102,11 +1102,18 @@ printf '{}' >"$W/prior-run/run.json"
 assert_status 0 "--against a directory that has a run.json succeeds" \
   _run_main diff --against "$W/prior-run" --out "$W/run-diff-ok"
 
-t_case "report --from mirrors diff --against"
+t_case "report --from is STRICTER than diff --against - it feeds findings.fields/meta/ straight to report_all's own renderer, never just run.json/findings.jsonl"
 assert_status 4 "report --from a non-run directory dies exit 4" \
   _run_main report --from "$W/not-a-run-dir" --out "$W/run-report-bad"
-assert_status 0 "report --from a real prior run dir succeeds" \
-  _run_main report --from "$W/prior-run" --out "$W/run-report-ok"
+assert_status 4 "report --from diff's own minimal fixture (run.json only, no findings.jsonl/findings.fields/meta) still dies exit 4 - fails under '_scan_require_prior_run's own OR check is enough for report too'" \
+  _run_main report --from "$W/prior-run" --out "$W/run-report-shallow"
+
+mkdir -p "$W/real-prior-run/meta"
+printf '{}' >"$W/real-prior-run/run.json"
+: >"$W/real-prior-run/findings.jsonl"
+: >"$W/real-prior-run/findings.fields"
+assert_status 0 "report --from a genuine prior run directory (findings.fields and meta/ both present) succeeds" \
+  _run_main report --from "$W/real-prior-run" --out "$W/run-report-ok"
 
 # =============================================================================
 printf '\n-- the config loader runs before scan_dispatch (this ticket''s 3rd acceptance criterion) --\n'

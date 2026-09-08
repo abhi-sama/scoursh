@@ -62,7 +62,8 @@ This file is a shorter, reader-facing summary of the same information, and is ha
   is live, and `--fail-on-new` now really is a carve-out - it gates on `status == new` only when the
   diff was usable, and falls back to every finding otherwise - rather than a synonym for `--fail-on`.
   `report --from DIR` (regenerating reports from a prior run's own findings, distinct from producing
-  them during a scan) is not part of this and remains unbuilt.
+  them during a scan) has since landed too, independent of `state/` (it needs no classification at
+  all, only re-emission) - see AGENTS.md's own entry on it.
 - **Guided mode is complete.** GUIDE-01 through GUIDE-07 have all landed (see
   [`docs/STEP-GUIDE-PLAN.md`](docs/STEP-GUIDE-PLAN.md)'s own status section): a bare `scan.sh`, or
   `scan.sh <command> --guided`, walks an operator through composing a real command - including the

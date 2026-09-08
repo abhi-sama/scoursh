@@ -1251,6 +1251,59 @@ the field the gate reads (simulating exactly the drift the test guards against) 
 
 Step 6 (Cloud) remains unstarted.
 
+**`scan.sh report --from DIR` has since landed too - independent of step 7's `state/`, since it needs
+no classification at all, only re-emission from a prior run's own findings.**
+`report` was a stub before this (scan.sh's own case arm recorded `coverage_reduction
+module=report reason=not_yet_built` and did nothing else); it now regenerates
+`report.md`/`report.html`/`report.sarif`/`report-audit.html` (honouring `--format`) from a prior run
+directory's own persisted record files, with no module dispatched and no rescan.
+Three things about the shape are worth knowing before touching it.
+
+- **The real render input is `findings.fields` and `meta/`, never `findings.jsonl`/`run.json`
+  themselves**, even though those two mandatory files are what `scan.sh --from DIR`'s own validation
+  (`_scan_require_report_source`, stricter than `_scan_require_prior_run` - it requires BOTH mandatory
+  files, non-empty, plus `findings.fields` and `meta/`) checks for. `report_md`/`report_html`/
+  `report_sarif`/`report_audit` all read `$rundir/findings.fields` and individual `$rundir/meta/<key>`
+  facts directly; none of them ever reads `run.json`. `lib/report.sh`'s `report_regenerate_from`
+  copies `findings.fields` and `meta/` byte-for-byte from `--from DIR` into the new output directory
+  and then calls `report_all`'s own renderer step (factored out as `_report_render_formats`, shared by
+  both `report_all` and `report_regenerate_from` - "reuse the exact same rendering path" means calling
+  the identical function, not a second reimplementation).
+- **`run.json` is copied byte-for-byte, never recomputed by `report_run_json`.** Several of that
+  function's fields - `scan_root_id`, `path_root`, `gate`, `gated_findings`, `diff_usable` - are
+  process-exported facts a live scan's own `scan.sh` case arm sets directly and no `meta/` fact ever
+  records; calling it here, with no module dispatched and no `--path` given, would silently replace
+  the original run's real values with empty defaults - exactly the "did not check collapses into
+  clean" failure this feature exists to avoid. `scan_main`'s own trailing, otherwise-unconditional
+  `report_run_json "$SCOURSH_RUN_DIR"` call is skipped specifically for `SCAN_COMMAND == report` for
+  the same reason - it would immediately overwrite the copy. `report_md`/`report_html` separately read
+  three fields straight from the environment rather than from `meta/` (`run_id`, `redact_secrets`,
+  `diff_guard`); `report_regenerate_from` re-exports all three from the just-copied `run.json` so those
+  banners agree with what that file says rather than with this invocation's own scanner.conf or its
+  own fresh `--out` directory's basename.
+- **`report_locations` is deliberately NOT repeated.** It re-tests every `SAST-HIST-*` finding's path
+  against `$SCOURSH_SCAN_ROOT_PATH`, LIVE, at render time (tension 22 option 3) - a real filesystem
+  check this command has no `--path` to perform. `findings.fields` (copied byte-for-byte) already
+  carries whatever that check decided during the original run; re-running it here with
+  `$SCOURSH_SCAN_ROOT_PATH` unset would silently flip an original "resolves" verdict to "cannot
+  resolve" for exactly the findings whose original resolution succeeded. This is a real, narrow,
+  documented gap - `report --from` never claims to re-verify a scan root that may not even exist any
+  more on this host - not a silent wrong answer: per `_locations_history_resolves`'s own comment,
+  "cannot resolve" is already the safer of the two readings whenever it is unclear.
+
+One field is NOT byte-identical between an original run and its regeneration, and cannot be:
+`report.sarif`'s `invocations[].endTimeUtc` is a live `now_iso()` call made inside `report_sarif`
+itself (that function's own header already documents this as "necessarily a snapshot at THIS
+report_all call") - it was never solved for `run.json`'s identical `completed_at` either, which is why
+that file is copied rather than recomputed. `tests/suites/report.sh`'s own regression test normalises
+that one field out before comparing; every other artifact (`report.md`, `report.html`,
+`report-audit.html`, `findings.jsonl`, `findings.json`, `run.json`) is asserted byte-identical with no
+normalisation at all, including a case that deliberately sets the wrong `redact_secrets`/`diff_guard`
+on the regenerating invocation first, to prove the copied `run.json` is what wins.
+`--out` given the same path as `--from` (in-place regeneration) is a real, tested case:
+`report_regenerate_from` guards it explicitly rather than `rm -rf`ing `meta/` right before reading it
+from the identical path.
+
 **DAST-07 made `docs/FOUNDATION.md` tension 19's single documented exception real, and the shape it
 landed in is what a future non-HTTP probe must copy.**
 `modules/dast/passive/tls.sh` needs a raw TLS handshake - not an HTTP request, and curl exposes neither
