@@ -1367,21 +1367,21 @@ _html_findings() {
   # every reader of this report learns to expect.
   local -a order=() rest=()
   local c
-  for c in "${_RPT_CAT_ORDER[@]}"; do
+  for c in "${_RPT_CAT_ORDER[@]+"${_RPT_CAT_ORDER[@]}"}"; do
     [[ -n ${_rptf_count[$c]:-} ]] && order+=("$c")
   done
-  for c in "${_rptf_seen[@]}"; do
+  for c in "${_rptf_seen[@]+"${_rptf_seen[@]}"}"; do
     [[ -n ${_RPT_CAT_LABEL[$c]:-} ]] || rest+=("$c")
   done
   if (( ${#rest[@]} > 0 )); then
     local extra
     while IFS= read -r extra; do
       [[ -n $extra ]] && order+=("$extra")
-    done <<<"$(printf '%s\n' "${rest[@]}" | LC_ALL=C sort -u)"
+    done <<<"$(printf '%s\n' "${rest[@]+"${rest[@]}"}" | LC_ALL=C sort -u)"
   fi
 
   printf '<div class="catnav">\n'
-  for c in "${order[@]}"; do
+  for c in "${order[@]+"${order[@]}"}"; do
     printf '<a class="catpill" href="#mod-%s">%s <span class="c">%s</span></a>\n' \
       "$(html_escape "$c")" "$(html_escape "${_RPT_CAT_LABEL[$c]:-$c}")" "${_rptf_count[$c]}"
   done
@@ -1396,7 +1396,7 @@ _html_findings() {
   printf '<span class="filterhint">hides findings below the selected severity &mdash; no JavaScript</span>\n'
   printf '</div>\n'
 
-  for c in "${order[@]}"; do
+  for c in "${order[@]+"${order[@]}"}"; do
     _html_findings_category "$c" "${_rptf_lines[$c]}" "${_rptf_count[$c]}"
   done
 
