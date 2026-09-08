@@ -657,41 +657,50 @@ landed; that table, not this sentence, is the authority if this is ever in doubt
 **Step 5 is therefore complete.**
 Steps 8 (`--paranoid` / `tools/run-in-netns.sh`) and 9 (optional engine adapters) have also landed, out
 of sequence - see their own sections below.
-Steps 6 (Cloud), 7 (persistent state) and 10 (SARIF plus the compliance report) have each now started -
-see below - per `docs/STEP6-CLOUD-PLAN.md` and `docs/STEP7-STATE-PLAN.md`'s stated priority order among
-the three, now that step 5 has cleared: step 7 first, then step 10, then step 6 last.
-All three now have a written sub-ticket plan, step 10's being `docs/STEP10-SARIF-PLAN.md`
-(SARIF-01..06 plus COMPLIANCE-01..04).
-**Read that one before treating step 10's queue position as a dependency**: it establishes, against
-the tree, that step 10 is three deliverables rather than one - the SARIF emitter needed neither step 6
-nor step 7, the compliance report's OWASP half is unblocked too while only its CIS half waits on step
-6, and the `--fail-on` CI gate that `docs/DESIGN.md` §13 item 10 bundles with them shipped back at
-step 3 and carries no ticket at all.**
-**Track A of step 10 (the SARIF emitter, SARIF-01 through SARIF-06) is now complete**, including its
-own documentation ticket - see the SARIF-01 through SARIF-06 landing paragraphs below. Only step 10's
+**Step 6 (Cloud) remains not started** - no `modules/cloud/` directory exists yet.
+**Step 7 (persistent run state, `state/` plus `diff`) is complete.**
+Step 10 (SARIF plus the compliance report) is partially landed: Track A (the SARIF emitter) is
+complete and Track B (the compliance-mapping report) has not started.
+All three have a written sub-ticket plan - `docs/STEP6-CLOUD-PLAN.md`, `docs/STEP7-STATE-PLAN.md`,
+and step 10's `docs/STEP10-SARIF-PLAN.md` (SARIF-01..06 plus COMPLIANCE-01..04) - and step 7 and
+step 10's SARIF track landed ahead of step 6 per `docs/STEP7-STATE-PLAN.md`'s stated priority order
+among the three (step 7 first, then step 10, then step 6 last).
+**Read `docs/STEP10-SARIF-PLAN.md` before treating step 10's queue position as a dependency**: it
+establishes, against the tree, that step 10 is three deliverables rather than one - the SARIF emitter
+needed neither step 6 nor step 7, the compliance report's OWASP half is unblocked too while only its
+CIS half waits on step 6, and the `--fail-on` CI gate that `docs/DESIGN.md` §13 item 10 bundles with
+them shipped back at step 3 and carries no ticket at all.
+**Track A of step 10 (the SARIF emitter, SARIF-01 through SARIF-06) is complete**, including its own
+documentation ticket - see the SARIF-01 through SARIF-06 landing paragraphs below. Only step 10's
 compliance-mapping report (Track B, COMPLIANCE-01 through COMPLIANCE-04) remains unstarted.
 
-**Step 7 (persistent run state) has now started**, ahead of step 6 (Cloud) and matching
-`docs/STEP7-STATE-PLAN.md`'s stated priority order: **STATE-01 (`lib/state.sh`) has landed** - the
-frozen `state/<run-id>.json` schema (tension 12: `fp_schema`, `tool_version`, `run_id`, `completed_at`,
-`scan_root_id`, `covered_checks`, `findings`), a writer
+**Step 7 (persistent run state) is complete: STATE-01 through STATE-08 have all landed**, matching
+`docs/STEP7-STATE-PLAN.md`'s own "Status" line.
+`lib/state.sh` ships the frozen `state/<run-id>.json` schema (tension 12: `fp_schema`,
+`tool_version`, `run_id`, `completed_at`, `scan_root_id`, `covered_checks`, `findings`), a writer
 (`state_set_run`/`state_add_covered`/`state_add_history_boundary`/`state_add_finding`, then
 `state_write`) that persists write-then-rename and prunes to a retain count (default 30, mirroring
 `rules/RULE-FORMAT.md` §9.6.1's `state-retain-runs`), and a loader (`state_load_file`/
 `state_load_latest`) that treats a missing or unparsable state file as "no prior state" while
-REJECTING a structurally malformed record outright - a duplicate fingerprint, a finding missing a
-required field, an invalid `scope` value, a non-boolean `suppressed`, an empty `cells` array - rather
-than half-loading it, two of those rejections proven by mutation.
-It implements the schema and the persistence primitives ONLY: no coverage recording (STATE-02), no
-classification (STATE-03 through STATE-05), and no `diff` command wiring (STATE-06) - `scan.sh`, every
-module's coverage behaviour, and the `diff` subcommand stub are all byte-for-byte unchanged by this
-ticket.
-**One coverage-scope kind, `account-region`, has no real producer yet**: cloud (step 6) has not landed,
-so `tests/suites/state.sh`'s `account-region` coverage is schema-only, against a hand-authored fixture,
-proving the writer and loader treat that scope kind correctly in isolation - not that it round-trips a
-real cloud finding, which needs step 6 to exist first (`lib/state.sh`'s own header and
-`docs/STEP7-STATE-PLAN.md`'s "Status" section both record this as a known, tracked gap rather than
-silently-assumed coverage).
+REJECTING a structurally malformed record outright.
+`lib/diff.sh` wires the classification engine (tension 12's four-row `new`/`recurring`/`fixed`/
+`unknown` table and both its guards, plus tension 13's `SAST-HIST-*` boundary refinement and tension
+6's composite rule) against real state for the first time, and is what `scan.sh diff`'s report delta
+runs on.
+`tests/suites/{state,state-coverage,state-classify,state-history-classify,state-diff,
+state-baseline}.sh` exercise all of it.
+**`_scan_stateful_command_built` (`scan.sh`) now returns true for `diff` and false for `report`** -
+`diff` is wired to real state; **`report --from` (regenerating a report from a prior run's
+`findings.json`, with no reclassification) remains unbuilt**, its own separate, unstarted piece of
+work outside STATE-06's scope.
+**One coverage-scope kind, `account-region`, still has no real producer**: cloud (step 6) has not
+landed, so every `account-region` case across the state suites above is schema-only, against a
+hand-authored fixture - proving the writer, loader and classifier treat that scope kind correctly in
+isolation, not that it round-trips a real cloud finding, which needs step 6 to exist first
+(`lib/state.sh`'s own header and `docs/STEP7-STATE-PLAN.md`'s "Status" section both record this as a
+known, tracked gap rather than silently-assumed coverage).
+`docs/STEP7-STATE-PLAN.md`'s own per-ticket status table is the authority for the STATE-01 through
+STATE-08 landing detail if this paragraph is ever in doubt.
 
 **Step 10's first ticket, SARIF-01, has also landed**: `lib/findings.sh` gained
 `_finding_default_logical`, called from `finding_emit` immediately before the fingerprint is computed,
