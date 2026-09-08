@@ -3764,7 +3764,8 @@ table lookup with no logic to diverge.
 `data/advisories.db` is TSV, not the frozen record format, and this exemption is explicit: it is
 machine-generated, has millions of rows, and needs O(log n) lookup, none of which the block-record format
 is for (`rules/RULE-FORMAT.md` covers human-authored records only, tension 26).
-Its schema is frozen here:
+Its schema, as originally frozen here (**superseded for `summary` and for npm specifically - see the two
+AMENDMENTs below, which are the current, authoritative schema**):
 
 ```
 ecosystem \t package \t version \t advisory_id \t severity \t fixed_versions \t summary
@@ -3829,6 +3830,101 @@ The expansion logic moves into `tools/vendor-engines.sh` at §13 step 9, and is 
 output is a build artifact with its own tests rather than a download.
 Tests cover normalisation per ecosystem, the exact-lookup path, and the unknown-version roll-up, all
 against a small committed fixture database.
+
+**AMENDMENT (npm semver-range matching).**
+A predecessor feasibility scout (`data/scoursh-sca-range-feasibility/report.md`) measured the actual
+cost of this RESOLUTION rather than assuming it: the shipped importer's `versions[]`-only reading covers
+just **10%** of npm's OSV.dev export, so npm's real-CVE recall against `data/advisories.db` was measured
+at **3.6%** (263 of 7,317 representable GHSA advisories) - not because tension 25's underlying argument
+was wrong, but because the shipped importer never implemented the RESOLUTION's own "resolve every
+advisory's affected range against the ecosystem's actual published version list" clause for the 90% of
+npm advisories that arrive as a `ranges[]` interval rather than an enumerated `versions[]` list.
+The scout further measured that **95.2%** of that gap is npm malware advisories (`MAL-*`, `introduced: 0`,
+no fix - "every version of this package is malicious"), which need **no version algebra at all**, and
+that the remaining real-CVE-bearing slice needs exactly ONE version algebra: SemVer 2.0.0, which a 70-line
+bash comparator (`modules/sca/semver.sh`) reproduces with **0 mismatches over tens of thousands of real
+npm version pairs** against an independent reference (`tests/suites/sca-semver.sh`) - the same standard
+of evidence this tension's own §5a below requires before trusting a comparator at all.
+
+Captain-approved, and scoped deliberately narrower than "implement range matching": **npm gains a
+semver-interval lookup; pypi, maven, Go, RubyGems and composer keep the ORIGINAL exact-match RESOLUTION
+verbatim, unchanged.** This is not a partial rollout of a plan to widen later - it is the register's own
+finding, re-affirmed by measurement rather than merely re-stated: a second differential (§5a) found PyPI's
+own advisory data diverging from a semver reading at **1.66%**, and the disagreements are false
+NEGATIVES (semver says "not affected", PEP 440 says "affected") - precisely the permissive-direction
+failure this tension's own "Why it bites" paragraph calls disqualifying. Maven's qualifier ordering, Go's
+`+incompatible`/`/vN` handling and RubyGems'/Composer's own version grammars remain equally out of scope,
+for the identical reason. **"Implementing four correct version algebras in bash is a large amount of code
+whose bugs are invisible" is still the argument against a general `version_cmp` - it argues against
+exactly one of the five being wrong, and this amendment adds exactly one, having measured it correct.**
+
+`sca_lookup_range` (`modules/sca/engine.sh`), never `sca_lookup_exact`, is npm's only call site now.
+Its `data/advisories.db` row carries an INTERVAL instead of a single version:
+
+```
+npm \t package \t introduced \t bound \t bound_kind \t advisory_id \t severity \t fixed_versions
+```
+
+`bound_kind` is one of `exact | fixed | last | open`. `exact` is a byte-equality row - what every OTHER
+ecosystem's row already was, and what an OSV `versions[]` entry still becomes for npm, so no npm
+advisory that was representable before this amendment loses coverage. `fixed`/`last` come from an OSV
+`ranges[].events[]` interval (`[introduced, fixed)` half-open, `[introduced, last_affected]` closed -
+`last_affected` is inclusive because OSV defines it as itself affected, unlike `fixed`). `open` has no
+upper bound; an `open` row with `introduced` `0` or absent is the Tier A whole-package/malware case and
+matches unconditionally, with **no version algebra evaluated at all**. The prefix a lookup shares across
+every row for one package is `(ecosystem, package)`, not `(ecosystem, package, version)` - there is no
+longer one literal version to key on - so `sca_lookup_range` uses `lib/core.sh`'s new
+`db_lookup_prefix`, not `db_lookup_exact`: the latter's `grep -F -m 1` fallback is deliberately safe for
+an exact three-field prefix and would be a correctness bug here, silently returning one row of several
+that share a package. Every other ecosystem's row shape, `sca_lookup_exact`, and `db_lookup_exact`
+itself are BYTE-FOR-BYTE unchanged.
+
+A range MISS for npm is a genuine "not affected" verdict, not missing coverage - unlike the exact-match
+ecosystems, where an unmatched exact version means "the snapshot does not know that version" (the
+paragraph above). npm's own pinned-but-unmatched dependencies therefore no longer contribute to
+`SCA-COV-UNKNOWN_VERSION-01`'s roll-up; reporting a resolved range miss as "unknown" would be a false
+`coverage_reduction` on exactly the case this amendment exists to fix.
+
+**AMENDMENT (summary normalisation).**
+Also captain-approved, independent of the npm amendment and shippable alone: `summary` is no longer a
+field of any `data/advisories.db` (or `data/versions.db`) row. Measured before this change, on the real
+OSV.dev npm+PyPI corpus: `summary`, duplicated across every exact-version row for one advisory, was
+**73% of the file's bytes** (214 MB of 292 MB) - a cost with no bearing on matching, since the field is
+carried for display only and never compared. It now lives in an advisory-keyed side table,
+`data/advisory-summaries.db` (and its `data/versions.db`-namespace twin, `data/version-summaries.db`):
+
+```
+advisory_id \t summary
+```
+
+one row per advisory_id, `LC_ALL=C` sorted, looked up by the identical `db_lookup_exact` prefix
+primitive on `advisory_id\t`. `modules/sca/engine.sh`'s `sca_lookup_summary`/`_sca_summary_for` join it
+back onto a finding at emission time, for every emitter (`_sca_emit_finding`, its npm-range sibling
+`_sca_emit_finding_npm_range`, and the Python/Go engines' own mirrors) - a missing summary row degrades
+to a stated placeholder, never a fatal error, since prose is not load-bearing the way a match is. The
+main row shrinks to six fields for the five exact-match ecosystems (`ecosystem \t package \t version \t
+advisory_id \t severity \t fixed_versions`) and to the eight shown above for npm. Matching semantics -
+what row a lookup returns - are UNCHANGED for every ecosystem; only where the display-only summary text
+lives changed. Measured effect on the same corpus: **292 MB -> 59.5 MB** for the exact-match schema
+alone, and smaller still once the npm-range amendment above replaces npm's own expanded rows with
+intervals.
+
+**Both amendments together, consequence for the build.** Neither changes `rules/RULE-FORMAT.md`'s frozen
+record format (`data/advisories.db` was already, and remains, that format's stated TSV exemption,
+`§14`'s versioning contract governs human-authored `*.rules`/`config/*.conf` records, never this file)
+and neither needs a `format_version` bump or a `state/` migration: `data/advisories.db` is **absent by
+default and regenerated wholesale**, never incrementally migrated (the paragraph above, "Both databases
+are ABSENT by default"), so a schema change here is realised the same way any other `tools/vendor-engines.sh
+advisories` refresh already is - not a compatibility hazard between two on-disk versions of the same
+file. The SCA location profile (`ecosystem`, `package`, `advisory_id` - tension 5's own table) is
+untouched by either amendment, so no existing finding's fingerprint changes identity; a newly
+representable npm `(package, advisory)` pair mints a genuinely new fingerprint and correctly classifies
+`new` in the diff, exactly as tension 12's own table already specifies for a check that starts covering
+ground it previously could not reach.
+Tests: `tests/suites/sca-semver.sh` (the comparator, differential-tested against an independent Python
+SemVer 2.0.0 reference), and `tests/suites/sca.sh` / `tests/suites/vendor-engines-advisories.sh` (the
+npm-range lookup and importer end to end, the summary side table's round trip through the finding-decode
+path, and every non-npm ecosystem proven unaffected).
 
 ## Tension 26 - one record format for human-authored config
 

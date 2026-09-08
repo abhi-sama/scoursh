@@ -276,30 +276,53 @@ chmod +x "$FAKE_BIN/curl"
 
 DB=$W/db/advisories.db
 VDB=$W/db/versions.db
+# docs/FOUNDATION.md tension 25's summary-normalisation amendment: the two
+# advisory-keyed summary side tables, pointed at scratch paths for the
+# identical reason DB/VDB are - without this override,
+# _veng_advisories_write_summaries_db would fall back to
+# $VENG_DIR/data/advisory-summaries.db (the REAL repository path), and this
+# suite would write into the checked-out tree it runs from.
+SDB=$W/db/advisory-summaries.db
+VSDB=$W/db/version-summaries.db
 rm -rf "$W/db"
 mkdir -p "$W/db"
 
 run_ecosystem() {
   # Runs one ecosystem's veng_advisories_one against the stubbed curl, with
-  # SCOURSH_SCA_ADVISORIES_DB/SCOURSH_SCA_VERSIONS_DB pointed at this
-  # suite's own scratch files - a real subprocess (not in-process), since
-  # veng_advisories_one/die exits on failure the same way
-  # tests/suites/vendor-engines.sh's own veng_vendor_all test documents for
-  # itself.
+  # SCOURSH_SCA_ADVISORIES_DB/SCOURSH_SCA_VERSIONS_DB (and their two summary
+  # side-table siblings) pointed at this suite's own scratch files - a real
+  # subprocess (not in-process), since veng_advisories_one/die exits on
+  # failure the same way tests/suites/vendor-engines.sh's own
+  # veng_vendor_all test documents for itself.
   local eco=$1
   ( PATH="$FAKE_BIN:$PATH" \
     FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
     SCOURSH_SCA_ADVISORIES_DB="$DB" \
     SCOURSH_SCA_VERSIONS_DB="$VDB" \
+    SCOURSH_SCA_SUMMARIES_DB="$SDB" \
+    SCOURSH_DAST_VERSION_SUMMARIES_DB="$VSDB" \
     bash "$TOOL" advisories "$eco" ) >"$W/run-$eco.out" 2>&1
 }
 
-t_case 'end-to-end: npm'
+t_case 'end-to-end: npm (docs/FOUNDATION.md tension 25 npm-range amendment)'
 SCOURSH_ADVISORY_NPM_IDS='SCOURSH-FIXTURE-OSV-NPM-1' run_ecosystem npm
 assert_file_exists "$DB" 'data/advisories.db (scratch) was written'
 assert_contains "$(cat "$DB")" \
-  "$(printf 'npm\tleft-pad-fixture\t1.0.0\tSCOURSH-FIXTURE-OSV-NPM-1\thigh\t1.1.0\tfixture: prototype pollution')" \
-  'the npm row lands in the frozen schema (ecosystem, package, version, advisory_id, severity, fixed_versions, summary), severity normalised HIGH -> high'
+  "$(printf 'npm\tleft-pad-fixture\t1.0.0\t\texact\tSCOURSH-FIXTURE-OSV-NPM-1\thigh\t1.1.0')" \
+  'the frozen npm-range schema (ecosystem, package, introduced, bound, bound_kind, advisory_id, severity, fixed_versions) - an OSV-enumerated versions[] entry becomes a bound_kind=exact row, bound empty. `summary` is no longer inline (Change 2) - severity normalised HIGH -> high'
+assert_contains "$(cat "$DB")" \
+  "$(printf 'npm\tleft-pad-fixture\t1.0.1\t\texact\tSCOURSH-FIXTURE-OSV-NPM-1')" \
+  'the second enumerated version gets its own exact-kind row'
+assert_contains "$(cat "$DB")" \
+  "$(printf 'npm\tleft-pad-fixture\t1.0.2\t\texact\tSCOURSH-FIXTURE-OSV-NPM-1')" \
+  'and the third'
+assert_contains "$(cat "$DB")" \
+  "$(printf 'npm\tleft-pad-fixture\t0\t1.1.0\tfixed\tSCOURSH-FIXTURE-OSV-NPM-1\thigh\t1.1.0')" \
+  'the fixture'"'"'s own ranges[] entry - introduced "0", fixed "1.1.0" - is ALSO written, as a bound_kind=fixed interval row, not skipped: this is the amendment'"'"'s whole point (§7 Slices 1+2 of the feasibility scout report), closing the gap the shipped importer left open even after tension 25'"'"'s original RESOLUTION called for exactly this'
+assert_not_contains "$(cat "$DB")" 'fixture:' \
+  'no summary text of any kind is inline in data/advisories.db'
+assert_contains "$(cat "$SDB")" 'fixture: prototype pollution' \
+  'the summary lives in the advisory-keyed side table instead (Change 2)'
 assert_not_contains "$(cat "$DB")" 'decoy-should-not-appear' \
   "the fixture's own decoy PyPI-ecosystem 'affected' entry inside the npm advisory is NOT emitted as an npm row - proves ecosystem filtering, not just id filtering"
 
@@ -326,9 +349,11 @@ assert_contains "$(cat "$DB")" \
 
 t_case 'end-to-end: RubyGems (lowercased, no fixed version published)'
 SCOURSH_ADVISORY_RUBYGEMS_IDS='SCOURSH-FIXTURE-OSV-RUBY-1' run_ecosystem RubyGems
-assert_contains "$(cat "$DB")" \
-  "$(printf 'RubyGems\trailsfixturegem\t5.0.0\tSCOURSH-FIXTURE-OSV-RUBY-1\tlow\t\tfixture')" \
-  'the RubyGems row lowercases the name and renders "no fixed version published" as a genuinely empty field, not a placeholder string - the same empty-middle-field shape tests/suites/sca.sh already pins for the READER side'
+assert_contains "$(LC_ALL=C grep -- $'^RubyGems\trailsfixturegem\t' "$DB")" \
+  "$(printf 'RubyGems\trailsfixturegem\t5.0.0\tSCOURSH-FIXTURE-OSV-RUBY-1\tlow\t')" \
+  'the RubyGems row lowercases the name and renders "no fixed version published" as a genuinely empty TRAILING field (row ends right after the empty fixed_versions field, `summary` no longer inline per Change 2), not a placeholder string - the same empty-middle-field shape tests/suites/sca.sh already pins for the READER side'
+assert_contains "$(cat "$SDB")" 'fixture' \
+  'the RubyGems advisory'"'"'s own summary lives in the side table too - Change 2 is not npm-specific'
 
 t_case 'end-to-end: composer (vendor/package lowercased)'
 SCOURSH_ADVISORY_COMPOSER_IDS='SCOURSH-FIXTURE-OSV-COMPOSER-1' run_ecosystem composer
@@ -357,17 +382,20 @@ else
   _t_no 'at least one # header/comment line is present' "header_count=$header_count"
 fi
 
-t_case 'range-only advisory: zero rows, not fatal'
+t_case 'range-only npm advisory: ONE interval row, not zero (docs/FOUNDATION.md tension 25 npm-range amendment)'
 : >"$W/db/advisories.db"
 : >"$W/db/versions.db"
+: >"$W/db/advisory-summaries.db"
+: >"$W/db/version-summaries.db"
 rc=0
 SCOURSH_ADVISORY_NPM_IDS='SCOURSH-FIXTURE-OSV-NPM-RANGEONLY' run_ecosystem npm || rc=$?
 assert_eq 0 "$rc" \
-  'an advisory whose only npm-ecosystem "affected" entry carries no explicit versions[] array is a WARNING, not a failure - the run still exits 0'
-assert_not_contains "$(cat "$DB")" 'range-only-fixture' \
-  'no row was written for it - tension 25 requires exact versions, never a guessed range'
-assert_contains "$(cat "$W/run-npm.out")" 'produced no npm row' \
-  'the zero-row case is logged, not silently swallowed'
+  'an advisory whose only npm-ecosystem "affected" entry carries no explicit versions[] array is not a failure - the run still exits 0'
+assert_contains "$(cat "$DB")" \
+  "$(printf 'npm\trange-only-fixture\t0\t2.0.0\tfixed\tSCOURSH-FIXTURE-OSV-NPM-RANGEONLY\thigh\t2.0.0')" \
+  'a row IS written for it now - the fixture'"'"'s ranges[] entry (introduced 0, fixed 2.0.0) becomes a bound_kind=fixed interval row, closing exactly the gap the pre-amendment importer left (tension 25'"'"'s original RESOLUTION always intended range resolution; the shipped importer never implemented it for npm until this amendment)'
+assert_contains "$(cat "$W/run-npm.out")" '-> 1 npm row' \
+  'the row is logged as produced, not silently swallowed - contrast with the OTHER five ecosystems, which still log "produced no ... row" for a genuinely range-only advisory (unaffected by this amendment)'
 
 t_case 'a TAB smuggled inside a fixed-version event is refused, never written (exit 5)'
 rc=0
@@ -392,6 +420,8 @@ run_banner() {
     FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
     SCOURSH_SCA_ADVISORIES_DB="$DB" \
     SCOURSH_SCA_VERSIONS_DB="$VDB" \
+    SCOURSH_SCA_SUMMARIES_DB="$SDB" \
+    SCOURSH_DAST_VERSION_SUMMARIES_DB="$VSDB" \
     bash "$TOOL" advisories banner ) >"$W/run-banner.out" 2>&1
 }
 
@@ -462,14 +492,18 @@ assert_eq '' "$(cat "$DB" 2>/dev/null || true)" \
   'data/advisories.db (scratch) was left completely untouched (still empty, from this test'"'"'s own reset above) - banner never writes there'
 assert_file_exists "$VDB" 'data/versions.db (scratch) was written'
 assert_contains "$(cat "$VDB")" \
-  "$(printf 'banner\tnginx-fixture\t1.18.0\tSCOURSH-FIXTURE-OSV-BANNER-1\tcritical\t1.19.0\tfixture: request smuggling in Nginx-Fixture')" \
-  'the banner row lands under the literal "banner" ecosystem with the product key normalised (Nginx-Fixture -> nginx-fixture)'
+  "$(printf 'banner\tnginx-fixture\t1.18.0\tSCOURSH-FIXTURE-OSV-BANNER-1\tcritical\t1.19.0')" \
+  'the banner row lands under the literal "banner" ecosystem with the product key normalised (Nginx-Fixture -> nginx-fixture) - `summary` no longer inline (Change 2 applies to every namespace, not only the six SCA ecosystems)'
+assert_contains "$(cat "$VSDB")" 'fixture: request smuggling in Nginx-Fixture' \
+  'the banner advisory'"'"'s own summary lives in the version-summaries side table instead'
 line_count=$(grep -c -F 'SCOURSH-FIXTURE-OSV-BANNER-1' "$VDB")
 assert_eq 1 "$line_count" \
   'the fixture carries TWO affected[] entries (Debian, Alpine) for the identical product+version+fix - both are admitted by the wildcard, but the writer dedupes them into exactly ONE row, never two'
 assert_contains "$(cat "$VDB")" \
-  "$(printf 'banner\tapache-http-server-fixture\t2.4.49\tSCOURSH-FIXTURE-OSV-BANNER-NOSEV\thigh\t\tfixture: unspecified-severity banner product issue')" \
+  "$(printf 'banner\tapache-http-server-fixture\t2.4.49\tSCOURSH-FIXTURE-OSV-BANNER-NOSEV\thigh\t')" \
   'no severity anywhere in this second OSV record (no database_specific.severity, no per-affected override) - the banner-only default (high, docs/VERSIONS-DB.md §3) applies, distinct from every SCA row default (medium)'
+assert_contains "$(cat "$VSDB")" 'fixture: unspecified-severity banner product issue' \
+  'and its summary is in the side table too'
 
 t_case 'merge: re-running banner replaces the WHOLE banner namespace (like any other ecosystem), and never disturbs an unrelated SCA ecosystem'
 SCOURSH_ADVISORY_BANNER_IDS='SCOURSH-FIXTURE-OSV-BANNER-1' run_banner
@@ -594,8 +628,14 @@ BAD_SHA='0000000000000000000000000000000000000000000000000000000000000000'
 
 BDB=$BULK_W/advisories.db
 BVDB=$BULK_W/versions.db
+# docs/FOUNDATION.md tension 25's summary-normalisation amendment - the bulk
+# section's own scratch summary side tables, mirroring BDB/BVDB, for the
+# identical reason SDB/VSDB exist above (without an explicit override these
+# fall back to the REAL $VENG_DIR/data/*-summaries.db paths).
+BSDB=$BULK_W/advisory-summaries.db
+BVSDB=$BULK_W/version-summaries.db
 bulk_reset_db() {
-  rm -f "$BDB" "$BVDB"
+  rm -f "$BDB" "$BVDB" "$BSDB" "$BVSDB"
 }
 
 # bulk_run [ARGS...] - one real subprocess of the bulk importer with curl
@@ -606,6 +646,8 @@ bulk_run() {
   ( PATH="$NO_NET_PATH" \
     SCOURSH_SCA_ADVISORIES_DB="$BDB" \
     SCOURSH_SCA_VERSIONS_DB="$BVDB" \
+    SCOURSH_SCA_SUMMARIES_DB="$BSDB" \
+    SCOURSH_DAST_VERSION_SUMMARIES_DB="$BVSDB" \
     bash "$TOOL" advisories bulk "$@" ) >"$BULK_W/last.out" 2>&1 || rc=$?
   return "$rc"
 }
@@ -618,6 +660,8 @@ bulk_run_net() {
     FAKE_BULK_ZIP_DIR="$BULK_W/zips" \
     SCOURSH_SCA_ADVISORIES_DB="$BDB" \
     SCOURSH_SCA_VERSIONS_DB="$BVDB" \
+    SCOURSH_SCA_SUMMARIES_DB="$BSDB" \
+    SCOURSH_DAST_VERSION_SUMMARIES_DB="$BVSDB" \
     bash "$TOOL" advisories bulk "$@" ) >"$BULK_W/last.out" 2>&1 || rc=$?
   return "$rc"
 }
@@ -754,6 +798,7 @@ for args in 'bulk' 'bulk --help' 'bulk npm' 'bulk --bogus' 'bulk --all' \
   rc=0
   # shellcheck disable=SC2086
   ( PATH=$NO_NET_PATH SCOURSH_SCA_ADVISORIES_DB="$BDB" SCOURSH_SCA_VERSIONS_DB="$BVDB" \
+    SCOURSH_SCA_SUMMARIES_DB="$BSDB" SCOURSH_DAST_VERSION_SUMMARIES_DB="$BVSDB" \
     bash "$TOOL" advisories $args ) >/dev/null 2>&1 || rc=$?
   if (( rc >= 0 && rc <= 5 )); then
     _t_ok "exit code for 'advisories $args' is $rc, within 0-5"
@@ -780,26 +825,30 @@ assert_contains "$out" "artifact sha256: $NPM_ZIP_SHA" \
 assert_contains "$out" 'content was NOT verified' \
   'the unpinned grade says out loud what it does not guarantee'
 
-t_case 'bulk import: every enumerated affected version becomes one exact-version row'
+t_case 'bulk import: every enumerated affected version becomes one exact-kind row (docs/FOUNDATION.md tension 25 npm-range amendment)'
 db=$(cat "$BDB")
-assert_contains "$db" "$(printf 'npm\tbulk-fixture-alpha\t1.0.0\tSCOURSH-FIXTURE-OSV-BULK-NPM-1\thigh\t1.1.0\tfixture: prototype pollution in bulk-fixture-alpha')" \
-  'the frozen 7-field schema is written verbatim, severity normalised HIGH -> high'
-assert_contains "$db" "$(printf 'npm\tbulk-fixture-alpha\t1.0.1\tSCOURSH-FIXTURE-OSV-BULK-NPM-1\thigh')" \
-  'the second enumerated version of the same advisory gets its own row (pre-expansion, tension 25)'
-assert_contains "$db" "$(printf 'npm\t@bulk-scope/beta\t2.0.0\tSCOURSH-FIXTURE-OSV-BULK-NPM-2\tcritical')" \
+assert_contains "$db" "$(printf 'npm\tbulk-fixture-alpha\t1.0.0\t\texact\tSCOURSH-FIXTURE-OSV-BULK-NPM-1\thigh\t1.1.0')" \
+  'the frozen npm-range schema (ecosystem, package, introduced, bound, bound_kind, advisory_id, severity, fixed_versions) is written verbatim, severity normalised HIGH -> high, bound empty and bound_kind=exact for an OSV-enumerated version - `summary` no longer lives in this row at all (Change 2)'
+assert_contains "$db" "$(printf 'npm\tbulk-fixture-alpha\t1.0.1\t\texact\tSCOURSH-FIXTURE-OSV-BULK-NPM-1')" \
+  'the second enumerated version of the same advisory gets its own exact-kind row (pre-expansion, tension 25)'
+assert_contains "$db" "$(printf 'npm\t@bulk-scope/beta\t2.0.0\t\texact\tSCOURSH-FIXTURE-OSV-BULK-NPM-2\tcritical')" \
   'a scoped npm name is carried verbatim, scope included (tension 25 frozen table)'
-assert_contains "$db" "$(printf 'npm\tbulk-fixture-gamma\t3.0.0\tSCOURSH-FIXTURE-OSV-BULK-NPM-4\tmedium')" \
+assert_contains "$db" "$(printf 'npm\tbulk-fixture-gamma\t3.0.0\t\texact\tSCOURSH-FIXTURE-OSV-BULK-NPM-4\tmedium')" \
   'an advisory with no severity at all defaults to medium rather than being dropped'
-assert_contains "$db" 'fixture: bulk-fixture-gamma leaks a token in its debug log.' \
-  'the summary falls back to the first line of the details field when no summary field exists'
-assert_not_contains "$db" 'A second line the summary fallback must not carry' \
+assert_contains "$(cat "$BSDB")" 'fixture: bulk-fixture-gamma leaks a token in its debug log.' \
+  'the summary falls back to the first line of the details field when no summary field exists - and now lives in the advisory-keyed side table (Change 2), not inline in advisories.db'
+assert_not_contains "$(cat "$BSDB")" 'A second line the summary fallback must not carry' \
   'only the FIRST line of details is used - a multi-line summary would be an LF inside a frozen-schema field'
+assert_not_contains "$db" 'fixture:' \
+  'no summary text of any kind leaked into data/advisories.db itself'
 
-t_case 'bulk import: a range-only advisory is skipped and COUNTED, never guessed at'
-assert_not_contains "$(cat "$BDB")" 'bulk-fixture-rangeonly' \
-  'no row is invented for an advisory with no enumerated versions - tension 25 puts range arithmetic on the networked box, and OSV published none here'
-assert_contains "$(cat "$BULK_W/last.out")" 'range_only_skipped=1' \
-  'the skipped advisory is reported as a count, so a database that covers less than the ecosystem does is never silently smaller'
+t_case 'bulk import (docs/FOUNDATION.md tension 25 npm-range amendment): a range-only advisory becomes ONE interval row, never skipped for npm'
+assert_contains "$(cat "$BDB")" "$(printf 'npm\tbulk-fixture-rangeonly\t1.0.0\t1.4.0\tfixed\tSCOURSH-FIXTURE-OSV-BULK-NPM-3\thigh\t1.4.0')" \
+  'the range-only advisory - no versions[] array published - is represented as a semver interval row instead of being dropped; this is the whole point of the amendment: closing the gap tension 25'"'"'s own resolution intended but the shipped importer never implemented'
+assert_contains "$(cat "$BULK_W/last.out")" 'range_only_skipped=0' \
+  'nothing is skipped for npm any more - contrast with every other ecosystem, which still counts and skips a range-only entry (section G'"'"'s pypi/maven/Go/RubyGems/composer cases elsewhere in this file are unaffected)'
+assert_contains "$(cat "$BULK_W/last.out")" 'rows_range=5' \
+  'five range rows total: one per advisory (NPM-1..5), each contributing exactly one ranges[] interval'
 
 t_case 'bulk import: a decoy affected entry for another ecosystem is skipped and counted'
 assert_not_contains "$(cat "$BDB")" 'bulk-decoy-should-not-appear' \
@@ -810,10 +859,10 @@ assert_contains "$(cat "$BULK_W/last.out")" 'other_ecosystem_skipped=1' \
 t_case 'bulk import: the run reports what it actually imported'
 out=$(cat "$BULK_W/last.out")
 assert_contains "$out" 'advisories_read=5' 'every member of the archive is accounted for'
-assert_contains "$out" 'rows=7' \
-  '7 exact-version rows from 5 advisories - 2 + 2 + 0 (range-only) + 2 + 1'
+assert_contains "$out" 'rows=12' \
+  '7 exact-kind rows (2+2+0+2+1, unchanged from before this amendment) plus 5 range rows (one ranges[] interval per advisory) = 12'
 body=$(LC_ALL=C sed -e '/^#/d' -e '/^$/d' "$BDB")
-assert_eq 7 "$(printf '%s\n' "$body" | wc -l | tr -d ' ')" \
+assert_eq 12 "$(printf '%s\n' "$body" | wc -l | tr -d ' ')" \
   'the row count in the file matches the count the run reported - a reported number that the file does not back is exactly the silent-coverage-gap shape'
 
 t_case 'bulk import: the database records its own provenance'
@@ -821,8 +870,8 @@ hdr=$(LC_ALL=C sed -n '/^#/p' "$BDB")
 assert_contains "$hdr" 'ecosystem=npm' 'the provenance line names the ecosystem it covers'
 assert_contains "$hdr" 'grade=unpinned-local-archive' 'it records the integrity grade that produced these rows'
 assert_contains "$hdr" "sha256=$NPM_ZIP_SHA" 'it records the digest of the artifact those rows came from'
-assert_contains "$hdr" 'rows=7' 'it records the row count'
-assert_contains "$hdr" 'range_only_skipped=1' 'it records what it could NOT express, next to what it could'
+assert_contains "$hdr" 'rows=12' 'it records the row count'
+assert_contains "$hdr" 'range_only_skipped=0' 'it records the (now zero, for npm) skip count'
 
 t_case 'bulk import: versions.db is written with the identical body (tension 25)'
 assert_file_exists "$BVDB" 'data/versions.db (scratch) was written too'
@@ -879,14 +928,27 @@ assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$rc" \
 assert_eq "$before" "$(cat "$BDB")" 'the database is unchanged'
 assert_not_contains "$(cat "$BDB")" 'bulk-fixture-poison' 'no row from the poisoned member reached the database'
 
-t_case 'bulk import: a structurally perfect archive that yields ZERO rows is refused (exit 5)'
-before=$(cat "$BDB")
+t_case 'bulk import (docs/FOUNDATION.md tension 25 npm-range amendment): the same "range-only" archive that used to yield zero rows now yields ONE, for npm'
 rc=0
 bulk_run --archive "$BULK_W/zips/npm-zero-rows.zip" --accept-unverified npm || rc=$?
+assert_eq 0 "$rc" \
+  'the amendment'"'"'s whole point: an archive whose only member is a range-only advisory (SCOURSH-FIXTURE-OSV-BULK-NPM-3, no versions[]) used to produce zero rows and refuse - it now produces one interval row and succeeds, for npm only'
+assert_contains "$(cat "$BDB")" 'bulk-fixture-rangeonly' 'the range row is present'
+
+t_case 'bulk import: a structurally perfect archive that yields ZERO rows is STILL refused (exit 5) for an ecosystem the amendment does not touch'
+# Runs the SAME archive - it names only an npm-ecosystem affected entry - as
+# a PYPI import instead: every entry is skipped as "other ecosystem", so this
+# exercises the zero-rows refusal path on a code path this ticket left
+# completely unchanged (pypi/maven/Go/RubyGems/composer all still skip a
+# range-only OR wrong-ecosystem entry and refuse on zero rows).
+bulk_reset_db
+before=$(cat "$BDB" 2>/dev/null || true)
+rc=0
+bulk_run --archive "$BULK_W/zips/npm-zero-rows.zip" --accept-unverified pypi || rc=$?
 assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$rc" \
   'an import that produces no rows refuses rather than replacing the ecosystem rows with nothing - fails under the reading that treats an empty result as a successful import, which would quietly turn every dependency in that ecosystem clean'
-assert_eq "$before" "$(cat "$BDB")" 'and the previous rows survive untouched'
-assert_contains "$(cat "$BULK_W/last.out")" 'ZERO exact-version rows' 'the refusal says exactly what was wrong'
+assert_eq "$before" "$(cat "$BDB" 2>/dev/null || true)" 'and the previous (absent) rows survive untouched'
+assert_contains "$(cat "$BULK_W/last.out")" 'ZERO' 'the refusal says exactly what was wrong'
 
 t_case 'bulk import: re-importing one ecosystem replaces only its own rows and its own provenance'
 bulk_reset_db
@@ -907,6 +969,7 @@ t_case 'a single-advisory import of an ecosystem RETIRES that ecosystem bulk pro
 ( PATH="$FAKE_BIN:$NO_NET_PATH" FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
   SCOURSH_ADVISORY_NPM_IDS='SCOURSH-FIXTURE-OSV-NPM-1' \
   SCOURSH_SCA_ADVISORIES_DB="$BDB" SCOURSH_SCA_VERSIONS_DB="$BVDB" \
+  SCOURSH_SCA_SUMMARIES_DB="$BSDB" SCOURSH_DAST_VERSION_SUMMARIES_DB="$BVSDB" \
   bash "$TOOL" advisories npm ) >"$BULK_W/retire.out" 2>&1
 assert_not_contains "$(LC_ALL=C sed -n '/^# bulk:/p' "$BDB")" 'ecosystem=npm' \
   'replacing npm rows with a one-advisory import drops the stale "this ecosystem was bulk imported" claim - fails under a reading that leaves the old provenance line describing rows that no longer exist'
@@ -925,53 +988,77 @@ first_pkg=$(printf '%s\n' "$body" | LC_ALL=C sed -n '1p' | cut -f 2)
 assert_eq '@bulk-scope/beta' "$first_pkg" \
   "'@bulk-scope/beta' sorts FIRST because '@' is 0x40 and 'b' is 0x62 - it fails under any punctuation-folding collation, which would sort it as 'bulkscopebeta' and put it last, and under that ordering db_lookup_exact's binary search misses rows that are really in the file"
 
-t_case 'the reader finds every written row through db_lookup_exact itself, not by inspection'
+t_case 'the reader finds every written row through sca_lookup_range itself, not by inspection (docs/FOUNDATION.md tension 25 npm-range amendment)'
 # Proving the sort by eyeballing the file is exactly the mistake tension 25
 # warns about: the thing that matters is whether the READER's own lookup
-# finds the row.  This runs sca_lookup_exact (modules/sca/engine.sh), which
-# routes through lib/core.sh's db_lookup_exact, against the generated file.
+# finds the row. This DB is npm-only (bulk_reset_db + a single npm import
+# above), so every row is a range row now - sca_lookup_range
+# (modules/sca/engine.sh), routing through lib/core.sh's db_lookup_prefix,
+# replaces sca_lookup_exact for this section entirely.
+#
+# The probe version used for each row is that row's OWN `introduced` field
+# (the third TAB column) - for a bound_kind=exact row this is a trivial
+# byte match; for a bound_kind=fixed row, semver_in_range_v's own intro
+# check is `[[ -n $intro && $intro != 0 ]]`, so introduced="0" skips the
+# lower bound entirely and introduced=X compares X to X (equal, passes),
+# and every fixture range'"'"'s bound is strictly above its own introduced -
+# so a row probed with its own introduced value always matches ITSELF,
+# regardless of kind. This is what makes "does the reader find every row"
+# checkable without hand-computing which OTHER rows a given probe version
+# might also match (several probes below deliberately DO match more than
+# one row - see the "two advisories" case).
 _veng_advisories_load_normalizers
 missed=0
-while IFS=$'\t' read -r eco pkg ver _rest; do
+while IFS=$'\t' read -r eco pkg intro _rest; do
   [[ -n $eco ]] || continue
-  if ! sca_lookup_exact "$eco" "$pkg" "$ver" "$BDB" >/dev/null; then
+  if ! sca_lookup_range "$pkg" "$intro" "$BDB" >/dev/null; then
     missed=$(( missed + 1 ))
-    printf '    MISSED: %s %s %s\n' "$eco" "$pkg" "$ver" >&2
+    printf '    MISSED: %s %s %s\n' "$eco" "$pkg" "$intro" >&2
   fi
 done <<<"$body"
 assert_eq 0 "$missed" \
-  'every one of the 7 generated rows is found by the reader own lookup primitive - a wrong sort order makes look silently miss rows that are visibly present in the file'
+  'every one of the 12 generated rows (7 exact-kind + 5 range) is found by the reader own lookup primitive, probed with its own introduced value - a wrong sort order makes look silently miss rows that are visibly present in the file'
 
 t_case 'the reader finds every row under BOTH lookup backends (look and the grep fallback)'
 missed=0
 # SC2030/SC2031: forcing SCOURSH_CAP_LOOK inside a subshell is the point of
-# this case (it drives db_lookup_exact down its grep -F fallback), and it
-# must NOT leak back into the surrounding suite, which goes on to exercise
-# the look path on the same file.
+# this case (it drives db_lookup_prefix down its grep -F fallback, which -
+# unlike db_lookup_exact's own -m 1 fallback - must return every matching
+# row, per db_lookup_prefix's own header), and it must NOT leak back into
+# the surrounding suite, which goes on to exercise the look path on the
+# same file.
 # shellcheck disable=SC2030
-while IFS=$'\t' read -r eco pkg ver _rest; do
+while IFS=$'\t' read -r eco pkg intro _rest; do
   [[ -n $eco ]] || continue
-  if ! ( SCOURSH_CAP_LOOK=none; sca_lookup_exact "$eco" "$pkg" "$ver" "$BDB" >/dev/null ); then
+  if ! ( SCOURSH_CAP_LOOK=none; sca_lookup_range "$pkg" "$intro" "$BDB" >/dev/null ); then
     missed=$(( missed + 1 ))
   fi
 done <<<"$body"
 assert_eq 0 "$missed" \
-  "the grep -F fallback path finds them too, so a host without look reads the same database (tension 25's own frozen asymmetry is about how MANY rows come back, never about which exist)"
+  "the grep -F fallback path (no -m 1) finds them too, so a host without look reads the same database"
 
-t_case 'a version that was never written is NOT found (the lookup is exact, not a prefix guess)'
+t_case 'a version outside every fixture interval for the package is NOT found'
 rc=0
-sca_lookup_exact npm bulk-fixture-alpha 9.9.9 "$BDB" >/dev/null || rc=$?
-assert_ne 0 "$rc" 'an unwritten version misses, so a passing lookup above is evidence rather than a lookup that matches everything'
+sca_lookup_range bulk-fixture-alpha 9.9.9 "$BDB" >/dev/null || rc=$?
+assert_ne 0 "$rc" 'an unwritten version, above every fixture range and unequal to every exact row, misses - so a passing lookup above is evidence rather than a lookup that matches everything'
 rc=0
-sca_lookup_exact npm bulk-fixture-rangeonly 1.2.0 "$BDB" >/dev/null || rc=$?
-assert_ne 0 "$rc" 'and the range-only advisory really is absent from the reader path, not merely from a visual scan of the file'
+sca_lookup_range bulk-fixture-rangeonly 9.9.9 "$BDB" >/dev/null || rc=$?
+assert_ne 0 "$rc" 'and a version above the range-only advisory'"'"'s own [1.0.0,1.4.0) interval misses too'
+
+t_case 'a version INSIDE the range-only advisory'"'"'s interval IS found, even though OSV never enumerated it explicitly'
+IN_RANGE_HIT=$(sca_lookup_range bulk-fixture-rangeonly 1.2.0 "$BDB")
+assert_contains "$IN_RANGE_HIT" 'SCOURSH-FIXTURE-OSV-BULK-NPM-3' \
+  '1.2.0 was never an explicit OSV versions[] entry for this advisory - it is only representable because the amendment stores the interval [1.0.0,1.4.0) rather than dropping it (the pre-amendment behaviour this whole ticket exists to fix)'
 
 t_case 'two advisories for one package@version both come back through the reader (look only)'
 # shellcheck disable=SC2031
 if [[ ${SCOURSH_CAP_LOOK:-none} == look ]]; then
-  hits=$(sca_lookup_exact npm bulk-fixture-alpha 1.0.1 "$BDB" | wc -l | tr -d ' ')
-  assert_eq 2 "$hits" \
-    'NPM-1 and NPM-5 both name bulk-fixture-alpha 1.0.1, and look returns both rows - a sort that grouped them apart would return one'
+  HITS_1_0_1=$(sca_lookup_range bulk-fixture-alpha 1.0.1 "$BDB")
+  DISTINCT_ADV=$(printf '%s\n' "$HITS_1_0_1" | cut -f1 | LC_ALL=C sort -u | wc -l | tr -d ' ')
+  assert_eq 2 "$DISTINCT_ADV" \
+    'NPM-1 and NPM-5 both name bulk-fixture-alpha 1.0.1 (NPM-1 as an explicit exact-kind row AND inside its own [0,1.1.0) range; NPM-5 as an exact-kind row AND inside its own [1.0.1,1.2.0) range) - both advisory ids appear, a sort that grouped them apart would return only one'
+  assert_contains "$HITS_1_0_1" 'SCOURSH-FIXTURE-OSV-BULK-NPM-1' 'NPM-1 is among the hits'
+  assert_contains "$HITS_1_0_1" 'SCOURSH-FIXTURE-OSV-BULK-NPM-5' 'NPM-5 is among the hits'
 else
   printf '  SKIP  look is absent on this host; the multi-row half of tension 25 lookup asymmetry cannot be exercised here\n'
 fi
@@ -982,16 +1069,16 @@ if [[ ${SCOURSH_CAP_LOOK:-none} == look ]]; then
   MIS=$BULK_W/mis-sorted.db
   { LC_ALL=C sed -n '/^#/p' "$BDB"; LC_ALL=C sort -r <<<"$body"; } >"$MIS"
   found=0
-  while IFS=$'\t' read -r eco pkg ver _rest; do
+  while IFS=$'\t' read -r eco pkg intro _rest; do
     [[ -n $eco ]] || continue
-    if sca_lookup_exact "$eco" "$pkg" "$ver" "$MIS" >/dev/null; then
+    if sca_lookup_range "$pkg" "$intro" "$MIS" >/dev/null; then
       found=$(( found + 1 ))
     fi
   done <<<"$body"
-  if (( found < 7 )); then
-    _t_ok "a reverse-sorted copy of the identical rows loses $(( 7 - found )) of 7 lookups, so the LC_ALL=C sort is load-bearing rather than incidental"
+  if (( found < 12 )); then
+    _t_ok "a reverse-sorted copy of the identical rows loses $(( 12 - found )) of 12 lookups, so the LC_ALL=C sort is load-bearing rather than incidental"
   else
-    _t_no 'a reverse-sorted copy of the identical rows loses at least one lookup' "found=$found of 7"
+    _t_no 'a reverse-sorted copy of the identical rows loses at least one lookup' "found=$found of 12"
   fi
 else
   printf '  SKIP  look is absent on this host; the binary-search half of the sort requirement cannot be exercised here\n'
@@ -1035,6 +1122,7 @@ bulk_reset_db
 rc=0
 ( PATH="$FAKE_BULK_BIN:$NO_NET_PATH" FAKE_BULK_ZIP_DIR="$BULK_W/zips" FAKE_CURL_FAIL=1 \
   SCOURSH_SCA_ADVISORIES_DB="$BDB" SCOURSH_SCA_VERSIONS_DB="$BVDB" \
+  SCOURSH_SCA_SUMMARIES_DB="$BSDB" SCOURSH_DAST_VERSION_SUMMARIES_DB="$BVSDB" \
   bash "$TOOL" advisories bulk --accept-unverified npm ) >"$BULK_W/last.out" 2>&1 || rc=$?
 assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$rc" 'a failed fetch is exit 5'
 assert_file_absent "$BDB" 'and writes no database, rather than an empty one that reports every project clean'
@@ -1100,13 +1188,13 @@ assert_contains "$before_json" 'no_advisories_db_on_disk' \
 assert_contains "$before_json" 'SCA-COV-NO_ADVISORY_DB-01' \
   'and carries the coverage finding that says so on the report itself, not only in run.json metadata'
 
-t_case 'AFTER: the same scan against the same project, pointed at a bulk-imported database, reports the vulnerabilities'
+t_case 'AFTER: the same scan against the same project, pointed at a bulk-imported database, reports the vulnerabilities (docs/FOUNDATION.md tension 25 npm-range amendment)'
 bulk_reset_db
 bulk_run --archive "$NPM_ZIP" --sha256 "$NPM_ZIP_SHA" npm
 E2E_AFTER=$BULK_W/e2e-after
 rm -rf "$E2E_AFTER"
 assert_status 0 'the scan exits 0' \
-  env SCOURSH_SCA_ADVISORIES_DB="$BDB" bash "$ROOT/scan.sh" sca \
+  env SCOURSH_SCA_ADVISORIES_DB="$BDB" SCOURSH_SCA_SUMMARIES_DB="$BSDB" bash "$ROOT/scan.sh" sca \
   --path "$DEMO" --out "$E2E_AFTER"
 after_json=$(cat "$E2E_AFTER/run.json" 2>/dev/null)
 assert_contains "$after_json" 'SCA-NPM-VULNERABLE_DEP-01' \
@@ -1115,8 +1203,10 @@ findings=$(cat "$E2E_AFTER/findings.jsonl" 2>/dev/null || true)
 assert_contains "$findings" 'SCOURSH-FIXTURE-OSV-BULK-NPM-1' \
   'the advisory id carried through the whole pipeline: OSV export -> bulk import -> frozen TSV -> reader lookup -> finding'
 assert_contains "$findings" 'SCOURSH-FIXTURE-OSV-BULK-NPM-2' 'both vulnerable dependencies are reported, not just the first'
-assert_contains "$after_json" '"sca":3' \
-  'two vulnerable dependencies plus the one unknown-version roll-up for the known package pinned at an untracked version'
+assert_contains "$after_json" '"sca":2' \
+  'bulk-fixture-alpha@1.0.0 (NPM-1) and @bulk-scope/beta@2.0.0 (NPM-2) both fall inside their own fixed-kind range - two vulnerable findings. bulk-fixture-gamma@3.5.0, which used to feed the unknown-version roll-up (a THIRD live finding, pre-amendment), is now a genuine range MISS: NPM-4'"'"'s own interval is [0,3.1.0) and 3.5.0 is above that bound, so this is a real "not affected" verdict and npm no longer contributes to that roll-up at all - see modules/sca/engine.sh'"'"'s npm walk comment'
+assert_not_contains "$findings" 'bulk-fixture-gamma' \
+  'bulk-fixture-gamma is genuinely not affected at 3.5.0 - no finding of any kind, not even a roll-up contribution'
 assert_not_contains "$findings" 'bulk-fixture-clean' \
   'the dependency that appears in no advisory is not reported - the database discriminates rather than matching everything'
 

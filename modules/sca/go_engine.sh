@@ -226,9 +226,11 @@ _sca_go_parse_sum() {
 # the report rather than silently rewriting what the operator pinned.
 _sca_go_emit_finding() {
   local direct=$1 manifest_rel=$2 pinned_ver=$3 row=$4
-  local eco pkg ver advisory sev fixed summary
+  local eco pkg ver advisory sev fixed
   local marked=${row//$'\t'/$'\x1f'}
-  IFS=$'\x1f' read -r eco pkg ver advisory sev fixed summary <<<"$marked"
+  IFS=$'\x1f' read -r eco pkg ver advisory sev fixed <<<"$marked"
+  local summary
+  summary=$(_sca_summary_for "$advisory")
 
   local accept_risk=false
   [[ -z $fixed ]] && accept_risk=true

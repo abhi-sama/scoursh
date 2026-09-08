@@ -530,6 +530,41 @@ db_lookup_exact "$DUP_PREFIX" "$W/does-not-exist.db" >/dev/null 2>&1 || rc=$?
 assert_eq 1 "$rc" 'FAILS if the [[ -r $file ]] guard is dropped: look/grep would then run against a nonexistent path'
 
 # ---------------------------------------------------------------------------
+printf '\n-- docs/FOUNDATION.md tension 25 (npm-range amendment): db_lookup_prefix --\n'
+# ---------------------------------------------------------------------------
+# db_lookup_prefix's whole reason to exist, over db_lookup_exact, is the
+# grep fallback: it must NOT carry -m 1, because modules/sca/engine.sh's
+# sca_lookup_range prefixes on (ecosystem, package) alone and must evaluate
+# EVERY row sharing that prefix against the semver comparator, unlike an
+# exact (ecosystem, package, version) prefix where at most a handful of
+# advisories share one exact version. Reuses $W/lookup.db above unchanged -
+# pkgA has three rows, two of them sharing the DUP_PREFIX.
+t_case 'db_lookup_prefix: the grep fallback returns EVERY line sharing the prefix, not just the first'
+out=$(SCOURSH_CAP_LOOK=none db_lookup_prefix "$DUP_PREFIX" "$W/lookup.db")
+assert_eq "$(printf 'eco\tpkgA\t1.0\trecA1\neco\tpkgA\t1.0\trecA2')" "$out" \
+  'FAILS under a fallback carrying -m 1 (db_lookup_exact'"'"'s own): it would return only recA1, silently dropping recA2 - exactly the correctness bug db_lookup_prefix exists to avoid for a (ecosystem, package)-only prefix'
+
+t_case 'db_lookup_prefix: look returns every line sharing the prefix too (unchanged from db_lookup_exact'"'"'s own look branch)'
+if _have look; then
+  out=$(SCOURSH_CAP_LOOK=look db_lookup_prefix "$DUP_PREFIX" "$W/lookup.db")
+  assert_eq "$(printf 'eco\tpkgA\t1.0\trecA1\neco\tpkgA\t1.0\trecA2')" "$out" \
+    'look already returns every matching line; db_lookup_prefix must not narrow that'
+else
+  _t_ok 'look unavailable on this host; the fallback branch above still covers it'
+fi
+
+t_case 'db_lookup_prefix: no match - status 1, no output, no crash'
+rc=0
+out=$(SCOURSH_CAP_LOOK=none db_lookup_prefix "$NOMATCH_PREFIX" "$W/lookup.db") || rc=$?
+assert_eq 1 "$rc" 'the grep fallback returns 1 when nothing matches'
+assert_eq '' "$out" 'and prints nothing'
+
+t_case 'db_lookup_prefix: a missing or unreadable file returns 1 immediately'
+rc=0
+db_lookup_prefix "$DUP_PREFIX" "$W/does-not-exist.db" >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" 'FAILS if the [[ -r $file ]] guard is dropped'
+
+# ---------------------------------------------------------------------------
 printf '\n-- json_string --\n'
 # ---------------------------------------------------------------------------
 t_case 'the single JSON writer'

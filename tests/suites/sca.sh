@@ -115,6 +115,12 @@ source "$ROOT/tests/lib/assert.sh"
 
 FIXTURES=$ROOT/tests/fixtures/sca
 DB=$FIXTURES/advisories.db
+# The advisory-keyed summary side table (docs/FOUNDATION.md tension 25's
+# summary-normalisation amendment) is a fixed companion to $DB throughout
+# this whole suite - exported ONCE, globally, rather than repeated at every
+# one of this file's many SCOURSH_SCA_ADVISORIES_DB export sites, since
+# nothing here tests ITS absence the way a few cases test advisories.db's.
+export SCOURSH_SCA_SUMMARIES_DB=$FIXTURES/advisory-summaries.db
 W=$SCOURSH_SCRATCH/sca-suite
 rm -rf "$W"
 mkdir -p "$W"
@@ -230,21 +236,10 @@ assert_eq puma "$(sca_ruby_normalize_name puma)" 'an already-lowercase name is u
 # =============================================================================
 printf -- '\n-- data/advisories.db exact-match lookup (docs/FOUNDATION.md tension 25) --\n'
 # =============================================================================
-t_case 'sca_lookup_exact: an exact (ecosystem, package, version) hit'
-LOOKUP_HIT=$(sca_lookup_exact npm lodash 4.17.15 "$DB")
-assert_contains "$LOOKUP_HIT" 'SCA-FIXTURE-ADVISORY-002' 'the exact-match row for lodash@4.17.15 is returned'
-
-t_case 'sca_lookup_exact: no row for this exact version - miss, not a crash'
-assert_status 1 'lookup of an unlisted lodash version fails cleanly (rc 1, no match)' \
-  sca_lookup_exact npm lodash 4.17.16 "$DB"
-
-t_case 'sca_package_known: true when ANY version of the package is tracked'
-assert_status 0 'lodash is known at some version, even though 4.17.16 itself is not' \
-  sca_package_known npm lodash "$DB"
-t_case 'sca_package_known: false when the package has no advisories.db rows at all'
-assert_status 1 'a package the fixture db never mentions is NOT "known" - this is the unknown-version roll-up'"'"'s own precondition, not "not vulnerable"' \
-  sca_package_known npm totally-untracked-package "$DB"
-
+# npm no longer uses sca_lookup_exact/sca_package_known at all (tension 25's
+# npm-range amendment - see the "npm semver-range matching" section below for
+# sca_lookup_range's own suite). Every other ecosystem's exact-match path is
+# completely unchanged, so RubyGems is the worked example here.
 t_case 'sca_lookup_exact: the same exact-match path works for RubyGems, keyed on the normalised (lowercase) name'
 RUBY_LOOKUP_HIT=$(sca_lookup_exact RubyGems railsaddon 2.0.0 "$DB")
 assert_contains "$RUBY_LOOKUP_HIT" 'SCA-FIXTURE-RUBY-001' \
@@ -258,6 +253,50 @@ assert_status 0 'mini_portile2 is known at 2.9.0 in the fixture db, even though 
 t_case 'sca_package_known: RubyGems, a package the db never mentions at all'
 assert_status 1 'nokogiri has no data/advisories.db rows whatsoever' \
   sca_package_known RubyGems nokogiri "$DB"
+
+# =============================================================================
+printf -- '\n-- sca_lookup_range: npm semver-range matching (docs/FOUNDATION.md tension 25 amendment) --\n'
+# =============================================================================
+# modules/sca/semver.sh's own suite (tests/suites/sca-semver.sh) proves the
+# comparator itself against 30,000 real npm version pairs; this section
+# proves the LOOKUP built on top of it, against the fixture db's own range
+# rows (see tests/fixtures/sca/advisories.db's own header for the schema).
+t_case 'sca_lookup_range: a version inside a fixed-bound interval is a hit'
+LOOKUP_HIT=$(sca_lookup_range lodash 4.17.15 "$DB")
+assert_contains "$LOOKUP_HIT" 'SCA-FIXTURE-ADVISORY-002' \
+  'lodash@4.17.15 falls inside the [4.0.0,4.17.16) range row'
+
+t_case 'sca_lookup_range: a different pinned version of the SAME package hits a DIFFERENT interval row'
+LOOKUP_HIT2=$(sca_lookup_range lodash 4.17.20 "$DB")
+assert_contains "$LOOKUP_HIT2" 'SCA-FIXTURE-ADVISORY-003' \
+  'lodash@4.17.20 falls inside the [4.17.16,4.17.21) range row, not the 002 one - proves the comparator is evaluated per row, not a first-match shortcut'
+assert_not_contains "$LOOKUP_HIT2" 'SCA-FIXTURE-ADVISORY-002' \
+  'lodash@4.17.20 does NOT also match the 002 row - it is outside that row'"'"'s [4.0.0,4.17.16) bound'
+
+t_case 'sca_lookup_range: the fixed version itself is OUT of range - miss, not a crash (the mandated in/out proof)'
+assert_status 1 'lodash@4.17.21 is the published fix for both fixture ranges - not affected' \
+  sca_lookup_range lodash 4.17.21 "$DB"
+
+t_case 'sca_lookup_range: a version below every introduced bound is OUT of range'
+assert_status 1 'lodash@3.0.0 is below the lowest range'"'"'s introduced bound' \
+  sca_lookup_range lodash 3.0.0 "$DB"
+
+t_case 'sca_lookup_range: bound_kind=exact still matches byte-for-byte (an explicit OSV versions[] entry, never through the comparator)'
+EXACT_HIT=$(sca_lookup_range left-pad 1.3.0 "$DB")
+assert_contains "$EXACT_HIT" 'SCA-FIXTURE-ADVISORY-004' \
+  'left-pad@1.3.0 is an exact-kind row (an advisory with no fixed version published, carried through unchanged)'
+assert_status 1 'left-pad@1.3.1 does not byte-match the exact row, even though it is numerically adjacent' \
+  sca_lookup_range left-pad 1.3.1 "$DB"
+
+t_case 'sca_lookup_range: bound_kind=open matches EVERY version (Tier A whole-package/malware row, no version algebra at all)'
+MAL_HIT=$(sca_lookup_range evil-typo-pkg 0.0.1 "$DB")
+assert_contains "$MAL_HIT" 'SCA-FIXTURE-MALWARE-001' 'a whole-package row matches an arbitrary low version'
+MAL_HIT2=$(sca_lookup_range evil-typo-pkg 99.0.0 "$DB")
+assert_contains "$MAL_HIT2" 'SCA-FIXTURE-MALWARE-001' 'and matches an arbitrarily high version too - open has no upper bound'
+
+t_case 'sca_lookup_range: an untracked npm package - miss, not a crash'
+assert_status 1 'a package the fixture db never mentions produces no hit' \
+  sca_lookup_range totally-untracked-package 1.0.0 "$DB"
 
 # =============================================================================
 printf -- '\n-- sca_scan_tree: full npm-lock fixture against the fixture db --\n'
@@ -300,26 +339,49 @@ assert_contains "$SCA_FINDINGS" 'fixed_versions: none published' \
 assert_contains "$SCA_FINDINGS" 'accept_risk_candidate: false' \
   'a dependency WITH a fixed version (e.g. @scope/pkg) is NOT flagged as accept-risk - proves the flag is not stuck on one constant value'
 
-t_case 'AC: SCA-COV-UNKNOWN_VERSION-01 fires exactly ONCE, not per package'
+t_case 'AC (docs/FOUNDATION.md tension 25 summary-normalisation amendment): the advisory summary still renders in the finding evidence, through the finding_decode path'
+assert_contains "$SCA_FINDINGS" 'summary: fixture: prototype pollution' \
+  '@scope/pkg@1.0.0 (SCA-FIXTURE-ADVISORY-001) - a normal exact-kind row - carries its summary in the evidence, fetched from tests/fixtures/sca/advisory-summaries.db via sca_lookup_summary, even though the row itself no longer stores it inline'
+assert_contains "$SCA_FINDINGS" 'summary: fixture: no fixed version published yet' \
+  'left-pad@1.3.0 (SCA-FIXTURE-ADVISORY-004) carries ITS OWN, DIFFERENT summary - proves the lookup is keyed on advisory_id, not a single cached value reused for every finding'
+
+t_case 'AC (docs/FOUNDATION.md tension 25 npm-range amendment): the npm-range emitter (_sca_emit_finding_npm_range) also renders its summary correctly'
+assert_contains "$SCA_FINDINGS" 'summary: fixture: prototype pollution' \
+  'minimist@1.2.5 (SCA-FIXTURE-ADVISORY-005, matched via sca_lookup_range, a DIFFERENT emitter function from the exact path above) also joins its summary back in correctly'
+
+t_case 'AC (docs/FOUNDATION.md tension 25 summary-normalisation amendment): an advisory with no summary row falls back to a placeholder rather than a fatal error'
+NOSUMMARY_SUMMARY=$(_sca_summary_for SCA-FIXTURE-ADVISORY-DOES-NOT-EXIST-999)
+assert_eq 'no summary available' "$NOSUMMARY_SUMMARY" \
+  '_sca_summary_for degrades to a placeholder instead of aborting - a missing summary row is degraded evidence, never a reason to fail the scan (sca_lookup_summary returns 1, and the caller treats that as an empty string, not an error)'
+
+t_case 'AC (docs/FOUNDATION.md tension 25 npm-range amendment): npm no longer contributes to SCA-COV-UNKNOWN_VERSION-01 at all'
 _UNKNOWN_COUNT=$(printf '%s\n' "$SCA_FINDINGS" | grep -c '^SCA-COV-UNKNOWN_VERSION-01' || true)
-assert_eq 1 "$_UNKNOWN_COUNT" \
-  'exactly one roll-up finding - fails if lodash@4.17.99 and minimist@9.9.9 (both: package known, exact pinned version unmatched) each produced their own finding instead of one aggregate'
-assert_contains "$SCA_FINDINGS" 'SCA: 2 pinned dependency version' \
-  'the roll-up title states the correct aggregate count (2: lodash@4.17.99 and minimist@9.9.9)'
+assert_eq 0 "$_UNKNOWN_COUNT" \
+  'a range-covered ecosystem never reports "unknown version" - lodash@4.17.99 and the nested minimist@9.9.9 are both genuinely OUTSIDE every fixture range (above every bound_kind=fixed upper bound), which is a real "not affected" verdict, not missing coverage'
+assert_not_contains "$SCA_FINDINGS" 'SCA-FIXTURE-ADVISORY-002' \
+  'lodash@4.17.99 does not match the [4.0.0,4.17.16) range row'
+assert_not_contains "$SCA_FINDINGS" 'SCA-FIXTURE-ADVISORY-003' \
+  'lodash@4.17.99 does not match the [4.17.16,4.17.21) range row either'
+
+t_case 'AC: the DIRECT minimist@1.2.5 IS a semver-range hit (docs/FOUNDATION.md tension 25 amendment'"'"'s own worked example)'
+assert_contains "$SCA_FINDINGS" 'minimist@1.2.5 is vulnerable (SCA-FIXTURE-ADVISORY-005)' \
+  'minimist@1.2.5 falls inside the fixture'"'"'s [1.2.0,1.2.6) range row'
+assert_not_contains "$SCA_FINDINGS" 'minimist@9.9.9' \
+  'the NESTED minimist@9.9.9 (a different, higher pinned version of the SAME package under left-pad) does not match the range - proves the lookup is evaluated per PINNED VERSION, not per package name'
 
 t_case 'a package with NO advisories.db rows at all does not appear in the roll-up or as a finding'
 assert_not_contains "$SCA_FINDINGS" 'nested-thing' \
-  'nested-thing has no db rows whatsoever (sca_package_known is false for it) - absence is silent, not an unknown-version count'
+  'nested-thing has no db rows whatsoever - absence is silent, not an unknown-version count'
 
-t_case 'run.json: checks_run records both check ids actually executed'
+t_case 'run.json: checks_run records the check id actually executed'
 assert_contains "$(cat "$RUNDIR/meta/checks_run" 2>/dev/null)" 'SCA-NPM-VULNERABLE_DEP-01' \
   'SCA-NPM-VULNERABLE_DEP-01 is recorded as run'
-assert_contains "$(cat "$RUNDIR/meta/checks_run" 2>/dev/null)" 'SCA-COV-UNKNOWN_VERSION-01' \
-  'SCA-COV-UNKNOWN_VERSION-01 is recorded as run (only because the roll-up actually fired this run)'
+assert_not_contains "$(cat "$RUNDIR/meta/checks_run" 2>/dev/null)" 'SCA-COV-UNKNOWN_VERSION-01' \
+  'SCA-COV-UNKNOWN_VERSION-01 is NOT recorded as run for a pure-npm root - the roll-up never fired, and lib/records.sh only records checks_run for a check that actually ran'
 
-t_case 'run.json: the unknown-version coverage_gap is recorded with the ecosystem breakdown'
-assert_contains "$(cat "$RUNDIR/meta/coverage_gap" 2>/dev/null)" 'ecosystem=npm count=2' \
-  'the coverage_gap fact carries the same count the roll-up finding'"'"'s title states'
+t_case 'run.json: no unknown-version coverage_gap is recorded for this npm-only root'
+assert_not_contains "$(cat "$RUNDIR/meta/coverage_gap" 2>/dev/null)" 'reason=unknown_version ecosystem=npm' \
+  'npm range misses are never reported as a coverage gap - see the npm walk'"'"'s own comment in sca_scan_tree'
 
 unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
 
@@ -384,15 +446,24 @@ unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
 printf -- '\n-- sca_scan_tree: mixed npm + Ruby root - one SHARED SCA-COV-UNKNOWN_VERSION-01 --\n'
 # =============================================================================
 # tests/fixtures/sca/mixed-ecosystems/ carries BOTH a package-lock.json
-# (lodash pinned at 4.17.99 - known package, unmatched exact version) and a
-# Gemfile.lock (mini_portile2 pinned at 2.8.1 - same shape).  This is the
-# AC's own "shared roll-up" case made concrete: one sca_scan_tree call over
-# one root must produce exactly ONE SCA-COV-UNKNOWN_VERSION-01 finding whose
-# breakdown mentions BOTH ecosystems, not two competing findings that would
+# (lodash pinned at 4.17.99) and a Gemfile.lock (mini_portile2 pinned at
+# 2.8.1 - known package, unmatched exact version). This was originally the
+# AC's own "shared roll-up" case made concrete with TWO contributing
+# ecosystems; docs/FOUNDATION.md tension 25's npm-range amendment changes
+# what the npm half of it proves. lodash@4.17.99 is now resolved by
+# sca_lookup_range against tests/fixtures/sca/advisories.db's npm range rows
+# - it falls outside both, a genuine "not affected" verdict - so this
+# fixture now demonstrates the shared-roll-up mechanism with RubyGems as its
+# sole contributor, plus (implicitly, by npm's absence from the breakdown)
+# that a range miss is never mistaken for missing coverage. The mechanism
+# itself - one sca_scan_tree call over one root produces exactly ONE
+# SCA-COV-UNKNOWN_VERSION-01 finding, never one per ecosystem, which would
 # collide on one fingerprint (module=sca, check_id=SCA-COV-UNKNOWN_VERSION-01,
 # and no ecosystem/package/advisory_id component - see sca_scan_tree's own
 # header comment in modules/sca/engine.sh) and have findings_merge's dedup
-# silently drop one ecosystem's count.
+# silently drop one ecosystem's count - is unchanged, and is still proven
+# with multiple real contributors below in the mixed-four-ecosystems section
+# (pypi + maven + Go, npm resolved and absent there too).
 MIXED_RUNDIR=$W/run-mixed
 rm -rf "$MIXED_RUNDIR"
 run_init "$MIXED_RUNDIR"
@@ -405,20 +476,18 @@ sca_scan_tree "$FIXTURES/mixed-ecosystems"
 findings_merge "$MIXED_RUNDIR"
 MIXED_FINDINGS=$(_sca_findings "$MIXED_RUNDIR")
 
-t_case 'AC: one root with both an npm lockfile and a Gemfile.lock produces exactly ONE roll-up finding'
+t_case 'AC (amended, docs/FOUNDATION.md tension 25 npm-range amendment): one roll-up finding, RubyGems'"'"' own count only - npm'"'"'s lodash@4.17.99 is a genuine range miss, not an unknown version'
 MIXED_UNKNOWN_COUNT=$(printf '%s\n' "$MIXED_FINDINGS" | grep -c '^SCA-COV-UNKNOWN_VERSION-01' || true)
 assert_eq 1 "$MIXED_UNKNOWN_COUNT" \
-  'exactly one SCA-COV-UNKNOWN_VERSION-01 finding - fails if npm and RubyGems each produced their own (which would also silently collide on one fingerprint and lose data in findings_merge'"'"'s dedup)'
-
-t_case 'AC: the single roll-up breakdown combines BOTH ecosystems'"'"' counts'
-assert_contains "$MIXED_FINDINGS" 'SCA: 2 pinned dependency version' \
-  'the roll-up title sums both ecosystems'"'"' unknown-version counts (1 npm + 1 RubyGems = 2)'
-assert_contains "$MIXED_FINDINGS" 'npm: 1' 'the breakdown names npm'"'"'s own count'
+  'exactly one SCA-COV-UNKNOWN_VERSION-01 finding, from RubyGems alone'
+assert_contains "$MIXED_FINDINGS" 'SCA: 1 pinned dependency version' \
+  'the roll-up title states RubyGems'"'"' own unknown-version count (1) - npm contributes nothing now that it uses semver-range matching'
+assert_not_contains "$MIXED_FINDINGS" 'npm:' 'the breakdown does not name npm'
 assert_contains "$MIXED_FINDINGS" 'RubyGems: 1' 'the breakdown names RubyGems'"'"'s own count'
 
-t_case 'run.json: coverage_gap carries one fact per ecosystem, both from the same run'
+t_case 'run.json: coverage_gap carries the RubyGems fact, and no npm unknown_version fact'
 MIXED_GAP=$(cat "$MIXED_RUNDIR/meta/coverage_gap" 2>/dev/null)
-assert_contains "$MIXED_GAP" 'ecosystem=npm count=1' 'npm'"'"'s own coverage_gap fact is recorded'
+assert_not_contains "$MIXED_GAP" 'ecosystem=npm count=' 'npm records no unknown_version coverage_gap - its range lookup produced a definitive miss'
 assert_contains "$MIXED_GAP" 'ecosystem=RubyGems count=1' 'RubyGems'"'"'s own coverage_gap fact is recorded'
 
 unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
@@ -464,8 +533,8 @@ assert_status 0 'a real subprocess against the npm-lock fixture, with the fixtur
 E2E_RUNJSON=$(cat "$E2E_RUNDIR/run.json" 2>/dev/null)
 assert_contains "$E2E_RUNJSON" '"SCA-NPM-VULNERABLE_DEP-01"' \
   'checks_run in run.json shows the check actually executed through the real scan.sh entry point (scan_dispatch sca), not just when the module is sourced standalone'
-assert_contains "$E2E_RUNJSON" '"sca":4' \
-  'run.json by_module counts 4 live findings for sca - the fixture'"'"'s 3 distinct-version vulnerable rows plus the one roll-up'
+assert_contains "$E2E_RUNJSON" '"sca":3' \
+  'run.json by_module counts 3 live findings for sca - the fixture'"'"'s 3 distinct-version vulnerable rows (@scope/pkg, left-pad, minimist@1.2.5); no roll-up fires, since npm'"'"'s only other pinned versions (lodash@4.17.99, the nested minimist@9.9.9) are genuine range misses under docs/FOUNDATION.md tension 25'"'"'s npm-range amendment, not unknown coverage'
 
 # =============================================================================
 printf -- '\n-- name normalisation (docs/FOUNDATION.md tension 25): Maven is groupId:artifactId --\n'
@@ -883,11 +952,11 @@ COMPOSER_FINDINGS=$(_sca_findings "$RUNDIR3")
 t_case 'AC: a known-vulnerable pinned package from composer.lock is reported, tagged SCA-PHP-VULNERABLE_DEP-01'
 assert_contains "$COMPOSER_FINDINGS" 'SCA-PHP-VULNERABLE_DEP-01' \
   'at least one SCA-PHP-VULNERABLE_DEP-01 finding was emitted for the fixture repo - fails if the check id were left as the shared npm one'
-assert_contains "$COMPOSER_FINDINGS" 'acme/widget@1.2.3 is vulnerable (SCA-FIXTURE-ADVISORY-101)' \
+assert_contains "$COMPOSER_FINDINGS" 'acme/widget@1.2.3 is vulnerable (SCA-FIXTURE-PHP-101)' \
   'the pinned acme/widget@1.2.3 row matches the fixture db exactly'
 
 t_case 'AC: the mixed-case package is matched too - proves normalisation happens before the lookup, not just before classification'
-assert_contains "$COMPOSER_FINDINGS" 'acme/mixedcase@3.0.0 is vulnerable (SCA-FIXTURE-ADVISORY-102)' \
+assert_contains "$COMPOSER_FINDINGS" 'acme/mixedcase@3.0.0 is vulnerable (SCA-FIXTURE-PHP-102)' \
   'db row is stored lowercase (acme/mixedcase); composer.lock spelled it Acme/MixedCase - a miss here means normalisation was skipped before sca_lookup_exact'
 
 t_case 'AC: direct vs transitive is distinguished in the composer finding evidence too'
@@ -895,7 +964,7 @@ assert_contains "$COMPOSER_FINDINGS" 'dependency_type: direct' 'acme/widget and 
 assert_contains "$COMPOSER_FINDINGS" 'dependency_type: transitive' 'acme/legacy-lib is transitive'
 
 t_case 'AC: a pinned package with no fixed version in advisories.db is accept-risk, not dropped'
-assert_contains "$COMPOSER_FINDINGS" 'acme/legacy-lib@0.1.0 is vulnerable (SCA-FIXTURE-ADVISORY-103)' \
+assert_contains "$COMPOSER_FINDINGS" 'acme/legacy-lib@0.1.0 is vulnerable (SCA-FIXTURE-PHP-103)' \
   'the no-fixed-version package still produced a finding - "dropping it" would mean this line is simply absent'
 assert_contains "$COMPOSER_FINDINGS" 'accept_risk_candidate: true' \
   'acme/legacy-lib (empty fixed_versions in the fixture db) is flagged accept_risk_candidate: true'
@@ -969,12 +1038,14 @@ sca_scan_tree "$FIXTURES/mixed-ecosystems-php"
 findings_merge "$RUNDIR5"
 MIXED_FINDINGS=$(_sca_findings "$RUNDIR5")
 
-t_case 'AC: an unknown-version case from EACH ecosystem in one run still produces exactly one roll-up finding'
+t_case 'AC: an unknown-version case still produces exactly one roll-up finding (docs/FOUNDATION.md tension 25 npm-range amendment: npm no longer contributes one of the two)'
 _MIXED_ROLLUP_COUNT=$(printf '%s\n' "$MIXED_FINDINGS" | grep -c '^SCA-COV-UNKNOWN_VERSION-01' || true)
 assert_eq 1 "$_MIXED_ROLLUP_COUNT" \
-  'the fixture has an npm lockfile (lodash@4.17.99, unmatched) AND a composer.lock (acme/unknown-version-pkg@9.9.9, unmatched) - this must still be ONE finding, not one per ecosystem, which is exactly the failure mode a naive per-ecosystem sca_scan_tree split would reintroduce'
-assert_contains "$MIXED_FINDINGS" 'by ecosystem: composer: 1, npm: 1' \
-  'the single roll-up'"'"'s evidence breaks the count down by ecosystem, LC_ALL=C sorted (composer before npm) - proves both ecosystems fed the SAME finding rather than each producing its own'
+  'the fixture has a composer.lock (acme/unknown-version-pkg@9.9.9, unmatched) - one finding, matching the "shared roll-up, not one per ecosystem" contract this section is named for; the fixture'"'"'s npm lockfile (lodash@4.17.99) is now a genuine range miss and contributes nothing'
+assert_contains "$MIXED_FINDINGS" 'by ecosystem: composer: 1' \
+  'the roll-up'"'"'s evidence names composer'"'"'s own count'
+assert_not_contains "$MIXED_FINDINGS" 'npm:' \
+  'npm does not appear in the breakdown - lodash@4.17.99 is outside every fixture range row, a genuine "not affected" verdict'
 
 unset SCOURSH_SCA_ADVISORIES_DB SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_ID
 
@@ -1351,7 +1422,7 @@ printf -- '\n-- the unknown-version roll-up: ONE per run, and its counts add up 
 # tests/fixtures/sca/mixed-four-ecosystems/ carries one unknown-version case in
 # each of the four ecosystem-scan ENTRY POINTS the module has - npm
 # (sca_scan_tree), pypi (sca_scan_python_tree), maven (sca_scan_java_tree) and
-# Go (sca_go_scan_tree) - so the true total is 4.
+# Go (sca_go_scan_tree).
 #
 # Shipped behaviour, measured before this change: run.json recorded all four
 # coverage_gap facts, and the report carried ONE roll-up finding reading
@@ -1366,6 +1437,15 @@ printf -- '\n-- the unknown-version roll-up: ONE per run, and its counts add up 
 # one per run by construction, so the four walks now accumulate into one shared
 # table that the module flushes once.  Its fingerprint is therefore UNCHANGED,
 # which is pinned below against a digest computed from raw bytes.
+#
+# docs/FOUNDATION.md tension 25's npm-range amendment changes what this
+# fixture's npm case PROVES, not the mechanism above: the fixture's pinned
+# lodash@4.17.99 is genuinely outside every fixture range row (above both
+# bound_kind=fixed upper bounds), so it is a real "not affected" verdict, not
+# missing coverage - npm therefore no longer contributes to this roll-up at
+# all, and the true total drops from 4 to 3 (pypi + maven + Go). This is
+# exactly the improvement Change 1 is for: npm went from "we don't know" to
+# "we checked, and it's fine" for this dependency.
 MIXED4=$FIXTURES/mixed-four-ecosystems
 MIXED4_RUNDIR=$W/run-mixed-four
 rm -rf "$MIXED4_RUNDIR"
@@ -1374,27 +1454,31 @@ assert_status 0 'the four-ecosystem fixture scans clean of gated findings' \
 MIXED4_FINDINGS=$(cat "$MIXED4_RUNDIR/findings.jsonl" 2>/dev/null)
 MIXED4_RUNJSON=$(cat "$MIXED4_RUNDIR/run.json" 2>/dev/null)
 
-t_case 'AC: four ecosystems with unknown-version dependencies produce exactly one roll-up'
+t_case 'AC: three range/exact-covered ecosystems with unknown-version dependencies produce exactly one roll-up'
 MIXED4_ROLLUPS=$(printf '%s\n' "$MIXED4_FINDINGS" | grep -c 'SCA-COV-UNKNOWN_VERSION-01' || true)
 assert_eq 1 "$MIXED4_ROLLUPS" \
   'one roll-up finding survives - true under the shipped reading too, but only because three of the four were silently deduplicated away rather than never emitted'
 
-t_case 'AC: the roll-up count is the TRUTH across every ecosystem, not one walk'"'"'s share'
-assert_contains "$MIXED4_FINDINGS" 'SCA: 4 pinned dependency version(s)' \
-  'the title states 4 (npm 1 + pypi 1 + maven 1 + Go 1) - fails under the shipped reading, whose surviving roll-up states 1 because the other three walks'"'"' counts were dropped by the fingerprint collision'
+t_case 'AC: the roll-up count is the TRUTH across every CONTRIBUTING ecosystem, not one walk'"'"'s share'
+assert_contains "$MIXED4_FINDINGS" 'SCA: 3 pinned dependency version(s)' \
+  'the title states 3 (pypi 1 + maven 1 + Go 1) - npm'"'"'s own lodash@4.17.99 case is a genuine range miss (not affected), not an unknown-version count, per tension 25'"'"'s npm-range amendment'
 
-t_case 'AC: the breakdown names every contributing ecosystem, LC_ALL=C sorted'
-assert_contains "$MIXED4_FINDINGS" 'by ecosystem: Go: 1, maven: 1, npm: 1, pypi: 1' \
-  'all four ecosystems appear in one breakdown - fails under the shipped reading, whose survivor reads "by ecosystem: Go: 1" alone'
+t_case 'AC: the breakdown names every contributing ecosystem, LC_ALL=C sorted, and npm is absent'
+assert_contains "$MIXED4_FINDINGS" 'by ecosystem: Go: 1, maven: 1, pypi: 1' \
+  'the three range/exact-covered ecosystems appear in one breakdown - fails under the shipped reading, whose survivor reads "by ecosystem: Go: 1" alone'
+assert_not_contains "$MIXED4_FINDINGS" 'npm: 1' \
+  'npm does not appear in the breakdown at all - its lodash@4.17.99 case was resolved, not counted as unknown'
 
 t_case 'AC: the coverage_gap facts and the roll-up finding now agree'
-for _eco in Go maven npm pypi; do
+for _eco in Go maven pypi; do
   assert_contains "$MIXED4_RUNJSON" "reason=unknown_version ecosystem=$_eco count=1" \
     "run.json still records $_eco's own coverage_gap fact"
 done
+assert_not_contains "$MIXED4_RUNJSON" 'reason=unknown_version ecosystem=npm' \
+  'npm records no unknown_version coverage_gap - its range lookup produced a definitive miss, not an unknown'
 MIXED4_GAP_TOTAL=$(printf '%s\n' "$MIXED4_RUNJSON" | grep -o 'reason=unknown_version ecosystem=[^ ]* count=1' | wc -l | tr -d ' ')
-assert_eq 4 "$MIXED4_GAP_TOTAL" \
-  'four coverage_gap facts, and the finding above states 4 - fails under the shipped reading, where run.json said four and the report said one, and nothing reconciled them'
+assert_eq 3 "$MIXED4_GAP_TOTAL" \
+  'three coverage_gap facts, and the finding above states 3'
 
 t_case 'the roll-up fingerprint is UNCHANGED by this fix (rules/RULE-FORMAT.md §14 item 3)'
 # Pick the roll-up's own line explicitly rather than the first finding in the
