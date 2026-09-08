@@ -18,6 +18,15 @@
 #
 # SC2016: backticks in assertion prose are literal, not command substitution.
 # shellcheck disable=SC2016
+#
+# SC2030/SC2031: every cache and credential case runs its snippet inside
+# `out=$( export ...; snip ... )`, and the export being confined to that
+# subshell is the POINT - a case that leaked SNIP_CACHE_DIR or STUB_COUNT_FILE
+# into the next one would make each case's result depend on the order the file
+# happens to run in.  shellcheck's "that change might be lost" is exactly the
+# property being relied on here, so it is disabled with a reason rather than
+# worked around.
+# shellcheck disable=SC2030,SC2031
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
@@ -357,7 +366,7 @@ assert_contains "$out" 'DONE' 'both regional calls completed'
 assert_eq 2 "$(calls_of "$CALLS")" \
   "us-east-1's answer is not served for eu-west-1 - a region-blind key would report one region's resources as every region's"
 
-t_case 'a principal change never serves the previous principal\'s cached answers'
+t_case 'a principal change never serves the previous principal cached answers'
 # Step 6's sts assume-role path changes principal mid-run.  Every entry already
 # in the cache is the OLD principal's view, and the identity call itself is the
 # one call whose key cannot carry an account - the account is what it is
@@ -563,6 +572,8 @@ An error occurred (ThrottlingException) when calling the ListRoles operation: Ra
 An error occurred (RequestLimitExceeded) when calling the DescribeInstances operation: slow down|throttled|yes
 An error occurred (NoSuchBucketPolicy) when calling the GetBucketPolicy operation: The bucket policy does not exist|not_found|no
 An error occurred (ResourceNotFoundException) when calling the DescribeKey operation: absent|not_found|no
+An error occurred (NoSuchEntity) when calling the GetRole operation: no such role|not_found|no
+An error occurred (ObjectNotFound) when calling the GetObject operation: gone|not_found|no
 An error occurred (UnsupportedOperation) when calling the DescribeInstances operation: not available here|unsupported|yes
 An error occurred (SomeBrandNewErrorCode) when calling the ListThings operation: who knows|error|yes
 Unable to locate credentials. You can configure credentials by running "aws configure".|no_credentials|yes

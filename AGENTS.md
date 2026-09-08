@@ -2863,6 +2863,19 @@ step 2 is next" above.
   the one call whose key cannot carry an account (the account is what it resolves), so after an
   assume-role the new principal's `sts get-caller-identity` hashes identically to the old one's and
   is served straight back. Measured; the `account` key component is belt-and-braces beside it.
+- **A fixture-driven check test that varies the response for an IDENTICAL call must reset the
+  cache, and `tests/lib/aws-fixtures.sh`'s `aws_fixture_response_set` is where that lives.** The
+  stub `aws` deliberately does not inspect service/operation/args - one fixture file is one canned
+  response - so the fixture's identity is the `AWS_FIXTURE_RESPONSE` variable, while the cache keys
+  on `sha256(service|region|account|op|args)`, which is byte-identical across a known-bad and a
+  known-good case calling the same operation. Setting the variable alone serves the second case the
+  FIRST case's body, so a known-good fixture is judged against known-bad bytes and the check reports
+  a finding its own fixture does not contain - measured, `tests/suites/aws-fixtures.sh`'s known-good
+  case went red the moment the cache landed. That is not a cache defect (in a real run two identical
+  calls genuinely have one answer, which is what tension 16 is for); it is a property of a harness
+  whose response varies under a fixed key, which is why the reset sits in the harness every step-6
+  check's own suite copies from rather than in one suite. `SCOURSH_AWS_CACHE=0` disables the cache
+  outright, but prefer the setter: a suite that wants to prove the cache itself still can.
 - **`--profile` and `--region` are now REACHABLE and still not WIRED.** `aws_ro_use_profile` /
   `aws_ro_use_region` set the ambient values and `aws_ro` applies whichever the caller did not
   supply, never duplicating a flag the caller passed (two `--region`s makes the winner a property of

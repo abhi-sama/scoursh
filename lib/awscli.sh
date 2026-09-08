@@ -135,6 +135,13 @@ readonly SCOURSH_AWS_RO_OUTCOMES='ok truncated access_denied auth_failure no_cre
 
 # Set by every aws_ro call, before it returns, on both the success and the
 # failure path.  A caller reads these; it never re-parses stderr itself.
+#
+# SC2034: four of these are written here and read only by a CALLER - a step-6
+# check, or tests/suites/awscli.sh - so shellcheck cannot see the read from
+# inside this file.  They are the published contract this section documents,
+# not dead stores; the disable is on the block rather than on each assignment
+# so a later field inherits it (each assignment inside a function carries its
+# own, since a file-level directive does not reach into a function body).
 SCOURSH_AWS_RO_OUTCOME=''     # one of SCOURSH_AWS_RO_OUTCOMES
 SCOURSH_AWS_RO_STATUS=0       # the CLI's own exit status (0 when served from cache)
 SCOURSH_AWS_RO_CODE=''        # the AWS error code, verbatim, when there was one
@@ -241,9 +248,13 @@ _awscli_classify() {
         RequestThrottledException | RequestLimitExceeded | TooManyRequestsException | \
         ProvisionedThroughputExceededException | SlowDown)
         SCOURSH_AWS_RO_OUTCOME=throttled ;;
+      # The four globs already carry every specifically-named code this arm
+      # used to spell out (NoSuchEntity, ObjectNotFound,
+      # ResourceNotFoundException, ...); re-adding one is both dead and an
+      # SC2222 that fails the shellcheck stage.  The table in
+      # tests/suites/awscli.sh pins the glob coverage instead.
       NoSuch* | *NotFound | *NotFoundException | *NotFoundError | *NotFoundFault | \
-        ResourceNotFoundException | NoSuchEntity | EntityDoesNotExist | \
-        ResourceNotDiscoveredException | ObjectNotFound)
+        EntityDoesNotExist | ResourceNotDiscoveredException)
         SCOURSH_AWS_RO_OUTCOME=not_found ;;
       InvalidAction | UnsupportedOperation | OperationNotPermitted | \
         UnsupportedOperationException | MethodNotAllowed | \
@@ -571,6 +582,7 @@ aws_ro() {
 
 _awscli_serve_cached() {
   local f=$1
+  # shellcheck disable=SC2034  # published contract; see the declarations above
   SCOURSH_AWS_RO_CACHED=1
   SCOURSH_AWS_RO_STATUS=0
   _awscli_detect_truncation "$f"
@@ -630,6 +642,7 @@ _awscli_fetch() {
   else
     SCOURSH_AWS_RO_OUTCOME=ok
   fi
+  # shellcheck disable=SC2034  # published contract; see the declarations above
   SCOURSH_AWS_RO_STATUS=0
 
   if [[ -n $cache ]]; then
@@ -705,6 +718,7 @@ aws_ro_paged() {
       SCOURSH_AWS_RO_PAGES=$(( page - 1 ))
       return 1
     fi
+    # shellcheck disable=SC2034  # published contract; see the declarations above
     SCOURSH_AWS_RO_PAGES=$page
     (( SCOURSH_AWS_RO_TRUNCATED )) || { SCOURSH_AWS_RO_OUTCOME=ok; return 0; }
     if [[ -z $SCOURSH_AWS_RO_NEXT_TOKEN ]]; then
@@ -799,6 +813,7 @@ aws_ro_account_id_set() {
 # and is belt-and-braces beside this, not the load-bearing half.
 aws_ro_identity_forget() {
   SCOURSH_AWS_ACCOUNT_ID=''
+  # shellcheck disable=SC2034  # published contract; see the declarations above
   SCOURSH_AWS_CALLER_ARN=''
   aws_ro_cache_clear
   return 0
