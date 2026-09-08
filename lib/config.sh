@@ -284,7 +284,7 @@ config_valid_ua_text() {
 _scanner_validate_list_item() {
   local key=$1 val=$2
   case $key in
-    formats) [[ $val =~ ^(json|sarif|html|md)$ ]] ;;
+    formats) [[ $val =~ ^(json|sarif|html|md|audit)$ ]] ;;
     paranoid-allow) [[ $val =~ ^[^:[:space:]]+:[0-9]+$ ]] ;;
     # An RFC 7230 field-name token - the identical bracket expression
     # modules/dast/passive/headers_engine.sh's own file-based loader accepts

@@ -828,6 +828,44 @@ done
 unset _checks_run _id
 
 # =============================================================================
+printf -- '\n-- checks_run semantics: recorded AFTER the walk, only for checks actually evaluated --\n'
+# =============================================================================
+# docs/FOUNDATION.md/AGENTS.md's "checks_run semantics fix": before this fix,
+# modules/iac/run.sh recorded `checks_run "$id"` from the SELECTION list,
+# BEFORE iac_scan_tree ever ran - byte-identical to the SAST bug this shares
+# its fix with - so a check whose `files:` glob matched zero files in the
+# scanned tree was still reported as "run". tests/fixtures/iac/docker-compose
+# contains exactly one file, docker-compose.yml - no *.tf anywhere in it - so
+# terraform.rules' IAC-TF-OPEN_CIDR-01 (files: *.tf) is selected but has
+# nothing to evaluate, while docker-compose.rules' own
+# IAC-COMPOSE-EXPOSED_PORT-01 (files: docker-compose.yml among others) does.
+#
+# This is the test that FAILS under the pre-fix reading: recording
+# checks_run from the selection list (before the walk) puts
+# IAC-TF-OPEN_CIDR-01 in checks_run regardless of the tree's contents, so the
+# first assertion below would fail (assert_not_contains would find it
+# present).
+t_case 'checks_run semantics: a check whose files: glob matched nothing in this tree is NOT recorded as run'
+rm -rf "$W/run-tf-not-applicable"
+bash "$ROOT/scan.sh" iac --path "$ROOT/tests/fixtures/iac/docker-compose" \
+  --out "$W/run-tf-not-applicable" >/dev/null 2>&1
+_tfna_checks_run=$(cat "$W/run-tf-not-applicable/meta/checks_run" 2>/dev/null || true)
+assert_not_contains "$_tfna_checks_run" 'IAC-TF-OPEN_CIDR-01' \
+  'IAC-TF-OPEN_CIDR-01 (files: *.tf) is NOT in checks_run over a tree with no .tf file - fails under the pre-fix reading, which records checks_run from the selection list before the tree walk ever runs, so this id would appear regardless of what the tree contains'
+
+t_case 'checks_run semantics: a check that WAS evaluated (its files: glob matched a real file in this tree) still IS recorded as run'
+assert_contains "$_tfna_checks_run" 'IAC-COMPOSE-EXPOSED_PORT-01' \
+  'IAC-COMPOSE-EXPOSED_PORT-01 (files: docker-compose.yml, present in this tree) is still recorded as run in the SAME scan - proves the fix narrows to unevaluated checks specifically, not to every check in a registry containing an inapplicable one'
+
+t_case 'checks_run semantics: the unevaluated check is declared, by id, as a coverage_reduction - never silently unaccounted'
+_tfna_reductions=$(cat "$W/run-tf-not-applicable/meta/coverage_reduction" 2>/dev/null || true)
+assert_contains "$_tfna_reductions" 'module=iac reason=no_matching_files' \
+  'a coverage_reduction names the reason no_matching_files for module=iac'
+assert_contains "$_tfna_reductions" 'IAC-TF-OPEN_CIDR-01' \
+  'that reduction names IAC-TF-OPEN_CIDR-01 specifically, inside its checks=[...] list - the same convention modules/dast/passive/headers.sh already established for a DAST check no fetched response was applicable to'
+unset _tfna_checks_run _tfna_reductions
+
+# =============================================================================
 printf -- '\n-- exit-code flip (mirrors sast.sh''s own last section) --\n'
 # =============================================================================
 # docs/STEP7-STATE-PLAN.md STATE-06: see tests/suites/sast.sh's identical note

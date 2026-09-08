@@ -142,6 +142,10 @@ iac_scan_tree() {
   shift
   local -a ids=("$@")
   _iac_capture_max_matches
+  # Shares `_SAST_CHECK_EVAL` with sast_scan_tree (modules/sast/engine.sh) -
+  # reset here so a stale IaC count from an earlier scan_main invocation in
+  # this process never rides to `checks_run` on a walk it was not part of.
+  sast_eval_reset
   local scan_root
   scan_root=$(scan_root_of "$root")
   local abspath rel id loc set idx
@@ -167,6 +171,7 @@ iac_scan_tree() {
       [[ -n $loc ]] || continue
       read -r set idx <<<"$loc"
       sast_rule_matches_file "$set" "$idx" "$rel" || continue
+      sast_eval_mark "$id"
       iac_scan_file "$set" "$idx" "$rel" "$abspath"
     done
   done <<<"$files"

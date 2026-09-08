@@ -109,6 +109,11 @@ formats: json
 formats: sarif
 formats: html
 formats: md
+# formats: audit is a fifth, opt-in value (never in the default list this
+# example ships): it writes report-audit.html alongside report.html, an
+# audit-grade per-category coverage report (ran / clean / not-covered, with
+# full not-covered detail). Uncomment the line below to always emit it.
+#formats: audit
 max-matches-per-file: 200
 evidence-max-bytes: 512
 state-retain-runs: 30
