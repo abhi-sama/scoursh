@@ -1,0 +1,849 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>scoursh vs. open-source security scanners</title>
+<style>
+  :root{
+    --bg:#fbfbfd; --surface:#ffffff; --surface-2:#f5f6f8; --surface-3:#eef0f4;
+    --text:#14161a; --text-2:#4a5058; --text-3:#6b727c;
+    --line:#e2e5ea; --line-2:#cfd4dc;
+    --accent:#2f5bd0; --accent-soft:#eaf0ff; --accent-line:#c2d2f7;
+    --ok:#0f7b4f; --ok-soft:#e4f5ec; --ok-line:#b6e0c8;
+    --warn:#8a5a00; --warn-soft:#fdf1dc; --warn-line:#f0d9a8;
+    --bad:#b0243a; --bad-soft:#fdeaee; --bad-line:#f4c2cc;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,"Helvetica Neue",Arial,sans-serif;
+    --radius:10px;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0e1014; --surface:#15181e; --surface-2:#1a1e25; --surface-3:#222731;
+      --text:#e9ecf1; --text-2:#aab2be; --text-3:#8b939f;
+      --line:#282e38; --line-2:#39414e;
+      --accent:#7ea3f5; --accent-soft:#182238; --accent-line:#2c3d63;
+      --ok:#5fd6a0; --ok-soft:#0f2419; --ok-line:#1e4634;
+      --warn:#f0c069; --warn-soft:#2a2013; --warn-line:#4d3c1c;
+      --bad:#f58aa0; --bad-soft:#2a151b; --bad-line:#4f2630;
+    }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);
+    font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased;
+  }
+  .wrap{display:grid;grid-template-columns:250px minmax(0,1fr);gap:0;max-width:1500px;margin:0 auto}
+
+  /* ---------- sidebar ---------- */
+  nav{
+    position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;
+    padding:28px 18px 40px;border-right:1px solid var(--line);background:var(--surface);
+  }
+  nav .brand{font-weight:700;font-size:15px;letter-spacing:-.01em;margin-bottom:2px}
+  nav .brand span{color:var(--accent)}
+  nav .tag{font-size:11.5px;color:var(--text-3);margin-bottom:22px;line-height:1.45}
+  nav a{
+    display:block;padding:5px 9px;margin:1px 0;border-radius:6px;color:var(--text-2);
+    text-decoration:none;font-size:13.5px;border-left:2px solid transparent;
+  }
+  nav a:hover{background:var(--surface-2);color:var(--text)}
+  nav .sec{
+    font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--text-3);
+    font-weight:650;margin:18px 0 5px;padding-left:9px;
+  }
+
+  /* ---------- main ---------- */
+  main{padding:44px 46px 100px;min-width:0}
+  header.page{border-bottom:1px solid var(--line);padding-bottom:26px;margin-bottom:34px}
+  h1{font-size:33px;line-height:1.18;letter-spacing:-.022em;margin:0 0 12px;font-weight:700}
+  .sub{font-size:17px;color:var(--text-2);margin:0;max-width:74ch;line-height:1.55}
+  .meta{margin-top:16px;font-size:12.5px;color:var(--text-3);font-family:var(--mono)}
+
+  h2{
+    font-size:23px;letter-spacing:-.016em;margin:52px 0 14px;padding-top:14px;
+    border-top:1px solid var(--line);font-weight:670;
+  }
+  h2:first-of-type{border-top:none;padding-top:0}
+  h3{font-size:16.5px;margin:30px 0 10px;font-weight:650;letter-spacing:-.008em}
+  p{max-width:80ch}
+  ul,ol{max-width:80ch;padding-left:22px}
+  li{margin:5px 0}
+  a{color:var(--accent)}
+  code{
+    font-family:var(--mono);font-size:.855em;background:var(--surface-3);
+    padding:1.5px 5px;border-radius:4px;
+  }
+  strong{font-weight:650}
+
+  /* ---------- callouts ---------- */
+  .thesis{
+    background:var(--accent-soft);border:1px solid var(--accent-line);
+    border-radius:var(--radius);padding:20px 24px;margin:26px 0;
+  }
+  .thesis p{margin:0;font-size:17px;line-height:1.55;max-width:78ch}
+  .thesis .lbl{
+    font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;font-weight:700;
+    color:var(--accent);margin-bottom:8px;
+  }
+  .verdict{
+    background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:var(--radius);padding:16px 20px;margin:20px 0;
+  }
+  .verdict .lbl{
+    font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;font-weight:700;
+    color:var(--text-3);margin-bottom:6px;
+  }
+  .verdict p{margin:0;font-size:14.5px;color:var(--text-2);line-height:1.6}
+  .verdict p + p{margin-top:9px}
+  .note{
+    background:var(--warn-soft);border:1px solid var(--warn-line);border-radius:var(--radius);
+    padding:15px 19px;margin:20px 0;font-size:14.5px;
+  }
+  .note p{margin:0;max-width:78ch}
+  .note p + p{margin-top:8px}
+  .note .lbl{font-weight:700;color:var(--warn)}
+  .danger{
+    background:var(--bad-soft);border:1px solid var(--bad-line);border-radius:var(--radius);
+    padding:15px 19px;margin:20px 0;font-size:14.5px;
+  }
+  .danger p{margin:0;max-width:78ch}
+  .danger .lbl{font-weight:700;color:var(--bad)}
+  blockquote{
+    margin:18px 0;padding:13px 20px;border-left:3px solid var(--line-2);
+    background:var(--surface-2);border-radius:0 var(--radius) var(--radius) 0;
+    color:var(--text-2);font-size:14.5px;
+  }
+  blockquote p{margin:0}
+  blockquote cite{display:block;margin-top:7px;font-size:12.5px;color:var(--text-3);font-style:normal}
+
+  /* ---------- tables ---------- */
+  .scroll{
+    overflow-x:auto;margin:18px 0;border:1px solid var(--line);
+    border-radius:var(--radius);background:var(--surface);
+  }
+  table{border-collapse:collapse;width:100%;font-size:13.2px;min-width:760px}
+  thead th{
+    background:var(--surface-2);text-align:left;padding:10px 13px;font-weight:650;
+    font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-2);
+    border-bottom:1px solid var(--line-2);white-space:nowrap;position:sticky;top:0;
+  }
+  tbody td{padding:11px 13px;border-bottom:1px solid var(--line);vertical-align:top;line-height:1.5}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:var(--surface-2)}
+  tbody tr.self{background:var(--accent-soft)}
+  tbody tr.self:hover{background:var(--accent-soft)}
+  tbody tr.self td{border-bottom-color:var(--accent-line)}
+  tbody tr.dead td{color:var(--text-3)}
+  td.tool{font-weight:650;white-space:nowrap;color:var(--text)}
+  tbody tr.dead td.tool{color:var(--text-3)}
+
+  /* ---------- pills ---------- */
+  .pill{
+    display:inline-block;padding:1px 7px;border-radius:20px;font-size:11px;
+    font-weight:650;white-space:nowrap;border:1px solid;line-height:1.6;
+  }
+  .p-ok{background:var(--ok-soft);color:var(--ok);border-color:var(--ok-line)}
+  .p-warn{background:var(--warn-soft);color:var(--warn);border-color:var(--warn-line)}
+  .p-bad{background:var(--bad-soft);color:var(--bad);border-color:var(--bad-line)}
+  .p-neut{background:var(--surface-3);color:var(--text-2);border-color:var(--line-2)}
+
+  /* ---------- stats ---------- */
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:24px 0}
+  .stat{
+    background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;
+  }
+  .stat .n{font-size:25px;font-weight:700;letter-spacing:-.02em;line-height:1.1}
+  .stat .l{font-size:12px;color:var(--text-3);margin-top:3px;line-height:1.4}
+  .stat.no .n{color:var(--bad)}
+
+  /* ---------- two-column guidance ---------- */
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:22px 0}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px}
+  .card h4{margin:0 0 10px;font-size:14.5px;font-weight:670}
+  .card.yes h4{color:var(--ok)}
+  .card.no h4{color:var(--bad)}
+  .card ul{margin:0;padding-left:19px;font-size:14px}
+  .card li{margin:7px 0;color:var(--text-2)}
+  .card li strong{color:var(--text)}
+
+  footer{
+    margin-top:60px;padding-top:22px;border-top:1px solid var(--line);
+    font-size:12.5px;color:var(--text-3);
+  }
+  footer a{color:var(--text-2)}
+
+  @media (max-width:1000px){
+    .wrap{grid-template-columns:1fr}
+    nav{position:static;height:auto;border-right:none;border-bottom:1px solid var(--line)}
+    nav a{display:inline-block;margin-right:4px}
+    main{padding:28px 20px 70px}
+    .cols{grid-template-columns:1fr}
+    h1{font-size:27px}
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<nav>
+  <div class="brand">scoursh<span>/</span>positioning</div>
+  <div class="tag">An honest comparison against free &amp; open-source scanners</div>
+
+  <div class="sec">Overview</div>
+  <a href="#headline">The headline</a>
+  <a href="#baseline">What scoursh actually is</a>
+  <a href="#limits">Declared limits</a>
+
+  <div class="sec">By category</div>
+  <a href="#sast">SAST</a>
+  <a href="#sca">SCA</a>
+  <a href="#iac">IaC</a>
+  <a href="#dast">DAST</a>
+  <a href="#secrets">Secrets</a>
+  <a href="#cloud">Cloud / CSPM</a>
+
+  <div class="sec">Guidance</div>
+  <a href="#measured">Measured head-to-head</a>
+  <a href="#choose">When to choose what</a>
+  <a href="#notes">Notes &amp; sources</a>
+</nav>
+
+<main>
+
+<header class="page">
+  <h1>scoursh vs. the open-source security scanners</h1>
+  <p class="sub">
+    scoursh is not a better Semgrep, a better ZAP, or a better Trivy — and this page will not pretend
+    otherwise. On raw depth in any single category, the specialist wins. This is a straight account of
+    what scoursh does, what it does not do, and the narrow set of situations where it is the right
+    choice anyway.
+  </p>
+  <p class="meta">Licence &amp; maintenance data from the GitHub API, 2026-09-08 &middot; scoursh measured at v0.1.0-dev</p>
+</header>
+
+<!-- ============ HEADLINE ============ -->
+<h2 id="headline">The headline</h2>
+
+<div class="thesis">
+  <div class="lbl">The position</div>
+  <p>
+    One auditable bash tool that sweeps four surfaces in a single run, refuses to talk to anything
+    outside an operator-declared allowlist, and — uniquely among the tools surveyed — reports what it
+    <strong>did not</strong> check as a first-class, non-clean output state.
+  </p>
+</div>
+
+<p>
+  That third property is the one no mainstream competitor offers, and it is the reason to reach for
+  scoursh. Portability and single-tool convenience are pleasant; the coverage honesty is unusual.
+  The market leader states the gap in its own documentation:
+</p>
+
+<blockquote>
+  <p>
+    &ldquo;For the secret/license scanner, the Trivy report contains only findings. Therefore, we
+    can&rsquo;t say for sure whether Trivy scanned at least one file or simply didn&rsquo;t find any
+    findings.&rdquo;
+  </p>
+  <cite>— Trivy troubleshooting documentation</cite>
+</blockquote>
+
+<p>
+  Removing exactly that ambiguity is scoursh&rsquo;s design centre. Every registered check lands in
+  one of four buckets: it <strong>found a problem</strong>, it <strong>ran and came back clean</strong>,
+  it <strong>was skipped with a reason on record</strong>, or it is <strong>not covered</strong> —
+  registered but never run. The last bucket is never folded into &ldquo;clean&rdquo;.
+</p>
+
+<!-- ============ BASELINE ============ -->
+<h2 id="baseline">What scoursh actually is</h2>
+
+<div class="stats">
+  <div class="stat"><div class="n">181</div><div class="l">security checks across four surfaces</div></div>
+  <div class="stat"><div class="n">4</div><div class="l">surfaces: SAST, SCA, IaC, DAST</div></div>
+  <div class="stat"><div class="n">0</div><div class="l">runtime deps beyond bash + coreutils</div></div>
+  <div class="stat"><div class="n">1</div><div class="l">network chokepoint, lint-enforced</div></div>
+  <div class="stat no"><div class="n">None</div><div class="l">cloud / CSPM checks — not built</div></div>
+</div>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Surface</th><th>Status</th><th>What shipped</th><th>Checks</th></tr></thead>
+  <tbody>
+    <tr><td class="tool">SAST</td><td><span class="pill p-ok">landed</span></td><td>9 rule packs across 6 languages, plus git-history secret replay</td><td>53</td></tr>
+    <tr><td class="tool">SCA</td><td><span class="pill p-warn">needs setup</span></td><td>6 ecosystems, 12 manifest formats — advisory DB is built by hand, offline</td><td>table lookup</td></tr>
+    <tr><td class="tool">IaC</td><td><span class="pill p-ok">landed</span></td><td>Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose</td><td>36</td></tr>
+    <tr><td class="tool">DAST</td><td><span class="pill p-ok">landed</span></td><td>Full engine: auth, crawl, passive, safe-active, injection, tier-5</td><td>92</td></tr>
+    <tr class="dead"><td class="tool">Cloud / AWS</td><td><span class="pill p-bad">not built</span></td><td>No <code>modules/cloud/</code> exists. <code>scan.sh cloud</code> is an accepted, logged no-op.</td><td>0</td></tr>
+  </tbody>
+</table>
+</div>
+
+<div class="danger">
+  <p><span class="lbl">Cloud is not built.</span> Any material implying CSPM capability is false.
+  <code>scan.sh cloud</code> accepts the command and records why it did nothing. The read-only AWS
+  chokepoint (<code>lib/awscli.sh</code>) is implemented and enforced at runtime, but has no callers —
+  it is architecture waiting for checks, not a feature. Use Prowler.</p>
+</div>
+
+<p>Also shipping, and relevant when comparing against a specialist toolchain:</p>
+<ul>
+  <li><strong>SARIF 2.1.0</strong> — a complete, schema-validated document, so findings drop into GitHub code scanning and any SARIF-aware viewer.</li>
+  <li><strong>Persistent state and diff</strong> — findings classify as <code>new</code> / <code>recurring</code> / <code>fixed</code> / <code>unknown</code> against the prior run, with baseline suppression and a real <code>--fail-on-new</code> CI carve-out.</li>
+  <li><strong>Optional engine adapters</strong> — semgrep and gitleaks for SAST, <code>trivy config</code> for IaC, all opt-in and vendored ahead of time. Nothing is fetched during a scan.</li>
+  <li><strong>Guided mode</strong> — a bare <code>scan.sh</code> walks you through composing a real command and can print the exact non-interactive equivalent.</li>
+  <li><strong>Test rigour</strong> — 81 suites and 6 linters; 47% of the codebase is tests.</li>
+</ul>
+
+<!-- ============ LIMITS ============ -->
+<h2 id="limits">Declared limits</h2>
+<p>
+  These are scoursh&rsquo;s own, published in its design document rather than discovered by a reviewer.
+  The project&rsquo;s stated principle is that <em>a scan that overstates coverage is worse than one
+  that names its blind spots</em>.
+</p>
+<ul>
+  <li><strong>Data-flow analysis.</strong> The native tier is pattern/linter-grade. True taint and cross-function analysis needs the optional vendored engines. This is the most important caveat on the page.</li>
+  <li><strong>Client-rendered apps.</strong> No JavaScript execution, so a single-page app&rsquo;s routes are invisible unless you supply an OpenAPI, HAR, Postman or GraphQL spec.</li>
+  <li><strong>Advisory freshness.</strong> SCA is only as current as your last offline refresh — a deliberate, dated snapshot, never real-time.</li>
+  <li><strong>Business logic.</strong> Authorization checks are detection-oriented; complete access-control correctness still needs human review.</li>
+  <li><strong>Speed.</strong> Every static scan is single-worker. Measured: 114&nbsp;s for 52 files. Compiled-Go competitors do comparable work in seconds.</li>
+  <li><strong>Not a pentest.</strong> Automated regression and posture scanning that complements a manual assessment; it does not replace one.</li>
+</ul>
+
+<!-- ============ SAST ============ -->
+<h2 id="sast">SAST</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Tool</th><th>Coverage</th><th>Licence</th><th>Footprint</th><th>Egress</th><th>Coverage honesty</th><th>Unique strength</th></tr></thead>
+  <tbody>
+    <tr class="self">
+      <td class="tool">scoursh</td>
+      <td>53 checks, 6 languages, + secrets &amp; git history</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td>
+      <td>bash &ge; 4.2, grep/rg, awk</td>
+      <td>None</td>
+      <td><strong>Four-state partition</strong></td>
+      <td>Honest coverage; one tool across surfaces</td>
+    </tr>
+    <tr>
+      <td class="tool">Semgrep CE</td>
+      <td>~3,000 community rules, 30+ languages; single-file analysis only</td>
+      <td><span class="pill p-ok">LGPL-2.1</span></td>
+      <td>Python + OCaml binary</td>
+      <td>Registry fetch unless offline</td>
+      <td>Findings only</td>
+      <td>Best free SAST depth; readable rule DSL</td>
+    </tr>
+    <tr>
+      <td class="tool">Bandit</td><td>Python only</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td><td>Python</td><td>None</td>
+      <td>Findings only</td><td>Deep Python idiom coverage</td>
+    </tr>
+    <tr>
+      <td class="tool">gosec</td><td>Go only</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td><td>Single Go binary</td><td>None</td>
+      <td>Findings only</td><td>Fast, zero-dep, Go-native AST</td>
+    </tr>
+    <tr>
+      <td class="tool">njsscan</td><td>JavaScript / Node only</td>
+      <td><span class="pill p-warn">LGPL-3.0</span></td><td>Python + semgrep</td><td>None</td>
+      <td>Findings only</td><td>Node and Express specific patterns</td>
+    </tr>
+    <tr>
+      <td class="tool">CodeQL</td>
+      <td>Deep interprocedural taint, 10+ languages</td>
+      <td><span class="pill p-bad">CLI proprietary</span></td>
+      <td>Multi-GB engine + DB build</td><td>Yes</td>
+      <td>Findings only</td><td>Best-in-class dataflow, if you qualify</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <p><span class="lbl">Read the CodeQL licence carefully.</span> The query libraries are MIT, but the
+  CLI engine that runs them is governed by the GitHub CodeQL Terms — not an OSI-approved licence. It
+  forbids use <em>&ldquo;in connection with any codebase that is not an Open Source Codebase (e.g.,
+  code in a private repo in GitHub)&rdquo;</em> unless you hold GitHub Advanced Security. If you are
+  scanning private code, CodeQL is not a free option.</p>
+</div>
+
+<div class="verdict">
+  <div class="lbl">Honest verdict</div>
+  <p>
+    <strong>Semgrep CE wins on depth and it is not close</strong> — roughly 3,000 rules against
+    scoursh&rsquo;s 53, across 30+ languages against 6. Use Semgrep as your primary SAST engine.
+  </p>
+  <p>
+    scoursh&rsquo;s SAST earns its place two ways: it is the only tool here that also replays its
+    secrets rules across <strong>git history</strong> without a second tool, and it tells you which of
+    its own checks never ran. Note the fair symmetry — Semgrep CE is <em>also</em> single-file-only,
+    so the taint-analysis gap scoursh declares is one CE shares; the difference is that 53 patterns
+    are a thinner net than 3,000. <strong>Position it as a baseline sweep and history scan, not your
+    deep SAST engine.</strong>
+  </p>
+</div>
+
+<!-- ============ SCA ============ -->
+<h2 id="sca">SCA — dependencies</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Tool</th><th>Coverage</th><th>Licence</th><th>Footprint</th><th>Egress</th><th>Coverage honesty</th><th>Unique strength</th></tr></thead>
+  <tbody>
+    <tr class="self">
+      <td class="tool">scoursh</td>
+      <td>6 ecosystems, 12 manifest formats</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td>
+      <td>bash + coreutils</td>
+      <td><strong>None at scan time</strong> — DB built offline</td>
+      <td><strong>Exits 4 rather than reporting clean</strong></td>
+      <td>Refuses to imply coverage it does not have</td>
+    </tr>
+    <tr>
+      <td class="tool">Trivy</td>
+      <td>20+ ecosystems, plus containers, IaC and secrets</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td>
+      <td>Single Go binary</td><td>Auto-fetches vuln DB</td>
+      <td>Findings only</td><td>Breadth: one binary covers most of the stack</td>
+    </tr>
+    <tr>
+      <td class="tool">Grype</td><td>Broad; pairs with Syft SBOMs</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td>
+      <td>Single Go binary</td><td>Auto-fetches grype-db</td>
+      <td>Findings only</td><td>Precise version matching, low false positives</td>
+    </tr>
+    <tr>
+      <td class="tool">OSV-Scanner</td><td>OSV.dev-backed, polyglot</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td>
+      <td>Single Go binary</td><td>Queries OSV.dev</td>
+      <td>Findings only</td><td>Highest reported accuracy, fewest false positives</td>
+    </tr>
+    <tr>
+      <td class="tool">Dependency-Check</td><td>Java-centric, CPE matching</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td>
+      <td>JVM + NVD feed</td><td>Downloads NVD</td>
+      <td>Findings only</td><td>Entrenched in Java, Maven and Jenkins shops</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <p><span class="lbl">One-time setup, and it is a real cost.</span> scoursh does not ship an advisory
+  database — it is deliberately never bundled or auto-fetched. Until you build it once on a networked
+  box, <code>scan.sh sca</code> matches nothing. It does not report &ldquo;0 vulnerabilities&rdquo;
+  when that happens: it exits 4 and names every ecosystem it did not check.</p>
+</div>
+
+<div class="verdict">
+  <div class="lbl">Honest verdict</div>
+  <p>
+    <strong>For finding CVEs, use Trivy, Grype or OSV-Scanner.</strong> They auto-fetch a maintained
+    database and work in one command. scoursh requires a deliberate, manual database build first,
+    which is genuine adoption friction.
+  </p>
+  <p>
+    What that cost buys is the thing the others cannot offer: a dated, auditable, offline snapshot
+    that never phones home at scan time, and a scanner that fails loudly rather than silently when the
+    data is missing. <strong>In an air-gapped or egress-audited environment that trade is correct.
+    Everywhere else, Trivy is the better default.</strong>
+  </p>
+</div>
+
+<!-- ============ IAC ============ -->
+<h2 id="iac">IaC — infrastructure as code</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Tool</th><th>Coverage</th><th>Licence</th><th>Footprint</th><th>Status</th><th>Coverage honesty</th><th>Unique strength</th></tr></thead>
+  <tbody>
+    <tr class="self">
+      <td class="tool">scoursh</td>
+      <td>36 checks across 6 formats</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td>
+      <td>bash + coreutils</td>
+      <td><span class="pill p-ok">active</span></td>
+      <td><strong>Four-state partition</strong></td>
+      <td>Auditable plain-text packs; cross-format isolation tested</td>
+    </tr>
+    <tr>
+      <td class="tool">Checkov</td><td>1,000+ policies, graph-based cross-resource analysis</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td><td>Python</td>
+      <td><span class="pill p-ok">active</span></td>
+      <td>Findings + skip comments</td><td>Terraform depth; cross-resource graph</td>
+    </tr>
+    <tr>
+      <td class="tool">KICS</td><td>2,400+ queries, 22+ platforms</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td><td>Go binary + query pack</td>
+      <td><span class="pill p-ok">active</span></td>
+      <td>Findings only</td><td>Widest raw format coverage</td>
+    </tr>
+    <tr>
+      <td class="tool">Trivy <code>config</code></td><td>tfsec&rsquo;s full inherited check set</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td><td>Single Go binary</td>
+      <td><span class="pill p-ok">active</span></td>
+      <td>Findings only</td><td>One binary for IaC, SCA and containers</td>
+    </tr>
+    <tr class="dead">
+      <td class="tool">tfsec</td><td>Merged into Trivy; no new rules</td>
+      <td><span class="pill p-neut">MIT</span></td><td>Go binary</td>
+      <td><span class="pill p-warn">superseded</span></td>
+      <td>&mdash;</td><td>Do not adopt — use <code>trivy config</code></td>
+    </tr>
+    <tr class="dead">
+      <td class="tool">Terrascan</td><td>~500 Rego policies</td>
+      <td><span class="pill p-neut">Apache-2.0</span></td><td>Go binary</td>
+      <td><span class="pill p-bad">archived 2025-11-20</span></td>
+      <td>&mdash;</td><td>Do not adopt — repository is read-only</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="note">
+  <p><span class="lbl">Two of the usual four are gone.</span> tfsec is frozen and redirects to Trivy.
+  Terrascan was archived read-only by Tenable on 2025-11-20. Both still run, but neither will see a
+  new rule or a new provider version again.</p>
+</div>
+
+<div class="verdict">
+  <div class="lbl">Honest verdict</div>
+  <p>
+    <strong>KICS and Checkov are far deeper</strong> — 2,400+ and 1,000+ policies against
+    scoursh&rsquo;s 36 — and Trivy gives you tfsec&rsquo;s inherited catalogue in a binary you may
+    already run for SCA. scoursh&rsquo;s 36 checks are a smoke test, not a policy engine, and should
+    be described that way.
+  </p>
+  <p>
+    Its narrow genuine edge: the packs are plain-text pattern records a reviewer can audit in an
+    afternoon, cross-format contamination is pinned by tests in both directions, and it reports which
+    packs never fired. <strong>A fast, dependency-free sanity pass, with Checkov or KICS as the real
+    gate.</strong>
+  </p>
+</div>
+
+<!-- ============ DAST ============ -->
+<h2 id="dast">DAST — running applications</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Tool</th><th>Coverage</th><th>Licence</th><th>Footprint</th><th>Egress / consent</th><th>Coverage honesty</th><th>Unique strength</th></tr></thead>
+  <tbody>
+    <tr class="self">
+      <td class="tool">scoursh</td>
+      <td>92 checks in 16 families; passive &rarr; safe-active &rarr; injection</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td>
+      <td>bash + curl</td>
+      <td><strong>Refuses any host not in scope.conf</strong></td>
+      <td><strong>Four-state + declared reductions</strong></td>
+      <td>Runtime-enforced consent and blast-radius model</td>
+    </tr>
+    <tr>
+      <td class="tool">ZAP <span class="pill p-neut">by Checkmarx</span></td>
+      <td>Full proxy, spider, AJAX spider, active and passive scan</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td>
+      <td>JVM + browser for AJAX spider</td>
+      <td>Whatever you point it at</td>
+      <td>Scan policy lists enabled rules</td>
+      <td>Best-in-class free DAST; large add-on ecosystem</td>
+    </tr>
+    <tr>
+      <td class="tool">Nuclei</td><td>12,000+ community templates</td>
+      <td><span class="pill p-ok">MIT</span></td><td>Single Go binary</td>
+      <td>Fetches template updates</td>
+      <td>Reports templates run</td><td>Fastest known-CVE template coverage</td>
+    </tr>
+    <tr>
+      <td class="tool">Nikto</td><td>Web-server misconfiguration and known files</td>
+      <td><span class="pill p-warn">GPLv3</span></td><td>Perl</td><td>Direct</td>
+      <td>Findings only</td><td>Decades of server-misconfig knowledge</td>
+    </tr>
+    <tr>
+      <td class="tool">Wapiti</td><td>Black-box injection families</td>
+      <td><span class="pill p-warn">GPL-2.0</span></td><td>Python</td><td>Direct</td>
+      <td>Findings only</td><td>Simple, focused black-box injection</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  scoursh&rsquo;s DAST differs less in what it checks than in what it refuses to do. It will not
+  contact a host absent from <code>config/scope.conf</code>. It holds itself to 4 requests per second
+  and 4 concurrent connections unless you assert <code>--i-own-target</code> <em>naming the same
+  target</em>. It ships an identifying User-Agent with no switch to remove it, on the reasoning that
+  an authorised scan has no need to be unidentifiable. Side-effecting checks need
+  <code>--allow-intrusive</code> as well, because the parties harmed by those are the target&rsquo;s
+  users, and owning a host does not confer permission to affect them.
+</p>
+
+<div class="verdict">
+  <div class="lbl">Honest verdict</div>
+  <p>
+    <strong>ZAP is the reference free DAST and scoursh does not displace it.</strong> No JavaScript
+    execution, no proxy, no AJAX spider — any single-page app is invisible to scoursh&rsquo;s crawler
+    unless you feed it a spec or HAR capture. Nuclei&rsquo;s 12,000 templates dwarf 92 checks for
+    known-CVE coverage.
+  </p>
+  <p>
+    Where scoursh is genuinely differentiated is the consent model: no other tool here makes
+    &ldquo;am I allowed to do this&rdquo; a runtime-enforced question. <strong>It is the DAST you can
+    safely leave running in CI against your own staging estate — not the one you hand a
+    pentester.</strong>
+  </p>
+</div>
+
+<!-- ============ SECRETS ============ -->
+<h2 id="secrets">Secrets</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Tool</th><th>Coverage</th><th>Licence</th><th>Footprint</th><th>Egress</th><th>Coverage honesty</th><th>Unique strength</th></tr></thead>
+  <tbody>
+    <tr class="self">
+      <td class="tool">scoursh</td>
+      <td>7 secret checks + git-history replay</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td>
+      <td>bash + git</td><td>None</td>
+      <td><strong>Four-state partition</strong></td>
+      <td>Secrets masked in every output, by construction</td>
+    </tr>
+    <tr>
+      <td class="tool">Gitleaks</td><td>Broad regex and entropy ruleset</td>
+      <td><span class="pill p-ok">MIT</span></td><td>Single Go binary</td><td>None</td>
+      <td>Findings only</td><td>Fastest git-native scanning; simplest licence</td>
+    </tr>
+    <tr>
+      <td class="tool">TruffleHog</td><td>Large detector set + live credential verification</td>
+      <td><span class="pill p-warn">AGPL-3.0</span></td><td>Single Go binary</td>
+      <td><strong>Verification calls providers by design</strong></td>
+      <td>Findings only</td><td>Turns &ldquo;maybe&rdquo; into a confirmed incident</td>
+    </tr>
+    <tr>
+      <td class="tool">detect-secrets</td><td>Plugin-based, baseline workflow</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td><td>Python</td><td>None</td>
+      <td>Baseline audit workflow</td><td>Mature baseline loop for brownfield repos</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="verdict">
+  <div class="lbl">Honest verdict</div>
+  <p>
+    <strong>Use Gitleaks or TruffleHog as your dedicated secret scanner.</strong> Seven checks against
+    a full ruleset is not a contest, and scoursh has no live verification.
+  </p>
+  <p>
+    scoursh&rsquo;s value here is narrower and different: a secret finding <em>cannot leak the secret
+    into the report</em>. Redaction is enforced by provenance at the single point every finding passes
+    through, not by hoping a pattern list is complete — and the test suite asserts the property that
+    the value appears in no byte the run wrote. That matters precisely when the report is an artefact
+    you hand to someone else. <strong>A safe-by-construction secondary net, not your primary secret
+    scanner.</strong>
+  </p>
+</div>
+
+<!-- ============ CLOUD ============ -->
+<h2 id="cloud">Cloud / CSPM</h2>
+
+<div class="danger">
+  <p><span class="lbl">scoursh does not compete here.</span> There are no cloud checks. This table is
+  included so the comparison is complete, not to suggest a contest.</p>
+</div>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>Tool</th><th>Coverage</th><th>Licence</th><th>Footprint</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr class="dead">
+      <td class="tool">scoursh</td><td><strong>None — not built</strong></td>
+      <td><span class="pill p-neut">Apache-2.0</span></td><td>&mdash;</td>
+      <td>Read-only chokepoint exists and is enforced, but has no callers</td>
+    </tr>
+    <tr>
+      <td class="tool">Prowler</td><td>~600 AWS checks, 84 services, 44 compliance frameworks</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td><td>Python + AWS credentials</td>
+      <td>Depth plus compliance mapping — the default choice</td>
+    </tr>
+    <tr>
+      <td class="tool">ScoutSuite</td><td>Multi-cloud posture with an HTML report</td>
+      <td><span class="pill p-warn">GPL-2.0</span></td><td>Python</td>
+      <td>Excellent visual report; last commit ~1 year old</td>
+    </tr>
+    <tr>
+      <td class="tool">CloudSploit</td><td>AWS, Azure, GCP, OCI and GitHub plugins</td>
+      <td><span class="pill p-warn">GPL-3.0</span></td><td>Node.js</td>
+      <td>Broad plugin model, actively maintained</td>
+    </tr>
+    <tr>
+      <td class="tool">Steampipe / Powerpipe</td><td>SQL over cloud APIs + large benchmark library</td>
+      <td><span class="pill p-bad">AGPL-3.0</span></td><td>Go + Postgres FDW</td>
+      <td>Powerful, but the CLI licence blocks some organisations</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="verdict">
+  <div class="lbl">Honest verdict</div>
+  <p>
+    <strong>Use Prowler.</strong> What scoursh has is the architecture for cloud scanning — a
+    read-only AWS chokepoint enforced at runtime, not merely by lint, and a CI guard for it, both
+    landed before any check exists to use them. That is a credible &ldquo;when we build it, it will
+    be safe&rdquo; story and an unusual build order. It is not a feature.
+  </p>
+</div>
+
+<!-- ============ MEASURED ============ -->
+<h2 id="measured">Measured head-to-head</h2>
+<p>
+  Real numbers, measured on one machine, each tool run against the same target with default-ish config.
+  Findings were judged against a known ground truth, not taken from any tool's own output.
+</p>
+<div class="verdict">
+  <strong>Read this first.</strong> Three of the four targets (SAST, IaC, secrets) are scoursh's own
+  committed test fixtures &mdash; its rules were authored against those exact files, so a high score there
+  measures &ldquo;still passes its own cases,&rdquo; not &ldquo;finds vulnerabilities it has never seen.&rdquo;
+  The SCA target is the fair one: real packages at real historically-vulnerable versions. Treat the
+  recall gaps, false-positive counts, runtime, and footprint as the load-bearing signals here &mdash; not
+  scoursh&rsquo;s home-turf recall.
+</div>
+
+<h3>SAST &mdash; 41 planted issues</h3>
+<table>
+  <thead><tr><th>Tool</th><th>Recall</th><th>False positives</th><th>Runtime</th><th>Footprint</th></tr></thead>
+  <tbody>
+    <tr><td><strong>scoursh</strong></td><td>40/41 (97.6%)</td><td>0</td><td>68 s</td><td>0 (repo only)</td></tr>
+    <tr><td>Semgrep (security-audit + secrets + owasp)</td><td>12/41 (29.3%)</td><td>0</td><td>1.6 s</td><td>~450 MB</td></tr>
+    <tr><td>Bandit (python subset)</td><td>6/12</td><td>0</td><td>0.13 s</td><td>17 MB</td></tr>
+    <tr><td>gosec (go subset)</td><td>4/5</td><td>0</td><td>&lt;0.1 s</td><td>Go toolchain + cache</td></tr>
+  </tbody>
+</table>
+
+<h3>SCA &mdash; 12 real vulnerable dependencies (the fair test)</h3>
+<table>
+  <thead><tr><th>Tool</th><th>Packages caught</th><th>Runtime</th><th>Local DB / egress</th></tr></thead>
+  <tbody>
+    <tr><td><strong>scoursh</strong></td><td>12/12</td><td>98 s</td><td>~10 MB, no egress</td></tr>
+    <tr><td>Trivy fs</td><td>12/12</td><td>~4 s</td><td>1.3 GB DB</td></tr>
+    <tr><td>Grype</td><td>12/12</td><td>0.5 s</td><td>2.0 GB DB</td></tr>
+    <tr><td>OSV-Scanner</td><td>12/12 + 2 transitive</td><td>3.5 s</td><td>live query to api.osv.dev</td></tr>
+  </tbody>
+</table>
+<div class="verdict">
+  <strong>Package-level recall is a tie &mdash; and the earlier exact-version gap is now closed.</strong>
+  The benchmark first surfaced that scoursh matched advisories by exact version only, missing most
+  range-based npm advisories. That has since been fixed: npm now uses semver-range matching (real-CVE
+  recall 3.6% &rarr; 100%) while the vendored database actually shrank (it was over-storing duplicated
+  data). scoursh reads only the literal lockfile, so it does not do OSV-Scanner&rsquo;s transitive
+  resolution &mdash; a real depth advantage for that tool.
+</div>
+
+<h3>IaC &mdash; 44 planted misconfigurations</h3>
+<table>
+  <thead><tr><th>Tool</th><th>Defects matched</th><th>Runtime</th><th>Notable</th></tr></thead>
+  <tbody>
+    <tr><td><strong>scoursh</strong></td><td>43/44</td><td>74 s</td><td>&mdash;</td></tr>
+    <tr><td>Trivy config</td><td>150 checks, 26/36 files covered</td><td>~3 s</td><td>zero findings on docker-compose or Helm files</td></tr>
+    <tr><td>Checkov</td><td>157 checks, 27/36 files covered</td><td>2.8 s</td><td>same Helm/compose blind spot</td></tr>
+  </tbody>
+</table>
+
+<h3>Secrets &mdash; 56 planted, 34 negative controls</h3>
+<table>
+  <thead><tr><th>Tool</th><th>Recall</th><th>False positives</th><th>Runtime</th><th>Note</th></tr></thead>
+  <tbody>
+    <tr><td><strong>scoursh</strong></td><td>53/56 (94.6%)</td><td>0/34</td><td>76 s</td><td>&mdash;</td></tr>
+    <tr><td>Gitleaks</td><td>19/56 (33.9%)</td><td>0/34</td><td>0.054 s</td><td>strong on API-key/token family, near-blind on generic &ldquo;password&rdquo;</td></tr>
+    <tr><td>TruffleHog</td><td>1/56 (1.8%)</td><td>0/34</td><td>0.66 s</td><td>built for verifiable service credentials, not generic literals</td></tr>
+  </tbody>
+</table>
+
+<div class="verdict">
+  <strong>The honest read.</strong> On these targets scoursh had the higher recall with zero false
+  positives and no vendored gigabytes &mdash; but it is <strong>40&ndash;1000&times; slower</strong> (a shell
+  engine&rsquo;s per-check cost), and the SAST/IaC/secrets recall is measured partly on its own fixtures.
+  DAST was attempted against a live OWASP Juice Shop: scoursh confirmed the login SQL-injection
+  end-to-end, while the competitor run (ZAP crashed twice; Nikto/Nuclei/Wapiti did not finish in the
+  session window) did not produce a clean comparison, so no DAST numbers are published here rather than
+  invent them.
+</div>
+
+<!-- ============ CHOOSE ============ -->
+<h2 id="choose">When to choose what</h2>
+
+<div class="cols">
+  <div class="card yes">
+    <h4>Choose scoursh when…</h4>
+    <ul>
+      <li><strong>You are air-gapped or egress-audited.</strong> SAST, SCA and IaC make zero network calls; DAST talks only to hosts you declared.</li>
+      <li><strong>&ldquo;Did it actually check?&rdquo; must be answerable.</strong> Compliance evidence, an auditor, a post-incident review.</li>
+      <li><strong>You cannot install a toolchain.</strong> No JVM, Python, Node, Go, Docker or build step.</li>
+      <li><strong>You want one report across four surfaces</strong> with one fingerprint scheme, severity rubric and diff model.</li>
+      <li><strong>You need a CI gate with a real new-findings carve-out</strong>, fail-closed when the diff is unusable.</li>
+      <li><strong>Auditability is the requirement.</strong> It is shell — a reviewer can read the rule that fired.</li>
+    </ul>
+  </div>
+  <div class="card no">
+    <h4>Choose a specialist when…</h4>
+    <ul>
+      <li><strong>Deep SAST across many languages</strong> &rarr; Semgrep CE</li>
+      <li><strong>Interprocedural taint analysis</strong> &rarr; CodeQL, licence permitting</li>
+      <li><strong>Authoritative CVE detection</strong> &rarr; Trivy, Grype or OSV-Scanner</li>
+      <li><strong>Serious IaC policy enforcement</strong> &rarr; Checkov or KICS</li>
+      <li><strong>Real web-app testing or SPA coverage</strong> &rarr; ZAP</li>
+      <li><strong>Latest-CVE web templates</strong> &rarr; Nuclei</li>
+      <li><strong>Primary secret scanning or verification</strong> &rarr; Gitleaks or TruffleHog</li>
+      <li><strong>Any cloud posture work at all</strong> &rarr; Prowler</li>
+    </ul>
+  </div>
+</div>
+
+<div class="thesis">
+  <div class="lbl">In one sentence</div>
+  <p>
+    scoursh is the baseline sweep you run everywhere, including the places the good tools cannot go —
+    and the one that tells you what it missed. It is not a replacement for the good tools.
+  </p>
+</div>
+
+<!-- ============ NOTES ============ -->
+<h2 id="notes">Notes &amp; sources</h2>
+
+<div class="note">
+  <p><span class="lbl">This is not a detection benchmark.</span> No number here claims scoursh finds
+  more or fewer real defects than any other tool. Nothing was run over a shared corpus and counted.
+  This is a capability and positioning comparison.</p>
+</div>
+
+<p>
+  scoursh figures were measured directly against the source tree at version 0.1.0-dev: check counts by
+  parsing the shipped rule packs, output formats and exit codes by running real scans, and the egress
+  chokepoint by running the project&rsquo;s own lint. Competitor licence, archive status and last-commit
+  dates come from the GitHub API, queried 2026-09-08. Rule and policy counts for competitors are as
+  published by their vendors or reported by the community; they were not independently recounted, and
+  are labelled throughout as approximate.
+</p>
+
+<p>
+  Licences shown are those governing the free, self-hosted tool. Several carry conditions worth
+  checking before adoption: <strong>CodeQL</strong>&rsquo;s CLI is proprietary and restricted to
+  open-source codebases; <strong>TruffleHog</strong> and <strong>Steampipe/Powerpipe</strong> are
+  AGPL-3.0; <strong>ScoutSuite</strong>, <strong>CloudSploit</strong>, <strong>Nikto</strong> and
+  <strong>Wapiti</strong> are GPL family. ZAP moved from OWASP to independent governance with
+  Checkmarx backing in September 2024 and remains Apache-2.0.
+</p>
+
+<footer>
+  Prepared as an internal positioning document for the scoursh open-source launch.
+  Every claim about scoursh is traceable to a command or a source file in the repository;
+  every claim about another tool is traceable to that project&rsquo;s own repository or documentation.
+</footer>
+
+</main>
+</div>
+
+</body>
+</html>
