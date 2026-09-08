@@ -23,10 +23,10 @@ look exactly like they worked.
 [Accepted but not yet implemented](#accepted-but-not-yet-implemented) gives the precise behaviour of
 every inert entry, and is the section to read before wiring `scoursh` into CI.
 
-The tool's own help does not carry this distinction.
-`-h` / `--help` prints the same global usage text for every command, built or not, so
-`scan.sh diff --help` is byte-identical to `scan.sh sast --help`.
-This document is the only place the difference is written down.
+`scan.sh <command> --help` (or `-h`) prints that command's own accepted flags plus a plainly-stated
+build status line - generated from the same on-disk check `scan_dispatch` itself uses, so it can
+never claim a status the code disagrees with. It is a good first check, but it is terser than this
+document: read the tables below for the exact per-flag behaviour behind that one status line.
 
 ## Commands
 
@@ -46,11 +46,11 @@ scan.sh <command> [options]
 | `sast` | `[--path DIR]` `[--lang py,js,go,java]` `[--history]` | live | Source code. `--history` replays secret checks across git history and requires `git` on `PATH`. |
 | `sca` | `[--path DIR]` | live, needs an advisory database | Dependency/lockfile CVEs. Lockfile parsing works for every supported ecosystem, but matching needs `data/advisories.db`, which this repository does not ship - without it the run exits `4` rather than reporting a clean project. See ["Dependency data"](#dependency-data-dataadvisoriesdb). |
 | `iac` | `[--path DIR]` | live | Cloud IaC plus container/Kubernetes manifests. |
-| `dast` | `--target NAME` `[--intensity passive\|safe\|active]` `[--authed]` `[--i-own-target NAME]` | partially live - **it sends real requests** | The scope gate below is enforced before anything else (see "The scope gate"), as are the conservative rate/budget/breaker ceilings and the `--i-own-target` affirmation (see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)). Past those, a run now really does talk to the target: it authenticates if asked (`auth.sh`), crawls to build an endpoint inventory (`crawl.sh`), and runs the security-header checks (`passive/headers.sh`). At `--intensity active` it additionally runs the SQL-injection and JWT probes. Most of `docs/DESIGN.md` §7 is still unbuilt, so every phase script that is missing is recorded in `run.json` as a `coverage_gap`; read those, not this table, for what a given run actually covered. |
-| `cloud` | `[--live]` `[--profile NAME]` `[--regions all\|us-east-1,...]` `[--assume-role ARN]` | inert | `--live` requires the `aws` CLI on `PATH` and the run refuses (exit 4) if it is missing, which is a real check. No AWS call follows it: there is no `modules/cloud/`, so the run records `module=cloud reason=not_yet_built`. |
-| `all` | union of every module's own flags above | live | Runs sast, sca, iac unconditionally; runs dast only if `--target` is given and cloud only if `--live` is given, and those two do nothing when they run. Every module it skips is recorded in `run.json` as a `coverage_reduction` fact, not silently dropped. |
-| `diff` | `--against DIR` | inert | `DIR` must be a prior run's output directory (must contain `findings.jsonl` or `run.json`), and that check is enforced. Nothing is then compared. |
-| `report` | `--from DIR` | inert | Regenerating reports from a prior run is not built. Report file generation during a scan is a different thing and works - see the section below. |
+| `dast` | `--target NAME` `[--intensity passive\|safe\|active]` `[--authed]` `[--i-own-target NAME]` `[--openapi\|--har\|--postman\|--graphql-schema FILE]` | live - **it sends real requests** | The scope gate below is enforced before anything else (see "The scope gate"), as are the conservative rate/budget/breaker ceilings and the `--i-own-target` affirmation (see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)). Every module `docs/DESIGN.md` §7 describes has landed (`docs/STEP5-DAST-PLAN.md`, DAST-01 through DAST-36): authentication and crawling, every passive check (headers, cookies, TLS, CORS, information leakage, mixed content), safe-active checks (content discovery, method enumeration), the full injection family gated at `--intensity active` (SQLi, XSS, command injection, path traversal, SSTI, NoSQLi, LDAPi, CRLF, XXE/SSRF, prototype pollution, open redirect, host-header injection), and the application-layer tier (GraphQL introspection, rate-limiting, JWT, object-level authorization/IDOR). `--intensity` genuinely gates which phases and checks run (not merely a ceiling that nothing tests, unlike the static modules below); a phase this run's intensity or authorization does not reach is recorded in `run.json` as a `coverage_gap`/`coverage_reduction` with its reason, rather than silently omitted. |
+| `cloud` | `[--live]` `[--profile NAME]` `[--regions all\|us-east-1,...]` `[--assume-role ARN]` | **PLANNED - inert today** | `--live` requires the `aws` CLI on `PATH` and the run refuses (exit 4) if it is missing, which is a real check. No AWS call follows it: there is no `modules/cloud/` anywhere in the tree, so the run records `module=cloud reason=not_yet_built`. Fully designed (`docs/STEP6-CLOUD-PLAN.md`); not started. The read-only `lib/awscli.sh` wrapper and its lint already exist, ahead of any check that uses them. |
+| `all` | union of every module's own flags above | live | Runs sast, sca, iac unconditionally; runs dast only if `--target` is given and cloud only if `--live` is given, and cloud does nothing when it runs. Every module it skips is recorded in `run.json` as a `coverage_reduction` fact, not silently dropped. |
+| `diff` | `--against DIR` | live | `DIR` must name a prior run's output directory (must contain `findings.jsonl` or `run.json`). Classifies `state/latest.json` (the most recently completed run) against the state recorded for the named prior run and renders the delta - `new`/`recurring`/`fixed`/`unknown` - into a fresh output directory (`run.json`, `report.md`). Performs no new scan. See [`docs/STEP7-STATE-PLAN.md`](STEP7-STATE-PLAN.md) (STATE-06). |
+| `report` | `--from DIR` | inert | `DIR` is validated the same way `diff --against` is, then the run records `module=report reason=not_yet_built` and exits 0. Regenerating a report from a prior run's own findings after the fact is not built. Report file generation *during* a scan is a different thing and works fully - every `sast`/`sca`/`iac`/`dast`/`all` run already writes `findings.json`, `findings.jsonl`, `report.md`, `report.html`, and `run.json` (plus `report.sarif` and `report-audit.html` if asked) as part of the scan itself. |
 
 `-h` / `--help` at any position before the first unrecognized token prints usage and exits 0.
 
@@ -62,7 +62,7 @@ scan.sh <command> [options]
 | `--lang py,js,go,java` | sast, all | inert |
 | `--history` | sast, all | live |
 | `--target NAME` | dast, all | live as a gate, and the scan it gates now runs |
-| `--intensity passive\|safe\|active` | dast, all | live as a ceiling; `passive` reaches the crawl and the security-header checks, `active` additionally reaches the SQLi and JWT probes |
+| `--intensity passive\|safe\|active` | dast, all | live; `passive` (default) reaches auth/crawl and every passive check (headers, cookies, TLS, CORS, leakage, mixed content), `safe` additionally reaches content discovery and method enumeration, `active` additionally reaches every injection probe and the application-layer tier (GraphQL, rate-limiting, JWT, authorization/IDOR) |
 | `--authed` | dast, all | live - `auth.sh` acquires a session, and a failed login is a declared coverage reduction rather than an error |
 | `--i-own-target NAME` | dast, all | live |
 | `--requests-per-second N` | dast, all | live; raising it above the conservative ceiling needs `--i-own-target` (see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)) |
@@ -85,13 +85,13 @@ scan.sh <command> [options]
 | `--verbose` | boolean | off | live |
 | `--paranoid` | boolean | off | live on Linux (`ss`/`strace`) and macOS (`lsof`) |
 | `--use-engines` | boolean | off | live, but no engine is vendored here |
-| `--allow-intrusive` | boolean | off | live as a gate (needs `--i-own-target`); the checks it would admit do not exist |
+| `--allow-intrusive` | boolean | off | live as a gate (needs `--i-own-target` too, for dast/all); no shipped check is tagged `intrusive` today, so it admits nothing yet except turning DAST's live user-enumeration probe on - which is itself not built and records why it did nothing |
 | `--contact VALUE` | one printable, space-free token | from `config/scanner.conf` (`contact`), else none | live |
 | `--user-agent-suffix TOKEN` | one printable, space-free token | none | live |
-| `--jobs N` | positive integer | from `config/scanner.conf` (`4`) | inert |
-| `--format` | CSV of `json,sarif,html,md` | all four | live; `sarif` writes a complete, schema-validated document - see [SARIF output](#sarif-output) |
+| `--jobs N` | positive integer | from `config/scanner.conf` (`4`) | inert for worker parallelism (every module is single-worker); live as DAST's in-flight-connection ceiling - see [`--jobs N`](#--jobs-n-and-the-jobs-config-key) |
+| `--format` | CSV of `json,sarif,html,md,audit` | `json,sarif,html,md` | live; `sarif` writes a complete, schema-validated document (see [SARIF output](#sarif-output)); `audit` is a fifth, opt-in value that writes `report-audit.html` alongside `report.html` rather than in place of it - see [`--format` and the `formats` config key](#--format-and-the-formats-config-key) |
 | `--fail-on` | `critical\|high\|medium\|low\|info\|none` | from `config/scanner.conf` (`none`) | live |
-| `--fail-on-new` | boolean; **requires `--fail-on`**, usage error otherwise | off | inert |
+| `--fail-on-new` | boolean; **requires `--fail-on`**, usage error otherwise | off | live - gates on `status == new` only when this run's diff against the prior one is usable (see [Persistent run state, diff, and baseline](#persistent-run-state-diff-and-baseline)) |
 | `--min-confidence` | `high\|medium\|low` | from `config/scanner.conf` (`low`) | live |
 | `--baseline FILE` | path | none | live |
 | `--out DIR` | path | `reports/<timestamp>` | live |
@@ -267,6 +267,16 @@ every run whatever `--format` asked for, so they are not evidence that the flag 
 
 `--format sarif` writes `report.sarif`, documented in full in the next section.
 
+`--format audit` (or `audit` added to a multi-value `--format`/`formats` list) writes
+`report-audit.html`, an opt-in fifth value that is **never** in the default list and never replaces
+`report.html` - it is written alongside it. It is a per-category (sast/sca/iac/dast/cloud) coverage
+report built for a reader auditing the run itself, not for triage: every registered check lands in
+exactly one of four states - it found something, it ran and found nothing, it did not run (with the
+run's own recorded reason), or it is unaccounted for (registered, not run, no reason recorded, which
+is never folded into "clean") - and every not-run check is listed individually with its reason rather
+than only a count. `scan.sh <cmd> --format json,html,audit` writes `report.html` and
+`report-audit.html` side by side.
+
 ## SARIF output
 
 `--format sarif` (or `sarif` in a multi-value `--format`/`formats` list) writes
@@ -357,19 +367,54 @@ guessed path:
 `docs/FOUNDATION.md` tension 22 has the full rationale for why a generated artifact was chosen over
 either omitting the location or fabricating one.
 
+## Persistent run state, diff, and baseline
+
+[`docs/STEP7-STATE-PLAN.md`](STEP7-STATE-PLAN.md) (STATE-01 through STATE-08) is complete: every
+normal scanning run (`sast`/`sca`/`iac`/`dast`/`cloud`/`all`) persists `state/<run-id>.json` and
+`state/latest.json` at the end of the run, and automatically classifies every finding against the
+prior run's state before its own gate is evaluated.
+
+- **Automatic classification** - every finding gets a `status` of `new`, `recurring`, `fixed`, or
+  `unknown` (a prior finding whose own `(check, cell)` was not covered this run - never assumed fixed
+  just because it did not reappear). `run.json`'s `counts.by_status` and the HTML/Markdown report's
+  "Since last scan" section both carry the breakdown; a `fixed` history-secret finding, a rule-digest
+  change, and a schema/`scan_root_id` mismatch that makes the whole diff unusable are each called out
+  in that section's own prose, not only in the raw JSON.
+- **`diff --against DIR`** - `DIR` must be a prior run's own output directory. Classifies
+  `state/latest.json` (the most recently completed run) against the state recorded for the named
+  prior run and renders the delta into a fresh output directory. Performs no new scan of its own.
+- **`--baseline FILE`** - suppresses findings whose fingerprint matches an entry in
+  `config/baseline.json`, or in `FILE` when `--baseline` is given (which **replaces** the default file
+  rather than adding to it). An entry is either a bare fingerprint string, or an object
+  `{"fingerprint": "…", "reason": "…", "added": "YYYY-MM-DD", "expires": "YYYY-MM-DD"}`
+  (`docs/FOUNDATION.md` tension 11's frozen schema; a bare string is `reason: ""`, `added`/`expires:
+  null`). Suppression is an annotation, never a deletion: a matched finding still appears in every
+  output format, with `suppressed: true` and its reason, in a collapsed "accepted risk" section, and
+  is excluded from every count and from `--fail-on`/`--fail-on-new`. An entry whose `expires` date has
+  passed stops suppressing, and the report says so; an entry that matches no finding this run is
+  reported `stale` in `run.json` and in the report - which is also how a finding that was baselined and
+  then genuinely fixed is still reported `fixed` rather than silently staying suppressed forever.
+  A `--baseline` path that does not exist is a real error (`exit 4`), not a clean exit with suppression
+  silently never having run; a default `config/baseline.json` that is simply absent - the ordinary case
+  for a fresh checkout - is not an error at all. A baseline file that exists but cannot be read, or is
+  not well-formed, is also a real error, rather than being treated as an empty baseline - unlike this
+  tool's own `state/`, which degrades gracefully on corruption, because `config/baseline.json` is a
+  human-edited accept-risk list and silently misreading it, in either direction, is the one outcome
+  this mechanism exists to rule out.
+- **`--fail-on-new`** - requires `--fail-on` (a real usage error otherwise). Gates on
+  `suppressed == false` and `confidence >= --min-confidence` and, once `--fail-on-new` is given,
+  `status == new` **if and only if** this run's diff against the prior one was usable
+  (`diff_usable`); when the diff was not usable (no prior state, an `fp_schema` mismatch, or - for a
+  run whose findings live in `path-root` cells - a `scan_root_id` mismatch), the gate falls back to
+  considering every finding, so a broken or absent baseline never silently passes a run that
+  `--fail-on` alone would have failed. `scan.sh <cmd> --fail-on high --fail-on-new` and
+  `scan.sh <cmd> --fail-on high` therefore agree exactly on a first run, and can disagree once a
+  second run has real prior state to compare against.
+
 ## Accepted but not yet implemented
 
 Everything in this section parses, validates, and is accepted today.
 None of it changes the outcome of a run.
-
-### `diff --against DIR`
-
-`DIR` is validated (a directory that is not a prior run directory is a hard exit 4), then the run
-prints `'diff' has no engine yet`, records `module=diff reason=not_yet_built` in `run.json`, and exits
-0.
-Nothing is compared, because there is no persistent run state to compare against: no findings are
-classified as new, fixed, or unchanged, and no output directory of a previous run is read beyond
-confirming it exists.
 
 ### `report --from DIR`
 
@@ -385,70 +430,33 @@ What does not exist is the separate ability to rebuild those files from an earli
 after the fact.
 Until it does, keep the output directory a run produced, or scan again.
 
-### `--baseline FILE`
-
-Suppresses findings whose fingerprint matches an entry in `config/baseline.json`, or in FILE when
-`--baseline` is given (which REPLACES the default file rather than adding to it).
-An entry is either a bare fingerprint string, or an object
-`{"fingerprint": "…", "reason": "…", "added": "YYYY-MM-DD", "expires": "YYYY-MM-DD"}`
-(`docs/FOUNDATION.md` tension 11's frozen schema; a bare string is `reason: ""`, `added`/`expires:
-null`).
-Suppression is an annotation, never a deletion: a matched finding still appears in every output
-format, with `suppressed: true` and its reason, in a collapsed "accepted risk" section, and is
-excluded from every count and from `--fail-on`/`--fail-on-new`.
-An entry whose `expires` date has passed stops suppressing, and the report says so; an entry that
-matches no finding this run is reported `stale` in `run.json` and in the report, which is also how a
-finding that was baselined and then genuinely fixed is still reported `fixed` rather than silently
-staying suppressed forever.
-The concrete failure this used to invite, now closed: a `--baseline` path that does not exist is a
-real error (`exit 4`), not a clean exit with suppression silently never having run; a default
-`config/baseline.json` that is simply absent - the ordinary case for a fresh checkout - is not an
-error at all.
-A baseline file that exists but cannot be read, or is not well-formed, is also a real error, rather
-than being treated as an empty baseline - unlike this tool's own `state/`, which degrades gracefully
-on corruption, because `config/baseline.json` is a human-edited accept-risk list and silently
-misreading it, in either direction, is the one outcome this mechanism exists to rule out.
-
 ### `--jobs N` and the `jobs` config key
 
-Validated as a positive integer, resolved, exported, and read by no module.
-Every run is single-worker, and each module says so in `run.json` with a
-`coverage_reduction reason=single_worker_no_parallel_scan_yet` fact.
-The advertised default is `4`; the actual concurrency is 1, at every value of the flag.
-
-### `--fail-on-new`
-
-Today this is a tautology, not a filter.
-Every finding is created with `status: new` and nothing overwrites it, because the diff classification
-that would ever mark a finding as anything else needs the not-yet-built `state/` layer.
-Gating on "only new findings" therefore gates on all findings, so `--fail-on high --fail-on-new` and
-`--fail-on high` return the same exit code on the same tree, always.
-The usage error when `--fail-on` is absent is real and is enforced.
+Validated as a positive integer, resolved, and exported. For `sast`/`sca`/`iac` it is read by no
+module: every run is single-worker, and each module says so in `run.json` with a
+`coverage_reduction reason=single_worker_no_parallel_scan_yet` fact, at every value of the flag.
+For `dast`, it is read for real - `lib/http.sh`'s tension-16 in-flight-connection ceiling uses the
+resolved `jobs` value as how many simultaneous connections a target may see (held to 4 without
+`--i-own-target`) - but since no DAST phase spawns additional workers yet, that ceiling has nothing to
+actually bound above 1 concurrent connection today either. Raising `--jobs` above 4 for a DAST scan
+therefore still needs `--i-own-target`, and still does not make the scan any more parallel.
 
 ### `--lang py,js,go,java`
 
 Validated as a CSV of the four language names, then never read.
 Every SAST run applies every rule pack; `--lang go` and no `--lang` at all produce identical findings.
 
-### `--intensity` and `--allow-intrusive`
+### `--intensity` and `--allow-intrusive` outside `dast`
 
-Both are wired into the check-selection chain, and neither can change what a shipped run *selects*:
-`--intensity` filters on a check's type tag and every check shipped here is tagged `static`, which all
-three tiers admit, while `--allow-intrusive` filters on the `intrusive` tag, which no shipped check
-carries.
-They will start to bite on selection when the DAST checks they were designed for land.
-
-**Their GATE is live today, though, and it will refuse an invocation.**
-`--intensity safe` or `--intensity active`, and `--allow-intrusive`, each require the own-your-target
-affirmation described in the next section, so `scan.sh dast --target NAME --intensity active` is exit 2
-without it.  That refusal is real now, not deferred.
-
-### `--authed`
-
-Parsed for `dast` and `all`, and recorded in `run.json`'s `authorization` object, because an
-authenticated active scan reaches state-changing endpoints an unauthenticated crawl never sees and an
-authorisation record that cannot distinguish the two is not answering its own question.
-Nothing else reads it: there is no authentication anywhere in the tool yet.
+`--intensity` is only accepted by `dast` and `all` (`sast`/`sca`/`iac` on their own reject it as a
+usage error); `--allow-intrusive` is a global flag every command accepts.
+Both are wired into the same check-selection chain `dast` uses, so under `scan.sh all` they also pass
+over sast/sca/iac's own checks - but neither changes what gets selected there: `--intensity` filters on
+a check's type tag and every non-DAST check shipped here is tagged `static`, which all three tiers
+admit, while `--allow-intrusive` filters on the `intrusive` tag, which no shipped check anywhere
+carries yet. For `dast`, both are live and do gate real check selection - see the per-command flags
+table above and ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target) below for
+the details.
 
 ### Conservative DAST limits and `--i-own-target`
 
@@ -562,10 +570,13 @@ boundary.
 
 This gate is live and enforced, and it is worth being clear about what passing it now buys you:
 **real HTTP requests to the host you listed.**
-A `dast` run that satisfies the gate crawls the target and inspects what comes back, so treat the entry
-you write as an authorisation you are prepared to stand behind.
-What it does NOT buy you is complete coverage: most of `docs/DESIGN.md` §7 is still unbuilt, and every
-absent check is recorded in `run.json` as a `coverage_gap` rather than passing silently.
+A `dast` run that satisfies the gate crawls the target, authenticates if asked, and runs every phase
+`--intensity` and `--authed` admit - `docs/DESIGN.md` §7's full engine has landed
+(`docs/STEP5-DAST-PLAN.md`, DAST-01 through DAST-36) - so treat the entry you write as an
+authorisation you are prepared to stand behind. What it does NOT buy you is complete coverage on
+every run regardless: a phase your run's own `--intensity`/`--authed`/`--allow-intrusive` did not
+reach, or one that had nothing to work with (no inventory, no configured identity), is recorded in
+`run.json` as a `coverage_gap`/`coverage_reduction` with its reason, rather than passing silently.
 The repository also ships `config/scope.conf.example` rather than `config/scope.conf`, so on a fresh
 checkout every `dast` invocation refuses with exit 4 until you write the real file.
 
@@ -630,11 +641,26 @@ One record per target.
 | `extra-host` | no | yes | none | Additional `host[:port]` in scope for this target. |
 | `allow-subdomains` | no | no | `false` | `true`/`false`. |
 | `allow-private-addresses` | no | no | `false` | `true`/`false`. Gates the link-local/loopback deny list. |
+| `tls-expect-wildcard` | no | no | `false` | `true`/`false`. Read by `passive/tls.sh` (DAST-07): declares that a wildcard certificate is this target's intended design, so a wildcard SAN does not produce a `DAST-TLS-*` finding. Per-target, not scanner-wide, since one estate can legitimately have both shapes. |
 | `notes` | no | no (multi-line) | empty | Free text. |
 
-Every key here that affects behaviour is live: `id`, `base-url`, `extra-host`, `allow-subdomains`, and
-`allow-private-addresses` are all consumed by the scope gate, which is enforced today.
+Every key here that affects behaviour is live: `id`, `base-url`, `extra-host`, `allow-subdomains`,
+`allow-private-addresses`, and `tls-expect-wildcard` are all consumed somewhere in the scope gate or
+a check that reads it, and each is enforced today.
 `notes` is free text that no code reads, exactly as intended.
+
+### `config/auth.conf` - required only for `--authed`
+
+One record per (target, identity), `rules/RULE-FORMAT.md` §9.6.2. Copy
+`config/auth.conf.example` (which documents every mode - `bearer`, `api-key`, `form`,
+`oauth2-password`, `oauth2-client`, `srp`, `external` - with a worked record each) to
+`config/auth.conf` and `chmod 600` it; scoursh refuses to read it at any other mode, since every
+value in it is a credential (`docs/FOUNDATION.md` tension 9). An `id` of `<target-id>.<label>`
+requires `<target-id>` to already exist in `config/scope.conf`. Two labelled identities on one
+target is what `authz.sh`'s object-level authorization / IDOR checks need - they work by asking for
+identity B's object as identity A, so with only one identity configured they cannot run at all. A
+credential belongs in `secret-file` (an absolute path to a mode-600 file, read as its first line)
+rather than inline where practical, so it never ends up pasted into this file directly.
 
 ### `config/discovery.conf` - optional; feeds `dast`'s crawler an application's real API surface
 
@@ -726,11 +752,11 @@ file yet; those are called out in the Notes column.
 | `fail-on` | severity name or `none` | `none` | live | |
 | `min-confidence` | `high\|medium\|low` | `low` | live | |
 | `redact-secrets` | `true`/`false` | `true` | live | Governs whether a matched credential is written in the clear. See ["What `redact-secrets` covers"](#what-redact-secrets-covers). |
-| `formats` | repeatable, `json\|sarif\|html\|md` | all four | live | Resolved through the same chain as `--format`. See [SARIF output](#sarif-output). |
+| `formats` | repeatable, `json\|sarif\|html\|md\|audit` | `json,sarif,html,md` | live | Resolved through the same chain as `--format`; `audit` is opt-in and never in the default. See [`--format`](#--format-and-the-formats-config-key). |
 | `max-matches-per-file` | positive integer | `200` | live | Read by both the SAST and IaC scanners. |
 | `evidence-max-bytes` | positive integer | `512` | inert | Truncation is real, but reads `SCOURSH_EVIDENCE_MAX_BYTES`, not this file. |
 | `scratch-dir` | absolute path | `${TMPDIR:-/tmp}` | inert | The scratch directory follows `SCOURSH_SCRATCH_BASE`, else `TMPDIR`. |
-| `state-retain-runs` | positive integer | `30` | inert | There is no `state/` to retain runs in yet. |
+| `state-retain-runs` | positive integer | `30` | live | Every scanning run prunes `state/` to this many most-recent runs plus `state/latest.json`. See [Persistent run state, diff, and baseline](#persistent-run-state-diff-and-baseline). |
 | `history-window-days` | positive integer | `365` | live | Bounds `sast --history`. |
 | `history-max-commits` | positive integer | `5000` | live | Bounds `sast --history`. |
 | `lock-stale-seconds` | positive integer | `30` | inert | The staleness rule is real, but reads `SCOURSH_LOCK_STALE_SECONDS`. |

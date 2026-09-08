@@ -22,11 +22,14 @@ for exactly where the line is drawn and why.
 - [scoursh vs. semgrep](#scoursh-vs-semgrep)
 - [Why egress-restricted, not air-gapped](#why-egress-restricted-not-air-gapped)
 - [Installation](#installation)
+- [Quickstart](#quickstart)
 - [Try it yourself: sample vulnerable repos](#try-it-yourself-sample-vulnerable-repos)
+- [Command reference](#command-reference)
+- [Safety and authorization](#safety-and-authorization)
 - [Optional third-party engines](#optional-third-party-engines)
 - [Build status](#build-status)
 - [Known gaps](#known-gaps)
-- [What's next](#whats-next)
+- [Planned / not yet built](#planned--not-yet-built)
 - [Documentation](#documentation)
 - [License](#license)
 
@@ -98,7 +101,7 @@ So today, `scoursh` covers everything on that list except live cloud posture (CS
 analysis of a local checkout, and dynamic testing of a running endpoint you've authorized.
 The dependency half of the static coverage stays inert until you build `data/advisories.db` yourself
 ([Installation](#installation)).
-See [What's next](#whats-next) for the rest.
+See [Planned / not yet built](#planned--not-yet-built) for the rest.
 
 ### What's available today, in detail
 
@@ -213,7 +216,14 @@ That single constraint shapes most of the architecture:
 ## Installation
 
 `scoursh` is pure POSIX-leaning bash - there is no build step and no runtime dependency beyond a
-standard Unix toolchain (`bash`, `grep`/`rg`, `awk`, coreutils).
+standard Unix toolchain: **bash >= 4.2** (macOS ships 3.2 by default; install a newer one and put it
+ahead of `/bin/bash` on `PATH`, or run under a shell that already satisfies this - `scan.sh` checks
+and refuses with a clear message otherwise), plus `grep`/`rg`, `awk`, and coreutils. `git` on `PATH`
+is needed for `sast --history`; nothing else is required to run `sast`, `sca`, `iac`, or `dast`.
+An optional third-party engine (`--use-engines`) or a Docker-based local DAST test target are each
+their own, separately-installed thing - see [Optional third-party
+engines](#optional-third-party-engines) and the [DAST](#dast) example below; their absence never
+breaks an ordinary scan.
 
 ```sh
 git clone https://github.com/abhi-sama/scoursh.git
@@ -241,7 +251,8 @@ because absence of findings here is absence of evidence, never evidence of absen
 (`scan.sh all` behaves the same way except for the exit code: it skips `sca` with that same recorded
 reason and finding, and leaves the exit code to the modules that did run.)
 
-You build it on a networked box with `tools/vendor-engines.sh`, which resolves advisories from
+You build it on a networked box with `tools/vendor-engines.sh` (needs `python3` and `curl` on that
+box only - neither is a `scan.sh` runtime dependency), which resolves advisories from
 [OSV.dev](https://osv.dev) into the pre-expanded rows the scanner looks up.
 
 **If you just want it working, this is the one command:**
@@ -302,6 +313,34 @@ For the complete CLI, exit-code, and configuration-file reference, see
 That document describes the grammar `scan.sh` accepts, not what each flag does today - read it
 alongside [Known gaps](#known-gaps), which is where the accepted-but-inert flags are listed.
 
+## Quickstart
+
+The single most useful command, right after cloning - `--path` defaults to `.`, so this scans
+`scoursh`'s own source tree with no further setup:
+
+```sh
+./scan.sh sast
+```
+
+Every run writes its output to a fresh, timestamped directory under `reports/` and prints that path
+when it finishes. Open the report:
+
+```sh
+open reports/<run>/report.html          # macOS; use xdg-open on Linux
+```
+
+That's the human-readable report. Two more files land in the same directory on every run, whatever
+`--format` you asked for: `findings.jsonl` (one JSON object per finding, for piping into another
+tool) and `run.json` (the run's own identity, coverage facts, and exit-gate decision - what a CI
+step should actually read). Add `--format json,html,audit` for a machine-readable `findings.json`
+plus a separate `report-audit.html` built for an auditor rather than a triager - every registered
+check, not just the ones that fired, in one of "found something / ran clean / didn't run (why) /
+unaccounted" - see [`--format`](docs/USAGE.md#--format-and-the-formats-config-key) in the usage
+reference.
+
+See [Command reference](#command-reference) below for every subcommand with real examples, and [Try
+it yourself](#try-it-yourself-sample-vulnerable-repos) for something that actually fires.
+
 ## Try it yourself: sample vulnerable repos
 
 `scoursh` has no bundled test targets of its own - point it at any real project, or at one of the
@@ -351,6 +390,105 @@ git clone --depth 1 https://github.com/juice-shop/juice-shop ~/scoursh-test-repo
 directory. Re-run with `git -C <dir> pull` instead of re-cloning if you want to re-test after a
 code change, since cloning into a non-empty directory fails.
 
+### DAST
+
+`dast` needs a target you've authorized in `config/scope.conf` - it's the safety control that keeps
+`scan.sh` from ever being pointed at a host you don't own (see [Safety and
+authorization](#safety-and-authorization)). `tools/dast-test-target.sh` starts a local, pinned OWASP
+Juice Shop container for exactly this purpose, with its own pre-authorized scope record:
+
+```sh
+tools/dast-test-target.sh start                                # needs Docker; prints its URL when ready
+cp tools/dast-test-target/scope.conf config/scope.conf          # back up your own config/scope.conf first if you have one
+./scan.sh dast --target dast-test-target --i-own-target dast-test-target
+./scan.sh dast --target dast-test-target --i-own-target dast-test-target --intensity active
+tools/dast-test-target.sh --stop                                 # when you're done
+```
+
+`--i-own-target` is the affirmation that raises the conservative default rate/budget ceilings - it's
+required above `--intensity passive`, and it must name the exact same target as `--target`. See
+[Safety and authorization](#safety-and-authorization) for what it does and doesn't grant.
+
+## Command reference
+
+Real, copy-paste examples for every subcommand `scan.sh` exposes. All of these are runnable as
+written from a fresh checkout (`dast` needs the local target above, or a target of your own in
+`config/scope.conf`). The full flag-by-flag reference, including every accepted-but-inert flag, is
+[`docs/USAGE.md`](docs/USAGE.md).
+
+```sh
+# Source code (SAST) - injection, crypto misuse, secrets, language-specific issues.
+./scan.sh sast --path ~/some/project
+./scan.sh sast --path ~/some/project --history            # also replay the secrets pack across git history
+
+# Dependencies (SCA) - needs data/advisories.db built once first, see Installation.
+./scan.sh sca --path ~/some/project
+
+# Infrastructure as code - Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose.
+./scan.sh iac --path ~/some/project
+
+# A running endpoint (DAST) - needs config/scope.conf; see the DAST example above.
+./scan.sh dast --target NAME --i-own-target NAME
+./scan.sh dast --target NAME --i-own-target NAME --intensity active --authed
+# Feed the crawler an application's real API surface instead of relying on a static crawl
+# (a single-page app's own routes are invisible to one - see docs/USAGE.md's config/discovery.conf
+# section):
+./scan.sh dast --target NAME --openapi ./openapi.json
+./scan.sh dast --target NAME --har ./capture.har
+./scan.sh dast --target NAME --postman ./collection.json
+./scan.sh dast --target NAME --graphql-schema ./schema.graphql
+
+# Live cloud posture (CSPM) - PLANNED, not built. This is a real, accepted invocation that
+# does nothing today: no modules/cloud/ exists yet, and the run records why. See
+# [Planned / not yet built](#planned--not-yet-built).
+./scan.sh cloud --live
+
+# Every static surface in one run, plus dast/cloud if you've given them what they need.
+./scan.sh all --path ~/some/project
+./scan.sh all --path ~/some/project --target NAME --i-own-target NAME
+
+# Output formats - default is json,sarif,html,md; audit is a fifth, opt-in value written
+# alongside report.html rather than in place of it.
+./scan.sh sast --path ~/some/project --format json,html,audit
+
+# Persistent state, diff, and CI gating (docs/STEP7-STATE-PLAN.md, complete).
+./scan.sh sast --path ~/some/project --fail-on high             # exit 1 if anything at/above high is found
+./scan.sh sast --path ~/some/project --fail-on high --fail-on-new   # ...but only for findings new since the last run
+./scan.sh diff --against reports/<earlier-run>                  # classify the latest run against a named earlier one
+./scan.sh sast --path ~/some/project --baseline config/baseline.json   # suppress accepted-risk findings by fingerprint
+
+# Guided mode - answers the same questions interactively, or just prints the equivalent command.
+./scan.sh
+./scan.sh dast --guided
+./scan.sh dast --target NAME --intensity active --i-own-target NAME --print-command
+```
+
+## Safety and authorization
+
+- **Egress-restricted by destination, at a single chokepoint.** Every outbound HTTP call in the
+  codebase goes through `lib/http.sh`, which refuses any host absent from `config/scope.conf`'s
+  resolved allowlist - there is no raw-URL bypass, and a dedicated lint fails the build if anything
+  tries to reach the network another way. See [Why egress-restricted, not
+  air-gapped](#why-egress-restricted-not-air-gapped) for the full picture, including the DAST-specific
+  private-address deny list and redirect-loop handling.
+- **Read-only AWS, by construction.** Every AWS API call goes through `lib/awscli.sh`, which refuses
+  any operation that is not read-only. It's built and tested ahead of the live cloud checks that will
+  use it (`scan.sh cloud` doesn't call it yet - see [Planned / not yet built](#planned--not-yet-built)),
+  specifically so no future cloud check is ever written against a bare `aws` CLI invocation.
+- **`--i-own-target` gates active DAST.** Raising `dast`'s conservative default rate limit (4
+  requests/second), request budget (5000/run), or intensity above `passive` requires
+  `--i-own-target NAME`, and `NAME` must equal `--target` exactly - a stale command, shell alias, or
+  copied CI config can never carry an affirmation to a host that changed hands. It's a key, not a
+  switch: it raises what's *available*, and authorizes nothing on its own - a host is only ever
+  scannable if it has its own record in `config/scope.conf`. See [`docs/USAGE.md`'s "Conservative DAST
+  limits"](docs/USAGE.md#conservative-dast-limits-and---i-own-target) for the full detail, including
+  the two bounds no affirmation ever lifts.
+- **A detector for your own egress, on top of the enforcement.** `--paranoid` samples the scan
+  process's own outbound connections and aborts on the first one outside scope, on Linux (`ss`/
+  `strace`) and macOS (`lsof`) alike; `tools/run-in-netns.sh` goes further on Linux, building a
+  network namespace where an out-of-scope connection is physically impossible rather than merely
+  observed. See [Why egress-restricted, not air-gapped](#why-egress-restricted-not-air-gapped).
+
 ## Optional third-party engines
 
 Beyond its own native rule packs, `scoursh` can optionally shell out to a small set of vendored
@@ -373,7 +511,7 @@ given - the run is unaffected, only the coverage gap is logged.
 
 Four modules are available today and produce real findings: `sast`, `iac`, `sca` - the last of those
 once you have built `data/advisories.db` ([Installation](#installation)) - and `dast`, once you
-authorize a target. `cloud` is designed but not built; see [What's next](#whats-next).
+authorize a target. `cloud` is designed but not built; see [Planned / not yet built](#planned--not-yet-built).
 
 Exactly which rule packs and ecosystems the three static-analysis modules cover is generated below
 straight from the repository tree, so it can't drift out of sync with what's actually on disk (`dast`
@@ -501,13 +639,13 @@ the tool rather than in a pipeline:
   It is safe to point a code-scanning CI step at it.
   What it deliberately never emits is `security-severity` - the field most consumers read first -
   because scoursh's CVSS score is an audit trail for how the rubric adjusted severity, not a second
-  severity measurement, and publishing it there would contradict `result.level`; see
-  [`docs/USAGE.md`'s SARIF output section](docs/USAGE.md#sarif-output) for the full reasoning and for
-  what is deliberately excluded.
-  Two things still trail the rest of the run's honesty story rather than SARIF's own scope: every
-  result reads `status: "new"` and `suppressions[]` is always empty, because both need the
-  not-yet-built persistent run state and baseline suppression (see the `state/` items below);
-  `partialFingerprints` is what lets a consumer do its own tracking in the meantime.
+  severity measurement, and publishing it there would contradict `result.level`. This is permanent by
+  design, not a gap that will close; see [`docs/USAGE.md`'s SARIF output
+  section](docs/USAGE.md#sarif-output) for the full reasoning and for what else is deliberately
+  excluded. `result.properties.status` (`new`/`recurring`, real classification against persistent run
+  state) and `result.suppressions[]` (populated for a `config/baseline.json`-suppressed finding) are
+  both live - a finding's own SARIF result never carries `fixed`/`unknown`, since those describe a
+  *prior* finding absent from this run, which has no result of its own to carry a status.
 - **`--baseline FILE` is live.**
   `config/baseline.json` (or the file `--baseline` names, which replaces the default rather than
   adding to it) suppresses matching findings by exact fingerprint: `suppressed: true` plus the
@@ -517,62 +655,59 @@ the tool rather than in a pipeline:
   is the ordinary, no-baseline-configured case. An expired entry stops suppressing and an entry
   matching nothing this run is reported `stale`, both in `run.json` and in the report, so a baseline
   that has drifted from reality is visible rather than silently wrong in either direction.
-- **`--fail-on-new` currently behaves identically to `--fail-on`.**
-  Every finding is emitted with `status=new` until there is persistent run state to compare a run
-  against, so there is nothing yet for it to narrow the gate down to.
-- **`--jobs N` is parsed and ignored.**
-  Every scan is single-worker and records `single_worker_no_parallel_scan_yet` in its own output.
+- **`--jobs N` doesn't add worker parallelism.**
+  Every scan is single-worker and records `single_worker_no_parallel_scan_yet` in its own output,
+  whatever value you pass. The one exception: for `dast`, `lib/http.sh`'s connection-concurrency
+  ceiling does read the resolved `jobs` value, held to 4 without `--i-own-target` - so it's live there
+  as a *ceiling*, just not yet as anything that spawns more workers to fill it.
 - **`--authed` works, and DAST's checks use the session it acquires.**
   It belongs to `dast`, and `modules/dast/auth.sh` reads it: with a `config/auth.conf`
   (`config/auth.conf.example` is the annotated template) it logs in, keeps a session, and
   re-authenticates once on a `401`. `modules/dast/authz.sh` (object-level authorization / IDOR) and
   the crawl/injection phases spend that session directly; with two configured identities, `authz.sh`
   also probes cross-user access.
-- **There is no per-subcommand help.**
-  `scan.sh dast --help`, `scan.sh cloud --help`, `scan.sh diff --help`, and `scan.sh sca --help` all
-  print the same global usage and exit 0, so nothing there tells you a subcommand is unbuilt.
 - `report`'s `--from` flag name is not specified in `docs/DESIGN.md`'s grammar block; `--from` is the
   engineer's own judgment call, noted as such in `scan.sh`'s own comments for a human to confirm or
-  override.
+  override. `report --from DIR` itself remains unbuilt (see [Planned / not yet
+  built](#planned--not-yet-built)); a validated `--from` and a recorded `not_yet_built` reason are all
+  it does today.
 
-## What's next
+## Planned / not yet built
 
 The full, dependency-ordered build plan lives in [`docs/DESIGN.md`](docs/DESIGN.md) §13, with a
-running account of progress in [`CLAUDE.md`](CLAUDE.md)'s "Build order and where we are" section.
-What's left, in priority order:
+running account of progress in [`AGENTS.md`](AGENTS.md)'s "Build order and where we are" section and
+a shorter reader-facing summary in [`ROADMAP.md`](ROADMAP.md).
 
-**DAST is done** - `scan.sh dast` (`modules/dast/`) is a complete engine: authentication, crawling,
-every passive/safe-active/injection/application-layer check `docs/STEP5-DAST-PLAN.md` planned, and
-the tension-16 rate limiter/budget/circuit breaker every request pays. What remains, in priority
-order:
+**What's actually still unbuilt, in priority order:**
 
-1. **Persistent run state** (`state/`) **is done**, and so is what it unblocks: every normal run
-   automatically classifies findings `new`/`recurring`/`fixed`/`unknown` against the prior one, the
-   `scan.sh diff --against <dir>` subcommand does real work, and `--baseline FILE` suppression is
-   live (see [Known gaps](#known-gaps) above). What remains of step 7 is `--fail-on-new`'s own
-   real carve-out - it exists as a flag today but still behaves identically to `--fail-on`, since it
-   has not yet been wired to the `diff_usable` fail-closed rule the rest of the mechanism now
-   computes. See [`docs/STEP7-STATE-PLAN.md`](docs/STEP7-STATE-PLAN.md)'s own status table for the
-   full per-ticket detail.
-2. **The compliance-mapping report.**
-   The SARIF half of step 10 is done - see [`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md)'s
-   status table (SARIF-01 through SARIF-06, all landed).
-   What remains of step 10 is grouping findings by OWASP Top 10 and CIS AWS Benchmark control id; the
-   OWASP half is unblocked today, and the CIS half needs live cloud scanning (below) for anything to
-   group.
-3. **Live cloud/CSPM scanning** (`scan.sh cloud`) - fully planned
-   ([`docs/STEP6-CLOUD-PLAN.md`](docs/STEP6-CLOUD-PLAN.md)), and last in the queue.
-   The subcommand is inert today with or without `--live`; there is no `modules/cloud/` in the tree at
-   all.
-   The read-only AWS wrapper already exists ahead of schedule.
+1. **The compliance-mapping report** (the other half of step 10). The SARIF half is **done** - see
+   [`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md)'s status table (SARIF-01 through
+   SARIF-06, all landed). What remains is grouping findings by OWASP Top 10 and CIS AWS Benchmark
+   control id; the OWASP half is unblocked today, and the CIS half needs live cloud scanning (below)
+   for anything to group against.
+2. **Live cloud / CSPM scanning** (`scan.sh cloud`, step 6) - fully designed
+   ([`docs/STEP6-CLOUD-PLAN.md`](docs/STEP6-CLOUD-PLAN.md)), **not built**. `scan.sh cloud --live` is
+   a real, accepted invocation that does nothing: there is no `modules/cloud/` anywhere in the tree,
+   the dispatch records `module=cloud reason=not_yet_built`, and `--live` only checks that the `aws`
+   CLI is installed before saying so. The read-only `lib/awscli.sh` wrapper and its CI lint already
+   exist, built ahead of schedule specifically so no cloud check is ever written against a bare `aws`
+   call - but no check exists yet to use them.
 
-Outside that ordering: container image scanning (scanning built image layers, not just
-Dockerfile/compose source) and network/host scanning are not currently part of the design plan at all.
+**Everything else in the original ten-step plan is done**, including some steps a reader might
+reasonably expect to still be open: **DAST** (step 5) is a complete engine end to end - session
+acquisition, crawling, every passive/safe-active/injection/application-layer check
+`docs/STEP5-DAST-PLAN.md` planned - subject to `--intensity`/`--authed`/`--i-own-target` gating;
+**persistent run state, diff, and baseline suppression** (step 7) are complete, including
+`--fail-on-new`'s real carve-out (`docs/STEP7-STATE-PLAN.md`, STATE-01 through STATE-08); and
+**`--paranoid` plus the Linux network-namespace guarantee** (step 8) have both shipped. Guided mode
+(`--guided`/`--print-command`) isn't one of the ten §13 steps at all, and it's also complete.
 
-See [`ROADMAP.md`](ROADMAP.md) for the fuller breakdown, including work that's already landed ahead
-of its normal turn (the optional engine adapters, the `--paranoid` connection observer, and the
-Linux network-namespace guarantee are all further along than the step numbering alone would
-suggest).
+Outside the ten-step plan entirely: container image scanning (scanning built image layers, not just
+Dockerfile/compose source) and network/host scanning are not currently part of the design at all -
+see [`ROADMAP.md`](ROADMAP.md#not-currently-on-the-roadmap).
+
+See [`ROADMAP.md`](ROADMAP.md) for the fuller breakdown, including recently-fixed defects in shipped
+features.
 
 ## Documentation
 
@@ -586,8 +721,9 @@ suggest).
   GitHub Actions workflow is dormant until the repository is public, so there is no pull-request
   status check today - this is where the daily local suite run, its schedule, and how to read its
   result are documented, alongside what changes once the workflow goes live.
-- [`CLAUDE.md`](CLAUDE.md) - the contributor/agent guide: architecture, sharp edges, and build
-  order.
+- [`AGENTS.md`](AGENTS.md) - the contributor/agent guide: architecture, sharp edges, and build
+  order (`CLAUDE.md` is a symlink to the same file, for tooling that looks for that name
+  specifically).
 
 ## License
 
