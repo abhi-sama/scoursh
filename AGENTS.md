@@ -663,7 +663,17 @@ landed; that table, not this sentence, is the authority if this is ever in doubt
 **Step 5 is therefore complete.**
 Steps 8 (`--paranoid` / `tools/run-in-netns.sh`) and 9 (optional engine adapters) have also landed, out
 of sequence - see their own sections below.
-**Step 6 (Cloud) remains not started** - no `modules/cloud/` directory exists yet.
+**Step 6 (Cloud) has STARTED, and `modules/cloud/` now exists** - its tier 0 is partly landed.
+`docs/STEP6-CLOUD-PLAN.md`'s own dispatch plan reorganises that step into PRs P1..P22; P1 (the
+`lib/awscli.sh` hardening - response cache, `--profile`/`--region` plumbing, `aws_ro_account_id_set`,
+pagination, and the outcome vocabulary that stops an `AccessDenied` reading as an empty account) and
+P3 (`modules/cloud/aws/{run.sh,engine.sh,regions.sh}` - the `scan_dispatch cloud` entry point, the
+authorization record, and single-account region iteration) have landed; see the "Step 6" section
+below for the four things about P3 that a later ticket will otherwise rediscover the expensive way.
+**No `aws/live/*.sh` service script exists yet**, so a `--live` run today resolves the account and its
+enabled regions, writes the `account-region` coverage cells, and records that it examined no service -
+which is `scan_dispatch cloud` being a real dispatch that found nothing to run, not the
+`reason=not_yet_built` no-op it used to be.
 **Step 7 (persistent run state, `state/` plus `diff`) is complete.**
 Step 10 (SARIF plus the compliance report) is partially landed: Track A (the SARIF emitter) is
 complete, and Track B (the compliance-mapping report) has its unblocked OWASP half landed
@@ -1501,7 +1511,7 @@ Landed 6 of 6.  Outstanding: none.
 #### Totals
 
 - Pattern packs on disk: **15** (`modules/sast/rules/` 9, `modules/iac/` 6).
-- Module directories present: `modules/dast/`, `modules/iac/`, `modules/sast/`, `modules/sca/`.
+- Module directories present: `modules/cloud/`, `modules/dast/`, `modules/iac/`, `modules/sast/`, `modules/sca/`.
 
 <!-- END GENERATED STATUS -->
 
@@ -2258,6 +2268,63 @@ full detail, including the one deliberate asymmetry worth knowing: loopback (`12
 NOT in the generic "safe" IP set that private/link-local/CGN/TEST-NET literals sit in, because unlike
 those, a bare loopback address means "whatever this operator's own machine happens to be running" for
 every installation - it is allowed only via the one authorized file's path exemption.
+
+**Step 6 (Cloud/AWS): `modules/cloud/aws/` now exists, and five things about it are easy to get
+backwards.**
+`docs/STEP6-CLOUD-PLAN.md` is the sub-ticket plan; the dispatch plan that reorganises it into PRs
+P1..P22 is the authority for what is landed. P1 (`lib/awscli.sh`'s remaining half) and P3
+(`modules/cloud/aws/{run.sh,engine.sh,regions.sh}`) are in; everything from P2 (a routed multi-call
+AWS fixture stub) and P5 (the s3 vertical slice) onward is not.
+
+- **An `AccessDenied` is NOT an empty account, and this module is where that distinction is most
+  expensive.** `lib/awscli.sh` section 2's frozen outcome vocabulary is what separates them, and
+  `aws_ro_outcome_is_coverage_loss` is the ONE predicate that answers "did we look" - only `ok` and
+  `not_found` are answers; `truncated` is a PARTIAL answer and counts as a loss. Do not re-derive that
+  judgement at a call site. It matters more here than anywhere else in the tree because a
+  least-privilege read-only role legitimately lacks permissions and an opt-in region legitimately
+  refuses, so the misleading run is the ORDINARY one rather than an edge case. A service script that
+  reads a response through `body=$(aws_ro ...)` defeats the whole mechanism: the outcome globals are
+  then set in a subshell that exits, and the caller reads the values from before the call. Use
+  `aws_ro_into` or a plain redirect - `lib/awscli.sh`'s own header says so at length.
+- **A `_CLOUD_SERVICES` row's `global`/`regional` scope is a fact about the API namespace, and BOTH
+  directions of getting it wrong are silent.** A regional service marked `global` is scanned in one
+  region and reported clean for every other. A global one marked `regional` mints one duplicate
+  finding per region for the same resource, each in a different cell, so tension 12's `fixed`
+  inference then needs every one of those cells revisited before a deleted resource can be reported
+  remediated. `s3` is `global` on purpose - `list-buckets` is one account-wide call and each
+  per-bucket call is addressed by name, so iterating it per region issues N identical calls; the
+  bucket's own region belongs in the finding's `loc_region`, not in the loop.
+- **`modules/cloud/posture/` is deliberately NOT in that table.** A posture check's coverage scope is
+  `scope-key`, not `account-region` (`rules/RULE-FORMAT.md` §9.5.1), so it cannot share the cell
+  `run.sh`'s loop writes; adding a row "for completeness" would write a cell of the wrong KIND under an
+  id whose registry record declares the other, and `lib/state.sh` validates the value's shape rather
+  than cross-checking it against the record. POSTURE-01 owns that file and its own table.
+  `_cloud_record_coverage` excludes `POSTURE-*` ids for the same reason.
+- **The JSON reader lives in `modules/cloud/aws/engine.sh`, NOT in `lib/`, and that is a hub-budget
+  decision rather than a taste one.** `tests/lint-source-graph.sh` caps the per-entry-point fan-out of
+  the five `lib/` hubs at 17 because `shellcheck -x` re-expands every source edge it follows rather
+  than memoising - a new `lib/` hub is re-expanded once per consumer tree-wide, and this project has
+  already paid twice for that lesson. `cloud_json_flatten` is a byte-identical copy of
+  `lib/state.sh`'s `_state_json_flatten` (the third instance of that same judgement, after
+  `crawl_json_flatten`), and `tests/suites/cloud.sh` section A asserts the two agree LEAF FOR LEAF on
+  one document rather than trusting the comment - so a well-meaning "improvement" to either copy goes
+  red instead of quietly leaving the two disagreeing about a document neither author looked at.
+- **A test suite that starts more than one `scan.sh` subprocess MUST give each its own
+  `SCOURSH_AWS_CACHE_DIR`, and the failure without it reads as a pass.** `SCOURSH_SCRATCH` is
+  EXPORTED (deliberately, so `xargs -P` workers share their parent's), `lib/awscli.sh`'s cache
+  defaults to `$SCOURSH_SCRATCH/awscache`, and its key is
+  `sha256(service|region|account|op|args)` - which is BYTE-IDENTICAL for `sts get-caller-identity`
+  across two cases whose stub `aws` differs. Measured while writing `tests/suites/cloud.sh`: the
+  no-credentials case was served the working stub's cached identity, reported a healthy account under
+  a binary that cannot resolve one, and exited 0 where the contract says 4 - with the
+  credential-failure branch never entered at all. That is not a cache defect (in a real run two
+  identical calls genuinely do have one answer, which is tension 16's whole point); it is a property
+  of a harness whose response varies under a fixed key, the same hazard
+  `tests/lib/aws-fixtures.sh`'s `aws_fixture_response_set` records from the other side.
+- **`tests/aws-readonly-allow.txt` still must NOT exist.** `tests/lint-aws-readonly.sh`'s check 4
+  rejects any entry that appears in no code, and `sts get-caller-identity` needs no entry at all - the
+  frozen `get` prefix already admits it. The file is seeded by the ticket that adds the first
+  `aws_ro sts assume-role` call site, and by no earlier one.
 
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01 has
 not.**

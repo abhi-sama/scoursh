@@ -5522,10 +5522,10 @@ works"), which NETNS-01 landing confirmed in practice as well as in plan.
 probe, the exit-3 abort and exit-4 missing-backend paths, and the deterministic `tests/suites/paranoid.sh`
 fixture all exist on `dev`, wired into `scan.sh`'s `scan_main` right after config loads and before any
 module dispatch. Tension 20's own "Implementation" paragraph above carries the full mechanism detail.
-Steps 6, 7, 9, and 10 remain un-landed and are not touched by this.
+Steps 6, 7, 9, and 10 were un-landed when this paragraph was written and are not touched by it; 7 and 9 have since landed in full and 6 and 10 in part - see their own sections below, which are the live answer.
 
 **Step 6 (Cloud/AWS) also now has a written, dependency-ordered sub-ticket plan
-(`docs/STEP6-CLOUD-PLAN.md`), but no implementation ticket has started.**
+(`docs/STEP6-CLOUD-PLAN.md`), and implementation HAS started - `modules/cloud/` exists.**
 The plan breaks §13 step 6's scope (`regions.sh` iteration -> the §8.1 live read-only catalog -> the
 read-only-verb CI lint -> `posture/` checks) into tickets CLOUD-01 through CLOUD-34 plus POSTURE-01
 through POSTURE-04, confirms `tests/lint-aws-readonly.sh` (tension 23's read-only lint) already shipped
@@ -5536,8 +5536,42 @@ against the first real `aws_ro` call sites once the live scripts start landing -
 landed IaC work (`modules/iac/`) is §8.2/step 4 work, out of this plan's scope. Step 6 was gated on
 step 3, step 4 (SCA + IaC), and step 5 (DAST) all being complete on `dev`, per that plan's own status
 section and this ticket's description - **that gate is now fully discharged: steps 3, 4, and 5 are all
-complete**, so step 6 remains not-started only for want of anyone picking up CLOUD-01, not because it
-is still blocked.
+complete.**
+
+**Two of that plan's tier-0 PRs have since landed.**
+`lib/awscli.sh`'s remaining half (its P1) shipped the response cache tension 16 specifies, the
+`--profile`/`--region` plumbing, `aws_ro_account_id_set`, `aws_ro_paged`, and - the honesty-critical
+one - the frozen outcome vocabulary in its section 2, which is what stops an `AccessDenied` from
+rendering identically to an account with nothing wrong in it.  That failure shape is worse here than
+anywhere else in the tree, because a least-privilege read-only role legitimately lacks permissions and
+an opt-in region legitimately refuses, so the misleading run is the ORDINARY one rather than an edge
+case; `aws_ro_outcome_is_coverage_loss` is the single predicate that separates "we looked" from "we did
+not", and no call site re-derives that judgement.
+
+`modules/cloud/aws/{run.sh,engine.sh,regions.sh}` (its P3) shipped the `scan_dispatch cloud` entry
+point, so that dispatch is no longer the `reason=not_yet_built` no-op it had been since step 2.  It
+resolves the caller identity FIRST, records `cloud_account_id`/`cloud_caller_arn`/`cloud_profile`/
+`cloud_regions_planned` into `run.json`'s own `cloud` object, echoes the resolved account and region
+count to stderr before any service call, iterates every region the account has ENABLED by default
+(`ec2 describe-regions`, with `account list-regions` as a fallback), and writes this tension's
+`account-region` coverage cells - which `lib/state.sh`'s own header had been recording as the one
+coverage-scope kind with no real emitter.  The authorization model is the plan's D1 as accepted:
+credentials ARE the authorization, plus an OPTIONAL `--i-own-account <id>` checked against the
+resolved account (exit 2 on a mismatch, naming both ids).  It is deliberately weaker than DAST's
+required `--i-own-target`, because cloud sends no payload and changes no state - the read-only property
+is enforced at `aws_ro` and tested - so the residual risks (CloudTrail noise, quota consumption, a
+GuardDuty anomaly alert) warrant an audit record and an echo-back rather than a gate.  Per the plan's
+D3 this version is SINGLE-ACCOUNT: `--assume-role` is REFUSED with exit 2 rather than accepted and
+ignored, because ignoring it would report a one-account scan as if it had covered every account named.
+The tension-14 required-inputs table's `cloud --live` row is enforced for the first time here -
+unresolvable credentials are exit 4 on `scan.sh cloud` and a declared skip under `scan.sh all`, both
+pinned, because the naive fix for each direction is the other's bug.
+
+**No `aws/live/*.sh` service script exists yet**, so a `--live` run today resolves the account and its
+regions, writes the cells, and records that it examined no service.  That is a real dispatch that found
+nothing to run, and it is stated as such in `run.json`, `report.md` and the audit report rather than
+left to read as a clean account.  Everything from the plan's P2 (a routed multi-call AWS fixture stub)
+and P5 (the s3 vertical slice) onward remains not-started.
 
 **Step 7 (persistent run state) has now started: STATE-01 (`lib/state.sh`) has landed**, ahead of step
 6, per `docs/STEP7-STATE-PLAN.md`'s own status - that plan's gate blocks *classification*
@@ -5856,7 +5890,7 @@ Landed 6 of 6.  Outstanding: none.
 #### Totals
 
 - Pattern packs on disk: **15** (`modules/sast/rules/` 9, `modules/iac/` 6).
-- Module directories present: `modules/dast/`, `modules/iac/`, `modules/sast/`, `modules/sca/`.
+- Module directories present: `modules/cloud/`, `modules/dast/`, `modules/iac/`, `modules/sast/`, `modules/sca/`.
 
 <!-- END GENERATED STATUS -->
 

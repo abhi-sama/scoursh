@@ -305,6 +305,18 @@ declare -A _SCAN_FLAG_KIND=(
   [cloud:profile]=value
   [cloud:regions]=value
   [cloud:assume-role]=value
+  # docs/STEP6-CLOUD-PLAN.md D1's OPTIONAL account affirmation.  Deliberately
+  # weaker than `--i-own-target`, which is REQUIRED before dast will raise a
+  # limit: dast sends injection payloads and cloud cannot change a single byte
+  # of state (lib/awscli.sh's `aws_ro` refuses any non-read operation with exit
+  # 3 before exec'ing the CLI, and that is runtime-enforced and tested).  What
+  # it buys, and the only reason it exists at all, is the same friction in the
+  # ACCIDENTAL case `_scan_check_affirmation` below documents: a stale command
+  # or a copied CI job pointed at the wrong account.  Its mismatch check lives
+  # in modules/cloud/aws/run.sh rather than here, because unlike `--target` the
+  # account id is not in SCAN_FLAGS - it is resolved from the credentials, at
+  # dispatch time, by `sts get-caller-identity`.
+  [cloud:i-own-account]=value
 
   [diff:against]=value
 
@@ -328,6 +340,7 @@ declare -A _SCAN_FLAG_KIND=(
   [all:intensity]=value
   [all:authed]=bool
   [all:i-own-target]=value
+  [all:i-own-account]=value
   [all:requests-per-second]=value
   [all:request-budget]=value
   [all:circuit-breaker-failures]=value
@@ -400,7 +413,21 @@ Commands:
                                          docs/USAGE.md's config/discovery.conf
                                          section for a 30-second HAR-capture
                                          recipe.)
-  cloud    [--live] [--profile <p>] [--regions all|us-east-1,...] [--assume-role ARN]
+  cloud    [--live] [--profile <p>] [--regions all|us-east-1,...]
+           [--i-own-account <account-id>] [--assume-role ARN]
+                            (read-only throughout: every AWS call goes through
+                              a chokepoint that refuses any operation which is
+                              not describe-/list-/get-.  --live is what makes
+                              it talk to AWS at all; without it no API call is
+                              made.  --regions defaults to EVERY region the
+                              account has enabled, because auditing one region
+                              and reporting clean says nothing about the rest.
+                              --i-own-account is optional and checked against
+                              the account the credentials actually resolve to
+                              (exit 2 on a mismatch), which is what catches a
+                              stale command pointed at the wrong account.
+                              --assume-role is NOT implemented in this version
+                              and is refused rather than ignored.)
   all      run every module for which inputs are configured
   diff     --against <prior-run-dir>
   report   --from <prior-run-dir>
@@ -525,6 +552,28 @@ _scan_dast_phase_status() {
   printf '%s of %s scan phases implemented' "$present" "$total"
 }
 
+# `_scan_cloud_service_status` - "N of M AWS services implemented", counted by
+# walking modules/cloud/aws/engine.sh's own `_CLOUD_SERVICES` table and
+# checking the same file path `cloud_run_service` checks for each row (its
+# "absent" outcome).  The exact shape, and the exact reasoning, of
+# `_scan_dast_phase_status` above: sourcing engine.sh costs nothing at source
+# time (a pure function/array library, guarded) and is skipped entirely if
+# modules/cloud/aws/run.sh itself does not exist, so a fixture
+# SCOURSH_INSTALL_ROOT with no cloud module never tries to source a file that
+# is not there.
+_scan_cloud_service_status() {
+  local total=0 present=0 spec
+  if [[ -z ${_CLOUD_SERVICES+x} && -f $SCOURSH_INSTALL_ROOT/modules/cloud/aws/engine.sh ]]; then
+    # shellcheck disable=SC1091
+    source "$SCOURSH_INSTALL_ROOT/modules/cloud/aws/engine.sh"
+  fi
+  for spec in "${_CLOUD_SERVICES[@]+"${_CLOUD_SERVICES[@]}"}"; do
+    total=$(( total + 1 ))
+    [[ -f $SCOURSH_INSTALL_ROOT/modules/cloud/aws/${spec%%:*} ]] && present=$(( present + 1 ))
+  done
+  printf '%s of %s AWS services implemented' "$present" "$total"
+}
+
 # `_scan_stateful_command_built CMD` - `diff` and `report` are not modules
 # (scan_main's own case block handles both inline, never through
 # scan_dispatch), so there is no run.sh on disk to check the way there is for
@@ -604,7 +653,8 @@ scan_usage_for() {
       ;;
     cloud)
       if _scan_module_built cloud; then
-        printf '%s\n' 'built.'
+        printf 'partially built - the dispatch entry point, the caller-identity/authorization record and the enabled-region iteration are real (%s, docs/STEP6-CLOUD-PLAN.md). No aws/live/*.sh service script has landed yet, so a --live run resolves the account and its regions, records what it could not examine, and reports that rather than a clean scan.\n' \
+          "$(_scan_cloud_service_status)"
       else
         printf '%s\n' 'NOT built - modules/cloud/aws/run.sh does not exist on disk yet; this command is a logged no-op (docs/DESIGN.md §13 step 6).'
       fi
@@ -880,6 +930,19 @@ _scan_check_affirmation() {
   local intensity=${SCAN_FLAGS[intensity]:-}
   local intrusive=${SCAN_FLAGS[allow-intrusive]:-false}
 
+  # `--i-own-account` (docs/STEP6-CLOUD-PLAN.md D1) is checked for the same
+  # ACCIDENTAL case, one flag along: an affirmation naming an account this run
+  # will never contact is an affirmation about nothing, exactly as
+  # `--i-own-target` with no `--target` is.  Without `--live` the cloud module
+  # makes no AWS call at all, so there is no identity to compare it against and
+  # the flag would sit in run.json looking like an affirmation that was
+  # honoured.  The VALUE comparison cannot happen here - unlike `--target`, the
+  # account id is not something the operator typed twice, it is resolved from
+  # the credentials at dispatch - so modules/cloud/aws/run.sh owns that half.
+  if [[ -n ${SCAN_FLAGS[i-own-account]:-} && ${SCAN_FLAGS[live]:-} != true ]]; then
+    scan_die_usage "--i-own-account '${SCAN_FLAGS[i-own-account]}' was given but this run has no --live, so no AWS account is contacted and there is nothing it affirms ownership of"
+  fi
+
   # A stale command, a shell alias, or a CI config copied between repositories
   # is exactly how an affirmation ends up pointed at a host nobody meant, so a
   # mismatch is fatal rather than ignored.  The no-`--target` case lands here
@@ -999,8 +1062,11 @@ _scan_check_discovery_flags() {
 # reaches a real target menu instead of the "guided setup for this is
 # partial" note that used to follow it - see `_guide_g1_status`'s own
 # dast/cloud split and `_guide_g1_note_guided_setup_partial`'s header, both
-# updated in the same change.  `cloud` (G7) is unchanged: no
-# `modules/cloud/aws/run.sh` exists yet, so it still gets that note.
+# updated in the same change.  `cloud` (G7) still gets that note, but for a
+# DIFFERENT reason now that `modules/cloud/aws/run.sh` exists: the module is
+# built and reachable, and it is only its guided ACCOUNT/REGION screens that
+# have not been written.  `_guide_g1_status` already derives the difference
+# from `_scan_module_built`, so nothing there had to change with it.
 #
 # AVAILABILITY LABELS come from the SAME probe scan_dispatch itself uses,
 # through ONE shared function per prerequisite - this ticket's own
@@ -1797,8 +1863,8 @@ _scan_require_report_source() {
 # -----------------------------------------------------------------------------
 # 7. Dispatch.  `scan_dispatch` sources the module's own run.sh when that
 #    file exists on disk, which is the real path for `sast`, `sca` and `iac`
-#    today (AGENTS.md "Build order").  For a module that has NOT landed -
-#    `dast` and `cloud` today - there is no run.sh to source, so it falls
+#    today (AGENTS.md "Build order"), and now for `dast` and `cloud` too.  For
+#    a module that has NOT landed there is no run.sh to source, so it falls
 #    back to a thin, logged no-op rather than a guess at module internals
 #    that a later ticket will actually own, and records a
 #    `coverage_reduction` fact so run.json states the reason honestly
