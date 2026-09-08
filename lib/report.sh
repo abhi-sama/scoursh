@@ -591,9 +591,52 @@ report_run_json() {
     # classification only).
     printf '  "diff_guard": %s,\n' "$(json_string "${SCOURSH_DIFF_GUARD:-not-evaluated}")"
     _report_dast_surface_json "$rundir"
+  _report_cloud_json "$rundir"
     _report_baseline_json "$rundir"
     printf '}\n'
   } >"$rundir/run.json"
+}
+
+# The run's CLOUD authorization/scope object (docs/STEP6-CLOUD-PLAN.md D1's
+# "record cloud_account_id, cloud_caller_arn, cloud_profile,
+# cloud_regions_planned into run.json - the _scan_record_authorization
+# analogue").
+#
+# It is a SEPARATE object rather than four more keys inside `authorization`,
+# because that object's own fields are DAST's - a scope target, a scope.conf
+# digest, an intensity, an intrusive flag - and every one of them is
+# meaningless for a cloud run.  Folding these in would leave a consumer unable
+# to tell "this run affirmed nothing because it was a cloud run" from "this run
+# affirmed nothing because the operator omitted the flag".
+#
+# Rendered on EVERY run, not only a cloud one, for the identical reason
+# `_report_authorization_json` and `_report_dast_surface_json` above always
+# render: an absent key is ambiguous between "no account was scanned" and "this
+# version does not record it". A non-cloud run's own empty/zero defaults are a
+# true and complete statement about it.
+#
+# `account_affirmed` is the OPTIONAL `--i-own-account` value, and it is a
+# STRING rather than a bool on purpose: what an auditor needs from it is WHICH
+# account the operator claimed, which is exactly the field a mismatch would
+# have been refused on. An empty string means the flag was not given.
+#
+# `regions_planned` renders as JSON `null` on a run that never dispatched
+# cloud, and as a NUMBER (including `0`) on one that did - `json_number` maps
+# the absent meta value to `null` and that asymmetry is wanted here, unlike in
+# `dast_surface` above where a zero default is the right answer.  "This run
+# never planned any region" and "the cloud module ran and could not resolve a
+# single enabled region" are different facts, and the second one is a real,
+# recorded coverage loss a consumer must not read as the first.
+_report_cloud_json() {
+  local rundir=$1
+  printf '  "cloud": {\n'
+  printf '    "account_id": %s,\n' "$(json_string "$(_meta_first "$rundir" cloud_account_id)")"
+  printf '    "caller_arn": %s,\n' "$(json_string "$(_meta_first "$rundir" cloud_caller_arn)")"
+  printf '    "profile": %s,\n' "$(json_string "$(_meta_first "$rundir" cloud_profile)")"
+  printf '    "account_affirmed": %s,\n' "$(json_string "$(_meta_first "$rundir" cloud_account_affirmed)")"
+  printf '    "regions_source": %s,\n' "$(json_string "$(_meta_first "$rundir" cloud_regions_source)")"
+  printf '    "regions_planned": %s\n' "$(json_number "$(_meta_first "$rundir" cloud_regions_planned)")"
+  printf '  },\n'
 }
 
 # The run's DAST surface-provenance object (IMPORT-06, docs/DESIGN.md §15's
@@ -2058,7 +2101,18 @@ declare -A _RPTC_CAT_NOUN=(
 )
 # strong/medium/weak/none - the per-category semantic strength of "ran" this
 # report states as a first-class field rather than a footnote.
-declare -A _RPTC_RANSEM=( [sast]=strong [iac]=strong [sca]=medium [dast]=strong [cloud]=none )
+# `cloud` moved from `none` to `strong` when modules/cloud/ landed
+# (docs/STEP6-CLOUD-PLAN.md P3).  The field names the PREDICATE a category uses
+# to decide a check was covered, not how many checks it currently has: cloud's
+# predicate is now a real one - a check id reaches `checks_run` only after the
+# `aws_ro` call it depends on returned an ANSWER (`ok` or `not_found`), never
+# after a call that was denied, throttled or truncated, because
+# lib/awscli.sh's `aws_ro_outcome_is_coverage_loss` separates those and a
+# service script owes a coverage_reduction for each.  It is strong AND
+# currently vacuous, since no service script ships yet, and those are different
+# facts: the `Checks available` / `Checks run` columns beside it are what say
+# nothing ran, and they are computed from the registry rather than typed here.
+declare -A _RPTC_RANSEM=( [sast]=strong [iac]=strong [sca]=medium [dast]=strong [cloud]=strong )
 # SC2016: the backticks below are literal prose (code-span-style quoting of
 # `run`/`files:`), not command substitution.
 # shellcheck disable=SC2016
@@ -2067,7 +2121,7 @@ declare -A _RPTC_RANSEM_TEXT=(
   [iac]='Recorded AFTER the tree walk (the same sast_record_checks_run, called from modules/iac/run.sh once iac_scan_tree returns) - byte-identical predicate to SAST, since both share one engine.'
   [sca]='Recorded when at least one manifest of that ecosystem was located and walked (e.g. modules/sca/engine.sh), before its package loop. It ships no on-disk check registry, so this report cannot state a coverage fraction for it - only what ran.'
   [dast]='Recorded AFTER evaluation, gated on at least one response or request the check was applicable to actually happening (e.g. modules/dast/passive/headers.sh:_HDRF_EVAL). This is the category the other two were brought up to match.'
-  [cloud]='modules/cloud/ does not exist on disk yet (docs/DESIGN.md §13 step 6). Nothing ran.'
+  [cloud]='Recorded AFTER the AWS call the check depends on returned an ANSWER - `ok` or `not_found` in lib/awscli.sh section 2s outcome vocabulary. A call that was denied, throttled, truncated or made against a region the account has not enabled is a declared coverage_reduction, listed below, never a silent checks_run entry: for a cloud scan an AccessDenied looks exactly like an account with nothing wrong in it, which is why this category classifies every failure rather than returning a status. NOTE: modules/cloud/aws/live/ ships no service script yet (docs/STEP6-CLOUD-PLAN.md), so nothing has been counted under this predicate - a --live run today resolves the account and its regions and records what it could not examine.'
 )
 
 _rptc_prefix_grep() {
