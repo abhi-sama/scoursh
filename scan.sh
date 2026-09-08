@@ -528,18 +528,18 @@ _scan_dast_phase_status() {
 # `_scan_stateful_command_built CMD` - `diff` and `report` are not modules
 # (scan_main's own case block handles both inline, never through
 # scan_dispatch), so there is no run.sh on disk to check the way there is for
-# every other command.  Both needed docs/DESIGN.md §13 step 7's persistent
-# state/ tracking; `diff` has it now (docs/STEP7-STATE-PLAN.md STATE-06:
+# every other command.  `diff` needed docs/DESIGN.md §13 step 7's persistent
+# state/ tracking and has it (docs/STEP7-STATE-PLAN.md STATE-06:
 # lib/diff.sh's `diff_render_against`, wired into scan_main's own `diff` case
-# arm) and `report` still does not (regenerating a report from a prior run's
-# findings.json is explicitly out of STATE-06's scope - it needs no
-# classification at all, only re-emission, and is its own, unstarted piece of
-# work).  This stays the ONE function scan_main's diff/report case arms AND
-# scan_usage_for both read, so a future ticket that lands `report` flips one
-# case here rather than two places silently drifting apart.
+# arm).  `report` needs no classification at all, only re-emission from a
+# prior run's own findings.fields/meta (lib/report.sh's
+# report_regenerate_from), so it never depended on state/ and lands
+# independently of it.  This stays the ONE function scan_main's diff/report
+# case arms AND scan_usage_for both read, so the two can never silently
+# disagree about which of them is built.
 _scan_stateful_command_built() {
   case $1 in
-    diff) return 0 ;;
+    diff | report) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -618,9 +618,9 @@ scan_usage_for() {
       ;;
     report)
       if _scan_stateful_command_built report; then
-        printf '%s\n' 'built.'
+        printf '%s\n' "built - regenerates report.md/report.html/report.sarif/report-audit.html (honouring --format) from a prior run directory's own findings.fields and meta/, with no rescan and no module dispatched; run.json is carried forward byte-for-byte from that run."
       else
-        printf '%s\n' 'NOT built - report regeneration needs the same step-7 state/ persistence diff does, which has not landed. This command validates --from and then records a declared no-op.'
+        printf '%s\n' 'NOT built.'
       fi
       ;;
     all)
@@ -1767,6 +1767,33 @@ _scan_require_prior_run() {
     || die "$SCOURSH_EXIT_INPUT" "--$flag '$dir' does not look like a prior run directory (no findings.jsonl or run.json)"
 }
 
+# `report --from DIR` needs a STRICTER check than `_scan_require_prior_run`
+# above: `diff --against` never reads DIR's own files at all (only DIR's
+# basename, to find state/<run-id>.json - lib/diff.sh's diff_render_against),
+# so either mandatory file being present is enough to accept a plausible run
+# id. `report --from` regenerates the actual report artifacts straight from
+# DIR's own findings (lib/report.sh's report_regenerate_from), so it needs
+# BOTH mandatory files, non-empty and minimally well-formed, AND the two
+# records the real renderer reads - findings.fields and meta/ - never
+# findings.jsonl/run.json themselves. A directory holding only the two
+# mandatory files (e.g. an archive that dropped everything else) is a real,
+# reportable error here, never a silent empty report - this ticket's own
+# honesty requirement, applied at the input side rather than the output side.
+_scan_require_report_source() {
+  local dir=$1 resolved first_byte
+  resolved=$(realpath_of "$dir")
+  [[ -d $resolved ]] || die "$SCOURSH_EXIT_INPUT" "--from '$dir' is not a directory"
+  [[ -r $resolved/findings.jsonl ]] \
+    || die "$SCOURSH_EXIT_INPUT" "--from '$dir' does not look like a prior run directory (no findings.jsonl)"
+  [[ -s $resolved/run.json ]] \
+    || die "$SCOURSH_EXIT_INPUT" "--from '$dir' does not look like a prior run directory (no run.json, or it is empty)"
+  first_byte=$(head -c1 -- "$resolved/run.json" 2>/dev/null || true)
+  [[ $first_byte == '{' ]] \
+    || die "$SCOURSH_EXIT_INPUT" "--from '$dir' run.json is malformed (does not start with '{')"
+  [[ -f $resolved/findings.fields && -d $resolved/meta ]] \
+    || die "$SCOURSH_EXIT_INPUT" "--from '$dir' is missing its own findings.fields/meta - report --from needs the run directory scoursh itself wrote, not a copy of just findings.jsonl and run.json"
+}
+
 # -----------------------------------------------------------------------------
 # 7. Dispatch.  `scan_dispatch` sources the module's own run.sh when that
 #    file exists on disk, which is the real path for `sast`, `sca` and `iac`
@@ -2376,9 +2403,8 @@ scan_main() {
       diff_render_against "${SCAN_FLAGS[against]}" "$SCOURSH_RUN_DIR"
       ;;
     report)
-      _scan_require_prior_run from "${SCAN_FLAGS[from]}"
-      run_record coverage_reduction 'module=report reason=not_yet_built'
-      log_warn "'report' regeneration has no engine yet"
+      _scan_require_report_source "${SCAN_FLAGS[from]}"
+      report_regenerate_from "${SCAN_FLAGS[from]}" "$SCOURSH_RUN_DIR"
       ;;
   esac
 
@@ -2402,7 +2428,14 @@ scan_main() {
     paranoid_detach
   fi
 
-  report_run_json "$SCOURSH_RUN_DIR"
+  # `report` is the one exception: report_regenerate_from already wrote
+  # run.json as a byte-for-byte copy of the ORIGINAL run's own (its own
+  # header explains why - several of the fields below are process-exported
+  # facts a live scan sets and no meta/ fact records, so recomputing them
+  # here, with no module dispatched and no --path given, would silently
+  # replace the original run's real values with empty defaults). Calling
+  # this unconditionally would immediately overwrite that copy.
+  [[ $SCAN_COMMAND == report ]] || report_run_json "$SCOURSH_RUN_DIR"
 
   # docs/STEP7-STATE-PLAN.md STATE-02: persist-on-every-run.  Reached on
   # every normal completion of scan_main - a clean run, a gated one

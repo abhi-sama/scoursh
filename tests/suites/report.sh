@@ -967,4 +967,136 @@ assert_contains "$HT15" '<td>A03:2021</td><td>Injection</td>' \
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 SCOURSH_INSTALL_ROOT=$ROOT
 
+# =============================================================================
+printf '\n-- report --from DIR (report_regenerate_from): byte-identical regeneration --\n'
+# =============================================================================
+# "A live scan into DIR, then report --from DIR" - D15 is built the exact way
+# every earlier fixture in this file already is (finding_new/finding_emit,
+# findings_merge, report_all): there is no scanner module in this test
+# process, and there does not need to be one. report_regenerate_from's own
+# contract is "reuse the exact same rendering path a live scan uses", so
+# proving it against report_all's own output, built the same way this whole
+# suite already builds it, IS the real test.
+D15=$SCOURSH_SCRATCH/rpt-regen-orig
+rm -rf "$D15"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$D15"
+D15=$SCOURSH_RUN_DIR
+SCOURSH_REDACT_SECRETS=false
+SCOURSH_DIFF_GUARD=usable
+
+finding_new
+finding_set check_id SAST-SEC-REGEN-01
+finding_set module sast
+finding_set title 'Hardcoded key (regen fixture)'
+finding_set base_severity critical
+finding_set cwe CWE-798
+finding_set owasp A07:2021
+finding_set loc_path app.py
+finding_set loc_line 9
+finding_set cell .
+finding_set_match 'k'
+finding_set_evidence 'SECRET = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"'
+finding_set remediation 'Rotate it.'
+finding_emit
+
+finding_new
+finding_set check_id DAST-GRP-REGEN-01
+finding_set module dast
+finding_set title 'dast regen finding'
+finding_set base_severity low
+finding_set cwe none
+finding_set owasp none
+finding_set loc_target t1
+finding_set loc_method GET
+finding_set path /regen
+finding_set cell t1
+finding_set_evidence e
+finding_set remediation r
+finding_emit
+
+findings_merge "$D15"
+run_record coverage_reduction 'module=sca reason=fixture'
+run_record checks_run SAST-SEC-REGEN-01
+run_record checks_run DAST-GRP-REGEN-01
+SCOURSH_FORMATS=json,sarif,html,md,audit
+report_all "$D15"
+unset SCOURSH_FORMATS
+
+t_case 'report_regenerate_from produces byte-identical report.md/report.html/report-audit.html/findings.jsonl/findings.json/run.json'
+D16=$SCOURSH_SCRATCH/rpt-regen-copy
+rm -rf "$D16"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$D16"
+D16=$SCOURSH_RUN_DIR
+# Deliberately WRONG, to prove report_regenerate_from restores the
+# ORIGINAL run's own values rather than leaving this invocation's: if it did
+# not, the comparisons below would fail on the redaction banner and the
+# run_id line instead of passing.
+SCOURSH_REDACT_SECRETS=true
+SCOURSH_DIFF_GUARD=scan_root_id_mismatch
+SCOURSH_FORMATS=json,sarif,html,md,audit
+report_regenerate_from "$D15" "$D16"
+unset SCOURSH_FORMATS
+
+for f in report.md report.html report-audit.html findings.jsonl findings.json run.json; do
+  if cmp -s "$D15/$f" "$D16/$f"; then
+    _t_ok "$f is byte-identical between the original run and its regeneration"
+  else
+    # AGENTS.md "things measured on this codebase": `head -5` on a `diff`
+    # producing MORE than 5 lines closes the pipe early, so `diff` gets
+    # SIGPIPE - under `pipefail`, inside `$(...)`, that is a real failure
+    # `|| true` must absorb, not the failing assertion's own signal.
+    DIFF_OUT=$(diff "$D15/$f" "$D16/$f" | head -5) || true
+    _t_no "$f is byte-identical between the original run and its regeneration" "$DIFF_OUT"
+  fi
+done
+
+t_case 'report.sarif is byte-identical apart from the invocations[].endTimeUtc render-time stamp'
+# report_sarif's own header (_sarif_print_invocations) documents this: the
+# field mirrors "now" via a live now_iso() call made INSIDE report_sarif
+# itself - the identical, already-documented limitation report_run_json's
+# own completed_at has, which report_regenerate_from solves for run.json by
+# copying it rather than recomputing it (see that function's own header for
+# why). report.sarif is never copied that way: --format sarif may not even
+# have been part of the original run, so it has to be genuinely re-rendered
+# here. Strip just the one volatile field before comparing everything else.
+NORM15=$(sed -E 's/"endTimeUtc":"[^"]*"/"endTimeUtc":"NOW"/' "$D15/report.sarif")
+NORM16=$(sed -E 's/"endTimeUtc":"[^"]*"/"endTimeUtc":"NOW"/' "$D16/report.sarif")
+assert_eq "$NORM15" "$NORM16" \
+  'report.sarif matches byte-for-byte once the live render timestamp is normalised'
+
+t_case "report_regenerate_from re-exports run_id/redact_secrets/diff_guard from the copied run.json, never from this invocation's own environment"
+assert_contains "$(cat "$D16/report.md")" "- run: \`$(basename -- "$D15")\`" \
+  "report.md names the ORIGINAL run's own run_id, not the regeneration output directory's basename"
+assert_contains "$(cat "$D16/report.md")" 'WARNING - redaction is disabled' \
+  "the redaction banner still fires - FAILS if report_regenerate_from left this invocation's own SCOURSH_REDACT_SECRETS=true (deliberately set above) in place instead of restoring the original run's false"
+assert_not_contains "$(cat "$D16/run.json")" 'scan_root_id_mismatch' \
+  "run.json was copied byte-for-byte from the original rather than reflecting this invocation's own (deliberately different) diff_guard"
+
+t_case "report_regenerate_from with --out identical to --from is a safe in-place regeneration, never a destructive copy-over-itself - even when the two paths are spelled differently but resolve to the same directory"
+D17=$SCOURSH_SCRATCH/rpt-regen-inplace
+rm -rf "$D17"
+cp -R "$D15" "$D17"
+SCOURSH_RUN_DIR=$D17
+SCOURSH_RUN_ID=$(basename -- "$D17")
+SCOURSH_FORMATS=json,sarif,html,md,audit
+# The trailing slash on the --from side is deliberate: it is the SAME
+# directory as $D17, spelled differently, so this only stays a safe no-op
+# if report_regenerate_from resolves BOTH sides before comparing them -
+# comparing the raw strings would read them as different and delete
+# rundir/meta right before reading it back from the identical path.
+report_regenerate_from "$D17/" "$D17"
+unset SCOURSH_FORMATS
+assert_file_exists "$D17/findings.fields" \
+  'findings.fields still exists after an in-place regeneration - FAILS if the rm -rf guard fired against its own source directory'
+if cmp -s "$D15/report.md" "$D17/report.md"; then
+  _t_ok 'an in-place regeneration reproduces the identical report.md'
+else
+  DIFF_OUT=$(diff "$D15/report.md" "$D17/report.md" | head -5) || true
+  _t_no 'an in-place regeneration reproduces the identical report.md' "$DIFF_OUT"
+fi
+
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+
 t_summary report
