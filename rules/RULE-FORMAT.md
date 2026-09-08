@@ -388,6 +388,7 @@ A parser cannot classify a line without its schema, because §7 consults *single
 | `config/discovery.conf` | **discovery input** (§9.6.3) |
 | `config/posture.conf` | **posture expectation** (§9.6.4) |
 | `data/severity-rubric.conf` | **severity modifier** (§9.6.5) |
+| `data/owasp-categories.conf` | **OWASP category label** (§9.6.6) |
 
 **The first matching row wins**, which is why the two `checks` rows are first.
 The basename `checks.rules` is **reserved repository-wide**: it always takes the §9.5 schema regardless
@@ -980,6 +981,24 @@ One record per modifier, implementing the frozen table in `docs/FOUNDATION.md` t
 The rubric reads no field outside this table, which is what makes `severity_of()` pure and total.
 `E075` fires when two records share the same (`fact`, `equals`) pair, since that would make the sum
 order-dependent.
+
+#### 9.6.6 `data/owasp-categories.conf` - OWASP category label
+
+One record per OWASP Top 10 category, expanding the id every pattern-rule, derived, and script-check
+`owasp` field carries (§9.1, §9.2, §9.5) into its published category name - the "the report expands it
+to the full label" §9.1 promises and COMPLIANCE-01 (`docs/STEP10-SARIF-PLAN.md`) implements.
+
+| Key | Req | Card | Multi-line | Value |
+|---|---|---|---|---|
+| `id` | required | single | no | `^A[0-9]{2}:[0-9]{4}$` - an OWASP Top 10 category id, in the same edition-qualified form the `owasp` field uses (§9.1) minus its `none` alternative. `none` is a fixed literal meaning "not categorised" and is never a row in this table - it is handled directly by the report layer. MUST be first. |
+| `category` | required | single | no | The category's published name, verbatim from the cited edition, for example `Broken Access Control`. |
+| `format-version` | optional | single | no | As §9.6.5. |
+
+A finding's `owasp` id with no row here (a different edition's id, or an id `E026` admits but this table
+has never been given a row for) is not a parse or validation error - `owasp` only has to match `E026`'s
+pattern, not appear in this table. The report layer renders the bare id plus a recorded reason in that
+case, never a blank or an invented label, so a category this table has never heard of is visibly
+distinct from a category that is genuinely covered and simply produced no finding this run.
 
 ## 10. The `context` directive
 

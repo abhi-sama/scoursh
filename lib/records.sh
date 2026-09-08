@@ -128,6 +128,10 @@ _schema_def() {
         'id:req:single:sl' 'fact:req:single:sl' 'equals:req:single:sl' \
         'modifier:req:single:sl' 'format-version:opt:single:sl'
       ;;
+    owasp-category)
+      printf '%s\n' \
+        'id:req:single:sl' 'category:req:single:sl' 'format-version:opt:single:sl'
+      ;;
     *)
       return 1
       ;;
@@ -136,7 +140,8 @@ _schema_def() {
 
 records_schema_names() {
   printf '%s\n' pattern-rule derived redaction scope-target script-check \
-    scanner-config auth-identity discovery-input posture-expectation severity-modifier
+    scanner-config auth-identity discovery-input posture-expectation severity-modifier \
+    owasp-category
 }
 
 # Schemas holding exactly one record, whose `id` is a frozen literal
@@ -217,6 +222,7 @@ records_schema_for_path() {
     config/discovery.conf) printf '%s' discovery-input ;;
     config/posture.conf) printf '%s' posture-expectation ;;
     data/severity-rubric.conf) printf '%s' severity-modifier ;;
+    data/owasp-categories.conf) printf '%s' owasp-category ;;
     *) return 1 ;;                                   # E070
   esac
 }
@@ -976,6 +982,10 @@ _records_check_id_form() {
         || records_diag "$path" "$line" 1 E027 "$id" 'id must be <target-id>.<label>'
       ;;
     scanner-config) ;;                       # frozen literal, checked by E071
+    owasp-category)
+      [[ $id =~ ^A[0-9]{2}:[0-9]{4}$ ]] \
+        || records_diag "$path" "$line" 1 E027 "$id" 'id must match ^A[0-9]{2}:[0-9]{4}$ (rules/RULE-FORMAT.md §9.6.6)'
+      ;;
     *)
       [[ $id =~ $re_lower ]] \
         || records_diag "$path" "$line" 1 E027 "$id" 'id must match ^[a-z][a-z0-9-]*$'

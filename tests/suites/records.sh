@@ -192,6 +192,8 @@ assert_eq redaction "$(records_schema_for_path rules/redaction.rules)" 'redactio
 assert_eq scope-target "$(records_schema_for_path config/scope.conf)" 'scope'
 assert_eq scanner-config "$(records_schema_for_path config/scanner.conf)" 'scanner'
 assert_eq severity-modifier "$(records_schema_for_path data/severity-rubric.conf)" 'rubric'
+assert_eq owasp-category "$(records_schema_for_path data/owasp-categories.conf)" \
+  'the COMPLIANCE-01 OWASP category label table (§9.6.6)'
 assert_status 1 'a file matching no row is E070' records_schema_for_path some/other/file.rules
 
 # --- §9's `checks-<name>.rules` row ----------------------------------------
@@ -273,6 +275,15 @@ assert_contains "$(val v2.rules "${base/cwe: CWE-95/cwe: CWE95}" pattern-rule)" 
 assert_contains "$(val v3.rules "${base/owasp: A03:2021/owasp: A3:2021}" pattern-rule)" E026 'E026 owasp form'
 assert_contains "$(val v4.rules "${base/id: SAST-PY-EVAL-01/id: SAST-PY-EVAL}" pattern-rule)" E027 \
   'E027 SEQ is required outside the derived schema'
+# owasp-category (§9.6.6, COMPLIANCE-01): the id must be an A<nn>:<yyyy> form,
+# never the generic lowercase-kebab fallback every other non-check-id schema
+# uses.
+assert_eq '' "$(val vow1.conf 'id: A01:2021\ncategory: Broken Access Control\n' owasp-category)" \
+  'a well-formed owasp-category record validates cleanly'
+assert_contains "$(val vow2.conf 'id: a01:2021\ncategory: Broken Access Control\n' owasp-category)" E027 \
+  'E027 owasp-category id form rejects the generic lowercase-kebab id'
+assert_contains "$(val vow3.conf 'id: A01:2021\n' owasp-category)" E023 \
+  'E023 owasp-category missing required category'
 assert_contains "$(val v5.rules 'id: SAST-PY-EVAL-01\ntitle: t\nseverity: high\ncwe: none\nowasp: none\npattern: x\ntags: static\n' pattern-rule)" E023 \
   'E023 a missing required key'
 assert_contains "$(val v6.rules "${base}severity-floor: critical\nseverity-ceiling: low\n" pattern-rule)" E029 \

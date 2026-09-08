@@ -616,8 +616,9 @@ remove it: an authorised scan has no need to be unidentifiable and an unauthoris
 
 `sca` parses every lockfile format it supports, then looks each resolved package up in
 `data/advisories.db`.
-That file is not in this repository - `data/` ships only `severity-rubric.conf` - so on a stock
-checkout `sca` examines nothing at all, whatever the lockfiles contain.
+That file is not in this repository - `data/` ships only `severity-rubric.conf` and
+`owasp-categories.conf`, neither of which is a dependency database - so on a stock checkout `sca`
+examines nothing at all, whatever the lockfiles contain.
 It reports that rather than reporting a clean project: `scan.sh sca` **exits `4`** (missing required
 input - the advisory database is `sca`'s, exactly as `config/scope.conf` is `dast`'s), records one
 `coverage_reduction module=sca reason=no_advisories_db_on_disk ecosystems=<every ecosystem>` fact in
