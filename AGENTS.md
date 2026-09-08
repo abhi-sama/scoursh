@@ -3062,6 +3062,21 @@ step 2 is next" above.
   known-good and known-bad inputs offline. Proven against one reference check
   (`tests/suites/aws-fixtures.sh`), explicitly labelled as a template, not a shipped check -
   `tests/fixtures/aws/README.md` says why.
+  **The stub now ROUTES on `(service, operation)`**, closing the gap the README used to admit: the
+  original single-response mode (`aws_fixture_response_set`, one `AWS_FIXTURE_RESPONSE` file for
+  every call) cannot test a check that calls `aws_ro` more than once per run - which is essentially
+  every real §8.1 check (s3 alone is `list-buckets` then six more calls per bucket) - because it
+  cannot tell one call apart from another. `aws_fixture_route_reset` / `aws_fixture_route_add SVC OP
+  PATH` build a table the stub consults on its own `$1 $2`, serving `PATH` for that exact pair and
+  refusing LOUDLY (a distinct stub exit code, `SCOURSH_AWS_RO_ERROR` naming the unmatched pair) on
+  any call the test did not register - never silently falling back to another row's file, which is
+  the property a multi-call check's own test needs most. The two modes clear each other (and the
+  `aws_ro` response cache) on entry, so a suite mixing single-response and routed cases across test
+  cases never leaks state between them - see `aws_fixture_response_set`'s own header for why clearing
+  the cache is required for correctness, not tidiness. `tests/fixtures/aws/<check>/<operation>.json`
+  is the routed-mode layout, alongside the existing `<check>/{good,bad}.json` single-call one;
+  `tests/fixtures/aws/README.md` documents both and `tests/suites/aws-fixtures.sh`'s "routed mode"
+  section is the worked example, unblocking every later cloud-service PR's own multi-call tests.
 - `tests/localstack/run.sh` - brings up LocalStack (docker), seeds a bucket via the real `aws` CLI
   directly (creation is mutating, so it deliberately does not go through `aws_ro`), then proves
   `aws_ro` against a real API shape: two read calls return the seeded bucket, and a mutating call

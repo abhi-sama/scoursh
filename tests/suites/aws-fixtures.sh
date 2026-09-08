@@ -87,4 +87,41 @@ bad_body=$(cat "$(aws_fixture_path example-s3-public-read-acl bad)")
 good_body=$(cat "$(aws_fixture_path example-s3-public-read-acl good)")
 assert_ne "$bad_body" "$good_body" 'good.json and bad.json are not byte-identical'
 
+# ---------------------------------------------------------------------------
+printf '\n-- routed mode: one fixture per (service, operation), for a multi-call check --\n'
+# ---------------------------------------------------------------------------
+list_fixture=$(aws_fixture_path example-s3-multi-call list-buckets)
+acl_fixture=$(aws_fixture_path example-s3-multi-call get-bucket-acl)
+
+t_case 'a stubbed list-buckets -> get-bucket-acl sequence returns the correct distinct fixture per operation'
+aws_fixture_route_reset
+aws_fixture_route_add s3api list-buckets "$list_fixture"
+aws_fixture_route_add s3api get-bucket-acl "$acl_fixture"
+list_body=$(aws_ro s3api list-buckets)
+acl_body=$(aws_ro s3api get-bucket-acl --bucket demo-bucket)
+assert_eq "$(cat "$list_fixture")" "$list_body" \
+  'list-buckets is served its own fixture'
+assert_eq "$(cat "$acl_fixture")" "$acl_body" \
+  'get-bucket-acl is served its own, distinct fixture rather than list-buckets fixture'
+assert_ne "$list_body" "$acl_body" \
+  'the two operations really did get two different bodies, not one file for both'
+
+t_case 'an unmatched (service, operation) pair fails loudly rather than silently serving the wrong file'
+rc=0
+aws_ro s3api get-bucket-policy-status --bucket demo-bucket >/dev/null || rc=$?
+assert_eq 1 "$rc" 'aws_ro reports failure for an operation no route names'
+assert_eq error "$SCOURSH_AWS_RO_OUTCOME" \
+  'the failure is a classified outcome, never silence'
+assert_contains "$SCOURSH_AWS_RO_ERROR" 'no route registered' \
+  'the diagnostic names the routing gap rather than looking like an ordinary AWS error'
+
+t_case 'aws_fixture_response_set after routed mode returns to single-response mode (backward compatible)'
+aws_fixture_response_set "$(aws_fixture_path example-s3-public-read-acl bad)"
+if _example_check_s3_public_read_acl demo-bucket; then
+  assert_eq EXAMPLE-S3-PUBLIC-READ-ACL "$(finding_get check_id)" \
+    'single-response mode still works, unchanged, after a routed table was used earlier'
+else
+  _t_no 'single-response mode after routed mode' 'the check returned "not flagged"'
+fi
+
 t_summary aws-fixtures
