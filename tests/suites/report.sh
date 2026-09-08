@@ -643,10 +643,31 @@ assert_not_contains "$A13" '</script><img' 'and no live script-closing sequence 
 
 t_case 'coverage matrix: the four real ids land in exactly the four states the design calls for'
 assert_contains "$A13" '<table class="matrix">' 'the coverage matrix table renders'
-assert_contains "$A13" '<td class="num">4</td><td class="num">2</td><td class="num">1</td><td class="num">1</td><td class="num">2</td><td class="num">0</td>' \
-  'sast row reads reg=4 (2 selected+run, 1 selected-not-applicable, 1 skipped) ran=2 found=1 clean=1 not-run=2 unaccounted=0 - fails under a reader that folds the not-applicable id into "unaccounted" instead of "not run", which would report unacc=1 here instead of 0'
+assert_contains "$A13" '<td class="num">4</td><td class="num">2</td><td class="num"><span class="cellnum">1</span><span class="cellsub">1 issue(s)</span></td><td class="num">1</td><td class="num">2</td><td class="num">0</td>' \
+  'sast row reads reg=4 (2 selected+run, 1 selected-not-applicable, 1 skipped) ran=2 found=1 check with 1 issue clean=1 not-run=2 unaccounted=0 - fails under a reader that folds the not-applicable id into "unaccounted" instead of "not run", which would report unacc=1 here instead of 0'
 assert_contains "$A13" '<span class="strength strong">strong</span>' \
   'SAST is now labelled strong-strength ran (the checks_run semantics fix), not weak'
+
+t_case 'scoursh-report-ux: plain-language column headers replace the terse reg/ran/unacc labels'
+assert_contains "$A13" 'Checks available' 'the reg column has a plain-language heading'
+assert_contains "$A13" 'Checks run' 'so does the ran column'
+assert_contains "$A13" 'Skipped (reason given)' 'the not-run column names what it means, not "not run"'
+assert_contains "$A13" 'Not covered' 'and the unaccounted column reads "not covered", not "unacc"'
+assert_contains "$A13" '<abbr title=' 'headers carry a hover tooltip with the fuller definition'
+
+t_case 'scoursh-report-ux: a check-count and a finding-count are never presented as one bare number'
+assert_contains "$A13" '<span class="cellnum">1</span><span class="cellsub">1 issue(s)</span>' \
+  'the coverage matrix cell shows both the distinct-check count and the individual-finding count - fails if it collapsed back to a bare number, which is what read as a contradiction against report.html'"'"'s own per-finding counts for the same category'
+assert_contains "$A13" 'checks with findings' 'the assurance-summary tile keeps its check-count label'
+assert_contains "$A13" 'tilesub">1 individual finding(s)</div>' \
+  'and states the individual-finding total right next to it, rather than leaving the reader to reconcile it against a different tile'
+
+t_case 'scoursh-report-ux: a genuinely plain-English one-line summary is generated per category'
+assert_contains "$A13" '<h3>In plain terms</h3>' 'the plain-terms section renders'
+assert_contains "$A13" 'Of 4 possible code checks, 2 ran (1 check(s) found 1 issue(s), 1 clean), 2 were skipped with a reason.' \
+  'the generated sentence states both the check count and the finding count, and never claims the unaccounted bucket is 0 by silence'
+assert_contains "$A13" 'class="plainline"' \
+  'the identical sentence also appears at the top of the category'"'"'s own section, where a reader who jumped straight there via a nav pill still sees it'
 
 t_case 'captain decision 2: FULL not-covered detail - both not-run reasons are listed BY ID, never only a count'
 assert_contains "$A13" '<td class="id">SAST-PY-EVAL_EXEC-01</td>' 'the profile-filtered check is named'
@@ -671,5 +692,142 @@ assert_contains "$A13" 'id="cat-cloud"' 'the Cloud / AWS section exists'
 assert_contains "$A13" 'This category did not run.' 'and at least one of them says so plainly'
 
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID='' SCOURSH_FORMATS=''
+
+# ===========================================================================
+# scoursh-report-ux: report.html groups live findings by category (SAST/SCA/
+# IaC/DAST/AWS) with a jump-link chip per category, and a CSS-only (:has(),
+# no JavaScript) severity filter that targets the exact `data-sev` attribute
+# `_html_one_finding` already sets on every `details.f`.
+# ===========================================================================
+printf -- '\n-- report.html: category grouping + severity filter --\n'
+D14=$SCOURSH_SCRATCH/rpt-groups
+rm -rf "$D14"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$D14"
+D14=$SCOURSH_RUN_DIR
+
+finding_new
+finding_set check_id SAST-GRP-01
+finding_set module sast
+finding_set title 'sast finding'
+finding_set base_severity critical
+finding_set cwe none
+finding_set owasp none
+finding_set loc_path a.py
+finding_set cell .
+finding_set_match x
+finding_set_evidence e
+finding_set remediation r
+finding_emit
+
+finding_new
+finding_set check_id IAC-GRP-01
+finding_set module iac
+finding_set title 'iac finding'
+finding_set base_severity high
+finding_set cwe none
+finding_set owasp none
+finding_set loc_path b.tf
+finding_set cell .
+finding_set_match x
+finding_set_evidence e
+finding_set remediation r
+finding_emit
+
+finding_new
+finding_set check_id SCA-GRP-01
+finding_set module sca
+finding_set title 'sca finding'
+finding_set base_severity medium
+finding_set cwe none
+finding_set owasp none
+finding_set loc_ecosystem npm
+finding_set loc_package example
+finding_set loc_advisory_id FIXTURE-GRP
+finding_set path package-lock.json
+finding_set cell .
+finding_set_evidence e
+finding_emit
+
+finding_new
+finding_set check_id DAST-GRP-01
+finding_set module dast
+finding_set title 'dast finding one'
+finding_set base_severity low
+finding_set cwe none
+finding_set owasp none
+finding_set loc_target t1
+finding_set loc_method GET
+finding_set path /p
+finding_set cell t1
+finding_set_evidence e
+finding_set remediation r
+finding_emit
+
+finding_new
+finding_set check_id DAST-GRP-02
+finding_set module dast
+finding_set title 'dast finding two'
+finding_set base_severity low
+finding_set cwe none
+finding_set owasp none
+finding_set loc_target t1
+finding_set loc_method GET
+finding_set path /q
+finding_set cell t1
+finding_set_evidence e
+finding_set remediation r
+finding_emit
+
+findings_merge "$D14"
+report_all "$D14"
+H14=$(cat "$D14/report.html")
+
+t_case 'category chips: one per present module, each carrying its own real finding count'
+assert_contains "$H14" 'class="catnav"' 'the quick-jump chip row renders'
+assert_contains "$H14" '<a class="catpill" href="#mod-sast">SAST <span class="c">1</span></a>' 'SAST chip carries its own finding count'
+assert_contains "$H14" '<a class="catpill" href="#mod-sca">SCA <span class="c">1</span></a>' 'SCA chip too'
+assert_contains "$H14" '<a class="catpill" href="#mod-iac">IaC <span class="c">1</span></a>' 'IaC chip too'
+assert_contains "$H14" '<a class="catpill" href="#mod-dast">DAST <span class="c">2</span></a>' \
+  'the DAST chip counts BOTH of its findings, not the number of distinct checks - the same check-vs-finding distinction report-audit.html now states explicitly'
+
+t_case 'findings are grouped under their own category, in canonical order regardless of emission order'
+assert_contains "$H14" 'id="mod-sast"' 'a SAST group exists'
+assert_contains "$H14" 'id="mod-sca"' 'an SCA group exists'
+assert_contains "$H14" 'id="mod-iac"' 'an IaC group exists'
+assert_contains "$H14" 'id="mod-dast"' 'a DAST group exists'
+SAST_POS=$(grep -bo 'id="mod-sast"' <<<"$H14" | head -1 | cut -d: -f1)
+SCA_POS=$(grep -bo 'id="mod-sca"' <<<"$H14" | head -1 | cut -d: -f1)
+IAC_POS=$(grep -bo 'id="mod-iac"' <<<"$H14" | head -1 | cut -d: -f1)
+DAST_POS=$(grep -bo 'id="mod-dast"' <<<"$H14" | head -1 | cut -d: -f1)
+ORDER_OK=false
+if (( SAST_POS < SCA_POS && SCA_POS < IAC_POS && IAC_POS < DAST_POS )); then ORDER_OK=true; fi
+assert_true "$ORDER_OK" \
+  'renders SAST, then SCA, then IaC, then DAST, however the underlying findings.fields ordered them - fails under "render in findings.fields order", which would make the section order depend on incidental merge/sort behaviour'
+
+t_case 'each category group shows its own severity breakdown'
+assert_contains "$H14" '<div class="sevbreak"><span class="sev critical">1 critical</span></div>' \
+  'the SAST group states its one critical finding'
+assert_contains "$H14" '<div class="sevbreak"><span class="sev low">2 low</span></div>' \
+  'the DAST group states both of its findings are low, not just a bare count'
+
+t_case 'the severity filter is CSS-only and targets the exact data-sev attribute every finding already carries'
+assert_contains "$H14" 'id="sv-all"' 'the "All" filter option exists'
+assert_contains "$H14" 'id="sv-crit"' 'the critical filter radio exists'
+assert_contains "$H14" 'id="sv-high"' 'the high+ filter radio exists'
+assert_contains "$H14" 'id="sv-med"' 'the medium+ filter radio exists'
+assert_contains "$H14" 'id="sv-low"' 'the low+ filter radio exists'
+assert_contains "$H14" 'body:has(#sv-crit:checked) details.f:not([data-sev="critical"])' \
+  'the hide rule targets details.f[data-sev], the exact attribute _html_one_finding already sets on every finding - no JavaScript is involved anywhere'
+assert_contains "$H14" 'data-sev="critical"' 'and the SAST finding really does carry that attribute'
+assert_contains "$H14" 'data-sev="low"' 'as does a DAST one'
+assert_not_contains "$H14" '<script' 'still no <script> element anywhere, even with the filter added'
+
+t_case 'no horizontal page overflow: wide tables scroll in their own container, not the page'
+assert_contains "$H14" '<div class="scroll"><table><tr><th>module</th>' \
+  'the by-module table is wrapped in a horizontally-scrollable box rather than left free to overflow the page'
+assert_contains "$H14" '.scroll { overflow-x: auto;' 'and the CSS backing that box is actually shipped'
+
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 
 t_summary report
