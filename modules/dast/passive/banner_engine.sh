@@ -548,9 +548,11 @@ _banner_flush_endpoint() {
 # ---------------------------------------------------------------------------
 # The file, its schema, and how an operator refreshes it are docs/VERSIONS-DB.md.
 # What matters here: it is the frozen tension-25 TSV
-# (`ecosystem package version advisory_id severity fixed_versions summary`),
-# every row this check reads carries the literal `banner` in field 1, and the
-# lookup is `db_lookup_exact` - lib/core.sh's ONE implementation of tension 25's
+# (`ecosystem package version advisory_id severity fixed_versions`) -
+# `summary` no longer lives inline (tension 25's summary-normalisation
+# amendment; see banner_summaries_db_path/banner_db_match below) - every row
+# this check reads carries the literal `banner` in field 1, and the lookup
+# is `db_lookup_exact` - lib/core.sh's ONE implementation of tension 25's
 # `look`-with-a-`grep -F`-fallback primitive - on the
 # `banner<TAB>product<TAB>version<TAB>` prefix.  No range arithmetic, no
 # comparison, no network.
@@ -566,6 +568,21 @@ banner_db_path() {
     return 0
   fi
   printf '%s' "${SCOURSH_INSTALL_ROOT:-${BASH_SOURCE[0]%/*}/../../..}/data/versions.db"
+}
+
+# `banner_summaries_db_path` - data/version-summaries.db's location (or the
+# SCOURSH_DAST_VERSION_SUMMARIES_DB override, mirroring banner_db_path's own
+# convention). docs/FOUNDATION.md tension 25's summary-normalisation
+# amendment applies uniformly to every row `tools/vendor-engines.sh advisories`
+# writes, `banner` rows included: `summary` no longer lives inline in
+# data/versions.db, and this advisory-keyed side table is where
+# banner_db_match below reads it back from.
+banner_summaries_db_path() {
+  if [[ -n ${SCOURSH_DAST_VERSION_SUMMARIES_DB:-} ]]; then
+    printf '%s' "$SCOURSH_DAST_VERSION_SUMMARIES_DB"
+    return 0
+  fi
+  printf '%s' "${SCOURSH_INSTALL_ROOT:-${BASH_SOURCE[0]%/*}/../../..}/data/version-summaries.db"
 }
 
 # `banner_db_state` - sets `_BANNER_DB_STATE` to one of:
@@ -633,21 +650,34 @@ banner_db_known() {
 # collision modules/sca/'s roll-up documents, met here before it could ship.
 # The advisory ids therefore travel in the EVIDENCE of a single finding.
 banner_db_match() {
-  local product=$1 version=$2 db eco pkg ver adv sev fixed summary found=0
+  local product=$1 version=$2 db eco pkg ver adv sev fixed found=0
   _BANNER_ADVISORIES='' _BANNER_SEVERITY='' _BANNER_FIXED='' _BANNER_SUMMARY=''
   [[ -n $product && -n $version ]] || return 1
   db=$(banner_db_path)
-  while IFS=$'\t' read -r eco pkg ver adv sev fixed summary; do
+  # data/versions.db's `banner` row is SIX fields now, not seven: `summary`
+  # moved to data/version-summaries.db (docs/FOUNDATION.md tension 25's
+  # summary-normalisation amendment) - fetched back below, once, from the
+  # FIRST matched advisory id, mirroring modules/sca/engine.sh's own
+  # sca_lookup_summary/_sca_summary_for.
+  while IFS=$'\t' read -r eco pkg ver adv sev fixed; do
     [[ $eco == banner && $pkg == "$product" && $ver == "$version" ]] || continue
     found=1
     [[ -n $adv ]] && _BANNER_ADVISORIES+="${_BANNER_ADVISORIES:+ }$adv"
     _banner_severity_max "${_BANNER_SEVERITY:-}" "$sev"
     _BANNER_SEVERITY=$_BANNER_SEV_MAX
     [[ -z $_BANNER_FIXED && -n $fixed ]] && _BANNER_FIXED=$fixed
-    [[ -z $_BANNER_SUMMARY && -n $summary ]] && _BANNER_SUMMARY=$summary
   done < <(db_lookup_exact "banner"$'\t'"$product"$'\t'"$version"$'\t' "$db" 2>/dev/null || true)
   (( found )) || return 1
   [[ -n $_BANNER_SEVERITY ]] || _BANNER_SEVERITY=high
+  local first_adv=${_BANNER_ADVISORIES%% *}
+  if [[ -n $first_adv ]]; then
+    local sdb srow smarked _sadv
+    sdb=$(banner_summaries_db_path)
+    if srow=$(db_lookup_exact "$first_adv"$'\t' "$sdb" 2>/dev/null); then
+      smarked=${srow//$'\t'/$'\x1f'}
+      IFS=$'\x1f' read -r _sadv _BANNER_SUMMARY <<<"$smarked"
+    fi
+  fi
   return 0
 }
 

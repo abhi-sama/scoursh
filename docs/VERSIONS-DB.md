@@ -5,9 +5,13 @@ inventory and `docs/ADAPTERS.md` is for engine adapters.
 It defines the file the DAST banner check (`modules/dast/passive/banner.sh`, `docs/DESIGN.md` §7.1) reads
 to decide whether a version it discovered on a running endpoint is known to be vulnerable.
 
-`docs/FOUNDATION.md` tension 25 is the decision this implements.
-Read that first if you are changing anything here: it is the reason the scanner performs **no version
-comparison and no range arithmetic at all**, and the reason this file is a table rather than a rule pack.
+`docs/FOUNDATION.md` tension 25 is the decision this implements, **as amended**: the `banner` namespace
+this file owns follows the AMENDED (summary-normalisation) schema below, exactly like every SCA
+ecosystem's own `data/advisories.db` rows - `summary` no longer lives inline. `banner` rows do NOT
+follow the npm-range amendment; they remain exact-version rows, one row per exact affected product
+version, same as before. Read tension 25 first if you are changing anything here: it is the reason the
+scanner performs **no version comparison and no range arithmetic at all** for this namespace, and the
+reason this file is a table rather than a rule pack.
 
 ## 1. Why the file exists, and why it is offline
 
@@ -25,11 +29,20 @@ A scan never fetches it, never refreshes it, and never notices that it is stale 
 
 ## 2. The file, and the two namespaces in it
 
-`data/versions.db` is the frozen tension-25 TSV, byte-for-byte the same schema as `data/advisories.db`:
+`data/versions.db` is the tension-25 TSV, byte-for-byte the same schema as `data/advisories.db`'s own
+non-npm ecosystem rows. `banner` is a namespace, not one of the six SCA ecosystems, so it is never
+touched by the npm-range amendment - its rows stay exact-version rows, under the AMENDED
+(summary-normalised) schema:
 
 ```
-ecosystem \t package \t version \t advisory_id \t severity \t fixed_versions \t summary
+ecosystem \t package \t version \t advisory_id \t severity \t fixed_versions
 ```
+
+`summary` no longer lives inline (`docs/FOUNDATION.md` tension 25's summary-normalisation amendment): it
+lives in the advisory-keyed side table `data/version-summaries.db` (`advisory_id \t summary`, one row per
+advisory_id), read back by `banner_summaries_db_path`/`banner_db_match`
+(`modules/dast/passive/banner_engine.sh`) at finding-emission time. A missing summary row degrades to a
+placeholder rather than a fatal error.
 
 Sorted by the first three fields under `LC_ALL=C`, with `#` comment lines at the top.
 No field may contain a TAB or an LF.

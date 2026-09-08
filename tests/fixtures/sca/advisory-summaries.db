@@ -1,0 +1,35 @@
+# scoursh SCA test fixture advisory-summaries.db - NOT the real database.
+# The advisory-keyed side table docs/FOUNDATION.md tension 25's
+# summary-normalisation amendment introduces (companion to
+# tests/fixtures/sca/advisories.db): advisory_id\tsummary, LC_ALL=C sorted.
+SCA-FIXTURE-ADVISORY-001	fixture: prototype pollution
+SCA-FIXTURE-ADVISORY-002	fixture: prototype pollution
+SCA-FIXTURE-ADVISORY-003	fixture: ReDoS
+SCA-FIXTURE-ADVISORY-004	fixture: no fixed version published yet
+SCA-FIXTURE-ADVISORY-005	fixture: prototype pollution
+SCA-FIXTURE-ADVISORY-006	fixture: unsafe deserialization gadget chain
+SCA-FIXTURE-ADVISORY-007	fixture: no fixed version published yet
+SCA-FIXTURE-ADVISORY-008	fixture: known package, different pinned version than what the fixture pom.xml declares
+SCA-FIXTURE-ADVISORY-009	fixture: polymorphic deserialization RCE
+SCA-FIXTURE-ADVISORY-010	fixture: unsafe Constructor deserialization
+SCA-FIXTURE-ADVISORY-011	fixture: no fixed version published yet (gradle)
+SCA-FIXTURE-ADVISORY-101	fixture: session fixation
+SCA-FIXTURE-ADVISORY-102	fixture: header injection
+SCA-FIXTURE-ADVISORY-103	fixture: certificate validation bypass
+SCA-FIXTURE-ADVISORY-104	fixture: SQL injection
+SCA-FIXTURE-ADVISORY-105	fixture: stale tzdata
+SCA-FIXTURE-ADVISORY-106	fixture: buffer overflow
+SCA-FIXTURE-ADVISORY-107	fixture: header injection
+SCA-FIXTURE-GO-006	fixture: Go stack trace disclosure
+SCA-FIXTURE-GO-007	fixture: Go /vN + +incompatible normalization proof
+SCA-FIXTURE-GO-008	fixture: Go no fixed version published yet
+SCA-FIXTURE-GO-009	fixture: Go unknown-version rollup proof
+SCA-FIXTURE-MALWARE-001	fixture: malicious package, every version affected (Tier A whole-package row)
+SCA-FIXTURE-PHP-101	fixture: known-vulnerable pinned package
+SCA-FIXTURE-PHP-102	fixture: mixed-case name must normalize to lowercase before lookup
+SCA-FIXTURE-PHP-103	fixture: no fixed version published yet
+SCA-FIXTURE-PHP-104	fixture: package known, pinned version 9.9.9 not tracked
+SCA-FIXTURE-RUBY-001	fixture: mixed-case gem name normalizes before lookup
+SCA-FIXTURE-RUBY-002	fixture: no fixed version published yet
+SCA-FIXTURE-RUBY-003	fixture: transitive dependency vulnerability
+SCA-FIXTURE-RUBY-004	fixture: known package, different pinned version (unknown-version roll-up case)

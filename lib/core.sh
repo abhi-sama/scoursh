@@ -735,6 +735,29 @@ db_lookup_exact() {
   fi
 }
 
+# db_lookup_prefix PREFIX FILE - like db_lookup_exact, but ALWAYS returns
+# every line sharing PREFIX, even under the `look`-less grep fallback.
+# docs/FOUNDATION.md tension 25's amendment (npm semver-range matching)
+# needs this: db_lookup_exact's asymmetric `grep -F -m 1` fallback is
+# deliberately safe for an EXACT (ecosystem, package, version) prefix - at
+# most a handful of advisories share one exact version - but is a
+# correctness bug for a (ecosystem, package) PREFIX, where every row must be
+# evaluated against the interval comparator. Measured on the real range
+# database: `grep -F -m 1 'npm<TAB>lodash<TAB>'` returns 1 of 10 rows a
+# `look`-having host sees. Dropping `-m 1` here also makes a `look`-less host
+# MORE correct than db_lookup_exact's own exact-lookup fallback already is,
+# never less - see modules/sca/engine.sh's sca_lookup_range for the one
+# caller.
+db_lookup_prefix() {
+  local prefix=$1 file=$2
+  [[ -r $file ]] || return 1
+  if [[ ${SCOURSH_CAP_LOOK:-none} == look ]]; then
+    LC_ALL=C look -- "$prefix" "$file"
+  else
+    LC_ALL=C grep -F -- "$prefix" "$file"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # 5. JSON string writer (tension 10)
 # ---------------------------------------------------------------------------
