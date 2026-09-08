@@ -389,6 +389,7 @@ A parser cannot classify a line without its schema, because §7 consults *single
 | `config/posture.conf` | **posture expectation** (§9.6.4) |
 | `data/severity-rubric.conf` | **severity modifier** (§9.6.5) |
 | `data/owasp-categories.conf` | **OWASP category label** (§9.6.6) |
+| `data/cis-mappings` | **CIS control label** (§9.6.7) |
 
 **The first matching row wins**, which is why the two `checks` rows are first.
 The basename `checks.rules` is **reserved repository-wide**: it always takes the §9.5 schema regardless
@@ -529,6 +530,7 @@ expectation id silently collide with a scope target id.
 | **auth identity id** | `config/auth.conf` | `<target>.<label>` | Unique within the file; the `<target>` part MUST name an existing target id (`E080`) |
 | **expectation id** | `config/posture.conf` | `^[a-z][a-z0-9-]*$` | Unique within the file |
 | **rubric modifier id** | `data/severity-rubric.conf` | `^[a-z][a-z0-9-]*$` | Unique within the file |
+| **CIS control id** | `data/cis-mappings` | `^[0-9]+(\.[0-9]+)+$`, the benchmark's own dotted-decimal numbering, §9.6.7 | Unique within the file. This namespace is **never** validated against a `cis:` field value (§9.1, §9.2, §9.5): the id is authored on the check record and this table is a reference the report layer consults, not a cross-reference the linter enforces either direction. |
 | **config literal** | single-record config files | the frozen basename literal | One record per file (`E071`) |
 | **adapter check id** | not a record file; produced at runtime by a vendored engine (§6.4) | `<ADAPTER>:<engine rule id>`, for example `semgrep:python.lang.security.eval` | Unique within the adapter's own output; never linted, since no record declares it |
 
@@ -999,6 +1001,41 @@ has never been given a row for) is not a parse or validation error - `owasp` onl
 pattern, not appear in this table. The report layer renders the bare id plus a recorded reason in that
 case, never a blank or an invented label, so a category this table has never heard of is visibly
 distinct from a category that is genuinely covered and simply produced no finding this run.
+
+#### 9.6.7 `data/cis-mappings` - CIS control label
+
+One record per CIS AWS Foundations Benchmark control, expanding the id every `cis:` field (§9.1, §9.2,
+§9.5) carries into its published short title - the CIS half of the same "the report expands it to the
+full label" job §9.6.6 does for `owasp` (COMPLIANCE-03, `docs/STEP10-SARIF-PLAN.md`).
+
+| Key | Req | Card | Multi-line | Value |
+|---|---|---|---|---|
+| `id` | required | single | no | The CIS control number, verbatim from the benchmark's own dotted-decimal numbering (for example `1.4`, `2.1.1`), matching `^[0-9]+(\.[0-9]+)+$`. MUST be first. |
+| `title` | required | single | no | The control's published short title, verbatim from the cited benchmark and version. Never the rationale, audit, or remediation prose - see below for why. |
+| `benchmark` | optional | single | no | The benchmark's published name, for example `CIS Amazon Web Services Foundations Benchmark`. Meaningful only on the **first** record of the file, exactly as `format-version` is (§9.6.5); every record is transcribed from one benchmark version, so repeating it on every record would only give a future version bump a second place to edit. |
+| `benchmark-version` | optional | single | no | The benchmark's published version, for example `3.0.0`. Same first-record-only convention as `benchmark`. |
+| `format-version` | optional | single | no | As §9.6.5. |
+
+**This table is an id -> label reference table, and is never a source of control ids.** A check's `cis:`
+field is authored on the check record itself (§9.1, §9.2, §9.5); nothing in `lib/`, `modules/`, or `scan.sh`
+may look a control id up in this file and treat the result as anything other than a display string. The
+distinction matters because "CIS AWS Foundations Benchmark v3.0.0 control 1.4" and "v1.4.0 control 1.4"
+are different controls: a check's `cis:` value has no version component of its own, so the benchmark name
+and version this file carries are what pin which numbering a given id is drawn from, and a `cis:` value
+authored against one version must not be silently re-interpreted against another.
+
+**Copyright-safe by construction.** A CIS benchmark's control ids and their short recommendation titles
+are facts about a published standard; the rationale, audit, and remediation prose accompanying each
+control is CIS's copyrighted text. This schema has no field for any of that prose - `title` is the only
+value field besides the id - so a conformant file cannot accidentally carry it.
+
+An id with no row here (a control this table has not yet been given a row for, whether because the
+benchmark added it in a later revision or because the table is a seed rather than the whole benchmark) is
+not a parse or validation error - a `cis:` field value is free text, not validated against this table
+either direction (§9.1.1a) - and is the report layer's degrade-visibly case, exactly as an unknown `owasp`
+id is (§9.6.6): the bare id plus a recorded reason, never a blank or an invented title. `docs/CIS-MAPPINGS.md`
+is the normative document for what is currently seeded, what is a stated gap, and the refresh procedure for
+closing it - read it before adding or editing a row here.
 
 ## 10. The `context` directive
 

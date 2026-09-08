@@ -858,6 +858,47 @@ assert_ne 'Not categorised' "$UNKNOWN_LABEL" \
 assert_eq 'unknown' "$(owasp_category_known A99:2099)" \
   'its state is `unknown`, distinct from both `known` and the `none` literal'
 
+# ===========================================================================
+# docs/STEP10-SARIF-PLAN.md Track B - COMPLIANCE-03 (data/cis-mappings: the
+# format, the vendored table, and its id -> label loader/lookup).  This
+# ticket lands the table and renders nothing - there is no report section to
+# test here, only the loader/lookup functions COMPLIANCE-04 will consume.
+# ===========================================================================
+printf -- '\n-- COMPLIANCE-03: data/cis-mappings, the CIS control label table --\n'
+
+t_case 'a known id expands to its published CIS v3.0.0 short title'
+assert_eq "Ensure no 'root' user account access key exists" "$(cis_control_label 1.4)" \
+  '1.4 is the CIS AWS Foundations Benchmark v3.0.0 title data/cis-mappings carries'
+assert_eq 'known' "$(cis_control_known 1.4)" 'and its state is `known`'
+
+t_case 'the benchmark name and version are present on the table, and are exposed'
+assert_eq 'CIS Amazon Web Services Foundations Benchmark' "$(cis_benchmark_name)" \
+  'the benchmark name is carried as data on the first record (rules/RULE-FORMAT.md §9.6.7)'
+assert_eq '3.0.0' "$(cis_benchmark_version)" \
+  'the benchmark version is carried as data on the first record, per the captain'"'"'s D4 decision'
+
+t_case 'an id with no row degrades visibly - never blank, never an invented label'
+UNKNOWN_CIS_LABEL=$(cis_control_label 99.99)
+assert_contains "$UNKNOWN_CIS_LABEL" '99.99' \
+  'the bare id survives into the rendered label - FAILS under a blank expansion, which would be indistinguishable from a rendering bug'
+assert_ne '' "$UNKNOWN_CIS_LABEL" 'never blank'
+assert_eq 'unknown' "$(cis_control_known 99.99)" \
+  'its state is `unknown`, distinct from `known`'
+
+t_case 'every id in the shipped table is unique, and the table parses/validates cleanly'
+records_reset_diagnostics
+if records_load "$ROOT/data/cis-mappings" cis-mapping cistbl >/dev/null 2>&1 \
+  && records_validate cistbl >/dev/null 2>&1; then
+  _t_ok 'data/cis-mappings parses and validates with no duplicate-id (E019) or id-form (E027) diagnostics'
+else
+  _t_no 'data/cis-mappings parses and validates cleanly' \
+    "${RECORDS_DIAGNOSTICS[*]+"${RECORDS_DIAGNOSTICS[*]}"}"
+fi
+CIS_N=$(records_count cistbl)
+assert_ne 0 "$CIS_N" 'the shipped table carries at least one control'
+
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+
 printf -- '\n-- COMPLIANCE-02: the OWASP compliance view in report.md and report.html --\n'
 # A fixture registry (tests/fixtures/checks-registry), not the real, growing
 # catalog: this proves the three-way honesty split against KNOWN registry

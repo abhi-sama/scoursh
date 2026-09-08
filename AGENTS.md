@@ -667,20 +667,22 @@ of sequence - see their own sections below.
 **Step 7 (persistent run state, `state/` plus `diff`) is complete.**
 Step 10 (SARIF plus the compliance report) is partially landed: Track A (the SARIF emitter) is
 complete, and Track B (the compliance-mapping report) has its unblocked OWASP half landed
-(COMPLIANCE-01/02) - only its CIS half (COMPLIANCE-03/04, blocked on step 6) remains unstarted.
+(COMPLIANCE-01/02) plus its CIS half's own unblocked ticket, COMPLIANCE-03 (`data/cis-mappings`: the
+format, the table, and its refresh procedure) - only COMPLIANCE-04 (the CIS report view itself,
+blocked on step 6) remains unstarted.
 All three have a written sub-ticket plan - `docs/STEP6-CLOUD-PLAN.md`, `docs/STEP7-STATE-PLAN.md`,
 and step 10's `docs/STEP10-SARIF-PLAN.md` (SARIF-01..06 plus COMPLIANCE-01..04) - and step 7 and
 step 10's SARIF track landed ahead of step 6 per `docs/STEP7-STATE-PLAN.md`'s stated priority order
 among the three (step 7 first, then step 10, then step 6 last).
 **Read `docs/STEP10-SARIF-PLAN.md` before treating step 10's queue position as a dependency**: it
 establishes, against the tree, that step 10 is three deliverables rather than one - the SARIF emitter
-needed neither step 6 nor step 7, the compliance report's OWASP half is unblocked too while only its
-CIS half waits on step 6, and the `--fail-on` CI gate that `docs/DESIGN.md` §13 item 10 bundles with
-them shipped back at step 3 and carries no ticket at all.
+needed neither step 6 nor step 7, the compliance report's OWASP half is unblocked too and so was
+COMPLIANCE-03 (the CIS table, as distinct from the CIS report view), and the `--fail-on` CI gate that
+`docs/DESIGN.md` §13 item 10 bundles with them shipped back at step 3 and carries no ticket at all.
 **Track A of step 10 (the SARIF emitter, SARIF-01 through SARIF-06) is complete**, including its own
 documentation ticket - see the SARIF-01 through SARIF-06 landing paragraphs below. **Track B's OWASP
-half (COMPLIANCE-01 and COMPLIANCE-02) has also landed** - see that landing paragraph below, after
-SARIF-06's. Only Track B's CIS half (COMPLIANCE-03, COMPLIANCE-04 - the latter blocked on step 6)
+half (COMPLIANCE-01 and COMPLIANCE-02) has also landed, and so has COMPLIANCE-03** - see those landing
+paragraphs below, after SARIF-06's. Only COMPLIANCE-04 (the CIS report view, blocked on step 6)
 remains unstarted.
 
 **Step 7 (persistent run state) is complete: STATE-01 through STATE-08 have all landed**, matching
@@ -929,8 +931,9 @@ documentation only: `lib/report.sh` and `lib/findings.sh` each carry one source 
 carries a stale description and asserts nothing about `report.sarif` itself.
 
 **COMPLIANCE-01 and COMPLIANCE-02 (`docs/STEP10-SARIF-PLAN.md` Track B's unblocked OWASP half) have
-now landed; COMPLIANCE-03 and COMPLIANCE-04 (the CIS half) remain unstarted and are step 6's to pick
-up, per that plan's own dependency table.**
+now landed, and so has COMPLIANCE-03 (the CIS half's own unblocked ticket); only COMPLIANCE-04 (the CIS
+report view itself) remains, and it is genuinely blocked on step 6 per that plan's own dependency
+table.**
 COMPLIANCE-01 is `data/owasp-categories.conf` (§9.6.6, a new record schema, additive per §14's second
 worked example - no `format_version` bump), a vendored table mapping each OWASP Top 10 2021 id to its
 published category name, read from disk exactly as `data/severity-rubric.conf` is rather than compiled
@@ -967,6 +970,57 @@ label-expansion cases for `known`/`none`/`unknown`, plus an end-to-end section a
 `tests/fixtures/checks-registry` - not the real, growing catalog - proving all three run-level buckets
 plus the fourth against KNOWN registry contents) and `tests/suites/records.sh` (the new schema's path
 mapping and id-form validation) are the proof.
+
+**COMPLIANCE-03 (`data/cis-mappings`: the format, the vendored table, and its refresh procedure) has
+also landed - the CIS half's own unblocked ticket, separable from COMPLIANCE-04 for exactly the reason
+`docs/STEP10-SARIF-PLAN.md`'s own row gives: it lands the format and the table and renders nothing.**
+`rules/RULE-FORMAT.md` §9.6.7 is the schema (a new record schema at a new path, additive per §14's
+second worked example - no `format_version` bump): `id` (the benchmark's own dotted-decimal control
+number, `^[0-9]+(\.[0-9]+)+$`), `title` (the published short title, and the ONLY other value field -
+the schema has nowhere to put the benchmark's copyrighted rationale/audit/remediation prose even by
+accident), and `benchmark`/`benchmark-version`/`format-version`, meaningful only on the first record,
+the identical convention `format-version` already uses in §9.6.5/§9.6.6.
+**The table is an id -> label REFERENCE table and is never a source of control ids** - the captain's D4
+decision (`docs/STEP10-SARIF-PLAN.md`'s own COMPLIANCE-03 row, and the linked cloud-plan report's D4
+section): a check's `cis` field is authored on the check record itself, exactly as `docs/STEP6-CLOUD-PLAN.md`
+already told every per-service ticket, and nothing in `lib/`/`modules/`/`scan.sh` may treat a lookup
+against this file as validating or supplying an id in either direction.
+`data/cis-mappings` itself ships 34 controls for **CIS AWS Foundations Benchmark v3.0.0** (the version
+D4 fixed), covering the v1(CIS-core) service scope (IAM, S3, EC2/VPC) plus the logging/monitoring
+controls those services' own checks cite (CloudTrail, AWS Config, KMS, EFS, RDS) - a SEED, not the whole
+benchmark, `docs/DESIGN.md` §3's own phrase for the identical reason. The ids and titles are
+cross-referenced against AWS Security Hub's own public CIS v3.0.0 control-id mapping
+(`https://docs.aws.amazon.com/securityhub/latest/userguide/cis-aws-foundations-benchmark.html`), which
+republishes CIS control numbers alongside its own control titles as part of its own standards
+documentation - never against the licensed benchmark PDF's copyrighted prose, which the schema has no
+field for regardless. Section 4 (the CloudWatch metric-filter/alarm controls) is a **stated, documented
+gap**, not a guess: Security Hub's own mapping marks every one of those controls "Not supported - manual
+check" for v3.0.0 and does not publish their v3.0.0 numbers, so this file cannot cite them without the
+source PDF in hand.
+`docs/CIS-MAPPINGS.md` is the new normative document, mirroring `docs/VERSIONS-DB.md`'s shape exactly:
+why the file exists and is an id -> label table rather than an id source, the schema, what is currently
+seeded versus a stated gap, and - the part the ticket's own acceptance criteria required - a documented
+refresh procedure. Unlike `data/versions.db`'s `banner` namespace (machine-refreshed from OSV.dev by
+`tools/vendor-engines.sh advisories banner`), this file's refresh is a **hand-transcription action**:
+CIS publishes no API or bulk export of its control ids and titles, so `tools/vendor-engines.sh` gains no
+new registry entry for it, and none should be added that scrapes the benchmark PDF - that would risk
+reproducing more than the id and title, which is exactly the copyright boundary D4 draws.
+`lib/report.sh` gains `cis_mappings_load`/`cis_control_label`/`cis_control_known`/`cis_benchmark_name`/
+`cis_benchmark_version`, the identical `owasp_categories_load`/`owasp_category_label`/
+`owasp_category_known` shape one section above - including the identical degrade-visibly contract (an
+id with no row renders as the bare id plus a fixed reason, never blank, never invented) - except there is
+no `none` sentinel: `cis` carries no fixed "not applicable" literal the way `owasp` does, it is simply
+absent from a record that cites no CIS control. **None of these functions is called from `report_all`,
+`report_md`, or `report_html`** - that is COMPLIANCE-04's job, blocked on `modules/cloud/` existing so
+there is a real `cis`-carrying finding to build and test a report section against. Landing the lookup
+now, unwired, is the identical shape COMPLIANCE-01 landed in ahead of COMPLIANCE-02.
+`tests/suites/records.sh` (the new schema's path mapping, id-form validation, and required-field
+checks) and `tests/suites/report.sh` (known/unknown label expansion, the benchmark name/version
+accessors, and an explicit id-uniqueness/parses-cleanly assertion against the real shipped file) are the
+proof; `tests/lint-rules.sh`'s repository sweep gained one literal-basename match (`data/cis-mappings`
+has no extension, unlike every other schema's path, and unlike its machine-generated `data/` siblings
+`versions.db`/`advisories.db`, which must NOT be swept - they are TSV, not records) so the shipped file
+is linted on every run rather than only exercised by its own test suite.
 
 **STATE-02 (per-(check, cell) coverage recording, and persist-on-every-run wiring) has also landed**,
 for the same "its own scope does not need the `account-region` producer" reason STATE-01 was authorised
