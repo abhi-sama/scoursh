@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>What scoursh detects</title>
+<style>
+  :root{
+    --bg:#fbfbfd; --surface:#ffffff; --surface-2:#f4f6f9; --line:#e3e6ec; --line-2:#cfd4dc;
+    --text:#14161a; --text-2:#4a5058; --text-3:#727a86;
+    --accent:#2f5bd0; --accent-soft:#eaf0ff;
+    --green:#0f7b4f; --green-soft:#e6f6ee; --blue:#1f6ba8; --blue-soft:#e6f1fb;
+    --purple:#7a3fb0; --purple-soft:#f1e9fa; --grey:#6b727c; --grey-soft:#eef0f4;
+    --crit:#b0243a;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --radius:10px;
+  }
+  :root:not([data-theme="light"]){}
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#0e1014; --surface:#15181e; --surface-2:#1b1f27; --line:#282e38; --line-2:#3a4350;
+      --text:#e9ecf1; --text-2:#aab2be; --text-3:#8b939f;
+      --accent:#7ea3f5; --accent-soft:#182238;
+      --green:#5fd6a0; --green-soft:#0f2419; --blue:#6fb8e8; --blue-soft:#0e2233;
+      --purple:#c39ae8; --purple-soft:#241833; --grey:#8b939f; --grey-soft:#1e232b;
+      --crit:#f58aa0;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0e1014; --surface:#15181e; --surface-2:#1b1f27; --line:#282e38; --line-2:#3a4350;
+    --text:#e9ecf1; --text-2:#aab2be; --text-3:#8b939f;
+    --accent:#7ea3f5; --accent-soft:#182238;
+    --green:#5fd6a0; --green-soft:#0f2419; --blue:#6fb8e8; --blue-soft:#0e2233;
+    --purple:#c39ae8; --purple-soft:#241833; --grey:#8b939f; --grey-soft:#1e232b;
+    --crit:#f58aa0;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.6}
+  .wrap{max-width:1000px;margin:0 auto;padding:2.5rem 1.5rem 5rem}
+  header h1{font-size:2rem;margin:0 0 .35rem;letter-spacing:-.02em;text-wrap:balance}
+  header p.sub{color:var(--text-2);margin:0 0 1.5rem;font-size:1.05rem;max-width:65ch}
+  .counts{display:flex;flex-wrap:wrap;gap:.6rem;margin:1.2rem 0}
+  .count{background:var(--surface-2);border:1px solid var(--line);border-radius:var(--radius);padding:.6rem .9rem;min-width:96px}
+  .count b{display:block;font-size:1.5rem;font-variant-numeric:tabular-nums}
+  .count span{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3)}
+  .legend{display:flex;flex-wrap:wrap;gap:.5rem;margin:1.4rem 0 2rem;padding:1rem;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--radius)}
+  .legend .item{display:flex;gap:.5rem;align-items:flex-start;font-size:.85rem;flex:1 1 220px;min-width:0}
+  .dot{flex:0 0 auto;width:.85rem;height:.85rem;border-radius:50%;margin-top:.25rem}
+  .d-green{background:var(--green)} .d-blue{background:var(--blue)} .d-purple{background:var(--purple)} .d-grey{background:var(--grey)}
+  .headline{background:var(--green-soft);border:1px solid var(--green);border-radius:var(--radius);padding:1rem 1.2rem;margin:0 0 2rem;font-size:1rem}
+  .headline b{color:var(--green)}
+  h2{font-size:1.35rem;margin:2.6rem 0 .4rem;letter-spacing:-.01em;display:flex;align-items:center;gap:.6rem}
+  h2 .tag{font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding:.2rem .5rem;border-radius:999px}
+  .t-green{background:var(--green-soft);color:var(--green)} .t-blue{background:var(--blue-soft);color:var(--blue)} .t-purple{background:var(--purple-soft);color:var(--purple)} .t-grey{background:var(--grey-soft);color:var(--grey)}
+  h2 + p{color:var(--text-2);margin:.2rem 0 1rem;max-width:70ch}
+  h3{font-size:.95rem;margin:1.4rem 0 .5rem;color:var(--text);font-family:var(--mono);font-weight:600}
+  h3 small{color:var(--text-3);font-family:var(--sans);font-weight:400;margin-left:.4rem}
+  .tblwrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius);margin:.4rem 0 1rem}
+  table{border-collapse:collapse;width:100%;min-width:520px;font-size:.86rem}
+  th,td{text-align:left;padding:.5rem .8rem;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--surface-2);font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);font-weight:600}
+  tr:last-child td{border-bottom:none}
+  td.id{font-family:var(--mono);font-size:.78rem;color:var(--accent);white-space:nowrap}
+  td.cwe{font-family:var(--mono);font-size:.76rem;color:var(--text-3);white-space:nowrap}
+  a{color:var(--accent)}
+  footer{margin-top:3rem;padding-top:1.2rem;border-top:1px solid var(--line);color:var(--text-3);font-size:.82rem}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+<header>
+  <h1>What scoursh detects</h1>
+  <p class="sub">The full built-in check catalogue on the <code>dev</code> branch, grouped by scan surface and by what each check needs to run. Roughly 180 checks ship in the box.</p>
+</header>
+
+<div class="headline">
+  <b>Almost everything runs with no external data.</b> Point scoursh at source code (<code>--path</code>) or a
+  live app (<code>--target</code>) and every SAST, IaC, and DAST check below works immediately &mdash; no database,
+  no downloads, no network. Only <b>dependency-CVE scanning (SCA)</b> and one banner check need the vendored
+  advisory database.
+</div>
+
+<div class="counts">
+  <div class="count"><b>53</b><span>SAST checks</span></div>
+  <div class="count"><b>36</b><span>IaC checks</span></div>
+  <div class="count"><b>46</b><span>DAST passive</span></div>
+  <div class="count"><b>34</b><span>DAST active</span></div>
+  <div class="count"><b>6</b><span>SCA ecosystems</span></div>
+</div>
+
+<div class="legend">
+  <div class="item"><span class="dot d-green"></span><div><b>No external data</b><br>Works on just <code>--path</code> (code) or <code>--target</code> (a running app). Active DAST needs a reachable target + <code>--i-own-target</code>.</div></div>
+  <div class="item"><span class="dot d-blue"></span><div><b>Needs the advisory DB</b><br>Requires <code>data/advisories.db</code> (built with <code>tools/vendor-engines.sh advisories</code>).</div></div>
+  <div class="item"><span class="dot d-purple"></span><div><b>Optional engine depth</b><br><code>--use-engines</code> adds vendored Semgrep/Trivy/Gitleaks. Boosts depth, not new categories.</div></div>
+  <div class="item"><span class="dot d-grey"></span><div><b>Planned, not built</b><br>Designed but no code ships yet.</div></div>
+</div>
+
+<h2>SAST <span class="tag t-green">no external data</span></h2>
+<p>Static analysis of source code. Runs on <code>./scan.sh sast --path DIR</code> with nothing else.</p>
+
+<h3>Secrets <small>hardcoded credentials in code</small></h3>
+<div class="tblwrap"><table>
+<thead><tr><th>Check</th><th>Catches</th><th>CWE</th></tr></thead><tbody>
+<tr><td class="id">SAST-SEC-AWS_AKID-01</td><td>Hardcoded AWS access key id</td><td class="cwe">CWE-798</td></tr>
+<tr><td class="id">SAST-SEC-PRIVATE_KEY-01</td><td>Hardcoded private key</td><td class="cwe">CWE-798</td></tr>
+<tr><td class="id">SAST-SEC-GENERIC_API_KEY-01</td><td>Hardcoded API key literal</td><td class="cwe">CWE-798</td></tr>
+<tr><td class="id">SAST-SEC-GENERIC_PASSWORD-01</td><td>Hardcoded password literal</td><td class="cwe">CWE-798</td></tr>
+<tr><td class="id">SAST-SEC-GENERIC_SECRET-01</td><td>Hardcoded secret, token or credential literal</td><td class="cwe">CWE-798</td></tr>
+<tr><td class="id">SAST-SEC-ENV_ASSIGNMENT-01</td><td>Hardcoded credential in an unquoted assignment</td><td class="cwe">CWE-798</td></tr>
+<tr><td class="id">SAST-SEC-JWT-01</td><td>Hardcoded JSON Web Token</td><td class="cwe">CWE-798</td></tr>
+</tbody></table></div>
+
+<h3>Crypto <small>weak cryptography</small></h3>
+<div class="tblwrap"><table>
+<thead><tr><th>Check</th><th>Catches</th><th>CWE</th></tr></thead><tbody>
+<tr><td class="id">SAST-CRY-WEAK_HASH-01</td><td>MD5 or SHA1 used where a security-relevant hash is expected</td><td class="cwe">CWE-327</td></tr>
+<tr><td class="id">SAST-CRY-DES_ECB-01</td><td>DES or ECB-mode cipher in use</td><td class="cwe">CWE-327</td></tr>
+<tr><td class="id">SAST-CRY-HARDCODED_IV-01</td><td>Hardcoded initialization vector or salt</td><td class="cwe">CWE-329</td></tr>
+<tr><td class="id">SAST-CRY-TLS_VERIFY_DISABLED-01</td><td>TLS certificate verification disabled</td><td class="cwe">CWE-295</td></tr>
+<tr><td class="id">SAST-CRY-WEAK_RANDOM_TOKEN-01</td><td>Math.random() used to generate a token, session id, or secret</td><td class="cwe">CWE-338</td></tr>
+</tbody></table></div>
+
+<h3>Injection <small>language-agnostic sinks</small></h3>
+<div class="tblwrap"><table>
+<thead><tr><th>Check</th><th>Catches</th><th>CWE</th></tr></thead><tbody>
+<tr><td class="id">SAST-INJ-OS_COMMAND-01</td><td>OS command built from a shell that trusts its own arguments</td><td class="cwe">CWE-78</td></tr>
+<tr><td class="id">SAST-INJ-SQL_CONCAT-01</td><td>SQL statement built by string concatenation</td><td class="cwe">CWE-89</td></tr>
+<tr><td class="id">SAST-INJ-CRLF_HEADER-01</td><td>Response header value built from request-derived data</td><td class="cwe">CWE-113</td></tr>
+<tr><td class="id">SAST-INJ-HOST_HEADER_TRUST-01</td><td>Host header trusted to build a URL or redirect target</td><td class="cwe">CWE-441</td></tr>
+<tr><td class="id">SAST-INJ-SSTI-01</td><td>Server-side template built from request-derived data</td><td class="cwe">CWE-1336</td></tr>
+<tr><td class="id">SAST-INJ-OPEN_REDIRECT-01</td><td>Redirect target taken directly from request-derived data</td><td class="cwe">CWE-601</td></tr>
+<tr><td class="id">SAST-INJ-MASS_ASSIGNMENT-01</td><td>Whole request body bound directly to a model</td><td class="cwe">CWE-915</td></tr>
+<tr><td class="id">SAST-INJ-XXE-01</td><td>XML parser configured to resolve external entities</td><td class="cwe">CWE-611</td></tr>
+</tbody></table></div>
+
+<h3>Python <small>&middot;</small> JavaScript <small>&middot;</small> Go <small>&middot;</small> Java <small>language-specific sinks</small></h3>
+<div class="tblwrap"><table>
+<thead><tr><th>Check</th><th>Catches</th><th>CWE</th></tr></thead><tbody>
+<tr><td class="id">SAST-PY-EVAL_EXEC-01</td><td>eval()/exec() on request-derived data</td><td class="cwe">CWE-95</td></tr>
+<tr><td class="id">SAST-PY-PICKLE_LOAD-01</td><td>pickle.load()/loads() on untrusted data</td><td class="cwe">CWE-502</td></tr>
+<tr><td class="id">SAST-PY-YAML_UNSAFE_LOAD-01</td><td>yaml.load() without a safe loader</td><td class="cwe">CWE-502</td></tr>
+<tr><td class="id">SAST-PY-SUBPROCESS_SHELL-01</td><td>subprocess call with shell=True</td><td class="cwe">CWE-78</td></tr>
+<tr><td class="id">SAST-PY-OS_SYSTEM-01</td><td>os.system() invocation</td><td class="cwe">CWE-78</td></tr>
+<tr><td class="id">SAST-PY-FLASK_DEBUG-01</td><td>Flask run/configured with debug enabled</td><td class="cwe">CWE-489</td></tr>
+<tr><td class="id">SAST-PY-JINJA_AUTOESCAPE_FALSE-01</td><td>Jinja2 environment with autoescape disabled</td><td class="cwe">CWE-79</td></tr>
+<tr><td class="id">SAST-JS-EVAL-01</td><td>eval() to execute dynamic code</td><td class="cwe">CWE-95</td></tr>
+<tr><td class="id">SAST-JS-DANGEROUSLY_SET_INNER_HTML-01</td><td>React dangerouslySetInnerHTML rendering markup</td><td class="cwe">CWE-79</td></tr>
+<tr><td class="id">SAST-JS-DOCUMENT_WRITE-01</td><td>document.write() injecting markup</td><td class="cwe">CWE-79</td></tr>
+<tr><td class="id">SAST-JS-TEMPLATE_LITERAL_SQL-01</td><td>SQL built from a JS template literal</td><td class="cwe">CWE-89</td></tr>
+<tr><td class="id">SAST-JS-DYNAMIC_REQUIRE-01</td><td>require() with a non-literal specifier</td><td class="cwe">CWE-829</td></tr>
+<tr><td class="id">SAST-JS-PROTO_ASSIGN-01</td><td>Direct assignment to __proto__</td><td class="cwe">CWE-1321</td></tr>
+<tr><td class="id">SAST-JS-UNSAFE_MERGE-01</td><td>Recursive merge without a prototype guard</td><td class="cwe">CWE-1321</td></tr>
+<tr><td class="id">SAST-GO-EXEC_CONCAT-01</td><td>exec.Command from a concatenated string</td><td class="cwe">CWE-78</td></tr>
+<tr><td class="id">SAST-GO-TEMPLATE_HTML-01</td><td>text/template where html/template is required</td><td class="cwe">CWE-79</td></tr>
+<tr><td class="id">SAST-GO-WEAK_RANDOM-01</td><td>math/rand for a token/session id/secret</td><td class="cwe">CWE-338</td></tr>
+<tr><td class="id">SAST-GO-SQL_CONCAT-01</td><td>SQL built by concatenation or Sprintf</td><td class="cwe">CWE-89</td></tr>
+<tr><td class="id">SAST-GO-TLS_SKIP_VERIFY-01</td><td>TLS verification disabled via InsecureSkipVerify</td><td class="cwe">CWE-295</td></tr>
+<tr><td class="id">SAST-JAVA-JDBC_SQL_CONCAT-01</td><td>JDBC statement with a concatenated SQL string</td><td class="cwe">CWE-89</td></tr>
+<tr><td class="id">SAST-JAVA-XXE_DISALLOW_DOCTYPE-01</td><td>XML factory without DOCTYPE/entity hardening</td><td class="cwe">CWE-611</td></tr>
+<tr><td class="id">SAST-JAVA-UNSAFE_DESERIALIZATION-01</td><td>ObjectInputStream.readObject() on untrusted data</td><td class="cwe">CWE-502</td></tr>
+<tr><td class="id">SAST-JAVA-TRUST_ALL_MANAGER-01</td><td>X509TrustManager that accepts any certificate</td><td class="cwe">CWE-295</td></tr>
+<tr><td class="id">SAST-JAVA-TRUST_ALL_HOSTNAME-01</td><td>HostnameVerifier that always returns true</td><td class="cwe">CWE-295</td></tr>
+<tr><td class="id">SAST-JAVA-SPEL_INJECTION-01</td><td>SpEL expression from request-derived data</td><td class="cwe">CWE-94</td></tr>
+<tr><td class="id">SAST-JAVA-OGNL_INJECTION-01</td><td>OGNL expression from request-derived data</td><td class="cwe">CWE-94</td></tr>
+</tbody></table></div>
+
+<h3>NoSQL <small>&middot;</small> LDAP <small>query injection</small></h3>
+<div class="tblwrap"><table>
+<thead><tr><th>Check</th><th>Catches</th><th>CWE</th></tr></thead><tbody>
+<tr><td class="id">SAST-NOSQL-WHERE_JS-01</td><td>MongoDB $where from concatenated/interpolated input</td><td class="cwe">CWE-95</td></tr>
+<tr><td class="id">SAST-NOSQL-SERVER_JS-01</td><td>Server-side JavaScript evaluation in the database</td><td class="cwe">CWE-94</td></tr>
+<tr><td class="id">SAST-NOSQL-OPERATOR_INJECTION-01</td><td>Request value used directly in a NoSQL query document</td><td class="cwe">CWE-943</td></tr>
+<tr><td class="id">SAST-NOSQL-QUERY_CONCAT-01</td><td>NoSQL query document parsed from a concatenated string</td><td class="cwe">CWE-943</td></tr>
+<tr><td class="id">SAST-LDAP-FILTER_CONCAT-01</td><td>LDAP search filter from an unescaped value</td><td class="cwe">CWE-90</td></tr>
+<tr><td class="id">SAST-LDAP-DN_CONCAT-01</td><td>LDAP distinguished name from an unescaped value</td><td class="cwe">CWE-90</td></tr>
+<tr><td class="id">SAST-LDAP-UNESCAPED_FILTER_INPUT-01</td><td>LDAP filter taken directly from request-derived data</td><td class="cwe">CWE-90</td></tr>
+</tbody></table></div>
+
+<h2>IaC <span class="tag t-green">no external data</span></h2>
+<p>Infrastructure-as-code misconfigurations. Runs on <code>./scan.sh iac --path DIR</code>. Covers Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, and docker-compose.</p>
+<div class="tblwrap"><table>
+<thead><tr><th>Check</th><th>Catches</th></tr></thead><tbody>
+<tr><td class="id">IAC-TF-OPEN_CIDR-01</td><td>Terraform security group open to 0.0.0.0/0</td></tr>
+<tr><td class="id">IAC-TF-PUBLIC_ACL-01</td><td>S3 bucket ACL set public</td></tr>
+<tr><td class="id">IAC-TF-UNENCRYPTED-01</td><td>Resource without encryption at rest</td></tr>
+<tr><td class="id">IAC-TF-KEY_ROTATION_DISABLED-01</td><td>KMS key without automatic rotation</td></tr>
+<tr><td class="id">IAC-TF-PUBLIC_IP-01</td><td>Instance auto-assigns a public IP</td></tr>
+<tr><td class="id">IAC-TF-HARDCODED_SECRET-01</td><td>Hardcoded credential in Terraform</td></tr>
+<tr><td class="id">IAC-TF-RDS_PUBLIC-01</td><td>RDS instance publicly accessible</td></tr>
+<tr><td class="id">IAC-CFN-*</td><td>CloudFormation: open CIDR, public S3, unencrypted, no key rotation, public IP, hardcoded secret, public RDS, privileged ECS (8 checks)</td></tr>
+<tr><td class="id">IAC-K8S-*</td><td>Kubernetes: privileged, host namespace, no resource limits, runs-as-root, secret env, mutable :latest tag, RBAC wildcard, default SA token mount (8 checks)</td></tr>
+<tr><td class="id">IAC-HELM-*</td><td>Helm: hostPort, sensitive hostPath mount, hardcoded secret (3 checks)</td></tr>
+<tr><td class="id">IAC-DOCKER-*</td><td>Dockerfile: root user, :latest tag, secret in ENV/ARG, remote ADD, pipe-to-shell, unpinned digest (6 checks)</td></tr>
+<tr><td class="id">IAC-COMPOSE-*</td><td>docker-compose: exposed port, privileged mode, sensitive mount, plaintext secret (4 checks)</td></tr>
+</tbody></table></div>
+
+<h2>DAST &mdash; passive <span class="tag t-green">no external data</span></h2>
+<p>Observations from responses to a running app (<code>./scan.sh dast --target NAME</code>) &mdash; no attacks, no database. (One exception is marked blue below.)</p>
+<div class="tblwrap"><table>
+<thead><tr><th>Family</th><th>Catches</th></tr></thead><tbody>
+<tr><td class="id">Headers (11)</td><td>Missing/unsafe CSP, HSTS missing/weak/malformed, clickjacking, nosniff missing, leaky referrer, recommended headers</td></tr>
+<tr><td class="id">Cookies (4)</td><td>Missing Secure, HttpOnly, SameSite absent/weak</td></tr>
+<tr><td class="id">CORS (5)</td><td>Null-origin trust, origin reflection, wildcard &mdash; each with/without credentials</td></tr>
+<tr><td class="id">Leakage (5)</td><td>Stack traces, internal-infra headers, email disclosure, secrets in served JS, third-party origins</td></tr>
+<tr><td class="id">Markup (7)</td><td>Missing SRI, tabnabbing, insecure/untrusted frames, absent anti-CSRF token</td></tr>
+<tr><td class="id">TLS (6)</td><td>Weak protocol/cipher, expired/expiring/self-signed/wildcard certificate</td></tr>
+<tr><td class="id">Transport (5)</td><td>Plaintext sensitive content, no HTTPS redirect, mixed active/passive/form content</td></tr>
+<tr><td class="id">Banner (2)</td><td>Server/framework disclosed, version disclosed</td></tr>
+<tr><td class="id" style="color:var(--blue)">DAST-BANNER-OUTDATED_COMPONENT-01 <span class="tag t-blue">advisory DB</span></td><td>Component version matched against the vendored known-vulnerable list (needs versions.db)</td></tr>
+</tbody></table></div>
+
+<h2>DAST &mdash; active <span class="tag t-green">no external data</span></h2>
+<p>Sends real attack payloads to a running app. Needs a reachable target plus <code>--intensity active</code> and <code>--i-own-target</code> (your authorization). No database.</p>
+<div class="tblwrap"><table>
+<thead><tr><th>Check</th><th>Catches</th></tr></thead><tbody>
+<tr><td class="id">DAST-INJ-SQLI_ERROR/BOOLEAN/TIME-01</td><td>SQL injection &mdash; error-based, boolean-based, time-based blind</td></tr>
+<tr><td class="id">DAST-INJ-NOSQLI_ERROR/BOOLEAN-01</td><td>NoSQL injection &mdash; error and operator/object injection</td></tr>
+<tr><td class="id">DAST-INJ-LDAP_ERROR/BOOLEAN-01</td><td>LDAP injection &mdash; error and boolean-based</td></tr>
+<tr><td class="id">DAST-INJ-XSS_REFLECTED_HTML/ATTR/JS-01</td><td>Reflected XSS in HTML text, attribute, and script contexts</td></tr>
+<tr><td class="id">DAST-INJ-SSTI_BRACES/DOLLAR/ERB/SMARTY-01</td><td>Server-side template injection (four engine dialects)</td></tr>
+<tr><td class="id">DAST-INJ-CMDI_TIME-01</td><td>OS command injection (time-based blind)</td></tr>
+<tr><td class="id">DAST-INJ-PATH_TRAVERSAL-01</td><td>Path traversal via a request parameter</td></tr>
+<tr><td class="id">DAST-INJ-OPENREDIR_HEADER/META-01</td><td>Open redirect via Location header or meta-refresh</td></tr>
+<tr><td class="id">DAST-INJ-XXE_ENTITY / XXE_SSRF-01</td><td>XXE entity processing and XXE-driven SSRF</td></tr>
+<tr><td class="id">DAST-INJ-SSRF_PARAM-01</td><td>Server-side request forgery via a parameter</td></tr>
+<tr><td class="id">DAST-INJ-CRLF_HEADER_INJECTION / RESPONSE_SPLITTING-01</td><td>CRLF header injection and full response splitting</td></tr>
+<tr><td class="id">DAST-INJ-PROTOPOLLUTION_ERROR / MARKER_REFLECTED-01</td><td>Prototype pollution (error-based and confirmed-reflected)</td></tr>
+<tr><td class="id">DAST-HOSTHDR-REFLECTED_BODY / LOCATION-01</td><td>Host-header reflection into body or redirect authority</td></tr>
+<tr><td class="id">DAST-DISC-SENSITIVE / BACKUP / CONTENT / DIRLIST-01</td><td>Exposed sensitive/backup files, content discovery, directory listing</td></tr>
+<tr><td class="id">DAST-METHOD-TRACE / WRITE / CONNECT-01</td><td>Dangerous HTTP methods advertised (TRACE, PUT/DELETE/PATCH, CONNECT)</td></tr>
+</tbody></table></div>
+
+<h2>SCA &mdash; dependency CVEs <span class="tag t-blue">advisory DB</span></h2>
+<p>Known-vulnerable dependencies from your lockfiles. This is the one surface that needs the vendored
+<code>data/advisories.db</code> (built with <code>tools/vendor-engines.sh advisories bulk --all</code>); without it,
+SCA reports that no advisory data was available rather than a false all-clear.</p>
+<div class="tblwrap"><table>
+<thead><tr><th>Check</th><th>Ecosystem</th></tr></thead><tbody>
+<tr><td class="id">SCA-NPM-VULNERABLE_DEP-01</td><td>npm (semver-range matching)</td></tr>
+<tr><td class="id">SCA-PY-VULNERABLE_DEP-01</td><td>PyPI</td></tr>
+<tr><td class="id">SCA-JAVA-VULNERABLE_DEP-01</td><td>Maven</td></tr>
+<tr><td class="id">SCA-RUBY-VULNERABLE_DEP-01</td><td>RubyGems</td></tr>
+<tr><td class="id">SCA-PHP-VULNERABLE_DEP-01</td><td>Composer</td></tr>
+<tr><td class="id">SCA-GO (Go modules)</td><td>Go</td></tr>
+<tr><td class="id">SCA-COV-NO_ADVISORY_DB-01 / UNKNOWN_VERSION-01</td><td>Honest coverage notes when data is missing</td></tr>
+</tbody></table></div>
+
+<h2>Optional engine depth <span class="tag t-purple">--use-engines</span></h2>
+<p>Vendor a specialist engine (you pin its version + checksum) and <code>--use-engines</code> runs it as an adapter
+for extra depth, keeping scoursh's honest coverage accounting. These add depth to existing surfaces, not new categories.</p>
+<div class="tblwrap"><table>
+<thead><tr><th>Engine</th><th>Boosts</th></tr></thead><tbody>
+<tr><td class="id">Semgrep</td><td>SAST rule breadth</td></tr>
+<tr><td class="id">Trivy</td><td>IaC coverage</td></tr>
+<tr><td class="id">Gitleaks</td><td>Secret detection</td></tr>
+</tbody></table></div>
+
+<h2>Planned &mdash; not built <span class="tag t-grey">no code yet</span></h2>
+<p>Designed in the roadmap but not shipping detections yet.</p>
+<div class="tblwrap"><table>
+<thead><tr><th>Surface</th><th>Status</th></tr></thead><tbody>
+<tr><td class="id">Cloud / AWS (CSPM)</td><td>Fully designed (CIS Benchmark checks per service); the read-only harness ships, the live checks do not. <code>scan.sh cloud</code> is an accepted, logged no-op today.</td></tr>
+<tr><td class="id">SARIF compliance report</td><td>SARIF output ships; the OWASP/CIS-grouped compliance view is planned.</td></tr>
+</tbody></table></div>
+
+<footer>
+  Generated from scoursh's shipped check registry on <code>dev</code>. Counts are approximate family totals; the audit report (<code>--format audit</code>) renders the exact per-run coverage. Every "no external data" check needs only the target you give it &mdash; code path or a running app.
+</footer>
+</div>
+</body>
+</html>

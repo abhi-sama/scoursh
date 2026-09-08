@@ -255,6 +255,102 @@ Colour on stderr is resolved from `SCOURSH_COLOR` and `NO_COLOR`, checked in thi
 allows an explicit user flag to override it, and `SCOURSH_COLOR` set to a specific value is exactly
 that - an operator who typed `always` gets `always`, not a value NO_COLOR silently downgraded.
 
+## Recipes
+
+Task-flow, copy-paste command sequences. Every command below is exact and runnable as written from a
+fresh checkout, except where it names a file or directory you supply yourself. The README's own
+[Commands & recipes](../README.md#commands--recipes) section is the short version of this; read here
+for the reasoning behind each one.
+
+### Per-surface scans
+
+`sast`, `sca`, and `iac` all take a `--path`; `dast` takes a `--target`. Write each report to its own
+directory so consecutive scans don't clobber one another:
+
+```sh
+./scan.sh sast --path DIR --format html,audit --out reports/sast
+./scan.sh sca  --path DIR --format html,audit --out reports/sca      # needs data/advisories.db - see above
+./scan.sh iac  --path DIR --format html,audit --out reports/iac
+./scan.sh dast --target NAME --format html,audit --out reports/dast   # config/scope.conf must authorize NAME first
+```
+
+### A full active-DAST recipe
+
+A bare passive scan against a target it hasn't crawled much of finds relatively little - most of a
+real application's surface is API endpoints a static crawl of an HTML page never sees. The recipe that
+actually lands injection findings combines three things: an imported API surface, the
+`--i-own-target` authorization `--intensity active` requires, and a rate gentle enough not to trip the
+target's own resource limits or scoursh's circuit breaker:
+
+```sh
+./scan.sh dast \
+  --target NAME --i-own-target NAME \
+  --intensity active \
+  --openapi ./openapi.json \
+  --requests-per-second 2 --jobs 2 --circuit-breaker-failures 40 \
+  --format json,sarif,html,md,audit \
+  --out reports/dast-full
+```
+
+- **`--intensity active`** sends real attack payloads and requires `--i-own-target NAME` naming the
+  exact same target - see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target).
+- **Import the API surface** with `--openapi`/`--har`/`--postman`/`--graphql-schema` so the scanner
+  reaches real endpoints - a single-page application's own routes are close to invisible to a static
+  crawl alone (see
+  ["`config/discovery.conf`"](#configdiscoveryconf---optional-feeds-dasts-crawler-an-applications-real-api-surface)
+  and `docs/DESIGN.md` §7.5).
+- **The circuit breaker is a safety feature, not a bug.** It stops the run if the target stops
+  answering - 10 failures within a 60-second window by default. Against a small or single-process
+  target, go gentler than the unaffirmed defaults (`--requests-per-second 2 --jobs 2`, both already
+  below the 4/s ceiling so they need no affirmation on their own), and raise
+  `--circuit-breaker-failures` (which does need `--i-own-target`, since it is a CLI-supplied value
+  above the default 10) if an application that answers an unmatched path with a `5xx` rather than a
+  `404` trips it during discovery or method enumeration before the injection phase ever runs.
+- **Run one scan at a time against a target.** Concurrent scans multiply the effective request rate
+  the target sees and make a circuit-breaker trip more likely for reasons that have nothing to do with
+  the target's actual health.
+
+### Everything in one run
+
+```sh
+./scan.sh all --path DIR --target NAME --i-own-target NAME --intensity active \
+  --openapi ./openapi.json --requests-per-second 2 --jobs 2 --circuit-breaker-failures 40 \
+  --format json,sarif,html,md,audit --out reports/all
+```
+
+`all` runs every module whose inputs are configured: `--path` drives `sast`/`sca`/`iac`, `--target`
+drives `dast`, and `--live` would drive `cloud` (which does nothing today - see
+[Planned / not yet built](../README.md#status)). A module `all` skips for missing input is recorded as
+a `coverage_reduction`, not silently dropped.
+
+**The gotcha**: see ["The gotcha" under Dependency data](#dependency-data-dataadvisoriesdb) above -
+don't point `--path` at a tree containing `data/advisories.db` once you've built it.
+
+### Guided (interactive) mode, quickly
+
+```sh
+./scan.sh all --guided                     # walk through the choices; composes and runs a real command
+./scan.sh dast --guided --print-command    # walk through the choices, then print the command instead of running it
+```
+
+At the languages prompt (`Limit to which languages? (py,js,go,java, comma-separated) [all]:`),
+pressing **Enter** accepts the bracketed default and scans every language; typing the literal word
+`all` is rejected (`scan_validate_flag_value` only accepts `py`, `js`, `go`, `java`, singly or
+comma-separated) and re-prompts. See ["Flag equivalence"](#flag-equivalence) above for every other
+prompt's non-interactive form.
+
+### Optional specialist engines for extra depth
+
+```sh
+tools/vendor-engines.sh <engine>      # semgrep | gitleaks | trivy - you supply and pin version+URL+sha256
+./scan.sh sast --path DIR --use-engines    # sast: adds semgrep (broader rules) and gitleaks (secrets)
+./scan.sh iac  --path DIR --use-engines    # iac: adds trivy config (broader misconfiguration coverage)
+```
+
+`--use-engines` only has an effect once the named engine's vendored binary and ruleset are actually
+present on disk; absent, it is a silent no-op - never an error, and never a reason a scan behaves any
+differently from one without the flag. Nothing is fetched at scan time, whatever the flag is given.
+
 ## `--format` and the `formats` config key
 
 The list is validated, resolved through the full CLI-over-environment-over-file-over-default chain,
@@ -532,6 +628,78 @@ that did run, since a module skipped for absent inputs is a declared reduction r
 This is by design rather than an oversight: the scanner never fetches advisory data at scan time.
 Build the database on a networked host with `tools/vendor-engines.sh advisories`, or point
 `SCOURSH_SCA_ADVISORIES_DB` at one you already have.
+
+#### Building it: the one command
+
+```sh
+tools/vendor-engines.sh advisories bulk --accept-unverified --all
+```
+
+Run this on a **networked box** - it is the one script in the whole tool permitted to touch the
+network, and it is never called during a scan. It needs `python3` and `curl` on that box only;
+neither is a `scan.sh` runtime dependency.
+
+Measured on a clean checkout: **~2 minutes**, **~290 MB downloaded** (OSV.dev's six per-ecosystem
+export archives), **~940 MB written** to `data/advisories.db` and `data/versions.db` combined. The
+archives themselves are not kept - they live under `$SCOURSH_SCRATCH` and are erased when the command
+exits, successfully or not. It ends by printing a per-ecosystem table (ecosystem, grade, rows
+imported, and a `range_only_skipped` percentage) - that table, not silence, is how you know it worked.
+A failed ecosystem is marked `FAILED` there and the command exits non-zero, rather than leaving you
+with a database that silently covers less than it claims.
+
+There are two ways to build it - bulk, above, which is what you almost certainly want, and one
+advisory at a time, below, when you already know the specific IDs you care about.
+
+**Bulk.** `advisories bulk` imports a whole ecosystem's published export in one command, or all six
+with `--all`. Because that export is rebuilt upstream continuously, there is no fixed checksum to pin,
+so an import whose content was not verified refuses until you pass `--accept-unverified`. Every import
+prints the integrity grade it achieved and records the digest of exactly what it fetched into the
+database header, so you can pin that digest with `--sha256` next time.
+
+```sh
+# All six ecosystems in one shot.
+tools/vendor-engines.sh advisories bulk --accept-unverified --all
+# ...or just the one ecosystem you care about right now.
+tools/vendor-engines.sh advisories bulk --accept-unverified npm
+# ...or pin the exact bytes, once you know the digest you want.
+tools/vendor-engines.sh advisories bulk --sha256 <hex> npm
+```
+
+**One advisory at a time**, when you already know the specific IDs you care about. You supply them
+per ecosystem and `advisories <ecosystem>` resolves just those. Here `--all` means "every ecosystem
+you have supplied an ID list for", not "every known advisory".
+
+```sh
+export SCOURSH_ADVISORY_NPM_IDS="GHSA-xxxx-xxxx-xxxx,GHSA-yyyy-yyyy-yyyy"
+tools/vendor-engines.sh advisories npm
+# or, once an ID list is set for each ecosystem you care about:
+tools/vendor-engines.sh advisories --all
+```
+
+See [`tools/vendor-engines.sh advisories --help`](../tools/vendor-engines.sh) for the full list of
+per-ecosystem environment variables.
+
+**Read the `range_only_skipped` percentage in that table - it is coverage, not a progress bar.**
+OSV.dev's own advisory records do not all carry an explicit list of affected versions. Where one lists
+only a semver *range* instead, `docs/FOUNDATION.md` tension 25's design refuses to guess a concrete
+version from it, so that advisory is not represented in the database at all. The percentage is exactly
+how much of that ecosystem was left out for this reason - it is not an import problem. Measured on a
+full `--all` import: **npm ~89%** and **Go ~98%** of the affected-package entries OSV.dev publishes for
+those two ecosystems are range-only and absent from the database, versus **RubyGems ~0%**, **Composer
+~9%**, **Maven ~13%**, and **PyPI ~23%**. Concretely, a fresh npm import is dominated by
+single-version malicious-package listings (OSV's `MAL-*` ids), not classic CVEs in popular packages: of
+npm's own rows, over 99% are `MAL-*` and under 1% are `GHSA-*`/`CVE-*`, covering a few hundred distinct
+legitimate packages. An npm-only scan against a real project is very unlikely to flag an outdated
+dependency with a well-known CVE, even immediately after a fresh, successful import - that is a
+limitation of npm's own OSV.dev export today, not a broken build.
+
+**The gotcha: do not scan `data/` itself with `sast` or `all --path .` after building the database.**
+`data/advisories.db` and `data/versions.db` together land at roughly 940 MB. If your `--path` includes
+this repository's own `data/` directory (for example, `./scan.sh all --path .` run from a checkout
+where you just built the database), `sast` will walk that multi-hundred-megabyte binary file like any
+other source file, producing noise and a very slow run for no security value. Point `--path` at real
+source you intend to scan, not at this repository's own checkout with the database inside it; if you
+must scan a tree that legitimately contains `data/`, exclude it.
 
 ## Exit codes
 

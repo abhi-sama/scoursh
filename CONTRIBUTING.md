@@ -7,9 +7,10 @@ sharp-edges register (most of it applies to agents and humans alike).
 
 ## Before you start
 
-- **Prerequisites and setup**: see [README.md § Installation](README.md#installation) - bash >= 4.2
-  plus a standard Unix toolchain, no build step. If you're touching SCA, you'll also want the
-  one-time `data/advisories.db` setup described there.
+- **Prerequisites and setup**: see [README.md § Install](README.md#install) - bash >= 4.2 plus a
+  standard Unix toolchain, no build step. If you're touching SCA, you'll also want the one-time
+  `data/advisories.db` setup in
+  [`docs/USAGE.md`](docs/USAGE.md#dependency-data-dataadvisoriesdb).
 - **Read `docs/DESIGN.md` and `docs/FOUNDATION.md` before a structural change.** `docs/DESIGN.md` is
   the preserved handoff spec; `docs/FOUNDATION.md` is the design-tension register, and where the two
   disagree, `docs/FOUNDATION.md` wins and says so explicitly at each point. Both are normative, not
