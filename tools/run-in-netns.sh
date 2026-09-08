@@ -13,25 +13,55 @@
 #
 # WHAT THIS IS.  A Linux-only, root/CAP_NET_ADMIN+CAP_SYS_ADMIN-requiring
 # wrapper: `tools/run-in-netns.sh -- <command...>` creates a network
-# namespace whose route table admits only two sets of IPv4 addresses -
+# namespace whose route table admits only two sets of addresses, in EACH
+# address family it supports (IPv4 and IPv6 alike) -
 #
 #   1. Resolved addresses of scoursh's in-scope targets, from
 #      lib/http.sh's pinned resolution cache (tension 19: http_scope_load +
 #      http_resolve_host, the SAME functions the scope gate itself uses -
-#      never a re-implementation of scope parsing or DNS resolution).
+#      never a re-implementation of scope parsing or DNS resolution). An
+#      admitted address is whichever family it actually is - an IPv6 literal
+#      scope host, or a hostname that resolved to an IPv6 address, is
+#      admitted as IPv6 exactly as an IPv4 one is admitted as IPv4; see
+#      _netns_collect_target_ips below.
 #   2. The nameserver addresses parsed from /etc/resolv.conf, plus loopback -
 #      the identical "infrastructure" set docs/FOUNDATION.md tension 20
 #      names as `--paranoid`'s allowlist set 3 (port 53 is that set's
 #      *intent*; the honest limitation on enforcing that specific port at
-#      THIS tool's layer is stated in section 4 below).
+#      THIS tool's layer is stated in section 4 below). Both an IPv4 and an
+#      IPv6 nameserver line are collected.
 #
 # - then execs <command...> inside that namespace via `ip netns exec`.  An
-# attempted connection to any address outside those two sets has no route
-# and fails at the kernel level (ENETUNREACH) before a single packet is
-# sent - it is not sampled, observed, or logged after the fact the way
-# `--paranoid` is; it is categorically impossible, which is exactly the
-# "guarantee vs detector" distinction tension 20's RESOLUTION draws between
-# this file and `--paranoid`.
+# attempted connection to any address outside those two sets, IN EITHER
+# FAMILY, has no route and fails at the kernel level (ENETUNREACH/EAFNOSUPPORT)
+# before a single packet is sent - it is not sampled, observed, or logged
+# after the fact the way `--paranoid` is; it is categorically impossible,
+# which is exactly the "guarantee vs detector" distinction tension 20's
+# RESOLUTION draws between this file and `--paranoid`.  A dual-stack target
+# (one scope entry that resolves or is declared in both families) cannot be
+# used to bypass this: EACH family gets its own explicit /32-or-/128 route
+# and NEITHER family ever gets a default route, so a family that happens to
+# carry no admitted address for THIS run is simply unreachable in that
+# family - the same "no route in, no route out" guarantee IPv4 has always
+# had, extended rather than weakened by adding a second family alongside it.
+#
+# IPv6 SUPPORT (this file's own follow-up ticket, filed when NETNS-01
+# originally shipped IPv4-only - ROADMAP.md's "Outside that ordering" list,
+# AGENTS.md's "Step 8" section, and docs/FOUNDATION.md tension 20's own
+# "Consequence for the build" paragraph all named it as scoped out and
+# deferred). The namespace's loopback and its veth pair are given IPv6
+# addressing and routing ALONGSIDE IPv4, unconditionally, on every run -
+# never only when the currently-resolved scope happens to contain an IPv6
+# address - because the guarantee this tool exists to provide is that
+# NOTHING escapes the namespace in either family, not merely that whatever
+# happens to be in scope today is contained. `_netns_require_ipv6` (section
+# 2) is therefore an unconditional precondition, exactly like
+# `_netns_require_tools`: this host must have IPv6 kernel support and
+# `ip6tables` before ANY isolation action is taken, and refuses loudly (exit
+# 4, before creating any namespace/veth/route state, <command> never runs)
+# rather than silently building an IPv4-only namespace that LOOKS like the
+# full guarantee but is not - see `_netns_require_ipv6`'s own comment for
+# why a silent v4-only fallback would be worse than refusing outright.
 #
 # WHAT THIS DELIBERATELY IS NOT (see this ticket's own "Out-of-scope" and
 # docs/STEP8-PARANOID-PLAN.md's NETNS-01 row):
@@ -45,12 +75,12 @@
 #     nameserver set"), which are the only two sets `--paranoid` uses that
 #     have nothing to do with `--paranoid`'s own AWS-iteration state or its
 #     operator-authored infra allowlist.
-#   - IPv6 routing is out of scope (this ticket's own "Out-of-scope": "IDN
-#     and general IPv6 CIDR support beyond what lib/http.sh's resolution
-#     cache already provides"). An in-scope host that is IPv6-only, or that
-#     resolves to an IPv6 address, is logged and SKIPPED rather than routed;
-#     see _netns_collect_target_ips below. A follow-up ticket is filed for
-#     dual-stack support.
+#   - General IPv6 CIDR/IDN support beyond what lib/http.sh's own resolution
+#     cache and scope-literal parsing already provide is still out of scope
+#     here, exactly as it is for lib/http.sh itself (tension 19's own stated
+#     limitation) - this ticket routes whatever address lib/http.sh hands
+#     back, in whichever family, and does not add a second resolver or a
+#     CIDR matcher of its own.
 #
 # shellcheck shell=bash
 #
@@ -125,13 +155,16 @@ usage: tools/run-in-netns.sh [--scope-conf PATH] -- <command> [args...]
 Runs <command> inside a Linux network namespace whose route table admits
 only the resolved addresses of scoursh's in-scope targets (from
 lib/http.sh's pinned resolution cache) plus the host's own nameservers
-(parsed from /etc/resolv.conf) and loopback. Any other destination has no
-route and fails at the kernel level.
+(parsed from /etc/resolv.conf) and loopback - in BOTH IPv4 and IPv6. Any
+other destination, in either family, has no route and fails at the kernel
+level.
 
 Requires: Linux, and root or CAP_NET_ADMIN+CAP_SYS_ADMIN, and `ip`
-(iproute2) and `iptables` on PATH. Fails immediately, before creating any
-namespace/veth/route state and without running <command>, if any of those
-are not met.
+(iproute2), `iptables`, and `ip6tables` on PATH, and host IPv6 kernel
+support (IPv6 containment is built unconditionally, alongside IPv4, on
+every run - see the header comment). Fails immediately, before creating
+any namespace/veth/route state and without running <command>, if any of
+those are not met.
 
   --scope-conf PATH   use PATH instead of config/scope.conf (mainly for
                        tests; matches lib/http.sh's own default resolution)
@@ -210,6 +243,41 @@ _netns_require_tools() {
   require_cmd ip iptables
 }
 
+# The path is a variable (default /proc/net/if_inet6, real on any Linux
+# kernel built with IPv6 support) rather than a hardcoded literal for the
+# same reason RUN_NETNS_PROC_STATUS_FILE is above: a test suite can point it
+# at a fixture path without a real /proc.  /proc/net/if_inet6 is created by
+# the kernel's IPv6 module and is absent when IPv6 was compiled out or the
+# module never loaded - it is not a claim about administrative state (a
+# host that booted with every interface's IPv6 disabled via sysctl can
+# still have this file), only about whether the kernel can speak IPv6 at
+# all.  A host with the module loaded but IPv6 administratively disabled
+# everywhere fails later, loudly, inside _netns_build's own `ip -6` calls -
+# set -Eeuo pipefail's ERR trap (lib/core.sh) turns that into
+# SCOURSH_EXIT_INCOMPLETE rather than a silent no-op, so "fails loudly" is
+# still true even where this precondition under-detects.
+RUN_NETNS_IF_INET6_FILE=${RUN_NETNS_IF_INET6_FILE:-/proc/net/if_inet6}
+
+_netns_has_ipv6_kernel_support() {
+  [[ -r $RUN_NETNS_IF_INET6_FILE ]]
+}
+
+# Unconditional, exactly like _netns_require_tools above: this tool builds
+# IPv6 containment alongside IPv4 on EVERY run (see the header comment for
+# why), so IPv6 support is required before anything privileged happens, not
+# only when the currently-resolved scope happens to contain an IPv6
+# address.  The alternative - silently skip IPv6 setup when the host lacks
+# it and proceed IPv4-only - is exactly the "silently degrading the
+# guarantee" this ticket exists to refuse: an operator who later authorises
+# an IPv6 or dual-stack target against a namespace that was quietly built
+# without IPv6 containment would have no way to know that family was never
+# actually contained.
+_netns_require_ipv6() {
+  require_cmd ip6tables
+  _netns_has_ipv6_kernel_support || die "$SCOURSH_EXIT_INPUT" \
+    "tools/run-in-netns.sh requires host IPv6 kernel support ('$RUN_NETNS_IF_INET6_FILE' is missing or unreadable, meaning the kernel's IPv6 stack is absent or fully disabled) to build the namespace's IPv6 containment alongside its IPv4 containment - the whole point of this tool is that NOTHING escapes it, in EITHER address family. Refusing to run <command> at all rather than silently degrading the guarantee to IPv4-only. If this host genuinely has no IPv6 stack (e.g. booted with 'ipv6.disable=1'), this tool cannot be used against an IPv6 or dual-stack target on it."
+}
+
 # ---------------------------------------------------------------------------
 # 3. Argument parsing: `[--scope-conf PATH] -- <command...>`
 # ---------------------------------------------------------------------------
@@ -247,29 +315,39 @@ _netns_parse_args() {
 
 # ---------------------------------------------------------------------------
 # 4. The allowlist: lib/http.sh's pinned resolution cache (set 1) plus the
-#    resolv.conf nameserver set (set 3, tension 20's own naming)
+#    resolv.conf nameserver set (set 3, tension 20's own naming) - each
+#    split by address family, IPv4 and IPv6 admitted alike.
 # ---------------------------------------------------------------------------
-# Populates the global RUN_NETNS_TARGET_IPS array (IPv4-only dotted-quads,
-# NOT yet deduplicated - see _netns_build). Calls ONLY lib/http.sh's own
-# public entry points - http_scope_load and http_resolve_host - never a
-# re-implementation of scope parsing or DNS resolution, so this tool and the
-# scope gate can never disagree about what a scope.conf host means (the same
-# principle lib/http.sh's own header states for attribution vs. the gate).
+# Populates the global RUN_NETNS_TARGET_IPS (IPv4 dotted-quads) and
+# RUN_NETNS_TARGET_IPS6 (IPv6 literals) arrays, NOT yet deduplicated - see
+# _netns_build. Calls ONLY lib/http.sh's own public entry points -
+# http_scope_load and http_resolve_host - never a re-implementation of scope
+# parsing or DNS resolution, so this tool and the scope gate can never
+# disagree about what a scope.conf host means (the same principle
+# lib/http.sh's own header states for attribution vs. the gate). An IPv6
+# scope host (an already-normalised, bracket-stripped literal straight out
+# of _HTTP_SCOPE_HOST - http_url_normalize validated and canonicalised it
+# when the scope was loaded, so it is not re-validated here) or an
+# IPv6-resolving hostname is admitted into the IPv6 array rather than
+# skipped: this is the change this ticket makes over the original
+# IPv4-only NETNS-01 (see the header comment's "IPv6 SUPPORT" paragraph).
 #
 # A fixed-name global, not a generic "return an array via a passed name"
 # helper: `local -n` (namerefs) arrived in bash 4.3, and tension 24 freezes
 # the minimum interpreter at 4.2 - lib/findings.sh's own header states this
 # repository deliberately uses namerefs nowhere, and this file follows suit.
 RUN_NETNS_TARGET_IPS=()
+RUN_NETNS_TARGET_IPS6=()
 
 _netns_collect_target_ips() {
   RUN_NETNS_TARGET_IPS=()
+  RUN_NETNS_TARGET_IPS6=()
   http_scope_load "${RUN_NETNS_SCOPE_CONF:-}"
   local n=${#_HTTP_SCOPE_HOST[@]} i host addr
   for (( i = 0; i < n; i++ )); do
     host=${_HTTP_SCOPE_HOST[i]}
     if [[ $host == *:* ]]; then
-      log_warn "run-in-netns: scope host '$host' is an IPv6 literal - IPv6 routing is out of scope for this tool (see header comment); it will NOT be reachable from inside the namespace"
+      RUN_NETNS_TARGET_IPS6+=("$host")
       continue
     fi
     if [[ $host =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
@@ -279,22 +357,24 @@ _netns_collect_target_ips() {
       continue
     fi
     if [[ $addr == *:* ]]; then
-      log_warn "run-in-netns: '$host' resolved to an IPv6 address ('$addr') - IPv6 routing is out of scope for this tool; it will NOT be reachable from inside the namespace"
+      RUN_NETNS_TARGET_IPS6+=("$addr")
       continue
     fi
     RUN_NETNS_TARGET_IPS+=("$addr")
   done
 }
 
-# Populates the global RUN_NETNS_NAMESERVERS array. Parses /etc/resolv.conf
-# for `nameserver` lines (IPv4 only - an IPv6 nameserver is logged and
-# skipped, same limitation as above). No bare grep (tension 4 rule 2): a
-# plain `while read` with bash-regex matching. Same fixed-global rationale
-# as _netns_collect_target_ips above.
+# Populates the global RUN_NETNS_NAMESERVERS (IPv4) and
+# RUN_NETNS_NAMESERVERS6 (IPv6) arrays from /etc/resolv.conf's `nameserver`
+# lines. No bare grep (tension 4 rule 2): a plain `while read` with
+# bash-regex matching. Same fixed-global rationale as
+# _netns_collect_target_ips above.
 RUN_NETNS_NAMESERVERS=()
+RUN_NETNS_NAMESERVERS6=()
 
 _netns_collect_nameservers() {
   RUN_NETNS_NAMESERVERS=()
+  RUN_NETNS_NAMESERVERS6=()
   if [[ ! -r /etc/resolv.conf ]]; then
     log_warn "run-in-netns: /etc/resolv.conf is not readable - no nameserver route will be added; DNS resolution inside the namespace will fail unless the wrapped command uses --resolve or a hosts file"
     return 0
@@ -304,7 +384,7 @@ _netns_collect_nameservers() {
     if [[ $line =~ ^[[:space:]]*nameserver[[:space:]]+([0-9]{1,3}(\.[0-9]{1,3}){3})([[:space:]]|$) ]]; then
       RUN_NETNS_NAMESERVERS+=("${BASH_REMATCH[1]}")
     elif [[ $line =~ ^[[:space:]]*nameserver[[:space:]]+([0-9a-fA-F:]+) ]]; then
-      log_warn "run-in-netns: skipping IPv6 nameserver '${BASH_REMATCH[1]}' from /etc/resolv.conf - IPv6 routing is out of scope for this tool"
+      RUN_NETNS_NAMESERVERS6+=("${BASH_REMATCH[1]}")
     fi
   done </etc/resolv.conf
 }
@@ -333,7 +413,9 @@ RUN_NETNS_VETH_CREATED=0
 RUN_NETNS_NS_CREATED=0
 RUN_NETNS_IPFWD_ORIG=''
 RUN_NETNS_IPFWD_CHANGED=0
-RUN_NETNS_NAT_RULES=()   # each entry: "TABLE|CHAIN|arg\x1farg\x1f..." as added, for exact -D removal
+RUN_NETNS_IP6FWD_ORIG=''
+RUN_NETNS_IP6FWD_CHANGED=0
+RUN_NETNS_NAT_RULES=()   # each entry: "FAMILY|TABLE|CHAIN|arg\x1farg\x1f..." as added, for exact -D removal
 RUN_NETNS_EGRESS_IF=''
 
 _netns_pick_link_names() {
@@ -355,14 +437,21 @@ _netns_detect_egress_if() {
   return 1
 }
 
+# FAMILY is 4 or 6, selecting iptables vs. ip6tables - the two tools have
+# identical CLI grammar (ip6tables is not "iptables with a -6 flag", but the
+# subset of syntax this file uses - -t TABLE, -A/-D CHAIN, -s/-i/-o/-j/-m -
+# is the same across both), so one function serves both families rather
+# than forking a second copy.
 _netns_add_nat_rule() {
-  local table=$1 chain=$2
-  shift 2
+  local family=$1 table=$2 chain=$3
+  shift 3
   local args=("$@")
-  local iptables_table_flag=(-t "$table")
-  [[ $table == filter ]] && iptables_table_flag=()
-  iptables "${iptables_table_flag[@]+"${iptables_table_flag[@]}"}" -A "$chain" "${args[@]+"${args[@]}"}"
-  RUN_NETNS_NAT_RULES+=("$table|$chain|$(printf '%s\x1f' "${args[@]+"${args[@]}"}")")
+  local bin=iptables
+  [[ $family == 6 ]] && bin=ip6tables
+  local table_flag=(-t "$table")
+  [[ $table == filter ]] && table_flag=()
+  "$bin" "${table_flag[@]+"${table_flag[@]}"}" -A "$chain" "${args[@]+"${args[@]}"}"
+  RUN_NETNS_NAT_RULES+=("$family|$table|$chain|$(printf '%s\x1f' "${args[@]+"${args[@]}"}")")
 }
 
 _netns_build() {
@@ -376,28 +465,47 @@ _netns_build() {
   RUN_NETNS_VETH_CREATED=1
   ip link set "$RUN_NETNS_VETH_NS" netns "$RUN_NETNS_NAME"
 
-  # A 169.254.0.0/16 (RFC 3927) /30 for the point-to-point link, offset by
-  # (pid % 250) to reduce (never eliminate) collision risk against anything
-  # else on the host that happens to use the same convention - a stated,
-  # best-effort choice, the same class of documented limitation as
+  # A 169.254.0.0/16 (RFC 3927) /30 for the IPv4 point-to-point link, offset
+  # by (pid % 250) to reduce (never eliminate) collision risk against
+  # anything else on the host that happens to use the same convention - a
+  # stated, best-effort choice, the same class of documented limitation as
   # lib/core.sh's tmpfs/erase_dir note for `shred`.  This link address is
   # NOT itself a "scope" address; it is never reachable from outside the
+  # namespace and carries no scan traffic of its own.
+  #
+  # The IPv6 point-to-point link reuses the SAME pid-derived offset, folded
+  # into a fd00::/8 (RFC 4193) Unique Local Address /126 rather than
+  # relying on the veth pair's automatic fe80::/10 link-local addresses:
+  # this file explicitly assigns and tracks every address it uses (see the
+  # IPv4 comment just above), and a manually-assigned ULA keeps that
+  # discipline rather than mixing an explicit v4 scheme with an implicit v6
+  # one.  Like the v4 link, it is never reachable from outside the
   # namespace and carries no scan traffic of its own.
   local octet=$(( ($$ % 250) + 2 ))
   local host_addr="169.254.${octet}.1"
   local ns_addr="169.254.${octet}.2"
+  local octet6
+  octet6=$(printf '%x' "$octet")
+  local host_addr6="fd00:5c02:${octet6}::1"
+  local ns_addr6="fd00:5c02:${octet6}::2"
 
   ip addr add "${host_addr}/30" dev "$RUN_NETNS_VETH_HOST"
+  ip -6 addr add "${host_addr6}/126" dev "$RUN_NETNS_VETH_HOST"
   ip link set "$RUN_NETNS_VETH_HOST" up
 
   ip netns exec "$RUN_NETNS_NAME" ip addr add "${ns_addr}/30" dev "$RUN_NETNS_VETH_NS"
+  ip netns exec "$RUN_NETNS_NAME" ip -6 addr add "${ns_addr6}/126" dev "$RUN_NETNS_VETH_NS"
   ip netns exec "$RUN_NETNS_NAME" ip link set "$RUN_NETNS_VETH_NS" up
+  # `ip link set lo up` brings up BOTH families' loopback addresses in one
+  # call - 127.0.0.1/8 and ::1 are both assigned by the kernel automatically
+  # the instant lo transitions to UP, so no separate `ip -6 addr add` is
+  # needed for the namespace's own IPv6 loopback.
   ip netns exec "$RUN_NETNS_NAME" ip link set lo up
 
   local addr
   _netns_collect_target_ips
   _netns_collect_nameservers
-  local allowed=()
+  local allowed=() allowed6=()
   if (( ${#RUN_NETNS_TARGET_IPS[@]} > 0 || ${#RUN_NETNS_NAMESERVERS[@]} > 0 )); then
     local deduped
     deduped=$(printf '%s\n' \
@@ -408,24 +516,46 @@ _netns_build() {
       [[ -n $addr ]] && allowed+=("$addr")
     done <<<"$deduped"
   fi
+  if (( ${#RUN_NETNS_TARGET_IPS6[@]} > 0 || ${#RUN_NETNS_NAMESERVERS6[@]} > 0 )); then
+    local deduped6
+    deduped6=$(printf '%s\n' \
+      "${RUN_NETNS_TARGET_IPS6[@]+"${RUN_NETNS_TARGET_IPS6[@]}"}" \
+      "${RUN_NETNS_NAMESERVERS6[@]+"${RUN_NETNS_NAMESERVERS6[@]}"}" \
+      | _netns_dedupe_lines)
+    while IFS= read -r addr; do
+      [[ -n $addr ]] && allowed6+=("$addr")
+    done <<<"$deduped6"
+  fi
 
-  if (( ${#allowed[@]} == 0 )); then
-    log_warn "run-in-netns: no in-scope addresses and no IPv4 nameservers resolved - the namespace's route table admits nothing beyond loopback; <command> will have no network reachability at all inside it"
+  if (( ${#allowed[@]} == 0 && ${#allowed6[@]} == 0 )); then
+    log_warn "run-in-netns: no in-scope addresses and no nameservers resolved in either address family - the namespace's route table admits nothing beyond loopback; <command> will have no network reachability at all inside it"
   fi
   for addr in "${allowed[@]+"${allowed[@]}"}"; do
     log_info "run-in-netns: admitting $addr/32 into the namespace route table (via $host_addr)"
     ip netns exec "$RUN_NETNS_NAME" ip route add "${addr}/32" via "$host_addr" dev "$RUN_NETNS_VETH_NS"
   done
+  for addr in "${allowed6[@]+"${allowed6[@]}"}"; do
+    log_info "run-in-netns: admitting $addr/128 into the namespace route table (via $host_addr6)"
+    ip netns exec "$RUN_NETNS_NAME" ip -6 route add "${addr}/128" via "$host_addr6" dev "$RUN_NETNS_VETH_NS"
+  done
 
-  # Deliberately no default route inside the namespace (this ticket's AC2):
-  # anything not explicitly admitted above has no route at all, so a
-  # connection attempt to it fails at the kernel level (ENETUNREACH) rather
-  # than being merely refused by a firewall rule.
+  # Deliberately no default route inside the namespace, in EITHER family
+  # (this ticket's AC2, extended from IPv4-only to both): anything not
+  # explicitly admitted above has no route at all, so a connection attempt
+  # to it fails at the kernel level (ENETUNREACH) rather than being merely
+  # refused by a firewall rule.  This is also what makes a dual-stack
+  # target safe: a family with nothing admitted this run gets no route of
+  # any kind, so it cannot become an accidental bypass for the other.
 
   RUN_NETNS_IPFWD_ORIG=$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || printf '0')
   if [[ $RUN_NETNS_IPFWD_ORIG != 1 ]]; then
     sysctl -w net.ipv4.ip_forward=1 >/dev/null
     RUN_NETNS_IPFWD_CHANGED=1
+  fi
+  RUN_NETNS_IP6FWD_ORIG=$(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null || printf '0')
+  if [[ $RUN_NETNS_IP6FWD_ORIG != 1 ]]; then
+    sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null
+    RUN_NETNS_IP6FWD_CHANGED=1
   fi
 
   if ! _netns_detect_egress_if; then
@@ -435,10 +565,22 @@ _netns_build() {
   # NAT: only the namespace's own point-to-point address may be
   # masqueraded, and only FORWARD traffic to/from this run's veth is
   # permitted - both scoped as tightly as the plumbing allows, and both
-  # reversed exactly (section 6) rather than left as a standing rule.
-  _netns_add_nat_rule nat POSTROUTING -s "${ns_addr}/32" -o "$RUN_NETNS_EGRESS_IF" -j MASQUERADE
-  _netns_add_nat_rule filter FORWARD -i "$RUN_NETNS_VETH_HOST" -o "$RUN_NETNS_EGRESS_IF" -j ACCEPT
-  _netns_add_nat_rule filter FORWARD -i "$RUN_NETNS_EGRESS_IF" -o "$RUN_NETNS_VETH_HOST" \
+  # reversed exactly (section 6) rather than left as a standing rule.  The
+  # IPv6 rules reuse the SAME detected egress interface as the IPv4 ones: on
+  # the overwhelmingly common single-NIC dual-stack host this is correct,
+  # and a host whose IPv6 route to the outside world genuinely leaves via a
+  # different interface is a stated, narrow limitation (not a safety gap -
+  # the namespace's own route table, not this NAT plumbing, is what makes
+  # an unadmitted destination unreachable; picking the "wrong" egress
+  # interface here can only break reachability for admitted v6 addresses,
+  # never widen what is reachable).
+  _netns_add_nat_rule 4 nat POSTROUTING -s "${ns_addr}/32" -o "$RUN_NETNS_EGRESS_IF" -j MASQUERADE
+  _netns_add_nat_rule 4 filter FORWARD -i "$RUN_NETNS_VETH_HOST" -o "$RUN_NETNS_EGRESS_IF" -j ACCEPT
+  _netns_add_nat_rule 4 filter FORWARD -i "$RUN_NETNS_EGRESS_IF" -o "$RUN_NETNS_VETH_HOST" \
+    -m state --state ESTABLISHED,RELATED -j ACCEPT
+  _netns_add_nat_rule 6 nat POSTROUTING -s "${ns_addr6}/128" -o "$RUN_NETNS_EGRESS_IF" -j MASQUERADE
+  _netns_add_nat_rule 6 filter FORWARD -i "$RUN_NETNS_VETH_HOST" -o "$RUN_NETNS_EGRESS_IF" -j ACCEPT
+  _netns_add_nat_rule 6 filter FORWARD -i "$RUN_NETNS_EGRESS_IF" -o "$RUN_NETNS_VETH_HOST" \
     -m state --state ESTABLISHED,RELATED -j ACCEPT
 }
 
@@ -449,10 +591,12 @@ _netns_build() {
 #    lib/core.sh's core_cleanup / erase_dir).
 # ---------------------------------------------------------------------------
 _netns_teardown() {
-  local entry table chain argstr args
+  local entry family table chain argstr args
   for entry in "${RUN_NETNS_NAT_RULES[@]+"${RUN_NETNS_NAT_RULES[@]}"}"; do
-    table=${entry%%|*}
+    family=${entry%%|*}
     local rest=${entry#*|}
+    table=${rest%%|*}
+    rest=${rest#*|}
     chain=${rest%%|*}
     argstr=${rest#*|}
     args=()
@@ -460,15 +604,21 @@ _netns_teardown() {
     while IFS= read -r -d $'\x1f' part; do
       args+=("$part")
     done <<<"$argstr"
-    local iptables_table_flag=(-t "$table")
-    [[ $table == filter ]] && iptables_table_flag=()
-    iptables "${iptables_table_flag[@]+"${iptables_table_flag[@]}"}" -D "$chain" "${args[@]+"${args[@]}"}" 2>/dev/null || true
+    local bin=iptables
+    [[ $family == 6 ]] && bin=ip6tables
+    local table_flag=(-t "$table")
+    [[ $table == filter ]] && table_flag=()
+    "$bin" "${table_flag[@]+"${table_flag[@]}"}" -D "$chain" "${args[@]+"${args[@]}"}" 2>/dev/null || true
   done
   RUN_NETNS_NAT_RULES=()
 
   if (( RUN_NETNS_IPFWD_CHANGED )); then
     sysctl -w net.ipv4.ip_forward="${RUN_NETNS_IPFWD_ORIG:-0}" >/dev/null 2>&1 || true
     RUN_NETNS_IPFWD_CHANGED=0
+  fi
+  if (( RUN_NETNS_IP6FWD_CHANGED )); then
+    sysctl -w net.ipv6.conf.all.forwarding="${RUN_NETNS_IP6FWD_ORIG:-0}" >/dev/null 2>&1 || true
+    RUN_NETNS_IP6FWD_CHANGED=0
   fi
 
   if (( RUN_NETNS_VETH_CREATED )); then
@@ -505,6 +655,7 @@ _netns_main() {
   _netns_require_linux
   _netns_require_privilege
   _netns_require_tools
+  _netns_require_ipv6
 
   (( ${#RUN_NETNS_CMD[@]} > 0 )) || die "$SCOURSH_EXIT_USAGE" "no command given after '--'"
 

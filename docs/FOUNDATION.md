@@ -5490,17 +5490,28 @@ host, missing privilege, a plumbing step itself failing) goes through `lib/core.
 inside the 0-5 exit contract; the one exit path deliberately NOT forced through `die` is the wrapped
 command's own exit status, which is forwarded transparently rather than laundered. It is never invoked
 by `scan.sh` and carries no dependency on PARANOID-01 - confirming this RESOLUTION's own "guarantee vs
-detector" distinction holds in the shipped code, not just in this register's prose. IPv6 routing is
-out of scope for this tool per its own ticket; an in-scope host that only resolves to IPv6 is logged
-and skipped, never routed - a follow-up ticket for dual-stack support was filed separately rather than
-absorbed into NETNS-01.
+detector" distinction holds in the shipped code, not just in this register's prose.
+**IPv6/dual-stack routing support has since landed as its own follow-up ticket** (this paragraph used to
+name it as out of scope and separately filed, the same pointer ROADMAP.md's "Outside that ordering" list
+carried). The namespace's loopback and veth pair now get IPv6 addressing and routing unconditionally,
+alongside IPv4, on every run - not only when the currently-resolved scope happens to contain an IPv6
+address - because the guarantee is that nothing escapes the namespace in EITHER family. A new
+unconditional precondition, `_netns_require_ipv6` (mirroring the existing `ip`/`iptables` check), refuses
+loudly (exit 4, before any isolation action, `<command>` never runs) on a host lacking IPv6 kernel
+support or `ip6tables`, rather than silently building an IPv4-only namespace that looks like the full
+guarantee but is not. `AGENTS.md`'s "Step 8" section carries the full implementation and testing detail,
+including the pid-derived `fd00::/8` ULA point-to-point link, the family-tagged NAT-rule bookkeeping
+shared between `iptables`/`ip6tables`, and a latent test-harness bug (bash function shadowing making
+part of the real kernel-level gate/assertion vacuous on any host) found and fixed while landing it.
 `tests/suites/netns.sh` tests it, and states plainly what it can and cannot prove on a given host:
-argument parsing, the CapEff bitmask arithmetic, the collectors, and the build/teardown command
-sequence are unit-tested against stubbed `ip`/`iptables`/`sysctl` on any host; the fail-closed
-non-Linux and no-privilege paths run as real subprocess invocations (whichever applies on the host the
-suite runs on); and the one claim that genuinely needs a privileged Linux kernel - an out-of-scope
-connection attempt actually failing - is a real end-to-end case gated behind a genuine capability probe,
-recorded as SKIPPED rather than a silent pass when that probe fails.
+argument parsing, the CapEff bitmask arithmetic, the collectors (each split into an IPv4 and an IPv6
+array), and the build/teardown command sequence are unit-tested against stubbed
+`ip`/`iptables`/`ip6tables`/`sysctl` on any host; the fail-closed non-Linux, no-privilege, and
+no-IPv6-support paths run as real subprocess invocations (whichever applies on the host the suite runs
+on); and the claims that genuinely need a privileged Linux kernel - an out-of-scope connection attempt
+actually failing, in both families, and an in-scope IPv6 target's route actually existing in the real
+namespace - are real end-to-end cases gated behind a genuine capability (now including `ip6tables` and
+real host IPv6 support) probe, recorded as SKIPPED rather than a silent pass when that probe fails.
 **PARANOID-01 has also landed** and is unaffected by NETNS-01 landing separately; the two were never
 interdependent. This planning ticket's own acceptance criteria named `lib/http.sh` (tension 19) as step
 8's blocker, and confirmed it present on `dev` before either sub-ticket started - it shipped early, out

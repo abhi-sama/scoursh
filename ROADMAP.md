@@ -112,8 +112,12 @@ Outside that ordering:
 - Two derived/composite findings (`COMPOSITE-TOKEN-HIJACK` and its dependents) are intentionally
   not seeded yet. DAST (step 5) now supplies one contributor, but the composite also needs a step 6
   (cloud) contributor that does not exist yet, so it remains unseeded until cloud lands.
-- IPv6 / dual-stack routing support for `tools/run-in-netns.sh` was explicitly scoped out of that
-  ticket and filed as a separate follow-up.
+- IPv6 / dual-stack routing support for `tools/run-in-netns.sh` has landed (the follow-up this line
+  used to point at): the namespace's loopback and veth pair get IPv6 addressing and routing
+  unconditionally, alongside IPv4, on every run, and the tool refuses to run at all (exit 4) on a
+  host that lacks IPv6 kernel support or `ip6tables` rather than silently degrading the guarantee to
+  IPv4-only. See `tools/run-in-netns.sh`'s own header comment and `AGENTS.md`'s "Step 8" section for
+  the detail.
 
 ## Known defects in shipped features
 

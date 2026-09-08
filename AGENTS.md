@@ -2213,23 +2213,84 @@ RESOLUTION) and **NETNS-01** (`tools/run-in-netns.sh`, the network-namespace run
 root-requiring, stated directly in that ticket's own filed description, not only in the plan doc).
 **NETNS-01 has now landed**: `tools/run-in-netns.sh` (a Linux-only, root/CAP_NET_ADMIN
 +CAP_SYS_ADMIN-requiring wrapper) builds a network namespace whose route table admits only two sets of
-IPv4 addresses - the resolved addresses of scoursh's in-scope targets, via `lib/http.sh`'s own
-`http_scope_load`/`http_resolve_host` (tension 19's pinned resolution cache, never a re-implementation),
-and the nameservers parsed from `/etc/resolv.conf` (tension 20's "set 3") - installs NO default route
-inside the namespace, and execs the wrapped command inside it via `ip netns exec`. Teardown (namespace,
-veth, NAT/iptables rules, `ip_forward` restoration) runs from the tool's own EXIT trap on every exit
-path, success or failure, staying inside the project's 0-5 exit-code contract throughout. It is never
-invoked by `scan.sh` and has no dependency on PARANOID-01 - the two are independent, peer mechanisms per
-tension 20's "guarantee vs detector" distinction. `tests/suites/netns.sh` tests it: argument parsing,
-the CapEff bitmask arithmetic, the target-IP/nameserver collectors, and the build/teardown command
-sequence are unit-tested against stubbed `ip`/`iptables`/`sysctl` on any host; the "fails immediately, no
-isolation action, `<command>` never runs" non-Linux/no-privilege paths (this ticket's ACs 3-4) are
-exercised as real subprocess invocations on whichever host the suite runs on; and a real, kernel-level
-out-of-scope-connection-fails test (this ticket's AC2) is gated behind a genuine Linux+root/capability+
-tooling probe and is honestly marked SKIPPED (not a silent pass) on a host that does not meet it.
-IPv6 routing is out of scope for this tool (an in-scope host that only resolves to IPv6 is logged and
-skipped, never routed) - a follow-up ticket for dual-stack support was filed separately, per this
-ticket's own out-of-scope list.
+addresses, in EACH family it supports (IPv4 and IPv6 alike) - the resolved addresses of scoursh's
+in-scope targets, via `lib/http.sh`'s own `http_scope_load`/`http_resolve_host` (tension 19's pinned
+resolution cache, never a re-implementation), and the nameservers parsed from `/etc/resolv.conf`
+(tension 20's "set 3") - installs NO default route inside the namespace in either family, and execs the
+wrapped command inside it via `ip netns exec`. Teardown (namespace, veth, NAT/iptables/ip6tables rules,
+`ip_forward`/`ip6` forwarding restoration) runs from the tool's own EXIT trap on every exit path, success
+or failure, staying inside the project's 0-5 exit-code contract throughout. It is never invoked by
+`scan.sh` and has no dependency on PARANOID-01 - the two are independent, peer mechanisms per tension
+20's "guarantee vs detector" distinction. `tests/suites/netns.sh` tests it: argument parsing, the CapEff
+bitmask arithmetic, the target-IP/nameserver collectors (each split into an IPv4 and an IPv6 array), and
+the build/teardown command sequence are unit-tested against stubbed `ip`/`iptables`/`ip6tables`/`sysctl`
+on any host; the "fails immediately, no isolation action, `<command>` never runs" non-Linux/no-privilege
+paths (this ticket's ACs 3-4) are exercised as real subprocess invocations on whichever host the suite
+runs on; and a real, kernel-level out-of-scope-connection-fails test (this ticket's AC2), in both
+families, is gated behind a genuine Linux+root/capability+tooling(+IPv6)-support probe and is honestly
+marked SKIPPED (not a silent pass) on a host that does not meet it.
+
+**IPv6/dual-stack routing support has since landed too, as its own follow-up ticket** (this section used
+to name it as filed separately and out of scope; ROADMAP.md's "Outside that ordering" list carried the
+same pointer). The namespace's loopback and veth pair are given IPv6 addressing and routing
+UNCONDITIONALLY, alongside IPv4, on every run - never only when the currently-resolved scope happens to
+contain an IPv6 address - because the guarantee this tool exists to provide is that nothing escapes the
+namespace in EITHER family, not merely that whatever happens to be in scope today is contained. A
+dual-stack target (one scope entry that resolves or is declared in both families) is admitted in both
+families at once; a family with nothing admitted this run gets no route of any kind (never a default
+route), so it cannot become an accidental bypass for the other. `_netns_require_ipv6` is therefore an
+UNCONDITIONAL precondition, exactly like the existing `ip`/`iptables` check: this host must have IPv6
+kernel support (`/proc/net/if_inet6` readable - a test-only variable indirection, the same idiom
+`RUN_NETNS_PROC_STATUS_FILE` already used for the CapEff check) and `ip6tables` before ANY isolation
+action is taken, and refuses loudly (exit 4, before creating any namespace/veth/route state, `<command>`
+never runs) rather than silently building an IPv4-only namespace that looks like the full guarantee but
+is not - this is the specific failure mode this ticket exists to refuse ("fail loudly ... rather than
+silently degrading the guarantee to v4-only"). `_netns_add_nat_rule` and the teardown parser were
+extended with a FAMILY field (4 or 6, selecting `iptables` vs. `ip6tables`) rather than forking a second
+copy of either function, since the two tools share the CLI grammar this file uses. The IPv6
+point-to-point link reuses the SAME pid-derived offset as the IPv4 one, folded into an `fd00::/8` (RFC
+4193) Unique Local Address `/126` rather than the veth pair's automatic `fe80::/10` link-local addresses
+- keeping the file's existing "every address is explicitly assigned and tracked" discipline rather than
+mixing an explicit v4 scheme with an implicit v6 one. Both NAT/FORWARD rule sets (v4 and v6) reuse the
+SAME detected egress interface (`ip route show default` is still v4-only) - correct on the
+overwhelmingly common single-NIC dual-stack host, and a stated, narrow limitation rather than a safety
+gap on a host whose v6 route genuinely leaves via a different interface, since the NAMESPACE'S OWN route
+table (never the host-side NAT/FORWARD plumbing) is what makes an unadmitted destination unreachable -
+picking the "wrong" egress interface can only break reachability for admitted v6 addresses, never widen
+what is reachable. `tests/suites/netns.sh`'s IPv6 extension: two new fixture ids
+(`netns-fixture-v6-literal`, `netns-fixture-dual-stack`) in `tests/fixtures/config/netns-scope.conf`;
+`RUN_NETNS_TARGET_IPS6`/`RUN_NETNS_NAMESERVERS6` coverage alongside the existing IPv4 arrays; `ip -6`/
+`ip6tables` command-sequence assertions and a "no IPv6 default route" assertion alongside the existing
+IPv4 ones; a unit-level proof that `_netns_has_ipv6_kernel_support`/`_netns_require_ipv6` fail loudly
+rather than silently degrading (via the same fixture-path indirection, deterministic on any host); and,
+in the real kernel-level section, an IPv6 block case (RFC 3849's `2001:db8::/32` documentation prefix,
+the IPv6 sibling of the IPv4 block case's RFC 5737 TEST-NET-3 address), an IPv6 target-works case
+(asserted against the REAL, in-namespace `ip -6 route show` output rather than a live socket to a real
+host - this project's own no-live-network testing discipline, docs/DESIGN.md §12 - since section B's
+stub-level assertions already prove the routing COMMAND is issued, and this proves the kernel actually
+INSTALLED it), and a real-subprocess proof of the fail-loud IPv6 precondition (via the same
+`RUN_NETNS_IF_INET6_FILE` override, since a real Linux+root host capable of running this section almost
+certainly has genuine IPv6 support, so there is no other deterministic way to exercise the refusal path
+end-to-end). All of it is gated on genuine `ip6tables` presence and real host IPv6 kernel support and
+SKIPS with a stated reason - never a false pass - on a host that lacks either.
+
+**One correctness bug in the test file itself was found and fixed while landing the IPv6 extension,
+worth recording because it is invisible and would have silently defeated part of AC2's own kernel-level
+proof.** Section 3's stub-level tests shadow `ip`/`iptables`/`ip6tables`/`sysctl` with bash FUNCTIONS
+that persist for the rest of that script's OWN process (functions are not scoped to a block), and
+`command -v NAME` reports a function as found regardless of whether the real binary is on PATH. Section
+C's own gate condition (`command -v ip && command -v iptables`) and its final "no namespace left behind"
+check (`ip netns list`, called directly rather than through `bash "$TOOL"`) were both silently reading
+the STUB function rather than the real tool once section 3 had run earlier in the same process - the
+gate would never correctly SKIP on a host genuinely missing one of these tools, and the leftover-namespace
+assertion was vacuously true (the stub returns no output for `netns list`, so the assertion could not
+have failed regardless of what it should be proving). Neither defect could be observed on any host this
+project's own CI matrix runs today, since a Linux+root host able to reach section C in the first place
+virtually always has the real tools genuinely installed - which is exactly why it went unnoticed. Fixed
+with `type -P NAME` for the gate (forces a PATH-only lookup, ignoring functions/aliases/builtins) and
+`command ip netns list` for the introspection call (the `command` builtin has the identical bypass
+effect for a single invocation); `bash "$TOOL" ...` itself was never affected either way, since a spawned
+subprocess never inherits the parent script's own shell functions.
 **PARANOID-01 (the `--paranoid` observer/abort mechanism) remains unimplemented.**
 Unlike the DAST plan above, step 8 was never gated on any unlanded step: this planning ticket's own
 acceptance criteria named `lib/http.sh` (the tension-19 chokepoint) as step 8's blocker, and it was
