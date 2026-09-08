@@ -1093,6 +1093,60 @@ nav.toc a:hover, .top-link:hover, .permalink:hover { text-decoration: underline;
 h2 { scroll-margin-top: 1rem; }
 details.f { scroll-margin-top: 1rem; }
 .top-link { display: inline-block; margin-top: .75rem; font-size: .82rem; }
+/* scoursh-report-ux: wide tables/content scroll in their own box rather than
+   the page - no horizontal page overflow on a narrow viewport. */
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+/* Category quick-jump chips at the top of the Findings section. */
+.catnav { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0 0 1.5rem; }
+.catpill { display: inline-flex; align-items: center; gap: .35rem; text-decoration: none;
+  border: 1px solid var(--line); background: var(--card); border-radius: 2rem;
+  padding: .25rem .7rem; font-size: .82rem; color: var(--fg); }
+.catpill:hover { border-color: var(--accent); }
+.catpill .c { color: var(--muted); font-variant-numeric: tabular-nums; font-size: .76rem; }
+/* One collapsible group per category (SAST/SCA/IaC/DAST/AWS). */
+details.modgrp { border: 1px solid var(--line); border-radius: .5rem; margin: 0 0 1.1rem;
+  background: var(--card); scroll-margin-top: 1rem; }
+details.modgrp > summary { cursor: pointer; padding: .7rem .9rem; list-style: none;
+  display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
+details.modgrp > summary::-webkit-details-marker { display: none; }
+details.modgrp > summary::before { content: "\25B8"; color: var(--muted); font-size: .8rem;
+  transition: transform .12s ease; display: inline-block; }
+details.modgrp[open] > summary::before { transform: rotate(90deg); }
+.modlabel { font-weight: 650; font-size: 1.02rem; }
+.modbody { padding: .1rem .9rem .9rem; border-top: 1px solid var(--line); }
+.sevbreak { display: flex; flex-wrap: wrap; gap: .35rem; margin: .7rem 0 .9rem; }
+.sevbreak .sev { padding: .15rem .5rem; }
+/* Severity filter - CSS-only (:has()), same no-JS mechanism report-audit.html
+   uses. The radios live inside .filter, next to their own labels, so both the
+   highlight rule and the hide/show rule work regardless of how deep .filter
+   sits in the document (a plain "~" sibling combinator would not reach past
+   the intervening <main>). */
+.filter { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; margin: 1rem 0 1.5rem; }
+.filter .lbl { font-size: .72rem; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--muted); font-weight: 650; margin-right: .2rem; }
+.filter input { position: absolute; opacity: 0; width: 0; height: 0; }
+.filter label { border: 1px solid var(--line); background: var(--card); border-radius: 2rem;
+  padding: .18rem .6rem; font-size: .8rem; cursor: pointer; user-select: none; }
+.filter label:hover { border-color: var(--accent); }
+.filter:has(#sv-all:checked) label[for="sv-all"],
+.filter:has(#sv-crit:checked) label[for="sv-crit"],
+.filter:has(#sv-high:checked) label[for="sv-high"],
+.filter:has(#sv-med:checked) label[for="sv-med"],
+.filter:has(#sv-low:checked) label[for="sv-low"] {
+  background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+}
+@media (prefers-color-scheme: dark) {
+  .filter:has(#sv-all:checked) label[for="sv-all"],
+  .filter:has(#sv-crit:checked) label[for="sv-crit"],
+  .filter:has(#sv-high:checked) label[for="sv-high"],
+  .filter:has(#sv-med:checked) label[for="sv-med"],
+  .filter:has(#sv-low:checked) label[for="sv-low"] { color: #111318; }
+}
+.filterhint { font-size: .74rem; color: var(--muted); margin-left: .2rem; }
+body:has(#sv-crit:checked) details.f:not([data-sev="critical"]),
+body:has(#sv-high:checked) details.f:not([data-sev="critical"]):not([data-sev="high"]),
+body:has(#sv-med:checked)  details.f:not([data-sev="critical"]):not([data-sev="high"]):not([data-sev="medium"]),
+body:has(#sv-low:checked)  details.f[data-sev="info"] { display: none; }
 </style>
 </head>
 <body>
@@ -1206,52 +1260,164 @@ _html_summary() {
   printf '</div>\n'
   _html_diff_delta "$rundir"
   if (( ${#_RPT_MODULE[@]} > 0 )); then
-    printf '<h2 id="by-module">By module</h2>\n<table><tr><th>module</th><th>findings</th></tr>\n'
+    printf '<h2 id="by-module">By module</h2>\n<div class="scroll"><table><tr><th>module</th><th>findings</th></tr>\n'
     while IFS= read -r k; do
       [[ -n $k ]] || continue
       printf '<tr><td>%s</td><td>%s</td></tr>\n' "$(html_escape "$k")" "${_RPT_MODULE[$k]}"
     done <<<"$(printf '%s\n' "${!_RPT_MODULE[@]}" | LC_ALL=C sort)"
-    printf '</table>\n'
+    printf '</table></div>\n'
   fi
   if (( ${#_RPT_OWASP[@]} > 0 )); then
-    printf '<h2 id="by-owasp">By OWASP category</h2>\n<table><tr><th>category</th><th>findings</th></tr>\n'
+    printf '<h2 id="by-owasp">By OWASP category</h2>\n<div class="scroll"><table><tr><th>category</th><th>findings</th></tr>\n'
     while IFS= read -r k; do
       [[ -n $k ]] || continue
       printf '<tr><td>%s</td><td>%s</td></tr>\n' "$(html_escape "$k")" "${_RPT_OWASP[$k]}"
     done <<<"$(printf '%s\n' "${!_RPT_OWASP[@]}" | LC_ALL=C sort)"
-    printf '</table>\n'
+    printf '</table></div>\n'
   fi
 }
 
+# `_RPT_CAT_LABEL`/`_RPT_CAT_ORDER` - report.html's own category vocabulary for
+# grouping findings, deliberately a SEPARATE declaration from report-audit.html's
+# `_RPTC_CAT_LABEL` (lib/report.sh section 4a) even though the labels agree:
+# the two reports share no markup or state by design (captain decision,
+# scoursh-audit-report ticket), and report.html must render correctly on its
+# own even if report-audit.html's array shape ever changes. `derived` is a
+# real `module` value (tension 6 composite findings) with no report-audit.html
+# analogue - `cloud` is spelled here to match the finding module value; the
+# UI label says "AWS" per the captain's own naming.
+declare -A _RPT_CAT_LABEL=( [sast]='SAST' [sca]='SCA' [iac]='IaC' [dast]='DAST' [cloud]='AWS' [derived]='Correlated' )
+_RPT_CAT_ORDER=(sast sca iac dast cloud derived)
+
+# `_html_findings_category MODULE LINES COUNT` - one collapsible group of
+# findings for a single category, with its own severity breakdown. `LINES` is
+# a newline-joined set of findings.fields rows already filtered to this
+# module and to live (non-suppressed) findings by the caller - never
+# re-decoded from findings.jsonl (tension 10's "escape on the way out"
+# discipline needs one path in, `finding_decode`, not two).
+_html_findings_category() {
+  local mod=$1 lines=$2 count=$3 label line sev
+  label=${_RPT_CAT_LABEL[$mod]:-$mod}
+  local -A sevcount=( [critical]=0 [high]=0 [medium]=0 [low]=0 [info]=0 )
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    finding_decode "$line"
+    sev=${_DF[severity]:-info}
+    sevcount[$sev]=$(( ${sevcount[$sev]:-0} + 1 ))
+  done <<<"$lines"
+  printf '<details class="modgrp" id="mod-%s" open><summary><span class="modlabel">%s</span><span class="count">%s finding(s)</span></summary>\n' \
+    "$(html_escape "$mod")" "$(html_escape "$label")" "$count"
+  printf '<div class="modbody">\n<div class="sevbreak">'
+  local k
+  for k in critical high medium low info; do
+    (( ${sevcount[$k]:-0} > 0 )) && printf '<span class="sev %s">%s %s</span>' \
+      "$(html_escape "$k")" "${sevcount[$k]}" "$(html_escape "$k")"
+  done
+  printf '</div>\n'
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    finding_decode "$line"
+    _html_one_finding
+  done <<<"$lines"
+  printf '</div>\n</details>\n'
+}
+
+# `_html_findings RUNDIR` - live findings grouped by category (SAST/SCA/IaC/
+# DAST/AWS), each its own collapsible group with a jump-link chip in the
+# `.catnav` row above them, plus the severity filter widget
+# (`.filter`/`:has()`, no JavaScript - see `_html_head`'s own comment on why
+# the radios live inside `.filter` rather than at the top of `<body>`).
+# Grouping is computed in ONE pass over `findings.fields` here rather than
+# reusing `_RPT_MODULE` (report_count's per-module total): that map has no
+# per-finding LINE to render from, only a count, so a second read is needed
+# either way - this keeps it local to the renderer that needs the lines.
 _html_findings() {
-  local rundir=$1 line
+  local rundir=$1 line mod
   printf '<h2 id="findings">Findings</h2>\n'
   if [[ ! -s $rundir/findings.fields ]]; then
     printf '<p class="empty">No findings.</p>\n'
+    _html_accepted_risk "$rundir"
     return 0
   fi
-  local wrote=0
+  local -A _rptf_lines=() _rptf_count=()
+  local -a _rptf_seen=()
   while IFS= read -r line; do
     [[ -n $line ]] || continue
     finding_decode "$line"
     [[ ${_DF[suppressed]:-false} == true ]] && continue
-    _html_one_finding
-    wrote=1
+    mod=${_DF[module]:-unknown}
+    [[ -n ${_rptf_count[$mod]:-} ]] || _rptf_seen+=("$mod")
+    _rptf_count[$mod]=$(( ${_rptf_count[$mod]:-0} + 1 ))
+    if [[ -n ${_rptf_lines[$mod]:-} ]]; then
+      _rptf_lines[$mod]+=$'\n'"$line"
+    else
+      _rptf_lines[$mod]=$line
+    fi
   done <"$rundir/findings.fields"
-  (( wrote )) || printf '<p class="empty">Every finding this run is an accepted risk; see below.</p>\n'
 
-  # Suppressed findings render in a separate collapsed "accepted risk" section
-  # with their reason, and are counted separately (tension 11 step 9).  They are
-  # never deleted.
-  if (( _RPT_SUPPRESSED > 0 )); then
-    printf '<h2 id="accepted-risk">Accepted risk (%s)</h2>\n' "$_RPT_SUPPRESSED"
-    while IFS= read -r line; do
-      [[ -n $line ]] || continue
-      finding_decode "$line"
-      [[ ${_DF[suppressed]:-false} == true ]] || continue
-      _html_one_finding
-    done <"$rundir/findings.fields"
+  if (( ${#_rptf_seen[@]} == 0 )); then
+    printf '<p class="empty">Every finding this run is an accepted risk; see below.</p>\n'
+    _html_accepted_risk "$rundir"
+    return 0
   fi
+
+  # Canonical category order first, then any module value outside that
+  # vocabulary (LC_ALL=C sorted), so an unexpected `module` value is still
+  # rendered - never silently dropped - without disturbing the fixed order
+  # every reader of this report learns to expect.
+  local -a order=() rest=()
+  local c
+  for c in "${_RPT_CAT_ORDER[@]}"; do
+    [[ -n ${_rptf_count[$c]:-} ]] && order+=("$c")
+  done
+  for c in "${_rptf_seen[@]}"; do
+    [[ -n ${_RPT_CAT_LABEL[$c]:-} ]] || rest+=("$c")
+  done
+  if (( ${#rest[@]} > 0 )); then
+    local extra
+    while IFS= read -r extra; do
+      [[ -n $extra ]] && order+=("$extra")
+    done <<<"$(printf '%s\n' "${rest[@]}" | LC_ALL=C sort -u)"
+  fi
+
+  printf '<div class="catnav">\n'
+  for c in "${order[@]}"; do
+    printf '<a class="catpill" href="#mod-%s">%s <span class="c">%s</span></a>\n' \
+      "$(html_escape "$c")" "$(html_escape "${_RPT_CAT_LABEL[$c]:-$c}")" "${_rptf_count[$c]}"
+  done
+  printf '</div>\n'
+
+  printf '<div class="filter"><span class="lbl">Severity filter</span>\n'
+  printf '<input type="radio" name="sv" id="sv-all" class="fsv" checked><label for="sv-all">All</label>\n'
+  printf '<input type="radio" name="sv" id="sv-crit" class="fsv"><label for="sv-crit">Critical</label>\n'
+  printf '<input type="radio" name="sv" id="sv-high" class="fsv"><label for="sv-high">High+</label>\n'
+  printf '<input type="radio" name="sv" id="sv-med" class="fsv"><label for="sv-med">Medium+</label>\n'
+  printf '<input type="radio" name="sv" id="sv-low" class="fsv"><label for="sv-low">Low+</label>\n'
+  printf '<span class="filterhint">hides findings below the selected severity &mdash; no JavaScript</span>\n'
+  printf '</div>\n'
+
+  for c in "${order[@]}"; do
+    _html_findings_category "$c" "${_rptf_lines[$c]}" "${_rptf_count[$c]}"
+  done
+
+  _html_accepted_risk "$rundir"
+}
+
+# Suppressed findings render in a separate collapsed "accepted risk" section
+# with their reason, and are counted separately (tension 11 step 9). They are
+# never deleted, and never grouped by category - an accepted risk is read as
+# its own small, deliberately flat list, not folded into the per-category
+# groups above it.
+_html_accepted_risk() {
+  local rundir=$1 line
+  (( _RPT_SUPPRESSED > 0 )) || return 0
+  printf '<h2 id="accepted-risk">Accepted risk (%s)</h2>\n' "$_RPT_SUPPRESSED"
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    finding_decode "$line"
+    [[ ${_DF[suppressed]:-false} == true ]] || continue
+    _html_one_finding
+  done <"$rundir/findings.fields"
 }
 
 _html_one_finding() {
@@ -1495,6 +1661,15 @@ declare -A _RPTC_CAT_DESCR=(
   [dast]='Dynamic analysis - live probes against an authorised target in config/scope.conf.'
   [cloud]='Live read-only AWS configuration review plus posture checks.'
 )
+# The plain-English noun `_rptc_plain_summary` uses in place of the bare
+# category label - "web checks" reads more naturally than "DAST checks" to a
+# reader who does not already know what DAST stands for (scoursh-report-ux,
+# the captain's own "Of 92 possible web checks ..." phrasing). Falls back to
+# "<LABEL> checks" for any category added later without an entry here.
+declare -A _RPTC_CAT_NOUN=(
+  [sast]='code checks' [sca]='dependency checks' [iac]='infrastructure checks'
+  [dast]='web checks' [cloud]='AWS checks'
+)
 # strong/medium/weak/none - the per-category semantic strength of "ran" this
 # report states as a first-class field rather than a footnote.
 declare -A _RPTC_RANSEM=( [sast]=strong [iac]=strong [sca]=medium [dast]=strong [cloud]=none )
@@ -1580,7 +1755,17 @@ _report_coverage_state() {
   declare -gA _RPTC_REG=() _RPTC_RAN=() _RPTC_FIRED=() _RPTC_CLEAN=() _RPTC_SKIP=() _RPTC_NOTRUN=() _RPTC_UNACC=() _RPTC_NAPP=()
   declare -gA _RPTC_RAN_SET=() _RPTC_FIRED_SET=() _RPTC_CLEAN_SET=() _RPTC_SKIP_ROWS=() _RPTC_NAPP_SET=() _RPTC_UNACC_SET=()
   declare -gA _RPTC_NAPP_REASON=() _RPTC_FIRED_LINES=() _RPTC_FIRED_COUNT=()
-  _RPTC_TOT_REG=0; _RPTC_TOT_RAN=0; _RPTC_TOT_FIRED=0; _RPTC_TOT_CLEAN=0; _RPTC_TOT_SKIP=0; _RPTC_TOT_UNACC=0
+  # `_RPTC_FIRED[$c]` counts distinct CHECKS with a finding; `_RPTC_FIRED_FINDINGS[$c]`
+  # counts the individual FINDINGS those checks produced - genuinely different
+  # numbers whenever one check fires more than once (a CORS-wildcard check
+  # flagging thirteen URLs is 1 check, 13 findings). Rendering only the first
+  # of the two ("5 found") next to report.html's own per-finding count ("17")
+  # for the identical category reads as a contradiction rather than two units
+  # of the same honest fact - scoursh-report-ux keeps both numbers visible
+  # everywhere this report states a "found" count.
+  declare -gA _RPTC_FIRED_FINDINGS=()
+  _RPTC_TOT_REG=0; _RPTC_TOT_RAN=0; _RPTC_TOT_FIRED=0; _RPTC_TOT_FIRED_FINDINGS=0
+  _RPTC_TOT_CLEAN=0; _RPTC_TOT_SKIP=0; _RPTC_TOT_UNACC=0
 
   local t=$SCOURSH_SCRATCH/rpt-audit.$$
   rm -rf "$t"
@@ -1643,14 +1828,20 @@ _report_coverage_state() {
       fi
     done <"$rundir/findings.fields"
   fi
+  # A second, UN-deduped copy, taken before the sort -u below collapses
+  # `$t/fired` to one line per check id: this one line-per-finding file is
+  # what lets the per-category loop count individual findings separately
+  # from distinct checks.
+  cp "$t/fired" "$t/fired_raw"
   LC_ALL=C sort -u "$t/fired" -o "$t/fired"
 
-  local c sel skp ran fired napp reg clean notrun unacc regall acct
+  local c sel skp ran fired fired_findings napp reg clean notrun unacc regall acct
   for c in sast sca iac dast cloud; do
     sel=$(_rptc_prefix_grep "$c" "$t/selected" | grep -c . || true); sel=${sel:-0}
     skp=$(_rptc_prefix_grep "$c" "$t/skipped_ids" | grep -c . || true); skp=${skp:-0}
     ran=$(_rptc_prefix_grep "$c" "$t/ran" | grep -c . || true); ran=${ran:-0}
     fired=$(_rptc_prefix_grep "$c" "$t/fired" | grep -c . || true); fired=${fired:-0}
+    fired_findings=$(_rptc_prefix_grep "$c" "$t/fired_raw" | grep -c . || true); fired_findings=${fired_findings:-0}
     napp=$(_rptc_prefix_grep "$c" "$t/napp" | grep -c . || true); napp=${napp:-0}
     reg=$(( sel + skp ))
     # SCA has no on-disk registry (modules/sca/run.sh's own header): its
@@ -1667,10 +1858,13 @@ _report_coverage_state() {
     notrun=$(( skp + napp ))
     unacc=$(( reg - ran - notrun )); (( unacc < 0 )) && unacc=0
     _RPTC_REG[$c]=$reg; _RPTC_RAN[$c]=$ran; _RPTC_FIRED[$c]=$fired
+    _RPTC_FIRED_FINDINGS[$c]=$fired_findings
     _RPTC_CLEAN[$c]=$clean; _RPTC_SKIP[$c]=$skp; _RPTC_NOTRUN[$c]=$notrun
     _RPTC_UNACC[$c]=$unacc; _RPTC_NAPP[$c]=$napp
     _RPTC_TOT_REG=$(( _RPTC_TOT_REG + reg )); _RPTC_TOT_RAN=$(( _RPTC_TOT_RAN + ran ))
-    _RPTC_TOT_FIRED=$(( _RPTC_TOT_FIRED + fired )); _RPTC_TOT_CLEAN=$(( _RPTC_TOT_CLEAN + clean ))
+    _RPTC_TOT_FIRED=$(( _RPTC_TOT_FIRED + fired ))
+    _RPTC_TOT_FIRED_FINDINGS=$(( _RPTC_TOT_FIRED_FINDINGS + fired_findings ))
+    _RPTC_TOT_CLEAN=$(( _RPTC_TOT_CLEAN + clean ))
     _RPTC_TOT_SKIP=$(( _RPTC_TOT_SKIP + notrun )); _RPTC_TOT_UNACC=$(( _RPTC_TOT_UNACC + unacc ))
 
     _RPTC_RAN_SET[$c]=$(_rptc_prefix_grep "$c" "$t/ran")
@@ -1709,6 +1903,46 @@ _rptc_group_severity() {
     fi
   done <<<"${_RPTC_FIRED_LINES[$id]}"
   printf '%s' "$best"
+}
+
+# `_rptc_plain_summary CATEGORY` - a genuinely plain-English, one-line reading
+# of the same integers the coverage matrix (`_html_audit_summary`) renders
+# per category - the captain's own worked example ("Of 92 possible web
+# checks, 34 ran (5 found problems, 29 clean), 10 were skipped with a reason,
+# and 48 were not covered - don't assume those are fine."). Reads only the
+# `_RPTC_*` counts `_report_coverage_state` already computed - no new facts,
+# so this can never say something the matrix does not already say, only say
+# it in words a non-expert can follow without first learning what "reg" or
+# "unacc" mean. Deliberately generated rather than hand-written per category,
+# so it reads correctly regardless of how the real counts split (a parallel
+# investigation may later shrink DAST's own 48 - this function makes no
+# assumption about which bucket is large).
+_rptc_plain_summary() {
+  local c=$1 noun reg ran fired fired_findings clean notrun unacc out
+  noun=${_RPTC_CAT_NOUN[$c]:-${_RPTC_CAT_LABEL[$c]:-$c} checks}
+  reg=${_RPTC_REG[$c]:-0}; ran=${_RPTC_RAN[$c]:-0}; fired=${_RPTC_FIRED[$c]:-0}
+  fired_findings=${_RPTC_FIRED_FINDINGS[$c]:-0}
+  clean=${_RPTC_CLEAN[$c]:-0}; notrun=${_RPTC_NOTRUN[$c]:-0}; unacc=${_RPTC_UNACC[$c]:-0}
+  out="Of $reg possible $noun, $ran ran"
+  # `$fired` (distinct checks with a finding) and `$fired_findings` (the
+  # individual findings those checks produced) are genuinely different
+  # numbers whenever one check fires more than once - state both, always,
+  # rather than only when they happen to differ: a reader should never have
+  # to wonder which number a bare "N found problems" was.
+  (( ran > 0 )) && out+=" ($fired check(s) found $fired_findings issue(s), $clean clean)"
+  local -a clauses=()
+  (( notrun > 0 )) && clauses+=("$notrun were skipped with a reason")
+  (( unacc > 0 )) && clauses+=("$unacc were not covered - don't assume those are fine")
+  local n=${#clauses[@]} j
+  for (( j = 0; j < n; j++ )); do
+    if (( j == n - 1 && n > 1 )); then
+      out+=", and ${clauses[j]}"
+    else
+      out+=", ${clauses[j]}"
+    fi
+  done
+  out+='.'
+  printf '%s' "$out"
 }
 
 _html_audit_head() {
@@ -1779,10 +2013,19 @@ p{margin:.5rem 0}
   border-radius:.35rem;padding:.7rem .9rem;font-size:.87rem;margin:.9rem 0}
 .warn{border-left:3px solid var(--high);background:var(--card2);
   border-radius:.35rem;padding:.7rem .9rem;font-size:.87rem;margin:.9rem 0}
+/* scoursh-report-ux: plain-language column headers (hover for the fuller
+   definition) and the generated one-line-per-category summary. */
+abbr[title]{text-decoration:underline dotted;-webkit-text-decoration-style:dotted;
+  text-underline-offset:.15em;cursor:help}
+ul.plain{margin:.6rem 0 0;padding-left:1.2rem}
+ul.plain li{margin:.5rem 0;font-size:.88rem}
+.plainline{color:var(--fg);font-size:.92rem;background:var(--card2);
+  border-radius:.4rem;padding:.55rem .8rem;margin:.7rem 0}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(8.5rem,1fr));gap:.65rem}
 .tile{border:1px solid var(--line);border-radius:.45rem;padding:.7rem .8rem;background:var(--card2)}
 .tile .n{font-size:1.65rem;font-weight:680;line-height:1.05;font-variant-numeric:tabular-nums}
 .tile .l{font-size:.7rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-top:.15rem}
+.tile .tilesub{font-size:.7rem;color:var(--muted);margin-top:.3rem}
 .tile.crit .n{color:var(--critical)} .tile.pass .n{color:var(--pass)}
 .tile.skip .n{color:var(--skip)} .tile.gap .n{color:var(--gap)}
 .matrix{width:100%;border-collapse:collapse;font-size:.87rem}
@@ -1790,7 +2033,9 @@ p{margin:.5rem 0}
   color:var(--muted);font-weight:650;padding:.5rem .7rem;border-bottom:1px solid var(--line)}
 .matrix td{padding:.6rem .7rem;border-bottom:1px solid var(--line);vertical-align:middle}
 .matrix tr:last-child td{border-bottom:none}
-.matrix td.num{font-variant-numeric:tabular-nums;text-align:right;width:3.5rem}
+.matrix td.num{font-variant-numeric:tabular-nums;text-align:right;min-width:3.5rem}
+.cellnum{display:block}
+.cellsub{display:block;font-size:.68rem;font-weight:400;color:var(--muted);white-space:nowrap}
 .matrix a.cat{font-weight:650;text-decoration:none}
 .bar{display:flex;height:.85rem;border-radius:.2rem;overflow:hidden;
   background:var(--card2);border:1px solid var(--line);min-width:9rem}
@@ -1981,18 +2226,34 @@ _html_audit_summary() {
   printf '<div class="tile"><div class="n">%s</div><div class="l">checks registered</div></div>\n' "$_RPTC_TOT_REG"
   printf '<div class="tile"><div class="n">%s</div><div class="l">checks ran</div></div>\n' "$_RPTC_TOT_RAN"
   printf '<div class="tile pass"><div class="n">%s</div><div class="l">ran, nothing found</div></div>\n' "$_RPTC_TOT_CLEAN"
-  printf '<div class="tile crit"><div class="n">%s</div><div class="l">checks with findings</div></div>\n' "$_RPTC_TOT_FIRED"
+  # Two numbers, deliberately: `$_RPTC_TOT_FIRED` distinct checks-with-a-
+  # finding, `$_RPTC_TOT_FIRED_FINDINGS` the individual findings behind them
+  # (one check firing on many locations makes these genuinely different -
+  # see `_RPTC_FIRED_FINDINGS`'s own comment in `_report_coverage_state`).
+  # report.html's own tally ("$nfind findings", below) is the second number,
+  # never the first - showing only the check count here made the two reports
+  # read as disagreeing about the same run.
+  printf '<div class="tile crit"><div class="n">%s</div><div class="l">checks with findings</div><div class="tilesub">%s individual finding(s)</div></div>\n' \
+    "$_RPTC_TOT_FIRED" "$_RPTC_TOT_FIRED_FINDINGS"
   printf '<div class="tile skip"><div class="n">%s</div><div class="l">not run (reason given)</div></div>\n' "$_RPTC_TOT_SKIP"
   printf '<div class="tile gap"><div class="n">%s</div><div class="l">unaccounted</div></div>\n' "$_RPTC_TOT_UNACC"
   printf '</div>\n'
 
-  printf '<div class="note"><strong>How to read this.</strong> A check appears in exactly one of four states per category: it <em>found something</em>, it <em>ran and found nothing</em>, it <em>did not run and the run says why</em>, or it is <em>unaccounted</em> - registered, not run, and no reason recorded. The last column is deliberately not folded into the others: rolling it into "clean" would be the overstatement <code>docs/DESIGN.md</code> &sect;15 forbids.</div>\n'
+  printf '<div class="note"><strong>How to read this.</strong> Every check lands in exactly one of four buckets per category: it <em>found a problem</em>, it <em>ran and came back clean</em>, it <em>was skipped with a reason on record</em>, or it is <em>not covered</em> - registered, but never run, with no reason given. That last bucket is never folded into "clean": doing so would be exactly the overstated coverage <code>docs/DESIGN.md</code> &sect;15 forbids. Hover any column heading below for what it counts, or read the plain-English line under each category.</div>\n'
 
   printf '<h3>Coverage by category</h3>\n<div class="scroll">\n'
-  printf '<table class="matrix"><tr><th>category</th><th>coverage</th><th class="num">reg</th><th class="num">ran</th><th class="num">found</th><th class="num">clean</th><th class="num">not run</th><th class="num">unacc</th><th>&ldquo;ran&rdquo; means</th></tr>\n'
-  local c reg ran fired clean notrun unacc
+  printf '<table class="matrix"><tr><th>Category</th><th>Coverage</th>'
+  printf '<th class="num"><abbr title="How many checks are registered for this category">Checks available</abbr></th>'
+  printf '<th class="num"><abbr title="Checks that were actually run this scan">Checks run</abbr></th>'
+  printf '<th class="num"><abbr title="Checks that ran and found at least one issue. The smaller number under it is how many individual findings those checks produced - one check can fire on many locations, e.g. a CORS check flagging 13 different URLs">Found problems</abbr></th>'
+  printf '<th class="num"><abbr title="Checks that ran and found nothing">Ran, all clear</abbr></th>'
+  printf '<th class="num"><abbr title="Checks that did not run this scan, with a documented reason why">Skipped (reason given)</abbr></th>'
+  printf '<th class="num"><abbr title="Registered but not run, and no reason was recorded for it - do not assume these are fine">Not covered</abbr></th>'
+  printf '<th><abbr title="How strictly this category defines &quot;ran&quot; - see that category&#39;s own section below">Coverage strength</abbr></th></tr>\n'
+  local c reg ran fired fired_findings clean notrun unacc
   for c in sast sca iac dast cloud; do
     reg=${_RPTC_REG[$c]:-0}; ran=${_RPTC_RAN[$c]:-0}; fired=${_RPTC_FIRED[$c]:-0}
+    fired_findings=${_RPTC_FIRED_FINDINGS[$c]:-0}
     clean=${_RPTC_CLEAN[$c]:-0}; notrun=${_RPTC_NOTRUN[$c]:-0}; unacc=${_RPTC_UNACC[$c]:-0}
     printf '<tr><td><a class="cat" href="#cat-%s">%s</a></td><td>' "$c" "$(html_escape "${_RPTC_CAT_LABEL[$c]}")"
     if (( reg > 0 )); then
@@ -2006,8 +2267,17 @@ _html_audit_summary() {
     else
       printf '<span class="notbuilt">not built</span>'
     fi
-    printf '</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td>' \
-      "$reg" "$ran" "$fired" "$clean" "$notrun" "$unacc"
+    printf '</td><td class="num">%s</td>' "$reg"
+    printf '<td class="num">%s</td>' "$ran"
+    # Two numbers, always, never one alone: `$fired` distinct checks versus
+    # `$fired_findings` individual findings - collapsing this to a single
+    # bare number is exactly what read as a contradiction against
+    # report.html's own per-finding counts for the same category.
+    printf '<td class="num"><span class="cellnum">%s</span><span class="cellsub">%s issue(s)</span></td>' \
+      "$fired" "$fired_findings"
+    printf '<td class="num">%s</td>' "$clean"
+    printf '<td class="num">%s</td>' "$notrun"
+    printf '<td class="num">%s</td>' "$unacc"
     printf '<td><span class="strength %s">%s</span></td></tr>\n' \
       "${_RPTC_RANSEM[$c]}" "$(html_escape "${_RPTC_RANSEM[$c]}")"
   done
@@ -2015,8 +2285,19 @@ _html_audit_summary() {
   printf '<div class="legend"><span class="l-fired"><i></i>found issues</span><span class="l-clean"><i></i>ran, nothing found</span><span class="l-skip"><i></i>not run, reason recorded</span><span class="l-unacc"><i></i>unaccounted</span></div>\n'
   printf '<div class="warn"><strong>&ldquo;Ran&rdquo; is not one thing.</strong> The strength column above is load-bearing: it names the exact predicate this run used to decide a check was covered. Treat a weak- or medium-strength clean count with the caveat printed in that category&rsquo;s own section below.</div>\n'
 
+  printf '<h3>In plain terms</h3>\n<ul class="plain">\n'
+  local any_plain=0
+  for c in sast sca iac dast cloud; do
+    (( ${_RPTC_REG[$c]:-0} > 0 )) || continue
+    any_plain=1
+    printf '<li><strong>%s:</strong> %s</li>\n' \
+      "$(html_escape "${_RPTC_CAT_LABEL[$c]}")" "$(html_escape "$(_rptc_plain_summary "$c")")"
+  done
+  (( any_plain )) || printf '<li class="sub">No category in this run has anything registered yet.</li>\n'
+  printf '</ul>\n'
+
   printf '<h3>Findings and declared limits</h3>\n<div class="tiles">\n'
-  printf '<div class="tile crit"><div class="n">%s</div><div class="l">findings</div></div>\n' "$nfind"
+  printf '<div class="tile crit"><div class="n">%s</div><div class="l"><abbr title="Every individual finding across every category - not the number of distinct checks that fired">findings</abbr></div></div>\n' "$nfind"
   printf '<div class="tile gap"><div class="n">%s</div><div class="l">coverage gaps</div></div>\n' "$ngap"
   printf '<div class="tile skip"><div class="n">%s</div><div class="l">declared reductions</div></div>\n' "$nred"
   printf '</div>\n</section>\n'
@@ -2073,6 +2354,8 @@ _html_audit_category() {
     printf '</section>\n'
     return 0
   fi
+
+  printf '<p class="plainline">%s</p>\n' "$(html_escape "$(_rptc_plain_summary "$c")")"
 
   printf '<div class="note"><span class="strength %s">%s</span> &nbsp;<strong>What &ldquo;ran&rdquo; means here:</strong> %s</div>\n' \
     "${_RPTC_RANSEM[$c]}" "$(html_escape "${_RPTC_RANSEM[$c]}")" "$(html_escape "${_RPTC_RANSEM_TEXT[$c]}")"
