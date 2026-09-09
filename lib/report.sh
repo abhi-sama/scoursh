@@ -2142,8 +2142,30 @@ _html_summary() {
 # real `module` value (tension 6 composite findings) with no report-audit.html
 # analogue - `cloud` is spelled here to match the finding module value; the
 # UI label says "AWS" per the captain's own naming.
-declare -A _RPT_CAT_LABEL=( [sast]='SAST' [sca]='SCA' [iac]='IaC' [dast]='DAST' [cloud]='AWS' [derived]='Correlated' )
-_RPT_CAT_ORDER=("${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}" derived)
+#
+# THIS MAP IS KEYED BY THE FINDING'S OWN `module` FIELD VALUE
+# (lib/findings.sh `_fp_profile_for`'s spelling: `net`, not `_RPT_MODULES`'s
+# `network` scan.sh subcommand spelling - the two are different vocabularies
+# for different jobs, `_RPTC_CAT_LABEL`'s own header two lines up already
+# makes the identical distinction for the checks/coverage side).  `[net]` was
+# absent until NET-09 emitted the first `module: net` finding to expose the
+# gap, and adding the label alone is NOT enough - `_html_findings`'s own
+# `order`/`rest` split below puts a module in `rest` (its "never drop an
+# unrecognised value" fallback path) ONLY when `_RPT_CAT_LABEL` has NO entry
+# for it; once a label exists the module MUST also appear in `_RPT_CAT_ORDER`
+# or it satisfies neither branch and is silently dropped from the render
+# entirely - measured directly: adding `[net]='Network'` here alone made a
+# real `module: net` finding vanish from the findings section (while still
+# appearing in `findings.jsonl`/`findings.json`/report.md, which read
+# `findings.fields` directly rather than through this split), the opposite
+# of what the label change intended.
+declare -A _RPT_CAT_LABEL=( [sast]='SAST' [sca]='SCA' [iac]='IaC' [dast]='DAST' [cloud]='AWS' [net]='Network' [derived]='Correlated' )
+# Deliberately its OWN literal list, never `_RPT_MODULES` (that array is
+# spelled `network`, the scan.sh subcommand name - checked above) plus
+# `derived`: every key `_RPT_CAT_LABEL` above defines needs a matching entry
+# here, in the finding-module spelling, or it is silently dropped rather than
+# rendered - see that map's own header for the failure this measured.
+_RPT_CAT_ORDER=(sast sca iac dast cloud net derived)
 
 # `_html_findings_category MODULE LINES COUNT` - one collapsible group of
 # findings for a single category, with its own severity breakdown. `LINES` is
@@ -4545,6 +4567,7 @@ _agent_module_of_check() {
     DAST-*) printf 'dast' ;;
     CLOUD-*) printf 'cloud' ;;
     POSTURE-*) printf 'posture' ;;
+    NET-*) printf 'net' ;;
     *) return 1 ;;
   esac
 }
