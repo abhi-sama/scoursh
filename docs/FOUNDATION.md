@@ -4774,16 +4774,45 @@ composite under `tests/fixtures/rules/derived.rules`; only the shipped seed wait
   required, so "non-empty" selects the whole catalog), the closed vocabulary above already treats
   `compliance` as a legal tag, and `rules/RULE-FORMAT.md` §12's own worked examples (12.1, 12.5) already
   assume the tag reading.
-- **F5 and F20 [medium] - seeding the composite at §13 step 1 is a guaranteed lint failure**
-  (tension 6's "Consequence for the build" against `E051`, and `E060`).
-  Tension 6 instructs seeding `COMPOSITE-TOKEN-HIJACK` at step 1 while its contributors do not exist
-  until steps 5 and 6, and `E051` makes a dangling contributor id an error, so the first build task
-  ships a red CI.
-  `E060` is a second, independent failure for the same record, since a composite's fixture is a
-  synthetic findings set rather than a source fixture.
-  Direction: either defer the seed to step 6, or add a narrow, explicit forward-reference allowance that
-  downgrades `E051` and forces the check into `skipped_checks`, and state `E060`'s applicability to the
-  derived schema.
+- **F5 and F20 [medium] - CLOSED.**
+  Originally: "seeding the composite at §13 step 1 is a guaranteed lint failure" (tension 6's
+  "Consequence for the build" against `E051`, and `E060`) - tension 6 instructs seeding
+  `COMPOSITE-TOKEN-HIJACK` at step 1 while its contributors do not exist until steps 5 and 6, and
+  `E051` makes a dangling contributor id an error, so the first build task ships a red CI.
+  Closed by the direction this entry itself named first: the seed was deferred, not `E051` weakened.
+  `rules/derived.rules` now carries the real `COMPOSITE-TOKEN-HIJACK` record - `requires:
+  CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01`, `DAST-LEAK-JS_CONFIG-01`, `DAST-GQL-INTROSPECTION-01`,
+  `correlate-on: target` - now that all three landed (§13 steps 5 and 6); `tests/lint-rules.sh`'s
+  `E051`/`E052`/`E053` pass against it, and `E060`'s enforcement remains the tracked placeholder
+  `tests/lint-rules.sh` already states, unaffected by this record either way.
+  `tests/suites/state-diff.sh` proves the real chain against real contributor ids, not only the
+  fixture composite STATE-03/04/05 already exercised: it fires once all three requires contributors
+  correlate on the same `target` (the cloud contributor via §9.2.2's endpoint-host attribution, the
+  two DAST contributors via their own `loc_target`), does not fire across two different targets or
+  with one contributor missing, and classifies `fixed (chain broken)` only once every contributor's
+  own coverage cell - the cloud contributor's `account-region`, not a `target` cell, per
+  `_derived_contributor_scope` - was revisited this run.
+  See F21, immediately below, for a real gap this work surfaced in the cloud contributor's own script,
+  left open rather than fixed here.
+- **F21 [medium] - OPEN. `CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01` never sets `endpoint_hosts`, so its
+  finding can never attribute to a `target` in a real run, and `COMPOSITE-TOKEN-HIJACK`'s cloud
+  contributor can never correlate in practice.**
+  Discovered while seeding the composite (F5/F20, above): `rules/RULE-FORMAT.md` §9.2.2 names an
+  AppSync `uris` value as *the* worked example of the attribution mechanism a `target`-correlated
+  cloud contributor needs, and `docs/STEP6-CLOUD-PLAN.md`'s own CLOUD-23 row says explicitly to
+  "correlate with DAST's `passive/leakage.sh` and `graphql.sh` at the derived-finding layer" - but
+  `appsync_emit_finding` (`modules/cloud/aws/live/appsync_engine.sh`) never calls `finding_add
+  endpoint_hosts`, and no other cloud check does either (`grep -rn endpoint_hosts modules/` matches
+  only `lib/findings.sh` itself).
+  The consequence is narrow and specific: `COMPOSITE-TOKEN-HIJACK`'s three-way `requires` predicate is
+  correct and its DAST contributors correlate correctly today, but its cloud contributor can never
+  supply a `target` value against a REAL `list-api-keys` response, so the flagship composite is
+  reachable only in a test that hand-sets `endpoint_hosts` (as `tests/suites/state-diff.sh` now does)
+  and not in an actual `scan.sh cloud` + `scan.sh dast` run pair.
+  This is a gap in the already-landed CLOUD-23 ticket's script, not in the derived-finding mechanism
+  or in this seed, and fixing it means reading the `uris` field off the same `list-graphql-apis`
+  response `appsync.sh` already holds (`appsync_engine.sh`'s `appsync_doc_get`) and adding it to the
+  finding - left open here rather than folded into this change, which is data-only.
 - **F18 [medium] - CLOSED in §13 step 1**, as a consequence of F16's exit-code work rather than as a
   deferred edit.
   `die` validates its argument against the frozen 0-5 contract, so a `die 6` cannot exist; both

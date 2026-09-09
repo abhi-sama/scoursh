@@ -453,6 +453,164 @@ assert_eq unknown "$st" \
   'SAST-PY-EVAL-01 (an any-of alternative) was never covered this run, so the chain could still be open - fails under "covered in at least one contributor" style leniency'
 
 # ---------------------------------------------------------------------------
+printf '\n-- diff_classify_run: the REAL, shipped COMPOSITE-TOKEN-HIJACK (correlate-on: target) --\n'
+# ---------------------------------------------------------------------------
+# rules/derived.rules (not the fixture) now seeds COMPOSITE-TOKEN-HIJACK
+# (docs/FOUNDATION.md tension 6; findings F5/F20, closed). Its three
+# `requires` contributors are CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01 (module
+# cloud, coverage-scope account-region, correlated via endpoint-host
+# attribution against tests/fixtures/config/scope.conf's `fixture-target`)
+# and DAST-LEAK-JS_CONFIG-01 / DAST-GQL-INTROSPECTION-01 (module dast,
+# coverage-scope target, correlated directly on their own loc_target). This
+# section exercises the real record against real contributor ids, rather
+# than the file-correlated fixture above.
+REAL_DERIVED_RULES=$ROOT/rules/derived.rules
+
+emit_appsync_key() {              # emit_appsync_key ACCOUNT REGION ARN HOST
+  finding_new
+  finding_set check_id CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01
+  finding_set module cloud
+  finding_set title t
+  finding_set base_severity medium
+  finding_set cwe CWE-613
+  finding_set owasp A07:2021
+  finding_set loc_account_id "$1"
+  finding_set loc_region "$2"
+  finding_set loc_resource_key "$3"
+  finding_set loc_sub_key none
+  finding_set cell "$1/$2"
+  finding_add endpoint_hosts "$4"
+  finding_set_evidence 'appsync api key, long expiry'
+  finding_emit
+}
+
+emit_dast_leak_js() {              # emit_dast_leak_js TARGET
+  finding_new
+  finding_set check_id DAST-LEAK-JS_CONFIG-01
+  finding_set module dast
+  finding_set title t
+  finding_set base_severity high
+  finding_set cwe CWE-540
+  finding_set owasp A05:2021
+  finding_set loc_target "$1"
+  finding_set loc_method GET
+  finding_set loc_path_template /static/bundle.js
+  finding_set loc_param_location body
+  finding_set loc_param_name apiKey
+  finding_set cell "$1"
+  finding_set_evidence 'api key present in served javascript'
+  finding_emit
+}
+
+emit_dast_gql_introspection() {    # emit_dast_gql_introspection TARGET
+  finding_new
+  finding_set check_id DAST-GQL-INTROSPECTION-01
+  finding_set module dast
+  finding_set title t
+  finding_set base_severity medium
+  finding_set cwe CWE-200
+  finding_set owasp A05:2021
+  finding_set loc_target "$1"
+  finding_set loc_method POST
+  finding_set loc_path_template /graphql
+  finding_set loc_param_location body
+  finding_set loc_param_name query
+  finding_set cell "$1"
+  finding_set_evidence 'introspection query answered with the full schema'
+  finding_emit
+}
+
+rm -rf "$STATE_DIR"
+
+t_case 'all three real contributors on the SAME target -> the flagship composite fires'
+new_run hijack-fires root-H
+d=$SCOURSH_RUN_DIR
+emit_appsync_key 123456789012 us-east-1 'arn:aws:appsync:us-east-1:123456789012:apis/fixtureapi' app.fixture.invalid
+emit_dast_leak_js fixture-target
+emit_dast_gql_introspection fixture-target
+findings_merge "$d"
+derive_findings "$d" "$REAL_DERIVED_RULES"
+HIJACK_FP=$(fp_of_check "$d" COMPOSITE-TOKEN-HIJACK)
+assert_ne '' "$HIJACK_FP" \
+  'fails if cloud endpoint-host attribution or DAST loc_target correlation is wired wrongly - the cloud finding never reaches "target=fixture-target" any other way'
+finding_decode "$(/usr/bin/grep 'check_id=COMPOSITE-TOKEN-HIJACK' "$d/findings.fields")"
+assert_eq critical "${_DF[base_severity]}" 'declared severity is already critical, and stays critical'
+ncontrib=$(printf '%s\n' "${_DF[contributors]}" | LC_ALL=C sort -u | wc -l | tr -d ' ')
+assert_eq 3 "$ncontrib" 'all three requires contributors are recorded as evidence'
+state_add_covered CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01 digest-key account-region 123456789012/us-east-1
+state_add_covered DAST-LEAK-JS_CONFIG-01 digest-leak target fixture-target
+state_add_covered DAST-GQL-INTROSPECTION-01 digest-gql target fixture-target
+diff_classify_run "$d"
+assert_eq new "$(status_of "$d" COMPOSITE-TOKEN-HIJACK)" 'no prior composite of this fingerprint -> new'
+state_write "$STATE_DIR" 30
+
+t_case 'the identical chain, same target, a second run -> recurring'
+new_run hijack-recur root-H
+d=$SCOURSH_RUN_DIR
+emit_appsync_key 123456789012 us-east-1 'arn:aws:appsync:us-east-1:123456789012:apis/fixtureapi' app.fixture.invalid
+emit_dast_leak_js fixture-target
+emit_dast_gql_introspection fixture-target
+findings_merge "$d"
+derive_findings "$d" "$REAL_DERIVED_RULES"
+state_add_covered CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01 digest-key account-region 123456789012/us-east-1
+state_add_covered DAST-LEAK-JS_CONFIG-01 digest-leak target fixture-target
+state_add_covered DAST-GQL-INTROSPECTION-01 digest-gql target fixture-target
+diff_classify_run "$d"
+assert_eq recurring "$(status_of "$d" COMPOSITE-TOKEN-HIJACK)" \
+  'the identical correlation value (target=fixture-target) fired again -> recurring, not new'
+
+t_case 'the same three checks fire, but on DIFFERENT targets -> the composite does not fire at all'
+new_run hijack-mismatch root-H
+d=$SCOURSH_RUN_DIR
+emit_appsync_key 123456789012 us-east-1 'arn:aws:appsync:us-east-1:123456789012:apis/otherapi' wide.fixture.invalid
+emit_dast_leak_js fixture-target
+emit_dast_gql_introspection fixture-target
+findings_merge "$d"
+derive_findings "$d" "$REAL_DERIVED_RULES"
+assert_eq 0 "$(/usr/bin/grep -c 'check_id=COMPOSITE-TOKEN-HIJACK' "$d/findings.fields" || true)" \
+  'the AppSync key belongs to fixture-wide (its endpoint host is wide.fixture.invalid) while the DAST findings are on fixture-target - a key found in one deployment and introspection enabled on another must not fabricate a chain'
+
+t_case 'only two of three requires contributors fire -> the composite does not fire (requires is ALL)'
+new_run hijack-partial root-H
+d=$SCOURSH_RUN_DIR
+emit_dast_leak_js fixture-target
+emit_dast_gql_introspection fixture-target
+findings_merge "$d"
+derive_findings "$d" "$REAL_DERIVED_RULES"
+assert_eq 0 "$(/usr/bin/grep -c 'check_id=COMPOSITE-TOKEN-HIJACK' "$d/findings.fields" || true)" \
+  'the AppSync long-expiry key contributor is absent this run, so the chain is not proven, however open the other two links are'
+
+t_case 'the chain breaks (introspection disabled) and every contributor cell was revisited -> fixed (chain broken)'
+new_run hijack-broken root-H
+d=$SCOURSH_RUN_DIR
+emit_appsync_key 123456789012 us-east-1 'arn:aws:appsync:us-east-1:123456789012:apis/fixtureapi' app.fixture.invalid
+emit_dast_leak_js fixture-target
+findings_merge "$d"
+derive_findings "$d" "$REAL_DERIVED_RULES"
+assert_eq 0 "$(/usr/bin/grep -c 'check_id=COMPOSITE-TOKEN-HIJACK' "$d/findings.fields" || true)" \
+  'sanity: with introspection gone this run genuinely does not fire it again'
+state_add_covered CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01 digest-key account-region 123456789012/us-east-1
+state_add_covered DAST-LEAK-JS_CONFIG-01 digest-leak target fixture-target
+state_add_covered DAST-GQL-INTROSPECTION-01 digest-gql target fixture-target
+diff_classify_run "$d"
+read -r st reason <<<"$(absent_row "$d" COMPOSITE-TOKEN-HIJACK)"
+assert_eq fixed "$st" \
+  'all three requires contributors were revisited at their own cells and the predicate no longer holds - fails if lib/diff.sh reports phantom remediation from a partial revisit, or never calls classify_derived for a target-correlated composite'
+
+t_case 'the chain breaks, but the cloud contributor cell (its own account-region, not the DAST target) was NOT revisited -> unknown, never fixed'
+new_run hijack-uncovered root-H
+d=$SCOURSH_RUN_DIR
+emit_dast_leak_js fixture-target
+findings_merge "$d"
+derive_findings "$d" "$REAL_DERIVED_RULES"
+state_add_covered DAST-LEAK-JS_CONFIG-01 digest-leak target fixture-target
+state_add_covered DAST-GQL-INTROSPECTION-01 digest-gql target fixture-target
+diff_classify_run "$d"
+read -r st reason <<<"$(absent_row "$d" COMPOSITE-TOKEN-HIJACK)"
+assert_eq unknown "$st" \
+  'CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01 coverage-scope is account-region, not target: this run never covered 123456789012/us-east-1 at all (no cloud credentials this run, say), so the chain could still be open - fails under a test that reads the DAST targets covered and calls that enough'
+
+# ---------------------------------------------------------------------------
 printf '\n-- the report distinguishes "fixed" from "not assessed this run" in TEXT a human reads --\n'
 # ---------------------------------------------------------------------------
 # The ticket's own acceptance criterion, verbatim: a reader must be able to

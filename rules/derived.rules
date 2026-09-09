@@ -1,0 +1,47 @@
+# COMPOSITE-TOKEN-HIJACK (docs/DESIGN.md Appendix A; docs/FOUNDATION.md tension 6;
+# rules/RULE-FORMAT.md §9.2).  Deferred at §13 step 1 as findings F5/F20: seeding
+# it before its contributors existed was a guaranteed E051 lint failure.  All
+# three now ship - CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01 (§8.5, CLOUD-23),
+# DAST-LEAK-JS_CONFIG-01 (§7.1, DAST-10) and DAST-GQL-INTROSPECTION-01 (§7.4,
+# DAST-27) - so the seed lands here rather than staying a fixture-only proof.
+#
+# The chain is a property of one deployed front end: a long-lived AppSync API
+# key (a static, unrotated bearer credential), that same class of key served in
+# the JavaScript bundle a browser downloaded (so the credential is not merely
+# long-lived but already exposed to anyone who fetched the page), and GraphQL
+# introspection left enabled (so whoever now holds the key also holds a
+# complete map of every type, field and mutation it can reach). Each
+# contributor alone is a medium; together they are the critical finding a
+# reader acts on first. All three are REQUIRED - this is one chain, not a set
+# of interchangeable alternatives - so every contributor is `requires`, and
+# `correlate-on: target` is the only correlation key all three can supply
+# (DAST via `loc_target`; the cloud contributor via §9.2.2's endpoint-host
+# attribution against config/scope.conf).
+
+id: COMPOSITE-TOKEN-HIJACK
+kind: derived
+title: A long-lived AppSync API key is exposed in served JavaScript, and its schema is fully queryable via introspection
+severity: critical
+confidence: high
+cwe: CWE-522
+owasp: A07:2021
+requires: CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01
+requires: DAST-LEAK-JS_CONFIG-01
+requires: DAST-GQL-INTROSPECTION-01
+correlate-on: target
+tags: derived
+remediation: Rotate the AppSync API key immediately - it is not merely
+  long-lived, it has already been observed served to every visitor of the
+  bundle, so treat it as compromised rather than merely stale. Then close all
+  three links so the chain cannot re-form: move the API off API_KEY
+  authentication onto AWS_IAM or Amazon Cognito user pools so a captured
+  credential alone is no longer sufficient; stop shipping the key to the
+  browser and have it held server-side instead; and disable introspection on
+  the production API so a future leaked key does not also hand out a complete
+  map of what it can reach. Any one of these three closes the composite, but
+  only rotating the key addresses the credential already exposed.
+references: CWE-522
+references: CWE-613
+references: CWE-540
+references: CWE-200
+references: https://owasp.org/Top10/A07_2021-Identification_and_Authentication_Failures/
