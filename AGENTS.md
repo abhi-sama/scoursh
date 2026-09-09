@@ -3333,6 +3333,60 @@ Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start
 - `lib/records.sh` (the record parser) is built **before** step 1's stated contents, since tensions 1, 6, 9, 15, and 26 all depend on it.
 - `lib/awscli.sh` is added to the layout and lands at the start of step 6, before any `aws/live/*.sh` script exists, so no script is ever written against a bare `aws`. **Update:** `lib/awscli.sh` itself now exists (see "AWS module: what exists ahead of step 6" below) - built out of sequence, deliberately, without the `aws/live/*.sh` scripts it was meant to land alongside.
 
+## Network module (NET): Tier 0 shared-file preparation has landed, nothing else has
+
+A new scanner surface - declared-listener verification, service/version identification and transport
+posture over an operator-declared port set, never port discovery - is planned as `modules/network/`
+with a `NET` check-id prefix, staged as dependency-ordered tickets the same way DAST and Cloud were.
+**Only the first ticket (shared-file preparation) has landed; `modules/network/` itself, `lib/records.sh`,
+`lib/findings.sh`, `lib/checks.sh`, `scan.sh` and every other NET coupling point named in the plan remain
+untouched.** Do not read this section as "the network module has started" - it is Tier-0 groundwork
+landed alone and first, on purpose, so every later NET ticket can add only its own files without
+conflicting with a peer (the same lesson the cloud module's parallel-ticket cascade cost a rebase over).
+
+Two shared files changed, both pure preparation with zero new scanner behaviour:
+
+- **`lib/report.sh`** now has one `_RPT_MODULES=(sast sca iac dast cloud)` array (declared near the top,
+  section 0a) instead of the same five-module literal spelled out at ten separate call sites across every
+  emitter (JSON, Markdown, HTML, report-audit.html, SARIF). A module added to the scan surface changes
+  this one line instead of ten. Every usage is the guarded expansion
+  `"${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}"`, matching the array-guard convention every other array in
+  this file already follows (tension 24). `_RPT_CAT_ORDER` (report-audit.html's own category vocabulary)
+  is `("${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}" derived)` - `derived` stays hand-appended, since it is a
+  real `module` value with no place in the five-module scan surface itself. Confirmed behaviour-identical
+  by running `tests/e2e/fixture-scan.sh` against both the old and new `lib/report.sh` and diffing every
+  emitted artifact byte-for-byte after normalising timestamps - all identical. `scan.sh:209`'s own
+  `SCAN_COMMANDS=(sast sca iac dast cloud all diff report)` literal is a *different* list (it also
+  carries `all`/`diff`/`report`, which are not scan modules) and is deliberately untouched here; it is a
+  later NET ticket's file, not this one's.
+- **`tests/lint-shell.sh`** gained a second check in the tension-19 "no bypass" section:
+  `no bypass: no /dev/tcp or /dev/udp outside the network transport primitive`, pattern `/dev/(tcp|udp)/`.
+  A bash redirection like `exec 3<>/dev/tcp/host/port` never goes near curl/wget/nc, so the existing
+  no-bypass check could not see it - a gap latent until now, but no longer once a real caller exists. **Exactly two
+  path exemptions**, by exact path (never by pattern, never a directory prefix - the `check()` helper
+  this file already uses only supports exact-path exemptions, and every other exemption in this file
+  follows that same convention): `lib/paranoid.sh` (already opens `/dev/udp/127.0.0.1/9` as its own
+  loopback control socket for the tension-20 connection sampler - real, pre-existing, unrelated to any
+  scan target) and `lib/nettransport.sh` (the network module's own future transport primitive - not yet
+  landed; exempted ahead of it so the exemption list is written when there is exactly one caller rather
+  than retrofitted once several `modules/network/` scripts depend on it). **No `modules/network/`
+  exemption exists or is planned**: every probe script the module eventually gains is expected to reach
+  the network by calling `lib/nettransport.sh`'s primitive, never by opening `/dev/tcp` itself, so no
+  further exemption should be needed - if a later NET ticket finds it does need one, that is itself worth
+  double-checking against this design before widening the list. `tests/suites/net01-lint.sh` (registered
+  in `tests/run-tests.sh`) is the meta-test, in the `tests/suites/dast35-lint.sh` shape: a planted
+  violation in a disposable fixture tree must fail the lint, removing it must pass, and each of the two
+  exemptions must pass at its real path and fail at any other.
+
+**`tests/run-tests.sh lint-shell` was already red on `dev` before this ticket, for reasons unrelated to
+either change above** - a pre-existing `array expansion is unguarded for bash 4.2` failure on
+`lib/report.sh` (a different array, `_CIS_ORDER`, not `_RPT_MODULES`) and on several
+`modules/cloud/aws/live/*.sh` files. Confirmed pre-existing by stashing this ticket's changes, running the
+lint against a clean `origin/dev` checkout, and observing the identical set of failures at the
+(unshifted) line numbers. Do not read a red `lint-shell` run as evidence this ticket broke something
+without first diffing against `origin/dev` the same way - the standing project rule for a
+suite-wide red already recorded elsewhere in this file for the shellcheck stage applies here too.
+
 ## AWS module: what exists ahead of step 6, and why
 
 A credential-less pass (no AWS account was available, and none of §13 step 2's other work was

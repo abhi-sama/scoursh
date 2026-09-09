@@ -43,6 +43,14 @@ source "${BASH_SOURCE[0]%/*}/findings.sh"
 source "${BASH_SOURCE[0]%/*}/checks.sh"
 
 # ---------------------------------------------------------------------------
+# 0a. The scanner module set this file renders across every emitter (JSON,
+#     Markdown, HTML, report-audit.html, SARIF).  Was ten separately-typed
+#     `sast sca iac dast cloud` literals; a module added to the scan surface
+#     (NET-01) now changes here once instead of at every call site.
+# ---------------------------------------------------------------------------
+declare -ga _RPT_MODULES=(sast sca iac dast cloud)
+
+# ---------------------------------------------------------------------------
 # 1. Counting
 # ---------------------------------------------------------------------------
 # tension 11 step 9: suppressed findings "render in a separate collapsed
@@ -420,7 +428,7 @@ _report_owasp_registry_load() {
   local -a _rptow_saved_sets=("${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}")
   _RPTOW_CHECK_OWASP=()
   local m set n i id ow
-  for m in sast sca iac dast cloud; do
+  for m in "${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}"; do
     checks_registry_load "$m" "_rptowreg_$m"
     for set in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
       n=$(records_count "$set")
@@ -628,7 +636,7 @@ _report_cis_registry_load() {
   local -a _rptcis_saved_sets=("${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}")
   _RPTCIS_CHECK_CIS=()
   local m set n i id v
-  for m in sast sca iac dast cloud; do
+  for m in "${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}"; do
     checks_registry_load "$m" "_rptcisreg_$m"
     for set in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
       n=$(records_count "$set")
@@ -2135,7 +2143,7 @@ _html_summary() {
 # analogue - `cloud` is spelled here to match the finding module value; the
 # UI label says "AWS" per the captain's own naming.
 declare -A _RPT_CAT_LABEL=( [sast]='SAST' [sca]='SCA' [iac]='IaC' [dast]='DAST' [cloud]='AWS' [derived]='Correlated' )
-_RPT_CAT_ORDER=(sast sca iac dast cloud derived)
+_RPT_CAT_ORDER=("${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}" derived)
 
 # `_html_findings_category MODULE LINES COUNT` - one collapsible group of
 # findings for a single category, with its own severity breakdown. `LINES` is
@@ -2708,7 +2716,7 @@ _report_coverage_registry_load() {
   local -a _rptc_saved_sets=("${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}")
   declare -gA _RPTC_TITLE=() _RPTC_SEV=()
   local m set n i id
-  for m in sast sca iac dast cloud; do
+  for m in "${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}"; do
     checks_registry_load "$m" "_rptcreg_$m"
     for set in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
       n=$(records_count "$set")
@@ -2813,7 +2821,7 @@ _report_coverage_state() {
   LC_ALL=C sort -u "$t/fired" -o "$t/fired"
 
   local c sel skp ran fired fired_findings napp reg clean notrun unacc regall acct
-  for c in sast sca iac dast cloud; do
+  for c in "${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}"; do
     sel=$(_rptc_prefix_grep "$c" "$t/selected" | grep -c . || true); sel=${sel:-0}
     skp=$(_rptc_prefix_grep "$c" "$t/skipped_ids" | grep -c . || true); skp=${skp:-0}
     ran=$(_rptc_prefix_grep "$c" "$t/ran" | grep -c . || true); ran=${ran:-0}
@@ -3143,7 +3151,7 @@ _html_audit_nav() {
   local c ran fired off
   printf '<div class="topbar"><div class="in"><span class="brand">scoursh</span>\n'
   printf '<a class="pill" href="#summary">Summary</a>\n'
-  for c in sast sca iac dast cloud; do
+  for c in "${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}"; do
     ran=${_RPTC_RAN[$c]:-0}
     fired=${_RPTC_FIRED[$c]:-0}
     off=''; [[ $ran == 0 && $fired == 0 ]] && off=' off'
@@ -3237,7 +3245,7 @@ _html_audit_summary() {
   printf '<th class="num"><abbr title="Registered but not run, and no reason was recorded for it - do not assume these are fine">Not covered</abbr></th>'
   printf '<th><abbr title="How strictly this category defines &quot;ran&quot; - see that category&#39;s own section below">Coverage strength</abbr></th></tr>\n'
   local c reg ran fired fired_findings clean notrun unacc
-  for c in sast sca iac dast cloud; do
+  for c in "${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}"; do
     reg=${_RPTC_REG[$c]:-0}; ran=${_RPTC_RAN[$c]:-0}; fired=${_RPTC_FIRED[$c]:-0}
     fired_findings=${_RPTC_FIRED_FINDINGS[$c]:-0}
     clean=${_RPTC_CLEAN[$c]:-0}; notrun=${_RPTC_NOTRUN[$c]:-0}; unacc=${_RPTC_UNACC[$c]:-0}
@@ -3273,7 +3281,7 @@ _html_audit_summary() {
 
   printf '<h3>In plain terms</h3>\n<ul class="plain">\n'
   local any_plain=0
-  for c in sast sca iac dast cloud; do
+  for c in "${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}"; do
     (( ${_RPTC_REG[$c]:-0} > 0 )) || continue
     any_plain=1
     printf '<li><strong>%s:</strong> %s</li>\n' \
@@ -3517,7 +3525,7 @@ report_audit() {
     _html_audit_nav
     _html_audit_summary "$rundir"
     local c
-    for c in sast sca iac dast cloud; do
+    for c in "${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}"; do
       _html_audit_category "$rundir" "$c"
     done
     _html_audit_limitations "$rundir"
@@ -3696,7 +3704,7 @@ declare -A _SARIF_REG_LOC=()
 _sarif_build_registry() {
   _SARIF_REG_LOC=()
   local module set idx n cid
-  for module in sast sca iac dast cloud; do
+  for module in "${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}"; do
     checks_registry_load "$module" "_sarif_reg_$module"
     for set in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
       n=$(records_count "$set")
