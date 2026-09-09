@@ -390,29 +390,46 @@ assert_contains "$_notes" 'coverage-scope=account-region' \
   'and every cell declares the account-region coverage scope (docs/FOUNDATION.md tension 12)'
 
 _red=$(cat "$W/out-live/meta/coverage_reduction")
+_chr=$(cat "$W/out-live/meta/checks_run" 2>/dev/null || true)
 # CLOUD-05 (s3.sh), CLOUD-22 (apigw.sh), CLOUD-07/08/09
-# (kms/secretsmanager/ssm.sh), CLOUD-06 (iam.sh) and CLOUD-13 (ec2.sh) have
-# all landed, so the
-# walk now INVOKES seven services and this run takes the third arm of the
-# roll-up rather than the first: every script is present, every one ran, and
-# against this suite`s stub - which answers AccessDenied to every call it has
-# no route for - none covered a check.  `reason=no_service_scripts_on_disk_yet`
-# is still written by the module and is still the right reason for a tree
-# with an empty live/ directory; it is simply no longer the reason THIS tree
-# produces.  Every arm stays pinned, here and in tests/suites/cloud-s3.sh /
-# cloud-apigw.sh / cloud-kms.sh / cloud-secretsmanager.sh / cloud-ssm.sh /
-# cloud-iam.sh / cloud-ec2.sh, because the naive edit when the next service
-# lands is to delete whichever one stopped matching rather than bump the
-# count: `services_present` is now 7 (s3, apigw, kms, secretsmanager, ssm,
-# iam, ec2), all
-# denied identically by this suite's stub with no route for any of them.
-assert_contains "$_red" 'reason=no_check_covered_by_any_service' \
-  'a run whose only present service scripts covered nothing records exactly that reason'
-assert_contains "$_red" 'services_present=7' 'and says how many of the catalog are on disk'
+# (kms/secretsmanager/ssm.sh), CLOUD-06 (iam.sh), CLOUD-13 (ec2.sh) and
+# CLOUD-30..34 (the governance/detection bundle: cloudtrail/config/
+# guardduty/inspector/macie) have all landed, so the walk now INVOKES twelve
+# services. `reason=no_service_scripts_on_disk_yet` is still written by the
+# module and is still the right reason for a tree with an empty live/
+# directory; it is simply no longer the reason THIS tree produces.
+#
+# Landing Macie is what changes the reading here for real: macie.sh's own
+# documented ambiguity (modules/cloud/aws/live/macie.sh's header) treats an
+# `access_denied` outcome on `get-macie-session` as the "Macie is not
+# enabled" ANSWER, not a coverage loss - because AWS itself gives a genuinely
+# disabled Macie account the identical AccessDeniedException a real
+# permission gap would produce.  This suite's stub answers EVERY unmapped
+# call with exactly that generic AccessDenied, so macie.sh's own call is
+# indistinguishable from a real disabled-Macie signal here, and it credits
+# `checks_run` for CLOUD-MACIE-DISABLED-01 in both enumerated regions -
+# `covered` (modules/cloud/aws/run.sh's own count of NEW CLOUD-* entries in
+# checks_run) is therefore nonzero, and the ENTIRE `covered == 0` roll-up
+# branch that would otherwise fire `reason=no_check_covered_by_any_service`
+# and the account-wide "covered nothing" gap does not run at all.  This is
+# the correct, intended reading of the documented ambiguity, not a test that
+# merely happens to trip on a shared stub: a real least-privilege role denied
+# for everything hits the identical shape, and reporting nothing wrong for
+# such an account would be the coverage-loss that macie.sh's header exists to
+# avoid.  The other services (s3, apigw, kms, secretsmanager, ssm, iam, ec2,
+# cloudtrail, config, guardduty, inspector) still each write their own
+# per-service coverage_reduction below, since none of them shares Macie's
+# ambiguity.
+assert_not_contains "$_red" 'reason=no_check_covered_by_any_service' \
+  'landing Macie changes this: its own access_denied-is-disabled reading covers something, so the account-wide "nothing covered" roll-up no longer fires here'
+assert_contains "$_chr" 'CLOUD-MACIE-DISABLED-01' \
+  'and that something is CLOUD-MACIE-DISABLED-01, credited from the identical AccessDenied this stub gives every other service'
 assert_contains "$_red" 'aws_api_access_denied' \
   'and the denied S3 call underneath it is itself a declared reduction, never silence'
-assert_contains "$(cat "$W/out-live/meta/coverage_gap")" 'cloud covered nothing in account 123456789012' \
-  'and the gap names the account rather than being generic'
+assert_contains "$_red" 'service=cloudtrail operation=describe-trails' \
+  'and so is the denied CloudTrail call, which has no such ambiguity and is a plain coverage loss'
+assert_not_contains "$(cat "$W/out-live/meta/coverage_gap" 2>/dev/null || true)" 'cloud covered nothing in account 123456789012' \
+  'and the account-wide "covered nothing" gap is honestly absent, since the account was not, in fact, entirely uncovered'
 
 # `--regions` narrows for real, and the narrowing is recorded.  The failing
 # reading is a flag that is parsed and ignored - which is what `--regions` did
@@ -602,8 +619,18 @@ assert_not_contains "$_html" 'modules/cloud/ does not exist on disk yet' \
 # must be there AND the superseded one must be gone, because a report that
 # carried both would be telling a reader two different things about the same
 # run and neither assertion alone would notice.
-assert_contains "$_html" 'service script invocation(s) ran' \
-  'and states the real, current limit instead - a script ran and covered nothing, rather than none existing'
+#
+# THE "service script invocation(s) ran ... none of them covered a check"
+# ROLL-UP SENTENCE IS ALSO GONE NOW, and for the identical reason section E
+# above records at length: landing Macie means this run's `covered` count is
+# 2, not 0, so modules/cloud/aws/run.sh's entire `covered == 0` roll-up branch
+# - the one that used to mint that sentence - does not execute at all.  The
+# real, current state the audit view now shows is a genuine finding
+# (CLOUD-MACIE-DISABLED-01) sitting beside the other five services' own
+# per-service coverage_reduction entries, which is a truer picture of this
+# stub run than a single "nothing was covered" sentence ever was.
+assert_contains "$_html" 'CLOUD-MACIE-DISABLED-01' \
+  'and states the real, current outcome instead - Macie-s own ambiguity credited this run with real (if uncertain) coverage, rather than none existing'
 assert_not_contains "$_html" 'ships no service script yet' \
   'and the pre-CLOUD-05 sentence is gone rather than left standing beside it'
 : "${_md:=}"

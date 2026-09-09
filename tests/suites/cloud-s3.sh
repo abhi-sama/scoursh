@@ -523,17 +523,16 @@ _run_cloud "$W/run-audit" --format audit
 assert_file_exists "$W/run-audit/report-audit.html" 'E14 --format audit writes report-audit.html'
 _AUDIT=$(cat "$W/run-audit/report-audit.html")
 assert_contains "$_AUDIT" 'CLOUD-S3-' 'E15 the audit view carries the cloud checks'
-# lib/report.sh's own coverage-strength note for the cloud category described
-# `modules/cloud/aws/live/` as shipping no service script at all.  That claim
-# is each ticket's to correct, and it is pinned in both directions here so the
-# next service to land finds a failing assertion rather than a stale sentence.
-# CLOUD-22 (`aws/live/apigw.sh`), CLOUD-07/08/09 (kms/secretsmanager/ssm) and
-# CLOUD-06 (`aws/live/iam.sh`) and CLOUD-13 (`aws/live/ec2.sh`) are exactly
-# that run of services, and each updated the assertion in the same change
-# that widened lib/report.sh's own sentence, rather than left to go stale
-# again - see tests/suites/cloud-ssm.sh's own round-trip section for an
-# earlier stage of this same guard.
-assert_contains "$_AUDIT" 'ships the S3, API Gateway, KMS, Secrets Manager, SSM, IAM and EC2/VPC services so far' \
+# lib/report.sh's own coverage-strength note for the cloud category names
+# the real, current extent of the live catalog rather than a stale sentence.
+# It named S3 alone at CLOUD-05, then S3 and API Gateway at CLOUD-22, then
+# KMS/Secrets Manager/SSM at CLOUD-07/08/09, then IAM (CLOUD-06) and EC2/VPC
+# (CLOUD-13), and now also names the CLOUD-30..34 governance bundle
+# (tests/suites/cloud-governance.sh), exactly as this comment originally
+# predicted a later service landing would require - see
+# tests/suites/cloud-ssm.sh's own round-trip section for an earlier stage of
+# this same guard.
+assert_contains "$_AUDIT" 'ships the S3, API Gateway, KMS, Secrets Manager, SSM, IAM, EC2/VPC, CloudTrail, AWS Config, GuardDuty, Inspector2 and Macie2 services so far' \
   'E16 the audit view states the real, current extent of the live catalog'
 assert_not_contains "$_AUDIT" 'ships no service script yet' \
   'E17 ... and no longer claims the catalog is empty'
@@ -543,5 +542,7 @@ assert_not_contains "$_AUDIT" 'ships the S3 and API Gateway services only so far
   'E17c ... and no longer claims IAM and EC2/VPC are absent'
 assert_not_contains "$_AUDIT" 'ships the S3, API Gateway, KMS, Secrets Manager, SSM and IAM services so far' \
   'E17d ... and no longer claims EC2/VPC is absent, now that CLOUD-13 has landed'
+assert_not_contains "$_AUDIT" 'ships the S3, API Gateway, KMS, Secrets Manager, SSM, IAM and EC2/VPC services so far' \
+  'E17e ... and no longer claims the CLOUD-30..34 governance bundle is absent'
 
 t_summary cloud-s3

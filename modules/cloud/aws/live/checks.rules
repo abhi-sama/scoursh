@@ -950,3 +950,181 @@ remediation: Enable VPC flow logs, per CIS AWS Foundations Benchmark control
   CLOUD-S3-NO_LOGGING-01 check reports one layer up the stack.
 references: CWE-778
 references: https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs.html
+
+# ---------------------------------------------------------------------------
+# The §8.1 governance & detection bundle (docs/STEP6-CLOUD-PLAN.md
+# CLOUD-30..34), appended to this shared, append-only registry per this
+# file's own header rule.  Five services, seven checks:
+# `modules/cloud/aws/live/cloudtrail.sh` (three - not enabled, not
+# multi-region, log file validation off), `config.sh`, `guardduty.sh`,
+# `inspector.sh` and `macie.sh` (one each).
+#
+# `cis:` IS AUTHORED ONLY WHERE A REAL CIS v3.0.0 CONTROL EXISTS, per this
+# file's own rule above.  CloudTrail cites 3.1 (twice, for its two distinct
+# failure modes - "no trail" and "no multi-region trail" are both facts
+# about the same control) and 3.2; AWS Config cites 3.3; all three already
+# have rows in data/cis-mappings, so no new mapping entry was needed.
+# GuardDuty, Inspector2 and Macie2 have NO CIS Amazon Web Services
+# Foundations Benchmark v3.0.0 control anywhere in that benchmark's sections
+# 1-5 (confirmed against data/cis-mappings' own scope, and its header's own
+# statement that section 4 - the closest thing to a detection-service
+# section - is entirely "Not supported - manual check" for v3.0.0 and
+# carries no control ids this table could cite). Their three records
+# therefore carry no `cis:` line and no `compliance` tag - an honest
+# absence, not a gap to be quietly filled with an invented number
+# (docs/DESIGN.md §15).
+#
+# Every record is `config-read`/`quick`, the identical reasoning the S3
+# records above give: each check is one or two read-only AWS API calls and
+# mutates nothing.
+
+id: CLOUD-CLOUDTRAIL-NOT_ENABLED-01
+title: CloudTrail is not logging in this account or region
+script: aws/live/cloudtrail.sh
+severity: critical
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 3.1
+remediation: Create a CloudTrail trail (or restart logging on an existing
+  one with StartLogging) so API activity in this account is recorded. A
+  single, enabled, multi-region trail with log file validation on is the
+  minimum an account needs before any of the rest of this bundle's checks -
+  or an incident investigation - has anything to work from. Without it,
+  there is no audit record of who did what in this account at all.
+references: CWE-778
+references: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-create-and-update-a-trail.html
+
+id: CLOUD-CLOUDTRAIL-NOT_MULTI_REGION-01
+title: CloudTrail trail is not multi-region
+script: aws/live/cloudtrail.sh
+severity: high
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 3.1
+remediation: Convert this trail to multi-region (UpdateTrail
+  --is-multi-region-trail), or create a separate multi-region trail
+  alongside it. A single-region trail records activity only in its own home
+  region, so an action taken through any other region's endpoint - which
+  includes almost every global-service API call and any region an attacker
+  chooses specifically because it is not being watched - leaves no trace at
+  all. CIS 3.1 requires at least one enabled, logging, multi-region trail.
+references: CWE-778
+references: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-create-and-update-a-trail.html
+
+id: CLOUD-CLOUDTRAIL-LOG_FILE_VALIDATION_OFF-01
+title: CloudTrail log file validation is not enabled
+script: aws/live/cloudtrail.sh
+severity: medium
+confidence: high
+cwe: CWE-345
+owasp: A08:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 3.2
+remediation: Enable log file validation on the trail
+  (UpdateTrail --enable-log-file-validation). Each delivered log file is
+  then paired with a signed digest file, so a log file modified or deleted
+  after delivery - by an attacker covering their tracks, or by a
+  misconfigured retention policy - can be detected rather than trusted
+  silently. Without it, a CloudTrail log is evidence only until someone with
+  write access to the log bucket decides it should not be.
+references: CWE-345
+references: https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-log-file-validation-intro.html
+
+id: CLOUD-CONFIG-RECORDER_OFF-01
+title: AWS Config configuration recorder is absent or not recording
+script: aws/live/config.sh
+severity: high
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 3.3
+remediation: Create a configuration recorder covering all resource types
+  (PutConfigurationRecorder with recordingGroup.allSupported true) and start
+  it (StartConfigurationRecorder) in this region. Without an active
+  recorder, AWS Config is not tracking how resource configuration in this
+  region changes over time, which removes both the change-history an
+  incident investigation needs and the input every AWS Config rule in this
+  region depends on to evaluate anything at all.
+references: CWE-778
+references: https://docs.aws.amazon.com/config/latest/developerguide/gs-console.html
+
+id: CLOUD-GUARDDUTY-DISABLED-01
+title: GuardDuty is not enabled in this region
+script: aws/live/guardduty.sh
+severity: high
+confidence: high
+cwe: CWE-693
+owasp: A09:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable GuardDuty in this region (CreateDetector, or
+  UpdateDetector to set an existing detector's Enable to true). GuardDuty is
+  this account's automated analysis of CloudTrail management events, VPC
+  Flow Logs and DNS query logs for known malicious and anomalous activity
+  patterns; with it off, that analysis simply does not happen, and a
+  compromised credential or instance in this region will not generate a
+  finding here however long it is active.
+references: CWE-693
+references: https://docs.aws.amazon.com/guardduty/latest/ug/what-is-guardduty.html
+
+id: CLOUD-INSPECTOR-DISABLED-01
+title: Inspector2 automated vulnerability scanning is not fully enabled
+script: aws/live/inspector.sh
+severity: medium
+confidence: high
+cwe: CWE-693
+owasp: A06:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable Inspector2 scanning for every resource type this
+  account actually uses in this region (Enable, naming the affected
+  resourceTypes - EC2, ECR, LAMBDA). Without it, a newly-disclosed CVE
+  against an in-use EC2 AMI's installed packages, an ECR container image's
+  layers, or a Lambda function's dependencies is not detected by anything
+  this account runs on its own; it is found only when something external
+  does - an attacker, a customer, or a researcher's disclosure.
+references: CWE-693
+references: https://docs.aws.amazon.com/inspector/latest/user/enabling.html
+
+id: CLOUD-MACIE-DISABLED-01
+title: Macie sensitive-data discovery is not enabled in this region
+script: aws/live/macie.sh
+severity: medium
+confidence: medium
+cwe: CWE-693
+owasp: A09:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable Macie in this region (EnableMacie), then configure a
+  discovery job against the S3 buckets this account uses. Without it, no
+  automated scan is looking for PII, credentials or financial data sitting
+  in an S3 bucket that should not hold it, so that kind of exposure is found
+  only by accident or after it has already been used against this account.
+  Note this check's confidence is medium rather than high: Macie reports
+  "not enabled" as the same AccessDeniedException code a genuine permission
+  gap on the scanning role's own IAM policy would produce (see
+  modules/cloud/aws/live/macie.sh's own header), so an absent
+  macie2:GetMacieSession grant on an otherwise-enabled account can read the
+  same way as Macie genuinely being off.
+references: CWE-693
+references: https://docs.aws.amazon.com/macie/latest/user/macie-setting-up.html
