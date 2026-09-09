@@ -3335,19 +3335,23 @@ Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start
 - `lib/records.sh` (the record parser) is built **before** step 1's stated contents, since tensions 1, 6, 9, 15, and 26 all depend on it.
 - `lib/awscli.sh` is added to the layout and lands at the start of step 6, before any `aws/live/*.sh` script exists, so no script is ever written against a bare `aws`. **Update:** `lib/awscli.sh` itself now exists (see "AWS module: what exists ahead of step 6" below) - built out of sequence, deliberately, without the `aws/live/*.sh` scripts it was meant to land alongside.
 
-## Network module (NET): Tier 0 (NET-01 through NET-04) is COMPLETE; `scan.sh network` is a real dispatch
+## Network module (NET): Tier 0 (NET-01 through NET-04) is complete; Tier 1 (NET-05) and part of Tier 2
+## (NET-06, NET-08) have landed on top of it - the module now sends real traffic and produces findings
 
 A new scanner surface - declared-listener verification, service/version identification and transport
-posture over an operator-declared port set, never port discovery - is planned as `modules/network/`
+posture over an operator-declared port set, never port discovery - is being built as `modules/network/`
 with a `NET` check-id prefix, staged as dependency-ordered tickets the same way DAST and Cloud were
 (`data/scoursh-network-scan-design/report.md` §7 is the staged plan; NET-01 through NET-04 are Tier 0,
 strictly serial, because each touches a file a later NET ticket would otherwise conflict on).
-**NET-01 (shared-file preparation), NET-02 (the `NET` module identity), NET-03 (the transport
-primitive) and NET-04 (module scaffold + dispatch) have all landed. `scan.sh network --target <t>`
-now dispatches for real, exactly like `scan.sh dast` did after DAST-02 - it tolerates ZERO phase
-scripts, sends no traffic, and completes cleanly with a fully honest, declared explanation of why it
-covered nothing.** Tier 1 (NET-05, the declared listener set) is next; do not read this section as "the
-network module has a check" - nothing on `modules/network/` yet reads a byte off any target.
+**NET-01 through NET-04 (Tier 0: shared-file preparation, the `NET` module identity, the transport
+primitive, module scaffold + dispatch) have all landed, and this is where the paragraphs below them in
+this section stop - they describe Tier 0 only.** Tier 1 (NET-05, the declared listener set) and two of
+Tier 2's four peer probes - NET-06 (`reachability.sh`, three-state listener verification) and NET-08
+(`tlsport.sh`, TLS identification on a non-base-url listener) - have since landed on top of Tier 0; their
+own paragraphs are below Tier 0's. NET-07 (`banner.sh`) and NET-09 (`httpport.sh`) remain unbuilt, and
+Tier 3 (`transport.sh`, NET-10) has not started. Do not read the Tier 0 paragraphs alone as "the network
+module has no check" - `modules/network/` now reads real bytes off a target's declared listeners and
+emits real findings; see the NET-05/NET-06/NET-08 paragraphs below Tier 0's for what.
 
 Two shared files changed, both pure preparation with zero new scanner behaviour:
 
@@ -3487,6 +3491,67 @@ problem from "avoid writing a first network copy" for a function this ticket shi
 of). `tests/lint-source-graph.sh`'s hub-sum cap (17, unchanged by this ticket) is the number to
 re-measure before ever lifting these; a real second caller - a future NET-05+ phase, or a second module -
 is the trigger to revisit it, not a hypothetical one.
+
+**NET-05 (`modules/network/inventory.sh`) has landed - the declared listener set, this module's
+`crawl.sh` equivalent, and the one artifact every Tier 2+ phase reads.** It writes
+`reports/<run>/inventory/listeners.json` (one `{role, scheme, host, port}` row per
+`config/scope.conf` tuple for the run's `--target` - `role: base-url` for the first, `role: extra-host`
+for each declared listener beyond it), gating every tuple through `http_authorize_raw_connection`
+directly (an operator-configured tuple is refused fatally, exit 3, except a transient DNS failure,
+which degrades to one counted `coverage_reduction` rather than aborting every sibling listener - the
+identical softening `modules/dast/passive/tls.sh` already uses). A target whose declared set holds
+only its base-url - the ordinary case today - writes NO file at all; `modules/network/engine.sh`'s
+`net_inventory_read` gives that absence a name (`absent`, distinct from `empty`) so a later phase never
+mistakes "nothing declared" for "the producer never ran."
+
+**NET-06 (`modules/network/reachability.sh` + `reachability_engine.sh`) has landed - the THREE-STATE
+listener verification (`open`/`not-open`/`filtered`) and the `NET-PORT-*` checks, at tier `safe`.** One
+TCP connect per declared listener (base-url included) via `lib/nettransport.sh`'s `net_connect_probe`,
+on the address `http_authorize_raw_connection` re-gates and re-resolves at probe time (never trusting
+NET-05's earlier pass, for the same anti-TOCTOU reason `modules/dast/passive/tls.sh` re-authorizes
+immediately before its own raw connection). `filtered` is never folded into `not-open` and is never a
+finding - only a counted reduction. Two check ids: `NET-PORT-DECLARED_NOT_ANSWERING-01` (info; a
+declared listener that did not accept a connection) and `NET-PORT-UNEXPECTED_LISTENER-01` (high; an
+`open` listener a `config/posture.conf` `expect: absent` expectation - report.md §9 decision D5, keyed
+on the new `scope-key` shape `<target>:<port>` - names as one that should be closed). An absent
+`config/posture.conf` makes the expect-closed half a declared skip (`net_check_not_applicable`), never
+exit 4.
+
+**NET-08 (`modules/network/tlsport.sh`) has landed - TLS identification on a non-`base-url` listener,
+the `NET-TLS-*` checks (six ids, mirroring `DAST-TLS-*` one-for-one), at tier `passive`.**
+`modules/dast/passive/tls_engine.sh` is reused VERBATIM (sourced, not forked) for every parser, every
+predicate, and the one `openssl s_client` invocation - `tests/lint-shell.sh`'s tension-19 exemption for
+that file and `modules/dast/passive/tls.sh` needed no edit, since this ticket added no second call
+site. Because `tlsport.sh` sits at `passive` and `reachability.sh` (NET-06) sits at `safe`, a
+`--intensity passive` run executes `tlsport.sh` and SKIPS `reachability.sh` entirely
+(`net_intensity_permits` fails for a `safe`-tier phase under a `passive` run) - so "reuse NET-06's
+open-state classification" cannot mean trusting an artifact from a same-process NET-06 pass (none
+exists; NET-06 emits findings and reductions, not a listener-state file). It means calling the SAME
+mechanism NET-06 calls - `net_connect_probe`, on the gate-pinned address, with the identical
+`open`/`not-open`/`filtered` vocabulary - a second, independent classification, exactly as NET-06 itself
+re-classifies rather than trusting NET-05's earlier authorization pass. Only `role: extra-host` rows
+from NET-05's `listeners.json` are probed; the `base-url` row is skipped outright, because
+`modules/dast/passive/tls.sh` (`DAST-TLS-*`) already assesses it - probing it again under `NET-TLS-*`
+would double-report one listener under two module namespaces. Skip categories (`filtered`,
+`net_check_not_applicable` for not-open, `tls_probe_failed` for open-but-no-transcript,
+`tls_handshake_failed` for open-with-a-transcript-but-no-session) are AGGREGATED into one
+`coverage_reduction` per reason per target - never one line per port - matching
+`reachability.sh`'s own "do not flood run.json" discipline; `checks_run` is likewise recorded once per
+check id per target, gated on whether ANY listener produced a session (the two protocol/cipher checks)
+or a recovered certificate (the four cert-dependent checks), not once per listener. One sharp edge worth
+keeping: every `coverage_reduction` naming multiple check ids here uses `checks=[...]` (PLURAL), matching
+`modules/dast/passive/tls.sh`'s own `_nc`/`checks=[$_nc]` convention - `modules/network/run.sh`'s
+`_net_record_unaccounted` backstop scans `coverage_reduction` facts for the literal substring
+`checks=[` (plural) to mark a `NET-*` id accounted for; `reachability.sh`'s own
+`_reach_capability_reduction` uses the singular `check=[...]` instead, which that substring scan does
+not match - a real, pre-existing inconsistency this ticket noticed but did not touch (out of this
+ticket's scope, and fixing it risks changing `reachability.sh`'s own already-tested output), so a
+future NET ticket editing either function should not assume the two spellings are interchangeable.
+`tests/suites/network.sh`'s hardcoded phase-count assertions (`phases_present=`/`phases_ran=`/the
+`coverage_gap` line count for a base-url-only target) were updated in this same change, since
+`tlsport.sh` landing on disk is exactly the kind of fact those counts are a real `-f` test on - the
+identical maintenance NET-05 and NET-06 themselves needed and did not always get in the same change
+(see this section's own header correction above).
 
 ## AWS module: what exists ahead of step 6, and why
 

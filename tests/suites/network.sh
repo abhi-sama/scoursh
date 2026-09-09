@@ -196,11 +196,11 @@ assert_contains "$RUN_OK_JSON" '"checks_run": []' \
 printf '\n-- run.json tells the truth about a run that covered nothing --\n'
 # =============================================================================
 
-t_case 'run.json records the phases_present declared reduction naming the real cause, now that NET-05, NET-06 and NET-09 have all landed'
+t_case 'run.json records the phases_present declared reduction naming the real cause, now that NET-05, NET-06, NET-08 and NET-09 have all landed'
 assert_contains "$RUN_OK_JSON" 'module=network reason=no_check_covered_by_any_phase' \
   'run.json carries the declared reduction with its owning module token - FAILS if the module logs it only to stderr, which leaves the artifact claiming a complete run, or if it is written under the finding-module short form "net" instead of the SCAN_COMMANDS/checks_module_dir token "network" lib/report.sh'"'"'s _RPT_MODULES actually greps for. Since NET-05 (inventory.sh) landed, net-fixture'"'"'s own single-listener (base-url only) run now RUNS that one phase rather than finding it absent, so the reduction reason moves from no_phase_scripts_on_disk_yet to no_check_covered_by_any_phase - FAILS under the pre-NET-05 reading, where nothing on disk would ever run'
-assert_contains "$RUN_OK_JSON" 'phases_expected=6 phases_present=3 phases_ran=1' \
-  'and states the phase count honestly (6 rows in _NET_PHASES; inventory.sh present and RAN; reachability.sh (NET-06) and httpport.sh (NET-09) also present on disk now but both gated by this run'"'"'s default --intensity passive, since their own rows are reachability.sh:safe and httpport.sh:safe - present counts a real -f test on every phase file, ran counts only the ones the intensity ceiling actually let through, and the two are different numbers here for exactly that reason; the other 3 rows are still absent) - FAILS if the phase table is declared but never actually walked, or if a phase'"'"'s mere PRESENCE on disk were conflated with having RUN'
+assert_contains "$RUN_OK_JSON" 'phases_expected=6 phases_present=4 phases_ran=2' \
+  'and states the phase count honestly (6 rows in _NET_PHASES; inventory.sh (NET-05, passive) and tlsport.sh (NET-08, passive) present and RAN; reachability.sh (NET-06, safe) and httpport.sh (NET-09, safe) also present on disk now but both gated by this run'"'"'s default --intensity passive - present counts a real -f test on every phase file, ran counts only the ones the intensity ceiling actually let through, and the two are different numbers here for exactly that reason; the other 2 rows, banner.sh and transport.sh, are still absent) - FAILS if the phase table is declared but never actually walked, or if a phase'"'"'s mere PRESENCE on disk were conflated with having RUN'
 assert_contains "$RUN_OK_JSON" 'reason=phase_above_intensity_ceiling target=net-fixture intensity=passive phases=[reachability.sh(>=safe) httpport.sh(>=safe)]' \
   'BOTH present-but-too-high-tier phases are named in ONE reduction, in the phase table'"'"'s own declared order (reachability.sh'"'"'s row precedes httpport.sh'"'"'s in _NET_PHASES) - FAILS if a phase that exists on disk but requires a higher --intensity than this run used were counted as merely "absent" (which would read identically to a phase that has not been written yet), or if the two present-but-gated phases produced two separate reduction lines instead of one naming both'
 
@@ -224,8 +224,8 @@ CR_FILE=$(_slurp "$W/run-ok/meta/coverage_reduction")
 assert_eq 1 "$(grep -c 'reason=no_check_covered_by_any_phase' <<<"$CR_FILE")" \
   'exactly one no_check_covered_by_any_phase reduction - FAILS if the phase loop or the per-target loop double-counts'
 GAP_FILE=$(_slurp "$W/run-ok/meta/coverage_gap")
-assert_eq 2 "$(grep -c "target 'net-fixture'" <<<"$GAP_FILE")" \
-  'exactly TWO coverage_gap lines name this target - inventory.sh'"'"'s own report.md §5.2 rule 3 gap (net-fixture declares only base-url) plus modules/network/run.sh'"'"'s own generic "covered nothing" gap - FAILS if either producer'"'"'s gap silently swallows the other'"'"'s, which would leave a reader unable to tell "this module has no check registry yet" apart from "this target declared no additional listener"'
+assert_eq 3 "$(grep -c "target 'net-fixture'" <<<"$GAP_FILE")" \
+  'exactly THREE coverage_gap lines name this target - inventory.sh'"'"'s own report.md §5.2 rule 3 gap (net-fixture declares only base-url), tlsport.sh'"'"'s (NET-08) own "no non-base-url listener" gap, and modules/network/run.sh'"'"'s own generic "covered nothing" gap - FAILS if any producer'"'"'s gap silently swallows another'"'"'s, which would leave a reader unable to tell "this module has no check registry yet" apart from "this target declared no additional listener"'
 
 # =============================================================================
 printf '\n-- intensity is a real gate, not a recorded string --\n'

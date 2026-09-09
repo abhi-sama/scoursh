@@ -1,0 +1,161 @@
+# modules/network/checks-tlsport.rules - the NET-08 script-check registry
+# (rules/RULE-FORMAT.md §9.5; data/scoursh-network-scan-design/report.md
+# §3.2 item 2, §5.1, the NET-08 row in its §7 staged plan). Owned by
+# modules/network/tlsport.sh; ids are all `NET-TLS-*`.
+#
+# ONE FILE PER OWNING PHASE SCRIPT, per rules/RULE-FORMAT.md §9's
+# `checks-<name>.rules` row (docs/FOUNDATION.md tension 29) - modules/network/
+# already carries no shared `checks.rules` for its script checks to collide
+# on, so this ticket seeds directly under its own per-owner name, mirroring
+# modules/network/checks-reachability.rules (NET-06).
+#
+# SIX IDS, ONE PER PROPERTY, THE IDENTICAL SET modules/dast/passive/
+# checks-tls.rules (DAST-TLS-*) ALREADY DEFINES - because this check reuses
+# that module's tls_engine.sh VERBATIM (report.md §3.2 item 2: "Certificate,
+# SANs, negotiated protocol and cipher on an arbitrary listener is genuinely
+# new coverage - DAST-TLS-* only ever looks at the base-url listener today").
+# The `net` fingerprint location profile (lib/findings.sh, target host port
+# transport) carries no component naming which TLS property a finding is
+# about, so the check id is the ONLY thing that keeps an expired certificate
+# and a weak protocol on the same listener from colliding into one finding -
+# the identical reasoning checks-tls.rules' own header gives, applied one
+# module down.
+#
+# `coverage-scope: target` is NET's cell (rules/RULE-FORMAT.md §9.5.1's own
+# NET row) - a run scoped to one target can never manufacture a `fixed`
+# verdict for a target it never visited.
+#
+# THE TYPE TAG IS `passive`, MATCHING modules/network/engine.sh's OWN
+# `tlsport.sh:passive` PHASE-TABLE FLOOR.  One TLS handshake per declared
+# non-base-url listener that a prior TCP classification found `open`
+# (report.md §5.1's own type tag for NET-TLS-*), no application data sent,
+# and nothing on the target changes.
+#
+# `quick` and `compliance` are on every record here, matching
+# checks-tls.rules' own reasoning verbatim: `quick` because the family costs
+# at most one handshake PER LISTENER regardless of how many checks fire, and
+# `compliance` because certificate validity and protocol/cipher strength are
+# transport controls every framework in docs/DESIGN.md §8.7's list
+# enumerates - except NET-TLS-WILDCARD_CERT-01, which checks-tls.rules'
+# DAST-TLS-WILDCARD_CERT-01 record also leaves off `compliance` for the
+# identical reason (a wildcard certificate is not itself a framework control
+# failure the way an expired or self-signed one is).
+
+id: NET-TLS-WEAK_PROTOCOL-01
+title: TLS endpoint on a declared listener negotiated a deprecated protocol version
+script: tlsport.sh
+severity: high
+confidence: high
+cwe: CWE-327
+owasp: A02:2021
+tags: passive
+tags: quick
+tags: compliance
+coverage-scope: target
+requires-cmd: openssl
+remediation: Disable SSLv2, SSLv3, TLS 1.0 and TLS 1.1 on this listener and
+  offer TLS 1.2 and TLS 1.3 only (RFC 8996). Where a client genuinely cannot be
+  upgraded, terminate its traffic on a separate listener with its own hostname
+  so the deprecated version is not offered to every client of this one.
+references: CWE-327
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+references: https://www.rfc-editor.org/rfc/rfc8996
+
+id: NET-TLS-WEAK_CIPHER-01
+title: TLS endpoint on a declared listener negotiated a weak cipher suite
+script: tlsport.sh
+severity: high
+confidence: high
+cwe: CWE-327
+owasp: A02:2021
+tags: passive
+tags: quick
+tags: compliance
+coverage-scope: target
+requires-cmd: openssl
+remediation: Restrict the listener cipher list to AEAD suites with forward
+  secrecy (ECDHE or DHE key exchange with AES-GCM or ChaCha20-Poly1305). Remove
+  every NULL, anonymous, export, RC4, single-DES, 3DES, IDEA, SEED and MD5
+  suite. On TLS 1.3 leave the default suite set alone and fix the TLS 1.2 list
+  instead.
+references: CWE-327
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: NET-TLS-CERT_EXPIRED-01
+title: TLS certificate on a declared listener has expired
+script: tlsport.sh
+severity: critical
+confidence: high
+cwe: CWE-324
+owasp: A02:2021
+tags: passive
+tags: quick
+tags: compliance
+coverage-scope: target
+requires-cmd: openssl
+remediation: Renew the certificate and reload the listener. Automate renewal
+  (ACME or the platform certificate manager) and alert on the remaining
+  lifetime, so the next renewal is not a manual step that can be missed again.
+references: CWE-324
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: NET-TLS-CERT_EXPIRING-01
+title: TLS certificate on a declared listener expires soon
+script: tlsport.sh
+severity: medium
+confidence: high
+cwe: CWE-324
+owasp: A02:2021
+tags: passive
+tags: quick
+tags: compliance
+coverage-scope: target
+requires-cmd: openssl
+remediation: Renew the certificate before it expires and confirm the listener
+  picks up the new one. If renewal is already automated, check that the
+  automation is running and that its own alerting fires - a silent renewal
+  failure looks exactly like a working one until the day it expires. The
+  warning window is config/scanner.conf's tls-expiry-warn-days, default 30.
+references: CWE-324
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: NET-TLS-SELF_SIGNED-01
+title: TLS certificate on a declared listener is self-signed and chains to no trusted issuer
+script: tlsport.sh
+severity: high
+confidence: high
+cwe: CWE-295
+owasp: A02:2021
+tags: passive
+tags: quick
+tags: compliance
+coverage-scope: target
+requires-cmd: openssl
+remediation: Replace the certificate with one issued by a certificate authority
+  the intended clients already trust, and serve the full intermediate chain. If
+  this endpoint is internal and must use a private CA, distribute that CA to the
+  clients and keep them verifying - never disable verification in the client,
+  which is the change this finding usually provokes and is strictly worse than
+  the certificate it works around.
+references: CWE-295
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: NET-TLS-WILDCARD_CERT-01
+title: TLS endpoint on a declared listener serves a wildcard certificate where a host-specific one is expected
+script: tlsport.sh
+severity: medium
+confidence: high
+cwe: CWE-693
+owasp: A02:2021
+tags: passive
+tags: quick
+coverage-scope: target
+requires-cmd: openssl
+remediation: Issue a certificate whose subjectAltName names this host
+  specifically, so a compromise of its private key cannot impersonate every
+  sibling host under the wildcard label. If a wildcard is genuinely the intended
+  design for this target, record that by setting tls-expect-wildcard true on its
+  config/scope.conf entry, which makes the expectation explicit and reviewable
+  rather than making this finding disappear silently.
+references: CWE-693
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
