@@ -1,0 +1,7 @@
+{
+    "IdentityPoolId": "eu-west-2:33333333-3333-3333-3333-333333333333",
+    "Roles": {
+        "authenticated": "arn:aws:iam::123456789012:role/Cognito_broadpoolAuth_Role",
+        "unauthenticated": "arn:aws:iam::123456789012:role/Cognito_broadpoolUnauth_Role"
+    }
+}

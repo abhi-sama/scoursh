@@ -1,0 +1,32 @@
+{
+    "UserPools": [
+        {
+            "Id": "eu-west-2_weakpool01",
+            "Name": "scoursh-fixture-weak-pool",
+            "Status": "Enabled",
+            "LastModifiedDate": "2024-01-02T03:04:05.000000+00:00",
+            "CreationDate": "2023-01-02T03:04:05.000000+00:00"
+        },
+        {
+            "Id": "eu-west-2_hardpool01",
+            "Name": "scoursh-fixture-hardened-pool",
+            "Status": "Enabled",
+            "LastModifiedDate": "2024-01-02T03:04:05.000000+00:00",
+            "CreationDate": "2023-01-02T03:04:05.000000+00:00"
+        },
+        {
+            "Id": "eu-west-2_optpool01",
+            "Name": "scoursh-fixture-optional-pool",
+            "Status": "Enabled",
+            "LastModifiedDate": "2024-01-02T03:04:05.000000+00:00",
+            "CreationDate": "2023-01-02T03:04:05.000000+00:00"
+        },
+        {
+            "Id": "eu-west-2_nopolicy01",
+            "Name": "scoursh-fixture-default-policy-pool",
+            "Status": "Enabled",
+            "LastModifiedDate": "2024-01-02T03:04:05.000000+00:00",
+            "CreationDate": "2023-01-02T03:04:05.000000+00:00"
+        }
+    ]
+}

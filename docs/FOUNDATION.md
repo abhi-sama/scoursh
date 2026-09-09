@@ -5622,6 +5622,19 @@ quotes, ANSI-C quoting silently stops being interpreted as such) and the "out of
 nor lost" third state an AWS-managed KMS key, a rotation-ineligible key type, an other-service-owned
 secret, or a deletion-scheduled secret all need.
 
+**The plan's P18 (CLOUD-20, `modules/cloud/aws/live/cognito.sh`) exercises the "credited only where
+the call ANSWERED" half at a finer grain than any earlier service could**, because its resources are
+reached through THREE independent list calls in TWO API namespaces: a denied `cognito-idp
+list-user-pools` loses the user-pool and app-client checks and leaves the identity-pool checks -
+reached through `cognito-identity` - credited, and the mirror case holds.  Marking every check lost on
+either failure would overstate the damage and hide that half the pass ran fine; both directions are
+asserted in `tests/suites/cloud-cognito.sh`.  One further case is worth recording because it is this
+tension's inference working correctly rather than a limitation: an identity pool whose unauthenticated
+role has NO policy attached CREDITS the two over-permissiveness checks and reports neither, because
+"there is nothing granted" is a real answer - treating an empty policy list as an unexamined role would
+leave a prior finding at `unknown` forever after an operator emptied the role, which is the correct
+remediation.
+
 **Every OTHER `aws/live/*.sh` service in `docs/DESIGN.md` §8.1's catalog is still absent**, and a
 `--live` run records each one as unexamined rather than counting it clean - a real dispatch that found
 nothing to run for those services, stated as such in `run.json`, `report.md` and the audit report

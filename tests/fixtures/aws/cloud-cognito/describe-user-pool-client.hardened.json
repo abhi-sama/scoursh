@@ -1,0 +1,49 @@
+{
+    "UserPoolClient": {
+        "UserPoolId": "eu-west-2_weakpool01",
+        "ClientName": "scoursh-fixture-hardened-client",
+        "ClientId": "hardclient000000000000000",
+        "ClientSecret": "scoursh-fixture-not-a-real-secret",
+        "RefreshTokenValidity": 30,
+        "AccessTokenValidity": 60,
+        "IdTokenValidity": 60,
+        "TokenValidityUnits": {
+            "AccessToken": "minutes",
+            "IdToken": "minutes",
+            "RefreshToken": "days"
+        },
+        "ReadAttributes": [
+            "email"
+        ],
+        "WriteAttributes": [
+            "email",
+            "given_name"
+        ],
+        "ExplicitAuthFlows": [
+            "ALLOW_USER_SRP_AUTH",
+            "ALLOW_REFRESH_TOKEN_AUTH"
+        ],
+        "SupportedIdentityProviders": [
+            "COGNITO"
+        ],
+        "CallbackURLs": [
+            "https://app.example.com/callback",
+            "http://localhost:3000/callback",
+            "http://127.0.0.1:3000/callback"
+        ],
+        "LogoutURLs": [
+            "https://app.example.com/logout"
+        ],
+        "AllowedOAuthFlows": [
+            "code"
+        ],
+        "AllowedOAuthScopes": [
+            "openid",
+            "email"
+        ],
+        "AllowedOAuthFlowsUserPoolClient": true,
+        "PreventUserExistenceErrors": "ENABLED",
+        "EnableTokenRevocation": true,
+        "AuthSessionValidity": 3
+    }
+}

@@ -683,6 +683,19 @@ that the `account-region` fixtures were hand-authored, schema-only proof until a
 is also the first `aws_ro` call site `tests/lint-aws-readonly.sh` actually enforces: that lint reported
 "0 aws_ro call sites" on every run before this ticket and reports 10 after, so its checks 1-3 have
 stopped being vacuous.
+**P18 (CLOUD-20, `modules/cloud/aws/live/cognito.sh`) is the Cognito service script**, and two things
+about it are worth knowing before touching it. It is the first service to reach a THIRD API namespace
+(`cognito-idp` and `cognito-identity` for the resources themselves, then `iam` to inspect an identity
+pool's UNAUTHENTICATED role, which `docs/DESIGN.md` §8.3 requires be "its own high-severity finding,
+not a note" rather than a remark hung off the `AllowUnauthenticatedIdentities` finding). And its
+records deliberately carry NO `cis` value at all - CIS AWS Foundations Benchmark v3.0.0 has no Cognito
+section, and citing 1.8 (the IAM ACCOUNT password policy) or 1.10 (MFA for IAM users) against an
+application's END-USER pool is exactly the misattribution `docs/CIS-MAPPINGS.md` §5 item 5 forbids; the
+findings still carry their CWE and OWASP category, and an honest absence beats an invented control id.
+User-enumeration and self-signup exposure are detected CONFIG-DERIVED (`PreventUserExistenceErrors`,
+the pool's own self-registration setting) rather than by probing a live sign-up or login endpoint, per
+§8.3's own closing paragraph - a probe there creates accounts and sends mail to real addresses.
+See `docs/STEP6-CLOUD-PLAN.md`'s "Landed tickets" section for the full account.
 **Every OTHER `aws/live/*.sh` service in `docs/DESIGN.md` §8.1's catalog is still absent**, and a
 `--live` run records each one as unexamined rather than counting it clean.
 **Step 7 (persistent run state, `state/` plus `diff`) is complete.**
