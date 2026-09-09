@@ -721,6 +721,18 @@ by watching `CLOUD-IAM-UNUSED_ROLE-01` never fire at all until that reload was a
 anywhere pointing at why. `SCOURSH_IAM_NOW_EPOCH` overrides the real clock for every age-threshold check
 here, mirroring `modules/dast/passive/tls_engine.sh`'s own injectable-`now` reasoning, so its own test
 fixtures keep the same verdict for as long as this file is in the tree.
+**P7 (CLOUD-13, `modules/cloud/aws/live/ec2.sh`) has now landed - the third `aws/live/*.sh` service
+script, and the first `regional` one (s3 is `global`).** It is the first real proof that
+`_CLOUD_SERVICES`' region loop actually iterates more than once: eight `CLOUD-EC2-*` checks (security
+groups open to `0.0.0.0/0` on an admin port or a database port - two ids, since CIS 5.2 covers only the
+former; the default security group in use; a public AMI; a public EBS snapshot; an unencrypted EBS
+volume; IMDSv2 not enforced; a VPC with no active flow log) fed by SIX INDEPENDENT API families
+(security groups + network interfaces for the default-SG "in use" half, AMIs, snapshots, volumes,
+instances, VPCs + flow logs) rather than S3's one `list-buckets` call every check depends on - see the
+"Step 6" section below for the five things about it a later regional service will otherwise
+rediscover. `tests/suites/cloud-ec2.sh` is its own vertical-slice proof, mirroring
+`tests/suites/cloud-s3.sh` but over TWO regions (a deliberately misconfigured `us-east-1` and a hardened
+`eu-west-2`), which is what makes multi-region iteration itself an assertion rather than a comment.
 **Every OTHER `aws/live/*.sh` service in `docs/DESIGN.md` §8.1's catalog is still absent**, and a
 `--live` run records each one as unexamined rather than counting it clean.
 **Step 7 (persistent run state, `state/` plus `diff`) is complete.**
@@ -2606,6 +2618,50 @@ and five things about them are worth carrying here rather than only in their own
   header block states this rather than leaving a reader to wonder whether it was overlooked, and
   `tests/suites/cloud-kms.sh` C6 / `cloud-secretsmanager.sh` C5 / `cloud-ssm.sh` C5 each assert the
   ABSENCE of a `cis` value on their non-rotation check, not only the presence of one where it belongs.
+
+**CLOUD-13 (`modules/cloud/aws/live/ec2.sh`) has landed - the fourth `aws/live/*.sh` service (after S3,
+API Gateway, and kms/secretsmanager/ssm), the third `regional` one (`apigw.sh` was the first), and five
+things about it a later regional service will otherwise rediscover the expensive way.**
+
+- **A `regional` service is sourced ONCE PER REGION, so its own per-pass state must be RESET, not merely
+  DECLARED, and the difference is real here in a way it never was for `s3.sh`'s `global` pass.**
+  `s3.sh`'s header already states "reset here rather than only declared" as a defensive precaution; for
+  `ec2.sh` a run genuinely reaches the file more than once, so a `declare -gA _EC2_EVALUATED=()` that
+  only *declared* (rather than *reset*) the map would carry `us-east-1`'s counts into `eu-west-2`'s pass
+  and credit the second region's `checks_run` with resources it never examined.
+- **THE CELL AND THE REGION ARE THE SAME VALUE HERE, unlike S3's `global` pass.** Every EC2/VPC API this
+  file calls (`describe-security-groups`, `describe-network-interfaces`, `describe-images`,
+  `describe-snapshots`, `describe-volumes`, `describe-instances`, `describe-vpcs`,
+  `describe-flow-logs`) is itself region-scoped, so there is no S3-shaped "the cell is the pass's, the
+  region is the resource's, and they differ" case to resolve - both are `<account>/<region>`, set once
+  from `SCOURSH_CLOUD_REGION`. `tests/suites/cloud-ec2.sh` asserts they are EQUAL rather than merely
+  both present, which is what would catch a script that copied `s3_emit_finding`'s global-cell reasoning
+  in unchanged.
+- **SIX INDEPENDENT API FAMILIES, NOT ONE LIST FEEDING EIGHT CHECKS.** Unlike S3 (one `list-buckets`
+  call every check depends on, so its failure is a whole-account loss), EC2/VPC's eight checks are fed
+  by six SEPARATE `describe-*` families - a role denied `ec2:DescribeImages` alone must still get the
+  other seven checks answered in that region. Each family's list-call failure is therefore handled
+  independently: the affected check ids' `_EC2_LOST_REASON` is recorded (so the end-of-region roll-up
+  names the real cause) and the family's own processing returns, but the REGION PASS CONTINUES to its
+  other five families - `_ec2_run_service` calls all six unconditionally rather than returning early the
+  way `s3.sh`'s `list-buckets` failure does.
+- **THE MULTI-CALL SHAPE ("list then per-resource get") IS REAL FOR TWO FAMILIES, NOT INVENTED FOR
+  UNIFORMITY WITH S3.** AMIs and EBS snapshots are the only two of EC2's families whose public-sharing
+  STATE is a separate, per-resource call (`describe-image-attribute`/`describe-snapshot-attribute`)
+  rather than a field already present on the list response - a security group's rules, a volume's
+  `Encrypted` flag, an instance's `MetadataOptions`, and a VPC's own id are all inline in their own
+  single `describe-*` call. Forcing a second call for the other four families would spend API budget
+  these EC2 operations do not need, purely to look uniform with S3's own per-property-call shape.
+- **EIGHT CHECK IDS FOR SEVEN PROPERTIES, AND THE SPLIT IS NOT ON SEVERITY THE WAY S3'S ACL SPLIT IS.**
+  `CLOUD-EC2-SG_OPEN_ADMIN_PORT-01` and `CLOUD-EC2-SG_OPEN_DB_PORT-01` are two ids because CIS AWS
+  Foundations Benchmark v3.0.0 control 5.2 covers "remote server administration ports" (22, 3389)
+  specifically and has NO database-port equivalent - citing 5.2 against a MySQL/Redis/... exposure would
+  misattribute a control that does not cover it (`docs/CIS-MAPPINGS.md` §1), on top of the fingerprint
+  argument every other split in this file's `checks.rules` already makes (the CLOUD location profile
+  names no component for which port family fired). Four of the eight cite a real v3.0.0 control (5.2,
+  5.4, 5.6, 3.7, already seeded in `data/cis-mappings` for exactly this v1 CIS-core scope); the
+  database-port case, public AMIs, public EBS snapshots, and unencrypted volumes cite none, because
+  v3.0.0 has no control for any of them - an honest absence, not a gap in the record.
 
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01 has
 not.**
