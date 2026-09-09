@@ -126,6 +126,12 @@ _schema_def() {
         'expect:req:single:sl' 'value:opt:single:sl' 'notes:opt:single:ml' \
         'format-version:opt:single:sl'
       ;;
+    image-source)
+      printf '%s\n' \
+        'id:req:single:sl' 'source:req:single:sl' 'path:req:single:sl' \
+        'reference:opt:single:sl' 'notes:opt:single:ml' \
+        'format-version:opt:single:sl'
+      ;;
     severity-modifier)
       printf '%s\n' \
         'id:req:single:sl' 'fact:req:single:sl' 'equals:req:single:sl' \
@@ -148,8 +154,8 @@ _schema_def() {
 
 records_schema_names() {
   printf '%s\n' pattern-rule derived redaction scope-target script-check \
-    scanner-config auth-identity discovery-input posture-expectation severity-modifier \
-    owasp-category cis-mapping
+    scanner-config auth-identity discovery-input posture-expectation image-source \
+    severity-modifier owasp-category cis-mapping
 }
 
 # Schemas holding exactly one record, whose `id` is a frozen literal
@@ -229,6 +235,7 @@ records_schema_for_path() {
     config/auth.conf) printf '%s' auth-identity ;;
     config/discovery.conf) printf '%s' discovery-input ;;
     config/posture.conf) printf '%s' posture-expectation ;;
+    config/images.conf) printf '%s' image-source ;;
     data/severity-rubric.conf) printf '%s' severity-modifier ;;
     data/owasp-categories.conf) printf '%s' owasp-category ;;
     data/cis-mappings) printf '%s' cis-mapping ;;
@@ -872,6 +879,24 @@ _records_validate_record() {
       ;;
     script-check)
       _records_check_coverage_scope "$set" "$i" "$path" "$line" "$id"
+      ;;
+    image-source)
+      # rules/RULE-FORMAT.md §9.6.8.  The enum lives in this schema's own arm
+      # rather than beside the unconditional enums above for the reason the
+      # `auth-identity` arm one line up gives: `source` is a common English
+      # word and a later schema is free to spell a key that way meaning
+      # something else, which a tree-wide enum would then reject on a record
+      # this one never sees.
+      #
+      # The two values are exactly report.md §1.2's shapes A and B, and the
+      # SET IS CLOSED ON PURPOSE.  Shape C (`docker save` shelled out to a
+      # running runtime) is a convenience wrapper that PRODUCES a shape-A
+      # tarball and re-enters the shape-A path; giving it a `source` value of
+      # its own would make it a second acquisition code path - the second door
+      # docs/FOUNDATION.md tension 19 refuses for the network, applied to a
+      # container runtime.
+      _records_check_enum "$set" "$i" "$path" "$line" "$id" source \
+        docker-archive oci-layout
       ;;
   esac
 

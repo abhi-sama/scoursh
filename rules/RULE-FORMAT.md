@@ -387,6 +387,7 @@ A parser cannot classify a line without its schema, because §7 consults *single
 | `config/auth.conf` | **auth identity** (§9.6.2) |
 | `config/discovery.conf` | **discovery input** (§9.6.3) |
 | `config/posture.conf` | **posture expectation** (§9.6.4) |
+| `config/images.conf` | **image source** (§9.6.8) |
 | `data/severity-rubric.conf` | **severity modifier** (§9.6.5) |
 | `data/owasp-categories.conf` | **OWASP category label** (§9.6.6) |
 | `data/cis-mappings` | **CIS control label** (§9.6.7) |
@@ -542,6 +543,7 @@ expectation id silently collide with a scope target id.
 | **discovery id** | `config/discovery.conf` | `^[a-z][a-z0-9-]*$` | Unique within the file, and MUST name an existing target id (`E080`) |
 | **auth identity id** | `config/auth.conf` | `<target>.<label>` | Unique within the file; the `<target>` part MUST name an existing target id (`E080`) |
 | **expectation id** | `config/posture.conf` | `^[a-z][a-z0-9-]*$` | Unique within the file |
+| **image id** | `config/images.conf` | `^[a-z][a-z0-9-]*$` | Unique within the file. Operator-assigned and deliberately **stable**: it is the `image-id` coverage cell (§9.5.1), so it must survive a rebuild and a retag, and it is never validated against the image's own digest, tag or content. |
 | **rubric modifier id** | `data/severity-rubric.conf` | `^[a-z][a-z0-9-]*$` | Unique within the file |
 | **CIS control id** | `data/cis-mappings` | `^[0-9]+(\.[0-9]+)+$`, the benchmark's own dotted-decimal numbering, §9.6.7 | Unique within the file. This namespace is **never** validated against a `cis:` field value (§9.1, §9.2, §9.5): the id is authored on the check record and this table is a reference the report layer consults, not a cross-reference the linter enforces either direction. |
 | **config literal** | single-record config files | the frozen basename literal | One record per file (`E071`) |
@@ -1088,6 +1090,36 @@ id is (§9.6.6): the bare id plus a recorded reason, never a blank or an invente
 is the normative document for what is currently seeded, what is a stated gap, and the refresh procedure for
 closing it - read it before adding or editing a row here.
 
+#### 9.6.8 `config/images.conf` - image source
+
+One record per built container image the operator makes available to `scan.sh image`, mapping an
+operator-assigned **stable** id to a **local, already-on-disk** image.
+`data/scoursh-image-scan-design/report.md` §1.2's shapes A and B are the whole of this schema.
+
+| Key | Req | Card | Multi-line | Value |
+|---|---|---|---|---|
+| `id` | required | single | no | The image name used by `--image`. `^[a-z][a-z0-9-]*$`. Unique within the file. MUST be first. |
+| `source` | required | single | no | `docker-archive` or `oci-layout`. Anything else is `E024`. |
+| `path` | required | single | no | Path to the docker-save tarball (`docker-archive`) or to the OCI image-layout directory (`oci-layout`). A relative path resolves against the process's working directory, never against the install root; an absolute path is recommended. |
+| `reference` | optional | single | no | Which image inside a multi-image source to read: a `RepoTags` entry for `docker-archive`, or the `org.opencontainers.image.ref.name` annotation for `oci-layout`. A source holding exactly one image needs no `reference`; a source holding more than one and naming no `reference` is a **declared refusal**, never an arbitrary pick. |
+| `notes` | optional | single | yes | Free text. |
+| `format-version` | optional | single | no | As §9.6.5. |
+
+**The id is deliberately not derived from anything the image itself carries.** The digest changes on
+every rebuild and the tag changes on every release, so either one would put every finding in a fresh
+`image-id` coverage cell (§9.5.1) and nothing would ever be classified `fixed` - the whole product
+value of scanning an image run over run.  This is `config/scope.conf`'s own decision one module over
+(`docs/FOUNDATION.md` tension 5: DAST's location component is "the `config/scope.conf` id, **not the
+URL**"), and it means `id` is never validated against the image's real content, on purpose.
+
+**There is no registry, daemon or URL value, and that is a safety property rather than an omission.**
+`lib/http.sh` refuses any host absent from `config/scope.conf` and there is no third egress channel
+(`docs/FOUNDATION.md` tension 19), so an image is supplied the way `data/advisories.db` is: built on a
+networked box and handed to the scanner as a file.  Report §1.2's shape C - shelling out to a local
+`docker save` - is convenience sugar that **produces** a shape-A tarball and re-enters the
+`docker-archive` path; if it is ever built it adds no `source` value of its own, because a second
+acquisition path is a second door of exactly the kind tension 19 refuses for the network.
+
 ## 10. The `context` directive
 
 `docs/DESIGN.md` §6.2 asks for "a `# context:` directive option to require/deny a neighboring pattern
@@ -1633,6 +1665,19 @@ examples above, it trips item **2** and nothing else, so it needs **no `format_v
    finding becomes `new`.
 4. **Does not apply.** No existing SARIF `ruleId` or `partialFingerprints` value changes, for the
    identical reason item 3 does not apply.
+
+**Which of the four ADDING A WHOLE NEW SCHEMA trips.**
+`image-source` (§9.6.8, `config/images.conf`) is the worked example, and it is the two examples above
+taken together rather than a fourth shape: a new §9.6 schema plus the one path-table row that reaches
+it. It trips item **2** alone, for their reasons combined - no existing file's schema resolution
+changes, because `config/images.conf` matched no row before and every other path still matches the row
+it always did; `lib/records.sh` gains a `_schema_fields` arm, a `records_schema_names` entry, a
+`records_schema_for_path` row and one `_records_check_enum` call, and the file's own consumer
+(`modules/image/acquire.sh`) lands in the same change; and no check id, module prefix, fingerprint
+input or SARIF value derives from an operator-config schema, so items 3 and 4 do not apply and
+`state/` and `config/baseline.json` stay valid. The image **id** an operator writes here is a
+coverage-CELL value, never a check id - it is not in the check-id namespace (§9.1.1a) and does not
+enter a fingerprint's `check_id` component.
 
 Generalising, since this is the third worked example and all three agree: an amendment that **adds** a
 legal spelling, leaving every existing one valid and every existing file parsing unchanged, trips item 2

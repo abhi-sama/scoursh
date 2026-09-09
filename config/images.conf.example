@@ -1,0 +1,65 @@
+# scoursh image sources - rules/RULE-FORMAT.md §9.6.8
+#
+# REQUIRED for `scan.sh image` unless every run passes --source explicitly.
+# `sast`, `sca`, `iac`, `dast`, `cloud` and `network` do not read this file at
+# all (docs/FOUNDATION.md tension 14's required-inputs table).
+#
+# Copy this file to config/images.conf and edit it.
+#
+# SCOURSH NEVER PULLS AN IMAGE. lib/http.sh refuses any host absent from
+# config/scope.conf and there is no third egress channel (tension 19), so an
+# image reaches this scanner the way data/advisories.db does: produced on a
+# networked box and handed over as a file. Nothing below is a registry
+# reference, a daemon socket or a URL, and no key in this schema can become
+# one.
+#
+#   docker save myapp:v1 -o /srv/images/myapp-v1.tar          # shape A
+#   skopeo copy docker://myapp:v1 oci:/srv/images/myapp-oci   # shape B
+#
+# Both commands run wherever the image already is. scoursh reads the result.
+#
+# THE ID IS YOURS AND IT MUST BE STABLE. `id` is the `image-id` coverage cell
+# (rules/RULE-FORMAT.md §9.5.1): it is what lets a CVE that a rebuild patched
+# be classified `fixed` on the next run rather than `unknown` plus `new`. The
+# digest changes on every rebuild and the tag changes on every release, so
+# either one as the id would put every finding in a fresh cell forever and
+# destroy the diff - which is why `id` is never checked against the image's
+# own content, deliberately. Name the THING you keep scanning ("the payments
+# API image"), not the build you happen to be scanning today.
+#
+# `path` is a local filesystem path: the docker-save tarball for
+# `source: docker-archive`, the OCI image-layout DIRECTORY (the one holding
+# `index.json` and `oci-layout`) for `source: oci-layout`. A relative path
+# resolves against the working directory the scan runs in, never against the
+# install root, so prefer an absolute one.
+#
+# `reference` picks one image out of a source that holds several - a RepoTag
+# for a docker-archive, the org.opencontainers.image.ref.name annotation for
+# an OCI layout. A source holding exactly one image needs no `reference`; a
+# source holding several and naming none is REFUSED with a recorded reason,
+# never resolved by picking the first one, because "scoursh scanned an image
+# from this file" and "scoursh scanned the image you meant" are different
+# facts and only an operator can tell them apart.
+#
+# NOTHING BELOW NAMES A REAL IMAGE, REGISTRY OR HOST: every path is an
+# illustrative placeholder. scoursh ships no scannable target of its own
+# (docs/DESIGN.md §1).
+
+id: payments-api
+source: docker-archive
+path: /srv/scoursh-images/payments-api.tar
+notes: Produced by `docker save payments-api:$TAG -o
+  /srv/scoursh-images/payments-api.tar` on the build host and copied here.
+  The id stays `payments-api` across every rebuild - that is the whole point
+  of it. A pipe | a colon: a hash # and a "quote" are all ordinary bytes in
+  this field, which is why config/images.conf uses the block-record format
+  rather than a delimited line.
+
+id: payments-worker
+source: oci-layout
+path: /srv/scoursh-images/payments-worker-oci
+reference: payments-worker:staging
+notes: An OCI image layout directory (index.json + oci-layout + blobs/), the
+  shape `skopeo copy ... oci:DIR` writes. This layout holds more than one
+  tagged image, so `reference` names which one to read; without it the run
+  refuses rather than picking one.
