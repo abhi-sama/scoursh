@@ -278,11 +278,13 @@ for the dated decision record.
 Four surfaces are built and produce real findings today: **SAST**, **IaC**, **SCA** (once you've
 built `data/advisories.db`), and **DAST** (once you've authorized a target). Guided mode, persistent
 run state with a real `--fail-on-new` CI carve-out, a complete, schema-validated SARIF 2.1.0 writer,
-and the OWASP half of the compliance report (findings grouped by OWASP Top 10 category, with an
-honest per-category assessed/out-of-scope/filtered status, in both `report.md` and `report.html`)
-have also landed. **Cloud/AWS (CSPM) and the CIS half of the compliance report remain planned, not
-built** - `scan.sh cloud` is a real, accepted invocation that does nothing: there is no
-`modules/cloud/` anywhere in the tree, and the run says so rather than reporting a silent clean pass.
+and both halves of the compliance report (findings grouped by OWASP Top 10 category and by CIS AWS
+Foundations Benchmark v3.0.0 control, each with an honest per-category/per-control
+assessed/out-of-scope/not-applicable/filtered status, in both `report.md` and `report.html`) have also
+landed. **Cloud/AWS (CSPM) remains mostly planned, not built**: `modules/cloud/aws/live/s3.sh` is the
+one live service that exists today, so a `--live` run examines S3 buckets and nothing else - every
+other service in `docs/DESIGN.md` §8.1's catalog is still an unexamined `scan.sh cloud` no-op, and the
+run says so rather than reporting a silent clean pass.
 See [`ROADMAP.md`](ROADMAP.md) for the full, current priority order, including recently-fixed defects
 in shipped features, and [`docs/USAGE.md`'s "Accepted but not yet
 implemented"](docs/USAGE.md#accepted-but-not-yet-implemented) for every flag that parses today but

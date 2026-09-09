@@ -683,25 +683,27 @@ before this ticket and reports 10 after, so its checks 1-3 have stopped being va
 **Every OTHER `aws/live/*.sh` service in `docs/DESIGN.md` §8.1's catalog is still absent**, and a
 `--live` run records each one as unexamined rather than counting it clean.
 **Step 7 (persistent run state, `state/` plus `diff`) is complete.**
-Step 10 (SARIF plus the compliance report) is partially landed: Track A (the SARIF emitter) is
-complete, and Track B (the compliance-mapping report) has its unblocked OWASP half landed
-(COMPLIANCE-01/02) plus its CIS half's own unblocked ticket, COMPLIANCE-03 (`data/cis-mappings`: the
-format, the table, and its refresh procedure) - only COMPLIANCE-04 (the CIS report view itself,
-blocked on step 6) remains unstarted.
-All three have a written sub-ticket plan - `docs/STEP6-CLOUD-PLAN.md`, `docs/STEP7-STATE-PLAN.md`,
-and step 10's `docs/STEP10-SARIF-PLAN.md` (SARIF-01..06 plus COMPLIANCE-01..04) - and step 7 and
-step 10's SARIF track landed ahead of step 6 per `docs/STEP7-STATE-PLAN.md`'s stated priority order
-among the three (step 7 first, then step 10, then step 6 last).
+**Step 10 (SARIF plus the compliance report) is now complete in full**: Track A (the SARIF emitter) is
+complete, and Track B (the compliance-mapping report) has landed all four tickets - COMPLIANCE-01/02
+(the OWASP half), COMPLIANCE-03 (`data/cis-mappings`: the format, the table, and its refresh
+procedure), and COMPLIANCE-04 (the CIS report view itself, unblocked once step 6 supplied its first
+`cis`-carrying finding).
+All three of steps 6/7/10 have a written sub-ticket plan - `docs/STEP6-CLOUD-PLAN.md`,
+`docs/STEP7-STATE-PLAN.md`, and step 10's `docs/STEP10-SARIF-PLAN.md` (SARIF-01..06 plus
+COMPLIANCE-01..04) - and step 7 and all of step 10 landed ahead of step 6 finishing, per
+`docs/STEP7-STATE-PLAN.md`'s stated priority order among the three (step 7 first, then step 10, then
+step 6 last).
 **Read `docs/STEP10-SARIF-PLAN.md` before treating step 10's queue position as a dependency**: it
 establishes, against the tree, that step 10 is three deliverables rather than one - the SARIF emitter
 needed neither step 6 nor step 7, the compliance report's OWASP half is unblocked too and so was
 COMPLIANCE-03 (the CIS table, as distinct from the CIS report view), and the `--fail-on` CI gate that
 `docs/DESIGN.md` §13 item 10 bundles with them shipped back at step 3 and carries no ticket at all.
+Only COMPLIANCE-04 needed step 6 at all, and only for its FIRST `cis`-carrying finding - not for step 6
+to finish.
 **Track A of step 10 (the SARIF emitter, SARIF-01 through SARIF-06) is complete**, including its own
-documentation ticket - see the SARIF-01 through SARIF-06 landing paragraphs below. **Track B's OWASP
-half (COMPLIANCE-01 and COMPLIANCE-02) has also landed, and so has COMPLIANCE-03** - see those landing
-paragraphs below, after SARIF-06's. Only COMPLIANCE-04 (the CIS report view, blocked on step 6)
-remains unstarted.
+documentation ticket - see the SARIF-01 through SARIF-06 landing paragraphs below.
+**Track B is now complete too: COMPLIANCE-01 through COMPLIANCE-04 have all landed** - see those
+landing paragraphs below, after SARIF-06's.
 
 **Step 7 (persistent run state) is complete: STATE-01 through STATE-08 have all landed**, matching
 `docs/STEP7-STATE-PLAN.md`'s own "Status" line.
@@ -949,9 +951,8 @@ documentation only: `lib/report.sh` and `lib/findings.sh` each carry one source 
 carries a stale description and asserts nothing about `report.sarif` itself.
 
 **COMPLIANCE-01 and COMPLIANCE-02 (`docs/STEP10-SARIF-PLAN.md` Track B's unblocked OWASP half) have
-now landed, and so has COMPLIANCE-03 (the CIS half's own unblocked ticket); only COMPLIANCE-04 (the CIS
-report view itself) remains, and it is genuinely blocked on step 6 per that plan's own dependency
-table.**
+now landed, and so has COMPLIANCE-03 (the CIS half's own unblocked ticket) and COMPLIANCE-04 (the CIS
+report view itself, once step 6 supplied its first `cis`-carrying finding) - Track B is complete.**
 COMPLIANCE-01 is `data/owasp-categories.conf` (§9.6.6, a new record schema, additive per §14's second
 worked example - no `format_version` bump), a vendored table mapping each OWASP Top 10 2021 id to its
 published category name, read from disk exactly as `data/severity-rubric.conf` is rather than compiled
@@ -1039,6 +1040,48 @@ proof; `tests/lint-rules.sh`'s repository sweep gained one literal-basename matc
 has no extension, unlike every other schema's path, and unlike its machine-generated `data/` siblings
 `versions.db`/`advisories.db`, which must NOT be swept - they are TSV, not records) so the shipped file
 is linted on every run rather than only exercised by its own test suite.
+
+**COMPLIANCE-04 (the CIS compliance view in `report.md` and `report.html`) has now landed, completing
+Track B and step 10 in full.** It was blocked on step 6 supplying its first `cis`-carrying finding, and
+unblocked the moment `modules/cloud/aws/live/s3.sh` (P5) merged - exactly as `docs/STEP10-SARIF-PLAN.md`'s
+own COMPLIANCE-04 row predicted ("one landed cloud check is enough to build and test against").
+It mirrors COMPLIANCE-02's OWASP view exactly in shape: `lib/report.sh` gains a new section 1c
+(`_report_cis_registry_load`/`_report_cis_state`/`_cis_bucket`/`_cis_render_order`, plus `_RPT_CIS`),
+the CIS twin of section 1a's OWASP mechanics, and `_md_cis_compliance`/`_html_cis_compliance` (called
+from `report_md`/`report_html` right after their OWASP siblings) are the CIS twins of
+`_md_owasp_compliance`/`_html_owasp_compliance`. `cis_mappings_load` (COMPLIANCE-03) gained one small,
+additive extension for this: `_CIS_ORDER`, an indexed array preserving the table's ON-DISK record order,
+because a `cis` id is dotted-decimal and **not zero-padded** (`1.10` sorts lexically before `1.2`) -
+`_owasp_render_order`'s own `LC_ALL=C` sort is correct only because every OWASP id IS zero-padded, and
+reusing it here would render the benchmark's own numbering out of order.
+**`cis` is `optional, repeatable` where `owasp` is `required, single`** (`rules/RULE-FORMAT.md`
+§9.1/§9.5), which is the one structural difference from COMPLIANCE-02's shape rather than a straight
+template copy: there is no `none`-mapped tail section (a finding with no `cis` value simply belongs to
+no control group - the ordinary case for nearly every SAST/SCA/IaC/DAST check in this build, which have
+nothing to do with an AWS benchmark), and the check-id-to-control registry map is a NEWLINE-JOINED LIST
+per check rather than one scalar, since one check may cite several controls.
+The ticket's own mandatory honesty split adds a **fourth** bucket beyond OWASP's `findings`/`clean`/
+`out_of_scope` (plus the fourth, `not_run`, COMPLIANCE-02 already added): **`not_applicable`** - "this
+control's check(s) ran but found no matching resource in the scanned account" - a fact only a cloud/
+posture check can produce, so OWASP's per-category view has no equivalent of it. It is read from
+`meta/coverage_reduction`, recognising BOTH the bracketed `checks=[A B C]` shape
+`_report_coverage_state` already reads for other modules AND the singular, unbracketed `check=<id>`
+shape `modules/cloud/aws/live/s3.sh`'s own per-account roll-up (`_s3_record_coverage`) actually emits -
+proven against that exact shape rather than an invented one, since a check named that way is, by that
+function's own construction, never also in `checks_run`. `filtered` (excluded by
+`--profile-scan`/`--intensity`) is kept for shape parity with OWASP even though the ticket named only
+three mandatory states.
+`tests/suites/report.sh`'s COMPLIANCE-04 case adds a fifth fixture registry,
+`tests/fixtures/checks-registry/modules/cloud/aws/live/checks.rules` (registered in
+`tests/lint-rules.sh`'s `fixture_schema_for`, sibling to the existing DAST one), whose `cis:` values are
+**real** CIS AWS Foundations Benchmark v3.0.0 ids from the shipped `data/cis-mappings` table - proving
+real labels and the real benchmark version render, not only the degrade-visibly path an unknown id
+already covered under COMPLIANCE-03 - while its check ids are entirely fixture-only, per the DAST
+fixture's own E019 warning. One run demonstrates all five states distinctly: 2.1.4 (a live finding),
+2.1.1 (clean), 1.6 (not applicable, via the s3.sh-shaped `coverage_reduction`), 1.8 (filtered), and 1.5
+(out of scope - no fixture check cites it). `README.md` and `ROADMAP.md` are updated in the same change
+to say the compliance report (both halves) is complete, per this ticket's own "Carries its own operator
+documentation" row.
 
 **STATE-02 (per-(check, cell) coverage recording, and persist-on-every-run wiring) has also landed**,
 for the same "its own scope does not need the `account-region` producer" reason STATE-01 was authorised

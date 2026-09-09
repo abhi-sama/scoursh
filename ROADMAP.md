@@ -64,6 +64,14 @@ This file is a shorter, reader-facing summary of the same information, and is ha
   `report --from DIR` (regenerating reports from a prior run's own findings, distinct from producing
   them during a scan) has since landed too, independent of `state/` (it needs no classification at
   all, only re-emission) - see AGENTS.md's own entry on it.
+- **Step 10 (SARIF output + compliance report) is complete.** SARIF-01 through SARIF-06 (see
+  [`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md)'s own status table) write a complete,
+  schema-validated SARIF 2.1.0 document under `--format sarif`. COMPLIANCE-01 through COMPLIANCE-04
+  add both halves of the compliance report to `report.md`/`report.html`: findings grouped by OWASP
+  Top 10 2021 category (`data/owasp-categories.conf`) and by CIS AWS Foundations Benchmark v3.0.0
+  control (`data/cis-mappings`), each with an honest per-category/per-control status distinguishing
+  assessed-clean, out-of-scope, not applicable to the scanned account, and filtered out of this run
+  by `--profile-scan`/`--intensity`.
 - **Guided mode is complete.** GUIDE-01 through GUIDE-07 have all landed (see
   [`docs/STEP-GUIDE-PLAN.md`](docs/STEP-GUIDE-PLAN.md)'s own status section): a bare `scan.sh`, or
   `scan.sh <command> --guided`, walks an operator through composing a real command - including the
@@ -74,38 +82,36 @@ This file is a shorter, reader-facing summary of the same information, and is ha
 ## Not yet started
 
 Ordered by priority, highest first.
-With step 5 (DAST) and step 7 (persistent run state) both complete, the compliance report is the top
-priority feature, ahead of live cloud scanning.
+With step 5 (DAST), step 7 (persistent run state) and step 10 (SARIF output + compliance report) all
+complete, live cloud scanning is what remains.
 
-1. **Step 10 (SARIF output + compliance report)** - the SARIF half is **done**: `--format sarif`
-   writes a complete, schema-validated SARIF 2.1.0 document (`report_sarif`, SARIF-01 through
-   SARIF-06) - `tool.driver`/`rules[]`/`artifacts[]`/`invocations[]` and a fully-mapped
-   `runs[0].results[]` carrying this run's actual findings. The OWASP half of the compliance report is
-   **also done** (COMPLIANCE-01/02): `data/owasp-categories.conf` expands every `owasp` id to its
-   published Top 10 2021 label, and `report.md`/`report.html` both group findings by category with an
-   honest per-category status (assessed-clean, out-of-scope, or filtered out of this run by
-   `--profile-scan`/`--intensity`). What remains of step 10 is the CIS half of the compliance report,
-   which still has no emitter anywhere in the tree.
-   A complete sub-ticket breakdown exists in
-   [`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md) (tickets SARIF-01 through SARIF-06 and
-   COMPLIANCE-01/02, all landed; COMPLIANCE-03/04 not started).
-   That plan's own central finding is that this step is three deliverables with three different
-   readiness states, not one: the SARIF emitter **has landed**, unblocked from the start by neither
-   step 6 nor step 7; the compliance report's OWASP half **has also landed**, likewise unblocked, while
-   only its CIS half waits on step 6; and the `--fail-on` CI gate §13 item 10 also names is **already
-   shipped in full** and carries no ticket.
-   Its position at number 1 here, for what is left of it (the CIS half alone now), is therefore a
-   priority choice, not a technical block.
-2. **Step 6 (live cloud / CSPM scanning)** - `scan.sh cloud` is a no-op today, with or without
-   `--live`.
-   There is no `modules/cloud/`, so the dispatch records a `not_yet_built` coverage reduction
-   whichever form is used, and all `--live` adds is a check that the `aws` CLI is installed.
+1. **Step 6 (live cloud / CSPM scanning)** - `modules/cloud/aws/live/s3.sh` is the one live service
+   that exists today (`docs/STEP6-CLOUD-PLAN.md`'s CLOUD-05), so a `--live` run examines every S3
+   bucket in the account and records every other service in `docs/DESIGN.md` §8.1's catalog as
+   unexamined rather than counting it clean.
    A complete sub-ticket breakdown exists in
    [`docs/STEP6-CLOUD-PLAN.md`](docs/STEP6-CLOUD-PLAN.md) (tickets CLOUD-01 through CLOUD-34 plus
    POSTURE-01 through POSTURE-04).
    `docs/STEP6-CLOUD-PLAN.md`'s own build-order gate is now fully cleared too (step 3's tail and all
-   of step 5 have both landed); it is placed last here on priority, not on any remaining technical
-   block.
+   of step 5 have both landed).
+
+**Step 10 (SARIF output + compliance report) is complete and no longer listed here.**
+The SARIF half writes a complete, schema-validated SARIF 2.1.0 document (`report_sarif`, SARIF-01
+through SARIF-06) - `tool.driver`/`rules[]`/`artifacts[]`/`invocations[]` and a fully-mapped
+`runs[0].results[]` carrying this run's actual findings. The compliance report is now **both halves
+done** (COMPLIANCE-01 through COMPLIANCE-04): `data/owasp-categories.conf` expands every `owasp` id to
+its published Top 10 2021 label and `data/cis-mappings` expands every `cis` id to its published CIS
+AWS Foundations Benchmark v3.0.0 title, and `report.md`/`report.html` both group findings by category
+and by control with an honest per-category/per-control status (assessed-clean, out-of-scope, not
+applicable to the scanned account, or filtered out of this run by `--profile-scan`/`--intensity`).
+A complete sub-ticket breakdown exists in
+[`docs/STEP10-SARIF-PLAN.md`](docs/STEP10-SARIF-PLAN.md) (tickets SARIF-01 through SARIF-06 and
+COMPLIANCE-01 through COMPLIANCE-04, all landed).
+That plan's own central finding is that this step was three deliverables with three different
+readiness states, not one: the SARIF emitter needed neither step 6 nor step 7; the compliance report's
+OWASP half was unblocked too, and its CIS half needed only step 6's FIRST `cis`-carrying finding
+(`modules/cloud/aws/live/s3.sh`), not step 6 to finish; and the `--fail-on` CI gate §13 item 10 also
+names was already shipped in full and carries no ticket.
 
 Outside that ordering:
 

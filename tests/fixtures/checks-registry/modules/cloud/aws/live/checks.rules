@@ -1,0 +1,80 @@
+# Fixture script-check registry for tests/suites/report.sh's COMPLIANCE-04
+# case (the CIS compliance view in report.md/report.html).  NOT a shipped
+# catalog: modules/cloud/aws/live/checks.rules owns the real `CLOUD-S3-*` ids
+# for real.  Mirrors the shape tests/fixtures/checks-registry/modules/dast/
+# checks.rules already documents for the OWASP compliance test - a small,
+# fully-controlled registry so the four-way honesty split (findings/clean/
+# not-applicable/filtered, plus out-of-scope for a real id no fixture check
+# cites at all) is deterministic, rather than coupled to however many real
+# `cis:` mappings modules/cloud/ happens to carry today.
+#
+# EVERY ID HERE IS DELIBERATELY DISTINCT FROM EVERY SHIPPED ONE (see the DAST
+# fixture's own header for why: E019 scopes check-id uniqueness to the whole
+# repository, not to one file).  The `cis:` VALUES are real CIS AWS
+# Foundations Benchmark v3.0.0 ids from the shipped data/cis-mappings table
+# (rules/RULE-FORMAT.md §9.1.1a: that namespace is never cross-referenced
+# against a `cis:` field either direction, so reusing a real id here is not a
+# collision) - that is what lets this fixture prove real labels and the real
+# benchmark version render, rather than only the "unknown id" degrade path.
+
+id: CLOUD-S3-CIS_FIXTURE_PUBLIC-01
+title: Fixture public-exposure check (findings bucket)
+script: aws/live/s3.sh
+severity: high
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 2.1.4
+remediation: This is a fixture check; it exists only to prove the CIS
+  compliance view groups a live finding under its control id.
+references: CWE-732
+
+id: CLOUD-S3-CIS_FIXTURE_LOGGING-01
+title: Fixture deny-HTTP-policy check (clean bucket)
+script: aws/live/s3.sh
+severity: high
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 2.1.1
+remediation: This is a fixture check; it exists only to prove a control that
+  ran and found nothing renders "assessed", not "out of scope".
+
+id: CLOUD-S3-CIS_FIXTURE_MFA-01
+title: Fixture hardware-MFA check (not-applicable bucket)
+script: aws/live/s3.sh
+severity: medium
+confidence: high
+cwe: CWE-732
+owasp: A07:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 1.6
+remediation: This is a fixture check; it exists only to prove a control whose
+  check ran but found no matching resource in the account renders distinctly
+  from both "clean" and "out of scope".
+
+id: CLOUD-S3-CIS_FIXTURE_PWPOLICY-01
+title: Fixture password-policy check (filtered bucket)
+script: aws/live/s3.sh
+severity: low
+confidence: high
+cwe: CWE-1188
+owasp: A07:2021
+tags: config-read
+tags: compliance
+coverage-scope: account-region
+cis: 1.8
+remediation: This is a fixture check; it exists only to prove a control
+  excluded from this run by the tension-15 filter chain renders distinctly
+  from both "clean" and "not applicable".

@@ -1005,6 +1005,111 @@ assert_contains "$HT15" '<th>category</th><th>label</th><th>findings</th>' \
 assert_contains "$HT15" '<td>A03:2021</td><td>Injection</td>' \
   'FAILS if the count table were replaced instead of kept, per this ticket'"'"'s own instruction'
 
+printf -- '\n-- COMPLIANCE-04: the CIS compliance view in report.md and report.html --\n'
+# A dedicated fixture registry (tests/fixtures/checks-registry/modules/cloud/
+# aws/live/checks.rules, sibling to the DAST one COMPLIANCE-02 uses above),
+# under the SAME SCOURSH_INSTALL_ROOT still in effect from that block. Its
+# `cis:` values are real CIS AWS Foundations Benchmark v3.0.0 ids
+# (data/cis-mappings, already loaded and memoized by the COMPLIANCE-03 case
+# earlier in this file while SCOURSH_INSTALL_ROOT was still $ROOT - real
+# labels and the real benchmark version therefore resolve here too, exactly
+# as COMPLIANCE-02's A03:2021 "Injection" label does above), so this proves
+# real labels grouping real findings rather than only the degrade-visibly
+# path: 2.1.4 (findings), 2.1.1 (clean), 1.6 (not applicable to the account -
+# a fixture CLOUD-S3-* check named in a coverage_reduction, never in
+# checks_run), 1.8 (filtered by --profile-scan/--intensity), and 1.5 (out of
+# scope - no fixture check anywhere cites it).
+DCIS=$SCOURSH_SCRATCH/rpt-cis-compliance
+rm -rf "$DCIS"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$DCIS"
+DCIS=$SCOURSH_RUN_DIR
+
+# 2.1.4 - a live finding: the "findings" bucket, grouped by control.
+finding_new
+finding_set check_id CLOUD-S3-CIS_FIXTURE_PUBLIC-01
+finding_set module cloud
+finding_set title 'S3 bucket ACL grants read access to a public grantee group (fixture)'
+finding_set base_severity high
+finding_set cwe CWE-732
+finding_set owasp A01:2021
+finding_add cis 2.1.4
+finding_set loc_account_id 111122223333
+finding_set loc_region global
+finding_set loc_resource_key arn:aws:s3:::fixture-bucket
+finding_set loc_sub_key acl
+finding_set cell 111122223333/global
+finding_set remediation 'Remove the public grant.'
+finding_set_evidence 'Grantee: AllUsers, Permission: READ'
+finding_emit
+
+findings_merge "$DCIS"
+
+# 2.1.1 - assessed this run, no findings: the "clean" bucket.
+run_record checks_run CLOUD-S3-CIS_FIXTURE_LOGGING-01
+
+# 1.6 - the check ran but found no matching resource in the scanned account:
+# the "not applicable" bucket, distinct from both "clean" and "out of scope".
+# The exact prose modules/cloud/aws/live/s3.sh's own per-account roll-up
+# emits (`_s3_record_coverage`'s singular, unbracketed `check=<id>` shape,
+# not the bracketed `checks=[...]` list `_report_coverage_state` already
+# reads for OTHER modules) - proving COMPLIANCE-04 reads the shape the
+# module that unblocked it actually produces.
+run_record coverage_reduction 'module=cloud reason=no_bucket_examined service=s3 check=CLOUD-S3-CIS_FIXTURE_MFA-01 account=111122223333 buckets_total=0 buckets_examined=0 - this check answered for NO bucket in the account and is therefore NOT recorded in checks_run.'
+
+# 1.8 - filtered out of THIS run by the tension-15 chain: the "filtered"
+# bucket, distinct from "not applicable" and "clean".
+run_record skipped_checks 'check=CLOUD-S3-CIS_FIXTURE_PWPOLICY-01 skipped_by=intensity=passive'
+
+report_all "$DCIS"
+MDCIS=$(cat "$DCIS/report.md")
+HTCIS=$(cat "$DCIS/report.html")
+
+t_case 'report.md has a CIS compliance section, where it had none before'
+assert_contains "$MDCIS" '## CIS compliance' 'the section heading is present'
+assert_contains "$MDCIS" 'CIS Amazon Web Services Foundations Benchmark 3.0.0' \
+  'and it states the benchmark name and version at the head of the section'
+
+t_case 'report.md groups the findings themselves under their real control id, not merely a count'
+assert_contains "$MDCIS" "### 2.1.4 - Ensure that S3 Buckets are configured with 'Block public access' setting" \
+  '2.1.4 carries its published v3.0.0 title'
+assert_contains "$MDCIS" 'CLOUD-S3-CIS_FIXTURE_PUBLIC-01' \
+  'and the live finding'"'"'s own check id appears under that heading - FAILS under a summary that only counts'
+
+t_case 'a control with a check that ran and found nothing reads assessed, not silently clean'
+assert_contains "$MDCIS" '### 2.1.1 - Ensure S3 Bucket Policy is set to deny HTTP requests' \
+  '2.1.1 carries its published title'
+assert_contains "$MDCIS" 'Assessed this run - no findings.' \
+  'FAILS if this bucket were indistinguishable from "out of scope" or "not applicable"'
+
+t_case 'a control whose check ran but found no matching resource in the account renders that fact, never as clean'
+assert_contains "$MDCIS" "### 1.6 - Ensure hardware MFA is enabled for the 'root' user account" \
+  '1.6 carries its published title'
+assert_contains "$MDCIS" 'no matching resource in the scanned account this run (no_bucket_examined)' \
+  'names the real coverage_reduction reason - FAILS if a not-applicable control read the same as an assessed-clean one'
+
+t_case 'a control filtered out of this run by --profile-scan/--intensity renders that fact, distinct from "not applicable"'
+assert_contains "$MDCIS" '### 1.8 - Ensure IAM password policy requires minimum length of 14 or greater' \
+  '1.8 carries its published title'
+assert_contains "$MDCIS" 'excluded from this run (intensity=passive)' \
+  'names the real skipped_by reason - FAILS if a filtered control read the same as a not-applicable one'
+
+t_case 'a control with no check anywhere in this build targets it renders "out of scope", never a fabricated clean bill'
+assert_contains "$MDCIS" "### 1.5 - Ensure MFA is enabled for the 'root' user account" \
+  '1.5 carries its published title'
+assert_contains "$MDCIS" 'No check in this build of scoursh targets this control yet.' \
+  'FAILS if a control with zero registry checks read identically to one that was assessed and found nothing'
+
+t_case 'report.html carries the equivalent CIS compliance section'
+assert_contains "$HTCIS" 'id="cis-compliance"' 'the section anchor exists'
+assert_contains "$HTCIS" 'CIS compliance' 'with its heading'
+assert_contains "$HTCIS" 'CIS Amazon Web Services Foundations Benchmark' 'and states the benchmark name'
+assert_contains "$HTCIS" "Ensure that S3 Buckets are configured with &#39;Block public access&#39; setting" \
+  'and every control label renders, escaped, not only the bare id'
+assert_contains "$HTCIS" "Ensure hardware MFA is enabled for the &#39;root&#39; user account" \
+  'including the not-applicable control'
+assert_not_contains "$HTCIS" '<script' 'still no <script> element anywhere (tension 10)'
+
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 SCOURSH_INSTALL_ROOT=$ROOT
 
