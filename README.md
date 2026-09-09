@@ -3,9 +3,9 @@
 **Scan exhaustively. Trust nothing over the network.**
 
 `scoursh` is an egress-restricted, shell-based security scanner: one tool, one CLI, one report,
-across source code (SAST), dependencies (SCA), infrastructure-as-code (IaC), and a running endpoint
-(DAST) - with live cloud posture checking (CSPM) already designed and next in line, but not built
-yet. It makes zero network calls except the ones you explicitly authorize, runs on nothing but
+across source code (SAST), dependencies (SCA), infrastructure-as-code (IaC), a running endpoint
+(DAST), and live AWS configuration (Cloud/CSPM). It makes zero network calls except the ones you
+explicitly authorize, runs on nothing but
 `bash` and standard coreutils, and treats "we did not check that" as a first-class result instead of
 folding it into "clean." The name blends **scour** (search thoroughly, corner to corner) and **sh**
 (the shell it's written in) - *scan exhaustively*.
@@ -33,9 +33,9 @@ folding it into "clean." The name blends **scour** (search thoroughly, corner to
 | **SCA** | Dependency/lockfile CVEs across 6 ecosystems (npm, PyPI, Maven, Go, RubyGems, Composer) | ✅ built - `scan.sh sca`, once you've [built the advisory database](#commands--recipes) |
 | **IaC** | Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose | ✅ built - `scan.sh iac` |
 | **DAST** | A running application you've authorized - auth/crawl, passive checks, safe-active, the full injection family, application-layer (GraphQL, rate-limiting, JWT, IDOR) | ✅ built - `scan.sh dast` |
-| **Cloud / CSPM** | Live AWS configuration | 🚧 designed, **not built** - `scan.sh cloud` is an accepted, logged no-op |
+| **Cloud / CSPM** | Live AWS configuration | ✅ built - `scan.sh cloud`, 30 AWS services, read-only, credential-authorized, CIS/OWASP-mapped |
 
-Roughly 180 checks ship across the four built surfaces. The complete catalogue - every check id,
+Roughly 290 checks ship across the five built surfaces. The complete catalogue - every check id,
 what it catches, and what it needs to run - is [`docs/CHECKS.md`](docs/CHECKS.md) (also published as
 a standalone page, [`docs/checks.html`](docs/checks.html)). Almost all of it runs with **no external
 data**: point scoursh at a path or a running target and every SAST/IaC/DAST check works immediately.
@@ -45,7 +45,7 @@ Only dependency-CVE matching (SCA) and one banner check need the vendored adviso
 ## Why scoursh
 
 scoursh is not a deeper Semgrep, ZAP, or Trivy, and it won't claim to be - a specialist in any single
-category outclasses it there. Its value is different: **one** unified, egress-safe sweep across four
+category outclasses it there. Its value is different: **one** unified, egress-safe sweep across five
 surfaces, with no heavy toolchain to install, that states its own blind spots instead of quietly
 reporting "clean" when it never actually looked. Reach for it as a CI baseline everywhere - including
 air-gapped or egress-audited environments a specialist can't run in at all - or wherever "did it
@@ -208,8 +208,8 @@ on disk; absent, it is a silent no-op, never an error. Nothing is fetched at sca
 ./scan.sh sast --path DIR --fail-on high --fail-on-new    # ...but only for findings new since the last run
 ./scan.sh sast --path DIR --baseline config/baseline.json # suppress accepted-risk findings by fingerprint
 ./scan.sh diff --against reports/<prior-run>          # classify the latest run vs a named earlier one
-./scan.sh report --from reports/<prior-run>           # PLANNED, not built - accepted, validated, a logged no-op today
-./scan.sh cloud --live                                # AWS CSPM - PLANNED, not built (logged no-op today)
+./scan.sh report --from reports/<prior-run>           # regenerate report.md/html/sarif from a prior run's own findings, no rescan
+./scan.sh cloud --live                                # AWS CSPM - 30 services, read-only, needs AWS credentials
 ```
 
 ## Output & the audit report
@@ -234,9 +234,9 @@ Full reference: [`docs/USAGE.md`](docs/USAGE.md#--format-and-the-formats-config-
   host absent from `config/scope.conf`'s resolved allowlist - no raw-URL bypass, enforced at runtime
   and lint-checked in the test suite. SAST, SCA, and IaC make zero network calls, full stop; DAST
   talks only to a target you named there.
-- **Read-only AWS, by construction.** Every AWS call would go through `lib/awscli.sh`'s `aws_ro`
-  wrapper, which refuses any operation that is not read-only. It's built and tested ahead of the live
-  cloud checks that will use it - `scan.sh cloud` doesn't call it yet, since no cloud check exists.
+- **Read-only AWS, by construction.** Every AWS call - across all 30 `scan.sh cloud` service checks -
+  goes through `lib/awscli.sh`'s `aws_ro` wrapper, which refuses any operation that is not read-only,
+  enforced at runtime and lint-checked in the test suite, the same way `lib/http.sh` gates DAST.
 - **Active DAST requires `--i-own-target NAME`.** Raising the default rate limit, request budget, or
   intensity above `passive` needs this affirmation, and `NAME` must equal `--target` exactly - a
   stale command or a copied CI config can never carry an authorization to a host that changed hands.
@@ -248,9 +248,9 @@ Full reference: [`docs/USAGE.md`](docs/USAGE.md#--format-and-the-formats-config-
   out-of-scope connection is physically impossible rather than merely observed - Linux-only, with no
   macOS equivalent.
 
-This is deliberately **egress-restricted, not air-gapped**: `dast`, and a future `cloud --live`,
-inherently have to talk to *something*, since testing a running app or reading live AWS config is the
-entire point of those two scans. What's actually guaranteed is narrower, and it's the part that
+This is deliberately **egress-restricted, not air-gapped**: `dast` and `cloud --live` inherently have
+to talk to *something*, since testing a running app or reading live AWS config is the entire point of
+those two scans. What's actually guaranteed is narrower, and it's the part that
 matters - scoursh itself has no back-channel, and it never decides on its own who to contact. See
 `docs/FOUNDATION.md` tension 28 for the full correction and `docs/adr/0001-egress-model-correction.md`
 for the dated decision record.
@@ -275,16 +275,20 @@ for the dated decision record.
 
 ## Status
 
-Four surfaces are built and produce real findings today: **SAST**, **IaC**, **SCA** (once you've
-built `data/advisories.db`), and **DAST** (once you've authorized a target). Guided mode, persistent
-run state with a real `--fail-on-new` CI carve-out, a complete, schema-validated SARIF 2.1.0 writer,
-and both halves of the compliance report (findings grouped by OWASP Top 10 category and by CIS AWS
-Foundations Benchmark v3.0.0 control, each with an honest per-category/per-control
+Five surfaces are built and produce real findings today: **SAST**, **IaC**, **SCA** (once you've
+built `data/advisories.db`), **DAST** (once you've authorized a target), and **Cloud/AWS CSPM** (once
+you've pointed it at an account with resolvable credentials). Guided mode, persistent run state with a
+real `--fail-on-new` CI carve-out, a complete, schema-validated SARIF 2.1.0 writer, and both halves of
+the compliance report (findings grouped by OWASP Top 10 category and by CIS AWS Foundations Benchmark
+v3.0.0 control, each with an honest per-category/per-control
 assessed/out-of-scope/not-applicable/filtered status, in both `report.md` and `report.html`) have also
-landed. **Cloud/AWS (CSPM) remains mostly planned, not built**: `modules/cloud/aws/live/s3.sh` is the
-one live service that exists today, so a `--live` run examines S3 buckets and nothing else - every
-other service in `docs/DESIGN.md` §8.1's catalog is still an unexamined `scan.sh cloud` no-op, and the
-run says so rather than reporting a silent clean pass.
+landed. **Cloud/AWS (CSPM) is built**: `scan.sh cloud --live` resolves the account and its enabled
+regions, runs read-only checks against all 30 services in `docs/DESIGN.md` §8.1's catalog through the
+`aws_ro` chokepoint, and records access-denied, opted-out, or throttled services as a declared
+coverage reduction rather than folding them into a silent clean pass. What's still open is the
+`posture/` phase (SSO/edge/session drift checks against an operator-declared baseline) - the config
+schema (`config/posture.conf.example`) exists but no posture check has landed yet - and there is no
+bundled or hosted AWS account: you point it at your own.
 See [`ROADMAP.md`](ROADMAP.md) for the full, current priority order, including recently-fixed defects
 in shipped features, and [`docs/USAGE.md`'s "Accepted but not yet
 implemented"](docs/USAGE.md#accepted-but-not-yet-implemented) for every flag that parses today but

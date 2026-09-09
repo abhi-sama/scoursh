@@ -11,6 +11,7 @@
     --accent:#2f5bd0; --accent-soft:#eaf0ff;
     --green:#0f7b4f; --green-soft:#e6f6ee; --blue:#1f6ba8; --blue-soft:#e6f1fb;
     --purple:#7a3fb0; --purple-soft:#f1e9fa; --grey:#6b727c; --grey-soft:#eef0f4;
+    --orange:#a35b13; --orange-soft:#faf0e2;
     --crit:#b0243a;
     --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
     --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
@@ -24,6 +25,7 @@
       --accent:#7ea3f5; --accent-soft:#182238;
       --green:#5fd6a0; --green-soft:#0f2419; --blue:#6fb8e8; --blue-soft:#0e2233;
       --purple:#c39ae8; --purple-soft:#241833; --grey:#8b939f; --grey-soft:#1e232b;
+      --orange:#e0a659; --orange-soft:#2c2013;
       --crit:#f58aa0;
     }
   }
@@ -33,6 +35,7 @@
     --accent:#7ea3f5; --accent-soft:#182238;
     --green:#5fd6a0; --green-soft:#0f2419; --blue:#6fb8e8; --blue-soft:#0e2233;
     --purple:#c39ae8; --purple-soft:#241833; --grey:#8b939f; --grey-soft:#1e232b;
+    --orange:#e0a659; --orange-soft:#2c2013;
     --crit:#f58aa0;
   }
   *{box-sizing:border-box}
@@ -47,12 +50,12 @@
   .legend{display:flex;flex-wrap:wrap;gap:.5rem;margin:1.4rem 0 2rem;padding:1rem;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--radius)}
   .legend .item{display:flex;gap:.5rem;align-items:flex-start;font-size:.85rem;flex:1 1 220px;min-width:0}
   .dot{flex:0 0 auto;width:.85rem;height:.85rem;border-radius:50%;margin-top:.25rem}
-  .d-green{background:var(--green)} .d-blue{background:var(--blue)} .d-purple{background:var(--purple)} .d-grey{background:var(--grey)}
+  .d-green{background:var(--green)} .d-blue{background:var(--blue)} .d-purple{background:var(--purple)} .d-grey{background:var(--grey)} .d-orange{background:var(--orange)}
   .headline{background:var(--green-soft);border:1px solid var(--green);border-radius:var(--radius);padding:1rem 1.2rem;margin:0 0 2rem;font-size:1rem}
   .headline b{color:var(--green)}
   h2{font-size:1.35rem;margin:2.6rem 0 .4rem;letter-spacing:-.01em;display:flex;align-items:center;gap:.6rem}
   h2 .tag{font-size:.62rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding:.2rem .5rem;border-radius:999px}
-  .t-green{background:var(--green-soft);color:var(--green)} .t-blue{background:var(--blue-soft);color:var(--blue)} .t-purple{background:var(--purple-soft);color:var(--purple)} .t-grey{background:var(--grey-soft);color:var(--grey)}
+  .t-green{background:var(--green-soft);color:var(--green)} .t-blue{background:var(--blue-soft);color:var(--blue)} .t-purple{background:var(--purple-soft);color:var(--purple)} .t-grey{background:var(--grey-soft);color:var(--grey)} .t-orange{background:var(--orange-soft);color:var(--orange)}
   h2 + p{color:var(--text-2);margin:.2rem 0 1rem;max-width:70ch}
   h3{font-size:.95rem;margin:1.4rem 0 .5rem;color:var(--text);font-family:var(--mono);font-weight:600}
   h3 small{color:var(--text-3);font-family:var(--sans);font-weight:400;margin-left:.4rem}
@@ -72,14 +75,14 @@
 <div class="wrap">
 <header>
   <h1>What scoursh detects</h1>
-  <p class="sub">The full built-in check catalogue on the <code>dev</code> branch, grouped by scan surface and by what each check needs to run. Roughly 180 checks ship in the box.</p>
+  <p class="sub">The full built-in check catalogue on the <code>dev</code> branch, grouped by scan surface and by what each check needs to run. Roughly 290 checks ship in the box.</p>
 </header>
 
 <div class="headline">
   <b>Almost everything runs with no external data.</b> Point scoursh at source code (<code>--path</code>) or a
   live app (<code>--target</code>) and every SAST, IaC, and DAST check below works immediately &mdash; no database,
-  no downloads, no network. Only <b>dependency-CVE scanning (SCA)</b> and one banner check need the vendored
-  advisory database.
+  no downloads, no network. <b>Dependency-CVE scanning (SCA)</b> and one banner check need the vendored
+  advisory database; <b>Cloud/AWS (CSPM)</b> needs resolvable AWS credentials.
 </div>
 
 <div class="counts">
@@ -88,13 +91,14 @@
   <div class="count"><b>46</b><span>DAST passive</span></div>
   <div class="count"><b>34</b><span>DAST active</span></div>
   <div class="count"><b>6</b><span>SCA ecosystems</span></div>
+  <div class="count"><b>112</b><span>Cloud/AWS checks (30 services)</span></div>
 </div>
 
 <div class="legend">
   <div class="item"><span class="dot d-green"></span><div><b>No external data</b><br>Works on just <code>--path</code> (code) or <code>--target</code> (a running app). Active DAST needs a reachable target + <code>--i-own-target</code>.</div></div>
   <div class="item"><span class="dot d-blue"></span><div><b>Needs the advisory DB</b><br>Requires <code>data/advisories.db</code> (built with <code>tools/vendor-engines.sh advisories</code>).</div></div>
   <div class="item"><span class="dot d-purple"></span><div><b>Optional engine depth</b><br><code>--use-engines</code> adds vendored Semgrep/Trivy/Gitleaks. Boosts depth, not new categories.</div></div>
-  <div class="item"><span class="dot d-grey"></span><div><b>Planned, not built</b><br>Designed but no code ships yet.</div></div>
+  <div class="item"><span class="dot d-orange"></span><div><b>Needs AWS credentials</b><br>Resolvable via profile, environment, or instance role. Read-only only, enforced by <code>lib/awscli.sh</code>'s <code>aws_ro</code> chokepoint. Optional <code>--i-own-account</code> + <code>--assume-role</code> for multi-account.</div></div>
 </div>
 
 <h2>SAST <span class="tag t-green">no external data</span></h2>
@@ -247,6 +251,50 @@ SCA reports that no advisory data was available rather than a false all-clear.</
 <tr><td class="id">SCA-COV-NO_ADVISORY_DB-01 / UNKNOWN_VERSION-01</td><td>Honest coverage notes when data is missing</td></tr>
 </tbody></table></div>
 
+<h2>Cloud / AWS (CSPM) <span class="tag t-orange">needs AWS credentials</span></h2>
+<p>Live AWS configuration, read-only. Runs on <code>./scan.sh cloud --live</code> against 30 services across your
+enabled regions (<code>--assume-role</code> for a second account); every call goes through <code>lib/awscli.sh</code>'s
+<code>aws_ro</code> chokepoint, which refuses anything that is not a read-only API call. Findings carry both a CIS AWS
+Foundations Benchmark v3.0.0 control and an OWASP Top 10 category, feeding the compliance report. An access-denied,
+opted-out, or throttled service is recorded as a coverage reduction, never folded into a clean pass. The
+<code>posture/</code> phase (SSO/edge/session drift against an operator-declared baseline) has a config schema but no
+checks yet.</p>
+<div class="tblwrap"><table>
+<thead><tr><th>Check</th><th>Catches</th></tr></thead><tbody>
+<tr><td class="id">CLOUD-IAM-* (12)</td><td>Root user MFA/access-key hygiene, missing/weak account password policy, no IAM Access Analyzer, full-admin policy, wildcard role trust, cross-account trust with no ExternalId, stale credentials/keys/roles, full-admin identity with no permission boundary, mixed inline+managed policies</td></tr>
+<tr><td class="id">CLOUD-COGNITO-* (24)</td><td>User pool: weak password policy, long-lived temp passwords, MFA off/optional, advanced security off, open self-registration, SMS-only recovery, deletion protection off; app client: non-SRP auth, implicit OAuth grant, plaintext/wildcard callback URL, excessive token lifetime, token revocation off, writable sensitive attribute, username enumeration; identity pool: unauthenticated identities/credentials, over-permissioned unauth role, classic auth flow, permissive role mapping</td></tr>
+<tr><td class="id">CLOUD-S3-* (7)</td><td>Public ACL (read/write), public bucket policy, Block Public Access off, no default encryption, versioning off, access logging off</td></tr>
+<tr><td class="id">CLOUD-RDS-* (4)</td><td>Publicly accessible instance, unencrypted storage, backups/point-in-time recovery off, snapshot shared publicly</td></tr>
+<tr><td class="id">CLOUD-DYNAMODB-* (3)</td><td>VPC endpoint left at the default full-access policy, no encryption at rest, point-in-time recovery off</td></tr>
+<tr><td class="id">CLOUD-EFS-* (3)</td><td>Wildcard file-system policy, no encryption at rest, transit encryption not enforced</td></tr>
+<tr><td class="id">CLOUD-BACKUP-* (1)</td><td>EBS volume with no AWS Backup recovery point</td></tr>
+<tr><td class="id">CLOUD-EC2-* (8)</td><td>Security group open to 0.0.0.0/0 on an admin or database port, default security group attached to a resource, public AMI/snapshot, unencrypted EBS volume, IMDSv2 not enforced, VPC with no flow log</td></tr>
+<tr><td class="id">CLOUD-LAMBDA-* (6)</td><td>Execution role with unrestricted or wildcard-sensitive actions, function URL open to unauthenticated invocation, wildcard resource policy, plaintext-looking env var, env vars not encrypted with a customer-managed key</td></tr>
+<tr><td class="id">CLOUD-ECR-* (3)</td><td>Wildcard repository policy, scan-on-push off, mutable image tags</td></tr>
+<tr><td class="id">CLOUD-ECS-* (2)</td><td>Task assigns a public IP, task role over-permissioned</td></tr>
+<tr><td class="id">CLOUD-EKS-* (2)</td><td>API endpoint reachable from outside the VPC, node-group role over-permissioned</td></tr>
+<tr><td class="id">CLOUD-CLOUDFRONT-* (5)</td><td>Plain-HTTP viewer protocol, weak minimum TLS version, no WAF web ACL, S3 origin with no Origin Access Control/Identity, logging off</td></tr>
+<tr><td class="id">CLOUD-ELB-* (3)</td><td>Plain-HTTP listener with no HTTPS redirect, TLS policy below a TLS 1.2 floor, access logging off</td></tr>
+<tr><td class="id">CLOUD-APIGW-* (2)</td><td>Method with no authorizer and no API key, method relying on an API key alone</td></tr>
+<tr><td class="id">CLOUD-APPSYNC-* (2)</td><td>GraphQL API defaults to a plain API key, API key with a far-future expiration</td></tr>
+<tr><td class="id">CLOUD-ROUTE53-* (1)</td><td>DNS record pointing at a nonexistent S3 static-website bucket (subdomain takeover)</td></tr>
+<tr><td class="id">CLOUD-KMS-* (2)</td><td>Automatic key rotation off, key policy grants an unqualified wildcard principal</td></tr>
+<tr><td class="id">CLOUD-SECRETSMANAGER-* (2)</td><td>Automatic rotation off, resource policy grants an unqualified wildcard principal</td></tr>
+<tr><td class="id">CLOUD-SSM-* (2)</td><td>Sensitive-looking parameter not stored as SecureString, resource policy grants an unqualified wildcard principal</td></tr>
+<tr><td class="id">CLOUD-ACM-* (1)</td><td>Certificate nearing or past expiry</td></tr>
+<tr><td class="id">CLOUD-SNS-* (2)</td><td>Wildcard topic policy, no server-side encryption</td></tr>
+<tr><td class="id">CLOUD-SQS-* (2)</td><td>Wildcard queue policy, no server-side encryption</td></tr>
+<tr><td class="id">CLOUD-CLOUDTRAIL-* (3)</td><td>Not logging in this account/region, not multi-region, log-file validation off</td></tr>
+<tr><td class="id">CLOUD-CONFIG-* (1)</td><td>Configuration recorder absent or not recording</td></tr>
+<tr><td class="id">CLOUD-GUARDDUTY-* (1)</td><td>Not enabled in this region</td></tr>
+<tr><td class="id">CLOUD-INSPECTOR-* (1)</td><td>Automated vulnerability scanning not fully enabled</td></tr>
+<tr><td class="id">CLOUD-MACIE-* (1)</td><td>Sensitive-data discovery not enabled in this region</td></tr>
+<tr><td class="id">CLOUD-OPENSEARCH-* (3)</td><td>Public endpoint with a wide-open access policy, no encryption at rest, node-to-node transport encryption off</td></tr>
+<tr><td class="id">CLOUD-REDSHIFT-* (3)</td><td>Publicly accessible cluster, no encryption at rest, parameter group does not require SSL</td></tr>
+</tbody></table></div>
+<p>Also seeded: <code>COMPOSITE-TOKEN-HIJACK</code> (<code>rules/derived.rules</code>), a cross-module derived finding
+that correlates a DAST contributor with a cloud contributor rather than firing off either surface alone.</p>
+
 <h2>Optional engine depth <span class="tag t-purple">--use-engines</span></h2>
 <p>Vendor a specialist engine (you pin its version + checksum) and <code>--use-engines</code> runs it as an adapter
 for extra depth, keeping scoursh's honest coverage accounting. These add depth to existing surfaces, not new categories.</p>
@@ -255,14 +303,6 @@ for extra depth, keeping scoursh's honest coverage accounting. These add depth t
 <tr><td class="id">Semgrep</td><td>SAST rule breadth</td></tr>
 <tr><td class="id">Trivy</td><td>IaC coverage</td></tr>
 <tr><td class="id">Gitleaks</td><td>Secret detection</td></tr>
-</tbody></table></div>
-
-<h2>Planned &mdash; not built <span class="tag t-grey">no code yet</span></h2>
-<p>Designed in the roadmap but not shipping detections yet.</p>
-<div class="tblwrap"><table>
-<thead><tr><th>Surface</th><th>Status</th></tr></thead><tbody>
-<tr><td class="id">Cloud / AWS (CSPM)</td><td>Fully designed (CIS Benchmark checks per service); the read-only harness ships, the live checks do not. <code>scan.sh cloud</code> is an accepted, logged no-op today.</td></tr>
-<tr><td class="id">SARIF compliance report</td><td>SARIF output ships; the OWASP/CIS-grouped compliance view is planned.</td></tr>
 </tbody></table></div>
 
 <footer>
