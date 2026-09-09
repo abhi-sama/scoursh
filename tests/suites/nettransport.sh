@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# tests/suites/nettransport.sh - lib/nettransport.sh, the pure-bash TCP
+# connect primitive (NET-03).
+#
+# NO CASE HERE OPENS A REAL SOCKET.  `net_connect_probe`'s three-state
+# classification is exercised entirely through the `SCOURSH_NET_PROBE` hook
+# with deterministic fixtures - the same idiom tests/suites/http.sh already
+# uses for SCOURSH_HTTP_TRANSPORT and tests/suites/dast-tls.sh already uses
+# for SCOURSH_TLS_PROBE - and the capability-absent degrade path is exercised
+# by overriding `_net_tcp_capability_probe` (a plain bash function, swapped
+# after sourcing) and by forcing `SCOURSH_NET_TCP_CAPABLE`, never by actually
+# building or running a capability-crippled bash.  This mirrors
+# tests/suites/paranoid.sh's own SCOURSH_PARANOID_FORCE_BACKEND section
+# exactly.
+#
+# Every case that pins a decision names the reading it FAILS under, per this
+# repository's testing rule (AGENTS.md).
+#
+# shellcheck shell=bash
+# SC2016: diagnostic prose quotes shell syntax literally.
+# SC2329: functions below are called indirectly, through the SCOURSH_NET_PROBE
+#         hook or by direct name from a case, not always visibly at the call
+#         site shellcheck inspects.
+# shellcheck disable=SC2016,SC2329
+
+set -Eeuo pipefail
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+# shellcheck source=lib/nettransport.sh
+source "$ROOT/lib/nettransport.sh"
+# shellcheck source=tests/lib/assert.sh
+source "$ROOT/tests/lib/assert.sh"
+
+W=$SCOURSH_SCRATCH/nettransport
+rm -rf "$W"
+mkdir -p "$W"
+
+# Reset the module's own memoized capability state between sections, exactly
+# as a fresh process would start - a leaked '1'/'0' (in-process OR on the
+# scratch-file memo) from an earlier section would silently make a later
+# section's forced value or stubbed probe a no-op.
+_net_reset() {
+  _NET_TCP_CAPABLE=''
+  unset SCOURSH_NET_TCP_CAPABLE SCOURSH_NET_PROBE
+  rm -f "$(_net_capability_file)" 2>/dev/null || true
+}
+
+printf '\n== argument validation ==\n'
+_net_reset
+
+out=$(net_connect_probe '' 22 2>/dev/null) && rc=0 || rc=$?
+assert_eq 'not-open' "$out" \
+  'a missing HOST reports not-open rather than attempting a connect with an empty target - FAILS if the empty-string guard is removed and bash instead tries to interpret /dev/tcp//22'
+assert_eq 1 "$rc" \
+  'a missing HOST is a caller usage error (rc 1), not a legitimate "not-open" result silently returned as if it were real'
+
+out=$(net_connect_probe example.test '' 2>/dev/null) && rc=0 || rc=$?
+assert_eq 'not-open' "$out" 'a missing PORT is refused the same way as a missing HOST'
+assert_eq 1 "$rc" 'a missing PORT is a usage error (rc 1)'
+
+printf '\n== classification via SCOURSH_NET_PROBE: deterministic, no real socket ==\n'
+_net_reset
+
+_stub_fixed() { printf '%s\n' "$_STUB_STATE"; }
+SCOURSH_NET_PROBE=_stub_fixed
+
+_STUB_STATE=open
+assert_eq 'open' "$(net_connect_probe 203.0.113.5 22)" \
+  'the hook is consulted in place of a real connect, and its "open" answer passes through unchanged - FAILS if net_connect_probe ever falls through to _net_connect_default while the hook is set'
+
+_STUB_STATE=not-open
+assert_eq 'not-open' "$(net_connect_probe 203.0.113.5 23)" \
+  'a "not-open" hook answer passes through unchanged'
+
+_STUB_STATE=filtered
+assert_eq 'filtered' "$(net_connect_probe 203.0.113.5 24)" \
+  'a "filtered" hook answer passes through unchanged - the third state is never collapsed into not-open (design report §3.1: "the port did not answer" and "the port refused" are different facts)'
+
+printf '\n== SCOURSH_NET_PROBE receives host/port/deadline exactly as given ==\n'
+_net_reset
+
+_CAPTURED=''
+_stub_capture() { _CAPTURED="host=$1 port=$2 deadline_ms=$3"; printf 'open\n'; }
+SCOURSH_NET_PROBE=_stub_capture
+
+net_connect_probe 198.51.100.9 8443 750 >/dev/null
+assert_eq 'host=198.51.100.9 port=8443 deadline_ms=750' "$_CAPTURED" \
+  'an explicit deadline is forwarded to the probe verbatim - FAILS if net_connect_probe drops or rewrites the third argument'
+
+_CAPTURED=''
+net_connect_probe 198.51.100.9 8443 >/dev/null
+assert_eq "host=198.51.100.9 port=8443 deadline_ms=$_NET_DEFAULT_DEADLINE_MS" "$_CAPTURED" \
+  'omitting the deadline forwards the documented default rather than an empty value'
+
+printf '\n== capability probe: memoized, never re-run once decided ==\n'
+_net_reset
+
+# Called DIRECTLY, never through $(...): a command-substitution subshell
+# would discard this test's own _PROBE_CALLS increment exactly the way the
+# library's in-process _NET_TCP_CAPABLE would be discarded by a real caller -
+# see this file's header and lib/nettransport.sh's own header for why that
+# is precisely the failure mode the scratch-file memo exists to avoid.
+_PROBE_CALLS=0
+_net_tcp_capability_probe() { _PROBE_CALLS=$(( _PROBE_CALLS + 1 )); return 0; }
+if net_probe_capability; then r1=0; else r1=1; fi
+if net_probe_capability; then r2=0; else r2=1; fi
+assert_true "$r1" 'a stubbed present-capability probe reports capable'
+assert_true "$r2" 'a second call reuses the memoized answer'
+assert_eq 1 "$_PROBE_CALLS" \
+  'the underlying probe function ran exactly once across two net_probe_capability calls - FAILS if the memoization guard is missing or checked backwards, which would re-run a real connect attempt on every single port probe of a scan'
+
+printf '\n== capability probe: SCOURSH_NET_PROBE bypasses it entirely ==\n'
+_net_reset
+
+_PROBE_CALLS=0
+_net_tcp_capability_probe() { _PROBE_CALLS=$(( _PROBE_CALLS + 1 )); return 0; }
+SCOURSH_NET_PROBE=_stub_fixed
+_STUB_STATE=open
+net_connect_probe 203.0.113.5 22 >/dev/null
+assert_eq 0 "$_PROBE_CALLS" \
+  'with the test hook set, the capability probe is never consulted at all - FAILS if net_connect_probe routes through net_probe_capability before dispatching to the hook, which would make every hooked test also depend on this host'"'"'s bash build'
+
+printf '\n== capability-absent path: recorded reduction, no real socket, degrades to filtered ==\n'
+_net_reset
+rm -rf "$W/run.capless"
+run_init "$W/run.capless"
+
+_net_tcp_capability_probe() { return 1; }
+out=$(net_connect_probe 203.0.113.5 22)
+assert_eq 'filtered' "$out" \
+  'a bash with no /dev/tcp support degrades every probe to filtered rather than crashing the run or silently reporting not-open - FAILS if the capability guard in _net_connect_default is removed, in which case this would instead attempt a real, unguarded /dev/tcp connect'
+
+cr=$(cat "$SCOURSH_RUN_DIR/meta/coverage_reduction" 2>/dev/null || printf '')
+assert_contains "$cr" 'module=net' \
+  'the coverage_reduction names the owning module'
+assert_contains "$cr" 'reason=net_probe_cmd_absent' \
+  'the coverage_reduction carries the frozen reason string design report §5.2 names, so a report reader can tell "no capability" apart from every other declared skip'
+assert_eq 1 "$(wc -l <"$SCOURSH_RUN_DIR/meta/coverage_reduction" | tr -d ' ')" \
+  'exactly one reduction line is written across this whole section - FAILS if the memoization guard is bypassed and every net_connect_probe call records its own line, which would flood run.json with one line per port on a real scan'
+
+net_connect_probe 203.0.113.5 23 >/dev/null
+net_connect_probe 203.0.113.5 24 >/dev/null
+assert_eq 1 "$(wc -l <"$SCOURSH_RUN_DIR/meta/coverage_reduction" | tr -d ' ')" \
+  'two further probes on the same degraded run still write only the one, first-recorded reduction line'
+
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+
+printf '\n== SCOURSH_NET_TCP_CAPABLE forces the answer without probing at all ==\n'
+_net_reset
+
+_PROBE_CALLS=0
+_net_tcp_capability_probe() { _PROBE_CALLS=$(( _PROBE_CALLS + 1 )); return 0; }
+SCOURSH_NET_TCP_CAPABLE=0
+assert_true "$(net_probe_capability && echo 1 || echo 0)" 'a forced 0 reports not-capable without ever calling the real probe'
+assert_eq 0 "$_PROBE_CALLS" \
+  'the forced value short-circuits the probe entirely - FAILS if net_probe_capability checks SCOURSH_NET_TCP_CAPABLE after already having called the probe function'
+
+_net_reset
+SCOURSH_NET_TCP_CAPABLE=1
+assert_true "$(net_probe_capability && echo 0 || echo 1)" 'a forced 1 reports capable without probing'
+assert_eq 0 "$_PROBE_CALLS" 'and still never calls the real probe'
+
+t_summary 'nettransport'

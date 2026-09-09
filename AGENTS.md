@@ -3335,16 +3335,19 @@ Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start
 - `lib/records.sh` (the record parser) is built **before** step 1's stated contents, since tensions 1, 6, 9, 15, and 26 all depend on it.
 - `lib/awscli.sh` is added to the layout and lands at the start of step 6, before any `aws/live/*.sh` script exists, so no script is ever written against a bare `aws`. **Update:** `lib/awscli.sh` itself now exists (see "AWS module: what exists ahead of step 6" below) - built out of sequence, deliberately, without the `aws/live/*.sh` scripts it was meant to land alongside.
 
-## Network module (NET): Tier 0 shared-file preparation has landed, nothing else has
+## Network module (NET): Tier 0 is NET-01 through NET-03; NET-04 (module scaffold + dispatch) is next
 
 A new scanner surface - declared-listener verification, service/version identification and transport
 posture over an operator-declared port set, never port discovery - is planned as `modules/network/`
-with a `NET` check-id prefix, staged as dependency-ordered tickets the same way DAST and Cloud were.
-**Only the first ticket (shared-file preparation) has landed; `modules/network/` itself, `lib/records.sh`,
-`lib/findings.sh`, `lib/checks.sh`, `scan.sh` and every other NET coupling point named in the plan remain
-untouched.** Do not read this section as "the network module has started" - it is Tier-0 groundwork
-landed alone and first, on purpose, so every later NET ticket can add only its own files without
-conflicting with a peer (the same lesson the cloud module's parallel-ticket cascade cost a rebase over).
+with a `NET` check-id prefix, staged as dependency-ordered tickets the same way DAST and Cloud were
+(`data/scoursh-network-scan-design/report.md` §7 is the staged plan; NET-01 through NET-04 are Tier 0,
+strictly serial, because each touches a file a later NET ticket would otherwise conflict on).
+**NET-01 (shared-file preparation), NET-02 (the `NET` module identity) and NET-03 (the transport
+primitive) have landed. `modules/network/` itself, `scan.sh`'s dispatch wiring, and every probe/finding
+emitter remain untouched - NET-04 is next.** Do not read this section as "the network module runs
+anything yet" - Tier 0 is groundwork landed alone and first, on purpose, so every later NET ticket can
+add only its own files without conflicting with a peer (the same lesson the cloud module's
+parallel-ticket cascade cost a rebase over).
 
 Two shared files changed, both pure preparation with zero new scanner behaviour:
 
@@ -3388,6 +3391,45 @@ lint against a clean `origin/dev` checkout, and observing the identical set of f
 (unshifted) line numbers. Do not read a red `lint-shell` run as evidence this ticket broke something
 without first diffing against `origin/dev` the same way - the standing project rule for a
 suite-wide red already recorded elsewhere in this file for the shellcheck stage applies here too.
+
+**NET-02 (`rules/RULE-FORMAT.md` §9.1.1/§9.2.2/§9.5.1, `lib/records.sh`, `lib/findings.sh`,
+`lib/checks.sh`) has landed - the `NET` module identity, no module or probe.** It is purely additive per
+§14 (item 2 only: no `format_version` bump, no `state/` migration - the ticket's own third worked
+example proves it): `NET` joins the `MODULE` enum, `correlate-on: target` is its §9.2.2 correlation-key
+row, and its §9.5.1 coverage-scope/owning-module rows land alongside the cloud/dast ones they mirror.
+`lib/findings.sh` gains the `net` fingerprint profile - `target host port transport` - matching the
+design report §4.1 exactly (this was the whole reason a new module was chosen over extending DAST:
+DAST's fingerprint profile has no port slot). `tests/lint-rules.sh`'s E053 `module_can_supply` table
+carries the matching NET row so the frozen table and its one enforcer stay in sync.
+
+**NET-03 (`lib/nettransport.sh`, `tests/suites/nettransport.sh`) has landed - the pure-bash TCP connect
+primitive, still no module, dispatch, probe or finding.** `net_connect_probe HOST PORT [DEADLINE_MS]`
+prints exactly one of `open`/`not-open`/`filtered` (design report §6.3's binding classification: `rc=0`
+-> open, deadline fired -> filtered, anything else -> not-open - the connect's own strerror text is
+evidence only and is never the discriminator, because it is locale-dependent under glibc and
+`lib/core.sh:34`'s `export LC_ALL=C` is what makes that safe). The deadline is FORK-POLL-KILL
+(`timeout(1)` is absent on macOS): the connect runs in a background subshell, this function polls with
+`msleep`, and kills the subshell on deadline. **Authorization is deliberately not in this file** - it
+takes an address the caller already gated through `lib/http.sh`'s `http_authorize_raw_connection`, the
+same division of labour `modules/dast/passive/tls.sh` already uses for a raw TLS handshake.
+`SCOURSH_NET_PROBE` is the swappable test hook, the same `SCOURSH_HTTP_TRANSPORT`/`SCOURSH_TLS_PROBE`
+idiom applied here, so `tests/suites/nettransport.sh` never opens a real socket.
+
+**One non-obvious fix landed inside NET-03, and it is the sharp edge a later NET ticket calling this
+primitive would otherwise rediscover the expensive way: the `/dev/tcp` capability memo cannot live in
+only an in-process shell variable, because the natural way to consume this function is
+`state=$(net_connect_probe "$host" "$port")` - a command-substitution subshell - and a subshell's writes
+to a shell variable are discarded the instant it exits (AGENTS.md "Things measured on this codebase":
+the same reason `occurrence_next`/`worker_id_set` set a variable rather than printing one).** An
+in-process-only memo would silently re-probe, and re-emit the `net_probe_cmd_absent` coverage_reduction,
+on every single call a real caller makes. The fix mirrors tension 16's own shared-state-across-workers
+pattern: the capability decision is memoized in a scratch file
+(`$SCOURSH_SCRATCH/nettransport-capability`), written once under `mutex_acquire`/`mutex_release`
+(`nettransport-capability`), so the memo and the one-time reduction record both survive across
+subshells and across `xargs -P` workers racing to probe for the first time. `tests/suites/nettransport.sh`
+pins this by mutation: defeating the scratch-file check (while leaving the in-process one intact) turns
+the "record only once" and "probe only once" assertions red, which is what proves the in-process cache
+alone was insufficient rather than merely different.
 
 ## AWS module: what exists ahead of step 6, and why
 
