@@ -174,12 +174,23 @@ _net_scan "$W/run-multi" "$FIX_MULTI" --target net-banner
 assert_eq 0 "$_RC" \
   'scan.sh network --target net-banner exits 0 at the DEFAULT intensity - FAILS if this check required an affirmation it should not need at its own passive tier'
 
-t_case 'net_connect_probe (the classification step) was invoked once per declared listener - the reuse this check makes of NET-06s own primitive'
+t_case 'net_connect_probe (the classification step) was invoked for every declared listener - the reuse this check makes of NET-06s own primitive'
 PROBE_LOG=$(_slurp "$W/net-probe.log")
-assert_eq 4 "$(grep -c . <<<"$PROBE_LOG")" \
-  'exactly four classify invocations - one per declared listener - FAILS if a listener were probed twice or skipped'
-assert_contains "$PROBE_LOG" '203.0.113.60 443' \
-  'the base-url listener was classified at its resolved address and port, not the hostname (the anti-TOCTOU guarantee report.md §2.5 names)'
+# NOT an exact total count: modules/network/engine.sh's own phase table now
+# runs tlsport.sh (NET-08) alongside banner.sh at the SAME passive tier, and
+# tlsport.sh calls this SAME net_connect_probe primitive on this SAME
+# declared listener set for its own classification (modules/network/
+# tlsport.sh's own header: "reachability.sh's own contract, for
+# net_connect_probe/net_probe_capability"), into this SAME shared
+# NET_PROBE_LOG file - a total-line assertion here would silently start
+# asserting a fact about a SIBLING phase's call volume rather than this
+# check's own, and break again the next time a further passive-tier peer
+# lands. Each declared (address, port) pair is asserted individually
+# instead, which is true regardless of how many phases share the primitive.
+for p in 443 8443 5432 9999; do
+  assert_contains "$PROBE_LOG" "203.0.113.60 $p" \
+    "listener port $p was classified at its resolved address, not the hostname (the anti-TOCTOU guarantee report.md §2.5 names) - FAILS if this listener were never probed at all"
+done
 
 t_case 'the banner-read step was invoked ONLY for the two open listeners, never for not-open or filtered ones - THE PASSIVE CONTRACT'
 BANNER_LOG=$(_slurp "$W/net-banner.log")
@@ -336,9 +347,22 @@ assert_contains "$AGENT_JSON" 'NET-SVC-BANNER_DISCLOSURE-01' \
 printf '\n-- no transport tool outside lib/nettransport.sh/lib/http.sh is ever reached --\n'
 # =============================================================================
 
-t_case 'even with real, classified, disclosing listeners, no curl/wget/nc/openssl is ever invoked'
+t_case 'even with real, classified, disclosing listeners, banner.sh itself never invokes curl/wget/nc'
 STUB=$W/stub-bin
 mkdir -p "$STUB"
+# `openssl` is stubbed here too (so a real handshake attempt from a SIBLING
+# phase can never reach the network from inside this suite - see below),
+# but it is deliberately not asserted against by name: modules/network/
+# engine.sh's own phase table now runs tlsport.sh (NET-08) at this SAME
+# passive tier alongside banner.sh, and tlsport.sh's own, entirely
+# legitimate contract is to call openssl s_client for ITS check family
+# (modules/network/tlsport.sh, exempted by path in tests/lint-shell.sh
+# exactly for that). Asserting "openssl was never reached" here would be
+# asserting a fact about a sibling phase this ticket does not own, and
+# would break again the moment any further tool-using passive-tier phase
+# lands - the identical reason the classify-count assertion above no
+# longer counts a total. banner.sh'"'"'s OWN contract - no curl, no wget, no
+# nc/ncat/netcat, ever - is what this case still proves.
 for c in curl wget nc ncat netcat openssl; do
   cat >"$STUB/$c" <<EOF
 #!/usr/bin/env bash
@@ -357,8 +381,13 @@ NET_PROBE_LOG=$W/net-probe.log NET_BANNER_LOG=$W/net-banner.log \
   --out "$W/run-notraffic" \
   >"$W/run-notraffic.log" 2>&1 || _NT_RC=$?
 assert_eq 0 "$_NT_RC" 'the run still exits 0 with a poisoned PATH'
-assert_file_absent "$W/network-attempts" \
-  'no curl/wget/nc/ncat/netcat/openssl was invoked - banner.sh reaches the network exclusively through lib/nettransport.sh'"'"'s net_connect_probe and net_read_banner (which this suite'"'"'s hooks already replace) and lib/http.sh'"'"'s http_authorize_raw_connection (whose own resolution this suite'"'"'s SCOURSH_HTTP_RESOLVE hook already replaces)'
+NETWORK_ATTEMPTS=$(_slurp "$W/network-attempts")
+assert_not_contains "$NETWORK_ATTEMPTS" 'curl ' 'no curl invocation was logged'
+assert_not_contains "$NETWORK_ATTEMPTS" 'wget ' 'no wget invocation was logged'
+assert_not_contains "$NETWORK_ATTEMPTS" 'nc ' 'no bare nc invocation was logged'
+assert_not_contains "$NETWORK_ATTEMPTS" 'ncat ' 'no ncat invocation was logged'
+assert_not_contains "$NETWORK_ATTEMPTS" 'netcat ' \
+  'no netcat invocation was logged - banner.sh reaches the network exclusively through lib/nettransport.sh'"'"'s net_connect_probe and net_read_banner (which this suite'"'"'s hooks already replace) and lib/http.sh'"'"'s http_authorize_raw_connection (whose own resolution this suite'"'"'s SCOURSH_HTTP_RESOLVE hook already replaces) - FAILS if banner.sh (or a future edit to it) ever shelled out to one of these directly instead'
 
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 
