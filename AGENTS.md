@@ -793,6 +793,40 @@ Two things measured while building them, worth knowing before the next service P
   section B (three-plus resources, only the first of which is examined under the broken reading) is
   what caught it, and it read as ordinary passing output until reduced to fewer resources than the
   fixture actually named.
+**P14 (CLOUD-25/26/27, `modules/cloud/aws/live/{ecr,ecs,eks}.sh`) has since landed - Tier 6, containers,
+the first bundle of peers built directly off the S3 vertical slice.** All three are `regional` rows,
+which is the main way they differ from S3's own `global` shape: `cell` and `loc_region` are now the
+SAME value on every finding, because the pass's own region IS the resource's real region, with no
+S3-style per-bucket region-resolution call needed. `ecr.sh` needs only TWO operations
+(`describe-repositories`, which already carries `imageTagMutability` and
+`imageScanningConfiguration.scanOnPush` per repository with no per-repository call at all, plus
+`get-repository-policy` for the one check - public exposure - that genuinely needs one); `ecs.sh` and
+`eks.sh` are each a four-level call chain (`list-*` -> `list-*` -> `describe-*` -> `describe-*`) ending
+in a NEW shared file, `modules/cloud/aws/live/iam_policy_engine.sh`, which both scripts reuse rather
+than fork. That file is a deliberate, NAMED departure from the `<service>_engine.sh` convention
+S3's own file established (a per-service engine is PURE, no `aws_ro` call anywhere in it) - "task role
+over-permissive" (ECS) and "pod role over-permissive" (EKS) are the identical question (does an IAM
+role's inline policy grant `Effect: Allow` with `Action: "*"` on `Resource: "*"`) asked about a role
+reached two different ways, so the shared file carries the ONE impure driver
+(`iam_role_overpermissive`, `list-role-policies` then per-policy `get-role-policy`) alongside the pure
+statement-walking classifiers, rather than duplicating either half. **"Pod role" is a stated, named
+substitution, not a literal per-Kubernetes-ServiceAccount IRSA audit**: a per-pod IRSA binding lives
+inside the cluster's own Kubernetes API server, which scoursh has no credential or network path to
+read (the identical boundary DAST-04's own SPA gap draws), so `eks_engine.sh` evaluates the NODE
+GROUP's own IAM role instead - the role every pod on a node without its own IRSA binding inherits via
+the EC2 instance metadata service - and the check's own evidence and remediation text say precisely
+this rather than overclaiming a per-pod audit that was never performed. **NONE of these six checks
+carries a `cis:` value**, and that is an honest absence rather than a gap: `data/cis-mappings` names
+exactly the CIS AWS Foundations Benchmark v3.0.0, whose own numbering (sections 1/2/3/5) has no ECR,
+ECS or EKS coverage at all - a separate published benchmark exists for containers, and citing an id
+from it against a table that names only the Foundations Benchmark and its version would misattribute
+the finding exactly as `docs/CIS-MAPPINGS.md` §3 warns a version mismatch does, applied to a second
+BENCHMARK rather than a second version of the one already there. Every finding still carries its own
+CWE and OWASP category. `tests/suites/cloud-{ecr,ecs,eks}.sh` are the proof, each mirroring
+`cloud-s3.sh`'s own five-section shape (classifiers / both-directions-in-one-run / finding citation /
+honesty accounting / round-trip), with `cloud-ecs.sh`'s own section D exercising a denial at the
+SECOND level of its four-level chain (`list-services`), the one `cloud-s3.sh`'s two-level chain has no
+analogue for.
 **Every OTHER `aws/live/*.sh` service in `docs/DESIGN.md` §8.1's catalog is still absent**, and a
 `--live` run records each one as unexamined rather than counting it clean.
 

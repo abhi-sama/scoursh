@@ -1,0 +1,1 @@
+An error occurred (AccessDeniedException) when calling the GetRepositoryPolicy operation: User is not authorized to perform: ecr:GetRepositoryPolicy

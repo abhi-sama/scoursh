@@ -1,0 +1,13 @@
+{
+    "cluster": {
+        "name": "scoursh-fixture-eks-good-cluster",
+        "arn": "arn:aws:eks:eu-west-2:123456789012:cluster/scoursh-fixture-eks-good-cluster",
+        "status": "ACTIVE",
+        "roleArn": "arn:aws:iam::123456789012:role/scoursh-fixture-eks-cluster-role",
+        "resourcesVpcConfig": {
+            "endpointPublicAccess": false,
+            "endpointPrivateAccess": true,
+            "publicAccessCidrs": ["0.0.0.0/0"]
+        }
+    }
+}

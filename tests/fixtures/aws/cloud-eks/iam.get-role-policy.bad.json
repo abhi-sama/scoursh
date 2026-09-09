@@ -1,0 +1,15 @@
+{
+    "RoleName": "scoursh-fixture-eks-bad-role",
+    "PolicyName": "scoursh-fixture-wildcard-admin",
+    "PolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "NodeAdminAccess",
+                "Effect": "Allow",
+                "Action": ["*"],
+                "Resource": ["*"]
+            }
+        ]
+    }
+}

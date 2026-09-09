@@ -1528,3 +1528,184 @@ remediation: Enable standard access logging for this distribution and
   work from.
 references: CWE-778
 references: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/AccessLogs.html
+
+# ---------------------------------------------------------------------------
+# ECR / ECS / EKS - docs/STEP6-CLOUD-PLAN.md CLOUD-25/26/27 (Tier 6,
+# containers).  All six records below are `script: aws/live/<service>.sh`
+# for the service owning them, exactly as every S3 record above is `script:
+# aws/live/s3.sh` - one shared, append-only registry per the header note.
+#
+# NONE OF THESE SIX RECORDS CARRIES A `cis:` VALUE, AND THAT IS AN HONEST
+# ABSENCE RATHER THAN A GAP LEFT FOR LATER.  `data/cis-mappings` names
+# exactly one benchmark - CIS Amazon Web Services Foundations Benchmark
+# v3.0.0 (see this file's own header on `cis:`, and docs/CIS-MAPPINGS.md §4)
+# - and that benchmark's own numbering covers IAM (section 1), Storage
+# (section 2: S3/EBS/RDS/EFS), Logging (section 3) and Networking (section
+# 5) only; it has no ECR, ECS or EKS section at all.  A SEPARATE published
+# benchmark exists for containers (CIS Amazon ECS Benchmark, CIS Amazon EKS
+# Benchmark), but citing an id from either against a table that names only
+# the Foundations Benchmark and its version would misattribute the finding
+# exactly as docs/CIS-MAPPINGS.md §3 warns a version mismatch does - "a
+# table that cannot say which [benchmark] edition a given control number was
+# drawn from ... silently misattribute[s] every id in it the day a second
+# [benchmark] is ever added" applies identically to a second BENCHMARK, not
+# only a second version of the same one.  Adding that second benchmark to
+# `data/cis-mappings` is a real, deliberate register change for whoever
+# transcribes it by hand from the published PDF (docs/CIS-MAPPINGS.md §5) -
+# not a thing to guess at from inside a check record.  Each finding still
+# carries its CWE and OWASP category, exactly as S3's own three
+# CIS-less records (encryption, versioning, logging) already do.
+
+id: CLOUD-ECR-PUBLIC_REPOSITORY-01
+title: ECR repository policy grants access to a wildcard principal
+script: aws/live/ecr.sh
+severity: high
+confidence: medium
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Review the repository's resource policy
+  (`aws ecr get-repository-policy --repository-name <name>`) and remove the
+  statement that grants an Allow to a wildcard Principal - either the bare
+  string "*" or {"AWS": "*"}, both of which admit every AWS account, or an
+  anonymous caller if nothing else fronts the pull. This is scoursh's own
+  reading of the policy statement rather than an AWS-evaluated verdict: ECR
+  has no equivalent of S3's get-bucket-policy-status, so confirm the finding
+  against the full policy before acting on it. Scope the Principal to named
+  account ids or roles, or remove the statement entirely if no cross-account
+  pull was ever intended.
+references: CWE-732
+references: https://docs.aws.amazon.com/AmazonECR/latest/userguide/repository-policies.html
+
+id: CLOUD-ECR-SCAN_ON_PUSH_OFF-01
+title: ECR repository does not scan images on push
+script: aws/live/ecr.sh
+severity: medium
+confidence: high
+cwe: CWE-1188
+owasp: A06:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable scan-on-push for the repository (or a registry-wide
+  scanning configuration covering it) so an image is checked for
+  known-vulnerable packages the moment it is pushed, rather than discovered
+  later by a separate audit or never at all. This is read directly off
+  imageScanningConfiguration.scanOnPush; an absent configuration is reported
+  the same as an explicitly-disabled one, since a repository created before
+  scan-on-push existed carries no scanning either way.
+references: CWE-1188
+references: https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-scanning.html
+
+id: CLOUD-ECR-MUTABLE_TAGS-01
+title: ECR repository allows image tags to be overwritten
+script: aws/live/ecr.sh
+severity: medium
+confidence: high
+cwe: CWE-345
+owasp: A08:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set the repository's image tag mutability to IMMUTABLE. With
+  mutable tags (AWS's own default), a tag like :latest or :prod can be
+  silently repointed to a different image after it has been reviewed or
+  deployed, undermining any verification that trusted the tag rather than
+  the image digest. A deployment pipeline that needs to move a tag should
+  push a new one instead of overwriting an existing one.
+references: CWE-345
+references: https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-tag-mutability.html
+
+id: CLOUD-ECS-PUBLIC_SERVICE-01
+title: ECS service assigns a public IP to its tasks
+script: aws/live/ecs.sh
+severity: high
+confidence: medium
+cwe: CWE-668
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set the service's networkConfiguration.awsvpcConfiguration.
+  assignPublicIp to DISABLED and route any outbound traffic the tasks need
+  through a NAT gateway instead, unless the service genuinely must be
+  directly reachable from the internet. This finding is a signal that the
+  task's network interface CAN receive a public IPv4 address, not a
+  confirmed internet-reachability verdict - actual reachability also
+  depends on the subnet's route table and the attached security group,
+  neither of which this check reads, so confirm both before deciding the
+  exposure is (or is not) real.
+references: CWE-668
+references: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-networking-awsvpc.html
+
+id: CLOUD-ECS-TASK_ROLE_OVERPERMISSIVE-01
+title: ECS task role grants unrestricted access
+script: aws/live/ecs.sh
+severity: critical
+confidence: medium
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Replace the wildcard statement (Action "*" on Resource "*") in
+  the task role's inline policy with the specific actions and resource ARNs
+  the application actually uses - review CloudTrail for the API calls it
+  has really made if that is not already known. Every container that runs
+  using this task definition inherits this role's full permission set at
+  runtime, so an application-level compromise (a dependency vulnerability,
+  an injection flaw) becomes an account-wide one. Only the task role's
+  INLINE policies are read by this check; a managed (attached) policy
+  granting the same wildcard is a real gap this check does not close.
+references: CWE-732
+references: https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-iam-roles.html
+
+id: CLOUD-EKS-PUBLIC_ENDPOINT-01
+title: EKS cluster API endpoint is reachable from outside the VPC
+script: aws/live/eks.sh
+severity: high
+confidence: high
+cwe: CWE-668
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Disable public access to the cluster's API endpoint
+  (endpointPublicAccess: false) and reach it over the VPC via
+  endpointPrivateAccess, or at minimum restrict publicAccessCidrs to the
+  specific ranges that legitimately need it rather than the 0.0.0.0/0
+  default. The API server is the single most powerful control point in the
+  cluster - anyone who can reach it and present valid credentials can
+  create or modify any workload in it.
+references: CWE-668
+references: https://docs.aws.amazon.com/eks/latest/userguide/cluster-endpoint.html
+
+id: CLOUD-EKS-POD_ROLE_OVERPERMISSIVE-01
+title: EKS node group IAM role grants unrestricted access
+script: aws/live/eks.sh
+severity: critical
+confidence: medium
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Replace the wildcard statement (Action "*" on Resource "*") in
+  the node group's inline role policy with the specific actions and
+  resource ARNs the node's own workloads use, and adopt IAM Roles for
+  Service Accounts (IRSA) for any pod that needs AWS API access beyond
+  that. Every pod scheduled onto a node in this group that has NOT adopted
+  its own IRSA binding inherits this NODE role's full permission set via
+  the EC2 instance metadata service - this check evaluates the node
+  group's role because a literal per-pod IRSA binding is recorded inside
+  the cluster's own Kubernetes API server, which scoursh has no credential
+  or network path to read; a cluster where every workload already has a
+  narrowly-scoped IRSA role is not fully assessed by this check alone.
+  Only the node role's INLINE policies are read; a managed (attached)
+  policy granting the same wildcard is a real gap this check does not
+  close.
+references: CWE-732
+references: https://docs.aws.amazon.com/eks/latest/userguide/service-accounts.html
+references: https://docs.aws.amazon.com/eks/latest/userguide/create-node-role.html
