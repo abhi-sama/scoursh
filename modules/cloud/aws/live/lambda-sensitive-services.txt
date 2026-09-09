@@ -1,0 +1,47 @@
+# modules/cloud/aws/live/lambda-sensitive-services.txt - the configurable
+# input to CLOUD-LAMBDA-ROLE_SENSITIVE_SERVICE-01 (docs/DESIGN.md §8.6,
+# docs/STEP6-CLOUD-PLAN.md CLOUD-21): which AWS service prefixes count as
+# "sensitive" when an execution role grants that service a wildcard action
+# (`<service>:*`) in an Allow statement, regardless of the statement's
+# Resource.
+#
+# ONE ENTRY PER LINE, the bare AWS CLI service prefix exactly as it appears
+# before the `:` in an IAM Action string (`iam`, `kms`, ...). Whole-line `#`
+# comments and blank lines are ignored. Point
+# SCOURSH_CLOUD_LAMBDA_SENSITIVE_SERVICES_FILE at another file to use a
+# different list, or edit this one - it is data, never code, and nothing here
+# is ever expanded, sourced or executed. Matched by EXACT equality against the
+# service prefix, never a substring: unlike modules/dast/sensitive-fields.txt,
+# these are single fixed AWS service tokens rather than free-form field names,
+# so there is no innocent-prefix problem an `=` marker would need to solve.
+#
+# WHY THESE SIX. Each lets a compromised or over-scoped function pivot into
+# account-wide identity, key, secret, network or organization control rather
+# than staying confined to the function's own data plane - the "beyond what
+# the function needs" language docs/DESIGN.md §8.6 uses:
+#   iam            create/attach a policy, an access key, or a new principal
+#   kms            decrypt or re-key data protected by any CMK the role can
+#                  reach, including one unrelated to this function
+#   secretsmanager read every secret the role's resource policy permits
+#   sts            assume another role or mint credentials for another
+#                  identity (AssumeRole, GetFederationToken)
+#   organizations  read or change the AWS Organization the account sits in
+#   ec2            create/modify network primitives (security groups,
+#                  instances, snapshots) outside the function's own runtime
+#
+# THIS IS A HINT LIST, AND A HIT IS NOT PROOF OF UNNECESSARY ACCESS. A
+# function that legitimately needs `secretsmanager:*` to rotate secrets for a
+# fleet of other services still trips this check; the finding says so and
+# recommends narrowing the action list and the resource ARN rather than
+# asserting the grant is definitely wrong.  A wildcard action on a service NOT
+# in this list is not, by that fact alone, safe - it is simply out of this
+# check's stated scope, exactly as CLOUD-LAMBDA-ROLE_WILDCARD-01 (Action "*"
+# AND Resource "*" together) covers the account-wide-admin case this list does
+# not need to name at all.
+
+iam
+kms
+secretsmanager
+sts
+organizations
+ec2

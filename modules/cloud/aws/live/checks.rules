@@ -1128,3 +1128,207 @@ remediation: Enable Macie in this region (EnableMacie), then configure a
   same way as Macie genuinely being off.
 references: CWE-693
 references: https://docs.aws.amazon.com/macie/latest/user/macie-setting-up.html
+
+# ---------------------------------------------------------------------------
+# Owned by modules/cloud/aws/live/lambda.sh (docs/DESIGN.md §8.6;
+# docs/STEP6-CLOUD-PLAN.md CLOUD-21). Ids are all `CLOUD-LAMBDA-*`, appended
+# to this SHARED, APPEND-ONLY registry rather than a per-service
+# `checks-lambda.rules` - this file's own header above already states why:
+# step 6's peers are dispatched as sequential bundles against one landed
+# vertical slice, not as parallel tickets fighting over one file, which is
+# the CONFLICT tension 29's per-owner split exists to prevent and which does
+# not apply here.
+#
+# `coverage-scope: account-region` is CLOUD's cell, exactly as the S3 records
+# above declare - but UNLIKE `s3`, whose `list-buckets` call is account-wide
+# (a `global` row in `_CLOUD_SERVICES`), `lambda` is a REGIONAL row: `lambda
+# list-functions` answers only for the region it is addressed to, so every
+# finding below lands in the `<account_id>/<region>` cell the pass actually
+# ran in, and that region IS the function's own region - there is no
+# S3-shaped split between "the cell the pass covered" and "the resource's own
+# region" here, because for a regional service they are the same fact.
+#
+# SIX IDS FOR THREE PROPERTIES, splitting each of docs/DESIGN.md §8.6's three
+# bullets in two for the identical reason S3's own PUBLIC_ACL_READ/WRITE
+# split states: the CLOUD location profile carries no component naming the
+# DEFECT, so two different problems on one function under one id would
+# collide onto one fingerprint and `findings_merge` would keep whichever
+# sorted first, and each pair's two halves genuinely differ in SEVERITY - a
+# per-record registry field a script cannot "weigh" at runtime without
+# putting itself in disagreement with the record.
+#   - ROLE_WILDCARD (critical) vs ROLE_SENSITIVE_SERVICE (high): an
+#     account-wide-admin-equivalent grant (`Action:"*"`, `Resource:"*"`) is a
+#     strictly worse root cause than a wildcard confined to one sensitive
+#     service, and reporting a role that happens to trip BOTH readings under
+#     one id would understate the narrower, commoner case's own severity.
+#   - PUBLIC_FUNCTION_URL (critical) vs PUBLIC_POLICY (critical/pattern): two
+#     independent SINKS for the same "unauthenticated invocation" root cause
+#     - a function URL and a resource-based policy are two different API
+#       surfaces a function can be reached through, and either can exist
+#       without the other - the same "one root cause, two sinks, two ids"
+#       shape modules/dast/active/hosthdr.sh's own two check ids record.
+#   - ENV_SECRET (high, confidence medium - a NAME/VALUE-shape heuristic, not
+#     a proof) vs ENV_NOT_ENCRYPTED (low): a credential sitting in an env var
+#     is a live exposure the moment anyone can call
+#     lambda:GetFunctionConfiguration; the absence of a customer-managed KMS
+#     key protecting the whole block is a weaker, defence-in-depth gap that
+#     exists whether or not any single value in it happens to be a secret.
+#
+# `cis:` IS AUTHORED HERE, ON THE RECORD, exactly as the S3 header above
+# states - and NONE of the six records below carries one. CIS AWS Foundations
+# Benchmark v3.0.0 has no dedicated Lambda section at all (its five sections
+# are IAM, Storage, Logging, Monitoring, Networking - data/cis-mappings'
+# own 34-row seed, cross-referenced against AWS Security Hub's public v3.0.0
+# control-id mapping, names none for Lambda), so there is no control an
+# honest transcription could cite. This is the identical "an honest absence
+# is the right outcome" call the S3 header above makes for its own three
+# unmapped checks (default encryption, versioning, logging) - inventing a
+# control number to satisfy a "must cite CIS" habit is the overstated-
+# coverage failure docs/DESIGN.md §15 forbids. A future CIS version that adds
+# a Lambda section, or a benchmark cross-reference that surfaces an existing
+# IAM control genuinely covering one of these six, adds the row via
+# docs/CIS-MAPPINGS.md §5 and the `cis:` line here in the same change - none
+# is `compliance`-tagged for the identical reason none carries a `cis` value
+# (S3's header states the TAG reading of the `compliance` profile: only a
+# check with a real `cis` value earns the tag).
+#
+# The type tag is `config-read` on every record, exactly as the S3 records
+# above: each check is one or more read-only AWS API calls (list-functions,
+# list-function-url-configs, get-policy, and - for the two role checks -
+# list-role-policies/get-role-policy/list-attached-role-policies/get-policy/
+# get-policy-version) and mutates nothing, so `--intensity`'s ceiling passes
+# all six at the default `passive`. They also carry `quick`
+# (docs/DESIGN.md §5's "passive + config-read, no active probes").
+
+id: CLOUD-LAMBDA-ROLE_WILDCARD-01
+title: Lambda execution role grants unrestricted Action "*" on Resource "*"
+script: aws/live/lambda.sh
+severity: critical
+confidence: high
+cwe: CWE-250
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Replace the offending policy statement with the specific actions
+  and resource ARNs this function's code actually calls - AWS IAM Access
+  Analyzer's policy generation, run against the role's own recent CloudTrail
+  activity, is the fastest path to a scoped replacement. An `Action: "*"` on
+  `Resource: "*"` grant gives this function's code, any dependency it loads,
+  and anything that can influence its input the same reach as an account
+  administrator; there is no narrower control left to fail once this one has.
+references: CWE-250
+references: https://docs.aws.amazon.com/lambda/latest/dg/lambda-permissions.html
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/access-analyzer-policy-generation.html
+
+id: CLOUD-LAMBDA-ROLE_SENSITIVE_SERVICE-01
+title: Lambda execution role grants a wildcard action on a sensitive AWS service
+script: aws/live/lambda.sh
+severity: high
+confidence: high
+cwe: CWE-250
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Narrow the flagged `<service>:*` action to the specific calls
+  this function actually makes, and confine the Resource element to the
+  specific ARNs it needs rather than leaving it unrestricted. Which services
+  count as sensitive enough to flag on a bare wildcard alone - identity
+  (iam), key management (kms), secrets (secretsmanager), cross-identity
+  assumption (sts), the organization itself (organizations), and networking
+  primitives (ec2) - is a configurable, operator-editable list in
+  modules/cloud/aws/live/lambda-sensitive-services.txt; a function that
+  genuinely needs broad access to one of these should still narrow the
+  Resource element even where the Action list cannot shrink further.
+references: CWE-250
+references: https://docs.aws.amazon.com/lambda/latest/dg/lambda-permissions.html
+
+id: CLOUD-LAMBDA-PUBLIC_FUNCTION_URL-01
+title: Lambda function URL allows unauthenticated invocation (AuthType NONE)
+script: aws/live/lambda.sh
+severity: critical
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set the function URL's AuthType to AWS_IAM and grant
+  lambda:InvokeFunctionUrl only to the specific principals that need to call
+  it; a NONE AuthType means any request that reaches the URL over the
+  internet invokes the function with no AWS authentication at all. If
+  anonymous access is genuinely required for a subset of callers, front the
+  URL with an authenticating layer (API Gateway with its own authorizer, or
+  CloudFront with signed requests/URLs) rather than leaving the raw function
+  URL open.
+references: CWE-284
+references: https://docs.aws.amazon.com/lambda/latest/dg/urls-auth.html
+
+id: CLOUD-LAMBDA-PUBLIC_POLICY-01
+title: Lambda resource-based policy allows a wildcard or unrestricted principal
+script: aws/live/lambda.sh
+severity: critical
+confidence: medium
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Replace the "*" (or {"AWS":"*"}) principal with the specific
+  account, role, or AWS-service principal that genuinely needs to invoke this
+  function, or add a Condition (aws:SourceArn / aws:SourceAccount) that
+  narrows the grant to a specific caller if one is not already present.
+  Confidence is medium rather than high because Lambda has no
+  server-evaluated "is this policy public" API the way S3's
+  get-bucket-policy-status gives S3 - this is a pattern match over the
+  policy's Principal element, and a real Condition on the flagged statement
+  may already narrow it; review the statement before assuming the grant is
+  unconditionally public.
+references: CWE-284
+references: https://docs.aws.amazon.com/lambda/latest/dg/access-control-resource-based.html
+
+id: CLOUD-LAMBDA-ENV_SECRET-01
+title: Lambda environment variable looks like a plaintext credential
+script: aws/live/lambda.sh
+severity: high
+confidence: medium
+cwe: CWE-798
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Move this value out of the function's environment variables and
+  into AWS Secrets Manager or SSM Parameter Store (SecureString), reading it
+  at invocation time with the minimum IAM grant needed to fetch that one
+  secret - an environment variable is visible in plaintext, via
+  lambda:GetFunctionConfiguration, to every principal permitted to read the
+  function's configuration, which is routinely a broader set than the ones
+  the credential is meant to be scoped to. Confidence is medium because this
+  is a name- or shape-based heuristic (modules/cloud/aws/live/lambda-secret-env-keywords.txt),
+  not a proof that the value is genuinely live; the finding's evidence never
+  includes the value itself.
+references: CWE-798
+references: https://docs.aws.amazon.com/lambda/latest/dg/configuration-envvars.html
+references: https://docs.aws.amazon.com/secretsmanager/latest/userguide/retrieving-secrets_lambda.html
+
+id: CLOUD-LAMBDA-ENV_NOT_ENCRYPTED-01
+title: Lambda environment variables are not encrypted with a customer-managed key
+script: aws/live/lambda.sh
+severity: low
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Configure a customer-managed KMS key for this function's
+  environment-variable encryption. Lambda always encrypts environment
+  variables at rest, so this finding is not "unencrypted" in the literal
+  sense - it is that the AWS-owned default key protecting them cannot be
+  rotated on your own schedule, restricted with its own key policy, or have
+  its usage audited separately from every other function relying on that
+  same shared default key. This finding is only raised for a function that
+  has at least one environment variable configured.
+references: CWE-311
+references: https://docs.aws.amazon.com/lambda/latest/dg/configuration-envvars.html#configuration-envvars-encryption

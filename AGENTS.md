@@ -680,6 +680,29 @@ id, and writes the FIRST real `account-region` coverage cell this repository has
 schema-only proof until a check emitted one). It is also the first `aws_ro` call site
 `tests/lint-aws-readonly.sh` actually enforces: that lint reported "0 aws_ro call sites" on every run
 before this ticket and reports 10 after, so its checks 1-3 have stopped being vacuous.
+**P12 (CLOUD-21, `modules/cloud/aws/live/lambda.sh`) has since landed too - the second `aws/live/*.sh`
+service script, and the first REGIONAL row in `_CLOUD_SERVICES` to land (`s3` is `global`).** It shipped
+out of `docs/STEP6-CLOUD-PLAN.md`'s own recommended dispatch order: that plan's P12 row names P6
+(CLOUD-06, `aws/live/iam.sh`) as a dependency ("Reuses P6's role-policy reader"), and P6 had not landed -
+had not even been opened as a PR - when P12 was dispatched. Rather than block on an unlanded peer, P12
+ships its own, self-contained IAM policy-document reader in `lambda_engine.sh`, whose own header states
+this explicitly and names the correct follow-up (lift the shared reader out once `aws/live/iam.sh`
+lands) rather than treating the fork as a defect to fix opportunistically - the identical "land what's
+ready, note the gap" precedent this file records for `lib/http.sh`, `modules/iac/` and `modules/sca/`
+landing ahead of their own nominal step. Being regional rather than global is what makes `lambda`'s
+finding's `cell` and its `loc_region` the SAME value, unlike S3's own pass-cell-versus-resource-region
+split: `lambda list-functions` only ever answers for the region it was addressed to. Six
+`CLOUD-LAMBDA-*` checks ship (over-permissive execution role, split into a full-admin-equivalent id and
+a sensitive-service-wildcard id; public function URL and a `*`-principal resource policy, two ids for
+two independent invocation sinks; and a credential-shaped environment variable versus the absence of a
+customer-managed KMS key protecting the whole block) - none carries a `cis:` value, because CIS AWS
+Foundations Benchmark v3.0.0 has no Lambda section for one to honestly cite, the identical "an honest
+absence is the right outcome" call S3's own three CIS-unmapped checks make. `tests/suites/cloud-lambda.sh`
+is the proof, and its own section D is where the honesty accounting differs most from S3's: a role
+whose BOTH inline-policy and attached-managed-policy IAM calls are denied is a declared TOTAL loss for
+its two role checks on that one function, while every OTHER function in the same run sharing a readable
+role still credits them - the "credit a check only where its own call answered" rule, applied to a
+role rather than to a single per-resource call.
 **CLOUD-07/08/09 (`kms.sh`, `secretsmanager.sh`, `ssm.sh`) have now landed too, in one ticket - the
 first REGIONAL `aws/live/*.sh` services, proving the half of the service table S3's own `global` row
 does not exercise.** All three follow `s3.sh`'s own `run.sh`/`engine.sh` split one level down
