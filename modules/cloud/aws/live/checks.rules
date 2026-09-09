@@ -1709,3 +1709,167 @@ remediation: Replace the wildcard statement (Action "*" on Resource "*") in
 references: CWE-732
 references: https://docs.aws.amazon.com/eks/latest/userguide/service-accounts.html
 references: https://docs.aws.amazon.com/eks/latest/userguide/create-node-role.html
+
+# ---------------------------------------------------------------------------
+# CLOUD-SNS-*, CLOUD-SQS-*, CLOUD-ACM-*, CLOUD-ROUTE53-*, CLOUD-BACKUP-*
+# (docs/STEP6-CLOUD-PLAN.md CLOUD-28/29/10/11/12) - owned by
+# modules/cloud/aws/live/{sns,sqs,acm,route53,backup}.sh.  Appended to this
+# shared, append-only registry per this file's own header above (a conflict
+# here is resolved by keeping BOTH blocks, never by choosing a side).
+#
+# NONE OF THESE SEVEN RECORDS CARRIES A `cis:` VALUE, AND THAT IS AN HONEST
+# ABSENCE RATHER THAN A GAP THIS TICKET LEFT.  This file's own header states
+# the rule at length for S3's three uncited records: `cis:` is authored only
+# where a real CIS AWS Foundations Benchmark v3.0.0 control exists for the
+# property being observed, and data/cis-mappings' benchmark-v3.0.0 catalog
+# (sections 1 IAM, 2.1 S3, 2.2-2.4 EBS/RDS/EFS encryption, 3 logging/
+# monitoring, 5 networking) contains no section for SNS, SQS, ACM, Route53 or
+# AWS Backup at all - inventing a control id to satisfy a "must cite CIS"
+# habit is precisely the overstated-coverage failure docs/DESIGN.md §15
+# forbids.  A future ticket that transcribes a control genuinely covering one
+# of these five services adds the row via docs/CIS-MAPPINGS.md §5 and the
+# `cis:` line here in the same change.
+
+id: CLOUD-SNS-PUBLIC_POLICY-01
+title: SNS topic policy grants access to a wildcard principal
+script: aws/live/sns.sh
+severity: high
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove or narrow the statement in this topic's resource policy
+  that grants Effect Allow to a wildcard Principal ("*" or {"AWS":"*"}) with
+  no Condition. Name the specific accounts, roles or AWS services that need to
+  publish to or subscribe from this topic, or add a Condition
+  (aws:SourceArn/aws:SourceAccount for an AWS-service principal,
+  aws:PrincipalOrgID for a cross-account grant scoped to your organisation)
+  that genuinely narrows who the grant applies to. A wildcard principal with
+  no condition lets any AWS account - and, for actions that do not require
+  SigV4, an unauthenticated caller - use this topic.
+references: CWE-732
+references: https://docs.aws.amazon.com/sns/latest/dg/sns-access-policy-use-cases.html
+
+id: CLOUD-SNS-NO_ENCRYPTION-01
+title: SNS topic has no server-side encryption configured
+script: aws/live/sns.sh
+severity: medium
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set a KmsMasterKeyId on this topic - a customer-managed key for
+  a separate, auditable key policy and CloudTrail key-usage events, or the AWS
+  managed alias/aws/sns as the zero-cost baseline. Unlike S3 and SQS, SNS
+  applies no default managed encryption to a new topic, so this is the
+  topic's real, current state rather than an inherited default that happens
+  to be safe.
+references: CWE-311
+references: https://docs.aws.amazon.com/sns/latest/dg/sns-server-side-encryption.html
+
+id: CLOUD-SQS-PUBLIC_POLICY-01
+title: SQS queue policy grants access to a wildcard principal
+script: aws/live/sqs.sh
+severity: high
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove or narrow the statement in this queue's resource policy
+  that grants Effect Allow to a wildcard Principal ("*" or {"AWS":"*"}) with
+  no Condition. Name the specific accounts, roles or AWS services that need to
+  send to or receive from this queue, or add a Condition that genuinely
+  narrows the grant (aws:SourceArn for an AWS-service principal,
+  aws:PrincipalOrgID for a cross-account grant scoped to your organisation). A
+  wildcard principal with no condition lets any AWS account use this queue.
+references: CWE-732
+references: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-security-best-practices.html
+
+id: CLOUD-SQS-NO_ENCRYPTION-01
+title: SQS queue has no server-side encryption configured
+script: aws/live/sqs.sh
+severity: medium
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable SQS-managed server-side encryption (SqsManagedSseEnabled)
+  as the zero-cost baseline, or set a customer-managed KmsMasterKeyId where a
+  separate, auditable key policy and CloudTrail key-usage events are
+  required. This queue has neither configured, so messages in it are not
+  encrypted at rest.
+references: CWE-311
+references: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-server-side-encryption.html
+
+id: CLOUD-ACM-EXPIRING-01
+title: ACM certificate is nearing or past its expiry date
+script: aws/live/acm.sh
+severity: high
+confidence: high
+cwe: CWE-298
+owasp: A05:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Renew this certificate before it lapses. If it is ACM-issued
+  with DNS or email validation, confirm the validation record still exists
+  and the domain still resolves - a changed or removed validation CNAME is
+  the commonest reason an ACM-managed certificate silently fails to
+  auto-renew. If it is imported rather than ACM-issued, ACM cannot renew it
+  automatically and it must be replaced with a new certificate manually. A
+  certificate that lapses while still attached to a listener breaks TLS for
+  every client of the service it terminates.
+references: CWE-298
+references: https://docs.aws.amazon.com/acm/latest/userguide/managed-renewal.html
+
+id: CLOUD-ROUTE53-DANGLING_RECORD-01
+title: DNS record points to an S3 static-website endpoint for a bucket that does not exist
+script: aws/live/route53.sh
+severity: high
+confidence: medium
+cwe: CWE-706
+owasp: A05:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove this DNS record if the site it served is retired, or
+  recreate the S3 bucket it names (with static-website hosting configured) if
+  it is not. AWS's S3 static-website hosting feature requires the serving
+  bucket's name to exactly match the DNS name being served; while the bucket
+  does not exist, ANY AWS account - not only yours - can create a bucket with
+  that exact name and configure it as a website, taking over everything
+  served at this DNS name. This check covers only the S3-website subdomain-
+  takeover vector; a CNAME/ALIAS to a retired ELB, CloudFront distribution or
+  third-party hosting provider is a related but separate risk this check does
+  not evaluate.
+references: CWE-706
+references: https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/dns-configuring-dangling-domain.html
+
+id: CLOUD-BACKUP-NO_PLAN_COVERAGE-01
+title: EBS volume has no AWS Backup recovery point
+script: aws/live/backup.sh
+severity: medium
+confidence: high
+cwe: CWE-693
+owasp: A05:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Add this volume to a backup plan's resource selection - by its
+  own ARN, by a tag it carries, or via an account-wide wildcard selection -
+  and confirm a rule in that plan actually runs against it. A volume with no
+  recovery point is unrecoverable if it is accidentally deleted, corrupted,
+  or encrypted by a ransomware-style attack. If this volume is intentionally
+  excluded (purely ephemeral scratch storage that is rebuilt rather than
+  restored), no action is needed, but confirm that is a deliberate choice
+  rather than an oversight in the backup plan's selection criteria.
+references: CWE-693
+references: https://docs.aws.amazon.com/aws-backup/latest/devguide/assigning-resources.html

@@ -1,0 +1,5 @@
+{
+    "Results": [
+        {"ResourceArn": "arn:aws:ec2:eu-west-2:123456789012:volume/vol-0000000000000002", "ResourceType": "EBS", "LastBackupTime": "2024-01-01T00:00:00.000Z"}
+    ]
+}

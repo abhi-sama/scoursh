@@ -1,0 +1,6 @@
+{
+    "HostedZones": [
+        {"Id": "/hostedzone/Z1DANGLING000", "Name": "example.com.", "CallerReference": "scoursh-fixture-1", "Config": {"PrivateZone": false}},
+        {"Id": "/hostedzone/Z2DENIEDZONE0", "Name": "denied-zone.com.", "CallerReference": "scoursh-fixture-2", "Config": {"PrivateZone": false}}
+    ]
+}

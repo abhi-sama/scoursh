@@ -1,0 +1,7 @@
+{
+    "QueueUrls": [
+        "https://sqs.eu-west-2.amazonaws.com/123456789012/scoursh-fixture-public-queue",
+        "https://sqs.eu-west-2.amazonaws.com/123456789012/scoursh-fixture-hardened-queue",
+        "https://sqs.eu-west-2.amazonaws.com/123456789012/scoursh-fixture-denied-queue"
+    ]
+}
