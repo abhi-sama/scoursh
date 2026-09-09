@@ -1590,7 +1590,7 @@ Landed 6 of 6.  Outstanding: none.
 #### Totals
 
 - Pattern packs on disk: **15** (`modules/sast/rules/` 9, `modules/iac/` 6).
-- Module directories present: `modules/cloud/`, `modules/dast/`, `modules/iac/`, `modules/sast/`, `modules/sca/`.
+- Module directories present: `modules/cloud/`, `modules/dast/`, `modules/iac/`, `modules/network/`, `modules/sast/`, `modules/sca/`.
 
 <!-- END GENERATED STATUS -->
 
@@ -3335,19 +3335,19 @@ Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start
 - `lib/records.sh` (the record parser) is built **before** step 1's stated contents, since tensions 1, 6, 9, 15, and 26 all depend on it.
 - `lib/awscli.sh` is added to the layout and lands at the start of step 6, before any `aws/live/*.sh` script exists, so no script is ever written against a bare `aws`. **Update:** `lib/awscli.sh` itself now exists (see "AWS module: what exists ahead of step 6" below) - built out of sequence, deliberately, without the `aws/live/*.sh` scripts it was meant to land alongside.
 
-## Network module (NET): Tier 0 is NET-01 through NET-03; NET-04 (module scaffold + dispatch) is next
+## Network module (NET): Tier 0 (NET-01 through NET-04) is COMPLETE; `scan.sh network` is a real dispatch
 
 A new scanner surface - declared-listener verification, service/version identification and transport
 posture over an operator-declared port set, never port discovery - is planned as `modules/network/`
 with a `NET` check-id prefix, staged as dependency-ordered tickets the same way DAST and Cloud were
 (`data/scoursh-network-scan-design/report.md` §7 is the staged plan; NET-01 through NET-04 are Tier 0,
 strictly serial, because each touches a file a later NET ticket would otherwise conflict on).
-**NET-01 (shared-file preparation), NET-02 (the `NET` module identity) and NET-03 (the transport
-primitive) have landed. `modules/network/` itself, `scan.sh`'s dispatch wiring, and every probe/finding
-emitter remain untouched - NET-04 is next.** Do not read this section as "the network module runs
-anything yet" - Tier 0 is groundwork landed alone and first, on purpose, so every later NET ticket can
-add only its own files without conflicting with a peer (the same lesson the cloud module's
-parallel-ticket cascade cost a rebase over).
+**NET-01 (shared-file preparation), NET-02 (the `NET` module identity), NET-03 (the transport
+primitive) and NET-04 (module scaffold + dispatch) have all landed. `scan.sh network --target <t>`
+now dispatches for real, exactly like `scan.sh dast` did after DAST-02 - it tolerates ZERO phase
+scripts, sends no traffic, and completes cleanly with a fully honest, declared explanation of why it
+covered nothing.** Tier 1 (NET-05, the declared listener set) is next; do not read this section as "the
+network module has a check" - nothing on `modules/network/` yet reads a byte off any target.
 
 Two shared files changed, both pure preparation with zero new scanner behaviour:
 
@@ -3430,6 +3430,63 @@ subshells and across `xargs -P` workers racing to probe for the first time. `tes
 pins this by mutation: defeating the scratch-file check (while leaving the in-process one intact) turns
 the "record only once" and "probe only once" assertions red, which is what proves the in-process cache
 alone was insufficient rather than merely different.
+
+**NET-04 (`modules/network/{run.sh,engine.sh}`, `scan.sh` wiring, `lib/report.sh`) has landed - the
+module scaffold and dispatch entry point, DAST-02's shape applied to network.** `_NET_PHASES`
+(`modules/network/engine.sh`) transcribes the design report §7 staged plan's own Tier 1-3 file names
+(`inventory.sh` NET-05 at `passive`; `reachability.sh`/`httpport.sh` NET-06/09 at `safe`;
+`banner.sh`/`tlsport.sh`/`transport.sh` NET-07/08/10 at `passive`) - none exist on disk yet, and
+`net_run_phase` (byte-identical shape to `dast_run_phase`) treats an absent script as a clean no-op, so
+the table is complete now rather than grown one ticket at a time. `modules/network/run.sh`
+(`_net_run_module`) resolves `--target`, re-asserts `config_scope_require` a second, independent time
+(`scan.sh`'s own `network)` dispatch arm already calls it once, mirroring `dast)` exactly), walks the
+phase table once per target, and writes the `target` coverage cell (rules/RULE-FORMAT.md §9.5.1, NET-02).
+With zero phase scripts on disk, every run records `reason=no_phase_scripts_on_disk_yet` plus a
+`coverage_gap` naming the target - the same honest no-op DAST-02 shipped before DAST-03 landed.
+
+**`scan.sh` gained `network` as a real command: `SCAN_COMMANDS`, `_SCAN_FLAG_KIND`
+(`network:target`/`network:intensity`/`network:i-own-target`, reusing `dast`'s own affirmation logic in
+`_scan_check_affirmation` rather than a second copy), `_SCAN_REQUIRED_FLAG[network]=target`, a `network)`
+dispatch arm byte-identical in shape to `dast)`, and a `network` block inside `all)` that runs alongside
+`dast` under the same `--target` (D6, report.md §9: "network runs under `all` whenever dast does" - one
+shared `_scan_record_authorization` call, not two, since a second call would double every
+`authorization_*` fact in run.json for the same target/intensity/affirmation).** `--guided` is
+deliberately NOT wired to offer `network` at G1 (docs/STEP-GUIDE-PLAN.md's own menu is a fixed-cardinality
+list scoped to that plan, not this one) - a stated, deliberate gap for a future ticket, not an oversight.
+
+**`lib/report.sh`'s `_RPT_MODULES` (the NET-01 refactor) gained `network`, and three things needed
+correcting alongside it, in the same change, because each one fails in the direction that reads as a
+pass:** (1) `_RPTC_RANSEM[network]`/`_RPTC_RANSEM_TEXT[network]` follow the cloud-P3 precedent exactly -
+`strong` from the moment the dispatch is real, not from the moment a check exists, because the field
+names the PREDICATE a future check will use, and the `Checks available`/`Checks run` columns beside it
+already say nothing ran. (2) `_rptc_prefix_grep`'s default `${cat^^}-` mapping would look for
+`NETWORK-`-prefixed check ids, which do not and never will exist - `NET-` is the frozen prefix
+(rules/RULE-FORMAT.md §9.1.1, NET-02) - so `network` needed its own case arm, the identical shape
+`cloud`'s own `CLOUD-|POSTURE-` alternation already has. (3) **`lib/nettransport.sh` (NET-03) shipped its
+own `net_probe_cmd_absent` coverage_reduction under `module=net` (the finding-module-field short form),
+not `module=network` (the SCAN_COMMANDS/`checks_module_dir`/`_RPT_MODULES` token every other module's
+own `module=` free text uses) - a real, pre-existing inconsistency this ticket found and fixed (plus its
+own `tests/suites/nettransport.sh` assertion), because a `module=net` line is invisible to
+`_html_audit_category`'s `grep "module=$c "` and would never have rendered under the Network category
+in `report-audit.html`.**
+
+**Two functions from `modules/dast/engine.sh` were deliberately FORKED rather than lifted into a shared
+`lib/` home, and this is a stated, revisit-when-a-second-caller-exists choice, not an oversight** (design
+report §5.2 rule 1 recommends a lift "ideally", not as a requirement): `net_endpoint_in_scope`/
+`net_endpoint_keep`/`net_scope_record_skips`/`net_scope_safe_text`/`net_scope_skips_reset`
+(`modules/network/engine.sh`) are byte-identical in shape to `dast_endpoint_in_scope`/`dast_endpoint_keep`/
+`dast_scope_record_skips`/`dast_scope_safe_text`/`dast_scope_skips_reset`, implementing report.md §5.2
+rule 1's non-fatal "a tuple lifted out of an artifact this scanner did not author degrades to a counted
+coverage_reduction" half (the fatal "an operator-configured tuple dies exit 3" half needs no wrapper at
+all - a future phase calls `lib/http.sh`'s `http_authorize_raw_connection` directly, exactly as
+`modules/dast/passive/tls.sh` already does). The fork follows the cloud-P3 precedent
+(`modules/cloud/aws/engine.sh`'s own byte-identical copy of `lib/state.sh`'s `_state_json_flatten`, kept
+local "to protect tests/lint-source-graph.sh's hub budget") rather than the DAST tree's own
+`response_engine.sh` lift (which consolidated four pre-existing, already-drifted copies - a different
+problem from "avoid writing a first network copy" for a function this ticket ships ZERO real callers
+of). `tests/lint-source-graph.sh`'s hub-sum cap (17, unchanged by this ticket) is the number to
+re-measure before ever lifting these; a real second caller - a future NET-05+ phase, or a second module -
+is the trigger to revisit it, not a hypothetical one.
 
 ## AWS module: what exists ahead of step 6, and why
 

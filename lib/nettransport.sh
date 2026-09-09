@@ -151,7 +151,17 @@ net_probe_capability() {
     mv -f "$file.tmp.$BASHPID" "$file"
     if (( _NET_TCP_CAPABLE == 0 )); then
       log_warn "nettransport: this bash has no /dev/tcp support (built without --enable-net-redirections); every net_connect_probe call degrades to 'filtered' with a recorded reduction"
-      run_record coverage_reduction "module=net reason=net_probe_cmd_absent - this bash was built without --enable-net-redirections, so no TCP connect can be attempted at all; every port probe on this run reports 'filtered' rather than a real result."
+      # `module=network`, not the finding-module-field short form `net`
+      # (lib/findings.sh's `_fp_profile_for`): every OTHER caller of this
+      # `module=` convention (modules/dast/run.sh, modules/cloud/aws/run.sh,
+      # scan.sh's own `_scan_apply_profile_filter`) spells it with the
+      # SCAN_COMMANDS/checks_module_dir token, which NET-04 fixes at
+      # `network`, so that is the token lib/report.sh's `_RPT_MODULES`/
+      # `_html_audit_category` grep for here too - a `module=net` line would
+      # be invisible to that grep and never render under the Network category
+      # in the audit report, which is the exact "declared but not machine-
+      # readable" failure AGENTS.md's own dast authz.sh section warns about.
+      run_record coverage_reduction "module=network reason=net_probe_cmd_absent - this bash was built without --enable-net-redirections, so no TCP connect can be attempted at all; every port probe on this run reports 'filtered' rather than a real result."
     fi
   fi
   mutex_release nettransport-capability
