@@ -1,0 +1,8 @@
+{
+    "IsLogging": true,
+    "LatestDeliveryTime": 1700000000.0,
+    "StartLoggingTime": 1600000000.0,
+    "LatestDeliveryAttemptSucceeded": "2023-11-14T12:00:00Z",
+    "LatestNotificationAttemptSucceeded": "2023-11-14T12:00:00Z",
+    "TimeLoggingStarted": "2020-09-13T12:00:00Z"
+}

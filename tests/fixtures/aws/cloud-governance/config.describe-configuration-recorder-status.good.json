@@ -1,0 +1,11 @@
+{
+    "ConfigurationRecordersStatus": [
+        {
+            "name": "default",
+            "lastStartTime": 1600000000.0,
+            "recording": true,
+            "lastStatus": "SUCCESS",
+            "lastStatusChangeTime": 1700000000.0
+        }
+    ]
+}
