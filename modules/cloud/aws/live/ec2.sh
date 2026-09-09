@@ -284,7 +284,7 @@ _ec2_pass_security_groups() {
   done
 
   local dgid=''
-  for dgid in "${default_sg_ids[@]}"; do
+  for dgid in "${default_sg_ids[@]+"${default_sg_ids[@]}"}"; do
     _ec2_note_evaluated "$defsg"
     if [[ -n ${used_groups[$dgid]:-} ]]; then
       ec2_emit_finding "$defsg" security-group "$dgid" '' \
@@ -518,7 +518,7 @@ _ec2_pass_vpc_flow_logs() {
   done
 
   local v
-  for v in "${vpc_ids[@]}"; do
+  for v in "${vpc_ids[@]+"${vpc_ids[@]}"}"; do
     _ec2_note_evaluated "$id"
     if [[ -z ${active_resource[$v]:-} ]]; then
       ec2_emit_finding "$id" vpc "$v" '' \

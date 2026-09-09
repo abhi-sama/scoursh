@@ -113,7 +113,7 @@ _apigw_run_service() {
   chmod 700 "$work" 2>/dev/null || true
 
   local id selected=0
-  for id in "${_APIGW_CHECK_IDS[@]}"; do
+  for id in "${_APIGW_CHECK_IDS[@]+"${_APIGW_CHECK_IDS[@]}"}"; do
     _apigw_selected "$id" && selected=$(( selected + 1 ))
   done
   if (( selected == 0 )); then
@@ -157,7 +157,7 @@ _apigw_run_service() {
   if (( rc != 0 )); then
     local reason=''
     aws_ro_reduction_reason_set reason
-    for id in "${_APIGW_CHECK_IDS[@]}"; do
+    for id in "${_APIGW_CHECK_IDS[@]+"${_APIGW_CHECK_IDS[@]}"}"; do
       _apigw_note_lost "$id" "$reason"
     done
     run_record coverage_reduction "module=cloud reason=$reason service=apigw operation=get-rest-apis account=$account region=$region - the account's REST API list could not be read (${SCOURSH_AWS_RO_OUTCOME}${SCOURSH_AWS_RO_CODE:+, code ${SCOURSH_AWS_RO_CODE}}), so NO API Gateway route was examined and neither CLOUD-APIGW-* check ran."
@@ -250,7 +250,7 @@ _apigw_examine_api() {
   if (( rc != 0 )); then
     local reason=''
     aws_ro_reduction_reason_set reason
-    for id in "${_APIGW_CHECK_IDS[@]}"; do
+    for id in "${_APIGW_CHECK_IDS[@]+"${_APIGW_CHECK_IDS[@]}"}"; do
       _apigw_note_lost "$id" "$reason"
     done
     run_record coverage_reduction "module=cloud reason=$reason service=apigw operation=get-resources api=$api_id region=$region - this API's resource/method tree could not be read (${SCOURSH_AWS_RO_OUTCOME}${SCOURSH_AWS_RO_CODE:+, code ${SCOURSH_AWS_RO_CODE}}), so none of its routes was examined."
@@ -333,7 +333,7 @@ _apigw_examine_method() {
 _apigw_record_coverage() {
   local account=$1 region=$2 id
   local ran=0
-  for id in "${_APIGW_CHECK_IDS[@]}"; do
+  for id in "${_APIGW_CHECK_IDS[@]+"${_APIGW_CHECK_IDS[@]}"}"; do
     _apigw_selected "$id" || continue
     if (( ${_APIGW_EVALUATED[$id]:-0} > 0 )); then
       run_record checks_run "$id"

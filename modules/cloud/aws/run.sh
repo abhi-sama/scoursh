@@ -560,7 +560,7 @@ _cloud_run_multi_account() {
   fi
 
   local acct_id
-  for acct_id in "${_CLOUD_ORG_ACCOUNTS[@]}"; do
+  for acct_id in "${_CLOUD_ORG_ACCOUNTS[@]+"${_CLOUD_ORG_ACCOUNTS[@]}"}"; do
     # Cleared BEFORE every attempt, not only after one - see
     # cloud_assume_role_clear's own header for why: a role-ARN template that
     # fails to build, or an assume that fails part-way through, would

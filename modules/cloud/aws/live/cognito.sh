@@ -292,7 +292,7 @@ _cg_run_service() {
 # ---------------------------------------------------------------------------
 _cg_walk_user_pools() {
   local account=$1 region=$2 partition=$3 work=$4
-  _cg_any_selected "${_CG_POOL_CHECK_IDS[@]}" "${_CG_CLIENT_CHECK_IDS[@]}" || return 0
+  _cg_any_selected "${_CG_POOL_CHECK_IDS[@]+"${_CG_POOL_CHECK_IDS[@]}"}" "${_CG_CLIENT_CHECK_IDS[@]+"${_CG_CLIENT_CHECK_IDS[@]}"}" || return 0
 
   local listf=$work/list-user-pools.json rc=0
   aws_ro cognito-idp list-user-pools --max-results "$_CG_PAGE_SIZE" >"$listf" || rc=$?
@@ -300,7 +300,7 @@ _cg_walk_user_pools() {
     local reason=''
     aws_ro_reduction_reason_set reason
     local cid
-    for cid in "${_CG_POOL_CHECK_IDS[@]}" "${_CG_CLIENT_CHECK_IDS[@]}"; do
+    for cid in "${_CG_POOL_CHECK_IDS[@]+"${_CG_POOL_CHECK_IDS[@]}"}" "${_CG_CLIENT_CHECK_IDS[@]+"${_CG_CLIENT_CHECK_IDS[@]}"}"; do
       _cg_note_lost "$cid" "$reason"
     done
     run_record coverage_reduction "module=cloud reason=$reason service=cognito operation=list-user-pools account=$account region=$region cell=${SCOURSH_CLOUD_CELL:-} - the region's user-pool list could not be read (${SCOURSH_AWS_RO_OUTCOME}${SCOURSH_AWS_RO_CODE:+, code ${SCOURSH_AWS_RO_CODE}}), so NO user pool and NO app client in $region was examined. The identity-pool half of this pass is unaffected and is reported separately."
@@ -353,12 +353,12 @@ _cg_examine_user_pool() {
   local safe=${pid//[^A-Za-z0-9._-]/_}
   local f=$work/pool.$safe.json rc=0 arn=''
 
-  _cg_any_selected "${_CG_POOL_CHECK_IDS[@]}" "${_CG_CLIENT_CHECK_IDS[@]}" || return 0
+  _cg_any_selected "${_CG_POOL_CHECK_IDS[@]+"${_CG_POOL_CHECK_IDS[@]}"}" "${_CG_CLIENT_CHECK_IDS[@]+"${_CG_CLIENT_CHECK_IDS[@]}"}" || return 0
 
   rc=0
   aws_ro cognito-idp describe-user-pool --user-pool-id "$pid" >"$f" || rc=$?
   if (( rc != 0 )); then
-    _cg_call_lost describe-user-pool "$pid" "${_CG_POOL_CHECK_IDS[@]}"
+    _cg_call_lost describe-user-pool "$pid" "${_CG_POOL_CHECK_IDS[@]+"${_CG_POOL_CHECK_IDS[@]}"}"
     # The app clients are reached through a DIFFERENT call and are still
     # examined: a describe that was denied says nothing about whether
     # `list-user-pool-clients` will be, and abandoning the clients here would
@@ -524,13 +524,13 @@ _cg_check_self_service_surface() {
 # ---------------------------------------------------------------------------
 _cg_walk_clients() {
   local pid=$1 pname=$2 account=$3 region=$4 partition=$5 work=$6 pool_arn=$7
-  _cg_any_selected "${_CG_CLIENT_CHECK_IDS[@]}" || return 0
+  _cg_any_selected "${_CG_CLIENT_CHECK_IDS[@]+"${_CG_CLIENT_CHECK_IDS[@]}"}" || return 0
 
   local safe=${pid//[^A-Za-z0-9._-]/_}
   local listf=$work/clients.$safe.json rc=0
   aws_ro cognito-idp list-user-pool-clients --user-pool-id "$pid" --max-results "$_CG_PAGE_SIZE" >"$listf" || rc=$?
   if (( rc != 0 )); then
-    _cg_call_lost list-user-pool-clients "$pid" "${_CG_CLIENT_CHECK_IDS[@]}"
+    _cg_call_lost list-user-pool-clients "$pid" "${_CG_CLIENT_CHECK_IDS[@]+"${_CG_CLIENT_CHECK_IDS[@]}"}"
     return 0
   fi
   if [[ ${SCOURSH_AWS_RO_OUTCOME:-} == truncated ]]; then
@@ -583,7 +583,7 @@ _cg_examine_client() {
 
   aws_ro cognito-idp describe-user-pool-client --user-pool-id "$pid" --client-id "$cid" >"$f" || rc=$?
   if (( rc != 0 )); then
-    _cg_call_lost describe-user-pool-client "$pid/$cid" "${_CG_CLIENT_CHECK_IDS[@]}"
+    _cg_call_lost describe-user-pool-client "$pid/$cid" "${_CG_CLIENT_CHECK_IDS[@]+"${_CG_CLIENT_CHECK_IDS[@]}"}"
     return 0
   fi
   cognito_doc_load "$f" || true
@@ -718,7 +718,7 @@ _cg_check_client_public_confidential() {
 # ---------------------------------------------------------------------------
 _cg_walk_identity_pools() {
   local account=$1 region=$2 partition=$3 work=$4
-  _cg_any_selected "${_CG_IDPOOL_CHECK_IDS[@]}" || return 0
+  _cg_any_selected "${_CG_IDPOOL_CHECK_IDS[@]+"${_CG_IDPOOL_CHECK_IDS[@]}"}" || return 0
 
   local listf=$work/list-identity-pools.json rc=0
   aws_ro cognito-identity list-identity-pools --max-results "$_CG_PAGE_SIZE" >"$listf" || rc=$?
@@ -726,7 +726,7 @@ _cg_walk_identity_pools() {
     local reason=''
     aws_ro_reduction_reason_set reason
     local cid
-    for cid in "${_CG_IDPOOL_CHECK_IDS[@]}"; do
+    for cid in "${_CG_IDPOOL_CHECK_IDS[@]+"${_CG_IDPOOL_CHECK_IDS[@]}"}"; do
       _cg_note_lost "$cid" "$reason"
     done
     run_record coverage_reduction "module=cloud reason=$reason service=cognito operation=list-identity-pools account=$account region=$region cell=${SCOURSH_CLOUD_CELL:-} - the region's identity-pool list could not be read (${SCOURSH_AWS_RO_OUTCOME}${SCOURSH_AWS_RO_CODE:+, code ${SCOURSH_AWS_RO_CODE}}), so NO identity pool in $region was examined. The user-pool half of this pass is unaffected and is reported separately."
@@ -771,7 +771,7 @@ _cg_examine_identity_pool() {
 
   aws_ro cognito-identity describe-identity-pool --identity-pool-id "$ipid" >"$f" || rc=$?
   if (( rc != 0 )); then
-    _cg_call_lost describe-identity-pool "$ipid" "${_CG_IDPOOL_CHECK_IDS[@]}"
+    _cg_call_lost describe-identity-pool "$ipid" "${_CG_IDPOOL_CHECK_IDS[@]+"${_CG_IDPOOL_CHECK_IDS[@]}"}"
     return 0
   fi
   cognito_doc_load "$f" || true

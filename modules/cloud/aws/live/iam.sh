@@ -278,7 +278,7 @@ _iam_run_users() {
   local -a ids=(CLOUD-IAM-POLICY_FULL_ADMIN-01 CLOUD-IAM-NO_PERMISSION_BOUNDARY-01 \
     CLOUD-IAM-POLICY_SPRAWL-01 CLOUD-IAM-UNUSED_CREDENTIAL-01 CLOUD-IAM-ACCESS_KEY_ROTATION-01)
   local need=0 id
-  for id in "${ids[@]}"; do
+  for id in "${ids[@]+"${ids[@]}"}"; do
     _iam_selected "$id" && need=1
   done
   (( need )) || return 0
@@ -286,7 +286,7 @@ _iam_run_users() {
   local listf=$work/list-users.json rc=0
   aws_ro iam list-users >"$listf" || rc=$?
   if (( rc != 0 )); then
-    _iam_call_lost list-users "$account" "${ids[@]}"
+    _iam_call_lost list-users "$account" "${ids[@]+"${ids[@]}"}"
     return 0
   fi
   iam_doc_load "$listf"
@@ -315,7 +315,7 @@ _iam_run_roles() {
     CLOUD-IAM-POLICY_SPRAWL-01 CLOUD-IAM-TRUST_WILDCARD_PRINCIPAL-01 \
     CLOUD-IAM-TRUST_NO_EXTERNAL_ID-01 CLOUD-IAM-UNUSED_ROLE-01)
   local need=0 id
-  for id in "${ids[@]}"; do
+  for id in "${ids[@]+"${ids[@]}"}"; do
     _iam_selected "$id" && need=1
   done
   (( need )) || return 0
@@ -323,7 +323,7 @@ _iam_run_roles() {
   local listf=$work/list-roles.json rc=0
   aws_ro iam list-roles >"$listf" || rc=$?
   if (( rc != 0 )); then
-    _iam_call_lost list-roles "$account" "${ids[@]}"
+    _iam_call_lost list-roles "$account" "${ids[@]+"${ids[@]}"}"
     return 0
   fi
   iam_doc_load "$listf"
@@ -672,7 +672,7 @@ _iam_examine_user_credentials() {
       local -a lost_ids=()
       (( need_unused )) && lost_ids+=(CLOUD-IAM-UNUSED_CREDENTIAL-01)
       (( need_rotation )) && lost_ids+=(CLOUD-IAM-ACCESS_KEY_ROTATION-01)
-      _iam_call_lost list-access-keys "$name" "${lost_ids[@]}"
+      _iam_call_lost list-access-keys "$name" "${lost_ids[@]+"${lost_ids[@]}"}"
     else
       iam_doc_load "$work/$safe.keys.json"
       local i=0 kid status created create_epoch

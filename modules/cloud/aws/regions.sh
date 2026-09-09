@@ -445,7 +445,7 @@ cloud_org_accounts_resolve() {
     # on two pages of a response observed mid-pagination-boundary-shift.
     while IFS= read -r acct; do
       [[ -n $acct ]] && _CLOUD_ORG_ACCOUNTS+=("$acct")
-    done < <(printf '%s\n' "${raw[@]}" | LC_ALL=C sort -u)
+    done < <(printf '%s\n' "${raw[@]+"${raw[@]}"}" | LC_ALL=C sort -u)
   fi
 
   if (( ${#_CLOUD_ORG_ACCOUNTS[@]} == 0 )); then

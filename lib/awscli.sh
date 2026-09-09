@@ -681,7 +681,7 @@ _awscli_fetch() {
       AWS_SESSION_TOKEN="$SCOURSH_AWS_SESSION_TOKEN"
     )
   fi
-  env "${__envp[@]}" "$SCOURSH_AWSCLI_BIN" "$svc" "$op" "$@" >"$outf" 2>"$errf" || status=$?
+  env "${__envp[@]+"${__envp[@]}"}" "$SCOURSH_AWSCLI_BIN" "$svc" "$op" "$@" >"$outf" 2>"$errf" || status=$?
 
   if (( status != 0 )); then
     _awscli_classify "$status" "$errf"
