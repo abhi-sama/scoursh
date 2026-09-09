@@ -666,6 +666,14 @@ landed; that table, not this sentence, is the authority if this is ever in doubt
 Steps 8 (`--paranoid` / `tools/run-in-netns.sh`) and 9 (optional engine adapters) have also landed, out
 of sequence - see their own sections below.
 
+**A new surface outside `docs/DESIGN.md` §13's ten steps - network/host scanning (`modules/network/`,
+the `NET` check-id prefix) - is now COMPLETE, out of sequence with everything below it.** It ships
+`scan.sh network --target NAME`: declared-listener reachability, banner/TLS/HTTP service and version
+identification, and transport posture, over an operator-declared listener set only - never a port
+sweep or host discovery, gated by the identical `lib/http.sh` chokepoint and ceilings `dast` uses. See
+"Network module (NET)" below for the full landing detail (NET-01 through NET-12); its own mirror lives
+in `docs/FOUNDATION.md`'s "Where the build currently stands".
+
 **`rules/derived.rules` now seeds `COMPOSITE-TOKEN-HIJACK` (findings F5/F20, closed), now that all
 three of its `requires` contributors exist**: `CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01` (§8.5, CLOUD-23),
 `DAST-LEAK-JS_CONFIG-01` (§7.1, DAST-10) and `DAST-GQL-INTROSPECTION-01` (§7.4, DAST-27), correlated on
@@ -3335,8 +3343,9 @@ Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start
 - `lib/records.sh` (the record parser) is built **before** step 1's stated contents, since tensions 1, 6, 9, 15, and 26 all depend on it.
 - `lib/awscli.sh` is added to the layout and lands at the start of step 6, before any `aws/live/*.sh` script exists, so no script is ever written against a bare `aws`. **Update:** `lib/awscli.sh` itself now exists (see "AWS module: what exists ahead of step 6" below) - built out of sequence, deliberately, without the `aws/live/*.sh` scripts it was meant to land alongside.
 
-## Network module (NET): Tier 0 (NET-01 through NET-04), Tier 1 (NET-05), all of Tier 2 (NET-06 through
-## NET-09) and Tier 3's NET-10 have landed - the module now sends real traffic and produces findings
+## Network module (NET): COMPLETE - Tier 0 (NET-01 through NET-04), Tier 1 (NET-05), all of Tier 2
+## (NET-06 through NET-09), and all of Tier 3 (NET-10, NET-11) have landed. NET-12 (this docs sweep)
+## closes the module out.
 
 A new scanner surface - declared-listener verification, service/version identification and transport
 posture over an operator-declared port set, never port discovery - is being built as `modules/network/`
@@ -3350,14 +3359,22 @@ of Tier 2's four peer probes - NET-06 (`reachability.sh`, three-state listener v
 (`banner.sh`, read-on-connect service identification, `NET-SVC-BANNER_DISCLOSURE-01`), NET-08
 (`tlsport.sh`, TLS identification on a non-base-url listener) and NET-09 (`httpport.sh`, a `safe-active`
 HTTP GET against a declared non-standard HTTP port, reusing `modules/dast/passive/banner_engine.sh`'s
-product normalisation) - have since landed on top of Tier 0, followed by Tier 3's NET-10
-(`transport.sh`, transport posture on non-HTTP listeners). Their own paragraphs are below Tier 0's for
-NET-05/NET-06/NET-08/NET-10; NET-07 and NET-09 landed without this section being updated for either -
-the same process-note failure this file warns about at length elsewhere - and are corrected here rather
-than backfilled with a full paragraph each, since neither ticket's own detail is this correction's to
-reconstruct. Do not read the Tier 0 paragraphs alone as "the network module has no check" -
-`modules/network/` now reads real bytes off a target's declared listeners and emits real findings; see
-the paragraphs below Tier 0's for what.
+product normalisation) - have since landed on top of Tier 0, followed by all of Tier 3: NET-10
+(`transport.sh`, transport posture on non-HTTP listeners) and NET-11 (the version→vulnerability lookup
+folded into NET-07's own `banner.sh`, `NET-SVC-OUTDATED_COMPONENT-01`). Their own paragraphs are below
+Tier 0's for NET-05/NET-06/NET-08/NET-10/NET-11; NET-07 and NET-09 landed without this section being
+updated for either - the same process-note failure this file warns about at length elsewhere - and are
+corrected here rather than backfilled with a full paragraph each, since neither ticket's own detail is
+this correction's to reconstruct. Do not read the Tier 0 paragraphs alone as "the network module has no
+check" - `modules/network/` now reads real bytes off a target's declared listeners and emits real
+findings across all 15 `NET-*` check ids; see the paragraphs below Tier 0's for what.
+**Every ticket in `data/scoursh-network-scan-design/report.md` §7's staged plan has now landed except
+Tier 4 (NET-13 the optional `nmap` adapter, NET-14 a `rules/derived.rules` composite correlating
+`NET-*` with `CLOUD-EC2-*`/`IAC-TF-OPEN_CIDR-01`, and NET-15 a local authorised network test target -
+all filed, none scheduled, per report.md §7's own table). NET-12, this paragraph's own change, is the
+docs-sweep ticket that brings `README.md`, `docs/CHECKS.md`, `ROADMAP.md`, `docs/COMPARISON.md`,
+`docs/USAGE.md`, this file, and `docs/FOUNDATION.md`'s own mirror in line with the fact that the module
+sends real traffic and is no longer a dispatch skeleton.**
 
 Two shared files changed, both pure preparation with zero new scanner behaviour:
 
@@ -3601,6 +3618,31 @@ product/version identifier this file has no use for. `tests/suites/network-trans
 assertions) is the proof, using the identical direct-source phase-env/listeners.json harness
 `tests/suites/network-tlsport.sh` established rather than the heavier real-`scan.sh`-subprocess shape,
 reserving only two real dispatch-chain runs for the end of the file.
+
+**NET-11 (the version→vulnerability lookup for banner disclosures, `NET-SVC-OUTDATED_COMPONENT-01`)
+has landed - inside NET-07's own `modules/network/banner.sh`/`banner_engine.sh`, not as a peer
+script.** report.md §3.2 item 1 and §5.1 both put this lookup on the same disclosure NET-07 already
+reads, so a second phase script would re-probe the identical connection for no new bytes; it is one
+more check id (`checks-banner.rules`) alongside `NET-SVC-BANNER_DISCLOSURE-01`, sharing that check's
+`passive` tag (zero bytes sent) rather than earning its own tier. `banner_emit_outdated` (network's own
+`banner_engine.sh`) fires only after `modules/dast/passive/banner_engine.sh`'s own `banner_db_match` -
+sourced, never reimplemented - has already matched, so the lookup itself is `db_lookup_exact` (never
+range arithmetic - the identical tension-25 discipline `DAST-BANNER-OUTDATED_COMPONENT-01` already
+established, one port over), and
+`confidence` is hardcoded `medium`, never `high` - report.md §3.4's backport problem: the version came
+from what the service volunteered unprompted, and a distribution that backports a security fix leaves
+that string unchanged, so an exact match can name an already-patched host as vulnerable, and the
+finding's own `remediation` states the caveat in words rather than leaving it implicit in the
+confidence field alone. Three absences are each their own declared reduction rather than folded into
+one: `versions_db_absent` (the file itself is missing - a fresh clone, since nothing vendors it during
+a scan), `versions_db_no_banner_rows` (the file exists but carries no `banner`-namespace rows), and
+`net_check_not_applicable` (a declared listener was not open, so nothing was read to look up in the
+first place) - `NET-SVC-BANNER_DISCLOSURE-01` is still checked and still reported in every one of
+those three cases, since an absent version list says nothing about whether a listener discloses a
+banner at all. `tests/suites/network-outdated.sh` is the proof - its own file, reusing
+`network-banner.sh`'s test seam (`SCOURSH_NET_PROBE`/`SCOURSH_NET_BANNER_PROBE`, the resolve stub, the
+`scan.sh network` subprocess shape) verbatim rather than duplicating it, since both suites exercise the
+same phase script.
 
 ## AWS module: what exists ahead of step 6, and why
 

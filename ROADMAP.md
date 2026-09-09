@@ -95,6 +95,16 @@ This file is a shorter, reader-facing summary of the same information, and is ha
 - **`COMPOSITE-TOKEN-HIJACK` is now seeded** in `rules/derived.rules` (findings F5/F20, open since step
   1, are cleared): DAST supplies one contributor and the cloud module landing above supplies the
   other, so the composite finding this correlates is live rather than an intentionally-unseeded gap.
+- **Network / host scanning is complete.** `modules/network/` (NET-01 through NET-11, see
+  [`AGENTS.md`](AGENTS.md)'s "Network module (NET)" section for the full landing detail) ships
+  `scan.sh network --target NAME`: service-posture scanning over the listener set
+  `config/scope.conf`'s `base-url`/`extra-host` entries declare for that target - three-state
+  reachability verification, banner/HTTP service and version disclosure, TLS posture on non-web
+  ports, and plaintext/STARTTLS transport posture - gated by the identical `lib/http.sh` scope
+  chokepoint, ceilings, and `--i-own-target` affirmation `dast` uses. This is deliberately **not** a
+  port scanner or a host-discovery tool: a port the operator did not declare is never probed, and OS
+  patch-level inference and UDP are stated-gap exclusions, not oversights - see
+  [`docs/CHECKS.md`](docs/CHECKS.md) for why.
 
 ## Not yet started
 
@@ -232,16 +242,22 @@ old behaviour can see what replaced it.
 
 ## Not currently on the roadmap
 
-Two categories from the broader "types of security scanner" taxonomy are not part of
+One category from the broader "types of security scanner" taxonomy is not part of
 `docs/DESIGN.md`'s plan at all, not merely unbuilt:
 
 - **Container image scanning** - scanning the layers and installed packages of a *built* Docker
   image (the way Trivy or Grype do). `scoursh` lints Dockerfile and docker-compose *source* as part
   of `iac`, which is a different, narrower thing.
-- **Network / host scanning** - servers, open ports, OS patch levels.
 
-If either of these matters to your use case, it's worth raising as an issue rather than assuming
-it's simply "next."
+Network / host scanning used to be listed here too; it shipped - see "Network / host scanning is
+complete" under [Landed](#landed).
+Two capabilities inside that surface remain deliberate, stated exclusions rather than unbuilt work -
+OS patch-level inference (banner-version matching cannot see a distribution's backported fixes) and
+UDP (no connect handshake, so "open" and "filtered" are indistinguishable without a per-service
+payload) - see [`docs/CHECKS.md`](docs/CHECKS.md).
+
+If container image scanning matters to your use case, it's worth raising as an issue rather than
+assuming it's simply "next."
 
 ## Maintenance note: this file is not generated
 

@@ -18,6 +18,7 @@ choice anyway.
 - [SCA — dependencies](#sca--dependencies)
 - [IaC — infrastructure as code](#iac--infrastructure-as-code)
 - [DAST — running applications](#dast--running-applications)
+- [Network / host](#network--host)
 - [Secrets](#secrets)
 - [Cloud / CSPM](#cloud--cspm)
 - [Measured head-to-head](#measured-head-to-head)
@@ -26,7 +27,7 @@ choice anyway.
 
 ## The headline
 
-**The position:** One auditable bash tool that sweeps four surfaces in a single run, refuses to talk
+**The position:** One auditable bash tool that sweeps six surfaces in a single run, refuses to talk
 to anything outside an operator-declared allowlist, and - uniquely among the tools surveyed - reports
 what it **did not** check as a first-class, non-clean output state.
 
@@ -48,8 +49,8 @@ on record**, or it is **not covered** - registered but never run. The last bucke
 
 | | |
 |---|---|
-| **293** | security checks across five surfaces |
-| **5** | surfaces: SAST, SCA, IaC, DAST, Cloud/CSPM |
+| **308** | security checks across six surfaces |
+| **6** | surfaces: SAST, SCA, IaC, DAST, Network/host, Cloud/CSPM |
 | **0** | runtime deps beyond bash + coreutils |
 | **1** | network chokepoint, lint-enforced |
 | **30** | AWS services covered by the read-only Cloud/CSPM checks |
@@ -60,6 +61,7 @@ on record**, or it is **not covered** - registered but never run. The last bucke
 | SCA | needs setup | 6 ecosystems, 12 manifest formats — advisory DB is built by hand, offline | table lookup |
 | IaC | landed | Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose | 36 |
 | DAST | landed | Full engine: auth, crawl, passive, safe-active, injection, tier-5 | 92 |
+| Network / host | landed | Declared-listener reachability, banner/TLS/HTTP identification, transport posture — never a port sweep | 15 |
 | Cloud / AWS | landed | 30 services, read-only, multi-account (`--assume-role`), CIS/OWASP-mapped | 112 |
 
 > **Cloud is read-only and needs your own account.** `scan.sh cloud --live` runs 112 checks across 30
@@ -200,6 +202,34 @@ Where scoursh is genuinely differentiated is the consent model: no other tool he
 to do this" a runtime-enforced question. **It is the DAST you can safely leave running in CI against
 your own staging estate - not the one you hand a pentester.**
 
+## Network / host
+
+| Tool | Coverage | Licence | Footprint | Egress / consent | Coverage honesty | Unique strength |
+|---|---|---|---|---|---|---|
+| **scoursh** | 15 checks: three-state reachability, banner/TLS/HTTP service+version identification, transport posture, over a DECLARED listener set | Apache-2.0 | bash, TCP connect only (no `nmap` dependency) | **Refuses any host:port not in scope.conf; never probes a port the operator did not declare** | **Three-state (open/not-open/filtered) + declared reductions** | Same runtime-enforced consent and ceiling model as DAST, applied to raw TCP |
+| Nmap | Full port/service/OS discovery across an address range, hundreds of NSE scripts | Nmap Public Source Licence | C, no deps | Whatever you point it at | Findings only | The reference port scanner and host-discovery tool |
+| testssl.sh | Deep TLS/SSL protocol, cipher and vulnerability assessment | GPLv2 | bash + openssl | Direct | Findings only | Far deeper single-purpose TLS auditor than any generalist |
+
+scoursh's network module is deliberately **not a port scanner**. It verifies the reachability, service
+identity, and transport posture of a listener set the operator already declared in
+`config/scope.conf` (`base-url`/`extra-host` entries) - it never discovers a port the operator did not
+name, gated by the identical `lib/http.sh` scope chokepoint and ceilings the DAST engine uses. There is
+no `nmap` dependency: the TCP-state classification is pure bash, capability-probed and
+deadline-bounded. An `nmap` adapter is filed (`docs/ADAPTERS.md`'s convention) but not yet built.
+Two capabilities a network scanner conventionally claims are stated v1 exclusions rather than
+oversights: OS patch-level inference (a backported distribution security fix leaves the banner's
+version string unchanged, so version-string matching against a live host is structurally unreliable)
+and UDP (no connect handshake, so "open" and "filtered" are indistinguishable without a
+protocol-specific payload per service).
+
+**Honest verdict:** **Use Nmap for port/host discovery and testssl.sh for a deep TLS audit.** scoursh's
+6 `NET-TLS-*` checks are a posture summary, not a protocol-level cipher-suite audit, and it will never
+tell you what else is listening on a host beyond what you already declared. What it adds is the same
+property the rest of the tool has: a listener you told it about gets checked with the identical
+consent-and-ceiling discipline as an authorized web target, in the same report as your code, dependency,
+IaC, and cloud findings, with "not open"/"filtered"/"not tested" kept as distinct, honestly-reported
+states rather than folded into a clean pass.
+
 ## Secrets
 
 | Tool | Coverage | Licence | Footprint | Egress | Coverage honesty | Unique strength |
@@ -305,13 +335,13 @@ Findings were judged against a known ground truth, not taken from any tool's own
 
 **Choose scoursh when…**
 
-- **You are air-gapped or egress-audited.** SAST, SCA and IaC make zero network calls; DAST talks
-  only to hosts you declared, and cloud talks only to your own AWS account through a read-only
-  chokepoint.
+- **You are air-gapped or egress-audited.** SAST, SCA and IaC make zero network calls; DAST and
+  network talk only to hosts (and, for network, ports) you declared, and cloud talks only to your own
+  AWS account through a read-only chokepoint.
 - **"Did it actually check?" must be answerable.** Compliance evidence, an auditor, a post-incident
   review.
 - **You cannot install a toolchain.** No JVM, Python, Node, Go, Docker or build step.
-- **You want one report across five surfaces** with one fingerprint scheme, severity rubric and diff
+- **You want one report across six surfaces** with one fingerprint scheme, severity rubric and diff
   model.
 - **You need a CI gate with a real new-findings carve-out**, fail-closed when the diff is unusable.
 - **Auditability is the requirement.** It is shell - a reviewer can read the rule that fired.
@@ -324,6 +354,8 @@ Findings were judged against a known ground truth, not taken from any tool's own
 - **Serious IaC policy enforcement** → Checkov or KICS
 - **Real web-app testing or SPA coverage** → ZAP
 - **Latest-CVE web templates** → Nuclei
+- **Port/host discovery** → Nmap (scoursh only verifies a listener set you already declared)
+- **Deep TLS/SSL protocol auditing** → testssl.sh
 - **Primary secret scanning or verification** → Gitleaks or TruffleHog
 - **Deep, multi-cloud, multi-framework cloud posture work** → Prowler (scoursh's cloud checker is
   AWS-only, CIS-only, and single-account by default)

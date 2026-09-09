@@ -47,8 +47,9 @@ scan.sh <command> [options]
 | `sca` | `[--path DIR]` | live, needs an advisory database | Dependency/lockfile CVEs. Lockfile parsing works for every supported ecosystem, but matching needs `data/advisories.db`, which this repository does not ship - without it the run exits `4` rather than reporting a clean project. See ["Dependency data"](#dependency-data-dataadvisoriesdb). |
 | `iac` | `[--path DIR]` | live | Cloud IaC plus container/Kubernetes manifests. |
 | `dast` | `--target NAME` `[--intensity passive\|safe\|active]` `[--authed]` `[--i-own-target NAME]` `[--openapi\|--har\|--postman\|--graphql-schema FILE]` | live - **it sends real requests** | The scope gate below is enforced before anything else (see "The scope gate"), as are the conservative rate/budget/breaker ceilings and the `--i-own-target` affirmation (see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)). Every module `docs/DESIGN.md` §7 describes has landed (`docs/STEP5-DAST-PLAN.md`, DAST-01 through DAST-36): authentication and crawling, every passive check (headers, cookies, TLS, CORS, information leakage, mixed content), safe-active checks (content discovery, method enumeration), the full injection family gated at `--intensity active` (SQLi, XSS, command injection, path traversal, SSTI, NoSQLi, LDAPi, CRLF, XXE/SSRF, prototype pollution, open redirect, host-header injection), and the application-layer tier (GraphQL introspection, rate-limiting, JWT, object-level authorization/IDOR). `--intensity` genuinely gates which phases and checks run (not merely a ceiling that nothing tests, unlike the static modules below); a phase this run's intensity or authorization does not reach is recorded in `run.json` as a `coverage_gap`/`coverage_reduction` with its reason, rather than silently omitted. |
+| `network` | `--target NAME` `[--intensity passive\|safe\|active]` `[--i-own-target NAME]` | live - **it opens real TCP connections** | Service-posture scanning over the DECLARED listener set `config/scope.conf`'s `base-url`/`extra-host` entries name for `--target` - never a port sweep or host discovery: a port scoursh was not told about is never probed. Gated by the identical scope chokepoint, ceilings, and `--i-own-target` affirmation `dast` uses - one TCP connect costs exactly what one HTTP request costs against the same limiter/budget/breaker. `--intensity` gates phases exactly as it does for `dast`: `passive` (default) reaches banner reads and TLS identification on non-`base-url` listeners plus transport-posture checks, `safe` additionally reaches the three-state reachability probe and HTTP identification on non-standard ports. All six phases (`inventory.sh`, `reachability.sh`, `banner.sh`, `tlsport.sh`, `httpport.sh`, `transport.sh`) are implemented (`data/scoursh-network-scan-design/report.md` §7, NET-01 through NET-11); a target whose `config/scope.conf` entry declares only `base-url` (no `extra-host` listener) records a `coverage_gap` rather than a clean scan, since there is nothing beyond the web port to test. `--jobs N` is also this module's ceiling on simultaneous connections. Unlike `dast`, it accepts no `--requests-per-second`/`--request-budget`/`--circuit-breaker-failures`/spec-file flags - those are DAST's own rate/discovery knobs and have no equivalent here. An operator-declared `expect-closed` expectation in the optional `config/posture.conf` (`scope-key: target:port`) is what lets `NET-PORT-UNEXPECTED_LISTENER-01` fire on a declared listener that should not be answering; absent that file it is a declared skip, never exit 4. |
 | `cloud` | `[--live]` `[--profile NAME]` `[--regions all\|us-east-1,...]` `[--assume-role ARN]` `[--i-own-account ID]` | live - **it makes real read-only AWS API calls** | `--live` requires the `aws` CLI on `PATH` and resolvable credentials, and the run refuses (exit 4) if either is missing. Every one of `docs/DESIGN.md` §8.1's 30 AWS services (`modules/cloud/aws/live/*.sh`) is implemented - 112 checks, CIS AWS Foundations Benchmark v3.0.0 and OWASP mapped. `regions.sh` resolves the account's enabled regions (or the `--regions` list, unvalidated against the account) and every AWS call goes through `lib/awscli.sh`'s `aws_ro`, which refuses anything that is not read-only. `--assume-role ARN` scans a second account; `--profile NAME` selects a named AWS CLI profile. An access-denied, opted-out, or throttled service is recorded as a `coverage_reduction`, never folded into a clean pass. The `posture/` phase (SSO/edge/session drift against an operator-declared baseline, `config/posture.conf`) has a config schema but no checks yet, so it is a declared skip today. |
-| `all` | union of every module's own flags above | live | Runs sast, sca, iac unconditionally; runs dast only if `--target` is given and cloud only if `--live` is given. Every module it skips is recorded in `run.json` as a `coverage_reduction` fact, not silently dropped. |
+| `all` | union of every module's own flags above | live | Runs sast, sca, iac unconditionally; runs dast and network only if `--target` is given (network under the identical condition dast uses - it never gets a separate authorization record, since the two share one `--target`/`--intensity`/`--i-own-target` triple), and cloud only if `--live` is given. Every module it skips is recorded in `run.json` as a `coverage_reduction` fact, not silently dropped. |
 | `diff` | `--against DIR` | live | `DIR` must name a prior run's output directory (must contain `findings.jsonl` or `run.json`). Classifies `state/latest.json` (the most recently completed run) against the state recorded for the named prior run and renders the delta - `new`/`recurring`/`fixed`/`unknown` - into a fresh output directory (`run.json`, `report.md`). Performs no new scan. See [`docs/STEP7-STATE-PLAN.md`](STEP7-STATE-PLAN.md) (STATE-06). |
 | `report` | `--from DIR` | live | `DIR` must be a prior run's own output directory (must contain `findings.jsonl` or `run.json`, plus a non-empty `findings.fields` and `meta/`). Regenerates `report.md`/`report.html`/`report.sarif`/`report-audit.html` (honouring `--format`) from that run's own persisted findings and `run.json` (copied byte-for-byte, never recomputed) - no new scan is performed. See ["`report --from DIR`"](#report---from-dir). |
 
@@ -72,6 +73,9 @@ scan.sh <command> [options]
 | `--har FILE` | dast, all | live; same as above, for `har-path` |
 | `--postman FILE` | dast, all | live; same as above, for `postman-path` |
 | `--graphql-schema FILE` | dast, all | live; same as above, for `graphql-schema-path` |
+| `--target NAME` | network, all | live as a gate, and the scan it gates now runs (byte-identical requirement to dast's own `--target`) |
+| `--intensity passive\|safe\|active` | network, all | live; `passive` (default) reaches banner disclosure, TLS identification on non-`base-url` listeners, and transport-posture checks, `safe` additionally reaches the three-state reachability probe and HTTP identification on non-standard ports. Sharing dast's own `--intensity` value on `all` is deliberate (report.md §9 D6) - it is one authorization, not one per module. |
+| `--i-own-target NAME` | network, all | live |
 | `--live` | cloud, all | live - runs all 30 AWS service checks against the resolved account/regions |
 | `--profile NAME` | cloud, all | live - selects a named AWS CLI profile |
 | `--regions all\|us-east-1,...` | cloud, all | live - narrows the enabled-region list; an explicit list is not validated against the account |
@@ -262,14 +266,15 @@ for the reasoning behind each one.
 
 ### Per-surface scans
 
-`sast`, `sca`, and `iac` all take a `--path`; `dast` takes a `--target`. Write each report to its own
-directory so consecutive scans don't clobber one another:
+`sast`, `sca`, and `iac` all take a `--path`; `dast` and `network` both take a `--target`. Write each
+report to its own directory so consecutive scans don't clobber one another:
 
 ```sh
-./scan.sh sast --path DIR --format html,audit --out reports/sast
-./scan.sh sca  --path DIR --format html,audit --out reports/sca      # needs data/advisories.db - see above
-./scan.sh iac  --path DIR --format html,audit --out reports/iac
-./scan.sh dast --target NAME --format html,audit --out reports/dast   # config/scope.conf must authorize NAME first
+./scan.sh sast    --path DIR --format html,audit --out reports/sast
+./scan.sh sca     --path DIR --format html,audit --out reports/sca      # needs data/advisories.db - see above
+./scan.sh iac     --path DIR --format html,audit --out reports/iac
+./scan.sh dast    --target NAME --format html,audit --out reports/dast     # config/scope.conf must authorize NAME first
+./scan.sh network --target NAME --format html,audit --out reports/network  # same authorization; scans NAME's declared listener set
 ```
 
 ### A full active-DAST recipe
@@ -317,9 +322,10 @@ target's own resource limits or scoursh's circuit breaker:
 ```
 
 `all` runs every module whose inputs are configured: `--path` drives `sast`/`sca`/`iac`, `--target`
-drives `dast`, and `--live` drives `cloud` (30 AWS services, read-only - see the [`cloud`
-row](#commands) above). A module `all` skips for missing input is recorded as a
-`coverage_reduction`, not silently dropped.
+drives both `dast` and `network` together (one shared `--target`/`--intensity`/`--i-own-target`
+authorization, never a separate one per module), and `--live` drives `cloud` (30 AWS services,
+read-only - see the [`cloud` row](#commands) above). A module `all` skips for missing input is recorded
+as a `coverage_reduction`, not silently dropped.
 
 **The gotcha**: see ["The gotcha" under Dependency data](#dependency-data-dataadvisoriesdb) above -
 don't point `--path` at a tree containing `data/advisories.db` once you've built it.
@@ -583,17 +589,17 @@ None of it changes the outcome of a run.
 Validated as a CSV of the four language names, then never read.
 Every SAST run applies every rule pack; `--lang go` and no `--lang` at all produce identical findings.
 
-### `--intensity` and `--allow-intrusive` outside `dast`
+### `--intensity` and `--allow-intrusive` outside `dast`/`network`
 
-`--intensity` is only accepted by `dast` and `all` (`sast`/`sca`/`iac` on their own reject it as a
-usage error); `--allow-intrusive` is a global flag every command accepts.
+`--intensity` is only accepted by `dast`, `network`, and `all` (`sast`/`sca`/`iac` on their own reject
+it as a usage error); `--allow-intrusive` is a global flag every command accepts.
 Both are wired into the same check-selection chain `dast` uses, so under `scan.sh all` they also pass
 over sast/sca/iac's own checks - but neither changes what gets selected there: `--intensity` filters on
-a check's type tag and every non-DAST check shipped here is tagged `static`, which all three tiers
-admit, while `--allow-intrusive` filters on the `intrusive` tag, which no shipped check anywhere
-carries yet. For `dast`, both are live and do gate real check selection - see the per-command flags
-table above and ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target) below for
-the details.
+a check's type tag and every non-DAST/non-network check shipped here is tagged `static`, which all
+three tiers admit, while `--allow-intrusive` filters on the `intrusive` tag, which no shipped check
+anywhere carries yet. For `dast` and `network`, both are live and do gate real check selection - see
+the per-command flags table above and ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)
+below for the details.
 
 ### Conservative DAST limits and `--i-own-target`
 
@@ -641,6 +647,11 @@ phase ever runs, on an application that is healthy but idiosyncratic rather than
 A run that did relax something says so on stderr at run start, banners it in the HTML and Markdown
 reports, and records the from->to deltas in `run.json`'s `authorization` object - because an
 unrestricted run's *absence* of availability findings is not evidence about the target.
+
+`network` reaches the identical chokepoint and the identical ceilings - one TCP connect draws down the
+same rate/budget/breaker state one HTTP request does - but exposes no `--requests-per-second`/
+`--request-budget`/`--circuit-breaker-failures` flags of its own; `--i-own-target NAME` still applies,
+since the underlying `lib/http.sh` state is shared rather than duplicated per module.
 
 ### The identifying `User-Agent`
 
@@ -760,18 +771,23 @@ The rate limiter, request budget, and circuit breaker described in
 ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target) are real and live: a `dast`
 run whose target stops answering trips the circuit breaker and exits `5` naming the failure count and
 window, and one that spends its whole request budget exits `5` naming that too. Both are per scope
-target, checked at every request through `lib/http.sh`'s single chokepoint.
+target, checked at every request through `lib/http.sh`'s single chokepoint - `network` draws from the
+identical per-target state, one TCP connect at a time, and can trip the same two exits.
 
-## The scope gate (`dast`)
+## The scope gate (`dast`, `network`)
 
-Plain language: **`dast` will not touch a host you have not explicitly listed.**
-Before any request goes out, `--target NAME` must match the `id` of an entry in `config/scope.conf`.
+Plain language: **`dast` and `network` will not touch a host you have not explicitly listed.**
+Before any request or connection goes out, `--target NAME` must match the `id` of an entry in
+`config/scope.conf`.
 If `config/scope.conf` does not exist at all, the run refuses with exit `4` ("missing required input") -
-`dast` cannot even attempt the gate.
+neither `dast` nor `network` can even attempt the gate.
 If the file exists but has no entry with that `id`, the run refuses with exit `3` ("scope violation") -
 the gate itself is refusing.
-There is no raw-URL flag that bypasses this: `--target` only ever takes a name, never a URL.
+There is no raw-URL flag that bypasses this: `--target` only ever takes a name, never a URL or a bare
+`host:port`.
 `sast`, `sca`, and `iac` do not need `config/scope.conf` at all.
+`network` additionally only ever probes a `(host, port)` tuple the target's own `base-url`/`extra-host`
+entries name - it never sweeps a port range or discovers a listener the operator did not declare.
 
 The gate matches on the normalized `(scheme, host, port)` tuple from the target's `base-url`, plus any
 `extra-host` entries.
@@ -787,8 +803,13 @@ authorisation you are prepared to stand behind. What it does NOT buy you is comp
 every run regardless: a phase your run's own `--intensity`/`--authed`/`--allow-intrusive` did not
 reach, or one that had nothing to work with (no inventory, no configured identity), is recorded in
 `run.json` as a `coverage_gap`/`coverage_reduction` with its reason, rather than passing silently.
+A `network` run that satisfies the gate opens real TCP connections to the declared listener set and
+runs every phase `--intensity` admits (`data/scoursh-network-scan-design/report.md` §7, NET-01 through
+NET-11 - all six phases are implemented) - treat the entry you write the same way you would for `dast`.
+A target whose `config/scope.conf` entry names only `base-url`, with no `extra-host` listener, gives
+`network` nothing beyond the web port to test and records a `coverage_gap` rather than a clean scan.
 The repository also ships `config/scope.conf.example` rather than `config/scope.conf`, so on a fresh
-checkout every `dast` invocation refuses with exit 4 until you write the real file.
+checkout every `dast` or `network` invocation refuses with exit 4 until you write the real file.
 
 ## `--paranoid` - the connection observer (a detector, not a guarantee)
 
@@ -840,18 +861,19 @@ Never hand-edit these with tooling that assumes shell syntax - the loader parses
 None of them is committed to this repository; `config/` ships `scope.conf.example`,
 `scanner.conf.example`, `auth.conf.example`, and `discovery.conf.example`, which you copy and edit.
 
-### `config/scope.conf` - required only for `dast`
+### `config/scope.conf` - required only for `dast`, `network`
 
-One record per target.
+One record per target. `extra-host` entries are what give `network` a listener set to scan: a target
+with only `base-url` gives it nothing beyond the web port to test (see ["The scope gate"](#the-scope-gate-dast-network)).
 
 | Key | Required | Repeatable | Default | Value |
 |---|---|---|---|---|
 | `id` | yes | no | - | Target name used by `--target`. Pattern `^[a-z][a-z0-9-]*$`. Must be the first field. |
 | `base-url` | yes | no | - | `https://host[:port][/path]`. Scheme must be `http` or `https`. |
-| `extra-host` | no | yes | none | Additional `host[:port]` in scope for this target. |
+| `extra-host` | no | yes | none | Additional `host[:port]` in scope for this target. Every `extra-host` entry is a listener `network`'s `reachability.sh`/`banner.sh`/`tlsport.sh`/`httpport.sh`/`transport.sh` phases probe; `network` never probes a `base-url`'s own port beyond what `dast`'s TLS/banner checks already assess. |
 | `allow-subdomains` | no | no | `false` | `true`/`false`. |
 | `allow-private-addresses` | no | no | `false` | `true`/`false`. Gates the link-local/loopback deny list. |
-| `tls-expect-wildcard` | no | no | `false` | `true`/`false`. Read by `passive/tls.sh` (DAST-07): declares that a wildcard certificate is this target's intended design, so a wildcard SAN does not produce a `DAST-TLS-*` finding. Per-target, not scanner-wide, since one estate can legitimately have both shapes. |
+| `tls-expect-wildcard` | no | no | `false` | `true`/`false`. Read by both `passive/tls.sh` (DAST-07) and `network`'s `tlsport.sh` (`NET-TLS-WILDCARD_CERT-01`): declares that a wildcard certificate is this target's intended design, so a wildcard SAN does not produce a finding. Per-target, not scanner-wide, since one estate can legitimately have both shapes. |
 | `notes` | no | no (multi-line) | empty | Free text. |
 
 Every key here that affects behaviour is live: `id`, `base-url`, `extra-host`, `allow-subdomains`,
