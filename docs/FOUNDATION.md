@@ -5585,11 +5585,30 @@ unanswered resources per check id, records a check that answered for none of the
 what it missed.  Crediting the intended set instead is what would let this tension's `fixed` inference
 run on the strength of a call that was denied.
 
+**CLOUD-07/08/09 (`aws/live/{kms,secretsmanager,ssm}.sh`) have since landed together, the first
+REGIONAL services in the catalog.**  A regional service's own `list-*`/`describe-*` call already names
+only the resources IN the pass's region, so - unlike S3's `global` row above - the resource's real
+region genuinely IS the pass's region: the cell and `loc_region` are the SAME value
+(`<account_id>/<region>`), with no separate per-resource region-resolution call and no global/regional
+cell split to get wrong.  `tests/suites/cloud-kms.sh`'s own C5 asserts that equality directly, because an
+implementation that copied S3's `<account>/global` cell literally would otherwise pass every other
+assertion in the suite.  All three checks new to this landing reuse a SHARED classifier
+(`cloud_policy_load`/`cloud_policy_is_public`, `modules/cloud/aws/engine.sh` §4b) for "does this
+resource policy grant to an unqualified wildcard principal with no Condition", because three services in
+one ticket needing it is the shape a shared classifier is for rather than a per-service copy - a KMS key
+policy, a Secrets Manager resource policy, and an SSM parameter resource policy are each JSON embedded AS
+A STRING inside their own response, unescaped EXACTLY ONCE by the loading `*_doc_load` before the shared
+classifier ever sees it.  `AGENTS.md`'s own "Step 6" section carries the fuller account, including a
+`$'\x1f'`-quoting trap this ticket found and fixed before landing (nested inside a second pair of double
+quotes, ANSI-C quoting silently stops being interpreted as such) and the "out of scope, neither evaluated
+nor lost" third state an AWS-managed KMS key, a rotation-ineligible key type, an other-service-owned
+secret, or a deletion-scheduled secret all need.
+
 **Every OTHER `aws/live/*.sh` service in `docs/DESIGN.md` §8.1's catalog is still absent**, and a
 `--live` run records each one as unexamined rather than counting it clean - a real dispatch that found
 nothing to run for those services, stated as such in `run.json`, `report.md` and the audit report
-rather than left to read as a clean account.  The plan's remaining service PRs (P6 onward) and its
-`posture/` half remain not-started.
+rather than left to read as a clean account.  The plan's remaining service PRs and its `posture/` half
+remain not-started.
 
 **Step 7 (persistent run state) has now started: STATE-01 (`lib/state.sh`) has landed**, ahead of step
 6, per `docs/STEP7-STATE-PLAN.md`'s own status - that plan's gate blocks *classification*

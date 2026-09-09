@@ -1,0 +1,10 @@
+{
+    "Policies": [
+        {
+            "PolicyId": "policy-1",
+            "PolicyHash": "abc123",
+            "Policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"ssm:GetParameter\",\"Resource\":\"*\"}]}",
+            "PolicyStatus": "Finalized"
+        }
+    ]
+}
