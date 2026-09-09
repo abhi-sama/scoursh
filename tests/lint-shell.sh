@@ -251,6 +251,34 @@ check 'no bypass: no curl/wget/nc/openssl s_client outside lib/http.sh' \
   engine_files lib/http.sh tools/vendor-engines.sh \
   modules/dast/passive/tls.sh modules/dast/passive/tls_engine.sh
 
+# `/dev/tcp` and `/dev/udp` are a SECOND, un-gated path to the network: a bash
+# redirection like `exec 3<>/dev/tcp/host/port` never goes near curl, so the
+# check above cannot see it, and until now nothing else could either -
+# `printf 'exec 3<>/dev/tcp/host/22\n'` matched none of the patterns this file
+# checks. That gap is latent today; it stops being latent the moment a module
+# actually opens a raw socket this way (the upcoming network-scanning module's
+# declared-listener probe), so the lint that keeps the chokepoint honest has
+# to cover it before that first real caller lands, not after.
+#
+# Matched as a device PATH, not a command word - `/dev/tcp`/`/dev/udp` are
+# never invoked, only redirected into, so there is no command-position anchor
+# to match the way curl/wget above do.
+#
+# Exactly two path exemptions, same one-exemption-with-a-stated-reason shape
+# as the check above: `lib/paranoid.sh`, which already opens
+# `/dev/udp/127.0.0.1/9` as its own loopback control socket for the tension-20
+# connection sampler (an unrelated, pre-existing, already-reviewed use with no
+# scan target involved at all); and `lib/nettransport.sh`, the network
+# module's own transport primitive - not yet landed, exempted here ahead of
+# it so the exemption list is written when there is exactly one caller rather
+# than retrofitted once several modules/network/ scripts depend on it. Every
+# other file, including every future modules/network/ script, reaches the
+# network only by calling that primitive - never by opening /dev/tcp itself -
+# so no further exemption is anticipated.
+check 'no bypass: no /dev/tcp or /dev/udp outside the network transport primitive' \
+  '/dev/(tcp|udp)/' \
+  engine_files lib/paranoid.sh lib/nettransport.sh
+
 printf '\n== DAST-35: no bundled scan target - docs/STEP5-DAST-PLAN.md ==\n'
 # "A convenient example target" is a helpful-looking contribution that would
 # silently become the built-in demo host, and a scanner with a built-in host
