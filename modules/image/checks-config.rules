@@ -1,0 +1,48 @@
+# modules/image/checks-config.rules - the container-image module's own
+# per-owner registry (rules/RULE-FORMAT.md §9's `checks-<name>.rules` row,
+# docs/FOUNDATION.md tension 29) for `IMAGE-CFG-RUNS_AS_ROOT-01` (IMG-06,
+# data/scoursh-image-scan-design/report.md §4.1's IMAGE-CFG-* row).
+#
+# `script: config.sh` - modules/image/config.sh is the owning driver
+# (`image_check_root_user`), a NEW file rather than an addition to
+# distro/apk.sh or engine.sh: this check is DISTRO-AGNOSTIC (report.md
+# §4.4 - it reads the image's own CONFIG blob, not a Dockerfile and not any
+# apk-specific data), so it belongs to neither this module's apk-specific
+# driver nor a future dpkg/rpm one.
+#
+# `tags: passive` / `tags: quick` - reads one already-extracted local
+# config blob, no network call, no mutation - the identical reasoning
+# modules/image/checks-apk.rules and checks-advisories.rules already give
+# for their own tags.
+#
+# `severity: medium` - report.md §4.1's own table value, one step below
+# `IAC-DOCKER-ROOT_USER-01`'s `high`: this check confirms the EFFECTIVE
+# runtime user from the built artifact, but (unlike source review) it
+# cannot see whether a later `docker run --user` override at deploy time
+# already corrects it, so it is reported at a slightly more conservative
+# severity than its source-side counterpart.
+#
+# `coverage-scope: image-id` - the only legal value for the `IMAGE` module
+# (rules/RULE-FORMAT.md §9.5.1's frozen table).
+
+id: IMAGE-CFG-RUNS_AS_ROOT-01
+title: Image config declares no non-root USER - the effective runtime user is root
+script: config.sh
+severity: medium
+confidence: high
+cwe: CWE-250
+owasp: A04:2021
+tags: passive
+tags: quick
+coverage-scope: image-id
+remediation: Add (or fix) a non-root USER in the Dockerfile that built this
+  image's final stage, or in whichever base image sets it, then rebuild and
+  re-scan. A base-image bump alone can change the effective user without
+  any Dockerfile line changing, so re-check this after any FROM tag/digest
+  bump too. This is the built-artifact counterpart to
+  IAC-DOCKER-ROOT_USER-01, which reads only one Dockerfile's own USER
+  instruction and cannot see the effective user across a base image or a
+  multi-stage build.
+references: data/scoursh-image-scan-design/report.md
+references: CWE-250
+references: https://owasp.org/Top10/A04_2021-Insecure_Design/

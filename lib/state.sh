@@ -93,11 +93,23 @@ SCOURSH_STATE_SOURCED=1
 # shellcheck source=lib/core.sh
 source "${BASH_SOURCE[0]%/*}/core.sh"
 
-# The five coverage-scope kinds tension 12 freezes.  `derived` findings carry
-# no `coverage-scope` at all (rules/RULE-FORMAT.md §9.2) and so never appear
-# in `covered_checks`; the four below are what a `covered_checks[<id>].scope`
-# value is validated against on load.
-_STATE_VALID_SCOPES='path-root target account-region scope-key'
+# The five coverage-scope kinds tension 12 freezes (rules/RULE-FORMAT.md
+# §9.5.1's frozen table: SAST/SCA/IAC `path-root`, DAST/NET `target`, CLOUD
+# `account-region`, POSTURE `scope-key`, IMAGE `image-id`).  `derived`
+# findings carry no `coverage-scope` at all (rules/RULE-FORMAT.md §9.2) and
+# so never appear in `covered_checks`.  `image-id` joined this list at IMG-06
+# (modules/image's own IMAGE-PKG-VULNERABLE_OS_PACKAGE-01 is the first real
+# check to call state_add_covered with it) - IMG-01 had already reserved the
+# comment above's count at five in anticipation, but left the value at four:
+# `_state_add_covered`'s scope was written and read fine either way, but
+# `_state_validate` REJECTS THE WHOLE STATE FILE - every module's coverage in
+# it, not only image's - the moment ANY covered_checks entry carries a scope
+# outside this list, so a run that reached IMG-06's real wiring against an
+# unpatched `_STATE_VALID_SCOPES` would silently poison every future run's
+# diff back to "first recorded run", the exact failure this file's own
+# STATE-01 acceptance criterion (malformed state rejected wholesale, never
+# half-loaded) makes look like the ordinary case rather than a defect.
+_STATE_VALID_SCOPES='path-root target account-region scope-key image-id'
 
 _state_valid_scope() {
   [[ " $_STATE_VALID_SCOPES " == *" $1 "* ]]

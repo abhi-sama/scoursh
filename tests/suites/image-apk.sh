@@ -174,9 +174,9 @@ t_case 'it registers exactly the one apk check id report.md §4.1 names, and no 
 assert_eq 1 "$(records_count apkchecks)" 'exactly one record in the file'
 assert_eq 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-01' "$(records_id apkchecks 0)" "that record's id"
 
-t_case 'the two per-owner image registries are BOTH discoverable by the same *.rules glob checks_registry_load uses'
+t_case 'every per-owner image registry is discoverable by the same *.rules glob checks_registry_load uses'
 _files=$(cd -- "$ROOT/modules/image" && printf '%s\n' *.rules | sort)
-assert_eq $'checks-advisories.rules\nchecks-apk.rules' "$_files" \
-  'exactly these two files - FAILS if a shared modules/image/checks.rules ever reappears (report.md §5.1s explicitly forbidden shape) or if this ticket had appended into checks-advisories.rules instead of shipping its own file'
+assert_eq $'checks-advisories.rules\nchecks-apk.rules\nchecks-config.rules\nchecks-coverage.rules' "$_files" \
+  'exactly these four files (checks-config.rules and checks-coverage.rules added by IMG-06) - FAILS if a shared modules/image/checks.rules ever reappears (report.md §5.1s explicitly forbidden shape) or if a later ticket appended into an existing file instead of shipping its own'
 
 t_summary image-apk

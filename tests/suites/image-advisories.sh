@@ -29,11 +29,13 @@
 #      `distro_release_unknown` reduction, still exit 0, and that the
 #      advisory-db gate is never reached without a resolved ecosystem.
 #
-# NOT this suite's job: apk enumeration (IMG-04) and the version comparator
-# (IMG-05) do not exist, and no case here claims otherwise - a run that
-# resolves an ecosystem the database DOES cover still emits zero package
-# findings, and that is exactly what section C's "does-not-fire" case
-# asserts.
+# NOT this suite's job: real apk matching against a POPULATED apk database
+# is tests/suites/image-e2e.sh's (IMG-06). This suite's own fixture images
+# (built by _mkimg below) carry etc/os-release but no lib/apk/db/installed
+# member at all, so section C's "does-not-fire" case exercises IMG-06's
+# no_package_db_found/IMAGE-COV-UNKNOWN_DISTRO-01 path rather than a real
+# match - which is still the correct, current behaviour for an image with
+# no apk database, and is asserted as such below.
 #
 # No network: image scanning is offline by construction (docs/DESIGN.md §1),
 # and this suite never puts curl/wget/aws on PATH at all.
@@ -258,10 +260,10 @@ assert_contains "$RUN_NODB_JSON" 'reason=no_advisories_db_for_ecosystem image=al
 assert_not_contains "$RUN_NODB_JSON" 'reason=no_distro_enumerator_on_disk_yet' \
   'the OLDER, still-true-once-a-db-exists reduction must NOT also fire on this path - the gate is a real branch, not an addition'
 
-t_case 'the gate does NOT fire: the fixture db HAS rows for Alpine:v3.18 - exit 0, and the still-true "no enumerator" reduction fires instead'
+t_case 'the gate does NOT fire: the fixture db HAS rows for Alpine:v3.18 - exit 0, and IMG-06 reports the still-real UNKNOWN_DISTRO reduction (this fixture image carries no apk database at all)'
 _image_scan "$W/run-withdb" "$FIXDB" -- --image alpine318 --source "$ALPINE_318_IMG"
 assert_eq 0 "$_RC" \
-  'exit 0 - FAILS if the gate fired anyway (fixture db genuinely covers Alpine:v3.18), and FAILS under "resolving an ecosystem the db covers is itself enough to claim a scan happened", since IMG-04/IMG-05 do not exist yet'
+  'exit 0 - FAILS if the gate fired anyway (fixture db genuinely covers Alpine:v3.18)'
 RUN_WITHDB_JSON=$(_slurp "$W/run-withdb/run.json")
 # NOTE: run.json's own "checks_selected" fact names IMAGE-COV-NO_ADVISORY_DB-01
 # on every run once it is registered (modules/image/checks-advisories.rules),
@@ -271,10 +273,22 @@ RUN_WITHDB_JSON=$(_slurp "$W/run-withdb/run.json")
 # run.json blob for the bare check id string.
 assert_not_contains "$(_slurp "$W/run-withdb/findings.jsonl")" 'IMAGE-COV-NO_ADVISORY_DB-01' \
   'no coverage-gap finding this time - the ecosystem IS known'
-assert_contains "$RUN_WITHDB_JSON" 'reason=no_distro_enumerator_on_disk_yet image=alpine318 ecosystem=Alpine:v3.18' \
-  'the run is still honest that nothing was actually matched against a package - IMG-04 (apk enumeration) and IMG-05 (the comparator) are still absent from disk'
-assert_contains "$RUN_WITHDB_JSON" '"checks_run": []' \
-  'checks_run stays empty on this path too - a resolved, covered ecosystem is not itself a check that ran'
+assert_not_contains "$RUN_WITHDB_JSON" 'reason=no_distro_enumerator_on_disk_yet' \
+  'the OLD IMG-01/IMG-03 placeholder reduction no longer fires now that IMG-06 has landed a real enumerator/comparator - FAILS if modules/image/run.sh still falls through to it'
+assert_contains "$RUN_WITHDB_JSON" 'reason=no_package_db_found image=alpine318 ecosystem=Alpine:v3.18' \
+  'IMG-06: this fixture image (built by _mkimg above with only etc/os-release, no apk database) resolves a known, covered ecosystem and still cannot be scanned - apk_scan_installed genuinely found no lib/apk/db/installed member in any layer'
+assert_contains "$(_slurp "$W/run-withdb/findings.jsonl")" '"check_id":"IMAGE-COV-UNKNOWN_DISTRO-01"' \
+  'and a REAL finding was emitted for it, not merely logged'
+assert_contains "$RUN_WITHDB_JSON" 'IMAGE-COV-UNKNOWN_DISTRO-01' \
+  'checks_run names the check - it genuinely executed and found no package database'
+assert_not_contains "$(_slurp "$W/run-withdb/findings.jsonl")" 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-01' \
+  'and no package finding, since none could be enumerated at all'
+
+t_case 'the distro-agnostic config check still runs on this same path (report.md §4.4: independent of the ecosystem/apk branch)'
+assert_contains "$RUN_WITHDB_JSON" 'IMAGE-CFG-RUNS_AS_ROOT-01' \
+  "checks_run names it - FAILS if image_check_root_user were gated behind the ecosystem resolution instead of running unconditionally once the image opened"
+assert_contains "$(_slurp "$W/run-withdb/findings.jsonl")" '"check_id":"IMAGE-CFG-RUNS_AS_ROOT-01"' \
+  "this fixture's own cfg.json declares no \"config\" object at all, so User is absent, which _image_user_is_root treats as root - a real finding fires"
 
 t_case 'no /etc/os-release at all: distro_release_unknown, exit 0, and the advisory-db gate is never reached'
 _image_scan "$W/run-noos" "$FIXDB" -- --image noosrelease --source "$NOOS_IMG"
@@ -284,10 +298,17 @@ assert_contains "$RUN_NOOS_JSON" 'reason=distro_release_unknown image=noosreleas
   'the declared reduction the brief names verbatim, carrying the specific detail'
 assert_not_contains "$(_slurp "$W/run-noos/findings.jsonl")" 'IMAGE-COV-NO_ADVISORY_DB-01' \
   'the advisory-db gate never ran at all - FAILS under a reading that falls through to "no rows for an empty ecosystem string", which would be a different, misleading claim'
-assert_contains "$RUN_NOOS_JSON" '"checks_run": []' \
-  'checks_run stays empty - the check is SELECTABLE (registered) but nothing here EXECUTED it'
+assert_not_contains "$(_slurp "$W/run-noos/findings.jsonl")" 'IMAGE-COV-UNKNOWN_DISTRO-01' \
+  'and neither does the apk-enumeration branch - there is no ecosystem to even attempt it against'
+assert_not_contains "$(_slurp "$W/run-noos/findings.jsonl")" 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-01' \
+  'nor any package finding'
 assert_not_contains "$RUN_NOOS_JSON" 'reason=no_distro_enumerator_on_disk_yet' \
-  'and neither does the "ecosystem known, no enumerator" reduction - there is no ecosystem to be known'
+  'the OLD IMG-01/IMG-03 placeholder reduction is gone entirely - it must not fire here either'
+t_case 'the distro-agnostic config check STILL runs when the distro release is unresolvable (report.md §4.4: it does not depend on os-release at all)'
+assert_contains "$RUN_NOOS_JSON" 'IMAGE-CFG-RUNS_AS_ROOT-01' \
+  'checks_run names it - FAILS if image_check_root_user were gated behind a resolved ecosystem, which this image (no /etc/os-release at all) never reaches'
+assert_contains "$(_slurp "$W/run-noos/findings.jsonl")" '"check_id":"IMAGE-CFG-RUNS_AS_ROOT-01"' \
+  "this fixture's cfg.json declares no User either, so the finding fires here too"
 assert_contains "$RUN_NOOS_JSON" 'absence of a test, not the absence of a problem' \
   'and the coverage_gap still states the docs/DESIGN.md §15 warning in the artifact itself'
 
