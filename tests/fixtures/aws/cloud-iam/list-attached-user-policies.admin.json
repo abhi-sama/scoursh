@@ -1,0 +1,9 @@
+{
+    "AttachedPolicies": [
+        {
+            "PolicyName": "AdminManaged",
+            "PolicyArn": "arn:aws:iam::123456789012:policy/AdminManaged"
+        }
+    ],
+    "IsTruncated": false
+}

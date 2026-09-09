@@ -1,0 +1,1 @@
+An error occurred (AccessDenied) when calling the GetRole operation: User: arn:aws:iam::123456789012:user/scoursh-fixture-scanner is not authorized to perform: iam:GetRole on resource: role scoursh-fixture-denied-role

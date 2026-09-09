@@ -234,13 +234,14 @@ assert_contains "$_SARIF" "$BAD_ARN" 'E6 the SARIF result names the resource'
 # the last of CLOUD-07/08/09 landed in this ticket, so this is where the
 # audit view's coverage-strength note is checked for the FULL, updated
 # sentence rather than only the fact that it changed at all. CLOUD-22
-# (apigw.sh) landed alongside CLOUD-07/08/09 on dev, so the sentence names all
-# five landed services rather than four.
+# (apigw.sh) landed alongside CLOUD-07/08/09 on dev, and CLOUD-06 (iam.sh)
+# landed after, so the sentence names all six landed services rather than
+# five.
 _routes_default
 _run_cloud "$W/ssm-run-audit" --format audit
 assert_file_exists "$W/ssm-run-audit/report-audit.html" 'E7 --format audit writes report-audit.html'
 _AUDIT=$(cat "$W/ssm-run-audit/report-audit.html")
-assert_contains "$_AUDIT" 'ships the S3, API Gateway, KMS, Secrets Manager and SSM services so far' \
-  'E8 the audit view names all five landed cloud services'
+assert_contains "$_AUDIT" 'ships the S3, API Gateway, KMS, Secrets Manager, SSM and IAM services so far' \
+  'E8 the audit view names all six landed cloud services'
 
 t_summary cloud-ssm

@@ -1,0 +1,4 @@
+{
+    "PolicyNames": ["S3ReadOnlyInline"],
+    "IsTruncated": false
+}

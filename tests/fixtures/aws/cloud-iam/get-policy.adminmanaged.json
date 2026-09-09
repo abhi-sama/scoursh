@@ -1,0 +1,9 @@
+{
+    "Policy": {
+        "PolicyName": "AdminManaged",
+        "PolicyId": "ANPAADMIN0000000001",
+        "Arn": "arn:aws:iam::123456789012:policy/AdminManaged",
+        "DefaultVersionId": "v1",
+        "AttachmentCount": 1
+    }
+}
