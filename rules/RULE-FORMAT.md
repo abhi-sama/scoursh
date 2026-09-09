@@ -472,6 +472,10 @@ more than one record.
 | `severity-floor` | optional | single | no | Severity name; the rubric may never lower the finding below it. |
 | `severity-ceiling` | optional | single | no | Severity name; the rubric may never raise the finding above it. |
 | `format-version` | optional | single | no | `1`. Only meaningful on the first record of a file. |
+| `fix-kind` | optional | single | no | One of `replace` / `replace-tpl` / `insert-near` / `dep-upgrade`, §9.1.4. |
+| `fix-find` | optional | single | no | The literal text `fix-replace`/`fix-snippet` acts against. Never derived from `evidence` (`docs/AGENT-FORMAT.md`). |
+| `fix-replace` | optional | single | no | Replacement text for `fix-find`, when `fix-kind` is `replace` or `replace-tpl`. Requires `fix-find` (`E082`). |
+| `fix-snippet` | optional | single | **yes** | Text to insert near `fix-find` (an anchor line), when `fix-kind` is `insert-near`. |
 
 #### 9.1.1 Check id
 
@@ -565,6 +569,39 @@ Tags drive check-set selection (`docs/FOUNDATION.md` tension 15).
 - The `intrusive` tag marks a check that mutates target state; it is refused unless `--allow-intrusive`
   is given.
   A pattern rule may never carry `intrusive` (`E043`).
+
+#### 9.1.4 `fix-*` - the optional deterministic fix scaffold
+
+Four optional keys, read by `finding_from_record` (`lib/findings.sh`) and carried onto the finding as
+first-class fields (`fix_kind`/`fix_find`/`fix_replace`/`fix_snippet`) so `--format agent`
+(`docs/AGENT-FORMAT.md`) can build a remediation scaffold without re-parsing the rule registry at
+render time. Absent on a check means that check's findings are `fixability: manual` in the agent
+format - most checks, deliberately (`docs/AGENT-FORMAT.md` §3).
+
+- `fix-kind: replace` - `fix-find` names the exact, literal text matched; `fix-replace` is the exact
+  literal text to put there instead. A complete, unattended edit (`fixability: auto`).
+- `fix-kind: replace-tpl` - same mechanics as `replace`, but `fix-replace` contains a
+  `<PLACEHOLDER>` a human must fill in (an operator-specific value scoursh cannot know offline, for
+  example a trusted CIDR). `fixability: assisted`.
+- `fix-kind: insert-near` - `fix-find` matches an ANCHOR line, not the offending line (for example
+  `containers:` for a missing `runAsNonRoot`); `fix-snippet` is text to insert into the enclosing
+  block near that anchor, indentation and placement left to the fixer. `fixability: assisted`.
+- `fix-kind: dep-upgrade` - reserved for `modules/sca/`'s own finding fields (`fix_fixed_versions`,
+  `dep_type`), set directly by the SCA engine rather than authored on a record (SCA ships no
+  `*.rules` at all). Illegal on an actual pattern-rule record; listed here only so the enum is the
+  same four values everywhere the fix scaffold is documented.
+
+Two rules, both enforced rather than merely documented:
+
+- `fix-find` MUST be authored on the record, and MUST NEVER be derived from a finding's `evidence` at
+  emission or render time - evidence is the regex match, which can be a truncated fragment, and is
+  **redacted** for every secret check (`docs/FOUNDATION.md` tension 9). `docs/AGENT-FORMAT.md` calls
+  this out as the tempting shortcut that produces a wrong edit to a real file.
+- A check whose id is in the secret family (`finding_check_is_secret_family`, `lib/findings.sh`) MUST
+  carry no `fix-*` key at all: `finding_from_record` `die()`s if one is present. An automated edit
+  that deletes a matched credential literal leaves a live, unrotated compromised credential the agent
+  cannot even see (its evidence is `<redacted:SECRET:...>`) - `manual` is correct there on purpose,
+  not a gap.
 
 ### 9.2 Schema: derived finding
 
@@ -1416,7 +1453,7 @@ Warnings are reported and do not fail unless `--strict`.
 | Code | Severity | Check |
 |---|---|---|
 | E023 | error | Missing required key |
-| E024 | error | Enum value outside its permitted set (`severity`, `confidence`, `dialect`, `kind`, `correlate-on`, boolean fields) |
+| E024 | error | Enum value outside its permitted set (`severity`, `confidence`, `dialect`, `kind`, `correlate-on`, `fix-kind`, boolean fields) |
 | E025 | error | `cwe` does not match `^(CWE-[0-9]+\|none)$` |
 | E026 | error | `owasp` does not match `^(A[0-9]{2}:[0-9]{4}\|none)$` |
 | E027 | error | `id` does not match the form its namespace requires (§9.1.1a); for check ids that is the §9.1.1 regex, with `SEQ` forbidden in the derived schema and required in every other |
@@ -1436,6 +1473,7 @@ Warnings are reported and do not fail unless `--strict`.
 | E078 | error | Two §9.6.4 records share the same (`check`, `scope-key`) pair |
 | E079 | error | §9.5 `coverage-scope` is not its module's required value (§9.5.1) |
 | E081 | error | A `checks.rules` sits outside every prefix of the §9.5.1 owning-module map, so its records have no owning module |
+| E082 | error | `fix-replace` present without `fix-find` (§9.1.4) |
 
 ### Regex (from §8)
 
@@ -1512,6 +1550,14 @@ trips item **2** and nothing else, so it needs **no `format_version` bump**:
 
 A key that were **required**, renamed, retyped, or removed would trip item 1 (every file rewritten) and
 IS a versioned migration.  The distinction is the optionality, not the size of the diff.
+
+§9.1.4's four `fix-*` keys are the identical shape applied to the pattern-rule schema instead of
+`config/scanner.conf`: optional, single-cardinality (`fix-snippet` is multi-line, which trips no
+extra item either - multi-line-ness is a parsing property, not an identity one), and read nowhere
+that participates in a fingerprint or a SARIF `ruleId`. Item 2 is what this ticket discharges:
+`lib/records.sh`'s schema table gains the four arms plus `E082`, and `lib/findings.sh`'s
+`finding_from_record` (the shared consumer for `sast`, `iac` and `cloud`) reads them onto the
+finding. Items 1, 3 and 4 do not apply, for the same reasons `contact` does not trip them.
 
 **Which of the four an ADDITIVE PATH-TABLE ROW trips, checked the same way.**
 The `checks-<name>.rules` row in §9 is the worked example. It **widens** the set of legal paths: a path

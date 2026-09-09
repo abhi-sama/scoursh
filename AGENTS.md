@@ -361,6 +361,8 @@ Each has a full entry in `docs/FOUNDATION.md`.
 
 - **The tab-to-US (0x1f) migration two bullets up traded one hazard for another it did not close: US (0x1f) is also the byte a JSON escaped C0 control character (any \u00XX escape, including CR/LF) decodes to, and `crawl_json_unescape` will produce it from an attacker-controlled name/value/method/URL in any OpenAPI/HAR/Postman document.** A raw control byte smuggled into one field of `crawl_add_endpoint`/`crawl_add_param`'s tuple shifts every field after it once `crawl_inv_write_endpoints`/`crawl_inv_write_parameters` re-split with `IFS=$'\x1f' read` - reproduced concretely: a query-location parameter named `Bad Name` + the raw byte + `header` gets written with `"location": "header"` (a genuinely forged field, not merely corrupted) while the real location (`query`) and source (`openapi`) end up glued into the `example` slot, because `read` dumps every leftover field into its last variable. The forged row bypasses the IMPORT-05 header-token check above because that check only fires for `location==header` AT THE ORIGINAL CALL, before the corruption exists - and if the shifted name is not an RFC 7230 token, the row reaches `http_request_header` on a later active run and `die`s the WHOLE SCAN (exit 5), turning a hostile spec into deterministic denial-of-scan. `crawl_has_control_byte` (`crawl_engine.sh`, beside `crawl_safe_text`) rejects - never strips - any field carrying a C0 control byte (0x01-0x1f) or DEL (0x7f) BEFORE either tuple is built, counted as `param_control_byte`/`endpoint_control_byte`; reject rather than strip matches the "skip malformed input and say so" posture the frozen record format already uses elsewhere, and closes the CRLF-in-HAR-`request.method` observation in the same pass since CR/LF are C0 bytes too. `tests/suites/dast-crawl.sh`'s own security-audit-finding-A1 section reproduces the forgery against the real writer with the guard function overridden in a subshell (bash function tables do not escape a subshell, so the real guard is untouched for every later case) before asserting the guard closes it, the same paired-mutation discipline IMPORT-05's own reproduction above uses.
 
+- **`--format agent` (`lib/report.sh`'s `report_agent`, `docs/AGENT-FORMAT.md` is the normative contract) is a new, opt-in, sixth format value writing `reports/<run>/agent-fix.json` - a compact, schema-projected findings file for a downstream AI fixing agent, never in the default list.** Two traps a future edit here will otherwise reintroduce, both the kind that ship silently: **`fix_find` must never be derived from `evidence`** - evidence is a possibly-truncated regex match and is redacted for every secret-family check, so a check whose id matches `finding_check_is_secret_family` can never carry a rule-authored `fix-*` key at all (`finding_from_record` `die()`s if one is present); and **a rule-authored `fix-kind: insert-near` match is an ANCHOR line, not the offender** (e.g. `IAC-DOCKER-ROOT_USER-01` matches `FROM`, not the missing `USER` line), so `fix_snippet` goes into the enclosing block near that anchor, never a literal replacement of the matched line. `rules/RULE-FORMAT.md` §9.1.4 is the frozen schema for the four optional `fix-*` pattern-rule keys (plus §9.5's `fix-cli` for cloud script-checks); it is additive-only (§14: trips item 2 only, no `format_version` bump). SCA's own fix scaffold (`fix_kind: dep-upgrade`) reuses `modules/sca/semver.sh`'s `semver_cmp_v` for the "smallest same-branch fix" computation, and that comparator is proven ONLY for npm (that file's own header) - `report_agent`'s `_agent_sca_fix_to` therefore falls back to the advisory's first-listed fixed version for every other ecosystem rather than inventing an ordering scoursh cannot verify. `run.modules_reported`/`modules_not_run` are computed from `meta/checks_run`'s own id prefixes (`SAST-`/`IAC-`/`SCA-`/`DAST-`/`CLOUD-`/`POSTURE-`), never from which modules happen to have a live finding, so a module that ran and found nothing still reports as reported.
+
 ## Build order and where we are
 
 `docs/DESIGN.md` §13 gives the build order, in ten steps, starting with `lib/core.sh` / `lib/findings.sh` / `lib/report.sh` and ending with SARIF plus the compliance report plus docs.
@@ -1554,7 +1556,7 @@ shipped here before.
 | `modules/sast/rules/ldap.rules` | landed | 3 | `tests/suites/sast.sh` |
 | `modules/sast/rules/nosql.rules` | landed | 4 | `tests/suites/sast.sh` |
 | `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/report.sh` |
-| `modules/sast/rules/secrets.rules` | landed | 7 | `tests/suites/records.sh` |
+| `modules/sast/rules/secrets.rules` | landed | 7 | `tests/suites/agent-format.sh` |
 | `modules/sast/history.sh` | landed | - | `tests/suites/sast-history.sh` |
 
 Landed 10 of 10.  Outstanding: none.
@@ -1578,10 +1580,10 @@ Landed 6 of 6.  Outstanding: none.
 | --- | --- | --- | --- |
 | `modules/iac/cloudformation.rules` | landed | 8 | `tests/suites/iac.sh` |
 | `modules/iac/docker-compose.rules` | landed | 4 | `tests/suites/iac.sh` |
-| `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/iac.sh` |
+| `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/agent-format.sh` |
 | `modules/iac/helm.rules` | landed | 3 | `tests/suites/iac.sh` |
-| `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/iac.sh` |
-| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac-trivy.sh` |
+| `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/agent-format.sh` |
+| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/agent-format.sh` |
 
 Landed 6 of 6.  Outstanding: none.
 

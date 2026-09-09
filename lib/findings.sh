@@ -931,7 +931,9 @@ _finding_known_field() {
       loc_account_id | loc_region | loc_resource_key | loc_sub_key | \
       loc_control_id | loc_scope_key | loc_correlation | \
       corr_target | corr_account | corr_account_region | corr_file | \
-      oldest_reaching_commit_time)
+      oldest_reaching_commit_time | \
+      fix_kind | fix_find | fix_replace | fix_snippet | fix_fixed_versions | \
+      dep_type | fix_cli)
       return 0
       ;;
     *) return 1 ;;
@@ -1217,6 +1219,56 @@ finding_from_record() {
   done <<<"$(records_list "$set" "$idx" cis)"
   _F[_severity_floor]=$(records_field_or "$set" "$idx" severity-floor '')
   _F[_severity_ceiling]=$(records_field_or "$set" "$idx" severity-ceiling '')
+
+  # rules/RULE-FORMAT.md §9.1.4's optional fix scaffold (--format agent,
+  # docs/AGENT-FORMAT.md).  Read here rather than by each of sast/iac/cloud
+  # separately, because this is the one function all three already share for
+  # every other rule-authored field.
+  local ck
+  ck=$(records_id "$set" "$idx")
+  local fk fkfind fkrepl fksnip fkcli
+  fk=$(records_field_or "$set" "$idx" fix-kind '')
+  fkfind=$(records_field_or "$set" "$idx" fix-find '')
+  fkrepl=$(records_field_or "$set" "$idx" fix-replace '')
+  fksnip=$(records_field_or "$set" "$idx" fix-snippet '')
+  # `fix-cli` (§9.5's script-check schema only, docs/AGENT-FORMAT.md's
+  # captain-decided cloud scaffold): a WRITE, unlike the other three, so it
+  # is never checked against the secret-family guard below (a cloud CLI
+  # remediation names no credential) and is always `assisted`, never `auto` -
+  # report_agent enforces both.
+  fkcli=$(records_field_or "$set" "$idx" fix-cli '')
+  # A bare `[[ cond ]] && cmd` whose COND is false and which is the LAST
+  # statement a function executes becomes that function's own return status
+  # (AGENTS.md "Things measured on this codebase" - the same set -e trap this
+  # whole file's own conventions warn about elsewhere), so every one of these
+  # six optional-field reads is a real `if`, never a short-circuit `&&`.
+  if [[ -n $fkcli ]]; then
+    finding_set fix_cli "$fkcli"
+  fi
+  if [[ -n $fk || -n $fkfind || -n $fkrepl || -n $fksnip ]]; then
+    # A secret-family check's evidence IS the credential (possibly redacted,
+    # possibly a truncated regex fragment): an automated edit built from a
+    # rule-authored fix-find/fix-replace on one of these checks would delete
+    # the literal without rotating it, leaving a live compromised credential
+    # nobody looked at (docs/AGENT-FORMAT.md).  `manual` is correct there on
+    # purpose, so this is refused rather than silently accepted.
+    if finding_check_is_secret_family "$ck"; then
+      die "$SCOURSH_EXIT_INCOMPLETE" \
+        "finding_from_record: '$ck' is a secret-family check and must not carry a fix-* key"
+    fi
+    if [[ -n $fk ]]; then
+      finding_set fix_kind "$fk"
+    fi
+    if [[ -n $fkfind ]]; then
+      finding_set fix_find "$fkfind"
+    fi
+    if [[ -n $fkrepl ]]; then
+      finding_set fix_replace "$fkrepl"
+    fi
+    if [[ -n $fksnip ]]; then
+      finding_set fix_snippet "$fksnip"
+    fi
+  fi
 }
 
 # ---------------------------------------------------------------------------

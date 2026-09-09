@@ -251,6 +251,8 @@ _sca_go_emit_finding() {
   finding_set cell "$SCOURSH_PATH_ROOT"
   finding_set logical_kind dependency
   finding_set logical_fqn "$eco:$pkg@$ver"
+  finding_set dep_type "$direct"
+  finding_set fix_fixed_versions "$fixed"
   if [[ -n $fixed ]]; then
     finding_set remediation "Upgrade $pkg to one of: $fixed."
   else
