@@ -1,0 +1,10 @@
+{
+    "User": {
+        "Path": "/",
+        "UserName": "scoursh-fixture-admin-user",
+        "UserId": "AIDAADMIN000000000001",
+        "Arn": "arn:aws:iam::123456789012:user/scoursh-fixture-admin-user",
+        "CreateDate": "2020-01-15T09:00:00+00:00",
+        "PasswordLastUsed": "2020-02-01T09:00:00+00:00"
+    }
+}

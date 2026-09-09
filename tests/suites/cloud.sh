@@ -390,23 +390,23 @@ assert_contains "$_notes" 'coverage-scope=account-region' \
   'and every cell declares the account-region coverage scope (docs/FOUNDATION.md tension 12)'
 
 _red=$(cat "$W/out-live/meta/coverage_reduction")
-# CLOUD-05 (s3.sh), CLOUD-22 (apigw.sh) and CLOUD-07/08/09
-# (kms/secretsmanager/ssm.sh) have all landed, so the walk now INVOKES five
-# services and this run takes the third arm of the roll-up rather than the
-# first: every script is present, every one ran, and against this suite`s
-# stub - which answers AccessDenied to every call it has no route for - none
-# covered a check.  `reason=no_service_scripts_on_disk_yet` is still written
-# by the module and is still the right reason for a tree with an empty live/
-# directory; it is simply no longer the reason THIS tree produces.  Both arms
-# stay pinned, here and in tests/suites/cloud-s3.sh / cloud-apigw.sh /
-# cloud-kms.sh / cloud-secretsmanager.sh / cloud-ssm.sh, because the naive
-# edit when the next service lands is to delete whichever one stopped
-# matching rather than bump the count: `services_present` is now 5 (s3,
-# apigw, kms, secretsmanager, ssm), all denied identically by this suite's
-# stub with no route for any of them.
+# CLOUD-05 (s3.sh), CLOUD-22 (apigw.sh), CLOUD-07/08/09
+# (kms/secretsmanager/ssm.sh) and CLOUD-06 (iam.sh) have all landed, so the
+# walk now INVOKES six services and this run takes the third arm of the
+# roll-up rather than the first: every script is present, every one ran, and
+# against this suite`s stub - which answers AccessDenied to every call it has
+# no route for - none covered a check.  `reason=no_service_scripts_on_disk_yet`
+# is still written by the module and is still the right reason for a tree
+# with an empty live/ directory; it is simply no longer the reason THIS tree
+# produces.  Both arms stay pinned, here and in tests/suites/cloud-s3.sh /
+# cloud-apigw.sh / cloud-kms.sh / cloud-secretsmanager.sh / cloud-ssm.sh /
+# cloud-iam.sh, because the naive edit when the next service lands is to
+# delete whichever one stopped matching rather than bump the count:
+# `services_present` is now 6 (s3, apigw, kms, secretsmanager, ssm, iam), all
+# denied identically by this suite's stub with no route for any of them.
 assert_contains "$_red" 'reason=no_check_covered_by_any_service' \
   'a run whose only present service scripts covered nothing records exactly that reason'
-assert_contains "$_red" 'services_present=5' 'and says how many of the catalog are on disk'
+assert_contains "$_red" 'services_present=6' 'and says how many of the catalog are on disk'
 assert_contains "$_red" 'aws_api_access_denied' \
   'and the denied S3 call underneath it is itself a declared reduction, never silence'
 assert_contains "$(cat "$W/out-live/meta/coverage_gap")" 'cloud covered nothing in account 123456789012' \

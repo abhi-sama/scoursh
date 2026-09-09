@@ -1,0 +1,9 @@
+{
+    "Policy": {
+        "PolicyName": "ReadOnlyManaged",
+        "PolicyId": "ANPAREADO0000000001",
+        "Arn": "arn:aws:iam::123456789012:policy/ReadOnlyManaged",
+        "DefaultVersionId": "v1",
+        "AttachmentCount": 3
+    }
+}

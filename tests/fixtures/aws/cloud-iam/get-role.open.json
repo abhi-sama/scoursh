@@ -1,0 +1,11 @@
+{
+    "Role": {
+        "Path": "/",
+        "RoleName": "scoursh-fixture-open-role",
+        "RoleId": "AROAOPEN0000000000001",
+        "Arn": "arn:aws:iam::123456789012:role/scoursh-fixture-open-role",
+        "CreateDate": "2023-01-01T00:00:00+00:00",
+        "AssumeRolePolicyDocument": "%7B%22Version%22%3A%222012-10-17%22%2C%22Statement%22%3A%5B%7B%22Effect%22%3A%22Allow%22%2C%22Principal%22%3A%22%2A%22%2C%22Action%22%3A%22sts%3AAssumeRole%22%7D%5D%7D",
+        "MaxSessionDuration": 3600
+    }
+}

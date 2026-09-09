@@ -463,3 +463,279 @@ remediation: Remove the wildcard Principal from the parameter's resource
   specific account(s) or role(s) that legitimately need access instead.
 references: CWE-732
 references: https://docs.aws.amazon.com/systems-manager/latest/userguide/parameter-store-resource-policies.html
+
+# ---------------------------------------------------------------------------
+# CLOUD-IAM-* - modules/cloud/aws/live/iam.sh (docs/STEP6-CLOUD-PLAN.md
+# CLOUD-06).  Appended to this shared, append-only registry per the header
+# note above; a merge conflict here is resolved by keeping BOTH blocks.
+#
+# EVERY RECORD BELOW LANDS IN THE `<account_id>/global` CELL, exactly as the
+# CLOUD-S3-* records above do, and for an even simpler reason: IAM is
+# genuinely global end to end, so `region: global` is not merely the cell -
+# it is the literal `loc_region` this service's every finding carries
+# (modules/cloud/aws/live/iam_engine.sh's own header explains why that
+# differs from S3, whose bucket-region resolution keeps the two apart).
+#
+# `cis:` IS AUTHORED HERE, ON THE RECORD, AND ONLY WHERE data/cis-mappings
+# ALREADY CARRIES THE CONTROL (docs/CIS-MAPPINGS.md §1: it is a label table,
+# never a source of ids).  Eight of these twelve checks cite a seeded CIS
+# v3.0.0 control from IAM section 1: 1.4 (root access key),
+# 1.5 (root MFA), 1.8 and 1.9 (the password-policy minimum length and reuse
+# prevention - both cited on the one WEAK_PASSWORD_POLICY record, since an
+# absent policy fails both simultaneously and the check has no way to tell
+# them apart from a policy that fails only one), 1.12 (credentials unused 45+
+# days), 1.14 (access keys rotated every 90 days or less), and 1.20 (IAM
+# Access Analyzer enabled). The remaining four - full-admin policies, a
+# wildcard/cross-account trust relationship, an unused role, and inline/
+# managed policy sprawl - cite NOTHING: CIS v3.0.0 control 1.16 (full-admin
+# policies) is real but data/cis-mappings has no row for it yet (a stated
+# gap, docs/CIS-MAPPINGS.md §4 - a future ticket transcribes it, per that
+# document's §5, rather than this one guessing at a number with no PDF in
+# hand), and the benchmark has no numbered control at all for a wildcard
+# trust principal, a missing sts:ExternalId, an unused role, or mixed
+# inline/managed policies. An honest absence beats an invented control id;
+# every one of these four still carries its own CWE and OWASP category.
+#
+# THE TYPE TAG IS `config-read` ON EVERY RECORD, exactly as CLOUD-S3-*'s own
+# note explains: each check is one read-only AWS API call (or a small,
+# bounded sequence of them) and mutates nothing, so lib/checks.sh's
+# `--intensity` ceiling passes all of them at the default `passive`. They
+# also carry `quick`, and `compliance` on the eight that carry a `cis` value -
+# finding F3's TAG reading of that profile. None is `intrusive`.
+
+id: CLOUD-IAM-ROOT_MFA_OFF-01
+title: The AWS account root user has no MFA device registered
+script: aws/live/iam.sh
+severity: critical
+confidence: high
+cwe: CWE-308
+owasp: A07:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 1.5
+remediation: Register a hardware or virtual MFA device for the root user
+  under IAM > My Security Credentials, then use root only for the handful of
+  tasks that genuinely require it - creating the account's first IAM
+  administrator, closing the account, and the small set of actions AWS
+  documents as root-only. The root user cannot be restricted by any IAM
+  policy, so a compromised root credential with no second factor is an
+  immediate, unrestrictable account takeover.
+references: CWE-308
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_root-user.html
+
+id: CLOUD-IAM-ROOT_ACCESS_KEY-01
+title: The AWS account root user has an active access key
+script: aws/live/iam.sh
+severity: critical
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 1.4
+remediation: Delete every root access key under IAM > My Security
+  Credentials. The root user should never be used for programmatic access;
+  any automation that currently depends on a root key needs a named IAM role
+  or user with least-privilege permissions instead. Rotate any credential the
+  key was used to protect once the key is deleted, since its prior use cannot
+  be retroactively distinguished from misuse.
+references: CWE-284
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_root-user.html
+
+id: CLOUD-IAM-WEAK_PASSWORD_POLICY-01
+title: The account's IAM password policy is absent or below the CIS minimums
+script: aws/live/iam.sh
+severity: medium
+confidence: high
+cwe: CWE-521
+owasp: A07:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 1.8
+cis: 1.9
+remediation: Set an account password policy under IAM > Account settings >
+  Password policy requiring a minimum length of at least 14 characters and
+  remembering at least the last 24 passwords, matching CIS v3.0.0 controls
+  1.8 and 1.9. An account with no password policy at all fails both at once.
+references: CWE-521
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_passwords_account-policy.html
+
+id: CLOUD-IAM-ACCESS_ANALYZER_DISABLED-01
+title: No active IAM Access Analyzer was found for this account
+script: aws/live/iam.sh
+severity: low
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 1.20
+remediation: Enable IAM Access Analyzer under IAM > Access Analyzer, in every
+  region this account uses (CIS v3.0.0 control 1.20 asks for all of them,
+  though this check itself examines only the region the run's own AWS CLI
+  configuration resolves - see modules/cloud/aws/live/iam.sh's own header).
+  Access Analyzer flags resources whose own resource policy makes them
+  reachable from outside the account or organization, a cross-resource class
+  of exposure no single-resource read-only check in this catalog can detect
+  on its own.
+references: CWE-778
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/what-is-access-analyzer.html
+
+id: CLOUD-IAM-POLICY_FULL_ADMIN-01
+title: An IAM identity carries a policy granting full administrative privileges
+script: aws/live/iam.sh
+severity: critical
+confidence: medium
+cwe: CWE-269
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Replace the statement granting Effect Allow, Action "*",
+  Resource "*" with one scoped to the specific actions and resources this
+  identity actually needs. This check matches CIS AWS Foundations Benchmark
+  v3.0.0 control 1.16's own published audit shape for a policy document, not
+  a live policy simulation - an equivalent permission set assembled from
+  several narrower-looking statements will not be caught by this pattern, so
+  a clean result here is not a complete privilege review on its own.
+references: CWE-269
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html
+
+id: CLOUD-IAM-TRUST_WILDCARD_PRINCIPAL-01
+title: An IAM role's trust policy admits any AWS principal
+script: aws/live/iam.sh
+severity: critical
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Replace the wildcard Principal with the specific account ids,
+  role or user ARNs, or AWS service principals that legitimately need to
+  assume this role. A trust policy is the ONLY control standing between "any
+  AWS principal in existence" and everything this role's own permissions
+  reach.
+references: CWE-284
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_terms-and-concepts.html
+
+id: CLOUD-IAM-TRUST_NO_EXTERNAL_ID-01
+title: An IAM role's trust policy allows a cross-account principal with no ExternalId condition
+script: aws/live/iam.sh
+severity: high
+confidence: medium
+cwe: CWE-441
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Add a Condition requiring a unique, secret sts:ExternalId to
+  every statement that trusts an AWS account other than this one, per AWS's
+  own third-party cross-account access guidance. Without one, a trust
+  relationship reused across more than one external customer of the trusting
+  account is the confused-deputy pattern that guidance exists to prevent -
+  one customer's request assuming a role meant for another's resources.
+references: CWE-441
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_create_for-user_externalid.html
+
+id: CLOUD-IAM-UNUSED_CREDENTIAL-01
+title: An IAM credential has not been used in 45 days or more
+script: aws/live/iam.sh
+severity: medium
+confidence: high
+cwe: CWE-613
+owasp: A07:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 1.12
+remediation: Disable or delete the console password or access key named in
+  this finding's evidence. A credential nobody is using is a credential
+  nobody will notice if it is stolen, and it contributes nothing that
+  removing it would take away.
+references: CWE-613
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_getting-report.html
+
+id: CLOUD-IAM-ACCESS_KEY_ROTATION-01
+title: An IAM access key is 90 days old or older and has not been rotated
+script: aws/live/iam.sh
+severity: medium
+confidence: high
+cwe: CWE-262
+owasp: A07:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 1.14
+remediation: Create a replacement access key, update whatever uses the old
+  one to the new key, confirm the new key works, then delete the old one. A
+  long-lived static credential has a longer window in which a leak goes
+  undetected, and rotating on a schedule bounds that window regardless of
+  whether a leak is ever suspected.
+references: CWE-262
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_access-keys.html
+
+id: CLOUD-IAM-UNUSED_ROLE-01
+title: An IAM role has not been assumed in 90 days or more
+script: aws/live/iam.sh
+severity: low
+confidence: medium
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Confirm nothing still depends on the role named in this
+  finding's evidence and remove it if not. An unused role is standing access
+  with no active owner relying on it, and every additional role is one more
+  trust policy and permission set that has to be reviewed on every future
+  audit whether or not anything still uses it.
+references: CWE-284
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_manage.html
+
+id: CLOUD-IAM-NO_PERMISSION_BOUNDARY-01
+title: A full-admin IAM identity has no permission boundary attached
+script: aws/live/iam.sh
+severity: low
+confidence: medium
+cwe: CWE-269
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Attach a permission boundary to the identity named in this
+  finding's evidence, scoped to the maximum permissions it should ever be
+  able to reach. A boundary caps the damage of both a compromised credential
+  and a future policy change that widens the identity's own attached policy
+  without anyone revisiting whether it still should be full-admin.
+references: CWE-269
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_boundaries.html
+
+id: CLOUD-IAM-POLICY_SPRAWL-01
+title: An IAM identity mixes inline and attached managed policies
+script: aws/live/iam.sh
+severity: low
+confidence: medium
+cwe: CWE-710
+owasp: A04:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Consolidate the identity named in this finding's evidence onto
+  managed (ideally customer-managed) policies, and remove its inline policies
+  once their grants are represented there. An identity whose permissions are
+  split between an inline policy and one or more attached managed policies
+  has no single place a reviewer can read to see its whole effective
+  permission set.
+references: CWE-710
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_managed-vs-inline.html

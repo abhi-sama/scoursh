@@ -692,6 +692,35 @@ resource policy; `ssm.sh` flags a `String` parameter whose NAME looks sensitive
 non-KMS-rotation checks carries a `cis:` value - CIS v3.0.0 has no section for KMS key policies, Secrets
 Manager, or SSM Parameter Store at all, and this project never invents a control number to satisfy a
 "must cite CIS" habit (`modules/cloud/aws/live/checks.rules`'s own new header block records the check).
+**P6 (CLOUD-06, `modules/cloud/aws/live/iam.sh`) has now landed too - the largest single CIS surface
+in the catalog and the first `global` service whose finding carries a `loc_region` of the literal
+string `global` rather than a real, per-resource region (see `iam_engine.sh`'s own header for why IAM
+has no per-resource region to resolve at all, unlike S3's buckets).** Twelve check ids across four
+account-wide facts (root MFA, root access keys, the account password policy, IAM Access Analyzer) and
+eight per-identity ones spanning users and roles (a full-admin policy - inline or attached managed,
+CIS v3.0.0 control 1.16's own published audit shape, matched by pattern rather than by a live policy
+simulation; no permission boundary on a full-admin identity; mixed inline/managed policies; a wildcard
+or unconditioned-cross-account trust policy on a role; an unused role; a stale password or access key;
+an unrotated access key). Five of the twelve cite a seeded `cis` value (1.4, 1.5, 1.8+1.9 together on
+one record, 1.12, 1.14, 1.20 - six numbers across five records); the other seven cite none, because
+CIS v3.0.0 has no seeded control for a full-admin policy (1.16 is real but untranscribed,
+`docs/CIS-MAPPINGS.md` §4), a wildcard/cross-account trust relationship, an unused role, or policy
+sprawl - an honest absence rather than an invented number. It ships
+`modules/cloud/aws/live/iam_engine.sh`'s `_iam_examine_policy_holder`, the shared inline+attached
+policy reader a later per-service ticket needing the same shape (an execution role, say) is expected
+to reuse rather than fork. Two sharp edges worth carrying forward, each found by running the checks
+against real fixtures rather than by review alone: `get-account-summary`'s `SummaryMap` flags are
+JSON NUMBERS (`0`/`1`), not booleans, and IAM Access Analyzer's own API is the one call in this file
+with all-lowercase field names (`analyzers[].status`), not IAM's usual PascalCase - both fail in the
+direction that reads as a clean account if spelled the PascalCase/boolean way. A THIRD, more expensive
+one: a role's trust-policy check and its unused-role check both reuse the one `_IAM_DOC` map a prior
+`iam_doc_load_string` call (decoding the trust document) leaves pointed at the WRONG document, so the
+unused-role check must reload the role's own `get-role` response immediately before reading
+`CreateDate`/`RoleLastUsed` rather than trusting whatever the trust-policy block left loaded - measured
+by watching `CLOUD-IAM-UNUSED_ROLE-01` never fire at all until that reload was added, with no error
+anywhere pointing at why. `SCOURSH_IAM_NOW_EPOCH` overrides the real clock for every age-threshold check
+here, mirroring `modules/dast/passive/tls_engine.sh`'s own injectable-`now` reasoning, so its own test
+fixtures keep the same verdict for as long as this file is in the tree.
 **Every OTHER `aws/live/*.sh` service in `docs/DESIGN.md` §8.1's catalog is still absent**, and a
 `--live` run records each one as unexamined rather than counting it clean.
 **Step 7 (persistent run state, `state/` plus `diff`) is complete.**
@@ -2338,9 +2367,10 @@ backwards.**
 P1..P22 is the authority for what is landed. P1 (`lib/awscli.sh`'s remaining half), P2 (the routed
 multi-call AWS fixture stub), P4 (`data/cis-mappings`), P3
 (`modules/cloud/aws/{run.sh,engine.sh,regions.sh}`), P5 (`aws/live/s3.sh`, the vertical slice), P17
-(`aws/live/apigw.sh`, CLOUD-22 - see its own landing paragraph below) and CLOUD-07/08/09
-(`aws/live/{kms,secretsmanager,ssm}.sh` - see its own landing paragraph below) are in; every other
-`aws/live/*.sh` service, and the `posture/` half, are not.
+(`aws/live/apigw.sh`, CLOUD-22 - see its own landing paragraph below), CLOUD-07/08/09
+(`aws/live/{kms,secretsmanager,ssm}.sh` - see its own landing paragraph below) and P6 (`aws/live/iam.sh`,
+CLOUD-06 - see its own landing paragraph below) are in; every other `aws/live/*.sh` service, and the
+`posture/` half, are not.
 
 - **An `AccessDenied` is NOT an empty account, and this module is where that distinction is most
   expensive.** `lib/awscli.sh` section 2's frozen outcome vocabulary is what separates them, and
