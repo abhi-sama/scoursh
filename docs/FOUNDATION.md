@@ -6022,7 +6022,7 @@ Landed 6 of 6.  Outstanding: none.
 #### Totals
 
 - Pattern packs on disk: **15** (`modules/sast/rules/` 9, `modules/iac/` 6).
-- Module directories present: `modules/cloud/`, `modules/dast/`, `modules/iac/`, `modules/network/`, `modules/sast/`, `modules/sca/`.
+- Module directories present: `modules/cloud/`, `modules/dast/`, `modules/iac/`, `modules/image/`, `modules/network/`, `modules/sast/`, `modules/sca/`.
 
 <!-- END GENERATED STATUS -->
 

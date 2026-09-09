@@ -394,6 +394,7 @@ checks_module_dir() {
     dast) printf 'modules/dast' ;;
     cloud) printf 'modules/cloud' ;;
     network) printf 'modules/network' ;;
+    image) printf 'modules/image' ;;
     *) return 1 ;;
   esac
 }

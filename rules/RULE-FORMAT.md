@@ -481,18 +481,22 @@ more than one record.
 
 ```
 id     = MODULE "-" FAMILY "-" NAME [ "-" SEQ ]
-MODULE = "SAST" / "SCA" / "IAC" / "DAST" / "CLOUD" / "POSTURE" / "NET" / "COMPOSITE"
+MODULE = "SAST" / "SCA" / "IAC" / "DAST" / "CLOUD" / "POSTURE" / "NET" / "IMAGE" / "COMPOSITE"
 FAMILY = 1*( ALPHA / DIGIT )                 ; uppercase
 NAME   = 1*( ALPHA / DIGIT / "_" )           ; uppercase
 SEQ    = 2DIGIT
 ```
 
-Full regex: `^(SAST|SCA|IAC|DAST|CLOUD|POSTURE|NET|COMPOSITE)-[A-Z0-9]+-[A-Z0-9_]+(-[0-9]{2})?$`.
+Full regex: `^(SAST|SCA|IAC|DAST|CLOUD|POSTURE|NET|IMAGE|COMPOSITE)-[A-Z0-9]+-[A-Z0-9_]+(-[0-9]{2})?$`.
 `NET` is the network/host-scanning module (`modules/network/`): declared-listener reachability,
 service/version identification, and transport posture on an operator-authorised `(host, port)` tuple.
 Its own module directory does not match its enum spelling - `modules/network/` rather than
 `modules/net/` - which §9.5.1's owning-module map states explicitly, the same way `POSTURE` nests under
 `modules/cloud/posture/` without matching a `modules/posture/` path.
+`IMAGE` is the built-container-image scanning module (`modules/image/`): offline package enumeration
+and installed-package CVE matching against an operator-supplied docker-save tarball or OCI image
+layout - never a registry pull (`data/scoursh-image-scan-design/report.md`). Unlike `NET`, its module
+directory matches its enum spelling exactly, so it needs no owning-module-map exception.
 
 `SEQ` is **required in every schema except the derived-finding schema (§9.2), where it MUST be
 omitted**.
@@ -826,6 +830,7 @@ The value is fixed per module, so the linter checks it against this table alone 
 | `CLOUD` | `account-region` | `<account_id>/<region>`, or `<account_id>/global` |
 | `POSTURE` | `scope-key` | the expectation's `scope-key` (§9.6.4) |
 | `NET` | `target` | the `config/scope.conf` target id |
+| `IMAGE` | `image-id` | the operator-declared stable image id (`config/images.conf`) |
 
 `none` is not a legal value in a §9.5 record: no script check is all-or-nothing.
 Derived findings have no `coverage-scope` at all - §9.2 has no such key - because they are classified by
@@ -865,6 +870,7 @@ The map is frozen here, **most specific first, first match wins**:
 | `modules/iac/` | `IAC` |
 | `modules/dast/` | `DAST` |
 | `modules/network/` | `NET` |
+| `modules/image/` | `IMAGE` |
 | `rules/derived.rules` | `COMPOSITE` |
 | `rules/redaction.rules` | `SAST` (redaction ids are `SAST-REDACT-*`, §9.3) |
 

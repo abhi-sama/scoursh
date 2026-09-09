@@ -1598,7 +1598,7 @@ Landed 6 of 6.  Outstanding: none.
 #### Totals
 
 - Pattern packs on disk: **15** (`modules/sast/rules/` 9, `modules/iac/` 6).
-- Module directories present: `modules/cloud/`, `modules/dast/`, `modules/iac/`, `modules/network/`, `modules/sast/`, `modules/sca/`.
+- Module directories present: `modules/cloud/`, `modules/dast/`, `modules/iac/`, `modules/image/`, `modules/network/`, `modules/sast/`, `modules/sca/`.
 
 <!-- END GENERATED STATUS -->
 
@@ -3781,6 +3781,66 @@ low-level S3 API, the AWS CLI service name is `s3api`, not `s3` - `aws s3 <verb>
 high-level command set (`ls`, `cp`, `mb`, `sync`, ...) with different verbs entirely. A first draft
 of the fixture/stub examples got this wrong; it only surfaced once `tests/localstack/run.sh` ran
 against a real CLI, since a stub that ignores the service name never would have caught it.
+
+## Container image scanning (the IMAGE module): what exists so far, and why
+
+A new scanner surface - built container images - was scoped in a separate design scout report,
+`data/scoursh-image-scan-design/report.md`: offline installed-package enumeration (apk/dpkg/rpm) and
+CVE matching against an operator-supplied `docker save` tarball or OCI image layout, reusing
+`data/advisories.db`'s schema and `db_lookup_exact` - never a registry pull, and never a new version
+comparator borrowed from `modules/sca/semver.sh` (report.md §2.4 measured that comparator 7/12 wrong,
+including a false negative, against real OS package versions - a NEW, differential-tested comparator
+is owed per distro). It amends `docs/DESIGN.md` §1's three-surface framing rather than contradicting
+any prior decision; §1 never named built images as out of scope, only silent about them. The report's
+own §5 staged plan is IMG-01 through IMG-14, staged (not fanned out) for the identical reason the
+cloud module's 13-writers-one-file incident (`git show c9f0e80`) argues against a wide parallel launch
+into one shared registry file.
+
+**IMG-01 - the module-foundation ticket - has landed.** It is the ONLY shared-file ticket for this
+module: it registers `IMAGE` across every frozen table and shared list so IMG-02 onward (offline
+acquisition, the apk/dpkg distro enumerators, their comparators) add only their own files, never
+touching `scan.sh`/`lib/records.sh`/`lib/report.sh`/`rules/RULE-FORMAT.md` again. `modules/image/run.sh`
+is a declared no-op, byte-identical in shape to `modules/network/run.sh` (NET-04): it resolves the
+operator-declared `--image` id (`scan.sh image --image <id> [--source <path>]`), writes the `image-id`
+coverage cell (rules/RULE-FORMAT.md §9.5.1 - the operator's own STABLE id, deliberately never the
+volatile digest or tag, so a rebuild or a retag does not reset coverage - report.md §3.4), and records
+why nothing was examined (`no_distro_enumerator_on_disk_yet`), since no acquisition code, distro
+enumerator or comparator exists on disk yet. `--source` is accepted (the docker-save tarball or OCI
+layout path) but genuinely unread until IMG-02 teaches this module to open one.
+
+**One necessary addition beyond IMG-01's original file list: `lib/findings.sh` gained an `image`
+fingerprint profile** (`_fp_profile_for`/`_fp_components_for`: `image_id ecosystem package
+advisory_id`, SCA's three components plus the image id per report.md §3.4, "Not the version" for the
+identical reason SCA's own profile excludes one) and `loc_image_id` joined `_finding_known_field`'s
+allowlist. Without this, `finding_fingerprint` dies (`SCOURSH_EXIT_INCOMPLETE`) the instant any
+`module: image` finding is ever emitted - `_fp_profile_for` has no fallback, by design, the same way
+every other module's profile is looked up. `lib/report.sh` also gained an `image` arm in
+`report_locations`/`_sarif_result_location`'s `dast | cloud | posture | derived` case (an IMAGE finding
+has no source file, so it needs the same generated-artifact `locations/image.txt` location those four
+modules use) and in `_agent_module_of_check` (`IMAGE-*` -> `image`, for `--format agent`'s
+`modules_reported`). `tests/suites/image.sh` proves all of this with a synthetic
+`IMAGE-PKG-VULNERABLE_OS_PACKAGE-01` finding round-tripping through findings.jsonl/findings.json,
+report.md, report.html, report.sarif, report-audit.html and agent-fix.json, plus a control case proving
+an unrelated SAST finding still fingerprints unchanged (§14's additive-enum guarantee, verified rather
+than assumed).
+
+**Deliberately NOT touched, and why:** `lib/state.sh`'s `_STATE_VALID_SCOPES` (still `path-root target
+account-region scope-key`) does not yet list `image-id` - inert until a real check calls
+`state_add_covered ... image-id ...`, which cannot happen before IMG-04+ - and `tests/lint-rules.sh`'s
+`module_can_supply` (§9.2.2's `correlate-on` capability table) gained no `IMAGE` arm, because
+`image-id` is not one of that frozen table's four keys (`target`/`account`/`account-region`/`file`);
+correlating `IMAGE-*` with `IAC-DOCKER-*` (report.md §4.4) is its own future ticket, IMG-14, and would
+need a register change to that table, not a quiet addition here. `--image`/`--source` are not wired
+into `--guided`: `modules/network/run.sh` (the peer this ticket mirrors) never joined the guided-mode
+G1 menu either, so this follows the actual precedent rather than the ticket brief's own assumption -
+verify against the tree, not against a design doc's prose, whenever the two disagree.
+
+**What remains, per report.md §5.3:** IMG-02 (`config/images.conf` schema + acquisition - the
+`image_tar_members` tar-listing wrapper, hostile-archive-member validation under both userlands,
+layer/whiteout ordering), IMG-03 (advisory ecosystem plumbing - `Alpine:vX.Y` rows, `/etc/os-release`
+detection), then the Alpine vertical slice (IMG-04 enumeration, IMG-05 the differential-tested apk
+comparator, IMG-06 end-to-end) before Debian/Ubuntu and rpm are even considered (D2's own
+Alpine-first recommendation).
 
 ## Tests
 

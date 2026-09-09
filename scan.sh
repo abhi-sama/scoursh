@@ -206,7 +206,7 @@ source "$SCOURSH_SCAN_SH_DIR/lib/guide.sh"
 # -----------------------------------------------------------------------------
 # 2. The §5 grammar, encoded as data rather than a chain of if/elif.
 # -----------------------------------------------------------------------------
-SCAN_COMMANDS=(sast sca iac dast cloud network all diff report)
+SCAN_COMMANDS=(sast sca iac dast cloud network image all diff report)
 
 # One map, keyed "scope:flag" (global, or a command name), because bash 4.2
 # has no namerefs (those are 4.3+, and tension 24 froze the minimum at 4.2)
@@ -328,6 +328,18 @@ declare -A _SCAN_FLAG_KIND=(
   [network:intensity]=value
   [network:i-own-target]=value
 
+  # IMG-01 (data/scoursh-image-scan-design/report.md §3.2/§5.3): the
+  # module-foundation ticket.  `--image` is the operator-declared STABLE id
+  # (§3.4's coverage-scope cell, NOT the volatile digest or tag - a rebuild
+  # or retag must not reset coverage), enforced via _SCAN_REQUIRED_FLAG
+  # below; `--source` names the offline docker-save tarball or OCI layout
+  # directory the operator supplies (§1.2, shapes A/B - never a registry
+  # pull). Neither is validated against a real acquisition path yet -
+  # modules/image/run.sh is a declared no-op until IMG-02 lands
+  # config/images.conf and the acquisition code that reads --source.
+  [image:image]=value
+  [image:source]=value
+
   [diff:against]=value
 
   # Not in docs/DESIGN.md §5's grammar block, which lists `report` with no
@@ -362,6 +374,8 @@ declare -A _SCAN_FLAG_KIND=(
   [all:profile]=value
   [all:regions]=value
   [all:assume-role]=value
+  [all:image]=value
+  [all:source]=value
 )
 
 # `network` deliberately reuses `all:target`/`all:intensity`/
@@ -369,6 +383,11 @@ declare -A _SCAN_FLAG_KIND=(
 # only the flags `network` and `all` accept that `dast` and `all` do NOT
 # already share need their own `[all:...]` row here, and network introduces
 # none: every one of its own flags is already in the union.
+#
+# `image` introduces `--image`/`--source`, which no other command already
+# shares, so `all` needs its own `[all:image]`/`[all:source]` rows above -
+# the identical reason `cloud`'s `--live`/`--profile`/`--regions` each got
+# one.
 
 # The one required flag per command that needs one, read both by the
 # cross-flag check at the end of scan_parse_args below AND by
@@ -378,6 +397,7 @@ declare -A _SCAN_FLAG_KIND=(
 declare -A _SCAN_REQUIRED_FLAG=(
   [dast]=target
   [network]=target
+  [image]=image
   [diff]=against
   [report]=from
 )
@@ -471,6 +491,22 @@ Commands:
                               disk, so a run today resolves the target and
                               records why it found nothing rather than
                               reporting a clean scan.)
+  image    --image <id> [--source <path>]
+                            (built-container-image scanning: offline
+                              installed-package enumeration and CVE matching
+                              against a docker-save tarball or OCI image
+                              layout the operator supplies - never a
+                              registry pull (data/scoursh-image-scan-design/
+                              report.md). --image is a STABLE id you choose
+                              (survives a rebuild or a retag - the coverage
+                              cell, not the volatile digest), never validated
+                              against the image's actual content.
+                              NOT YET BUILT beyond this dispatch skeleton:
+                              no acquisition, no distro enumerator, and no
+                              comparator exist on disk yet (IMG-01), so a run
+                              today records why it found nothing rather than
+                              reporting a clean scan; --source is accepted
+                              but not yet read.)
   all      run every module for which inputs are configured
   diff     --against <prior-run-dir>
   report   --from <prior-run-dir>
@@ -730,6 +766,13 @@ scan_usage_for() {
           "$(_scan_network_phase_status)"
       else
         printf '%s\n' 'NOT built - modules/network/run.sh does not exist on disk yet.'
+      fi
+      ;;
+    image)
+      if _scan_module_built image; then
+        printf 'partially built - the dispatch entry point and the check registry are real (IMG-01, data/scoursh-image-scan-design/report.md). No acquisition, distro enumerator or comparator has landed yet (IMG-02 onward), so a run resolves the declared --image id and records why it found nothing, rather than reporting a clean scan.\n'
+      else
+        printf '%s\n' 'NOT built - modules/image/run.sh does not exist on disk yet.'
       fi
       ;;
     diff)
@@ -2518,6 +2561,16 @@ scan_main() {
       _scan_apply_profile_filter network
       scan_dispatch network
       ;;
+    image)
+      # IMG-01: no scope gate and no live target - image scanning reads an
+      # operator-supplied offline archive (or, once IMG-02 lands, a
+      # config/images.conf entry), never a network address, so there is
+      # nothing here for config_scope_require to check. --image is enforced
+      # by _SCAN_REQUIRED_FLAG above (scan_die_usage, exit 2) before this
+      # arm is ever reached.
+      _scan_apply_profile_filter image
+      scan_dispatch image
+      ;;
     all)
       path=${SCAN_FLAGS[path]:-.}
       _scan_require_readable_path "$path"
@@ -2561,6 +2614,17 @@ scan_main() {
         scan_dispatch cloud
       else
         run_record coverage_reduction 'module=cloud reason=no --live given (declared, all)'
+      fi
+      # IMG-01: `all` runs image scanning only when the operator gave
+      # --image, mirroring the `--live`/`--target` conditionals above -
+      # `all` "runs every module for which inputs are configured"
+      # (docs/DESIGN.md §5), and image has no default target the way
+      # sast/sca/iac's `--path .` does.
+      if [[ -n ${SCAN_FLAGS[image]:-} ]]; then
+        _scan_apply_profile_filter image
+        scan_dispatch image
+      else
+        run_record coverage_reduction 'module=image reason=no --image given (declared, all)'
       fi
       ;;
     diff)
@@ -2621,7 +2685,7 @@ scan_main() {
   # is what turns "nobody happened to see this" into "half the point of this
   # feature quietly breaks itself", so it is fixed in the same change.
   case $SCAN_COMMAND in
-    sast | sca | iac | dast | cloud | network | all)
+    sast | sca | iac | dast | cloud | network | image | all)
       local _scan_state_retain
       _scan_capture _scan_state_retain config_scanner_value state-retain-runs ''
       state_write '' "$_scan_state_retain"
