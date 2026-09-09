@@ -1,0 +1,1 @@
+An error occurred (AccessDeniedException) when calling the DescribeClusterParameters operation: User is not authorized to perform redshift:DescribeClusterParameters

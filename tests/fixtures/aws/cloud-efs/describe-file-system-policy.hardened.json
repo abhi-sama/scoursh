@@ -1,0 +1,4 @@
+{
+  "FileSystemId": "fsid-hardened",
+  "Policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::123456789012:role/scoursh-fixture-role\"},\"Action\":\"elasticfilesystem:ClientMount\",\"Resource\":\"arn:aws:elasticfilesystem:eu-west-2:123456789012:file-system/fsid-hardened\"},{\"Effect\":\"Deny\",\"Principal\":\"*\",\"Action\":\"*\",\"Resource\":\"arn:aws:elasticfilesystem:eu-west-2:123456789012:file-system/fsid-hardened\",\"Condition\":{\"Bool\":{\"aws:SecureTransport\":\"false\"}}}]}"
+}

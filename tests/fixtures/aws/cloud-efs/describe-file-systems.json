@@ -1,0 +1,40 @@
+{
+  "FileSystems": [
+    {
+      "FileSystemId": "fsid-public",
+      "Encrypted": false,
+      "SizeInBytes": {
+        "Value": 6144
+      },
+      "LifeCycleState": "available",
+      "FileSystemArn": "arn:aws:elasticfilesystem:eu-west-2:123456789012:file-system/fsid-public"
+    },
+    {
+      "FileSystemId": "fsid-hardened",
+      "Encrypted": true,
+      "SizeInBytes": {
+        "Value": 6144
+      },
+      "LifeCycleState": "available",
+      "FileSystemArn": "arn:aws:elasticfilesystem:eu-west-2:123456789012:file-system/fsid-hardened"
+    },
+    {
+      "FileSystemId": "fsid-denied",
+      "Encrypted": true,
+      "SizeInBytes": {
+        "Value": 6144
+      },
+      "LifeCycleState": "available",
+      "FileSystemArn": "arn:aws:elasticfilesystem:eu-west-2:123456789012:file-system/fsid-denied"
+    },
+    {
+      "FileSystemId": "fsid-nopolicy",
+      "Encrypted": true,
+      "SizeInBytes": {
+        "Value": 6144
+      },
+      "LifeCycleState": "available",
+      "FileSystemArn": "arn:aws:elasticfilesystem:eu-west-2:123456789012:file-system/fsid-nopolicy"
+    }
+  ]
+}
