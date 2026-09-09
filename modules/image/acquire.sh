@@ -19,18 +19,20 @@
 # extraction API below has no whole-archive mode to reach for.
 #
 # WHO CALLS THIS, AND WHEN - stated because "no caller" is the shape a
-# reviewer should always question.  Nothing in modules/image/run.sh reaches
-# this file yet, deliberately: IMG-01 shipped that dispatch as an honestly
-# declared no-op, and the first REAL consumer is IMG-03, which reads
-# `etc/os-release` out of a collected metadata set to detect the distro
-# release.  Wiring the dispatch here would mean this ticket changing IMG-01's
-# just-landed coverage records for a run that still enumerates no packages -
-# a run that opened an image and then said nothing about it is not more honest
-# than one that says it has no enumerator, only louder.  What makes that
-# acceptable rather than dead code is that every function below is exercised
-# against real committed fixtures by tests/suites/image-acquire.sh; the same
-# argument docs/ADAPTERS.md's scaffold and IMG-01's own inert
-# `_image_record_coverage` already make one ticket over.
+# reviewer should always question.  At IMG-02 landing, nothing in
+# modules/image/run.sh reached this file yet, deliberately: IMG-01 shipped
+# that dispatch as an honestly declared no-op, and wiring the dispatch here
+# would have meant this ticket changing IMG-01's just-landed coverage
+# records for a run that still enumerates no packages - a run that opened
+# an image and then said nothing about it is not more honest than one that
+# says it has no enumerator, only louder.  IMG-03 IS that first real
+# consumer now: modules/image/engine.sh sources this file and
+# modules/image/run.sh calls image_source_resolve/image_open/
+# image_collect_metadata to read `etc/os-release` out of a collected
+# metadata set and detect the distro release.  What made the gap acceptable
+# rather than dead code in between is unchanged - every function below is
+# exercised directly against real committed fixtures by
+# tests/suites/image-acquire.sh, independent of whatever wires into it.
 #
 # WHY IT SOURCES ONLY lib/config.sh.  The lesson
 # modules/dast/passive/response_engine.sh's own header records: `shellcheck
