@@ -95,8 +95,10 @@ blind spots*.
   snapshot, never real-time.
 - **Business logic.** Authorization checks are detection-oriented; complete access-control
   correctness still needs human review.
-- **Speed.** Every static scan is single-worker. Measured: 114 s for 52 files. Compiled-Go competitors
-  do comparable work in seconds.
+- **Speed.** Measured: 114 s for 52 files at the default single worker. `--jobs N` now gives real
+  multi-worker fan-out for `sast`/`sca`/`iac` (byte-identical findings regardless of width), but each
+  worker is still a shell pattern engine, not a compiled parser - compiled-Go competitors do
+  comparable per-file work in a fraction of the time.
 - **Not a pentest.** Automated regression and posture scanning that complements a manual assessment;
   it does not replace one.
 

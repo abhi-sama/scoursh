@@ -17,8 +17,8 @@ It has two values, sometimes followed by a short qualifier:
 An inert flag is not a usage error and does not print a warning.
 It is accepted, the run exits normally, and in most cases nothing in `run.json` records that the flag
 was ever given.
-That is the trap this column exists to close: `--jobs 8` and `--lang py,js,go,java` both
-look exactly like they worked.
+That is the trap this column exists to close: `--lang py,js,go,java` and `report --from DIR` before
+it was built both used to look exactly like they worked.
 
 [Accepted but not yet implemented](#accepted-but-not-yet-implemented) gives the precise behaviour of
 every inert entry, and is the section to read before wiring `scoursh` into CI.
@@ -50,7 +50,7 @@ scan.sh <command> [options]
 | `cloud` | `[--live]` `[--profile NAME]` `[--regions all\|us-east-1,...]` `[--assume-role ARN]` `[--i-own-account ID]` | live - **it makes real read-only AWS API calls** | `--live` requires the `aws` CLI on `PATH` and resolvable credentials, and the run refuses (exit 4) if either is missing. Every one of `docs/DESIGN.md` §8.1's 30 AWS services (`modules/cloud/aws/live/*.sh`) is implemented - 112 checks, CIS AWS Foundations Benchmark v3.0.0 and OWASP mapped. `regions.sh` resolves the account's enabled regions (or the `--regions` list, unvalidated against the account) and every AWS call goes through `lib/awscli.sh`'s `aws_ro`, which refuses anything that is not read-only. `--assume-role ARN` scans a second account; `--profile NAME` selects a named AWS CLI profile. An access-denied, opted-out, or throttled service is recorded as a `coverage_reduction`, never folded into a clean pass. The `posture/` phase (SSO/edge/session drift against an operator-declared baseline, `config/posture.conf`) has a config schema but no checks yet, so it is a declared skip today. |
 | `all` | union of every module's own flags above | live | Runs sast, sca, iac unconditionally; runs dast only if `--target` is given and cloud only if `--live` is given. Every module it skips is recorded in `run.json` as a `coverage_reduction` fact, not silently dropped. |
 | `diff` | `--against DIR` | live | `DIR` must name a prior run's output directory (must contain `findings.jsonl` or `run.json`). Classifies `state/latest.json` (the most recently completed run) against the state recorded for the named prior run and renders the delta - `new`/`recurring`/`fixed`/`unknown` - into a fresh output directory (`run.json`, `report.md`). Performs no new scan. See [`docs/STEP7-STATE-PLAN.md`](STEP7-STATE-PLAN.md) (STATE-06). |
-| `report` | `--from DIR` | inert | `DIR` is validated the same way `diff --against` is, then the run records `module=report reason=not_yet_built` and exits 0. Regenerating a report from a prior run's own findings after the fact is not built. Report file generation *during* a scan is a different thing and works fully - every `sast`/`sca`/`iac`/`dast`/`all` run already writes `findings.json`, `findings.jsonl`, `report.md`, `report.html`, and `run.json` (plus `report.sarif` and `report-audit.html` if asked) as part of the scan itself. |
+| `report` | `--from DIR` | live | `DIR` must be a prior run's own output directory (must contain `findings.jsonl` or `run.json`, plus a non-empty `findings.fields` and `meta/`). Regenerates `report.md`/`report.html`/`report.sarif`/`report-audit.html` (honouring `--format`) from that run's own persisted findings and `run.json` (copied byte-for-byte, never recomputed) - no new scan is performed. See ["`report --from DIR`"](#report---from-dir). |
 
 `-h` / `--help` at any position before the first unrecognized token prints usage and exits 0.
 
@@ -89,7 +89,7 @@ scan.sh <command> [options]
 | `--allow-intrusive` | boolean | off | live as a gate (needs `--i-own-target` too, for dast/all); no shipped check is tagged `intrusive` today, so it admits nothing yet except turning DAST's live user-enumeration probe on - which is itself not built and records why it did nothing |
 | `--contact VALUE` | one printable, space-free token | from `config/scanner.conf` (`contact`), else none | live |
 | `--user-agent-suffix TOKEN` | one printable, space-free token | none | live |
-| `--jobs N` | positive integer | from `config/scanner.conf` (`4`) | inert for worker parallelism (every module is single-worker); live as DAST's in-flight-connection ceiling - see [`--jobs N`](#--jobs-n-and-the-jobs-config-key) |
+| `--jobs N` | positive integer | from `config/scanner.conf` (`4`) | live - real worker parallelism for `sast`/`sca`/`iac`, and DAST's in-flight-connection ceiling - see [`--jobs N`](#--jobs-n-and-the-jobs-config-key) |
 | `--format` | CSV of `json,sarif,html,md,audit` | `json,sarif,html,md` | live; `sarif` writes a complete, schema-validated document (see [SARIF output](#sarif-output)); `audit` is a fifth, opt-in value that writes `report-audit.html` alongside `report.html` rather than in place of it - see [`--format` and the `formats` config key](#--format-and-the-formats-config-key) |
 | `--fail-on` | `critical\|high\|medium\|low\|info\|none` | from `config/scanner.conf` (`none`) | live |
 | `--fail-on-new` | boolean; **requires `--fail-on`**, usage error otherwise | off | live - gates on `status == new` only when this run's diff against the prior one is usable (see [Persistent run state, diff, and baseline](#persistent-run-state-diff-and-baseline)) |
@@ -477,6 +477,8 @@ prior run's state before its own gate is evaluated.
 - **`diff --against DIR`** - `DIR` must be a prior run's own output directory. Classifies
   `state/latest.json` (the most recently completed run) against the state recorded for the named
   prior run and renders the delta into a fresh output directory. Performs no new scan of its own.
+- **`report --from DIR`** - see ["`report --from DIR`"](#report---from-dir) below; regenerates a
+  prior run's report artifacts with no reclassification and no new scan.
 - **`--baseline FILE`** - suppresses findings whose fingerprint matches an entry in
   `config/baseline.json`, or in `FILE` when `--baseline` is given (which **replaces** the default file
   rather than adding to it). An entry is either a bare fingerprint string, or an object
@@ -505,24 +507,31 @@ prior run's state before its own gate is evaluated.
   `scan.sh <cmd> --fail-on high` therefore agree exactly on a first run, and can disagree once a
   second run has real prior state to compare against.
 
-## Accepted but not yet implemented
-
-Everything in this section parses, validates, and is accepted today.
-None of it changes the outcome of a run.
-
 ### `report --from DIR`
 
-The same shape as `diff`: `DIR` is validated, the run prints `'report' regeneration has no engine
-yet`, records `module=report reason=not_yet_built`, and exits 0.
-It creates its own output directory containing `run.json` and empty scaffolding, and no `report.md`,
-`report.html`, `findings.json`, or `findings.jsonl`.
+`DIR` is validated the same way `diff --against` is (must contain `findings.jsonl` or `run.json`,
+plus a non-empty `findings.fields` and `meta/`). The run regenerates `report.md`, `report.html`,
+`report.sarif`, and `report-audit.html` (honouring `--format`) from `DIR`'s own persisted
+`findings.fields`/`meta/` facts, with no module dispatched and no rescan.
 
-**Report file generation itself works, and is not affected by this.**
-Every `sast`, `sca`, `iac`, and `all` run writes `findings.json`, `findings.jsonl`, `report.md`,
-`report.html`, and `run.json` into its own output directory as part of the scan.
-What does not exist is the separate ability to rebuild those files from an earlier run's directory
-after the fact.
-Until it does, keep the output directory a run produced, or scan again.
+`run.json` is copied byte-for-byte from `DIR` rather than recomputed - several of its fields
+(`scan_root_id`, `path_root`, `gate`, `gated_findings`, `diff_usable`) are facts the original scan set
+directly and no `meta/` record carries, so recomputing them here would silently replace the original
+run's real values with empty defaults. The one field that cannot be byte-identical is
+`report.sarif`'s `invocations[].endTimeUtc`, a live timestamp taken at render time - every other
+artifact is byte-identical to what the original run wrote.
+
+`SAST-HIST-*` path resolution (whether a history finding's file still exists in the working tree) is
+**not** re-checked: that needs a real `--path` this command does not take, so `findings.fields`'s
+already-decided verdict from the original scan is used as-is.
+
+`--out` given the same path as `--from` (in-place regeneration) is supported.
+
+Report file generation *during* a scan is a separate thing that always worked: every `sast`/`sca`/
+`iac`/`dast`/`cloud`/`all` run already writes `findings.json`, `findings.jsonl`, `report.md`,
+`report.html`, and `run.json` (plus `report.sarif` and `report-audit.html` if asked) as part of the
+scan itself. `report --from DIR` is the separate ability to rebuild those files from an earlier run's
+own directory after the fact, with no reclassification.
 
 ### `--jobs N` and the `jobs` config key
 
@@ -552,6 +561,11 @@ simultaneous connections a target may see (held to 4 without `--i-own-target`). 
 spawns additional workers, that ceiling still has nothing to bound above 1 concurrent connection
 today. Raising `--jobs` above 4 for a DAST scan therefore still needs `--i-own-target`, and still
 does not make the scan any more parallel.
+
+## Accepted but not yet implemented
+
+Everything in this section parses, validates, and is accepted today.
+None of it changes the outcome of a run.
 
 ### `--lang py,js,go,java`
 
@@ -928,7 +942,7 @@ file yet; those are called out in the Notes column.
 | Key | Value | Default | Status | Notes |
 |---|---|---|---|---|
 | `requests-per-second` | decimal, may be fractional | `4` | live | The token-bucket limiter in `lib/http.sh`, shared across workers. Held to 4/s for a DAST scan without `--i-own-target`; see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target). |
-| `jobs` | positive integer | `4` | inert | Every run is single-worker. See [`--jobs N`](#--jobs-n-and-the-jobs-config-key). |
+| `jobs` | positive integer | `4` | live | Real worker parallelism for `sast`/`sca`/`iac`, and DAST's in-flight-connection ceiling. See [`--jobs N`](#--jobs-n-and-the-jobs-config-key). |
 | `http-timeout` | positive integer (seconds) | `20` | inert | The HTTP layer's timeout reads `SCOURSH_HTTP_TIMEOUT`, never this file. |
 | `max-redirects` | non-negative integer | `5` | inert | The redirect cap is a caller-supplied argument defaulting to 5, never read from this file. |
 | `request-budget` | positive integer, per run | `20000` | live | Per-run, shared across workers; exhausting it stops the run at exit 5. Clamped to 5000 for a DAST scan without `--i-own-target`, so this default is not what a DAST run spends. |

@@ -208,7 +208,7 @@ on disk; absent, it is a silent no-op, never an error. Nothing is fetched at sca
 ./scan.sh sast --path DIR --fail-on high --fail-on-new    # ...but only for findings new since the last run
 ./scan.sh sast --path DIR --baseline config/baseline.json # suppress accepted-risk findings by fingerprint
 ./scan.sh diff --against reports/<prior-run>          # classify the latest run vs a named earlier one
-./scan.sh report --from reports/<prior-run>           # PLANNED, not built - accepted, validated, a logged no-op today
+./scan.sh report --from reports/<prior-run>           # regenerate report.md/html/sarif from a prior run's own findings, no rescan
 ./scan.sh cloud --live                                # AWS CSPM - 30 services, read-only, needs AWS credentials
 ```
 

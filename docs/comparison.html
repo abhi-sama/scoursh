@@ -313,7 +313,7 @@
   <li><strong>Client-rendered apps.</strong> No JavaScript execution, so a single-page app&rsquo;s routes are invisible unless you supply an OpenAPI, HAR, Postman or GraphQL spec.</li>
   <li><strong>Advisory freshness.</strong> SCA is only as current as your last offline refresh — a deliberate, dated snapshot, never real-time.</li>
   <li><strong>Business logic.</strong> Authorization checks are detection-oriented; complete access-control correctness still needs human review.</li>
-  <li><strong>Speed.</strong> Every static scan is single-worker. Measured: 114&nbsp;s for 52 files. Compiled-Go competitors do comparable work in seconds.</li>
+  <li><strong>Speed.</strong> Measured: 114&nbsp;s for 52 files at the default single worker. <code>--jobs N</code> now gives real multi-worker fan-out for <code>sast</code>/<code>sca</code>/<code>iac</code> (byte-identical findings regardless of width), but each worker is still a shell pattern engine, not a compiled parser — compiled-Go competitors do comparable per-file work in a fraction of the time.</li>
   <li><strong>Not a pentest.</strong> Automated regression and posture scanning that complements a manual assessment; it does not replace one.</li>
 </ul>
 
