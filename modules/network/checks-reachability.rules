@@ -1,0 +1,76 @@
+# modules/network/checks-reachability.rules - the NET-06 script-check
+# registry (rules/RULE-FORMAT.md §9.5; data/scoursh-network-scan-design/
+# report.md §3.1/§5.1, the NET-06 row in its §7 staged plan). Owned by
+# modules/network/reachability.sh; ids are both `NET-PORT-*`.
+#
+# ONE FILE PER OWNING PHASE SCRIPT, per rules/RULE-FORMAT.md §9's
+# `checks-<name>.rules` row (docs/FOUNDATION.md tension 29) - modules/network/
+# already carries no shared `checks.rules` for its script checks to collide
+# on, so this ticket seeds directly under its own per-owner name rather than
+# ever creating one, mirroring how modules/dast/passive/checks-cors.rules
+# (DAST-08, landed after tension 29's split) was seeded.
+#
+# TWO CHECK IDS FOR ONE PROBE, on purpose - report.md §5.1's own reasoning,
+# applied here exactly as it is for every sibling module in this tree: the
+# `net` fingerprint location profile (lib/findings.sh, target host port
+# transport) carries no component naming the STATE a listener was found in,
+# so an `open`-and-violating-posture listener and a `not-open` listener on a
+# DIFFERENT port of the SAME target would only collide if they somehow
+# shared one id - they do not, because ports differ, but the underlying
+# reasoning is the same one every DAST checks-*.rules file in this tree
+# states for itself: severity and remediation genuinely differ between "this
+# should be closed and is open" (a real exposure) and "this was declared and
+# did not answer" (an inventory-hygiene observation), so a verdict that
+# varies with the outcome is a SECOND check id, never one id whose severity
+# is raised at runtime (AGENTS.md's own DAST-11 "a severity that varies with
+# context" rule, applied one module down).
+#
+# `coverage-scope: target` is NET's cell (rules/RULE-FORMAT.md §9.5.1's own
+# NET row: the config/scope.conf target id) - a run scoped to one target can
+# never manufacture a `fixed` verdict for a target it never visited.
+#
+# The type tag is `safe-active`, matching modules/network/engine.sh's own
+# phase-table floor (`reachability.sh:safe`, CHECKS_INTENSITIES' `safe`
+# tier): one TCP connect per declared listener, zero bytes sent, but a real
+# connection to a port the operator did not necessarily expect a scanner to
+# knock on - report.md §5.1's own table, and this file's own reachability.sh
+# header, both say why that is `safe-active` rather than `passive`.
+
+id: NET-PORT-UNEXPECTED_LISTENER-01
+title: Declared listener answers on a port expected to be closed
+script: reachability.sh
+severity: high
+confidence: high
+cwe: CWE-668
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: Close this listener, restrict it to a private network or a
+  VPN/bastion path, or add a firewall/security-group rule that denies the
+  source this scan ran from, so the port no longer answers a plain TCP
+  connect from an untrusted network. If it is now intentionally open, update
+  or remove the corresponding config/posture.conf expectation
+  (`check: NET-PORT-UNEXPECTED_LISTENER-01`, `scope-key: <target>:<port>`,
+  `expect: absent`) so this baseline reflects the current, reviewed
+  configuration rather than continuing to report drift.
+references: CWE-668
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: NET-PORT-DECLARED_NOT_ANSWERING-01
+title: Declared network listener did not answer
+script: reachability.sh
+severity: info
+confidence: high
+cwe: CWE-16
+owasp: A05:2021
+tags: safe-active
+coverage-scope: target
+remediation: No action is required for this finding by itself - it records
+  that a listener config/scope.conf declares for this target (base-url or an
+  extra-host entry) did not accept a TCP connection during this run. If the
+  listener is decommissioned, remove its extra-host entry from
+  config/scope.conf so future runs do not keep probing a port nothing is
+  meant to be running on; if it should be running, verify the service and
+  any network path (firewall, security group, load balancer health check)
+  between the scanner and the host.
+references: CWE-16

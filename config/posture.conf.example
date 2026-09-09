@@ -11,20 +11,34 @@
 # Copy this file to config/posture.conf and edit it.
 #
 # AN EXPECTATION IS NOT A CHECK. The check is the script registered in a
-# `checks.rules` under `modules/cloud/posture/` that reads the live or config
-# state; the expectation below is the operator-supplied BASELINE that check
-# compares the live state against, so a posture finding reports DRIFT from
-# what you declared here rather than this tool's own opinion of what "good"
-# looks like. They live in two different id namespaces for that reason: `id`
-# below is an expectation id (^[a-z][a-z0-9-]*$), never a check id, and
-# `check` is the POSTURE-* check id it parameterises.
+# `checks.rules` that reads the live or config state; the expectation below
+# is the operator-supplied BASELINE that check compares the live state
+# against, so a posture finding reports DRIFT from what you declared here
+# rather than this tool's own opinion of what "good" looks like. They live in
+# two different id namespaces for that reason: `id` below is an expectation
+# id (^[a-z][a-z0-9-]*$), never a check id, and `check` names the check id it
+# parameterises.
 #
-# ONE RECORD PER EXPECTED CONTROL PER SCOPE. `check` MUST name a check id a
-# `checks.rules` under modules/cloud/posture/ defines (E077); the (`check`,
-# `scope-key`) pair MUST be unique across this file (E078), since two
-# baselines for one control in one scope is a contradiction with no defined
-# winner. `scope-key` is a target id, an AWS account id, or `account/region` -
+# ONE RECORD PER EXPECTED CONTROL PER SCOPE. `check` MUST name a check id
+# SOME `checks.rules` in the tree defines (E077); the (`check`, `scope-key`)
+# pair MUST be unique across this file (E078), since two baselines for one
+# control in one scope is a contradiction with no defined winner. `scope-key`
+# is a target id, an AWS account id, `account/region`, or `target:port`
+# (`modules/network/`'s own NET-PORT-UNEXPECTED_LISTENER-01, below) -
 # whichever a given check's own coverage-scope declares.
+#
+# THIS FILE IS NOT EXCLUSIVELY `POSTURE-*`. §9.6.4's own key table describes
+# `check` as naming a check id "with MODULE = POSTURE" for the ordinary case
+# (a `modules/cloud/posture/` control read against live AWS state), but
+# nothing that parses or lints this file enforces that module prefix - E077
+# only requires the named id to exist SOMEWHERE in the repository-wide
+# check-id namespace. `modules/network/reachability.sh`'s own
+# NET-PORT-UNEXPECTED_LISTENER-01 check (data/scoursh-network-scan-design/
+# report.md §9 decision D5) spends that real, enforced flexibility rather
+# than open a second "this control should not be true" config file: it reads
+# THIS file too, for its own narrower purpose (a declared listener that
+# should be closed), and is a DECLARED SKIP - not exit 4 - when this file is
+# absent, exactly like every other expectation below.
 #
 # `expect` is one of: present | absent | equals | at-least | at-most.
 # `value` is required when `expect` is `equals`, `at-least`, or `at-most`, and
@@ -67,3 +81,17 @@ notes: A logout / session-invalidation route is expected in this target's
   heuristically and flags it for manual confirmation when absent, per
   docs/DESIGN.md §8.7's own heuristic-not-probe framing - it is not a proof
   that no logout capability exists, only that none was found by name.
+
+id: example-target-db-port-should-be-closed
+check: NET-PORT-UNEXPECTED_LISTENER-01
+scope-key: example-target:5432
+expect: absent
+notes: This target's database port is expected to be reachable only from
+  inside its own network, never from wherever scoursh runs. scope-key here
+  is `<config/scope.conf target id>:<port>`, the one shape this check reads
+  from this file - `expect: absent` reads literally as "this listener is
+  expected to be absent" from the outside. If the declared listener at that
+  port answers a plain TCP connect anyway, modules/network/reachability.sh
+  reports NET-PORT-UNEXPECTED_LISTENER-01; a port config/scope.conf does not
+  actually declare a listener for is a coverage fact
+  (`reason=port_out_of_scope`), never a probe.
