@@ -72,22 +72,39 @@ fi
 : "${_NET_BANNER_MAX_BYTES:=1024}"
 
 # `_banner_capability_reduction TARGET` - the ONE check-level reduction for a
-# bash built without --enable-net-redirections, byte-identical in shape to
+# bash built without --enable-net-redirections, similar in shape to
 # modules/network/reachability.sh's own `_reach_capability_reduction` and
 # for the identical reason (AGENTS.md's "checks_run must count what
 # SUCCEEDED" lesson): checked BEFORE the listener loop rather than left to
 # happen per-listener, so a host with no /dev/tcp support records ONE named
 # reduction naming this check, not a `checks_run` entry the moment any
 # listener was merely attempted.
+#
+# `checks=[ID]`, PLURAL and BRACKETED, is deliberate and is NOT the same
+# spelling reachability.sh's own two reductions use (`check=ID`/
+# `check=[ID ID]`, singular).  `modules/network/run.sh`'s own
+# `_net_record_unaccounted` - the honesty backstop that flags a selected
+# check no phase ever explained - reads `run_facts coverage_reduction` for
+# the literal substring `checks=[`, never `check=` alone (that singular form
+# is only recognised inside a DIFFERENT fact, `skipped_checks`, which no
+# phase in this module writes today).  This check is `passive`-tagged and so
+# IS selected under this module's own default `--intensity passive` -
+# unlike NET-PORT-*'s `safe-active` tag, which is filtered out of selection
+# entirely below `--intensity safe` and so never reaches that backstop at
+# all - so a reduction spelled the other way here would leave a live,
+# reachable false positive: `check_not_executed_no_reason_recorded` naming
+# this id on the very target this function is explaining.  Measured by
+# reproducing it against `tests/suites/network.sh`'s own `net-fixture`
+# scenario before writing this note.
 _banner_capability_reduction() {
   local target=$1
-  run_record coverage_reduction "module=network phase=banner.sh reason=net_probe_cmd_absent check=[NET-SVC-BANNER_DISCLOSURE-01] target=$target - this bash was built without --enable-net-redirections (lib/nettransport.sh), so no TCP connect could be attempted for any of this target's declared listeners; the check produced no real result and is not recorded as covered."
+  run_record coverage_reduction "module=network phase=banner.sh reason=net_probe_cmd_absent checks=[NET-SVC-BANNER_DISCLOSURE-01] target=$target - this bash was built without --enable-net-redirections (lib/nettransport.sh), so no TCP connect could be attempted for any of this target's declared listeners; the check produced no real result and is not recorded as covered."
   return 0
 }
 
 _banner_no_listeners_reduction() {
   local target=$1 why=$2
-  run_record coverage_reduction "module=network phase=banner.sh reason=no_declared_listeners check=NET-SVC-BANNER_DISCLOSURE-01 target=$target - $why"
+  run_record coverage_reduction "module=network phase=banner.sh reason=no_declared_listeners checks=[NET-SVC-BANNER_DISCLOSURE-01] target=$target - $why"
   run_record coverage_gap "network banner: target '$(net_scope_safe_text "$target" 80)' has no usable declared listener set this run ($why), so no listener was read for a banner. This is the absence of a test, not the absence of a problem."
   return 0
 }
@@ -197,17 +214,31 @@ _banner_run() {
     esac
   done
 
+  # Every coverage_reduction below names this check as `checks=[ID]` - plural
+  # and bracketed, per `_banner_capability_reduction`'s own note above on
+  # why that spelling (not reachability.sh's singular `check=`) is what
+  # modules/network/run.sh's `_net_record_unaccounted` backstop actually
+  # recognises. `net_listener_unresolvable` and `net_check_not_applicable`
+  # can each be the ONLY reduction this run writes (every declared listener
+  # unresolvable, or every one not-open/filtered), in which case `open_ct`
+  # is 0 and `checks_run` below is never reached - so the id must be
+  # accounted for here rather than assumed accounted elsewhere.
+  # `no_banner` cannot occur without `open_ct > 0`, so `checks_run` already
+  # covers it, but it is spelled identically for the same reason
+  # consistency is worth more here than the few bytes saved: a reader
+  # comparing four sibling reductions should not have to work out which one
+  # is exempt.
   if (( unresolvable_ct > 0 )); then
-    run_record coverage_reduction "module=network phase=banner.sh reason=net_listener_unresolvable check=NET-SVC-BANNER_DISCLOSURE-01 target=$target count=$unresolvable_ct - that many declared listener(s) could not be re-authorised/re-resolved at probe time, so no banner was attempted for them. Reason(s): $unresolvable_reasons."
+    run_record coverage_reduction "module=network phase=banner.sh reason=net_listener_unresolvable checks=[NET-SVC-BANNER_DISCLOSURE-01] target=$target count=$unresolvable_ct - that many declared listener(s) could not be re-authorised/re-resolved at probe time, so no banner was attempted for them. Reason(s): $unresolvable_reasons."
   fi
 
   local not_applicable_ct=$(( notopen_ct + filtered_ct ))
   if (( not_applicable_ct > 0 )); then
-    run_record coverage_reduction "module=network phase=banner.sh reason=net_check_not_applicable check=NET-SVC-BANNER_DISCLOSURE-01 target=$target count=$not_applicable_ct not_open=$notopen_ct filtered=$filtered_ct - that many declared listener(s) were not open (report.md §5.2 rule 4: 'did not answer in time' and 'refused' are different facts, and neither is read for a banner), so this check was not applicable to them and nothing was read."
+    run_record coverage_reduction "module=network phase=banner.sh reason=net_check_not_applicable checks=[NET-SVC-BANNER_DISCLOSURE-01] target=$target count=$not_applicable_ct not_open=$notopen_ct filtered=$filtered_ct - that many declared listener(s) were not open (report.md §5.2 rule 4: 'did not answer in time' and 'refused' are different facts, and neither is read for a banner), so this check was not applicable to them and nothing was read."
   fi
 
   if (( nobanner_ct > 0 )); then
-    run_record coverage_reduction "module=network phase=banner.sh reason=no_banner check=NET-SVC-BANNER_DISCLOSURE-01 target=$target count=$nobanner_ct - that many OPEN declared listener(s) accepted a TCP connection but sent no bytes within the read deadline, so no banner could be examined. Most services (a bare web server, most databases without a greeting) never send one unprompted; this is not evidence of anything about them by itself."
+    run_record coverage_reduction "module=network phase=banner.sh reason=no_banner checks=[NET-SVC-BANNER_DISCLOSURE-01] target=$target count=$nobanner_ct - that many OPEN declared listener(s) accepted a TCP connection but sent no bytes within the read deadline, so no banner could be examined. Most services (a bare web server, most databases without a greeting) never send one unprompted; this is not evidence of anything about them by itself."
   fi
 
   if (( open_ct > 0 )); then

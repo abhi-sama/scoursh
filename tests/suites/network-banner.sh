@@ -210,11 +210,11 @@ assert_eq '' "$NOFIND_8443" \
 
 RUN_MULTI_JSON=$(_slurp "$W/run-multi/run.json")
 t_case 'the no-banner listener (8443) is a counted no_banner reduction, never a silent clean'
-assert_contains "$RUN_MULTI_JSON" 'reason=no_banner check=NET-SVC-BANNER_DISCLOSURE-01 target=net-banner count=1' \
+assert_contains "$RUN_MULTI_JSON" 'reason=no_banner checks=[NET-SVC-BANNER_DISCLOSURE-01] target=net-banner count=1' \
   'the reduction names the exact reason report.md §5.2 rule 2s own honesty vocabulary lists for this check, and the real count'
 
 t_case 'the not-open and filtered listeners are ONE counted net_check_not_applicable reduction, naming both states'
-assert_contains "$RUN_MULTI_JSON" 'reason=net_check_not_applicable check=NET-SVC-BANNER_DISCLOSURE-01 target=net-banner count=2 not_open=1 filtered=1' \
+assert_contains "$RUN_MULTI_JSON" 'reason=net_check_not_applicable checks=[NET-SVC-BANNER_DISCLOSURE-01] target=net-banner count=2 not_open=1 filtered=1' \
   'both non-open listeners are folded into one reduction with the real breakdown - FAILS if either were silently dropped or reported as a finding'
 
 t_case 'checks_run records NET-SVC-BANNER_DISCLOSURE-01 once at least one listener was actually open and read'
@@ -267,11 +267,15 @@ t_case 'a base-url-only target (no listeners.json at all, NET-05 rule 3) records
 _net_scan "$W/run-solo" "$FIX_SOLO" --target net-solo
 assert_eq 0 "$_RC" 'exits 0'
 SOLO_JSON=$(_slurp "$W/run-solo/run.json")
-assert_contains "$SOLO_JSON" 'reason=no_declared_listeners check=NET-SVC-BANNER_DISCLOSURE-01' \
+assert_contains "$SOLO_JSON" 'reason=no_declared_listeners checks=[NET-SVC-BANNER_DISCLOSURE-01]' \
   'the named reason from report.md §5.2 rule 2s own list appears, naming this check specifically'
 SOLO_JSONL=$(_slurp "$W/run-solo/findings.jsonl")
 assert_not_contains "$SOLO_JSONL" 'NET-SVC-BANNER_DISCLOSURE-01' \
   'no finding was fabricated with nothing to probe'
+
+t_case 'this check is not ALSO flagged by modules/network/run.sh own honesty backstop as a selected-but-unexplained check'
+assert_not_contains "$SOLO_JSON" 'reason=check_not_executed_no_reason_recorded' \
+  'no check_not_executed_no_reason_recorded reduction names this run - FAILS if the reduction above were spelled check=ID (singular, reachability.sh'"'"'s own convention) rather than checks=[ID] (plural, bracketed): modules/network/run.sh'"'"'s _net_record_unaccounted reads run_facts coverage_reduction for the literal substring "checks=[" and would then see this check as selected (it is passive-tagged, so it IS selected even at this run'"'"'s own default --intensity passive, unlike NET-PORT-*'"'"'s safe-active tag, which is filtered out of selection below --intensity safe and so never reaches this backstop at all) but never accounted for, and would falsely report it as a defect in modules/network/ rather than the declared skip it actually is. Reproduced against the pre-fix spelling before writing this assertion.'
 
 # =============================================================================
 printf '\n-- report.md §5.2 rule 2: net_probe_cmd_absent is a named, counted, CHECK-LEVEL skip - nothing is probed at all --\n'
@@ -292,7 +296,7 @@ assert_eq 0 "$_CAP_RC" 'exits 0 - a bash without --enable-net-redirections is a 
 NOCAP_JSON=$(_slurp "$W/run-nocap/run.json")
 assert_contains "$NOCAP_JSON" 'reason=net_probe_cmd_absent' \
   'the named reason from report.md §5.2 rule 2s own list appears'
-assert_contains "$NOCAP_JSON" 'check=[NET-SVC-BANNER_DISCLOSURE-01]' \
+assert_contains "$NOCAP_JSON" 'checks=[NET-SVC-BANNER_DISCLOSURE-01]' \
   'the reduction names this check id specifically, not only a generic module note'
 assert_file_absent "$W/net-probe.log" \
   'net_connect_probe (SCOURSH_NET_PROBE) was NEVER invoked - FAILS if the capability check ran per-listener rather than once up front (AGENTS.md'"'"'s "checks_run must count what SUCCEEDED" lesson)'
