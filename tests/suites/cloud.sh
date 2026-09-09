@@ -390,9 +390,20 @@ assert_contains "$_notes" 'coverage-scope=account-region' \
   'and every cell declares the account-region coverage scope (docs/FOUNDATION.md tension 12)'
 
 _red=$(cat "$W/out-live/meta/coverage_reduction")
-assert_contains "$_red" 'reason=no_service_scripts_on_disk_yet' \
-  'a run with zero service scripts records exactly that reason'
-assert_contains "$_red" 'services_present=0' 'and says how many are present'
+# CLOUD-05 landed modules/cloud/aws/live/s3.sh, so the walk now INVOKES a
+# service and this run takes the third arm of the roll-up rather than the
+# first: a script is present, it ran, and against this suite`s stub - which
+# answers AccessDenied to every call it has no route for - it covered no
+# check.  `reason=no_service_scripts_on_disk_yet` is still written by the
+# module and is still the right reason for a tree with an empty live/
+# directory; it is simply no longer the reason THIS tree produces.  Both arms
+# stay pinned, here and in tests/suites/cloud-s3.sh, because the naive edit
+# when the next service lands is to delete whichever one stopped matching.
+assert_contains "$_red" 'reason=no_check_covered_by_any_service' \
+  'a run whose only present service script covered nothing records exactly that reason'
+assert_contains "$_red" 'services_present=1' 'and says how many of the catalog are on disk'
+assert_contains "$_red" 'aws_api_access_denied' \
+  'and the denied S3 call underneath it is itself a declared reduction, never silence'
 assert_contains "$(cat "$W/out-live/meta/coverage_gap")" 'cloud covered nothing in account 123456789012' \
   'and the gap names the account rather than being generic'
 
@@ -511,8 +522,17 @@ _md=$(cat "$W/out-live/report-audit.md" 2>/dev/null || true)
 _html=$(cat "$W/out-live/report-audit.html" 2>/dev/null || cat "$W/out-live/report.html")
 assert_not_contains "$_html" 'modules/cloud/ does not exist on disk yet' \
   'lib/report.sh no longer claims modules/cloud/ does not exist - it does, and a stale claim in the audit report is exactly the doc rot this project`s own process rule exists to prevent'
-assert_contains "$_html" 'ships no service script yet' \
-  'and states the real, current limit instead'
+# The phrase this used to look for - "ships no service script yet" - came from
+# modules/cloud/aws/run.sh`s own coverage_gap, on the roll-up arm taken when
+# NO service script is on disk.  CLOUD-05 landed the first one, so this run
+# takes the third arm instead.  Both halves are asserted: the current sentence
+# must be there AND the superseded one must be gone, because a report that
+# carried both would be telling a reader two different things about the same
+# run and neither assertion alone would notice.
+assert_contains "$_html" 'service script invocation(s) ran' \
+  'and states the real, current limit instead - a script ran and covered nothing, rather than none existing'
+assert_not_contains "$_html" 'ships no service script yet' \
+  'and the pre-CLOUD-05 sentence is gone rather than left standing beside it'
 : "${_md:=}"
 
 t_summary cloud

@@ -360,7 +360,7 @@ _cloud_run_module() {
   local _cloud_checks_run_before
   _cloud_checks_run_before=$(run_facts checks_run | wc -l | tr -d '[:space:]')
 
-  for region in "${cells[@]}"; do
+  for region in "${cells[@]+"${cells[@]}"}"; do
     cell=$(cloud_cell "$account" "$region")
     # `run_record regions` is what fills run.json's own `regions` array, which
     # has been rendered since step 1 and written by nothing (it was always

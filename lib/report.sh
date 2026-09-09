@@ -449,11 +449,20 @@ _report_owasp_state() {
   # A bare `"${!ran_ids[@]}"` (never the `${arr[@]+alt}` guard idiom used for
   # an INDEXED array elsewhere in this file) is what a genuinely empty
   # associative array needs here: nested inside that guard, `${!ran_ids[@]}`
-  # on an empty associative array does not expand to zero words the way
-  # `${arr[@]}` does for an indexed one - it yields one spurious empty-string
-  # element, and `${_RPTOW_CHECK_OWASP[$cid]}` with `cid=''` is itself a bash
-  # "bad array subscript" error on an associative array (unlike a numeric
-  # one), not a harmless empty read. Measured directly by reproducing it.
+  # on an empty associative array does not expand to zero words the way a
+  # bare indexed-array all-elements expansion does - it yields one spurious
+  # empty-string element, and `${_RPTOW_CHECK_OWASP[$cid]}` with `cid=''` is
+  # itself a bash "bad array subscript" error on an associative array (unlike
+  # a numeric one), not a harmless empty read. Measured directly by
+  # reproducing it.
+  #
+  # The prose above deliberately DESCRIBES that indexed-array expansion rather
+  # than spelling it: tests/lint-shell.sh's bash-4.2 array-guard check greps
+  # every line of this file, comments included, so a comment that quoted the
+  # unguarded form reported this file as carrying one - the same self-match
+  # this project already recorded for a rule pack whose header spelled the
+  # credential shape it was describing (AGENTS.md, modules/sast/rules/
+  # secrets.rules). Describe the hazard, do not spell it.
   for cid in "${!ran_ids[@]}"; do
     [[ -n $cid ]] || continue
     ow=${_RPTOW_CHECK_OWASP[$cid]:-}
@@ -556,7 +565,11 @@ _owasp_render_order() {
     extra+=("$k")
   done
   if (( ${#extra[@]} > 0 )); then
-    printf '%s\n' "${extra[@]}" | LC_ALL=C sort -u
+    # Length-guarded already, so the `+` idiom adds nothing at runtime; it is
+    # written anyway because tests/lint-shell.sh's check is a per-line grep
+    # that cannot see the enclosing `if`, and an exemption it cannot express
+    # is a check that stays red for a correct file.
+    printf '%s\n' "${extra[@]+"${extra[@]}"}" | LC_ALL=C sort -u
   fi
 }
 
@@ -2218,7 +2231,7 @@ declare -A _RPTC_RANSEM_TEXT=(
   [iac]='Recorded AFTER the tree walk (the same sast_record_checks_run, called from modules/iac/run.sh once iac_scan_tree returns) - byte-identical predicate to SAST, since both share one engine.'
   [sca]='Recorded when at least one manifest of that ecosystem was located and walked (e.g. modules/sca/engine.sh), before its package loop. It ships no on-disk check registry, so this report cannot state a coverage fraction for it - only what ran.'
   [dast]='Recorded AFTER evaluation, gated on at least one response or request the check was applicable to actually happening (e.g. modules/dast/passive/headers.sh:_HDRF_EVAL). This is the category the other two were brought up to match.'
-  [cloud]='Recorded AFTER the AWS call the check depends on returned an ANSWER - `ok` or `not_found` in lib/awscli.sh section 2s outcome vocabulary. A call that was denied, throttled, truncated or made against a region the account has not enabled is a declared coverage_reduction, listed below, never a silent checks_run entry: for a cloud scan an AccessDenied looks exactly like an account with nothing wrong in it, which is why this category classifies every failure rather than returning a status. NOTE: modules/cloud/aws/live/ ships no service script yet (docs/STEP6-CLOUD-PLAN.md), so nothing has been counted under this predicate - a --live run today resolves the account and its regions and records what it could not examine.'
+  [cloud]='Recorded AFTER the AWS call the check depends on returned an ANSWER - `ok` or `not_found` in lib/awscli.sh section 2s outcome vocabulary. A call that was denied, throttled, truncated or made against a region the account has not enabled is a declared coverage_reduction, listed below, never a silent checks_run entry: for a cloud scan an AccessDenied looks exactly like an account with nothing wrong in it, which is why this category classifies every failure rather than returning a status. NOTE: modules/cloud/aws/live/ ships the S3 service only so far (docs/STEP6-CLOUD-PLAN.md CLOUD-05); every other service in docs/DESIGN.md 8.1s catalog is still absent, so a --live run today resolves the account and its regions, examines S3, and records every other service as unexamined rather than counting it clean.'
 )
 
 _rptc_prefix_grep() {

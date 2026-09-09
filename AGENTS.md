@@ -670,10 +670,18 @@ pagination, and the outcome vocabulary that stops an `AccessDenied` reading as a
 P3 (`modules/cloud/aws/{run.sh,engine.sh,regions.sh}` - the `scan_dispatch cloud` entry point, the
 authorization record, and single-account region iteration) have landed; see the "Step 6" section
 below for the four things about P3 that a later ticket will otherwise rediscover the expensive way.
-**No `aws/live/*.sh` service script exists yet**, so a `--live` run today resolves the account and its
-enabled regions, writes the `account-region` coverage cells, and records that it examined no service -
-which is `scan_dispatch cloud` being a real dispatch that found nothing to run, not the
-`reason=not_yet_built` no-op it used to be.
+**P5 (CLOUD-05, `modules/cloud/aws/live/s3.sh`) has now landed too - the first `aws/live/*.sh` service
+script, and the vertical slice that proves the whole cloud chain end to end.** It is the template every
+later service PR copies, so read its own section below before writing the second one. With it, a
+`--live` run resolves the account and its enabled regions, examines every S3 bucket in the account,
+emits findings that cite an ARN, a region, an account id and - where CIS v3.0.0 has a control - a `cis`
+id, and writes the FIRST real `account-region` coverage cell this repository has ever produced
+(`lib/state.sh`'s own header recorded that the `account-region` fixtures were hand-authored,
+schema-only proof until a check emitted one). It is also the first `aws_ro` call site
+`tests/lint-aws-readonly.sh` actually enforces: that lint reported "0 aws_ro call sites" on every run
+before this ticket and reports 10 after, so its checks 1-3 have stopped being vacuous.
+**Every OTHER `aws/live/*.sh` service in `docs/DESIGN.md` §8.1's catalog is still absent**, and a
+`--live` run records each one as unexamined rather than counting it clean.
 **Step 7 (persistent run state, `state/` plus `diff`) is complete.**
 Step 10 (SARIF plus the compliance report) is partially landed: Track A (the SARIF emitter) is
 complete, and Track B (the compliance-mapping report) has its unblocked OWASP half landed
@@ -2272,9 +2280,10 @@ every installation - it is allowed only via the one authorized file's path exemp
 **Step 6 (Cloud/AWS): `modules/cloud/aws/` now exists, and five things about it are easy to get
 backwards.**
 `docs/STEP6-CLOUD-PLAN.md` is the sub-ticket plan; the dispatch plan that reorganises it into PRs
-P1..P22 is the authority for what is landed. P1 (`lib/awscli.sh`'s remaining half) and P3
-(`modules/cloud/aws/{run.sh,engine.sh,regions.sh}`) are in; everything from P2 (a routed multi-call
-AWS fixture stub) and P5 (the s3 vertical slice) onward is not.
+P1..P22 is the authority for what is landed. P1 (`lib/awscli.sh`'s remaining half), P2 (the routed
+multi-call AWS fixture stub), P4 (`data/cis-mappings`), P3
+(`modules/cloud/aws/{run.sh,engine.sh,regions.sh}`) and P5 (`aws/live/s3.sh`, the vertical slice) are
+in; every other `aws/live/*.sh` service, and the `posture/` half, are not.
 
 - **An `AccessDenied` is NOT an empty account, and this module is where that distinction is most
   expensive.** `lib/awscli.sh` section 2's frozen outcome vocabulary is what separates them, and
@@ -2321,6 +2330,52 @@ AWS fixture stub) and P5 (the s3 vertical slice) onward is not.
   identical calls genuinely do have one answer, which is tension 16's whole point); it is a property
   of a harness whose response varies under a fixed key, the same hazard
   `tests/lib/aws-fixtures.sh`'s `aws_fixture_response_set` records from the other side.
+- **A SERVICE SCRIPT IS `live/<service>.sh` PLUS `live/<service>_engine.sh`, AND THE SPLIT IS THE
+  MODULE'S EXISTING ONE APPLIED ONE LEVEL DOWN.** `modules/cloud/aws/engine.sh` is the MODULE's shared
+  library (the service table, the cell, the JSON reader, the one door into a service script) and is
+  shared by all thirty of `docs/DESIGN.md` §8.1's services; a classifier that knows what an S3 ACL
+  grantee URI means belongs to S3 alone, and putting it in the module engine would grow a file every
+  service sources into the union of thirty response formats. `modules/cloud/aws/live/s3{,_engine}.sh`
+  is the worked example. A file whose name is not a `_CLOUD_SERVICES` row is never sourced by the
+  walk, so the `_engine.sh` sibling costs the dispatch nothing - and it is what lets a suite exercise
+  every classifier against committed fixtures with no scan, no stub and no run directory.
+- **THE FINDING'S `cell` IS THE PASS'S AND ITS `loc_region` IS THE RESOURCE'S, AND FOR A `global`
+  SERVICE THEY DIFFER.** `rules/RULE-FORMAT.md` §9.5.1 says a CLOUD cell is a projection of the
+  finding's location components, which reads as "put the region in the cell" and is wrong for exactly
+  the rows the service table marks `global`. Coverage is credited ONCE PER PASS
+  (`_cloud_record_coverage`), so for `s3` it is credited to `<account>/global`; a finding filed under
+  `<account>/eu-west-2` would then sit in a cell no pass ever covers, could never be classified
+  `fixed`, and would stay `unknown` forever however thoroughly the bucket was remediated - tension
+  12's whole point, inverted. `modules/cloud/aws/live/s3.sh` sets `cell` from `SCOURSH_CLOUD_CELL`
+  (what `cloud_run_service` published) and `loc_region` from the bucket's own
+  `get-bucket-location`, and `tests/suites/cloud-s3.sh` asserts BOTH, because a test that checked only
+  the region passes under the implementation that writes the region into the cell too.
+- **`checks_run` NAMES WHAT ANSWERED, PER CHECK, NOT WHAT THE PASS INTENDED TO RUN.** A cloud check
+  is one API call per resource, and those calls fail INDEPENDENTLY - a role may read every ACL and no
+  encryption configuration. `modules/cloud/aws/live/s3.sh` therefore counts, per check id, the
+  resources that answered and the ones that did not: a check that answered for at least one resource
+  is recorded in `checks_run` AND carries a reduction naming the resources it missed, and a check that
+  answered for NONE is absent from `checks_run` entirely. Recording the intended set instead would
+  credit a coverage cell for a call that was denied, which is precisely what lets tension 12 report a
+  prior finding `fixed` on the strength of a scan that never looked.
+- **THREE S3 CHECKS FIRE ON AN `aws_ro` FAILURE, AND THAT IS CORRECT.** `NoSuchBucketPolicy`,
+  `NoSuchPublicAccessBlockConfiguration` and `ServerSideEncryptionConfigurationNotFoundError` are how
+  S3 says "there is no policy / no Block Public Access / no default encryption" - the `not_found`
+  outcome, which `aws_ro_outcome_is_coverage_loss` deliberately classes as an ANSWER rather than a
+  loss. A service script that treats every non-zero `aws_ro` as a coverage loss suppresses its own
+  finding on exactly the resources that have the problem, leaving the check firing only where the
+  setting exists but is wrong. Both directions are pinned in `tests/suites/cloud-s3.sh` section D,
+  because the naive fix for each is the other's bug.
+- **`cis:` IS AUTHORED ON THE CHECK RECORD AND OMITTED WHERE NO CONTROL EXISTS.** `data/cis-mappings`
+  is an id -> label table, never a source of ids (`docs/CIS-MAPPINGS.md` §1), and CIS AWS Foundations
+  Benchmark v3.0.0's S3 section has exactly four controls - so `modules/cloud/aws/live/checks.rules`
+  cites `2.1.4` on its four public-exposure checks and NOTHING on default encryption, versioning and
+  access logging, for which v3.0.0 has no control. Do not reach for v1.4.0's numbering to fill the
+  gap: CIS renumbers between versions, `data/cis-mappings` declares v3.0.0 project-wide, and
+  `docs/CIS-MAPPINGS.md` §5 item 5 forbids exactly that mixture. The finding still carries its CWE and
+  OWASP category; an honest absence beats an invented control id. A service script emits through
+  `finding_from_record`, so the `cis` value reaches the finding from the registry rather than being
+  retyped - which is the only way the two cannot disagree.
 - **`tests/aws-readonly-allow.txt` still must NOT exist.** `tests/lint-aws-readonly.sh`'s check 4
   rejects any entry that appears in no code, and `sts get-caller-identity` needs no entry at all - the
   frozen `get` prefix already admits it. The file is seeded by the ticket that adds the first

@@ -1,0 +1,20 @@
+{
+    "Buckets": [
+        {
+            "Name": "scoursh-fixture-public-bucket",
+            "CreationDate": "2019-04-02T09:11:04+00:00"
+        },
+        {
+            "Name": "scoursh-fixture-hardened-bucket",
+            "CreationDate": "2023-07-19T14:26:51+00:00"
+        },
+        {
+            "Name": "scoursh-fixture-denied-bucket",
+            "CreationDate": "2021-11-30T08:02:17+00:00"
+        }
+    ],
+    "Owner": {
+        "DisplayName": "scoursh-fixture-owner",
+        "ID": "1111111111111111111111111111111111111111111111111111111111111111"
+    }
+}
