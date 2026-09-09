@@ -1,0 +1,86 @@
+# modules/network/checks-transport.rules - the NET-10 script-check registry
+# (rules/RULE-FORMAT.md §9.5; data/scoursh-network-scan-design/report.md
+# §3.3, §5.1, §5.2, the NET-10 row in its §7 staged plan). Owned by
+# modules/network/transport.sh; ids are both `NET-TRANSPORT-*`.
+#
+# ONE FILE PER OWNING PHASE SCRIPT, per rules/RULE-FORMAT.md §9's
+# `checks-<name>.rules` row (docs/FOUNDATION.md tension 29) - matching every
+# sibling registry in this directory, never a shared `checks.rules` two
+# peers could collide on.
+#
+# TWO CHECK IDS, ONE PER PROPERTY, for the identical reason every sibling
+# registry in this directory gives: the `net` fingerprint location profile
+# (lib/findings.sh, target host port transport) carries no component naming
+# WHICH transport defect a finding is about, so a plaintext-protocol
+# exposure and a STARTTLS-not-required observation on the same listener
+# would collide onto one fingerprint if they shared an id - and they are
+# genuinely different facts with different remediations, not one fact
+# reported at two strengths (report.md §3.3's own framing: the first is "the
+# service answers in the clear at all", the second is "TLS is offered but
+# not enforced").
+#
+# A THIRD id for "expired/self-signed certificate on a non-web listener" -
+# the third case report.md §3.3's prose names - is DELIBERATELY ABSENT
+# HERE: modules/network/tlsport.sh (NET-08) already assesses every
+# non-base-url listener's certificate unconditionally under its own
+# NET-TLS-CERT_EXPIRED-01/NET-TLS-SELF_SIGNED-01 ids, and "non-base-url"
+# already means "non-web" for this module. See
+# modules/network/transport_engine.sh's own header for the full reasoning;
+# adding a third id here would collide onto the identical fact NET-08
+# already reports under a different check id at the same location.
+#
+# `coverage-scope: target` is NET's cell (rules/RULE-FORMAT.md §9.5.1's own
+# NET row), identical to every other NET-* check.
+#
+# THE TYPE TAG IS `passive`, MATCHING modules/network/engine.sh's OWN
+# `transport.sh:passive` PHASE-TABLE FLOOR - every reused primitive this
+# check calls (a TCP connect classification, one TLS handshake, one
+# zero-byte banner read) is one a sibling phase already tags `passive` for
+# the identical reason: connect-and-observe, never a protocol command this
+# scanner composes and sends of its own. `requires-cmd: openssl` on both
+# ids matches the phase's own dependency check - the plaintext-service
+# check needs it directly for the native-TLS-absence handshake, and the
+# STARTTLS check depends on that same classification before it ever runs,
+# so it is withheld under the identical absence.
+
+id: NET-TRANSPORT-PLAINTEXT_SERVICE-01
+title: Network service answers in the clear on a port whose protocol has a standard encrypted variant
+script: transport.sh
+severity: high
+confidence: medium
+cwe: CWE-319
+owasp: A02:2021
+tags: passive
+coverage-scope: target
+requires-cmd: openssl
+remediation: Run this service's encrypted variant instead (its standard
+  implicit-TLS port), or require STARTTLS on this same port before any
+  credential or protocol data is exchanged, and disable the plaintext
+  listener once every real client has migrated. A client that authenticates
+  against this service today is sending its credentials and data
+  unencrypted to anyone positioned on the network path. Port identification
+  here is by number alone, which is why this finding is reported at medium
+  confidence rather than high - verify the listening service before acting.
+references: CWE-319
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
+
+id: NET-TRANSPORT-STARTTLS_NOT_REQUIRED-01
+title: Network listener advertises STARTTLS but does not appear to require it
+script: transport.sh
+severity: medium
+confidence: medium
+cwe: CWE-319
+owasp: A02:2021
+tags: passive
+coverage-scope: target
+requires-cmd: openssl
+remediation: Configure this service to require STARTTLS before any protocol
+  command runs, rather than offering it opportunistically (Postfix
+  `smtpd_tls_security_level = encrypt`, Dovecot `disable_plaintext_auth = yes`
+  with `ssl = required`, ProFTPD `TLSRequired on`), or retire this port in
+  favour of its implicit-TLS variant entirely. This scan did not attempt
+  authentication and so could not confirm whether AUTH itself is blocked
+  without STARTTLS; verify enforcement directly against the service's own
+  configuration.
+references: CWE-319
+references: https://owasp.org/Top10/A02_2021-Cryptographic_Failures/
