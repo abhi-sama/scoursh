@@ -3335,8 +3335,8 @@ Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start
 - `lib/records.sh` (the record parser) is built **before** step 1's stated contents, since tensions 1, 6, 9, 15, and 26 all depend on it.
 - `lib/awscli.sh` is added to the layout and lands at the start of step 6, before any `aws/live/*.sh` script exists, so no script is ever written against a bare `aws`. **Update:** `lib/awscli.sh` itself now exists (see "AWS module: what exists ahead of step 6" below) - built out of sequence, deliberately, without the `aws/live/*.sh` scripts it was meant to land alongside.
 
-## Network module (NET): Tier 0 (NET-01 through NET-04) is complete; Tier 1 (NET-05) and part of Tier 2
-## (NET-06, NET-08) have landed on top of it - the module now sends real traffic and produces findings
+## Network module (NET): Tier 0 (NET-01 through NET-04), Tier 1 (NET-05), all of Tier 2 (NET-06 through
+## NET-09) and Tier 3's NET-10 have landed - the module now sends real traffic and produces findings
 
 A new scanner surface - declared-listener verification, service/version identification and transport
 posture over an operator-declared port set, never port discovery - is being built as `modules/network/`
@@ -3345,13 +3345,19 @@ with a `NET` check-id prefix, staged as dependency-ordered tickets the same way 
 strictly serial, because each touches a file a later NET ticket would otherwise conflict on).
 **NET-01 through NET-04 (Tier 0: shared-file preparation, the `NET` module identity, the transport
 primitive, module scaffold + dispatch) have all landed, and this is where the paragraphs below them in
-this section stop - they describe Tier 0 only.** Tier 1 (NET-05, the declared listener set) and two of
-Tier 2's four peer probes - NET-06 (`reachability.sh`, three-state listener verification) and NET-08
-(`tlsport.sh`, TLS identification on a non-base-url listener) - have since landed on top of Tier 0; their
-own paragraphs are below Tier 0's. NET-07 (`banner.sh`) and NET-09 (`httpport.sh`) remain unbuilt, and
-Tier 3 (`transport.sh`, NET-10) has not started. Do not read the Tier 0 paragraphs alone as "the network
-module has no check" - `modules/network/` now reads real bytes off a target's declared listeners and
-emits real findings; see the NET-05/NET-06/NET-08 paragraphs below Tier 0's for what.
+this section stop - they describe Tier 0 only.** Tier 1 (NET-05, the declared listener set) and every one
+of Tier 2's four peer probes - NET-06 (`reachability.sh`, three-state listener verification), NET-07
+(`banner.sh`, read-on-connect service identification, `NET-SVC-BANNER_DISCLOSURE-01`), NET-08
+(`tlsport.sh`, TLS identification on a non-base-url listener) and NET-09 (`httpport.sh`, a `safe-active`
+HTTP GET against a declared non-standard HTTP port, reusing `modules/dast/passive/banner_engine.sh`'s
+product normalisation) - have since landed on top of Tier 0, followed by Tier 3's NET-10
+(`transport.sh`, transport posture on non-HTTP listeners). Their own paragraphs are below Tier 0's for
+NET-05/NET-06/NET-08/NET-10; NET-07 and NET-09 landed without this section being updated for either -
+the same process-note failure this file warns about at length elsewhere - and are corrected here rather
+than backfilled with a full paragraph each, since neither ticket's own detail is this correction's to
+reconstruct. Do not read the Tier 0 paragraphs alone as "the network module has no check" -
+`modules/network/` now reads real bytes off a target's declared listeners and emits real findings; see
+the paragraphs below Tier 0's for what.
 
 Two shared files changed, both pure preparation with zero new scanner behaviour:
 
@@ -3552,6 +3558,49 @@ future NET ticket editing either function should not assume the two spellings ar
 `tlsport.sh` landing on disk is exactly the kind of fact those counts are a real `-f` test on - the
 identical maintenance NET-05 and NET-06 themselves needed and did not always get in the same change
 (see this section's own header correction above).
+
+**NET-10 (`modules/network/transport.sh` + `transport_engine.sh`) has landed - transport POSTURE on
+non-HTTP listeners, `NET-TRANSPORT-PLAINTEXT_SERVICE-01` and `NET-TRANSPORT-STARTTLS_NOT_REQUIRED-01`,
+`DAST-TRANSPORT-*`/`DAST-TLS-*` reasoning applied one port over, at tier `passive`.**
+`data/scoursh-network-scan-design/report.md` §3.3 names THREE transport-posture cases for this ticket,
+and only two become new check ids here: an expired or self-signed certificate on a non-web listener is
+ALREADY NET-08's own coverage (every non-base-url listener's certificate is assessed unconditionally
+there, and "non-base-url" already means "non-web" for this module), so a third id here would collide
+onto the identical fact NET-08 already reports under a different check id at the same location -
+`modules/network/transport_engine.sh`'s own header records this explicitly rather than leaving it to
+look like a missed case. Neither NET-07 nor NET-08 persists any per-listener artifact to disk (both
+emit findings and coverage records directly from their own process), so "reuse NET-07/NET-08" means
+what it means for every peer in this module: call the SAME shared primitives those two files call
+(`lib/nettransport.sh`'s `net_connect_probe`/`net_read_banner`,
+`modules/dast/passive/tls_engine.sh`'s `tls_probe`/`tls_parse_session`) on a second, independent
+connection, never invent a fourth way to classify a socket or read a banner.
+NET-TRANSPORT-PLAINTEXT_SERVICE-01 fires when a listener sits on one of five well-known ports whose
+protocol has a standard encrypted variant (FTP 21, SMTP 25, POP3 110, IMAP 143, LDAP 389 - a static
+table, port-number identification only, which is why both ids report `confidence: medium` rather than
+`high`) and a native TLS handshake against THAT port produces no completed session.
+NET-TRANSPORT-STARTTLS_NOT_REQUIRED-01 is evaluated only for a listener check 1 already confirmed
+genuinely cleartext, and only for the subset of that table this scanner can read an unprompted STARTTLS
+signal for without authenticating - SMTP and IMAP (whose command is the literal word `STARTTLS`) and
+POP3 (RFC 2449's distinct `STLS` spelling). **LDAP and FTP are both excluded from the second check, for
+two different reasons, and "fixing" this by adding FTP back is the trap a later ticket should check
+against this paragraph first**: LDAP's StartTLS is a binary extended operation with no unprompted
+greeting to read at all, while FTP's equivalent (RFC 4217) is the command `AUTH TLS` - a different token
+this check does not match, and one FTP daemons essentially never volunteer unprompted in their `220`
+greeting anyway (it is discovered via `FEAT`, an explicit query this passive probe never sends, per
+report.md §2.6's own "no protocol conversation" boundary). This scanner never issues STARTTLS itself and
+never authenticates, so the finding's own evidence is deliberately narrower than its title might suggest:
+it reports that the unauthenticated protocol exchange proceeded in cleartext while STARTTLS was
+advertised, not that mandatory-TLS enforcement was tested and found absent - real-world recall is
+correspondingly limited to servers that advertise capability inline in their greeting (Dovecot-style
+IMAP is the common case) rather than only after an explicit EHLO/CAPA/FEAT this scanner never sends.
+A private, NUL-safe banner-text reader (`net_transport_banner_read_text`) is a deliberate copy of
+`modules/network/banner_engine.sh`'s own `net_banner_read_text`, not a shared call, for the same
+`tests/lint-source-graph.sh` hub-budget reason `reachability_engine.sh`'s own private JSON-flattening
+copy already states - the shared version drags in `modules/dast/passive/banner_engine.sh` for a
+product/version identifier this file has no use for. `tests/suites/network-transport.sh` (71
+assertions) is the proof, using the identical direct-source phase-env/listeners.json harness
+`tests/suites/network-tlsport.sh` established rather than the heavier real-`scan.sh`-subprocess shape,
+reserving only two real dispatch-chain runs for the end of the file.
 
 ## AWS module: what exists ahead of step 6, and why
 
