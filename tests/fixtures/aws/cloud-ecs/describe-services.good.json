@@ -1,0 +1,19 @@
+{
+    "services": [
+        {
+            "serviceArn": "arn:aws:ecs:eu-west-2:123456789012:service/scoursh-fixture-ecs-good-cluster/scoursh-fixture-ecs-good-service",
+            "serviceName": "scoursh-fixture-ecs-good-service",
+            "clusterArn": "arn:aws:ecs:eu-west-2:123456789012:cluster/scoursh-fixture-ecs-good-cluster",
+            "status": "ACTIVE",
+            "launchType": "FARGATE",
+            "taskDefinition": "arn:aws:ecs:eu-west-2:123456789012:task-definition/scoursh-fixture-ecs-good-task:1",
+            "networkConfiguration": {
+                "awsvpcConfiguration": {
+                    "subnets": ["subnet-0123456789abcdef1"],
+                    "securityGroups": ["sg-0123456789abcdef1"],
+                    "assignPublicIp": "DISABLED"
+                }
+            }
+        }
+    ]
+}

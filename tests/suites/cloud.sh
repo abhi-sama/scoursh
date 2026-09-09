@@ -392,14 +392,14 @@ assert_contains "$_notes" 'coverage-scope=account-region' \
 _red=$(cat "$W/out-live/meta/coverage_reduction")
 _chr=$(cat "$W/out-live/meta/checks_run" 2>/dev/null || true)
 # CLOUD-05 (s3.sh), CLOUD-21 (lambda.sh), CLOUD-15/16 (rds.sh/dynamodb.sh),
-# CLOUD-22 (apigw.sh), CLOUD-07/08/09 (kms/secretsmanager/ssm.sh), CLOUD-06
-# (iam.sh), CLOUD-13 (ec2.sh), CLOUD-14/CLOUD-24 (elb.sh, cloudfront.sh) and
-# CLOUD-30..34 (the governance/detection bundle:
-# cloudtrail/config/guardduty/inspector/macie) have all landed, so the walk
-# now INVOKES seventeen services. `reason=no_service_scripts_on_disk_yet`
-# is still written by the module and is still the right reason for a tree
-# with an empty live/ directory; it is simply no longer the reason THIS tree
-# produces.
+# CLOUD-22 (apigw.sh), CLOUD-25/26/27 (ecr.sh/ecs.sh/eks.sh), CLOUD-07/08/09
+# (kms/secretsmanager/ssm.sh), CLOUD-06 (iam.sh), CLOUD-13 (ec2.sh),
+# CLOUD-14/CLOUD-24 (elb.sh, cloudfront.sh) and CLOUD-30..34 (the
+# governance/detection bundle: cloudtrail/config/guardduty/inspector/macie)
+# have all landed, so the walk now INVOKES twenty services.
+# `reason=no_service_scripts_on_disk_yet` is still written by the module and
+# is still the right reason for a tree with an empty live/ directory; it is
+# simply no longer the reason THIS tree produces.
 #
 # Landing Macie is what changes the reading here for real: macie.sh's own
 # documented ambiguity (modules/cloud/aws/live/macie.sh's header) treats an
@@ -418,8 +418,8 @@ _chr=$(cat "$W/out-live/meta/checks_run" 2>/dev/null || true)
 # merely happens to trip on a shared stub: a real least-privilege role denied
 # for everything hits the identical shape, and reporting nothing wrong for
 # such an account would be the coverage-loss that macie.sh's header exists to
-# avoid.  The other services (s3, lambda, rds, dynamodb, apigw, kms,
-# secretsmanager, ssm, iam, ec2, elb, cloudfront, cloudtrail, config,
+# avoid.  The other services (s3, lambda, rds, dynamodb, apigw, ecr, ecs, eks,
+# kms, secretsmanager, ssm, iam, ec2, elb, cloudfront, cloudtrail, config,
 # guardduty, inspector) still each write their own per-service
 # coverage_reduction below, since none of them shares Macie's ambiguity.
 assert_not_contains "$_red" 'reason=no_check_covered_by_any_service' \
