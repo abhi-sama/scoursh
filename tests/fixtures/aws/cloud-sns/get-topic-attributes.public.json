@@ -1,0 +1,8 @@
+{
+    "Attributes": {
+        "Policy": "{\"Version\":\"2012-10-17\",\"Id\":\"__default_policy_ID\",\"Statement\":[{\"Sid\":\"__default_statement_ID\",\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"*\"},\"Action\":[\"SNS:Publish\",\"SNS:Subscribe\"],\"Resource\":\"arn:aws:sns:eu-west-2:123456789012:scoursh-fixture-public-topic\"}]}",
+        "Owner": "123456789012",
+        "TopicArn": "arn:aws:sns:eu-west-2:123456789012:scoursh-fixture-public-topic",
+        "DisplayName": ""
+    }
+}

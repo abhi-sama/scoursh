@@ -1,0 +1,6 @@
+{
+    "Buckets": [
+        {"Name": "www.example.com", "CreationDate": "2020-01-01T00:00:00.000Z"}
+    ],
+    "Owner": {"DisplayName": "scoursh-fixture-owner", "ID": "1111111111111111111111111111111111111111111111111111111111111111"}
+}
