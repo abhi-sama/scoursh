@@ -344,14 +344,23 @@ _awscli_detect_truncation() {
     # Fast path: the overwhelming majority of a response's lines are neither a
     # continuation token nor a truncation flag, and this loop runs over every
     # line of every response, so the cheap case comes before the key test.
+    # `position` is API Gateway's own token name (`get-rest-apis`,
+    # `get-resources`, `get-api-keys`, ... - the older `get-*` list operations
+    # that predate the `list-*`/NextToken convention every other service in
+    # this catalog uses). Recognising it here, rather than only in a caller,
+    # is what keeps CLOUD-22's calls honest under the identical rule S3's
+    # `list-buckets` truncation check already relies on: a caller that trusts
+    # `SCOURSH_AWS_RO_OUTCOME` alone must never see `ok` on a response this
+    # function silently failed to recognise as partial.
     case $trimmed in
       '"NextToken"'* | '"nextToken"'* | '"NextMarker"'* | '"NextContinuationToken"'* | \
-        '"NextPageToken"'* | '"nextForwardToken"'* | '"NextRecordName"'* | '"IsTruncated"'*) ;;
+        '"NextPageToken"'* | '"nextForwardToken"'* | '"NextRecordName"'* | '"position"'* | \
+        '"IsTruncated"'*) ;;
       *) continue ;;
     esac
     matched=''
     for key in NextToken nextToken NextMarker NextContinuationToken NextPageToken \
-      nextForwardToken NextRecordName; do
+      nextForwardToken NextRecordName position; do
       if _awscli_json_key_is "$trimmed" "$key"; then matched=$key; break; fi
     done
     if [[ -n $matched ]]; then

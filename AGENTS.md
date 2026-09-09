@@ -2282,8 +2282,9 @@ backwards.**
 `docs/STEP6-CLOUD-PLAN.md` is the sub-ticket plan; the dispatch plan that reorganises it into PRs
 P1..P22 is the authority for what is landed. P1 (`lib/awscli.sh`'s remaining half), P2 (the routed
 multi-call AWS fixture stub), P4 (`data/cis-mappings`), P3
-(`modules/cloud/aws/{run.sh,engine.sh,regions.sh}`) and P5 (`aws/live/s3.sh`, the vertical slice) are
-in; every other `aws/live/*.sh` service, and the `posture/` half, are not.
+(`modules/cloud/aws/{run.sh,engine.sh,regions.sh}`), P5 (`aws/live/s3.sh`, the vertical slice) and P17
+(`aws/live/apigw.sh`, CLOUD-22 - see its own landing paragraph below) are in; every other
+`aws/live/*.sh` service, and the `posture/` half, are not.
 
 - **An `AccessDenied` is NOT an empty account, and this module is where that distinction is most
   expensive.** `lib/awscli.sh` section 2's frozen outcome vocabulary is what separates them, and
@@ -2380,6 +2381,90 @@ in; every other `aws/live/*.sh` service, and the `posture/` half, are not.
   rejects any entry that appears in no code, and `sts get-caller-identity` needs no entry at all - the
   frozen `get` prefix already admits it. The file is seeded by the ticket that adds the first
   `aws_ro sts assume-role` call site, and by no earlier one.
+
+**P17 (CLOUD-22, `modules/cloud/aws/live/apigw.sh`) has now landed too - the second `aws/live/*.sh`
+service, and the first CROSS-MODULE producer of `reports/<run>/inventory/endpoints.json`
+(`docs/FOUNDATION.md` tension 21; `docs/INVENTORY-FORMAT.md`), the frozen artifact `modules/dast/crawl.sh`
+(DAST-04) already reads.**
+It ships `apigw_engine.sh` (the pure half: the response reader, the ARN builder, the two open-auth
+classifiers, and an independent reader/writer for the endpoint-inventory file - never a `source` of
+`modules/dast/crawl_engine.sh`, since tension 21's "modules never invoke each other and never import
+each other's code" applies to this producer exactly as it does to DAST's own SAST-route-import half) and
+`apigw.sh` (the pass). `services_present` in `tests/suites/cloud.sh`'s honesty-roll-up assertion is now
+`2`, not `1` - the next service to land bumps it again rather than deleting the assertion, exactly as
+that suite's own comment predicts. Seven things about it are worth knowing before touching it.
+
+- **`get-resources` is called with `--embed methods`, and that ONE flag is why no separate `get-method`
+  call exists per (resource, verb).** Without it, a resource's `resourceMethods` map has one key per
+  configured HTTP verb but an EMPTY object `{}` as each value - and `cloud_json_flatten` prints one line
+  per SCALAR leaf only, so an empty object leaves NO trace in the flattened stream at all: a verb whose
+  method object is `{}` is invisible to any leaf-path reader, not merely under-detailed. `--embed
+  methods` embeds the full `Method` shape (`httpMethod`, `authorizationType`, `apiKeyRequired`, ...)
+  inline, closing that blind spot at no extra API-call cost.
+- **A method's own embedded `methodIntegration` sub-object carries a SECOND, unrelated `httpMethod`
+  field - the backend integration's own call method (a Lambda-proxy integration is always `POST`,
+  whatever the resource's real verb is) - and a naive "glob every `httpMethod` leaf under
+  `resourceMethods`" reading invents a phantom verb from it.** `apigw_resource_methods_set`
+  (`apigw_engine.sh`) guards against this by rejecting any match whose extracted "verb" still contains a
+  path separator (0x1f) - the tell that the glob reached past the real verb segment into a nested
+  object. `tests/suites/cloud-apigw.sh`'s fixtures deliberately give EVERY method a `methodIntegration`
+  block for this exact reason (case A1 fails under the naive reading).
+- **`get-stages`'s own JSON names its array `item` (singular), not `items`** - one of a handful of API
+  Gateway v1 operations that predate the `items` convention `get-rest-apis`, `get-resources` and
+  `get-api-keys` all use. Getting this wrong reads as "every API in the account has zero deployed
+  stages", which is the silent-short-list failure this codebase's honesty rules exist to catch, and
+  which is why `apigw.sh`'s own header calls it out by name rather than leaving it to be rediscovered.
+- **`OPTIONS` is read off the fixture with `authorizationType: NONE`, like the CORS-preflight method it
+  represents on every real API, and it is EXCLUDED from both open-auth checks (never from the
+  inventory).** API Gateway's own CORS console action wires every `OPTIONS` method to a MOCK integration
+  with no authorizer, because a preflight request never carries a credential by browser/Fetch-spec
+  design - so flagging it would be a false-positive flood on the single most common API Gateway
+  configuration there is. `ANY` (the catch-all pseudo-verb) is NOT excluded: an open `ANY` is a real,
+  high-impact finding.
+- **Two check ids for one condition, for the identical reason `CLOUD-S3-PUBLIC_ACL_READ-01`/`WRITE-01`
+  are two.** `CLOUD-APIGW-OPEN_AUTH_ROUTE-01` (high) is `authorizationType NONE` with `apiKeyRequired
+  false` - no barrier of any kind; `CLOUD-APIGW-OPEN_AUTH_KEY_ONLY-01` (medium) is the same
+  `authorizationType` with `apiKeyRequired true` - gated by a shared, unauthenticated key rather than a
+  real authorizer. `severity` is a per-record registry field every suite asserts the script and the
+  registry agree on, so a script that "weighted a finding higher" for the key-gated case at runtime
+  would put the two into disagreement; two ids is what keeps them in step. Neither carries a `cis` value
+  - CIS AWS Foundations Benchmark v3.0.0 has no API Gateway section at all (its sections are IAM, S3,
+  CloudTrail/Config/monitoring, KMS, RDS and VPC/networking only), and `docs/CIS-MAPPINGS.md` §1 forbids
+  inventing a control id to satisfy a "must cite CIS" habit - an honest absence is the right outcome
+  here, the same one `CLOUD-S3-NO_VERSIONING-01` and its two siblings already established.
+- **`get-api-keys` is called once per region, EXISTENCE ONLY - `--include-value` is never passed - and
+  its count is folded into the KEY_ONLY finding's evidence as context, never used to gate anything.** A
+  key's VALUE read by this script would be a secret on disk from the instant the response landed in
+  `$work` (`docs/FOUNDATION.md` tension 9); counting `items` entries needs no such call, since
+  `get-api-keys` never returns a value at all unless `--include-value` is explicitly passed.
+- **The endpoint-inventory write is the write side of a contract DAST's crawler has read since DAST-04,
+  and "merge, don't overwrite" (`docs/INVENTORY-FORMAT.md` §1) is real here too, not only in
+  `crawl.sh`.** `apigw_inv_merge_existing` reads whatever is already at `inventory/endpoints.json` (a
+  SAST-route-extraction row, say) into the accumulator BEFORE this pass's own routes are added, and does
+  so once PER REGION PASS - since `apigw` is a `regional` `_CLOUD_SERVICES` row, a second region's pass
+  reads back what the first region's pass already wrote, so the file accumulates correctly across
+  regions with no in-process state carried between them. A route's `target` field is left BLANK on
+  purpose: this module has no `config/scope.conf` target id of its own, and `crawl.sh`'s own merge
+  (`_crawl_merge_flush_endpoint`) already falls back to its run's target when a merged row's `target` is
+  empty - so leaving it blank hands the field to the one consumer that has an answer, rather than
+  guessing one. The invoke URL's stage segment is a REAL, resolved stage name from `get-stages` (never a
+  placeholder), because a URL missing it 403s with "Missing Authentication Token" on every real API
+  Gateway account - the inventory write would otherwise be shipping deliberately broken candidates to
+  DAST, the "confident wrong answer" this codebase's other packs already refuse to reproduce elsewhere.
+  The method ARN cited on the FINDING, by contrast, deliberately uses the literal wildcard stage `*` (AWS's
+  own IAM-policy convention) rather than a resolved one: `authorizationType`/`apiKeyRequired` are
+  properties of the Method resource, shared by every stage deployed from it, so the defect is genuinely
+  stage-independent and the two - the finding's ARN and the inventory's URL - answer different questions
+  on purpose.
+- **`lib/awscli.sh`'s truncation detector gained a SEVENTH key, `position`, for this ticket alone.**
+  API Gateway's older `get-*` list operations (`get-rest-apis`, `get-resources`, `get-api-keys`) name
+  their own continuation token `position` rather than any `NextToken` spelling the six pre-existing keys
+  already covered, so an unrecognised `"position"` field would have let a truncated API Gateway list
+  read as complete - the identical honesty gap `list-buckets`'s own truncation check exists for, one
+  service over. Purely additive (a new recognised key can only ever ADD a `truncated` classification a
+  prior response never got, never remove one), so no existing suite's fixtures were at risk;
+  `tests/suites/awscli.sh` pins both the truncated and the `null`-means-last-page readings for it,
+  mirroring the existing `NextToken` cases exactly.
 
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01 has
 not.**

@@ -1,0 +1,19 @@
+{
+    "items": [
+        {
+            "id": "apikey0001",
+            "name": "fixture-key-one",
+            "enabled": true
+        },
+        {
+            "id": "apikey0002",
+            "name": "fixture-key-two",
+            "enabled": true
+        },
+        {
+            "id": "apikey0003",
+            "name": "fixture-key-three",
+            "enabled": false
+        }
+    ]
+}

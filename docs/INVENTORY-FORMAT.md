@@ -22,7 +22,7 @@ consumed by §7.3/§7.4").
 |---|---|---|
 | Producer | `modules/dast/crawl.sh` (DAST-04) | landed |
 | Producer | SAST route extraction (`docs/DESIGN.md` §8.4) | not built |
-| Producer | `modules/cloud/aws/live/apigw.sh` (§8.4) | not built |
+| Producer | `modules/cloud/aws/live/apigw.sh` (§8.4) | landed (CLOUD-22) |
 | Consumer | every `docs/STEP5-DAST-PLAN.md` ticket in tiers 2-5 | not built |
 
 Every consumer treats both files as **optional input**.
