@@ -481,13 +481,18 @@ more than one record.
 
 ```
 id     = MODULE "-" FAMILY "-" NAME [ "-" SEQ ]
-MODULE = "SAST" / "SCA" / "IAC" / "DAST" / "CLOUD" / "POSTURE" / "COMPOSITE"
+MODULE = "SAST" / "SCA" / "IAC" / "DAST" / "CLOUD" / "POSTURE" / "NET" / "COMPOSITE"
 FAMILY = 1*( ALPHA / DIGIT )                 ; uppercase
 NAME   = 1*( ALPHA / DIGIT / "_" )           ; uppercase
 SEQ    = 2DIGIT
 ```
 
-Full regex: `^(SAST|SCA|IAC|DAST|CLOUD|POSTURE|COMPOSITE)-[A-Z0-9]+-[A-Z0-9_]+(-[0-9]{2})?$`.
+Full regex: `^(SAST|SCA|IAC|DAST|CLOUD|POSTURE|NET|COMPOSITE)-[A-Z0-9]+-[A-Z0-9_]+(-[0-9]{2})?$`.
+`NET` is the network/host-scanning module (`modules/network/`): declared-listener reachability,
+service/version identification, and transport posture on an operator-authorised `(host, port)` tuple.
+Its own module directory does not match its enum spelling - `modules/network/` rather than
+`modules/net/` - which §9.5.1's owning-module map states explicitly, the same way `POSTURE` nests under
+`modules/cloud/posture/` without matching a `modules/posture/` path.
 
 `SEQ` is **required in every schema except the derived-finding schema (§9.2), where it MUST be
 omitted**.
@@ -662,6 +667,7 @@ there.
 | DAST | **yes** | no | no | no |
 | CLOUD | **yes**, by attribution | **yes** | **yes** | no |
 | POSTURE | **yes**, by scope-key | **yes** | **yes** | no |
+| NET | **yes** | no | no | no |
 
 `E053` fires when a derived record's `correlate-on` is a key that **any** of its `requires` or `any-of`
 contributors' modules cannot supply per this table.
@@ -819,6 +825,7 @@ The value is fixed per module, so the linter checks it against this table alone 
 | `DAST` | `target` | the `config/scope.conf` target id |
 | `CLOUD` | `account-region` | `<account_id>/<region>`, or `<account_id>/global` |
 | `POSTURE` | `scope-key` | the expectation's `scope-key` (§9.6.4) |
+| `NET` | `target` | the `config/scope.conf` target id |
 
 `none` is not a legal value in a §9.5 record: no script check is all-or-nothing.
 Derived findings have no `coverage-scope` at all - §9.2 has no such key - because they are classified by
@@ -857,6 +864,7 @@ The map is frozen here, **most specific first, first match wins**:
 | `modules/sca/` | `SCA` |
 | `modules/iac/` | `IAC` |
 | `modules/dast/` | `DAST` |
+| `modules/network/` | `NET` |
 | `rules/derived.rules` | `COMPOSITE` |
 | `rules/redaction.rules` | `SAST` (redaction ids are `SAST-REDACT-*`, §9.3) |
 
@@ -1585,8 +1593,42 @@ inserted above only the pattern-rule row and no existing repository file has a b
 4. **Does not apply.** SARIF `ruleId` is the check id and `partialFingerprints` derives from the
    fingerprint; item 3 establishes neither changes, so no previously-ingested result is orphaned.
 
-Generalising, since this is the second worked example and the pair is the actual rule: an amendment that
-**adds** a legal spelling, leaving every existing one valid and every existing file parsing unchanged,
-trips item 2 alone. An amendment that **retires, renames or re-schemas** an existing spelling trips item
-1, and items 3 and 4 with it whenever the re-schema reaches a check id. Only the second is a versioned
-migration.
+**Which of the four ADDING A NEW MODULE ENUM VALUE trips, checked the same way.**
+`NET` (§9.1.1, the network/host-scanning module) is the worked example. It **widens** the `MODULE`
+alternation: every id that matched the enum before this change still matches it after, because the
+regex gained an alternative rather than losing or renaming one, and no existing check id, module
+prefix, or record file used the string `NET` for anything before this change. Like the two worked
+examples above, it trips item **2** and nothing else, so it needs **no `format_version` bump**:
+
+1. **Does not apply.** No existing `.rules` pack or `config/*.conf` file is rewritten, and none *has* to
+   be: every check id already on disk still matches the widened `MODULE` alternation in `lib/records.sh`
+   and in this section, because the change only adds an alternative rather than removing or renaming
+   one.
+2. **Applies, and is discharged inside the same change.** `lib/records.sh` gains three arms: the
+   `re_check` alternation (§9.1.1), `records_owning_module`'s `modules/network/*) NET` case (§9.5.1's
+   owning-module map), and `_records_check_coverage_scope`'s `NET) want='target'` case (§9.5.1's
+   coverage-scope table). `lib/findings.sh` gains the `net` arms of `_fp_profile_for` and
+   `_fp_components_for` - the finding profile `target host port transport`, with no `version` component
+   for the identical reason SCA's profile omits one (§9.2, "SCA excludes the version deliberately") -
+   plus `loc_host`, `loc_port`, and `loc_transport` in `_finding_known_field`'s allowlist (`loc_target`
+   is already there, shared with `dast` and `cloud`); without that third piece the location profile
+   this paragraph names could be declared but never actually populated by `finding_set`.
+   `lib/checks.sh`'s `checks_module_dir` gains the `network` -> `modules/network` arm, and
+   `tests/lint-rules.sh`'s `module_can_supply` (`E053`) gains `NET` alongside `DAST`/`CLOUD`/`POSTURE` in
+   its `target` case, matching the §9.2.2 row this change adds - keeping the frozen table and its one
+   executable enforcer in step is the same discipline item 2 already requires of
+   `records_schema_for_path` and `tests/lint-rules.sh` together. None of the module's own files exist
+   yet - no `modules/network/` directory, no probe script, no finding emitter, no `scan.sh` dispatch
+   entry - so every one of these arms is reached by no caller today; they are inert until a later ticket
+   adds one, exactly as an additive optional key's consumer arm is inert on every file that omits the
+   key.
+3. **Does not apply.** No existing check id, module prefix, or fingerprint input changes. `NET` is a new
+   alternative in an enum no existing id used, so `state/` and `config/baseline.json` stay valid and no
+   finding becomes `new`.
+4. **Does not apply.** No existing SARIF `ruleId` or `partialFingerprints` value changes, for the
+   identical reason item 3 does not apply.
+
+Generalising, since this is the third worked example and all three agree: an amendment that **adds** a
+legal spelling, leaving every existing one valid and every existing file parsing unchanged, trips item 2
+alone. An amendment that **retires, renames or re-schemas** an existing spelling trips item 1, and items
+3 and 4 with it whenever the re-schema reaches a check id. Only the second is a versioned migration.

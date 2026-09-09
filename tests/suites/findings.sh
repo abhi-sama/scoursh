@@ -287,10 +287,16 @@ assert_eq sca "$(_fp_profile_for sca SCA-A-B-01)" 'sca'
 assert_eq dast "$(_fp_profile_for dast DAST-A-B-01)" 'dast'
 assert_eq cloud "$(_fp_profile_for cloud CLOUD-A-B-01)" 'cloud'
 assert_eq posture "$(_fp_profile_for posture POSTURE-A-B-01)" 'posture'
+assert_eq net "$(_fp_profile_for net NET-PORT-X-01)" 'net - the additive module this change adds'
 assert_eq derived "$(_fp_profile_for derived COMPOSITE-X)" 'derived'
 assert_eq 'blob_sha
 match_digest
 occurrence' "$(_fp_components_for history)" 'history carries all three components, in that order'
+assert_eq 'target
+host
+port
+transport' "$(_fp_components_for net)" \
+  'net carries target, host, port, transport, in that order - a port has no slot in any other profile'
 
 t_case 'SCA excludes the version deliberately'
 assert_not_contains "$(_fp_components_for sca)" version \
@@ -884,6 +890,32 @@ findings_merge "$d"
 finding_decode "$(/usr/bin/grep 'check_id=POSTURE-A-B-01' "$d/findings.fields")"
 assert_eq control "${_DF[logical_kind]}" 'defaults to kind=control'
 assert_eq POSTURE-EDGE-WAF_GEO-01 "${_DF[logical_fqn]}" 'defaults to <loc_control_id>'
+
+t_case 'net profile: target host port transport - NET-02 identity only, no logical-default arm yet'
+new_run sarif01-net
+d=$SCOURSH_RUN_DIR
+finding_new
+finding_set check_id NET-PORT-UNEXPECTED_LISTENER-01
+finding_set module net
+finding_set title t
+finding_set base_severity high
+finding_set cwe none
+finding_set owasp none
+finding_set loc_target lab
+finding_set loc_host target.example
+finding_set loc_port 8443
+finding_set loc_transport tcp
+finding_set cell lab
+finding_set_evidence e
+finding_emit
+assert_eq "${_F[fingerprint]}" "$(finding_fingerprint)" \
+  'the net fingerprint (target host port transport) round-trips through finding_emit'
+findings_merge "$d"
+assert_eq 1 "$(fps_of "$d" | wc -l | tr -d ' ')" 'exactly one finding was written'
+finding_decode "$(/usr/bin/grep 'check_id=NET-PORT-UNEXPECTED_LISTENER-01' "$d/findings.fields")"
+assert_eq net "${_DF[module]}" 'module round-trips through the merge as net'
+assert_eq lab "${_DF[loc_target]}" 'loc_target round-trips'
+assert_eq 8443 "${_DF[loc_port]}" 'loc_port round-trips - the component no other profile has a slot for'
 
 t_case 'sca profile: an emitters own logical identity is never overwritten'
 new_run sarif01-sca

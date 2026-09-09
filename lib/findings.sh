@@ -134,6 +134,7 @@ _fp_profile_for() {
     dast) printf '%s' dast ;;
     cloud) printf '%s' cloud ;;
     posture) printf '%s' posture ;;
+    net) printf '%s' net ;;
     derived) printf '%s' derived ;;
     *) return 1 ;;
   esac
@@ -147,6 +148,7 @@ _fp_components_for() {
     dast) printf '%s\n' target method path_template param_location param_name ;;
     cloud) printf '%s\n' account_id region resource_key sub_key ;;
     posture) printf '%s\n' control_id scope_key ;;
+    net) printf '%s\n' target host port transport ;;
     derived) printf '%s\n' correlation ;;
     *) return 1 ;;
   esac
@@ -930,6 +932,7 @@ _finding_known_field() {
       loc_method | loc_path_template | loc_param_location | loc_param_name | \
       loc_account_id | loc_region | loc_resource_key | loc_sub_key | \
       loc_control_id | loc_scope_key | loc_correlation | \
+      loc_host | loc_port | loc_transport | \
       corr_target | corr_account | corr_account_region | corr_file | \
       oldest_reaching_commit_time | \
       fix_kind | fix_find | fix_replace | fix_snippet | fix_fixed_versions | \
