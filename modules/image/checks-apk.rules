@@ -25,15 +25,13 @@
 # run.sh - the script field names the DRIVER a reader would go to, not
 # necessarily the literal function body).
 #
-# THIS CHECK DOES NOT FIRE YET (IMG-04's own scope line: "enumeration + the
-# apk registry file only").  `distro/apk.sh` ships an enumerator and no
-# comparator, and nothing in `modules/image/run.sh` calls it - the identical
-# "registered, not yet reachable" shape `modules/image/checks-advisories.rules`
-# itself was in before IMG-03 wired its own emitter, and that
-# `modules/sast/`/`modules/dast/` precedent this whole module follows.
-# `checks_registry_load` globs every `*.rules` file with no reachability
-# requirement, so a check id registered here today costs nothing and is
-# already correct the day IMG-05/IMG-06 land.
+# THIS CHECK NOW FIRES (IMG-06): `distro/apk.sh`'s `apk_scan_installed`
+# enumerates the installed apk database, looks every package up against
+# `data/advisories.db` under this image's resolved ecosystem, and compares
+# with `distro/apk_version.sh`'s comparator (IMG-05) - see that function's
+# own header for the matching rule.  `modules/image/run.sh` calls it from
+# the branch that used to be an unconditional
+# `no_distro_enumerator_on_disk_yet` reduction.
 #
 # `severity: high` is the REGISTERED DEFAULT, not a promise every finding
 # will carry it - report.md §4.1's own table says the real severity is "from

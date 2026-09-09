@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # modules/image/run.sh - the container-image-scanning module entry point
 # (IMG-01, data/scoursh-image-scan-design/report.md §3.2's exact integration
-# cost table and §5.3's IMG-01 row; wired to real acquisition by IMG-03).
+# cost table and §5.3's IMG-01 row; wired to real acquisition by IMG-03;
+# wired to real apk enumeration + matching + the config-blob check, and so
+# completing the v1 Alpine slice, by IMG-06).
 #
 # Contract (modules/sast/run.sh's own header, reused verbatim by every
 # module in this tree): scan.sh's `scan_dispatch image` does a plain
@@ -18,20 +20,26 @@
 # gets the standard sourced-once guard - the identical sast/dast/network
 # split.
 #
-# WHAT THIS TICKET SHIPS, AND WHAT IT DELIBERATELY DOES NOT.  IMG-01 shipped
-# the module-foundation skeleton: it resolves the operator-declared --image
-# id, writes the image-id coverage cell (rules/RULE-FORMAT.md §9.5.1) and
-# records why nothing was examined.  IMG-03 (this ticket's own scope, on top
-# of IMG-02's acquire.sh) is the FIRST to actually resolve --image's source,
-# open it, extract /etc/os-release, pick a per-release advisory ecosystem
-# key (Alpine-only in v1; report.md §2.4/D2) and gate on whether
-# data/advisories.db has any row for it.  It still ships NO distro
-# enumerator (no apk/dpkg/rpm package-DB parser - IMG-04/IMG-07) and NO
-# comparator (IMG-05/IMG-08) - there is no `modules/image/distro/*.sh` on
-# disk yet, so even a run that resolves an ecosystem the database DOES
-# cover ends in a declared coverage_reduction rather than a package finding,
-# exactly the state modules/dast/'s and modules/network/'s own dispatch were
-# in before their first real check landed.
+# WHAT HAS LANDED, ACROSS THREE TICKETS.  IMG-01 shipped the
+# module-foundation skeleton: it resolves the operator-declared --image id,
+# writes the image-id coverage cell (rules/RULE-FORMAT.md §9.5.1) and
+# records why nothing was examined.  IMG-03 (on top of IMG-02's acquire.sh)
+# was the FIRST to actually resolve --image's source, open it, extract
+# /etc/os-release, pick a per-release advisory ecosystem key (Alpine-only in
+# v1; report.md §2.4/D2) and gate on whether data/advisories.db has any row
+# for it.  IMG-06 completes the v1 Alpine slice: it widens the metadata
+# collected to include lib/apk/db/installed, wires modules/image/distro/
+# apk.sh's enumerator+matcher (IMG-04/IMG-06) and apk_version.sh's
+# comparator (IMG-05) into the branch that used to be a bare
+# `no_distro_enumerator_on_disk_yet` reduction, and adds the two remaining
+# v1 coverage checks report.md §4.1 lists
+# (`IMAGE-COV-UNKNOWN_DISTRO-01`/`IMAGE-COV-LAYER_UNREADABLE-01`) plus the
+# distro-agnostic `IMAGE-CFG-RUNS_AS_ROOT-01` config-blob check
+# (modules/image/config.sh), which runs independently of the ecosystem
+# branch below it.  Stage 2 (dpkg/rpm, IMG-07 onward) is explicitly out of
+# scope here - see modules/image/acquire.sh's own IMAGE_METADATA_PATHS
+# comment for why var/lib/dpkg/status still is not in the wanted set this
+# file asks for.
 #
 # THE HONESTY THIS FILE OWES ITS READER IS ITS ACTUAL DELIVERABLE.  A run
 # that does nothing must not leave a report that reads like a clean scan -
@@ -62,10 +70,14 @@ fi
 # that completed since line SINCE_LINE of the run-wide `checks_run` fact.
 # Byte-identical shape to modules/network/run.sh's own
 # `_net_record_coverage`, with `target` swapped for `image-id` and the id
-# prefix for IMAGE's.  INERT today - modules/image/ ships no check registry
-# at all (IMG-01), so `checks_run` never carries an `IMAGE-*` line for this
-# to find - kept for structural parity, so it is already correct the day
-# the first `modules/image/checks-<name>.rules` record lands (IMG-04+).
+# prefix for IMAGE's.  Was INERT from IMG-01 through IMG-05 - no check ever
+# reached `checks_run` for it to find - and is now live as of IMG-06,
+# whose IMAGE-PKG-VULNERABLE_OS_PACKAGE-01/IMAGE-CFG-RUNS_AS_ROOT-01/
+# IMAGE-COV-* checks are the first real `IMAGE-*` lines this function reads.
+# `image-id` also had to be added to `lib/state.sh`'s own
+# `_STATE_VALID_SCOPES` in this same change - see that file's own comment
+# for why an inert call site with a value nobody had exercised yet still
+# needed the register to already accept it.
 _image_record_coverage() {
   declare -F state_add_covered >/dev/null 2>&1 || return 0
   local image_id=$1 since=${2:-0}
@@ -152,23 +164,43 @@ _image_run_module() {
       run_record coverage_reduction "module=image reason=image_source_unreadable image=$image_id detail=$open_reason - the image source at '$path' ($kind) could not be opened."
       run_record coverage_gap "image scanning examined nothing for image '$image_id': its source could not be opened ($open_reason). A clean result here is the absence of a test, not the absence of a problem."
     else
+      # IMG-06: the image config-blob check is distro-agnostic (report.md
+      # §4.4: it reads the EFFECTIVE user across every merged base layer,
+      # not any one Dockerfile) and runs unconditionally once the image is
+      # open, independent of whether an ecosystem or apk database is ever
+      # resolved below - an image whose distro this module cannot yet
+      # identify (v1 is Alpine-only, report.md D2) still gets this check.
+      image_check_root_user "$kind" "$path" "$image_id"
+
       # A dedicated scratch directory, released unconditionally below -
       # image_collect_metadata is the module's one acquisition entry point
-      # (acquire.sh's own header) and asks for ONLY the two os-release
-      # candidate paths, never the full IMAGE_METADATA_PATHS default: apk/
-      # dpkg enumeration is IMG-04/IMG-07's scope, not this ticket's, and
-      # extracting those paths now would claim a coverage this module does
-      # not have yet.
-      local osdir
-      osdir=$(mktemp -d "${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/scoursh-image-osrelease.XXXXXX")
-      chmod 700 "$osdir" 2>/dev/null || true
-      image_collect_metadata "$kind" "$path" "$osdir" etc/os-release usr/lib/os-release >/dev/null
+      # (acquire.sh's own header). IMG-06 widens the wanted set from IMG-03's
+      # original two os-release candidates to also ask for
+      # lib/apk/db/installed, now that this module has a real apk enumerator
+      # and comparator to feed it to; var/lib/dpkg/status stays OFF this
+      # list - dpkg parsing is IMG-07's scope, not this ticket's, and asking
+      # for it now would claim a coverage this module does not have yet.
+      local metadir
+      metadir=$(mktemp -d "${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/scoursh-image-meta.XXXXXX")
+      chmod 700 "$metadir" 2>/dev/null || true
+      image_collect_metadata "$kind" "$path" "$metadir" etc/os-release usr/lib/os-release lib/apk/db/installed >/dev/null
+
+      # report.md §4.3's `layer_unreadable` reduction: any wanted path a
+      # refusal stopped (an unreadable layer, or a malformed member) is a
+      # coverage hole distinct from "this image simply does not carry that
+      # path" (IMAGE_COLLECT_MISSING, the ordinary case, handled per-path
+      # below with no reduction at all). Checked once, for every wanted
+      # path in this one collect call, rather than per path - report.md's
+      # own table says this reduction "carries count and total".
+      if (( ${#IMAGE_COLLECT_REFUSED[@]} > 0 )); then
+        image_report_layer_unreadable "$image_id" "${IMAGE_COLLECT_REFUSED[@]+"${IMAGE_COLLECT_REFUSED[@]}"}"
+      fi
 
       local osrel=''
-      if [[ -r $osdir/etc/os-release ]]; then
-        osrel=$osdir/etc/os-release
-      elif [[ -r $osdir/usr/lib/os-release ]]; then
-        osrel=$osdir/usr/lib/os-release
+      if [[ -r $metadir/etc/os-release ]]; then
+        osrel=$metadir/etc/os-release
+      elif [[ -r $metadir/usr/lib/os-release ]]; then
+        osrel=$metadir/usr/lib/os-release
       fi
 
       rc=0
@@ -212,11 +244,32 @@ _image_run_module() {
             input=1
           fi
         else
-          run_record coverage_reduction "module=image reason=no_distro_enumerator_on_disk_yet image=$image_id ecosystem=$ecosystem - data/advisories.db has rows for $ecosystem, but modules/image/ ships no apk/dpkg/rpm package-DB parser or comparator yet (IMG-04/IMG-05; data/scoursh-image-scan-design/report.md §5.3), so no package was looked up."
-          run_record coverage_gap "image scanning examined nothing for image '$image_id': the advisory database covers $ecosystem, but no distro enumerator or comparator exists yet to match installed packages against it. A clean result here is the absence of a test, not the absence of a problem."
+          # IMG-06: real apk enumeration + matching, at last. apk_scan_installed
+          # (modules/image/distro/apk.sh) enumerates $metadir/lib/apk/db/
+          # installed, looks every installed package up against
+          # data/advisories.db under this image's own resolved ecosystem, and
+          # emits IMAGE-PKG-VULNERABLE_OS_PACKAGE-01 per still-vulnerable
+          # (package, advisory) pair - see that function's own header for the
+          # matching rule and why it deliberately compares fixed_versions
+          # rather than treating it as opaque display text.
+          rc=0
+          apk_scan_installed "$metadir/lib/apk/db/installed" "$image_id" "$ecosystem" || rc=$?
+          if (( rc != 0 )); then
+            # No apk database in ANY layer, despite a resolved, covered
+            # Alpine release (report.md §4.3's `no_package_db_found` row) -
+            # a scratch/distroless final stage. Never rendered as a clean
+            # scan.
+            image_report_unknown_distro "$image_id" "$ecosystem" "${_APK_INSTALLED_REASON:-no_package_db_found}"
+          elif (( _APK_SCAN_SKIPPED > 0 )); then
+            # One or more installed packages carried no comparable version
+            # (an empty or malformed `V:` line) and were skipped, never
+            # silently dropped - counted once for the whole image rather
+            # than one reduction per package.
+            run_record coverage_reduction "module=image reason=package_version_unparseable image=$image_id ecosystem=$ecosystem count=$_APK_SCAN_SKIPPED"
+          fi
         fi
       fi
-      erase_dir "$osdir"
+      erase_dir "$metadir"
     fi
   fi
 

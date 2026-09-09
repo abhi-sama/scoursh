@@ -18,6 +18,15 @@
 # metadata paths" a design invariant rather than an optimisation, and the
 # extraction API below has no whole-archive mode to reach for.
 #
+# IMG-06 ADDED SECTION 10 (`image_config_blob_read`), the one exception to
+# "no finding" above being a statement about THIS file's scope rather than a
+# promise that it never grows: reading the image's CONFIG blob (never a
+# layer member) to decide `IMAGE-CFG-RUNS_AS_ROOT-01`
+# (modules/image/config.sh) is still acquisition, not enumeration or
+# matching, and belongs here for the identical reason section 7/8's
+# manifest/index readers do - it is attacker-controlled content reached
+# through the same extraction gate.
+#
 # WHO CALLS THIS, AND WHEN - stated because "no caller" is the shape a
 # reviewer should always question.  At IMG-02 landing, nothing in
 # modules/image/run.sh reached this file yet, deliberately: IMG-01 shipped
@@ -1274,4 +1283,72 @@ image_collect_metadata() {
     image_layer_release
   done
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# 10. The image CONFIG BLOB (IMG-06, report.md §4.1's IMAGE-CFG-* row)
+# ---------------------------------------------------------------------------
+# `image_config_blob_read KIND ARCHIVE DESTROOT` - resolves `_IMAGE_CONFIG_MEMBER`
+# (set by image_open, whichever shape opened) to a real, readable file and
+# sets `_IMAGE_CONFIG_PATH` to it.  Unlike a layer member, the config blob is
+# never inside a layer, so this does not go through image_layer_winner/
+# image_collect_metadata at all.
+#
+# For an oci-layout the config is already a real file on disk -
+# `_image_oci_blob_path` resolved it at image_open time, through the same
+# digest-shape validation every blob path in section 8 goes through - so this
+# is a plain readability check, no extraction.
+#
+# For a docker-archive the config is a member of the OUTER tar (never a
+# layer), so it goes through the identical image_extract_member security gate
+# every other extraction in this file does: a config blob is attacker-
+# controlled content exactly like a layer is, and "it is only metadata, not a
+# layer" is not a reason to extract it any differently.
+#
+# Returns 0 with `_IMAGE_CONFIG_PATH` set; returns 1 with
+# `_IMAGE_REFUSE_REASON` set (never dies) when the manifest/index declared no
+# config member at all, or when the blob is missing/refused - the caller
+# turns that into a `coverage_reduction reason=image_config_unreadable`
+# (report.md §4.3's own row), never a fatal error, since a malformed or
+# missing config blob is a fact about the image, not about this tool.
+_IMAGE_CONFIG_PATH=''
+image_config_blob_read() {
+  local kind=$1 archive=$2 destroot=$3
+  _IMAGE_CONFIG_PATH=''
+  _IMAGE_REFUSE_REASON=''
+
+  if [[ -z $_IMAGE_CONFIG_MEMBER ]]; then
+    _IMAGE_REFUSE_REASON=config_member_not_declared
+    return 1
+  fi
+
+  case $kind in
+    oci-layout)
+      if [[ ! -r $_IMAGE_CONFIG_MEMBER ]]; then
+        _IMAGE_REFUSE_REASON=config_blob_missing_from_layout
+        return 1
+      fi
+      _IMAGE_CONFIG_PATH=$_IMAGE_CONFIG_MEMBER
+      return 0
+      ;;
+    docker-archive)
+      if [[ -z $destroot || ! -d $destroot ]]; then
+        _IMAGE_REFUSE_REASON=no_extraction_root
+        return 1
+      fi
+      local outer rc=0
+      image_tar_listing_set outer "$archive" || return 5
+      if ! image_extract_member "$archive" "$outer" "$_IMAGE_CONFIG_MEMBER" "$destroot"; then
+        rc=$?
+        (( rc == 5 )) && return 5
+        return 1
+      fi
+      _IMAGE_CONFIG_PATH=$destroot/$(image_member_normalize "$_IMAGE_CONFIG_MEMBER")
+      return 0
+      ;;
+    *)
+      _IMAGE_REFUSE_REASON=unknown_image_source_kind
+      return 1
+      ;;
+  esac
 }

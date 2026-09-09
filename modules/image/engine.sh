@@ -2,24 +2,29 @@
 # modules/image/engine.sh - the container-image-scanning module's pure
 # function library (IMG-01, data/scoursh-image-scan-design/report.md
 # §3.1/§5.3's "module foundation" row; distro-release detection and the
-# advisory-database reuse added by IMG-03).
+# advisory-database reuse added by IMG-03; distro/apk.sh, apk_version.sh and
+# config.sh sourced here, and the two remaining v1 coverage emitters added,
+# by IMG-06).
 #
-# WHAT IMG-01 SHIPPED, AND WHAT IS STILL DELIBERATELY MISSING.  IMG-01 was
-# the ONLY shared-file ticket for this module - it registered the `IMAGE`
-# module across every frozen table and shared list (rules/RULE-FORMAT.md,
+# WHAT IMG-01 SHIPPED, AND WHAT HAS LANDED SINCE.  IMG-01 was the ONLY
+# shared-file ticket for this module - it registered the `IMAGE` module
+# across every frozen table and shared list (rules/RULE-FORMAT.md,
 # lib/records.sh, lib/checks.sh, lib/findings.sh, lib/report.sh, scan.sh -
 # see that ticket's own commit) so every later ticket adds only its own
-# files.  IMG-03 (this section) sources acquire.sh (IMG-02) and adds
-# distro-release detection plus the data/advisories.db coverage gate; this
-# file still ships NO distro enumerator (no apk/dpkg/rpm package-DB
-# parser - IMG-04/IMG-07) and NO version comparator (IMG-05/IMG-08) -
-# report.md §2's package-matching half is still out of scope here.  Unlike
-# modules/dast/engine.sh and modules/network/engine.sh, it declares no
-# phase table: report.md's v1 architecture is acquire -> enumerate ->
-# compare, each its own file (`acquire.sh`, `distro/apk.sh`, ...), not a
-# set of intensity-gated phases run in a fixed order over one target -
-# there is nothing to gate on `--intensity` here, so a phase table would be
-# a table with nothing to put in it.
+# files.  IMG-03 sources acquire.sh (IMG-02) and adds distro-release
+# detection plus the data/advisories.db coverage gate.  IMG-06 completes the
+# v1 Alpine slice: it sources distro/apk.sh (IMG-04's enumerator, extended by
+# IMG-06 itself with matching + emission), distro/apk_version.sh (IMG-05's
+# comparator) and config.sh (IMG-06's own IMAGE-CFG-RUNS_AS_ROOT-01 driver),
+# and adds this file's own `image_report_unknown_distro`/
+# `image_report_layer_unreadable` - the two coverage reductions report.md
+# §4.3 lists that IMG-03 had not yet reached.  Unlike modules/dast/engine.sh
+# and modules/network/engine.sh, it declares no phase table: report.md's v1
+# architecture is acquire -> enumerate -> compare, each its own file
+# (`acquire.sh`, `distro/apk.sh`, ...), not a set of intensity-gated phases
+# run in a fixed order over one target - there is nothing to gate on
+# `--intensity` here, so a phase table would be a table with nothing to put
+# in it.
 #
 # The run.sh / engine.sh split is modules/sast/'s, modules/dast/'s and
 # modules/network/'s, reused verbatim: this file is a pure function library
@@ -56,6 +61,21 @@ fi
 # sast/engine.sh and lib/checks.sh source lines above already give.
 # shellcheck source=modules/image/acquire.sh
 source "${BASH_SOURCE[0]%/*}/acquire.sh"
+
+# distro/apk.sh (IMG-04/IMG-06) and distro/apk_version.sh (IMG-05), and
+# config.sh (IMG-06) - all three are LEAVES (apk_version.sh's own header:
+# "adds no edge to the shellcheck -x source graph ... keep it that way"; the
+# other two source nothing either), so adding them here costs nothing like
+# the diamond/cycle measurements AGENTS.md records for a real hub. They are
+# sourced from the module's one function-library hub, exactly like
+# acquire.sh above, rather than from modules/image/run.sh directly, for the
+# identical reason.
+# shellcheck source=modules/image/distro/apk.sh
+source "${BASH_SOURCE[0]%/*}/distro/apk.sh"
+# shellcheck source=modules/image/distro/apk_version.sh
+source "${BASH_SOURCE[0]%/*}/distro/apk_version.sh"
+# shellcheck source=modules/image/config.sh
+source "${BASH_SOURCE[0]%/*}/config.sh"
 
 # ---------------------------------------------------------------------------
 # Distro-release detection (IMG-03, report.md §4.3's `distro_release_unknown`
@@ -207,5 +227,93 @@ image_report_no_advisory_db() {
 ecosystem_not_scanned: $ecosystem
 image: $image_id
 packages_checked: 0"
+  finding_emit
+}
+
+# ---------------------------------------------------------------------------
+# The remaining v1 coverage reductions (IMG-06, report.md §4.1/§4.3)
+# ---------------------------------------------------------------------------
+
+# `image_report_unknown_distro IMAGE_ID ECOSYSTEM [DETAIL]` - the ecosystem
+# WAS resolved (an operator-facing distro/release, e.g. `Alpine:v3.18`) and
+# `data/advisories.db` DOES cover it, but no apk package database exists in
+# ANY layer of this image - a scratch or distroless final stage that copies
+# binaries out without the package manager's own metadata (report.md §4.3's
+# `no_package_db_found` row). ONE coverage_reduction, ONE
+# `IMAGE-COV-UNKNOWN_DISTRO-01` finding, `info` severity - the identical "a
+# blind spot is not a vulnerability" reasoning `image_report_no_advisory_db`
+# above already gives, applied to a different absent input. The check id
+# reads "unknown distro" despite a resolved os-release because, from a
+# packaging standpoint, an image with no package database is one this
+# module cannot identify the CONTENTS of, whatever `/etc/os-release` claims;
+# the title and evidence below say so explicitly rather than trusting the
+# id alone to carry that nuance.
+image_report_unknown_distro() {
+  local image_id=$1 ecosystem=$2 detail=${3:-no_package_db_found}
+
+  log_warn "image: no recognised package database in any layer of image '$image_id' (resolved ecosystem: $ecosystem, detail=$detail) - NO package was checked"
+  run_record coverage_reduction "module=image reason=$detail image=$image_id ecosystem=$ecosystem"
+  run_record checks_run IMAGE-COV-UNKNOWN_DISTRO-01
+
+  finding_new
+  finding_set check_id IMAGE-COV-UNKNOWN_DISTRO-01
+  finding_set module image
+  finding_set title "Container image scanning did NOT run for '$ecosystem' - no apk package database in any layer of this image"
+  finding_set base_severity info
+  finding_set confidence high
+  finding_set cwe none
+  finding_set owasp none
+  finding_set cell "$image_id"
+  finding_set loc_image_id "$image_id"
+  finding_set loc_ecosystem "$ecosystem"
+  finding_set remediation "This image's own /etc/os-release names $ecosystem, but no lib/apk/db/installed member exists in any layer - typically a distroless or scratch-based final build stage. If this image really does ship apk-managed packages, check whether the final build stage strips /lib/apk/db. Until it is present, this run says NOTHING about this image's installed packages."
+  finding_set_evidence "ecosystem: $ecosystem
+image: $image_id
+detail: $detail
+packages_checked: 0"
+  finding_emit
+}
+
+# `image_report_layer_unreadable IMAGE_ID REFUSED_LINES...` - one or more of
+# `image_collect_metadata`'s wanted paths could not be obtained: the archive
+# named a layer that failed to list/extract, or a member was refused by
+# section 3's own extraction gate (report.md §4.3's `layer_unreadable` row -
+# "carries count and total"). REFUSED_LINES is `IMAGE_COLLECT_REFUSED`
+# verbatim, one `<path><TAB><reason>` per array element. ONE reduction and
+# ONE finding for the whole run, carrying the COUNT, never one per path -
+# an operator wants "how bad" at a glance, and the evidence line still
+# lists every affected path and its own reason.
+image_report_layer_unreadable() {
+  local image_id=$1
+  shift
+  local -a refused=("$@")
+  local n=${#refused[@]}
+  (( n > 0 )) || return 0
+
+  local line path reason evline=''
+  for line in "${refused[@]+"${refused[@]}"}"; do
+    path=${line%%$'\t'*}
+    reason=${line#*$'\t'}
+    evline+="$path: $reason"$'\n'
+  done
+
+  log_warn "image: $n metadata path(s) could not be read from image '$image_id' - see this finding's evidence for detail"
+  run_record coverage_reduction "module=image reason=layer_unreadable image=$image_id count=$n"
+  run_record checks_run IMAGE-COV-LAYER_UNREADABLE-01
+
+  finding_new
+  finding_set check_id IMAGE-COV-LAYER_UNREADABLE-01
+  finding_set module image
+  finding_set title "Container image scanning is INCOMPLETE for image '$image_id' - $n metadata path(s) could not be read from this image's layers"
+  finding_set base_severity info
+  finding_set confidence high
+  finding_set cwe none
+  finding_set owasp none
+  finding_set cell "$image_id"
+  finding_set loc_image_id "$image_id"
+  finding_set remediation "Re-save or re-export this image and re-scan. If the problem persists, the archive may be corrupt or a layer member may be malformed - see this finding's own evidence for the specific path(s) and refusal reason(s)."
+  finding_set_evidence "image: $image_id
+paths_unreadable: $n
+${evline%$'\n'}"
   finding_emit
 }

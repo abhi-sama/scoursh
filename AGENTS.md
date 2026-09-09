@@ -4008,11 +4008,105 @@ belong here:
   in section C.  Digit runs are compared by stripped LENGTH first and bytes second, which is exact at
   any width and forks nothing.  IMG-08's dpkg comparator and IMG-12's rpm one want the same rule.
 
-**What remains, per report.md §5.3:** IMG-06 (end-to-end: wire `distro/apk.sh` and `apk_version.sh`
-into `modules/image/run.sh`, and actually emit `IMAGE-PKG-VULNERABLE_OS_PACKAGE-01` for the first
-time - note `apk_version_cmp_v` returns rc 1 on an unreadable version and that owes a
-`coverage_reduction`, never a silent skip) - before Debian/Ubuntu and rpm are even considered (D2's
-own Alpine-first recommendation).
+**IMG-06 has landed - the end-to-end Alpine slice, and it COMPLETES v1.** It wires IMG-04's enumerator
+and IMG-05's comparator into `modules/image/run.sh`'s real dispatch, replacing the
+`no_distro_enumerator_on_disk_yet` placeholder with real matching, and ships the two remaining v1
+coverage checks plus the one distro-agnostic config check report.md §4.1's table names
+(`IMAGE-COV-UNKNOWN_DISTRO-01`, `IMAGE-COV-LAYER_UNREADABLE-01`, `IMAGE-CFG-RUNS_AS_ROOT-01`). `scan.sh
+image` now actually reports vulnerable apk packages - the whole point of the module.
+
+- **`lib/state.sh`'s `_STATE_VALID_SCOPES` needed `image-id` added, and finding this was not
+  optional.** IMG-01's own paragraph above already named the gap ("inert until a real check calls
+  `state_add_covered ... image-id ...`, which cannot happen before IMG-04+") but the value itself was
+  never patched - `modules/image/run.sh`'s `_image_record_coverage` has called `state_add_covered`
+  with scope `image-id` since IMG-01/IMG-03, just never for a check that actually appeared in
+  `checks_run`, so the call was live code with a value it could never actually reach. The moment
+  IMG-06 puts `IMAGE-PKG-VULNERABLE_OS_PACKAGE-01` into `checks_run` for real, `state_write` persists a
+  `covered_checks` entry whose scope is `image-id`, and `_state_validate` REJECTS THE WHOLE STATE
+  FILE on the very next load (`_state_valid_scope` had no such value) - not only image's own coverage,
+  every module's. That is exactly STATE-01's own acceptance criterion working as designed (a malformed
+  file is rejected wholesale, never half-loaded), applied to a file this codebase itself was about to
+  make malformed. Caught by a real two-scan differential (`state/latest.json` genuinely held run 1's
+  data; run 2 still reported "This is the first recorded run"), not by inspection - a
+  `_STATE_VALID_SCOPES` unit assertion would have to know to test the exact scope this ticket newly
+  exercises to catch it, and none did until now.
+- **The matching rule is a DELIBERATE, documented departure from tension 25's exact-match resolution,
+  not an oversight.** Tension 25 freezes `data/advisories.db` matching as an exact
+  `(ecosystem, package, version)` lookup for pypi/maven/Go/RubyGems/composer, with `fixed_versions`
+  "carried as opaque display text and never compared" - correct there because the database is
+  pre-expanded to name every affected version explicitly. Alpine cannot use that shape: an OSV Alpine
+  advisory names ONE recorded affected version per release branch, while a real image carries an
+  arbitrary REBUILD of that branch (`-r4` vs `-r10`), and only a real ordering comparison can tell
+  whether a given rebuild has reached the fix - report.md §2.4's whole measured argument for building
+  IMG-05 at all, and `apk_version.sh`'s own header states outright that an exact-match reading of this
+  schema would make that ticket dead code. So `modules/image/distro/apk.sh`'s new
+  `apk_scan_installed`/`_apk_row_still_vulnerable` look up EVERY row sharing `(ecosystem, package)` via
+  `db_lookup_prefix` (never an exact three-field prefix, which would silently miss every rebuild OSV
+  did not happen to record) and compare the installed version against the LARGEST `fixed_versions`
+  token that parses, conservative on purpose (a false positive is "noisy, survivable"; a false negative
+  is the disqualifying direction tension 25 already names). An empty or all-unparseable
+  `fixed_versions` is treated as still-vulnerable, mirroring `modules/sca/engine.sh`'s own
+  `accept_risk` convention for an unfixed advisory. One finding per `(package, advisory_id)`, deduped
+  within one package's own matching loop.
+- **`db_lookup_prefix` on a genuine miss logs a `command failed (status 1) ... LC_ALL=C look` line via
+  the global ERR trap (`core_on_err`) even on the ordinary "this package has no advisories" case.**
+  Measured to be pre-existing, not a regression: `modules/sca/engine.sh`'s own `sca_lookup_range` (the
+  npm-range amendment) uses the identical `done < <(db_lookup_prefix ...)` shape and reproduces the
+  same noise on a plain miss, confirmed by direct reproduction against a real fixture db. Harmless
+  (the loop just sees no lines) and consistent with established precedent - not something this ticket
+  "fixed" by working around it.
+- **`IMAGE-COV-UNKNOWN_DISTRO-01`'s name is about the PACKAGE DATABASE, not the distro release**,
+  despite reading that way: it fires when the ecosystem WAS resolved (a real, covered `Alpine:vX.Y`)
+  but no `lib/apk/db/installed` member exists in ANY layer - a scratch or distroless final stage - which
+  is report.md §4.3's `no_package_db_found` row given a real check id. It is registered in its OWN
+  `modules/image/checks-coverage.rules`, a semantic split from `checks-advisories.rules` (which stays
+  scoped to the advisory-DB-ecosystem gate) rather than one file per literal ticket - report.md §5.1's
+  binding rule is about avoiding an add/add conflict class, not literally one file per PR.
+- **`IMAGE-CFG-RUNS_AS_ROOT-01` (`modules/image/config.sh`, its own `checks-config.rules`) is
+  distro-agnostic and runs UNCONDITIONALLY once `image_open` succeeds**, independent of whether an
+  ecosystem or apk database is ever resolved - report.md §4.4's own point: it reads the EFFECTIVE
+  runtime user across every merged base layer from the image's CONFIG blob, which
+  `IAC-DOCKER-ROOT_USER-01` (one Dockerfile's own `USER` instruction) structurally cannot see. Absence
+  of a `User` key is treated as root, matching `IAC-DOCKER-ROOT_USER-01`'s own trigger (the common
+  case, not only an explicit `USER root`). `modules/image/acquire.sh` gained
+  `image_config_blob_read` for this - the config is a member of the OUTER tar for a docker-archive
+  (never a layer) and already a real blob on disk for an oci-layout - going through the same
+  `image_extract_member` security gate every other extraction in that file does, since a config blob is
+  exactly as attacker-controlled as a layer.
+- **A test-suite trap, worth remembering for any future suite mixing `run_init` with real `scan.sh`
+  subprocesses in one process:** `run_init` (`lib/core.sh`) does `: "${SCOURSH_RUN_ID:=...}"` and
+  EXPORTS it, so a raw unit-level `run_init "$D"` call earlier in a suite leaks its own run id into
+  every `scan.sh` subprocess launched later in that SAME process - `scan.sh`'s own `run_init` call then
+  finds `SCOURSH_RUN_ID` already set and never derives a fresh one from `--out`'s basename, so two
+  real scans meant to be run-id-distinct (a "does this diff read the patched CVE as fixed" test) both
+  write and read `state/<the-leaked-id>.json` and appear to diff against the WRONG prior run (or, if the
+  leaked id came from a run with no coverage of its own, against nothing at all - the first-run report
+  text on what should be a second scan). `tests/suites/image.sh` avoids this by ordering its real
+  subprocess calls before its own raw `run_init` section; `tests/suites/image-e2e.sh` resets
+  `SCOURSH_RUN_DIR=''`/`SCOURSH_RUN_ID=''` (empty, not `unset` - `:=` treats empty the same as unset)
+  immediately after its own unit-level section finishes, before section C's two real scans.
+
+`tests/suites/image-e2e.sh` is the proof: unit-level `apk_scan_installed`/`_apk_row_still_vulnerable`
+(the numeric-not-lexical pkgrel comparison, quiet at/above the fixed version, an unparseable version
+counted rather than dropped) and `image_config_user_get`/`_image_user_is_root` (absent/root/non-root,
+both archive shapes), then two real `scan.sh image` subprocesses against the SAME `--image` id built
+from `tests/fixtures/image/mkustar.sh` (the first with `openssl@3.1.4-r1` and no config `User` -
+vulnerable and root; the second with `openssl@3.1.4-r2` and `User: appuser` - both checks quiet) proving
+the finding's location carries `image_id`/`ecosystem`/`package`/`advisory_id` and NOT the version, that
+it round-trips through findings.jsonl/json, report.md/html, SARIF (including the generated
+`locations/image.txt` artifact `report_locations` writes for this module) and `agent-fix.json`, and
+that the second run's report.md renders the first run's now-fixed finding under "Fixed since last
+scan" - report.md §3.4's whole point for choosing the operator-declared image id as the coverage cell
+rather than the volatile digest or tag. `tests/suites/image-advisories.sh`'s own section C was updated
+in the same change: its "gate does NOT fire" fixture image carries no apk database at all, so it now
+exercises `IMAGE-COV-UNKNOWN_DISTRO-01`'s real path instead of the retired placeholder reduction, and
+both of its fixture images now also produce a real `IMAGE-CFG-RUNS_AS_ROOT-01` finding (neither
+fixture's config blob declares a `User`), asserted explicitly rather than left to collide silently with
+the older assertions.
+
+**Stage 2 (dpkg/rpm, IMG-07 onward) is explicitly out of scope for this ticket** - `var/lib/dpkg/status`
+still is not in `modules/image/run.sh`'s wanted-metadata-paths list, per D2's Alpine-first
+recommendation, and is a later ticket's addition, not this one's.
 
 ## Tests
 
