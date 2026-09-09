@@ -1,0 +1,745 @@
+# modules/cloud/aws/live/checks-cognito.rules - the §8.3 Cognito read-only
+# script-check registry (rules/RULE-FORMAT.md §9.5; docs/STEP6-CLOUD-PLAN.md
+# CLOUD-20).  Owned by modules/cloud/aws/live/cognito.sh; ids are all
+# `CLOUD-COGNITO-*`.
+#
+# WHY THIS IS A PER-SERVICE FILE RATHER THAN A BLOCK APPENDED TO THE SHARED
+# `checks.rules` BESIDE IT.  That file's own header reserves both spellings and
+# names the condition under which the second is right: "A later service whose
+# peers really are in flight simultaneously may add its own
+# `checks-<service>.rules` beside this one; both spellings load, because
+# `checks_registry_load` (lib/checks.sh) globs every `*.rules` under
+# `modules/cloud/` at any depth with no per-file allowlist and no registration
+# step."  Step 6's per-service tickets ARE in flight simultaneously - one PR per
+# service, all cut from the same `dev` - so twenty-four records appended to one
+# shared file is a guaranteed conflict for every peer that lands after it, and
+# a conflict in a registry is resolved by hand-merging two blocks of records,
+# which is where a duplicated or dropped `id` gets committed with a straight
+# face.  rules/RULE-FORMAT.md §9's path table reserves the `checks-` PREFIX
+# with the `.rules` extension repository-wide and at any depth, so this path is
+# a §9.5 script-check registry by that row (docs/FOUNDATION.md tension 29); the
+# SUFFIX spelling `cognito-checks.rules` would still be `E070`.
+#
+# `coverage-scope: account-region` is CLOUD's cell (§9.5.1), and EVERY RECORD
+# BELOW LANDS IN THE `<account_id>/<region>` CELL - never `<account_id>/global`.
+# Cognito is a `regional` row in modules/cloud/aws/engine.sh's `_CLOUD_SERVICES`
+# because both of its API namespaces are regional: a user pool created in
+# eu-west-2 is invisible to `cognito-idp list-user-pools` in us-east-1, and the
+# same is true of `cognito-identity list-identity-pools`.  That is the OPPOSITE
+# of the `s3` row beside it, where `list-buckets` is one account-wide call and
+# the bucket's own region has to be resolved per bucket and deliberately
+# differs from the cell.  Here the pass visits one region at a time and every
+# resource it can see is in that region by construction, so the cell and the
+# finding's `loc_region` are the same value and cannot drift.
+#
+# TWENTY-FOUR IDS, AND EVERY SPLIT IS FORCED OR DELIBERATE.  The CLOUD location
+# profile is (account_id, region, resource_key, sub_key) and carries no
+# component naming the DEFECT, so two different problems on one pool - or on
+# one app client - under one id would hash to one fingerprint and
+# `findings_merge` would keep whichever sorted first.  That forces one id per
+# defect.  Three pairs are split for the SECOND reason, which is that severity
+# varies with what was observed and `severity` is a per-record field (§9.5)
+# every suite asserts the script and the registry agree on - so a script that
+# "weighted a finding higher" at runtime would put the two into disagreement:
+#
+#   MFA_OFF / MFA_OPTIONAL                 no MFA at all versus MFA the user
+#                                          may decline.
+#   CLIENT_INSECURE_CALLBACK /
+#     CLIENT_WILDCARD_CALLBACK             a plaintext destination versus one
+#                                          that is not a fixed destination at
+#                                          all.
+#   IDPOOL_UNAUTH_ROLE_ADMIN /
+#     IDPOOL_UNAUTH_ROLE_BROAD             an anonymous role holding `*` on `*`
+#                                          versus one holding a whole service.
+#
+# Two ids also keeps the ordinary and the escalated case two findings rather
+# than one whose meaning flips between runs - the identical argument
+# `modules/dast/passive/checks-markup.rules`'s two `DAST-MARKUP-TABNABBING*`
+# ids and this directory's own two `CLOUD-S3-PUBLIC_ACL_*` ids both record.
+#
+# NOT ONE RECORD BELOW CARRIES A `cis:` VALUE, AND THAT IS AN HONEST ABSENCE
+# RATHER THAN AN OVERSIGHT.  data/cis-mappings declares its benchmark as CIS
+# Amazon Web Services Foundations Benchmark v3.0.0, and that benchmark has NO
+# Cognito section: its scope is IAM (section 1), Storage (2), Logging (3),
+# Monitoring (4) and Networking (5), and no control in any of them is about a
+# user pool, an app client or an identity pool.  Two neighbouring controls are
+# close enough to be tempting and are both wrong:
+#
+#   1.8  "Ensure IAM password policy requires minimum length of 14 or greater"
+#        governs the IAM ACCOUNT password policy, which applies to IAM
+#        principals with console access to the AWS account.  A Cognito user
+#        pool governs an APPLICATION'S END USERS and its policy is a different
+#        object entirely; citing 1.8 against it would tell a compliance reader
+#        that an IAM control was assessed when it was not.
+#   1.10 "Ensure MFA is enabled for all IAM users that have a console password"
+#        is the same category error applied to MFA_OFF.
+#
+# docs/CIS-MAPPINGS.md §5 item 5 forbids exactly this misattribution, and this
+# directory's own `checks.rules` already records the same decision from the
+# other side: three of its seven S3 records cite nothing, because v3.0.0 has no
+# S3 control for encryption-at-rest, versioning or access logging.  An honest
+# absence is the right outcome - `cis` is `optional, repeatable` (§9.5), an
+# unmapped finding still carries its CWE and OWASP category, and inventing a
+# control number to satisfy a "must cite CIS" habit is the overstated-coverage
+# failure docs/DESIGN.md §15 exists to forbid.  A future ticket that
+# transcribes a benchmark control genuinely covering one of these adds the row
+# via docs/CIS-MAPPINGS.md §5 and the `cis:` line here in the same change.
+#
+# The type tag is `config-read` on every record: each check reads a
+# `describe-*`/`list-*`/`get-*` response and mutates nothing, so lib/checks.sh's
+# `--intensity` ceiling passes all of them at the default `passive` (its own
+# type table names `config-read` in the `passive` row).  They also carry
+# `quick`, which docs/DESIGN.md §5 defines as "passive + config-read, no active
+# probes" - omitting it would leave `--profile-scan quick` selecting no cognito
+# check at all.  NONE carries `compliance`, which is finding F3's TAG reading
+# of that profile (lib/checks.sh): the tag means "this check contributes to a
+# compliance report", and with no `cis` value to contribute it would name a
+# check the CIS view has nothing to say about.  None is `intrusive` either:
+# every answer is config-derived, nothing here calls `SignUp`,
+# `ForgotPassword`, `InitiateAuth` or `GetCredentialsForIdentity`, and `aws_ro`
+# refuses a non-read operation with exit 3 before the CLI is even exec'd.
+
+id: CLOUD-COGNITO-WEAK_PASSWORD_POLICY-01
+title: Cognito user pool password policy is below the baseline
+script: aws/live/cognito.sh
+severity: medium
+confidence: high
+cwe: CWE-521
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Raise this user pool's password policy to at least an 8-character
+  minimum with all four character classes required (uppercase, lowercase,
+  numbers and symbols), which is the policy Cognito applies by default to a
+  pool that configures none - a pool reported here has been explicitly
+  loosened below that default. Length is the single most effective of the
+  five settings; the character-class requirements chiefly raise the cost of
+  offline cracking once a hash is stolen. Note that changing the policy
+  affects new passwords and password resets only, so existing users keep
+  whatever they set until they next change it - pair the change with a forced
+  rotation if the current policy has been weak for long. Consider enabling
+  advanced security mode ENFORCED alongside it, which additionally refuses a
+  password Cognito has seen in a known-compromised credential list, something
+  no complexity rule can do.
+references: CWE-521
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-policies.html
+
+id: CLOUD-COGNITO-TEMP_PASSWORD_VALIDITY-01
+title: Cognito user pool temporary passwords stay valid for longer than the default
+script: aws/live/cognito.sh
+severity: low
+confidence: high
+cwe: CWE-262
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Lower TemporaryPasswordValidityDays back towards Cognito's own
+  7-day default. A temporary password is created by an administrator and
+  delivered to the user over email or SMS, so for the whole of this window a
+  working credential for the account is sitting in a mailbox or a message log -
+  channels that are neither encrypted end to end nor under the operator's
+  control. Widening the window does not make onboarding more reliable; it only
+  lengthens the period in which a forwarded, archived or intercepted message is
+  still a usable credential. If users genuinely cannot complete first sign-in
+  within a week, re-issue the invitation rather than extending its life.
+references: CWE-262
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-policies.html
+
+id: CLOUD-COGNITO-MFA_OFF-01
+title: Cognito user pool has multi-factor authentication switched off
+script: aws/live/cognito.sh
+severity: medium
+confidence: high
+cwe: CWE-308
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set this user pool's MFA configuration to ON (required) and
+  enable at least one second factor. Prefer TOTP software tokens over SMS:
+  SMS delivery is interceptable by SIM swap and by SS7 attacks on the carrier
+  network, so it raises the cost of an account takeover without bounding it.
+  Turning MFA ON for a pool that already has users forces every one of them
+  through enrolment at next sign-in, so plan the rollout - but note that the
+  intermediate setting, OPTIONAL, leaves the decision with each user and in
+  practice means most accounts have no second factor at all. If a phased
+  rollout is genuinely required, pair OPTIONAL with advanced security mode
+  ENFORCED so that at least the highest-risk sign-ins are challenged, and
+  treat that as a temporary state with a date on it.
+references: CWE-308
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-mfa.html
+
+id: CLOUD-COGNITO-MFA_OPTIONAL-01
+title: Cognito user pool leaves multi-factor authentication optional
+script: aws/live/cognito.sh
+severity: low
+confidence: high
+cwe: CWE-308
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Move this user pool from OPTIONAL to ON so a second factor is
+  required rather than offered. OPTIONAL is reported separately from OFF, and
+  more mildly, because the mechanism is configured and some users are
+  protected by it - but it is not a control the operator can rely on, since
+  whether any given account has a second factor is that user's decision and
+  the answer for most accounts is no. An attacker with a valid password does
+  not need to defeat the second factor; they need only find an account that
+  never enrolled one. Before switching to ON, check how many users have
+  actually enrolled, and pair the change with a supported enrolment path so
+  the cutover does not lock out the accounts that had not.
+references: CWE-308
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-mfa.html
+
+id: CLOUD-COGNITO-ADVANCED_SECURITY_OFF-01
+title: Cognito user pool advanced security is not enforced
+script: aws/live/cognito.sh
+severity: medium
+confidence: high
+cwe: CWE-1173
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set this user pool's advanced security mode to ENFORCED. In
+  ENFORCED mode Cognito refuses a sign-in that presents a password it has seen
+  in a known-compromised credential list, and applies adaptive
+  authentication - blocking or challenging a sign-in whose risk score is high
+  because of the device, the location or the pattern of attempts. Neither
+  behaviour exists in the two other modes. AUDIT is reported here alongside
+  OFF, and the distinction matters when you act on this finding rather than
+  when you triage it: in AUDIT mode Cognito computes exactly the same risk
+  score and publishes it to CloudWatch, and then takes no action on it, so a
+  sign-in with a credential known to be in a breach corpus succeeds exactly as
+  it would with the feature off. AUDIT is a reasonable place to sit for a
+  short, dated observation period before switching to ENFORCED; it is not a
+  control. Note advanced security is a paid feature billed per monthly active
+  user, so budget for it rather than being surprised by it.
+references: CWE-1173
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pool-settings-advanced-security.html
+
+id: CLOUD-COGNITO-SELF_REGISTRATION_OPEN-01
+title: Cognito user pool allows unauthenticated self-registration
+script: aws/live/cognito.sh
+severity: low
+confidence: high
+cwe: CWE-1390
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Confirm that open self-registration is intended for this pool. It
+  is reported for review rather than as a defect, because for a
+  consumer-facing application it is the whole point of having a user pool -
+  but for an internal or B2B pool it means anyone on the internet can create
+  an account, and every downstream authorization decision that assumes "a
+  signed-in user is a known user" is then wrong. If it is not intended, set
+  AdminCreateUserConfig.AllowAdminCreateUserOnly to true so accounts are
+  created only by an administrator or by a provisioning integration. If it is
+  intended, make sure the application does not treat mere authentication as
+  authorization: gate anything privileged on a group, a claim or a record the
+  self-registered user cannot set for themselves, and check the app clients'
+  writable attributes (this pack's CLIENT_WRITABLE_ATTRIBUTE check) so a new
+  account cannot assert its own verification state or role.
+references: CWE-1390
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/signing-up-users-in-your-app.html
+
+id: CLOUD-COGNITO-RECOVERY_SMS_ONLY-01
+title: Cognito user pool account recovery prefers SMS over email
+script: aws/live/cognito.sh
+severity: medium
+confidence: high
+cwe: CWE-640
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Reorder this pool's account-recovery mechanisms so that
+  verified_email sits at priority 1 and any phone-based mechanism below it, or
+  set recovery to admin_only if self-service recovery is not wanted at all.
+  Account recovery is an authentication bypass by design - it hands whoever
+  controls the channel a way into the account without the password - so the
+  channel it prefers is as security-relevant as the password policy itself. A
+  phone number is not under the account holder's sole control: a SIM-swap
+  against the carrier, a ported number, or an SS7 interception all give an
+  attacker the recovery code, and none of them requires touching the user's
+  device. This is reported on the HIGHEST-PRIORITY mechanism rather than on
+  membership, so a pool that offers email first and phone as a fallback is not
+  flagged - that is a reasonable configuration, and the finding is specifically
+  about SMS being the path a recovery attempt takes by default.
+references: CWE-640
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/how-to-recover-a-user-account.html
+
+id: CLOUD-COGNITO-DELETION_PROTECTION_OFF-01
+title: Cognito user pool deletion protection is inactive
+script: aws/live/cognito.sh
+severity: low
+confidence: high
+cwe: CWE-693
+owasp: A05:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set DeletionProtection to ACTIVE on this user pool. With it
+  inactive, a single DeleteUserPool call - from a mistaken console click, a
+  Terraform plan that recreates the resource, or a credential an attacker
+  holds - destroys every user account, every password and every attribute in
+  the pool, and there is no undo and no export to restore from. Cognito offers
+  no backup of a user pool's directory, so this is one of the few AWS
+  resources whose loss is genuinely unrecoverable rather than merely
+  disruptive. Deletion protection costs nothing, does not affect any runtime
+  behaviour, and requires only that the pool be updated to disable it before a
+  legitimate deletion - which is precisely the confirmation step that is
+  missing today.
+references: CWE-693
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-deletion-protection.html
+
+id: CLOUD-COGNITO-SELF_SERVICE_SURFACE-01
+title: Cognito user pool exposes unauthenticated self-service operations
+script: aws/live/cognito.sh
+severity: info
+confidence: high
+cwe: CWE-1059
+owasp: A05:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Review the listed operations against what this application is
+  meant to offer anonymously. This is an inventory rather than a defect: every
+  operation named here is a legitimate Cognito feature and a great many
+  applications intend to expose all of them. What it gives you is one place to
+  see which anonymous entry points the pool actually has, derived from the
+  pool's own configuration rather than by calling them - scoursh never sends
+  SignUp or ForgotPassword, because doing so creates real accounts and fires
+  real verification email and SMS to whatever address the probe invented. Each
+  operation is reachable by anyone who holds an app client id, which is a
+  public value that ships in the application's own JavaScript or mobile
+  binary, so treat each as an internet-facing endpoint: confirm the pool's
+  rate limits are adequate, confirm PreventUserExistenceErrors is ENABLED on
+  every client so these endpoints cannot be used to enumerate accounts, and
+  confirm that a self-registered or self-recovered account is not implicitly
+  trusted anywhere downstream.
+references: CWE-1059
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-identity-pools.html
+
+id: CLOUD-COGNITO-CLIENT_PLAINTEXT_AUTH-01
+title: Cognito app client permits a non-SRP password authentication flow
+script: aws/live/cognito.sh
+severity: medium
+confidence: high
+cwe: CWE-522
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove the plaintext password flows from this app client's
+  ExplicitAuthFlows and use ALLOW_USER_SRP_AUTH instead. Under SRP the client
+  proves knowledge of the password through a zero-knowledge exchange and the
+  password itself never leaves the device; under ALLOW_USER_PASSWORD_AUTH,
+  ALLOW_ADMIN_USER_PASSWORD_AUTH or their legacy spellings the password is
+  sent to Cognito as a request parameter. TLS protects it on the wire, so this
+  is not an interception finding - the exposure is everywhere the request is
+  handled in cleartext at the endpoints: an application log that records
+  request bodies, an APM or error-reporting agent that captures parameters, a
+  proxy or WAF doing TLS termination and logging, and any backend that relays
+  the call and might retain it. Migrating to SRP removes the whole class
+  rather than any single instance of it. Where a flow genuinely cannot be
+  migrated, at minimum confirm that nothing in the request path logs bodies,
+  and treat that as a compensating control with an owner rather than a fix.
+references: CWE-522
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/amazon-cognito-user-pools-authentication-flow.html
+
+id: CLOUD-COGNITO-CLIENT_IMPLICIT_OAUTH-01
+title: Cognito app client permits the implicit OAuth grant
+script: aws/live/cognito.sh
+severity: medium
+confidence: high
+cwe: CWE-598
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove `implicit` from this app client's AllowedOAuthFlows and
+  use the authorization code grant with PKCE instead. In the implicit grant
+  Cognito returns the access and ID tokens in the URL FRAGMENT of the redirect,
+  so the tokens land in the browser address bar, in the session history, in
+  any referrer a subsequent navigation sends, and in whatever the browser or
+  an extension records - none of which is a place a bearer token can be
+  revoked from. The code grant returns a single-use authorization code instead
+  and exchanges it for tokens over a direct back-channel request, and PKCE
+  binds that exchange to the client that started it so an intercepted code is
+  useless. The implicit grant was deprecated by OAuth 2.0 Security Best
+  Current Practice for exactly these reasons and is not appropriate for new
+  clients; every current Cognito SDK supports code+PKCE, including from a
+  single-page application, so there is rarely a migration blocker beyond the
+  redirect handling itself.
+references: CWE-598
+references: https://datatracker.ietf.org/doc/html/rfc9700
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-app-idp-settings.html
+
+id: CLOUD-COGNITO-CLIENT_INSECURE_CALLBACK-01
+title: Cognito app client has a plaintext HTTP callback or logout URL
+script: aws/live/cognito.sh
+severity: high
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Change this app client's callback and logout URLs to https://.
+  The callback URL is where Cognito delivers an authorization code or - with
+  the implicit grant - the tokens themselves, so a plaintext destination means
+  that delivery crosses the network unprotected: anyone on the path can read
+  the code or the token and use it, and anyone who can inject can redirect the
+  user somewhere else entirely. A loopback URL (http://localhost or
+  http://127.0.0.1) is NOT reported here, because RFC 8252 section 7.3
+  endorses it for native applications - the redirect never leaves the user's
+  own machine - so anything this check names is a real network destination.
+  Note that Cognito's console refuses a plaintext non-loopback URL today, so a
+  client carrying one was created through the API or predates that validation:
+  check whether it is still in use at all before spending effort migrating it.
+references: CWE-319
+references: https://datatracker.ietf.org/doc/html/rfc8252#section-7.3
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-app-settings.html
+
+id: CLOUD-COGNITO-CLIENT_WILDCARD_CALLBACK-01
+title: Cognito app client has a wildcarded or hostless callback or logout URL
+script: aws/live/cognito.sh
+severity: critical
+confidence: high
+cwe: CWE-601
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Replace every wildcarded or hostless entry in this app client's
+  callback and logout URL lists with the exact URLs the application actually
+  uses. The redirect URI allow-list is the only thing standing between an
+  authorization flow and an attacker-chosen destination: a wildcard host such
+  as https://*.example.com admits every subdomain, including one an attacker
+  obtained through a dangling DNS record or a compromised sub-site, and a
+  wildcard path admits any handler on the host. An attacker who can name the
+  redirect can start an authorization flow, have the victim complete it, and
+  receive the authorization code or token at a destination they control - a
+  full account takeover that leaves no trace in the application itself. This
+  is rated above the plaintext-callback finding because a wildcard is
+  exploitable by anyone who can register or take over one matching name,
+  whereas plaintext needs network position. Enumerate the real redirect URIs
+  from the application's own configuration rather than widening the list to
+  make an environment work; if several environments share a client, give each
+  its own client instead.
+references: CWE-601
+references: https://datatracker.ietf.org/doc/html/rfc9700
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-app-settings.html
+
+id: CLOUD-COGNITO-CLIENT_TOKEN_LIFETIME-01
+title: Cognito app client configures an excessive token lifetime
+script: aws/live/cognito.sh
+severity: medium
+confidence: high
+cwe: CWE-613
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Lower the token validity settings named in this finding. A
+  Cognito access or ID token is a bearer JWT that Cognito itself cannot
+  invalidate before it expires - there is no revocation list and no
+  introspection endpoint - so the lifetime is a hard floor on how long a stolen
+  token keeps working after the theft is discovered, the user's password is
+  changed, or the account is disabled. The access and ID tokens are reported
+  above 12 hours, which is the midpoint of Cognito's own permitted range and
+  twelve times its own default, so a client named here has been pushed most of
+  the way to the 24-hour ceiling rather than merely being generous; an
+  hour is the default and is right for most applications. A refresh token IS
+  revocable (see this pack's CLIENT_TOKEN_REVOCATION_OFF check), but only if
+  revocation is enabled and something actually calls it, so a multi-year
+  refresh token on a client with revocation off is an unbounded session. Set
+  the refresh window to the longest period a user should stay signed in
+  without re-authenticating, not to the longest the API accepts.
+references: CWE-613
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/amazon-cognito-user-pools-using-tokens-with-identity-providers.html
+
+id: CLOUD-COGNITO-CLIENT_TOKEN_REVOCATION_OFF-01
+title: Cognito app client has token revocation disabled
+script: aws/live/cognito.sh
+severity: medium
+confidence: high
+cwe: CWE-613
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable token revocation on this app client. Without it there is
+  no way to end a session before its tokens expire: the RevokeToken API
+  refuses to act for a client that has it disabled, so a refresh token stolen
+  from a device, a browser profile or a log continues to mint fresh access
+  tokens for its whole validity window regardless of anything the operator
+  does. Password change, account disable and even user deletion do not stop
+  it. Enabling revocation is a one-field change with no effect on existing
+  sign-ins, and it is what makes a sign-out actually sign the user out rather
+  than only clearing local storage. Having enabled it, make sure the
+  application calls RevokeToken on sign-out and on any security-relevant
+  event - the capability alone changes nothing until something uses it - and
+  review this client's refresh token lifetime at the same time, since the two
+  settings together decide the worst-case exposure of a stolen session.
+references: CWE-613
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/token-revocation.html
+
+id: CLOUD-COGNITO-CLIENT_WRITABLE_ATTRIBUTE-01
+title: Cognito app client may write a security-relevant user attribute
+script: aws/live/cognito.sh
+severity: high
+confidence: medium
+cwe: CWE-269
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove the named attributes from this app client's
+  WriteAttributes list. An attribute the client may write is one the END USER
+  may write, because the client is the user's own browser or mobile
+  application and every request it makes is under their control - so a
+  writable email_verified or phone_number_verified lets any account assert
+  that it has verified an address it does not own, and a writable custom
+  privilege attribute lets it assert its own role, group, plan or
+  entitlement. Wherever the application, a Lambda trigger, an API Gateway
+  authorizer or a downstream service reads that claim to make an authorization
+  decision, this is a direct privilege escalation available to anyone who can
+  register an account. Attributes that reflect a decision the system makes
+  about a user belong in a group membership or in a record the user cannot
+  reach, never in a self-asserted attribute; only genuinely
+  user-owned preferences belong in WriteAttributes. This check is medium
+  confidence for the custom-attribute half alone: it matches a short list of
+  names that are privileges in effectively every application that uses them,
+  and cannot know what a given application's custom attribute means, so
+  confirm the named attribute's role before acting.
+references: CWE-269
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-attributes.html
+
+id: CLOUD-COGNITO-CLIENT_USER_EXISTENCE_ERRORS-01
+title: Cognito app client reveals whether a username exists
+script: aws/live/cognito.sh
+severity: medium
+confidence: high
+cwe: CWE-204
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set PreventUserExistenceErrors to ENABLED on this app client.
+  With it LEGACY - which is also the effective setting for any client created
+  before the option existed - Cognito answers UserNotFoundException for an
+  unknown username and NotAuthorizedException for a known username with the
+  wrong password, so anyone holding the app client id can tell the two apart
+  one request at a time and enumerate the pool's entire membership. The client
+  id is a public value that ships in the application's own JavaScript or
+  mobile binary, so no credential is needed to do this. What the enumeration
+  buys an attacker is a validated target list: which of a leaked
+  email/password corpus applies here, whose addresses to phish with a
+  convincing "your account" message, and which accounts to spray a common
+  password against. Enabling the setting makes both responses identical, and
+  also removes the same oracle from the forgot-password and confirmation
+  flows. It is a per-client setting, so check every client on the pool -
+  scoursh reports each separately.
+references: CWE-204
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/cognito-user-pools-managing-errors.html
+
+id: CLOUD-COGNITO-CLIENT_PUBLIC_CONFIDENTIAL_FLOW-01
+title: Cognito public app client permits a flow that assumes a client secret
+script: aws/live/cognito.sh
+severity: high
+confidence: high
+cwe: CWE-287
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Either give this app client a secret and move it behind a
+  backend that can keep one, or remove the named flows from it. A client with
+  no secret is a PUBLIC client - a single-page application or a mobile binary
+  whose code an attacker holds a copy of - so anything the client is permitted
+  to do, anyone is permitted to do. The client_credentials grant authenticates
+  the CLIENT ITSELF with no user in the exchange at all, so its entire security
+  rests on the secret being secret; offered by a public client it is an
+  unauthenticated path to whatever scopes it carries. The ADMIN_* authentication
+  flows are meant to be called server-to-server by a trusted backend, and they
+  bypass parts of the user-facing flow accordingly. Create a separate
+  confidential client for the server-side work and leave the public client with
+  ALLOW_USER_SRP_AUTH and the authorization code grant with PKCE, which is the
+  combination designed for a client that cannot keep a secret.
+references: CWE-287
+references: https://datatracker.ietf.org/doc/html/rfc9700
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/user-pool-settings-client-apps.html
+
+id: CLOUD-COGNITO-IDPOOL_UNAUTH_IDENTITIES-01
+title: Cognito identity pool allows unauthenticated identities
+script: aws/live/cognito.sh
+severity: medium
+confidence: high
+cwe: CWE-306
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Turn off AllowUnauthenticatedIdentities on this identity pool
+  unless anonymous access is a deliberate, documented requirement. With it on,
+  any caller who knows the identity pool id - a public value that ships in the
+  application's own JavaScript or mobile binary - can obtain an identity from
+  the pool with no credential of any kind. On its own that is a configuration
+  fact rather than an exposure, which is why this is reported separately from
+  and more mildly than the two findings that follow it: what turns it into an
+  exposure is an unauthenticated IAM role being attached to the pool, and what
+  turns that into a serious one is the scope of that role. Look for
+  CLOUD-COGNITO-IDPOOL_UNAUTH_CREDENTIALS-01 and the two
+  IDPOOL_UNAUTH_ROLE_* findings on this same pool before deciding how urgent
+  this is. If anonymous access IS required - the usual legitimate case is a
+  public read of an S3 bucket or a Pinpoint analytics event before sign-in -
+  keep it, and make the unauthenticated role as narrow as that one use.
+references: CWE-306
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/identity-pools.html
+
+id: CLOUD-COGNITO-IDPOOL_UNAUTH_CREDENTIALS-01
+title: Cognito identity pool hands AWS credentials to unauthenticated callers
+script: aws/live/cognito.sh
+severity: high
+confidence: high
+cwe: CWE-306
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: This identity pool both allows unauthenticated identities AND has
+  an unauthenticated IAM role attached, so GetCredentialsForIdentity will
+  return real, signed AWS credentials for that role to any caller who knows the
+  pool id - no sign-in, no token, no account. The pool id is not a secret: it
+  ships in the application's own JavaScript or mobile binary and is routinely
+  visible in a browser's network tab. Decide first whether anonymous access is
+  required at all; if it is not, turn off AllowUnauthenticatedIdentities, which
+  removes the whole path. If it is, treat the unauthenticated role exactly as
+  you would a set of AWS credentials published on the internet: grant it the
+  single action on the single resource the pre-sign-in experience needs,
+  nothing more, and add a condition on aws:PrincipalTag or on the identity
+  pool's own audience so the role cannot be assumed from another pool. Note
+  that scoursh derives this from the pool's configuration and never calls
+  GetCredentialsForIdentity - the credentials are obtainable, and no scan
+  obtained any.
+references: CWE-306
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/identity-pools-roles.html
+
+id: CLOUD-COGNITO-IDPOOL_UNAUTH_ROLE_ADMIN-01
+title: Cognito identity pool unauthenticated role holds unrestricted permissions
+script: aws/live/cognito.sh
+severity: critical
+confidence: high
+cwe: CWE-269
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Rewrite or detach this policy now. The unauthenticated role of an
+  identity pool that allows anonymous identities is assumable by anyone who
+  knows the pool id, which is a public value shipped in the application's own
+  code - so a policy statement on it granting Action "*" on Resource "*", or
+  using NotAction/NotResource to the same effect, is administrative access to
+  the AWS account published on the internet. Anyone who reads the application's
+  JavaScript can read every bucket, every secret and every database in the
+  account, create and destroy resources, and escalate further through IAM.
+  Treat this as an active incident rather than a hardening item: assume the
+  permissions have been used, review CloudTrail for GetCredentialsForIdentity
+  calls and for the role's own session activity, then replace the policy with
+  the single action on the single resource the pre-sign-in experience needs. If
+  nothing needs anonymous access at all, turn off
+  AllowUnauthenticatedIdentities, which removes the path entirely. scoursh
+  reports the wildcard grant only where the statement carries NO Condition, so
+  what it names here is unconditioned by the policy itself.
+references: CWE-269
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/identity-pools-roles.html
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html
+
+id: CLOUD-COGNITO-IDPOOL_UNAUTH_ROLE_BROAD-01
+title: Cognito identity pool unauthenticated role holds a service-wide wildcard
+script: aws/live/cognito.sh
+severity: high
+confidence: high
+cwe: CWE-269
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Narrow this policy to the specific actions and resources the
+  pre-sign-in experience needs. The unauthenticated role of an identity pool
+  that allows anonymous identities is assumable by anyone who knows the pool
+  id - a public value shipped in the application's own code - so a statement
+  granting a whole service (an Action of the form service:* against a Resource
+  of "*") hands every anonymous caller every operation that service offers,
+  across every resource in the account. For s3:* that is read, write and delete
+  on every bucket; for dynamodb:* it is every table; for lambda:* it is
+  invoking and reconfiguring every function. This is reported below the
+  unrestricted-admin finding because it is bounded by one service rather than
+  by nothing, and it is still an anonymous grant. Replace the wildcard with the
+  named actions (typically a single s3:GetObject or
+  mobiletargeting:PutEvents) and scope Resource to the exact ARN prefix, then
+  review CloudTrail for use of the role before assuming it was never
+  exercised.
+references: CWE-269
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/identity-pools-roles.html
+references: https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html
+
+id: CLOUD-COGNITO-IDPOOL_CLASSIC_FLOW-01
+title: Cognito identity pool has the classic (basic) authentication flow enabled
+script: aws/live/cognito.sh
+severity: medium
+confidence: high
+cwe: CWE-1104
+owasp: A05:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set AllowClassicFlow to false on this identity pool. The classic
+  flow re-enables Cognito Identity's original two-step credential exchange -
+  GetOpenIdToken followed by a direct sts assume-role-with-web-identity call -
+  alongside the modern single-step GetCredentialsForIdentity. The two-step form
+  hands the caller an OpenID token they then present to STS themselves, which
+  takes role selection out of the identity pool's own role-mapping rules and
+  lets the caller name the role: a principal who can obtain the token can
+  attempt to assume any role whose trust policy accepts the pool, not only the
+  one the pool would have chosen for them. It also widens the window for token
+  replay, since the intermediate token is a separate credential with its own
+  lifetime. The classic flow exists for compatibility with clients written
+  before the enhanced flow; unless one of those is still in use, turning it off
+  removes the alternative path with no effect on current SDKs. If it must stay
+  on, audit every role whose trust policy names this identity pool.
+references: CWE-1104
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/authentication-flow.html
+
+id: CLOUD-COGNITO-IDPOOL_ROLE_MAPPING-01
+title: Cognito identity pool role mapping falls back to the authenticated role
+script: aws/live/cognito.sh
+severity: medium
+confidence: high
+cwe: CWE-863
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Change AmbiguousRoleResolution from AuthenticatedRole to Deny for
+  the named role mappings. A role mapping exists to give different classes of
+  user different IAM roles based on a claim in their token;
+  AmbiguousRoleResolution decides what happens when a token matches several
+  rules or none of them. AuthenticatedRole falls back to the pool's DEFAULT
+  authenticated role, so a token carrying an unexpected claim - or a claim the
+  token's issuer lets the user influence, which for a self-registered Cognito
+  user with a writable custom attribute is common - silently receives whatever
+  that default role can do, rather than being refused. The two settings are
+  easy to read the wrong way round: Deny is the safe value and AuthenticatedRole
+  is the permissive one, despite the names. Set Deny, then confirm the rules
+  actually cover every legitimate class of user, because with Deny in place a
+  gap in the rules becomes a visible failure instead of a silent grant - which
+  is the point.
+references: CWE-863
+references: https://docs.aws.amazon.com/cognito/latest/developerguide/role-based-access-control.html

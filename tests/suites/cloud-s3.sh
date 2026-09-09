@@ -532,11 +532,12 @@ assert_contains "$_AUDIT" 'CLOUD-S3-' 'E15 the audit view carries the cloud chec
 # also RDS and DynamoDB (CLOUD-15/16, tests/suites/cloud-rds.sh /
 # tests/suites/cloud-dynamodb.sh), then also Lambda (CLOUD-21,
 # tests/suites/cloud-lambda.sh, section E), and now also ECR, ECS and EKS
-# (CLOUD-25/26/27, tests/suites/cloud-{ecr,ecs,eks}.sh) - exactly as this
+# (CLOUD-25/26/27, tests/suites/cloud-{ecr,ecs,eks}.sh), and now also
+# Cognito (CLOUD-20, tests/suites/cloud-cognito.sh) - exactly as this
 # comment originally predicted a later service landing would require - see
 # tests/suites/cloud-ssm.sh's own round-trip section for an earlier stage of
 # this same guard.
-assert_contains "$_AUDIT" 'ships the S3, Lambda, RDS, DynamoDB, API Gateway, ECR, ECS, EKS, ELB/ALB, CloudFront, KMS, Secrets Manager, SSM, IAM, EC2/VPC, CloudTrail, AWS Config, GuardDuty, Inspector2 and Macie2 services so far' \
+assert_contains "$_AUDIT" 'ships the S3, Cognito, Lambda, RDS, DynamoDB, API Gateway, ECR, ECS, EKS, ELB/ALB, CloudFront, KMS, Secrets Manager, SSM, IAM, EC2/VPC, CloudTrail, AWS Config, GuardDuty, Inspector2 and Macie2 services so far' \
   'E16 the audit view states the real, current extent of the live catalog'
 assert_not_contains "$_AUDIT" 'ships no service script yet' \
   'E17 ... and no longer claims the catalog is empty'

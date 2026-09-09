@@ -1,0 +1,21 @@
+{
+    "UserPoolClient": {
+        "UserPoolId": "eu-west-2_optpool01",
+        "ClientName": "scoursh-fixture-oauth-off-client",
+        "ClientId": "oauthoffclient0000000000",
+        "ClientSecret": "scoursh-fixture-not-a-real-secret",
+        "ExplicitAuthFlows": [
+            "ALLOW_USER_SRP_AUTH",
+            "ALLOW_REFRESH_TOKEN_AUTH"
+        ],
+        "CallbackURLs": [
+            "https://app.example.com/callback"
+        ],
+        "AllowedOAuthFlows": [
+            "implicit"
+        ],
+        "AllowedOAuthFlowsUserPoolClient": false,
+        "PreventUserExistenceErrors": "ENABLED",
+        "EnableTokenRevocation": true
+    }
+}
