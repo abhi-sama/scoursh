@@ -1,0 +1,11 @@
+{
+    "NetworkInterfaces": [
+        {
+            "NetworkInterfaceId": "eni-hard1",
+            "VpcId": "vpc-hard1",
+            "Groups": [
+                {"GroupId": "sg-hard1", "GroupName": "web-hard"}
+            ]
+        }
+    ]
+}

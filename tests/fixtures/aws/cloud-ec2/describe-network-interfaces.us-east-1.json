@@ -1,0 +1,11 @@
+{
+    "NetworkInterfaces": [
+        {
+            "NetworkInterfaceId": "eni-bad1",
+            "VpcId": "vpc-bad1",
+            "Groups": [
+                {"GroupId": "sg-defaultbad", "GroupName": "default"}
+            ]
+        }
+    ]
+}

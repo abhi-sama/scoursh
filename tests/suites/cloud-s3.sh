@@ -528,18 +528,20 @@ assert_contains "$_AUDIT" 'CLOUD-S3-' 'E15 the audit view carries the cloud chec
 # is each ticket's to correct, and it is pinned in both directions here so the
 # next service to land finds a failing assertion rather than a stale sentence.
 # CLOUD-22 (`aws/live/apigw.sh`), CLOUD-07/08/09 (kms/secretsmanager/ssm) and
-# CLOUD-06 (`aws/live/iam.sh`) are exactly that run of services, and each
-# updated the assertion in the same change that widened lib/report.sh's own
-# sentence, rather than left to go stale again - see
-# tests/suites/cloud-ssm.sh's own round-trip section for the five-service
-# half of this same guard.
-assert_contains "$_AUDIT" 'ships the S3, API Gateway, KMS, Secrets Manager, SSM and IAM services so far' \
+# CLOUD-06 (`aws/live/iam.sh`) and CLOUD-13 (`aws/live/ec2.sh`) are exactly
+# that run of services, and each updated the assertion in the same change
+# that widened lib/report.sh's own sentence, rather than left to go stale
+# again - see tests/suites/cloud-ssm.sh's own round-trip section for an
+# earlier stage of this same guard.
+assert_contains "$_AUDIT" 'ships the S3, API Gateway, KMS, Secrets Manager, SSM, IAM and EC2/VPC services so far' \
   'E16 the audit view states the real, current extent of the live catalog'
 assert_not_contains "$_AUDIT" 'ships no service script yet' \
   'E17 ... and no longer claims the catalog is empty'
 assert_not_contains "$_AUDIT" 'ships the S3 service only so far' \
   'E17b ... and no longer claims API Gateway and IAM are absent'
 assert_not_contains "$_AUDIT" 'ships the S3 and API Gateway services only so far' \
-  'E17c ... and no longer claims IAM is absent, now that CLOUD-06 has landed'
+  'E17c ... and no longer claims IAM and EC2/VPC are absent'
+assert_not_contains "$_AUDIT" 'ships the S3, API Gateway, KMS, Secrets Manager, SSM and IAM services so far' \
+  'E17d ... and no longer claims EC2/VPC is absent, now that CLOUD-13 has landed'
 
 t_summary cloud-s3

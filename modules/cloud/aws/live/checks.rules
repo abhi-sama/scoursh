@@ -739,3 +739,214 @@ remediation: Consolidate the identity named in this finding's evidence onto
   permission set.
 references: CWE-710
 references: https://docs.aws.amazon.com/IAM/latest/UserGuide/access_policies_managed-vs-inline.html
+
+# ---------------------------------------------------------------------------
+# EC2/VPC (docs/STEP6-CLOUD-PLAN.md CLOUD-13) - owned by
+# modules/cloud/aws/live/ec2.sh, ids all `CLOUD-EC2-*`.  Appended to this
+# shared, append-only registry per this file's own header note - a per-service
+# `checks-ec2.rules` would also be legal (rules/RULE-FORMAT.md §9's path
+# table admits both spellings), but step 6's tickets are sequential bundles
+# against one landed vertical slice rather than parallel peers, so the
+# tension-29 split modules/dast/passive/ needed does not apply here.
+#
+# EIGHT IDS FOR SEVEN PROPERTIES.  The admin-port and database-port cases are
+# two ids, `SG_OPEN_ADMIN_PORT` and `SG_OPEN_DB_PORT`, because CIS AWS
+# Foundations Benchmark v3.0.0 control 5.2 covers "remote server
+# administration ports" (22, 3389) specifically and has no database-port
+# equivalent - citing 5.2 against a MySQL/Redis/... exposure would
+# misattribute a control that does not cover it (docs/CIS-MAPPINGS.md §1),
+# and the CLOUD location profile carries no component naming which port
+# family fired, so one id would also collide the two onto one fingerprint.
+#
+# `cis:` IS AUTHORED HERE, ON THE RECORD, AND ONLY WHERE A REAL CIS v3.0.0
+# CONTROL EXISTS (data/cis-mappings is an id -> label table, never a source of
+# ids - docs/CIS-MAPPINGS.md §1).  Four of these eight cite a real control
+# (5.2, 5.4, 5.6, 3.7, all already seeded in data/cis-mappings for exactly
+# this v1 CIS-core service scope); the other four - the database-port case,
+# public AMIs, public EBS snapshots, and unencrypted volumes - cite nothing,
+# because CIS v3.0.0 has no control for any of them.  An honest absence is the
+# right outcome; inventing a control number to satisfy a "must cite CIS"
+# habit is the overstated-coverage failure docs/DESIGN.md §15 forbids.
+#
+# THE TYPE TAG IS `config-read` ON EVERY RECORD: each check is one or more
+# read-only `describe-*`/`get-*` AWS API calls and mutates nothing, so
+# lib/checks.sh's `--intensity` ceiling passes all of them at the default
+# `passive`. They also carry `quick` (docs/DESIGN.md §5's "passive +
+# config-read, no active probes"); `compliance` is carried by exactly the
+# four records that carry a `cis` value (finding F3's TAG reading of that
+# profile). None is `intrusive`: there is no state to mutate, and `aws_ro`
+# refuses a non-read operation with exit 3 before the CLI is even exec'd.
+
+id: CLOUD-EC2-SG_OPEN_ADMIN_PORT-01
+title: Security group allows ingress from 0.0.0.0/0 to a remote administration port
+script: aws/live/ec2.sh
+severity: high
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 5.2
+remediation: Remove the 0.0.0.0/0 ingress rule for port 22 (SSH) or 3389
+  (RDP) from this security group. A rule this broad lets any host on the
+  internet attempt to authenticate against the port, which is one of the
+  most commonly scanned and brute-forced surfaces on AWS. Restrict ingress to
+  a known jump host or bastion's own security group, a VPN or Direct Connect
+  CIDR, or replace the direct exposure entirely with AWS Systems Manager
+  Session Manager, which needs no inbound rule at all.
+references: CWE-284
+references: https://docs.aws.amazon.com/vpc/latest/userguide/vpc-security-groups.html
+
+id: CLOUD-EC2-SG_OPEN_DB_PORT-01
+title: Security group allows ingress from 0.0.0.0/0 to a common database port
+script: aws/live/ec2.sh
+severity: high
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove the 0.0.0.0/0 ingress rule for this database port
+  (MySQL/MariaDB 3306, PostgreSQL 5432, MSSQL 1433/1434, Oracle 1521, MongoDB
+  27017, Redis 6379, CouchDB 5984, Elasticsearch 9200, Memcached 11211, or
+  Redshift 5439). A database reachable from the whole internet is exposed to
+  credential-stuffing and unpatched-CVE scanning from the moment it is
+  provisioned, regardless of how strong its own authentication is. Restrict
+  ingress to the application tier's own security group and place the database
+  in a private subnet with no route to the internet.
+references: CWE-284
+references: https://docs.aws.amazon.com/vpc/latest/userguide/vpc-security-groups.html
+
+id: CLOUD-EC2-DEFAULT_SG_IN_USE-01
+title: The VPC's default security group is attached to a resource
+script: aws/live/ec2.sh
+severity: medium
+confidence: high
+cwe: CWE-1188
+owasp: A05:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 5.4
+remediation: Move every resource attached to the VPC's default security
+  group onto a purpose-specific security group whose rules are reviewed
+  deliberately, then remove all of the default security group's own ingress
+  and egress rules so it restricts all traffic, per CIS AWS Foundations
+  Benchmark control 5.4. A resource left in the default group inherits
+  whatever rule set it carries and is the group most likely to be overlooked
+  in a review that only inspects custom security groups by name.
+references: CWE-1188
+references: https://docs.aws.amazon.com/vpc/latest/userguide/vpc-security-groups.html#default-security-group
+
+id: CLOUD-EC2-PUBLIC_AMI-01
+title: Owned AMI grants public launch permission
+script: aws/live/ec2.sh
+severity: critical
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove the AMI's public launch permission (the AllUsers/"all"
+  group in describe-image-attribute's launchPermission) immediately. Any AWS
+  account in the partition can launch an instance from a publicly-shared AMI
+  and inspect its full disk contents, which routinely includes application
+  code, configuration files, and any credential baked into the image at build
+  time. Share the AMI only with named account ids, or with an AWS
+  Organization/Resource Access Manager share where the recipient set needs to
+  be broad but still bounded.
+references: CWE-732
+references: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/sharingamis-explicit.html
+
+id: CLOUD-EC2-PUBLIC_EBS_SNAPSHOT-01
+title: Owned EBS snapshot grants public create-volume permission
+script: aws/live/ec2.sh
+severity: critical
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove the snapshot's public create-volume permission (the
+  AllUsers/"all" group in describe-snapshot-attribute's
+  createVolumePermission) immediately. Any AWS account in the partition can
+  create a volume from a publicly-shared snapshot, attach it to their own
+  instance, and read every byte it contains - a direct data-exposure path
+  that bypasses every access control the original, running instance ever
+  had. Share the snapshot only with named account ids, and consider whether
+  any data it contains needs to be treated as already exposed.
+references: CWE-732
+references: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-modifying-snapshot-permissions.html
+
+id: CLOUD-EC2-UNENCRYPTED_VOLUME-01
+title: EBS volume is not encrypted at rest
+script: aws/live/ec2.sh
+severity: medium
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable "EBS encryption by default" for the region so every
+  volume created from now on is encrypted automatically, then replace this
+  volume with an encrypted copy - create a snapshot, copy it with
+  encryption enabled (or copy an unencrypted snapshot into an encrypted one
+  directly), and create a new volume from the encrypted copy, since an
+  existing volume cannot be encrypted in place. Without encryption at rest, a
+  compromised storage-layer credential or a mis-shared snapshot exposes the
+  volume's contents in plaintext.
+references: CWE-311
+references: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSEncryption.html
+
+id: CLOUD-EC2-IMDSV2_NOT_ENFORCED-01
+title: EC2 instance metadata service does not enforce IMDSv2
+script: aws/live/ec2.sh
+severity: medium
+confidence: high
+cwe: CWE-918
+owasp: A10:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 5.6
+remediation: Set the instance's metadata options to HttpTokens required
+  (IMDSv2 only), per CIS AWS Foundations Benchmark control 5.6. The original
+  metadata service (IMDSv1) answers a plain, unauthenticated HTTP GET from
+  inside the instance, so any request the instance can be tricked into
+  making on its own behalf - the textbook Server-Side Request Forgery shape -
+  can retrieve the instance's own IAM role credentials from
+  169.254.169.254. IMDSv2 requires a session token obtained via a PUT
+  request first, which most SSRF techniques cannot forge.
+references: CWE-918
+references: https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-instance-metadata-service.html
+
+id: CLOUD-EC2-FLOW_LOGS_OFF-01
+title: VPC has no active flow log
+script: aws/live/ec2.sh
+severity: low
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 3.7
+remediation: Enable VPC flow logs, per CIS AWS Foundations Benchmark control
+  3.7, delivering them to CloudWatch Logs or S3 with a retention period
+  matched to the estate's incident-response window. Without a flow log there
+  is no record of which network traffic was accepted or rejected in or out
+  of the VPC, so an investigation into a suspected compromise or a
+  data-exfiltration path has no network-layer evidence to work from -
+  identical in kind to the S3 access-logging gap this project's own
+  CLOUD-S3-NO_LOGGING-01 check reports one layer up the stack.
+references: CWE-778
+references: https://docs.aws.amazon.com/vpc/latest/userguide/flow-logs.html

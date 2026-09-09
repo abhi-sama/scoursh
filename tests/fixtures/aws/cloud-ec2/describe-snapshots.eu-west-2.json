@@ -1,0 +1,5 @@
+{
+    "Snapshots": [
+        {"SnapshotId": "snap-hardprivate1", "VolumeId": "vol-hardencrypted1"}
+    ]
+}
