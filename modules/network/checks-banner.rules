@@ -1,0 +1,51 @@
+# modules/network/checks-banner.rules - the NET-07 script-check registry
+# (rules/RULE-FORMAT.md §9.5; data/scoursh-network-scan-design/report.md
+# §3.2 item 1, §5.1, the NET-07 row in its §7 staged plan). Owned by
+# modules/network/banner.sh.
+#
+# ONE FILE PER OWNING PHASE SCRIPT, per rules/RULE-FORMAT.md §9's
+# `checks-<name>.rules` row (docs/FOUNDATION.md tension 29) - matching
+# modules/network/checks-reachability.rules (NET-06), never a shared
+# `checks.rules` two peers could collide on.
+#
+# ONE CHECK ID, unlike NET-06's two: report.md §5.1's own table gives this
+# probe exactly one row, `NET-SVC-BANNER_DISCLOSURE-01`, because unlike
+# NET-PORT-*'s two genuinely different verdicts (a real exposure vs an
+# inventory-hygiene observation), a banner disclosing a product name alone
+# and a banner disclosing a product AND version are the SAME finding at two
+# strengths of the same fact, not two different facts - net_banner_identify_
+# text (modules/network/banner_engine.sh) reports both under this one id,
+# with the version named in the evidence when one was disclosed.
+#
+# The type tag is `passive` (report.md §5.1's own table for this check, and
+# modules/network/engine.sh's own phase-table floor, `banner.sh:passive`):
+# the probe reads only what a listener volunteers unprompted on connect and
+# sends zero bytes - the opposite of NET-06's own `safe-active` tag, whose
+# header explains why a bare connect attempt earns that tag instead (a real
+# connection to a port the operator did not necessarily expect a scanner to
+# knock on). Sending nothing at all on that same connection is what earns
+# this check the weaker tag.
+#
+# `coverage-scope: target` is NET's cell (rules/RULE-FORMAT.md §9.5.1's own
+# NET row: the config/scope.conf target id), identical to every other NET-*
+# check.
+
+id: NET-SVC-BANNER_DISCLOSURE-01
+title: Network service discloses product/version unprompted
+script: banner.sh
+severity: low
+confidence: high
+cwe: CWE-200
+owasp: A05:2021
+tags: passive
+coverage-scope: target
+remediation: A service greeting that names its own product and exact
+  version lets an attacker select exploits for that product and version
+  without probing for them first. Where the software supports it, suppress
+  or generalise the banner (an SSH `Banner`/version-string override, an
+  SMTP `smtpd_banner` set to a generic string, an FTP daemon login-message
+  override) so it no longer names the product or the version. This is
+  defence in depth, not a fix on its own: keep the component patched on its
+  own schedule regardless of whether the banner is suppressed.
+references: CWE-200
+references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
