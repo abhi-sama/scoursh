@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
-# lib/nettransport.sh - the pure-bash TCP connect primitive (NET-03).
+# lib/nettransport.sh - the pure-bash TCP connect primitive (NET-03), plus
+# the NET-07 read-on-connect primitive added to it below.
 #
 # Owns:
 #   data/scoursh-network-scan-design/report.md §6.2-6.6 (the measured
 #     transport decisions this file implements) and the NET-03 row in §7.
+#   data/scoursh-network-scan-design/report.md §3.2 item 1, the NET-07 row
+#     in §7: "Connect, read up to N bytes with a deadline, close" -
+#     `net_read_banner`, section 4 below.  Landed here rather than as a
+#     private copy in modules/network/banner_engine.sh because it is a
+#     TRANSPORT primitive, not a banner-parsing one - the identical
+#     reasoning `net_connect_probe` itself already establishes for this
+#     file, one operation further along the same connection lifecycle.
 #
 # `net_connect_probe HOST PORT [DEADLINE_MS]` prints exactly one of three
 # states on stdout: `open` / `not-open` / `filtered`.
@@ -232,7 +240,7 @@ _net_connect_default() {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Public entry point
+# 3. Public entry point (connect classification)
 # ---------------------------------------------------------------------------
 net_connect_probe() {
   local host=${1:-} port=${2:-} deadline_ms=${3:-$_NET_DEFAULT_DEADLINE_MS}
@@ -242,4 +250,122 @@ net_connect_probe() {
     return 1
   fi
   "${SCOURSH_NET_PROBE:-_net_connect_default}" "$host" "$port" "$deadline_ms"
+}
+
+# ---------------------------------------------------------------------------
+# 4. Read-on-connect (NET-07): connect, read up to MAX_BYTES, close - never
+#    writes a byte to the socket.
+# ---------------------------------------------------------------------------
+# `net_read_banner HOST PORT MAX_BYTES OUTFILE [DEADLINE_MS]` connects to an
+# address the CALLER already gated (the identical division of labour
+# `net_connect_probe` above documents at its own header - this function
+# authorizes nothing) and writes up to MAX_BYTES of whatever the listener
+# volunteers, unprompted, into OUTFILE.  OUTFILE always exists afterward, and
+# is empty when nothing was read - the caller decides what an empty read
+# means (data/scoursh-network-scan-design/report.md §5.2 rule 2: "sent
+# nothing" is its own honest outcome, `no_banner`, never folded into a
+# connect-failure state).
+#
+# OUTFILE, NOT STDOUT, IS THE CONTRACT, and that is deliberate: a service's
+# own greeting is bytes it chose (report.md §5.3 - "not text by construction"
+# one step further out than an HTTP body), so it may contain a NUL byte a
+# bash STRING cannot hold at all (AGENTS.md's "Things measured on this
+# codebase" - the identical trap `_net_json_flatten`'s own JSON reading
+# guards against, one layer up).  A caller that wants text sanitizes the
+# file's bytes through a byte-stream tool (e.g. `tr`) before ever assigning
+# them to a bash variable - modules/network/banner_engine.sh's own reader
+# does exactly that - never through this function's return value.
+#
+# DEADLINE AND CLASSIFICATION reuse `net_connect_probe`'s own fork-poll-kill
+# shape verbatim (§6.1/§6.3), for the identical capability/portability
+# reasons that file's header states: `timeout(1)` is absent on macOS, and the
+# connect step is a bash builtin redirection (`exec {fd}<>/dev/tcp/...`)
+# rather than a forked external command specifically so a SIGTERM delivered
+# to the timed subshell interrupts it directly, with nothing to orphan.  The
+# READ step keeps that property on purpose: it is bash's own `read -N ... -t
+# ...` builtin, never a forked `head`/`dd`, because a forked child blocked on
+# its own read(2) would NOT be interrupted by a SIGTERM the PARENT subshell
+# receives (only the parent dies; the child becomes an orphan still waiting
+# on a socket that may never send more or close) - this was reasoned through
+# and rejected before being written, not discovered by a hang.  `read -N` at
+# bash 4.2 (this project's frozen minimum, lib/core.sh) returns any bytes
+# already read when `-t` times out, so a deadline that fires mid-read still
+# yields whatever arrived first, which is normally the whole of a short
+# protocol greeting.
+_net_read_banner_default() {
+  local host=$1 port=$2 max_bytes=$3 outfile=$4 deadline_ms=${5:-$_NET_DEFAULT_DEADLINE_MS}
+  : >"$outfile"
+
+  net_probe_capability || return 0
+
+  local dir=$SCOURSH_SCRATCH/nettransport
+  mkdir -p "$dir"
+  local tag=$BASHPID.$RANDOM.$RANDOM
+  local donefile=$dir/banner.$tag.done
+  local datafile=$dir/banner.$tag.data
+  rm -f "$donefile" "$datafile" "$datafile.tmp"
+
+  (
+    trap - ERR
+    local frc=0 ffd
+    { exec {ffd}<>"/dev/tcp/$host/$port"; } 2>/dev/null || frc=$?
+    if [[ $frc -eq 0 ]]; then
+      # `read`'s own `-t` is seconds, not milliseconds, and rounds UP so a
+      # sub-second deadline never collapses to zero (which bash treats as
+      # "poll, do not block" rather than "no time left").  This is a
+      # defense-in-depth bound - the OUTER poll-and-kill loop below is the
+      # real deadline enforcer, exactly as it is for the plain connect probe
+      # above, so a `read` builtin that ignored `-t` entirely would still be
+      # bounded by it.
+      local chunk='' rt_s=$(( (deadline_ms + 999) / 1000 ))
+      (( rt_s < 1 )) && rt_s=1
+      IFS= read -r -N "$max_bytes" -t "$rt_s" chunk <&"$ffd" || true
+      printf '%s' "$chunk" >"$datafile.tmp"
+      exec {ffd}>&- 2>/dev/null || true
+      mv -f "$datafile.tmp" "$datafile" 2>/dev/null || true
+    fi
+    printf '%s' "$frc" >"$donefile.tmp"
+    mv -f "$donefile.tmp" "$donefile"
+  ) &
+  local pid=$!
+
+  local waited=0
+  while (( waited < deadline_ms )); do
+    [[ -e $donefile ]] && break
+    proc_alive "$pid" || break
+    msleep "$_NET_POLL_STEP_MS"
+    (( waited += _NET_POLL_STEP_MS ))
+  done
+
+  if [[ ! -e $donefile ]]; then
+    # The deadline elapsed with the subshell still connecting or reading, or
+    # it is gone without ever writing a result.  Either way `$datafile` was
+    # never renamed into place (the write-then-rename above only happens on
+    # a graceful finish), so OUTFILE stays empty - a killed attempt reports
+    # the same honest "nothing captured" outcome as a listener that truly
+    # sent nothing, which is the correct fold: report.md §5.2 rule 2 names
+    # exactly one skip reason for this check, `no_banner`, not a second one
+    # for "we could not tell in time".
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+
+  [[ -f $datafile ]] && mv -f "$datafile" "$outfile"
+  rm -f "$donefile" "$donefile.tmp" "$datafile" "$datafile.tmp" 2>/dev/null || true
+  return 0
+}
+
+# `net_read_banner HOST PORT MAX_BYTES OUTFILE [DEADLINE_MS]` - public entry
+# point.  `SCOURSH_NET_BANNER_PROBE` names a function (or executable) taking
+# the same five positional arguments and writing to OUTFILE, replacing the
+# whole real-socket path below - the identical `SCOURSH_NET_PROBE` idiom this
+# file's own connect probe already uses, so a test suite never opens a real
+# socket for a banner read either.
+net_read_banner() {
+  local host=${1:-} port=${2:-} max_bytes=${3:-} outfile=${4:-} deadline_ms=${5:-$_NET_DEFAULT_DEADLINE_MS}
+  if [[ -z $host || -z $port || -z $max_bytes || -z $outfile ]]; then
+    log_error "nettransport: net_read_banner requires HOST, PORT, MAX_BYTES and OUTFILE"
+    return 1
+  fi
+  "${SCOURSH_NET_BANNER_PROBE:-_net_read_banner_default}" "$host" "$port" "$max_bytes" "$outfile" "$deadline_ms"
 }

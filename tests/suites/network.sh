@@ -196,11 +196,11 @@ assert_contains "$RUN_OK_JSON" '"checks_run": []' \
 printf '\n-- run.json tells the truth about a run that covered nothing --\n'
 # =============================================================================
 
-t_case 'run.json records the phases_present declared reduction naming the real cause, now that NET-05, NET-06, NET-08 and NET-09 have all landed'
+t_case 'run.json records the phases_present declared reduction naming the real cause, now that NET-05 through NET-09 (all but NET-10) have landed'
 assert_contains "$RUN_OK_JSON" 'module=network reason=no_check_covered_by_any_phase' \
-  'run.json carries the declared reduction with its owning module token - FAILS if the module logs it only to stderr, which leaves the artifact claiming a complete run, or if it is written under the finding-module short form "net" instead of the SCAN_COMMANDS/checks_module_dir token "network" lib/report.sh'"'"'s _RPT_MODULES actually greps for. Since NET-05 (inventory.sh) landed, net-fixture'"'"'s own single-listener (base-url only) run now RUNS that one phase rather than finding it absent, so the reduction reason moves from no_phase_scripts_on_disk_yet to no_check_covered_by_any_phase - FAILS under the pre-NET-05 reading, where nothing on disk would ever run'
-assert_contains "$RUN_OK_JSON" 'phases_expected=6 phases_present=4 phases_ran=2' \
-  'and states the phase count honestly (6 rows in _NET_PHASES; inventory.sh (NET-05, passive) and tlsport.sh (NET-08, passive) present and RAN; reachability.sh (NET-06, safe) and httpport.sh (NET-09, safe) also present on disk now but both gated by this run'"'"'s default --intensity passive - present counts a real -f test on every phase file, ran counts only the ones the intensity ceiling actually let through, and the two are different numbers here for exactly that reason; the other 2 rows, banner.sh and transport.sh, are still absent) - FAILS if the phase table is declared but never actually walked, or if a phase'"'"'s mere PRESENCE on disk were conflated with having RUN'
+  'run.json carries the declared reduction with its owning module token - FAILS if the module logs it only to stderr, which leaves the artifact claiming a complete run, or if it is written under the finding-module short form "net" instead of the SCAN_COMMANDS/checks_module_dir token "network" lib/report.sh'"'"'s _RPT_MODULES actually greps for. Since NET-05 (inventory.sh) landed, net-fixture'"'"'s own single-listener (base-url only) run now RUNS that phase rather than finding it absent, so the reduction reason moves from no_phase_scripts_on_disk_yet to no_check_covered_by_any_phase - FAILS under the pre-NET-05 reading, where nothing on disk would ever run'
+assert_contains "$RUN_OK_JSON" 'phases_expected=6 phases_present=5 phases_ran=3' \
+  'and states the phase count honestly (6 rows in _NET_PHASES; inventory.sh (NET-05), banner.sh (NET-07) and tlsport.sh (NET-08) are all present and RAN, since all three sit at the passive tier - this run'"'"'s own default --intensity; reachability.sh (NET-06) and httpport.sh (NET-09) are also present on disk now but both gated, since their own rows are reachability.sh:safe and httpport.sh:safe - present counts a real -f test on every phase file, ran counts only the ones the intensity ceiling actually let through, and the two are different numbers here for exactly that reason; the remaining row, transport.sh (NET-10), is still absent) - FAILS if the phase table is declared but never actually walked, or if a phase'"'"'s mere PRESENCE on disk were conflated with having RUN'
 assert_contains "$RUN_OK_JSON" 'reason=phase_above_intensity_ceiling target=net-fixture intensity=passive phases=[reachability.sh(>=safe) httpport.sh(>=safe)]' \
   'BOTH present-but-too-high-tier phases are named in ONE reduction, in the phase table'"'"'s own declared order (reachability.sh'"'"'s row precedes httpport.sh'"'"'s in _NET_PHASES) - FAILS if a phase that exists on disk but requires a higher --intensity than this run used were counted as merely "absent" (which would read identically to a phase that has not been written yet), or if the two present-but-gated phases produced two separate reduction lines instead of one naming both'
 
@@ -224,8 +224,8 @@ CR_FILE=$(_slurp "$W/run-ok/meta/coverage_reduction")
 assert_eq 1 "$(grep -c 'reason=no_check_covered_by_any_phase' <<<"$CR_FILE")" \
   'exactly one no_check_covered_by_any_phase reduction - FAILS if the phase loop or the per-target loop double-counts'
 GAP_FILE=$(_slurp "$W/run-ok/meta/coverage_gap")
-assert_eq 3 "$(grep -c "target 'net-fixture'" <<<"$GAP_FILE")" \
-  'exactly THREE coverage_gap lines name this target - inventory.sh'"'"'s own report.md §5.2 rule 3 gap (net-fixture declares only base-url), tlsport.sh'"'"'s (NET-08) own "no non-base-url listener" gap, and modules/network/run.sh'"'"'s own generic "covered nothing" gap - FAILS if any producer'"'"'s gap silently swallows another'"'"'s, which would leave a reader unable to tell "this module has no check registry yet" apart from "this target declared no additional listener"'
+assert_eq 4 "$(grep -c "target 'net-fixture'" <<<"$GAP_FILE")" \
+  'exactly FOUR coverage_gap lines name this target, now that both NET-07 and NET-08 have landed - inventory.sh'"'"'s own report.md §5.2 rule 3 gap (net-fixture declares only base-url), banner.sh'"'"'s (NET-07) own no_declared_listeners gap and tlsport.sh'"'"'s (NET-08) own "no non-base-url listener" gap (both ran, at the same passive tier, and each found nothing to read), plus modules/network/run.sh'"'"'s own generic "covered nothing" gap - FAILS if any one producer'"'"'s gap silently swallows another'"'"'s, which would leave a reader unable to tell "this module has no check registry yet" apart from "this target declared no additional listener" apart from "this specific check had nothing open to read"'
 
 # =============================================================================
 printf '\n-- intensity is a real gate, not a recorded string --\n'
@@ -244,10 +244,10 @@ if net_intensity_permits bogus passive; then r4=0; else r4=1; fi
 assert_eq 1 "$r4" \
   'an unrecognised run intensity fails CLOSED rather than resolving to a permissive default - FAILS if a typo silently ran something the operator did not ask for'
 
-t_case 'net_run_phase reports absent for a row whose script does not exist on disk (banner.sh, still NET-07-not-landed)'
-net_run_phase 'banner.sh:passive' passive net-fixture
+t_case 'net_run_phase reports absent for a row whose script does not exist on disk (transport.sh, still NET-10-not-landed)'
+net_run_phase 'transport.sh:passive' passive net-fixture
 assert_eq absent "$_NET_PHASE_OUTCOME" \
-  'banner.sh:passive is absent under a passive run - FAILS if presence is inferred from the table alone rather than a real -f test on modules/network/banner.sh. inventory.sh itself is no longer a usable "absent" fixture here: NET-05 landed it on disk, so net_run_phase now correctly reports it ran (see the two-tier authorization section below for direct inventory.sh coverage)'
+  'transport.sh:passive is absent under a passive run - FAILS if presence is inferred from the table alone rather than a real -f test on modules/network/transport.sh. Neither banner.sh nor tlsport.sh is a usable "absent" fixture here any more: NET-07 and NET-08 both landed them on disk, so net_run_phase now correctly reports each ran (see the two-tier authorization section below for direct inventory.sh coverage)'
 assert_eq 0 "$_NET_PHASE_PRESENT" 'and _NET_PHASE_PRESENT agrees'
 
 net_run_phase 'reachability.sh:safe' passive net-fixture

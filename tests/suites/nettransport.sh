@@ -159,4 +159,87 @@ SCOURSH_NET_TCP_CAPABLE=1
 assert_true "$(net_probe_capability && echo 0 || echo 1)" 'a forced 1 reports capable without probing'
 assert_eq 0 "$_PROBE_CALLS" 'and still never calls the real probe'
 
+printf '\n== net_read_banner: argument validation ==\n'
+_net_reset
+
+rm -f "$W/out.1"
+net_read_banner '' 22 512 "$W/out.1" 2>/dev/null && rc=0 || rc=$?
+assert_eq 1 "$rc" 'a missing HOST is a caller usage error (rc 1) - FAILS if net_read_banner silently proceeded to interpret /dev/tcp//22'
+
+rm -f "$W/out.2"
+net_read_banner example.test '' 512 "$W/out.2" 2>/dev/null && rc=0 || rc=$?
+assert_eq 1 "$rc" 'a missing PORT is refused the same way'
+
+rm -f "$W/out.3"
+net_read_banner example.test 22 '' "$W/out.3" 2>/dev/null && rc=0 || rc=$?
+assert_eq 1 "$rc" 'a missing MAX_BYTES is refused - FAILS if net_read_banner fell through to a real connect with an empty byte count'
+
+net_read_banner example.test 22 512 '' 2>/dev/null && rc=0 || rc=$?
+assert_eq 1 "$rc" 'a missing OUTFILE is refused - NET-07'"'"'s whole contract (lib/nettransport.sh'"'"'s own header) is that the read result is a FILE, never a bash-string return value, so a caller that forgot it must fail loudly rather than silently discard the read'
+
+printf '\n== net_read_banner: SCOURSH_NET_BANNER_PROBE bypasses the whole real-socket path, no real socket, deterministic ==\n'
+_net_reset
+
+_stub_banner_fixed() { printf '%s' "$_BSTUB_TEXT" >"$4"; return 0; }
+SCOURSH_NET_BANNER_PROBE=_stub_banner_fixed
+
+_BSTUB_TEXT=$'SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6\r\n'
+rm -f "$W/banner.out"
+net_read_banner 203.0.113.5 22 512 "$W/banner.out"
+assert_eq "${_BSTUB_TEXT%$'\n'}" "$(cat "$W/banner.out")" \
+  'the hook is consulted in place of a real connect+read, and its captured bytes pass through unchanged into OUTFILE - FAILS if net_read_banner ever fell through to _net_read_banner_default while the hook is set (command substitution strips exactly one trailing newline, matching cat'"'"'s own read here, so the comparison is against that same trimmed form on both sides)'
+
+_BSTUB_TEXT=''
+rm -f "$W/banner.out"
+: >"$W/banner.out"
+net_read_banner 203.0.113.5 80 512 "$W/banner.out"
+assert_eq '' "$(cat "$W/banner.out")" \
+  'a hook that captures nothing leaves OUTFILE empty - the honest "this listener sent nothing" outcome a caller folds into report.md'"'"'s own no_banner reduction, never a crash or a fabricated string'
+
+printf '\n== net_read_banner: SCOURSH_NET_BANNER_PROBE receives host/port/max_bytes/outfile/deadline exactly as given ==\n'
+_net_reset
+
+_BCAPTURED=''
+_stub_banner_capture() { _BCAPTURED="host=$1 port=$2 max_bytes=$3 outfile=$4 deadline_ms=$5"; : >"$4"; return 0; }
+SCOURSH_NET_BANNER_PROBE=_stub_banner_capture
+
+net_read_banner 198.51.100.9 8443 256 "$W/cap.out" 900
+assert_eq "host=198.51.100.9 port=8443 max_bytes=256 outfile=$W/cap.out deadline_ms=900" "$_BCAPTURED" \
+  'an explicit max-bytes and deadline are forwarded verbatim - FAILS if net_read_banner drops or reorders an argument'
+
+_BCAPTURED=''
+net_read_banner 198.51.100.9 8443 256 "$W/cap.out"
+assert_eq "host=198.51.100.9 port=8443 max_bytes=256 outfile=$W/cap.out deadline_ms=$_NET_DEFAULT_DEADLINE_MS" "$_BCAPTURED" \
+  'omitting the deadline forwards the documented default rather than an empty value, matching net_connect_probe'"'"'s own contract'
+
+printf '\n== net_read_banner: capability-absent degrades to an empty OUTFILE, never a crash, never a fabricated read ==\n'
+_net_reset
+
+_net_tcp_capability_probe() { return 1; }
+rm -f "$W/cap-absent.out"
+: >"$W/cap-absent.out"
+_net_read_banner_default 203.0.113.5 22 512 "$W/cap-absent.out"
+assert_file_exists "$W/cap-absent.out" 'OUTFILE still exists after a capability-absent call'
+assert_eq '' "$(cat "$W/cap-absent.out")" \
+  'and it is empty - a bash with no /dev/tcp support reads nothing rather than crashing the run or fabricating banner bytes, the identical degrade net_connect_probe applies to its own classification'
+
+printf '\n== the real implementation NEVER writes to the socket - the passive contract, checked statically ==\n'
+# report.md §3.2 item 1 and §5.1 both require this probe to send ZERO bytes.
+# There is no live-socket harness in this suite (nor in net_connect_probe's
+# own tests above) to observe that dynamically without opening a real
+# connection, so the invariant is pinned the way a frozen contract with no
+# argument for outbound data can be: (a) the function's own signature carries
+# no payload/data parameter for a caller to even attempt to supply one, and
+# (b) its body contains no redirection that writes INTO the connection fd -
+# only the read direction (`<&"$ffd"`) and the initial bidirectional open
+# (`<>`, required so the read side exists at all) ever reference it.
+FN_BODY=$(sed -n '/^_net_read_banner_default() {/,/^}/p' "$ROOT/lib/nettransport.sh")
+assert_ne '' "$FN_BODY" 'the function body was actually extracted (a sanity check on the extraction itself, not the contract)'
+assert_not_contains "$FN_BODY" '>&"$ffd"' \
+  'no line writes TO the connection file descriptor - FAILS if a future edit added an outbound write (e.g. sending a probe payload), which would silently turn this into an active check without report.md, checks-banner.rules or this suite ever being updated to say so'
+assert_not_contains "$FN_BODY" '>&$ffd' \
+  'the unquoted spelling of the same write-direction redirection is checked too, so a future edit cannot dodge the assertion above by dropping quotes'
+
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+
 t_summary 'nettransport'
