@@ -196,15 +196,13 @@ assert_contains "$RUN_OK_JSON" '"checks_run": []' \
 printf '\n-- run.json tells the truth about a run that covered nothing --\n'
 # =============================================================================
 
-t_case 'run.json records the phases_present=2 declared reduction naming the real cause, now that NET-05 and NET-06 have landed'
+t_case 'run.json records the phases_present declared reduction naming the real cause, now that NET-05, NET-06 and NET-09 have all landed'
 assert_contains "$RUN_OK_JSON" 'module=network reason=no_check_covered_by_any_phase' \
   'run.json carries the declared reduction with its owning module token - FAILS if the module logs it only to stderr, which leaves the artifact claiming a complete run, or if it is written under the finding-module short form "net" instead of the SCAN_COMMANDS/checks_module_dir token "network" lib/report.sh'"'"'s _RPT_MODULES actually greps for. Since NET-05 (inventory.sh) landed, net-fixture'"'"'s own single-listener (base-url only) run now RUNS that one phase rather than finding it absent, so the reduction reason moves from no_phase_scripts_on_disk_yet to no_check_covered_by_any_phase - FAILS under the pre-NET-05 reading, where nothing on disk would ever run'
-assert_contains "$RUN_OK_JSON" 'phases_expected=6 phases_present=2 phases_ran=1' \
-  'and states the phase count honestly (6 rows in _NET_PHASES; inventory.sh present and ran; reachability.sh present but above this default --intensity passive run'"'"'s ceiling, since it is a safe-tier phase; the other 4 still absent) - FAILS if the phase table is declared but never actually walked, or if inventory.sh'"'"'s/reachability.sh'"'"'s own presence is not picked up by a real -f test'
-
-t_case 'run.json ALSO records reachability.sh as above this run'"'"'s intensity ceiling, not silently folded into "absent"'
-assert_contains "$RUN_OK_JSON" 'module=network reason=phase_above_intensity_ceiling target=net-fixture intensity=passive phases=[reachability.sh(>=safe)]' \
-  'a present-but-too-high-tier phase is its own named reduction - FAILS if a phase that exists on disk but requires a higher --intensity than this run used were counted as merely "absent", which would read identically to a phase that has not been written yet'
+assert_contains "$RUN_OK_JSON" 'phases_expected=6 phases_present=3 phases_ran=1' \
+  'and states the phase count honestly (6 rows in _NET_PHASES; inventory.sh present and RAN; reachability.sh (NET-06) and httpport.sh (NET-09) also present on disk now but both gated by this run'"'"'s default --intensity passive, since their own rows are reachability.sh:safe and httpport.sh:safe - present counts a real -f test on every phase file, ran counts only the ones the intensity ceiling actually let through, and the two are different numbers here for exactly that reason; the other 3 rows are still absent) - FAILS if the phase table is declared but never actually walked, or if a phase'"'"'s mere PRESENCE on disk were conflated with having RUN'
+assert_contains "$RUN_OK_JSON" 'reason=phase_above_intensity_ceiling target=net-fixture intensity=passive phases=[reachability.sh(>=safe) httpport.sh(>=safe)]' \
+  'BOTH present-but-too-high-tier phases are named in ONE reduction, in the phase table'"'"'s own declared order (reachability.sh'"'"'s row precedes httpport.sh'"'"'s in _NET_PHASES) - FAILS if a phase that exists on disk but requires a higher --intensity than this run used were counted as merely "absent" (which would read identically to a phase that has not been written yet), or if the two present-but-gated phases produced two separate reduction lines instead of one naming both'
 
 t_case 'run.json records a coverage_gap a human reads, naming the target'
 assert_contains "$RUN_OK_JSON" "network covered nothing on target 'net-fixture'" \
