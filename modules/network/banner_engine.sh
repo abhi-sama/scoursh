@@ -269,3 +269,66 @@ banner_emit_disclosure() {
   finding_emit
   return 0
 }
+
+# `banner_emit_outdated TARGET ROLE SCHEME HOST PORT PRODUCT VERSION` -
+# NET-11, the `NET-SVC-OUTDATED_COMPONENT-01` check (report.md §3.2 item 1,
+# §3.4, §5.1, §7 Tier 3; docs/VERSIONS-DB.md §3's `banner` namespace).
+#
+# CALLED ONLY AFTER `banner_db_match PRODUCT VERSION` (modules/dast/passive/
+# banner_engine.sh, sourced above) HAS ALREADY RETURNED 0 for this exact
+# product@version pair - this function does no lookup of its own and reads
+# `_BANNER_ADVISORIES`/`_BANNER_SEVERITY`/`_BANNER_FIXED`/`_BANNER_SUMMARY`/
+# `_BANNER_DB_GENERATED`, the globals that call leaves set.  An EXACT match
+# against `data/versions.db`'s `banner` namespace, never a range or
+# close-enough comparison (report.md §3.4; docs/FOUNDATION.md tension 25
+# moved version-range arithmetic onto the networked box that populates that
+# file - this scanner only ever does a table lookup).
+#
+# CONFIDENCE IS ALWAYS `medium`, NEVER `high` - not a per-call choice, a
+# frozen property of this finding.  report.md §3.4's own backport problem:
+# a version read off a raw TCP banner is the SOFTWARE'S OWN self-reported
+# upstream version string, and a distribution that backports a security fix
+# (Debian's or RHEL's own openssh package is the report's worked example)
+# does so under an UNCHANGED version string, so an exact match against the
+# vendored list can name a host that is genuinely already patched. The
+# `remediation` field below states that limitation in words on every single
+# finding this function emits, not only in this file's own comment - a
+# reader of the finding alone, with no access to this source file, must be
+# able to see why `confidence: medium` rather than `high` applies here.
+#
+# THE `net` LOCATION PROFILE (target host port transport) IS UNCHANGED FROM
+# `banner_emit_disclosure` ABOVE, carrying no product/version component
+# (lib/findings.sh `_fp_components_for net`) - the two checks share no
+# fingerprint collision risk because they are two DIFFERENT check ids on the
+# same listener, the identical reasoning modules/network/checks-banner.rules'
+# own header gives for why disclosure alone needed only one id: one listener
+# discloses at most one product per this probe (net_banner_identify_text
+# stops at the first identifying line), so (target, host, port) already
+# identifies each check's own finding uniquely.
+banner_emit_outdated() {
+  local target=$1 role=$2 scheme=$3 host=$4 port=$5 product=$6 version=$7
+  local sev evi
+  sev=${_BANNER_SEVERITY:-high}
+  evi="Declared listener $scheme://$host:$port (role=$role, config/scope.conf) volunteered a banner identifying '$product' version '$version' without this scan sending any bytes to it, and that exact product@version has a row in the vendored known-vulnerable list at data/versions.db.${_BANNER_ADVISORIES:+ Advisory id(s): ${_BANNER_ADVISORIES}.}${_BANNER_SUMMARY:+ Summary: ${_BANNER_SUMMARY}.}${_BANNER_FIXED:+ Fixed in: ${_BANNER_FIXED}.} That list is an offline snapshot${_BANNER_DB_GENERATED:+ generated ${_BANNER_DB_GENERATED}} and is only as current as its last refresh (docs/VERSIONS-DB.md)."
+  finding_new
+  finding_set check_id NET-SVC-OUTDATED_COMPONENT-01
+  finding_set module net
+  finding_set title 'Network service version named in the vendored known-vulnerable list'
+  finding_set base_severity "$sev"
+  finding_set confidence medium
+  finding_set cwe CWE-1104
+  finding_set owasp A06:2021
+  finding_set exposure external
+  finding_set auth none
+  finding_set sensitive_data false
+  finding_set cell "${SCOURSH_NET_CELL:-$target}"
+  finding_set loc_target "$target"
+  finding_set loc_host "$host"
+  finding_set loc_port "$port"
+  finding_set loc_transport "$scheme"
+  finding_set corr_target "$target"
+  finding_set remediation 'Upgrade the component on this listener to a release the advisory does not name, or apply the vendor backport for it. Where an upgrade cannot be immediate, put a compensating control in front of the specific weakness the advisory describes and track the upgrade as the remediation rather than treating the control as one. Re-read the running version from the same listener afterwards. The version was read from a raw TCP banner the listener volunteered on connect, not a package manager or an authenticated check, so a distribution that backports a security fix under an unchanged upstream version string (e.g. Debian'"'"'s or RHEL'"'"'s own openssh packages) would not be visible here - confirm the running binary before treating this as a high-confidence claim about it.'
+  finding_set_evidence "$evi"
+  finding_emit
+  return 0
+}
