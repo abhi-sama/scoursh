@@ -666,277 +666,25 @@ of sequence - see their own sections below.
 **Step 6 (Cloud) has STARTED, and `modules/cloud/` now exists** - its tier 0 is partly landed.
 `docs/STEP6-CLOUD-PLAN.md`'s own dispatch plan reorganises that step into PRs P1..P22; P1 (the
 `lib/awscli.sh` hardening - response cache, `--profile`/`--region` plumbing, `aws_ro_account_id_set`,
-pagination, and the outcome vocabulary that stops an `AccessDenied` reading as an empty account) and
+pagination, and the outcome vocabulary that stops an `AccessDenied` reading as an empty account),
 P3 (`modules/cloud/aws/{run.sh,engine.sh,regions.sh}` - the `scan_dispatch cloud` entry point, the
-authorization record, and single-account region iteration) have landed; see the "Step 6" section
-below for the four things about P3 that a later ticket will otherwise rediscover the expensive way.
+authorization record, and single-account region iteration) and **P20 (`--assume-role` multi-account
+iteration - CLOUD-02's remainder - plus CLOUD-03's remaining scope item, the negative-fixture test)**
+have landed; see the "Step 6" section below for the four things about P3 that a later ticket will
+otherwise rediscover the expensive way, and for P20's own detail.
 **P5 (CLOUD-05, `modules/cloud/aws/live/s3.sh`) has now landed too - the first `aws/live/*.sh` service
 script, and the vertical slice that proves the whole cloud chain end to end.** It is the template every
 later service PR copies, so read its own section below before writing the second one. With it, a
-`--live` run resolves the account and its enabled regions, examines every S3 bucket in the account,
-emits findings that cite an ARN, a region, an account id and - where CIS v3.0.0 has a control - a `cis`
-id, and writes the FIRST real `account-region` coverage cell this repository has ever produced
-(`lib/state.sh`'s own header recorded that the `account-region` fixtures were hand-authored,
-schema-only proof until a check emitted one). It is also the first `aws_ro` call site
-`tests/lint-aws-readonly.sh` actually enforces: that lint reported "0 aws_ro call sites" on every run
-before this ticket and reports 10 after, so its checks 1-3 have stopped being vacuous.
-**P12 (CLOUD-21, `modules/cloud/aws/live/lambda.sh`) has since landed too - the second `aws/live/*.sh`
-service script, and the first REGIONAL row in `_CLOUD_SERVICES` to land (`s3` is `global`).** It shipped
-out of `docs/STEP6-CLOUD-PLAN.md`'s own recommended dispatch order: that plan's P12 row names P6
-(CLOUD-06, `aws/live/iam.sh`) as a dependency ("Reuses P6's role-policy reader"), and P6 had not landed -
-had not even been opened as a PR - when P12 was dispatched. Rather than block on an unlanded peer, P12
-ships its own, self-contained IAM policy-document reader in `lambda_engine.sh`, whose own header states
-this explicitly and names the correct follow-up (lift the shared reader out once `aws/live/iam.sh`
-lands) rather than treating the fork as a defect to fix opportunistically - the identical "land what's
-ready, note the gap" precedent this file records for `lib/http.sh`, `modules/iac/` and `modules/sca/`
-landing ahead of their own nominal step. Being regional rather than global is what makes `lambda`'s
-finding's `cell` and its `loc_region` the SAME value, unlike S3's own pass-cell-versus-resource-region
-split: `lambda list-functions` only ever answers for the region it was addressed to. Six
-`CLOUD-LAMBDA-*` checks ship (over-permissive execution role, split into a full-admin-equivalent id and
-a sensitive-service-wildcard id; public function URL and a `*`-principal resource policy, two ids for
-two independent invocation sinks; and a credential-shaped environment variable versus the absence of a
-customer-managed KMS key protecting the whole block) - none carries a `cis:` value, because CIS AWS
-Foundations Benchmark v3.0.0 has no Lambda section for one to honestly cite, the identical "an honest
-absence is the right outcome" call S3's own three CIS-unmapped checks make. `tests/suites/cloud-lambda.sh`
-is the proof, and its own section D is where the honesty accounting differs most from S3's: a role
-whose BOTH inline-policy and attached-managed-policy IAM calls are denied is a declared TOTAL loss for
-its two role checks on that one function, while every OTHER function in the same run sharing a readable
-role still credits them - the "credit a check only where its own call answered" rule, applied to a
-role rather than to a single per-resource call.
-**CLOUD-07/08/09 (`kms.sh`, `secretsmanager.sh`, `ssm.sh`) have now landed too, in one ticket - the
-first REGIONAL `aws/live/*.sh` services, proving the half of the service table S3's own `global` row
-does not exercise.** All three follow `s3.sh`'s own `run.sh`/`engine.sh` split one level down
-(`live/<service>.sh` + `live/<service>_engine.sh`) and its three honesty rules verbatim; see the "Step
-6" section below for what is actually new in this ticket rather than copied. In outline: `kms.sh`
-flags a customer-managed key with automatic rotation off (`cis: 3.6`) or an unconditioned wildcard key
-policy; `secretsmanager.sh` flags a secret with no rotation schedule or an unconditioned wildcard
-resource policy; `ssm.sh` flags a `String` parameter whose NAME looks sensitive
-(password/secret/token/credential/key) or an unconditioned wildcard resource policy. None of the five
-non-KMS-rotation checks carries a `cis:` value - CIS v3.0.0 has no section for KMS key policies, Secrets
-Manager, or SSM Parameter Store at all, and this project never invents a control number to satisfy a
-"must cite CIS" habit (`modules/cloud/aws/live/checks.rules`'s own new header block records the check).
-**P6 (CLOUD-06, `modules/cloud/aws/live/iam.sh`) has now landed too - the largest single CIS surface
-in the catalog and the first `global` service whose finding carries a `loc_region` of the literal
-string `global` rather than a real, per-resource region (see `iam_engine.sh`'s own header for why IAM
-has no per-resource region to resolve at all, unlike S3's buckets).** Twelve check ids across four
-account-wide facts (root MFA, root access keys, the account password policy, IAM Access Analyzer) and
-eight per-identity ones spanning users and roles (a full-admin policy - inline or attached managed,
-CIS v3.0.0 control 1.16's own published audit shape, matched by pattern rather than by a live policy
-simulation; no permission boundary on a full-admin identity; mixed inline/managed policies; a wildcard
-or unconditioned-cross-account trust policy on a role; an unused role; a stale password or access key;
-an unrotated access key). Five of the twelve cite a seeded `cis` value (1.4, 1.5, 1.8+1.9 together on
-one record, 1.12, 1.14, 1.20 - six numbers across five records); the other seven cite none, because
-CIS v3.0.0 has no seeded control for a full-admin policy (1.16 is real but untranscribed,
-`docs/CIS-MAPPINGS.md` §4), a wildcard/cross-account trust relationship, an unused role, or policy
-sprawl - an honest absence rather than an invented number. It ships
-`modules/cloud/aws/live/iam_engine.sh`'s `_iam_examine_policy_holder`, the shared inline+attached
-policy reader a later per-service ticket needing the same shape (an execution role, say) is expected
-to reuse rather than fork. Two sharp edges worth carrying forward, each found by running the checks
-against real fixtures rather than by review alone: `get-account-summary`'s `SummaryMap` flags are
-JSON NUMBERS (`0`/`1`), not booleans, and IAM Access Analyzer's own API is the one call in this file
-with all-lowercase field names (`analyzers[].status`), not IAM's usual PascalCase - both fail in the
-direction that reads as a clean account if spelled the PascalCase/boolean way. A THIRD, more expensive
-one: a role's trust-policy check and its unused-role check both reuse the one `_IAM_DOC` map a prior
-`iam_doc_load_string` call (decoding the trust document) leaves pointed at the WRONG document, so the
-unused-role check must reload the role's own `get-role` response immediately before reading
-`CreateDate`/`RoleLastUsed` rather than trusting whatever the trust-policy block left loaded - measured
-by watching `CLOUD-IAM-UNUSED_ROLE-01` never fire at all until that reload was added, with no error
-anywhere pointing at why. `SCOURSH_IAM_NOW_EPOCH` overrides the real clock for every age-threshold check
-here, mirroring `modules/dast/passive/tls_engine.sh`'s own injectable-`now` reasoning, so its own test
-fixtures keep the same verdict for as long as this file is in the tree.
-**P7 (CLOUD-13, `modules/cloud/aws/live/ec2.sh`) has now landed - the third `aws/live/*.sh` service
-script, and the first `regional` one (s3 is `global`).** It is the first real proof that
-`_CLOUD_SERVICES`' region loop actually iterates more than once: eight `CLOUD-EC2-*` checks (security
-groups open to `0.0.0.0/0` on an admin port or a database port - two ids, since CIS 5.2 covers only the
-former; the default security group in use; a public AMI; a public EBS snapshot; an unencrypted EBS
-volume; IMDSv2 not enforced; a VPC with no active flow log) fed by SIX INDEPENDENT API families
-(security groups + network interfaces for the default-SG "in use" half, AMIs, snapshots, volumes,
-instances, VPCs + flow logs) rather than S3's one `list-buckets` call every check depends on - see the
-"Step 6" section below for the five things about it a later regional service will otherwise
-rediscover. `tests/suites/cloud-ec2.sh` is its own vertical-slice proof, mirroring
-`tests/suites/cloud-s3.sh` but over TWO regions (a deliberately misconfigured `us-east-1` and a hardened
-`eu-west-2`), which is what makes multi-region iteration itself an assertion rather than a comment.
-**CLOUD-15/16 (`modules/cloud/aws/live/rds.sh` and `dynamodb.sh`) have now landed too, as
-tier-2 peers built by copying the S3 template** - four `CLOUD-RDS-*` checks (public accessibility,
-no encryption at rest, no automated backups/PITR, a snapshot shared with `restore: all`) and three
-`CLOUD-DYNAMODB-*` checks (no encryption-at-rest configuration, PITR disabled, a VPC Gateway endpoint
-left at AWS's default `Principal:"*"`/`Action:"*"` "Full Access" policy). Both are `regional` rows in
-`_CLOUD_SERVICES`, unlike S3's `global` one, so for both of them the coverage cell and a finding's
-`loc_region` are the SAME value - the ordinary case tension 12 is built around, not S3's global/
-per-bucket exception. Their own `checks-rds.rules`/`checks-dynamodb.rules` are SEPARATE files rather
-than appended to the shared `checks.rules` (that file's own header names this escape hatch: tier-2
-service PRs are genuinely parallel, simultaneously in-flight peers, not the sequential bundles the
-shared file assumes). Neither DynamoDB check carries a `cis` value - CIS v3.0.0 has no DynamoDB
-section at all - while RDS cites 2.3.1 and 2.3.3 (encryption, public access) and leaves its two other
-checks uncited, the identical honest-absence pattern `checks.rules` already documents for S3's
-versioning/logging checks.
-Two things measured while building them, worth knowing before the next service PR:
-- **Both RDS and DynamoDB paginate with a continuation key `lib/awscli.sh`'s shared
-  `_awscli_detect_truncation` does NOT recognise.** Every RDS `describe-*` operation returns a bare
-  `Marker` (not `NextMarker`/`NextToken`), and DynamoDB's `list-tables` returns
-  `LastEvaluatedTableName` - neither is in that function's frozen key table, so a truncated response
-  from either comes back `SCOURSH_AWS_RO_OUTCOME=ok` unless the service script checks the key itself.
-  `rds.sh`/`dynamodb.sh` each do, explicitly (`rds_marker_present`/`ddb_last_evaluated_present`), and
-  `tests/suites/cloud-rds.sh`/`cloud-dynamodb.sh` each have their own section F proving the shared
-  detector alone would have missed it. A future `aws/live/*.sh` script should check whether ITS OWN
-  service's pagination key is in that table before trusting `SCOURSH_AWS_RO_OUTCOME` alone.
-- **A per-resource call inside a list-walk must never `_doc_load` into the SAME shared doc-map the
-  walk itself is reading from, and this is a real, shipped defect that was caught by testing rather
-  than reasoned about in advance.** `s3.sh`'s own bucket loop avoids the hazard by draining every
-  bucket name into a plain array (`buckets=()`) BEFORE `_s3_examine_bucket` (which reloads `_S3_DOC`
-  per check) is ever called; a first draft of `rds.sh`'s snapshot loop and `dynamodb.sh`'s table loop
-  both interleaved the list-walk with the per-resource call instead, so `_rds_examine_snapshot`/
-  `_ddb_examine_table` - each of which calls `rds_doc_load`/`ddb_doc_load` on its OWN response -
-  clobbered the shared `_RDS_DOC`/`_DDB_DOC` map the outer `while` loop was still reading `DBSnapshots`/
-  `TableNames` from, so the walk silently stopped after exactly the FIRST resource with no error of any
-  kind. Both scripts now drain into a plain array first, matching s3.sh's own shape; both suites'
-  section B (three-plus resources, only the first of which is examined under the broken reading) is
-  what caught it, and it read as ordinary passing output until reduced to fewer resources than the
-  fixture actually named.
-**P14 (CLOUD-25/26/27, `modules/cloud/aws/live/{ecr,ecs,eks}.sh`) has since landed - Tier 6, containers,
-the first bundle of peers built directly off the S3 vertical slice.** All three are `regional` rows,
-which is the main way they differ from S3's own `global` shape: `cell` and `loc_region` are now the
-SAME value on every finding, because the pass's own region IS the resource's real region, with no
-S3-style per-bucket region-resolution call needed. `ecr.sh` needs only TWO operations
-(`describe-repositories`, which already carries `imageTagMutability` and
-`imageScanningConfiguration.scanOnPush` per repository with no per-repository call at all, plus
-`get-repository-policy` for the one check - public exposure - that genuinely needs one); `ecs.sh` and
-`eks.sh` are each a four-level call chain (`list-*` -> `list-*` -> `describe-*` -> `describe-*`) ending
-in a NEW shared file, `modules/cloud/aws/live/iam_policy_engine.sh`, which both scripts reuse rather
-than fork. That file is a deliberate, NAMED departure from the `<service>_engine.sh` convention
-S3's own file established (a per-service engine is PURE, no `aws_ro` call anywhere in it) - "task role
-over-permissive" (ECS) and "pod role over-permissive" (EKS) are the identical question (does an IAM
-role's inline policy grant `Effect: Allow` with `Action: "*"` on `Resource: "*"`) asked about a role
-reached two different ways, so the shared file carries the ONE impure driver
-(`iam_role_overpermissive`, `list-role-policies` then per-policy `get-role-policy`) alongside the pure
-statement-walking classifiers, rather than duplicating either half. **"Pod role" is a stated, named
-substitution, not a literal per-Kubernetes-ServiceAccount IRSA audit**: a per-pod IRSA binding lives
-inside the cluster's own Kubernetes API server, which scoursh has no credential or network path to
-read (the identical boundary DAST-04's own SPA gap draws), so `eks_engine.sh` evaluates the NODE
-GROUP's own IAM role instead - the role every pod on a node without its own IRSA binding inherits via
-the EC2 instance metadata service - and the check's own evidence and remediation text say precisely
-this rather than overclaiming a per-pod audit that was never performed. **NONE of these six checks
-carries a `cis:` value**, and that is an honest absence rather than a gap: `data/cis-mappings` names
-exactly the CIS AWS Foundations Benchmark v3.0.0, whose own numbering (sections 1/2/3/5) has no ECR,
-ECS or EKS coverage at all - a separate published benchmark exists for containers, and citing an id
-from it against a table that names only the Foundations Benchmark and its version would misattribute
-the finding exactly as `docs/CIS-MAPPINGS.md` §3 warns a version mismatch does, applied to a second
-BENCHMARK rather than a second version of the one already there. Every finding still carries its own
-CWE and OWASP category. `tests/suites/cloud-{ecr,ecs,eks}.sh` are the proof, each mirroring
-`cloud-s3.sh`'s own five-section shape (classifiers / both-directions-in-one-run / finding citation /
-honesty accounting / round-trip), with `cloud-ecs.sh`'s own section D exercising a denial at the
-SECOND level of its four-level chain (`list-services`), the one `cloud-s3.sh`'s two-level chain has no
-analogue for.
+`--live` run resolves the account (or, under `--assume-role`, every ACTIVE organization member account)
+and its enabled regions, examines every S3 bucket in the account, emits findings that cite an ARN, a
+region, an account id and - where CIS v3.0.0 has a control - a `cis` id, and writes the FIRST real
+`account-region` coverage cell this repository has ever produced (`lib/state.sh`'s own header recorded
+that the `account-region` fixtures were hand-authored, schema-only proof until a check emitted one). It
+is also the first `aws_ro` call site `tests/lint-aws-readonly.sh` actually enforces: that lint reported
+"0 aws_ro call sites" on every run before this ticket and reports 10 after, so its checks 1-3 have
+stopped being vacuous.
 **Every OTHER `aws/live/*.sh` service in `docs/DESIGN.md` §8.1's catalog is still absent**, and a
 `--live` run records each one as unexamined rather than counting it clean.
-
-**CLOUD-14 (`aws/live/elb.sh`) and CLOUD-24 (`aws/live/cloudfront.sh`) have also landed**, copying
-CLOUD-05's `run.sh`/`engine.sh` split and honesty-accounting shape onto two services with real shape
-differences from S3's, each worth knowing before touching either file:
-
-- **`elb.sh` covers TWO AWS CLI namespaces - `elb` (Classic Load Balancer) and `elbv2` (ALB/NLB) - as
-  ONE service row and ONE set of three check ids** (`CLOUD-ELB-HTTP_NO_REDIRECT-01`,
-  `CLOUD-ELB-WEAK_TLS_POLICY-01`, `CLOUD-ELB-NO_ACCESS_LOGS-01`), per `docs/STEP6-CLOUD-PLAN.md`'s own
-  counting note ("Classic ELB and ALB/NLB are one AWS product across two API generations"). It is
-  `regional`, unlike S3's `global` row, so `loc_region` and the coverage cell AGREE - there is no
-  bucket-vs-cell-region split to reconcile the way `s3.sh` has.
-- **A Classic ELB listener's own `PolicyNames` entry is an operator-chosen LABEL with no protocol
-  information in it**, unlike ALB/NLB's `SslPolicy` field, which genuinely is the predefined policy's
-  own name. Classifying a Classic ELB's TLS strength from that label alone would false-positive on the
-  ordinary Terraform shape (a custom-named policy that references a modern predefined one), so
-  `elb.sh` resolves it through a SECOND call, `elb describe-load-balancer-policies`, and
-  `elb_classic_policy_doc_is_weak` (`elb_engine.sh`) reads the resulting `Reference-Security-Policy`
-  attribute when present, falling back to the `Protocol-SSLv3`/`Protocol-TLSv1`/`Protocol-TLSv1.1`
-  flags on a fully custom policy - matching AWS's own Trusted Advisor check for this posture.
-  ALB/NLB's `SslPolicy` still needs no such indirection; `elb_policy_is_weak` there is a "proves
-  strong" name test (matches `TLS-1-2`/`TLS13`), not a "matches known-weak" one, so a custom ALB
-  policy name that proves nothing is reported rather than assumed fine.
-- **`PolicyNames` is a SIBLING key of `Listener` inside one `ListenerDescriptions[]` entry, never
-  nested under it** (`{"Listener": {...}, "PolicyNames": [...]}`). A path built by appending
-  `PolicyNames` onto the already-constructed `.../Listener` prefix names a leaf the document has no
-  way to hold, so the lookup silently reads empty on every listener - the exact "TLS policy examined
-  and found nothing wrong" false clean this module's honesty rules exist to forbid. Caught by
-  `tests/suites/cloud-elb.sh` section B (both a weak and a hardened Classic ELB in one run) rather
-  than by review; a fixed sibling `entry` variable (never the `Listener`-suffixed `base`) is what
-  `PolicyNames` and `Listener`'s own fields are each read against now.
-- **An ALB redirect action whose `RedirectConfig.Protocol` is the literal string `#{protocol}`
-  performs NO scheme upgrade at all** - it is AWS's placeholder for "keep the original protocol",
-  used for path-only redirects - so `elb_default_actions_redirect_https` accepts only the literal
-  `HTTPS`, never that placeholder. Pinned directly in `tests/suites/cloud-elb.sh` (case A9/A10 and the
-  public ALB fixture, whose HTTP listener carries exactly this shape).
-- **`cloudfront.sh` cites `loc_region` as the literal `global` on EVERY finding, and it agrees with the
-  cell** - a CloudFront distribution has no per-resource AWS region at all, unlike an S3 bucket, so
-  there is nothing to resolve the way `s3.sh` resolves a bucket's. Its ARN is READ directly off
-  `get-distribution`'s own `Distribution.ARN` field, never constructed (unlike S3's bucket ARN and
-  Classic ELB's, neither of which the API ever returns).
-- **The origin-exposure check (`CLOUD-CLOUDFRONT-ORIGIN_EXPOSED-01`) is scoped to S3 origins ONLY**: an
-  origin is treated as an S3 origin solely by the presence of an `S3OriginConfig` block: a
-  `CustomOriginConfig` origin (an ALB, an on-prem server, any non-S3 HTTP(S) backend) is skipped
-  outright, since OAC/OAI is exclusively an S3-origin access-control mechanism and flagging a custom
-  origin for lacking one would be a defect this check has no standing to raise -
-  `tests/suites/cloud-cloudfront.sh` case B5 pins the count of findings at exactly one on a
-  distribution with both origin shapes present.
-- **NEITHER SERVICE'S CHECK RECORDS CARRY A `cis:` VALUE.** CIS AWS Foundations Benchmark v3.0.0 has no
-  Elastic Load Balancing or CloudFront section at all - confirmed against `data/cis-mappings`, which
-  transcribes the full v1(CIS-core) scope and carries no row shaped like either. Per
-  `docs/CIS-MAPPINGS.md` §1, an absent `cis:` line is the honest reading; inventing a control number to
-  satisfy a "must cite CIS" habit is the overstated-coverage failure `docs/DESIGN.md` §15 forbids -
-  this is the identical judgement `modules/cloud/aws/live/checks.rules`'s own S3
-  NO_DEFAULT_ENCRYPTION/NO_VERSIONING/NO_LOGGING records already made.
-- **`finding_set exposure internet`, not `external`.** `data/severity-rubric.conf`'s frozen `exposure`
-  fact has exactly three values - `internet`/`internal`/`unknown` (`rules/RULE-FORMAT.md` §9.6.5) -
-  and `modules/cloud/aws/live/s3_engine.sh` spells the internet-facing case `external`, which matches
-  none of them and silently takes the rubric's `_rubric_mod` no-match default of `+0`, the SAME
-  outcome as `unknown`: an S3 public-exposure finding therefore gets no severity boost from exposure
-  at all. That mismatch is pre-existing on `dev` and was left alone here (fixing it is a change to
-  already-merged, unrelated code, not this ticket's scope) - `elb_engine.sh`'s and
-  `cloudfront_engine.sh`'s own emitters use the correct `internet` spelling and say so in their own
-  headers, so the next reader does not copy the S3 file's mistake forward a second time.
-- **Every `<engine>_doc_get VAR PATH` call whose PATH may legitimately be absent needs `|| true`.**
-  `elb_doc_get`/`cfd_doc_get` return the SAME 1 `s3_doc_get` does for a missing leaf (by design - it
-  is how a caller tests for absence), and under this file's `set -Eeuo pipefail` an unguarded call on
-  a path that is not always present aborts the whole scan the first time a real response omits it
-  (measured: a Classic ELB listener with an empty `PolicyNames` array killed a live debug run outright
-  before this was caught). `s3.sh` never hits this because every one of its bare `s3_doc_get` calls is
-  either preceded by a same-path `s3_doc_has` check or reads a field the API always populates; `elb.sh`
-  and `cloudfront.sh` read several fields with no such guarantee (a listener's optional policy name, an
-  ALB attribute walked by key rather than fixed path, `WebACLId`, `MinimumProtocolVersion`, an
-  `OriginAccessControlId` sibling to an already-checked `S3OriginConfig`) and guard every one.
-
-**P15 (CLOUD-28/29/10/11/12: `sns`, `sqs`, `acm`, `route53`, `backup`) has since landed too**, the
-first tier-2 peer bundle copied from the P5/S3 template.  Seven checks across five services, all
-regional except `route53` (global, like `s3`, but with NO per-resource region to resolve at all -
-a hosted zone is a global DNS namespace, so `loc_region` is the literal string `global` rather than
-an S3-style resolved value).  **None of the seven carries a `cis` value**, and that is the honest
-absence this module's own `checks.rules` header rule requires: CIS AWS Foundations Benchmark
-v3.0.0 (`data/cis-mappings`) has no section for SNS, SQS, ACM, Route53 or AWS Backup at all, so
-inventing a control id to satisfy a "must cite CIS" habit would be the overstated-coverage failure
-`docs/DESIGN.md` §15 forbids - a future ticket that transcribes a genuinely-covering control adds
-the row and the `cis:` line together.  Three things worth carrying here for the next tier-2 bundle:
-- **SNS and SQS have no `get-bucket-policy-status`-style AWS-side policy evaluator**, unlike S3, so
-  their `*_PUBLIC_POLICY-01` checks parse the resource-policy JSON directly - deliberately
-  conservatively (Effect Allow, a wildcard Principal, and NO Condition AT ALL; any Condition
-  suppresses the finding rather than this scanner attempting to evaluate whether it truly narrows
-  the grant). SQS additionally has an SSE-managed-by-default exemption S3 has and SNS does not
-  (`SqsManagedSseEnabled`, a STRING "true"/"false" - every SQS attribute is `Map<String,String>`,
-  never a JSON boolean).
-- **`acm.sh`'s expiry check takes `now` as an argument** (`SCOURSH_CLOUD_ACM_NOW` overrides
-  `date +%s`), the identical AGENTS.md DAST-07 TLS-expiry lesson applied one layer up - a
-  hardcoded system clock would make a committed fixture certificate's outcome depend on the day
-  the suite happens to run.
-- **`route53.sh`'s dangling-record check is deliberately scoped to ONE subdomain-takeover vector**
-  (an S3-website ALIAS/CNAME whose record name equals a bucket that no longer exists), because a
-  real check for an externally-hosted target would need a raw DNS lookup - which is NEITHER of the
-  no-egress rule's two permitted outbound categories (a curl to a `config/scope.conf` host, or a
-  read-only AWS API call) - and must not be added. `backup.sh`'s v1 scope is EBS volumes compared
-  against `backup list-protected-resources`, not the S3/EC2/ELB cross-reference the plan doc's
-  own Notes column mentions, because those two services' scripts do not exist on disk yet and this
-  module's peer-service model forbids depending on another service's FILE existing.
-- **Two new "Things measured" lessons this bundle found, both in `tests/suites/cloud-*.sh` test
-  code rather than in the shipped scripts** - see that section below: `IFS=$'\t' read` silently
-  collapsing an EMPTY field (the identical DAST-11 "tab is IFS whitespace" trap, now hit in test
-  table-parsing rather than a production stream), and `local -n` (bash namerefs) needing 4.3 against
-  this project's frozen 4.2 minimum.
 **Step 7 (persistent run state, `state/` plus `diff`) is complete.**
 **Step 10 (SARIF plus the compliance report) is now complete in full**: Track A (the SARIF emitter) is
 complete, and Track B (the compliance-mapping report) has landed all four tickets - COMPLIANCE-01/02
@@ -1619,7 +1367,8 @@ suppression check reads, ahead of the carve-out ever being consulted.  Confirmed
 the field the gate reads (simulating exactly the drift the test guards against) turns this case red.
 **Step 7 is therefore complete**: STATE-01 through STATE-08 have all landed.
 
-Step 6 (Cloud) remains unstarted.
+Step 6 (Cloud) has since started (CLOUD-01/02/03/04 - see the "Step 6" sections further down for the
+detail); every real §8.1 service script (CLOUD-05 onward) remains unstarted.
 
 **`scan.sh report --from DIR` has since landed too - independent of step 7's `state/`, since it needs
 no classification at all, only re-emission from a prior run's own findings.**
@@ -2580,11 +2329,32 @@ backwards.**
 `docs/STEP6-CLOUD-PLAN.md` is the sub-ticket plan; the dispatch plan that reorganises it into PRs
 P1..P22 is the authority for what is landed. P1 (`lib/awscli.sh`'s remaining half), P2 (the routed
 multi-call AWS fixture stub), P4 (`data/cis-mappings`), P3
-(`modules/cloud/aws/{run.sh,engine.sh,regions.sh}`), P5 (`aws/live/s3.sh`, the vertical slice), P17
-(`aws/live/apigw.sh`, CLOUD-22 - see its own landing paragraph below), CLOUD-07/08/09
-(`aws/live/{kms,secretsmanager,ssm}.sh` - see its own landing paragraph below) and P6 (`aws/live/iam.sh`,
-CLOUD-06 - see its own landing paragraph below) are in; every other `aws/live/*.sh` service, and the
-`posture/` half, are not.
+(`modules/cloud/aws/{run.sh,engine.sh,regions.sh}`, single-account), **P20 (CLOUD-02's
+`--assume-role` multi-account remainder, plus CLOUD-03's remaining scope item)**, P5
+(`aws/live/s3.sh`, the vertical slice) and P17 (`aws/live/apigw.sh`, CLOUD-22 - see its own landing
+paragraph below) are in; every other `aws/live/*.sh` service, and the `posture/` half, are not.
+
+**P20 landed multi-account iteration** (`modules/cloud/aws/regions.sh` section 5:
+`cloud_org_accounts_resolve`, `cloud_assume_role_arn_for`, `cloud_assume_role`,
+`cloud_assume_role_clear`; `modules/cloud/aws/run.sh`'s `_cloud_run_multi_account` and the
+`_cloud_scan_one_account` extraction it shares with the single-account path) and closed out CLOUD-03's
+one remaining scope item, the negative-fixture test (`tests/suites/aws-lint.sh`).
+`--assume-role ARN` no longer refuses (D3's single-account-only gate is gone): it enumerates the
+organization's ACTIVE member accounts (`organizations list-accounts`, paged via `--starting-token`),
+and assumes a read-only role in each (`sts assume-role`) built by rewriting the ARN's own account
+segment per account - the role NAME/path is a template, identical in every member account, which is
+the ordinary shape an `OrganizationAccountAccessRole`-style deployment already takes.
+Two correctness properties worth knowing before touching this code: `lib/awscli.sh`'s response cache is
+keyed in part on the resolved account id, so switching principal without RE-resolving it (`aws_ro
+sts get-caller-identity`, forced via `aws_ro_identity_forget`) would let two different accounts' calls
+with byte-identical arguments (`ec2 describe-regions` takes none at all) collide on one cache entry -
+`cloud_assume_role` re-resolves and VERIFIES the assumed session lands in the account it was built for,
+never trusting a clean `sts assume-role` response alone; and `cloud_assume_role_clear` runs BEFORE every
+attempt, not only after one, because a role assumed into one account routinely cannot itself assume a
+role in a different one, so a failed attempt must never leave its session ambient for the next.
+`--i-own-account` is checked once, against the CALLING identity only (typically the org management or a
+delegated-administrator account) - never per member account, since it answers "did the operator mean to
+point this invocation at this credential," a fact about how the run was started.
 
 - **An `AccessDenied` is NOT an empty account, and this module is where that distinction is most
   expensive.** `lib/awscli.sh` section 2's frozen outcome vocabulary is what separates them, and
@@ -2677,10 +2447,16 @@ CLOUD-06 - see its own landing paragraph below) are in; every other `aws/live/*.
   OWASP category; an honest absence beats an invented control id. A service script emits through
   `finding_from_record`, so the `cis` value reaches the finding from the registry rather than being
   retyped - which is the only way the two cannot disagree.
-- **`tests/aws-readonly-allow.txt` still must NOT exist.** `tests/lint-aws-readonly.sh`'s check 4
-  rejects any entry that appears in no code, and `sts get-caller-identity` needs no entry at all - the
-  frozen `get` prefix already admits it. The file is seeded by the ticket that adds the first
-  `aws_ro sts assume-role` call site, and by no earlier one.
+- **`tests/aws-readonly-allow.txt` now exists, seeded by P20 with exactly one entry, `sts
+  assume-role`** - the ticket that added the first `aws_ro sts assume-role` call site
+  (`modules/cloud/aws/regions.sh`'s `cloud_assume_role`), and the only ticket that could seed it without
+  tripping `tests/lint-aws-readonly.sh`'s check 4 (an entry with no caller fails; §1.4 of the scoursh
+  cloud dispatch report measured this directly before P20 landed). `sts get-caller-identity` still needs
+  no entry at all - the frozen `get` prefix already admits it, and `lib/awscli.sh`'s own
+  `aws_ro_account_id_set` header says explicitly not to add one. Every `tests/suites/aws-lint.sh` case
+  still runs against an ISOLATED fixture allowlist (its own `lint()`/`lint_with_allowfile()` helpers, both
+  updated by P20 to never fall through to the real committed file), so this file having real content
+  changes nothing about what any of those assertions mean.
 
 **P17 (CLOUD-22, `modules/cloud/aws/live/apigw.sh`) has now landed too - the second `aws/live/*.sh`
 service, and the first CROSS-MODULE producer of `reports/<run>/inventory/endpoints.json`
@@ -2765,105 +2541,6 @@ that suite's own comment predicts. Seven things about it are worth knowing befor
   prior response never got, never remove one), so no existing suite's fixtures were at risk;
   `tests/suites/awscli.sh` pins both the truncated and the `null`-means-last-page readings for it,
   mirroring the existing `NextToken` cases exactly.
-
-**CLOUD-07/08/09 (`kms.sh`, `secretsmanager.sh`, `ssm.sh`) landed together, copying `s3.sh`'s template,
-and five things about them are worth carrying here rather than only in their own file headers.**
-
-- **All three are `regional`, and that REMOVES a whole class of `s3.sh`'s own bookkeeping rather than
-  adding a new one.** A regional service's `list-*`/`describe-*` call already names only the resources
-  IN the pass's own region, so the resource's real region genuinely IS `SCOURSH_CLOUD_REGION`, the cell
-  is `<account>/<region>` (the SAME value as `loc_region`, not S3's separate `<account>/global`), and
-  there is no per-resource region-resolution call to make at all. `tests/suites/cloud-kms.sh`'s own C5
-  asserts this equality directly, because an implementation that copied S3's cell literally would
-  otherwise pass every other assertion in the suite.
-- **A resource-policy document is JSON embedded AS A STRING inside another JSON document, and it is
-  UNESCAPED EXACTLY ONCE - never twice.** `kms get-key-policy`'s `Policy`, `secretsmanager
-  get-resource-policy`'s `ResourcePolicy`, and `ssm get-resource-policies`'s per-entry `Policy` all
-  share this shape. Every `*_doc_load` in this tree already unescapes every STRING leaf as it loads
-  (`s3_doc_load`'s own header explains why), so by the time a service script reads the field back out
-  (`kms_policy_field`, `secm_policy_field`, ...) it has ALREADY had its one layer of escaping removed -
-  and `cloud_policy_load` (`modules/cloud/aws/engine.sh` §4b, the SHARED classifier all three consume,
-  because three services landing in one ticket needing it is the shape `inject_engine.sh` was shared
-  for, not a one-service convenience) must NOT unescape it again. Unescaping twice mangles nothing
-  visibly in the common case (most policy statements carry no literal backslash) but is simply the
-  wrong function of a document that happens to still parse - and the REAL defect this ticket actually
-  shipped and caught before landing was different and sharper: see the next bullet.
-- **`$'\x1f'` (ANSI-C quoting) LOSES ITS SPECIAL MEANING THE INSTANT IT IS NESTED INSIDE A SECOND, OUTER
-  PAIR OF DOUBLE QUOTES - it is then nine LITERAL bytes, not one separator byte - and this is invisible
-  in an editor because both readings look identical on screen.** `"Statement$'\x1f'$__idx"`, passed
-  as a function ARGUMENT, is the broken spelling; `Statement$'\x1f'"$__idx"` (no enclosing quotes around
-  the whole expression - separate quoted/unquoted pieces the shell concatenates into one word) or
-  building it into a plain variable first, are the two fixes this ticket landed with. The identical
-  byte sequence used as an ARRAY SUBSCRIPT (`${_KMS_DOC[KeyMetadata$'\x1f'KeyManager]}`) is NOT affected
-  even when the whole subscript expression sits inside an outer `"..."` - subscript expansion has its
-  own quote-removal rules - so this trap is specific to building a PATH STRING as a quoted argument, not
-  to the US-byte idiom in general. `cloud_policy_is_public`'s own header comment (`engine.sh`) carries
-  the full account, including which assertion in `tests/suites/cloud-kms.sh` (B7) fails under the broken
-  spelling - measured by reverting the fix and watching it go red, not reasoned about.
-- **A resource this pass correctly judges OUT OF SCOPE for a check is neither EVALUATED nor LOST for
-  it, and that is a third state `s3.sh`'s own accounting never needed.** An AWS-managed KMS key, an
-  asymmetric/HMAC/imported-material KMS key (rotation only), a Secrets Manager secret owned by another
-  AWS service, and one already scheduled for deletion, all fall into this state: the API call is never
-  attempted, so no `unsupported`/`access_denied` outcome is ever manufactured for a call this scanner
-  had no business making, and the resource contributes to neither `_note_evaluated` nor `_note_lost`.
-  Getting the gate PERMISSIVE (calling anyway) turns a real "not applicable" into a misleading
-  coverage_reduction; getting it RESTRICTIVE (skipping an eligible resource) silently under-reports.
-  `tests/suites/cloud-kms.sh`'s own routed fixture table proves the permissive direction concretely: it
-  registers NO route at all for the ineligible/AWS-managed key's rotation call, so a regression that
-  widened the gate would fail LOUDLY at the stub (tests/lib/aws-fixtures.sh's own "no route registered"
-  exit) rather than silently passing.
-- **`cis:` follows the identical discipline `s3.sh`'s own checks established, and the count is stark:
-  one of six.** Only `CLOUD-KMS-ROTATION_DISABLED-01` cites a real CIS v3.0.0 control (`3.6`, already
-  present in `data/cis-mappings`); the other five - the KMS/Secrets-Manager/SSM policy checks and the
-  two remaining rotation/type checks - cite nothing, because CIS AWS Foundations Benchmark v3.0.0 has no
-  section for a KMS key policy, Secrets Manager, or SSM Parameter Store at all. `checks.rules`' own new
-  header block states this rather than leaving a reader to wonder whether it was overlooked, and
-  `tests/suites/cloud-kms.sh` C6 / `cloud-secretsmanager.sh` C5 / `cloud-ssm.sh` C5 each assert the
-  ABSENCE of a `cis` value on their non-rotation check, not only the presence of one where it belongs.
-
-**CLOUD-13 (`modules/cloud/aws/live/ec2.sh`) has landed - the fourth `aws/live/*.sh` service (after S3,
-API Gateway, and kms/secretsmanager/ssm), the third `regional` one (`apigw.sh` was the first), and five
-things about it a later regional service will otherwise rediscover the expensive way.**
-
-- **A `regional` service is sourced ONCE PER REGION, so its own per-pass state must be RESET, not merely
-  DECLARED, and the difference is real here in a way it never was for `s3.sh`'s `global` pass.**
-  `s3.sh`'s header already states "reset here rather than only declared" as a defensive precaution; for
-  `ec2.sh` a run genuinely reaches the file more than once, so a `declare -gA _EC2_EVALUATED=()` that
-  only *declared* (rather than *reset*) the map would carry `us-east-1`'s counts into `eu-west-2`'s pass
-  and credit the second region's `checks_run` with resources it never examined.
-- **THE CELL AND THE REGION ARE THE SAME VALUE HERE, unlike S3's `global` pass.** Every EC2/VPC API this
-  file calls (`describe-security-groups`, `describe-network-interfaces`, `describe-images`,
-  `describe-snapshots`, `describe-volumes`, `describe-instances`, `describe-vpcs`,
-  `describe-flow-logs`) is itself region-scoped, so there is no S3-shaped "the cell is the pass's, the
-  region is the resource's, and they differ" case to resolve - both are `<account>/<region>`, set once
-  from `SCOURSH_CLOUD_REGION`. `tests/suites/cloud-ec2.sh` asserts they are EQUAL rather than merely
-  both present, which is what would catch a script that copied `s3_emit_finding`'s global-cell reasoning
-  in unchanged.
-- **SIX INDEPENDENT API FAMILIES, NOT ONE LIST FEEDING EIGHT CHECKS.** Unlike S3 (one `list-buckets`
-  call every check depends on, so its failure is a whole-account loss), EC2/VPC's eight checks are fed
-  by six SEPARATE `describe-*` families - a role denied `ec2:DescribeImages` alone must still get the
-  other seven checks answered in that region. Each family's list-call failure is therefore handled
-  independently: the affected check ids' `_EC2_LOST_REASON` is recorded (so the end-of-region roll-up
-  names the real cause) and the family's own processing returns, but the REGION PASS CONTINUES to its
-  other five families - `_ec2_run_service` calls all six unconditionally rather than returning early the
-  way `s3.sh`'s `list-buckets` failure does.
-- **THE MULTI-CALL SHAPE ("list then per-resource get") IS REAL FOR TWO FAMILIES, NOT INVENTED FOR
-  UNIFORMITY WITH S3.** AMIs and EBS snapshots are the only two of EC2's families whose public-sharing
-  STATE is a separate, per-resource call (`describe-image-attribute`/`describe-snapshot-attribute`)
-  rather than a field already present on the list response - a security group's rules, a volume's
-  `Encrypted` flag, an instance's `MetadataOptions`, and a VPC's own id are all inline in their own
-  single `describe-*` call. Forcing a second call for the other four families would spend API budget
-  these EC2 operations do not need, purely to look uniform with S3's own per-property-call shape.
-- **EIGHT CHECK IDS FOR SEVEN PROPERTIES, AND THE SPLIT IS NOT ON SEVERITY THE WAY S3'S ACL SPLIT IS.**
-  `CLOUD-EC2-SG_OPEN_ADMIN_PORT-01` and `CLOUD-EC2-SG_OPEN_DB_PORT-01` are two ids because CIS AWS
-  Foundations Benchmark v3.0.0 control 5.2 covers "remote server administration ports" (22, 3389)
-  specifically and has NO database-port equivalent - citing 5.2 against a MySQL/Redis/... exposure would
-  misattribute a control that does not cover it (`docs/CIS-MAPPINGS.md` §1), on top of the fingerprint
-  argument every other split in this file's `checks.rules` already makes (the CLOUD location profile
-  names no component for which port family fired). Four of the eight cite a real v3.0.0 control (5.2,
-  5.4, 5.6, 3.7, already seeded in `data/cis-mappings` for exactly this v1 CIS-core scope); the
-  database-port case, public AMIs, public EBS snapshots, and unencrypted volumes cite none, because
-  v3.0.0 has no control for any of them - an honest absence, not a gap in the record.
 
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01 has
 not.**
@@ -2972,6 +2649,16 @@ branch and `main` lags it (see "`main` lags `dev`" below), so gating on `main`'s
 work that has already landed as still outstanding - and step 5 has since landed in full (see "Current
 position" above), so that gate is discharged; step 6 remains not started only because no CLOUD-0x or
 POSTURE-0x ticket has been picked up yet, not because it is still blocked.
+
+**That is no longer true: step 6 HAS started.** CLOUD-01 (`lib/awscli.sh`'s remaining half), CLOUD-02
+(`modules/cloud/aws/regions.sh`, both the single-account half via P3 and the `--assume-role`
+multi-account half via P20) and CLOUD-04 (`modules/cloud/aws/run.sh`, the dispatch skeleton) have
+landed, and CLOUD-03 (the read-only-verb lint's remaining scope item, the negative-fixture test) has
+landed with P20 too - see "`modules/cloud/aws/` now exists" above for the detail, which this paragraph
+is kept beside rather than merged into, per this file's own convention of correcting in place rather
+than rewriting. What remains not started is every real §8.1 service script (CLOUD-05 onward) and the
+`posture/` phase (POSTURE-01 onward), so a `scan.sh cloud --live` run is still a clean, honestly-declared
+no-op over whichever account(s)/region(s) it resolved.
 
 **PARANOID-01 has now landed - `lib/paranoid.sh` implements `--paranoid` for real.**
 It builds the four-set allowlist tension 20's RESOLUTION specifies (`paranoid_allowlist_build`).
@@ -3979,9 +3666,6 @@ Recorded because the review rounds found several confidently-stated shell facts 
 - **A top-level `declare -A` in a library file is global ONLY if the file's first `source` in this process happens outside every function frame; sourcing it lazily from inside a short-lived function makes that array LOCAL to that function and gone the moment it returns.** This is the same hazard `modules/dast/engine.sh`'s own `declare -ga _DAST_PHASES` comment documents for `scan_dispatch`, but it had never actually bitten `lib/records.sh`/`lib/findings.sh` because every real caller (`scan.sh`, every `modules/*/run.sh`) sources them transitively at true top level before any function runs. `tools/vendor-engines.sh`'s `_veng_advisories_load_normalizers` broke that assumption: it lazily sources `modules/sca/engine.sh` (which pulls in `lib/findings.sh` -> `lib/records.sh`) from inside itself, then returns - so `_SCHEMA_LOADED` et al. existed for exactly one function call, and every later `log_info`/`log_warn` in that process (routed through `redact()` -> `_schema_ensure`) died with `records.sh: line N: <schema>: unbound variable` under `set -u`, printed from a dying command-substitution subshell so the run kept going and still exited 0 with unredacted log output. Fixed by making every top-level associative/indexed array in both files `declare -gA`/`declare -ga` (a no-op for the normal top-level-sourcing case, since `-g` only matters inside a function). If a new file gains this same "lazily source a `lib/`-chain file from inside a helper function" shape, its persistent state needs the identical `-g`, or it will look correct until something calls it a second time from a different frame.
 - **A fixture `SCOURSH_INSTALL_ROOT` needs a REAL, COPIED `modules/` tree, never a symlinked one, the instant a test actually DISPATCHES (not merely probes `_scan_module_built`/G1 reachability).** `lib/records.sh` resolves every loaded file's path via `realpath` and strips `$SCOURSH_INSTALL_ROOT` as a literal prefix (the E018/E081 module-ownership checks, and every other path-table check, key off the result); a symlinked `modules/` makes `realpath` follow the link to the REAL tree, so the strip silently fails and a real check-registry load fires a spurious E081 ("`checks.rules` sits outside every prefix of the §9.5.1 owning-module map") on a fixture that never touched the registry's actual content. Measured building GUIDE-06's guided-dast-flow and load-bearing round-trip tests (`tests/suites/scan.sh`): `ln -s "$ROOT/modules" "$FIXTURE/modules"` passed every case that only asked "is `dast` built" (G1's own `_guide_g1_reachable`) and failed the instant one of them picked "Run it" and reached `scan_dispatch dast` for real. `cp -R` instead - `tests/suites/scan.sh`'s own `$ROOT_WITH_CHECKS` fixture already canonicalises its root (`cd -- DIR && pwd -P`) for the identical realpath-prefix reason, on the `/tmp` -> `/private/tmp` macOS symlink chain; a fixture that dispatches for real needs both fixes together.
 - **A DAST response body loaded into a bash string with `body=$(cat -- "$f")`/`body=$(head -c N -- "$f")` both silently drops every NUL byte AND prints `warning: command substitution: ignored null byte in input` to the shell's own stderr on this project's supported bash versions - regardless of an inner `2>/dev/null`, which only silences the read command's own stderr, not bash's warning about the substitution it performed.** Measured live: `modules/dast/active/hosthdr_engine.sh`'s `hh_body_reflects` leaked exactly this line twice during a real active scan. `read`/`mapfile` would silence the warning but not the byte loss (bash strings are C strings internally and cannot hold an embedded NUL by any route), so the fix is to never lift the body into a bash string at all - match on the file directly via `scan_match ... -a ...`. `-a`/`--text` is load-bearing and not optional: `rg`'s DEFAULT binary heuristic (a NUL anywhere) makes it report only `binary file X matches` with no offsets otherwise, and **`--no-binary` is NOT a real ripgrep flag that means "treat as text"** - despite `lib/core.sh`'s own `core_bind_engine` comment claiming it "expresses the same thing" as `--binary=false` - it is clap's auto-generated negation of `--binary` and behaves identically to omitting the flag (measured: a NUL-containing file with a match after the NUL still gets only the binary-file summary line under `--no-binary`, on both a fresh invocation and one with `--binary` also passed). This is a live, unaddressed gap in the SAST/SCA/IaC pattern engine's own binary-file handling (tension 2 wanted binary files searched as text so a secret in a vendored blob is not missed) - `hh_body_reflects` and `crawl_body_looks_like_markup` sidestep it locally with their own `-a`, but `core_bind_engine`'s array-wide claim is still wrong and was left uncorrected because fixing the shared engine binding is a cross-cutting change well outside a targeted null-byte fix.
-- **`IFS=$'\t' read -r a b c ... <<<"$row"` silently drops an EMPTY MIDDLE FIELD, because a tab is an IFS-*whitespace* character and bash's word-splitting collapses a RUN of IFS-whitespace into one delimiter** - the identical fact DAST-11's `markup_engine.sh` note already records for a production stream, now measured biting TEST CODE instead: `tests/suites/cloud-sns.sh`'s own `_findings_table` helper printed a tab-joined row whose `cis` column is legitimately empty for every CLOUD-SNS-*/SQS-*/ACM-*/ROUTE53-*/BACKUP-* check (none of the five services has a CIS AWS Foundations Benchmark v3.0.0 section to cite), and `IFS=$'\t' read` silently shifted every field after the empty one left by one position - the account id landed in the variable meant for `cis`, and the variable meant for the account id came back empty. `tests/suites/cloud-s3.sh` never tripped this because every row it ever parses that way happens to have a non-empty `cis` (S3's four public-exposure checks all cite 2.1.4), so the trap was latent rather than absent there. The fix, applied in every `tests/suites/cloud-{sns,sqs,acm,route53,backup}.sh` suite: join and read on `$'\x1f'` (US) instead of a tab, in the python `_findings_table` helper, the `awk -F` calls that filter its output, and the `IFS=... read` that unpacks one row - never mix an IFS-whitespace byte into a delimited record whenever a field can legitimately be empty, in test code exactly as much as in a shipped script.
-- **`awk -F'\x1f'` does NOT reliably split on the real 0x1f byte - measured on macOS/BSD awk 20200816, it silently produces `NF=1` (the whole line as one field) instead of splitting, so `$2 == "$want"` is always false and every downstream filter returns nothing.** This is a DIFFERENT trap from the tab-IFS one directly above, found fixing it: switching a delimiter FROM a tab TO the hex escape `\x1f` written literally inside the `-F` argument looks like the obvious fix and is itself broken, because `-x` hex escapes in an AWK string/regex literal are a GNU AWK extension this project's own BSD userland does not implement the way a naive port assumes - the sequence is not an error, it just never matches, which is the failure shape to fear (AGENTS.md's own standing warning: a fixture wrong in the direction that still passes). Measured directly: `printf 'a\x1fb\x1fc\n' | awk -F'\x1f' '{print NF}'` prints `1` on this project's macOS awk; `SEP=$'\x1f'; ... | awk -F"$SEP" '{print NF}'` prints the correct `3`. The fix in every `tests/suites/cloud-{sns,sqs,acm,route53,backup}.sh` suite is a `SEP=$'\x1f'` shell variable, defined once near the top, with every `awk -F` call spelled `awk -F"$SEP"` - never `awk -F'\x1f'` inline. This was caught only because the SHIPPED CHECK SCRIPTS were independently proven correct first (a raw `aws_ro` fetch diffed byte-identical against the fixture, and the classifier functions given that exact fetched content returned the right verdict) - which is what pointed the search at the TEST'S OWN extraction pipeline rather than at `modules/cloud/aws/live/*.sh` a second time.
-- **A `local -n VARNAME=ARG` (bash nameref) needs bash 4.3; this project's frozen minimum, stated repeatedly in this file, is 4.2.** A first draft of `modules/cloud/aws/live/route53.sh` passed its per-pass known-bucket-name set to `_route53_examine_zone` as a nameref parameter, mirroring a pattern common in newer bash code; it runs fine under a current macOS/Homebrew bash but is a real, silent incompatibility on the oldest bash this project claims to support - `local -n` did not exist before 4.3 at all, so it fails to parse rather than merely misbehaving. Fixed by making the known-bucket set a module-level `declare -gA` global (`_R53_KNOWN_BUCKETS`) that the callee reads directly, the same "own global, no reference passed" shape every other per-pass accumulator in `modules/cloud/aws/live/*.sh` already uses. Grep `local -n\|declare -n` before adding one anywhere in this tree.
 
 ## Maintaining this file
 

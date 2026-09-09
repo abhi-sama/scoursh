@@ -10,6 +10,18 @@ step 5.
 
 ## Status: not started, but every sequential blocker is now cleared
 
+**Correction, since this section was written: step 6 has since started.**
+CLOUD-01 (`lib/awscli.sh`'s remaining half - the response cache, `--profile`/`--region` plumbing,
+`aws_ro_account_id_set`, pagination, and the outcome vocabulary), CLOUD-02 (`modules/cloud/aws/regions.sh`
+- both the single-account half and the `--assume-role` multi-account remainder), CLOUD-03 (the
+read-only-verb lint's remaining scope item: the negative-fixture test, and seeding
+`tests/aws-readonly-allow.txt` with `sts assume-role`) and CLOUD-04 (`modules/cloud/aws/run.sh`, the
+`scan_dispatch cloud` entry point) have all landed - see `AGENTS.md`'s "Step 6 (Cloud/AWS)" sections for
+the full detail. No real `docs/DESIGN.md` §8.1 service script (CLOUD-05 onward) or `posture/` phase
+(POSTURE-01 onward) has landed yet, so a `scan.sh cloud --live` run today resolves the account(s) and
+region(s) and records that it examined no service - a real dispatch that found nothing to run, not a
+`reason=not_yet_built` no-op.
+
 **The build order (§13) is strictly sequential, and every step ahead of step 6 - step 3 (SAST), step 4
 (SCA + IaC), and step 5 (DAST) - is now complete on `dev`.** `dev` is the integration branch (`main` is
 the release branch; work lands on `dev` first and reaches `main` in batches - both exist on the

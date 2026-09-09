@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# modules/cloud/aws/regions.sh - single-account region iteration
+# modules/cloud/aws/regions.sh - single-account region iteration, and
+# multi-account iteration via --assume-role
 # (docs/DESIGN.md §8.1's `regions.sh` bullet; docs/STEP6-CLOUD-PLAN.md
-# CLOUD-02, single-account half only).
+# CLOUD-02, both halves).
 #
 # docs/DESIGN.md §8.1 states the requirement this file exists for:
 #
@@ -17,12 +18,26 @@
 # outcome vocabulary was added to close one layer down.  An operator who wants
 # one region says so with `--regions`, and that narrowing is RECORDED.
 #
-# MULTI-ACCOUNT IS OUT OF SCOPE HERE, DELIBERATELY.  §8.1's own wording makes
-# it "Optionally iterate accounts via --assume-role", and this module refuses
-# `--assume-role` outright (exit 2, `modules/cloud/aws/run.sh`) rather than
-# accepting the flag and ignoring it.  See that file's own note for why
-# refusing beats silently scanning one account under a flag that asked for
-# several.
+# MULTI-ACCOUNT (docs/STEP6-CLOUD-PLAN.md D3's deferred half, this ticket).
+# §8.1's own wording is "Optionally iterate accounts via --assume-role across
+# an Org (read-only role in each)."  Section 5 below is that: the flag names
+# ONE role ARN whose ACCOUNT segment is a TEMPLATE, rewritten per member
+# account resolved from `organizations list-accounts` and assumed through the
+# chokepoint's own `sts` `assume-role` operation.  SINGLE-ACCOUNT BEHAVIOUR (no
+# --assume-role) IS COMPLETELY UNCHANGED - sections 1-4 below are untouched by
+# this ticket, and `modules/cloud/aws/run.sh` reaches section 5 only when the
+# operator passed the flag.
+#
+# A NOTE ON THIS FILE'S OWN COMMENTS, worth reading before writing another one:
+# tests/lint-aws-readonly.sh has no comment awareness at all (the identical
+# lesson `modules/iac/cloudformation.rules`'s own header already records for
+# the pattern engine), so PROSE naming the chokepoint's function immediately
+# followed by two literal words - the shape a real invocation of it takes - is
+# matched as though it were one.  Measured while writing this section: writing
+# that shape in a docstring turned this file's own comments into two of the
+# lint's reported "call sites", each parsed into a bogus, punctuation-mangled
+# operation name that was then reported as refused.  Describe the hazard; do
+# not spell the invocation shape.
 #
 # shellcheck shell=bash
 
@@ -295,4 +310,253 @@ cloud_regions_resolve() {
   aws_ro_reduction_reason_set _CLOUD_REGIONS_REASON "$ec2_outcome"
   _CLOUD_REGIONS_DETAIL="no region could be enumerated: 'ec2 describe-regions' returned $ec2_outcome and the 'account list-regions' fallback returned $acct_outcome"
   return 1
+}
+
+# ---------------------------------------------------------------------------
+# 5. Multi-account iteration via --assume-role (docs/STEP6-CLOUD-PLAN.md D3's
+#    deferred half, CLOUD-02 remainder)
+# ---------------------------------------------------------------------------
+# Published state, the account-list analogue of section 1's region globals:
+#
+#   _CLOUD_ORG_ACCOUNTS         ACTIVE member account ids, LC_ALL=C sorted and
+#                                de-duplicated
+#   _CLOUD_ORG_ACCOUNTS_REASON  the machine-readable reason, empty on success
+#   _CLOUD_ORG_ACCOUNTS_DETAIL  a human sentence for the coverage record
+declare -ga _CLOUD_ORG_ACCOUNTS=()
+_CLOUD_ORG_ACCOUNTS_REASON=''
+_CLOUD_ORG_ACCOUNTS_DETAIL=''
+
+# `cloud_assume_role_arn_for VARNAME ACCOUNT_ID TEMPLATE_ARN` - rewrites the
+# account-id field of TEMPLATE_ARN to ACCOUNT_ID, keeping the partition and
+# the role path/name unchanged.  A SETTER, for the reason `cloud_json_leaf`'s
+# own header gives one file up: a caller composing this straight into
+# `aws_ro sts assume-role --role-arn "$(...)"` would be one edit away from the
+# subshell hazard the whole module is written against.
+#
+# ARN shape for an IAM role: `arn:PARTITION:iam::ACCOUNT:role/PATH` - IAM ARNs
+# carry no region field, so splitting on ':' gives exactly SIX parts and the
+# fifth is the account.  A role name cannot itself contain ':' (IAM constrains
+# it to `[\w+=,.@-]`), so the sixth part (the resource) is never split
+# further.  scan.sh's own `assume-role) [[ $val == arn:*:role/* ]]` shape
+# check is looser than this - it admits a string that matches that glob but
+# splits into fewer than six colon-parts (e.g. `arn:aws:role/x`, missing the
+# empty service/region fields) - so THIS is the stricter check that actually
+# gates whether the template can be used, and a caller must check the return
+# status rather than trust scan.sh's parse-time validation alone.
+cloud_assume_role_arn_for() {
+  local __var=$1 __account=$2 __template=$3
+  local -a __parts=()
+  IFS=':' read -r -a __parts <<<"$__template"
+  if (( ${#__parts[@]} != 6 )); then
+    printf -v "$__var" '%s' ''
+    return 1
+  fi
+  printf -v "$__var" '%s:%s:%s:%s:%s:%s' \
+    "${__parts[0]}" "${__parts[1]}" "${__parts[2]}" "${__parts[3]}" "$__account" "${__parts[5]}"
+}
+
+# `_cloud_org_accounts_note_truncation OUTCOME` - the account-list analogue of
+# `_cloud_regions_note_truncation`: a SUCCESSFUL enumeration whose outcome is
+# `truncated` produced a SHORT account list, and the accounts that WERE
+# resolved are kept and used (a partial audit beats none) while the caller
+# gets a non-empty `_CLOUD_ORG_ACCOUNTS_REASON` to record.
+_cloud_org_accounts_note_truncation() {
+  local outcome=$1
+  [[ $outcome == truncated ]] || return 0
+  aws_ro_reduction_reason_set _CLOUD_ORG_ACCOUNTS_REASON "$outcome"
+  _CLOUD_ORG_ACCOUNTS_DETAIL="'organizations list-accounts' returned a TRUNCATED response, so the account list resolved is an incomplete list of this organization's member accounts - any account missing from it was not scanned and is not reported on either way"
+  return 0
+}
+
+# `cloud_org_accounts_resolve` - `organizations list-accounts`, kept to ACTIVE
+# accounts only.  A SUSPENDED or PENDING_CLOSURE account is not scannable (its
+# APIs refuse outright), so admitting one here would spend an assume-role call
+# per account just to collect a refusal this function already knows is
+# coming - the identical "a loss invented by the scanner rather than observed"
+# reasoning `_cloud_regions_from_ec2`'s own header gives for `--all-regions`.
+#
+# `--starting-token` (never `--next-token`): `aws_ro_paged`'s own header draws
+# the line on which flag a caller passes - `--starting-token` for an operation
+# the CLI has a REGISTERED PAGINATOR for, and `organizations list-accounts` is
+# one of the ordinary `NextToken`-shaped list operations every AWS CLI release
+# has paginated automatically since Organizations first shipped a CLI surface;
+# passing the raw `--next-token` to a paginated command is rejected by the CLI
+# itself as an unrecognised argument.
+#
+# EACH PAGE'S ARRAY INDICES ARE READ, ACCUMULATED AND FLUSHED WITHIN THAT
+# PAGE, NEVER ACROSS PAGES.  `cloud_json_flatten`'s path for account N of a
+# page is `Accounts<US>N<US>Id` - N restarts at 0 on every page, so combining
+# two pages' `Id`/`Status` maps in one associative array keyed on N alone
+# would let page 2's account 0 silently overwrite page 1's account 0 in the
+# map, DROPPING page 1's account entirely rather than merely mis-labelling it.
+# Flushing to `_CLOUD_ORG_ACCOUNTS` before moving to the next page's `local -A`
+# (which re-executes and clears both maps each loop iteration) avoids the
+# collision by construction rather than by namespacing the key.
+cloud_org_accounts_resolve() {
+  _CLOUD_ORG_ACCOUNTS=()
+  _CLOUD_ORG_ACCOUNTS_REASON=''
+  _CLOUD_ORG_ACCOUNTS_DETAIL=''
+
+  local dir rc=0
+  dir=$(mktemp -d "${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/cloud-org-accounts.XXXXXX")
+  aws_ro_paged "$dir" --starting-token organizations list-accounts || rc=$?
+  local outcome=${SCOURSH_AWS_RO_OUTCOME:-error}
+  if (( rc != 0 )); then
+    rm -rf -- "$dir"
+    aws_ro_reduction_reason_set _CLOUD_ORG_ACCOUNTS_REASON "$outcome"
+    _CLOUD_ORG_ACCOUNTS_DETAIL="'organizations list-accounts' returned $outcome, so no member account could be enumerated"
+    return 1
+  fi
+  _cloud_org_accounts_note_truncation "$outcome"
+
+  local page path type val idx acct
+  local -a raw=()
+  for page in "$dir"/page-*.json; do
+    [[ -f $page ]] || continue
+    local -A id_by_idx=() status_by_idx=()
+    while IFS=$'\t' read -r path type val; do
+      [[ $type == s ]] || continue
+      case $path in
+        Accounts$'\x1f'*$'\x1f'Id)
+          idx=${path#Accounts$'\x1f'}; idx=${idx%%$'\x1f'*}
+          id_by_idx[$idx]=$(cloud_json_unescape "$val")
+          ;;
+        Accounts$'\x1f'*$'\x1f'Status)
+          idx=${path#Accounts$'\x1f'}; idx=${idx%%$'\x1f'*}
+          status_by_idx[$idx]=$(cloud_json_unescape "$val")
+          ;;
+        *) continue ;;
+      esac
+    done < <(cloud_json_flatten <"$page")
+    for idx in "${!id_by_idx[@]}"; do
+      [[ ${status_by_idx[$idx]:-} == ACTIVE ]] || continue
+      acct=${id_by_idx[$idx]}
+      [[ $acct =~ ^[0-9]{12}$ ]] || continue
+      raw+=("$acct")
+    done
+  done
+  rm -rf -- "$dir"
+
+  if (( ${#raw[@]} > 0 )); then
+    # LC_ALL=C sort -u: a fixed, reproducible order (the same reason
+    # `docs/INVENTORY-FORMAT.md`'s own consumers sort - tension 5's finding
+    # `occurrence` ordinal and this run's own `checks_run` order both derive
+    # from visitation order) and de-duplicated, since one account CAN appear
+    # on two pages of a response observed mid-pagination-boundary-shift.
+    while IFS= read -r acct; do
+      [[ -n $acct ]] && _CLOUD_ORG_ACCOUNTS+=("$acct")
+    done < <(printf '%s\n' "${raw[@]}" | LC_ALL=C sort -u)
+  fi
+
+  if (( ${#_CLOUD_ORG_ACCOUNTS[@]} == 0 )); then
+    _CLOUD_ORG_ACCOUNTS_REASON=org_no_active_accounts
+    _CLOUD_ORG_ACCOUNTS_DETAIL="'organizations list-accounts' returned no ACTIVE account"
+    return 1
+  fi
+  return 0
+}
+
+# `cloud_assume_role ACCOUNT_ID TEMPLATE_ARN` - assumes the read-only role in
+# ACCOUNT_ID (built from TEMPLATE_ARN via `cloud_assume_role_arn_for`) and
+# makes the resulting session credentials AMBIENT for every `aws_ro` call that
+# follows, through lib/awscli.sh's own `aws_ro_use_credentials` - the
+# multi-account analogue of `aws_ro_use_profile`/`aws_ro_use_region`.
+#
+# THE CALL SITE IS SPELLED DIRECTLY (`aws_ro sts assume-role ...`), never
+# through a variable or a wrapper, for the identical reason
+# `_cloud_regions_from_ec2`'s own header gives at length: tests/lint-aws-readonly.sh
+# reads the literal operation word following the chokepoint's function and its
+# service argument.  `sts assume-role` is the one operation in this file that
+# is NOT covered by the frozen read-only prefix - it needs its own
+# tests/aws-readonly-allow.txt entry (tension 23 item 4), which this ticket is
+# the one that seeds.
+#
+# A SETTER, for the by-now-standard reason: `aws_ro` sets lib/awscli.sh's
+# outcome globals, and a `$(...)` around this call would set them in a
+# subshell that then exits, reintroducing the exact honesty gap
+# `aws_ro_account_id_set`'s own header is written against.
+cloud_assume_role() {
+  local __account=$1 __template=$2
+  local __role_arn=''
+  if ! cloud_assume_role_arn_for __role_arn "$__account" "$__template"; then
+    _CLOUD_ORG_ACCOUNTS_REASON=cli_usage
+    _CLOUD_ORG_ACCOUNTS_DETAIL="--assume-role '$__template' does not split into the six ':'-separated fields an IAM role ARN has, so no role ARN could be built for account $__account"
+    return 1
+  fi
+
+  local __out __rc=0
+  __out=$(mktemp "${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/cloud-assume.XXXXXX")
+  chmod 600 -- "$__out" 2>/dev/null || true
+  aws_ro sts assume-role --role-arn "$__role_arn" \
+    --role-session-name "scoursh-scan-$$" >"$__out" || __rc=$?
+  local __outcome=${SCOURSH_AWS_RO_OUTCOME:-error}
+  if (( __rc != 0 )); then
+    rm -f -- "$__out"
+    aws_ro_reduction_reason_set _CLOUD_ORG_ACCOUNTS_REASON "$__outcome"
+    _CLOUD_ORG_ACCOUNTS_DETAIL="'sts assume-role' for account $__account ($__role_arn) returned $__outcome"
+    return 1
+  fi
+
+  local __akid='' __secret='' __token=''
+  cloud_json_leaf __akid "$__out" $'Credentials\x1fAccessKeyId'
+  cloud_json_leaf __secret "$__out" $'Credentials\x1fSecretAccessKey'
+  cloud_json_leaf __token "$__out" $'Credentials\x1fSessionToken'
+  rm -f -- "$__out"
+  if [[ -z $__akid || -z $__secret || -z $__token ]]; then
+    _CLOUD_ORG_ACCOUNTS_REASON=error
+    _CLOUD_ORG_ACCOUNTS_DETAIL="'sts assume-role' for account $__account returned a 200 whose body carried no usable Credentials"
+    return 1
+  fi
+  aws_ro_use_credentials "$__akid" "$__secret" "$__token"
+
+  # lib/awscli.sh's response cache is keyed in part on SCOURSH_AWS_ACCOUNT_ID,
+  # which at this point still holds the CALLER's id (or is empty) - not the
+  # account just assumed into.  Leaving it stale would let two DIFFERENT
+  # accounts' identical (service, region, operation, args) calls collide on
+  # one cache entry: `ec2 describe-regions` takes no arguments at all and is
+  # called for every account in the sweep, so this is a measured hazard, not
+  # a hypothetical one.  `aws_ro_identity_forget` clears the memoisation AND
+  # the cache, which is what forces the re-resolve below to be a REAL API
+  # call rather than the memoised early return `aws_ro_account_id_set`
+  # otherwise takes - and confirming the resolved identity also catches a
+  # trust policy that assumed cleanly but landed somewhere other than the
+  # account this function built the role ARN for.
+  aws_ro_identity_forget
+  local __resolved='' __idrc=0
+  aws_ro_account_id_set __resolved || __idrc=$?
+  if (( __idrc != 0 )) || [[ $__resolved != "$__account" ]]; then
+    local __idoutcome=${SCOURSH_AWS_RO_OUTCOME:-error}
+    aws_ro_use_credentials
+    aws_ro_identity_forget
+    aws_ro_reduction_reason_set _CLOUD_ORG_ACCOUNTS_REASON "$__idoutcome"
+    _CLOUD_ORG_ACCOUNTS_DETAIL="the assumed session for account $__account resolved to '${__resolved:-no identity ($__idoutcome)}' via sts get-caller-identity, not the requested account - refusing to scan under a session that does not match"
+    return 1
+  fi
+  return 0
+}
+
+# `cloud_assume_role_clear` - drop the ambient assumed-role session and the
+# identity it resolved, back to whatever ambient (--profile/environment)
+# credentials the CALLER holds.  `modules/cloud/aws/run.sh`'s multi-account
+# loop calls this BEFORE every `cloud_assume_role` attempt, not only after
+# one - a role-ARN template that fails to build (`cloud_assume_role_arn_for`)
+# or an assume that fails before `aws_ro_use_credentials` is ever reached
+# would otherwise leave the PREVIOUS account's session ambient for whatever
+# `cloud_assume_role` call comes next, and a role assumed into one account
+# routinely cannot itself assume a role in a different one - so every attempt
+# starts from a clean, known state rather than depending on how the previous
+# one failed.  It is also called once after the whole sweep, so nothing after
+# the loop ever runs under a stale assumed session.
+#
+# Both halves are required: `aws_ro_use_credentials` with no arguments clears
+# the session credentials themselves, and `aws_ro_identity_forget` clears the
+# memoised account id AND the response cache - lib/awscli.sh's own header
+# explains why the cache half is load-bearing rather than tidiness (a `sts
+# get-caller-identity` under the new principal hashes identically to the old
+# one's cache key and would otherwise be served the previous account's cached
+# identity straight back).
+cloud_assume_role_clear() {
+  aws_ro_use_credentials
+  aws_ro_identity_forget
+  return 0
 }
