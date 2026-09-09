@@ -49,19 +49,27 @@ No field may contain a TAB or an LF.
 Lookup is `db_lookup_exact` (`lib/core.sh`) - `LC_ALL=C look` on a prefix, falling back to
 `grep -F -m 1` where `look` is absent - and nothing else ever reads the file.
 
-The first field is a **namespace**, and this file carries two kinds of row:
+The first field is a **namespace**, and this file carries three kinds of row:
 
 | Field 1 | Rows | Written by | Read by |
 |---|---|---|---|
 | an SCA ecosystem (`npm`, `pypi`, `maven`, `Go`, `RubyGems`, `composer`) | one per exact affected package version | `tools/vendor-engines.sh advisories` | nothing today - `modules/sca/` reads `data/advisories.db`, and `tools/vendor-engines.sh` writes both files from one call (tension 25's "the same shape and the same rule") |
 | the literal `banner` | one per exact affected **product** version | an operator, per §5 | `modules/dast/passive/banner_engine.sh` |
+| a per-release Alpine key (`Alpine:v3.18`, `Alpine:v3.19`, ...) | one per exact affected apk package version | `tools/vendor-engines.sh advisories alpine` (data/scoursh-image-scan-design/report.md §2.3/§4.1, IMG-03) | nothing today - `modules/image/` reads `data/advisories.db`, mirroring the SCA row above; both files get it for the identical "same shape, same rule" reason |
 
-The two coexist safely and that is by construction, not by luck.
-`tools/vendor-engines.sh`'s single writer (`_veng_advisories_write_db`) replaces only the rows whose first
-field equals the ecosystem it is writing and carries every other row through untouched, so refreshing npm
-cannot delete the banner catalogue and vendoring a banner row cannot delete npm's.
+All three coexist safely and that is by construction, not by luck.
+`tools/vendor-engines.sh`'s writer for a single fixed namespace
+(`_veng_advisories_write_db`) replaces only the rows whose first field EQUALS the ecosystem it is
+writing and carries every other row through untouched, so refreshing npm cannot delete the banner
+catalogue and vendoring a banner row cannot delete npm's. The Alpine importer uses a PREFIX-matched
+sibling writer instead (`_veng_advisories_write_db_prefix`) because one import can legitimately name
+several different Alpine releases at once - see that function's own header in `tools/vendor-engines.sh`
+for why an exact match does not fit this one namespace.
 `banner` also sorts before every ecosystem name under `LC_ALL=C`, so adding banner rows never disturbs the
-sort the lookup depends on.
+sort the lookup depends on. `Alpine:` (capital `A`, byte `0x41`) sorts before every lowercase-initial
+namespace - `banner` (`0x62`), `composer`, `maven`, `npm`, `pypi` - and before the two other
+capital-initial ecosystems, `Go` (`0x47`) and `RubyGems` (`0x52`); only the file's own `#` header lines
+(`0x23`) sort earlier still. Adding Alpine rows therefore never disturbs the sort either.
 
 ## 3. The `banner` row, field by field
 

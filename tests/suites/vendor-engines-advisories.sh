@@ -520,6 +520,119 @@ assert_not_contains "$(cat "$DB")" banner \
   'data/advisories.db (scratch) STILL carries no banner row even after other ecosystems have since written real rows to it - banner never reaches this file at all'
 
 # ---------------------------------------------------------------------------
+# -- section D3: the `alpine` namespace (IMG-03, data/scoursh-image-scan-
+#    design/report.md §2.3/§4.1) - a SEVENTH advisory importer, but the
+#    ONE whose own row carries a PREFIX-matched, per-row ecosystem key
+#    rather than a fixed one, and the only one besides the six SCA
+#    ecosystems that writes data/advisories.db at all (banner does not).
+#    Deliberately NOT one of VENG_ADVISORY_REGISTRY's six entries either -
+#    see veng_advisories_alpine's own header comment in
+#    tools/vendor-engines.sh for why.
+# ---------------------------------------------------------------------------
+run_alpine() {
+  # Same shape as run_banner above, reached through its own `alpine` case
+  # in veng_advisories_main rather than veng_advisories_one.
+  ( PATH="$FAKE_BIN:$PATH" \
+    FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
+    SCOURSH_SCA_ADVISORIES_DB="$DB" \
+    SCOURSH_SCA_VERSIONS_DB="$VDB" \
+    SCOURSH_SCA_SUMMARIES_DB="$SDB" \
+    SCOURSH_DAST_VERSION_SUMMARIES_DB="$VSDB" \
+    bash "$TOOL" advisories alpine ) >"$W/run-alpine.out" 2>&1
+}
+
+t_case 'veng_advisories_alpine is not one of VENG_ADVISORY_REGISTRY'"'"'s six entries'
+assert_eq 6 "${#VENG_ADVISORY_REGISTRY[@]}" \
+  'the registry still holds exactly six entries - adding alpine support must never grow it'
+rc=0
+( veng_advisories_one alpine ) >"$W/alpine-not-registered.out" 2>&1 || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
+  "veng_advisories_one (the registry-dispatch path) refuses 'alpine' - it is reached only through advisories_main's own explicit 'alpine' case, never VENG_ADVISORY_REGISTRY"
+assert_contains "$(cat "$W/alpine-not-registered.out")" "unknown ecosystem 'alpine'" \
+  'the refusal names alpine, proving it genuinely is not in the registry rather than silently matching by accident'
+
+t_case '_veng_advisories_osv_ecosystem: alpine is the "Alpine:*" PREFIX sentinel, never the bare "*" wildcard banner uses'
+assert_eq 'Alpine:*' "$(_veng_advisories_osv_ecosystem alpine)" \
+  'a distinct sentinel from banner own "*" - FAILS if alpine were wired to the bare wildcard, which would also admit a Debian- or RubyGems-tagged affected[] entry'
+
+t_case '_veng_advisories_env_var: alpine mirrors the SCOURSH_ADVISORY_<NAME>_IDS shape'
+assert_eq 'SCOURSH_ADVISORY_ALPINE_IDS' "$(_veng_advisories_env_var alpine)" \
+  'the env var name follows the identical pattern every SCA ecosystem and banner already use'
+
+t_case '_veng_advisories_normalize_name: alpine is a verbatim pass-through, never an sca_* function'
+assert_eq 'openssl' "$(_veng_advisories_normalize_name alpine openssl)" \
+  'apk package names carry no normalisation convention the way npm/PyPI/Composer names do (report.md §2.1)'
+assert_eq 'Mixed-Case' "$(_veng_advisories_normalize_name alpine 'Mixed-Case')" \
+  'and nothing is lower-cased or punctuation-collapsed either, unlike banner_normalize_product'
+
+t_case 'advisories alpine, no operator-supplied ids: refuses (exit 4), never touches curl'
+rc=0
+out=$(PATH=$NO_NET_PATH bash "$TOOL" advisories alpine 2>&1) || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" 'advisories alpine with no ids set is exit 4 - curl is entirely absent from PATH'
+assert_contains "$out" 'SCOURSH_ADVISORY_ALPINE_IDS' \
+  'the refusal names the exact env var, mirroring every SCA ecosystem and banner refusal'
+
+t_case 'advisories bulk alpine: refused (exit 4) - alpine is scoped to VENG_ADVISORY_REGISTRY'"'"'s six SCA ecosystems, and has no bulk path'
+rc=0
+out=$(PATH=$NO_NET_PATH bash "$TOOL" advisories bulk alpine --accept-unverified 2>&1) || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
+  "bulk refuses 'alpine' exactly like any other unknown ecosystem, never silently accepted - IMG-03's own scope is single-advisory import only"
+assert_contains "$out" "unknown ecosystem 'alpine'" 'the bulk refusal names alpine directly'
+
+t_case 'advisories --list / --all are unaffected by alpine'
+out=$(PATH=$NO_NET_PATH bash "$TOOL" advisories --list 2>&1)
+assert_not_contains "$out" alpine \
+  '--list still reports only the six SCA ecosystems - alpine is a separate command, never a seventh list entry, and so is never swept into --all or bulk --all either'
+
+t_case 'end-to-end: alpine - ONE advisory spanning TWO Alpine releases writes TWO rows, and a same-package Debian entry is excluded'
+: >"$W/db/advisories.db"
+: >"$W/db/versions.db"
+SCOURSH_ADVISORY_ALPINE_IDS='SCOURSH-FIXTURE-OSV-ALPINE-1' run_alpine
+assert_file_exists "$DB" 'data/advisories.db (scratch) was written - UNLIKE banner, alpine writes here (report.md §2.3: this IS the exact-row shape modules/image/ reads)'
+DB_AFTER_1=$(cat "$DB")
+assert_contains "$DB_AFTER_1" \
+  "$(printf 'Alpine:v3.18\topenssl\t3.1.4-r1\tSCOURSH-FIXTURE-OSV-ALPINE-1\thigh\t3.1.4-r2')" \
+  'the Alpine:v3.18 row, in the EXISTING exact-row shape the brief names (ecosystem/package/version/advisory_id/severity/fixed_versions) - FAILS if the row carried a seventh, un-frozen field, or if the release-specific fixed version were dropped'
+assert_contains "$DB_AFTER_1" \
+  "$(printf 'Alpine:v3.19\topenssl\t3.1.4-r0\tSCOURSH-FIXTURE-OSV-ALPINE-1\thigh\t3.1.5-r0')" \
+  'the SAME advisory ALSO wrote an Alpine:v3.19 row, with its OWN fixed version (3.1.5-r0, not v3.18'"'"'s 3.1.4-r2) - FAILS under any reading that keeps only the first affected[] entry it sees, or that collapses two releases onto one row'
+assert_not_contains "$DB_AFTER_1" 'Debian' \
+  'the Debian-tagged affected[] entry for the SAME package produced no row at all - FAILS if "Alpine:*" were wired to the bare "*" wildcard instead of a real Alpine: prefix match'
+line_count=$(grep -c -F 'SCOURSH-FIXTURE-OSV-ALPINE-1' "$DB")
+assert_eq 2 "$line_count" \
+  'exactly two rows for this advisory (v3.18 and v3.19), never three - the Debian entry contributed none'
+assert_eq "$(grep -v '^#' <<<"$DB_AFTER_1")" "$(grep -v '^#' "$VDB")" \
+  'data/versions.db carries the byte-identical DATA rows (the two files'"'"' own `#` header lines legitimately differ - each names its own basename) - tension 25/VERSIONS-DB.md §2'"'"'s "same shape, same rule" reuse applies to alpine too, unlike banner'
+assert_contains "$(cat "$VSDB")" 'fixture: openssl heap overflow' \
+  'the summary lives in the version-summaries side table, mirroring every other namespace'
+assert_contains "$(cat "$SDB")" 'fixture: openssl heap overflow' \
+  'and in the advisory-summaries side table too, since alpine (unlike banner) writes data/advisories.db'
+
+t_case 'both directions of the exit-4 gate this ticket adds are pinned against a real image_ecosystem_known-shaped lookup'
+rc=0
+db_lookup_exact "$(printf 'Alpine:v3.18\t')" "$DB" >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" \
+  'Alpine:v3.18 IS covered after the run above - the gate must NOT fire for this release (fires-when-present half)'
+rc=0
+db_lookup_exact "$(printf 'Alpine:v3.20\t')" "$DB" >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" \
+  'Alpine:v3.20 has no row at all - the gate MUST fire for an unvendored release (fires-when-absent half) - modules/image/engine.sh'"'"'s image_ecosystem_known is this exact db_lookup_exact prefix test'
+
+t_case 'merge: re-running alpine replaces the WHOLE Alpine: namespace across EVERY release, and never disturbs an unrelated SCA ecosystem'
+SCOURSH_ADVISORY_NPM_IDS='SCOURSH-FIXTURE-OSV-NPM-1' run_ecosystem npm
+SCOURSH_ADVISORY_ALPINE_IDS='SCOURSH-FIXTURE-OSV-ALPINE-2' run_alpine
+after_replace=$(cat "$DB")
+assert_contains "$after_replace" 'busybox' "alpine-2's own package is present"
+assert_not_contains "$after_replace" 'openssl' \
+  "a second 'advisories alpine' run REPLACES the WHOLE Alpine: namespace rather than accumulating - so BOTH of the first run's rows (v3.18 AND v3.19) are gone, not merged, even though this run only named v3.18"
+assert_not_contains "$after_replace" 'Alpine:v3.19' \
+  'specifically: the v3.19 row from the FIRST run is gone even though the SECOND run never touched v3.19 at all - proving the replace-scope is the whole Alpine: PREFIX, not the one release the new rows happen to name'
+assert_contains "$after_replace" 'left-pad-fixture' \
+  "the npm row written BEFORE this alpine run survives untouched - _veng_advisories_write_db_prefix's own prefix filter leaves every non-'Alpine:' row alone"
+assert_contains "$(cat "$VDB")" 'busybox' 'data/versions.db was replaced the same way'
+assert_not_contains "$(cat "$VDB")" 'openssl' 'and also lost the stale v3.18/v3.19 openssl rows'
+
+# ---------------------------------------------------------------------------
 # -- section E: merge behaviour - re-running one ecosystem replaces ONLY
 #    that ecosystem's rows, leaving every other ecosystem's rows intact --
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # modules/image/run.sh - the container-image-scanning module entry point
 # (IMG-01, data/scoursh-image-scan-design/report.md §3.2's exact integration
-# cost table and §5.3's IMG-01 row).
+# cost table and §5.3's IMG-01 row; wired to real acquisition by IMG-03).
 #
 # Contract (modules/sast/run.sh's own header, reused verbatim by every
 # module in this tree): scan.sh's `scan_dispatch image` does a plain
@@ -18,17 +18,20 @@
 # gets the standard sourced-once guard - the identical sast/dast/network
 # split.
 #
-# WHAT THIS TICKET SHIPS, AND WHAT IT DELIBERATELY DOES NOT.  IMG-01 is the
-# module-foundation ticket ONLY: it resolves the operator-declared `--image`
-# id, writes the `image-id` coverage cell (rules/RULE-FORMAT.md §9.5.1) and
-# records why nothing was examined.  It ships NO acquisition (no
-# docker-save/OCI-layout reader - IMG-02), NO distro enumerator (no
-# apk/dpkg/rpm package-DB parser - IMG-04/IMG-07), and NO comparator
-# (IMG-05/IMG-08) - there is no `modules/image/acquire.sh` or
-# `modules/image/distro/*.sh` on disk yet, so a run is a clean, honestly
-# declared no-op over whichever image id it resolved, exactly the state
-# modules/dast/'s and modules/network/'s own dispatch were in before their
-# first real check landed.
+# WHAT THIS TICKET SHIPS, AND WHAT IT DELIBERATELY DOES NOT.  IMG-01 shipped
+# the module-foundation skeleton: it resolves the operator-declared --image
+# id, writes the image-id coverage cell (rules/RULE-FORMAT.md §9.5.1) and
+# records why nothing was examined.  IMG-03 (this ticket's own scope, on top
+# of IMG-02's acquire.sh) is the FIRST to actually resolve --image's source,
+# open it, extract /etc/os-release, pick a per-release advisory ecosystem
+# key (Alpine-only in v1; report.md §2.4/D2) and gate on whether
+# data/advisories.db has any row for it.  It still ships NO distro
+# enumerator (no apk/dpkg/rpm package-DB parser - IMG-04/IMG-07) and NO
+# comparator (IMG-05/IMG-08) - there is no `modules/image/distro/*.sh` on
+# disk yet, so even a run that resolves an ecosystem the database DOES
+# cover ends in a declared coverage_reduction rather than a package finding,
+# exactly the state modules/dast/'s and modules/network/'s own dispatch were
+# in before their first real check landed.
 #
 # THE HONESTY THIS FILE OWES ITS READER IS ITS ACTUAL DELIVERABLE.  A run
 # that does nothing must not leave a report that reads like a clean scan -
@@ -120,18 +123,106 @@ _image_run_module() {
   local _image_checks_run_before
   _image_checks_run_before=$(run_facts checks_run | wc -l | tr -d '[:space:]')
 
-  # No acquisition, no distro enumerator, no comparator exist on disk yet
-  # (IMG-01's own scope) - so unlike modules/dast/run.sh's and
-  # modules/network/run.sh's phase-table walk, there is nothing here to
-  # attempt and no "present but gated by intensity" case to distinguish.
-  # The single honest fact this run can state is that report.md's whole v1
-  # pipeline (acquire -> enumerate -> compare) has not landed yet.
-  run_record coverage_reduction "module=image reason=no_distro_enumerator_on_disk_yet image=$image_id - modules/image/ ships no acquisition code, no apk/dpkg/rpm package-DB parser and no comparator yet (IMG-01; data/scoursh-image-scan-design/report.md §5.3), so no layer was read and no package was looked up."
-  run_record coverage_gap "image scanning examined nothing for image '$image_id': modules/image/ is registered but not yet built beyond this dispatch skeleton, so no layer, package or advisory was looked at - a clean result here is the absence of a test, not the absence of a problem."
+  # IMG-03: the first real consumer of modules/image/acquire.sh
+  # (acquire.sh's own header names this ticket explicitly). IMG-04/IMG-05
+  # (apk enumeration and the version comparator) still do not exist, so
+  # even a fully successful resolve/open/parse/gate walk below ends in a
+  # coverage_reduction rather than a package finding - report.md §5.3's
+  # scope line for this ticket.
+  local kind='' path='' ref='' origin=''
+  local ecosystem='' distro_id='' distro_version=''
+  local rc=0
 
-  # docs/STEP7-STATE-PLAN.md STATE-02: reached only when the (currently
-  # nonexistent) work above returns without dying - the identical reasoning
-  # modules/dast/run.sh's and modules/network/run.sh's own comments give.
+  image_source_resolve "$image_id" "$source" || rc=$?
+  if (( rc != 0 )); then
+    run_record coverage_reduction "module=image reason=image_source_unresolved image=$image_id - no config/images.conf record named '$image_id' and no --source override was given (rules/RULE-FORMAT.md §9.6.8), so no image could be opened."
+    run_record coverage_gap "image scanning examined nothing for image '$image_id': its source could not be resolved - no config/images.conf record and no --source override. A clean result here is the absence of a test, not the absence of a problem."
+  else
+    kind=$_IMAGE_SRC_KIND
+    path=$_IMAGE_SRC_PATH
+    ref=$_IMAGE_SRC_REF
+    origin=$_IMAGE_SRC_ORIGIN
+    run_record notes "module=image image=$image_id source_kind=$kind source_path=$path source_origin=$origin"
+
+    rc=0
+    image_open "$kind" "$path" "$ref" || rc=$?
+    if (( rc != 0 )); then
+      local open_reason=${_IMAGE_REFUSE_REASON:-}
+      [[ -n $open_reason ]] || open_reason=archive_unreadable
+      run_record coverage_reduction "module=image reason=image_source_unreadable image=$image_id detail=$open_reason - the image source at '$path' ($kind) could not be opened."
+      run_record coverage_gap "image scanning examined nothing for image '$image_id': its source could not be opened ($open_reason). A clean result here is the absence of a test, not the absence of a problem."
+    else
+      # A dedicated scratch directory, released unconditionally below -
+      # image_collect_metadata is the module's one acquisition entry point
+      # (acquire.sh's own header) and asks for ONLY the two os-release
+      # candidate paths, never the full IMAGE_METADATA_PATHS default: apk/
+      # dpkg enumeration is IMG-04/IMG-07's scope, not this ticket's, and
+      # extracting those paths now would claim a coverage this module does
+      # not have yet.
+      local osdir
+      osdir=$(mktemp -d "${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/scoursh-image-osrelease.XXXXXX")
+      chmod 700 "$osdir" 2>/dev/null || true
+      image_collect_metadata "$kind" "$path" "$osdir" etc/os-release usr/lib/os-release >/dev/null
+
+      local osrel=''
+      if [[ -r $osdir/etc/os-release ]]; then
+        osrel=$osdir/etc/os-release
+      elif [[ -r $osdir/usr/lib/os-release ]]; then
+        osrel=$osdir/usr/lib/os-release
+      fi
+
+      rc=0
+      if [[ -z $osrel ]]; then
+        rc=1
+        _IMAGE_DISTRO_REASON=no_os_release
+      else
+        image_distro_ecosystem_resolve "$osrel" || rc=$?
+      fi
+
+      if (( rc != 0 )); then
+        # report.md §4.3: Alpine advisories are keyed PER RELEASE
+        # (Alpine:v3.18 != Alpine:v3.19), so with no resolved release there
+        # is no ecosystem to look up - and guessing "latest" would produce
+        # a false NEGATIVE on an older image, the direction that reads as a
+        # pass. Declared, never guessed.
+        run_record coverage_reduction "module=image reason=distro_release_unknown image=$image_id detail=${_IMAGE_DISTRO_REASON:-no_os_release} - /etc/os-release (and usr/lib/os-release) is missing or unparseable in this image, so no advisory ecosystem could be picked."
+        run_record coverage_gap "image scanning examined nothing for image '$image_id': its distro release could not be determined from /etc/os-release. A clean result here is the absence of a test, not the absence of a problem."
+      else
+        ecosystem=$_IMAGE_DISTRO_ECOSYSTEM
+        distro_id=$_IMAGE_OS_RELEASE_ID
+        distro_version=$_IMAGE_OS_RELEASE_VERSION_ID
+        run_record notes "module=image image=$image_id distro_id=$distro_id distro_version=$distro_version ecosystem=$ecosystem"
+
+        # data/advisories.db reuse (report.md §2.3/§4.2): the SAME file and
+        # the SAME db_lookup_exact modules/sca/ already uses, keyed on this
+        # image's own resolved ecosystem rather than "is there a database
+        # at all" - a db that covers Alpine:v3.19 says nothing about an
+        # Alpine:v3.18 image.
+        if ! image_ecosystem_known "$ecosystem"; then
+          image_report_no_advisory_db "$image_id" "$ecosystem"
+          # SCOURSH_EXIT_INPUT (4, docs/FOUNDATION.md tension 14's
+          # per-module required-inputs table) when `image` was the
+          # selected command, mirroring modules/sca/run.sh's own gate
+          # verbatim - `input` is scan_main's own local, reached through
+          # the sourced-not-subprocess dynamic-scoping contract, so a
+          # standalone `all` run degrades this to a declared skip instead
+          # (the same table's other row).
+          if [[ ${SCAN_COMMAND:-image} == image ]]; then
+            # shellcheck disable=SC2034
+            input=1
+          fi
+        else
+          run_record coverage_reduction "module=image reason=no_distro_enumerator_on_disk_yet image=$image_id ecosystem=$ecosystem - data/advisories.db has rows for $ecosystem, but modules/image/ ships no apk/dpkg/rpm package-DB parser or comparator yet (IMG-04/IMG-05; data/scoursh-image-scan-design/report.md §5.3), so no package was looked up."
+          run_record coverage_gap "image scanning examined nothing for image '$image_id': the advisory database covers $ecosystem, but no distro enumerator or comparator exists yet to match installed packages against it. A clean result here is the absence of a test, not the absence of a problem."
+        fi
+      fi
+      erase_dir "$osdir"
+    fi
+  fi
+
+  # docs/STEP7-STATE-PLAN.md STATE-02: reached only when the work above
+  # returns without dying - the identical reasoning modules/dast/run.sh's
+  # and modules/network/run.sh's own comments give.
   _image_record_coverage "$image_id" "$_image_checks_run_before"
 
   # The same five calls, in the same order, that modules/sast/run.sh,

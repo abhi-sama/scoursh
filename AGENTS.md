@@ -3835,11 +3835,104 @@ into `--guided`: `modules/network/run.sh` (the peer this ticket mirrors) never j
 G1 menu either, so this follows the actual precedent rather than the ticket brief's own assumption -
 verify against the tree, not against a design doc's prose, whenever the two disagree.
 
-**What remains, per report.md §5.3:** IMG-02 (`config/images.conf` schema + acquisition - the
-`image_tar_members` tar-listing wrapper, hostile-archive-member validation under both userlands,
-layer/whiteout ordering), IMG-03 (advisory ecosystem plumbing - `Alpine:vX.Y` rows, `/etc/os-release`
-detection), then the Alpine vertical slice (IMG-04 enumeration, IMG-05 the differential-tested apk
-comparator, IMG-06 end-to-end) before Debian/Ubuntu and rpm are even considered (D2's own
+**IMG-02 (`config/images.conf` schema + offline acquisition) has since landed, and this section is
+corrected here to say so - it previously listed IMG-02 under "what remains" after it had already
+merged, exactly the staleness this file's own process-rule paragraphs elsewhere warn against.**
+It ships `modules/image/acquire.sh`: `image_tar_members`/`image_tar_listing_set` (the `scan_match` of
+`tar` - report.md §1.4's own tar-exit-1-means-either-"absent"-or-"corrupt" hazard, resolved by listing
+the WHOLE archive once and matching member names in bash, never a bare `tar -xf`), member-name
+validation refusing `..`, a leading `/`, and a symlink-escape target BEFORE ever calling `tar`
+(defence in depth on top of, never instead of, tar's own containment - report.md §1.5), `image_open`
+(the one door for both offline shapes: a `docker save` tarball and an OCI image layout directory),
+layer ordering with OCI whiteouts applied (`.wh.<name>` and `.wh..wh..opq`, later-layer-wins), and
+`image_collect_metadata` - the module's one acquisition entry point, extracting ONLY the caller's
+named metadata paths rather than ever materialising a rootfs (report.md §1.6's design invariant). A
+fifth byte-identical copy of the project's own JSON flattener lives here too
+(`image_json_flatten`/`image_json_unescape`/`image_json_leaf`), asserted leaf-for-leaf against
+`modules/cloud/aws/engine.sh`'s copy the same way `tests/suites/cloud.sh` already does for that one -
+never a fifth, DIFFERENT parser. `config/images.conf` (rules/RULE-FORMAT.md §9.6.8) resolves an
+operator-declared id to a `(kind, path, reference)` triple; a `--source` override with no config
+record infers the kind from the filesystem (a directory is an OCI layout, a file is a docker-save
+tarball) rather than asking the operator to declare what their own file already is. **At landing, none
+of this was wired into `modules/image/run.sh` yet, deliberately** - acquire.sh's own header explained
+why (wiring it would have meant IMG-02 changing IMG-01's just-landed coverage records for a run that
+still enumerates no packages), and named IMG-03 as the first real consumer. `tests/suites/image-acquire.sh`
+proves every piece of this directly, including the three classic archive escapes refused in bash with a
+canary planted outside the extraction root, and the hostile fixtures are built at test time (never
+committed) because a well-behaved `tar -cf` cannot even write the shapes this module has to refuse.
+
+**IMG-03 (advisory ecosystem plumbing) has also landed - the first ticket to actually wire acquire.sh
+into `modules/image/run.sh`'s real dispatch, distro-release detection, and the
+`data/advisories.db` reuse's exit-4 gate.** Three pieces:
+
+- **`tools/vendor-engines.sh advisories alpine`** - a SEVENTH advisory importer, alongside the six SCA
+  ecosystems and `banner`, writing `Alpine:vX.Y` rows to `data/advisories.db` (unlike `banner`, which
+  writes `data/versions.db` only - an Alpine row IS the exact-row shape `modules/sca/`-style consumers
+  read, so it belongs in both files for tension 25's own "same shape, same rule"). It needed a THIRD
+  ecosystem-matching shape in `_veng_advisories_osv_extract_py` (section 3) beyond exact-match and
+  `banner`'s bare `*` wildcard: OSV.dev keys Alpine advisories PER RELEASE
+  (`Alpine:v3.18`, `Alpine:v3.19`, ...), so the `alpine` sentinel (`Alpine:*`) is a PREFIX match, and -
+  uniquely among every namespace this script writes - the row itself carries its own matched ecosystem
+  string, because one imported advisory can legitimately name several different Alpine releases at
+  once. That in turn needed a sibling writer, `_veng_advisories_write_db_prefix`, since
+  `_veng_advisories_write_db`'s own replace-scope is an ecosystem EQUALITY test and Alpine's replace-scope
+  has to be the whole `Alpine:` namespace decided once, not one release NEW_ROWS happens to name.
+  Like `banner`, `alpine` is reached from its own named command in `veng_advisories_main`
+  (`advisories alpine`, `SCOURSH_ADVISORY_ALPINE_IDS`) rather than joining `VENG_ADVISORY_REGISTRY` -
+  `advisories bulk` assumes one fixed ecosystem per import and writes with the equality-matched writer,
+  neither of which holds for this namespace, so a bulk path for it is a stated future gap rather than a
+  reuse of machinery built for a different shape.
+- **Distro-release detection** (`modules/image/engine.sh`): `image_os_release_parse` is a bash-only
+  `KEY=VALUE` reader for `/etc/os-release` (never `source`d - tension 26's rule applies with equal
+  force to attacker-adjacent target content, not only scoursh's own config files), and
+  `image_distro_ecosystem_resolve` maps `ID`+`VERSION_ID` to the `Alpine:vX.Y` key - MAJOR.MINOR only,
+  the patch component dropped, matching OSV.dev's own per-release granularity. v1 is Alpine-only (D2),
+  so a recognised-but-unsupported `ID` (`distro_not_yet_supported`) is a DIFFERENT, more specific
+  reason than a genuinely missing os-release (`no_os_release`) or an unparseable `VERSION_ID`
+  (`os_release_version_unparseable`) - all three still land on the ONE `distro_release_unknown`
+  `coverage_reduction` reason report.md §4.3 and the ticket brief both name, since from an operator's
+  chair the three answer "was an ecosystem found" identically, but the sub-reason stays in the
+  human-readable detail text. Never a guess: report.md §4.3 is explicit that guessing "latest"
+  produces a false NEGATIVE on an older image, the direction that reads as a pass.
+- **`IMAGE-COV-NO_ADVISORY_DB-01` + the exit-4 gate** (`modules/image/engine.sh`'s
+  `image_ecosystem_known`/`image_report_no_advisory_db`, called from `modules/image/run.sh`), mirroring
+  `modules/sca/run.sh`'s own no-advisory-db gate almost verbatim but PER ECOSYSTEM rather than
+  per-database: the gate asks whether `data/advisories.db` has any row for THIS image's own resolved
+  release (`Alpine:v3.18`), never "does a database exist at all" - a db that covers `Alpine:v3.19` says
+  nothing about an `Alpine:v3.18` image. `IMAGE-COV-NO_ADVISORY_DB-01` is registered in the module's
+  OWN `modules/image/checks-advisories.rules` (report.md §5.1's binding per-ticket-own-file rule, the
+  fix for the cloud-wave incident `c9f0e80` cites) - a genuine departure from `modules/sca/`'s own
+  `SCA-COV-NO_ADVISORY_DB-01`, which is never registered anywhere, because unlike SCA the image module
+  already has a real, wired check-registry gate (`_scan_apply_profile_filter image`) for it to belong
+  to. Landing this registry file is also what makes `_scan_apply_profile_filter image`'s own
+  `no_check_registry_on_disk_yet` reduction stop firing for the first time since IMG-01 - a real,
+  intentional behaviour change `tests/suites/image.sh`'s own `run-ok` case had to be updated for in the
+  same change, since that case's `--source /tmp/myapp.tar` now resolves and fails at
+  `image_open` (a real, now-reachable acquisition failure) rather than stopping at "no acquisition code
+  exists yet".
+
+`modules/image/run.sh` calls, in order: `image_source_resolve` (declared `image_source_unresolved` gap
+on a miss - no config/images.conf record and no `--source`), `image_open` (declared
+`image_source_unreadable` gap on a miss, carrying tar's own refusal reason), `image_collect_metadata`
+for ONLY `etc/os-release`/`usr/lib/os-release` (never the full default path set - apk/dpkg enumeration
+is still IMG-04/IMG-07's scope, and extracting those paths now would claim a coverage this module does
+not have), `image_distro_ecosystem_resolve`, then the advisory-db gate. Every branch that stops short
+records its own `coverage_reduction` and `coverage_gap`, ending with the docs/DESIGN.md §15
+"absence of a test, not the absence of a problem" sentence every other honestly-declared no-op in this
+module already carries; a run that resolves an ecosystem the database DOES cover still ends in the
+original `no_distro_enumerator_on_disk_yet` reduction, since IMG-04/IMG-05 do not exist yet.
+`tests/suites/image-advisories.sh` proves distro-release parsing unit-level, both directions of the
+exit-4 gate unit-level against a hand-built scratch `data/advisories.db`, and both directions again
+end-to-end through a real `scan.sh image` subprocess against synthetic docker-archive fixtures built
+at test time (one alpine-shaped, one carrying no os-release at all) - never this repository's own
+(absent) `data/advisories.db`. `tests/suites/vendor-engines-advisories.sh` gained its own section D3
+for the alpine importer, proving one advisory spanning two Alpine releases writes two rows, a
+same-package entry under a different ecosystem is excluded, and a re-run replaces the WHOLE `Alpine:`
+namespace (every release) while leaving an unrelated SCA ecosystem's rows untouched.
+
+**What remains, per report.md §5.3:** the Alpine vertical slice - IMG-04 (apk enumeration), IMG-05 (the
+differential-tested apk comparator), IMG-06 (end-to-end, the first ticket to actually emit
+`IMAGE-PKG-VULNERABLE_OS_PACKAGE-01`) - before Debian/Ubuntu and rpm are even considered (D2's own
 Alpine-first recommendation).
 
 ## Tests

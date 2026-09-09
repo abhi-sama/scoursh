@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
 # modules/image/engine.sh - the container-image-scanning module's pure
 # function library (IMG-01, data/scoursh-image-scan-design/report.md
-# §3.1/§5.3's "module foundation" row).
+# §3.1/§5.3's "module foundation" row; distro-release detection and the
+# advisory-database reuse added by IMG-03).
 #
-# WHAT THIS TICKET SHIPS, AND WHAT IT DELIBERATELY DOES NOT.  IMG-01 is the
-# ONLY shared-file ticket for this module - it registers the `IMAGE` module
-# across every frozen table and shared list (rules/RULE-FORMAT.md,
+# WHAT IMG-01 SHIPPED, AND WHAT IS STILL DELIBERATELY MISSING.  IMG-01 was
+# the ONLY shared-file ticket for this module - it registered the `IMAGE`
+# module across every frozen table and shared list (rules/RULE-FORMAT.md,
 # lib/records.sh, lib/checks.sh, lib/findings.sh, lib/report.sh, scan.sh -
-# see this ticket's own commit) so every later ticket (IMG-02 onward) adds
-# only its own files.  This file therefore ships NO acquisition (no
-# docker-save/OCI-layout reader), NO distro enumerator (no apk/dpkg/rpm
-# package-DB parser), and NO version comparator - report.md §1-§2's whole
-# design is out of scope here.  Unlike modules/dast/engine.sh and
-# modules/network/engine.sh, it declares no phase table: report.md's v1
-# architecture is acquire -> enumerate -> compare, each its own file
-# (`acquire.sh`, `distro/apk.sh`, ...), not a set of intensity-gated phases
-# run in a fixed order over one target - there is nothing to gate on
-# `--intensity` here, so a phase table would be a table with nothing to
-# put in it.
+# see that ticket's own commit) so every later ticket adds only its own
+# files.  IMG-03 (this section) sources acquire.sh (IMG-02) and adds
+# distro-release detection plus the data/advisories.db coverage gate; this
+# file still ships NO distro enumerator (no apk/dpkg/rpm package-DB
+# parser - IMG-04/IMG-07) and NO version comparator (IMG-05/IMG-08) -
+# report.md §2's package-matching half is still out of scope here.  Unlike
+# modules/dast/engine.sh and modules/network/engine.sh, it declares no
+# phase table: report.md's v1 architecture is acquire -> enumerate ->
+# compare, each its own file (`acquire.sh`, `distro/apk.sh`, ...), not a
+# set of intensity-gated phases run in a fixed order over one target -
+# there is nothing to gate on `--intensity` here, so a phase table would be
+# a table with nothing to put in it.
 #
 # The run.sh / engine.sh split is modules/sast/'s, modules/dast/'s and
 # modules/network/'s, reused verbatim: this file is a pure function library
@@ -45,3 +47,165 @@ if [[ -z ${SCOURSH_CHECKS_SOURCED:-} ]]; then
   # shellcheck source=lib/checks.sh
   source "${BASH_SOURCE[0]%/*}/../../lib/checks.sh"
 fi
+
+# acquire.sh (IMG-02) carries its own sourced-once guard, so this is safe to
+# leave unconditional exactly like the sast/engine.sh source line above.
+# IMG-03 is the first real consumer (acquire.sh's own header names it), and
+# it is sourced HERE rather than from modules/image/run.sh directly so
+# run.sh keeps its own source list at one line - the same reasoning the
+# sast/engine.sh and lib/checks.sh source lines above already give.
+# shellcheck source=modules/image/acquire.sh
+source "${BASH_SOURCE[0]%/*}/acquire.sh"
+
+# ---------------------------------------------------------------------------
+# Distro-release detection (IMG-03, report.md §4.3's `distro_release_unknown`
+# reduction) - parses the image's own /etc/os-release (or the systemd
+# fallback path, usr/lib/os-release) to pick the per-release advisory
+# ecosystem key a v1 (Alpine-only) run looks up in data/advisories.db.
+# ---------------------------------------------------------------------------
+
+# `image_os_release_parse FILE` - a bash-only KEY=VALUE reader for one
+# os-release file, never `source`d (tension 26's "never source a config
+# file" rule applies with equal force here even though this is not one of
+# scoursh's own config files: the bytes are attacker-adjacent target
+# content, and sourcing them would be arbitrary code execution). Sets
+# `_IMAGE_OS_RELEASE_ID`/`_IMAGE_OS_RELEASE_VERSION_ID` and returns 0 only
+# when `ID` was present - an os-release with no `ID` line names no distro at
+# all, which this function treats the same as a missing file.
+_IMAGE_OS_RELEASE_ID=''
+_IMAGE_OS_RELEASE_VERSION_ID=''
+image_os_release_parse() {
+  local file=$1 line key val
+  _IMAGE_OS_RELEASE_ID=''
+  _IMAGE_OS_RELEASE_VERSION_ID=''
+  [[ -r $file ]] || return 1
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ -n $line && $line != '#'* && $line == *=* ]] || continue
+    key=${line%%=*}
+    val=${line#*=}
+    # The systemd os-release spec (os-release(5)) allows a value to be
+    # double- or single-quoted; an unquoted value is equally legal and is
+    # left untouched. Only a MATCHING pair of surrounding quotes is
+    # stripped, so a value that merely starts with a stray quote byte is
+    # not mangled.
+    if [[ $val == \"*\" && ${#val} -ge 2 ]]; then
+      val=${val#\"}
+      val=${val%\"}
+    elif [[ $val == \'*\' && ${#val} -ge 2 ]]; then
+      val=${val#\'}
+      val=${val%\'}
+    fi
+    case $key in
+      ID) _IMAGE_OS_RELEASE_ID=$val ;;
+      VERSION_ID) _IMAGE_OS_RELEASE_VERSION_ID=$val ;;
+    esac
+  done <"$file"
+  [[ -n $_IMAGE_OS_RELEASE_ID ]]
+}
+
+# `image_distro_ecosystem_resolve FILE` - image_os_release_parse plus the
+# ID/VERSION_ID -> data/advisories.db ecosystem key mapping (report.md
+# §2.3/§3.4: `Alpine:vX.Y`, keyed per RELEASE, never per exact patch
+# version - OSV.dev's own Alpine namespace is major.minor only). v1 is
+# Alpine-only (D2), so any other `ID`, or a VERSION_ID that does not carry a
+# leading `major.minor`, resolves to nothing rather than a guess: report.md
+# §4.3 is explicit that guessing "latest" on a missing/unrecognised release
+# produces a false NEGATIVE on an older image, which is the direction that
+# reads as a pass. `_IMAGE_DISTRO_REASON` distinguishes "no os-release at
+# all" (`no_os_release`) from "os-release named a distro/version this
+# module cannot yet map" (`os_release_version_unparseable` /
+# `distro_not_yet_supported`) purely for the human-readable detail text -
+# every one of them is reported under the SAME `distro_release_unknown`
+# coverage_reduction reason the brief and report.md §4.3 both name, since
+# from an operator's chair all three answer the identical question
+# ("was an advisory ecosystem found for this image") the identical way.
+_IMAGE_DISTRO_ECOSYSTEM=''
+_IMAGE_DISTRO_REASON=''
+image_distro_ecosystem_resolve() {
+  local file=$1 major minor
+  _IMAGE_DISTRO_ECOSYSTEM=''
+  _IMAGE_DISTRO_REASON=''
+  if ! image_os_release_parse "$file"; then
+    _IMAGE_DISTRO_REASON=no_os_release
+    return 1
+  fi
+  case $_IMAGE_OS_RELEASE_ID in
+    alpine)
+      if [[ $_IMAGE_OS_RELEASE_VERSION_ID =~ ^([0-9]+)\.([0-9]+) ]]; then
+        major=${BASH_REMATCH[1]}
+        minor=${BASH_REMATCH[2]}
+        _IMAGE_DISTRO_ECOSYSTEM="Alpine:v${major}.${minor}"
+        return 0
+      fi
+      _IMAGE_DISTRO_REASON=os_release_version_unparseable
+      return 1
+      ;;
+    *)
+      _IMAGE_DISTRO_REASON=distro_not_yet_supported
+      return 1
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# The advisory database reuse (IMG-03, report.md §2.3/§4.2) - data/
+# advisories.db is the SAME file and the SAME `db_lookup_exact` lookup
+# modules/sca/ already uses; only the ecosystem key differs. Deliberately a
+# one-line reimplementation of `sca_advisories_db_path` rather than a
+# `source modules/sca/engine.sh` edge: that file is a real shellcheck -x
+# hub (AGENTS.md's own "the shared response reader"/"a DIAMOND" measurements
+# document exactly this cost for other consumers), and the env var name is
+# reused verbatim so a test pointing SCOURSH_SCA_ADVISORIES_DB at a fixture
+# redirects this module too - the one thing that actually has to agree.
+image_advisories_db_path() {
+  printf '%s' "${SCOURSH_SCA_ADVISORIES_DB:-${SCOURSH_INSTALL_ROOT:-}/data/advisories.db}"
+}
+
+# `image_ecosystem_known ECOSYSTEM [DB]` - true when data/advisories.db
+# carries ANY row for this exact ecosystem key (e.g. `Alpine:v3.18`). A
+# plain existence test, so `db_lookup_exact`'s `-m 1` grep fallback is
+# exactly as safe here as `sca_package_known`'s identical use of it
+# (modules/sca/engine.sh): neither needs to enumerate every match, only to
+# know at least one exists.
+image_ecosystem_known() {
+  local ecosystem=$1 db=${2:-$(image_advisories_db_path)}
+  local prefix
+  prefix=$(printf '%s\t' "$ecosystem")
+  db_lookup_exact "$prefix" "$db" >/dev/null
+}
+
+# `image_report_no_advisory_db IMAGE_ID ECOSYSTEM [DB]` - the module-level
+# announcement when data/advisories.db has no rows for the image's own
+# resolved ecosystem: ONE coverage_reduction, ONE IMAGE-COV-NO_ADVISORY_DB-01
+# finding, `info` severity for the identical reason
+# sca_report_no_advisories_db's own comment gives (a blind spot is not a
+# vulnerability, and `--fail-on` gating it would report "a complete
+# assessment that failed its gate" for a run that never had a database to
+# assess against). modules/image/run.sh sets the exit-4 gate itself, on
+# `input`, for the identical dynamic-scoping reason modules/sca/run.sh's own
+# comment gives.
+image_report_no_advisory_db() {
+  local image_id=$1 ecosystem=$2 db=${3:-$(image_advisories_db_path)}
+
+  log_warn "image: no advisory database rows for '$ecosystem' at '$db' - NO package was checked for image '$image_id' (populate it with 'tools/vendor-engines.sh advisories alpine' on a networked box, data/scoursh-image-scan-design/report.md §2.3)"
+  run_record coverage_reduction "module=image reason=no_advisories_db_for_ecosystem image=$image_id ecosystem=$ecosystem"
+  run_record checks_run IMAGE-COV-NO_ADVISORY_DB-01
+
+  finding_new
+  finding_set check_id IMAGE-COV-NO_ADVISORY_DB-01
+  finding_set module image
+  finding_set title "Container image scanning did NOT run for '$ecosystem' - no advisory database rows for this distro release, so ZERO packages were checked"
+  finding_set base_severity info
+  finding_set confidence high
+  finding_set cwe none
+  finding_set owasp none
+  finding_set cell "$image_id"
+  finding_set loc_image_id "$image_id"
+  finding_set loc_ecosystem "$ecosystem"
+  finding_set remediation "Populate data/advisories.db for $ecosystem with 'tools/vendor-engines.sh advisories alpine' (or the matching distro importer) on a networked box, then re-run. Until then this run says NOTHING about image '$image_id' - absence of findings here is absence of evidence, never evidence of absence."
+  finding_set_evidence "advisories_db: $db
+ecosystem_not_scanned: $ecosystem
+image: $image_id
+packages_checked: 0"
+  finding_emit
+}

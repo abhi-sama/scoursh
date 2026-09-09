@@ -1,0 +1,47 @@
+# modules/image/checks-advisories.rules - the container-image module's own
+# per-owner registry (rules/RULE-FORMAT.md §9's `checks-<name>.rules` row,
+# docs/FOUNDATION.md tension 29) for the advisory-database coverage check
+# IMG-03 adds (data/scoursh-image-scan-design/report.md §4.1/§4.2/§4.3).
+#
+# ONE FILE PER OWNING DRIVER, per every other module's own precedent
+# (modules/dast/passive/'s six checks-<name>.rules files, modules/network/'s
+# five) - this ticket's OWN file rather than an append to a shared one, per
+# report.md §5.1's binding rule and the cloud-wave incident it cites
+# (`c9f0e80`): a shared modules/image/checks.rules would be exactly the
+# add/add conflict class every later IMG-0x ticket would then collide on.
+#
+# `script: run.sh` because IMAGE-COV-NO_ADVISORY_DB-01 is emitted by the
+# module's own driver (modules/image/run.sh, via
+# modules/image/engine.sh's image_report_no_advisory_db), not by a
+# distro-specific phase script - there is no modules/image/distro/apk.sh on
+# disk yet (IMG-04), and this check fires whether or not one ever does for
+# THIS image's distro.
+#
+# `tags: passive` - the closest fit among rules/RULE-FORMAT.md §9.1.3's
+# fixed vocabulary (static/passive/safe-active/active/config-read/posture):
+# this check reads a local file (data/advisories.db) and a local os-release
+# byte string already extracted from the image, makes no network call, and
+# mutates nothing - modules/network/'s own checks-banner.rules and
+# checks-transport.rules apply the identical tag to their own read-only,
+# no-mutation checks. `quick` because the whole check costs nothing beyond a
+# single db_lookup_exact prefix test - the same "cheapest real coverage a
+# run can buy" reasoning modules/dast/passive/checks-tls.rules's own header
+# gives its own `quick` tag.
+
+id: IMAGE-COV-NO_ADVISORY_DB-01
+title: Container image scanning did NOT run - no advisory database rows for this image's distro release
+script: run.sh
+severity: info
+confidence: high
+cwe: none
+owasp: none
+tags: passive
+tags: quick
+coverage-scope: image-id
+remediation: Populate data/advisories.db for this image's distro/release
+  ecosystem (for example Alpine:v3.18) with 'tools/vendor-engines.sh
+  advisories alpine' (or the matching distro importer, once one exists) on a
+  networked box, then re-run. Until then this run says NOTHING about this
+  image's installed packages - absence of findings here is absence of
+  evidence, never evidence of absence.
+references: data/scoursh-image-scan-design/report.md

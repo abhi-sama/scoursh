@@ -23,3 +23,15 @@ a package rather than filtering the way the six SCA ecosystems do.
 `-NOSEV` also carries no severity anywhere, to prove the banner-only default
 (docs/VERSIONS-DB.md §3: "a row with none lands on `high`") rather than the
 SCA rows' own `medium` default.
+
+`SCOURSH-FIXTURE-OSV-ALPINE-1.json` and `SCOURSH-FIXTURE-OSV-ALPINE-2.json`
+are for `veng_advisories_alpine` (data/advisories.db and data/versions.db's
+`Alpine:vX.Y` namespace, IMG-03). `-ALPINE-1` carries THREE `affected[]`
+entries: `Alpine:v3.18` and `Alpine:v3.19` (two DIFFERENT releases, each with
+its own `fixed` version, for the SAME package - proving one import can
+legitimately produce rows for more than one Alpine release) plus a `Debian`
+entry for the identical package, which must be SKIPPED - proving the
+`Alpine:*` sentinel (`_veng_advisories_osv_ecosystem`'s "alpine" case) is a
+PREFIX match on `Alpine:`, never the `*` wildcard `banner` uses. `-ALPINE-2`
+names a different package under `Alpine:v3.18` only, for the
+replace-the-whole-namespace test.

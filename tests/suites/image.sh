@@ -104,24 +104,34 @@ assert_contains "$RUN_OK_JSON" '"checks_run": []' \
   'checks_run is empty - FAILS under "record the work we would have done", the overclaim this ticket exists to avoid'
 
 t_case 'run.json records why nothing was examined, naming the image'
-assert_contains "$RUN_OK_JSON" 'module=image reason=no_check_registry_on_disk_yet' \
-  'the profile-filter reduction fires first - FAILS if modules/image/ shipped a checks-*.rules registry already, which this ticket explicitly does not'
-assert_contains "$RUN_OK_JSON" "module=image reason=no_distro_enumerator_on_disk_yet image=myapp" \
+# IMG-03 is the first ticket to wire real acquisition into this dispatch
+# (modules/image/acquire.sh's own header names it), so a --source naming a
+# file that genuinely does not exist on disk ('/tmp/myapp.tar' is a
+# deliberately fake path, per IMG-01's own original comment) now resolves
+# its (kind, path) fine and then fails at image_open - "unreadable
+# archive", the identical `tar -tf` failure report.md §1.4 documents -
+# rather than stopping at "no acquisition code exists yet" the way it did
+# before this ticket landed.
+assert_contains "$RUN_OK_JSON" "module=image reason=image_source_unreadable image=myapp detail=archive_unreadable" \
   "the module's own reduction names the image id - FAILS if a copy-paste from modules/network/run.sh left the literal string \"module=network\" behind"
 assert_contains "$RUN_OK_JSON" "image scanning examined nothing for image 'myapp'" \
   'the coverage_gap is a sentence a human reads, naming the image - FAILS if the gap is generic and a reader with two images in one run.json cannot tell which one it is about'
 assert_contains "$RUN_OK_JSON" 'absence of a test, not the absence of a problem' \
   'and states the docs/DESIGN.md §15 warning in the artifact itself, not only in prose a reader has to already know'
+assert_not_contains "$RUN_OK_JSON" 'reason=no_distro_enumerator_on_disk_yet' \
+  'the OLD IMG-01 reduction reason no longer fires for an image whose source could not even be opened - FAILS if the new acquisition-failure branch fell through to the old unconditional reduction instead of replacing it'
 
 t_case 'the image id and cell are recorded, and the coverage-scope is image-id'
 NOTES_FILE=$(_slurp "$W/run-ok/meta/notes")
 assert_contains "$NOTES_FILE" 'module=image image=myapp source=/tmp/myapp.tar coverage-scope=image-id cell=myapp' \
   "the notes line records image's own coverage-scope (rules/RULE-FORMAT.md §9.5.1: image-id) - FAILS if the cell were the volatile --source path or a digest rather than the operator's own stable --image id"
+assert_contains "$NOTES_FILE" 'module=image image=myapp source_kind=docker-archive source_path=/tmp/myapp.tar source_origin=source_flag_kind_inferred' \
+  'IMG-03: the resolved (kind, path, origin) triple is also recorded, from image_source_resolve - FAILS if the kind were not inferred from the filesystem shape of --source (a non-directory path infers docker-archive)'
 
 t_case 'the coverage_reduction and coverage_gap are each written exactly once'
 CR_FILE=$(_slurp "$W/run-ok/meta/coverage_reduction")
-assert_eq 1 "$(grep -c 'reason=no_distro_enumerator_on_disk_yet' <<<"$CR_FILE")" \
-  'exactly one no_distro_enumerator_on_disk_yet reduction - FAILS if the run loop double-counts'
+assert_eq 1 "$(grep -c 'reason=image_source_unreadable' <<<"$CR_FILE")" \
+  'exactly one image_source_unreadable reduction - FAILS if the run loop double-counts'
 GAP_FILE=$(_slurp "$W/run-ok/meta/coverage_gap")
 assert_eq 1 "$(grep -c "image 'myapp'" <<<"$GAP_FILE")" \
   'exactly one coverage_gap names this image'
