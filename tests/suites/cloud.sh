@@ -390,18 +390,19 @@ assert_contains "$_notes" 'coverage-scope=account-region' \
   'and every cell declares the account-region coverage scope (docs/FOUNDATION.md tension 12)'
 
 _red=$(cat "$W/out-live/meta/coverage_reduction")
-# CLOUD-05 landed modules/cloud/aws/live/s3.sh, so the walk now INVOKES a
-# service and this run takes the third arm of the roll-up rather than the
-# first: a script is present, it ran, and against this suite`s stub - which
-# answers AccessDenied to every call it has no route for - it covered no
-# check.  `reason=no_service_scripts_on_disk_yet` is still written by the
-# module and is still the right reason for a tree with an empty live/
-# directory; it is simply no longer the reason THIS tree produces.  Both arms
-# stay pinned, here and in tests/suites/cloud-s3.sh, because the naive edit
-# when the next service lands is to delete whichever one stopped matching.
+# CLOUD-05 (s3.sh) and CLOUD-22 (apigw.sh) have both landed, so the walk now
+# INVOKES two services and this run takes the third arm of the roll-up rather
+# than the first: both scripts are present, both ran, and against this
+# suite`s stub - which answers AccessDenied to every call it has no route for
+# - neither covered a check.  `reason=no_service_scripts_on_disk_yet` is still
+# written by the module and is still the right reason for a tree with an
+# empty live/ directory; it is simply no longer the reason THIS tree produces.
+# Both arms stay pinned, here and in tests/suites/cloud-s3.sh /
+# tests/suites/cloud-apigw.sh, because the naive edit when the next service
+# lands is to delete whichever one stopped matching rather than bump the count.
 assert_contains "$_red" 'reason=no_check_covered_by_any_service' \
-  'a run whose only present service script covered nothing records exactly that reason'
-assert_contains "$_red" 'services_present=1' 'and says how many of the catalog are on disk'
+  'a run whose only present service scripts covered nothing records exactly that reason'
+assert_contains "$_red" 'services_present=2' 'and says how many of the catalog are on disk'
 assert_contains "$_red" 'aws_api_access_denied' \
   'and the denied S3 call underneath it is itself a declared reduction, never silence'
 assert_contains "$(cat "$W/out-live/meta/coverage_gap")" 'cloud covered nothing in account 123456789012' \

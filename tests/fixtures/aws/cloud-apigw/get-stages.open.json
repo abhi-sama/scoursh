@@ -1,0 +1,8 @@
+{
+    "item": [
+        {
+            "stageName": "prod",
+            "deploymentId": "deploy0001"
+        }
+    ]
+}

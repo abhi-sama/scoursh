@@ -1,0 +1,20 @@
+{
+    "items": [
+        {
+            "id": "apiopen1",
+            "name": "fixture-open-api",
+            "createdDate": 1700000000
+        },
+        {
+            "id": "apigood1",
+            "name": "fixture-good-api",
+            "createdDate": 1700000000
+        },
+        {
+            "id": "apideny1",
+            "name": "fixture-denied-api",
+            "createdDate": 1700000000
+        }
+    ],
+    "position": "fixture-next-page-token"
+}

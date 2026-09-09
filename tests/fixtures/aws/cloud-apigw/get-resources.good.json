@@ -1,0 +1,27 @@
+{
+    "items": [
+        {
+            "id": "resroot2",
+            "path": "/",
+            "resourceMethods": {}
+        },
+        {
+            "id": "ressecure1",
+            "parentId": "resroot2",
+            "pathPart": "secure",
+            "path": "/secure",
+            "resourceMethods": {
+                "GET": {
+                    "httpMethod": "GET",
+                    "authorizationType": "AWS_IAM",
+                    "apiKeyRequired": false,
+                    "methodIntegration": {
+                        "type": "AWS_PROXY",
+                        "httpMethod": "POST",
+                        "uri": "arn:aws:apigateway:eu-west-2:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-west-2:123456789012:function:fixture-secure/invocations"
+                    }
+                }
+            }
+        }
+    ]
+}

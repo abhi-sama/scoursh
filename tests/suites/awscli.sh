@@ -687,6 +687,25 @@ got=$(trunc_case '{
 ')
 assert_contains "$got" 'OUTCOME=ok' \
   'a bare "NextToken" string element in an array has no colon after it and is not a key - a prefix-only test reads it as a token'
+
+t_case 'a "position" field is API Gateway own continuation token, distinct from every NextToken spelling'
+got=$(trunc_case '{
+    "items": [],
+    "position": "apigw-page-2"
+}
+')
+assert_contains "$got" 'OUTCOME=truncated' \
+  'CLOUD-22 (aws/live/apigw.sh) calls get-rest-apis/get-resources/get-api-keys, whose own JSON names this field "position" rather than any NextToken spelling - unrecognised, a partial API Gateway list would read as a complete one'
+assert_contains "$got" 'TOKEN=apigw-page-2' 'the token is captured for a caller that wants to resume'
+
+t_case 'a null "position" is the last page, not a truncated one - the identical NextToken:null reading applied to this key'
+got=$(trunc_case '{
+    "items": [],
+    "position": null
+}
+')
+assert_contains "$got" 'OUTCOME=ok' 'a null position means there is no more to fetch'
+assert_contains "$got" 'TRUNC=0' 'nothing is truncated'
 assert_contains "$got" 'TRUNC=0' 'and does not mark a complete response partial'
 
 t_case 'a cached truncated response replays as truncated'

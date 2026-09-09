@@ -256,3 +256,63 @@ remediation: Enable server access logging (or CloudTrail S3 data events) for
   to choose where the record must be reliable and queryable.
 references: CWE-778
 references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerLogs.html
+
+# docs/STEP6-CLOUD-PLAN.md CLOUD-22 (`aws/live/apigw.sh`, docs/DESIGN.md §8.4).
+# Two ids for one condition ("this method has no authorizer") for the same
+# reason CLOUD-S3-PUBLIC_ACL_READ-01/WRITE-01 are two ids rather than one:
+# `severity` is a per-record registry field every suite asserts the script and
+# the registry agree on, and the two cases genuinely differ in severity - a
+# route with NO barrier at all versus one gated by a shared, unauthenticated
+# API key - so a script that "weighted a finding higher" at runtime would put
+# the two into disagreement. CIS AWS Foundations Benchmark v3.0.0 has no API
+# Gateway section (its sections are IAM, S3, CloudTrail/Config/monitoring, KMS,
+# RDS and VPC/networking only), so neither record carries a `cis:` value -
+# docs/CIS-MAPPINGS.md §1 forbids inventing a control id to satisfy a
+# "must cite CIS" habit, and an honest absence is the correct outcome here.
+
+id: CLOUD-APIGW-OPEN_AUTH_ROUTE-01
+title: API Gateway method has no authorizer and no API key
+script: aws/live/apigw.sh
+severity: high
+confidence: high
+cwe: CWE-306
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Attach an authorizer to this method - AWS_IAM (SigV4-signed
+  requests from an IAM principal), a Cognito user pool authorizer, or a
+  Lambda (custom) authorizer - unless the route is genuinely meant to be
+  public (a health check, a public content-delivery endpoint fronted by its
+  own CDN-level controls). authorizationType NONE with apiKeyRequired false
+  means API Gateway performs no check of any kind before invoking the
+  integration: anyone who has this URL can call it. If some access control is
+  wanted but a full authorizer is not yet available, apiKeyRequired alone is
+  not a substitute - see CLOUD-APIGW-OPEN_AUTH_KEY_ONLY-01's own remediation
+  for why.
+references: CWE-306
+references: https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-control-access-to-api.html
+
+id: CLOUD-APIGW-OPEN_AUTH_KEY_ONLY-01
+title: API Gateway method has no authorizer and relies on an API key alone
+script: aws/live/apigw.sh
+severity: medium
+confidence: high
+cwe: CWE-306
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: An API key is not an authorizer - API Gateway's apiKeyRequired
+  setting only checks that SOME provisioned key was presented in the
+  `x-api-key` header, never who the caller is, so every holder of any key
+  provisioned anywhere in the account gets the identical access and a leaked
+  or shared key cannot be traced to a caller. If callers need to be
+  individually identified, revoked, or rate-limited per identity, attach a
+  real authorizer (AWS_IAM, a Cognito user pool, or a Lambda authorizer) in
+  addition to, or instead of, the key requirement. If this route is an
+  intentional machine-to-machine integration where a shared key is an
+  accepted risk, no change is needed beyond confirming the key is rotated and
+  scoped to a usage plan.
+references: CWE-306
+references: https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-api-usage-plans.html

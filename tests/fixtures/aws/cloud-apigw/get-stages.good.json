@@ -1,0 +1,12 @@
+{
+    "item": [
+        {
+            "stageName": "prod",
+            "deploymentId": "deploy0002"
+        },
+        {
+            "stageName": "dev",
+            "deploymentId": "deploy0003"
+        }
+    ]
+}
