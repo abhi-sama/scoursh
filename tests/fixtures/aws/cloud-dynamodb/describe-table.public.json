@@ -1,0 +1,7 @@
+{
+    "Table": {
+        "TableName": "scoursh-fixture-public-table",
+        "TableArn": "arn:aws:dynamodb:eu-west-2:123456789012:table/scoursh-fixture-public-table",
+        "TableStatus": "ACTIVE"
+    }
+}

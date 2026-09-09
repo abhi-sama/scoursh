@@ -1,0 +1,7 @@
+{
+    "TableNames": [
+        "scoursh-fixture-public-table",
+        "scoursh-fixture-hardened-table",
+        "scoursh-fixture-denied-table"
+    ]
+}

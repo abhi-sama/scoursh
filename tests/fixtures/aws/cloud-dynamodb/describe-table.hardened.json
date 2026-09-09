@@ -1,0 +1,12 @@
+{
+    "Table": {
+        "TableName": "scoursh-fixture-hardened-table",
+        "TableArn": "arn:aws:dynamodb:eu-west-2:123456789012:table/scoursh-fixture-hardened-table",
+        "TableStatus": "ACTIVE",
+        "SSEDescription": {
+            "Status": "ENABLED",
+            "SSEType": "KMS",
+            "KMSMasterKeyArn": "arn:aws:kms:eu-west-2:123456789012:key/scoursh-fixture-key"
+        }
+    }
+}
