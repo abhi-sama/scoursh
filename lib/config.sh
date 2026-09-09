@@ -473,7 +473,10 @@ config_scope_load() {
 config_scope_require() {
   local target=$1 path=${2:-$SCOURSH_INSTALL_ROOT/config/scope.conf}
   [[ -n $target ]] || die "$SCOURSH_EXIT_USAGE" 'config_scope_require called with no target id'
-  [[ -e $path ]] || die "$SCOURSH_EXIT_INPUT" "dast requires $path, and it does not exist"
+  # Module-agnostic wording (NET-04): this function is now called by both
+  # `dast` and `network`, and a hardcoded "dast requires" here would
+  # misdescribe a network run's own missing config/scope.conf.
+  [[ -e $path ]] || die "$SCOURSH_EXIT_INPUT" "a --target-scoped command requires $path, and it does not exist"
   config_scope_load "$path"
   records_index_of_id scope "$target" >/dev/null \
     || die "$SCOURSH_EXIT_SCOPE" "--target '$target' has no entry in $path"

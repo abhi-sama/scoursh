@@ -206,7 +206,7 @@ source "$SCOURSH_SCAN_SH_DIR/lib/guide.sh"
 # -----------------------------------------------------------------------------
 # 2. The §5 grammar, encoded as data rather than a chain of if/elif.
 # -----------------------------------------------------------------------------
-SCAN_COMMANDS=(sast sca iac dast cloud all diff report)
+SCAN_COMMANDS=(sast sca iac dast cloud network all diff report)
 
 # One map, keyed "scope:flag" (global, or a command name), because bash 4.2
 # has no namerefs (those are 4.3+, and tension 24 froze the minimum at 4.2)
@@ -318,6 +318,16 @@ declare -A _SCAN_FLAG_KIND=(
   # dispatch time, by `sts get-caller-identity`.
   [cloud:i-own-account]=value
 
+  # NET-04: mirrors dast's own target/intensity/affirmation trio exactly
+  # (report.md §2.5's table - a network probe is gated by exactly the same
+  # chokepoint and the same ceilings a DAST request is). No
+  # requests-per-second/request-budget/circuit-breaker-failures/openapi/har/
+  # postman/graphql-schema pair here: those are DAST-32's own rate/discovery
+  # knobs, meaningless for a module with no HTTP discovery phase of its own.
+  [network:target]=value
+  [network:intensity]=value
+  [network:i-own-target]=value
+
   [diff:against]=value
 
   # Not in docs/DESIGN.md §5's grammar block, which lists `report` with no
@@ -354,6 +364,12 @@ declare -A _SCAN_FLAG_KIND=(
   [all:assume-role]=value
 )
 
+# `network` deliberately reuses `all:target`/`all:intensity`/
+# `all:i-own-target` above (they are already present, shared with `dast`) -
+# only the flags `network` and `all` accept that `dast` and `all` do NOT
+# already share need their own `[all:...]` row here, and network introduces
+# none: every one of its own flags is already in the union.
+
 # The one required flag per command that needs one, read both by the
 # cross-flag check at the end of scan_parse_args below AND by
 # scan_usage_for's per-subcommand help - a single map rather than two
@@ -361,6 +377,7 @@ declare -A _SCAN_FLAG_KIND=(
 # which flag a command demands.
 declare -A _SCAN_REQUIRED_FLAG=(
   [dast]=target
+  [network]=target
   [diff]=against
   [report]=from
 )
@@ -437,6 +454,23 @@ Commands:
                               scan.  --i-own-account is still checked against
                               the CALLING identity only, not per member
                               account.)
+  network  --target <name-from-scope> [--intensity passive|safe|active]
+           [--i-own-target <same-name>]
+                            (service-posture scanning over the DECLARED
+                              listener set config/scope.conf's own
+                              base-url/extra-host entries name for
+                              --target - never a port sweep or host
+                              discovery: a port scoursh was not told about is
+                              never probed, exactly as an unauthorised host
+                              is never requested by `dast`.  Gated by the
+                              identical chokepoint, ceilings and
+                              --i-own-target affirmation `dast` uses - one
+                              TCP connect costs exactly what one HTTP
+                              request costs.  NOT YET BUILT beyond this
+                              dispatch skeleton: no phase script exists on
+                              disk, so a run today resolves the target and
+                              records why it found nothing rather than
+                              reporting a clean scan.)
   all      run every module for which inputs are configured
   diff     --against <prior-run-dir>
   report   --from <prior-run-dir>
@@ -565,6 +599,24 @@ _scan_dast_phase_status() {
   printf '%s of %s scan phases implemented' "$present" "$total"
 }
 
+# `_scan_network_phase_status` - "N of M scan phases implemented", the exact
+# shape and reasoning of `_scan_dast_phase_status` above, applied to
+# modules/network/engine.sh's own `_NET_PHASES` table.
+_scan_network_phase_status() {
+  local total=0 present=0 spec script path
+  if [[ -z ${_NET_PHASES+x} && -f $SCOURSH_INSTALL_ROOT/modules/network/engine.sh ]]; then
+    # shellcheck disable=SC1091
+    source "$SCOURSH_INSTALL_ROOT/modules/network/engine.sh"
+  fi
+  for spec in "${_NET_PHASES[@]+"${_NET_PHASES[@]}"}"; do
+    script=${spec%%:*}
+    path=$SCOURSH_INSTALL_ROOT/modules/network/$script
+    total=$(( total + 1 ))
+    [[ -f $path ]] && present=$(( present + 1 ))
+  done
+  printf '%s of %s scan phases implemented' "$present" "$total"
+}
+
 # `_scan_cloud_service_status` - "N of M AWS services implemented", counted by
 # walking modules/cloud/aws/engine.sh's own `_CLOUD_SERVICES` table and
 # checking the same file path `cloud_run_service` checks for each row (its
@@ -670,6 +722,14 @@ scan_usage_for() {
           "$(_scan_cloud_service_status)"
       else
         printf '%s\n' 'NOT built - modules/cloud/aws/run.sh does not exist on disk yet; this command is a logged no-op (docs/DESIGN.md §13 step 6).'
+      fi
+      ;;
+    network)
+      if _scan_module_built network; then
+        printf 'partially built - the dispatch entry point, the scope gate and the phase harness are real (%s, data/scoursh-network-scan-design/report.md). A run against a real target completes cleanly and records why it found nothing, rather than reporting a clean scan.\n' \
+          "$(_scan_network_phase_status)"
+      else
+        printf '%s\n' 'NOT built - modules/network/run.sh does not exist on disk yet.'
       fi
       ;;
     diff)
@@ -969,10 +1029,14 @@ _scan_check_affirmation() {
   fi
 
   # Only where a live endpoint is actually reachable.  `all` without a
-  # `--target` runs no DAST at all, so refusing there would be refusing an
-  # invocation that sends nothing.
+  # `--target` runs no DAST (or network) at all, so refusing there would be
+  # refusing an invocation that sends nothing.  `network` (NET-04) joins
+  # `dast` here rather than getting its own arm: report.md §2.5's own table
+  # says a network probe is gated by exactly the same ceiling this function
+  # already enforces, so the identical `--intensity`/`--allow-intrusive`
+  # affirmation rule applies unchanged.
   case $SCAN_COMMAND in
-    dast) ;;
+    dast | network) ;;
     all) [[ -n $target ]] || return 0 ;;
     *) return 0 ;;
   esac
@@ -1925,7 +1989,7 @@ scan_dispatch() {
 # Also grows SCOURSH_SELECTED_CHECKS (declared with SCAN_FLAGS below): the
 # LF-joined id list lib/findings.sh's `_derived_record_selected` already
 # reads (tension 6 condition (a)), across every module this run dispatches -
-# `scan.sh all` must union sast+sca+iac+dast+cloud's selections, not just the
+# `scan.sh all` must union sast+sca+iac+dast+cloud+network's selections, not just the
 # last module filtered, or a composite whose contributors span modules would
 # be judged against only one of them.
 # -----------------------------------------------------------------------------
@@ -2442,6 +2506,18 @@ scan_main() {
       _scan_apply_profile_filter cloud
       scan_dispatch cloud
       ;;
+    network)
+      # Byte-identical shape to the `dast` arm above (NET-04's own explicit
+      # instruction: follow the dast precedent exactly).  config_scope_require
+      # is the non-bypassable gate: no matching --target dies 3, a wholly
+      # missing scope.conf dies 4.  modules/network/run.sh (report.md §5.2
+      # rule 1) re-asserts it a second, independent time.
+      config_scope_require "${SCAN_FLAGS[target]}"
+      run_record targets "${SCAN_FLAGS[target]}"
+      _scan_record_authorization "${SCAN_FLAGS[target]}"
+      _scan_apply_profile_filter network
+      scan_dispatch network
+      ;;
     all)
       path=${SCAN_FLAGS[path]:-.}
       _scan_require_readable_path "$path"
@@ -2462,11 +2538,21 @@ scan_main() {
       if [[ -n ${SCAN_FLAGS[target]:-} ]]; then
         config_scope_require "${SCAN_FLAGS[target]}"
         run_record targets "${SCAN_FLAGS[target]}"
+        # One authorization record per target, not one per target-scoped
+        # module: `dast` and `network` (NET-04) share the same --target,
+        # --intensity and --i-own-target values under `all`, so a second call
+        # here would double every authorization_* fact in run.json for no new
+        # information - D6 (data/scoursh-network-scan-design/report.md §9)
+        # is "network runs under `all` whenever dast does", not "network gets
+        # its own affirmation record".
         _scan_record_authorization "${SCAN_FLAGS[target]}"
         _scan_apply_profile_filter dast
         scan_dispatch dast
+        _scan_apply_profile_filter network
+        scan_dispatch network
       else
         run_record coverage_reduction 'module=dast reason=no --target given (declared, all)'
+        run_record coverage_reduction 'module=network reason=no --target given (declared, all)'
       fi
       if [[ ${SCAN_FLAGS[live]:-} == true ]]; then
         command -v aws >/dev/null 2>&1 \
@@ -2535,7 +2621,7 @@ scan_main() {
   # is what turns "nobody happened to see this" into "half the point of this
   # feature quietly breaks itself", so it is fixed in the same change.
   case $SCAN_COMMAND in
-    sast | sca | iac | dast | cloud | all)
+    sast | sca | iac | dast | cloud | network | all)
       local _scan_state_retain
       _scan_capture _scan_state_retain config_scanner_value state-retain-runs ''
       state_write '' "$_scan_state_retain"

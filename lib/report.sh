@@ -48,7 +48,7 @@ source "${BASH_SOURCE[0]%/*}/checks.sh"
 #     `sast sca iac dast cloud` literals; a module added to the scan surface
 #     (NET-01) now changes here once instead of at every call site.
 # ---------------------------------------------------------------------------
-declare -ga _RPT_MODULES=(sast sca iac dast cloud)
+declare -ga _RPT_MODULES=(sast sca iac dast cloud network)
 
 # ---------------------------------------------------------------------------
 # 1. Counting
@@ -2627,13 +2627,14 @@ _html_foot() {
 #     "what ran" for it rather than ever claiming a coverage fraction it
 #     cannot know - the identical fallback the design scout's prototype used.
 # ---------------------------------------------------------------------------
-declare -A _RPTC_CAT_LABEL=( [sast]='SAST' [sca]='SCA' [iac]='IaC' [dast]='DAST' [cloud]='Cloud / AWS' )
+declare -A _RPTC_CAT_LABEL=( [sast]='SAST' [sca]='SCA' [iac]='IaC' [dast]='DAST' [cloud]='Cloud / AWS' [network]='Network' )
 declare -A _RPTC_CAT_DESCR=(
   [sast]='Static analysis of source code - pattern rule packs over the scan root.'
   [sca]='Dependency composition analysis - lockfile parsing against the vendored advisory table.'
   [iac]='Infrastructure-as-code - pattern rule packs over Terraform, CloudFormation, Kubernetes, Helm, Docker.'
   [dast]='Dynamic analysis - live probes against an authorised target in config/scope.conf.'
   [cloud]='Live read-only AWS configuration review plus posture checks.'
+  [network]='Service-posture scanning over the declared listener set config/scope.conf names for an authorised target - never a port sweep or host discovery.'
 )
 # The plain-English noun `_rptc_plain_summary` uses in place of the bare
 # category label - "web checks" reads more naturally than "DAST checks" to a
@@ -2642,7 +2643,7 @@ declare -A _RPTC_CAT_DESCR=(
 # "<LABEL> checks" for any category added later without an entry here.
 declare -A _RPTC_CAT_NOUN=(
   [sast]='code checks' [sca]='dependency checks' [iac]='infrastructure checks'
-  [dast]='web checks' [cloud]='AWS checks'
+  [dast]='web checks' [cloud]='AWS checks' [network]='network checks'
 )
 # strong/medium/weak/none - the per-category semantic strength of "ran" this
 # report states as a first-class field rather than a footnote.
@@ -2657,7 +2658,13 @@ declare -A _RPTC_CAT_NOUN=(
 # currently vacuous, since no service script ships yet, and those are different
 # facts: the `Checks available` / `Checks run` columns beside it are what say
 # nothing ran, and they are computed from the registry rather than typed here.
-declare -A _RPTC_RANSEM=( [sast]=strong [iac]=strong [sca]=medium [dast]=strong [cloud]=strong )
+# `network` (NET-04) is added the identical way cloud-P3 added `cloud`: strong
+# from the moment modules/network/ lands a real dispatch, not from the moment
+# it lands a real check, for the identical reason - the predicate a future
+# check will use is already decided (evaluated over a live listener, like
+# DAST's), and it is a fact about the MECHANISM, not about how many phase
+# scripts currently exist to exercise it.
+declare -A _RPTC_RANSEM=( [sast]=strong [iac]=strong [sca]=medium [dast]=strong [cloud]=strong [network]=strong )
 # SC2016: the backticks below are literal prose (code-span-style quoting of
 # `run`/`files:`), not command substitution.
 # shellcheck disable=SC2016
@@ -2667,17 +2674,23 @@ declare -A _RPTC_RANSEM_TEXT=(
   [sca]='Recorded when at least one manifest of that ecosystem was located and walked (e.g. modules/sca/engine.sh), before its package loop. It ships no on-disk check registry, so this report cannot state a coverage fraction for it - only what ran.'
   [dast]='Recorded AFTER evaluation, gated on at least one response or request the check was applicable to actually happening (e.g. modules/dast/passive/headers.sh:_HDRF_EVAL). This is the category the other two were brought up to match.'
   [cloud]='Recorded AFTER the AWS call the check depends on returned an ANSWER - `ok` or `not_found` in lib/awscli.sh section 2s outcome vocabulary. A call that was denied, throttled, truncated or made against a region the account has not enabled is a declared coverage_reduction, listed below, never a silent checks_run entry: for a cloud scan an AccessDenied looks exactly like an account with nothing wrong in it, which is why this category classifies every failure rather than returning a status. NOTE: modules/cloud/aws/live/ ships the S3, Cognito, Lambda, RDS, DynamoDB, API Gateway, ECR, ECS, EKS, ELB/ALB, CloudFront, KMS, Secrets Manager, SSM, IAM, EC2/VPC, CloudTrail, AWS Config, GuardDuty, Inspector2 and Macie2 services so far (docs/STEP6-CLOUD-PLAN.md CLOUD-05, CLOUD-20, CLOUD-21, CLOUD-15/16, CLOUD-22, CLOUD-25/26/27, CLOUD-14, CLOUD-24, CLOUD-06/07/08/09, CLOUD-13, CLOUD-30..34); every other service in docs/DESIGN.md 8.1s catalog is still absent, so a --live run today resolves the account and its regions, examines those twenty-one services, and records every other service as unexamined rather than counting it clean.'
+  [network]='Recorded AFTER evaluation, gated on at least one connection or response the check was applicable to actually happening - the identical predicate DAST uses, one transport layer down (a plain TCP connect via lib/nettransport.sh in place of an HTTP request). NOTE: modules/network/ ships no phase script yet (NET-04; data/scoursh-network-scan-design/report.md §7 tiers 1-3), so nothing has been counted under this predicate - a run today resolves the target and its scope-gate authorization and records what it could not examine, exactly as modules/cloud/ did before its first service script landed.'
 )
 
 _rptc_prefix_grep() {
   # Emits the matching lines of FILE for CATEGORY's id prefix(es). `cloud`
   # is the one category with two (docs/DESIGN.md §13's CLOUD-*/POSTURE-*
   # split, both step-6 work) - kept as one egrep alternation rather than two
-  # separate greps so a caller never has to know that.
+  # separate greps so a caller never has to know that.  `network` (NET-04) is
+  # the one category whose SCAN_COMMANDS/_RPT_MODULES token does NOT equal
+  # its own check-id prefix: rules/RULE-FORMAT.md §9.1.1 (NET-02) reserves
+  # `NET-`, never `NETWORK-`, so the default `${cat^^}-` mapping every other
+  # category relies on would silently match nothing for this one.
   local cat=$1 file=$2
   [[ -r $file ]] || return 0
   case $cat in
     cloud) grep -E '^(CLOUD-|POSTURE-)' "$file" 2>/dev/null || true ;;
+    network) grep '^NET-' "$file" 2>/dev/null || true ;;
     *) grep "^${cat^^}-" "$file" 2>/dev/null || true ;;
   esac
 }
