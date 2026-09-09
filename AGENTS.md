@@ -3970,11 +3970,49 @@ subprocess): a real-shaped multi-package fixture, the malformed/partial-block fi
 DB, a directory in place of a file, a DB with no trailing blank line, an empty-but-present DB, and
 `checks-apk.rules` parsing clean and appearing alongside `checks-advisories.rules` under the same glob.
 
-**What remains, per report.md §5.3:** IMG-05 (the differential-tested apk version comparator -
-`1.2.3-r4 < 1.2.3-r10`, report.md §2.4/§2.5's own measured reason `modules/sca/semver.sh` cannot be
-reused for OS package versions) and IMG-06 (end-to-end: wire `distro/apk.sh` and the comparator into
-`modules/image/run.sh`, and actually emit `IMAGE-PKG-VULNERABLE_OS_PACKAGE-01` for the first time) -
-before Debian/Ubuntu and rpm are even considered (D2's own Alpine-first recommendation).
+**IMG-05 (the apk version comparator) has also landed**, as `modules/image/distro/apk_version.sh`
+plus its committed differential corpus `tests/fixtures/image/apk-version-corpus.tsv` and
+`tests/suites/image-apk-version.sh`.  Read that file's own header before changing anything in it - it
+is written to be the authority - but four things bind callers and future distro comparators and so
+belong here:
+
+- **An apk version is NOT a semver, and the two comparators must never be merged.**  report.md §2.4
+  measured `modules/sca/semver.sh` at 5 correct / 7 wrong on OS versions, `1.2.3-r4` vs `1.2.3-r10`
+  among them, in the FALSE-NEGATIVE direction the project's frozen tension-25 standard already rules
+  disqualifying (`_sv_split` splits on the first `-`, so it compares the pkgrels `"r4" > "r10"`
+  lexically and reports an actually-vulnerable package SAFE).  The inverse temptation is equally
+  wrong: the two genuinely disagree on cases both consider ordinary - `1.0` vs `1.0.0` is EQUAL under
+  SemVer and LESS under apk - so a merged `version_cmp` is necessarily wrong for one of its callers.
+  `tests/suites/image-apk-version.sh` section B asserts the DISAGREEMENT itself, not only the correct
+  answer, so a later "simplification" into a semver wrapper goes red rather than passing every case
+  semver happens to get right.
+- **The comparator's ONE deliberate divergence from apk-tools is its structural tie-break, and it is
+  divergent in the only safe direction.**  When two versions diverge into different FIELDS of the
+  grammar (`1.0-r5` against `1.0.1-r0`; `1.0_git-r0` against `1.0_git1-r0`) apk-tools' own comparison
+  falls through to EQUAL - its ordering is a preorder, not an order.  EQUAL means "not below" means
+  "reported safe", the disqualifying direction again, so this file applies a field-order rule instead
+  (the side that advanced FURTHER through the grammar passed the earlier field with no content, and an
+  absent field sorts low).  Every pair it decides is a pair apk called EQUAL, so the divergence can
+  only ever turn a silent SAFE into a reported finding - a false positive at worst.  A live
+  `apk version -t` differential WILL flag these; that is expected and is not a defect to "fix".
+- **The offline-corpus limit is real and is named rather than papered over.**  scoursh is
+  egress-restricted and no development host here has apk-tools, so `apk version -t` could not be run
+  and NO row of the corpus was harvested from the tool - both references (the committed corpus and the
+  suite's independent Python reference) are spec-derived.  The corpus's `<`/`=`/`>` column is
+  deliberately `apk version -t`'s own output vocabulary so the deferred live differential is a direct
+  column diff, in the same shape as the GNU-tar cross-check `tools/daily-suite.sh` already defers.
+  The fractional-component rule (`1.01 < 1.1`) and `1.0 < 1.0-r0` are the two rows to scrutinise first.
+- **No arithmetic on an untrusted digit run, anywhere.**  A version string comes out of a scanned
+  image's package database.  `$(( 10#$run ))` silently wraps at 64 bits, so two runs differing by
+  exactly 2^64 evaluate EQUAL and a wrapped run can invert an ordering outright - measured, and pinned
+  in section C.  Digit runs are compared by stripped LENGTH first and bytes second, which is exact at
+  any width and forks nothing.  IMG-08's dpkg comparator and IMG-12's rpm one want the same rule.
+
+**What remains, per report.md §5.3:** IMG-06 (end-to-end: wire `distro/apk.sh` and `apk_version.sh`
+into `modules/image/run.sh`, and actually emit `IMAGE-PKG-VULNERABLE_OS_PACKAGE-01` for the first
+time - note `apk_version_cmp_v` returns rc 1 on an unreadable version and that owes a
+`coverage_reduction`, never a silent skip) - before Debian/Ubuntu and rpm are even considered (D2's
+own Alpine-first recommendation).
 
 ## Tests
 
