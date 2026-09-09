@@ -221,7 +221,7 @@ module_can_supply() {
   case $key in
     none) return 0 ;;
     file) case $module in SAST | SCA | IAC) return 0 ;; *) return 1 ;; esac ;;
-    target) case $module in DAST | CLOUD | POSTURE) return 0 ;; *) return 1 ;; esac ;;
+    target) case $module in DAST | CLOUD | POSTURE | NET) return 0 ;; *) return 1 ;; esac ;;
     account | account-region) case $module in CLOUD | POSTURE) return 0 ;; *) return 1 ;; esac ;;
     *) return 1 ;;
   esac

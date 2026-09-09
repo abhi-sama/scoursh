@@ -258,6 +258,8 @@ assert_eq POSTURE "$(records_owning_module modules/cloud/posture/checks.rules)" 
 assert_eq CLOUD "$(records_owning_module modules/cloud/aws/checks.rules)" 'cloud'
 assert_eq COMPOSITE "$(records_owning_module rules/derived.rules)" 'derived.rules is COMPOSITE'
 assert_eq SAST "$(records_owning_module rules/redaction.rules)" 'redaction ids are SAST-REDACT-*'
+assert_eq NET "$(records_owning_module modules/network/checks.rules)" \
+  'modules/network/ owns NET, added by this change - its directory name does not match its enum spelling, the same way modules/cloud/posture/ does not match POSTURE'
 
 # ---------------------------------------------------------------------------
 printf '\n-- §9 validation codes --\n'
@@ -335,6 +337,14 @@ assert_contains "$(val v20.rules 'id: SAST-A-B-01\ntitle: t\nscript: x.sh\nsever
 assert_contains "$(val v21.rules 'id: SAST-A-B-01\ntitle: t\nscript: x.sh\nseverity: low\ncwe: none\nowasp: none\ntags: static\ncoverage-scope: path-root\nremediation: r\n' script-check)" E044 \
   'E044 a script check may not carry the static type tag'
 assert_contains "$(val v22.rules "${base}pattern: dup\n" pattern-rule)" E014 'E014 through the validator too'
+
+t_case 'the NET module (rules/RULE-FORMAT.md §14 third worked example) is a purely additive enum entry'
+assert_eq '' "$(val vnet1.rules 'id: NET-PORT-UNEXPECTED_LISTENER-01\ntitle: t\nscript: x.sh\nseverity: high\ncwe: none\nowasp: none\ntags: safe-active\ncoverage-scope: target\nremediation: r\n' script-check)" \
+  'a well-formed NET script check validates cleanly - fails if the widened §9.1.1 MODULE alternation rejects NET'
+assert_contains "$(val vnet2.rules 'id: NET-PORT-UNEXPECTED_LISTENER-01\ntitle: t\nscript: x.sh\nseverity: high\ncwe: none\nowasp: none\ntags: safe-active\ncoverage-scope: path-root\nremediation: r\n' script-check)" E079 \
+  'E079 NET is required to carry coverage-scope: target, exactly like DAST, per the §9.5.1 row this change adds'
+assert_contains "$(val vnet3.rules 'id: XNET-PORT-X-01\ntitle: t\nscript: x.sh\nseverity: high\ncwe: none\nowasp: none\ntags: safe-active\ncoverage-scope: target\nremediation: r\n' script-check)" E027 \
+  'a near-miss module spelling is still rejected - the widened alternation legalises exactly NET, not any prefix containing it'
 
 t_case 'a clean record produces no diagnostics at all'
 assert_eq '' "$(val ok.rules "$base" pattern-rule)" 'the seeded shape validates silently'

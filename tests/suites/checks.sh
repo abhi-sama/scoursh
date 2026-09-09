@@ -84,6 +84,10 @@ t_case 'an unknown module name finds nothing rather than dying'
 checks_registry_load bogus-module reg_bogus
 assert_eq 0 "${#CHECKS_REGISTRY_SETS[@]}" 'checks_module_dir has no row for it'
 
+t_case 'checks_module_dir network resolves modules/network - the NET module identity'
+assert_eq modules/network "$(checks_module_dir network)" \
+  'the scan.sh subcommand is "network" even though the MODULE enum/check-id prefix is NET (rules/RULE-FORMAT.md §9.1.1)'
+
 unset SCOURSH_INSTALL_ROOT
 
 # =============================================================================
