@@ -196,11 +196,15 @@ assert_contains "$RUN_OK_JSON" '"checks_run": []' \
 printf '\n-- run.json tells the truth about a run that covered nothing --\n'
 # =============================================================================
 
-t_case 'run.json records the phases_present=1 declared reduction naming the real cause, now that NET-05 has landed'
+t_case 'run.json records the phases_present=2 declared reduction naming the real cause, now that NET-05 and NET-06 have landed'
 assert_contains "$RUN_OK_JSON" 'module=network reason=no_check_covered_by_any_phase' \
   'run.json carries the declared reduction with its owning module token - FAILS if the module logs it only to stderr, which leaves the artifact claiming a complete run, or if it is written under the finding-module short form "net" instead of the SCAN_COMMANDS/checks_module_dir token "network" lib/report.sh'"'"'s _RPT_MODULES actually greps for. Since NET-05 (inventory.sh) landed, net-fixture'"'"'s own single-listener (base-url only) run now RUNS that one phase rather than finding it absent, so the reduction reason moves from no_phase_scripts_on_disk_yet to no_check_covered_by_any_phase - FAILS under the pre-NET-05 reading, where nothing on disk would ever run'
-assert_contains "$RUN_OK_JSON" 'phases_expected=6 phases_present=1 phases_ran=1' \
-  'and states the phase count honestly (6 rows in _NET_PHASES, inventory.sh present and ran, the other 5 still absent) - FAILS if the phase table is declared but never actually walked, or if inventory.sh'"'"'s own presence is not picked up by a real -f test'
+assert_contains "$RUN_OK_JSON" 'phases_expected=6 phases_present=2 phases_ran=1' \
+  'and states the phase count honestly (6 rows in _NET_PHASES; inventory.sh present and ran; reachability.sh present but above this default --intensity passive run'"'"'s ceiling, since it is a safe-tier phase; the other 4 still absent) - FAILS if the phase table is declared but never actually walked, or if inventory.sh'"'"'s/reachability.sh'"'"'s own presence is not picked up by a real -f test'
+
+t_case 'run.json ALSO records reachability.sh as above this run'"'"'s intensity ceiling, not silently folded into "absent"'
+assert_contains "$RUN_OK_JSON" 'module=network reason=phase_above_intensity_ceiling target=net-fixture intensity=passive phases=[reachability.sh(>=safe)]' \
+  'a present-but-too-high-tier phase is its own named reduction - FAILS if a phase that exists on disk but requires a higher --intensity than this run used were counted as merely "absent", which would read identically to a phase that has not been written yet'
 
 t_case 'run.json records a coverage_gap a human reads, naming the target'
 assert_contains "$RUN_OK_JSON" "network covered nothing on target 'net-fixture'" \
@@ -251,8 +255,8 @@ assert_eq 0 "$_NET_PHASE_PRESENT" 'and _NET_PHASE_PRESENT agrees'
 net_run_phase 'reachability.sh:safe' passive net-fixture
 assert_eq skipped_intensity "$_NET_PHASE_OUTCOME" \
   'a safe-tier phase under a passive run reports skipped_intensity, not absent - the intensity gate is evaluated FIRST, before the script is even looked for (byte-identical to modules/dast/engine.sh'"'"'s own dast_run_phase), so this is the outcome REGARDLESS of whether the file exists. FAILS if the file-existence test runs first and this phase (which happens to not exist either) reports absent instead'
-assert_eq 0 "$_NET_PHASE_PRESENT" \
-  'and _NET_PHASE_PRESENT still correctly reports 0 - modules/network/run.sh reads this to decide whether a skipped_intensity phase belongs in the "phases_above_intensity_ceiling" count (present) or the plain absent count (not present, this case)'
+assert_eq 1 "$_NET_PHASE_PRESENT" \
+  'and _NET_PHASE_PRESENT now correctly reports 1, now that NET-06 landed reachability.sh on disk - modules/network/run.sh reads this to decide whether a skipped_intensity phase belongs in the "phases_above_intensity_ceiling" count (present, this case) or the plain absent count (not present) - FAILS under the pre-NET-06 reading, where the file did not exist either'
 
 t_case 'net_intensity_rank fails on an unrecognised name and never leaves a stale rank'
 net_intensity_rank passive >/dev/null
