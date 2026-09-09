@@ -1915,6 +1915,12 @@ id: CLOUD-OPENSEARCH-PUBLIC_ACCESS-01
 title: OpenSearch domain is on the public endpoint with a wide-open access policy
 script: aws/live/opensearch.sh
 severity: critical
+confidence: medium
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
 remediation: Either attach the domain to a VPC (VPCOptions), which removes
   the public AWS-owned endpoint entirely, or narrow the access policy so its
   Principal names specific accounts, roles or a Condition that genuinely
@@ -1928,6 +1934,13 @@ references: https://docs.aws.amazon.com/opensearch-service/latest/developerguide
 id: CLOUD-OPENSEARCH-NO_ENCRYPTION_AT_REST-01
 title: OpenSearch domain has no encryption at rest configured
 script: aws/live/opensearch.sh
+severity: medium
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
 remediation: Enable encryption at rest with an AWS-owned or customer-managed
   KMS key. This setting cannot be changed on a running domain - migrate the
   data to a newly-created, encrypted domain (a snapshot restore or a reindex)
@@ -1938,6 +1951,13 @@ references: https://docs.aws.amazon.com/opensearch-service/latest/developerguide
 id: CLOUD-OPENSEARCH-NO_ENCRYPTION_IN_TRANSIT-01
 title: OpenSearch domain has node-to-node transport encryption disabled
 script: aws/live/opensearch.sh
+severity: medium
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
 remediation: Enable node-to-node encryption so traffic between the domain's
   own data nodes is encrypted in transit. This is a distinct setting from
   HTTPS-to-client (DomainEndpointOptions.EnforceHTTPS) and from encryption at
@@ -1950,6 +1970,12 @@ id: CLOUD-REDSHIFT-PUBLIC_ACCESS-01
 title: Redshift cluster is configured as publicly accessible
 script: aws/live/redshift.sh
 severity: critical
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
 remediation: Set the cluster's PubliclyAccessible option to false and reach
   it from outside the VPC through a VPN, Direct Connect, or a bastion/proxy
   host inside the VPC instead. A publicly accessible cluster is reachable
@@ -1962,6 +1988,13 @@ references: https://docs.aws.amazon.com/redshift/latest/mgmt/managing-clusters-v
 id: CLOUD-REDSHIFT-NO_ENCRYPTION_AT_REST-01
 title: Redshift cluster has no encryption at rest configured
 script: aws/live/redshift.sh
+severity: medium
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
 remediation: Encryption at rest cannot be enabled on a running cluster - create
   a new, encrypted cluster from a snapshot of the existing one (or with KMS
   encryption enabled from the start) and switch client connections over to
@@ -1993,6 +2026,10 @@ script: aws/live/efs.sh
 severity: critical
 confidence: medium
 cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
 remediation: Scope the file system policy's Principal to specific accounts or
   roles, or add a Condition restricting elasticfilesystem:AccessedViaMountTarget
   and the expected VPC/account, rather than admitting the wildcard "*". A
@@ -2006,6 +2043,12 @@ references: https://docs.aws.amazon.com/efs/latest/ug/iam-access-control-nfs-efs
 id: CLOUD-EFS-NO_ENCRYPTION_AT_REST-01
 title: EFS file system has no encryption at rest configured
 script: aws/live/efs.sh
+severity: medium
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
 tags: compliance
 coverage-scope: account-region
 cis: 2.4.1
