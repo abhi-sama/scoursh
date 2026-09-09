@@ -2034,3 +2034,74 @@ remediation: Add a Deny statement to the file system policy conditioned on
   traffic is encrypted.
 references: CWE-319
 references: https://docs.aws.amazon.com/efs/latest/ug/encryption-in-transit.html
+
+# ---------------------------------------------------------------------------
+# The following two records are owned by modules/cloud/aws/live/appsync.sh
+# (docs/DESIGN.md §8.5; docs/STEP6-CLOUD-PLAN.md CLOUD-23).  Appended to this
+# shared, append-only registry per this file's own header rule.
+#
+# NEITHER RECORD CARRIES A `cis` VALUE, AND THAT IS AN HONEST ABSENCE RATHER
+# THAN A GAP.  CIS Amazon Web Services Foundations Benchmark v3.0.0 has no
+# section for AppSync, or for any managed GraphQL service - its four sections
+# cover IAM, storage (S3/EBS/RDS), logging/monitoring, and networking - so
+# there is no control number to cite.  `data/cis-mappings`'s own header
+# records the identical judgement for the three S3 checks that also cite
+# nothing; inventing one here to satisfy a "must cite CIS" habit is the
+# overstated-coverage failure docs/DESIGN.md §15 exists to forbid.  Neither
+# record carries `tags: compliance` either, matching the rule those three S3
+# checks already establish: that tag is carried by exactly the records that
+# also carry a `cis` value.
+#
+# TWO IDS FOR TWO INDEPENDENT FACTS, PER §8.5'S OWN TEXT ("API-key auth in
+# use and key expiry").  The CLOUD location profile carries no component
+# naming the defect, so one id covering both an API's own default-auth choice
+# and one of its keys' expiry would collide two unrelated findings about two
+# different resources (the API itself; one API key) onto whichever
+# fingerprint sorted first.
+
+id: CLOUD-APPSYNC-API_KEY_DEFAULT_AUTH-01
+title: AppSync GraphQL API's default authentication is a plain API key
+script: aws/live/appsync.sh
+severity: medium
+confidence: high
+cwe: CWE-287
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Move the API's default authentication off API_KEY onto AWS_IAM
+  (for first-party, SigV4-signing callers such as another AWS service or a
+  backend you control) or Amazon Cognito user pools (for end users who need
+  individual identity and field-level `@aws_auth` authorization). An API key
+  is a static, bearer-style credential that carries no caller identity -
+  anyone who holds it, however it reached them, gets whatever access the
+  schema grants an API-key caller, with no per-caller authorization, no MFA,
+  and no revocation short of deleting the key itself. If API_KEY is kept at
+  all, reserve it for development use with a short-lived key and pair it with
+  additional authentication providers so production traffic never depends on
+  it.
+references: CWE-287
+references: https://docs.aws.amazon.com/appsync/latest/devguide/security-authz.html
+
+id: CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01
+title: AppSync API key has a long, far-future expiration
+script: aws/live/appsync.sh
+severity: medium
+confidence: high
+cwe: CWE-613
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Reissue the key with a short lifetime - the 7-to-30-day range
+  covers most legitimate uses, and AppSync's own maximum for any key is 365
+  days from creation - and put a rotation process in front of whatever
+  consumes it before the old key expires. The longer a static, unrotatable
+  API key stays valid, the longer it remains useful if it is ever captured -
+  copied out of a mobile app's decompiled binary, committed to a repository,
+  or read straight out of a JavaScript bundle a browser downloaded. Where the
+  consuming client can authenticate another way, move it off API_KEY
+  authentication entirely (see CLOUD-APPSYNC-API_KEY_DEFAULT_AUTH-01) rather
+  than only shortening this key's lifetime.
+references: CWE-613
+references: https://docs.aws.amazon.com/appsync/latest/devguide/security-authz.html

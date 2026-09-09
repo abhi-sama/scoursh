@@ -1,0 +1,14 @@
+{
+    "apiKeys": [
+        {
+            "id": "da2-longlivedkey01",
+            "description": "issued with a deliberately long lifetime",
+            "expires": 1717280000
+        },
+        {
+            "id": "da2-shortlivedkey01",
+            "description": "ordinary short-lived key",
+            "expires": 1700864000
+        }
+    ]
+}
