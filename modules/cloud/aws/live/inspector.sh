@@ -80,7 +80,7 @@ _insp_run_service() {
 
   local rtype status
   local -a off=()
-  for rtype in "${_INSP_RESOURCE_TYPES[@]}"; do
+  for rtype in "${_INSP_RESOURCE_TYPES[@]+"${_INSP_RESOURCE_TYPES[@]}"}"; do
     status=''
     gov_doc_get status "$(gov_path accounts 0 resourceState "$rtype" status)"
     [[ $status == ENABLED ]] || off+=("$rtype=${status:-UNKNOWN}")

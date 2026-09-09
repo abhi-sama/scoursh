@@ -854,7 +854,7 @@ _cis_render_order() {
   (( _CIS_LABEL_LOADED )) || cis_mappings_load
   local k
   if (( ${#_CIS_ORDER[@]} > 0 )); then
-    printf '%s\n' "${_CIS_ORDER[@]}"
+    printf '%s\n' "${_CIS_ORDER[@]+"${_CIS_ORDER[@]}"}"
   fi
   local -a extra=()
   local -A seen=()
