@@ -260,6 +260,8 @@ assert_eq COMPOSITE "$(records_owning_module rules/derived.rules)" 'derived.rule
 assert_eq SAST "$(records_owning_module rules/redaction.rules)" 'redaction ids are SAST-REDACT-*'
 assert_eq NET "$(records_owning_module modules/network/checks.rules)" \
   'modules/network/ owns NET, added by this change - its directory name does not match its enum spelling, the same way modules/cloud/posture/ does not match POSTURE'
+assert_eq IMAGE "$(records_owning_module modules/image/checks.rules)" \
+  'modules/image/ owns IMAGE - unlike NET, its directory name matches its enum spelling exactly'
 
 # ---------------------------------------------------------------------------
 printf '\n-- §9 validation codes --\n'
@@ -356,6 +358,14 @@ assert_contains "$(val vnet2.rules 'id: NET-PORT-UNEXPECTED_LISTENER-01\ntitle: 
   'E079 NET is required to carry coverage-scope: target, exactly like DAST, per the §9.5.1 row this change adds'
 assert_contains "$(val vnet3.rules 'id: XNET-PORT-X-01\ntitle: t\nscript: x.sh\nseverity: high\ncwe: none\nowasp: none\ntags: safe-active\ncoverage-scope: target\nremediation: r\n' script-check)" E027 \
   'a near-miss module spelling is still rejected - the widened alternation legalises exactly NET, not any prefix containing it'
+
+t_case 'the IMAGE module (IMG-01, rules/RULE-FORMAT.md §14 additive-enum pattern) is a purely additive enum entry'
+assert_eq '' "$(val vimg1.rules 'id: IMAGE-PKG-VULNERABLE_OS_PACKAGE-01\ntitle: t\nscript: x.sh\nseverity: high\ncwe: none\nowasp: none\ntags: passive\ncoverage-scope: image-id\nremediation: r\n' script-check)" \
+  'a well-formed IMAGE script check validates cleanly - fails if the widened §9.1.1 MODULE alternation rejects IMAGE'
+assert_contains "$(val vimg2.rules 'id: IMAGE-PKG-VULNERABLE_OS_PACKAGE-01\ntitle: t\nscript: x.sh\nseverity: high\ncwe: none\nowasp: none\ntags: passive\ncoverage-scope: path-root\nremediation: r\n' script-check)" E079 \
+  'E079 IMAGE is required to carry coverage-scope: image-id, per the §9.5.1 row this change adds'
+assert_contains "$(val vimg3.rules 'id: XIMAGE-PKG-X-01\ntitle: t\nscript: x.sh\nseverity: high\ncwe: none\nowasp: none\ntags: passive\ncoverage-scope: image-id\nremediation: r\n' script-check)" E027 \
+  'a near-miss module spelling is still rejected - the widened alternation legalises exactly IMAGE, not any prefix containing it'
 
 t_case 'a clean record produces no diagnostics at all'
 assert_eq '' "$(val ok.rules "$base" pattern-rule)" 'the seeded shape validates silently'

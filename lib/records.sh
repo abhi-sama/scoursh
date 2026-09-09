@@ -251,6 +251,7 @@ records_owning_module() {
     modules/iac/*) printf '%s' IAC ;;
     modules/dast/*) printf '%s' DAST ;;
     modules/network/*) printf '%s' NET ;;
+    modules/image/*) printf '%s' IMAGE ;;
     rules/derived.rules) printf '%s' COMPOSITE ;;
     rules/redaction.rules) printf '%s' SAST ;;
     *) return 1 ;;
@@ -983,7 +984,7 @@ _records_validate_record() {
 
 _records_check_id_form() {
   local set=$1 i=$2 schema=$3 path=$4 line=$5 id=$6
-  local re_check='^(SAST|SCA|IAC|DAST|CLOUD|POSTURE|NET|COMPOSITE)-[A-Z0-9]+-[A-Z0-9_]+(-[0-9]{2})?$'
+  local re_check='^(SAST|SCA|IAC|DAST|CLOUD|POSTURE|NET|IMAGE|COMPOSITE)-[A-Z0-9]+-[A-Z0-9_]+(-[0-9]{2})?$'
   local re_lower='^[a-z][a-z0-9-]*$'
   case $schema in
     derived)
@@ -1091,6 +1092,7 @@ _records_check_coverage_scope() {
     CLOUD) want='account-region' ;;
     POSTURE) want='scope-key' ;;
     NET) want='target' ;;
+    IMAGE) want='image-id' ;;
     *) return 0 ;;
   esac
   [[ $v == "$want" ]] || records_diag "$path" "$line" 1 E079 "$id" \

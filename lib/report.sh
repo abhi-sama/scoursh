@@ -48,7 +48,7 @@ source "${BASH_SOURCE[0]%/*}/checks.sh"
 #     `sast sca iac dast cloud` literals; a module added to the scan surface
 #     (NET-01) now changes here once instead of at every call site.
 # ---------------------------------------------------------------------------
-declare -ga _RPT_MODULES=(sast sca iac dast cloud network)
+declare -ga _RPT_MODULES=(sast sca iac dast cloud network image)
 
 # ---------------------------------------------------------------------------
 # 1. Counting
@@ -2649,7 +2649,7 @@ _html_foot() {
 #     "what ran" for it rather than ever claiming a coverage fraction it
 #     cannot know - the identical fallback the design scout's prototype used.
 # ---------------------------------------------------------------------------
-declare -A _RPTC_CAT_LABEL=( [sast]='SAST' [sca]='SCA' [iac]='IaC' [dast]='DAST' [cloud]='Cloud / AWS' [network]='Network' )
+declare -A _RPTC_CAT_LABEL=( [sast]='SAST' [sca]='SCA' [iac]='IaC' [dast]='DAST' [cloud]='Cloud / AWS' [network]='Network' [image]='Image' )
 declare -A _RPTC_CAT_DESCR=(
   [sast]='Static analysis of source code - pattern rule packs over the scan root.'
   [sca]='Dependency composition analysis - lockfile parsing against the vendored advisory table.'
@@ -2657,6 +2657,7 @@ declare -A _RPTC_CAT_DESCR=(
   [dast]='Dynamic analysis - live probes against an authorised target in config/scope.conf.'
   [cloud]='Live read-only AWS configuration review plus posture checks.'
   [network]='Service-posture scanning over the declared listener set config/scope.conf names for an authorised target - never a port sweep or host discovery.'
+  [image]='Built container image scanning - offline installed-package enumeration and CVE matching against an operator-supplied docker-save tarball or OCI image layout (data/scoursh-image-scan-design/report.md); no registry pull.'
 )
 # The plain-English noun `_rptc_plain_summary` uses in place of the bare
 # category label - "web checks" reads more naturally than "DAST checks" to a
@@ -2666,6 +2667,7 @@ declare -A _RPTC_CAT_DESCR=(
 declare -A _RPTC_CAT_NOUN=(
   [sast]='code checks' [sca]='dependency checks' [iac]='infrastructure checks'
   [dast]='web checks' [cloud]='AWS checks' [network]='network checks'
+  [image]='image checks'
 )
 # strong/medium/weak/none - the per-category semantic strength of "ran" this
 # report states as a first-class field rather than a footnote.
@@ -2686,7 +2688,7 @@ declare -A _RPTC_CAT_NOUN=(
 # check will use is already decided (evaluated over a live listener, like
 # DAST's), and it is a fact about the MECHANISM, not about how many phase
 # scripts currently exist to exercise it.
-declare -A _RPTC_RANSEM=( [sast]=strong [iac]=strong [sca]=medium [dast]=strong [cloud]=strong [network]=strong )
+declare -A _RPTC_RANSEM=( [sast]=strong [iac]=strong [sca]=medium [dast]=strong [cloud]=strong [network]=strong [image]=strong )
 # SC2016: the backticks below are literal prose (code-span-style quoting of
 # `run`/`files:`), not command substitution.
 # shellcheck disable=SC2016
@@ -2697,6 +2699,7 @@ declare -A _RPTC_RANSEM_TEXT=(
   [dast]='Recorded AFTER evaluation, gated on at least one response or request the check was applicable to actually happening (e.g. modules/dast/passive/headers.sh:_HDRF_EVAL). This is the category the other two were brought up to match.'
   [cloud]='Recorded AFTER the AWS call the check depends on returned an ANSWER - `ok` or `not_found` in lib/awscli.sh section 2s outcome vocabulary. A call that was denied, throttled, truncated or made against a region the account has not enabled is a declared coverage_reduction, listed below, never a silent checks_run entry: for a cloud scan an AccessDenied looks exactly like an account with nothing wrong in it, which is why this category classifies every failure rather than returning a status. NOTE: modules/cloud/aws/live/ ships the S3, Cognito, Lambda, RDS, DynamoDB, API Gateway, ECR, ECS, EKS, ELB/ALB, CloudFront, KMS, Secrets Manager, SSM, IAM, EC2/VPC, CloudTrail, AWS Config, GuardDuty, Inspector2 and Macie2 services so far (docs/STEP6-CLOUD-PLAN.md CLOUD-05, CLOUD-20, CLOUD-21, CLOUD-15/16, CLOUD-22, CLOUD-25/26/27, CLOUD-14, CLOUD-24, CLOUD-06/07/08/09, CLOUD-13, CLOUD-30..34); every other service in docs/DESIGN.md 8.1s catalog is still absent, so a --live run today resolves the account and its regions, examines those twenty-one services, and records every other service as unexamined rather than counting it clean.'
   [network]='Recorded AFTER evaluation, gated on at least one connection or response the check was applicable to actually happening - the identical predicate DAST uses, one transport layer down (a plain TCP connect via lib/nettransport.sh in place of an HTTP request). NOTE: modules/network/ ships no phase script yet (NET-04; data/scoursh-network-scan-design/report.md §7 tiers 1-3), so nothing has been counted under this predicate - a run today resolves the target and its scope-gate authorization and records what it could not examine, exactly as modules/cloud/ did before its first service script landed.'
+  [image]='Recorded AFTER a package database found in an image layer was actually looked up against data/advisories.db - a table lookup, never a live probe. NOTE: modules/image/ ships no distro enumerator yet (IMG-01; data/scoursh-image-scan-design/report.md §5.3), so nothing has been counted under this predicate - a run today resolves the declared --image id and records what it could not examine, exactly as modules/cloud/ and modules/network/ did before each landed its first real check.'
 )
 
 _rptc_prefix_grep() {
@@ -3633,7 +3636,7 @@ report_locations() {
     finding_decode "$line"
     local mod=${_DF[module]:-} check=${_DF[check_id]:-} write=0 fallback=0
     case $mod in
-      dast | cloud | posture | derived) write=1 ;;
+      dast | cloud | posture | derived | image) write=1 ;;
       sast)
         if [[ $check == SAST-HIST-* ]] \
           && ! _locations_history_resolves "${_DF[loc_path]:-}"; then
@@ -3962,7 +3965,7 @@ _sarif_run_incomplete() {
 # NOT a fingerprint component (tension 5/25: adding it to the sca profile
 # would change every shipped SCA check id's fingerprint) - and carries no
 # line at all. The non-resolving half of case 3, and case 4 (dast, cloud,
-# posture, derived) point at report_locations' own generated artifact,
+# posture, derived, image) point at report_locations' own generated artifact,
 # `locations/<module>.txt`, with loc_line the line SARIF-02 already wrote
 # back onto the finding - so this function needs no line bookkeeping of its
 # own, only the URI decision the table describes.
@@ -3993,7 +3996,7 @@ _sarif_result_location() {
       fi
       _SARIF_LOC_LINE=${_DF[loc_line]:-}
       ;;
-    dast | cloud | posture | derived)
+    dast | cloud | posture | derived | image)
       _SARIF_LOC_URI="locations/$module.txt"
       _SARIF_LOC_LINE=${_DF[loc_line]:-}
       ;;
@@ -4568,6 +4571,7 @@ _agent_module_of_check() {
     CLOUD-*) printf 'cloud' ;;
     POSTURE-*) printf 'posture' ;;
     NET-*) printf 'net' ;;
+    IMAGE-*) printf 'image' ;;
     *) return 1 ;;
   esac
 }

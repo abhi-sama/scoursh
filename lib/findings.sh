@@ -135,6 +135,7 @@ _fp_profile_for() {
     cloud) printf '%s' cloud ;;
     posture) printf '%s' posture ;;
     net) printf '%s' net ;;
+    image) printf '%s' image ;;
     derived) printf '%s' derived ;;
     *) return 1 ;;
   esac
@@ -149,6 +150,11 @@ _fp_components_for() {
     cloud) printf '%s\n' account_id region resource_key sub_key ;;
     posture) printf '%s\n' control_id scope_key ;;
     net) printf '%s\n' target host port transport ;;
+    # IMAGE (data/scoursh-image-scan-design/report.md §3.4): SCA's three
+    # components plus image_id, so two images scanned in one run cannot
+    # collide - "Not the version" applies here for the identical reason
+    # SCA's own profile excludes one (§9.2).
+    image) printf '%s\n' image_id ecosystem package advisory_id ;;
     derived) printf '%s\n' correlation ;;
     *) return 1 ;;
   esac
@@ -929,6 +935,7 @@ _finding_known_field() {
       logical_fqn | line | url | commit | path | unit_key | \
       loc_path | loc_line | loc_match_digest | loc_occurrence | loc_blob_sha | \
       loc_ecosystem | loc_package | loc_version | loc_advisory_id | loc_target | \
+      loc_image_id | \
       loc_method | loc_path_template | loc_param_location | loc_param_name | \
       loc_account_id | loc_region | loc_resource_key | loc_sub_key | \
       loc_control_id | loc_scope_key | loc_correlation | \
