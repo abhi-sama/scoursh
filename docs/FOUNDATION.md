@@ -5824,8 +5824,10 @@ through STATE-06, above), baseline suppression is real (STATE-07, above), and th
 carries its real `diff_usable` carve-out (STATE-08, above) - **step 7 is complete**; SARIF-01 through
 SARIF-06 have since landed (above), so Track
 A of step 10's SARIF emitter is complete, documentation included; COMPLIANCE-01 and COMPLIANCE-02 have
-also landed, so Track B's OWASP compliance view is complete too, while its CIS half (COMPLIANCE-03,
-COMPLIANCE-04) remains unbuilt and is blocked on step 6.
+also landed, so Track B's OWASP compliance view is complete too, and its CIS half (COMPLIANCE-03, the
+`data/cis-mappings` table, and COMPLIANCE-04, the CIS report view itself, unblocked once
+`modules/cloud/aws/live/s3.sh` supplied a real `cis`-carrying finding) has since landed as well - **step
+10 is complete in full**.
 
 <!-- BEGIN GENERATED STATUS -->
 <!--

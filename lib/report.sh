@@ -55,6 +55,13 @@ declare -A _RPT_SEV=()
 declare -A _RPT_MODULE=()
 declare -A _RPT_STATUS=()
 declare -A _RPT_OWASP=()
+# COMPLIANCE-04: per-control live-finding counts.  Unlike `_RPT_OWASP`, `cis`
+# is optional and REPEATABLE (rules/RULE-FORMAT.md §9.1/§9.5: one check may
+# cite several controls, and most checks cite none at all) - so this counts
+# occurrences across a newline-joined `_DF[cis]` list rather than one value
+# per finding, and a finding with no `cis` value contributes to no key here
+# at all (there is no `none` sentinel for `cis`, unlike `owasp`).
+declare -A _RPT_CIS=()
 declare -A _RPT_SEV_SUP=()
 _RPT_TOTAL=0
 _RPT_SUPPRESSED=0
@@ -154,14 +161,16 @@ report_count() {
   _RPT_MODULE=()
   _RPT_STATUS=([new]=0 [recurring]=0 [fixed]=0 [unknown]=0)
   _RPT_OWASP=()
+  _RPT_CIS=()
   _RPT_TOTAL=0
   _RPT_SUPPRESSED=0
   _RPT_LIVE=0
   _report_dast_injection_gap_state "$rundir"
   _report_dast_surface_state "$rundir"
   _report_owasp_state "$rundir"
+  _report_cis_state "$rundir"
   [[ -s $rundir/findings.fields ]] || return 0
-  local sev mod st ow
+  local sev mod st ow cislist cid
   while IFS= read -r line; do
     [[ -n $line ]] || continue
     finding_decode "$line"
@@ -180,6 +189,13 @@ report_count() {
     _RPT_MODULE[$mod]=$(( ${_RPT_MODULE[$mod]:-0} + 1 ))
     _RPT_STATUS[$st]=$(( ${_RPT_STATUS[$st]:-0} + 1 ))
     _RPT_OWASP[$ow]=$(( ${_RPT_OWASP[$ow]:-0} + 1 ))
+    cislist=${_DF[cis]:-}
+    if [[ -n $cislist ]]; then
+      while IFS= read -r cid; do
+        [[ -n $cid ]] || continue
+        _RPT_CIS[$cid]=$(( ${_RPT_CIS[$cid]:-0} + 1 ))
+      done <<<"$cislist"
+    fi
   done <"$rundir/findings.fields"
 
   # docs/STEP7-STATE-PLAN.md STATE-06: `fixed`/`unknown` never appear as a
@@ -300,6 +316,14 @@ owasp_category_known() {
 declare -gA _CIS_LABEL=()
 declare -g _CIS_LABEL_LOADED=0
 declare -g _CIS_BENCHMARK_NAME='' _CIS_BENCHMARK_VERSION=''
+# `_CIS_ORDER` - the ids in ON-DISK record order (docs/CIS-MAPPINGS.md §5:
+# "keeping the file sorted by id"), preserved as an INDEXED array rather than
+# re-derived from `_CIS_LABEL`'s keys. A `cis` id is dotted-decimal
+# (`^[0-9]+(\.[0-9]+)+$`, §9.6.7), never zero-padded, so a plain `LC_ALL=C`
+# sort - the trick `_owasp_render_order` relies on, because every OWASP id
+# IS zero-padded - would put `1.10` ahead of `1.2`: COMPLIANCE-04's own render
+# order uses this array for that reason, never a re-sort of `_CIS_LABEL`.
+declare -ga _CIS_ORDER=()
 
 # The path argument exists for the fixture harness and test suites, exactly
 # as owasp_categories_load's does; shellcheck's SC2120 disagreement across
@@ -308,6 +332,7 @@ declare -g _CIS_BENCHMARK_NAME='' _CIS_BENCHMARK_VERSION=''
 cis_mappings_load() {
   local path=${1:-$SCOURSH_INSTALL_ROOT/data/cis-mappings}
   _CIS_LABEL=()
+  _CIS_ORDER=()
   _CIS_BENCHMARK_NAME=''
   _CIS_BENCHMARK_VERSION=''
   _CIS_LABEL_LOADED=1
@@ -320,6 +345,7 @@ cis_mappings_load() {
     id=$(records_id cismap "$i")
     ttl=$(records_field cismap "$i" title)
     _CIS_LABEL[$id]=$ttl
+    _CIS_ORDER+=("$id")
   done
   # benchmark/benchmark-version are meaningful only on the first record
   # (rules/RULE-FORMAT.md §9.6.7, docs/CIS-MAPPINGS.md §3), exactly as
@@ -569,6 +595,279 @@ _owasp_render_order() {
     # written anyway because tests/lint-shell.sh's check is a per-line grep
     # that cannot see the enclosing `if`, and an exemption it cannot express
     # is a check that stays red for a correct file.
+    printf '%s\n' "${extra[@]+"${extra[@]}"}" | LC_ALL=C sort -u
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# 1c. CIS compliance view state (docs/STEP10-SARIF-PLAN.md Track B,
+#     COMPLIANCE-04)
+# ---------------------------------------------------------------------------
+# Mirrors section 1a's OWASP registry/state/bucket/render-order mechanics
+# (COMPLIANCE-02), with the one structural difference `cis` forces: it is
+# `optional, repeatable` (rules/RULE-FORMAT.md §9.1/§9.5) rather than
+# `required, single` like `owasp`, so ONE check can cite SEVERAL controls, and
+# most checks - the vast majority of SAST/SCA/IaC/DAST checks, which have
+# nothing to do with an AWS benchmark - cite NONE. There is therefore no `none`
+# bucket to render here (unlike OWASP's own tail section): a finding with no
+# `cis` value simply belongs to no control group, which is the ordinary case,
+# not a fact worth a heading of its own.
+#
+# The check_id -> cis registry map, across every module that ships an on-disk
+# *.rules registry.  Memoized on $SCOURSH_INSTALL_ROOT for the identical
+# reason `_report_owasp_registry_load` is.  Built as check_id -> a
+# NEWLINE-JOINED list of cis ids (mirroring `finding_add`'s own join for the
+# repeatable `cis` field), never a single scalar, because a check can cite
+# more than one control.
+declare -gA _RPTCIS_CHECK_CIS=()
+declare -g _RPTCIS_REGISTRY_LOADED_ROOT=''
+_report_cis_registry_load() {
+  if [[ -n ${_RPTCIS_REGISTRY_LOADED_ROOT:-} && ${_RPTCIS_REGISTRY_LOADED_ROOT} == "${SCOURSH_INSTALL_ROOT:-}" ]]; then
+    return 0
+  fi
+  local -a _rptcis_saved_sets=("${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}")
+  _RPTCIS_CHECK_CIS=()
+  local m set n i id v
+  for m in sast sca iac dast cloud; do
+    checks_registry_load "$m" "_rptcisreg_$m"
+    for set in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
+      n=$(records_count "$set")
+      for (( i = 0; i < n; i++ )); do
+        id=$(records_id "$set" "$i")
+        [[ -n $id ]] || continue
+        while IFS= read -r v; do
+          [[ -n $v ]] || continue
+          if [[ -n ${_RPTCIS_CHECK_CIS[$id]:-} ]]; then
+            _RPTCIS_CHECK_CIS[$id]+=$'\n'"$v"
+          else
+            _RPTCIS_CHECK_CIS[$id]=$v
+          fi
+        done <<<"$(records_list "$set" "$i" cis)"
+      done
+    done
+  done
+  CHECKS_REGISTRY_SETS=("${_rptcis_saved_sets[@]+"${_rptcis_saved_sets[@]}"}")
+  _RPTCIS_REGISTRY_LOADED_ROOT=${SCOURSH_INSTALL_ROOT:-}
+}
+
+# _report_cis_state RUNDIR - the per-run facts the view needs to tell FOUR
+# things apart that a bare finding count cannot: a control assessed and
+# genuinely clean, a control no check in this build targets at all, a control
+# whose checks exist but were excluded from THIS run by the tension-15 chain,
+# and a control whose checks ran this build but found no resource of the
+# relevant kind IN THE SCANNED ACCOUNT to examine - the ticket's own third
+# mandatory honesty state, that a per-category OWASP view has no equivalent
+# of, because "no resource of this kind exists in the account" is a fact only
+# a cloud/posture check can produce.
+#
+# That fourth state - `_RPTCIS_NAPP_SET`, "not applicable to the scanned
+# account" - is read from `meta/coverage_reduction`, the same file
+# `_report_coverage_state` already mines for its own "evaluated as not
+# applicable" set (`checks=[A B C]`), extended here to ALSO recognise the
+# singular `check=<id>` shape `modules/cloud/aws/live/s3.sh`'s own per-account
+# roll-up emits (`_s3_record_coverage`: "this check answered for NO bucket in
+# the account and is therefore NOT recorded in checks_run") - a check id
+# named this way is, by construction, never also in `checks_run`, so there is
+# no ambiguity to resolve between the two facts. A check already credited in
+# `checks_run` (because it ran successfully for some OTHER account/region/
+# bucket in the same run) always reads as assessed for its control instead,
+# exactly as `_owasp_bucket`'s own priority order already treats a
+# partially-covered OWASP category as assessed rather than filtered.
+declare -gA _RPTCIS_REG_HAS=() _RPTCIS_RAN=() _RPTCIS_FILTERED_SET=() _RPTCIS_NAPP_SET=() _RPTCIS_LINES=()
+_report_cis_state() {
+  local rundir=$1
+  (( _CIS_LABEL_LOADED )) || cis_mappings_load
+  _report_cis_registry_load
+  _RPTCIS_REG_HAS=() ; _RPTCIS_RAN=() ; _RPTCIS_FILTERED_SET=() ; _RPTCIS_NAPP_SET=() ; _RPTCIS_LINES=()
+
+  local cid cislist cis_id
+  for cid in "${!_RPTCIS_CHECK_CIS[@]}"; do
+    while IFS= read -r cis_id; do
+      [[ -n $cis_id ]] || continue
+      _RPTCIS_REG_HAS[$cis_id]=1
+    done <<<"${_RPTCIS_CHECK_CIS[$cid]}"
+  done
+
+  local -A ran_ids=()
+  if [[ -r $rundir/meta/checks_run ]]; then
+    while IFS= read -r cid; do
+      [[ -n $cid ]] || continue
+      ran_ids[$cid]=1
+    done <"$rundir/meta/checks_run"
+  fi
+  # See `_report_owasp_state`'s own comment on why this loop uses a bare
+  # `"${!ran_ids[@]}"` rather than the `${arr[@]+alt}` guard idiom: the same
+  # empty-associative-array hazard applies here verbatim.
+  for cid in "${!ran_ids[@]}"; do
+    [[ -n $cid ]] || continue
+    cislist=${_RPTCIS_CHECK_CIS[$cid]:-}
+    [[ -n $cislist ]] || continue
+    while IFS= read -r cis_id; do
+      [[ -n $cis_id ]] || continue
+      _RPTCIS_RAN[$cis_id]=1
+    done <<<"$cislist"
+  done
+
+  if [[ -r $rundir/meta/skipped_checks ]]; then
+    local line skid reason
+    while IFS= read -r line; do
+      [[ $line =~ ^check=([^\ ]+)\ skipped_by=(.*)$ ]] || continue
+      skid=${BASH_REMATCH[1]}
+      reason=${BASH_REMATCH[2]}
+      cislist=${_RPTCIS_CHECK_CIS[$skid]:-}
+      [[ -n $cislist ]] || continue
+      while IFS= read -r cis_id; do
+        [[ -n $cis_id ]] || continue
+        _RPTCIS_FILTERED_SET["$cis_id|$reason"]=1
+      done <<<"$cislist"
+    done <"$rundir/meta/skipped_checks"
+  fi
+
+  # "not applicable to the scanned account": a check id named either inside a
+  # coverage_reduction's `checks=[A B C]` list (the shared, cross-module
+  # shape `_report_coverage_state` already reads) or its singular `check=<id>`
+  # shape (`modules/cloud/aws/live/s3.sh`'s own per-account roll-up). Literal
+  # substring matching is safe for both: `check=` never matches inside
+  # `checks=` (the sixth byte differs, `s` vs `=`), so the two extractions
+  # cannot collide.
+  if [[ -r $rundir/meta/coverage_reduction ]]; then
+    local crline crreason crids crid crsingle
+    while IFS= read -r crline; do
+      [[ -n $crline ]] || continue
+      crreason=$(sed -n 's/.*reason=\([^ ]*\).*/\1/p' <<<"$crline")
+      crids=$(sed -n 's/.*checks=\[\([^]]*\)\].*/\1/p' <<<"$crline")
+      for crid in $crids; do
+        [[ -n $crid ]] || continue
+        cislist=${_RPTCIS_CHECK_CIS[$crid]:-}
+        [[ -n $cislist ]] || continue
+        while IFS= read -r cis_id; do
+          [[ -n $cis_id ]] || continue
+          _RPTCIS_NAPP_SET["$cis_id|${crreason:-not_applicable}"]=1
+        done <<<"$cislist"
+      done
+      crsingle=$(sed -n 's/.*check=\([^ ]*\).*/\1/p' <<<"$crline")
+      [[ -n $crsingle ]] || continue
+      cislist=${_RPTCIS_CHECK_CIS[$crsingle]:-}
+      [[ -n $cislist ]] || continue
+      while IFS= read -r cis_id; do
+        [[ -n $cis_id ]] || continue
+        _RPTCIS_NAPP_SET["$cis_id|${crreason:-not_applicable}"]=1
+      done <<<"$cislist"
+    done <"$rundir/meta/coverage_reduction"
+  fi
+
+  if [[ -s $rundir/findings.fields ]]; then
+    local fline flist
+    while IFS= read -r fline; do
+      [[ -n $fline ]] || continue
+      finding_decode "$fline"
+      [[ ${_DF[suppressed]:-false} == true ]] && continue
+      flist=${_DF[cis]:-}
+      [[ -n $flist ]] || continue
+      while IFS= read -r cis_id; do
+        [[ -n $cis_id ]] || continue
+        if [[ -n ${_RPTCIS_LINES[$cis_id]:-} ]]; then
+          _RPTCIS_LINES[$cis_id]+=$'\n'"$fline"
+        else
+          _RPTCIS_LINES[$cis_id]=$fline
+        fi
+      done <<<"$flist"
+    done <"$rundir/findings.fields"
+  fi
+}
+
+# _cis_bucket ID - one of `findings` / `clean` / `out_of_scope` /
+# `not_applicable` / `filtered` / `not_run`, in that priority order - the
+# ticket's mandatory three (`clean`/`out_of_scope`/`not_applicable`) plus the
+# two extra states `_owasp_bucket` already renders, kept for shape parity.
+_cis_bucket() {
+  local id=$1 count=${_RPT_CIS[$1]:-0}
+  if (( count > 0 )); then
+    printf 'findings'
+  elif [[ -z ${_RPTCIS_REG_HAS[$id]:-} ]]; then
+    printf 'out_of_scope'
+  elif [[ -n ${_RPTCIS_RAN[$id]:-} ]]; then
+    printf 'clean'
+  else
+    local k
+    for k in "${!_RPTCIS_NAPP_SET[@]}"; do
+      [[ -n $k ]] || continue
+      if [[ $k == "$id|"* ]]; then
+        printf 'not_applicable'
+        return 0
+      fi
+    done
+    for k in "${!_RPTCIS_FILTERED_SET[@]}"; do
+      [[ -n $k ]] || continue
+      if [[ $k == "$id|"* ]]; then
+        printf 'filtered'
+        return 0
+      fi
+    done
+    printf 'not_run'
+  fi
+}
+
+# _cis_not_applicable_reasons ID / _cis_filtered_reasons ID - the distinct
+# reasons behind the `not_applicable`/`filtered` buckets above, comma-joined,
+# `LC_ALL=C` sorted for determinism - mirrors `_owasp_filtered_reasons`
+# exactly, once per set.
+_cis_not_applicable_reasons() {
+  local id=$1 k reason out='' list
+  list=$(
+    for k in "${!_RPTCIS_NAPP_SET[@]}"; do
+      [[ -n $k ]] || continue
+      [[ $k == "$id|"* ]] && printf '%s\n' "${k#"$id|"}"
+    done | LC_ALL=C sort -u
+  )
+  while IFS= read -r reason; do
+    [[ -n $reason ]] || continue
+    if [[ -n $out ]]; then out+=", $reason"; else out=$reason; fi
+  done <<<"$list"
+  printf '%s' "$out"
+}
+
+_cis_filtered_reasons() {
+  local id=$1 k reason out='' list
+  list=$(
+    for k in "${!_RPTCIS_FILTERED_SET[@]}"; do
+      [[ -n $k ]] || continue
+      [[ $k == "$id|"* ]] && printf '%s\n' "${k#"$id|"}"
+    done | LC_ALL=C sort -u
+  )
+  while IFS= read -r reason; do
+    [[ -n $reason ]] || continue
+    if [[ -n $out ]]; then out+=", $reason"; else out=$reason; fi
+  done <<<"$list"
+  printf '%s' "$out"
+}
+
+# _cis_render_order - every id `data/cis-mappings` has a row for, in ON-DISK
+# (natural benchmark-numbering) order via `_CIS_ORDER` - never a `LC_ALL=C`
+# re-sort, which `_CIS_ORDER`'s own declaration comment explains is wrong for
+# a dotted-decimal id that is not zero-padded - followed by any id this run's
+# own findings or registry carry that the table has NEVER heard of (drift, or
+# a future benchmark edition), `LC_ALL=C` sorted among themselves and never
+# reordered ahead of the canonical set, exactly as `_owasp_render_order`'s own
+# tail does.
+_cis_render_order() {
+  (( _CIS_LABEL_LOADED )) || cis_mappings_load
+  local k
+  if (( ${#_CIS_ORDER[@]} > 0 )); then
+    printf '%s\n' "${_CIS_ORDER[@]}"
+  fi
+  local -a extra=()
+  local -A seen=()
+  for k in "${!_RPT_CIS[@]}" "${!_RPTCIS_REG_HAS[@]}"; do
+    [[ -n $k ]] || continue
+    [[ -n ${_CIS_LABEL[$k]+set} ]] && continue
+    [[ -n ${seen[$k]:-} ]] && continue
+    seen[$k]=1
+    extra+=("$k")
+  done
+  if (( ${#extra[@]} > 0 )); then
+    # Length-guarded already; written as the `+` idiom anyway for the same
+    # tests/lint-shell.sh reason `_owasp_render_order`'s own comment gives.
     printf '%s\n' "${extra[@]+"${extra[@]}"}" | LC_ALL=C sort -u
   fi
 }
@@ -1045,6 +1344,7 @@ report_md() {
       _md_findings "$rundir" suppressed
     fi
     _md_owasp_compliance "$rundir"
+    _md_cis_compliance "$rundir"
     _md_limitations "$rundir"
   } >"$rundir/report.md"
 }
@@ -1230,6 +1530,72 @@ _md_owasp_compliance() {
     done <<<"${_RPTOW_LINES[none]:-}"
     printf '\n'
   fi
+}
+
+# `_md_cis_compliance RUNDIR` - COMPLIANCE-04: report.md's CIS twin of
+# `_md_owasp_compliance` above; see that function's own header and section 1c
+# for the design this mirrors. States the benchmark name and version at the
+# head of the section (docs/DESIGN.md §4's CIS half), then groups the
+# findings themselves by control id, expanded to its published title through
+# `cis_control_label` (COMPLIANCE-03). There is no `none`-mapped tail section
+# here, unlike the OWASP view: `cis` carries no such sentinel, and a finding
+# with no `cis` value simply belongs to no control group - the ordinary case
+# for every non-cloud/posture check in this build.
+# SC2016: the Markdown code spans below are literal output, not command
+# substitution.
+# shellcheck disable=SC2016
+_md_cis_compliance() {
+  local rundir=$1
+  printf '## CIS compliance\n\n'
+  local bname bver
+  bname=$(cis_benchmark_name)
+  bver=$(cis_benchmark_version)
+  if [[ -n $bname ]]; then
+    printf '> This run'\''s status against **%s%s**, per control, measured from this\n' \
+      "$bname" "${bver:+ $bver}"
+    printf '> run'\''s `checks_run`/`skipped_checks`/`coverage_reduction` records.  A\n'
+    printf '> control assessed and clean, a control this build has no check for yet, and\n'
+    printf '> a control whose check ran but found no matching resource in the scanned\n'
+    printf '> account are three different facts and render as three different things\n'
+    printf '> below - see `docs/CIS-MAPPINGS.md` for what this table covers today and its\n'
+    printf '> stated gaps.\n\n'
+  else
+    printf '> No CIS control label table (`data/cis-mappings`) is available in this\n'
+    printf '> build, so control ids on findings below render unexpanded.\n\n'
+  fi
+  local id label count bucket line
+  while IFS= read -r id; do
+    [[ -n $id ]] || continue
+    label=$(cis_control_label "$id")
+    count=${_RPT_CIS[$id]:-0}
+    bucket=$(_cis_bucket "$id")
+    printf '### %s - %s\n\n' "$id" "$label"
+    case $bucket in
+      findings)
+        printf -- '- **%s** live finding(s) this run\n\n' "$count"
+        printf '| check | title | severity | status |\n|---|---|---|---|\n'
+        while IFS= read -r line; do
+          [[ -n $line ]] || continue
+          finding_decode "$line"
+          printf '| `%s` | %s | %s | %s |\n' \
+            "${_DF[check_id]}" "${_DF[title]}" "${_DF[severity]}" "${_DF[status]}"
+        done <<<"${_RPTCIS_LINES[$id]:-}"
+        printf '\nSee [Findings](#findings) above for full detail and remediation.\n\n'
+        ;;
+      clean)
+        printf 'Assessed this run - no findings.\n\n' ;;
+      out_of_scope)
+        printf 'No check in this build of scoursh targets this control yet.\n\n' ;;
+      not_applicable)
+        printf 'This control'\''s check(s) ran but found no matching resource in the scanned account this run (%s).\n\n' \
+          "$(_cis_not_applicable_reasons "$id")" ;;
+      filtered)
+        printf 'Checks for this control exist but were excluded from this run (%s).\n\n' \
+          "$(_cis_filtered_reasons "$id")" ;;
+      not_run)
+        printf 'Checks for this control exist but did not run this scan; no reason was recorded.\n\n' ;;
+    esac
+  done <<<"$(_cis_render_order)"
 }
 
 # `_md_zero_injection_banner` - the human-readable, top-of-report half of the
@@ -1471,6 +1837,7 @@ report_html() {
     _html_summary "$rundir"
     _html_findings "$rundir"
     _html_owasp_compliance "$rundir"
+    _html_cis_compliance "$rundir"
     _html_limitations "$rundir"
     _html_foot
   } >"$rundir/report.html"
@@ -1713,6 +2080,7 @@ _html_summary() {
   printf '<li><a href="#findings">Findings (%s)</a></li>\n' "$_RPT_LIVE"
   (( _RPT_SUPPRESSED > 0 )) && printf '<li><a href="#accepted-risk">Accepted risk (%s)</a></li>\n' "$_RPT_SUPPRESSED"
   printf '<li><a href="#owasp-compliance">OWASP Top 10 compliance</a></li>\n'
+  printf '<li><a href="#cis-compliance">CIS compliance</a></li>\n'
   printf '<li><a href="#limitations">Limitations and coverage</a></li>\n'
   printf '</ul></nav>\n'
   printf '<h2 id="severity">Severity</h2>\n<div class="tiles">\n'
@@ -1940,6 +2308,65 @@ _html_owasp_compliance() {
     done <<<"${_RPTOW_LINES[none]:-}"
     printf '</ul>\n</div>\n</details>\n'
   fi
+}
+
+# `_html_cis_compliance RUNDIR` - COMPLIANCE-04's HTML twin of
+# `_md_cis_compliance`; see that function's own header and section 1c for the
+# design this mirrors. Each control is a collapsible group carrying its own
+# status (findings/clean/out-of-scope/not-applicable/filtered/not-run); a
+# `findings` group links into the existing per-finding anchors
+# (`_html_one_finding`'s `f-<fp>` ids) rather than re-rendering full
+# evidence/remediation a second time, exactly as the OWASP view does. There is
+# no `none`-mapped tail section here - see `_md_cis_compliance`'s own comment
+# on why `cis` needs none.
+_html_cis_compliance() {
+  local rundir=$1
+  printf '<h2 id="cis-compliance">CIS compliance</h2>\n'
+  local bname bver
+  bname=$(cis_benchmark_name)
+  bver=$(cis_benchmark_version)
+  if [[ -n $bname ]]; then
+    printf '<p class="sub">This run&#39;s status against <strong>%s%s</strong>, per control, measured from this run&#39;s <code>checks_run</code>/<code>skipped_checks</code>/<code>coverage_reduction</code> records. A control assessed and clean, a control this build has no check for yet, and a control whose check ran but found no matching resource in the scanned account are three different facts and render as three different things below - see <code>docs/CIS-MAPPINGS.md</code> for what this table covers today and its stated gaps.</p>\n' \
+      "$(html_escape "$bname")" "$(html_escape "${bver:+ $bver}")"
+  else
+    printf '<p class="sub">No CIS control label table (<code>data/cis-mappings</code>) is available in this build, so control ids on findings below render unexpanded.</p>\n'
+  fi
+  local id label count bucket line status_class status_text reasons
+  while IFS= read -r id; do
+    [[ -n $id ]] || continue
+    label=$(cis_control_label "$id")
+    count=${_RPT_CIS[$id]:-0}
+    bucket=$(_cis_bucket "$id")
+    case $bucket in
+      findings) status_class=findings; status_text="$count finding(s)" ;;
+      clean) status_class=clean; status_text='assessed - no findings' ;;
+      out_of_scope) status_class=outofscope; status_text='out of scope - no check targets this control yet' ;;
+      not_applicable)
+        reasons=$(_cis_not_applicable_reasons "$id")
+        status_class=notapplicable; status_text="no matching resource in the scanned account ($reasons)" ;;
+      filtered)
+        reasons=$(_cis_filtered_reasons "$id")
+        status_class=filtered; status_text="excluded from this run ($reasons)" ;;
+      not_run) status_class=notrun; status_text='did not run this scan - no reason recorded' ;;
+    esac
+    printf '<details class="modgrp" id="cis-%s"><summary><span class="modlabel">%s - %s</span><span class="count cisstat-%s">%s</span></summary>\n' \
+      "$(html_escape "$id")" "$(html_escape "$id")" "$(html_escape "$label")" \
+      "$(html_escape "$status_class")" "$(html_escape "$status_text")"
+    printf '<div class="modbody">\n'
+    if [[ $bucket == findings ]]; then
+      printf '<ul>\n'
+      while IFS= read -r line; do
+        [[ -n $line ]] || continue
+        finding_decode "$line"
+        printf '<li><a href="#f-%s"><code>%s</code></a> %s - <span class="sev %s">%s</span>, %s</li>\n' \
+          "$(html_escape "${_DF[fingerprint]}")" "$(html_escape "${_DF[check_id]}")" \
+          "$(html_escape "${_DF[title]}")" "$(html_escape "${_DF[severity]}")" \
+          "$(html_escape "${_DF[severity]}")" "$(html_escape "${_DF[status]}")"
+      done <<<"${_RPTCIS_LINES[$id]:-}"
+      printf '</ul>\n'
+    fi
+    printf '</div>\n</details>\n'
+  done <<<"$(_cis_render_order)"
 }
 
 # Suppressed findings render in a separate collapsed "accepted risk" section

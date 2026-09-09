@@ -143,13 +143,14 @@ table in `docs/VERSIONS-DB.md` §6:
 
 ## 7. What this ticket lands, and what it does not
 
-**This ticket (COMPLIANCE-03) lands the format (`rules/RULE-FORMAT.md` §9.6.7), the vendored table
+**This ticket (COMPLIANCE-03) landed the format (`rules/RULE-FORMAT.md` §9.6.7), the vendored table
 (`data/cis-mappings`), and the id -> label loader/lookup functions (`lib/report.sh`:
 `cis_mappings_load`, `cis_control_label`, `cis_control_known`, `cis_benchmark_name`,
-`cis_benchmark_version`). It renders nothing**: no CIS section exists in `report.md` or `report.html`
-yet, and nothing in `lib/report.sh`'s `report_all`/`report_md`/`report_html` calls any of these
-functions. That is COMPLIANCE-04's job, blocked on step 6 (`modules/cloud/`) existing so there is a real
-`cis`-carrying finding to build and test the view against - see `docs/STEP10-SARIF-PLAN.md`'s own
-COMPLIANCE-03/COMPLIANCE-04 rows. Landing the table now, ahead of that, means every `CLOUD-*` and
-`POSTURE-*` ticket written from here on has a table to check its own `cis:` values against as it is
-written, rather than after.
+`cis_benchmark_version`). It rendered nothing at the time**: no CIS section existed in `report.md` or
+`report.html` yet, and nothing in `lib/report.sh`'s `report_all`/`report_md`/`report_html` called any
+of these functions. **COMPLIANCE-04 has since landed and closes that gap** - `_md_cis_compliance`/
+`_html_cis_compliance` (`lib/report.sh` section 1c) now call every function this ticket lands, wired
+into `report_md`/`report_html` right after their OWASP siblings - see `docs/STEP10-SARIF-PLAN.md`'s own
+COMPLIANCE-03/COMPLIANCE-04 rows for the full account. Landing the table ahead of that, back when step 6
+had not yet shipped a single `cis`-carrying check, meant every `CLOUD-*` and `POSTURE-*` ticket written
+from then on had a table to check its own `cis:` values against as it was written, rather than after.
