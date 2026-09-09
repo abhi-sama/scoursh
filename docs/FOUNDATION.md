@@ -5567,11 +5567,29 @@ The tension-14 required-inputs table's `cloud --live` row is enforced for the fi
 unresolvable credentials are exit 4 on `scan.sh cloud` and a declared skip under `scan.sh all`, both
 pinned, because the naive fix for each direction is the other's bug.
 
-**No `aws/live/*.sh` service script exists yet**, so a `--live` run today resolves the account and its
-regions, writes the cells, and records that it examined no service.  That is a real dispatch that found
-nothing to run, and it is stated as such in `run.json`, `report.md` and the audit report rather than
-left to read as a clean account.  Everything from the plan's P2 (a routed multi-call AWS fixture stub)
-and P5 (the s3 vertical slice) onward remains not-started.
+**The plan's P5 (CLOUD-05, `modules/cloud/aws/live/s3.sh`) has now landed - the first `aws/live/*.sh`
+service script, and the first check anywhere in this repository to emit a real `account-region`
+coverage cell.**  `lib/state.sh`'s own header recorded that this coverage-scope kind had no producer
+and that its fixtures were hand-authored, schema-only proof; a `scan.sh cloud --live` run now writes
+`<account_id>/global` cells for seven `CLOUD-S3-*` checks, and `tests/suites/cloud-s3.sh` asserts them
+out of the state snapshot the run itself persisted.  Two consequences of this tension are worth
+recording where they were first exercised for real.  **The cell is the PASS's and the finding's
+`loc_region` is the RESOURCE's, and for a `global` service they differ**: coverage is credited once per
+pass, so an S3 finding sits in `<account>/global` while citing the bucket's own region - filing it
+under the bucket's region instead would put it in a cell no pass ever covers, so it could never be
+classified `fixed` and would stay `unknown` however thoroughly the bucket was remediated.  **And a
+check is credited to a cell only where its own API call ANSWERED**: a cloud check is one call per
+resource and those calls fail independently, so `modules/cloud/aws/live/s3.sh` counts answered and
+unanswered resources per check id, records a check that answered for none of them nowhere in
+`checks_run`, and records one that answered for some of them in `checks_run` AND in a reduction naming
+what it missed.  Crediting the intended set instead is what would let this tension's `fixed` inference
+run on the strength of a call that was denied.
+
+**Every OTHER `aws/live/*.sh` service in `docs/DESIGN.md` §8.1's catalog is still absent**, and a
+`--live` run records each one as unexamined rather than counting it clean - a real dispatch that found
+nothing to run for those services, stated as such in `run.json`, `report.md` and the audit report
+rather than left to read as a clean account.  The plan's remaining service PRs (P6 onward) and its
+`posture/` half remain not-started.
 
 **Step 7 (persistent run state) has now started: STATE-01 (`lib/state.sh`) has landed**, ahead of step
 6, per `docs/STEP7-STATE-PLAN.md`'s own status - that plan's gate blocks *classification*

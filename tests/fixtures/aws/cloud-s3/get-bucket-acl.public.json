@@ -1,0 +1,37 @@
+{
+    "Owner": {
+        "DisplayName": "scoursh-fixture-owner",
+        "ID": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "Grants": [
+        {
+            "Grantee": {
+                "DisplayName": "scoursh-fixture-owner",
+                "ID": "1111111111111111111111111111111111111111111111111111111111111111",
+                "Type": "CanonicalUser"
+            },
+            "Permission": "FULL_CONTROL"
+        },
+        {
+            "Grantee": {
+                "Type": "Group",
+                "URI": "http://acs.amazonaws.com/groups/global/AllUsers"
+            },
+            "Permission": "READ"
+        },
+        {
+            "Grantee": {
+                "Type": "Group",
+                "URI": "http://acs.amazonaws.com/groups/global/AllUsers"
+            },
+            "Permission": "READ_ACP"
+        },
+        {
+            "Grantee": {
+                "Type": "Group",
+                "URI": "http://acs.amazonaws.com/groups/global/AuthenticatedUsers"
+            },
+            "Permission": "WRITE"
+        }
+    ]
+}

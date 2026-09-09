@@ -1,0 +1,258 @@
+# modules/cloud/aws/live/checks.rules - the §8.1 S3 read-only script-check
+# registry (rules/RULE-FORMAT.md §9.5; docs/STEP6-CLOUD-PLAN.md CLOUD-05).
+# Owned by modules/cloud/aws/live/s3.sh; ids are all `CLOUD-S3-*`.
+#
+# THIS IS A SHARED, APPEND-ONLY REGISTRY FOR EVERY `aws/live/*.sh` SERVICE, and
+# that is a decision rather than an accident.  rules/RULE-FORMAT.md §9's path
+# table reserves BOTH the `checks.rules` basename and the `checks-<name>.rules`
+# spelling repository-wide, so a per-service `checks-s3.rules` here would be
+# legal too - modules/dast/passive/ is split that way (docs/FOUNDATION.md
+# tension 29).  It is NOT split here because tension 29's own argument is about
+# CONFLICTS BETWEEN PARALLEL PEERS, and step 6's peers are dispatched as
+# sequential bundles against one landed vertical slice rather than as a dozen
+# simultaneous tickets: modules/dast/active/checks.rules and
+# modules/dast/checks.rules are both under the identical append-only rule for
+# the identical reason.  A CONFLICT IN THIS FILE IS RESOLVED BY KEEPING BOTH
+# BLOCKS, never by choosing a side.  A later service whose peers really are
+# in flight simultaneously may add its own `checks-<service>.rules` beside this
+# one; both spellings load, because `checks_registry_load` (lib/checks.sh)
+# globs every `*.rules` under `modules/cloud/` at any depth with no per-file
+# allowlist and no registration step.
+#
+# `coverage-scope: account-region` is CLOUD's cell (§9.5.1), spelled
+# `<account_id>/<region>` or `<account_id>/global`.  EVERY RECORD BELOW LANDS
+# IN THE `<account_id>/global` CELL, and the reason is worth stating here
+# rather than only in the script: `list-buckets` is a single account-wide call
+# and `_CLOUD_SERVICES` marks `live/s3.sh` `global`, so the unit this run
+# actually VISITED is the account's global S3 namespace - every bucket in the
+# account, whatever region it sits in.  The bucket's own region is a fact about
+# the RESOURCE and rides in the finding's `loc_region`, which is why a finding
+# here cites a real region while its cell says `global`.  Writing the bucket's
+# region into the cell instead would be the silent defect: coverage is recorded
+# once per PASS (modules/cloud/aws/run.sh's `_cloud_record_coverage`), so a
+# finding in a cell no pass ever covered can never be classified `fixed` and
+# would sit at `unknown` forever - docs/FOUNDATION.md tension 12's whole point.
+#
+# SEVEN IDS FOR SIX BUCKET PROPERTIES, AND THE ONE SPLIT IS DELIBERATE.  The
+# CLOUD location profile is (account_id, region, resource_key, sub_key) and
+# carries no component naming the DEFECT, so two different problems on one
+# bucket under one id would hash to one fingerprint and `findings_merge` would
+# keep whichever sorted first - the identical argument
+# modules/dast/passive/checks-cors.rules records for its own three ids.  The
+# split that is NOT forced by the fingerprint is
+# PUBLIC_ACL_READ vs PUBLIC_ACL_WRITE: it is two ids because SEVERITY VARIES
+# WITH THE GRANTED PERMISSION, and `severity` is a per-record registry field
+# (§9.5) that every suite asserts the script and the registry agree on - so a
+# script that "weighted a finding higher" at runtime would put the two into
+# disagreement.  Two ids also keeps the ordinary and the escalated case two
+# findings rather than one whose meaning flips between runs, which is the same
+# reasoning DAST-11's two `DAST-MARKUP-TABNABBING*` ids record.
+#
+# `cis:` IS AUTHORED HERE, ON THE RECORD, AND ONLY WHERE A REAL CIS v3.0.0
+# CONTROL EXISTS.  data/cis-mappings is an id -> label table and never a source
+# of ids (docs/CIS-MAPPINGS.md §1).  CIS Amazon Web Services Foundations
+# Benchmark v3.0.0 section 2.1 - the S3 section - contains exactly four
+# controls (2.1.1 deny-HTTP bucket policy, 2.1.2 MFA Delete, 2.1.3 Macie
+# discovery, 2.1.4 Block Public Access), so the four PUBLIC-EXPOSURE records
+# below cite 2.1.4, the control whose enforcement each of them observes to be
+# absent or defeated, and the three remaining records - default encryption,
+# versioning, access logging - CITE NOTHING, because v3.0.0 has no S3 control
+# for them.  (v1.4.0's 2.1.1 was "Ensure all S3 buckets employ encryption-at-
+# rest"; v3.0.0 renumbered 2.1.1 to the deny-HTTP control after AWS made
+# SSE-S3 a default, and citing the v1.4.0 number against a v3.0.0-declared
+# table would misattribute the finding - §5 item 5 of docs/CIS-MAPPINGS.md
+# forbids exactly that.  3.4, "S3 bucket access logging is enabled on the
+# CloudTrail S3 bucket", is about ONE named bucket and is not a general
+# access-logging control, so CLOUD-S3-NO_LOGGING-01 does not cite it either.)
+# An honest absence is the right outcome: `cis` is `optional, repeatable`
+# (§9.5), an unmapped finding still carries its CWE and OWASP category, and
+# inventing a control number to satisfy a "must cite CIS" habit is the
+# overstated-coverage failure docs/DESIGN.md §15 exists to forbid.  A future
+# ticket that transcribes a control genuinely covering one of the three adds
+# the row via docs/CIS-MAPPINGS.md §5 and the `cis:` line here in the same
+# change.
+#
+# The type tag is `config-read` on every record: each check is one read-only
+# AWS API call and mutates nothing, so lib/checks.sh's `--intensity` ceiling
+# passes all of them at the default `passive` (its own type table names
+# `config-read` in the `passive` row).  They also carry `quick`, which
+# docs/DESIGN.md §5 defines as "passive + config-read, no active probes" -
+# omitting it would leave `--profile-scan quick` selecting no cloud check at
+# all.  `compliance` is carried by exactly the four records that carry a `cis`
+# value, which is finding F3's TAG reading of that profile (lib/checks.sh).
+# None is `intrusive`: there is no state to mutate, and `aws_ro` refuses a
+# non-read operation with exit 3 before the CLI is even exec'd.
+
+id: CLOUD-S3-PUBLIC_ACL_READ-01
+title: S3 bucket ACL grants read access to a public grantee group
+script: aws/live/s3.sh
+severity: high
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 2.1.4
+remediation: Remove the AllUsers ("everyone, including anonymous") or
+  AuthenticatedUsers ("any AWS account holder anywhere, not just yours") grant
+  from this bucket's ACL, then confirm nothing depended on it. Note that
+  AuthenticatedUsers is not a narrowing - any person who can create a free AWS
+  account is inside it. Prefer to disable ACLs entirely by setting the bucket's
+  Object Ownership to BucketOwnerEnforced, which makes every ACL inert and
+  leaves the bucket policy as the single access-control surface, and turn on
+  all four Block Public Access settings at both the bucket and the account
+  level so a future ACL cannot re-open it. If the objects really are meant to
+  be world-readable, serve them through a CloudFront distribution with an
+  Origin Access Control rather than by making the bucket itself public, so the
+  bucket keeps a single, auditable reader.
+references: CWE-732
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/acl-overview.html
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+
+id: CLOUD-S3-PUBLIC_ACL_WRITE-01
+title: S3 bucket ACL grants write or full control to a public grantee group
+script: aws/live/s3.sh
+severity: critical
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 2.1.4
+remediation: Remove this grant immediately. A WRITE, WRITE_ACP or FULL_CONTROL
+  grant to AllUsers or AuthenticatedUsers lets an unauthenticated or
+  arbitrary-AWS-account principal add, replace and delete objects in this
+  bucket - and WRITE_ACP or FULL_CONTROL additionally lets them rewrite the
+  ACL itself, so the exposure survives being partially undone. Set the
+  bucket's Object Ownership to BucketOwnerEnforced to make every ACL inert,
+  enable all four Block Public Access settings at the bucket and account
+  level, and grant writes only to named principals through an IAM or bucket
+  policy. Because a public writer may already have modified content, review
+  the bucket's object versions and CloudTrail data-event history rather than
+  assuming the grant was unused.
+references: CWE-732
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/acl-overview.html
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+
+id: CLOUD-S3-PUBLIC_POLICY-01
+title: S3 bucket policy is evaluated as public by AWS
+script: aws/live/s3.sh
+severity: high
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 2.1.4
+remediation: AWS's own policy evaluation reports this bucket's policy as
+  public, which means at least one statement grants a bucket or object action
+  to a principal that is not constrained to your account or organisation -
+  typically Principal "*" with no Condition, or a Condition that does not
+  actually narrow it (aws:Referer and aws:UserAgent are attacker-supplied and
+  narrow nothing). Rewrite the statement to name the principals, accounts or
+  aws:PrincipalOrgID that need the access, and enable the RestrictPublicBuckets
+  and BlockPublicPolicy settings of Block Public Access so a future policy
+  cannot re-open it. If the content is genuinely public, front it with a
+  CloudFront distribution using an Origin Access Control instead of leaving the
+  bucket itself reachable by any principal.
+references: CWE-732
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-policy-language-overview.html
+
+id: CLOUD-S3-BLOCK_PUBLIC_ACCESS_OFF-01
+title: S3 bucket Block Public Access is absent or partially disabled
+script: aws/live/s3.sh
+severity: medium
+confidence: high
+cwe: CWE-1188
+owasp: A05:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 2.1.4
+remediation: Turn on all four Block Public Access settings for this bucket -
+  BlockPublicAcls, IgnorePublicAcls, BlockPublicPolicy and
+  RestrictPublicBuckets - and set the same four at the account level, which
+  applies to every current and future bucket. The four are not
+  interchangeable: the two Acls settings neutralise public ACLs, while
+  BlockPublicPolicy rejects a new public bucket policy and
+  RestrictPublicBuckets suppresses an existing one, so leaving any of them off
+  leaves one route open. This finding is about the guardrail rather than about
+  a bucket that is public today: with the guardrail off, one future ACL or
+  policy edit is enough to expose the bucket, and nothing will refuse it.
+references: CWE-1188
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+
+id: CLOUD-S3-NO_DEFAULT_ENCRYPTION-01
+title: S3 bucket has no default server-side encryption configuration
+script: aws/live/s3.sh
+severity: medium
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set a default encryption configuration on the bucket so every
+  object is encrypted at rest whether or not the uploading client asks for it.
+  SSE-S3 (AES256) is the zero-cost baseline; SSE-KMS with a customer-managed
+  key adds a separate, auditable key policy and CloudTrail key-usage events,
+  which is what an estate needing separation of duties or a defined key
+  rotation should use. Enable S3 Bucket Keys alongside SSE-KMS to keep the KMS
+  request cost down. Note that default encryption applies to objects written
+  after it is set, so also confirm whether existing objects need re-encrypting
+  by copying them in place.
+references: CWE-311
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucket-encryption.html
+
+id: CLOUD-S3-NO_VERSIONING-01
+title: S3 bucket versioning is not enabled
+script: aws/live/s3.sh
+severity: low
+confidence: high
+cwe: CWE-693
+owasp: A05:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable versioning on the bucket. Without it an overwrite or a
+  delete is unrecoverable, which makes accidental deletion, a compromised
+  credential and ransomware-style encryption of the bucket's contents all
+  terminal rather than merely disruptive. With versioning on, add MFA Delete
+  or an Object Lock retention policy if the data warrants it, and add a
+  lifecycle rule expiring non-current versions so the storage cost stays
+  bounded. A bucket whose versioning is Suspended is reported here as well as
+  one that never had it: suspension stops new versions being created, so
+  objects written from that point on are as unrecoverable as they were before
+  versioning was ever enabled.
+references: CWE-693
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/Versioning.html
+
+id: CLOUD-S3-NO_LOGGING-01
+title: S3 bucket server access logging is not enabled
+script: aws/live/s3.sh
+severity: low
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable server access logging (or CloudTrail S3 data events) for
+  this bucket and send the records to a separate, restricted log bucket -
+  never to the bucket being logged, which creates a feedback loop and lets
+  anyone who can write to the source bucket also write its own audit trail.
+  Without either, there is no record of who read or wrote which object, so a
+  future investigation into a suspected exposure has nothing to work from and
+  cannot even establish whether anything was accessed. Server access logs are
+  best-effort and delivered on a delay; CloudTrail data events are the option
+  to choose where the record must be reliable and queryable.
+references: CWE-778
+references: https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerLogs.html

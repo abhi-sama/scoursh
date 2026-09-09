@@ -70,6 +70,50 @@ aws_fixture_route_add s3api get-bucket-acl "$(aws_fixture_path example-s3-multi-
 # fixture, in whatever order the check makes them ...
 ```
 
+### Per-resource routes
+
+Essentially every §8.1 check is `list-<things>` followed by the same
+`get-<property>` call once per thing, so the response that has to vary between
+two calls is the one addressed at a *resource* - `--bucket a` versus
+`--bucket b`. `aws_fixture_route_add_for` adds a route qualified by one argv
+value:
+
+```bash
+aws_fixture_route_add_for s3api get-bucket-acl my-public-bucket   "$FIX/get-bucket-acl.public.json"
+aws_fixture_route_add_for s3api get-bucket-acl my-hardened-bucket "$FIX/get-bucket-acl.hardened.json"
+```
+
+A qualified row wins over an unqualified one for the operation, whatever order
+they were added in, so a table can carry per-resource overrides on top of one
+default. The value is matched as a **whole argv word**, never as a substring,
+so a bucket named `logs` cannot swallow a route registered for `logs-archive`.
+
+This is what lets a known-bad and a known-good resource be examined by **one
+run**, which matters more than it looks: a check that has gone inert passes
+every "stays quiet" assertion ever written, and two separate runs - one
+all-bad, one all-good - cannot tell an inert check from a correct one.
+
+### Failure fixtures
+
+A route whose file is named `*.err` is served as a **failed** call: its
+contents go to stderr and the stub exits 254, the way the real CLI reports a
+service error.
+
+```bash
+aws_fixture_route_add_for s3api get-bucket-policy-status my-bucket \
+  "$FIX/get-bucket-policy-status.nopolicy.err"
+```
+
+Both directions of the honesty contract need this. An `AccessDenied` must never
+render as a correctly-configured resource (`lib/awscli.sh` section 2), and a
+stub that can only succeed cannot test that at all. The mirror case is just as
+easy to get wrong: `NoSuchBucketPolicy`,
+`NoSuchPublicAccessBlockConfiguration` and
+`ServerSideEncryptionConfigurationNotFoundError` are *errors that carry a real
+answer* ("there is no policy / no block / no encryption"), so a check that
+treats every error as a coverage loss silently suppresses its own finding on
+exactly the resources that have the problem.
+
 An `aws_ro` call whose `(service, operation)` matches no registered route
 **fails loudly** - a distinct stub exit code and a diagnostic naming the
 unmatched pair in `SCOURSH_AWS_RO_ERROR` - rather than silently falling back
@@ -89,12 +133,20 @@ that clear is required for correctness, not tidiness).
 including the unmatched-pair failure case, against
 `tests/fixtures/aws/example-s3-multi-call/{list-buckets,get-bucket-acl}.json`.
 
-## What is NOT here
+## The one real fixture set
 
-No real check reads any fixture in this directory yet. `example-s3-public-read-acl`
-and `example-s3-multi-call` are consumed only by `tests/suites/aws-fixtures.sh`,
-as reference implementations proving the harness works end to end - neither is
-a shipped check, neither is ever invoked by `scan.sh` (which does not dispatch
-to a real cloud check yet either), and `tests/lint-aws-readonly.sh` never
-examines either, since that lint only scans `lib/`, `modules/`, `aws/`, and
+`cloud-s3/` is consumed by `tests/suites/cloud-s3.sh`, which drives the real
+`modules/cloud/aws/live/s3.sh` through a real `scan.sh cloud --live`
+subprocess. It is the worked example for every later service PR, and it is
+shaped the way this file recommends: three buckets in one run - one public in
+every way the checks can observe, one hardened in every way, and one whose ACL
+call is `AccessDenied` - so "the check fires", "the check stays quiet" and "a
+denied call is a recorded coverage reduction rather than a clean result" are
+all asserted against one code path in one process.
+
+`example-s3-public-read-acl` and `example-s3-multi-call` are consumed only by
+`tests/suites/aws-fixtures.sh`, as reference implementations proving the
+harness itself works end to end. Neither is a shipped check and neither is
+ever invoked by `scan.sh`; `tests/lint-aws-readonly.sh` never examines any of
+these files either, since that lint only scans `lib/`, `modules/`, `aws/`, and
 `tools/`.

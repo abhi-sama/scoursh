@@ -29,13 +29,20 @@ SCOURSH_AWS_FIXTURES_SOURCED=1
 # two modes, checked in this order:
 #
 #   1. ROUTED - $AWS_FIXTURE_ROUTES names a readable route table (see
-#      `aws_fixture_route_reset`/`aws_fixture_route_add` below).  The stub
-#      looks up the invoked SERVICE and OPERATION (its own $1 $2, never
-#      inspecting the rest of argv) in that table and serves the matched
-#      file.  A call with no matching row FAILS LOUDLY - a distinct exit code
-#      and a stderr message naming the unmatched pair - rather than silently
-#      falling back to some other row's file, which is exactly the defect a
-#      multi-call check's own test suite must be able to catch.
+#      `aws_fixture_route_reset`/`aws_fixture_route_add`/
+#      `aws_fixture_route_add_for` below).  The stub looks up the invoked
+#      SERVICE and OPERATION (its own $1 $2) in that table and serves the
+#      matched file.  A row may additionally be QUALIFIED by one argument
+#      value, written `OPERATION@VALUE`, which matches only when VALUE appears
+#      verbatim as one of the call's own argv words - that is what lets one
+#      run serve a DIFFERENT response per resource (`--bucket a` versus
+#      `--bucket b`) for the same operation.  A qualified row always wins over
+#      an unqualified one for the same (service, operation), whatever order
+#      they were added in, so a table can carry per-resource overrides on top
+#      of one default.  A call with no matching row FAILS LOUDLY - a distinct
+#      exit code and a stderr message naming the unmatched pair - rather than
+#      silently falling back to some other row's file, which is exactly the
+#      defect a multi-call check's own test suite must be able to catch.
 #   2. SINGLE-RESPONSE - $AWS_FIXTURE_ROUTES is unset (the default, and the
 #      only mode that existed before this stub grew routing).  Every call
 #      other than `--version` is served whatever file $AWS_FIXTURE_RESPONSE
@@ -64,17 +71,32 @@ if [[ -n ${AWS_FIXTURE_ROUTES:-} ]]; then
   svc=${1:-}
   op=${2:-}
   matched=''
+  fallback=''
   while IFS= read -r line || [[ -n $line ]]; do
     [[ -z $line || $line == '#'* ]] && continue
     rsvc=${line%% *}
     rest=${line#* }
     rop=${rest%% *}
     rpath=${rest#* }
-    if [[ $rsvc == "$svc" && $rop == "$op" ]]; then
-      matched=$rpath
-      break
+    [[ $rsvc == "$svc" ]] || continue
+    if [[ $rop == "$op" ]]; then
+      # An unqualified row is remembered but never wins immediately: a
+      # qualified row later in the table must be able to override it, and a
+      # table is written in whatever order a test finds readable.
+      [[ -n $fallback ]] || fallback=$rpath
+      continue
     fi
+    [[ $rop == "$op"@* ]] || continue
+    want=${rop#*@}
+    for arg in "$@"; do
+      if [[ $arg == "$want" ]]; then
+        matched=$rpath
+        break
+      fi
+    done
+    [[ -n $matched ]] && break
   done <"$AWS_FIXTURE_ROUTES"
+  [[ -n $matched ]] || matched=$fallback
   if [[ -z $matched ]]; then
     printf 'aws-fixture-stub: no route registered for "%s %s" in %s\n' \
       "$svc" "$op" "$AWS_FIXTURE_ROUTES" >&2
@@ -84,6 +106,21 @@ if [[ -n ${AWS_FIXTURE_ROUTES:-} ]]; then
     printf 'aws-fixture-stub: routed fixture for "%s %s" is unreadable (%s)\n' \
       "$svc" "$op" "$matched" >&2
     exit 253
+  fi
+  # A route whose file is named `*.err` is served as a FAILED call: its
+  # contents go to stderr and the stub exits 254, the way the real CLI reports
+  # a service error.  That is not a convenience - an AWS check's hardest
+  # requirement is that a denied call never renders as a clean resource
+  # (lib/awscli.sh section 2), and a stub that can only succeed cannot test
+  # that at all.  It also covers the opposite case, which is just as easy to
+  # get wrong: `NoSuchBucketPolicy`, `NoSuchPublicAccessBlockConfiguration`
+  # and `ServerSideEncryptionConfigurationNotFoundError` are ERRORS that carry
+  # a real answer ("there is no policy / no block / no encryption"), so a check
+  # that treats every error as a coverage loss silently suppresses its own
+  # finding on exactly the resources that have the problem.
+  if [[ $matched == *.err ]]; then
+    cat -- "$matched" >&2
+    exit 254
   fi
   cat -- "$matched"
   exit 0
@@ -98,15 +135,24 @@ STUB
   chmod +x "$bindir/aws"
 }
 
-# `aws_fixture_path CHECK_ID KIND` - tests/fixtures/aws/<check-id>/<kind>.json.
+# `aws_fixture_path CHECK_ID KIND [EXT]` -
+# tests/fixtures/aws/<check-id>/<kind>.<ext>, EXT defaulting to `json`.
 # For a single-call check KIND is `good` or `bad` (see
 # tests/fixtures/aws/README.md); for a routed, multi-call check KIND is the
 # operation name a route serves (e.g. `list-buckets`), since the layout is
 # identical either way - one file per (check, thing-that-varies).  Resolved
 # against the install root (tension 26), never the scan root, since fixtures
 # ship with scoursh itself.
+#
+# EXT exists for exactly one value, `err`: the stub serves a `*.err` route as a
+# FAILED call (see aws_fixture_stub_install's routed-mode note), so a fixture
+# set can express `AccessDenied` and `NoSuchBucketPolicy` alongside the
+# successful responses rather than only the happy path.  It is a parameter
+# rather than a second function because the on-disk layout is the same one -
+# one file per (check, thing-that-varies) - and a second path builder would be
+# a second place for that layout to drift.
 aws_fixture_path() {
-  printf '%s/tests/fixtures/aws/%s/%s.json' "$SCOURSH_INSTALL_ROOT" "$1" "$2"
+  printf '%s/tests/fixtures/aws/%s/%s.%s' "$SCOURSH_INSTALL_ROOT" "$1" "$2" "${3:-json}"
 }
 
 # `aws_fixture_response_set PATH` - point the stub at a single canned
@@ -179,9 +225,62 @@ aws_fixture_route_reset() {
 # tests/suites/aws-fixtures.sh's unmatched-pair case asserts.
 aws_fixture_route_add() {
   local svc=$1 op=$2 path=$3
+  # The `@` is the qualified-row separator the stub parses, so an operation
+  # carrying one would silently register a route that can never match.
+  # Refusing it here is what keeps `aws_fixture_route_add_for` the only way to
+  # write one - that function appends through `_aws_fixture_route_append`
+  # rather than through this one, precisely so this guard can stay strict.
+  case $op in
+    *@*) printf 'aws_fixture_route_add: OPERATION may not contain "@" (use aws_fixture_route_add_for for a per-argument route)\n' >&2; return 1 ;;
+  esac
+  _aws_fixture_route_append "$svc" "$op" "$path"
+}
+
+_aws_fixture_route_append() {
+  local svc=$1 op=$2 path=$3
   if [[ -z ${AWS_FIXTURE_ROUTES:-} ]]; then
     printf 'aws_fixture_route_add: call aws_fixture_route_reset first\n' >&2
     return 1
   fi
   printf '%s %s %s\n' "$svc" "$op" "$path" >>"$AWS_FIXTURE_ROUTES"
+}
+
+# `aws_fixture_route_add_for SERVICE OPERATION ARGVALUE PATH` - serve PATH for
+# `aws_ro SERVICE OPERATION ...` only when ARGVALUE appears verbatim as one of
+# the call's own argv words, falling back to the unqualified
+# `aws_fixture_route_add SERVICE OPERATION ...` row (if the table has one) for
+# every other call to that operation.
+#
+# WHY A ONE-ARGUMENT QUALIFIER RATHER THAN A FULL ARGV MATCHER.  Essentially
+# every §8.1 cloud check is `list-<things>` followed by the same per-thing
+# `get-<property>` call once per thing, and the property that varies between
+# two things is exactly what a good/bad fixture pair has to express - a
+# public bucket and a hardened bucket examined by ONE run, so that "the check
+# fires" and "the check stays quiet" are asserted against the same code path
+# in the same process rather than against two runs, either of which could
+# have gone inert without the other noticing.  Matching one argv WORD is
+# enough for that (`--bucket my-bucket`, `--role-name my-role`,
+# `--db-instance-identifier my-db`) and stays a whitespace-free token, so the
+# route table keeps its plain, newline-delimited on-disk shape.  A general
+# argv matcher would need quoting rules and would encode each check's call
+# shape into the harness, which is the AWS-shaped parsing this stub
+# deliberately has none of.
+#
+# The value is matched as a WHOLE argv word, never as a substring: a bucket
+# named `logs` must not match a route registered for a bucket named
+# `logs-archive`, and a substring test would make the FIRST-registered of two
+# such routes swallow the second - a wrong-fixture failure that reads as a
+# perfectly ordinary passing test.
+aws_fixture_route_add_for() {
+  local svc=$1 op=$2 val=$3 path=$4
+  case $op in
+    *@*) printf 'aws_fixture_route_add_for: OPERATION may not contain "@"\n' >&2; return 1 ;;
+  esac
+  case $val in
+    '' | *[[:space:]]* | *@*)
+      printf 'aws_fixture_route_add_for: ARGVALUE must be a non-empty, whitespace-free token without "@" (got: %s)\n' "$val" >&2
+      return 1
+      ;;
+  esac
+  _aws_fixture_route_append "$svc" "$op@$val" "$path"
 }
