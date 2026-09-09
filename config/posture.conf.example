@@ -1,0 +1,69 @@
+# scoursh posture expectations - rules/RULE-FORMAT.md §9.6.4
+#
+# OPTIONAL. Read by the POSTURE PHASE of `scan.sh cloud --live` (docs/DESIGN.md
+# §8.7) - posture is a phase of the `cloud` command, not a subcommand of its
+# own (docs/FOUNDATION.md's required-inputs table: `cloud (posture phase) |
+# config/posture.conf, else the posture phase is a declared skip`). An absent
+# file is never an error and never exit 4: it means this account carries no
+# operator-declared expected-control baseline, which is a fact about the
+# invocation, not a failure of the tool.
+#
+# Copy this file to config/posture.conf and edit it.
+#
+# AN EXPECTATION IS NOT A CHECK. The check is the script registered in a
+# `checks.rules` under `modules/cloud/posture/` that reads the live or config
+# state; the expectation below is the operator-supplied BASELINE that check
+# compares the live state against, so a posture finding reports DRIFT from
+# what you declared here rather than this tool's own opinion of what "good"
+# looks like. They live in two different id namespaces for that reason: `id`
+# below is an expectation id (^[a-z][a-z0-9-]*$), never a check id, and
+# `check` is the POSTURE-* check id it parameterises.
+#
+# ONE RECORD PER EXPECTED CONTROL PER SCOPE. `check` MUST name a check id a
+# `checks.rules` under modules/cloud/posture/ defines (E077); the (`check`,
+# `scope-key`) pair MUST be unique across this file (E078), since two
+# baselines for one control in one scope is a contradiction with no defined
+# winner. `scope-key` is a target id, an AWS account id, or `account/region` -
+# whichever a given check's own coverage-scope declares.
+#
+# `expect` is one of: present | absent | equals | at-least | at-most.
+# `value` is required when `expect` is `equals`, `at-least`, or `at-most`, and
+# is otherwise omitted.
+#
+# NOTHING BELOW NAMES A REAL ACCOUNT, ROLE, OR IDENTITY PROVIDER: every
+# scope-key is a placeholder AWS account id and every value is illustrative.
+# scoursh ships no scannable target or account of its own (docs/DESIGN.md §1).
+# These three examples correspond to docs/STEP6-CLOUD-PLAN.md's POSTURE-02
+# (federated SSO), POSTURE-03 (edge/WAF), and POSTURE-04 (session
+# termination) - none of which has landed a check yet, so a posture phase run
+# today reads this file and evaluates nothing against it. That is an honest,
+# recorded outcome (a `coverage_reduction`), not a silent no-op.
+
+id: org-sso-federation-expected
+check: POSTURE-SSO-FEDERATION_ENABLED-01
+scope-key: 123456789012
+expect: present
+notes: This account is expected to federate identity through the
+  organisation's IdP rather than issuing standalone IAM user credentials.
+  Reported as drift if POSTURE-02 finds no federated SSO integration
+  configured for this account.
+
+id: edge-waf-allowlist-expected
+check: POSTURE-EDGE-WAF_IP_ALLOWLIST-01
+scope-key: 123456789012/us-east-1
+expect: equals
+value: 3
+notes: This CloudFront distribution's WAF web ACL is expected to carry
+  exactly 3 IP-set allowlist rules (the office, the VPN egress, and the CI
+  runner range). A count that drifts from this - added or removed - is
+  reported either way, since both are a change nobody recorded here.
+
+id: app-logout-route-required
+check: POSTURE-SESSION-LOGOUT_ROUTE-01
+scope-key: example-target
+expect: present
+notes: A logout / session-invalidation route is expected in this target's
+  API Gateway route inventory (CLOUD-22). POSTURE-04 reports this
+  heuristically and flags it for manual confirmation when absent, per
+  docs/DESIGN.md §8.7's own heuristic-not-probe framing - it is not a proof
+  that no logout capability exists, only that none was found by name.
