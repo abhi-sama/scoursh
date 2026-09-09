@@ -341,3 +341,46 @@ net_run_phase() {
   _NET_PHASE_OUTCOME=ran
   return 0
 }
+
+# ---------------------------------------------------------------------------
+# 6. The declared listener set (report.md §7's NET-05, NET-05's own
+#    modules/network/inventory.sh)
+# ---------------------------------------------------------------------------
+# `net_inventory_read [RUNDIR]` - sets, for the one artifact NET-05 writes:
+#
+#   _NET_LISTENERS_FILE   the path, '' when unusable
+#   _NET_LISTENERS_STATE  present | empty | absent
+#
+# Byte-identical shape and reasoning to modules/dast/engine.sh's own
+# `dast_inventory_read` (docs/FOUNDATION.md tension 21, applied one module
+# down): ABSENT IS THE NORMAL CASE AND IS NEVER AN ERROR.  A target whose
+# declared set holds only its base-url writes no file at all
+# (inventory.sh's own honesty-contract rule 3), so a future NET-06+ phase
+# must treat "no file" as a real, expected outcome and record its own
+# coverage_gap naming what that means for it - never crash on a missing
+# path.  `empty` is kept distinct from `absent` for the identical reason
+# dast_inventory_read's own comment gives: a file some producer created and
+# never wrote to is not the same fact as no producer having run at all, and
+# collapsing the two would let a zero-byte artifact read as real coverage.
+# The content is NOT parsed here, for the same reason: no NET-06+ consumer
+# exists yet to agree with a shape, and inventing a reader for a schema
+# nothing consumes would be a second, untested definition of it. Publishing
+# the path is what a later phase needs; parsing modules/network/inventory.sh's
+# own $'\x1f'-record shape (or the JSON it writes) is each future consumer's
+# own job, mirroring how dast_inventory_read leaves endpoints.json/
+# parameters.json unparsed for its own consumers too.
+net_inventory_read() {
+  local rundir=${1:-${SCOURSH_RUN_DIR:-}} f
+  _NET_LISTENERS_FILE='' _NET_LISTENERS_STATE=absent
+
+  f=$rundir/inventory/listeners.json
+  if [[ -f $f && -r $f ]]; then
+    if [[ -s $f ]]; then
+      _NET_LISTENERS_STATE=present
+      _NET_LISTENERS_FILE=$f
+    else
+      _NET_LISTENERS_STATE=empty
+    fi
+  fi
+  return 0
+}
