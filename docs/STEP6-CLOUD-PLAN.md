@@ -24,8 +24,18 @@ remote).
 3. **§13 step 5 (DAST).** **Complete.** Every DAST-01 through DAST-36 ticket has landed
    (`docs/STEP5-DAST-PLAN.md`'s own status section); `modules/dast/` exists in full.
 
-**No CLOUD-0x or POSTURE-0x ticket has been picked up yet, but that is no longer because step 6 is
-blocked - it is simply next in an unclaimed queue.**
+**This "Status" section is a snapshot from before step 6 was picked up, and it is now stale - work has
+since started.** `lib/awscli.sh` hardening (CLOUD-01), the dispatch entry point plus region iteration
+(CLOUD-02/04), and two `aws/live/*.sh` service scripts have landed on `dev`: `s3.sh` (CLOUD-05, the
+vertical slice) and `lambda.sh` (CLOUD-21, out of this doc's own recommended dispatch order - it names
+CLOUD-06/`iam.sh` as a dependency for a shared role-policy reader that had not landed, and shipped its
+own self-contained one rather than block; see `AGENTS.md`'s "Where the build currently stands" section
+for the full account and the correct follow-up). `AGENTS.md`, not this paragraph, is the authority for
+which CLOUD-0x/POSTURE-0x tickets are actually landed at any given time - this file remains the ticket
+SPEC each one implements against.
+
+**No CLOUD-0x or POSTURE-0x ticket had been picked up yet AS OF THIS PLAN'S OWN WRITING, but that was no
+longer because step 6 was blocked - it was simply next in an unclaimed queue.**
 Once step 5 landed, the priority order this project has been using put step 7 (persistent run state,
 `docs/STEP7-STATE-PLAN.md`) and step 10 (SARIF plus the compliance report) ahead of step 6 for
 sequencing reasons rather than a technical dependency - see `ROADMAP.md` for the current priority

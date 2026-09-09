@@ -1,0 +1,10 @@
+{
+    "FunctionUrlConfigs": [
+        {
+            "FunctionUrl": "https://abc123def456.lambda-url.eu-west-2.on.aws/",
+            "FunctionArn": "arn:aws:lambda:eu-west-2:123456789012:function:scoursh-fixture-public-lambda",
+            "AuthType": "NONE",
+            "CreationTime": "2024-01-01T00:00:00.000+0000"
+        }
+    ]
+}

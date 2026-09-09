@@ -5585,6 +5585,24 @@ unanswered resources per check id, records a check that answered for none of the
 what it missed.  Crediting the intended set instead is what would let this tension's `fixed` inference
 run on the strength of a call that was denied.
 
+**A second `aws/live/*.sh` service has since landed: the plan's P12 (CLOUD-21, `aws/live/lambda.sh`,
+§8.6), out of the plan's own recommended dispatch order.**  The dispatch graph names P12 as depending on
+P6 (CLOUD-06, `aws/live/iam.sh`) for a shared role-policy reader ("Reuses P6's role-policy reader"), and
+P6 had not landed - had not even been opened - when P12 was dispatched.  Rather than block, P12 ships its
+own, self-contained IAM policy-document reader in `lambda_engine.sh` (its own header names this
+explicitly and points at the correct follow-up: LIFT the shared logic into a common reader once
+`aws/live/iam.sh` lands, the same "land what's ready, note the gap" precedent this project's own build
+order already set for `lib/http.sh`, `modules/iac/` and `modules/sca/` landing ahead of their nominal
+step).  `lambda.sh` is `_CLOUD_SERVICES`' first REGIONAL row to land (`s3` is `global`), which is what
+proves the cell-equals-loc_region shape a regional service takes: unlike S3, where the pass's cell and
+the resource's own region are two different facts credited and cited separately, `lambda list-functions`
+only ever answers for the region it is addressed to, so the cell and `loc_region` are the identical
+value.  Six `CLOUD-LAMBDA-*` checks ship, splitting `docs/DESIGN.md` §8.6's three bullets in two apiece
+for the identical fingerprint-collision and per-record-severity reasons S3's own PUBLIC_ACL_READ/WRITE
+split states; none carries a `cis:` value, because CIS AWS Foundations Benchmark v3.0.0 has no dedicated
+Lambda section for one to honestly cite.  `tests/suites/cloud-lambda.sh` is the proof, including both
+shapes an IAM/Lambda policy-document field can arrive in (a JSON string that must be reloaded, and a
+native object read in place) in the same run.
 **CLOUD-07/08/09 (`aws/live/{kms,secretsmanager,ssm}.sh`) have since landed together, the first
 REGIONAL services in the catalog.**  A regional service's own `list-*`/`describe-*` call already names
 only the resources IN the pass's region, so - unlike S3's `global` row above - the resource's real
@@ -5607,8 +5625,8 @@ secret, or a deletion-scheduled secret all need.
 **Every OTHER `aws/live/*.sh` service in `docs/DESIGN.md` §8.1's catalog is still absent**, and a
 `--live` run records each one as unexamined rather than counting it clean - a real dispatch that found
 nothing to run for those services, stated as such in `run.json`, `report.md` and the audit report
-rather than left to read as a clean account.  The plan's remaining service PRs and its `posture/` half
-remain not-started.
+rather than left to read as a clean account.  The plan's remaining service PRs (P6 onward, minus P12
+above) and its `posture/` half remain not-started.
 
 **Step 7 (persistent run state) has now started: STATE-01 (`lib/state.sh`) has landed**, ahead of step
 6, per `docs/STEP7-STATE-PLAN.md`'s own status - that plan's gate blocks *classification*
