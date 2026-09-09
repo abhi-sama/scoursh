@@ -1,0 +1,34 @@
+{
+    "LoadBalancers": [
+        {
+            "LoadBalancerArn": "arn:aws:elasticloadbalancing:eu-west-2:123456789012:loadbalancer/app/scoursh-fixture-alb-hardened/aaaaaaaaaaaaaaaa",
+            "DNSName": "scoursh-fixture-alb-hardened-123456.eu-west-2.elb.amazonaws.com",
+            "LoadBalancerName": "scoursh-fixture-alb-hardened",
+            "Scheme": "internet-facing",
+            "VpcId": "vpc-fixture",
+            "State": {"Code": "active"},
+            "Type": "application",
+            "IpAddressType": "ipv4"
+        },
+        {
+            "LoadBalancerArn": "arn:aws:elasticloadbalancing:eu-west-2:123456789012:loadbalancer/app/scoursh-fixture-alb-public/bbbbbbbbbbbbbbbb",
+            "DNSName": "scoursh-fixture-alb-public-123456.eu-west-2.elb.amazonaws.com",
+            "LoadBalancerName": "scoursh-fixture-alb-public",
+            "Scheme": "internet-facing",
+            "VpcId": "vpc-fixture",
+            "State": {"Code": "active"},
+            "Type": "application",
+            "IpAddressType": "ipv4"
+        },
+        {
+            "LoadBalancerArn": "arn:aws:elasticloadbalancing:eu-west-2:123456789012:loadbalancer/app/scoursh-fixture-alb-denied/cccccccccccccccc",
+            "DNSName": "scoursh-fixture-alb-denied-123456.eu-west-2.elb.amazonaws.com",
+            "LoadBalancerName": "scoursh-fixture-alb-denied",
+            "Scheme": "internet-facing",
+            "VpcId": "vpc-fixture",
+            "State": {"Code": "active"},
+            "Type": "application",
+            "IpAddressType": "ipv4"
+        }
+    ]
+}

@@ -795,6 +795,80 @@ Two things measured while building them, worth knowing before the next service P
   fixture actually named.
 **Every OTHER `aws/live/*.sh` service in `docs/DESIGN.md` §8.1's catalog is still absent**, and a
 `--live` run records each one as unexamined rather than counting it clean.
+
+**CLOUD-14 (`aws/live/elb.sh`) and CLOUD-24 (`aws/live/cloudfront.sh`) have also landed**, copying
+CLOUD-05's `run.sh`/`engine.sh` split and honesty-accounting shape onto two services with real shape
+differences from S3's, each worth knowing before touching either file:
+
+- **`elb.sh` covers TWO AWS CLI namespaces - `elb` (Classic Load Balancer) and `elbv2` (ALB/NLB) - as
+  ONE service row and ONE set of three check ids** (`CLOUD-ELB-HTTP_NO_REDIRECT-01`,
+  `CLOUD-ELB-WEAK_TLS_POLICY-01`, `CLOUD-ELB-NO_ACCESS_LOGS-01`), per `docs/STEP6-CLOUD-PLAN.md`'s own
+  counting note ("Classic ELB and ALB/NLB are one AWS product across two API generations"). It is
+  `regional`, unlike S3's `global` row, so `loc_region` and the coverage cell AGREE - there is no
+  bucket-vs-cell-region split to reconcile the way `s3.sh` has.
+- **A Classic ELB listener's own `PolicyNames` entry is an operator-chosen LABEL with no protocol
+  information in it**, unlike ALB/NLB's `SslPolicy` field, which genuinely is the predefined policy's
+  own name. Classifying a Classic ELB's TLS strength from that label alone would false-positive on the
+  ordinary Terraform shape (a custom-named policy that references a modern predefined one), so
+  `elb.sh` resolves it through a SECOND call, `elb describe-load-balancer-policies`, and
+  `elb_classic_policy_doc_is_weak` (`elb_engine.sh`) reads the resulting `Reference-Security-Policy`
+  attribute when present, falling back to the `Protocol-SSLv3`/`Protocol-TLSv1`/`Protocol-TLSv1.1`
+  flags on a fully custom policy - matching AWS's own Trusted Advisor check for this posture.
+  ALB/NLB's `SslPolicy` still needs no such indirection; `elb_policy_is_weak` there is a "proves
+  strong" name test (matches `TLS-1-2`/`TLS13`), not a "matches known-weak" one, so a custom ALB
+  policy name that proves nothing is reported rather than assumed fine.
+- **`PolicyNames` is a SIBLING key of `Listener` inside one `ListenerDescriptions[]` entry, never
+  nested under it** (`{"Listener": {...}, "PolicyNames": [...]}`). A path built by appending
+  `PolicyNames` onto the already-constructed `.../Listener` prefix names a leaf the document has no
+  way to hold, so the lookup silently reads empty on every listener - the exact "TLS policy examined
+  and found nothing wrong" false clean this module's honesty rules exist to forbid. Caught by
+  `tests/suites/cloud-elb.sh` section B (both a weak and a hardened Classic ELB in one run) rather
+  than by review; a fixed sibling `entry` variable (never the `Listener`-suffixed `base`) is what
+  `PolicyNames` and `Listener`'s own fields are each read against now.
+- **An ALB redirect action whose `RedirectConfig.Protocol` is the literal string `#{protocol}`
+  performs NO scheme upgrade at all** - it is AWS's placeholder for "keep the original protocol",
+  used for path-only redirects - so `elb_default_actions_redirect_https` accepts only the literal
+  `HTTPS`, never that placeholder. Pinned directly in `tests/suites/cloud-elb.sh` (case A9/A10 and the
+  public ALB fixture, whose HTTP listener carries exactly this shape).
+- **`cloudfront.sh` cites `loc_region` as the literal `global` on EVERY finding, and it agrees with the
+  cell** - a CloudFront distribution has no per-resource AWS region at all, unlike an S3 bucket, so
+  there is nothing to resolve the way `s3.sh` resolves a bucket's. Its ARN is READ directly off
+  `get-distribution`'s own `Distribution.ARN` field, never constructed (unlike S3's bucket ARN and
+  Classic ELB's, neither of which the API ever returns).
+- **The origin-exposure check (`CLOUD-CLOUDFRONT-ORIGIN_EXPOSED-01`) is scoped to S3 origins ONLY**: an
+  origin is treated as an S3 origin solely by the presence of an `S3OriginConfig` block: a
+  `CustomOriginConfig` origin (an ALB, an on-prem server, any non-S3 HTTP(S) backend) is skipped
+  outright, since OAC/OAI is exclusively an S3-origin access-control mechanism and flagging a custom
+  origin for lacking one would be a defect this check has no standing to raise -
+  `tests/suites/cloud-cloudfront.sh` case B5 pins the count of findings at exactly one on a
+  distribution with both origin shapes present.
+- **NEITHER SERVICE'S CHECK RECORDS CARRY A `cis:` VALUE.** CIS AWS Foundations Benchmark v3.0.0 has no
+  Elastic Load Balancing or CloudFront section at all - confirmed against `data/cis-mappings`, which
+  transcribes the full v1(CIS-core) scope and carries no row shaped like either. Per
+  `docs/CIS-MAPPINGS.md` §1, an absent `cis:` line is the honest reading; inventing a control number to
+  satisfy a "must cite CIS" habit is the overstated-coverage failure `docs/DESIGN.md` §15 forbids -
+  this is the identical judgement `modules/cloud/aws/live/checks.rules`'s own S3
+  NO_DEFAULT_ENCRYPTION/NO_VERSIONING/NO_LOGGING records already made.
+- **`finding_set exposure internet`, not `external`.** `data/severity-rubric.conf`'s frozen `exposure`
+  fact has exactly three values - `internet`/`internal`/`unknown` (`rules/RULE-FORMAT.md` §9.6.5) -
+  and `modules/cloud/aws/live/s3_engine.sh` spells the internet-facing case `external`, which matches
+  none of them and silently takes the rubric's `_rubric_mod` no-match default of `+0`, the SAME
+  outcome as `unknown`: an S3 public-exposure finding therefore gets no severity boost from exposure
+  at all. That mismatch is pre-existing on `dev` and was left alone here (fixing it is a change to
+  already-merged, unrelated code, not this ticket's scope) - `elb_engine.sh`'s and
+  `cloudfront_engine.sh`'s own emitters use the correct `internet` spelling and say so in their own
+  headers, so the next reader does not copy the S3 file's mistake forward a second time.
+- **Every `<engine>_doc_get VAR PATH` call whose PATH may legitimately be absent needs `|| true`.**
+  `elb_doc_get`/`cfd_doc_get` return the SAME 1 `s3_doc_get` does for a missing leaf (by design - it
+  is how a caller tests for absence), and under this file's `set -Eeuo pipefail` an unguarded call on
+  a path that is not always present aborts the whole scan the first time a real response omits it
+  (measured: a Classic ELB listener with an empty `PolicyNames` array killed a live debug run outright
+  before this was caught). `s3.sh` never hits this because every one of its bare `s3_doc_get` calls is
+  either preceded by a same-path `s3_doc_has` check or reads a field the API always populates; `elb.sh`
+  and `cloudfront.sh` read several fields with no such guarantee (a listener's optional policy name, an
+  ALB attribute walked by key rather than fixed path, `WebACLId`, `MinimumProtocolVersion`, an
+  `OriginAccessControlId` sibling to an already-checked `S3OriginConfig`) and guard every one.
+
 **Step 7 (persistent run state, `state/` plus `diff`) is complete.**
 **Step 10 (SARIF plus the compliance report) is now complete in full**: Track A (the SARIF emitter) is
 complete, and Track B (the compliance-mapping report) has landed all four tickets - COMPLIANCE-01/02
