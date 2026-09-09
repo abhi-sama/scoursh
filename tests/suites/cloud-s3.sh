@@ -527,10 +527,13 @@ assert_contains "$_AUDIT" 'CLOUD-S3-' 'E15 the audit view carries the cloud chec
 # `modules/cloud/aws/live/` as shipping no service script at all.  That claim
 # is this ticket's to correct, and it is pinned in both directions here so the
 # next service to land finds a failing assertion rather than a stale sentence.
-# CLOUD-22 (`aws/live/apigw.sh`) is exactly that next service, and it DID find
-# this assertion failing - updated here, in the same change that widened
-# lib/report.sh's own sentence, rather than left to go stale a second time.
-assert_contains "$_AUDIT" 'ships the S3 and API Gateway services only so far' \
+# CLOUD-22 (`aws/live/apigw.sh`) and CLOUD-07/08/09 (kms/secretsmanager/ssm)
+# are exactly that next round of services, and they DID find this assertion
+# failing - updated here, in the same change that widened lib/report.sh's own
+# sentence, rather than left to go stale a second time - see
+# tests/suites/cloud-ssm.sh's own round-trip section for the five-service
+# half of this same guard.
+assert_contains "$_AUDIT" 'ships the S3, API Gateway, KMS, Secrets Manager and SSM services so far' \
   'E16 the audit view states the real, current extent of the live catalog'
 assert_not_contains "$_AUDIT" 'ships no service script yet' \
   'E17 ... and no longer claims the catalog is empty'

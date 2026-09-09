@@ -1,0 +1,14 @@
+{
+    "KeyMetadata": {
+        "AWSAccountId": "123456789012",
+        "KeyId": "5555eeee-eeee-eeee-eeee-eeeeeeeeeeee",
+        "Arn": "arn:aws:kms:eu-west-2:123456789012:key/5555eeee-eeee-eeee-eeee-eeeeeeeeeeee",
+        "Enabled": true,
+        "KeyUsage": "SIGN_VERIFY",
+        "KeyState": "Enabled",
+        "Origin": "AWS_KMS",
+        "KeyManager": "CUSTOMER",
+        "KeySpec": "RSA_2048",
+        "MultiRegion": false
+    }
+}

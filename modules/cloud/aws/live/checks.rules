@@ -316,3 +316,150 @@ remediation: An API key is not an authorizer - API Gateway's apiKeyRequired
   scoped to a usage plan.
 references: CWE-306
 references: https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-api-usage-plans.html
+
+# ===========================================================================
+# CLOUD-07 (aws/live/kms.sh), CLOUD-08 (aws/live/secretsmanager.sh) and
+# CLOUD-09 (aws/live/ssm.sh) - kms/secretsmanager/ssm, landed in one ticket
+# and appended here together (docs/STEP6-CLOUD-PLAN.md).
+#
+# `cis:` FOLLOWS THE IDENTICAL DISCIPLINE THE S3 RECORDS ABOVE ESTABLISH: cited
+# only where CIS AWS Foundations Benchmark v3.0.0 names a real control, never
+# invented to satisfy a "must cite CIS" habit (docs/DESIGN.md §15).  Of these
+# six checks, exactly ONE has a real control: `CLOUD-KMS-ROTATION_DISABLED-01`
+# cites 3.6 ("Ensure rotation for customer-created symmetric CMKs is
+# enabled"), already present in data/cis-mappings.  The benchmark has no
+# section for KMS key policies, Secrets Manager, or SSM Parameter Store at
+# all - Security Hub's own public v3.0.0 mapping was checked and confirms
+# none exists - so the other five carry no `cis:` line, an honest absence
+# rather than a gap, the identical outcome the S3 encryption/versioning/
+# logging records above already model.  A future benchmark revision that adds
+# one of these sections gets its row added to data/cis-mappings and its
+# `cis:` line added here, in the same change, per docs/CIS-MAPPINGS.md §5.
+#
+# All six are `config-read`/`quick`: each is one or more read-only AWS API
+# calls with no active probe, exactly as the S3 records above.  Only
+# `CLOUD-KMS-ROTATION_DISABLED-01` carries `compliance` (the tag `cis:`-bearing
+# records use, per finding F3's TAG reading of `--profile-scan compliance`).
+
+id: CLOUD-KMS-ROTATION_DISABLED-01
+title: KMS customer-managed key does not have automatic rotation enabled
+script: aws/live/kms.sh
+severity: medium
+confidence: high
+cwe: CWE-320
+owasp: A02:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 3.6
+remediation: Enable automatic annual key rotation
+  (`aws kms enable-key-rotation --key-id <id>`) for every customer-managed
+  symmetric encryption key. AWS keeps every prior backing key version, so
+  data encrypted before rotation still decrypts correctly and no application
+  change is required. Rotation applies only to enabled, AWS_KMS-origin,
+  SYMMETRIC_DEFAULT/ENCRYPT_DECRYPT keys - an asymmetric, HMAC, or
+  imported-key-material key is out of scope for this control by design, not
+  an oversight.
+references: CWE-320
+references: https://docs.aws.amazon.com/kms/latest/developerguide/rotate-keys.html
+
+id: CLOUD-KMS-PUBLIC_POLICY-01
+title: KMS key policy grants to an unqualified wildcard principal
+script: aws/live/kms.sh
+severity: critical
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove the wildcard Principal (or Principal.AWS "*") from the
+  key policy statement, or add a Condition that genuinely narrows it (an
+  attacker-supplied context key such as aws:Referer narrows nothing). A KMS
+  key policy is the ONLY access-control surface for the key - unlike an S3
+  bucket, where IAM also gates access - so an unconditioned wildcard grant
+  here means any AWS principal in any account that can name the key's ARN can
+  request whatever this statement allows. Name the specific account(s),
+  role(s), or aws:PrincipalOrgID that legitimately need access instead.
+references: CWE-732
+references: https://docs.aws.amazon.com/kms/latest/developerguide/key-policies.html
+
+id: CLOUD-SECRETSMANAGER-NO_ROTATION-01
+title: Secrets Manager secret does not have automatic rotation enabled
+script: aws/live/secretsmanager.sh
+severity: medium
+confidence: high
+cwe: CWE-262
+owasp: A07:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Configure automatic rotation for the secret (a Lambda rotation
+  function - AWS provides templates for RDS/DocumentDB/Redshift master
+  credentials, and a custom function covers any other secret type) so a
+  leaked or over-shared value has a bounded lifetime even when the leak
+  itself is never detected. A secret owned by another AWS service (its
+  OwningService field is set) or already scheduled for deletion is not
+  evaluated by this check - its rotation lifecycle belongs to the owning
+  service, not to this account's operator.
+references: CWE-262
+references: https://docs.aws.amazon.com/secretsmanager/latest/userguide/rotate-secrets_turn-on-for-other.html
+
+id: CLOUD-SECRETSMANAGER-PUBLIC_POLICY-01
+title: Secrets Manager resource policy grants to an unqualified wildcard principal
+script: aws/live/secretsmanager.sh
+severity: critical
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove the wildcard Principal from the secret's resource policy,
+  or add a Condition that genuinely narrows it. A Secrets Manager resource
+  policy controls who can call GetSecretValue directly, so an unconditioned
+  wildcard grant means any AWS principal in any account that can name the
+  secret's ARN can retrieve its value. Name the specific account(s) or
+  role(s) that legitimately need access instead.
+references: CWE-732
+references: https://docs.aws.amazon.com/secretsmanager/latest/userguide/auth-and-access_resource-based-policies.html
+
+id: CLOUD-SSM-STRING_TYPE_SENSITIVE-01
+title: SSM parameter name suggests sensitive content but is not a SecureString
+script: aws/live/ssm.sh
+severity: medium
+confidence: medium
+cwe: CWE-312
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Re-create the parameter with `--type SecureString`, which
+  encrypts the value at rest with a KMS key and requires kms:Decrypt in
+  addition to ssm:GetParameter to read it back. This is a NAME-based
+  heuristic over the parameter's path (password/secret/token/credential/key),
+  not a content scan: confirm the value is genuinely sensitive before acting,
+  and note that a differently-named parameter holding a secret will not be
+  caught by it.
+references: CWE-312
+references: https://docs.aws.amazon.com/systems-manager/latest/userguide/parameter-store-securestring.html
+
+id: CLOUD-SSM-PUBLIC_POLICY-01
+title: SSM parameter resource policy grants to an unqualified wildcard principal
+script: aws/live/ssm.sh
+severity: critical
+confidence: high
+cwe: CWE-732
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove the wildcard Principal from the parameter's resource
+  policy, or add a Condition that genuinely narrows it. An SSM resource
+  policy controls cross-account access to the parameter directly, so an
+  unconditioned wildcard grant means any AWS principal in any account that
+  can name the parameter's ARN can call GetParameter against it. Name the
+  specific account(s) or role(s) that legitimately need access instead.
+references: CWE-732
+references: https://docs.aws.amazon.com/systems-manager/latest/userguide/parameter-store-resource-policies.html

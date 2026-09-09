@@ -401,6 +401,140 @@ cloud_json_leaf() {
 }
 
 # ---------------------------------------------------------------------------
+# 4b. Resource-policy documents - a JSON document embedded AS A STRING
+# ---------------------------------------------------------------------------
+# WHY THIS LIVES HERE, ON THE MODULE'S SHARED ENGINE, RATHER THAN ON ONE
+# SERVICE'S OWN _engine.sh.  `kms get-key-policy`, `secretsmanager
+# get-resource-policy` and `ssm get-resource-policies` (CLOUD-07/08/09, landed
+# together in one ticket) all hand back an IAM-policy-shaped JSON document
+# under a field (`Policy` / `ResourcePolicy`) whose VALUE is itself JSON text -
+# `cloud_json_flatten` reads it as one opaque string leaf, exactly as it must
+# per RFC 8259 §7 (a JSON string cannot itself contain an unescaped `{`). Three
+# service scripts landing in one ticket needing the identical "is this
+# statement an unconditional wildcard grant" classifier is the shape
+# `modules/dast/active/inject_engine.sh` was shared for, not the "one service,
+# one _engine.sh" shape `s3_engine.sh`'s own header describes - and every
+# later service with a resource policy (SNS, SQS, ECR, ...) is another
+# consumer, so this is not a one-ticket convenience.
+#
+# `declare -g`, for the identical reason `s3_engine.sh`'s own `_S3_DOC` is:
+# nothing sources this file at top level in a real run, `cloud_run_service`
+# reaches a live script by `source`ing it from INSIDE a function, so a bare
+# `declare -A` here would create a local that dies with the function.
+declare -gA _CLOUD_POLICY_DOC=()
+declare -gA _CLOUD_POLICY_DOCT=()
+
+# `cloud_policy_load TEXT` - TEXT is a policy field's value ALREADY UNESCAPED
+# EXACTLY ONCE, i.e. what a caller reads back from its own `*_doc_load`'s
+# string map (`kms_policy_field`, `secm_policy_field`,
+# `ssm_policy_entry_field_set`) - every one of those loaders already runs
+# `cloud_json_unescape` on every string leaf as it populates its own map
+# (`kms_doc_load`'s own header explains why, one file over), so the `Policy` /
+# `ResourcePolicy` field a caller hands here has ALREADY had its one layer of
+# JSON-string escaping removed and is ready to re-parse as its own document
+# without any further decoding.  Unescaping it a SECOND time here would mangle
+# any literal backslash the embedded policy legitimately contains (a
+# `Condition` value with a regex, say) - measured while writing this function,
+# by round-tripping a fixture and comparing the flattened `Statement<US>0<US>
+# Effect` leaf against the source text.
+#
+# Flattens TEXT as a second, independent document into
+# `_CLOUD_POLICY_DOC`/`_CLOUD_POLICY_DOCT` - the same two-map shape
+# `s3_engine.sh`'s `s3_doc_load` uses one level up, chosen for the identical
+# reason: a policy's `Statement` is an array a caller must be able to walk
+# index by index, which an unflattened string cannot support.
+#
+# Returns 1 and leaves both maps EMPTY when TEXT is empty (no policy attached
+# - the ordinary case for a fresh SSM parameter or secret) or does not parse.
+cloud_policy_load() {
+  local __text=$1
+  _CLOUD_POLICY_DOC=()
+  _CLOUD_POLICY_DOCT=()
+  [[ -n $__text ]] || return 1
+  local __path __type __val
+  while IFS=$'\t' read -r __path __type __val; do
+    [[ -n $__path ]] || continue
+    [[ $__type == s ]] && __val=$(cloud_json_unescape "$__val")
+    _CLOUD_POLICY_DOC[$__path]=$__val
+    _CLOUD_POLICY_DOCT[$__path]=$__type
+  done < <(printf '%s' "$__text" | cloud_json_flatten 2>/dev/null)
+  (( ${#_CLOUD_POLICY_DOCT[@]} > 0 ))
+}
+
+# `_cloud_policy_statement_is_public PREFIX` - true when the statement rooted
+# at PREFIX (`Statement` for a single-object policy, `Statement<US><n>` for
+# one entry of an array of them - the IAM policy grammar allows both shapes
+# for `Statement`) is an `Allow` that grants to an UNQUALIFIED wildcard
+# principal.
+#
+# THE VERDICT IS DELIBERATELY COARSE, THE SAME DIRECTION `s3_policy_is_public`
+# ONE LEVEL UP GETS FROM AWS ITSELF: a real `Condition` block anywhere under
+# the statement is treated as narrowing it, WHATEVER the condition actually
+# tests - `aws:SourceVpce` genuinely narrows, `aws:Referer` narrows nothing at
+# all (a client sends whatever `Referer` it likes), and this module has no IAM
+# policy evaluator to tell the two apart. Reporting the SECOND as a false
+# negative is the failure a stricter-than-necessary verdict accepts on
+# purpose: this project's read-only chokepoint has no way to ask AWS's own
+# evaluator the question the way `get-bucket-policy-status` answers it for S3,
+# so "no Condition at all" is the one shape this classifier can assert without
+# guessing, and it never reports a NARROWED grant as public.
+_cloud_policy_statement_is_public() {
+  local __prefix=$1
+  [[ ${_CLOUD_POLICY_DOC[$__prefix$'\x1f'Effect]:-} == Allow ]] || return 1
+
+  local __wild=0
+  [[ ${_CLOUD_POLICY_DOC[$__prefix$'\x1f'Principal]:-} == '*' ]] && __wild=1
+  [[ ${_CLOUD_POLICY_DOC[$__prefix$'\x1f'Principal$'\x1f'AWS]:-} == '*' ]] && __wild=1
+  local __i=0
+  while [[ -n ${_CLOUD_POLICY_DOCT[$__prefix$'\x1f'Principal$'\x1f'AWS$'\x1f'$__i]+set} ]]; do
+    [[ ${_CLOUD_POLICY_DOC[$__prefix$'\x1f'Principal$'\x1f'AWS$'\x1f'$__i]:-} == '*' ]] && __wild=1
+    __i=$(( __i + 1 ))
+  done
+  (( __wild )) || return 1
+
+  local __k
+  for __k in "${!_CLOUD_POLICY_DOCT[@]}"; do
+    [[ $__k == "$__prefix"$'\x1f'Condition* ]] && return 1
+  done
+  return 0
+}
+
+# `cloud_policy_is_public` - true when the document `cloud_policy_load` most
+# recently loaded contains at least one public statement, over EITHER
+# `Statement` shape the IAM policy grammar allows (a lone object, or an array
+# of them) - AWS's own default key/secret/parameter policies are generated as
+# a one-entry array, but a hand-authored policy may legally be the bare
+# object.
+cloud_policy_is_public() {
+  local __idx=0 __saw_array=0 __prefix=''
+  while [[ -n ${_CLOUD_POLICY_DOCT[Statement$'\x1f'$__idx$'\x1f'Effect]+set} ]]; do
+    __saw_array=1
+    # BUILT INTO A VARIABLE FIRST, NEVER SPLICED DIRECTLY INTO ONE
+    # DOUBLE-QUOTED ARGUMENT STRING.  `$'\x1f'` is ANSI-C quoting and is only
+    # recognised as such when it is its own shell WORD (bare, or concatenated
+    # with adjacent bare/quoted pieces) - nested inside an ENCLOSING pair of
+    # double quotes, as `"Statement$'\x1f'$__idx"` would be, it loses that
+    # meaning entirely and becomes the nine LITERAL bytes `$`, `'`, `\`, `x`,
+    # `1`, `f`, `'` between `Statement` and the index, so the lookup below
+    # silently misses every real entry.  This is precisely the reverse of
+    # kms_engine.sh's own array-SUBSCRIPT accessors
+    # (`${_KMS_DOC[KeyMetadata$'\x1f'KeyManager]}`), where `$'\x1f'` sits
+    # inside the subscript brackets rather than inside a second, outer pair
+    # of quotes and is expanded correctly - measured by mutation: reverting
+    # this line to the spliced form makes B7 in tests/suites/cloud-kms.sh
+    # fail (the public-policy check never fires on ANY fixture), the failure
+    # mode this note exists to keep from being reintroduced.
+    __prefix=Statement$'\x1f'"$__idx"
+    _cloud_policy_statement_is_public "$__prefix" && return 0
+    __idx=$(( __idx + 1 ))
+  done
+  if (( ! __saw_array )) && [[ -n ${_CLOUD_POLICY_DOCT[Statement$'\x1f'Effect]+set} ]]; then
+    _cloud_policy_statement_is_public Statement && return 0
+  fi
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # 5. The one door into a service script
 # ---------------------------------------------------------------------------
 # `cloud_run_service SPEC ACCOUNT REGION` - SPEC is one `_CLOUD_SERVICES` row.

@@ -680,6 +680,18 @@ id, and writes the FIRST real `account-region` coverage cell this repository has
 schema-only proof until a check emitted one). It is also the first `aws_ro` call site
 `tests/lint-aws-readonly.sh` actually enforces: that lint reported "0 aws_ro call sites" on every run
 before this ticket and reports 10 after, so its checks 1-3 have stopped being vacuous.
+**CLOUD-07/08/09 (`kms.sh`, `secretsmanager.sh`, `ssm.sh`) have now landed too, in one ticket - the
+first REGIONAL `aws/live/*.sh` services, proving the half of the service table S3's own `global` row
+does not exercise.** All three follow `s3.sh`'s own `run.sh`/`engine.sh` split one level down
+(`live/<service>.sh` + `live/<service>_engine.sh`) and its three honesty rules verbatim; see the "Step
+6" section below for what is actually new in this ticket rather than copied. In outline: `kms.sh`
+flags a customer-managed key with automatic rotation off (`cis: 3.6`) or an unconditioned wildcard key
+policy; `secretsmanager.sh` flags a secret with no rotation schedule or an unconditioned wildcard
+resource policy; `ssm.sh` flags a `String` parameter whose NAME looks sensitive
+(password/secret/token/credential/key) or an unconditioned wildcard resource policy. None of the five
+non-KMS-rotation checks carries a `cis:` value - CIS v3.0.0 has no section for KMS key policies, Secrets
+Manager, or SSM Parameter Store at all, and this project never invents a control number to satisfy a
+"must cite CIS" habit (`modules/cloud/aws/live/checks.rules`'s own new header block records the check).
 **Every OTHER `aws/live/*.sh` service in `docs/DESIGN.md` §8.1's catalog is still absent**, and a
 `--live` run records each one as unexamined rather than counting it clean.
 **Step 7 (persistent run state, `state/` plus `diff`) is complete.**
@@ -2325,8 +2337,9 @@ backwards.**
 `docs/STEP6-CLOUD-PLAN.md` is the sub-ticket plan; the dispatch plan that reorganises it into PRs
 P1..P22 is the authority for what is landed. P1 (`lib/awscli.sh`'s remaining half), P2 (the routed
 multi-call AWS fixture stub), P4 (`data/cis-mappings`), P3
-(`modules/cloud/aws/{run.sh,engine.sh,regions.sh}`), P5 (`aws/live/s3.sh`, the vertical slice) and P17
-(`aws/live/apigw.sh`, CLOUD-22 - see its own landing paragraph below) are in; every other
+(`modules/cloud/aws/{run.sh,engine.sh,regions.sh}`), P5 (`aws/live/s3.sh`, the vertical slice), P17
+(`aws/live/apigw.sh`, CLOUD-22 - see its own landing paragraph below) and CLOUD-07/08/09
+(`aws/live/{kms,secretsmanager,ssm}.sh` - see its own landing paragraph below) are in; every other
 `aws/live/*.sh` service, and the `posture/` half, are not.
 
 - **An `AccessDenied` is NOT an empty account, and this module is where that distinction is most
@@ -2508,6 +2521,61 @@ that suite's own comment predicts. Seven things about it are worth knowing befor
   prior response never got, never remove one), so no existing suite's fixtures were at risk;
   `tests/suites/awscli.sh` pins both the truncated and the `null`-means-last-page readings for it,
   mirroring the existing `NextToken` cases exactly.
+
+**CLOUD-07/08/09 (`kms.sh`, `secretsmanager.sh`, `ssm.sh`) landed together, copying `s3.sh`'s template,
+and five things about them are worth carrying here rather than only in their own file headers.**
+
+- **All three are `regional`, and that REMOVES a whole class of `s3.sh`'s own bookkeeping rather than
+  adding a new one.** A regional service's `list-*`/`describe-*` call already names only the resources
+  IN the pass's own region, so the resource's real region genuinely IS `SCOURSH_CLOUD_REGION`, the cell
+  is `<account>/<region>` (the SAME value as `loc_region`, not S3's separate `<account>/global`), and
+  there is no per-resource region-resolution call to make at all. `tests/suites/cloud-kms.sh`'s own C5
+  asserts this equality directly, because an implementation that copied S3's cell literally would
+  otherwise pass every other assertion in the suite.
+- **A resource-policy document is JSON embedded AS A STRING inside another JSON document, and it is
+  UNESCAPED EXACTLY ONCE - never twice.** `kms get-key-policy`'s `Policy`, `secretsmanager
+  get-resource-policy`'s `ResourcePolicy`, and `ssm get-resource-policies`'s per-entry `Policy` all
+  share this shape. Every `*_doc_load` in this tree already unescapes every STRING leaf as it loads
+  (`s3_doc_load`'s own header explains why), so by the time a service script reads the field back out
+  (`kms_policy_field`, `secm_policy_field`, ...) it has ALREADY had its one layer of escaping removed -
+  and `cloud_policy_load` (`modules/cloud/aws/engine.sh` §4b, the SHARED classifier all three consume,
+  because three services landing in one ticket needing it is the shape `inject_engine.sh` was shared
+  for, not a one-service convenience) must NOT unescape it again. Unescaping twice mangles nothing
+  visibly in the common case (most policy statements carry no literal backslash) but is simply the
+  wrong function of a document that happens to still parse - and the REAL defect this ticket actually
+  shipped and caught before landing was different and sharper: see the next bullet.
+- **`$'\x1f'` (ANSI-C quoting) LOSES ITS SPECIAL MEANING THE INSTANT IT IS NESTED INSIDE A SECOND, OUTER
+  PAIR OF DOUBLE QUOTES - it is then nine LITERAL bytes, not one separator byte - and this is invisible
+  in an editor because both readings look identical on screen.** `"Statement$'\x1f'$__idx"`, passed
+  as a function ARGUMENT, is the broken spelling; `Statement$'\x1f'"$__idx"` (no enclosing quotes around
+  the whole expression - separate quoted/unquoted pieces the shell concatenates into one word) or
+  building it into a plain variable first, are the two fixes this ticket landed with. The identical
+  byte sequence used as an ARRAY SUBSCRIPT (`${_KMS_DOC[KeyMetadata$'\x1f'KeyManager]}`) is NOT affected
+  even when the whole subscript expression sits inside an outer `"..."` - subscript expansion has its
+  own quote-removal rules - so this trap is specific to building a PATH STRING as a quoted argument, not
+  to the US-byte idiom in general. `cloud_policy_is_public`'s own header comment (`engine.sh`) carries
+  the full account, including which assertion in `tests/suites/cloud-kms.sh` (B7) fails under the broken
+  spelling - measured by reverting the fix and watching it go red, not reasoned about.
+- **A resource this pass correctly judges OUT OF SCOPE for a check is neither EVALUATED nor LOST for
+  it, and that is a third state `s3.sh`'s own accounting never needed.** An AWS-managed KMS key, an
+  asymmetric/HMAC/imported-material KMS key (rotation only), a Secrets Manager secret owned by another
+  AWS service, and one already scheduled for deletion, all fall into this state: the API call is never
+  attempted, so no `unsupported`/`access_denied` outcome is ever manufactured for a call this scanner
+  had no business making, and the resource contributes to neither `_note_evaluated` nor `_note_lost`.
+  Getting the gate PERMISSIVE (calling anyway) turns a real "not applicable" into a misleading
+  coverage_reduction; getting it RESTRICTIVE (skipping an eligible resource) silently under-reports.
+  `tests/suites/cloud-kms.sh`'s own routed fixture table proves the permissive direction concretely: it
+  registers NO route at all for the ineligible/AWS-managed key's rotation call, so a regression that
+  widened the gate would fail LOUDLY at the stub (tests/lib/aws-fixtures.sh's own "no route registered"
+  exit) rather than silently passing.
+- **`cis:` follows the identical discipline `s3.sh`'s own checks established, and the count is stark:
+  one of six.** Only `CLOUD-KMS-ROTATION_DISABLED-01` cites a real CIS v3.0.0 control (`3.6`, already
+  present in `data/cis-mappings`); the other five - the KMS/Secrets-Manager/SSM policy checks and the
+  two remaining rotation/type checks - cite nothing, because CIS AWS Foundations Benchmark v3.0.0 has no
+  section for a KMS key policy, Secrets Manager, or SSM Parameter Store at all. `checks.rules`' own new
+  header block states this rather than leaving a reader to wonder whether it was overlooked, and
+  `tests/suites/cloud-kms.sh` C6 / `cloud-secretsmanager.sh` C5 / `cloud-ssm.sh` C5 each assert the
+  ABSENCE of a `cis` value on their non-rotation check, not only the presence of one where it belongs.
 
 **Step 8 (`--paranoid` / `tools/run-in-netns.sh`) is half landed: NETNS-01 has shipped; PARANOID-01 has
 not.**

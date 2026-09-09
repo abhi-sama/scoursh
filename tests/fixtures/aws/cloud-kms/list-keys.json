@@ -1,0 +1,24 @@
+{
+    "Keys": [
+        {
+            "KeyId": "1111aaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            "KeyArn": "arn:aws:kms:eu-west-2:123456789012:key/1111aaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        },
+        {
+            "KeyId": "2222bbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            "KeyArn": "arn:aws:kms:eu-west-2:123456789012:key/2222bbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+        },
+        {
+            "KeyId": "3333cccc-cccc-cccc-cccc-cccccccccccc",
+            "KeyArn": "arn:aws:kms:eu-west-2:123456789012:key/3333cccc-cccc-cccc-cccc-cccccccccccc"
+        },
+        {
+            "KeyId": "4444dddd-dddd-dddd-dddd-dddddddddddd",
+            "KeyArn": "arn:aws:kms:eu-west-2:123456789012:key/4444dddd-dddd-dddd-dddd-dddddddddddd"
+        },
+        {
+            "KeyId": "5555eeee-eeee-eeee-eeee-eeeeeeeeeeee",
+            "KeyArn": "arn:aws:kms:eu-west-2:123456789012:key/5555eeee-eeee-eeee-eeee-eeeeeeeeeeee"
+        }
+    ]
+}

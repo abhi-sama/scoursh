@@ -1,0 +1,5 @@
+{
+    "ARN": "arn:aws:secretsmanager:eu-west-2:123456789012:secret:bad-secret-GhIjKl",
+    "Name": "bad-secret",
+    "ResourcePolicy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"secretsmanager:GetSecretValue\",\"Resource\":\"*\"}]}"
+}

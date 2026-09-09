@@ -1,0 +1,4 @@
+{
+    "ARN": "arn:aws:secretsmanager:eu-west-2:123456789012:secret:good-secret-AbCdEf",
+    "Name": "good-secret"
+}
