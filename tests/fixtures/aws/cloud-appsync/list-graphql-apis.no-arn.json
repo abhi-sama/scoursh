@@ -1,0 +1,9 @@
+{
+    "graphqlApis": [
+        {
+            "name": "scoursh-fixture-no-arn-api",
+            "apiId": "abcdefnoarn05",
+            "authenticationType": "API_KEY"
+        }
+    ]
+}
