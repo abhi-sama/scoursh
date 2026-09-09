@@ -3,12 +3,13 @@
 *Also available as a standalone page: [`checks.html`](checks.html).*
 
 The full built-in check catalogue on the `dev` branch, grouped by scan surface and by what each check
-needs to run. Roughly 290 checks ship in the box.
+needs to run. Roughly 300 checks ship in the box.
 
-> **Almost everything runs with no external data.** Point scoursh at source code (`--path`) or a live
-> app (`--target`) and every SAST, IaC, and DAST check below works immediately - no database, no
-> downloads, no network. **Dependency-CVE scanning (SCA)** and one banner check need the vendored
-> advisory database; **Cloud/AWS (CSPM)** needs resolvable AWS credentials.
+> **Almost everything runs with no external data.** Point scoursh at source code (`--path`), a live
+> app (`--target`), or an authorized listener set (`--target`, network) and every SAST, IaC, DAST, and
+> network check below works immediately - no database, no downloads, no network of scoursh's own
+> choosing. **Dependency-CVE scanning (SCA)** and two banner-version checks (one DAST, one network)
+> need the vendored advisory database; **Cloud/AWS (CSPM)** needs resolvable AWS credentials.
 
 | | |
 |---|---|
@@ -16,6 +17,7 @@ needs to run. Roughly 290 checks ship in the box.
 | **36** | IaC checks |
 | **46** | DAST passive |
 | **34** | DAST active |
+| **15** | Network/host checks |
 | **6** | SCA ecosystems |
 | **112** | Cloud/AWS checks (30 services) |
 
@@ -172,6 +174,34 @@ Sends real attack payloads to a running app. Needs a reachable target plus `--in
 | `DAST-HOSTHDR-REFLECTED_BODY / LOCATION-01` | Host-header reflection into body or redirect authority |
 | `DAST-DISC-SENSITIVE / BACKUP / CONTENT / DIRLIST-01` | Exposed sensitive/backup files, content discovery, directory listing |
 | `DAST-METHOD-TRACE / WRITE / CONNECT-01` | Dangerous HTTP methods advertised (TRACE, PUT/DELETE/PATCH, CONNECT) |
+
+## Network / host 🟢 no external data
+
+Service-posture scanning over an operator-declared listener set. Runs on
+`./scan.sh network --target NAME`, where `NAME` names a `config/scope.conf` target whose `base-url`
+and `extra-host` entries declare the host:port tuples authorized for this scan. This is deliberately
+**not** a port scanner or host-discovery tool: a port the operator did not declare is never probed,
+gated by the identical `lib/http.sh` scope chokepoint and ceilings `dast` uses. OS patch-level
+inference and UDP are stated v1 exclusions, not oversights - see `AGENTS.md`'s "Network module (NET)"
+section for why.
+
+| Check | Catches |
+|---|---|
+| `NET-PORT-DECLARED_NOT_ANSWERING-01` | A declared listener did not accept a TCP connection during this run |
+| `NET-PORT-UNEXPECTED_LISTENER-01` | A declared listener answers on a port an operator-supplied `config/posture.conf` expectation names as should-be-closed |
+| `NET-SVC-BANNER_DISCLOSURE-01` | Service greeting discloses a product name and/or version unprompted on connect (zero bytes sent) |
+| `NET-SVC-OUTDATED_COMPONENT-01` 🔵 advisory DB | Banner-disclosed version matched exactly against the vendored known-vulnerable list |
+| `NET-TLS-*` (6 checks) | TLS on a non-`base-url` listener: weak protocol/cipher, expired/expiring/self-signed certificate, unexpected wildcard cert |
+| `NET-SVC-HTTP_SERVER_DISCLOSURE-01` / `HTTP_VERSION_DISCLOSURE-01` | Server/framework or component version disclosed by an HTTP response on a non-standard port |
+| `NET-SVC-HTTP_OUTDATED_COMPONENT-01` 🔵 advisory DB | HTTP-disclosed component version on a non-standard port matched exactly against the vendored known-vulnerable list |
+| `NET-TRANSPORT-PLAINTEXT_SERVICE-01` | Service answers in the clear on a port whose protocol has a standard encrypted variant |
+| `NET-TRANSPORT-STARTTLS_NOT_REQUIRED-01` | Listener advertises STARTTLS but does not appear to require it |
+
+Both `*OUTDATED_COMPONENT*` checks are `confidence: medium`, never `high`: the version came from what
+the service volunteered on connect, and a distribution that backports a security fix keeps the
+upstream version string unchanged, so an exact-match lookup can name an already-patched host as
+vulnerable. This is a table lookup against `data/versions.db`'s `banner` namespace, never range
+arithmetic - the identical `DAST-BANNER-OUTDATED_COMPONENT-01` convention above, one port over.
 
 ## SCA — dependency CVEs 🔵 advisory DB
 
