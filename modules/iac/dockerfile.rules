@@ -72,6 +72,10 @@ context-deny: ^\s*USER\s+
 context-window: 50
 tags: static
 tags: compliance
+fix-kind: insert-near
+fix-find: FROM
+fix-snippet: RUN addgroup -S app && adduser -S app -G app
+  USER app
 remediation: Create an unprivileged account (`RUN addgroup -S app && adduser -S app -G app` or
   equivalent for the base distro) and add a `USER app` instruction before the container's default
   entrypoint/cmd runs, so the process does not run as root by default. An attacker who achieves code

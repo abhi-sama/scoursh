@@ -90,7 +90,7 @@ scan.sh <command> [options]
 | `--contact VALUE` | one printable, space-free token | from `config/scanner.conf` (`contact`), else none | live |
 | `--user-agent-suffix TOKEN` | one printable, space-free token | none | live |
 | `--jobs N` | positive integer | from `config/scanner.conf` (`4`) | live - real worker parallelism for `sast`/`sca`/`iac`, and DAST's in-flight-connection ceiling - see [`--jobs N`](#--jobs-n-and-the-jobs-config-key) |
-| `--format` | CSV of `json,sarif,html,md,audit` | `json,sarif,html,md` | live; `sarif` writes a complete, schema-validated document (see [SARIF output](#sarif-output)); `audit` is a fifth, opt-in value that writes `report-audit.html` alongside `report.html` rather than in place of it - see [`--format` and the `formats` config key](#--format-and-the-formats-config-key) |
+| `--format` | CSV of `json,sarif,html,md,audit,agent` | `json,sarif,html,md` | live; `sarif` writes a complete, schema-validated document (see [SARIF output](#sarif-output)); `audit` and `agent` are opt-in values that never replace another format - `audit` writes `report-audit.html` alongside `report.html`, `agent` writes `agent-fix.json` (docs/AGENT-FORMAT.md) - see [`--format` and the `formats` config key](#--format-and-the-formats-config-key) |
 | `--fail-on` | `critical\|high\|medium\|low\|info\|none` | from `config/scanner.conf` (`none`) | live |
 | `--fail-on-new` | boolean; **requires `--fail-on`**, usage error otherwise | off | live - gates on `status == new` only when this run's diff against the prior one is usable (see [Persistent run state, diff, and baseline](#persistent-run-state-diff-and-baseline)) |
 | `--min-confidence` | `high\|medium\|low` | from `config/scanner.conf` (`low`) | live |
@@ -370,6 +370,17 @@ run's own recorded reason), or it is unaccounted for (registered, not run, no re
 is never folded into "clean") - and every not-run check is listed individually with its reason rather
 than only a count. `scan.sh <cmd> --format json,html,audit` writes `report.html` and
 `report-audit.html` side by side.
+
+`--format agent` (or `agent` added to a multi-value `--format`/`formats` list) writes
+`reports/<run>/agent-fix.json`, a compact JSON findings file built for a downstream AI fixing agent
+rather than a human reader. It is an opt-in sixth value, **never** in the default list and never
+replacing any other format. Unlike every other emitter it does not carry every field - it drops what a
+fixing agent never reads (`fingerprint`, `cvss`, timestamps, `contributors`, ...) and, where scoursh can
+derive one, includes a deterministic fix scaffold (an SCA dependency-version bump, an IaC config
+one-liner, or a cloud remediation command **labeled as a suggestion the tool never runs itself**).
+The full field-by-field contract - what is promoted into the shared per-check catalogue, the four
+`fixability` states, and the honesty header that keeps "did not check" from ever reading as "clean" -
+is [`docs/AGENT-FORMAT.md`](AGENT-FORMAT.md).
 
 ## SARIF output
 
@@ -951,7 +962,7 @@ file yet; those are called out in the Notes column.
 | `fail-on` | severity name or `none` | `none` | live | |
 | `min-confidence` | `high\|medium\|low` | `low` | live | |
 | `redact-secrets` | `true`/`false` | `true` | live | Governs whether a matched credential is written in the clear. See ["What `redact-secrets` covers"](#what-redact-secrets-covers). |
-| `formats` | repeatable, `json\|sarif\|html\|md\|audit` | `json,sarif,html,md` | live | Resolved through the same chain as `--format`; `audit` is opt-in and never in the default. See [`--format`](#--format-and-the-formats-config-key). |
+| `formats` | repeatable, `json\|sarif\|html\|md\|audit\|agent` | `json,sarif,html,md` | live | Resolved through the same chain as `--format`; `audit` and `agent` are opt-in and never in the default. See [`--format`](#--format-and-the-formats-config-key). |
 | `max-matches-per-file` | positive integer | `200` | live | Read by both the SAST and IaC scanners. |
 | `evidence-max-bytes` | positive integer | `512` | inert | Truncation is real, but reads `SCOURSH_EVIDENCE_MAX_BYTES`, not this file. |
 | `scratch-dir` | absolute path | `${TMPDIR:-/tmp}` | inert | The scratch directory follows `SCOURSH_SCRATCH_BASE`, else `TMPDIR`. |

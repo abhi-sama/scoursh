@@ -177,6 +177,7 @@ tags: quick
 tags: compliance
 coverage-scope: account-region
 cis: 2.1.4
+fix-cli: aws s3api put-public-access-block --bucket %RESOURCE% --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 remediation: Turn on all four Block Public Access settings for this bucket -
   BlockPublicAcls, IgnorePublicAcls, BlockPublicPolicy and
   RestrictPublicBuckets - and set the same four at the account level, which
@@ -200,6 +201,7 @@ owasp: A02:2021
 tags: config-read
 tags: quick
 coverage-scope: account-region
+fix-cli: aws s3api put-bucket-encryption --bucket %RESOURCE% --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
 remediation: Set a default encryption configuration on the bucket so every
   object is encrypted at rest whether or not the uploading client asks for it.
   SSE-S3 (AES256) is the zero-cost baseline; SSE-KMS with a customer-managed
@@ -222,6 +224,7 @@ owasp: A05:2021
 tags: config-read
 tags: quick
 coverage-scope: account-region
+fix-cli: aws s3api put-bucket-versioning --bucket %RESOURCE% --versioning-configuration Status=Enabled
 remediation: Enable versioning on the bucket. Without it an overwrite or a
   delete is unrecoverable, which makes accidental deletion, a compromised
   credential and ransomware-style encryption of the bucket's contents all

@@ -490,11 +490,15 @@ Global:
   --jobs N                  (worker parallelism; on a network module it is
                               also the ceiling on simultaneous connections and
                               is held to 4 without --i-own-target)
-  --format json,sarif,html,md,audit
-                              (audit is opt-in: it is never in the default
-                              list, and requesting it never drops any other
-                              format - report-audit.html is written alongside
-                              report.html, never in place of it)
+  --format json,sarif,html,md,audit,agent
+                              (audit and agent are opt-in: neither is ever in
+                              the default list, and requesting one never drops
+                              any other format. audit writes report-audit.html
+                              alongside report.html, never in place of it.
+                              agent writes reports/<run>/agent-fix.json, a
+                              compact, schema-projected findings file for a
+                              downstream fixing agent - see
+                              docs/AGENT-FORMAT.md)
   --fail-on SEVERITY        (critical|high|medium|low|info|none)
   --fail-on-new             (requires --fail-on; usage error otherwise)
   --min-confidence LEVEL    (high|medium|low; default low)
@@ -738,7 +742,7 @@ scan_validate_flag_value() {
     # checks the value is a well-formed non-negative decimal, not that it is
     # runnable.
     requests-per-second) [[ $val =~ ^(0|[1-9][0-9]*)(\.[0-9]+)?$ ]] ;;
-    format) _scan_validate_csv "$val" '^(json|sarif|html|md|audit)$' ;;
+    format) _scan_validate_csv "$val" '^(json|sarif|html|md|audit|agent)$' ;;
     lang) _scan_validate_csv "$val" '^(py|js|go|java)$' ;;
     regions) [[ $val == all ]] || _scan_validate_csv "$val" '^[a-zA-Z0-9-]+$' ;;
     assume-role) [[ $val == arn:*:role/* ]] ;;

@@ -5955,7 +5955,7 @@ shipped here before.
 | `modules/sast/rules/ldap.rules` | landed | 3 | `tests/suites/sast.sh` |
 | `modules/sast/rules/nosql.rules` | landed | 4 | `tests/suites/sast.sh` |
 | `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/report.sh` |
-| `modules/sast/rules/secrets.rules` | landed | 7 | `tests/suites/records.sh` |
+| `modules/sast/rules/secrets.rules` | landed | 7 | `tests/suites/agent-format.sh` |
 | `modules/sast/history.sh` | landed | - | `tests/suites/sast-history.sh` |
 
 Landed 10 of 10.  Outstanding: none.
@@ -5979,10 +5979,10 @@ Landed 6 of 6.  Outstanding: none.
 | --- | --- | --- | --- |
 | `modules/iac/cloudformation.rules` | landed | 8 | `tests/suites/iac.sh` |
 | `modules/iac/docker-compose.rules` | landed | 4 | `tests/suites/iac.sh` |
-| `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/iac.sh` |
+| `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/agent-format.sh` |
 | `modules/iac/helm.rules` | landed | 3 | `tests/suites/iac.sh` |
-| `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/iac.sh` |
-| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac-trivy.sh` |
+| `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/agent-format.sh` |
+| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/agent-format.sh` |
 
 Landed 6 of 6.  Outstanding: none.
 

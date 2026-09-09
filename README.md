@@ -214,17 +214,22 @@ on disk; absent, it is a silent no-op, never an error. Nothing is fetched at sca
 
 ## Output & the audit report
 
-`--format` takes a CSV of `json,sarif,html,md,audit` (default `json,sarif,html,md`):
+`--format` takes a CSV of `json,sarif,html,md,audit,agent` (default `json,sarif,html,md`):
 
 - `json` -> `findings.json`; `sarif` -> a complete, schema-validated `report.sarif` that drops into
   GitHub code scanning or any SARIF-aware viewer (it deliberately omits `security-severity` - see
   [`docs/USAGE.md`](docs/USAGE.md#sarif-output) for why); `html`/`md` -> `report.html`/`report.md`.
 - `findings.jsonl` and `run.json` are written on **every** run regardless of `--format` - they are
-  mandatory per-run records, not one of the four selectable formats.
-- `audit` is a fifth, **opt-in** value: it writes `report-audit.html` **alongside** `report.html`,
+  mandatory per-run records, not one of the six selectable formats.
+- `audit` is an **opt-in** value: it writes `report-audit.html` **alongside** `report.html`,
   never in place of it. Where the ordinary report lists findings, the audit report lists every
   registered check and its fate - found / ran clean / skipped (with a reason) / not covered - so "we
   looked and found nothing" and "we never looked" are never the same line.
+- `agent` -> `agent-fix.json`, also **opt-in**: a compact, schema-projected findings file for a
+  downstream AI fixing agent, with a deterministic fix scaffold where scoursh can derive one (an SCA
+  version bump, an IaC one-line config fix, or a cloud CLI command explicitly labeled
+  suggested/human-review/never-auto-run) and a coverage header so "did not check" can never read as
+  "clean". Contract: [`docs/AGENT-FORMAT.md`](docs/AGENT-FORMAT.md).
 
 Full reference: [`docs/USAGE.md`](docs/USAGE.md#--format-and-the-formats-config-key).
 
@@ -347,7 +352,7 @@ shipped here before.
 | `modules/sast/rules/ldap.rules` | landed | 3 | `tests/suites/sast.sh` |
 | `modules/sast/rules/nosql.rules` | landed | 4 | `tests/suites/sast.sh` |
 | `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/report.sh` |
-| `modules/sast/rules/secrets.rules` | landed | 7 | `tests/suites/records.sh` |
+| `modules/sast/rules/secrets.rules` | landed | 7 | `tests/suites/agent-format.sh` |
 | `modules/sast/history.sh` | landed | - | `tests/suites/sast-history.sh` |
 
 Landed 10 of 10.  Outstanding: none.
@@ -371,10 +376,10 @@ Landed 6 of 6.  Outstanding: none.
 | --- | --- | --- | --- |
 | `modules/iac/cloudformation.rules` | landed | 8 | `tests/suites/iac.sh` |
 | `modules/iac/docker-compose.rules` | landed | 4 | `tests/suites/iac.sh` |
-| `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/iac.sh` |
+| `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/agent-format.sh` |
 | `modules/iac/helm.rules` | landed | 3 | `tests/suites/iac.sh` |
-| `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/iac.sh` |
-| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac-trivy.sh` |
+| `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/agent-format.sh` |
+| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/agent-format.sh` |
 
 Landed 6 of 6.  Outstanding: none.
 

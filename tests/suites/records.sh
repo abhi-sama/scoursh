@@ -305,6 +305,17 @@ assert_contains "$(val v5.rules 'id: SAST-PY-EVAL-01\ntitle: t\nseverity: high\n
   'E023 a missing required key'
 assert_contains "$(val v6.rules "${base}severity-floor: critical\nseverity-ceiling: low\n" pattern-rule)" E029 \
   'E029 floor above ceiling'
+# §9.1.4's fix scaffold (docs/AGENT-FORMAT.md; --format agent)
+assert_contains "$(val v6a.rules "${base}fix-replace: y\n" pattern-rule)" E082 \
+  'E082 fix-replace present without fix-find'
+assert_eq '' "$(val v6b.rules "${base}fix-find: x\nfix-replace: y\n" pattern-rule)" \
+  'fix-find plus fix-replace together is legal'
+assert_eq '' "$(val v6c.rules "${base}fix-find: x\nfix-snippet: y\nfix-kind: insert-near\n" pattern-rule)" \
+  'fix-find plus fix-snippet with no fix-replace is legal (insert-near carries no fix-replace)'
+assert_contains "$(val v6d.rules "${base}fix-kind: overwrite\n" pattern-rule)" E024 \
+  'E024 fix-kind outside its enum'
+assert_eq '' "$(val v6e.rules "${base}fix-kind: replace\n" pattern-rule)" \
+  'fix-kind: replace is legal on its own (fix-find/fix-replace are independently optional at the schema layer)'
 assert_contains "$(val v7.rules "${base}context-window: 3\n" pattern-rule)" E031 \
   'E031 context-window with no require and no deny'
 assert_contains "$(val v8.rules "${base}context-deny: y\ncontext-window: 99\n" pattern-rule)" E032 \

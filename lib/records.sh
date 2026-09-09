@@ -51,7 +51,9 @@ _schema_def() {
         'context-window:opt:single:sl' 'remediation:req:single:ml' \
         'references:opt:repeatable:sl' 'cis:opt:repeatable:sl' \
         'tags:opt:repeatable:sl' 'severity-floor:opt:single:sl' \
-        'severity-ceiling:opt:single:sl' 'format-version:opt:single:sl'
+        'severity-ceiling:opt:single:sl' 'format-version:opt:single:sl' \
+        'fix-kind:opt:single:sl' 'fix-find:opt:single:sl' \
+        'fix-replace:opt:single:sl' 'fix-snippet:opt:single:ml'
       ;;
     derived)
       printf '%s\n' \
@@ -84,7 +86,8 @@ _schema_def() {
         'requires-cmd:opt:repeatable:sl' 'requires-identities:opt:single:sl' \
         'remediation:req:single:ml' 'references:opt:repeatable:sl' \
         'cis:opt:repeatable:sl' 'severity-floor:opt:single:sl' \
-        'severity-ceiling:opt:single:sl' 'format-version:opt:single:sl'
+        'severity-ceiling:opt:single:sl' 'format-version:opt:single:sl' \
+        'fix-cli:opt:single:sl'
       ;;
     scanner-config)
       printf '%s\n' \
@@ -846,6 +849,12 @@ _records_validate_record() {
   _records_check_enum "$set" "$i" "$path" "$line" "$id" correlate-on none target account account-region file
   _records_check_enum "$set" "$i" "$path" "$line" "$id" mode \
     bearer api-key form oauth2-password oauth2-client srp external
+  # `dep-upgrade` is legal here for schema-consistency with the value
+  # modules/sca/engine.sh mints directly onto a finding (SCA ships no
+  # `*.rules` at all, so no pattern-rule record will ever actually carry it) -
+  # docs/AGENT-FORMAT.md is the normative list of all four `fix_kind` values.
+  _records_check_enum "$set" "$i" "$path" "$line" "$id" fix-kind \
+    replace replace-tpl insert-near dep-upgrade
   case $schema in
     auth-identity)
       _records_check_auth_mode "$set" "$i" "$path" "$line" "$id"
@@ -883,6 +892,15 @@ _records_validate_record() {
     ce=$(severity_rank "$(records_field "$set" "$i" severity-ceiling)")
     (( fl <= ce )) || records_diag "$path" "$line" 1 E029 "$id" \
       'severity-floor is above severity-ceiling'
+  fi
+
+  # E082 `fix-replace` requires `fix-find` - a replacement with nothing to
+  # anchor it to is not a patch, it is a value with no location
+  # (docs/AGENT-FORMAT.md's fix scaffold; `fix-find` alone is legal on its
+  # own, e.g. paired with `fix-snippet` for an `insert-near` anchor).
+  if records_has "$set" "$i" fix-replace && ! records_has "$set" "$i" fix-find; then
+    records_diag "$path" "$line" 1 E082 "$id" \
+      "fix-replace present without fix-find"
   fi
 
   # E045 format-version

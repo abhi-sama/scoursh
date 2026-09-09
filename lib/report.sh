@@ -4166,11 +4166,472 @@ report_sarif() {
 }
 
 # ---------------------------------------------------------------------------
+# 5b. `--format agent` - a compact, schema-projected findings file for a
+#     downstream AI fixing agent (docs/AGENT-FORMAT.md is the normative
+#     contract; this is the implementation).
+# ---------------------------------------------------------------------------
+# Captain-decided shape (docs/AGENT-FORMAT.md §1): compact JSON, written to
+# `reports/<run>/agent-fix.json`, opt-in and never in the default format
+# list.  The token saving is the SCHEMA PROJECTION - dropping every field a
+# fixing agent never reads (fingerprint, cvss, first_seen/last_seen,
+# rule_digest, contributors/derived_into/related, endpoint_hosts, cell,
+# logical.kind, exposure/auth/sensitive_data, suppressed_by) and promoting
+# whatever is byte-identical across a check's own findings into a shared
+# `checks{}` catalogue - never a bespoke encoding.  A ran-clean check is
+# EXCLUDED from `checks{}` (it never appears in `findings[]` either, so there
+# is nothing to catalogue); the `run` header's `checks_run`/`coverage_gap`/
+# `coverage_reduction` carry that fact instead, verbatim, so "did not check"
+# can never read as "clean" (docs/DESIGN.md §15).
+#
+# Two passes over the SAME findings.fields `_md_findings`/`_finding_json`
+# already read, exactly as docs/AGENT-FORMAT.md's own feasibility prototype
+# proved: pass 1 (`_agent_pass1`) decides which per-check fields are
+# byte-identical across every one of that check's LIVE findings; pass 2
+# (`_agent_print_findings`) emits.  Needs no check registry access - which
+# matters because SCA ships no `*.rules` at all and an adapter's check id is
+# minted at runtime, so a registry-driven catalogue would have a hole exactly
+# there.
+declare -gA _AGENT_SEEN=() _AGENT_TITLE=() _AGENT_REM=() _AGENT_SEV=() \
+  _AGENT_CWE=() _AGENT_OWASP=() _AGENT_REFS=() _AGENT_CIS=() _AGENT_VARY=()
+_AGENT_BUF=''
+
+_agent_pass1() {
+  local rundir=$1 line c
+  _AGENT_SEEN=(); _AGENT_TITLE=(); _AGENT_REM=(); _AGENT_SEV=()
+  _AGENT_CWE=(); _AGENT_OWASP=(); _AGENT_REFS=(); _AGENT_CIS=(); _AGENT_VARY=()
+  [[ -s $rundir/findings.fields ]] || return 0
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    finding_decode "$line"
+    [[ ${_DF[suppressed]:-false} == true ]] && continue
+    c=${_DF[check_id]:-}
+    [[ -n $c ]] || continue
+    if [[ -z ${_AGENT_SEEN[$c]:-} ]]; then
+      _AGENT_SEEN[$c]=1
+      _AGENT_TITLE[$c]=${_DF[title]:-}
+      _AGENT_REM[$c]=${_DF[remediation]:-}
+      _AGENT_SEV[$c]=${_DF[severity]:-}
+      _AGENT_CWE[$c]=${_DF[cwe]:-}
+      _AGENT_OWASP[$c]=${_DF[owasp]:-}
+      _AGENT_REFS[$c]=${_DF[references]:-}
+      _AGENT_CIS[$c]=${_DF[cis]:-}
+    else
+      [[ ${_AGENT_TITLE[$c]} == "${_DF[title]:-}" ]] || _AGENT_VARY[$c.title]=1
+      [[ ${_AGENT_REM[$c]} == "${_DF[remediation]:-}" ]] || _AGENT_VARY[$c.rem]=1
+      [[ ${_AGENT_SEV[$c]} == "${_DF[severity]:-}" ]] || _AGENT_VARY[$c.sev]=1
+      [[ ${_AGENT_CWE[$c]} == "${_DF[cwe]:-}" ]] || _AGENT_VARY[$c.cwe]=1
+      [[ ${_AGENT_OWASP[$c]} == "${_DF[owasp]:-}" ]] || _AGENT_VARY[$c.owasp]=1
+      [[ ${_AGENT_REFS[$c]} == "${_DF[references]:-}" ]] || _AGENT_VARY[$c.refs]=1
+      [[ ${_AGENT_CIS[$c]} == "${_DF[cis]:-}" ]] || _AGENT_VARY[$c.cis]=1
+    fi
+  done <"$rundir/findings.fields"
+}
+
+# _agent_obj_begin / _agent_kv_str / _agent_kv_list / _agent_kv_raw - a small
+# sparse-object accumulator.  Every one of the three setters OMITS the key
+# entirely on an empty value (docs/AGENT-FORMAT.md §2.1: "empty values are
+# omitted, not emitted as ""/[]"), which is what makes a leading-comma-free
+# accumulator simpler here than the printf-with-a-`first`-flag idiom the rest
+# of this file uses: a dozen conditionally-present fields would otherwise need
+# a dozen independent `first` flags.  Never used for the `run` header, which
+# has the OPPOSITE contract (every field always present, `[]` for an empty
+# array) - that header is built with plain printf, reusing `_meta_array`/
+# `_meta_array_unique` directly, exactly as report_run_json does.
+_agent_obj_begin() { _AGENT_BUF=''; }
+
+_agent_kv_str() {
+  local k=$1 v=$2
+  [[ -n $v ]] || return 0
+  [[ -z $_AGENT_BUF ]] || _AGENT_BUF+=','
+  _AGENT_BUF+="$(json_string "$k"):$(json_string "$v")"
+}
+
+# KEY VALUE, where VALUE is LF-joined (finding_add's own join character for a
+# repeatable field, e.g. `references`/`cis`) or comma-joined (SCA's own
+# `fix_fixed_versions`, translated to LF by the one caller that needs it).
+_agent_kv_list() {
+  local k=$1 v=$2 arr='' first=1 line
+  [[ -n $v ]] || return 0
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    (( first )) || arr+=','
+    first=0
+    arr+="$(json_string "$line")"
+  done <<<"$v"
+  [[ -n $arr ]] || return 0
+  [[ -z $_AGENT_BUF ]] || _AGENT_BUF+=','
+  _AGENT_BUF+="$(json_string "$k"):[$arr]"
+}
+
+# KEY RAW - RAW is already-valid JSON (a number, a bool, a nested object).
+_agent_kv_raw() {
+  local k=$1 v=$2
+  [[ -n $v ]] || return 0
+  [[ -z $_AGENT_BUF ]] || _AGENT_BUF+=','
+  _AGENT_BUF+="$(json_string "$k"):$v"
+}
+
+# `SCOURSH_SCA_SEMVER_SOURCED` idiom (modules/sca/semver.sh's own top-of-file
+# guard): lazily sources the ONE comparator this codebase has proven
+# (docs/FOUNDATION.md tension 25), so a caller that reaches report_agent
+# without modules/sca/engine.sh ever having been sourced in this process -
+# `scan.sh report --from DIR`, or a test that sources lib/report.sh alone -
+# still gets a working `semver_cmp_v` rather than a bare "command not found".
+_agent_sca_semver_ensure() {
+  [[ -n ${SCOURSH_SCA_SEMVER_SOURCED:-} ]] && return 0
+  # shellcheck source=modules/sca/semver.sh
+  source "$SCOURSH_INSTALL_ROOT/modules/sca/semver.sh"
+}
+
+# _agent_sca_fix_to ECOSYSTEM INSTALLED FIXED_CSV - the smallest published
+# fixed version >= INSTALLED (docs/AGENT-FORMAT.md §3: `django@1.11` +
+# `2.1.10,2.2.3,1.11.22` -> `1.11.22`, the same branch, not `2.1.10`).
+#
+# `semver_cmp_v` is proven ONLY for npm (modules/sca/semver.sh's own header:
+# "never called from any of [pypi/maven/Go/RubyGems/composer]'s code paths" -
+# a 1.66% divergence was measured against real PEP 440).  Reusing it for a
+# non-npm ecosystem here would be exactly the kind of invented-precision
+# tension 25 forbids, so a non-npm ecosystem falls back to the advisory's
+# OWN first-listed fixed version - a real published fact, never a guess at an
+# ordering scoursh cannot verify - and `fix_all` always carries every option
+# so the fixer can choose a different one.
+_agent_sca_fix_to() {
+  local eco=$1 installed=$2 csv=$3 best='' cand
+  if [[ $eco == npm ]]; then
+    _agent_sca_semver_ensure
+    local IFS=,
+    # shellcheck disable=SC2206
+    local -a cands=($csv)
+    IFS=$' \t\n'
+    for cand in "${cands[@]+"${cands[@]}"}"; do
+      [[ -n $cand ]] || continue
+      semver_cmp_v "$cand" "$installed"
+      (( _SV_CMP < 0 )) && continue
+      if [[ -z $best ]]; then
+        best=$cand
+      else
+        semver_cmp_v "$cand" "$best"
+        (( _SV_CMP < 0 )) && best=$cand
+      fi
+    done
+    if [[ -n $best ]]; then
+      printf '%s' "$best"
+      return 0
+    fi
+  fi
+  printf '%s' "${csv%%,*}"
+}
+
+# _agent_sca_fix_cmd ECOSYSTEM PACKAGE TO - the frozen per-ecosystem template
+# (docs/AGENT-FORMAT.md §3).  Empty TO (no fix_to could be derived - never
+# reached in practice, since a non-empty FIXED_CSV always yields at least the
+# first-listed fallback) yields an empty command rather than a broken one.
+_agent_sca_fix_cmd() {
+  local eco=$1 pkg=$2 to=$3
+  [[ -n $to ]] || { printf ''; return 0; }
+  case $eco in
+    npm) printf 'npm install %s@%s' "$pkg" "$to" ;;
+    pypi) printf "pip install '%s==%s'" "$pkg" "$to" ;;
+    RubyGems) printf 'bundle update %s --conservative' "$pkg" ;;
+    composer) printf 'composer require %s:%s' "$pkg" "$to" ;;
+    maven) printf '<version>%s</version>' "$to" ;;
+    Go) printf 'go get %s@%s && go mod tidy' "$pkg" "$to" ;;
+    *) printf '' ;;
+  esac
+}
+
+# A cloud `fix-cli` template's `%RESOURCE%` placeholder is filled from the
+# finding's own `loc_resource_key`, which every modules/cloud/aws/live/*.sh
+# emitter sets to the resource's full ARN (s3_engine.sh:425 and its
+# siblings). Stripping to the trailing colon-segment is correct for the ONLY
+# shape a fix-cli template references today - an S3 bucket ARN
+# (`arn:aws:s3:::name`), which carries no embedded `/` - and is NOT a general
+# ARN-to-resource-name parser: a future fix-cli on a resource type whose bare
+# name is not simply the ARN's trailing segment (an IAM role `role/name`, for
+# example) must not reuse this unchanged.
+_agent_cloud_resource_of() { printf '%s' "${1##*:}"; }
+
+# The fix scaffold for the CURRENTLY-DECODED finding (_DF).  Sets globals
+# rather than printing (the occurrence_next/worker_id_set idiom, AGENTS.md
+# "Things measured on this codebase"): a side-effecting function called as
+# `$(f)` runs in a subshell and its writes are discarded.
+_AGENT_FIXABILITY=manual
+_AGENT_FIX_KIND=''
+_AGENT_FIX_FIND=''
+_AGENT_FIX_REPLACE=''
+_AGENT_FIX_SNIPPET=''
+_AGENT_FIX_TO=''
+_AGENT_FIX_ALL=''
+_AGENT_FIX_CMD=''
+_AGENT_FIX_CLI=''
+_AGENT_FIX_WRITES=''
+_agent_compute_fix() {
+  _AGENT_FIXABILITY=manual
+  _AGENT_FIX_KIND=''; _AGENT_FIX_FIND=''; _AGENT_FIX_REPLACE=''; _AGENT_FIX_SNIPPET=''
+  _AGENT_FIX_TO=''; _AGENT_FIX_ALL=''; _AGENT_FIX_CMD=''; _AGENT_FIX_CLI=''; _AGENT_FIX_WRITES=''
+
+  local mod=${_DF[module]:-}
+
+  # SCA: fully derivable offline from fix_fixed_versions/dep_type, which
+  # modules/sca/{engine,go_engine}.sh set at emit time from the SAME
+  # data/advisories.db row the finding already matched - never re-parsed
+  # from `evidence` (docs/AGENT-FORMAT.md's own trap warning applies equally
+  # here, even though SCA's evidence is not redacted: the row is the source
+  # of truth, and evidence is free text for a human, not a machine field).
+  if [[ $mod == sca ]]; then
+    local fixed=${_DF[fix_fixed_versions]:-}
+    if [[ -z $fixed ]]; then
+      _AGENT_FIXABILITY=blocked
+      return 0
+    fi
+    local dep=${_DF[dep_type]:-unknown}
+    if [[ $dep == direct ]]; then _AGENT_FIXABILITY=auto; else _AGENT_FIXABILITY=assisted; fi
+    _AGENT_FIX_KIND='dep-upgrade'
+    _AGENT_FIX_ALL=${fixed//,/$'\n'}
+    _AGENT_FIX_TO=$(_agent_sca_fix_to "${_DF[loc_ecosystem]:-}" "${_DF[loc_version]:-}" "$fixed")
+    _AGENT_FIX_CMD=$(_agent_sca_fix_cmd "${_DF[loc_ecosystem]:-}" "${_DF[loc_package]:-}" "$_AGENT_FIX_TO")
+    return 0
+  fi
+
+  # CLOUD: a rule-authored `fix-cli` (§9.5 script-check schema) is a WRITE,
+  # so it is ALWAYS `assisted` and ALWAYS carries `fix_writes: true` - never
+  # `auto`, whatever the check - because scoursh is read-only end to end and
+  # this is a suggestion for a human to review, never a command scoursh will
+  # run itself (captain decision).
+  if [[ $mod == cloud && -n ${_DF[fix_cli]:-} ]]; then
+    _AGENT_FIXABILITY=assisted
+    _AGENT_FIX_KIND=cloud-cli
+    _AGENT_FIX_CLI=${_DF[fix_cli]//%RESOURCE%/$(_agent_cloud_resource_of "${_DF[loc_resource_key]:-}")}
+    _AGENT_FIX_WRITES=true
+    return 0
+  fi
+
+  # SAST / IaC: a rule-authored fix-kind (§9.1.4).  Absent on most checks by
+  # design - docs/AGENT-FORMAT.md §3 catalogues which of the 91 SAST/IaC
+  # checks carry one and why the rest are `manual` - and a secret-family
+  # check can never reach this with one set at all
+  # (finding_from_record's own die() guard).
+  case ${_DF[fix_kind]:-} in
+    replace)
+      _AGENT_FIXABILITY=auto
+      _AGENT_FIX_KIND=replace
+      _AGENT_FIX_FIND=${_DF[fix_find]:-}
+      _AGENT_FIX_REPLACE=${_DF[fix_replace]:-}
+      ;;
+    replace-tpl)
+      _AGENT_FIXABILITY=assisted
+      _AGENT_FIX_KIND=replace-tpl
+      _AGENT_FIX_FIND=${_DF[fix_find]:-}
+      _AGENT_FIX_REPLACE=${_DF[fix_replace]:-}
+      ;;
+    insert-near)
+      _AGENT_FIXABILITY=assisted
+      _AGENT_FIX_KIND=insert-near
+      _AGENT_FIX_FIND=${_DF[fix_find]:-}
+      _AGENT_FIX_SNIPPET=${_DF[fix_snippet]:-}
+      ;;
+    *)
+      _AGENT_FIXABILITY=manual
+      ;;
+  esac
+}
+
+_agent_print_finding() {
+  local c=${_DF[check_id]:-}
+  _agent_compute_fix
+  _agent_obj_begin
+  _agent_kv_str id "${_DF[fingerprint]:0:12}"
+  _agent_kv_str check "$c"
+  _agent_kv_str mod "${_DF[module]:-}"
+  [[ -z ${_AGENT_VARY[$c.sev]:-} ]] || _agent_kv_str sev "${_DF[severity]:-}"
+  _agent_kv_str conf "${_DF[confidence]:-}"
+  _agent_kv_str status "${_DF[status]:-}"
+  _agent_kv_str loc "${_DF[logical_fqn]:-}"
+  _agent_kv_str advisory "${_DF[loc_advisory_id]:-}"
+  _agent_kv_str dep_type "${_DF[dep_type]:-}"
+  [[ -z ${_AGENT_VARY[$c.cwe]:-} ]] || _agent_kv_str cwe "${_DF[cwe]:-}"
+  [[ -z ${_AGENT_VARY[$c.owasp]:-} ]] || _agent_kv_str owasp "${_DF[owasp]:-}"
+  [[ -z ${_AGENT_VARY[$c.refs]:-} ]] || _agent_kv_list refs "${_DF[references]:-}"
+  [[ -z ${_AGENT_VARY[$c.cis]:-} ]] || _agent_kv_list cis "${_DF[cis]:-}"
+  [[ -z ${_AGENT_VARY[$c.title]:-} ]] || _agent_kv_str title "${_DF[title]:-}"
+  _agent_kv_str evidence "${_DF[evidence]:-}"
+  [[ -z ${_AGENT_VARY[$c.rem]:-} ]] || _agent_kv_str remediation "${_DF[remediation]:-}"
+  _agent_kv_str fixability "$_AGENT_FIXABILITY"
+  # `fix_*` is present ONLY for auto/assisted (docs/AGENT-FORMAT.md §3's
+  # table): a manual/blocked finding carries NO fix_* key at all, never an
+  # empty `fix_kind: ""`, which would read as "there is a fix".
+  if [[ $_AGENT_FIXABILITY == auto || $_AGENT_FIXABILITY == assisted ]]; then
+    _agent_kv_str fix_kind "$_AGENT_FIX_KIND"
+    _agent_kv_str fix_find "$_AGENT_FIX_FIND"
+    _agent_kv_str fix_replace "$_AGENT_FIX_REPLACE"
+    _agent_kv_str fix_snippet "$_AGENT_FIX_SNIPPET"
+    _agent_kv_str fix_to "$_AGENT_FIX_TO"
+    _agent_kv_list fix_all "$_AGENT_FIX_ALL"
+    _agent_kv_str fix_cmd "$_AGENT_FIX_CMD"
+    _agent_kv_str fix_cli "$_AGENT_FIX_CLI"
+    if [[ -n $_AGENT_FIX_WRITES ]]; then
+      _agent_kv_raw fix_writes true
+      _agent_kv_str fix_note \
+        'suggested, human-review, do NOT auto-run - scoursh is read-only and never executes this'
+    fi
+  fi
+  printf '{%s}' "$_AGENT_BUF"
+}
+
+_agent_print_findings() {
+  local rundir=$1 line first=1
+  [[ -s $rundir/findings.fields ]] || return 0
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    finding_decode "$line"
+    [[ ${_DF[suppressed]:-false} == true ]] && continue
+    (( first )) || printf ','
+    first=0
+    _agent_print_finding
+  done <"$rundir/findings.fields"
+}
+
+_agent_print_check_obj() {
+  local c=$1
+  _agent_obj_begin
+  [[ -n ${_AGENT_VARY[$c.title]:-} ]] || _agent_kv_str title "${_AGENT_TITLE[$c]}"
+  [[ -n ${_AGENT_VARY[$c.rem]:-} ]] || _agent_kv_str remediation "${_AGENT_REM[$c]}"
+  [[ -n ${_AGENT_VARY[$c.sev]:-} ]] || _agent_kv_str sev "${_AGENT_SEV[$c]}"
+  [[ -n ${_AGENT_VARY[$c.cwe]:-} ]] || _agent_kv_str cwe "${_AGENT_CWE[$c]}"
+  [[ -n ${_AGENT_VARY[$c.owasp]:-} ]] || _agent_kv_str owasp "${_AGENT_OWASP[$c]}"
+  [[ -n ${_AGENT_VARY[$c.refs]:-} ]] || _agent_kv_list refs "${_AGENT_REFS[$c]}"
+  [[ -n ${_AGENT_VARY[$c.cis]:-} ]] || _agent_kv_list cis "${_AGENT_CIS[$c]}"
+  printf '{%s}' "$_AGENT_BUF"
+}
+
+_agent_print_checks() {
+  local c first=1
+  (( ${#_AGENT_SEEN[@]} > 0 )) || return 0
+  while IFS= read -r c; do
+    [[ -n $c ]] || continue
+    (( first )) || printf ','
+    first=0
+    printf '%s:' "$(json_string "$c")"
+    _agent_print_check_obj "$c"
+  done <<<"$(printf '%s\n' "${!_AGENT_SEEN[@]}" | LC_ALL=C sort)"
+}
+
+# `check_id` -> `module`, by id-namespace prefix (rules/RULE-FORMAT.md
+# §9.1.1's own MODULE token) - used ONLY to compute the `run` header's
+# `modules_reported`/`modules_not_run`, from `meta/checks_run` (never from
+# `findings.fields`'s own `module` field, which is silent for a module that
+# ran and found nothing).  An id this cannot classify (an adapter id like
+# `trivy:AVD-...`, which carries no module prefix at all) is simply skipped:
+# the native engine that ran alongside every adapter already contributes a
+# classifiable id of its own, so nothing is lost.
+_agent_module_of_check() {
+  case $1 in
+    SAST-*) printf 'sast' ;;
+    IAC-*) printf 'iac' ;;
+    SCA-*) printf 'sca' ;;
+    DAST-*) printf 'dast' ;;
+    CLOUD-*) printf 'cloud' ;;
+    POSTURE-*) printf 'posture' ;;
+    *) return 1 ;;
+  esac
+}
+
+_agent_modules_reported() {
+  local rundir=$1 line m
+  local -A seen=()
+  if [[ -r $rundir/meta/checks_run ]]; then
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      m=$(_agent_module_of_check "$line") || continue
+      seen[$m]=1
+    done <"$rundir/meta/checks_run"
+  fi
+  (( ${#seen[@]} > 0 )) || return 0
+  printf '%s\n' "${!seen[@]}" | LC_ALL=C sort -u
+}
+
+_agent_modules_not_run() {
+  local rundir=$1 m line
+  local -A rep=()
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    rep[$line]=1
+  done <<<"$(_agent_modules_reported "$rundir")"
+  for m in sast sca iac dast cloud posture; do
+    [[ -n ${rep[$m]:-} ]] || printf '%s\n' "$m"
+  done
+}
+
+_agent_print_str_array() {  # LABEL LIST(newline-separated) - always present
+  local label=$1 list=$2 line first=1
+  printf '%s:[' "$(json_string "$label")"
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    (( first )) || printf ','
+    first=0
+    printf '%s' "$(json_string "$line")"
+  done <<<"$list"
+  printf '],'
+}
+
+# The `run` header (docs/AGENT-FORMAT.md §2.4): emitted FIRST, before
+# `checks`/`findings`, and every field always present - the opposite
+# omit-if-empty contract `_agent_kv_*` gives the rest of the document,
+# because an ABSENT header field here is exactly the ambiguity §15 forbids
+# ("did not check" reading as "clean"). Reuses `_meta_array`/
+# `_meta_array_unique` directly, the same functions report_run_json's own
+# header uses for the identical facts, so this can never drift from what
+# run.json itself says.
+_agent_run_header() {
+  local rundir=$1
+  printf '{'
+  printf '"run_id":%s,' "$(json_string "${SCOURSH_RUN_ID:-}")"
+  _agent_print_str_array modules_reported "$(_agent_modules_reported "$rundir")"
+  _agent_print_str_array modules_not_run "$(_agent_modules_not_run "$rundir")"
+  _meta_array_unique "$rundir" checks_run 'checks_run' ''
+  _meta_array "$rundir" skipped_checks 'skipped_checks' ''
+  _meta_array "$rundir" coverage_gap 'coverage_gap' ''
+  _meta_array "$rundir" coverage_reduction 'coverage_reduction' ''
+  _meta_array "$rundir" incomplete_reason 'incomplete_reason' ''
+  printf '"status_counts":{"new":%s,"recurring":%s,"fixed":%s,"unknown":%s},' \
+    "$(json_number "${_RPT_STATUS[new]:-0}")" "$(json_number "${_RPT_STATUS[recurring]:-0}")" \
+    "$(json_number "${_RPT_STATUS[fixed]:-0}")" "$(json_number "${_RPT_STATUS[unknown]:-0}")"
+  printf '"gate":%s,' "$(json_string "${SCOURSH_GATE_RESULT:-not-evaluated}")"
+  printf '"diff_usable":%s,' "$(json_bool "${SCOURSH_DIFF_USABLE:-false}")"
+  printf '"redact_secrets":%s' "$(json_bool "${SCOURSH_REDACT_SECRETS:-true}")"
+  printf '}'
+}
+
+# `report_agent [RUNDIR]` - the entry point, gated behind `--format agent`
+# (opt-in, never in the default list - the identical wiring `audit` already
+# has). Writes `agent-fix.json` unconditionally alongside whatever else
+# report_all wrote; never gates or replaces any other format.
+report_agent() {
+  local rundir=${1:-$SCOURSH_RUN_DIR}
+  report_count "$rundir"
+  _agent_pass1 "$rundir"
+  {
+    printf '{'
+    printf '"scoursh_agent":1,'
+    printf '"_note":%s,' \
+      "$(json_string 'each finding inherits checks[<check>]; per-finding keys override')"
+    printf '"run":'
+    _agent_run_header "$rundir"
+    printf ',"checks":{'
+    _agent_print_checks
+    printf '},"findings":['
+    _agent_print_findings "$rundir"
+    printf ']}\n'
+  } >"$rundir/agent-fix.json"
+}
+
+# ---------------------------------------------------------------------------
 # 6. Everything
 # ---------------------------------------------------------------------------
 # `report_all [RUNDIR]` writes every artifact this run's resolved --format
 # list selects (docs/DESIGN.md §5's `--format json,sarif,html,md`, since
-# extended with a fifth, opt-in `audit` value - report_audit, §4a above),
+# extended with two further opt-in values - `audit` (report_audit, §4a above)
+# and `agent` (report_agent, §5b above) - neither ever in the default list),
 # plus two records this project treats as mandatory rather than
 # format-selectable, neither of which is even in that enum
 # (`_scan_validate_csv`/`_scanner_validate_list_item`, scan.sh and
@@ -4226,6 +4687,11 @@ _report_render_formats() {
   # ticket) - an audit-grade per-category coverage report with full
   # not-covered detail, §4a above.
   [[ -z ${_rpt_want[audit]:-} ]] || report_audit "$rundir"
+  # `agent` is a sixth, OPT-IN format value (never in the default list
+  # above): report_agent writes reports/<run>/agent-fix.json, a compact,
+  # schema-projected findings file for a downstream AI fixing agent
+  # (docs/AGENT-FORMAT.md), never gating or replacing any other format.
+  [[ -z ${_rpt_want[agent]:-} ]] || report_agent "$rundir"
 }
 
 report_all() {
@@ -4310,7 +4776,16 @@ report_regenerate_from() {
   SCOURSH_RUN_ID=$(_report_from_field "$resolved/run.json" run_id)
   SCOURSH_REDACT_SECRETS=$(_report_from_field "$resolved/run.json" redact_secrets)
   SCOURSH_DIFF_GUARD=$(_report_from_field "$resolved/run.json" diff_guard)
-  export SCOURSH_RUN_ID SCOURSH_REDACT_SECRETS SCOURSH_DIFF_GUARD
+  # `report_agent`'s honesty header (--format agent, docs/AGENT-FORMAT.md)
+  # reads these from the environment exactly as report_run_json does, and a
+  # live scan is the only caller that otherwise sets them - re-exported here
+  # for the identical reason SCOURSH_DIFF_GUARD already is: A14's byte-identity
+  # requirement means this command must reproduce the ORIGINAL run's gate and
+  # diff_usable, never this invocation's own unset defaults.
+  SCOURSH_GATE_RESULT=$(_report_from_field "$resolved/run.json" gate)
+  SCOURSH_DIFF_USABLE=$(_report_from_field "$resolved/run.json" diff_usable)
+  export SCOURSH_RUN_ID SCOURSH_REDACT_SECRETS SCOURSH_DIFF_GUARD \
+    SCOURSH_GATE_RESULT SCOURSH_DIFF_USABLE
 
   # `--out` pointed at the same directory as `--from`: it is already this
   # run's own findings.fields/meta/locations/run.json, so there is nothing
