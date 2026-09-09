@@ -48,11 +48,11 @@ on record**, or it is **not covered** - registered but never run. The last bucke
 
 | | |
 |---|---|
-| **181** | security checks across four surfaces |
-| **4** | surfaces: SAST, SCA, IaC, DAST |
+| **293** | security checks across five surfaces |
+| **5** | surfaces: SAST, SCA, IaC, DAST, Cloud/CSPM |
 | **0** | runtime deps beyond bash + coreutils |
 | **1** | network chokepoint, lint-enforced |
-| **None** | cloud / CSPM checks — not built |
+| **30** | AWS services covered by the read-only Cloud/CSPM checks |
 
 | Surface | Status | What shipped | Checks |
 |---|---|---|---|
@@ -60,12 +60,14 @@ on record**, or it is **not covered** - registered but never run. The last bucke
 | SCA | needs setup | 6 ecosystems, 12 manifest formats — advisory DB is built by hand, offline | table lookup |
 | IaC | landed | Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose | 36 |
 | DAST | landed | Full engine: auth, crawl, passive, safe-active, injection, tier-5 | 92 |
-| Cloud / AWS | **not built** | No `modules/cloud/` exists. `scan.sh cloud` is an accepted, logged no-op. | 0 |
+| Cloud / AWS | landed | 30 services, read-only, multi-account (`--assume-role`), CIS/OWASP-mapped | 112 |
 
-> **Cloud is not built.** Any material implying CSPM capability is false. `scan.sh cloud` accepts the
-> command and records why it did nothing. The read-only AWS chokepoint (`lib/awscli.sh`) is
-> implemented and enforced at runtime, but has no callers - it is architecture waiting for checks, not
-> a feature. Use Prowler.
+> **Cloud is read-only and needs your own account.** `scan.sh cloud --live` runs 112 checks across 30
+> AWS services through `lib/awscli.sh`'s `aws_ro` chokepoint, which refuses any call that is not
+> read-only. It needs resolvable AWS credentials (profile, env, or instance role) - there is no
+> bundled or hosted account - and an access-denied, opted-out, or throttled service is recorded as a
+> coverage reduction rather than a silent clean pass. The `posture/` phase (SSO/edge/session drift
+> against an operator-declared baseline) has a config schema but no checks yet.
 
 Also shipping, and relevant when comparing against a specialist toolchain:
 
@@ -216,21 +218,26 @@ no byte the run wrote. That matters precisely when the report is an artefact you
 
 ## Cloud / CSPM
 
-> **scoursh does not compete here.** There are no cloud checks. This table is included so the
-> comparison is complete, not to suggest a contest.
+> **scoursh has a real, but narrower, cloud checker.** 112 read-only checks across 30 AWS services,
+> CIS AWS Foundations Benchmark v3.0.0 and OWASP mapped, single cloud provider (AWS), single
+> compliance framework. This is an honest comparison, not a claim of parity with the specialists.
 
 | Tool | Coverage | Licence | Footprint | Notes |
 |---|---|---|---|---|
-| scoursh | **None — not built** | Apache-2.0 | — | Read-only chokepoint exists and is enforced, but has no callers |
-| Prowler | ~600 AWS checks, 84 services, 44 compliance frameworks | Apache-2.0 | Python + AWS credentials | Depth plus compliance mapping — the default choice |
+| scoursh | 112 checks, 30 AWS services, 1 framework (CIS) | Apache-2.0 | bash + AWS CLI | Read-only enforced at a runtime chokepoint (`aws_ro`), not merely by lint; no bundled account, single-tool multi-surface report |
+| Prowler | ~600 AWS checks, 84 services, 44 compliance frameworks | Apache-2.0 | Python + AWS credentials | Depth plus broad compliance mapping — the default choice for serious cloud posture work |
 | ScoutSuite | Multi-cloud posture with an HTML report | GPL-2.0 | Python | Excellent visual report; last commit ~1 year old |
 | CloudSploit | AWS, Azure, GCP, OCI and GitHub plugins | GPL-3.0 | Node.js | Broad plugin model, actively maintained |
 | Steampipe / Powerpipe | SQL over cloud APIs + large benchmark library | AGPL-3.0 | Go + Postgres FDW | Powerful, but the CLI licence blocks some organisations |
 
-**Honest verdict:** **Use Prowler.** What scoursh has is the architecture for cloud scanning - a
-read-only AWS chokepoint enforced at runtime, not merely by lint, and a CI guard for it, both landed
-before any check exists to use them. That is a credible "when we build it, it will be safe" story and
-an unusual build order. It is not a feature.
+**Honest verdict:** **Use Prowler for depth.** Prowler's ~600 checks across 84 services and 44
+compliance frameworks outclasses scoursh's 112-check, CIS-only, AWS-only catalogue on every depth
+metric that matters for a dedicated cloud posture audit. What scoursh adds is not depth, it's the same
+property the rest of the tool has: read-only enforced at a runtime chokepoint rather than by
+convention, one report alongside SAST/SCA/IaC/DAST findings with the same fingerprint and severity
+scheme, and the same "unexamined is not clean" accounting - an access-denied or opted-out service is a
+declared coverage reduction, not a false pass. Reach for scoursh's cloud check as part of the baseline
+sweep everywhere; reach for Prowler when cloud posture is the job itself.
 
 ## Measured head-to-head
 
@@ -297,11 +304,12 @@ Findings were judged against a known ground truth, not taken from any tool's own
 **Choose scoursh when…**
 
 - **You are air-gapped or egress-audited.** SAST, SCA and IaC make zero network calls; DAST talks
-  only to hosts you declared.
+  only to hosts you declared, and cloud talks only to your own AWS account through a read-only
+  chokepoint.
 - **"Did it actually check?" must be answerable.** Compliance evidence, an auditor, a post-incident
   review.
 - **You cannot install a toolchain.** No JVM, Python, Node, Go, Docker or build step.
-- **You want one report across four surfaces** with one fingerprint scheme, severity rubric and diff
+- **You want one report across five surfaces** with one fingerprint scheme, severity rubric and diff
   model.
 - **You need a CI gate with a real new-findings carve-out**, fail-closed when the diff is unusable.
 - **Auditability is the requirement.** It is shell - a reviewer can read the rule that fired.
@@ -315,7 +323,8 @@ Findings were judged against a known ground truth, not taken from any tool's own
 - **Real web-app testing or SPA coverage** → ZAP
 - **Latest-CVE web templates** → Nuclei
 - **Primary secret scanning or verification** → Gitleaks or TruffleHog
-- **Any cloud posture work at all** → Prowler
+- **Deep, multi-cloud, multi-framework cloud posture work** → Prowler (scoursh's cloud checker is
+  AWS-only, CIS-only, and single-account by default)
 
 **In one sentence:** scoursh is the baseline sweep you run everywhere, including the places the good
 tools cannot go - and the one that tells you what it missed. It is not a replacement for the good

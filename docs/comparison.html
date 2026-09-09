@@ -230,7 +230,7 @@
 <div class="thesis">
   <div class="lbl">The position</div>
   <p>
-    One auditable bash tool that sweeps four surfaces in a single run, refuses to talk to anything
+    One auditable bash tool that sweeps five surfaces in a single run, refuses to talk to anything
     outside an operator-declared allowlist, and — uniquely among the tools surveyed — reports what it
     <strong>did not</strong> check as a first-class, non-clean output state.
   </p>
@@ -262,11 +262,11 @@
 <h2 id="baseline">What scoursh actually is</h2>
 
 <div class="stats">
-  <div class="stat"><div class="n">181</div><div class="l">security checks across four surfaces</div></div>
-  <div class="stat"><div class="n">4</div><div class="l">surfaces: SAST, SCA, IaC, DAST</div></div>
+  <div class="stat"><div class="n">293</div><div class="l">security checks across five surfaces</div></div>
+  <div class="stat"><div class="n">5</div><div class="l">surfaces: SAST, SCA, IaC, DAST, Cloud/CSPM</div></div>
   <div class="stat"><div class="n">0</div><div class="l">runtime deps beyond bash + coreutils</div></div>
   <div class="stat"><div class="n">1</div><div class="l">network chokepoint, lint-enforced</div></div>
-  <div class="stat no"><div class="n">None</div><div class="l">cloud / CSPM checks — not built</div></div>
+  <div class="stat"><div class="n">30</div><div class="l">AWS services covered by the read-only Cloud/CSPM checks</div></div>
 </div>
 
 <div class="scroll">
@@ -277,16 +277,19 @@
     <tr><td class="tool">SCA</td><td><span class="pill p-warn">needs setup</span></td><td>6 ecosystems, 12 manifest formats — advisory DB is built by hand, offline</td><td>table lookup</td></tr>
     <tr><td class="tool">IaC</td><td><span class="pill p-ok">landed</span></td><td>Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose</td><td>36</td></tr>
     <tr><td class="tool">DAST</td><td><span class="pill p-ok">landed</span></td><td>Full engine: auth, crawl, passive, safe-active, injection, tier-5</td><td>92</td></tr>
-    <tr class="dead"><td class="tool">Cloud / AWS</td><td><span class="pill p-bad">not built</span></td><td>No <code>modules/cloud/</code> exists. <code>scan.sh cloud</code> is an accepted, logged no-op.</td><td>0</td></tr>
+    <tr><td class="tool">Cloud / AWS</td><td><span class="pill p-ok">landed</span></td><td>30 services, read-only, multi-account (<code>--assume-role</code>), CIS/OWASP-mapped</td><td>112</td></tr>
   </tbody>
 </table>
 </div>
 
-<div class="danger">
-  <p><span class="lbl">Cloud is not built.</span> Any material implying CSPM capability is false.
-  <code>scan.sh cloud</code> accepts the command and records why it did nothing. The read-only AWS
-  chokepoint (<code>lib/awscli.sh</code>) is implemented and enforced at runtime, but has no callers —
-  it is architecture waiting for checks, not a feature. Use Prowler.</p>
+<div class="note">
+  <p><span class="lbl">Cloud is read-only and needs your own account.</span>
+  <code>scan.sh cloud --live</code> runs 112 checks across 30 AWS services through
+  <code>lib/awscli.sh</code>'s <code>aws_ro</code> chokepoint, which refuses any call that is not
+  read-only. It needs resolvable AWS credentials (profile, env, or instance role) — there is no
+  bundled or hosted account — and an access-denied, opted-out, or throttled service is recorded as a
+  coverage reduction rather than a silent clean pass. The <code>posture/</code> phase (SSO/edge/session
+  drift against an operator-declared baseline) has a config schema but no checks yet.</p>
 </div>
 
 <p>Also shipping, and relevant when comparing against a specialist toolchain:</p>
@@ -648,24 +651,26 @@
 <!-- ============ CLOUD ============ -->
 <h2 id="cloud">Cloud / CSPM</h2>
 
-<div class="danger">
-  <p><span class="lbl">scoursh does not compete here.</span> There are no cloud checks. This table is
-  included so the comparison is complete, not to suggest a contest.</p>
+<div class="note">
+  <p><span class="lbl">scoursh has a real, but narrower, cloud checker.</span> 112 read-only checks
+  across 30 AWS services, CIS AWS Foundations Benchmark v3.0.0 and OWASP mapped, single cloud provider
+  (AWS), single compliance framework. This is an honest comparison, not a claim of parity with the
+  specialists.</p>
 </div>
 
 <div class="scroll">
 <table>
   <thead><tr><th>Tool</th><th>Coverage</th><th>Licence</th><th>Footprint</th><th>Notes</th></tr></thead>
   <tbody>
-    <tr class="dead">
-      <td class="tool">scoursh</td><td><strong>None — not built</strong></td>
-      <td><span class="pill p-neut">Apache-2.0</span></td><td>&mdash;</td>
-      <td>Read-only chokepoint exists and is enforced, but has no callers</td>
+    <tr>
+      <td class="tool">scoursh</td><td>112 checks, 30 AWS services, 1 framework (CIS)</td>
+      <td><span class="pill p-neut">Apache-2.0</span></td><td>bash + AWS CLI</td>
+      <td>Read-only enforced at a runtime chokepoint (<code>aws_ro</code>), not merely by lint; no bundled account, single-tool multi-surface report</td>
     </tr>
     <tr>
       <td class="tool">Prowler</td><td>~600 AWS checks, 84 services, 44 compliance frameworks</td>
       <td><span class="pill p-ok">Apache-2.0</span></td><td>Python + AWS credentials</td>
-      <td>Depth plus compliance mapping — the default choice</td>
+      <td>Depth plus broad compliance mapping — the default choice for serious cloud posture work</td>
     </tr>
     <tr>
       <td class="tool">ScoutSuite</td><td>Multi-cloud posture with an HTML report</td>
@@ -689,10 +694,15 @@
 <div class="verdict">
   <div class="lbl">Honest verdict</div>
   <p>
-    <strong>Use Prowler.</strong> What scoursh has is the architecture for cloud scanning — a
-    read-only AWS chokepoint enforced at runtime, not merely by lint, and a CI guard for it, both
-    landed before any check exists to use them. That is a credible &ldquo;when we build it, it will
-    be safe&rdquo; story and an unusual build order. It is not a feature.
+    <strong>Use Prowler for depth.</strong> Prowler&rsquo;s ~600 checks across 84 services and 44
+    compliance frameworks outclasses scoursh&rsquo;s 112-check, CIS-only, AWS-only catalogue on every
+    depth metric that matters for a dedicated cloud posture audit. What scoursh adds is not depth,
+    it&rsquo;s the same property the rest of the tool has: read-only enforced at a runtime chokepoint
+    rather than by convention, one report alongside SAST/SCA/IaC/DAST findings with the same
+    fingerprint and severity scheme, and the same &ldquo;unexamined is not clean&rdquo; accounting — an
+    access-denied or opted-out service is a declared coverage reduction, not a false pass. Reach for
+    scoursh&rsquo;s cloud check as part of the baseline sweep everywhere; reach for Prowler when cloud
+    posture is the job itself.
   </p>
 </div>
 
@@ -778,10 +788,10 @@
   <div class="card yes">
     <h4>Choose scoursh when…</h4>
     <ul>
-      <li><strong>You are air-gapped or egress-audited.</strong> SAST, SCA and IaC make zero network calls; DAST talks only to hosts you declared.</li>
+      <li><strong>You are air-gapped or egress-audited.</strong> SAST, SCA and IaC make zero network calls; DAST talks only to hosts you declared, and cloud talks only to your own AWS account through a read-only chokepoint.</li>
       <li><strong>&ldquo;Did it actually check?&rdquo; must be answerable.</strong> Compliance evidence, an auditor, a post-incident review.</li>
       <li><strong>You cannot install a toolchain.</strong> No JVM, Python, Node, Go, Docker or build step.</li>
-      <li><strong>You want one report across four surfaces</strong> with one fingerprint scheme, severity rubric and diff model.</li>
+      <li><strong>You want one report across five surfaces</strong> with one fingerprint scheme, severity rubric and diff model.</li>
       <li><strong>You need a CI gate with a real new-findings carve-out</strong>, fail-closed when the diff is unusable.</li>
       <li><strong>Auditability is the requirement.</strong> It is shell — a reviewer can read the rule that fired.</li>
     </ul>
@@ -796,7 +806,7 @@
       <li><strong>Real web-app testing or SPA coverage</strong> &rarr; ZAP</li>
       <li><strong>Latest-CVE web templates</strong> &rarr; Nuclei</li>
       <li><strong>Primary secret scanning or verification</strong> &rarr; Gitleaks or TruffleHog</li>
-      <li><strong>Any cloud posture work at all</strong> &rarr; Prowler</li>
+      <li><strong>Deep, multi-cloud, multi-framework cloud posture work</strong> &rarr; Prowler (scoursh&rsquo;s cloud checker is AWS-only, CIS-only, and single-account by default)</li>
     </ul>
   </div>
 </div>

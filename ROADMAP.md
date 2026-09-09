@@ -77,23 +77,35 @@ This file is a shorter, reader-facing summary of the same information, and is ha
   `scan.sh <command> --guided`, walks an operator through composing a real command - including the
   DAST target/intensity/affirmation flow - and `--print-command` prints the exact equivalent
   non-interactive invocation, verified byte-identical to what "Run it" actually executes. `cloud` is
-  the one surface guided mode refuses outright, since `modules/cloud/` does not exist.
+  now reachable at the G1 menu (`modules/cloud/aws/run.sh` exists), though its guided setup beyond the
+  scan type and `--fail-on` isn't wired into `--guided` yet - the menu says so and hands back the
+  equivalent direct command rather than asking questions it can't yet compose an answer to.
+- **Step 6 (Cloud / AWS CSPM) is complete for the live-checks half.** `lib/awscli.sh`'s `aws_ro`
+  chokepoint, `modules/cloud/aws/run.sh`'s dispatch entry point (account-authorization record +
+  enabled-region iteration, `--assume-role` for multi-account), and all 30 `docs/DESIGN.md` §8.1
+  services (`modules/cloud/aws/live/*.sh`) have landed - 112 checks total, CIS AWS Foundations
+  Benchmark v3.0.0 and OWASP mapped, feeding the compliance report step 10 already ships. Every AWS
+  call goes through `aws_ro`, which refuses anything that is not read-only; access-denied, opted-out,
+  or throttled services are recorded as a coverage reduction, never folded into a clean pass. The
+  `posture/` phase (`docs/DESIGN.md` §8.7's SSO/edge/session drift checks, POSTURE-02 through
+  POSTURE-04) has not landed - only its config schema (`config/posture.conf.example`, POSTURE-01) does
+  - so a posture-phase run today is a declared skip. A complete sub-ticket breakdown, including the
+  three remaining posture tickets, is in
+  [`docs/STEP6-CLOUD-PLAN.md`](docs/STEP6-CLOUD-PLAN.md).
+- **`COMPOSITE-TOKEN-HIJACK` is now seeded** in `rules/derived.rules` (findings F5/F20, open since step
+  1, are cleared): DAST supplies one contributor and the cloud module landing above supplies the
+  other, so the composite finding this correlates is live rather than an intentionally-unseeded gap.
 
 ## Not yet started
 
-Ordered by priority, highest first.
-With step 5 (DAST), step 7 (persistent run state) and step 10 (SARIF output + compliance report) all
-complete, live cloud scanning is what remains.
+Every `docs/DESIGN.md` §13 step (1 through 10) has now landed - see "Landed" above.
+What's left is a gap in an already-shipped feature, not an unstarted step:
 
-1. **Step 6 (live cloud / CSPM scanning)** - `modules/cloud/aws/live/s3.sh` is the one live service
-   that exists today (`docs/STEP6-CLOUD-PLAN.md`'s CLOUD-05), so a `--live` run examines every S3
-   bucket in the account and records every other service in `docs/DESIGN.md` §8.1's catalog as
-   unexamined rather than counting it clean.
-   A complete sub-ticket breakdown exists in
-   [`docs/STEP6-CLOUD-PLAN.md`](docs/STEP6-CLOUD-PLAN.md) (tickets CLOUD-01 through CLOUD-34 plus
-   POSTURE-01 through POSTURE-04).
-   `docs/STEP6-CLOUD-PLAN.md`'s own build-order gate is now fully cleared too (step 3's tail and all
-   of step 5 have both landed).
+- **A macOS guarantee for `--paranoid`.** It has a real, measured-usable `lsof` backend on macOS today
+  (see "Known defects in shipped features" below), which makes it a genuine detector there - but there
+  is no macOS equivalent of `tools/run-in-netns.sh`'s Linux network-namespace guarantee, so a macOS run
+  has the detector and nothing enforcing behind it. This is a research item (is a Linux-equivalent
+  enforcement mechanism even available on macOS?) rather than a scheduled build.
 
 **Step 10 (SARIF output + compliance report) is complete and no longer listed here.**
 The SARIF half writes a complete, schema-validated SARIF 2.1.0 document (`report_sarif`, SARIF-01
@@ -115,9 +127,6 @@ names was already shipped in full and carries no ticket.
 
 Outside that ordering:
 
-- Two derived/composite findings (`COMPOSITE-TOKEN-HIJACK` and its dependents) are intentionally
-  not seeded yet. DAST (step 5) now supplies one contributor, but the composite also needs a step 6
-  (cloud) contributor that does not exist yet, so it remains unseeded until cloud lands.
 - IPv6 / dual-stack routing support for `tools/run-in-netns.sh` has landed (the follow-up this line
   used to point at): the namespace's loopback and veth pair get IPv6 addressing and routing
   unconditionally, alongside IPv4, on every run, and the tool refuses to run at all (exit 4) on a

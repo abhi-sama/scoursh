@@ -3,12 +3,12 @@
 *Also available as a standalone page: [`checks.html`](checks.html).*
 
 The full built-in check catalogue on the `dev` branch, grouped by scan surface and by what each check
-needs to run. Roughly 180 checks ship in the box.
+needs to run. Roughly 290 checks ship in the box.
 
 > **Almost everything runs with no external data.** Point scoursh at source code (`--path`) or a live
 > app (`--target`) and every SAST, IaC, and DAST check below works immediately - no database, no
-> downloads, no network. Only **dependency-CVE scanning (SCA)** and one banner check need the
-> vendored advisory database.
+> downloads, no network. **Dependency-CVE scanning (SCA)** and one banner check need the vendored
+> advisory database; **Cloud/AWS (CSPM)** needs resolvable AWS credentials.
 
 | | |
 |---|---|
@@ -17,6 +17,7 @@ needs to run. Roughly 180 checks ship in the box.
 | **46** | DAST passive |
 | **34** | DAST active |
 | **6** | SCA ecosystems |
+| **112** | Cloud/AWS checks (30 services) |
 
 ## Legend
 
@@ -26,7 +27,9 @@ needs to run. Roughly 180 checks ship in the box.
   advisories`).
 - 🟣 **Optional engine depth** - `--use-engines` adds vendored Semgrep/Trivy/Gitleaks. Boosts depth,
   not new categories.
-- ⚪ **Planned, not built** - designed but no code ships yet.
+- 🟠 **Needs AWS credentials** - resolvable via profile, environment, or instance role
+  (`aws sts get-caller-identity`); read-only only, enforced by `lib/awscli.sh`'s `aws_ro` chokepoint.
+  Optional `--i-own-account ID` affirmation and `--assume-role` for multi-account.
 
 ## SAST 🟢 no external data
 
@@ -186,6 +189,53 @@ reports that no advisory data was available rather than a false all-clear.
 | `SCA-GO` | Go modules |
 | `SCA-COV-NO_ADVISORY_DB-01` / `UNKNOWN_VERSION-01` | Honest coverage notes when data is missing |
 
+## Cloud / AWS (CSPM) 🟠 needs AWS credentials
+
+Live AWS configuration, read-only. Runs on `./scan.sh cloud --live` against 30 services across your
+enabled regions (`--assume-role` for a second account); every call goes through `lib/awscli.sh`'s
+`aws_ro` chokepoint, which refuses anything that is not a read-only API call. Findings carry both a
+CIS AWS Foundations Benchmark v3.0.0 control and an OWASP Top 10 category, feeding the compliance
+report (`report.md`/`report.html`). An access-denied, opted-out, or throttled service is recorded as
+a coverage reduction, never folded into a clean pass. The `posture/` phase (SSO/edge/session drift
+against an operator-declared baseline) has a config schema (`config/posture.conf.example`) but no
+checks yet.
+
+| Check | Catches |
+|---|---|
+| `CLOUD-IAM-*` (12 checks) | Root user MFA/access-key hygiene, missing/weak account password policy, no IAM Access Analyzer, full-admin policy, wildcard role trust, cross-account trust with no ExternalId, stale credentials/keys/roles, full-admin identity with no permission boundary, mixed inline+managed policies |
+| `CLOUD-COGNITO-*` (24 checks) | User pool: weak password policy, long-lived temp passwords, MFA off/optional, advanced security off, open self-registration, SMS-only recovery, deletion protection off; app client: non-SRP auth, implicit OAuth grant, plaintext/wildcard callback URL, excessive token lifetime, token revocation off, writable sensitive attribute, username enumeration; identity pool: unauthenticated identities/credentials, over-permissioned unauth role, classic auth flow, permissive role mapping |
+| `CLOUD-S3-*` (7 checks) | Public ACL (read/write), public bucket policy, Block Public Access off, no default encryption, versioning off, access logging off |
+| `CLOUD-RDS-*` (4 checks) | Publicly accessible instance, unencrypted storage, backups/point-in-time recovery off, snapshot shared publicly |
+| `CLOUD-DYNAMODB-*` (3 checks) | VPC endpoint left at the default full-access policy, no encryption at rest, point-in-time recovery off |
+| `CLOUD-EFS-*` (3 checks) | Wildcard file-system policy, no encryption at rest, transit encryption not enforced |
+| `CLOUD-BACKUP-*` (1 check) | EBS volume with no AWS Backup recovery point |
+| `CLOUD-EC2-*` (8 checks) | Security group open to 0.0.0.0/0 on an admin or database port, default security group attached to a resource, public AMI/snapshot, unencrypted EBS volume, IMDSv2 not enforced, VPC with no flow log |
+| `CLOUD-LAMBDA-*` (6 checks) | Execution role with unrestricted or wildcard-sensitive actions, function URL open to unauthenticated invocation, wildcard resource policy, plaintext-looking env var, env vars not encrypted with a customer-managed key |
+| `CLOUD-ECR-*` (3 checks) | Wildcard repository policy, scan-on-push off, mutable image tags |
+| `CLOUD-ECS-*` (2 checks) | Task assigns a public IP, task role over-permissioned |
+| `CLOUD-EKS-*` (2 checks) | API endpoint reachable from outside the VPC, node-group role over-permissioned |
+| `CLOUD-CLOUDFRONT-*` (5 checks) | Plain-HTTP viewer protocol, weak minimum TLS version, no WAF web ACL, S3 origin with no Origin Access Control/Identity, logging off |
+| `CLOUD-ELB-*` (3 checks) | Plain-HTTP listener with no HTTPS redirect, TLS policy below a TLS 1.2 floor, access logging off |
+| `CLOUD-APIGW-*` (2 checks) | Method with no authorizer and no API key, method relying on an API key alone |
+| `CLOUD-APPSYNC-*` (2 checks) | GraphQL API defaults to a plain API key, API key with a far-future expiration |
+| `CLOUD-ROUTE53-*` (1 check) | DNS record pointing at a nonexistent S3 static-website bucket (subdomain takeover) |
+| `CLOUD-KMS-*` (2 checks) | Automatic key rotation off, key policy grants an unqualified wildcard principal |
+| `CLOUD-SECRETSMANAGER-*` (2 checks) | Automatic rotation off, resource policy grants an unqualified wildcard principal |
+| `CLOUD-SSM-*` (2 checks) | Sensitive-looking parameter not stored as SecureString, resource policy grants an unqualified wildcard principal |
+| `CLOUD-ACM-*` (1 check) | Certificate nearing or past expiry |
+| `CLOUD-SNS-*` (2 checks) | Wildcard topic policy, no server-side encryption |
+| `CLOUD-SQS-*` (2 checks) | Wildcard queue policy, no server-side encryption |
+| `CLOUD-CLOUDTRAIL-*` (3 checks) | Not logging in this account/region, not multi-region, log-file validation off |
+| `CLOUD-CONFIG-*` (1 check) | Configuration recorder absent or not recording |
+| `CLOUD-GUARDDUTY-*` (1 check) | Not enabled in this region |
+| `CLOUD-INSPECTOR-*` (1 check) | Automated vulnerability scanning not fully enabled |
+| `CLOUD-MACIE-*` (1 check) | Sensitive-data discovery not enabled in this region |
+| `CLOUD-OPENSEARCH-*` (3 checks) | Public endpoint with a wide-open access policy, no encryption at rest, node-to-node transport encryption off |
+| `CLOUD-REDSHIFT-*` (3 checks) | Publicly accessible cluster, no encryption at rest, parameter group does not require SSL |
+
+Also seeded: `COMPOSITE-TOKEN-HIJACK` (`rules/derived.rules`), a cross-module derived finding that
+correlates a DAST contributor with a cloud contributor rather than firing off either surface alone.
+
 ## Optional engine depth 🟣 --use-engines
 
 Vendor a specialist engine (you pin its version + checksum) and `--use-engines` runs it as an adapter
@@ -197,15 +247,6 @@ not new categories.
 | Semgrep | SAST rule breadth |
 | Trivy | IaC coverage |
 | Gitleaks | Secret detection |
-
-## Planned — not built ⚪ no code yet
-
-Designed in the roadmap but not shipping detections yet.
-
-| Surface | Status |
-|---|---|
-| Cloud / AWS (CSPM) | Fully designed (CIS Benchmark checks per service); the read-only harness ships, the live checks do not. `scan.sh cloud` is an accepted, logged no-op today. |
-| SARIF compliance report | SARIF output ships; the OWASP/CIS-grouped compliance view is planned. |
 
 ---
 
