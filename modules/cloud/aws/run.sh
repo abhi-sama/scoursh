@@ -189,6 +189,55 @@ _cloud_record_coverage() {
 }
 
 # ---------------------------------------------------------------------------
+# 2a. The posture phase (docs/DESIGN.md §8.7; docs/STEP6-CLOUD-PLAN.md
+#     POSTURE-01; D5, ACCEPTED: posture is a PHASE of `scan.sh cloud`, not a
+#     subcommand of its own - docs/FOUNDATION.md's required-inputs table is
+#     amended accordingly).
+# ---------------------------------------------------------------------------
+# `config/posture.conf` carries a DIFFERENT coverage scope (`scope-key`,
+# rules/RULE-FORMAT.md §9.5.1) than the `account-region` cells the service
+# walk below writes - engine.sh's own note on `_CLOUD_SERVICES` explains why a
+# `posture/` row can never sit in that table - so this phase is its own small
+# block rather than a service-table entry, and it does not touch `cells`,
+# `ran`, or `covered` below.
+#
+# ABSENT IS A DECLARED SKIP, NEVER EXIT 4.  rules/RULE-FORMAT.md §9.6.4's
+# schema is frozen (config/posture.conf.example ships it), but nothing ships a
+# real config/posture.conf by default - the same "reserved example domain, no
+# shipped scannable target" rule every other config/*.conf follows
+# (docs/DESIGN.md §1) - so treating its absence as a required-input failure
+# would make every ordinary `cloud --live` run exit 4 the moment this file
+# exists on disk, for an account that simply declared no baseline.  A missing
+# file means "no expected-control baseline was declared for this account",
+# which is a fact about the invocation, never a failure of the tool.
+#
+# PRESENT MEANS READ AND VALIDATED, NOT EVALUATED.  `config_load_if_present`
+# is the same generic loader every other config/*.conf uses (lib/config.sh);
+# a syntax or schema error still dies exit 4 through it, exactly as a
+# malformed config/scope.conf does, because a file that exists but cannot be
+# trusted is never treated as if it were absent.  No `POSTURE-*` check exists
+# yet (those are POSTURE-02/03/04), so an expectation that parses cleanly is
+# still compared against nothing this run - recorded as its own
+# coverage_reduction rather than left silent, the same honesty this file owes
+# its reader everywhere else.
+_cloud_posture_conf_path() {
+  printf '%s' "${SCOURSH_CLOUD_POSTURE_CONF:-${SCOURSH_INSTALL_ROOT:-}/config/posture.conf}"
+}
+
+_cloud_run_posture_phase() {
+  local path
+  path=$(_cloud_posture_conf_path)
+  if ! config_load_if_present "$path" posture-expectation posture; then
+    run_record coverage_reduction "module=cloud reason=no_posture_conf phase=posture path=$path - config/posture.conf does not exist, so the posture phase (docs/DESIGN.md §8.7) is a DECLARED SKIP: no operator-declared expected-control baseline was compared against anything this run. This is not an error - docs/FOUNDATION.md's \`cloud (posture phase)\` required-inputs row says so explicitly - and it does not affect the exit code."
+    return 0
+  fi
+  local n
+  n=$(records_count posture)
+  run_record coverage_reduction "module=cloud reason=no_posture_checks_on_disk_yet phase=posture path=$path expectations=$n - config/posture.conf was read and schema-validated successfully ($n expectation(s)), but modules/cloud/posture/ ships no POSTURE-* check yet (docs/STEP6-CLOUD-PLAN.md POSTURE-02/03/04), so none of them was evaluated against anything."
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # 3. The module
 # ---------------------------------------------------------------------------
 _cloud_run_module() {
@@ -318,6 +367,13 @@ _cloud_run_module() {
 
   _cloud_record_authorization "$account" "${SCOURSH_AWS_CALLER_ARN:-}" "$profile" \
     "$nregions" "$_CLOUD_REGIONS_SOURCE"
+
+  # -------------------------------------------------------------------------
+  # Posture phase.  Account-scoped, not region-scoped, so it runs once here
+  # regardless of how many regions resolved - unlike the service walk below,
+  # it needs no region at all (see the "2a" block above for why).
+  # -------------------------------------------------------------------------
+  _cloud_run_posture_phase
 
   if (( nregions == 0 )); then
     # Global services can still run - they need no region - so this is a

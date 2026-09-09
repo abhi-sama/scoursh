@@ -419,6 +419,72 @@ assert_not_contains "$(cat "$W/log-one")" 'describe-regions' \
   'and skips the enumeration call entirely - an explicit list is not validated against the account (see cloud_regions_resolve for why)'
 
 # ===========================================================================
+# E2. The posture phase (docs/STEP6-CLOUD-PLAN.md POSTURE-01; D5, ACCEPTED:
+#     posture is a PHASE of `scan.sh cloud`, not a subcommand).
+# ===========================================================================
+t_case 'E2. posture phase'
+
+# ABSENT is a DECLARED SKIP, never exit 4.  `--live` against the stub above
+# already resolves an identity and reaches the service walk with no
+# config/posture.conf anywhere near this fixture root, so `out-live` (E's own
+# run, above) already covers the absent case - re-asserted here on its own
+# meta files so a future edit to E cannot silently stop covering it.
+_red=$(cat "$W/out-live/meta/coverage_reduction")
+assert_contains "$_red" 'reason=no_posture_conf' \
+  'a cloud --live run with no config/posture.conf records the posture-phase declared skip'
+assert_contains "$_red" 'phase=posture' 'tagged as the posture phase, not a generic reduction'
+
+# PRESENT is read and validated, not evaluated - the failing reading here is
+# either treating a readable file as an error (it must not exit 4) or silently
+# saying nothing about it (an operator who wrote real expectations deserves to
+# know none of them was checked against anything yet).
+cat >"$W/posture-present.conf" <<'PC'
+id: fixture-sso-expected
+check: POSTURE-FIXTURE-CHECK-01
+scope-key: 123456789012
+expect: present
+notes: a fixture expectation, not a real check id - POSTURE-02/03/04 have not
+  landed yet.
+PC
+
+SCOURSH_CLOUD_POSTURE_CONF="$W/posture-present.conf" \
+  _run_cloud "$W/out-posture-present" "$W/log-posture-present" "$STUBDIR/bin" -- cloud --live
+assert_eq '0' "$_RC" \
+  '`scan.sh cloud --live` with a config/posture.conf present reads it without error'
+# The posture phase itself makes no aws call of its own - it reads a local
+# file only.  Asserted COMPARATIVELY against `out-live` (E's own run, with no
+# config/posture.conf) rather than against a hardcoded call count: a fixed
+# count would silently start asserting something else - how many AWS calls
+# the module's OTHER, unrelated service scripts happen to make - the moment a
+# real one lands (as modules/cloud/aws/live/s3.sh has, CLOUD-05), and would
+# then need editing for a reason that has nothing to do with this phase.  Two
+# otherwise-identical `cloud --live` runs, one with config/posture.conf and
+# one without, must produce byte-identical aws call logs.
+assert_eq "$(cat "$W/log-live")" "$(cat "$W/log-posture-present")" \
+  'and a run with config/posture.conf present issues the EXACT SAME aws calls as one without it - the posture phase changed nothing about what was dialled'
+_red=$(cat "$W/out-posture-present/meta/coverage_reduction")
+assert_contains "$_red" 'reason=no_posture_checks_on_disk_yet' \
+  'and records that it was read but nothing evaluated it - modules/cloud/posture/ ships no check yet'
+assert_contains "$_red" 'phase=posture' 'tagged as the posture phase'
+assert_contains "$_red" 'expectations=1' \
+  'and counts the one expectation this fixture file declares'
+assert_not_contains "$_red" 'reason=no_posture_conf' \
+  'and does NOT also claim the file is absent - the naive fix for each direction is the other`s bug'
+
+# A malformed config/posture.conf is NEVER silently treated as absent
+# (rules/RULE-FORMAT.md §11) - it dies exit 4, exactly like every other
+# config/*.conf this repository loads through config_load_or_die.
+cat >"$W/posture-broken.conf" <<'PC'
+id: fixture-sso-expected
+check: POSTURE-FIXTURE-CHECK-01
+expect: bogus-not-a-real-value
+PC
+SCOURSH_CLOUD_POSTURE_CONF="$W/posture-broken.conf" \
+  _run_cloud "$W/out-posture-broken" "$W/log-posture-broken" "$STUBDIR/bin" -- cloud --live
+assert_eq '4' "$_RC" \
+  'a config/posture.conf that exists but fails schema validation (here: missing required scope-key, and an invalid expect enum) is exit 4, never treated as if it were absent'
+
+# ===========================================================================
 # F. --profile
 # ===========================================================================
 t_case 'F. --profile'

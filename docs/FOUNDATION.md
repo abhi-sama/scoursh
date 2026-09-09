@@ -2279,7 +2279,7 @@ Three edge cases are decided rather than left open, all three **fail closed**:
 | `sca` | the same readable `--path`, **and a readable `data/advisories.db`** - see the paragraph below |
 | `dast` | `config/scope.conf` with a matching `--target`; `config/auth.conf` additionally when `--authed` |
 | `cloud --live` | resolvable AWS credentials; `config/scope.conf` is not required, since AWS endpoints are allowed by §2 independently |
-| `posture` | `config/posture.conf` |
+| `cloud` (posture phase) | `config/posture.conf`, else the posture phase is a declared skip |
 | `all` | whatever each selected module requires; a module whose inputs are absent is **skipped with a `run.json` reason**, not an error, which is what §5's "run every module for which inputs are configured" already says |
 
 A missing `scope.conf` is exit `4` only for `dast`.
