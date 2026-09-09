@@ -67,6 +67,10 @@ No build step, no runtime dependency beyond a standard Unix toolchain:
   `grep`/`rg`, `awk`, and coreutils.
 - `git` on `PATH` is needed only for `sast --history`. Nothing else is required to run `sast`, `sca`,
   `iac`, or `dast`.
+- `tar` on `PATH` is needed only for `image`, which reads a `docker save` tarball or an OCI image
+  layout the operator supplies. Strictly, `tar` is not coreutils - it is called out separately here
+  rather than folded into the line above, because a dependency that only one subcommand needs should
+  be visible as exactly that.
 - `dast` additionally needs a target authorized in `config/scope.conf` - it's the safety control that
   keeps `scan.sh` from ever being pointed at a host you don't own. Copy the bundled fixture to try it
   against a local, disposable test target:
