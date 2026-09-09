@@ -1,0 +1,49 @@
+{
+    "LoadBalancerDescriptions": [
+        {
+            "LoadBalancerName": "scoursh-fixture-classic-hardened",
+            "DNSName": "scoursh-fixture-classic-hardened-123456.eu-west-2.elb.amazonaws.com",
+            "ListenerDescriptions": [
+                {
+                    "Listener": {
+                        "Protocol": "HTTPS",
+                        "LoadBalancerPort": 443,
+                        "InstanceProtocol": "HTTP",
+                        "InstancePort": 80,
+                        "SSLCertificateId": "arn:aws:iam::123456789012:server-certificate/scoursh-fixture"
+                    },
+                    "PolicyNames": ["scoursh-fixture-hardened-policy"]
+                }
+            ],
+            "AvailabilityZones": ["eu-west-2a"],
+            "VPCId": "vpc-fixture"
+        },
+        {
+            "LoadBalancerName": "scoursh-fixture-classic-public",
+            "DNSName": "scoursh-fixture-classic-public-123456.eu-west-2.elb.amazonaws.com",
+            "ListenerDescriptions": [
+                {
+                    "Listener": {
+                        "Protocol": "HTTP",
+                        "LoadBalancerPort": 80,
+                        "InstanceProtocol": "HTTP",
+                        "InstancePort": 80
+                    },
+                    "PolicyNames": []
+                },
+                {
+                    "Listener": {
+                        "Protocol": "HTTPS",
+                        "LoadBalancerPort": 443,
+                        "InstanceProtocol": "HTTP",
+                        "InstancePort": 80,
+                        "SSLCertificateId": "arn:aws:iam::123456789012:server-certificate/scoursh-fixture"
+                    },
+                    "PolicyNames": ["scoursh-fixture-weak-policy"]
+                }
+            ],
+            "AvailabilityZones": ["eu-west-2a"],
+            "VPCId": "vpc-fixture"
+        }
+    ]
+}

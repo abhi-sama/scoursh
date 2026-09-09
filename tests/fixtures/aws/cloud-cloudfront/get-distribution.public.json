@@ -1,0 +1,72 @@
+{
+    "ETag": "E1ZZZZZZZZZZZZ",
+    "Distribution": {
+        "Id": "EPUB1FIXTURE",
+        "ARN": "arn:aws:cloudfront::123456789012:distribution/EPUB1FIXTURE",
+        "Status": "Deployed",
+        "DomainName": "d2public.cloudfront.net",
+        "ActiveTrustedSigners": {"Enabled": false, "Quantity": 0},
+        "ActiveTrustedKeyGroups": {"Enabled": false, "Quantity": 0},
+        "DistributionConfig": {
+            "CallerReference": "scoursh-fixture-public",
+            "Aliases": {"Quantity": 0},
+            "DefaultRootObject": "",
+            "Origins": {
+                "Quantity": 2,
+                "Items": [
+                    {
+                        "Id": "s3-origin-public",
+                        "DomainName": "scoursh-fixture-public-bucket.s3.eu-west-2.amazonaws.com",
+                        "OriginPath": "",
+                        "CustomHeaders": {"Quantity": 0},
+                        "S3OriginConfig": {"OriginAccessIdentity": ""},
+                        "OriginAccessControlId": "",
+                        "ConnectionAttempts": 3,
+                        "ConnectionTimeout": 10
+                    },
+                    {
+                        "Id": "custom-origin-alb",
+                        "DomainName": "scoursh-fixture-alb.eu-west-2.elb.amazonaws.com",
+                        "OriginPath": "",
+                        "CustomHeaders": {"Quantity": 0},
+                        "CustomOriginConfig": {
+                            "HTTPPort": 80,
+                            "HTTPSPort": 443,
+                            "OriginProtocolPolicy": "https-only",
+                            "OriginSslProtocols": {"Quantity": 1, "Items": ["TLSv1.2"]}
+                        },
+                        "ConnectionAttempts": 3,
+                        "ConnectionTimeout": 10
+                    }
+                ]
+            },
+            "OriginGroups": {"Quantity": 0},
+            "DefaultCacheBehavior": {
+                "TargetOriginId": "s3-origin-public",
+                "ViewerProtocolPolicy": "allow-all",
+                "AllowedMethods": {"Quantity": 2, "Items": ["GET", "HEAD"]}
+            },
+            "CacheBehaviors": {"Quantity": 0},
+            "CustomErrorResponses": {"Quantity": 0},
+            "Comment": "scoursh fixture public distribution",
+            "Logging": {
+                "Enabled": false,
+                "IncludeCookies": false,
+                "Bucket": "",
+                "Prefix": ""
+            },
+            "PriceClass": "PriceClass_All",
+            "Enabled": true,
+            "ViewerCertificate": {
+                "CloudFrontDefaultCertificate": true,
+                "SSLSupportMethod": "vip",
+                "MinimumProtocolVersion": "TLSv1",
+                "CertificateSource": "cloudfront"
+            },
+            "Restrictions": {"GeoRestriction": {"RestrictionType": "none", "Quantity": 0}},
+            "WebACLId": "",
+            "HttpVersion": "http2",
+            "IsIPV6Enabled": true
+        }
+    }
+}

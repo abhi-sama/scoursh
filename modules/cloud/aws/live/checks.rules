@@ -1332,3 +1332,199 @@ remediation: Configure a customer-managed KMS key for this function's
   has at least one environment variable configured.
 references: CWE-311
 references: https://docs.aws.amazon.com/lambda/latest/dg/configuration-envvars.html#configuration-envvars-encryption
+
+# ---------------------------------------------------------------------------
+# CLOUD-14 (docs/STEP6-CLOUD-PLAN.md) - modules/cloud/aws/live/elb.sh.
+# `elb` (Classic Load Balancer) and `elbv2` (ALB/NLB) are one AWS product,
+# "Elastic Load Balancing", across two API generations
+# (docs/STEP6-CLOUD-PLAN.md's own counting note) - one script, one set of
+# check ids, evaluated against both namespaces.  `elb.sh` is a `regional` row
+# in `_CLOUD_SERVICES`, unlike S3's `global` one, so `loc_region` here is
+# simply the region the pass ran in - see elb_engine.sh's own header for why
+# that needs no second resolution the way an S3 bucket's does.
+#
+# NO `cis:` ON ANY OF THESE THREE.  CIS AWS Foundations Benchmark v3.0.0 has
+# no Elastic Load Balancing section at all - its scope is IAM (section 1),
+# storage encryption/access (2), logging (3) and networking (5); confirmed
+# against data/cis-mappings, which transcribes the full v1(CIS-core) scope
+# and carries no `CLOUD-ELB-*`-shaped row.  Per docs/CIS-MAPPINGS.md §1,
+# `data/cis-mappings` is an id -> label table and never a source of ids: an
+# absent `cis:` line here is the honest reading, exactly as it is for S3's own
+# NO_DEFAULT_ENCRYPTION/NO_VERSIONING/NO_LOGGING records above, and inventing
+# a control number to satisfy a "must cite CIS" habit is the
+# overstated-coverage failure docs/DESIGN.md §15 forbids.
+# ---------------------------------------------------------------------------
+
+id: CLOUD-ELB-HTTP_NO_REDIRECT-01
+title: Load balancer listener accepts plain HTTP with no redirect to HTTPS
+script: aws/live/elb.sh
+severity: medium
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: A Classic Load Balancer has no redirect capability at all - it
+  is a pass-through TCP/HTTP proxy - so remove the plain-HTTP listener
+  entirely, or migrate to an Application Load Balancer where a redirect
+  action can be configured. On an ALB, add or fix the HTTP listener's default
+  action so it is a `redirect` whose `Protocol` is exactly `HTTPS` (not the
+  `#{protocol}` placeholder, which preserves the original scheme and performs
+  no upgrade at all) rather than forwarding the request in the clear.
+references: CWE-319
+references: https://docs.aws.amazon.com/elasticloadbalancing/latest/application/create-https-listener.html
+
+id: CLOUD-ELB-WEAK_TLS_POLICY-01
+title: Load balancer HTTPS/TLS listener uses a TLS policy that does not prove a TLS 1.2 floor
+script: aws/live/elb.sh
+severity: high
+confidence: medium
+cwe: CWE-326
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Attach a security policy that names a TLS 1.2 (or later) floor -
+  on ALB/NLB, one of the `ELBSecurityPolicy-TLS-1-2-*` or
+  `ELBSecurityPolicy-TLS13-*` predefined policies (Forward-Secrecy variants
+  where the client population supports them); on a Classic Load Balancer,
+  replace the listener's policy with `ELBSecurityPolicy-TLS-1-2-2017-01` or
+  newer, or a custom policy that explicitly disables SSLv3, TLSv1 and
+  TLSv1.1. On ALB/NLB the check reads the listener's own `SslPolicy` field
+  directly, so a CUSTOM policy name that does not itself declare a TLS 1.2+
+  floor is reported even when the underlying cipher/protocol list happens to
+  be fine - see elb_engine.sh's `elb_policy_is_weak`, which proves strong
+  rather than matches a known-weak name. On a Classic Load Balancer the check
+  instead resolves the attached policy's own attributes
+  (`Reference-Security-Policy`, or the `Protocol-SSLv3`/`Protocol-TLSv1`/
+  `Protocol-TLSv1.1` flags on a fully custom policy), because a Classic ELB
+  listener's own `PolicyNames` entry is an operator-chosen label that
+  routinely carries no protocol information at all, unlike ALB/NLB's field.
+references: CWE-326
+references: https://docs.aws.amazon.com/elasticloadbalancing/latest/application/describe-ssl-policies.html
+
+id: CLOUD-ELB-NO_ACCESS_LOGS-01
+title: Load balancer access logging is not enabled
+script: aws/live/elb.sh
+severity: low
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable access logging for this load balancer (the
+  `access_logs.s3.enabled` attribute on ALB/NLB, or the `AccessLog.Enabled`
+  attribute on a Classic Load Balancer) and deliver the logs to a separate,
+  restricted S3 bucket. Without it there is no per-request record of who was
+  served by this load balancer, so a later investigation into a suspected
+  abuse or outage has nothing to work from.
+references: CWE-778
+references: https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-access-logs.html
+
+# ---------------------------------------------------------------------------
+# CLOUD-24 (docs/STEP6-CLOUD-PLAN.md) - modules/cloud/aws/live/cloudfront.sh.
+# `cloudfront` is a `global` row in `_CLOUD_SERVICES`, and every finding here
+# cites `region: global` - a CloudFront distribution has no per-resource AWS
+# region at all (cloudfront_engine.sh's own header). No `cis:` on any of
+# these five, for the identical reason the CLOUD-ELB-* records above give:
+# CIS AWS Foundations Benchmark v3.0.0 has no CloudFront section, and
+# data/cis-mappings carries no row for one.
+# ---------------------------------------------------------------------------
+
+id: CLOUD-CLOUDFRONT-VIEWER_HTTP_ALLOWED-01
+title: CloudFront distribution permits plain HTTP between viewer and edge
+script: aws/live/cloudfront.sh
+severity: high
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set the distribution's (default and any per-path) cache
+  behavior ViewerProtocolPolicy to `redirect-to-https` or `https-only`
+  instead of `allow-all`. With `allow-all`, a viewer that happens to request
+  the plain-HTTP URL is served over an unencrypted connection between itself
+  and the CloudFront edge, and nothing about the distribution's own
+  configuration prevents that request from ever being made.
+references: CWE-319
+references: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-https-viewers-to-cloudfront.html
+
+id: CLOUD-CLOUDFRONT-WEAK_MIN_TLS-01
+title: CloudFront distribution's minimum viewer TLS protocol version is weak
+script: aws/live/cloudfront.sh
+severity: medium
+confidence: high
+cwe: CWE-326
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Attach a certificate through AWS Certificate Manager (a
+  distribution using the shared CloudFront default certificate cannot set a
+  custom minimum protocol version at all, and its fixed minimum is weak) and
+  set the distribution's SecurityPolicy/MinimumProtocolVersion to
+  `TLSv1.2_2021` or later, so a client attempting a connection below TLS 1.2
+  is refused rather than served.
+references: CWE-326
+references: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-viewer-protocols-ciphers.html
+
+id: CLOUD-CLOUDFRONT-NO_WAF-01
+title: CloudFront distribution has no AWS WAF web ACL associated
+script: aws/live/cloudfront.sh
+severity: medium
+confidence: high
+cwe: CWE-1188
+owasp: A05:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Create or reuse an AWS WAF (WAFv2) web ACL scoped to CloudFront
+  and associate it with this distribution, starting from the AWS Managed
+  Core rule group so common web exploits (SQL injection, known bad inputs)
+  are filtered at the edge before ever reaching an origin. An unassociated
+  distribution passes every request straight through with no rule evaluation
+  of any kind.
+references: CWE-1188
+references: https://docs.aws.amazon.com/waf/latest/developerguide/cloudfront-features.html
+
+id: CLOUD-CLOUDFRONT-ORIGIN_EXPOSED-01
+title: CloudFront S3 origin has no Origin Access Control or Origin Access Identity
+script: aws/live/cloudfront.sh
+severity: high
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Create an Origin Access Control (OAC; the current, SigV4-based
+  mechanism - the legacy Origin Access Identity still works but AWS
+  recommends OAC for new distributions) for this origin, attach it to the
+  distribution, and restrict the S3 bucket policy to that OAC's principal.
+  Without either, the bucket has to be reachable by more than just this
+  distribution to serve content at all, which in practice usually means the
+  bucket is public or trusts a far wider principal than "requests CloudFront
+  itself forwarded".
+references: CWE-284
+references: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/private-content-restricting-access-to-s3.html
+
+id: CLOUD-CLOUDFRONT-NO_LOGGING-01
+title: CloudFront distribution standard logging is not enabled
+script: aws/live/cloudfront.sh
+severity: low
+confidence: high
+cwe: CWE-778
+owasp: A09:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Enable standard access logging for this distribution and
+  deliver the logs to a separate, restricted S3 bucket. Without it there is
+  no per-request record of what CloudFront served at the edge, so a later
+  investigation into a suspected abuse or content exposure has nothing to
+  work from.
+references: CWE-778
+references: https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/AccessLogs.html

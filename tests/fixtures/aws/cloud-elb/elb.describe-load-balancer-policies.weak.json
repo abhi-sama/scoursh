@@ -1,0 +1,26 @@
+{
+    "PolicyDescriptions": [
+        {
+            "PolicyName": "scoursh-fixture-weak-policy",
+            "PolicyTypeName": "SSLNegotiationPolicyType",
+            "PolicyAttributeDescriptions": [
+                {
+                    "AttributeName": "Protocol-SSLv3",
+                    "AttributeValue": "false"
+                },
+                {
+                    "AttributeName": "Protocol-TLSv1",
+                    "AttributeValue": "true"
+                },
+                {
+                    "AttributeName": "Protocol-TLSv1.1",
+                    "AttributeValue": "true"
+                },
+                {
+                    "AttributeName": "Protocol-TLSv1.2",
+                    "AttributeValue": "true"
+                }
+            ]
+        }
+    ]
+}
