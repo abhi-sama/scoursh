@@ -663,6 +663,15 @@ landed; that table, not this sentence, is the authority if this is ever in doubt
 **Step 5 is therefore complete.**
 Steps 8 (`--paranoid` / `tools/run-in-netns.sh`) and 9 (optional engine adapters) have also landed, out
 of sequence - see their own sections below.
+
+**`rules/derived.rules` now seeds `COMPOSITE-TOKEN-HIJACK` (findings F5/F20, closed), now that all
+three of its `requires` contributors exist**: `CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01` (§8.5, CLOUD-23),
+`DAST-LEAK-JS_CONFIG-01` (§7.1, DAST-10) and `DAST-GQL-INTROSPECTION-01` (§7.4, DAST-27), correlated on
+`target`. `docs/FOUNDATION.md`'s "Known follow-ups" carries the closure detail and, immediately after
+it, a new open finding (F21) this seeding work surfaced: the AppSync contributor's own script never
+sets `endpoint_hosts`, so its finding cannot attribute to a `target` in a real run today - the composite
+fires correctly against real contributor ids in `tests/suites/state-diff.sh`, which sets it directly,
+but not yet against a real `scan.sh cloud` run's own AppSync findings.
 **Step 6 (Cloud) has STARTED, and `modules/cloud/` now exists** - its tier 0 is partly landed.
 `docs/STEP6-CLOUD-PLAN.md`'s own dispatch plan reorganises that step into PRs P1..P22; P1 (the
 `lib/awscli.sh` hardening - response cache, `--profile`/`--region` plumbing, `aws_ro_account_id_set`,
