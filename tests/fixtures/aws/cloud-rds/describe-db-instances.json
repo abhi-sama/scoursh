@@ -1,0 +1,18 @@
+{
+    "DBInstances": [
+        {
+            "DBInstanceIdentifier": "scoursh-fixture-public-db",
+            "DBInstanceArn": "arn:aws:rds:eu-west-2:123456789012:db:scoursh-fixture-public-db",
+            "PubliclyAccessible": true,
+            "StorageEncrypted": false,
+            "BackupRetentionPeriod": 0
+        },
+        {
+            "DBInstanceIdentifier": "scoursh-fixture-hardened-db",
+            "DBInstanceArn": "arn:aws:rds:eu-west-2:123456789012:db:scoursh-fixture-hardened-db",
+            "PubliclyAccessible": false,
+            "StorageEncrypted": true,
+            "BackupRetentionPeriod": 7
+        }
+    ]
+}

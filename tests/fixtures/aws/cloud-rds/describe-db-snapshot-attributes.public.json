@@ -1,0 +1,11 @@
+{
+    "DBSnapshotAttributesResult": {
+        "DBSnapshotIdentifier": "scoursh-fixture-public-db-snap",
+        "DBSnapshotAttributes": [
+            {
+                "AttributeName": "restore",
+                "AttributeValues": ["all"]
+            }
+        ]
+    }
+}

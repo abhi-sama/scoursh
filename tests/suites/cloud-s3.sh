@@ -527,12 +527,13 @@ assert_contains "$_AUDIT" 'CLOUD-S3-' 'E15 the audit view carries the cloud chec
 # the real, current extent of the live catalog rather than a stale sentence.
 # It named S3 alone at CLOUD-05, then S3 and API Gateway at CLOUD-22, then
 # KMS/Secrets Manager/SSM at CLOUD-07/08/09, then IAM (CLOUD-06) and EC2/VPC
-# (CLOUD-13), and now also names the CLOUD-30..34 governance bundle
-# (tests/suites/cloud-governance.sh), exactly as this comment originally
-# predicted a later service landing would require - see
-# tests/suites/cloud-ssm.sh's own round-trip section for an earlier stage of
-# this same guard.
-assert_contains "$_AUDIT" 'ships the S3, API Gateway, KMS, Secrets Manager, SSM, IAM, EC2/VPC, CloudTrail, AWS Config, GuardDuty, Inspector2 and Macie2 services so far' \
+# (CLOUD-13), then the CLOUD-30..34 governance bundle
+# (tests/suites/cloud-governance.sh), and now also RDS and DynamoDB
+# (CLOUD-15/16, tests/suites/cloud-rds.sh / tests/suites/cloud-dynamodb.sh),
+# exactly as this comment originally predicted a later service landing would
+# require - see tests/suites/cloud-ssm.sh's own round-trip section for an
+# earlier stage of this same guard.
+assert_contains "$_AUDIT" 'ships the S3, RDS, DynamoDB, API Gateway, KMS, Secrets Manager, SSM, IAM, EC2/VPC, CloudTrail, AWS Config, GuardDuty, Inspector2 and Macie2 services so far' \
   'E16 the audit view states the real, current extent of the live catalog'
 assert_not_contains "$_AUDIT" 'ships no service script yet' \
   'E17 ... and no longer claims the catalog is empty'
@@ -544,5 +545,7 @@ assert_not_contains "$_AUDIT" 'ships the S3, API Gateway, KMS, Secrets Manager, 
   'E17d ... and no longer claims EC2/VPC is absent, now that CLOUD-13 has landed'
 assert_not_contains "$_AUDIT" 'ships the S3, API Gateway, KMS, Secrets Manager, SSM, IAM and EC2/VPC services so far' \
   'E17e ... and no longer claims the CLOUD-30..34 governance bundle is absent'
+assert_not_contains "$_AUDIT" 'ships the S3, API Gateway, KMS, Secrets Manager, SSM, IAM, EC2/VPC, CloudTrail, AWS Config, GuardDuty, Inspector2 and Macie2 services so far' \
+  'E17f ... and no longer claims RDS and DynamoDB are absent'
 
 t_summary cloud-s3

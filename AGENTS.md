@@ -733,6 +733,43 @@ instances, VPCs + flow logs) rather than S3's one `list-buckets` call every chec
 rediscover. `tests/suites/cloud-ec2.sh` is its own vertical-slice proof, mirroring
 `tests/suites/cloud-s3.sh` but over TWO regions (a deliberately misconfigured `us-east-1` and a hardened
 `eu-west-2`), which is what makes multi-region iteration itself an assertion rather than a comment.
+**CLOUD-15/16 (`modules/cloud/aws/live/rds.sh` and `dynamodb.sh`) have now landed too, as
+tier-2 peers built by copying the S3 template** - four `CLOUD-RDS-*` checks (public accessibility,
+no encryption at rest, no automated backups/PITR, a snapshot shared with `restore: all`) and three
+`CLOUD-DYNAMODB-*` checks (no encryption-at-rest configuration, PITR disabled, a VPC Gateway endpoint
+left at AWS's default `Principal:"*"`/`Action:"*"` "Full Access" policy). Both are `regional` rows in
+`_CLOUD_SERVICES`, unlike S3's `global` one, so for both of them the coverage cell and a finding's
+`loc_region` are the SAME value - the ordinary case tension 12 is built around, not S3's global/
+per-bucket exception. Their own `checks-rds.rules`/`checks-dynamodb.rules` are SEPARATE files rather
+than appended to the shared `checks.rules` (that file's own header names this escape hatch: tier-2
+service PRs are genuinely parallel, simultaneously in-flight peers, not the sequential bundles the
+shared file assumes). Neither DynamoDB check carries a `cis` value - CIS v3.0.0 has no DynamoDB
+section at all - while RDS cites 2.3.1 and 2.3.3 (encryption, public access) and leaves its two other
+checks uncited, the identical honest-absence pattern `checks.rules` already documents for S3's
+versioning/logging checks.
+Two things measured while building them, worth knowing before the next service PR:
+- **Both RDS and DynamoDB paginate with a continuation key `lib/awscli.sh`'s shared
+  `_awscli_detect_truncation` does NOT recognise.** Every RDS `describe-*` operation returns a bare
+  `Marker` (not `NextMarker`/`NextToken`), and DynamoDB's `list-tables` returns
+  `LastEvaluatedTableName` - neither is in that function's frozen key table, so a truncated response
+  from either comes back `SCOURSH_AWS_RO_OUTCOME=ok` unless the service script checks the key itself.
+  `rds.sh`/`dynamodb.sh` each do, explicitly (`rds_marker_present`/`ddb_last_evaluated_present`), and
+  `tests/suites/cloud-rds.sh`/`cloud-dynamodb.sh` each have their own section F proving the shared
+  detector alone would have missed it. A future `aws/live/*.sh` script should check whether ITS OWN
+  service's pagination key is in that table before trusting `SCOURSH_AWS_RO_OUTCOME` alone.
+- **A per-resource call inside a list-walk must never `_doc_load` into the SAME shared doc-map the
+  walk itself is reading from, and this is a real, shipped defect that was caught by testing rather
+  than reasoned about in advance.** `s3.sh`'s own bucket loop avoids the hazard by draining every
+  bucket name into a plain array (`buckets=()`) BEFORE `_s3_examine_bucket` (which reloads `_S3_DOC`
+  per check) is ever called; a first draft of `rds.sh`'s snapshot loop and `dynamodb.sh`'s table loop
+  both interleaved the list-walk with the per-resource call instead, so `_rds_examine_snapshot`/
+  `_ddb_examine_table` - each of which calls `rds_doc_load`/`ddb_doc_load` on its OWN response -
+  clobbered the shared `_RDS_DOC`/`_DDB_DOC` map the outer `while` loop was still reading `DBSnapshots`/
+  `TableNames` from, so the walk silently stopped after exactly the FIRST resource with no error of any
+  kind. Both scripts now drain into a plain array first, matching s3.sh's own shape; both suites'
+  section B (three-plus resources, only the first of which is examined under the broken reading) is
+  what caught it, and it read as ordinary passing output until reduced to fewer resources than the
+  fixture actually named.
 **Every OTHER `aws/live/*.sh` service in `docs/DESIGN.md` §8.1's catalog is still absent**, and a
 `--live` run records each one as unexamined rather than counting it clean.
 **Step 7 (persistent run state, `state/` plus `diff`) is complete.**
