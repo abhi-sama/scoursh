@@ -1,0 +1,45 @@
+C:Q1musl0000000000000000000000000000000000=
+P:musl
+V:1.2.4-r2
+A:x86_64
+S:383188
+I:622592
+T:the musl c library (libc) implementation
+U:https://musl.libc.org/
+L:MIT
+o:musl
+m:Musl maintainer <musl@example.invalid>
+t:1700000000
+c:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+D:so:libc.musl-x86_64.so.1
+
+C:Q1busybox000000000000000000000000000000=
+P:busybox
+V:1.36.1-r15
+A:x86_64
+S:849152
+I:1662976
+T:Size optimized toolbox of many common UNIX utilities
+U:https://busybox.net/
+L:GPL-2.0-only
+o:busybox
+m:Busybox maintainer <busybox@example.invalid>
+t:1700000001
+c:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+D:so:libc.musl-x86_64.so.1
+p:/bin/sh
+
+C:Q1openssl000000000000000000000000000000=
+P:openssl
+V:3.1.4-r1
+A:x86_64
+S:1245184
+I:3506176
+T:Toolkit for Transport Layer Security (TLS)
+U:https://www.openssl.org/
+L:Apache-2.0
+o:openssl
+m:OpenSSL maintainer <openssl@example.invalid>
+t:1700000002
+c:cccccccccccccccccccccccccccccccccccccccc
+D:so:libc.musl-x86_64.so.1 so:libcrypto.so.3

@@ -1,0 +1,77 @@
+# modules/image/checks-apk.rules - the container-image module's apk-specific
+# script-check registry (rules/RULE-FORMAT.md §9's `checks-<name>.rules`
+# row, docs/FOUNDATION.md tension 29; data/scoursh-image-scan-design/
+# report.md §4.1's check-set table and §5.3's IMG-04 row).
+#
+# ONE FILE PER OWNING DRIVER, per report.md §5.1's binding rule (the
+# cloud-wave `checks.rules` corruption, `c9f0e80`, is the incident that rule
+# exists to prevent) and modules/image/checks-advisories.rules' own
+# identical precedent: this ticket's OWN file, never an append to a shared
+# `modules/image/checks.rules` a later dpkg/rpm ticket could then collide
+# on.
+#
+# `id: IMAGE-PKG-VULNERABLE_OS_PACKAGE-01` IS APK-SPECIFIC, despite its
+# generic-sounding name - report.md §4.1 states it exactly this way ("apk
+# package ... Alpine release"), because a check id names one owning file
+# under §9.1.1's uniqueness rule (E019), so a future dpkg or rpm ticket adds
+# its OWN id in its OWN `checks-dpkg.rules`/`checks-rpm.rules` rather than
+# reusing this one - report.md §5.3's IMG-07 row lists "own checks-dpkg.rules"
+# for exactly this reason.
+#
+# `script: distro/apk.sh` because the comparator IMG-05 adds and the finding
+# emission IMG-06 wires both land in this same file, mirroring
+# checks-advisories.rules' own `script: run.sh` (that file's emitter,
+# `image_report_no_advisory_db`, lives in engine.sh but is called from
+# run.sh - the script field names the DRIVER a reader would go to, not
+# necessarily the literal function body).
+#
+# THIS CHECK DOES NOT FIRE YET (IMG-04's own scope line: "enumeration + the
+# apk registry file only").  `distro/apk.sh` ships an enumerator and no
+# comparator, and nothing in `modules/image/run.sh` calls it - the identical
+# "registered, not yet reachable" shape `modules/image/checks-advisories.rules`
+# itself was in before IMG-03 wired its own emitter, and that
+# `modules/sast/`/`modules/dast/` precedent this whole module follows.
+# `checks_registry_load` globs every `*.rules` file with no reachability
+# requirement, so a check id registered here today costs nothing and is
+# already correct the day IMG-05/IMG-06 land.
+#
+# `severity: high` is the REGISTERED DEFAULT, not a promise every finding
+# will carry it - report.md §4.1's own table says the real severity is "from
+# row" (data/advisories.db's own per-advisory `severity` field). This
+# mirrors modules/network/checks-banner.rules' own
+# NET-SVC-OUTDATED_COMPONENT-01: that record also declares a fixed registry
+# severity while its emitter (`banner_engine.sh`) calls
+# `finding_set base_severity "$sev"` with the vendored list's own row value.
+# IMG-06's comparator/emitter is expected to do the identical thing against
+# data/advisories.db's row rather than defer to this field.
+#
+# `tags: passive` - apk enumeration reads one already-extracted local file
+# and makes no network call and mutates nothing, the identical reasoning
+# checks-advisories.rules' own header gives for the same tag.  `tags: quick`
+# for the identical reason that file gives too: a single-file parse plus a
+# `db_lookup_exact` prefix test is the cheapest real coverage a run can buy.
+#
+# `coverage-scope: image-id` - the only legal value for the `IMAGE` module
+# (rules/RULE-FORMAT.md §9.5.1's frozen table); the cell is the
+# operator-declared stable id from `config/images.conf`, never the image
+# digest or tag (report.md §3.4).
+
+id: IMAGE-PKG-VULNERABLE_OS_PACKAGE-01
+title: Installed apk package matches a known advisory for this image's Alpine release
+script: distro/apk.sh
+severity: high
+confidence: high
+cwe: CWE-1104
+owasp: A06:2021
+tags: passive
+tags: quick
+coverage-scope: image-id
+remediation: Rebuild the image against an updated base layer (or upgrade
+  the named package directly, where the Dockerfile installs it explicitly)
+  so the installed version no longer matches this advisory, then re-scan.
+  A base-image bump alone can carry this fix silently, so treat a `FROM`
+  tag pin as something to review whenever this finding's advisory has a
+  fixed-in version at or below the base image's own release.
+references: data/scoursh-image-scan-design/report.md
+references: CWE-1104
+references: https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/

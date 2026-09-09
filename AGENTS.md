@@ -3930,10 +3930,51 @@ for the alpine importer, proving one advisory spanning two Alpine releases write
 same-package entry under a different ecosystem is excluded, and a re-run replaces the WHOLE `Alpine:`
 namespace (every release) while leaving an unrelated SCA ecosystem's rows untouched.
 
-**What remains, per report.md §5.3:** the Alpine vertical slice - IMG-04 (apk enumeration), IMG-05 (the
-differential-tested apk comparator), IMG-06 (end-to-end, the first ticket to actually emit
-`IMAGE-PKG-VULNERABLE_OS_PACKAGE-01`) - before Debian/Ubuntu and rpm are even considered (D2's own
-Alpine-first recommendation).
+**IMG-04 (apk enumeration) has also landed - the first tier-1 (Stage 1) ticket, and the first ticket
+to ship anything under `modules/image/distro/`.** It ships `modules/image/distro/apk.sh`
+(`apk_installed_enumerate FILE`, a pure reader with no `finding_emit`/`run_record` calls of its own -
+recording is left to whichever caller has the run context, the identical
+`image_os_release_parse`/`image_tar_members` precedent) and its own
+`modules/image/checks-apk.rules` (report.md §5.1's per-ticket-own-file rule, never an append to
+`checks-advisories.rules`). Five things about it are worth carrying here:
+
+- **The apk `installed` DB's blank-line-separated `K:value` blocks are read with a bash `case`
+  matching only `P:*`/`V:*`**; every other real, legal key (checksum, arch, size, description, url,
+  license, origin, maintainer, build time, commit, depends, provides, ...) falls through to a no-op
+  rather than a diagnostic, which is what "handle a malformed/partial block sanely" turns out to mean
+  in practice - there is no such thing as a corrupt LINE here, only an unrecognised one.
+- **A block with no `P:` at all is dropped; a block with `P:` but no `V:` is still enumerated, with an
+  empty version string.** There is no such thing as a nameless installed package, but "no version on
+  record" is a real fact worth handing to a future comparator rather than a parse failure to hide.
+- **`[[ ! -f $file || ! -r $file ]]`, never `-r` alone.** A directory commonly reports `-r` true too
+  (the execute/search bit tracks with the read bit on most setups), so `-r`-only refusal lets a
+  directory path fall through into `<"$file"` and fail INSIDE the read loop with bash's own "Is a
+  directory" read error instead of this function's clean, declared refusal - measured by this
+  ticket's own suite (`tests/suites/image-apk.sh` section C), which is what caught it.
+- **Two parallel arrays (`APK_INSTALLED_NAMES`/`APK_INSTALLED_VERSIONS`), never one associative array
+  keyed by name** - an associative array would silently keep only the LAST of two same-named `P:`
+  blocks, which apk's own tooling would never produce but a hand-edited or corrupt database might, and
+  parallel arrays preserve both for a caller to notice rather than collapsing them before anyone looks.
+  A SETTER, never a `$(f)` printer, for the same reason `image_tar_listing_set`'s own header gives.
+- **`IMAGE-PKG-VULNERABLE_OS_PACKAGE-01` IS APK-SPECIFIC despite its generic-sounding name** -
+  report.md §4.1 names it exactly this way ("apk package ... Alpine release"), and a check id names
+  one owning file under §9.1.1's uniqueness rule (E019), so IMG-07's dpkg ticket adds its OWN id in its
+  own `checks-dpkg.rules` rather than reusing this one. The record is registered and UNREACHABLE today
+  - `distro/apk.sh` ships an enumerator and no comparator, and nothing in `modules/image/run.sh` calls
+  it yet - the identical "registered, not yet wired" shape `checks-advisories.rules` was in before
+  IMG-03 wired its own emitter; `checks_registry_load` globs every `*.rules` file with no reachability
+  requirement, so this costs nothing today and is already correct the day IMG-05/IMG-06 land.
+
+`tests/suites/image-apk.sh` is the proof (unit-level only, no acquisition, no `scan.sh image`
+subprocess): a real-shaped multi-package fixture, the malformed/partial-block fixture above, a missing
+DB, a directory in place of a file, a DB with no trailing blank line, an empty-but-present DB, and
+`checks-apk.rules` parsing clean and appearing alongside `checks-advisories.rules` under the same glob.
+
+**What remains, per report.md §5.3:** IMG-05 (the differential-tested apk version comparator -
+`1.2.3-r4 < 1.2.3-r10`, report.md §2.4/§2.5's own measured reason `modules/sca/semver.sh` cannot be
+reused for OS package versions) and IMG-06 (end-to-end: wire `distro/apk.sh` and the comparator into
+`modules/image/run.sh`, and actually emit `IMAGE-PKG-VULNERABLE_OS_PACKAGE-01` for the first time) -
+before Debian/Ubuntu and rpm are even considered (D2's own Alpine-first recommendation).
 
 ## Tests
 
