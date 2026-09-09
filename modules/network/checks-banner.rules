@@ -1,30 +1,54 @@
-# modules/network/checks-banner.rules - the NET-07 script-check registry
-# (rules/RULE-FORMAT.md §9.5; data/scoursh-network-scan-design/report.md
-# §3.2 item 1, §5.1, the NET-07 row in its §7 staged plan). Owned by
-# modules/network/banner.sh.
+# modules/network/checks-banner.rules - the NET-07 AND NET-11 script-check
+# registry (rules/RULE-FORMAT.md §9.5; data/scoursh-network-scan-design/
+# report.md §3.2 item 1, §3.4, §5.1, the NET-07 and NET-11 rows in its §7
+# staged plan). Owned by modules/network/banner.sh - see that file's own
+# header for why NET-11 (the version->vulnerability lookup) lives inside
+# NET-07's own phase script rather than as a peer file.
 #
 # ONE FILE PER OWNING PHASE SCRIPT, per rules/RULE-FORMAT.md §9's
 # `checks-<name>.rules` row (docs/FOUNDATION.md tension 29) - matching
 # modules/network/checks-reachability.rules (NET-06), never a shared
 # `checks.rules` two peers could collide on.
 #
-# ONE CHECK ID, unlike NET-06's two: report.md §5.1's own table gives this
-# probe exactly one row, `NET-SVC-BANNER_DISCLOSURE-01`, because unlike
-# NET-PORT-*'s two genuinely different verdicts (a real exposure vs an
-# inventory-hygiene observation), a banner disclosing a product name alone
-# and a banner disclosing a product AND version are the SAME finding at two
-# strengths of the same fact, not two different facts - net_banner_identify_
-# text (modules/network/banner_engine.sh) reports both under this one id,
-# with the version named in the evidence when one was disclosed.
+# TWO CHECK IDS, ONE PER PROPERTY: `NET-SVC-BANNER_DISCLOSURE-01` (a banner
+# disclosing a product name alone, and one disclosing a product AND version,
+# are the SAME finding at two strengths of the same fact - net_banner_
+# identify_text, modules/network/banner_engine.sh, reports both under this
+# one id, with the version named in the evidence when one was disclosed) and
+# `NET-SVC-OUTDATED_COMPONENT-01` (an EXACT data/versions.db `banner`-
+# namespace match on that same disclosure - report.md §3.4, never a range or
+# heuristic comparison). The `net` location profile (lib/findings.sh,
+# target/host/port/transport) carries no "kind" or "product" component, so a
+# name-only disclosure and a known-vulnerable-version hit on the SAME
+# listener would collide onto the SAME fingerprint under one id -
+# modules/network/checks-httpport.rules' own header (NET-09) states the
+# identical reasoning for its own two sibling ids, and it applies here
+# unchanged.
 #
-# The type tag is `passive` (report.md §5.1's own table for this check, and
-# modules/network/engine.sh's own phase-table floor, `banner.sh:passive`):
-# the probe reads only what a listener volunteers unprompted on connect and
-# sends zero bytes - the opposite of NET-06's own `safe-active` tag, whose
-# header explains why a bare connect attempt earns that tag instead (a real
-# connection to a port the operator did not necessarily expect a scanner to
-# knock on). Sending nothing at all on that same connection is what earns
-# this check the weaker tag.
+# NET-SVC-OUTDATED_COMPONENT-01 IS `confidence: medium`, NEVER `high` -
+# report.md §3.4's backport problem: the version came from a raw TCP banner
+# the listener volunteered unprompted, which is the SOFTWARE's own
+# self-reported upstream version string, and a distribution that backports a
+# security fix (Debian's or RHEL's own openssh packages are the report's
+# worked example) does so under an UNCHANGED version string. An exact match
+# against the vendored list can therefore name a host that is genuinely
+# already patched, which is why `confidence` is capped at `medium` here and
+# the finding's own `remediation` states the limitation in words - the
+# identical caveat modules/network/checks-httpport.rules' own
+# NET-SVC-HTTP_OUTDATED_COMPONENT-01 record carries for the HTTP-response
+# channel.
+#
+# The type tag is `passive` for BOTH ids (report.md §5.1's own table for
+# NET-SVC-BANNER_DISCLOSURE-01, and modules/network/engine.sh's own
+# phase-table floor, `banner.sh:passive`, which binds every check this phase
+# script emits): the probe reads only what a listener volunteers unprompted
+# on connect and sends zero bytes - the opposite of NET-06's own
+# `safe-active` tag, whose header explains why a bare connect attempt earns
+# that tag instead (a real connection to a port the operator did not
+# necessarily expect a scanner to knock on). Sending nothing at all on that
+# same connection is what earns both of this file's checks the weaker tag,
+# including the outdated-component one - unlike NET-09's HTTP-channel
+# sibling, which sends one GET and so is `safe-active` instead.
 #
 # `coverage-scope: target` is NET's cell (rules/RULE-FORMAT.md §9.5.1's own
 # NET row: the config/scope.conf target id), identical to every other NET-*
@@ -49,3 +73,26 @@ remediation: A service greeting that names its own product and exact
   own schedule regardless of whether the banner is suppressed.
 references: CWE-200
 references: https://owasp.org/Top10/A05_2021-Security_Misconfiguration/
+
+id: NET-SVC-OUTDATED_COMPONENT-01
+title: Network service version named in the vendored known-vulnerable list
+script: banner.sh
+severity: high
+confidence: medium
+cwe: CWE-1104
+owasp: A06:2021
+tags: passive
+coverage-scope: target
+remediation: Upgrade the component on this listener to a release the
+  advisory does not name, or apply the vendor backport for it. Where an
+  upgrade cannot be immediate, put a compensating control in front of the
+  specific weakness the advisory describes and track the upgrade as the
+  remediation rather than treating the control as one. Re-read the running
+  version from the same listener afterwards. The version was read from a
+  raw TCP banner the listener volunteered on connect, not a package manager
+  or an authenticated check, so a distribution that backports a security
+  fix under an unchanged upstream version string (e.g. Debian's or RHEL's
+  own openssh packages) would not be visible here - confirm the running
+  binary before treating this as a high-confidence claim about it.
+references: CWE-1104
+references: https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/
