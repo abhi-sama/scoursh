@@ -426,8 +426,17 @@ Commands:
                               the account the credentials actually resolve to
                               (exit 2 on a mismatch), which is what catches a
                               stale command pointed at the wrong account.
-                              --assume-role is NOT implemented in this version
-                              and is refused rather than ignored.)
+                              --assume-role ARN iterates a read-only role
+                              across every ACTIVE account of the organization
+                              the resolved credentials belong to
+                              (organizations list-accounts, then sts
+                              assume-role per account) - the ARN's account
+                              segment is a template, rewritten per member
+                              account, so name any account and role name/path
+                              that exists identically in every account to
+                              scan.  --i-own-account is still checked against
+                              the CALLING identity only, not per member
+                              account.)
   all      run every module for which inputs are configured
   diff     --against <prior-run-dir>
   report   --from <prior-run-dir>

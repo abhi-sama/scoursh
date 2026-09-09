@@ -26,13 +26,12 @@
 # network) and tests/localstack/run.sh (a real emulator, still not an AWS
 # account).
 #
-# WHAT IS STILL INERT AFTER THIS FILE, and must not be read as wired:
-# `aws_ro_use_profile` / `aws_ro_use_region` make an operator's `--profile` and
-# `--region` REACHABLE, and nothing calls them yet - `scan.sh`'s SCAN_FLAGS
-# still has zero readers.  `modules/cloud/aws/run.sh` (step 6's dispatch entry
-# point) is the file that closes that loop; until it lands, `--profile staging`
-# still resolves to whatever ambient credentials the environment supplies.  The
-# defect is narrowed to one wiring site rather than fixed.
+# STATUS UPDATE (docs/STEP6-CLOUD-PLAN.md P3, P20): `modules/cloud/aws/run.sh`
+# now calls `aws_ro_use_profile` before the identity call, and
+# `modules/cloud/aws/regions.sh`'s `cloud_assume_role` calls
+# `aws_ro_use_credentials` for the `--assume-role` multi-account path - both
+# are wired, not merely reachable.  `aws_ro_use_region` is called per service
+# invocation by `modules/cloud/aws/engine.sh`'s `cloud_run_service`.
 #
 # shellcheck shell=bash
 
@@ -72,6 +71,15 @@ source "${BASH_SOURCE[0]%/*}/core.sh"
 # default and the behaviour before these existed.
 : "${SCOURSH_AWS_PROFILE:=}"
 : "${SCOURSH_AWS_REGION:=}"
+
+# The ambient ASSUMED-ROLE session credentials (step 6's multi-account path,
+# docs/STEP6-CLOUD-PLAN.md CLOUD-02's `--assume-role` remainder).  All three
+# empty (the default) means "no assumed session; resolve credentials the
+# ordinary way" - --profile/environment/instance profile, exactly as before
+# this existed.  Set together, never individually, by aws_ro_use_credentials.
+: "${SCOURSH_AWS_ACCESS_KEY_ID:=}"
+: "${SCOURSH_AWS_SECRET_ACCESS_KEY:=}"
+: "${SCOURSH_AWS_SESSION_TOKEN:=}"
 
 # The frozen read-only prefix allowlist, byte-identical to tension 23's
 # RESOLUTION and to tests/lint-aws-readonly.sh's copy. Kept in one place would
@@ -484,6 +492,35 @@ aws_ro_use_region() {
   export SCOURSH_AWS_REGION
 }
 
+# `aws_ro_use_credentials [AKID SECRET TOKEN]` - the multi-account analogue of
+# aws_ro_use_profile/aws_ro_use_region: sets the ambient ASSUMED-ROLE session
+# credentials every later `aws_ro` call uses, until replaced or cleared by a
+# no-argument call.  modules/cloud/aws/regions.sh's `cloud_assume_role` is the
+# only caller (step 6's `--assume-role` iteration); the single-account path
+# never calls this and is therefore unchanged.
+#
+# NOT EXPORTED, and never written into this process's own environment.  The
+# three values are passed to the CLI as a per-invocation ENVIRONMENT PREFIX on
+# the one exec line in _awscli_fetch (the identical spelling `AWS_PAGER=''`
+# already uses there), never as a process-wide `export`: an exported temporary
+# credential would leak into every OTHER subprocess this run ever spawns - a
+# `curl` from lib/http.sh, an adapter's vendor.sh, a shellcheck child process -
+# which is exactly what tension 9's secret-handling rules exist to prevent one
+# layer down, applied here to a session credential instead of a static one.
+aws_ro_use_credentials() {
+  SCOURSH_AWS_ACCESS_KEY_ID=${1:-}
+  SCOURSH_AWS_SECRET_ACCESS_KEY=${2:-}
+  SCOURSH_AWS_SESSION_TOKEN=${3:-}
+}
+
+# `aws_ro_credentials_active` - true when an assumed-role session is ambient.
+# A caller uses this to decide whether to label a call's identity as "the
+# assumed session" rather than "the ambient profile/environment" - it is a
+# predicate over section 6's own state, not a new concept.
+aws_ro_credentials_active() {
+  [[ -n $SCOURSH_AWS_ACCESS_KEY_ID ]]
+}
+
 _awscli_args_carry() {
   local flag=$1
   shift
@@ -628,7 +665,23 @@ _awscli_fetch() {
   # even attempted, so every AWS call would fail while reporting a tool error
   # rather than a finding.  The environment variable is honoured by both major
   # versions and needs no version detection to use safely.
-  AWS_PAGER='' "$SCOURSH_AWSCLI_BIN" "$svc" "$op" "$@" >"$outf" 2>"$errf" || status=$?
+  #
+  # `env` rather than a second bash prefix-assignment: the three assumed-role
+  # credential vars are conditional (present only when aws_ro_use_credentials
+  # has set them), and a bash prefix assignment cannot be made conditional on
+  # its own line the way an `env` argv can - `AWS_ACCESS_KEY_ID=""` as a
+  # constant prefix would CLEAR a legitimately-set ambient environment
+  # credential on every single-account call, which is the opposite of "empty
+  # means resolve the ordinary way" section 1 documents for these globals.
+  local -a __envp=(AWS_PAGER=)
+  if aws_ro_credentials_active; then
+    __envp+=(
+      AWS_ACCESS_KEY_ID="$SCOURSH_AWS_ACCESS_KEY_ID"
+      AWS_SECRET_ACCESS_KEY="$SCOURSH_AWS_SECRET_ACCESS_KEY"
+      AWS_SESSION_TOKEN="$SCOURSH_AWS_SESSION_TOKEN"
+    )
+  fi
+  env "${__envp[@]}" "$SCOURSH_AWSCLI_BIN" "$svc" "$op" "$@" >"$outf" 2>"$errf" || status=$?
 
   if (( status != 0 )); then
     _awscli_classify "$status" "$errf"

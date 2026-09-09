@@ -17,19 +17,21 @@
 # libraries, get the standard sourced-once guard - exactly the
 # sast/engine.sh and dast/engine.sh split.
 #
-# WHAT THIS TICKET SHIPS, AND WHAT IT DELIBERATELY DOES NOT.  This is the
+# WHAT THIS FILE SHIPS, AND WHAT IT DELIBERATELY DOES NOT.  This is the
 # dispatch skeleton: it resolves the caller identity, records the authorization
-# facts, resolves the enabled-region list, walks the `_CLOUD_SERVICES` table
-# once per (service, cell), and writes the `account-region` coverage cells.  It
-# ships NO check and makes no AWS call beyond the two it needs to answer "whose
-# account is this" and "which regions does it have" - there is no
-# `aws/live/*.sh` script on disk yet, so a run is a clean, honestly-declared
-# no-op, exactly the state modules/dast/'s own dispatch was in before its first
-# phase script landed.  Not shipped here, each by its own ticket: every §8.1
-# service script, the §8.7 posture phase (POSTURE-01, which carries a DIFFERENT
-# coverage scope - see engine.sh's note on why it is not in the service table),
-# and multi-account iteration via `--assume-role` (refused below rather than
-# ignored).
+# facts, resolves the enabled-region list (or, under `--assume-role`, the org
+# member account list, once per account - docs/STEP6-CLOUD-PLAN.md CLOUD-02's
+# multi-account remainder), walks the `_CLOUD_SERVICES` table once per
+# (service, cell), and writes the `account-region` coverage cells.  It ships NO
+# check and makes no AWS call beyond the ones it needs to answer "whose account
+# is this", "which regions does it have" and, under `--assume-role`, "which
+# other accounts does the org have" - there is no `aws/live/*.sh` script on
+# disk yet, so a run is a clean, honestly-declared no-op over whatever
+# account(s)/region(s) it resolved, exactly the state modules/dast/'s own
+# dispatch was in before its first phase script landed.  Not shipped here, each
+# by its own ticket: every §8.1 service script, and the §8.7 posture phase
+# (POSTURE-01, which carries a DIFFERENT coverage scope - see engine.sh's note
+# on why it is not in the service table).
 #
 # THE HONESTY THIS FILE OWES ITS READER IS ITS ACTUAL DELIVERABLE, and it is
 # sharper here than in any peer module.  Every other module fails visibly when
@@ -256,26 +258,6 @@ _cloud_run_module() {
   local regions_flag=${SCAN_FLAGS[regions]:-}
   local assume=${SCAN_FLAGS[assume-role]:-}
 
-  # `--assume-role` REFUSES rather than being ignored (docs/STEP6-CLOUD-PLAN.md
-  # D3, single-account only in this version).  The flag has been PARSED since
-  # step 2 and read by nothing, so an operator who passed it got a
-  # single-account scan of whatever ambient credentials resolved, reported with
-  # no indication that the other accounts they asked for were never visited -
-  # a clean report for an estate that was never looked at.  Refusing is the
-  # smaller failure by a wide margin, and it is exit 2 for the same reason the
-  # affirmation mismatch is: it is a wrong invocation against this version of
-  # the tool, and the fix is to drop the flag or wait for the multi-account
-  # ticket.
-  #
-  # It is checked BEFORE `--live`, so `scan.sh cloud --assume-role ...` with no
-  # `--live` is refused too.  Accepting it silently on the one invocation that
-  # was going to do nothing anyway would leave the operator believing the flag
-  # is supported.
-  if [[ -n $assume ]]; then
-    die "$SCOURSH_EXIT_USAGE" \
-      "cloud: --assume-role is not implemented in this version (single-account only) - it was refused rather than ignored, because ignoring it would report a one-account scan as if it had covered every account named"
-  fi
-
   # `--profile` is HONOURED, at last: it has been parsed since step 2 and read
   # by nothing, so `--profile staging` scanned whatever ambient
   # AWS_PROFILE/default credentials resolved - and then labelled the findings
@@ -353,8 +335,59 @@ _cloud_run_module() {
 
   # The affirmation is checked the instant the account is known and BEFORE the
   # region enumeration, so a wrong-account invocation costs one API call rather
-  # than one plus an enumeration.
+  # than one plus an enumeration.  It is checked against THIS resolved
+  # identity only - the account that started the run, typically the org
+  # management or a delegated-administrator account under `--assume-role` -
+  # and is NOT re-checked per org member account below: it answers "did the
+  # operator mean to point this invocation at this credential", a fact about
+  # how the run was STARTED, not about which accounts the org happens to
+  # contain.
   _cloud_check_account_affirmation "$account"
+
+  # -------------------------------------------------------------------------
+  # Multi-account (docs/STEP6-CLOUD-PLAN.md D3's deferred half, CLOUD-02
+  # remainder).
+  # -------------------------------------------------------------------------
+  if [[ -n $assume ]]; then
+    _cloud_run_multi_account "$account" "$profile" "$regions_flag" "$assume"
+    _cloud_finish
+    return 0
+  fi
+
+  _cloud_scan_one_account "$account" "$profile" "$regions_flag" true
+  _cloud_finish
+  return 0
+}
+
+# `_cloud_scan_one_account ACCOUNT PROFILE REGIONS_FLAG RECORD_SINGULAR` -
+# resolves ACCOUNT's enabled regions, walks `_CLOUD_SERVICES` once per
+# (service, cell) exactly as the single-account path always has, and writes
+# the `account-region` coverage cells and honesty records.  Factored out of
+# `_cloud_run_module` so the single-account path (RECORD_SINGULAR=true, called
+# once) and the `--assume-role` multi-account loop below
+# (RECORD_SINGULAR=false, called once per resolved member account) share one
+# implementation rather than two copies that could drift - the same reasoning
+# `cloud_run_service` already applies one level down.  Single-account BEHAVIOUR
+# is unchanged: this is the identical code that used to sit inline in
+# `_cloud_run_module`, moved rather than rewritten.
+#
+# RECORD_SINGULAR gates ONLY the run.json singular authorization fields
+# (`cloud.profile`/`cloud.regions_planned`/`cloud.regions_source`, written via
+# `_cloud_record_authorization`) - never the per-cell coverage cells or the
+# per-account coverage_reduction/coverage_gap records below, which are always
+# written and are what carries per-account truth under multi-account.  It MUST
+# be false for every multi-account call: `_cloud_record_authorization`'s own
+# header documents that those three facts are recorded via `run_record`'s
+# first-wins semantics (`_meta_first`), so calling it once per account would
+# leave run.json's singular fields describing only the FIRST account visited
+# while every other account's true region count/source is silently dropped
+# from view - not wrong, but a genuinely different fact wearing the first
+# account's label.  A caller with RECORD_SINGULAR=false gets the same facts
+# per account instead, in a repeatable `notes` record `_meta_array` renders as
+# an array, exactly as the per-cell `notes` record a few lines below already
+# does for the region loop.
+_cloud_scan_one_account() {
+  local account=$1 profile=$2 regions_flag=$3 record_singular=${4:-true}
 
   # -------------------------------------------------------------------------
   # Regions.
@@ -365,8 +398,13 @@ _cloud_run_module() {
     run_record coverage_reduction "module=cloud reason=$_CLOUD_REGIONS_REASON regions_resolved=$nregions - $_CLOUD_REGIONS_DETAIL"
   fi
 
-  _cloud_record_authorization "$account" "${SCOURSH_AWS_CALLER_ARN:-}" "$profile" \
-    "$nregions" "$_CLOUD_REGIONS_SOURCE"
+  if [[ $record_singular == true ]]; then
+    _cloud_record_authorization "$account" "${SCOURSH_AWS_CALLER_ARN:-}" "$profile" \
+      "$nregions" "$_CLOUD_REGIONS_SOURCE"
+  else
+    run_record notes "module=cloud account=$account regions_planned=$nregions regions_source=$_CLOUD_REGIONS_SOURCE assumed_role=1"
+    log_info "cloud: scanning AWS account $account (assumed via --assume-role) across $nregions region(s), read-only"
+  fi
 
   # -------------------------------------------------------------------------
   # Posture phase.  Account-scoped, not region-scoped, so it runs once here
@@ -483,7 +521,65 @@ _cloud_run_module() {
     run_record coverage_gap "cloud covered nothing in account $account: $why and no property of the account's configuration was tested - a clean result here is the absence of a test, not the absence of a problem"
   fi
 
-  _cloud_finish
+  return 0
+}
+
+# `_cloud_run_multi_account CALLER_ACCOUNT PROFILE REGIONS_FLAG ASSUME_ARN` -
+# resolves the organization's ACTIVE member accounts (`cloud_org_accounts_resolve`,
+# modules/cloud/aws/regions.sh section 5) and scans each one under the
+# read-only role ASSUME_ARN names, via `cloud_assume_role`
+# (docs/DESIGN.md §8.1: "Optionally iterate accounts via --assume-role across
+# an Org (read-only role in each)").  CALLER_ACCOUNT is the identity that
+# started this run - already resolved and D1-affirmed by `_cloud_run_module`
+# before this function is ever called - and is used ONLY to enumerate the
+# org; it is not itself re-scanned unless it also appears in `organizations
+# list-accounts`' own response, which for a management or
+# delegated-administrator account it usually does.
+#
+# A FAILED enumeration, or an enumeration that resolves zero accounts, is a
+# declared coverage_gap and NOT a fatal error: the base identity already
+# resolved fine (tension 14's required-input check already passed in
+# `_cloud_run_module`), and Organizations access being denied under a
+# least-privilege caller is the ordinary shape this whole module is built to
+# handle honestly rather than crash on.
+_cloud_run_multi_account() {
+  local caller_account=$1 profile=$2 regions_flag=$3 assume=$4
+
+  run_record cloud_assume_role_arn "$assume"
+
+  cloud_org_accounts_resolve || true
+  local naccounts=${#_CLOUD_ORG_ACCOUNTS[@]}
+  if [[ -n $_CLOUD_ORG_ACCOUNTS_REASON ]]; then
+    run_record coverage_reduction "module=cloud reason=$_CLOUD_ORG_ACCOUNTS_REASON accounts_resolved=$naccounts - $_CLOUD_ORG_ACCOUNTS_DETAIL"
+  fi
+  log_info "cloud: --assume-role resolved $naccounts organization account(s) to scan under '$assume' (caller account $caller_account), read-only"
+
+  if (( naccounts == 0 )); then
+    run_record coverage_gap "cloud --assume-role resolved NO organization member account to scan (${_CLOUD_ORG_ACCOUNTS_DETAIL:-organizations list-accounts returned no ACTIVE account}) - nothing was examined in any account"
+    return 0
+  fi
+
+  local acct_id
+  for acct_id in "${_CLOUD_ORG_ACCOUNTS[@]}"; do
+    # Cleared BEFORE every attempt, not only after one - see
+    # cloud_assume_role_clear's own header for why: a role-ARN template that
+    # fails to build, or an assume that fails part-way through, would
+    # otherwise leave the PREVIOUS account's session ambient for this
+    # attempt, and a role assumed into one account routinely cannot itself
+    # assume a role in a different one.
+    cloud_assume_role_clear
+    if ! cloud_assume_role "$acct_id" "$assume"; then
+      run_record coverage_reduction "module=cloud reason=$_CLOUD_ORG_ACCOUNTS_REASON account=$acct_id - $_CLOUD_ORG_ACCOUNTS_DETAIL"
+      run_record coverage_gap "cloud could not assume the read-only role in account $acct_id (${_CLOUD_ORG_ACCOUNTS_DETAIL:-assume-role failed}) - nothing was examined in this account"
+      continue
+    fi
+    _cloud_scan_one_account "$acct_id" "$profile" "$regions_flag" false
+  done
+
+  # Clears the ambient assumed session so nothing after this function - a
+  # future caller, a later phase, a test process reusing this shell - runs
+  # under the LAST scanned account's credentials by accident.
+  cloud_assume_role_clear
   return 0
 }
 

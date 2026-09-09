@@ -90,7 +90,70 @@ if [[ ${1:-} == --version ]]; then
 fi
 svc=$1
 op=$2
-[[ -n ${AWS_STUB_LOG:-} ]] && printf '%s\n' "$*" >>"$AWS_STUB_LOG"
+shift 2
+[[ -n ${AWS_STUB_LOG:-} ]] && printf '%s %s %s\n' "$svc" "$op" "$*" >>"$AWS_STUB_LOG"
+
+# `sts assume-role` / `sts get-caller-identity` are special-cased, and
+# EVERY OTHER (service, operation) pair still falls through to the ordinary
+# static-file router below - this is what lets section H simulate a REAL
+# identity switch under `--assume-role` while every earlier section's own
+# `sts.get-caller-identity.json` fixture keeps meaning exactly what it always
+# has.  The routed stub is otherwise blind to WHICH credentials made a call -
+# it keys purely on (service, operation) - and `cloud_assume_role`
+# (modules/cloud/aws/regions.sh) genuinely depends on `sts get-caller-identity`
+# answering DIFFERENTLY depending on which account was last assumed into, so a
+# stub that could not tell them apart could not exercise that verification
+# honestly.  The trick: `sts assume-role` is ITSELF given the target account,
+# on its own ARGV (`--role-arn arn:...:<account>:role/...`), which is exactly
+# the one thing this stub already sees; it records that account to a state
+# file, and `sts get-caller-identity` reads it back, in preference to the
+# static caller-identity fixture, when present.
+if [[ $svc == sts && $op == assume-role ]]; then
+  role_arn=''
+  while (( $# > 0 )); do
+    case $1 in
+      --role-arn) role_arn=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  acct=${role_arn#arn:*:iam::}
+  acct=${acct%%:*}
+  if [[ -n ${AWS_STUB_DENY_ACCOUNT:-} && $acct == "$AWS_STUB_DENY_ACCOUNT" ]]; then
+    printf 'An error occurred (AccessDenied) when calling the AssumeRole operation: stub denies this account\n' >&2
+    exit 254
+  fi
+  [[ -n ${AWS_STUB_STATE:-} ]] && printf '%s' "$acct" >"$AWS_STUB_STATE/current-account"
+  cat <<J
+{
+    "Credentials": {
+        "AccessKeyId": "ASIAEXAMPLEFIXTURE",
+        "SecretAccessKey": "example-secret-$acct",
+        "SessionToken": "example-token-$acct",
+        "Expiration": "2099-01-01T00:00:00Z"
+    },
+    "AssumedRoleUser": {
+        "AssumedRoleId": "AROAEXAMPLEFIXTURE:scoursh-scan",
+        "Arn": "arn:aws:sts::$acct:assumed-role/scoursh-ro/scoursh-scan"
+    }
+}
+J
+  exit 0
+fi
+
+if [[ $svc == sts && $op == get-caller-identity && -n ${AWS_STUB_STATE:-} ]]; then
+  acct=$(cat "$AWS_STUB_STATE/current-account" 2>/dev/null || true)
+  if [[ -n $acct ]]; then
+    cat <<J
+{
+    "UserId": "AROAEXAMPLEFIXTURE:scoursh-scan",
+    "Account": "$acct",
+    "Arn": "arn:aws:sts::$acct:assumed-role/scoursh-ro/scoursh-scan"
+}
+J
+    exit 0
+  fi
+fi
+
 f=$AWS_STUB_DIR/$svc.$op.json
 if [[ -r $f ]]; then
   cat -- "$f"
@@ -132,6 +195,41 @@ cat >"$STUBDIR/resp/ec2.describe-regions.json" <<'J'
             "Endpoint": "ec2.us-east-1.amazonaws.com",
             "RegionName": "us-east-1",
             "OptInStatus": "opt-in-not-required"
+        }
+    ]
+}
+J
+
+# Section H's organization: two ACTIVE member accounts and one SUSPENDED -
+# `cloud_org_accounts_resolve` (modules/cloud/aws/regions.sh) must keep the
+# two ACTIVE ones and drop the SUSPENDED one, never spending an assume-role
+# call on an account that cannot be scanned anyway.
+cat >"$STUBDIR/resp/organizations.list-accounts.json" <<'J'
+{
+    "Accounts": [
+        {
+            "Id": "222222222222",
+            "Arn": "arn:aws:organizations::123456789012:account/o-fixture/222222222222",
+            "Email": "account-a@example.com",
+            "Name": "account-a",
+            "Status": "ACTIVE",
+            "JoinedMethod": "INVITED"
+        },
+        {
+            "Id": "333333333333",
+            "Arn": "arn:aws:organizations::123456789012:account/o-fixture/333333333333",
+            "Email": "account-b@example.com",
+            "Name": "account-b",
+            "Status": "SUSPENDED",
+            "JoinedMethod": "INVITED"
+        },
+        {
+            "Id": "444444444444",
+            "Arn": "arn:aws:organizations::123456789012:account/o-fixture/444444444444",
+            "Email": "account-c@example.com",
+            "Name": "account-c",
+            "Status": "ACTIVE",
+            "JoinedMethod": "INVITED"
         }
     ]
 }
@@ -190,7 +288,17 @@ _run_cloud() {
   _RC=0
   rm -rf "$out"
   : >"$log"
-  AWS_STUB_DIR=$STUBDIR/resp AWS_STUB_LOG=$log PATH="$bin:$PATH" \
+  # AWS_STUB_STATE: a fresh, per-invocation directory the routed stub's
+  # sts assume-role/get-caller-identity special-casing uses to simulate a real
+  # identity switch under `--assume-role` (section H).  Harmless for every
+  # OTHER stub and every section that never calls assume-role: it is created
+  # unconditionally, exactly like SCOURSH_AWS_CACHE_DIR below, but only ever
+  # read by the two special-cased operations.
+  local statedir
+  statedir=$W/state/$(basename "$out")
+  rm -rf "$statedir"
+  mkdir -p "$statedir"
+  AWS_STUB_DIR=$STUBDIR/resp AWS_STUB_LOG=$log AWS_STUB_STATE=$statedir PATH="$bin:$PATH" \
     SCOURSH_AWS_CACHE_DIR=$W/cache/$(basename "$out") \
     bash "$ROOT/scan.sh" "$@" --out "$out" >"$out.stdout" 2>&1 || _RC=$?
   return 0
@@ -560,22 +668,85 @@ _RC=0
 assert_eq '2' "$_RC" '`--i-own-account` with no `--live` is exit 2 - it would sit in run.json looking like an affirmation that was honoured'
 
 # ===========================================================================
-# H. --assume-role (docs/STEP6-CLOUD-PLAN.md D3).
+# H. --assume-role (docs/STEP6-CLOUD-PLAN.md D3's deferred half, CLOUD-02
+#    remainder, implemented by this ticket).
 # ===========================================================================
-t_case 'H. --assume-role'
+t_case 'H. --assume-role: iterates the organization'
 
-_run_cloud "$W/out-ar" "$W/log-ar" "$STUBDIR/bin" -- cloud --live --assume-role arn:aws:iam::1:role/ro
-assert_eq '2' "$_RC" '--assume-role is REFUSED (exit 2), never silently ignored'
-assert_contains "$(cat "$W/out-ar.stdout")" 'not implemented in this version' \
-  'and says so plainly'
-assert_eq '' "$(cat "$W/log-ar")" \
-  'and makes no aws call at all - the failing reading here is exit 0 with a one-account scan, which reads as a complete multi-account audit'
+# arn:aws:iam::999999999999:role/scoursh-ro - the account segment is a
+# TEMPLATE (cloud_assume_role_arn_for rewrites it per resolved member
+# account), so "999999999999" here is deliberately not any account the
+# fixture organization actually has.  --regions us-east-1 is explicit so this
+# case is about ACCOUNT iteration, not region enumeration, which section C
+# already covers on its own.
+_run_cloud "$W/out-ar" "$W/log-ar" "$STUBDIR/bin" -- \
+  cloud --live --assume-role arn:aws:iam::999999999999:role/scoursh-ro --regions us-east-1
+assert_eq '0' "$_RC" '--assume-role with a real organization and a real (fixture) role exits 0'
+_log_ar=$(cat "$W/log-ar")
+assert_contains "$_log_ar" 'organizations list-accounts' 'and enumerates the organization'
+assert_contains "$_log_ar" 'sts assume-role --role-arn arn:aws:iam::222222222222:role/scoursh-ro' \
+  'and assumes the role in the first ACTIVE member account, with the account segment rewritten'
+assert_contains "$_log_ar" 'sts assume-role --role-arn arn:aws:iam::444444444444:role/scoursh-ro' \
+  'and in the second ACTIVE member account too'
+assert_not_contains "$_log_ar" '333333333333' \
+  'and never attempts the SUSPENDED account at all - not even a wasted assume-role call'
 
-# Refused with no --live too: accepting it silently on the one invocation that
-# was going to do nothing anyway would leave the operator believing the flag is
-# supported.
-_run_cloud "$W/out-ar2" "$W/log-ar2" "$STUBDIR/bin" -- cloud --assume-role arn:aws:iam::1:role/ro
-assert_eq '2' "$_RC" 'and it is refused without --live as well'
+_notes_ar=$(cat "$W/out-ar/meta/notes")
+assert_contains "$_notes_ar" 'cell=222222222222/us-east-1' \
+  'and the account-region coverage cell - the same location component a finding would carry - cites the FIRST scanned account, not the caller'
+assert_contains "$_notes_ar" 'cell=444444444444/us-east-1' \
+  'and the second scanned account too'
+assert_not_contains "$_notes_ar" 'cell=999999999999' \
+  'and never a cell under the template ARN`s own placeholder account - it was never resolved to a real one'
+assert_not_contains "$_notes_ar" 'cell=123456789012' \
+  'and never a cell under the CALLER`s own account - the caller is not itself in the fixture organization`s account list'
+
+assert_eq 'arn:aws:iam::999999999999:role/scoursh-ro' "$(cat "$W/out-ar/meta/cloud_assume_role_arn")" \
+  'run.json`s raw meta records the template ARN the operator gave'
+
+t_case 'H2. --assume-role: an account whose role cannot be assumed is a declared, non-fatal skip'
+
+AWS_STUB_DENY_ACCOUNT=222222222222 \
+  _run_cloud "$W/out-ar-deny" "$W/log-ar-deny" "$STUBDIR/bin" -- \
+  cloud --live --assume-role arn:aws:iam::999999999999:role/scoursh-ro --regions us-east-1
+assert_eq '0' "$_RC" \
+  'one account`s assume-role failing does not abort the run - a partial multi-account audit beats none, the same reasoning a single denied region already gets'
+_notes_ard=$(cat "$W/out-ar-deny/meta/notes")
+assert_not_contains "$_notes_ard" 'cell=222222222222' 'the denied account is never scanned'
+assert_contains "$_notes_ard" 'cell=444444444444/us-east-1' 'and the OTHER account is scanned anyway'
+_red_ard=$(cat "$W/out-ar-deny/meta/coverage_reduction")
+assert_contains "$_red_ard" 'account=222222222222' 'and the reduction names the account that could not be assumed'
+assert_contains "$_red_ard" 'reason=aws_api_access_denied' \
+  'with lib/awscli.sh`s OWN classification of the failure, the same vocabulary the region/identity failures above already use'
+
+t_case 'H3. --assume-role: an ARN that passes scan.sh`s own shape check but is unusable errors cleanly'
+
+# scan.sh`s CLI-level validation is only `[[ $val == arn:*:role/* ]]` - loose
+# enough to admit a string with fewer than the six ':'-separated fields a real
+# IAM role ARN has.  `cloud_assume_role_arn_for` is the STRICTER check that
+# actually gates whether the template can be used, and THIS is what "a bad
+# --assume-role ARN errors cleanly" is proving: no bash error, no crash, a
+# declared per-account skip, exit 0 - never a hard failure over a value
+# scan.sh`s own parser already let through.
+_run_cloud "$W/out-ar-bad" "$W/log-ar-bad" "$STUBDIR/bin" -- \
+  cloud --live --assume-role arn:aws:role/x --regions us-east-1
+assert_eq '0' "$_RC" 'an unusable-but-scan.sh-accepted ARN template does not crash the run'
+assert_not_contains "$(cat "$W/log-ar-bad")" 'assume-role' \
+  'and never even attempts an `aws_ro sts assume-role` call - the template fails to parse before any API call is spent on it'
+_gap_arb=$(cat "$W/out-ar-bad/meta/coverage_gap")
+assert_contains "$_gap_arb" 'could not assume the read-only role' \
+  'and the gap says plainly that nothing was examined in either account'
+
+t_case 'H4. --assume-role is honoured with no --live too, exactly like every other cloud flag'
+
+# `--assume-role` no longer refuses unconditionally before `--live` is even
+# checked (D3`s single-account-only refusal is gone); `--live` still gates
+# every AWS call the SAME way it always has, so this is simply section D`s
+# own "no --live, no AWS call at all" case with `--assume-role` also present.
+_run_cloud "$W/out-ar-nolive" "$W/log-ar-nolive" "$STUBDIR/bin" -- \
+  cloud --assume-role arn:aws:iam::999999999999:role/scoursh-ro
+assert_eq '0' "$_RC" 'no --live is still a clean, declared no-op even with --assume-role given'
+assert_eq '' "$(cat "$W/log-ar-nolive")" 'and makes no AWS call at all'
 
 # ===========================================================================
 # I. Unresolvable credentials (docs/FOUNDATION.md tension 14, both rows).
