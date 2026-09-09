@@ -1,0 +1,16 @@
+{
+  "Parameters": [
+    {
+      "ParameterName": "require_ssl",
+      "ParameterValue": "false",
+      "Source": "engine-default",
+      "ApplyType": "static"
+    },
+    {
+      "ParameterName": "statement_timeout",
+      "ParameterValue": "0",
+      "Source": "engine-default",
+      "ApplyType": "dynamic"
+    }
+  ]
+}

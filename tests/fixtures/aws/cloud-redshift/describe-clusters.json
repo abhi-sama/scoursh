@@ -1,0 +1,46 @@
+{
+  "Clusters": [
+    {
+      "ClusterIdentifier": "scoursh-fixture-public-cluster",
+      "ClusterStatus": "available",
+      "PubliclyAccessible": true,
+      "Encrypted": false,
+      "VpcId": "vpc-0123456789abcdef0",
+      "ClusterNamespaceArn": "arn:aws:redshift:eu-west-2:123456789012:namespace:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "ClusterParameterGroups": [
+        {
+          "ParameterGroupName": "scoursh-fixture-public-pg",
+          "ParameterApplyStatus": "in-sync"
+        }
+      ]
+    },
+    {
+      "ClusterIdentifier": "scoursh-fixture-hardened-cluster",
+      "ClusterStatus": "available",
+      "PubliclyAccessible": false,
+      "Encrypted": true,
+      "VpcId": "vpc-0123456789abcdef0",
+      "ClusterNamespaceArn": "arn:aws:redshift:eu-west-2:123456789012:namespace:11111111-2222-3333-4444-555555555555",
+      "ClusterParameterGroups": [
+        {
+          "ParameterGroupName": "scoursh-fixture-hardened-pg",
+          "ParameterApplyStatus": "in-sync"
+        }
+      ]
+    },
+    {
+      "ClusterIdentifier": "scoursh-fixture-denied-cluster",
+      "ClusterStatus": "available",
+      "PubliclyAccessible": false,
+      "Encrypted": true,
+      "VpcId": "vpc-0123456789abcdef0",
+      "ClusterNamespaceArn": "arn:aws:redshift:eu-west-2:123456789012:namespace:66666666-7777-8888-9999-000000000000",
+      "ClusterParameterGroups": [
+        {
+          "ParameterGroupName": "scoursh-fixture-denied-pg",
+          "ParameterApplyStatus": "in-sync"
+        }
+      ]
+    }
+  ]
+}

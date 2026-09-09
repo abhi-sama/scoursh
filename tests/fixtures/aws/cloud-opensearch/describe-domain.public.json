@@ -1,0 +1,22 @@
+{
+  "DomainStatus": {
+    "DomainId": "123456789012/scoursh-fixture-public-domain",
+    "DomainName": "scoursh-fixture-public-domain",
+    "ARN": "arn:aws:es:eu-west-2:123456789012:domain/scoursh-fixture-public-domain",
+    "Created": true,
+    "Deleted": false,
+    "Endpoint": "search-scoursh-fixture-public-domain.eu-west-2.es.amazonaws.com",
+    "Processing": false,
+    "EngineVersion": "OpenSearch_2.11",
+    "AccessPolicies": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"es:*\",\"Resource\":\"arn:aws:es:eu-west-2:123456789012:domain/scoursh-fixture-public-domain/*\"}]}",
+    "EncryptionAtRestOptions": {
+      "Enabled": false
+    },
+    "NodeToNodeEncryptionOptions": {
+      "Enabled": false
+    },
+    "DomainEndpointOptions": {
+      "EnforceHTTPS": false
+    }
+  }
+}

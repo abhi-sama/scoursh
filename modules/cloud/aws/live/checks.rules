@@ -1873,3 +1873,164 @@ remediation: Add this volume to a backup plan's resource selection - by its
   rather than an oversight in the backup plan's selection criteria.
 references: CWE-693
 references: https://docs.aws.amazon.com/aws-backup/latest/devguide/assigning-resources.html
+# ---------------------------------------------------------------------------
+# CLOUD-OPENSEARCH-*, CLOUD-REDSHIFT-*, CLOUD-EFS-* - docs/STEP6-CLOUD-PLAN.md
+# CLOUD-17/18/19, the "data stores" tier's three §8.1 rows sharing one
+# three-check shape: public access, no encryption at rest, no encryption in
+# transit. Owned by modules/cloud/aws/live/opensearch.sh, redshift.sh and
+# efs.sh respectively.
+#
+# WHY NONE OF THESE NINE RECORDS CITES A `cis` VALUE, EXCEPT ONE.  Following
+# the S3 records' own rule above ("cis IS AUTHORED HERE ... AND ONLY WHERE A
+# REAL CIS v3.0.0 CONTROL EXISTS"): the CIS AWS Foundations Benchmark v3.0.0
+# has no OpenSearch or Redshift section at all - its storage coverage (§2) is
+# S3, EBS, RDS and EFS only - so none of the six OpenSearch/Redshift records
+# below cites one, and inventing a control number for either service is
+# exactly the overstated-coverage failure docs/DESIGN.md §15 forbids.  EFS IS
+# in scope (§2.4), but only for encryption at rest: `data/cis-mappings`
+# carries `2.4.1`, "Ensure EFS volumes are encrypted at rest", which
+# CLOUD-EFS-NO_ENCRYPTION_AT_REST-01 cites below - the benchmark's EFS
+# coverage stops there, so EFS's own public-access and in-transit records
+# cite nothing either, for the identical reason S3's own NO_VERSIONING/
+# NO_LOGGING records above cite nothing.
+#
+# WHY THE THREE POLICY-HEURISTIC CHECKS (OpenSearch and EFS public access,
+# EFS in-transit) ARE `confidence: medium` WHILE EVERY REDSHIFT CHECK AND
+# EVERY ENCRYPTION-AT-REST CHECK IS `high`.  Redshift's `PubliclyAccessible`
+# and `Encrypted` are direct API fields, and OpenSearch's/EFS's encryption
+# flags are too - an exact read, the same `high` S3's own field-read checks
+# earn.  OpenSearch and EFS have no `get-bucket-policy-status`-style
+# evaluator API, so their public-access (and EFS's in-transit) checks read
+# the raw policy document with modules/cloud/aws/engine.sh's
+# `cloud_policy_is_wide_open`/`cloud_policy_denies_insecure_transport` - a
+# heuristic over the policy's Principal/Condition shape, not AWS's own
+# verdict, and the confidence field says so honestly rather than borrowing
+# the same certainty an exact field read earns.
+#
+# The type tag is `config-read` on every record below, for the identical
+# reason the S3 records above give: each check is one or two read-only AWS
+# API calls and mutates nothing.
+
+id: CLOUD-OPENSEARCH-PUBLIC_ACCESS-01
+title: OpenSearch domain is on the public endpoint with a wide-open access policy
+script: aws/live/opensearch.sh
+severity: critical
+remediation: Either attach the domain to a VPC (VPCOptions), which removes
+  the public AWS-owned endpoint entirely, or narrow the access policy so its
+  Principal names specific accounts, roles or a Condition that genuinely
+  restricts the caller (aws:SourceVpc/aws:SourceVpce, or a source IP range)
+  rather than admitting the wildcard "*". A domain with no VPC and a wide-open
+  policy is reachable, unauthenticated, by any host on the internet that
+  knows or guesses the endpoint.
+references: CWE-284
+references: https://docs.aws.amazon.com/opensearch-service/latest/developerguide/ac.html
+
+id: CLOUD-OPENSEARCH-NO_ENCRYPTION_AT_REST-01
+title: OpenSearch domain has no encryption at rest configured
+script: aws/live/opensearch.sh
+remediation: Enable encryption at rest with an AWS-owned or customer-managed
+  KMS key. This setting cannot be changed on a running domain - migrate the
+  data to a newly-created, encrypted domain (a snapshot restore or a reindex)
+  rather than expecting an in-place toggle.
+references: CWE-311
+references: https://docs.aws.amazon.com/opensearch-service/latest/developerguide/encryption-at-rest.html
+
+id: CLOUD-OPENSEARCH-NO_ENCRYPTION_IN_TRANSIT-01
+title: OpenSearch domain has node-to-node transport encryption disabled
+script: aws/live/opensearch.sh
+remediation: Enable node-to-node encryption so traffic between the domain's
+  own data nodes is encrypted in transit. This is a distinct setting from
+  HTTPS-to-client (DomainEndpointOptions.EnforceHTTPS) and from encryption at
+  rest, and like encryption at rest it cannot be toggled in place - plan a
+  migration to a newly-created domain with the setting enabled.
+references: CWE-319
+references: https://docs.aws.amazon.com/opensearch-service/latest/developerguide/ntn.html
+
+id: CLOUD-REDSHIFT-PUBLIC_ACCESS-01
+title: Redshift cluster is configured as publicly accessible
+script: aws/live/redshift.sh
+severity: critical
+remediation: Set the cluster's PubliclyAccessible option to false and reach
+  it from outside the VPC through a VPN, Direct Connect, or a bastion/proxy
+  host inside the VPC instead. A publicly accessible cluster is reachable
+  from the internet whenever its security group and network ACLs also permit
+  the connection, which is the ordinary case for a security group opened for
+  a BI tool or an operator's own workstation.
+references: CWE-284
+references: https://docs.aws.amazon.com/redshift/latest/mgmt/managing-clusters-vpc.html
+
+id: CLOUD-REDSHIFT-NO_ENCRYPTION_AT_REST-01
+title: Redshift cluster has no encryption at rest configured
+script: aws/live/redshift.sh
+remediation: Encryption at rest cannot be enabled on a running cluster - create
+  a new, encrypted cluster from a snapshot of the existing one (or with KMS
+  encryption enabled from the start) and switch client connections over to
+  it, then decommission the unencrypted cluster.
+references: CWE-311
+references: https://docs.aws.amazon.com/redshift/latest/mgmt/working-with-db-encryption.html
+
+id: CLOUD-REDSHIFT-NO_ENCRYPTION_IN_TRANSIT-01
+title: Redshift cluster parameter group does not require SSL
+script: aws/live/redshift.sh
+severity: medium
+confidence: high
+cwe: CWE-319
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set require_ssl to true in the cluster's own parameter group and
+  apply it. Without it, a client can connect and exchange query text and
+  result rows in the clear even though the cluster supports TLS; setting the
+  parameter does not itself disconnect existing plaintext sessions, so plan a
+  client reconnect after applying it.
+references: CWE-319
+references: https://docs.aws.amazon.com/redshift/latest/mgmt/connecting-ssl-support.html
+
+id: CLOUD-EFS-PUBLIC_ACCESS-01
+title: EFS file system policy grants access to a wildcard principal
+script: aws/live/efs.sh
+severity: critical
+confidence: medium
+cwe: CWE-284
+remediation: Scope the file system policy's Principal to specific accounts or
+  roles, or add a Condition restricting elasticfilesystem:AccessedViaMountTarget
+  and the expected VPC/account, rather than admitting the wildcard "*". A
+  wide-open policy is not itself internet exposure - EFS has no public
+  endpoint - but it means any principal that can reach a mount target,
+  including one outside this account if network access is otherwise
+  available, can mount the file system without being named on the policy.
+references: CWE-284
+references: https://docs.aws.amazon.com/efs/latest/ug/iam-access-control-nfs-efs.html
+
+id: CLOUD-EFS-NO_ENCRYPTION_AT_REST-01
+title: EFS file system has no encryption at rest configured
+script: aws/live/efs.sh
+tags: compliance
+coverage-scope: account-region
+cis: 2.4.1
+remediation: Encryption at rest can only be set when a file system is
+  created - there is no in-place toggle. Create a new, encrypted file system
+  and migrate the data onto it (AWS DataSync or an EFS-to-EFS copy), then
+  redirect mount targets and decommission the unencrypted file system.
+references: CWE-311
+references: https://docs.aws.amazon.com/efs/latest/ug/encryption-at-rest.html
+
+id: CLOUD-EFS-NO_ENCRYPTION_IN_TRANSIT-01
+title: EFS file system policy does not require encryption in transit
+script: aws/live/efs.sh
+severity: medium
+confidence: medium
+cwe: CWE-319
+owasp: A02:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Add a Deny statement to the file system policy conditioned on
+  Bool aws:SecureTransport=false, so every client is required to mount over
+  the TLS-wrapped transport (mount.efs's -o tls option) rather than plain
+  NFS. Without it, TLS is available but not enforced, and a client's own
+  mount options - not this file system's own configuration - decide whether
+  traffic is encrypted.
+references: CWE-319
+references: https://docs.aws.amazon.com/efs/latest/ug/encryption-in-transit.html

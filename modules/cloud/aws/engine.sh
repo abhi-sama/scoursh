@@ -168,6 +168,30 @@ cloud_cell() {
   printf '%s/%s' "$1" "${2:-global}"
 }
 
+# `cloud_partition_of CALLER_ARN` - the ARN partition (`aws`, `aws-cn`,
+# `aws-us-gov`), read out of the caller identity's own ARN rather than
+# hardcoded, defaulting to `aws`.  s3_engine.sh's own `s3_partition_of` makes
+# the identical point at length (a hardcoded `aws` partition names a resource
+# that does not exist in GovCloud or China) for its own file; this is the
+# SHARED copy every other service's ARN-constructing classifier calls, so a
+# service script never has an implicit, sourcing-order-dependent dependency on
+# s3_engine.sh having already been sourced by an earlier pass in the same
+# process - a real risk for any `regional` service, since `s3` (the only file
+# that used to define this) is `global` and is not guaranteed to run before a
+# `--profile-scan`-narrowed or otherwise reordered walk reaches a regional
+# one.
+cloud_partition_of() {
+  local arn=${1:-} rest part
+  case $arn in
+    arn:*)
+      rest=${arn#arn:}
+      part=${rest%%:*}
+      [[ -n $part ]] && { printf '%s' "$part"; return 0; }
+      ;;
+  esac
+  printf '%s' aws
+}
+
 # ---------------------------------------------------------------------------
 # 3. Per-check selection (docs/FOUNDATION.md tension 15)
 # ---------------------------------------------------------------------------
@@ -605,4 +629,125 @@ cloud_run_service() {
   source "$_cloud_path"
   _CLOUD_SERVICE_OUTCOME=ran
   return 0
+}
+
+# ---------------------------------------------------------------------------
+# 6. Resource-policy heuristics (shared by every service with no S3-style
+#    "policy status" evaluator API of its own)
+# ---------------------------------------------------------------------------
+# S3's own public-policy check (s3_engine.sh's `s3_policy_is_public`) reads
+# `get-bucket-policy-status`, AWS'S OWN evaluator, and is exact - the reason
+# that check's own header calls out "the verdict is AWS's, not ours".
+# OpenSearch and EFS have no equivalent read-only "is this policy public"
+# operation: the only way to answer the question is to read the raw resource
+# policy document (OpenSearch's `AccessPolicies`, EFS's
+# `describe-file-system-policy`'s `Policy`) and evaluate it here.  That is
+# necessarily a HEURISTIC rather than AWS's own answer, and every check built
+# on it is registered `confidence: medium` for that reason rather than the
+# `high` a direct API field or an AWS-evaluated verdict earns.
+#
+# `cloud_policy_is_wide_open` DELIBERATELY IGNORES `Condition` BLOCKS.  A
+# `Condition` narrows an Allow statement only if the caller understands the
+# specific operator and key - `aws:SourceVpc`/`aws:SourceVpce` genuinely
+# restrict to a VPC, while `aws:Referer` and `aws:UserAgent` (s3_engine.sh's
+# own `s3_policy_is_public` header makes the identical point) are attacker-
+# supplied and narrow nothing.  A generic reader cannot tell those apart
+# without re-implementing IAM policy evaluation, and reading "any Condition
+# present" as "therefore not public" fails in the direction that manufactures
+# a false negative on a policy that is genuinely public but happens to carry
+# an unrelated, non-narrowing condition - the reading this project's own
+# testing rule (AGENTS.md) treats as the one to fear.  A wildcard Principal on
+# an Allow statement is reported regardless of any Condition; the `medium`
+# confidence is what tells a reader this is a heuristic rather than a
+# certainty.
+#
+# `cloud_json_flatten` is reused rather than a second JSON reader (fed a
+# STRING via a pipe, not a file - `printf '%s' "$text" | cloud_json_flatten`
+# reads identically to `<"$file"`, since awk's END block reads all of stdin
+# either way), for the same "one parser, not a fifth copy" reasoning that
+# file's own header states.
+declare -gA _CLOUD_POLICY_DOC=()
+declare -gA _CLOUD_POLICY_DOCT=()
+declare -ga _CLOUD_POLICY_STMT_BASES=()
+
+# `cloud_policy_load TEXT` - flatten TEXT (already-unescaped JSON policy text,
+# never a file path) into `_CLOUD_POLICY_DOC`/`_CLOUD_POLICY_DOCT`.  Returns 1
+# and leaves both empty for an empty or unparseable TEXT - the caller's own
+# classifiers then correctly answer "not open" / "does not deny" for a policy
+# that could not be read, which is the same "an absent document is not the
+# document" convention `s3_doc_load` already establishes for a missing file.
+cloud_policy_load() {
+  local __text=$1
+  _CLOUD_POLICY_DOC=()
+  _CLOUD_POLICY_DOCT=()
+  [[ -n $__text ]] || return 1
+  local __path __type __val
+  while IFS=$'\t' read -r __path __type __val; do
+    [[ -n $__path ]] || continue
+    [[ $__type == s ]] && __val=$(cloud_json_unescape "$__val")
+    _CLOUD_POLICY_DOC[$__path]=$__val
+    _CLOUD_POLICY_DOCT[$__path]=$__type
+  done < <(printf '%s' "$__text" | cloud_json_flatten 2>/dev/null)
+  return 0
+}
+
+# `_cloud_policy_statement_bases_set` - the list of `Statement<US><i>` (or the
+# single `Statement`, for the equally-legal bare-object spelling IAM accepts
+# when a policy has exactly one statement) path prefixes in the loaded
+# document, over `_CLOUD_POLICY_DOC` set by `cloud_policy_load` above.
+_cloud_policy_statement_bases_set() {
+  _CLOUD_POLICY_STMT_BASES=()
+  local sep=$'\x1f'
+  if [[ -n ${_CLOUD_POLICY_DOCT[Statement${sep}0${sep}Effect]+set} ]]; then
+    local i=0
+    while [[ -n ${_CLOUD_POLICY_DOCT[Statement${sep}${i}${sep}Effect]+set} ]]; do
+      _CLOUD_POLICY_STMT_BASES+=("Statement${sep}${i}")
+      i=$(( i + 1 ))
+    done
+  elif [[ -n ${_CLOUD_POLICY_DOCT[Statement${sep}Effect]+set} ]]; then
+    _CLOUD_POLICY_STMT_BASES=(Statement)
+  fi
+  return 0
+}
+
+# `cloud_policy_is_wide_open` - true when the LOADED policy document (see
+# `cloud_policy_load`) carries an `Effect: Allow` statement whose `Principal`
+# is the wildcard `"*"` - spelled bare, as `{"AWS": "*"}`, or as `"*"`
+# anywhere inside an `AWS` principal array.  See this section's own header for
+# why `Condition` is deliberately not consulted.
+cloud_policy_is_wide_open() {
+  local sep=$'\x1f' base principal_wild=0 j=0
+  _cloud_policy_statement_bases_set
+  for base in "${_CLOUD_POLICY_STMT_BASES[@]+"${_CLOUD_POLICY_STMT_BASES[@]}"}"; do
+    [[ ${_CLOUD_POLICY_DOC[${base}${sep}Effect]:-} == Allow ]] || continue
+    principal_wild=0
+    [[ ${_CLOUD_POLICY_DOC[${base}${sep}Principal]:-} == '*' ]] && principal_wild=1
+    [[ ${_CLOUD_POLICY_DOC[${base}${sep}Principal${sep}AWS]:-} == '*' ]] && principal_wild=1
+    if (( ! principal_wild )); then
+      j=0
+      while [[ -n ${_CLOUD_POLICY_DOCT[${base}${sep}Principal${sep}AWS${sep}${j}]+set} ]]; do
+        [[ ${_CLOUD_POLICY_DOC[${base}${sep}Principal${sep}AWS${sep}${j}]:-} == '*' ]] && principal_wild=1
+        j=$(( j + 1 ))
+      done
+    fi
+    (( principal_wild )) && return 0
+  done
+  return 1
+}
+
+# `cloud_policy_denies_insecure_transport` - true when the LOADED policy
+# document carries an `Effect: Deny` statement conditioned on
+# `Bool.aws:SecureTransport` being the (string, per IAM's own condition-value
+# convention) `"false"` - the published AWS pattern for enforcing TLS-only
+# access on a resource policy.  Only that one condition shape is recognised;
+# a policy expressing the same intent through a different operator is a
+# stated gap rather than a guess.
+cloud_policy_denies_insecure_transport() {
+  local sep=$'\x1f' base
+  _cloud_policy_statement_bases_set
+  for base in "${_CLOUD_POLICY_STMT_BASES[@]+"${_CLOUD_POLICY_STMT_BASES[@]}"}"; do
+    [[ ${_CLOUD_POLICY_DOC[${base}${sep}Effect]:-} == Deny ]] || continue
+    [[ ${_CLOUD_POLICY_DOC[${base}${sep}Condition${sep}Bool${sep}aws:SecureTransport]:-} == false ]] && return 0
+  done
+  return 1
 }
