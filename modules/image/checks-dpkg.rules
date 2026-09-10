@@ -1,0 +1,83 @@
+# modules/image/checks-dpkg.rules - the container-image module's dpkg-
+# specific script-check registry (rules/RULE-FORMAT.md §9's
+# `checks-<name>.rules` row, docs/FOUNDATION.md tension 29;
+# data/scoursh-image-scan-design/report.md §4.1's check-set table and §5.3's
+# IMG-07 row).
+#
+# ONE FILE PER OWNING DRIVER, per report.md §5.1's binding rule (the
+# cloud-wave `checks.rules` corruption, `c9f0e80`, is the incident that rule
+# exists to prevent) and `modules/image/checks-apk.rules`' own identical
+# precedent: this ticket's OWN file, never an append to `checks-apk.rules` or
+# to a shared `modules/image/checks.rules` a later rpm ticket could then
+# collide on.
+#
+# `id: IMAGE-PKG-VULNERABLE_OS_PACKAGE-02` IS DPKG-SPECIFIC, despite its
+# generic-sounding name - the identical convention `checks-apk.rules`' own
+# `-01` id already established ("IS APK-SPECIFIC, despite its
+# generic-sounding name"). A check id names one owning file under §9.1.1's
+# uniqueness rule (E019), so `IMAGE-PKG-VULNERABLE_OS_PACKAGE-01` (apk,
+# `checks-apk.rules`) stays untouched and this ticket adds its own `-02`
+# sibling in its own file, exactly as `checks-apk.rules`' own header
+# predicted ("so IMG-07's dpkg ticket adds its OWN id in its OWN
+# checks-dpkg.rules"). A future rpm ticket (IMG-12) adds a third sibling,
+# `-03`, in its own `checks-rpm.rules`.
+#
+# `script: distro/dpkg.sh` because a future dpkg comparator (IMG-08) and the
+# finding emission a future Debian/Ubuntu advisory-ecosystem ticket (IMG-09)
+# wires are both expected to land in that same file, mirroring
+# `checks-apk.rules`' own `script: distro/apk.sh` before IMG-05/IMG-06 landed
+# on top of it.
+#
+# THIS CHECK DOES NOT FIRE YET (IMG-07's own scope line: "dpkg enumeration -
+# Status gate + Source: fallback, own checks-dpkg.rules; no comparator, no
+# advisories, no finding yet"). `distro/dpkg.sh` ships an enumerator and no
+# comparator, and nothing in `modules/image/run.sh` calls it -
+# `var/lib/dpkg/status` is not even in that file's own explicit wanted-path
+# list yet (report.md §5.3's IMG-06 landing note: "var/lib/dpkg/status stays
+# OFF this list - dpkg parsing is IMG-07's scope, not this ticket's"). This
+# is the identical "registered, not yet reachable" shape
+# `modules/image/checks-apk.rules` itself was in from IMG-04 through IMG-05,
+# and the `modules/sast/`/`modules/dast/` precedent this whole module
+# follows. `checks_registry_load` globs every `*.rules` file with no
+# reachability requirement, so a check id registered here today costs
+# nothing and is already correct the day a future dpkg comparator/matcher
+# ticket lands.
+#
+# `severity: high` is the REGISTERED DEFAULT, not a promise every finding
+# will carry it - mirroring `checks-apk.rules`' own identical comment: the
+# real severity is expected to come from `data/advisories.db`'s own
+# per-advisory `severity` field once a matcher exists, the same
+# `finding_set base_severity "$sev"` convention `modules/network/
+# checks-banner.rules`' NET-SVC-OUTDATED_COMPONENT-01 and
+# `checks-apk.rules`' own `-01` id both already apply.
+#
+# `tags: passive` - dpkg enumeration reads one already-extracted local file
+# and makes no network call and mutates nothing, the identical reasoning
+# `checks-apk.rules`' own header gives for the same tag. `tags: quick` for
+# the identical reason that file gives too: a single-file parse is the
+# cheapest real coverage a run can buy.
+#
+# `coverage-scope: image-id` - the only legal value for the `IMAGE` module
+# (rules/RULE-FORMAT.md §9.5.1's frozen table); the cell is the
+# operator-declared stable id from `config/images.conf`, never the image
+# digest or tag (report.md §3.4).
+
+id: IMAGE-PKG-VULNERABLE_OS_PACKAGE-02
+title: Installed dpkg package matches a known advisory for this image's Debian/Ubuntu release
+script: distro/dpkg.sh
+severity: high
+confidence: high
+cwe: CWE-1104
+owasp: A06:2021
+tags: passive
+tags: quick
+coverage-scope: image-id
+remediation: Rebuild the image against an updated base layer (or upgrade
+  the named package directly, where the Dockerfile installs it explicitly)
+  so the installed version no longer matches this advisory, then re-scan.
+  A base-image bump alone can carry this fix silently, so treat a `FROM`
+  tag pin as something to review whenever this finding's advisory has a
+  fixed-in version at or below the base image's own release.
+references: data/scoursh-image-scan-design/report.md
+references: CWE-1104
+references: https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/
