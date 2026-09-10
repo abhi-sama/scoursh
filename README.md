@@ -255,8 +255,11 @@ Full reference: [`docs/USAGE.md`](docs/USAGE.md#--format-and-the-formats-config-
 - **A detector on top of the enforcement.** `--paranoid` samples the scan process's own outbound
   connections and aborts on the first one outside scope, on Linux (`ss`/`strace`) and macOS (`lsof`)
   alike. `tools/run-in-netns.sh` goes further on Linux, building a network namespace where an
-  out-of-scope connection is physically impossible rather than merely observed - Linux-only, with no
-  macOS equivalent.
+  out-of-scope connection is physically impossible rather than merely observed. macOS gets two routes to
+  the same kind of guarantee: `tools/run-sandboxed.sh` (a kernel-enforced, unprivileged deny-all-network
+  sandbox - narrower than the netns route table, since it can't scope to one target, but genuinely
+  physically impossible for `sast`/`sca`/`iac`, which need no network at all), and running
+  `tools/run-in-netns.sh` unmodified inside a Linux container, for full parity.
 
 This is deliberately **egress-restricted, not air-gapped**: `dast` and `cloud --live` inherently have
 to talk to *something*, since testing a running app or reading live AWS config is the entire point of

@@ -2715,9 +2715,34 @@ filter there, `nettop`'s per-connection rows carry no pid, and `dtruss` needs SI
 security tool must never ask for - and the full reasoning is in `docs/FOUNDATION.md` tension 20's
 "Backend roster" paragraph, which records the extension deliberately rather than diverging from the
 RESOLUTION in silence.
-**None of this changes the framing**: `lsof` is a sampler with exactly `ss`'s blind spot, and
-`tools/run-in-netns.sh` - the actual guarantee - is Linux-only with **no macOS equivalent**, so a
-macOS run has the detector and nothing behind it.
+**None of this changes the framing**: `lsof` is a sampler with exactly `ss`'s blind spot, and (as of
+this paragraph) `tools/run-in-netns.sh` itself is still Linux-only - but it is no longer true that macOS
+has "nothing behind" the detector; see the next paragraph.
+
+**macOS now has TWO routes to a kernel-enforced guarantee, and `run-in-netns.sh` remaining Linux-only
+no longer means macOS has nothing behind its detector.** `tools/run-sandboxed.sh` (Tier A,
+`docs/FOUNDATION.md` tension 20) wraps `sandbox-exec` (Apple's Seatbelt), refusing `<command>` and every
+descendant it spawns from any network syscall at the kernel boundary - genuine, but narrower than the
+netns route table on purpose: Seatbelt's address filter accepts only `*`/`localhost` as a host, so it
+can restrict ports but never which remote host, meaning it ships as an unconditional deny-all rather
+than a per-target allowlist. That is exactly what `sast`/`sca`/`iac` need (they make zero network calls
+by design) and is not proposed as a substitute for `dast`/`cloud`/`network`'s real target-specific
+traffic. It needs no root and no capability - unlike the netns tool - and has no teardown surface at
+all: no namespace, no host state of any kind. It fails loud (exit 4) and never degrades to an
+unsandboxed run, on a non-Darwin host, an absent `sandbox-exec`, or a rejected profile, with the profile
+pre-validated against a known-good probe command before `<command>` is ever touched, so `sandbox-exec`'s
+own out-of-contract sysexits codes (65/71) never leak past this tool's 0-5 contract. Tier C is the
+zero-code route: `tools/run-in-netns.sh` runs unmodified inside a Linux container on a macOS host -
+Docker Desktop grants an unprivileged container `CAP_NET_ADMIN`+`CAP_SYS_ADMIN` and namespace creation,
+measured working - which is full parity with the Linux guarantee, not an approximation of it (this
+project's own `tools/daily-suite/gnu.dockerfile` test image doesn't currently install
+`iproute2`/`iptables`/`ip6tables`, so it can't run the netns tool as shipped today - that's specific to
+that one Dockerfile's package list, not a limit of Tier C itself). What remains unbuilt is a
+macOS-native mechanism for "only the authorised target, nothing else" without a container - the netns
+route table's own per-target scoping, natively - tracked separately as Tier B (a loopback relay plus a
+`lib/http.sh` mode, real work on the scanner's most safety-critical file). See `docs/FOUNDATION.md`
+tension 20's own "What macOS still does NOT get" paragraph for the full account, and
+`tools/run-sandboxed.sh`'s own header for its contract.
 
 **Two things measured while building that backend, both easy to hit again:**
 
