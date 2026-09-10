@@ -1,0 +1,223 @@
+# tests/fixtures/image/rpm-version-corpus.tsv - the COMMITTED differential
+# corpus for modules/image/distro/rpm_version.sh - the rpm version
+# comparator, the second ticket of the rpm sub-chain IMG-12's enumerator
+# opened.
+#
+# FORMAT: four TAB-separated columns, `A <op> B <why>`, where <op> is one of
+# `<`, `=`, `>` - the same vocabulary tests/fixtures/image/apk-version-corpus.tsv
+# and tests/fixtures/image/dpkg-version-corpus.tsv use, and a one-for-one map
+# onto `rpmdev-vercmp`'s own exit codes (0 equal, 11 A newer, 12 B newer), so
+# the follow-up live differential named in the comparator's header is a direct
+# column diff rather than a translation.  Whole-line `#` comments and blank
+# lines are ignored, matching the record-format instinct the rest of this
+# repository uses; a value never needs escaping because no column can contain
+# a TAB and no legal rpm version can contain one either.
+#
+# PROVENANCE, STATED PLAINLY.  Rows here come from three places and nowhere
+# else:
+#
+#   1. The three rpm cases data/scoursh-image-scan-design/report.md §2.4
+#      measured `modules/sca/semver.sh` getting WRONG.  These are the rows
+#      this ticket exists for and they are marked (report.md 2.4).
+#   2. rpm's OWN PUBLISHED TEST VECTORS - the pairs librpm's `rpmvercmp.at`
+#      asserts - transcribed by hand and marked (rpm vector).  They are the
+#      closest thing to a harvested corpus available offline: each one is a
+#      pair the tool's maintainers wrote down as the answer.
+#   3. Cases derived from rpm's documented `rpmvercmp` algorithm, covering
+#      each rule the other two do not reach on its own, marked with the rule
+#      they exercise.
+#
+# NONE of it was harvested by running `rpmdev-vercmp` or `rpm`: scoursh is
+# egress-restricted and the development host has neither binary, so a live
+# harvest of the shape `modules/sca/semver.sh` used for npm was not
+# available.  This is the strongest OFFLINE corpus available and it is not a
+# substitute for that run - see the comparator's own "THE OFFLINE-CORPUS
+# LIMIT" section for the follow-up hardening this owes.
+#
+# WHAT IS DELIBERATELY ABSENT.  rpm's own vector file carries a block of
+# NON-ASCII rows (`1.1.<alpha>` compares EQUAL to `1.1.<beta>`, because
+# rpm's `risalnum` is ASCII-only and skips a UTF-8 byte as a separator)
+# under a comment calling them "arguably buggy behaviors ... included here
+# to document current behavior".  This comparator REFUSES a non-ASCII byte
+# rather than reproducing a documented bug that makes two genuinely
+# different versions indistinguishable, so those rows cannot appear in a
+# file every row of which must be orderable.  The refusal is pinned in
+# tests/suites/image-rpm-version.sh section C instead, naming rpm's own
+# answer, so the divergence is measured rather than merely absent.
+#
+# A	op	B	why
+
+# --- report.md §2.4's three measured semver.sh failures ---
+# Each is a pair modules/sca/semver.sh answers WRONG, and each is why this
+# file is a separate comparator rather than a reuse.
+1.0	>	1.0~rc1	a tilde sorts BEFORE everything, including the end of the string - semver.sh answers 0 (report.md 2.4)
+1.0^20230101	>	1.0	a caret sorts AFTER the version it follows - semver.sh answers 0 (report.md 2.4)
+2:1.0-1	>	3.0-1	epoch 2 beats upstream 3.0 - the epoch decides alone; semver.sh answers -1 (report.md 2.4)
+
+# --- THE TILDE RULE: below everything, including the empty string ---
+1.0~rc1	=	1.0~rc1	(rpm vector) a tilde version compares equal to itself
+1.0~rc1	<	1.0	(rpm vector) the pre-release sorts below the release it precedes
+1.0~rc1	<	1.0~rc2	(rpm vector) two tilde suffixes still order by what follows them
+1.0~rc1~git123	=	1.0~rc1~git123	(rpm vector) a doubled tilde compares equal to itself
+1.0~rc1~git123	<	1.0~rc1	(rpm vector) a second tilde demotes again, below the first tilde suffix alone
+1.0~	<	1.0	a bare tilde with nothing after it is still below the end of the string
+1.0~~	<	1.0~	and a second bare tilde is lower again
+1.0~1	<	1.0	a tilde demotes a NUMERIC suffix exactly as it demotes an alpha one
+1.0~beta	<	1.0~rc	the segment after the tilde decides, alphabetically
+2.0~rc1	>	1.0	a tilde never reaches across a difference decided earlier in the string
+1.0~rc1-1	<	1.0-1	the tilde rule holds with a release present on both sides
+1.0-1~bp1	<	1.0-1	and inside the RELEASE, which is what makes a rebuild sort below the build
+5.15.0~rc2	<	5.15.0	a real kernel-shaped pre-release below its own release
+
+# --- THE CARET RULE: after the version it follows, before the next one ---
+1.0^	=	1.0^	(rpm vector) a bare caret compares equal to itself
+1.0^	>	1.0	(rpm vector) a bare caret is ABOVE the end of the string - the tilde rule pointing the other way
+1.0^git1	=	1.0^git1	(rpm vector) a caret snapshot compares equal to itself
+1.0^git1	>	1.0	(rpm vector) a post-release snapshot sorts above the release it was cut from
+1.0^git1	<	1.01	(rpm vector) but below the next real version, because a non-caret side wins
+1.0^20160101	=	1.0^20160101	(rpm vector) a dated snapshot compares equal to itself
+1.0^20160101	<	1.0.1	(rpm vector) and below an ordinary following segment
+1.0^20160101^git1	=	1.0^20160101^git1	(rpm vector) a doubled caret compares equal to itself
+1.0^20160102	>	1.0^20160101^git1	(rpm vector) the first differing caret segment decides, before the second caret is reached
+1.0^a	<	1.0.a	a caret segment loses to an ordinary segment of the same text
+1.0^2	<	1.0.1	and loses even when its own segment is numerically larger
+1.0^git1	>	1.0~rc1	a post-release snapshot outranks a pre-release, with the base version equal
+1.0-1^git1	>	1.0-1	the caret rule holds inside the RELEASE too
+
+# --- TILDE AND CARET TOGETHER ---
+1.0~rc1^git1	=	1.0~rc1^git1	(rpm vector) compares equal to itself
+1.0~rc1^git1	>	1.0~rc1	(rpm vector) a snapshot of a pre-release is above that pre-release
+1.0^git1~pre	=	1.0^git1~pre	(rpm vector) compares equal to itself
+1.0^git1	>	1.0^git1~pre	(rpm vector) and a pre-release of a snapshot is below that snapshot
+1.0~rc1^git1	<	1.0	a snapshot of a pre-release is still below the release - the tilde was decided first
+1.0^git1~pre	>	1.0	while a pre-release of a snapshot is still above it, for the same reason
+
+# --- THE EPOCH: compared first, and as an integer ---
+0:1.0	=	1.0	an absent epoch IS epoch 0, not a missing field
+1:1.0	>	1.0	a present epoch outranks an absent one
+1:0.1	>	0:99.9	the epoch decides before the version is looked at, at any width
+10:1.0	>	9:1.0	epoch 10 beats epoch 9 NUMERICALLY - a byte comparison reads "1" < "9" and inverts this
+01:1.0	=	1:1.0	a leading zero in the epoch is not significant - it is an integer
+1:1.0	<	1:2.0	equal epochs fall through to the version comparison
+1:1.0-1	<	1:1.0-2	equal epochs and versions fall through to the release
+2:1.0	=	2:1.0	an epoch tie on identical versions
+99:0.0.1	>	98:9.9.9	the epoch is compared before anything else, always
+1:1.0~rc1	>	0:1.0	an epoch outranks even the tilde rule, which is decided later
+0:1.0	<	0:1.0^git1	and an epoch tie falls through to the caret rule the same way
+
+# --- THE RELEASE: a separate field, compared last and by the same algorithm ---
+1.0-1	<	1.0-2	the release decides when the version ties
+1.0-1	<	1.0-10	and NUMERICALLY, not lexically - a byte read makes 10 < 2
+1.0-1	=	1.0-1	a release tie
+1.0-01	=	1.0-1	a leading zero in the release is not significant
+1.0	<	1.0-1	an ABSENT release orders below any present one
+1.0-1.el8	<	1.0-2.el8	a real RHEL-shaped release series
+1.0-1.el8	<	1.0-1.el9	and its distro tag orders within one release number
+1.0-1.fc38	<	1.0-1.fc39	the Fedora equivalent
+2.0-1	>	1.0-99	the VERSION decides before the release is looked at
+1.0-1.el8_9.1	>	1.0-1.el8_9	an underscore is a plain separator, so the trailing segment decides
+
+# --- SEGMENTATION: maximal runs of digits vs letters ---
+1.0	=	1.0	(rpm vector) identical versions
+1.0	<	2.0	(rpm vector) the leading numeric segment decides
+2.0.1	=	2.0.1	(rpm vector) three numeric segments, all equal
+2.0	<	2.0.1	(rpm vector) a longer version with a trailing segment is greater
+2.0.1a	=	2.0.1a	(rpm vector) a trailing alpha segment compares equal to itself
+2.0.1a	>	2.0.1	(rpm vector) and outranks the same version without it
+5.5p1	=	5.5p1	(rpm vector) a letter run between two numeric runs
+5.5p1	<	5.5p2	(rpm vector) the numeric run after the letter decides
+5.5p10	=	5.5p10	(rpm vector) a two-digit run after a letter
+5.5p1	<	5.5p10	(rpm vector) compared NUMERICALLY - a byte read makes p10 < p2 and this backwards
+5.5p2	<	5.6p1	(rpm vector) an earlier segment decides before a later one is reached
+5.6p1	<	6.5p1	(rpm vector) and the leading segment before that
+10xyz	<	10.1xyz	(rpm vector) an alpha run against a numeric run at the same position
+xyz10	=	xyz10	(rpm vector) a version may legally START with a letter
+xyz10	<	xyz10.1	(rpm vector) with the same trailing-segment rule
+xyz.4	=	xyz.4	(rpm vector) a letter run, a separator and a numeric run
+1.0aa	=	1.0aa	(rpm vector) a two-letter run
+1.0a	<	1.0aa	(rpm vector) the longer letter run wins when it is a prefix of the other
+10b2	>	10a1	(rpm vector) two letter runs compare by byte, and decide before the digits after them
+1.0A	<	1.0a	two letter runs compare by CODE POINT, as strcmp does - a locale collation reads A and a as one letter with a case tiebreak and inverts this on glibc
+1.0Z	<	1.0a	and every uppercase letter is below every lowercase one, which is the half a collation order does not preserve
+10a2	<	10b2	(rpm vector) the same, in the other direction
+4.999.9	<	5.0	(rpm vector) a leading segment decides however long the rest is
+20101121	<	20101122	(rpm vector) a plain date-shaped version
+6.0.rc1	>	6.0	(rpm vector) "rc" is an ORDINARY alpha segment, not a tilde: the side with characters LEFT OVER wins, and nothing on the other side is left to align it against - contrast 1a < 1.0, where both sides still had characters
+1.0	<	1.0a	the end of a string loses to a trailing alpha segment
+1.0.1	<	1.0.1.1	a further trailing segment always wins over the end of the string
+
+# --- DIGIT-VS-LETTER ALIGNMENT: a numeric segment outranks an alpha one ---
+# When the two cursors are at runs of different KINDS, one side's run of the
+# left side's kind is EMPTY, and rpm resolves that by kind alone rather than
+# by any byte comparison.  This is the rule the brief's `1a` vs `1.0` case
+# names, and it is the one segmentation rule with no analogue in either
+# sibling comparator.
+1a	<	1.0	(rpm vector, brief) an alpha segment loses to a numeric one at the same position
+8	>	xyz.4	(rpm vector) whatever their contents, and whatever their lengths
+2	>	xyz.4	(rpm vector) including when the numeric run is a single low digit
+1.0a1	<	1.0.1	a letter run at the head of a segment loses to a digit run there
+1.a	<	1.0	the rule is about the KIND of the run, not about what follows it
+1.9z	<	1.10	so it can invert what a naive "longer segment" reading would say
+a1	<	1a	and it applies at the very first segment too
+
+# --- LEADING-ZERO DIGIT RUNS: stripped, then LENGTH, then bytes ---
+10.0001	=	10.0001	(rpm vector) a zero-padded run compares equal to itself
+10.0001	=	10.1	(rpm vector) leading zeros are not significant - stripping is what makes these one version
+10.0001	<	10.0039	(rpm vector) and once stripped, the runs still compare numerically
+1.0010	>	1.9	(brief) the LONGER stripped run wins - "0010" strips to "10", which beats "9"
+1.05	=	1.5	(brief) and a stripped run that is a single digit
+1.000	=	1.0	every digit of a zero run but the last is stripped, leaving "0"
+1.00	<	1.1	a zero run is still the number zero, below one
+1.007	<	1.08	stripped lengths tie, so the bytes decide: 7 < 8
+1.0070	>	1.008	while a longer stripped run wins whatever its bytes say
+1.0-0001	=	1.0-1	the same stripping inside the release
+1:1.0	=	000001:1.0	and inside the epoch, at any width
+
+# --- HOSTILE DIGIT WIDTHS: no arithmetic, so no 64-bit wrap ---
+# The first pair differs by exactly 2**64, so `$(( 10#... ))` maps both onto
+# the SAME value and reports them equal; the second inverts under the same
+# reading.  Neither is reachable by rpm's own algorithm, which never needs a
+# run's value.
+1.1	<	1.18446744073709551617	a run wider than 64 bits is compared by length, not by value
+1.18446744073709551617	>	1.2	and a wrapped left operand would report BELOW 1.2 - an inversion, not a rounding
+1.0-1	<	1.0-18446744073709551617	the same at the release
+18446744073709551617:1.0	>	18446744073709551616:1.0	and at the epoch, which rpm itself cannot even store above UINT32_MAX
+1.100000000000000000000000000000	>	1.99999999999999999999999999999	a longer stripped run is always the larger number, at any width
+
+# --- SEPARATORS: every non-alphanumeric that is not ~ or ^ is equivalent ---
+2_0	=	2_0	(rpm vector) an underscore is a legal rpm version character
+2.0	=	2_0	(rpm vector) and carries no ordering weight of its own - it is just a separator
+a	=	a	(rpm vector) a bare letter is a legal version
+a+	=	a+	(rpm vector) a trailing plus
+a+	=	a_	(rpm vector) two different separators are indistinguishable
++a	=	+a	(rpm vector) a leading separator
++a	=	_a	(rpm vector) likewise indistinguishable
++_	=	+_	(rpm vector) two separators and nothing else
+_+	=	+_	(rpm vector) in either order
++	=	_	(rpm vector) a version made only of separators compares equal to any other such
+1.0	=	1.0.	a trailing separator adds nothing, because it is skipped before the end test
+1.0	=	1..0	and a doubled separator collapses to one
+1.0	=	._1.0+	leading and trailing separators alike
+1.0~rc1	=	1.0~rc.1	a separator inside a tilde suffix is skipped like any other
+1.0_alpha1	>	1.0	an underscore is a plain separator, so "alpha1" is an ordinary trailing segment - apk reads the same bytes as a PRE-release and answers the opposite
+
+# --- RhBug:811992, transcribed because it is documented rpm behaviour ---
+# rpm's own vector file carries this block to pin an inconsistency rather
+# than to endorse it: appending a letter to a version moves it BELOW `1.`
+# for "b" and ABOVE it for "g", because the comparison that decides is the
+# byte comparison of "b"/"g" against "fc".  A comparator that "tidied" this
+# up would be diverging from the tool it must agree with.
+1b.fc17	=	1b.fc17	(rpm vector) compares equal to itself
+1b.fc17	<	1.fc17	(rpm vector) "b" sorts below "fc", so the whole version does
+1g.fc17	=	1g.fc17	(rpm vector) compares equal to itself
+1g.fc17	>	1.fc17	(rpm vector) but "g" sorts above "fc" - the documented inconsistency, kept deliberately
+
+# --- REAL-WORLD SHAPES, as they appear in an rpm database ---
+1:1.14.6-2.el8	<	1:1.14.6-3.el8	an epoch, a version and a dotted release, differing in the release
+2.34-60.el9	<	2.34-100.el9	a release run that a lexical read gets backwards
+4.14.3-23.el8_9.2	>	4.14.3-23.el8_9	a longer release with a further segment
+1:4.18.0-513.5.1.el8_9	>	1:4.18.0-477.27.1.el8_8	a kernel-shaped EVR where the release decides
+7.61.1-30.el8_8.3	>	7.61.1-30.el8_8	a curl-shaped security release
+3.9.16-1.el9_2.2	<	3.9.18-1.el9_3	the version decides before the release
+0:2.4.37-56.module+el8.9.0+20918+7c9fbe07	>	0:2.4.37-51.module+el8.8.0+18063+9c4952f6	a modular release string, decided by its own leading run
+2.0.20-2.el8	>	2.0.20-2.el7	the distro tag orders when everything before it ties
