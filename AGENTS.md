@@ -4410,6 +4410,85 @@ lookup, any `IMAGE-PKG-VULNERABLE_OS_PACKAGE-03` finding, any `data/advisories.d
 `checks-dpkg.rules` did between IMG-07 and IMG-09; the rpm equivalent of IMG-09 is the next ticket,
 and it inherits `rpm.sh`'s own still-open `rpm_db_binary_format` limitation unchanged.
 
+**IMG-11 has landed - language dependencies (npm/RubyGems/Composer/PyPI/Maven/Go) shipped inside the
+image rootfs, found by reusing the existing `modules/sca/` tree-walkers against a bounded, declared
+extraction rather than a new parser.** It ships `modules/image/langdeps.sh` (`image_langdeps_scan`,
+called from `modules/image/run.sh` unconditionally once `image_open` succeeds, alongside and
+independent of the three `IMAGE-CFG-*` checks and the os-release/ecosystem/apk-or-dpkg branch - the
+identical "distro-agnostic, runs regardless" reasoning IMG-06's/IMG-10's own config-blob checks already
+give, and the more important case here: a distroless final stage with no package database at all is
+exactly where a copied-in `requirements.txt` is this module's only hope of seeing anything) and
+`modules/image/checks-langdeps.rules` (two ids: `IMAGE-LANGDEP-VULNERABLE_DEP-01`, the finding, and
+`IMAGE-COV-LANGDEPS_NOT_SCANNED-01`, the honesty check). `tests/suites/image-langdeps.sh` (48
+assertions) is the proof, including a real `scan.sh image` subprocess round-trip through every report
+format.
+
+The report's own §2.2 names two binding caveats, and this ticket's whole design is answering both:
+
+- **Caveat 1 - a bounded, DECLARED extraction, never a rootfs dump.** `IMAGE_LANGDEPS_DIRS` (six
+  conventional WORKDIR locations: image root, `app`, `usr/src/app`, `srv`, `opt/app`, `home/app`) times
+  `IMAGE_LANGDEPS_FILENAMES` (the twelve manifest names the four SCA walkers already glob for) is a
+  fixed 72-path cross product, extracted through the SAME `image_collect_metadata` acquire.sh already
+  uses for `etc/os-release`/`lib/apk/db/installed`/`var/lib/dpkg/status` - never a directory LISTING of
+  an unbounded layer. A manifest outside this declared set is genuinely invisible, and that is a stated
+  limitation rather than a bug: when literally nothing in the cross product exists in the image, this is
+  a declared `IMAGE-COV-LANGDEPS_NOT_SCANNED-01`/`detail=no_manifests_found` reduction, never a silent
+  clean scan - the brief's own words. A missing/unreadable `data/advisories.db` gets the same check id
+  under `detail=no_advisories_db`, mirroring `image_report_no_advisory_db`'s identical reasoning one
+  check id over (deliberately its OWN id and OWN file rather than reusing
+  `IMAGE-COV-NO_ADVISORY_DB-01`, which report.md §5.1's "one registry per owner" rule reserves for the
+  DISTRO-ecosystem family in `checks-advisories.rules`, even though both ultimately read the same
+  physical file).
+- **Caveat 2 - re-emission under `IMAGE-LANGDEP-VULNERABLE_DEP-01`, never a raw `module=sca` finding
+  with a host path-root cell.** The four SCA walkers (`sca_scan_tree`, `sca_scan_python_tree`,
+  `sca_scan_java_tree`, `sca_go_scan_tree`) are called UNMODIFIED against the bounded destroot, but with
+  `SCOURSH_RUN_DIR` pointed at a private, meta-less SHADOW run directory - `run_record` (lib/core.sh)
+  requires a real `meta/` directory to exist and silently no-ops without one, so every `run_record` call
+  inside the reused walkers becomes a harmless no-op, and every `finding_emit` call lands only in the
+  shadow's own shard files. `_image_langdeps_transform_shard` is the ONLY path a shadow-run finding ever
+  reaches this run's REAL output through: it decodes each one via `lib/findings.sh`'s public
+  `finding_decode`/`finding_adopt_decoded` reader (never a hand-rolled parse of that format, the
+  identical discipline the gitleaks adapter's own dedup pass already uses against ITS run's shard), and
+  only a `SCA-{NPM,PY,JAVA,RUBY,PHP,GO}-VULNERABLE_DEP-01` finding is re-minted - under
+  `check_id=IMAGE-LANGDEP-VULNERABLE_DEP-01`, `module=image`, `cell=$image_id`,
+  `loc_image_id=$image_id` - with every `loc_ecosystem`/`loc_package`/`loc_version`/`loc_advisory_id`/
+  `path` field kept VERBATIM from the original: `path` in particular is already destroot-relative, which
+  for a destroot rooted at this image's own bounded extraction IS the correct in-image relative path
+  (`app/requirements.txt`, never the host scratch directory's own absolute path). The `image`
+  fingerprint profile (`image_id ecosystem package advisory_id`, tension 5's frozen table) is reused
+  UNCHANGED rather than needing its own - it was already general enough, `loc_ecosystem` differing
+  between a distro release string (`Alpine:v3.18`) and a language ecosystem (`pypi`) is exactly what the
+  component already discriminates on. `sca_rollup_begin`/`sca_rollup_flush` bracket all four walker
+  calls (mirroring `modules/sca/run.sh`'s own `_sca_run_module`), so the one possible
+  `SCA-COV-UNKNOWN_VERSION-01` roll-up the shadow run might emit is folded into a single, plain
+  `coverage_reduction reason=langdeps_unknown_version` line rather than re-minted as its own finding -
+  giving it a dedicated check id here would need its own fingerprint-safe location profile for a record
+  that, by construction, names no specific dependency, which is precisely the `SCA-COV-*` collision
+  AGENTS.md documents at length (every instance would hash identically and `findings_merge` would keep
+  only one), one check id over.
+
+Three sharp edges this ticket hit, each worth knowing before touching the file again:
+
+- **`SCOURSH_PATH_ROOT` is genuinely UNBOUND, not merely empty, on an `image` run - the `image` command
+  never sets it at all (it scans an `--image`, not a `--path`).** The reused SCA walkers' own
+  `finding_set cell "$SCOURSH_PATH_ROOT"` calls therefore `die` under `set -u` unless
+  `image_langdeps_scan` saves/defaults it (via `${SCOURSH_PATH_ROOT+x}` to detect "was it set at all",
+  since the shape has to restore true UNSET-ness afterward, not merely restore an empty string) around
+  the walker calls - its actual value is irrelevant either way, since the shadow-run redirection
+  discards every finding that reads it.
+- **`modules/sca/engine.sh` is sourced via `modules/sca/go_engine.sh` under a deliberate `# shellcheck
+  source=/dev/null` cut, not a real edge.** `modules/image/engine.sh` already reaches the
+  `lib/report.sh`/`lib/config.sh` subtree through `modules/sast/engine.sh` (sourced there for
+  `sast_evaluate_gate`), so a second, real edge into the same subtree via `modules/sca/engine.sh` is
+  exactly the diamond `tests/lint-source-graph.sh` (cap 17, snug against the tree's own current worst)
+  exists to catch - and did, before the cut was added. The cut is lossless: `modules/sca/run.sh` remains
+  a real, unguarded entry point of its own, so the subtree is still checked in full at least once.
+- **Every array expansion, even one provably non-empty by construction (a fixed six-element literal
+  directory list) or already guarded by a preceding length check three lines above it, still needs the
+  `"${arr[@]+"${arr[@]}"}"` idiom.** `tests/lint-shell.sh`'s tension-24 check is purely textual - it has
+  no control-flow awareness at all - so a bare `"${arr[@]}"` anywhere in an engine file fails the lint
+  regardless of whether the surrounding code makes emptiness impossible.
+
 ## Tests
 
 ```

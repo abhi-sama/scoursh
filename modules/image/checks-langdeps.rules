@@ -1,0 +1,71 @@
+# modules/image/checks-langdeps.rules - the container-image module's own
+# per-owner registry (rules/RULE-FORMAT.md §9's `checks-<name>.rules` row,
+# docs/FOUNDATION.md tension 29) for IMG-11 (data/scoursh-image-scan-design/
+# report.md §2.2, §4.1's IMAGE-LANGDEP-* row and §5.3's IMG-11 row):
+# language dependencies (npm/RubyGems/Composer/PyPI/Maven/Go) shipped inside
+# the image rootfs, found by reusing the four existing `modules/sca/`
+# tree-walkers against a bounded, declared extraction of this image's own
+# conventional manifest locations.
+#
+# A SEPARATE FILE FROM checks-apk.rules/checks-dpkg.rules/checks-rpm.rules/
+# checks-advisories.rules/checks-coverage.rules/checks-config.rules,
+# per report.md §5.1's binding "one registry per owner" rule and
+# modules/image/checks-apk.rules' own identical precedent: this ticket's OWN
+# file, never an append to a shared or sibling one a later ticket could then
+# collide on.
+#
+# `script: langdeps.sh` for both records below - the whole ticket lives in
+# ONE new driver file (modules/image/langdeps.sh), unlike apk/dpkg's
+# enumerate-then-compare pair split across two tickets each.
+#
+# `tags: passive` - language-dependency extraction reads already-extracted
+# local layer members with no network call and no mutation, mirroring every
+# other image checks-*.rules file's own reasoning for the identical tag.
+# Deliberately NO `tags: quick`: unlike a single-file parse plus one
+# `db_lookup_exact` prefix test, this check's bounded extraction is
+# `image_collect_metadata` over the whole IMAGE_LANGDEPS_DIRS x
+# IMAGE_LANGDEPS_FILENAMES cross product (modules/image/langdeps.sh
+# section 1) - still local-disk-only and still no network, but a real
+# multiple of the cost every sibling image check pays, so it is not
+# described as the cheapest coverage a run can buy.
+#
+# `coverage-scope: image-id` - the only legal value for the `IMAGE` module
+# (rules/RULE-FORMAT.md §9.5.1's frozen table); the cell is the
+# operator-declared stable id from `config/images.conf`, never the image
+# digest or tag (report.md §3.4) - and, per report.md §2.2 caveat 2, NEVER
+# the `path-root` cell the reused `modules/sca/` walkers would otherwise set
+# on their own raw findings; modules/image/langdeps.sh's own header explains
+# the shadow-run re-emission that guarantees this.
+
+id: IMAGE-LANGDEP-VULNERABLE_DEP-01
+title: A language dependency (npm/RubyGems/Composer/PyPI/Maven/Go) pinned inside this image matches a known advisory
+script: langdeps.sh
+severity: high
+confidence: high
+cwe: CWE-1104
+owasp: A06:2021
+tags: passive
+coverage-scope: image-id
+remediation: Rebuild the image with the named dependency re-pinned to at
+  least the advisory's fixed version (a lockfile edit and a fresh install,
+  not a base-image bump - this is an application-level dependency, not an
+  OS package) and re-scan.
+references: data/scoursh-image-scan-design/report.md
+references: CWE-1104
+
+id: IMAGE-COV-LANGDEPS_NOT_SCANNED-01
+title: Language-dependency scanning did NOT run inside this image - no advisory database, or no manifest found under any declared candidate location
+script: langdeps.sh
+severity: info
+confidence: high
+cwe: none
+owasp: none
+tags: passive
+coverage-scope: image-id
+remediation: Populate data/advisories.db for the affected ecosystem(s) with
+  'tools/vendor-engines.sh advisories <ecosystem>' on a networked box (the
+  no_advisories_db case), or confirm this image genuinely ships no
+  package-lock.json/requirements.txt/go.mod/and-similar manifest at any of
+  this module's declared conventional locations (the no_manifests_found
+  case) - see this finding's own evidence for which reason applied.
+references: data/scoursh-image-scan-design/report.md

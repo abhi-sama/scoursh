@@ -47,7 +47,15 @@
 # enumerator+matcher (IMG-07/IMG-09) and `dpkg_version.sh`'s comparator
 # (IMG-08) into a sibling branch of the ecosystem dispatch below, dispatched
 # on the resolved distro `ID` rather than on the ecosystem string itself.
-# rpm (IMG-12) is still out of scope here.
+# IMG-11 adds `image_langdeps_scan` (modules/image/langdeps.sh), also
+# distro-agnostic and also independent of the ecosystem branch below it:
+# language dependencies (npm/RubyGems/Composer/PyPI/Maven/Go) found inside
+# the image's own rootfs by reusing modules/sca/'s four tree-walkers against
+# a bounded, declared extraction of conventional manifest locations,
+# re-emitted under `IMAGE-LANGDEP-VULNERABLE_DEP-01` with this image's own
+# `image-id` cell rather than a host path-root (that file's own header has
+# the full reasoning). rpm (IMG-12) is out of scope for run.sh's own
+# distro-ecosystem branch below.
 #
 # THE HONESTY THIS FILE OWES ITS READER IS ITS ACTUAL DELIVERABLE.  A run
 # that does nothing must not leave a report that reads like a clean scan -
@@ -184,6 +192,16 @@ _image_run_module() {
       image_check_root_user "$kind" "$path" "$image_id"
       image_check_exposed_ports "$kind" "$path" "$image_id"
       image_check_mutable_base_ref "$kind" "$path" "$image_id"
+
+      # IMG-11: language dependencies inside the rootfs (report.md §2.2) -
+      # also distro-agnostic and runs unconditionally once the image is
+      # open, independent of the os-release/ecosystem/apk-or-dpkg branch
+      # below it, for the identical reasoning the three image_check_* calls
+      # above already give. A distroless final stage with no os-release and
+      # no package database at all is exactly the case this check matters
+      # most for: it is often the ONLY dependency surface this module has
+      # any hope of examining for such an image.
+      image_langdeps_scan "$kind" "$path" "$image_id"
 
       # A dedicated scratch directory, released unconditionally below -
       # image_collect_metadata is the module's one acquisition entry point

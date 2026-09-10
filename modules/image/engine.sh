@@ -7,7 +7,9 @@
 # by IMG-06; distro-release detection widened to Debian/Ubuntu and
 # distro/dpkg.sh, dpkg_version.sh sourced here, by IMG-09; config.sh widened
 # with two more distro-agnostic config-blob checks by IMG-10, no new source
-# edge since config.sh was already sourced here by IMG-06).
+# edge since config.sh was already sourced here by IMG-06; langdeps.sh
+# sourced here by IMG-11, reusing modules/sca/'s four tree-walkers against a
+# bounded, declared extraction of this image's own language manifests).
 #
 # WHAT IMG-01 SHIPPED, AND WHAT HAS LANDED SINCE.  IMG-01 was the ONLY
 # shared-file ticket for this module - it registered the `IMAGE` module
@@ -92,6 +94,13 @@ source "${BASH_SOURCE[0]%/*}/distro/dpkg.sh"
 source "${BASH_SOURCE[0]%/*}/distro/dpkg_version.sh"
 # shellcheck source=modules/image/config.sh
 source "${BASH_SOURCE[0]%/*}/config.sh"
+# langdeps.sh (IMG-11) is sourced from the module's one function-library hub
+# exactly like every sibling above, for the identical reason; it carries its
+# own shellcheck -x cut on its one real edge into modules/sca/ (its own
+# header explains why), so adding it here costs nothing like the five leaves
+# above do.
+# shellcheck source=modules/image/langdeps.sh
+source "${BASH_SOURCE[0]%/*}/langdeps.sh"
 
 # ---------------------------------------------------------------------------
 # Distro-release detection (IMG-03, report.md §4.3's `distro_release_unknown`
