@@ -1073,17 +1073,29 @@ image_open() {
 #
 # `IMAGE_METADATA_PATHS` is the whole of what this module ever asks for.  It
 # is a list of LOCATIONS and nothing here parses a single byte of any of them:
-# the apk and dpkg readers are IMG-04 and IMG-07, and rpm - a binary database
-# needing a new `sqlite3` dependency - is IMG-12 and is deliberately ABSENT
-# rather than listed and unread, so this list never claims a coverage the
-# module does not have.  Keeping it a handful of paths is what report.md §1.6
-# calls a design invariant: scoursh never materialises a rootfs, so scanning a
-# 900 MB image costs its layer INDEXES plus a few kilobytes.
+# the apk and dpkg readers are IMG-04 and IMG-07, and the three rpm database
+# paths below are IMG-12's own addition (report.md §2.1's table: the modern
+# sqlite backend plus the two older binary shapes, Berkeley DB and ndb - a
+# real image carries at most one of the three, never all of them).  Only ONE
+# of the three rpm paths is ever actually read as text -
+# `modules/image/distro/rpm.sh`'s own header explains why the sqlite one is
+# the only shape this project can read, and why even that one degrades to a
+# declared `rpm_db_binary_format` reduction against a real, unmodified
+# database rather than a silent zero-package "clean" scan - but all three are
+# listed here so acquisition extracts whichever one a given image actually
+# carries, exactly as `rpm_installed_enumerate` needs to tell "no rpm
+# database at all" from "a database this file cannot read as text" apart.
+# Keeping it a handful of paths is what report.md §1.6 calls a design
+# invariant: scoursh never materialises a rootfs, so scanning a 900 MB image
+# costs its layer INDEXES plus a few kilobytes.
 declare -ga IMAGE_METADATA_PATHS=(
   etc/os-release
   usr/lib/os-release
   lib/apk/db/installed
   var/lib/dpkg/status
+  var/lib/rpm/rpmdb.sqlite
+  var/lib/rpm/Packages
+  var/lib/rpm/Packages.db
 )
 
 # `image_whiteout_names PATH` - every whiteout member name that would delete

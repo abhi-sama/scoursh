@@ -4230,7 +4230,52 @@ now) is the check id this wiring makes real; `tests/suites/image-debian.sh` (new
 proof, deliberately exercising a binary-name-!=-source-name package (`libssl3`/`Source: openssl`) so the
 Source: fallback is a real test rather than an accident of a same-named package, and
 `tests/suites/vendor-engines-advisories.sh` sections D4/D5 are the importer-side proof, mirroring
-section D3's own alpine coverage. rpm (IMG-12) remains the only distro left.
+section D3's own alpine coverage. rpm remains the only distro left, and - unlike apk and dpkg, which
+each landed as a two-ticket enum-then-matching pair - it is split into its own enum -> comparator ->
+advisories+e2e sub-chain, mirroring dpkg's IMG-07/08/09 split one ticket further, per report.md §2.1's
+own "apk ≪ dpkg < rpm" difficulty ranking.
+
+**IMG-12 (rpm enumeration) has landed - the first ticket of that sub-chain, and Stage 2's second
+distro after dpkg.** `modules/image/distro/rpm.sh` (`rpm_installed_enumerate`) and
+`modules/image/checks-rpm.rules` (`IMAGE-PKG-VULNERABLE_OS_PACKAGE-03`, `requires-cmd: sqlite3`,
+registered and unreachable, the identical "correct the day it becomes reachable" shape
+`checks-dpkg.rules` was in from IMG-07 through IMG-08/09) ship enumeration only - no comparator, no
+advisories, no finding, exactly as report.md §5.3's IMG-12 row scopes it. `modules/image/acquire.sh`'s
+`IMAGE_METADATA_PATHS` gains all three of the rpm database's on-disk shapes
+(`var/lib/rpm/rpmdb.sqlite`, `var/lib/rpm/Packages`, `var/lib/rpm/Packages.db`), deliberately absent
+from that list since IMG-02 pending exactly this ticket.
+
+**report.md §2.1 measured "sqlite3 present" and read that as "the modern rpm backend is thereby
+text-readable"; RE-MEASURED while landing this ticket, it is not, and the correction matters for every
+future rpm ticket in this sub-chain.** `rpmdb.sqlite`'s own native `Packages` table is
+`(hnum INTEGER PRIMARY KEY, blob BLOB)` - two columns, full stop, confirmed against rpm.org's own
+db_recovery.html and the Fedora "Sqlite Rpmdb" change proposal. `blob` is the SAME serialized RPM
+header structure (a binary tag/type/offset/count index over a second binary data segment) the
+Berkeley-DB and ndb backends store under the identical key; the per-tag index tables sqlite also ships
+(`Name`, `Providename`, `Requirename`, ...) map an indexed string to the `hnum`(s) that carry it - real
+plain text, but names/capabilities only, never a package's own version/release/epoch/arch, which live
+solely inside the opaque per-row `blob`. Confirmed against how the two scanners that already solved
+this actually read it: anchore/syft's `rpm/sqlite` package and quay/claircore's own equivalent both
+query `Packages` for `(hnum, blob)` and then run a real RPM HEADER DECODER over `blob` - the exact same
+decoder they run against a Berkeley-DB or ndb row. Nobody gets NEVRA out of this format with a bare
+`SELECT`, and writing a general RPM-header decoder in pure bash is exactly the "unverifiable blob"
+tension 25 already rejects for OS version algebras (report.md §2.1's own words).
+
+**So this ticket does not attempt one, and the consequence is that all three of rpm's on-disk shapes
+map to the SAME declared `rpm_db_binary_format` reduction against a real image, not only the two
+already-known-binary ones.** `rpm_installed_enumerate` still queries `Packages` for a plain
+`(name, epoch, version, release, arch)` projection - the shape `requires-cmd: sqlite3` was written for,
+and real, exercised, working code (`tests/suites/image-rpm.sh` section A) rather than a stub - but run
+against an unmodified native-schema database that query fails (`no such column: name`) and this file
+maps that failure to `rpm_db_binary_format` exactly like the Berkeley-DB and ndb branches
+(`tests/suites/image-rpm.sh` section F proves this empirically, against a fixture built with the real
+two-column schema, sqlite3 genuinely present and genuinely able to open the file - it is the SQL query
+against the file's real shape that fails, not the tool). The result: every real rpm-based image gets
+ONE honest, consistent answer today regardless of which of the three shapes it carries, never a silent
+zero-package "clean" scan. A future ticket that lands a real header decoder most plausibly does it as a
+vendored engine adapter (docs/ADAPTERS.md, mirroring how the `gitleaks`/`trivy` adapters already wrap a
+real binary rather than a bash reimplementation of one) and writes rows into a real sqlite database
+this same query already reads correctly, rather than reshaping this file's contract.
 
 ## Tests
 
