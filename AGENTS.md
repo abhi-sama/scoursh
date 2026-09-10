@@ -674,6 +674,19 @@ sweep or host discovery, gated by the identical `lib/http.sh` chokepoint and cei
 "Network module (NET)" below for the full landing detail (NET-01 through NET-12); its own mirror lives
 in `docs/FOUNDATION.md`'s "Where the build currently stands".
 
+**A second new surface outside `docs/DESIGN.md` §13's ten steps - built-container-image scanning
+(`modules/image/`, the `IMAGE` check-id prefix) - is also now COMPLETE.** `data/scoursh-image-scan-
+design/report.md` §5.3 staged it IMG-01 through IMG-14; every ticket in that list has landed,
+including IMG-14 (correlating `IMAGE-*` built-artifact findings with `IAC-DOCKER-*` Dockerfile-source
+findings via `rules/derived.rules`). It ships `scan.sh image --image ID [--source PATH]`: offline
+enumeration and CVE matching of installed apk, dpkg, and rpm packages plus in-image language
+dependencies (npm/RubyGems/Composer/PyPI/Maven/Go, reusing `modules/sca/`'s tree-walkers) against a
+`docker save` tarball or OCI image-layout directory the operator supplies - never a registry pull,
+the same offline-database model SCA already lives in. Config-blob checks (effective runtime user,
+exposed ports, mutable base-image reference) run on every opened image regardless of distro. See
+"Container image scanning (the IMAGE module)" below for the full landing detail; its own mirror lives
+in `docs/FOUNDATION.md`'s "Where the build currently stands".
+
 **`rules/derived.rules` now seeds `COMPOSITE-TOKEN-HIJACK` (findings F5/F20, closed), now that all
 three of its `requires` contributors exist**: `CLOUD-APPSYNC-API_KEY_LONG_EXPIRY-01` (§8.5, CLOUD-23),
 `DAST-LEAK-JS_CONFIG-01` (§7.1, DAST-10) and `DAST-GQL-INTROSPECTION-01` (§7.4, DAST-27), correlated on
@@ -4553,6 +4566,34 @@ their own distinct `IMAGE-COV-UNKNOWN_DISTRO-01` detail rather than a silent cle
 alpine/debian/ubuntu coverage - including that a same-advisory `Debian:12` entry never bleeds into the
 exact-match `Red Hat` rows, and that re-running `redhat` replaces the WHOLE `Red Hat` namespace without
 disturbing a same-named package under a different ecosystem.
+
+**IMG-14 (correlating `IMAGE-*` with `IAC-DOCKER-*`, report.md §4.4) has landed, closing out the
+module's own §5.3 ticket list - the LAST rpm ticket above completed the check set, and this is the
+last plumbing ticket.** It seeds four composites in `rules/derived.rules`:
+`COMPOSITE-IMAGE-EFFECTIVE_ROOT` (`IAC-DOCKER-ROOT_USER-01` confirmed by
+`IMAGE-CFG-RUNS_AS_ROOT-01` - the Dockerfile's missing `USER` line confirmed by the built image's own
+effective runtime user) and one `COMPOSITE-IMAGE-STALE_BASE_*` per package manager (APK/DPKG/RPM: an
+unpinned base, `IAC-DOCKER-LATEST_TAG-01` `any-of` `IAC-DOCKER-UNPINNED_DIGEST-01`, shipping a known-
+vulnerable installed package). Split per manager because `requires`/`any-of` on one composite record
+can express (ALL `requires`) AND (>=1 of `any-of`), and there is no way to express (>=1 of group A)
+AND (>=1 of group B) on one record - the package side is one fixed `requires` entry per record
+instead, with the two independent IAC signals in `any-of`.
+
+Per `rules/RULE-FORMAT.md` §9.2's own rule ("not scanner scripts"), no `modules/image/` script mints
+a composite id - each side only populates a `corr_file` correlation value on its own finding.
+`IAC-DOCKER-*` gets it for free, from `lib/findings.sh`'s `path` fingerprint-profile default (no code
+in `modules/iac/` changed). `IMAGE-*` gets it via the new optional `dockerfile` key on
+`config/images.conf` (§9.6.8, an additive optional key per §14 - trips item 2 alone, no
+`format_version` bump), threaded through `image_source_resolve` and `modules/image/run.sh` into the
+three emitters that correlate (`config.sh`, `distro/apk.sh`, `distro/dpkg.sh`; rpm's own emitter was
+seeded as a `requires` contributor in the same change, ahead of the rpm ticket that made it reachable
+- report.md's own "registered, not yet reachable" precedent, already established for the check id
+itself). An image with no declared `dockerfile` simply has no correlation value and cannot join -
+never a guessed pairing. `IMAGE` also joined `rules/RULE-FORMAT.md` §9.2.2's correlation-key
+capability table (`file`, conditional on the declared key) and `tests/lint-rules.sh`'s
+`module_can_supply` (E053), the identical pairing NET's own addition to that table already
+established. `tests/suites/image-iac-correlate.sh` proves both directions against the real check ids
+and the real `rules/derived.rules`.
 
 ## `bench/` is a benchmark harness, NOT part of the scanner
 

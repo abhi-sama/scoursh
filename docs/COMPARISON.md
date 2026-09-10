@@ -19,6 +19,7 @@ choice anyway.
 - [IaC — infrastructure as code](#iac--infrastructure-as-code)
 - [DAST — running applications](#dast--running-applications)
 - [Network / host](#network--host)
+- [Container image](#container-image)
 - [Secrets](#secrets)
 - [Cloud / CSPM](#cloud--cspm)
 - [Benchmark status](#benchmark-status)
@@ -27,7 +28,7 @@ choice anyway.
 
 ## The headline
 
-**The position:** One auditable bash tool that sweeps six surfaces in a single run, refuses to talk
+**The position:** One auditable bash tool that sweeps seven surfaces in a single run, refuses to talk
 to anything outside an operator-declared allowlist, and - uniquely among the tools surveyed - reports
 what it **did not** check as a first-class, non-clean output state.
 
@@ -49,8 +50,8 @@ on record**, or it is **not covered** - registered but never run. The last bucke
 
 | | |
 |---|---|
-| **308** | security checks across six surfaces |
-| **6** | surfaces: SAST, SCA, IaC, DAST, Network/host, Cloud/CSPM |
+| **319** | security checks across seven surfaces |
+| **7** | surfaces: SAST, SCA, IaC, DAST, Network/host, Container image, Cloud/CSPM |
 | **0** | runtime deps beyond bash + coreutils |
 | **1** | network chokepoint, lint-enforced |
 | **30** | AWS services covered by the read-only Cloud/CSPM checks |
@@ -62,6 +63,7 @@ on record**, or it is **not covered** - registered but never run. The last bucke
 | IaC | landed | Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose | 36 |
 | DAST | landed | Full engine: auth, crawl, passive, safe-active, injection, tier-5 | 92 |
 | Network / host | landed | Declared-listener reachability, banner/TLS/HTTP identification, transport posture — never a port sweep | 15 |
+| Container image | landed | Offline apk/dpkg/rpm package + language-dep CVE matching against a `docker save` tarball or OCI layout — never a registry pull | 11 |
 | Cloud / AWS | landed | 30 services, read-only, multi-account (`--assume-role`), CIS/OWASP-mapped | 112 |
 
 > **Cloud is read-only and needs your own account.** `scan.sh cloud --live` runs 112 checks across 30
@@ -97,6 +99,10 @@ blind spots*.
   snapshot, never real-time.
 - **Business logic.** Authorization checks are detection-oriented; complete access-control
   correctness still needs human review.
+- **Container images.** Only the bounded, declared metadata paths a package-manager database and a
+  handful of conventional language-manifest locations occupy are ever read - never a full rootfs
+  materialisation, and never a running container or its runtime behaviour. rpm needs `sqlite3` on
+  `PATH`, or matching is a declared coverage reduction rather than a silent clean pass.
 - **Speed.** Measured: 114 s for 52 files at the default single worker. `--jobs N` now gives real
   multi-worker fan-out for `sast`/`sca`/`iac` (byte-identical findings regardless of width), but each
   worker is still a shell pattern engine, not a compiled parser - compiled-Go competitors do
@@ -230,6 +236,40 @@ consent-and-ceiling discipline as an authorized web target, in the same report a
 IaC, and cloud findings, with "not open"/"filtered"/"not tested" kept as distinct, honestly-reported
 states rather than folded into a clean pass.
 
+## Container image
+
+| Tool | Coverage | Licence | Footprint | Egress / consent | Coverage honesty | Unique strength |
+|---|---|---|---|---|---|---|
+| **scoursh** | 11 checks: installed apk/dpkg/rpm package CVEs, in-image language-dependency CVEs (npm/RubyGems/Composer/PyPI/Maven/Go), plus config-blob checks (effective runtime user, exposed ports, mutable base-image reference) | Apache-2.0 | bash + `tar` (rpm also needs `sqlite3` on `PATH`) | **Reads only an operator-supplied `docker save` tarball or OCI layout - never a registry pull, no daemon socket** | **Found / ran-clean / declared-skip (no advisory DB, no recognised package database, unreadable layer) kept as distinct states** | Correlates a built-artifact finding with the Dockerfile source finding for the same image (`rules/derived.rules`) |
+| Trivy | Full image, filesystem, and repo scanning across OS packages, language deps, IaC misconfig, secrets, and SBOM export, plus registry/daemon pulls | Apache-2.0 | Go binary, self-contained | Pulls from a registry or local daemon directly | Findings only | The reference image scanner - broadest ecosystem and distro coverage, actively maintained vulnerability DB |
+| Grype | OS package and language-dependency CVEs via Anchore's own feed, SBOM-driven | Apache-2.0 | Go binary, self-contained | Pulls from a registry or local daemon directly | Findings only | Fast, SBOM-native (pairs with Syft), strong feed-freshness tooling |
+
+scoursh's image module is **not designed to reach a registry or a running container runtime at
+all** - `lib/http.sh` refuses any host absent from `config/scope.conf` and there is no third egress
+channel (`docs/FOUNDATION.md` tension 19), so an image is supplied as a file, offline, the identical
+model `data/advisories.db` already lives in for SCA. Trivy and Grype both pull directly from a
+registry or a local daemon by design, which is real convenience scoursh's egress model does not
+permit itself. What scoursh adds instead is the property the rest of the tool has: the same finding
+lands in one report alongside this image's own source-code, dependency, IaC, and (if scanned) cloud
+findings, with an absent advisory database or an unrecognised package database (a distroless/scratch
+image, or an rpm database with no `sqlite3` on `PATH`) reported as a declared reduction rather than
+folded into a silent clean pass. It is also the **built-artifact** counterpart to `iac`'s own
+Dockerfile *source* linting rather than a replacement for it - see `docs/CHECKS.md`'s "Container
+image" section and `docs/DESIGN.md` §15 for the boundary, including what neither scoursh feature
+alone can see (a base image's own packages, drift between a digest-pinned Dockerfile and a
+months-old build).
+
+**Honest verdict:** **Use Trivy or Grype when you need registry-pull convenience, the broadest
+distro/ecosystem coverage, or SBOM export** - both have years of dedicated feed maintenance behind
+them that this module does not attempt to match. What scoursh adds is coverage in an egress-restricted
+or air-gapped setting where pulling from a registry or daemon is off the table, and the same
+found/ran-clean/declared-skip honesty discipline the rest of the tool applies, now extended to what
+actually shipped inside an image rather than only to what a Dockerfile says it should contain. No
+detection-rate comparison against Trivy or Grype is published here, for the identical reason given
+under ["Benchmark status"](#benchmark-status): scoursh does not currently have a neutral, versioned
+corpus for container-image findings, and a number computed only on this project's own fixtures would
+repeat the exact mistake that section documents.
+
 ## Secrets
 
 | Tool | Coverage | Licence | Footprint | Egress | Coverage honesty | Unique strength |
@@ -292,6 +332,9 @@ checks-shipped gap predicts a recall gap; the recall gap should never be the fir
 - **IaC:** scoursh ships 36 checks across 6 formats; Checkov ships 1,000+, KICS 2,400+.
 - **Secrets:** scoursh ships 7 dedicated secret checks against Gitleaks' and TruffleHog's broad,
   purpose-built rulesets.
+- **Container image:** scoursh ships 11 checks across three package managers (apk/dpkg/rpm) plus six
+  language ecosystems; Trivy and Grype each track a broader distro and vulnerability-feed surface,
+  refreshed continuously against a registry rather than an offline, hand-refreshed database.
 
 A roughly 50-to-1 rule-count gap does not require a benchmark to predict a specialist win on recall. A
 same-corpus comparison should confirm that gap, not report it as news.
@@ -344,7 +387,7 @@ a new measurement:
 | Property | scoursh | Typical specialist |
 |---|---|---|
 | Coverage honesty | Four-state partition (found / clean / skipped-with-reason / not covered) | Findings only - a clean run and an unrun check both look "clean" |
-| Egress | Zero network calls for SAST/SCA/IaC; DAST/network/cloud refuse any destination outside an operator allowlist, provable live under `--paranoid` | Registry/database fetch, template updates, or live verification calls, per tool |
+| Egress | Zero network calls for SAST/SCA/IaC/container-image; DAST/network/cloud refuse any destination outside an operator allowlist, provable live under `--paranoid` | Registry/database fetch, template updates, or live verification calls, per tool |
 | Advisory DB footprint | ~10 MB, hand-built offline | 1.3-2.0 GB, auto-fetched (Trivy, Grype) |
 | Runtime dependencies | bash + coreutils | JVM, Python, Node, Go toolchain, or a multi-GB engine, per tool |
 
@@ -360,13 +403,14 @@ labelled and scoped as exactly that.
 
 **Choose scoursh when…**
 
-- **You are air-gapped or egress-audited.** SAST, SCA and IaC make zero network calls; DAST and
-  network talk only to hosts (and, for network, ports) you declared, and cloud talks only to your own
-  AWS account through a read-only chokepoint.
+- **You are air-gapped or egress-audited.** SAST, SCA, IaC, and container-image scanning make zero
+  network calls (an image is a local file, never a registry pull); DAST and network talk only to
+  hosts (and, for network, ports) you declared, and cloud talks only to your own AWS account through
+  a read-only chokepoint.
 - **"Did it actually check?" must be answerable.** Compliance evidence, an auditor, a post-incident
   review.
 - **You cannot install a toolchain.** No JVM, Python, Node, Go, Docker or build step.
-- **You want one report across six surfaces** with one fingerprint scheme, severity rubric and diff
+- **You want one report across seven surfaces** with one fingerprint scheme, severity rubric and diff
   model.
 - **You need a CI gate with a real new-findings carve-out**, fail-closed when the diff is unusable.
 - **Auditability is the requirement.** It is shell - a reviewer can read the rule that fired.

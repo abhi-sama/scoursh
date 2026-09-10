@@ -34,14 +34,16 @@ folding it into "clean." The name blends **scour** (search thoroughly, corner to
 | **IaC** | Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose | ✅ built - `scan.sh iac` |
 | **DAST** | A running application you've authorized - auth/crawl, passive checks, safe-active, the full injection family, application-layer (GraphQL, rate-limiting, JWT, IDOR) | ✅ built - `scan.sh dast` |
 | **Network / host** | Service-posture scanning over an operator-declared listener set (`config/scope.conf`'s `base-url`/`extra-host` entries) - reachability, banner/version disclosure, TLS posture on non-web ports, plaintext/STARTTLS transport posture. Never a port sweep or host discovery: a port scoursh was not told about is never probed | ✅ built - `scan.sh network --target NAME` |
+| **Container image** | Offline OS-package (apk, dpkg, rpm) and language-dependency CVE matching, plus config-blob checks (effective runtime user, exposed ports, mutable base tag), against a `docker save` tarball or OCI image layout you supply - never a registry pull | ✅ built - `scan.sh image --image ID` |
 | **Cloud / CSPM** | Live AWS configuration | ✅ built - `scan.sh cloud`, 30 AWS services, read-only, credential-authorized, CIS/OWASP-mapped |
 
-Roughly 300 checks ship across the six built surfaces. The complete catalogue - every check id,
+Roughly 320 checks ship across the seven built surfaces. The complete catalogue - every check id,
 what it catches, and what it needs to run - is [`docs/CHECKS.md`](docs/CHECKS.md) (also published as
 a standalone page, [`docs/checks.html`](docs/checks.html)). Almost all of it runs with **no external
 data**: point scoursh at a path or a running target and every SAST/IaC/DAST/network check works
-immediately. Only dependency-CVE matching (SCA) and the two version-lookup checks (one DAST, one
-network) need the vendored advisory database - see [Commands & recipes](#commands--recipes).
+immediately. Dependency-CVE matching (SCA), most container-image checks, and the two version-lookup
+checks (one DAST, one network) need the vendored advisory database - see
+[Commands & recipes](#commands--recipes).
 
 ## Why scoursh
 

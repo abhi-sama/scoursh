@@ -105,6 +105,20 @@ This file is a shorter, reader-facing summary of the same information, and is ha
   port scanner or a host-discovery tool: a port the operator did not declare is never probed, and OS
   patch-level inference and UDP are stated-gap exclusions, not oversights - see
   [`docs/CHECKS.md`](docs/CHECKS.md) for why.
+- **Container image scanning is complete.** `modules/image/` (IMG-01 through IMG-14, see
+  [`AGENTS.md`](AGENTS.md)'s "Container image scanning (the IMAGE module)" section for the full
+  landing detail) ships `scan.sh image --image ID [--source PATH]`: offline installed-package
+  enumeration and CVE matching against a `docker save` tarball or OCI image-layout directory the
+  operator supplies - never a registry pull, the same offline-database model SCA already lives in.
+  Covers apk, dpkg, and rpm packages (rpm needs `sqlite3` on `PATH`; its absence is a declared
+  coverage reduction, never a silent clean pass), language dependencies found inside the image's own
+  rootfs (reusing `sca`'s tree-walkers), and config-blob checks (effective runtime user, exposed
+  ports, mutable base-image reference). Correlates with `modules/iac/dockerfile.rules` findings for
+  the same image via `rules/derived.rules` when `config/images.conf` names the Dockerfile that built
+  it. This is the **built-artifact** counterpart to IaC's Dockerfile *source* linting, not a
+  replacement for it - see [`docs/CHECKS.md`](docs/CHECKS.md)'s "Container image" section and
+  `docs/DESIGN.md` §15 for what it deliberately does not do (no full-rootfs materialisation, no
+  running-container/runtime inspection).
 
 ## Not yet started
 
@@ -242,22 +256,20 @@ old behaviour can see what replaced it.
 
 ## Not currently on the roadmap
 
-One category from the broader "types of security scanner" taxonomy is not part of
-`docs/DESIGN.md`'s plan at all, not merely unbuilt:
+Nothing from the broader "types of security scanner" taxonomy is excluded from `docs/DESIGN.md`'s
+plan at this point - this section is empty for the moment, kept as a heading because the taxonomy it
+tracked is worth re-checking against before assuming a new category is simply "next."
 
-- **Container image scanning** - scanning the layers and installed packages of a *built* Docker
-  image (the way Trivy or Grype do). `scoursh` lints Dockerfile and docker-compose *source* as part
-  of `iac`, which is a different, narrower thing.
-
-Network / host scanning used to be listed here too; it shipped - see "Network / host scanning is
-complete" under [Landed](#landed).
-Two capabilities inside that surface remain deliberate, stated exclusions rather than unbuilt work -
-OS patch-level inference (banner-version matching cannot see a distribution's backported fixes) and
-UDP (no connect handshake, so "open" and "filtered" are indistinguishable without a per-service
-payload) - see [`docs/CHECKS.md`](docs/CHECKS.md).
-
-If container image scanning matters to your use case, it's worth raising as an issue rather than
-assuming it's simply "next."
+Network / host scanning and container image scanning both used to be listed here; both shipped - see
+"Network / host scanning is complete" and "Container image scanning is complete" under
+[Landed](#landed).
+Network / host scanning still carries two deliberate, stated exclusions rather than unbuilt work - OS
+patch-level inference (banner-version matching cannot see a distribution's backported fixes) and UDP
+(no connect handshake, so "open" and "filtered" are indistinguishable without a per-service payload).
+Container image scanning likewise carries stated exclusions rather than unbuilt work - no
+full-rootfs materialisation, no running-container/runtime inspection, and rpm needs `sqlite3` on
+`PATH` or it is a declared coverage reduction. See [`docs/CHECKS.md`](docs/CHECKS.md) and
+`docs/DESIGN.md` §15 for both.
 
 ## Maintenance note: this file is not generated
 
