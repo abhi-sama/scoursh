@@ -1,0 +1,223 @@
+# bench/sca-advisories.lock - pinned OSV.dev advisories for the SCA
+# detection-benchmark leg (B5).  Read by bench/fetch-sca-corpus.sh, which
+# turns this into bench/corpora/_samples/sca-lockfiles-26/{root,truth,MANIFEST}
+# - a real npm/PyPI/Go lockfile per case, pinned to a genuinely vulnerable
+# version (the `real: true` case) or the first version OSV says is not
+# vulnerable (the `real: false` sanitized-trap counterpart), exactly the
+# real/trap pairing bench/corpus.lock's owasp-benchmark record uses for SAST
+# and for the identical reason (bench/lib/truth.sh's header: a recall-only
+# corpus cannot measure a false-positive rate, and Youden J needs one).
+#
+# EVERY FACT BELOW WAS READ FROM https://api.osv.dev/v1/vulns/<osv-id> AT THE
+# `resolved` TIMESTAMP, NOT FROM MEMORY.  `fixed-version` is not "the first
+# `fixed` event in the document" - a single OSV record routinely carries
+# several SEMVER ranges (one per affected release branch: minimist's
+# GHSA-xvch-5gv4-984h has a 0.x range fixed at 0.2.4 *and* a 1.x range fixed
+# at 1.2.6), and the one that matters is whichever range actually contains
+# `vuln-version`.  Picking the wrong one is silent and wrong in the direction
+# that inflates a tool's apparent miss: a "fixed" case built from the wrong
+# range asks a scanner to explain a version gap the advisory never claimed.
+#
+# THIS IS A CONSTRUCTED CORPUS, NOT A CLONED ONE - unlike owasp-benchmark and
+# terragoat in bench/corpus.lock, there is no single third-party "SCA
+# benchmark" repository to pin a commit against.  Every case here names a
+# real, historically shipped, publicly disclosed vulnerable version of a real
+# package, and the corpus this file drives out of it is licence-free (it
+# vendors no third-party test code, only package names and version numbers),
+# so - unlike the git-cloned corpora - it is small enough to fetch offline
+# from this file alone and IS reproducible without network access; the
+# default fetch additionally re-verifies each id live (see
+# bench/fetch-sca-corpus.sh --offline to skip that and build from the pin
+# alone).
+#
+# scoursh's OWN advisory_id for a real (non-fixture) database is the OSV
+# canonical id (tools/vendor-engines.sh's `rows_for()`: `vuln_id =
+# data.get("id")`), never a CVE, so `osv-id` below - not `cve` - is what
+# scoursh and OSV-Scanner (which also speaks OSV natively) are expected to
+# report back; `cve` is recorded because Trivy and Grype more often surface
+# it instead, and both are read for the STRICT (identity) scoring column.
+#
+# FORMAT: the same blank-line-separated `key: value` block shape
+# bench/corpus.lock uses (rules/RULE-FORMAT.md's frozen record shape,
+# deliberately not loaded by the scanner - see that file's own header).
+#
+# KEYS
+#   id             this file's own case-family id; becomes the case directory
+#                  name under bench/corpora/_samples/sca-lockfiles-26/root/
+#   ecosystem      the OSV ecosystem string (npm, PyPI, Go)
+#   package        the package name, OSV's own spelling
+#   vuln-version   a real, historically shipped vulnerable version
+#   fixed-version  the first version NOT in the SEMVER range that actually
+#                  contains vuln-version (see the header paragraph above)
+#   osv-id         the advisory this pair was resolved from
+#   cve            its CVE alias, or empty if OSV lists none
+#   severity       OSV's own database_specific.severity, verbatim
+#   resolved       UTC timestamp this record was read from the live API
+#   summary        OSV's own one-line summary, verbatim
+#   note           free prose, repeatable
+
+id: npm-lodash
+ecosystem: npm
+package: lodash
+vuln-version: 4.17.15
+fixed-version: 4.17.19
+osv-id: GHSA-p6mc-m468-83gw
+cve: CVE-2020-8203
+severity: HIGH
+resolved: 2026-09-10T10:21:12Z
+summary: Prototype Pollution in lodash
+
+id: npm-minimist
+ecosystem: npm
+package: minimist
+vuln-version: 1.2.5
+fixed-version: 1.2.6
+osv-id: GHSA-xvch-5gv4-984h
+cve: CVE-2021-44906
+severity: CRITICAL
+resolved: 2026-09-10T10:21:13Z
+summary: Prototype Pollution in minimist
+note: OSV lists two SEMVER ranges for this advisory (0.x fixed at 0.2.4, 1.x
+  fixed at 1.2.6). vuln-version 1.2.5 falls in the 1.x range, so 1.2.6 is the
+  correct fixed-version - not the 0.2.4 a naive "first fixed event" read
+  would pick.
+
+id: npm-node-fetch
+ecosystem: npm
+package: node-fetch
+vuln-version: 2.6.0
+fixed-version: 2.6.7
+osv-id: GHSA-r683-j2x4-v87g
+cve: CVE-2022-0235
+severity: HIGH
+resolved: 2026-09-10T10:21:14Z
+summary: node-fetch forwards secure headers to untrusted sites
+
+id: npm-axios
+ecosystem: npm
+package: axios
+vuln-version: 0.21.0
+fixed-version: 0.21.1
+osv-id: GHSA-4w2v-q235-vp99
+cve: CVE-2020-28168
+severity: MODERATE
+resolved: 2026-09-10T10:21:15Z
+summary: Axios vulnerable to Server-Side Request Forgery
+
+id: npm-follow-redirects
+ecosystem: npm
+package: follow-redirects
+vuln-version: 1.14.7
+fixed-version: 1.15.4
+osv-id: GHSA-jchw-25xp-jwwc
+cve: CVE-2023-26159
+severity: MODERATE
+resolved: 2026-09-10T10:21:16Z
+summary: Follow Redirects improperly handles URLs in the url.parse() function
+
+id: npm-y18n
+ecosystem: npm
+package: y18n
+vuln-version: 3.2.1
+fixed-version: 3.2.2
+osv-id: GHSA-c4w7-xm78-47vh
+cve: CVE-2020-7774
+severity: HIGH
+resolved: 2026-09-10T10:21:17Z
+summary: Prototype Pollution in y18n
+
+id: pypi-pyyaml
+ecosystem: PyPI
+package: pyyaml
+vuln-version: 5.3
+fixed-version: 5.4
+osv-id: GHSA-8q59-q68h-6hv4
+cve: CVE-2020-14343
+severity: CRITICAL
+resolved: 2026-09-10T10:21:30Z
+summary: Improper Input Validation in PyYAML
+
+id: pypi-django
+ecosystem: PyPI
+package: django
+vuln-version: 3.0
+fixed-version: 5.2.15
+osv-id: GHSA-h7pc-vwp9-298g
+cve: CVE-2026-6873
+severity: LOW
+resolved: 2026-09-10T10:21:31Z
+summary: 'Django: signed cookies are vulnerable to salt namespace collisions'
+note: OSV's own affected range for this advisory is [0, 5.2.15) - the design
+  issue predates every 3.x/4.x release, so the large version jump from 3.0 to
+  5.2.15 is the advisory's own range, not a corpus-construction error.
+
+id: pypi-urllib3
+ecosystem: PyPI
+package: urllib3
+vuln-version: 1.25.8
+fixed-version: 1.26.17
+osv-id: GHSA-v845-jxx5-vc9f
+cve: CVE-2023-43804
+severity: HIGH
+resolved: 2026-09-10T10:21:32Z
+summary: 'Cookie HTTP header isn''t stripped on cross-origin redirects'
+
+id: pypi-jinja2
+ecosystem: PyPI
+package: jinja2
+vuln-version: 2.10.1
+fixed-version: 3.1.3
+osv-id: GHSA-h5c8-rqwp-cp95
+cve: CVE-2024-22195
+severity: MODERATE
+resolved: 2026-09-10T10:21:33Z
+summary: Jinja vulnerable to HTML attribute injection when passing user input as keys to xmlattr filter
+
+id: go-x-text
+ecosystem: Go
+package: golang.org/x/text
+vuln-version: 0.3.0
+fixed-version: 0.3.8
+osv-id: GHSA-69ch-w2m2-3vjp
+cve: CVE-2022-32149
+severity: HIGH
+resolved: 2026-09-10T10:21:40Z
+summary: golang.org/x/text/language Denial of service via crafted Accept-Language header
+note: This advisory publishes only a SEMVER range, never an explicit affected-
+  version list, so tools/vendor-engines.sh's own exact-version-only import
+  (docs/FOUNDATION.md tension 25) DROPS it - confirmed against a freshly
+  built data/advisories.db, 2026-09-10 (0 rows for golang.org/x/text). Kept
+  in the corpus deliberately: scoursh cannot match this pair no matter how
+  the run is configured, and that is a real, structural, already-self-
+  reported (tools/vendor-engines.sh advisories bulk Go's own "MORE THAN HALF
+  ... range-only" warning) coverage gap worth measuring rather than avoiding.
+
+id: go-gorilla-websocket
+ecosystem: Go
+package: github.com/gorilla/websocket
+vuln-version: 1.4.0
+fixed-version: 1.4.1
+osv-id: GHSA-3xh2-74w9-5vxm
+cve: CVE-2020-27813
+severity: HIGH
+resolved: 2026-09-10T10:21:41Z
+summary: Integer overflow in github.com/gorilla/websocket
+note: Same range-only gap as go-x-text above - also 0 rows in a freshly built
+  data/advisories.db, 2026-09-10.
+
+id: go-hashicorp-vault
+ecosystem: Go
+package: github.com/hashicorp/vault
+vuln-version: 1.14.0
+fixed-version: 1.14.1
+osv-id: GHSA-9v3w-w2jh-4hff
+cve: CVE-2023-3462
+severity: MODERATE
+resolved: 2026-09-10T10:21:50Z
+summary: HashiCorp Vault and Vault Enterprise vulnerable to user enumeration
+note: Chosen specifically because it DOES survive tools/vendor-engines.sh's
+  exact-version-only import (confirmed present in a freshly built
+  data/advisories.db, 2026-09-10) - the one Go case in this corpus where
+  scoursh's Go SCA coverage gap (see go-x-text, go-gorilla-websocket above)
+  does not apply, so the leg can distinguish "the matching logic is broken"
+  from "the database has no row to match against".

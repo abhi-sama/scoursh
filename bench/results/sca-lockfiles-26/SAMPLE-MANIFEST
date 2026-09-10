@@ -1,0 +1,8 @@
+sample: sca-lockfiles-26
+commit: n/a - see bench/sca-advisories.lock (not a git-cloned corpus)
+source: bench/sca-advisories.lock
+verified-live: 1
+cases: 26
+real-cases: 13
+trap-cases: 13 (patched version of the same package - the sanitized-trap counterpart)
+selection: every record in bench/sca-advisories.lock, in file order

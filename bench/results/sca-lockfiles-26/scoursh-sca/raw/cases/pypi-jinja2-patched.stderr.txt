@@ -1,0 +1,1 @@
+2026-09-10T11:16:31Z info  scan complete in 36s - report: <BENCH>/results/sca-lockfiles-26/scoursh-sca/raw/cases/pypi-jinja2-patched

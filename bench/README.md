@@ -4,9 +4,11 @@ A rig for measuring scoursh's detection against other tools on **neutral,
 pinned, third-party corpora**, and for scoring the result honestly.
 
 This directory is tickets **B1 (harness)**, **B2 (corpus manifest)** and
-**B3 (scorer)** of the benchmark plan. The per-category measurement legs
-(B4 SAST, B5 SCA, …) and the published page (B9) are follow-ups; **no number
-produced here is published anywhere in `docs/` yet, and that is deliberate.**
+**B3 (scorer)** of the benchmark plan, plus the **B4 (SAST leg)** and
+**B5 (SCA leg)** measurements built on top of them. The remaining
+per-category legs (B6 IaC/secrets, …) and the published page (B9) are
+follow-ups; **no number produced here is published anywhere in `docs/` yet,
+and that is deliberate.**
 
 ---
 
@@ -19,10 +21,25 @@ It is **not part of the scanner.** Nothing under `lib/`, `modules/` or
 That separation is what lets the harness use the network at all. scoursh is
 egress-restricted; the harness orchestrating Semgrep, Trivy, Grype and
 OSV-Scanner is not, because **the constraint binds the tool under test, not
-the test rig.** Those tools need the network to work at all. Even so, only
-one file here ever reaches it — `bench/fetch-corpus.sh`. Fetch a corpus once
-and every measurement run afterwards is offline, which is also the only way
-the suite can run on the air-gapped host scoursh is designed for.
+the test rig.** Those tools need the network to work at all. Even so, only two
+files here ever reach it — `bench/fetch-corpus.sh` (git-cloned corpora) and
+`bench/fetch-sca-corpus.sh` (the SCA leg's own corpus, built from
+`bench/sca-advisories.lock` and re-verified live against OSV.dev by default;
+`--offline` skips even that and builds from the pin alone). Fetch a corpus
+once and every measurement run afterwards is offline, which is also the only
+way the suite can run on the air-gapped host scoursh is designed for.
+`tests/suites/bench.sh` section G's network-isolation check names both files
+by basename; `tests/suites/bench-sca.sh` section E re-asserts it for the SCA
+leg's own files specifically.
+
+**The SCA leg (B5) additionally needs `data/advisories.db` populated** before
+`bench/tools/scoursh-sca.sh` can produce anything but coverage-reduction
+noise — that database is scoursh's own required input for `scan.sh sca`
+(AGENTS.md's tension-14 entry), it is gitignored, and building it is a
+separate, documented, by-hand step
+(`tools/vendor-engines.sh advisories bulk <ecosystem>`) that this harness
+never runs on its own. See `bench/results/sca-lockfiles-26/README.md` for
+the exact snapshot this leg's committed results were measured against.
 
 ---
 
@@ -53,24 +70,34 @@ bench/score.sh --truth bench/corpora/_samples/sast-192/truth \
 
 `bench/run-tool.sh --list-tools` shows the adapters present.
 
+The SCA leg (B5) follows the identical four-step shape, substituting its own
+fetch script and corpus id - see `bench/results/sca-lockfiles-26/README.md`
+for the exact commands used and why they differ where they do (one
+`scoursh-sca` invocation per case directory; `osv-scanner` needs explicit
+`--lockfile` arguments rather than a directory scan; `trivy-fs` runs against
+a cached, not freshly pulled, vulnerability database on this host).
+
 ---
 
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `corpus.lock` | every corpus, pinned by **full 40-hex commit**, with its licence and how its ground truth is obtained |
+| `corpus.lock` | every git-cloned corpus, pinned by **full 40-hex commit**, with its licence and how its ground truth is obtained |
+| `sca-advisories.lock` | the SCA leg's own pin: real OSV.dev advisories, resolved live and recorded with a timestamp (no git commit to pin, since there is no single third-party SCA benchmark repository - see its own header) |
 | `cwe-classes.conf` | the CWE equivalence classes STRICT matching uses, published up front |
-| `fetch-corpus.sh` | the one network-touching script |
-| `make-sample.sh` | a balanced, deterministic sample of a fetched corpus |
+| `fetch-corpus.sh` | fetches a git-cloned corpus (owasp-benchmark, terragoat) |
+| `fetch-sca-corpus.sh` | builds the SCA leg's lockfile corpus from `sca-advisories.lock` |
+| `make-sample.sh` | a balanced, deterministic sample of a fetched (git-cloned) corpus |
 | `run-tool.sh` | run one tool, preserve raw output, emit normalised records |
 | `score.sh` | the scorecard renderer (markdown or JSON) |
 | `lib/json.sh` | a depth- and string-aware JSON flattener |
 | `lib/normalise.sh` | the normalised record shape and its one JSON writer |
 | `lib/corpus.sh`, `lib/truth.sh` | the lock-file and ground-truth readers |
+| `lib/sca_advisories.sh` | the `sca-advisories.lock` reader (a separate, simpler format - see its own header) |
 | `lib/score.sh` | the confusion matrix, the matching modes, the ratios |
-| `tools/<tool>.sh` | one adapter per tool |
-| `corpora/` | fetched corpora — **gitignored, never committed** |
+| `tools/<tool>.sh` | one adapter per tool - `scoursh`/`semgrep` (SAST, B4), `scoursh-sca`/`grype`/`osv-scanner`/`trivy-fs` (SCA, B5) |
+| `corpora/` | fetched/built corpora — **gitignored, never committed** |
 | `results/` | committed run outputs |
 
 ### The normalised record
@@ -184,3 +211,22 @@ directory's own `README.md`.
 **It is not published anywhere in `docs/`.** That is ticket B9, deliberately
 kept separate so a launch page is composed once, from every landed leg, rather
 than assembled piecemeal as each leg lands.
+
+---
+
+## B5: the SCA leg
+
+`bench/results/sca-lockfiles-26/` holds the SCA leg's own real measurement:
+scoursh, Trivy `fs`, Grype and OSV-Scanner over a 26-case pinned lockfile
+corpus (13 real npm/PyPI/Go advisories, each paired with its patched
+counterpart), with raw output, normalised records, manifests, and the
+rendered scorecard for every tool. **Its own `README.md` is the primary
+account of this leg** - the exact `data/advisories.db` snapshot it was
+measured against, the DB-size/egress-before-first-finding columns, three
+environment-specific tool quirks discovered while building it (and how each
+was resolved), and why loose ("any finding in this file") matching is a poor
+fit for SCA specifically, unlike SAST. Read it before citing a number from
+this leg anywhere.
+
+**It is not published anywhere in `docs/` either** - the same B9 deliberate
+deferral as the B4 leg above.

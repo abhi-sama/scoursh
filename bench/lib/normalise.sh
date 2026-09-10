@@ -154,6 +154,20 @@ bench_flat_read() {
   while IFS= read -r line || [[ -n $line ]]; do
     [[ -n $line ]] || continue
     IFS=$BENCH_NORM_US read -r path type value <<<"$line"
+    # An EMPTY path is bench_json_flatten's own marker for "the whole
+    # document was an empty container" (`[]` or `{}` at the top level, its
+    # header's own §"o/a rows" paragraph) - never a real leaf a caller could
+    # look up by name, since every actual field lives at a NON-empty path
+    # (`findings/0/...`). Bash cannot use an empty string as an associative-
+    # array subscript on either side (`arr[$x]=v` and `arr[$x]` both refuse
+    # it, quoted or not, when `$x` expands to zero bytes - measured, not
+    # assumed: `declare -gA a=(); x=''; a[$x]=v` is `bad array subscript`
+    # even as `a["$x"]=v`), so recording it here would abort the whole read
+    # under `set -e` on precisely the "this tool reported nothing" case a
+    # benchmark corpus's own sanitized-trap/patched half is built to
+    # exercise. Skipping it costs nothing: no caller reads the empty path,
+    # and the absence of any OTHER entry already means what it always meant.
+    [[ -n $path ]] || continue
     BENCH_FLAT[$path]=$value
     BENCH_FLAT_TYPE[$path]=$type
   done

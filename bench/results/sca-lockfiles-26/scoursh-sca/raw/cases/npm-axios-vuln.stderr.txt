@@ -1,0 +1,1 @@
+2026-09-10T11:08:55Z info  scan complete in 45s - report: <BENCH>/results/sca-lockfiles-26/scoursh-sca/raw/cases/npm-axios-vuln

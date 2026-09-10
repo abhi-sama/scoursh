@@ -1,0 +1,1 @@
+2026-09-10T11:15:55Z info  scan complete in 53s - report: <BENCH>/results/sca-lockfiles-26/scoursh-sca/raw/cases/pypi-django-vuln

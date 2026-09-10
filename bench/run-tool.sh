@@ -172,7 +172,7 @@ main() {
 # output captured on a real machine embeds that machine's absolute scan root -
 # which, for anything committed to a public repository, is an operator's home
 # directory.  This rewrite is the ONE transformation applied, it is purely
-# mechanical (one prefix, one token), and the MANIFEST records that it
+# mechanical (three prefixes, three tokens), and the MANIFEST records that it
 # happened, so a reader is never left to wonder whether anything else was
 # edited.  Without `--portable-paths` nothing is touched at all.
 #
@@ -181,19 +181,23 @@ main() {
 # against a token that is not a prefix of anything.
 _portable_paths() {
   local dest=$1 root=$2 f
-  # TWO prefixes, longest first.  The scan root is itself usually under
-  # bench/, so rewriting bench/ first would leave `<BENCH>/corpora/_samples/…`
-  # behind and the scan-root rule would then match nothing - the tokens would
-  # be inconsistent between files rather than absent, which is worse than
-  # either alone.  The second rule is what catches the paths that live OUTSIDE
-  # the scan root and still name the operator's home: the ground-truth file
-  # and the output directory.
+  # THREE prefixes, longest first - order matters, because the scan root is
+  # itself usually under bench/, which is itself usually under $HOME, so
+  # rewriting a shorter prefix first would leave the longer ones only
+  # PARTIALLY matching whatever token replaced their own prefix, and every
+  # later rule would then match nothing - the tokens would be inconsistent
+  # between files rather than absent, which is worse than either alone.  The
+  # third rule catches a path a TOOL emits about ITSELF rather than about the
+  # scan - Grype's own `descriptor.db.location`, naming wherever its local
+  # vulnerability database happens to be cached, is not under the scan root
+  # or bench/ at all and was measured leaking here first.
+  local home_prefix=${HOME:-}
+  local sed_args=(-e "s|${root//|/\\|}|<SCAN_ROOT>|g" -e "s|${BENCH_ROOT//|/\\|}|<BENCH>|g")
+  [[ -n $home_prefix ]] && sed_args+=(-e "s|${home_prefix//|/\\|}|<HOME>|g")
   while IFS= read -r f; do
-    LC_ALL=C sed -i.bak \
-      -e "s|${root//|/\\|}|<SCAN_ROOT>|g" \
-      -e "s|${BENCH_ROOT//|/\\|}|<BENCH>|g" "$f" && rm -f "$f.bak"
+    LC_ALL=C sed -i.bak "${sed_args[@]}" "$f" && rm -f "$f.bak"
   done < <(find "$dest" -type f ! -name '*.bak')
-  printf 'portable-paths: the scan-root prefix was replaced by <SCAN_ROOT> and the bench/ prefix by <BENCH>; no other edit was made\n' \
+  printf 'portable-paths: the scan-root prefix was replaced by <SCAN_ROOT>, the bench/ prefix by <BENCH>, and any remaining operator-home prefix by <HOME>; no other edit was made\n' \
     >>"$dest/MANIFEST"
 }
 
@@ -205,6 +209,10 @@ _gate_line() {
   case $1 in
     scoursh) printf 'scan.sh sast --format json (defaults: --profile-scan full --min-confidence low; NOT --use-engines)' ;;
     semgrep | semgrep-default) printf 'semgrep --config %s --no-git-ignore --metrics=off' "$BENCH_SEMGREP_CONFIG" ;;
+    scoursh-sca) printf 'scan.sh sca --format json, one invocation per case directory (defaults: --profile-scan full --min-confidence low; NOT --use-engines) - requires a populated data/advisories.db, built separately via tools/vendor-engines.sh advisories bulk' ;;
+    grype) printf 'grype dir:<root> -o json (default vulnerability DB, whatever local state grype already has)' ;;
+    osv-scanner) printf 'osv-scanner scan source --format json --lockfile <each manifest> (queries api.osv.dev live; deps.dev data source default)' ;;
+    trivy-fs) printf 'trivy fs --scanners vuln --format json --skip-db-update --skip-java-db-update (cached DB, NOT freshly pulled - see bench/tools/trivy-fs.sh header)' ;;
     *) printf 'unrecorded - add a row to _gate_line in bench/run-tool.sh' ;;
   esac
 }
