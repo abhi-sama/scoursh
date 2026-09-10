@@ -518,6 +518,8 @@ printf -- '\n-- H. the tool adapters, against REAL committed tool output --\n'
 source "$BENCH/tools/semgrep.sh"
 # shellcheck source=bench/tools/scoursh.sh
 source "$BENCH/tools/scoursh.sh"
+# shellcheck source=bench/tools/semgrep-default.sh
+source "$BENCH/tools/semgrep-default.sh"
 
 t_case 'the semgrep adapter maps real semgrep JSON into the normalised shape'
 mkdir -p "$W/raw-semgrep"
@@ -587,12 +589,18 @@ assert_eq 'critical' "$(_scoursh_severity critical)" 'critical'
 assert_eq 'info' "$(_scoursh_severity wibble)" 'an unrecognised severity becomes info rather than widening the scale every other adapter maps onto'
 
 t_case 'every adapter implements the whole contract'
-for _t in scoursh semgrep; do
+for _t in scoursh semgrep semgrep-default; do
   for _fn in _available _version _run _normalise _scope; do
     assert_cond "${_t}${_fn} is defined" declare -F "${_t}${_fn}"
   done
   assert_ne '' "$(${_t}_scope)" "${_t}_scope names at least one category - an adapter with no declared scope would silently be scored on everything"
 done
+
+t_case 'semgrep-default runs the DOCUMENTED DEFAULT ruleset, semgrep.sh the MAXIMUM free one - two columns, never one env flip a reader has to notice'
+assert_eq 'p/default' "$BENCH_SEMGREP_CONFIG" \
+  'sourcing bench/tools/semgrep-default.sh sets BENCH_SEMGREP_CONFIG before semgrep.sh applies its own ${:-} default - a load-order swap here would silently collapse both gate configurations onto one'
+assert_cond 'semgrep-default is a distinct tool id, not an alias' \
+  declare -F 'semgrep-default_run'
 
 t_case 'records_to_jsonl produces one parseable JSON object per record'
 out=$(bench_record 'a"b.java' 7 89 high 'r,1' | bench_records_to_jsonl t v c)

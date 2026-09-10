@@ -169,5 +169,18 @@ its normalised records, its manifest, and the rendered scorecard. Its own
 `README.md` states what it is and is not.
 
 It is a **smoke test of the rig**, not a benchmark result: one sample, one
-gate configuration per tool, one machine, one run. The B4 leg is what produces
-publishable SAST numbers.
+gate configuration per tool, one machine, one run.
+
+## B4 SAST leg
+
+`bench/results/b4-sast-owasp-full/` is the B4 leg: scoursh plus Semgrep at
+**both** its documented-default (`p/default`) and maximum-free-ruleset gate
+configurations, over the **full, unfiltered 2,740-case** OWASP Benchmark
+corpus. It is real, committed, reproducible data - the headline numbers,
+per-category diagnosis, and what could not be measured here (Bandit, gosec,
+and a NIST Juliet slice, each with its own stated reason) are in that
+directory's own `README.md`.
+
+**It is not published anywhere in `docs/`.** That is ticket B9, deliberately
+kept separate so a launch page is composed once, from every landed leg, rather
+than assembled piecemeal as each leg lands.
