@@ -4345,6 +4345,71 @@ RUNS_AS_ROOT.** Two things worth knowing before touching either:
   image's own history is simply concatenated in), so a heuristic there produces exactly the overstated
   coverage `docs/DESIGN.md` §15 forbids.
 
+**The rpm VERSION COMPARATOR has now landed too - `modules/image/distro/rpm_version.sh` - the second
+ticket of the rpm sub-chain IMG-12's enumerator opened, and the last of the three OS comparators.**
+It carries no IMG number of its own: report.md §5.3's IMG-13 and IMG-14 rows are the docs and
+`rules/derived.rules` correlation tickets, and §2.4's own difficulty ranking is "apk << dpkg < rpm".
+It is `rpmvercmp` transcribed into pure bash - epoch first (numeric, width-exact, no `$(( ))` on an
+untrusted digit run), then the version, then the release, each by rpm's segmentation rule (maximal
+runs of digits vs ASCII letters; a digit run beats a letter run whenever the two ALIGN; every other
+byte except `~` and `^` is a weightless separator, which is why `2_0 == 2.0` and `+ == _`).  It is
+the piece that makes `1.0~rc1 < 1.0` (the tilde rule: below everything, INCLUDING the end of the
+string) and `1.0^20230101 > 1.0` (the caret rule: above the version it follows, below the next real
+segment) order correctly, plus `2:1.0-1 > 3.0-1`, all three of which `modules/sca/semver.sh` gets
+wrong - and two of those three it answers `0`, EQUAL, which a caller asking "is the installed version
+below the fixed-in version" reads as "not vulnerable" with no diagnostic at all.  Malformed input is
+UNORDERABLE, never silently "equal" or "less" - `rpm_version_cmp_v` returns rc 1 with `_RPMV_REASON`
+set - the identical discipline `apk_version.sh` and `dpkg_version.sh` already established, and it is
+a LEAF (sources nothing, adds no `shellcheck -x` source-graph edge).  Five things about it are worth
+knowing before changing it.
+
+- **The caret's FOUR tests are ORDERED, and swapping the first two inverts report.md §2.4's own
+  case.** The ENDED side must be tested BEFORE the non-caret side: `if one ended -> A loses`, `if two
+  ended -> A wins`, only then `if A is not at ^ -> A wins`, `if B is not at ^ -> A loses`.  Test the
+  non-caret pair first and `1.0` vs `1.0^20230101` returns -1 for the wrong reason and `1.0^git1` vs
+  `1.0.1` inverts.  Measured: that single reordering takes `tests/suites/image-rpm-version.sh` from
+  202 passed to 7 failed.  It is also the one asymmetrically-written step in the algorithm, which is
+  why that suite's antisymmetry case says so by name.
+- **A segment comparison is by CODE POINT, never `[[ $a < $b ]]`, and the alphabet gate spells its
+  set out character by character rather than as `[0-9a-zA-Z]`.** rpm's own comparison is `strcmp`,
+  where every uppercase letter is below every lowercase one; bash's `<` uses LC_COLLATE, which under
+  a UTF-8 locale interleaves the cases and inverts `1.0A < 1.0a`.  A bracket RANGE has the same
+  problem one level down - its membership is collation-defined.  Both are invisible on this macOS
+  host, whose collation is already byte-ordered: the collation mutation's only failures are the
+  suite's own two forced-locale assertions, which exist because otherwise only the GNU leg of
+  `tools/daily-suite.sh` would ever see the bug.
+- **Three DELIBERATE STRICTNESSES, all refusals where rpm answers, and none the other way round.**
+  rpm's `rpmvercmp` never fails - it orders any byte string - so every divergence here turns an
+  answer into a `coverage_reduction`, never a finding into silence.  A NON-ASCII byte is refused
+  where rpm skips it as a separator and so calls `1.1.<alpha>` EQUAL to `1.1.<beta>` (rpm's own
+  vector file carries those rows under a comment calling them "arguably buggy behaviors"); an
+  out-of-alphabet ASCII byte is refused; and a colon that is not a well-formed epoch separator is
+  refused, where rpm's `parseEVR` silently folds it into the version and reads `a:1.0` as a version
+  containing a colon.  The one place this file is LOOSER is a huge epoch, which rpm cannot store
+  above UINT32_MAX and this file orders width-exactly - also the safe direction.
+- **There are TWO public comparison entry points and they differ in exactly one place, on purpose.**
+  `rpm_version_cmp_v A B` takes the `[epoch:]version[-release]` STRING; `rpm_evr_cmp_v EA VA RA EB VB
+  RB` takes the three columns `modules/image/distro/rpm.sh` actually returns (five parallel arrays,
+  one of which is "commonly the empty string" because most rpm packages carry no epoch).  An EMPTY
+  epoch or release FIELD is an ABSENT field and is accepted; the STRINGS that would encode them,
+  `:1.0` and `1.0-`, are dangling separators and are refused.  A NULL database column and a malformed
+  version string are different facts, and collapsing them in either direction loses one.  The suite
+  asserts the two forms agree on every committed corpus row, because a later ticket will reach for
+  whichever is closer to hand.
+- **The corpus is offline and says so.** `tests/fixtures/image/rpm-version-corpus.tsv` is 133 rows,
+  61 of them transcribed from librpm's own `rpmvercmp.at`, and the suite adds an independent
+  key-based Python reference over 75,855 generated pairs - both spec-derived, since this
+  egress-restricted host has neither `rpm` nor `rpmdev-vercmp`.  The `<`/`=`/`>` column maps
+  one-for-one onto `rpmdev-vercmp`'s exit codes (0/11/12), so replaying it on a networked box is a
+  column diff rather than a translation; that replay is the stated follow-up hardening, the same
+  shape as the deferred `dpkg --compare-versions` and GNU-tar cross-checks.
+
+**What this ticket deliberately did not build**, so the boundary is not rediscovered: any advisory
+lookup, any `IMAGE-PKG-VULNERABLE_OS_PACKAGE-03` finding, any `data/advisories.db` read, and any
+`modules/image/run.sh` wiring.  `checks-rpm.rules` stays registered and unreachable, exactly as
+`checks-dpkg.rules` did between IMG-07 and IMG-09; the rpm equivalent of IMG-09 is the next ticket,
+and it inherits `rpm.sh`'s own still-open `rpm_db_binary_format` limitation unchanged.
+
 ## Tests
 
 ```
