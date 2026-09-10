@@ -21,7 +21,7 @@ choice anyway.
 - [Network / host](#network--host)
 - [Secrets](#secrets)
 - [Cloud / CSPM](#cloud--cspm)
-- [Measured head-to-head](#measured-head-to-head)
+- [Benchmark status](#benchmark-status)
 - [When to choose what](#when-to-choose-what)
 - [Notes & sources](#notes--sources)
 
@@ -271,65 +271,90 @@ scheme, and the same "unexamined is not clean" accounting - an access-denied or 
 declared coverage reduction, not a false pass. Reach for scoursh's cloud check as part of the baseline
 sweep everywhere; reach for Prowler when cloud posture is the job itself.
 
-## Measured head-to-head
+## Benchmark status
 
-Real numbers, measured on one machine, each tool run against the same target with default-ish config.
-Findings were judged against a known ground truth, not taken from any tool's own output.
+**The recall numbers that used to live in this section are retracted.** An earlier version of this
+page published a "Measured head-to-head" table claiming, among other things, scoursh 40/41 (97.6%)
+recall against Semgrep's 12/41 (29.3%) on a 41-issue SAST target. That target, like the IaC and
+secrets targets in the same table, was scoursh's own committed test fixtures under `tests/fixtures/` -
+files its own rules were authored against, which measures "still passes its own cases," not "finds
+vulnerabilities it has never seen." No harness, corpus manifest, or scoring script for any of those
+numbers ever shipped in this repository, so a reader could not have reproduced them. The whole section
+is removed rather than re-caveated: a caveat is prose, and the table underneath it is what gets
+screenshotted.
 
-> **Read this first.** Three of the four targets (SAST, IaC, secrets) are scoursh's own committed
-> test fixtures - its rules were authored against those exact files, so a high score there measures
-> "still passes its own cases," not "finds vulnerabilities it has never seen." The SCA target is the
-> fair one: real packages at real historically-vulnerable versions. Treat the recall gaps,
-> false-positive counts, runtime, and footprint as the load-bearing signals here - not scoursh's
-> home-turf recall.
+### Scope first, then score
 
-### SAST — 41 planted issues
+Read the per-surface tables above before any recall number, on this page or a future one. A
+checks-shipped gap predicts a recall gap; the recall gap should never be the first thing a reader sees.
 
-| Tool | Recall | False positives | Runtime | Footprint |
-|---|---|---|---|---|
-| **scoursh** | 40/41 (97.6%) | 0 | 68 s | 0 (repo only) |
-| Semgrep (security-audit + secrets + owasp) | 12/41 (29.3%) | 0 | 1.6 s | ~450 MB |
-| Bandit (python subset) | 6/12 | 0 | 0.13 s | 17 MB |
-| gosec (go subset) | 4/5 | 0 | <0.1 s | Go toolchain + cache |
+- **SAST:** scoursh ships 53 checks across 6 languages; Semgrep CE ships roughly 3,000 across 30+.
+- **IaC:** scoursh ships 36 checks across 6 formats; Checkov ships 1,000+, KICS 2,400+.
+- **Secrets:** scoursh ships 7 dedicated secret checks against Gitleaks' and TruffleHog's broad,
+  purpose-built rulesets.
 
-### SCA — 12 real vulnerable dependencies (the fair test)
+A roughly 50-to-1 rule-count gap does not require a benchmark to predict a specialist win on recall. A
+same-corpus comparison should confirm that gap, not report it as news.
 
-| Tool | Packages caught | Runtime | Local DB / egress |
-|---|---|---|---|
-| **scoursh** | 12/12 | 98 s | ~10 MB, no egress |
-| Trivy fs | 12/12 | ~4 s | 1.3 GB DB |
-| Grype | 12/12 | 0.5 s | 2.0 GB DB |
-| OSV-Scanner | 12/12 + 2 transitive | 3.5 s | live query to api.osv.dev |
+### Why the old number was thrown away: a 192-case pilot that inverts it
 
-> **Package-level recall is a tie - and the earlier exact-version gap is now closed.** The benchmark
-> first surfaced that scoursh matched advisories by exact version only, missing most range-based npm
-> advisories. That has since been fixed: npm now uses semver-range matching (real-CVE recall 3.6% →
-> 100%) while the vendored database actually shrank (it was over-storing duplicated data). scoursh
-> reads only the literal lockfile, so it does not do OSV-Scanner's transitive resolution - a real
-> depth advantage for that tool.
+We ran a real pilot to find out how much of the old SAST number was fixture bias. It was worth the
+entire result.
 
-### IaC — 44 planted misconfigurations
+**Setup.** A stratified 192-case sample (96 real vulnerabilities / 96 sanitized traps; 12 of each
+across 8 CWE categories: `sqli cmdi ldapi pathtraver crypto hash weakrand xss`) drawn from
+`OWASP-Benchmark/BenchmarkJava` (`master`, GPL-2.0, last pushed 2026-09-08) - a corpus scoursh has
+never seen and did not author. Tools: scoursh `0.1.0-dev` @ `6787df3` (native tier, all defaults, no
+`--use-engines`) against Semgrep CE `1.176.0` (`--config p/security-audit --config p/owasp-top-ten`).
+Scored two ways - loose (any finding in the file) and strict (the finding's CWE in the case's
+ground-truth equivalence class) - and both scorings agreed.
 
-| Tool | Defects matched | Runtime | Notable |
-|---|---|---|---|
-| **scoursh** | 43/44 | 74 s | — |
-| Trivy config | 150 checks, 26/36 files covered | ~3 s | zero findings on docker-compose or Helm files |
-| Checkov | 157 checks, 27/36 files covered | 2.8 s | same Helm/compose blind spot |
+| SAST recall, same two tools | On scoursh's own fixtures (the old, retracted number) | On the neutral 192-case pilot |
+|---|---|---|
+| scoursh | 40/41 = 97.6% | **14/96 = 14.6%** (Youden J −0.031, below a coin flip) |
+| Semgrep CE | 12/41 = 29.3% | **82/96 = 85.4%** (Youden J +0.583) |
 
-### Secrets — 56 planted, 34 negative controls
+Same two tools, same task shape, opposite ranking. That is not "the old number was a little
+optimistic" - it is direct evidence that the old number measured "still passes its own test files,"
+not "finds vulnerabilities it has never seen." We are publishing the inversion in place of the number
+it replaced, because a benchmark that only shows results favourable to the project running it is not a
+benchmark.
 
-| Tool | Recall | False positives | Runtime | Note |
-|---|---|---|---|---|
-| **scoursh** | 53/56 (94.6%) | 0/34 | 76 s | — |
-| Gitleaks | 19/56 (33.9%) | 0/34 | 0.054 s | strong on API-key/token family, near-blind on generic "password" |
-| TruffleHog | 1/56 (1.8%) | 0/34 | 0.66 s | built for verifiable service credentials, not generic literals |
+This is a **192-case pilot on one language (Java)**, not the finished benchmark - too small and too
+narrow to be a final verdict. Treat it as what it is: the evidence for why the old table is gone, and
+a preview of the real benchmark below.
 
-> **The honest read.** On these targets scoursh had the higher recall with zero false positives and
-> no vendored gigabytes - but it is **40-1000× slower** (a shell engine's per-check cost), and the
-> SAST/IaC/secrets recall is measured partly on its own fixtures. DAST was attempted against a live
-> OWASP Juice Shop: scoursh confirmed the login SQL-injection end-to-end, while the competitor run
-> (ZAP crashed twice; Nikto/Nuclei/Wapiti did not finish in the session window) did not produce a
-> clean comparison, so no DAST numbers are published here rather than invent them.
+Per-category results in the pilot were not uniformly bad: scoursh matched or beat Semgrep on `ldapi`
+(12/12 vs 11/12), a pattern-shaped check, while losing heavily on the taint-shaped categories -
+`sqli`, `cmdi`, `pathtraver` - where it found none of the 12 real cases in each. That split lines up
+with a limitation the project already states, not a fresh one:
+
+> **Declared, not discovered.** [`docs/DESIGN.md` §15](DESIGN.md) states plainly: *"native tier is
+> pattern/linter-grade; true taint/cross-function analysis needs the optional vendored engines."* A
+> pilot showing scoursh losing on taint-shaped injection categories confirms that declared limitation
+> under measurement. It is a consistency result, not a surprise.
+
+### Where scoursh's real wins are
+
+None of the above is a case for parity on detection depth - see the per-surface "Honest verdict"
+call-outs above for that. scoursh's genuine advantages are structural, hold regardless of which
+detection benchmark eventually lands, and are drawn from the same per-surface tables above rather than
+a new measurement:
+
+| Property | scoursh | Typical specialist |
+|---|---|---|
+| Coverage honesty | Four-state partition (found / clean / skipped-with-reason / not covered) | Findings only - a clean run and an unrun check both look "clean" |
+| Egress | Zero network calls for SAST/SCA/IaC; DAST/network/cloud refuse any destination outside an operator allowlist, provable live under `--paranoid` | Registry/database fetch, template updates, or live verification calls, per tool |
+| Advisory DB footprint | ~10 MB, hand-built offline | 1.3-2.0 GB, auto-fetched (Trivy, Grype) |
+| Runtime dependencies | bash + coreutils | JVM, Python, Node, Go toolchain, or a multi-GB engine, per tool |
+
+### What is next
+
+A real, neutral-corpus benchmark - pinned corpora with a commit/digest manifest, a published scorer,
+every tool's raw output kept, and explicit per-category "not covered" cells rather than a forced
+overall score - is in progress as a separate effort and will replace this section when it lands.
+Until then, this page makes no detection-recall claim beyond the 192-case pilot above, which is
+labelled and scoped as exactly that.
 
 ## When to choose what
 
@@ -366,9 +391,12 @@ tools.
 
 ## Notes & sources
 
-> **This is not a detection benchmark.** No number here claims scoursh finds more or fewer real
-> defects than any other tool. Nothing was run over a shared corpus and counted. This is a capability
-> and positioning comparison.
+> **This page is a capability and positioning comparison, not a finished detection benchmark.** The
+> one exception is the 192-case SAST pilot in [Benchmark status](#benchmark-status), which really was
+> run over a shared, neutral corpus and scored against ground truth - it is disclosed there with its
+> corpus, tool versions, and scope, precisely because it is the one number on this page that makes
+> that claim. Every other row on this page - check counts, licences, footprints - is drawn from each
+> project's own published data, not a shared run.
 
 scoursh figures were measured directly against the source tree at version 0.1.0-dev: check counts by
 parsing the shipped rule packs, output formats and exit codes by running real scans, and the egress
