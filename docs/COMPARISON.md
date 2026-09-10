@@ -377,27 +377,111 @@ with a limitation the project already states, not a fresh one:
 > pilot showing scoursh losing on taint-shaped injection categories confirms that declared limitation
 > under measurement. It is a consistency result, not a surprise.
 
-### Where scoursh's real wins are
+This pilot has since been confirmed at 14x the sample size: the full benchmark's SAST leg (below) runs
+the identical two tools over all 2,740 OWASP Benchmark cases, unsampled, and lands at the same
+below-coin-flip Youden J the 192-case pilot found.
 
-None of the above is a case for parity on detection depth - see the per-surface "Honest verdict"
-call-outs above for that. scoursh's genuine advantages are structural, hold regardless of which
-detection benchmark eventually lands, and are drawn from the same per-surface tables above rather than
-a new measurement:
+### The real benchmark: six legs landed, all reproducible from `bench/`
 
-| Property | scoursh | Typical specialist |
+The pilot above answered "should we trust the old numbers" (no). It was never the finished benchmark.
+That benchmark - a harness, a pinned corpus manifest, a scorer, and per-category results with raw tool
+output committed alongside - now exists at [`bench/`](../bench/README.md) and six of its legs have
+landed: **SAST** (the full 2,740-case OWASP Benchmark corpus, not a sample), **SCA** (26 pinned
+npm/PyPI/Go lockfile cases against real OSV.dev advisories), **IaC** (two hand-labelled corpora -
+TerraGoat/AWS and kubernetes-goat), **secrets** (leaky-repo, 82 hand-labelled cases), and **honesty +
+egress** (a coverage-honesty audit over every run below, plus a kernel-enforced zero-egress proof).
+Every number in the two tables below traces to a committed `bench/results/<leg>/` directory carrying
+the tool's raw output, its normalised records, a `MANIFEST` with exact version and corpus commit, and
+the rendered scorecard - re-run any of it with the commands in that leg's own `README.md`.
+
+**No number below is measured on `tests/fixtures/`, no single score spans categories, and every ratio
+carries its tool version and corpus commit** - the three rules [`bench/README.md`](../bench/README.md)
+exists to enforce, the same three the retracted table above broke.
+
+**DAST (B7) is not measured and is not represented by any number below.** It needs an operator
+Docker-memory increase this environment could not make on its own (raising the shared Docker VM's
+allocation would have interrupted other running workloads) - see "Not yet measured," below. **Cloud and
+network are out of scope for this benchmark entirely** - no neutral cloud-posture corpus/account and no
+head-to-head with Nmap that would not be comparing discovery against a declared-listener check, per the
+same scoping logic ["Network / host"](#network--host) already states on this page.
+
+#### Table 1 — where the specialists win, by how much
+
+Scope first: a checks-shipped gap this large predicts a recall gap before any corpus is run.
+
+| Category | scoursh scope | Best specialist scope | scoursh Youden J | Best specialist Youden J | Corpus |
+|---|---|---|---|---|---|
+| SAST — taint-shaped defects | 8 relevant checks (of 53 shipped) | Semgrep CE: ~3,000 rules shipped | **-0.005** all findings / **-0.027** high+critical | Semgrep (max ruleset) **+0.492** / **+0.017**; Semgrep (`p/default`) +0.479 / +0.010 | OWASP Benchmark, full 2,740 cases |
+| IaC — Terraform | 7 checks (4 fired) | Trivy `config`: 49 rule ids fired (several hundred shipped) | **+0.038** | Trivy **+0.611**; KICS +0.496; Checkov +0.495 | TerraGoat/AWS, 71 hand-labelled resources |
+| IaC — Kubernetes | 8 checks (6 fired) | Trivy `config`: 30 rule ids fired (several hundred shipped) | **+0.737** (2nd of 4) | Trivy **+0.842**; Checkov +0.447; KICS +0.438 | kubernetes-goat, 35 hand-labelled documents |
+
+`J = 0.000` is a coin flip. On the full-corpus SAST leg, Semgrep's advantage narrows sharply at
+high+critical severity alone (its taint findings are mostly `WARNING`/medium in this corpus) but the
+ranking never flips - scoursh stays at or below a coin flip in both severity columns. On Kubernetes,
+scoursh places second of four on J with **zero false positives**, but that is narrowness reading as
+precision, not comprehensiveness: Checkov and KICS each find more of the genuinely misconfigured
+documents (18/19 and 19/19 against scoursh's 14/19). Full per-category breakdowns, the false-positive
+diagnoses (a commented-out Terraform attribute, a CIDR split across a continuation line), and the
+borderline-label sensitivity tables are in each leg's own `README.md`.
+
+Secrets follows the identical scope pattern - 7 dedicated checks against Gitleaks' and TruffleHog's
+broad, purpose-built rulesets - but the one corpus benchmarked here does not confirm a recall gap in
+that direction. That result is real and is reported in Table 2, with the corpus-dependency caveat that
+makes it non-generalisable stated in full there.
+
+#### Table 2 — where scoursh wins, by how much
+
+| Property | scoursh | Best/typical competitor | Source |
+|---|---|---|---|
+| Coverage honesty | 31/31 runs, 100% of unrun-but-selected checks declared with a reason, zero undeclared gaps | Structural non-comparison - none of the 8 competitor tools measured across every leg below emit an equivalent "loaded N, ran M, here is why not the rest" record | [`b8-honesty-egress`](../bench/results/b8-honesty-egress/README.md) §1 |
+| Zero-egress, kernel-enforced | `sast`/`sca`/`iac` completed with exit 0, full report written, wrapped in a macOS Seatbelt profile denying every network syscall in the process tree; `--paranoid`'s detector independently observed zero out-of-allowlist connections on the same runs | Not attempted for any competitor - none can complete its normal workflow (registry pull, DB refresh, live verification) inside a deny-all-network sandbox | [`b8-honesty-egress`](../bench/results/b8-honesty-egress/README.md) §2 |
+| Installed footprint | ~5.2 MB, zero runtime dependency beyond bash + coreutils + grep/rg | 15 MB (Gitleaks) to 241 MB (Semgrep) - each its own separately installed, versioned binary or Python venv | [`b8-honesty-egress`](../bench/results/b8-honesty-egress/README.md) §3 |
+| SCA DB size before first finding | 86 MB local (npm+PyPI+Go, 3 of 6 ecosystems), zero egress at scan time | Trivy 1.3 GB (auto-refreshed); Grype 2.0 GB (auto-refreshed); OSV-Scanner 0 bytes local but one live query to `api.osv.dev` on every run | [`sca-lockfiles-26`](../bench/results/sca-lockfiles-26/README.md) §3 |
+| Secrets recall, measured corpus | 33/65 planted credentials (50.8%), **zero false positives**, J **+0.508** | Gitleaks 21/65 (32.3%), J +0.323; TruffleHog 9/65 (13.8%), J +0.079 | [`b6-secrets-leaky-repo`](../bench/results/b6-secrets-leaky-repo/README.md) |
+
+**The secrets row is real and it is not general evidence that scoursh out-detects Gitleaks or
+TruffleHog.** leaky-repo, the one corpus measured, is dominated by generic keyword-shaped credentials
+(`password =`, `API_KEY=`, and similar) in configuration files - exactly the shape
+`modules/sast/rules/secrets.rules` was widened to catch. The six cases a specialist finds and scoursh
+misses are the mirror image: provider-shaped or encoded credentials (a base64 Docker-registry blob, an
+npm `_authToken`, a MongoDB URI's userinfo) that scoursh has no detector for. And 26 of the corpus's 65
+planted credentials - `.netrc`, `.pgpass`, `.htpasswd`, positional call arguments, a bare-file secret
+with no keyword at all - were found by **none** of the three tools. A corpus weighted toward
+provider-issued tokens, which is what a scan of real GitHub repositories mostly produces, would move
+this ranking; this leg cannot say by how much. The defensible sentence, from the leg's own `README.md`:
+*on a corpus of the credential-bearing config files that leak by accident, scoursh's generic-assignment
+rules found half the planted secrets with no false positives, where Gitleaks found a third and
+TruffleHog a seventh; on provider-specific token shapes the ordering reverses.*
+
+The SCA leg (`sca-lockfiles-26`) also confirms the scout report's parity prediction for two of three
+ecosystems it covers: scoursh matches Grype/OSV-Scanner/Trivy at 100% strict-identity recall on npm (6/6)
+and PyPI (4/4), with zero false positives across all 26 cases in every category. It misses all 3 Go
+cases (aggregate recall 10/13, J +0.769 against the other three's +1.000 each) - two are a stated,
+self-reported gap in the offline advisory importer (semver-range-only advisories, no exact version to
+match), the third a real, narrowly-scoped `go.mod` version-prefix bug in `modules/sca/go_engine.sh`,
+filed as its own follow-up rather than folded into this measurement. See that leg's `README.md` §7 for
+the full account of both.
+
+#### Not yet measured
+
+| Leg | Status | Why |
 |---|---|---|
-| Coverage honesty | Four-state partition (found / clean / skipped-with-reason / not covered) | Findings only - a clean run and an unrun check both look "clean" |
-| Egress | Zero network calls for SAST/SCA/IaC/container-image; DAST/network/cloud refuse any destination outside an operator allowlist, provable live under `--paranoid` | Registry/database fetch, template updates, or live verification calls, per tool |
-| Advisory DB footprint | ~10 MB, hand-built offline | 1.3-2.0 GB, auto-fetched (Trivy, Grype) |
-| Runtime dependencies | bash + coreutils | JVM, Python, Node, Go toolchain, or a multi-GB engine, per tool |
+| DAST | **Not yet measured - pending** | Needs an operator Docker-memory increase; this benchmark could not raise it without interrupting other workloads sharing the same Docker VM. No fabricated or estimated number stands in for it anywhere on this page. |
+| Cloud / CSPM | **Out of scope for this benchmark** | No AWS account available to the benchmark, and no neutral, versioned cloud-posture corpus identified. |
+| Network / host | **Out of scope for this benchmark** | scoursh verifies a declared listener set; a fair competitor comparison would need a discovery-vs-verification distinction this benchmark's scorer does not model - see ["Network / host"](#network--host) above. |
 
-### What is next
+### Reproducing every number above
 
-A real, neutral-corpus benchmark - pinned corpora with a commit/digest manifest, a published scorer,
-every tool's raw output kept, and explicit per-category "not covered" cells rather than a forced
-overall score - is in progress as a separate effort and will replace this section when it lands.
-Until then, this page makes no detection-recall claim beyond the 192-case pilot above, which is
-labelled and scoped as exactly that.
+Nothing above is asserted without the artefact that produced it. The harness, the pinned corpus
+manifest, every tool's raw output, and the scorer are all committed:
+
+- [`bench/README.md`](../bench/README.md) - the harness itself: what it is, what it refuses to publish, and the four rules every result above is held to.
+- [`bench/corpus.lock`](../bench/corpus.lock) / [`bench/sca-advisories.lock`](../bench/sca-advisories.lock) - every corpus pinned by full commit hash (or, for the SCA leg's live OSV.dev advisories, a timestamped resolution) with its licence.
+- [`bench/results/b4-sast-owasp-full/`](../bench/results/b4-sast-owasp-full/README.md) - the SAST leg.
+- [`bench/results/sca-lockfiles-26/`](../bench/results/sca-lockfiles-26/README.md) - the SCA leg.
+- [`bench/results/b6-iac-terragoat-aws/`](../bench/results/b6-iac-terragoat-aws/README.md) and [`bench/results/b6-iac-kubernetes-goat/`](../bench/results/b6-iac-kubernetes-goat/README.md) - the two IaC legs.
+- [`bench/results/b6-secrets-leaky-repo/`](../bench/results/b6-secrets-leaky-repo/README.md) - the secrets leg.
+- [`bench/results/b8-honesty-egress/`](../bench/results/b8-honesty-egress/README.md) - the coverage-honesty metric and the egress proofs.
 
 ## When to choose what
 
@@ -435,11 +519,13 @@ tools.
 
 ## Notes & sources
 
-> **This page is a capability and positioning comparison, not a finished detection benchmark.** The
-> one exception is the 192-case SAST pilot in [Benchmark status](#benchmark-status), which really was
-> run over a shared, neutral corpus and scored against ground truth - it is disclosed there with its
-> corpus, tool versions, and scope, precisely because it is the one number on this page that makes
-> that claim. Every other row on this page - check counts, licences, footprints - is drawn from each
+> **This page is a capability and positioning comparison, with one section that is a real benchmark.**
+> [Benchmark status](#benchmark-status) carries the 192-case SAST pilot and the six landed
+> `bench/` legs (SAST, SCA, IaC ×2, secrets, honesty/egress) - every number there was run over a
+> shared, neutral, pinned corpus and scored against committed ground truth, with the harness, raw tool
+> output, and scorer all reproducible from the repository. DAST is explicitly not measured; cloud and
+> network are out of scope for this benchmark. There is deliberately no single overall score spanning
+> categories. Every other row on this page - check counts, licences, footprints - is drawn from each
 > project's own published data, not a shared run.
 
 scoursh figures were measured directly against the source tree at version 0.1.0-dev: check counts by

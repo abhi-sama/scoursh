@@ -4772,6 +4772,20 @@ alone.
   pattern is matched against the full path it walked, so an anchored `^\.git/`
   matches nothing when the scan root is absolute.
 
+**B9 (publication) has landed: the six landed legs above (B4 SAST, B5 SCA, B6
+IaC x2 + secrets, B8 honesty/egress) are now published** in
+`docs/COMPARISON.md` and `docs/comparison.html`'s "Benchmark status" section,
+as the two-table structure `data/scoursh-bench/report.md` §7.2 specified -
+"where the specialists win, by how much" and "where scoursh wins, by how
+much" - built on top of, not replacing, the pre-existing 192-case pilot and
+its retract-and-explain narrative for the old fixture-measured numbers.
+DAST (B7) is stated on that page as an explicit not-yet-measured row, never a
+fabricated number; cloud and network are stated as out of scope for this
+benchmark, per report.md §8's B9 row. A future leg landing (B7, or a wider
+SCA/secrets corpus) updates that published section directly - re-read
+`bench/README.md`'s "what must not be published" rules before editing it, the
+same four rules this landing was held to.
+
 ## Tests
 
 ```
