@@ -549,6 +549,7 @@ cat >"$_conf" <<CONF
 id: one
 source: docker-archive
 path: $ONE
+dockerfile: fixtures/one/Dockerfile
 notes: The committed one-image fixture.
 
 id: layout
@@ -565,10 +566,18 @@ assert_eq docker-archive "$_IMAGE_SRC_KIND" 'the kind comes from the record'
 assert_eq "$ONE" "$_IMAGE_SRC_PATH" 'and so does the path'
 assert_eq images_conf "$_IMAGE_SRC_ORIGIN" 'and the origin records where the answer came from'
 
+t_case 'IMG-14: an optional dockerfile key resolves into _IMAGE_SRC_DOCKERFILE'
+assert_eq 'fixtures/one/Dockerfile' "$_IMAGE_SRC_DOCKERFILE" \
+  'the operator-declared correlation path (rules/RULE-FORMAT.md §9.6.8) is read off the record'
+
 t_case 'a reference in the record is carried through'
 image_source_resolve layout '' "$_conf"
 assert_eq oci-layout "$_IMAGE_SRC_KIND" 'the layout kind'
 assert_eq 'fixture/oci:v1' "$_IMAGE_SRC_REF" 'and the reference the record names'
+
+t_case 'IMG-14: a record with no dockerfile key leaves _IMAGE_SRC_DOCKERFILE empty, never a guess'
+assert_eq '' "$_IMAGE_SRC_DOCKERFILE" \
+  'FAILS under a resolver that defaults to some inferred path - an image with no declared dockerfile must not correlate at all'
 
 t_case 'an unknown id with no --source resolves to NOTHING rather than inventing a path'
 _rc=0
@@ -593,6 +602,16 @@ assert_eq "$W/elsewhere" "$_IMAGE_SRC_PATH" 'the path is the override'
 assert_eq oci-layout "$_IMAGE_SRC_KIND" \
   'the kind still comes from the record - FAILS under an override that re-infers the kind, which would call a rebuilt OCI layout a tarball the moment the operator pointed at a path that does not exist yet'
 assert_eq 'fixture/oci:v1' "$_IMAGE_SRC_REF" 'and so does the reference'
+
+t_case 'IMG-14: --source overriding a configured id still carries its declared dockerfile through'
+image_source_resolve one "$W/elsewhere" "$_conf"
+assert_eq 'fixtures/one/Dockerfile' "$_IMAGE_SRC_DOCKERFILE" \
+  '--source overrides only where the archive lives, never which Dockerfile the operator says built it'
+
+t_case 'IMG-14: --source with NO record leaves the dockerfile correlation path empty'
+image_source_resolve adhoc2 "$ONE" "$W/no-such-images.conf"
+assert_eq '' "$_IMAGE_SRC_DOCKERFILE" \
+  'an ad-hoc --source run has no config/images.conf record to read a dockerfile key from'
 
 t_case 'an ABSENT images.conf is not an error'
 _rc=0

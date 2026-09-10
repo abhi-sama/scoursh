@@ -362,6 +362,16 @@ _apk_emit_vulnerable_package() {
   finding_set loc_advisory_id "$advisory"
   finding_set logical_kind package
   finding_set logical_fqn "image $image_id: $ecosystem/$pkg@$installed"
+  # IMG-14 (rules/RULE-FORMAT.md §9.2.2, §9.6.8): populated only when the
+  # operator declared this image's `dockerfile` in config/images.conf - the
+  # `file` correlation value that lets rules/derived.rules join this finding
+  # to the IAC-DOCKER-* findings from scanning that same Dockerfile.  A
+  # direct `finding_set corr_file`, never a profile default (lib/findings.sh
+  # has no `image` case in `_finding_fill_correlation`), the identical
+  # pattern modules/network/*.sh already use for `corr_target`: the IMAGE
+  # profile's own components (image_id ecosystem package advisory_id) have
+  # no path field a default could read.
+  [[ -n ${SCOURSH_IMAGE_DOCKERFILE:-} ]] && finding_set corr_file "$SCOURSH_IMAGE_DOCKERFILE"
   finding_set fix_fixed_versions "$fixed"
   if [[ -n $fixed ]]; then
     finding_set remediation "Rebuild the image against an updated base layer (or upgrade $pkg directly, where the Dockerfile installs it explicitly) to at least $fixed, then re-scan. A base-image bump alone can carry this fix silently."

@@ -45,3 +45,155 @@ references: CWE-613
 references: CWE-540
 references: CWE-200
 references: https://owasp.org/Top10/A07_2021-Identification_and_Authentication_Failures/
+
+# COMPOSITE-IMAGE-EFFECTIVE_ROOT and the three COMPOSITE-IMAGE-STALE_BASE_*
+# records below it (IMG-14; data/scoursh-image-scan-design/report.md §4.4;
+# rules/RULE-FORMAT.md §9.2/§9.2.2). `modules/iac/dockerfile.rules` reads
+# what a Dockerfile's AUTHOR wrote; `modules/image/` reads what the BUILT
+# ARTIFACT actually ships. Neither can see what the other sees (report.md
+# §4.4's own table), so correlating the two says something stronger than
+# either alone: the source's omission was really left uncorrected in the
+# artifact, or the artifact's unpatched packages really do trace back to an
+# unpinned base a rebuild would have refreshed. `correlate-on: file` joins
+# them on the Dockerfile's scan-root-relative path - the `IAC-DOCKER-*` side
+# supplies it automatically (its `path` fingerprint profile always sets
+# `corr_file` from its own `loc_path`, lib/findings.sh's
+# `_finding_fill_correlation`); the `IMAGE-*` side supplies it only when the
+# operator declares `config/images.conf`'s optional `dockerfile` key
+# (§9.6.8) naming that same path, per §9.2.2's new IMAGE row. Per §9.2's own
+# "correlate-on: none/target/etc. are the only join keys, and a contributor
+# that cannot produce one simply has no value" rule, an image scanned with
+# no declared `dockerfile` never joins - never a guessed pairing.
+#
+# COMPOSITE-IMAGE-EFFECTIVE_ROOT is one chain, not a set of alternatives, so
+# both contributors are `requires`: IAC-DOCKER-ROOT_USER-01 (the Dockerfile
+# has no non-root USER instruction) confirmed by IMAGE-CFG-RUNS_AS_ROOT-01
+# (the built image's own merged config confirms the EFFECTIVE runtime user
+# really is root, across every base layer and multi-stage copy a source
+# lint cannot see through). Each alone is a real finding already registered
+# under its own id; together they close the gap report.md §4.4 names -
+# "IAC-DOCKER-ROOT_USER-01 reads one Dockerfile's own USER instruction; the
+# effective user comes from the merged config across every base layer" - so
+# the composite is the CONFIRMED case, not merely the suspected one.
+#
+# COMPOSITE-IMAGE-STALE_BASE_APK/_DPKG/_RPM say what report.md §4.4 gives as
+# its worked example: "the unpinned base is delivering stale vulnerable
+# packages." Splitting it by distro/package-manager rather than seeding one
+# record is what the primitives here actually let this say correctly.
+# `requires`/`any-of` on ONE record express (ALL requires) AND (>=1 of
+# any-of); there is no way to express (>=1 of GROUP A) AND (>=1 of GROUP B)
+# on one record, and the two groups here are genuinely both disjunctions -
+# either IAC-DOCKER-* check can be the unpinned-base signal (a Dockerfile
+# pinned to `:latest@sha256:...` trips LATEST_TAG but not UNPINNED_DIGEST,
+# so neither implies the other), and any distro's own IMAGE-PKG-* check can
+# be the vulnerable-package signal, but a single image is Alpine XOR
+# Debian/Ubuntu XOR RHEL/Fedora (never more than one distro's package
+# database at once), so the three IMAGE-PKG-* ids are mutually exclusive IN
+# PRACTICE within one image's own findings. Fixing the package side to a
+# single `requires` entry per record and leaving the base-pinning side as
+# `any-of` expresses the correct AND-of-two-ORs without any engine change.
+# IMAGE-PKG-VULNERABLE_OS_PACKAGE-03 (rpm) is a real, registered check id
+# today (E051 asks only that a contributor id exist, never that it already
+# fires) even though `modules/image/checks-rpm.rules`' own header states
+# nothing calls it yet - seeding its composite now costs nothing and is
+# already correct the day a future rpm advisory-matcher ticket wires it in,
+# the identical "registered, not yet reachable" precedent that file's own
+# header already documents for the check itself.
+
+id: COMPOSITE-IMAGE-EFFECTIVE_ROOT
+kind: derived
+title: A Dockerfile's missing non-root USER is confirmed by the built image's own effective runtime user
+severity: critical
+confidence: high
+cwe: CWE-250
+owasp: A04:2021
+requires: IAC-DOCKER-ROOT_USER-01
+requires: IMAGE-CFG-RUNS_AS_ROOT-01
+correlate-on: file
+tags: derived
+remediation: Add (or fix) a non-root USER instruction in the Dockerfile that
+  builds this image's final stage - or in whichever base image is meant to
+  set one - then rebuild and re-scan both the source and the artifact. This
+  is not merely a lint finding: the built image's own config confirms the
+  container actually runs as root today, so treat it as a live privilege
+  exposure rather than a stylistic gap. A base-image bump can change the
+  effective user with no Dockerfile line changing at all, so re-check this
+  after any FROM tag/digest bump too.
+references: data/scoursh-image-scan-design/report.md
+references: CWE-250
+references: https://owasp.org/Top10/A04_2021-Insecure_Design/
+
+id: COMPOSITE-IMAGE-STALE_BASE_APK
+kind: derived
+title: An unpinned base image is shipping known-vulnerable apk packages
+severity: high
+confidence: high
+cwe: CWE-1104
+owasp: A06:2021
+requires: IMAGE-PKG-VULNERABLE_OS_PACKAGE-01
+any-of: IAC-DOCKER-LATEST_TAG-01
+any-of: IAC-DOCKER-UNPINNED_DIGEST-01
+correlate-on: file
+tags: derived
+remediation: The Dockerfile's own base image reference is not pinned to an
+  immutable tag and content digest, and the built image already carries a
+  package with a known, published advisory - the two are connected: an
+  unpinned base is exactly what lets a routine rebuild silently reintroduce
+  a vulnerable version instead of refreshing it away. Pin the base image
+  with an explicit release tag AND an `@sha256:...` digest
+  (IAC-DOCKER-UNPINNED_DIGEST-01's own remediation), then rebuild against a
+  current base and re-scan to confirm the advisory clears.
+references: data/scoursh-image-scan-design/report.md
+references: CWE-1104
+references: CWE-829
+references: https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/
+
+id: COMPOSITE-IMAGE-STALE_BASE_DPKG
+kind: derived
+title: An unpinned base image is shipping known-vulnerable dpkg packages
+severity: high
+confidence: high
+cwe: CWE-1104
+owasp: A06:2021
+requires: IMAGE-PKG-VULNERABLE_OS_PACKAGE-02
+any-of: IAC-DOCKER-LATEST_TAG-01
+any-of: IAC-DOCKER-UNPINNED_DIGEST-01
+correlate-on: file
+tags: derived
+remediation: The Dockerfile's own base image reference is not pinned to an
+  immutable tag and content digest, and the built image already carries a
+  Debian/Ubuntu package with a known, published advisory - the two are
+  connected: an unpinned base is exactly what lets a routine rebuild
+  silently reintroduce a vulnerable version instead of refreshing it away.
+  Pin the base image with an explicit release tag AND an `@sha256:...`
+  digest (IAC-DOCKER-UNPINNED_DIGEST-01's own remediation), then rebuild
+  against a current base and re-scan to confirm the advisory clears.
+references: data/scoursh-image-scan-design/report.md
+references: CWE-1104
+references: CWE-829
+references: https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/
+
+id: COMPOSITE-IMAGE-STALE_BASE_RPM
+kind: derived
+title: An unpinned base image is shipping known-vulnerable rpm packages
+severity: high
+confidence: high
+cwe: CWE-1104
+owasp: A06:2021
+requires: IMAGE-PKG-VULNERABLE_OS_PACKAGE-03
+any-of: IAC-DOCKER-LATEST_TAG-01
+any-of: IAC-DOCKER-UNPINNED_DIGEST-01
+correlate-on: file
+tags: derived
+remediation: The Dockerfile's own base image reference is not pinned to an
+  immutable tag and content digest, and the built image already carries an
+  RHEL/Fedora package with a known, published advisory - the two are
+  connected: an unpinned base is exactly what lets a routine rebuild
+  silently reintroduce a vulnerable version instead of refreshing it away.
+  Pin the base image with an explicit release tag AND an `@sha256:...`
+  digest (IAC-DOCKER-UNPINNED_DIGEST-01's own remediation), then rebuild
+  against a current base and re-scan to confirm the advisory clears.
+references: data/scoursh-image-scan-design/report.md
+references: CWE-1104
+references: CWE-829
+references: https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/

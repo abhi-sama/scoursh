@@ -134,6 +134,15 @@ image_check_root_user() {
   finding_set loc_image_id "$image_id"
   finding_set logical_kind image
   finding_set logical_fqn "image $image_id: config.User"
+  # IMG-14 (rules/RULE-FORMAT.md §9.2.2, §9.6.8) - see
+  # modules/image/distro/apk.sh's identical comment on its own emitter.
+  # This is the pairing report.md §4.4 names directly: this check reads the
+  # EFFECTIVE runtime user from the built artifact,
+  # IAC-DOCKER-ROOT_USER-01 reads only the one Dockerfile a source lint can
+  # see, and correlating them on the same Dockerfile path confirms the
+  # source's absent USER instruction really did leave the artifact running
+  # as root, rather than reporting two independent guesses about it.
+  [[ -n ${SCOURSH_IMAGE_DOCKERFILE:-} ]] && finding_set corr_file "$SCOURSH_IMAGE_DOCKERFILE"
   finding_set remediation "Add (or fix) a non-root USER in the Dockerfile that built this image's final stage, or in whichever base image sets it, then rebuild and re-scan. A base-image bump alone can change the effective user without any Dockerfile line changing, so re-check this after any FROM tag/digest bump too."
   local shown=${_IMAGE_CONFIG_USER:-<absent>}
   finding_set_evidence "image: $image_id

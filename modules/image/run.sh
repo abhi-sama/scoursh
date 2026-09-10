@@ -146,7 +146,14 @@ _image_run_module() {
   # a CI job sees it acknowledged rather than silently ignored.
   SCOURSH_IMAGE_ID=$image_id
   SCOURSH_IMAGE_SOURCE=$source
-  export SCOURSH_IMAGE_ID SCOURSH_IMAGE_SOURCE
+  # IMG-14 (rules/RULE-FORMAT.md §9.2.2, §9.6.8): the operator-declared
+  # Dockerfile path this image correlates against, reset here on every call
+  # so a prior invocation's value (tests/suites/image.sh calls
+  # _image_run_module more than once per process, modules/sast/run.sh's own
+  # header names the same hazard for its own per-call state) cannot leak
+  # into a run whose own images.conf record carries no `dockerfile` key.
+  SCOURSH_IMAGE_DOCKERFILE=''
+  export SCOURSH_IMAGE_ID SCOURSH_IMAGE_SOURCE SCOURSH_IMAGE_DOCKERFILE
 
   # image's coverage cell is `image-id`, the operator-declared STABLE id
   # (rules/RULE-FORMAT.md §9.5.1, report.md §3.4) - deliberately never the
@@ -177,7 +184,8 @@ _image_run_module() {
     path=$_IMAGE_SRC_PATH
     ref=$_IMAGE_SRC_REF
     origin=$_IMAGE_SRC_ORIGIN
-    run_record notes "module=image image=$image_id source_kind=$kind source_path=$path source_origin=$origin"
+    SCOURSH_IMAGE_DOCKERFILE=${_IMAGE_SRC_DOCKERFILE:-}
+    run_record notes "module=image image=$image_id source_kind=$kind source_path=$path source_origin=$origin dockerfile=${SCOURSH_IMAGE_DOCKERFILE:-<none>}"
 
     rc=0
     image_open "$kind" "$path" "$ref" || rc=$?

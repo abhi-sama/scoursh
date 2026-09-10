@@ -728,11 +728,24 @@ image_sources_load() {
 # "scoursh read the image your config names" and "scoursh read whatever
 # --source pointed at, and guessed its shape" are different facts, and a run
 # that cannot tell them apart cannot report honestly about what it opened.
-_IMAGE_SRC_KIND='' _IMAGE_SRC_PATH='' _IMAGE_SRC_REF='' _IMAGE_SRC_ORIGIN=''
+#
+# `_IMAGE_SRC_DOCKERFILE` (IMG-14, §9.6.8's optional `dockerfile` key) is the
+# operator-declared, scan-root-relative path of the Dockerfile that built
+# this image - IMAGE's `file` correlation value (§9.2.2), never inferred
+# from the image's own content (an image carries no record of which
+# Dockerfile built it). Empty whenever the record omits the key, whenever
+# `--source` overrode a record's path, or whenever no record exists at all:
+# in every one of those cases the finding this run emits simply has no `file`
+# correlation value and cannot join an IAC-DOCKER-* finding, the same
+# conservative "no value, no participation" outcome §9.2.2 describes for a
+# cloud finding with zero host-attribution matches.
+_IMAGE_SRC_KIND='' _IMAGE_SRC_PATH='' _IMAGE_SRC_REF='' _IMAGE_SRC_ORIGIN='' \
+  _IMAGE_SRC_DOCKERFILE=''
 image_source_resolve() {
   local id=$1 override=${2:-} path=${3:-$SCOURSH_INSTALL_ROOT/config/images.conf}
   local idx have_record=0
-  _IMAGE_SRC_KIND='' _IMAGE_SRC_PATH='' _IMAGE_SRC_REF='' _IMAGE_SRC_ORIGIN=''
+  _IMAGE_SRC_KIND='' _IMAGE_SRC_PATH='' _IMAGE_SRC_REF='' _IMAGE_SRC_ORIGIN='' \
+    _IMAGE_SRC_DOCKERFILE=''
   [[ -n $id ]] || die "$SCOURSH_EXIT_USAGE" 'image_source_resolve called with no image id'
 
   if image_sources_load "$path"; then
@@ -741,6 +754,7 @@ image_source_resolve() {
       _IMAGE_SRC_KIND=$(records_field images "$idx" source)
       _IMAGE_SRC_PATH=$(records_field images "$idx" path)
       _IMAGE_SRC_REF=$(records_field_or images "$idx" reference '')
+      _IMAGE_SRC_DOCKERFILE=$(records_field_or images "$idx" dockerfile '')
       _IMAGE_SRC_ORIGIN=images_conf
     fi
   fi

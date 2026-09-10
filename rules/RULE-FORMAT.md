@@ -674,6 +674,7 @@ there.
 | CLOUD | **yes**, by attribution | **yes** | **yes** | no |
 | POSTURE | **yes**, by scope-key | **yes** | **yes** | no |
 | NET | **yes** | no | no | no |
+| IMAGE | no | no | no | **yes**, conditionally |
 
 `E053` fires when a derived record's `correlate-on` is a key that **any** of its `requires` or `any-of`
 contributors' modules cannot supply per this table.
@@ -681,14 +682,23 @@ contributors' modules cannot supply per this table.
 
 Every **yes** in this table is a statement about the module *in principle*, which is what makes the
 table static and `E053` decidable from record text alone.
-Two cells are supplied conditionally at runtime, and both resolve the same graceful way: a finding that
-cannot produce the value simply has no value for that key and does not participate in that composite.
+Three cells are supplied conditionally at runtime, and all three resolve the same graceful way: a
+finding that cannot produce the value simply has no value for that key and does not participate in
+that composite.
 
 - **CLOUD / `target`** is supplied by attribution, below; zero host matches means no `target` value.
 - **POSTURE / `target`** is supplied when the finding's expectation carries a `scope-key` that is a
   scope target id (`rules/RULE-FORMAT.md` §9.6.4).
   When the `scope-key` is an account id or `account/region` instead, the finding has no `target` value
   and does not participate in a `target` composite, exactly as for a cloud finding with no host match.
+- **IMAGE / `file`** is supplied only when the operator declares which Dockerfile built the image, via
+  the optional `dockerfile` key on its `config/images.conf` record (§9.6.8) - the value scoursh reads
+  is never inferred from the image's own content, exactly as `id` never is (§9.6.8's own "deliberately
+  not derived" paragraph). A `config/images.conf` record with no `dockerfile` key gives every
+  `IMAGE-*` finding for that image no `file` correlation value, so it cannot join an
+  `IAC-DOCKER-*` finding whatever the two scans actually built - the same conservative "no value,
+  no participation" outcome CLOUD's zero-host-match case reaches, never a guess at which Dockerfile
+  produced an image nobody named.
 
 Neither case is an error, and neither is silent: a composite that never fires because its contributors
 never share a correlation value is reported in `run.json` under `coverage_gap`, so the operator sees a
@@ -1102,6 +1112,7 @@ operator-assigned **stable** id to a **local, already-on-disk** image.
 | `source` | required | single | no | `docker-archive` or `oci-layout`. Anything else is `E024`. |
 | `path` | required | single | no | Path to the docker-save tarball (`docker-archive`) or to the OCI image-layout directory (`oci-layout`). A relative path resolves against the process's working directory, never against the install root; an absolute path is recommended. |
 | `reference` | optional | single | no | Which image inside a multi-image source to read: a `RepoTags` entry for `docker-archive`, or the `org.opencontainers.image.ref.name` annotation for `oci-layout`. A source holding exactly one image needs no `reference`; a source holding more than one and naming no `reference` is a **declared refusal**, never an arbitrary pick. |
+| `dockerfile` | optional | single | no | The **scan-root-relative** path (`modules/sast/engine.sh`'s `sast_relpath` shape - no leading `/`, no leading `./`) of the Dockerfile that built this image, when the operator scans it as source too. Never validated against the image's own content (it cannot be - report.md §1.6 - so a typo here is silent). This is IMAGE's `file` correlation value (§9.2.2): populating it is what lets `rules/derived.rules` join an `IMAGE-*` finding to the `IAC-DOCKER-*` findings from scanning that same Dockerfile with `modules/iac/`. Omitting it leaves every `IMAGE-*` finding for this image with no `file` correlation value, so it simply cannot join - never a guess at which Dockerfile built an image the operator did not name one for. |
 | `notes` | optional | single | yes | Free text. |
 | `format-version` | optional | single | no | As §9.6.5. |
 
@@ -1119,6 +1130,15 @@ networked box and handed to the scanner as a file.  Report §1.2's shape C - she
 `docker save` - is convenience sugar that **produces** a shape-A tarball and re-enters the
 `docker-archive` path; if it is ever built it adds no `source` value of its own, because a second
 acquisition path is a second door of exactly the kind tension 19 refuses for the network.
+
+**`dockerfile` is §14's additive-optional-key shape (`contact` in §9.6.1 is the worked example) and
+trips item 2 alone, so it needs no `format_version` bump.** No existing `config/images.conf` record is
+rewritten (an absent `dockerfile` key already validates exactly as it did before this key existed);
+`lib/records.sh`'s `image-source` schema gains the one arm and `tests/lint-rules.sh` is re-run over
+every shipped record file; `IMAGE-*`/`IAC-DOCKER-*` are ordinary check ids and `dockerfile` feeds no
+fingerprint (§9.2's correlation value is a derived-finding-only input, §9.2's "attribution never enters
+the fingerprint" paragraph applies here identically), so `state/` and `config/baseline.json` stay valid
+and no SARIF `ruleId`/`partialFingerprints` value changes either.
 
 ## 10. The `context` directive
 
