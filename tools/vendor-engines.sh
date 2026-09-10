@@ -400,21 +400,30 @@ Commands:
                        unlike 'banner', and is likewise deliberately not part
                        of --list/--all/'bulk --all' (see veng_advisories_alpine's
                        own header for why).
+  debian              the container-image module's Debian importer (IMG-09):
+                       per-release Debian namespace (Debian:N, MAJOR version
+                       only) from SCOURSH_ADVISORY_DEBIAN_IDS.  Same shape as
+                       'alpine' in every other respect.
+  ubuntu              the container-image module's Ubuntu importer (IMG-09):
+                       per-release Ubuntu namespace (Ubuntu:XX.YY) from
+                       SCOURSH_ADVISORY_UBUNTU_IDS.  Same shape as 'alpine' in
+                       every other respect.
   bulk ...            import a WHOLE SCA ecosystem's published OSV.dev export
                        in one command, instead of naming advisory ids one at a
                        time; run 'advisories bulk --help' for its own usage,
                        including how artifact integrity is handled.  This is
                        the command that populates a usable database.  Scoped
-                       to the six SCA ecosystems; neither 'banner' nor
-                       'alpine' has a bulk path.
+                       to the six SCA ecosystems; 'banner', 'alpine', 'debian'
+                       and 'ubuntu' have no bulk path.
   -h, --help          print this message and exit 0
 
 Every SCA ecosystem reads its advisory ids from an operator-supplied env var -
 SCOURSH_ADVISORY_NPM_IDS, SCOURSH_ADVISORY_PYPI_IDS,
 SCOURSH_ADVISORY_MAVEN_IDS, SCOURSH_ADVISORY_GO_IDS,
 SCOURSH_ADVISORY_RUBYGEMS_IDS, SCOURSH_ADVISORY_COMPOSER_IDS - and 'banner'
-reads SCOURSH_ADVISORY_BANNER_IDS and 'alpine' reads
-SCOURSH_ADVISORY_ALPINE_IDS, the identical shape.  Each is a
+reads SCOURSH_ADVISORY_BANNER_IDS, 'alpine' reads SCOURSH_ADVISORY_ALPINE_IDS,
+'debian' reads SCOURSH_ADVISORY_DEBIAN_IDS, and 'ubuntu' reads
+SCOURSH_ADVISORY_UBUNTU_IDS, the identical shape.  Each is a
 comma/space-separated list of real OSV.dev advisory ids (e.g.
 "GHSA-xxxx-xxxx-xxxx", "CVE-2021-41773") the operator identified from that
 ecosystem's (or product's) own advisory source.  This script never guesses or
@@ -493,9 +502,19 @@ _veng_advisories_load_banner_normalizer() {
 # ACTUAL matched ecosystem string travels with each row rather than being
 # supplied by the caller, because a single import can legitimately produce
 # rows for several different Alpine releases at once (see
-# `_veng_advisories_osv_extract_py`'s own `is_alpine` branch, section 3,
-# and `_veng_advisories_write_db_prefix`, section 3's own write-side
-# sibling to `_veng_advisories_write_db`).
+# `_veng_advisories_osv_extract_py`'s own generalised `eco.endswith(":*")`
+# branch, section 3, and `_veng_advisories_write_db_prefix`, section 3's own
+# write-side sibling to `_veng_advisories_write_db`).
+#
+# `debian`/`ubuntu` (IMG-09, report.md §2.3/§4.1's Stage-2 row) are the
+# IDENTICAL PREFIX-sentinel shape, one per distro's own OSV.dev namespace:
+# Debian's is `Debian:N` (`Debian:11`, `Debian:12`, ... - a bare MAJOR
+# version, never a point release, since OSV does not publish per-point-
+# release Debian advisories), Ubuntu's is `Ubuntu:XX.YY`
+# (`Ubuntu:20.04`, `Ubuntu:22.04`, ...). Both reuse the exact same
+# `eco.endswith(":*")` extractor branch and `_veng_advisories_write_db_prefix`
+# writer alpine's own sentinel already exercises - no new machinery, only
+# two new sentinel strings and two new dispatch cases.
 _veng_advisories_osv_ecosystem() {
   case $1 in
     npm) printf 'npm' ;;
@@ -506,6 +525,8 @@ _veng_advisories_osv_ecosystem() {
     composer) printf 'Packagist' ;;
     banner) printf '*' ;;
     alpine) printf 'Alpine:*' ;;
+    debian) printf 'Debian:*' ;;
+    ubuntu) printf 'Ubuntu:*' ;;
     *) die "$SCOURSH_EXIT_INPUT" "advisories: unknown ecosystem '$1'" ;;
   esac
 }
@@ -524,6 +545,8 @@ _veng_advisories_env_var() {
     composer) printf 'SCOURSH_ADVISORY_COMPOSER_IDS' ;;
     banner) printf 'SCOURSH_ADVISORY_BANNER_IDS' ;;
     alpine) printf 'SCOURSH_ADVISORY_ALPINE_IDS' ;;
+    debian) printf 'SCOURSH_ADVISORY_DEBIAN_IDS' ;;
+    ubuntu) printf 'SCOURSH_ADVISORY_UBUNTU_IDS' ;;
     *) die "$SCOURSH_EXIT_INPUT" "advisories: unknown ecosystem '$1'" ;;
   esac
 }
@@ -563,7 +586,14 @@ _veng_advisories_normalize_name() {
     # convention to normalise the way npm/PyPI/Composer names have - so this
     # is a verbatim pass-through, exactly like every OTHER ecosystem's
     # version field already is in _veng_advisories_normalize_version below.
-    alpine) printf '%s' "$raw" ;;
+    #
+    # debian/ubuntu (IMG-09): OSV.dev already publishes Debian/Ubuntu
+    # advisories keyed by the dpkg SOURCE package name (report.md §2.1's
+    # trap 2 - the identical identity `modules/image/distro/dpkg.sh`'s own
+    # Source:-vs-Package: resolution produces at scan time), so there is
+    # nothing to normalise here either - a verbatim pass-through, mirroring
+    # alpine.
+    alpine | debian | ubuntu) printf '%s' "$raw" ;;
     *) die "$SCOURSH_EXIT_INPUT" "advisories: unknown ecosystem '$db_eco'" ;;
   esac
 }
@@ -784,15 +814,21 @@ def rows_for(data):
         # affected[] entry that names a package is taken regardless of its
         # own ecosystem field.
         #
-        # eco == "Alpine:*" is the alpine sentinel (IMG-03): OSV.dev keys
-        # Alpine advisories PER RELEASE ("Alpine:v3.18", "Alpine:v3.19",
-        # ...), so this is a PREFIX match rather than an exact or wildcard
-        # one, and - unlike every other branch - row_eco below carries the
-        # ACTUAL matched ecosystem string, because one advisory can name
-        # several different Alpine releases across its own affected[] list.
+        # eco ending in ":*" is a PER-RELEASE distro sentinel (IMG-03's
+        # "Alpine:*", IMG-09's "Debian:*"/"Ubuntu:*"): OSV.dev keys these
+        # advisories PER RELEASE ("Alpine:v3.18", "Debian:12", "Ubuntu:22.04",
+        # ...), never under one flat ecosystem string, so this is a PREFIX
+        # match rather than an exact or wildcard one, and - unlike every
+        # other branch - row_eco below carries the ACTUAL matched ecosystem
+        # string, because one advisory can name several different releases
+        # of the SAME distro across its own affected[] list. Generalised
+        # from a hardcoded "Alpine:*" comparison to this ".endswith(':*')"
+        # form so Debian/Ubuntu share the identical extraction path rather
+        # than a second, distro-specific copy of it.
         row_eco = ""
-        if eco == "Alpine:*":
-            if not pkg_eco.startswith("Alpine:"):
+        if eco.endswith(":*"):
+            prefix = eco[:-1]  # "Alpine:*" -> "Alpine:", etc.
+            if not pkg_eco.startswith(prefix):
                 STATS["other_ecosystem_skipped"] += 1
                 continue
             row_eco = pkg_eco
@@ -1013,12 +1049,13 @@ _veng_advisories_expand_one() {
       emitted=$(( emitted + 1 ))
       continue
     fi
-    if [[ $db_eco == alpine ]]; then
-      # alpine (IMG-03): the ONE ecosystem whose ROW carries its own
-      # ecosystem field, because it varies per row (Alpine:v3.18,
-      # Alpine:v3.19, ...) rather than being the fixed $db_eco every other
-      # branch here writes - see _veng_advisories_osv_extract_py's own
-      # "row_eco" comment (section 3) for where this field is produced.
+    if [[ $db_eco == alpine || $db_eco == debian || $db_eco == ubuntu ]]; then
+      # alpine/debian/ubuntu (IMG-03/IMG-09): the per-release-distro
+      # ecosystems, each whose ROW carries its own ecosystem field, because
+      # it varies per row (Alpine:v3.18/Alpine:v3.19, Debian:11/Debian:12,
+      # Ubuntu:20.04/Ubuntu:22.04, ...) rather than being the fixed $db_eco
+      # every other branch here writes - see _veng_advisories_osv_extract_py's
+      # own "row_eco" comment (section 3) for where this field is produced.
       local row_eco norm_row_eco
       IFS=$'\x1f' read -r row_eco name version advisory_id severity fixed summary <<<"$raw_line"
       [[ -n $name && -n $row_eco ]] || continue
@@ -1444,6 +1481,99 @@ veng_advisories_alpine() {
   # `Alpine:` namespace decided once - see that function's own header.
   _veng_advisories_write_db_prefix "$VENG_ADVISORIES_DB" 'Alpine:' "$rows_new"
   _veng_advisories_write_db_prefix "$VENG_VERSIONS_DB" 'Alpine:' "$rows_new"
+  _veng_advisories_write_summaries_db "$VENG_SUMMARIES_DB" "$rows_new.summaries"
+  _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$rows_new.summaries"
+}
+
+# veng_advisories_debian - the eighth advisory importer (IMG-09, data/
+# scoursh-image-scan-design/report.md §2.3/§4.1's Stage-2 row), Debian's
+# sibling to veng_advisories_alpine immediately above - byte-identical in
+# shape, differing only in the sentinel/env-var/prefix names, because
+# report.md §2.3 already established that OSV.dev publishes distro
+# ecosystems as first-class namespaces and that a `Debian:N` row fits the
+# existing `data/advisories.db` shape exactly the way `Alpine:vX.Y` does.
+# Writes `Debian:N` rows (NEVER a point release - see
+# _veng_advisories_osv_ecosystem's own "debian" comment) to BOTH
+# data/advisories.db and data/versions.db, for the identical "same shape,
+# same rule" reasoning veng_advisories_alpine's own header gives.
+#
+# Deliberately NOT one of VENG_ADVISORY_REGISTRY's entries, reached from its
+# own `debian` case in veng_advisories_main instead - the identical reason
+# veng_advisories_alpine's own header gives: `advisories bulk` assumes ONE
+# db_eco per import and an equality-matched writer, both wrong for a
+# namespace whose own rows can span several distinct `Debian:N` keys in one
+# import.
+#   - it reads SCOURSH_ADVISORY_DEBIAN_IDS.
+#   - the package NAME is passed through verbatim
+#     (_veng_advisories_normalize_name's own "debian" case) - dpkg SOURCE
+#     package names carry no normalisation convention npm/PyPI/Composer
+#     names have.
+#   - the row's ECOSYSTEM is read off each row itself, exactly like alpine,
+#     because _veng_advisories_osv_extract_py's "Debian:*" sentinel is a
+#     PREFIX match across every Debian release an advisory names.
+veng_advisories_debian() {
+  _veng_advisories_load_normalizers
+
+  local env_var
+  env_var=$(_veng_advisories_env_var debian)
+  local ids=${!env_var:-}
+  [[ -n $ids ]] || die "$SCOURSH_EXIT_INPUT" \
+    "advisories: $env_var is not set - supply one or more real OSV.dev advisory ids (comma/space separated) you identified from Debian's own security tracker (https://osv.dev), e.g. $env_var='CVE-2023-xxxxx'. This script never guesses or hardcodes an advisory id (see this file's own header)."
+
+  local -a id_list=()
+  IFS=$', \t' read -ra id_list <<<"$ids"
+  (( ${#id_list[@]} > 0 )) || die "$SCOURSH_EXIT_INPUT" "advisories: $env_var is set but names no ids"
+
+  local rows_new=$SCOURSH_SCRATCH/advisories/rows.debian.tsv
+  mkdir -p "$(dirname -- "$rows_new")"
+  : >"$rows_new"
+  : >"$rows_new.summaries"
+
+  local id
+  for id in "${id_list[@]+"${id_list[@]}"}"; do
+    [[ -n $id ]] || continue
+    _veng_advisories_expand_one debian "$id" "$rows_new"
+  done
+
+  # PREFIX-scoped writes, mirroring veng_advisories_alpine's own identical
+  # call - rows_new can carry more than one distinct Debian:N key, and the
+  # replace-scope has to be the whole `Debian:` namespace decided once.
+  _veng_advisories_write_db_prefix "$VENG_ADVISORIES_DB" 'Debian:' "$rows_new"
+  _veng_advisories_write_db_prefix "$VENG_VERSIONS_DB" 'Debian:' "$rows_new"
+  _veng_advisories_write_summaries_db "$VENG_SUMMARIES_DB" "$rows_new.summaries"
+  _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$rows_new.summaries"
+}
+
+# veng_advisories_ubuntu - Ubuntu's sibling to veng_advisories_debian
+# immediately above (IMG-09), differing only in the sentinel/env-var/prefix
+# names: Ubuntu's own OSV.dev namespace is `Ubuntu:XX.YY` (major.minor,
+# unlike Debian's bare major).
+veng_advisories_ubuntu() {
+  _veng_advisories_load_normalizers
+
+  local env_var
+  env_var=$(_veng_advisories_env_var ubuntu)
+  local ids=${!env_var:-}
+  [[ -n $ids ]] || die "$SCOURSH_EXIT_INPUT" \
+    "advisories: $env_var is not set - supply one or more real OSV.dev advisory ids (comma/space separated) you identified from Ubuntu's own security tracker (https://osv.dev), e.g. $env_var='CVE-2023-xxxxx'. This script never guesses or hardcodes an advisory id (see this file's own header)."
+
+  local -a id_list=()
+  IFS=$', \t' read -ra id_list <<<"$ids"
+  (( ${#id_list[@]} > 0 )) || die "$SCOURSH_EXIT_INPUT" "advisories: $env_var is set but names no ids"
+
+  local rows_new=$SCOURSH_SCRATCH/advisories/rows.ubuntu.tsv
+  mkdir -p "$(dirname -- "$rows_new")"
+  : >"$rows_new"
+  : >"$rows_new.summaries"
+
+  local id
+  for id in "${id_list[@]+"${id_list[@]}"}"; do
+    [[ -n $id ]] || continue
+    _veng_advisories_expand_one ubuntu "$id" "$rows_new"
+  done
+
+  _veng_advisories_write_db_prefix "$VENG_ADVISORIES_DB" 'Ubuntu:' "$rows_new"
+  _veng_advisories_write_db_prefix "$VENG_VERSIONS_DB" 'Ubuntu:' "$rows_new"
   _veng_advisories_write_summaries_db "$VENG_SUMMARIES_DB" "$rows_new.summaries"
   _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$rows_new.summaries"
 }
@@ -2127,6 +2257,14 @@ veng_advisories_main() {
       # Also a named command, not routed through the registry - see
       # veng_advisories_alpine's own header for why (IMG-03).
       veng_advisories_alpine
+      ;;
+    debian)
+      # Same shape as alpine's case above - see veng_advisories_debian's own
+      # header for why (IMG-09).
+      veng_advisories_debian
+      ;;
+    ubuntu)
+      veng_advisories_ubuntu
       ;;
     --*)
       veng_advisories_usage >&2

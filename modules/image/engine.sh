@@ -4,7 +4,8 @@
 # §3.1/§5.3's "module foundation" row; distro-release detection and the
 # advisory-database reuse added by IMG-03; distro/apk.sh, apk_version.sh and
 # config.sh sourced here, and the two remaining v1 coverage emitters added,
-# by IMG-06).
+# by IMG-06; distro-release detection widened to Debian/Ubuntu and
+# distro/dpkg.sh, dpkg_version.sh sourced here, by IMG-09).
 #
 # WHAT IMG-01 SHIPPED, AND WHAT HAS LANDED SINCE.  IMG-01 was the ONLY
 # shared-file ticket for this module - it registered the `IMAGE` module
@@ -18,11 +19,19 @@
 # comparator) and config.sh (IMG-06's own IMAGE-CFG-RUNS_AS_ROOT-01 driver),
 # and adds this file's own `image_report_unknown_distro`/
 # `image_report_layer_unreadable` - the two coverage reductions report.md
-# §4.3 lists that IMG-03 had not yet reached.  Unlike modules/dast/engine.sh
-# and modules/network/engine.sh, it declares no phase table: report.md's v1
-# architecture is acquire -> enumerate -> compare, each its own file
-# (`acquire.sh`, `distro/apk.sh`, ...), not a set of intensity-gated phases
-# run in a fixed order over one target - there is nothing to gate on
+# §4.3 lists that IMG-03 had not yet reached.  IMG-09 completes the
+# Debian/Ubuntu slice: it widens `image_distro_ecosystem_resolve` to map
+# `debian`/`ubuntu` os-release IDs onto their own OSV.dev ecosystem keys,
+# sources distro/dpkg.sh (IMG-07's enumerator, extended by IMG-09 itself
+# with matching + emission, mirroring distro/apk.sh's own IMG-04/IMG-06
+# shape) and dpkg_version.sh (IMG-08's comparator), and widens
+# `image_report_unknown_distro` to take an explicit MANAGER argument so apk
+# and dpkg share one emitter rather than each carrying manager-specific
+# prose.  Unlike modules/dast/engine.sh and modules/network/engine.sh, it
+# declares no phase table: report.md's v1 architecture is
+# acquire -> enumerate -> compare, each its own file (`acquire.sh`,
+# `distro/apk.sh`, `distro/dpkg.sh`, ...), not a set of intensity-gated
+# phases run in a fixed order over one target - there is nothing to gate on
 # `--intensity` here, so a phase table would be a table with nothing to put
 # in it.
 #
@@ -62,18 +71,23 @@ fi
 # shellcheck source=modules/image/acquire.sh
 source "${BASH_SOURCE[0]%/*}/acquire.sh"
 
-# distro/apk.sh (IMG-04/IMG-06) and distro/apk_version.sh (IMG-05), and
-# config.sh (IMG-06) - all three are LEAVES (apk_version.sh's own header:
-# "adds no edge to the shellcheck -x source graph ... keep it that way"; the
-# other two source nothing either), so adding them here costs nothing like
-# the diamond/cycle measurements AGENTS.md records for a real hub. They are
-# sourced from the module's one function-library hub, exactly like
-# acquire.sh above, rather than from modules/image/run.sh directly, for the
-# identical reason.
+# distro/apk.sh (IMG-04/IMG-06), distro/apk_version.sh (IMG-05),
+# distro/dpkg.sh (IMG-07/IMG-09) and distro/dpkg_version.sh (IMG-08), and
+# config.sh (IMG-06) - all five are LEAVES (apk_version.sh's and
+# dpkg_version.sh's own headers: "adds no edge to the shellcheck -x source
+# graph ... keep it that way"; the other three source nothing either), so
+# adding them here costs nothing like the diamond/cycle measurements
+# AGENTS.md records for a real hub. They are sourced from the module's one
+# function-library hub, exactly like acquire.sh above, rather than from
+# modules/image/run.sh directly, for the identical reason.
 # shellcheck source=modules/image/distro/apk.sh
 source "${BASH_SOURCE[0]%/*}/distro/apk.sh"
 # shellcheck source=modules/image/distro/apk_version.sh
 source "${BASH_SOURCE[0]%/*}/distro/apk_version.sh"
+# shellcheck source=modules/image/distro/dpkg.sh
+source "${BASH_SOURCE[0]%/*}/distro/dpkg.sh"
+# shellcheck source=modules/image/distro/dpkg_version.sh
+source "${BASH_SOURCE[0]%/*}/distro/dpkg_version.sh"
 # shellcheck source=modules/image/config.sh
 source "${BASH_SOURCE[0]%/*}/config.sh"
 
@@ -126,19 +140,27 @@ image_os_release_parse() {
 # `image_distro_ecosystem_resolve FILE` - image_os_release_parse plus the
 # ID/VERSION_ID -> data/advisories.db ecosystem key mapping (report.md
 # §2.3/§3.4: `Alpine:vX.Y`, keyed per RELEASE, never per exact patch
-# version - OSV.dev's own Alpine namespace is major.minor only). v1 is
-# Alpine-only (D2), so any other `ID`, or a VERSION_ID that does not carry a
-# leading `major.minor`, resolves to nothing rather than a guess: report.md
-# §4.3 is explicit that guessing "latest" on a missing/unrecognised release
-# produces a false NEGATIVE on an older image, which is the direction that
-# reads as a pass. `_IMAGE_DISTRO_REASON` distinguishes "no os-release at
-# all" (`no_os_release`) from "os-release named a distro/version this
-# module cannot yet map" (`os_release_version_unparseable` /
-# `distro_not_yet_supported`) purely for the human-readable detail text -
-# every one of them is reported under the SAME `distro_release_unknown`
-# coverage_reduction reason the brief and report.md §4.3 both name, since
-# from an operator's chair all three answer the identical question
-# ("was an advisory ecosystem found for this image") the identical way.
+# version - OSV.dev's own Alpine namespace is major.minor only; IMG-09 adds
+# Debian and Ubuntu, each keyed the way OSV.dev itself publishes them -
+# `Debian:N` is MAJOR-ONLY, e.g. `Debian:12`, never `Debian:12.5` (Debian's
+# own point-release number is not part of OSV's ecosystem string at all, so
+# keeping it would build a key data/advisories.db never carries a row
+# under), while `Ubuntu:XX.YY` is major.minor, identically shaped to
+# Alpine's own key and to `VERSION_ID` verbatim - Ubuntu's `VERSION_ID` IS
+# already `22.04`/`20.04`, so no reformatting is needed once it is
+# extracted). Any OTHER `ID`, or a `VERSION_ID` that does not carry the
+# leading numeric component its own distro's key needs, resolves to nothing
+# rather than a guess: report.md §4.3 is explicit that guessing "latest" on
+# a missing/unrecognised release produces a false NEGATIVE on an older
+# image, which is the direction that reads as a pass. `_IMAGE_DISTRO_REASON`
+# distinguishes "no os-release at all" (`no_os_release`) from "os-release
+# named a distro/version this module cannot yet map"
+# (`os_release_version_unparseable` / `distro_not_yet_supported`) purely
+# for the human-readable detail text - every one of them is reported under
+# the SAME `distro_release_unknown` coverage_reduction reason the brief and
+# report.md §4.3 both name, since from an operator's chair all three answer
+# the identical question ("was an advisory ecosystem found for this image")
+# the identical way.
 _IMAGE_DISTRO_ECOSYSTEM=''
 _IMAGE_DISTRO_REASON=''
 image_distro_ecosystem_resolve() {
@@ -155,6 +177,34 @@ image_distro_ecosystem_resolve() {
         major=${BASH_REMATCH[1]}
         minor=${BASH_REMATCH[2]}
         _IMAGE_DISTRO_ECOSYSTEM="Alpine:v${major}.${minor}"
+        return 0
+      fi
+      _IMAGE_DISTRO_REASON=os_release_version_unparseable
+      return 1
+      ;;
+    debian)
+      # Debian's own OSV.dev namespace is the bare major version -
+      # `Debian:11`, `Debian:12` - never the point release (`VERSION_ID` on
+      # a real Debian image is typically already just `12`, but a stray
+      # `12.5` is tolerated by matching only the LEADING run of digits
+      # rather than requiring the whole field to be one integer).
+      if [[ $_IMAGE_OS_RELEASE_VERSION_ID =~ ^([0-9]+) ]]; then
+        major=${BASH_REMATCH[1]}
+        _IMAGE_DISTRO_ECOSYSTEM="Debian:${major}"
+        return 0
+      fi
+      _IMAGE_DISTRO_REASON=os_release_version_unparseable
+      return 1
+      ;;
+    ubuntu)
+      # Ubuntu's OSV.dev namespace is major.minor, e.g. `Ubuntu:22.04` -
+      # `VERSION_ID` on a real Ubuntu image already carries exactly this
+      # shape verbatim, so this is structurally identical to the Alpine
+      # branch above rather than a new rule.
+      if [[ $_IMAGE_OS_RELEASE_VERSION_ID =~ ^([0-9]+)\.([0-9]+) ]]; then
+        major=${BASH_REMATCH[1]}
+        minor=${BASH_REMATCH[2]}
+        _IMAGE_DISTRO_ECOSYSTEM="Ubuntu:${major}.${minor}"
         return 0
       fi
       _IMAGE_DISTRO_REASON=os_release_version_unparseable
@@ -234,10 +284,11 @@ packages_checked: 0"
 # The remaining v1 coverage reductions (IMG-06, report.md §4.1/§4.3)
 # ---------------------------------------------------------------------------
 
-# `image_report_unknown_distro IMAGE_ID ECOSYSTEM [DETAIL]` - the ecosystem
-# WAS resolved (an operator-facing distro/release, e.g. `Alpine:v3.18`) and
-# `data/advisories.db` DOES cover it, but no apk package database exists in
-# ANY layer of this image - a scratch or distroless final stage that copies
+# `image_report_unknown_distro IMAGE_ID ECOSYSTEM MANAGER [DETAIL]` - the
+# ecosystem WAS resolved (an operator-facing distro/release, e.g.
+# `Alpine:v3.18`, `Debian:12`, `Ubuntu:22.04`) and `data/advisories.db` DOES
+# cover it, but no MANAGER (`apk` or `dpkg`) package database exists in ANY
+# layer of this image - a scratch or distroless final stage that copies
 # binaries out without the package manager's own metadata (report.md §4.3's
 # `no_package_db_found` row). ONE coverage_reduction, ONE
 # `IMAGE-COV-UNKNOWN_DISTRO-01` finding, `info` severity - the identical "a
@@ -248,17 +299,27 @@ packages_checked: 0"
 # module cannot identify the CONTENTS of, whatever `/etc/os-release` claims;
 # the title and evidence below say so explicitly rather than trusting the
 # id alone to carry that nuance.
+#
+# MANAGER is required (IMG-09 widened this function from apk-only to also
+# cover dpkg's mirror-image case, report.md §2.1) - the wording below is
+# generic on purpose so a future rpm caller (IMG-12) needs no third copy of
+# this function, only its own MANAGER value.
 image_report_unknown_distro() {
-  local image_id=$1 ecosystem=$2 detail=${3:-no_package_db_found}
+  local image_id=$1 ecosystem=$2 manager=$3 detail=${4:-no_package_db_found}
+  local db_path=''
+  case $manager in
+    apk) db_path='lib/apk/db/installed' ;;
+    dpkg) db_path='var/lib/dpkg/status' ;;
+  esac
 
-  log_warn "image: no recognised package database in any layer of image '$image_id' (resolved ecosystem: $ecosystem, detail=$detail) - NO package was checked"
+  log_warn "image: no recognised $manager package database in any layer of image '$image_id' (resolved ecosystem: $ecosystem, detail=$detail) - NO package was checked"
   run_record coverage_reduction "module=image reason=$detail image=$image_id ecosystem=$ecosystem"
   run_record checks_run IMAGE-COV-UNKNOWN_DISTRO-01
 
   finding_new
   finding_set check_id IMAGE-COV-UNKNOWN_DISTRO-01
   finding_set module image
-  finding_set title "Container image scanning did NOT run for '$ecosystem' - no apk package database in any layer of this image"
+  finding_set title "Container image scanning did NOT run for '$ecosystem' - no $manager package database in any layer of this image"
   finding_set base_severity info
   finding_set confidence high
   finding_set cwe none
@@ -266,9 +327,10 @@ image_report_unknown_distro() {
   finding_set cell "$image_id"
   finding_set loc_image_id "$image_id"
   finding_set loc_ecosystem "$ecosystem"
-  finding_set remediation "This image's own /etc/os-release names $ecosystem, but no lib/apk/db/installed member exists in any layer - typically a distroless or scratch-based final build stage. If this image really does ship apk-managed packages, check whether the final build stage strips /lib/apk/db. Until it is present, this run says NOTHING about this image's installed packages."
+  finding_set remediation "This image's own /etc/os-release names $ecosystem, but no ${db_path:-package database} member exists in any layer - typically a distroless or scratch-based final build stage. If this image really does ship $manager-managed packages, check whether the final build stage strips ${db_path:-the package database}. Until it is present, this run says NOTHING about this image's installed packages."
   finding_set_evidence "ecosystem: $ecosystem
 image: $image_id
+manager: $manager
 detail: $detail
 packages_checked: 0"
   finding_emit

@@ -1,0 +1,12 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-DEBIAN-2",
+  "summary": "fixture: bash command injection (debian)",
+  "database_specific": {"severity": "MODERATE"},
+  "affected": [
+    {
+      "package": {"ecosystem": "Debian:12", "name": "bash"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "5.2.15-2+b2"}]}],
+      "versions": ["5.2.15-2+b1"]
+    }
+  ]
+}
