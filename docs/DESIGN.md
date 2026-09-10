@@ -12,6 +12,7 @@
 ## 1. Goals
 
 - One shell-based tool that audits three surfaces: **source code (SAST)**, a **running endpoint (DAST)**, and **AWS configuration (live + IaC)**.
+  Addendum, added when built-container-image scanning shipped (`modules/image/`, `data/scoursh-image-scan-design/report.md`): this never was an exhaustive list of every surface the tool would ever reach - it named the three surfaces the original handoff scoped - and it does not preclude a fourth. Built container images (offline, operator-supplied - never a registry pull) are that fourth surface; §15 states what it does not cover.
 - **Exhaustive** across the surfaces it can reach - code, dependencies, running endpoint, and cloud/IaC config - with coverage and blind spots stated explicitly (§15) rather than implied. Depth on SAST scales with the engine tier (§9).
 - **Modular** - each surface is a self-contained module under `modules/`, invokable alone or together.
 - **No third-party egress.** No telemetry, no SaaS backend, no fetching rules at scan time. Runs on an air-gapped host.
@@ -457,6 +458,7 @@ Being explicit here is what keeps the output trustworthy - a scan that overstate
 - **CVE/advisory freshness** - SCA and outdated-component verdicts are only as current as the last `vendor-engines.sh` refresh of `data/`; on an air-gapped host that's a deliberate, dated snapshot, not real-time.
 - **Business logic & full authorization** - IDOR/excessive-data checks are detection-oriented; complete access-control correctness (A01) and design flaws (A04) still require human review.
 - **Not a pentest / not ASVS** - this is automated regression + posture scanning that complements, and does not replace, a manual assessment.
+- **Built container images** (`modules/image/`, added after this document's original handoff - see §1's addendum) - never a running-container or runtime inspection: only the metadata paths a docker-save tarball or OCI layout carries on disk are read, so nothing about a container's actual runtime behaviour, mounted volumes, or environment is examined. Only the bounded, declared paths a package-manager database and a handful of conventional language-manifest locations occupy are ever extracted - never a full rootfs materialisation - so a dependency manifest at a non-conventional path is genuinely invisible to it, a stated limitation rather than a silent gap. Matching an installed **rpm** package needs `sqlite3` on `PATH` (its database is a binary format no text tool can read); its absence is a declared coverage reduction, never a silent clean pass. CVE/advisory freshness for OS packages is the identical vendored-snapshot limitation already stated above for SCA, one ecosystem family over.
 
 ## 16. Extension points
 

@@ -3,13 +3,15 @@
 *Also available as a standalone page: [`checks.html`](checks.html).*
 
 The full built-in check catalogue on the `dev` branch, grouped by scan surface and by what each check
-needs to run. Roughly 300 checks ship in the box.
+needs to run. Roughly 320 checks ship in the box.
 
 > **Almost everything runs with no external data.** Point scoursh at source code (`--path`), a live
 > app (`--target`), or an authorized listener set (`--target`, network) and every SAST, IaC, DAST, and
 > network check below works immediately - no database, no downloads, no network of scoursh's own
-> choosing. **Dependency-CVE scanning (SCA)** and two banner-version checks (one DAST, one network)
-> need the vendored advisory database; **Cloud/AWS (CSPM)** needs resolvable AWS credentials.
+> choosing. **Dependency-CVE scanning (SCA)**, most of **container-image scanning** (the three
+> `IMAGE-CFG-*` config-blob checks need only a supplied image, no database), and two banner-version
+> checks (one DAST, one network) need the vendored advisory database; **Cloud/AWS (CSPM)** needs
+> resolvable AWS credentials.
 
 | | |
 |---|---|
@@ -19,6 +21,7 @@ needs to run. Roughly 300 checks ship in the box.
 | **34** | DAST active |
 | **15** | Network/host checks |
 | **6** | SCA ecosystems |
+| **11** | Container-image checks |
 | **112** | Cloud/AWS checks (30 services) |
 
 ## Legend
@@ -218,6 +221,48 @@ reports that no advisory data was available rather than a false all-clear.
 | `SCA-PHP-VULNERABLE_DEP-01` | Composer |
 | `SCA-GO` | Go modules |
 | `SCA-COV-NO_ADVISORY_DB-01` / `UNKNOWN_VERSION-01` | Honest coverage notes when data is missing |
+
+## Container image 🔵 advisory DB
+
+Offline installed-package enumeration and CVE matching against a **built** container image - never a
+registry pull. Runs on `./scan.sh image --image ID` (optionally `--source PATH` to override the path
+`config/images.conf` records for that id), where `ID` names an `id` record in `config/images.conf`
+pointing at a `docker save` tarball (`source: docker-archive`) or an OCI image-layout directory
+(`source: oci-layout`) the operator has already exported. `tar` is the only new binary this needs;
+rpm additionally needs `sqlite3` on `PATH` (its package database is a binary format text tools can't
+read - `requires-cmd: sqlite3`, a declared coverage reduction rather than a silent skip when absent).
+This is the **built-artifact** counterpart to `modules/iac/dockerfile.rules`: the Dockerfile check
+reads what was *written*, this reads what actually *shipped* - the base image's own packages, drift
+between a digest-pinned Dockerfile and a months-old build, and the effective runtime user across every
+merged layer, none of which source linting can see. See `docs/DESIGN.md` §15 for the boundary between
+the two and this module's own stated gaps.
+
+| Check | Catches |
+|---|---|
+| `IMAGE-PKG-VULNERABLE_OS_PACKAGE-01` | Installed apk package matches a known advisory for the image's Alpine release |
+| `IMAGE-PKG-VULNERABLE_OS_PACKAGE-02` | Installed dpkg package matches a known advisory for the image's Debian/Ubuntu release (resolved against the `Source:` package where one is declared) |
+| `IMAGE-PKG-VULNERABLE_OS_PACKAGE-03` (needs `sqlite3` on `PATH`) | Installed rpm package matches a known advisory for the image's RHEL/Fedora release |
+| `IMAGE-LANGDEP-VULNERABLE_DEP-01` | A language dependency (npm/RubyGems/Composer/PyPI/Maven/Go) found at a bounded set of conventional manifest locations inside the image's own rootfs matches a known advisory - reuses `sca`'s own tree-walkers, re-emitted under this id and the image's own `image-id` cell rather than `module=sca` |
+| `IMAGE-CFG-RUNS_AS_ROOT-01` | Image config declares no non-root `User` - the *effective* runtime user across every merged base layer, not one Dockerfile's own `USER` line |
+| `IMAGE-CFG-EXPOSED_PORTS-01` | Image config declares one or more exposed ports (informational) |
+| `IMAGE-CFG-MUTABLE_BASE_REF-01` | Image's own recorded base-image reference is a mutable tag rather than a content digest |
+| `IMAGE-COV-NO_ADVISORY_DB-01` | No advisory rows for this image's distro release - nothing was matched (exit 4 when `image` is the selected command) |
+| `IMAGE-COV-UNKNOWN_DISTRO-01` | No recognised package database (apk/dpkg/rpm) found in any layer - e.g. a distroless/scratch image |
+| `IMAGE-COV-LAYER_UNREADABLE-01` | One or more layers or archive members could not be read |
+| `IMAGE-COV-LANGDEPS_NOT_SCANNED-01` | Language-dependency scanning found no manifest at any declared candidate location, or no advisory data |
+
+Every `VULNERABLE_OS_PACKAGE`/`VULNERABLE_DEP` finding needs a real, differential-tested version
+comparator per package manager (`modules/sca/semver.sh` is npm-only by measured decision - it mismatches
+7 of 12 real OS version pairs, including a false negative - so apk/dpkg/rpm each ship their own,
+`data/scoursh-image-scan-design/report.md` §2.4-§2.5). `distro_release_unknown` (no `/etc/os-release`)
+is its own declared reduction, never a silent guess at "latest": Alpine advisories are keyed per
+release, and guessing produces false negatives on older images.
+
+Also seeded: `COMPOSITE-IMAGE-EFFECTIVE_ROOT` and three `COMPOSITE-IMAGE-STALE_BASE_*` ids
+(`rules/derived.rules`), correlating an `IMAGE-*` built-artifact finding with the `IAC-DOCKER-*`
+Dockerfile-source finding for the same image when `config/images.conf`'s optional `dockerfile` key
+names the Dockerfile that built it - never guessed, and never minted by a scanner script (composites
+live in the derived layer per `rules/RULE-FORMAT.md` §9.2).
 
 ## Cloud / AWS (CSPM) 🟠 needs AWS credentials
 

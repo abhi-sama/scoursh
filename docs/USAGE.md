@@ -49,7 +49,8 @@ scan.sh <command> [options]
 | `dast` | `--target NAME` `[--intensity passive\|safe\|active]` `[--authed]` `[--i-own-target NAME]` `[--openapi\|--har\|--postman\|--graphql-schema FILE]` | live - **it sends real requests** | The scope gate below is enforced before anything else (see "The scope gate"), as are the conservative rate/budget/breaker ceilings and the `--i-own-target` affirmation (see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)). Every module `docs/DESIGN.md` §7 describes has landed (`docs/STEP5-DAST-PLAN.md`, DAST-01 through DAST-36): authentication and crawling, every passive check (headers, cookies, TLS, CORS, information leakage, mixed content), safe-active checks (content discovery, method enumeration), the full injection family gated at `--intensity active` (SQLi, XSS, command injection, path traversal, SSTI, NoSQLi, LDAPi, CRLF, XXE/SSRF, prototype pollution, open redirect, host-header injection), and the application-layer tier (GraphQL introspection, rate-limiting, JWT, object-level authorization/IDOR). `--intensity` genuinely gates which phases and checks run (not merely a ceiling that nothing tests, unlike the static modules below); a phase this run's intensity or authorization does not reach is recorded in `run.json` as a `coverage_gap`/`coverage_reduction` with its reason, rather than silently omitted. |
 | `network` | `--target NAME` `[--intensity passive\|safe\|active]` `[--i-own-target NAME]` | live - **it opens real TCP connections** | Service-posture scanning over the DECLARED listener set `config/scope.conf`'s `base-url`/`extra-host` entries name for `--target` - never a port sweep or host discovery: a port scoursh was not told about is never probed. Gated by the identical scope chokepoint, ceilings, and `--i-own-target` affirmation `dast` uses - one TCP connect costs exactly what one HTTP request costs against the same limiter/budget/breaker. `--intensity` gates phases exactly as it does for `dast`: `passive` (default) reaches banner reads and TLS identification on non-`base-url` listeners plus transport-posture checks, `safe` additionally reaches the three-state reachability probe and HTTP identification on non-standard ports. All six phases (`inventory.sh`, `reachability.sh`, `banner.sh`, `tlsport.sh`, `httpport.sh`, `transport.sh`) are implemented (`data/scoursh-network-scan-design/report.md` §7, NET-01 through NET-11); a target whose `config/scope.conf` entry declares only `base-url` (no `extra-host` listener) records a `coverage_gap` rather than a clean scan, since there is nothing beyond the web port to test. `--jobs N` is also this module's ceiling on simultaneous connections. Unlike `dast`, it accepts no `--requests-per-second`/`--request-budget`/`--circuit-breaker-failures`/spec-file flags - those are DAST's own rate/discovery knobs and have no equivalent here. An operator-declared `expect-closed` expectation in the optional `config/posture.conf` (`scope-key: target:port`) is what lets `NET-PORT-UNEXPECTED_LISTENER-01` fire on a declared listener that should not be answering; absent that file it is a declared skip, never exit 4. |
 | `cloud` | `[--live]` `[--profile NAME]` `[--regions all\|us-east-1,...]` `[--assume-role ARN]` `[--i-own-account ID]` | live - **it makes real read-only AWS API calls** | `--live` requires the `aws` CLI on `PATH` and resolvable credentials, and the run refuses (exit 4) if either is missing. Every one of `docs/DESIGN.md` §8.1's 30 AWS services (`modules/cloud/aws/live/*.sh`) is implemented - 112 checks, CIS AWS Foundations Benchmark v3.0.0 and OWASP mapped. `regions.sh` resolves the account's enabled regions (or the `--regions` list, unvalidated against the account) and every AWS call goes through `lib/awscli.sh`'s `aws_ro`, which refuses anything that is not read-only. `--assume-role ARN` scans a second account; `--profile NAME` selects a named AWS CLI profile. An access-denied, opted-out, or throttled service is recorded as a `coverage_reduction`, never folded into a clean pass. The `posture/` phase (SSO/edge/session drift against an operator-declared baseline, `config/posture.conf`) has a config schema but no checks yet, so it is a declared skip today. |
-| `all` | union of every module's own flags above | live | Runs sast, sca, iac unconditionally; runs dast and network only if `--target` is given (network under the identical condition dast uses - it never gets a separate authorization record, since the two share one `--target`/`--intensity`/`--i-own-target` triple), and cloud only if `--live` is given. Every module it skips is recorded in `run.json` as a `coverage_reduction` fact, not silently dropped. |
+| `image` | `--image ID` `[--source PATH]` | live, needs an advisory database for OS-package/dependency matching | Offline installed-package enumeration and CVE matching against a **built** container image - `ID` names an `id` record in `config/images.conf` pointing at a `docker save` tarball (`source: docker-archive`) or an OCI image-layout directory (`source: oci-layout`); never a registry pull, and `--image` is the only required flag. `--source PATH` overrides the configured path for this run only (the shape is inferred from the filesystem - a directory is `oci-layout`, a file is `docker-archive`); with no `config/images.conf` record for `ID` at all, `--source` is the only way to run. Enumerates and matches apk, dpkg, and rpm packages (rpm needs `sqlite3` on `PATH` - its package database is a binary format, a declared coverage reduction rather than a silent skip when absent), plus language dependencies found at a bounded set of conventional manifest locations inside the image's own rootfs (reusing `sca`'s tree-walkers). Also reads the image's config blob for its effective runtime user, exposed ports, and whether its recorded base reference is a mutable tag - these three checks need no advisory database and run on every opened image regardless of distro. No advisory data for the image's release is `IMAGE-COV-NO_ADVISORY_DB-01` and exit `4` when `image` is the selected command (a declared skip under `all`, per the identical SCA precedent). `--format agent` works here the same as every other module. See ["Dependency data"](#dependency-data-dataadvisoriesdb) and `docs/CHECKS.md`'s "Container image" section. |
+| `all` | union of every module's own flags above | live | Runs sast, sca, iac unconditionally; runs dast and network only if `--target` is given (network under the identical condition dast uses - it never gets a separate authorization record, since the two share one `--target`/`--intensity`/`--i-own-target` triple), image only if `--image` is given, and cloud only if `--live` is given. Every module it skips is recorded in `run.json` as a `coverage_reduction` fact, not silently dropped. |
 | `diff` | `--against DIR` | live | `DIR` must name a prior run's output directory (must contain `findings.jsonl` or `run.json`). Classifies `state/latest.json` (the most recently completed run) against the state recorded for the named prior run and renders the delta - `new`/`recurring`/`fixed`/`unknown` - into a fresh output directory (`run.json`, `report.md`). Performs no new scan. See [`docs/STEP7-STATE-PLAN.md`](STEP7-STATE-PLAN.md) (STATE-06). |
 | `report` | `--from DIR` | live | `DIR` must be a prior run's own output directory (must contain `findings.jsonl` or `run.json`, plus a non-empty `findings.fields` and `meta/`). Regenerates `report.md`/`report.html`/`report.sarif`/`report-audit.html` (honouring `--format`) from that run's own persisted findings and `run.json` (copied byte-for-byte, never recomputed) - no new scan is performed. See ["`report --from DIR`"](#report---from-dir). |
 
@@ -81,6 +82,8 @@ scan.sh <command> [options]
 | `--regions all\|us-east-1,...` | cloud, all | live - narrows the enabled-region list; an explicit list is not validated against the account |
 | `--assume-role ARN` | cloud, all | live - scans a second account via STS, recorded in `run.json`'s authorization block |
 | `--i-own-account ID` | cloud, all | live - optional affirmation; when given, must match the resolved account id (mismatch is exit 2) |
+| `--image ID` | image, all | live as a gate (`scan_die_usage`, exit 2, if missing on `image`), and the scan it gates now runs; `all` skips `image` entirely (a declared coverage reduction) when it is absent |
+| `--source PATH` | image, all | live; overrides `config/images.conf`'s configured path for this run only, with the `docker-archive`/`oci-layout` shape inferred from the filesystem when `ID` has no config record at all |
 
 ## Global flags (apply to every command)
 
@@ -266,8 +269,8 @@ for the reasoning behind each one.
 
 ### Per-surface scans
 
-`sast`, `sca`, and `iac` all take a `--path`; `dast` and `network` both take a `--target`. Write each
-report to its own directory so consecutive scans don't clobber one another:
+`sast`, `sca`, and `iac` all take a `--path`; `dast` and `network` both take a `--target`; `image` takes
+an `--image`. Write each report to its own directory so consecutive scans don't clobber one another:
 
 ```sh
 ./scan.sh sast    --path DIR --format html,audit --out reports/sast
@@ -275,6 +278,7 @@ report to its own directory so consecutive scans don't clobber one another:
 ./scan.sh iac     --path DIR --format html,audit --out reports/iac
 ./scan.sh dast    --target NAME --format html,audit --out reports/dast     # config/scope.conf must authorize NAME first
 ./scan.sh network --target NAME --format html,audit --out reports/network  # same authorization; scans NAME's declared listener set
+./scan.sh image   --image ID --format html,audit --out reports/image      # config/images.conf must name ID first (or pass --source)
 ```
 
 ### A full active-DAST recipe
@@ -732,6 +736,26 @@ tools/vendor-engines.sh advisories --all
 See [`tools/vendor-engines.sh advisories --help`](../tools/vendor-engines.sh) for the full list of
 per-ecosystem environment variables.
 
+**`scan.sh image` reads the same two files, through four more ecosystems that are deliberately NOT
+part of `--list`/`--all`/`bulk --all` above: `alpine`, `debian`, `ubuntu`, and `redhat`.** Each is
+its own named subcommand, one-advisory-at-a-time only (no bulk import exists for these yet - a stated
+gap, not an oversight):
+
+```sh
+export SCOURSH_ADVISORY_ALPINE_IDS="CVE-2023-xxxxx,CVE-2023-yyyyy"
+tools/vendor-engines.sh advisories alpine
+# debian/ubuntu/redhat take SCOURSH_ADVISORY_DEBIAN_IDS / _UBUNTU_IDS / _REDHAT_IDS the same way
+```
+
+Without a row for the image's own distro release (Alpine and Debian/Ubuntu are keyed per release,
+e.g. `Alpine:v3.18`; Red Hat's OSV.dev namespace is one flat `Red Hat` key with no per-release
+suffix), `scan.sh image` reports `IMAGE-COV-NO_ADVISORY_DB-01` and exits `4` rather than a clean
+scan - the identical `sca` precedent above, one module over. The three `IMAGE-CFG-*` config-blob
+checks (effective runtime user, exposed ports, mutable base reference) need none of this and always
+run once an image opens. Matching an installed **rpm** package additionally needs `sqlite3` on
+`PATH` - its package database is a binary format no text tool can read - and its absence is its own
+declared coverage reduction (`rpm_db_binary_format`), never folded into a silent clean pass.
+
 **Read the `range_only_skipped` percentage in that table - it is coverage, not a progress bar.**
 OSV.dev's own advisory records do not all carry an explicit list of affected versions. Where one lists
 only a semver *range* instead, `docs/FOUNDATION.md` tension 25's design refuses to guess a concrete
@@ -951,7 +975,8 @@ These config files use the same on-disk record format: blank-line-separated `key
 Never hand-edit these with tooling that assumes shell syntax - the loader parses them as data and never
 `source`s them.
 None of them is committed to this repository; `config/` ships `scope.conf.example`,
-`scanner.conf.example`, `auth.conf.example`, and `discovery.conf.example`, which you copy and edit.
+`scanner.conf.example`, `auth.conf.example`, `discovery.conf.example`, and `images.conf.example`,
+which you copy and edit.
 
 ### `config/scope.conf` - required only for `dast`, `network`
 
@@ -1049,6 +1074,29 @@ target the override applies to (exit 2 otherwise, the same rule `--i-own-target`
 relative path is resolved against the install root exactly as this file's own paths are. Prefer the
 file for anything you want to keep re-running the same way; reach for a flag when you are trying one
 spec or capture once.
+
+### `config/images.conf` - required only for `image` (unless `--source` is given)
+
+One record per built container image `--image` can name, `rules/RULE-FORMAT.md` §9.6.8. Copy
+`config/images.conf.example` to `config/images.conf` and edit it - or skip this file entirely for a
+one-off scan and pass `--source PATH` instead (see ["Per-command flags"](#per-command-flags)).
+
+| Key | Required | Repeatable | Value |
+|---|---|---|---|
+| `id` | yes | no | The name used by `--image`. Pattern `^[a-z][a-z0-9-]*$`. Must be the first field. Deliberately never derived from the image's own digest or tag, which both change on every rebuild/retag - `id` is the stable coverage-cell key a rebuild must keep, the same reasoning `config/scope.conf`'s own `id` uses one module over. |
+| `source` | yes | no | `docker-archive` (a `docker save` tarball) or `oci-layout` (an OCI image-layout directory). Anything else is a lint error. |
+| `path` | yes | no | Path to that tarball or directory. A relative path resolves against the process's working directory, never the install root. |
+| `reference` | no | no | Which image to read out of a multi-image source - a `RepoTags` entry (`docker-archive`) or the `org.opencontainers.image.ref.name` annotation (`oci-layout`). Required when the source holds more than one image; omitting it there is a declared refusal, never an arbitrary pick. |
+| `dockerfile` | no | no | The scan-root-relative path of the Dockerfile that built this image, when you also scan it with `iac`. Populating it is what lets `rules/derived.rules` join this image's `IMAGE-*` findings to that Dockerfile's `IAC-DOCKER-*` findings (`COMPOSITE-IMAGE-EFFECTIVE_ROOT`, `COMPOSITE-IMAGE-STALE_BASE_*` - see `docs/CHECKS.md`). Never validated against the image's own content (it cannot be); omitting it just means this image's findings carry no correlation value and cannot join. |
+| `notes` | no | no (multi-line) | Free text. |
+
+`--source PATH` overrides `path` for a single run; when `ID` has no record in this file at all, the
+`source` value is inferred from the filesystem instead (a directory is `oci-layout`, a file is
+`docker-archive`). Where a record for `ID` does exist, its own `source` and `reference` still apply -
+`--source` there just points at a different copy of the same image (a rebuild, say) - and its
+`dockerfile` correlation value carries over unchanged. There is deliberately no registry URL or
+daemon-socket key: a registry pull is not designed for at all (`docs/FOUNDATION.md` tension 19 - no
+third egress channel), so an image is supplied as a file, the same way `data/advisories.db` is.
 
 ### `config/scanner.conf` - optional; an absent file behaves as if it contained only `id: scanner`
 

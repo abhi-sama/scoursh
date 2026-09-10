@@ -202,6 +202,8 @@
   <a href="#sca">SCA</a>
   <a href="#iac">IaC</a>
   <a href="#dast">DAST</a>
+  <a href="#network">Network / host</a>
+  <a href="#image">Container image</a>
   <a href="#secrets">Secrets</a>
   <a href="#cloud">Cloud / CSPM</a>
 
@@ -230,7 +232,7 @@
 <div class="thesis">
   <div class="lbl">The position</div>
   <p>
-    One auditable bash tool that sweeps five surfaces in a single run, refuses to talk to anything
+    One auditable bash tool that sweeps seven surfaces in a single run, refuses to talk to anything
     outside an operator-declared allowlist, and — uniquely among the tools surveyed — reports what it
     <strong>did not</strong> check as a first-class, non-clean output state.
   </p>
@@ -262,8 +264,8 @@
 <h2 id="baseline">What scoursh actually is</h2>
 
 <div class="stats">
-  <div class="stat"><div class="n">293</div><div class="l">security checks across five surfaces</div></div>
-  <div class="stat"><div class="n">5</div><div class="l">surfaces: SAST, SCA, IaC, DAST, Cloud/CSPM</div></div>
+  <div class="stat"><div class="n">319</div><div class="l">security checks across seven surfaces</div></div>
+  <div class="stat"><div class="n">7</div><div class="l">surfaces: SAST, SCA, IaC, DAST, Network/host, Container image, Cloud/CSPM</div></div>
   <div class="stat"><div class="n">0</div><div class="l">runtime deps beyond bash + coreutils</div></div>
   <div class="stat"><div class="n">1</div><div class="l">network chokepoint, lint-enforced</div></div>
   <div class="stat"><div class="n">30</div><div class="l">AWS services covered by the read-only Cloud/CSPM checks</div></div>
@@ -277,6 +279,8 @@
     <tr><td class="tool">SCA</td><td><span class="pill p-warn">needs setup</span></td><td>6 ecosystems, 12 manifest formats — advisory DB is built by hand, offline</td><td>table lookup</td></tr>
     <tr><td class="tool">IaC</td><td><span class="pill p-ok">landed</span></td><td>Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose</td><td>36</td></tr>
     <tr><td class="tool">DAST</td><td><span class="pill p-ok">landed</span></td><td>Full engine: auth, crawl, passive, safe-active, injection, tier-5</td><td>92</td></tr>
+    <tr><td class="tool">Network / host</td><td><span class="pill p-ok">landed</span></td><td>Declared-listener reachability, banner/TLS/HTTP identification, transport posture &mdash; never a port sweep</td><td>15</td></tr>
+    <tr><td class="tool">Container image</td><td><span class="pill p-ok">landed</span></td><td>Offline apk/dpkg/rpm package + language-dep CVE matching against a <code>docker save</code> tarball or OCI layout &mdash; never a registry pull</td><td>11</td></tr>
     <tr><td class="tool">Cloud / AWS</td><td><span class="pill p-ok">landed</span></td><td>30 services, read-only, multi-account (<code>--assume-role</code>), CIS/OWASP-mapped</td><td>112</td></tr>
   </tbody>
 </table>
@@ -598,6 +602,145 @@
   </p>
 </div>
 
+<!-- ============ NETWORK ============ -->
+<h2 id="network">Network / host</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Tool</th><th>Coverage</th><th>Licence</th><th>Footprint</th><th>Egress / consent</th><th>Coverage honesty</th><th>Unique strength</th></tr></thead>
+  <tbody>
+    <tr class="self">
+      <td class="tool">scoursh</td>
+      <td>15 checks: three-state reachability, banner/TLS/HTTP service+version identification, transport posture, over a DECLARED listener set</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td>
+      <td>bash, TCP connect only (no <code>nmap</code> dependency)</td>
+      <td><strong>Refuses any host:port not in scope.conf; never probes a port the operator did not declare</strong></td>
+      <td><strong>Three-state (open/not-open/filtered) + declared reductions</strong></td>
+      <td>Same runtime-enforced consent and ceiling model as DAST, applied to raw TCP</td>
+    </tr>
+    <tr>
+      <td class="tool">Nmap</td>
+      <td>Full port/service/OS discovery across an address range, hundreds of NSE scripts</td>
+      <td><span class="pill p-neut">Nmap Public Source Licence</span></td>
+      <td>C, no deps</td>
+      <td>Whatever you point it at</td>
+      <td>Findings only</td>
+      <td>The reference port scanner and host-discovery tool</td>
+    </tr>
+    <tr>
+      <td class="tool">testssl.sh</td>
+      <td>Deep TLS/SSL protocol, cipher and vulnerability assessment</td>
+      <td><span class="pill p-warn">GPLv2</span></td>
+      <td>bash + openssl</td>
+      <td>Direct</td>
+      <td>Findings only</td>
+      <td>Far deeper single-purpose TLS auditor than any generalist</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  scoursh&rsquo;s network module is deliberately <strong>not a port scanner</strong>. It verifies the
+  reachability, service identity, and transport posture of a listener set the operator already
+  declared in <code>config/scope.conf</code> (<code>base-url</code>/<code>extra-host</code> entries)
+  &mdash; it never discovers a port the operator did not name, gated by the identical
+  <code>lib/http.sh</code> scope chokepoint and ceilings the DAST engine uses. There is no
+  <code>nmap</code> dependency: the TCP-state classification is pure bash, capability-probed and
+  deadline-bounded. An <code>nmap</code> adapter is filed (<code>docs/ADAPTERS.md</code>&rsquo;s
+  convention) but not yet built. Two capabilities a network scanner conventionally claims are stated
+  v1 exclusions rather than oversights: OS patch-level inference (a backported distribution security
+  fix leaves the banner&rsquo;s version string unchanged, so version-string matching against a live
+  host is structurally unreliable) and UDP (no connect handshake, so &ldquo;open&rdquo; and
+  &ldquo;filtered&rdquo; are indistinguishable without a protocol-specific payload per service).
+</p>
+
+<div class="verdict">
+  <div class="lbl">Honest verdict</div>
+  <p>
+    <strong>Use Nmap for port/host discovery and testssl.sh for a deep TLS audit.</strong> scoursh&rsquo;s
+    6 <code>NET-TLS-*</code> checks are a posture summary, not a protocol-level cipher-suite audit, and
+    it will never tell you what else is listening on a host beyond what you already declared. What it
+    adds is the same property the rest of the tool has: a listener you told it about gets checked with
+    the identical consent-and-ceiling discipline as an authorized web target, in the same report as
+    your code, dependency, IaC, and cloud findings, with &ldquo;not open&rdquo;/&ldquo;filtered&rdquo;/
+    &ldquo;not tested&rdquo; kept as distinct, honestly-reported states rather than folded into a clean
+    pass.
+  </p>
+</div>
+
+<!-- ============ CONTAINER IMAGE ============ -->
+<h2 id="image">Container image</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Tool</th><th>Coverage</th><th>Licence</th><th>Footprint</th><th>Egress / consent</th><th>Coverage honesty</th><th>Unique strength</th></tr></thead>
+  <tbody>
+    <tr class="self">
+      <td class="tool">scoursh</td>
+      <td>11 checks: installed apk/dpkg/rpm package CVEs, in-image language-dependency CVEs (npm/RubyGems/Composer/PyPI/Maven/Go), plus config-blob checks (effective runtime user, exposed ports, mutable base-image reference)</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td>
+      <td>bash + <code>tar</code> (rpm also needs <code>sqlite3</code> on <code>PATH</code>)</td>
+      <td><strong>Reads only an operator-supplied <code>docker save</code> tarball or OCI layout — never a registry pull, no daemon socket</strong></td>
+      <td><strong>Found / ran-clean / declared-skip kept as distinct states</strong></td>
+      <td>Correlates a built-artifact finding with the Dockerfile source finding for the same image (<code>rules/derived.rules</code>)</td>
+    </tr>
+    <tr>
+      <td class="tool">Trivy</td>
+      <td>Full image, filesystem, and repo scanning across OS packages, language deps, IaC misconfig, secrets, and SBOM export, plus registry/daemon pulls</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td>
+      <td>Go binary, self-contained</td>
+      <td>Pulls from a registry or local daemon directly</td>
+      <td>Findings only</td>
+      <td>The reference image scanner — broadest ecosystem and distro coverage, actively maintained vulnerability DB</td>
+    </tr>
+    <tr>
+      <td class="tool">Grype</td>
+      <td>OS package and language-dependency CVEs via Anchore&rsquo;s own feed, SBOM-driven</td>
+      <td><span class="pill p-ok">Apache-2.0</span></td>
+      <td>Go binary, self-contained</td>
+      <td>Pulls from a registry or local daemon directly</td>
+      <td>Findings only</td>
+      <td>Fast, SBOM-native (pairs with Syft), strong feed-freshness tooling</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<p>
+  scoursh&rsquo;s image module is <strong>not designed to reach a registry or a running container
+  runtime at all</strong> &mdash; <code>lib/http.sh</code> refuses any host absent from
+  <code>config/scope.conf</code> and there is no third egress channel
+  (<code>docs/FOUNDATION.md</code> tension 19), so an image is supplied as a file, offline, the
+  identical model <code>data/advisories.db</code> already lives in for SCA. Trivy and Grype both pull
+  directly from a registry or a local daemon by design, which is real convenience scoursh&rsquo;s
+  egress model does not permit itself. What scoursh adds instead is the property the rest of the tool
+  has: the same finding lands in one report alongside this image&rsquo;s own source-code, dependency,
+  IaC, and (if scanned) cloud findings, with an absent advisory database or an unrecognised package
+  database (a distroless/scratch image, or an rpm database with no <code>sqlite3</code> on
+  <code>PATH</code>) reported as a declared reduction rather than folded into a silent clean pass. It
+  is also the <strong>built-artifact</strong> counterpart to <code>iac</code>&rsquo;s own Dockerfile
+  <em>source</em> linting rather than a replacement for it &mdash; see
+  <a href="checks.html">docs/CHECKS.md</a>&rsquo;s &ldquo;Container image&rdquo; section and
+  <code>docs/DESIGN.md</code> &sect;15 for the boundary, including what neither scoursh feature alone can
+  see (a base image&rsquo;s own packages, drift between a digest-pinned Dockerfile and a months-old
+  build).
+</p>
+
+<div class="verdict">
+  <div class="lbl">Honest verdict</div>
+  <p>
+    <strong>Use Trivy or Grype when you need registry-pull convenience, the broadest distro/ecosystem
+    coverage, or SBOM export</strong> &mdash; both have years of dedicated feed maintenance behind them
+    that this module does not attempt to match. What scoursh adds is coverage in an egress-restricted
+    or air-gapped setting where pulling from a registry or daemon is off the table, and the same
+    found/ran-clean/declared-skip honesty discipline the rest of the tool applies, now extended to what
+    actually shipped inside an image rather than only to what a Dockerfile says it should contain. No
+    detection-rate comparison against Trivy or Grype is published here, for the identical reason given
+    under <a href="#benchmark-status">Benchmark status</a>: scoursh does not currently have a neutral,
+    versioned corpus for container-image findings, and a number computed only on this project&rsquo;s
+    own fixtures would repeat the exact mistake that section documents.
+  </p>
+</div>
+
 <!-- ============ SECRETS ============ -->
 <h2 id="secrets">Secrets</h2>
 <div class="scroll">
@@ -729,6 +872,7 @@
   <li><strong>SAST:</strong> scoursh ships 53 checks across 6 languages; Semgrep CE ships roughly 3,000 across 30+.</li>
   <li><strong>IaC:</strong> scoursh ships 36 checks across 6 formats; Checkov ships 1,000+, KICS 2,400+.</li>
   <li><strong>Secrets:</strong> scoursh ships 7 dedicated secret checks against Gitleaks&rsquo; and TruffleHog&rsquo;s broad, purpose-built rulesets.</li>
+  <li><strong>Container image:</strong> scoursh ships 11 checks across three package managers (apk/dpkg/rpm) plus six language ecosystems; Trivy and Grype each track a broader distro and vulnerability-feed surface, refreshed continuously against a registry rather than an offline, hand-refreshed database.</li>
 </ul>
 <p>
   A roughly 50-to-1 rule-count gap does not require a benchmark to predict a specialist win on recall. A
@@ -798,7 +942,7 @@
   <thead><tr><th>Property</th><th>scoursh</th><th>Typical specialist</th></tr></thead>
   <tbody>
     <tr><td>Coverage honesty</td><td>Four-state partition (found / clean / skipped-with-reason / not covered)</td><td>Findings only &mdash; a clean run and an unrun check both look &ldquo;clean&rdquo;</td></tr>
-    <tr><td>Egress</td><td>Zero network calls for SAST/SCA/IaC; DAST/network/cloud refuse any destination outside an operator allowlist, provable live under <code>--paranoid</code></td><td>Registry/database fetch, template updates, or live verification calls, per tool</td></tr>
+    <tr><td>Egress</td><td>Zero network calls for SAST/SCA/IaC/container-image; DAST/network/cloud refuse any destination outside an operator allowlist, provable live under <code>--paranoid</code></td><td>Registry/database fetch, template updates, or live verification calls, per tool</td></tr>
     <tr><td>Advisory DB footprint</td><td>~10 MB, hand-built offline</td><td>1.3&ndash;2.0 GB, auto-fetched (Trivy, Grype)</td></tr>
     <tr><td>Runtime dependencies</td><td>bash + coreutils</td><td>JVM, Python, Node, Go toolchain, or a multi-GB engine, per tool</td></tr>
   </tbody>
@@ -820,10 +964,10 @@
   <div class="card yes">
     <h4>Choose scoursh when…</h4>
     <ul>
-      <li><strong>You are air-gapped or egress-audited.</strong> SAST, SCA and IaC make zero network calls; DAST talks only to hosts you declared, and cloud talks only to your own AWS account through a read-only chokepoint.</li>
+      <li><strong>You are air-gapped or egress-audited.</strong> SAST, SCA, IaC, and container-image scanning make zero network calls (an image is a local file, never a registry pull); DAST and network talk only to hosts (and, for network, ports) you declared, and cloud talks only to your own AWS account through a read-only chokepoint.</li>
       <li><strong>&ldquo;Did it actually check?&rdquo; must be answerable.</strong> Compliance evidence, an auditor, a post-incident review.</li>
       <li><strong>You cannot install a toolchain.</strong> No JVM, Python, Node, Go, Docker or build step.</li>
-      <li><strong>You want one report across five surfaces</strong> with one fingerprint scheme, severity rubric and diff model.</li>
+      <li><strong>You want one report across seven surfaces</strong> with one fingerprint scheme, severity rubric and diff model.</li>
       <li><strong>You need a CI gate with a real new-findings carve-out</strong>, fail-closed when the diff is unusable.</li>
       <li><strong>Auditability is the requirement.</strong> It is shell — a reviewer can read the rule that fired.</li>
     </ul>
