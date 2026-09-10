@@ -1,0 +1,15 @@
+tool: scoursh-sca
+version: 0.1.0-dev+1710274dbf30
+corpus: sca-lockfiles-26
+corpus-commit: n/a - see bench/sca-advisories.lock (not a git-cloned corpus)
+scan-root: <SCAN_ROOT>
+files-scanned: 32
+wall-clock-seconds: 935
+records: 174
+claims-categories: sca-npm sca-pypi sca-go
+ground-truth: <BENCH>/corpora/_samples/sca-lockfiles-26/truth
+gate: scan.sh sca --format json, one invocation per case directory (defaults: --profile-scan full --min-confidence low; NOT --use-engines) - requires a populated data/advisories.db, built separately via tools/vendor-engines.sh advisories bulk
+note: runtime is a WALL CLOCK over 32 file(s), not a rate - see the
+  header of bench/run-tool.sh for why a single total on a small corpus
+  is mostly fixed startup cost.
+portable-paths: the scan-root prefix was replaced by <SCAN_ROOT> and the bench/ prefix by <BENCH>; no other edit was made

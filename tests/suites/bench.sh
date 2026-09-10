@@ -122,6 +122,32 @@ flat=$(printf '%s' '[{"R":"a"},{"R":"b"}]' | bench_json_flatten)
 assert_contains "$flat" "0/R${US}s${US}a" 'index 0'
 assert_contains "$flat" "1/R${US}s${US}b" 'index 1'
 
+t_case 'bench_flat_read survives a TOP-LEVEL empty array/object without crashing'
+# `[]` at the document root is the same "wrote nothing" vs "found nothing"
+# shape section A pins for a NESTED empty container, but here the emitted
+# leaf's own path is EMPTY (bench_json_flatten's root marker) - and bash
+# refuses an empty string as an associative-array subscript on EITHER side
+# of an assignment, quoted or not (`declare -gA a=(); x=''; a[$x]=v` and
+# `a["$x"]=v` are both `bad array subscript`, measured directly rather than
+# assumed).  A caller normalising a tool run that found literally nothing in
+# one file - the ordinary shape of a benchmark corpus's own sanitized-trap
+# half - hits this on every such file, so this has to survive rather than
+# merely produce the right leaf text.
+flat=$(printf '%s' '[]' | bench_json_flatten)
+assert_cond 'bench_flat_read does not abort under set -e on a root-level empty array' bash -c '
+  set -Eeuo pipefail
+  source "'"$BENCH"'/lib/json.sh"
+  source "'"$BENCH"'/lib/normalise.sh"
+  bench_flat_read <<<"$1"
+' _ "$flat"
+flat2=$(printf '%s' '{}' | bench_json_flatten)
+assert_cond 'and the identical root-level empty OBJECT shape' bash -c '
+  set -Eeuo pipefail
+  source "'"$BENCH"'/lib/json.sh"
+  source "'"$BENCH"'/lib/normalise.sh"
+  bench_flat_read <<<"$1"
+' _ "$flat2"
+
 t_case 'bench_json_string escapes what RFC 8259 requires and nothing else'
 assert_eq 'a\"b' "$(bench_json_string 'a"b')" 'a quote is escaped'
 assert_eq 'a\\b' "$(bench_json_string 'a\b')" 'a backslash is escaped'
@@ -477,14 +503,14 @@ t_case 'bench/ ships no scanner record file the rule linter would have to own'
 assert_file_absent "$ROOT/bench/checks.rules" 'bench/ has no §9.5 check registry'
 assert_eq '' "$(find "$ROOT/bench" -name '*.rules' -type f)" 'and no .rules file at all - bench/corpus.lock uses the record SHAPE without claiming the extension rules/RULE-FORMAT.md §9 governs'
 
-t_case 'only bench/fetch-corpus.sh reaches the network'
+t_case 'only bench/fetch-corpus.sh and bench/fetch-sca-corpus.sh reach the network'
 netusers=''
 while IFS= read -r f; do
-  case $(basename "$f") in fetch-corpus.sh) continue ;; esac
+  case $(basename "$f") in fetch-corpus.sh | fetch-sca-corpus.sh) continue ;; esac
   grep -nE '(^|[^[:alnum:]_])(curl|wget|git (clone|fetch|ls-remote))([^[:alnum:]_]|$)' "$f" >/dev/null 2>&1 &&
     netusers+="$(basename "$f") "
 done < <(find "$ROOT/bench" -type f -name '*.sh')
-assert_eq '' "$netusers" 'every other bench/ script is offline, so a measurement run needs no network once a corpus is fetched'
+assert_eq '' "$netusers" 'every other bench/ script is offline, so a measurement run needs no network once a corpus is fetched - bench/fetch-sca-corpus.sh is the second exception, and only a live RE-VERIFICATION of an already-pinned advisory (its own header explains why the corpus itself needs no network to build); --offline skips even that'
 
 t_case 'the corpora directory is gitignored, so no corpus content can be committed'
 assert_file_exists "$ROOT/bench/.gitignore" 'bench/.gitignore exists'

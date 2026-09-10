@@ -1,0 +1,15 @@
+tool: osv-scanner
+version: 2.5.1
+corpus: sca-lockfiles-26
+corpus-commit: n/a - see bench/sca-advisories.lock (not a git-cloned corpus)
+scan-root: <SCAN_ROOT>
+files-scanned: 32
+wall-clock-seconds: 3
+records: 587
+claims-categories: sca-npm sca-pypi sca-go
+ground-truth: <BENCH>/corpora/_samples/sca-lockfiles-26/truth
+gate: osv-scanner scan source --format json --lockfile <each manifest> (queries api.osv.dev live; deps.dev data source default)
+note: runtime is a WALL CLOCK over 32 file(s), not a rate - see the
+  header of bench/run-tool.sh for why a single total on a small corpus
+  is mostly fixed startup cost.
+portable-paths: the scan-root prefix was replaced by <SCAN_ROOT>, the bench/ prefix by <BENCH>, and any remaining operator-home prefix by <HOME>; no other edit was made
