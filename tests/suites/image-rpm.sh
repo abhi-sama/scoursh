@@ -314,7 +314,7 @@ assert_eq 'sqlite3' "$(records_field rpmchecks 0 requires-cmd)" \
 
 t_case 'every per-owner image registry is discoverable by the same *.rules glob checks_registry_load uses'
 _files=$(cd -- "$ROOT/modules/image" && printf '%s\n' *.rules | sort)
-assert_eq $'checks-advisories.rules\nchecks-apk.rules\nchecks-config.rules\nchecks-coverage.rules\nchecks-dpkg.rules\nchecks-rpm.rules' "$_files" \
-  'exactly these six files (checks-rpm.rules added by IMG-12) - FAILS if a shared modules/image/checks.rules ever reappears (report.md §5.1s explicitly forbidden shape) or if this ticket appended into checks-dpkg.rules instead of shipping its own'
+assert_eq $'checks-advisories.rules\nchecks-apk.rules\nchecks-config.rules\nchecks-coverage.rules\nchecks-dpkg.rules\nchecks-langdeps.rules\nchecks-rpm.rules' "$_files" \
+  'exactly these seven files (checks-rpm.rules added by IMG-12, checks-langdeps.rules added by IMG-11) - FAILS if a shared modules/image/checks.rules ever reappears (report.md §5.1s explicitly forbidden shape) or if this ticket appended into checks-dpkg.rules instead of shipping its own'
 
 t_summary image-rpm
