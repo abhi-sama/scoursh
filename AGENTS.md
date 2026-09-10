@@ -4104,9 +4104,50 @@ both of its fixture images now also produce a real `IMAGE-CFG-RUNS_AS_ROOT-01` f
 fixture's config blob declares a `User`), asserted explicitly rather than left to collide silently with
 the older assertions.
 
-**Stage 2 (dpkg/rpm, IMG-07 onward) is explicitly out of scope for this ticket** - `var/lib/dpkg/status`
-still is not in `modules/image/run.sh`'s wanted-metadata-paths list, per D2's Alpine-first
-recommendation, and is a later ticket's addition, not this one's.
+**IMG-07 (dpkg enumeration) has landed - the first Stage 2 ticket, and the first ticket to ship
+anything under `modules/image/distro/` for a manager other than apk.** It ships
+`modules/image/distro/dpkg.sh` (`dpkg_installed_enumerate`, reading the blank-line-separated
+`Key: value` blocks of an already-extracted `var/lib/dpkg/status` file into three parallel arrays -
+name, version, and RESOLVED source name) and `modules/image/checks-dpkg.rules` (its own per-owner
+registry file, per report.md §5.1's binding rule and `checks-apk.rules`' own precedent, registering
+`IMAGE-PKG-VULNERABLE_OS_PACKAGE-02` - apk's own `-01` id stays in `checks-apk.rules` untouched, the
+identical "one owning file per check id" reasoning `checks-apk.rules`' header already gave for why a
+future dpkg ticket would need its own id rather than reusing apk's).
+`var/lib/dpkg/status` has been in `IMAGE_METADATA_PATHS` (`modules/image/acquire.sh`) since IMG-02,
+named for this ticket explicitly, so no acquisition change was needed; `modules/image/run.sh` still
+does not call this enumerator and does not list `var/lib/dpkg/status` in its own explicit wanted-path
+set - the identical "registered, not yet reachable" shape `checks-apk.rules` itself was in from IMG-04
+through IMG-05 - since a future dpkg version comparator (IMG-08, epoch + tilde, differential-tested at
+`semver.sh`'s own standard) and the Debian/Ubuntu advisory-ecosystem ticket (IMG-09) are what wire
+matching and finding emission, mirroring how `distro/apk.sh` shipped a pure enumerator at IMG-04 with
+matching landing only at IMG-06 once IMG-05's comparator existed.
+
+Two BINDING correctness traps report.md §2.1 names, both enforced INSIDE the enumerator rather than
+left to a caller:
+
+- **The Status gate.** Only a package whose `Status:` is EXACTLY `install ok installed` is enumerated.
+  `Status: deinstall ok config-files` means the package has been removed and only its conffiles remain
+  - reporting it is a false positive on nearly every Debian/Ubuntu image - and the match is exact, not
+  a substring test: `Status: install reinst-required installed` also contains the word "installed" (as
+  its third token) and must be excluded too, which is why `tests/fixtures/image/dpkg/status` plants
+  both shapes (`perl-base` and `half-broken-pkg`) rather than only the first.
+- **`Source:` vs `Package:`.** Distro advisories are published against the SOURCE package (binary
+  `libssl3` comes from source `openssl`), so `DPKG_INSTALLED_SOURCES` always carries the RESOLVED name:
+  `Source:` when present - with any parenthesised version override (`Source: glibc (2.31-13)`) stripped
+  down to the bare name - else an EXPLICIT fallback to `Package:` itself (the common case: most Debian
+  source packages build exactly one same-named binary, so `Source:` is simply absent from the block).
+  The fallback is applied inside `_dpkg_flush_block`, never deferred to a caller that would otherwise
+  have to re-derive "absent means equal to Package" itself.
+
+`tests/suites/image-dpkg.sh` (43 assertions) is the proof: the real-shaped multi-package fixture
+(including a multi-line `Description` with a period-only continuation line, and a `Conffiles:` stanza,
+both correctly ignored rather than mistaken for a new block), the malformed/partial-block fixture (no
+`Package:` at all - dropped; `Package:` with no `Status:` - dropped by the same gate; `Package:` and a
+passing `Status:` but no `Version:` - kept, with an empty version, mirroring `apk_installed_enumerate`'s
+identical recovery for a `P:`-only block), a missing/directory database, no trailing blank line at EOF,
+and the new registry file parsing clean alongside the module's other four per-owner registries.
+`tests/suites/image-apk.sh`'s own section E was updated in the same change: its "every per-owner image
+registry is discoverable" assertion now names five files, not four.
 
 ## Tests
 
