@@ -1,0 +1,14 @@
+tool: trivy-config
+version: 0.74.0
+corpus: kubernetes-goat
+corpus-commit: 723a0db478f050d173d23b4ce5044b65bce0bdd0
+scan-root: <SCAN_ROOT>
+files-scanned: 16
+wall-clock-seconds: 1
+records: 316
+claims-categories: terraform-aws kubernetes
+gate: trivy config --format json --skip-check-update ROOT (default compiled-in checks; no --severity filter)
+note: runtime is a WALL CLOCK over 16 file(s), not a rate - see the
+  header of bench/run-tool.sh for why a single total on a small corpus
+  is mostly fixed startup cost.
+portable-paths: the scan-root prefix was replaced by <SCAN_ROOT> and the bench/ prefix by <BENCH>; no other edit was made

@@ -15,6 +15,22 @@
 #   strict  the tool reported a finding in the case's file whose CWE is in the
 #           same equivalence class as the case's own CWE
 #
+# TWO MATCHING GRANULARITIES, AND ONLY ONE OF THEM IS EVER RIGHT FOR A CORPUS.
+# `file` is the default and is the scout report's "one file per test case" row:
+# OWASP Benchmark, Juliet.  `line` is its "multiple defects per file" row -
+# TerraGoat, kubernetes-goat, a secrets corpus - where a whole file holds many
+# independently-labelled cases and `the tool reported something in this file`
+# credits a tool for every one of them the moment it finds any one.  Measured
+# on the B6 IaC leg: `rds.tf` holds nine separate clusters, so under file
+# granularity one finding anywhere in it scores nine true positives.  Under
+# `line` a case is flagged only by a finding inside the case's own recorded
+# range, and the ranges in one file do not overlap.
+#
+# The granularity is chosen by the CALLER and is recorded in the scorecard; it
+# is never inferred from whether the truth file happens to carry ranges,
+# because a truth file with SOME ranges would then silently score two different
+# ways in one run.
+#
 # Both, every time, and the agreement between them REPORTED - because that
 # agreement is what proves a ranking is not an artifact of the scoring method.
 # The scout report's §3.1 checked it and found the two identical for both
@@ -39,10 +55,14 @@
 # shellcheck shell=bash
 
 # SC2016: the diagnostics below quote key names and shell syntax literally.
-# SC2034: BENCH_TP/FN/FP/TN and BENCH_FINDING_* are this file's published
+# SC2153: BENCH_TRUTH_CAT / _FILE / _REAL / _LINE are bench/lib/truth.sh's
+# published outputs, read here.  shellcheck does not follow that direction and
+# guesses they are misspellings of BENCH_TRUTH_CWE, which this file does assign
+# nothing to either.
+# SC2034: BENCH_TP/FN/FP/TN, BENCH_HIT_AT and BENCH_FINDING_* are this file's published
 # outputs - every consumer is bench/score.sh, which shellcheck does not follow
 # from here.
-# shellcheck disable=SC2016,SC2034
+# shellcheck disable=SC2016,SC2034,SC2153
 [[ -n ${BENCH_SCORE_SOURCED:-} ]] && return 0
 BENCH_SCORE_SOURCED=1
 
@@ -95,37 +115,99 @@ cwe_class() {
 # Reads a normalised.jsonl into:
 #   BENCH_HIT[file]        set when the tool reported anything in that file
 #   BENCH_HIT_CWE[file]    space-wrapped set of CWE CLASS representatives
+#   BENCH_HIT_AT[file]     space-wrapped set of `<line>:<cwe-class>` tokens, for
+#                          `line` granularity.  The class half is empty when the
+#                          tool declared no CWE, which is a different token from
+#                          one that declared a class - so a CWE-less finding can
+#                          match loosely and never strictly, exactly as at file
+#                          granularity.
 #   BENCH_FINDING_COUNT    records kept after the severity filter
 #   BENCH_FINDING_DROPPED  records dropped by it
+#   BENCH_FINDING_NO_LINE  records kept that carry NO line number.  Under `line`
+#                          granularity such a record can match nothing, so it is
+#                          counted and reported rather than silently discarded -
+#                          a tool whose adapter stopped emitting lines would
+#                          otherwise read as a tool that stopped finding things.
 #
 # MIN_SEVERITY is `any` or one of the common scale's rungs; a record below it
 # is dropped BEFORE any counting, which is how the ALL-findings and the
 # high+critical columns are the same code path rather than two.
 findings_load() {
   local file=$1 min=${2:-any}
-  unset BENCH_HIT BENCH_HIT_CWE
-  declare -gA BENCH_HIT=() BENCH_HIT_CWE=()
+  unset BENCH_HIT BENCH_HIT_CWE BENCH_HIT_AT
+  declare -gA BENCH_HIT=() BENCH_HIT_CWE=() BENCH_HIT_AT=()
   BENCH_FINDING_COUNT=0
   BENCH_FINDING_DROPPED=0
+  BENCH_FINDING_NO_LINE=0
   [[ -r $file ]] || { printf 'bench: cannot read findings: %s\n' "$file" >&2; return 2; }
 
-  local line f c s cls
+  local line f c s l cls tok
   while IFS= read -r line || [[ -n $line ]]; do
     [[ -n $line ]] || continue
     f=$(_json_field "$line" file)
     s=$(_json_field "$line" severity)
     c=$(_json_field "$line" cwe)
+    l=$(_json_field "$line" line)
     if ! _severity_at_least "$s" "$min"; then
       BENCH_FINDING_DROPPED=$(( BENCH_FINDING_DROPPED + 1 ))
       continue
     fi
     BENCH_FINDING_COUNT=$(( BENCH_FINDING_COUNT + 1 ))
     BENCH_HIT[$f]=1
+    cls=''
     if [[ -n $c ]]; then
       cls=$(cwe_class "$c")
       [[ ${BENCH_HIT_CWE[$f]:-} == *" $cls "* ]] || BENCH_HIT_CWE[$f]="${BENCH_HIT_CWE[$f]:- } $cls "
     fi
+    if [[ $l =~ ^[0-9]+$ ]]; then
+      tok="$l:$cls"
+      [[ ${BENCH_HIT_AT[$f]:-} == *" $tok "* ]] || BENCH_HIT_AT[$f]="${BENCH_HIT_AT[$f]:- } $tok "
+    else
+      BENCH_FINDING_NO_LINE=$(( BENCH_FINDING_NO_LINE + 1 ))
+    fi
   done <"$file"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# findings_unscored - records that fall outside EVERY labelled case range.
+# ---------------------------------------------------------------------------
+# Requires truth_load and findings_load.  Sets BENCH_FINDING_UNSCORED.
+#
+# THIS NUMBER IS PUBLISHED, NOT DIAGNOSTIC.  A label set that covers part of a
+# corpus neither credits nor penalises a finding outside it, which is the right
+# treatment for material the labeller declined to judge - but it is also the
+# one place a benchmark could quietly shrink a tool's exposure by labelling
+# only where it does well.  Reporting how much of each tool's output went
+# unjudged is what makes that visible, and it costs one pass over the records.
+findings_unscored() {
+  BENCH_FINDING_UNSCORED=0
+  local f tok l n s e c
+  for f in "${!BENCH_HIT_AT[@]}"; do
+    for tok in ${BENCH_HIT_AT[$f]}; do
+      l=${tok%%:*}
+      n=0
+      for c in "${BENCH_TRUTH_CASES[@]}"; do
+        [[ ${BENCH_TRUTH_FILE[$c]} == "$f" ]] || continue
+        _range_of "${BENCH_TRUTH_LINE[$c]:-}" || continue
+        s=$_BENCH_RANGE_S e=$_BENCH_RANGE_E
+        if (( l >= s && l <= e )); then n=1; break; fi
+      done
+      (( n )) || BENCH_FINDING_UNSCORED=$(( BENCH_FINDING_UNSCORED + 1 ))
+    done
+  done
+  return 0
+}
+
+# _range_of RANGE - parse `N` or `N-M` into _BENCH_RANGE_S/_E.  Non-zero when
+# RANGE is empty, so a caller can treat "this case has no range" as "no range
+# contains this line" rather than as "every line matches".
+_range_of() {
+  local r=$1
+  [[ -n $r ]] || return 1
+  _BENCH_RANGE_S=${r%%-*}
+  _BENCH_RANGE_E=${r#*-}
+  [[ $_BENCH_RANGE_E == "$r" ]] && _BENCH_RANGE_E=$_BENCH_RANGE_S
   return 0
 }
 
@@ -190,23 +272,33 @@ _severity_at_least() {
 }
 
 # ---------------------------------------------------------------------------
-# score_category CATEGORY MODE
+# score_category CATEGORY MODE [GRANULARITY] [WINDOW]
 # ---------------------------------------------------------------------------
 # Requires truth_load and findings_load to have run.  Sets BENCH_TP/FN/FP/TN.
-# MODE is `loose` or `strict`.
+# MODE is `loose` or `strict`; GRANULARITY is `file` (default) or `line`;
+# WINDOW widens each case's range by that many lines on both sides and defaults
+# to 0.
+#
+# WINDOW DEFAULTS TO 0 BECAUSE THE RANGES ARE REAL EXTENTS, not anchors.  Every
+# tool in the B6 IaC leg anchors a finding either at the resource block's own
+# first line or at the offending attribute inside it, so both land within the
+# block and a window buys nothing - while a window large enough to matter
+# starts reaching into the NEXT case, which in `es.tf` sits two lines away.
 score_category() {
-  local cat=$1 mode=$2
+  local cat=$1 mode=$2 gran=${3:-file} win=${4:-0}
   BENCH_TP=0 BENCH_FN=0 BENCH_FP=0 BENCH_TN=0
   local c f flagged want
   for c in "${BENCH_TRUTH_CASES[@]}"; do
     [[ ${BENCH_TRUTH_CAT[$c]} == "$cat" ]] || continue
     f=${BENCH_TRUTH_FILE[$c]}
+    want=$(cwe_class "${BENCH_TRUTH_CWE[$c]}")
     flagged=0
-    if [[ -n ${BENCH_HIT[$f]:-} ]]; then
+    if [[ $gran == line ]]; then
+      _case_flagged_at "$c" "$f" "$mode" "$want" "$win" && flagged=1
+    elif [[ -n ${BENCH_HIT[$f]:-} ]]; then
       if [[ $mode == loose ]]; then
         flagged=1
       else
-        want=$(cwe_class "${BENCH_TRUTH_CWE[$c]}")
         # A case with NO ground-truth CWE can never strict-match.  Treating an
         # empty class as a wildcard would make strict matching silently equal
         # loose matching for every such case, which is the direction that
@@ -220,6 +312,41 @@ score_category() {
       if (( flagged )); then BENCH_FP=$(( BENCH_FP + 1 )); else BENCH_TN=$(( BENCH_TN + 1 )); fi
     fi
   done
+}
+
+# _case_flagged_at CASE FILE MODE WANT WINDOW - 0 when some finding in FILE
+# lands inside CASE's own range (and, in strict mode, carries WANT's class).
+_case_flagged_at() {
+  local c=$1 f=$2 mode=$3 want=$4 win=$5
+  _range_of "${BENCH_TRUTH_LINE[$c]:-}" || return 1
+  local s=$(( _BENCH_RANGE_S - win )) e=$(( _BENCH_RANGE_E + win ))
+  (( s < 1 )) && s=1
+  local tok l cls
+  for tok in ${BENCH_HIT_AT[$f]:-}; do
+    l=${tok%%:*}
+    cls=${tok#*:}
+    (( l >= s && l <= e )) || continue
+    [[ $mode == loose ]] && return 0
+    [[ -n $want && $cls == "$want" ]] && return 0
+  done
+  return 1
+}
+
+# truth_category_has_cwe CATEGORY - 0 when at least one case in CATEGORY
+# carries a ground-truth CWE.
+#
+# A category where NO case does cannot be strict-matched at all, and rendering
+# that as a row of zeros would read as "every tool missed everything" - the
+# single most misleading thing this scorer could print.  The renderers ask this
+# and print an explicit `no CWE in truth` cell instead, which is the same
+# distinction the no-coverage cell draws for scope.
+truth_category_has_cwe() {
+  local cat=$1 c
+  for c in "${BENCH_TRUTH_CASES[@]}"; do
+    [[ ${BENCH_TRUTH_CAT[$c]} == "$cat" ]] || continue
+    [[ -n ${BENCH_TRUTH_CWE[$c]} ]] && return 0
+  done
+  return 1
 }
 
 # ---------------------------------------------------------------------------

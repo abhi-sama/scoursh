@@ -4683,8 +4683,94 @@ tree:
   vulnerability), so no file could ever serve as a sanitized-trap negative
   control and Youden J - the harness's whole headline metric - could not be
   computed for it at all.  Scoring it honestly needs function- or
-  line-range-level ground truth, which is a scorer-contract change, not a
-  plug-in adapter; do not reach for it opportunistically inside a leg ticket.
+  line-range-level ground truth.  **That scorer-contract change has since
+  landed** - `bench/score.sh --match line`, added by the B6 leg - so the
+  structural blocker is gone and what remains for Juliet is the labelling
+  work itself, which is a leg-sized ticket rather than an impossibility.
+- **A corpus that has been FETCHED is arbitrary third-party content sitting
+  inside `bench/`, so any tree-walk over `bench/` has to prune it.**
+  `bench/corpora/` is gitignored and absent from a fresh checkout, which is
+  exactly what makes this bite late: `tests/suites/bench.sh` section G's "only
+  `bench/fetch-corpus.sh` reaches the network" check walked `bench/**/*.sh` and
+  started failing the moment anyone fetched the B6 secrets corpus, because
+  `Plazmaz/leaky-repo` ships a `.leaky-meta/install-test-tools.sh` that curls
+  four scanners.  The check was right and its input was wrong - and the
+  reported filename is one the reader then cannot find in git, which is the
+  direction that wastes the most time.  `bench_scripts` in that suite prunes
+  `corpora` and `results`; any new walk needs the same.
+
+### The B6 legs: hand-authored ground truth, and line-range matching
+
+`bench/labels/` holds ground truth **this project wrote**, for the corpora that
+ship none of their own.  `bench/README.md` is the authority; four things bind
+anything built on it.
+
+- **A `corpus.lock` row reading `ground-truth: labels:<file>` names a file under
+  `bench/labels/`, not one inside the corpus** - which is what distinguishes a
+  corpus whose labels this project authored from one that ships its own.  Each
+  label file states the rules every call was made under and carries a rationale
+  beside every single case, because a benchmark whose labels nobody can inspect
+  is not a benchmark.  Two rules are non-negotiable and are in each header: no
+  tool's output of any kind may be consulted to produce a label (methodology
+  rule R2), and a genuinely arguable call is marked BORDERLINE and re-scored
+  BOTH WAYS in the leg's README, so a reader who disagrees can see what the
+  disagreement is worth.  `tests/suites/bench-b6-labels.sh` enforces the
+  structural half - a range on every case, no two ranges overlapping in one
+  file, both real and clean cases present, a comment above every record.
+- **`--match line` exists because file-granularity matching credits a tool for
+  every case in a file the moment it finds any one of them.**  TerraGoat's
+  `rds.tf` declares nine separate clusters; under `--match file` one finding
+  anywhere in it scores nine true positives.  The granularity is chosen by the
+  CALLER and printed in the scorecard, never inferred from whether the truth
+  carries ranges - and `--match line` over a truth file with no ranges is exit
+  2 rather than a silent demotion to the inflated reading.  `--line-window`
+  defaults to **0**: the B6 ranges are real extents rather than anchors, and a
+  window large enough to matter merges neighbouring cases.
+- **A category whose truth carries no CWE renders strict matching as an explicit
+  `no CWE in truth` cell, never as zeros.**  All three B6 label sets are in that
+  position deliberately: their unit is the resource or the credential, and the
+  four IaC tools share no defect vocabulary, so a rule-id-to-CWE map per tool
+  would be an unauditable dial between the corpus and the result.  A row of
+  zeros there would read as "every tool missed every case", which is the single
+  most misleading thing the scorer could print.
+- **Only the all-findings column is published for these legs, and the reason is
+  the tools' output rather than a choice.**  Checkov CE, Gitleaks and TruffleHog
+  each ship NO severity at all (158 of 158 Checkov failed checks carry
+  `"severity": null`), so their adapters map an absent severity to `medium` by
+  stated convention and a `--min-severity high` column would report all three at
+  zero recall - a fact about their JSON, not their detection.  Rule R5 asks for
+  the gate to be declared; declaring why the column is absent is the
+  declaration.
+
+### Three third-party-tool behaviours the B6 adapters had to work around, each of which reads as a clean result
+
+Every one of these produced a plausible-looking benchmark number rather than an
+error, which is why they are recorded rather than left in the adapters' headers
+alone.
+
+- **Checkov's Kubernetes runner discards every file whose path contains a HIDDEN
+  (dot-prefixed) directory component**, silently: exit 0, empty stderr, and a
+  report with no `kubernetes` block.  Measured on 3.3.10 over one identical
+  tree - `/tmp/<no dot>/root` gives 253 failed checks, `/tmp/.hidden/root` gives
+  none.  A checkout under a git-worktree pool, a `.cache` or a `.local/share`
+  therefore scores Checkov at zero recall on Kubernetes while looking like a
+  completed run.  The Terraform runner does not apply the filter.  Separately,
+  the two runners DISAGREE about whether `file_path` includes the `-d`
+  argument's basename.  `bench/tools/checkov.sh` `cd`s into the scan root and
+  passes `.`, which fixes both.
+- **KICS reports a path relative to its own working directory, not to the `-p`
+  root it was handed - even when `-p` is absolute.**  All 155 findings on
+  TerraGoat came back as `bench/corpora/terragoat/...`, which the harness's
+  relative-path helper cannot strip, so every case scored 0 TP AND 0 FP and the
+  tool read as having found nothing at all.  KICS also needs its query library
+  named explicitly: with no `--queries-path` and no `KICS_QUERIES_PATH` it looks
+  in `./assets/queries` relative to the cwd, finds nothing, and reports a clean
+  scan.
+- **`trufflehog filesystem` walks `.git/objects/` and reports every credential
+  twice** - once from the working tree and once from the loose object - where
+  `gitleaks dir` and scoursh read only the working tree.  Its `--exclude-paths`
+  pattern is matched against the full path it walked, so an anchored `^\.git/`
+  matches nothing when the scan root is absolute.
 
 ## Tests
 

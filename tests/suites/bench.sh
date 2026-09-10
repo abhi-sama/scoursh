@@ -492,16 +492,35 @@ while IFS= read -r f; do
 done < <(find "$ROOT/lib" "$ROOT/modules" -type f -name '*.sh'; printf '%s\n' "$ROOT/scan.sh")
 assert_eq '' "$hits" 'lib/, modules/ and scan.sh must not mention bench/ - the harness orchestrates other tools and may use the network, which the scanner may not'
 
+# bench_scripts - every SHELL SCRIPT THIS HARNESS OWNS, and no corpus file.
+#
+# `bench/corpora/` is gitignored and absent from a fresh checkout, but it is
+# present the moment anyone runs bench/fetch-corpus.sh - and a corpus is
+# arbitrary third-party content that may contain anything at all.  Measured:
+# `Plazmaz/leaky-repo` ships `.leaky-meta/install-test-tools.sh`, which curls
+# four scanners, so an unpruned walk reported the HARNESS as reaching the
+# network on any machine that had fetched the secrets corpus.  The check was
+# right and its input was wrong, which is the direction that wastes the most
+# time: the finding names a file the reader then cannot find in git.
+#
+# `_slices/` is pruned for the same reason - bench/make-slice.sh materialises
+# corpus content there.
+bench_scripts() {
+  find "$ROOT/bench" \
+    -type d \( -name corpora -o -name results \) -prune -o \
+    -type f -name '*.sh' -print
+}
+
 t_case 'nothing in bench/ sources a scanner library'
 hits=''
 while IFS= read -r f; do
   grep -nE '^[[:space:]]*(source|\.)[[:space:]]+.*(\$ROOT|\.\./\.\.)/lib/' "$f" >/dev/null 2>&1 && hits+="$f "
-done < <(find "$ROOT/bench" -type f -name '*.sh')
+done < <(bench_scripts)
 assert_eq '' "$hits" 'a source edge from bench/ into lib/ would put benchmark code on the scan path source graph that tests/lint-source-graph.sh measures'
 
 t_case 'bench/ ships no scanner record file the rule linter would have to own'
 assert_file_absent "$ROOT/bench/checks.rules" 'bench/ has no §9.5 check registry'
-assert_eq '' "$(find "$ROOT/bench" -name '*.rules' -type f)" 'and no .rules file at all - bench/corpus.lock uses the record SHAPE without claiming the extension rules/RULE-FORMAT.md §9 governs'
+assert_eq '' "$(find "$ROOT/bench" -type d \( -name corpora -o -name results \) -prune -o -name '*.rules' -type f -print)" 'and no .rules file at all - bench/corpus.lock uses the record SHAPE without claiming the extension rules/RULE-FORMAT.md §9 governs'
 
 t_case 'only bench/fetch-corpus.sh and bench/fetch-sca-corpus.sh reach the network'
 netusers=''
@@ -509,7 +528,7 @@ while IFS= read -r f; do
   case $(basename "$f") in fetch-corpus.sh | fetch-sca-corpus.sh) continue ;; esac
   grep -nE '(^|[^[:alnum:]_])(curl|wget|git (clone|fetch|ls-remote))([^[:alnum:]_]|$)' "$f" >/dev/null 2>&1 &&
     netusers+="$(basename "$f") "
-done < <(find "$ROOT/bench" -type f -name '*.sh')
+done < <(bench_scripts)
 assert_eq '' "$netusers" 'every other bench/ script is offline, so a measurement run needs no network once a corpus is fetched - bench/fetch-sca-corpus.sh is the second exception, and only a live RE-VERIFICATION of an already-pinned advisory (its own header explains why the corpus itself needs no network to build); --offline skips even that'
 
 t_case 'the corpora directory is gitignored, so no corpus content can be committed'

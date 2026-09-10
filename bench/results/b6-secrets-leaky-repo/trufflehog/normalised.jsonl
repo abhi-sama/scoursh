@@ -1,0 +1,12 @@
+{"tool":"trufflehog","version":"trufflehog 3.97.4","corpus":"leaky-repo","file":".ssh/id_rsa","line":1,"cwe":null,"severity":"medium","rule_id":"PrivateKey"}
+{"tool":"trufflehog","version":"trufflehog 3.97.4","corpus":"leaky-repo","file":"db/dbeaver-data-sources.xml","line":4,"cwe":null,"severity":"medium","rule_id":"JDBC"}
+{"tool":"trufflehog","version":"trufflehog 3.97.4","corpus":"leaky-repo","file":"misc-keys/cert-key.pem","line":1,"cwe":null,"severity":"medium","rule_id":"PrivateKey"}
+{"tool":"trufflehog","version":"trufflehog 3.97.4","corpus":"leaky-repo","file":"db/mongoid.yml","line":4,"cwe":null,"severity":"medium","rule_id":"MongoDB"}
+{"tool":"trufflehog","version":"trufflehog 3.97.4","corpus":"leaky-repo","file":"misc-keys/putty-example.ppk","line":10,"cwe":null,"severity":"medium","rule_id":"Box"}
+{"tool":"trufflehog","version":"trufflehog 3.97.4","corpus":"leaky-repo","file":".npmrc","line":9,"cwe":null,"severity":"medium","rule_id":"NpmToken"}
+{"tool":"trufflehog","version":"trufflehog 3.97.4","corpus":"leaky-repo","file":".bash_profile","line":23,"cwe":null,"severity":"medium","rule_id":"Slack"}
+{"tool":"trufflehog","version":"trufflehog 3.97.4","corpus":"leaky-repo","file":".bash_profile","line":22,"cwe":null,"severity":"medium","rule_id":"Github"}
+{"tool":"trufflehog","version":"trufflehog 3.97.4","corpus":"leaky-repo","file":".bashrc","line":106,"cwe":null,"severity":"medium","rule_id":"Mailchimp"}
+{"tool":"trufflehog","version":"trufflehog 3.97.4","corpus":"leaky-repo","file":".bashrc","line":109,"cwe":null,"severity":"medium","rule_id":"Github"}
+{"tool":"trufflehog","version":"trufflehog 3.97.4","corpus":"leaky-repo","file":".bashrc","line":107,"cwe":null,"severity":"medium","rule_id":"Mailchimp"}
+{"tool":"trufflehog","version":"trufflehog 3.97.4","corpus":"leaky-repo","file":".bashrc","line":110,"cwe":null,"severity":"medium","rule_id":"Github"}

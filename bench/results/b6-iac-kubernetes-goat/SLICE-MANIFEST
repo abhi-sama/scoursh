@@ -1,0 +1,10 @@
+slice: k8s-scenarios
+corpus: kubernetes-goat
+commit: 723a0db478f050d173d23b4ce5044b65bce0bdd0
+licence: MIT
+from: scenarios
+exclude: metadata-db
+files: 16
+note: a slice only ever REMOVES paths, it is applied once and every tool
+  in the leg is pointed at this same root, and each exclusion is justified
+  against the label set - see the header of bench/make-slice.sh.

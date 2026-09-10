@@ -86,9 +86,11 @@ a cached, not freshly pulled, vulnerability database on this host).
 | `corpus.lock` | every git-cloned corpus, pinned by **full 40-hex commit**, with its licence and how its ground truth is obtained |
 | `sca-advisories.lock` | the SCA leg's own pin: real OSV.dev advisories, resolved live and recorded with a timestamp (no git commit to pin, since there is no single third-party SCA benchmark repository - see its own header) |
 | `cwe-classes.conf` | the CWE equivalence classes STRICT matching uses, published up front |
-| `fetch-corpus.sh` | fetches a git-cloned corpus (owasp-benchmark, terragoat) |
+| `labels/` | **hand-authored ground truth**, committed - the corpora that ship none of their own |
+| `fetch-corpus.sh` | fetches a git-cloned corpus (owasp-benchmark, terragoat, kubernetes-goat, leaky-repo) |
 | `fetch-sca-corpus.sh` | builds the SCA leg's lockfile corpus from `sca-advisories.lock` |
 | `make-sample.sh` | a balanced, deterministic sample of a fetched (git-cloned) corpus |
+| `make-slice.sh` | a scan root that is a subset of a fetched corpus, so every tool sees one surface |
 | `run-tool.sh` | run one tool, preserve raw output, emit normalised records |
 | `score.sh` | the scorecard renderer (markdown or JSON) |
 | `lib/json.sh` | a depth- and string-aware JSON flattener |
@@ -124,6 +126,51 @@ documented at the top of `bench/tools/scoursh.sh`.
 `<name>_scope` is the important one: it declares which categories the tool
 **claims**, and a category it does not claim renders as an explicit
 `no coverage` cell rather than as a zero.
+
+### Ground truth a corpus does not ship: `bench/labels/`
+
+A `corpus.lock` row whose `ground-truth` reads `labels:<file>` names a file
+under `bench/labels/` rather than a file inside the corpus. That file is
+ground truth **this project authored**, and it is committed for the reason the
+whole harness exists: a benchmark whose labels nobody can inspect is not a
+benchmark. Three exist today, one per B6 corpus.
+
+Each carries, in its own header, the rules every call was made under, and a
+short rationale beside **every single case**. `tests/suites/bench-b6-labels.sh`
+enforces the structural half of that - a range on every case, no two ranges
+overlapping within a file, both `real` and clean cases present, and a comment
+line above every record. What a label SAYS about a resource is not checkable
+without the corpus and is not claimed to be; that is what the rationale is for,
+and what a reviewer spot-checks.
+
+Two rules bind a hand-authored label set, and both are in each file's header:
+
+- **No tool's output of any kind may be consulted to produce it** (methodology
+  rule R2). It is the one property a reader cannot verify from the file, which
+  is why the labelling rules are written down so every call can be re-derived
+  independently.
+- **A call that is genuinely arguable is marked BORDERLINE and re-scored both
+  ways in the leg's README.** A reader who disagrees can then see exactly what
+  the disagreement is worth.
+
+### Matching granularity: `--match file` and `--match line`
+
+The scout report's §5.2 gives two corpus shapes and they need different
+matching. `--match file` is the default and is the "one file per test case" row
+- OWASP Benchmark, Juliet. `--match line` is the "multiple defects per file"
+row: a truth row then carries a sixth field, its case's line range, and a case
+is flagged only by a finding inside that range.
+
+The difference is not cosmetic. TerraGoat's `rds.tf` declares nine separate
+clusters; under file granularity one finding anywhere in it scores nine true
+positives. The granularity is chosen by the caller and printed in the
+scorecard, never inferred from whether the truth happens to carry ranges - and
+`--match line` over a truth file with no ranges is exit 2 rather than a silent
+demotion to the inflated reading.
+
+`--line-window` defaults to **0**, because the B6 ranges are real extents rather
+than anchors. A window large enough to matter starts merging neighbouring
+cases; `tests/suites/bench-b6-labels.sh` pins that with the arithmetic.
 
 ### Adding a corpus
 
@@ -230,3 +277,48 @@ this leg anywhere.
 
 **It is not published anywhere in `docs/` either** - the same B9 deliberate
 deferral as the B4 leg above.
+
+---
+
+## B6 IaC and secrets legs
+
+Three directories, one ticket:
+
+| Result | Corpus | Tools | Ground truth |
+|---|---|---|---|
+| `bench/results/b6-iac-terragoat-aws/` | TerraGoat, `terraform/aws` | scoursh, Checkov, KICS, Trivy | `bench/labels/terragoat-aws.truth` - 71 cases |
+| `bench/results/b6-iac-kubernetes-goat/` | kubernetes-goat `scenarios/` | scoursh, Checkov, KICS, Trivy | `bench/labels/kubernetes-goat.truth` - 35 cases |
+| `bench/results/b6-secrets-leaky-repo/` | leaky-repo | scoursh, Gitleaks, TruffleHog | `bench/labels/leaky-repo.truth` - 82 cases |
+
+Each directory's own `README.md` is the authority for its numbers, its framing
+and what it is weak evidence for. Three facts are worth carrying here because
+they bind anything derived from the set:
+
+- **The three legs do not agree, and that is the useful part.** The same four
+  IaC tools scored the same way rank scoursh last on Terraform and second of
+  four on Kubernetes; the secrets leg ranks it first. A single "IaC" or
+  "secrets" number across corpora would hide all of that, which is why
+  `bench/score.sh` refuses to compute one.
+- **Only the all-findings column is published for these legs**, and the reason
+  is a property of the tools rather than a choice: Checkov CE, Gitleaks and
+  TruffleHog each ship **no severity at all**, so a `--min-severity high` column
+  would compare one tool's real severities against a placeholder for the others
+  and report them at zero recall. Each leg's README states the measurement.
+- **Strict CWE matching is not defined for any of them.** The labels are
+  per-resource and per-credential and carry no CWE, and the scorer renders that
+  as an explicit `no CWE in truth` cell rather than a row of zeros. Inventing a
+  rule-id-to-CWE mapping per tool would have put an unauditable dial between the
+  corpus and the result.
+
+- **A secrets leg's raw output is committed REDACTED**, which is the one place
+  the "raw output verbatim" rule bends and it bends for a measured reason:
+  committing it unredacted was refused by GitHub push protection, correctly.
+  `bench/run-tool.sh --redact-secret-values` replaces the matched credential
+  with a `<redacted:N-bytes>` placeholder, leaves every other field alone,
+  records itself in the MANIFEST, and FAILS THE RUN rather than writing that
+  record if the redaction did not actually happen.
+
+**SecretBench is an explicit not-measured cell** - it needs a Google Cloud
+account, a signed data-protection agreement and per-email access granted by its
+authors, none of which a benchmark run can satisfy. See
+`bench/results/b6-secrets-leaky-repo/README.md`.
