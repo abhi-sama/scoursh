@@ -430,6 +430,9 @@ _dpkg_emit_vulnerable_package() {
   finding_set loc_advisory_id "$advisory"
   finding_set logical_kind package
   finding_set logical_fqn "image $image_id: $ecosystem/$src@$installed"
+  # IMG-14 (rules/RULE-FORMAT.md §9.2.2, §9.6.8) - see modules/image/distro/
+  # apk.sh's identical comment on its own sibling emitter.
+  [[ -n ${SCOURSH_IMAGE_DOCKERFILE:-} ]] && finding_set corr_file "$SCOURSH_IMAGE_DOCKERFILE"
   finding_set fix_fixed_versions "$fixed"
   if [[ -n $fixed ]]; then
     finding_set remediation "Rebuild the image against an updated base layer (or upgrade the $src source package directly, where the Dockerfile installs it explicitly) to at least $fixed, then re-scan. A base-image bump alone can carry this fix silently."

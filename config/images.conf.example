@@ -41,6 +41,18 @@
 # from this file" and "scoursh scanned the image you meant" are different
 # facts and only an operator can tell them apart.
 #
+# `dockerfile` is OPTIONAL and is IMAGE's correlation join key
+# (rules/RULE-FORMAT.md §9.2.2, §9.6.8): the scan-root-relative path of the
+# Dockerfile that built this image, when the operator also scans it as
+# source with `modules/iac/`. Setting it lets rules/derived.rules correlate
+# an IMAGE-* finding (what actually shipped) with the IAC-DOCKER-* findings
+# from scanning that same Dockerfile (what the author wrote) -
+# data/scoursh-image-scan-design/report.md §4.4. It is never validated
+# against the image's own content (the image carries no record of which
+# Dockerfile built it), so a typo here is silent and simply correlates
+# nothing rather than the wrong thing. Omit it and the two modules still
+# scan independently; only the composite correlation is lost.
+#
 # NOTHING BELOW NAMES A REAL IMAGE, REGISTRY OR HOST: every path is an
 # illustrative placeholder. scoursh ships no scannable target of its own
 # (docs/DESIGN.md §1).
@@ -48,12 +60,16 @@
 id: payments-api
 source: docker-archive
 path: /srv/scoursh-images/payments-api.tar
+dockerfile: services/payments-api/Dockerfile
 notes: Produced by `docker save payments-api:$TAG -o
   /srv/scoursh-images/payments-api.tar` on the build host and copied here.
   The id stays `payments-api` across every rebuild - that is the whole point
   of it. A pipe | a colon: a hash # and a "quote" are all ordinary bytes in
   this field, which is why config/images.conf uses the block-record format
-  rather than a delimited line.
+  rather than a delimited line. `dockerfile` names the Dockerfile
+  `services/payments-api/Dockerfile` at the scan root a `scan.sh iac` run of
+  this same repository would scan, so IMAGE-PKG-VULNERABLE_OS_PACKAGE-01 and
+  IAC-DOCKER-LATEST_TAG-01/UNPINNED_DIGEST-01 findings can correlate.
 
 id: payments-worker
 source: oci-layout

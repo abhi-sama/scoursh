@@ -129,7 +129,7 @@ _schema_def() {
     image-source)
       printf '%s\n' \
         'id:req:single:sl' 'source:req:single:sl' 'path:req:single:sl' \
-        'reference:opt:single:sl' 'notes:opt:single:ml' \
+        'reference:opt:single:sl' 'dockerfile:opt:single:sl' 'notes:opt:single:ml' \
         'format-version:opt:single:sl'
       ;;
     severity-modifier)
