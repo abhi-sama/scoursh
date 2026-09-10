@@ -454,6 +454,161 @@ http_resolve_host() {
 }
 
 # ---------------------------------------------------------------------------
+# 7a. GUARANTEE MODE: the loopback-relay redirection (docs/FOUNDATION.md
+#     tension 20, Tier B - "containment guarantee, target restriction by
+#     relay")
+# ---------------------------------------------------------------------------
+# OFF BY DEFAULT, AND THE DEFAULT PATH IS BYTE-FOR-BYTE UNCHANGED.  Nothing in
+# this section runs unless `SCOURSH_HTTP_RELAY_MAP` is non-empty in the
+# environment, which only `tools/run-sandboxed.sh --scope-conf` ever sets.  An
+# ordinary scan reaches `curl --resolve "$host:$port:$addr"` exactly as it did
+# before this section existed - the same two argv words in the same position -
+# and `tests/suites/http.sh` asserts that on curl's real argv rather than on a
+# code path being "unreached", because an assertion about a branch not being
+# taken is satisfiable by a branch that was taken and did nothing.
+#
+# WHAT THE MODE IS FOR.  Apple's Seatbelt refuses a network syscall at the
+# kernel boundary and its `(remote ip ...)` filter can express `localhost:PORT`
+# - "an address of THIS HOST, on this port" - and nothing finer.  So a Seatbelt
+# profile alone cannot say "only the authorised scope target"; what it CAN say
+# is "off-host egress is categorically impossible, and on-host only these
+# ports".  `tools/run-sandboxed.sh --scope-conf` closes the remaining half by
+# running one forwarder per authorised (address, port) OUTSIDE the sandbox,
+# each with its destination fixed for the life of the process, and this section
+# is what points the scan's own requests at them.
+#
+# ONE MAP, FOUR COLUMNS, AND THAT IS DELIBERATE - IT DOES TWO JOBS.  The
+# wrapper hands in newline-separated `HOST PORT ADDR RELAYPORT` rows.  Two
+# consumers read them, and splitting them into two variables would be two
+# things to keep in step whose disagreement is silent:
+#
+#   1. `ADDR` SEEDS `_HTTP_RESOLVE_CACHE`.  Inside the sandbox DNS is
+#      kernel-denied (measured: `getaddrinfo` fails; that is the covert channel
+#      tension 20 option 1 refuses to allowlist, closed for free), so without
+#      the seed `http_request` dies at exit 3 - "DNS resolution failed after
+#      the gate had approved it" - before any transport is reached, and
+#      guarantee mode would be unusable rather than merely restricted.  The
+#      wrapper resolved those addresses through THIS FILE's own
+#      `http_scope_load`/`http_resolve_host`, outside the sandbox, before the
+#      scan started.  That makes the pin STRONGER than the default path's, not
+#      weaker: the address is resolved exactly once, and the scan cannot
+#      re-resolve it even if it wanted to.
+#   2. `RELAYPORT` is what `_http_transport_default` redirects to.
+#
+# FAIL-CLOSED, AND LOUDLY, ON A MISS.  A (host, port) with no row is exit 3
+# (`SCOURSH_EXIT_SCOPE`), never a fall-back to `--resolve`.  Falling back would
+# be refused by the kernel anyway, so both readings are SAFE - the difference
+# is entirely one of honesty, and returning a transport failure instead would
+# be recorded as a breaker failure and read to an operator as "the target did
+# not answer", which is this project's most expensive failure shape: a control
+# that did not run, wearing the appearance of a clean result.  Two shapes reach
+# this legitimately and neither is a defect in this file: a scope row with
+# `allow-subdomains: true` (the gate admits `sub.example.com`, which the
+# wrapper could not enumerate ahead of time and so has no relay for) and an
+# IPv6 scope host (the relay is IPv4-only, see the wrapper's own header).  The
+# wrapper WARNS about both at build time; this is where they land if they are
+# then actually requested.
+#
+# WHAT THIS MODE DOES NOT COVER, STATED RATHER THAN DISCOVERED.
+# `http_authorize_raw_connection` (section 9b) hands an address back to
+# `modules/dast/passive/tls.sh`, which opens its OWN socket - tension 19's one
+# documented transport exception.  That socket goes to the target address
+# directly, which under the Seatbelt profile is off-host and therefore
+# kernel-refused, so the raw-TLS check FAILS under guarantee mode rather than
+# escaping it.  It fails CLOSED, which is the safe direction, and it is a
+# stated gap rather than an oversight: closing it means teaching that module
+# the same redirection, which is a change to a second file and is not this
+# one's to make silently.
+declare -A _HTTP_RELAY_PORT=()
+_HTTP_RELAY_LOADED=0
+_HTTP_RELAY_PORT_FOUND=''
+
+# Idempotent by intent rather than by a guard flag alone: re-running it re-reads
+# the environment, which is what lets a test set the map after this file was
+# sourced.  Every row is validated - a malformed one is refused rather than
+# skipped, because a silently-dropped row is a relay the scan will later be
+# told does not exist, reported as a scope failure whose real cause is a typo.
+http_relay_map_load() {
+  _HTTP_RELAY_PORT=()
+  _HTTP_RELAY_LOADED=0
+  local map=${SCOURSH_HTTP_RELAY_MAP:-}
+  [[ -n $map ]] || return 0
+  local host port addr relayport
+  while IFS=' ' read -r host port addr relayport; do
+    [[ -n $host ]] || continue
+    if [[ -z $port || -z $addr || -z $relayport ]] \
+      || [[ ! $port =~ ^[0-9]+$ ]] || [[ ! $relayport =~ ^[0-9]+$ ]]; then
+      die "$SCOURSH_EXIT_INPUT" \
+        "SCOURSH_HTTP_RELAY_MAP: malformed row (expected 'HOST PORT ADDR RELAYPORT'): $host $port $addr $relayport"
+    fi
+    _HTTP_RELAY_PORT["$host:$port"]=$relayport
+    # The pinned resolution the wrapper already performed, outside the sandbox.
+    _HTTP_RESOLVE_CACHE[$host]=$addr
+  done <<<"$map"
+  _HTTP_RELAY_LOADED=1
+  _http_relay_require_connect_to
+}
+
+# `--connect-to` arrived in curl 7.49 (2016) and is the flag this whole mode
+# rests on, so an older curl must refuse the RUN rather than every request.
+#
+# CHECKED HERE, AND NOT IN THE WRAPPER THAT SETS THE MAP, FOR A STRUCTURAL
+# REASON.  tension 19's "no bypass" lint permits a curl invocation in this file
+# and in a short, stated exemption list; putting the probe in
+# tools/run-sandboxed.sh would have added a third path-exemption to that list
+# for a file that has no other business touching the network, which is exactly
+# how a structural property stops being structural.  This runs once per process
+# and only in guarantee mode - and in the main scan process that is at
+# source time, before any request - so it still fails early rather than one
+# failed request at a time.  Probed rather than version-parsed: curl exits 2 on
+# an unknown option and 0 when it accepted one, and `--version` sends nothing.
+_http_relay_require_connect_to() {
+  require_cmd curl
+  curl --connect-to 'scoursh.invalid:1:127.0.0.1:1' --version >/dev/null 2>&1 \
+    || die "$SCOURSH_EXIT_INPUT" \
+      "guarantee mode (SCOURSH_HTTP_RELAY_MAP) needs a curl that accepts --connect-to (added in curl 7.49, 2016), which is how a request is redirected into the loopback relay while keeping SNI, the Host header and certificate validation intact. This curl does not. Refusing the run rather than failing every request individually."
+}
+
+# True only when a map was supplied AND parsed into at least one row.  A single
+# predicate rather than "is the variable set" at each call site, so there is one
+# answer to "is guarantee mode on" and no second one to drift from it.
+http_relay_active() {
+  (( _HTTP_RELAY_LOADED ))
+}
+
+# Sets `_HTTP_RELAY_PORT_FOUND` and returns 0, or returns 1 having set it
+# empty.  Two properties of this signature are load-bearing.
+#
+# IT SETS RATHER THAN PRINTS, because a `$(...)` call runs in a subshell and
+# its writes are discarded - the mistake this project already paid for once
+# (docs/FOUNDATION.md "Things measured on this codebase", occurrence_next).
+#
+# IT RETURNS RATHER THAN CALLS `die`, AND THAT IS NOT A STYLE CHOICE - A
+# `die` HERE CANNOT TERMINATE THE RUN.  `http_request` invokes the transport
+# as `out=$("${SCOURSH_HTTP_TRANSPORT:-...}" ...)`, a command substitution, so
+# everything the transport does happens in a SUBSHELL: `die`'s `exit 3` ends
+# that subshell, arrives as a non-zero `tx_rc`, and is handled as an ordinary
+# transport failure - recorded against the circuit breaker and returned to the
+# caller as 1.  Measured, not reasoned: the first draft of this section put the
+# refusal here and `tests/suites/http.sh` observed exit 1, which is exactly the
+# "a control that did not run, wearing the appearance of a target that did not
+# answer" outcome the refusal exists to prevent.  The fatal decision therefore
+# lives in `http_request` (section 12), in the parent process, beside the
+# address pin; this function is the lookup both of them share, so the two can
+# never disagree about what the map says.
+_http_relay_port_set() {
+  local host=$1 port=$2 key="$1:$2"
+  _HTTP_RELAY_PORT_FOUND=''
+  [[ -n ${_HTTP_RELAY_PORT[$key]+set} ]] || return 1
+  _HTTP_RELAY_PORT_FOUND=${_HTTP_RELAY_PORT[$key]}
+}
+
+# Read once at source time, because the wrapper sets the variable before this
+# process starts and every `xargs -P` worker is a fresh process that sources
+# this file again.  A test that sets the map afterwards calls the loader itself.
+http_relay_map_load
+
+# ---------------------------------------------------------------------------
 # 8. Auditability (docs/FOUNDATION.md tension 19 "Auditability")
 # ---------------------------------------------------------------------------
 # A caught bypass attempt is not a silent abort: it is always logged, and -
@@ -878,9 +1033,37 @@ _http_transport_default() {
   # "Redirects" / "Redirect-recheck parity").  --resolve pins the connection
   # to the address the gate itself just approved, closing the TOCTOU window
   # between the gate's resolution and curl's.
+  #
+  # GUARANTEE MODE SWAPS THAT ONE PIN AND NOTHING ELSE (section 7a, tension 20
+  # Tier B).  `--connect-to` redirects the TCP connection while keeping the
+  # ORIGINAL host for SNI, for the `Host:` header and for certificate
+  # validation - measured end to end against a local TLS fixture reached
+  # through a relay inside a real Seatbelt profile: `ssl_verify=0` (validated)
+  # and the fixture saw its own hostname in `Host:`.  `--resolve` would be
+  # wrong here for a reason that is easy to miss: it maps the name to an
+  # ADDRESS, so the port cannot change, and a relay listens on an ephemeral
+  # port that is never the target's.  The TOCTOU-closing intent is unchanged
+  # and in fact strengthened - the destination is fixed one hop further in, by
+  # a forwarder whose own destination was fixed before the scan started.
+  #
+  # ONE `curl ` INVOCATION, STILL.  Both modes build the same two argv words in
+  # the same position and hand them to the same single command line; a second
+  # curl branch is the first place a request with no identifying User-Agent
+  # could appear, which `tests/suites/http.sh` counts for precisely that reason.
+  local -a pin=(--resolve "$host:$port:$addr")
+  if http_relay_active; then
+    # A miss cannot happen on the ordinary path - `http_request` already
+    # refused it fatally, in the parent, before reaching here - so this arm is
+    # only for a caller that invokes the transport directly.  It returns
+    # rather than dies for the reason `_http_relay_port_set`'s own header
+    # gives: a `die` in this subshell would be laundered into a transport
+    # failure anyway.
+    _http_relay_port_set "$host" "$port" || return 1
+    pin=(--connect-to "$host:$port:127.0.0.1:$_HTTP_RELAY_PORT_FOUND")
+  fi
   local rc=0
   printf '%s' "$cfg" | curl --silent --show-error --max-redirs 0 --max-time "$timeout" \
-    --resolve "$host:$port:$addr" \
+    "${pin[@]+"${pin[@]}"}" \
     -A "$_HTTP_UA" \
     -o "$outarg" -D "$hdrfile" \
     -K - \
@@ -2253,6 +2436,19 @@ http_request() {
       die "$SCOURSH_EXIT_SCOPE" "scope gate: DNS resolution failed for '$_HN_HOST' after the gate had approved it"
     fi
     _http_note_target_address "$bucket" "$addr"
+
+    # GUARANTEE MODE (section 7a): resolve THIS hop's relay here, beside the
+    # address pin, and refuse fatally if there is none.  Here rather than in
+    # the transport because the transport runs in a command substitution and
+    # cannot exit the run (see `_http_relay_port_set`'s own header); per HOP
+    # rather than per call because a redirect can cross to another host, which
+    # needs its own relay and gets its own refusal if it has none.  Exit 3 is
+    # the right code: the destination is not among the authorised relays, and
+    # that is a scope fact.
+    if http_relay_active && ! _http_relay_port_set "$_HN_HOST" "$_HN_PORT"; then
+      die "$SCOURSH_EXIT_SCOPE" \
+        "guarantee mode (SCOURSH_HTTP_RELAY_MAP) has no relay for '$_HN_HOST:$_HN_PORT', so this request cannot be sent through one. tools/run-sandboxed.sh --scope-conf builds one relay per authorised (address, port) it could resolve from config/scope.conf; a host the gate admits but the wrapper could not enumerate ahead of time - an allow-subdomains match, or an IPv6 target - lands here. Refusing and saying so, rather than attempting a direct connection the sandbox would refuse anyway and reporting the result as a target that did not answer."
+    fi
 
     _HTTP_TX_HEADERS=("${req_headers[@]+"${req_headers[@]}"}")
     _HTTP_TX_BODY=$req_body

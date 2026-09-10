@@ -2057,4 +2057,110 @@ t_case 'a request with no header and no body still uses the SAME single curl inv
 assert_contains "$(cat "$ARGV_OUT")" '-K' \
   'the plain path takes the identical command line - FAILS under a second, header-free curl branch, which is the first place a request with no identifying User-Agent could appear (the "exactly ONE curl invocation" case above is what keeps that structural)'
 
+printf -- '\n-- tension 20 Tier B: guarantee mode, and the DEFAULT path staying unchanged --\n'
+# =============================================================================
+# Section 7a's relay redirection. Like the credential case above, these run
+# the REAL transport against the stub `curl` on PATH, because what is under
+# test is how `_http_transport_default` INVOKES curl - a stubbed
+# SCOURSH_HTTP_TRANSPORT would prove nothing about the flag it passes.
+# Nothing leaves the machine: the stub is a shell script and no relay is
+# started here (tests/suites/run-sandboxed.sh owns the real relay).
+
+t_case 'the DEFAULT path pins with --resolve, exactly as it did before guarantee mode existed'
+: >"$ARGV_OUT"
+# shellcheck disable=SC2030,SC2031
+(
+  unset SCOURSH_HTTP_TRANSPORT SCOURSH_HTTP_RELAY_MAP
+  http_relay_map_load
+  export SCOURSH_STUB_ARGV=$ARGV_OUT SCOURSH_STUB_STDIN=$STDIN_OUT
+  PATH="$STUB:$PATH"
+  http_request GET 'https://good.fixture.example/plain'
+) >/dev/null 2>&1
+DEFAULT_ARGV=$(cat "$ARGV_OUT")
+assert_contains "$DEFAULT_ARGV" '--resolve' \
+  'with no SCOURSH_HTTP_RELAY_MAP the transport still passes --resolve - asserted on curl'"'"'s REAL argv rather than on a branch "not being taken", because a claim that a branch was skipped is equally satisfied by a branch that ran and did nothing'
+assert_contains "$DEFAULT_ARGV" 'good.fixture.example:443:93.184.216.34' \
+  'and pins it to the address the gate itself approved, closing the TOCTOU window - the byte-for-byte unchanged default'
+assert_not_contains "$DEFAULT_ARGV" '--connect-to' \
+  'and NEVER --connect-to - FAILS if guarantee mode is ever on by default, which would silently route every ordinary scan through a relay that does not exist'
+
+t_case 'guarantee mode swaps that ONE pin for --connect-to, and nothing else about the command line'
+: >"$ARGV_OUT"
+# shellcheck disable=SC2030,SC2031
+(
+  unset SCOURSH_HTTP_TRANSPORT
+  export SCOURSH_HTTP_RELAY_MAP='good.fixture.example 443 93.184.216.34 41999'
+  http_relay_map_load
+  export SCOURSH_STUB_ARGV=$ARGV_OUT SCOURSH_STUB_STDIN=$STDIN_OUT
+  PATH="$STUB:$PATH"
+  http_request GET 'https://good.fixture.example/plain'
+) >/dev/null 2>&1
+RELAY_ARGV=$(cat "$ARGV_OUT")
+assert_contains "$RELAY_ARGV" '--connect-to' 'guarantee mode uses --connect-to'
+assert_contains "$RELAY_ARGV" 'good.fixture.example:443:127.0.0.1:41999' \
+  'redirecting to the relay while keeping the ORIGINAL host:port on the left - which is what preserves SNI, the Host header and certificate validation (--resolve could not do this: it maps a name to an ADDRESS and cannot change the port, and a relay listens on an ephemeral port that is never the target'"'"'s)'
+assert_not_contains "$RELAY_ARGV" '--resolve' \
+  'and the --resolve pin is REPLACED, not accompanied - two pins for one connection is two answers to "where does this go"'
+assert_contains "$RELAY_ARGV" '-K' \
+  'everything else about the command line is untouched - same single curl invocation, same stdin config, so "every request carries the identifying User-Agent" stays structural in guarantee mode too'
+
+t_case 'the map SEEDS the pinned resolution cache, which is what makes guarantee mode usable at all'
+# Inside the sandbox DNS is kernel-denied, so a host that the stub resolver
+# does not know stands in for one the scan cannot resolve for itself. Without
+# the seed http_request dies at exit 3 before any transport is reached.
+: >"$ARGV_OUT"
+seed_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  unset SCOURSH_HTTP_TRANSPORT
+  export SCOURSH_HTTP_RELAY_MAP='good.fixture.example 443 198.51.100.9 41998'
+  http_relay_map_load
+  export SCOURSH_STUB_ARGV=$ARGV_OUT SCOURSH_STUB_STDIN=$STDIN_OUT
+  PATH="$STUB:$PATH"
+  # The stub resolver is deliberately removed, so any resolution at all must
+  # come from the map.
+  unset SCOURSH_HTTP_RESOLVE
+  # The cache is cleared and the map re-read here, AFTER the resolver is gone,
+  # so the only surviving source of an address is the map itself.
+  _HTTP_RESOLVE_CACHE=()
+  while IFS=' ' read -r _h _p _a _rp; do
+    [[ -n $_h ]] && _HTTP_RESOLVE_CACHE[$_h]=$_a
+  done <<<"$SCOURSH_HTTP_RELAY_MAP"
+  http_request GET 'https://good.fixture.example/plain'
+) >/dev/null 2>&1 || seed_rc=$?
+assert_eq 0 "$seed_rc" \
+  'a request succeeds with NO resolver available at all, because the wrapper already resolved the host outside the sandbox and handed the address in - FAILS if the ADDR column is dropped from the map, in which case guarantee mode dies at exit 3 ("DNS resolution failed after the gate had approved it") on its very first request'
+assert_contains "$(cat "$ARGV_OUT")" '127.0.0.1:41998' 'and it still went through the relay'
+
+t_case 'a (host, port) with no relay row is exit 3, naming the reason - never a silent fall-back to --resolve'
+miss_rc=0
+miss_out=$(
+  # shellcheck disable=SC2030,SC2031
+  (
+    unset SCOURSH_HTTP_TRANSPORT
+    export SCOURSH_HTTP_RELAY_MAP='other.fixture.example 443 198.51.100.9 41997'
+    http_relay_map_load
+    export SCOURSH_STUB_ARGV=$ARGV_OUT SCOURSH_STUB_STDIN=$STDIN_OUT
+    PATH="$STUB:$PATH"
+    http_request GET 'https://good.fixture.example/plain'
+  ) 2>&1
+) || miss_rc=$?
+assert_eq "$SCOURSH_EXIT_SCOPE" "$miss_rc" \
+  'exit 3. Both readings are SAFE - a direct connection would be refused by the kernel anyway - so the difference is entirely honesty: returning a transport failure instead would be recorded as a breaker failure and read to an operator as "the target did not answer", which is a control that did not run wearing the appearance of a clean result'
+assert_contains "$miss_out" 'no relay for' \
+  'and the message names the actual reason, including the two shapes that reach it legitimately (an allow-subdomains match and an IPv6 target, neither of which the wrapper can enumerate ahead of time)'
+
+t_case 'http_relay_active is the ONE answer to "is guarantee mode on"'
+SCOURSH_HTTP_RELAY_MAP='' http_relay_map_load
+assert_status 1 'an empty map means OFF' http_relay_active
+SCOURSH_HTTP_RELAY_MAP='h 1 2.2.2.2 3' http_relay_map_load
+assert_status 0 'a parsed map means ON' http_relay_active
+malformed_rc=0
+( SCOURSH_HTTP_RELAY_MAP='h notaport 2.2.2.2 3' http_relay_map_load ) >/dev/null 2>&1 || malformed_rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$malformed_rc" \
+  'a malformed row is REFUSED, never skipped - a silently-dropped row is a relay the scan is later told does not exist, reported as a scope failure whose real cause is a typo in the wrapper'
+SCOURSH_HTTP_RELAY_MAP='' http_relay_map_load
+unset SCOURSH_HTTP_RELAY_MAP
+SCOURSH_HTTP_RESOLVE=_test_resolve
+
 t_summary 'http'

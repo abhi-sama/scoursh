@@ -846,8 +846,8 @@ Sampling can miss a connection that opens and closes between two polls.
 `tools/run-in-netns.sh` is the actual guarantee: a network namespace whose only route is the declared
 scope makes an out-of-scope connection categorically impossible rather than merely observable.
 **That tool is Linux-only** (it needs network namespaces, and root/`CAP_NET_ADMIN`+`CAP_SYS_ADMIN`); on
-macOS its native peer is `tools/run-sandboxed.sh`, Tier A below, which enforces a narrower but still
-kernel-guaranteed claim, and its full-parity equivalent is Tier C, running the netns tool unmodified
+macOS its native peers are `tools/run-sandboxed.sh`, Tiers A and B below, which enforce narrower but
+still kernel-backed claims, and its full-parity equivalent is Tier C, running the netns tool unmodified
 inside a Linux container.
 Every `--paranoid` run states its own detector/guarantee limitation in `run.json`, so the report never
 overstates what the flag alone proved.
@@ -877,12 +877,54 @@ falling through to an unsandboxed run. There is no teardown surface at all - no 
 of any kind - so a crashed run leaves nothing behind.
 
 **This is a narrower guarantee than the netns tool's, on purpose.** Seatbelt's network filter accepts
-only `*` or `localhost` as a rule's host part - it restricts ports, never which remote host - so this
-profile cannot express "only the authorised scope target is reachable", only "no network access at
-all". That is exactly what `sast`/`sca`/`iac` need and nothing more; it is not a substitute for
-scope-restricted egress on `dast`/`cloud`/`network`, which need real, target-specific traffic to do
-their job. Wrapping one of those three in `tools/run-sandboxed.sh` gets zero network access and, most
-likely, an honest, loud failure on its own first request.
+only `*` or `localhost` as a rule's host part, so this profile cannot name the authorised target the way
+the netns route table does - only "no network access at all". That is exactly what `sast`/`sca`/`iac`
+need and nothing more. Wrapping a `dast`/`cloud`/`network` command in Tier A gets it zero network access
+and, most likely, an honest, loud failure on its own first request - use Tier B below for those.
+
+### Tier B (macOS) - `tools/run-sandboxed.sh --scope-conf`, off-host egress kernel-denied plus a loopback relay
+
+```
+tools/run-sandboxed.sh --scope-conf config/scope.conf -- scan.sh dast --target my-target
+```
+
+This is the mode for `dast`/`cloud`/`network`, which need real traffic to their declared target. It
+resolves that scope through `lib/http.sh`'s own scope loader and pinned resolver (the same two functions
+the netns tool uses - never a second resolver), starts one loopback forwarder per authorised
+`(address, port)` **outside** the sandbox, and emits a profile admitting exactly those relay ports.
+`lib/http.sh` then sends every request through them with `curl --connect-to`, which redirects the TCP
+connection while keeping the original host for SNI, the `Host:` header and certificate validation.
+
+**What is guaranteed, and by whom - this is a distinct third label, not a full "guarantee".**
+
+- **The kernel** guarantees off-host egress is categorically impossible. Every process in the tree,
+  every `xargs -P` worker included, can open only the relay ports and only to an address of this host.
+- **scoursh's own relay**, not the kernel, guarantees the bytes on those ports reach the authorised
+  target. The relay is a few lines with its destination fixed at process start and no path that takes a
+  destination from the wire - auditable, but scoursh's code. Under Tier C the kernel enforces both
+  halves; that difference is why this is named "containment guarantee, target restriction by relay"
+  rather than folded into either of the words `--paranoid`'s framing already uses.
+
+Needs, in addition to Tier A's requirements, a working `python3` (the relay - bash's `/dev/tcp` can dial
+but cannot listen, so there is no bash-only forwarder) and a `curl` that accepts `--connect-to` (7.49+).
+Both are probed before `<command>` runs and refuse with exit `4` rather than degrade. Relays are
+children of the wrapper and an `EXIT` trap tears them down on success and failure alike; everything is
+per-process, bound to `127.0.0.1`, with no host state of any kind.
+
+**The relay is unauthenticated on loopback.** Any process on the host that can reach `127.0.0.1` can
+use a live relay to reach the authorised target for as long as the run lasts. Its destination is fixed
+and its port ephemeral and unpublished, so it is a path to a target you already authorised and nothing
+else - but on a multi-user host where reaching the target is itself meant to be a privilege, prefer
+Tier C.
+
+**Two gaps it states rather than hides.** A scope row with `allow-subdomains: true` and an IPv6 scope
+host cannot be turned into relays ahead of time, so the wrapper warns and a request for one is refused
+with exit `3` naming the reason. And the raw TLS handshake `dast`'s transport check opens for itself is
+not redirected, so it is kernel-refused inside the sandbox - it fails closed, which is the safe
+direction.
+
+**Guarantee mode is off by default.** Without `--scope-conf` nothing about the ordinary egress path
+changes; `lib/http.sh` only redirects when the wrapper has set `SCOURSH_HTTP_RELAY_MAP`.
 
 ### Tier C (macOS) - full netns parity via a Linux container, zero code
 
@@ -894,12 +936,13 @@ userland test image (`tools/daily-suite/gnu.dockerfile`) does not currently inst
 packages, so it cannot run the netns tool as shipped - an image-build detail specific to that one
 Dockerfile's own package list, not a limit of this route itself.
 
-**What neither tier gives you (yet):** a macOS-native mechanism that restricts an authorised target's
-traffic to *only* that target, without a container - the netns route table's own per-target scoping,
-natively on macOS. That would need a loopback relay Tier A's own profile could pin to plus a
-`lib/http.sh` mode to redirect through it, which is real, separate work on the scanner's most
-safety-critical file and is tracked as its own follow-up. See `docs/FOUNDATION.md` tension 20 for the
-full account of all three tiers.
+**Which tier to reach for.** Tier A for `sast`/`sca`/`iac`, where zero network is the correct claim and
+nothing weaker is needed. Tier B for `dast`/`cloud`/`network` on macOS, where off-host egress becomes
+kernel-impossible and the target restriction is supplied by scoursh's own relay. Tier C when you want
+the kernel enforcing both halves and can run a Linux container. See `docs/FOUNDATION.md` tension 20 for
+the full account, including the measurement of what a Seatbelt `localhost:PORT` rule actually admits
+(any address of *this host* on that port - not port-only, and not `127.0.0.1`-only) and why the obvious
+"connect to the LAN address and watch it fail" test does not discriminate.
 
 ## Configuration
 

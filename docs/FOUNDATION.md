@@ -3393,20 +3393,106 @@ particular to that one Dockerfile's own package list (built for the GNU-vs-BSD u
 tension 24 checks, which needs none of the three), not a platform limitation of Tier C itself, and is
 tracked as its own follow-up rather than conflated with this tension's own scope.
 
-**What is still NOT built: a macOS-native mechanism that restricts an authorised target's traffic to
-ONLY that target** (the netns route table's own per-target scoping, natively, without a container).
-That would need a loopback relay Tier A's own Seatbelt profile could pin to (Seatbelt filters by port,
-never by remote host, so "only this one target" needs a forwarder scoursh itself runs outside the
-sandbox and points at the authorised target) plus a `lib/http.sh` mode to redirect through it - a real,
-separate change to the scanner's most safety-critical file, deliberately NOT part of this extension, and
-tracked as its own ticket ("Tier B") rather than folded in here.
-So the accurate statement, replacing the retired one above, is: **on macOS, `sast`/`sca`/`iac` now get a
-genuine, kernel-enforced, zero-network guarantee natively (Tier A); every module - including
-`dast`/`cloud`/`network`, which need real target-specific traffic - gets full parity with the Linux
-netns guarantee via a Linux container (Tier C); and a native macOS mechanism for "only the authorised
-target, nothing else" without a container remains unbuilt (Tier B, open).**
-`--paranoid`'s own detector-versus-guarantee framing is otherwise unchanged by any of this: it remains a
-sampler on every platform, and Tier A/Tier C are guarantees that exist alongside it, exactly as
+**Tier B: `tools/run-sandboxed.sh --scope-conf` - a THIRD, DISTINCT LABEL, and neither of this
+tension's two existing words.**
+This paragraph used to say a native macOS mechanism for "only the authorised target, nothing else"
+remained unbuilt and was tracked as its own ticket.
+It is now built, and the register records what it is rather than rounding it to the nearer of
+"guarantee" and "detector" - the same deliberate-extension discipline `lsof` was added to the backend
+roster under.
+The mechanism: `--scope-conf PATH` resolves that scope through `lib/http.sh`'s own
+`http_scope_load`/`http_resolve_host` (the SAME two functions `tools/run-in-netns.sh`'s
+`_netns_collect_target_ips` calls, never a second resolver), starts one loopback forwarder per
+authorised `(address, port)` OUTSIDE the sandbox with its destination fixed at process start, and
+emits a Seatbelt profile admitting exactly those relay ports; `lib/http.sh` section 7a then redirects
+each request into them by swapping its `--resolve` pin for `--connect-to`, which keeps SNI, the `Host`
+header and certificate validation intact (measured against a local TLS fixture through a real relay
+inside a real profile: `ssl_verify=0`, and the fixture saw its own hostname).
+
+**The label is "containment guarantee, target restriction by relay", and the split is who enforces
+which half:**
+
+- **The KERNEL guarantees that off-host egress is categorically impossible.**
+  Every process in the tree - every `xargs -P` worker included, since `man 7 sandbox` makes the sandbox
+  inherited - can open only the relay ports, and only to an address of this host.
+  That is not sampled, and it is not this project's code.
+- **scoursh's OWN RELAY, not the kernel, guarantees that the bytes on those ports go to the authorised
+  target.**
+  The relay is a few lines with a hardcoded-at-start destination and no path that reads a destination
+  from the wire, so it is auditable - but it is this project's code.
+  Under `tools/run-in-netns.sh` the kernel route table enforces BOTH halves; that difference is real,
+  and calling this a "guarantee" outright would be exactly the quiet inflation the `lsof` extension
+  above refuses.
+  It is equally not a "detector": nothing here samples, and nothing here can miss a connection that
+  opens and closes between two polls.
+
+**What `localhost:PORT` actually admits, MEASURED - and why the obvious test does not discriminate.**
+Seatbelt's filter is neither port-only nor 127.0.0.1-only: it admits any address belonging to THIS
+HOST on the named port.
+Measured on macOS 26.6.2 against a listener bound to `0.0.0.0`, with a profile allowing one port P:
+a sandboxed connect to `127.0.0.1:P` connects, to this host's own LAN address on `P` connects, to
+`192.0.2.1:P` (RFC 5737 TEST-NET-1, genuinely off-host) is `Operation not permitted`, and to any other
+port on any address is `Operation not permitted`.
+The research that drove this extension reported the LAN-address row as a denial; it was not one - that
+probe used an address of the measuring host, and the `Connection refused` it saw came from nothing
+listening there rather than from Seatbelt.
+The only probe that separates "restricts the host" from "restricts only the port" is one against a
+genuinely off-host address, where a denial is instant and a permit is a timeout, and
+`tests/suites/run-sandboxed.sh` section G4 uses that one with a positive control beside it.
+The consequence to state rather than discover: a different service already listening on the same port
+number on another of this host's own interfaces would also be reachable from inside.
+Relay ports are ephemeral and the relay binds `127.0.0.1` only, so nothing else holds them - but the
+claim is "cannot leave this host", not "cannot reach any other socket on this host", and those are
+different sentences.
+
+**A third property, stated because an adversarial reading finds it: the relay is unauthenticated on
+loopback.**
+Any process on the host that can reach `127.0.0.1` can connect to a live relay and so reach the
+authorised target through it, for as long as the run lasts.
+Its destination is fixed, so it is a path to a target the operator already authorised and to nothing
+else; its port is ephemeral and unpublished; and it exists only between the first precondition passing
+and the `EXIT` trap firing.
+What it is not suitable for is a multi-user host where reaching the target at all is meant to be a
+privilege.
+The netns tier has no equivalent exposure - its enforcement is a route table, not a listener - and that
+is a second real difference behind Tier B's label, alongside who enforces the target restriction.
+
+**Two stated gaps, neither of them silent.**
+An `allow-subdomains: true` scope row and an IPv6 scope host cannot be enumerated into relays ahead of
+time (the relay is IPv4-only, and a subdomain is by definition not known until the gate sees it), so
+the wrapper WARNS at build time and `lib/http.sh` refuses such a request with exit `3` naming the
+reason.
+That refusal is fail-CLOSED in both readings - a direct connection would be kernel-refused anyway - so
+the choice is purely about honesty: returned as a transport failure it would be recorded against the
+circuit breaker and read to an operator as "the target did not answer", which is a control that did not
+run wearing the appearance of a clean result.
+Separately, the raw TLS handshake `modules/dast/passive/tls.sh` opens under tension 19's transport
+exception is NOT redirected: that socket is opened by the module itself, goes off-host, and is
+therefore kernel-refused inside the sandbox.
+It fails closed, which is the safe direction, and closing it properly means teaching that module the
+same redirection - a change to a second file, tracked rather than made silently.
+
+**Guarantee mode is OFF by default and the default egress path is byte-for-byte unchanged.**
+Nothing in section 7a runs unless `SCOURSH_HTTP_RELAY_MAP` is non-empty, which only
+`tools/run-sandboxed.sh --scope-conf` sets; an ordinary scan reaches the same `--resolve` pin, as the
+same two argv words in the same position, and `tests/suites/http.sh` asserts that on curl's REAL argv
+rather than on a branch being unreached - a claim that a branch was skipped is equally satisfied by a
+branch that ran and did nothing.
+One implementation fact is worth recording because it is invisible and shipped once already: a `die`
+inside the transport CANNOT terminate the run.
+`http_request` invokes the transport as `out=$(...)`, so the transport is a SUBSHELL and `die`'s
+`exit 3` arrives as a non-zero transport status, is charged to the circuit breaker, and is returned as
+`1` - the exact failure shape the refusal exists to prevent.
+The fatal decision therefore lives in `http_request`, beside the address pin, in the parent process;
+the transport shares the same lookup function so the two cannot disagree.
+
+So the accurate statement, replacing the retired one above, is: **on macOS, `sast`/`sca`/`iac` get a
+genuine, kernel-enforced, zero-network guarantee natively (Tier A); `dast`/`cloud`/`network` get a
+native containment guarantee - off-host egress kernel-impossible - with target restriction supplied by
+scoursh's own relay rather than by the kernel (Tier B); and full parity with the Linux netns guarantee,
+kernel-enforced on both halves, remains available via a Linux container (Tier C).**
+`--paranoid`'s own detector-versus-guarantee framing is unchanged by any of this: it remains a sampler
+on every platform, and Tiers A, B and C are enforcement mechanisms that exist alongside it, exactly as
 `tools/run-in-netns.sh` already was on Linux before this extension.
 
 **Usability is MEASURED, with a positive control, not inferred from `command -v`.**
