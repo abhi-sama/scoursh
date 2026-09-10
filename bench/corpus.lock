@@ -1,0 +1,71 @@
+# bench/corpus.lock - every benchmark corpus, pinned.
+#
+# This file is the B2 deliverable and it is the reason a published number is
+# reproducible by a stranger (the scout report's methodology rule R7).  A
+# corpus that is fetched at "HEAD" is not a corpus, it is a moving target: two
+# runs a week apart measure two different things and the difference is
+# invisible in the result.  Every row here pins a COMMIT, never a branch or a
+# tag, because a tag can be moved and a branch always is.
+#
+# NO CORPUS CONTENT IS COMMITTED TO THIS REPOSITORY, and that is a licence
+# decision as well as a size one.  scoursh is Apache-2.0; OWASP Benchmark is
+# GPL-2.0.  Vendoring even a subset of its test cases - or of its
+# `expectedresults` ground-truth CSV, which is part of the same work - would
+# put GPL-2.0 material inside an Apache-2.0 tree.  `bench/fetch-corpus.sh`
+# clones it into an IGNORED directory instead (bench/corpora/, see
+# bench/.gitignore), and the committed smoke result under bench/results/
+# carries only the SCORE and the two tools' own normalised output - never a
+# line of corpus text.
+#
+# FORMAT.  Blank-line-separated `key: value` block records, the same shape
+# rules/RULE-FORMAT.md freezes for the scanner's own record files - so anyone
+# who can read a `.rules` file can read this without learning a second format.
+# It is deliberately NOT loaded by the scanner and is NOT covered by
+# tests/lint-rules.sh: bench/ is a separate harness (see bench/README.md), and
+# `rules/RULE-FORMAT.md` §9's path table governs the scanner's own record
+# files, not this one.  Values carry no escaping; a `#` in the first column is
+# a whole-line comment.
+#
+# KEYS
+#   id             the name every other bench/ script refers to this corpus by
+#   repo           the clone URL
+#   commit         the pinned commit sha - full 40 hex, never abbreviated
+#   licence        SPDX identifier, or `unstated` (which is a reason NOT to use it)
+#   ground-truth   how a case's true label is obtained, or `none`
+#   categories     the scoring categories this corpus supplies, space separated
+#   sparse         optional: a sparse-checkout path, to avoid fetching the whole tree
+#   note           free prose, repeatable
+
+id: owasp-benchmark
+repo: https://github.com/OWASP-Benchmark/BenchmarkJava.git
+commit: 20cbf3d11123347e47ed89541e6942836def53f7
+licence: GPL-2.0
+ground-truth: csv:expectedresults-1.2.csv
+categories: sqli cmdi ldapi pathtraver crypto hash weakrand xss trustbound securecookie xpathi
+sparse: src/main/java/org/owasp/benchmark/testcode
+note: 2,740 single-file Java test cases, each labelled with its category, its
+  CWE and a `real vulnerability: true|false` column - the only corpus in this
+  file whose ground truth is machine-readable and authored by neither of the
+  tools being compared.  Half the cases are deliberate SANITIZED TRAPS, which
+  is what makes a false-positive rate measurable here at all and what makes
+  recall alone meaningless (the scout report's rule R3).
+note: GPL-2.0.  Fetched, never vendored - see the licence paragraph above.
+
+id: terragoat
+repo: https://github.com/bridgecrewio/terragoat.git
+commit: 729f8da62c6a85ce4af5ad3d123de97776d954c4
+licence: Apache-2.0
+ground-truth: none
+categories: terraform-aws
+sparse: terraform/aws
+note: Deliberately-misconfigured Terraform.  Its ground truth is PROSE plus
+  Checkov's own `CKV_*` check ids, so scoring recall against it would bias the
+  result toward Checkov - it is usable for the adjudication-free COVERAGE
+  metric only (which files did a tool find anything wrong in), never for
+  recall.  `ground-truth: none` is what makes bench/score.sh refuse a recall
+  request against it rather than inventing one.
+note: Scoped to `terraform/aws` on purpose.  The repository is mostly
+  Azure/GCP/Oracle/AliCloud and scoursh's terraform.rules is AWS-shaped, so
+  scoring the whole tree would measure cloud-provider mismatch and report it
+  as a detection gap.  For IaC, "same category" has to mean "same cloud" -
+  which is why `categories` says `terraform-aws` and not `iac`.

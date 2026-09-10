@@ -4554,6 +4554,57 @@ alpine/debian/ubuntu coverage - including that a same-advisory `Debian:12` entry
 exact-match `Red Hat` rows, and that re-running `redhat` replaces the WHOLE `Red Hat` namespace without
 disturbing a same-named package under a different ecosystem.
 
+## `bench/` is a benchmark harness, NOT part of the scanner
+
+`bench/` measures scoursh's detection against other tools on neutral, pinned,
+third-party corpora.  Read `bench/README.md` before changing anything in it;
+what belongs here rather than there is the part that binds the rest of the
+tree:
+
+- **It is off the scan path in both directions, and that is asserted.**  Nothing
+  under `lib/`, `modules/` or `scan.sh` may reference `bench/`, and nothing in
+  `bench/` may `source` a scanner library - `tests/suites/bench.sh` section G
+  fails on either.  That separation is what lets the harness use the network at
+  all: the no-egress rule binds the tool under test, not the test rig, and
+  Semgrep/Trivy/Grype cannot work without it.  Only `bench/fetch-corpus.sh` ever
+  reaches the network, and it is never called by a measurement run or by the
+  suite.
+- **No corpus content is committed, and that is a LICENCE constraint before it
+  is a size one.**  OWASP Benchmark is GPL-2.0 and this tree is Apache-2.0, so
+  even its ground-truth CSV must not be vendored.  `bench/corpora/` is
+  gitignored; `bench/corpus.lock` pins each corpus by full 40-hex commit and
+  `bench/fetch-corpus.sh` fetches it.
+- **A committed result must not embed an operator home directory.**  Every tool
+  echoes back the absolute path it was given, so `bench/run-tool.sh
+  --portable-paths` rewrites the scan-root prefix to `<SCAN_ROOT>` and the
+  `bench/` prefix to `<BENCH>` and records in the MANIFEST that it did.
+  `tests/suites/bench.sh` fails on any file under `bench/results/` carrying a
+  home-shaped absolute path.
+- **`tools/gen-status.sh` attributes a rule pack to the FIRST `tests/**/*.sh`
+  suite naming any of its check ids, in `LC_ALL=C` order - so a new suite whose
+  name sorts early can silently take over another suite's "exercised by" cell
+  in three published status blocks.**  `tests/suites/bench.sh` hit this against
+  `tests/suites/report.sh` for `crypto.rules`, by quoting one check id out of a
+  committed fixture.  The generator was not wrong by its own stated rule; the
+  resulting cell was misleading, since nothing in the benchmark suite exercises
+  that pack.  The fix was to stop spelling the id in the suite at all and derive
+  it from the fixture with an independent reader, which is also a stronger test.
+  Any new early-sorting suite that mentions a real check id has the same
+  problem - check `tests/lint-status.sh` before assuming `--write` is the right
+  answer.
+- **Two scoring decisions are load-bearing and each fails in the direction that
+  reads as a result.**  A category a tool does not CLAIM renders as an explicit
+  `no coverage` cell and is excluded from its aggregate - never a zero, which
+  would accuse it of failing at something it never entered.  And an undefined
+  ratio renders `n/a`, never `0.000`: a precision of zero says every finding was
+  wrong, while an undefined one says there were none.
+- **scoursh reports `loc_path` relative to the GIT TOPLEVEL, so a corpus checked
+  out inside any repository comes back with an extra prefix.**  `run.json`'s
+  `path_root` is what records it and `bench/tools/scoursh.sh` strips it.  Get
+  this wrong and every case mismatches, which renders as "this tool found
+  nothing" rather than as an error - the whole class of failure the harness
+  exists to catch, occurring inside the harness itself.
+
 ## Tests
 
 ```
