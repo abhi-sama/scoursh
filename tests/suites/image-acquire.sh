@@ -532,11 +532,13 @@ _files=$(cd "$_dest" && find . -type f | LC_ALL=C sort | tr '\n' ' ')
 assert_contains "$_files" 'os-release' 'the requested path is there'
 assert_not_contains "$_files" 'installed' 'and nothing outside the request is'
 
-t_case 'the default wanted-path list names LOCATIONS only, and claims no rpm coverage'
+t_case 'the default wanted-path list names LOCATIONS only, and now names all three rpm database shapes too (IMG-12)'
 assert_contains "${IMAGE_METADATA_PATHS[*]}" 'lib/apk/db/installed' 'the apk database location'
 assert_contains "${IMAGE_METADATA_PATHS[*]}" 'var/lib/dpkg/status' 'the dpkg database location'
-assert_not_contains "${IMAGE_METADATA_PATHS[*]}" 'rpm' \
-  'rpm is deliberately ABSENT rather than listed and unread - it is a binary database needing a new sqlite3 dependency (IMG-12), and listing it here would claim a coverage the module does not have'
+assert_contains "${IMAGE_METADATA_PATHS[*]}" 'var/lib/rpm/rpmdb.sqlite' \
+  'the modern rpm database location - FAILS if IMG-12 forgot to extend this list, which would silently leave rpm_installed_enumerate with nothing to read on every rpm-based image'
+assert_contains "${IMAGE_METADATA_PATHS[*]}" 'var/lib/rpm/Packages' 'the Berkeley-DB rpm database location'
+assert_contains "${IMAGE_METADATA_PATHS[*]}" 'var/lib/rpm/Packages.db' 'the ndb rpm database location'
 
 # =============================================================================
 printf -- '\n-- H. config/images.conf (rules/RULE-FORMAT.md §9.6.8) --\n'
