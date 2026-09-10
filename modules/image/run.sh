@@ -4,7 +4,9 @@
 # cost table and §5.3's IMG-01 row; wired to real acquisition by IMG-03;
 # wired to real apk enumeration + matching + the config-blob check, and so
 # completing the v1 Alpine slice, by IMG-06; wired to real dpkg enumeration +
-# matching, completing the Debian/Ubuntu slice, by IMG-09).
+# matching, completing the Debian/Ubuntu slice, by IMG-09; widened with the
+# two remaining IMAGE-CFG-* config-blob checks (`IMAGE-CFG-EXPOSED_PORTS-01`,
+# `IMAGE-CFG-MUTABLE_BASE_REF-01`) by IMG-10).
 #
 # Contract (modules/sast/run.sh's own header, reused verbatim by every
 # module in this tree): scan.sh's `scan_dispatch image` does a plain
@@ -176,7 +178,12 @@ _image_run_module() {
       # open, independent of whether an ecosystem or apk database is ever
       # resolved below - an image whose distro this module cannot yet
       # identify (v1 is Alpine-only, report.md D2) still gets this check.
+      # IMG-10 adds two peer config-blob checks (modules/image/config.sh's
+      # own header) - identically distro-agnostic, so they run alongside
+      # RUNS_AS_ROOT rather than inside the ecosystem branch below.
       image_check_root_user "$kind" "$path" "$image_id"
+      image_check_exposed_ports "$kind" "$path" "$image_id"
+      image_check_mutable_base_ref "$kind" "$path" "$image_id"
 
       # A dedicated scratch directory, released unconditionally below -
       # image_collect_metadata is the module's one acquisition entry point

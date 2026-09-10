@@ -1,29 +1,50 @@
 # modules/image/checks-config.rules - the container-image module's own
 # per-owner registry (rules/RULE-FORMAT.md §9's `checks-<name>.rules` row,
-# docs/FOUNDATION.md tension 29) for `IMAGE-CFG-RUNS_AS_ROOT-01` (IMG-06,
-# data/scoursh-image-scan-design/report.md §4.1's IMAGE-CFG-* row).
+# docs/FOUNDATION.md tension 29) for the module's three CONFIG-BLOB checks:
+# `IMAGE-CFG-RUNS_AS_ROOT-01` (IMG-06); `IMAGE-CFG-EXPOSED_PORTS-01` and
+# `IMAGE-CFG-MUTABLE_BASE_REF-01` (IMG-10) - all three from
+# data/scoursh-image-scan-design/report.md §4.1's IMAGE-CFG-* row, and
+# §5.3's IMG-10 row ("root user, exposed ports, mutable base tag").
 #
-# `script: config.sh` - modules/image/config.sh is the owning driver
-# (`image_check_root_user`), a NEW file rather than an addition to
-# distro/apk.sh or engine.sh: this check is DISTRO-AGNOSTIC (report.md
-# §4.4 - it reads the image's own CONFIG blob, not a Dockerfile and not any
-# apk-specific data), so it belongs to neither this module's apk-specific
-# driver nor a future dpkg/rpm one.
+# `script: config.sh` for all three - modules/image/config.sh is the owning
+# driver (`image_check_root_user`/`image_check_exposed_ports`/
+# `image_check_mutable_base_ref`), a NEW file rather than an addition to
+# distro/apk.sh or engine.sh: every one of these checks is DISTRO-AGNOSTIC
+# (report.md §4.4 - it reads the image's own CONFIG blob, not a Dockerfile
+# and not any apk/dpkg-specific data), so they belong to neither this
+# module's package-manager-specific drivers nor a future rpm one.
 #
-# `tags: passive` / `tags: quick` - reads one already-extracted local
+# `tags: passive` / `tags: quick` - each reads one already-extracted local
 # config blob, no network call, no mutation - the identical reasoning
 # modules/image/checks-apk.rules and checks-advisories.rules already give
 # for their own tags.
 #
-# `severity: medium` - report.md §4.1's own table value, one step below
-# `IAC-DOCKER-ROOT_USER-01`'s `high`: this check confirms the EFFECTIVE
-# runtime user from the built artifact, but (unlike source review) it
-# cannot see whether a later `docker run --user` override at deploy time
-# already corrects it, so it is reported at a slightly more conservative
-# severity than its source-side counterpart.
-#
 # `coverage-scope: image-id` - the only legal value for the `IMAGE` module
 # (rules/RULE-FORMAT.md §9.5.1's frozen table).
+#
+# `IMAGE-CFG-RUNS_AS_ROOT-01`'s `severity: medium` - report.md §4.1's own
+# table value, one step below `IAC-DOCKER-ROOT_USER-01`'s `high`: this check
+# confirms the EFFECTIVE runtime user from the built artifact, but (unlike
+# source review) it cannot see whether a later `docker run --user` override
+# at deploy time already corrects it, so it is reported at a slightly more
+# conservative severity than its source-side counterpart.
+#
+# `IMAGE-CFG-EXPOSED_PORTS-01`'s `severity: info` / `cwe: none` /
+# `owasp: none` - the identical convention checks-coverage.rules already
+# uses for a purely descriptive, non-defect finding: this check is a
+# built-artifact attack-surface INVENTORY (report.md §5.3's own "a
+# built-artifact counterpart to reviewing EXPOSE lines"), not an assertion
+# that any port is itself a vulnerability - an EXPOSE/ExposedPorts entry
+# documents intent and does not by itself open anything (see the check's
+# own remediation text in modules/image/config.sh).
+#
+# `IMAGE-CFG-MUTABLE_BASE_REF-01`'s `severity: low` / `cwe: CWE-829` /
+# `owasp: A08:2021` - the identical mapping `modules/iac/dockerfile.rules`'
+# `IAC-DOCKER-UNPINNED_DIGEST-01` already uses (this check fires on ANY
+# non-digest-pinned base reference, the broader of that file's two related
+# checks' conditions, not only a literal `:latest` tag), restated under this
+# module's own 2021 OWASP-year convention (modules/image/checks-apk.rules,
+# checks-dpkg.rules) rather than dockerfile.rules' 2025 one.
 
 id: IMAGE-CFG-RUNS_AS_ROOT-01
 title: Image config declares no non-root USER - the effective runtime user is root
@@ -46,3 +67,48 @@ remediation: Add (or fix) a non-root USER in the Dockerfile that built this
 references: data/scoursh-image-scan-design/report.md
 references: CWE-250
 references: https://owasp.org/Top10/A04_2021-Insecure_Design/
+
+id: IMAGE-CFG-EXPOSED_PORTS-01
+title: Image config declares one or more exposed network ports
+script: config.sh
+severity: info
+confidence: high
+cwe: none
+owasp: none
+tags: passive
+tags: quick
+coverage-scope: image-id
+remediation: Review whether every port listed in this finding's evidence
+  genuinely needs to be reachable from this container's default network.
+  An ExposedPorts entry (the built-artifact record of a Dockerfile's own
+  EXPOSE instruction) documents intent but does not by itself open
+  anything - the actual exposure is decided by how the container is run
+  (-p/--publish, a Kubernetes Service, ...) - so treat this as an
+  attack-surface inventory to cross-check against that runtime
+  configuration, not as a vulnerability on its own.
+references: data/scoursh-image-scan-design/report.md
+
+id: IMAGE-CFG-MUTABLE_BASE_REF-01
+title: Image's recorded base image reference is a mutable tag, not a content digest
+script: config.sh
+severity: low
+confidence: high
+cwe: CWE-829
+owasp: A08:2021
+tags: passive
+tags: quick
+coverage-scope: image-id
+remediation: Rebuild from the base image's own @sha256:<digest> reference
+  rather than a mutable tag (docker pull <ref> && docker inspect --format
+  '{{index .RepoDigests 0}}' <ref>, or read the digest off the registry),
+  so a later repoint of the tag cannot silently change what this image was
+  built from on the next rebuild. This is the built-artifact counterpart
+  to IAC-DOCKER-UNPINNED_DIGEST-01/IAC-DOCKER-LATEST_TAG-01 - fixing the
+  Dockerfile's own FROM line is what prevents this on the NEXT build; this
+  finding is about the image already built. This check applies only when
+  the image's own config records a base image reference at all
+  (org.opencontainers.image.base.name, an opt-in buildkit provenance
+  annotation) - most built images do not carry this label, which this
+  module records as a declared coverage limitation rather than a guess.
+references: data/scoursh-image-scan-design/report.md
+references: CWE-829
