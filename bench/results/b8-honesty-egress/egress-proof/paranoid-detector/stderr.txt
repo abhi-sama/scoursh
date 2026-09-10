@@ -1,0 +1,4 @@
+2026-09-10T13:21:24Z info  paranoid: connection observer attached (backend=lsof, family root pid=12016) - detector, not guarantee
+2026-09-10T13:21:32Z info  sast: scanning 16 files under <SCAN_ROOT>/lib
+2026-09-10T13:22:02Z info  paranoid: connection observer detached cleanly - zero out-of-allowlist connections observed this run (sampling-based; see docs/FOUNDATION.md tension 20 for what this does and does not prove)
+2026-09-10T13:22:02Z info  scan complete in 44s - report: <BENCH_OUT>/paranoid-sast
