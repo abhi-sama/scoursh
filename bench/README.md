@@ -322,3 +322,30 @@ they bind anything derived from the set:
 account, a signed data-protection agreement and per-email access granted by its
 authors, none of which a benchmark run can satisfy. See
 `bench/results/b6-secrets-leaky-repo/README.md`.
+
+---
+
+## B8: honesty + egress metrics
+
+`bench/results/b8-honesty-egress/` holds the scout report's §5.3
+coverage-honesty metric (computed over every scoursh `run.json` already
+committed by B4/B5/B6 - 31 of 31 runs, 100% of unrun-but-selected checks
+declared with a reason, zero undeclared gaps), a zero-egress proof of
+`sast`/`sca`/`iac` under both the kernel-enforced macOS Seatbelt sandbox
+(`tools/run-sandboxed.sh`, no `--scope-conf`) and the `--paranoid` detector,
+and a footprint table (installed size, peak process memory,
+DB-size-before-first-finding, egress-after-setup) across the tool roster.
+`bench/tools/coverage-honesty.py` is the metric's own script - re-runnable
+against any future leg's `bench/results/` tree with no arguments beyond the
+results root.
+
+**B7 (DAST) has not landed** - it needs an operator Docker-memory bump
+(scout report §4.4) - and B8 records that as a stated not-measured gap
+wherever a metric would otherwise need a DAST number, never a fabricated
+value. See that directory's own `README.md` for the full account, including
+a real environmental interaction it found (`--paranoid`'s process-family
+enumeration degrades, but still reports correctly, when run nested inside
+the Seatbelt sandbox).
+
+**It is not published anywhere in `docs/` either** - the same B9 deliberate
+deferral as every other landed leg.

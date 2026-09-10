@@ -1,0 +1,34 @@
+leg                            tool             selected   run   gap  declared  accounted
+b4-sast-owasp-full             scoursh                53    34    19        19     100.0%
+b6-iac-kubernetes-goat         scoursh-iac            36    16    20        20     100.0%
+b6-iac-terragoat-aws           scoursh-iac            36    13    23        23     100.0%
+b6-secrets-leaky-repo          scoursh-secrets        53    41    12        12     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     2     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     2     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     2     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+sca-lockfiles-26               scoursh-sca             0     1     0         0     100.0%
+smoke-owasp-sast-192           scoursh                53    34    19        19     100.0%
+
+TOTAL: 31 scoursh run(s) inspected, 93 total unrun-but-selected checks, 93 declared with a reason (100.0% accounted)
