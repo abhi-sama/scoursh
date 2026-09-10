@@ -4604,6 +4604,46 @@ tree:
   this wrong and every case mismatches, which renders as "this tool found
   nothing" rather than as an error - the whole class of failure the harness
   exists to catch, occurring inside the harness itself.
+- **A second gate configuration for an already-landed tool is a NEW adapter
+  FILE with its own tool id, not an env-var flip on the existing one.**
+  `bench/tools/semgrep-default.sh` (the B4 SAST leg) is the worked example:
+  it sets `BENCH_SEMGREP_CONFIG='p/default'` **before** sourcing
+  `bench/tools/semgrep.sh` (whose own default is `${BENCH_SEMGREP_CONFIG:-...}`,
+  so a value already present wins), then re-exports the shared `semgrep_*`
+  functions under `semgrep-default_*` names.  A hyphen in a tool id is a real,
+  legal bash function-name character (`foo-bar() { :; }` works), and this is
+  why: `bench/run-tool.sh` keys the results directory, the MANIFEST and the
+  scorecard row off `$tool`, so the two gate configurations need distinct
+  tool ids to sit side by side in one `results/` directory and score together
+  - an env var alone would let a reader wonder which run used which ruleset.
+  `_gate_line` in `bench/run-tool.sh` needs a matching case arm (or a shared
+  `case A | B)` line) or the new tool's MANIFEST prints "unrecorded".
+- **`bench_json_flatten` (`bench/lib/json.sh`) flattens the WHOLE document,
+  including fields no normaliser reads, and a real multi-tool run's raw JSON
+  is worth timing before assuming a stall means a bug.**  Semgrep's own
+  `--json` output over a few thousand findings carries a `paths` array (every
+  scanned file) and a per-rule `time` profiling block that can run into the
+  hundreds of KB by themselves; flattening a ~3.5 MB real Semgrep document
+  this way measured multiple CPU-minutes on one run (worse under contention
+  from another concurrent process on the same host).  A `bench/run-tool.sh`
+  call that appears to hang for minutes on `_normalise` is very likely still
+  working, not stuck - confirm with `ps` for a live `awk`/flattener process
+  before concluding otherwise.  This is a real, measured cost of the current
+  design, not (yet) something this leg's scope included fixing.
+- **A NIST Juliet slice is NOT obtainable with this harness's CURRENT scorer,
+  and the reason is structural rather than licence or network.**  Every
+  Juliet port checked (including the CC0-1.0 `UnitTestBot/juliet-java-test-suite`
+  mirror, confirmed by fetching a real file) bundles a `bad()` method and one
+  or more `good()`/`goodB2G()`/`goodG2B()` methods in ONE source file per test
+  case - unlike OWASP Benchmark's one-vulnerability-per-file shape that
+  `bench/lib/truth.sh` and `bench/lib/score.sh` are built around (`score_category`
+  flags a CASE when a tool reports anything in that case's FILE).  Every
+  Juliet file would have to carry `real: true` (it genuinely contains a real
+  vulnerability), so no file could ever serve as a sanitized-trap negative
+  control and Youden J - the harness's whole headline metric - could not be
+  computed for it at all.  Scoring it honestly needs function- or
+  line-range-level ground truth, which is a scorer-contract change, not a
+  plug-in adapter; do not reach for it opportunistically inside a leg ticket.
 
 ## Tests
 

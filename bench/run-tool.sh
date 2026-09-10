@@ -204,7 +204,7 @@ _portable_paths() {
 _gate_line() {
   case $1 in
     scoursh) printf 'scan.sh sast --format json (defaults: --profile-scan full --min-confidence low; NOT --use-engines)' ;;
-    semgrep) printf 'semgrep %s --no-git-ignore --metrics=off' "$BENCH_SEMGREP_CONFIG" ;;
+    semgrep | semgrep-default) printf 'semgrep --config %s --no-git-ignore --metrics=off' "$BENCH_SEMGREP_CONFIG" ;;
     *) printf 'unrecorded - add a row to _gate_line in bench/run-tool.sh' ;;
   esac
 }
