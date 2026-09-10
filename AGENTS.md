@@ -4406,9 +4406,9 @@ knowing before changing it.
 
 **What this ticket deliberately did not build**, so the boundary is not rediscovered: any advisory
 lookup, any `IMAGE-PKG-VULNERABLE_OS_PACKAGE-03` finding, any `data/advisories.db` read, and any
-`modules/image/run.sh` wiring.  `checks-rpm.rules` stays registered and unreachable, exactly as
-`checks-dpkg.rules` did between IMG-07 and IMG-09; the rpm equivalent of IMG-09 is the next ticket,
-and it inherits `rpm.sh`'s own still-open `rpm_db_binary_format` limitation unchanged.
+`modules/image/run.sh` wiring.  `checks-rpm.rules` stayed registered and unreachable, exactly as
+`checks-dpkg.rules` did between IMG-07 and IMG-09; the rpm equivalent of IMG-09 has since landed - see
+below - and closes that gap.
 
 **IMG-11 has landed - language dependencies (npm/RubyGems/Composer/PyPI/Maven/Go) shipped inside the
 image rootfs, found by reusing the existing `modules/sca/` tree-walkers against a bounded, declared
@@ -4488,6 +4488,71 @@ Three sharp edges this ticket hit, each worth knowing before touching the file a
   `"${arr[@]+"${arr[@]}"}"` idiom.** `tests/lint-shell.sh`'s tension-24 check is purely textual - it has
   no control-flow awareness at all - so a bare `"${arr[@]}"` anywhere in an engine file fails the lint
   regardless of whether the surrounding code makes emptiness impossible.
+
+**The rpm slice is now COMPLETE end to end - the last rpm ticket adds the Red Hat advisory ecosystem
+and wires `rpm.sh`'s enumerator plus `rpm_version.sh`'s comparator into the real vulnerable-package
+finding path, mirroring IMG-09's identical completion of the dpkg (Debian/Ubuntu) slice.** It ships
+`modules/image/distro/rpm.sh`'s own section 2 (matching + `_rpm_emit_vulnerable_package`, emitting
+`IMAGE-PKG-VULNERABLE_OS_PACKAGE-03` - registered by `checks-rpm.rules` at IMG-12 but unreachable until
+now) and a new `tools/vendor-engines.sh advisories redhat` importer. Four things about it are worth
+knowing before touching either file again.
+
+- **OSV.dev's own Red Hat namespace is a single FLAT ecosystem string, `Red Hat`, with NO per-release
+  suffix - unlike Alpine/Debian/Ubuntu, whose ecosystem KEY is built from the image's own release.**
+  report.md §2.3 already names this explicitly ("Alpine:v3.18, Debian:12, Ubuntu:22.04, Red Hat" - the
+  last one carries no colon). A real Red Hat advisory's own `versions`/`fixed` entries carry the RHEL
+  STREAM inside the rpm RELEASE field itself (`...el8`, `...el9`), so `image_distro_ecosystem_resolve`
+  (modules/image/engine.sh) maps every one of `rhel`/`centos`/`rocky`/`almalinux`/`fedora` to the
+  IDENTICAL `Red Hat` key regardless of `VERSION_ID` - the one distro branch in that function that does
+  NOT gate on a parseable release, since there is no per-release key to fail to build. Consequently
+  `veng_advisories_redhat` (tools/vendor-engines.sh) is NOT alpine/debian/ubuntu's third sibling - it
+  reuses `_veng_advisories_run`/`_veng_advisories_write_db` (the SIX SCA ecosystems' own exact-match
+  driver) rather than their `:*` prefix-sentinel/`_veng_advisories_write_db_prefix` machinery, and needs
+  no change to `_veng_advisories_osv_extract_py`'s python walk at all - the existing exact-match branch
+  (`elif eco != "*" and pkg_eco != eco: skip`) already does the right thing for a flat ecosystem string.
+- **The lookup key is the PLAIN rpm package name, never a resolved source name.** dpkg's own IMG-09
+  ticket had to resolve `Source:` vs `Package:` because Debian/Ubuntu advisories are published against
+  the source package and a binary package's own name is routinely different from it. rpm has no
+  equivalent trap: `modules/image/distro/rpm.sh`'s IMG-12 enumerator queries only
+  `(name, epoch, version, release, arch)` - there is no second, source-rpm identity in that projection
+  to resolve - and Red Hat's own OSV.dev advisories are keyed by the installed package's own name
+  directly, so `rpm_scan_installed`'s lookup key and `loc_package` are both `RPM_INSTALLED_NAMES[i]`
+  verbatim.
+- **The version comparison joins the enumerator's three parallel-array fields into `rpm_version.sh`'s
+  own `[epoch:]version[-release]` STRING form, rather than reaching for the FIELD-form
+  `rpm_evr_cmp_v` directly.** `data/advisories.db`'s `fixed_versions` column is a plain,
+  comma-separated list of strings (the identical shape `_apk_row_still_vulnerable`/
+  `_dpkg_row_still_vulnerable` already compare against), so a second parse path for that column would
+  buy nothing; `_rpm_evr_join` (three lines) builds the joined form once per installed package instead,
+  and `rpm_version_valid`/`rpm_version_cmp_v` (the STRING-form public entry points) do the rest. An
+  empty epoch or release joins to the identical shape `rpm_version.sh`'s own string-form parser already
+  treats as an absent field (epoch 0, a release that orders below any present one) - not a new rule
+  invented here, just the join.
+- **`image_report_unknown_distro` (modules/image/engine.sh) gained a DETAIL-AWARE branch, not merely a
+  third `manager` case.** apk's and dpkg's own callers only ever pass `detail=no_package_db_found`
+  (their enumerators recognise no other refusal), but rpm's own enumerator can ALSO refuse with
+  `rpm_db_binary_format` - a database WAS found, but this scanner cannot read it as text (`sqlite3`
+  absent from PATH, a genuinely binary Berkeley-DB/ndb file, or the real sqlite backend's own
+  two-column native schema, per `rpm.sh`'s own header). Reusing the generic "no $manager package
+  database in any layer" wording for that case would misreport a found-but-unreadable database as an
+  absent one - a distinct fact report.md §4.2/§4.3's honesty doctrine says must not be collapsed into a
+  different reason's prose - so `rpm_db_binary_format` gets its own title/remediation string, checked
+  against `detail` rather than `manager` alone; apk and dpkg never set that detail, so their own
+  behaviour is byte-for-byte unchanged.
+
+`tests/suites/image-rpm-e2e.sh` is the proof - `image_distro_ecosystem_resolve` unit tests for every
+one of the five RHEL-family `ID`s (including that `VERSION_ID` plays no role in the resolved key, and
+that a missing `/etc/os-release` still refuses with the ordinary `no_os_release` reason) plus real
+`scan.sh image` subprocesses against a synthetic RHEL image carrying a real sqlite `rpmdb.sqlite` (built
+at test time with `sqlite3`, never a committed binary blob, mirroring `tests/suites/image-rpm.sh`'s own
+fixture discipline): an epoch-carrying vulnerable package fires, is quiet once the installed release
+segment reaches the fixed one, the run-over-run diff reads the patched CVE as `fixed`, and BOTH honesty
+branches - no rpm database at all, and a real database with `sqlite3` removed from PATH - each report
+their own distinct `IMAGE-COV-UNKNOWN_DISTRO-01` detail rather than a silent clean scan.
+`tests/suites/vendor-engines-advisories.sh` section D6 is the importer's own proof, mirroring D3-D5's
+alpine/debian/ubuntu coverage - including that a same-advisory `Debian:12` entry never bleeds into the
+exact-match `Red Hat` rows, and that re-running `redhat` replaces the WHOLE `Red Hat` namespace without
+disturbing a same-named package under a different ecosystem.
 
 ## Tests
 

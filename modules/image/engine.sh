@@ -76,10 +76,12 @@ fi
 source "${BASH_SOURCE[0]%/*}/acquire.sh"
 
 # distro/apk.sh (IMG-04/IMG-06), distro/apk_version.sh (IMG-05),
-# distro/dpkg.sh (IMG-07/IMG-09) and distro/dpkg_version.sh (IMG-08), and
-# config.sh (IMG-06) - all five are LEAVES (apk_version.sh's and
-# dpkg_version.sh's own headers: "adds no edge to the shellcheck -x source
-# graph ... keep it that way"; the other three source nothing either), so
+# distro/dpkg.sh (IMG-07/IMG-09), distro/dpkg_version.sh (IMG-08),
+# distro/rpm.sh (IMG-12, extended with matching + emission by this ticket)
+# and distro/rpm_version.sh (the rpmvercmp comparator), and config.sh
+# (IMG-06) - all seven are LEAVES (apk_version.sh's, dpkg_version.sh's and
+# rpm_version.sh's own headers: "adds no edge to the shellcheck -x source
+# graph ... keep it that way"; the other four source nothing either), so
 # adding them here costs nothing like the diamond/cycle measurements
 # AGENTS.md records for a real hub. They are sourced from the module's one
 # function-library hub, exactly like acquire.sh above, rather than from
@@ -92,6 +94,10 @@ source "${BASH_SOURCE[0]%/*}/distro/apk_version.sh"
 source "${BASH_SOURCE[0]%/*}/distro/dpkg.sh"
 # shellcheck source=modules/image/distro/dpkg_version.sh
 source "${BASH_SOURCE[0]%/*}/distro/dpkg_version.sh"
+# shellcheck source=modules/image/distro/rpm.sh
+source "${BASH_SOURCE[0]%/*}/distro/rpm.sh"
+# shellcheck source=modules/image/distro/rpm_version.sh
+source "${BASH_SOURCE[0]%/*}/distro/rpm_version.sh"
 # shellcheck source=modules/image/config.sh
 source "${BASH_SOURCE[0]%/*}/config.sh"
 # langdeps.sh (IMG-11) is sourced from the module's one function-library hub
@@ -221,6 +227,37 @@ image_distro_ecosystem_resolve() {
       _IMAGE_DISTRO_REASON=os_release_version_unparseable
       return 1
       ;;
+    rhel | centos | rocky | almalinux | fedora)
+      # Red Hat's own OSV.dev namespace is a single FLAT ecosystem string
+      # with NO per-release variant (report.md §2.3: "Alpine:v3.18,
+      # Debian:12, Ubuntu:22.04, Red Hat" - the last one carries no colon or
+      # version suffix at all, unlike its three siblings). A real OSV Red
+      # Hat advisory's own `versions` entries already carry the RHEL STREAM
+      # inside the rpm RELEASE field itself (e.g. `...el8`, `...el9`), so
+      # the major/minor release this image's own /etc/os-release reports
+      # plays no role in picking the ecosystem KEY - only in which rows the
+      # operator chose to import, and in whether an installed package's own
+      # release string (compared via rpm_version.sh's rpmvercmp, which
+      # orders `.el8` against `.el9` like any other alphanumeric segment)
+      # actually matches. `centos`/`rocky`/`almalinux`/`fedora` share the
+      # identical ecosystem for the same reason report.md's task brief
+      # names all five together: each is a rebuild or close sibling of
+      # RHEL's own rpm package stream, and this project has no evidence
+      # OSV.dev publishes a separate namespace for any of them.
+      #
+      # VERSION_ID is deliberately NOT required to be numeric/parseable
+      # here, unlike the alpine/debian/ubuntu branches above: those need a
+      # parseable release to BUILD the ecosystem key at all, so an
+      # unparseable one genuinely leaves no key to look up (report.md
+      # §4.3's "guessing 'latest' produces a false negative" argument).
+      # Red Hat's key needs no release component, so there is nothing to
+      # guess - an RHEL-family image with a missing or oddly-formatted
+      # VERSION_ID still names a real, coverable ecosystem. VERSION_ID is
+      # still recorded in this module's own `notes` fact (modules/image/
+      # run.sh) for operator visibility, whatever it contains.
+      _IMAGE_DISTRO_ECOSYSTEM='Red Hat'
+      return 0
+      ;;
     *)
       _IMAGE_DISTRO_REASON=distro_not_yet_supported
       return 1
@@ -313,24 +350,49 @@ packages_checked: 0"
 #
 # MANAGER is required (IMG-09 widened this function from apk-only to also
 # cover dpkg's mirror-image case, report.md §2.1) - the wording below is
-# generic on purpose so a future rpm caller (IMG-12) needs no third copy of
-# this function, only its own MANAGER value.
+# generic on purpose, which is what let this ticket's own rpm caller reuse
+# it with only its own MANAGER value and one new DETAIL-aware branch below.
+#
+# `rpm_db_binary_format` gets its OWN title/remediation, rather than sharing
+# the generic "no $manager package database in any layer" wording apk/dpkg
+# always use: this detail means an rpm database WAS found - report.md
+# §2.1's rpm row and `modules/image/distro/rpm.sh`'s own header - either
+# sqlite3 is absent from PATH (the `requires-cmd: sqlite3` gate), or the
+# database is one of the two genuinely-binary shapes (Berkeley DB / ndb)
+# this project has no reader for, or it is the modern sqlite backend's own
+# REAL two-column native schema, whose per-package NEVRA lives inside an
+# opaque blob rather than queryable columns. Reusing the "no database at
+# all" wording for that case would misreport a found-but-unreadable
+# database as an absent one - a distinct fact this project's own honesty
+# doctrine (report.md §4.2/§4.3) says must not be collapsed into a
+# different reason's prose. apk and dpkg never set this detail, so their
+# behaviour here is unchanged.
 image_report_unknown_distro() {
   local image_id=$1 ecosystem=$2 manager=$3 detail=${4:-no_package_db_found}
   local db_path=''
   case $manager in
     apk) db_path='lib/apk/db/installed' ;;
     dpkg) db_path='var/lib/dpkg/status' ;;
+    rpm) db_path='var/lib/rpm/rpmdb.sqlite (or the older var/lib/rpm/Packages / Packages.db)' ;;
   esac
 
-  log_warn "image: no recognised $manager package database in any layer of image '$image_id' (resolved ecosystem: $ecosystem, detail=$detail) - NO package was checked"
+  local title remediation
+  if [[ $detail == rpm_db_binary_format ]]; then
+    title="Container image scanning did NOT run for '$ecosystem' - this image's rpm database exists but is not text-readable ($detail)"
+    remediation="This image's own /etc/os-release names $ecosystem and an rpm database exists at ${db_path:-its usual path}, but this scanner could not read it as text - either sqlite3 is not on this scanning host's PATH ('requires-cmd: sqlite3', modules/image/checks-rpm.rules), or the database is one of the two binary formats (Berkeley DB / ndb) this project has no reader for, or it is the modern sqlite backend's real two-column native schema, which stores every package's NEVRA inside an opaque per-row blob rather than as queryable columns (modules/image/distro/rpm.sh's own header has the full detail). Install sqlite3 on the scanning host if it is absent; until then this run says NOTHING about this image's installed rpm packages."
+    log_warn "image: $manager package database in image '$image_id' exists but is not text-readable (resolved ecosystem: $ecosystem, detail=$detail) - NO package was checked"
+  else
+    title="Container image scanning did NOT run for '$ecosystem' - no $manager package database in any layer of this image"
+    remediation="This image's own /etc/os-release names $ecosystem, but no ${db_path:-package database} member exists in any layer - typically a distroless or scratch-based final build stage. If this image really does ship $manager-managed packages, check whether the final build stage strips ${db_path:-the package database}. Until it is present, this run says NOTHING about this image's installed packages."
+    log_warn "image: no recognised $manager package database in any layer of image '$image_id' (resolved ecosystem: $ecosystem, detail=$detail) - NO package was checked"
+  fi
   run_record coverage_reduction "module=image reason=$detail image=$image_id ecosystem=$ecosystem"
   run_record checks_run IMAGE-COV-UNKNOWN_DISTRO-01
 
   finding_new
   finding_set check_id IMAGE-COV-UNKNOWN_DISTRO-01
   finding_set module image
-  finding_set title "Container image scanning did NOT run for '$ecosystem' - no $manager package database in any layer of this image"
+  finding_set title "$title"
   finding_set base_severity info
   finding_set confidence high
   finding_set cwe none
@@ -338,7 +400,7 @@ image_report_unknown_distro() {
   finding_set cell "$image_id"
   finding_set loc_image_id "$image_id"
   finding_set loc_ecosystem "$ecosystem"
-  finding_set remediation "This image's own /etc/os-release names $ecosystem, but no ${db_path:-package database} member exists in any layer - typically a distroless or scratch-based final build stage. If this image really does ship $manager-managed packages, check whether the final build stage strips ${db_path:-the package database}. Until it is present, this run says NOTHING about this image's installed packages."
+  finding_set remediation "$remediation"
   finding_set_evidence "ecosystem: $ecosystem
 image: $image_id
 manager: $manager

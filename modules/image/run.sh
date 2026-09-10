@@ -6,7 +6,9 @@
 # completing the v1 Alpine slice, by IMG-06; wired to real dpkg enumeration +
 # matching, completing the Debian/Ubuntu slice, by IMG-09; widened with the
 # two remaining IMAGE-CFG-* config-blob checks (`IMAGE-CFG-EXPOSED_PORTS-01`,
-# `IMAGE-CFG-MUTABLE_BASE_REF-01`) by IMG-10).
+# `IMAGE-CFG-MUTABLE_BASE_REF-01`) by IMG-10; wired to real rpm enumeration +
+# matching, completing the RHEL/Fedora slice and closing out §5.3's IMG-12
+# row, by the last rpm ticket).
 #
 # Contract (modules/sast/run.sh's own header, reused verbatim by every
 # module in this tree): scan.sh's `scan_dispatch image` does a plain
@@ -54,8 +56,13 @@
 # a bounded, declared extraction of conventional manifest locations,
 # re-emitted under `IMAGE-LANGDEP-VULNERABLE_DEP-01` with this image's own
 # `image-id` cell rather than a host path-root (that file's own header has
-# the full reasoning). rpm (IMG-12) is out of scope for run.sh's own
-# distro-ecosystem branch below.
+# the full reasoning). The last rpm ticket then completes the RHEL/Fedora
+# slice the same way IMG-09 did for Debian/Ubuntu: it widens the metadata
+# collected to also include rpm's own three candidate database paths, and
+# wires `modules/image/distro/rpm.sh`'s enumerator+matcher (IMG-12, extended
+# by this ticket) and `rpm_version.sh`'s rpmvercmp comparator into a third
+# sibling branch of the ecosystem dispatch below, dispatched on
+# `rhel`/`centos`/`rocky`/`almalinux`/`fedora`.
 #
 # THE HONESTY THIS FILE OWES ITS READER IS ITS ACTUAL DELIVERABLE.  A run
 # that does nothing must not leave a report that reads like a clean scan -
@@ -207,19 +214,24 @@ _image_run_module() {
       # image_collect_metadata is the module's one acquisition entry point
       # (acquire.sh's own header). IMG-06 widened the wanted set from
       # IMG-03's original two os-release candidates to also ask for
-      # lib/apk/db/installed; IMG-09 widens it again to also ask for
-      # var/lib/dpkg/status, now that this module has a real dpkg enumerator
-      # (IMG-07), comparator (IMG-08) and Debian/Ubuntu advisory ecosystem
-      # (this ticket) to feed it to. Both package-manager paths are always
-      # requested regardless of which distro's os-release this image turns
-      # out to name - the ecosystem-dispatch branch below is what decides
-      # which one is actually READ, and asking for both costs nothing (an
-      # absent member is the ordinary case for a distro that does not carry
-      # it, per acquire.sh's own "tar is the new grep" discipline).
+      # lib/apk/db/installed; IMG-09 widened it again to also ask for
+      # var/lib/dpkg/status; this ticket widens it a third time to also ask
+      # for rpm's own three candidate database paths
+      # (var/lib/rpm/rpmdb.sqlite, var/lib/rpm/Packages,
+      # var/lib/rpm/Packages.db - report.md §2.1's table, at most one of
+      # which any real image ever carries), now that this module has a real
+      # rpm enumerator+matcher (IMG-12, extended by this ticket) and
+      # comparator (rpm_version.sh) to feed it to. Every package-manager
+      # path is always requested regardless of which distro's os-release
+      # this image turns out to name - the ecosystem-dispatch branch below
+      # is what decides which one is actually READ, and asking for all of
+      # them costs nothing (an absent member is the ordinary case for a
+      # distro that does not carry it, per acquire.sh's own "tar is the new
+      # grep" discipline).
       local metadir
       metadir=$(mktemp -d "${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/scoursh-image-meta.XXXXXX")
       chmod 700 "$metadir" 2>/dev/null || true
-      image_collect_metadata "$kind" "$path" "$metadir" etc/os-release usr/lib/os-release lib/apk/db/installed var/lib/dpkg/status >/dev/null
+      image_collect_metadata "$kind" "$path" "$metadir" etc/os-release usr/lib/os-release lib/apk/db/installed var/lib/dpkg/status var/lib/rpm/rpmdb.sqlite var/lib/rpm/Packages var/lib/rpm/Packages.db >/dev/null
 
       # report.md §4.3's `layer_unreadable` reduction: any wanted path a
       # refusal stopped (an unreadable layer, or a malformed member) is a
@@ -281,19 +293,24 @@ _image_run_module() {
           fi
         else
           # IMG-06 wired real apk enumeration + matching for Alpine; IMG-09
-          # adds the mirror-image dpkg branch for Debian/Ubuntu, dispatched
-          # on the distro `ID` image_distro_ecosystem_resolve already
-          # resolved (never on the ecosystem string itself, which is the
-          # advisory-db KEY, not the package-manager SELECTOR - Alpine and
-          # a future rpm-based distro could in principle share a prefix
-          # scheme some day, and this dispatch must not assume otherwise).
-          # apk_scan_installed/dpkg_scan_installed each enumerate their own
-          # already-extracted database, look every installed package up
-          # against data/advisories.db under this image's own resolved
-          # ecosystem (dpkg's lookup key is the RESOLVED SOURCE package
-          # name, report.md §2.1 trap 2 - modules/image/distro/dpkg.sh's own
-          # section 2 header has the full reasoning), and emit
-          # IMAGE-PKG-VULNERABLE_OS_PACKAGE-01/-02 respectively per
+          # added the mirror-image dpkg branch for Debian/Ubuntu; this
+          # ticket adds a third, rpm, branch for RHEL/Fedora - all three
+          # dispatched on the distro `ID` image_distro_ecosystem_resolve
+          # already resolved (never on the ecosystem string itself, which
+          # is the advisory-db KEY, not the package-manager SELECTOR -
+          # Alpine's and Red Hat's own OSV.dev namespaces are shaped
+          # nothing alike, one per-release-prefixed and one flat, and this
+          # dispatch must not assume otherwise).
+          # apk_scan_installed/dpkg_scan_installed/rpm_scan_installed each
+          # enumerate their own already-extracted database, look every
+          # installed package up against data/advisories.db under this
+          # image's own resolved ecosystem (dpkg's lookup key is the
+          # RESOLVED SOURCE package name, report.md §2.1 trap 2 -
+          # modules/image/distro/dpkg.sh's own section 2 header has the
+          # full reasoning; rpm's lookup key is the plain installed package
+          # name - modules/image/distro/rpm.sh's own section 2 header has
+          # that reasoning), and emit
+          # IMAGE-PKG-VULNERABLE_OS_PACKAGE-01/-02/-03 respectively per
           # still-vulnerable (package, advisory) pair.
           rc=0
           case $distro_id in
@@ -322,6 +339,32 @@ _image_run_module() {
                 image_report_unknown_distro "$image_id" "$ecosystem" dpkg "${_DPKG_INSTALLED_REASON:-no_package_db_found}"
               elif (( _DPKG_SCAN_SKIPPED > 0 )); then
                 run_record coverage_reduction "module=image reason=package_version_unparseable image=$image_id ecosystem=$ecosystem count=$_DPKG_SCAN_SKIPPED"
+              fi
+              ;;
+            rhel | centos | rocky | almalinux | fedora)
+              # rpm's own enumerator takes THREE candidate paths (section 1
+              # of modules/image/distro/rpm.sh's own header explains why -
+              # the modern sqlite backend and the two older binary shapes,
+              # at most one of which any real image ever carries), unlike
+              # apk's and dpkg's single FILE argument above.
+              rpm_scan_installed \
+                "$metadir/var/lib/rpm/rpmdb.sqlite" \
+                "$metadir/var/lib/rpm/Packages" \
+                "$metadir/var/lib/rpm/Packages.db" \
+                "$image_id" "$ecosystem" || rc=$?
+              if (( rc != 0 )); then
+                # No rpm database in ANY layer (no_package_db_found), OR one
+                # was found but this scanner cannot read it as text
+                # (rpm_db_binary_format: sqlite3 absent from PATH, or a
+                # genuinely binary Berkeley-DB/ndb file, or the real sqlite
+                # backend's own two-column native schema) - both are
+                # `modules/image/distro/rpm.sh`'s own declared reasons, and
+                # `image_report_unknown_distro` gives the second its own
+                # detail-aware wording rather than reusing "no database at
+                # all" for a database that was actually found.
+                image_report_unknown_distro "$image_id" "$ecosystem" rpm "${_RPM_INSTALLED_REASON:-no_package_db_found}"
+              elif (( _RPM_SCAN_SKIPPED > 0 )); then
+                run_record coverage_reduction "module=image reason=package_version_unparseable image=$image_id ecosystem=$ecosystem count=$_RPM_SCAN_SKIPPED"
               fi
               ;;
           esac

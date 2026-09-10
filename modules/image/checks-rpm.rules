@@ -26,17 +26,16 @@
 # file, mirroring `checks-dpkg.rules`' own `script: distro/dpkg.sh` before
 # a comparator/matcher landed on top of it.
 #
-# THIS CHECK DOES NOT FIRE YET (IMG-12's own scope: rpm enumeration only -
-# no comparator, no advisories, no finding).  `distro/rpm.sh` ships an
-# enumerator and no comparator, and nothing in `modules/image/run.sh` calls
-# it - the three rpm database paths are extracted by
-# `modules/image/acquire.sh`'s `IMAGE_METADATA_PATHS` (this ticket adds
-# them) but are not yet parsed by anything `run.sh` reaches.  This is the
-# identical "registered, not yet reachable" shape `checks-dpkg.rules` itself
-# was in from IMG-07 through IMG-08/09.  `checks_registry_load` globs every
-# `*.rules` file with no reachability requirement, so a check id registered
-# here today costs nothing and is already correct the day a future rpm
-# comparator/matcher ticket lands.
+# THIS CHECK NOW FIRES.  IMG-12 shipped `distro/rpm.sh` with an enumerator
+# only - no comparator, no advisories, no finding, the identical
+# "registered, not yet reachable" shape `checks-dpkg.rules` itself was in
+# from IMG-07 through IMG-08/09.  The last rpm ticket (the Red Hat advisory
+# ecosystem plus wiring rpm enumeration + rpmvercmp into the
+# vulnerable-package finding path) closed that gap: `distro/rpm.sh`'s own
+# section 2 now matches every enumerated rpm package against
+# `data/advisories.db`'s `Red Hat` ecosystem rows via `rpm_version.sh`'s
+# comparator, and `modules/image/run.sh` dispatches to it for every
+# `rhel`/`centos`/`rocky`/`almalinux`/`fedora` os-release `ID`.
 #
 # `requires-cmd: sqlite3` - the modern rpm database backend (Fedora 33+,
 # report.md §2.1) is a sqlite file, and this project ships no sqlite3

@@ -408,13 +408,21 @@ Commands:
                        per-release Ubuntu namespace (Ubuntu:XX.YY) from
                        SCOURSH_ADVISORY_UBUNTU_IDS.  Same shape as 'alpine' in
                        every other respect.
+  redhat              the container-image module's Red Hat/rpm importer (the
+                       last rpm ticket): a single FLAT 'Red Hat' namespace
+                       (no per-release suffix, unlike 'alpine'/'debian'/
+                       'ubuntu') from SCOURSH_ADVISORY_REDHAT_IDS.  Writes
+                       BOTH data/advisories.db and data/versions.db, and
+                       covers rhel/centos/rocky/almalinux/fedora images
+                       alike (modules/image/engine.sh's
+                       image_distro_ecosystem_resolve).
   bulk ...            import a WHOLE SCA ecosystem's published OSV.dev export
                        in one command, instead of naming advisory ids one at a
                        time; run 'advisories bulk --help' for its own usage,
                        including how artifact integrity is handled.  This is
                        the command that populates a usable database.  Scoped
-                       to the six SCA ecosystems; 'banner', 'alpine', 'debian'
-                       and 'ubuntu' have no bulk path.
+                       to the six SCA ecosystems; 'banner', 'alpine', 'debian',
+                       'ubuntu' and 'redhat' have no bulk path.
   -h, --help          print this message and exit 0
 
 Every SCA ecosystem reads its advisory ids from an operator-supplied env var -
@@ -422,8 +430,9 @@ SCOURSH_ADVISORY_NPM_IDS, SCOURSH_ADVISORY_PYPI_IDS,
 SCOURSH_ADVISORY_MAVEN_IDS, SCOURSH_ADVISORY_GO_IDS,
 SCOURSH_ADVISORY_RUBYGEMS_IDS, SCOURSH_ADVISORY_COMPOSER_IDS - and 'banner'
 reads SCOURSH_ADVISORY_BANNER_IDS, 'alpine' reads SCOURSH_ADVISORY_ALPINE_IDS,
-'debian' reads SCOURSH_ADVISORY_DEBIAN_IDS, and 'ubuntu' reads
-SCOURSH_ADVISORY_UBUNTU_IDS, the identical shape.  Each is a
+'debian' reads SCOURSH_ADVISORY_DEBIAN_IDS, 'ubuntu' reads
+SCOURSH_ADVISORY_UBUNTU_IDS, and 'redhat' reads
+SCOURSH_ADVISORY_REDHAT_IDS, the identical shape.  Each is a
 comma/space-separated list of real OSV.dev advisory ids (e.g.
 "GHSA-xxxx-xxxx-xxxx", "CVE-2021-41773") the operator identified from that
 ecosystem's (or product's) own advisory source.  This script never guesses or
@@ -527,6 +536,18 @@ _veng_advisories_osv_ecosystem() {
     alpine) printf 'Alpine:*' ;;
     debian) printf 'Debian:*' ;;
     ubuntu) printf 'Ubuntu:*' ;;
+    # 'Red Hat' (the rpm advisory ecosystem, the last rpm ticket): UNLIKE
+    # alpine/debian/ubuntu immediately above, this is an EXACT match, not a
+    # ':*' per-release prefix sentinel - OSV.dev's own Red Hat namespace is
+    # a single FLAT ecosystem string with no per-release variant (report.md
+    # §2.3: "Alpine:v3.18, Debian:12, Ubuntu:22.04, Red Hat" - the last one
+    # carries no colon/version suffix). A real advisory's own `versions`
+    # entries already carry the RHEL stream inside the rpm RELEASE field
+    # itself (`...el8`, `...el9`), so this ecosystem needs no wildcard
+    # sentinel and falls through to _veng_advisories_expand_one's generic
+    # (fixed-ecosystem) branch, the identical shape every one of the six
+    # SCA ecosystems above already uses.
+    'Red Hat') printf 'Red Hat' ;;
     *) die "$SCOURSH_EXIT_INPUT" "advisories: unknown ecosystem '$1'" ;;
   esac
 }
@@ -547,6 +568,7 @@ _veng_advisories_env_var() {
     alpine) printf 'SCOURSH_ADVISORY_ALPINE_IDS' ;;
     debian) printf 'SCOURSH_ADVISORY_DEBIAN_IDS' ;;
     ubuntu) printf 'SCOURSH_ADVISORY_UBUNTU_IDS' ;;
+    'Red Hat') printf 'SCOURSH_ADVISORY_REDHAT_IDS' ;;
     *) die "$SCOURSH_EXIT_INPUT" "advisories: unknown ecosystem '$1'" ;;
   esac
 }
@@ -593,7 +615,14 @@ _veng_advisories_normalize_name() {
     # Source:-vs-Package: resolution produces at scan time), so there is
     # nothing to normalise here either - a verbatim pass-through, mirroring
     # alpine.
-    alpine | debian | ubuntu) printf '%s' "$raw" ;;
+    #
+    # 'Red Hat' (the last rpm ticket): OSV.dev keys Red Hat advisories by
+    # the rpm package's own NAME, and `modules/image/distro/rpm.sh`'s own
+    # enumerator reads that identical name straight off the rpm database
+    # with no source/binary distinction to resolve (that file's own section
+    # 2 header explains why rpm has no dpkg-style Source:-vs-Package: trap)
+    # - another verbatim pass-through.
+    alpine | debian | ubuntu | 'Red Hat') printf '%s' "$raw" ;;
     *) die "$SCOURSH_EXIT_INPUT" "advisories: unknown ecosystem '$db_eco'" ;;
   esac
 }
@@ -1578,6 +1607,33 @@ veng_advisories_ubuntu() {
   _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$rows_new.summaries"
 }
 
+# veng_advisories_redhat - the container-image module's rpm advisory
+# importer (the last rpm ticket: "complete the rpm slice end-to-end" - the
+# Red Hat advisory ecosystem plus wiring rpm enumeration + rpmvercmp into
+# the vulnerable-package finding path). It is the RHEL/Fedora sibling to
+# veng_advisories_alpine/debian/ubuntu above, but shaped like the SIX SCA
+# ecosystems (_veng_advisories_run) rather than like its three per-release
+# distro siblings: OSV.dev's own Red Hat namespace is a single FLAT
+# ecosystem string with no per-release variant at all
+# (_veng_advisories_osv_ecosystem's own 'Red Hat' case has the full
+# reasoning - a real advisory's own `versions` entries already carry the
+# RHEL stream inside the rpm RELEASE field itself), so it needs none of
+# alpine/debian/ubuntu's ':*' prefix sentinel or
+# `_veng_advisories_write_db_prefix` machinery. It reads
+# SCOURSH_ADVISORY_REDHAT_IDS and writes exact-match `Red Hat` rows to BOTH
+# data/advisories.db and data/versions.db through the identical
+# `_veng_advisories_run` driver npm/pypi/maven/Go/RubyGems/composer already
+# share - the same "same shape and the same rule" reasoning
+# veng_advisories_alpine's own header gives for writing both files, unlike
+# `banner`'s versions.db-only shape.
+#
+# Deliberately NOT one of VENG_ADVISORY_REGISTRY's entries, reached from its
+# own `redhat` case in veng_advisories_main instead - the identical reason
+# veng_advisories_alpine's own header gives: `advisories --list`/`--all` and
+# `advisories bulk --all` are scoped to docs/DESIGN.md §6.5's six SCA
+# ecosystems, and this is a distro ecosystem, not one of them.
+veng_advisories_redhat() { _veng_advisories_run 'Red Hat'; }
+
 veng_advisories_list() {
   local name
   for name in "${!VENG_ADVISORY_REGISTRY[@]}"; do
@@ -2265,6 +2321,11 @@ veng_advisories_main() {
       ;;
     ubuntu)
       veng_advisories_ubuntu
+      ;;
+    redhat)
+      # Also a named command, not routed through the registry - see
+      # veng_advisories_redhat's own header for why (the last rpm ticket).
+      veng_advisories_redhat
       ;;
     --*)
       veng_advisories_usage >&2
