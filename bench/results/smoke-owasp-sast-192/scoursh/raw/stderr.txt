@@ -1,0 +1,2 @@
+2026-09-10T09:22:19Z info  sast: scanning 192 files under <SCAN_ROOT>
+2026-09-10T09:23:31Z info  scan complete in 88s - report: <BENCH>/results/smoke-owasp-sast-192/scoursh/raw/run

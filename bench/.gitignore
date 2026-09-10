@@ -1,0 +1,5 @@
+# Fetched corpora are pinned in bench/corpus.lock and NEVER committed - both
+# because they are large and because at least one of them (OWASP Benchmark,
+# GPL-2.0) carries a licence this Apache-2.0 tree must not absorb.  See the
+# licence paragraph at the top of bench/corpus.lock.
+corpora/

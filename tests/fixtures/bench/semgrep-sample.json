@@ -1,0 +1,342 @@
+{
+ "errors": [],
+ "paths": {
+  "scanned": []
+ },
+ "results": [
+  {
+   "check_id": "java.lang.security.httpservlet-path-traversal.httpservlet-path-traversal",
+   "end": {
+    "col": 74,
+    "line": 72,
+    "offset": 2969
+   },
+   "extra": {
+    "engine_kind": "OSS",
+    "fingerprint": "requires login",
+    "lines": "requires login",
+    "message": "Detected a potential path traversal. A malicious actor could control the location of this file, to include going backwards in the directory with '../'. To address this, ensure that user-controlled variables in file paths are sanitized. You may also consider using a utility method such as org.apache.commons.io.FilenameUtils.getName(...) to only retrieve the file name from the path.",
+    "metadata": {
+     "category": "security",
+     "confidence": "MEDIUM",
+     "cwe": [
+      "CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')"
+     ],
+     "cwe2021-top25": true,
+     "cwe2022-top25": true,
+     "impact": "MEDIUM",
+     "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+     "likelihood": "HIGH",
+     "owasp": [
+      "A05:2017 - Broken Access Control",
+      "A01:2021 - Broken Access Control",
+      "A01:2025 - Broken Access Control"
+     ],
+     "references": [
+      "https://www.owasp.org/index.php/Path_Traversal"
+     ],
+     "shortlink": "https://sg.run/oxXN",
+     "source": "https://semgrep.dev/r/java.lang.security.httpservlet-path-traversal.httpservlet-path-traversal",
+     "source-rule-url": "https://find-sec-bugs.github.io/bugs.htm#PATH_TRAVERSAL_IN",
+     "subcategory": [
+      "vuln"
+     ],
+     "technology": [
+      "java"
+     ],
+     "vulnerability_class": [
+      "Path Traversal"
+     ]
+    },
+    "severity": "ERROR",
+    "validation_state": "NO_VALIDATOR"
+   },
+   "path": "/Users/abhi-sama/.treehouse/scoursh-1e3d3e/3/scoursh/bench/corpora/_samples/sast-192/root/src/main/java/org/owasp/benchmark/testcode/BenchmarkTest00001.java",
+   "start": {
+    "col": 19,
+    "line": 72,
+    "offset": 2914
+   }
+  },
+  {
+   "check_id": "java.lang.security.audit.crypto.des-is-deprecated.des-is-deprecated",
+   "end": {
+    "col": 91,
+    "line": 63,
+    "offset": 2534
+   },
+   "extra": {
+    "engine_kind": "OSS",
+    "fingerprint": "requires login",
+    "fix": "\"AES/GCM/NoPadding\"",
+    "lines": "requires login",
+    "message": "DES is considered deprecated. AES is the recommended cipher. Upgrade to use AES. See https://www.nist.gov/news-events/news/2005/06/nist-withdraws-outdated-data-encryption-standard for more information.",
+    "metadata": {
+     "asvs": {
+      "control_id": "6.2.5 Insecure Algorithm",
+      "control_url": "https://github.com/OWASP/ASVS/blob/master/4.0/en/0x14-V6-Cryptography.md#v62-algorithms",
+      "section": "V6 Stored Cryptography Verification Requirements",
+      "version": "4"
+     },
+     "category": "security",
+     "confidence": "HIGH",
+     "cwe": [
+      "CWE-326: Inadequate Encryption Strength"
+     ],
+     "functional-categories": [
+      "crypto::search::symmetric-algorithm::javax.crypto"
+     ],
+     "impact": "MEDIUM",
+     "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+     "likelihood": "MEDIUM",
+     "owasp": [
+      "A03:2017 - Sensitive Data Exposure",
+      "A02:2021 - Cryptographic Failures",
+      "A04:2025 - Cryptographic Failures"
+     ],
+     "references": [
+      "https://www.nist.gov/news-events/news/2005/06/nist-withdraws-outdated-data-encryption-standard",
+      "https://cheatsheetseries.owasp.org/cheatsheets/Cryptographic_Storage_Cheat_Sheet.html#algorithms"
+     ],
+     "shortlink": "https://sg.run/5Q73",
+     "source": "https://semgrep.dev/r/java.lang.security.audit.crypto.des-is-deprecated.des-is-deprecated",
+     "source-rule-url": "https://find-sec-bugs.github.io/bugs.htm#DES_USAGE",
+     "subcategory": [
+      "vuln"
+     ],
+     "technology": [
+      "java"
+     ],
+     "vulnerability_class": [
+      "Cryptographic Issues"
+     ]
+    },
+    "severity": "WARNING",
+    "validation_state": "NO_VALIDATOR"
+   },
+   "path": "/Users/abhi-sama/.treehouse/scoursh-1e3d3e/3/scoursh/bench/corpora/_samples/sast-192/root/src/main/java/org/owasp/benchmark/testcode/BenchmarkTest00005.java",
+   "start": {
+    "col": 69,
+    "line": 63,
+    "offset": 2512
+   }
+  },
+  {
+   "check_id": "java.lang.security.audit.tainted-cmd-from-http-request.tainted-cmd-from-http-request",
+   "end": {
+    "col": 38,
+    "line": 62,
+    "offset": 2305
+   },
+   "extra": {
+    "engine_kind": "OSS",
+    "fingerprint": "requires login",
+    "lines": "requires login",
+    "message": "Detected input from a HTTPServletRequest going into a 'ProcessBuilder' or 'exec' command. This could lead to command injection if variables passed into the exec commands are not properly sanitized. Instead, avoid using these OS commands with user-supplied input, or, if you must use these commands, use a whitelist of specific values.",
+    "metadata": {
+     "category": "security",
+     "confidence": "MEDIUM",
+     "cwe": [
+      "CWE-78: Improper Neutralization of Special Elements used in an OS Command ('OS Command Injection')"
+     ],
+     "cwe2021-top25": true,
+     "cwe2022-top25": true,
+     "impact": "MEDIUM",
+     "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+     "likelihood": "MEDIUM",
+     "owasp": [
+      "A01:2017 - Injection",
+      "A03:2021 - Injection",
+      "A05:2025 - Injection"
+     ],
+     "references": [
+      "https://owasp.org/Top10/A03_2021-Injection"
+     ],
+     "shortlink": "https://sg.run/8zPN",
+     "source": "https://semgrep.dev/r/java.lang.security.audit.tainted-cmd-from-http-request.tainted-cmd-from-http-request",
+     "subcategory": [
+      "vuln"
+     ],
+     "technology": [
+      "java"
+     ],
+     "vulnerability_class": [
+      "Command Injection"
+     ]
+    },
+    "severity": "ERROR",
+    "validation_state": "NO_VALIDATOR"
+   },
+   "path": "/Users/abhi-sama/.treehouse/scoursh-1e3d3e/3/scoursh/bench/corpora/_samples/sast-192/root/src/main/java/org/owasp/benchmark/testcode/BenchmarkTest00006.java",
+   "start": {
+    "col": 9,
+    "line": 62,
+    "offset": 2276
+   }
+  },
+  {
+   "check_id": "java.lang.security.audit.sqli.tainted-sql-from-http-request.tainted-sql-from-http-request",
+   "end": {
+    "col": 80,
+    "line": 57,
+    "offset": 2200
+   },
+   "extra": {
+    "engine_kind": "OSS",
+    "fingerprint": "requires login",
+    "lines": "requires login",
+    "message": "Detected input from a HTTPServletRequest going into a SQL sink or statement. This could lead to SQL injection if variables in the SQL statement are not properly sanitized. Use parameterized SQL queries or properly sanitize user input instead.",
+    "metadata": {
+     "category": "security",
+     "confidence": "HIGH",
+     "cwe": [
+      "CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"
+     ],
+     "cwe2021-top25": true,
+     "cwe2022-top25": true,
+     "impact": "MEDIUM",
+     "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+     "likelihood": "HIGH",
+     "owasp": [
+      "A01:2017 - Injection",
+      "A03:2021 - Injection",
+      "A05:2025 - Injection"
+     ],
+     "references": [
+      "https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html",
+      "https://owasp.org/www-community/attacks/SQL_Injection"
+     ],
+     "shortlink": "https://sg.run/Lg56",
+     "source": "https://semgrep.dev/r/java.lang.security.audit.sqli.tainted-sql-from-http-request.tainted-sql-from-http-request",
+     "subcategory": [
+      "vuln"
+     ],
+     "technology": [
+      "sql",
+      "java",
+      "servlets",
+      "spring"
+     ],
+     "vulnerability_class": [
+      "SQL Injection"
+     ]
+    },
+    "severity": "WARNING",
+    "validation_state": "NO_VALIDATOR"
+   },
+   "path": "/Users/abhi-sama/.treehouse/scoursh-1e3d3e/3/scoursh/bench/corpora/_samples/sast-192/root/src/main/java/org/owasp/benchmark/testcode/BenchmarkTest00008.java",
+   "start": {
+    "col": 13,
+    "line": 57,
+    "offset": 2133
+   }
+  },
+  {
+   "check_id": "java.lang.security.audit.tainted-ldapi-from-http-request.tainted-ldapi-from-http-request",
+   "end": {
+    "col": 58,
+    "line": 68,
+    "offset": 2986
+   },
+   "extra": {
+    "engine_kind": "OSS",
+    "fingerprint": "requires login",
+    "lines": "requires login",
+    "message": "Detected input from a HTTPServletRequest going into an LDAP query. This could lead to LDAP injection if the input is not properly sanitized, which could result in attackers modifying objects in the LDAP tree structure. Ensure data passed to an LDAP query is not controllable or properly sanitize the data.",
+    "metadata": {
+     "category": "security",
+     "confidence": "MEDIUM",
+     "cwe": [
+      "CWE-90: Improper Neutralization of Special Elements used in an LDAP Query ('LDAP Injection')"
+     ],
+     "impact": "MEDIUM",
+     "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+     "likelihood": "MEDIUM",
+     "owasp": [
+      "A01:2017 - Injection",
+      "A03:2021 - Injection",
+      "A05:2025 - Injection"
+     ],
+     "references": [
+      "https://sensei.securecodewarrior.com/recipes/scw%3Ajava%3ALDAP-injection"
+     ],
+     "shortlink": "https://sg.run/gRg0",
+     "source": "https://semgrep.dev/r/java.lang.security.audit.tainted-ldapi-from-http-request.tainted-ldapi-from-http-request",
+     "subcategory": [
+      "vuln"
+     ],
+     "technology": [
+      "java"
+     ],
+     "vulnerability_class": [
+      "LDAP Injection"
+     ]
+    },
+    "severity": "WARNING",
+    "validation_state": "NO_VALIDATOR"
+   },
+   "path": "/Users/abhi-sama/.treehouse/scoursh-1e3d3e/3/scoursh/bench/corpora/_samples/sast-192/root/src/main/java/org/owasp/benchmark/testcode/BenchmarkTest00012.java",
+   "start": {
+    "col": 21,
+    "line": 68,
+    "offset": 2949
+   }
+  },
+  {
+   "check_id": "java.lang.security.audit.xss.no-direct-response-writer.no-direct-response-writer",
+   "end": {
+    "col": 69,
+    "line": 56,
+    "offset": 2176
+   },
+   "extra": {
+    "engine_kind": "OSS",
+    "fingerprint": "requires login",
+    "lines": "requires login",
+    "message": "Detected a request with potential user-input going into a OutputStream or Writer object. This bypasses any view or template environments, including HTML escaping, which may expose this application to cross-site scripting (XSS) vulnerabilities. Consider using a view technology such as JavaServer Faces (JSFs) which automatically escapes HTML views.",
+    "metadata": {
+     "category": "security",
+     "confidence": "MEDIUM",
+     "cwe": [
+      "CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"
+     ],
+     "cwe2021-top25": true,
+     "cwe2022-top25": true,
+     "impact": "MEDIUM",
+     "interfile": true,
+     "license": "Semgrep Rules License v1.0. For more details, visit semgrep.dev/legal/rules-license",
+     "likelihood": "HIGH",
+     "owasp": [
+      "A07:2017 - Cross-Site Scripting (XSS)",
+      "A03:2021 - Injection",
+      "A05:2025 - Injection"
+     ],
+     "references": [
+      "https://www3.ntu.edu.sg/home/ehchua/programming/java/JavaServerFaces.html"
+     ],
+     "shortlink": "https://sg.run/KlRL",
+     "source": "https://semgrep.dev/r/java.lang.security.audit.xss.no-direct-response-writer.no-direct-response-writer",
+     "subcategory": [
+      "vuln"
+     ],
+     "technology": [
+      "java",
+      "servlets"
+     ],
+     "vulnerability_class": [
+      "Cross-Site-Scripting (XSS)"
+     ]
+    },
+    "severity": "WARNING",
+    "validation_state": "NO_VALIDATOR"
+   },
+   "path": "/Users/abhi-sama/.treehouse/scoursh-1e3d3e/3/scoursh/bench/corpora/_samples/sast-192/root/src/main/java/org/owasp/benchmark/testcode/BenchmarkTest00013.java",
+   "start": {
+    "col": 9,
+    "line": 56,
+    "offset": 2116
+   }
+  }
+ ],
+ "version": "1.176.0"
+}
