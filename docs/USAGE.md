@@ -845,12 +845,61 @@ quietly stopped watching would be worse than no flag at all.
 Sampling can miss a connection that opens and closes between two polls.
 `tools/run-in-netns.sh` is the actual guarantee: a network namespace whose only route is the declared
 scope makes an out-of-scope connection categorically impossible rather than merely observable.
-**That tool is Linux-only and has no macOS equivalent** (it needs network namespaces, and
-root/`CAP_NET_ADMIN`+`CAP_SYS_ADMIN`).
-So on Linux you can have a detector and, separately, a guarantee; on macOS you have the detector and
-nothing behind it.
-Every `--paranoid` run states this same limitation in its own `run.json`, so the report never
-overstates what the flag proved.
+**That tool is Linux-only** (it needs network namespaces, and root/`CAP_NET_ADMIN`+`CAP_SYS_ADMIN`); on
+macOS its native peer is `tools/run-sandboxed.sh`, Tier A below, which enforces a narrower but still
+kernel-guaranteed claim, and its full-parity equivalent is Tier C, running the netns tool unmodified
+inside a Linux container.
+Every `--paranoid` run states its own detector/guarantee limitation in `run.json`, so the report never
+overstates what the flag alone proved.
+
+## Enforcement tiers beyond `--paranoid` - `tools/run-sandboxed.sh` and `tools/run-in-netns.sh`
+
+`--paranoid` samples; these two tools make an out-of-scope connection categorically impossible instead
+of merely observed. Neither is invoked by `scan.sh` - both are run deliberately, by an operator who
+wants a stronger guarantee than sampling can provide.
+
+### Tier A (macOS) - `tools/run-sandboxed.sh`, kernel-enforced deny-all-network
+
+```
+tools/run-sandboxed.sh -- scan.sh sast --path .
+```
+
+Runs `<command>` under the macOS Seatbelt profile `(version 1)(allow default)(deny network*)` via
+`sandbox-exec`: `<command>` and every descendant process it spawns is refused from opening any network
+socket at all, by the kernel, before a single packet is sent. This makes the claim above this
+section - `sast`/`sca`/`iac` make zero network calls - **kernel-enforced instead of merely asserted**,
+for exactly those three modules.
+
+Needs macOS and `sandbox-exec` on PATH; no root, no capabilities - that is this tier's whole advantage
+over the netns tool. It fails loud and never degrades: a non-Darwin host, an absent `sandbox-exec`, or a
+profile `sandbox-exec` itself rejects each refuse with exit `4` before `<command>` ever runs, rather than
+falling through to an unsandboxed run. There is no teardown surface at all - no namespace, no host state
+of any kind - so a crashed run leaves nothing behind.
+
+**This is a narrower guarantee than the netns tool's, on purpose.** Seatbelt's network filter accepts
+only `*` or `localhost` as a rule's host part - it restricts ports, never which remote host - so this
+profile cannot express "only the authorised scope target is reachable", only "no network access at
+all". That is exactly what `sast`/`sca`/`iac` need and nothing more; it is not a substitute for
+scope-restricted egress on `dast`/`cloud`/`network`, which need real, target-specific traffic to do
+their job. Wrapping one of those three in `tools/run-sandboxed.sh` gets zero network access and, most
+likely, an honest, loud failure on its own first request.
+
+### Tier C (macOS) - full netns parity via a Linux container, zero code
+
+`tools/run-in-netns.sh` runs **unmodified** inside a Linux container on a macOS host, given an image
+carrying `iproute2`, `iptables`, and `ip6tables`: Docker Desktop grants an unprivileged container
+`CAP_NET_ADMIN`+`CAP_SYS_ADMIN` and network-namespace creation, so the SAME kernel-level guarantee the
+Linux tier provides natively is available on macOS today, with no code change. This project's own GNU
+userland test image (`tools/daily-suite/gnu.dockerfile`) does not currently install those three
+packages, so it cannot run the netns tool as shipped - an image-build detail specific to that one
+Dockerfile's own package list, not a limit of this route itself.
+
+**What neither tier gives you (yet):** a macOS-native mechanism that restricts an authorised target's
+traffic to *only* that target, without a container - the netns route table's own per-target scoping,
+natively on macOS. That would need a loopback relay Tier A's own profile could pin to plus a
+`lib/http.sh` mode to redirect through it, which is real, separate work on the scanner's most
+safety-critical file and is tracked as its own follow-up. See `docs/FOUNDATION.md` tension 20 for the
+full account of all three tiers.
 
 ## Configuration
 

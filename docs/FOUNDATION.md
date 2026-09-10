@@ -3346,13 +3346,68 @@ unprivileged user):
   `p<pid>` line followed by that process's own `n<local>-><peer>` lines, so a command name containing a
   space cannot shift a column.
 
-**What macOS still does NOT get, stated plainly so no reader infers parity.**
-`tools/run-in-netns.sh` - the guarantee this tension names, and the only mechanism here that makes an
-out-of-scope connection impossible rather than merely observable - is built on Linux network
-namespaces and **has no macOS equivalent**.
-Nothing in this extension provides one.
-So on Linux the two tiers are "detector, plus a guarantee available separately"; on macOS there is the
-detector and nothing behind it.
+**What macOS still does NOT get, AS OF THIS EXTENSION - amended below, deliberately, the same way
+`lsof` was added to the backend roster rather than left to drift.**
+The paragraph used to end here: *"`tools/run-in-netns.sh` ... is built on Linux network namespaces and
+has no macOS equivalent. Nothing in this extension provides one. So on Linux the two tiers are
+'detector, plus a guarantee available separately'; on macOS there is the detector and nothing behind
+it."*
+That is no longer accurate, and is corrected in place rather than left to contradict
+`tools/run-sandboxed.sh`'s own header comment.
+
+**Tier A: `tools/run-sandboxed.sh` - a kernel-enforced macOS guarantee, narrower than the netns one on
+purpose.**
+Apple's Seatbelt sandbox (`sandbox-exec`, `man 7 sandbox`) refuses a network syscall at the kernel
+boundary, inherited by every descendant process - proven by measurement (`man sandbox-exec`'s own
+DEPRECATED notice is nine years old and the facility is still fully functional; Apple's own system
+daemons depend on it).
+Its address filter accepts only `*` or `localhost` as the host part of a `(remote ip "...")` clause, so
+unlike the netns route table it **cannot** express "only the authorised scope target is reachable" -
+it can restrict ports, never which remote host.
+What it can express, and what Tier A ships, is a strictly narrower but still genuine guarantee: **no
+network access of any kind**, which is exactly the claim §1 already makes for `sast`/`sca`/`iac` (those
+three modules make zero network calls by design) - Tier A makes that claim kernel-enforced rather than
+merely asserted, for exactly those three modules, and is not proposed as a scope-restricted substitute
+for `dast`/`cloud`/`network`, which need real, target-specific network access to function at all.
+The captain's decision this tier is built on: `sandbox-exec`'s deprecation is **accepted** as
+load-bearing, WITH fail-loud-on-absence - `tools/run-sandboxed.sh` refuses (exit `4`) and never runs
+`<command>` unsandboxed, on a non-Darwin host, on `sandbox-exec` being absent, or on the profile being
+rejected; there is no degraded mode, and the profile is pre-validated against a known-good probe command
+before `<command>` is ever touched, so a `sandbox-exec` failure never leaks its own out-of-contract exit
+code (65/71, `man sandbox-exec`'s sysexits range) past this tool's own 0-5 contract.
+It needs no root and no capability, unlike the netns tool - that is its whole advantage - and it has no
+teardown surface at all (no namespace, no veth, no host state of any kind survives the process).
+See `tools/run-sandboxed.sh`'s own header and `docs/USAGE.md` for the full contract.
+
+**Tier C: full netns parity on macOS today, at zero code - a Linux container.**
+`tools/run-in-netns.sh` runs **unmodified** inside a Linux container on a macOS host, given an image
+carrying `iproute2`/`iptables`/`ip6tables`: Docker Desktop grants `CAP_NET_ADMIN`+`CAP_SYS_ADMIN` and
+network-namespace creation to an unprivileged container, measured working directly (§3.6 of the
+macOS-paranoid research that drove this extension).
+This is the SAME guarantee the Linux tier already provides - the container's kernel enforces the route
+table, not this project's own code - not a weaker approximation of it.
+This project's own GNU userland test image (`tools/daily-suite/gnu.dockerfile`, tagged
+`scoursh-daily-gnu:<dockerfile-digest>` by `tools/daily-suite.sh`) does not currently install those three
+packages, so it cannot run `tools/run-in-netns.sh` as shipped today - that is an IMAGE-BUILD detail
+particular to that one Dockerfile's own package list (built for the GNU-vs-BSD userland comparison
+tension 24 checks, which needs none of the three), not a platform limitation of Tier C itself, and is
+tracked as its own follow-up rather than conflated with this tension's own scope.
+
+**What is still NOT built: a macOS-native mechanism that restricts an authorised target's traffic to
+ONLY that target** (the netns route table's own per-target scoping, natively, without a container).
+That would need a loopback relay Tier A's own Seatbelt profile could pin to (Seatbelt filters by port,
+never by remote host, so "only this one target" needs a forwarder scoursh itself runs outside the
+sandbox and points at the authorised target) plus a `lib/http.sh` mode to redirect through it - a real,
+separate change to the scanner's most safety-critical file, deliberately NOT part of this extension, and
+tracked as its own ticket ("Tier B") rather than folded in here.
+So the accurate statement, replacing the retired one above, is: **on macOS, `sast`/`sca`/`iac` now get a
+genuine, kernel-enforced, zero-network guarantee natively (Tier A); every module - including
+`dast`/`cloud`/`network`, which need real target-specific traffic - gets full parity with the Linux
+netns guarantee via a Linux container (Tier C); and a native macOS mechanism for "only the authorised
+target, nothing else" without a container remains unbuilt (Tier B, open).**
+`--paranoid`'s own detector-versus-guarantee framing is otherwise unchanged by any of this: it remains a
+sampler on every platform, and Tier A/Tier C are guarantees that exist alongside it, exactly as
+`tools/run-in-netns.sh` already was on Linux before this extension.
 
 **Usability is MEASURED, with a positive control, not inferred from `command -v`.**
 `lsof` exits `1` both when it matched nothing and, on a restricted host, when it was not permitted to
@@ -5552,6 +5607,15 @@ probe, the exit-3 abort and exit-4 missing-backend paths, and the deterministic 
 fixture all exist on `dev`, wired into `scan.sh`'s `scan_main` right after config loads and before any
 module dispatch. Tension 20's own "Implementation" paragraph above carries the full mechanism detail.
 Steps 6, 7, 9, and 10 were un-landed when this paragraph was written and are not touched by it; 7 and 9 have since landed in full and 6 and 10 in part - see their own sections below, which are the live answer.
+
+**Step 8 has since gained a macOS enforcement extension, `tools/run-sandboxed.sh`, the identical
+"land what's ready, out of strict sequence, recorded deliberately" shape the `lsof` paranoid backend
+used.** Tension 20's own "What macOS still does NOT get" paragraph above is the full account (Tier A -
+`tools/run-sandboxed.sh`, a kernel-enforced, unprivileged deny-all-network Seatbelt wrapper for
+`sast`/`sca`/`iac`, which need no network at all - and Tier C - full netns parity on macOS today via an
+unmodified `tools/run-in-netns.sh` inside a Linux container, zero code); this pointer exists only so a
+reader of this section is not left believing `tools/run-in-netns.sh` still "has no macOS equivalent",
+which is no longer true.
 
 **Step 6 (Cloud/AWS) also now has a written, dependency-ordered sub-ticket plan
 (`docs/STEP6-CLOUD-PLAN.md`), and implementation HAS started - `modules/cloud/` exists.**
