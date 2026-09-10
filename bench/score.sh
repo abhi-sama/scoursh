@@ -47,6 +47,12 @@ bench/score.sh --truth FILE --results DIR [options]
   --truth FILE        ground-truth records (bench/lib/truth.sh format)
   --results DIR       a directory of <tool>/normalised.jsonl
   --classes FILE      CWE equivalence classes (default bench/cwe-classes.conf)
+  --match file|line   how a finding is matched to a case (default file).
+                      `line` requires every case to carry a line range and
+                      scores a case only from findings inside its own range -
+                      use it for a corpus with several cases per file.
+  --line-window N     widen each case's range by N lines on both sides
+                      (default 0; --match line only)
   --min-severity S    any|info|low|medium|high|critical   (default any)
   --format md|json    (default md)
   --out FILE          write there instead of stdout
@@ -94,11 +100,15 @@ tool_corpus_commit() {
 main() {
   local truth='' results='' classes=$BENCH_ROOT/cwe-classes.conf
   local minsev=any format=md out=''
+  BENCH_MATCH='file'
+  BENCH_WINDOW='0'
   while (( $# > 0 )); do
     case $1 in
       --truth) truth=$2; shift 2 ;;
       --results) results=$2; shift 2 ;;
       --classes) classes=$2; shift 2 ;;
+      --match) BENCH_MATCH=$2; shift 2 ;;
+      --line-window) BENCH_WINDOW=$2; shift 2 ;;
       --min-severity) minsev=$2; shift 2 ;;
       --format) format=$2; shift 2 ;;
       --out) out=$2; shift 2 ;;
@@ -113,9 +123,31 @@ main() {
   case $format in md | json) ;;
     *) printf 'bench: --format must be md or json\n' >&2; return 2 ;;
   esac
+  case $BENCH_MATCH in file | line) ;;
+    *) printf 'bench: --match must be file or line\n' >&2; return 2 ;;
+  esac
+  [[ $BENCH_WINDOW =~ ^[0-9]+$ ]] ||
+    { printf 'bench: --line-window must be a non-negative integer\n' >&2; return 2; }
 
   truth_load "$truth" || return $?
   cwe_classes_load "$classes" || return $?
+
+  # `--match line` over a truth file whose cases carry no range is REFUSED, not
+  # quietly demoted to file matching.  Demoting it would report a number under
+  # a heading that names a granularity it was not computed at, and the number
+  # would be the INFLATED one - every case in a file credited by any finding in
+  # it - which is exactly the error `--match line` exists to prevent.
+  if [[ $BENCH_MATCH == line ]]; then
+    local _c _missing=0
+    for _c in "${BENCH_TRUTH_CASES[@]}"; do
+      [[ -n ${BENCH_TRUTH_LINE[$_c]:-} ]] || _missing=$(( _missing + 1 ))
+    done
+    if (( _missing > 0 )); then
+      printf 'bench: --match line needs a line range on every case; %d of %d have none in %s\n' \
+        "$_missing" "${#BENCH_TRUTH_CASES[@]}" "$truth" >&2
+      return 2
+    fi
+  fi
 
   local tools=() d
   for d in "$results"/*/; do
@@ -151,6 +183,12 @@ render_md() {
     "$(_count_real true)" "$(_count_real false)"
   printf 'Severity filter: `%s`. CWE equivalence classes: `%s`.\n\n' \
     "$minsev" "$(basename "$BENCH_ROOT")/cwe-classes.conf"
+  if [[ $BENCH_MATCH == line ]]; then
+    printf 'Matching granularity: `line` - a case is flagged only by a finding inside its\n'
+    printf 'own recorded line range (window %s). Ranges within one file do not overlap.\n\n' "$BENCH_WINDOW"
+  else
+    printf 'Matching granularity: `file` - a case is flagged by any finding in its file.\n\n'
+  fi
   printf 'Youden J = TPR - FPR. **J = 0.000 is a coin flip.**\n\n'
 
   printf '## Tools\n\n'
@@ -162,6 +200,8 @@ render_md() {
       "$(tool_claims "$results" "$tool")"
   done
   printf '\n'
+
+  _volume_md "$results" "$minsev" "${tools[@]}"
 
   for mode in loose strict; do
     printf '## Per category - %s CWE matching\n\n' "$mode"
@@ -182,7 +222,16 @@ render_md() {
             "$tool" "$cat"
           continue
         fi
-        score_category "$cat" "$mode"
+        if [[ $mode == strict ]] && ! truth_category_has_cwe "$cat"; then
+          # NOT a row of zeros.  No case in this category carries a
+          # ground-truth CWE, so nothing here CAN strict-match; printing
+          # 0/0/0 would read as "every tool missed every case", which is a
+          # claim about the tools rather than about the labels.
+          printf '| %s | %s | - | - | - | - | *no CWE in truth* | *no CWE in truth* | *no CWE in truth* | *no CWE in truth* |\n' \
+            "$tool" "$cat"
+          continue
+        fi
+        score_category "$cat" "$mode" "$BENCH_MATCH" "$BENCH_WINDOW"
         _row "$tool" "$cat"
       done
     done
@@ -202,6 +251,44 @@ render_md() {
 - Nothing here is measured on any tool's own test fixtures. A tool scored on a
   corpus it was authored against is measuring "still passes its own cases".
 EOF
+}
+
+# THE FINDING-VOLUME TABLE IS NOT THE CONFUSION MATRIX AND MUST NOT BE READ AS
+# ONE.  It counts RECORDS, where every number in the matrix counts CASES - a
+# tool that reports one defect five times moves this table and moves nothing
+# else.  It is here for two things the matrix genuinely cannot show.  `no line`
+# is a record that cannot match any range, so under `line` granularity it is
+# invisible to scoring, and a tool whose adapter quietly stopped emitting lines
+# would otherwise read as a tool that stopped finding things.  `outside every
+# labelled range` is how much of a tool's output the LABEL SET declined to
+# judge - the one number that would let a benchmark shrink a tool's exposure by
+# labelling only where it does well, so it is published rather than inferred.
+_volume_md() {
+  local results=$1 minsev=$2
+  shift 2
+  local tools=("$@") tool
+  printf '## Finding volume (records, not cases)\n\n'
+  printf '| tool | records kept | dropped by severity | no line |'
+  [[ $BENCH_MATCH == line ]] && printf ' outside every labelled range |'
+  # `printf --` and not a bare `printf`: the separator row starts with `-`, and
+  # bash's builtin printf parses a leading `---|` as options.  Measured here -
+  # it aborted the renderer mid-table with `invalid option`.
+  printf -- '\n|---|---|---|---|'
+  [[ $BENCH_MATCH == line ]] && printf -- '---|'
+  printf '\n'
+  for tool in "${tools[@]}"; do
+    findings_load "$results/$tool/normalised.jsonl" "$minsev" || return $?
+    printf '| %s | %d | %d | %d |' "$tool" \
+      "$BENCH_FINDING_COUNT" "$BENCH_FINDING_DROPPED" "$BENCH_FINDING_NO_LINE"
+    if [[ $BENCH_MATCH == line ]]; then
+      findings_unscored
+      printf ' %d |' "$BENCH_FINDING_UNSCORED"
+    fi
+    printf '\n'
+  done
+  printf '\n'
+  printf 'These are RECORD counts. Every number in the tables below counts CASES, so a\n'
+  printf 'tool reporting one defect five times moves this table and nothing else.\n\n'
 }
 
 _count_real() {
@@ -231,13 +318,16 @@ _aggregate_md() {
   printf '| tool | categories scored | categories with no coverage | TP | FN | FP | TN | recall | FPR | precision | Youden J |\n'
   printf '|---|---|---|---|---|---|---|---|---|---|---|\n'
   for tool in "${tools[@]}"; do
-    local claims scored=0 nocov=0
+    local claims scored=0 nocov=0 nocwe=0
     local tp=0 fn=0 fp=0 tn=0
     claims=" $(tool_claims "$results" "$tool") "
     findings_load "$results/$tool/normalised.jsonl" "$minsev" || return $?
     for cat in "${BENCH_TRUTH_CATS[@]}"; do
       if [[ $claims != *" $cat "* ]]; then nocov=$(( nocov + 1 )); continue; fi
-      score_category "$cat" "$mode"
+      if [[ $mode == strict ]] && ! truth_category_has_cwe "$cat"; then
+        nocwe=$(( nocwe + 1 )); continue
+      fi
+      score_category "$cat" "$mode" "$BENCH_MATCH" "$BENCH_WINDOW"
       scored=$(( scored + 1 ))
       tp=$(( tp + BENCH_TP )); fn=$(( fn + BENCH_FN ))
       fp=$(( fp + BENCH_FP )); tn=$(( tn + BENCH_TN ))
@@ -250,10 +340,16 @@ _aggregate_md() {
     printf '| %s | %d of %d | %d | %d | %d | %d | %d | %s | %s | %s | %s |\n' \
       "$tool" "$scored" "${#BENCH_TRUTH_CATS[@]}" "$nocov" \
       "$tp" "$fn" "$fp" "$tn" "$tpr" "$fpr" "$prec" "$j"
+    (( nocwe > 0 )) && _AGG_NOCWE=$nocwe
   done
   printf '\n'
   printf 'This aggregate spans one corpus and the categories each tool CLAIMS.\n'
-  printf 'It is not comparable with any other corpus, and it is not an overall score.\n\n'
+  printf 'It is not comparable with any other corpus, and it is not an overall score.\n'
+  if [[ $mode == strict && -n ${_AGG_NOCWE:-} ]]; then
+    printf '%s categor(y/ies) carry no ground-truth CWE and are excluded from this strict\n' "$_AGG_NOCWE"
+    printf 'aggregate rather than counted as misses - see the per-category table above.\n'
+  fi
+  printf '\n'
 }
 
 # The strict/loose agreement check.  Reported every run, because the scout
@@ -267,27 +363,39 @@ _agreement_md() {
   printf '## Strict/loose agreement\n\n'
   printf '| tool | categories where strict and loose agree | disagreeing categories |\n|---|---|---|\n'
   for tool in "${tools[@]}"; do
-    local claims agree=0 total=0 diff=''
+    local claims agree=0 total=0 nocwe=0 diff=''
     claims=" $(tool_claims "$results" "$tool") "
     findings_load "$results/$tool/normalised.jsonl" "$minsev" || return $?
     for cat in "${BENCH_TRUTH_CATS[@]}"; do
       [[ $claims == *" $cat "* ]] || continue
+      if ! truth_category_has_cwe "$cat"; then
+        # A category with no ground-truth CWE cannot disagree, because strict
+        # is not defined for it.  Counting it as agreement would inflate the
+        # "N of M agree" fraction with categories where the check did not run.
+        nocwe=$(( nocwe + 1 ))
+        continue
+      fi
       total=$(( total + 1 ))
       # TP and FP alone decide agreement: the case counts are fixed per
       # category, so TP+FN and FP+TN are constants and the other two cells are
       # determined by these.
-      score_category "$cat" loose
+      score_category "$cat" loose "$BENCH_MATCH" "$BENCH_WINDOW"
       local lt=$BENCH_TP lf=$BENCH_FP
-      score_category "$cat" strict
+      score_category "$cat" strict "$BENCH_MATCH" "$BENCH_WINDOW"
       if (( lt == BENCH_TP && lf == BENCH_FP )); then
         agree=$(( agree + 1 ))
       else
         diff+="$cat "
       fi
     done
-    printf '| %s | %d of %d | %s |\n' "$tool" "$agree" "$total" "${diff:-none}"
+    printf '| %s | %d of %d | %s |\n' "$tool" "$agree" "$total" \
+      "$(if (( total == 0 )); then printf 'n/a - no category here carries a ground-truth CWE'; else printf '%s' "${diff:-none}"; fi)"
   done
   printf '\n'
+  if (( nocwe > 0 )); then
+    printf '%d categor(y/ies) are excluded from this check because no case in them carries a\n' "$nocwe"
+    printf 'ground-truth CWE, so strict matching is undefined there rather than failing.\n\n' 
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -303,6 +411,8 @@ render_json() {
   printf '  "real_cases": %d,\n' "$(_count_real true)"
   printf '  "trap_cases": %d,\n' "$(_count_real false)"
   printf '  "min_severity": "%s",\n' "$minsev"
+  printf '  "match": "%s",\n' "$BENCH_MATCH"
+  printf '  "line_window": %s,\n' "$BENCH_WINDOW"
   printf '  "categories": ['
   first_c=1
   for cat in "${BENCH_TRUTH_CATS[@]}"; do
@@ -324,6 +434,11 @@ render_json() {
     findings_load "$results/$tool/normalised.jsonl" "$minsev" || return $?
     printf '      "findings_kept": %d,\n' "$BENCH_FINDING_COUNT"
     printf '      "findings_dropped_by_severity": %d,\n' "$BENCH_FINDING_DROPPED"
+    printf '      "findings_without_a_line": %d,\n' "$BENCH_FINDING_NO_LINE"
+    if [[ $BENCH_MATCH == line ]]; then
+      findings_unscored
+      printf '      "findings_outside_every_labelled_range": %d,\n' "$BENCH_FINDING_UNSCORED"
+    fi
     local first_m=1
     for mode in loose strict; do
       (( first_m )) || printf ',\n'
@@ -340,7 +455,11 @@ render_json() {
           printf '        "%s": {"coverage": "none"}' "$cat"
           continue
         fi
-        score_category "$cat" "$mode"
+        if [[ $mode == strict ]] && ! truth_category_has_cwe "$cat"; then
+          printf '        "%s": {"coverage": "no_cwe_in_truth"}' "$cat"
+          continue
+        fi
+        score_category "$cat" "$mode" "$BENCH_MATCH" "$BENCH_WINDOW"
         local tpr fpr prec j
         tpr=$(rate "$BENCH_TP" "$(( BENCH_TP + BENCH_FN ))")
         fpr=$(rate "$BENCH_FP" "$(( BENCH_FP + BENCH_TN ))")

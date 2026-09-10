@@ -2,9 +2,10 @@
 # bench/lib/truth.sh - the benchmark's own ground-truth record format, and
 # the adapters that produce it from a corpus's native labelling.
 #
-# THE FORMAT.  One case per line, five 0x1f-separated fields:
+# THE FORMAT.  One case per line, five 0x1f-separated fields plus an optional
+# sixth:
 #
-#     <case><US><file><US><category><US><cwe><US><real>
+#     <case><US><file><US><category><US><cwe><US><real>[<US><line-range>]
 #
 #   case      the corpus's own identifier for the case
 #   file      the case's path, RELATIVE TO THE SCAN ROOT the tools are pointed
@@ -14,6 +15,22 @@
 #   cwe       the case's true CWE as a bare number, or empty
 #   real      `true` if the case really is vulnerable, `false` if it is a
 #             deliberate sanitized trap
+#   line      OPTIONAL.  `start-end`, or a bare `n` meaning `n-n`: the case's
+#             extent in the file.  Present only for a corpus with more than one
+#             case per file, where `the tool reported something in this file`
+#             cannot tell two cases apart - the scout report's §5.2 row for
+#             TerraGoat and k8s-goat.  `bench/score.sh --match line` scores
+#             against it; the default `--match file` ignores it entirely, so
+#             every existing five-field truth file parses and scores exactly as
+#             it did before this field existed.
+#
+# THE SIXTH FIELD IS READ INTO ITS OWN VARIABLE AND NOT INTO `real`.  A `read`
+# with N variables puts the whole remainder into the Nth, so a five-variable
+# reader over a six-field row would silently make `real` the string
+# `true<US>1-42` and every `case $real in true|false)` arm below would refuse
+# the file.  That is the safe direction - it fails loudly - but it is worth
+# stating, because the unsafe direction (adding a seventh field later and not
+# adding a seventh variable) is the same mistake with the opposite outcome.
 #
 # THE `real: false` ROWS ARE NOT PADDING AND MUST NOT BE DROPPED.  They are
 # the only thing that makes a false-positive rate measurable, and therefore
@@ -47,19 +64,22 @@ BENCH_TRUTH_US=$'\x1f'
 #   BENCH_TRUTH_CAT     assoc case -> category
 #   BENCH_TRUTH_CWE     assoc case -> cwe
 #   BENCH_TRUTH_REAL    assoc case -> true|false
+#   BENCH_TRUTH_LINE    assoc case -> `start-end`, or empty when the row has no
+#                       sixth field
 #   BENCH_TRUTH_CATS    array of distinct categories, LC_ALL=C sorted
 truth_load() {
-  local file=$1 line c f cat cwe real lineno=0
+  local file=$1 line c f cat cwe real rng lineno=0
   [[ -r $file ]] || { printf 'bench: cannot read ground truth: %s\n' "$file" >&2; return 2; }
 
   BENCH_TRUTH_CASES=()
-  unset BENCH_TRUTH_FILE BENCH_TRUTH_CAT BENCH_TRUTH_CWE BENCH_TRUTH_REAL
+  unset BENCH_TRUTH_FILE BENCH_TRUTH_CAT BENCH_TRUTH_CWE BENCH_TRUTH_REAL BENCH_TRUTH_LINE
   declare -gA BENCH_TRUTH_FILE=() BENCH_TRUTH_CAT=() BENCH_TRUTH_CWE=() BENCH_TRUTH_REAL=()
+  declare -gA BENCH_TRUTH_LINE=()
 
   while IFS= read -r line || [[ -n $line ]]; do
     lineno=$(( lineno + 1 ))
     [[ -z $line || ${line:0:1} == '#' ]] && continue
-    IFS=$BENCH_TRUTH_US read -r c f cat cwe real <<<"$line"
+    IFS=$BENCH_TRUTH_US read -r c f cat cwe real rng <<<"$line"
     if [[ -z $c || -z $f || -z $cat ]]; then
       printf 'bench: %s:%d: malformed ground-truth row\n' "$file" "$lineno" >&2
       return 2
@@ -76,6 +96,14 @@ truth_load() {
         return 2
         ;;
     esac
+    if [[ -n $rng && ! $rng =~ ^[0-9]+(-[0-9]+)?$ ]]; then
+      # A malformed range is REFUSED rather than dropped to empty.  Dropping it
+      # would silently demote the row to file-level matching under `--match
+      # line`, which credits every tool for every other case in the same file -
+      # an inflation no total in the scorecard would reveal.
+      printf 'bench: %s:%d: `line` must be N or N-M, got: %s\n' "$file" "$lineno" "$rng" >&2
+      return 2
+    fi
     if [[ -n ${BENCH_TRUTH_FILE[$c]:-} ]]; then
       printf 'bench: %s:%d: duplicate case id: %s\n' "$file" "$lineno" "$c" >&2
       return 2
@@ -85,6 +113,7 @@ truth_load() {
     BENCH_TRUTH_CAT[$c]=$cat
     BENCH_TRUTH_CWE[$c]=$cwe
     BENCH_TRUTH_REAL[$c]=$real
+    BENCH_TRUTH_LINE[$c]=$rng
   done <"$file"
 
   mapfile -t BENCH_TRUTH_CATS < <(

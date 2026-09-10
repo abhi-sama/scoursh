@@ -1,0 +1,15 @@
+tool: gitleaks
+version: 8.30.1
+corpus: leaky-repo
+corpus-commit: 2e951359cac53addbee56437da3ffb546e3dfe24
+scan-root: <SCAN_ROOT>
+files-scanned: 167
+wall-clock-seconds: 0
+records: 22
+claims-categories: secrets
+gate: gitleaks dir --no-banner --exit-code 0 --report-format json ROOT (default rule set; WORKING TREE, not history)
+note: runtime is a WALL CLOCK over 167 file(s), not a rate - see the
+  header of bench/run-tool.sh for why a single total on a small corpus
+  is mostly fixed startup cost.
+portable-paths: the scan-root prefix was replaced by <SCAN_ROOT> and the bench/ prefix by <BENCH>; no other edit was made
+redact-secret-values: the matched credential in every Secret/Match/Raw/RawV2/Redacted/SecretV2/connection_string/password field was replaced by a <redacted:N-bytes> placeholder; every other field is the tool's own output, and the run fails rather than claiming this if it did not happen

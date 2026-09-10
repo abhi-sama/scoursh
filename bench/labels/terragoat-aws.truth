@@ -1,0 +1,525 @@
+# bench/labels/terragoat-aws.truth - the HAND-AUTHORED ground truth for the
+# TerraGoat AWS slice, pinned at bench/corpus.lock's `terragoat` commit.
+#
+# THIS FILE IS THE CORPUS.  TerraGoat ships no machine-readable labels: its own
+# ground truth is prose plus Checkov's `CKV_*` check ids, and scoring recall
+# against those would bias the result toward Checkov (bench/corpus.lock's own
+# note says so, and it is why this corpus read `ground-truth: none` until this
+# leg).  So the labels below were authored by reading the Terraform, and they
+# are committed - with a rationale beside every single case - because a
+# benchmark whose ground truth nobody can inspect is not a benchmark.
+#
+# NO TOOL OUTPUT OF ANY KIND WAS CONSULTED TO PRODUCE THEM.  That is
+# methodology rule R2 ("no using one tool's output as truth for another") and
+# it is the one property of this file a reader cannot verify from the file
+# itself, so it is stated plainly and the two written rules below are given so
+# every call can be re-derived independently.
+#
+# ---------------------------------------------------------------------------
+# THE UNIT IS THE RESOURCE, and it is the brief's own unit: "which resources
+# are genuinely misconfigured".
+# ---------------------------------------------------------------------------
+# One case per top-level block, covering every `resource`, `data`, `provider`
+# and `terraform` block in the slice - none skipped, so a reader can check the
+# set is complete rather than curated.  A case's `line` field is the block's
+# real extent, brace-matched from the file rather than transcribed.
+#
+# What the unit CANNOT express, stated because it bounds every number derived
+# from this file: a tool that flags a genuinely-misconfigured resource for the
+# WRONG REASON still scores a true positive.  Distinguishing "found the missing
+# encryption" from "found something else in the same block" would need a defect
+# vocabulary shared across scoursh, Checkov, KICS and Trivy, and no such
+# vocabulary exists - their rule identifiers do not map onto one another, and
+# inventing a mapping here would put an unauditable dial between the corpus and
+# the result.  The resource-level unit has no dial at all.
+#
+# ---------------------------------------------------------------------------
+# THE TWO RULES, applied to every case below
+# ---------------------------------------------------------------------------
+# R-REAL  A resource is `true` when a competent reviewer would REQUIRE it to be
+#         changed before production.
+# R-CLEAN A resource is `false` when the configuration as written is a
+#         defensible production choice, EVEN IF a best-practice linter would
+#         comment on it.  A tool flagging such a resource is counted as a false
+#         positive, which is the whole reason the clean cases are here.
+#
+# R-ATTR  A defect is attributed to the resource whose OWN attributes express
+#         it.  A resource that is insecure only because of what it references
+#         is `false`, and the referenced resource carries the label - otherwise
+#         one underlying mistake is credited to a tool two or three times.
+#
+# Applying R-CLEAN honestly costs this project findings: it makes an
+# unrestricted-egress rule and a public subnet into false positives for every
+# tool that flags them, scoursh included.  Cases where the call is genuinely
+# arguable are marked BORDERLINE in their own rationale and are re-scored both
+# ways in the leg README's sensitivity table, so a reader who disagrees with a
+# call can see exactly what it is worth.
+#
+# ---------------------------------------------------------------------------
+# FORMAT: bench/lib/truth.sh records - five 0x1f-separated fields plus a sixth.
+#
+#     <case><US><file><US><category><US><cwe><US><real><US><line-range>
+#
+# The sixth field is the resource's line range and is what `bench/score.sh
+# --match line` scores against: a tool flags this case when it reports a
+# finding inside that range in that file.  `cwe` is EMPTY for every case here,
+# deliberately - see "what the unit cannot express" above - and the scorer
+# renders the strict-CWE column for such a category as an explicit
+# `no CWE in truth` cell rather than as a row of zeros.
+#
+# 71 cases: 33 genuinely misconfigured, 38 correctly configured.
+
+# ==========================================================================
+# consts.tf
+# ==========================================================================
+
+# data.aws_caller_identity.current  (lines 2-2)
+#   A data source returning the account id of the caller. It creates nothing
+#   and has no attribute that could be set wrongly. Present so the case set
+#   covers every top-level block in the slice with none omitted.
+consts:data.aws_caller_identity.currentconsts.tfterraform-awsfalse2-2
+
+# ==========================================================================
+# db-app.tf
+# ==========================================================================
+
+# aws_db_instance.default  (lines 1-42)
+#   publicly_accessible = true on a MySQL instance holding application data,
+#   with storage_encrypted = false and backup_retention_period = 0. Three
+#   independent production blockers in one block; the file's own seed
+#   comments say so.
+db-app:aws_db_instance.defaultdb-app.tfterraform-awstrue1-42
+
+# aws_db_option_group.default  (lines 44-63)
+#   An option group declaring no options. It carries no security posture:
+#   there is no attribute here that could be set wrongly.
+db-app:aws_db_option_group.defaultdb-app.tfterraform-awsfalse44-63
+
+# aws_db_parameter_group.default  (lines 65-95)
+#   Two character-set parameters. Nothing here weakens the engine's security
+#   posture; a reviewer would pass it.
+db-app:aws_db_parameter_group.defaultdb-app.tfterraform-awsfalse65-95
+
+# aws_db_subnet_group.default  (lines 97-115)
+#   ATTRIBUTION. The subnets it names are public, which is a fact about
+#   aws_subnet.web_subnet / web_subnet2 and is labelled there. The subnet
+#   group's own attributes express nothing insecure, and crediting the same
+#   defect twice would inflate every tool's recall on one underlying
+#   mistake.
+db-app:aws_db_subnet_group.defaultdb-app.tfterraform-awsfalse97-115
+
+# aws_security_group.default  (lines 117-134)
+#   A security group with no inline ingress or egress block at all - the
+#   rules are separate aws_security_group_rule resources and are labelled
+#   there.
+db-app:aws_security_group.defaultdb-app.tfterraform-awsfalse117-134
+
+# aws_security_group_rule.ingress  (lines 136-143)
+#   tcp/3306 from ${aws_vpc.web_vpc.cidr_block} - the database port
+#   reachable from the VPC and from nowhere else. This is the correct shape
+#   for a database security-group rule and is the negative control for the
+#   open-ingress class.
+db-app:aws_security_group_rule.ingressdb-app.tfterraform-awsfalse136-143
+
+# aws_security_group_rule.egress  (lines 145-152)
+#   BORDERLINE, resolved against flagging. Unrestricted egress to 0.0.0.0/0
+#   is what AWS itself creates for a new security group, CIS AWS Foundations
+#   v3.0 requires egress restriction only on the DEFAULT security group, and
+#   allow-all egress on a custom group is the overwhelmingly common
+#   production shape. Under this label set's own rule - `a defensible
+#   production choice, even where a best-practice linter would comment on
+#   it` - it is clean. See the leg README's sensitivity table: this is one
+#   of the cases whose flip moves a published number.
+db-app:aws_security_group_rule.egressdb-app.tfterraform-awsfalse145-152
+
+# aws_iam_instance_profile.ec2profile  (lines 156-169)
+#   An instance profile naming a role. No posture of its own; the role and
+#   its policy are labelled separately.
+db-app:aws_iam_instance_profile.ec2profiledb-app.tfterraform-awsfalse156-169
+
+# aws_iam_role.ec2role  (lines 171-204)
+#   An assume-role trust policy for ec2.amazonaws.com with no wildcard
+#   principal. The excessive permissions live in the attached
+#   aws_iam_role_policy, which is labelled real.
+db-app:aws_iam_role.ec2roledb-app.tfterraform-awsfalse171-204
+
+# aws_iam_role_policy.ec2policy  (lines 206-226)
+#   Allow s3:*, ec2:* and rds:* on Resource "*". Full control of three
+#   services on every resource in the account, attached to an instance
+#   profile a web host assumes. No reviewer passes this.
+db-app:aws_iam_role_policy.ec2policydb-app.tfterraform-awstrue206-226
+
+# data.aws_ami.amazon-linux-2  (lines 228-241)
+#   A data source selecting the most recent Amazon-owned AMI. It creates
+#   nothing.
+db-app:data.aws_ami.amazon-linux-2db-app.tfterraform-awsfalse228-241
+
+# aws_instance.db_app  (lines 243-413)
+#   user_data writes the database username and password into
+#   /var/www/inc/dbinfo.inc in cleartext. EC2 user data is readable from the
+#   instance metadata service by anything that can reach 169.254.169.254,
+#   and this instance sets no metadata_options, so IMDSv1 is available to
+#   any SSRF on the web tier.
+db-app:aws_instance.db_appdb-app.tfterraform-awstrue243-413
+
+# ==========================================================================
+# ec2.tf
+# ==========================================================================
+
+# aws_instance.web_host  (lines 1-32)
+#   user_data exports AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY as
+#   literals. Long-lived static credentials in instance metadata, on an
+#   instance whose security group opens 22 to the world.
+ec2:aws_instance.web_hostec2.tfterraform-awstrue1-32
+
+# aws_ebs_volume.web_host_storage  (lines 34-51)
+#   No `encrypted` attribute, so the volume is created unencrypted.
+#   Encryption at rest for block storage is a baseline requirement; the
+#   file's own comment (`# unencrypted volume`) confirms the intent.
+ec2:aws_ebs_volume.web_host_storageec2.tfterraform-awstrue34-51
+
+# aws_ebs_snapshot.example_snapshot  (lines 53-69)
+#   A snapshot of the unencrypted volume above, and therefore itself
+#   unencrypted. Snapshots outlive the volume and are independently
+#   shareable, so this is a defect of the snapshot and not only an inherited
+#   one.
+ec2:aws_ebs_snapshot.example_snapshotec2.tfterraform-awstrue53-69
+
+# aws_volume_attachment.ebs_att  (lines 71-75)
+#   Attaches a volume to an instance at a device name. No security
+#   attributes.
+ec2:aws_volume_attachment.ebs_attec2.tfterraform-awsfalse71-75
+
+# aws_security_group.web-node  (lines 77-115)
+#   ingress tcp/22 from 0.0.0.0/0 - SSH open to the entire internet. The
+#   single least arguable misconfiguration in this corpus.
+ec2:aws_security_group.web-nodeec2.tfterraform-awstrue77-115
+
+# aws_vpc.web_vpc  (lines 117-133)
+#   A /16 with DNS support and hostnames enabled, and flow logging IS
+#   configured for it by aws_flow_log.vpcflowlogs below. Deliberately paired
+#   with aws_vpc.eks_vpc, which has no flow log and is labelled real - the
+#   two are this corpus's own contrast for that check.
+ec2:aws_vpc.web_vpcec2.tfterraform-awsfalse117-133
+
+# aws_subnet.web_subnet  (lines 135-153)
+#   BORDERLINE, resolved against flagging. map_public_ip_on_launch = true in
+#   a subnet that an internet gateway and a 0.0.0.0/0 route make public by
+#   design, serving an internet-facing ELB. A public subnet is architecture,
+#   not misconfiguration; the defect a reviewer would raise is what runs IN
+#   it, which is labelled on the instances. See the leg README's sensitivity
+#   table.
+ec2:aws_subnet.web_subnetec2.tfterraform-awsfalse135-153
+
+# aws_subnet.web_subnet2  (lines 155-173)
+#   Second availability zone of the same public subnet pair. Same reasoning
+#   as aws_subnet.web_subnet.
+ec2:aws_subnet.web_subnet2ec2.tfterraform-awsfalse155-173
+
+# aws_internet_gateway.web_igw  (lines 176-191)
+#   An internet gateway attached to the VPC. A gateway is not a control;
+#   whether reaching it is safe is decided by the route tables and security
+#   groups.
+ec2:aws_internet_gateway.web_igwec2.tfterraform-awsfalse176-191
+
+# aws_route_table.web_rtb  (lines 193-208)
+#   An empty route table declaration; its one route is a separate resource.
+ec2:aws_route_table.web_rtbec2.tfterraform-awsfalse193-208
+
+# aws_route_table_association.rtbassoc  (lines 210-213)
+#   Associates a subnet with a route table. No security attributes.
+ec2:aws_route_table_association.rtbassocec2.tfterraform-awsfalse210-213
+
+# aws_route_table_association.rtbassoc2  (lines 215-218)
+#   Associates the second subnet with the same route table.
+ec2:aws_route_table_association.rtbassoc2ec2.tfterraform-awsfalse215-218
+
+# aws_route.public_internet_gateway  (lines 220-228)
+#   0.0.0.0/0 to the internet gateway. This IS what a public subnet is; a
+#   public subnet with no default route is simply broken.
+ec2:aws_route.public_internet_gatewayec2.tfterraform-awsfalse220-228
+
+# aws_network_interface.web-eni  (lines 231-247)
+#   A private-IP ENI in the subnet. Nothing insecure is declared.
+ec2:aws_network_interface.web-eniec2.tfterraform-awsfalse231-247
+
+# aws_flow_log.vpcflowlogs  (lines 250-269)
+#   VPC flow logging for ALL traffic to S3. This is the REMEDIATION, not a
+#   defect - it is the reason aws_vpc.web_vpc is labelled clean.
+ec2:aws_flow_log.vpcflowlogsec2.tfterraform-awsfalse250-269
+
+# aws_s3_bucket.flowbucket  (lines 271-288)
+#   The destination for the VPC flow logs, with no
+#   server_side_encryption_configuration, no versioning, no access logging
+#   and no public-access block. Network metadata for the whole VPC, stored
+#   unencrypted.
+ec2:aws_s3_bucket.flowbucketec2.tfterraform-awstrue271-288
+
+# ==========================================================================
+# ecr.tf
+# ==========================================================================
+
+# aws_ecr_repository.repository  (lines 1-18)
+#   image_tag_mutability = "MUTABLE" written out explicitly, and no
+#   image_scanning_configuration and no encryption_configuration. A registry
+#   whose tags can be moved under a running deployment and whose images are
+#   never scanned.
+ecr:aws_ecr_repository.repositoryecr.tfterraform-awstrue1-18
+
+# null_resource.push_image  (lines 25-35)
+#   A local-exec build step. It authenticates with `aws ecr
+#   get-login-password | docker login --password-stdin`, which is the
+#   documented way to keep the password off the command line - the correct
+#   pattern, not a defect.
+ecr:null_resource.push_imageecr.tfterraform-awsfalse25-35
+
+# ==========================================================================
+# eks.tf
+# ==========================================================================
+
+# data.aws_iam_policy_document.iam_policy_eks  (lines 7-16)
+#   Assume-role trust for eks.amazonaws.com. No wildcard principal.
+eks:data.aws_iam_policy_document.iam_policy_ekseks.tfterraform-awsfalse7-16
+
+# aws_iam_role.iam_for_eks  (lines 19-32)
+#   The role that document is attached to. Nothing insecure declared.
+eks:aws_iam_role.iam_for_ekseks.tfterraform-awsfalse19-32
+
+# aws_iam_role_policy_attachment.policy_attachment-AmazonEKSClusterPolicy  (lines 34-37)
+#   Attaches the AWS-managed AmazonEKSClusterPolicy, which EKS requires.
+eks:aws_iam_role_policy_attachment.policy_attachment-AmazonEKSClusterPolicyeks.tfterraform-awsfalse34-37
+
+# aws_iam_role_policy_attachment.policy_attachment-AmazonEKSServicePolicy  (lines 39-42)
+#   Attaches the AWS-managed AmazonEKSServicePolicy, which EKS requires.
+eks:aws_iam_role_policy_attachment.policy_attachment-AmazonEKSServicePolicyeks.tfterraform-awsfalse39-42
+
+# aws_vpc.eks_vpc  (lines 44-60)
+#   No aws_flow_log anywhere in this corpus names this VPC, unlike
+#   aws_vpc.web_vpc. A cluster VPC with no network-flow record has no
+#   forensic trail at all, and the corpus itself supplies the contrast.
+eks:aws_vpc.eks_vpceks.tfterraform-awstrue44-60
+
+# aws_subnet.eks_subnet1  (lines 62-88)
+#   Public subnet for the EKS control-plane ENIs, by design. Same reasoning
+#   as aws_subnet.web_subnet.
+eks:aws_subnet.eks_subnet1eks.tfterraform-awsfalse62-88
+
+# aws_subnet.eks_subnet2  (lines 90-116)
+#   Second availability zone of the same pair.
+eks:aws_subnet.eks_subnet2eks.tfterraform-awsfalse90-116
+
+# aws_eks_cluster.eks_cluster  (lines 118-141)
+#   vpc_config sets endpoint_private_access = true and leaves
+#   endpoint_public_access unset, whose default is TRUE - so the Kubernetes
+#   API server is reachable from the internet with no public_access_cidrs
+#   restriction. It also sets no enabled_cluster_log_types, so no
+#   control-plane audit log is produced, and no encryption_config, so
+#   Secrets are not envelope-encrypted.
+eks:aws_eks_cluster.eks_clustereks.tfterraform-awstrue118-141
+
+# ==========================================================================
+# elb.tf
+# ==========================================================================
+
+# aws_elb.weblb  (lines 2-40)
+#   A single listener, http on 80 to http on 8000. No TLS anywhere, and no
+#   access_logs block, on an internet-facing classic load balancer.
+elb:aws_elb.weblbelb.tfterraform-awstrue2-40
+
+# ==========================================================================
+# es.tf
+# ==========================================================================
+
+# aws_elasticsearch_domain.monitoring-framework  (lines 1-28)
+#   No encrypt_at_rest, no node_to_node_encryption, no
+#   domain_endpoint_options (so no enforced HTTPS), no
+#   log_publishing_options, and elasticsearch_version 2.3, which reached end
+#   of life years before this commit.
+es:aws_elasticsearch_domain.monitoring-frameworkes.tfterraform-awstrue1-28
+
+# data.aws_iam_policy_document.policy  (lines 30-39)
+#   actions = ["es:*"] for principal type AWS with identifiers = ["*"] on
+#   resources = ["*"]. A wildcard principal on a wildcard action - anonymous
+#   full control of the domain. Attributed here rather than to the
+#   aws_elasticsearch_domain_policy that attaches it, because this block is
+#   where the wildcard is written.
+es:data.aws_iam_policy_document.policyes.tfterraform-awstrue30-39
+
+# aws_elasticsearch_domain_policy.monitoring-framework-policy  (lines 41-44)
+#   ATTRIBUTION. It attaches the document above and declares no policy
+#   content of its own.
+es:aws_elasticsearch_domain_policy.monitoring-framework-policyes.tfterraform-awsfalse41-44
+
+# ==========================================================================
+# iam.tf
+# ==========================================================================
+
+# aws_iam_user.user  (lines 1-19)
+#   A tagged IAM user. force_destroy is an operational convenience, not a
+#   security control. The over-broad policy attached to this user is a
+#   separate resource and is labelled real.
+iam:aws_iam_user.useriam.tfterraform-awsfalse1-19
+
+# aws_iam_access_key.user  (lines 21-23)
+#   A long-lived static access key created with no pgp_key, so the secret is
+#   written into Terraform state in cleartext and is then only as protected
+#   as the state backend. iam.tf goes on to `output` it.
+iam:aws_iam_access_key.useriam.tfterraform-awstrue21-23
+
+# aws_iam_user_policy.userpolicy  (lines 25-46)
+#   Named `excess_policy` by its own author: ec2:*, s3:*, lambda:* and
+#   cloudwatch:* on Resource "*", inline on a user.
+iam:aws_iam_user_policy.userpolicyiam.tfterraform-awstrue25-46
+
+# ==========================================================================
+# kms.tf
+# ==========================================================================
+
+# aws_kms_key.logs_key  (lines 1-16)
+#   enable_key_rotation is unset, so annual rotation is off. The file's own
+#   comment says so, and this is the key protecting the log bucket.
+kms:aws_kms_key.logs_keykms.tfterraform-awstrue1-16
+
+# aws_kms_alias.logs_key_alias  (lines 18-21)
+#   A human-readable name for the key. No posture.
+kms:aws_kms_alias.logs_key_aliaskms.tfterraform-awsfalse18-21
+
+# ==========================================================================
+# lambda.tf
+# ==========================================================================
+
+# aws_iam_role.iam_for_lambda  (lines 1-30)
+#   Assume-role trust for lambda.amazonaws.com with no wildcard principal,
+#   and no policy attached to it here.
+lambda:aws_iam_role.iam_for_lambdalambda.tfterraform-awsfalse1-30
+
+# aws_lambda_function.analysis_lambda  (lines 32-59)
+#   An AWS access key id and secret key as literal environment variables,
+#   with no kms_key_arn, so they are additionally visible to anyone with
+#   lambda:GetFunctionConfiguration. The file's own comment says so.
+lambda:aws_lambda_function.analysis_lambdalambda.tfterraform-awstrue32-59
+
+# ==========================================================================
+# neptune.tf
+# ==========================================================================
+
+# aws_neptune_cluster.default  (lines 1-20)
+#   storage_encrypted = false and iam_database_authentication_enabled =
+#   false, both written out explicitly. A graph database unencrypted at rest
+#   with no IAM authentication path.
+neptune:aws_neptune_cluster.defaultneptune.tfterraform-awstrue1-20
+
+# aws_neptune_cluster_instance.default  (lines 22-39)
+#   An instance in the cluster. The one insecure attribute the corpus wanted
+#   here, publicly_accessible, is COMMENTED OUT with a note that the API no
+#   longer accepts it - a commented attribute is not configuration.
+neptune:aws_neptune_cluster_instance.defaultneptune.tfterraform-awsfalse22-39
+
+# aws_neptune_cluster_snapshot.default  (lines 41-44)
+#   ATTRIBUTION. A cluster snapshot has no encryption attribute of its own;
+#   it inherits the cluster's, and the cluster is labelled real.
+neptune:aws_neptune_cluster_snapshot.defaultneptune.tfterraform-awsfalse41-44
+
+# ==========================================================================
+# providers.tf
+# ==========================================================================
+
+# provider.aws#1  (lines 2-5)
+#   profile and region from variables. No credentials in the file.
+providers:provider.aws#1providers.tfterraform-awsfalse2-5
+
+# provider.aws#2  (lines 7-12)
+#   access_key and secret_key as literals in the provider block -
+#   credentials committed to version control.
+providers:provider.aws#2providers.tfterraform-awstrue7-12
+
+# terraform#1  (lines 14-18)
+#   An S3 backend with encrypt = true. This is the secure spelling.
+providers:terraform#1providers.tfterraform-awsfalse14-18
+
+# ==========================================================================
+# rds.tf
+# ==========================================================================
+
+# aws_rds_cluster.app1-rds-cluster  (lines 1-15)
+#   storage_encrypted is unset, and the aws_rds_cluster default is false -
+#   the cluster is created unencrypted. backup_retention_period = 0
+#   additionally disables automated backups entirely.
+rds:aws_rds_cluster.app1-rds-clusterrds.tfterraform-awstrue1-15
+
+# aws_rds_cluster.app2-rds-cluster  (lines 17-31)
+#   Unencrypted, as app1. backup_retention_period = 1 is a single day, below
+#   any recovery objective a reviewer would accept.
+rds:aws_rds_cluster.app2-rds-clusterrds.tfterraform-awstrue17-31
+
+# aws_rds_cluster.app3-rds-cluster  (lines 33-47)
+#   Unencrypted. backup_retention_period = 15 is fine, which is the point of
+#   this block - the corpus varies retention across nine otherwise identical
+#   clusters. A resource-level label cannot express `fixed for retention,
+#   still broken for encryption`; the leg README states that limitation.
+rds:aws_rds_cluster.app3-rds-clusterrds.tfterraform-awstrue33-47
+
+# aws_rds_cluster.app4-rds-cluster  (lines 49-63)
+#   Unencrypted; retention 15. As app3.
+rds:aws_rds_cluster.app4-rds-clusterrds.tfterraform-awstrue49-63
+
+# aws_rds_cluster.app5-rds-cluster  (lines 65-79)
+#   Unencrypted; retention 15. As app3.
+rds:aws_rds_cluster.app5-rds-clusterrds.tfterraform-awstrue65-79
+
+# aws_rds_cluster.app6-rds-cluster  (lines 81-95)
+#   Unencrypted; retention 15. As app3.
+rds:aws_rds_cluster.app6-rds-clusterrds.tfterraform-awstrue81-95
+
+# aws_rds_cluster.app7-rds-cluster  (lines 97-111)
+#   Unencrypted; retention 25. As app3.
+rds:aws_rds_cluster.app7-rds-clusterrds.tfterraform-awstrue97-111
+
+# aws_rds_cluster.app8-rds-cluster  (lines 113-128)
+#   Unencrypted; retention 25. As app3.
+rds:aws_rds_cluster.app8-rds-clusterrds.tfterraform-awstrue113-128
+
+# aws_rds_cluster.app9-rds-cluster  (lines 130-144)
+#   Unencrypted; retention 25. As app3.
+rds:aws_rds_cluster.app9-rds-clusterrds.tfterraform-awstrue130-144
+
+# ==========================================================================
+# s3.tf
+# ==========================================================================
+
+# aws_s3_bucket.data  (lines 1-21)
+#   Public, unencrypted, unversioned and unlogged, and it is the bucket the
+#   customer master spreadsheet is uploaded to. The file's own seed comments
+#   enumerate all four.
+s3:aws_s3_bucket.datas3.tfterraform-awstrue1-21
+
+# aws_s3_bucket_object.data_object  (lines 23-40)
+#   BORDERLINE, resolved against flagging. ATTRIBUTION: the object sets no
+#   server_side_encryption, which means `inherit the bucket default` rather
+#   than `do not encrypt`. The missing default belongs to aws_s3_bucket.data
+#   and is labelled there. See the leg README's sensitivity table.
+s3:aws_s3_bucket_object.data_objects3.tfterraform-awsfalse23-40
+
+# aws_s3_bucket.financials  (lines 42-63)
+#   acl = private, so not public - but no encryption, no versioning and no
+#   access logging on a bucket named for financial records. This is the
+#   second rung of the corpus's own S3 remediation ladder and it is still
+#   short of production.
+s3:aws_s3_bucket.financialss3.tfterraform-awstrue42-63
+
+# aws_s3_bucket.operations  (lines 65-87)
+#   Private and versioned, still unencrypted and unlogged. Third rung of the
+#   ladder.
+s3:aws_s3_bucket.operationss3.tfterraform-awstrue65-87
+
+# aws_s3_bucket.data_science  (lines 89-111)
+#   Private, versioned and logging to the logs bucket, still unencrypted.
+#   Fourth rung. Encryption at rest alone is enough to fail a review.
+s3:aws_s3_bucket.data_sciences3.tfterraform-awstrue89-111
+
+# aws_s3_bucket.logs  (lines 113-141)
+#   The top of the ladder and this corpus's own worked answer: acl =
+#   log-delivery-write, versioning enabled, and server-side encryption with
+#   the KMS key from kms.tf. It is the negative control for the whole S3
+#   family.
+s3:aws_s3_bucket.logss3.tfterraform-awsfalse113-141

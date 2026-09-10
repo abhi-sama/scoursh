@@ -55,17 +55,69 @@ id: terragoat
 repo: https://github.com/bridgecrewio/terragoat.git
 commit: 729f8da62c6a85ce4af5ad3d123de97776d954c4
 licence: Apache-2.0
-ground-truth: none
+ground-truth: labels:terragoat-aws.truth
 categories: terraform-aws
 sparse: terraform/aws
-note: Deliberately-misconfigured Terraform.  Its ground truth is PROSE plus
-  Checkov's own `CKV_*` check ids, so scoring recall against it would bias the
-  result toward Checkov - it is usable for the adjudication-free COVERAGE
-  metric only (which files did a tool find anything wrong in), never for
-  recall.  `ground-truth: none` is what makes bench/score.sh refuse a recall
-  request against it rather than inventing one.
+note: Deliberately-misconfigured Terraform.  Its own ground truth is PROSE plus
+  Checkov's own `CKV_*` check ids, so scoring recall against THAT would bias
+  the result toward Checkov - which is why this row read `ground-truth: none`
+  until the B6 leg hand-labelled the corpus.  It now names
+  bench/labels/terragoat-aws.truth, a label set this project authored by
+  reading the Terraform and applying two written rules, with a rationale
+  committed beside every case.  No `CKV_*` id, and no tool's output of any
+  kind, was consulted to produce it - methodology rule R2.
 note: Scoped to `terraform/aws` on purpose.  The repository is mostly
   Azure/GCP/Oracle/AliCloud and scoursh's terraform.rules is AWS-shaped, so
   scoring the whole tree would measure cloud-provider mismatch and report it
   as a detection gap.  For IaC, "same category" has to mean "same cloud" -
   which is why `categories` says `terraform-aws` and not `iac`.
+
+id: kubernetes-goat
+repo: https://github.com/madhuakula/kubernetes-goat.git
+commit: 723a0db478f050d173d23b4ce5044b65bce0bdd0
+licence: MIT
+ground-truth: labels:kubernetes-goat.truth
+categories: kubernetes
+sparse: scenarios
+note: Deliberately-vulnerable Kubernetes scenario manifests.  Its own ground
+  truth is PROSE (a per-scenario walkthrough in `guide/`), so this repository
+  hand-labels it instead - see bench/labels/kubernetes-goat.truth, which IS
+  the ground truth and is committed for exactly that reason.  `ground-truth:
+  labels:<file>` names a file under bench/labels/ rather than a file inside
+  the corpus, which is what distinguishes a corpus whose labels this project
+  authored from one that ships its own.
+note: Scoped to `scenarios` on purpose.  `guide/` is documentation, `platforms/`
+  is cluster bootstrap for a specific hosted provider, and
+  `infrastructure/helm-tiller/` is a Helm chart whose templates are Go
+  templates rather than Kubernetes manifests - a plain-manifest scanner cannot
+  parse them and scoring it on them would measure template syntax, not
+  detection.  The two Helm-shaped directories INSIDE `scenarios` are excluded
+  by the label file for the same reason, and the exclusion is stated there.
+
+id: leaky-repo
+repo: https://github.com/Plazmaz/leaky-repo.git
+commit: 2e951359cac53addbee56437da3ffb546e3dfe24
+licence: MIT
+ground-truth: labels:leaky-repo.truth
+categories: secrets
+note: A deliberately-seeded collection of the credential-bearing files that
+  most often reach a public repository by accident - ssh and PEM private keys,
+  cloud credential files, framework config, a database dump, browser password
+  stores.  Its author states plainly that none of the values are real; they
+  are randomised or redacted reproductions of shapes seen in the wild, which
+  is what makes it publishable at all.
+note: It is NOT any scanned tool's own fixture set, which is what methodology
+  rule R1 requires.  It does ship `.leaky-meta/benchmarking/*.md` reporting
+  how several scanners scored against it, so a tool author COULD have tuned
+  against it since 2019 - that is a weaker relationship than authorship and it
+  is stated here rather than left for a reader to find.  Its own
+  `.leaky-meta/secrets.csv` is a per-FILE count of "risk" and "informative"
+  lines, not a line-level label, and it covers only a subset of the tree - so
+  it is used here as an independent CROSS-CHECK on the hand labels, never as
+  the labels themselves.
+note: SecretBench (`setu1421/SecretBench`, MSR'23) was the first choice and is
+  NOT obtainable here: the dataset itself is not in that repository, it lives
+  in Google BigQuery and Google Cloud Storage behind a Google Cloud account
+  AND a signed data-protection agreement AND per-email access granted by its
+  authors.  That is recorded as an explicit not-measured cell rather than
+  quietly substituted - see bench/results/b6-secrets-leaky-repo/README.md.

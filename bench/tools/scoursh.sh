@@ -47,12 +47,17 @@ scoursh_version() {
   printf '%s' "${v:-unknown}${sha:++$sha}"
 }
 
-# scoursh claims every category its own modules ship rules for.  SAST
-# categories are named the way OWASP Benchmark names them, because that is the
-# corpus supplying the labels; the IaC category is `terraform-aws` rather than
-# `iac` for the reason bench/corpus.lock's terragoat note gives.
+# THIS ADAPTER RUNS `scan.sh sast`, SO IT CLAIMS SAST CATEGORIES AND NOTHING
+# ELSE.  It named `terraform-aws` when it was the only scoursh adapter here,
+# which was a claim `scan.sh sast` could not honour: the terraform rules live
+# in `modules/iac/` and a `sast` run never loads them, so the claim would have
+# scored scoursh at zero on an IaC corpus while looking like a real attempt.
+# `bench/tools/scoursh-iac.sh` runs `scan.sh iac` and carries that claim now.
+#
+# The SAST category names are OWASP Benchmark's, because that is the corpus
+# supplying the labels.
 scoursh_scope() {
-  printf '%s\n' sqli cmdi ldapi pathtraver crypto hash weakrand xss terraform-aws
+  printf '%s\n' sqli cmdi ldapi pathtraver crypto hash weakrand xss
 }
 
 scoursh_run() {

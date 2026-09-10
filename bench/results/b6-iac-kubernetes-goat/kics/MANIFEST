@@ -1,0 +1,14 @@
+tool: kics
+version: 2.1.21
+corpus: kubernetes-goat
+corpus-commit: 723a0db478f050d173d23b4ce5044b65bce0bdd0
+scan-root: <SCAN_ROOT>
+files-scanned: 16
+wall-clock-seconds: 0
+records: 451
+claims-categories: terraform-aws kubernetes
+gate: kics scan -p ROOT -q <installed query library> --report-formats json (no --include-queries/--exclude-queries)
+note: runtime is a WALL CLOCK over 16 file(s), not a rate - see the
+  header of bench/run-tool.sh for why a single total on a small corpus
+  is mostly fixed startup cost.
+portable-paths: the scan-root prefix was replaced by <SCAN_ROOT> and the bench/ prefix by <BENCH>; no other edit was made
