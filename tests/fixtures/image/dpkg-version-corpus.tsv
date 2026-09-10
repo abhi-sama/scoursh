@@ -1,0 +1,175 @@
+# tests/fixtures/image/dpkg-version-corpus.tsv - the COMMITTED differential
+# corpus for modules/image/distro/dpkg_version.sh (IMG-08).
+#
+# FORMAT: four TAB-separated columns, `A <op> B <why>`, where <op> is one of
+# `<`, `=`, `>` - the same vocabulary tests/fixtures/image/apk-version-corpus.tsv
+# uses, and a one-for-one map onto dpkg's own `lt`/`eq`/`gt` operators, so
+# the follow-up live differential named in the comparator's header (run
+# `dpkg --compare-versions A lt B` per row on a networked box) is a direct
+# column diff rather than a translation.  Whole-line `#` comments and blank
+# lines are ignored, matching the record-format instinct the rest of this
+# repository uses; a value never needs escaping because no column can contain
+# a TAB and no legal Debian version can contain one either.
+#
+# PROVENANCE, STATED PLAINLY.  Rows here come from three places and nowhere
+# else:
+#
+#   1. The three dpkg cases data/scoursh-image-scan-design/report.md §2.4
+#      measured `modules/sca/semver.sh` getting WRONG.  These are the rows
+#      this ticket exists for and they are marked (report.md 2.4).
+#   2. dpkg's OWN PUBLISHED TEST VECTORS - the pairs its `Dpkg::Version`
+#      test suite asserts - transcribed by hand and marked (dpkg vector).
+#      They are the closest thing to a harvested corpus available offline:
+#      each one is a pair the tool's maintainers wrote down as the answer.
+#   3. Cases derived from `deb-version(7)`'s documented algorithm, covering
+#      each rule the other two do not reach on its own, marked with the rule
+#      they exercise.
+#
+# NONE of it was harvested by running `dpkg --compare-versions`: scoursh is
+# egress-restricted and the development host has no dpkg, so a live harvest
+# of the shape `modules/sca/semver.sh` used for npm was not available.  This
+# is the strongest OFFLINE corpus available and it is not a substitute for
+# that run - see the comparator's own "THE OFFLINE-CORPUS LIMIT" section for
+# the follow-up hardening this owes.
+#
+# The suite asserts the MIRROR of every row too (`A < B` implies `B > A`) and
+# the reflexivity of every distinct version, so a comparator that returned a
+# constant could not pass by agreeing with one column.
+#
+# A	op	B	why
+
+# --- report.md §2.4's three measured semver.sh failures ---
+# Each is a pair modules/sca/semver.sh answers WRONG, and each is why this
+# file is a separate comparator rather than a reuse.
+1:2.30.2-1	>	2.39.5-1	epoch 1 beats any epoch-0 version, whatever the upstream (report.md 2.4)
+1.0	>	1.0~beta	a tilde sorts BEFORE everything, including the end of the string (report.md 2.4)
+5:1.0-1	>	10.0-1	epoch 5 beats upstream 10.0 - the epoch decides alone (report.md 2.4)
+
+# --- THE EPOCH: compared first, and as an integer ---
+0:1.0	=	1.0	an absent epoch IS epoch 0, not a missing field
+1	=	0:1	(dpkg vector) the same one component wide
+0:0foo	=	0foo	(dpkg vector) and with a non-numeric upstream tail
+1:0foo	>	0foo	(dpkg vector) a present epoch outranks an absent one
+2:2.5	>	1:7.5	(dpkg vector) the epoch decides before the upstream is looked at
+10:1.0	>	9:1.0	epoch 10 beats epoch 9 NUMERICALLY - a byte comparison reads "1" < "9" and inverts this
+01:1.0	=	1:1.0	a leading zero in the epoch is not significant - it is an integer
+0:1.0	<	1:0.1	a lower upstream with a higher epoch still wins
+1:1.0	<	1:2.0	equal epochs fall through to the upstream comparison
+1:1.0-1	<	1:1.0-2	equal epochs and upstreams fall through to the revision
+1:1.0	=	1:1.0	an epoch tie on identical versions
+99:0.0.1	>	98:9.9.9	the epoch is compared before anything else, always
+1:1.0	>	0:99999.99999	and no upstream is large enough to overcome one epoch
+
+# --- THE TILDE: below everything, including the end of the string ---
+1.0~beta	<	1.0	the headline rule, at the end of the upstream part
+1.0~	<	1.0	a bare tilde with nothing after it is still below the end of the string
+1~	<	1	(dpkg vector) the same one component wide
+1.0~~	<	1.0~	(dpkg vector shape) a second tilde is lower again
+1.0~~	<	1.0	two tildes are below the bare version too
+0foo~~	<	0foo~	(dpkg vector) dpkg's own spelling of the same pair
+0foo~1	<	0foo	(dpkg vector) a tilde followed by a digit is still a tilde
+1.0~alpha	<	1.0~beta	two tildes at the same position fall through to what follows
+1.0~beta	<	1.0~rc	and letters compare by code point
+1.0~beta1	<	1.0~beta2	and a digit run after a tilde compares numerically
+1.0~beta9	<	1.0~beta10	numerically rather than lexically, where a byte read fails
+1.0~rc1	<	1.0	every pre-release shape stays below the release
+2.2~rc-4	<	2.2-4	(dpkg vector) a tilde in the upstream beats a HIGHER revision
+1.2.0~b7-1	<	1.2.0-2	(dpkg vector) a real Debian pre-release against a later revision
+1.0-1~bpo11+1	<	1.0-1	the tilde rule inside the REVISION - a Debian backport sorts below its release
+1.0-1~bpo11+1	<	1.0-1~bpo12+1	two backports of one release compare after the tilde
+1.0-1~exp1	<	1.0-1~exp2	an experimental revision series
+1.0-0~	<	1.0-0	a tilde at the very start of a revision
+1~2	<	1	a tilde mid-upstream still sinks the whole version below the bare one
+1~2	<	1.0	and below a longer sibling
+1.0~1	<	1.0.1	the tilde is decided before the digit runs are ever reached
+1.0	>	1.0~9999	no digit run after a tilde can lift it above the release
+
+# --- SEGMENTATION: alternating non-digit and digit runs ---
+1.2.10	>	1.2.9	digit runs compare numerically, not lexically
+1.9.0	<	1.10.0	the same at the minor component
+9.0.0	<	10.0.0	and at the major
+53	<	53.1	(dpkg vector) a longer version with the same prefix is greater
+3.11	>	3.10+nmu1	(dpkg vector) the digit runs decide before the `+` is reached
+1.09	=	1.9	(dpkg vector) leading zeros are stripped before a run is compared
+1.011-1	=	1.11-1	(dpkg vector) the same with a revision attached
+1.0000-1	=	1.0-1	(dpkg vector) any number of leading zeros
+0foo	>	0fo	(dpkg vector) a longer non-digit run is greater when the shorter one ends
+0foo.bar	>	0foobar	(dpkg vector) `.` sorts above every letter
+0foo.bar	>	0foo1bar	(dpkg vector) and above a digit run
+0foo.bar	>	0foo0bar	(dpkg vector) including a zero run
+0foo1bar-1	<	0foobar-1	(dpkg vector) a digit sorts below a letter at the same position
+0foo2.0-1	>	0foo2-1	(dpkg vector) `.` against the end of the string
+0foo2.0-1	<	0foo2.0.0-1	(dpkg vector) a further component is greater
+0foo2.0.0-1	<	0foo2.10.0-1	(dpkg vector) numeric, not lexical, mid-version
+0foo2.0-1	<	0foo2.10-1	(dpkg vector) the same one component earlier
+0foo2.1-1	<	0foo2.10-1	(dpkg vector) 1 against 10
+1.0.8+nmu1	>	1.0.8	(dpkg vector) `+` sorts above the end of the string
+0.0.9+dfsg1-1	>	0.0.9-1	(dpkg vector) a real `+dfsg` repack sorts above the plain upstream
+4.6.99+svn6582-1	>	4.6.99-1	(dpkg vector) a real `+svn` snapshot does too
+0.9j-20080306-4	>	0.9i-20070813-1	(dpkg vector) `j` beats `i`, and the LAST hyphen is the revision separator
+12345+that-really-is-some-ver-0	=	12345+that-really-is-some-ver-0	(dpkg vector) a version full of hyphens compares equal to itself
+1.0	<	1.0a	a letter sorts above the end of the string
+1.0a	<	1.0b	two letters compare by code point
+1.0a	<	1.0.1	a letter sorts BELOW `.` - letters come before every other non-alphanumeric
+1.0a	<	1.0+	and below `+`, the same rule
+1.0a	>	1.0-1	but ABOVE a version whose only extra content is a revision - the upstream parts are compared FIRST, and `1.0a` beats `1.0` there before the revision is ever reached
+1.0A	<	1.0a	uppercase sorts below lowercase, by code point
+1.0Z	<	1.0a	and the whole uppercase range does
+0foo~foo+Bar	<	0foo~foo+bar	(dpkg vector) the same distinction inside a tilde-suffixed upstream
+1.0	<	1.0.0	a trailing `.0` is a real, greater component
+1.0	<	1.0.0.0	and two of them
+1.2	<	1.2.1	a shorter version is below a longer one that shares its prefix
+1.0	<	1.00.0	a zero-led component is still a component
+1a	<	1a1	a digit run after a letter is greater than the end of the string
+1a1	<	1a2	and compares numerically
+1a9	<	1a10	numerically rather than lexically
+1.0+	<	1.0+1	the same after a `+`
+1.0.	<	1.0.1	a trailing dot is legal and sorts below a following digit run
+
+# --- THE REVISION: compared last, and an absent one is "0" ---
+1.0	=	1.0-0	an ABSENT revision compares EQUAL to `0` - this is where dpkg and apk go OPPOSITE ways
+0	=	0:0-0	(dpkg vector) the same at the smallest possible version
+0foo-0	=	0foo	(dpkg vector) and with a non-numeric upstream
+1.0	<	1.0-1	but an absent revision is below any non-zero one
+1.0-0	<	1.0-1	adjacent revisions
+1.0-1	<	1.0-2	adjacent again
+1.0-1	<	1.0-10	numerically, where a lexical read says otherwise
+1.0-9	<	1.0-10	one digit lower, where a lexical read fails identically
+1.0-99	<	1.0-100	two digits against three
+0foo-0	<	0foo-01	(dpkg vector) `0` against `01` - the leading zero is stripped, then the run is longer
+1.0-01	=	1.0-1	a leading zero in the revision is not significant
+1.0-0	<	1.0-0.1	a dotted revision is greater than the bare one
+1.0-1.1	<	1.0-1.2	and dotted revisions compare component by component
+1.0-1ubuntu1	<	1.0-1ubuntu2	the Ubuntu revision series
+7.68.0-1ubuntu2.7	<	7.68.0-1ubuntu2.14	a real Ubuntu security series - 2.7 is BELOW 2.14, which a lexical read inverts
+1:8.2p1-4ubuntu0.5	<	1:8.2p1-4ubuntu0.11	the same shape with an epoch, as openssh actually ships it
+1.0-1	<	1.0-1ubuntu1	an Ubuntu delta sorts above the Debian revision it derives from
+1.0-1ubuntu1	<	1.0-2	but never above the next Debian revision
+0foo-0	<	0foo+	(dpkg vector) the revision is only reached when the UPSTREAMS tie - here they do not
+1.0-0	<	1.0.1-0	an upstream bump outranks any revision below it
+1.0-99	<	1.0.1-0	including a very high one
+2.39.5-1	<	2.39.5-2	the revision decides when epoch and upstream both tie
+1.0-1	<	2.0-2	(dpkg vector) but never when the upstream does not tie
+3.0.11-1~deb12u2	<	3.0.11-1	a Debian point-release revision is a tilde revision
+3.0.11-1~deb12u1	<	3.0.11-1~deb12u2	and the point releases order among themselves
+1.0-a	<	1.0-b	a purely alphabetic revision
+1.0-1	<	1.0-a	a digit sorts below a letter in the revision too
+1.0-1	<	1.0-1a	a letter after the digit run is above the end of the string
+1.0--1	=	1.0--1	only the LAST hyphen splits, so `1.0-` is the upstream here
+
+# --- IDENTITY, in every shape the grammar allows ---
+1.0	=	1.0	the plainest possible pair
+1:1.0-1	=	1:1.0-1	epoch, upstream and revision all present
+1:2.30.2-1~bpo11+1	=	1:2.30.2-1~bpo11+1	every feature at once
+0	=	0	the smallest legal version
+1.0~beta	=	1.0~beta	a tilde compares equal to itself
+
+# --- HOSTILE WIDTH: no digit run is ever evaluated arithmetically ---
+# Both operands of the first pair differ by exactly 2^64, so `$(( 10#... ))`
+# maps them onto the SAME value; the second pair is ordered BACKWARDS under
+# that reading rather than merely tied.
+1.1	<	1.18446744073709551617	a 20-digit run is compared width-exact - 64-bit arithmetic wraps it back onto 1
+1.18446744073709551617	>	1.2	and wrapping does not merely lose precision, it inverts the ordering
+1.0-1	<	1.0-18446744073709551617	the same at the revision
+1.100000000000000000000000000000	>	1.99999999999999999999999999999	a longer stripped digit run is always the larger number
+18446744073709551617:1.0	>	18446744073709551616:1.0	and the epoch is compared the same way
