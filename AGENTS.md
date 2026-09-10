@@ -4277,6 +4277,38 @@ vendored engine adapter (docs/ADAPTERS.md, mirroring how the `gitleaks`/`trivy` 
 real binary rather than a bash reimplementation of one) and writes rows into a real sqlite database
 this same query already reads correctly, rather than reshaping this file's contract.
 
+**IMG-10 adds the two remaining `IMAGE-CFG-*` config-blob checks report.md §5.3 names for it -
+`IMAGE-CFG-EXPOSED_PORTS-01` (informational) and `IMAGE-CFG-MUTABLE_BASE_REF-01` - both in
+`modules/image/config.sh` alongside IMG-06's `IMAGE-CFG-RUNS_AS_ROOT-01`, and both distro-agnostic and
+run unconditionally from `modules/image/run.sh` the moment `image_open` succeeds, exactly like
+RUNS_AS_ROOT.** Two things worth knowing before touching either:
+
+- **`config.sh` gained a SECOND, DISTINCT JSON reader, `image_json_object_keys`, and it is not a sixth
+  copy of the byte-identical `image_json_flatten` this tension already governs (acquire.sh's own
+  header).** `image_json_flatten` reports one line per SCALAR leaf, so a docker/OCI config's
+  `map[string]struct{}` fields (`config.ExposedPorts` - port numbers live entirely in the KEYS, every
+  value is a structurally EMPTY object) emit NOTHING under it, whether the image declares zero ports or
+  five: there is no scalar to report either way. Enumerating an object's own keys regardless of what
+  each key's value is is a genuinely different task from leaf extraction (not a divergent copy of the
+  same one), so it lives as its own small, `fail()`-guarded recursive-descent walker next to its one
+  caller in `config.sh`, not as a `lib/`-hub edge for a need nothing else in the tree has yet. See that
+  file's own section-2 header for the full reasoning and `tests/suites/image-config.sh` section A for
+  the proof, including that a same-named key at the WRONG structural depth must not bleed into the
+  wanted path, and that malformed JSON must fail (rc=1) rather than hang - the config blob is
+  attacker-controlled content exactly like a layer is.
+- **`IMAGE-CFG-MUTABLE_BASE_REF-01` only ever fires when the image's own config carries the OCI
+  image-spec 1.1 `org.opencontainers.image.base.name` label under `config.Labels` (buildkit's own
+  opt-in provenance annotation) - which most built images do NOT carry, since it is optional and
+  buildkit-specific, and classic (non-buildkit) `docker build` leaves no trace of the base image at
+  all.** When the label is absent (or holds buildkit's own `unknown` placeholder, written for a
+  multi-stage build referencing an earlier stage rather than a real registry image), this is a
+  DECLARED `reason=base_reference_not_recorded` coverage_reduction, never a guess rendered as a clean
+  pass and never a fabricated finding - the brief's own words for this ticket. Do not widen this to
+  infer a base reference from `History[].created_by` text or any other heuristic: classic `docker
+  build` history carries no reliable marker for which entry was the `FROM` line at all (the base
+  image's own history is simply concatenated in), so a heuristic there produces exactly the overstated
+  coverage `docs/DESIGN.md` §15 forbids.
+
 ## Tests
 
 ```

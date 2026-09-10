@@ -5,7 +5,9 @@
 # advisory-database reuse added by IMG-03; distro/apk.sh, apk_version.sh and
 # config.sh sourced here, and the two remaining v1 coverage emitters added,
 # by IMG-06; distro-release detection widened to Debian/Ubuntu and
-# distro/dpkg.sh, dpkg_version.sh sourced here, by IMG-09).
+# distro/dpkg.sh, dpkg_version.sh sourced here, by IMG-09; config.sh widened
+# with two more distro-agnostic config-blob checks by IMG-10, no new source
+# edge since config.sh was already sourced here by IMG-06).
 #
 # WHAT IMG-01 SHIPPED, AND WHAT HAS LANDED SINCE.  IMG-01 was the ONLY
 # shared-file ticket for this module - it registered the `IMAGE` module
