@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 # tools/run-sandboxed.sh - the macOS Seatbelt runner (docs/FOUNDATION.md
-# tension 20, Tier A of the tension-20 macOS-enforcement amendment).
+# tension 20, Tiers A and B of the tension-20 macOS-enforcement amendment).
+#
+# TWO MODES, AND THE FLAG IS THE WHOLE DIFFERENCE.
+#   `-- <command...>`                    Tier A: deny ALL network access.
+#   `--scope-conf F -- <command...>`     Tier B: deny all network access
+#                                        EXCEPT one loopback relay per
+#                                        authorised (address, port) in F,
+#                                        each forwarding to exactly that
+#                                        target - so dast/cloud become
+#                                        runnable under a real kernel
+#                                        restriction. See section 1b for the
+#                                        mechanism and for why its label is a
+#                                        distinct third one rather than
+#                                        "guarantee" or "detector".
 #
 # Owns:
 #   docs/FOUNDATION.md tension 20 ("What macOS still does NOT get" - the
@@ -20,23 +33,25 @@
 # of their parent") to open a network socket is refused by the kernel at the
 # connect() boundary, before a single packet is sent.
 #
-# WHY THIS IS NOT tools/run-in-netns.sh's EQUIVALENT, NOT A REPLACEMENT FOR
-# IT.  Seatbelt's network address filter accepts only `*` or `localhost` as
-# the host part of a `(remote ip "...")` clause - it can restrict *ports*,
-# never *which remote host* - so unlike the netns tool's per-target route
-# table, this profile cannot express "only the authorised scope target is
-# reachable".  What it CAN express, and what this tool ships, is a strictly
-# narrower but still genuine guarantee: **no network access of any kind**.
-# That is exactly what `sast`/`sca`/`iac` need (docs/FOUNDATION.md §1: those
-# three modules make zero network calls by design), so this tool is scoped
-# to that claim and no further - it is never proposed as a substitute for
-# scope-restricted egress control on `dast`/`cloud`/`network`, which need
-# real, target-specific network access to do their job at all.  Restricting
-# an authorised target's traffic to loopback-only, the way a future
-# `--connect-to`-based relay could, is a SEPARATE, larger change (a real
-# edit to lib/http.sh) and is deliberately not this ticket's scope - see the
-# tension-20 amendment this ticket makes in docs/FOUNDATION.md for the full
-# three-tier picture and why the loopback-relay tier is tracked separately.
+# WHY THIS IS NOT tools/run-in-netns.sh's EQUIVALENT, IN EITHER MODE.
+# Seatbelt's network address filter accepts only `*` or `localhost` as the
+# host part of a `(remote ip "...")` clause, so it cannot name the authorised
+# target the way the netns tool's per-target route table does.  `localhost`
+# is not port-only and not 127.0.0.1-only either: MEASURED, it admits any
+# address belonging to THIS HOST on the named port, and denies every off-host
+# address on every port (section 1b carries the four-row measurement and the
+# probe that actually discriminates).  So:
+#   - Tier A expresses **no network access of any kind**, which is exactly
+#     what `sast`/`sca`/`iac` need (docs/FOUNDATION.md §1: those three
+#     modules make zero network calls by design) and makes that claim
+#     kernel-enforced rather than asserted.
+#   - Tier B expresses **no OFF-HOST access of any kind, plus these loopback
+#     relay ports**, and scoursh's own relay - not the kernel - is what makes
+#     the bytes on those ports go to the authorised target.  That split is
+#     why Tier B is labelled "containment guarantee, target restriction by
+#     relay" rather than being folded into either of tension 20's two
+#     existing words; under the netns tool the kernel enforces both halves,
+#     and that difference is real.
 #
 # THE CAPTAIN'S DECISION THIS TICKET IMPLEMENTS: sandbox-exec is ACCEPTED as
 # load-bearing despite being nine years deprecated (`man sandbox-exec`,
@@ -107,23 +122,22 @@
 #   - Never invoked by scan.sh; run deliberately, exactly like
 #     tools/run-in-netns.sh.
 #
-# WHAT THIS DELIBERATELY IS NOT (Tier B, out of scope for this ticket - see
-# the tension-20 amendment in docs/FOUNDATION.md for the full three-tier
-# account):
-#   - It does not resolve `config/scope.conf`, does not start a loopback
-#     relay, and grants no network access to any authorised target. A
-#     command that itself needs real network access (dast/cloud/network)
-#     is not what this tool is for; wrapping one here means it gets ZERO
-#     network access and most likely fails loudly on its own first request
-#     - which is the intended, honest outcome for a tool whose only claim is
-#     "no network calls happen inside this sandbox", not "only the
-#     authorised target is reachable".
-#   - It carries no `--scope-conf` equivalent, because there is no scope to
-#     resolve: the profile this tool applies is the same fixed deny-all
-#     string on every invocation, unconditionally.
-#   - It does not depend on, call, or wrap `--paranoid`'s connection-observer
-#     mechanism (lib/paranoid.sh) or tools/run-in-netns.sh in any way. All
-#     three are independent, peer mechanisms under tension 20's RESOLUTION.
+# WHAT THIS DELIBERATELY IS NOT, IN EITHER MODE:
+#   - It is never invoked by scan.sh; it is run deliberately, exactly like
+#     tools/run-in-netns.sh, and it does not depend on, call, or wrap
+#     `--paranoid`'s connection observer (lib/paranoid.sh) or the netns tool.
+#     All three are independent, peer mechanisms under tension 20's
+#     RESOLUTION.
+#   - Tier A grants no network access to any authorised target and has no
+#     concept of one. Wrapping a `dast`/`cloud` command in Tier A means it
+#     gets ZERO network access and fails loudly on its own first request -
+#     the intended, honest outcome. `--scope-conf` is the mode for those.
+#   - Tier B does NOT redirect the raw TLS handshake
+#     `modules/dast/passive/tls.sh` opens through tension 19's transport
+#     exception: that socket is opened by the module itself, goes off-host,
+#     and is therefore kernel-refused inside the sandbox. It fails CLOSED,
+#     which is the safe direction, and is a stated gap - see lib/http.sh
+#     section 7a's own note.
 #
 # shellcheck shell=bash
 #
@@ -141,8 +155,18 @@ else
 fi
 
 RUN_SANDBOXED_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-# shellcheck source=lib/core.sh
+# -x back-edge cut: lib/http.sh below reaches lib/core.sh itself, so following
+# this edge too would inline the whole hub chain twice for every consumer of
+# this file (docs/CI-RUNBOOK.md, "the memory model"). Lossless - core.sh is
+# still inlined once, via the kept edge - and the identical cut
+# tools/run-in-netns.sh makes for the identical pair.
+# shellcheck source=/dev/null
 source "$RUN_SANDBOXED_DIR/lib/core.sh"
+# Tier B only: http_scope_load/http_resolve_host, the SAME two functions the
+# scope gate itself uses and the same two _netns_collect_target_ips calls -
+# never a second resolver.
+# shellcheck source=lib/http.sh
+source "$RUN_SANDBOXED_DIR/lib/http.sh"
 
 # ---------------------------------------------------------------------------
 # 1. The fixed profile - a literal, unconditional deny-all-network string.
@@ -159,36 +183,368 @@ RUN_SANDBOXED_PROFILE=${RUN_SANDBOXED_PROFILE:-'(version 1)(allow default)(deny 
 # validation cannot be redirected by a caller-controlled PATH.
 RUN_SANDBOXED_PROBE_CMD=${RUN_SANDBOXED_PROBE_CMD:-/usr/bin/true}
 
+# ---------------------------------------------------------------------------
+# 1b. TIER B: the loopback relay and the port-pinned profile
+#     (docs/FOUNDATION.md tension 20 - "containment guarantee, target
+#     restriction by relay")
+# ---------------------------------------------------------------------------
+# WHAT --scope-conf ADDS, AND THE ONE THING IT IS NOT.  Without it this tool
+# is Tier A and grants ZERO network access.  With it, it resolves the
+# authorised scope, starts one forwarder per authorised (address, port)
+# OUTSIDE the sandbox, and emits a Seatbelt profile admitting EXACTLY those
+# loopback ports and nothing else - so `dast`/`cloud` become runnable under a
+# real kernel restriction instead of being simply excluded.
+#
+# THE LABEL IS A DISTINCT THIRD ONE, DELIBERATELY, AND IT IS NOT "GUARANTEE"
+# AND NOT "DETECTOR".  tension 20's whole framing is built on those two words
+# and this mechanism is honestly neither, so it gets its own:
+# **containment guarantee, target restriction by relay.**  Split by who
+# enforces which half:
+#   - The KERNEL guarantees that off-host egress is categorically impossible.
+#     Every process in the tree - every `xargs -P` worker included, since
+#     `man 7 sandbox` makes the sandbox inherited - can open exactly the
+#     relay ports, and only to an address of THIS HOST.  That is not sampled
+#     and it is not this project's code.
+#   - scoursh's OWN RELAY, not the kernel, guarantees that the bytes then go
+#     to the authorised target.  The relay is a few lines with a destination
+#     fixed at process start, so it is auditable - but it is this project's
+#     code, and calling that "the kernel guarantees only the target is
+#     reachable" would be an inflation of exactly the kind tension 20 exists
+#     to prevent.  Under `tools/run-in-netns.sh` the kernel route table
+#     enforces BOTH halves; that is the honest difference, and it is why this
+#     is not simply called a guarantee.
+#
+# WHAT `localhost:PORT` ACTUALLY MEANS, MEASURED - AND WHY THE OBVIOUS TEST
+# DOES NOT DISCRIMINATE.  Seatbelt's filter admits an address belonging to
+# THIS HOST on that port; it is not restricted to 127.0.0.1, and it is not
+# port-only either.  Measured on macOS 26.6.2 with a listener bound to
+# 0.0.0.0 and a profile allowing one port P:
+#
+#   sandboxed -> 127.0.0.1:P        connected
+#   sandboxed -> <this host's LAN address>:P    connected
+#   sandboxed -> 192.0.2.1:P (TEST-NET-1, off-host)   Operation not permitted
+#   sandboxed -> anything:<any other port>            Operation not permitted
+#
+# The LAN-address row is why a "connect to the LAN address and check it
+# fails" test proves nothing on its own: with nothing listening there it
+# fails as `Connection refused` whether Seatbelt denied it or not, and the
+# only discriminating probe is one against a genuinely OFF-HOST address,
+# where a denial is instant `Operation not permitted` and a permit is a
+# timeout.  The consequence to state rather than discover: a DIFFERENT
+# service already listening on the same port number on another of this
+# host's own interfaces would also be reachable from inside.  The relay binds
+# 127.0.0.1 only and takes an EPHEMERAL port the kernel just handed it, so
+# nothing else holds that port - but the containment claim is "cannot leave
+# this host", not "cannot reach any other socket on this host", and the two
+# are different sentences.
+#
+# THE RELAY IS PYTHON, AND THAT CHOICE IS MEASURED RATHER THAN PREFERRED.
+# The smallest dependency was wanted and bash cannot supply it: bash's
+# `/dev/tcp` can only DIAL, never LISTEN (measured - the failure is
+# `bash: connect: ...`, a connect attempt, because there is no listen form of
+# the construct at all), so there is no bash-only forwarder to write.  `nc`
+# ships with macOS but forwarding between two `nc` processes needs a FIFO for
+# the reverse direction and handles one connection at a time, which a scan
+# running `--jobs N` workers would serialise; `socat` is not present on a
+# stock macOS.  `python3` is present on every macOS with the Command Line
+# Tools, gives a concurrent listener in a few lines, and is pre-validated
+# here exactly as `sandbox-exec` is - fail loud (exit 4), never a degraded
+# run.  The destination is passed as ARGV and never interpolated into the
+# program text, so no address can alter the program; the relay accepts no
+# instruction over the wire, reads no configuration, and forwards bytes
+# between the connection it accepted and the one fixed destination it was
+# started for.
+#
+# THE RELAY IS UNAUTHENTICATED ON LOOPBACK, AND THAT IS A REAL PROPERTY RATHER
+# THAN AN OVERSIGHT.  Any process on this host that can reach 127.0.0.1 can
+# connect to a live relay and so reach the authorised target through it, for as
+# long as the run lasts.  Three things bound it and none of them is "nobody
+# will notice": the destination is fixed, so the relay is a path to the target
+# the operator already authorised and to nothing else; the port is ephemeral
+# and unpublished; and it exists only between the first precondition passing
+# and the EXIT trap firing.  What it is NOT suitable for is a multi-user host
+# where reaching the target at all is meant to be a privilege - there, a local
+# user who finds the port gets the same reach the scan has.  The netns tier has
+# no equivalent exposure, because its enforcement is a route table rather than
+# a listener, and that is a second real difference behind Tier B's label.
+#
+# TEARDOWN IS REAL HERE, UNLIKE TIER A.  Relays are children of this process
+# and an EXIT trap kills them and closes their listeners on BOTH success and
+# failure.  Everything is per-process, per-port, bound to 127.0.0.1: no host
+# mutation, nothing global, nothing that outlives the run.  This is the one
+# place this tool departs from its own "no teardown surface" header note, and
+# the note says Tier A; Tier B has exactly this one piece of state.
+RUN_SANDBOXED_SCOPE_CONF=''
+RUN_SANDBOXED_RELAY_PIDS=()
+RUN_SANDBOXED_RELAY_PORTS=()
+RUN_SANDBOXED_MAP_HOST=()
+RUN_SANDBOXED_MAP_PORT=()
+RUN_SANDBOXED_MAP_ADDR=()
+RUN_SANDBOXED_RELAY_PORT_LAST=''
+
+# The interpreter, a FIXED path by default for the same reason
+# RUN_SANDBOXED_PROBE_CMD is one: validation and the relay itself must not be
+# redirectable by a caller-controlled PATH.  Overridable only so a test can
+# drive the absent/unusable-runtime refusal for real.
+RUN_SANDBOXED_PYTHON=${RUN_SANDBOXED_PYTHON:-/usr/bin/python3}
+
+# The whole relay.  Held as one constant so it is auditable in one place and
+# never touches disk (the same argument the profile string makes for itself).
+# It binds 127.0.0.1 on an EPHEMERAL port, prints that port on stdout so the
+# parent learns it without guessing, and forwards between each accepted
+# connection and sys.argv[1]:sys.argv[2] - which is fixed for the life of the
+# process.  There is no path in it that reads a destination from anywhere else.
+read -r -d '' RUN_SANDBOXED_RELAY_SRC <<'RELAYEOF' || true
+import socket, socketserver, sys, threading
+DST = (sys.argv[1], int(sys.argv[2]))
+class H(socketserver.BaseRequestHandler):
+    def handle(self):
+        try:
+            up = socket.create_connection(DST, 30)
+        except OSError:
+            self.request.close()
+            return
+        def pump(a, b):
+            try:
+                while True:
+                    d = a.recv(65536)
+                    if not d:
+                        break
+                    b.sendall(d)
+            except OSError:
+                pass
+            finally:
+                try:
+                    b.shutdown(socket.SHUT_WR)
+                except OSError:
+                    pass
+        t = threading.Thread(target=pump, args=(self.request, up))
+        t.daemon = True
+        t.start()
+        pump(up, self.request)
+        t.join()
+        up.close()
+class S(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+srv = S(("127.0.0.1", 0), H)
+sys.stdout.write("%d\n" % srv.server_address[1])
+sys.stdout.flush()
+srv.serve_forever()
+RELAYEOF
+
+_sbx_require_relay_runtime() {
+  [[ -x $RUN_SANDBOXED_PYTHON ]] || die "$SCOURSH_EXIT_INPUT" \
+    "tools/run-sandboxed.sh --scope-conf: the relay runtime '$RUN_SANDBOXED_PYTHON' is not an executable file. The loopback relay needs it (bash's /dev/tcp can dial but cannot listen, so there is no bash-only forwarder to fall back to - see this file's header). Refusing rather than running <command> with no relay and a deny-all profile, which would look like a contained run and be an untested one."
+  "$RUN_SANDBOXED_PYTHON" -c 'import socket, socketserver, threading' >/dev/null 2>&1 \
+    || die "$SCOURSH_EXIT_INPUT" \
+      "tools/run-sandboxed.sh --scope-conf: the relay runtime '$RUN_SANDBOXED_PYTHON' could not import socket/socketserver/threading. On macOS /usr/bin/python3 is a stub until the Command Line Tools are installed, which is the ordinary cause. Refusing rather than proceeding without a relay."
+}
+
+# Resolves the authorised scope into map rows, through lib/http.sh's OWN
+# http_scope_load/http_resolve_host - the same two functions
+# tools/run-in-netns.sh's _netns_collect_target_ips calls, and never a second
+# resolver, so this tool and the scope gate can never disagree about what a
+# scope.conf host means.  Resolution happens HERE, outside the sandbox, which
+# is the only place it can: inside, DNS is kernel-denied.
+#
+# THE https -> http:80 RELAXATION IS MIRRORED ON PURPOSE.  http_scope_match
+# admits `http` on port 80 for a host whose scope row is `https` (its one
+# documented relaxation), so a map built from the scope rows alone would have
+# the gate approve a request guarantee mode then has no relay for - a refusal
+# whose real cause is this builder, not the operator.  One extra row per https
+# host closes it.
+_sbx_collect_relay_targets() {
+  RUN_SANDBOXED_MAP_HOST=()
+  RUN_SANDBOXED_MAP_PORT=()
+  RUN_SANDBOXED_MAP_ADDR=()
+  http_scope_load "$RUN_SANDBOXED_SCOPE_CONF"
+  local n=${#_HTTP_SCOPE_HOST[@]} i host port scheme subs addr
+  (( n > 0 )) || die "$SCOURSH_EXIT_INPUT" \
+    "tools/run-sandboxed.sh --scope-conf '$RUN_SANDBOXED_SCOPE_CONF': no usable scope target was loaded, so there is nothing to build a relay for. Refusing rather than running <command> under a deny-all profile it was not asked for."
+  for (( i = 0; i < n; i++ )); do
+    host=${_HTTP_SCOPE_HOST[i]}
+    port=${_HTTP_SCOPE_PORT[i]}
+    scheme=${_HTTP_SCOPE_SCHEME[i]}
+    subs=${_HTTP_SCOPE_SUBS[i]}
+    if [[ $subs == true ]]; then
+      log_warn "run-sandboxed: scope host '$host' has allow-subdomains: true, and a subdomain cannot be enumerated ahead of time - no relay is built for one. The gate will still admit it and lib/http.sh will then refuse it with exit 3 naming this reason, rather than attempting a connection the sandbox would deny anyway."
+    fi
+    if [[ $host == *:* ]]; then
+      log_warn "run-sandboxed: scope host '$host' is an IPv6 literal and the relay is IPv4-only (it binds and dials over IPv4), so no relay is built for it - it will NOT be reachable from inside the sandbox. This is a stated gap, not a silent drop."
+      continue
+    fi
+    if [[ $host =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+      addr=$host
+    elif ! addr=$(http_resolve_host "$host"); then
+      log_warn "run-sandboxed: DNS resolution failed for scope host '$host' - no relay is built for it, and it will NOT be reachable from inside the sandbox (inside, DNS is kernel-denied, so this address can only be resolved out here)."
+      continue
+    fi
+    if [[ $addr == *:* ]]; then
+      log_warn "run-sandboxed: scope host '$host' resolved to the IPv6 address '$addr' and the relay is IPv4-only, so no relay is built for it."
+      continue
+    fi
+    RUN_SANDBOXED_MAP_HOST+=("$host")
+    RUN_SANDBOXED_MAP_PORT+=("$port")
+    RUN_SANDBOXED_MAP_ADDR+=("$addr")
+    if [[ $scheme == https && $port != 80 ]]; then
+      RUN_SANDBOXED_MAP_HOST+=("$host")
+      RUN_SANDBOXED_MAP_PORT+=(80)
+      RUN_SANDBOXED_MAP_ADDR+=("$addr")
+    fi
+  done
+  (( ${#RUN_SANDBOXED_MAP_HOST[@]} > 0 )) || die "$SCOURSH_EXIT_INPUT" \
+    "tools/run-sandboxed.sh --scope-conf '$RUN_SANDBOXED_SCOPE_CONF': every scope target was skipped (see the warnings above), so no relay could be built and <command> would have no reachable target at all. Refusing rather than running it under an effectively deny-all profile."
+}
+
+# Starts ONE relay for (ADDR, PORT) and sets RUN_SANDBOXED_RELAY_PORT_LAST to
+# the ephemeral port it bound.  The port is READ BACK from the relay rather
+# than chosen here: picking a port and hoping it is free is a race, and the
+# kernel already answers the question.
+_sbx_relay_start() {
+  local addr=$1 port=$2 portfile rc=0 waited=0 pid
+  RUN_SANDBOXED_RELAY_PORT_LAST=''
+  portfile=$(mktemp "${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/relay-port.XXXXXX") || rc=$?
+  (( rc == 0 )) || die "$SCOURSH_EXIT_INPUT" "run-sandboxed: could not create a scratch file for the relay's port"
+  chmod 600 "$portfile"
+  "$RUN_SANDBOXED_PYTHON" -c "$RUN_SANDBOXED_RELAY_SRC" "$addr" "$port" >"$portfile" 2>/dev/null &
+  pid=$!
+  RUN_SANDBOXED_RELAY_PIDS+=("$pid")
+  # Bounded wait: the relay prints its port and flushes immediately, so this
+  # is a startup race and not a poll of anything slow.  A relay that never
+  # reports is a hard failure, never a silent "assume it worked".
+  while (( waited < 100 )); do
+    if [[ -s $portfile ]]; then
+      RUN_SANDBOXED_RELAY_PORT_LAST=$(< "$portfile")
+      RUN_SANDBOXED_RELAY_PORT_LAST=${RUN_SANDBOXED_RELAY_PORT_LAST%%$'\n'*}
+      break
+    fi
+    kill -0 "$pid" 2>/dev/null || break
+    msleep 50
+    waited=$(( waited + 1 ))
+  done
+  rm -f "$portfile"
+  [[ $RUN_SANDBOXED_RELAY_PORT_LAST =~ ^[0-9]+$ ]] || die "$SCOURSH_EXIT_INPUT" \
+    "run-sandboxed: the relay for $addr:$port did not report a listening port. Refusing rather than emitting a profile with a port nothing is listening on, which would look like a contained run and silently fail every request."
+  RUN_SANDBOXED_RELAY_PORTS+=("$RUN_SANDBOXED_RELAY_PORT_LAST")
+}
+
+# Kills every relay this process started.  Runs from the EXIT trap, so it must
+# never itself fail - the same discipline tools/run-in-netns.sh's own teardown
+# states for itself.
+_sbx_relays_stop() {
+  local pid
+  for pid in "${RUN_SANDBOXED_RELAY_PIDS[@]+"${RUN_SANDBOXED_RELAY_PIDS[@]}"}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+  for pid in "${RUN_SANDBOXED_RELAY_PIDS[@]+"${RUN_SANDBOXED_RELAY_PIDS[@]}"}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+  RUN_SANDBOXED_RELAY_PIDS=()
+}
+
+# We override lib/core.sh's own `trap core_cleanup EXIT` in Tier B only, so
+# the relays are torn down on EVERY exit path - success, failure, and a die()
+# from any precondition after the first relay started.  It replicates what
+# core_cleanup would have done afterwards (the same shape
+# tools/run-in-netns.sh's _netns_on_exit uses) and preserves the status.
+_sbx_on_exit() {
+  local status=$?
+  _sbx_relays_stop
+  if [[ -n ${_SCOURSH_SLEEPFD:-} ]]; then
+    exec {_SCOURSH_SLEEPFD}>&- 2>/dev/null || true
+    _SCOURSH_SLEEPFD=''
+  fi
+  if scratch_is_owned_here; then
+    erase_dir "$SCOURSH_SCRATCH"
+  fi
+  return "$status"
+}
+
+# Starts one relay per DISTINCT (addr, port) - two scope hosts behind one
+# address share a relay, since the relay is keyed by where it dials - and
+# builds both the profile and the map from the result.  Sets
+# RUN_SANDBOXED_PROFILE and RUN_SANDBOXED_RELAY_MAP.
+RUN_SANDBOXED_RELAY_MAP=''
+
+_sbx_start_relays_and_build_profile() {
+  local n=${#RUN_SANDBOXED_MAP_HOST[@]} i key addr port relayport allow=''
+  local -a seen_key=() seen_port=()
+  local j found
+  RUN_SANDBOXED_RELAY_MAP=''
+  for (( i = 0; i < n; i++ )); do
+    addr=${RUN_SANDBOXED_MAP_ADDR[i]}
+    port=${RUN_SANDBOXED_MAP_PORT[i]}
+    key="$addr:$port"
+    found=''
+    for (( j = 0; j < ${#seen_key[@]}; j++ )); do
+      if [[ ${seen_key[j]} == "$key" ]]; then found=${seen_port[j]}; break; fi
+    done
+    if [[ -z $found ]]; then
+      _sbx_relay_start "$addr" "$port"
+      found=$RUN_SANDBOXED_RELAY_PORT_LAST
+      seen_key+=("$key")
+      seen_port+=("$found")
+      allow+="(allow network-outbound (remote ip \"localhost:$found\"))"
+      log_info "run-sandboxed: relay 127.0.0.1:$found -> $addr:$port"
+    fi
+    RUN_SANDBOXED_RELAY_MAP+="${RUN_SANDBOXED_MAP_HOST[i]} $port $addr $found"$'\n'
+  done
+  RUN_SANDBOXED_PROFILE="(version 1)(allow default)(deny network*)$allow"
+}
+
 _sbx_usage() {
   cat <<'EOF'
-usage: tools/run-sandboxed.sh -- <command> [args...]
+usage: tools/run-sandboxed.sh [--scope-conf PATH] -- <command> [args...]
 
-Runs <command> under the macOS Seatbelt profile
-"(version 1)(allow default)(deny network*)" via `sandbox-exec`: <command> and
-every descendant process it spawns is kernel-refused from opening any
-network socket, before a single packet is sent. This makes the "sast/sca/iac
-make zero network calls" claim kernel-enforced instead of merely asserted.
+Runs <command> under a macOS Seatbelt profile via `sandbox-exec`, so that
+<command> and every descendant process it spawns is restricted by the KERNEL
+at the connect() boundary, before a single packet is sent.
 
-Requires: macOS (Darwin) and `sandbox-exec` on PATH. No root, no
-capabilities - that is this tool's whole advantage over
-tools/run-in-netns.sh. Fails immediately, before <command> ever runs, if
-either requirement is not met, or if `sandbox-exec` itself rejects the fixed
-profile.
+Two modes:
+
+  (no --scope-conf)   Tier A. The profile is
+                      "(version 1)(allow default)(deny network*)": NO network
+                      access of any kind. This makes the "sast/sca/iac make
+                      zero network calls" claim kernel-enforced instead of
+                      merely asserted, and is what those three modules want.
+
+  --scope-conf PATH   Tier B. PATH is read as a scope.conf; its targets are
+                      resolved through lib/http.sh's own scope loader and
+                      pinned resolver (never a second resolver), one loopback
+                      relay is started per authorised (address, port), and
+                      the profile admits EXACTLY those relay ports and
+                      nothing else. lib/http.sh then redirects every request
+                      through them (with `curl --connect-to`, so SNI, the Host
+                      header and certificate validation are all preserved).
+                      Off-host egress is kernel-impossible; that the bytes on
+                      those ports reach the authorised target is guaranteed
+                      by scoursh's own relay rather than by the kernel - see
+                      docs/FOUNDATION.md tension 20 for why that is named as
+                      a distinct third thing.
+                      Relays are children of this process and are torn down
+                      by an EXIT trap on success and failure alike.
 
   -h, --help          print this message and exit 0
 
-Example:
-  tools/run-sandboxed.sh -- scan.sh sast --path .
+Requires: macOS (Darwin) and `sandbox-exec` on PATH. No root, no
+capabilities - that is this tool's whole advantage over
+tools/run-in-netns.sh. Tier B additionally requires a working python3 (the
+relay: bash's /dev/tcp can dial but cannot listen). A `curl` that accepts
+`--connect-to` (7.49+) is required too and is checked by lib/http.sh itself,
+which is the one file permitted to invoke it. Fails immediately, before <command> ever runs, if any
+requirement is not met or if `sandbox-exec` rejects the profile - there is no
+degraded, unsandboxed mode.
 
-This tool restricts <command> to NO network access at all - it has no
-concept of an authorised scope target, unlike tools/run-in-netns.sh, and is
-therefore suited to sast/sca/iac (which need none) and not to dast/cloud/
-network (which need real access to their declared target). It is never
-invoked by scan.sh, and does not depend on or wrap `--paranoid` or
-tools/run-in-netns.sh - independent, peer mechanisms under
-docs/FOUNDATION.md tension 20. See docs/USAGE.md for the full three-tier
-account (this tool is "Tier A"; a Linux container running
-tools/run-in-netns.sh unmodified is "Tier C").
+Examples:
+  tools/run-sandboxed.sh -- scan.sh sast --path .
+  tools/run-sandboxed.sh --scope-conf config/scope.conf -- \
+      scan.sh dast --target my-target
+
+Never invoked by scan.sh, and independent of `--paranoid` and
+tools/run-in-netns.sh (peer mechanisms under docs/FOUNDATION.md tension 20).
+See docs/USAGE.md for the full account; a Linux container running
+tools/run-in-netns.sh unmodified is "Tier C".
 EOF
 }
 
@@ -242,25 +598,35 @@ RUN_SANDBOXED_CMD=()
 
 _sbx_parse_args() {
   RUN_SANDBOXED_CMD=()
+  RUN_SANDBOXED_SCOPE_CONF=''
   while (( $# )); do
     case $1 in
       -h | --help)
         _sbx_usage
         exit "$SCOURSH_EXIT_OK"
         ;;
+      --scope-conf)
+        shift
+        (( $# )) || die "$SCOURSH_EXIT_USAGE" "--scope-conf needs a PATH argument"
+        RUN_SANDBOXED_SCOPE_CONF=$1
+        shift
+        [[ -r $RUN_SANDBOXED_SCOPE_CONF ]] || die "$SCOURSH_EXIT_INPUT" \
+          "--scope-conf '$RUN_SANDBOXED_SCOPE_CONF' is not readable"
+        continue
+        ;;
       --)
         shift
         RUN_SANDBOXED_CMD=("$@")
         (( ${#RUN_SANDBOXED_CMD[@]} > 0 )) || die "$SCOURSH_EXIT_USAGE" \
-          "missing <command> after '--' (usage: tools/run-sandboxed.sh -- <command...>)"
+          "missing <command> after '--' (usage: tools/run-sandboxed.sh [--scope-conf PATH] -- <command...>)"
         return 0
         ;;
       *)
-        die "$SCOURSH_EXIT_USAGE" "unrecognised argument before '--': '$1' (usage: tools/run-sandboxed.sh -- <command...>)"
+        die "$SCOURSH_EXIT_USAGE" "unrecognised argument before '--': '$1' (usage: tools/run-sandboxed.sh [--scope-conf PATH] -- <command...>)"
         ;;
     esac
   done
-  die "$SCOURSH_EXIT_USAGE" "missing '--' separator and <command> (usage: tools/run-sandboxed.sh -- <command...>)"
+  die "$SCOURSH_EXIT_USAGE" "missing '--' separator and <command> (usage: tools/run-sandboxed.sh [--scope-conf PATH] -- <command...>)"
 }
 
 # ---------------------------------------------------------------------------
@@ -272,17 +638,41 @@ _sbx_main() {
   # work on any host so an operator on the "wrong" platform can still read
   # why, and a bad usage error is cheaper to report than an environment
   # check. Every path that can actually reach a wrapped command still goes
-  # through every precondition below first. No teardown to arrange (see this
-  # file's header): lib/core.sh's own default `trap core_cleanup EXIT`,
-  # armed when it was sourced above, is all that is needed.
+  # through every precondition below first.
   _sbx_parse_args "$@"
 
   _sbx_require_darwin
   _sbx_require_sandbox_exec
+
+  # TIER B, and ONLY when --scope-conf was given. Ordered so that every
+  # refusal that CAN happen before a relay exists does happen before one
+  # exists: the runtime and curl probes are pure checks, the scope resolution
+  # touches no listener, and only then is the EXIT trap armed and the first
+  # relay started. The trap is armed BEFORE `_sbx_start_relays_and_build_
+  # profile`, never after, so a die() from partway through relay startup
+  # still tears down the relays that had already come up.
+  #
+  # RUN_SANDBOXED_PROFILE is rebuilt here, so `_sbx_require_profile_ok` below
+  # validates the profile that will ACTUALLY be applied - the port-pinned one
+  # - rather than the deny-all default it would otherwise still be holding.
+  # Pre-validating a string that is not the one used is the shape of check
+  # that passes while proving nothing.
+  if [[ -n $RUN_SANDBOXED_SCOPE_CONF ]]; then
+    _sbx_require_relay_runtime
+    _sbx_collect_relay_targets
+    trap _sbx_on_exit EXIT
+    _sbx_start_relays_and_build_profile
+    export SCOURSH_HTTP_RELAY_MAP=$RUN_SANDBOXED_RELAY_MAP
+  fi
+
   _sbx_require_profile_ok
   _sbx_require_command_exists "${RUN_SANDBOXED_CMD[0]}"
 
-  log_info "run-sandboxed: executing under Seatbelt (deny-all-network): ${RUN_SANDBOXED_CMD[*]}"
+  if [[ -n $RUN_SANDBOXED_SCOPE_CONF ]]; then
+    log_info "run-sandboxed: executing under Seatbelt (off-host egress denied; ${#RUN_SANDBOXED_RELAY_PORTS[@]} relay port(s) admitted): ${RUN_SANDBOXED_CMD[*]}"
+  else
+    log_info "run-sandboxed: executing under Seatbelt (deny-all-network): ${RUN_SANDBOXED_CMD[*]}"
+  fi
   local rc=0
   sandbox-exec -p "$RUN_SANDBOXED_PROFILE" "${RUN_SANDBOXED_CMD[@]+"${RUN_SANDBOXED_CMD[@]}"}" || rc=$?
   # An intentional, transparent forward of <command>'s own exit status is not

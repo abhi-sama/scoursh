@@ -2719,30 +2719,66 @@ RESOLUTION in silence.
 this paragraph) `tools/run-in-netns.sh` itself is still Linux-only - but it is no longer true that macOS
 has "nothing behind" the detector; see the next paragraph.
 
-**macOS now has TWO routes to a kernel-enforced guarantee, and `run-in-netns.sh` remaining Linux-only
-no longer means macOS has nothing behind its detector.** `tools/run-sandboxed.sh` (Tier A,
-`docs/FOUNDATION.md` tension 20) wraps `sandbox-exec` (Apple's Seatbelt), refusing `<command>` and every
-descendant it spawns from any network syscall at the kernel boundary - genuine, but narrower than the
-netns route table on purpose: Seatbelt's address filter accepts only `*`/`localhost` as a host, so it
-can restrict ports but never which remote host, meaning it ships as an unconditional deny-all rather
-than a per-target allowlist. That is exactly what `sast`/`sca`/`iac` need (they make zero network calls
-by design) and is not proposed as a substitute for `dast`/`cloud`/`network`'s real target-specific
-traffic. It needs no root and no capability - unlike the netns tool - and has no teardown surface at
-all: no namespace, no host state of any kind. It fails loud (exit 4) and never degrades to an
-unsandboxed run, on a non-Darwin host, an absent `sandbox-exec`, or a rejected profile, with the profile
-pre-validated against a known-good probe command before `<command>` is ever touched, so `sandbox-exec`'s
-own out-of-contract sysexits codes (65/71) never leak past this tool's 0-5 contract. Tier C is the
-zero-code route: `tools/run-in-netns.sh` runs unmodified inside a Linux container on a macOS host -
-Docker Desktop grants an unprivileged container `CAP_NET_ADMIN`+`CAP_SYS_ADMIN` and namespace creation,
-measured working - which is full parity with the Linux guarantee, not an approximation of it (this
-project's own `tools/daily-suite/gnu.dockerfile` test image doesn't currently install
-`iproute2`/`iptables`/`ip6tables`, so it can't run the netns tool as shipped today - that's specific to
-that one Dockerfile's package list, not a limit of Tier C itself). What remains unbuilt is a
-macOS-native mechanism for "only the authorised target, nothing else" without a container - the netns
-route table's own per-target scoping, natively - tracked separately as Tier B (a loopback relay plus a
-`lib/http.sh` mode, real work on the scanner's most safety-critical file). See `docs/FOUNDATION.md`
-tension 20's own "What macOS still does NOT get" paragraph for the full account, and
-`tools/run-sandboxed.sh`'s own header for its contract.
+**macOS now has THREE enforcement routes behind its detector, and `run-in-netns.sh` remaining
+Linux-only no longer means macOS has nothing behind it.** `tools/run-sandboxed.sh`
+(`docs/FOUNDATION.md` tension 20) wraps `sandbox-exec` (Apple's Seatbelt), refusing `<command>` and
+every descendant it spawns at the kernel boundary. **Tier A** (no flag) is an unconditional deny-all:
+exactly what `sast`/`sca`/`iac` need, since they make zero network calls by design. **Tier B**
+(`--scope-conf PATH`) is for `dast`/`cloud`/`network`, which need real target traffic - it resolves that
+scope through `lib/http.sh`'s own `http_scope_load`/`http_resolve_host` (never a second resolver, the
+same reuse `tools/run-in-netns.sh` makes), starts one loopback forwarder per authorised
+`(address, port)` outside the sandbox, emits a profile admitting exactly those relay ports, and
+`lib/http.sh` section 7a redirects each request into them by swapping its `--resolve` pin for
+`--connect-to` (which keeps SNI, `Host:` and certificate validation - measured against a local TLS
+fixture through a real relay inside a real profile, `ssl_verify=0`). **Tier C** is the zero-code route:
+`tools/run-in-netns.sh` runs unmodified inside a Linux container on a macOS host (Docker Desktop grants
+an unprivileged container `CAP_NET_ADMIN`+`CAP_SYS_ADMIN` and namespace creation, measured working) -
+full parity with the Linux guarantee, not an approximation (this project's own
+`tools/daily-suite/gnu.dockerfile` image doesn't install `iproute2`/`iptables`/`ip6tables`, so it can't
+run the netns tool as shipped - specific to that Dockerfile's package list, not a limit of Tier C).
+All three fail loud (exit 4) and never degrade to an unsandboxed run; the profile is pre-validated
+against a known-good probe command before `<command>` is touched, so `sandbox-exec`'s out-of-contract
+sysexits codes (65/71) never leak past the 0-5 contract.
+
+**Four things about Tier B are easy to get backwards, and three of them fail in the direction that
+reads as success.**
+
+- **Tier B is a DISTINCT THIRD LABEL - "containment guarantee, target restriction by relay" - and is
+  neither of tension 20's two words.** The KERNEL guarantees off-host egress is categorically
+  impossible (every `xargs -P` worker included); scoursh's OWN RELAY, not the kernel, guarantees the
+  bytes then reach the authorised target. Under Tier C the kernel enforces both halves. Calling Tier B
+  a "guarantee" outright is the quiet inflation tension 20 exists to prevent; calling it a "detector"
+  is also wrong, since nothing here samples.
+- **A Seatbelt `(remote ip "localhost:P")` rule admits any address of THIS HOST on port P - not
+  port-only, and not `127.0.0.1`-only - and the obvious test does not discriminate.** Measured: a
+  sandboxed connect to `127.0.0.1:P` and to this host's own LAN address on `P` both connect; to
+  `192.0.2.1:P` (TEST-NET-1, genuinely off-host) it is `Operation not permitted`; any other port is
+  denied everywhere. The research this work implements reported the LAN-address row as a DENIAL - it
+  was not one; that address belongs to the measuring host, and the `Connection refused` it saw came
+  from nothing listening there. The only discriminating probe is against a genuinely off-host address,
+  where a denial is instant and a permit is a timeout. `tests/suites/run-sandboxed.sh` section G4 uses
+  that one, with a positive control beside it.
+- **A `die` inside `_http_transport_default` CANNOT terminate the run, and this is invisible.**
+  `http_request` invokes the transport as `out=$("${SCOURSH_HTTP_TRANSPORT:-...}" ...)` - a command
+  substitution, so the transport is a SUBSHELL. `die`'s `exit 3` ends only that subshell, arrives as a
+  non-zero `tx_rc`, is charged to the circuit breaker, and is returned as `1`: a refusal that reads to
+  an operator as "the target did not answer". Measured, not reasoned - the first draft put guarantee
+  mode's fail-closed refusal there and `tests/suites/http.sh` observed exit 1 where it asserted 3. Any
+  fatal decision about a request belongs in `http_request`, in the parent, beside the address pin.
+- **bash's `/dev/tcp` can only DIAL, never LISTEN**, so there is no bash-only forwarder to write and
+  the relay is a small python3 program (destination passed as argv, never interpolated into the program
+  text; no path in it reads a destination from the wire). Its runtime is pre-validated and refuses with
+  exit 4 rather than degrading - the same fail-loud-on-absence contract `sandbox-exec` itself is
+  accepted under.
+
+Guarantee mode is OFF by default and the default egress path is byte-for-byte unchanged: nothing in
+section 7a runs unless `SCOURSH_HTTP_RELAY_MAP` is non-empty, which only the wrapper sets, and
+`tests/suites/http.sh` asserts the default `--resolve` pin on curl's REAL argv rather than on a branch
+being unreached. Two stated gaps, both fail-closed and both warned about at build time: an
+`allow-subdomains` scope row and an IPv6 scope host cannot be enumerated into relays, and
+`modules/dast/passive/tls.sh`'s raw handshake (tension 19's transport exception) is not redirected and
+is therefore kernel-refused inside the sandbox. See `docs/FOUNDATION.md` tension 20 for the full
+account and `tools/run-sandboxed.sh`'s own header for the contract.
 
 **Two things measured while building that backend, both easy to hit again:**
 
