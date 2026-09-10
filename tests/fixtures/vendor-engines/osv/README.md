@@ -57,3 +57,17 @@ package `openssl`) plus a `Debian:12` entry for the identical package, which
 must be SKIPPED - proving the `Ubuntu:*` sentinel does not also admit
 `Debian:*`'s own rows, even though both are per-release distro sentinels
 sharing the same `eco.endswith(':*')` extraction path.
+
+`SCOURSH-FIXTURE-OSV-REDHAT-1.json` and `SCOURSH-FIXTURE-OSV-REDHAT-2.json`
+are for `veng_advisories_redhat` (data/advisories.db and data/versions.db's
+`Red Hat` namespace, the last rpm ticket) - UNLIKE its three distro siblings
+above, `Red Hat` is a single FLAT ecosystem string with no per-release
+variant, so `-REDHAT-1` carries only ONE `Red Hat` entry (`openssl-libs`,
+with an EPOCH in both its installed and fixed version - `1:1.1.1k-9.el8` /
+`1:1.1.1k-9.el8_6` - proving the epoch-aware rpmvercmp comparator is what
+orders it, never a lexical/semver comparison) plus a `Debian:12` entry for a
+different-but-similarly-named package (`openssl`), which must be SKIPPED -
+proving the exact-match branch (`_veng_advisories_osv_ecosystem`'s `'Red
+Hat'` case) never falls back to a prefix or wildcard match. `-REDHAT-2`
+names a different package (`bash`, no epoch - the ordinary rpm case) for the
+replace-the-whole-namespace test.

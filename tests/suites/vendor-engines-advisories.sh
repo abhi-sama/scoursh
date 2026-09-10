@@ -779,6 +779,111 @@ assert_contains "$(cat "$VDB")" 'bash' 'data/versions.db was replaced the same w
 assert_not_contains "$(cat "$VDB")" $'Debian:11\topenssl' 'and lost the stale Debian:11 openssl row there too'
 
 # ---------------------------------------------------------------------------
+# -- section D6: the `redhat` namespace (the last rpm ticket: "complete the
+#    rpm slice end-to-end" - the Red Hat advisory ecosystem plus wiring rpm
+#    enumeration + rpmvercmp into the vulnerable-package finding path) -
+#    UNLIKE its three distro siblings above, this is a single FLAT ecosystem
+#    string with no per-release variant at all, so it shares
+#    _veng_advisories_run/_veng_advisories_write_db with the six SCA
+#    ecosystems rather than the ':*' prefix machinery D3-D5 exercise. This
+#    section proves the EXACT-match branch is wired correctly and that it
+#    writes BOTH data/advisories.db and data/versions.db like alpine/debian/
+#    ubuntu (unlike banner), never bleeding into or from a sibling ecosystem.
+# ---------------------------------------------------------------------------
+run_redhat() {
+  ( PATH="$FAKE_BIN:$PATH" \
+    FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
+    SCOURSH_SCA_ADVISORIES_DB="$DB" \
+    SCOURSH_SCA_VERSIONS_DB="$VDB" \
+    SCOURSH_SCA_SUMMARIES_DB="$SDB" \
+    SCOURSH_DAST_VERSION_SUMMARIES_DB="$VSDB" \
+    bash "$TOOL" advisories redhat ) >"$W/run-redhat.out" 2>&1
+}
+
+t_case 'redhat is not one of VENG_ADVISORY_REGISTRY'"'"'s six entries'
+assert_eq 6 "${#VENG_ADVISORY_REGISTRY[@]}" \
+  'the registry still holds exactly six entries - adding redhat support must never grow it'
+rc=0
+( veng_advisories_one redhat ) >"$W/redhat-not-registered.out" 2>&1 || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
+  "veng_advisories_one refuses 'redhat' - reached only through advisories_main's own explicit 'redhat' case, never VENG_ADVISORY_REGISTRY"
+
+t_case '_veng_advisories_osv_ecosystem: "Red Hat" is an EXACT match, never a ":*" prefix sentinel like alpine/debian/ubuntu'
+assert_eq 'Red Hat' "$(_veng_advisories_osv_ecosystem 'Red Hat')" \
+  'the literal OSV ecosystem string - FAILS under a reading that wired this to a "Red Hat:*" prefix sentinel, which real OSV.dev Red Hat rows would never match since that namespace carries no per-release suffix'
+
+t_case '_veng_advisories_env_var: "Red Hat" mirrors the SCOURSH_ADVISORY_<NAME>_IDS shape'
+assert_eq 'SCOURSH_ADVISORY_REDHAT_IDS' "$(_veng_advisories_env_var 'Red Hat')" 'the env var name'
+
+t_case '_veng_advisories_normalize_name: "Red Hat" is a verbatim pass-through, never an sca_* function'
+assert_eq 'openssl-libs' "$(_veng_advisories_normalize_name 'Red Hat' openssl-libs)" \
+  'rpm package names carry no normalisation convention the way npm/PyPI/Composer names do'
+
+t_case 'advisories redhat, no operator-supplied ids: refuses (exit 4), never touches curl'
+rc=0
+out=$(PATH=$NO_NET_PATH bash "$TOOL" advisories redhat 2>&1) || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" 'advisories redhat with no ids set is exit 4 - curl is entirely absent from PATH'
+assert_contains "$out" 'SCOURSH_ADVISORY_REDHAT_IDS' 'the refusal names the exact env var'
+
+t_case 'advisories bulk redhat: refused (exit 4) - scoped to VENG_ADVISORY_REGISTRY'"'"'s six SCA ecosystems, no bulk path'
+rc=0
+out=$(PATH=$NO_NET_PATH bash "$TOOL" advisories bulk redhat --accept-unverified 2>&1) || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" "bulk refuses 'redhat' exactly like any other unknown ecosystem"
+
+t_case 'advisories --list / --all are unaffected by redhat'
+out=$(PATH=$NO_NET_PATH bash "$TOOL" advisories --list 2>&1)
+assert_not_contains "$out" redhat '--list still reports only the six SCA ecosystems - redhat is never a seventh entry'
+
+t_case 'end-to-end: redhat - one EPOCH-carrying advisory writes ONE flat "Red Hat" row, and a same-advisory Debian entry is excluded'
+: >"$W/db/advisories.db"
+: >"$W/db/versions.db"
+SCOURSH_ADVISORY_REDHAT_IDS='SCOURSH-FIXTURE-OSV-REDHAT-1' run_redhat
+assert_file_exists "$DB" 'data/advisories.db (scratch) was written - like alpine/debian/ubuntu, unlike banner'
+DB_AFTER_REDHAT=$(cat "$DB")
+assert_contains "$DB_AFTER_REDHAT" \
+  "$(printf 'Red Hat\topenssl-libs\t1:1.1.1k-9.el8\tSCOURSH-FIXTURE-OSV-REDHAT-1\thigh\t1:1.1.1k-9.el8_6')" \
+  'the flat "Red Hat" row, carrying the EPOCH in both the installed and fixed version verbatim - FAILS if the epoch were stripped, or if the row carried a per-release ecosystem suffix like its three distro siblings'
+assert_not_contains "$DB_AFTER_REDHAT" 'Debian' \
+  'the Debian-tagged affected[] entry for a similarly-named package produced no row at all - FAILS if "Red Hat" were wired to a wildcard or prefix match instead of an exact one'
+line_count=$(grep -c -F 'SCOURSH-FIXTURE-OSV-REDHAT-1' "$DB")
+assert_eq 1 "$line_count" 'exactly ONE row for this advisory - unlike alpine/debian/ubuntu, "Red Hat" names no per-release variant to multiply across'
+assert_eq "$(grep -v '^#' <<<"$DB_AFTER_REDHAT")" "$(grep -v '^#' "$VDB")" \
+  'data/versions.db carries the byte-identical DATA rows, mirroring alpine/debian/ubuntu'"'"'s own reuse (tension 25/VERSIONS-DB.md §2)'
+assert_contains "$(cat "$VSDB")" 'fixture: openssl-libs heap overflow (redhat)' 'the summary lives in the version-summaries side table'
+assert_contains "$(cat "$SDB")" 'fixture: openssl-libs heap overflow (redhat)' 'and in the advisory-summaries side table too, since redhat (unlike banner) writes data/advisories.db'
+
+t_case 'both directions of the exit-4 gate this ticket relies on are pinned against a real image_ecosystem_known-shaped lookup'
+rc=0
+db_lookup_exact "$(printf 'Red Hat\t')" "$DB" >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" '"Red Hat" IS covered after the run above - fires-when-present half'
+rc=0
+db_lookup_exact "$(printf 'Fedora\t')" "$DB" >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" 'a DIFFERENT ecosystem string has no row at all - fires-when-absent half, and proves this module never invents a second, Fedora-specific namespace'
+
+t_case 'merge: re-running redhat replaces the WHOLE "Red Hat" namespace, never disturbs npm/debian rows, and never disturbs a same-named package in another ecosystem'
+: >"$W/db/advisories.db"
+: >"$W/db/versions.db"
+SCOURSH_ADVISORY_NPM_IDS='SCOURSH-FIXTURE-OSV-NPM-1' run_ecosystem npm
+SCOURSH_ADVISORY_DEBIAN_IDS='SCOURSH-FIXTURE-OSV-DEBIAN-1' run_debian
+SCOURSH_ADVISORY_REDHAT_IDS='SCOURSH-FIXTURE-OSV-REDHAT-1' run_redhat
+before_merge=$(cat "$DB")
+assert_contains "$before_merge" 'openssl-libs' 'redhat-1'"'"'s own row is present before the re-run'
+SCOURSH_ADVISORY_REDHAT_IDS='SCOURSH-FIXTURE-OSV-REDHAT-2' run_redhat
+after_merge=$(cat "$DB")
+assert_contains "$after_merge" $'Red Hat\tbash' \
+  'redhat-2'"'"'s own package is present, under the flat "Red Hat" ecosystem'
+assert_not_contains "$after_merge" 'openssl-libs' \
+  "a second 'advisories redhat' run REPLACES the WHOLE \"Red Hat\" namespace rather than accumulating - redhat-1's row is gone"
+assert_contains "$after_merge" 'Debian:11' \
+  "debian's rows survive a redhat re-run untouched - the two namespaces never share a replace-scope"
+assert_contains "$after_merge" $'Debian:12\topenssl\t' \
+  'and Debian'"'"'s own (unrelated) "openssl" row is untouched too, proving the "Red Hat" replace-scope is an exact ecosystem-field match, never a package-name match'
+assert_contains "$after_merge" 'left-pad-fixture' \
+  'the npm row written before this redhat run survives untouched too'
+assert_contains "$(cat "$VDB")" $'Red Hat\tbash' 'data/versions.db was replaced the same way'
+assert_not_contains "$(cat "$VDB")" 'openssl-libs' 'and lost the stale redhat-1 row there too'
+
+# ---------------------------------------------------------------------------
 # -- section E: merge behaviour - re-running one ecosystem replaces ONLY
 #    that ecosystem's rows, leaving every other ecosystem's rows intact --
 # ---------------------------------------------------------------------------
