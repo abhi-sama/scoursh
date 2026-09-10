@@ -137,14 +137,19 @@ assert_eq 1 "$_rc" 'refused'
 assert_eq no_os_release "$_IMAGE_DISTRO_REASON" 'the specific, distinguishable reason'
 assert_eq '' "$_IMAGE_DISTRO_ECOSYSTEM" 'and no ecosystem is guessed - report.md §4.3 is explicit that guessing "latest" produces a false NEGATIVE on an older image, the direction that reads as a pass'
 
+# NOTE: this case used to plant ID=debian here, back when v1 was
+# Alpine-only (report.md D2). IMG-09 added real Debian/Ubuntu support (see
+# tests/suites/image-debian.sh for that coverage), so this case now plants
+# an rpm-based distro instead - rpm (IMG-12) remains genuinely unsupported,
+# which is exactly what this case exists to prove.
 t_case 'ID present but recognised as a distro this module cannot yet map: distro_not_yet_supported, still no guess'
-cat >"$W/os-release-debian" <<'EOF'
-ID=debian
-VERSION_ID=12
+cat >"$W/os-release-fedora" <<'EOF'
+ID=fedora
+VERSION_ID=39
 EOF
 _rc=0
-image_distro_ecosystem_resolve "$W/os-release-debian" || _rc=$?
-assert_eq 1 "$_rc" 'refused - v1 is Alpine-only (report.md D2)'
+image_distro_ecosystem_resolve "$W/os-release-fedora" || _rc=$?
+assert_eq 1 "$_rc" 'refused - rpm (IMG-12) is not yet supported'
 assert_eq distro_not_yet_supported "$_IMAGE_DISTRO_REASON" \
   'a DIFFERENT, more specific reason than no_os_release - FAILS if a real, parseable os-release for an unsupported distro were folded into the same bucket as a missing file, which would tell an operator to go looking for a file that is actually right there'
 

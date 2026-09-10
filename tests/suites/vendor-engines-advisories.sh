@@ -633,6 +633,152 @@ assert_contains "$(cat "$VDB")" 'busybox' 'data/versions.db was replaced the sam
 assert_not_contains "$(cat "$VDB")" 'openssl' 'and also lost the stale v3.18/v3.19 openssl rows'
 
 # ---------------------------------------------------------------------------
+# -- section D4/D5: the `debian` and `ubuntu` namespaces (IMG-09, data/
+#    scoursh-image-scan-design/report.md §2.3/§4.1's Stage-2 row) - Debian's
+#    and Ubuntu's siblings to section D3's `alpine` above, sharing the
+#    identical PREFIX-sentinel mechanism (`_veng_advisories_osv_ecosystem`'s
+#    "debian"/"ubuntu" cases, `eco.endswith(':*')` in the python extractor,
+#    `_veng_advisories_write_db_prefix`). Kept terser than D3 above since
+#    the underlying mechanism is already fully pinned there; this section
+#    proves the two NEW sentinel strings/env-vars/prefixes are wired
+#    correctly, and that the two distro namespaces do not bleed into each
+#    other or into alpine's.
+# ---------------------------------------------------------------------------
+run_debian() {
+  ( PATH="$FAKE_BIN:$PATH" \
+    FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
+    SCOURSH_SCA_ADVISORIES_DB="$DB" \
+    SCOURSH_SCA_VERSIONS_DB="$VDB" \
+    SCOURSH_SCA_SUMMARIES_DB="$SDB" \
+    SCOURSH_DAST_VERSION_SUMMARIES_DB="$VSDB" \
+    bash "$TOOL" advisories debian ) >"$W/run-debian.out" 2>&1
+}
+run_ubuntu() {
+  ( PATH="$FAKE_BIN:$PATH" \
+    FAKE_OSV_FIXTURES_DIR="$FIXTURES" \
+    SCOURSH_SCA_ADVISORIES_DB="$DB" \
+    SCOURSH_SCA_VERSIONS_DB="$VDB" \
+    SCOURSH_SCA_SUMMARIES_DB="$SDB" \
+    SCOURSH_DAST_VERSION_SUMMARIES_DB="$VSDB" \
+    bash "$TOOL" advisories ubuntu ) >"$W/run-ubuntu.out" 2>&1
+}
+
+t_case 'neither debian nor ubuntu is one of VENG_ADVISORY_REGISTRY'"'"'s six entries'
+assert_eq 6 "${#VENG_ADVISORY_REGISTRY[@]}" \
+  'the registry still holds exactly six entries - adding debian/ubuntu support must never grow it'
+rc=0
+( veng_advisories_one debian ) >"$W/debian-not-registered.out" 2>&1 || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" \
+  "veng_advisories_one refuses 'debian' - reached only through advisories_main's own explicit 'debian' case, never VENG_ADVISORY_REGISTRY"
+rc=0
+( veng_advisories_one ubuntu ) >"$W/ubuntu-not-registered.out" 2>&1 || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" "veng_advisories_one refuses 'ubuntu' the identical way"
+
+t_case '_veng_advisories_osv_ecosystem: debian/ubuntu are their OWN distinct PREFIX sentinels, never sharing one another'"'"'s or alpine'"'"'s'
+assert_eq 'Debian:*' "$(_veng_advisories_osv_ecosystem debian)" \
+  'a distinct sentinel from both banner'"'"'s "*" and alpine'"'"'s "Alpine:*"'
+assert_eq 'Ubuntu:*' "$(_veng_advisories_osv_ecosystem ubuntu)" 'and a distinct one again from debian'"'"'s'
+
+t_case '_veng_advisories_env_var: debian/ubuntu mirror the SCOURSH_ADVISORY_<NAME>_IDS shape'
+assert_eq 'SCOURSH_ADVISORY_DEBIAN_IDS' "$(_veng_advisories_env_var debian)" 'debian env var name'
+assert_eq 'SCOURSH_ADVISORY_UBUNTU_IDS' "$(_veng_advisories_env_var ubuntu)" 'ubuntu env var name'
+
+t_case '_veng_advisories_normalize_name: debian/ubuntu are a verbatim pass-through, never an sca_* function'
+assert_eq 'openssl' "$(_veng_advisories_normalize_name debian openssl)" \
+  'dpkg SOURCE package names carry no normalisation convention'
+assert_eq 'openssl' "$(_veng_advisories_normalize_name ubuntu openssl)" 'same for ubuntu'
+
+t_case 'advisories debian/ubuntu, no operator-supplied ids: refuses (exit 4), never touches curl'
+rc=0
+out=$(PATH=$NO_NET_PATH bash "$TOOL" advisories debian 2>&1) || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" 'advisories debian with no ids set is exit 4 - curl is entirely absent from PATH'
+assert_contains "$out" 'SCOURSH_ADVISORY_DEBIAN_IDS' 'the refusal names the exact env var'
+rc=0
+out=$(PATH=$NO_NET_PATH bash "$TOOL" advisories ubuntu 2>&1) || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" 'same for ubuntu'
+assert_contains "$out" 'SCOURSH_ADVISORY_UBUNTU_IDS' 'and its own env var'
+
+t_case 'advisories bulk debian/ubuntu: refused (exit 4) - scoped to VENG_ADVISORY_REGISTRY'"'"'s six SCA ecosystems, no bulk path'
+rc=0
+out=$(PATH=$NO_NET_PATH bash "$TOOL" advisories bulk debian --accept-unverified 2>&1) || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" "bulk refuses 'debian' exactly like any other unknown ecosystem"
+rc=0
+out=$(PATH=$NO_NET_PATH bash "$TOOL" advisories bulk ubuntu --accept-unverified 2>&1) || rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$rc" "and 'ubuntu' the same way"
+
+t_case 'advisories --list / --all are unaffected by debian/ubuntu'
+out=$(PATH=$NO_NET_PATH bash "$TOOL" advisories --list 2>&1)
+assert_not_contains "$out" debian '--list still reports only the six SCA ecosystems - debian is never a seventh entry'
+assert_not_contains "$out" ubuntu 'nor is ubuntu'
+
+t_case 'end-to-end: debian - ONE advisory spanning TWO Debian releases writes TWO rows keyed by the SOURCE package name, and a same-package Alpine entry is excluded'
+: >"$W/db/advisories.db"
+: >"$W/db/versions.db"
+SCOURSH_ADVISORY_DEBIAN_IDS='SCOURSH-FIXTURE-OSV-DEBIAN-1' run_debian
+assert_file_exists "$DB" 'data/advisories.db (scratch) was written - the exact-row shape modules/image/ reads'
+DB_AFTER_DEBIAN=$(cat "$DB")
+assert_contains "$DB_AFTER_DEBIAN" \
+  "$(printf 'Debian:11\topenssl\t1.1.1n-0+deb11u3\tSCOURSH-FIXTURE-OSV-DEBIAN-1\thigh\t1.1.1n-0+deb11u4')" \
+  'the Debian:11 row, keyed by the SOURCE package name (openssl) - FAILS if the row carried a seventh, un-frozen field, or dropped the release-specific fixed version'
+assert_contains "$DB_AFTER_DEBIAN" \
+  "$(printf 'Debian:12\topenssl\t3.0.11-1~deb12u2\tSCOURSH-FIXTURE-OSV-DEBIAN-1\thigh\t3.0.11-1~deb12u3')" \
+  'the SAME advisory ALSO wrote a Debian:12 row, with its OWN fixed version - proving one import legitimately spans several Debian releases'
+assert_not_contains "$DB_AFTER_DEBIAN" 'Alpine' \
+  'the Alpine-tagged affected[] entry for the SAME package produced no row at all - FAILS if "Debian:*" were wired to a bare "*" wildcard, or to "Alpine:*"'"'"'s own prefix'
+line_count=$(grep -c -F 'SCOURSH-FIXTURE-OSV-DEBIAN-1' "$DB")
+assert_eq 2 "$line_count" 'exactly two rows for this advisory (Debian:11 and Debian:12), never three'
+assert_eq "$(grep -v '^#' <<<"$DB_AFTER_DEBIAN")" "$(grep -v '^#' "$VDB")" \
+  'data/versions.db carries the byte-identical DATA rows, mirroring alpine'"'"'s own reuse'
+assert_contains "$(cat "$VSDB")" 'fixture: openssl heap overflow (debian)' 'the summary lives in the version-summaries side table'
+
+t_case 'end-to-end: ubuntu - a Debian entry for the same package is excluded, and both Ubuntu releases land as separate rows'
+: >"$W/db/advisories.db"
+: >"$W/db/versions.db"
+SCOURSH_ADVISORY_UBUNTU_IDS='SCOURSH-FIXTURE-OSV-UBUNTU-1' run_ubuntu
+DB_AFTER_UBUNTU=$(cat "$DB")
+assert_contains "$DB_AFTER_UBUNTU" \
+  "$(printf 'Ubuntu:20.04\topenssl\t1.1.1f-1ubuntu2.19\tSCOURSH-FIXTURE-OSV-UBUNTU-1\thigh\t1.1.1f-1ubuntu2.20')" \
+  'the Ubuntu:20.04 row'
+assert_contains "$DB_AFTER_UBUNTU" \
+  "$(printf 'Ubuntu:22.04\topenssl\t3.0.2-0ubuntu1.14\tSCOURSH-FIXTURE-OSV-UBUNTU-1\thigh\t3.0.2-0ubuntu1.15')" \
+  'the Ubuntu:22.04 row, with its own fixed version'
+assert_not_contains "$DB_AFTER_UBUNTU" 'Debian' \
+  'the Debian-tagged affected[] entry for the SAME package produced no row - proving "Ubuntu:*" does not also admit "Debian:*"'"'"'s own rows, even though both share the identical eco.endswith(":*") extraction path'
+line_count=$(grep -c -F 'SCOURSH-FIXTURE-OSV-UBUNTU-1' "$DB")
+assert_eq 2 "$line_count" 'exactly two rows, never three'
+
+t_case 'both directions of the exit-4 gate this ticket relies on are pinned against a real image_ecosystem_known-shaped lookup, for debian AND ubuntu'
+rc=0
+db_lookup_exact "$(printf 'Ubuntu:22.04\t')" "$DB" >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" 'Ubuntu:22.04 IS covered after the run above - fires-when-present half'
+rc=0
+db_lookup_exact "$(printf 'Ubuntu:24.04\t')" "$DB" >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" 'Ubuntu:24.04 has no row at all - fires-when-absent half'
+
+t_case 'merge: re-running debian replaces the WHOLE Debian: namespace across EVERY release, never disturbs ubuntu/npm rows, and debian never disturbs ubuntu'"'"'s namespace either'
+: >"$W/db/advisories.db"
+: >"$W/db/versions.db"
+SCOURSH_ADVISORY_NPM_IDS='SCOURSH-FIXTURE-OSV-NPM-1' run_ecosystem npm
+SCOURSH_ADVISORY_DEBIAN_IDS='SCOURSH-FIXTURE-OSV-DEBIAN-1' run_debian
+SCOURSH_ADVISORY_UBUNTU_IDS='SCOURSH-FIXTURE-OSV-UBUNTU-1' run_ubuntu
+before_merge=$(cat "$DB")
+assert_contains "$before_merge" 'Debian:11' 'debian-1'"'"'s rows are present before the re-run'
+assert_contains "$before_merge" 'Ubuntu:20.04' 'and ubuntu'"'"'s rows too'
+SCOURSH_ADVISORY_DEBIAN_IDS='SCOURSH-FIXTURE-OSV-DEBIAN-2' run_debian
+after_merge=$(cat "$DB")
+assert_contains "$after_merge" 'bash' 'debian-2'"'"'s own package is present'
+assert_not_contains "$after_merge" $'Debian:11\topenssl' \
+  "a second 'advisories debian' run REPLACES the WHOLE Debian: namespace rather than accumulating - BOTH of the first run's rows (Debian:11 AND Debian:12) are gone, not merged"
+assert_not_contains "$after_merge" 'Debian:11' \
+  'specifically: the Debian:11 row is gone even though this run only named Debian:12 - proving the replace-scope is the whole Debian: PREFIX, not one release'
+assert_contains "$after_merge" 'Ubuntu:20.04' \
+  "ubuntu's rows survive a debian re-run untouched - the two distro namespaces never share a replace-scope despite both being per-release prefix sentinels"
+assert_contains "$after_merge" 'left-pad-fixture' \
+  'the npm row written before either distro run survives untouched too'
+assert_contains "$(cat "$VDB")" 'bash' 'data/versions.db was replaced the same way'
+assert_not_contains "$(cat "$VDB")" $'Debian:11\topenssl' 'and lost the stale Debian:11 openssl row there too'
+
+# ---------------------------------------------------------------------------
 # -- section E: merge behaviour - re-running one ecosystem replaces ONLY
 #    that ecosystem's rows, leaving every other ecosystem's rows intact --
 # ---------------------------------------------------------------------------

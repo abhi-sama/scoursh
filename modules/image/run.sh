@@ -3,7 +3,8 @@
 # (IMG-01, data/scoursh-image-scan-design/report.md §3.2's exact integration
 # cost table and §5.3's IMG-01 row; wired to real acquisition by IMG-03;
 # wired to real apk enumeration + matching + the config-blob check, and so
-# completing the v1 Alpine slice, by IMG-06).
+# completing the v1 Alpine slice, by IMG-06; wired to real dpkg enumeration +
+# matching, completing the Debian/Ubuntu slice, by IMG-09).
 #
 # Contract (modules/sast/run.sh's own header, reused verbatim by every
 # module in this tree): scan.sh's `scan_dispatch image` does a plain
@@ -36,10 +37,15 @@
 # (`IMAGE-COV-UNKNOWN_DISTRO-01`/`IMAGE-COV-LAYER_UNREADABLE-01`) plus the
 # distro-agnostic `IMAGE-CFG-RUNS_AS_ROOT-01` config-blob check
 # (modules/image/config.sh), which runs independently of the ecosystem
-# branch below it.  Stage 2 (dpkg/rpm, IMG-07 onward) is explicitly out of
-# scope here - see modules/image/acquire.sh's own IMAGE_METADATA_PATHS
-# comment for why var/lib/dpkg/status still is not in the wanted set this
-# file asks for.
+# branch below it.  IMG-09 completes the Debian/Ubuntu slice: it widens
+# `image_distro_ecosystem_resolve` (modules/image/engine.sh) to resolve
+# `debian`/`ubuntu` os-release IDs to their own OSV.dev ecosystem keys
+# (`Debian:N`, `Ubuntu:XX.YY`), widens the metadata collected to also
+# include `var/lib/dpkg/status`, and wires `modules/image/distro/dpkg.sh`'s
+# enumerator+matcher (IMG-07/IMG-09) and `dpkg_version.sh`'s comparator
+# (IMG-08) into a sibling branch of the ecosystem dispatch below, dispatched
+# on the resolved distro `ID` rather than on the ecosystem string itself.
+# rpm (IMG-12) is still out of scope here.
 #
 # THE HONESTY THIS FILE OWES ITS READER IS ITS ACTUAL DELIVERABLE.  A run
 # that does nothing must not leave a report that reads like a clean scan -
@@ -174,16 +180,21 @@ _image_run_module() {
 
       # A dedicated scratch directory, released unconditionally below -
       # image_collect_metadata is the module's one acquisition entry point
-      # (acquire.sh's own header). IMG-06 widens the wanted set from IMG-03's
-      # original two os-release candidates to also ask for
-      # lib/apk/db/installed, now that this module has a real apk enumerator
-      # and comparator to feed it to; var/lib/dpkg/status stays OFF this
-      # list - dpkg parsing is IMG-07's scope, not this ticket's, and asking
-      # for it now would claim a coverage this module does not have yet.
+      # (acquire.sh's own header). IMG-06 widened the wanted set from
+      # IMG-03's original two os-release candidates to also ask for
+      # lib/apk/db/installed; IMG-09 widens it again to also ask for
+      # var/lib/dpkg/status, now that this module has a real dpkg enumerator
+      # (IMG-07), comparator (IMG-08) and Debian/Ubuntu advisory ecosystem
+      # (this ticket) to feed it to. Both package-manager paths are always
+      # requested regardless of which distro's os-release this image turns
+      # out to name - the ecosystem-dispatch branch below is what decides
+      # which one is actually READ, and asking for both costs nothing (an
+      # absent member is the ordinary case for a distro that does not carry
+      # it, per acquire.sh's own "tar is the new grep" discipline).
       local metadir
       metadir=$(mktemp -d "${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}/scoursh-image-meta.XXXXXX")
       chmod 700 "$metadir" 2>/dev/null || true
-      image_collect_metadata "$kind" "$path" "$metadir" etc/os-release usr/lib/os-release lib/apk/db/installed >/dev/null
+      image_collect_metadata "$kind" "$path" "$metadir" etc/os-release usr/lib/os-release lib/apk/db/installed var/lib/dpkg/status >/dev/null
 
       # report.md §4.3's `layer_unreadable` reduction: any wanted path a
       # refusal stopped (an unreadable layer, or a malformed member) is a
@@ -244,29 +255,51 @@ _image_run_module() {
             input=1
           fi
         else
-          # IMG-06: real apk enumeration + matching, at last. apk_scan_installed
-          # (modules/image/distro/apk.sh) enumerates $metadir/lib/apk/db/
-          # installed, looks every installed package up against
-          # data/advisories.db under this image's own resolved ecosystem, and
-          # emits IMAGE-PKG-VULNERABLE_OS_PACKAGE-01 per still-vulnerable
-          # (package, advisory) pair - see that function's own header for the
-          # matching rule and why it deliberately compares fixed_versions
-          # rather than treating it as opaque display text.
+          # IMG-06 wired real apk enumeration + matching for Alpine; IMG-09
+          # adds the mirror-image dpkg branch for Debian/Ubuntu, dispatched
+          # on the distro `ID` image_distro_ecosystem_resolve already
+          # resolved (never on the ecosystem string itself, which is the
+          # advisory-db KEY, not the package-manager SELECTOR - Alpine and
+          # a future rpm-based distro could in principle share a prefix
+          # scheme some day, and this dispatch must not assume otherwise).
+          # apk_scan_installed/dpkg_scan_installed each enumerate their own
+          # already-extracted database, look every installed package up
+          # against data/advisories.db under this image's own resolved
+          # ecosystem (dpkg's lookup key is the RESOLVED SOURCE package
+          # name, report.md §2.1 trap 2 - modules/image/distro/dpkg.sh's own
+          # section 2 header has the full reasoning), and emit
+          # IMAGE-PKG-VULNERABLE_OS_PACKAGE-01/-02 respectively per
+          # still-vulnerable (package, advisory) pair.
           rc=0
-          apk_scan_installed "$metadir/lib/apk/db/installed" "$image_id" "$ecosystem" || rc=$?
-          if (( rc != 0 )); then
-            # No apk database in ANY layer, despite a resolved, covered
-            # Alpine release (report.md §4.3's `no_package_db_found` row) -
-            # a scratch/distroless final stage. Never rendered as a clean
-            # scan.
-            image_report_unknown_distro "$image_id" "$ecosystem" "${_APK_INSTALLED_REASON:-no_package_db_found}"
-          elif (( _APK_SCAN_SKIPPED > 0 )); then
-            # One or more installed packages carried no comparable version
-            # (an empty or malformed `V:` line) and were skipped, never
-            # silently dropped - counted once for the whole image rather
-            # than one reduction per package.
-            run_record coverage_reduction "module=image reason=package_version_unparseable image=$image_id ecosystem=$ecosystem count=$_APK_SCAN_SKIPPED"
-          fi
+          case $distro_id in
+            alpine)
+              apk_scan_installed "$metadir/lib/apk/db/installed" "$image_id" "$ecosystem" || rc=$?
+              if (( rc != 0 )); then
+                # No apk database in ANY layer, despite a resolved, covered
+                # Alpine release (report.md §4.3's `no_package_db_found`
+                # row) - a scratch/distroless final stage. Never rendered
+                # as a clean scan.
+                image_report_unknown_distro "$image_id" "$ecosystem" apk "${_APK_INSTALLED_REASON:-no_package_db_found}"
+              elif (( _APK_SCAN_SKIPPED > 0 )); then
+                # One or more installed packages carried no comparable
+                # version (an empty or malformed `V:` line) and were
+                # skipped, never silently dropped - counted once for the
+                # whole image rather than one reduction per package.
+                run_record coverage_reduction "module=image reason=package_version_unparseable image=$image_id ecosystem=$ecosystem count=$_APK_SCAN_SKIPPED"
+              fi
+              ;;
+            debian | ubuntu)
+              dpkg_scan_installed "$metadir/var/lib/dpkg/status" "$image_id" "$ecosystem" || rc=$?
+              if (( rc != 0 )); then
+                # No dpkg database in ANY layer, despite a resolved, covered
+                # Debian/Ubuntu release - the identical apk case above,
+                # mirrored for dpkg.
+                image_report_unknown_distro "$image_id" "$ecosystem" dpkg "${_DPKG_INSTALLED_REASON:-no_package_db_found}"
+              elif (( _DPKG_SCAN_SKIPPED > 0 )); then
+                run_record coverage_reduction "module=image reason=package_version_unparseable image=$image_id ecosystem=$ecosystem count=$_DPKG_SCAN_SKIPPED"
+              fi
+              ;;
+          esac
         fi
       fi
       erase_dir "$metadir"

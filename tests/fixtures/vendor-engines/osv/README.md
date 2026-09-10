@@ -35,3 +35,25 @@ entry for the identical package, which must be SKIPPED - proving the
 PREFIX match on `Alpine:`, never the `*` wildcard `banner` uses. `-ALPINE-2`
 names a different package under `Alpine:v3.18` only, for the
 replace-the-whole-namespace test.
+
+`SCOURSH-FIXTURE-OSV-DEBIAN-1.json` and `SCOURSH-FIXTURE-OSV-DEBIAN-2.json`
+are for `veng_advisories_debian` (data/advisories.db and data/versions.db's
+`Debian:N` namespace, IMG-09) - Debian's sibling to the two `-ALPINE-*`
+fixtures above. `-DEBIAN-1` carries THREE `affected[]` entries: `Debian:11`
+and `Debian:12` (two DIFFERENT releases, each with its own `fixed` version,
+for the SAME source package `openssl` - proving one import can legitimately
+produce rows for more than one Debian release) plus an `Alpine:v3.18` entry
+for the identical package, which must be SKIPPED - proving the `Debian:*`
+sentinel is a PREFIX match on `Debian:`, not the bare `*` wildcard `banner`
+uses and not `Alpine:*`'s own, different prefix. `-DEBIAN-2` names a
+different source package (`bash`) under `Debian:12` only, for the
+replace-the-whole-namespace test.
+
+`SCOURSH-FIXTURE-OSV-UBUNTU-1.json` is for `veng_advisories_ubuntu`
+(data/advisories.db and data/versions.db's `Ubuntu:XX.YY` namespace, IMG-09).
+It carries THREE `affected[]` entries: `Ubuntu:20.04` and `Ubuntu:22.04` (two
+DIFFERENT releases, each with its own `fixed` version, for the SAME source
+package `openssl`) plus a `Debian:12` entry for the identical package, which
+must be SKIPPED - proving the `Ubuntu:*` sentinel does not also admit
+`Debian:*`'s own rows, even though both are per-release distro sentinels
+sharing the same `eco.endswith(':*')` extraction path.

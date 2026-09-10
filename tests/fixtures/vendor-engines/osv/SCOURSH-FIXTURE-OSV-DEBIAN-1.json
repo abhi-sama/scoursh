@@ -1,0 +1,22 @@
+{
+  "id": "SCOURSH-FIXTURE-OSV-DEBIAN-1",
+  "summary": "fixture: openssl heap overflow (debian)",
+  "database_specific": {"severity": "HIGH"},
+  "affected": [
+    {
+      "package": {"ecosystem": "Debian:11", "name": "openssl"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "1.1.1n-0+deb11u4"}]}],
+      "versions": ["1.1.1n-0+deb11u3"]
+    },
+    {
+      "package": {"ecosystem": "Debian:12", "name": "openssl"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "3.0.11-1~deb12u3"}]}],
+      "versions": ["3.0.11-1~deb12u2"]
+    },
+    {
+      "package": {"ecosystem": "Alpine:v3.18", "name": "openssl"},
+      "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "3.1.4-r2"}]}],
+      "versions": ["3.1.4-r1"]
+    }
+  ]
+}

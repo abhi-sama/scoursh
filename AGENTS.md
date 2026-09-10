@@ -4174,6 +4174,64 @@ and the new registry file parsing clean alongside the module's other four per-ow
 `tests/suites/image-apk.sh`'s own section E was updated in the same change: its "every per-owner image
 registry is discoverable" assertion now names five files, not four.
 
+**IMG-08 (the dpkg version comparator) has also landed - `modules/image/distro/dpkg_version.sh` -
+though it landed without this section (or its own "AGENTS.md not updated" note) being added at the
+time, the same process-note gap this file's own "Build order" section names for `history.sh`; it is
+corrected here in the same change that lands IMG-09, which is what actually consumes it.** It is
+`deb-version(7)`'s own `verrevcmp` transcribed into pure bash - epoch first (numeric, width-exact, no
+`$(( ))` on an untrusted digit run), then the upstream part, then the revision, each via the identical
+modified-ASCII-order table (`~` sorts BELOW the end of a string; letters sort before every other
+non-alphanumeric) - and it is the piece that makes `1.0~beta < 1.0` (a pre-release ranks below the
+release it precedes) and `5:1.0-1 > 10.0-1` (an epoch beats any upstream comparison) order correctly,
+both of which `modules/sca/semver.sh` gets backwards (report.md §2.4's own measured 5-correct/7-wrong
+result). Malformed input is UNORDERABLE, never silently "equal" or "less" - `dpkg_version_cmp_v` returns
+rc 1 with `_DPKGV_REASON` set rather than inventing an ordering, the identical discipline
+`apk_version.sh` (IMG-05) already established. It is a LEAF (sources nothing, adds no
+`shellcheck -x` source-graph edge) and is differential-tested against a committed corpus
+(`tests/fixtures/image/dpkg-version-corpus.tsv`) plus an independent Python sweep - both derived from
+`deb-version(7)`'s documented algorithm rather than a real `dpkg` binary, since none exists on this
+egress-restricted development host; replaying the corpus through a real `dpkg --compare-versions` on a
+networked box is the stated follow-up hardening, the identical shape the GNU-tar cross-check in this
+file's own "Sharp edges" section already defers.
+
+**IMG-09 completes the dpkg (Debian/Ubuntu) slice end to end - the second distro after Alpine (IMG-06)
+to reach a real, reportable finding - by adding the Debian/Ubuntu advisory ecosystems and wiring
+IMG-07's enumerator plus IMG-08's comparator into the vulnerable-package finding path.** Three things
+change, mirroring IMG-06's own shape for apk exactly:
+
+- **`tools/vendor-engines.sh` gains `advisories debian`/`advisories ubuntu`**, the eighth and ninth
+  advisory importers, siblings to `advisories alpine` (IMG-03) in every respect but the sentinel string:
+  `Debian:*`/`Ubuntu:*` instead of `Alpine:*`. The one shared mechanism generalised rather than
+  triplicated: the Python OSV extractor's `eco == "Alpine:*"` branch became `eco.endswith(":*")`, so all
+  three per-release-distro sentinels walk one code path. Debian's own OSV.dev namespace is the bare
+  MAJOR version (`Debian:11`, `Debian:12` - never a point release); Ubuntu's is major.minor
+  (`Ubuntu:20.04`, `Ubuntu:22.04`), identically shaped to Alpine's own key. Neither is one of
+  `VENG_ADVISORY_REGISTRY`'s six entries, for the identical reason `alpine` is not (no bulk path, and a
+  single import can span several releases at once).
+- **`modules/image/engine.sh`'s `image_distro_ecosystem_resolve` widens from Alpine-only to also resolve
+  `ID=debian`/`ID=ubuntu`** to their own ecosystem keys, and `image_report_unknown_distro` gains an
+  explicit `MANAGER` argument (`apk` or `dpkg`) so the two package managers share one emitter with
+  manager-specific wording rather than the apk-only prose it used to carry unconditionally.
+- **`modules/image/run.sh` widens the metadata wanted-set to also request `var/lib/dpkg/status`, and its
+  ecosystem-match branch now dispatches on the resolved `_IMAGE_OS_RELEASE_ID` (`alpine` vs
+  `debian`/`ubuntu`)** to `apk_scan_installed` or the new `dpkg_scan_installed`
+  (`modules/image/distro/dpkg.sh` section 2, IMG-09's own addition on top of IMG-07's enumerator) -
+  mirroring `apk_scan_installed`'s exact matching/emission shape (`db_lookup_prefix` on
+  (ecosystem, package), `fixed_versions` compared via the version comparator rather than treated as
+  opaque text, one finding per (package, advisory)), with one deliberate difference: **the lookup key,
+  and the emitted `loc_package`, is the RESOLVED SOURCE package name
+  (`DPKG_INSTALLED_SOURCES[i]`, IMG-07's own Source:-vs-Package: fallback), never the binary package
+  name** - distro advisories are published against source packages (report.md §2.1 trap 2: binary
+  `libssl3` comes from source `openssl`), so a matcher keyed on the binary name would miss most
+  advisories. The binary package name is still recorded, in the finding's evidence only, for
+  traceability without corrupting the fingerprint identity `loc_package` feeds.
+`IMAGE-PKG-VULNERABLE_OS_PACKAGE-02` (registered by `checks-dpkg.rules` at IMG-07, unreachable until
+now) is the check id this wiring makes real; `tests/suites/image-debian.sh` (new) is the end-to-end
+proof, deliberately exercising a binary-name-!=-source-name package (`libssl3`/`Source: openssl`) so the
+Source: fallback is a real test rather than an accident of a same-named package, and
+`tests/suites/vendor-engines-advisories.sh` sections D4/D5 are the importer-side proof, mirroring
+section D3's own alpine coverage. rpm (IMG-12) remains the only distro left.
+
 ## Tests
 
 ```
