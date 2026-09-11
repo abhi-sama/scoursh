@@ -707,9 +707,11 @@ config_scope_resolve_target() {
   done
 
   local -a uniq=()
-  if (( ${#matches[@]} > 0 )); then
-    mapfile -t uniq < <(printf '%s\n' "${matches[@]}" | LC_ALL=C sort -u)
-  fi
+  local m
+  while IFS= read -r m; do
+    [[ -n $m ]] || continue
+    uniq+=("$m")
+  done < <(printf '%s\n' "${matches[@]+"${matches[@]}"}" | LC_ALL=C sort -u)
 
   case ${#uniq[@]} in
     0) return 1 ;;
