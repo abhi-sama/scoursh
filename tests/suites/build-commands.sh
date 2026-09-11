@@ -110,9 +110,23 @@ assert_scan_status 0 \
   './scan.sh sast --path DIR --format json,sarif,html,md,audit,agent is accepted and completes clean' \
   sast --path "$W/mini-sast" --out "$W/out-sast" --format json,sarif,html,md,audit,agent
 
-# sca: --path only.
-assert_scan_status 0 \
-  './scan.sh sca --path DIR is accepted and completes clean' \
+# sca: --path only.  data/advisories.db is OPERATOR-BUILT and never shipped
+# (docs/FOUNDATION.md tension 25: tools/vendor-engines.sh populates it on a
+# networked box and it is never produced in this repo or in CI), so a real
+# `sca` run genuinely exits 4 (SCOURSH_EXIT_INPUT, modules/sca/run.sh's own
+# required-input gate) on a fresh clone with no dependency examined at all -
+# proven directly against a clean checkout while fixing this exact case.
+# Asserting exit 0 unconditionally was a FALSE GREEN in any worktree that
+# happened to carry a leftover, untracked data/advisories.db from unrelated
+# local work; point this assertion at the small, committed
+# tests/fixtures/sca/advisories.db instead (the same
+# SCOURSH_SCA_ADVISORIES_DB override tests/suites/sca.sh's own real-scan
+# cases use), which removes the hidden dependency entirely rather than
+# merely detecting it - deterministic on a fresh clone, in CI, and in a
+# contaminated worktree alike.
+SCOURSH_SCA_ADVISORIES_DB="$ROOT/tests/fixtures/sca/advisories.db" \
+  assert_scan_status 0 \
+  './scan.sh sca --path DIR is accepted and completes clean (fixture advisory db)' \
   sca --path "$ROOT/tests/fixtures/sca/mixed-ecosystems" --out "$W/out-sca"
 
 # iac: --path only.
