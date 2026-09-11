@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>scoursh command builder</title>
+<style>
+  :root{
+    --bg:#fbfbfd; --surface:#ffffff; --surface-2:#f4f6f9; --surface-3:#eef0f4; --line:#e3e6ec; --line-2:#cfd4dc;
+    --text:#14161a; --text-2:#4a5058; --text-3:#727a86;
+    --accent:#2f5bd0; --accent-soft:#eaf0ff;
+    --green:#0f7b4f; --green-soft:#e6f6ee; --blue:#1f6ba8; --blue-soft:#e6f1fb;
+    --purple:#7a3fb0; --purple-soft:#f1e9fa; --grey:#6b727c; --grey-soft:#eef0f4;
+    --orange:#a35b13; --orange-soft:#faf0e2; --orange-line:#f0d9a8;
+    --crit:#b0243a; --crit-soft:#fdeaee; --crit-line:#f4c2cc;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --radius:10px;
+  }
+  :root:not([data-theme="light"]){}
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#0e1014; --surface:#15181e; --surface-2:#1b1f27; --surface-3:#20252e; --line:#282e38; --line-2:#3a4350;
+      --text:#e9ecf1; --text-2:#aab2be; --text-3:#8b939f;
+      --accent:#7ea3f5; --accent-soft:#182238;
+      --green:#5fd6a0; --green-soft:#0f2419; --blue:#6fb8e8; --blue-soft:#0e2233;
+      --purple:#c39ae8; --purple-soft:#241833; --grey:#8b939f; --grey-soft:#1e232b;
+      --orange:#e0a659; --orange-soft:#2c2013; --orange-line:#4d3c1c;
+      --crit:#f58aa0; --crit-soft:#2a151b; --crit-line:#4f2630;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0e1014; --surface:#15181e; --surface-2:#1b1f27; --surface-3:#20252e; --line:#282e38; --line-2:#3a4350;
+    --text:#e9ecf1; --text-2:#aab2be; --text-3:#8b939f;
+    --accent:#7ea3f5; --accent-soft:#182238;
+    --green:#5fd6a0; --green-soft:#0f2419; --blue:#6fb8e8; --blue-soft:#0e2233;
+    --purple:#c39ae8; --purple-soft:#241833; --grey:#8b939f; --grey-soft:#1e232b;
+    --orange:#e0a659; --orange-soft:#2c2013; --orange-line:#4d3c1c;
+    --crit:#f58aa0; --crit-soft:#2a151b; --crit-line:#4f2630;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.6}
+  .wrap{max-width:1000px;margin:0 auto;padding:2.5rem 1.5rem 8rem}
+  header h1{font-size:2rem;margin:0 0 .35rem;letter-spacing:-.02em;text-wrap:balance}
+  header p.sub{color:var(--text-2);margin:0 0 1.5rem;font-size:1.05rem;max-width:70ch}
+  code{font-family:var(--mono);font-size:.88em;background:var(--surface-3);padding:.1rem .35rem;border-radius:4px}
+  a{color:var(--accent)}
+  h2{font-size:1.3rem;margin:2.4rem 0 .5rem;letter-spacing:-.01em}
+  h2 + p{color:var(--text-2);margin:.2rem 0 1rem;max-width:70ch}
+  h3.group{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--text-3);
+    margin:1.4rem 0 .6rem;font-weight:700}
+  h3.group:first-child{margin-top:.2rem}
+
+  fieldset{border:1px solid var(--line);border-radius:var(--radius);padding:1.1rem 1.2rem 1.3rem;margin:0 0 1.2rem;background:var(--surface)}
+  legend{font-size:.85rem;font-weight:600;padding:0 .4rem;color:var(--text-2)}
+
+  /* surface picker */
+  .surfaces{display:flex;flex-wrap:wrap;gap:.5rem;margin:0}
+  .surfaces label{
+    display:flex;flex-direction:column;gap:.15rem;min-width:108px;flex:1 1 108px;
+    border:1px solid var(--line);border-radius:var(--radius);padding:.6rem .75rem;
+    background:var(--surface-2);cursor:pointer;user-select:none;
+  }
+  .surfaces label:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+  .surfaces label:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+  .surfaces input{margin:0 .1rem 0 0}
+  .surfaces .name{font-family:var(--mono);font-weight:600;font-size:.88rem}
+  .surfaces .desc{font-size:.7rem;color:var(--text-3);line-height:1.35}
+
+  .field{margin:0 0 1rem}
+  .field:last-child{margin-bottom:0}
+  .field > label{display:block;font-family:var(--mono);font-size:.86rem;font-weight:600;margin-bottom:.3rem}
+  .field .req{font-family:var(--sans);font-weight:600;color:var(--crit);font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;margin-left:.4rem}
+  .field .opt{font-family:var(--sans);font-weight:400;color:var(--text-3);font-size:.72rem;margin-left:.4rem}
+  .field input[type="text"], .field input[type="number"], .field select{
+    width:100%;max-width:480px;font:inherit;font-size:.92rem;
+    background:var(--surface-2);color:var(--text);border:1px solid var(--line-2);
+    border-radius:6px;padding:.5rem .65rem;
+  }
+  .field input[aria-invalid="true"]{border-color:var(--crit)}
+  .field .help{margin:.35rem 0 0;font-size:.8rem;color:var(--text-3);max-width:64ch;line-height:1.45}
+  .field-bool > label{display:flex;align-items:center;gap:.5rem;font-family:var(--sans);font-weight:400;font-size:.92rem}
+  .field-bool code{font-weight:600}
+  .field-bool input{width:1.05rem;height:1.05rem;margin:0}
+  .chkrow{display:flex;flex-wrap:wrap;gap:.4rem .9rem}
+  .chkrow label{display:flex;align-items:center;gap:.4rem;font-size:.88rem;font-family:var(--mono)}
+  .chkrow input{width:1rem;height:1rem;margin:0}
+
+  *:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  .notebox{border-radius:var(--radius);border:1px solid var(--line);padding:.85rem 1.05rem;margin:0 0 1rem;font-size:.86rem;line-height:1.5}
+  .notebox p{margin:0}
+  .notebox p + p{margin-top:.4rem}
+  .notebox.info{background:var(--blue-soft);border-color:var(--blue)}
+  .notebox.warn{background:var(--orange-soft);border-color:var(--orange-line)}
+  .notebox.danger{background:var(--crit-soft);border-color:var(--crit-line)}
+  .notebox .lbl{font-weight:700;text-transform:uppercase;font-size:.66rem;letter-spacing:.05em;display:block;margin-bottom:.25rem}
+  .notebox.info .lbl{color:var(--blue)} .notebox.warn .lbl{color:var(--orange)} .notebox.danger .lbl{color:var(--crit)}
+
+  .sandbox-row{display:flex;flex-wrap:wrap;gap:.6rem;margin-bottom:.8rem}
+  .sandbox-row label{
+    display:flex;flex-direction:column;gap:.15rem;flex:1 1 160px;
+    border:1px solid var(--line);border-radius:var(--radius);padding:.55rem .7rem;
+    background:var(--surface-2);cursor:pointer;
+  }
+  .sandbox-row label:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+  .sandbox-row .name{font-weight:600;font-size:.85rem}
+  .sandbox-row .desc{font-size:.7rem;color:var(--text-3);line-height:1.35}
+
+  /* live command bar */
+  .composer-bar{
+    position:sticky;bottom:0;left:0;right:0;margin:2.2rem calc(-1.5rem) 0;
+    padding:1rem 1.5rem calc(1rem + env(safe-area-inset-bottom));
+    background:var(--surface);border-top:1px solid var(--line);
+    box-shadow:0 -6px 18px -12px rgba(0,0,0,.25);
+  }
+  .composer-inner{max-width:1000px;margin:0 auto}
+  .composer-label{font-size:.68rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);margin:0 0 .4rem;font-weight:700}
+  .composer-row{display:flex;gap:.6rem;align-items:stretch;flex-wrap:wrap}
+  pre.cmd{
+    flex:1 1 320px;margin:0;background:var(--surface-2);border:1px solid var(--line-2);
+    border-radius:8px;padding:.7rem .9rem;font-family:var(--mono);font-size:.86rem;
+    overflow-x:auto;white-space:pre;color:var(--text);min-height:2.6rem;
+  }
+  pre.cmd .flagname{color:var(--accent)}
+  pre.cmd.invalid{color:var(--text-3);font-style:italic}
+  button{
+    font:inherit;font-weight:600;font-size:.88rem;border-radius:8px;border:1px solid var(--line-2);
+    background:var(--surface-2);color:var(--text);padding:.6rem 1.1rem;cursor:pointer;
+  }
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:disabled{opacity:.5;cursor:not-allowed}
+  button.ghost{background:transparent}
+  .composer-msg{font-size:.78rem;color:var(--text-3);margin:.4rem 0 0}
+  .composer-msg.err{color:var(--crit)}
+
+  footer{margin-top:3rem;padding-top:1.2rem;border-top:1px solid var(--line);color:var(--text-3);font-size:.82rem}
+  .visually-hidden{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+  @media (max-width:600px){
+    .composer-bar{margin:2.2rem -1rem 0;padding:.9rem 1rem calc(.9rem + env(safe-area-inset-bottom))}
+    .field input[type="text"], .field input[type="number"], .field select{max-width:100%}
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+<header>
+  <h1>Command builder</h1>
+  <p class="sub">Pick a surface, point it at a path or target, toggle options, and copy the exact
+  <code>scan.sh</code> invocation. This page composes a command string only &mdash; it never runs
+  anything, and it makes no network request of any kind. The terminal equivalent is
+  <code>./scan.sh &lt;command&gt; --guided --print-command</code>, which asks the same questions
+  interactively and prints the command instead of running it. See also
+  <a href="checks.html">docs/checks.html</a> for what each check needs, and
+  <code>docs/USAGE.md</code> for the full flag reference.</p>
+</header>
+
+<h2>1. Surface</h2>
+<p>Only the flags that actually apply to the chosen surface are shown below.</p>
+<fieldset>
+  <legend>scan.sh &lt;command&gt;</legend>
+  <div class="surfaces" id="surfaces" role="radiogroup" aria-label="Surface"></div>
+</fieldset>
+
+<h2>2. Target &amp; surface options</h2>
+<div id="cmd-notes"></div>
+<fieldset id="cmd-fieldset">
+  <legend id="cmd-legend">&hellip;</legend>
+  <div id="cmd-fields"></div>
+</fieldset>
+
+<h2>3. Common options</h2>
+<div id="global-fieldsets"></div>
+
+<h2>4. Sandboxed wrapper</h2>
+<p>Optionally prefix the command with one of scoursh's kernel-enforced network sandboxes
+(<code>docs/USAGE.md</code> &sect; &ldquo;Enforcement tiers&rdquo;). Neither wrapper is ever invoked by
+<code>scan.sh</code> itself &mdash; both are opt-in, run by you.</p>
+<fieldset>
+  <legend>tools/run-sandboxed.sh / tools/run-in-netns.sh</legend>
+  <div class="sandbox-row" id="sandbox-row" role="radiogroup" aria-label="Sandboxed wrapper"></div>
+  <div class="field" id="scope-conf-field" hidden>
+    <label for="field-scope-conf"><code>--scope-conf</code> <span class="opt">optional</span></label>
+    <input type="text" id="field-scope-conf" placeholder="config/scope.conf">
+    <p class="help">Path to the scope file the wrapper resolves targets from. Defaults to
+    <code>config/scope.conf</code> if left blank.</p>
+  </div>
+</fieldset>
+
+<div class="composer-bar">
+  <div class="composer-inner">
+    <p class="composer-label">Composed command</p>
+    <div class="composer-row">
+      <pre class="cmd" id="cmd-output" tabindex="0"></pre>
+      <button type="button" class="primary" id="copy-btn">Copy</button>
+      <button type="button" class="ghost" id="reset-btn">Reset</button>
+    </div>
+    <p class="composer-msg" id="composer-msg" role="status" aria-live="polite"></p>
+  </div>
+</div>
+
+<footer>
+  Every flag name and accepted value here is read off <code>scan.sh</code>'s own grammar
+  (<code>SCAN_COMMANDS</code>, <code>_SCAN_FLAG_KIND</code>, <code>scan_usage</code>) on the
+  <code>dev</code> branch. If a flag does not exist there, it does not appear here. This page changes no
+  scanner behaviour: it is static HTML, CSS and JavaScript, self-contained, and works fully offline as a
+  <code>file://</code> page.
+</footer>
+</div>
+
+<script>
+"use strict";
+
+/* -------------------------------------------------------------------------
+ * Ground truth: mirrors scan.sh's SCAN_COMMANDS, _SCAN_FLAG_KIND and
+ * _SCAN_REQUIRED_FLAG on the dev branch. Every flag name, value shape and
+ * default below is read directly off that file plus docs/USAGE.md - nothing
+ * here is invented. Update this table if scan.sh's own grammar changes.
+ * ---------------------------------------------------------------------- */
+
+var SURFACES = [
+  {id:"sast", desc:"Source code, static"},
+  {id:"sca", desc:"Dependency CVEs"},
+  {id:"iac", desc:"Infra-as-code"},
+  {id:"dast", desc:"Running app"},
+  {id:"cloud", desc:"AWS config"},
+  {id:"network", desc:"Host/service"},
+  {id:"image", desc:"Container image"},
+  {id:"all", desc:"Every configured module"},
+  {id:"diff", desc:"Classify vs a prior run"},
+  {id:"report", desc:"Regenerate reports"}
+];
+
+var REQUIRED = {dast:"target", network:"target", image:"image", diff:"against", report:"from"};
+
+var FIELD_DEFS = {
+  path: {kind:"text", label:"--path", placeholder:"DIR", help:"Directory to scan. Default: the git toplevel of the resolved path, else the current directory."},
+  lang: {kind:"text", label:"--lang", placeholder:"py,js,go,java", help:"Restrict SAST rule packs to these languages, comma-separated. Default: all four."},
+  history: {kind:"bool", label:"--history", help:"Also replay modules/sast/rules/secrets.rules across git history, bounded by a commit/time window."},
+  target: {kind:"text", label:"--target", placeholder:"name-from-scope", help:"Must already be declared in config/scope.conf's base-url/extra-host entries."},
+  intensity: {kind:"select", label:"--intensity", choices:["passive","safe","active"], defaultNote:"default: passive", help:"active (and --allow-intrusive) each require --i-own-target."},
+  authed: {kind:"bool", label:"--authed", help:"Use the identities configured in config/auth.conf."},
+  "i-own-target": {kind:"text", label:"--i-own-target", placeholder:"same name as --target", help:"Required to raise --intensity above passive, or to combine with --allow-intrusive. Must equal --target exactly."},
+  "requests-per-second": {kind:"number", label:"--requests-per-second", placeholder:"e.g. 4", help:"Raises the rate ceiling above the conservative default. Above the default needs --i-own-target."},
+  "request-budget": {kind:"number", label:"--request-budget", placeholder:"e.g. 20000", help:"Raises the per-run request budget. Above the default needs --i-own-target."},
+  "circuit-breaker-failures": {kind:"number", label:"--circuit-breaker-failures", placeholder:"e.g. 40", help:"Raises the breaker's failure ceiling (useful when the target answers unmatched paths with 5xx). Above the default needs --i-own-target."},
+  openapi: {kind:"text", label:"--openapi", placeholder:"FILE", help:"Ephemeral, this-run-only override of config/discovery.conf's openapi-path. Requires --target."},
+  har: {kind:"text", label:"--har", placeholder:"FILE", help:"Ephemeral, this-run-only override of config/discovery.conf's har-path. Requires --target."},
+  postman: {kind:"text", label:"--postman", placeholder:"FILE", help:"Ephemeral, this-run-only override of config/discovery.conf's postman-path. Requires --target."},
+  "graphql-schema": {kind:"text", label:"--graphql-schema", placeholder:"FILE", help:"Ephemeral, this-run-only override of config/discovery.conf's graphql-schema-path. Requires --target."},
+  live: {kind:"bool", label:"--live", help:"Without this, no AWS API call is made at all - the module resolves nothing."},
+  profile: {kind:"text", label:"--profile", placeholder:"AWS profile name", help:"Named AWS CLI profile to resolve credentials from."},
+  regions: {kind:"text", label:"--regions", placeholder:"all or us-east-1,us-west-2", help:"Default: every region the account has enabled."},
+  "i-own-account": {kind:"text", label:"--i-own-account", placeholder:"123456789012", help:"Optional affirmation, checked against the account the credentials actually resolve to (exit 2 on mismatch) - catches a stale command pointed at the wrong account."},
+  "assume-role": {kind:"text", label:"--assume-role", placeholder:"arn:aws:iam::ACCOUNT:role/NAME", help:"Iterates this role across every active account of the resolved credentials' organization."},
+  image: {kind:"text", label:"--image", placeholder:"ID", help:"A stable id you chose, naming a record in config/images.conf - never the volatile digest or tag."},
+  source: {kind:"text", label:"--source", placeholder:"PATH", help:"Overrides config/images.conf's configured path for this run only: a docker-save tarball or an OCI image-layout directory, never a registry pull."},
+  against: {kind:"text", label:"--against", placeholder:"prior-run-dir", help:"A prior reports/<run> directory to classify this run's findings against."},
+  from: {kind:"text", label:"--from", placeholder:"prior-run-dir", help:"A prior reports/<run> directory to regenerate report.md/html/sarif from, with no rescan."}
+};
+
+var COMMAND_GROUPS = {
+  sast: [
+    {title:"Target", flags:["path"]},
+    {title:"Scope", flags:["lang","history"]}
+  ],
+  sca: [{title:"Target", flags:["path"]}],
+  iac: [{title:"Target", flags:["path"]}],
+  dast: [
+    {title:"Target", flags:["target"]},
+    {title:"Depth &amp; authorization", flags:["intensity","authed","i-own-target"]},
+    {title:"Rate &amp; safety overrides", flags:["requests-per-second","request-budget","circuit-breaker-failures"]},
+    {title:"Discovery overrides (this run only)", flags:["openapi","har","postman","graphql-schema"]}
+  ],
+  cloud: [
+    {title:"Live access", flags:["live","profile","regions"]},
+    {title:"Multi-account", flags:["i-own-account","assume-role"]}
+  ],
+  network: [
+    {title:"Target", flags:["target"]},
+    {title:"Depth &amp; authorization", flags:["intensity","i-own-target"]}
+  ],
+  image: [{title:"Image", flags:["image","source"]}],
+  all: [
+    {title:"Source code (SAST / SCA / IaC)", flags:["path","lang","history"]},
+    {title:"Running app (DAST)", flags:["target","intensity","authed","i-own-target"]},
+    {title:"DAST rate &amp; discovery overrides", flags:["requests-per-second","request-budget","circuit-breaker-failures","openapi","har","postman","graphql-schema"]},
+    {title:"AWS (cloud)", flags:["live","profile","regions","i-own-account","assume-role"]},
+    {title:"Container image", flags:["image","source"]}
+  ],
+  diff: [{title:"Target", flags:["against"]}],
+  report: [{title:"Target", flags:["from"]}]
+};
+
+var GLOBAL_GROUPS = [
+  {title:"Scan behavior", flags:["profile-scan","jobs","use-engines","allow-intrusive","verbose","paranoid"]},
+  {title:"Output", flags:["format","fail-on","fail-on-new","min-confidence","baseline","out"]},
+  {title:"Identification", flags:["contact","user-agent-suffix"]},
+  {title:"Terminal equivalent", flags:["guided","print-command"]}
+];
+
+FIELD_DEFS["profile-scan"] = {kind:"select", label:"--profile-scan", choices:["quick","full","compliance"], defaultNote:"default: full", help:"Which check-set filter chain to apply (lib/checks.sh)."};
+FIELD_DEFS.jobs = {kind:"number", label:"--jobs", placeholder:"4", help:"Worker parallelism; on network modules also the in-flight-connection ceiling."};
+FIELD_DEFS["use-engines"] = {kind:"bool", label:"--use-engines", help:"Opt in to vendored engine adapters (Semgrep/Trivy/Gitleaks). Only does anything once the named engine's binary + ruleset already exist on disk under modules/<module>/adapters/<engine>/; absent, it is a silent, logged no-op."};
+FIELD_DEFS["allow-intrusive"] = {kind:"bool", label:"--allow-intrusive", help:"Side-effecting checks (live user enumeration, signup/reset probing, the burst probe). On dast/network, and on all with a target, this additionally requires --i-own-target."};
+FIELD_DEFS.verbose = {kind:"bool", label:"--verbose", help:"Also print rule-authoring lint warnings that a normal run keeps out of the way."};
+FIELD_DEFS.paranoid = {kind:"bool", label:"--paranoid", help:"Connection DETECTOR (not a guarantee): aborts on the first connection observed outside the run's allowlist. See the sandboxed-wrapper section below for a kernel-enforced guarantee instead."};
+FIELD_DEFS.format = {kind:"multiset", label:"--format", choices:["json","sarif","html","md","audit","agent"], help:"Default: json,sarif,html,md. audit and agent are opt-in additions and never replace another format."};
+FIELD_DEFS["fail-on"] = {kind:"select", label:"--fail-on", choices:["critical","high","medium","low","info","none"], defaultNote:"default: none", help:"Exit 1 if any finding at or above this severity is present."};
+FIELD_DEFS["fail-on-new"] = {kind:"bool", label:"--fail-on-new", help:"Gate only on findings whose status is new since the last run. Requires --fail-on - a usage error otherwise."};
+FIELD_DEFS["min-confidence"] = {kind:"select", label:"--min-confidence", choices:["high","medium","low"], defaultNote:"default: low", help:"Drop findings below this confidence level."};
+FIELD_DEFS.baseline = {kind:"text", label:"--baseline", placeholder:"config/baseline.json", help:"Suppress accepted-risk findings by fingerprint."};
+FIELD_DEFS.out = {kind:"text", label:"--out", placeholder:"reports/<timestamp>", help:"Output directory for this run's reports."};
+FIELD_DEFS.contact = {kind:"text", label:"--contact", placeholder:"security@example.com", help:"An email or URL a target owner can reach you at; placed in the User-Agent on every request."};
+FIELD_DEFS["user-agent-suffix"] = {kind:"text", label:"--user-agent-suffix", placeholder:"extra-token", help:"Append one extra product token to the User-Agent. The scoursh/<version> prefix itself is never replaceable."};
+FIELD_DEFS.guided = {kind:"bool", label:"--guided", help:"Launch the interactive questionnaire instead of running this composed command. Needs an interactive terminal."};
+FIELD_DEFS["print-command"] = {kind:"bool", label:"--print-command", help:"With --guided, print the composed command at the review step instead of running it."};
+
+/* -------------------------------------------------------------------------
+ * State
+ * ---------------------------------------------------------------------- */
+
+var state = {
+  command: "sast",
+  fields: {},
+  sandbox: "none",
+  scopeConf: ""
+};
+
+/* -------------------------------------------------------------------------
+ * Shell quoting.  Every user-entered value is passed through this before it
+ * ever reaches the composed command string, so a path containing a space, a
+ * single quote, a semicolon, or anything else shell-meaningful can never
+ * break out of its own argument or inject a second command.
+ * ---------------------------------------------------------------------- */
+
+var SAFE_UNQUOTED = /^[A-Za-z0-9_.,:/=@%+-]+$/;
+
+function shQuote(raw) {
+  var s = String(raw);
+  if (s === "") { return "''"; }
+  if (SAFE_UNQUOTED.test(s)) { return s; }
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+/* -------------------------------------------------------------------------
+ * Rendering
+ * ---------------------------------------------------------------------- */
+
+function el(tag, attrs, children) {
+  var e = document.createElement(tag);
+  attrs = attrs || {};
+  for (var k in attrs) {
+    if (!Object.prototype.hasOwnProperty.call(attrs, k)) { continue; }
+    if (k === "html") { e.innerHTML = attrs[k]; }
+    else if (k === "text") { e.textContent = attrs[k]; }
+    else { e.setAttribute(k, attrs[k]); }
+  }
+  (children || []).forEach(function (c) { if (c) { e.appendChild(c); } });
+  return e;
+}
+
+function renderSurfaces() {
+  var host = document.getElementById("surfaces");
+  host.innerHTML = "";
+  SURFACES.forEach(function (s) {
+    var input = el("input", {
+      type: "radio", name: "surface", value: s.id, id: "surface-" + s.id
+    });
+    input.checked = (s.id === state.command);
+    input.addEventListener("change", function () {
+      if (input.checked) { state.command = s.id; renderCommandFields(); renderAll(); }
+    });
+    var label = el("label", {"for": "surface-" + s.id}, [
+      input,
+      el("span", {"class": "name", text: s.id}),
+      el("span", {"class": "desc", text: s.desc})
+    ]);
+    host.appendChild(label);
+  });
+}
+
+function fieldValue(flag) {
+  var v = state.fields[flag];
+  return v === undefined || v === null ? "" : v;
+}
+
+function renderField(flag) {
+  var def = FIELD_DEFS[flag];
+  var id = "field-" + flag;
+  var wrap;
+
+  if (def.kind === "bool") {
+    var cb = el("input", {type: "checkbox", id: id, "data-flag": flag});
+    cb.checked = !!state.fields[flag];
+    cb.addEventListener("change", function () { state.fields[flag] = cb.checked; renderAll(); });
+    var lbl = el("label", {"for": id}, [cb, el("code", {text: def.label})]);
+    wrap = el("div", {"class": "field field-bool"}, [lbl]);
+  } else if (def.kind === "multiset") {
+    var row = el("div", {"class": "chkrow"});
+    var current = state.fields[flag] || [];
+    def.choices.forEach(function (choice) {
+      var mid = id + "-" + choice;
+      var mcb = el("input", {type: "checkbox", id: mid, "data-flag-multi": flag, value: choice});
+      mcb.checked = current.indexOf(choice) !== -1;
+      mcb.addEventListener("change", function () {
+        var vals = [];
+        row.querySelectorAll("input[data-flag-multi='" + flag + "']:checked").forEach(function (n) { vals.push(n.value); });
+        state.fields[flag] = vals;
+        renderAll();
+      });
+      row.appendChild(el("label", {"for": mid}, [mcb, document.createTextNode(choice)]));
+    });
+    wrap = el("div", {"class": "field"}, [
+      el("label", {html: "<code>" + def.label + "</code>"}),
+      row
+    ]);
+  } else if (def.kind === "select") {
+    var sel = el("select", {id: id, "data-flag": flag});
+    sel.appendChild(el("option", {value: "", text: def.defaultNote ? "(" + def.defaultNote + ")" : "(unset)"}));
+    def.choices.forEach(function (choice) {
+      sel.appendChild(el("option", {value: choice, text: choice}));
+    });
+    sel.value = fieldValue(flag);
+    sel.addEventListener("change", function () { state.fields[flag] = sel.value; renderAll(); });
+    wrap = el("div", {"class": "field"}, [
+      el("label", {"for": id, html: "<code>" + def.label + "</code>"}),
+      sel
+    ]);
+  } else {
+    var inputType = def.kind === "number" ? "number" : "text";
+    var inp = el("input", {type: inputType, id: id, "data-flag": flag, placeholder: def.placeholder || ""});
+    if (inputType === "number") { inp.setAttribute("min", "0"); inp.setAttribute("step", "1"); }
+    inp.value = fieldValue(flag);
+    var isRequired = REQUIRED[state.command] === flag;
+    if (isRequired) { inp.setAttribute("aria-required", "true"); }
+    inp.addEventListener("input", function () { state.fields[flag] = inp.value; renderAll(); });
+    var labelHtml = "<code>" + def.label + "</code>" + (isRequired ? '<span class="req">required</span>' : '<span class="opt">optional</span>');
+    wrap = el("div", {"class": "field"}, [
+      el("label", {"for": id, html: labelHtml}),
+      inp
+    ]);
+    wrap._input = inp;
+  }
+
+  if (def.help) { wrap.appendChild(el("p", {"class": "help", text: def.help})); }
+  return wrap;
+}
+
+function renderGroups(container, groups) {
+  container.innerHTML = "";
+  groups.forEach(function (g) {
+    container.appendChild(el("h3", {"class": "group", html: g.title}));
+    g.flags.forEach(function (flag) { container.appendChild(renderField(flag)); });
+  });
+}
+
+function renderCommandFields() {
+  document.getElementById("cmd-legend").textContent = "./scan.sh " + state.command;
+  renderGroups(document.getElementById("cmd-fields"), COMMAND_GROUPS[state.command] || []);
+}
+
+function renderGlobalFields() {
+  var host = document.getElementById("global-fieldsets");
+  host.innerHTML = "";
+  GLOBAL_GROUPS.forEach(function (g) {
+    var fs = el("fieldset", {}, [el("legend", {text: g.title})]);
+    var body = el("div", {});
+    g.flags.forEach(function (flag) { body.appendChild(renderField(flag)); });
+    fs.appendChild(body);
+    host.appendChild(fs);
+  });
+}
+
+function renderSandboxRow() {
+  var host = document.getElementById("sandbox-row");
+  host.innerHTML = "";
+  var options = [
+    {id: "none", name: "None", desc: "Ordinary local run, no wrapper."},
+    {id: "tierA", name: "Tier A - deny all (macOS)", desc: "tools/run-sandboxed.sh -- ..., kernel-refuses every network socket."},
+    {id: "tierB", name: "Tier B - scope relay (macOS)", desc: "tools/run-sandboxed.sh --scope-conf ... -- ..., off-host egress kernel-denied plus a loopback relay to the declared target."},
+    {id: "netns", name: "Linux network namespace", desc: "tools/run-in-netns.sh -- ..., route table admits only the resolved scope + nameservers + loopback."}
+  ];
+  options.forEach(function (o) {
+    var input = el("input", {type: "radio", name: "sandbox", value: o.id, id: "sandbox-" + o.id});
+    input.checked = (o.id === state.sandbox);
+    input.addEventListener("change", function () {
+      if (input.checked) {
+        state.sandbox = o.id;
+        document.getElementById("scope-conf-field").hidden = (o.id === "none");
+        renderAll();
+      }
+    });
+    host.appendChild(el("label", {"for": "sandbox-" + o.id}, [
+      input,
+      el("span", {"class": "name", text: o.name}),
+      el("span", {"class": "desc", text: o.desc})
+    ]));
+  });
+  document.getElementById("scope-conf-field").hidden = (state.sandbox === "none");
+  var scopeInput = document.getElementById("field-scope-conf");
+  scopeInput.value = state.scopeConf;
+  scopeInput.addEventListener("input", function () { state.scopeConf = scopeInput.value; renderAll(); });
+}
+
+/* -------------------------------------------------------------------------
+ * Prerequisite / validation notes
+ * ---------------------------------------------------------------------- */
+
+var STATIC_NOTES = {
+  sast: [],
+  sca: [{kind: "info", text: "Needs data/advisories.db - build it once (a networked, off-scan-time step) with tools/vendor-engines.sh advisories bulk --all. Without it, sca records why it could not look rather than a false all-clear."}],
+  iac: [],
+  dast: [{kind: "info", text: "--target must already be declared in config/scope.conf (base-url / extra-host). --authed additionally needs config/auth.conf's identities."}],
+  cloud: [{kind: "info", text: "Needs resolvable AWS credentials (profile, environment, or instance role). Every call is read-only, enforced by lib/awscli.sh's aws_ro chokepoint. Without --live, no AWS API call is made at all."}],
+  network: [{kind: "info", text: "--target must already be declared in config/scope.conf (base-url / extra-host)."}],
+  image: [{kind: "info", text: "--image must name an id record in config/images.conf pointing at a docker-save tarball or an OCI layout directory - or pass --source to point at one directly for this run."}],
+  all: [{kind: "info", text: "Runs every module whose inputs are configured above; a module with nothing configured is skipped with a recorded coverage_reduction, not silently dropped."}],
+  diff: [],
+  report: []
+};
+
+function computeNotes() {
+  var cmd = state.command;
+  var f = state.fields;
+  var notes = STATIC_NOTES[cmd].slice();
+  var hasTarget = ["dast", "network", "all"].indexOf(cmd) !== -1;
+
+  if (hasTarget) {
+    var intensityAboveDefault = f.intensity === "active" || f.intensity === "safe";
+    var needsAffirmation = f.intensity === "active" || (f["allow-intrusive"] && (f.target || "").trim() !== "");
+    if (needsAffirmation && !(f["i-own-target"] || "").trim()) {
+      notes.push({kind: "warn", text: "--intensity active (and --allow-intrusive) require --i-own-target, set to the exact same value as --target."});
+    }
+    var discoveryFlags = ["openapi", "har", "postman", "graphql-schema"];
+    var anyDiscovery = discoveryFlags.some(function (k) { return (f[k] || "").trim() !== ""; });
+    if (anyDiscovery && (f.target || "").trim() === "") {
+      notes.push({kind: "warn", text: "--openapi / --har / --postman / --graphql-schema each require --target - usage error otherwise."});
+    }
+  }
+
+  if (f["fail-on-new"] && !(f["fail-on"] || "").trim()) {
+    notes.push({kind: "warn", text: "--fail-on-new requires --fail-on - usage error otherwise."});
+  }
+
+  if (f["use-engines"]) {
+    notes.push({kind: "info", text: "--use-engines only does anything once the named engine's vendored binary + ruleset already exist on disk under modules/<module>/adapters/<engine>/ (docs/ADAPTERS.md). Absent, it is a silent, logged no-op."});
+  }
+
+  var required = REQUIRED[cmd];
+  if (required && !(f[required] || "").trim()) {
+    notes.push({kind: "danger", text: "--" + required + " is required for scan.sh " + cmd + "."});
+  }
+
+  if (state.sandbox === "tierA" && ["dast", "cloud", "network", "all"].indexOf(cmd) !== -1) {
+    notes.push({kind: "warn", text: "Tier A denies ALL network access. dast/cloud/network need real traffic to their target, so this combination gets zero network access and, most likely, an honest, loud failure on its own first request - use Tier B or the Linux namespace wrapper instead."});
+  }
+
+  return notes;
+}
+
+function renderNotes(hostId, notes) {
+  var host = document.getElementById(hostId);
+  host.innerHTML = "";
+  notes.forEach(function (n) {
+    var lbl = n.kind === "danger" ? "Required" : (n.kind === "warn" ? "Check" : "Prerequisite");
+    host.appendChild(el("div", {"class": "notebox " + n.kind}, [
+      el("span", {"class": "lbl", text: lbl}),
+      el("p", {text: n.text})
+    ]));
+  });
+}
+
+/* -------------------------------------------------------------------------
+ * Command composition
+ * ---------------------------------------------------------------------- */
+
+function flattenFlags(groups) {
+  var out = [];
+  groups.forEach(function (g) { g.flags.forEach(function (fl) { out.push(fl); }); });
+  return out;
+}
+
+function compose() {
+  var cmd = state.command;
+  var f = state.fields;
+  var missing = [];
+  var tokens = ["./scan.sh", cmd];
+
+  function addField(flag) {
+    var def = FIELD_DEFS[flag];
+    if (def.kind === "bool") {
+      if (f[flag]) { tokens.push("--" + flag); }
+      return;
+    }
+    if (def.kind === "multiset") {
+      var arr = f[flag] || [];
+      if (arr.length) { tokens.push("--" + flag); tokens.push(shQuote(arr.join(","))); }
+      return;
+    }
+    var v = (f[flag] === undefined || f[flag] === null) ? "" : String(f[flag]).trim();
+    if (v === "") {
+      if (REQUIRED[cmd] === flag) { missing.push(flag); }
+      return;
+    }
+    tokens.push("--" + flag);
+    tokens.push(shQuote(v));
+  }
+
+  flattenFlags(COMMAND_GROUPS[cmd] || []).forEach(addField);
+  flattenFlags(GLOBAL_GROUPS).forEach(addField);
+
+  var prefix = [];
+  if (state.sandbox === "tierA") {
+    prefix = ["tools/run-sandboxed.sh", "--"];
+  } else if (state.sandbox === "tierB") {
+    var scB = (state.scopeConf || "").trim() || "config/scope.conf";
+    prefix = ["tools/run-sandboxed.sh", "--scope-conf", shQuote(scB), "--"];
+  } else if (state.sandbox === "netns") {
+    var scN = (state.scopeConf || "").trim();
+    prefix = ["tools/run-in-netns.sh"];
+    if (scN && scN !== "config/scope.conf") { prefix.push("--scope-conf", shQuote(scN)); }
+    prefix.push("--");
+  }
+
+  var full = prefix.concat(tokens);
+  return {tokens: full, text: full.join(" "), missing: missing};
+}
+
+var lastComposed = "";
+
+function renderCommandOutput() {
+  var result = compose();
+  var out = document.getElementById("cmd-output");
+  var copyBtn = document.getElementById("copy-btn");
+  var msg = document.getElementById("composer-msg");
+
+  if (result.missing.length) {
+    out.textContent = result.text + "   # missing: --" + result.missing.join(", --");
+    out.classList.add("invalid");
+    copyBtn.disabled = true;
+    msg.textContent = "Fill in the required field(s) above before copying.";
+    msg.classList.add("err");
+    lastComposed = "";
+  } else {
+    out.textContent = result.text;
+    out.classList.remove("invalid");
+    copyBtn.disabled = false;
+    msg.textContent = "";
+    msg.classList.remove("err");
+    lastComposed = result.text;
+  }
+}
+
+function renderAll() {
+  renderNotes("cmd-notes", computeNotes());
+  renderCommandOutput();
+}
+
+/* -------------------------------------------------------------------------
+ * Copy-to-clipboard.  Local browser clipboard access only; nothing here
+ * reaches out over the network, and nothing here executes the command.
+ * ---------------------------------------------------------------------- */
+
+function flashCopyState(ok) {
+  var msg = document.getElementById("composer-msg");
+  msg.classList.remove("err");
+  msg.textContent = ok ? "Copied to clipboard." : "Could not copy automatically - select the text above and copy it manually.";
+  window.setTimeout(function () {
+    if (msg.textContent === (ok ? "Copied to clipboard." : "Could not copy automatically - select the text above and copy it manually.")) {
+      msg.textContent = "";
+    }
+  }, 2500);
+}
+
+function legacyCopy(text) {
+  var ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.top = "-1000px";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  var ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  document.body.removeChild(ta);
+  return ok;
+}
+
+function copyComposedCommand() {
+  if (!lastComposed) { return; }
+  var text = lastComposed;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () {
+      flashCopyState(true);
+    }, function () {
+      flashCopyState(legacyCopy(text));
+    });
+  } else {
+    flashCopyState(legacyCopy(text));
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * Boot
+ * ---------------------------------------------------------------------- */
+
+document.getElementById("copy-btn").addEventListener("click", copyComposedCommand);
+document.getElementById("reset-btn").addEventListener("click", function () {
+  state.fields = {};
+  state.sandbox = "none";
+  state.scopeConf = "";
+  renderSandboxRow();
+  renderCommandFields();
+  renderGlobalFields();
+  renderAll();
+});
+
+renderSurfaces();
+renderCommandFields();
+renderGlobalFields();
+renderSandboxRow();
+renderAll();
+</script>
+</body>
+</html>

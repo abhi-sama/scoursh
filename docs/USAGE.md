@@ -115,6 +115,10 @@ to this repository, so on a stock checkout the flag produces a
 
 ## Guided mode (`--guided`)
 
+Prefer a point-and-click alternative to either the interactive questionnaire below or hand-typing
+flags? [`docs/build.html`](build.html) is a static, offline command builder covering the same surfaces
+and flags - it only composes a command string and offers a copy button, and never runs anything itself.
+
 Two invocations reach guided mode: a bare `scan.sh` with no arguments at all, and
 `scan.sh <command> --guided` (e.g. `scan.sh dast --guided`).
 Both launch the interactive questionnaire only when run on an interactive terminal - see "When it
