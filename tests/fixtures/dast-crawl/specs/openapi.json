@@ -21,7 +21,7 @@
     "/never-linked-from-anywhere": {"get": {"summary": "unreachable by crawl"}},
     "/orders": {
       "post": {
-        "summary": "IMPORT-03: a real API whose ENTIRE surface is in requestBody, mirroring the Juice Shop reproduction in the api-surface-import scout report §1a/§1b",
+        "summary": "IMPORT-03: a real API whose ENTIRE surface is in requestBody, mirroring a real Juice Shop endpoint",
         "parameters": [],
         "requestBody": {
           "content": {

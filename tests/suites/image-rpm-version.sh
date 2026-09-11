@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # tests/suites/image-rpm-version.sh - the rpm (RHEL/Fedora) VERSION
 # COMPARATOR, the second ticket of the rpm sub-chain IMG-12's enumerator
-# opened (data/scoursh-image-scan-design/report.md §2.4 "THE BLOCKER", whose
+# opened - the acknowledged blocker of the three, whose
 # difficulty ranking "apk << dpkg < rpm" puts this comparator last and
-# hardest of the three; §5.3's IMG-13 and IMG-14 rows are the docs and
+# hardest (IMG-13 and IMG-14 are the docs and
 # correlation tickets, so this one carries no plan number of its own).  It is
 # held to the bar `modules/sca/semver.sh` set for itself - differential-tested
 # against a reference, 0 mismatches or it does not ship.
@@ -14,8 +14,8 @@
 #   A. Against a COMMITTED, provenance-annotated corpus of known orderings
 #      (tests/fixtures/image/rpm-version-corpus.tsv) - 133 hand-checked rows,
 #      of which 61 are rpm's OWN PUBLISHED TEST VECTORS (librpm's
-#      `rpmvercmp.at`) transcribed by hand and 3 are the pairs report.md §2.4
-#      measured semver.sh getting wrong.  This half is what can catch a
+#      `rpmvercmp.at`) transcribed by hand and 3 are pairs
+#      measured to have `modules/sca/semver.sh` get wrong.  This half is what can catch a
 #      misreading of the SPEC, because each row's expected ordering was
 #      decided from rpm's documented algorithm and from the tool's own
 #      maintainers rather than from this implementation.  Its limit is its
@@ -49,7 +49,7 @@
 # file's, in the same shape as the GNU-tar cross-check `tools/daily-suite.sh`
 # defers - a stated gap with a named discharge.
 #
-# Section B restates every specific case report.md §2.4 names, plus the
+# Section B restates every specific case named above, plus the
 # classic `rpmvercmp` reference vectors, each naming the reading it FAILS
 # under, per AGENTS.md's rule that a test agreeing with both the correct and
 # the rejected reading pins nothing.  Section C pins the malformed-input
@@ -176,7 +176,7 @@ else
   _t_no "at least 50 rows marked (rpm vector)" "only $vector_rows"
 fi
 
-t_case 'the corpus covers every rule report.md §2.4, the brief and rpmvercmp name'
+t_case 'the corpus covers every rule the brief and rpmvercmp name'
 CORPUS_TEXT=$(cat "$CORPUS")
 for needed in \
   '1.0	>	1.0~rc1' \
@@ -246,9 +246,9 @@ done < <(awk -F'\t' '!/^#/ && NF == 4 { print $1; print $3 }' "$CORPUS" | LC_ALL
 assert_eq 0 "$refl_bad" "all $refl_n distinct corpus versions compare equal to themselves"
 
 # ---------------------------------------------------------------------------
-printf -- '\n-- B. the specific cases report.md §2.4 and rpmvercmp name, each naming the reading it fails under --\n'
+printf -- '\n-- B. the specific cases the brief and rpmvercmp name, each naming the reading it fails under --\n'
 # ---------------------------------------------------------------------------
-t_case 'the TILDE sorts BEFORE everything, including the end of the string: 1.0 > 1.0~rc1 (report.md §2.4)'
+t_case 'the TILDE sorts BEFORE everything, including the end of the string: 1.0 > 1.0~rc1'
 assert_eq 1 "$(cmp_p 1.0 1.0~rc1)" \
   'FAILS under modules/sca/semver.sh, which drops the suffix and answers 0 - EQUAL, which a caller asking "is the installed version below the fixed-in version" reads as "not below", reads as "not vulnerable", with no diagnostic at all'
 assert_eq -1 "$(cmp_p 1.0~ 1.0)" 'a bare tilde with nothing after it is still below the end of the string - FAILS under any reading that compares what FOLLOWS the tilde rather than the tilde itself'
@@ -256,7 +256,7 @@ assert_eq -1 "$(cmp_p 1.0~~ 1.0~)" 'and a second tilde is lower again, which is 
 assert_eq -1 "$(cmp_p 1.0~1 1.0)" 'a tilde demotes a NUMERIC suffix too - FAILS under a reading that only special-cases an alphabetic pre-release tag'
 assert_eq 1 "$(cmp_p 2.0~rc1 1.0)" 'and the tilde never reaches across a difference the earlier segments already decided'
 
-t_case 'the CARET sorts AFTER the version it follows: 1.0^20230101 > 1.0 (report.md §2.4)'
+t_case 'the CARET sorts AFTER the version it follows: 1.0^20230101 > 1.0'
 assert_eq 1 "$(cmp_p 1.0^20230101 1.0)" \
   'FAILS under modules/sca/semver.sh, which answers 0; and FAILS under the belief that ^ is "a tilde pointing the other way in every respect", which would make it lose to the bare version exactly as ~ does'
 assert_eq 1 "$(cmp_p 1.0^ 1.0)" 'a bare caret with nothing after it is already above the end of the string'
@@ -271,9 +271,9 @@ assert_eq 1 "$(cmp_p '1.0^git1' '1.0~rc1')" \
 assert_eq -1 "$(cmp_p '1.0~rc1^git1' 1.0)" 'a snapshot OF a pre-release is still below the release, because the tilde is reached first'
 assert_eq 1 "$(cmp_p '1.0^git1~pre' 1.0)" 'while a pre-release OF a snapshot is still above it, for the mirror-image reason'
 
-t_case 'the EPOCH is compared first, and NUMERICALLY: 2:1.0-1 > 3.0-1 (report.md §2.4)'
+t_case 'the EPOCH is compared first, and NUMERICALLY: 2:1.0-1 > 3.0-1'
 assert_eq 1 "$(cmp_p 2:1.0-1 3.0-1)" \
-  'FAILS under modules/sca/semver.sh, which coerces the non-numeric major "2:1" to 0 and answers -1 - report.md §2.4'"'"'s own measured mismatch, and the direction where a PATCHED package is reported vulnerable'
+  'FAILS under modules/sca/semver.sh, which coerces the non-numeric major "2:1" to 0 and answers -1 - a measured mismatch, and the direction where a PATCHED package is reported vulnerable'
 assert_eq 1 "$(cmp_p 10:1.0 9:1.0)" \
   'FAILS under a byte comparison of the epoch, which reads "1" < "9" and inverts a real RHEL estate'"'"'s epoch ordering'
 assert_eq 0 "$(cmp_p 01:1.0 1:1.0)" 'a leading zero in the epoch is not significant - it is an integer'
@@ -344,7 +344,7 @@ t_case 'this comparator and modules/sca/semver.sh genuinely DISAGREE on all thre
 # shellcheck source=modules/sca/semver.sh
 source "$ROOT/modules/sca/semver.sh"
 semver_cmp_v 1.0 1.0~rc1
-assert_eq 0 "$_SV_CMP" 'semver_cmp_v still answers 0 - EQUAL - on the tilde pair, exactly as report.md §2.4 measured, and that is the silent direction'
+assert_eq 0 "$_SV_CMP" 'semver_cmp_v still answers 0 - EQUAL - on the tilde pair, exactly as measured earlier, and that is the silent direction'
 semver_cmp_v 1.0^20230101 1.0
 assert_eq 0 "$_SV_CMP" 'and still answers 0 on the caret pair'
 semver_cmp_v 2:1.0-1 3.0-1

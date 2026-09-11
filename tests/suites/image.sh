@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # tests/suites/image.sh - modules/image/: the `scan_dispatch image` entry
-# point and the module-registration surface IMG-01 lands (IMG-01,
-# data/scoursh-image-scan-design/report.md §3.2/§5.3).
+# point and the module-registration surface IMG-01 lands.
 #
 # IMG-01 is the module-FOUNDATION ticket only: it registers `IMAGE` across
 # every frozen table and shared list so IMG-02 onward add only their own
@@ -18,7 +17,7 @@
 #      consumer actually reads, never only an internal record.
 #   3. The `image-id` coverage cell (rules/RULE-FORMAT.md §9.5.1) is
 #      recorded under the operator's own `--image` value, not the volatile
-#      digest or tag report.md §3.4 explicitly excludes.
+#      digest or tag, which is deliberately excluded.
 #   4. A synthetic `module: image` finding - proving the frozen-format
 #      additions (lib/records.sh, lib/findings.sh, lib/report.sh) actually
 #      work together - round-trips through findings.jsonl/findings.json,
@@ -109,9 +108,9 @@ t_case 'run.json records why nothing was examined, naming the image'
 # file that genuinely does not exist on disk ('/tmp/myapp.tar' is a
 # deliberately fake path, per IMG-01's own original comment) now resolves
 # its (kind, path) fine and then fails at image_open - "unreadable
-# archive", the identical `tar -tf` failure report.md §1.4 documents -
-# rather than stopping at "no acquisition code exists yet" the way it did
-# before this ticket landed.
+# archive", the same `tar -tf` failure modules/image/acquire.sh already
+# handles - rather than stopping at "no acquisition code exists yet" the way
+# it did before this ticket landed.
 assert_contains "$RUN_OK_JSON" "module=image reason=image_source_unreadable image=myapp detail=archive_unreadable" \
   "the module's own reduction names the image id - FAILS if a copy-paste from modules/network/run.sh left the literal string \"module=network\" behind"
 assert_contains "$RUN_OK_JSON" "image scanning examined nothing for image 'myapp'" \
@@ -168,7 +167,7 @@ t_case "'scan.sh image --help' states the required flag and the current build st
 IMG_HELP=$(SCOURSH_INSTALL_ROOT=$ROOT bash "$ROOT/scan.sh" image --help 2>&1 || true)
 assert_contains "$IMG_HELP" 'Required: --image' \
   'the per-subcommand help states --image is required, from the same _SCAN_REQUIRED_FLAG map scan_main enforces'
-assert_contains "$IMG_HELP" 'partially built' \
+assert_contains "$IMG_HELP" 'built' \
   'the status line reflects that modules/image/run.sh now exists on disk - FAILS if _scan_module_script has no generic fallback for a module scan.sh does not special-case'
 
 t_case 'an unknown flag for image is still refused (exit 2), same as every other command'

@@ -322,7 +322,7 @@ assert_contains "$(_ep_body_type_lines)" "$TGT/v1/users|json" \
 # ===========================================================================
 printf -- '\n-- IMPORT-03: OpenAPI requestBody + $ref/components resolution (crawl_engine.sh §8a) --\n'
 # ===========================================================================
-# The api-surface-import scout report's own §1a/§1b reproduction: an
+# A reproduction of a real gap: an
 # application whose entire attack surface sits in requestBody, with a $ref to
 # a components.schemas entry, produced ZERO parameters before this ticket.
 
@@ -415,7 +415,7 @@ assert_not_contains "$PARAMS" 'correct-horse-battery' 'the captured value appear
 # ===========================================================================
 printf -- '\n-- IMPORT-04: HAR JSON body + headers + path-template dedup (crawl_engine.sh §8) --\n'
 # ===========================================================================
-# The api-surface-import scout report's own §1c reproduction: a Chrome-shaped
+# A reproduction of a real gap: a Chrome-shaped
 # HAR of real XHRs lost every JSON body and every header before this ticket,
 # and a numbered listing inflated the surface into one endpoint per number.
 
@@ -486,8 +486,8 @@ assert_not_contains "$PARAMS" 'email|graphql' \
 # ===========================================================================
 printf -- '\n-- IMPORT-05: import-time hardening of untrusted param name + location (crawl_engine.sh §6) --\n'
 # ===========================================================================
-# Two pre-existing defects a hostile spec/HAR/hand-written inventory can trip
-# (the api-surface-import scout report §7), fixed at the one place every
+# Two pre-existing defects a hostile spec/HAR/hand-written inventory can trip,
+# fixed at the one place every
 # producer already funnels through: crawl_add_param.
 #
 #   (a) A header-location name that is not an RFC 7230 token reaches
@@ -1019,9 +1019,9 @@ assert_contains "$RUNJSON" 'config/discovery.conf' 'it names where to supply a s
 assert_contains "$RUNJSON" 'tension 21' 'and the SAST-route mitigation for the server-side half'
 
 # ===========================================================================
-printf -- '\n-- the SPA HAR-import nudge (data/scoursh-spa-har-nudge): guidance only --\n'
+printf -- '\n-- the SPA HAR-import nudge: guidance only --\n'
 # ===========================================================================
-# The captain'"'"'s decision (2026-09-06) rejected static-JS auto-discovery and
+# The design decision rejected static-JS auto-discovery and
 # asked instead for a clear, actionable nudge toward --har/--openapi whenever
 # the crawler'"'"'s own SPA heuristic actually fires. This is a narrower trigger
 # than "no specification was supplied" above: index.html (used by run-nospec

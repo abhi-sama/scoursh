@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# tests/suites/image-dpkg-version.sh - IMG-08 (data/scoursh-image-scan-design/
-# report.md §2.4 "THE BLOCKER" and §5.3's IMG-08 row, "dpkg comparator -
+# tests/suites/image-dpkg-version.sh - IMG-08 ("dpkg comparator -
 # epoch + tilde, differential-tested"): the Debian/Ubuntu version comparator,
 # held to the bar `modules/sca/semver.sh` set for itself - differential-tested
 # against a reference, 0 mismatches or it does not ship.
@@ -11,7 +10,8 @@
 #   A. Against a COMMITTED, provenance-annotated corpus of known orderings
 #      (tests/fixtures/image/dpkg-version-corpus.tsv) - 117 hand-checked rows,
 #      of which 32 are dpkg's OWN PUBLISHED TEST VECTORS transcribed by hand
-#      and 3 are the pairs report.md §2.4 measured semver.sh getting wrong.
+#      and 3 are pairs where `modules/sca/semver.sh` is measured getting the
+#      ordering wrong.
 #      This half is what can catch a misreading of the SPEC, because each
 #      row's expected ordering was decided from `deb-version(7)` and from the
 #      tool's own maintainers rather than from this implementation.  Its
@@ -44,7 +44,7 @@
 # same shape as the GNU-tar cross-check `tools/daily-suite.sh` defers - a
 # stated gap with a named discharge.
 #
-# Section B restates every specific case report.md §2.4 names as its own
+# Section B restates each specific case below as its own
 # regression, each naming the reading it FAILS under, per AGENTS.md's rule
 # that a test agreeing with both the correct and the rejected reading pins
 # nothing.  Section C pins the malformed-input contract.  Section E pins the
@@ -130,7 +130,7 @@ else
   _t_no "at least 25 rows marked (dpkg vector)" "only $vector_rows"
 fi
 
-t_case 'the corpus covers every rule report.md §2.4 and deb-version(7) name'
+t_case 'the corpus covers every rule deb-version(7) names'
 CORPUS_TEXT=$(cat "$CORPUS")
 for needed in \
   '1:2.30.2-1	>	2.39.5-1' \
@@ -199,16 +199,16 @@ done < <(awk -F'\t' '!/^#/ && NF == 4 { print $1; print $3 }' "$CORPUS" | LC_ALL
 assert_eq 0 "$refl_bad" "all $refl_n distinct corpus versions compare equal to themselves"
 
 # ---------------------------------------------------------------------------
-printf -- '\n-- B. the specific cases report.md §2.4 names, each naming the reading it fails under --\n'
+printf -- '\n-- B. the specific measured mismatch cases, each naming the reading it fails under --\n'
 # ---------------------------------------------------------------------------
-t_case 'the EPOCH is compared first: 1:2.30.2-1 > 2.39.5-1 (report.md §2.4)'
+t_case 'the EPOCH is compared first: 1:2.30.2-1 > 2.39.5-1'
 assert_eq 1 "$(cmp_p 1:2.30.2-1 2.39.5-1)" \
-  'FAILS under modules/sca/semver.sh, which coerces the non-numeric major "1:2" to 0 and answers -1 - report.md §2.4'"'"'s own measured mismatch, and the direction where a PATCHED package is reported vulnerable'
+  'FAILS under modules/sca/semver.sh, which coerces the non-numeric major "1:2" to 0 and answers -1 - a measured mismatch, and the direction where a PATCHED package is reported vulnerable'
 assert_eq -1 "$(cmp_p 2.39.5-1 1:2.30.2-1)" 'and the reverse direction agrees'
 
-t_case 'the epoch outranks ANY upstream: 5:1.0-1 > 10.0-1 (report.md §2.4)'
+t_case 'the epoch outranks ANY upstream: 5:1.0-1 > 10.0-1'
 assert_eq 1 "$(cmp_p 5:1.0-1 10.0-1)" \
-  'FAILS under any comparator that reads the leading run as a plain major version - 5 against 10 says -1, which is report.md §2.4'"'"'s third measured mismatch'
+  'FAILS under any comparator that reads the leading run as a plain major version - 5 against 10 says -1, another measured mismatch'
 assert_eq 1 "$(cmp_p 1:1.0 0:99999.99999)" 'and no upstream, at any width, overcomes one epoch'
 
 t_case 'the epoch compares NUMERICALLY, not lexically: 10:1.0 > 9:1.0'
@@ -216,7 +216,7 @@ assert_eq 1 "$(cmp_p 10:1.0 9:1.0)" \
   'FAILS under a byte comparison of the epoch, which reads "1" < "9" and inverts a real Debian estate'"'"'s epoch ordering'
 assert_eq 0 "$(cmp_p 01:1.0 1:1.0)" 'and a leading zero in the epoch is not significant - it is an integer'
 
-t_case 'a TILDE sorts BEFORE everything, including the end of the string: 1.0 > 1.0~beta (report.md §2.4)'
+t_case 'a TILDE sorts BEFORE everything, including the end of the string: 1.0 > 1.0~beta'
 assert_eq 1 "$(cmp_p 1.0 1.0~beta)" \
   'FAILS under modules/sca/semver.sh, which drops the suffix and answers 0 - EQUAL, which a caller asking "is the installed version below the fixed-in version" reads as "not below", reads as "not vulnerable", with no diagnostic at all'
 assert_eq -1 "$(cmp_p 1.0~ 1.0)" 'a bare tilde with nothing after it is still below the end of the string'
@@ -231,7 +231,7 @@ t_case 'this comparator and modules/sca/semver.sh genuinely DISAGREE on all thre
 # shellcheck source=modules/sca/semver.sh
 source "$ROOT/modules/sca/semver.sh"
 semver_cmp_v 1:2.30.2-1 2.39.5-1
-assert_eq -1 "$_SV_CMP" 'semver_cmp_v still answers -1 on the epoch pair, exactly as report.md §2.4 measured'
+assert_eq -1 "$_SV_CMP" 'semver_cmp_v still answers -1 on the epoch pair, exactly as measured'
 semver_cmp_v 1.0 1.0~beta
 assert_eq 0 "$_SV_CMP" 'and still answers 0 - EQUAL - on the tilde pair, the silent direction'
 semver_cmp_v 5:1.0-1 10.0-1

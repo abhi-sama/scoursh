@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # modules/image/distro/dpkg_version.sh - the dpkg (Debian/Ubuntu) VERSION
-# COMPARATOR (IMG-08; data/scoursh-image-scan-design/report.md §2.4 "THE
-# BLOCKER" and §5.3's IMG-08 row, "dpkg comparator - epoch + tilde,
+# COMPARATOR (IMG-08, "dpkg comparator - epoch + tilde,
 # differential-tested").
 #
 # WHAT THIS FILE IS.  A total ordering over Debian/Ubuntu package version
@@ -27,7 +26,7 @@
 # divergence, the exact direction tension 25 calls disqualifying", as the
 # reason it never generalised into a shared `version_cmp`.
 #
-# report.md §2.4 applied that same standard to OS versions and measured the
+# The same standard was applied to OS versions and measured the
 # shipped comparator at 5 correct / 7 WRONG out of 12.  Three of those seven
 # are dpkg's, and they are this file's reason to exist:
 #
@@ -70,7 +69,7 @@
 #
 #   epoch              a single unsigned integer, default 0 when absent.
 #                      Compared FIRST, and NUMERICALLY - which is the whole
-#                      of report.md §2.4's `5:1.0-1 > 10.0-1`: epoch 5 beats
+#                      of the rule `5:1.0-1 > 10.0-1`: epoch 5 beats
 #                      epoch 0 without ever looking at 1.0 against 10.0.
 #   upstream_version   alphanumerics plus `. + - : ~`, starting with a digit.
 #                      A `-` may appear only when a revision is present (the
@@ -141,7 +140,7 @@
 # read and found safe.  A caller owes a `coverage_reduction` on rc 1, never a
 # silent skip - and `modules/image/distro/dpkg.sh` deliberately emits a
 # package with an EMPTY version string when its block carried no `Version:`
-# line (that file's own §"a block that passes both gates but carries no
+# line (that file's own "a block that passes both gates but carries no
 # Version:"), so an unorderable input is an ordinary, expected arrival here
 # rather than a corrupt-database edge case.
 #
@@ -448,7 +447,7 @@ dpkg_version_cmp_v() {
   if ! _dpkgv_parse "$2"; then _DPKGV_REASON=invalid_version_b; return 1; fi
   eb=$_DPKGV_EPOCH; ub=$_DPKGV_UPSTREAM; rb=$_DPKGV_REVISION
 
-  # The epoch decides on its own when it differs - report.md §2.4's
+  # The epoch decides on its own when it differs -
   # `5:1.0-1 > 10.0-1` never reaches the upstream comparison at all.
   _dpkgv_cmp_digits "$ea" "$eb"
   if (( _DPKGV_R != 0 )); then _DPKGV_CMP=$_DPKGV_R; return 0; fi

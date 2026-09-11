@@ -318,9 +318,9 @@ declare -A _SCAN_FLAG_KIND=(
   # dispatch time, by `sts get-caller-identity`.
   [cloud:i-own-account]=value
 
-  # NET-04: mirrors dast's own target/intensity/affirmation trio exactly
-  # (report.md §2.5's table - a network probe is gated by exactly the same
-  # chokepoint and the same ceilings a DAST request is). No
+  # NET-04: mirrors dast's own target/intensity/affirmation trio exactly -
+  # a network probe is gated by exactly the same
+  # chokepoint and the same ceilings a DAST request is. No
   # requests-per-second/request-budget/circuit-breaker-failures/openapi/har/
   # postman/graphql-schema pair here: those are DAST-32's own rate/discovery
   # knobs, meaningless for a module with no HTTP discovery phase of its own.
@@ -328,15 +328,12 @@ declare -A _SCAN_FLAG_KIND=(
   [network:intensity]=value
   [network:i-own-target]=value
 
-  # IMG-01 (data/scoursh-image-scan-design/report.md §3.2/§5.3): the
-  # module-foundation ticket.  `--image` is the operator-declared STABLE id
-  # (§3.4's coverage-scope cell, NOT the volatile digest or tag - a rebuild
-  # or retag must not reset coverage), enforced via _SCAN_REQUIRED_FLAG
-  # below; `--source` names the offline docker-save tarball or OCI layout
-  # directory the operator supplies (§1.2, shapes A/B - never a registry
-  # pull). Neither is validated against a real acquisition path yet -
-  # modules/image/run.sh is a declared no-op until IMG-02 lands
-  # config/images.conf and the acquisition code that reads --source.
+  # IMG-01: the module-foundation ticket.  `--image` is the operator-declared
+  # STABLE id (the coverage-scope cell, NOT the volatile digest or tag - a
+  # rebuild or retag must not reset coverage), enforced via
+  # _SCAN_REQUIRED_FLAG below; `--source` names the offline docker-save
+  # tarball or OCI layout directory the operator supplies (config/images.conf's
+  # `docker-archive`/`oci-layout` shapes - never a registry pull).
   [image:image]=value
   [image:source]=value
 
@@ -486,9 +483,12 @@ Commands:
                               identical chokepoint, ceilings and
                               --i-own-target affirmation `dast` uses - one
                               TCP connect costs exactly what one HTTP
-                              request costs.  NOT YET BUILT beyond this
-                              dispatch skeleton: no phase script exists on
-                              disk, so a run today resolves the target and
+                              request costs.  Built: all six scan phases
+                              (reachability, banner/HTTP disclosure, TLS
+                              posture, transport posture) have landed; run
+                              `scan.sh network --help` for the current phase
+                              count.  A run whose target has no non-web
+                              listener declared still resolves the target and
                               records why it found nothing rather than
                               reporting a clean scan.)
   image    --image <id> [--source <path>]
@@ -496,17 +496,19 @@ Commands:
                               installed-package enumeration and CVE matching
                               against a docker-save tarball or OCI image
                               layout the operator supplies - never a
-                              registry pull (data/scoursh-image-scan-design/
-                              report.md). --image is a STABLE id you choose
+                              registry pull. --image is a STABLE id you choose
                               (survives a rebuild or a retag - the coverage
                               cell, not the volatile digest), never validated
                               against the image's actual content.
-                              NOT YET BUILT beyond this dispatch skeleton:
-                              no acquisition, no distro enumerator, and no
-                              comparator exist on disk yet (IMG-01), so a run
-                              today records why it found nothing rather than
-                              reporting a clean scan; --source is accepted
-                              but not yet read.)
+                              Built: acquisition, apk/dpkg/rpm enumeration and
+                              version comparison, language-dependency
+                              extraction, and the config-blob checks have all
+                              landed; run `scan.sh image --help` for the
+                              current component count. A missing advisory
+                              database for the image's distro release records
+                              why nothing was found rather than reporting a
+                              clean scan; --source overrides the configured
+                              path for this run only.)
   all      run every module for which inputs are configured
   diff     --against <prior-run-dir>
   report   --from <prior-run-dir>
@@ -675,6 +677,35 @@ _scan_cloud_service_status() {
   printf '%s of %s AWS services implemented' "$present" "$total"
 }
 
+# `_scan_image_component_status` - "N of M pipeline components implemented",
+# the same file-existence idiom as `_scan_dast_phase_status` and
+# `_scan_cloud_service_status` above, applied to the image module's own
+# fixed acquire -> enumerate -> compare pipeline.  Unlike dast/network/cloud,
+# modules/image/engine.sh deliberately declares no phase table of its own
+# (see that file's header: there is nothing to gate on `--intensity` here,
+# so a table would have nothing to put in it) - this list therefore lives
+# here, in scan.sh, purely to keep this help text honest, rather than in
+# engine.sh where it would contradict that file's own documented design.
+_scan_image_component_status() {
+  local total=0 present=0 rel
+  local -a components=(
+    acquire.sh
+    distro/apk.sh
+    distro/apk_version.sh
+    distro/dpkg.sh
+    distro/dpkg_version.sh
+    distro/rpm.sh
+    distro/rpm_version.sh
+    config.sh
+    langdeps.sh
+  )
+  for rel in "${components[@]+"${components[@]}"}"; do
+    total=$(( total + 1 ))
+    [[ -f $SCOURSH_INSTALL_ROOT/modules/image/$rel ]] && present=$(( present + 1 ))
+  done
+  printf '%s of %s pipeline components implemented' "$present" "$total"
+}
+
 # `_scan_stateful_command_built CMD` - `diff` and `report` are not modules
 # (scan_main's own case block handles both inline, never through
 # scan_dispatch), so there is no run.sh on disk to check the way there is for
@@ -746,7 +777,7 @@ scan_usage_for() {
       ;;
     dast)
       if _scan_module_built dast; then
-        printf 'partially built - the scope gate, rate limiter and phase harness are real (%s, docs/STEP5-DAST-PLAN.md). A run against a real target completes cleanly and records why it found nothing, rather than reporting a clean scan.\n' \
+        printf 'built - every scan phase has landed (%s, docs/STEP5-DAST-PLAN.md): the scope gate, rate limiter, session/crawl inventory, and the full passive/active/tier-5 check set. A run against a real target completes cleanly and records why a check found nothing, rather than reporting a clean scan when it did not look.\n' \
           "$(_scan_dast_phase_status)"
       else
         printf '%s\n' 'NOT built - modules/dast/run.sh does not exist on disk yet.'
@@ -754,7 +785,7 @@ scan_usage_for() {
       ;;
     cloud)
       if _scan_module_built cloud; then
-        printf 'partially built - the dispatch entry point, the caller-identity/authorization record and the enabled-region iteration are real (%s, docs/STEP6-CLOUD-PLAN.md). No aws/live/*.sh service script has landed yet, so a --live run resolves the account and its regions, records what it could not examine, and reports that rather than a clean scan.\n' \
+        printf 'built - the dispatch entry point, the caller-identity/authorization record, the enabled-region iteration, and every AWS service check have landed (%s, docs/STEP6-CLOUD-PLAN.md). A --live run examines every enabled service across every enabled region; where a call is inaccessible (access denied, opted out, throttled), that gap is recorded as a coverage reduction rather than folded into a clean scan. The posture/ phase (SSO, edge and session-drift checks, docs/DESIGN.md §8.7) has not landed - only its config/posture.conf schema has - so a posture-relevant control is a declared skip today.\n' \
           "$(_scan_cloud_service_status)"
       else
         printf '%s\n' 'NOT built - modules/cloud/aws/run.sh does not exist on disk yet; this command is a logged no-op (docs/DESIGN.md §13 step 6).'
@@ -762,7 +793,7 @@ scan_usage_for() {
       ;;
     network)
       if _scan_module_built network; then
-        printf 'partially built - the dispatch entry point, the scope gate and the phase harness are real (%s, data/scoursh-network-scan-design/report.md). A run against a real target completes cleanly and records why it found nothing, rather than reporting a clean scan.\n' \
+        printf 'built - every scan phase has landed (%s): three-state reachability verification, banner/HTTP service and version disclosure, TLS posture on non-web ports, and plaintext/STARTTLS transport posture, gated by the same scope chokepoint and --i-own-target affirmation dast uses. This is deliberately not a port scanner - a port the operator did not declare in config/scope.conf is never probed.\n' \
           "$(_scan_network_phase_status)"
       else
         printf '%s\n' 'NOT built - modules/network/run.sh does not exist on disk yet.'
@@ -770,7 +801,8 @@ scan_usage_for() {
       ;;
     image)
       if _scan_module_built image; then
-        printf 'partially built - the dispatch entry point and the check registry are real (IMG-01, data/scoursh-image-scan-design/report.md). No acquisition, distro enumerator or comparator has landed yet (IMG-02 onward), so a run resolves the declared --image id and records why it found nothing, rather than reporting a clean scan.\n'
+        printf 'built - every pipeline stage has landed (%s): tarball/OCI-layout acquisition, apk/dpkg/rpm package enumeration and version comparison against data/advisories.db, language-dependency extraction reusing sca'"'"'s tree-walkers, and the config-blob checks (effective runtime user, exposed ports, mutable base-image reference). This is offline lookup against an operator-supplied image, never a registry pull or a running-container inspection.\n' \
+          "$(_scan_image_component_status)"
       else
         printf '%s\n' 'NOT built - modules/image/run.sh does not exist on disk yet.'
       fi
@@ -1074,8 +1106,8 @@ _scan_check_affirmation() {
   # Only where a live endpoint is actually reachable.  `all` without a
   # `--target` runs no DAST (or network) at all, so refusing there would be
   # refusing an invocation that sends nothing.  `network` (NET-04) joins
-  # `dast` here rather than getting its own arm: report.md §2.5's own table
-  # says a network probe is gated by exactly the same ceiling this function
+  # `dast` here rather than getting its own arm: a network probe is gated by
+  # exactly the same ceiling this function
   # already enforces, so the identical `--intensity`/`--allow-intrusive`
   # affirmation rule applies unchanged.
   case $SCAN_COMMAND in
@@ -2553,8 +2585,8 @@ scan_main() {
       # Byte-identical shape to the `dast` arm above (NET-04's own explicit
       # instruction: follow the dast precedent exactly).  config_scope_require
       # is the non-bypassable gate: no matching --target dies 3, a wholly
-      # missing scope.conf dies 4.  modules/network/run.sh (report.md §5.2
-      # rule 1) re-asserts it a second, independent time.
+      # missing scope.conf dies 4.  modules/network/run.sh
+      # re-asserts it a second, independent time.
       config_scope_require "${SCAN_FLAGS[target]}"
       run_record targets "${SCAN_FLAGS[target]}"
       _scan_record_authorization "${SCAN_FLAGS[target]}"
@@ -2595,8 +2627,8 @@ scan_main() {
         # module: `dast` and `network` (NET-04) share the same --target,
         # --intensity and --i-own-target values under `all`, so a second call
         # here would double every authorization_* fact in run.json for no new
-        # information - D6 (data/scoursh-network-scan-design/report.md §9)
-        # is "network runs under `all` whenever dast does", not "network gets
+        # information - the deliberate design decision is "network runs
+        # under `all` whenever dast does", not "network gets
         # its own affirmation record".
         _scan_record_authorization "${SCAN_FLAGS[target]}"
         _scan_apply_profile_filter dast

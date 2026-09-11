@@ -5,7 +5,7 @@
 # --results=verified,unknown,unverified`, its own default detector set.
 #
 # `--no-verification` IS NOT A HANDICAP, IT IS THE ONLY DEFENSIBLE SETTING
-# HERE, and the scout report's §6.2 says so directly: TruffleHog's verified
+# HERE: TruffleHog's verified
 # mode calls each provider's API to see whether a candidate credential still
 # works, which is a deliberate EGRESS action.  Running it would (a) send this
 # corpus's values to third-party APIs, (b) make the result depend on those

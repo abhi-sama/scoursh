@@ -1,7 +1,7 @@
 # bench/corpus.lock - every benchmark corpus, pinned.
 #
 # This file is the B2 deliverable and it is the reason a published number is
-# reproducible by a stranger (the scout report's methodology rule R7).  A
+# reproducible by a stranger.  A
 # corpus that is fetched at "HEAD" is not a corpus, it is a moving target: two
 # runs a week apart measure two different things and the difference is
 # invisible in the result.  Every row here pins a COMMIT, never a branch or a
@@ -48,7 +48,7 @@ note: 2,740 single-file Java test cases, each labelled with its category, its
   file whose ground truth is machine-readable and authored by neither of the
   tools being compared.  Half the cases are deliberate SANITIZED TRAPS, which
   is what makes a false-positive rate measurable here at all and what makes
-  recall alone meaningless (the scout report's rule R3).
+  recall alone meaningless.
 note: GPL-2.0.  Fetched, never vendored - see the licence paragraph above.
 
 id: terragoat

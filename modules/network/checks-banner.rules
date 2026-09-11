@@ -1,7 +1,5 @@
 # modules/network/checks-banner.rules - the NET-07 AND NET-11 script-check
-# registry (rules/RULE-FORMAT.md §9.5; data/scoursh-network-scan-design/
-# report.md §3.2 item 1, §3.4, §5.1, the NET-07 and NET-11 rows in its §7
-# staged plan). Owned by modules/network/banner.sh - see that file's own
+# registry (rules/RULE-FORMAT.md §9.5). Owned by modules/network/banner.sh - see that file's own
 # header for why NET-11 (the version->vulnerability lookup) lives inside
 # NET-07's own phase script rather than as a peer file.
 #
@@ -16,7 +14,7 @@
 # identify_text, modules/network/banner_engine.sh, reports both under this
 # one id, with the version named in the evidence when one was disclosed) and
 # `NET-SVC-OUTDATED_COMPONENT-01` (an EXACT data/versions.db `banner`-
-# namespace match on that same disclosure - report.md §3.4, never a range or
+# namespace match on that same disclosure, never a range or
 # heuristic comparison). The `net` location profile (lib/findings.sh,
 # target/host/port/transport) carries no "kind" or "product" component, so a
 # name-only disclosure and a known-vulnerable-version hit on the SAME
@@ -26,11 +24,11 @@
 # unchanged.
 #
 # NET-SVC-OUTDATED_COMPONENT-01 IS `confidence: medium`, NEVER `high` -
-# report.md §3.4's backport problem: the version came from a raw TCP banner
+# the same backport problem: the version came from a raw TCP banner
 # the listener volunteered unprompted, which is the SOFTWARE's own
 # self-reported upstream version string, and a distribution that backports a
-# security fix (Debian's or RHEL's own openssh packages are the report's
-# worked example) does so under an UNCHANGED version string. An exact match
+# security fix (Debian's or RHEL's own openssh packages are the canonical
+# example) does so under an UNCHANGED version string. An exact match
 # against the vendored list can therefore name a host that is genuinely
 # already patched, which is why `confidence` is capped at `medium` here and
 # the finding's own `remediation` states the limitation in words - the
@@ -38,8 +36,7 @@
 # NET-SVC-HTTP_OUTDATED_COMPONENT-01 record carries for the HTTP-response
 # channel.
 #
-# The type tag is `passive` for BOTH ids (report.md §5.1's own table for
-# NET-SVC-BANNER_DISCLOSURE-01, and modules/network/engine.sh's own
+# The type tag is `passive` for BOTH ids (matching NET-SVC-BANNER_DISCLOSURE-01's own table, and modules/network/engine.sh's own
 # phase-table floor, `banner.sh:passive`, which binds every check this phase
 # script emits): the probe reads only what a listener volunteers unprompted
 # on connect and sends zero bytes - the opposite of NET-06's own

@@ -18,8 +18,8 @@
 #   line      OPTIONAL.  `start-end`, or a bare `n` meaning `n-n`: the case's
 #             extent in the file.  Present only for a corpus with more than one
 #             case per file, where `the tool reported something in this file`
-#             cannot tell two cases apart - the scout report's §5.2 row for
-#             TerraGoat and k8s-goat.  `bench/score.sh --match line` scores
+#             cannot tell two cases apart - the shape
+#             TerraGoat and k8s-goat need.  `bench/score.sh --match line` scores
 #             against it; the default `--match file` ignores it entirely, so
 #             every existing five-field truth file parses and scores exactly as
 #             it did before this field existed.
@@ -37,7 +37,7 @@
 # the only thing that makes Youden J measurable.  A benchmark run over the
 # `real: true` rows alone reports recall, and recall alone is a metric a rule
 # that flags every file scores 100% on - which is exactly the `ldapi` result
-# the scout report's §3.1 caught (12/12 real AND 12/12 traps, reading as a
+# measurement caught (12/12 real AND 12/12 traps, reading as a
 # perfect score while having zero discriminating power).
 #
 # 0x1f rather than a tab, for the reason bench/lib/json.sh's header gives: a

@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# tests/suites/image-e2e.sh - IMG-06 (data/scoursh-image-scan-design/
-# report.md §4.1/§4.2/§4.3, and §3.4's coverage-cell decision): the
+# tests/suites/image-e2e.sh - IMG-06 (the coverage-cell decision): the
 # END-TO-END Alpine slice - IMG-04's apk enumerator, IMG-05's version
 # comparator, and IMG-03's advisory-ecosystem plumbing wired together into
 # real `IMAGE-PKG-VULNERABLE_OS_PACKAGE-01` findings, plus the two remaining
@@ -30,7 +29,7 @@
 #      agent-fix.json); a second scan of the SAME image id with the package
 #      upgraded to its fixed version is quiet for that check AND reads the
 #      first run's finding as `fixed` in the run-over-run diff - never
-#      `unknown`+`new` - which is report.md §3.4's whole point for choosing
+#      `unknown`+`new` - which is the whole point of choosing
 #      the operator-declared image id as the coverage cell rather than the
 #      volatile digest/tag. The same two runs also prove
 #      `IMAGE-CFG-RUNS_AS_ROOT-01` fires on the first (root-config) image
@@ -113,7 +112,7 @@ assert_eq 1 "$_rc" 'equal versions are never "still vulnerable" - FAILS under a 
 t_case 'a package ABOVE the fixed version is quiet'
 _rc=0
 _apk_row_still_vulnerable '3.1.4-r10' '3.1.4-r2' || _rc=$?
-assert_eq 1 "$_rc" '3.1.4-r10 > 3.1.4-r2 numerically - FAILS under the exact lexical-pkgrel bug report.md §2.4 measured semver.sh making (r10 < r2 as strings)'
+assert_eq 1 "$_rc" '3.1.4-r10 > 3.1.4-r2 numerically - FAILS under the exact lexical-pkgrel bug measured in semver.sh (r10 < r2 as strings)'
 
 t_case 'an empty fixed_versions field is treated as still-vulnerable, never a silent skip'
 _apk_row_still_vulnerable '9.9.9' ''
@@ -308,8 +307,8 @@ assert_contains "$RUN1_FINDINGS" '"module":"image"' 'under module image'
 assert_not_contains "$RUN1_FINDINGS" 'IMAGE-COV-UNKNOWN_DISTRO-01' \
   'the apk database WAS present and readable this time - FAILS if the enumerator refused it'
 
-t_case 'the finding location carries image_id/ecosystem/package/advisory_id - NOT the version (report.md §3.4)'
-# The location object may carry a trailing "line" key too - report.md's
+t_case 'the finding location carries image_id/ecosystem/package/advisory_id - NOT the version'
+# The location object may carry a trailing "line" key too - the image
 # module has no source file of its own, so report_locations (lib/report.sh)
 # writes a generated locations/image.txt artifact and back-fills loc_line
 # with THAT file's own line number, purely for SARIF's required
@@ -356,9 +355,9 @@ assert_not_contains "$RUN2_FINDINGS" 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-01' \
 assert_not_contains "$RUN2_FINDINGS" 'IMAGE-CFG-RUNS_AS_ROOT-01' \
   "this image's cfg.json now declares config.User=appuser - quiet this run"
 assert_contains "$RUN2_JSON" 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-01' \
-  'checks_run STILL names the package check - it executed and found nothing, which is a different fact from "did not run" (report.md §4.2 honesty)'
+  'checks_run STILL names the package check - it executed and found nothing, which is a different fact from "did not run"'
 
-t_case 'the run-over-run DIFF reads the patched CVE as fixed, never unknown+new (report.md §3.4 - the whole point of the image-id cell)'
+t_case 'the run-over-run DIFF reads the patched CVE as fixed, never unknown+new - the whole point of the image-id cell'
 assert_contains "$RUN2_JSON" '"fixed"' \
   'run.json carries at least one fixed-classified finding this run - FAILS under a naive digest/tag-keyed cell, where the id never changed but nothing here would even be comparable to run 1'
 REPORT2=$(_slurp "$W/run2/report.md")

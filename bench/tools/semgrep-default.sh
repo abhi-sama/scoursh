@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # bench/tools/semgrep-default.sh - Semgrep CE at its DOCUMENTED DEFAULT free
-# ruleset, the (a) half of the scout report's rule R5.  bench/tools/semgrep.sh
+# ruleset, the (a) half of a two-column comparison.  bench/tools/semgrep.sh
 # is the (b) half - Semgrep's MAXIMUM free ruleset (p/security-audit plus
-# p/owasp-top-ten).  Both are published as separate columns per R5 ("hiding
+# p/owasp-top-ten).  Both are published as separate columns ("hiding
 # which was used is how a benchmark gets accused of rigging").
 #
 # This is a distinct tool id rather than an env-var flip on the other adapter,

@@ -1,19 +1,19 @@
 # B8 — honesty + egress metrics
 
-The scout report's §7.2 point 4 asks for scoursh's *structural* wins their own
+This leg gives scoursh's *structural* wins their own
 scored table, separate from the per-category detection tables (B4-B6) where
-the specialists win. This is that table, plus the coverage-honesty metric
-§5.3 defines and the zero-egress proof §7.1 predicts.
+the specialists win: the coverage-honesty metric below, plus the zero-egress proof.
 
-**Not published anywhere in `docs/` yet** — same B9 deliverable as every
-other landed leg, per `bench/README.md`'s deliberate deferral.
+**Published in `docs/COMPARISON.md`'s comparison table** — the "Coverage honesty",
+"Zero-egress, kernel-enforced" and "Installed footprint" rows there each cite this
+leg's own sections.
 
-**B7 (DAST) has not landed** — it needs an operator Docker-memory bump
-(scout report §4.4) and is out of scope here. Nothing below computes a metric
-that would need a DAST number; the footprint table's competitor roster is
-SAST/IaC/SCA/secrets tools only, for the same reason. Where the plan (§8, B8
-row) implies a DAST-inclusive column, there is none — that is a **stated
-not-measured gap**, not folded into any total.
+**B7 (DAST) had not landed when this leg was measured** (it has since landed - see
+`bench/README.md`'s "B7: the DAST leg"). Nothing below computes a metric
+that needed a DAST number; the footprint table's competitor roster is
+SAST/IaC/SCA/secrets tools only, for the same reason. There is no
+DAST-inclusive column — that was a **stated
+not-measured gap** at the time, not folded into any total.
 
 ## 1. Coverage-honesty metric (§5.3)
 
@@ -182,11 +182,11 @@ Full raw numbers and commands: `footprint/measurements.md`. Summary:
 | SCA DB-size before first finding | 86 MB for 3 ecosystems (already measured, `bench/results/sca-lockfiles-26/README.md` §3) | 1.3 GB (Trivy), 2.0 GB (Grype), 0 (OSV-Scanner — trades footprint for egress on every run) |
 | Egress after setup completes | **zero, kernel-provable** (§2 above) | Trivy/Grype: DB refresh egress. OSV-Scanner: egress every run. Semgrep/Checkov/KICS/Gitleaks/TruffleHog: none observed in this benchmark's default-gate runs, but none of them can be wrapped in a deny-all-network sandbox and still complete their normal workflow (registry/update checks, `--verified` mode, etc.) the way scoursh's three offline modules can |
 
-This table is not a ranked "scoursh wins" score — §7.3's "no single overall
+This table is not a ranked "scoursh wins" score — the same "no single overall
 score" rule applies here as much as to the detection tables — it is four
 independent measurements, each with its own unit, presented together because
-they are the structural properties the scout report's §7.2 point 4 asked to
-be given their own table rather than a prose footnote.
+they are structural properties that deserve
+their own table rather than a prose footnote.
 
 ## 4. Reproducing this leg
 

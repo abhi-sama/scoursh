@@ -55,7 +55,7 @@ The first field is a **namespace**, and this file carries three kinds of row:
 |---|---|---|---|
 | an SCA ecosystem (`npm`, `pypi`, `maven`, `Go`, `RubyGems`, `composer`) | one per exact affected package version | `tools/vendor-engines.sh advisories` | nothing today - `modules/sca/` reads `data/advisories.db`, and `tools/vendor-engines.sh` writes both files from one call (tension 25's "the same shape and the same rule") |
 | the literal `banner` | one per exact affected **product** version | an operator, per §5 | `modules/dast/passive/banner_engine.sh` |
-| a per-release Alpine key (`Alpine:v3.18`, `Alpine:v3.19`, ...) | one per exact affected apk package version | `tools/vendor-engines.sh advisories alpine` (data/scoursh-image-scan-design/report.md §2.3/§4.1, IMG-03) | nothing today - `modules/image/` reads `data/advisories.db`, mirroring the SCA row above; both files get it for the identical "same shape, same rule" reason |
+| a per-release Alpine key (`Alpine:v3.18`, `Alpine:v3.19`, ...) | one per exact affected apk package version | `tools/vendor-engines.sh advisories alpine` (IMG-03) | nothing today - `modules/image/` reads `data/advisories.db`, mirroring the SCA row above; both files get it for the identical "same shape, same rule" reason |
 
 All three coexist safely and that is by construction, not by luck.
 `tools/vendor-engines.sh`'s writer for a single fixed namespace

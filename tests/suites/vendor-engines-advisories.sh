@@ -318,7 +318,7 @@ assert_contains "$(cat "$DB")" \
   'and the third'
 assert_contains "$(cat "$DB")" \
   "$(printf 'npm\tleft-pad-fixture\t0\t1.1.0\tfixed\tSCOURSH-FIXTURE-OSV-NPM-1\thigh\t1.1.0')" \
-  'the fixture'"'"'s own ranges[] entry - introduced "0", fixed "1.1.0" - is ALSO written, as a bound_kind=fixed interval row, not skipped: this is the amendment'"'"'s whole point (§7 Slices 1+2 of the feasibility scout report), closing the gap the shipped importer left open even after tension 25'"'"'s original RESOLUTION called for exactly this'
+  'the fixture'"'"'s own ranges[] entry - introduced "0", fixed "1.1.0" - is ALSO written, as a bound_kind=fixed interval row, not skipped: this is the amendment'"'"'s whole point, closing the gap the shipped importer left open even after tension 25'"'"'s original RESOLUTION called for exactly this'
 assert_not_contains "$(cat "$DB")" 'fixture:' \
   'no summary text of any kind is inline in data/advisories.db'
 assert_contains "$(cat "$SDB")" 'fixture: prototype pollution' \
@@ -520,8 +520,7 @@ assert_not_contains "$(cat "$DB")" banner \
   'data/advisories.db (scratch) STILL carries no banner row even after other ecosystems have since written real rows to it - banner never reaches this file at all'
 
 # ---------------------------------------------------------------------------
-# -- section D3: the `alpine` namespace (IMG-03, data/scoursh-image-scan-
-#    design/report.md §2.3/§4.1) - a SEVENTH advisory importer, but the
+# -- section D3: the `alpine` namespace (IMG-03) - a SEVENTH advisory importer, but the
 #    ONE whose own row carries a PREFIX-matched, per-row ecosystem key
 #    rather than a fixed one, and the only one besides the six SCA
 #    ecosystems that writes data/advisories.db at all (banner does not).
@@ -561,7 +560,7 @@ assert_eq 'SCOURSH_ADVISORY_ALPINE_IDS' "$(_veng_advisories_env_var alpine)" \
 
 t_case '_veng_advisories_normalize_name: alpine is a verbatim pass-through, never an sca_* function'
 assert_eq 'openssl' "$(_veng_advisories_normalize_name alpine openssl)" \
-  'apk package names carry no normalisation convention the way npm/PyPI/Composer names do (report.md §2.1)'
+  'apk package names carry no normalisation convention the way npm/PyPI/Composer names do'
 assert_eq 'Mixed-Case' "$(_veng_advisories_normalize_name alpine 'Mixed-Case')" \
   'and nothing is lower-cased or punctuation-collapsed either, unlike banner_normalize_product'
 
@@ -588,7 +587,7 @@ t_case 'end-to-end: alpine - ONE advisory spanning TWO Alpine releases writes TW
 : >"$W/db/advisories.db"
 : >"$W/db/versions.db"
 SCOURSH_ADVISORY_ALPINE_IDS='SCOURSH-FIXTURE-OSV-ALPINE-1' run_alpine
-assert_file_exists "$DB" 'data/advisories.db (scratch) was written - UNLIKE banner, alpine writes here (report.md §2.3: this IS the exact-row shape modules/image/ reads)'
+assert_file_exists "$DB" 'data/advisories.db (scratch) was written - UNLIKE banner, alpine writes here, in the exact-row shape modules/image/ reads'
 DB_AFTER_1=$(cat "$DB")
 assert_contains "$DB_AFTER_1" \
   "$(printf 'Alpine:v3.18\topenssl\t3.1.4-r1\tSCOURSH-FIXTURE-OSV-ALPINE-1\thigh\t3.1.4-r2')" \
@@ -633,8 +632,7 @@ assert_contains "$(cat "$VDB")" 'busybox' 'data/versions.db was replaced the sam
 assert_not_contains "$(cat "$VDB")" 'openssl' 'and also lost the stale v3.18/v3.19 openssl rows'
 
 # ---------------------------------------------------------------------------
-# -- section D4/D5: the `debian` and `ubuntu` namespaces (IMG-09, data/
-#    scoursh-image-scan-design/report.md §2.3/§4.1's Stage-2 row) - Debian's
+# -- section D4/D5: the `debian` and `ubuntu` namespaces (IMG-09) - Debian's
 #    and Ubuntu's siblings to section D3's `alpine` above, sharing the
 #    identical PREFIX-sentinel mechanism (`_veng_advisories_osv_ecosystem`'s
 #    "debian"/"ubuntu" cases, `eco.endswith(':*')` in the python extractor,

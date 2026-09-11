@@ -5,7 +5,7 @@
 #
 # THE RULESET IS DECLARED AND IS NOT THE DEFAULT.  `p/security-audit` plus
 # `p/owasp-top-ten` is Semgrep's maximum free security ruleset, which is the
-# (b) half of the scout report's rule R5 - every tool is run at its documented
+# (b) half of a two-column comparison - every tool is run at its documented
 # default AND at its maximum free ruleset, and both columns are published.
 # Semgrep's numbers move a lot between `p/default` and these two, and hiding
 # which was used is how a benchmark gets accused of rigging.  Which one THIS

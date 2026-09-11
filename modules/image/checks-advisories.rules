@@ -1,12 +1,12 @@
 # modules/image/checks-advisories.rules - the container-image module's own
 # per-owner registry (rules/RULE-FORMAT.md §9's `checks-<name>.rules` row,
 # docs/FOUNDATION.md tension 29) for the advisory-database coverage check
-# IMG-03 adds (data/scoursh-image-scan-design/report.md §4.1/§4.2/§4.3).
+# IMG-03 adds.
 #
 # ONE FILE PER OWNING DRIVER, per every other module's own precedent
 # (modules/dast/passive/'s six checks-<name>.rules files, modules/network/'s
 # five) - this ticket's OWN file rather than an append to a shared one, per
-# report.md §5.1's binding rule and the cloud-wave incident it cites
+# the "one registry per owner" binding rule and the cloud-wave incident it cites
 # (`c9f0e80`): a shared modules/image/checks.rules would be exactly the
 # add/add conflict class every later IMG-0x ticket would then collide on.
 #
@@ -44,4 +44,3 @@ remediation: Populate data/advisories.db for this image's distro/release
   networked box, then re-run. Until then this run says NOTHING about this
   image's installed packages - absence of findings here is absence of
   evidence, never evidence of absence.
-references: data/scoursh-image-scan-design/report.md

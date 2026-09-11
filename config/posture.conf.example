@@ -33,8 +33,7 @@
 # nothing that parses or lints this file enforces that module prefix - E077
 # only requires the named id to exist SOMEWHERE in the repository-wide
 # check-id namespace. `modules/network/reachability.sh`'s own
-# NET-PORT-UNEXPECTED_LISTENER-01 check (data/scoursh-network-scan-design/
-# report.md §9 decision D5) spends that real, enforced flexibility rather
+# NET-PORT-UNEXPECTED_LISTENER-01 check spends that real, enforced flexibility rather
 # than open a second "this control should not be true" config file: it reads
 # THIS file too, for its own narrower purpose (a declared listener that
 # should be closed), and is a DECLARED SKIP - not exit 4 - when this file is

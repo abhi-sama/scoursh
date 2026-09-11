@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # modules/network/reachability.sh - the NET-06 tier-2 probe: THREE-STATE
-# listener verification and the `NET-PORT-*` checks
-# (data/scoursh-network-scan-design/report.md §3.1, §5.1, §5.2, §9 D5).
+# listener verification and the `NET-PORT-*` checks.
 #
 # THIS IS A PHASE SCRIPT: modules/network/engine.sh's `net_run_phase` reaches
 # it with a plain `source` (at tier `safe`, so it does not run below
@@ -28,8 +27,8 @@
 # `net_connect_probe`, ZERO BYTES SENT - the transport primitive opens a
 # socket and immediately closes it (or lets the deadline fire), never
 # writing to the fd.  That is a real connection to a real port the operator
-# did not necessarily expect a scanner to knock on, which report.md's own
-# §5.1 table tags `safe-active` (never `passive`, which report.md reserves
+# did not necessarily expect a scanner to knock on, which this module's own
+# check-type table tags `safe-active` (never `passive`, which is reserved
 # for a check that opens no connection at all, e.g. reading a banner a
 # listener volunteers unprompted - NET-07's job, not this one).
 #
@@ -45,15 +44,15 @@ source "${BASH_SOURCE[0]%/*}/reachability_engine.sh"
 # shellcheck source=lib/nettransport.sh
 source "${BASH_SOURCE[0]%/*}/../../lib/nettransport.sh"
 # For http_authorize_raw_connection - the SAME anti-TOCTOU pinned-resolution,
-# rate-limiter, request-budget and circuit-breaker chokepoint report.md
-# §2.5's own table says a raw TCP probe is gated through, called AGAIN here
+# rate-limiter, request-budget and circuit-breaker chokepoint a raw TCP
+# probe is gated through, called AGAIN here
 # (a second, independent pass, not a reuse of inventory.sh's own earlier
 # authorization) for the identical reason modules/dast/passive/tls.sh
 # re-authorizes immediately before ITS OWN raw connection rather than
 # trusting an artifact written by an earlier phase: listeners.json is
-# already-authorized OPERATOR CONFIG, so re-running the fatal gate here is
-# report.md §5.2 rule 1's first half ("an operator-configured tuple is
-# refused exactly like an out-of-scope DAST target"), and re-resolving the
+# already-authorized OPERATOR CONFIG, so re-running the fatal gate here
+# refuses an operator-configured tuple exactly like an out-of-scope DAST
+# target, and re-resolving the
 # hostname AT PROBE TIME (rather than trusting whatever inventory.sh may
 # have resolved earlier in this run) is what keeps the pinned-resolution
 # anti-TOCTOU guarantee real for a probe that can run an arbitrary amount of
@@ -117,7 +116,7 @@ _reach_run() {
   case $_NET_LISTENERS_STATE in
     absent)
       _reach_no_listeners_reduction "$target" \
-        "reports/<run>/inventory/listeners.json was not written this run (modules/network/inventory.sh's report.md §5.2 rule 3: a target with only base-url, or every extra-host dropped, writes no artifact)"
+        "reports/<run>/inventory/listeners.json was not written this run (modules/network/inventory.sh writes no artifact for a target with only base-url, or every extra-host dropped)"
       return 0
       ;;
     empty)
@@ -149,7 +148,7 @@ _reach_run() {
     seen_ports[$port]=1
     url="$scheme://$host:$port/"
 
-    # report.md §5.2 rule 1, first half: an operator-configured tuple (this
+    # An operator-configured tuple (this
     # IS one - listeners.json is a snapshot of config/scope.conf's own
     # base-url/extra-host entries) is refused FATALLY on every reason except
     # a transient DNS failure, which degrades to one counted reduction
@@ -180,7 +179,7 @@ _reach_run() {
         reach_emit_not_answering "$target" "$role" "$scheme" "$host" "$port"
         ;;
       filtered | *)
-        # report.md §5.2 rule 4: filtered is NEVER folded into not-open, and
+        # filtered is NEVER folded into not-open, and
         # is never a finding - it is the absence of a conclusive answer, not
         # a fact about the listener.  `*` reaches this arm too so an
         # unrecognised SCOURSH_NET_PROBE stub result degrades to the SAME
@@ -195,14 +194,14 @@ _reach_run() {
     run_record coverage_reduction "module=network phase=reachability.sh reason=net_listener_unresolvable target=$target count=$unresolvable_ct - that many declared listener(s) could not be re-authorised/re-resolved at probe time (they were authorised when modules/network/inventory.sh ran earlier this same run), so no TCP connect was attempted for them. Reason(s): $unresolvable_reasons."
   fi
   if (( filtered_ct > 0 )); then
-    run_record coverage_reduction "module=network phase=reachability.sh reason=filtered target=$target count=$filtered_ct - that many declared listener(s) neither accepted nor refused a TCP connection before this probe's deadline. 'Did not answer in time' and 'refused' are different facts (report.md §5.2 rule 4): these are reported as filtered, never folded into not-open, and produce no finding either way."
+    run_record coverage_reduction "module=network phase=reachability.sh reason=filtered target=$target count=$filtered_ct - that many declared listener(s) neither accepted nor refused a TCP connection before this probe's deadline. 'Did not answer in time' and 'refused' are different facts: these are reported as filtered, never folded into not-open, and produce no finding either way."
   fi
   if (( tested > 0 )); then
     run_record checks_run NET-PORT-DECLARED_NOT_ANSWERING-01
   fi
 
   if [[ $_REACH_POSTURE_STATE == absent ]]; then
-    run_record coverage_reduction "module=network phase=reachability.sh reason=net_check_not_applicable check=NET-PORT-UNEXPECTED_LISTENER-01 target=$target path=$_REACH_POSTURE_PATH - config/posture.conf does not exist, so no operator-declared expect-closed baseline was compared against this target's $open_ct open listener(s). This is a declared skip (report.md §9 D5), never an error, and does not affect the exit code."
+    run_record coverage_reduction "module=network phase=reachability.sh reason=net_check_not_applicable check=NET-PORT-UNEXPECTED_LISTENER-01 target=$target path=$_REACH_POSTURE_PATH - config/posture.conf does not exist, so no operator-declared expect-closed baseline was compared against this target's $open_ct open listener(s). This is a declared skip, never an error, and does not affect the exit code."
   else
     if (( tested > 0 )); then
       run_record checks_run NET-PORT-UNEXPECTED_LISTENER-01

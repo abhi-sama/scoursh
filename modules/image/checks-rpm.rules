@@ -1,10 +1,9 @@
 # modules/image/checks-rpm.rules - the container-image module's rpm-specific
 # script-check registry (rules/RULE-FORMAT.md §9's `checks-<name>.rules` row,
-# docs/FOUNDATION.md tension 29; data/scoursh-image-scan-design/report.md
-# §4.1's check-set table and §5.3's IMG-12 row: "rpm - gated on the
+# docs/FOUNDATION.md tension 29; "rpm - gated on the
 # v1-distro-scope decision; requires-cmd: sqlite3").
 #
-# ONE FILE PER OWNING DRIVER, per report.md §5.1's binding rule (the
+# ONE FILE PER OWNING DRIVER, per the "one registry per owner" binding rule (the
 # cloud-wave `checks.rules` corruption, `c9f0e80`, is the incident that rule
 # exists to prevent) and `modules/image/checks-apk.rules`'/
 # `modules/image/checks-dpkg.rules`' own identical precedent: this ticket's
@@ -37,8 +36,8 @@
 # comparator, and `modules/image/run.sh` dispatches to it for every
 # `rhel`/`centos`/`rocky`/`almalinux`/`fedora` os-release `ID`.
 #
-# `requires-cmd: sqlite3` - the modern rpm database backend (Fedora 33+,
-# report.md §2.1) is a sqlite file, and this project ships no sqlite3
+# `requires-cmd: sqlite3` - the modern rpm database backend (Fedora 33+)
+# is a sqlite file, and this project ships no sqlite3
 # implementation of its own; an rpm image scanned on a host without sqlite3
 # on PATH must become a DECLARED coverage reduction
 # (`rpm_db_binary_format`), never a silent clean pass.  This is the same
@@ -64,7 +63,7 @@
 # `coverage-scope: image-id` - the only legal value for the `IMAGE` module
 # (rules/RULE-FORMAT.md §9.5.1's frozen table); the cell is the
 # operator-declared stable id from `config/images.conf`, never the image
-# digest or tag (report.md §3.4).
+# digest or tag - a rebuild or retag must not reset coverage.
 
 id: IMAGE-PKG-VULNERABLE_OS_PACKAGE-03
 title: Installed rpm package matches a known advisory for this image's RHEL/Fedora release
@@ -83,6 +82,5 @@ remediation: Rebuild the image against an updated base layer (or upgrade
   A base-image bump alone can carry this fix silently, so treat a `FROM`
   tag pin as something to review whenever this finding's advisory has a
   fixed-in version at or below the base image's own release.
-references: data/scoursh-image-scan-design/report.md
 references: CWE-1104
 references: https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/

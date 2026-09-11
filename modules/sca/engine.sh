@@ -1007,8 +1007,7 @@ sca_lookup_summary() {
 }
 
 # sca_lookup_range PACKAGE VERSION [DB] - the npm-only semver-interval
-# lookup docs/FOUNDATION.md tension 25's amendment adds (§7 Slices 1+2 of the
-# feasibility scout report). NPM ONLY: every other ecosystem keeps
+# lookup docs/FOUNDATION.md tension 25's amendment adds. NPM ONLY: every other ecosystem keeps
 # sca_lookup_exact/db_lookup_exact unchanged, per the amendment's own
 # register entry, and this function is never called for them.
 #
@@ -1557,8 +1556,8 @@ sca_scan_tree() {
     while IFS=$'\x1f' read -r name ver direct; do
       [[ -n $name && -n $ver ]] || continue
       name=$(sca_npm_normalize_name "$name")
-      # npm ONLY: docs/FOUNDATION.md tension 25's amendment (feasibility
-      # scout report §7, Slices 1+2) - sca_lookup_range, evaluating semver
+      # npm ONLY: docs/FOUNDATION.md tension 25's amendment -
+      # sca_lookup_range, evaluating semver
       # intervals via modules/sca/semver.sh, replaces sca_lookup_exact for
       # this ecosystem alone; the other five ecosystems below are unchanged.
       #

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # tests/suites/network-reachability.sh - modules/network/reachability.sh: the
 # THREE-STATE listener verification and the `NET-PORT-*` checks (NET-06,
-# data/scoursh-network-scan-design/report.md §3.1, §5.1, §5.2, §9 decision
-# D5). NET-05's own inventory.sh artifact (reports/<run>/inventory/
+# decision D5). NET-05's own inventory.sh artifact (reports/<run>/inventory/
 # listeners.json) is this file's one live input; tests/suites/
 # network-inventory.sh pins that artifact's own shape and honesty contract
 # separately, so this suite treats it as a trusted producer and focuses on
@@ -14,17 +13,17 @@
 #
 #   1. open/not-open/filtered are each classified correctly off the SAME
 #      declared listener set, purely by what SCOURSH_NET_PROBE returns.
-#   2. `filtered` is NEVER a finding and NEVER folded into `not-open`
-#      (report.md §5.2 rule 4) - it is its own counted coverage_reduction.
+#   2. `filtered` is NEVER a finding and NEVER folded into `not-open` -
+#      it is its own counted coverage_reduction.
 #   3. NET-PORT-UNEXPECTED_LISTENER-01 FIRES on an `open` listener a
 #      config/posture.conf expect-closed expectation names, and stays QUIET
 #      on an `open` listener no expectation names - both readings pinned in
 #      the SAME run, so neither can be satisfied by breaking the other.
 #   4. An ABSENT config/posture.conf makes the expect-closed half of this
 #      check a DECLARED SKIP (a counted coverage_reduction), never exit 4 and
-#      never silent - report.md §9 D5's own resolution.
-#   5. Every skip path returns 0 with a recorded reason - report.md §5.2 rule
-#      2's own named list: filtered, net_probe_cmd_absent, port_out_of_scope,
+#      never silent - decision D5's own resolution.
+#   5. Every skip path returns 0 with a recorded reason, drawn from one
+#      named list: filtered, net_probe_cmd_absent, port_out_of_scope,
 #      no_declared_listeners, net_check_not_applicable.
 #   6. A finding this phase emits carries the `net` fingerprint profile's own
 #      location fields (target/host/port/transport) and round-trips through
@@ -104,7 +103,7 @@ chmod 0755 "$NET_PROBE_STUB"
 # `_net_scan RUNDIR INSTALL_ROOT [ARGS...]` - one real `scan.sh network`
 # subprocess. reachability.sh's own phase tier is `safe`, so every call here
 # passes --intensity safe --i-own-target, matching scan.sh's own
-# _scan_check_affirmation requirement (report.md §2.5's own table row).
+# _scan_check_affirmation requirement.
 _net_scan() {
   local rundir=$1 root=$2 target=''
   shift 2
@@ -131,7 +130,7 @@ _slurp() {
 }
 
 # =============================================================================
-printf '\n-- open/not-open/filtered are classified correctly, and each is reported as report.md §3.1 says --\n'
+printf '\n-- open/not-open/filtered are classified correctly, and each is reported accordingly --\n'
 # =============================================================================
 
 FIX_MULTI=$W/root-multi
@@ -155,7 +154,7 @@ t_case 'net_connect_probe was actually invoked once per declared listener, never
 PROBE_LOG=$(_slurp "$W/net-probe.log")
 assert_eq 4 "$(grep -c . <<<"$PROBE_LOG")" \
   'exactly four probe invocations - one per declared listener (base-url plus three extra-host entries) - FAILS if a listener were probed twice or skipped'
-assert_contains "$PROBE_LOG" '203.0.113.40 443' 'the base-url listener was probed at its resolved address and port, not the hostname - FAILS if net_connect_probe were called with the raw hostname rather than the pinned _HTTP_RAW_ADDR (the anti-TOCTOU guarantee report.md §2.5 names)'
+assert_contains "$PROBE_LOG" '203.0.113.40 443' 'the base-url listener was probed at its resolved address and port, not the hostname - FAILS if net_connect_probe were called with the raw hostname rather than the pinned _HTTP_RAW_ADDR (the anti-TOCTOU guarantee this pin exists to enforce)'
 
 RUN_MULTI_JSONL=$(_slurp "$W/run-multi/findings.jsonl")
 t_case 'the not-open listener produced the DECLARED_NOT_ANSWERING finding'
@@ -166,7 +165,7 @@ assert_contains "$RUN_MULTI_JSONL" '"location":{"target":"net-reach","host":"rea
 
 t_case 'the filtered listener produced NO finding of either kind, and is never rendered as not-open'
 assert_not_contains "$RUN_MULTI_JSONL" '"port":"9999"' \
-  'no finding at all names port 9999 (filtered) - FAILS under report.md §5.2 rule 4 collapsed into not-open, which would put a DECLARED_NOT_ANSWERING finding at port 9999'
+  'no finding at all names port 9999 (filtered) - FAILS under a reading that collapses filtered into not-open, which would put a DECLARED_NOT_ANSWERING finding at port 9999'
 CR_MULTI=$(_slurp "$W/run-multi/run.json")
 assert_contains "$CR_MULTI" 'reason=filtered' \
   'run.json instead records the filtered listener as ITS OWN counted coverage_reduction'
@@ -181,7 +180,7 @@ t_case 'checks_run records DECLARED_NOT_ANSWERING once the phase actually produc
 assert_contains "$CR_MULTI" 'NET-PORT-DECLARED_NOT_ANSWERING-01' 'the check id is in checks_run'
 
 # =============================================================================
-printf '\n-- report.md §9 D5: an expect-closed posture.conf expectation fires on the SAME open listener, and stays quiet with none --\n'
+printf '\n-- decision D5: an expect-closed posture.conf expectation fires on the SAME open listener, and stays quiet with none --\n'
 # =============================================================================
 
 cat >"$FIX_MULTI/config/posture.conf" <<'EOF'
@@ -218,7 +217,7 @@ assert_not_contains "$POSTURE_RUNJSON" 'reason=net_check_not_applicable' \
   'no net_check_not_applicable skip is recorded, because config/posture.conf DOES exist and was read this run'
 
 # =============================================================================
-printf '\n-- report.md §9 D5: an ABSENT config/posture.conf is a declared skip, never exit 4, never silent --\n'
+printf '\n-- decision D5: an ABSENT config/posture.conf is a declared skip, never exit 4, never silent --\n'
 # =============================================================================
 
 FIX_NOPOSTURE=$W/root-noposture
@@ -234,10 +233,10 @@ rm -f "$FIX_NOPOSTURE/config/posture.conf"
 t_case 'no config/posture.conf: the run exits 0, not 4, and the expect-closed half is a counted, named skip'
 _net_scan "$W/run-nopost" "$FIX_NOPOSTURE" --target net-nopost
 assert_eq 0 "$_RC" \
-  'exits 0 - FAILS under "an absent operator config the tool looked for is a required-input failure (exit 4)", which report.md §9 D5 explicitly refuses for this expectation file'
+  'exits 0 - FAILS under "an absent operator config the tool looked for is a required-input failure (exit 4)", which decision D5 explicitly refuses for this expectation file'
 NOPOST_JSON=$(_slurp "$W/run-nopost/run.json")
 assert_contains "$NOPOST_JSON" 'reason=net_check_not_applicable check=NET-PORT-UNEXPECTED_LISTENER-01' \
-  'the skip is recorded under the exact reason report.md §5.2 rule 2 names for this case'
+  'the skip is recorded under the exact declared reason for this case'
 assert_not_contains "$NOPOST_JSON" '"check_id":"NET-PORT-UNEXPECTED_LISTENER-01"' \
   'and no UNEXPECTED_LISTENER finding was fabricated in the absence of any baseline to compare against'
 NOPOST_JSONL=$(_slurp "$W/run-nopost/findings.jsonl")
@@ -245,7 +244,7 @@ assert_not_contains "$NOPOST_JSONL" 'NET-PORT-UNEXPECTED_LISTENER-01' \
   'confirmed again against the finding shard itself, not only run.json prose'
 
 # =============================================================================
-printf '\n-- report.md §5.2 rule 2: a posture.conf port not in the declared listener set is out_of_scope, never silently dropped --\n'
+printf '\n-- a posture.conf port not in the declared listener set is out_of_scope, never silently dropped --\n'
 # =============================================================================
 
 FIX_OOS=$W/root-oos
@@ -267,7 +266,7 @@ EOF
 t_case 'a posture.conf expectation naming an undeclared port records port_out_of_scope and never probes it'
 rm -f "$W/net-probe.log"
 _net_scan "$W/run-oos" "$FIX_OOS" --target net-oos
-assert_eq 0 "$_RC" 'exits 0 - an out-of-scope EXPECTATION is a coverage fact, never a scope-gate refusal (report.md §5.2 rule 1 second half: only an OPERATOR-configured scope.conf tuple is fatal)'
+assert_eq 0 "$_RC" 'exits 0 - an out-of-scope EXPECTATION is a coverage fact, never a scope-gate refusal (only an OPERATOR-configured scope.conf tuple is fatal)'
 OOS_JSON=$(_slurp "$W/run-oos/run.json")
 assert_contains "$OOS_JSON" 'reason=port_out_of_scope check=NET-PORT-UNEXPECTED_LISTENER-01 target=net-oos count=1' \
   'the reduction names the check, the target and the real count - FAILS if the expectation were silently ignored with no record at all'
@@ -277,7 +276,7 @@ assert_not_contains "$OOS_PROBE_LOG" ' 6000 ' \
   'port 6000 was never probed - FAILS if an expectation alone caused a connection attempt to a port config/scope.conf never authorised'
 
 # =============================================================================
-printf '\n-- report.md §5.2 rule 2: no_declared_listeners is a named, counted skip, not a silent clean run --\n'
+printf '\n-- no_declared_listeners is a named, counted skip, not a silent clean run --\n'
 # =============================================================================
 
 FIX_SOLO=$W/root-solo
@@ -293,12 +292,12 @@ _net_scan "$W/run-solo" "$FIX_SOLO" --target net-solo
 assert_eq 0 "$_RC" 'exits 0'
 SOLO_JSON=$(_slurp "$W/run-solo/run.json")
 assert_contains "$SOLO_JSON" 'reason=no_declared_listeners' \
-  'the named reason from report.md §5.2 rule 2s own list appears - FAILS if this degraded to a generic or missing reduction'
+  'the named, declared reason appears - FAILS if this degraded to a generic or missing reduction'
 SOLO_JSONL=$(_slurp "$W/run-solo/findings.jsonl")
 assert_not_contains "$SOLO_JSONL" 'NET-PORT' 'no NET-PORT finding of either kind was fabricated with nothing to probe'
 
 # =============================================================================
-printf '\n-- report.md §5.2 rule 2: net_probe_cmd_absent is a named, counted, CHECK-LEVEL skip --\n'
+printf '\n-- net_probe_cmd_absent is a named, counted, CHECK-LEVEL skip --\n'
 # =============================================================================
 
 t_case 'with SCOURSH_NET_TCP_CAPABLE=0, both NET-PORT checks are recorded as uncovered by name, and nothing is probed'
@@ -314,7 +313,7 @@ NET_PROBE_LOG=$W/net-probe.log \
 assert_eq 0 "$_CAP_RC" 'exits 0 - a bash without --enable-net-redirections is a coverage fact, never an error'
 NOCAP_JSON=$(_slurp "$W/run-nocap/run.json")
 assert_contains "$NOCAP_JSON" 'reason=net_probe_cmd_absent' \
-  'the named reason from report.md §5.2 rule 2s own list appears'
+  'the named, declared reason appears'
 assert_contains "$NOCAP_JSON" 'NET-PORT-DECLARED_NOT_ANSWERING-01' \
   'the reduction names the not-answering check id by name, not only a generic module note'
 assert_contains "$NOCAP_JSON" 'NET-PORT-UNEXPECTED_LISTENER-01' \

@@ -12,7 +12,7 @@
 #      own idea of member ordering, and bsdtar and GNU tar disagree about
 #      several of them.
 #   2. **A hostile archive cannot be built with `tar -cf`, by design.**  The
-#      three escapes report.md §1.5 requires this module to refuse - a `..`
+#      three escapes this module is required to refuse - a `..`
 #      component, an absolute name, and a symlink whose target leaves the
 #      extraction root - are exactly what a well-behaved `tar -cf` refuses to
 #      WRITE.  Measured here (bsdtar 3.5.3): `tar -cf` will not put `../x` in

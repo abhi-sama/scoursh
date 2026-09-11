@@ -36,9 +36,9 @@
 # unit is the case").
 #
 # THE COMMON SEVERITY SCALE is `critical high medium low info`, and every
-# adapter maps onto exactly it.  The scale exists because the scout report's
-# rule R5 requires publishing both an ALL-findings and a HIGH+CRITICAL-only
-# column: a tool that reports informational findings must not be punished for
+# adapter maps onto exactly it.  The scale exists because publishing both an
+# ALL-findings and a HIGH+CRITICAL-only
+# column requires it: a tool that reports informational findings must not be punished for
 # it in a recall table, and that comparison is impossible while each tool is
 # scored on its own private ladder.
 #

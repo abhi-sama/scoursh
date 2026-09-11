@@ -2,15 +2,14 @@
 # per-owner registry (rules/RULE-FORMAT.md §9's `checks-<name>.rules` row,
 # docs/FOUNDATION.md tension 29) for the module's three CONFIG-BLOB checks:
 # `IMAGE-CFG-RUNS_AS_ROOT-01` (IMG-06); `IMAGE-CFG-EXPOSED_PORTS-01` and
-# `IMAGE-CFG-MUTABLE_BASE_REF-01` (IMG-10) - all three from
-# data/scoursh-image-scan-design/report.md §4.1's IMAGE-CFG-* row, and
-# §5.3's IMG-10 row ("root user, exposed ports, mutable base tag").
+# `IMAGE-CFG-MUTABLE_BASE_REF-01` (IMG-10) - root user, exposed ports, and a
+# mutable base tag.
 #
 # `script: config.sh` for all three - modules/image/config.sh is the owning
 # driver (`image_check_root_user`/`image_check_exposed_ports`/
 # `image_check_mutable_base_ref`), a NEW file rather than an addition to
 # distro/apk.sh or engine.sh: every one of these checks is DISTRO-AGNOSTIC
-# (report.md §4.4 - it reads the image's own CONFIG blob, not a Dockerfile
+# (it reads the image's own CONFIG blob, not a Dockerfile
 # and not any apk/dpkg-specific data), so they belong to neither this
 # module's package-manager-specific drivers nor a future rpm one.
 #
@@ -22,8 +21,8 @@
 # `coverage-scope: image-id` - the only legal value for the `IMAGE` module
 # (rules/RULE-FORMAT.md §9.5.1's frozen table).
 #
-# `IMAGE-CFG-RUNS_AS_ROOT-01`'s `severity: medium` - report.md §4.1's own
-# table value, one step below `IAC-DOCKER-ROOT_USER-01`'s `high`: this check
+# `IMAGE-CFG-RUNS_AS_ROOT-01`'s `severity: medium` is deliberately
+# one step below `IAC-DOCKER-ROOT_USER-01`'s `high`: this check
 # confirms the EFFECTIVE runtime user from the built artifact, but (unlike
 # source review) it cannot see whether a later `docker run --user` override
 # at deploy time already corrects it, so it is reported at a slightly more
@@ -32,8 +31,8 @@
 # `IMAGE-CFG-EXPOSED_PORTS-01`'s `severity: info` / `cwe: none` /
 # `owasp: none` - the identical convention checks-coverage.rules already
 # uses for a purely descriptive, non-defect finding: this check is a
-# built-artifact attack-surface INVENTORY (report.md §5.3's own "a
-# built-artifact counterpart to reviewing EXPOSE lines"), not an assertion
+# built-artifact attack-surface INVENTORY - a built-artifact counterpart to
+# reviewing EXPOSE lines - not an assertion
 # that any port is itself a vulnerability - an EXPOSE/ExposedPorts entry
 # documents intent and does not by itself open anything (see the check's
 # own remediation text in modules/image/config.sh).
@@ -64,7 +63,6 @@ remediation: Add (or fix) a non-root USER in the Dockerfile that built this
   IAC-DOCKER-ROOT_USER-01, which reads only one Dockerfile's own USER
   instruction and cannot see the effective user across a base image or a
   multi-stage build.
-references: data/scoursh-image-scan-design/report.md
 references: CWE-250
 references: https://owasp.org/Top10/A04_2021-Insecure_Design/
 
@@ -86,7 +84,6 @@ remediation: Review whether every port listed in this finding's evidence
   (-p/--publish, a Kubernetes Service, ...) - so treat this as an
   attack-surface inventory to cross-check against that runtime
   configuration, not as a vulnerability on its own.
-references: data/scoursh-image-scan-design/report.md
 
 id: IMAGE-CFG-MUTABLE_BASE_REF-01
 title: Image's recorded base image reference is a mutable tag, not a content digest
@@ -110,5 +107,4 @@ remediation: Rebuild from the base image's own @sha256:<digest> reference
   (org.opencontainers.image.base.name, an opt-in buildkit provenance
   annotation) - most built images do not carry this label, which this
   module records as a declared coverage limitation rather than a guess.
-references: data/scoursh-image-scan-design/report.md
 references: CWE-829

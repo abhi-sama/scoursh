@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/suites/network.sh - modules/network/: the `scan_dispatch network`
-# entry point, the target/intensity orchestration, and the report.md §5.2
-# honesty contract (NET-04, data/scoursh-network-scan-design/report.md).
+# entry point, the target/intensity orchestration, and the module's own
+# honesty contract (NET-04).
 #
 # The four things this suite exists to pin, because each has a plausible
 # wrong reading that would ship silently - mirroring tests/suites/dast.sh's
@@ -14,13 +14,13 @@
 #   2. A run with NO phase script sends NOTHING and says so, on run.json and
 #      on the report - the surfaces a consumer actually reads, never only an
 #      internal record.  A target with only base-url (every target in this
-#      ticket's world) records a coverage_gap and exits 0 (report.md §5.2
-#      rule 3).
+#      ticket's world) records a coverage_gap and exits 0 - the module's own
+#      rule for a target that declares no listener beyond base-url.
 #   3. Intensity is a real gate, not a recorded string - the identical
 #      alphabetical-order trap tests/suites/dast.sh's own case 3 pins
 #      (`active` < `passive` < `safe` lexically, the exact reverse of the
 #      tier order).
-#   4. report.md §5.2 rule 1's TWO-TIER authorization split is real: an
+#   4. The module's own TWO-TIER authorization split is real: an
 #      operator-configured tuple (config/scope.conf) is refused FATALLY
 #      (http_authorize_raw_connection, exit 3) and a tuple lifted out of an
 #      ARTIFACT this scanner did not author degrades NON-FATALLY to one
@@ -161,7 +161,7 @@ _MOD_GATE_RC=0
   source "$ROOT/modules/network/run.sh"
 ) >/dev/null 2>&1 || _MOD_GATE_RC=$?
 assert_eq 3 "$_MOD_GATE_RC" \
-  'sourcing modules/network/run.sh directly with an unauthorised target still dies exit 3 - FAILS under "scan.sh already called config_scope_require, so the module may trust its caller" (report.md §5.2 rule 1)'
+  'sourcing modules/network/run.sh directly with an unauthorised target still dies exit 3 - FAILS under "scan.sh already called config_scope_require, so the module may trust its caller", since the module re-asserts the gate itself'
 
 # =============================================================================
 printf '\n-- this ticket ships no phase script and issues no traffic --\n'
@@ -225,7 +225,7 @@ assert_eq 1 "$(grep -c 'reason=no_check_covered_by_any_phase' <<<"$CR_FILE")" \
   'exactly one no_check_covered_by_any_phase reduction - FAILS if the phase loop or the per-target loop double-counts'
 GAP_FILE=$(_slurp "$W/run-ok/meta/coverage_gap")
 assert_eq 4 "$(grep -c "target 'net-fixture'" <<<"$GAP_FILE")" \
-  'exactly FOUR coverage_gap lines name this target, now that both NET-07 and NET-08 have landed - inventory.sh'"'"'s own report.md §5.2 rule 3 gap (net-fixture declares only base-url), banner.sh'"'"'s (NET-07) own no_declared_listeners gap and tlsport.sh'"'"'s (NET-08) own "no non-base-url listener" gap (both ran, at the same passive tier, and each found nothing to read), plus modules/network/run.sh'"'"'s own generic "covered nothing" gap - FAILS if any one producer'"'"'s gap silently swallows another'"'"'s, which would leave a reader unable to tell "this module has no check registry yet" apart from "this target declared no additional listener" apart from "this specific check had nothing open to read"'
+  'exactly FOUR coverage_gap lines name this target, now that both NET-07 and NET-08 have landed - inventory.sh'"'"'s own no-additional-listener gap (net-fixture declares only base-url), banner.sh'"'"'s (NET-07) own no_declared_listeners gap and tlsport.sh'"'"'s (NET-08) own "no non-base-url listener" gap (both ran, at the same passive tier, and each found nothing to read), plus modules/network/run.sh'"'"'s own generic "covered nothing" gap - FAILS if any one producer'"'"'s gap silently swallows another'"'"'s, which would leave a reader unable to tell "this module has no check registry yet" apart from "this target declared no additional listener" apart from "this specific check had nothing open to read"'
 
 # =============================================================================
 printf '\n-- intensity is a real gate, not a recorded string --\n'
@@ -266,7 +266,7 @@ assert_eq '' "$_NET_INTENSITY_RANK" \
 assert_ne '' "$FIRST_RANK" 'sanity: the earlier real lookup did set a rank'
 
 # =============================================================================
-printf '\n-- report.md §5.2 rule 1: the two-tier tuple authorization split --\n'
+printf '\n-- the two-tier tuple authorization split --\n'
 # =============================================================================
 # `run_init` gives this section its own scratch run directory so run_record
 # writes land somewhere real - lib/core.sh's own primitive, already sourced
@@ -291,7 +291,7 @@ _TUPLE_RC=0
 ( http_authorize_raw_connection 'https://tuple.fixture.invalid:9999' tuple-fixture >/dev/null 2>&1 ) \
   || _TUPLE_RC=$?
 assert_eq 3 "$_TUPLE_RC" \
-  'a port config/scope.conf never declared dies exit 3 through http_authorize_raw_connection - the exact chokepoint report.md §2.5'"'"'s table says a future NET-05+ phase calls directly for an operator-configured tuple. FAILS if this were instead a soft skip: an operator-authored scope.conf mistake would then read as "this port is closed" rather than "this scanner refused to even ask"'
+  'a port config/scope.conf never declared dies exit 3 through http_authorize_raw_connection - the exact chokepoint a future NET-05+ phase calls directly for an operator-configured tuple. FAILS if this were instead a soft skip: an operator-authored scope.conf mistake would then read as "this port is closed" rather than "this scanner refused to even ask"'
 
 t_case 'the SAME operator-declared tuple, on an authorised port, is not refused'
 _TUPLE_OK_RC=0
@@ -306,7 +306,7 @@ SCOURSH_NET_TARGET=tuple-fixture
 _ARTIFACT_RC=0
 net_endpoint_keep 'https://tuple.fixture.invalid:9999' tuple-fixture || _ARTIFACT_RC=$?
 assert_eq 1 "$_ARTIFACT_RC" \
-  'net_endpoint_keep returns 1 (drop, non-fatal) for the identical out-of-scope port the fatal path above dies on - FAILS if this were fatal too, collapsing report.md §5.2 rule 1'"'"'s two-tier split into one'
+  'net_endpoint_keep returns 1 (drop, non-fatal) for the identical out-of-scope port the fatal path above dies on - FAILS if this were fatal too, collapsing the two-tier split into one'
 assert_eq 1 "$_NET_SCOPE_SKIPPED" 'and the skip is counted'
 assert_contains "$_NET_SCOPE_REASONS" 'no entry in config/scope.conf' \
   'the captured reason names the real gate refusal, not a generic placeholder'

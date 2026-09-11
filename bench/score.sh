@@ -13,7 +13,7 @@
 # limitation:
 #
 #   * It never emits a single number spanning two corpora or two category
-#     families.  The scout report's §7.3 forbids an "overall score" because
+#     families.  An "overall score" is deliberately forbidden because
 #     the scope differences make it meaningless and because it is the first
 #     thing an unfriendly reader attacks.  The per-corpus aggregate it DOES
 #     emit is labelled with exactly which categories went into it and how many
@@ -213,8 +213,8 @@ render_md() {
       findings_load "$results/$tool/normalised.jsonl" "$minsev" || return $?
       for cat in "${BENCH_TRUTH_CATS[@]}"; do
         if [[ $claims != *" $cat "* ]]; then
-          # THE NO-COVERAGE CELL.  Rendered, never omitted and never zeroed -
-          # the scout report's rule R4.  Omitting the row would leave a reader
+          # THE NO-COVERAGE CELL.  Rendered, never omitted and never zeroed.
+          # Omitting the row would leave a reader
           # to assume the tool competed and the renderer lost the number;
           # zeroing it would accuse the tool of failing at something it never
           # claimed.

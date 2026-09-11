@@ -10,7 +10,7 @@
 #   <tool>_scope                the scoring categories this tool CLAIMS
 #
 # `<tool>_scope` is not decoration and is not derived from the results: it is
-# the scout report's rule R4, the explicit "did not compete" cell.  A category
+# the explicit "did not compete" cell.  A category
 # a tool does not claim gets a labelled no-coverage cell in the scorecard,
 # never a silent zero folded into an average - and a zero and a no-coverage
 # cell are different claims about the world, one of which is a failure and one
@@ -22,7 +22,7 @@
 # scoursh's semgrep/gitleaks/trivy adapters make it WRAP the tools it is being
 # compared against: a scoursh-with-engines column against Semgrep is Semgrep
 # versus Semgrep plus scoursh's startup cost, which is an integration
-# measurement wearing a detection table's clothes (the scout report, §6.1).
+# measurement wearing a detection table's clothes.
 #
 # shellcheck shell=bash
 
@@ -42,7 +42,7 @@ scoursh_version() {
   local sha=''
   sha=$(git -C "$BENCH_SCOURSH_ROOT" rev-parse --short=12 HEAD 2>/dev/null) || sha=''
   # The version AND the commit, because `0.1.0-dev` is not a version anyone
-  # can re-run against - and the scout report's "no version-less numbers" rule
+  # can re-run against - "no version-less numbers"
   # is not satisfied by a version string that names 140 different trees.
   printf '%s' "${v:-unknown}${sha:++$sha}"
 }

@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# tests/suites/image-apk-version.sh - IMG-05 (data/scoursh-image-scan-design/
-# report.md §2.4 "THE BLOCKER", §2.5 "the comparator is tractable", §5.3's
-# IMG-05 row): the apk version comparator, held to the bar
+# tests/suites/image-apk-version.sh - IMG-05: the apk version comparator, held to the bar
 # `modules/sca/semver.sh` set for itself - differential-tested against a
 # reference, 0 mismatches or it does not ship.
 #
@@ -10,8 +8,8 @@
 #
 #   A. Against a COMMITTED, provenance-annotated corpus of known orderings
 #      (tests/fixtures/image/apk-version-corpus.tsv) - 101 hand-checked rows
-#      covering every grammar feature and every case report.md §2.4/§2.5
-#      names.  This half is what can catch a misreading of the SPEC, because
+#      covering every grammar feature apk-tools' own version format defines.
+#      This half is what can catch a misreading of the SPEC, because
 #      each row's expected ordering was decided from apk-tools' documented
 #      grammar rather than from this implementation.  Its limit is its size.
 #
@@ -33,7 +31,7 @@
 # corpus file's, in the same shape as the GNU-tar cross-check
 # `tools/daily-suite.sh` defers - a stated gap with a named discharge.
 #
-# Section B restates every specific case report.md §2.4/§2.5 names as its own
+# Section B restates every specific measured mismatch as its own
 # regression, each naming the reading it FAILS under, per AGENTS.md's rule
 # that a test agreeing with both the correct and the rejected reading pins
 # nothing.  Section C pins the malformed-input contract AND the field-order
@@ -95,7 +93,7 @@ else
   _t_no 'at least 100 corpus rows' "only $corpus_rows"
 fi
 
-t_case 'the corpus covers every grammar feature and every case report.md §2.4/§2.5 names'
+t_case 'the corpus covers every grammar feature and every measured mismatch case'
 # Asserted on the corpus FILE rather than on the comparator, because the
 # failure this catches is a later ticket quietly deleting the row that
 # disqualified semver.sh - which no comparator assertion would notice.
@@ -167,11 +165,11 @@ done < <(awk -F'\t' '!/^#/ && NF == 4 { print $1; print $3 }' "$CORPUS" | LC_ALL
 assert_eq 0 "$refl_bad" "all $refl_n distinct corpus versions compare equal to themselves"
 
 # ---------------------------------------------------------------------------
-printf -- '\n-- B. the specific cases report.md §2.4/§2.5 name, each naming the reading it fails under --\n'
+printf -- '\n-- B. the specific measured mismatch cases, each naming the reading it fails under --\n'
 # ---------------------------------------------------------------------------
-t_case 'the pkgrel compares NUMERICALLY: 1.2.3-r4 < 1.2.3-r10 (report.md §2.4)'
+t_case 'the pkgrel compares NUMERICALLY: 1.2.3-r4 < 1.2.3-r10'
 assert_eq -1 "$(cmp_p 1.2.3-r4 1.2.3-r10)" \
-  'FAILS under modules/sca/semver.sh, which splits on the first "-" and compares the prerelease strings "r4" > "r10" LEXICALLY - the false-NEGATIVE direction report.md §2.4 measured, where an advisory fixed in -r10 reports a vulnerable -r4 package SAFE'
+  'FAILS under modules/sca/semver.sh, which splits on the first "-" and compares the prerelease strings "r4" > "r10" LEXICALLY - the false-NEGATIVE direction measured here, where an advisory fixed in -r10 reports a vulnerable -r4 package SAFE'
 assert_eq 1 "$(cmp_p 1.2.3-r10 1.2.3-r4)" 'and the reverse direction agrees'
 assert_eq -1 "$(cmp_p 1.2.3-r9 1.2.3-r10)" 'and one digit lower, where a lexical read fails identically'
 
@@ -184,21 +182,21 @@ t_case 'this comparator and modules/sca/semver.sh genuinely DISAGREE on that pai
 # shellcheck source=modules/sca/semver.sh
 source "$ROOT/modules/sca/semver.sh"
 semver_cmp_v 1.2.3-r4 1.2.3-r10
-assert_eq 1 "$_SV_CMP" 'semver_cmp_v still answers 1 (A greater) on this pair, exactly as report.md §2.4 measured - if this ever changes, re-read §2.4 before touching this comparator'
+assert_eq 1 "$_SV_CMP" 'semver_cmp_v still answers 1 (A greater) on this pair, exactly as measured earlier in this file - if this ever changes, re-verify the mismatch before touching this comparator'
 apk_version_cmp_v 1.2.3-r4 1.2.3-r10
 assert_eq -1 "$_APKV_CMP" 'and apk_version_cmp_v answers -1, the true apk ordering - the two comparators are not interchangeable and must not be merged'
 
-t_case 'a pre-release suffix sorts BELOW the bare release: 1.2.3_alpha1 < 1.2.3 (report.md §2.5)'
+t_case 'a pre-release suffix sorts BELOW the bare release: 1.2.3_alpha1 < 1.2.3'
 assert_eq -1 "$(cmp_p 1.2.3_alpha1 1.2.3)" \
   'FAILS under a comparator that decides a type mismatch by "the longer token stream wins" alone - that reading puts 1.2.3_alpha1 ABOVE 1.2.3, which is the release/pre-release order backwards'
 assert_eq -1 "$(cmp_p 1.2.3_rc1-r4 1.2.3-r0)" 'and a pre-release with a HIGH pkgrel still loses to the release with a low one'
 
-t_case 'a post-release suffix sorts ABOVE the bare release: 1.2.3 < 1.2.3_git20240101 (report.md §2.5)'
+t_case 'a post-release suffix sorts ABOVE the bare release: 1.2.3 < 1.2.3_git20240101'
 assert_eq -1 "$(cmp_p 1.2.3 1.2.3_git20240101)" \
   'FAILS under a comparator that treats EVERY _suffix as a pre-release the way SemVer treats every "-" suffix - apk splits its suffix table, and cvs/svn/git/hg/p sort above the bare version'
 assert_eq -1 "$(cmp_p 1.2.3_rc1 1.2.3_git1)" 'and a pre-release suffix is below a post-release one on the same version'
 
-t_case 'dotted components compare NUMERICALLY, not lexically: 1.2.10 > 1.2.9 (report.md §2.5)'
+t_case 'dotted components compare NUMERICALLY, not lexically: 1.2.10 > 1.2.9'
 assert_eq 1 "$(cmp_p 1.2.10 1.2.9)" 'FAILS under a byte comparison, which reads "1" < "9" and gets this backwards'
 assert_eq -1 "$(cmp_p 1.9.0 1.10.0)" 'and the same at the minor component'
 assert_eq -1 "$(cmp_p 9.0.0 10.0.0)" 'and at the major'
@@ -213,7 +211,7 @@ for (( i = 0; i < ${#CHAIN[@]} - 1; i++ )); do
     printf '    CHAIN STEP FAILED: %s should be < %s (got %s)\n' "${CHAIN[i]}" "${CHAIN[i+1]}" "$_APKV_CMP" >&2
   fi
 done
-assert_eq 0 "$chain_bad" 'every adjacent step of report.md §2.5'"'"'s own suffix ordering, including BOTH boundaries with the bare version'
+assert_eq 0 "$chain_bad" 'every adjacent step of apk-tools'"'"' own suffix ordering, including BOTH boundaries with the bare version'
 
 t_case 'equal versions tie, in every shape the grammar allows'
 assert_eq 0 "$(cmp_p 1.2.3-r4 1.2.3-r4)" 'with a pkgrel'
@@ -283,10 +281,10 @@ assert_eq '?' "$(cmp_p '1.0_foo' '1.0')" 'the printing form emits "?" rather tha
 t_case 'two WELL-FORMED versions are ALWAYS ordered - a refusal always means an unreadable input'
 # The naive structural tie-break falls through to EQUAL here, which is what
 # apk-tools itself does; this file applies the field-order rule instead,
-# because EQUAL means "not below" means "reported safe" - report.md §2.4's
-# own disqualifying direction.  Asserted on the ORDERING rather than only on
-# the return status, so "it did not refuse" cannot be satisfied by a path
-# that answered EQUAL.
+# because EQUAL means "not below" means "reported safe" - the same
+# disqualifying direction measured elsewhere in this suite.  Asserted on
+# the ORDERING rather than only on the return status, so "it did not
+# refuse" cannot be satisfied by a path that answered EQUAL.
 for structural in '1.0-r5 1.0.1-r0' '1.0-r5 1.0a-r0' '1.0_git-r0 1.0_git1-r0' '1.0_git_p-r0 1.0_git1-r0' '1.0-r0 1.0.0-r0'; do
   # shellcheck disable=SC2086
   set -- $structural

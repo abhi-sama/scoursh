@@ -116,7 +116,7 @@ if [[ -r $BENCH/corpora/_samples/sca-lockfiles-26/truth ]]; then
   t_case 'the built corpus truth file pairs one real:true case with one real:false case per advisory'
   truth_load "$BENCH/corpora/_samples/sca-lockfiles-26/truth"
   assert_eq "$(( ${#BENCH_SCA_ADV_IDS[@]} * 2 ))" "${#BENCH_TRUTH_CASES[@]}" \
-    'every pinned advisory contributes exactly two cases (the scout report'"'"'s rule R3: a recall-only corpus cannot measure a false-positive rate)'
+    'every pinned advisory contributes exactly two cases (a recall-only corpus cannot measure a false-positive rate)'
   for id in "${BENCH_SCA_ADV_IDS[@]}"; do
     assert_eq 'true' "${BENCH_TRUTH_REAL[$id-vuln]:-MISSING}" "$id-vuln is the real case"
     assert_eq 'false' "${BENCH_TRUTH_REAL[$id-patched]:-MISSING}" "$id-patched is the sanitized-trap counterpart"

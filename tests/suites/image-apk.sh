@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# tests/suites/image-apk.sh - IMG-04 (data/scoursh-image-scan-design/
-# report.md §2.1/§2.5's apk row and §5.3's IMG-04 row): apk installed-
+# tests/suites/image-apk.sh - IMG-04: apk installed-
 # package ENUMERATION, unit-level, against a committed fixture DB.
 #
 # What this suite proves, and what it is NOT for:
@@ -17,7 +16,7 @@
 #      with an empty version string; and a valid block landing immediately
 #      after either malformed shape is unaffected - state does not leak
 #      across a blank-line block boundary.
-#   C. A missing database (the scratch/distroless case, report.md §4.3)
+#   C. A missing database (the scratch/distroless case)
 #      returns 1 with `_APK_INSTALLED_REASON=no_package_db_found`, and
 #      leaves both result arrays empty - never a silent clean enumeration.
 #   D. A database with no trailing blank line at end of file still has its
@@ -27,10 +26,10 @@
 #      regression here fails under its own name rather than only as a
 #      miscount in section A).
 #   E. `modules/image/checks-apk.rules` parses under the real record loader
-#      with no diagnostics, registers exactly the one check id report.md
-#      §4.1 names, and is discovered by `checks_registry_load` alongside
+#      with no diagnostics, registers exactly the one check id IMG-04
+#      names, and is discovered by `checks_registry_load` alongside
 #      the module's other per-owner registry, `checks-advisories.rules` -
-#      the "one registry per owner" shape report.md §5.1 requires, proven
+#      the "one registry per owner" shape this module follows, proven
 #      by asserting BOTH ids are visible together rather than assuming a
 #      glob that happens to find one also finds the other.
 #
@@ -121,9 +120,9 @@ APK_INSTALLED_NAMES=(stale)
 APK_INSTALLED_VERSIONS=(stale)
 _rc=0
 apk_installed_enumerate "$FIX/does-not-exist/installed" || _rc=$?
-assert_eq 1 "$_rc" 'refusal is a plain 1, not a die/abort - a missing apk DB is the ordinary scratch/distroless case, report.md §4.3'
+assert_eq 1 "$_rc" 'refusal is a plain 1, not a die/abort - a missing apk DB is the ordinary scratch/distroless case'
 assert_eq no_package_db_found "$_APK_INSTALLED_REASON" \
-  'the exact declared coverage_reduction reason the brief and report.md §4.3 both name'
+  'the exact declared coverage_reduction reason for this case'
 assert_eq 0 "${#APK_INSTALLED_NAMES[@]}" 'APK_INSTALLED_NAMES is reset to empty, not left holding a stale prior result'
 assert_eq 0 "${#APK_INSTALLED_VERSIONS[@]}" 'APK_INSTALLED_VERSIONS is reset to empty too'
 
@@ -170,13 +169,13 @@ assert_eq 0 "$_load_rc" 'records_load returns 0 - no schema/format errors'
 assert_eq 0 "$RECORDS_ERRORS" \
   "modules/image/checks-apk.rules has 0 record-format diagnostics - FAILS on a schema mistake (a bad tags/coverage-scope/cwe/owasp value, a missing required key) that records_load would otherwise catch silently here and loudly only once scan.sh iac/image/... loads every *.rules file at run time"
 
-t_case 'it registers exactly the one apk check id report.md §4.1 names, and no other'
+t_case 'it registers exactly the one apk check id IMG-04 names, and no other'
 assert_eq 1 "$(records_count apkchecks)" 'exactly one record in the file'
 assert_eq 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-01' "$(records_id apkchecks 0)" "that record's id"
 
 t_case 'every per-owner image registry is discoverable by the same *.rules glob checks_registry_load uses'
 _files=$(cd -- "$ROOT/modules/image" && printf '%s\n' *.rules | sort)
 assert_eq $'checks-advisories.rules\nchecks-apk.rules\nchecks-config.rules\nchecks-coverage.rules\nchecks-dpkg.rules\nchecks-langdeps.rules\nchecks-rpm.rules' "$_files" \
-  'exactly these seven files (checks-config.rules and checks-coverage.rules added by IMG-06, checks-dpkg.rules added by IMG-07, checks-rpm.rules added by IMG-12, checks-langdeps.rules added by IMG-11) - FAILS if a shared modules/image/checks.rules ever reappears (report.md §5.1s explicitly forbidden shape) or if a later ticket appended into an existing file instead of shipping its own'
+  'exactly these seven files (checks-config.rules and checks-coverage.rules added by IMG-06, checks-dpkg.rules added by IMG-07, checks-rpm.rules added by IMG-12, checks-langdeps.rules added by IMG-11) - FAILS if a shared modules/image/checks.rules ever reappears (an explicitly forbidden shape) or if a later ticket appended into an existing file instead of shipping its own'
 
 t_summary image-apk

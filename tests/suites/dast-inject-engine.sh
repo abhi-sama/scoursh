@@ -246,8 +246,8 @@ assert_true "$([[ ${#_INJ_BODY} -le $_INJ_MAX_BODY_BYTES ]] && echo 0 || echo 1)
 # ===========================================================================
 printf '== dast inject_engine: IMPORT-05 - unsendable/out-of-vocabulary locations are refused, never "tested clean" ==\n'
 # ===========================================================================
-# Two pre-existing defects a hostile import can trip (the api-surface-import
-# scout report §7), closed by (a) crawl_add_param validating at IMPORT time
+# Two pre-existing defects a hostile import can trip,
+# closed by (a) crawl_add_param validating at IMPORT time
 # (tests/suites/dast-crawl.sh owns that half) and (b) inject_send gaining an
 # explicit `*)` refusal arm, right here.
 #
@@ -363,7 +363,7 @@ assert_eq 0 "$PRE_RC" \
 assert_contains "$(cat "$PREREQLOG")" 'GET /probe' \
   'and a real request WAS sent - this is not "nothing happened", it is "something happened and was called clean"'
 assert_not_contains "$(cat "$PREOUT")$(cat "$PREREQLOG")" 'PAYLOAD-MARKER' \
-  'yet the payload itself is nowhere in what was sent or logged - the exact "tested clean" false negative the scout report describes'
+  'yet the payload itself is nowhere in what was sent or logged - the exact "tested clean" false negative this case guards against'
 
 t_case '(b) hardened: the shipped inject_send refuses an out-of-vocabulary location - "cannot test", never "tested clean"'
 _inj_set_candidate GET json
@@ -489,10 +489,9 @@ printf '== dast inject_engine: IMPORT-03/04 - an IMPORTED json-body parameter re
 # input. What is proven here is the other half: that crawl_spec_openapi's OWN
 # written endpoints.json/parameters.json - the artifact an operator's spec
 # actually produces (docs/INVENTORY-FORMAT.md) - is read back by
-# inject_inventory_load into exactly the input the sender needs. This is the
-# api-surface-import scout report's own closing ask: "prove an imported
-# parameter reaches an injection check", against the report's own Juice Shop
-# reproduction shape (a nested requestBody field, resolved through $ref).
+# inject_inventory_load into exactly the input the sender needs: proof that an imported
+# parameter reaches an injection check, using the same Juice Shop
+# shape (a nested requestBody field, resolved through $ref) a real target reproduces.
 IMPORT_SPEC=$W/import-order-spec.json
 cat >"$IMPORT_SPEC" <<'EOF'
 {
@@ -557,6 +556,6 @@ assert_eq 0 "$import_rc" 'the imported parameter sends successfully'
 assert_contains "$IMPORT_LOG" 'ctype=application/json' \
   'Content-Type is application/json, read from the IMPORTED request_body_type field rather than assumed'
 assert_contains "$IMPORT_LOG" 'body={"orderLines":[{"productId":"PAYLOAD"}]}' \
-  'the payload lands nested at the exact pointer the requestBody schema described - this is the api-surface-import scout report'"'"'s own §1b reproduction, now reaching a live probe instead of finding zero parameters to test'
+  'the payload lands nested at the exact pointer the requestBody schema described - a live probe now reaches it instead of finding zero parameters to test'
 
 t_summary 'dast-inject-engine'

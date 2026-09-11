@@ -12,7 +12,7 @@
 ## 1. Goals
 
 - One shell-based tool that audits three surfaces: **source code (SAST)**, a **running endpoint (DAST)**, and **AWS configuration (live + IaC)**.
-  Addendum, added when built-container-image scanning shipped (`modules/image/`, `data/scoursh-image-scan-design/report.md`): this never was an exhaustive list of every surface the tool would ever reach - it named the three surfaces the original handoff scoped - and it does not preclude a fourth. Built container images (offline, operator-supplied - never a registry pull) are that fourth surface; §15 states what it does not cover.
+  Addendum, added when built-container-image scanning shipped (`modules/image/`): this never was an exhaustive list of every surface the tool would ever reach - it named the three surfaces the original handoff scoped - and it does not preclude a fourth. Built container images (offline, operator-supplied - never a registry pull) are that fourth surface; §15 states what it does not cover.
 - **Exhaustive** across the surfaces it can reach - code, dependencies, running endpoint, and cloud/IaC config - with coverage and blind spots stated explicitly (§15) rather than implied. Depth on SAST scales with the engine tier (§9).
 - **Modular** - each surface is a self-contained module under `modules/`, invokable alone or together.
 - **No third-party egress.** No telemetry, no SaaS backend, no fetching rules at scan time. Runs on an air-gapped host.

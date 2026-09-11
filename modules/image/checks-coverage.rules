@@ -1,8 +1,7 @@
 # modules/image/checks-coverage.rules - the container-image module's own
 # per-owner registry (rules/RULE-FORMAT.md §9's `checks-<name>.rules` row,
 # docs/FOUNDATION.md tension 29) for the two general acquisition/enumeration
-# coverage checks IMG-06 adds (data/scoursh-image-scan-design/report.md
-# §4.1/§4.3): `IMAGE-COV-UNKNOWN_DISTRO-01` and
+# coverage checks IMG-06 adds: `IMAGE-COV-UNKNOWN_DISTRO-01` and
 # `IMAGE-COV-LAYER_UNREADABLE-01`.
 #
 # A SEPARATE FILE FROM checks-advisories.rules, deliberately, even though
@@ -10,8 +9,8 @@
 # same ticket: checks-advisories.rules is scoped to the advisory-DB-ecosystem
 # family (`IMAGE-COV-NO_ADVISORY_DB-01`), while these two are about whether
 # this module could read the image's OWN metadata at all - a distinct
-# semantic owner, and report.md §5.1's binding rule ("every ticket writes
-# its OWN checks-<name>.rules") is about avoiding an add/add conflict class,
+# semantic owner, and the "every ticket writes
+# its OWN checks-<name>.rules" binding rule is about avoiding an add/add conflict class,
 # not about literally one file per ticket; splitting by semantic family here
 # costs nothing and keeps a future dpkg/rpm-scoped coverage check
 # (IMG-07/IMG-12) from having any reason to touch this file either.
@@ -48,7 +47,6 @@ remediation: This image's own /etc/os-release names a resolved distro
   the final build stage strips the package manager's own metadata
   directory. Until it is present, this run says NOTHING about this image's
   installed packages.
-references: data/scoursh-image-scan-design/report.md
 
 id: IMAGE-COV-LAYER_UNREADABLE-01
 title: Container image scanning is incomplete - one or more layers or members could not be read
@@ -64,4 +62,3 @@ remediation: Re-save or re-export this image and re-scan. If the problem
   persists, the archive may be corrupt or a layer member may be malformed -
   see this finding's own evidence for the specific path(s) and refusal
   reason(s).
-references: data/scoursh-image-scan-design/report.md

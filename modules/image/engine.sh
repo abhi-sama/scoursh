@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # modules/image/engine.sh - the container-image-scanning module's pure
-# function library (IMG-01, data/scoursh-image-scan-design/report.md
-# §3.1/§5.3's "module foundation" row; distro-release detection and the
+# function library (IMG-01, the module foundation ticket; distro-release detection and the
 # advisory-database reuse added by IMG-03; distro/apk.sh, apk_version.sh and
 # config.sh sourced here, and the two remaining v1 coverage emitters added,
 # by IMG-06; distro-release detection widened to Debian/Ubuntu and
@@ -109,7 +108,7 @@ source "${BASH_SOURCE[0]%/*}/config.sh"
 source "${BASH_SOURCE[0]%/*}/langdeps.sh"
 
 # ---------------------------------------------------------------------------
-# Distro-release detection (IMG-03, report.md §4.3's `distro_release_unknown`
+# Distro-release detection (IMG-03, the `distro_release_unknown`
 # reduction) - parses the image's own /etc/os-release (or the systemd
 # fallback path, usr/lib/os-release) to pick the per-release advisory
 # ecosystem key a v1 (Alpine-only) run looks up in data/advisories.db.
@@ -155,8 +154,7 @@ image_os_release_parse() {
 }
 
 # `image_distro_ecosystem_resolve FILE` - image_os_release_parse plus the
-# ID/VERSION_ID -> data/advisories.db ecosystem key mapping (report.md
-# §2.3/§3.4: `Alpine:vX.Y`, keyed per RELEASE, never per exact patch
+# ID/VERSION_ID -> data/advisories.db ecosystem key mapping (`Alpine:vX.Y`, keyed per RELEASE, never per exact patch
 # version - OSV.dev's own Alpine namespace is major.minor only; IMG-09 adds
 # Debian and Ubuntu, each keyed the way OSV.dev itself publishes them -
 # `Debian:N` is MAJOR-ONLY, e.g. `Debian:12`, never `Debian:12.5` (Debian's
@@ -167,15 +165,14 @@ image_os_release_parse() {
 # already `22.04`/`20.04`, so no reformatting is needed once it is
 # extracted). Any OTHER `ID`, or a `VERSION_ID` that does not carry the
 # leading numeric component its own distro's key needs, resolves to nothing
-# rather than a guess: report.md §4.3 is explicit that guessing "latest" on
+# rather than a guess: guessing "latest" on
 # a missing/unrecognised release produces a false NEGATIVE on an older
 # image, which is the direction that reads as a pass. `_IMAGE_DISTRO_REASON`
 # distinguishes "no os-release at all" (`no_os_release`) from "os-release
 # named a distro/version this module cannot yet map"
 # (`os_release_version_unparseable` / `distro_not_yet_supported`) purely
 # for the human-readable detail text - every one of them is reported under
-# the SAME `distro_release_unknown` coverage_reduction reason the brief and
-# report.md §4.3 both name, since from an operator's chair all three answer
+# the SAME `distro_release_unknown` coverage_reduction reason, since from an operator's chair all three answer
 # the identical question ("was an advisory ecosystem found for this image")
 # the identical way.
 _IMAGE_DISTRO_ECOSYSTEM=''
@@ -229,7 +226,7 @@ image_distro_ecosystem_resolve() {
       ;;
     rhel | centos | rocky | almalinux | fedora)
       # Red Hat's own OSV.dev namespace is a single FLAT ecosystem string
-      # with NO per-release variant (report.md §2.3: "Alpine:v3.18,
+      # with NO per-release variant ("Alpine:v3.18,
       # Debian:12, Ubuntu:22.04, Red Hat" - the last one carries no colon or
       # version suffix at all, unlike its three siblings). A real OSV Red
       # Hat advisory's own `versions` entries already carry the RHEL STREAM
@@ -266,7 +263,7 @@ image_distro_ecosystem_resolve() {
 }
 
 # ---------------------------------------------------------------------------
-# The advisory database reuse (IMG-03, report.md §2.3/§4.2) - data/
+# The advisory database reuse (IMG-03) - data/
 # advisories.db is the SAME file and the SAME `db_lookup_exact` lookup
 # modules/sca/ already uses; only the ecosystem key differs. Deliberately a
 # one-line reimplementation of `sca_advisories_db_path` rather than a
@@ -305,7 +302,7 @@ image_ecosystem_known() {
 image_report_no_advisory_db() {
   local image_id=$1 ecosystem=$2 db=${3:-$(image_advisories_db_path)}
 
-  log_warn "image: no advisory database rows for '$ecosystem' at '$db' - NO package was checked for image '$image_id' (populate it with 'tools/vendor-engines.sh advisories alpine' on a networked box, data/scoursh-image-scan-design/report.md §2.3)"
+  log_warn "image: no advisory database rows for '$ecosystem' at '$db' - NO package was checked for image '$image_id' (populate it with 'tools/vendor-engines.sh advisories alpine' on a networked box)"
   run_record coverage_reduction "module=image reason=no_advisories_db_for_ecosystem image=$image_id ecosystem=$ecosystem"
   run_record checks_run IMAGE-COV-NO_ADVISORY_DB-01
 
@@ -329,7 +326,7 @@ packages_checked: 0"
 }
 
 # ---------------------------------------------------------------------------
-# The remaining v1 coverage reductions (IMG-06, report.md §4.1/§4.3)
+# The remaining v1 coverage reductions (IMG-06)
 # ---------------------------------------------------------------------------
 
 # `image_report_unknown_distro IMAGE_ID ECOSYSTEM MANAGER [DETAIL]` - the
@@ -337,8 +334,8 @@ packages_checked: 0"
 # `Alpine:v3.18`, `Debian:12`, `Ubuntu:22.04`) and `data/advisories.db` DOES
 # cover it, but no MANAGER (`apk` or `dpkg`) package database exists in ANY
 # layer of this image - a scratch or distroless final stage that copies
-# binaries out without the package manager's own metadata (report.md §4.3's
-# `no_package_db_found` row). ONE coverage_reduction, ONE
+# binaries out without the package manager's own metadata (the
+# `no_package_db_found` reason). ONE coverage_reduction, ONE
 # `IMAGE-COV-UNKNOWN_DISTRO-01` finding, `info` severity - the identical "a
 # blind spot is not a vulnerability" reasoning `image_report_no_advisory_db`
 # above already gives, applied to a different absent input. The check id
@@ -349,14 +346,14 @@ packages_checked: 0"
 # id alone to carry that nuance.
 #
 # MANAGER is required (IMG-09 widened this function from apk-only to also
-# cover dpkg's mirror-image case, report.md §2.1) - the wording below is
+# cover dpkg's mirror-image case) - the wording below is
 # generic on purpose, which is what let this ticket's own rpm caller reuse
 # it with only its own MANAGER value and one new DETAIL-aware branch below.
 #
 # `rpm_db_binary_format` gets its OWN title/remediation, rather than sharing
 # the generic "no $manager package database in any layer" wording apk/dpkg
-# always use: this detail means an rpm database WAS found - report.md
-# §2.1's rpm row and `modules/image/distro/rpm.sh`'s own header - either
+# always use: this detail means an rpm database WAS found - see
+# `modules/image/distro/rpm.sh`'s own header - either
 # sqlite3 is absent from PATH (the `requires-cmd: sqlite3` gate), or the
 # database is one of the two genuinely-binary shapes (Berkeley DB / ndb)
 # this project has no reader for, or it is the modern sqlite backend's own
@@ -364,7 +361,7 @@ packages_checked: 0"
 # opaque blob rather than queryable columns. Reusing the "no database at
 # all" wording for that case would misreport a found-but-unreadable
 # database as an absent one - a distinct fact this project's own honesty
-# doctrine (report.md §4.2/§4.3) says must not be collapsed into a
+# doctrine says must not be collapsed into a
 # different reason's prose. apk and dpkg never set this detail, so their
 # behaviour here is unchanged.
 image_report_unknown_distro() {
@@ -412,8 +409,8 @@ packages_checked: 0"
 # `image_report_layer_unreadable IMAGE_ID REFUSED_LINES...` - one or more of
 # `image_collect_metadata`'s wanted paths could not be obtained: the archive
 # named a layer that failed to list/extract, or a member was refused by
-# section 3's own extraction gate (report.md §4.3's `layer_unreadable` row -
-# "carries count and total"). REFUSED_LINES is `IMAGE_COLLECT_REFUSED`
+# section 3's own extraction gate (the `layer_unreadable` reason -
+# carries count and total). REFUSED_LINES is `IMAGE_COLLECT_REFUSED`
 # verbatim, one `<path><TAB><reason>` per array element. ONE reduction and
 # ONE finding for the whole run, carrying the COUNT, never one per path -
 # an operator wants "how bad" at a glance, and the evidence line still

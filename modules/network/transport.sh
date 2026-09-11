@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # modules/network/transport.sh - the NET-10 tier-3 probe: transport POSTURE
-# on non-HTTP listeners and the `NET-TRANSPORT-*` checks
-# (data/scoursh-network-scan-design/report.md §3.3, §5.1, §5.2, §7's NET-10
-# row).
+# on non-HTTP listeners and the `NET-TRANSPORT-*` checks.
 #
 # THIS IS A PHASE SCRIPT: modules/network/engine.sh's `net_run_phase` reaches
 # it with a plain `source` (at tier `passive`, so it runs on every network
@@ -27,8 +25,8 @@
 # `net_connect_probe`, `tls_probe`, `net_read_banner` - is one that a
 # sibling phase already tags `passive` for the SAME reason: the transport
 # handshake and the banner read are both connect-and-observe, never a
-# protocol command this scanner composes and sends of its own (report.md
-# §2.6's "no protocol conversation" boundary, applied to STARTTLS
+# protocol command this scanner composes and sends of its own (a deliberate
+# "no protocol conversation" boundary, applied to STARTTLS
 # specifically in transport_engine.sh's own header).  A listener that
 # genuinely requires an EHLO/CAPA/FEAT round-trip before it names STARTTLS
 # is a stated recall gap (transport_engine.sh's own header), not something
@@ -77,7 +75,7 @@ _transport_capability_reduction() {
 
 _transport_openssl_reduction() {
   local target=$1
-  run_record coverage_reduction "module=network phase=transport.sh reason=requires_cmd_absent cmd=openssl checks=[$_NET_TRANSPORT_IDS] target=$target - the plaintext-service check needs openssl for its native-TLS-absence handshake (report.md §3.3), and it is not on PATH, so neither NET-TRANSPORT-* check ran (the STARTTLS-advertisement check depends on the SAME plaintext-versus-TLS classification, so it is withheld too rather than run on an unverified assumption of cleartext)."
+  run_record coverage_reduction "module=network phase=transport.sh reason=requires_cmd_absent cmd=openssl checks=[$_NET_TRANSPORT_IDS] target=$target - the plaintext-service check needs openssl for its native-TLS-absence handshake, and it is not on PATH, so neither NET-TRANSPORT-* check ran (the STARTTLS-advertisement check depends on the SAME plaintext-versus-TLS classification, so it is withheld too rather than run on an unverified assumption of cleartext)."
   run_record coverage_gap "network transport: openssl is not available, so neither NET-TRANSPORT-* check ran on target '$target''s non-base-url listeners. Their transport posture was not tested."
   return 0
 }
@@ -96,7 +94,7 @@ _transport_run() {
       'internal: modules/network/transport.sh was reached with no target; net_run_phase publishes SCOURSH_NET_TARGET'
   fi
 
-  # openssl is this check's one external dependency (report.md §3.3's own
+  # openssl is this check's one external dependency (its own
   # native-TLS-absence measurement, via tls_probe) - absent is a declared
   # skip naming both ids, never an error, per AGENTS.md's authz.sh
   # "checks_run must count what SUCCEEDED" lesson.
@@ -118,7 +116,7 @@ _transport_run() {
 
   if [[ $_NET_LISTENERS_STATE != present ]]; then
     _transport_no_listeners_reduction "$target" \
-      "reports/<run>/inventory/listeners.json was not usable this run (modules/network/inventory.sh's report.md §5.2 rule 3: a target with only base-url, or every extra-host dropped, writes no artifact, or it exists but is empty)"
+      "reports/<run>/inventory/listeners.json was not usable this run (modules/network/inventory.sh writes no artifact, or an empty one, for a target with only base-url, or every extra-host dropped)"
     return 0
   fi
 
@@ -157,7 +155,7 @@ _transport_run() {
     scheme=${xh_scheme[i]} host=${xh_host[i]} port=${xh_port[i]}
     url="$scheme://$host:$port/"
 
-    # report.md §5.2 rule 1, first half - the identical re-authorization
+    # The identical re-authorization
     # every sibling phase's own header explains at length.
     if ! http_authorize_raw_connection "$url" "$target" false; then
       unresolvable_ct=$(( unresolvable_ct + 1 ))
@@ -172,7 +170,7 @@ _transport_run() {
     # THE OPEN-STATE CLASSIFICATION: the SAME net_connect_probe call every
     # sibling phase makes, on the same gate-pinned address, with the
     # identical three-state vocabulary and the identical
-    # filtered-is-never-not-open discipline (report.md §5.2 rule 4).
+    # filtered-is-never-not-open discipline.
     state=$(net_connect_probe "$addr" "$port")
     case $state in
       open) : ;;
@@ -253,7 +251,7 @@ _transport_run() {
   fi
   local non_open_ct=$(( notopen_ct + filtered_ct ))
   if (( non_open_ct > 0 )); then
-    run_record coverage_reduction "module=network phase=transport.sh reason=net_check_not_applicable checks=[$_NET_TRANSPORT_IDS] target=$target count=$non_open_ct not_open=$notopen_ct filtered=$filtered_ct - that many non-base-url listener(s) were not open this run (report.md §5.2 rule 4: 'did not answer in time' and 'refused' are different facts, kept separate here in the breakdown even though both prevent either check from applying), so neither NET-TRANSPORT-* check was applicable to them."
+    run_record coverage_reduction "module=network phase=transport.sh reason=net_check_not_applicable checks=[$_NET_TRANSPORT_IDS] target=$target count=$non_open_ct not_open=$notopen_ct filtered=$filtered_ct - that many non-base-url listener(s) were not open this run ('did not answer in time' and 'refused' are different facts, kept separate here in the breakdown even though both prevent either check from applying), so neither NET-TRANSPORT-* check was applicable to them."
   fi
   if (( plaintext_notapplicable_ct > 0 )); then
     run_record coverage_reduction "module=network phase=transport.sh reason=proto_not_recognised checks=[NET-TRANSPORT-PLAINTEXT_SERVICE-01] target=$target count=$plaintext_notapplicable_ct - that many open non-base-url listener(s) are on a port outside this check's static plaintext-protocol table (FTP 21, SMTP 25, POP3 110, IMAP 143, LDAP 389), so no standard encrypted variant could be named for them and this check does not apply."

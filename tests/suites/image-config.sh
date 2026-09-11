@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# tests/suites/image-config.sh - IMG-10 (data/scoursh-image-scan-design/
-# report.md §4.1's IMAGE-CFG-* row, §5.3's IMG-10 row: "root user, exposed
+# tests/suites/image-config.sh - IMG-10 ("root user, exposed
 # ports, mutable base tag"): the two remaining distro-agnostic image
 # CONFIG-BLOB checks - `IMAGE-CFG-EXPOSED_PORTS-01` and
 # `IMAGE-CFG-MUTABLE_BASE_REF-01` - on top of IMG-06's already-tested
@@ -32,8 +31,8 @@
 #      config with two exposed ports and a mutable-tag base label fires
 #      both checks and round-trips through every report format; a config
 #      with no exposed ports and a digest-PINNED base label is quiet for
-#      both, with `checks_run` still naming them (report.md §4.2 honesty -
-#      it looked and found nothing, a different fact from "did not run");
+#      both, with `checks_run` still naming them - the honesty rule that
+#      it looked and found nothing, a different fact from "did not run";
 #      and a config with NEITHER field at all is quiet for both, with the
 #      base-ref check recording a declared `base_reference_not_recorded`
 #      coverage_reduction rather than guessing - the brief's own "honesty
@@ -292,7 +291,7 @@ assert_not_contains "$RUN2_FIELDS" 'check_id=IMAGE-CFG-EXPOSED_PORTS-01' 'no Exp
 assert_not_contains "$RUN2_FIELDS" 'check_id=IMAGE-CFG-MUTABLE_BASE_REF-01' \
   'the base image IS pinned by a real digest - quiet, not merely "not new"'
 assert_contains "$RUN2_JSON" 'IMAGE-CFG-EXPOSED_PORTS-01' \
-  'checks_run STILL names the ports check - it executed and found nothing, a different fact from "did not run" (report.md §4.2 honesty)'
+  'checks_run STILL names the ports check - it executed and found nothing, a different fact from "did not run"'
 assert_contains "$RUN2_JSON" 'IMAGE-CFG-MUTABLE_BASE_REF-01' 'and still names the base-ref check too'
 
 # Run 3: neither ExposedPorts nor the base.name label at all.

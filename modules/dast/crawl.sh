@@ -547,8 +547,8 @@ _crawl_record_spa_gap() {
 }
 
 # ---------------------------------------------------------------------------
-# 5b. The SPA nudge (2026-09-06 captain decision: no auto-discovery, lower
-# friction on the import path instead - data/scoursh-spa-har-nudge)
+# 5b. The SPA nudge (a deliberate design decision: no auto-discovery, lower
+# friction on the import path instead)
 # ---------------------------------------------------------------------------
 # Fires ONLY when the root-page heuristic actually fired (`_CRAWL_SPA_SHAPED`),
 # which is a strictly NARROWER condition than the coverage_gap above (that one

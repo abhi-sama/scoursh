@@ -1,6 +1,5 @@
 # modules/network/checks-httpport.rules - NET-09's own script-check registry
-# (rules/RULE-FORMAT.md §9.5; data/scoursh-network-scan-design/report.md §3.2
-# item 3, §7 Tier 2).
+# (rules/RULE-FORMAT.md §9.5).
 #
 # ONE FILE PER OWNER, NEVER A SHARED modules/network/checks.rules - the
 # tension-29 discipline docs/FOUNDATION.md and modules/dast/passive/'s own
@@ -18,11 +17,11 @@
 # `modules/dast/passive/checks-banner.rules`'s own header states the
 # identical reasoning for DAST-BANNER-*, and it applies here unchanged.
 #
-# "_HTTP_" IN EACH NAME IS DELIBERATE, NOT DECORATION: a future NET-07
+# "_HTTP_" IN EACH NAME IS DELIBERATE, NOT DECORATION: NET-07
 # (banner.sh) reads a service's banner on a bare TCP connect - zero bytes
 # sent - while this ticket sends one HTTP GET. Two different mechanisms
 # reusing the SAME NET-SVC-BANNER_DISCLOSURE-01/NET-SVC-OUTDATED_COMPONENT-01
-# spelling report.md §5.1's own table uses illustratively would need two
+# spelling would need two
 # DIFFERENT type tags (`passive` vs `safe-active`) on one check id, which
 # §9.5's schema forbids (exactly one type tag per record) - so distinct ids
 # were required regardless, and naming the channel in the id is what keeps a
@@ -32,7 +31,7 @@
 # modules/dast/passive/checks-banner.rules' own three records exactly - the
 # underlying disclosure classes (a name in a response, a name+version, a
 # version matched against the vendored list) are identical regardless of
-# which channel read them, and report.md §3.4's backport caveat is the
+# which channel read them, and the same backport caveat is the
 # reason the outdated-component id stays confidence: medium rather than high
 # here too.
 
@@ -89,7 +88,7 @@ remediation: Upgrade the component on this listener to a release the advisory
   rather than treating the control as one. Re-read the running version from
   the same listener afterwards. The version was read from an HTTP response
   banner, so a distribution that backports fixes under an unchanged upstream
-  version string would not be visible here (report.md §3.4) - confirm before
+  version string would not be visible here - confirm before
   treating this as a high-confidence claim about the running binary.
 references: CWE-1104
 references: https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/

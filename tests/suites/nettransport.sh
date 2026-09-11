@@ -73,7 +73,7 @@ assert_eq 'not-open' "$(net_connect_probe 203.0.113.5 23)" \
 
 _STUB_STATE=filtered
 assert_eq 'filtered' "$(net_connect_probe 203.0.113.5 24)" \
-  'a "filtered" hook answer passes through unchanged - the third state is never collapsed into not-open (design report §3.1: "the port did not answer" and "the port refused" are different facts)'
+  'a "filtered" hook answer passes through unchanged - the third state is never collapsed into not-open ("the port did not answer" and "the port refused" are different facts)'
 
 printf '\n== SCOURSH_NET_PROBE receives host/port/deadline exactly as given ==\n'
 _net_reset
@@ -133,7 +133,7 @@ cr=$(cat "$SCOURSH_RUN_DIR/meta/coverage_reduction" 2>/dev/null || printf '')
 assert_contains "$cr" 'module=network' \
   'the coverage_reduction names the owning module using the SCAN_COMMANDS/checks_module_dir token (network, NET-04), not the finding-module-field short form (net) - lib/report.sh (NET-04)'"'"'s _RPT_MODULES/_html_audit_category grep for "module=network " and would never surface a "module=net" line under the Network category'
 assert_contains "$cr" 'reason=net_probe_cmd_absent' \
-  'the coverage_reduction carries the frozen reason string design report §5.2 names, so a report reader can tell "no capability" apart from every other declared skip'
+  'the coverage_reduction carries the frozen reason string this module names, so a report reader can tell "no capability" apart from every other declared skip'
 assert_eq 1 "$(wc -l <"$SCOURSH_RUN_DIR/meta/coverage_reduction" | tr -d ' ')" \
   'exactly one reduction line is written across this whole section - FAILS if the memoization guard is bypassed and every net_connect_probe call records its own line, which would flood run.json with one line per port on a real scan'
 
@@ -224,7 +224,7 @@ assert_eq '' "$(cat "$W/cap-absent.out")" \
   'and it is empty - a bash with no /dev/tcp support reads nothing rather than crashing the run or fabricating banner bytes, the identical degrade net_connect_probe applies to its own classification'
 
 printf '\n== the real implementation NEVER writes to the socket - the passive contract, checked statically ==\n'
-# report.md §3.2 item 1 and §5.1 both require this probe to send ZERO bytes.
+# This probe is required to send ZERO bytes - it is a passive read only.
 # There is no live-socket harness in this suite (nor in net_connect_probe's
 # own tests above) to observe that dynamically without opening a real
 # connection, so the invariant is pinned the way a frozen contract with no

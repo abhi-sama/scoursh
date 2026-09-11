@@ -1,6 +1,5 @@
 # modules/network/checks-tlsport.rules - the NET-08 script-check registry
-# (rules/RULE-FORMAT.md §9.5; data/scoursh-network-scan-design/report.md
-# §3.2 item 2, §5.1, the NET-08 row in its §7 staged plan). Owned by
+# (rules/RULE-FORMAT.md §9.5). Owned by
 # modules/network/tlsport.sh; ids are all `NET-TLS-*`.
 #
 # ONE FILE PER OWNING PHASE SCRIPT, per rules/RULE-FORMAT.md §9's
@@ -11,9 +10,9 @@
 #
 # SIX IDS, ONE PER PROPERTY, THE IDENTICAL SET modules/dast/passive/
 # checks-tls.rules (DAST-TLS-*) ALREADY DEFINES - because this check reuses
-# that module's tls_engine.sh VERBATIM (report.md §3.2 item 2: "Certificate,
+# that module's tls_engine.sh VERBATIM. Certificate,
 # SANs, negotiated protocol and cipher on an arbitrary listener is genuinely
-# new coverage - DAST-TLS-* only ever looks at the base-url listener today").
+# new coverage - DAST-TLS-* only ever looks at the base-url listener.
 # The `net` fingerprint location profile (lib/findings.sh, target host port
 # transport) carries no component naming which TLS property a finding is
 # about, so the check id is the ONLY thing that keeps an expired certificate
@@ -27,8 +26,8 @@
 #
 # THE TYPE TAG IS `passive`, MATCHING modules/network/engine.sh's OWN
 # `tlsport.sh:passive` PHASE-TABLE FLOOR.  One TLS handshake per declared
-# non-base-url listener that a prior TCP classification found `open`
-# (report.md §5.1's own type tag for NET-TLS-*), no application data sent,
+# non-base-url listener that a prior TCP classification found `open`,
+# no application data sent,
 # and nothing on the target changes.
 #
 # `quick` and `compliance` are on every record here, matching

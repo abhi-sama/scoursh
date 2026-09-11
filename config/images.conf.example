@@ -46,8 +46,8 @@
 # Dockerfile that built this image, when the operator also scans it as
 # source with `modules/iac/`. Setting it lets rules/derived.rules correlate
 # an IMAGE-* finding (what actually shipped) with the IAC-DOCKER-* findings
-# from scanning that same Dockerfile (what the author wrote) -
-# data/scoursh-image-scan-design/report.md §4.4. It is never validated
+# from scanning that same Dockerfile (what the author wrote).
+# It is never validated
 # against the image's own content (the image carries no record of which
 # Dockerfile built it), so a typo here is silent and simply correlates
 # nothing rather than the wrong thing. Omit it and the two modules still

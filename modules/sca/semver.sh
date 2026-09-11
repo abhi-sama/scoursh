@@ -102,7 +102,7 @@ _sv_cmp_pre() {
 }
 
 # semver_cmp A B -> prints -1 | 0 | 1 (A<B, A==B, A>B). Kept for the
-# differential-test harness only (§5 of the scout report); production code
+# differential-test harness only; production code
 # calls semver_cmp_v.
 # SC2015: `printf`/`return` never fail, so `A && B || C` is safe here despite
 # not being if-then-else in general.

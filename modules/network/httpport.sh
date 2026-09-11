@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # modules/network/httpport.sh - NET-09, the `safe-active` HTTP-identification
-# probe against a declared NON-STANDARD HTTP port
-# (data/scoursh-network-scan-design/report.md §3.2 item 3, §7 Tier 2:
-# "One `http_request` GET. Everything modules/dast/passive/banner.sh already
+# probe against a declared NON-STANDARD HTTP port: one `http_request` GET.
+# Everything modules/dast/passive/banner.sh already
 # does, pointed at port 8080 instead of 443, and it reuses banner_engine.sh's
 # product normalisation and the data/versions.db `banner` namespace
-# unchanged.").
+# unchanged.
 #
 # THIS IS A PHASE SCRIPT: `net_run_phase` (modules/network/engine.sh) reaches
 # it with a plain `source`, at the `httpport.sh:safe` phase-table row, so it
@@ -22,8 +21,8 @@
 # (modules/network/inventory.sh's own header) - nothing here invents a URL
 # or a port.
 #
-# ONE GET PER LISTENER, SAFE-ACTIVE, NOT PASSIVE - report.md's own type tag
-# for this ticket.  A raw TCP banner read (a future NET-07) sends zero
+# ONE GET PER LISTENER, SAFE-ACTIVE, NOT PASSIVE - this ticket's own type
+# tag.  A raw TCP banner read (a future NET-07) sends zero
 # bytes; issuing an HTTP request line is a step further than that, which is
 # why this check's own `tags: safe-active` (modules/network/checks-httpport.rules)
 # differs from a future NET-07's `passive` even though both describe "a
@@ -113,7 +112,7 @@ _httpport_emit() {
       cwe=CWE-200; owasp=A05:2021
       title='Server or framework disclosed by an HTTP response on a non-standard port'
       remed='Suppress or overwrite the product token in the response. On the origin server this is `server_tokens off` (nginx), `ServerTokens Prod` plus `ServerSignature Off` (Apache), `expose_php = Off` (PHP) or removing `X-Powered-By` in the application framework; where the origin cannot be changed, strip the header at the reverse proxy or CDN. This is defence in depth, not a fix on its own: treat it as one, and patch the component itself on its own schedule.'
-      evi="$where from $host:$port (a declared listener, not the target's base-url) names: $names. This listener identifies its running software to every client that reaches it, exactly as report.md §3.2 describes for a non-standard port." ;;
+      evi="$where from $host:$port (a declared listener, not the target's base-url) names: $names. This listener identifies its running software to every client that reaches it." ;;
     version)
       check=NET-SVC-HTTP_VERSION_DISCLOSURE-01; base=low; conf=high
       cwe=CWE-200; owasp=A05:2021
@@ -124,7 +123,7 @@ _httpport_emit() {
       check=NET-SVC-HTTP_OUTDATED_COMPONENT-01; base=${_BANNER_SEVERITY:-high}; conf=medium
       cwe=CWE-1104; owasp=A06:2021
       title='Component version on a non-standard HTTP listener named in the vendored known-vulnerable list'
-      remed='Upgrade the component on this listener to a release that is not named in the advisory, or apply the vendor backport for it. Where an upgrade is not immediately possible, put a compensating control in front of the specific weakness the advisory describes and track the upgrade as remediation rather than treating the control as one. Verify the running version afterwards from the same listener. The version came from a banner (report.md §3.4); a backported fix under an unchanged upstream version string would not be visible here.'
+      remed='Upgrade the component on this listener to a release that is not named in the advisory, or apply the vendor backport for it. Where an upgrade is not immediately possible, put a compensating control in front of the specific weakness the advisory describes and track the upgrade as remediation rather than treating the control as one. Verify the running version afterwards from the same listener. The version came from a banner; a backported fix under an unchanged upstream version string would not be visible here.'
       evi="$where from $host:$port identifies: $names, at least one of which the vendored list at data/versions.db names as affected (when more than one is named, the advisory details below are for the last one matched - consult data/versions.db directly for the others).${_BANNER_ADVISORIES:+ Advisory id(s): ${_BANNER_ADVISORIES}.}${_BANNER_SUMMARY:+ Summary: ${_BANNER_SUMMARY}.}${_BANNER_FIXED:+ Fixed in: ${_BANNER_FIXED}.} That list is an offline snapshot${_BANNER_DB_GENERATED:+ generated ${_BANNER_DB_GENERATED}} and is only as current as its last refresh (docs/VERSIONS-DB.md)." ;;
     *)
       die "$SCOURSH_EXIT_INCOMPLETE" "internal: modules/network/httpport.sh emitted an unknown finding kind '$kind'" ;;
@@ -277,7 +276,7 @@ _net_httpport_phase() {
   net_inventory_read "$SCOURSH_RUN_DIR"
   case $_NET_LISTENERS_STATE in
     absent)
-      run_record coverage_reduction "module=network reason=no_http_listener target=$target - no declared listener beyond the target's own base-url exists for this target (modules/network/inventory.sh, NET-05), so there is no non-standard HTTP port to probe. 'This host has one listener' and 'scoursh did not look' are different facts (report.md §5.2 rule 3) - this phase records the same fact for its own honesty."
+      run_record coverage_reduction "module=network reason=no_http_listener target=$target - no declared listener beyond the target's own base-url exists for this target (modules/network/inventory.sh, NET-05), so there is no non-standard HTTP port to probe. 'This host has one listener' and 'scoursh did not look' are different facts - this phase records the same fact for its own honesty."
       run_record coverage_gap "network httpport: target '$target' declares no listener beyond its base-url, so no non-standard-port HTTP response was examined for a service disclosure."
       return 0
       ;;
@@ -368,7 +367,7 @@ _net_httpport_phase() {
   fi
 
   if (( transport_failed > 0 )); then
-    run_record coverage_reduction "module=network reason=net_http_unavailable target=$target count=$transport_failed - that many declared non-standard HTTP listener(s) for this target did not answer at the transport (connection refused, timed out, or an unhandled protocol), so no response was examined for them. 'Filtered'/connection-refused and 'answered cleanly' are different facts (report.md §5.2 rule 4's own distinction, applied here) - this is not evidence the listener speaks HTTP cleanly."
+    run_record coverage_reduction "module=network reason=net_http_unavailable target=$target count=$transport_failed - that many declared non-standard HTTP listener(s) for this target did not answer at the transport (connection refused, timed out, or an unhandled protocol), so no response was examined for them. 'Filtered'/connection-refused and 'answered cleanly' are different facts - this is not evidence the listener speaks HTTP cleanly."
   fi
 
   if (( probed_ok == 0 )); then

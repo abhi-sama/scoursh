@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# modules/image/langdeps.sh - IMG-11 (data/scoursh-image-scan-design/
-# report.md §2.2, §4.1's IMAGE-LANGDEP-* row and §5.3's IMG-11 row):
+# modules/image/langdeps.sh - IMG-11:
 # language dependencies (npm/RubyGems/Composer/PyPI/Maven/Go) shipped INSIDE
 # the image rootfs, found by reusing the four existing SCA tree-walkers -
 # `sca_scan_tree`, `sca_scan_python_tree`, `sca_scan_java_tree`
@@ -10,10 +9,10 @@
 # and every `data/advisories.db` lookup below is the identical code
 # `scan.sh sca` already runs against a checked-out repository.
 #
-# THE TWO BINDING CAVEATS THIS FILE EXISTS TO SATISFY (report.md §2.2):
+# THE TWO BINDING CAVEATS THIS FILE EXISTS TO SATISFY:
 #
 #   Caveat 1 - this is the ONE image-scanning case that needs a fuller
-#   rootfs extraction than report.md §1.6's cheap-metadata-only invariant
+#   rootfs extraction than acquire.sh's cheap-metadata-only invariant
 #   (a handful of exact, declared paths). Section 1 below is the bound:
 #   IMAGE_LANGDEPS_DIRS x IMAGE_LANGDEPS_FILENAMES, a fixed, declared cross
 #   product of conventional manifest locations, extracted through the SAME
@@ -82,7 +81,7 @@ SCOURSH_IMAGE_LANGDEPS_SOURCED=1
 source "${BASH_SOURCE[0]%/*}/../sca/go_engine.sh"
 
 # ---------------------------------------------------------------------------
-# 1. The bounded, declared candidate path set (report.md §2.2 caveat 1)
+# 1. The bounded, declared candidate path set (caveat 1)
 # ---------------------------------------------------------------------------
 # Every path this module will ever ask `image_collect_metadata` to extract
 # for a language manifest is the cross product of these two arrays - a
@@ -139,7 +138,7 @@ image_langdeps_candidate_paths() {
 }
 
 # ---------------------------------------------------------------------------
-# 2. Re-emission under IMAGE-LANGDEP-* (report.md §2.2 caveat 2)
+# 2. Re-emission under IMAGE-LANGDEP-* (caveat 2)
 # ---------------------------------------------------------------------------
 
 # `_image_langdeps_emit_vulnerable_dep IMAGE_ID` - `_DF` (lib/findings.sh)
@@ -245,7 +244,7 @@ _image_langdeps_transform_shard() {
 # coverage check this ticket owns. Language-dependency scanning produced no
 # meaningful examination of this image, for one of two DETAIL reasons:
 # `no_advisories_db` (the same data/advisories.db this scan needs is
-# missing/unreadable - report.md §2.3's shared-file reuse means this is the
+# missing/unreadable - the shared advisories.db reuse means this is the
 # identical file IMAGE-COV-NO_ADVISORY_DB-01 already gates the distro side
 # on, but that check id belongs to the DISTRO-ecosystem family in
 # checks-advisories.rules; this is its own family, own file, per report.md
@@ -266,7 +265,7 @@ image_langdeps_report_not_scanned() {
       ;;
     *)
       log_warn "image: no language manifest found under any of this module's declared candidate locations for image '$image_id' - NO language dependency was checked"
-      detail_text="This image was opened successfully, but no manifest file (package-lock.json, requirements.txt, go.mod, and similar) was present at any of this module's declared conventional locations. This module bounds its search to a fixed, declared set of candidate directories (data/scoursh-image-scan-design/report.md §2.2) rather than a full rootfs dump; a manifest at a non-conventional path is out of scope and was not examined."
+      detail_text="This image was opened successfully, but no manifest file (package-lock.json, requirements.txt, go.mod, and similar) was present at any of this module's declared conventional locations. This module bounds its search to a fixed, declared set of candidate directories rather than a full rootfs dump; a manifest at a non-conventional path is out of scope and was not examined."
       ;;
   esac
 
@@ -352,7 +351,7 @@ image_langdeps_scan() {
   fi
 
   # Reuse the existing SCA walkers, UNMODIFIED, pointed at the bounded
-  # destroot above (report.md §2.2: "no new parser"). A shadow, meta-less
+  # destroot above ("no new parser"). A shadow, meta-less
   # run directory (this section's own header paragraph) keeps every raw
   # module=sca / cell=$SCOURSH_PATH_ROOT finding they emit OUT of this run's
   # real shard set; `_image_langdeps_transform_shard` below is what actually

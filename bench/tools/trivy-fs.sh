@@ -3,7 +3,7 @@
 # --scanners vuln) SCA adapter (B5).
 #
 # NAMED `trivy-fs`, NOT `trivy` - a deliberate reservation. `docs/COMPARISON.md`
-# and the scout report's own roster (report.md §6.2) name Trivy TWICE, once
+# names Trivy TWICE, once
 # per category: `trivy config` for IaC (a hypothetical future
 # `bench/tools/trivy.sh` for that leg) and `trivy fs --scanners vuln` for SCA,
 # here. `<tool>_run` takes no category argument (bench/run-tool.sh), so one
@@ -19,7 +19,7 @@
 # reachability to mirror.gcr.io was independently confirmed fast (HTTP 200
 # and 401 responses in well under a second) at the same time, so this is not
 # a blanket egress failure, and Trivy's `config`-only IaC path (no DB needed) already
-# ran sub-second in the scout report's own pilot on a sibling host - it is
+# ran sub-second in an earlier pilot on a sibling host - it is
 # specific to this host's ability to complete a fresh `fs --scanners vuln` DB
 # pull. `--skip-db-update` against the pre-existing cached DB (dated on disk
 # to 2026-09-08, two days before this leg's run - see the leg's own results

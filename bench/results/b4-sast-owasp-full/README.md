@@ -4,7 +4,7 @@
 `bench/results/smoke-owasp-sast-192/` (that result stays as the harness's own
 proof-of-rig), and it is not published anywhere in `docs/` - that is ticket
 B9, deliberately separate, per `bench/README.md`'s "what must not be
-published" rules and the scout report's §7.3.
+published" rules.
 
 ## What was run
 
@@ -12,7 +12,7 @@ published" rules and the scout report's §7.3.
 |---|---|
 | Corpus | `OWASP-Benchmark/BenchmarkJava` @ `20cbf3d11123347e47ed89541e6942836def53f7` (GPL-2.0) |
 | Cases | **all 2,740** - every category (`sqli cmdi ldapi pathtraver crypto hash weakrand xss trustbound securecookie xpathi`), every real and sanitized-trap case, none excluded |
-| scoursh | `0.1.0-dev+8b637cae9ce6`, `scan.sh sast --format json`, defaults (`--profile-scan full --min-confidence low`), **not `--use-engines`** - the fair baseline the scout report's §6.1 requires |
+| scoursh | `0.1.0-dev+8b637cae9ce6`, `scan.sh sast --format json`, defaults (`--profile-scan full --min-confidence low`), **not `--use-engines`** - the fair baseline this harness requires |
 | Semgrep (documented default) | `1.176.0`, `--config p/default` |
 | Semgrep (maximum free ruleset) | `1.176.0`, `--config p/security-audit --config p/owasp-top-ten` |
 | Host | one macOS machine, one run each |
@@ -26,7 +26,7 @@ sampled through the same tool as a matter of reuse, not a stratified subset -
 
 ### The two Semgrep gate configurations, per methodology rule R5
 
-`bench/README.md`'s rule 3 and the scout report's §5.1 R5 require every tool
+`bench/README.md`'s methodology requires every tool
 run at **(a) its documented default** and **(b) its maximum free ruleset**,
 both published, so a reader is never left to infer which one produced a
 number. `--config auto` was tried first as the literal reading of "documented
@@ -39,8 +39,7 @@ existing `bench/tools/semgrep.sh` is unchanged and remains the maximum-ruleset
 column. Each run's own `MANIFEST` carries its exact `gate:` line - never left
 to be inferred from the tool id.
 
-scoursh has one gate here, not two, and that is a decision already made and
-stated in the scout report's §6.1: scoursh's rule set is fixed (it ships no
+scoursh has one gate here, not two, since scoursh's rule set is fixed (it ships no
 alternate "maximum" pack), and `--use-engines` would make scoursh *wrap* the
 very Semgrep/Gitleaks/Trivy adapters it is being benchmarked against - a
 scoursh-with-engines column is Semgrep versus Semgrep plus scoursh's own
@@ -76,7 +75,7 @@ bench/score.sh --truth bench/corpora/_samples/sast-full/truth --results <dir> --
 ```
 
 Only the first line needs the network. `scoursh`'s run over 2,740 files took
-~400s wall clock (the ~38s fixed startup the scout report's §3.3 measured,
+~400s wall clock (a ~38s fixed startup cost,
 plus ~0.13s/file here - a lower marginal rate than the 0.2-0.4s/file measured
 against a smaller sample, consistent with the fixed cost being the dominant
 term at small n); each Semgrep gate took ~15s.
@@ -102,14 +101,14 @@ for all three, since none of the three tools here claims them):**
 | semgrep-default (p/default) | 90.2% | 42.3% | 0.689 | **+0.479** |
 
 `J = 0.000` is a coin flip. **scoursh scores at essentially a coin flip on
-this corpus at full corpus size**, matching the scout report's 192-case pilot
-(`J = -0.031` there) in direction and magnitude - this is not new information,
+this corpus at full corpus size**, matching this project's own 192-case pilot leg
+(`bench/results/smoke-owasp-sast-192/`, `J = -0.031` there) in direction and magnitude - this is not new information,
 it is the same finding confirmed at 14x the sample size with the full,
 unbalanced, real corpus composition rather than a hand-balanced stratified
 draw. Both Semgrep configurations land solidly above the coin flip, with the
 maximum ruleset and the documented default within a few points of each other
 - the two gate configurations do **not** materially change Semgrep's ranking
-relative to scoursh here, which is itself worth stating: R5 exists so a
+relative to scoursh here, which is itself worth stating: running both exists so a
 benchmark cannot be accused of picking whichever Semgrep configuration
 flatters a conclusion, and here it would not have mattered which one was
 picked.
@@ -137,7 +136,7 @@ columns rather than one.
 
 ## Per-category diagnosis worth carrying forward
 
-- **`ldapi` reproduces the scout report's diagnostic case exactly, at 5x the
+- **`ldapi` reproduces the 192-case pilot's diagnostic case exactly, at 5x the
   sample size.** scoursh: 27 TP, 0 FN, 32 FP, 0 TN - **100% recall and 100%
   false-positive rate**. It detects the presence of an LDAP filter
   construction, not the presence of the vulnerability, so it flags every case
@@ -163,8 +162,7 @@ columns rather than one.
   environment (`command -v bandit` / `command -v gosec` both fail), and - this
   is the more important half - **neither would be applicable even if
   installed**: OWASP Benchmark is a Java-only corpus, and Bandit/gosec have no
-  Python or Go source to analyse in it. The scout report's own §6.2 comparison
-  roster lists both as fair baselines *scoped to their own language*, which
+  Python or Go source to analyse in it. Both are fair baselines *scoped to their own language*, which
   this corpus does not offer. This is a scope mismatch, not an availability
   gap, and it is recorded as such rather than as a silent omission.
 - **A NIST Juliet Java slice was investigated and found NOT obtainable within
@@ -212,8 +210,8 @@ columns rather than one.
   sample of it, so - unlike the smoke result - there is no sampling variance
   to worry about in the counts themselves; the 2,740-case denominator is the
   entire published ground truth this corpus offers for these categories.
-- **This confirms, rather than discovers, the scout report's prediction**
-  (§7.1: "SAST (taint-shaped defects): scoursh loses heavily; Youden J near or
+- **This confirms, rather than discovers, the smoke leg's own prediction**
+  ("SAST (taint-shaped defects): scoursh loses heavily; Youden J near or
   below zero" - *measured*). Nothing here is a new finding about scoursh's
   capability; it is the B4 leg's job to turn that prediction into a real,
   reproducible, full-corpus, dual-gate-config number, which this is.

@@ -150,7 +150,7 @@ _fp_components_for() {
     cloud) printf '%s\n' account_id region resource_key sub_key ;;
     posture) printf '%s\n' control_id scope_key ;;
     net) printf '%s\n' target host port transport ;;
-    # IMAGE (data/scoursh-image-scan-design/report.md §3.4): SCA's three
+    # IMAGE: SCA's three
     # components plus image_id, so two images scanned in one run cannot
     # collide - "Not the version" applies here for the identical reason
     # SCA's own profile excludes one (§9.2).

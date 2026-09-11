@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 # modules/network/reachability_engine.sh - the pure half of the NET-06
-# reachability probe (data/scoursh-network-scan-design/report.md §3.1, §5.1,
-# §5.2, §9 decision D5; the NET-06 row in its §7 staged plan).
+# reachability probe.
 #
 # Owns:
-#   report.md §3.1  the THREE-STATE classification a probe reports as -
-#                    open/not-open/filtered - and what each is REPORTED AS:
+#   THREE-STATE      the THREE-STATE classification a probe reports as -
+#   classification   open/not-open/filtered - and what each is REPORTED AS:
 #                    `open` is input to the expect-closed comparison below;
 #                    `not-open` is the NET-PORT-DECLARED_NOT_ANSWERING-01
 #                    finding; `filtered` is NEVER a finding and NEVER folded
-#                    into `not-open` (report.md §5.2 rule 4) - it is a
+#                    into `not-open` - it is a
 #                    counted coverage_reduction, because "the port did not
 #                    answer" and "the port refused" are different facts.
-#   report.md §9 D5  RESOLVED option (a): the "this port should be closed"
+#   expect-closed    RESOLVED option (a): the "this port should be closed"
 #                    expectation lives in config/posture.conf
 #                    (rules/RULE-FORMAT.md §9.6.4, already frozen), keyed on
 #                    `scope-key`.  §9.6.4's own key table describes scope-key
@@ -272,7 +271,7 @@ _reach_row_collect() {
 }
 
 # ---------------------------------------------------------------------------
-# 2. The config/posture.conf expect-closed reader (report.md §9 D5)
+# 2. The config/posture.conf expect-closed reader
 # ---------------------------------------------------------------------------
 # `reach_posture_load TARGET [PATH]` - sets:
 #

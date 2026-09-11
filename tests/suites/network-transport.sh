@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # tests/suites/network-transport.sh - modules/network/transport.sh:
 # transport POSTURE on non-HTTP listeners and the `NET-TRANSPORT-*` checks
-# (NET-10, data/scoursh-network-scan-design/report.md §3.3, §5.1, §5.2, the
-# NET-10 row in its §7 staged plan).  NET-06's open/not-open/filtered
+# (NET-10).  NET-06's open/not-open/filtered
 # classification, NET-07's zero-byte banner read and
 # modules/dast/passive/tls_engine.sh's tls_probe/tls_parse_session are all
 # reused rather than re-implemented (their own low-level parsing decisions
@@ -312,7 +311,7 @@ assert_contains "$IMAP_LINES" 'loc_transport=https' 'loc_transport is set'
 assert_not_contains "$IMAP_LINES" 'loc_method=' 'no loc_method field - that is the dast profile, not net''s (lib/findings.sh _fp_components_for net: target host port transport)'
 assert_contains "$IMAP_LINES" 'module=net' 'the finding is module=net, never module=dast'
 assert_not_contains "$IMAP_LINES" 'module=dast' 'confirmed the other way too'
-assert_contains "$IMAP_LINES" 'confidence=medium' 'both checks report medium confidence (report.md §5.1''s own table), never high - port-based protocol identification is a stated limitation'
+assert_contains "$IMAP_LINES" 'confidence=medium' 'both checks report medium confidence, never high - port-based protocol identification is a stated limitation'
 
 t_case 'not-open (5432) and filtered (9999) are ONE combined, counted net_check_not_applicable reduction naming both check ids'
 assert_not_contains "$FIND" 'loc_port=5432' 'no finding names port 5432'
@@ -345,7 +344,7 @@ assert_eq 2 "$(grep -c '^requires-cmd: openssl' <<<"$RULES_FILE")" \
   'both records declare requires-cmd: openssl, matching the phase''s own dependency check'
 
 # =============================================================================
-printf '\n-- report.md §5.2 rule 3: no non-base-url listener is a named, counted, honest skip --\n'
+printf '\n-- no non-base-url listener is a named, counted, honest skip --\n'
 # =============================================================================
 
 t_case 'a base-url-only target (no listeners.json at all, NET-05 rule 3) records no_declared_listeners and exits 0'

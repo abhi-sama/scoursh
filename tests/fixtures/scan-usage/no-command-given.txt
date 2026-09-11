@@ -30,7 +30,68 @@ Commands:
                                          docs/USAGE.md's config/discovery.conf
                                          section for a 30-second HAR-capture
                                          recipe.)
-  cloud    [--live] [--profile <p>] [--regions all|us-east-1,...] [--assume-role ARN]
+  cloud    [--live] [--profile <p>] [--regions all|us-east-1,...]
+           [--i-own-account <account-id>] [--assume-role ARN]
+                            (read-only throughout: every AWS call goes through
+                              a chokepoint that refuses any operation which is
+                              not describe-/list-/get-.  --live is what makes
+                              it talk to AWS at all; without it no API call is
+                              made.  --regions defaults to EVERY region the
+                              account has enabled, because auditing one region
+                              and reporting clean says nothing about the rest.
+                              --i-own-account is optional and checked against
+                              the account the credentials actually resolve to
+                              (exit 2 on a mismatch), which is what catches a
+                              stale command pointed at the wrong account.
+                              --assume-role ARN iterates a read-only role
+                              across every ACTIVE account of the organization
+                              the resolved credentials belong to
+                              (organizations list-accounts, then sts
+                              assume-role per account) - the ARN's account
+                              segment is a template, rewritten per member
+                              account, so name any account and role name/path
+                              that exists identically in every account to
+                              scan.  --i-own-account is still checked against
+                              the CALLING identity only, not per member
+                              account.)
+  network  --target <name-from-scope> [--intensity passive|safe|active]
+           [--i-own-target <same-name>]
+                            (service-posture scanning over the DECLARED
+                              listener set config/scope.conf's own
+                              base-url/extra-host entries name for
+                              --target - never a port sweep or host
+                              discovery: a port scoursh was not told about is
+                              never probed, exactly as an unauthorised host
+                              is never requested by `dast`.  Gated by the
+                              identical chokepoint, ceilings and
+                              --i-own-target affirmation `dast` uses - one
+                              TCP connect costs exactly what one HTTP
+                              request costs.  Built: all six scan phases
+                              (reachability, banner/HTTP disclosure, TLS
+                              posture, transport posture) have landed; run
+                              `scan.sh network --help` for the current phase
+                              count.  A run whose target has no non-web
+                              listener declared still resolves the target and
+                              records why it found nothing rather than
+                              reporting a clean scan.)
+  image    --image <id> [--source <path>]
+                            (built-container-image scanning: offline
+                              installed-package enumeration and CVE matching
+                              against a docker-save tarball or OCI image
+                              layout the operator supplies - never a
+                              registry pull. --image is a STABLE id you choose
+                              (survives a rebuild or a retag - the coverage
+                              cell, not the volatile digest), never validated
+                              against the image's actual content.
+                              Built: acquisition, apk/dpkg/rpm enumeration and
+                              version comparison, language-dependency
+                              extraction, and the config-blob checks have all
+                              landed; run `scan.sh image --help` for the
+                              current component count. A missing advisory
+                              database for the image's distro release records
+                              why nothing was found rather than reporting a
+                              clean scan; --source overrides the configured
+                              path for this run only.)
   all      run every module for which inputs are configured
   diff     --against <prior-run-dir>
   report   --from <prior-run-dir>
@@ -84,11 +145,15 @@ Global:
   --jobs N                  (worker parallelism; on a network module it is
                               also the ceiling on simultaneous connections and
                               is held to 4 without --i-own-target)
-  --format json,sarif,html,md,audit
-                              (audit is opt-in: it is never in the default
-                              list, and requesting it never drops any other
-                              format - report-audit.html is written alongside
-                              report.html, never in place of it)
+  --format json,sarif,html,md,audit,agent
+                              (audit and agent are opt-in: neither is ever in
+                              the default list, and requesting one never drops
+                              any other format. audit writes report-audit.html
+                              alongside report.html, never in place of it.
+                              agent writes reports/<run>/agent-fix.json, a
+                              compact, schema-projected findings file for a
+                              downstream fixing agent - see
+                              docs/AGENT-FORMAT.md)
   --fail-on SEVERITY        (critical|high|medium|low|info|none)
   --fail-on-new             (requires --fail-on; usage error otherwise)
   --min-confidence LEVEL    (high|medium|low; default low)

@@ -20,8 +20,8 @@
 #
 #   DETERMINISTIC - selection is the first N by `LC_ALL=C sort` of the case
 #   id, never a random draw and never filesystem order.  A benchmark whose
-#   sample changes between runs cannot be re-derived by a reader, which is the
-#   scout report's rule R7, and it also makes "the score moved" ambiguous
+#   sample changes between runs cannot be re-derived by a reader, and it also
+#   makes "the score moved" ambiguous
 #   between "the tool changed" and "the sample did".
 #
 # The sample directory is written under bench/corpora/, which is gitignored:
