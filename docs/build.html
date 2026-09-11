@@ -79,6 +79,8 @@
   }
   .field input[aria-invalid="true"]{border-color:var(--crit)}
   .field .help{margin:.35rem 0 0;font-size:.8rem;color:var(--text-3);max-width:64ch;line-height:1.45}
+  .field-warn{margin:.35rem 0 0;font-size:.8rem;color:var(--orange);max-width:64ch;line-height:1.45;font-weight:600}
+  .field-warn[hidden]{display:none}
   .field-bool > label{display:flex;align-items:center;gap:.5rem;font-family:var(--sans);font-weight:400;font-size:.92rem}
   .field-bool code{font-weight:600}
   .field-bool input{width:1.05rem;height:1.05rem;margin:0}
@@ -318,6 +320,79 @@ FIELD_DEFS.guided = {kind:"bool", label:"--guided", help:"Launch the interactive
 FIELD_DEFS["print-command"] = {kind:"bool", label:"--print-command", help:"With --guided, print the composed command at the review step instead of running it."};
 
 /* -------------------------------------------------------------------------
+ * Field-shape warnings. These catch a mistake this page CAN know about
+ * without running anything - a value pasted into --target that is plainly
+ * a URL, not a config/scope.conf id, being the incident that motivated this
+ * table (an operator pasted a base-url into --target and the pre-preflight
+ * scan.sh scanned for three hours before refusing). Deliberately kept
+ * SEPARATE from FIELD_DEFS, never merged into it: FIELD_DEFS is parsed as a
+ * plain object literal by tests/lib/build_page_model.py's structural
+ * cross-check (no function values are supported there, by design - see that
+ * file's own header), so a validator function living inside a FIELD_DEFS
+ * entry would break that parser. This table is never read by it.
+ *
+ * Every validator is non-blocking: it returns a message string or null, and
+ * a non-null message is shown next to the field, never stops the command
+ * from composing or copying. The operator may know something this page does
+ * not.
+ * ---------------------------------------------------------------------- */
+
+var FIELD_VALIDATORS = {};
+
+(function () {
+  // Mirrors lib/config.sh's _scope_target_not_found_message regex on dev
+  // exactly: `^[A-Za-z][A-Za-z0-9+.-]*://` (a URL scheme) or
+  // `^[^[:space:]/]+:[0-9]+/?$` (a bare host:port). This page additionally
+  // flags a leading "/" and embedded whitespace - shapes that are still
+  // plainly not a bare scope.conf id, even though scan.sh's own regex does
+  // not need to catch them (a URL's scheme:// already does, in the exact
+  // case that actually happened).
+  var URL_SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+  var HOST_PORT_RE = /^[^\s/]+:[0-9]+\/?$/;
+
+  function targetIdHint(flagName) {
+    return function (raw) {
+      var v = String(raw === undefined || raw === null ? "" : raw);
+      if (v.trim() === "") { return null; }
+      var t = v.trim();
+      var looksOff = URL_SCHEME_RE.test(t) || HOST_PORT_RE.test(t) || t.charAt(0) === "/" || /\s/.test(v);
+      if (!looksOff) { return null; }
+      // Wording mirrors _scope_target_not_found_message (lib/config.sh) so
+      // the browser hint and the CLI's own exit-3 refusal agree.
+      return "'" + t + "' looks like a URL or host:port - --" + flagName +
+        " wants the ID a target is declared UNDER in config/scope.conf, not its base-url value; check that target's own base-url: field.";
+    };
+  }
+
+  FIELD_VALIDATORS.target = targetIdHint("target");
+  FIELD_VALIDATORS["i-own-target"] = targetIdHint("i-own-target");
+
+  FIELD_VALIDATORS.image = function (raw) {
+    var v = String(raw === undefined || raw === null ? "" : raw).trim();
+    if (v === "") { return null; }
+    if (v.indexOf("@") !== -1 || v.indexOf("/") !== -1 || v.indexOf(":") !== -1) {
+      return "'" + v + "' looks like a digest, tag, or registry reference - --image wants the stable id you chose in config/images.conf, never the volatile digest or tag.";
+    }
+    return null;
+  };
+
+  function nonNegativeIntegerHint(flagName) {
+    return function (raw) {
+      var v = String(raw === undefined || raw === null ? "" : raw).trim();
+      if (v === "") { return null; }
+      if (!/^[0-9]+$/.test(v)) {
+        return "'" + v + "' is not a whole, non-negative number - --" + flagName + " expects an integer.";
+      }
+      return null;
+    };
+  }
+
+  ["requests-per-second", "request-budget", "circuit-breaker-failures", "jobs"].forEach(function (flagName) {
+    FIELD_VALIDATORS[flagName] = nonNegativeIntegerHint(flagName);
+  });
+})();
+
+/* -------------------------------------------------------------------------
  * State
  * ---------------------------------------------------------------------- */
 
@@ -445,6 +520,9 @@ function renderField(flag) {
   }
 
   if (def.help) { wrap.appendChild(el("p", {"class": "help", text: def.help})); }
+  if (FIELD_VALIDATORS[flag]) {
+    wrap.appendChild(el("p", {"class": "field-warn", id: "warn-" + flag, hidden: "hidden"}));
+  }
   return wrap;
 }
 
@@ -521,6 +599,18 @@ var STATIC_NOTES = {
   report: []
 };
 
+// `--i-own-target` is the builder's own stated rule (its own help text:
+// "Must equal --target exactly") and scan.sh's real requirement alike - a
+// value that merely LOOKS similar is still a refusal at runtime. True only
+// once both are non-empty and differ, so an unset --i-own-target is left to
+// the existing "required to raise intensity" note above rather than double
+// counted here.
+function targetAffirmMismatch() {
+  var t = (state.fields.target || "").trim();
+  var i = (state.fields["i-own-target"] || "").trim();
+  return t !== "" && i !== "" && t !== i;
+}
+
 function computeNotes() {
   var cmd = state.command;
   var f = state.fields;
@@ -532,6 +622,9 @@ function computeNotes() {
     var needsAffirmation = f.intensity === "active" || (f["allow-intrusive"] && (f.target || "").trim() !== "");
     if (needsAffirmation && !(f["i-own-target"] || "").trim()) {
       notes.push({kind: "warn", text: "--intensity active (and --allow-intrusive) require --i-own-target, set to the exact same value as --target."});
+    }
+    if (targetAffirmMismatch()) {
+      notes.push({kind: "warn", text: "--i-own-target ('" + (f["i-own-target"] || "").trim() + "') does not equal --target ('" + (f.target || "").trim() + "') - it must match exactly, or scan.sh refuses it."});
     }
     var discoveryFlags = ["openapi", "har", "postman", "graphql-schema"];
     var anyDiscovery = discoveryFlags.some(function (k) { return (f[k] || "").trim() !== ""; });
@@ -630,6 +723,60 @@ function compose() {
 
 var lastComposed = "";
 
+// Fields keep their typed value in state.fields across a surface switch
+// (Reset is the only thing that clears it), so a stray --image value left
+// over from a prior "image" surface visit must NOT flag a warning on a
+// "dast" command that never composes --image at all - only checking flags
+// this surface's own COMMAND_GROUPS/GLOBAL_GROUPS actually compose keeps
+// the trailing note honest about the command actually on screen.
+function activeFlagSet() {
+  var set = {};
+  flattenFlags(COMMAND_GROUPS[state.command] || []).forEach(function (fl) { set[fl] = true; });
+  flattenFlags(GLOBAL_GROUPS).forEach(function (fl) { set[fl] = true; });
+  return set;
+}
+
+// True when any FIELD_VALIDATORS shape check, or the --target/--i-own-target
+// equality rule, currently has something to say. Non-blocking by design
+// (the operator may know something this page does not) - this only decides
+// whether the composed command carries a trailing note, never whether Copy
+// is enabled.
+function hasAnyFieldOrCrossWarning() {
+  var active = activeFlagSet();
+  var flag;
+  for (flag in FIELD_VALIDATORS) {
+    if (!Object.prototype.hasOwnProperty.call(FIELD_VALIDATORS, flag)) { continue; }
+    if (!active[flag]) { continue; }
+    if (FIELD_VALIDATORS[flag](fieldValue(flag), state.fields)) { return true; }
+  }
+  return !!(active.target && active["i-own-target"] && targetAffirmMismatch());
+}
+
+// Updates the per-field warning boxes renderField already created (never
+// rebuilds the fields themselves, so an in-progress edit keeps its caret and
+// focus) plus aria-invalid, which the page's own CSS already styles.
+function updateFieldWarnings() {
+  var flag, box, input, msg;
+  for (flag in FIELD_VALIDATORS) {
+    if (!Object.prototype.hasOwnProperty.call(FIELD_VALIDATORS, flag)) { continue; }
+    box = document.getElementById("warn-" + flag);
+    input = document.getElementById("field-" + flag);
+    if (!box && !input) { continue; }
+    msg = FIELD_VALIDATORS[flag](fieldValue(flag), state.fields);
+    if (box) {
+      box.textContent = msg ? "Check: " + msg : "";
+      box.hidden = !msg;
+    }
+    if (input) { input.setAttribute("aria-invalid", msg ? "true" : "false"); }
+  }
+  if (targetAffirmMismatch()) {
+    var tIn = document.getElementById("field-target");
+    var iIn = document.getElementById("field-i-own-target");
+    if (tIn) { tIn.setAttribute("aria-invalid", "true"); }
+    if (iIn) { iIn.setAttribute("aria-invalid", "true"); }
+  }
+}
+
 function renderCommandOutput() {
   var result = compose();
   var out = document.getElementById("cmd-output");
@@ -644,17 +791,24 @@ function renderCommandOutput() {
     msg.classList.add("err");
     lastComposed = "";
   } else {
-    out.textContent = result.text;
+    var text = result.text;
+    var warned = hasAnyFieldOrCrossWarning();
+    if (warned) { text += "   # warning(s) above - review before running"; }
+    out.textContent = text;
     out.classList.remove("invalid");
     copyBtn.disabled = false;
-    msg.textContent = "";
+    msg.textContent = warned ? "One or more fields look off - see the warning(s) above before running this." : "";
     msg.classList.remove("err");
-    lastComposed = result.text;
+    // Include the warning note in the copied text too, deliberately: a
+    // copy-paste that never scrolls back up to the field warnings should
+    // still carry evidence that something needs a second look.
+    lastComposed = text;
   }
 }
 
 function renderAll() {
   renderNotes("cmd-notes", computeNotes());
+  updateFieldWarnings();
   renderCommandOutput();
 }
 
