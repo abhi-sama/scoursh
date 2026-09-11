@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# modules/network/httpport_engine.sh - the pure, testable half of NET-09
-# (data/scoursh-network-scan-design/report.md §3.2 item 3, §7 Tier 2):
-# "HTTP identification on a non-standard port ... one `http_request` GET.
+# modules/network/httpport_engine.sh - the pure, testable half of NET-09:
+# HTTP identification on a non-standard port - one `http_request` GET.
 # Everything modules/dast/passive/banner.sh already does, pointed at port
 # 8080 instead of 443, and it reuses banner_engine.sh's product
-# normalisation and the data/versions.db `banner` namespace unchanged."
+# normalisation and the data/versions.db `banner` namespace unchanged.
 #
 # THE ENGINE.SH / PHASE-SCRIPT SPLIT IS modules/sast/'s, reused one level
 # down exactly as modules/network/inventory.sh and every modules/dast/

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # tests/suites/network-tlsport.sh - modules/network/tlsport.sh: TLS
 # identification on a non-`base-url` listener, and the `NET-TLS-*` checks
-# (NET-08, data/scoursh-network-scan-design/report.md §3.2 item 2, §5.1,
-# §5.2, the NET-08 row in its §7 staged plan).
+# (NET-08).
 #
 # tls_engine.sh (modules/dast/passive/tls_engine.sh) IS REUSED VERBATIM BY
 # modules/network/tlsport.sh, so its own low-level parsing decisions (the
@@ -21,7 +20,8 @@
 #      `open` - reusing NET-06's own three-state mechanism on the SAME
 #      gate-pinned address. `not-open` and `filtered` are each their own
 #      counted coverage_reduction and NEVER a finding, NEVER collapsed into
-#      each other (report.md §5.2 rule 4, one listener down).
+#      each other - the same filtered/not-open distinction reachability.sh's
+#      own checks apply, one listener down.
 #   3. An `open` listener that is not actually TLS (the handshake produces no
 #      transcript, or a transcript with no session) is ALSO a counted
 #      coverage_reduction, never a silent clean run.
@@ -292,12 +292,12 @@ assert_not_contains "$WP_LINE" 'module=dast' 'confirmed the other way too'
 t_case 'not-open (5432) and filtered (9999) are aggregated, counted reductions - never a finding, never collapsed into each other'
 assert_not_contains "$FIND" 'loc_port=5432' 'no finding at all names port 5432'
 assert_not_contains "$FIND" 'loc_port=9999' 'no finding at all names port 9999'
-assert_contains "$META" 'reason=net_check_not_applicable' 'the not-open listener is recorded under this exact reason, per report.md''s own wording for this ticket'
+assert_contains "$META" 'reason=net_check_not_applicable' 'the not-open listener is recorded under this exact reason'
 assert_contains "$META" 'target=net-tls count=1' 'naming the real count for the not-open reduction'
 assert_contains "$META" 'reason=filtered' 'the filtered listener is a SEPARATE, distinct reduction'
 NCA_LINE=$(grep 'reason=net_check_not_applicable' <<<"$META" || true)
 assert_not_contains "$NCA_LINE" 'reason=filtered' \
-  'the two reasons never appear on the SAME line - FAILS if filtered were folded into not-open, report.md §5.2 rule 4 one module down'
+  'the two reasons never appear on the SAME line - FAILS if filtered were folded into not-open, the same filtered/not-open distinction one module down'
 
 t_case 'the open-but-not-TLS listener (2222) is ALSO a counted reduction, never a silent clean result'
 assert_not_contains "$FIND" 'loc_port=2222' 'no finding names port 2222'
@@ -317,7 +317,7 @@ assert_contains "$CR" 'NET-TLS-SELF_SIGNED-01' 'self-signed is recorded'
 assert_contains "$CR" 'NET-TLS-WILDCARD_CERT-01' 'wildcard is recorded'
 
 # =============================================================================
-printf '\n-- report.md §9.4 tls-expect-wildcard: the SAME certificate fires on one target and not the other --\n'
+printf '\n-- tls-expect-wildcard: the SAME certificate fires on one target and not the other --\n'
 # =============================================================================
 
 _tls_stub_probe_wc() {
@@ -353,7 +353,7 @@ assert_contains "$META" 'wildcard_certificate=' \
 export SCOURSH_TLS_PROBE=_tls_stub_probe
 
 # =============================================================================
-printf '\n-- report.md §5.2 rule 3: no non-base-url listener is a named, counted, honest skip --\n'
+printf '\n-- no non-base-url listener is a named, counted, honest skip --\n'
 # =============================================================================
 
 t_case 'a base-url-only target (no listeners.json at all) records no_declared_listeners and exits 0'

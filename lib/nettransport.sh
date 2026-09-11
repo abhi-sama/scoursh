@@ -3,10 +3,9 @@
 # the NET-07 read-on-connect primitive added to it below.
 #
 # Owns:
-#   data/scoursh-network-scan-design/report.md §6.2-6.6 (the measured
-#     transport decisions this file implements) and the NET-03 row in §7.
-#   data/scoursh-network-scan-design/report.md §3.2 item 1, the NET-07 row
-#     in §7: "Connect, read up to N bytes with a deadline, close" -
+#   NET-03           the measured
+#     transport decisions this file implements.
+#   NET-07           Connect, read up to N bytes with a deadline, close -
 #     `net_read_banner`, section 4 below.  Landed here rather than as a
 #     private copy in modules/network/banner_engine.sh because it is a
 #     TRANSPORT primitive, not a banner-parsing one - the identical
@@ -24,7 +23,7 @@
 # `modules/dast/passive/tls.sh` for the same division of labour applied to a
 # raw TLS handshake.
 #
-# CLASSIFICATION (binding, design report §6.3): rc=0 -> open; deadline fired
+# CLASSIFICATION (binding): rc=0 -> open; deadline fired
 # -> filtered; anything else -> not-open.  The connect's own strerror text
 # ("Connection refused", "Operation timed out", ...) is kept as EVIDENCE ONLY
 # by a caller that wants it and is NEVER the discriminator here - it is
@@ -37,14 +36,14 @@
 # Classify on the connect's own exit status and the deadline timer, never on
 # message text.
 #
-# DEADLINE (design report §6.1/§6.3): `timeout(1)` is absent on macOS, so the
+# DEADLINE: `timeout(1)` is absent on macOS, so the
 # deadline is FORK-POLL-KILL: the connect attempt runs in a background
 # subshell that records its own result to a scratch file, this function polls
 # with lib/core.sh's `msleep` (the tension-24 capability-measured sleep -
 # `read -t </dev/null` does not sleep at all, finding F14), and
 # `kill -TERM`s the subshell once the deadline elapses with no result yet.
 #
-# CAPABILITY (design report §6.2, mirroring lib/paranoid.sh:163's own
+# CAPABILITY (mirroring lib/paranoid.sh:163's own
 # `/dev/udp`-without-`--enable-net-redirections` caveat): a bash built
 # without `--enable-net-redirections` has no `/dev/tcp` at all.  Probed once
 # per run and degraded to a recorded `coverage_reduction` with a stated
@@ -228,9 +227,9 @@ _net_connect_default() {
     # Either the deadline elapsed with the subshell still connecting, or the
     # subshell is gone without ever writing a result (the identical "we
     # never got an answer" fact, from a different cause).  Both are
-    # `filtered`, per §6.3's binding rule - never inferred from any message
-    # text, and never folded into `not-open` (design report §3.1: "the port
-    # did not answer" and "the port refused" are different facts).
+    # `filtered`, per this file's own binding classification rule - never inferred from any message
+    # text, and never folded into `not-open`: "the port
+    # did not answer" and "the port refused" are different facts.
     kill -TERM "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
     state=filtered
@@ -262,13 +261,13 @@ net_connect_probe() {
 # authorizes nothing) and writes up to MAX_BYTES of whatever the listener
 # volunteers, unprompted, into OUTFILE.  OUTFILE always exists afterward, and
 # is empty when nothing was read - the caller decides what an empty read
-# means (data/scoursh-network-scan-design/report.md §5.2 rule 2: "sent
+# means: "sent
 # nothing" is its own honest outcome, `no_banner`, never folded into a
-# connect-failure state).
+# connect-failure state.
 #
 # OUTFILE, NOT STDOUT, IS THE CONTRACT, and that is deliberate: a service's
-# own greeting is bytes it chose (report.md §5.3 - "not text by construction"
-# one step further out than an HTTP body), so it may contain a NUL byte a
+# own greeting is bytes it chose - not text by construction,
+# one step further out than an HTTP body - so it may contain a NUL byte a
 # bash STRING cannot hold at all (AGENTS.md's "Things measured on this
 # codebase" - the identical trap `_net_json_flatten`'s own JSON reading
 # guards against, one layer up).  A caller that wants text sanitizes the
@@ -343,8 +342,8 @@ _net_read_banner_default() {
     # never renamed into place (the write-then-rename above only happens on
     # a graceful finish), so OUTFILE stays empty - a killed attempt reports
     # the same honest "nothing captured" outcome as a listener that truly
-    # sent nothing, which is the correct fold: report.md §5.2 rule 2 names
-    # exactly one skip reason for this check, `no_banner`, not a second one
+    # sent nothing, which is the correct fold: this check names
+    # exactly one skip reason, `no_banner`, not a second one
     # for "we could not tell in time".
     kill -TERM "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true

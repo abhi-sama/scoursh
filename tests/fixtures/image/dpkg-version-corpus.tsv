@@ -14,9 +14,9 @@
 # PROVENANCE, STATED PLAINLY.  Rows here come from three places and nowhere
 # else:
 #
-#   1. The three dpkg cases data/scoursh-image-scan-design/report.md §2.4
+#   1. The three dpkg cases directly
 #      measured `modules/sca/semver.sh` getting WRONG.  These are the rows
-#      this ticket exists for and they are marked (report.md 2.4).
+#      this ticket exists for and they are marked (measured).
 #   2. dpkg's OWN PUBLISHED TEST VECTORS - the pairs its `Dpkg::Version`
 #      test suite asserts - transcribed by hand and marked (dpkg vector).
 #      They are the closest thing to a harvested corpus available offline:
@@ -38,12 +38,12 @@
 #
 # A	op	B	why
 
-# --- report.md §2.4's three measured semver.sh failures ---
+# --- measured semver.sh failures ---
 # Each is a pair modules/sca/semver.sh answers WRONG, and each is why this
 # file is a separate comparator rather than a reuse.
-1:2.30.2-1	>	2.39.5-1	epoch 1 beats any epoch-0 version, whatever the upstream (report.md 2.4)
-1.0	>	1.0~beta	a tilde sorts BEFORE everything, including the end of the string (report.md 2.4)
-5:1.0-1	>	10.0-1	epoch 5 beats upstream 10.0 - the epoch decides alone (report.md 2.4)
+1:2.30.2-1	>	2.39.5-1	epoch 1 beats any epoch-0 version, whatever the upstream (measured)
+1.0	>	1.0~beta	a tilde sorts BEFORE everything, including the end of the string (measured)
+5:1.0-1	>	10.0-1	epoch 5 beats upstream 10.0 - the epoch decides alone (measured)
 
 # --- THE EPOCH: compared first, and as an integer ---
 0:1.0	=	1.0	an absent epoch IS epoch 0, not a missing field

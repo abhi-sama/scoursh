@@ -12,7 +12,7 @@
 # is offline.
 #
 # scoursh's own no-egress rule is NOT weakened by this: the constraint binds
-# the tool under test, not the test rig (the scout report, §4.5).  bench/ is
+# the tool under test, not the test rig.  bench/ is
 # not on the scan path and nothing under lib/, modules/ or scan.sh references
 # it - `tests/suites/bench.sh` section G asserts that in both directions.
 #

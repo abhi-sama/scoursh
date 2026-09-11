@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# tests/suites/image-dpkg.sh - IMG-07 (data/scoursh-image-scan-design/
-# report.md §2.1's dpkg row and §5.3's IMG-07 row): dpkg installed-package
+# tests/suites/image-dpkg.sh - IMG-07: dpkg installed-package
 # ENUMERATION, unit-level, against committed fixture status files.
 #
 # What this suite proves, and what it is NOT for:
@@ -13,7 +12,7 @@
 #      Conffiles, a multi-line Description including a period-only
 #      continuation line) present in the fixture and correctly ignored
 #      rather than mistaken for a corrupt line or a new block.
-#      TRAP 1 (the Status gate, report.md §2.1 item 1): a package whose
+#      TRAP 1 (the Status gate): a package whose
 #      Status is `deinstall ok config-files` (files removed, only
 #      conffiles remain) is EXCLUDED - the fixture plants `perl-base` in
 #      that exact state so this suite fails if the gate is dropped. A
@@ -22,7 +21,7 @@
 #      "installed" - it is also EXCLUDED, proving the gate is an EXACT
 #      three-word match, not a substring/contains test that a naive
 #      `[[ $status == *installed* ]]` reading would wrongly pass.
-#      TRAP 2 (Source: vs Package:, report.md §2.1 item 2): `bash` carries
+#      TRAP 2 (Source: vs Package:): `bash` carries
 #      no `Source:` line at all and must resolve to source name `bash`
 #      (the explicit fallback); `zlib1g`/`libssl3` carry a plain `Source:`
 #      naming a different package (`zlib`/`openssl`); `libc6` carries a
@@ -40,8 +39,8 @@
 #      immediately before or after any of these three shapes is
 #      unaffected - state does not leak across a blank-line block
 #      boundary in either direction.
-#   C. A missing database (an Alpine image, or a scratch/distroless image,
-#      report.md §4.3) returns 1 with
+#   C. A missing database (an Alpine image, or a scratch/distroless image)
+#      returns 1 with
 #      `_DPKG_INSTALLED_REASON=no_package_db_found`, and leaves all three
 #      result arrays empty. A directory at the given path is refused the
 #      same way, never treated as a readable file.
@@ -54,12 +53,12 @@
 #      enumerates to zero packages, never a refusal.
 #   E. `modules/image/checks-dpkg.rules` parses under the real record
 #      loader with no diagnostics, registers exactly the one dpkg check id
-#      report.md §5.3's IMG-07 row calls for
+#      IMG-07 calls for
 #      (`IMAGE-PKG-VULNERABLE_OS_PACKAGE-02`, distinct from apk's own `-01`
 #      id in its own `checks-apk.rules`), and is discovered by
 #      `checks_registry_load` alongside every other per-owner registry
-#      under `modules/image/` - the "one registry per owner" shape
-#      report.md §5.1 requires.
+#      under `modules/image/` - the "one registry per owner" shape this
+#      module requires.
 #
 # NOT this suite's job: no version comparator exists for dpkg yet (IMG-08),
 # no advisory matching exists (IMG-09), and IMAGE-PKG-VULNERABLE_OS_PACKAGE-02
@@ -175,9 +174,9 @@ DPKG_INSTALLED_VERSIONS=(stale)
 DPKG_INSTALLED_SOURCES=(stale)
 _rc=0
 dpkg_installed_enumerate "$FIX/does-not-exist/status" || _rc=$?
-assert_eq 1 "$_rc" 'refusal is a plain 1, not a die/abort - a missing dpkg DB is the ordinary Alpine/scratch/distroless case, report.md §4.3'
+assert_eq 1 "$_rc" 'refusal is a plain 1, not a die/abort - a missing dpkg DB is the ordinary Alpine/scratch/distroless case'
 assert_eq no_package_db_found "$_DPKG_INSTALLED_REASON" \
-  'the exact declared coverage_reduction reason the brief and report.md §4.3 both name'
+  'the exact declared coverage_reduction reason for this case'
 assert_eq 0 "${#DPKG_INSTALLED_NAMES[@]}" 'DPKG_INSTALLED_NAMES is reset to empty, not left holding a stale prior result'
 assert_eq 0 "${#DPKG_INSTALLED_VERSIONS[@]}" 'DPKG_INSTALLED_VERSIONS is reset to empty too'
 assert_eq 0 "${#DPKG_INSTALLED_SOURCES[@]}" 'DPKG_INSTALLED_SOURCES is reset to empty too'
@@ -226,7 +225,7 @@ assert_eq 0 "$_load_rc" 'records_load returns 0 - no schema/format errors'
 assert_eq 0 "$RECORDS_ERRORS" \
   "modules/image/checks-dpkg.rules has 0 record-format diagnostics - FAILS on a schema mistake (a bad tags/coverage-scope/cwe/owasp value, a missing required key) that records_load would otherwise catch silently here and loudly only once scan.sh image loads every *.rules file at run time"
 
-t_case 'it registers exactly the one dpkg check id report.md §5.3s IMG-07 row calls for, distinct from apks own -01 id'
+t_case 'it registers exactly the one dpkg check id IMG-07 calls for, distinct from apks own -01 id'
 assert_eq 1 "$(records_count dpkgchecks)" 'exactly one record in the file'
 assert_eq 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-02' "$(records_id dpkgchecks 0)" \
   "that record's id - FAILS if it collided with apk's own IMAGE-PKG-VULNERABLE_OS_PACKAGE-01, which checks-apk.rules already owns"
@@ -234,6 +233,6 @@ assert_eq 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-02' "$(records_id dpkgchecks 0)" \
 t_case 'every per-owner image registry is discoverable by the same *.rules glob checks_registry_load uses'
 _files=$(cd -- "$ROOT/modules/image" && printf '%s\n' *.rules | sort)
 assert_eq $'checks-advisories.rules\nchecks-apk.rules\nchecks-config.rules\nchecks-coverage.rules\nchecks-dpkg.rules\nchecks-langdeps.rules\nchecks-rpm.rules' "$_files" \
-  'exactly these seven files (checks-dpkg.rules added by IMG-07, checks-rpm.rules added by IMG-12, checks-langdeps.rules added by IMG-11) - FAILS if a shared modules/image/checks.rules ever reappears (report.md §5.1s explicitly forbidden shape) or if this ticket appended into checks-apk.rules instead of shipping its own'
+  'exactly these seven files (checks-dpkg.rules added by IMG-07, checks-rpm.rules added by IMG-12, checks-langdeps.rules added by IMG-11) - FAILS if a shared modules/image/checks.rules ever reappears (an explicitly forbidden shape) or if this ticket appended into checks-apk.rules instead of shipping its own'
 
 t_summary image-dpkg

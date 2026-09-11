@@ -4,7 +4,7 @@
 `bench/results/b6-iac-kubernetes-goat/`; the secrets half is
 `bench/results/b6-secrets-leaky-repo/`. None of it is published anywhere in
 `docs/` — that is ticket B9, deliberately separate, per `bench/README.md`'s
-"what must not be published" rules and the scout report's §7.3.
+"what must not be published" rules.
 
 ## What was run
 
@@ -28,8 +28,8 @@ rewritten to `<SCAN_ROOT>` and the `bench/` prefix to `<BENCH>`.
 TerraGoat ships no machine-readable labels. Its own ground truth is prose plus
 Checkov's `CKV_*` check ids, and scoring recall against those would bias the
 result toward Checkov — which is why `bench/corpus.lock` carried
-`ground-truth: none` for this corpus until this leg, and why the scout report
-(§3.2) could only report a coverage metric from it.
+`ground-truth: none` for this corpus until this leg, and why an earlier pass
+over it could only report a coverage metric rather than real recall/precision.
 
 So the corpus was **labelled by hand**, by reading the Terraform, and the labels
 are committed. `bench/labels/terragoat-aws.truth` states the two rules every
@@ -108,7 +108,7 @@ There is likewise one gate configuration per tool rather than two: none of the
 four ships an alternate "maximum" rule set the way Semgrep ships `p/default`
 versus `p/security-audit`, and `scoursh --use-engines` would make scoursh *wrap*
 Trivy (`modules/iac/adapters/trivy/`), which is an integration measurement
-wearing a detection table's clothes (scout report §6.1).
+wearing a detection table's clothes.
 
 ## Two scoursh defects this leg found, both worth filing
 

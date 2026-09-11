@@ -51,7 +51,7 @@ re-derive whether VAmPI is obtainable here.
 
 ## Why ZAP took five attempts, and what changed between them
 
-The scout report's §4.4 diagnosed the *previous* DAST attempt (2026-09-08) as
+A prior diagnosis of the *previous* DAST attempt (2026-09-08) found
 the wrapper (`zap-full-scan.py`) losing its control connection mid-scan on a
 memory-constrained Docker VM, and named three fixes: `-config
 start.checkForUpdates=false`, an explicit JVM heap, and polling the ZAP API

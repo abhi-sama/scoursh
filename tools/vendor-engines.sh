@@ -395,8 +395,7 @@ Commands:
   alpine              expand data/advisories.db's (and data/versions.db's)
                        per-release Alpine namespace (Alpine:vX.Y) from
                        SCOURSH_ADVISORY_ALPINE_IDS - the container-image
-                       module's own importer (data/scoursh-image-scan-design/
-                       report.md §2.3/§4.1, IMG-03).  Writes BOTH files,
+                       module's own importer (IMG-03).  Writes BOTH files,
                        unlike 'banner', and is likewise deliberately not part
                        of --list/--all/'bulk --all' (see veng_advisories_alpine's
                        own header for why).
@@ -502,7 +501,7 @@ _veng_advisories_load_banner_normalizer() {
 # names a package, regardless of ecosystem" rather than adding a second
 # extractor.
 #
-# `alpine` (data/scoursh-image-scan-design/report.md §2.3/§4.1, IMG-03) maps
+# `alpine` (IMG-03) maps
 # to the sentinel `Alpine:*`, a DIFFERENT shape from `banner`'s `*`: OSV.dev
 # publishes Alpine advisories keyed PER RELEASE (`Alpine:v3.18`,
 # `Alpine:v3.19`, ...), never under one flat `Alpine` ecosystem string, so
@@ -515,7 +514,7 @@ _veng_advisories_load_banner_normalizer() {
 # branch, section 3, and `_veng_advisories_write_db_prefix`, section 3's own
 # write-side sibling to `_veng_advisories_write_db`).
 #
-# `debian`/`ubuntu` (IMG-09, report.md §2.3/§4.1's Stage-2 row) are the
+# `debian`/`ubuntu` (IMG-09, the Stage-2 distro slice) are the
 # IDENTICAL PREFIX-sentinel shape, one per distro's own OSV.dev namespace:
 # Debian's is `Debian:N` (`Debian:11`, `Debian:12`, ... - a bare MAJOR
 # version, never a point release, since OSV does not publish per-point-
@@ -602,16 +601,16 @@ _veng_advisories_normalize_name() {
       banner_normalize_product "$raw"
       ;;
     # alpine (IMG-03): apk package names are already the canonical
-    # identifier apk's own installed database reports (report.md §2.1's
-    # "delightful accident" - apk's `installed` DB is already scoursh's own
-    # frozen key:value block shape), with no case-folding or punctuation
+    # identifier apk's own installed database reports - a delightful
+    # accident, since apk's `installed` DB is already scoursh's own
+    # frozen key:value block shape - with no case-folding or punctuation
     # convention to normalise the way npm/PyPI/Composer names have - so this
     # is a verbatim pass-through, exactly like every OTHER ecosystem's
     # version field already is in _veng_advisories_normalize_version below.
     #
     # debian/ubuntu (IMG-09): OSV.dev already publishes Debian/Ubuntu
-    # advisories keyed by the dpkg SOURCE package name (report.md §2.1's
-    # trap 2 - the identical identity `modules/image/distro/dpkg.sh`'s own
+    # advisories keyed by the dpkg SOURCE package name (the identical identity
+    # `modules/image/distro/dpkg.sh`'s own
     # Source:-vs-Package: resolution produces at scan time), so there is
     # nothing to normalise here either - a verbatim pass-through, mirroring
     # alpine.
@@ -1441,8 +1440,7 @@ veng_advisories_banner() {
   _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$rows_new.summaries"
 }
 
-# veng_advisories_alpine - the seventh advisory importer (IMG-03, data/
-# scoursh-image-scan-design/report.md §2.3/§4.1), closing the container-image
+# veng_advisories_alpine - the seventh advisory importer (IMG-03), closing the container-image
 # module's own "operator supplies the fact, this script only fetches/
 # transforms it" gap the same way veng_advisories_banner closed the
 # banner-catalogue one. Writes `Alpine:vX.Y` rows to data/advisories.db (the
@@ -1474,7 +1472,7 @@ veng_advisories_banner() {
 #   - the package NAME is passed through verbatim
 #     (_veng_advisories_normalize_name's own "alpine" case) - apk package
 #     names carry no normalisation convention the way npm/PyPI/Composer
-#     names do (report.md §2.1).
+#     names do.
 #   - the row's ECOSYSTEM is not $db_eco at all: it is read off each row
 #     itself (_veng_advisories_expand_one's own "elif db_eco == alpine"
 #     branch), because _veng_advisories_osv_extract_py's "Alpine:*" sentinel
@@ -1514,12 +1512,12 @@ veng_advisories_alpine() {
   _veng_advisories_write_summaries_db "$VENG_VERSION_SUMMARIES_DB" "$rows_new.summaries"
 }
 
-# veng_advisories_debian - the eighth advisory importer (IMG-09, data/
-# scoursh-image-scan-design/report.md §2.3/§4.1's Stage-2 row), Debian's
+# veng_advisories_debian - the eighth advisory importer (IMG-09, the
+# Stage-2 distro slice), Debian's
 # sibling to veng_advisories_alpine immediately above - byte-identical in
 # shape, differing only in the sentinel/env-var/prefix names, because
-# report.md §2.3 already established that OSV.dev publishes distro
-# ecosystems as first-class namespaces and that a `Debian:N` row fits the
+# OSV.dev publishes distro
+# ecosystems as first-class namespaces and a `Debian:N` row fits the
 # existing `data/advisories.db` shape exactly the way `Alpine:vX.Y` does.
 # Writes `Debian:N` rows (NEVER a point release - see
 # _veng_advisories_osv_ecosystem's own "debian" comment) to BOTH

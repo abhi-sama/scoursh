@@ -888,7 +888,8 @@ _records_validate_record() {
       # something else, which a tree-wide enum would then reject on a record
       # this one never sees.
       #
-      # The two values are exactly report.md §1.2's shapes A and B, and the
+      # The two values are exactly the two image-source shapes this module
+      # supports, and the
       # SET IS CLOSED ON PURPOSE.  Shape C (`docker save` shelled out to a
       # running runtime) is a convenience wrapper that PRODUCES a shape-A
       # tarball and re-enters the shape-A path; giving it a `source` value of

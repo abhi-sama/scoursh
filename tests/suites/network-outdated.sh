@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # tests/suites/network-outdated.sh - NET-11: the version->vulnerability
 # lookup for network banners, `NET-SVC-OUTDATED_COMPONENT-01`
-# (data/scoursh-network-scan-design/report.md §3.2 item 1, §3.4, §5.1, the
-# NET-11 row in its §7 staged plan; depends on NET-07's banner.sh, MERGED
+# (depends on NET-07's banner.sh, MERGED
 # #239, which produces the version string this check looks up).
 #
 # This check lands INSIDE modules/network/banner.sh (NET-07's own phase
@@ -23,8 +22,7 @@
 #      release away from a listed one does not fire.
 #   4. EVERY NET-SVC-OUTDATED_COMPONENT-01 finding carries confidence=medium
 #      (never high) AND states the banner/backport limitation in its own
-#      remediation field (report.md §3.4) - not merely as a comment in this
-#      source tree.
+#      remediation field - not merely as a comment in this source tree.
 #   5. A missing or banner-less data/versions.db degrades ONE named,
 #      counted reduction; disclosure is unaffected.
 #   6. The finding round-trips through every report format.
@@ -183,12 +181,12 @@ RUN_VULN_JSONL=$(_slurp "$W/run-vuln/findings.jsonl")
 assert_contains "$RUN_VULN_JSONL" '"check_id":"NET-SVC-BANNER_DISCLOSURE-01"' \
   'the disclosure check still fires alongside the outdated one'
 assert_contains "$RUN_VULN_JSONL" '"check_id":"NET-SVC-OUTDATED_COMPONENT-01"' \
-  'the outdated-component check fires on the exact fixtureserver/1.2.3 versions.db match - FAILS under any "close enough" heuristic reading, since this is an EXACT table lookup (report.md §3.4)'
+  'the outdated-component check fires on the exact fixtureserver/1.2.3 versions.db match - FAILS under any "close enough" heuristic reading, since this is an EXACT table lookup'
 assert_contains "$RUN_VULN_JSONL" '"location":{"target":"net-outdated","host":"outdated.fixture.invalid","port":"2200","transport":"https"}' \
   'the outdated finding names the actual disclosing listener, under the net fingerprint profile (target host port transport)'
 
 RUN_VULN_SHARD=$(cat -- "$W/run-vuln"/shards/*.fields 2>/dev/null)
-t_case 'the outdated finding is confidence=medium, never high - report.md §3.4s backport caveat'
+t_case 'the outdated finding is confidence=medium, never high - the banner/backport caveat'
 assert_contains "$RUN_VULN_SHARD" 'check_id=NET-SVC-OUTDATED_COMPONENT-01' 'sanity: the finding is present in the shard'
 # Each shard line is ONE finding: tab-separated key=value fields
 # (lib/findings.sh _finding_fields), never one key per line - grep the ONE
@@ -199,7 +197,7 @@ assert_contains "$OUTDATED_LINE" 'confidence=medium' \
   'FAILS if this finding were ever emitted at confidence=high: a banner-read version cannot see a distributions own backported fix, so high confidence would overstate what this check can actually establish'
 assert_contains "$OUTDATED_LINE" 'remediation=' 'the finding carries a remediation field at all'
 assert_contains "$OUTDATED_LINE" 'backport' \
-  'the per-finding remediation states the banner/backport limitation IN WORDS (report.md §3.4) - FAILS if that caveat lived only in this source trees comments and never reached the finding a reader actually sees'
+  'the per-finding remediation states the banner/backport limitation IN WORDS - FAILS if that caveat lived only in this source trees comments and never reached the finding a reader actually sees'
 assert_contains "$OUTDATED_LINE" 'openssh' \
   'the remediation names the projects own worked backport example (Debian/RHEL openssh), matching modules/network/checks-banner.rules own record'
 
@@ -235,14 +233,14 @@ assert_contains "$RUN_CLEAN_JSON" 'NET-SVC-OUTDATED_COMPONENT-01' \
   'the outdated check id is still recorded as RUN across this target (port 2200 IS an exact hit in the same run) - a clean result on one listener is not the same as the check never having executed'
 
 # =============================================================================
-printf '\n-- report.md §3.4: an exact table lookup, not range arithmetic --\n'
+printf '\n-- an exact table lookup, not range arithmetic --\n'
 # =============================================================================
 
 t_case 'fixtureserver 1.2.30 (one patch release off the listed 1.2.3/1.2.4) does not fire the outdated check'
 RUN_VULN_JSONL_ALL=$(_slurp "$W/run-vuln/findings.jsonl")
 NEAR_2202=$(grep '"port":"2202"' <<<"$RUN_VULN_JSONL_ALL" | grep OUTDATED || true)
 assert_eq '' "$NEAR_2202" \
-  'no outdated-component finding names port 2202 - FAILS under any "close to a known-bad version" comparison, which report.md §3.4 explicitly forbids: this is an EXACT product+version table lookup only, never range/prefix/semver-distance arithmetic'
+  'no outdated-component finding names port 2202 - FAILS under any "close to a known-bad version" comparison: this is an EXACT product+version table lookup only, never range/prefix/semver-distance arithmetic'
 assert_contains "$RUN_VULN_JSONL_ALL" '"port":"2202"' \
   'port 2202 still disclosed (the disclosure check has no versions.db dependency at all) - proves the listener was genuinely read, not skipped'
 
@@ -256,7 +254,7 @@ assert_eq '' "$NAMEONLY_2203" \
   'no outdated finding for port 2203 - there is no version to match against data/versions.db'
 
 # =============================================================================
-printf '\n-- report.md §5.2 rule 2 / §3.4: a missing versions.db is a named, counted reduction, disclosure unaffected --\n'
+printf '\n-- a missing versions.db is a named, counted reduction, disclosure unaffected --\n'
 # =============================================================================
 
 t_case 'with no usable data/versions.db, the outdated check is a named coverage_reduction and disclosure still fires'

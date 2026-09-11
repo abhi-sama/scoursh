@@ -2,8 +2,8 @@
 
 **This is a real measurement, not a smoke test.** Four tools ran over the
 identical 26-case corpus: scoursh, Trivy `fs --scanners vuln`, Grype and
-OSV-Scanner. The scout report's own §7.1 prediction — "genuine parity on
-package-level recall" for SCA — is confirmed for two of three ecosystems and
+OSV-Scanner. The prediction that SCA should show "genuine parity on
+package-level recall" — since it is a table lookup against the same advisory data every tool draws from — is confirmed for two of three ecosystems and
 refuted for the third, for reasons this document states plainly rather than
 averaging away. Read this whole file before citing a number from it: the
 headline result depends on which of the two matching modes (§4 below) is
@@ -56,8 +56,7 @@ Resulting `data/advisories.db` (npm + pypi + Go only): **86 MB** on disk (86 MB
 `data/versions.db` alongside it, same rows). Every row's provenance —
 integrity grade, source URL, per-ecosystem counts — is in the file's own
 header; `grade=unpinned-transport-only` because this run used
-`--accept-unverified` (no operator-supplied `--sha256`), the same grade the
-scout report's own §4.3 measurement used.
+`--accept-unverified` (no operator-supplied `--sha256`).
 
 **This database is not committed and is not reproducible from this repository
 alone** — it is a live snapshot of OSV.dev's bulk export on 2026-09-10, and a
@@ -67,12 +66,12 @@ otherwise.
 
 ## 3. The DB-size / egress column (§4.3/§5.3)
 
-The distinguishing metric the scout report's §4.5 asked for, measured rather
+The distinguishing metric this leg exists to measure, measured rather
 than asserted:
 
 | Tool | Local DB before first finding | Egress per run |
 |---|---|---|
-| **scoursh** | 86 MB (npm+pypi+Go only; ~270–400 MB for all six per the scout report's own estimate) | **zero** — reads `data/advisories.db` only; the file itself is built by a separate, quarantined, by-hand step (`tools/vendor-engines.sh`), never at scan time |
+| **scoursh** | 86 MB (npm+pypi+Go only; ~270–400 MB estimated for all six ecosystems) | **zero** — reads `data/advisories.db` only; the file itself is built by a separate, quarantined, by-hand step (`tools/vendor-engines.sh`), never at scan time |
 | Trivy | 1.3 GB (`trivy.db`, this host's cache) | one OCI pull per DB refresh (`mirror.gcr.io/aquasec/trivy-db:2`); **this run used a cached DB and pulled nothing** — see §6 |
 | Grype | 2.0 GB (`~/Library/Caches/grype`) | one archive pull per DB refresh; this run used the already-cached DB |
 | OSV-Scanner | **0 bytes local** | **one live query to `api.osv.dev` per run** (no `--offline-vulnerabilities`/`--download-offline-databases` given) — the opposite shape from the other three: no local footprint, but egress on every single invocation |
@@ -141,7 +140,7 @@ single case the way they do here.
 
 **scoursh: zero false positives across all 26 cases, in every category, under
 both matching modes.** Every one of its 10 true positives correctly names the
-pinned advisory id; it never once flagged a patched case. The scout report's
+pinned advisory id; it never once flagged a patched case. The genuine-parity
 prediction is confirmed exactly for npm and PyPI — **perfect parity with all
 three specialists** — and the aggregate is pulled down entirely by a
 structural gap in Go coverage, explained in full in §7. This is not a subtle

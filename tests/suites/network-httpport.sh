@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # tests/suites/network-httpport.sh - modules/network/httpport.sh and
 # httpport_engine.sh: NET-09, the `safe-active` HTTP-identification probe
-# against a declared non-standard HTTP port
-# (data/scoursh-network-scan-design/report.md §3.2 item 3, §7 Tier 2).
+# against a declared non-standard HTTP port.
 #
 # Five things this suite exists to pin, each with a plausible wrong reading
 # that would ship silently:
@@ -14,14 +13,15 @@
 #   2. A known-vulnerable version disclosed on a non-standard port fires
 #      NET-SVC-HTTP_OUTDATED_COMPONENT-01 (an exact data/versions.db `banner`
 #      match); a current or unlisted version stays quiet on THAT check while
-#      the disclosure checks still fire - report.md §3.4's "exact table
-#      lookup, never a heuristic" is testable from both directions.
+#      the disclosure checks still fire - the "exact table lookup, never a
+#      heuristic" rule for the outdated check is testable from both
+#      directions.
 #   3. A target with no declared listener beyond its own base-url (or an
 #      empty/unusable listeners.json) records a `coverage_reduction` +
 #      `coverage_gap` and sends nothing - "this host has one listener" and
-#      "scoursh did not look" are different facts (report.md §5.2 rule 3).
-#   4. Every request goes through the SAME two-tier authorization
-#      report.md §5.2 rule 1 describes: an artifact-tuple row
+#      "scoursh did not look" are different facts.
+#   4. Every request goes through the SAME two-tier authorization scheme:
+#      an artifact-tuple row
 #      `net_endpoint_keep` drops is a counted `coverage_reduction`, never a
 #      silent skip and never a fatal abort of the whole target.
 #   5. Findings round-trip through every emitted report format - json, md,
@@ -220,9 +220,9 @@ _meta_text() {
 # Every host this suite's positive cases probe (extra.fixture.invalid,
 # extra1/extra2.fixture.invalid) is declared here as an `extra-host` -
 # http_request's own gate is FATAL for a tuple config/scope.conf does not
-# authorise, exactly as report.md §5.2 rule 1 requires for an
-# operator-configured tuple, so a listener this suite wants httpport.sh to
-# actually GET must be declared, not merely resolvable.
+# authorise, the same fatal gating an operator-configured tuple always gets -
+# so a listener this suite wants httpport.sh to actually GET must be
+# declared, not merely resolvable.
 # `outofscope.fixture.invalid` (used by the artifact-tuple-skip case below) is
 # DELIBERATELY ABSENT from this list: it resolves (SCOURSH_HTTP_RESOLVE admits
 # it) but is not declared, which is exactly the "a listeners.json row names a
@@ -293,14 +293,14 @@ assert_contains "$SHARD" 'check_id=NET-SVC-HTTP_VERSION_DISCLOSURE-01' \
 assert_not_contains "$SHARD" 'check_id=NET-SVC-HTTP_SERVER_DISCLOSURE-01' \
   'a Server header that DOES carry a version is never ALSO reported as a bare name-only disclosure - FAILS if _httpport_consider double-counted one header value into both buckets'
 assert_contains "$SHARD" 'check_id=NET-SVC-HTTP_OUTDATED_COMPONENT-01' \
-  'the outdated-component check fires on the exact fixtureserver/1.2.3 versions.db match - FAILS under any "close enough" heuristic reading, since this is an EXACT table lookup (report.md §3.4)'
+  'the outdated-component check fires on the exact fixtureserver/1.2.3 versions.db match - FAILS under any "close enough" heuristic reading, since this is an EXACT table lookup'
 
 t_case 'the finding carries the net location profile - host, port and transport, not a DAST-shaped identity'
 assert_contains "$SHARD" 'loc_host=extra.fixture.invalid' 'loc_host names the probed listener'
 assert_contains "$SHARD" 'loc_port=8080' 'loc_port names its declared port, not the base-url'"'"'s 443'
 assert_contains "$SHARD" 'loc_transport=https' 'loc_transport names the scheme actually used for the GET'
 assert_contains "$SHARD" 'confidence=medium' \
-  'the outdated finding is confidence: medium, never high - report.md §3.4'"'"'s backport caveat: a banner-read version cannot see a distribution'"'"'s own backported fix'
+  'the outdated finding is confidence: medium, never high - a banner-read version cannot see a distribution'"'"'s own backported fix'
 
 t_case 'checks_run records all three ids for a successfully-probed listener'
 CR=$(_meta_text checks_run)
@@ -330,7 +330,7 @@ t_case 'fixtureserver 9.9.9 is not in the fixture versions.db, so the outdated c
 assert_contains "$SHARD" 'check_id=NET-SVC-HTTP_VERSION_DISCLOSURE-01' \
   'the version is still disclosed - a clean-version result is not the same as no response being read at all'
 assert_not_contains "$SHARD" 'check_id=NET-SVC-HTTP_OUTDATED_COMPONENT-01' \
-  'no outdated-component finding - FAILS under a "close to a known-bad version" heuristic, which report.md §3.4 explicitly forbids: only an EXACT match is a finding'
+  'no outdated-component finding - FAILS under a "close to a known-bad version" heuristic; only an EXACT match is a finding'
 CR=$(_meta_text checks_run)
 assert_contains "$CR" 'NET-SVC-HTTP_OUTDATED_COMPONENT-01' \
   'the outdated check id is still recorded as RUN (it executed and found nothing) - FAILS if a clean result were indistinguishable from the check never having executed at all'
@@ -354,7 +354,7 @@ assert_not_contains "$SHARD" 'check_id=NET-SVC-HTTP_OUTDATED_COMPONENT-01' \
   'no outdated finding either - there is no version to look up'
 
 # =============================================================================
-printf '\n-- report.md §5.2 rule 3: no non-standard listener records a reduction and sends nothing --\n'
+printf '\n-- no non-standard listener records a reduction and sends nothing --\n'
 # =============================================================================
 
 _fresh_run
@@ -380,15 +380,15 @@ assert_contains "$CR" 'reason=no_http_listener' 'the same reason fires for an em
 assert_eq 0 "$(grep -c . "$REQ_LOG")" 'no request was sent'
 
 # =============================================================================
-printf '\n-- report.md §5.2 rule 1: an out-of-scope artifact-tuple row is a counted skip, not a fatal abort --\n'
+printf '\n-- an out-of-scope artifact-tuple row is a counted skip, not a fatal abort --\n'
 # =============================================================================
 
 _fresh_run
 mkdir -p "$SCOURSH_RUN_DIR/inventory"
 # outofscope.fixture.invalid resolves (the resolver stub above admits it) but
 # is NOT declared in config/scope.conf at all - a listeners.json row this
-# scanner did not author itself, matching report.md §5.2 rule 1's own
-# "artifact this scanner did not author" shape exactly.
+# scanner did not author itself, exactly the "artifact this scanner did not
+# author" shape the two-tier authorization scheme exists to catch.
 _hp_listeners_json hp-fixture https outofscope.fixture.invalid 9200 >"$SCOURSH_RUN_DIR/inventory/listeners.json"
 _hp_source_phase
 t_case 'an out-of-scope declared-listener row is dropped as ONE counted reduction, and the run does not abort'
@@ -412,7 +412,7 @@ _hp_source_phase
 t_case 'a listener that fails at the transport records net_http_unavailable, not a silent clean result'
 CR=$(_meta_text coverage_reduction)
 assert_contains "$CR" 'reason=net_http_unavailable' \
-  'FAILS if a connection failure were swallowed, which would let "the listener never answered" render identically to "it answered cleanly" - report.md §5.2 rule 4'"'"'s own filtered/not-open distinction, applied here'
+  'FAILS if a connection failure were swallowed, which would let "the listener never answered" render identically to "it answered cleanly" - the same filtered/not-open distinction applied here'
 GAP=$(_meta_text coverage_gap)
 assert_contains "$GAP" 'failed at the transport' 'the human-readable gap says so too'
 SHARD=$(_shard_text)

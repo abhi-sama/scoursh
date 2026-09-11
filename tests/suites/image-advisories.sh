@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# tests/suites/image-advisories.sh - IMG-03 (data/scoursh-image-scan-design/
-# report.md §2.3/§4.1/§4.3): distro-release detection from /etc/os-release,
+# tests/suites/image-advisories.sh - IMG-03: distro-release detection from /etc/os-release,
 # the data/advisories.db advisory-ecosystem reuse, and the
 # IMAGE-COV-NO_ADVISORY_DB-01 exit-4 gate this ticket adds on top of IMG-02's
 # acquire.sh.
@@ -11,8 +10,9 @@
 #      (modules/image/engine.sh), unit-level: quoted/unquoted os-release
 #      values, a missing ID line, an unparseable VERSION_ID, and a
 #      recognised-but-not-yet-supported distro ID all resolve to the reasons
-#      run.sh actually reads - never a guess (report.md §4.3's explicit
-#      warning against guessing "latest").
+#      run.sh actually reads - never a guess: guessing "latest" produces a
+#      false negative on an older image, which is the direction that reads
+#      as a pass.
 #   B. image_ecosystem_known / image_advisories_db_path
 #      (modules/image/engine.sh), unit-level: BOTH directions of the gate
 #      predicate against a small, hand-built scratch data/advisories.db -
@@ -123,22 +123,22 @@ image_distro_ecosystem_resolve "$W/os-release-quoted"
 _rc=$?
 assert_eq 0 "$_rc" 'resolves'
 assert_eq 'Alpine:v3.18' "$_IMAGE_DISTRO_ECOSYSTEM" \
-  'the patch component (the trailing .4 in 3.18.4) is dropped - report.md §2.3: OSV.dev keys Alpine advisories per RELEASE (major.minor), never per exact patch build, so a comparator that kept the patch would never match a real db row'
+  'the patch component (the trailing .4 in 3.18.4) is dropped - OSV.dev keys Alpine advisories per RELEASE (major.minor), never per exact patch build, so a comparator that kept the patch would never match a real db row'
 
 t_case 'a different Alpine minor version resolves to a DIFFERENT ecosystem key'
 image_distro_ecosystem_resolve "$W/os-release-unquoted"
 assert_eq 'Alpine:v3.19' "$_IMAGE_DISTRO_ECOSYSTEM" \
-  'Alpine:v3.18 != Alpine:v3.19 (report.md §4.3) - FAILS under any reading that collapses every Alpine image onto one fixed key'
+  'Alpine:v3.18 != Alpine:v3.19 - FAILS under any reading that collapses every Alpine image onto one fixed key'
 
 t_case 'no /etc/os-release at all: no_os_release, never a guess'
 _rc=0
 image_distro_ecosystem_resolve "$W/definitely-absent-os-release" || _rc=$?
 assert_eq 1 "$_rc" 'refused'
 assert_eq no_os_release "$_IMAGE_DISTRO_REASON" 'the specific, distinguishable reason'
-assert_eq '' "$_IMAGE_DISTRO_ECOSYSTEM" 'and no ecosystem is guessed - report.md §4.3 is explicit that guessing "latest" produces a false NEGATIVE on an older image, the direction that reads as a pass'
+assert_eq '' "$_IMAGE_DISTRO_ECOSYSTEM" 'and no ecosystem is guessed - guessing "latest" produces a false NEGATIVE on an older image, the direction that reads as a pass'
 
 # NOTE: this case used to plant ID=debian here, back when v1 was
-# Alpine-only (report.md D2). IMG-09 added real Debian/Ubuntu support (see
+# Alpine-only. IMG-09 added real Debian/Ubuntu support (see
 # tests/suites/image-debian.sh for that coverage), so this case now plants
 # an rpm-based distro instead - rpm (IMG-12) remains genuinely unsupported,
 # which is exactly what this case exists to prove.
@@ -189,7 +189,7 @@ t_case 'image_ecosystem_known: fires TRUE (unknown) for a sibling release the fi
 _rc=0
 image_ecosystem_known 'Alpine:v3.19' "$FIXDB" || _rc=$?
 assert_eq 1 "$_rc" \
-  'Alpine:v3.19 has no row even though Alpine:v3.18 does - the gate MUST fire, since a db that covers one release says nothing about a sibling one (report.md §4.3)'
+  'Alpine:v3.19 has no row even though Alpine:v3.18 does - the gate MUST fire, since a db that covers one release says nothing about a sibling one'
 
 t_case 'image_ecosystem_known: an entirely absent db file is also "unknown", never a crash'
 _rc=0
@@ -289,7 +289,7 @@ assert_contains "$RUN_WITHDB_JSON" 'IMAGE-COV-UNKNOWN_DISTRO-01' \
 assert_not_contains "$(_slurp "$W/run-withdb/findings.jsonl")" 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-01' \
   'and no package finding, since none could be enumerated at all'
 
-t_case 'the distro-agnostic config check still runs on this same path (report.md §4.4: independent of the ecosystem/apk branch)'
+t_case 'the distro-agnostic config check still runs on this same path (independent of the ecosystem/apk branch)'
 assert_contains "$RUN_WITHDB_JSON" 'IMAGE-CFG-RUNS_AS_ROOT-01' \
   "checks_run names it - FAILS if image_check_root_user were gated behind the ecosystem resolution instead of running unconditionally once the image opened"
 assert_contains "$(_slurp "$W/run-withdb/findings.jsonl")" '"check_id":"IMAGE-CFG-RUNS_AS_ROOT-01"' \
@@ -309,7 +309,7 @@ assert_not_contains "$(_slurp "$W/run-noos/findings.jsonl")" 'IMAGE-PKG-VULNERAB
   'nor any package finding'
 assert_not_contains "$RUN_NOOS_JSON" 'reason=no_distro_enumerator_on_disk_yet' \
   'the OLD IMG-01/IMG-03 placeholder reduction is gone entirely - it must not fire here either'
-t_case 'the distro-agnostic config check STILL runs when the distro release is unresolvable (report.md §4.4: it does not depend on os-release at all)'
+t_case 'the distro-agnostic config check STILL runs when the distro release is unresolvable (it does not depend on os-release at all)'
 assert_contains "$RUN_NOOS_JSON" 'IMAGE-CFG-RUNS_AS_ROOT-01' \
   'checks_run names it - FAILS if image_check_root_user were gated behind a resolved ecosystem, which this image (no /etc/os-release at all) never reaches'
 assert_contains "$(_slurp "$W/run-noos/findings.jsonl")" '"check_id":"IMAGE-CFG-RUNS_AS_ROOT-01"' \

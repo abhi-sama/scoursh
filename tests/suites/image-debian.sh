@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# tests/suites/image-debian.sh - IMG-09 (data/scoursh-image-scan-design/
-# report.md §2.1's dpkg row, §2.3's advisory-ecosystem-namespace row, and
-# §5.3's IMG-09 row): completes the dpkg (Debian/Ubuntu) slice END TO END -
+# tests/suites/image-debian.sh - IMG-09: completes the dpkg (Debian/Ubuntu) slice END TO END -
 # the Debian/Ubuntu advisory ecosystems PLUS wiring IMG-07's dpkg enumerator
 # and IMG-08's dpkg comparator into the real vulnerable-package finding path,
 # mirroring what tests/suites/image-e2e.sh (IMG-06) already proved for apk.
@@ -20,12 +18,12 @@
 #   B. End to end, through real `scan.sh image` subprocesses against a
 #      synthetic Debian-shaped docker-archive fixture carrying a real
 #      `var/lib/dpkg/status`: a vulnerable dpkg package - `libssl3`, whose
-#      `Source:` names a DIFFERENT package, `openssl` (report.md §2.1's
-#      trap 2, deliberately exercised: binary name != source name) - fires
+#      `Source:` names a DIFFERENT package, `openssl` (the Source:-vs-Package:
+#      trap, deliberately exercised: binary name != source name) - fires
 #      `IMAGE-PKG-VULNERABLE_OS_PACKAGE-02` with `loc_package` carrying the
 #      SOURCE name, is quiet once the installed version reaches the fixed
 #      version, and the run-over-run diff (same operator-declared --image
-#      id, report.md §3.4) reads the patched CVE as `fixed`, never
+#      id) reads the patched CVE as `fixed`, never
 #      `unknown`+`new`.
 #   C. The advisory-db exit-4 gate (IMG-03's mechanism, reused unchanged)
 #      fires correctly for a resolved `Debian:12` ecosystem the fixture db
@@ -201,8 +199,8 @@ DEBIAN_OSREL='ID=debian
 VERSION_ID=12
 '
 # `libssl3` is the BINARY package; `Source: openssl` is a DIFFERENT name -
-# report.md §2.1 trap 2, deliberately exercised so this suite fails if the
-# lookup ever fell back to the binary name.
+# the Source:-vs-Package: trap, deliberately exercised so this suite fails if
+# the lookup ever fell back to the binary name.
 DPKG_VULN='Package: libssl3
 Status: install ok installed
 Priority: optional
@@ -265,7 +263,7 @@ assert_contains "$RUN1_JSON" 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-02' 'checks_run na
 assert_contains "$RUN1_FINDINGS" '"check_id":"IMAGE-PKG-VULNERABLE_OS_PACKAGE-02"' 'a real finding was emitted'
 assert_contains "$RUN1_FINDINGS" '"module":"image"' 'under module image'
 assert_contains "$(_slurp "$W/run-withdb/findings.fields")" 'loc_package=openssl' \
-  'the SOURCE name, not the binary - FAILS if the lookup (or the emitted location) ever used libssl3 instead of its Source: fallback (report.md §2.1 trap 2)'
+  'the SOURCE name, not the binary - FAILS if the lookup (or the emitted location) ever used libssl3 instead of its Source: fallback'
 assert_not_contains "$RUN1_FINDINGS" 'loc_package=libssl3' \
   'the binary name never appears as the finding'"'"'s own package identity'
 assert_contains "$(_slurp "$W/run-withdb/findings.fields")" 'loc_advisory_id=SCOURSH-FIXTURE-CVE-DEB-1' 'and the right advisory'
@@ -286,11 +284,11 @@ assert_eq 0 "$_RC" 'exit 0'
 RUN2_JSON=$(_slurp "$W/run2/run.json")
 RUN2_FINDINGS=$(_slurp "$W/run2/findings.jsonl")
 assert_not_contains "$RUN2_FINDINGS" 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-02' \
-  'openssl@3.0.11-1~deb12u3 is AT the fixed version - quiet this run, not merely "not new" - FAILS under a comparator that cannot order the tilde correctly (report.md §2.4)'
+  'openssl@3.0.11-1~deb12u3 is AT the fixed version - quiet this run, not merely "not new" - FAILS under a comparator that cannot order the tilde correctly'
 assert_contains "$RUN2_JSON" 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-02' \
-  'checks_run STILL names the package check - it executed and found nothing, a different fact from "did not run" (report.md §4.2 honesty)'
+  'checks_run STILL names the package check - it executed and found nothing, a different fact from "did not run"'
 
-t_case 'the run-over-run DIFF reads the patched CVE as fixed, never unknown+new (report.md §3.4, the whole point of the image-id cell)'
+t_case 'the run-over-run DIFF reads the patched CVE as fixed, never unknown+new - the whole point of the image-id cell'
 assert_contains "$RUN2_JSON" '"fixed"' 'run.json carries at least one fixed-classified finding this run'
 REPORT2=$(_slurp "$W/run2/report.md")
 assert_contains "$REPORT2" 'Fixed since last scan' \

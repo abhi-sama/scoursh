@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # modules/image/run.sh - the container-image-scanning module entry point
-# (IMG-01, data/scoursh-image-scan-design/report.md §3.2's exact integration
-# cost table and §5.3's IMG-01 row; wired to real acquisition by IMG-03;
+# (IMG-01; wired to real acquisition by IMG-03;
 # wired to real apk enumeration + matching + the config-blob check, and so
 # completing the v1 Alpine slice, by IMG-06; wired to real dpkg enumeration +
 # matching, completing the Debian/Ubuntu slice, by IMG-09; widened with the
@@ -31,13 +30,13 @@
 # records why nothing was examined.  IMG-03 (on top of IMG-02's acquire.sh)
 # was the FIRST to actually resolve --image's source, open it, extract
 # /etc/os-release, pick a per-release advisory ecosystem key (Alpine-only in
-# v1; report.md §2.4/D2) and gate on whether data/advisories.db has any row
+# v1) and gate on whether data/advisories.db has any row
 # for it.  IMG-06 completes the v1 Alpine slice: it widens the metadata
 # collected to include lib/apk/db/installed, wires modules/image/distro/
 # apk.sh's enumerator+matcher (IMG-04/IMG-06) and apk_version.sh's
 # comparator (IMG-05) into the branch that used to be a bare
 # `no_distro_enumerator_on_disk_yet` reduction, and adds the two remaining
-# v1 coverage checks report.md §4.1 lists
+# v1 coverage checks
 # (`IMAGE-COV-UNKNOWN_DISTRO-01`/`IMAGE-COV-LAYER_UNREADABLE-01`) plus the
 # distro-agnostic `IMAGE-CFG-RUNS_AS_ROOT-01` config-blob check
 # (modules/image/config.sh), which runs independently of the ecosystem
@@ -156,10 +155,9 @@ _image_run_module() {
   export SCOURSH_IMAGE_ID SCOURSH_IMAGE_SOURCE SCOURSH_IMAGE_DOCKERFILE
 
   # image's coverage cell is `image-id`, the operator-declared STABLE id
-  # (rules/RULE-FORMAT.md §9.5.1, report.md §3.4) - deliberately never the
+  # (rules/RULE-FORMAT.md §9.5.1) - deliberately never the
   # image digest or tag, both of which change on every rebuild/release and
-  # would put every finding in a fresh cell forever, destroying the diff
-  # (report.md §3.4's own table).
+  # would put every finding in a fresh cell forever, destroying the diff.
   run_record notes "module=image image=$image_id source=${source:-<none>} coverage-scope=image-id cell=$image_id"
 
   local _image_checks_run_before
@@ -169,8 +167,8 @@ _image_run_module() {
   # (acquire.sh's own header names this ticket explicitly). IMG-04/IMG-05
   # (apk enumeration and the version comparator) still do not exist, so
   # even a fully successful resolve/open/parse/gate walk below ends in a
-  # coverage_reduction rather than a package finding - report.md §5.3's
-  # scope line for this ticket.
+  # coverage_reduction rather than a package finding - this ticket's own
+  # scope line.
   local kind='' path='' ref='' origin=''
   local ecosystem='' distro_id='' distro_version=''
   local rc=0
@@ -208,7 +206,7 @@ _image_run_module() {
       image_check_exposed_ports "$kind" "$path" "$image_id"
       image_check_mutable_base_ref "$kind" "$path" "$image_id"
 
-      # IMG-11: language dependencies inside the rootfs (report.md §2.2) -
+      # IMG-11: language dependencies inside the rootfs -
       # also distro-agnostic and runs unconditionally once the image is
       # open, independent of the os-release/ecosystem/apk-or-dpkg branch
       # below it, for the identical reasoning the three image_check_* calls
@@ -226,7 +224,7 @@ _image_run_module() {
       # var/lib/dpkg/status; this ticket widens it a third time to also ask
       # for rpm's own three candidate database paths
       # (var/lib/rpm/rpmdb.sqlite, var/lib/rpm/Packages,
-      # var/lib/rpm/Packages.db - report.md §2.1's table, at most one of
+      # var/lib/rpm/Packages.db - at most one of
       # which any real image ever carries), now that this module has a real
       # rpm enumerator+matcher (IMG-12, extended by this ticket) and
       # comparator (rpm_version.sh) to feed it to. Every package-manager
@@ -241,7 +239,7 @@ _image_run_module() {
       chmod 700 "$metadir" 2>/dev/null || true
       image_collect_metadata "$kind" "$path" "$metadir" etc/os-release usr/lib/os-release lib/apk/db/installed var/lib/dpkg/status var/lib/rpm/rpmdb.sqlite var/lib/rpm/Packages var/lib/rpm/Packages.db >/dev/null
 
-      # report.md §4.3's `layer_unreadable` reduction: any wanted path a
+      # The `layer_unreadable` reduction: any wanted path a
       # refusal stopped (an unreadable layer, or a malformed member) is a
       # coverage hole distinct from "this image simply does not carry that
       # path" (IMAGE_COLLECT_MISSING, the ordinary case, handled per-path
@@ -268,7 +266,7 @@ _image_run_module() {
       fi
 
       if (( rc != 0 )); then
-        # report.md §4.3: Alpine advisories are keyed PER RELEASE
+        # Alpine advisories are keyed PER RELEASE
         # (Alpine:v3.18 != Alpine:v3.19), so with no resolved release there
         # is no ecosystem to look up - and guessing "latest" would produce
         # a false NEGATIVE on an older image, the direction that reads as a
@@ -281,7 +279,7 @@ _image_run_module() {
         distro_version=$_IMAGE_OS_RELEASE_VERSION_ID
         run_record notes "module=image image=$image_id distro_id=$distro_id distro_version=$distro_version ecosystem=$ecosystem"
 
-        # data/advisories.db reuse (report.md §2.3/§4.2): the SAME file and
+        # data/advisories.db reuse: the SAME file and
         # the SAME db_lookup_exact modules/sca/ already uses, keyed on this
         # image's own resolved ecosystem rather than "is there a database
         # at all" - a db that covers Alpine:v3.19 says nothing about an
@@ -313,7 +311,7 @@ _image_run_module() {
           # enumerate their own already-extracted database, look every
           # installed package up against data/advisories.db under this
           # image's own resolved ecosystem (dpkg's lookup key is the
-          # RESOLVED SOURCE package name, report.md §2.1 trap 2 -
+          # RESOLVED SOURCE package name -
           # modules/image/distro/dpkg.sh's own section 2 header has the
           # full reasoning; rpm's lookup key is the plain installed package
           # name - modules/image/distro/rpm.sh's own section 2 header has
@@ -326,8 +324,8 @@ _image_run_module() {
               apk_scan_installed "$metadir/lib/apk/db/installed" "$image_id" "$ecosystem" || rc=$?
               if (( rc != 0 )); then
                 # No apk database in ANY layer, despite a resolved, covered
-                # Alpine release (report.md §4.3's `no_package_db_found`
-                # row) - a scratch/distroless final stage. Never rendered
+                # Alpine release (the `no_package_db_found`
+                # reason) - a scratch/distroless final stage. Never rendered
                 # as a clean scan.
                 image_report_unknown_distro "$image_id" "$ecosystem" apk "${_APK_INSTALLED_REASON:-no_package_db_found}"
               elif (( _APK_SCAN_SKIPPED > 0 )); then

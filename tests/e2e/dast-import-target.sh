@@ -260,7 +260,7 @@ if (( _RC != 0 )); then tail -60 "$W/run-nospec.log" >&2; fi
 assert_eq 0 "$_RC" 'the run exits 0 against the live target'
 RUNJSON0=$(cat "$W/run-nospec/run.json")
 assert_contains "$RUNJSON0" 'no_specification_supplied' \
-  'the machine-readable SPA gap is recorded - the §1 status quo the scout report reproduced against this same target'
+  'the machine-readable SPA gap is recorded - the status quo before this ticket, reproduced live against this same target'
 PAR0=$(cat "$W/run-nospec/inventory/parameters.json")
 assert_not_contains "$PAR0" '"location": "body"' \
   'and NO body-location parameter exists to inject - FAILS if the static crawler somehow discovered the requestBody-only /orders surface on its own, which would make this whole ticket unnecessary'

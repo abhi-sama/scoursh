@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # tests/suites/network-banner.sh - modules/network/banner.sh: the NET-07
 # read-on-connect service identification probe and the
-# `NET-SVC-BANNER_DISCLOSURE-01` check (data/scoursh-network-scan-design/
-# report.md §3.2 item 1, §5.1, §5.2, §5.3). NET-05's inventory.sh artifact
+# `NET-SVC-BANNER_DISCLOSURE-01` check. NET-05's inventory.sh artifact
 # and NET-06's open/not-open/filtered classification are this file's live
 # inputs; tests/suites/network-inventory.sh and
 # tests/suites/network-reachability.sh pin those separately, so this suite
@@ -24,8 +23,9 @@
 #   4. An open listener that sends nothing is a counted `no_banner`
 #      reduction, never a silent clean and never a finding.
 #   5. A not-open/filtered declared listener is a counted
-#      `net_check_not_applicable` reduction - report.md §5.2 rule 4's
-#      "never collapsed" reasoning, applied one probe over.
+#      `net_check_not_applicable` reduction - the same "never collapsed"
+#      reasoning that governs other not-applicable states, applied one
+#      probe over.
 #   6. A finding this phase emits carries the `net` fingerprint profile's own
 #      location fields (target/host/port/transport) and round-trips through
 #      every output format.
@@ -126,8 +126,8 @@ chmod 0755 "$NET_BANNER_STUB"
 # only when `--intensity` is given AND differs from the default
 # (`passive`, lib/checks.sh), so a bare `scan.sh network --target X` already
 # runs this check. Running it at the plain default is itself part of what
-# report.md §5.1's `passive` tag for this check means, and is worth pinning
-# by NOT passing those two flags here, unlike the reachability suite.
+# this check's own `passive` tag means, and is worth pinning by NOT passing
+# those two flags here, unlike the reachability suite.
 _net_scan() {
   local rundir=$1 root=$2 target=''
   shift 2
@@ -189,13 +189,13 @@ PROBE_LOG=$(_slurp "$W/net-probe.log")
 # instead, which is true regardless of how many phases share the primitive.
 for p in 443 8443 5432 9999; do
   assert_contains "$PROBE_LOG" "203.0.113.60 $p" \
-    "listener port $p was classified at its resolved address, not the hostname (the anti-TOCTOU guarantee report.md §2.5 names) - FAILS if this listener were never probed at all"
+    "listener port $p was classified at its resolved address, not the hostname (the anti-TOCTOU guarantee this module enforces) - FAILS if this listener were never probed at all"
 done
 
 t_case 'the banner-read step was invoked ONLY for the two open listeners, never for not-open or filtered ones - THE PASSIVE CONTRACT'
 BANNER_LOG=$(_slurp "$W/net-banner.log")
 assert_eq 2 "$(grep -c . <<<"$BANNER_LOG")" \
-  'exactly two banner-read invocations (ports 443 and 8443) - FAILS if a not-open or filtered listener were also asked for a banner, which report.md §5.2 rule 4s own "never collapsed" reasoning forbids for this probe just as much as for NET-06s own findings'
+  'exactly two banner-read invocations (ports 443 and 8443) - FAILS if a not-open or filtered listener were also asked for a banner, which the "never collapsed" reasoning behind not-applicable states forbids for this probe just as much as for NET-06s own findings'
 assert_contains "$BANNER_LOG" 'host=203.0.113.60 port=443' 'the open base-url listener was read'
 assert_contains "$BANNER_LOG" 'host=203.0.113.60 port=8443' 'the other open listener was read too'
 assert_not_contains "$BANNER_LOG" 'port=5432' \
@@ -222,7 +222,7 @@ assert_eq '' "$NOFIND_8443" \
 RUN_MULTI_JSON=$(_slurp "$W/run-multi/run.json")
 t_case 'the no-banner listener (8443) is a counted no_banner reduction, never a silent clean'
 assert_contains "$RUN_MULTI_JSON" 'reason=no_banner checks=[NET-SVC-BANNER_DISCLOSURE-01] target=net-banner count=1' \
-  'the reduction names the exact reason report.md §5.2 rule 2s own honesty vocabulary lists for this check, and the real count'
+  'the reduction names the exact reason this module'"'"'s own honesty vocabulary lists for this check, and the real count'
 
 t_case 'the not-open and filtered listeners are ONE counted net_check_not_applicable reduction, naming both states'
 assert_contains "$RUN_MULTI_JSON" 'reason=net_check_not_applicable checks=[NET-SVC-BANNER_DISCLOSURE-01] target=net-banner count=2 not_open=1 filtered=1' \
@@ -236,7 +236,7 @@ RULES_FILE=$(_slurp "$ROOT/modules/network/checks-banner.rules")
 assert_contains "$RULES_FILE" 'id: NET-SVC-BANNER_DISCLOSURE-01' 'the check id is registered'
 assert_contains "$RULES_FILE" 'coverage-scope: target' 'the record declares coverage-scope: target - FAILS the linter'"'"'s E079 otherwise'
 assert_contains "$RULES_FILE" 'tags: passive' \
-  'the record is tagged passive, matching modules/network/engine.sh'"'"'s own banner.sh:passive phase-table floor and report.md §5.1'"'"'s own table for this check'
+  'the record is tagged passive, matching modules/network/engine.sh'"'"'s own banner.sh:passive phase-table floor and this check'"'"'s own declared tier'
 
 # =============================================================================
 printf '\n-- a multi-line greeting (FTP, "220-..." continuation then "220 " with the product) is identified from its LATER line --\n'
@@ -263,7 +263,7 @@ assert_contains "$ML_JSONL" 'proftpd' \
 assert_contains "$ML_JSONL" '1.3.5e' 'the version 1.3.5e is named in the evidence too'
 
 # =============================================================================
-printf '\n-- report.md §5.2 rule 2: no_declared_listeners is a named, counted skip, not a silent clean run --\n'
+printf '\n-- no_declared_listeners is a named, counted skip, not a silent clean run --\n'
 # =============================================================================
 
 FIX_SOLO=$W/root-solo
@@ -279,7 +279,7 @@ _net_scan "$W/run-solo" "$FIX_SOLO" --target net-solo
 assert_eq 0 "$_RC" 'exits 0'
 SOLO_JSON=$(_slurp "$W/run-solo/run.json")
 assert_contains "$SOLO_JSON" 'reason=no_declared_listeners checks=[NET-SVC-BANNER_DISCLOSURE-01]' \
-  'the named reason from report.md §5.2 rule 2s own list appears, naming this check specifically'
+  'the named reason from the module'"'"'s own declared-skip vocabulary appears, naming this check specifically'
 SOLO_JSONL=$(_slurp "$W/run-solo/findings.jsonl")
 assert_not_contains "$SOLO_JSONL" 'NET-SVC-BANNER_DISCLOSURE-01' \
   'no finding was fabricated with nothing to probe'
@@ -289,7 +289,7 @@ assert_not_contains "$SOLO_JSON" 'reason=check_not_executed_no_reason_recorded' 
   'no check_not_executed_no_reason_recorded reduction names this run - FAILS if the reduction above were spelled check=ID (singular, reachability.sh'"'"'s own convention) rather than checks=[ID] (plural, bracketed): modules/network/run.sh'"'"'s _net_record_unaccounted reads run_facts coverage_reduction for the literal substring "checks=[" and would then see this check as selected (it is passive-tagged, so it IS selected even at this run'"'"'s own default --intensity passive, unlike NET-PORT-*'"'"'s safe-active tag, which is filtered out of selection below --intensity safe and so never reaches this backstop at all) but never accounted for, and would falsely report it as a defect in modules/network/ rather than the declared skip it actually is. Reproduced against the pre-fix spelling before writing this assertion.'
 
 # =============================================================================
-printf '\n-- report.md §5.2 rule 2: net_probe_cmd_absent is a named, counted, CHECK-LEVEL skip - nothing is probed at all --\n'
+printf '\n-- net_probe_cmd_absent is a named, counted, CHECK-LEVEL skip - nothing is probed at all --\n'
 # =============================================================================
 
 t_case 'with SCOURSH_NET_TCP_CAPABLE=0, the check is recorded as uncovered by name, and neither the classify nor the banner-read primitive is ever invoked'
@@ -306,7 +306,7 @@ NET_PROBE_LOG=$W/net-probe.log NET_BANNER_LOG=$W/net-banner.log \
 assert_eq 0 "$_CAP_RC" 'exits 0 - a bash without --enable-net-redirections is a coverage fact, never an error'
 NOCAP_JSON=$(_slurp "$W/run-nocap/run.json")
 assert_contains "$NOCAP_JSON" 'reason=net_probe_cmd_absent' \
-  'the named reason from report.md §5.2 rule 2s own list appears'
+  'the named reason from the module'"'"'s own declared-skip vocabulary appears'
 assert_contains "$NOCAP_JSON" 'checks=[NET-SVC-BANNER_DISCLOSURE-01]' \
   'the reduction names this check id specifically, not only a generic module note'
 assert_file_absent "$W/net-probe.log" \

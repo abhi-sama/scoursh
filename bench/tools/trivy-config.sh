@@ -19,7 +19,7 @@
 # CONFLICT DISCLOSURE.  scoursh ships `modules/iac/adapters/trivy/`, so
 # `scoursh --use-engines` would WRAP this tool.  The scoursh column in this leg
 # is `bench/tools/scoursh-iac.sh`, which is explicitly not `--use-engines`, so
-# the two columns are independent - see the scout report's §6.1.
+# the two columns are independent.
 #
 # shellcheck shell=bash
 

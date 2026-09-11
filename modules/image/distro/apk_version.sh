@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # modules/image/distro/apk_version.sh - the apk-tools VERSION COMPARATOR
-# (IMG-05; data/scoursh-image-scan-design/report.md §2.4 "THE BLOCKER" and
-# §2.5 "the comparator is tractable", plus §5.3's IMG-05 row).
+# (IMG-05).
 #
 # WHAT THIS FILE IS.  A total ordering over Alpine/apk package version
 # strings, in pure bash: no fork, no `sort -V`, no external command, and no
@@ -25,7 +24,7 @@
 # divergence, the exact direction tension 25 calls disqualifying", as the
 # reason it never generalised into a shared `version_cmp`.
 #
-# report.md §2.4 applied that same standard to OS versions and measured the
+# The same standard was applied to OS versions and measured the
 # shipped comparator at 5 correct / 7 WRONG out of 12, including:
 #
 #     MISMATCH  1.2.3-r4  vs  1.2.3-r10   semver= 1   true=-1
@@ -47,7 +46,7 @@
 # ---------------------------------------------------------------------------
 # THE GRAMMAR, AND THE ALGORITHM
 # ---------------------------------------------------------------------------
-# apk-tools' documented version grammar (report.md §2.5):
+# apk-tools' documented version grammar:
 #
 #     NUM ( '.' NUM )*  [ letter ]  ( '_' suffix [ NUM ] )*  [ '-r' NUM ]
 #
@@ -55,8 +54,8 @@
 #
 #     alpha < beta < pre < rc < (no suffix) < cvs < svn < git < hg < p
 #
-# apk has no epoch in practice, which is why it is the easy distro and why
-# report.md §2.5 ranks the remaining work apk << dpkg < rpm.
+# apk has no epoch in practice, which is why it is the easy distro; the
+# remaining work ranks apk << dpkg < rpm.
 #
 # A version is LEXED into a token stream, and two streams are then walked in
 # lockstep.  The tokens are:
@@ -136,14 +135,14 @@
 #   EQUAL is the FALSE-NEGATIVE direction.  IMG-06 asks "is the installed
 #   version below the advisory's fixed-in version"; EQUAL means "not below",
 #   means "not vulnerable", reported with no diagnostic at all - the exact
-#   failure shape report.md §2.4 disqualified semver.sh for.
+#   failure shape that disqualified semver.sh above.
 #
 # The divergence is also one-directional, which is what makes it safe to
 # ship: every pair it decides is a pair apk called EQUAL, and EQUAL already
 # means "not below" means "reported safe".  So this rule can only ever turn a
 # silent SAFE into a reported finding - a false positive at worst, never a
 # false negative.  That is the trade this project already makes everywhere
-# else (report.md §2.4: "a false positive: noisy, survivable").
+# else ("a false positive: noisy, survivable").
 #
 # The live `apk version -t` differential named below WILL flag these pairs.
 # That is expected.  Confirm each flagged pair is a genuine field-order case

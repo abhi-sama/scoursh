@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 # modules/network/transport_engine.sh - the pure half of the NET-10
-# transport-posture probe (data/scoursh-network-scan-design/report.md §3.3,
-# §5.1, §5.2; the NET-10 row in its §7 staged plan). Owned by
+# transport-posture probe. Owned by
 # modules/network/transport.sh.
 #
 # Owns:
-#   report.md §3.3  "A plaintext service on a port whose TLS twin exists;
+#   transport posture  A plaintext service on a port whose TLS twin exists;
 #                    STARTTLS advertised but not required; ... This is
 #                    DAST-TRANSPORT-* and DAST-TLS-* reasoning applied one
 #                    port over ... a web app can be perfectly configured
-#                    while its database port answers in the clear."  The
-#                    third case that sentence names - an expired or
+#                    while its database port answers in the clear.  The
+#                    third case that reasoning names - an expired or
 #                    self-signed certificate on a non-web listener - is
 #                    ALREADY NET-08's own coverage (modules/network/
 #                    tlsport.sh assesses every non-base-url listener's
@@ -18,7 +17,7 @@
 #                    means "non-web" for this module - modules/network/
 #                    tlsport.sh's own header explains why the base-url row is
 #                    skipped there), so this file adds exactly the TWO ids
-#                    report.md §5.1's own finding table lists under the
+#                    the finding table lists under the
 #                    `NET-TRANSPORT-*` prefix that NET-08 does not already
 #                    produce: NET-TRANSPORT-PLAINTEXT_SERVICE-01 and
 #                    NET-TRANSPORT-STARTTLS_NOT_REQUIRED-01.  Re-emitting a
@@ -58,9 +57,9 @@
 #   limitation rather than a silent one (this file's own header, and every
 #   finding this check emits, says so): a service repurposing one of these
 #   ports for something else would be misidentified, and confidence is
-#   `medium` (report.md §5.1's own table) for exactly that reason - the
+#   `medium` for exactly that reason - the
 #   identical "confidence reflects what was actually measured" discipline
-#   report.md §3.4 already applies to NET-11's banner-version lookup.  A
+#   already applies to NET-11's banner-version lookup.  A
 #   listener on one of those ports is then handed to `tls_probe` (the SAME
 #   openssl s_client invocation modules/network/tlsport.sh already calls on
 #   every non-base-url listener, reused here rather than forked): a
@@ -101,9 +100,9 @@
 #   servers that advertise capability inline in their greeting (common for
 #   IMAP, e.g. Dovecot's `* OK [CAPABILITY ... STARTTLS] ...`) rather than
 #   only after an explicit capability query (EHLO/CAPA/FEAT) this scanner
-#   never sends, per report.md §2.6's "no protocol conversation" boundary -
-#   a stated recall limitation, not a silent one, and why report.md §5.1
-#   gives this check `confidence: medium` rather than `high`.
+#   never sends, per this module's deliberate "no protocol conversation" boundary -
+#   a stated recall limitation, not a silent one, and why this check is
+#   given `confidence: medium` rather than `high`.
 #
 # THIS FILE IS A PURE FUNCTION LIBRARY, no side effect at source time beyond
 # `set -Eeuo pipefail` and its own guarded sources, matching every sibling
@@ -141,7 +140,7 @@ fi
 # "a new source edge is measured, not free" reasoning
 # modules/network/reachability_engine.sh's own private `_net_json_flatten`
 # copy gives for a different function.  Bytes read off a raw socket are not
-# text by construction (report.md §5.3, one probe over) and may carry a NUL
+# text by construction and may carry a NUL
 # a bash string cannot hold at all, so the substitution happens on the byte
 # stream via `tr`, before the bytes ever reach a bash variable - the
 # identical ordering the function this copies from documents at length.
@@ -213,7 +212,7 @@ net_transport_plaintext_twin() {
 # neither of the two this function's sibling matches, and one FTP daemons
 # essentially never volunteer unprompted in their `220` greeting in any
 # case (it is discovered via the `FEAT` command, an explicit query this
-# probe never sends, per report.md §2.6's own boundary).  Matching `AUTH`
+# probe never sends, per this module's own deliberate boundary).  Matching `AUTH`
 # here would be a false-positive generator on essentially every plaintext
 # banner that happens to mention authentication at all.
 net_transport_proto_starttls_capable() {
@@ -240,7 +239,7 @@ net_transport_banner_advertises_starttls() {
 # ---------------------------------------------------------------------------
 # Both share the `net` fingerprint location profile (lib/findings.sh: target
 # host port transport), identical to every sibling emitter in this module -
-# report.md gives this family no location component of its own to add.
+# this family adds no location component of its own.
 
 transport_emit_plaintext_service() {
   local target=$1 role=$2 scheme=$3 host=$4 port=$5 proto=$6 twin=$7

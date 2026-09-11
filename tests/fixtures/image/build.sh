@@ -16,7 +16,7 @@
 # WHAT IS BUILT, AND WHAT EACH ONE IS FOR:
 #
 #   docker-archive/one-image.tar
-#     report.md §1.2 shape A, the ordinary case: `manifest.json` as a
+#     The ordinary docker-archive shape: `manifest.json` as a
 #     top-level ARRAY with one entry, a config blob, three layers. The layers
 #     carry a package-database path that is WRITTEN, then WHITED OUT, then
 #     WRITTEN AGAIN, which is the case that separates "later wins" from a
@@ -29,7 +29,7 @@
 #     with no reference at all).
 #
 #   oci-layout/
-#     report.md §1.2 shape B: `oci-layout`, `index.json` with ONE manifest
+#     The other supported archive shape: `oci-layout`, `index.json` with ONE manifest
 #     carrying an `org.opencontainers.image.ref.name` annotation, and blobs
 #     under `blobs/sha256/`. Its layers carry a DIFFERENT metadata path from
 #     the docker-archive fixture's, so a test that read the wrong fixture

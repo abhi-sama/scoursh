@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # modules/image/acquire.sh - offline image ACQUISITION and untrusted-archive
-# handling (IMG-02, data/scoursh-image-scan-design/report.md §1).
+# handling (IMG-02).
 #
 # WHAT THIS FILE IS.  Everything between "the operator handed us a file" and
 # "these are the bytes of the metadata paths we asked for, from the layer that
 # actually wins".  It reads config/images.conf (rules/RULE-FORMAT.md §9.6.8),
-# opens report.md §1.2's two offline shapes - a `docker save` tarball (A) and
+# opens two offline shapes - a `docker save` tarball (A) and
 # an OCI image layout directory (B) - resolves layers in manifest order with
-# OCI whiteouts applied (§1.6), and extracts ONLY the handful of named
+# OCI whiteouts applied (manifest order IS layer application order), and extracts ONLY the handful of named
 # metadata paths a later ticket will parse.
 #
 # WHAT IT DELIBERATELY IS NOT.  No package enumeration, no version comparator,
 # no advisory lookup and no finding: IMG-04 onward own those, and this file
 # must be complete and reviewable on its own before any of them is written,
 # because it is the file that touches attacker-controlled bytes.  It also
-# never materialises a rootfs - report.md §1.6 makes "extract only the
-# metadata paths" a design invariant rather than an optimisation, and the
+# never materialises a rootfs - "extract only the
+# metadata paths" is a design invariant rather than an optimisation, and the
 # extraction API below has no whole-archive mode to reach for.
 #
 # IMG-06 ADDED SECTION 10 (`image_config_blob_read`), the one exception to
@@ -57,7 +57,7 @@
 # check-gate half of the module, none of which acquisition needs.
 #
 # ===========================================================================
-# THE SECURITY STATEMENT, IN ONE PLACE (report.md §1.5)
+# THE SECURITY STATEMENT, IN ONE PLACE
 # ===========================================================================
 # A layer tarball is attacker-controlled content and is the most hostile input
 # this tool processes.  Three classic escapes are refused HERE, IN BASH,
@@ -81,7 +81,7 @@
 #
 # **The bash validation is THE control, and it does not rest on tar's own
 # containment.**  bsdtar 3.5.3 / libarchive 3.7.4 was measured on this host
-# refusing all three (report.md §1.5's table, re-measured while writing this
+# refusing all three (re-measured while writing this
 # file: `Path contains '..'`, a leading `/` stripped, extraction through a
 # symlink refused) - and that is ONE userland's behaviour, not a guarantee.
 # The GNU-tar half of that cross-check is deferred to tools/daily-suite.sh's
@@ -150,7 +150,7 @@ source "${BASH_SOURCE[0]%/*}/../../lib/config.sh"
 #
 # Reading the two manifests through it rather than through grep is not
 # fastidiousness.  `manifest.json` is a top-level ARRAY whose `Layers` entries
-# are ordered and whose order IS the layer application order (§1.6); an OCI
+# are ordered and whose order IS the layer application order; an OCI
 # `index.json` nests a digest under `manifests[n].digest` beside an
 # annotations map that can carry any operator text at all.  A grep for
 # `sha256:` over either one reads a digest out of a field it never meant to,
@@ -314,7 +314,7 @@ image_json_leaf() {
 # ---------------------------------------------------------------------------
 # 2. `image_tar_members` - the `scan_match` of tar
 # ---------------------------------------------------------------------------
-# report.md §1.4, measured rather than reasoned about, and re-measured on this
+# Measured rather than reasoned about, and re-measured on this
 # host (bsdtar 3.5.3 / libarchive 3.7.4) while writing this file:
 #
 #   tar -tf ARCHIVE                     -> 0    (whole listing)
@@ -375,7 +375,7 @@ image_tar_listing_set() {
 }
 
 # ---------------------------------------------------------------------------
-# 3. Member-name validation - THE security control (report.md §1.5)
+# 3. Member-name validation - THE security control
 # ---------------------------------------------------------------------------
 
 # `image_member_normalize NAME` - the one normalisation applied before every
@@ -400,11 +400,11 @@ image_member_normalize() {
 #   empty                  - names nothing.  An extractor handed it asks tar
 #                            for "everything"; a remover handed it is a bare
 #                            `rm` of the extraction root
-#   absolute (`/x`)        - report.md §1.5's second escape.  bsdtar happens
+#   absolute (`/x`)        - the second escape.  bsdtar happens
 #                            to strip the leading slash; that is bsdtar's
 #                            choice, not a property of tar, and this refusal
 #                            does not depend on it
-#   a `..` COMPONENT       - report.md §1.5's first escape.  Tested per
+#   a `..` COMPONENT       - the first escape.  Tested per
 #                            component, never as a substring: a file
 #                            legitimately named `..foo` or `x..y` contains
 #                            those bytes and is not a traversal, and refusing
@@ -437,7 +437,7 @@ image_member_is_safe() {
   return 0
 }
 
-# `image_member_parents_are_dirs LISTING NAME` - report.md §1.5's THIRD escape,
+# `image_member_parents_are_dirs LISTING NAME` - the THIRD escape,
 # the one neither name-shape check above can see.
 #
 # The attack is a layer that ships `lib` as a SYMLINK pointing outside the
@@ -782,7 +782,7 @@ image_source_resolve() {
 }
 
 # ---------------------------------------------------------------------------
-# 7. Shape A - a `docker save` tarball (report.md §1.2 shape A)
+# 7. Shape A - a `docker save` tarball
 # ---------------------------------------------------------------------------
 # The archive holds `manifest.json` (a top-level ARRAY, one entry per image),
 # a config JSON blob, and one member per layer.  A layer is a tar INSIDE the
@@ -791,7 +791,7 @@ image_source_resolve() {
 # JSON and is no more trusted than a name out of the listing.
 #
 # Sets `_IMAGE_LAYERS` (ordered, layer 0 first - manifest order IS application
-# order, §1.6) and `_IMAGE_CONFIG_MEMBER`.
+# order) and `_IMAGE_CONFIG_MEMBER`.
 declare -ga _IMAGE_LAYERS=()
 _IMAGE_CONFIG_MEMBER=''
 _IMAGE_ENTRY=''
@@ -892,7 +892,7 @@ image_docker_archive_open() {
   # than taken in the order the flattener happened to print it: that order is
   # document order, which is the same thing for a well-formed array and is not
   # something a hostile document has to respect.  Layer order is what decides
-  # which copy of a package database wins (§1.6), so it is derived from the
+  # which copy of a package database wins, so it is derived from the
   # structure rather than from the serialisation.
   local -a idxs=()
   local declared=0
@@ -927,7 +927,7 @@ image_docker_archive_open() {
 }
 
 # ---------------------------------------------------------------------------
-# 8. Shape B - an OCI image layout directory (report.md §1.2 shape B)
+# 8. Shape B - an OCI image layout directory
 # ---------------------------------------------------------------------------
 # `index.json` names one or more manifests by digest; each manifest names a
 # config and its layers by digest; every digest is a file under
@@ -1076,7 +1076,7 @@ image_open() {
 }
 
 # ---------------------------------------------------------------------------
-# 9. Layers, ordering, and whiteouts (report.md §1.6)
+# 9. Layers, ordering, and whiteouts
 # ---------------------------------------------------------------------------
 # Layers apply in manifest order and LATER WINS.  Deletions are OCI whiteouts:
 # `<dir>/.wh.<name>` deletes one entry, `<dir>/.wh..wh..opq` clears everything
@@ -1088,7 +1088,7 @@ image_open() {
 # `IMAGE_METADATA_PATHS` is the whole of what this module ever asks for.  It
 # is a list of LOCATIONS and nothing here parses a single byte of any of them:
 # the apk and dpkg readers are IMG-04 and IMG-07, and the three rpm database
-# paths below are IMG-12's own addition (report.md §2.1's table: the modern
+# paths below are IMG-12's own addition (the modern
 # sqlite backend plus the two older binary shapes, Berkeley DB and ndb - a
 # real image carries at most one of the three, never all of them).  Only ONE
 # of the three rpm paths is ever actually read as text -
@@ -1099,7 +1099,7 @@ image_open() {
 # listed here so acquisition extracts whichever one a given image actually
 # carries, exactly as `rpm_installed_enumerate` needs to tell "no rpm
 # database at all" from "a database this file cannot read as text" apart.
-# Keeping it a handful of paths is what report.md §1.6 calls a design
+# Keeping it a handful of paths is a design
 # invariant: scoursh never materialises a rootfs, so scanning a 900 MB image
 # costs its layer INDEXES plus a few kilobytes.
 declare -ga IMAGE_METADATA_PATHS=(
@@ -1213,7 +1213,7 @@ image_layer_listing_set() {
 # inlined so the "unpack one layer, read it, throw it away" cycle is visible
 # at every call site: a loop that forgot this would accumulate every layer of
 # every image in scratch, which for a real image is exactly the full-rootfs
-# materialisation §1.6 forbids.
+# materialisation this module forbids.
 image_layer_release() {
   if [[ -n $_IMAGE_LAYER_SCRATCH ]]; then
     erase_dir "$_IMAGE_LAYER_SCRATCH"
@@ -1312,7 +1312,7 @@ image_collect_metadata() {
 }
 
 # ---------------------------------------------------------------------------
-# 10. The image CONFIG BLOB (IMG-06, report.md §4.1's IMAGE-CFG-* row)
+# 10. The image CONFIG BLOB (IMG-06)
 # ---------------------------------------------------------------------------
 # `image_config_blob_read KIND ARCHIVE DESTROOT` - resolves `_IMAGE_CONFIG_MEMBER`
 # (set by image_open, whichever shape opened) to a real, readable file and
@@ -1335,7 +1335,7 @@ image_collect_metadata() {
 # `_IMAGE_REFUSE_REASON` set (never dies) when the manifest/index declared no
 # config member at all, or when the blob is missing/refused - the caller
 # turns that into a `coverage_reduction reason=image_config_unreadable`
-# (report.md §4.3's own row), never a fatal error, since a malformed or
+# (a recorded reason), never a fatal error, since a malformed or
 # missing config blob is a fact about the image, not about this tool.
 _IMAGE_CONFIG_PATH=''
 image_config_blob_read() {

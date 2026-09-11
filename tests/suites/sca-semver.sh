@@ -6,17 +6,15 @@
 #
 #   1. Unit tests for the interval edges (bound_kind exact|fixed|last|open),
 #      the SemVer 2.0.0 prerelease-precedence ladder, build-metadata being
-#      ignored, and the `v`/`=` prefix handling - the specific shapes the
-#      feasibility scout report's own §5 names.
+#      ignored, and the `v`/`=` prefix handling.
 #
 #   2. A differential test against an INDEPENDENT Python reference
 #      implementation of SemVer 2.0.0 precedence, over every pair in a
 #      programmatically generated corpus (curated adversarial cases plus a
 #      systematic major/minor/patch/prerelease/build sweep) - this suite's
-#      own reproduction of the scout report's "0/30,000 mismatches on real
-#      npm version pairs" measurement (§5), using a fresh corpus rather than
-#      the original one (a scratch artifact, discarded per that report's own
-#      Appendix). The reference is written independently in Python, in its
+#      own reproduction of the "0/30,000 mismatches on real
+#      npm version pairs" measurement, using a fresh corpus rather than
+#      the original scratch one (discarded once measured). The reference is written independently in Python, in its
 #      own idiom, rather than transliterated from the bash source, so the
 #      two are not the same bug wearing two languages.
 #
@@ -115,10 +113,10 @@ assert_status 1 'a version below introduced is not affected' semver_in_range_v '
 
 t_case 'bound_kind=open with introduced=0 (Tier A: whole-package/malware row) matches EVERY version unconditionally'
 assert_status 0 'a very low version matches' semver_in_range_v '0.0.1' '0' '' open
-assert_status 0 'a very high version matches too - this is the zero-version-algebra case (feasibility scout report §4 Tier A)' semver_in_range_v '999.999.999' '0' '' open
+assert_status 0 'a very high version matches too - this is the zero-version-algebra case' semver_in_range_v '999.999.999' '0' '' open
 assert_status 0 'and a prerelease version matches as well' semver_in_range_v '1.0.0-alpha' '0' '' open
 
-t_case 'false-positive controls: the FIXED version itself must never match (feasibility scout report §5)'
+t_case 'false-positive controls: the FIXED version itself must never match'
 assert_status 1 'minimist@1.2.6 (the published fix) does not match [1.2.0,1.2.6)' semver_in_range_v '1.2.6' '1.2.0' '1.2.6' fixed
 assert_status 1 'a prerelease of the version AFTER the fixed bound'"'"'s own major is correctly excluded' semver_in_range_v '2.1.0-beta.1' '1.0.0' '2.0.0' fixed
 assert_status 0 'a prerelease of the fixed bound ITSELF is correctly INCLUDED - it sorts below the real 2.0.0 release, so it is still inside [1.0.0,2.0.0) (SemVer 2.0.0 §11.4.3, the same rule the ladder case above pins)' \
@@ -226,7 +224,7 @@ t_case 'the generated corpus is a strong subset of the report'"'"'s own 30,000-p
 corpus_n=$(wc -l <"$W/corpus.txt" | tr -d ' ')
 pairs_n=$(wc -l <"$W/pairs.txt" | tr -d ' ')
 if (( pairs_n >= 10000 )); then
-  _t_ok "$corpus_n distinct version(s), $pairs_n pair(s) - a substantial fraction of the 30,000-pair scale the feasibility scout report measured"
+  _t_ok "$corpus_n distinct version(s), $pairs_n pair(s) - a substantial fraction of the 30,000-pair scale this comparator was originally measured against"
 else
   _t_no 'at least 10,000 pairs generated' "only $pairs_n"
 fi
@@ -247,6 +245,6 @@ while IFS=$'\t' read -r a b expected; do
 done <"$W/pairs.txt"
 assert_eq "$pairs_n" "$checked" 'every generated pair was actually exercised (not silently skipped)'
 assert_eq 0 "$mismatches" \
-  "0 mismatches over $checked real-shaped version pairs against an independent Python SemVer 2.0.0 reference - the same measured-correctness bar the feasibility scout report's own §5 sets (0/30,000 on real npm data); the first 10 of any mismatch are printed above for diagnosis"
+  "0 mismatches over $checked real-shaped version pairs against an independent Python SemVer 2.0.0 reference - the same measured-correctness bar this comparator was originally held to (0/30,000 on real npm data); the first 10 of any mismatch are printed above for diagnosis"
 
 t_summary sca-semver

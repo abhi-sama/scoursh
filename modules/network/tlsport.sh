@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # modules/network/tlsport.sh - the NET-08 tier-2 probe: TLS identification on
-# a non-`base-url` listener, and the `NET-TLS-*` checks
-# (data/scoursh-network-scan-design/report.md §3.2 item 2, §5.1, §5.2, §7's
-# NET-08 row).
+# a non-`base-url` listener, and the `NET-TLS-*` checks.
 #
 # THIS IS A PHASE SCRIPT: modules/network/engine.sh's `net_run_phase` reaches
 # it with a plain `source` (at tier `passive`, so it runs at every
@@ -24,7 +22,7 @@
 # open/not-open/filtered - `lib/nettransport.sh`'s `net_connect_probe`, on the
 # gate-pinned address `http_authorize_raw_connection` already resolved, with
 # the identical three-state vocabulary and the identical
-# filtered-is-never-not-open discipline (report.md §5.2 rule 4) -  reached the
+# filtered-is-never-not-open discipline -  reached the
 # same way reachability.sh itself reaches it: a second, independent classify
 # call, never a cached result from a different phase this run may not have
 # run at all.
@@ -40,22 +38,22 @@
 # `openssl s_client` call site, so that exemption list needs no edit.
 #
 # WHY NET-TLS-* AND NOT DAST-TLS-*.  `modules/dast/passive/tls.sh` already
-# assesses the target's own `base-url` listener; report.md §3.2 item 2's own
-# words are "genuinely new coverage - DAST-TLS-* only ever looks at the
-# base-url listener today".  This phase therefore probes every OTHER declared
+# assesses the target's own `base-url` listener; this phase is genuinely new
+# coverage - DAST-TLS-* only ever looks at the
+# base-url listener.  This phase therefore probes every OTHER declared
 # listener (config/scope.conf's `extra-host` entries, NET-05's `role:
 # extra-host` rows) and skips the `base-url` row outright - reusing tls.sh's
 # module=dast/base-url pass a second time under a different check id would
 # double-report the identical listener under two different module namespaces.
 #
-# THE HONESTY CONTRACT (report.md §5.2), APPLIED PER LISTENER BUT REPORTED
+# THE HONESTY CONTRACT, APPLIED PER LISTENER BUT REPORTED
 # AGGREGATED.  A listener that is not-open, filtered, or open-but-not-TLS
 # (the handshake produced no session) is a counted coverage_reduction, never a
 # silent clean run and never a finding - reachability.sh's own "ONE reduction
 # naming the count, never one per dropped tuple" discipline is reused here
 # rather than flooding run.json with a line per port.  Per-listener facts -
-# the finding itself, and the protocol/cipher `notes` line report.md §3.2
-# asks this check to report even when nothing fires - are still emitted per
+# the finding itself, and the protocol/cipher `notes` line this check
+# reports even when nothing fires - are still emitted per
 # listener, because those ARE listener-specific facts; only the SKIP
 # categories are aggregated.
 #
@@ -80,7 +78,7 @@ source "${BASH_SOURCE[0]%/*}/../../lib/nettransport.sh"
 # For http_authorize_raw_connection - see reachability.sh's own header for why
 # this is called AGAIN here rather than trusted from inventory.sh's earlier
 # pass: listeners.json is already-authorized OPERATOR CONFIG, so re-running
-# the fatal gate is report.md §5.2 rule 1's first half, and re-resolving the
+# the fatal gate refuses an operator-configured tuple, and re-resolving the
 # hostname AT PROBE TIME is what keeps the pinned-resolution anti-TOCTOU
 # guarantee real for a probe that can run an arbitrary amount of time after
 # inventory.sh wrote its artifact.
@@ -155,8 +153,8 @@ _net_tls_assess() {
   _NET_TLS_HAD_SESSION=1
 
   # The negotiated pair is recorded on the run unconditionally, mirroring
-  # modules/dast/passive/tls.sh's own reporting-versus-judging split: report.md
-  # §3.2 item 2 asks for protocol/cipher to be REPORTED, and a healthy session
+  # modules/dast/passive/tls.sh's own reporting-versus-judging split: protocol/cipher
+  # is REPORTED, and a healthy session
   # is not itself a finding.
   run_record notes "module=network check=tlsport target=$target endpoint=$endpoint protocol=${_TLS_PROTOCOL:-unknown} cipher=${_TLS_CIPHER:-unknown} verify_code=${_TLS_VERIFY_CODE:-none}"
 
@@ -291,7 +289,7 @@ _net_tlsport_run() {
   fi
 
   if [[ $_NET_LISTENERS_STATE != present ]]; then
-    run_record coverage_reduction "module=network reason=no_declared_listeners checks=[$_NET_TLS_IDS] target=$target - reports/<run>/inventory/listeners.json was not usable this run (modules/network/inventory.sh's report.md §5.2 rule 3: a target with only base-url, or every extra-host dropped, writes no artifact, or it exists but is empty)."
+    run_record coverage_reduction "module=network reason=no_declared_listeners checks=[$_NET_TLS_IDS] target=$target - reports/<run>/inventory/listeners.json was not usable this run (modules/network/inventory.sh writes no artifact, or an empty one, for a target with only base-url, or every extra-host dropped)."
     run_record coverage_gap "network tlsport: target '$(net_scope_safe_text "$target" 80)' has no usable declared listener set beyond its base-url this run, so no NET-TLS-* check probed anything. This is the absence of a test, not the absence of a problem."
     return 0
   fi
@@ -335,7 +333,7 @@ _net_tlsport_run() {
     scheme=${xh_scheme[i]} host=${xh_host[i]} port=${xh_port[i]}
     url="$scheme://$host:$port/"
 
-    # report.md §5.2 rule 1, first half: an operator-configured tuple is
+    # An operator-configured tuple is
     # refused FATALLY on every reason except a transient DNS failure, which
     # degrades to one counted reduction rather than aborting every sibling
     # listener - identical to reachability.sh's own `false` dns_fatal arg.
@@ -352,8 +350,8 @@ _net_tlsport_run() {
     # THE OPEN-STATE CLASSIFICATION THIS FILE'S OWN HEADER PROMISES: the same
     # net_connect_probe call reachability.sh makes, on the same gate-pinned
     # address, with the same three-state vocabulary. A listener that is not
-    # open never reaches a TLS handshake at all - report.md §5.2's own
-    # honesty contract, "a probe that did not run is a counted reduction,
+    # open never reaches a TLS handshake at all - the module's own
+    # honesty contract: "a probe that did not run is a counted reduction,
     # never a silent clean".
     state=$(net_connect_probe "$addr" "$port")
     case $state in

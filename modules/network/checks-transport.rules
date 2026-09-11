@@ -1,6 +1,5 @@
 # modules/network/checks-transport.rules - the NET-10 script-check registry
-# (rules/RULE-FORMAT.md §9.5; data/scoursh-network-scan-design/report.md
-# §3.3, §5.1, §5.2, the NET-10 row in its §7 staged plan). Owned by
+# (rules/RULE-FORMAT.md §9.5). Owned by
 # modules/network/transport.sh; ids are both `NET-TRANSPORT-*`.
 #
 # ONE FILE PER OWNING PHASE SCRIPT, per rules/RULE-FORMAT.md §9's
@@ -15,12 +14,12 @@
 # exposure and a STARTTLS-not-required observation on the same listener
 # would collide onto one fingerprint if they shared an id - and they are
 # genuinely different facts with different remediations, not one fact
-# reported at two strengths (report.md §3.3's own framing: the first is "the
+# reported at two strengths: the first is "the
 # service answers in the clear at all", the second is "TLS is offered but
-# not enforced").
+# not enforced".
 #
 # A THIRD id for "expired/self-signed certificate on a non-web listener" -
-# the third case report.md §3.3's prose names - is DELIBERATELY ABSENT
+# a third case this module's own design names - is DELIBERATELY ABSENT
 # HERE: modules/network/tlsport.sh (NET-08) already assesses every
 # non-base-url listener's certificate unconditionally under its own
 # NET-TLS-CERT_EXPIRED-01/NET-TLS-SELF_SIGNED-01 ids, and "non-base-url"

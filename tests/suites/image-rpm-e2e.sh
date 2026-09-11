@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# tests/suites/image-rpm-e2e.sh - the last rpm ticket (data/scoursh-image-
-# scan-design/report.md §2.1's rpm row, §2.3's advisory-ecosystem-namespace
-# row, and §5.3's IMG-12 row): completes the rpm (RHEL/Fedora) slice END TO
+# tests/suites/image-rpm-e2e.sh - the last rpm ticket: completes the rpm (RHEL/Fedora) slice END TO
 # END - the Red Hat advisory ecosystem PLUS wiring IMG-12's rpm enumerator
 # and the rpmvercmp comparator into the real vulnerable-package finding
 # path, mirroring what tests/suites/image-debian.sh (IMG-09) already proved
@@ -24,8 +22,8 @@
 #      EPOCH-carrying vulnerable rpm package fires
 #      `IMAGE-PKG-VULNERABLE_OS_PACKAGE-03`, is quiet once the installed
 #      NEVRA reaches the fixed EVR (epoch-aware - a lexical/lax comparator
-#      would get this wrong, report.md §2.4), and the run-over-run diff
-#      (same operator-declared --image id, report.md §3.4) reads the
+#      would get this wrong), and the run-over-run diff
+#      (same operator-declared --image id) reads the
 #      patched CVE as `fixed`, never `unknown`+`new`.
 #   C. The advisory-db exit-4 gate (IMG-03's mechanism, reused unchanged)
 #      fires correctly for a resolved `Red Hat` ecosystem the fixture db
@@ -124,7 +122,7 @@ EOF
   _rc=$?
   assert_eq 0 "$_rc" "$_id resolves"
   assert_eq 'Red Hat' "$_IMAGE_DISTRO_ECOSYSTEM" \
-    "FAILS under a reading that built a per-release key (e.g. 'Red Hat:9') the way alpine/debian/ubuntu do - OSV.dev's own Red Hat namespace carries no such suffix (report.md §2.3)"
+    "FAILS under a reading that built a per-release key (e.g. 'Red Hat:9') the way alpine/debian/ubuntu do - OSV.dev's own Red Hat namespace carries no such suffix"
 done
 
 t_case 'VERSION_ID plays NO role in the ecosystem key: two different RHEL major versions resolve to the IDENTICAL ecosystem'
@@ -247,7 +245,7 @@ VERSION_ID=8.6
 '
 
 # `openssl-libs` carries an EPOCH (1) in both the installed and fixed EVR -
-# report.md §2.4's whole reason this ticket needs its own comparator rather
+# the whole reason this ticket needs its own comparator rather
 # than reusing modules/sca/semver.sh: an epoch-BLIND comparator has no way
 # to represent this field at all, and a naive string comparison of
 # "1:1.1.1k-9.el8" against "1:1.1.1k-9.el8_6" happens to get the RIGHT
@@ -318,9 +316,9 @@ RUN2_FINDINGS=$(_slurp "$W/run2/findings.jsonl")
 assert_not_contains "$RUN2_FINDINGS" 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-03' \
   'openssl-libs@1:1.1.1k-9.el8_6 is AT the fixed version - quiet this run, not merely "not new" - FAILS under a comparator that cannot order the release-field segment correctly (rpm_version.sh'"'"'s own rpmvercmp)'
 assert_contains "$RUN2_JSON" 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-03' \
-  'checks_run STILL names the package check - it executed and found nothing, a different fact from "did not run" (report.md §4.2 honesty)'
+  'checks_run STILL names the package check - it executed and found nothing, a different fact from "did not run"'
 
-t_case 'the run-over-run DIFF reads the patched CVE as fixed, never unknown+new (report.md §3.4, the whole point of the image-id cell)'
+t_case 'the run-over-run DIFF reads the patched CVE as fixed, never unknown+new - the whole point of the image-id cell'
 assert_contains "$RUN2_JSON" '"fixed"' 'run.json carries at least one fixed-classified finding this run'
 REPORT2=$(_slurp "$W/run2/report.md")
 assert_contains "$REPORT2" 'Fixed since last scan' \
@@ -347,7 +345,7 @@ _image_scan "$W/run-nosqlite" "$FIXDB" "$NO_SQLITE_PATH" -- --image "$IMG_ID-nos
 assert_eq 0 "$_RC" 'exit 0 - a missing sqlite3 on the scanning host is a declared limitation (requires-cmd: sqlite3, modules/image/checks-rpm.rules), not a fatal error'
 RUN_NOSQLITE_JSON=$(_slurp "$W/run-nosqlite/run.json")
 assert_contains "$RUN_NOSQLITE_JSON" 'reason=rpm_db_binary_format' \
-  'the DISTINCT declared reason - FAILS if this collapsed to no_package_db_found, which would misreport "a database exists but I could not read it" as "there is nothing here" (report.md §4.3)'
+  'the DISTINCT declared reason - FAILS if this collapsed to no_package_db_found, which would misreport "a database exists but I could not read it" as "there is nothing here"'
 NOSQLITE_FINDINGS=$(_slurp "$W/run-nosqlite/findings.jsonl")
 assert_contains "$NOSQLITE_FINDINGS" '"check_id":"IMAGE-COV-UNKNOWN_DISTRO-01"' 'the same coverage check as the no-database case'
 assert_contains "$NOSQLITE_FINDINGS" 'not text-readable' \

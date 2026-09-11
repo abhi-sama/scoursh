@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # modules/image/distro/rpm.sh - rpm (RHEL/Fedora) installed-package
-# ENUMERATION (IMG-12, data/scoursh-image-scan-design/report.md §2.1's rpm
-# row and §5.3's IMG-12 row: "rpm - gated on the v1-distro-scope decision;
+# ENUMERATION (IMG-12: "rpm - gated on the v1-distro-scope decision;
 # requires-cmd: sqlite3"), first of the rpm sub-chain that mirrors dpkg's
 # own IMG-07/08/09 split - enumeration here (section 1, IMG-12's own
 # scope), a version comparator next (rpm_version.sh, the rpmvercmp
@@ -27,7 +26,7 @@
 # WHY THIS FILE TAKES THREE FILE ARGUMENTS, UNLIKE ITS TWO SIBLINGS.  apk has
 # exactly one on-disk shape (`lib/apk/db/installed`) and dpkg has exactly one
 # (`var/lib/dpkg/status`), so each enumerator takes one FILE.  rpm has THREE
-# (report.md §2.1's table): the modern sqlite backend
+# (three physical shapes): the modern sqlite backend
 # (`var/lib/rpm/rpmdb.sqlite`, Fedora 33+ default since 2020) and the two
 # older binary shapes, Berkeley DB (`var/lib/rpm/Packages`) and ndb
 # (`var/lib/rpm/Packages.db`).  A real image carries exactly one of the
@@ -40,7 +39,7 @@
 # ===========================================================================
 # THE CENTRAL, MEASURED FACT THIS FILE IS BUILT AROUND
 # ===========================================================================
-# report.md §2.1 measured "sqlite3 present, rpm/rpm2cpio absent" on its
+# A first draft measured "sqlite3 present, rpm/rpm2cpio absent" on its
 # authoring host and read that as "the modern format is thereby readable".
 # It is not, and this was RE-MEASURED while writing this file, against
 # rpm.org's own db_recovery.html, the Fedora "Sqlite Rpmdb" change proposal,
@@ -63,10 +62,9 @@
 #   a Berkeley-DB or ndb row.  Nobody gets NEVRA out of this format with a
 #   bare `SELECT`.
 #
-# So "sqlite present" does NOT mean "text-readable" the way report.md's own
-# §5.3 row implies, and writing a general RPM-header decoder in pure bash is
+# So "sqlite present" does NOT mean "text-readable", and writing a general RPM-header decoder in pure bash is
 # EXACTLY the "unverifiable blob" docs/FOUNDATION.md tension 25 already
-# rejects for OS version algebras (report.md §2.1's own words, quoting
+# rejects for OS version algebras (quoting
 # tension 25 almost verbatim) - a hand-rolled binary tag/type/offset parser
 # with no reference implementation to differential-test against in this
 # tree is not something this project ships.  This file does not attempt one.
@@ -98,7 +96,7 @@
 # THE OLDER FORMATS NEED NO DETECTION BEYOND "WHICH PATH EXISTS" (report.md
 # §2.1: "need no text reader available here (rpm2cpio absent)").  Berkeley
 # DB and ndb are told apart by their FIXED, DIFFERENT on-disk path alone
-# (`var/lib/rpm/Packages` vs `var/lib/rpm/Packages.db` - report.md §2.1's
+# (`var/lib/rpm/Packages` vs `var/lib/rpm/Packages.db` -
 # own table), never by sniffing file content: this project has no Berkeley-
 # DB or ndb reader of any kind, so which of the two binary shapes it is
 # changes nothing about what happens next, only about which fixed path
@@ -145,7 +143,7 @@ declare -ga RPM_INSTALLED_RELEASES=()
 declare -ga RPM_INSTALLED_ARCHES=()
 
 # `_RPM_INSTALLED_REASON` - set only on a return-1 refusal, one of the two
-# reasons report.md §4.3's table names for this module:
+# reasons this module recognises:
 #
 #   no_package_db_found    - none of the three candidate paths exist at all,
 #                             the ordinary shape of an apk/dpkg image that
@@ -185,7 +183,7 @@ _RPM_INSTALLED_FORMAT=''
 # left empty otherwise.
 #
 # SQLITE FIRST, DELIBERATELY.  It is the current rpm default (Fedora 33+,
-# report.md §2.1) and the only one of the three this file can ever actually
+# Fedora 33+) and the only one of the three this file can ever actually
 # read, so on an image whose database happens to carry a stale leftover copy
 # of an older backend alongside a live sqlite one (a real shape after a
 # `dnf` in-place upgrade migrates the backend but never deletes the old
@@ -279,7 +277,7 @@ _rpm_sqlite_enumerate() {
 #    end-to-end" ticket: the Red Hat advisory ecosystem plus wiring rpm
 #    enumeration + rpmvercmp into the vulnerable-package finding path,
 #    mirroring modules/image/distro/dpkg.sh's own IMG-07 -> IMG-09 shape,
-#    the last rpm ticket report.md §5.3's IMG-12 row anticipated: "a future
+#    the last rpm ticket anticipated: "a future
 #    rpm version comparator and the advisory-matching/finding-emission
 #    wiring a future Red Hat/Fedora advisory-ecosystem ticket adds are both
 #    expected to land in that same file", modules/image/checks-rpm.rules's
@@ -437,7 +435,7 @@ rpm_scan_installed() {
 # comma-separated list of EVR strings (docs/FOUNDATION.md tension 25's
 # schema); every token that parses under `rpm_version_valid` is compared and
 # the LARGEST one wins as the fix threshold - conservative on purpose
-# (report.md §2.4: a false positive is noisy but survivable, a false
+# (a false positive is noisy but survivable, a false
 # negative is not), so a package below ANY of several recorded fix points is
 # still reported rather than only the smallest. An empty field, or one whose
 # tokens all fail to parse, means no comparable fix is known at all -

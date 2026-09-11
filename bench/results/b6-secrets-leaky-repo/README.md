@@ -7,7 +7,7 @@ None of it is published anywhere in `docs/` — that is ticket B9.
 ## SecretBench is NOT MEASURED, and here is the reason
 
 The ticket names SecretBench (`setu1421/SecretBench`, MSR'23) as the corpus, and
-the scout report's §4.2 lists it as the best neutral secrets corpus. **It is not
+this benchmark harness treats it as the best neutral secrets corpus available. **It is not
 obtainable in this environment**, and this is a scope boundary rather than a
 result:
 
@@ -166,7 +166,7 @@ the IaC leg, and the same treatment.
 
 Every planted credential in this corpus is CWE-798. A strict-CWE column would
 therefore separate no two cases and no two tools — it would be a tautology
-rather than the independent check the scout report's §5.2 wants it to be. The
+rather than the independent check it is meant to be. The
 label file carries an empty `cwe` on every case and the scorer renders the
 strict column as an explicit `no CWE in truth` cell rather than a row of zeros.
 

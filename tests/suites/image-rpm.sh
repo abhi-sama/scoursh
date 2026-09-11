@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# tests/suites/image-rpm.sh - IMG-12 (data/scoursh-image-scan-design/
-# report.md §2.1's rpm row and §5.3's IMG-12 row): rpm installed-package
+# tests/suites/image-rpm.sh - IMG-12: rpm installed-package
 # ENUMERATION, unit-level, against fixtures this suite BUILDS locally with
 # `sqlite3` - never committed binary blobs, and never a network call. This
 # is the first of the rpm sub-chain that mirrors dpkg's own IMG-07/08/09
@@ -26,7 +25,7 @@
 #   D. A Berkeley-DB-shaped file at `var/lib/rpm/Packages` (sqlite absent) -
 #      `rpm_db_binary_format`. This project has no Berkeley-DB reader of
 #      any kind, so the fixture's CONTENT is irrelevant; only its presence
-#      at that fixed path matters, per report.md §2.1's own table.
+#      at that fixed path matters.
 #   E. An ndb-shaped file at `var/lib/rpm/Packages.db` (sqlite and Berkeley
 #      both absent) - `rpm_db_binary_format`, the mirror of D.
 #   F. THE CENTRAL CLAIM THIS TICKET'S OWN HEADER MAKES, PROVEN EMPIRICALLY
@@ -73,7 +72,7 @@
 #
 # No network: image scanning is offline by construction (docs/DESIGN.md §1).
 # `sqlite3` is used here only to BUILD this suite's own local fixtures (and
-# is the same tool report.md §2.1 measured present on a real host) - never
+# is the same tool measured present on a real host) - never
 # to reach a network, and section C simulates its absence with a restricted
 # PATH rather than skipping.
 #
@@ -155,8 +154,8 @@ RPM_INSTALLED_RELEASES=(stale)
 RPM_INSTALLED_ARCHES=(stale)
 _rc=0
 rpm_installed_enumerate "$W/does-not-exist.sqlite" "$W/does-not-exist-Packages" "$W/does-not-exist-Packages.db" || _rc=$?
-assert_eq 1 "$_rc" 'refusal is a plain 1, not a die/abort - an apk/dpkg image with no rpm database at all is the ordinary case, report.md §4.3'
-assert_eq no_package_db_found "$_RPM_INSTALLED_REASON" 'the exact declared coverage_reduction reason the brief and report.md §4.3 both name'
+assert_eq 1 "$_rc" 'refusal is a plain 1, not a die/abort - an apk/dpkg image with no rpm database at all is the ordinary case'
+assert_eq no_package_db_found "$_RPM_INSTALLED_REASON" 'the exact declared coverage_reduction reason for this case'
 assert_eq '' "$_RPM_INSTALLED_FORMAT" 'no format was detected - nothing was found at any of the three paths'
 assert_eq 0 "${#RPM_INSTALLED_NAMES[@]}" 'RPM_INSTALLED_NAMES is reset to empty, not left holding a stale prior result'
 assert_eq 0 "${#RPM_INSTALLED_EPOCHS[@]}" 'RPM_INSTALLED_EPOCHS is reset to empty too'
@@ -190,7 +189,7 @@ PATH=$_OLD_PATH
 rm -rf -- "${_EMPTY_PATH_DIR:?}"
 assert_eq 1 "$_rc" 'refusal, not a die/abort - a host missing sqlite3 is a declared limitation, not a fatal error'
 assert_eq rpm_db_binary_format "$_RPM_INSTALLED_REASON" \
-  'the exact declared reason report.md §4.3 and this brief both name - FAILS if enumeration were attempted anyway (there would be nothing on PATH to attempt it with) or if the reason fell back to no_package_db_found, which would misreport "we could not read this" as "there is nothing here"'
+  'the exact declared reason for this case - FAILS if enumeration were attempted anyway (there would be nothing on PATH to attempt it with) or if the reason fell back to no_package_db_found, which would misreport "we could not read this" as "there is nothing here"'
 assert_eq sqlite "$_RPM_INSTALLED_FORMAT" \
   'the format WAS correctly detected as sqlite before the requires-cmd gate refused it - distinct from section B, where nothing was found at all'
 assert_eq 0 "${#RPM_INSTALLED_NAMES[@]}" 'no packages are enumerated on a refusal'
@@ -204,9 +203,9 @@ printf 'not a real Berkeley DB, just needs to exist at this path' >"$W/Packages-
 t_case 'a Berkeley-DB-shaped file at var/lib/rpm/Packages (sqlite absent) yields rpm_db_binary_format'
 _rc=0
 rpm_installed_enumerate '' "$W/Packages-bdb-stub" '' || _rc=$?
-assert_eq 1 "$_rc" 'refusal, not an attempted parse - this project has no Berkeley-DB reader of any kind, report.md §2.1'
+assert_eq 1 "$_rc" 'refusal, not an attempted parse - this project has no Berkeley-DB reader of any kind'
 assert_eq rpm_db_binary_format "$_RPM_INSTALLED_REASON" 'the same declared reason the sqlite branch uses - one honest answer regardless of which of the three physical shapes the image carries'
-assert_eq bdb "$_RPM_INSTALLED_FORMAT" 'the format is recorded as bdb - FAILS if format detection were content-based instead of the fixed-path distinction report.md §2.1s own table draws'
+assert_eq bdb "$_RPM_INSTALLED_FORMAT" 'the format is recorded as bdb - FAILS if format detection were content-based instead of the fixed-path distinction this reader draws'
 
 printf 'not a real ndb file either, just needs to exist at this path' >"$W/Packages-ndb-stub"
 
@@ -303,7 +302,7 @@ assert_eq 0 "$_load_rc" 'records_load returns 0 - no schema/format errors'
 assert_eq 0 "$RECORDS_ERRORS" \
   "modules/image/checks-rpm.rules has 0 record-format diagnostics - FAILS on a schema mistake (a bad tags/coverage-scope/cwe/owasp/requires-cmd value, a missing required key) that records_load would otherwise catch silently here and loudly only once scan.sh image loads every *.rules file at run time"
 
-t_case 'it registers exactly the one rpm check id report.md §5.3s IMG-12 row calls for, distinct from apks -01 and dpkgs -02'
+t_case 'it registers exactly the one rpm check id IMG-12 calls for, distinct from apks -01 and dpkgs -02'
 assert_eq 1 "$(records_count rpmchecks)" 'exactly one record in the file'
 assert_eq 'IMAGE-PKG-VULNERABLE_OS_PACKAGE-03' "$(records_id rpmchecks 0)" \
   "that record's id - FAILS if it collided with apk's -01 or dpkg's -02, which checks-apk.rules/checks-dpkg.rules already own"
@@ -315,6 +314,6 @@ assert_eq 'sqlite3' "$(records_field rpmchecks 0 requires-cmd)" \
 t_case 'every per-owner image registry is discoverable by the same *.rules glob checks_registry_load uses'
 _files=$(cd -- "$ROOT/modules/image" && printf '%s\n' *.rules | sort)
 assert_eq $'checks-advisories.rules\nchecks-apk.rules\nchecks-config.rules\nchecks-coverage.rules\nchecks-dpkg.rules\nchecks-langdeps.rules\nchecks-rpm.rules' "$_files" \
-  'exactly these seven files (checks-rpm.rules added by IMG-12, checks-langdeps.rules added by IMG-11) - FAILS if a shared modules/image/checks.rules ever reappears (report.md §5.1s explicitly forbidden shape) or if this ticket appended into checks-dpkg.rules instead of shipping its own'
+  'exactly these seven files (checks-rpm.rules added by IMG-12, checks-langdeps.rules added by IMG-11) - FAILS if a shared modules/image/checks.rules ever reappears (an explicitly forbidden shape) or if this ticket appended into checks-dpkg.rules instead of shipping its own'
 
 t_summary image-rpm

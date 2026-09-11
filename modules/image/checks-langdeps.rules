@@ -1,7 +1,6 @@
 # modules/image/checks-langdeps.rules - the container-image module's own
 # per-owner registry (rules/RULE-FORMAT.md §9's `checks-<name>.rules` row,
-# docs/FOUNDATION.md tension 29) for IMG-11 (data/scoursh-image-scan-design/
-# report.md §2.2, §4.1's IMAGE-LANGDEP-* row and §5.3's IMG-11 row):
+# docs/FOUNDATION.md tension 29) for IMG-11:
 # language dependencies (npm/RubyGems/Composer/PyPI/Maven/Go) shipped inside
 # the image rootfs, found by reusing the four existing `modules/sca/`
 # tree-walkers against a bounded, declared extraction of this image's own
@@ -9,7 +8,7 @@
 #
 # A SEPARATE FILE FROM checks-apk.rules/checks-dpkg.rules/checks-rpm.rules/
 # checks-advisories.rules/checks-coverage.rules/checks-config.rules,
-# per report.md §5.1's binding "one registry per owner" rule and
+# per the binding "one registry per owner" rule and
 # modules/image/checks-apk.rules' own identical precedent: this ticket's OWN
 # file, never an append to a shared or sibling one a later ticket could then
 # collide on.
@@ -32,7 +31,7 @@
 # `coverage-scope: image-id` - the only legal value for the `IMAGE` module
 # (rules/RULE-FORMAT.md §9.5.1's frozen table); the cell is the
 # operator-declared stable id from `config/images.conf`, never the image
-# digest or tag (report.md §3.4) - and, per report.md §2.2 caveat 2, NEVER
+# digest or tag - a rebuild or retag must not reset coverage - and NEVER
 # the `path-root` cell the reused `modules/sca/` walkers would otherwise set
 # on their own raw findings; modules/image/langdeps.sh's own header explains
 # the shadow-run re-emission that guarantees this.
@@ -50,7 +49,6 @@ remediation: Rebuild the image with the named dependency re-pinned to at
   least the advisory's fixed version (a lockfile edit and a fresh install,
   not a base-image bump - this is an application-level dependency, not an
   OS package) and re-scan.
-references: data/scoursh-image-scan-design/report.md
 references: CWE-1104
 
 id: IMAGE-COV-LANGDEPS_NOT_SCANNED-01
@@ -68,4 +66,3 @@ remediation: Populate data/advisories.db for the affected ecosystem(s) with
   package-lock.json/requirements.txt/go.mod/and-similar manifest at any of
   this module's declared conventional locations (the no_manifests_found
   case) - see this finding's own evidence for which reason applied.
-references: data/scoursh-image-scan-design/report.md

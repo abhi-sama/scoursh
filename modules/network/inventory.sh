@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # modules/network/inventory.sh - the network module's `crawl.sh` analogue
-# (data/scoursh-network-scan-design/report.md; NET-05, §7's Tier 1, serial).
+# (NET-05, Tier 1, serial).
 #
 # THIS IS A PHASE SCRIPT, NOT A LIBRARY.  `net_run_phase`
 # (modules/network/engine.sh) `source`s it once per target under the phase
@@ -9,8 +9,8 @@
 # second target (or a second scan_main invocation in one process) a no-op,
 # the identical contract modules/dast/crawl.sh's own header states.
 #
-# WHAT IT PRODUCES, AND WHY THAT IS THE WHOLE POINT (report.md §7's NET-05
-# row: "Every Tier 2+ ticket reads this one artifact"):
+# WHAT IT PRODUCES, AND WHY THAT IS THE WHOLE POINT: every Tier 2+ ticket
+# reads this one artifact.
 #
 #     reports/<run>/inventory/listeners.json
 #
@@ -39,7 +39,7 @@
 # what the listener actually speaks: an extra-host tuple inherits its
 # target's base-url scheme by construction (lib/http.sh's `http_scope_load`),
 # so `https` on a declared SSH port is fiction the same way it already is at
-# `http_authorize_raw_connection` (report.md §2.3) - a future NET-07/NET-08
+# `http_authorize_raw_connection` - a future NET-07/NET-08
 # probe decides what a listener really speaks by reading it, never by
 # trusting this field.  `port` is a JSON number; every other field is a JSON
 # string, through `json_string`/`json_number` (lib/core.sh, tension 10's one
@@ -53,7 +53,8 @@
 # target's worth of listeners to describe per run; a later ticket widening
 # `--target` to a list changes this file's own loop, not its shape.
 #
-# HONESTY CONTRACT THIS FILE OWNS (report.md §5.2 rules 1 and 3 - rules 2 and
+# HONESTY CONTRACT THIS FILE OWNS (rules 1 and 3 of the module's honesty
+# contract - rules 2 and
 # 4 belong to a future PROBE, since this ticket sends no traffic of its own
 # and opens no socket):
 #
@@ -64,7 +65,7 @@
 #   modules/network/engine.sh already ships (`net_endpoint_keep`/
 #   `net_scope_record_skips`) is reserved for a FUTURE tuple source - a
 #   config/posture.conf `expect-closed` expectation, a cross-module inventory
-#   row (report.md §9 decision D5) - that does not exist yet, and is
+#   row - that does not exist yet, and is
 #   deliberately NOT called here: calling it on an operator-authored tuple
 #   would silently soften the ONE authorization this module can actually rely
 #   on being correct.  Every declared tuple is gated through
@@ -100,7 +101,7 @@
 #   consumer must expect, and modules/dast/engine.sh's `dast_inventory_read`
 #   already gives it a name (`absent`) this file's own `net_inventory_read`
 #   reuses.  ONE `coverage_gap` is recorded naming why, then this phase
-#   returns 0 - report.md §5.2 rule 3, verbatim: "this host has one listener"
+#   returns 0 - "this host has one listener"
 #   and "scoursh did not look" are different facts, and a silent
 #   zero-listener run would collapse them into one.  The SAME "absent, one
 #   named coverage_gap" shape is used, for a DIFFERENT reason worded
@@ -172,12 +173,12 @@ _net_inv_run() {
   fi
 
   if (( ${#extra_host[@]} == 0 )); then
-    run_record coverage_gap "network inventory: target '$(net_scope_safe_text "$target" 80)' declares only its base-url ($base_scheme://$base_host:$base_port) and no additional extra-host listener in config/scope.conf, so modules/network/'s declared listener set for it is empty. 'This host has one listener' and 'scoursh did not look' are different facts (report.md §5.2 rule 3) - this is a stated fact about the target's configuration, not a failed probe."
+    run_record coverage_gap "network inventory: target '$(net_scope_safe_text "$target" 80)' declares only its base-url ($base_scheme://$base_host:$base_port) and no additional extra-host listener in config/scope.conf, so modules/network/'s declared listener set for it is empty. 'This host has one listener' and 'scoursh did not look' are different facts - this is a stated fact about the target's configuration, not a failed probe."
     return 0
   fi
 
   # -- 2. gate every declared listener, base-url included -------------------
-  # report.md §5.2 rule 1: an operator-configured tuple is refused FATALLY
+  # An operator-configured tuple is refused FATALLY
   # (this file's own header, above) except for the one named DNS softening.
   # `_NET_INV_LISTENERS` accumulates one packed record per authorised
   # listener, 0x1f-joined (role/scheme/host/port) - a `declare -g` module

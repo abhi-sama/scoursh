@@ -155,8 +155,8 @@ Two rules bind a hand-authored label set, and both are in each file's header:
 
 ### Matching granularity: `--match file` and `--match line`
 
-The scout report's §5.2 gives two corpus shapes and they need different
-matching. `--match file` is the default and is the "one file per test case" row
+This benchmark harness recognizes two corpus shapes, and they need different
+matching. `--match file` is the default and is the "one file per test case" shape
 - OWASP Benchmark, Juliet. `--match line` is the "multiple defects per file"
 row: a truth row then carries a sixth field, its case's line range, and a case
 is flagged only by a finding inside that range.
@@ -342,8 +342,8 @@ scoursh's `dast` module (authenticated, `--intensity active`) against OWASP
 ZAP 2.17.0, over a 20-case hand-labelled corpus against a local,
 operator-owned OWASP Juice Shop container. **Its own `README.md` is the
 primary account of this leg** - why ZAP took five attempts to complete an
-active scan in this environment (never the memory-only failure the scout
-report's §4.4 diagnosed for the *previous* attempt), the strict/loose CWE
+active scan in this environment (never simply a memory-only failure, as an
+earlier attempt had been misdiagnosed), the strict/loose CWE
 disagreement between scoursh's and ZAP's own CORS and CSP checks, the one
 hand-verified real vulnerability neither tool caught, and exactly what this
 small, SPA-constrained corpus does and does not show. VAmPI was obtained
@@ -365,7 +365,7 @@ one thing blocking it.
 
 ## B8: honesty + egress metrics
 
-`bench/results/b8-honesty-egress/` holds the scout report's §5.3
+`bench/results/b8-honesty-egress/` holds the
 coverage-honesty metric (computed over every scoursh `run.json` already
 committed by B4/B5/B6 - 31 of 31 runs, 100% of unrun-but-selected checks
 declared with a reason, zero undeclared gaps), a zero-egress proof of
@@ -377,10 +377,11 @@ DB-size-before-first-finding, egress-after-setup) across the tool roster.
 against any future leg's `bench/results/` tree with no arguments beyond the
 results root.
 
-**B7 (DAST) has not landed** - it needs an operator Docker-memory bump
-(scout report §4.4) - and B8 records that as a stated not-measured gap
+**B7 (DAST) has since landed** (see "B7: the DAST leg" above) - it needed an operator Docker-memory
+bump to get ZAP through a clean active scan. B8's own honesty-metric and footprint measurements
+predate that landing and record DAST as a stated not-measured gap
 wherever a metric would otherwise need a DAST number, never a fabricated
-value. See that directory's own `README.md` for the full account, including
+value; a future leg re-running B8 alongside a landed B7 could close that gap. See that directory's own `README.md` for the full account, including
 a real environmental interaction it found (`--paranoid`'s process-family
 enumeration degrades, but still reports correctly, when run nested inside
 the Seatbelt sandbox).

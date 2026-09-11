@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # tests/suites/network-inventory.sh - modules/network/inventory.sh: the
-# authorised listener set (NET-05,
-# data/scoursh-network-scan-design/report.md §7's Tier 1, serial ticket).
+# authorised listener set (NET-05, a Tier 1, serial ticket).
 # Every Tier 2+ ticket (NET-06..09) reads the one artifact this file writes,
 # so this suite pins its shape and its honesty contract directly, separately
 # from tests/suites/network.sh's own dispatch/orchestration coverage.
@@ -13,16 +12,15 @@
 #      authorised set - base-url plus every declared extra-host, no more, no
 #      fewer - in reports/<run>/inventory/listeners.json.
 #   2. A target whose declared set holds ONLY base-url writes NO artifact at
-#      all and records ONE coverage_gap naming why, then exits 0 - report.md
-#      §5.2 rule 3.  "This host has one listener" and "scoursh did not look"
+#      all and records ONE coverage_gap naming why, then exits 0.
+#      "This host has one listener" and "scoursh did not look"
 #      are different facts.
 #   3. An out-of-scope tuple (here: a declared extra-host that resolves to a
 #      link-local address - 169.254.169.254, the cloud metadata endpoint
 #      lib/http.sh's own deny-list comment names by example - with no
 #      allow-private-addresses: true) is refused FATALLY through
-#      http_authorize_raw_connection, exit 3 - report.md §5.2 rule 1: every
-#      tuple this file reads is operator-configured, so a refusal is never a
-#      soft skip.
+#      http_authorize_raw_connection, exit 3: every tuple this file reads is
+#      operator-configured, so a refusal is never a soft skip.
 #   4. A transient DNS failure on ONE declared listener degrades to a single
 #      counted coverage_reduction and the run continues, producing the
 #      authorised set MINUS the unresolvable listener - the one named
@@ -138,7 +136,7 @@ _net_scan "$W/run-multi" "$FIX_MULTI" --target net-multi
 assert_eq 0 "$_RC" \
   'scan.sh network --target net-multi exits 0 - FAILS if authorising three already-declared, resolvable tuples were somehow treated as a refusal'
 assert_file_exists "$W/run-multi/inventory/listeners.json" \
-  'inventory/listeners.json exists - FAILS under report.md §5.2 rule 3'"'"'s "absent when only base-url" reading applied to a target that plainly declares two extra listeners'
+  'inventory/listeners.json exists - FAILS under the "absent when only base-url" reading applied to a target that plainly declares two extra listeners'
 
 LISTENERS_JSON=$(_slurp "$W/run-multi/inventory/listeners.json")
 t_case 'the artifact names its own schema, run and producer'
@@ -151,7 +149,7 @@ assert_contains "$LISTENERS_JSON" '"target": "net-multi"' \
 
 t_case 'the authorised set contains exactly the base-url row and the two declared extra-host rows'
 assert_contains "$LISTENERS_JSON" '"role": "base-url", "scheme": "https", "host": "multi.fixture.invalid", "port": 443' \
-  'the base-url tuple is in the authorised set - FAILS if inventory.sh reports only the extra-host rows and silently drops its own base-url row, which report.md §5.2 rule 3'"'"'s own "only base-url" wording implies is itself part of "the declared set"'
+  'the base-url tuple is in the authorised set - FAILS if inventory.sh reports only the extra-host rows and silently drops its own base-url row, which the "only base-url" wording implies is itself part of "the declared set"'
 assert_contains "$LISTENERS_JSON" '"role": "extra-host", "scheme": "https", "host": "multi.fixture.invalid", "port": 8443' \
   'the first declared extra-host listener is in the authorised set'
 assert_contains "$LISTENERS_JSON" '"role": "extra-host", "scheme": "https", "host": "multi.fixture.invalid", "port": 9200' \
@@ -169,7 +167,7 @@ assert_not_contains "$GAP_MULTI" "declares only its base-url" \
   'the rule-3 "declares only base-url" gap text is absent - FAILS if it fires even though net-multi plainly declares two extra listeners'
 
 # =============================================================================
-printf '\n-- report.md §5.2 rule 3: a base-url-only target writes no artifact --\n'
+printf '\n-- a base-url-only target writes no artifact --\n'
 # =============================================================================
 
 FIX_SOLO=$W/root-solo
@@ -203,10 +201,10 @@ SOLO_JSON=$(_slurp "$W/run-solo/run.json")
 assert_contains "$SOLO_JSON" "target 'net-solo' declares only its base-url (https://solo.fixture.invalid:443)" \
   'the coverage_gap names the target and its base-url tuple explicitly - FAILS if the gap were generic and a reader with several targets could not tell which one it is about'
 assert_contains "$SOLO_JSON" "'This host has one listener' and 'scoursh did not look' are different facts" \
-  'the gap states the docs/DESIGN.md §15 / report.md §5.2 rule 3 warning in the artifact itself, not only in prose a reader has to already know'
+  'the gap states docs/DESIGN.md §15'"'"'s warning in the artifact itself, not only in prose a reader has to already know'
 
 # =============================================================================
-printf '\n-- report.md §5.2 rule 1: an out-of-scope declared tuple is refused fatally --\n'
+printf '\n-- an out-of-scope declared tuple is refused fatally --\n'
 # =============================================================================
 
 FIX_PRIV=$W/root-priv
@@ -221,12 +219,12 @@ EOF
 t_case 'a declared extra-host that resolves to a link-local address (169.254.169.254) with no allow-private-addresses is exit 3, not a soft skip'
 _net_scan "$W/run-priv" "$FIX_PRIV" --target net-priv
 assert_eq 3 "$_RC" \
-  'the whole run dies exit 3 (SCOURSH_EXIT_SCOPE) through http_authorize_raw_connection - FAILS under "an operator-declared listener that happens to resolve to a deny-listed address is quietly dropped like a DNS failure", which report.md §5.2 rule 1 and this file'"'"'s own header both refuse: there is no non-fatal path for an operator-authored config/scope.conf mistake, only for a transient DNS failure. lib/http.sh'"'"'s deny list (_http_ipv4_denied) covers loopback, link-local/169.254.0.0/16 (which includes the cloud metadata address used here), CGN and 0.0.0.0/8 - NOT the full RFC1918 private ranges, so this fixture deliberately uses a link-local address rather than a 10.x/172.16.x/192.168.x one'
+  'the whole run dies exit 3 (SCOURSH_EXIT_SCOPE) through http_authorize_raw_connection - FAILS under "an operator-declared listener that happens to resolve to a deny-listed address is quietly dropped like a DNS failure", which this file'"'"'s own header refuses: there is no non-fatal path for an operator-authored config/scope.conf mistake, only for a transient DNS failure. lib/http.sh'"'"'s deny list (_http_ipv4_denied) covers loopback, link-local/169.254.0.0/16 (which includes the cloud metadata address used here), CGN and 0.0.0.0/8 - NOT the full RFC1918 private ranges, so this fixture deliberately uses a link-local address rather than a 10.x/172.16.x/192.168.x one'
 assert_file_absent "$W/run-priv/inventory/listeners.json" \
   'no partial artifact survives a fatal refusal - FAILS if the base-url row (which DOES resolve, publicly) were written before the fatal extra-host row aborted the process, leaving a listeners.json a reader could mistake for a complete authorised set'
 
 # =============================================================================
-printf '\n-- report.md §5.2 rule 1: a transient DNS failure degrades, one bad listener does not sink the rest --\n'
+printf '\n-- a transient DNS failure degrades, one bad listener does not sink the rest --\n'
 # =============================================================================
 
 FIX_MIXED=$W/root-mixed

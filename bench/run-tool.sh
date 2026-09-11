@@ -13,16 +13,15 @@
 #   MANIFEST        tool version, corpus id and pinned commit, gate config,
 #                   wall clock, and the scope this tool CLAIMS
 #
-# THE RAW OUTPUT IS THE POINT, not a debugging convenience.  The scout report's
-# rule R7 - "the whole thing must be re-runnable by a stranger" - is what the
+# THE RAW OUTPUT IS THE POINT, not a debugging convenience.  "The whole thing
+# must be re-runnable by a stranger" is what the
 # numbers already shipping in docs/COMPARISON.md fail, and raw output is the
 # half of it a reader cannot reconstruct.  A normalised record is this
 # harness's INTERPRETATION of what a tool said; keeping the tool's own words
 # beside it is what lets a reader who distrusts the interpretation check it.
 #
 # RUNTIME IS RECORDED AS A WALL CLOCK AND A FILE COUNT, never as a rate.
-# scoursh's cost is ~38 s of fixed startup plus ~0.3 s/file (the scout report,
-# §3.3), so a single total on a small corpus is almost entirely startup and
+# scoursh's cost is ~38 s of fixed startup plus ~0.3 s/file (measured), so a single total on a small corpus is almost entirely startup and
 # every such comparison is wrong in scoursh's disfavour.  Publishing `a + b·n`
 # needs both numbers from at least two corpus sizes, which is why this file
 # records the inputs to that fit rather than a ratio it cannot honestly

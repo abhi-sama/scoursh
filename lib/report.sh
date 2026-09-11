@@ -2657,7 +2657,7 @@ declare -A _RPTC_CAT_DESCR=(
   [dast]='Dynamic analysis - live probes against an authorised target in config/scope.conf.'
   [cloud]='Live read-only AWS configuration review plus posture checks.'
   [network]='Service-posture scanning over the declared listener set config/scope.conf names for an authorised target - never a port sweep or host discovery.'
-  [image]='Built container image scanning - offline installed-package enumeration and CVE matching against an operator-supplied docker-save tarball or OCI image layout (data/scoursh-image-scan-design/report.md); no registry pull.'
+  [image]='Built container image scanning - offline installed-package enumeration and CVE matching against an operator-supplied docker-save tarball or OCI image layout; no registry pull.'
 )
 # The plain-English noun `_rptc_plain_summary` uses in place of the bare
 # category label - "web checks" reads more naturally than "DAST checks" to a
@@ -2672,22 +2672,24 @@ declare -A _RPTC_CAT_NOUN=(
 # strong/medium/weak/none - the per-category semantic strength of "ran" this
 # report states as a first-class field rather than a footnote.
 # `cloud` moved from `none` to `strong` when modules/cloud/ landed
-# (docs/STEP6-CLOUD-PLAN.md P3).  The field names the PREDICATE a category uses
+# (CLOUD-04, the dispatch entry point).  The field names the PREDICATE a category uses
 # to decide a check was covered, not how many checks it currently has: cloud's
 # predicate is now a real one - a check id reaches `checks_run` only after the
 # `aws_ro` call it depends on returned an ANSWER (`ok` or `not_found`), never
 # after a call that was denied, throttled or truncated, because
 # lib/awscli.sh's `aws_ro_outcome_is_coverage_loss` separates those and a
-# service script owes a coverage_reduction for each.  It is strong AND
-# currently vacuous, since no service script ships yet, and those are different
-# facts: the `Checks available` / `Checks run` columns beside it are what say
-# nothing ran, and they are computed from the registry rather than typed here.
-# `network` (NET-04) is added the identical way cloud-P3 added `cloud`: strong
-# from the moment modules/network/ lands a real dispatch, not from the moment
-# it lands a real check, for the identical reason - the predicate a future
-# check will use is already decided (evaluated over a live listener, like
-# DAST's), and it is a fact about the MECHANISM, not about how many phase
-# scripts currently exist to exercise it.
+# service script owes a coverage_reduction for each.  It was strong AND
+# vacuous when this field was added (no service script shipped yet) and is
+# strong AND populated now that all 30 services have landed - the strength
+# describes the predicate a check uses, not how many checks currently exist,
+# so the field did not need to change when the module filled in around it.
+# The `Checks available` / `Checks run` columns beside it are computed from
+# the registry rather than typed here.
+# `network` (NET-04) was added the identical way CLOUD-04 added `cloud`, for
+# the identical reason: the predicate is a fact about the MECHANISM
+# (evaluated over a live listener, like DAST's), not about how many phase
+# scripts existed at the time it was added - and the module's full phase set
+# has since landed too.
 declare -A _RPTC_RANSEM=( [sast]=strong [iac]=strong [sca]=medium [dast]=strong [cloud]=strong [network]=strong [image]=strong )
 # SC2016: the backticks below are literal prose (code-span-style quoting of
 # `run`/`files:`), not command substitution.
@@ -2697,9 +2699,9 @@ declare -A _RPTC_RANSEM_TEXT=(
   [iac]='Recorded AFTER the tree walk (the same sast_record_checks_run, called from modules/iac/run.sh once iac_scan_tree returns) - byte-identical predicate to SAST, since both share one engine.'
   [sca]='Recorded when at least one manifest of that ecosystem was located and walked (e.g. modules/sca/engine.sh), before its package loop. It ships no on-disk check registry, so this report cannot state a coverage fraction for it - only what ran.'
   [dast]='Recorded AFTER evaluation, gated on at least one response or request the check was applicable to actually happening (e.g. modules/dast/passive/headers.sh:_HDRF_EVAL). This is the category the other two were brought up to match.'
-  [cloud]='Recorded AFTER the AWS call the check depends on returned an ANSWER - `ok` or `not_found` in lib/awscli.sh section 2s outcome vocabulary. A call that was denied, throttled, truncated or made against a region the account has not enabled is a declared coverage_reduction, listed below, never a silent checks_run entry: for a cloud scan an AccessDenied looks exactly like an account with nothing wrong in it, which is why this category classifies every failure rather than returning a status. NOTE: modules/cloud/aws/live/ ships the S3, Cognito, Lambda, RDS, DynamoDB, API Gateway, ECR, ECS, EKS, ELB/ALB, CloudFront, KMS, Secrets Manager, SSM, IAM, EC2/VPC, CloudTrail, AWS Config, GuardDuty, Inspector2 and Macie2 services so far (docs/STEP6-CLOUD-PLAN.md CLOUD-05, CLOUD-20, CLOUD-21, CLOUD-15/16, CLOUD-22, CLOUD-25/26/27, CLOUD-14, CLOUD-24, CLOUD-06/07/08/09, CLOUD-13, CLOUD-30..34); every other service in docs/DESIGN.md 8.1s catalog is still absent, so a --live run today resolves the account and its regions, examines those twenty-one services, and records every other service as unexamined rather than counting it clean.'
-  [network]='Recorded AFTER evaluation, gated on at least one connection or response the check was applicable to actually happening - the identical predicate DAST uses, one transport layer down (a plain TCP connect via lib/nettransport.sh in place of an HTTP request). NOTE: modules/network/ ships no phase script yet (NET-04; data/scoursh-network-scan-design/report.md §7 tiers 1-3), so nothing has been counted under this predicate - a run today resolves the target and its scope-gate authorization and records what it could not examine, exactly as modules/cloud/ did before its first service script landed.'
-  [image]='Recorded AFTER a package database found in an image layer was actually looked up against data/advisories.db - a table lookup, never a live probe. NOTE: modules/image/ ships no distro enumerator yet (IMG-01; data/scoursh-image-scan-design/report.md §5.3), so nothing has been counted under this predicate - a run today resolves the declared --image id and records what it could not examine, exactly as modules/cloud/ and modules/network/ did before each landed its first real check.'
+  [cloud]='Recorded AFTER the AWS call the check depends on returned an ANSWER - `ok` or `not_found` in lib/awscli.sh section 2s outcome vocabulary. A call that was denied, throttled, truncated or made against a region the account has not enabled is a declared coverage_reduction, listed below, never a silent checks_run entry: for a cloud scan an AccessDenied looks exactly like an account with nothing wrong in it, which is why this category classifies every failure rather than returning a status. modules/cloud/aws/live/ ships all 30 docs/DESIGN.md §8.1 services (docs/STEP6-CLOUD-PLAN.md CLOUD-05 through CLOUD-34); a --live run examines every enabled service in every enabled region and records any it could not examine as a coverage reduction rather than folding it into a clean pass. The posture/ phase (§8.7, POSTURE-02 through POSTURE-04) has not landed - only its config schema has - so it is a declared skip today.'
+  [network]='Recorded AFTER evaluation, gated on at least one connection or response the check was applicable to actually happening - the identical predicate DAST uses, one transport layer down (a plain TCP connect via lib/nettransport.sh in place of an HTTP request). modules/network/ ships its full phase set (see AGENTS.md'"'"'s "Network module (NET)" section): three-state reachability verification, banner/HTTP service and version disclosure, TLS posture on non-web ports, and plaintext/STARTTLS transport posture, all gated by the same scope chokepoint and --i-own-target affirmation dast uses.'
+  [image]='Recorded AFTER a package database found in an image layer was actually looked up against data/advisories.db - a table lookup, never a live probe. modules/image/ ships its full acquire -> enumerate -> compare pipeline for apk, dpkg and rpm packages (see AGENTS.md'"'"'s "Container image scanning (the IMAGE module)" section), plus language-dependency extraction and the config-blob checks; a run resolves the declared --image id and records anything it could not examine (e.g. a missing sqlite3 for rpm) as a coverage reduction rather than a clean pass.'
 )
 
 _rptc_prefix_grep() {

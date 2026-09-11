@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# modules/image/distro/dpkg.sh - dpkg installed-package ENUMERATION (IMG-07,
-# data/scoursh-image-scan-design/report.md §2.1's dpkg row and §5.3's IMG-07
-# row: "dpkg enumeration - Status gate + Source: fallback, own
+# modules/image/distro/dpkg.sh - dpkg installed-package ENUMERATION (IMG-07:
+# "dpkg enumeration - Status gate + Source: fallback, own
 # checks-dpkg.rules").
 #
 # WHAT THIS FILE IS.  Given the path of an already-extracted
@@ -15,7 +14,7 @@
 #
 # WHAT THIS FILE WAS AT IMG-07, AND WHAT IMG-09 ADDS ON TOP.  IMG-07 shipped
 # section 1 below ONLY: enumeration, no advisory lookup, no version
-# comparator, and no finding emission - report.md §5.3's own row split that
+# comparator, and no finding emission - that split
 # out to IMG-08 (the dpkg version comparator, `dpkg_version.sh`, epoch +
 # tilde) and IMG-09 (Debian/Ubuntu advisory ecosystems), mirroring how
 # `distro/apk.sh` shipped a pure enumerator at IMG-04 with matching landing
@@ -26,7 +25,7 @@
 # callable standalone.  No archive handling and no layer resolution
 # (modules/image/acquire.sh's job, IMG-02) is added either way.
 #
-# THE DPKG STATUS FORMAT (report.md §2.1: "blank-line-separated `Key: value`",
+# THE DPKG STATUS FORMAT ("blank-line-separated `Key: value`",
 # SPACE after the colon, unlike apk's colon-with-no-space `K:value`): blocks
 # of `Key: value` lines, one package per block, separated by a single blank
 # line, with MULTI-LINE fields (Description, Conffiles, and others) continued
@@ -60,7 +59,7 @@
 # legal line never poisons the block it sits in" discipline
 # `apk_installed_enumerate` already applies.
 #
-# TRAP 1 - THE STATUS GATE (report.md §2.1 item 1, BINDING).  Only a package
+# TRAP 1 - THE STATUS GATE (BINDING).  Only a package
 # whose `Status:` is EXACTLY `install ok installed` counts as installed. A
 # package with `Status: deinstall ok config-files` has been removed - its
 # files are gone and only its conffiles remain on disk - so reporting it is a
@@ -75,11 +74,11 @@
 # `install reinst-required installed` package specifically so the suite fails
 # if the gate is dropped or loosened to a substring test.
 #
-# TRAP 2 - SOURCE: VS PACKAGE: (report.md §2.1 item 2, BINDING). Distro
+# TRAP 2 - SOURCE: VS PACKAGE: (BINDING). Distro
 # advisories are published against the SOURCE package - binary `libssl3`
 # comes from source `openssl` - so a matcher keyed only on the binary
 # `Package:` name misses most advisories (a silent false negative, the
-# direction report.md and this project's own tension 25 both treat as
+# direction this project's own tension 25 treats as
 # disqualifying). `Source:` is ABSENT from the block when it equals
 # `Package:` (the common case: most Debian source packages build exactly one
 # binary of the same name), so the fallback to `Package:` must be EXPLICIT
@@ -129,7 +128,7 @@ declare -ga DPKG_INSTALLED_SOURCES=()
 # `_DPKG_INSTALLED_REASON` - set only on a return-1 refusal, for the ONE
 # refusal this file recognises: no readable database at the given path,
 # which is the ordinary shape of an Alpine image or a scratch/distroless
-# image that carries no dpkg database at all (report.md §4.3's
+# image that carries no dpkg database at all (the
 # `no_package_db_found` reduction - the same reason apk's own enumerator
 # reports for the mirror-image case). A caller turns this into an actual
 # coverage_reduction/finding; that wiring is a later ticket's scope, not this
@@ -245,8 +244,8 @@ _dpkg_flush_block() {
 }
 
 # ---------------------------------------------------------------------------
-# 2. Advisory matching + finding emission (IMG-09, report.md §2.1/§2.3-2.5/
-#    §4.1's IMAGE-PKG-VULNERABLE_OS_PACKAGE-02 row, §5.3's IMG-09 row)
+# 2. Advisory matching + finding emission (IMG-09,
+#    IMAGE-PKG-VULNERABLE_OS_PACKAGE-02)
 # ---------------------------------------------------------------------------
 # WHAT CHANGED FROM IMG-07.  Section 1 above is UNCHANGED; this section is
 # the wiring `modules/image/checks-dpkg.rules` already named this file as
@@ -259,7 +258,7 @@ _dpkg_flush_block() {
 # scope.
 #
 # THE LOOKUP KEY IS THE RESOLVED SOURCE NAME, NEVER THE BINARY PACKAGE NAME
-# (report.md §2.1 item 2, TRAP 2, BINDING).  Distro advisories are published
+# (TRAP 2, BINDING).  Distro advisories are published
 # against the SOURCE package - `openssl`, not `libssl3` - and section 1's
 # enumerator has already done the Source:-vs-Package: resolution for every
 # entry (`DPKG_INSTALLED_SOURCES[i]`), so this section reads that array,
@@ -355,7 +354,7 @@ dpkg_scan_installed() {
 # apk's comparator. FIXED_VERSIONS is a comma-separated list
 # (docs/FOUNDATION.md tension 25's schema); every token that parses under
 # `dpkg_version_valid` is compared and the LARGEST one wins as the fix
-# threshold - conservative on purpose (report.md §2.4: a false positive is
+# threshold - conservative on purpose (a false positive is
 # noisy but survivable, a false negative is not), so a package below ANY of
 # several recorded fix points is still reported rather than only the
 # smallest. An empty field, or one whose tokens all fail to parse, means no
@@ -404,7 +403,7 @@ _dpkg_summary_for() {
 # ADVISORY SEVERITY FIXED_VERSIONS` - one finding. `base_severity` is the
 # ROW's own value, not the registry's declared default, mirroring
 # `checks-dpkg.rules`' own comment and `apk.sh`'s identical convention.
-# SOURCE (the resolved source package name, report.md §2.1 trap 2) is what
+# SOURCE (the resolved source package name) is what
 # becomes `loc_package` - the identity the advisory row itself names; BINARY
 # (the actually-installed dpkg package, e.g. `libssl3`) is recorded in the
 # evidence only, so an operator can see exactly which installed package

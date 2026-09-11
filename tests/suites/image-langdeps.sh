@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# tests/suites/image-langdeps.sh - IMG-11 (data/scoursh-image-scan-design/
-# report.md §2.2, §4.1's IMAGE-LANGDEP-* row and §5.3's IMG-11 row):
+# tests/suites/image-langdeps.sh - IMG-11: the
 # language dependencies inside the image rootfs, found by reusing the
 # existing `modules/sca/` tree-walkers against a bounded, declared
 # extraction of this image's own conventional manifest locations.
@@ -15,10 +14,10 @@
 #      candidate location (`app/requirements.txt`): the reused SCA walker
 #      really does fire, and the finding it produces lands as
 #      `IMAGE-LANGDEP-VULNERABLE_DEP-01`/`module=image`/`cell=<image id>` -
-#      NEVER `module=sca`/`cell=$SCOURSH_PATH_ROOT`, report.md §2.2's caveat
-#      2 - with `path` correctly IN-IMAGE-relative
+#      NEVER `module=sca`/`cell=$SCOURSH_PATH_ROOT` - with `path` correctly
+#      IN-IMAGE-relative
 #      (`app/requirements.txt`, not a host scratch path).
-#   C. Honesty (report.md §2.2's own words, "never a silent clean"):
+#   C. Honesty ("never a silent clean"):
 #      `IMAGE-COV-LANGDEPS_NOT_SCANNED-01` fires with `detail=
 #      no_advisories_db` when data/advisories.db is missing/unreadable, and
 #      with `detail=no_manifests_found` when the image opens fine but no
@@ -144,7 +143,7 @@ assert_eq 0 $? 'the scan itself always returns 0 - a partial/complete result is 
 findings_merge "$D"
 FIELDS=$(_slurp "$D/findings.fields")
 assert_contains "$FIELDS" 'IMAGE-LANGDEP-VULNERABLE_DEP-01' 'the vulnerable flask@0.12.0 dependency produced a real finding'
-assert_contains "$FIELDS" 'module=image' 'under module=image - NEVER module=sca (report.md §2.2 caveat 2)'
+assert_contains "$FIELDS" 'module=image' 'under module=image - NEVER module=sca'
 assert_not_contains "$FIELDS" 'module=sca' \
   'no raw module=sca finding from the reused SCA walkers ever reaches this run real shard - FAILS if the shadow-run redirection were skipped'
 assert_contains "$FIELDS" "cell=$IMG_ID" "the cell is this image's own operator-declared id, never a host path-root"
@@ -265,7 +264,7 @@ assert_contains "$E2E_FINDINGS" '"module":"image"' 'under module image'
 assert_not_contains "$E2E_FINDINGS" '"module":"sca"' \
   'no raw module=sca finding ever reaches the real run output through the real scan.sh image CLI path either'
 
-t_case 'the finding location carries image_id/ecosystem/package/advisory_id, mirroring IMAGE-PKG-VULNERABLE_OS_PACKAGE-01 (report.md §3.4)'
+t_case 'the finding location carries image_id/ecosystem/package/advisory_id, mirroring IMAGE-PKG-VULNERABLE_OS_PACKAGE-01'
 assert_contains "$E2E_FINDINGS" '"location":{"image_id":"'"$E2E_IMG_ID"'","ecosystem":"pypi","package":"flask","advisory_id":"SCOURSH-FIXTURE-PY-1"' \
   'the JSON location object leads with EXACTLY these four keys, in this order - the same frozen `image` fingerprint profile IMAGE-PKG-VULNERABLE_OS_PACKAGE-01 already uses (lib/findings.sh _fp_components_for image), reused unchanged rather than needing a format-version bump'
 

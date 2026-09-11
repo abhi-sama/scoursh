@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # tests/suites/image-acquire.sh - modules/image/acquire.sh: offline image
 # acquisition, and the untrusted-archive handling that is the whole reason
-# IMG-02 is a ticket of its own (data/scoursh-image-scan-design/report.md
-# §1.4, §1.5, §1.6).
+# IMG-02 is a ticket of its own.
 #
 # What this suite is FOR, in the order the risk runs:
 #
@@ -10,7 +9,7 @@
 #      DIFFERENT parser - asserted leaf for leaf against lib/state.sh's, the
 #      way tests/suites/cloud.sh already asserts it for the cloud copy.
 #   B. `image_tar_members` tells an ABSENT member from a BROKEN archive, which
-#      under `set -Eeuo pipefail` a bare `tar -xf` cannot (report.md §1.4).
+#      under `set -Eeuo pipefail` a bare `tar -xf` cannot.
 #   C. The three classic archive escapes are refused IN BASH, with a canary
 #      planted OUTSIDE the extraction root that must survive each one.
 #   D. Deletion is guarded: nothing this module removes is ever a bare or
@@ -129,7 +128,7 @@ t_case 'an ABSENT member is answered in bash and is NOT an error'
 _rc=0
 image_member_present "$_listing" 'var/lib/dpkg/status' || _rc=$?
 assert_eq 1 "$_rc" \
-  'an absent member is a plain 1 from a bash string test - FAILS under the reading that asks tar for the member, which exits 1 and so aborts the run under set -Eeuo pipefail on the NORMAL case (most layers carry no package DB at all, report.md §1.4)'
+  'an absent member is a plain 1 from a bash string test - FAILS under the reading that asks tar for the member, which exits 1 and so aborts the run under set -Eeuo pipefail on the NORMAL case (most layers carry no package DB at all)'
 _rc=0
 image_tar_members "$ONE" >/dev/null || _rc=$?
 assert_eq 0 "$_rc" \
@@ -211,7 +210,7 @@ assert_eq parent_traversal_member_name "$_IMAGE_REFUSE_REASON" 'and the reason n
 _rc=0
 image_member_is_safe '../../victim/canary.txt' || _rc=$?
 assert_eq 1 "$_rc" \
-  'the refusal is reachable with NO archive and NO tar process at all - this is what makes "the bash validation is THE control" checkable rather than claimed, and it FAILS under a design that leans on tar refusing the member itself, which is one userland behaviour and not a guarantee (report.md §1.5)'
+  'the refusal is reachable with NO archive and NO tar process at all - this is what makes "the bash validation is THE control" checkable rather than claimed, and it FAILS under an implementation that leans on tar refusing the member itself, which is one userland behaviour and not a guarantee'
 _dest=$(_fresh dest1)
 _rc=0
 image_extract_member "$HOSTILE" "$_hl" '../../victim/canary.txt' "$_dest" >/dev/null 2>&1 || _rc=$?
@@ -471,7 +470,7 @@ t_case 'an unknown source kind is refused rather than guessed'
 _rc=0
 image_open docker-daemon "$ONE" || _rc=$?
 assert_eq 1 "$_rc" \
-  'report.md §1.2 shape C is not a second acquisition path - FAILS under an implementation that adds a third arm here instead of producing a shape-A tarball and re-entering the shape-A path, which is the second door tension 19 refuses for the network'
+  'a docker-daemon source is not a second acquisition path - FAILS under an implementation that adds a third arm here instead of producing a tarball and re-entering the ordinary tarball path, which is the second door tension 19 refuses for the network'
 assert_eq unknown_image_source_kind "$_IMAGE_REFUSE_REASON" 'and says so'
 
 # =============================================================================

@@ -89,10 +89,10 @@ finding_set_evidence 'AKIAABCDEFGHIJKLMNOP'
 finding_emit
 
 # A9: SCA npm TRANSITIVE - assisted, never auto, even though a fix exists.
-# (npm rather than the design report's own pypi worked example: semver_cmp_v
+# (npm rather than a pypi worked example: semver_cmp_v
 # is proven ONLY for npm - modules/sca/semver.sh's own header - so this
-# suite exercises the real, verified comparator rather than reproducing the
-# design report's pypi/semver mismatch.)
+# suite exercises the real, verified comparator rather than reproducing a
+# pypi/semver mismatch a different, unproven comparator would have.)
 finding_new
 finding_set check_id SCA-NPM-VULNERABLE_DEP-01
 finding_set module sca

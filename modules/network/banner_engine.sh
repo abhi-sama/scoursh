@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # modules/network/banner_engine.sh - the pure half of the NET-07 read-on-connect
-# service identification probe (data/scoursh-network-scan-design/report.md
-# §3.2 item 1, §5.1, §5.2, §5.3; the NET-07 row in its §7 staged plan).
+# service identification probe.
 #
 # Owns:
-#   report.md §3.2 item 1  "Connect, read up to N bytes with a deadline,
+#   connect/read/close  Connect, read up to N bytes with a deadline,
 #                           close. SSH, SMTP, FTP, POP3, IMAP and many
 #                           database and message-broker protocols announce
 #                           themselves unprompted. This is the cheapest real
-#                           coverage in the module and it sends ZERO bytes."
+#                           coverage in the module and it sends ZERO bytes.
 #                           The connect/read/close mechanics live in
 #                           lib/nettransport.sh's `net_read_banner`
 #                           (NET-03's file, extended for NET-07 - see that
@@ -16,7 +15,7 @@
 #                           turning whatever bytes come back into a
 #                           product/version identification, or honestly
 #                           finding none.
-#   report.md §5.3         evidence is untrusted, one step further out than
+#   untrusted evidence  evidence is untrusted, one step further out than
 #                           DAST's: a banner is bytes a SERVICE chose on a
 #                           port that may not speak a protocol this scanner
 #                           models at all, and is NOT text by construction -
@@ -31,9 +30,10 @@
 # modules/dast/passive/banner_engine.sh."  `data/versions.db`'s `banner`
 # namespace (docs/VERSIONS-DB.md §3) is shared across every producer that
 # discovers a product@version pair, DAST's HTTP-surface banner check and
-# this module's raw-socket one alike - NET-11 (the future version->vuln
-# lookup this ticket deliberately does NOT build, report.md §7's own row)
-# will read the SAME table this check's product key is meant to line up
+# this module's raw-socket one alike - NET-11 (the version->vuln
+# lookup this ticket deliberately did not build, now landed inside
+# modules/network/banner.sh)
+# reads the SAME table this check's product key is meant to line up
 # with.  A second, independently-drifting copy of the normalisation would be
 # the exact "writer and reader disagree on the key" defect tension 25 exists
 # to prevent for every SCA ecosystem - this is not a generic algorithm like
@@ -84,7 +84,7 @@ source "${BASH_SOURCE[0]%/*}/reachability_engine.sh"
 # escaped - the identical trap `_net_json_flatten`'s own JSON reading guards
 # against, AGENTS.md's "Things measured on this codebase"), and unlike that
 # JSON case a raw service banner is target/service-controlled bytes with no
-# schema at all (report.md §5.3), so a binary protocol's greeting WILL
+# schema at all, so a binary protocol's greeting WILL
 # contain one.  `tr` runs on the byte stream, which is NUL-safe by
 # construction (a real file can hold a NUL; only a bash variable cannot), so
 # the substitution happens before assignment rather than after.
@@ -114,7 +114,7 @@ net_banner_read_text() {
 # nothing is not a defect in the line, it is the ordinary case for most text
 # a service could plausibly print.
 #
-# TWO PASSES, in the order report.md §3.2 item 1 names its examples:
+# TWO PASSES, in the order the design's own protocol list names its examples:
 #
 #   1. SSH's own wire-format identification string (RFC 4253 §4.2):
 #      "SSH-protoversion-softwareversion[ comments]", e.g.
@@ -131,7 +131,7 @@ net_banner_read_text() {
 #      "220 ProFTPD 1.3.5e Server ready.") and the one thing they share is
 #      exactly this shape whenever they disclose a version at all.  A name
 #      with NO adjacent version-shaped word (bare "Postfix", bare "Dovecot")
-#      is deliberately NOT reported by this pass: report.md's own honesty
+#      is deliberately NOT reported by this pass: the honesty
 #      contract requires a real, checkable disclosure, and guessing that any
 #      capitalised word is a product name would manufacture findings out of
 #      ordinary prose ("Server ready", "Mail Transfer") the way a keyword
@@ -185,7 +185,7 @@ net_banner_identify_line() {
 # stops at the first line that identifies anything.  A banner that
 # identifies nothing on ANY line is the ordinary "read something, nothing
 # recognisable in it" outcome (this file's own header, section 2) - not an
-# error, and not `no_banner` either (report.md's own `no_banner` reason
+# error, and not `no_banner` either (`no_banner` reason
 # means the listener sent NO bytes at all, which this function is never
 # reached for).
 net_banner_identify_text() {
@@ -208,7 +208,7 @@ net_banner_identify_text() {
 # tests/lint-source-graph.sh hub-budget cost", applied here to avoid a
 # reverse edge from an engine file up into the module's own driver instead).
 # Needed here, unlike reachability_engine.sh's own emitters, because a raw
-# banner is TARGET-CONTROLLED bytes (report.md §5.3), never operator-authored
+# banner is TARGET-CONTROLLED bytes, never operator-authored
 # config like every field reach_emit_not_answering/reach_emit_unexpected_
 # listener interpolate - so this file, not just the phase script, must be
 # able to sanitize one on its own.
@@ -233,7 +233,7 @@ _banner_safe_text() {
 # ---------------------------------------------------------------------------
 # The `net` fingerprint location profile (lib/findings.sh, `target host port
 # transport`) is unchanged from NET-06's own reach_emit_* functions -
-# report.md gives this check no location component of its own to add, and
+# this check needs no location component of its own to add, and
 # there is no need for one: one listener discloses at most one product this
 # probe reports (net_banner_identify_text stops at the first hit), so
 # (target, host, port) alone already identifies the finding uniquely.
@@ -271,8 +271,7 @@ banner_emit_disclosure() {
 }
 
 # `banner_emit_outdated TARGET ROLE SCHEME HOST PORT PRODUCT VERSION` -
-# NET-11, the `NET-SVC-OUTDATED_COMPONENT-01` check (report.md §3.2 item 1,
-# §3.4, §5.1, §7 Tier 3; docs/VERSIONS-DB.md §3's `banner` namespace).
+# NET-11, the `NET-SVC-OUTDATED_COMPONENT-01` check (docs/VERSIONS-DB.md §3's `banner` namespace).
 #
 # CALLED ONLY AFTER `banner_db_match PRODUCT VERSION` (modules/dast/passive/
 # banner_engine.sh, sourced above) HAS ALREADY RETURNED 0 for this exact
@@ -280,15 +279,15 @@ banner_emit_disclosure() {
 # `_BANNER_ADVISORIES`/`_BANNER_SEVERITY`/`_BANNER_FIXED`/`_BANNER_SUMMARY`/
 # `_BANNER_DB_GENERATED`, the globals that call leaves set.  An EXACT match
 # against `data/versions.db`'s `banner` namespace, never a range or
-# close-enough comparison (report.md §3.4; docs/FOUNDATION.md tension 25
+# close-enough comparison (docs/FOUNDATION.md tension 25
 # moved version-range arithmetic onto the networked box that populates that
 # file - this scanner only ever does a table lookup).
 #
 # CONFIDENCE IS ALWAYS `medium`, NEVER `high` - not a per-call choice, a
-# frozen property of this finding.  report.md §3.4's own backport problem:
+# frozen property of this finding.  The same backport problem:
 # a version read off a raw TCP banner is the SOFTWARE'S OWN self-reported
 # upstream version string, and a distribution that backports a security fix
-# (Debian's or RHEL's own openssh package is the report's worked example)
+# (Debian's or RHEL's own openssh package is the canonical example)
 # does so under an UNCHANGED version string, so an exact match against the
 # vendored list can name a host that is genuinely already patched. The
 # `remediation` field below states that limitation in words on every single

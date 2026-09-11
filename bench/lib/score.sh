@@ -3,7 +3,7 @@
 #
 # THE COUNTING UNIT IS THE CASE, never the finding.  A ground-truth case is
 # FLAGGED by a tool when that tool reported at least one finding in the case's
-# file (the scout report's §5.2, "one file per test case" row).  Finding count
+# file (the "one file per test case" granularity).  Finding count
 # is deliberately not a metric here: a tool that reports the same defect three
 # times is not three times better, and a table that rewards it is measuring
 # verbosity.  This is also what makes bench/lib/normalise.sh's one-record-per-
@@ -16,8 +16,8 @@
 #           same equivalence class as the case's own CWE
 #
 # TWO MATCHING GRANULARITIES, AND ONLY ONE OF THEM IS EVER RIGHT FOR A CORPUS.
-# `file` is the default and is the scout report's "one file per test case" row:
-# OWASP Benchmark, Juliet.  `line` is its "multiple defects per file" row -
+# `file` is the default: the "one file per test case" shape
+# OWASP Benchmark, Juliet use.  `line` is the "multiple defects per file" shape -
 # TerraGoat, kubernetes-goat, a secrets corpus - where a whole file holds many
 # independently-labelled cases and `the tool reported something in this file`
 # credits a tool for every one of them the moment it finds any one.  Measured
@@ -33,12 +33,12 @@
 #
 # Both, every time, and the agreement between them REPORTED - because that
 # agreement is what proves a ranking is not an artifact of the scoring method.
-# The scout report's §3.1 checked it and found the two identical for both
-# tools, which is the only reason its headline result can be stated at all.
+# Measurement checked it and found the two identical for both
+# tools, which is the only reason a headline result can be stated at all.
 #
 # THE CONFUSION MATRIX IS REPORTED IN FULL AND THE HEADLINE IS YOUDEN J.
 # Recall alone is meaningless: a rule that flags every file scores 100% on it.
-# The scout report's `ldapi` row is exactly that failure passing as a win -
+# A measured `ldapi` result is exactly that failure passing as a win -
 # 12/12 real cases AND 12/12 sanitized traps, perfect recall with zero
 # discriminating power.  J = TPR - FPR is 0.000 for a coin flip, and the
 # renderer prints that reminder beside every J it emits.

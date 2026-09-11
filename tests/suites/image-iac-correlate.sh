@@ -2,8 +2,7 @@
 # tests/suites/image-iac-correlate.sh - IMG-14 (Stage 3, independent peer):
 # correlating modules/image/'s built-artifact findings with
 # modules/iac/dockerfile.rules' source-text findings via the DERIVED layer
-# (rules/RULE-FORMAT.md §9.2/§9.2.2; data/scoursh-image-scan-design/
-# report.md §4.4).
+# (rules/RULE-FORMAT.md §9.2/§9.2.2).
 #
 # What this proves, against the REAL registered check ids and the REAL
 # rules/derived.rules file - never a fixture stand-in, because the whole

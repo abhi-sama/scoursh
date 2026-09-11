@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # modules/image/distro/rpm_version.sh - the rpm (RHEL/Fedora/openSUSE)
 # VERSION COMPARATOR, the second ticket of the rpm sub-chain IMG-12's
-# enumerator opened (data/scoursh-image-scan-design/report.md §2.4 "THE
-# BLOCKER", whose difficulty ranking "apk << dpkg < rpm" puts this file last
-# and hardest of the three; §5.3's IMG-13 and IMG-14 rows are the docs and
+# enumerator opened - measured to be the hardest of apk/dpkg/rpm's three
+# version-comparator problems (IMG-13 and IMG-14 are the docs and
 # correlation tickets, so this one carries no plan number of its own).
 #
 # WHAT THIS FILE IS.  A total ordering over rpm package version strings, in
@@ -29,7 +28,7 @@
 # divergence, the exact direction tension 25 calls disqualifying", as the
 # reason it never generalised into a shared `version_cmp`.
 #
-# report.md §2.4 applied that same standard to OS versions and measured the
+# The same standard was applied to OS versions, measuring the
 # shipped comparator at 5 correct / 7 WRONG out of 12.  Three of those seven
 # are rpm's, and they are this file's reason to exist:
 #
@@ -78,7 +77,7 @@
 #     [epoch:]version[-release]
 #
 #   epoch     an unsigned integer, default 0 when absent.  Compared FIRST,
-#             and NUMERICALLY - which is the whole of report.md §2.4's
+#             and NUMERICALLY - which is the whole reason
 #             `2:1.0-1 > 3.0-1`: epoch 2 beats epoch 0 without ever looking
 #             at 1.0 against 3.0.
 #   version   rpm's own allowed alphabet is alphanumerics plus `.`, `_`,
@@ -480,7 +479,7 @@ _rpmv_vercmp() {
     # makes `1.0 < 1.0^20230101` - and only then does a non-caret side win,
     # which is what makes `1.0^git1 < 1.0.1`.  Swapping those two tests is
     # the single most likely way to get this rule wrong, and it inverts
-    # exactly the case report.md §2.4 names.
+    # exactly the `1.0^20230101` vs `1.0` case measured above.
     if [[ $ca == '^' || $cb == '^' ]]; then
       if [[ -z $ca ]]; then _RPMV_R=-1; return 0; fi
       if [[ -z $cb ]]; then _RPMV_R=1; return 0; fi
@@ -578,8 +577,8 @@ rpm_version_cmp_v() {
 
 # _rpmv_evr_cmp EA VA RA EB VB RB - sets _RPMV_R, comparing two already-parsed
 # triples.  Epoch first and NUMERICALLY, then the versions, then the
-# releases; the first non-zero result wins.  report.md §2.4's `2:1.0-1 >
-# 3.0-1` never reaches the version comparison at all.
+# releases; the first non-zero result wins.  The measured `2:1.0-1 >
+# 3.0-1` case above never reaches the version comparison at all.
 _rpmv_evr_cmp() {
   _rpmv_cmp_digits "$1" "$4"
   if (( _RPMV_R != 0 )); then return 0; fi

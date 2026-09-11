@@ -2,15 +2,14 @@
 # modules/image/config.sh - the container-image module's CONFIG-BLOB checks
 # (IMG-06's `IMAGE-CFG-RUNS_AS_ROOT-01`; IMG-10 adds
 # `IMAGE-CFG-EXPOSED_PORTS-01` and `IMAGE-CFG-MUTABLE_BASE_REF-01` -
-# data/scoursh-image-scan-design/report.md §4.1's IMAGE-CFG-* row and
-# §5.3's IMG-10 row: "root user, exposed ports, mutable base tag").
+# root user, exposed ports, mutable base tag).
 #
 # WHAT THIS FILE IS.  Three checks, all driven from the image's own CONFIG
 # blob (never a Dockerfile, never a layer):
 #
 #   IMAGE-CFG-RUNS_AS_ROOT-01 (IMG-06) - `config.User` is absent or root.
-#   Report.md §4.1 calls this "the built-artifact counterpart to
-#   `IAC-DOCKER-ROOT_USER-01`", and §4.4 explains why it is not redundant
+#   This is the built-artifact counterpart to
+#   `IAC-DOCKER-ROOT_USER-01`, and it is not redundant
 #   with it: `IAC-DOCKER-ROOT_USER-01` reads ONE Dockerfile's own `USER`
 #   instruction; this check reads the EFFECTIVE user baked into the merged
 #   config across every base layer, which is what the container runtime
@@ -21,7 +20,7 @@
 #   IMAGE-CFG-EXPOSED_PORTS-01 (IMG-10) - `config.ExposedPorts` lists one or
 #   more ports.  Informational: the built-artifact counterpart to reviewing
 #   a Dockerfile's `EXPOSE` lines, which `modules/iac/dockerfile.rules`
-#   never checked (report.md §5.3's own IMG-10 row).
+#   never checked.
 #
 #   IMAGE-CFG-MUTABLE_BASE_REF-01 (IMG-10) - the image's own record of its
 #   base image (see section 3 below) names that base by a mutable TAG
@@ -74,7 +73,7 @@ _image_user_is_root() {
 # parse failure) when the config blob itself was readable; returns 1 with
 # `_IMAGE_REFUSE_REASON` set (image_config_blob_read's own reason) when it
 # was not - the caller (modules/image/run.sh) turns THAT into the
-# `image_config_unreadable` coverage_reduction (report.md §4.3), never a
+# `image_config_unreadable` coverage_reduction, never a
 # silent skip and never a guess at whether the image runs as root.
 _IMAGE_CONFIG_USER=''
 image_config_user_get() {
@@ -136,7 +135,7 @@ image_check_root_user() {
   finding_set logical_fqn "image $image_id: config.User"
   # IMG-14 (rules/RULE-FORMAT.md §9.2.2, §9.6.8) - see
   # modules/image/distro/apk.sh's identical comment on its own emitter.
-  # This is the pairing report.md §4.4 names directly: this check reads the
+  # This is the pairing `rules/derived.rules`' COMPOSITE-IMAGE-EFFECTIVE_ROOT names directly: this check reads the
   # EFFECTIVE runtime user from the built artifact,
   # IAC-DOCKER-ROOT_USER-01 reads only the one Dockerfile a source lint can
   # see, and correlating them on the same Dockerfile path confirms the
@@ -492,10 +491,10 @@ count: ${#ports[@]}"
 # earlier build stage rather than a real registry image and so has no real
 # base reference to name), record a DECLARED coverage limitation - never a
 # finding, and never silence either, since a clean scan and "this module
-# could not tell" are different facts an operator needs told apart
-# (report.md §4.2's honesty discipline, applied to a general limitation of
+# could not tell" are different facts an operator needs told apart -
+# this module's general honesty discipline, applied to a limitation of
 # built-artifact base-reference recording rather than to one image's own
-# unreadable bytes).
+# unreadable bytes.
 #
 # `_image_base_ref_is_pinned REF` - true when REF names its base by an
 # immutable content digest (`...@sha256:<hex>`) rather than a mutable tag.

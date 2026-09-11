@@ -496,7 +496,7 @@ Its own module directory does not match its enum spelling - `modules/network/` r
 `modules/cloud/posture/` without matching a `modules/posture/` path.
 `IMAGE` is the built-container-image scanning module (`modules/image/`): offline package enumeration
 and installed-package CVE matching against an operator-supplied docker-save tarball or OCI image
-layout - never a registry pull (`data/scoursh-image-scan-design/report.md`). Unlike `NET`, its module
+layout - never a registry pull. Unlike `NET`, its module
 directory matches its enum spelling exactly, so it needs no owning-module-map exception.
 
 `SEQ` is **required in every schema except the derived-finding schema (§9.2), where it MUST be
@@ -1104,7 +1104,8 @@ closing it - read it before adding or editing a row here.
 
 One record per built container image the operator makes available to `scan.sh image`, mapping an
 operator-assigned **stable** id to a **local, already-on-disk** image.
-`data/scoursh-image-scan-design/report.md` §1.2's shapes A and B are the whole of this schema.
+The table below is the whole of this schema: a single-image source needs no `reference`, and a
+multi-image source needs one naming which image inside it to read.
 
 | Key | Req | Card | Multi-line | Value |
 |---|---|---|---|---|
@@ -1112,7 +1113,7 @@ operator-assigned **stable** id to a **local, already-on-disk** image.
 | `source` | required | single | no | `docker-archive` or `oci-layout`. Anything else is `E024`. |
 | `path` | required | single | no | Path to the docker-save tarball (`docker-archive`) or to the OCI image-layout directory (`oci-layout`). A relative path resolves against the process's working directory, never against the install root; an absolute path is recommended. |
 | `reference` | optional | single | no | Which image inside a multi-image source to read: a `RepoTags` entry for `docker-archive`, or the `org.opencontainers.image.ref.name` annotation for `oci-layout`. A source holding exactly one image needs no `reference`; a source holding more than one and naming no `reference` is a **declared refusal**, never an arbitrary pick. |
-| `dockerfile` | optional | single | no | The **scan-root-relative** path (`modules/sast/engine.sh`'s `sast_relpath` shape - no leading `/`, no leading `./`) of the Dockerfile that built this image, when the operator scans it as source too. Never validated against the image's own content (it cannot be - report.md §1.6 - so a typo here is silent). This is IMAGE's `file` correlation value (§9.2.2): populating it is what lets `rules/derived.rules` join an `IMAGE-*` finding to the `IAC-DOCKER-*` findings from scanning that same Dockerfile with `modules/iac/`. Omitting it leaves every `IMAGE-*` finding for this image with no `file` correlation value, so it simply cannot join - never a guess at which Dockerfile built an image the operator did not name one for. |
+| `dockerfile` | optional | single | no | The **scan-root-relative** path (`modules/sast/engine.sh`'s `sast_relpath` shape - no leading `/`, no leading `./`) of the Dockerfile that built this image, when the operator scans it as source too. Never validated against the image's own content (a built image carries no record of which Dockerfile built it, so there is nothing on disk to check this path against - a typo here is silent). This is IMAGE's `file` correlation value (§9.2.2): populating it is what lets `rules/derived.rules` join an `IMAGE-*` finding to the `IAC-DOCKER-*` findings from scanning that same Dockerfile with `modules/iac/`. Omitting it leaves every `IMAGE-*` finding for this image with no `file` correlation value, so it simply cannot join - never a guess at which Dockerfile built an image the operator did not name one for. |
 | `notes` | optional | single | yes | Free text. |
 | `format-version` | optional | single | no | As §9.6.5. |
 

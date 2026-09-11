@@ -4024,14 +4024,14 @@ Tests cover normalisation per ecosystem, the exact-lookup path, and the unknown-
 against a small committed fixture database.
 
 **AMENDMENT (npm semver-range matching).**
-A predecessor feasibility scout (`data/scoursh-sca-range-feasibility/report.md`) measured the actual
+A pre-implementation feasibility measurement checked the actual
 cost of this RESOLUTION rather than assuming it: the shipped importer's `versions[]`-only reading covers
 just **10%** of npm's OSV.dev export, so npm's real-CVE recall against `data/advisories.db` was measured
 at **3.6%** (263 of 7,317 representable GHSA advisories) - not because tension 25's underlying argument
 was wrong, but because the shipped importer never implemented the RESOLUTION's own "resolve every
 advisory's affected range against the ecosystem's actual published version list" clause for the 90% of
 npm advisories that arrive as a `ranges[]` interval rather than an enumerated `versions[]` list.
-The scout further measured that **95.2%** of that gap is npm malware advisories (`MAL-*`, `introduced: 0`,
+That same measurement found that **95.2%** of that gap is npm malware advisories (`MAL-*`, `introduced: 0`,
 no fix - "every version of this package is malicious"), which need **no version algebra at all**, and
 that the remaining real-CVE-bearing slice needs exactly ONE version algebra: SemVer 2.0.0, which a 70-line
 bash comparator (`modules/sca/semver.sh`) reproduces with **0 mismatches over tens of thousands of real
@@ -6059,15 +6059,15 @@ also landed, so Track B's OWASP compliance view is complete too, and its CIS hal
 10 is complete in full**.
 
 **A surface outside `docs/DESIGN.md` §13's ten steps entirely - network/host scanning
-(`modules/network/`, the `NET` check-id prefix) - is now COMPLETE.** `data/scoursh-network-scan-design/
-report.md` §7 staged it as NET-01 through NET-15 (Tier 0 through Tier 4), the same dependency-ordered,
+(`modules/network/`, the `NET` check-id prefix) - is now COMPLETE.** It was staged as
+NET-01 through NET-15 (Tier 0 through Tier 4), the same dependency-ordered,
 PR-sized shape DAST and Cloud were staged in; NET-01 through NET-11 (Tiers 0 through 3) have all
 landed, and NET-12 (this section's own update) is the docs sweep that closes the initiative out. `AGENTS.md`'s
 "Network module (NET)" section carries the full per-ticket landing detail; in short, `scan.sh network
 --target NAME` verifies the reachability, service identity/version, and transport posture of the
 listener set the target's `config/scope.conf` `base-url`/`extra-host` entries declare - never a port
-sweep or host discovery, since the design report's §0 and §2.4 both name that the one capability this
-module must not build without an explicit captain decision, and none was taken. It reuses the identical
+sweep or host discovery, a deliberate scope decision this module must not widen without an explicit
+captain decision, and none was taken. It reuses the identical
 `lib/http.sh` scope chokepoint, tension-16 rate/budget/breaker ceilings, and `--i-own-target`
 affirmation `dast` uses (`http_authorize_raw_connection`, tension 19's TLS-probe exemption pattern
 extended to a raw TCP connect), so a network probe is gated exactly as an HTTP request is. Fifteen
@@ -6079,9 +6079,9 @@ non-`base-url` listeners (`NET-TLS-*`, six ids mirroring `DAST-TLS-*`), and plai
 transport posture (`NET-TRANSPORT-*`). The two version-lookup checks
 (`NET-SVC-OUTDATED_COMPONENT-01`, `NET-SVC-HTTP_OUTDATED_COMPONENT-01`) are exact-match lookups against
 `data/versions.db`'s `banner` namespace, never range arithmetic (tension 25's discipline, one port
-over), and are `confidence: medium` rather than `high` for the reason the design report's §3.4 states
-at length: a version a service volunteers unprompted cannot show a distribution's backported security
-fix, so an exact match can name an already-patched host as vulnerable. Two capabilities the report
+over), and are `confidence: medium` rather than `high` because a version a service volunteers
+unprompted cannot show a distribution's backported security
+fix, so an exact match can name an already-patched host as vulnerable. Two capabilities this module
 explicitly declines for v1, and states as deliberate rather than silently drops: OS patch-level
 inference (no honest way to infer a host's patch level externally; a banner-version-only signal is
 already the WEAKER mechanism `docs/DESIGN.md` §6.5 chose against for the identical class via SCA) and
@@ -6092,8 +6092,8 @@ target) is filed, not scheduled - the module ships with no `nmap` dependency at 
 connect only.
 
 **A second surface outside `docs/DESIGN.md` §13's ten steps - built-container-image scanning
-(`modules/image/`, the `IMAGE` check-id prefix) - is also now COMPLETE.** `data/scoursh-image-scan-
-design/report.md` §5.3 staged it IMG-01 through IMG-14 (Stage 0 foundation, Stage 1 the Alpine
+(`modules/image/`, the `IMAGE` check-id prefix) - is also now COMPLETE.** It was staged as
+IMG-01 through IMG-14 (Stage 0 foundation, Stage 1 the Alpine
 vertical slice, Stage 2 Debian/Ubuntu, Stage 3 breadth); every ticket has landed, most recently IMG-14
 (correlating `IMAGE-*` with `IAC-DOCKER-*` via `rules/derived.rules`). `AGENTS.md`'s "Container image
 scanning (the IMAGE module)" section carries the full per-ticket landing detail; in short,

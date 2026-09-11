@@ -47,11 +47,10 @@ references: CWE-200
 references: https://owasp.org/Top10/A07_2021-Identification_and_Authentication_Failures/
 
 # COMPOSITE-IMAGE-EFFECTIVE_ROOT and the three COMPOSITE-IMAGE-STALE_BASE_*
-# records below it (IMG-14; data/scoursh-image-scan-design/report.md §4.4;
-# rules/RULE-FORMAT.md §9.2/§9.2.2). `modules/iac/dockerfile.rules` reads
+# records below it (IMG-14; rules/RULE-FORMAT.md §9.2/§9.2.2).
+# `modules/iac/dockerfile.rules` reads
 # what a Dockerfile's AUTHOR wrote; `modules/image/` reads what the BUILT
-# ARTIFACT actually ships. Neither can see what the other sees (report.md
-# §4.4's own table), so correlating the two says something stronger than
+# ARTIFACT actually ships. Neither can see what the other sees, so correlating the two says something stronger than
 # either alone: the source's omission was really left uncorrected in the
 # artifact, or the artifact's unpatched packages really do trace back to an
 # unpinned base a rebuild would have refreshed. `correlate-on: file` joins
@@ -71,13 +70,13 @@ references: https://owasp.org/Top10/A07_2021-Identification_and_Authentication_F
 # (the built image's own merged config confirms the EFFECTIVE runtime user
 # really is root, across every base layer and multi-stage copy a source
 # lint cannot see through). Each alone is a real finding already registered
-# under its own id; together they close the gap report.md §4.4 names -
+# under its own id; together they close the gap between them -
 # "IAC-DOCKER-ROOT_USER-01 reads one Dockerfile's own USER instruction; the
 # effective user comes from the merged config across every base layer" - so
 # the composite is the CONFIRMED case, not merely the suspected one.
 #
-# COMPOSITE-IMAGE-STALE_BASE_APK/_DPKG/_RPM say what report.md §4.4 gives as
-# its worked example: "the unpinned base is delivering stale vulnerable
+# COMPOSITE-IMAGE-STALE_BASE_APK/_DPKG/_RPM say the analogous thing for
+# package freshness: "the unpinned base is delivering stale vulnerable
 # packages." Splitting it by distro/package-manager rather than seeding one
 # record is what the primitives here actually let this say correctly.
 # `requires`/`any-of` on ONE record express (ALL requires) AND (>=1 of
@@ -119,7 +118,6 @@ remediation: Add (or fix) a non-root USER instruction in the Dockerfile that
   exposure rather than a stylistic gap. A base-image bump can change the
   effective user with no Dockerfile line changing at all, so re-check this
   after any FROM tag/digest bump too.
-references: data/scoursh-image-scan-design/report.md
 references: CWE-250
 references: https://owasp.org/Top10/A04_2021-Insecure_Design/
 
@@ -143,7 +141,6 @@ remediation: The Dockerfile's own base image reference is not pinned to an
   with an explicit release tag AND an `@sha256:...` digest
   (IAC-DOCKER-UNPINNED_DIGEST-01's own remediation), then rebuild against a
   current base and re-scan to confirm the advisory clears.
-references: data/scoursh-image-scan-design/report.md
 references: CWE-1104
 references: CWE-829
 references: https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/
@@ -168,7 +165,6 @@ remediation: The Dockerfile's own base image reference is not pinned to an
   Pin the base image with an explicit release tag AND an `@sha256:...`
   digest (IAC-DOCKER-UNPINNED_DIGEST-01's own remediation), then rebuild
   against a current base and re-scan to confirm the advisory clears.
-references: data/scoursh-image-scan-design/report.md
 references: CWE-1104
 references: CWE-829
 references: https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/
@@ -193,7 +189,6 @@ remediation: The Dockerfile's own base image reference is not pinned to an
   Pin the base image with an explicit release tag AND an `@sha256:...`
   digest (IAC-DOCKER-UNPINNED_DIGEST-01's own remediation), then rebuild
   against a current base and re-scan to confirm the advisory clears.
-references: data/scoursh-image-scan-design/report.md
 references: CWE-1104
 references: CWE-829
 references: https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/

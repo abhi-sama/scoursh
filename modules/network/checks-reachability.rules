@@ -1,6 +1,5 @@
 # modules/network/checks-reachability.rules - the NET-06 script-check
-# registry (rules/RULE-FORMAT.md §9.5; data/scoursh-network-scan-design/
-# report.md §3.1/§5.1, the NET-06 row in its §7 staged plan). Owned by
+# registry (rules/RULE-FORMAT.md §9.5). Owned by
 # modules/network/reachability.sh; ids are both `NET-PORT-*`.
 #
 # ONE FILE PER OWNING PHASE SCRIPT, per rules/RULE-FORMAT.md §9's
@@ -10,8 +9,8 @@
 # ever creating one, mirroring how modules/dast/passive/checks-cors.rules
 # (DAST-08, landed after tension 29's split) was seeded.
 #
-# TWO CHECK IDS FOR ONE PROBE, on purpose - report.md §5.1's own reasoning,
-# applied here exactly as it is for every sibling module in this tree: the
+# TWO CHECK IDS FOR ONE PROBE, on purpose - the reasoning
+# applied here is exactly the one every sibling module in this tree uses: the
 # `net` fingerprint location profile (lib/findings.sh, target host port
 # transport) carries no component naming the STATE a listener was found in,
 # so an `open`-and-violating-posture listener and a `not-open` listener on a
@@ -33,8 +32,8 @@
 # phase-table floor (`reachability.sh:safe`, CHECKS_INTENSITIES' `safe`
 # tier): one TCP connect per declared listener, zero bytes sent, but a real
 # connection to a port the operator did not necessarily expect a scanner to
-# knock on - report.md §5.1's own table, and this file's own reachability.sh
-# header, both say why that is `safe-active` rather than `passive`.
+# knock on - this file's own reachability.sh
+# header says why that is `safe-active` rather than `passive`.
 
 id: NET-PORT-UNEXPECTED_LISTENER-01
 title: Declared listener answers on a port expected to be closed

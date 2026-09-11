@@ -1333,12 +1333,12 @@ assert_file_absent "$W/fmt-sarif/report.html" 'report.html is NOT written for --
 # =============================================================================
 printf '\n-- per-subcommand help: scan.sh <command> --help --\n'
 # =============================================================================
-t_case 'dast --help exits 0 with no --target given, and states it is only partially built'
+t_case 'dast --help exits 0 with no --target given, and states its real build status'
 assert_status 0 './scan.sh dast --help exits 0 with no --target' _bin_run dast --help
 DAST_HELP=$(cat "$W/bin.out")
 assert_contains "$DAST_HELP" 'scan.sh dast [options]' 'command-specific header'
-assert_contains "$DAST_HELP" 'partially built' \
-  "dast states plainly that it is only partially built - fails under the shipped defect where every subcommand prints the same global usage and says nothing about build status"
+assert_contains "$DAST_HELP" 'built' \
+  "dast states plainly what its build status is - fails under the shipped defect where every subcommand prints the same global usage and says nothing about build status"
 assert_contains "$DAST_HELP" 'scan phases implemented' \
   'the phase count is stated, not just a bare "partial"'
 assert_not_contains "$DAST_HELP" 'Commands:' \

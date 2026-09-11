@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # modules/image/distro/apk.sh - apk installed-package ENUMERATION (IMG-04)
-# plus advisory matching and finding emission (IMG-06, data/
-# scoursh-image-scan-design/report.md §2.1's apk row, §2.3-2.5, and §4.1's
-# IMAGE-PKG-VULNERABLE_OS_PACKAGE-01 row).
+# plus advisory matching and finding emission (IMG-06,
+# IMAGE-PKG-VULNERABLE_OS_PACKAGE-01).
 #
 # WHAT THIS FILE IS.  Section 1 (IMG-04, unchanged): given the path of an
 # already-extracted `lib/apk/db/installed` file (the exact byte-for-byte
@@ -27,7 +26,7 @@
 # having the full lib/ stack in scope rather than sourcing a copy of it - see
 # that section's own header for why.
 #
-# THE APK DB FORMAT (report.md §2.1's own delightful accident): blank-line
+# THE APK DB FORMAT (its own delightful accident): blank-line
 # separated blocks of single-letter `K:value` lines - no space after the
 # colon, unlike scoursh's own frozen `key: value` record format
 # (rules/RULE-FORMAT.md §4) - with no escaping and a value that runs to end
@@ -91,7 +90,7 @@ declare -ga APK_INSTALLED_VERSIONS=()
 # `_APK_INSTALLED_REASON` - set only on a return-1 refusal, for the ONE
 # refusal this file recognises: no readable database at the given path,
 # which is the ordinary shape of a scratch or distroless image that carries
-# no apk database at all (report.md §4.3's `no_package_db_found` reduction).
+# no apk database at all (the `no_package_db_found` reduction).
 # A caller turns this into an actual `coverage_reduction`/finding - that
 # wiring is IMG-06's scope, not this file's; this variable exists so a unit
 # test (and, later, that wiring) can assert on WHY enumeration produced
@@ -168,8 +167,8 @@ apk_installed_enumerate() {
 }
 
 # ---------------------------------------------------------------------------
-# 2. Advisory matching + finding emission (IMG-06, report.md §2.3-2.5/§4.1's
-#    IMAGE-PKG-VULNERABLE_OS_PACKAGE-01 row)
+# 2. Advisory matching + finding emission (IMG-06,
+#    IMAGE-PKG-VULNERABLE_OS_PACKAGE-01)
 # ---------------------------------------------------------------------------
 # WHAT CHANGED FROM IMG-04.  This file's own header above said "no advisory
 # lookup, no finding ... that wiring is IMG-06's scope, not this file's" -
@@ -195,7 +194,7 @@ apk_installed_enumerate() {
 # byte-equal lookup is sound.  Alpine cannot use that shape: an OSV Alpine
 # advisory names ONE recorded affected version per release branch, while a
 # real image carries an arbitrary REBUILD of that branch (`-r4` vs `-r10`,
-# `report.md §2.4`'s own measured example), and only a real ordering
+# a real measured example), and only a real ordering
 # comparison can tell whether a given rebuild has reached the fix. That
 # measurement - the shipped semver comparator scored 7-of-12 WRONG on real
 # OS version pairs, including a false negative, "the exact direction tension
@@ -287,7 +286,7 @@ apk_scan_installed() {
 # whole check exists to make. FIXED_VERSIONS is a comma-separated list
 # (docs/FOUNDATION.md tension 25's schema); every token that parses under
 # apk_version_valid is compared and the LARGEST one wins as the fix
-# threshold - conservative on purpose (report.md §2.4: "a false positive:
+# threshold - conservative on purpose ("a false positive:
 # noisy, survivable" is the accepted direction; a false negative is not), so
 # a package below ANY of several recorded fix points is still reported
 # rather than only the smallest. An empty field, or one whose tokens all

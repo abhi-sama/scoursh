@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # modules/network/run.sh - the network/host-scanning module entry point
-# (data/scoursh-network-scan-design/report.md; the NET-04 row in its §7
-# staged plan).
+# (NET-04).
 #
 # Contract (modules/sast/run.sh's own header, reused verbatim by every module
 # in this tree): scan.sh's `scan_dispatch network` does a plain `source` of
@@ -28,7 +27,7 @@
 # honestly-declared no-op, exactly the state modules/dast/'s own dispatch was
 # in before DAST-03 (`auth.sh`) landed.  Not shipped here, each by its own
 # future ticket: the declared listener set config/scope.conf's own
-# base-url/extra-host entries produce (report.md §7's NET-05, this module's
+# base-url/extra-host entries produce (NET-05, this module's
 # `crawl.sh` equivalent), any `modules/network/checks-<name>.rules`
 # registry (there is no script for a §9.5 record to name, and one would fail
 # rules/RULE-FORMAT.md's E072 on every row), and multi-target iteration
@@ -174,7 +173,7 @@ _net_run_module() {
   local ran absent above expected=${#_NET_PHASES[@]}
   local -a above_names=()
 
-  # report.md §5.2 rule 1, first half: an operator-configured out-of-scope
+  # An operator-configured out-of-scope
   # tuple is refused exactly like an out-of-scope DAST target.  scan.sh's
   # own network dispatch arm calls config_scope_require ahead of dispatch,
   # and this call is a SECOND, INDEPENDENT assertion rather than a
@@ -264,7 +263,7 @@ _net_run_module() {
       # limitations section without having to know what a phase script is.
       present=$(( expected - absent ))
       if (( present == 0 )); then
-        why="modules/network/ ships no phase script yet ($present of $expected present, data/scoursh-network-scan-design/report.md §7), so no request was sent"
+        why="this install is missing every network phase script ($present of $expected present on disk), so no request was sent"
         run_record coverage_reduction "module=network reason=no_phase_scripts_on_disk_yet target=$target intensity=$intensity phases_expected=$expected phases_present=$present phases_ran=$ran"
       elif (( ran == 0 )); then
         why="all $present of the $expected phase scripts present declare a higher intensity than this run's --intensity $intensity, so no request was sent"
@@ -273,13 +272,13 @@ _net_run_module() {
         why="$ran of the $expected phase scripts ran and none of them covered a check - each one's own coverage_reduction above says why"
         run_record coverage_reduction "module=network reason=no_check_covered_by_any_phase target=$target intensity=$intensity phases_expected=$expected phases_present=$present phases_ran=$ran"
       fi
-      # report.md §5.2 rule 3: "A target with no declared listener beyond
-      # base-url records a coverage_gap and exits 0."  Every target this
-      # module sees today is exactly that case (NET-05, which would
-      # distinguish a target with real extra-host listeners from one with
-      # none, has not landed), so this IS that record for every run this
-      # ticket ships - the same honest, currently-universal statement
-      # modules/dast/run.sh's own coverage_gap made before DAST-03 landed.
+      # A target with no declared listener beyond
+      # base-url records a coverage_gap and exits 0 - the same honest
+      # statement modules/dast/run.sh's own coverage_gap makes for a target
+      # with no injectable parameter.  A target that DOES declare real
+      # extra-host listeners reaches this branch only when every phase
+      # covered nothing for it (e.g. every declared listener was filtered),
+      # in which case the message above already names why.
       run_record coverage_gap "network covered nothing on target '$target': $why and no property of the target's listeners was tested - a clean result here is the absence of a test, not the absence of a problem."
     fi
 

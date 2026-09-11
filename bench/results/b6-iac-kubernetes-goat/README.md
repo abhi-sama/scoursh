@@ -76,8 +76,8 @@ cause attached rather than as a headline.
 the disagreement is the point.** KICS finds every single misconfigured document
 (recall 1.000) and flags nine of the sixteen correctly-configured ones as well;
 Checkov is one behind on both. Recall alone would rank them first and second and
-scoursh last — which is exactly the failure the scout report's rule R3 exists to
-prevent, and exactly the `ldapi` row it caught in the SAST pilot. J = TPR − FPR
+scoursh last — which is exactly why this harness's own "recall alone is not a result" rule exists,
+and exactly the `ldapi` row it caught in the SAST pilot. J = TPR − FPR
 ranks them the other way round because eight of Checkov's ten false positives
 and all nine of KICS's come from **one rule each fired against every ClusterIP
 Service in the corpus** (`CKV_K8S_21`, "default namespace should not be used";

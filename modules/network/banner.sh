@@ -2,12 +2,10 @@
 # modules/network/banner.sh - the NET-07 tier-2 probe (read-on-connect
 # service identification, `NET-SVC-BANNER_DISCLOSURE-01`) AND NET-11 (the
 # version->vulnerability lookup against that same disclosure,
-# `NET-SVC-OUTDATED_COMPONENT-01`) - data/scoursh-network-scan-design/
-# report.md §3.2 item 1, §3.4, §5.1, §5.2, §5.3, and the NET-11 row in its §7
-# staged plan ("depends on NET-07").
+# `NET-SVC-OUTDATED_COMPONENT-01`, staged as depending on NET-07).
 #
-# NET-11 LANDS INSIDE THIS FILE, NOT AS A NEW PHASE SCRIPT.  report.md §7's
-# own plan sketches NET-11 as though it might be a peer file, but
+# NET-11 LANDS INSIDE THIS FILE, NOT AS A NEW PHASE SCRIPT.  The
+# original staging sketched NET-11 as though it might be a peer file, but
 # modules/network/engine.sh's `_NET_PHASES` phase table carries no row for
 # one, and modules/network/httpport.sh (NET-09) already set the real
 # precedent this ticket follows instead: its own
@@ -19,10 +17,10 @@
 # independent connection - not a read of any artifact reachability.sh
 # produced, because that phase writes no persisted per-listener state").  A
 # separate NET-11 phase would need EITHER a third redundant connection to
-# every listener (report.md §2.6's "no exploit or version-confirmation
-# probe" boundary already treats a second read of the same banner as
-# pointless traffic) OR a new on-disk artifact this module has never needed
-# before, for a check whose entire input - `_NET_BANNER_PRODUCT` /
+# every listener (this module's own deliberate "no exploit or
+# version-confirmation probe" boundary already treats a second read of the
+# same banner as pointless traffic) OR a new on-disk artifact this module
+# has never needed before, for a check whose entire input - `_NET_BANNER_PRODUCT` /
 # `_NET_BANNER_VERSION` - this file's own identification pass already holds
 # in-process the moment it identifies something. So the outdated-component
 # check is evaluated in the SAME listener-loop iteration, immediately after
@@ -39,19 +37,19 @@
 # (`banner_emit_disclosure` and NET-11's own `banner_emit_outdated`) - is
 # modules/network/banner_engine.sh.
 #
-# NET-11'S CONFIDENCE IS ALWAYS `medium`, NEVER `high` - report.md §3.4's
-# backport problem, restated at every call site that can raise the finding:
+# NET-11'S CONFIDENCE IS ALWAYS `medium`, NEVER `high` - the same backport
+# problem, restated at every call site that can raise the finding:
 # a version read off a raw TCP banner is the listener's own self-reported
 # upstream string, and a distribution that backports a security fix (the
-# report's own Debian/RHEL openssh example) does so under an UNCHANGED
+# canonical Debian/RHEL openssh example) does so under an UNCHANGED
 # version string, so an exact `data/versions.db` match can name a host that
 # is genuinely already patched. `banner_emit_outdated`
 # (modules/network/banner_engine.sh) hardcodes `confidence: medium` and
 # states the limitation in the finding's OWN `remediation` field - never a
 # per-call choice this file could get wrong by omission.
 #
-# NET-11 IS AN EXACT TABLE LOOKUP, NEVER RANGE ARITHMETIC (report.md §3.4;
-# docs/FOUNDATION.md tension 25).  `banner_db_match` (modules/dast/passive/
+# NET-11 IS AN EXACT TABLE LOOKUP, NEVER RANGE ARITHMETIC (docs/FOUNDATION.md
+# tension 25).  `banner_db_match` (modules/dast/passive/
 # banner_engine.sh, sourced transitively below) is a byte-for-byte
 # `(product, version)` match against `data/versions.db`'s `banner` namespace
 # - there is no "close enough" comparison anywhere in this path, and none is
@@ -62,7 +60,7 @@
 # opens a socket, reads whatever the far end volunteers within a bounded
 # deadline, and closes it, never writing to the fd (that file's own header
 # states the same about `net_connect_probe`, and this function shares its
-# connect step).  report.md §5.1's own table gives this check the `passive`
+# connect step).  This check carries the `passive`
 # tag for exactly that reason, distinct from NET-06's `safe-active` connect
 # probe - see modules/network/checks-banner.rules' own header for the
 # contrast in full.
@@ -72,7 +70,7 @@
 # SAME `net_connect_probe` (lib/nettransport.sh) modules/network/
 # reachability.sh itself calls, with a SECOND, independent connection - not
 # a read of any artifact reachability.sh produced, because that phase writes
-# no persisted per-listener state (report.md's own three-state table lives
+# no persisted per-listener state (the three-state classification lives
 # entirely in that phase's own process; there is nothing on disk for a
 # sibling phase to read).  "Reuse the classification" therefore means "call
 # the same shared primitive reachability.sh calls", never "invent a second
@@ -205,7 +203,7 @@ _banner_run() {
   case $_NET_LISTENERS_STATE in
     absent)
       _banner_no_listeners_reduction "$target" \
-        "reports/<run>/inventory/listeners.json was not written this run (modules/network/inventory.sh's report.md §5.2 rule 3: a target with only base-url, or every extra-host dropped, writes no artifact)"
+        "reports/<run>/inventory/listeners.json was not written this run (modules/network/inventory.sh writes no artifact for a target with only base-url, or every extra-host dropped)"
       return 0
       ;;
     empty)
@@ -241,7 +239,7 @@ _banner_run() {
     port=${_REACH_PORT[i]}
     url="$scheme://$host:$port/"
 
-    # report.md §5.2 rule 1, first half - the identical re-authorization
+    # The identical re-authorization
     # modules/network/reachability.sh's own header explains at length.
     if ! http_authorize_raw_connection "$url" "$target" false; then
       unresolvable_ct=$(( unresolvable_ct + 1 ))
@@ -273,7 +271,7 @@ _banner_run() {
               "$_NET_BANNER_PRODUCT" "$_NET_BANNER_VERSION" "$text"
             # NET-11: an exact data/versions.db `banner`-namespace match on
             # THIS SAME identification, never a second connection and never a
-            # range/heuristic comparison (report.md §3.4). A name-only
+            # range/heuristic comparison. A name-only
             # disclosure (no version) has nothing to look up.
             if (( do_outdated )) && [[ -n $_NET_BANNER_VERSION ]] \
                 && banner_db_match "$_NET_BANNER_PRODUCT" "$_NET_BANNER_VERSION"; then
@@ -284,8 +282,8 @@ _banner_run() {
           fi
           # A banner that arrived but identified nothing recognisable is a
           # real, honest "checked, nothing to flag" outcome (this check's
-          # own registry header) - it is NOT no_banner (report.md's own
-          # `no_banner` names a listener that sent NOTHING at all), so it is
+          # own registry header) - it is NOT no_banner (which
+          # names a listener that sent NOTHING at all), so it is
           # neither a finding nor a reduction.
         else
           rm -f "$bfile"
@@ -320,7 +318,7 @@ _banner_run() {
   # comparing four sibling reductions should not have to work out which one
   # is exempt.
   # Both reductions below name NET-SVC-OUTDATED_COMPONENT-01 alongside
-  # NET-SVC-BANNER_DISCLOSURE-01 - report.md's own outdated-component check
+  # NET-SVC-BANNER_DISCLOSURE-01 - the outdated-component check
   # never runs on a listener that was never read for a banner in the first
   # place, so a run where EVERY declared listener is unresolvable or
   # not-open/filtered (open_ct stays 0, so `checks_run` below is never
@@ -336,7 +334,7 @@ _banner_run() {
 
   local not_applicable_ct=$(( notopen_ct + filtered_ct ))
   if (( not_applicable_ct > 0 )); then
-    run_record coverage_reduction "module=network phase=banner.sh reason=net_check_not_applicable checks=[NET-SVC-BANNER_DISCLOSURE-01 NET-SVC-OUTDATED_COMPONENT-01] target=$target count=$not_applicable_ct not_open=$notopen_ct filtered=$filtered_ct - that many declared listener(s) were not open (report.md §5.2 rule 4: 'did not answer in time' and 'refused' are different facts, and neither is read for a banner), so this check was not applicable to them and nothing was read."
+    run_record coverage_reduction "module=network phase=banner.sh reason=net_check_not_applicable checks=[NET-SVC-BANNER_DISCLOSURE-01 NET-SVC-OUTDATED_COMPONENT-01] target=$target count=$not_applicable_ct not_open=$notopen_ct filtered=$filtered_ct - that many declared listener(s) were not open ('did not answer in time' and 'refused' are different facts, and neither is read for a banner), so this check was not applicable to them and nothing was read."
   fi
 
   if (( nobanner_ct > 0 )); then

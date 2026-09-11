@@ -1,10 +1,8 @@
 # modules/image/checks-dpkg.rules - the container-image module's dpkg-
 # specific script-check registry (rules/RULE-FORMAT.md §9's
-# `checks-<name>.rules` row, docs/FOUNDATION.md tension 29;
-# data/scoursh-image-scan-design/report.md §4.1's check-set table and §5.3's
-# IMG-07 row).
+# `checks-<name>.rules` row, docs/FOUNDATION.md tension 29).
 #
-# ONE FILE PER OWNING DRIVER, per report.md §5.1's binding rule (the
+# ONE FILE PER OWNING DRIVER, per the "one registry per owner" binding rule (the
 # cloud-wave `checks.rules` corruption, `c9f0e80`, is the incident that rule
 # exists to prevent) and `modules/image/checks-apk.rules`' own identical
 # precedent: this ticket's OWN file, never an append to `checks-apk.rules` or
@@ -33,7 +31,7 @@
 # advisories, no finding yet"). `distro/dpkg.sh` ships an enumerator and no
 # comparator, and nothing in `modules/image/run.sh` calls it -
 # `var/lib/dpkg/status` is not even in that file's own explicit wanted-path
-# list yet (report.md §5.3's IMG-06 landing note: "var/lib/dpkg/status stays
+# list yet ("var/lib/dpkg/status stays
 # OFF this list - dpkg parsing is IMG-07's scope, not this ticket's"). This
 # is the identical "registered, not yet reachable" shape
 # `modules/image/checks-apk.rules` itself was in from IMG-04 through IMG-05,
@@ -60,7 +58,7 @@
 # `coverage-scope: image-id` - the only legal value for the `IMAGE` module
 # (rules/RULE-FORMAT.md §9.5.1's frozen table); the cell is the
 # operator-declared stable id from `config/images.conf`, never the image
-# digest or tag (report.md §3.4).
+# digest or tag - a rebuild or retag must not reset coverage.
 
 id: IMAGE-PKG-VULNERABLE_OS_PACKAGE-02
 title: Installed dpkg package matches a known advisory for this image's Debian/Ubuntu release
@@ -78,6 +76,5 @@ remediation: Rebuild the image against an updated base layer (or upgrade
   A base-image bump alone can carry this fix silently, so treat a `FROM`
   tag pin as something to review whenever this finding's advisory has a
   fixed-in version at or below the base image's own release.
-references: data/scoursh-image-scan-design/report.md
 references: CWE-1104
 references: https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/
