@@ -56,3 +56,10 @@ data/versions.db
 /node_modules/
 /pnpm-lock.yaml
 /package-lock.json
+
+# Compiled bytecode cache from importing tests/lib/*.py as modules (the
+# docs/build.html command-builder cross-check imports build_page_model.py
+# and scan_flag_model.py rather than only running them as __main__, which is
+# what tests/lib/sarif_validate.py never needed one for). Not a source file
+# in any of the ecosystems SCA already ignores above.
+tests/lib/__pycache__/

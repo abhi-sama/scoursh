@@ -206,6 +206,11 @@ At the languages prompt, press **Enter** to accept the bracketed default and sca
 typing the literal word `all` is rejected (only `py`, `js`, `go`, `java` are valid, singly or
 comma-separated) and re-prompts.
 
+Prefer clicking over typing? [`docs/build.html`](docs/build.html) is a static, offline command builder:
+pick a surface, point it at a path or target, toggle options, and copy the exact command it composes -
+nothing on that page runs anything. `./scan.sh <command> --guided --print-command` is its terminal
+equivalent.
+
 ### 6. Optional specialist engines, for extra depth
 
 ```sh
