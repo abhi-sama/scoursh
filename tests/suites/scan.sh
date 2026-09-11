@@ -65,6 +65,24 @@ ROOT_WITH_SCOPE_AND_MODULES=$(cd -- "$W" && mkdir -p root-with-scope-and-modules
   && cp -R "$ROOT/modules" root-with-scope-and-modules/modules \
   && cd -- root-with-scope-and-modules && pwd -P)
 
+# As $ROOT_WITH_SCOPE_AND_MODULES above, but carrying only sast/sca/iac - the
+# three modules the operator-reported preflight bug is about - and
+# deliberately WITHOUT modules/dast or modules/network, so a "valid --target,
+# does the run really reach dispatch" test can prove a real module actually
+# ran (a genuine modules/sast/rules/*.rules load, real checks_run facts)
+# without ever letting dast/network's own real HTTP layer attempt a
+# connection to the fixture's `https://app.fixture.invalid/` target (an RFC
+# 6761 reserved, deliberately non-resolving domain) - a network attempt this
+# suite has no business making and cannot make deterministic.  cloud/image
+# are left out for the same reason `all`'s own no-op fallback is desirable
+# here, not for any reason specific to them.
+ROOT_WITH_SCOPE_AND_SAST=$(cd -- "$W" && mkdir -p root-with-scope-and-sast/config root-with-scope-and-sast/modules \
+  && cp "$ROOT/tests/fixtures/config/scope.conf" root-with-scope-and-sast/config/scope.conf \
+  && cp -R "$ROOT/modules/sast" root-with-scope-and-sast/modules/sast \
+  && cp -R "$ROOT/modules/sca" root-with-scope-and-sast/modules/sca \
+  && cp -R "$ROOT/modules/iac" root-with-scope-and-sast/modules/iac \
+  && cd -- root-with-scope-and-sast && pwd -P)
+
 ROOT_NO_SCOPE=$W/root-no-scope
 mkdir -p "$ROOT_NO_SCOPE/config"
 
@@ -1114,6 +1132,108 @@ printf '{}' >"$W/real-prior-run/run.json"
 : >"$W/real-prior-run/findings.fields"
 assert_status 0 "report --from a genuine prior run directory (findings.fields and meta/ both present) succeeds" \
   _run_main report --from "$W/real-prior-run" --out "$W/run-report-ok"
+
+# =============================================================================
+printf '\n-- preflight (operator-reported fail-fast bug): every problem knowable before dispatch, caught together --\n'
+# =============================================================================
+# Operator report, 2026-09-11: `scan.sh all --path <repo> --target
+# http://127.0.0.1:3400 ...` scanned sast/sca/iac for 3h03m before dying on a
+# --target typo that was knowable the instant flags were parsed, because
+# `all`'s own case arm called config_scope_require only AFTER sast/sca/iac had
+# already dispatched. $ROOT_WITH_SCOPE_AND_SAST carries real sast/sca/iac
+# modules (deliberately WITHOUT dast/network - see its own definition above
+# for why), so a bug that let sast/sca/iac actually run would leave real,
+# observable evidence behind (meta/checks_run) - this is what tells
+# "preflight refused before anything ran" apart from "an old bug let a module
+# run and then something else happened to still exit 3/4".
+
+t_case 'all --target <bad> fails IMMEDIATELY at exit 3, and NO module ran - the core bug'
+_PF_T0=$SECONDS
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST assert_status 3 \
+  "all --target no-such-target dies exit 3, same as dast/network - fails under the pre-fix ordering, where sast/sca/iac dispatch before the target is ever checked" \
+  _run_main all --path "$ROOT_WITH_SCOPE_AND_SAST" --target no-such-target --out "$W/run-all-badtarget"
+_PF_ELAPSED=$(( SECONDS - _PF_T0 ))
+assert_file_absent "$W/run-all-badtarget/meta/checks_run" \
+  'meta/checks_run was never written - fails if sast, sca or iac actually dispatched and recorded even one check as run before the target gate refused'
+if (( _PF_ELAPSED <= 10 )); then
+  _t_ok "returned in ${_PF_ELAPSED}s, not the hours a real sast/sca/iac walk would need"
+else
+  _t_no 'preflight should refuse in a couple of seconds, never run a real module first' "took ${_PF_ELAPSED}s"
+fi
+
+t_case 'the SAME bad --target under plain dast (single-module, always fast) still refuses at exit 3, unchanged'
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST assert_status 3 \
+  'dast on its own was already fail-fast before this fix and must stay that way' \
+  _run_main dast --target no-such-target --out "$W/run-dast-badtarget-2"
+
+t_case 'a VALID --target under all still dispatches normally - the fix must not refuse a good run'
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST assert_status 0 \
+  'all --target fixture-target (a real scope.conf entry) reaches dispatch and exits 0 - dast/network are absent from this fixture root, so they no-op harmlessly rather than attempting a real connection to the fixture base-url' \
+  _run_main all --path "$ROOT_WITH_SCOPE_AND_SAST" --target fixture-target --out "$W/run-all-goodtarget"
+assert_file_exists "$W/run-all-goodtarget/meta/checks_run" \
+  'this time sast (or sca/iac) really did dispatch and record at least one check as run'
+
+t_case 'all with a bad --baseline file fails immediately too - the identical late-check shape baseline_apply had (called from inside each module, after sast/sca/iac under all)'
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST assert_status 4 \
+  '--baseline pointing nowhere dies exit 4 before any module runs' \
+  _run_main all --path "$ROOT_WITH_SCOPE_AND_SAST" --baseline "$W/does-not-exist-baseline.json" --out "$W/run-all-badbaseline"
+assert_file_absent "$W/run-all-badbaseline/meta/checks_run" \
+  'no module ran for the bad-baseline case either'
+
+t_case 'all --live with no aws CLI on PATH fails immediately - the aws check used to sit after sast/sca/iac and dast/network under all'
+# Excludes only whichever PATH directories hold an `aws` executable, rather
+# than replacing PATH wholesale (e.g. with a bare /usr/bin:/bin) - a blanket
+# restriction also hides sha256sum/grep/rg and every other tool
+# core_require_baseline and the rule-compile probe need, which produces
+# unrelated noise (or a wrong exit code) that has nothing to do with the aws
+# check this case is actually about. Measured, not assumed.
+_PF_PATH_NO_AWS=''
+IFS=':' read -ra _pf_path_dirs <<<"$PATH"
+for _pf_dir in "${_pf_path_dirs[@]}"; do
+  [[ -x "$_pf_dir/aws" ]] && continue
+  _PF_PATH_NO_AWS=${_PF_PATH_NO_AWS:+$_PF_PATH_NO_AWS:}$_pf_dir
+done
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST PATH=$_PF_PATH_NO_AWS assert_status 4 \
+  'cloud --live requires aws, refused up front, with every OTHER tool still reachable' \
+  _run_main all --path "$ROOT_WITH_SCOPE_AND_SAST" --live --out "$W/run-all-badlive"
+assert_file_absent "$W/run-all-badlive/meta/checks_run" \
+  'no module ran for the missing-aws case either'
+
+t_case 'all with a missing --path fails immediately, same as it always has for sast/sca/iac alone'
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST assert_status 4 \
+  '--path pointing nowhere dies exit 4 under all too' \
+  _run_main all --path "$W/does-not-exist-for-all" --out "$W/run-all-badpath"
+assert_file_absent "$W/run-all-badpath/meta/checks_run" \
+  'no module ran for the bad-path case either'
+
+t_case 'MULTIPLE simultaneous faults are ALL reported together in one pass, not one per re-run'
+MULTI_LOG=$W/run-all-multi.log
+_MULTI_RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST scan_main all \
+    --path "$W/does-not-exist-for-multi" \
+    --target no-such-target \
+    --baseline "$W/does-not-exist-baseline-2.json" \
+    --out "$W/run-all-multi" ) >/dev/null 2>"$MULTI_LOG" || _MULTI_RC=$?
+assert_eq 3 "$_MULTI_RC" \
+  'scope beats input in the combined precedence (docs/FOUNDATION.md tension 14 2>3>4>5>1>0), even though a --path and --baseline problem are ALSO present'
+MULTI_MSG=$(cat "$MULTI_LOG")
+assert_contains "$MULTI_MSG" "does-not-exist-for-multi" \
+  'the --path problem is named in the SAME message as the scope problem - fails if only the first problem found is reported'
+assert_contains "$MULTI_MSG" 'no-such-target' \
+  'the --target problem is named too'
+assert_contains "$MULTI_MSG" 'does-not-exist-baseline-2.json' \
+  'and the --baseline problem is named too - all three in one refusal, one round trip'
+assert_file_absent "$W/run-all-multi/meta/checks_run" \
+  'and still, no module ran'
+
+t_case 'an unresolvable --image is a WARNING, not a fatal preflight refusal - the existing, tested, declared-skip design (tests/suites/image.sh) is deliberately left alone'
+# Needs $ROOT_WITH_SCOPE_AND_MODULES specifically (the one fixture root that
+# actually carries modules/image/), or scan_dispatch's own "no run.sh on
+# disk" no-op would make this pass trivially regardless of what preflight
+# does. `image` never touches dast/network, so this is still network-free.
+SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_MODULES assert_status 0 \
+  "image --image nonexistent-id (no config/images.conf entry, no --source) still exits 0 - fails if preflight were widened to refuse this too, which would break tests/suites/image.sh's own 'an --image run completes cleanly and exits 0' case" \
+  _run_main image --image nonexistent-id --out "$W/run-image-warn"
 
 # =============================================================================
 printf '\n-- the config loader runs before scan_dispatch (this ticket''s 3rd acceptance criterion) --\n'

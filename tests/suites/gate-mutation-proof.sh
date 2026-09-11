@@ -169,7 +169,7 @@ assert_ne '' "$(cat "$TLOG_MUT" 2>/dev/null || printf '')" \
 # =============================================================================
 printf '\n-- mutation 2: lib/config.sh, config_scope_require'"'"'s exit-3 die (docs/DESIGN.md §7) --\n'
 # =============================================================================
-CONFIG_OLD=$'    || die "$SCOURSH_EXIT_SCOPE" "--target \'$target\' has no entry in $path"'
+CONFIG_OLD=$'    || die "$SCOURSH_EXIT_SCOPE" "$(_scope_target_not_found_message "$target" "$path")"'
 CONFIG_NEW=$'    || : # MUTATED by gate-mutation-proof.sh: exit-3 scope-violation die removed'
 
 t_case 'mutation 2 guard'

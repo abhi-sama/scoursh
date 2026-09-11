@@ -325,6 +325,24 @@ records_key_is_required() { [[ ${_SCHEMA_REQ["$1|$2"]:-opt} == req ]]; }
 RECORDS_ERRORS=0
 RECORDS_DIAGNOSTICS=()
 
+# A rule pack's own *.rules file is re-parsed many times in one process - once
+# per module dispatch (lib/checks.sh's checks_registry_load, called from
+# _scan_apply_profile_filter) and then again, per module, inside every one of
+# report_all's OWASP/CIS/category/SARIF mapping builders (lib/report.sh) - so
+# under `scan.sh all` a handful of real W-class warnings (W033's
+# context-deny/context-window note, docs/FOUNDATION.md finding F4) were
+# reprinted dozens of times, filling an --verbose log with identical repeated
+# blocks (operator report, 2026-09-11: a real 3h03m run's log was mostly
+# this). This cache is PRINT-ONLY: it never touches RECORDS_DIAGNOSTICS above,
+# which still gets every occurrence on every load, unchanged, because
+# tests/lint-rules.sh reads that array directly and a reload genuinely is a
+# distinct parse to it. It only suppresses the SECOND and later stderr print
+# of the identical message (same path:line:col:code:id:text) within one
+# process, so an operator sees each real warning once, not once per reload -
+# never once per DIFFERENT warning, and never anything error-class, which is
+# never gated by SCOURSH_SHOW_RULE_WARNINGS at all.
+declare -gA _RECORDS_W_PRINTED=()
+
 records_diag() {
   local path=$1 line=$2 col=$3 code=$4 id=$5
   shift 5
@@ -339,9 +357,13 @@ records_diag() {
     # stderr, sees every one regardless), but only PRINTED here when
     # SCOURSH_SHOW_RULE_WARNINGS is set - scan.sh's --verbose flag - so a
     # normal scan run isn't opened with a wall of warnings nobody scanning
-    # their own code can act on.
+    # their own code can act on. And even then, printed at most once per
+    # process per distinct message - see _RECORDS_W_PRINTED's own comment
+    # above.
     W*)
       [[ ${SCOURSH_SHOW_RULE_WARNINGS:-} == true ]] || return 0
+      [[ -z ${_RECORDS_W_PRINTED["$msg"]:-} ]] || return 0
+      _RECORDS_W_PRINTED["$msg"]=1
       ;;
     *) RECORDS_ERRORS=$(( RECORDS_ERRORS + 1 )) ;;
   esac

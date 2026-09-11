@@ -479,8 +479,38 @@ config_scope_require() {
   [[ -e $path ]] || die "$SCOURSH_EXIT_INPUT" "a --target-scoped command requires $path, and it does not exist"
   config_scope_load "$path"
   records_index_of_id scope "$target" >/dev/null \
-    || die "$SCOURSH_EXIT_SCOPE" "--target '$target' has no entry in $path"
+    || die "$SCOURSH_EXIT_SCOPE" "$(_scope_target_not_found_message "$target" "$path")"
   return 0
+}
+
+# `_scope_target_not_found_message TARGET PATH` - the teaching half of
+# config_scope_require's exit-3 refusal. --target takes a config/scope.conf
+# id (docs/FOUNDATION.md tension 5: "the config/scope.conf id, not the
+# URL"), and passing a URL there - the obvious mistake, and the one an
+# operator actually made - reads as an inscrutable "no entry" refusal with
+# no clue what was expected instead. This: (a) states --target wants a
+# scope.conf id, not a URL; (b) when TARGET itself looks like a URL or
+# host:port, says so and points at the base-url: field it probably belongs
+# in; (c) lists the ids config_scope_load just populated (or says the file
+# is empty/has none), so the operator sees valid choices without opening
+# the file. Pure - never dies - so the actual die() call above stays one
+# mutation-testable line (tests/suites/gate-mutation-proof.sh mutation 2).
+_scope_target_not_found_message() {
+  local target=$1 path=$2 n i id ids='' url_hint=''
+  if [[ $target =~ ^[A-Za-z][A-Za-z0-9+.-]*:// || $target =~ ^[^[:space:]/]+:[0-9]+/?$ ]]; then
+    url_hint=" '$target' looks like a URL or host:port - --target wants the ID a target is declared UNDER in $path, not its base-url value; check that target's own base-url: field."
+  fi
+  n=$(records_count scope)
+  if (( n == 0 )); then
+    ids="$path declares no targets (it is empty, or has no scope-target records)."
+  else
+    for (( i = 0; i < n; i++ )); do
+      id=$(records_id scope "$i")
+      ids=${ids:+$ids, }$id
+    done
+    ids="declared target ids in $path: $ids"
+  fi
+  printf '%s' "--target '$target' has no entry in $path.$url_hint $ids"
 }
 
 # Convenience accessor for a field of an already-loaded/required target.
