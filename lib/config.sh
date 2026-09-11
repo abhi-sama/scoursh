@@ -488,6 +488,16 @@ config_scope_require() {
   return 0
 }
 
+# `_scope_looks_like_url_or_hostport VALUE` - the shape test
+# `_scope_target_not_found_message` and `config_scope_resolve_target` both
+# need (the message to word its hint, the resolver to skip a plain id with
+# no file read at all), factored out so the two can never drift onto two
+# different ideas of "looks like a URL".
+_scope_looks_like_url_or_hostport() {
+  local value=$1
+  [[ $value =~ ^[A-Za-z][A-Za-z0-9+.-]*:// || $value =~ ^[^[:space:]/]+:[0-9]+/?$ ]]
+}
+
 # `_scope_target_not_found_message TARGET PATH` - the teaching half of
 # config_scope_require's exit-3 refusal. --target takes a config/scope.conf
 # id (docs/FOUNDATION.md tension 5: "the config/scope.conf id, not the
@@ -500,9 +510,14 @@ config_scope_require() {
 # is empty/has none), so the operator sees valid choices without opening
 # the file. Pure - never dies - so the actual die() call above stays one
 # mutation-testable line (tests/suites/gate-mutation-proof.sh mutation 2).
+# Unchanged by the base-url resolution below: this fires only once
+# `config_scope_resolve_target` has already had its chance and found no
+# usable match (config_scope_resolve_target is tried first - see
+# scan.sh's `_scan_resolve_target_flags`, which is what actually resolves a
+# base-url before this message would ever be composed for it).
 _scope_target_not_found_message() {
   local target=$1 path=$2 n i id ids='' url_hint=''
-  if [[ $target =~ ^[A-Za-z][A-Za-z0-9+.-]*:// || $target =~ ^[^[:space:]/]+:[0-9]+/?$ ]]; then
+  if _scope_looks_like_url_or_hostport "$target"; then
     url_hint=" '$target' looks like a URL or host:port - --target wants the ID a target is declared UNDER in $path, not its base-url value; check that target's own base-url: field."
   fi
   n=$(records_count scope)
@@ -516,6 +531,196 @@ _scope_target_not_found_message() {
     ids="declared target ids in $path: $ids"
   fi
   printf '%s' "--target '$target' has no entry in $path.$url_hint $ids"
+}
+
+# `_scope_default_port SCHEME` - http(s)'s two well-known ports; the empty
+# string for anything else, which never occurs here since every caller below
+# has already rejected a non-http(s) scheme.
+_scope_default_port() {
+  case $1 in
+    https) printf '443' ;;
+    http) printf '80' ;;
+  esac
+}
+
+# `_scope_parse_authority VALUE` - a minimal, deliberately conservative
+# `scheme://host[:port][/path]` or bare `host:port` splitter for
+# `config_scope_resolve_target`'s own best-effort matching below. This is
+# NOT lib/http.sh's `http_url_normalize` and must never become a second copy
+# of it: that function additionally percent-decodes the authority, strips
+# userinfo, and canonicalises a numeric host, all in service of the SCOPE
+# GATE's own authorisation question; lib/config.sh is a strictly lower
+# dependency (lib/http.sh sources this file, never the reverse - see
+# lib/http.sh's own `http_scope_load` header), so it cannot call into it
+# even if that were desirable. A value hostile enough to need any of that
+# already fails to parse here and correctly resolves nothing - "when in
+# doubt, no match" is exactly the ticket's own rule.
+#
+# Sets _SCOPE_AUTH_SCHEME (lowercased; empty for the bare host:port form,
+# which carries no scheme opinion at all), _SCOPE_AUTH_HOST (lowercased),
+# and _SCOPE_AUTH_PORT (empty when the scheme form named no port - the
+# caller fills in that scheme's own default). Any path/query/fragment on the
+# scheme form is discarded outright, which is also what makes a trailing
+# slash a non-issue for the caller's compare. Returns 1 for anything that is
+# not one of the two shapes, or whose scheme is not http/https.
+_scope_parse_authority() {
+  local value=$1 scheme='' authority host port
+  if [[ $value =~ ^([A-Za-z][A-Za-z0-9+.-]*):// ]]; then
+    scheme=${BASH_REMATCH[1],,}
+    case $scheme in
+      http | https) ;;
+      *) return 1 ;;
+    esac
+    authority=${value#*://}
+    authority=${authority%%[/?#]*}
+  elif [[ $value =~ ^([^[:space:]/]+):([0-9]+)/?$ ]]; then
+    authority=${BASH_REMATCH[1]}:${BASH_REMATCH[2]}
+  else
+    return 1
+  fi
+  [[ -n $authority ]] || return 1
+  if [[ $authority =~ ^([^:]+):([0-9]+)$ ]]; then
+    host=${BASH_REMATCH[1]}
+    port=${BASH_REMATCH[2]}
+  else
+    host=$authority
+    port=''
+  fi
+  [[ -n $host ]] || return 1
+  _SCOPE_AUTH_SCHEME=$scheme
+  _SCOPE_AUTH_HOST=${host,,}
+  _SCOPE_AUTH_PORT=$port
+  return 0
+}
+
+# `_scope_parse_hostport VALUE` - extra-host's own frozen shape, `host[:port]`
+# with no scheme at all (rules/RULE-FORMAT.md §9.4). Sets _SCOPE_HP_HOST
+# (lowercased) and _SCOPE_HP_PORT (empty when VALUE named none).
+_scope_parse_hostport() {
+  local value=$1 host port
+  [[ -n $value ]] || return 1
+  if [[ $value =~ ^([^:]+):([0-9]+)$ ]]; then
+    host=${BASH_REMATCH[1]}
+    port=${BASH_REMATCH[2]}
+  else
+    host=$value
+    port=''
+  fi
+  [[ -n $host ]] || return 1
+  _SCOPE_HP_HOST=${host,,}
+  _SCOPE_HP_PORT=$port
+  return 0
+}
+
+# `_scope_authority_eq WANT_SCHEME WANT_HOST WANT_PORT CAND_SCHEME CAND_HOST
+# CAND_PORT` - the conservative identity compare config_scope_resolve_target
+# uses. A non-empty WANT_SCHEME must equal CAND_SCHEME exactly: unlike
+# lib/http.sh's `http_scope_match`, there is no "http on port 80 authorises
+# an https target" relaxation here, because that relaxation answers a scope
+# GATE question ("may this request reach that target") and this answers an
+# IDENTITY question ("did the operator name that target") - conflating the
+# two would resolve a plaintext --target onto an https-only declaration,
+# silently, which is exactly the silent substitution this feature must never
+# do. Hosts compare already-lowercased-equal. An empty WANT_PORT (the scheme
+# form named none) falls back to WANT_SCHEME's own default port; the bare
+# host:port form always carries an explicit port already
+# (`_scope_parse_authority` guarantees it), so an empty WANT_SCHEME with an
+# empty WANT_PORT cannot occur and never matches.
+_scope_authority_eq() {
+  local want_scheme=$1 want_host=$2 want_port=$3
+  local cand_scheme=$4 cand_host=$5 cand_port=$6
+  if [[ -n $want_scheme && $want_scheme != "$cand_scheme" ]]; then
+    return 1
+  fi
+  [[ $want_host == "$cand_host" ]] || return 1
+  if [[ -z $want_port ]]; then
+    [[ -n $want_scheme ]] || return 1
+    want_port=$(_scope_default_port "$want_scheme")
+  fi
+  [[ $want_port == "$cand_port" ]]
+}
+
+# `config_scope_resolve_target TARGET [PATH]` - the base-url/extra-host
+# resolution half of the "--target wants an id, not a URL" UX fix: an
+# operator hit that literal refusal three separate times while the tool was
+# already holding the answer - config/scope.conf's own declared base-url
+# values are loaded by the very code path that refuses, and never consulted.
+# When TARGET is not a declared id but IS shaped like a URL or host:port
+# (`_scope_looks_like_url_or_hostport`, the identical test the refusal
+# message already uses for its hint), and config/scope.conf is present,
+# checks TARGET against every declared target's own base-url and extra-host
+# fields, normalising a trailing slash, an explicit vs. default port, and
+# host case away first exactly as `_scope_authority_eq`/`_scope_parse_authority`
+# describe.
+#
+# Prints the resolved id and returns 0 on exactly one match. Returns 1 with
+# nothing printed when TARGET does not look URL-shaped, is already a
+# declared id, config/scope.conf is absent, or nothing matches - every one of
+# those leaves the caller's existing "no entry" refusal (`config_scope_require`
+# / `_scope_target_not_found_message`, both unchanged) to fire exactly as
+# before this function existed. Returns 2 and prints a comma-joined,
+# LC_ALL=C-sorted, de-duplicated candidate id list when more than one target
+# matches: ambiguity is refused, never guessed.
+#
+# Can die() (via config_scope_load -> config_load_if_present, on a
+# genuinely malformed config/scope.conf) exactly as config_scope_require
+# itself can; callers must invoke it directly, never through $(...) alone,
+# for the identical subshell-swallows-die() reason documented on
+# config_scope_require's own header above.
+config_scope_resolve_target() {
+  local target=$1 path=${2:-$SCOURSH_INSTALL_ROOT/config/scope.conf}
+  _scope_looks_like_url_or_hostport "$target" || return 1
+  [[ -e $path ]] || return 1
+  config_scope_load "$path" || return 1
+  records_index_of_id scope "$target" >/dev/null 2>&1 && return 1
+
+  _scope_parse_authority "$target" || return 1
+  local want_scheme=$_SCOPE_AUTH_SCHEME want_host=$_SCOPE_AUTH_HOST want_port=$_SCOPE_AUTH_PORT
+
+  local n i id base_url base_scheme base_host base_port extra extra_port matched
+  local -a matches=()
+  n=$(records_count scope)
+  for (( i = 0; i < n; i++ )); do
+    id=$(records_id scope "$i")
+    base_url=$(records_field scope "$i" base-url)
+    _scope_parse_authority "$base_url" || continue
+    base_scheme=$_SCOPE_AUTH_SCHEME base_host=$_SCOPE_AUTH_HOST base_port=$_SCOPE_AUTH_PORT
+    [[ -n $base_scheme ]] || continue
+    [[ -n $base_port ]] || base_port=$(_scope_default_port "$base_scheme")
+
+    matched=false
+    if _scope_authority_eq "$want_scheme" "$want_host" "$want_port" "$base_scheme" "$base_host" "$base_port"; then
+      matched=true
+    else
+      while IFS= read -r extra; do
+        [[ -n $extra ]] || continue
+        _scope_parse_hostport "$extra" || continue
+        extra_port=$_SCOPE_HP_PORT
+        [[ -n $extra_port ]] || extra_port=$(_scope_default_port "$base_scheme")
+        if _scope_authority_eq "$want_scheme" "$want_host" "$want_port" "$base_scheme" "$_SCOPE_HP_HOST" "$extra_port"; then
+          matched=true
+          break
+        fi
+      done <<<"$(records_list scope "$i" extra-host)"
+    fi
+    $matched && matches+=("$id")
+  done
+
+  local -a uniq=()
+  if (( ${#matches[@]} > 0 )); then
+    mapfile -t uniq < <(printf '%s\n' "${matches[@]}" | LC_ALL=C sort -u)
+  fi
+
+  case ${#uniq[@]} in
+    0) return 1 ;;
+    1) printf '%s' "${uniq[0]}"; return 0 ;;
+    *)
+      local joined
+      joined=$(IFS=,; echo "${uniq[*]}")
+      printf '%s' "$joined"
+      return 2
+      ;;
+  esac
 }
 
 # Convenience accessor for a field of an already-loaded/required target.

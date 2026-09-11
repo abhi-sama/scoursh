@@ -1018,14 +1018,77 @@ scan_parse_args() {
   # flag check evaluated here, before a guided pass had any chance to fill a
   # gap, would not have needed and would not have honoured.
   #
+  # `_scan_resolve_target_flags` runs FIRST, so a --target/--i-own-target
+  # given as a declared target's own base-url is already its canonical id by
+  # the time `_scan_check_affirmation` compares the two flags below, and by
+  # the time every later reader (config_scope_require, run_record targets,
+  # every module's own direct SCAN_FLAGS[target] read) sees it - one
+  # resolution, at the earliest point both flags exist together, rather than
+  # a control each of those callers would otherwise have to remember apply
+  # itself (tension 19's own argument, applied here too).
+  #
   # `_scan_check_affirmation` is NOT part of that moved block and stays
   # called from here, unchanged: its rules (docs/STEP5-DAST-PLAN.md DAST-32)
   # read whatever combination of `--i-own-target`/`--target`/`--intensity`/
   # `--allow-intrusive` was ACTUALLY typed and are already correct when none
   # of them were - see that function's own comment - so a guided pass filling
   # them in later changes what it reads, never what it checks.
+  _scan_resolve_target_flags
   _scan_check_affirmation
   _scan_check_discovery_flags
+}
+
+# -----------------------------------------------------------------------------
+# 3z. --target/--i-own-target base-url resolution (UX fix: an operator hit
+#     config_scope_require's "wants the ID, not the base-url" refusal three
+#     separate times with the tool already holding the answer - see
+#     lib/config.sh's `config_scope_resolve_target`, the actual matching
+#     engine this wraps). Called from the tail of scan_parse_args, above,
+#     BEFORE `_scan_check_affirmation`, so that function's own literal
+#     `$affirm != $target` compare needs no change at all: by the time it
+#     runs, a URL in one flag and its target's own id in the other are
+#     already the identical string.
+#
+#     Reads config/scope.conf when (and only when) a flag's value is shaped
+#     like a URL or host:port (`config_scope_resolve_target`'s own fast-path
+#     gate) - an ordinary id round-trips with no file touched at all, and a
+#     typo'd id is left exactly as typed, so its existing refusal downstream
+#     (config_scope_require / the preflight gate, both unchanged) still
+#     fires with the same message it always has. A value that resolves to
+#     MORE THAN ONE declared target dies HERE, immediately, naming every
+#     candidate: guessing among them is the exact silent substitution this
+#     feature must never do, and refusing early means nothing downstream
+#     ever acts on an unresolved, ambiguous value.
+# -----------------------------------------------------------------------------
+_scan_resolve_target_flags() {
+  local flag value path=$SCOURSH_INSTALL_ROOT/config/scope.conf
+  local __tmp resolved rc
+  for flag in target i-own-target; do
+    value=${SCAN_FLAGS[$flag]:-}
+    [[ -n $value ]] || continue
+
+    # Never through $(...): config_scope_resolve_target can die() (a
+    # genuinely malformed config/scope.conf), and a subshell would swallow
+    # that die's exit silently - the identical hazard _scan_capture's own
+    # header documents, worked around the same way: a plain redirection,
+    # never a command substitution, around the call that might die.
+    __tmp=$SCOURSH_SCRATCH/_scan_resolve_target.$$
+    rc=0
+    config_scope_resolve_target "$value" "$path" >"$__tmp" || rc=$?
+    resolved=$(<"$__tmp")
+    rm -f "$__tmp"
+
+    case $rc in
+      0)
+        log_info "--$flag '$value' resolved to declared target id '$resolved' (its base-url)"
+        SCAN_FLAGS[$flag]=$resolved
+        ;;
+      2)
+        die "$SCOURSH_EXIT_SCOPE" "--$flag '$value' matches more than one declared target's base-url/extra-host in $path: $resolved - refusing to guess which one; re-run with that target's own id instead."
+        ;;
+      *) ;; # no match (or nothing to resolve) - leave it as typed
+    esac
+  done
 }
 
 # -----------------------------------------------------------------------------

@@ -240,7 +240,7 @@ var FIELD_DEFS = {
   path: {kind:"text", label:"--path", placeholder:"DIR", help:"Directory to scan. Default: the git toplevel of the resolved path, else the current directory."},
   lang: {kind:"text", label:"--lang", placeholder:"py,js,go,java", help:"Restrict SAST rule packs to these languages, comma-separated. Default: all four."},
   history: {kind:"bool", label:"--history", help:"Also replay modules/sast/rules/secrets.rules across git history, bounded by a commit/time window."},
-  target: {kind:"text", label:"--target", placeholder:"name-from-scope", help:"Must already be declared in config/scope.conf's base-url/extra-host entries."},
+  target: {kind:"text", label:"--target", placeholder:"name-from-scope", help:"The id a target is declared UNDER in config/scope.conf - or that target's own base-url/extra-host value, which scan.sh resolves to the id on exactly one match."},
   intensity: {kind:"select", label:"--intensity", choices:["passive","safe","active"], defaultNote:"default: passive", help:"active (and --allow-intrusive) each require --i-own-target."},
   authed: {kind:"bool", label:"--authed", help:"Use the identities configured in config/auth.conf."},
   "i-own-target": {kind:"text", label:"--i-own-target", placeholder:"same name as --target", help:"Required to raise --intensity above passive, or to combine with --allow-intrusive. Must equal --target exactly."},
@@ -357,10 +357,22 @@ var FIELD_VALIDATORS = {};
       var t = v.trim();
       var looksOff = URL_SCHEME_RE.test(t) || HOST_PORT_RE.test(t) || t.charAt(0) === "/" || /\s/.test(v);
       if (!looksOff) { return null; }
-      // Wording mirrors _scope_target_not_found_message (lib/config.sh) so
-      // the browser hint and the CLI's own exit-3 refusal agree.
+      // Wording mirrors config_scope_resolve_target/_scope_target_not_found_message
+      // (lib/config.sh) so the browser hint and the CLI's own behaviour
+      // agree, and tests/lint-docs-build.sh cross-checks the shared
+      // fragment below against lib/config.sh's own wording so the two
+      // cannot silently drift apart again: scan.sh now RESOLVES a
+      // --target/--i-own-target value shaped like this against every
+      // declared target's own base-url/extra-host and, on exactly one
+      // match, substitutes that target's id and prints which one it chose -
+      // it no longer refuses outright the moment the shape looks like a
+      // URL. This page cannot perform that lookup itself (it never reads
+      // config/scope.conf), so it can only say the value is ACCEPTED and
+      // will be resolved at run time; scan.sh still refuses it if no
+      // declared target's base-url/extra-host matches, or if more than one
+      // does.
       return "'" + t + "' looks like a URL or host:port - --" + flagName +
-        " wants the ID a target is declared UNDER in config/scope.conf, not its base-url value; check that target's own base-url: field.";
+        " wants the ID a target is declared UNDER in config/scope.conf, but scan.sh will also accept this and try to resolve it against a declared target's own base-url/extra-host, substituting that target's id (and printing which one it chose) on exactly one match. It still refuses if no declared target matches, or if more than one does.";
     };
   }
 
@@ -590,9 +602,9 @@ var STATIC_NOTES = {
   sast: [],
   sca: [{kind: "info", text: "Needs data/advisories.db - build it once (a networked, off-scan-time step) with tools/vendor-engines.sh advisories bulk --all. Without it, sca records why it could not look rather than a false all-clear."}],
   iac: [],
-  dast: [{kind: "info", text: "--target must already be declared in config/scope.conf (base-url / extra-host). --authed additionally needs config/auth.conf's identities."}],
+  dast: [{kind: "info", text: "--target takes a config/scope.conf id, or that target's own base-url/extra-host value (scan.sh resolves it to the id on exactly one match). --authed additionally needs config/auth.conf's identities."}],
   cloud: [{kind: "info", text: "Needs resolvable AWS credentials (profile, environment, or instance role). Every call is read-only, enforced by lib/awscli.sh's aws_ro chokepoint. Without --live, no AWS API call is made at all."}],
-  network: [{kind: "info", text: "--target must already be declared in config/scope.conf (base-url / extra-host)."}],
+  network: [{kind: "info", text: "--target takes a config/scope.conf id, or that target's own base-url/extra-host value (scan.sh resolves it to the id on exactly one match)."}],
   image: [{kind: "info", text: "--image must name an id record in config/images.conf pointing at a docker-save tarball or an OCI layout directory - or pass --source to point at one directly for this run."}],
   all: [{kind: "info", text: "Runs every module whose inputs are configured above; a module with nothing configured is skipped with a recorded coverage_reduction, not silently dropped."}],
   diff: [],
