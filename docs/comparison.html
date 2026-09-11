@@ -302,7 +302,7 @@
   <li><strong>Persistent state and diff</strong> — findings classify as <code>new</code> / <code>recurring</code> / <code>fixed</code> / <code>unknown</code> against the prior run, with baseline suppression and a real <code>--fail-on-new</code> CI carve-out.</li>
   <li><strong>Optional engine adapters</strong> — semgrep and gitleaks for SAST, <code>trivy config</code> for IaC, all opt-in and vendored ahead of time. Nothing is fetched during a scan.</li>
   <li><strong>Guided mode</strong> — a bare <code>scan.sh</code> walks you through composing a real command and can print the exact non-interactive equivalent.</li>
-  <li><strong>Test rigour</strong> — 81 suites and 6 linters; 47% of the codebase is tests.</li>
+  <li><strong>Test rigour</strong> — <code>tests/run-tests.sh --list</code> is the source of truth for the current suite/linter count (141 suites, 7 linters as of this writing); 47% of the codebase is tests.</li>
 </ul>
 
 <!-- ============ LIMITS ============ -->
@@ -959,7 +959,7 @@
   seventh; on provider-specific token shapes the ordering reverses.</em>
 </p>
 <p>
-  The SCA leg (<code>sca-lockfiles-26</code>) also confirms the scout report&rsquo;s parity prediction
+  The SCA leg (<code>sca-lockfiles-26</code>) also confirms the predicted parity
   for two of three ecosystems it covers: scoursh matches Grype/OSV-Scanner/Trivy at 100%
   strict-identity recall on npm (6/6) and PyPI (4/4), with zero false positives across all 26 cases in
   every category. It misses all 3 Go cases (aggregate recall 10/13, J +0.769 against the other

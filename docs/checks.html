@@ -75,14 +75,17 @@
 <div class="wrap">
 <header>
   <h1>What scoursh detects</h1>
-  <p class="sub">The full built-in check catalogue on the <code>dev</code> branch, grouped by scan surface and by what each check needs to run. Roughly 300 checks ship in the box.</p>
+  <p class="sub">The full built-in check catalogue on the <code>dev</code> branch, grouped by scan surface and by what each check needs to run. 319 checks ship in the box (53 SAST + 36 IaC + 92 DAST + 15 network + 11 container-image + 112 Cloud/AWS; SCA is a table lookup across 6 ecosystems, not counted as checks).</p>
 </header>
 
 <div class="headline">
-  <b>Almost everything runs with no external data.</b> Point scoursh at source code (<code>--path</code>) or a
-  live app (<code>--target</code>) and every SAST, IaC, and DAST check below works immediately &mdash; no database,
-  no downloads, no network. <b>Dependency-CVE scanning (SCA)</b> and one banner check need the vendored
-  advisory database; <b>Cloud/AWS (CSPM)</b> needs resolvable AWS credentials.
+  <b>Almost everything runs with no external data.</b> Point scoursh at source code (<code>--path</code>), a
+  live app (<code>--target</code>), or an authorized listener set (<code>--target</code>, network) and every SAST,
+  IaC, DAST, and network check below works immediately &mdash; no database, no downloads, no network of scoursh's
+  own choosing. <b>Dependency-CVE scanning (SCA)</b>, most of <b>container-image scanning</b> (the three
+  <code>IMAGE-CFG-*</code> config-blob checks need only a supplied image, no database), and three banner-version
+  checks (one DAST, two network) need the vendored advisory database; <b>Cloud/AWS (CSPM)</b> needs resolvable
+  AWS credentials.
 </div>
 
 <div class="counts">
@@ -91,7 +94,9 @@
   <div class="count"><b>46</b><span>DAST passive</span></div>
   <div class="count"><b>34</b><span>DAST active</span></div>
   <div class="count"><b>12</b><span>DAST authz/JWT/rate/GraphQL</span></div>
+  <div class="count"><b>15</b><span>Network/host checks</span></div>
   <div class="count"><b>6</b><span>SCA ecosystems</span></div>
+  <div class="count"><b>11</b><span>Container-image checks</span></div>
   <div class="count"><b>112</b><span>Cloud/AWS checks (30 services)</span></div>
 </div>
 
@@ -276,6 +281,31 @@ need two authenticated identities (<code>requires-identities: 2</code>, <code>co
 <tr><td class="id">DAST-GQL-INTROSPECTION-01</td><td>GraphQL introspection is enabled and returns the full schema</td><td class="cwe">CWE-200</td></tr>
 </tbody></table></div>
 
+<h2>Network / host <span class="tag t-green">no external data</span></h2>
+<p>Service-posture scanning over an operator-declared listener set. Runs on <code>./scan.sh network --target NAME</code>,
+where <code>NAME</code> names a <code>config/scope.conf</code> target whose <code>base-url</code> and <code>extra-host</code>
+entries declare the host:port tuples authorized for this scan. This is deliberately <b>not</b> a port scanner or
+host-discovery tool: a port the operator did not declare is never probed, gated by the identical
+<code>lib/http.sh</code> scope chokepoint and ceilings <code>dast</code> uses. OS patch-level inference and UDP are
+stated v1 exclusions, not oversights.</p>
+<div class="tblwrap"><table>
+<thead><tr><th>Check</th><th>Catches</th></tr></thead><tbody>
+<tr><td class="id">NET-PORT-DECLARED_NOT_ANSWERING-01</td><td>A declared listener did not accept a TCP connection during this run</td></tr>
+<tr><td class="id">NET-PORT-UNEXPECTED_LISTENER-01</td><td>A declared listener answers on a port an operator-supplied <code>config/posture.conf</code> expectation names as should-be-closed</td></tr>
+<tr><td class="id">NET-SVC-BANNER_DISCLOSURE-01</td><td>Service greeting discloses a product name and/or version unprompted on connect (zero bytes sent)</td></tr>
+<tr><td class="id" style="color:var(--blue)">NET-SVC-OUTDATED_COMPONENT-01 <span class="tag t-blue">advisory DB</span></td><td>Banner-disclosed version matched exactly against the vendored known-vulnerable list</td></tr>
+<tr><td class="id">NET-TLS-* (6)</td><td>TLS on a non-<code>base-url</code> listener: weak protocol/cipher, expired/expiring/self-signed certificate, unexpected wildcard cert</td></tr>
+<tr><td class="id">NET-SVC-HTTP_SERVER_DISCLOSURE-01 / HTTP_VERSION_DISCLOSURE-01</td><td>Server/framework or component version disclosed by an HTTP response on a non-standard port</td></tr>
+<tr><td class="id" style="color:var(--blue)">NET-SVC-HTTP_OUTDATED_COMPONENT-01 <span class="tag t-blue">advisory DB</span></td><td>HTTP-disclosed component version on a non-standard port matched exactly against the vendored known-vulnerable list</td></tr>
+<tr><td class="id">NET-TRANSPORT-PLAINTEXT_SERVICE-01</td><td>Service answers in the clear on a port whose protocol has a standard encrypted variant</td></tr>
+<tr><td class="id">NET-TRANSPORT-STARTTLS_NOT_REQUIRED-01</td><td>Listener advertises STARTTLS but does not appear to require it</td></tr>
+</tbody></table></div>
+<p>Both <code>*OUTDATED_COMPONENT*</code> checks are <code>confidence: medium</code>, never <code>high</code>: the
+version came from what the service volunteered on connect, and a distribution that backports a security fix keeps
+the upstream version string unchanged, so an exact-match lookup can name an already-patched host as vulnerable.
+This is a table lookup against <code>data/versions.db</code>'s <code>banner</code> namespace, never range
+arithmetic &mdash; the identical <code>DAST-BANNER-OUTDATED_COMPONENT-01</code> convention above, one port over.</p>
+
 <h2>SCA &mdash; dependency CVEs <span class="tag t-blue">advisory DB</span></h2>
 <p>Known-vulnerable dependencies from your lockfiles. This is the one surface that needs the vendored
 <code>data/advisories.db</code> (built with <code>tools/vendor-engines.sh advisories bulk --all</code>); without it,
@@ -287,9 +317,48 @@ SCA reports that no advisory data was available rather than a false all-clear.</
 <tr><td class="id">SCA-JAVA-VULNERABLE_DEP-01</td><td>Maven</td></tr>
 <tr><td class="id">SCA-RUBY-VULNERABLE_DEP-01</td><td>RubyGems</td></tr>
 <tr><td class="id">SCA-PHP-VULNERABLE_DEP-01</td><td>Composer</td></tr>
-<tr><td class="id">SCA-GO (Go modules)</td><td>Go</td></tr>
+<tr><td class="id">SCA-GO-VULNERABLE_DEP-01</td><td>Go modules</td></tr>
 <tr><td class="id">SCA-COV-NO_ADVISORY_DB-01 / UNKNOWN_VERSION-01</td><td>Honest coverage notes when data is missing</td></tr>
 </tbody></table></div>
+
+<h2>Container image <span class="tag t-blue">advisory DB</span></h2>
+<p>Offline installed-package enumeration and CVE matching against a <b>built</b> container image &mdash; never a
+registry pull. Runs on <code>./scan.sh image --image ID</code> (optionally <code>--source PATH</code> to override
+the path <code>config/images.conf</code> records for that id), where <code>ID</code> names an <code>id</code>
+record in <code>config/images.conf</code> pointing at a <code>docker save</code> tarball
+(<code>source: docker-archive</code>) or an OCI image-layout directory (<code>source: oci-layout</code>) the
+operator has already exported. <code>tar</code> is the only new binary this needs; rpm additionally needs
+<code>sqlite3</code> on <code>PATH</code> (its package database is a binary format text tools can't read &mdash;
+<code>requires-cmd: sqlite3</code>, a declared coverage reduction rather than a silent skip when absent). This is
+the <b>built-artifact</b> counterpart to <code>modules/iac/dockerfile.rules</code>: the Dockerfile check reads what
+was <i>written</i>, this reads what actually <i>shipped</i> &mdash; the base image's own packages, drift between a
+digest-pinned Dockerfile and a months-old build, and the effective runtime user across every merged layer, none of
+which source linting can see.</p>
+<div class="tblwrap"><table>
+<thead><tr><th>Check</th><th>Catches</th></tr></thead><tbody>
+<tr><td class="id">IMAGE-PKG-VULNERABLE_OS_PACKAGE-01</td><td>Installed apk package matches a known advisory for the image's Alpine release</td></tr>
+<tr><td class="id">IMAGE-PKG-VULNERABLE_OS_PACKAGE-02</td><td>Installed dpkg package matches a known advisory for the image's Debian/Ubuntu release (resolved against the <code>Source:</code> package where one is declared)</td></tr>
+<tr><td class="id">IMAGE-PKG-VULNERABLE_OS_PACKAGE-03 (needs <code>sqlite3</code> on <code>PATH</code>)</td><td>Installed rpm package matches a known advisory for the image's RHEL/Fedora release</td></tr>
+<tr><td class="id">IMAGE-LANGDEP-VULNERABLE_DEP-01</td><td>A language dependency (npm/RubyGems/Composer/PyPI/Maven/Go) found at a bounded set of conventional manifest locations inside the image's own rootfs matches a known advisory &mdash; reuses <code>sca</code>'s own tree-walkers, re-emitted under this id and the image's own <code>image-id</code> cell rather than <code>module=sca</code></td></tr>
+<tr><td class="id">IMAGE-CFG-RUNS_AS_ROOT-01</td><td>Image config declares no non-root <code>User</code> &mdash; the <i>effective</i> runtime user across every merged base layer, not one Dockerfile's own <code>USER</code> line</td></tr>
+<tr><td class="id">IMAGE-CFG-EXPOSED_PORTS-01</td><td>Image config declares one or more exposed ports (informational)</td></tr>
+<tr><td class="id">IMAGE-CFG-MUTABLE_BASE_REF-01</td><td>Image's own recorded base-image reference is a mutable tag rather than a content digest</td></tr>
+<tr><td class="id">IMAGE-COV-NO_ADVISORY_DB-01</td><td>No advisory rows for this image's distro release &mdash; nothing was matched (exit 4 when <code>image</code> is the selected command)</td></tr>
+<tr><td class="id">IMAGE-COV-UNKNOWN_DISTRO-01</td><td>No recognised package database (apk/dpkg/rpm) found in any layer &mdash; e.g. a distroless/scratch image</td></tr>
+<tr><td class="id">IMAGE-COV-LAYER_UNREADABLE-01</td><td>One or more layers or archive members could not be read</td></tr>
+<tr><td class="id">IMAGE-COV-LANGDEPS_NOT_SCANNED-01</td><td>Language-dependency scanning found no manifest at any declared candidate location, or no advisory data</td></tr>
+</tbody></table></div>
+<p>Every <code>VULNERABLE_OS_PACKAGE</code>/<code>VULNERABLE_DEP</code> finding needs a real, differential-tested
+version comparator per package manager (<code>modules/sca/semver.sh</code> is npm-only by measured decision &mdash;
+it mismatches 7 of 12 real OS version pairs, including a false negative &mdash; so apk/dpkg/rpm each ship their
+own). <code>distro_release_unknown</code> (no <code>/etc/os-release</code>) is its own declared reduction, never a
+silent guess at "latest": Alpine advisories are keyed per release, and guessing produces false negatives on older
+images.</p>
+<p>Also seeded: <code>COMPOSITE-IMAGE-EFFECTIVE_ROOT</code> and three <code>COMPOSITE-IMAGE-STALE_BASE_*</code> ids
+(<code>rules/derived.rules</code>), correlating an <code>IMAGE-*</code> built-artifact finding with the
+<code>IAC-DOCKER-*</code> Dockerfile-source finding for the same image when <code>config/images.conf</code>'s
+optional <code>dockerfile</code> key names the Dockerfile that built it &mdash; never guessed, and never minted by
+a scanner script.</p>
 
 <h2>Cloud / AWS (CSPM) <span class="tag t-orange">needs AWS credentials</span></h2>
 <p>Live AWS configuration, read-only. Runs on <code>./scan.sh cloud --live</code> against 30 services across your
