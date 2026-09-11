@@ -75,7 +75,7 @@
 <div class="wrap">
 <header>
   <h1>What scoursh detects</h1>
-  <p class="sub">The full built-in check catalogue on the <code>dev</code> branch, grouped by scan surface and by what each check needs to run. Roughly 290 checks ship in the box.</p>
+  <p class="sub">The full built-in check catalogue on the <code>dev</code> branch, grouped by scan surface and by what each check needs to run. Roughly 300 checks ship in the box.</p>
 </header>
 
 <div class="headline">
@@ -90,6 +90,7 @@
   <div class="count"><b>36</b><span>IaC checks</span></div>
   <div class="count"><b>46</b><span>DAST passive</span></div>
   <div class="count"><b>34</b><span>DAST active</span></div>
+  <div class="count"><b>12</b><span>DAST authz/JWT/rate/GraphQL</span></div>
   <div class="count"><b>6</b><span>SCA ecosystems</span></div>
   <div class="count"><b>112</b><span>Cloud/AWS checks (30 services)</span></div>
 </div>
@@ -234,6 +235,45 @@
 <tr><td class="id">DAST-HOSTHDR-REFLECTED_BODY / LOCATION-01</td><td>Host-header reflection into body or redirect authority</td></tr>
 <tr><td class="id">DAST-DISC-SENSITIVE / BACKUP / CONTENT / DIRLIST-01</td><td>Exposed sensitive/backup files, content discovery, directory listing</td></tr>
 <tr><td class="id">DAST-METHOD-TRACE / WRITE / CONNECT-01</td><td>Dangerous HTTP methods advertised (TRACE, PUT/DELETE/PATCH, CONNECT)</td></tr>
+</tbody></table></div>
+
+<h2>DAST &mdash; authorization, tokens, rate limits &amp; GraphQL <span class="tag t-green">no external data</span></h2>
+<p>The tier-5 <code>modules/dast/checks.rules</code> registry: object-level authorization, JWT verification
+weaknesses, missing rate limiting, and GraphQL introspection. Reachable only at <code>--intensity active</code>
+(same target/authorization requirements as DAST active, above). The <code>DAST-AUTHZ-*</code> checks additionally
+need two authenticated identities (<code>requires-identities: 2</code>, <code>config/auth.conf</code>);
+<code>DAST-RATE-*</code> additionally needs the <code>--i-own-target</code> burst-probe affirmation (DAST-28).</p>
+
+<h3>Authorization <small>object-level access control</small></h3>
+<div class="tblwrap"><table>
+<thead><tr><th>Check</th><th>Catches</th><th>CWE</th></tr></thead><tbody>
+<tr><td class="id">DAST-AUTHZ-IDOR-01</td><td>Object reference is readable by an identity that does not own it</td><td class="cwe">CWE-639</td></tr>
+<tr><td class="id">DAST-AUTHZ-CROSS_IDENTITY_READ-01</td><td>Two separate identities receive the identical non-public object</td><td class="cwe">CWE-639</td></tr>
+<tr><td class="id">DAST-AUTHZ-EXCESSIVE_DATA-01</td><td>Authenticated response carries fields beyond what the view needs</td><td class="cwe">CWE-213</td></tr>
+<tr><td class="id">DAST-AUTHZ-OTHER_IDENTITY_DATA-01</td><td>Authenticated response contains another identity's identifier</td><td class="cwe">CWE-200</td></tr>
+</tbody></table></div>
+
+<h3>JWT <small>signature and algorithm verification</small></h3>
+<div class="tblwrap"><table>
+<thead><tr><th>Check</th><th>Catches</th><th>CWE</th></tr></thead><tbody>
+<tr><td class="id">DAST-JWT-SIG_NOT_VERIFIED-01</td><td>JWT signature is not verified</td><td class="cwe">CWE-347</td></tr>
+<tr><td class="id">DAST-JWT-ALG_NONE-01</td><td>JWT accepted with alg:none (unsigned token)</td><td class="cwe">CWE-347</td></tr>
+<tr><td class="id">DAST-JWT-EMPTY_HMAC-01</td><td>JWT accepted when re-signed HS256 with an empty secret</td><td class="cwe">CWE-1391</td></tr>
+<tr><td class="id">DAST-JWT-WEAK_HMAC-01</td><td>JWT accepted when re-signed HS256 with a common weak secret</td><td class="cwe">CWE-1391</td></tr>
+<tr><td class="id">DAST-JWT-ALG_CONFUSION-01</td><td>JWT RS to HS algorithm confusion accepted</td><td class="cwe">CWE-347</td></tr>
+</tbody></table></div>
+
+<h3>Rate limiting</h3>
+<div class="tblwrap"><table>
+<thead><tr><th>Check</th><th>Catches</th><th>CWE</th></tr></thead><tbody>
+<tr><td class="id">DAST-RATE-NO_THROTTLE-01</td><td>No request throttling on an idempotent endpoint</td><td class="cwe">CWE-770</td></tr>
+<tr><td class="id">DAST-RATE-NO_RETRY_AFTER-01</td><td>Rate limit signalled without a usable back-off (429 with no Retry-After)</td><td class="cwe">CWE-770</td></tr>
+</tbody></table></div>
+
+<h3>GraphQL</h3>
+<div class="tblwrap"><table>
+<thead><tr><th>Check</th><th>Catches</th><th>CWE</th></tr></thead><tbody>
+<tr><td class="id">DAST-GQL-INTROSPECTION-01</td><td>GraphQL introspection is enabled and returns the full schema</td><td class="cwe">CWE-200</td></tr>
 </tbody></table></div>
 
 <h2>SCA &mdash; dependency CVEs <span class="tag t-blue">advisory DB</span></h2>

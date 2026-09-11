@@ -3,7 +3,7 @@
 *Also available as a standalone page: [`checks.html`](checks.html).*
 
 The full built-in check catalogue on the `dev` branch, grouped by scan surface and by what each check
-needs to run. Roughly 320 checks ship in the box.
+needs to run. Roughly 325 checks ship in the box.
 
 > **Almost everything runs with no external data.** Point scoursh at source code (`--path`), a live
 > app (`--target`), or an authorized listener set (`--target`, network) and every SAST, IaC, DAST, and
@@ -19,6 +19,7 @@ needs to run. Roughly 320 checks ship in the box.
 | **36** | IaC checks |
 | **46** | DAST passive |
 | **34** | DAST active |
+| **12** | DAST authorization/JWT/rate-limit/GraphQL |
 | **15** | Network/host checks |
 | **6** | SCA ecosystems |
 | **11** | Container-image checks |
@@ -177,6 +178,46 @@ Sends real attack payloads to a running app. Needs a reachable target plus `--in
 | `DAST-HOSTHDR-REFLECTED_BODY / LOCATION-01` | Host-header reflection into body or redirect authority |
 | `DAST-DISC-SENSITIVE / BACKUP / CONTENT / DIRLIST-01` | Exposed sensitive/backup files, content discovery, directory listing |
 | `DAST-METHOD-TRACE / WRITE / CONNECT-01` | Dangerous HTTP methods advertised (TRACE, PUT/DELETE/PATCH, CONNECT) |
+
+## DAST — authorization, tokens, rate limits & GraphQL 🟢 no external data
+
+The tier-5 `modules/dast/checks.rules` registry: object-level authorization, JWT verification
+weaknesses, missing rate limiting, and GraphQL introspection. Reachable only at `--intensity active`
+(same target/authorization requirements as DAST active, above). The `DAST-AUTHZ-*` checks additionally
+need two authenticated identities (`requires-identities: 2`, `config/auth.conf`); `DAST-RATE-*`
+additionally needs the `--i-own-target` burst-probe affirmation (DAST-28).
+
+### Authorization — object-level access control
+
+| Check | Catches | CWE |
+|---|---|---|
+| `DAST-AUTHZ-IDOR-01` | Object reference is readable by an identity that does not own it | CWE-639 |
+| `DAST-AUTHZ-CROSS_IDENTITY_READ-01` | Two separate identities receive the identical non-public object | CWE-639 |
+| `DAST-AUTHZ-EXCESSIVE_DATA-01` | Authenticated response carries fields beyond what the view needs | CWE-213 |
+| `DAST-AUTHZ-OTHER_IDENTITY_DATA-01` | Authenticated response contains another identity's identifier | CWE-200 |
+
+### JWT — signature and algorithm verification
+
+| Check | Catches | CWE |
+|---|---|---|
+| `DAST-JWT-SIG_NOT_VERIFIED-01` | JWT signature is not verified | CWE-347 |
+| `DAST-JWT-ALG_NONE-01` | JWT accepted with alg:none (unsigned token) | CWE-347 |
+| `DAST-JWT-EMPTY_HMAC-01` | JWT accepted when re-signed HS256 with an empty secret | CWE-1391 |
+| `DAST-JWT-WEAK_HMAC-01` | JWT accepted when re-signed HS256 with a common weak secret | CWE-1391 |
+| `DAST-JWT-ALG_CONFUSION-01` | JWT RS to HS algorithm confusion accepted | CWE-347 |
+
+### Rate limiting
+
+| Check | Catches | CWE |
+|---|---|---|
+| `DAST-RATE-NO_THROTTLE-01` | No request throttling on an idempotent endpoint | CWE-770 |
+| `DAST-RATE-NO_RETRY_AFTER-01` | Rate limit signalled without a usable back-off (429 with no Retry-After) | CWE-770 |
+
+### GraphQL
+
+| Check | Catches | CWE |
+|---|---|---|
+| `DAST-GQL-INTROSPECTION-01` | GraphQL introspection is enabled and returns the full schema | CWE-200 |
 
 ## Network / host 🟢 no external data
 
