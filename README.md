@@ -163,7 +163,7 @@ real application's surface is API endpoints a static HTML crawl never reaches:
   --intensity active \
   --openapi ./openapi.json \
   --requests-per-second 2 --jobs 2 --circuit-breaker-failures 40 \
-  --format json,sarif,html,md,audit \
+  --format json,sarif,html,md,audit,agent \
   --out reports/dast-full
 ```
 
@@ -186,7 +186,7 @@ real application's surface is API endpoints a static HTML crawl never reaches:
 ```sh
 ./scan.sh all --path DIR --target NAME --i-own-target NAME --intensity active \
   --openapi ./openapi.json --requests-per-second 2 --jobs 2 --circuit-breaker-failures 40 \
-  --format json,sarif,html,md,audit --out reports/all
+  --format json,sarif,html,md,audit,agent --out reports/all
 ```
 
 `all` runs every module whose inputs are configured - `--path` drives SAST/SCA/IaC, `--target` drives
@@ -237,22 +237,23 @@ on disk; absent, it is a silent no-op, never an error. Nothing is fetched at sca
 
 ## Output & the audit report
 
-`--format` takes a CSV of `json,sarif,html,md,audit,agent` (default `json,sarif,html,md`):
+`--format` takes a CSV of `json,sarif,html,md,audit,agent` (default `json,sarif,html,md,agent` -
+naming `--format` explicitly replaces that default list rather than adding to it):
 
 - `json` -> `findings.json`; `sarif` -> a complete, schema-validated `report.sarif` that drops into
   GitHub code scanning or any SARIF-aware viewer (it deliberately omits `security-severity` - see
   [`docs/USAGE.md`](docs/USAGE.md#sarif-output) for why); `html`/`md` -> `report.html`/`report.md`.
 - `findings.jsonl` and `run.json` are written on **every** run regardless of `--format` - they are
   mandatory per-run records, not one of the six selectable formats.
-- `audit` is an **opt-in** value: it writes `report-audit.html` **alongside** `report.html`,
-  never in place of it. Where the ordinary report lists findings, the audit report lists every
-  registered check and its fate - found / ran clean / skipped (with a reason) / not covered - so "we
-  looked and found nothing" and "we never looked" are never the same line.
-- `agent` -> `agent-fix.json`, also **opt-in**: a compact, schema-projected findings file for a
-  downstream AI fixing agent, with a deterministic fix scaffold where scoursh can derive one (an SCA
-  version bump, an IaC one-line config fix, or a cloud CLI command explicitly labeled
-  suggested/human-review/never-auto-run) and a coverage header so "did not check" can never read as
-  "clean". Contract: [`docs/AGENT-FORMAT.md`](docs/AGENT-FORMAT.md).
+- `agent` -> `agent-fix.json`, in the default list so a plain run writes it with **no flag required**:
+  a compact, schema-projected findings file for a downstream AI fixing agent, with a deterministic fix
+  scaffold where scoursh can derive one (an SCA version bump, an IaC one-line config fix, or a cloud
+  CLI command explicitly labeled suggested/human-review/never-auto-run) and a coverage header so "did
+  not check" can never read as "clean". Contract: [`docs/AGENT-FORMAT.md`](docs/AGENT-FORMAT.md).
+- `audit` is the one remaining **opt-in** value: it writes `report-audit.html` **alongside**
+  `report.html`, never in place of it. Where the ordinary report lists findings, the audit report
+  lists every registered check and its fate - found / ran clean / skipped (with a reason) / not
+  covered - so "we looked and found nothing" and "we never looked" are never the same line.
 
 Full reference: [`docs/USAGE.md`](docs/USAGE.md#--format-and-the-formats-config-key).
 

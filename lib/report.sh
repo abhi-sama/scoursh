@@ -4211,8 +4211,9 @@ report_sarif() {
 #     contract; this is the implementation).
 # ---------------------------------------------------------------------------
 # Captain-decided shape (docs/AGENT-FORMAT.md §1): compact JSON, written to
-# `reports/<run>/agent-fix.json`, opt-in and never in the default format
-# list.  The token saving is the SCHEMA PROJECTION - dropping every field a
+# `reports/<run>/agent-fix.json`, a first-class deliverable and part of the
+# default format list (an explicit `--format` list still wins and can omit
+# it).  The token saving is the SCHEMA PROJECTION - dropping every field a
 # fixing agent never reads (fingerprint, cvss, first_seen/last_seen,
 # rule_digest, contributors/derived_into/related, endpoint_hosts, cell,
 # logical.kind, exposure/auth/sensitive_data, suppressed_by) and promoting
@@ -4645,9 +4646,9 @@ _agent_run_header() {
 }
 
 # `report_agent [RUNDIR]` - the entry point, gated behind `--format agent`
-# (opt-in, never in the default list - the identical wiring `audit` already
-# has). Writes `agent-fix.json` unconditionally alongside whatever else
-# report_all wrote; never gates or replaces any other format.
+# (in the default list; an explicit `--format` list still wins). Writes
+# `agent-fix.json` unconditionally alongside whatever else report_all wrote;
+# never gates or replaces any other format.
 report_agent() {
   local rundir=${1:-$SCOURSH_RUN_DIR}
   report_count "$rundir"
@@ -4672,10 +4673,10 @@ report_agent() {
 # ---------------------------------------------------------------------------
 # `report_all [RUNDIR]` writes every artifact this run's resolved --format
 # list selects (docs/DESIGN.md §5's `--format json,sarif,html,md`, since
-# extended with two further opt-in values - `audit` (report_audit, §4a above)
-# and `agent` (report_agent, §5b above) - neither ever in the default list),
-# plus two records this project treats as mandatory rather than
-# format-selectable, neither of which is even in that enum
+# extended with `agent` (report_agent, §5b above - a first-class deliverable,
+# in the default list) and `audit` (report_audit, §4a above - opt-in, never
+# in the default list)), plus two records this project treats as mandatory
+# rather than format-selectable, neither of which is even in that enum
 # (`_scan_validate_csv`/`_scanner_validate_list_item`, scan.sh and
 # lib/config.sh):
 #
@@ -4706,7 +4707,7 @@ report_agent() {
 # than each keeping their own copy of that logic.
 _report_render_formats() {
   local rundir=${1:-$SCOURSH_RUN_DIR}
-  local _rpt_formats_csv=${SCOURSH_FORMATS:-json,sarif,html,md}
+  local _rpt_formats_csv=${SCOURSH_FORMATS:-json,sarif,html,md,agent}
   local -a _rpt_fmt=()
   IFS=',' read -r -a _rpt_fmt <<<"$_rpt_formats_csv"
   local -A _rpt_want=()
@@ -4729,8 +4730,8 @@ _report_render_formats() {
   # ticket) - an audit-grade per-category coverage report with full
   # not-covered detail, §4a above.
   [[ -z ${_rpt_want[audit]:-} ]] || report_audit "$rundir"
-  # `agent` is a sixth, OPT-IN format value (never in the default list
-  # above): report_agent writes reports/<run>/agent-fix.json, a compact,
+  # `agent` is in the default list above (a first-class deliverable):
+  # report_agent writes reports/<run>/agent-fix.json, a compact,
   # schema-projected findings file for a downstream AI fixing agent
   # (docs/AGENT-FORMAT.md), never gating or replacing any other format.
   [[ -z ${_rpt_want[agent]:-} ]] || report_agent "$rundir"

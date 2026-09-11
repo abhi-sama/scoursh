@@ -563,14 +563,16 @@ Global:
                               also the ceiling on simultaneous connections and
                               is held to 4 without --i-own-target)
   --format json,sarif,html,md,audit,agent
-                              (audit and agent are opt-in: neither is ever in
-                              the default list, and requesting one never drops
-                              any other format. audit writes report-audit.html
-                              alongside report.html, never in place of it.
-                              agent writes reports/<run>/agent-fix.json, a
-                              compact, schema-projected findings file for a
-                              downstream fixing agent - see
-                              docs/AGENT-FORMAT.md)
+                              (default: json,sarif,html,md,agent - naming
+                              --format explicitly always replaces that list,
+                              never adds to it. audit alone is opt-in: it is
+                              never in the default list, and requesting it
+                              never drops any other format. audit writes
+                              report-audit.html alongside report.html, never
+                              in place of it. agent writes
+                              reports/<run>/agent-fix.json, a compact,
+                              schema-projected findings file for a downstream
+                              fixing agent - see docs/AGENT-FORMAT.md)
   --fail-on SEVERITY        (critical|high|medium|low|info|none)
   --fail-on-new             (requires --fail-on; usage error otherwise)
   --min-confidence LEVEL    (high|medium|low; default low)

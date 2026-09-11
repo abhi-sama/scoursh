@@ -1,9 +1,12 @@
 # The `--format agent` contract
 
 `reports/<run>/agent-fix.json`, written by `report_agent` (`lib/report.sh`) when `agent` appears in
-`--format`/the `formats` config key. It is opt-in and never in the default format list, and requesting
-it never drops or replaces any other format - `findings.jsonl` and `run.json` are still written
-unconditionally, and `json`/`sarif`/`html`/`md`/`audit` are still written whenever also requested.
+`--format`/the `formats` config key. It is a first-class deliverable and is in the default format
+list (`json,sarif,html,md,agent`), so an ordinary run with no `--format` flag at all writes it with no
+flag required; naming `--format` explicitly still replaces that default list rather than adding to it,
+so `--format json` alone omits it. Writing it never drops or replaces any other format -
+`findings.jsonl` and `run.json` are still written unconditionally, and `json`/`sarif`/`html`/`md` are
+still written whenever also requested; `audit` remains the one opt-in value never in the default list.
 
 It exists for one reason: a downstream AI fixing agent reading `findings.json` pays for a lot of bytes
 it never uses (`fingerprint`, `cvss`, `first_seen`/`last_seen`, `rule_digest`, `contributors`, ...) and
@@ -218,8 +221,11 @@ Six changes, all reuse of existing machinery - no new escaping surface, no new d
 6. `modules/sca/{engine,go_engine}.sh`: `finding_set dep_type`/`finding_set fix_fixed_versions` at
    each of the four emit sites.
 
-`agent` is opt-in and **not** in the default list (`lib/config.sh`'s `_scanner_default_list formats`
-stays `json sarif html md`, exactly as `audit`). Adding the six `fix_*`/`dep_type` fields to
+At landing, `agent` was opt-in and not in the default list, exactly as `audit`. A later captain
+decision made `agent` a first-class deliverable: `lib/config.sh`'s `_scanner_default_list formats` now
+returns `json sarif html md agent`, so a plain run with no `--format` flag writes `agent-fix.json`
+too - `audit` alone stays opt-in. See §1 above for the current contract. Adding the six
+`fix_*`/`dep_type` fields to
 `_finding_known_field` does **not** change `findings.jsonl` or `report.sarif` (`_finding_json` emits a
 fixed key list, never an iteration over the finding's own field set) and does **not** move any
 fingerprint (`finding_fingerprint` reads only `loc_<component>` keys) - both are pinned by

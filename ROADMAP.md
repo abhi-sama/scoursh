@@ -60,7 +60,9 @@ This file is a shorter, reader-facing summary of the same information, and is ha
   report that lists every registered check in exactly one of four states - found something, ran and
   found nothing, did not run (with the recorded reason), or unaccounted - with full not-covered
   detail rather than a count alone, so a registered-but-silent check can never read as "clean."
-- **`--format agent` - a sixth, opt-in format value.** `report_agent` writes
+- **`--format agent` - originally a sixth, opt-in format value; a later captain decision made it a
+  first-class deliverable in the default list (`json,sarif,html,md,agent`), so a plain run with no
+  `--format` flag now writes it too.** `report_agent` writes
   `reports/<run>/agent-fix.json`, a compact findings file shaped for a downstream AI fixing agent
   rather than a human reader: fields byte-identical across every finding of a check are hoisted into
   a shared `checks{}` catalogue instead of repeated per finding, and a deterministic fix scaffold is

@@ -162,7 +162,7 @@ _scanner_env_name() {
 # The §9.6.1 "Default" column, for every SINGLE-cardinality key.  `formats`
 # and `paranoid-allow` are repeatable and are handled by
 # _scanner_default_list instead: a single scalar default cannot represent
-# "all four formats".
+# "json, sarif, html, md and agent".
 _scanner_default() {
   case $1 in
     requests-per-second) printf '%s' 4 ;;
@@ -206,7 +206,12 @@ _scanner_default() {
 
 _scanner_default_list() {
   case $1 in
-    formats) printf '%s\n' json sarif html md ;;
+    # `agent` is a first-class deliverable (agent-fix.json, a
+    # schema-projected view of findings already computed - no extra
+    # scanning work) and is in the default set for that reason; `audit`
+    # remains opt-in, since report-audit.html is a distinct rendering an
+    # operator must ask for.
+    formats) printf '%s\n' json sarif html md agent ;;
     paranoid-allow) printf '' ;;
     # Empty, not the shipped seven-entry list: an empty result here is what
     # tells modules/dast/passive/headers_engine.sh's hdr_load_recommended that

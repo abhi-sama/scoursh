@@ -531,6 +531,39 @@ fi
 SCOURSH_GATE_RESULT='' SCOURSH_DIFF_USABLE=''
 
 # ==============================================================================
+printf '\n-- agent is a first-class deliverable: default --format list, no flag required --\n'
+# ==============================================================================
+t_case 'no SCOURSH_FORMATS set at all: report_all writes agent-fix.json alongside json/sarif/html/md'
+rm -f "$D12"/agent-fix.json "$D12"/findings.json "$D12"/report.md "$D12"/report.html "$D12"/report.sarif
+report_all "$D12"
+assert_file_exists "$D12/agent-fix.json" 'agent-fix.json is written with no --format given (agent is in the default list)'
+assert_file_exists "$D12/findings.json" 'findings.json (json) is also written by default'
+assert_file_exists "$D12/report.md" 'report.md (md) is also written by default'
+assert_file_exists "$D12/report.html" 'report.html (html) is also written by default'
+assert_file_exists "$D12/report.sarif" 'report.sarif (sarif) is also written by default'
+assert_file_absent "$D12/report-audit.html" 'report-audit.html is NOT written by default - audit alone stays opt-in'
+
+t_case 'an explicit --format json list still wins in full: agent is NOT force-added'
+rm -f "$D12"/agent-fix.json "$D12"/findings.json "$D12"/report.md "$D12"/report.html "$D12"/report.sarif
+SCOURSH_FORMATS=json
+report_all "$D12"
+unset SCOURSH_FORMATS
+assert_file_exists "$D12/findings.json" 'findings.json is written (the one format named)'
+assert_file_absent "$D12/agent-fix.json" 'agent-fix.json is NOT written - naming --format explicitly replaces the default list rather than adding to it'
+assert_file_absent "$D12/report.md" 'report.md is NOT written either, for the identical reason'
+
+t_case 'report --from DIR with no SCOURSH_FORMATS set also regenerates agent-fix.json by default'
+D_DEFREGEN=$SCOURSH_SCRATCH/agent-default-regen
+rm -rf "$D_DEFREGEN"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$D_DEFREGEN"
+D_DEFREGEN=$SCOURSH_RUN_DIR
+report_all "$D12"
+report_regenerate_from "$D12" "$D_DEFREGEN"
+assert_file_exists "$D_DEFREGEN/agent-fix.json" \
+  'report --from DIR with no --format given writes agent-fix.json too, the identical default report_all uses'
+
+# ==============================================================================
 printf '\n-- A16: the fix_* fields never move a fingerprint or leak into findings.jsonl/report.sarif --\n'
 # ==============================================================================
 # Two SEPARATE run directories, each through the real finding_emit pipeline

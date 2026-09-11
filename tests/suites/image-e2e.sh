@@ -331,10 +331,13 @@ assert_contains "$SARIF1" '"ruleId":"IMAGE-PKG-VULNERABLE_OS_PACKAGE-01"' 'repor
 assert_contains "$SARIF1" 'locations/image.txt' \
   'the artifactLocation points at report_locations own generated artifact, mirroring image.sh own synthetic-finding assertion'
 
-# `--format agent` is opt-in and never in the default list (report_agent's
-# own header), so report_agent is called directly here on run1's own
-# directory - the identical shape tests/suites/image.sh's own synthetic
-# finding test uses - rather than re-running scan.sh with an extra flag.
+# `agent` is in the default `--format` list now, so the real scan.sh image
+# dispatch above (no --format given) already wrote agent-fix.json - assert
+# that directly, then re-derive it via report_agent (the identical shape
+# tests/suites/image.sh's own synthetic finding test uses) as a second,
+# redundant proof it is reproducible from findings.fields alone.
+assert_file_exists "$W/run1/agent-fix.json" \
+  'a real scan.sh image run with no --format given already wrote agent-fix.json (agent is in the default list)'
 report_agent "$W/run1"
 AGENT1=$(_slurp "$W/run1/agent-fix.json")
 assert_contains "$AGENT1" '"check":"IMAGE-PKG-VULNERABLE_OS_PACKAGE-01"' 'agent-fix.json names the check'

@@ -79,7 +79,8 @@ assert_eq true "$(config_scanner_value redact-secrets)" 'redact-secrets defaults
 assert_eq 'json
 sarif
 html
-md' "$(config_scanner_list formats)" 'formats defaults to all four, in the documented order'
+md
+agent' "$(config_scanner_list formats)" 'formats defaults to all five - agent is a first-class deliverable - in the documented order; audit alone stays opt-in'
 assert_eq '' "$(config_scanner_list paranoid-allow)" 'paranoid-allow defaults to empty'
 assert_eq '' "$(config_scanner_list recommended-header)" \
   'recommended-header defaults to empty here too - its shipped seven-entry default lives in modules/dast/passive/recommended-headers.txt, read by hdr_load_recommended only when this key resolves to nothing at every level'

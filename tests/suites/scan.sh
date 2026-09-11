@@ -1408,14 +1408,16 @@ printf '\n-- --format actually selects which artifacts get written --\n'
 # empty tree that would write the same five near-empty files whatever
 # --format asked for and pin nothing.
 
-t_case 'no --format: the five artifacts this project has always written are all still written'
+t_case 'no --format: the six artifacts this project now writes by default are all still written'
 rm -rf "$W/fmt-default"
 assert_status 0 './scan.sh all --path DIR --out DIR (no --format) exits 0' \
   _bin_run all --path "$W/all-tree" --out "$W/fmt-default"
-for f in findings.json findings.jsonl report.md report.html run.json; do
+for f in findings.json findings.jsonl report.md report.html agent-fix.json run.json; do
   assert_file_exists "$W/fmt-default/$f" \
-    "$f is written with no --format given - pins today's unchanged default, fails under a default that silently narrows what a caller who never asked for --format gets"
+    "$f is written with no --format given - agent-fix.json joined the default list as a first-class deliverable; fails under a default that silently narrows what a caller who never asked for --format gets"
 done
+assert_file_absent "$W/fmt-default/report-audit.html" \
+  'report-audit.html is NOT written with no --format given - audit alone stays opt-in'
 
 t_case '--format md writes only report.md, plus the two mandatory records'
 rm -rf "$W/fmt-md"
@@ -1430,6 +1432,8 @@ assert_file_absent "$W/fmt-md/findings.json" \
   "findings.json is NOT written - fails under the shipped defect where --format is parsed and then discarded, so 'md' still got findings.json too"
 assert_file_absent "$W/fmt-md/report.html" \
   "report.html is NOT written - fails under the same discarded-format defect"
+assert_file_absent "$W/fmt-md/agent-fix.json" \
+  "agent-fix.json is NOT written - naming --format explicitly replaces the default list, it does not force-add agent"
 
 t_case '--format json,html (multi-format) writes exactly those two, and nothing findings.jsonl/run.json would not already cover'
 rm -rf "$W/fmt-json-html"
@@ -1439,6 +1443,8 @@ assert_file_exists "$W/fmt-json-html/findings.json" 'findings.json is written'
 assert_file_exists "$W/fmt-json-html/report.html" 'report.html is written'
 assert_file_absent "$W/fmt-json-html/report.md" \
   "report.md is NOT written - fails under 'every format list still writes all five artifacts'"
+assert_file_absent "$W/fmt-json-html/agent-fix.json" \
+  "agent-fix.json is NOT written - it was not named, and an explicit --format list is never widened to include it"
 
 t_case '--format sarif alone: no SARIF emitter exists yet (docs/DESIGN.md §13 step 10), so it selects nothing beyond the two mandatory records'
 rm -rf "$W/fmt-sarif"
@@ -1449,6 +1455,7 @@ assert_file_exists "$W/fmt-sarif/run.json" 'run.json is still written (mandatory
 assert_file_absent "$W/fmt-sarif/findings.json" 'findings.json is NOT written for --format sarif'
 assert_file_absent "$W/fmt-sarif/report.md" 'report.md is NOT written for --format sarif'
 assert_file_absent "$W/fmt-sarif/report.html" 'report.html is NOT written for --format sarif'
+assert_file_absent "$W/fmt-sarif/agent-fix.json" 'agent-fix.json is NOT written for --format sarif alone'
 
 # =============================================================================
 printf '\n-- per-subcommand help: scan.sh <command> --help --\n'
