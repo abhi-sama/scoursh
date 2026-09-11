@@ -288,6 +288,10 @@ for the dated decision record.
 
 - [`docs/USAGE.md`](docs/USAGE.md) - the full CLI, exit-code, and configuration reference.
 - [`docs/CHECKS.md`](docs/CHECKS.md) - every built-in check, grouped by surface and by what data it needs.
+- [`docs/build.html`](docs/build.html) - a static, offline command builder: pick a surface, toggle
+  options, and copy the exact command it composes.
+- [`docs/AGENT-FORMAT.md`](docs/AGENT-FORMAT.md) - the `--format agent` contract, for a downstream
+  AI fixing agent reading `agent-fix.json`.
 - [`docs/COMPARISON.md`](docs/COMPARISON.md) - the honest comparison against Semgrep, Trivy, Checkov,
   ZAP, Gitleaks, Prowler, and others, including measured head-to-head numbers.
 - [`docs/DESIGN.md`](docs/DESIGN.md) - the original handoff spec, preserved verbatim.
