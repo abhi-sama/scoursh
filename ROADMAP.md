@@ -27,7 +27,13 @@ This file is a shorter, reader-facing summary of the same information, and is ha
   test.
 - **Step 8 (`--paranoid` / network namespace isolation)** - complete: the connection-observer
   (`--paranoid`) and the Linux network-namespace guarantee (`tools/run-in-netns.sh`) have both
-  shipped.
+  shipped. macOS now has a real enforcement mechanism behind the detector too:
+  `tools/run-sandboxed.sh` wraps Apple's Seatbelt (`sandbox-exec`) in three tiers - Tier A, an
+  unconditional deny-all for `sast`/`sca`/`iac`; Tier B, a loopback relay plus an `lib/http.sh`
+  redirect mode (`--scope-conf PATH`) that gives `dast`/`cloud`/`network` real target traffic while
+  keeping off-host egress kernel-denied; and Tier C, running `tools/run-in-netns.sh` unmodified
+  inside a Linux container on macOS for full namespace parity. See `AGENTS.md`'s own account of
+  each tier and `docs/FOUNDATION.md` tension 20 for the detail.
 - **Step 9 (optional engine adapters)** - three adapters shipped ahead of schedule: `semgrep` and
   `gitleaks` for `sast`, `trivy config` for `iac`. The advisory-database expansion tooling
   (`tools/vendor-engines.sh advisories ...`) has also landed.
@@ -54,6 +60,14 @@ This file is a shorter, reader-facing summary of the same information, and is ha
   report that lists every registered check in exactly one of four states - found something, ran and
   found nothing, did not run (with the recorded reason), or unaccounted - with full not-covered
   detail rather than a count alone, so a registered-but-silent check can never read as "clean."
+- **`--format agent` - a sixth, opt-in format value.** `report_agent` writes
+  `reports/<run>/agent-fix.json`, a compact findings file shaped for a downstream AI fixing agent
+  rather than a human reader: fields byte-identical across every finding of a check are hoisted into
+  a shared `checks{}` catalogue instead of repeated per finding, and a deterministic fix scaffold is
+  included wherever scoursh can derive one (an SCA version bump, an IaC one-line config fix, or a
+  cloud CLI command labeled suggested/human-review/never-auto-run), alongside the same honesty header
+  the other formats carry so "did not check" can never read as "clean." Full contract:
+  [`docs/AGENT-FORMAT.md`](docs/AGENT-FORMAT.md).
 - **Step 7 (`state/` - persistent coverage tracking) is complete.** STATE-01 through STATE-08 have
   all landed (see [`docs/STEP7-STATE-PLAN.md`](docs/STEP7-STATE-PLAN.md)'s own status table): every
   normal run persists `state/<run-id>.json` and automatically classifies findings
@@ -80,6 +94,9 @@ This file is a shorter, reader-facing summary of the same information, and is ha
   now reachable at the G1 menu (`modules/cloud/aws/run.sh` exists), though its guided setup beyond the
   scan type and `--fail-on` isn't wired into `--guided` yet - the menu says so and hands back the
   equivalent direct command rather than asking questions it can't yet compose an answer to.
+  [`docs/build.html`](docs/build.html) is the click-through equivalent of the same idea: a static,
+  offline command builder page (pick a surface, point it at a path or target, toggle options) that
+  composes and displays the exact command rather than running anything.
 - **Step 6 (Cloud / AWS CSPM) is complete for the live-checks half.** `lib/awscli.sh`'s `aws_ro`
   chokepoint, `modules/cloud/aws/run.sh`'s dispatch entry point (account-authorization record +
   enabled-region iteration, `--assume-role` for multi-account), and all 30 `docs/DESIGN.md` §8.1
@@ -123,13 +140,9 @@ This file is a shorter, reader-facing summary of the same information, and is ha
 ## Not yet started
 
 Every `docs/DESIGN.md` §13 step (1 through 10) has now landed - see "Landed" above.
-What's left is a gap in an already-shipped feature, not an unstarted step:
-
-- **A macOS guarantee for `--paranoid`.** It has a real, measured-usable `lsof` backend on macOS today
-  (see "Known defects in shipped features" below), which makes it a genuine detector there - but there
-  is no macOS equivalent of `tools/run-in-netns.sh`'s Linux network-namespace guarantee, so a macOS run
-  has the detector and nothing enforcing behind it. This is a research item (is a Linux-equivalent
-  enforcement mechanism even available on macOS?) rather than a scheduled build.
+This section used to track one gap in an already-shipped feature - a macOS enforcement mechanism
+behind `--paranoid`'s detector - and that has since landed too (`tools/run-sandboxed.sh`'s three
+tiers; see "Landed" above). It is empty for the moment.
 
 **Step 10 (SARIF output + compliance report) is complete and no longer listed here.**
 The SARIF half writes a complete, schema-validated SARIF 2.1.0 document (`report_sarif`, SARIF-01
@@ -175,20 +188,26 @@ scheduled on its own.
   `--format` values, and are written on every run regardless of what `--format` asked for; `sarif`
   selects `report_sarif` like every other value and, as of SARIF-06, writes a complete document -
   see "Recently fixed" below and [`docs/USAGE.md`'s SARIF output section](docs/USAGE.md#sarif-output).)
-- **`--paranoid` has a real macOS backend, but no macOS *guarantee*.**
-  Of its three connection-observer backends, `ss` and `strace` are Linux-only; `lsof` was added as a
-  third, measured-usable backend specifically so `--paranoid` runs on macOS too, and it is a genuine
-  detector there, not a refusal.
-  What macOS still lacks is `tools/run-in-netns.sh` (step 8's *guarantee* tier, a Linux network
-  namespace): on macOS `--paranoid`'s sampling detector is the only egress control available, with no
-  stronger mechanism behind it.
-  A host with none of the three backends still exits 4 before any module runs.
 
 ## Recently fixed
 
 Entries that used to sit under "Known defects" above, kept for a release or two so a reader who knew the
 old behaviour can see what replaced it.
 
+- **`--paranoid` had a real macOS *detector* but no macOS *guarantee*.**
+  Of its three connection-observer backends, `ss` and `strace` are Linux-only; `lsof` was added as a
+  third, measured-usable backend so `--paranoid` runs on macOS too, but that made it a genuine
+  detector there, not a refusal - `tools/run-in-netns.sh` (step 8's *guarantee* tier) is a Linux
+  network namespace and has no macOS equivalent, so a macOS run used to have the detector and nothing
+  enforcing behind it. `tools/run-sandboxed.sh` closes that: Tier A is an unconditional Seatbelt
+  (`sandbox-exec`) deny-all for `sast`/`sca`/`iac`, which make zero network calls by design; Tier B
+  adds a loopback relay plus an `lib/http.sh` redirect mode (`--scope-conf PATH`) so `dast`/`cloud`/
+  `network` still get real, scope-restricted target traffic while off-host egress stays
+  kernel-denied; Tier C runs `tools/run-in-netns.sh` unmodified inside a Linux container on macOS for
+  full namespace parity. All three fail loud (exit 4) and never degrade to an unsandboxed run. A host
+  with none of `--paranoid`'s three detector backends still exits 4 before any module runs,
+  independent of `run-sandboxed.sh`. See `AGENTS.md`'s own account of each tier and
+  `docs/FOUNDATION.md` tension 20 for the full detail.
 - **`--jobs N` was accepted, validated, exported and read by no module.**
   It is documented with a default of 4 and every `sast`/`sca`/`iac` scan was single-worker
   regardless, each module recording a flat `single_worker_no_parallel_scan_yet` coverage_reduction at
