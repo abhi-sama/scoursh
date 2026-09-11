@@ -83,7 +83,8 @@ Also shipping, and relevant when comparing against a specialist toolchain:
   vendored ahead of time. Nothing is fetched during a scan.
 - **Guided mode** - a bare `scan.sh` walks you through composing a real command and can print the
   exact non-interactive equivalent.
-- **Test rigour** - 81 suites and 6 linters; 47% of the codebase is tests.
+- **Test rigour** - `tests/run-tests.sh --list` is the source of truth for the current suite/linter
+  count (141 suites, 7 linters as of this writing); 47% of the codebase is tests.
 
 ## Declared limits
 
@@ -401,7 +402,7 @@ this ranking; this leg cannot say by how much. The defensible sentence, from the
 rules found half the planted secrets with no false positives, where Gitleaks found a third and
 TruffleHog a seventh; on provider-specific token shapes the ordering reverses.*
 
-The SCA leg (`sca-lockfiles-26`) also confirms the scout report's parity prediction for two of three
+The SCA leg (`sca-lockfiles-26`) also confirms the predicted parity for two of three
 ecosystems it covers: scoursh matches Grype/OSV-Scanner/Trivy at 100% strict-identity recall on npm (6/6)
 and PyPI (4/4), with zero false positives across all 26 cases in every category. It misses all 3 Go
 cases (aggregate recall 10/13, J +0.769 against the other three's +1.000 each) - two are a stated,

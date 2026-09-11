@@ -3,14 +3,15 @@
 *Also available as a standalone page: [`checks.html`](checks.html).*
 
 The full built-in check catalogue on the `dev` branch, grouped by scan surface and by what each check
-needs to run. Roughly 325 checks ship in the box.
+needs to run. 319 checks ship in the box (53 SAST + 36 IaC + 92 DAST + 15 network + 11 container-image +
+112 Cloud/AWS; SCA is a table lookup across 6 ecosystems, not counted as checks).
 
 > **Almost everything runs with no external data.** Point scoursh at source code (`--path`), a live
 > app (`--target`), or an authorized listener set (`--target`, network) and every SAST, IaC, DAST, and
 > network check below works immediately - no database, no downloads, no network of scoursh's own
 > choosing. **Dependency-CVE scanning (SCA)**, most of **container-image scanning** (the three
-> `IMAGE-CFG-*` config-blob checks need only a supplied image, no database), and two banner-version
-> checks (one DAST, one network) need the vendored advisory database; **Cloud/AWS (CSPM)** needs
+> `IMAGE-CFG-*` config-blob checks need only a supplied image, no database), and three banner-version
+> checks (one DAST, two network) need the vendored advisory database; **Cloud/AWS (CSPM)** needs
 > resolvable AWS credentials.
 
 | | |
@@ -260,7 +261,7 @@ reports that no advisory data was available rather than a false all-clear.
 | `SCA-JAVA-VULNERABLE_DEP-01` | Maven |
 | `SCA-RUBY-VULNERABLE_DEP-01` | RubyGems |
 | `SCA-PHP-VULNERABLE_DEP-01` | Composer |
-| `SCA-GO` | Go modules |
+| `SCA-GO-VULNERABLE_DEP-01` | Go modules |
 | `SCA-COV-NO_ADVISORY_DB-01` / `UNKNOWN_VERSION-01` | Honest coverage notes when data is missing |
 
 ## Container image 🔵 advisory DB
@@ -294,8 +295,8 @@ the two and this module's own stated gaps.
 
 Every `VULNERABLE_OS_PACKAGE`/`VULNERABLE_DEP` finding needs a real, differential-tested version
 comparator per package manager (`modules/sca/semver.sh` is npm-only by measured decision - it mismatches
-7 of 12 real OS version pairs, including a false negative - so apk/dpkg/rpm each ship their own,
-`data/scoursh-image-scan-design/report.md` §2.4-§2.5). `distro_release_unknown` (no `/etc/os-release`)
+7 of 12 real OS version pairs, including a false negative - so apk/dpkg/rpm each ship their own).
+`distro_release_unknown` (no `/etc/os-release`)
 is its own declared reduction, never a silent guess at "latest": Alpine advisories are keyed per
 release, and guessing produces false negatives on older images.
 
