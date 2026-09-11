@@ -1927,6 +1927,209 @@ _scan_require_readable_path() {
   [[ -r $_SCAN_RESOLVED_PATH ]] || die "$SCOURSH_EXIT_INPUT" "--path '$path' is not readable"
 }
 
+# -----------------------------------------------------------------------------
+# 6a. Preflight (operator-reported bug fix, widened by request into a single
+#     up-front gate): every precondition that is knowable WITHOUT running a
+#     module, checked and reported TOGETHER, before the first scan_dispatch
+#     call of any kind. `all` used to call config_scope_require only after
+#     `sast`, `sca` and `iac` had ALREADY finished - a real run scanned for
+#     3h03m before dying on a --target typo that was knowable the instant
+#     flags were parsed. `--baseline` and `--live`'s aws requirement have the
+#     identical shape under `all` (baseline_apply/the aws check both sat
+#     after sast/sca/iac too); --path already ran first thing in every arm
+#     that takes one.
+#
+#     Each `_scan_pf_check_*` below is a non-dying DETECTOR: it sets
+#     _SCAN_PF_CLASS/_SCAN_PF_MSG and returns 1 on a problem, so every
+#     problem across every check can be collected before anything is
+#     reported. Called DIRECTLY, never through $(...) - config_scope_load
+#     and config_load_if_present can still die (config_load_or_die) on a
+#     genuinely malformed config file, and that must abort the process
+#     immediately rather than be swallowed by a captured subshell, exactly
+#     the hazard _scan_require_readable_path's own comment documents for
+#     die() in general. A malformed config file is therefore still an
+#     immediate, individual die - not accumulated - which is correct: there
+#     is nothing useful to keep checking once a config file itself fails to
+#     parse.
+#
+#     None of this REPLACES its later, authoritative counterpart:
+#     config_scope_require, _scan_require_readable_path, baseline_apply and
+#     the --live aws check all still run again, unchanged, at their existing
+#     call sites below - a control only one caller remembers to apply is not
+#     a control (tension 19's own argument, applied here too).
+#
+#     What this deliberately does NOT fail on, because the existing,
+#     documented design already treats it as a graceful, declared skip
+#     rather than an error: an --image id with no config/images.conf entry
+#     and no --source (rules/RULE-FORMAT.md §9.6.8 - tests/suites/image.sh's
+#     own "an --image run completes cleanly and exits 0" case is exactly
+#     this), and a missing data/advisories.db ahead of an `sca` walk
+#     (docs/FOUNDATION.md tension 14's own required-input table: sca records
+#     a coverage_reduction and an exit-4 `input` flag itself, deliberately,
+#     rather than dying). Turning either into a preflight die would be a
+#     real behaviour change to a previously-reviewed design decision, not a
+#     fail-fast fix - so preflight only WARNS about them, immediately and
+#     honestly, same as it warns that a --target's own base-url is never
+#     probed here: preflight cannot know whether a target actually answers
+#     or whether cloud/dast credentials are valid, only that the shape of
+#     the input is coherent. Those remain "checked at run time" - stated so
+#     rather than implied by a clean preflight.
+# -----------------------------------------------------------------------------
+_SCAN_PF_CLASS='' _SCAN_PF_MSG=''
+
+# `_scan_pf_check_target TARGET` - config_scope_require's own "does this id
+# resolve" question, without the die.
+_scan_pf_check_target() {
+  local target=$1 path=$SCOURSH_INSTALL_ROOT/config/scope.conf
+  if [[ ! -e $path ]]; then
+    _SCAN_PF_CLASS=input
+    _SCAN_PF_MSG="a --target-scoped command requires $path, and it does not exist"
+    return 1
+  fi
+  config_scope_load "$path"
+  records_index_of_id scope "$target" >/dev/null && return 0
+  _SCAN_PF_CLASS=scope
+  _SCAN_PF_MSG=$(_scope_target_not_found_message "$target" "$path")
+  return 1
+}
+
+# `_scan_pf_check_path PATH` - _scan_require_readable_path's own two tests,
+# without the die.
+_scan_pf_check_path() {
+  local path=${1:-.} resolved
+  resolved=$(realpath_of "$path")
+  if [[ ! -e $resolved ]]; then
+    _SCAN_PF_CLASS=input
+    _SCAN_PF_MSG="--path '$path' does not exist"
+    return 1
+  fi
+  if [[ ! -r $resolved ]]; then
+    _SCAN_PF_CLASS=input
+    _SCAN_PF_MSG="--path '$path' is not readable"
+    return 1
+  fi
+  return 0
+}
+
+# `_scan_pf_check_baseline` - baseline_apply's own existence/readability
+# tests (lib/diff.sh's `_baseline_resolve_file_set`/`baseline_apply`),
+# without the die. An implicit config/baseline.json (no --baseline given) is
+# never required to exist (baseline_apply's own documented behaviour), so
+# this only fires for an EXPLICIT --baseline.
+_scan_pf_check_baseline() {
+  local file=${SCAN_FLAGS[baseline]:-}
+  [[ -n $file ]] || return 0
+  if [[ ! -e $file ]]; then
+    _SCAN_PF_CLASS=input
+    _SCAN_PF_MSG="--baseline $file: no such file"
+    return 1
+  fi
+  if [[ ! -r $file ]]; then
+    _SCAN_PF_CLASS=input
+    _SCAN_PF_MSG="baseline $file exists but is not readable"
+    return 1
+  fi
+  return 0
+}
+
+# `_scan_pf_check_live` - the same `cloud --live requires the aws CLI`
+# check every arm that can reach cloud already makes, without the die.
+_scan_pf_check_live() {
+  [[ ${SCAN_FLAGS[live]:-} == true ]] || return 0
+  command -v aws >/dev/null 2>&1 && return 0
+  _SCAN_PF_CLASS=input
+  _SCAN_PF_MSG='cloud --live requires the aws CLI to be installed'
+  return 1
+}
+
+# `_scan_pf_warn_declared_skips` - the non-fatal, informational half:
+# surfaces (via log_warn, at second zero) the two declared-skip conditions
+# named in this section's own header above. Deliberately never adds to the
+# fatal problem list and never changes the exit code - see that header for
+# why turning these fatal would be a real design change, not this ticket's.
+_scan_pf_warn_declared_skips() {
+  local image_id=${SCAN_FLAGS[image]:-}
+  if [[ -n $image_id && -z ${SCAN_FLAGS[source]:-} ]]; then
+    # Mirrors modules/image/acquire.sh's own image_sources_load: same
+    # schema/set pair, called directly (config_load_if_present can die on a
+    # malformed images.conf, exactly like config_scope_load above).
+    config_load_if_present "$SCOURSH_INSTALL_ROOT/config/images.conf" image-source images >/dev/null || true
+    if ! records_index_of_id images "$image_id" >/dev/null 2>&1; then
+      log_warn "preflight: --image '$image_id' has no config/images.conf entry and no --source override - a declared, non-fatal coverage gap (rules/RULE-FORMAT.md §9.6.8), will be checked when the image module actually runs, not a preflight failure"
+    fi
+  fi
+  case $SCAN_COMMAND in
+    sca | all)
+      # Mirrors modules/sca/engine.sh's sca_advisories_db_path default;
+      # keep the two in step if that resolution order ever changes.
+      local db=${SCOURSH_SCA_ADVISORIES_DB:-$SCOURSH_INSTALL_ROOT/data/advisories.db}
+      [[ -r $db ]] \
+        || log_warn "preflight: $db is absent or unreadable - sca records this as a declared coverage_reduction and its own exit-4 input flag when it actually runs (docs/FOUNDATION.md tension 14), not a preflight failure"
+      ;;
+  esac
+}
+
+# `_scan_preflight` - the orchestrator. Runs every check relevant to
+# $SCAN_COMMAND, collects every problem, and if any exist, dies ONCE with
+# every problem listed together and the correct precedence class
+# (scope beats input, matching scan_exit_code's own 2>3>4>5>1>0 order -
+# usage-class problems are structurally impossible here, since
+# _scan_check_required already died on any of those before run_init ever
+# ran). Zero problems: falls through, and every check below still runs
+# again for real at its existing call site.
+_scan_preflight() {
+  local -a problems=()
+  local have_scope=false target=${SCAN_FLAGS[target]:-} path=${SCAN_FLAGS[path]:-.}
+
+  case $SCAN_COMMAND in
+    dast | network | all)
+      if [[ -n $target ]] && ! _scan_pf_check_target "$target"; then
+        problems+=("$_SCAN_PF_MSG")
+        [[ $_SCAN_PF_CLASS == scope ]] && have_scope=true
+      fi
+      ;;
+  esac
+
+  case $SCAN_COMMAND in
+    sast | sca | iac | all)
+      _scan_pf_check_path "$path" || problems+=("$_SCAN_PF_MSG")
+      ;;
+  esac
+
+  # --baseline is a [global:...] flag (accepted, syntactically, by every
+  # command - scan_flag_kind's own global fallback), but baseline_apply is
+  # only ever CALLED from sast/sca/iac/dast/network/cloud/image's own run.sh
+  # - diff and report never read it at all. Checking it for diff/report too
+  # would refuse a --baseline value those two commands have always silently
+  # ignored, which is a new failure this ticket's own "change no exit-code
+  # semantics" principle forbids introducing.
+  case $SCAN_COMMAND in
+    diff | report) ;;
+    *) _scan_pf_check_baseline || problems+=("$_SCAN_PF_MSG") ;;
+  esac
+
+  case $SCAN_COMMAND in
+    cloud | all)
+      _scan_pf_check_live || problems+=("$_SCAN_PF_MSG")
+      ;;
+  esac
+
+  if (( ${#problems[@]} > 0 )); then
+    local msg="preflight refused to start: ${#problems[@]} problem(s) found before any module ran -"
+    local p
+    for p in "${problems[@]+"${problems[@]}"}"; do
+      msg+=$'\n  - '"$p"
+    done
+    if $have_scope; then
+      die "$SCOURSH_EXIT_SCOPE" "$msg"
+    else
+      die "$SCOURSH_EXIT_INPUT" "$msg"
+    fi
+  fi
+
+  _scan_pf_warn_declared_skips
+}
+
 # `_scan_capture VARNAME CMD [ARGS...]` - runs CMD (which may call die(), e.g.
 # every lib/config.sh `config_scanner_*` accessor) with its stdout captured
 # into VARNAME, WITHOUT ever wrapping the call itself in $(...) - see the
@@ -2542,6 +2745,11 @@ scan_main() {
   # than exit 5 or a silent 0.
   # shellcheck disable=SC2034
   local incomplete=0 gate=0 input=0 path
+
+  # Preflight (section 6a above): every problem it can safely detect,
+  # together, before the first scan_dispatch call of any kind. Dies here on
+  # any of them; falls through unchanged when there are none.
+  _scan_preflight
 
   case $SCAN_COMMAND in
     sast | sca | iac)

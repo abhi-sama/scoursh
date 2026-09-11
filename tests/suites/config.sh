@@ -224,6 +224,61 @@ t_case 'a target that does not exist is exit 3, never exit 4'
 assert_status 3 '"--target no-such-target" with a present, valid scope.conf dies exit 3 (scope violation) - fails under "any scope.conf problem is exit 4"; docs/DESIGN.md §7 requires exactly 3 here, because 3 is the code that must never be masked' \
   config_scope_require no-such-target "$FIXTURE_SCOPE"
 
+# ---------------------------------------------------------------------------
+# FIX 2: the exit-3 message teaches, rather than only refusing (operator
+# report, 2026-09-11 - the operator passed a URL where scope.conf wants a
+# declared id and had no clue what was actually expected).
+#
+# `_pf_msg VARNAME ARGS...` captures config_scope_require's stderr into
+# VARNAME without ever wrapping the die()-capable call in $(...): a
+# subshell used as a plain STATEMENT (`( cmd ) >out 2>err || true`) is a
+# checked context under `set -e`, exactly like assert_status's own `( "$@" )
+# || rc=$?` above, so the exit() inside die() is caught normally instead of
+# aborting this whole suite - the identical hazard
+# scan.sh's _scan_require_readable_path comment documents for `x=$(cmd)`.
+# ---------------------------------------------------------------------------
+_pf_msg() {
+  local __var=$1
+  shift
+  local __errfile=$W/pf-msg.$$
+  ( "$@" ) >/dev/null 2>"$__errfile" || true
+  # shellcheck disable=SC2229
+  IFS= read -r -d '' "$__var" <"$__errfile" || true
+  rm -f -- "$__errfile"
+}
+
+t_case 'the exit-3 message states --target wants a scope.conf id and lists the ones actually declared'
+_pf_msg MSG_PLAIN config_scope_require no-such-target "$FIXTURE_SCOPE"
+assert_contains "$MSG_PLAIN" "has no entry in $FIXTURE_SCOPE" \
+  'the original refusal text is preserved verbatim'
+assert_contains "$MSG_PLAIN" 'declared target ids' \
+  'it lists what IS declared, so the operator sees valid choices without opening the file'
+assert_contains "$MSG_PLAIN" 'fixture-target' 'first declared id named'
+assert_contains "$MSG_PLAIN" 'fixture-wide' 'second declared id named'
+assert_contains "$MSG_PLAIN" 'fixture-authority' 'third declared id named'
+assert_not_contains "$MSG_PLAIN" 'looks like a URL' \
+  'a plain, non-URL-shaped id typo does NOT get the URL-specific hint - fails if the hint fires unconditionally'
+
+t_case 'a URL-shaped --target (scheme://) gets the URL-specific hint, pointing at base-url'
+_pf_msg MSG_URL config_scope_require 'http://127.0.0.1:3400' "$FIXTURE_SCOPE"
+assert_contains "$MSG_URL" 'looks like a URL' \
+  "the operator's real reported mistake (docs/FOUNDATION.md tension 5: --target is the scope.conf id, not the URL) is called out by name"
+assert_contains "$MSG_URL" 'base-url' \
+  'and it points at the field the URL probably belongs in'
+assert_contains "$MSG_URL" 'declared target ids' \
+  'the id list is still appended after the URL hint, not replaced by it'
+
+t_case 'a host:port-shaped --target with no scheme ALSO gets the URL hint'
+_pf_msg MSG_HP config_scope_require '127.0.0.1:3400' "$FIXTURE_SCOPE"
+assert_contains "$MSG_HP" 'looks like a URL' \
+  'bare host:port is the other common shape of "I pasted the target, not its id" - fails if only a full scheme:// is recognised'
+
+t_case 'an empty scope.conf (zero scope-target records) says so by name, not just an empty id list'
+printf '' >"$W/scope-empty.conf"
+_pf_msg MSG_EMPTY config_scope_require anything "$W/scope-empty.conf"
+assert_contains "$MSG_EMPTY" 'declares no targets' \
+  'an empty/no-record file is distinguished from "has records but none match" - fails if it silently prints an empty id list with no explanation'
+
 t_case 'a wholly missing scope.conf is exit 4, never exit 3'
 assert_status 4 'dast needs config/scope.conf to exist at all before the gate can even be asked a question - fails under "no file also means no entry, so it is exit 3 too" (docs/FOUNDATION.md tension 14: missing scope.conf is exit 4 only for dast)' \
   config_scope_require fixture-target "$W/does-not-exist-scope.conf"
