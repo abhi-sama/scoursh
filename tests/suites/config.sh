@@ -298,5 +298,95 @@ CONFIG_SCOPE_LOADED=0
 assert_status 5 'config_scope_field before any load/require dies exit 5 (internal/incomplete), not a confusing "target not found"' \
   config_scope_field fixture-target base-url
 
+# ---------------------------------------------------------------------------
+# config_scope_resolve_target: the --target/--i-own-target base-url
+# resolution UX fix (an operator hit config_scope_require's "wants the ID,
+# not the base-url" refusal three separate times with the tool already
+# holding the answer). Called DIRECTLY here too, never through $(...) alone,
+# for the same subshell-swallows-die() reason as config_scope_require above
+# - `_resolve` below still uses a subshell, but only to capture a status
+# this suite EXPECTS (0/1/2), the same acceptable test-only pattern
+# `_pf_msg` already uses for an EXPECTED die().
+# ---------------------------------------------------------------------------
+printf '\n-- config_scope_resolve_target: base-url/extra-host resolution --\n'
+
+_resolve() {
+  local __msgvar=$1 __rcvar=$2
+  shift 2
+  local __out=$W/resolve-out.$$
+  local __rc=0
+  ( "$@" ) >"$__out" 2>/dev/null || __rc=$?
+  # shellcheck disable=SC2229
+  IFS= read -r -d '' "$__msgvar" <"$__out" || true
+  rm -f -- "$__out"
+  # shellcheck disable=SC2229
+  printf -v "$__rcvar" '%s' "$__rc"
+}
+
+t_case 'an exact base-url match resolves to its target id'
+_resolve RES RC config_scope_resolve_target 'https://app.fixture.invalid/' "$FIXTURE_SCOPE"
+assert_eq 0 "$RC" 'exactly one match returns 0'
+assert_eq fixture-target "$RES" 'and prints that target'"'"'s own id'
+
+t_case 'a missing trailing slash still resolves - fails if the path/no-path forms are treated as different authorities'
+_resolve RES RC config_scope_resolve_target 'https://app.fixture.invalid' "$FIXTURE_SCOPE"
+assert_eq 0 "$RC" 'still exactly one match'
+assert_eq fixture-target "$RES" 'same target'
+
+t_case 'an explicit default port (443) resolves the same as an implicit one - fails if :443 and no-port are compared as different ports'
+_resolve RES RC config_scope_resolve_target 'https://app.fixture.invalid:443/' "$FIXTURE_SCOPE"
+assert_eq 0 "$RC" 'still exactly one match'
+assert_eq fixture-target "$RES" 'same target'
+
+t_case 'host case is folded before comparing - fails if the compare is case-sensitive'
+_resolve RES RC config_scope_resolve_target 'https://APP.Fixture.Invalid/' "$FIXTURE_SCOPE"
+assert_eq 0 "$RC" 'still exactly one match'
+assert_eq fixture-target "$RES" 'same target'
+
+t_case 'an extra-host value resolves too, inheriting its target'"'"'s own base-url scheme'
+_resolve RES RC config_scope_resolve_target 'https://api.fixture.invalid/' "$FIXTURE_SCOPE"
+assert_eq 0 "$RC" 'the extra-host counts as a match on the SAME target as its base-url'
+assert_eq fixture-target "$RES" 'fixture-target, not a separate id'
+
+t_case 'a bare host:port value (no scheme at all) matches on host+port alone, regardless of the declared scheme'
+_resolve RES RC config_scope_resolve_target 'api.fixture.invalid:443' "$FIXTURE_SCOPE"
+assert_eq 0 "$RC" 'a value with no scheme opinion still resolves against an https-scheme extra-host'
+assert_eq fixture-target "$RES" 'same target'
+
+t_case 'a different scheme never resolves - "when in doubt, no match", never lib/http.sh'"'"'s own http-on-80-authorises-https relaxation'
+_resolve RES RC config_scope_resolve_target 'http://app.fixture.invalid/' "$FIXTURE_SCOPE"
+assert_eq 1 "$RC" 'fixture-target is declared https-only, so an http:// value must NOT resolve to it - fails if the resolver reuses the scope GATE'"'"'s own relaxation, which is a different question'
+assert_eq '' "$RES" 'nothing printed on a non-match'
+
+t_case 'a URL matching no declared target at all is left for the existing refusal to report, unchanged'
+_resolve RES RC config_scope_resolve_target 'https://totally-unknown.fixture.invalid/' "$FIXTURE_SCOPE"
+assert_eq 1 "$RC" 'no candidate at all is exactly the same outcome as a non-matching scheme - the caller cannot tell them apart, and does not need to'
+assert_eq '' "$RES" 'nothing printed'
+
+t_case 'a value that is already a declared id is left alone - there is nothing to resolve'
+_resolve RES RC config_scope_resolve_target 'fixture-target' "$FIXTURE_SCOPE"
+assert_eq 1 "$RC" 'an exact id match returns 1 (nothing to resolve), never 0 with the same value - fails if this function also fires for the ordinary, already-correct case'
+
+t_case 'a plain word that looks like neither a URL nor host:port never even loads the file'
+_resolve RES RC config_scope_resolve_target 'not-a-url-or-host' "$FIXTURE_SCOPE"
+assert_eq 1 "$RC" 'no shape, no attempt - the caller'"'"'s own existing "no entry" refusal is what reports this, unchanged'
+
+t_case 'a URL matching more than one declared target refuses to guess, naming every candidate'
+cat >"$W/scope-ambiguous.conf" <<'EOF'
+id: dup-b
+base-url: https://shared.fixture.invalid/
+notes: Deliberately shares a base-url with dup-a below, to prove ambiguous
+  resolution refuses rather than guessing. Declared out of alphabetical
+  order on purpose, so a passing sort is what makes the id list ordered,
+  not declaration order.
+
+id: dup-a
+base-url: https://shared.fixture.invalid/
+notes: See dup-b.
+EOF
+_resolve RES RC config_scope_resolve_target 'https://shared.fixture.invalid/' "$W/scope-ambiguous.conf"
+assert_eq 2 "$RC" 'more than one match returns 2, never a guessed 0'
+assert_eq 'dup-a,dup-b' "$RES" 'both candidate ids are printed, comma-joined and LC_ALL=C-sorted - fails if declaration order (dup-b first) leaks through unsorted'
+
 t_summary 'config' || FAILED=1
 exit "${FAILED:-0}"

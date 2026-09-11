@@ -643,7 +643,9 @@ Four things about that flag are worth knowing before reaching for it.
 
 - **It must equal `--target`.** A mismatch, or `--i-own-target` with no `--target`, is exit 2 - so a
   stale command, a shell alias, or a CI file copied between repositories cannot carry an affirmation to
-  a host that changed hands.
+  a host that changed hands. The comparison happens *after* both flags are resolved (see ["The scope
+  gate"](#the-scope-gate-dast-network)), so `--target`'s id and `--i-own-target`'s base-url for the
+  same declared target still satisfy this, in either direction.
 - **It is a key, not a switch.** On its own it raises nothing, sends nothing, and enables no check. It
   makes the higher settings *available*; you still have to ask for each one.
 - **It is never persisted.** There is no config key, dotfile, cache or environment variable that means
@@ -815,12 +817,21 @@ identical per-target state, one TCP connect at a time, and can trip the same two
 Plain language: **`dast` and `network` will not touch a host you have not explicitly listed.**
 Before any request or connection goes out, `--target NAME` must match the `id` of an entry in
 `config/scope.conf`.
+`NAME` also accepts a declared target's own `base-url` or `extra-host` value directly: when it does
+not match any id but is shaped like a URL or `host:port`, scan.sh checks it against every declared
+target's `base-url`/`extra-host` fields (normalising a trailing slash, an explicit vs. default port,
+and host case) and, on exactly one match, resolves it to that target's id and prints which one it
+chose - so `--target http://127.0.0.1:3400/` works exactly like `--target dast-test-target` when
+`dast-test-target`'s own `base-url:` is `http://127.0.0.1:3400/`. This never crosses schemes (an
+`http://` value never resolves against an `https`-only target) and never guesses: a value matching
+more than one declared target's `base-url`/`extra-host` refuses immediately, naming every candidate,
+rather than picking one. `--i-own-target` is resolved the identical way, and the two are compared
+*after* resolution, so a URL in one flag and its target's own id in the other still satisfy the
+"must equal `--target`" rule below.
 If `config/scope.conf` does not exist at all, the run refuses with exit `4` ("missing required input") -
 neither `dast` nor `network` can even attempt the gate.
-If the file exists but has no entry with that `id`, the run refuses with exit `3` ("scope violation") -
-the gate itself is refusing.
-There is no raw-URL flag that bypasses this: `--target` only ever takes a name, never a URL or a bare
-`host:port`.
+If the file exists but `NAME` matches no id and resolves to no target's `base-url`/`extra-host` either,
+the run refuses with exit `3` ("scope violation") - the gate itself is refusing.
 `sast`, `sca`, and `iac` do not need `config/scope.conf` at all.
 `network` additionally only ever probes a `(host, port)` tuple the target's own `base-url`/`extra-host`
 entries name - it never sweeps a port range or discovers a listener the operator did not declare.

@@ -86,6 +86,26 @@ ROOT_WITH_SCOPE_AND_SAST=$(cd -- "$W" && mkdir -p root-with-scope-and-sast/confi
 ROOT_NO_SCOPE=$W/root-no-scope
 mkdir -p "$ROOT_NO_SCOPE/config"
 
+# A scope.conf carrying two targets that deliberately share one base-url, so
+# a --target given as that URL resolves ambiguously (--target/--i-own-target
+# base-url resolution UX fix: an operator hit the "wants the ID, not the
+# base-url" refusal three times with the tool already holding the answer -
+# see lib/config.sh's config_scope_resolve_target and its own suite in
+# tests/suites/config.sh for the resolver's unit-level proof; this fixture
+# is what proves the wiring through scan_parse_args/_scan_resolve_target_flags
+# instead).
+ROOT_WITH_AMBIGUOUS_SCOPE=$W/root-with-ambiguous-scope
+mkdir -p "$ROOT_WITH_AMBIGUOUS_SCOPE/config"
+cat >"$ROOT_WITH_AMBIGUOUS_SCOPE/config/scope.conf" <<'EOF'
+id: dup-b
+base-url: https://shared.fixture.invalid/
+notes: Deliberately shares a base-url with dup-a below.
+
+id: dup-a
+base-url: https://shared.fixture.invalid/
+notes: See dup-b.
+EOF
+
 # A fixture SCOURSH_INSTALL_ROOT whose config/scanner.conf fails schema
 # validation, to prove the config loader really runs (and dies) before
 # scan_dispatch is ever reached.
@@ -1097,6 +1117,78 @@ t_case 'a WHOLLY MISSING scope.conf is exit 4, never exit 3'
 SCOURSH_INSTALL_ROOT=$ROOT_NO_SCOPE assert_status 4 \
   "dast --target anything with no config/scope.conf file at all dies exit 4 - fails under 'no file also means no matching entry, so it is exit 3 too' (docs/FOUNDATION.md tension 14: missing scope.conf is exit 4 only for dast)" \
   _run_main dast --target anything --out "$W/run-no-scope"
+
+# =============================================================================
+printf '\n-- --target/--i-own-target base-url resolution (the operator-reported UX fix) --\n'
+# =============================================================================
+# The real incident: `--target http://127.0.0.1:3400/` was refused even
+# though config/scope.conf's own declared target names that exact base-url -
+# the tool had already loaded the answer and refused to use it. Every case
+# here runs the FULL `scan_main` path (never scan_parse_args/
+# _scan_resolve_target_flags in isolation), because the fix's own value is
+# that config_scope_require, run_record, and every module's later
+# SCAN_FLAGS[target] read all see the SAME resolved id for free - that is
+# only provable by watching a real run reach (or fail to reach) dispatch.
+
+t_case 'a --target given as a declared target'"'"'s own base-url resolves and the run proceeds, printing the substitution'
+RESOLVE_OUT1=$W/resolve-out-1
+rm -rf "$RESOLVE_OUT1"; RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target 'https://app.fixture.invalid/' --out "$RESOLVE_OUT1" ) >"$W/resolve-1.log" 2>&1 || RC=$?
+assert_eq 0 "$RC" 'exactly one declared target'"'"'s base-url matches, so the run proceeds exactly as --target fixture-target would - fails if a URL-shaped value is refused outright regardless of whether it matches something'
+assert_contains "$(cat "$W/resolve-1.log")" "resolved to declared target id 'fixture-target'" \
+  'the substitution is printed, naming which target it resolved to - never a silent rewrite'
+
+t_case 'a missing trailing slash and an explicit default port both still resolve'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target 'https://app.fixture.invalid' --out "$W/resolve-out-2" ) >/dev/null 2>&1 || RC=$?
+assert_eq 0 "$RC" 'no trailing slash still resolves to fixture-target'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target 'https://app.fixture.invalid:443/' --out "$W/resolve-out-3" ) >/dev/null 2>&1 || RC=$?
+assert_eq 0 "$RC" 'an explicit :443 (https'"'"'s own default) still resolves to fixture-target'
+
+t_case 'a different scheme never resolves, and the run refuses exactly as an unmatched id would'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target 'http://app.fixture.invalid/' --out "$W/resolve-out-4" ) >"$W/resolve-4.log" 2>&1 || RC=$?
+assert_eq 3 "$RC" 'fixture-target is declared https-only - an http:// value must be refused (exit 3), never silently authorised against it'
+assert_not_contains "$(cat "$W/resolve-4.log")" 'resolved to declared target id' \
+  'no substitution happened - the refusal below is the ORIGINAL, unresolved value'
+assert_contains "$(cat "$W/resolve-4.log")" 'has no entry in' \
+  'the existing, unchanged "no entry" refusal is what actually fires'
+
+t_case 'a URL matching no declared target at all still refuses with today'"'"'s teaching message, unchanged'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target 'https://not-declared-anywhere.fixture.invalid/' --out "$W/resolve-out-5" ) >"$W/resolve-5.log" 2>&1 || RC=$?
+assert_eq 3 "$RC" 'an undeclared host is still refused by the scope gate - fails if base-url resolution widens the gate itself rather than only mapping a DECLARED target'"'"'s own address to its id'
+assert_contains "$(cat "$W/resolve-5.log")" "looks like a URL or host:port - --target wants the ID" \
+  'the URL-shaped hint still fires, exactly as before this feature existed'
+
+t_case 'a URL matching MORE THAN ONE declared target refuses and names every candidate, never guesses'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_AMBIGUOUS_SCOPE _run_main dast --target 'https://shared.fixture.invalid/' --out "$W/resolve-out-6" ) >"$W/resolve-6.log" 2>&1 || RC=$?
+assert_eq 3 "$RC" 'ambiguous resolution refuses (exit 3, a scope-class problem), never picks one candidate silently'
+assert_contains "$(cat "$W/resolve-6.log")" 'dup-a' 'first candidate named'
+assert_contains "$(cat "$W/resolve-6.log")" 'dup-b' 'second candidate named'
+assert_contains "$(cat "$W/resolve-6.log")" 'matches more than one declared target' \
+  'the refusal states this is an ambiguity, not an ordinary "no entry" miss'
+
+t_case '--target as a URL and --i-own-target as that same target'"'"'s own id satisfy the "must equal --target" rule'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target 'https://app.fixture.invalid/' --i-own-target fixture-target --out "$W/resolve-out-7" ) >"$W/resolve-7.log" 2>&1 || RC=$?
+assert_eq 0 "$RC" 'the equality check compares RESOLVED values - fails if it still compares the raw strings, which differ here and would die exit 2'
+assert_not_contains "$(cat "$W/resolve-7.log")" 'does not match' \
+  'no mismatch was ever reported'
+
+t_case 'and the reverse - --target as a plain id, --i-own-target as its own URL - satisfies the rule too'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target fixture-target --i-own-target 'https://app.fixture.invalid/' --out "$W/resolve-out-8" ) >/dev/null 2>&1 || RC=$?
+assert_eq 0 "$RC" 'symmetric: which flag carries the URL does not matter'
+
+t_case 'a GENUINE mismatch - one resolves to a DIFFERENT declared target - still fails'
+RC=0
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE _run_main dast --target 'https://app.fixture.invalid/' --i-own-target fixture-wide --out "$W/resolve-out-9" ) >"$W/resolve-9.log" 2>&1 || RC=$?
+assert_eq 2 "$RC" 'fixture-target (what the URL resolves to) and fixture-wide (a real, different, already-valid id) are still a real mismatch - fails if resolution is used to EXCUSE a genuine mismatch rather than only to canonicalise a same-target spelling'
+assert_contains "$(cat "$W/resolve-9.log")" 'does not match' \
+  'the ordinary mismatch refusal fires'
 
 # =============================================================================
 printf '\n-- required-input gates: --path (sast/sca/iac), and the prior-run dirs (diff/report) --\n'
