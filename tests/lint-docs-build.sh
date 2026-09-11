@@ -62,6 +62,43 @@ for entry in "${CHECKS[@]}"; do
   check_entry "${entry%%|*}" "${entry#*|}"
 done
 
+printf '\n== inline field-shape warnings exist, and the --target wording mirrors lib/config.sh ==\n'
+
+# The real incident this page's warnings exist for: an operator pasted a
+# base-url into --target and the (then-unpreflighted) scan.sh scanned for
+# three hours before refusing. These are POSITIVE presence checks - unlike
+# CHECKS above - proving the non-blocking, inline validation table actually
+# ships, not just that the page avoids network primitives.
+if scan_match "$HITS" -F -e 'FIELD_VALIDATORS' -- "$PAGE"; then
+  printf '  ok    a FIELD_VALIDATORS table (the inline, non-blocking field-shape warnings) is present\n'
+else
+  FAILED=1
+  printf '  FAIL  %s has no FIELD_VALIDATORS table - the inline field-shape warnings do not exist\n' "${PAGE#"$ROOT"/}" >&2
+fi
+
+# Pull the shared wording fragment straight out of lib/config.sh's own
+# _scope_target_not_found_message rather than hardcoding a second copy of
+# it here, so this check breaks loudly (rather than silently going stale)
+# the moment the CLI's own wording changes without the page following it.
+CONFIG_SH=$ROOT/lib/config.sh
+CLI_MSG_FRAGMENT='wants the ID a target is declared UNDER in'
+if ! scan_match "$SCOURSH_SCRATCH/docs-build-cli-msg" -F -e "$CLI_MSG_FRAGMENT" -- "$CONFIG_SH"; then
+  FAILED=1
+  printf '  FAIL  lib/config.sh no longer contains the expected --target refusal wording fragment (%s) - cannot verify the page agrees with it\n' "$CLI_MSG_FRAGMENT" >&2
+elif scan_match "$HITS" -F -e "$CLI_MSG_FRAGMENT" -- "$PAGE"; then
+  printf '  ok    the inline --target warning wording matches lib/config.sh'"'"'s _scope_target_not_found_message\n'
+else
+  FAILED=1
+  printf '  FAIL  %s does not contain the CLI'"'"'s own --target refusal wording (%s) - the inline warning has drifted from lib/config.sh\n' "${PAGE#"$ROOT"/}" "$CLI_MSG_FRAGMENT" >&2
+fi
+
+if scan_match "$HITS" -F -e 'targetAffirmMismatch' -- "$PAGE"; then
+  printf '  ok    a --target/--i-own-target equality check (targetAffirmMismatch) is present\n'
+else
+  FAILED=1
+  printf '  FAIL  %s has no --target/--i-own-target equality check\n' "${PAGE#"$ROOT"/}" >&2
+fi
+
 printf '\n'
 if (( FAILED )); then
   printf 'lint-docs-build: FAILED\n'
