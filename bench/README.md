@@ -196,10 +196,20 @@ derived from a `bench/` run.
 1. **No number measured on any tool's own test fixtures.** A tool's rules were
    authored against its own cases, so a high score there measures "still
    passes its own cases", not "finds vulnerabilities it has never seen". This
-   is not a theoretical risk: the same two tools on the same class of task
-   invert their ranking between scoursh's fixtures and a neutral corpus, and
-   the gap is worth roughly seventy percentage points of recall. Nothing in
-   `bench/` will score `tests/fixtures/`.
+   is not a theoretical risk - it was measured directly, and the ranking
+   inverted:
+
+   | SAST recall, same two tools | On scoursh's own fixtures (`tests/fixtures/`, a 41-issue target) | On a neutral 192-case sample (`bench/results/smoke-owasp-sast-192/`, below) |
+   |---|---|---|
+   | scoursh | 40/41 = 97.6% | 14/96 = 14.6% (Youden J −0.031, below a coin flip) |
+   | Semgrep CE | 12/41 = 29.3% | 82/96 = 85.4% (Youden J +0.583) |
+
+   Same two tools, same task shape, opposite ranking - a roughly seventy-point
+   swing in scoursh's own recall, in the direction that flatters it on its own
+   fixtures. That inversion is why this rule is absolute rather than a
+   caveat: a number measured on a tool's own fixtures does not predict, even
+   in *direction*, how the tool performs on a corpus it did not author.
+   Nothing in `bench/` will score `tests/fixtures/`.
 
 2. **No single overall score across categories.** The scope differences make
    it meaningless and it is the first thing an unfriendly reader attacks.

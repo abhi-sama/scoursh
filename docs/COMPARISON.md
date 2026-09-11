@@ -246,7 +246,7 @@ states rather than folded into a clean pass.
 
 scoursh's image module is **not designed to reach a registry or a running container runtime at
 all** - `lib/http.sh` refuses any host absent from `config/scope.conf` and there is no third egress
-channel (`docs/FOUNDATION.md` tension 19), so an image is supplied as a file, offline, the identical
+channel, so an image is supplied as a file, offline, the identical
 model `data/advisories.db` already lives in for SCA. Trivy and Grype both pull directly from a
 registry or a local daemon by design, which is real convenience scoursh's egress model does not
 permit itself. What scoursh adds instead is the property the rest of the tool has: the same finding
@@ -313,16 +313,6 @@ sweep everywhere; reach for Prowler when cloud posture is the job itself.
 
 ## Benchmark status
 
-**The recall numbers that used to live in this section are retracted.** An earlier version of this
-page published a "Measured head-to-head" table claiming, among other things, scoursh 40/41 (97.6%)
-recall against Semgrep's 12/41 (29.3%) on a 41-issue SAST target. That target, like the IaC and
-secrets targets in the same table, was scoursh's own committed test fixtures under `tests/fixtures/` -
-files its own rules were authored against, which measures "still passes its own cases," not "finds
-vulnerabilities it has never seen." No harness, corpus manifest, or scoring script for any of those
-numbers ever shipped in this repository, so a reader could not have reproduced them. The whole section
-is removed rather than re-caveated: a caveat is prose, and the table underneath it is what gets
-screenshotted.
-
 ### Scope first, then score
 
 Read the per-surface tables above before any recall number, on this page or a future one. A
@@ -339,66 +329,24 @@ checks-shipped gap predicts a recall gap; the recall gap should never be the fir
 A roughly 50-to-1 rule-count gap does not require a benchmark to predict a specialist win on recall. A
 same-corpus comparison should confirm that gap, not report it as news.
 
-### Why the old number was thrown away: a 192-case pilot that inverts it
+### The real benchmark: seven legs landed, all reproducible from `bench/`
 
-We ran a real pilot to find out how much of the old SAST number was fixture bias. It was worth the
-entire result.
-
-**Setup.** A stratified 192-case sample (96 real vulnerabilities / 96 sanitized traps; 12 of each
-across 8 CWE categories: `sqli cmdi ldapi pathtraver crypto hash weakrand xss`) drawn from
-`OWASP-Benchmark/BenchmarkJava` (`master`, GPL-2.0, last pushed 2026-09-08) - a corpus scoursh has
-never seen and did not author. Tools: scoursh `0.1.0-dev` @ `6787df3` (native tier, all defaults, no
-`--use-engines`) against Semgrep CE `1.176.0` (`--config p/security-audit --config p/owasp-top-ten`).
-Scored two ways - loose (any finding in the file) and strict (the finding's CWE in the case's
-ground-truth equivalence class) - and both scorings agreed.
-
-| SAST recall, same two tools | On scoursh's own fixtures (the old, retracted number) | On the neutral 192-case pilot |
-|---|---|---|
-| scoursh | 40/41 = 97.6% | **14/96 = 14.6%** (Youden J −0.031, below a coin flip) |
-| Semgrep CE | 12/41 = 29.3% | **82/96 = 85.4%** (Youden J +0.583) |
-
-Same two tools, same task shape, opposite ranking. That is not "the old number was a little
-optimistic" - it is direct evidence that the old number measured "still passes its own test files,"
-not "finds vulnerabilities it has never seen." We are publishing the inversion in place of the number
-it replaced, because a benchmark that only shows results favourable to the project running it is not a
-benchmark.
-
-This is a **192-case pilot on one language (Java)**, not the finished benchmark - too small and too
-narrow to be a final verdict. Treat it as what it is: the evidence for why the old table is gone, and
-a preview of the real benchmark below.
-
-Per-category results in the pilot were not uniformly bad: scoursh matched or beat Semgrep on `ldapi`
-(12/12 vs 11/12), a pattern-shaped check, while losing heavily on the taint-shaped categories -
-`sqli`, `cmdi`, `pathtraver` - where it found none of the 12 real cases in each. That split lines up
-with a limitation the project already states, not a fresh one:
-
-> **Declared, not discovered.** [`docs/DESIGN.md` §15](DESIGN.md) states plainly: *"native tier is
-> pattern/linter-grade; true taint/cross-function analysis needs the optional vendored engines."* A
-> pilot showing scoursh losing on taint-shaped injection categories confirms that declared limitation
-> under measurement. It is a consistency result, not a surprise.
-
-This pilot has since been confirmed at 14x the sample size: the full benchmark's SAST leg (below) runs
-the identical two tools over all 2,740 OWASP Benchmark cases, unsampled, and lands at the same
-below-coin-flip Youden J the 192-case pilot found.
-
-### The real benchmark: six legs landed, all reproducible from `bench/`
-
-The pilot above answered "should we trust the old numbers" (no). It was never the finished benchmark.
-That benchmark - a harness, a pinned corpus manifest, a scorer, and per-category results with raw tool
-output committed alongside - now exists at [`bench/`](../bench/README.md) and seven of its legs have
-landed: **SAST** (the full 2,740-case OWASP Benchmark corpus, not a sample), **SCA** (26 pinned
-npm/PyPI/Go lockfile cases against real OSV.dev advisories), **IaC** (two hand-labelled corpora -
-TerraGoat/AWS and kubernetes-goat), **secrets** (leaky-repo, 82 hand-labelled cases), **DAST** (a
-20-case hand-labelled corpus against a local, operator-owned OWASP Juice Shop container, scoursh vs
-OWASP ZAP), and **honesty + egress** (a coverage-honesty audit over every run below, plus a
-kernel-enforced zero-egress proof).
+`bench/` is a harness, a pinned corpus manifest, a scorer, and per-category results with raw tool
+output committed alongside - see [`bench/README.md`](../bench/README.md) for what it is and the rules
+every result below is held to, including why a tool's own recall on a corpus it authored its own rules
+against is not published here. Seven of its legs have landed: **SAST** (the full 2,740-case OWASP
+Benchmark corpus, not a sample), **SCA** (26 pinned npm/PyPI/Go lockfile cases against real OSV.dev
+advisories), **IaC** (two hand-labelled corpora - TerraGoat/AWS and kubernetes-goat), **secrets**
+(leaky-repo, 82 hand-labelled cases), **DAST** (a 20-case hand-labelled corpus against a local,
+operator-owned OWASP Juice Shop container, scoursh vs OWASP ZAP), and **honesty + egress** (a
+coverage-honesty audit over every run below, plus a kernel-enforced zero-egress proof).
 Every number in the tables below traces to a committed `bench/results/<leg>/` directory carrying
 the tool's raw output, its normalised records, a `MANIFEST` with exact version and corpus commit, and
 the rendered scorecard - re-run any of it with the commands in that leg's own `README.md`.
 
 **No number below is measured on `tests/fixtures/`, no single score spans categories, and every ratio
 carries its tool version and corpus commit** - the three rules [`bench/README.md`](../bench/README.md)
-exists to enforce, the same three the retracted table above broke.
+exists to enforce.
 
 **Cloud and network are out of scope for this benchmark entirely** - no neutral cloud-posture
 corpus/account and no head-to-head with Nmap that would not be comparing discovery against a
@@ -550,7 +498,7 @@ tools.
 ## Notes & sources
 
 > **This page is a capability and positioning comparison, with one section that is a real benchmark.**
-> [Benchmark status](#benchmark-status) carries the 192-case SAST pilot and the seven landed
+> [Benchmark status](#benchmark-status) carries the seven landed
 > `bench/` legs (SAST, SCA, IaC ×2, secrets, DAST, honesty/egress) - every number there was run over a
 > shared, neutral, pinned corpus and scored against committed ground truth, with the harness, raw tool
 > output, and scorer all reproducible from the repository. Cloud and
@@ -573,6 +521,5 @@ September 2024 and remains Apache-2.0.
 
 ---
 
-Prepared as an internal positioning document for the scoursh open-source launch. Every claim about
-scoursh is traceable to a command or a source file in the repository; every claim about another tool
-is traceable to that project's own repository or documentation.
+Every claim about scoursh is traceable to a command or a source file in the repository; every claim
+about another tool is traceable to that project's own repository or documentation.
