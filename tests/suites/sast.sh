@@ -833,6 +833,14 @@ assert_status 0 \
   'no --fail-on given means not-evaluated, never a silent gate - fails if the gate fired without being asked' \
   bash "$ROOT/scan.sh" sast --path "$ROOT/tests/fixtures/vuln" --out "$W/run-no-gate"
 
+t_case 'a single-module run with no --format at all writes agent-fix.json alongside the other defaults'
+for f in findings.json findings.jsonl report.md report.html agent-fix.json run.json; do
+  assert_file_exists "$W/run-no-gate/$f" \
+    "$f is written on a plain 'scan.sh sast' run with no --format flag - agent-fix.json is in the default list, no flag required"
+done
+assert_file_absent "$W/run-no-gate/report-audit.html" \
+  'report-audit.html is NOT written by default on a single-module run - audit alone stays opt-in'
+
 
 # =============================================================================
 printf -- '\n-- --jobs N: real bounded parallelism, byte-identical to --jobs 1 --\n'

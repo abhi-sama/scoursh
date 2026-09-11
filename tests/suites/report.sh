@@ -617,7 +617,11 @@ report_all "$D13"
 
 t_case 'report-audit.html is opt-in: report_all with the default format list does NOT write it'
 assert_file_absent "$D13/report-audit.html" \
-  'SCOURSH_FORMATS was never set, so the default json,sarif,html,md list applies - fails if audit were ever added to the default list, which would make it non-opt-in'
+  'SCOURSH_FORMATS was never set, so the default json,sarif,html,md,agent list applies - fails if audit were ever added to the default list, which would make it non-opt-in'
+
+t_case 'agent-fix.json IS written with no --format given: it is a first-class deliverable, in the default list'
+assert_file_exists "$D13/agent-fix.json" \
+  'SCOURSH_FORMATS was never set, so the default json,sarif,html,md,agent list applies - fails if agent were ever dropped from the default list'
 
 t_case 'captain decision 1: report.html is byte-for-byte unaffected by the audit report existing'
 H13_BEFORE=$(cat "$D13/report.html")
