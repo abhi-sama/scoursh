@@ -4,8 +4,8 @@
 
 `scoursh` is an egress-restricted, shell-based security scanner: one tool, one CLI, one report,
 across source code (SAST), dependencies (SCA), infrastructure-as-code (IaC), a running endpoint
-(DAST), and live AWS configuration (Cloud/CSPM). It makes zero network calls except the ones you
-explicitly authorize, runs on nothing but
+(DAST), a network/host listener set, a container image, and live AWS configuration (Cloud/CSPM). It
+makes zero network calls except the ones you explicitly authorize, runs on nothing but
 `bash` and standard coreutils, and treats "we did not check that" as a first-class result instead of
 folding it into "clean." The name blends **scour** (search thoroughly, corner to corner) and **sh**
 (the shell it's written in) - *scan exhaustively*.
@@ -48,13 +48,22 @@ checks (one DAST, one network) need the vendored advisory database - see
 ## Why scoursh
 
 scoursh is not a deeper Semgrep, ZAP, or Trivy, and it won't claim to be - a specialist in any single
-category outclasses it there. Its value is different: **one** unified, egress-safe sweep across five
-surfaces, with no heavy toolchain to install, that states its own blind spots instead of quietly
-reporting "clean" when it never actually looked. Reach for it as a CI baseline everywhere - including
-air-gapped or egress-audited environments a specialist can't run in at all - or wherever "did it
-actually check?" has to be an answerable question: an auditor, a post-incident review, compliance
-evidence. Reach for a specialist - Semgrep, ZAP, Trivy, Checkov, Gitleaks, Prowler - when you need
-its depth.
+category outclasses it there. Its value is different:
+
+- **One** unified, egress-safe sweep across seven surfaces (SAST, SCA, IaC, DAST, network/host,
+  container image, Cloud/CSPM) in a single CLI and a single report, with no heavy toolchain to
+  install - pure `bash` and coreutils.
+- **Zero egress is enforced, not promised.** `tools/run-sandboxed.sh` (macOS Seatbelt) and
+  `tools/run-in-netns.sh` (Linux network namespaces) back the no-egress rule with a kernel-level
+  guarantee rather than a policy the tool merely follows, which is why it runs in air-gapped and
+  egress-audited environments a network-dependent specialist can't run in at all.
+- **"We did not check that" is a first-class, recorded result**, never folded into a silent "clean" -
+  so "did it actually check?" stays an answerable question for an auditor, a post-incident review, or
+  compliance evidence.
+- **`--format agent`** emits a compact findings file (`reports/<run>/agent-fix.json`) shaped for a
+  downstream fixing agent to consume and act on, not for a human to triage.
+
+Reach for a specialist - Semgrep, ZAP, Trivy, Checkov, Gitleaks, Prowler - when you need its depth.
 
 The full capability comparison, including measured head-to-head numbers and an honest verdict per
 surface, is [`docs/COMPARISON.md`](docs/COMPARISON.md) (also
@@ -290,9 +299,11 @@ for the dated decision record.
 
 ## Status
 
-Five surfaces are built and produce real findings today: **SAST**, **IaC**, **SCA** (once you've
-built `data/advisories.db`), **DAST** (once you've authorized a target), and **Cloud/AWS CSPM** (once
-you've pointed it at an account with resolvable credentials). Guided mode, persistent run state with a
+Seven surfaces are built and produce real findings today: **SAST**, **IaC**, **SCA** (once you've
+built `data/advisories.db`), **DAST** (once you've authorized a target), **Network/host** (once
+you've authorized a target), **Container image** (once you've pointed it at a `docker save` tarball
+or OCI layout), and **Cloud/AWS CSPM** (once you've pointed it at an account with resolvable
+credentials). Guided mode, persistent run state with a
 real `--fail-on-new` CI carve-out, a complete, schema-validated SARIF 2.1.0 writer, and both halves of
 the compliance report (findings grouped by OWASP Top 10 category and by CIS AWS Foundations Benchmark
 v3.0.0 control, each with an honest per-category/per-control
