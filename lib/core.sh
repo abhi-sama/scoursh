@@ -722,17 +722,39 @@ core_require_baseline() {
 # outside this file - a second implementation in modules/sca/ would be exactly
 # the "ad hoc parser, subtly different" failure tension 24 exists to prevent.
 #
+# _db_lookup_exec PREFIX FILE FALLBACK_ARGS... - runs the capability-selected
+# engine (`look`, else `grep -F` with FALLBACK_ARGS appended - `-m 1` for the
+# exact caller, nothing for the prefix caller) and captures its rc the same
+# way scan_match does, rather than letting it be the function's bare last
+# statement: `look`/`grep` exit 1 on NO MATCH, which is the ordinary case for
+# both callers below (most packages carry no advisory), and under scoursh's
+# mandatory `set -Eeuo pipefail` an untested trailing command tripping that
+# exit trips the ERR trap too - loudly, on every clean lookup, from inside
+# whatever subshell the caller used (`sca_lookup_range`'s
+# `done < <(db_lookup_prefix ...)` is the reported case, but any bare/`$()`
+# call is equally exposed). `rc <= 1` is normal (0 matched, 1 no match) and is
+# returned with no trap noise; `rc > 1` is a genuine engine/file failure and
+# is `die`'d exactly as scan_match's own does, because a real failure here
+# must stay loud.
+_db_lookup_exec() {
+  local prefix=$1 file=$2 rc=0
+  shift 2
+  if [[ ${SCOURSH_CAP_LOOK:-none} == look ]]; then
+    LC_ALL=C look -- "$prefix" "$file" || rc=$?
+  else
+    LC_ALL=C grep -F "$@" -- "$prefix" "$file" || rc=$?
+  fi
+  (( rc <= 1 )) || die "$SCOURSH_EXIT_INCOMPLETE" "db lookup engine failed (rc=$rc): prefix=$prefix file=$file"
+  return "$rc"
+}
+
 # Returns the underlying command's own exit status: 0 with output when at
 # least one line matched, 1 with no output otherwise. FILE must already be
 # sorted under `LC_ALL=C` (tension 25) - this function does not sort it.
 db_lookup_exact() {
   local prefix=$1 file=$2
   [[ -r $file ]] || return 1
-  if [[ ${SCOURSH_CAP_LOOK:-none} == look ]]; then
-    LC_ALL=C look -- "$prefix" "$file"
-  else
-    LC_ALL=C grep -F -m 1 -- "$prefix" "$file"
-  fi
+  _db_lookup_exec "$prefix" "$file" -m 1
 }
 
 # db_lookup_prefix PREFIX FILE - like db_lookup_exact, but ALWAYS returns
@@ -751,11 +773,7 @@ db_lookup_exact() {
 db_lookup_prefix() {
   local prefix=$1 file=$2
   [[ -r $file ]] || return 1
-  if [[ ${SCOURSH_CAP_LOOK:-none} == look ]]; then
-    LC_ALL=C look -- "$prefix" "$file"
-  else
-    LC_ALL=C grep -F -- "$prefix" "$file"
-  fi
+  _db_lookup_exec "$prefix" "$file"
 }
 
 # ---------------------------------------------------------------------------

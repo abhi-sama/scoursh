@@ -298,6 +298,74 @@ t_case 'sca_lookup_range: an untracked npm package - miss, not a crash'
 assert_status 1 'a package the fixture db never mentions produces no hit' \
   sca_lookup_range totally-untracked-package 1.0.0 "$DB"
 
+# -----------------------------------------------------------------------------
+printf -- '\n-- sca_lookup_range / db_lookup_prefix: no false "command failed" noise on a clean no-match (docs/FOUNDATION.md tension 4'"'"'s trap, third reported instance) --\n'
+# -----------------------------------------------------------------------------
+# BUG (operator-reported, real scan): `sca_lookup_range` reads db_lookup_prefix
+# through `done < <(db_lookup_prefix "$prefix" "$db")`, and `look`/`grep -F`
+# both exit 1 on NO MATCH - the ORDINARY case, since most packages carry no
+# advisory. Under scoursh's mandatory `set -Eeuo pipefail`, that untested
+# nonzero exit trips the ERR trap from inside the process-substitution
+# subshell and logs `error scoursh: command failed (status 1) at ...` once per
+# CLEAN package, flooding a successful scan's stderr with spurious errors -
+# exactly what tension 4 already names as the codebase's own documented trap
+# ("grep exits 1 on no-match, which is the normal case").
+#
+# This section proves the fix at the exact shape it was reported in: a
+# real, tested `if sca_lookup_range ...; then` call (the shape
+# `_sca_run_npm` itself uses, modules/sca/engine.sh:1585) around a package
+# the fixture db has never heard of.
+_DLR_ERR=$W/sca-lookup-range-nomatch.stderr
+: >"$_DLR_ERR"
+_dlr_rc=0
+if ( sca_lookup_range totally-untracked-package 1.0.0 "$DB" >/dev/null ) 2>"$_DLR_ERR"; then
+  _dlr_rc=0
+else
+  _dlr_rc=$?
+fi
+t_case 'sca_lookup_range: a NO-MATCH lookup emits NOTHING on stderr'
+assert_eq '' "$(cat "$_DLR_ERR")" \
+  'FAILS under the original implementation: db_lookup_prefix'"'"'s bare last-statement grep/look exiting 1 (normal no-match) trips the ERR trap and logs "error scoursh: command failed ... LC_ALL=C look/grep ..." even though the lookup behaved correctly and the scan is not broken'
+t_case 'sca_lookup_range: ...and still correctly reports "no match" (the fix must not change the contract)'
+assert_eq 1 "$_dlr_rc" 'the no-advisory case must still return non-zero - silence on stderr must not become silence about the result too'
+
+t_case 'sca_lookup_range: a package WITH an advisory still matches, with its rows unchanged, and STILL emits no stderr noise'
+_DLR_ERR2=$W/sca-lookup-range-match.stderr
+: >"$_DLR_ERR2"
+_dlr_hit=''
+_dlr_rc2=1
+if _dlr_hit=$(sca_lookup_range lodash 4.17.15 "$DB" 2>"$_DLR_ERR2"); then _dlr_rc2=0; fi
+assert_eq 0 "$_dlr_rc2" 'lodash@4.17.15 must still be reported as a hit'
+assert_contains "$_dlr_hit" 'SCA-FIXTURE-ADVISORY-002' 'and must still carry the same advisory row the pre-fix behavior already returned'
+assert_eq '' "$(cat "$_DLR_ERR2")" 'a MATCHING lookup must also stay silent on stderr - the fix must not just move the noise to the success path'
+
+t_case 'db_lookup_prefix: a genuine engine failure (rc > 1, e.g. a transient I/O error) still dies loudly rather than being silently swallowed as "no match" - the "do not simply || true" half of the fix'
+# A missing/unreadable FILE is deliberately NOT this case: db_lookup_exact and
+# db_lookup_prefix both freeze "unreadable file -> return 1" as their own
+# documented, tested contract (tests/suites/core.sh), so it is not a stand-in
+# for "the pattern engine itself broke" the way it would be for scan_match.
+# What distinguishes a REAL engine failure is the underlying command exiting
+# with something other than 0 or 1 - simulated here with a stub `grep` ahead
+# of PATH, forced onto the grep-fallback branch so the stub is guaranteed to
+# be the one invoked.
+_STUBDIR=$W/stub-bin-engine-failure
+mkdir -p "$_STUBDIR"
+cat >"$_STUBDIR/grep" <<'STUBEOF'
+#!/usr/bin/env bash
+exit 2
+STUBEOF
+chmod +x "$_STUBDIR/grep"
+_dlp_engine_fail() {
+  PATH="$_STUBDIR:$PATH" SCOURSH_CAP_LOOK=none db_lookup_prefix 'npm'$'\t''lodash'$'\t' "$DB"
+}
+_DLP_FAIL_ERR=$W/dlp-enginefail.stderr
+_dlp_fail_rc=0
+( _dlp_engine_fail ) >/dev/null 2>"$_DLP_FAIL_ERR" || _dlp_fail_rc=$?
+assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$_dlp_fail_rc" \
+  'a stubbed grep exiting 2 must exit 5 (SCOURSH_EXIT_INCOMPLETE) - a naive `|| true` fix at the call site (without db_lookup_prefix distinguishing rc>1 itself) would instead read this as an ordinary no-match and swallow it'
+assert_contains "$(cat "$_DLP_FAIL_ERR")" 'db lookup engine failed' \
+  'and the failure is reported, not silently discarded'
+
 # =============================================================================
 printf -- '\n-- sca_scan_tree: full npm-lock fixture against the fixture db --\n'
 # =============================================================================

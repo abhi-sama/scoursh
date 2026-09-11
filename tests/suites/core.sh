@@ -565,6 +565,53 @@ db_lookup_prefix "$DUP_PREFIX" "$W/does-not-exist.db" >/dev/null 2>&1 || rc=$?
 assert_eq 1 "$rc" 'FAILS if the [[ -r $file ]] guard is dropped'
 
 # ---------------------------------------------------------------------------
+printf '\n-- docs/FOUNDATION.md tension 4'"'"'s trap, third instance: db_lookup_exact/db_lookup_prefix distinguish no-match from engine failure --\n'
+# ---------------------------------------------------------------------------
+# Operator-reported bug: `look`/`grep -F` both exit 1 on NO MATCH - the
+# ordinary case, since most packages carry no advisory - and modules/sca/
+# engine.sh's sca_lookup_range read db_lookup_prefix's output through
+# `done < <(db_lookup_prefix ...)`, an untested process substitution under
+# scoursh's mandatory `set -Eeuo pipefail`. That tripped the ERR trap and
+# logged "error scoursh: command failed" once per clean package, even though
+# the lookup behaved correctly (tests/suites/sca.sh's own section on this
+# proves the fix at that exact reported shape). The unit-level half proved
+# here is that both primitives now internally distinguish rc<=1 (returned
+# cleanly, no matter how the caller invokes them) from rc>1 (a genuine
+# engine/file failure, `die`'d loudly) - the same distinction scan_match
+# already makes for the pattern-rule engine, mirrored here for `look`/`grep`.
+_STUBDIR=$W/stub-bin-lookup-enginefail
+mkdir -p "$_STUBDIR"
+cat >"$_STUBDIR/grep" <<'STUBEOF'
+#!/usr/bin/env bash
+exit 2
+STUBEOF
+chmod +x "$_STUBDIR/grep"
+
+t_case 'db_lookup_prefix: a stubbed grep exiting 2 (rc > 1) dies with SCOURSH_EXIT_INCOMPLETE, never returns as if it were an ordinary no-match'
+_dlp_err=$W/dlp-stub-prefix.stderr
+_dlp_rc=0
+( PATH="$_STUBDIR:$PATH" SCOURSH_CAP_LOOK=none db_lookup_prefix "$DUP_PREFIX" "$W/lookup.db" ) \
+  >/dev/null 2>"$_dlp_err" || _dlp_rc=$?
+assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$_dlp_rc" \
+  'FAILS under a naive `|| true`-only fix: rc=2 must never be read as "no match" (rc=1)'
+assert_contains "$(cat "$_dlp_err")" 'db lookup engine failed' 'and the failure is reported, not silently discarded'
+
+t_case 'db_lookup_exact: a stubbed grep exiting 2 (rc > 1) dies with SCOURSH_EXIT_INCOMPLETE too - the same audited hazard, same fix'
+_dle_err=$W/dlp-stub-exact.stderr
+_dle_rc=0
+( PATH="$_STUBDIR:$PATH" SCOURSH_CAP_LOOK=none db_lookup_exact "$DUP_PREFIX" "$W/lookup.db" ) \
+  >/dev/null 2>"$_dle_err" || _dle_rc=$?
+assert_eq "$SCOURSH_EXIT_INCOMPLETE" "$_dle_rc" \
+  'db_lookup_exact shares db_lookup_prefix'"'"'s exact bare-last-statement shape, so it needs the identical guard'
+assert_contains "$(cat "$_dle_err")" 'db lookup engine failed' 'and the failure is reported, not silently discarded'
+
+t_case 'db_lookup_prefix: an ordinary no-match (rc=1) is unaffected by the engine-failure guard'
+rc=0
+out=$(SCOURSH_CAP_LOOK=none db_lookup_prefix "$NOMATCH_PREFIX" "$W/lookup.db") || rc=$?
+assert_eq 1 "$rc" 'rc<=1 must still return cleanly rather than being escalated into a die'
+assert_eq '' "$out" 'and print nothing, exactly as before this fix'
+
+# ---------------------------------------------------------------------------
 printf '\n-- json_string --\n'
 # ---------------------------------------------------------------------------
 t_case 'the single JSON writer'

@@ -4124,13 +4124,32 @@ image` now actually reports vulnerable apk packages - the whole point of the mod
   `fixed_versions` is treated as still-vulnerable, mirroring `modules/sca/engine.sh`'s own
   `accept_risk` convention for an unfixed advisory. One finding per `(package, advisory_id)`, deduped
   within one package's own matching loop.
-- **`db_lookup_prefix` on a genuine miss logs a `command failed (status 1) ... LC_ALL=C look` line via
-  the global ERR trap (`core_on_err`) even on the ordinary "this package has no advisories" case.**
-  Measured to be pre-existing, not a regression: `modules/sca/engine.sh`'s own `sca_lookup_range` (the
-  npm-range amendment) uses the identical `done < <(db_lookup_prefix ...)` shape and reproduces the
-  same noise on a plain miss, confirmed by direct reproduction against a real fixture db. Harmless
-  (the loop just sees no lines) and consistent with established precedent - not something this ticket
-  "fixed" by working around it.
+- **This was tension 4's trap, THIRD instance, and it is now FIXED - do not reintroduce it or read the
+  paragraph this replaces as still accurate.** An earlier ticket here measured `db_lookup_prefix`
+  logging a spurious `command failed (status 1) ... LC_ALL=C look`/`grep` line on the ordinary "this
+  package has no advisories" case and, at the time, shipped it anyway as "harmless, pre-existing,
+  consistent with established precedent." An operator later reported exactly this from a real scan (~20
+  consecutive lines on a clean dependency set), which is what "harmless" actually costs: scoursh's whole
+  pitch is reporting honestly what it did and did not check, and a scan flooding its own stderr with
+  `error` lines it cannot tell apart from a real failure defeats that. The fix has TWO parts and both are
+  required - fixing only one reintroduces either this bug or its mirror-image (a swallowed real failure):
+  `db_lookup_exact`/`db_lookup_prefix` (`lib/core.sh`) now route the `look`/`grep -F` call through a
+  shared `_db_lookup_exec` that captures `rc` the way `scan_match` already does for the pattern engine,
+  and `die`s (`SCOURSH_EXIT_INCOMPLETE`) on `rc > 1` - a real engine/file failure stays loud. That alone
+  is NOT sufficient: bash trips `errexit`/the ERR trap on ANY untested command whose exit status is
+  nonzero, including a plain `return N` (N != 0) propagating up through nested, otherwise-untested
+  function calls - measured directly (`if myfn; then` fully suppresses it for the whole nested call
+  tree; a bare/`$(...)`-command-substitution use of a function returning 1 does NOT, even though `$(...)`
+  itself does not inherit `errexit` by default) - so the ordinary "no match" return (1) STILL trips the
+  trap from inside a process substitution's own subshell unless the CALL SITE tests it too.
+  `modules/sca/engine.sh`'s `sca_lookup_range` therefore also changed its `done < <(db_lookup_prefix
+  "$prefix" "$db")` to `... || true` - safe now specifically BECAUSE a genuine failure already `die`s
+  (`exit`, not `return`) before that `|| true` ever gets a chance to see it. **Still open, out of that
+  fix's stated scope**: `modules/image/distro/{apk,rpm,dpkg}.sh` each read `db_lookup_prefix` through
+  the identical untested `done < <(...)` shape for OS-package matching and were not touched - same
+  hazard, unfixed there. Also still open, unrelated: two PRE-EXISTING instances of the *same* trap class
+  in test-only code, `tests/suites/sca.sh`'s bare `$(cat FILE 2>/dev/null)` used directly as an
+  `assert_eq` argument (no `|| true`) - cosmetic stderr noise in a suite that still exits 0.
 - **`IMAGE-COV-UNKNOWN_DISTRO-01`'s name is about the PACKAGE DATABASE, not the distro release**,
   despite reading that way: it fires when the ecosystem WAS resolved (a real, covered `Alpine:vX.Y`)
   but no `lib/apk/db/installed` member exists in ANY layer - a scratch or distroless final stage - which
