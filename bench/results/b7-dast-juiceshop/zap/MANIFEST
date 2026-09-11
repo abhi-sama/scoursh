@@ -1,0 +1,9 @@
+tool: zap
+version: 2.17.0
+corpus: dast-juiceshop
+corpus-commit: sha256:cd58d79c5cb4d82f22fbaf616f9ff43bbd04ba630cd6b448a9ed99cf652fcebf
+scan-root: (none - a running HTTP target, not a directory)
+records: 588
+claims-categories: cors missing-csp sqli info-disclosure
+ground-truth: bench/labels/dast-juiceshop.truth
+gate: ZAP 2.17.0 daemon, -config start.checkForUpdates=false, -Xmx2048m, docker --memory=4g, driven entirely over its own JSON API (never zap-full-scan.py/zap-baseline.py): traditional spider (recurse) -> passive-scan drain -> active scan (all default-policy rules at their default strength/threshold EXCEPT plugin 40026, Cross Site Scripting (DOM Based), disabled - see this leg's README for why). The AJAX spider was not run - see the README.

@@ -522,10 +522,16 @@ t_case 'bench/ ships no scanner record file the rule linter would have to own'
 assert_file_absent "$ROOT/bench/checks.rules" 'bench/ has no §9.5 check registry'
 assert_eq '' "$(find "$ROOT/bench" -type d \( -name corpora -o -name results \) -prune -o -name '*.rules' -type f -print)" 'and no .rules file at all - bench/corpus.lock uses the record SHAPE without claiming the extension rules/RULE-FORMAT.md §9 governs'
 
-t_case 'only bench/fetch-corpus.sh and bench/fetch-sca-corpus.sh reach the network'
+t_case 'only bench/fetch-corpus.sh, bench/fetch-sca-corpus.sh and bench/run-dast-leg.sh reach the network'
+# run-dast-leg.sh is the B7 DAST leg's own third exception, for a reason the
+# other two do not share: DAST has no corpus to fetch once, offline, and
+# score forever after - the thing under test IS a live HTTP target, reached
+# again on every run (scan.sh dast against 127.0.0.1, and ZAP's own JSON API,
+# also on 127.0.0.1 - see that file's own header). Every OTHER bench/ script
+# stays a pure file-in, file-out transform.
 netusers=''
 while IFS= read -r f; do
-  case $(basename "$f") in fetch-corpus.sh | fetch-sca-corpus.sh) continue ;; esac
+  case $(basename "$f") in fetch-corpus.sh | fetch-sca-corpus.sh | run-dast-leg.sh) continue ;; esac
   grep -nE '(^|[^[:alnum:]_])(curl|wget|git (clone|fetch|ls-remote))([^[:alnum:]_]|$)' "$f" >/dev/null 2>&1 &&
     netusers+="$(basename "$f") "
 done < <(bench_scripts)

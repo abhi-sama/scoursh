@@ -1,0 +1,223 @@
+# bench/labels/dast-juiceshop.truth - the HAND-AUTHORED ground truth for the
+# B7 DAST leg, against the local, operator-owned OWASP Juice Shop test target
+# (bench/corpus.lock's `dast-juiceshop` row; tools/dast-test-target.sh starts
+# it, per docs/DAST-TEST-TARGET-AUTHORIZATION.md).
+#
+# WHY THIS TRUTH SET IS SMALLER AND NARROWER THAN THE OTHER B6 LABEL FILES,
+# STATED UP FRONT.  Juice Shop is a client-rendered Angular SPA: its server
+# returns almost no links for a static crawler to follow, so both tools here
+# see the SAME small, fixed surface - the handful of static assets/routes a
+# plain HTTP walk reaches plus a short, published-knowledge list of its own
+# REST endpoints (the ones this file's own cases probe below) - rather than
+# the whole application. See this leg's own bench/results/b7-dast-juiceshop/
+# README.md for how each tool's crawl/spider actually did against this same
+# ceiling, including a ZAP AJAX-spider attempt that could not be measured at
+# all in this environment (that README, not this file, carries that account).
+#
+# ---------------------------------------------------------------------------
+# METHODOLOGY RULE R2, APPLIED HERE
+# ---------------------------------------------------------------------------
+# No tool's output of any kind was consulted to produce a single row below.
+# Every case is either (a) an HTTP fact obtained by probing the target
+# DIRECTLY with `curl -i` (never scoursh, never ZAP) and reading the raw
+# response, or (b) a live behaviour reproduced BY HAND against the target's
+# own HTTP API with a documented public payload for a challenge OWASP Juice
+# Shop itself ships and names (its own `data/static/challenges.yml`
+# publishes "Login Admin" - bypass the admin login without knowing the
+# password - as a first-tier SQL Injection challenge; this file's one `real:
+# true` sqli case is that exact challenge, reproduced directly).  This is the
+# same category of source B6's terragoat-aws.truth used (reading the
+# Terraform, never a tool's report on it) and kubernetes-goat.truth used
+# (the scenario's own walkthrough) - a target's own published behaviour or
+# documentation, not a scanner's opinion of it.
+#
+# ---------------------------------------------------------------------------
+# THE UNIT IS ONE (ENDPOINT PATH, VULNERABILITY CLASS) PAIR
+# ---------------------------------------------------------------------------
+# DAST has no file/line to anchor a case to (AGENTS.md's fingerprint table:
+# a DAST finding's location is `target method path_template param_location
+# param_name`, never a byte range), so `--match file` (the default
+# granularity; see bench/README.md's own section on this) is used throughout
+# and `file` here is a URL PATH - scheme, host and query stripped - exactly
+# what bench/tools/scoursh-dast.sh's own `path_template` mapping and
+# bench/tools/zap.sh's own `urlsplit(...).path` both normalise a finding's
+# `file` field to. Two DIFFERENT vulnerability classes on the SAME path are
+# two cases (this file has several); two cases of the SAME class scored
+# against the SAME path would double-count one observation as two, which is
+# why no category below repeats a path.
+#
+# ---------------------------------------------------------------------------
+# FOUR CATEGORIES, AND WHAT EACH ONE CAN AND CANNOT SHOW
+# ---------------------------------------------------------------------------
+# `cors` and `missing-csp` are UNIFORM ACROSS THIS TARGET - Juice Shop applies
+# the same permissive CORS policy and omits Content-Security-Policy on every
+# response this file probed, with no clean counter-example anywhere on the
+# app to use as a negative control. That is disclosed rather than hidden:
+# both categories can measure RECALL here (does the tool report the
+# misconfiguration where it genuinely exists) but cannot measure a
+# false-positive rate from this corpus alone - bench/score.sh's own `rate()`
+# renders TN/FP as `0/0` -> `n/a` rather than a fabricated 0.000, and
+# bench/README.md's own "both directions of false accounting" section is the
+# place this limitation is stated for the published table too.  `sqli` and
+# `info-disclosure` are the categories that DO carry negative controls, for
+# the opposite reason: SQLi is not uniform (one hand-verified real bypass,
+# several endpoints that take no attacker-controlled value into a query at
+# all), and no response probed here discloses an engine/framework banner, so
+# every `info-disclosure` case is a trap by construction.
+#
+# `missing-csp` is ONE CASE, not one per endpoint, because scoursh's own
+# `DAST-HDR-CSP_MISSING-01` is a per-APPLICATION check (one finding, at the
+# first endpoint in a fixed order - AGENTS.md's DAST-05 section, "One finding
+# per check per target") - matching that grain here is what keeps a tool's
+# score from depending on how many of the 13 assets it happened to crawl.
+#
+# ---------------------------------------------------------------------------
+# WHAT IS DELIBERATELY OUT OF SCOPE FOR THIS FILE
+# ---------------------------------------------------------------------------
+# scoursh's own DAST engine ships 92 checks (docs/COMPARISON.md's DAST row) -
+# auth/session handling, JWT algorithm confusion, GraphQL introspection,
+# rate-limiting, host-header injection, object-level authorization, and more
+# - and scoursh's own passive run against this same target found a real,
+# high-confidence `DAST-JWT-SIG_NOT_VERIFIED-01`.  None of that is scored
+# here: this file covers only what could be hand-verified against the RAW
+# target, independent of any tool, inside this ticket's time budget.  That is
+# a scope limit on the CORPUS, not a claim about what either tool can find -
+# see bench/README.md's "lead each category with the scope cell" framing.
+#
+# ---------------------------------------------------------------------------
+# FORMAT: bench/lib/truth.sh records - five 0x1f-separated fields, no sixth
+# (this corpus has no line ranges to score - see "the unit" above).
+#
+#     <case><US><file><US><category><US><cwe><US><real>
+#
+# 20 cases: 14 real, 6 negative controls.
+
+# ==========================================================================
+# cors - Access-Control-Allow-Origin: * observed on every response probed
+# (CWE-942, permissive cross-origin resource sharing)
+# ==========================================================================
+
+# cors-root  (GET /)
+#   The SPA shell document. curl -i confirmed "Access-Control-Allow-Origin: *"
+#   with no credentialed-request handling alongside it - a static wildcard,
+#   not origin reflection.
+cors-root/cors942true
+
+# cors-robots  (GET /robots.txt)
+#   Same wildcard header, confirmed directly; a "public" static file is
+#   exactly the case a wildcard is defensible for, which is why this corpus
+#   also probes routes that plainly are not (below).
+cors-robots/robots.txtcors942true
+
+# cors-styles  (GET /styles.css)
+#   Same wildcard header on a bundled asset, confirmed directly.
+cors-styles/styles.csscors942true
+
+# cors-search  (GET /rest/products/search)
+#   A REST endpoint invisible to a static crawler (no <a href> reaches it)
+#   but directly reachable and, per curl -i, carrying the identical wildcard
+#   header - this and the five rows below it are the cases that actually test
+#   whether a tool discovered the SPA's API surface at all.
+cors-search/rest/products/searchcors942true
+
+# cors-whoami  (GET /rest/user/whoami)
+#   Confirmed directly; returns JSON identity data behind the same wildcard
+#   CORS policy.
+cors-whoami/rest/user/whoamicors942true
+
+# cors-appversion  (GET /rest/admin/application-version)
+#   An admin-prefixed but unauthenticated (200, not 401) endpoint - confirmed
+#   directly, same wildcard header.
+cors-appversion/rest/admin/application-versioncors942true
+
+# cors-languages  (GET /rest/languages)
+#   Confirmed directly, same wildcard header.
+cors-languages/rest/languagescors942true
+
+# cors-continuecode  (GET /rest/continue-code)
+#   Confirmed directly, same wildcard header.
+cors-continuecode/rest/continue-codecors942true
+
+# cors-captcha  (GET /rest/captcha)
+#   Confirmed directly, same wildcard header.
+cors-captcha/rest/captchacors942true
+
+# cors-challenges  (GET /api/Challenges)
+#   The loopback ORM REST layer (distinct from /rest/*), confirmed directly
+#   with the same wildcard header - a 65 KB JSON document naming every
+#   challenge in the app, itself the source this file's own sqli-login case
+#   below points at for the exact payload it reproduces.
+cors-challenges/api/Challengescors942true
+
+# cors-apiusers  (GET /api/Users)
+#   401 Unauthorized (no session) - but curl -i shows the CORS header is set
+#   on the 401 response too, so the misconfiguration is present regardless of
+#   auth state. Confirmed directly.
+cors-apiusers/api/Userscors942true
+
+# cors-ftp  (GET /ftp)
+#   A legacy static file-listing route, confirmed directly, same wildcard
+#   header.
+cors-ftp/ftpcors942true
+
+# ==========================================================================
+# missing-csp - no Content-Security-Policy header anywhere on the target
+# (CWE-1021, missing framing/script-origin control)
+# ==========================================================================
+
+# csp-root  (GET /, ONE case for the whole application)
+#   curl -i against / (and, independently, against every other endpoint
+#   probed for the cors cases above) shows no Content-Security-Policy header
+#   anywhere on this target. Scored as a single app-level case at the root
+#   document, matching scoursh's own DAST-HDR-CSP_MISSING-01 grain (one
+#   finding per application, not per endpoint - AGENTS.md, DAST-05) rather
+#   than inflating it into 13 near-duplicate cases.
+csp-root/missing-csp1021true
+
+# ==========================================================================
+# sqli - SQL injection (CWE-89)
+# ==========================================================================
+
+# sqli-login  (POST /rest/user/login, real:true)
+#   OWASP Juice Shop names this challenge explicitly - "Login Admin", tier 1,
+#   SQL Injection - in its own shipped challenge catalogue. Reproduced by
+#   hand, directly against the target, with no scanner involved:
+#     curl -X POST http://127.0.0.1:3400/rest/user/login \
+#       -H 'Content-Type: application/json' \
+#       -d '{"email":"admin@juice-sh.op'"' --","password":"x"}'
+#   returned HTTP 200 with a valid JWT for the admin account
+#   (role":"admin") despite an arbitrary password - the classic
+#   comment-out-the-password-check bypass. Confirmed working at the time this
+#   file was written; a real, hand-verified positive.
+sqli-login/rest/user/loginsqli89true
+
+# sqli-languages-clean  (GET /rest/languages, real:false)
+#   Takes no request body and no query parameter that reaches a database
+#   query - it serves a static language-list JSON document. A finding here
+#   would be a false positive by construction.
+sqli-languages-clean/rest/languagessqli89false
+
+# sqli-captcha-clean  (GET /rest/captcha, real:false)
+#   Generates and returns a CAPTCHA; takes no attacker-supplied value used in
+#   a query. Same reasoning as sqli-languages-clean.
+sqli-captcha-clean/rest/captchasqli89false
+
+# ==========================================================================
+# info-disclosure - engine/framework version banner (CWE-200)
+# ==========================================================================
+
+# ALL FOUR CASES ARE NEGATIVE CONTROLS.  curl -i against every endpoint this
+# file probes shows no X-Powered-By, no Server: Express, and no other
+# version-naming header anywhere on this target - confirmed directly, and
+# independently consistent with scoursh's own passive banner check reporting
+# zero disclosures on this same target (that consistency is NOT how this
+# call was made; it is noted only because a reader will otherwise wonder).
+# A tool that reports an engine/framework disclosure on any of these four is
+# a false positive.
+infodisc-root-clean/info-disclosure200false
+
+infodisc-robots-clean/robots.txtinfo-disclosure200false
+
+infodisc-languages-clean/rest/languagesinfo-disclosure200false
+
+infodisc-appversion-clean/rest/admin/application-versioninfo-disclosure200false
