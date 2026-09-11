@@ -325,6 +325,34 @@ authors, none of which a benchmark run can satisfy. See
 
 ---
 
+## B7: the DAST leg
+
+`bench/results/b7-dast-juiceshop/` holds the DAST leg's real measurement:
+scoursh's `dast` module (authenticated, `--intensity active`) against OWASP
+ZAP 2.17.0, over a 20-case hand-labelled corpus against a local,
+operator-owned OWASP Juice Shop container. **Its own `README.md` is the
+primary account of this leg** - why ZAP took five attempts to complete an
+active scan in this environment (never the memory-only failure the scout
+report's §4.4 diagnosed for the *previous* attempt), the strict/loose CWE
+disagreement between scoursh's and ZAP's own CORS and CSP checks, the one
+hand-verified real vulnerability neither tool caught, and exactly what this
+small, SPA-constrained corpus does and does not show. VAmPI was obtained
+(pinned in `bench/corpus.lock` by image digest) but is not part of this leg's
+scored corpus - see that README for why.
+
+DAST needs its own driver rather than `bench/run-tool.sh`: there is no
+scan-root directory to `find -type f` over when the thing under test is a
+running HTTP target. `bench/run-dast-leg.sh` is that driver (setup, run
+scoursh directly against `config/scope.conf`/`config/auth.conf`, drive ZAP
+entirely over its own JSON API, normalise); `bench/tools/scoursh-dast.sh` and
+`bench/tools/zap.sh` are the two adapters, each documenting in its own header
+why it is not driven through `run-tool.sh`'s model.
+
+**Unlike B4-B8, B7 lands already published**: this change updates
+`docs/COMPARISON.md`'s "Not yet measured" table in the same commit, since
+that table named this exact leg - not a general B9 publication pass - as the
+one thing blocking it.
+
 ## B8: honesty + egress metrics
 
 `bench/results/b8-honesty-egress/` holds the scout report's §5.3

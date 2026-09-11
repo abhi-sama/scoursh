@@ -937,17 +937,19 @@
   same below-coin-flip Youden J the 192-case pilot found.
 </p>
 
-<h3>The real benchmark: six legs landed, all reproducible from <code>bench/</code></h3>
+<h3>The real benchmark: seven legs landed, all reproducible from <code>bench/</code></h3>
 <p>
   The pilot above answered &ldquo;should we trust the old numbers&rdquo; (no). It was never the finished
   benchmark. That benchmark &mdash; a harness, a pinned corpus manifest, a scorer, and per-category
   results with raw tool output committed alongside &mdash; now exists at
-  <a href="../bench/README.md"><code>bench/</code></a> and six of its legs have landed:
+  <a href="../bench/README.md"><code>bench/</code></a> and seven of its legs have landed:
   <strong>SAST</strong> (the full 2,740-case OWASP Benchmark corpus, not a sample), <strong>SCA</strong>
   (26 pinned npm/PyPI/Go lockfile cases against real OSV.dev advisories), <strong>IaC</strong> (two
   hand-labelled corpora &mdash; TerraGoat/AWS and kubernetes-goat), <strong>secrets</strong>
-  (leaky-repo, 82 hand-labelled cases), and <strong>honesty + egress</strong> (a coverage-honesty audit
-  over every run below, plus a kernel-enforced zero-egress proof). Every number in the two tables below
+  (leaky-repo, 82 hand-labelled cases), <strong>DAST</strong> (a 20-case hand-labelled corpus against a
+  local, operator-owned OWASP Juice Shop container, scoursh vs OWASP ZAP), and
+  <strong>honesty + egress</strong> (a coverage-honesty audit
+  over every run below, plus a kernel-enforced zero-egress proof). Every number in the tables below
   traces to a committed <code>bench/results/&lt;leg&gt;/</code> directory carrying the tool&rsquo;s raw
   output, its normalised records, a <code>MANIFEST</code> with exact version and corpus commit, and the
   rendered scorecard &mdash; re-run any of it with the commands in that leg&rsquo;s own
@@ -960,10 +962,7 @@
   the retracted table above broke.
 </p>
 <p>
-  <strong>DAST (B7) is not measured and is not represented by any number below.</strong> It needs an
-  operator Docker-memory increase this environment could not make on its own (raising the shared Docker
-  VM&rsquo;s allocation would have interrupted other running workloads) &mdash; see &ldquo;Not yet
-  measured,&rdquo; below. <strong>Cloud and network are out of scope for this benchmark entirely</strong>
+  <strong>Cloud and network are out of scope for this benchmark entirely</strong>
   &mdash; no neutral cloud-posture corpus/account and no head-to-head with Nmap that would not be
   comparing discovery against a declared-listener check, per the same scoping logic
   <a href="#network">Network / host</a> already states on this page.
@@ -1041,12 +1040,44 @@
   &sect;7 for the full account of both.
 </p>
 
+<h3>Table 3 &mdash; DAST (B7): a narrow, SPA-constrained comparison</h3>
+<p>
+  Juice Shop is a client-rendered Angular SPA. Neither tool executes JavaScript in this run &mdash;
+  ZAP&rsquo;s AJAX spider, built specifically for this case, could not be measured in this environment at
+  all (see the leg&rsquo;s own README) &mdash; so both tools see the same small, mostly-static surface,
+  and this corpus&rsquo;s own ground truth had to hand-enumerate the REST endpoints neither crawl
+  actually discovered. Read the scope cell before the score: this is one 20-case corpus against one
+  target, not a general DAST detection claim in either direction.
+</p>
+<div class="scroll">
+<table>
+  <thead><tr><th>Matching</th><th>scoursh-dast Youden J</th><th>ZAP Youden J</th><th>Corpus</th></tr></thead>
+  <tbody>
+    <tr><td class="tool">Loose CWE</td><td><strong>+0.047</strong></td><td>+0.024</td><td rowspan="2">Juice Shop, 20 hand-labelled cases (cors, missing-csp, sqli, info-disclosure)</td></tr>
+    <tr><td class="tool">Strict CWE</td><td><strong>+0.214</strong></td><td>+0.000</td></tr>
+  </tbody>
+</table>
+</div>
+<p>
+  <code>J = 0.000</code> is a coin flip; both tools score low in absolute terms on this small corpus. The
+  strict/loose gap for ZAP is a CWE-taxonomy disagreement, not a detection difference: ZAP&rsquo;s own
+  CORS and CSP checks fire on the identical endpoints scoursh&rsquo;s do, but classify them under
+  <code>CWE-264</code>/<code>CWE-693</code> where scoursh uses <code>CWE-942</code>/<code>CWE-1021</code>
+  &mdash; both are defensible, differently specific readings of the same misconfiguration.
+  <strong>Neither tool caught the one hand-verified real vulnerability</strong> in this corpus:
+  Juice Shop&rsquo;s own documented admin-login SQL-injection bypass, a comment-injection auth bypass
+  that neither tool&rsquo;s automated SQLi technique is built to notice from a single crafted request
+  with no baseline to diff against. Full account, including why ZAP&rsquo;s active scan needed five
+  attempts in this environment (never the memory-only cause a prior DAST attempt diagnosed) and exactly
+  what this corpus does and does not show:
+  <a href="../bench/results/b7-dast-juiceshop/README.md"><code>bench/results/b7-dast-juiceshop/README.md</code></a>.
+</p>
+
 <h3>Not yet measured</h3>
 <div class="scroll">
 <table>
   <thead><tr><th>Leg</th><th>Status</th><th>Why</th></tr></thead>
   <tbody>
-    <tr><td class="tool">DAST</td><td><span class="pill p-warn">not yet measured &mdash; pending</span></td><td>Needs an operator Docker-memory increase; this benchmark could not raise it without interrupting other workloads sharing the same Docker VM. No fabricated or estimated number stands in for it anywhere on this page.</td></tr>
     <tr><td class="tool">Cloud / CSPM</td><td><span class="pill p-neut">out of scope</span></td><td>No AWS account available to the benchmark, and no neutral, versioned cloud-posture corpus identified.</td></tr>
     <tr><td class="tool">Network / host</td><td><span class="pill p-neut">out of scope</span></td><td>scoursh verifies a declared listener set; a fair competitor comparison would need a discovery-vs-verification distinction this benchmark&rsquo;s scorer does not model &mdash; see <a href="#network">Network / host</a> above.</td></tr>
   </tbody>
@@ -1065,6 +1096,7 @@
   <li><a href="../bench/results/sca-lockfiles-26/README.md"><code>bench/results/sca-lockfiles-26/</code></a> &mdash; the SCA leg.</li>
   <li><a href="../bench/results/b6-iac-terragoat-aws/README.md"><code>bench/results/b6-iac-terragoat-aws/</code></a> and <a href="../bench/results/b6-iac-kubernetes-goat/README.md"><code>bench/results/b6-iac-kubernetes-goat/</code></a> &mdash; the two IaC legs.</li>
   <li><a href="../bench/results/b6-secrets-leaky-repo/README.md"><code>bench/results/b6-secrets-leaky-repo/</code></a> &mdash; the secrets leg.</li>
+  <li><a href="../bench/results/b7-dast-juiceshop/README.md"><code>bench/results/b7-dast-juiceshop/</code></a> &mdash; the DAST leg.</li>
   <li><a href="../bench/results/b8-honesty-egress/README.md"><code>bench/results/b8-honesty-egress/</code></a> &mdash; the coverage-honesty metric and the egress proofs.</li>
 </ul>
 
@@ -1112,10 +1144,10 @@
 <div class="note">
   <p><span class="lbl">This page is a capability and positioning comparison, with one section that is a
   real benchmark.</span> <a href="#benchmark-status">Benchmark status</a> carries the 192-case SAST
-  pilot and the six landed <code>bench/</code> legs (SAST, SCA, IaC &times;2, secrets,
+  pilot and the seven landed <code>bench/</code> legs (SAST, SCA, IaC &times;2, secrets, DAST,
   honesty/egress) &mdash; every number there was run over a shared, neutral, pinned corpus and scored
   against committed ground truth, with the harness, raw tool output, and scorer all reproducible from
-  the repository. DAST is explicitly not measured; cloud and network are out of scope for this
+  the repository. Cloud and network are out of scope for this
   benchmark. There is deliberately no single overall score spanning categories. Every other row on this
   page &mdash; check counts, licences, footprints &mdash; is drawn from each project&rsquo;s own
   published data, not a shared run.</p>

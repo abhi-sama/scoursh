@@ -1,0 +1,37 @@
+2026-09-11T02:04:26Z == accessing target directly to seed the session ==
+2026-09-11T02:04:26Z == disabling Cross Site Scripting (DOM Based), plugin 40026 ==
+2026-09-11T02:04:26Z measured: this rule (which drives a headless browser via Crawljax/HtmlUnit, same as the AJAX spider) OOM-killed the ZAP container 4/4 times at ~34% active-scan progress, at container memory ceilings from 4g to 8g and JVM heaps from 2048m to 3072m - see bench/results/b7-dast-juiceshop/README.md. Disabling it is a real, disclosed scope reduction, not a silent one: DAST-INJ-XSS_REFLECTED_* is scored against scoursh's own reflected-XSS checks, never against a DOM-XSS rule neither tool actually ran to completion here.
+2026-09-11T02:04:26Z == traditional spider ==
+2026-09-11T02:04:26Z spider scanId=0
+2026-09-11T02:04:26Z spider status=16%
+2026-09-11T02:04:31Z spider status=94%
+2026-09-11T02:04:32Z ascan status=%
+2026-09-11T02:04:36Z spider status=99%
+2026-09-11T02:04:41Z spider status=99%
+2026-09-11T02:04:46Z spider status=100%
+2026-09-11T02:04:46Z == ajax spider SKIPPED ==
+2026-09-11T02:04:46Z ajaxSpider: not run - the first 3 driver attempts OOM-killed the ZAP container within <=30s of a headless-firefox/Crawljax component starting (the ajax spider itself, attempts 1-2; the DOM-XSS active-scan rule, attempt 3, which uses the same browser machinery and is disabled below instead of retried). See bench/results/b7-dast-juiceshop/README.md for the full, attempt-by-attempt account. This is a stated scope reduction, not a silent one.
+2026-09-11T02:04:46Z == waiting for passive scan queue to drain ==
+2026-09-11T02:04:47Z passive records left=0
+2026-09-11T02:04:47Z == active scan ==
+2026-09-11T02:04:47Z ascan scanId=0
+2026-09-11T02:04:47Z ascan status=0%
+2026-09-11T02:04:47Z ascan status=3%
+2026-09-11T02:05:02Z ascan status=40%
+2026-09-11T02:05:02Z ascan status=40%
+2026-09-11T02:05:17Z ascan status=92%
+2026-09-11T02:05:17Z ascan status=92%
+2026-09-11T02:05:32Z ascan status=92%
+2026-09-11T02:05:32Z ascan status=92%
+2026-09-11T02:05:47Z ascan status=92%
+2026-09-11T02:05:47Z ascan status=92%
+2026-09-11T02:06:02Z ascan status=92%
+2026-09-11T02:06:02Z ascan status=92%
+2026-09-11T02:06:17Z ascan status=92%
+2026-09-11T02:06:17Z ascan status=92%
+2026-09-11T02:06:32Z ascan status=100%
+2026-09-11T02:06:32Z == exporting alerts ==
+2026-09-11T02:06:32Z ascan status=100%
+2026-09-11T02:06:32Z == exporting alerts ==
+2026-09-11T02:06:32Z == done ==
+2026-09-11T02:06:32Z == done ==

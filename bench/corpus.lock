@@ -121,3 +121,40 @@ note: SecretBench (`setu1421/SecretBench`, MSR'23) was the first choice and is
   AND a signed data-protection agreement AND per-email access granted by its
   authors.  That is recorded as an explicit not-measured cell rather than
   quietly substituted - see bench/results/b6-secrets-leaky-repo/README.md.
+
+id: dast-juiceshop
+repo: https://github.com/juice-shop/juice-shop.git
+commit: f915bddd82790d0f3018902d36ae9b4241a5f51f
+licence: MIT
+ground-truth: labels:dast-juiceshop.truth
+categories: cors missing-csp sqli info-disclosure
+image: bkimminich/juice-shop:v20.1.1
+image-digest: sha256:cd58d79c5cb4d82f22fbaf616f9ff43bbd04ba630cd6b448a9ed99cf652fcebf
+note: A RUNNING TARGET, not a scanned tree - `commit` above is the SOURCE
+  commit the `v20.1.1` tag dereferences to (required to satisfy
+  bench/lib/corpus.sh's own full-40-hex validation, which every corpus row
+  must pass or the whole lock file fails to load), but the artefact actually
+  under test is the CONTAINER IMAGE, so `image`/`image-digest` pin that
+  separately and it is `image-digest` a reproduction should match against.
+  tools/dast-test-target.sh starts it, fixed at 127.0.0.1:3400,
+  authorized by docs/DAST-TEST-TARGET-AUTHORIZATION.md and
+  tools/dast-test-target/scope.conf - the same local, operator-owned target
+  scoursh's own DAST test suite (tests/e2e/dast-auth-live.sh) already uses.
+note: `ground-truth: labels:dast-juiceshop.truth` names a file this project
+  authored by probing the running target directly (`curl -i`) and, for its one
+  SQL-injection case, reproducing a challenge Juice Shop itself documents and
+  names in its own shipped challenge catalogue - never a tool's output.  See
+  that file's own header for the full methodology and its stated scope limit
+  (a client-rendered SPA reachable only by a short, hand-enumerated endpoint
+  list, not by a static crawl).
+note: VAmPI (`erev0s/vampi:latest`, digest
+  sha256:0a5a224b6e14ae7da6a6ea265178ff71286ff903aec74adee98f660bb0e4ca12) WAS
+  obtained in this environment (`docker pull` succeeded once retried past a
+  slow first attempt) but is NOT part of this leg's scored corpus: standing up
+  a second target, hand-labelling a second ground-truth set and running a
+  second full ZAP active scan (each ZAP active scan against Juice Shop alone
+  took the driver through five real attempts before completing - see
+  bench/results/b7-dast-juiceshop/README.md) was outside this ticket's time
+  budget once that Juice Shop measurement was real. Recorded here, pinned by
+  digest, rather than silently dropped, so a follow-up ticket can pick it up
+  without re-deriving whether it is obtainable.

@@ -1,0 +1,7 @@
+request-budget:20000 (finite, never removable)
+concurrency:4-in-flight (bounded at the transport, never removable)
+circuit-breaker:10-failures/60s (never disableable)
+scope-gate:config/scope.conf (every URL and every redirect hop; no affirmation authorises a target)
+payloads:detection-only (docs/DESIGN.md §7.3; no destructive payload exists at any setting)
+ssrf:in-scope-sentinels-only
+user-agent:scoursh-identified (the product token is never removable)
