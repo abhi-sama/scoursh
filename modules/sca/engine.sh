@@ -1041,7 +1041,22 @@ sca_lookup_range() {
     semver_in_range_v "$version" "$intro" "$bound" "$kind" || continue
     printf '%s\t%s\t%s\n' "$advisory" "$sev" "$fixed"
     matched=0
-  done < <(db_lookup_prefix "$prefix" "$db")
+  # `|| true` is what makes this SAFE, not merely tidy: db_lookup_prefix's
+  # own no-match exit (1) is the ordinary case - most packages carry no
+  # advisory - but this line is an UNTESTED command (nothing wraps it in
+  # if/&&/||), and under scoursh's mandatory `set -Eeuo pipefail` any
+  # untested command with a nonzero exit trips the ERR trap, in a process
+  # substitution exactly as in a plain `x=$(cmd)` - both are ordinary
+  # subshells, so the fix is the same explicit guard `db_lookup_exact`'s
+  # OTHER call sites already use (e.g. `row=$(db_lookup_exact ...) ||
+  # return 1`), not some special exemption process substitution lacks.
+  # Without it, the ordinary no-match return here logged a spurious
+  # "command failed" line on every clean package (docs/FOUNDATION.md
+  # tension 4's trap, third instance - reported from a real scan). This does
+  # NOT risk swallowing a genuine engine/file failure: db_lookup_prefix now
+  # `die`s (exit, not return) on rc > 1 before this line ever sees a return
+  # value to test, so `|| true` here only ever catches the ordinary rc=1.
+  done < <(db_lookup_prefix "$prefix" "$db" || true)
   return $matched
 }
 
