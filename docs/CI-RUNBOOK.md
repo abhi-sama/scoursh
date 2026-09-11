@@ -4,7 +4,7 @@ Audience: engineers contributing to scoursh (PR authors), and whoever administer
 
 ## Two paths, and which one actually runs right now
 
-There are two ways this project's suite gets run: a local daily runner on the maintainer's own machine, and a GitHub Actions workflow (`.github/workflows/ci.yml`) that is committed to the repository but does not currently execute.
+There are two ways this project's suite gets run: a local daily runner on the maintainer's own machine, and a GitHub Actions workflow (`.github/workflows/ci.yml`) that runs for real now that the repository is public, though a pull request gets the Ubuntu leg only (see the next bullet for what that leaves out).
 
 - **`tools/daily-suite.sh` is the maintainer's real path, and it runs today.**
   It is described in full below: the BSD-userland assertion, the GNU leg via a container, the byte-for-byte cross-userland diff, and how to install its daily schedule.
@@ -15,23 +15,23 @@ There are two ways this project's suite gets run: a local daily runner on the ma
 
 Read that literally, because it changes what merging means **today**, regardless of which path this file describes:
 
-- **A pull request carries no automatic pass/fail.**
-  There is no red tick and no "checks pending" - only a skipped one, from the `if:` guard above. A PR that breaks every suite in the repository looks, on GitHub, exactly like one that breaks nothing.
-- **Nothing runs when you push**, except the daily local run described below, and whatever you run yourself.
+- **A pull request carries no automatic pass/fail on the parts that actually catch a regression.**
+  The `ubuntu-latest` leg runs for real on a `pull_request` trigger and produces a genuine red or green check - see the bullet above. What is skipped, not run-and-ignored, on that trigger is the `macos-latest` leg (not even generated as a job, per the matrix note above) and the `compare` job, which needs both legs' findings. So a macOS-only regression, or anything the cross-userland diff alone catches, looks on GitHub exactly like a PR that breaks nothing - the Ubuntu leg passing is real information, but it is not the whole suite this file describes below.
+- **A push to `main` or `dev` does run the full matrix, plus the `compare` job - but only after the commit has already landed there, not before a PR merges into it.** For catching a regression *before* it merges, nothing but the daily local run described below, and whatever you run yourself, covers the ground the `pull_request` trigger's Ubuntu-only leg leaves out.
 - **Anyone merging is the check.**
   Before merging, either run `tests/run-tests.sh` against the merge result yourself, or confirm that a daily run *newer than the change* passed.
   An older green result says nothing about the commit in front of you - see "Reading a result" for why the runner reports staleness rather than letting an old PASS stand in for a current one.
 
 That is a real loss of a real control, stated here rather than papered over.
-The local runner covers the *repository over time*; it does not cover *this pull request before it lands* - and the workflow does not either, while it cannot start.
+The local runner covers the *repository over time*; the hosted workflow now covers *this pull request before it lands* on its Ubuntu leg alone - neither one gives a PR the macOS leg or the cross-userland `compare` job before merge.
 
 ### Why
 
 GitHub Actions stopped assigning machines to this repository on 2026-08-02: every run since then failed within seconds with no machine allocated and zero steps recorded, reproduced identically on a second private repository.
 That is an account-level compute-billing condition on *private* repositories, not a fault in any workflow file - a self-hosted runner was registered as a way around it and then deregistered, since it had nothing to run against either; a self-hosted runner still needs Actions itself to dispatch a job to it.
 
-Making the repository public removes that condition: hosted Actions is free for public repositories, and does not draw on the same private-repository minutes quota that is currently exhausted.
-That is the plan - the maintainer intends to make this repository public, and at that point `.github/workflows/ci.yml` starts running for real, giving forks and contributors, who do not have the maintainer's own machine, a real check with nothing to set up.
+Making the repository public removes that condition: hosted Actions is free for public repositories, and does not draw on the same private-repository minutes quota that was exhausted.
+That has since happened - `abhi-sama/scoursh` is public, and `.github/workflows/ci.yml` runs for real now, giving forks and contributors, who do not have the maintainer's own machine, a real check with nothing to set up.
 The workflow's trigger was also part of why this account's Actions minutes were exhausted before that: it used to fire on both `push: ['**']` and `pull_request`, so every push to a branch with an open PR ran the whole matrix twice.
 It became `push: [main]` plus `pull_request`, so a push to a branch with an open PR ran the matrix once, not twice, and a push to a branch with no PR ran it only if that branch was `main`.
 It is now `push: [main, dev]` plus `pull_request`, with the matrix itself split by trigger (see the bullet above): `pull_request` runs the Ubuntu leg only, and `push` to `main` or `dev` runs both legs. A push to a branch with an open PR still runs the matrix once per event, not twice - it is the same event that used to run the full matrix that now runs Ubuntu-only, and the fuller `push`-triggered run only happens once that branch's commits land on `dev`.

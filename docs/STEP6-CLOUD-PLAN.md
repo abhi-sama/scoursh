@@ -8,56 +8,32 @@ small, independently reviewable tickets the moment its blockers clear, instead o
 `docs/DESIGN.md` §8 from scratch by whoever picks it up first, mirroring `docs/STEP5-DAST-PLAN.md` for
 step 5.
 
-## Status: not started, but every sequential blocker is now cleared
+## Status: complete for the live-checks half; `posture/` is the one thing still open
 
-**Correction, since this section was written: step 6 has since started.**
-CLOUD-01 (`lib/awscli.sh`'s remaining half - the response cache, `--profile`/`--region` plumbing,
-`aws_ro_account_id_set`, pagination, and the outcome vocabulary), CLOUD-02 (`modules/cloud/aws/regions.sh`
-- both the single-account half and the `--assume-role` multi-account remainder), CLOUD-03 (the
-read-only-verb lint's remaining scope item: the negative-fixture test, and seeding
-`tests/aws-readonly-allow.txt` with `sts assume-role`) and CLOUD-04 (`modules/cloud/aws/run.sh`, the
-`scan_dispatch cloud` entry point) have all landed - see `AGENTS.md`'s "Step 6 (Cloud/AWS)" sections for
-the full detail. No real `docs/DESIGN.md` §8.1 service script (CLOUD-05 onward) or `posture/` phase
-(POSTURE-01 onward) has landed yet, so a `scan.sh cloud --live` run today resolves the account(s) and
-region(s) and records that it examined no service - a real dispatch that found nothing to run, not a
-`reason=not_yet_built` no-op.
+**Step 6 is done except for the `posture/` phase.** CLOUD-01 through CLOUD-04 (the `lib/awscli.sh`
+hardening, `modules/cloud/aws/regions.sh` account/region iteration including `--assume-role`, the
+read-only-verb lint's remaining scope, and `modules/cloud/aws/run.sh`'s `scan_dispatch cloud` entry
+point) have landed, and so has every one of CLOUD-05 through CLOUD-34: all 30 `docs/DESIGN.md` §8.1
+AWS service scripts (`modules/cloud/aws/live/*.sh`, one per service - iam, ec2, s3, rds, kms, lambda,
+ecs, cloudfront, route53, secretsmanager, sns, sqs, cloudtrail, eks, guardduty, inspector, macie,
+config, cognito, apigw, appsync, dynamodb, opensearch, redshift, efs, backup, acm, ecr, elb, ssm),
+totalling 112 checks, CIS AWS Foundations Benchmark v3.0.0 and OWASP mapped, each with its own
+`tests/suites/cloud-*.sh` suite. `scan.sh cloud --live` resolves the account(s) and region(s) and runs
+every landed service against them today; it is not a dispatch that finds nothing to run.
 
-**The build order (§13) is strictly sequential, and every step ahead of step 6 - step 3 (SAST), step 4
-(SCA + IaC), and step 5 (DAST) - is now complete on `dev`.** `dev` is the integration branch (`main` is
-the release branch; work lands on `dev` first and reaches `main` in batches - both exist on the
-remote).
+Only the `posture/` phase remains: POSTURE-01 (`config/posture.conf`/`.example`, the operator-authored
+expected-control baseline schema) has landed, but POSTURE-02 (`modules/cloud/posture/sso.sh`),
+POSTURE-03 (`edge.sh`) and POSTURE-04 (`session.sh`) have not - `modules/cloud/posture/` does not exist
+on disk - so a posture-phase run today is a declared skip. `ROADMAP.md`'s "Step 6" entry and
+`AGENTS.md`'s generated module-status block are the always-current mirrors of this paragraph; if either
+ever disagrees with this file, trust them and fix this file's wording rather than the other way round.
 
-1. **§13 step 3 (SAST).** **Complete.** All ten catalog artifacts (`secrets`, `crypto`, `injection`,
-   `python`, `go`, `javascript`, `java`, `nosql`, `ldap`, and `history.sh`) have landed; the generated
-   status block in `AGENTS.md` reports SAST at `Landed 10 of 10`, `Outstanding: none`.
-2. **§13 step 4 (SCA + IaC).** **Complete.** `modules/sca/` covers all six `docs/DESIGN.md` §6.5
-   ecosystems, and `modules/iac/` carries all six rule packs; the generated status block in `AGENTS.md`
-   reports `Landed 6 of 6` with `Outstanding: none` for each of them.
-3. **§13 step 5 (DAST).** **Complete.** Every DAST-01 through DAST-36 ticket has landed
-   (`docs/STEP5-DAST-PLAN.md`'s own status section); `modules/dast/` exists in full.
+**The build order (§13) is strictly sequential, and every step through step 10 is now complete on
+`dev`** (`main` is the release branch; work lands on `dev` first and reaches `main` in batches - both
+exist on the remote) - see `ROADMAP.md` for the current, terse per-step summary.
 
-**This "Status" section is a snapshot from before step 6 was picked up, and it is now stale - work has
-since started.** `lib/awscli.sh` hardening (CLOUD-01), the dispatch entry point plus region iteration
-(CLOUD-02/04), and two `aws/live/*.sh` service scripts have landed on `dev`: `s3.sh` (CLOUD-05, the
-vertical slice) and `lambda.sh` (CLOUD-21, out of this doc's own recommended dispatch order - it names
-CLOUD-06/`iam.sh` as a dependency for a shared role-policy reader that had not landed, and shipped its
-own self-contained one rather than block; see `AGENTS.md`'s "Where the build currently stands" section
-for the full account and the correct follow-up). `AGENTS.md`, not this paragraph, is the authority for
-which CLOUD-0x/POSTURE-0x tickets are actually landed at any given time - this file remains the ticket
-SPEC each one implements against.
-
-**No CLOUD-0x or POSTURE-0x ticket had been picked up yet AS OF THIS PLAN'S OWN WRITING, but that was no
-longer because step 6 was blocked - it was simply next in an unclaimed queue.**
-Once step 5 landed, the priority order this project has been using put step 7 (persistent run state,
-`docs/STEP7-STATE-PLAN.md`) and step 10 (SARIF plus the compliance report) ahead of step 6 for
-sequencing reasons rather than a technical dependency - see `ROADMAP.md` for the current priority
-ordering, which is the live answer if this paragraph and that document ever disagree.
-This plan stays a written breakdown for whenever step 6 is picked up.
-
-This applies to the whole module - both the `CLOUD-*` per-service tickets and the `POSTURE-*` tickets
-below, since `docs/DESIGN.md` §13 names them as one step ("6. **Cloud**: ... + `posture/` checks.").
-Whoever lifts this block should update the "Status" line above, and the two build-order sections named
-in "Doc-update process" below, in the same change that starts CLOUD-01.
+Whoever picks up POSTURE-02 through POSTURE-04 should update this "Status" section, and the two
+build-order sections named in "Doc-update process" below, in the same change.
 
 ## `lib/awscli.sh`'s read-only lint has already shipped as a no-op stub - do not re-plan its matching logic
 

@@ -4,12 +4,12 @@ This directory holds recorded/synthetic AWS API responses, so a §8.1 posture
 check can be unit-tested against known-good and known-bad inputs offline, in
 CI, with no AWS account and no LocalStack.
 
-None of §8.1's catalog is built yet - `modules/cloud/aws` lands at
-`docs/DESIGN.md` §13 step 6. This directory, and the harness in
-`tests/lib/aws-fixtures.sh`, are the credential-less half of that work,
-delivered ahead of it so step 6 has a tested pattern to build against rather
-than inventing one under time pressure. See `AGENTS.md`, "AWS module: what
-exists ahead of step 6".
+`modules/cloud/aws` (`docs/DESIGN.md` §13 step 6) is now fully built - all 30 §8.1 service scripts have
+landed. This directory, and the harness in `tests/lib/aws-fixtures.sh`, started as the credential-less
+half of that work, delivered ahead of it so step 6 had a tested pattern to build against rather than
+inventing one under time pressure; it now carries one `cloud-*` fixture set per landed service. See
+`AGENTS.md`, "AWS module: what exists ahead of step 6", for that history, and `docs/STEP6-CLOUD-PLAN.md`
+for the current build status.
 
 ## Layout
 
@@ -133,16 +133,17 @@ that clear is required for correctness, not tidiness).
 including the unmatched-pair failure case, against
 `tests/fixtures/aws/example-s3-multi-call/{list-buckets,get-bucket-acl}.json`.
 
-## The one real fixture set
+## The real fixture sets
 
-`cloud-s3/` is consumed by `tests/suites/cloud-s3.sh`, which drives the real
-`modules/cloud/aws/live/s3.sh` through a real `scan.sh cloud --live`
-subprocess. It is the worked example for every later service PR, and it is
-shaped the way this file recommends: three buckets in one run - one public in
-every way the checks can observe, one hardened in every way, and one whose ACL
-call is `AccessDenied` - so "the check fires", "the check stays quiet" and "a
-denied call is a recorded coverage reduction rather than a clean result" are
-all asserted against one code path in one process.
+There are now 26 `cloud-*` fixture sets, one per landed AWS service, each consumed by its own
+`tests/suites/cloud-<service>.sh` suite driving the real `modules/cloud/aws/live/<service>.sh` through a
+real `scan.sh cloud --live` subprocess.
+
+`cloud-s3/` was the first and is still the worked example every later service PR followed: three
+buckets in one run - one public in every way the checks can observe, one hardened in every way, and one
+whose ACL call is `AccessDenied` - so "the check fires", "the check stays quiet" and "a denied call is a
+recorded coverage reduction rather than a clean result" are all asserted against one code path in one
+process.
 
 `example-s3-public-read-acl` and `example-s3-multi-call` are consumed only by
 `tests/suites/aws-fixtures.sh`, as reference implementations proving the
