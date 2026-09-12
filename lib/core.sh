@@ -244,15 +244,37 @@ die() {
 # error.
 _SCOURSH_RUN_JSON_REFRESHED=0
 run_json_refresh_incomplete() {
-  local fn
+  local fn _rjri_regdump=''
   (( _SCOURSH_RUN_JSON_REFRESHED == 0 )) || return 0
   [[ -n ${SCOURSH_RUN_DIR:-} && -d ${SCOURSH_RUN_DIR:-}/meta ]] || return 0
   [[ ${_SCOURSH_RUN_OWNER:-} == "$$" ]] || return 0
   _SCOURSH_RUN_JSON_REFRESHED=1
+  # report_run_json/report_md/report_html each independently re-parse the
+  # tool's whole *.rules catalog (via report_count's OWASP/CIS registry
+  # state) the first time they run in a process - normally paid once and
+  # memoized for the rest of that process, but each of these three runs in
+  # its OWN subshell (below), and a subshell can never write its memoized
+  # state back to this parent. Dumping that state out of each subshell and
+  # sourcing it back here - see report_registries_dump's own header comment -
+  # means only the FIRST of the three pays for the parse; a no-op if
+  # lib/report.sh (or $SCOURSH_SCRATCH) is unavailable.
+  if [[ -n ${SCOURSH_SCRATCH:-} && -d ${SCOURSH_SCRATCH:-} ]]; then
+    _rjri_regdump=$SCOURSH_SCRATCH/report-registries.$$
+  fi
   for fn in report_run_json report_md report_html; do
     declare -F "$fn" >/dev/null 2>&1 || continue
-    ( trap - ERR; "$fn" "$SCOURSH_RUN_DIR" ) || true
+    (
+      trap - ERR
+      "$fn" "$SCOURSH_RUN_DIR"
+      if [[ -n $_rjri_regdump ]] && declare -F report_registries_dump >/dev/null 2>&1; then
+        report_registries_dump "$_rjri_regdump"
+      fi
+    ) || true
+    if [[ -n $_rjri_regdump && -s $_rjri_regdump ]]; then
+      source "$_rjri_regdump"
+    fi
   done
+  [[ -z $_rjri_regdump ]] || rm -f "$_rjri_regdump"
   # docs/STEP7-STATE-PLAN.md STATE-02: `state/<run-id>.json` is persisted on
   # EVERY run, not only a clean or gated one - the identical "an incomplete
   # run still leaves a real report behind" argument the three writers above
