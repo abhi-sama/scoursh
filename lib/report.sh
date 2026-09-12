@@ -4806,26 +4806,63 @@ _agent_print_checks() {
   done <<<"$(printf '%s\n' "${!_AGENT_SEEN[@]}" | LC_ALL=C sort)"
 }
 
-# `check_id` -> `module`, by id-namespace prefix (rules/RULE-FORMAT.md
-# §9.1.1's own MODULE token) - used ONLY to compute the `run` header's
-# `modules_reported`/`modules_not_run`, from `meta/checks_run` (never from
-# `findings.fields`'s own `module` field, which is silent for a module that
-# ran and found nothing).  An id this cannot classify (an adapter id like
-# `trivy:AVD-...`, which carries no module prefix at all) is simply skipped:
-# the native engine that ran alongside every adapter already contributes a
-# classifiable id of its own, so nothing is lost.
+# The ONE table mapping a check id's namespace prefix (rules/RULE-FORMAT.md
+# §9.1.1's own MODULE token) to the module name this honesty header uses for
+# it.  `_agent_module_of_check` and `_agent_all_modules` both read this same
+# array, so the id-classification side and the not-run universe can never
+# drift apart the way they once did - a fixed prefix set used to run only six
+# of these eight modules, so `network`/`image` could appear in
+# `modules_reported` but could never appear in `modules_not_run` (a real gap
+# in the field that exists to stop "did not check" reading as "clean").
+# Adding a ninth module needs exactly one new entry here, in both functions
+# at once.
+#
+# The `net`/`image` spelling (not `network`) matches the finding-level
+# `module` field a NET-*/IMAGE-* check itself sets (`finding_set module net`
+# in modules/network/*_engine.sh; `finding_set module image` in
+# modules/image/*.sh) and, for `net`, deliberately does NOT match
+# `_RPT_MODULES`/`SCAN_COMMANDS`'s own `network` token - that second spelling
+# names the CLI subcommand and the report-audit.html category, a different
+# axis from this header's per-check module classification, and the two have
+# used different tokens since NET-01 shipped. Changing `net` to `network`
+# here would be a breaking change to the honesty header's ALREADY-SHIPPED
+# output for a real `scan.sh network` run, not merely a doc fix.
+declare -ga _AGENT_MODULE_PREFIXES=(
+  'SAST-:sast'
+  'SCA-:sca'
+  'IAC-:iac'
+  'DAST-:dast'
+  'CLOUD-:cloud'
+  'POSTURE-:posture'
+  'NET-:net'
+  'IMAGE-:image'
+)
+
+# `check_id` -> `module`, by id-namespace prefix - used ONLY to compute the
+# `run` header's `modules_reported`/`modules_not_run`, from `meta/checks_run`
+# (never from `findings.fields`'s own `module` field, which is silent for a
+# module that ran and found nothing).  An id this cannot classify (an adapter
+# id like `trivy:AVD-...`, which carries no module prefix at all) is simply
+# skipped: the native engine that ran alongside every adapter already
+# contributes a classifiable id of its own, so nothing is lost.
 _agent_module_of_check() {
-  case $1 in
-    SAST-*) printf 'sast' ;;
-    IAC-*) printf 'iac' ;;
-    SCA-*) printf 'sca' ;;
-    DAST-*) printf 'dast' ;;
-    CLOUD-*) printf 'cloud' ;;
-    POSTURE-*) printf 'posture' ;;
-    NET-*) printf 'net' ;;
-    IMAGE-*) printf 'image' ;;
-    *) return 1 ;;
-  esac
+  local id=$1 entry prefix
+  for entry in "${_AGENT_MODULE_PREFIXES[@]}"; do
+    prefix=${entry%%:*}
+    case $id in
+      "$prefix"*) printf '%s' "${entry#*:}"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# The full not-run universe, in `_AGENT_MODULE_PREFIXES`'s own order - the
+# complete set `modules_not_run` subtracts `_agent_modules_reported` from.
+_agent_all_modules() {
+  local entry
+  for entry in "${_AGENT_MODULE_PREFIXES[@]}"; do
+    printf '%s\n' "${entry#*:}"
+  done
 }
 
 _agent_modules_reported() {
@@ -4849,9 +4886,10 @@ _agent_modules_not_run() {
     [[ -n $line ]] || continue
     rep[$line]=1
   done <<<"$(_agent_modules_reported "$rundir")"
-  for m in sast sca iac dast cloud posture; do
+  while IFS= read -r m; do
+    [[ -n $m ]] || continue
     [[ -n ${rep[$m]:-} ]] || printf '%s\n' "$m"
-  done
+  done <<<"$(_agent_all_modules)"
 }
 
 _agent_print_str_array() {  # LABEL LIST(newline-separated) - always present

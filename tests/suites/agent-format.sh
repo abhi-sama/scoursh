@@ -465,6 +465,36 @@ if (( HAVE_PY )); then
 fi
 
 # ==============================================================================
+printf '\n-- A10b: modules_not_run covers the full eight-module universe, not just six --\n'
+# ==============================================================================
+# A `NET-*`-only run used to leave BOTH `net` and `image` out of every list:
+# `_agent_module_of_check` classifies `NET-*`/`IMAGE-*` ids, but
+# `_agent_modules_not_run` used to iterate only `sast sca iac dast cloud
+# posture`, so a network-only run reported `modules_reported: ["net"]` and
+# `modules_not_run` never named `image` at all - a shipped surface silently
+# absent from both lists. This pins the fix: the not-run universe and the
+# id-prefix mapping must be read from the same table, so they cannot drift
+# apart again.
+DHB=$SCOURSH_SCRATCH/agent-header-net
+rm -rf "$DHB"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$DHB"
+DHB=$SCOURSH_RUN_DIR
+run_record checks_run NET-TLS-SELF_SIGNED-01
+findings_merge "$DHB"
+report_agent "$DHB"
+
+if (( HAVE_PY )); then
+  t_case 'A10b: a NET-*-only run reports modules_reported=[net]'
+  MRB=$(jget "$DHB/agent-fix.json" 'doc["run"]["modules_reported"]')
+  assert_eq '["net"]' "$MRB" 'net, not network, matches the module a NET-* finding sets on itself'
+  t_case 'A10b: modules_not_run names every one of the other seven modules, image included'
+  MNRB=$(jget "$DHB/agent-fix.json" 'sorted(doc["run"]["modules_not_run"])')
+  assert_eq '["cloud", "dast", "iac", "image", "posture", "sast", "sca"]' "$MNRB" \
+    'image (and every other unreported module) is namable as not-run alongside net - FAILS if _agent_modules_not_run iterates a fixed six-module list instead of the full prefix-mapped universe'
+fi
+
+# ==============================================================================
 printf '\n-- A12/A13/A14: format wiring --\n'
 # ==============================================================================
 D12=$SCOURSH_SCRATCH/agent-formats

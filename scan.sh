@@ -1713,7 +1713,6 @@ _guide_g9_describe() {
     sast)
       printf '  - scan source code under %s for secrets, crypto, injection and\n' "${flags[path]:-.}" >&2
       printf '    language-specific issues\n' >&2
-      [[ -n ${flags[lang]:-} ]] && printf '  - limited to: %s\n' "${flags[lang]}" >&2
       [[ ${flags[history]:-} == true ]] && printf '  - and replay the secret checks across git history too\n' >&2
       ;;
     sca)
