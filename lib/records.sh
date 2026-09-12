@@ -515,6 +515,44 @@ records_list() {
   printf '%s' "${_REC_L["$1|$2|$3"]:-}"
 }
 
+# --- fork-free bulk reads --------------------------------------------------
+# `records_count`/`records_id`/`records_field_or`/`records_list` above each
+# print to stdout, so a caller capturing the result with `$(...)` pays a real
+# fork for every call - fine for a one-off read, ruinous for a loop over
+# every field of every record in the tool's whole check catalog (measured:
+# lib/report.sh's OWASP/CIS registry walk was paying ~1000+ such forks for a
+# ~300-record catalog). "Things measured on this codebase" in AGENTS.md
+# already states the fix this project uses elsewhere (`occurrence_next`,
+# `worker_id_set`): a side-effecting function SETS a variable rather than
+# printing one for `$(...)` to capture. Bash 4.2 - this project's frozen
+# minimum - has no nameref (`local -n` is 4.3+), so these write into a fixed
+# global the caller reads immediately after the call, exactly as
+# `finding_decode` populates `_DF` for its own callers, rather than a
+# caller-chosen name threaded through by reference.
+#
+# Global, not `local`: the caller reads each slot from its own scope right
+# after the call, the same contract `_DF` already has.
+_RECORDS_COUNT_V=0
+_RECORDS_ID_V=''
+_RECORDS_FIELD_V=''
+_RECORDS_LIST_V=''
+
+records_count_into() { _RECORDS_COUNT_V=${_REC_N[$1]:-0}; }
+records_id_into() { _RECORDS_ID_V=${_REC_S["$1|$2|id"]:-}; }
+
+# records_field_or_into SET IDX KEY DEFAULT - mirrors records_field_or's own
+# has-then-fall-back logic exactly (an unset key is not the same as one set
+# to an empty string), without the `records_has` sub-call's own extra work:
+# both read the identical `_REC_S` slot, so the presence test is inlined.
+records_field_or_into() {
+  if [[ -n ${_REC_S["$1|$2|$3"]+set} ]]; then
+    _RECORDS_FIELD_V=${_REC_S["$1|$2|$3"]}
+  else
+    _RECORDS_FIELD_V=$4
+  fi
+}
+records_list_into() { _RECORDS_LIST_V=${_REC_L["$1|$2|$3"]:-}; }
+
 records_index_of_id() {
   local idx=${_REC_BYID["$1|$2"]:-}
   [[ -n $idx ]] || return 1

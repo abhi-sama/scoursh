@@ -71,6 +71,15 @@ declare -A _RPT_OWASP=()
 # at all (there is no `none` sentinel for `cis`, unlike `owasp`).
 declare -A _RPT_CIS=()
 declare -A _RPT_SEV_SUP=()
+# Set by `report_count` when `meta/checks_run` is empty - true exactly when
+# NO check executed this run (an abort before dispatch, or a filter chain
+# that selected nothing) - and the OWASP/CIS per-category registry walk
+# (`_report_owasp_state`/`_report_cis_state`, ~9-10s against the real
+# catalog) was skipped as a result. The compliance renderers below read this
+# to print one honest "no coverage" statement instead of the per-category
+# table; see `report_count`'s own comment for why skipping is safe exactly
+# in this case and nowhere else.
+_RPT_COMPLIANCE_SKIPPED=0
 _RPT_TOTAL=0
 _RPT_SUPPRESSED=0
 _RPT_LIVE=0
@@ -200,8 +209,45 @@ report_count() {
   _RPT_LIVE=0
   _report_dast_injection_gap_state "$rundir"
   _report_dast_surface_state "$rundir"
-  _report_owasp_state "$rundir"
-  _report_cis_state "$rundir"
+  # `_report_owasp_state`/`_report_cis_state` walk the tool's WHOLE check
+  # catalog (~9-10s against the real, on-disk *.rules tree - the cost
+  # `_report_checkmeta_registry_load`'s own header measures) purely to learn,
+  # for every category, which of its checks ran versus were merely
+  # registered. `meta/checks_run` (checks_record_run_selection) is written by
+  # every check some module actually executed, so an EMPTY/absent file means
+  # this run dispatched zero checks - an abort before any module ran
+  # (die() at exit 2/3/4, never reaching a module) or a filter chain that
+  # selected nothing - and in that state every category's answer to "did any
+  # of its checks run" is trivially no, without walking a single *.rules
+  # file to find out. Skipping the walk there is what takes an aborted run
+  # from ~16.9s to ~0.25s.
+  #
+  # This is NOT "skip whenever there are zero findings": a real, fully-run
+  # scan that legitimately found nothing also has zero findings, and there
+  # the per-category distinction (assessed-and-clean vs out-of-scope vs
+  # filtered) is real information the walk is the only way to produce - so
+  # the gate is on checks_run, never on the finding count. A combined
+  # `scan.sh all` where sast/sca/iac complete and dast then aborts still has
+  # a non-empty checks_run (from the modules that DID run) and still gets
+  # the full walk, correctly showing sast/sca/iac categories as
+  # assessed/clean and dast's own as not-run with the recorded abort reason.
+  #
+  # `_RPT_COMPLIANCE_SKIPPED` tells `_md_owasp_compliance`/`_html_owasp_compliance`
+  # and their CIS twins to render one honest "no checks ran" statement
+  # instead of a per-category table computed from arrays that were never
+  # populated - the constraint being that an unpopulated `_RPTOW_RAN` must
+  # never be silently read as "assessed, nothing found" (which is what the
+  # existing not_run/out_of_scope buckets would compute it as, wrongly, if
+  # the renderers were left untouched here).
+  if [[ -s $rundir/meta/checks_run ]]; then
+    _RPT_COMPLIANCE_SKIPPED=0
+    _report_owasp_state "$rundir"
+    _report_cis_state "$rundir"
+  else
+    _RPT_COMPLIANCE_SKIPPED=1
+    _RPTOW_REG_HAS=() ; _RPTOW_RAN=() ; _RPTOW_FILTERED_SET=() ; _RPTOW_LINES=()
+    _RPTCIS_REG_HAS=() ; _RPTCIS_RAN=() ; _RPTCIS_FILTERED_SET=() ; _RPTCIS_NAPP_SET=() ; _RPTCIS_LINES=()
+  fi
   [[ -s $rundir/findings.fields ]] || return 0
   local sev mod st ow cislist cid
   while IFS= read -r line; do
@@ -274,7 +320,17 @@ _OWASP_LABEL_LOADED=0
 # the same one documented on rubric_load, so it is silenced the same way.
 # shellcheck disable=SC2120
 owasp_categories_load() {
-  local path=${1:-$SCOURSH_INSTALL_ROOT/data/owasp-categories.conf}
+  # `${SCOURSH_INSTALL_ROOT:-}`, not a bare reference: `report_count` no
+  # longer unconditionally calls `_report_owasp_state` (the walk this
+  # function used to always be warmed by first, incidentally, from a
+  # scenario where the caller HAD set a real install root) whenever a run
+  # dispatched zero checks - see report_count's own comment - so a caller
+  # reaching this function directly (the compliance renderers' own header
+  # prose need a label table regardless of whether the per-category walk
+  # ran) can now be the FIRST call in a process where SCOURSH_INSTALL_ROOT
+  # is unset, and an unguarded reference is a `set -u` abort rather than the
+  # honest "no table available" this function already handles below.
+  local path=${1:-${SCOURSH_INSTALL_ROOT:-}/data/owasp-categories.conf}
   _OWASP_LABEL=()
   _OWASP_LABEL_LOADED=1
   [[ -r $path ]] || return 0
@@ -363,7 +419,9 @@ declare -ga _CIS_ORDER=()
 # versions is the same one documented there, so it is silenced the same way.
 # shellcheck disable=SC2120
 cis_mappings_load() {
-  local path=${1:-$SCOURSH_INSTALL_ROOT/data/cis-mappings}
+  # See owasp_categories_load's own comment: `${SCOURSH_INSTALL_ROOT:-}`,
+  # never a bare reference, for the identical reason.
+  local path=${1:-${SCOURSH_INSTALL_ROOT:-}/data/cis-mappings}
   _CIS_LABEL=()
   _CIS_ORDER=()
   _CIS_BENCHMARK_NAME=''
@@ -465,7 +523,13 @@ _report_owasp_registry_load() {
 # populates both `_RPTOW_CHECK_OWASP` and `_RPTCIS_CHECK_CIS` from the same
 # pass, under one shared memoization flag - `_report_owasp_registry_load` and
 # `_report_cis_registry_load` are kept as thin wrappers so neither caller
-# needed to change.
+# needed to change. `_sarif_build_registry` is now a third such thin wrapper
+# (see its own comment), for the identical reason.
+#
+# `checks_registry_load` is called DIRECTLY below, never through `$(...)`:
+# its own `die()` on a malformed registry file must abort the run, and a
+# `die()` inside a command substitution does not reliably do that
+# (lib/checks.sh's own comment on `CHECKS_REGISTRY_SETS`).
 declare -g _RPT_CHECKMETA_LOADED_ROOT=''
 _report_checkmeta_registry_load() {
   if [[ -n ${_RPT_CHECKMETA_LOADED_ROOT:-} && ${_RPT_CHECKMETA_LOADED_ROOT} == "${SCOURSH_INSTALL_ROOT:-}" ]]; then
@@ -474,16 +538,44 @@ _report_checkmeta_registry_load() {
   local -a _rptmeta_saved_sets=("${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}")
   _RPTOW_CHECK_OWASP=()
   _RPTCIS_CHECK_CIS=()
-  local m set n i id ow v
+  # `_SARIF_REG_LOC` (id -> "set idx") used to be built by `_sarif_build_registry`'s
+  # own, entirely SEPARATE full catalog walk (its own `checks_registry_load`
+  # call per module, re-parsing and re-validating every *.rules file this
+  # function has ALREADY just parsed and validated moments before) - measured
+  # costing as much again as this walk itself (~10-18s on this tree), because
+  # `report_sarif` is in the default `--format` list and so ran on every
+  # ordinary scan. Populated here instead, in the SAME pass, for free;
+  # `_sarif_build_registry` is now a thin wrapper that only calls this
+  # function (memoized exactly as `_RPTOW_CHECK_OWASP`/`_RPTCIS_CHECK_CIS`
+  # are) rather than reloading anything.
+  _SARIF_REG_LOC=()
+  local m set n i id ow v cislist
   for m in "${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}"; do
     checks_registry_load "$m" "_rptmetareg_$m"
     for set in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
-      n=$(records_count "$set")
+      # `records_count`/`records_id`/`records_field_or`/`records_list`
+      # (lib/records.sh) each print to stdout, so calling them the ordinary
+      # way - `x=$(records_id "$set" "$i")` - forks once per call. This loop
+      # runs 4 such calls for every check record in the tool's WHOLE catalog
+      # (hundreds of records across all `_RPT_MODULES`), which measurably
+      # dominated the difference between this function's own load+validate
+      # cost and its total wall time. The `_into` variants below (added for
+      # exactly this loop) write into a fixed scratch variable instead of
+      # printing - no fork, same result - see their own header in
+      # lib/records.sh for why a nameref isn't used (bash 4.2 has none).
+      records_count_into "$set"
+      n=$_RECORDS_COUNT_V
       for (( i = 0; i < n; i++ )); do
-        id=$(records_id "$set" "$i")
+        records_id_into "$set" "$i"
+        id=$_RECORDS_ID_V
         [[ -n $id ]] || continue
-        ow=$(records_field_or "$set" "$i" owasp none)
+        _SARIF_REG_LOC[$id]="$set $i"
+        records_field_or_into "$set" "$i" owasp none
+        ow=$_RECORDS_FIELD_V
         _RPTOW_CHECK_OWASP[$id]=$ow
+        records_list_into "$set" "$i" cis
+        cislist=$_RECORDS_LIST_V
+        [[ -n $cislist ]] || continue
         while IFS= read -r v; do
           [[ -n $v ]] || continue
           if [[ -n ${_RPTCIS_CHECK_CIS[$id]:-} ]]; then
@@ -491,7 +583,7 @@ _report_checkmeta_registry_load() {
           else
             _RPTCIS_CHECK_CIS[$id]=$v
           fi
-        done <<<"$(records_list "$set" "$i" cis)"
+        done <<<"$cislist"
       done
     done
   done
@@ -1528,6 +1620,29 @@ _md_findings() {
   done <"$rundir/findings.fields"
 }
 
+# `_md_compliance_no_coverage RUNDIR NOUN` - the shared "no checks ran at
+# all" statement `_md_owasp_compliance`/`_md_cis_compliance` print in place
+# of their usual per-category/per-control table when `report_count` set
+# `_RPT_COMPLIANCE_SKIPPED` (meta/checks_run empty: an abort before dispatch,
+# or a filter chain that selected nothing). NOUN is "category" or "control",
+# so the one sentence reads naturally in both callers.
+#
+# Deliberately does NOT say "assessed, no findings" (that would be the
+# "clean" bucket, and nothing was assessed) and deliberately does NOT say
+# "checks exist for this category but did not run" (that claim needs the
+# registry walk this path exists to skip, so it is never made here) - it
+# states only what is actually known: no check ran, and why, when a reason
+# was recorded.
+_md_compliance_no_coverage() {
+  local rundir=$1 noun=$2 abort_reason
+  abort_reason=$(_run_abort_reason "$rundir")
+  if [[ -n $abort_reason ]]; then
+    printf 'This scan aborted before any %s could be assessed: %s\n\n' "$noun" "$abort_reason"
+  else
+    printf 'No checks ran this scan, so no %s could be assessed; no reason was recorded.\n\n' "$noun"
+  fi
+}
+
 # `_md_owasp_compliance RUNDIR` - COMPLIANCE-02: report.md has no OWASP
 # section at all today; this adds one. Groups the findings themselves by
 # category (never merely counts them - `_html_summary`'s existing
@@ -1550,6 +1665,10 @@ _md_owasp_compliance() {
   printf '> table below is this run'\''s own status per category, measured from this\n'
   printf '> run'\''s `checks_run`/`skipped_checks` records rather than copied from that\n'
   printf '> prose, and will differ from it as coverage grows.\n\n'
+  if (( _RPT_COMPLIANCE_SKIPPED )); then
+    _md_compliance_no_coverage "$rundir" category
+    return 0
+  fi
   local id label count bucket line
   while IFS= read -r id; do
     [[ -n $id ]] || continue
@@ -1631,6 +1750,10 @@ _md_cis_compliance() {
   else
     printf '> No CIS control label table (`data/cis-mappings`) is available in this\n'
     printf '> build, so control ids on findings below render unexpanded.\n\n'
+  fi
+  if (( _RPT_COMPLIANCE_SKIPPED )); then
+    _md_compliance_no_coverage "$rundir" control
+    return 0
   fi
   local id label count bucket line
   while IFS= read -r id; do
@@ -2363,10 +2486,32 @@ _html_findings() {
 # into the existing per-finding anchors (`_html_one_finding`'s `f-<fp>` ids)
 # rather than re-rendering full evidence/remediation a second time, keeping
 # this section a compact index rather than a duplicate of "Findings" above.
+#
+# `_html_compliance_no_coverage RUNDIR NOUN` - the HTML twin of
+# `_md_compliance_no_coverage`, printed instead of the per-category/
+# per-control group list when `report_count` set `_RPT_COMPLIANCE_SKIPPED`.
+# See that function's own header for why: nothing here is "clean", and
+# nothing here claims a category/control has checks that merely "did not
+# run" - that claim needs the registry walk this path skips.
+_html_compliance_no_coverage() {
+  local rundir=$1 noun=$2 abort_reason
+  abort_reason=$(_run_abort_reason "$rundir")
+  if [[ -n $abort_reason ]]; then
+    printf '<p class="sub notrun">This scan aborted before any %s could be assessed: %s</p>\n' \
+      "$(html_escape "$noun")" "$(html_escape "$abort_reason")"
+  else
+    printf '<p class="sub notrun">No checks ran this scan, so no %s could be assessed - no reason recorded.</p>\n' \
+      "$(html_escape "$noun")"
+  fi
+}
 _html_owasp_compliance() {
   local rundir=$1
   printf '<h2 id="owasp-compliance">OWASP Top 10 compliance</h2>\n'
   printf '<p class="sub">docs/DESIGN.md Appendix B&#39;s own honest summary: &quot;strong automated coverage of the testable Top 10, explicit and labeled gaps on A04/A08/A09 and the manual-review portion of A01 - not a substitute for a human pentest or an ASVS audit.&quot; That is the tool&#39;s documented design-level claim. The table below is this run&#39;s own status per category, measured from this run&#39;s <code>checks_run</code>/<code>skipped_checks</code> records rather than copied from that prose, and will differ from it as coverage grows.</p>\n'
+  if (( _RPT_COMPLIANCE_SKIPPED )); then
+    _html_compliance_no_coverage "$rundir" category
+    return 0
+  fi
   local id label count bucket line status_class status_text reasons abort_reason
   while IFS= read -r id; do
     [[ -n $id ]] || continue
@@ -2443,6 +2588,10 @@ _html_cis_compliance() {
       "$(html_escape "$bname")" "$(html_escape "${bver:+ $bver}")"
   else
     printf '<p class="sub">No CIS control label table (<code>data/cis-mappings</code>) is available in this build, so control ids on findings below render unexpanded.</p>\n'
+  fi
+  if (( _RPT_COMPLIANCE_SKIPPED )); then
+    _html_compliance_no_coverage "$rundir" control
+    return 0
   fi
   local id label count bucket line status_class status_text reasons abort_reason
   while IFS= read -r id; do
@@ -3833,33 +3982,28 @@ _sarif_level_for() {
 }
 
 # Populates the global _SARIF_REG_LOC[check_id]="set idx" map from every
-# on-disk `*.rules` file `checks_registry_load` finds under sast/sca/iac/dast/
-# cloud (posture nests under `modules/cloud/`, so its own checks.rules is
-# covered by the `cloud` call; rules/derived.rules and rules/redaction.rules
-# live outside modules/ entirely and are never loaded here - the former is
-# deliberately unseeded, the latter's ids are never a finding's check_id).
-# Called DIRECTLY, never through $(...): checks_registry_load's own die() on a
-# malformed registry file must abort the run, exactly as it does for the
-# module-level callers in modules/*/run.sh, and a die() inside a command
-# substitution does not reliably do that (checks.sh's own comment on
-# CHECKS_REGISTRY_SETS).  Each call resets CHECKS_REGISTRY_SETS, so results
-# are accumulated into _SARIF_REG_LOC across the five module calls rather than
-# read from that global once at the end.
+# on-disk `*.rules` file under sast/sca/iac/dast/cloud (posture nests under
+# `modules/cloud/`, so its own checks.rules is covered by the `cloud` call;
+# rules/derived.rules and rules/redaction.rules live outside modules/
+# entirely and are never loaded here - the former is deliberately unseeded,
+# the latter's ids are never a finding's check_id).
+#
+# This USED to be its own, entirely separate full-catalog walk - the exact
+# same `checks_registry_load` + per-module/per-record loop
+# `_report_checkmeta_registry_load` (section 1a) already performs for the
+# OWASP/CIS state - re-parsing and re-validating every `*.rules` file a
+# SECOND time from disk under a second set-name prefix. Measured costing as
+# much again as that walk (~10-18s on this tree's ~319-record catalog), and
+# paid on every ordinary scan because `sarif` is in the default `--format`
+# list. `_report_checkmeta_registry_load` now populates `_SARIF_REG_LOC` in
+# its own single pass instead (see that function's own comment); this is a
+# thin wrapper so no caller below needed to change, and is exactly as cheap
+# to call again as `_report_owasp_registry_load` already is - memoized on
+# `SCOURSH_INSTALL_ROOT`, a no-op once any of the three views has run once
+# in this process.
 declare -A _SARIF_REG_LOC=()
 _sarif_build_registry() {
-  _SARIF_REG_LOC=()
-  local module set idx n cid
-  for module in "${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}"; do
-    checks_registry_load "$module" "_sarif_reg_$module"
-    for set in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
-      n=$(records_count "$set")
-      for (( idx = 0; idx < n; idx++ )); do
-        cid=$(records_id "$set" "$idx")
-        [[ -n $cid ]] || continue
-        _SARIF_REG_LOC[$cid]="$set $idx"
-      done
-    done
-  done
+  _report_checkmeta_registry_load
 }
 
 # Populates the globals _SARIF_FIND_TITLE/_SARIF_FIND_REMEDIATION/

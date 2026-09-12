@@ -1139,12 +1139,19 @@ printf -- '\n-- HONESTY FIX: meta/abort_reason and the OWASP/CIS not_run bucket 
 # codes) now records WHY in its own `abort_reason` meta field, separate from
 # `incomplete_reason` (that field's emptiness is exactly the exit-5 predicate,
 # docs/FOUNDATION.md tension 14) - a scope/usage/input abort must never read
-# as an incomplete run. This reuses the same checks-registry fixture as
-# COMPLIANCE-02/04 above (SCOURSH_INSTALL_ROOT is still set to it): A01:2021
-# (DAST-AUTHZ-OBJREF-01) and CIS 2.1.1 (CLOUD-S3-CIS_FIXTURE_LOGGING-01) are
-# both registered but this run deliberately never runs, skips, or marks
-# either not-applicable - a genuine `not_run`, the bucket that used to render
-# "no reason was recorded" unconditionally.
+# as an incomplete run.
+#
+# PERFORMANCE FIX: a run with an empty `meta/checks_run` - which every one of
+# these fixtures has, since none of them ever calls `run_record checks_run`
+# - is now known, cheaply (one `[[ -s ]]` test), to have dispatched ZERO
+# checks; `report_count` skips the ~9-10s OWASP/CIS registry walk entirely in
+# that case (`_RPT_COMPLIANCE_SKIPPED`) rather than paying it to learn what a
+# `[[ -s ]]` test already answered - "did anything run" is no for every
+# category. The compliance sections below therefore render ONE honest
+# statement instead of the old per-category table (which needed the walk to
+# tell "checks exist but didn't run" apart from "no check exists"), and
+# deliberately do NOT claim a category HAS registered checks that merely
+# didn't run - a claim the skipped walk is the only way to make truthfully.
 DABORT=$SCOURSH_SCRATCH/rpt-abort-reason
 rm -rf "$DABORT"
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
@@ -1163,22 +1170,33 @@ assert_contains "$JSA" 'scope gate refused GET https://bad-target.example' \
 assert_contains "$JSA" '"incomplete_reason": []' \
   'and incomplete_reason stays EMPTY - FAILS if an abort reason were folded into the exit-5 field'
 
-t_case 'the OWASP not_run bucket renders the abort reason instead of "no reason was recorded", in report.md'
-assert_contains "$MDA" '### A01:2021 - Broken Access Control' 'A01:2021 carries its published label'
-assert_contains "$MDA" 'did not run this scan: exit=3 scope gate refused' \
+t_case 'the OWASP section states the abort reason instead of the per-category table, in report.md'
+assert_contains "$MDA" '## OWASP Top 10 compliance' 'the section heading is still present'
+assert_contains "$MDA" 'This scan aborted before any category could be assessed: exit=3 scope gate refused' \
   'names the real abort reason - FAILS if the honest fallback text were shown despite a recorded reason'
+assert_not_contains "$MDA" '### A01:2021' \
+  'and no per-category heading appears - FAILS if the expensive registry walk still ran'
 
 t_case 'and in report.html'
-assert_contains "$HTA" 'did not run this scan: exit=3 scope gate refused' \
+assert_contains "$HTA" 'This scan aborted before any category could be assessed: exit=3 scope gate refused' \
   'the HTML compliance view renders the same reason'
+assert_not_contains "$HTA" 'id="owasp-A01:2021"' \
+  'and no per-category group renders there either'
 
-t_case 'the CIS not_run bucket renders the same abort reason, in both formats'
-assert_contains "$MDA" '### 2.1.1 - Ensure S3 Bucket Policy is set to deny HTTP requests' \
-  '2.1.1 carries its published title'
-assert_contains "$MDA" 'Checks for this control exist but did not run this scan: exit=3 scope gate refused' \
-  'report.md names the real abort reason for a not-run CIS control too'
-assert_contains "$HTA" 'did not run this scan: exit=3 scope gate refused' \
+t_case 'the CIS section states the same abort reason, in both formats'
+assert_contains "$MDA" '## CIS compliance' 'the section heading is still present'
+assert_contains "$MDA" 'This scan aborted before any control could be assessed: exit=3 scope gate refused' \
+  'report.md names the real abort reason for CIS too'
+assert_contains "$HTA" 'This scan aborted before any control could be assessed: exit=3 scope gate refused' \
   'report.html does the same'
+
+t_case 'neither compliance section reads as clean or as "checks exist but did not run"'
+assert_not_contains "$MDA" 'Assessed this run - no findings' \
+  'FAILS if an aborted run with no coverage at all could still render a category/control as clean'
+assert_not_contains "$MDA" 'Checks for this' \
+  'and the skipped walk never claims a specific category/control HAS registered checks - that claim needs the walk this path exists to avoid'
+assert_not_contains "$HTA" 'assessed - no findings' \
+  'report.html carries the same guarantee'
 
 t_case 'the Limitations section also states the run aborted, in both formats'
 assert_contains "$MDA" '**run aborted**: exit=3 scope gate refused' 'report.md'
@@ -1194,15 +1212,36 @@ report_all "$DNOABORT"
 MDN=$(cat "$DNOABORT/report.md")
 HTN=$(cat "$DNOABORT/report.html")
 
-t_case 'a not_run category with no abort_reason recorded keeps the original honest text'
+t_case 'no checks_run and no abort_reason keeps an honest fallback text, never a fabricated reason'
 assert_contains "$MDN" 'no reason was recorded' \
   'FAILS if the fallback text were removed even when nothing was actually captured - a check simply not selected must not read like an abort'
-assert_not_contains "$MDN" 'did not run this scan: exit=' \
-  'and no fabricated reason appears in report.md where none was recorded'
+assert_not_contains "$MDN" 'This scan aborted before any' \
+  'and no fabricated abort claim appears in report.md where none was recorded'
 assert_contains "$HTN" 'no reason recorded' \
   'and report.html keeps the same honest fallback'
-assert_not_contains "$HTN" 'did not run this scan: exit=' \
-  'and no fabricated reason appears in report.html where none was recorded'
+assert_not_contains "$HTN" 'This scan aborted before any' \
+  'and no fabricated abort claim appears in report.html where none was recorded'
+
+printf -- '\n-- and a PARTIAL abort (some modules ran, one then aborted) still gets the full per-category walk --\n'
+# A combined `scan.sh all` where earlier modules completed (so checks_run is
+# non-empty) and a later one then aborts must NOT take the fast path above -
+# the categories the completed modules covered are real information the
+# skip must never discard. Reuses the DABORT fixture's own abort_reason.
+DPARTIAL=$SCOURSH_SCRATCH/rpt-partial-abort
+rm -rf "$DPARTIAL"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$DPARTIAL"
+DPARTIAL=$SCOURSH_RUN_DIR
+run_record checks_run DAST-AUTHZ-OBJREF-01
+run_record abort_reason 'exit=3 scope gate refused GET https://bad-target.example: destination not in scope.conf'
+report_all "$DPARTIAL"
+MDP=$(cat "$DPARTIAL/report.md")
+
+t_case 'a partial run (some checks_run, then an abort) still renders the per-category table, not the fast-path summary'
+assert_contains "$MDP" '### A01:2021 - Broken Access Control' \
+  'FAILS if a non-empty checks_run were ever routed onto the zero-coverage fast path'
+assert_not_contains "$MDP" 'This scan aborted before any category could be assessed' \
+  'the fast-path sentence must never appear once at least one check genuinely ran'
 
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 SCOURSH_INSTALL_ROOT=$ROOT
