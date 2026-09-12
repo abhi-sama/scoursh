@@ -695,6 +695,26 @@ assert_contains "$A13" 'id="cat-dast"' 'the DAST section exists'
 assert_contains "$A13" 'id="cat-cloud"' 'the Cloud / AWS section exists'
 assert_contains "$A13" 'This category did not run.' 'and at least one of them says so plainly'
 
+printf -- '\n-- HONESTY FIX: the audit report'"'"'s per-category "did not run" fallback uses abort_reason too --\n'
+# Same fixture shape as above (SAST-only coverage, D13'"'"'s own real ids and
+# registry), but with meta/abort_reason also recorded - the DAST/Cloud
+# sections above never had ANY coverage_reduction line naming them either, so
+# they fell back to the uninformative "No coverage was recorded for it."
+# text. When the run actually aborted before dispatching them, that fallback
+# is exactly the honesty gap this ticket exists to close.
+run_record abort_reason 'exit=3 scope gate refused GET https://bad-target.example: destination not in scope.conf'
+SCOURSH_FORMATS=json,sarif,html,md,audit report_all "$D13"
+A13B=$(cat "$D13/report-audit.html")
+
+t_case 'a category with no coverage_reduction of its own states the captured abort reason instead of a generic fallback'
+assert_contains "$A13B" 'id="cat-dast"' 'the DAST section still exists'
+assert_contains "$A13B" 'The run aborted before it could be dispatched: exit=3 scope gate refused' \
+  'names the real abort reason - FAILS if the generic "No coverage was recorded for it." text were shown despite a recorded reason'
+
+t_case 'a category that DOES have its own coverage_reduction line keeps naming that reason, not the run-level abort'
+assert_contains "$A13B" 'reason=no_matching_files' \
+  'the SAST-JS-EVAL-01 not-applicable reason from earlier in this fixture is unaffected by abort_reason existing elsewhere in the same run'
+
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID='' SCOURSH_FORMATS=''
 
 # ===========================================================================
@@ -1113,6 +1133,76 @@ assert_contains "$HTCIS" "Ensure that S3 Buckets are configured with &#39;Block 
 assert_contains "$HTCIS" "Ensure hardware MFA is enabled for the &#39;root&#39; user account" \
   'including the not-applicable control'
 assert_not_contains "$HTCIS" '<script' 'still no <script> element anywhere (tension 10)'
+
+printf -- '\n-- HONESTY FIX: meta/abort_reason and the OWASP/CIS not_run bucket --\n'
+# A run that terminated early (lib/core.sh die(), usage/scope/input exit
+# codes) now records WHY in its own `abort_reason` meta field, separate from
+# `incomplete_reason` (that field's emptiness is exactly the exit-5 predicate,
+# docs/FOUNDATION.md tension 14) - a scope/usage/input abort must never read
+# as an incomplete run. This reuses the same checks-registry fixture as
+# COMPLIANCE-02/04 above (SCOURSH_INSTALL_ROOT is still set to it): A01:2021
+# (DAST-AUTHZ-OBJREF-01) and CIS 2.1.1 (CLOUD-S3-CIS_FIXTURE_LOGGING-01) are
+# both registered but this run deliberately never runs, skips, or marks
+# either not-applicable - a genuine `not_run`, the bucket that used to render
+# "no reason was recorded" unconditionally.
+DABORT=$SCOURSH_SCRATCH/rpt-abort-reason
+rm -rf "$DABORT"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$DABORT"
+DABORT=$SCOURSH_RUN_DIR
+run_record abort_reason 'exit=3 scope gate refused GET https://bad-target.example: destination not in scope.conf'
+report_all "$DABORT"
+MDA=$(cat "$DABORT/report.md")
+HTA=$(cat "$DABORT/report.html")
+JSA=$(cat "$DABORT/run.json")
+
+t_case 'run.json records abort_reason verbatim, as its own field, separate from incomplete_reason'
+assert_contains "$JSA" '"abort_reason"' 'the field exists'
+assert_contains "$JSA" 'scope gate refused GET https://bad-target.example' \
+  'and carries the real reason, byte for byte'
+assert_contains "$JSA" '"incomplete_reason": []' \
+  'and incomplete_reason stays EMPTY - FAILS if an abort reason were folded into the exit-5 field'
+
+t_case 'the OWASP not_run bucket renders the abort reason instead of "no reason was recorded", in report.md'
+assert_contains "$MDA" '### A01:2021 - Broken Access Control' 'A01:2021 carries its published label'
+assert_contains "$MDA" 'did not run this scan: exit=3 scope gate refused' \
+  'names the real abort reason - FAILS if the honest fallback text were shown despite a recorded reason'
+
+t_case 'and in report.html'
+assert_contains "$HTA" 'did not run this scan: exit=3 scope gate refused' \
+  'the HTML compliance view renders the same reason'
+
+t_case 'the CIS not_run bucket renders the same abort reason, in both formats'
+assert_contains "$MDA" '### 2.1.1 - Ensure S3 Bucket Policy is set to deny HTTP requests' \
+  '2.1.1 carries its published title'
+assert_contains "$MDA" 'Checks for this control exist but did not run this scan: exit=3 scope gate refused' \
+  'report.md names the real abort reason for a not-run CIS control too'
+assert_contains "$HTA" 'did not run this scan: exit=3 scope gate refused' \
+  'report.html does the same'
+
+t_case 'the Limitations section also states the run aborted, in both formats'
+assert_contains "$MDA" '**run aborted**: exit=3 scope gate refused' 'report.md'
+assert_contains "$HTA" '<strong>run aborted</strong>: exit=3 scope gate refused' 'report.html'
+
+printf -- '\n-- and the honest fallback survives when nothing was actually captured --\n'
+DNOABORT=$SCOURSH_SCRATCH/rpt-no-abort-reason
+rm -rf "$DNOABORT"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$DNOABORT"
+DNOABORT=$SCOURSH_RUN_DIR
+report_all "$DNOABORT"
+MDN=$(cat "$DNOABORT/report.md")
+HTN=$(cat "$DNOABORT/report.html")
+
+t_case 'a not_run category with no abort_reason recorded keeps the original honest text'
+assert_contains "$MDN" 'no reason was recorded' \
+  'FAILS if the fallback text were removed even when nothing was actually captured - a check simply not selected must not read like an abort'
+assert_not_contains "$MDN" 'did not run this scan: exit=' \
+  'and no fabricated reason appears in report.md where none was recorded'
+assert_contains "$HTN" 'no reason recorded' \
+  'and report.html keeps the same honest fallback'
+assert_not_contains "$HTN" 'did not run this scan: exit=' \
+  'and no fabricated reason appears in report.html where none was recorded'
 
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 SCOURSH_INSTALL_ROOT=$ROOT

@@ -2224,6 +2224,20 @@ it honoured it".
 `incomplete_reason` (the unplanned ones), and `incomplete_reason` being non-empty is exactly the exit-5
 predicate.
 
+**A later amendment: `abort_reason` records WHY a `2`/`3`/`4` termination happened, in its own field.**
+Before it existed, a run that died mid-pipeline (`die()` in `lib/core.sh`, on any of codes `2`/`3`/`4`)
+left the terminal message as the only record of the reason - the run directory a combined `scan.sh all`
+had already written (by whichever module finished last before the abort) rendered every not-yet-run
+module's OWASP/CIS category as "did not run this scan - no reason recorded", even though the tool knew
+exactly why. `abort_reason` is deliberately **not** folded into `incomplete_reason`: this precedence
+table's whole point is that `incomplete_reason`'s emptiness is the exit-5 predicate, so writing a scope
+refusal into it would silently reclassify every exit-3 run as exit-5. `abort_reason` carries no exit-code
+meaning of its own - it is read-only for the report (the Limitations section and the OWASP/CIS `not_run`
+bucket), which renders it in place of "no reason recorded" when one was captured, and keeps that same
+honest fallback text when nothing was. `die()` writes it for exactly its 2/3/4 codes and never for 5 (nor
+does `core_on_signal`'s SIGTERM path, which is a different unplanned-incompleteness route entirely), so
+the exit-code precedence table above is completely unchanged by this addition.
+
 Without this split, exit 5 swallows the product.
 Tension 12 emits `unknown` for every prior finding of any uncovered check, so on any repository with
 prior state and a non-empty backlog, `scan.sh sast` and `--profile-scan quick` would *always* exit 5 and

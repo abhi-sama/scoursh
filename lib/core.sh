@@ -155,6 +155,24 @@ log_error() { _log error '1;31' "$@"; }
 # so no path can leave the process with an unclassifiable status.  A code of 5
 # additionally records `incomplete_reason`, which tension 14 makes exactly the
 # exit-5 predicate.
+#
+# Every OTHER code die() ever actually receives (2 usage, 3 scope, 4 input -
+# 0 and 1 are never passed to this function; see scan_exit_code, which
+# computes those two without ever calling die) is itself a run terminating
+# before every planned module ran, and until now the reason lived nowhere but
+# stderr: a combined `scan.sh all` run that dies at the DAST scope gate after
+# sast/sca/iac already wrote a report leaves that report's own per-category
+# tables saying "did not run this scan - no reason recorded" for dast, even
+# though the tool knew exactly why. `abort_reason` records that reason -
+# deliberately a SEPARATE meta key from `incomplete_reason`, never folded into
+# it: that field's emptiness is exactly the exit-5 predicate a few lines above
+# and lib/report.sh ~889 states again, so writing a scope/usage/input reason
+# into it here would silently turn every scope refusal into an exit-5
+# incomplete run. `abort_reason` has no exit-code effect of its own; it is
+# read-only for the report (lib/report.sh's OWASP/CIS `not_run` bucket and the
+# Limitations section), which renders it in place of "no reason recorded" when
+# one is present and falls back to that same honest text when it is not - a
+# check simply never selected is not an abort, and must not read like one.
 die() {
   local code=$1
   shift
@@ -167,26 +185,37 @@ die() {
   esac
   if (( code == SCOURSH_EXIT_INCOMPLETE )); then
     run_record incomplete_reason "$*"
-    run_json_refresh_incomplete
+  else
+    run_record abort_reason "exit=$code $*"
   fi
+  # Unconditional, not only for code 5: any die() call means the process is
+  # about to exit outside scan_main's own end-of-run report_all call, so
+  # whichever report is already on disk (written by the last module that
+  # finished normally) is stale about the abort either way. Safe to call for
+  # every code - including 2/4 reached before a run directory ever existed -
+  # because the function itself no-ops with no SCOURSH_RUN_DIR/meta.
+  run_json_refresh_incomplete
   log_error "$*"
   # An intentional exit is not an error to be re-reported by the ERR trap.
   trap - ERR
   exit "$code"
 }
 
-# The exit-5 half of tension 14, enforced on the CONSUMER SURFACE rather than
-# only on the internal meta record.
+# Originally the exit-5 half of tension 14 alone, enforced on the CONSUMER
+# SURFACE rather than only on the internal meta record; `die` now calls this
+# for every code it can terminate on (2/3/4/5), because the same staleness
+# problem is not specific to 5.
 #
-# `die 5` terminates the process, so a run that aborts partway through never
+# Any `die` terminates the process, so a run that aborts partway through never
 # reaches scan.sh's own `report_run_json`.  In a combined scan the earlier
 # modules have each already called `report_all`, so the run directory is left
 # holding a `run.json`, `report.md` and `report.html` written by the PREVIOUS
-# module - an empty `incomplete_reason` and a computed gate verdict - while the
-# on-disk meta record says the run was truncated.  The exit code and the report
-# then contradict each other, and it is the report a consumer reads.
-# Re-running the run.json writer here closes that: whenever the exit code is 5,
-# `run.json`'s `incomplete_reason` is non-empty.
+# module - an empty `incomplete_reason`/`abort_reason` and a computed gate
+# verdict - while the on-disk meta record says the run was truncated.  The
+# exit code and the report then contradict each other, and it is the report a
+# consumer reads.  Re-running the run.json writer here closes that: whenever
+# the exit code is 5, `run.json`'s `incomplete_reason` is non-empty, and for
+# 2/3/4 its `abort_reason` is.
 #
 # Three guards, each load-bearing:
 #
