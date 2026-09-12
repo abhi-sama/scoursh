@@ -129,7 +129,7 @@ printf '\n-- guide_scope_record_text --\n'
 
 notes=$(guide_scope_notes_text)
 t_case 'guide_scope_notes_text'
-assert_contains "$notes" 'Authorised interactively via scan.sh --guided on' \
+assert_contains "$notes" 'Authorised interactively at a scoursh confirmation prompt on' \
   'the dated authorisation sentence is present'
 assert_contains "$notes" $'\n' 'the notes text is genuinely multi-line'
 
@@ -142,7 +142,7 @@ assert_eq 'allow-subdomains: false' "$(printf '%s\n' "$record" | sed -n 3p)" \
   'FAILS if allow-subdomains is ever anything but false: there is no parameter for it in this design'
 assert_eq 'allow-private-addresses: true' "$(printf '%s\n' "$record" | sed -n 4p)" \
   'the caller-decided allow-private-addresses value is passed through unchanged'
-assert_contains "$(printf '%s\n' "$record" | sed -n 5p)" 'notes: Authorised interactively via scan.sh --guided on' \
+assert_contains "$(printf '%s\n' "$record" | sed -n 5p)" 'notes: Authorised interactively at a scoursh confirmation prompt on' \
   'the notes field opens the multi-line value'
 assert_eq '  Confirmed at the prompt after the normalised target and its resolved' \
   "$(printf '%s\n' "$record" | sed -n 6p)" \

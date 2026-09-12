@@ -1345,6 +1345,241 @@ SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_MODULES assert_status 0 \
   _run_main image --image nonexistent-id --out "$W/run-image-warn"
 
 # =============================================================================
+printf '\n-- scan.sh section 6b: the interactive authorisation OFFER for an unauthorised --target --\n'
+# =============================================================================
+# config/scope.conf is the PRIMARY safety control, so every case here is about
+# what the offer REFUSES to do.  Each is named for the reading it fails under,
+# per AGENTS.md, and each asserts on the FILE (was a record written) as well as
+# the exit code - "it refused" must not be satisfiable by a path that wrote the
+# authorisation and then returned non-zero.
+#
+# $AUTH_URL is an RFC 6761 reserved, deliberately non-resolving name, and
+# $ROOT_AUTH_* fixture roots carry NO modules/dast, so a run that DOES continue
+# past the gate degrades to scan_dispatch's logged no-op and never opens a
+# socket - the same reason $ROOT_WITH_SCOPE_AND_SAST exists above.
+AUTH_URL='https://authorise-me.fixture.invalid/'
+AUTH_ID='authorise-me-fixture-invalid-443'
+
+# Never resolves a real name: lib/guide_scope.sh's `guide_scope_resolve` goes
+# through lib/http.sh's SCOURSH_HTTP_RESOLVE hook, the same stand-in
+# tests/suites/guide.sh's own G4 section uses.
+_auth_test_resolve() {
+  case $1 in
+    authorise-me.fixture.invalid) printf '93.184.216.34' ;;
+    elsewhere.fixture.invalid) printf '93.184.216.35' ;;
+    *) return 1 ;;
+  esac
+}
+
+# A fresh, EMPTY install root per case - no config/scope.conf at all, which is
+# the fresh-checkout shape this whole feature exists for ("I don't believe user
+# going to create file and copy").  `guide_scope_append` creates the file, so
+# the offer must work here and not only for a present-but-unmatched file.
+_auth_root() {
+  local d=$W/auth-$1
+  rm -rf "$d"
+  mkdir -p "$d/config"
+  printf '%s' "$d"
+}
+
+t_case 'NON-TTY: a piped/scripted stdin gets today refusal with NO prompt and NO write - fails under any reading that probes something other than the terminal, or that prompts first and checks after'
+AR=$(_auth_root nontty)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main dast --target "$AUTH_URL" --out "$W/auth-nontty-run" \
+    < <(printf '%s\n%s\n' "$AUTH_URL" 'authorise-me.fixture.invalid') ) \
+  >/dev/null 2>"$W/auth-nontty.log" || _AUTH_RC=$?
+assert_eq 4 "$_AUTH_RC" \
+  'exit is unchanged from before this feature (a wholly absent scope.conf is tension 14 exit 4) - fails if a non-tty run is allowed to prompt, or to succeed'
+assert_file_absent "$AR/config/scope.conf" \
+  'NOTHING was written: the answers it was fed WOULD have authorised the target had a prompt been shown, so this fails loudly if the tty gate is ever inverted'
+assert_not_contains "$(cat "$W/auth-nontty.log")" 'DECLARES THAT YOU OWN THIS HOST' \
+  'the ownership banner is never printed into a pipeline'
+
+t_case 'SCOURSH_NO_PROMPT suppresses the offer entirely even with the terminal checks forced TRUE - fails under a reading that only gates on the terminal'
+AR=$(_auth_root noprompt)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_GUIDE_FORCE_TTY=true SCOURSH_NO_PROMPT=1 \
+    SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main dast --target "$AUTH_URL" --out "$W/auth-noprompt-run" \
+    < <(printf '%s\n%s\n' "$AUTH_URL" 'authorise-me.fixture.invalid') ) \
+  >/dev/null 2>"$W/auth-noprompt.log" || _AUTH_RC=$?
+assert_eq 4 "$_AUTH_RC" 'refused exactly as today'
+assert_file_absent "$AR/config/scope.conf" 'and wrote nothing'
+assert_not_contains "$(cat "$W/auth-noprompt.log")" 'DECLARES THAT YOU OWN THIS HOST' \
+  'no banner, so SCOURSH_NO_PROMPT really is consulted before anything is printed'
+
+t_case 'a CI environment marker suppresses the offer too (guide_may_prompt condition 4, reused rather than re-derived)'
+AR=$(_auth_root cimarker)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_GUIDE_FORCE_TTY=true CI=true \
+    SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main dast --target "$AUTH_URL" --out "$W/auth-ci-run" \
+    < <(printf '%s\n%s\n' "$AUTH_URL" 'authorise-me.fixture.invalid') ) \
+  >/dev/null 2>&1 || _AUTH_RC=$?
+assert_eq 4 "$_AUTH_RC" 'a runner that allocated a pty is still refused'
+assert_file_absent "$AR/config/scope.conf" 'and wrote nothing'
+
+t_case 'TTY + the operator DECLINES (a blank URL, guide_g4_authorize_target own cancel contract): today refusal, today exit, no write'
+AR=$(_auth_root decline)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_GUIDE_FORCE_TTY=true \
+    SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main dast --target "$AUTH_URL" --out "$W/auth-decline-run" \
+    < <(printf '\n') ) >/dev/null 2>"$W/auth-decline.log" || _AUTH_RC=$?
+assert_eq 4 "$_AUTH_RC" 'a cancel is a refusal, never a fatal guide error and never a pass'
+assert_file_absent "$AR/config/scope.conf" 'a cancelled offer writes nothing at all'
+DECLINE_MSG=$(cat "$W/auth-decline.log")
+assert_contains "$DECLINE_MSG" 'DECLARES THAT YOU OWN THIS HOST' \
+  'the ownership assertion IS stated before the first question - fails if the banner is a bare continue? [y/N]'
+assert_not_contains "$DECLINE_MSG" 'To authorise it: re-run this command at an interactive terminal' \
+  'the teaching hint is NOT appended when the operator just saw the offer and declined it - the refusal is today message, unchanged'
+
+t_case 'TTY + the operator ACCEPTS: the record lands in config/scope.conf, --target is re-resolved to the new id, and the run CONTINUES through the normal gate'
+AR=$(_auth_root accept)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_GUIDE_FORCE_TTY=true \
+    SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main dast --target "$AUTH_URL" --out "$W/auth-accept-run" \
+    < <(printf '%s\nauthorise-me.fixture.invalid\n' "$AUTH_URL") ) \
+  >/dev/null 2>"$W/auth-accept.log" || _AUTH_RC=$?
+assert_eq 0 "$_AUTH_RC" \
+  'the run continues to completion - fails if the offer writes the record but preflight still refuses, the whole point of the re-resolve'
+assert_file_exists "$AR/config/scope.conf" 'the authorisation is durable, in the file, exactly as a hand edit would be'
+records_clear scope
+config_scope_load "$AR/config/scope.conf"
+assert_eq 1 "$(records_count scope)" 'exactly one record was appended'
+assert_eq "$AUTH_ID" "$(records_id scope 0)" \
+  'the id is guide_scope_unique_id own derivation - no second id scheme was invented here'
+assert_eq "$AUTH_URL" "$(records_field scope 0 base-url)" \
+  'base-url is the bytes the operator typed (lib/guide_scope.sh rule 2), not a normalised substitute'
+assert_eq 'false' "$(records_field_or scope 0 allow-subdomains false)" \
+  'allow-subdomains is still always false - the offer grants no wider scope than the guided menu does'
+assert_eq "$AUTH_ID" "$(cat "$W/auth-accept-run/meta/scope_authorization_interactive")" \
+  'run.json meta records WHICH target was authorised interactively, so the route is auditable and is never inferred from the config note'
+assert_file_exists "$W/auth-accept-run/meta/config_scope_conf_sha256_post_authorization" \
+  'and the post-write state of the file, because _scan_record_config already wrote config_scope_conf_sha256 for the PRE-write file and lib/report.sh reads that key with _meta_first'
+# The "it continued" proof is `meta/targets`, which the `dast` arm writes
+# immediately AFTER `config_scope_require` - so it exists only if the
+# non-bypassable §7 gate itself accepted the newly written record, and it
+# carries the RESOLVED id rather than the URL the operator typed.  Deliberately
+# NOT meta/checks_run: these fixture roots carry no modules/ at all, so
+# scan_dispatch degrades to its logged no-op exactly as \$ROOT_WITH_SCOPE's own
+# dispatch cases already rely on.
+assert_eq "$AUTH_ID" "$(cat "$W/auth-accept-run/meta/targets")" \
+  'the run really reached the real §7 gate afterwards, with --target carrying the resolved id - fails if the offer short-circuits the run instead of continuing it, and fails if the URL reaches the run record unresolved'
+assert_file_exists "$W/auth-accept-run/meta/coverage_reduction" \
+  'and scan_dispatch ran too - with no modules/ under this fixture root, its declared no-op is what a completed dispatch looks like here'
+
+t_case 'the newly authorised target then passes the normal gate on a LATER, wholly NON-INTERACTIVE run by its own id - the record is ordinary, and the gate is unchanged'
+SCOURSH_INSTALL_ROOT=$AR SCOURSH_NO_PROMPT=1 assert_status 0 \
+  "a second run with --target $AUTH_ID and no terminal at all succeeds - fails if the offer wrote something config_scope_require cannot match" \
+  _run_main dast --target "$AUTH_ID" --out "$W/auth-accept-run-2"
+SCOURSH_INSTALL_ROOT=$AR SCOURSH_NO_PROMPT=1 assert_status 0 \
+  'and by its base-url too, through the existing _scan_resolve_target_flags resolution' \
+  _run_main dast --target "$AUTH_URL" --out "$W/auth-accept-run-3"
+
+t_case 'a host the operator did NOT pass is never authorised FOR THIS RUN: typing a different host at the prompt writes that operator own record but leaves the run refused, and the refusal names what is actually in the file now'
+AR=$(_auth_root elsewhere)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_GUIDE_FORCE_TTY=true \
+    SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main dast --target "$AUTH_URL" --out "$W/auth-elsewhere-run" \
+    < <(printf 'https://elsewhere.fixture.invalid/\nelsewhere.fixture.invalid\n') ) \
+  >/dev/null 2>"$W/auth-elsewhere.log" || _AUTH_RC=$?
+assert_eq 3 "$_AUTH_RC" \
+  'still refused - fails under any reading that treats "a write happened" as "this run is authorised", which is the whole of safety constraint 7'
+ELSEWHERE_MSG=$(cat "$W/auth-elsewhere.log")
+assert_contains "$ELSEWHERE_MSG" 'elsewhere-fixture-invalid-443' \
+  'the refusal lists the id that IS now declared - fails if the pre-write message is reported stale, which would claim a scope.conf that now exists does not'
+assert_not_contains "$ELSEWHERE_MSG" 'and it does not exist' \
+  'and specifically does not still say the file is absent'
+records_clear scope
+config_scope_load "$AR/config/scope.conf"
+assert_eq 1 "$(records_count scope)" 'exactly the one record the operator themselves typed'
+assert_eq 'elsewhere-fixture-invalid-443' "$(records_id scope 0)" \
+  'and it is for the host they typed, never for the --target they passed'
+assert_file_absent "$W/auth-elsewhere-run/meta/scope_authorization_interactive" \
+  'no interactive-authorisation fact is recorded for a run that was still refused'
+
+t_case 'a BARE, non-URL --target id is never offered at all: the id guide_scope_unique_id derives comes from the host, so no answer at that prompt could match it, and prompting then refusing is worse than refusing now'
+AR=$(_auth_root bareid)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_GUIDE_FORCE_TTY=true \
+    SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main dast --target some-typo-id --out "$W/auth-bareid-run" \
+    < <(printf '%s\nauthorise-me.fixture.invalid\n' "$AUTH_URL") ) \
+  >/dev/null 2>"$W/auth-bareid.log" || _AUTH_RC=$?
+assert_eq 4 "$_AUTH_RC" 'refused as today'
+assert_file_absent "$AR/config/scope.conf" \
+  'and nothing was written - fails if the offer fires for a value it cannot re-resolve, which would authorise a host the operator never named'
+BAREID_MSG=$(cat "$W/auth-bareid.log")
+assert_not_contains "$BAREID_MSG" 'DECLARES THAT YOU OWN THIS HOST' 'no banner either'
+assert_contains "$BAREID_MSG" 'To authorise it: re-run this command at an interactive terminal' \
+  'but the operator IS told the easy paths, since no offer was shown'
+assert_contains "$BAREID_MSG" '--guided' 'including that --guided exists'
+
+t_case 'the offer is NOT made when something ELSE would refuse the run anyway - accepting it must always continue the run, never write an authorisation for a run that dies on the next line'
+AR=$(_auth_root otherproblem)
+_AUTH_RC=0
+( _guide_env SCOURSH_INSTALL_ROOT="$AR" SCOURSH_GUIDE_FORCE_TTY=true \
+    SCOURSH_HTTP_RESOLVE=_auth_test_resolve \
+    scan_main all --target "$AUTH_URL" --path "$W/auth-no-such-path" \
+    --out "$W/auth-otherproblem-run" \
+    < <(printf '%s\nauthorise-me.fixture.invalid\n' "$AUTH_URL") ) \
+  >/dev/null 2>"$W/auth-otherproblem.log" || _AUTH_RC=$?
+assert_eq 4 "$_AUTH_RC" 'the --path problem still refuses the run'
+assert_file_absent "$AR/config/scope.conf" \
+  'and no authorisation was written - fails under a reading that offers as soon as the target check fails, before the other checks have had their say'
+OTHER_MSG=$(cat "$W/auth-otherproblem.log")
+assert_contains "$OTHER_MSG" 'auth-no-such-path' 'the --path problem is named'
+assert_contains "$OTHER_MSG" '2 problem(s) found' \
+  'BOTH problems are still reported together in one refusal, exactly as before this feature'
+# This fixture root has no config/scope.conf at all, so the TARGET problem's own
+# message names the absent file rather than the --target value - it is the same
+# message, in the same first position, that a non-interactive run has always
+# produced.
+assert_contains "$OTHER_MSG" '--target-scoped command requires' \
+  'and the target problem is still named in the same refusal, in the order it always was'
+
+t_case 'NO FLAG authorises a target: the absence is asserted against _SCAN_FLAG_KIND itself, so a later ticket cannot quietly add one'
+_AUTH_BAD_FLAGS=''
+for _auth_k in "${!_SCAN_FLAG_KIND[@]}"; do
+  case ${_auth_k#*:} in
+    yes | y | force | authorize | authorise | authorize-target | authorise-target \
+      | accept | accept-scope | auto-authorize | auto-authorise | assume-yes \
+      | no-confirm | non-interactive-authorize | non-interactive-authorise)
+      _AUTH_BAD_FLAGS=${_AUTH_BAD_FLAGS:+$_AUTH_BAD_FLAGS, }$_auth_k
+      ;;
+  esac
+done
+if [[ -n $_AUTH_BAD_FLAGS ]]; then
+  _t_no 'no --yes/--force/--authorize-shaped flag exists in the CLI grammar (safety constraint 3: such a flag can sit in a CI file, which is exactly the non-bypassability docs/DESIGN.md §7 demands)' \
+    "found: $_AUTH_BAD_FLAGS"
+else
+  _t_ok 'no --yes/--force/--authorize-shaped flag exists in the CLI grammar (safety constraint 3: such a flag can sit in a CI file, which is exactly the non-bypassability docs/DESIGN.md §7 demands)'
+fi
+# And the mechanism itself reads no flag at all: the only gate is
+# guide_may_prompt.  Read off the real source, so wiring a flag in WITHOUT
+# touching _SCAN_FLAG_KIND (a `${SCAN_FLAGS[...]}` read of a global-fallback
+# spelling, say) still fails this.
+_AUTH_OFFER_SRC=$(sed -n '/^_scan_pf_offer_authorize_target() {/,/^}/p' "$ROOT/scan.sh")
+assert_contains "$_AUTH_OFFER_SRC" 'guide_may_prompt true'   'the offer gates on guide_may_prompt and nothing else'
+# It reads SCAN_FLAGS[target] - it has to, in order to re-resolve and then
+# record the id it just authorised - so this asserts the exact KEY SET rather
+# than banning the array outright, which would be unsatisfiable and so would
+# pin nothing at all.
+_AUTH_FLAG_KEYS=$(printf '%s\n' "$_AUTH_OFFER_SRC" \
+  | grep -o 'SCAN_FLAGS\[[a-z-]*\]' | sed 's/SCAN_FLAGS\[//; s/\]//' | LC_ALL=C sort -u | tr '\n' ',') \
+  || _AUTH_FLAG_KEYS=''
+assert_eq 'target,' "$_AUTH_FLAG_KEYS" \
+  'the ONLY flag the offer reads is --target, the value it was asked about - fails the moment any other flag can influence whether an authorisation is written'
+
+t_case 'an unknown --target flag value IS still refused with exit 2 before any of this - the grammar has gained no new spelling'
+assert_status 2 'a bogus flag is still a usage error, not an authorisation question' \
+  _run_main dast --target "$AUTH_URL" --authorize-target
+
+# =============================================================================
 printf '\n-- the config loader runs before scan_dispatch (this ticket''s 3rd acceptance criterion) --\n'
 # =============================================================================
 t_case 'a malformed config/scanner.conf dies exit 4 BEFORE any module is dispatched'

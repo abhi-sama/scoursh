@@ -212,8 +212,17 @@ guide_scope_unique_id() {
 # `guide_scope_notes_text` - the dated `notes:` line's content (unwrapped,
 # LF-separated; `guide_scope_record_text` below applies the two-space
 # continuation prefix rules/RULE-FORMAT.md §6 requires).
+#
+# DELIBERATELY ROUTE-NEUTRAL.  This used to say "via scan.sh --guided", which
+# was true while the guided menu was the only caller and became a false claim
+# about a flag the operator never typed once scan.sh's preflight began offering
+# the same screen for an unauthorised --target (scan.sh section 6b).  A record
+# in config/scope.conf is a durable authorisation document, so it states what
+# is true of every route into this writer - a human confirmed it at a prompt -
+# and leaves "which command was run" to run.json, where scan.sh records it
+# (`scope_authorization_interactive`) without guessing.
 guide_scope_notes_text() {
-  printf 'Authorised interactively via scan.sh --guided on %s.\nConfirmed at the prompt after the normalised target and its resolved\naddress were shown.' "$(now_iso)"
+  printf 'Authorised interactively at a scoursh confirmation prompt on %s.\nConfirmed at the prompt after the normalised target and its resolved\naddress were shown.' "$(now_iso)"
 }
 
 # `guide_scope_record_text ID BASE_URL ALLOW_PRIVATE NOTES` - renders one
