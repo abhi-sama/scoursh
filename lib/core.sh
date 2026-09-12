@@ -87,8 +87,10 @@ _want_color() {
   esac
 }
 
-# `_redact_out TEXT` - docs/FOUNDATION.md tension 9 defines redact() as what is
-# written ANYWHERE, and names run.json and logs in the same breath as evidence.
+# `_redact_out TEXT` - sets `_REDACT_OUT_V` to the masked text (a setter, not
+# a stdout producer - see below for why).  docs/FOUNDATION.md tension 9
+# defines redact() as what is written ANYWHERE, and names run.json and logs
+# in the same breath as evidence.
 # Both writers in this file - `_log` and `run_record` - carry target-derived
 # bytes: modules/dast/ratelimit.sh logs the burst endpoint it lifted out of the
 # crawler's inventory, and a `coverage_gap` naming an endpoint it could not
@@ -114,18 +116,65 @@ _want_color() {
 # shell and inherited by the `$(redact ...)` subshell, which is what makes the
 # inner call bail; a redact() that dies takes only that subshell with it and the
 # raw text is used, because a logger that aborts the run is worse than one that
-# fails open on its own error path.
+# fails open on its own error path.  The `$(redact ...)` call below is KEPT
+# exactly as it always was - same subshell, same containment, same fail-open
+# behaviour on a genuine engine failure (tests/suites/secret-redaction.sh I3
+# pins this) - and is still the only place text actually reaches the matching
+# engine.
+#
+# `_redact_out` itself, though, is now a SETTER (`_REDACT_OUT_V`) rather than a
+# function callers wrap in `$(_redact_out ...)`.  That is not a style choice:
+# `_log` and `run_record` used to call it as `$(_redact_out "$*")`, and command
+# substitution forks a subshell around the ENTIRE call - so the per-process
+# cache below, and redact()'s own ruleset-load/memo (lib/findings.sh), were
+# being recreated and thrown away on every single invocation, never surviving
+# to the next one even though both live in ordinary global variables.
+# `_scan_record_config` (scan.sh) alone calls `run_record` roughly forty times,
+# and measured on this tree the overwhelmingly common case is the SAME literal
+# value recurring (a `config_source_*` of "default", a boolean, a format
+# name) - each paying a fresh external grep/rg fork for a question this run
+# already answered.  Calling `_redact_out` directly - no `$(...)` - is what
+# lets `_REDACT_OUT_MEMO` actually persist: the ONLY subshell left in the path
+# is `redact()`'s own internal one two paragraphs up, entered only on a cache
+# MISS, so the die()-containment guarantee is exactly as strong as before and
+# a MISS costs exactly what it always cost.  Caching is sound because redact()
+# is a pure function of its input for the run's lifetime (its own comment
+# above: "the same bytes in always produce the same masked bytes out") - the
+# ruleset never changes mid-run, so caching input->output here changes
+# nothing about WHAT gets redacted, only how many times the identical
+# question gets re-asked.  Capped at the same 512-byte size `redact()`'s own
+# memo uses, for the same reason: evidence is usually long and usually unique,
+# so the cap keeps this from growing on the inputs least likely to repeat.
 _REDACT_OUT_BUSY=0
+declare -gA _REDACT_OUT_MEMO=()
+_REDACT_OUT_V=''
 _redact_out() {
   if (( _REDACT_OUT_BUSY )) || ! declare -F redact >/dev/null 2>&1; then
-    printf '%s' "$1"
+    _REDACT_OUT_V=$1
+    return 0
+  fi
+  local text=$1
+  # An empty key on an associative array is a bash bug, not a style question -
+  # `${arr[$k]+set}`/`arr[$k]=v` with `k=''` raises "bad array subscript" on
+  # bash 5.3.9 (measured on this host), which is merely a warning without
+  # `set -e` and a hard abort of the whole process WITH it. `redact()` itself
+  # already treats empty text as a trivial no-op (`[[ -z $text ]]` up front,
+  # this file's own docstring above), so this mirrors that rather than
+  # inventing a new case: skip the cache and the cost together.
+  if [[ -z $text ]]; then
+    _REDACT_OUT_V=''
+    return 0
+  fi
+  if (( ${#text} <= 512 )) && [[ -n ${_REDACT_OUT_MEMO[$text]+set} ]]; then
+    _REDACT_OUT_V=${_REDACT_OUT_MEMO[$text]}
     return 0
   fi
   _REDACT_OUT_BUSY=1
   local out
-  out=$(redact "$1") || out=$1
+  out=$(redact "$text") || out=$text
   _REDACT_OUT_BUSY=0
-  printf '%s' "$out"
+  (( ${#text} <= 512 )) && _REDACT_OUT_MEMO[$text]=$out
+  _REDACT_OUT_V=$out
 }
 
 _log() {
@@ -140,7 +189,8 @@ _log() {
     prefix=$'\033['"$colour"'m'
     suffix=$'\033[0m'
   fi
-  printf '%s %s%-5s%s %s\n' "$(now_iso)" "$prefix" "$level" "$suffix" "$(_redact_out "$*")" >&2
+  _redact_out "$*"
+  printf '%s %s%-5s%s %s\n' "$(now_iso)" "$prefix" "$level" "$suffix" "$_REDACT_OUT_V" >&2
 }
 
 log_debug() { _log debug '2;37' "$@"; }
@@ -942,7 +992,8 @@ run_record() {
   [[ -n ${SCOURSH_RUN_DIR:-} && -d ${SCOURSH_RUN_DIR:-}/meta ]] || return 0
   local dir=${SCOURSH_META_DIR:-$SCOURSH_RUN_DIR/meta}
   [[ -d $dir ]] || dir=$SCOURSH_RUN_DIR/meta
-  printf '%s\n' "$(_redact_out "$*")" >>"$dir/$key"
+  _redact_out "$*"
+  printf '%s\n' "$_REDACT_OUT_V" >>"$dir/$key"
   return 0
 }
 
