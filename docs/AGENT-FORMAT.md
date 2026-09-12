@@ -213,6 +213,40 @@ emptiness - `[]` for an empty array is still a fact, not silence):
   below is not classification the fixer can trust as "new since last time" - a first run, or one whose
   prior state was unusable, reports every live finding `new` regardless.
 
+## 4a. Aborted runs
+
+`report_agent` is not gated on the run having actually reached `report_all`. `die()` (`lib/core.sh`,
+exit codes 2/3/4/5) terminates the process directly, and its own abort-refresh path
+(`run_json_refresh_incomplete`) re-renders `run.json`, `report.md`, `report.html` **and**
+`agent-fix.json` in that order before the process exits - the identical four-writer list, so an
+aborted run's `agent-fix.json` is never stale or absent. This closes what would otherwise be the
+worst case for a consumer that reads only this one file by default: no file at all on an abort reads
+as "never fetched", not as "clean", but it is still strictly worse than an explicit aborted state,
+because it gives a downstream fixing agent nothing to branch on.
+
+No new field exists for this - the `run` header (§4) already carries everything needed, because it is
+built entirely from the same `meta/*` records `run.json` itself renders, whether or not the run ever
+reached `report_all` normally:
+
+- **(a) ran and found nothing**: `run.abort_reason` and `run.incomplete_reason` are both `[]`,
+  `run.checks_run` is non-empty. `findings` is `[]`; every check that ran is a real, clean assessment.
+- **(b) ran partially, then aborted**: `run.abort_reason` (2/3/4) or `run.incomplete_reason` (5) is
+  non-empty, and `run.checks_run` is ALSO non-empty - the modules that completed before the abort left
+  real coverage behind, and their findings (if any) are still in `findings[]`. `run.modules_not_run`
+  names what never got to run because of the abort, not because a filter excluded it (§4's own bullet
+  on `abort_reason` states this precisely).
+- **(c) refused before anything ran**: `run.abort_reason` or `run.incomplete_reason` is non-empty and
+  `run.checks_run` is `[]` - no module ever dispatched a check, so `findings` is unconditionally `[]`
+  too (there is nothing in `findings.fields` for `report_agent` to have read). This is the shape a
+  scope/usage/input refusal (`scan.sh all --target <unauthorized>`, exit 3) produces.
+
+A consumer that reads `run.abort_reason`/`run.incomplete_reason` before trusting `findings: []` as
+"clean" can never confuse (c) with (a); checking `run.checks_run` alongside it separates (b) from (c).
+Nothing here is computed as a "clean" result from an empty finding set - the same honesty precedent
+`report.md`/`report.html`'s own `_RPT_COMPLIANCE_SKIPPED` path (`lib/report.sh`) already established
+for the compliance tables: an aborted run's absence of findings is stated as an abort, never rendered
+indistinguishably from a real, completed, clean scan.
+
 ## 5. Wiring, for anyone tracing the implementation
 
 Six changes, all reuse of existing machinery - no new escaping surface, no new dependency:
@@ -228,6 +262,10 @@ Six changes, all reuse of existing machinery - no new escaping surface, no new d
    optional §9.1.4/§9.5 keys and the secret-family guard.
 6. `modules/sca/{engine,go_engine}.sh`: `finding_set dep_type`/`finding_set fix_fixed_versions` at
    each of the four emit sites.
+7. `lib/core.sh`: `report_agent` added to `run_json_refresh_incomplete`'s writer list (§4a) - the
+   abort path, reached from `die()`, otherwise never calls into `report_all`/`_report_render_formats`
+   at all, so `agent-fix.json` used to be silently absent on every aborted run (exit 2/3/4/5) even
+   though `meta/abort_reason`/`meta/incomplete_reason` were correctly recorded.
 
 At landing, `agent` was opt-in and not in the default list, exactly as `audit`. A later captain
 decision made `agent` a first-class deliverable: `lib/config.sh`'s `_scanner_default_list formats` now

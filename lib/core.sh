@@ -209,13 +209,17 @@ die() {
 # Any `die` terminates the process, so a run that aborts partway through never
 # reaches scan.sh's own `report_run_json`.  In a combined scan the earlier
 # modules have each already called `report_all`, so the run directory is left
-# holding a `run.json`, `report.md` and `report.html` written by the PREVIOUS
-# module - an empty `incomplete_reason`/`abort_reason` and a computed gate
-# verdict - while the on-disk meta record says the run was truncated.  The
-# exit code and the report then contradict each other, and it is the report a
-# consumer reads.  Re-running the run.json writer here closes that: whenever
-# the exit code is 5, `run.json`'s `incomplete_reason` is non-empty, and for
-# 2/3/4 its `abort_reason` is.
+# holding a `run.json`, `report.md`, `report.html` and `agent-fix.json`
+# written by the PREVIOUS module - an empty `incomplete_reason`/`abort_reason`
+# and a computed gate verdict - while the on-disk meta record says the run was
+# truncated.  The exit code and the report then contradict each other, and it
+# is the report a consumer reads.  Re-running the writers here closes that:
+# whenever the exit code is 5, `run.json`'s `incomplete_reason` is non-empty,
+# and for 2/3/4 its `abort_reason` is - and `agent-fix.json`'s own `run`
+# header (§4, docs/AGENT-FORMAT.md) carries the identical value, because it is
+# the ONLY format a downstream fixing agent reads by default (docs/DESIGN.md
+# §15): an agent that saw no file at all on an abort could not tell "ran and
+# found nothing" from "never ran", which is worse than an empty result.
 #
 # Three guards, each load-bearing:
 #
@@ -249,19 +253,28 @@ run_json_refresh_incomplete() {
   [[ -n ${SCOURSH_RUN_DIR:-} && -d ${SCOURSH_RUN_DIR:-}/meta ]] || return 0
   [[ ${_SCOURSH_RUN_OWNER:-} == "$$" ]] || return 0
   _SCOURSH_RUN_JSON_REFRESHED=1
-  # report_run_json/report_md/report_html each independently re-parse the
-  # tool's whole *.rules catalog (via report_count's OWASP/CIS registry
-  # state) the first time they run in a process - normally paid once and
-  # memoized for the rest of that process, but each of these three runs in
+  # report_run_json/report_md/report_html/report_agent each independently
+  # re-parse the tool's whole *.rules catalog (via report_count's OWASP/CIS
+  # registry state) the first time they run in a process - normally paid once
+  # and memoized for the rest of that process, but each of these four runs in
   # its OWN subshell (below), and a subshell can never write its memoized
   # state back to this parent. Dumping that state out of each subshell and
   # sourcing it back here - see report_registries_dump's own header comment -
-  # means only the FIRST of the three pays for the parse; a no-op if
+  # means only the FIRST of the four pays for the parse; a no-op if
   # lib/report.sh (or $SCOURSH_SCRATCH) is unavailable.
   if [[ -n ${SCOURSH_SCRATCH:-} && -d ${SCOURSH_SCRATCH:-} ]]; then
     _rjri_regdump=$SCOURSH_SCRATCH/report-registries.$$
   fi
-  for fn in report_run_json report_md report_html; do
+  # `report_agent` is last: it is the one format a downstream fixing agent
+  # reads by default (docs/AGENT-FORMAT.md), and every field in its `run`
+  # header it needs - `abort_reason`, `checks_run`, `coverage_gap`/
+  # `coverage_reduction` - is read straight from meta/, the same records
+  # report_run_json/report_md/report_html already read; it adds no dispatch
+  # of its own and no registry walk beyond the one report_count already
+  # shares across this loop (report_count's own `_RPT_COMPLIANCE_SKIPPED`
+  # gate, #287, keeps that walk skipped whenever meta/checks_run is empty -
+  # the ordinary abort shape - so this adds no cost on the common case).
+  for fn in report_run_json report_md report_html report_agent; do
     declare -F "$fn" >/dev/null 2>&1 || continue
     (
       trap - ERR
