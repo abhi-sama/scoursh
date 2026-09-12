@@ -499,11 +499,13 @@ printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-03: the G1 scan-type menu --\n'
 # the menu's ready set equals the set of modules with a run.sh on disk,
 # because a shared-function convention is a thing a future edit can break."
 # Two proofs, not one: against the REAL tree (where this project's own
-# build-order state decides the answer, and is worth pinning as of this
-# ticket - sast/sca/iac/dast all landed, cloud has not), and against a
-# FIXTURE tree built to name an arbitrary subset, so the assertion is
-# discriminating rather than a coincidence of what this checkout happens to
-# have on disk right now.
+# build-order state decides the answer - as of PR #275, sast/sca/iac/dast
+# AND cloud have all landed, so every module in this loop is reachable on
+# a real checkout today; the assertion still holds because it reads
+# `_scan_module_built` at run time rather than hardcoding which are ready),
+# and against a FIXTURE tree built to name an arbitrary subset, so the
+# assertion is discriminating rather than a coincidence of what this
+# checkout happens to have on disk right now.
 t_case "_guide_g1_reachable equals _scan_module_built (\"the same probe scan_dispatch uses\") on the real tree"
 for _guide_mod in sast sca iac dast cloud; do
   _guide_on_disk=0
@@ -541,25 +543,40 @@ unset _guide_mod _guide_want _guide_got
 # case `cd`s into its own scratch directory instead, letting the default
 # `reports/<timestamp>` fall there if it were ever created, and always
 # `cd`s back out afterward.
-t_case "picking an item whose module has no run.sh loops back to G1, and picking one that does proceeds - the menu's fixed 7 items never reorder"
+# PR #275 landed modules/cloud/aws/run.sh (30 of 30 AWS services), so every
+# item in this fixed 7-item menu (sast/sca/iac/dast/cloud/all/quit) is now
+# reachable on a real checkout - `_guide_g1_reachable` for every named module
+# returns 0, per the real-tree proof above.  The G1 "loops back with a
+# not-built explanation" branch (`_guide_g1_explain_not_built`, still present
+# in scan.sh for the day a module regresses or a new one is added ahead of
+# its own run.sh) therefore has NO module left to exercise it through this
+# menu - it is unreachable on this codebase's own real tree today, and this
+# case is re-expressed around cloud's real, current behaviour rather than
+# left pinning a defect that no longer exists.  Coverage for the loop-back
+# MECHANISM itself (re-asking and returning to G1) still lives in the
+# bad-`--path` case further below, which reaches it via a bad answer rather
+# than an unbuilt module.
+t_case "picking item 5 (cloud, now built) proceeds past G1 with its own partial-guided-setup note, never the not-built loop-back - the menu's fixed 7 items never reorder"
 GUIDE_CLOUD_LOOP_DIR=$W/guide-cloud-loop
 rm -rf "$GUIDE_CLOUD_LOOP_DIR"
 mkdir -p "$GUIDE_CLOUD_LOOP_DIR"
 cd "$GUIDE_CLOUD_LOOP_DIR"
 assert_status 0 \
-  "item 5 (cloud, not built) explains and returns to G1; item 7 (quit) then exits 0 with nothing scanned - fails if the menu numbering shifted an unavailable item out of its fixed slot, or if picking it dispatched anyway" \
-  _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n7\n'
+  "item 5 (cloud) proceeds past G1 into G8 (no local-surface G2/G3 questions apply to cloud); G8 '1' (no CI gate) then G9 '3' (Cancel) exits 0 with nothing scanned - fails if the menu numbering shifted cloud out of its fixed slot, or if picking it still bounced back to G1" \
+  _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n1\n3\n'
 cd "$ROOT"
-assert_file_absent "$GUIDE_CLOUD_LOOP_DIR/reports" 'quitting from the guided flow never creates a run directory'
+assert_file_absent "$GUIDE_CLOUD_LOOP_DIR/reports" 'cancelling from the guided flow never creates a run directory'
 
 GUIDE_CLOUD_LOOP_OUT=$W/guide-cloud-loop.out
 cd "$GUIDE_CLOUD_LOOP_DIR"
-( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n7\n' ) >"$GUIDE_CLOUD_LOOP_OUT" 2>&1 || true
+( _guide_env SCOURSH_GUIDE_FORCE_TTY=true _run_main_answers $'5\n1\n3\n' ) >"$GUIDE_CLOUD_LOOP_OUT" 2>&1 || true
 cd "$ROOT"
-assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'not built yet in this version of' \
-  'the loop-back explanation names the module as not built - fails under a message that cannot distinguish this from an ordinary refusal'
+assert_not_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'not built yet in this version' \
+  'cloud is built now, so the not-built loop-back explanation is never shown - fails if picking cloud still looped back to G1'
+assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'guided setup for this is partial - see below' \
+  "cloud's menu row still names its OWN, real limitation (guided setup beyond scan type is partial) - fails under a status word that cannot distinguish this from an ordinary refusal"
 assert_contains "$(cat "$GUIDE_CLOUD_LOOP_OUT")" 'Cancelled.  Nothing was scanned.' \
-  'quit (item 7) reached after the loop-back prints the ordinary cancellation message, never a guided-specific one'
+  'Cancel at G9, reached only because cloud proceeded past G1, prints the ordinary cancellation message, never a guided-specific one'
 
 t_case 'sca with no advisories.db explains and still proceeds - the operator may proceed, per this ticket'"'"'s own G1 wording'
 GUIDE_SCA_DIR=$W/guide-sca-dir
@@ -1563,13 +1580,18 @@ assert_contains "$DAST_HELP" 'scan phases implemented' \
 assert_not_contains "$DAST_HELP" 'Commands:' \
   "dast --help is NOT the global usage text - fails under 'scan.sh dast --help prints the same global usage' (the shipped defect this ticket fixes)"
 
-t_case 'cloud --help exits 0 and states plainly it is not built'
+t_case 'cloud --help exits 0 and states plainly it IS built, per PR #275 (30 of 30 AWS services)'
 assert_status 0 './scan.sh cloud --help exits 0' _bin_run cloud --help
 CLOUD_HELP=$(cat "$W/bin.out")
 assert_contains "$CLOUD_HELP" 'scan.sh cloud [options]' 'command-specific header'
-assert_contains "$CLOUD_HELP" 'NOT built' 'cloud states plainly that it is not built'
-assert_contains "$CLOUD_HELP" 'modules/cloud/aws/run.sh does not exist' \
-  'the reason is the real, checkable fact scan_dispatch itself acts on, not a hand-typed claim'
+assert_contains "$CLOUD_HELP" 'Status: built' \
+  "cloud states plainly what its build status is - fails under the pre-#275 defect where this command claimed modules/cloud/aws/run.sh does not exist on disk"
+assert_contains "$CLOUD_HELP" 'AWS services implemented' \
+  'the service count is stated, not just a bare "built" - fails under hand-typed prose that cannot regress if a service script is removed'
+assert_not_contains "$CLOUD_HELP" 'NOT built' \
+  'the stale "NOT built" wording is gone now that modules/cloud/aws/run.sh exists'
+assert_eq "$(_scan_cloud_service_status)" "$(printf '%s' "$CLOUD_HELP" | grep -oE '[0-9]+ of [0-9]+ AWS services implemented')" \
+  "the reason is the real, checkable fact _scan_cloud_service_status itself computes from modules/cloud/aws/engine.sh's own _CLOUD_SERVICES table, not a hand-typed claim - fails if the help text and the live status function were ever allowed to drift apart"
 
 # docs/STEP7-STATE-PLAN.md STATE-06: `diff` is a real command now
 # (lib/diff.sh's diff_render_against), so its --help text says "built",
