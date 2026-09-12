@@ -51,13 +51,14 @@ This file is a shorter, reader-facing summary of the same information, and is ha
   `scan.sh <cmd> --format <fmt>` writes exactly the artifacts `<fmt>` implies; `findings.jsonl` and
   `run.json` are written on every run regardless, as mandatory per-run records rather than
   `--format`-selectable artifacts.
-  The no-`--format` default is unchanged (all four selectable formats, same as before).
+  The no-`--format` default is `json,sarif,html,md,agent` - five formats, since `agent` became a
+  default rather than opt-in; `audit` remains the sixth, opt-in selectable value.
   `scan.sh <command> --help` now prints that command's own accepted flags (generated from the
   parser's own flag table, so it cannot list a flag the parser would reject) and a plainly-stated
   build status, derived from the same on-disk check `scan_dispatch` itself uses wherever one exists.
 - **`--format audit` - a fifth, opt-in format value.** `report_audit` writes `report-audit.html`
-  alongside `report.html`, never replacing it: a per-category (sast/sca/iac/dast/cloud) coverage
-  report that lists every registered check in exactly one of four states - found something, ran and
+  alongside `report.html`, never replacing it: a per-category (sast/sca/iac/dast/cloud/network/image)
+  coverage report that lists every registered check in exactly one of four states - found something, ran and
   found nothing, did not run (with the recorded reason), or unaccounted - with full not-covered
   detail rather than a count alone, so a registered-but-silent check can never read as "clean."
 - **`--format agent` - originally a sixth, opt-in format value; a later captain decision made it a

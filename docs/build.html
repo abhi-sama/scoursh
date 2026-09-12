@@ -238,7 +238,7 @@ var REQUIRED = {dast:"target", network:"target", image:"image", diff:"against", 
 
 var FIELD_DEFS = {
   path: {kind:"text", label:"--path", placeholder:"DIR", help:"Directory to scan. Default: the git toplevel of the resolved path, else the current directory."},
-  lang: {kind:"text", label:"--lang", placeholder:"py,js,go,java", help:"Restrict SAST rule packs to these languages, comma-separated. Default: all four."},
+  lang: {kind:"text", label:"--lang", placeholder:"py,js,go,java", help:"Validated as a CSV of the four language names, then never read - every SAST run applies every rule pack regardless. Accepted but not yet implemented."},
   history: {kind:"bool", label:"--history", help:"Also replay modules/sast/rules/secrets.rules across git history, bounded by a commit/time window."},
   target: {kind:"text", label:"--target", placeholder:"name-from-scope", help:"The id a target is declared UNDER in config/scope.conf - or that target's own base-url/extra-host value, which scan.sh resolves to the id on exactly one match."},
   intensity: {kind:"select", label:"--intensity", choices:["passive","safe","active"], defaultNote:"default: passive", help:"active (and --allow-intrusive) each require --i-own-target."},
