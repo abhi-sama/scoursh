@@ -370,9 +370,14 @@ var FIELD_VALIDATORS = {};
       // config/scope.conf), so it can only say the value is ACCEPTED and
       // will be resolved at run time; scan.sh still refuses it if no
       // declared target's base-url/extra-host matches, or if more than one
-      // does.
+      // does.  One addition since then (scan.sh section 6b): at an
+      // INTERACTIVE terminal, a --target that matches nothing is offered the
+      // authorisation screen rather than only refused - which is worth saying
+      // here, because the command this page composes is typically pasted into
+      // a terminal where that offer WILL appear.  It is interactive-only: a
+      // pipeline, a CI job, or SCOURSH_NO_PROMPT gets the plain refusal.
       return "'" + t + "' looks like a URL or host:port - --" + flagName +
-        " wants the ID a target is declared UNDER in config/scope.conf, but scan.sh will also accept this and try to resolve it against a declared target's own base-url/extra-host, substituting that target's id (and printing which one it chose) on exactly one match. It still refuses if no declared target matches, or if more than one does.";
+        " wants the ID a target is declared UNDER in config/scope.conf, but scan.sh will also accept this and try to resolve it against a declared target's own base-url/extra-host, substituting that target's id (and printing which one it chose) on exactly one match. It still refuses if no declared target matches, or if more than one does - though at an interactive terminal it first OFFERS to authorise this exact host in config/scope.conf, and continues the run if you confirm. That offer never appears in a pipeline or CI job, and never with SCOURSH_NO_PROMPT set.";
     };
   }
 

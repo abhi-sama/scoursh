@@ -2134,6 +2134,164 @@ _scan_pf_warn_declared_skips() {
   esac
 }
 
+# -----------------------------------------------------------------------------
+# 6b. The interactive authorisation OFFER (operator-reported friction: "I don't
+#     believe user going to create file and copy, too much friction").
+#
+#     config/scope.conf is scoursh's PRIMARY safety control - `dast` sends real
+#     attack traffic, and docs/DESIGN.md §7 calls the target gate "the single
+#     most important safety control; do not make it bypassable by raw URL".
+#     So this makes the AUTHORISATION ACT cheap, and changes nothing about the
+#     gate: a target authorised here is a target DECLARED IN THE FILE, matched
+#     afterwards by exactly the same `config_scope_require` every hand-written
+#     record is matched by.  There is no new code path into a scan.
+#
+#     It WIRES UP what already exists rather than adding a second prompt or a
+#     second writer: `guide_may_prompt` (lib/guide.sh section 1 - the five
+#     condition gate, which subsumes `_guide_stdin_is_tty`, stderr, the nine
+#     non-interactive environment markers and `SCOURSH_NO_PROMPT`) decides
+#     whether prompting is permitted at all, and `guide_g4_authorize_target`
+#     (lib/guide.sh section 7, over lib/guide_scope.sh's validate-then-rename
+#     writer) is the screen and the writer.  Neither is reimplemented here.
+#
+#     SIX PROPERTIES, each load-bearing, each pinned in tests/suites/scan.sh's
+#     own section for this and named there by the reading it fails under:
+#
+#     1. INTERACTIVE ONLY, and `SCOURSH_NO_PROMPT` suppresses it.  A pipe, a
+#        script, a cron job or a CI runner gets today's refusal with today's
+#        exit code and no prompt - not a hang, and not a write.  That is
+#        `guide_may_prompt true`, unchanged and not re-derived: a second TTY
+#        probe here is a second place for the answer to be wrong.
+#
+#     2. NO FLAG REACHES IT.  There is deliberately no `--yes`/`--authorize`/
+#        `--force`: a flag that authorises a target is a flag that can sit in
+#        a CI file, which is precisely the non-bypassability docs/DESIGN.md §7
+#        demands.  An operator who wants non-interactive authorisation edits
+#        config/scope.conf, the existing auditable path, and the refusal
+#        message below says so.  tests/suites/scan.sh asserts the ABSENCE of
+#        such a flag against `_SCAN_FLAG_KIND` itself, so a later ticket
+#        cannot quietly add one without a test going red.
+#
+#     3. ONLY THE HOST THE OPERATOR NAMED.  Enforced STRUCTURALLY rather than
+#        by comparing strings: the offer is made only for a --target that is
+#        shaped like a URL or host:port (`_scope_looks_like_url_or_hostport`,
+#        the same test the refusal message's own hint already uses), and a
+#        write is accepted only if re-running `_scan_resolve_target_flags`
+#        then resolves THAT value against the new file.  An operator who
+#        types a different host at the prompt writes a record for it - their
+#        own act, durable and auditable, exactly as a hand edit would be -
+#        and this run still refuses, because the value they PASSED still
+#        resolves to nothing.  A bare, non-URL id is never offered at all:
+#        `guide_scope_record_text` derives the id from the host, so an
+#        arbitrary typed id could not match the write either, and offering
+#        there would mean prompting a human and then refusing anyway.
+#
+#     4. THE OFFER IS MADE ONLY WHEN IT IS THE SOLE BLOCKER.  `_scan_preflight`
+#        collects every problem first; accepting this prompt therefore always
+#        continues the run, and an operator is never asked to authorise a host
+#        for a run that was going to die on an unreadable --path regardless.
+#
+#     5. THE REFUSAL IS BYTE-IDENTICAL WHEN THE OPERATOR DECLINES.  A cancel
+#        (blank URL, unparseable URL, mismatched confirmation - every one of
+#        which `guide_g4_authorize_target` returns 1 for rather than dying)
+#        leaves today's message and today's exit code untouched.  The teaching
+#        hint below is appended ONLY when no offer was made, which is the case
+#        where the operator has not just been told the easy path on screen.
+#
+#     5a. ONE CONSEQUENCE IS ACCEPTED RATHER THAN PAPERED OVER: EOF at a G4
+#        prompt (Ctrl-D) is `guide_ask`/`guide_confirm`'s own exit 2, not this
+#        gate's 3 or 4, exactly as it is on every other guided screen.  It is
+#        still a refusal with nothing scanned and nothing written, and the
+#        alternative - catching it - means running G4 inside a subshell, which
+#        is precisely what turns a `die` into an ignorable exit status (see
+#        `_scan_require_readable_path`).  A blank answer, the cancel the banner
+#        actually tells the operator to use, keeps today's exit code.
+#
+#     6. THE OWNERSHIP ASSERTION IS EXPLICIT.  The banner states, before the
+#        first question, that this declares the operator owns or is authorised
+#        to attack the host - and `guide_g4_authorize_target`'s own
+#        confirmation is "type the host name", not "[y/N]", so the confirming
+#        act names the host it authorises.  A second `guide_confirm` was
+#        deliberately NOT added in front of it: a bare yes/no is exactly the
+#        weaker shape this property exists to avoid, and two prompts to write
+#        one record is the friction this ticket removes.
+# -----------------------------------------------------------------------------
+_SCAN_PF_OFFER_MADE=false
+
+# `_scan_pf_offer_authorize_target TARGET` - returns 0 only when TARGET is now
+# a declared, resolvable target id in SCAN_FLAGS (so the caller may continue
+# the run); 1 in every other case, including every case where no prompt was
+# shown at all.  Sets _SCAN_PF_OFFER_MADE so the caller can tell "the operator
+# declined" from "we never asked".  Never dies on a cancel; CAN die, by design,
+# through `_scan_resolve_target_flags` on a genuinely ambiguous resolution and
+# through `guide_scope_append` on a composed file that would not parse - both
+# of which must abort rather than be swallowed, which is why this is called
+# directly and never through $(...) (see `_scan_require_readable_path`).
+_scan_pf_offer_authorize_target() {
+  local target=$1 path=$SCOURSH_INSTALL_ROOT/config/scope.conf
+  _SCAN_PF_OFFER_MADE=false
+
+  # Property 3: only a value that can be re-resolved back to what was passed.
+  _scope_looks_like_url_or_hostport "$target" || return 1
+  # Properties 1 and 2: the only gate, and no flag feeds it.
+  guide_may_prompt true || return 1
+
+  _SCAN_PF_OFFER_MADE=true
+  {
+    printf '\n'
+    printf "  '%s' is not authorised in %s, so this run has not started.\n" "$target" "$path"
+    printf '\n'
+    printf '  scoursh can write that authorisation now.  Confirming the questions\n'
+    printf '  that follow DECLARES THAT YOU OWN THIS HOST, OR HAVE WRITTEN PERMISSION\n'
+    printf '  TO ATTACK IT.  A scan sends real requests to it, and some of them are\n'
+    printf '  real attack traffic.  If that is not true of %s, cancel\n' "$target"
+    printf '  by leaving the next answer blank.\n'
+  } >&2
+
+  guide_g4_authorize_target "$path" || return 1
+
+  # Property 3, the structural half: whatever was written, this run continues
+  # only if the value the operator actually PASSED resolves against the new
+  # file.  `_scan_resolve_target_flags` is the one resolver every other caller
+  # already goes through, so "was it really this target" cannot drift onto a
+  # second opinion here; it also rewrites --i-own-target in the same pass, so a
+  # run affirming the same URL stays consistent with `_scan_check_affirmation`'s
+  # already-performed compare.
+  _scan_resolve_target_flags
+  _scan_pf_check_target "${SCAN_FLAGS[target]:-}" || {
+    {
+      printf '\n'
+      printf "  That record does not authorise '%s', the --target this run was\n" "$target"
+      printf '  given, so this run is still refused.  The record was written and is\n'
+      printf '  yours to keep or remove; re-run naming the host you authorised.\n'
+    } >&2
+    return 1
+  }
+
+  # run.json honesty: `_scan_record_config` has ALREADY recorded
+  # `config_scope_conf_sha256` for the pre-write file (it runs before
+  # preflight), and lib/report.sh reads that key with `_meta_first`, so a
+  # second line under the same key would be invisible rather than corrective.
+  # Record the post-write state under its own key instead.
+  # `authorization_scope_conf_sha256` needs no such fixup - it is written by
+  # `_scan_record_authorization`, which runs AFTER preflight for every command
+  # that can reach this gate, and so already names the file this run used.
+  run_record scope_authorization_interactive "${SCAN_FLAGS[target]}"
+  run_record config_scope_conf_sha256_post_authorization "$(_scan_scope_conf_sha256)"
+  log_info "authorised target '${SCAN_FLAGS[target]}' interactively in $path - continuing"
+  return 0
+}
+
+# `_scan_pf_target_hint PATH` - the teaching half of a refusal where no offer
+# was shown (property 5).  Names both easy paths, so an operator who hit this
+# in a pipeline learns them without reading the source: an interactive re-run
+# offers to write the record, `--guided` walks the whole thing, and a hand
+# edit remains the non-interactive answer.
+_scan_pf_target_hint() {
+  local path=$1
+  printf ' To authorise it: re-run this command at an interactive terminal and scoursh will offer to write the record for you; or run it with --guided to be walked through target selection and authorisation; or add the target to %s by hand (config/scope.conf.example shows the shape).' "$path"
+}
+
 # `_scan_preflight` - the orchestrator. Runs every check relevant to
 # $SCAN_COMMAND, collects every problem, and if any exist, dies ONCE with
 # every problem listed together and the correct precedence class
@@ -2145,12 +2303,24 @@ _scan_pf_warn_declared_skips() {
 _scan_preflight() {
   local -a problems=()
   local have_scope=false target=${SCAN_FLAGS[target]:-} path=${SCAN_FLAGS[path]:-.}
+  # The target problem is held ASIDE rather than appended with the rest,
+  # because section 6b's offer may still clear it - and may only be OFFERED
+  # once every other check has had its say (property 4: accepting the prompt
+  # must always continue the run).  It is prepended back below if it survives,
+  # so a refusal naming several problems lists them in the same order it
+  # always has.
+  local target_failed=false target_msg='' target_class=''
+  # Reset explicitly rather than relying on the global's initial value: a
+  # process that runs scan_main more than once (this suite does) must not read
+  # a previous run's answer to "was an offer shown".
+  _SCAN_PF_OFFER_MADE=false
 
   case $SCAN_COMMAND in
     dast | network | all)
       if [[ -n $target ]] && ! _scan_pf_check_target "$target"; then
-        problems+=("$_SCAN_PF_MSG")
-        [[ $_SCAN_PF_CLASS == scope ]] && have_scope=true
+        target_failed=true
+        target_msg=$_SCAN_PF_MSG
+        target_class=$_SCAN_PF_CLASS
       fi
       ;;
   esac
@@ -2178,6 +2348,41 @@ _scan_preflight() {
       _scan_pf_check_live || problems+=("$_SCAN_PF_MSG")
       ;;
   esac
+
+  # Section 6b: offer to authorise, but only when the unauthorised --target is
+  # the ONLY thing standing between this run and a dispatch, and only when
+  # prompting is permitted.  A successful write that re-resolves to the value
+  # the operator passed clears the problem outright; every other outcome -
+  # including every case where no prompt was shown - leaves it exactly as it
+  # was found.
+  if $target_failed && (( ${#problems[@]} == 0 )); then
+    if _scan_pf_offer_authorize_target "$target"; then
+      target_failed=false
+    else
+      # The offer can WRITE a record and still refuse - the operator typed a
+      # different host at the prompt (property 3) - so the message captured
+      # above may now be stale, and a "config/scope.conf does not exist"
+      # refusal naming a file this run just created is exactly the kind of
+      # wrong that reads as a tool bug.  `_scan_pf_check_target` re-ran inside
+      # the offer on that path and left the current truth in _SCAN_PF_MSG;
+      # every other path out of the offer left it untouched, so re-reading it
+      # is correct in all of them.
+      target_msg=$_SCAN_PF_MSG
+      target_class=$_SCAN_PF_CLASS
+    fi
+  fi
+
+  if $target_failed; then
+    # Property 5: today's message, unchanged, when the operator saw the offer
+    # and declined it.  The hint is for the operator who did NOT see it.
+    if [[ $_SCAN_PF_OFFER_MADE != true ]]; then
+      target_msg+=$(_scan_pf_target_hint "$SCOURSH_INSTALL_ROOT/config/scope.conf")
+    fi
+    problems=("$target_msg" "${problems[@]+"${problems[@]}"}")
+    if [[ $target_class == scope ]]; then
+      have_scope=true
+    fi
+  fi
 
   if (( ${#problems[@]} > 0 )); then
     local msg="preflight refused to start: ${#problems[@]} problem(s) found before any module ran -"
