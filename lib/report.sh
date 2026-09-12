@@ -162,6 +162,31 @@ _report_dast_injection_gap_state() {
   fi
 }
 
+# report_registries_dump OUTFILE - serialises the OWASP/CIS check-metadata
+# registry (`_report_checkmeta_registry_load` above) as `declare -p` output,
+# so a PARENT process can `source` it back after this one exits.
+#
+# This exists for `lib/core.sh`'s `run_json_refresh_incomplete`: on an abort,
+# that function calls `report_run_json`/`report_md`/`report_html` each in its
+# OWN subshell (deliberately, so a failure inside one cannot cost the other
+# two, and so an internal `die` inside the expensive registry walk can only
+# ever exit that subshell rather than replace the original abort's exit code
+# - see that function's own header comment). A bash subshell inherits the
+# parent's variables at fork time but can never write them back, so the
+# `SCOURSH_INSTALL_ROOT`-keyed memo each of those three writers populates via
+# `report_count` was being rebuilt from scratch in every one of the three
+# subshells - tripling an already-expensive full-registry parse (every
+# `*.rules` file in the tool re-parsed and re-validated) for a run that
+# executed zero checks. Dumping it here after the FIRST writer, and having
+# the parent `source` the dump before forking the next one, lets the second
+# and third inherit an already-warm cache - without moving the (dying-capable)
+# walk itself out of subshell containment.
+report_registries_dump() {
+  local out=$1
+  declare -p _RPTOW_CHECK_OWASP _RPTCIS_CHECK_CIS _RPTOW_REGISTRY_LOADED_ROOT \
+    _RPTCIS_REGISTRY_LOADED_ROOT _RPT_CHECKMETA_LOADED_ROOT >"$out" 2>/dev/null || true
+}
+
 report_count() {
   local rundir=${1:-$SCOURSH_RUN_DIR} line
   _RPT_SEV=([critical]=0 [high]=0 [medium]=0 [low]=0 [info]=0)
@@ -422,14 +447,36 @@ cis_benchmark_version() {
 declare -gA _RPTOW_CHECK_OWASP=()
 declare -g _RPTOW_REGISTRY_LOADED_ROOT=''
 _report_owasp_registry_load() {
-  if [[ -n ${_RPTOW_REGISTRY_LOADED_ROOT:-} && ${_RPTOW_REGISTRY_LOADED_ROOT} == "${SCOURSH_INSTALL_ROOT:-}" ]]; then
+  _report_checkmeta_registry_load
+}
+
+# _report_checkmeta_registry_load - the SHARED walk behind both
+# `_report_owasp_registry_load` and `_report_cis_registry_load` below.
+#
+# Before this, each of those independently called `checks_registry_load` (and
+# so `records_load`/`records_validate`) across every one of `_RPT_MODULES`'
+# on-disk `*.rules` files - the single most expensive step in producing a
+# report, since it re-parses and re-validates the tool's ENTIRE check catalog
+# from disk. Both walks read the identical set of files and differ only in
+# which field they pull off each record (`owasp` vs `cis`), so doing it twice
+# doubled that cost for no reason: measured on this tree, one such walk costs
+# ~9-10s, so `report_count`'s combined owasp+cis state cost ~19s per call
+# before this change. This function performs that walk exactly ONCE and
+# populates both `_RPTOW_CHECK_OWASP` and `_RPTCIS_CHECK_CIS` from the same
+# pass, under one shared memoization flag - `_report_owasp_registry_load` and
+# `_report_cis_registry_load` are kept as thin wrappers so neither caller
+# needed to change.
+declare -g _RPT_CHECKMETA_LOADED_ROOT=''
+_report_checkmeta_registry_load() {
+  if [[ -n ${_RPT_CHECKMETA_LOADED_ROOT:-} && ${_RPT_CHECKMETA_LOADED_ROOT} == "${SCOURSH_INSTALL_ROOT:-}" ]]; then
     return 0
   fi
-  local -a _rptow_saved_sets=("${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}")
+  local -a _rptmeta_saved_sets=("${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}")
   _RPTOW_CHECK_OWASP=()
-  local m set n i id ow
+  _RPTCIS_CHECK_CIS=()
+  local m set n i id ow v
   for m in "${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}"; do
-    checks_registry_load "$m" "_rptowreg_$m"
+    checks_registry_load "$m" "_rptmetareg_$m"
     for set in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
       n=$(records_count "$set")
       for (( i = 0; i < n; i++ )); do
@@ -437,11 +484,21 @@ _report_owasp_registry_load() {
         [[ -n $id ]] || continue
         ow=$(records_field_or "$set" "$i" owasp none)
         _RPTOW_CHECK_OWASP[$id]=$ow
+        while IFS= read -r v; do
+          [[ -n $v ]] || continue
+          if [[ -n ${_RPTCIS_CHECK_CIS[$id]:-} ]]; then
+            _RPTCIS_CHECK_CIS[$id]+=$'\n'"$v"
+          else
+            _RPTCIS_CHECK_CIS[$id]=$v
+          fi
+        done <<<"$(records_list "$set" "$i" cis)"
       done
     done
   done
-  CHECKS_REGISTRY_SETS=("${_rptow_saved_sets[@]+"${_rptow_saved_sets[@]}"}")
+  CHECKS_REGISTRY_SETS=("${_rptmeta_saved_sets[@]+"${_rptmeta_saved_sets[@]}"}")
   _RPTOW_REGISTRY_LOADED_ROOT=${SCOURSH_INSTALL_ROOT:-}
+  _RPTCIS_REGISTRY_LOADED_ROOT=${SCOURSH_INSTALL_ROOT:-}
+  _RPT_CHECKMETA_LOADED_ROOT=${SCOURSH_INSTALL_ROOT:-}
 }
 
 # _report_owasp_state RUNDIR - the per-run facts a compliance view needs to
@@ -630,32 +687,7 @@ _owasp_render_order() {
 declare -gA _RPTCIS_CHECK_CIS=()
 declare -g _RPTCIS_REGISTRY_LOADED_ROOT=''
 _report_cis_registry_load() {
-  if [[ -n ${_RPTCIS_REGISTRY_LOADED_ROOT:-} && ${_RPTCIS_REGISTRY_LOADED_ROOT} == "${SCOURSH_INSTALL_ROOT:-}" ]]; then
-    return 0
-  fi
-  local -a _rptcis_saved_sets=("${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}")
-  _RPTCIS_CHECK_CIS=()
-  local m set n i id v
-  for m in "${_RPT_MODULES[@]+"${_RPT_MODULES[@]}"}"; do
-    checks_registry_load "$m" "_rptcisreg_$m"
-    for set in "${CHECKS_REGISTRY_SETS[@]+"${CHECKS_REGISTRY_SETS[@]}"}"; do
-      n=$(records_count "$set")
-      for (( i = 0; i < n; i++ )); do
-        id=$(records_id "$set" "$i")
-        [[ -n $id ]] || continue
-        while IFS= read -r v; do
-          [[ -n $v ]] || continue
-          if [[ -n ${_RPTCIS_CHECK_CIS[$id]:-} ]]; then
-            _RPTCIS_CHECK_CIS[$id]+=$'\n'"$v"
-          else
-            _RPTCIS_CHECK_CIS[$id]=$v
-          fi
-        done <<<"$(records_list "$set" "$i" cis)"
-      done
-    done
-  done
-  CHECKS_REGISTRY_SETS=("${_rptcis_saved_sets[@]+"${_rptcis_saved_sets[@]}"}")
-  _RPTCIS_REGISTRY_LOADED_ROOT=${SCOURSH_INSTALL_ROOT:-}
+  _report_checkmeta_registry_load
 }
 
 # _report_cis_state RUNDIR - the per-run facts the view needs to tell FOUR
