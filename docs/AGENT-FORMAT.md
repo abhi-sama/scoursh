@@ -176,7 +176,7 @@ emptiness - `[]` for an empty array is still a fact, not silence):
 "run": {
   "run_id":            "...",
   "modules_reported":  ["iac", "sast", "sca"],
-  "modules_not_run":   ["dast", "cloud", "posture"],
+  "modules_not_run":   ["dast", "cloud", "posture", "net", "image"],
   "checks_run":        ["IAC-CFN-ECS_PRIVILEGED-01", "... every id that actually executed"],
   "skipped_checks":     [],
   "coverage_gap":       ["module=sca reason=unknown_version ecosystem=Go count=1"],
@@ -191,10 +191,15 @@ emptiness - `[]` for an empty array is still a fact, not silence):
 
 - **`modules_reported` / `modules_not_run`** are *computed*, never hand-listed: every check id in
   `run.json`'s own `checks_run` meta record is mapped to a module by its `rules/RULE-FORMAT.md`
-  §9.1.1 id-namespace prefix (`SAST-`/`IAC-`/`SCA-`/`DAST-`/`CLOUD-`/`POSTURE-`), and
-  `modules_not_run` is the six-module universe minus whatever that mapping found. A module that ran
-  but produced zero findings still shows up in `modules_reported` this way, because it is read from
-  what actually EXECUTED, never from which modules happen to have a live finding.
+  §9.1.1 id-namespace prefix, via the single `_AGENT_MODULE_PREFIXES` table (`lib/report.sh`) that
+  both this mapping and the not-run universe read - `SAST-`/`SCA-`/`IAC-`/`DAST-`/`CLOUD-`/`POSTURE-`
+  to their same-named module, plus `NET-` to `net` and `IMAGE-` to `image`, and `modules_not_run` is
+  that eight-module universe minus whatever the mapping found. `net` (not `network`) is deliberate:
+  it matches the `module` field a `NET-*` finding sets on itself, not `_RPT_MODULES`'s/
+  `SCAN_COMMANDS`'s own `network` token for the CLI subcommand and report-audit.html category - a
+  different axis that has used a different spelling since NET-01 shipped. A module that ran but
+  produced zero findings still shows up in `modules_reported` this way, because it is read from what
+  actually EXECUTED, never from which modules happen to have a live finding.
 - **`checks_run`** is the full executed set (deduped, `LC_ALL=C` sorted), so "this check ran and found
   nothing" and "this check was never loaded" stay distinguishable - never collapsed into a count.
 - **`coverage_gap` / `coverage_reduction` / `skipped_checks` / `incomplete_reason` / `abort_reason`**
