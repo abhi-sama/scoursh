@@ -1247,6 +1247,90 @@ SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 SCOURSH_INSTALL_ROOT=$ROOT
 
 # =============================================================================
+printf -- '\n-- REGRESSION: report_agent must run on the die() abort path too --\n'
+# =============================================================================
+# `die()` (lib/core.sh) exits the process directly, and its own abort-refresh
+# path (`run_json_refresh_incomplete`) used to re-render only run.json,
+# report.md and report.html - `report_agent`, the ONLY writer of
+# agent-fix.json, is reached exclusively via `report_all`'s
+# `_report_render_formats`, which never runs once `die()` has fired. So on
+# ANY aborted run (exit 2/3/4/5) NO agent-fix.json was written at all, even
+# though `meta/abort_reason`/`meta/incomplete_reason` were correctly
+# recorded. Unlike the fixtures above (which fabricate `abort_reason` by hand
+# and call `report_all` directly - a fine way to test the RENDERER, but one
+# that never goes anywhere near the actual bug), this drives the real `die()`
+# call the same way tests/suites/state-coverage.sh's STATE-02 case does, so
+# it exercises `run_json_refresh_incomplete` itself. FAILS under the pre-fix
+# writer list (`report_run_json report_md report_html`) with agent-fix.json
+# absent entirely; passes once `report_agent` is added to it.
+DAGENTABORT=$SCOURSH_SCRATCH/rpt-agent-abort
+rm -rf "$DAGENTABORT"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$DAGENTABORT"
+DAGENTABORT=$SCOURSH_RUN_DIR
+(
+  die "$SCOURSH_EXIT_SCOPE" \
+    'scope gate refused GET https://bad-target.example: destination not in scope.conf'
+) || true
+
+t_case 'a fully pre-dispatch die() abort still writes agent-fix.json'
+assert_file_exists "$DAGENTABORT/agent-fix.json" \
+  'agent-fix.json exists after a die() abort with zero checks dispatched - FAILS if report_agent is never reached from the abort path'
+AGJ=$(cat "$DAGENTABORT/agent-fix.json")
+assert_contains "$AGJ" '"scoursh_agent":1' \
+  'the document is the real report_agent shape, not a stub or a copy of run.json'
+assert_contains "$AGJ" 'exit=3 scope gate refused GET https://bad-target.example' \
+  "run.abort_reason carries the die() message verbatim, code-prefixed exactly as run.json's own abort_reason records it"
+assert_contains "$AGJ" '"checks_run": []' \
+  'run.checks_run is empty - no module ever dispatched a check (case (c): refused before anything ran)'
+assert_contains "$AGJ" '"findings":[]' \
+  'findings is empty - there is nothing in findings.fields for a pre-dispatch abort to have read'
+
+t_case 'the abort is unmistakable to a machine reader - never rendered as a clean or complete result'
+assert_not_contains "$AGJ" '"abort_reason": []' \
+  'FAILS if abort_reason were empty despite the recorded die() call - that is exactly "never ran" collapsing into "clean", the ambiguity this fix exists to remove'
+
+printf -- '\n-- and a PARTIAL die() abort (one check already ran) reports that finding alongside the abort --\n'
+# case (b): some coverage exists before the abort, so a consumer must be able
+# to tell this apart from BOTH a clean run (no abort_reason at all) and a
+# full pre-dispatch refusal (checks_run empty) - by run.checks_run being
+# non-empty here, exactly as docs/AGENT-FORMAT.md §4a now states.
+DAGENTPARTIAL=$SCOURSH_SCRATCH/rpt-agent-abort-partial
+rm -rf "$DAGENTPARTIAL"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$DAGENTPARTIAL"
+DAGENTPARTIAL=$SCOURSH_RUN_DIR
+finding_new
+finding_set check_id SAST-SEC-HARDCODED_PASSWORD-01
+finding_set module sast
+finding_set title 'Hardcoded password'
+finding_set base_severity high
+finding_set cwe CWE-798
+finding_set owasp A07:2021
+finding_set loc_path src/config.py
+finding_set loc_line 12
+finding_set cell .
+finding_emit
+findings_merge "$DAGENTPARTIAL"
+run_record checks_run SAST-SEC-HARDCODED_PASSWORD-01
+(
+  die "$SCOURSH_EXIT_SCOPE" \
+    'scope gate refused GET https://bad-target.example: destination not in scope.conf'
+) || true
+
+AGP=$(cat "$DAGENTPARTIAL/agent-fix.json")
+t_case 'a partial die() abort reports BOTH the completed finding and the abort - neither discards the other'
+assert_contains "$AGP" 'SAST-SEC-HARDCODED_PASSWORD-01' \
+  'the finding from the module that completed before the abort is still present in findings[]'
+assert_contains "$AGP" 'exit=3 scope gate refused GET https://bad-target.example' \
+  'and the abort reason is present alongside it - FAILS if a partial abort were ever rendered as a clean, complete result'
+assert_not_contains "$AGP" '"checks_run": []' \
+  'run.checks_run is non-empty here - the field that tells case (b) (ran partially, then aborted) apart from case (c) (refused before anything ran)'
+
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+SCOURSH_INSTALL_ROOT=$ROOT
+
+# =============================================================================
 printf '\n-- report --from DIR (report_regenerate_from): byte-identical regeneration --\n'
 # =============================================================================
 # "A live scan into DIR, then report --from DIR" - D15 is built the exact way
