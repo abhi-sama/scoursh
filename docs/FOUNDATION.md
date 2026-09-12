@@ -2999,8 +2999,22 @@ open-redirect check.
 
 **No bypass.**
 There is no raw-URL flag.
-`--target` names a `scope.conf` id and nothing else, and every request in every module goes through
-`http_request`.
+`--target` names a `scope.conf` id, or a value `scan.sh` resolves against a declared target's own
+`base-url`/`extra-host` when it is shaped like a URL or `host:port` (`config_scope_resolve_target`,
+landed after this tension was first written) - on exactly one match it substitutes that target's id and
+prints which one it chose, and it refuses rather than guesses when a value matches none or more than
+one. Either way the value still has to resolve to something the operator already declared; there is no
+value that reaches `http_request` without having matched a `config/scope.conf` entry first. Every
+request in every module goes through `http_request`.
+At an interactive terminal, an unresolvable URL/host:port-shaped `--target` is additionally *offered* an
+authorisation screen that writes an ordinary `config/scope.conf` record for that exact host
+(`scan.sh` section 6b, `_scan_pf_offer_authorize_target`, over `lib/guide_scope.sh`'s existing
+validate-then-rename writer) - this is not a bypass either: the offer requires `guide_may_prompt true`
+(so it never fires in a pipeline, CI, or with `SCOURSH_NO_PROMPT` set), there is no `--yes`/`--authorize`/
+`--force` flag that reaches it, and a write is only accepted once re-resolving the run's own `--target`
+value against the new file succeeds - so only the host the operator actually named can authorise the
+run that is asking. Declining, or running non-interactively, leaves the refusal byte-identical to before:
+exit `3`, no file written.
 A lint fails on any `curl`, `wget`, `nc`, or `openssl s_client` invocation outside `lib/http.sh` and
 `modules/dast/passive/tls.sh`, the latter being the one documented exception, which takes its host from
 the same resolved, gated tuple set.
@@ -4884,11 +4898,13 @@ what the code disproves is the failure mode round 3 diagnosed:
   so an example takes the schema of the file it is an example of.  That is a loader rule rather than a
   format change, and the frozen document is untouched.
 
-**Still open, and inherited by §13 step 2 and beyond.**
-F5 and F20 are why `rules/derived.rules` is **not** seeded at step 1: `COMPOSITE-TOKEN-HIJACK`'s
-contributors do not exist until steps 5 and 6, so seeding it now is a guaranteed `E051` failure and a
-red CI on the first build task.  The derived MECHANISM is delivered and tested against a fixture
-composite under `tests/fixtures/rules/derived.rules`; only the shipped seed waits.
+**At step 1: deferred, and inherited by §13 step 2 and beyond.**
+F5 and F20 are why `rules/derived.rules` was **not** seeded at step 1: `COMPOSITE-TOKEN-HIJACK`'s
+contributors did not exist until steps 5 and 6, so seeding it then would have been a guaranteed `E051`
+failure and a red CI on the first build task. The derived MECHANISM was delivered and tested against a
+fixture composite under `tests/fixtures/rules/derived.rules`; only the shipped seed waited - see
+"Cheap corrections, safe to defer" below, where F5/F20 are now CLOSED, since both steps have since
+landed.
 
 
 ### Cheap corrections, safe to defer
@@ -5019,9 +5035,9 @@ F18 closed with them by mechanism.
 dispatch) and `lib/checks.sh` (tension 15's filter chain and registry loader, plus the
 `_scan_apply_profile_filter` wiring into `scan.sh`) are both now built, closing out §13 step 2 except
 for real module execution, which waits on step 3+ as `scan.sh`'s own header says.
-F3 and F8 are closed as part of `lib/checks.sh` landing (see their own entries above); F5 and F20
-remain open for the same reason they always were - `rules/derived.rules` is still not seeded, since its
-contributors do not exist until steps 5 and 6.
+F3 and F8 are closed as part of `lib/checks.sh` landing (see their own entries above); F5 and F20 have
+since closed too, once steps 5 and 6 supplied `COMPOSITE-TOKEN-HIJACK`'s three `requires` contributors -
+`rules/derived.rules` now seeds the real record (see the F5/F20 entry above).
 
 **§13 step 3 is complete: every rule pack `docs/DESIGN.md` §6.3's catalog names is now on disk and
 exercised.**
@@ -5397,13 +5413,14 @@ and every out-of-date finding carries the list's own generation stamp - because 
 false negatives, which is the failure mode that hides.
 Tier 4's DAST-14 (`active/sqli.sh`) and tier 5's DAST-26 (`jwt.sh`) also landed, out of tier order;
 `docs/STEP5-DAST-PLAN.md`'s per-ticket tables are the authority for what is in.
-`modules/cloud/` remains unbuilt and steps 6, 7 and 10 remain unstarted; step 5 (DAST) has since landed
-in full - see the generated status block below, and `ROADMAP.md`, for the current priority order among
-the steps still open.
-`lib/awscli.sh` is a further out-of-sequence exception: a credential-less pass built it ahead of step
-6, so the chokepoint exists while `modules/cloud/aws/live/*.sh` and everything else step 6 names are
-still unbuilt - see "AWS module: what exists ahead of step 6" in `AGENTS.md`.
-The remaining follow-ups (F5 and F20) are inherited by steps 4 through 10 and are still open.
+**This paragraph is a snapshot from when only step 5 had landed; every step named below as unbuilt has
+since landed - see "Current position, headline" in `AGENTS.md` and `ROADMAP.md` for the current state.**
+`lib/awscli.sh` was a further out-of-sequence exception at that time: a credential-less pass had built it
+ahead of step 6, so the chokepoint existed while `modules/cloud/aws/live/*.sh` and everything else step 6
+names were still unbuilt - see "AWS module: what exists ahead of step 6" in `AGENTS.md` for that history;
+`modules/cloud/` itself has since landed in full (30 of 30 AWS services).
+F5 and F20, named here as still open at the time, have also since closed, once step 6 supplied
+`COMPOSITE-TOKEN-HIJACK`'s third `requires` contributor (see that finding's own entry above).
 (F3, F4, F8, and F16 - including its `look` half - are closed above, and F17 closed out of order as
 part of that same credential-less pass.)
 
