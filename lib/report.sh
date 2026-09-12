@@ -981,6 +981,14 @@ report_run_json() {
     _meta_array "$rundir" coverage_gap 'coverage_gap'
     _meta_array "$rundir" coverage_reduction 'coverage_reduction'
     _meta_array "$rundir" incomplete_reason 'incomplete_reason'
+    # `abort_reason` (lib/core.sh's die()) is deliberately NOT folded into
+    # `incomplete_reason`: that field's emptiness is exactly the exit-5
+    # predicate (tension 14, this file's own header above), and a usage/scope/
+    # input abort (exit 2/3/4) must never read as an incomplete (exit 5) run.
+    # It carries no exit-code meaning of its own - only the reason a run that
+    # terminated early is what it is, for the OWASP/CIS `not_run` bucket and
+    # the Limitations section to render instead of "no reason recorded".
+    _meta_array "$rundir" abort_reason 'abort_reason'
     _meta_array "$rundir" notes 'notes'
     # `use_engines` (docs/ADAPTERS.md) is a SCALAR bool, not an array: scan.sh
     # records exactly one value per run.  Rendering it here closes a real,
@@ -1265,6 +1273,20 @@ _meta_first() {
   printf '%s' "$v"
 }
 
+# `_run_abort_reason RUNDIR` - the human-readable reason this run's process
+# actually terminated early via `die()` (lib/core.sh), when one was captured.
+# Empty, with status 0, when nothing was: a check simply not selected by a
+# filter or profile is not an abort, and callers must keep the honest "no
+# reason was recorded" text for that case rather than borrow this one.
+# Reads only the FIRST line: a run practically dies exactly once, and
+# `meta/abort_reason` is append-only in the same shape every other run-level
+# fact is, so a stray second line (a worker's own abort, folded in after the
+# owning process already recorded its own) is not this function's job to
+# join - the OWASP/CIS `not_run` bucket wants one sentence, not a list.
+_run_abort_reason() {
+  _meta_first "$1" abort_reason
+}
+
 # As _meta_array, but deduped and sorted: a loader may legitimately run more
 # than once in a process, and a repeated target or check id is noise rather than
 # information.
@@ -1523,7 +1545,14 @@ _md_owasp_compliance() {
         printf 'Checks for this category exist but were excluded from this run (%s).\n\n' \
           "$(_owasp_filtered_reasons "$id")" ;;
       not_run)
-        printf 'Checks for this category exist but did not run this scan; no reason was recorded.\n\n' ;;
+        local abort_reason
+        abort_reason=$(_run_abort_reason "$rundir")
+        if [[ -n $abort_reason ]]; then
+          printf 'Checks for this category exist but did not run this scan: %s\n\n' "$abort_reason"
+        else
+          printf 'Checks for this category exist but did not run this scan; no reason was recorded.\n\n'
+        fi
+        ;;
     esac
   done <<<"$(_owasp_render_order)"
   if (( ${_RPT_OWASP[none]:-0} > 0 )); then
@@ -1601,7 +1630,14 @@ _md_cis_compliance() {
         printf 'Checks for this control exist but were excluded from this run (%s).\n\n' \
           "$(_cis_filtered_reasons "$id")" ;;
       not_run)
-        printf 'Checks for this control exist but did not run this scan; no reason was recorded.\n\n' ;;
+        local abort_reason
+        abort_reason=$(_run_abort_reason "$rundir")
+        if [[ -n $abort_reason ]]; then
+          printf 'Checks for this control exist but did not run this scan: %s\n\n' "$abort_reason"
+        else
+          printf 'Checks for this control exist but did not run this scan; no reason was recorded.\n\n'
+        fi
+        ;;
     esac
   done <<<"$(_cis_render_order)"
 }
@@ -1792,6 +1828,13 @@ _md_limitations() {
       any=1
       printf -- '- **incomplete run**: %s\n' "$line"
     done <"$rundir/meta/incomplete_reason"
+  fi
+  if [[ -r $rundir/meta/abort_reason ]]; then
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      any=1
+      printf -- '- **run aborted**: %s\n' "$line"
+    done <"$rundir/meta/abort_reason"
   fi
   (( any )) || printf -- '- None recorded for this run.\n'
   printf '\n'
@@ -2292,7 +2335,7 @@ _html_owasp_compliance() {
   local rundir=$1
   printf '<h2 id="owasp-compliance">OWASP Top 10 compliance</h2>\n'
   printf '<p class="sub">docs/DESIGN.md Appendix B&#39;s own honest summary: &quot;strong automated coverage of the testable Top 10, explicit and labeled gaps on A04/A08/A09 and the manual-review portion of A01 - not a substitute for a human pentest or an ASVS audit.&quot; That is the tool&#39;s documented design-level claim. The table below is this run&#39;s own status per category, measured from this run&#39;s <code>checks_run</code>/<code>skipped_checks</code> records rather than copied from that prose, and will differ from it as coverage grows.</p>\n'
-  local id label count bucket line status_class status_text reasons
+  local id label count bucket line status_class status_text reasons abort_reason
   while IFS= read -r id; do
     [[ -n $id ]] || continue
     label=$(owasp_category_label "$id")
@@ -2305,7 +2348,15 @@ _html_owasp_compliance() {
       filtered)
         reasons=$(_owasp_filtered_reasons "$id")
         status_class=filtered; status_text="excluded from this run ($reasons)" ;;
-      not_run) status_class=notrun; status_text='did not run this scan - no reason recorded' ;;
+      not_run)
+        abort_reason=$(_run_abort_reason "$rundir")
+        status_class=notrun
+        if [[ -n $abort_reason ]]; then
+          status_text="did not run this scan: $abort_reason"
+        else
+          status_text='did not run this scan - no reason recorded'
+        fi
+        ;;
     esac
     printf '<details class="modgrp" id="owasp-%s"><summary><span class="modlabel">%s - %s</span><span class="count owstat-%s">%s</span></summary>\n' \
       "$(html_escape "$id")" "$(html_escape "$id")" "$(html_escape "$label")" \
@@ -2361,7 +2412,7 @@ _html_cis_compliance() {
   else
     printf '<p class="sub">No CIS control label table (<code>data/cis-mappings</code>) is available in this build, so control ids on findings below render unexpanded.</p>\n'
   fi
-  local id label count bucket line status_class status_text reasons
+  local id label count bucket line status_class status_text reasons abort_reason
   while IFS= read -r id; do
     [[ -n $id ]] || continue
     label=$(cis_control_label "$id")
@@ -2377,7 +2428,15 @@ _html_cis_compliance() {
       filtered)
         reasons=$(_cis_filtered_reasons "$id")
         status_class=filtered; status_text="excluded from this run ($reasons)" ;;
-      not_run) status_class=notrun; status_text='did not run this scan - no reason recorded' ;;
+      not_run)
+        abort_reason=$(_run_abort_reason "$rundir")
+        status_class=notrun
+        if [[ -n $abort_reason ]]; then
+          status_text="did not run this scan: $abort_reason"
+        else
+          status_text='did not run this scan - no reason recorded'
+        fi
+        ;;
     esac
     printf '<details class="modgrp" id="cis-%s"><summary><span class="modlabel">%s - %s</span><span class="count cisstat-%s">%s</span></summary>\n' \
       "$(html_escape "$id")" "$(html_escape "$id")" "$(html_escape "$label")" \
@@ -2604,6 +2663,13 @@ _html_limitations() {
       any=1
       printf '<li><strong>incomplete run</strong>: %s</li>\n' "$(html_escape "$line")"
     done <"$rundir/meta/incomplete_reason"
+  fi
+  if [[ -r $rundir/meta/abort_reason ]]; then
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      any=1
+      printf '<li><strong>run aborted</strong>: %s</li>\n' "$(html_escape "$line")"
+    done <"$rundir/meta/abort_reason"
   fi
   (( any )) || printf '<li>None recorded for this run.</li>\n'
   printf '</ul>\n'
@@ -3376,12 +3442,19 @@ _html_audit_category() {
 
   if (( p_reg == 0 && p_ran == 0 )); then
     printf '<div class="warn"><strong>This category did not run.</strong> '
-    local red
+    local red abort_reason
     red=$(grep "module=$c " "$rundir/meta/coverage_reduction" 2>/dev/null || true)
+    abort_reason=$(_run_abort_reason "$rundir")
     if [[ -n $red ]]; then
       printf 'The run recorded:</div>\n<ul class="prose">\n'
       while IFS= read -r l; do [[ -n $l ]] && printf '<li>%s</li>\n' "$(html_escape "$l")"; done <<<"$red"
       printf '</ul>\n'
+    elif [[ -n $abort_reason ]]; then
+      # HONESTY FIX (record-abort-reason): a module with no coverage_reduction
+      # of its own most often means the run terminated (lib/core.sh die())
+      # before it was ever dispatched, not that nothing is known - state the
+      # captured reason rather than the uninformative "no coverage recorded".
+      printf 'The run aborted before it could be dispatched: %s</div>\n' "$(html_escape "$abort_reason")"
     else
       printf 'No coverage was recorded for it.</div>\n'
     fi
@@ -3525,7 +3598,7 @@ _html_audit_limitations() {
   printf '<p class="desc">Facts about this run as a whole, not attributable to one category.</p></header>\n'
   printf '<ul class="prose">\n'
   local any=0 k l
-  for k in limits_relaxed limits_clamped incomplete_reason; do
+  for k in limits_relaxed limits_clamped incomplete_reason abort_reason; do
     [[ -r $rundir/meta/$k ]] || continue
     while IFS= read -r l; do
       [[ -n $l ]] || continue
@@ -4636,6 +4709,7 @@ _agent_run_header() {
   _meta_array "$rundir" coverage_gap 'coverage_gap' ''
   _meta_array "$rundir" coverage_reduction 'coverage_reduction' ''
   _meta_array "$rundir" incomplete_reason 'incomplete_reason' ''
+  _meta_array "$rundir" abort_reason 'abort_reason' ''
   printf '"status_counts":{"new":%s,"recurring":%s,"fixed":%s,"unknown":%s},' \
     "$(json_number "${_RPT_STATUS[new]:-0}")" "$(json_number "${_RPT_STATUS[recurring]:-0}")" \
     "$(json_number "${_RPT_STATUS[fixed]:-0}")" "$(json_number "${_RPT_STATUS[unknown]:-0}")"

@@ -183,6 +183,7 @@ emptiness - `[]` for an empty array is still a fact, not silence):
   "coverage_reduction": ["module=dast reason=no --target given (declared, all)",
                           "module=cloud reason=no --live given (declared, all)"],
   "incomplete_reason":  [],
+  "abort_reason":       [],
   "status_counts":     {"new": 109, "recurring": 0, "fixed": 0, "unknown": 105},
   "gate": "not-evaluated", "diff_usable": false, "redact_secrets": true
 }
@@ -196,9 +197,16 @@ emptiness - `[]` for an empty array is still a fact, not silence):
   what actually EXECUTED, never from which modules happen to have a live finding.
 - **`checks_run`** is the full executed set (deduped, `LC_ALL=C` sorted), so "this check ran and found
   nothing" and "this check was never loaded" stay distinguishable - never collapsed into a count.
-- **`coverage_gap` / `coverage_reduction` / `skipped_checks` / `incomplete_reason`** are carried
-  **verbatim**, byte for byte, from the same `meta/*` records `run.json` itself renders - never
-  summarised, counted, or reworded.
+- **`coverage_gap` / `coverage_reduction` / `skipped_checks` / `incomplete_reason` / `abort_reason`**
+  are carried **verbatim**, byte for byte, from the same `meta/*` records `run.json` itself renders -
+  never summarised, counted, or reworded.
+- **`abort_reason`** is non-empty only when `lib/core.sh`'s `die()` terminated the process on a usage,
+  scope, or input exit code (2/3/4) - never on the exit-5 incomplete code, which keeps writing only
+  `incomplete_reason` (that field's emptiness is `docs/FOUNDATION.md` tension 14's own exit-5
+  predicate, and folding an abort into it would silently relabel a scope refusal as an incomplete
+  run). A module named in `modules_not_run` alongside a non-empty `abort_reason` did not run because
+  the run terminated early for the stated reason, not because a filter excluded it; a module in
+  `modules_not_run` with an empty `abort_reason` was simply never selected.
 - **`redact_secrets`** tells the fixer that an `<redacted:...>` evidence value is a masked REAL
   credential, not an absent one.
 - **`diff_usable: false`** (with a non-trivial `status_counts.unknown`) means `status` on the findings
