@@ -176,20 +176,39 @@ _report_dast_injection_gap_state() {
 # so a PARENT process can `source` it back after this one exits.
 #
 # This exists for `lib/core.sh`'s `run_json_refresh_incomplete`: on an abort,
-# that function calls `report_run_json`/`report_md`/`report_html` each in its
-# OWN subshell (deliberately, so a failure inside one cannot cost the other
-# two, and so an internal `die` inside the expensive registry walk can only
-# ever exit that subshell rather than replace the original abort's exit code
-# - see that function's own header comment). A bash subshell inherits the
-# parent's variables at fork time but can never write them back, so the
-# `SCOURSH_INSTALL_ROOT`-keyed memo each of those three writers populates via
-# `report_count` was being rebuilt from scratch in every one of the three
-# subshells - tripling an already-expensive full-registry parse (every
-# `*.rules` file in the tool re-parsed and re-validated) for a run that
-# executed zero checks. Dumping it here after the FIRST writer, and having
-# the parent `source` the dump before forking the next one, lets the second
-# and third inherit an already-warm cache - without moving the (dying-capable)
+# that function calls `report_run_json`/`report_md`/`report_html`/
+# `report_agent` each in its OWN subshell (deliberately, so a failure inside
+# one cannot cost the others, and so an internal `die` inside the expensive
+# registry walk can only ever exit that subshell rather than replace the
+# original abort's exit code - see that function's own header comment). A
+# bash subshell inherits the parent's variables at fork time but can never
+# write them back, so the `SCOURSH_INSTALL_ROOT`-keyed memo each of those four
+# writers populates via `report_count` was being rebuilt from scratch in
+# every one of them - repeating an already-expensive full-registry parse
+# (every `*.rules` file in the tool re-parsed and re-validated) for a run
+# that executed zero checks. Dumping it here after the FIRST writer, and
+# having the parent `source` the dump before forking the next one, lets the
+# rest inherit an already-warm cache - without moving the (dying-capable)
 # walk itself out of subshell containment.
+#
+# `report_sarif` and `report_audit` deliberately do NOT participate in this
+# dump/restore chain, even though `_sarif_build_registry` shares the same
+# `_report_checkmeta_registry_load` walk and memo flag
+# (`_RPT_CHECKMETA_LOADED_ROOT`): unlike the OWASP/CIS category state, SARIF's
+# `rules[]` descriptors are built from `lib/records.sh`'s own raw parsed
+# record state (`_REC_ORDER`/`_REC_L`/`_REC_DIGEST`, populated by
+# `checks_registry_load`/`records_load`), which this dump does not - and
+# safely cannot cheaply - carry across a subshell boundary. Restoring only
+# the memo flag would make a LATER subshell's `_report_checkmeta_registry_load`
+# believe the walk already ran and short-circuit, leaving those record-level
+# arrays empty in that subshell even though the flag says otherwise - which
+# manifested as an `unbound variable` abort deep in `records_digest` and,
+# worse, a `report.sarif` whose `rules[]` was silently missing the tool's
+# whole catalog. `run_json_refresh_incomplete` resets the memo flags before
+# calling either function, forcing each its own complete, self-consistent
+# walk exactly as it always performs on a normal (non-abort) run - the same
+# cost `report_sarif` and `report_audit` already pay whenever `--format`
+# selects them, abort or not.
 report_registries_dump() {
   local out=$1
   declare -p _RPTOW_CHECK_OWASP _RPTCIS_CHECK_CIS _RPTOW_REGISTRY_LOADED_ROOT \
@@ -1458,11 +1477,30 @@ _meta_array() {
 # SC2016 fires on every Markdown code span below; the backticks are literal
 # output, not command substitution.
 # shellcheck disable=SC2016
+# `_md_abort_banner RUNDIR` - an aborted run's counts are all zero (0 live
+# findings, an all-zero severity table, an empty "Since last scan" block),
+# which reads exactly like a clean scan to anyone who reads the top of the
+# file and stops, or screenshots it. The OWASP/CIS sections and
+# `_md_limitations` already disclose the abort in full further down; this is
+# ADDITIVE, placed before every count in the report so the reader cannot miss
+# it. `_run_abort_reason` reads the identical `meta/abort_reason` record
+# die() itself wrote (lib/core.sh), so this can never disagree with the
+# lower-down disclosures.
+_md_abort_banner() {
+  local rundir=$1 abort_reason
+  abort_reason=$(_run_abort_reason "$rundir")
+  [[ -n $abort_reason ]] || return 0
+  printf '> **THIS RUN DID NOT COMPLETE.** %s\n>\n' "$abort_reason"
+  printf '> Every count below reflects only what ran before the abort - it is not a\n'
+  printf '> clean result. See "Limitations and coverage" below for the full detail.\n\n'
+}
+
 report_md() {
   local rundir=${1:-$SCOURSH_RUN_DIR}
   report_count "$rundir"
   {
     printf '# scoursh scan report\n\n'
+    _md_abort_banner "$rundir"
     printf -- '- run: `%s`\n' "${SCOURSH_RUN_ID:-}"
     printf -- '- tool version: `%s`\n' "$(scoursh_version)"
     printf -- '- fingerprint schema: `%s`\n' "$FP_SCHEMA"
@@ -2266,9 +2304,22 @@ _html_diff_delta() {
   fi
 }
 
+# `_html_abort_banner RUNDIR` - the HTML twin of `_md_abort_banner` above;
+# see that function's own header for why this has to sit above every count.
+# Reuses the existing `.banner` style (a critical-colored box the redaction
+# and unrestricted-run banners already use) rather than inventing a new one.
+_html_abort_banner() {
+  local rundir=$1 abort_reason
+  abort_reason=$(_run_abort_reason "$rundir")
+  [[ -n $abort_reason ]] || return 0
+  printf '<p class="banner">THIS RUN DID NOT COMPLETE: %s Every count below reflects only what ran before the abort - it is not a clean result. See <a href="#limitations">Limitations and coverage</a> below for the full detail.</p>\n' \
+    "$(html_escape "$abort_reason")"
+}
+
 _html_summary() {
   local rundir=${1:-$SCOURSH_RUN_DIR}
   printf '<h1 id="top">scoursh scan report</h1>\n'
+  _html_abort_banner "$rundir"
   printf '<p class="sub">run <code>%s</code> · tool <code>%s</code> · fingerprint schema <code>%s</code> · %s live findings, %s accepted risk</p>\n' \
     "$(html_escape "${SCOURSH_RUN_ID:-}")" "$(html_escape "$(scoursh_version)")" \
     "$(html_escape "$FP_SCHEMA")" "$_RPT_LIVE" "$_RPT_SUPPRESSED"
@@ -4986,6 +5037,25 @@ report_agent() {
 # documented default can never quietly diverge into two different answers to
 # "what happens when nobody asked".
 #
+# `_report_format_wanted NAME` - true (0) iff format NAME is selected by
+# `SCOURSH_FORMATS` (or its documented default).  The single source of truth
+# for "what does `--format` mean", shared by the normal path below AND by the
+# abort path's own gate (`run_json_refresh_incomplete`, lib/core.sh) so the
+# two can never drift the way they did before that fix: the abort path used
+# to ignore `SCOURSH_FORMATS` entirely and always write report.html and
+# agent-fix.json regardless of what `--format` asked for.
+_report_format_wanted() {
+  local _rfw_want=$1
+  local _rfw_csv=${SCOURSH_FORMATS:-json,sarif,html,md,agent}
+  local -a _rfw_fmt=()
+  IFS=',' read -r -a _rfw_fmt <<<"$_rfw_csv"
+  local _rfw_f
+  for _rfw_f in "${_rfw_fmt[@]+"${_rfw_fmt[@]}"}"; do
+    [[ $_rfw_f == "$_rfw_want" ]] && return 0
+  done
+  return 1
+}
+
 # Factored out of report_all so `scan.sh report --from DIR`
 # (report_regenerate_from, below) can call the identical set of emitters
 # without also repeating report_all's other two steps - report_locations and
@@ -4995,34 +5065,26 @@ report_agent() {
 # than each keeping their own copy of that logic.
 _report_render_formats() {
   local rundir=${1:-$SCOURSH_RUN_DIR}
-  local _rpt_formats_csv=${SCOURSH_FORMATS:-json,sarif,html,md,agent}
-  local -a _rpt_fmt=()
-  IFS=',' read -r -a _rpt_fmt <<<"$_rpt_formats_csv"
-  local -A _rpt_want=()
-  local _rpt_f
-  for _rpt_f in "${_rpt_fmt[@]+"${_rpt_fmt[@]}"}"; do
-    [[ -n $_rpt_f ]] && _rpt_want[$_rpt_f]=1
-  done
 
   findings_write_jsonl "$rundir"
-  [[ -z ${_rpt_want[json]:-} ]] || findings_write_json "$rundir"
-  [[ -z ${_rpt_want[md]:-} ]] || report_md "$rundir"
-  [[ -z ${_rpt_want[html]:-} ]] || report_html "$rundir"
+  ! _report_format_wanted json || findings_write_json "$rundir"
+  ! _report_format_wanted md   || report_md "$rundir"
+  ! _report_format_wanted html || report_html "$rundir"
   # docs/STEP10-SARIF-PLAN.md SARIF-03/04: report_sarif writes the full
   # SARIF-2.1.0 document (tool.driver/rules[]/artifacts[]/invocations[], and
   # results[] mapped from this run's own findings).
-  [[ -z ${_rpt_want[sarif]:-} ]] || report_sarif "$rundir"
+  ! _report_format_wanted sarif || report_sarif "$rundir"
   # `audit` is a fifth, OPT-IN format value (never in the default list
   # above): report_audit writes report-audit.html ALONGSIDE report.html,
   # never replacing or editing it (captain decision, scoursh-audit-report
   # ticket) - an audit-grade per-category coverage report with full
   # not-covered detail, §4a above.
-  [[ -z ${_rpt_want[audit]:-} ]] || report_audit "$rundir"
+  ! _report_format_wanted audit || report_audit "$rundir"
   # `agent` is in the default list above (a first-class deliverable):
   # report_agent writes reports/<run>/agent-fix.json, a compact,
   # schema-projected findings file for a downstream AI fixing agent
   # (docs/AGENT-FORMAT.md), never gating or replacing any other format.
-  [[ -z ${_rpt_want[agent]:-} ]] || report_agent "$rundir"
+  ! _report_format_wanted agent || report_agent "$rundir"
 }
 
 report_all() {

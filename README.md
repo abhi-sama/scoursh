@@ -55,10 +55,14 @@ category outclasses it there. Its value is different:
 - **One** unified, egress-safe sweep across seven surfaces (SAST, SCA, IaC, DAST, network/host,
   container image, Cloud/CSPM) in a single CLI and a single report, with no heavy toolchain to
   install - pure `bash` and coreutils.
-- **Zero egress is enforced, not promised.** `tools/run-sandboxed.sh` (macOS Seatbelt) and
-  `tools/run-in-netns.sh` (Linux network namespaces) back the no-egress rule with a kernel-level
-  guarantee rather than a policy the tool merely follows, which is why it runs in air-gapped and
-  egress-audited environments a network-dependent specialist can't run in at all.
+- **Egress is restricted, not promised - and kernel-enforced for the three offline scanners.**
+  `sast`/`sca`/`iac` genuinely make zero network calls, and `tools/run-sandboxed.sh` (macOS Seatbelt)
+  and `tools/run-in-netns.sh` (Linux network namespaces) back that with a real, kernel-level
+  deny-all-network guarantee rather than a policy the tool merely follows - which is why those three
+  run in air-gapped and egress-audited environments a network-dependent specialist can't run in at
+  all. `dast` and `cloud --live` inherently have to talk to the target or account you authorized, so
+  scoursh is deliberately **egress-restricted, not air-gapped** overall - see
+  [Safety model](#safety-model) for exactly what's guaranteed and where the line is.
 - **"We did not check that" is a first-class, recorded result**, never folded into a silent "clean" -
   so "did it actually check?" stays an answerable question for an auditor, a post-incident review, or
   compliance evidence.
