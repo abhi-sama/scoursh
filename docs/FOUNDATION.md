@@ -2238,6 +2238,27 @@ honest fallback text when nothing was. `die()` writes it for exactly its 2/3/4 c
 does `core_on_signal`'s SIGTERM path, which is a different unplanned-incompleteness route entirely), so
 the exit-code precedence table above is completely unchanged by this addition.
 
+**A further amendment: the OWASP/CIS `not_run` bucket described above is no longer how a full
+pre-dispatch abort renders at all.** The per-category walk that bucket depends on
+(`_report_owasp_state`/`_report_cis_state`, `lib/report.sh`) parses the tool's whole on-disk check
+catalog, which cost ~24s to render three times over on a run that dispatched zero checks - `#286`/`#287`
+fixed the redundant re-parsing, and `#287` additionally observed that the walk itself is pointless work
+whenever `meta/checks_run` is empty: every category's answer to "did any of its checks run" is trivially
+no without walking a single `*.rules` file to find out. So the `not_run`-bucket rendering this paragraph
+describes ("did not run this scan: `<abort_reason>`", per category) still applies exactly as written,
+but only when **some** module ran before the abort (`meta/checks_run` non-empty) - a `scan.sh all`
+where sast/sca/iac complete and dast then aborts still gets the full per-category table, correctly
+showing the completed categories assessed and the rest not-run with the recorded reason. A run that
+never dispatched a single check (`meta/checks_run` empty - the ordinary shape of an exit-`2`/`3`/`4`
+scope/usage/input refusal, since those fire before any module starts) skips the walk entirely and
+renders one honest, run-wide statement instead - "This scan aborted before any category could be
+assessed: `<abort_reason>`", or "No checks ran this scan, so no category could be assessed; no reason
+was recorded" when `abort_reason` itself is empty (a filter chain that selected nothing) - never a
+per-category table computed from arrays that were never populated. `agent-fix.json` gained the same
+distinction for the identical reason once `#288` made `report_agent` reachable from `die()`: a consumer
+tells the three cases apart from `run.checks_run`/`run.abort_reason`/`run.incomplete_reason` alone (see
+`docs/AGENT-FORMAT.md` §4a).
+
 Without this split, exit 5 swallows the product.
 Tension 12 emits `unknown` for every prior finding of any uncovered check, so on any repository with
 prior state and a non-empty backlog, `scan.sh sast` and `--profile-scan quick` would *always* exit 5 and
