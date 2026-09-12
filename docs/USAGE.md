@@ -52,7 +52,7 @@ scan.sh <command> [options]
 | `image` | `--image ID` `[--source PATH]` | live, needs an advisory database for OS-package/dependency matching | Offline installed-package enumeration and CVE matching against a **built** container image - `ID` names an `id` record in `config/images.conf` pointing at a `docker save` tarball (`source: docker-archive`) or an OCI image-layout directory (`source: oci-layout`); never a registry pull, and `--image` is the only required flag. `--source PATH` overrides the configured path for this run only (the shape is inferred from the filesystem - a directory is `oci-layout`, a file is `docker-archive`); with no `config/images.conf` record for `ID` at all, `--source` is the only way to run. Enumerates and matches apk, dpkg, and rpm packages (rpm needs `sqlite3` on `PATH` - its package database is a binary format, a declared coverage reduction rather than a silent skip when absent), plus language dependencies found at a bounded set of conventional manifest locations inside the image's own rootfs (reusing `sca`'s tree-walkers). Also reads the image's config blob for its effective runtime user, exposed ports, and whether its recorded base reference is a mutable tag - these three checks need no advisory database and run on every opened image regardless of distro. No advisory data for the image's release is `IMAGE-COV-NO_ADVISORY_DB-01` and exit `4` when `image` is the selected command (a declared skip under `all`, per the identical SCA precedent). `--format agent` works here the same as every other module. See ["Dependency data"](#dependency-data-dataadvisoriesdb) and `docs/CHECKS.md`'s "Container image" section. |
 | `all` | union of every module's own flags above | live | Runs sast, sca, iac unconditionally; runs dast and network only if `--target` is given (network under the identical condition dast uses - it never gets a separate authorization record, since the two share one `--target`/`--intensity`/`--i-own-target` triple), image only if `--image` is given, and cloud only if `--live` is given. Every module it skips is recorded in `run.json` as a `coverage_reduction` fact, not silently dropped. |
 | `diff` | `--against DIR` | live | `DIR` must name a prior run's output directory (must contain `findings.jsonl` or `run.json`). Classifies `state/latest.json` (the most recently completed run) against the state recorded for the named prior run and renders the delta - `new`/`recurring`/`fixed`/`unknown` - into a fresh output directory (`run.json`, `report.md`). Performs no new scan. See [`docs/STEP7-STATE-PLAN.md`](STEP7-STATE-PLAN.md) (STATE-06). |
-| `report` | `--from DIR` | live | `DIR` must be a prior run's own output directory (must contain `findings.jsonl` or `run.json`, plus a non-empty `findings.fields` and `meta/`). Regenerates `report.md`/`report.html`/`report.sarif`/`report-audit.html` (honouring `--format`) from that run's own persisted findings and `run.json` (copied byte-for-byte, never recomputed) - no new scan is performed. See ["`report --from DIR`"](#report---from-dir). |
+| `report` | `--from DIR` | live | `DIR` must be a prior run's own output directory: it must contain `findings.jsonl` AND a non-empty, well-formed `run.json` AND `findings.fields` AND `meta/` - all four, a stricter check than `diff --against`'s. Regenerates `report.md`/`report.html`/`report.sarif`/`report-audit.html` (honouring `--format`) from that run's own persisted findings and `run.json` (copied byte-for-byte, never recomputed) - no new scan is performed. An aborted run's directory therefore never qualifies, since it never writes `findings.jsonl`. See ["`report --from DIR`"](#report---from-dir). |
 
 `-h` / `--help` at any position before the first unrecognized token prints usage and exits 0.
 
@@ -378,9 +378,9 @@ every run whatever `--format` asked for, so they are not evidence that the flag 
 `--format sarif` writes `report.sarif`, documented in full in the next section.
 
 `--format audit` (or `audit` added to a multi-value `--format`/`formats` list) writes
-`report-audit.html`, an opt-in fifth value that is **never** in the default list and never replaces
-`report.html` - it is written alongside it. It is a per-category (sast/sca/iac/dast/cloud) coverage
-report built for a reader auditing the run itself, not for triage: every registered check lands in
+`report-audit.html`, an opt-in sixth value that is **never** in the default list and never replaces
+`report.html` - it is written alongside it. It is a per-category (sast/sca/iac/dast/cloud/network/image)
+coverage report built for a reader auditing the run itself, not for triage: every registered check lands in
 exactly one of four states - it found something, it ran and found nothing, it did not run (with the
 run's own recorded reason), or it is unaccounted for (registered, not run, no reason recorded, which
 is never folded into "clean") - and every not-run check is listed individually with its reason rather
@@ -537,8 +537,11 @@ prior run's state before its own gate is evaluated.
 
 ### `report --from DIR`
 
-`DIR` is validated the same way `diff --against` is (must contain `findings.jsonl` or `run.json`,
-plus a non-empty `findings.fields` and `meta/`). The run regenerates `report.md`, `report.html`,
+`DIR` is validated more strictly than `diff --against` is: it must contain `findings.jsonl` AND a
+non-empty, well-formed `run.json` AND `findings.fields` AND `meta/` - all four are required, never
+just one of `findings.jsonl`/`run.json` the way `diff --against` accepts. A consequence: `report
+--from` cannot run against an aborted run's own output directory, since an abort never writes
+`findings.jsonl`. The run regenerates `report.md`, `report.html`,
 `report.sarif`, and `report-audit.html` (honouring `--format`) from `DIR`'s own persisted
 `findings.fields`/`meta/` facts, with no module dispatched and no rescan.
 
@@ -556,10 +559,11 @@ already-decided verdict from the original scan is used as-is.
 `--out` given the same path as `--from` (in-place regeneration) is supported.
 
 Report file generation *during* a scan is a separate thing that always worked: every `sast`/`sca`/
-`iac`/`dast`/`cloud`/`all` run already writes `findings.json`, `findings.jsonl`, `report.md`,
-`report.html`, and `run.json` (plus `report.sarif` and `report-audit.html` if asked) as part of the
-scan itself. `report --from DIR` is the separate ability to rebuild those files from an earlier run's
-own directory after the fact, with no reclassification.
+`iac`/`dast`/`cloud`/`network`/`image`/`all` run already writes `findings.jsonl` and `run.json` as
+part of the scan itself, plus whichever of `findings.json`/`report.md`/`report.html`/`report.sarif`/
+`report-audit.html` its `--format` selects - `findings.json` is not written on, say,
+`--format html,audit`. `report --from DIR` is the separate ability to rebuild those files from an
+earlier run's own directory after the fact, with no reclassification.
 
 ### `--jobs N` and the `jobs` config key
 
@@ -810,6 +814,17 @@ A run that terminates on any of codes `2`/`3`/`4` records *why* in `run.json`'s 
 place of "no reason recorded" wherever a not-yet-run module's coverage would otherwise say so - see
 `docs/AGENT-FORMAT.md` for the field and `docs/FOUNDATION.md` tension 14 for why it is kept apart from
 `incomplete_reason`.
+
+The rendered report itself takes one of two shapes on such an abort, and which shape depends on
+whether any module dispatched a check before the abort. If **no** module ran (`meta/checks_run`
+empty - the ordinary shape of a `2`/`3`/`4` scope/usage/input refusal, since those fire before
+dispatch), the OWASP and CIS compliance sections are replaced with a single run-wide sentence
+("This scan aborted before any category could be assessed: `<abort_reason>`") rather than a
+per-category table computed from data that was never populated. If **some** module completed
+before a later one aborted (e.g. `scan.sh all` where `sast`/`sca`/`iac` finish and `dast` then
+aborts), the full per-category OWASP/CIS walk still renders, correctly showing the completed
+categories assessed and the rest not-run with the recorded reason. See `docs/FOUNDATION.md`
+tension 14's "further amendment" paragraph for the full account.
 
 The rate limiter, request budget, and circuit breaker described in
 ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target) are real and live: a `dast`
