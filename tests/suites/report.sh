@@ -1202,6 +1202,38 @@ t_case 'the Limitations section also states the run aborted, in both formats'
 assert_contains "$MDA" '**run aborted**: exit=3 scope gate refused' 'report.md'
 assert_contains "$HTA" '<strong>run aborted</strong>: exit=3 scope gate refused' 'report.html'
 
+printf -- '\n-- OMISSION A FIX: the abort is stated ABOVE the counts, not only in OWASP/CIS/Limitations --\n'
+# Before this fix an aborted report.md opened with `# scoursh scan report`,
+# then straight into `- findings: 0 live, 0 accepted risk (0 total)`, an
+# all-zero "Since last scan" block and severity table, and `## Findings` ->
+# `_No findings._` - the abort was disclosed only much further down, in the
+# OWASP/CIS sections and "Limitations and coverage". A reader who reads the
+# top of the file and stops, or screenshots it, would take away a clean
+# result from a run that never started. `_md_abort_banner`/
+# `_html_abort_banner` (lib/report.sh) are additive - none of the assertions
+# above are affected - and sit before every count. Split on the exact text
+# every count line is introduced by, so this FAILS if the banner were ever
+# moved below either marker, not merely absent.
+MDA_ABOVE_COUNTS=${MDA%%- findings:*}
+t_case 'report.md states the abort before the findings-count line'
+assert_contains "$MDA_ABOVE_COUNTS" 'THIS RUN DID NOT COMPLETE' \
+  'FAILS if the banner is missing, or rendered only below the counts'
+assert_contains "$MDA_ABOVE_COUNTS" 'exit=3 scope gate refused GET https://bad-target.example' \
+  'and it carries the real abort_reason, not a generic placeholder'
+
+HTA_ABOVE_COUNTS=${HTA%%live findings*}
+t_case 'report.html states the abort before the "N live findings" summary line'
+assert_contains "$HTA_ABOVE_COUNTS" 'THIS RUN DID NOT COMPLETE' \
+  'FAILS if the banner is missing, or rendered only below the summary paragraph'
+assert_contains "$HTA_ABOVE_COUNTS" 'exit=3 scope gate refused GET https://bad-target.example' \
+  'and it carries the real abort_reason there too'
+
+t_case 'the abort banner never removes the lower-down disclosures - it is additive'
+assert_contains "$MDA" 'This scan aborted before any category could be assessed' \
+  'the OWASP section still states the abort, unchanged by the new banner'
+assert_contains "$MDA" '**run aborted**: exit=3 scope gate refused' \
+  'and so does the Limitations section'
+
 printf -- '\n-- and the honest fallback survives when nothing was actually captured --\n'
 DNOABORT=$SCOURSH_SCRATCH/rpt-no-abort-reason
 rm -rf "$DNOABORT"
@@ -1221,6 +1253,10 @@ assert_contains "$HTN" 'no reason recorded' \
   'and report.html keeps the same honest fallback'
 assert_not_contains "$HTN" 'This scan aborted before any' \
   'and no fabricated abort claim appears in report.html where none was recorded'
+assert_not_contains "$MDN" 'THIS RUN DID NOT COMPLETE' \
+  'the top-of-report abort banner is never fabricated either, in report.md'
+assert_not_contains "$HTN" 'THIS RUN DID NOT COMPLETE' \
+  'or in report.html'
 
 printf -- '\n-- and a PARTIAL abort (some modules ran, one then aborted) still gets the full per-category walk --\n'
 # A combined `scan.sh all` where earlier modules completed (so checks_run is
@@ -1326,6 +1362,74 @@ assert_contains "$AGP" 'exit=3 scope gate refused GET https://bad-target.example
   'and the abort reason is present alongside it - FAILS if a partial abort were ever rendered as a clean, complete result'
 assert_not_contains "$AGP" '"checks_run": []' \
   'run.checks_run is non-empty here - the field that tells case (b) (ran partially, then aborted) apart from case (c) (refused before anything ran)'
+
+printf -- '\n-- REGRESSION: the die() abort path must honour --format, and findings.jsonl is mandatory even on abort --\n'
+# =============================================================================
+# `run_json_refresh_incomplete` (lib/core.sh) used to loop over
+# `report_run_json report_md report_html report_agent` with NO
+# `SCOURSH_FORMATS` gate at all - an aborted run under `--format md` still
+# wrote report.html and agent-fix.json, silently ignoring the operator's
+# explicit --format on exactly the path a CI step is most likely to assert
+# "only the artifacts --format implies exist" against. And `findings.jsonl`
+# was never written on ANY abort at all, because `findings_write_jsonl` is
+# only ever reached through `_report_render_formats` (lib/report.sh), which
+# the abort path never called - `report --from` requires findings.jsonl
+# (`_scan_require_report_source`, scan.sh) and so could never read an
+# aborted run's own directory back. FAILS under the pre-fix loop: report.html
+# and agent-fix.json both present under --format md, and findings.jsonl
+# absent under every format including the default.
+DFMTABORT=$SCOURSH_SCRATCH/rpt-format-abort-md
+rm -rf "$DFMTABORT"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
+run_init "$DFMTABORT"
+DFMTABORT=$SCOURSH_RUN_DIR
+(
+  SCOURSH_FORMATS=md
+  die "$SCOURSH_EXIT_SCOPE" \
+    'scope gate refused GET https://bad-target.example: destination not in scope.conf'
+) || true
+
+t_case 'an aborted run under --format md writes only the mandatory records plus report.md'
+assert_file_exists "$DFMTABORT/run.json" 'run.json is mandatory, --format notwithstanding'
+assert_file_exists "$DFMTABORT/findings.jsonl" \
+  'findings.jsonl is mandatory too - FAILS pre-fix, where it was never written on any abort'
+assert_file_exists "$DFMTABORT/report.md" 'report.md is written - it is the one format actually named'
+assert_file_absent "$DFMTABORT/report.html" \
+  'report.html must NOT be written - FAILS pre-fix, where the abort path ignored --format entirely and always wrote it'
+assert_file_absent "$DFMTABORT/agent-fix.json" \
+  'agent-fix.json must NOT be written either, for the identical reason'
+assert_file_absent "$DFMTABORT/report.sarif" 'report.sarif must NOT be written - sarif was never named'
+assert_file_absent "$DFMTABORT/findings.json" 'findings.json must NOT be written - json was never named'
+
+printf -- '\n-- and a DEFAULT-format abort (no --format given) still writes the full default list --\n'
+DFMTDEFAULT=$SCOURSH_SCRATCH/rpt-format-abort-default
+rm -rf "$DFMTDEFAULT"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID='' SCOURSH_FORMATS=''
+run_init "$DFMTDEFAULT"
+DFMTDEFAULT=$SCOURSH_RUN_DIR
+(
+  die "$SCOURSH_EXIT_SCOPE" \
+    'scope gate refused GET https://bad-target.example: destination not in scope.conf'
+) || true
+
+t_case 'a default-format abort writes every default-list artifact, findings.jsonl included'
+assert_file_exists "$DFMTDEFAULT/run.json" 'run.json'
+assert_file_exists "$DFMTDEFAULT/findings.jsonl" 'findings.jsonl'
+assert_file_exists "$DFMTDEFAULT/findings.json" 'findings.json (json is in the default list)'
+assert_file_exists "$DFMTDEFAULT/report.md" 'report.md'
+assert_file_exists "$DFMTDEFAULT/report.html" 'report.html'
+assert_file_exists "$DFMTDEFAULT/report.sarif" 'report.sarif (sarif is in the default list)'
+assert_file_exists "$DFMTDEFAULT/agent-fix.json" 'agent-fix.json (agent is in the default list)'
+assert_file_absent "$DFMTDEFAULT/report-audit.html" \
+  'report-audit.html stays opt-in even under a default-list abort - audit is never in the default list'
+
+t_case 'a mandatory but empty findings.jsonl on abort is never confused with a genuine clean scan'
+FJA=$(cat "$DFMTDEFAULT/findings.jsonl")
+assert_eq '' "$FJA" \
+  'empty is the correct content for a pre-dispatch abort - nothing was ever merged into findings.fields'
+JDA=$(cat "$DFMTDEFAULT/run.json")
+assert_contains "$JDA" 'scope gate refused GET https://bad-target.example' \
+  "a consumer tells the two apart via run.json's own abort_reason, which is unconditional and non-empty here"
 
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 SCOURSH_INSTALL_ROOT=$ROOT

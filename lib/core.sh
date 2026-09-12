@@ -284,13 +284,33 @@ die() {
 #     can neither replace the original exit code nor print a crash-shaped
 #     second diagnostic over the real message.
 #
-# The writers run in that order, each in its own subshell, and run.json goes
-# FIRST on purpose: it is the one the exit-5 contract is stated over, so a
-# failure inside either of the heavier human-readable writers cannot cost the
-# guarantee.  The two findings writers are deliberately NOT re-run - they merge
-# every worker's shard, which is the one part of `report_all` that is unsafe
-# while other workers may still be mid-write, and neither of them is what
-# claims the run completed.
+# `run.json` and `findings.jsonl` are MANDATORY on every run, abort included -
+# docs/USAGE.md's and README's own "written on every run whatever --format
+# asked for" contract, which this loop used to violate two different ways: it
+# always wrote report.html/agent-fix.json regardless of --format (never
+# consulting SCOURSH_FORMATS at all), and it never wrote findings.jsonl,
+# leaving a real functional gap - `report --from` requires findings.jsonl
+# (scan.sh's `_scan_require_report_source`) and so could never read an aborted
+# run's own directory back.  Both are fixed here: `_report_format_wanted`
+# (lib/report.sh) - the SAME function `_report_render_formats` uses on a
+# normal run - is consulted for every optional writer, and findings.jsonl
+# joins run.json as unconditional.  `findings_write_jsonl` only ever READS the
+# already-merged `findings.fields` (never a worker's own shard file, which
+# tension 17 keeps private until `findings_merge` folds it in) - "mid-write"
+# for it means findings.fields reflects only whatever `findings_merge` had
+# already appended before the abort, the identical partial-information
+# tradeoff already accepted for the meta-derived writers below, not a
+# corruption risk.  An aborted run's findings.jsonl is normally EMPTY; that is
+# correct and is not the same as absent - a consumer distinguishes the two by
+# `run.json`'s own `abort_reason`/`incomplete_reason` (also carried verbatim
+# into `agent-fix.json`'s `run` header), which is unconditional here and reads
+# empty on a genuine clean scan.
+#
+# The writers run in this order, each in its own subshell so one writer's
+# failure cannot cost any of the others: `report_run_json` FIRST, since it is
+# the one the exit-5 contract is stated over; `findings_write_jsonl` next,
+# also mandatory; then every optional renderer `_report_render_formats` would
+# have run on a normal completed scan, each gated on `--format` identically.
 #
 # These writers live in lib/report.sh, which lib/core.sh deliberately does not
 # source (the dependency runs the other way).  A run that never loaded them has
@@ -298,7 +318,7 @@ die() {
 # error.
 _SCOURSH_RUN_JSON_REFRESHED=0
 run_json_refresh_incomplete() {
-  local fn _rjri_regdump=''
+  local fn _rjri_name='' _rjri_fmt='' _rjri_regdump=''
   (( _SCOURSH_RUN_JSON_REFRESHED == 0 )) || return 0
   [[ -n ${SCOURSH_RUN_DIR:-} && -d ${SCOURSH_RUN_DIR:-}/meta ]] || return 0
   [[ ${_SCOURSH_RUN_OWNER:-} == "$$" ]] || return 0
@@ -306,12 +326,13 @@ run_json_refresh_incomplete() {
   # report_run_json/report_md/report_html/report_agent each independently
   # re-parse the tool's whole *.rules catalog (via report_count's OWASP/CIS
   # registry state) the first time they run in a process - normally paid once
-  # and memoized for the rest of that process, but each of these four runs in
-  # its OWN subshell (below), and a subshell can never write its memoized
-  # state back to this parent. Dumping that state out of each subshell and
-  # sourcing it back here - see report_registries_dump's own header comment -
-  # means only the FIRST of the four pays for the parse; a no-op if
-  # lib/report.sh (or $SCOURSH_SCRATCH) is unavailable.
+  # and memoized for the rest of that process, but each of these runs in its
+  # OWN subshell (below), and a subshell can never write its memoized state
+  # back to this parent. Dumping that state out of each subshell and sourcing
+  # it back here - see report_registries_dump's own header comment - means
+  # only the FIRST writer that needs it pays for the parse; a no-op if
+  # lib/report.sh (or $SCOURSH_SCRATCH) is unavailable.  Harmless, and cheap,
+  # for the writers below that never touch the registry at all.
   if [[ -n ${SCOURSH_SCRATCH:-} && -d ${SCOURSH_SCRATCH:-} ]]; then
     _rjri_regdump=$SCOURSH_SCRATCH/report-registries.$$
   fi
@@ -324,11 +345,32 @@ run_json_refresh_incomplete() {
   # shares across this loop (report_count's own `_RPT_COMPLIANCE_SKIPPED`
   # gate, #287, keeps that walk skipped whenever meta/checks_run is empty -
   # the ordinary abort shape - so this adds no cost on the common case).
-  for fn in report_run_json report_md report_html report_agent; do
-    declare -F "$fn" >/dev/null 2>&1 || continue
+  #
+  # `NAME:FORMAT` pairs; an empty FORMAT means "mandatory, never format-gated".
+  for fn in report_run_json: findings_write_jsonl: \
+            findings_write_json:json report_md:md report_html:html \
+            report_sarif:sarif report_audit:audit report_agent:agent; do
+    _rjri_name=${fn%%:*}
+    _rjri_fmt=${fn#*:}
+    declare -F "$_rjri_name" >/dev/null 2>&1 || continue
+    if [[ -n $_rjri_fmt ]] && declare -F _report_format_wanted >/dev/null 2>&1; then
+      _report_format_wanted "$_rjri_fmt" || continue
+    fi
     (
       trap - ERR
-      "$fn" "$SCOURSH_RUN_DIR"
+      # report_sarif/report_audit build their per-check descriptors from
+      # lib/records.sh's own raw parsed record state, which
+      # report_registries_dump does not (and cannot cheaply) carry across a
+      # subshell boundary - see that function's own header. A memo flag this
+      # subshell inherited from an EARLIER writer's dump would make the
+      # registry walk below short-circuit without ever populating that state
+      # HERE, so force each its own complete, self-consistent walk instead of
+      # trusting an inherited flag.
+      if [[ $_rjri_name == report_sarif || $_rjri_name == report_audit ]]; then
+        unset _RPT_CHECKMETA_LOADED_ROOT _RPTOW_REGISTRY_LOADED_ROOT \
+          _RPTCIS_REGISTRY_LOADED_ROOT 2>/dev/null || true
+      fi
+      "$_rjri_name" "$SCOURSH_RUN_DIR"
       if [[ -n $_rjri_regdump ]] && declare -F report_registries_dump >/dev/null 2>&1; then
         report_registries_dump "$_rjri_regdump"
       fi

@@ -369,11 +369,20 @@ The list is validated, resolved through the full CLI-over-environment-over-file-
 and then honoured: `lib/report.sh`'s `report_all` gates `findings.json`, `report.md`, `report.html`,
 `report.sarif` and `agent-fix.json` on it. Naming `--format` explicitly **replaces** the default list
 rather than adding to it - `--format md` writes only the Markdown report, none of the others, agent-fix.json
-included.
+included. This holds identically whether the run completes or aborts partway through
+(`die()`'s own `run_json_refresh_incomplete`, `lib/core.sh`, re-renders through the same
+`--format`-aware gate a completed run uses - it does not have its own, separate rule).
 
 `findings.jsonl` and `run.json` are **not** `--format` values.
 They are mandatory per-run records - the incremental ledger and the audit record - and are written on
-every run whatever `--format` asked for, so they are not evidence that the flag was ignored.
+every run whatever `--format` asked for, **including an aborted one**, so they are not evidence that
+the flag was ignored. An aborted run's `findings.jsonl` is normally **empty** (whatever the run had
+already merged before it died, which for a pre-dispatch abort is nothing) - that is correct, and is
+not the same as *absent*. Do not read an empty `findings.jsonl` alone as "scan completed, nothing
+found": always check it alongside `run.json`'s `abort_reason`/`incomplete_reason` (also carried
+verbatim into `agent-fix.json`'s `run` header - [`docs/AGENT-FORMAT.md`](AGENT-FORMAT.md) §4), which
+is empty on a genuine clean scan and non-empty on every abort. A consumer that reads `findings.jsonl`
+without also checking those fields is not reading enough of the contract to tell the two apart.
 
 `--format sarif` writes `report.sarif`, documented in full in the next section.
 
