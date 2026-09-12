@@ -805,6 +805,12 @@ Checked in this fixed order - the first true condition wins, never "worst findin
 | `4` | Missing required input (unreadable path, missing config file, missing required command, or `sca` with no `data/advisories.db` - see ["Dependency data"](#dependency-data-dataadvisoriesdb)). |
 | `5` | Incomplete run (circuit breaker tripped or the run aborted mid-flight). A run that both trips the breaker and has gated findings exits `5`, not `1` - an incomplete run cannot assert a clean gate result either way. |
 
+A run that terminates on any of codes `2`/`3`/`4` records *why* in `run.json`'s `abort_reason` field
+(separate from `incomplete_reason`, which stays the exit-5 predicate) and the report renders it in
+place of "no reason recorded" wherever a not-yet-run module's coverage would otherwise say so - see
+`docs/AGENT-FORMAT.md` for the field and `docs/FOUNDATION.md` tension 14 for why it is kept apart from
+`incomplete_reason`.
+
 The rate limiter, request budget, and circuit breaker described in
 ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target) are real and live: a `dast`
 run whose target stops answering trips the circuit breaker and exits `5` naming the failure count and
@@ -832,6 +838,19 @@ If `config/scope.conf` does not exist at all, the run refuses with exit `4` ("mi
 neither `dast` nor `network` can even attempt the gate.
 If the file exists but `NAME` matches no id and resolves to no target's `base-url`/`extra-host` either,
 the run refuses with exit `3` ("scope violation") - the gate itself is refusing.
+
+**At an interactive terminal, that refusal is offered a way out first.** When a URL/host:port-shaped
+`--target` (for `dast`, `network`, or `all`) is the run's *only* blocker, `scan.sh` offers to write an
+ordinary `config/scope.conf` record for that exact host before refusing - a banner states plainly that
+confirming declares you own or are authorised to attack it, then asks you to type the host name to
+confirm (never a bare `[y/N]`). Accepting writes a real record and the run continues, matched afterward
+by the identical `config_scope_require` a hand-written entry goes through - there is no separate,
+weaker path into a scan. Declining (a blank answer, or typing a different host than the one you passed)
+leaves the run refused, exit `3`, exactly as if no offer had been made. **The offer never appears
+non-interactively**: it is gated by the same `guide_may_prompt` check every other guided prompt uses,
+which is suppressed in a pipeline, a CI job, or with `SCOURSH_NO_PROMPT` set - and there is no
+`--yes`/`--authorize`/`--force` flag that can substitute for the interactive confirmation, so a
+non-interactive run always gets today's plain refusal.
 `sast`, `sca`, and `iac` do not need `config/scope.conf` at all.
 `network` additionally only ever probes a `(host, port)` tuple the target's own `base-url`/`extra-host`
 entries name - it never sweeps a port range or discovers a listener the operator did not declare.

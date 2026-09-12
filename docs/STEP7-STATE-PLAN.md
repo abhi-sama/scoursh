@@ -21,16 +21,15 @@ The build order (§13) is strictly sequential, so step 7 waited behind:
 3. **§13 step 5 (DAST) completes.**
    **CLEARED.** Every DAST-01 through DAST-36 ticket has landed (`docs/STEP5-DAST-PLAN.md`'s own status section); `modules/dast/` exists in full.
 4. **§13 step 6 (Cloud) completes.**
-   **Still outstanding**: zero of CLOUD-01 through CLOUD-34 / POSTURE-01 through POSTURE-04 (`docs/STEP6-CLOUD-PLAN.md`) has landed and `modules/cloud/` does not exist.
-   `lib/awscli.sh` is the one exception, and its absence must not be cited as evidence here, because it is no longer absent: the `aws_ro` chokepoint landed ahead of step 6 in a credential-less pass (`AGENTS.md`, "AWS module: what exists ahead of step 6"), leaving `modules/cloud/` as the thing that says step 6 is unstarted.
+   **CLEARED.** All of CLOUD-01 through CLOUD-34 (`docs/STEP6-CLOUD-PLAN.md`) has since landed - `modules/cloud/` exists, with all 30 of 30 AWS services implemented (`scan.sh cloud --help` states "Status: built"). This gate item was written while cloud was still outstanding (`lib/awscli.sh` had landed ahead of step 6 in a credential-less pass, `AGENTS.md`'s "AWS module: what exists ahead of step 6", but `modules/cloud/` itself did not exist yet); it is recorded here as history rather than deleted, since steps 5 and 6 both landed after step 7's own STATE-01 was authorised to proceed ahead of this gate (see below).
 
 The generated status block in `AGENTS.md` (mirrored in `README.md` and `docs/FOUNDATION.md`) is what says whether these gates have lifted - read it there, not this snapshot.
-The gate matters more for step 7 than for any earlier step: tension 12's coverage-cell table spans every module's scope kind (`path-root`, `target`, `account-region`, `scope-key`), and building classification before the `target` and `account-region` producers exist would leave those arms of the table untestable against real emitters.
-`target` cells now have a real producer (DAST landed), so only the `account-region` arm still lacks one; that is what keeps gate item 4 (step 6) open.
+The gate mattered more for step 7 than for any earlier step: tension 12's coverage-cell table spans every module's scope kind (`path-root`, `target`, `account-region`, `scope-key`), and building classification before the `target` and `account-region` producers existed would have left those arms of the table untestable against real emitters.
+Both producers now exist (DAST landed for `target`, cloud for `account-region`), so this concern is fully moot; the `account-region` fixtures the STATE-0x tickets below built ahead of cloud landing remain as the historical record of how that gap was worked around, not as an open gap.
 Steps 8 and 9 are explicitly NOT in this gate: both have landed early, out of step order, and step 7 neither depends on them nor waits for anything behind them.
 
 **Step 7's place in the project's priority order, now that DAST has landed, is a question for `ROADMAP.md` to settle rather than this plan** - see that document for the current ordering.
-The technical tension this section used to flag between step 7's priority and step 6's sequential gate (wanting step 6's `account-region` producer to exist before classification is tested against it) is unchanged: whoever picks up STATE-01 while step 6 is still open inherits that same open question for the `account-region` arm specifically, even though the `target` arm is now unblocked by DAST.
+The technical tension this section used to flag between step 7's priority and step 6's sequential gate (wanting step 6's `account-region` producer to exist before classification is tested against it) no longer applies: cloud (step 6) has since landed, so both the `target` arm (DAST) and the `account-region` arm (cloud) have real producers, and nothing about classification remains untestable against a real emitter for this reason.
 
 Whoever lifts this block should update the "Status" line above, and the two build-order sections named in "Doc-update process" below, in the same change that starts STATE-01.
 

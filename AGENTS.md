@@ -3100,12 +3100,11 @@ boundary test and tension 6 condition (b1) read once `state/` exists at step 7.
 and `history.sh`; step 3's §6.3 rule-pack catalog is complete as of the `nosql.rules`/`ldap.rules`
 landing, per the generated block above.
 
-**Findings still open after 3a-3d and 3e, and the step each is inherited by:**
+**Findings still open after 3a-3d and 3e, at the time this section was written:**
 
-- **F5 and F20** - `rules/derived.rules` still does not seed `COMPOSITE-TOKEN-HIJACK`.
-  Step 5 (DAST) has since landed in full and supplies one contributor, but the composite also needs a
-  step 6 (cloud) contributor that does not exist yet, so it remains unseeded until step 6.
-  Seeding it now is a guaranteed `E051`/`E060` lint failure.
+F5 and F20 have since closed too, once step 6 (cloud) landed and supplied `COMPOSITE-TOKEN-HIJACK`'s
+third `requires` contributor - see "`rules/derived.rules` now seeds `COMPOSITE-TOKEN-HIJACK`" above and
+`docs/FOUNDATION.md`'s "Known follow-ups" for the closure detail and the new finding (F21) it surfaced.
 
 F3, F4, F8, F17, and F16's `look` half are closed (F3 and F8 as of step 2's `lib/checks.sh`; F4 as of 3a
 above; F17 as of `lib/awscli.sh` landing - `aws_ro` sets `AWS_PAGER=''` rather than `--no-cli-pager`, see
@@ -3376,17 +3375,21 @@ tension 12's `covered_checks`, which is per-(check, cell) coverage persisted in
 `state/` and owned by step 7: a check can be in `checks_run` and still be
 uncovered for a cell the run never visited.
 
-`rules/derived.rules` is **not** seeded, and that is deliberate: findings F5 and F20 record that
-`COMPOSITE-TOKEN-HIJACK`'s contributors do not exist until steps 5 and 6, so seeding it now is a
-guaranteed `E051` lint failure.  The derived *mechanism* is delivered and is tested against a fixture
-composite under `tests/fixtures/rules/derived.rules`.
+At step 1, `rules/derived.rules` was deliberately **not** seeded: findings F5 and F20 recorded that
+`COMPOSITE-TOKEN-HIJACK`'s contributors did not exist until steps 5 and 6, so seeding it then would have
+been a guaranteed `E051` lint failure. Both steps have since landed and `rules/derived.rules` now seeds
+the real record - see "`rules/derived.rules` now seeds `COMPOSITE-TOKEN-HIJACK`" above. The derived
+*mechanism* itself was delivered at step 1 and is tested against a fixture composite under
+`tests/fixtures/rules/derived.rules`.
 
 **Read `docs/FOUNDATION.md` "Known follow-ups" before starting step 2.**
 Six findings remain open (F4, F3, F5, F20, F8, F17, plus F16's `look` half); all are cheap corrections
 that cost nothing to defer, and each names the step it must land before.
 This is a snapshot from before step 2 landed and is kept for history; it is stale on its own.
-F3, F4, and F8 have since closed, and F17 has since closed too (see "Findings still open after 3a-3d and 3e"
-above for the current list: only F5, F20, and F16's `look` half remain).
+All six have since closed - F3, F4, and F8 as of step 2/3a; F17 as of `lib/awscli.sh`; F16's `look` half
+as of `lib/core.sh`'s `db_lookup_exact`; and F5/F20 once step 6 (cloud) landed and supplied
+`COMPOSITE-TOKEN-HIJACK`'s third contributor - see "Findings still open after 3a-3d and 3e" above for the
+detail on each.
 
 Two amendments to §13 come from `docs/FOUNDATION.md` and applied from the start:
 

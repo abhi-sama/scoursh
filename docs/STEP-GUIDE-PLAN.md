@@ -114,8 +114,7 @@ criterion. `_scan_module_built` (already existed, `scan_usage_for`'s own check) 
 sast/sca/iac/dast/cloud is looped back at G1 with an explanation; `sca_advisories_db_readable`
 (`modules/sca/engine.sh`) decides SCA's "no advisory database installed" label; `_have git` (the same
 primitive `require_cmd git` is built on) decides whether G2 even asks about `--history`; and `_have aws`
-is reserved for a future `cloud --live` screen, wired the identical way, though unreached today since
-`cloud` is not yet built.  `tests/suites/scan.sh` proves the acceptance criterion directly: `_guide_g1_reachable`
+is reserved for a `cloud --live` screen, wired the identical way.  `tests/suites/scan.sh` proves the acceptance criterion directly: `_guide_g1_reachable`
 (the shared function) is asserted equal to "has a `run.sh` on disk" both against the real tree and
 against a fixture tree naming an arbitrary subset, so the assertion discriminates rather than coincides.
 
@@ -127,9 +126,13 @@ false "not built" claim the shared probe exists to prevent - the exact "prerequi
 ticket's own title names, applied to a fact that changed after the plan was written rather than one the
 plan got wrong.  Picking dast at G1 therefore proceeds (no loop-back) with a note that guided target
 selection (GUIDE-04's G3) is not wired into `--guided` yet, skips G2 entirely (none of its follow-ups have
-a flag equivalent for `dast` - see `_SCAN_FLAG_KIND`), and reaches G8 directly.  `cloud` is handled by the
-identical code path for forward-compatibility, unreached in practice until a future ticket lands
-`modules/cloud/aws/run.sh`.
+a flag equivalent for `dast` - see `_SCAN_FLAG_KIND`), and reaches G8 directly.
+
+**A second thing has since changed the same way: `cloud` also landed (step 6 completed, 30 of 30 AWS
+services, `docs/STEP6-CLOUD-PLAN.md`), so `modules/cloud/aws/run.sh` exists on disk today and
+`_scan_module_built cloud` is true as well.** The mockup's item 5 ("not built yet in this version") is
+equally stale text now, for the identical reason item 4's was; `cloud` is handled by the same G1 code
+path `dast` is, and picking it proceeds rather than looping back with a "not built" explanation.
 
 **`scan.sh CMD --guided` skips G1 (the command was already typed), and every flag already supplied on the
 command line is never re-asked about at G2/G8** - the plan's own "must not prompt, ever" list ("'--guided'
@@ -411,10 +414,11 @@ have no `config/scanner.conf` key of their own, by design.
 **The honest answer this row asked for: there is no live gap today where guided mode walks through
 configuring a surface and then runs something not wired up.** `sast`, `sca`, `iac` and `dast` are each
 fully wired end to end (verified by reading `scan.sh`'s `_scan_guide_run`/G1-G9 and `lib/guide.sh`'s
-`guide_dast_configure`, not assumed from this document's own older wording). `cloud` is refused at the
-door - `_guide_g1_reachable cloud` is false on this tree because `modules/cloud/run.sh` does not exist,
-so G1 explains it is not built yet and loops back, asking nothing - the same treatment any other
-not-yet-built surface already gets here, not a special case invented for this ticket. `all` is honest in
+`guide_dast_configure`, not assumed from this document's own older wording). `cloud` was refused at the
+door when this paragraph was written - `_guide_g1_reachable cloud` was false because `modules/cloud/aws/run.sh`
+did not exist yet, so G1 explained it was not built and looped back, asking nothing - but cloud (step 6)
+has since landed (30 of 30 AWS services, `docs/STEP6-CLOUD-PLAN.md`), so `_guide_g1_reachable cloud` is
+true today and G1 proceeds for it the same way it does for `dast`. `all` is honest in
 a different way worth stating precisely: it never reaches the `dast`/`cloud`-specific menus at all, so it
 only actually runs those two surfaces when `--target`/`--live` were already given on the command line
 before `--guided`, identically to non-guided `scan.sh all` - this is a real, user-facing gap in what "all"
