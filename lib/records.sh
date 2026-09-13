@@ -589,6 +589,30 @@ records_digest() {
   printf '%s' "$digest"
 }
 
+# records_digest_into SET IDX - the fork-free sibling of records_digest above,
+# for the same reason the "fork-free bulk reads" section exists: a caller
+# looping over every record in the catalog (lib/report.sh's SARIF rules[]
+# builder is the one that needs it) pays one $(...) fork per call just to
+# capture an already-memoized value, on top of the one real fork this
+# function cannot avoid on a genuine cache miss (`_records_digest_stream |
+# sha256_of`, computing a NEW sha256 - there is no bash-builtin hash, so that
+# single pipe is the unavoidable cost of a digest this process has never
+# computed before). Mirrors records_digest's own cache check exactly rather
+# than calling it, so the cache-HIT path - the overwhelming majority of calls
+# once a check's digest has been computed anywhere in this process, whether
+# by a module emitting a finding for it or by an earlier call here - is a
+# plain array read with no fork at all.
+_RECORDS_DIGEST_V=''
+records_digest_into() {
+  local set=$1 idx=$2
+  if [[ -n ${_REC_DIGEST["$set|$idx"]:-} ]]; then
+    _RECORDS_DIGEST_V=${_REC_DIGEST["$set|$idx"]}
+    return 0
+  fi
+  _RECORDS_DIGEST_V=$(_records_digest_stream "$set" "$idx" | sha256_of)
+  _REC_DIGEST["$set|$idx"]=$_RECORDS_DIGEST_V
+}
+
 # _REC_ORDER records a key once per OCCURRENCE, so a repeatable key appears in it
 # as many times as it was authored.  Its values are emitted as a group the first
 # time it is seen and skipped thereafter, which is what "one key/value pair per
