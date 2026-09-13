@@ -49,11 +49,13 @@ rm -rf "$W"
 mkdir -p "$W"
 
 # The fixture registry tests/suites/checks.sh already uses: one sast pattern
-# pack (2 checks) and one dast script-check registry (5 checks), 7 checks
-# total, no sca/iac/cloud directory at all - which is exactly the shape a
-# real checkout has for sca (modules/sca/ ships no *.rules by design), so it
-# doubles as the "no registry record" fixture for that family with no need
-# for a second fixture tree.
+# pack, one dast script-check registry, and one cloud script-check registry -
+# no sca/iac directory at all, which is exactly the shape a real checkout has
+# for sca (modules/sca/ ships no *.rules by design), so it doubles as the "no
+# registry record" fixture for that family with no need for a second fixture
+# tree.  The exact per-module record counts are read off the fixture files
+# themselves below (FIXTURE_IDS), not restated here, so this comment cannot
+# go stale the way the literal it replaced did.
 FIXTURE_ROOT=$ROOT/tests/fixtures/checks-registry
 
 _new_rundir() {                    # name -> sets D, resets it
@@ -120,13 +122,26 @@ export SCOURSH_INSTALL_ROOT=$FIXTURE_ROOT
 _new_rundir full-registry
 report_all "$D"
 
+# The expected id set is derived from the fixture registry ON DISK, by a
+# plain `grep '^id: '` over every *.rules file under FIXTURE_ROOT/modules -
+# NEVER by calling checks_registry_load (which is exactly what report_sarif
+# itself calls to build rules[]).  A count sourced from the same parse the
+# implementation performs would go green even under the defect this case
+# exists to catch (an implementation that silently drops a whole module's
+# worth of records would shrink both sides together) - see the suite's own
+# comment block for the mutation proof that this reading does not do that.
+# Hardcoding a literal here is exactly the defect class this ticket exists to
+# fix (a stale "7 = 2 sast + 5 dast" that the cloud fixture's own 4 checks
+# left behind), so a fourth fixture module added later needs no edit here.
+mapfile -t FIXTURE_IDS < <(find "$FIXTURE_ROOT/modules" -type f -name '*.rules' -print0 \
+  | xargs -0 grep -h '^id: ' | sed 's/^id: //' | LC_ALL=C sort)
+
 t_case 'a run with ZERO findings still lists every on-disk check as a rule - tension 22, "the full loaded check registry"'
 N_RULES=$(_py "$D" "len(d['runs'][0]['tool']['driver']['rules'])")
-assert_eq '7' "$N_RULES" \
-  '7 = 2 sast + 5 dast fixture checks, none of which fired a finding this run - FAILS under an implementation that only emits rules for checks a finding actually referenced'
+assert_eq "${#FIXTURE_IDS[@]}" "$N_RULES" \
+  "rules[] carries one entry per id: record found by grepping every *.rules file under $FIXTURE_ROOT/modules (currently ${#FIXTURE_IDS[@]}: sast/demo.rules, dast/checks.rules and cloud/aws/live/checks.rules) - FAILS under an implementation that only emits rules for checks a finding actually referenced"
 
-for cid in SAST-GEN-DEMO_QUICK-01 SAST-GEN-DEMO_FULL-01 DAST-HDR-CSP-01 DAST-HDR-HSTS-01 \
-  DAST-AUTHZ-OBJREF-01 DAST-INJ-SQLI-01 DAST-DISC-CRAWL-01; do
+for cid in "${FIXTURE_IDS[@]}"; do
   HAS=$(_py "$D" "'$cid' in {r['id'] for r in d['runs'][0]['tool']['driver']['rules']}")
   assert_eq 'True' "$HAS" "$cid is present in rules[]"
 done

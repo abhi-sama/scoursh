@@ -74,8 +74,8 @@ _result_for() {                    # rundir check_id python-expr-on-'r'
 HAVE_PY=0
 command -v python3 >/dev/null 2>&1 && HAVE_PY=1
 
-# The small fixture registry tests/suites/sarif-rules.sh already uses (2 sast
-# + 5 dast checks), for the whole suite: nothing below tests registry-backed
+# The small fixture registry tests/suites/sarif-rules.sh already uses, for
+# the whole suite: nothing below tests registry-backed
 # vs synthesised DESCRIPTOR content (that's SARIF-03's own territory) - only
 # results[]'s mapping off the finding, which is agnostic to which registry is
 # loaded - and loading the real, full check registry on every one of this
