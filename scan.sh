@@ -2133,6 +2133,71 @@ _scan_pf_warn_declared_skips() {
   esac
 }
 
+# `_scan_pf_engine_pairs` - the exact "module engine" pairs `--use-engines`
+# can possibly matter for under $SCAN_COMMAND, one line per pair. This is
+# NOT a second, invented notion of "which engines exist" - it is only the
+# dispatch table (which modules run under this command) crossed with the
+# two real call sites that ever check `has_engine` today
+# (modules/sast/run.sh: semgrep, gitleaks; modules/iac/run.sh: trivy,
+# `docs/ADAPTERS.md` §9's roster). A module gaining a THIRD adapter, or a
+# new module gaining its first, means adding one line here - the same
+# maintenance cost `docs/ADAPTERS.md` §9's own roster table already pays,
+# not a new one.
+_scan_pf_engine_pairs() {
+  case $SCAN_COMMAND in
+    sast) printf '%s\n' sast:semgrep sast:gitleaks ;;
+    iac) printf '%s\n' iac:trivy ;;
+    all) printf '%s\n' sast:semgrep sast:gitleaks iac:trivy ;;
+  esac
+}
+
+# `_scan_pf_warn_inert_use_engines` - operator report, 2026-09-12: a real
+# 4h27m run passed `--use-engines` against a fresh checkout with nothing
+# ever vendored (no vendor/ dir at all), and only learned this from
+# run.json's coverage_reduction array afterwards, once every module had
+# already run. Whether an adapter is vendored is a PURE FILESYSTEM QUESTION
+# (`has_engine`, lib/engines.sh: an adapter.sh existing on disk AND its own
+# `<engine>_detect` returning 0 - no network, no subprocess beyond a
+# detect script's own cheap check), so it is exactly as knowable before
+# module dispatch as it is inside modules/sast/run.sh - this reuses
+# `has_engine` itself rather than inventing a second, divergent notion of
+# "vendored" that could silently drift from the one the modules actually
+# gate on.
+#
+# Fires ONLY when EVERY engine `--use-engines` could possibly reach this
+# run is missing - never on a partial vendoring (say, gitleaks vendored,
+# semgrep and trivy not): --use-engines DID do something for a run like
+# that, so calling it inert would be false, and noise on a healthy run is
+# what trains an operator to stop reading preflight (this ticket's own
+# design constraint). A command that dispatches neither sast nor iac at
+# all (dast, sca, cloud, network, image, diff, report) is the other,
+# simpler inert case: `--use-engines` reaches no consumer whatsoever.
+_scan_pf_warn_inert_use_engines() {
+  [[ ${SCAN_FLAGS[use-engines]:-} == true ]] || return 0
+  local -a pairs=() missing=()
+  local pair module engine
+  while IFS= read -r pair; do
+    [[ -n $pair ]] && pairs+=("$pair")
+  done < <(_scan_pf_engine_pairs)
+
+  if (( ${#pairs[@]} == 0 )); then
+    log_warn "preflight: --use-engines was given, but '$SCAN_COMMAND' dispatches no module that consults it - only sast (semgrep, gitleaks) and iac (trivy) ever call has_engine (docs/ADAPTERS.md) - so this run will not use any vendored engine"
+    return 0
+  fi
+
+  for pair in "${pairs[@]+"${pairs[@]}"}"; do
+    module=${pair%%:*}
+    engine=${pair#*:}
+    has_engine "$module" "$engine" || missing+=("$engine")
+  done
+
+  if (( ${#missing[@]} == ${#pairs[@]} )); then
+    local list
+    list=$(IFS=,; printf '%s' "${missing[*]}")
+    log_warn "preflight: --use-engines was given, but no adapter is vendored ($list) - this run will use no engine checks at all, exactly as if the flag were absent. Vendor one first: tools/vendor-engines.sh --list"
+  fi
+}
+
 # -----------------------------------------------------------------------------
 # 6b. The interactive authorisation OFFER (operator-reported friction: "I don't
 #     believe user going to create file and copy, too much friction").
@@ -2397,6 +2462,7 @@ _scan_preflight() {
   fi
 
   _scan_pf_warn_declared_skips
+  _scan_pf_warn_inert_use_engines
 }
 
 # `_scan_capture VARNAME CMD [ARGS...]` - runs CMD (which may call die(), e.g.

@@ -1345,6 +1345,174 @@ SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_MODULES assert_status 0 \
   _run_main image --image nonexistent-id --out "$W/run-image-warn"
 
 # =============================================================================
+printf '\n-- preflight: --use-engines is warned as inert BEFORE dispatch when no engine can possibly help this run --\n'
+# =============================================================================
+# Operator report, 2026-09-12: a real 4h27m `all` run passed --use-engines
+# against a fresh checkout with nothing vendored at all (no vendor/ dir), and
+# only learned this afterwards from run.json's coverage_reduction array -
+# every module had already run. Whether an adapter is vendored is a pure
+# filesystem question (has_engine, lib/engines.sh), knowable before dispatch
+# exactly as it is inside modules/sast/run.sh/modules/iac/run.sh, so this is
+# a WARNING (never a refusal - --use-engines with nothing vendored is still a
+# perfectly runnable scan, just one that gets no engine checks) printed at
+# preflight, not discovered from run.json afterwards.
+#
+# $ROOT_WITH_SCOPE_AND_SAST (defined above) carries real modules/sast and
+# modules/iac trees but no modules/*/adapters/ directory at all, so
+# has_engine is false for every engine under it - exactly the "nothing
+# vendored" shape the operator hit.
+t_case '--use-engines against a checkout with NOTHING vendored: sast warns, naming every missing engine and the fix'
+USE_ENG_LOG=$W/use-engines-sast.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main sast \
+    --path "$ROOT_WITH_SCOPE_AND_SAST" --use-engines --out "$W/run-use-engines-sast" \
+) >"$USE_ENG_LOG" 2>&1 || true
+assert_contains "$(cat "$USE_ENG_LOG")" 'preflight' 'the warning is printed at preflight, before/alongside the rest of the run'
+assert_contains "$(cat "$USE_ENG_LOG")" 'semgrep' 'names semgrep as one of the missing engines'
+assert_contains "$(cat "$USE_ENG_LOG")" 'gitleaks' 'names gitleaks as the other missing sast engine'
+assert_contains "$(cat "$USE_ENG_LOG")" 'tools/vendor-engines.sh' 'names the fix'
+
+t_case 'the SAME checkout under `all` warns about all three engines (sast: semgrep, gitleaks; iac: trivy) - fails if the pair list were hardcoded to one module'
+USE_ENG_ALL_LOG=$W/use-engines-all.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main all \
+    --path "$ROOT_WITH_SCOPE_AND_SAST" --use-engines --out "$W/run-use-engines-all" \
+) >"$USE_ENG_ALL_LOG" 2>&1 || true
+assert_contains "$(cat "$USE_ENG_ALL_LOG")" 'semgrep' 'names semgrep'
+assert_contains "$(cat "$USE_ENG_ALL_LOG")" 'gitleaks' 'names gitleaks'
+assert_contains "$(cat "$USE_ENG_ALL_LOG")" 'trivy' 'names trivy - fails if only sast were consulted under all'
+
+t_case '--use-engines under a command with no engine-consuming module at all (dast): warns, naming the reason, regardless of vendoring'
+USE_ENG_DAST_LOG=$W/use-engines-dast.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main dast \
+    --target fixture-target --use-engines --out "$W/run-use-engines-dast" \
+) >"$USE_ENG_DAST_LOG" 2>&1 || true
+assert_contains "$(cat "$USE_ENG_DAST_LOG")" 'dispatches no module that consults it' \
+  'dast never calls has_engine at all - fails if the check only looked at vendoring and missed the "wrong command" case entirely'
+
+t_case '--use-engines is silent when it was never given (no flag, healthy default run) - never fires unprompted'
+NOFLAG_LOG=$W/use-engines-absent.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main sast \
+    --path "$ROOT_WITH_SCOPE_AND_SAST" --out "$W/run-use-engines-absent" \
+) >"$NOFLAG_LOG" 2>&1 || true
+assert_not_contains "$(cat "$NOFLAG_LOG")" 'tools/vendor-engines.sh' \
+  'fails if the warning fired even though the operator never passed --use-engines'
+
+# A SEPARATE root, with one real (fake, for-test) adapter vendored, to prove
+# the warning does NOT fire on a run where --use-engines genuinely does
+# something - the "not noisy on a healthy run" design constraint. Only
+# semgrep is vendored; gitleaks and trivy are still absent, which is exactly
+# the "partial vendoring" case the warning must stay silent on (it fired for
+# ALL of them or none, never a subset - firing here would be false: the flag
+# DID engage a real check this run).
+ROOT_WITH_SCOPE_AND_ENGINE=$(cd -- "$W" && rm -rf root-with-scope-and-engine \
+  && mkdir -p root-with-scope-and-engine/config root-with-scope-and-engine/modules \
+  && cp "$ROOT/tests/fixtures/config/scope.conf" root-with-scope-and-engine/config/scope.conf \
+  && cp -R "$ROOT/modules/sast" root-with-scope-and-engine/modules/sast \
+  && cp -R "$ROOT/modules/sca" root-with-scope-and-engine/modules/sca \
+  && cp -R "$ROOT/modules/iac" root-with-scope-and-engine/modules/iac \
+  && mkdir -p root-with-scope-and-engine/modules/sast/adapters/semgrep \
+  && printf 'semgrep_detect() { return 0; }\nsemgrep_run() { return 1; }\nsemgrep_normalize() { return 1; }\n' \
+       >root-with-scope-and-engine/modules/sast/adapters/semgrep/adapter.sh \
+  && cd -- root-with-scope-and-engine && pwd -P)
+
+t_case '--use-engines with ONE real engine vendored (semgrep) but others missing (gitleaks, trivy): no inert-flag warning - the flag genuinely does something this run'
+USE_ENG_PARTIAL_LOG=$W/use-engines-partial.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_ENGINE _run_main all \
+    --path "$ROOT_WITH_SCOPE_AND_ENGINE" --use-engines --out "$W/run-use-engines-partial" \
+) >"$USE_ENG_PARTIAL_LOG" 2>&1 || true
+assert_not_contains "$(cat "$USE_ENG_PARTIAL_LOG")" 'this run will use no engine checks at all' \
+  'fails if the warning fired on a partial-vendoring run, which is noise: --use-engines DID engage semgrep this run'
+assert_not_contains "$(cat "$USE_ENG_PARTIAL_LOG")" 'dispatches no module that consults it' \
+  'all dispatches both sast and iac, so the "wrong command" message must not fire either'
+
+# =============================================================================
+printf '\n-- preflight timing: the new inert-flag warnings must not slow preflight down --\n'
+# =============================================================================
+# This must isolate PREFLIGHT's OWN cost, never the cost of a real scan
+# alongside it. A first draft of this case measured a real, end-to-end
+# `sast --use-engines` run: pointed at $ROOT_WITH_SCOPE_AND_SAST's own copied
+# modules/sast+sca+iac trees (necessary so scan_dispatch really dispatches
+# sast, proving the warning fires against a genuinely dispatching module -
+# not scan_dispatch's not_yet_built no-op) as the --path TARGET too, it
+# measured 24s: the real SAST engine walking its hundreds of copied rule
+# files, not preflight. Pointing --path at a tiny scratch directory instead
+# still measured 9s - not the pattern-engine walk this time, but
+# checks_registry_load's own real parse of the full production sast/sca/iac
+# *.rules catalog (~9-10s on this tree, per this file's own "Sharp edges"
+# notes on the report.sarif registry walk) - a real, pre-existing, entirely
+# unrelated cost every ordinary dispatching `sast` run already pays, and
+# still no measurement of the new probe itself. So this calls
+# `_scan_pf_warn_inert_use_engines` DIRECTLY, with the minimal global state
+# `_scan_preflight` itself would set up for it (SCAN_COMMAND, SCAN_FLAGS,
+# SCOURSH_INSTALL_ROOT) and nothing past it - no config load, no check
+# registry, no dispatch - which is the only way to measure this probe's own
+# cost rather than a number dominated by something else in the pipeline.
+# `date +%s%N` (nanosecond resolution) rather than bash's own $SECONDS
+# (one-second resolution, too coarse to say anything about a sub-second
+# probe) - the same profiling technique this file's own "Sharp edges" notes
+# name for exactly this class of measurement.
+t_case '_scan_pf_warn_inert_use_engines itself: repeated calls average well under 50ms each - fails if the probe (or its has_engine calls) is slow, isolated from every other cost a real dispatch pays'
+declare -A SCAN_FLAGS=([use-engines]=true)
+SCAN_COMMAND=all
+_UEW_NS0=$(date +%s%N 2>/dev/null || printf '')
+for _uew_i in $(seq 1 20); do
+  ( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _scan_pf_warn_inert_use_engines ) >/dev/null 2>&1
+done
+_UEW_NS1=$(date +%s%N 2>/dev/null || printf '')
+if [[ $_UEW_NS0 =~ ^[0-9]+$ && $_UEW_NS1 =~ ^[0-9]+$ ]]; then
+  _UEW_AVG_MS=$(( (_UEW_NS1 - _UEW_NS0) / 20 / 1000000 ))
+  if (( _UEW_AVG_MS <= 50 )); then
+    _t_ok "20 calls to _scan_pf_warn_inert_use_engines averaged ${_UEW_AVG_MS}ms each"
+  else
+    _t_no 'the inert-flag probe must stay cheap (pure filesystem probes only)' "averaged ${_UEW_AVG_MS}ms each"
+  fi
+else
+  # This userland's `date` does not support %N (nanosecond resolution) - a
+  # real BSD/macOS possibility this project's own dual-userland testing
+  # discipline requires accounting for, never assumed away. Report the gap
+  # honestly rather than asserting a pass/fail from a garbage subtraction
+  # (a literal trailing "N" is not numeric and would abort under set -u a
+  # different way, or silently produce a nonsense elapsed value).
+  printf '  NOTICE date(1) on this host has no %%N (nanosecond) support: the sub-second per-call microbenchmark did NOT run. This is a SKIP, not a pass.\n'
+fi
+# Reset, never `unset` - scan.sh declares SCAN_FLAGS as `declare -A` at its
+# own top level, and `unset SCAN_FLAGS` strips that attribute permanently
+# for the rest of THIS PROCESS (every later t_case in this same suite file
+# runs in the one sourced process). scan_parse_args's own re-entry does the
+# identical `SCAN_FLAGS=()` (never re-declares -A either), which is safe
+# only because the attribute is never removed in the first place. Measured
+# the regression this caused: with `unset` here, `SCAN_FLAGS=()` afterwards
+# silently recreates it as an INDEXED array, so every later
+# `SCAN_FLAGS[$flag]=$val` evaluates `$flag` (e.g. `target`) as an
+# arithmetic subscript instead of a string key - which reads the shell
+# variable named `target` under `set -u` and aborts with "target: unbound
+# variable" the moment any later case sets that flag with an unset local by
+# that name in scope.
+SCAN_FLAGS=()
+SCAN_COMMAND=''
+
+# A looser, real end-to-end sanity check alongside the microbenchmark above:
+# a genuinely dispatching sast run, with --use-engines, over a TINY --path
+# target (never the copied rule-pack tree itself, per the measurement
+# above), still completes on an ordinary machine - a generous bound (the
+# multi-hour scale the motivating operator report exists to avoid), not a
+# tight one, since this number is dominated by the pre-existing registry
+# parse rather than by anything this ticket added.
+UEW_TINY_TARGET=$W/use-engines-timing-target
+mkdir -p "$UEW_TINY_TARGET"
+printf 'print("nothing interesting")\n' >"$UEW_TINY_TARGET/app.py"
+t_case 'sast --use-engines over a tiny --path target still completes well under a minute end to end (sanity check, not a tight bound)'
+_UEW_T0=$SECONDS
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main sast \
+    --path "$UEW_TINY_TARGET" --use-engines --out "$W/run-use-engines-timing" \
+) >/dev/null 2>&1 || true
+_UEW_ELAPSED=$(( SECONDS - _UEW_T0 ))
+if (( _UEW_ELAPSED <= 60 )); then
+  _t_ok "sast --use-engines over a tiny scan target completed in ${_UEW_ELAPSED}s"
+else
+  _t_no 'an inert-flag warning must never turn a fast run into a slow one' "took ${_UEW_ELAPSED}s"
+fi
+
+# =============================================================================
 printf '\n-- scan.sh section 6b: the interactive authorisation OFFER for an unauthorised --target --\n'
 # =============================================================================
 # config/scope.conf is the PRIMARY safety control, so every case here is about
