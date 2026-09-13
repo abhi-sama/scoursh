@@ -360,7 +360,14 @@ records_diag() {
     # normal scan run isn't opened with a wall of warnings nobody scanning
     # their own code can act on. And even then, printed at most once per
     # process per distinct message - see _RECORDS_W_PRINTED's own comment
-    # above.
+    # above. "Once per process" needed a second fix once a process could
+    # legitimately run the registry walk in more than one SUBSHELL of
+    # itself: lib/core.sh's run_json_refresh_incomplete (the abort path)
+    # runs several report writers each in its own subshell, and a subshell
+    # can populate this map but can never write it back to the parent - see
+    # lib/report.sh's report_registries_dump, which now dumps and restores
+    # this map across exactly that boundary for the identical reason it
+    # already did for the OWASP/CIS registry state.
     W*)
       [[ ${SCOURSH_SHOW_RULE_WARNINGS:-} == true ]] || return 0
       [[ -z ${_RECORDS_W_PRINTED["$msg"]:-} ]] || return 0

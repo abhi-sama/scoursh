@@ -210,10 +210,31 @@ _report_dast_injection_gap_state() {
 # walk exactly as it always performs on a normal (non-abort) run - the same
 # cost `report_sarif` and `report_audit` already pay whenever `--format`
 # selects them, abort or not.
+#
+# `_RECORDS_W_PRINTED` (lib/records.sh's per-process print-dedup memo for a
+# W-class rule-authoring diagnostic like W033) IS included below, even though
+# it belongs to none of the record-level state the paragraph above says
+# cannot cheaply cross a subshell: it is a tiny message-string-keyed cache,
+# entirely orthogonal to `_REC_ORDER`/`_REC_L`/`_REC_DIGEST`, and forcing
+# `report_sarif`/`report_audit` to redo the real registry walk for their own,
+# legitimate reason does not require also re-EMITTING every warning that walk
+# produces. Without this, a real operator run that dies mid-scan (breaker
+# trip, budget exhaustion, an unresolvable scope violation - anything routing
+# through `die()`) reprinted the tool's whole W033 block a second time, once
+# from `report_run_json`'s own walk (the first writer in
+# `run_json_refresh_incomplete`'s loop, which this dump already kept from
+# repeating for `report_md`/`report_html`/`report_agent`) and once more from
+# `report_sarif`'s forced re-walk - each print correct in isolation and
+# indistinguishable from a genuinely new warning to an operator reading
+# --verbose output, even though it is the identical thirteen messages this
+# dedup exists to collapse to one. Restoring it here means the forced re-walk
+# still rebuilds every record-level array it needs, but the diagnostics it
+# re-derives from them were already told to the operator once.
 report_registries_dump() {
   local out=$1
   declare -p _RPTOW_CHECK_OWASP _RPTCIS_CHECK_CIS _RPTOW_REGISTRY_LOADED_ROOT \
-    _RPTCIS_REGISTRY_LOADED_ROOT _RPT_CHECKMETA_LOADED_ROOT >"$out" 2>/dev/null || true
+    _RPTCIS_REGISTRY_LOADED_ROOT _RPT_CHECKMETA_LOADED_ROOT \
+    _RECORDS_W_PRINTED >"$out" 2>/dev/null || true
 }
 
 report_count() {
