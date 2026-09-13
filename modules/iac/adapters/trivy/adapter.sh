@@ -39,14 +39,43 @@
 # curl/wget/nc/ncat/netcat/openssl-s_client invocation and never sources or
 # calls tools/vendor-engines.sh - tests/lint-shell.sh's "no bypass" and "no
 # wiring of tools/vendor-engines.sh" checks both cover this file like every
-# other file under modules/.  `trivy_run` invokes the vendored binary with
-# `--offline-scan` and `--skip-check-update` (belt-and-suspenders: the first
-# stops trivy resolving license/OS metadata over the network, the second
-# stops it fetching its own OPA check bundle from an OCI registry even
-# though this binary's checks are already compiled in) - an egress-restricted
-# scanner cannot rely on a THIRD PARTY BINARY's own default being safe, the
-# same reasoning modules/sast/adapters/semgrep/adapter.sh's own header
-# states for semgrep's `--offline`/`SEMGREP_SEND_METRICS=off` pair.
+# other file under modules/.
+#
+# WHICH FLAGS, AND WHY (measured against the real vendored 0.74.0 binary,
+# not assumed from older docs).  `--offline-scan` and `--skip-db-update` -
+# what this adapter originally passed - are BOTH GONE from `trivy config
+# --help` on this release: `trivy config` never scanned licenses, OS
+# packages, or a vulnerability DB in the first place (that is
+# `--scanners vuln`/`license` work, which this adapter never requests via
+# `--scanners misconfig`), so those two flags look to have simply never
+# applied to this subcommand and were removed as dead weight - passing
+# either is now a hard `unknown flag` refusal, exit 1.
+# `--skip-check-update` SURVIVES ("skip fetching rego check updates") and is
+# kept unchanged: trivy's misconfiguration checks are compiled into the
+# binary (this file's own header), but the binary can also update its Rego
+# checks from `--checks-bundle-repository`'s OCI registry
+# (default mirror.gcr.io/aquasec/trivy-checks); this flag is what keeps a
+# scan from doing that.
+# A REAL, MEASURED GAP THIS TICKET CLOSES, not merely restates: without
+# `--disable-telemetry` and `--skip-version-check` (NEITHER of which the
+# original adapter passed - both are new on this release, not renames of
+# anything the old flags covered), a real `trivy config` run was observed
+# opening a genuine outbound HTTPS connection before/around startup, verified
+# by sampling `lsof -p <pid>` every 20ms for the run's lifetime (the same
+# technique lib/paranoid.sh's own `--paranoid` backend uses) - a live
+# TCP session to a public IP, not a DNS lookup or a loopback probe.  Adding
+# both flags and re-running the identical sampling showed zero connections.
+# This is not cosmetic: it means the ORIGINAL adapter, even before its two
+# now-rejected flags stopped it from running at all, was never actually
+# offline on a build of trivy carrying this telemetry/version-check
+# behaviour - `--offline-scan`/`--skip-db-update` never covered it, because
+# neither flag was ever the control for it.  Re-verify with the identical
+# lsof-sampling method after any future trivy upgrade; do not infer
+# "no egress" from a flag merely still being accepted.
+# An egress-restricted scanner cannot rely on a THIRD PARTY BINARY's own
+# default being safe, the same reasoning
+# modules/sast/adapters/semgrep/adapter.sh's own header states for
+# semgrep's metrics/version-check pair.
 #
 # UNTRUSTED OUTPUT (CLAUDE.md §6 / docs/FOUNDATION.md tension 9's "evidence
 # is untrusted target output" applied to a THIRD-PARTY TOOL's output rather
@@ -136,28 +165,38 @@ trivy_run() {
   (( $# > 0 )) || { : >"$out"; return 1; }
 
   local rc=0 errfile=$SCOURSH_SCRATCH/trivy-stderr.$$
-  # --offline-scan: never resolve license/OS/package metadata over the
-  # network for a target this adapter scans.
-  # --skip-check-update / --skip-db-update: never fetch trivy's own
-  # OPA check bundle or vulnerability DB from its OCI registry, even
-  # though the misconfig checks this adapter uses are already compiled
-  # into the vendored binary and do not need either. Deliberately
-  # redundant with --offline-scan, the same "two independent ways of
-  # saying the same thing to a moving third-party CLI" precedent
-  # modules/sast/adapters/semgrep/adapter.sh's semgrep_run sets for
-  # --offline plus SEMGREP_SEND_METRICS=off.
-  # --scanners misconfig: this adapter is IaC-misconfiguration only; it
-  # never asks trivy for vulnerability (SCA) or secret scanning, which
-  # modules/sca/ and modules/sast/rules/secrets.rules already own.
+  # --skip-check-update: never fetch trivy's own OPA check bundle from its
+  # OCI registry, even though the misconfig checks this adapter uses are
+  # already compiled into the vendored binary and do not need it.
+  # --disable-telemetry / --skip-version-check: never phone home usage data
+  # or check for a newer release - see this file's header ("WHICH FLAGS, AND
+  # WHY") for the measured egress this pair closes; neither
+  # `--offline-scan` nor `--skip-db-update` (this adapter's OLD flags) ever
+  # covered it, and both are gone from `trivy config` on this release
+  # regardless (they applied to vulnerability/license scanning, which this
+  # adapter never requests).
+  # No --scanners flag: `--scanners` DOES NOT EXIST ON `trivy config` at all
+  # on this release (measured: `trivy config --help` lists no such flag, and
+  # passing it is a hard `unknown flag: --scanners` refusal, exit 1) - it is
+  # not renamed, just gone from this subcommand.  This is not a loss of
+  # scope: `trivy config` scans for misconfigurations ONLY, structurally,
+  # regardless of any flag - vulnerability and secret scanning are separate
+  # trivy subcommands (`trivy fs`/`trivy image`) this adapter never invokes,
+  # so the "this adapter is IaC-misconfiguration only" guarantee the removed
+  # flag used to restate is still true, now enforced by which SUBCOMMAND is
+  # run rather than by an extra flag on it.  modules/sca/ and
+  # modules/sast/rules/secrets.rules still own vulnerability/secret
+  # scanning respectively; nothing here changes that.
   # --format json --quiet: machine-readable output only, no progress noise
   # mixed into stdout.
   "$TRIVY_BIN" config \
-    --offline-scan --skip-check-update --skip-db-update \
-    --scanners misconfig --format json --quiet \
+    --skip-check-update --disable-telemetry --skip-version-check \
+    --format json --quiet \
     -- "$@" >"$out" 2>"$errfile" || rc=$?
 
   if (( rc != 0 )); then
     log_warn "iac: trivy adapter exited $rc - $(cat "$errfile" 2>/dev/null | head -n 5)"
+    _trivy_diagnose_flag_rejection "$errfile"
   fi
   rm -f "$errfile"
   return "$rc"
@@ -225,6 +264,34 @@ trivy_normalize() {
 # Private helpers below.  Never called directly by anything outside this
 # file (docs/ADAPTERS.md §5's contract is the three functions above).
 # ---------------------------------------------------------------------------
+
+# _trivy_diagnose_flag_rejection ERRFILE - the trivy sibling of
+# modules/sast/adapters/semgrep/adapter.sh's own
+# `_semgrep_diagnose_flag_rejection`: called only after trivy_run has
+# already observed a non-zero exit, and only adds a SECOND, more specific
+# coverage_reduction (naming the rejected flag and trivy's own reported
+# version) alongside modules/iac/run.sh's generic `engine_run_failed` when
+# the failure signature actually matches a flag this adapter itself passed
+# being rejected - trivy's own shape (a cobra CLI) is
+# "unknown flag: --foo", distinct from semgrep's cmdliner-style
+# "unknown option '--foo'", so the two adapters cannot share one regex.
+_trivy_diagnose_flag_rejection() {
+  local errfile=$1
+  [[ -r $errfile ]] || return 0
+  local line
+  line=$(grep -m1 "unknown flag:" "$errfile" 2>/dev/null) || return 0
+  [[ $line =~ unknown\ flag:\ (--[A-Za-z0-9_-]+) ]] || return 0
+  local flag=${BASH_REMATCH[1]}
+  local ver
+  ver=$("$TRIVY_BIN" --version 2>/dev/null | { grep -m1 -oE '[0-9]+\.[0-9]+\.[0-9]+' || true; })
+  ver=${ver:-unknown}
+  log_warn "iac: trivy $ver rejects flag '$flag' - this adapter's trivy_run" \
+    "(modules/iac/adapters/trivy/adapter.sh) was written against a different" \
+    "trivy release; update its flag list for $ver rather than treating this as" \
+    "an ordinary engine failure."
+  run_record coverage_reduction \
+    "module=iac reason=engine_flag_rejected engine=trivy engine_version=$ver flag=$flag"
+}
 
 # _trivy_split_objects_from_marker CONTENT MARKER MAX - shared depth- and
 # string-aware array-of-objects splitter (the same technique

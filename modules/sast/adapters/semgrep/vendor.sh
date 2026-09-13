@@ -74,4 +74,8 @@ semgrep_vendor() {
   log_info "vendor-engines: semgrep $version vendored into ${adapter_dir#"$SCOURSH_INSTALL_ROOT"/}"
   log_info '  commit modules/sast/adapters/semgrep/bin and .../rules to git; every real scan'
   log_info '  from here on runs fully offline against exactly these bytes.'
+  log_info '  Run scan.sh sast --use-engines once against a real target next - adapter.sh'
+  log_info '  will name the exact flag if this semgrep release rejects one of its own'
+  log_info '  (docs/ADAPTERS.md §7a explains why that check runs here, not as a vendor-time'
+  log_info '  smoke test that executes these just-fetched bytes).'
 }

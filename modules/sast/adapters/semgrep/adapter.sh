@@ -20,13 +20,42 @@
 # curl/wget/nc/ncat/netcat/openssl-s_client invocation and never sources or
 # calls tools/vendor-engines.sh - tests/lint-shell.sh's "no bypass" and "no
 # wiring of tools/vendor-engines.sh" checks both cover this file like every
-# other file under modules/.  `semgrep_run` invokes the vendored binary
-# with `--offline` and metrics explicitly disabled (see its own comment) as
-# a second, belt-and-suspenders control on top of that: semgrep's upstream
-# default is to phone home anonymous usage metrics unless told not to, and
-# an egress-restricted scanner cannot rely on a THIRD PARTY BINARY's own
+# other file under modules/.  `semgrep_run` invokes the vendored binary with
+# a local, on-disk `--config` and metrics explicitly disabled (see "WHAT
+# 'OFFLINE' MEANS" below for the full, measured account) as a
+# belt-and-suspenders control on top of that: semgrep's upstream default is
+# to phone home anonymous usage metrics unless told not to, and an
+# egress-restricted scanner cannot rely on a THIRD PARTY BINARY's own
 # default being safe - the no-egress rule (AGENTS.md) has to hold even if the
 # vendored tool's own defaults would not, on their own, guarantee it.
+#
+# WHAT "OFFLINE" MEANS ON THE CURRENT (measured: 1.176.0) BINARY.  An
+# earlier version of this adapter also passed `--offline`; that flag is
+# GONE from semgrep's own CLI as of this measurement (`semgrep scan --help`
+# lists no such option, and passing it is a hard `unknown option '--offline'`
+# refusal, exit 2) - upstream removed it rather than renamed it.  There is no
+# single replacement flag; the guarantee it used to name is now the
+# conjunction of three things this adapter already controls, none of them
+# new:
+#   1. `--config "$SEMGREP_RULES_DIR"` is always a local filesystem
+#      directory, never `auto`, a bare registry entry name, or a URL -
+#      semgrep only ever reaches its registry/CDN when `--config` resolves
+#      to one of those three shapes (see its own `--config` help text), so a
+#      vendored on-disk directory gives it nothing to fetch in the first
+#      place.
+#   2. `--metrics=off` plus `SEMGREP_SEND_METRICS=off` (kept, unchanged;
+#      still the correct current flag).
+#   3. `--disable-version-check` (kept, unchanged; still the correct current
+#      flag - it survives specifically because it negates `--enable-version-
+#      check`, a real flag on this release, unlike `--offline`).
+# Verified rather than assumed: this exact invocation (flags below, minus
+# `--offline`) was run against the real vendored 1.176.0 binary while
+# sampling `lsof -p <pid>` every 20ms for the life of the process (the same
+# connection-sampling technique lib/paranoid.sh's own `--paranoid` backend
+# uses) - zero TCP/UDP file descriptors were ever observed, on a target
+# large enough to take several seconds to scan.  Re-verify the same way
+# after any future semgrep upgrade; do not assume a flag's continued
+# presence in `--help` output is the same claim as "still makes no request".
 #
 # UNTRUSTED OUTPUT (CLAUDE.md §6 / docs/FOUNDATION.md tension 9's "evidence
 # is untrusted target output" applied to a THIRD-PARTY TOOL's output rather
@@ -147,15 +176,18 @@ semgrep_run() {
   # same thing to semgrep's own CLI, deliberately redundant (see this
   # file's header) - an egress-restricted scan must not depend on getting
   # exactly one flag spelling right against a moving upstream default.
-  # --offline: never resolve or fetch a registry ruleset; only the
-  # vendored, on-disk $SEMGREP_RULES_DIR is ever consulted.
+  # --config "$SEMGREP_RULES_DIR": always a local directory, never a
+  # registry entry/URL/`auto` - see this file's header ("WHAT 'OFFLINE'
+  # MEANS") for why that alone already keeps semgrep from ever resolving a
+  # ruleset over the network, `--offline` having been removed upstream.
   SEMGREP_SEND_METRICS=off "$SEMGREP_BIN" \
-    --offline --metrics=off --json --quiet --disable-version-check \
+    --metrics=off --json --quiet --disable-version-check \
     --config "$SEMGREP_RULES_DIR" \
     -- "$@" >"$out" 2>"$errfile" || rc=$?
 
   if (( rc != 0 )); then
     log_warn "sast: semgrep adapter exited $rc - $(cat "$errfile" 2>/dev/null | head -n 5)"
+    _semgrep_diagnose_flag_rejection "$errfile"
   fi
   rm -f "$errfile"
   return "$rc"
@@ -199,6 +231,37 @@ semgrep_normalize() {
 # Private helpers below.  Never called directly by anything outside this
 # file (docs/ADAPTERS.md §5's contract is the three functions above).
 # ---------------------------------------------------------------------------
+
+# _semgrep_diagnose_flag_rejection ERRFILE - called only when semgrep_run has
+# already observed a non-zero exit.  A flag this adapter passes being
+# rejected outright (semgrep's own message shape: "unknown option '--foo'.
+# Did you mean '-o'?") is a distinct FAILURE CLASS from a genuine engine
+# crash or a malformed ruleset: it means this adapter's own hardcoded flag
+# list has drifted from the vendored binary's CLI, exactly the class of bug
+# this ticket exists to fix (--offline was removed upstream; see this file's
+# header).  modules/sast/run.sh's caller already records a generic
+# `engine_run_failed` for every non-zero exit; this adds a SECOND, more
+# specific coverage_reduction alongside it - naming the rejected flag and
+# the engine's own reported version - only when the signature actually
+# matches, so an ordinary rule-syntax or filesystem failure still reads as
+# plain `engine_run_failed` with no invented specificity.
+_semgrep_diagnose_flag_rejection() {
+  local errfile=$1
+  [[ -r $errfile ]] || return 0
+  local line
+  line=$(grep -m1 "unknown option" "$errfile" 2>/dev/null) || return 0
+  [[ $line =~ unknown\ option\ \'([^\']+)\' ]] || return 0
+  local flag=${BASH_REMATCH[1]}
+  local ver
+  ver=$("$SEMGREP_BIN" --version 2>/dev/null | head -n1)
+  ver=${ver:-unknown}
+  log_warn "sast: semgrep $ver rejects flag '$flag' - this adapter's semgrep_run" \
+    "(modules/sast/adapters/semgrep/adapter.sh) was written against a different" \
+    "semgrep release; update its flag list for $ver rather than treating this as" \
+    "an ordinary engine failure."
+  run_record coverage_reduction \
+    "module=sast reason=engine_flag_rejected engine=semgrep engine_version=$ver flag=$flag"
+}
 
 # _semgrep_split_results FILE - writes one COMPLETE result object's raw JSON
 # text (whitespace-flattened, so guaranteed to carry no embedded raw
