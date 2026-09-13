@@ -47,7 +47,7 @@ scan.sh <command> [options]
 | `sca` | `[--path DIR]` | live, needs an advisory database | Dependency/lockfile CVEs. Lockfile parsing works for every supported ecosystem, but matching needs `data/advisories.db`, which this repository does not ship - without it the run exits `4` rather than reporting a clean project. See ["Dependency data"](#dependency-data-dataadvisoriesdb). |
 | `iac` | `[--path DIR]` | live | Cloud IaC plus container/Kubernetes manifests. |
 | `dast` | `--target NAME` `[--intensity passive\|safe\|active]` `[--authed]` `[--i-own-target NAME]` `[--openapi\|--har\|--postman\|--graphql-schema FILE]` | live - **it sends real requests** | The scope gate below is enforced before anything else (see "The scope gate"), as are the conservative rate/budget/breaker ceilings and the `--i-own-target` affirmation (see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)). Every module `docs/DESIGN.md` §7 describes has landed (`docs/STEP5-DAST-PLAN.md`, DAST-01 through DAST-36): authentication and crawling, every passive check (headers, cookies, TLS, CORS, information leakage, mixed content), safe-active checks (content discovery, method enumeration), the full injection family gated at `--intensity active` (SQLi, XSS, command injection, path traversal, SSTI, NoSQLi, LDAPi, CRLF, XXE/SSRF, prototype pollution, open redirect, host-header injection), and the application-layer tier (GraphQL introspection, rate-limiting, JWT, object-level authorization/IDOR). `--intensity` genuinely gates which phases and checks run (not merely a ceiling that nothing tests, unlike the static modules below); a phase this run's intensity or authorization does not reach is recorded in `run.json` as a `coverage_gap`/`coverage_reduction` with its reason, rather than silently omitted. |
-| `network` | `--target NAME` `[--intensity passive\|safe\|active]` `[--i-own-target NAME]` | live - **it opens real TCP connections** | Service-posture scanning over the DECLARED listener set `config/scope.conf`'s `base-url`/`extra-host` entries name for `--target` - never a port sweep or host discovery: a port scoursh was not told about is never probed. Gated by the identical scope chokepoint, ceilings, and `--i-own-target` affirmation `dast` uses - one TCP connect costs exactly what one HTTP request costs against the same limiter/budget/breaker. `--intensity` gates phases exactly as it does for `dast`: `passive` (default) reaches banner reads and TLS identification on non-`base-url` listeners plus transport-posture checks, `safe` additionally reaches the three-state reachability probe and HTTP identification on non-standard ports. All six phases (`inventory.sh`, `reachability.sh`, `banner.sh`, `tlsport.sh`, `httpport.sh`, `transport.sh`) are implemented (NET-01 through NET-11); a target whose `config/scope.conf` entry declares only `base-url` (no `extra-host` listener) records a `coverage_gap` rather than a clean scan, since there is nothing beyond the web port to test. `--jobs N` is also this module's ceiling on simultaneous connections. Unlike `dast`, it accepts no `--requests-per-second`/`--request-budget`/`--circuit-breaker-failures`/spec-file flags - those are DAST's own rate/discovery knobs and have no equivalent here. An operator-declared `expect-closed` expectation in the optional `config/posture.conf` (`scope-key: target:port`) is what lets `NET-PORT-UNEXPECTED_LISTENER-01` fire on a declared listener that should not be answering; absent that file it is a declared skip, never exit 4. |
+| `network` | `--target NAME` `[--intensity passive\|safe\|active]` `[--i-own-target NAME]` | live - **it opens real TCP connections** | Service-posture scanning over the DECLARED listener set `config/scope.conf`'s `base-url`/`extra-host` entries name for `--target` - never a port sweep or host discovery: a port scoursh was not told about is never probed. Gated by the identical scope chokepoint, ceilings, and `--i-own-target` affirmation `dast` uses - one TCP connect costs exactly what one HTTP request costs against the same limiter/budget/breaker. `--intensity` gates phases exactly as it does for `dast`: `passive` (default) reaches banner reads and TLS identification on non-`base-url` listeners plus transport-posture checks, `safe` additionally reaches the three-state reachability probe and HTTP identification on non-standard ports. All six phases (`inventory.sh`, `reachability.sh`, `banner.sh`, `tlsport.sh`, `httpport.sh`, `transport.sh`) are implemented (NET-01 through NET-11); a target whose `config/scope.conf` entry declares only `base-url` (no `extra-host` listener) records a `coverage_gap` rather than a clean scan, since there is nothing beyond the web port to test. `--jobs N` is also this module's ceiling on simultaneous connections. Unlike `dast`, it accepts no `--requests-per-second`/`--request-budget`/`--circuit-breaker-failures`/`--circuit-breaker-5xx-failures`/spec-file flags - those are DAST's own rate/discovery knobs and have no equivalent here. An operator-declared `expect-closed` expectation in the optional `config/posture.conf` (`scope-key: target:port`) is what lets `NET-PORT-UNEXPECTED_LISTENER-01` fire on a declared listener that should not be answering; absent that file it is a declared skip, never exit 4. |
 | `cloud` | `[--live]` `[--profile NAME]` `[--regions all\|us-east-1,...]` `[--assume-role ARN]` `[--i-own-account ID]` | live - **it makes real read-only AWS API calls** | `--live` requires the `aws` CLI on `PATH` and resolvable credentials, and the run refuses (exit 4) if either is missing. Every one of `docs/DESIGN.md` §8.1's 30 AWS services (`modules/cloud/aws/live/*.sh`) is implemented - 112 checks, CIS AWS Foundations Benchmark v3.0.0 and OWASP mapped. `regions.sh` resolves the account's enabled regions (or the `--regions` list, unvalidated against the account) and every AWS call goes through `lib/awscli.sh`'s `aws_ro`, which refuses anything that is not read-only. `--assume-role ARN` scans a second account; `--profile NAME` selects a named AWS CLI profile. An access-denied, opted-out, or throttled service is recorded as a `coverage_reduction`, never folded into a clean pass. The `posture/` phase (SSO/edge/session drift against an operator-declared baseline, `config/posture.conf`) has a config schema but no checks yet, so it is a declared skip today. |
 | `image` | `--image ID` `[--source PATH]` | live, needs an advisory database for OS-package/dependency matching | Offline installed-package enumeration and CVE matching against a **built** container image - `ID` names an `id` record in `config/images.conf` pointing at a `docker save` tarball (`source: docker-archive`) or an OCI image-layout directory (`source: oci-layout`); never a registry pull, and `--image` is the only required flag. `--source PATH` overrides the configured path for this run only (the shape is inferred from the filesystem - a directory is `oci-layout`, a file is `docker-archive`); with no `config/images.conf` record for `ID` at all, `--source` is the only way to run. Enumerates and matches apk, dpkg, and rpm packages (rpm needs `sqlite3` on `PATH` - its package database is a binary format, a declared coverage reduction rather than a silent skip when absent), plus language dependencies found at a bounded set of conventional manifest locations inside the image's own rootfs (reusing `sca`'s tree-walkers). Also reads the image's config blob for its effective runtime user, exposed ports, and whether its recorded base reference is a mutable tag - these three checks need no advisory database and run on every opened image regardless of distro. No advisory data for the image's release is `IMAGE-COV-NO_ADVISORY_DB-01` and exit `4` when `image` is the selected command (a declared skip under `all`, per the identical SCA precedent). `--format agent` works here the same as every other module. See ["Dependency data"](#dependency-data-dataadvisoriesdb) and `docs/CHECKS.md`'s "Container image" section. |
 | `all` | union of every module's own flags above | live | Runs sast, sca, iac unconditionally; runs dast and network only if `--target` is given (network under the identical condition dast uses - it never gets a separate authorization record, since the two share one `--target`/`--intensity`/`--i-own-target` triple), image only if `--image` is given, and cloud only if `--live` is given. Every module it skips is recorded in `run.json` as a `coverage_reduction` fact, not silently dropped. |
@@ -69,7 +69,8 @@ scan.sh <command> [options]
 | `--i-own-target NAME` | dast, all | live |
 | `--requests-per-second N` | dast, all | live; raising it above the conservative ceiling needs `--i-own-target` (see ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)) |
 | `--request-budget N` | dast, all | live; same as above |
-| `--circuit-breaker-failures N` | dast, all | live; same as above - useful for a target that answers an unmatched path with 5xx rather than 404, which can otherwise trip the default 10-failures/60s ceiling during discovery/methods before the injection phase runs |
+| `--circuit-breaker-failures N` | dast, all | live; same as above - raises the TRANSPORT-failure ceiling (no usable response at all: connection refused, timeout, reset). Rarely needed; a well-formed 5xx no longer counts toward this counter at all (see `--circuit-breaker-5xx-failures`) |
+| `--circuit-breaker-5xx-failures N` | dast, all | live; same as above - raises the SEPARATE, much higher 5xx-response ceiling (default 200, measured against a real target - see "Conservative DAST limits" below). Useful for a target that produces MORE than that within one 60s window; the default already absorbed 180 measured 5xx responses on an ordinary application without raising anything |
 | `--openapi FILE` | dast, all | live - an ephemeral, this-run-only override of `config/discovery.conf`'s `openapi-path` for `--target`; nothing is written to that file. Requires `--target`, exit 2 otherwise. See ["`config/discovery.conf`"](#configdiscoveryconf---optional-feeds-dasts-crawler-an-applications-real-api-surface) if a run told you the target "looks like a single-page app". |
 | `--har FILE` | dast, all | live; same as above, for `har-path` |
 | `--postman FILE` | dast, all | live; same as above, for `postman-path` |
@@ -298,7 +299,7 @@ target's own resource limits or scoursh's circuit breaker:
   --target NAME --i-own-target NAME \
   --intensity active \
   --openapi ./openapi.json \
-  --requests-per-second 2 --jobs 2 --circuit-breaker-failures 40 \
+  --requests-per-second 2 --jobs 2 \
   --format json,sarif,html,md,audit,agent \
   --out reports/dast-full
 ```
@@ -310,13 +311,15 @@ target's own resource limits or scoursh's circuit breaker:
   crawl alone (see
   ["`config/discovery.conf`"](#configdiscoveryconf---optional-feeds-dasts-crawler-an-applications-real-api-surface)
   and `docs/DESIGN.md` §7.5).
-- **The circuit breaker is a safety feature, not a bug.** It stops the run if the target stops
-  answering - 10 failures within a 60-second window by default. Against a small or single-process
-  target, go gentler than the unaffirmed defaults (`--requests-per-second 2 --jobs 2`, both already
-  below the 4/s ceiling so they need no affirmation on their own), and raise
-  `--circuit-breaker-failures` (which does need `--i-own-target`, since it is a CLI-supplied value
-  above the default 10) if an application that answers an unmatched path with a `5xx` rather than a
-  `404` trips it during discovery or method enumeration before the injection phase ever runs.
+- **The circuit breaker is a safety feature, not a bug.** It stops the run if the target genuinely
+  stops answering - 10 transport-level failures (no usable response at all) within a 60-second window
+  by default. Against a small or single-process target, go gentler than the unaffirmed defaults
+  (`--requests-per-second 2 --jobs 2`, both already below the 4/s ceiling so they need no affirmation
+  on their own). An application that answers an unmatched path with a `5xx` rather than a `404` during
+  discovery or method enumeration is tracked by a SEPARATE, much higher counter
+  (`--circuit-breaker-5xx-failures`, default 200 - measured against a real target, not guessed; see
+  "Conservative DAST limits" below) that no longer shares a threshold with a genuine outage, and
+  raising it further still needs `--i-own-target`, since it is a CLI-supplied value above the default.
 - **Run one scan at a time against a target.** Concurrent scans multiply the effective request rate
   the target sees and make a circuit-breaker trip more likely for reasons that have nothing to do with
   the target's actual health.
@@ -325,7 +328,7 @@ target's own resource limits or scoursh's circuit breaker:
 
 ```sh
 ./scan.sh all --path DIR --target NAME --i-own-target NAME --intensity active \
-  --openapi ./openapi.json --requests-per-second 2 --jobs 2 --circuit-breaker-failures 40 \
+  --openapi ./openapi.json --requests-per-second 2 --jobs 2 \
   --format json,sarif,html,md,audit,agent --out reports/all
 ```
 
@@ -632,11 +635,36 @@ below for the details.
 
 ### Conservative DAST limits and `--i-own-target`
 
-The four network limits - `requests-per-second`, `request-budget`, `circuit-breaker-failures` and
-`circuit-breaker-window` - are resolved through the ordinary CLI > env > file > default chain and then
-held to a conservative limit for a running-endpoint scan, inside `lib/http.sh`, at the same chokepoint
-the scope gate lives at.  The effective unaffirmed values are 4 requests/second and a per-run budget of
-5000.
+The five network limits - `requests-per-second`, `request-budget`, `circuit-breaker-failures`,
+`circuit-breaker-5xx-failures` and `circuit-breaker-window` - are resolved through the ordinary CLI >
+env > file > default chain and then held to a conservative limit for a running-endpoint scan, inside
+`lib/http.sh`, at the same chokepoint the scope gate lives at.  The effective unaffirmed values are 4
+requests/second and a per-run budget of 5000.
+
+`circuit-breaker-failures` and `circuit-breaker-5xx-failures` are two independent counters over the
+same rolling window, not one value with two names: a transport-level failure (no usable response at
+all) counts toward the first, at a conservative default of 10, because that is the strongest evidence a
+target has genuinely stopped answering; a well-formed 5xx response counts toward the second, at a much
+higher default of 200, because the target IS answering - an unmatched path, a wrong method, or an
+unauthenticated route answered with a 5xx (rather than a 404/401/405) is a routine target quirk, and
+`dast`'s own content-discovery and method-enumeration checks probe exactly those shapes. Either counter
+reaching its own threshold still opens the same breaker and stops the run.
+
+**200 is measured, not guessed, and it is bounded on both sides rather than picked to make one target
+quiet.** Re-deriving discovery's own backup-suffix candidates (an endpoint path plus one of nine
+suffixes) against a real, ordinary local target found 180 of 369 candidates - 49% - answered 500,
+because appending a suffix to a nested REST path trips an unrelated framework routing quirk; a default
+of 10, or the 50 an operator might reasonably try by hand, both undershoot that by an order of
+magnitude, and 100 was measured insufficient end to end too. The upper bound is structural rather than
+a matter of taste: at the default 4 requests/second and the frozen 60-second window floor, at most
+about 240 requests of any kind can ever land inside one rolling window on an unaffirmed run, so a
+default AT OR ABOVE that ceiling would not be generous - it would make the counter unable to open at
+all under default settings, which is the same "reaches never-trips by a different route" failure mode
+the window's own bounds already refuse. 200 sits with real margin under ~240 and real margin over the
+180 measured, which is why a real `scan.sh dast --target NAME --intensity active --allow-intrusive
+--i-own-target NAME` run against that target - the operator's own original command, no manual override
+of either breaker flag - now completes end to end, discovery through every injection family, at the
+shipped default.
 
 What happens to a value above one of those limits depends on where it came from, and the split is
 deliberate:
@@ -669,11 +697,13 @@ Four things about that flag are worth knowing before reaching for it.
 
 Two bounds no affirmation lifts: `circuit-breaker-window` cannot go below 60 seconds (a shorter window
 counts fewer failures towards the same threshold, which is a weaker breaker) or above 86400 (that one
-is arithmetic, not safety).  The budget can be raised but never removed, and the breaker can have its
-threshold raised but never be disabled - `--circuit-breaker-failures N` plus `--i-own-target` is the
-flag for that, useful against a target that answers an unmatched path with a 5xx rather than a 404
-(the default 10-failures/60s ceiling can otherwise trip during discovery/methods before the injection
-phase ever runs, on an application that is healthy but idiosyncratic rather than actually failing).
+is arithmetic, not safety).  The budget can be raised but never removed, and BOTH breaker counters can
+have their own threshold raised but never be disabled - `--circuit-breaker-failures N` (transport-level
+failures) and `--circuit-breaker-5xx-failures N` (well-formed 5xx responses) plus `--i-own-target` are
+the flags for that. The second is the one that matters against a target that answers an unmatched path
+with a 5xx rather than a 404: its own default (100) is already generous enough to absorb that during
+discovery/methods for most applications without raising anything, since a 5xx no longer counts toward
+the transport-failure counter at all.
 
 A run that did relax something says so on stderr at run start, banners it in the HTML and Markdown
 reports, and records the from->to deltas in `run.json`'s `authorization` object - because an
@@ -681,8 +711,9 @@ unrestricted run's *absence* of availability findings is not evidence about the 
 
 `network` reaches the identical chokepoint and the identical ceilings - one TCP connect draws down the
 same rate/budget/breaker state one HTTP request does - but exposes no `--requests-per-second`/
-`--request-budget`/`--circuit-breaker-failures` flags of its own; `--i-own-target NAME` still applies,
-since the underlying `lib/http.sh` state is shared rather than duplicated per module.
+`--request-budget`/`--circuit-breaker-failures`/`--circuit-breaker-5xx-failures` flags of its own;
+`--i-own-target NAME` still applies, since the underlying `lib/http.sh` state is shared rather than
+duplicated per module.
 
 ### The identifying `User-Agent`
 
@@ -1193,8 +1224,9 @@ file yet; those are called out in the Notes column.
 | `http-timeout` | positive integer (seconds) | `20` | inert | The HTTP layer's timeout reads `SCOURSH_HTTP_TIMEOUT`, never this file. |
 | `max-redirects` | non-negative integer | `5` | inert | The redirect cap is a caller-supplied argument defaulting to 5, never read from this file. |
 | `request-budget` | positive integer, per run | `20000` | live | Per-run, shared across workers; exhausting it stops the run at exit 5. Clamped to 5000 for a DAST scan without `--i-own-target`, so this default is not what a DAST run spends. |
-| `circuit-breaker-failures` | positive integer | `10` | live | Failures (transport failure or 5xx) within the window below; reaching it aborts the run at exit 5. Never disableable, but raisable under `--i-own-target` - `--circuit-breaker-failures N` is the dedicated CLI flag for `dast`/`all` (same shape as `--requests-per-second`/`--request-budget`, exported as `SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES`). |
-| `circuit-breaker-window` | non-negative integer (seconds) | `60` | live | Rolling window. Bounded at both ends - never below 60s, never above 86400 - and no affirmation lifts either bound. |
+| `circuit-breaker-failures` | positive integer | `10` | live | Transport-level failures (no usable response at all - connection refused, timeout, reset, or a malformed status line) within the window below; reaching it aborts the run at exit 5. Never disableable, but raisable under `--i-own-target` - `--circuit-breaker-failures N` is the dedicated CLI flag for `dast`/`all` (same shape as `--requests-per-second`/`--request-budget`, exported as `SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES`). |
+| `circuit-breaker-5xx-failures` | positive integer | `100` | live | A SEPARATE counter for well-formed 5xx responses within the same window - a 5xx is a real answer and individually weaker evidence of an outage than a transport failure, so its own threshold is much higher. Reaching it aborts the run at exit 5 exactly as the transport counter does. Never disableable, but raisable under `--i-own-target` - `--circuit-breaker-5xx-failures N` is the dedicated CLI flag for `dast`/`all`, exported as `SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES`. |
+| `circuit-breaker-window` | non-negative integer (seconds) | `60` | live | Rolling window, shared by both counters above. Bounded at both ends - never below 60s, never above 86400 - and no affirmation lifts either bound. |
 | `fail-on` | severity name or `none` | `none` | live | |
 | `min-confidence` | `high\|medium\|low` | `low` | live | |
 | `redact-secrets` | `true`/`false` | `true` | live | Governs whether a matched credential is written in the clear. See ["What `redact-secrets` covers"](#what-redact-secrets-covers). |

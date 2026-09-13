@@ -246,7 +246,8 @@ var FIELD_DEFS = {
   "i-own-target": {kind:"text", label:"--i-own-target", placeholder:"same name as --target", help:"Required to raise --intensity above passive, or to combine with --allow-intrusive. Must equal --target exactly."},
   "requests-per-second": {kind:"number", label:"--requests-per-second", placeholder:"e.g. 4", help:"Raises the rate ceiling above the conservative default. Above the default needs --i-own-target."},
   "request-budget": {kind:"number", label:"--request-budget", placeholder:"e.g. 20000", help:"Raises the per-run request budget. Above the default needs --i-own-target."},
-  "circuit-breaker-failures": {kind:"number", label:"--circuit-breaker-failures", placeholder:"e.g. 40", help:"Raises the breaker's failure ceiling (useful when the target answers unmatched paths with 5xx). Above the default needs --i-own-target."},
+  "circuit-breaker-failures": {kind:"number", label:"--circuit-breaker-failures", placeholder:"e.g. 20", help:"Raises the TRANSPORT-failure ceiling (no usable response at all - connection refused, timeout, reset). Above the default needs --i-own-target."},
+  "circuit-breaker-5xx-failures": {kind:"number", label:"--circuit-breaker-5xx-failures", placeholder:"e.g. 200", help:"Raises the SEPARATE, higher 5xx-response ceiling (useful when the target answers unmatched paths with 5xx rather than 404 - a routine quirk, not an outage). Above the default of 200 (measured against a real target) needs --i-own-target."},
   openapi: {kind:"text", label:"--openapi", placeholder:"FILE", help:"Ephemeral, this-run-only override of config/discovery.conf's openapi-path. Requires --target."},
   har: {kind:"text", label:"--har", placeholder:"FILE", help:"Ephemeral, this-run-only override of config/discovery.conf's har-path. Requires --target."},
   postman: {kind:"text", label:"--postman", placeholder:"FILE", help:"Ephemeral, this-run-only override of config/discovery.conf's postman-path. Requires --target."},
@@ -272,7 +273,7 @@ var COMMAND_GROUPS = {
   dast: [
     {title:"Target", flags:["target"]},
     {title:"Depth &amp; authorization", flags:["intensity","authed","i-own-target"]},
-    {title:"Rate &amp; safety overrides", flags:["requests-per-second","request-budget","circuit-breaker-failures"]},
+    {title:"Rate &amp; safety overrides", flags:["requests-per-second","request-budget","circuit-breaker-failures","circuit-breaker-5xx-failures"]},
     {title:"Discovery overrides (this run only)", flags:["openapi","har","postman","graphql-schema"]}
   ],
   cloud: [
@@ -287,7 +288,7 @@ var COMMAND_GROUPS = {
   all: [
     {title:"Source code (SAST / SCA / IaC)", flags:["path","lang","history"]},
     {title:"Running app (DAST)", flags:["target","intensity","authed","i-own-target"]},
-    {title:"DAST rate &amp; discovery overrides", flags:["requests-per-second","request-budget","circuit-breaker-failures","openapi","har","postman","graphql-schema"]},
+    {title:"DAST rate &amp; discovery overrides", flags:["requests-per-second","request-budget","circuit-breaker-failures","circuit-breaker-5xx-failures","openapi","har","postman","graphql-schema"]},
     {title:"AWS (cloud)", flags:["live","profile","regions","i-own-account","assume-role"]},
     {title:"Container image", flags:["image","source"]}
   ],

@@ -90,6 +90,7 @@ id: scanner
 requests-per-second: 5000
 request-budget: 20000
 circuit-breaker-failures: 100000
+circuit-breaker-5xx-failures: 100000
 EOF
 config_scanner_load "$W/scanner.conf"
 

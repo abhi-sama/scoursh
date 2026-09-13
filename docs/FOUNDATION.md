@@ -2697,6 +2697,68 @@ Two tests matter: a concurrency test runs 16 workers against a local mock and as
 request rate does not exceed `requests_per_second`, and a breaker test asserts all workers stop within
 one request of the breaker opening.
 
+**Second amendment: the breaker's single failure counter is now TWO (the breaker-5xx-semantics fix).**
+This section's own "Why it bites" paragraph gives the breaker's founding scenario as "each worker sees
+only its own share of the 5xx responses ... a target that is comprehensively down", and
+`docs/STEP5-DAST-PLAN.md`'s "What may be relaxed" table restates the same argument for why disabling it
+is never offered: "a target returning sustained 5xx produces no useful findings, so continuing to
+hammer it buys nothing".
+Both are still true, and neither is what a real run measured.
+Instrumenting `lib/http.sh`'s two failure paths on a run against an ordinary, healthy application (an
+OWASP Juice Shop instance) showed 11 of 11 counted failures were HTTP 500 STATUS RESPONSES and ZERO
+were transport-level - the run aborted during content-discovery, before any injection phase ever ran,
+because a handful of backup-suffix and malformed-method probes against real `/rest/*` routes provoke a
+500 on that application (an ordinary Express routing quirk, not an outage), and the single counter this
+section specified counted every one of them the same way it would count a target that had genuinely
+stopped answering.
+The breaker-open message itself, added by a prior fix, already said the quiet part: "an application
+that returns a 5xx ... is a routine target quirk, not evidence of an outage" - which was true of the
+message and false of what the counter it was attached to actually did.
+
+Three options were weighed, and the middle one was chosen.
+**Exclude every 5xx from the breaker entirely** was rejected: it is the exact regression this section's
+"Why it bites" scenario warns against, since a target that genuinely 5xxs on EVERYTHING - not a handful
+of edge-case routes, but comprehensively - would then never trip the breaker at all, and the register
+would have lost a real detector to fix a false positive.
+**Exempt only the content-discovery/method-enumeration phases** was rejected too: it would require
+threading which PHASE is calling into this general-purpose chokepoint, which every other caller
+(`crawl.sh`, `auth.sh`, every future module) would then have to remember NOT to do - the identical
+"a control each caller must remember is not a control" argument tension 19 already makes for this same
+file - and it would let a target that is completely 5xx-dead specifically DURING discovery grind
+through its entire (up to 600-request) candidate set for nothing, defeating the breaker's efficiency
+purpose in precisely the phase with the largest request volume.
+**Count a 5xx toward a SEPARATE, much higher threshold** is what shipped: `circuit-breaker-failures`
+(default 10/60s, unchanged) now counts only transport-level failures (no usable response at all -
+connection refused, timeout, reset, or a malformed status line, the strongest and fastest evidence of an
+outage); a new §9.6.1 key, `circuit-breaker-5xx-failures` (default 200/60s), counts a well-formed 5xx
+response, individually weaker evidence since the target IS answering.  Either counter reaching its own
+threshold still opens the same breaker and stops the run, so "a target returning sustained 5xx produces
+no useful findings" is still caught - it now takes two hundred data points instead of ten, which is the
+point: enough to distinguish "this target 5xxs on a handful of backup-suffix and malformed-method
+probes" from "this target has stopped answering", without an operator having to guess a number "in the
+thousands" by hand, which is what the pre-fix single counter's own escape hatch amounted to in practice.
+**200 is a measured number, bounded on both sides, not a guess and not "raise it until it works."**
+Re-deriving discovery's own backup-suffix candidate set (an endpoint path plus one of nine suffixes)
+against a real, ordinary local target and requesting each one directly found 180 of 369 - 49% - answer
+500, because a suffix appended to a nested REST path trips an unrelated framework routing quirk; the
+pre-fix default of 10, and the 50 this project's own operator tried by hand, both undershoot that by an
+order of magnitude, and 100 was measured insufficient end to end too (it still aborted the operator's
+exact command during discovery). The upper bound is structural: at the default 4 requests/second and the
+frozen 60-second window floor (`_HTTP_BREAKER_WINDOW_MAX`/the ceiling table above), at most ~240
+requests of any kind can ever land inside one rolling window on an unaffirmed run, so a default at or
+above that ceiling would make the 5xx counter unable to open AT ALL under default settings - the
+identical "reaches never-trips by a different route" failure mode the window's own floor already exists
+to refuse, just approached from the threshold side instead of the window side. 200 leaves real margin
+under ~240 and real margin over the 180 measured, and it is verified end to end: the operator's own
+original command (`scan.sh dast --target NAME --intensity active --allow-intrusive --i-own-target NAME`,
+no manual override of either breaker flag) now completes against that same real target, discovery
+through every injection family, at the shipped default.
+See `lib/http.sh`'s `_http_breaker_record_failure` for the mechanism (one rolling-window state file per
+class per bucket, sharing the mutex and the window) and `docs/USAGE.md`'s "Conservative DAST limits and
+`--i-own-target`" for the operator-facing account.
+The new key is additive and optional (`rules/RULE-FORMAT.md` §14 item 2 only, no `format_version`
+bump), the same shape as `contact`/`tls-expiry-warn-days`/`recommended-header` before it.
+
 ## Tension 17 - concurrent writes to `findings.jsonl`
 
 **The tension.**

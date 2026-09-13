@@ -288,6 +288,16 @@ declare -A _SCAN_FLAG_KIND=(
   # as the other two are - see scan_main's own comment where all three are
   # exported as SCOURSH_CONFIG_* for lib/http.sh's DAST-32 clamp.
   [dast:circuit-breaker-failures]=value
+  # breaker-5xx-semantics fix (docs/FOUNDATION.md tension 16's amendment):
+  # `--circuit-breaker-failures` above raises the TRANSPORT-failure threshold
+  # (no usable response at all), which a well-formed 5xx response no longer
+  # counts against at all - it is tracked by this SEPARATE counter and its own,
+  # much higher default (200 vs. 10), because a 5xx is a real answer and
+  # individually weaker evidence of an outage. Same mechanism, same asymmetric
+  # clamp, same CLI/env/file/default resolution as its sibling; see
+  # lib/http.sh's `_http_breaker_record_failure` for the full reasoning behind
+  # the split.
+  [dast:circuit-breaker-5xx-failures]=value
   # IMPORT-07: an ephemeral, --target-scoped override of the matching
   # config/discovery.conf key (rules/RULE-FORMAT.md §9.6.3's openapi-path/
   # har-path/postman-path/graphql-schema-path) - never persisted, and never a
@@ -363,6 +373,7 @@ declare -A _SCAN_FLAG_KIND=(
   [all:requests-per-second]=value
   [all:request-budget]=value
   [all:circuit-breaker-failures]=value
+  [all:circuit-breaker-5xx-failures]=value
   [all:openapi]=value
   [all:har]=value
   [all:postman]=value
@@ -866,7 +877,7 @@ scan_validate_flag_value() {
     intensity) checks_valid_intensity "$val" ;;
     fail-on) [[ $val =~ ^(critical|high|medium|low|info|none)$ ]] ;;
     min-confidence) [[ $val =~ ^(high|medium|low)$ ]] ;;
-    jobs | request-budget | circuit-breaker-failures) [[ $val =~ ^[1-9][0-9]*$ ]] ;;
+    jobs | request-budget | circuit-breaker-failures | circuit-breaker-5xx-failures) [[ $val =~ ^[1-9][0-9]*$ ]] ;;
     # Copied verbatim from lib/config.sh's `_scanner_validate_value` (the same
     # duplication `jobs`/`fail-on`/`min-confidence` above already accept:
     # there is no cross-file regex-sharing mechanism in this codebase, and the
@@ -918,6 +929,10 @@ _SCAN_ENV_BUDGET_PRISTINE_SET=${SCOURSH_CONFIG_REQUEST_BUDGET+set}
 # destroy a genuine operator-set SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES).
 _SCAN_ENV_BREAKER_PRISTINE=${SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES-}
 _SCAN_ENV_BREAKER_PRISTINE_SET=${SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES+set}
+# breaker-5xx-semantics fix: the identical pristine-snapshot treatment for the
+# separate --circuit-breaker-5xx-failures flag/env var.
+_SCAN_ENV_BREAKER_5XX_PRISTINE=${SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES-}
+_SCAN_ENV_BREAKER_5XX_PRISTINE_SET=${SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES+set}
 
 # -----------------------------------------------------------------------------
 # 4. The parser.  Hand-rolled rather than `getopts`/`getopt`: `getopts` (the
@@ -2783,7 +2798,8 @@ _scan_scanner_conf_sha256() {
 _scan_record_config() {
   local key val cli
   local -a single_keys=(
-    circuit-breaker-failures circuit-breaker-window contact evidence-max-bytes
+    circuit-breaker-failures circuit-breaker-5xx-failures circuit-breaker-window
+    contact evidence-max-bytes
     fail-on history-max-commits history-window-days http-timeout jobs
     lock-stale-seconds max-matches-per-file max-redirects min-confidence
     mutex-timeout-seconds redact-secrets request-budget requests-per-second
@@ -2798,6 +2814,7 @@ _scan_record_config() {
       request-budget) cli=${SCAN_FLAGS[request-budget]:-} ;;
       requests-per-second) cli=${SCAN_FLAGS[requests-per-second]:-} ;;
       circuit-breaker-failures) cli=${SCAN_FLAGS[circuit-breaker-failures]:-} ;;
+      circuit-breaker-5xx-failures) cli=${SCAN_FLAGS[circuit-breaker-5xx-failures]:-} ;;
       *) cli='' ;;
     esac
     _scan_capture val config_scanner_value "$key" "$cli"
@@ -2990,17 +3007,31 @@ scan_main() {
     unset SCOURSH_CONFIG_REQUEST_BUDGET
   fi
   # --circuit-breaker-failures: the third member of this trio (see the
-  # comment above), closing the gap docs/FOUNDATION.md tension 16 names - a
-  # target that answers unmatched paths with 5xx (rather than 404) can trip
-  # the breaker's default 10-failures/60s ceiling during discovery/methods
-  # before the injection phase ever runs. An owning operator can now raise it
-  # the same way as rate/budget: an explicit value here plus --i-own-target.
+  # comment above). It raises the TRANSPORT-failure threshold (no usable
+  # response at all - the strongest evidence of a genuinely down target).
+  # An owning operator raises it the same way as rate/budget: an explicit
+  # value here plus --i-own-target.
   if [[ -n ${SCAN_FLAGS[circuit-breaker-failures]:-} ]]; then
     export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=${SCAN_FLAGS[circuit-breaker-failures]}
   elif [[ -n $_SCAN_ENV_BREAKER_PRISTINE_SET ]]; then
     export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=$_SCAN_ENV_BREAKER_PRISTINE
   else
     unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
+  fi
+  # --circuit-breaker-5xx-failures: the breaker-5xx-semantics fix
+  # (docs/FOUNDATION.md tension 16's amendment). A target that answers
+  # unmatched paths with 5xx (rather than 404) is answering, not outage
+  # evidence, so it is counted SEPARATELY from a transport failure, against a
+  # much higher default (200 vs. 10) - which is what closes the gap the
+  # comment this replaced used to describe against --circuit-breaker-failures:
+  # a real DAST run against an ordinary application no longer needs to raise
+  # anything by hand for content-discovery/method-enumeration to finish.
+  if [[ -n ${SCAN_FLAGS[circuit-breaker-5xx-failures]:-} ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES=${SCAN_FLAGS[circuit-breaker-5xx-failures]}
+  elif [[ -n $_SCAN_ENV_BREAKER_5XX_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES=$_SCAN_ENV_BREAKER_5XX_PRISTINE
+  else
+    unset SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES
   fi
 
   _scan_capture SCOURSH_JOBS config_scanner_value jobs "${SCAN_FLAGS[jobs]:-}"

@@ -94,6 +94,7 @@ _schema_def() {
         'id:req:single:sl' 'requests-per-second:opt:single:sl' 'jobs:opt:single:sl' \
         'http-timeout:opt:single:sl' 'max-redirects:opt:single:sl' \
         'request-budget:opt:single:sl' 'circuit-breaker-failures:opt:single:sl' \
+        'circuit-breaker-5xx-failures:opt:single:sl' \
         'circuit-breaker-window:opt:single:sl' 'fail-on:opt:single:sl' \
         'min-confidence:opt:single:sl' 'redact-secrets:opt:single:sl' \
         'formats:opt:repeatable:sl' 'max-matches-per-file:opt:single:sl' \
