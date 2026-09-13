@@ -3034,6 +3034,22 @@ new and passes; `tests/suites/vendor-engines.sh` gained the equivalent `trivy_ve
 section, against its own scratch copy of the adapter directory.
 `docs/ADAPTERS.md` §9's roster table now names this second row too.
 
+**A later ticket found and fixed real upstream flag drift on both the semgrep and trivy adapters, plus
+a genuine, measured egress gap - not merely a renamed flag - on trivy.** `semgrep_run`'s `--offline` was
+removed from semgrep entirely (measured: 1.176.0); `trivy_run`'s `--offline-scan`, `--skip-db-update`,
+and `--scanners misconfig` are all rejected by `trivy config` on a current release (measured: 0.74.0) -
+none of the three ever applied to that subcommand's actual scope, which is misconfig-only by
+construction regardless of any flag. Separately, and more seriously: a real `trivy config` run with
+neither `--disable-telemetry` nor `--skip-version-check` (both new on this release, covering nothing the
+three removed flags ever did) was observed opening a genuine outbound HTTPS connection, verified by
+sampling `lsof -p <pid>` for the run's lifetime. See `docs/ADAPTERS.md` §7a for the fix (a distinct
+`engine_flag_rejected` coverage_reduction naming the rejected flag and the engine's own reported version,
+alongside the existing generic `engine_run_failed`) and for why a vendor-time execution smoke test was
+considered and deliberately rejected in favour of it. **Re-verify every adapter's flag list, by hand,
+against its own vendored binary's real `--help` output plus a real, sampled-connections run, after every
+re-vendor** - a flag surviving in `--help` is not proof it still makes no request, as trivy's own
+telemetry/version-check behaviour demonstrates.
+
 **`tools/vendor-engines.sh`'s OTHER, unrelated responsibility - tension 25's `data/advisories.db`/
 `data/versions.db` expansion, named as deliberately unbuilt by the step-9 scaffold paragraph above - has
 now landed too, as its own ticket ("Implement tools/vendor-engines.sh's advisories.db/versions.db

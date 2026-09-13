@@ -85,4 +85,8 @@ trivy_vendor() {
   log_info '  on runs fully offline against exactly these bytes.  No rules/ directory'
   log_info '  is vendored - trivy'\''s misconfiguration checks are compiled into the'
   log_info '  binary itself.'
+  log_info '  Run scan.sh iac --use-engines once against a real target next - adapter.sh'
+  log_info '  will name the exact flag if this trivy release rejects one of its own'
+  log_info '  (docs/ADAPTERS.md §7a explains why that check runs here, not as a vendor-time'
+  log_info '  smoke test that executes these just-fetched bytes).'
 }
