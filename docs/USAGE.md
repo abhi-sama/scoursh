@@ -1107,13 +1107,21 @@ One record per target, `id` matching a `config/scope.conf` target you have alrea
 | `crawl-depth` | no | no | `3` | Non-negative integer; how many link-hops the static crawl follows. |
 | `include-path` | no | yes | none (all reachable paths) | Glob, matched against the target-relative request path, of paths the crawl is allowed to request. |
 | `exclude-path` | no | yes | none | Same glob syntax; a match here is never requested, even if `include-path` would also match it. |
+| `js-endpoint-discovery` | no | no | `true` | `true`/`false`. When true (the default), the crawl mines URL-shaped literal strings out of every fetched JS/source-map response - a single-page app's own bundled code routinely names the API paths it calls, invisible to link-following alone - and adds each in-scope one to the inventory as `source=js`, weaker evidence than a route the crawl actually requested. Nothing new is ever fetched to do this: only bodies the crawl already downloaded are scanned, and every candidate still goes through the same scope gate as a crawled link before it is ever written to disk. Set to `false` for a target where you want a strictly crawl/spec/HAR-only inventory. |
 | `notes` | no | no (multi-line) | empty | Free text. |
 
-All four document keys are independent - supply only the ones you have - and every one of them adds
+All five keys above are independent - supply only the ones you have - and every one of them adds
 to the *same* inventory (`reports/<run>/inventory/endpoints.json` and `parameters.json`) a plain crawl
 already writes, so a supplied spec and a crawl of the same target are additive, not either/or.
 Every path is resolved relative to scoursh's own install root, not the scan target and not your
 current working directory, when it is not already absolute.
+
+**JS-mined endpoints are a real find, and still not a substitute for a spec or a HAR.** A path read out
+of a bundle's own source is missing everything a specification or a captured request carries - its HTTP
+method, its body shape, its real parameter names beyond what a literal query string happened to show -
+so it is recorded with weaker provenance (`source=js`) precisely so a report reader is never left
+believing the surface is now complete. When no spec or HAR was supplied at all, the report's SPA/gap
+message still fires and still recommends one; JS mining narrows that gap, it does not close it.
 
 **How to obtain one.** An OpenAPI/Swagger document is usually served by the application itself (a
 common path is `/openapi.json`, `/swagger.json`, or embedded in a Swagger UI page's own JavaScript);

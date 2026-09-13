@@ -128,6 +128,7 @@ _dast_surface_source_label() {
     har) printf 'a HAR capture you supplied' ;;
     graphql) printf 'a GraphQL schema you supplied' ;;
     crawl) printf 'the static crawl' ;;
+    js) printf 'a literal string inside a fetched JS/source-map file (weaker evidence - not requested directly)' ;;
     imported) printf 'a cross-module inventory import' ;;
     *) printf 'source %s' "$1" ;;
   esac

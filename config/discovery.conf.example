@@ -24,6 +24,16 @@
 # "a specification's own host is never scanned" cases). This file decides
 # WHAT to test on a target you already authorised, never WHICH host to test.
 #
+# The crawler also mines URL-shaped literal strings out of every fetched
+# JS/source-map response by default (`js-endpoint-discovery`, default
+# `true`) - a single-page app's own bundled code routinely names the API
+# paths it calls, which is invisible to link-following alone. Nothing new is
+# ever fetched to do this, and every candidate still goes through the same
+# scope gate a crawled link does before it is ever recorded. It is weaker
+# evidence than a real request (`source=js` in the inventory) and never a
+# substitute for a spec or a HAR - set it to `false` for a target where you
+# want a strictly crawl/spec/HAR-only inventory.
+#
 # ONE RECORD PER TARGET. `id` MUST name a target your config/scope.conf
 # already defines (rules/RULE-FORMAT.md E080).
 #
@@ -42,6 +52,7 @@ crawl-depth: 3
 include-path: /api/**
 include-path: /rest/**
 exclude-path: /admin/**
+js-endpoint-discovery: true
 notes: Every endpoint and parameter a specification or capture contributes
   lands in the SAME inventory (reports/<run>/inventory/endpoints.json and
   parameters.json) a plain crawl produces, tagged with the source it came
