@@ -4032,6 +4032,22 @@ _sarif_level_for() {
   esac
 }
 
+# _sarif_level_for_into - the fork-free sibling of _sarif_level_for above, for
+# the identical reason records_digest_into exists: `_sarif_print_rules`'s loop
+# over the tool's whole check catalog (up to ~319 records) calling
+# `$(_sarif_level_for "$sev")` once per rule pays one fork per rule for a
+# four-way case statement. Same mapping, written into a global instead of
+# printed.
+_SARIF_LEVEL_FOR_V=''
+_sarif_level_for_into() {
+  case ${1:-} in
+    critical | high) _SARIF_LEVEL_FOR_V=error ;;
+    medium) _SARIF_LEVEL_FOR_V=warning ;;
+    low | info) _SARIF_LEVEL_FOR_V=note ;;
+    *) _SARIF_LEVEL_FOR_V=note ;;
+  esac
+}
+
 # Populates the global _SARIF_REG_LOC[check_id]="set idx" map from every
 # on-disk `*.rules` file under sast/sca/iac/dast/cloud (posture nests under
 # `modules/cloud/`, so its own checks.rules is covered by the `cloud` call;
@@ -4089,18 +4105,43 @@ _sarif_index_findings() {
 # owasp, cis and rule_digest - never `properties.descriptorSource`, which is
 # reserved for the synthesised case so its presence alone marks the
 # difference.
+#
+# Reads every field through the fork-free `_into` accessors (records_id_into,
+# records_field_or_into, records_list_into, records_digest_into,
+# _sarif_level_for_into) rather than `$(...)`, for the identical reason
+# `_report_checkmeta_registry_load` already does: `_sarif_print_rules` below
+# calls this once per record in the tool's WHOLE catalog (up to ~319 today),
+# and the previous version's eight `$(...)` captures per call - one of which,
+# records_digest, forked a further external sha256 process on top - measured
+# costing several real seconds on this tree, entirely separate from (and
+# additional to) the registry-load walk `_sarif_build_registry` already
+# shares with the OWASP/CIS state. `records_field_or_into SET IDX KEY ''` is
+# used in place of the old `records_field`/`records_field_or` calls for
+# title/severity/remediation/cwe/owasp alike: for an unconditionally-present
+# field the two have always been byte-identical (records_field's own
+# `${_REC_S[...]:-}` already collapses "unset" and "set to empty" to the same
+# default `records_field_or_into` computes explicitly), so this is a pure
+# fork-free substitution, not a behaviour change.
 _sarif_descriptor_registry() {  # set idx
   local set=$1 idx=$2 cid title sev cwe owasp remediation digest
-  cid=$(records_id "$set" "$idx")
-  title=$(records_field "$set" "$idx" title)
-  sev=$(records_field "$set" "$idx" severity)
-  cwe=$(records_field_or "$set" "$idx" cwe none)
-  owasp=$(records_field_or "$set" "$idx" owasp none)
-  remediation=$(records_field "$set" "$idx" remediation)
-  digest=$(records_digest "$set" "$idx")
+  records_id_into "$set" "$idx"
+  cid=$_RECORDS_ID_V
+  records_field_or_into "$set" "$idx" title ''
+  title=$_RECORDS_FIELD_V
+  records_field_or_into "$set" "$idx" severity ''
+  sev=$_RECORDS_FIELD_V
+  records_field_or_into "$set" "$idx" cwe none
+  cwe=$_RECORDS_FIELD_V
+  records_field_or_into "$set" "$idx" owasp none
+  owasp=$_RECORDS_FIELD_V
+  records_field_or_into "$set" "$idx" remediation ''
+  remediation=$_RECORDS_FIELD_V
+  records_digest_into "$set" "$idx"
+  digest=$_RECORDS_DIGEST_V
 
   local help=$remediation uri='' ref refs
-  refs=$(records_list "$set" "$idx" references)
+  records_list_into "$set" "$idx" references
+  refs=$_RECORDS_LIST_V
   if [[ -n $refs ]]; then
     help+=$'\n\nReferences:'
     while IFS= read -r ref; do
@@ -4112,12 +4153,14 @@ _sarif_descriptor_registry() {  # set idx
     done <<<"$refs"
   fi
 
+  _sarif_level_for_into "$sev"
+
   printf '{'
   printf '"id":%s' "$(json_string "$cid")"
   printf ',"name":%s' "$(json_string "$title")"
   printf ',"help":{"text":%s}' "$(json_string "$help")"
   [[ -z $uri ]] || printf ',"helpUri":%s' "$(json_string "$uri")"
-  printf ',"defaultConfiguration":{"level":%s}' "$(json_string "$(_sarif_level_for "$sev")")"
+  printf ',"defaultConfiguration":{"level":%s}' "$(json_string "$_SARIF_LEVEL_FOR_V")"
   printf ',"properties":{'
   printf '"ruleDigest":%s' "$(json_string "$digest")"
   printf ',"tags":['
@@ -4131,7 +4174,8 @@ _sarif_descriptor_registry() {  # set idx
     printf '%s' "$(json_string "external/owasp/$owasp")"
     tfirst=0
   fi
-  cislist=$(records_list "$set" "$idx" cis)
+  records_list_into "$set" "$idx" cis
+  cislist=$_RECORDS_LIST_V
   if [[ -n $cislist ]]; then
     while IFS= read -r cisv; do
       [[ -n $cisv ]] || continue
@@ -4153,12 +4197,12 @@ _sarif_descriptor_registry() {  # set idx
 # the fabrication tension 22 forbids elsewhere in this file.
 _sarif_descriptor_synth() {  # check_id
   local cid=$1
+  _sarif_level_for_into "${_SARIF_FIND_BASESEV[$cid]:-}"
   printf '{'
   printf '"id":%s' "$(json_string "$cid")"
   printf ',"name":%s' "$(json_string "${_SARIF_FIND_TITLE[$cid]:-}")"
   printf ',"help":{"text":%s}' "$(json_string "${_SARIF_FIND_REMEDIATION[$cid]:-}")"
-  printf ',"defaultConfiguration":{"level":%s}' \
-    "$(json_string "$(_sarif_level_for "${_SARIF_FIND_BASESEV[$cid]:-}")")"
+  printf ',"defaultConfiguration":{"level":%s}' "$(json_string "$_SARIF_LEVEL_FOR_V")"
   printf ',"properties":{"descriptorSource":"synthesised"}'
   printf '}'
 }
