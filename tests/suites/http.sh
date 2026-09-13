@@ -644,60 +644,112 @@ assert_contains "$(cat "$SCOURSH_RUN_DIR/meta/incomplete_reason" 2>/dev/null || 
 unset SCOURSH_CONFIG_REQUEST_BUDGET
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 
-printf '\n-- tension 16: the circuit breaker --\n'
+printf '\n-- the 5xx-failure ceiling is 200, MEASURED against a real target rather than guessed --\n'
 
-# Status is chosen by PATH so a single transport stub can serve both the
-# failing and the succeeding request in one interleaved sequence.
+# docs/FOUNDATION.md tension 16's amendment records the measurement this
+# pins: re-deriving discovery's own backup-suffix candidates against a real,
+# ordinary target found 180 of 369 (49%) answer 500, so a default below that
+# (10, or the 50 an operator tried by hand, or even 100) is not a hypothetical
+# undershoot - it was observed. 200 is also bounded from ABOVE: at the
+# default 4 requests/second and the 60s window floor, at most ~240 requests
+# of any kind fit in one rolling window, so a default at or beyond that
+# ceiling could never open the counter at all under default settings, which
+# is the disable-by-a-different-route failure mode the window bounds already
+# refuse. This is why 200 is the shipped default rather than "a much larger
+# number" - a bigger default buys nothing past ~240, and the real target this
+# was measured against is proof enough that 200 has margin above what an
+# ordinary application actually produces.
+_HTTP_EFF_LIMIT=MISSING
+_http_effective_limit_set circuit-breaker-5xx-failures 2>/dev/null
+assert_eq 200 "$_HTTP_EFF_LIMIT" \
+  'the effective 5xx-failure threshold is 200 on an unedited install - FAILS if the ceiling and the §9.6.1 schema default (both meant to be 200) have drifted apart'
+
+printf '\n-- tension 16: the circuit breaker (transport-failure and 5xx-failure counters, split by the breaker-5xx-semantics fix) --\n'
+
+# Status/failure is chosen by PATH so one transport stub serves three
+# interleaved sequences: a well-formed 5xx (an answer, just a weak one), a
+# genuine transport-level failure (no usable response at all - the stub
+# signals this the same way a real curl failure does, with a non-zero
+# return), and a plain success.
 _test_transport_by_path() {
   printf '%s %s\n' "$1" "$3" >>"$TRANSPORT_LOG"
   case $5 in
-    /fail) printf '503\n\n' ;;
+    /fail-5xx) printf '503\n\n' ;;
+    /fail-transport) return 1 ;;
     *) printf '200\n\n' ;;
   esac
 }
 
+printf '\n-- the operator-measured bug this fix closes: a routine 5xx no longer counts toward the TRANSPORT threshold at all --\n'
+
+# PR #298 shipped ONE counter: a well-formed 5xx counted toward the same low,
+# transport-shaped default (10 failures/60s) a genuinely dead target trips.
+# Measured on a real run against an ordinary application that 5xxs on a
+# handful of unmatched/malformed routes (exactly what docs/DESIGN.md §7.2's
+# content-discovery and method-enumeration phases probe): 11 of 11 counted
+# failures were 500 STATUS RESPONSES, zero transport, and the run aborted
+# before any injection phase ran. Lowering the TRANSPORT threshold to 1 and
+# sending several 5xx responses proves they are now invisible to it - FAILS
+# under the pre-fix single counter, where the first 5xx below would have
+# opened the breaker immediately.
 _limits_reset
 : >"$TRANSPORT_LOG"
 SCOURSH_HTTP_TRANSPORT=_test_transport_by_path
-# Lowering the threshold is a tunable in the SAFE direction (a more sensitive
-# breaker), which is why the ceiling clamps only upwards.  It keeps this case
-# to four requests instead of nineteen.
-export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=3
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=1
+for _i in 1 2 3 4 5; do
+  rc=0
+  http_request GET 'https://still-good.fixture.example/fail-5xx' >/dev/null || rc=$?
+  assert_eq 0 "$rc" "5xx response #$_i does not trip the transport-failure breaker, whose threshold this run lowered to 1"
+done
+unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
+
+printf '\n-- but a SUSTAINED run of 5xx still trips its OWN, separate, much-higher threshold --\n'
+
+# tension 16 itself is why 5xx cannot simply be excluded from the breaker
+# altogether (the option this fix rejected): "each worker sees only its own
+# share of the 5xx responses ... a target that is comprehensively down" is
+# the exact scenario the breaker exists to catch, and a target that 5xxs on
+# EVERYTHING is that scenario. So the counter still exists - it is just
+# SEPARATE from the transport one, and its own threshold (not
+# circuit-breaker-failures) is what a real DAST run raises for a target that
+# answers unmatched paths with a 5xx.
+_limits_reset
+: >"$TRANSPORT_LOG"
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES=3
 rc=0
-http_request GET 'https://still-good.fixture.example/fail' >/dev/null || rc=$?
+http_request GET 'https://still-good.fixture.example/fail-5xx' >/dev/null || rc=$?
 assert_eq 0 "$rc" 'one 5xx is recorded, not fatal'
 rc=0
-http_request GET 'https://still-good.fixture.example/fail' >/dev/null || rc=$?
+http_request GET 'https://still-good.fixture.example/fail-5xx' >/dev/null || rc=$?
 assert_eq 0 "$rc" 'two 5xx responses, still below the configured threshold of 3, do not abort the run'
 rc=0
 http_request GET 'https://still-good.fixture.example/ok' >/dev/null || rc=$?
 assert_eq 0 "$rc" 'a successful request interleaved between the failures is served normally'
 rc=0
-( http_request GET 'https://still-good.fixture.example/fail' >/dev/null ) 2>"$W/breaker-die.err" || rc=$?
+( http_request GET 'https://still-good.fixture.example/fail-5xx' >/dev/null ) 2>"$W/breaker-die-5xx.err" || rc=$?
 assert_eq 5 "$rc" \
-  'the THIRD failure inside the window trips the breaker and exits 5, even though a success was interleaved before it - FAILS under a consecutive-failures reading, where the interleaved success resets the counter and this request is only failure number one. docs/FOUNDATION.md tension 16 freezes a ROLLING WINDOW ("the rolling window counters"), and docs/STEP5-DAST-PLAN.md states it as "10 failures in a 60s window"'
+  'the THIRD 5xx inside the window trips the breaker and exits 5, even though a success was interleaved before it - FAILS under a consecutive-failures reading, where the interleaved success resets the counter and this request is only failure number one. docs/FOUNDATION.md tension 16 freezes a ROLLING WINDOW ("the rolling window counters")'
 
 # The abort message is the ONLY thing an operator sees at the moment the run
 # stops, so it is where the lever to raise has to be named - a fact buried
 # only in docs/USAGE.md's "Conservative DAST limits" prose is a fact an
-# operator mid-incident will not go read.  It names both keys BY THEIR ACTUAL
-# FLAG SPELLING (never a paraphrase a config-key rename could silently drift
-# from), states the CURRENT effective values so an operator does not have to
-# go compute what they already hit, and states the judgement call rather than
-# just the lever: raising it is right for a target that is UP but answers
-# with a 5xx instead of a 404/401/405, and wrong for a target that is
-# genuinely down, where raising it would just hide that.
-BREAKER_DIE=$(cat "$W/breaker-die.err")
-assert_contains "$BREAKER_DIE" '--circuit-breaker-failures' \
-  'the breaker-open message names the --circuit-breaker-failures flag by its real spelling, not a paraphrase'
-assert_contains "$BREAKER_DIE" '--circuit-breaker-window' \
-  'the breaker-open message names the --circuit-breaker-window flag by its real spelling, not a paraphrase'
-assert_contains "$BREAKER_DIE" 'currently 3' \
-  'the message states the CURRENT effective threshold (3, this test lowered it), not the schema default (10) - an operator comparing the message against their own invocation needs the number that actually applies to THIS run'
-assert_contains "$BREAKER_DIE" 'docs/USAGE.md' \
+# operator mid-incident will not go read. It names the 5XX-SPECIFIC flag BY
+# ITS REAL SPELLING (never the transport flag - raising the wrong one would
+# do nothing), states the CURRENT effective threshold, and states the
+# judgement call rather than just the lever: reaching even the higher
+# threshold can still mean the target is comprehensively broken, in which
+# case raising it further only hides that.
+BREAKER_DIE_5XX=$(cat "$W/breaker-die-5xx.err")
+assert_contains "$BREAKER_DIE_5XX" '--circuit-breaker-5xx-failures' \
+  'the 5xx breaker-open message names the --circuit-breaker-5xx-failures flag by its real spelling, not the transport flag and not a paraphrase'
+assert_contains "$BREAKER_DIE_5XX" '--circuit-breaker-window' \
+  'the message names the --circuit-breaker-window flag by its real spelling'
+assert_contains "$BREAKER_DIE_5XX" 'currently 3' \
+  'the message states the CURRENT effective threshold (3, this test lowered it), not the schema default (200)'
+assert_contains "$BREAKER_DIE_5XX" 'docs/USAGE.md' \
   'the message points at the doc that carries the full "Conservative DAST limits" guidance rather than trying to restate all of it inline'
-assert_contains "$BREAKER_DIE" 'genuinely down' \
-  'the message states the judgement an operator must make before reaching for the flags - FAILS on a version that names the lever with no caveat, which reads as "always safe to raise this" and would turn a real outage into a wider window that just delays the same abort'
+assert_contains "$BREAKER_DIE_5XX" 'comprehensively broken' \
+  'the message states the judgement an operator must make before reaching for the flag - FAILS on a version that names the lever with no caveat, which reads as "always safe to raise this" and would turn a real outage into a wider window that just delays the same abort'
 
 TRANSPORT_BEFORE=$(cat "$TRANSPORT_LOG")
 rc=0
@@ -706,6 +758,42 @@ assert_eq 5 "$rc" \
   'once the breaker is open every later request in the run exits 5, including one that would have succeeded - tension 16 makes the abort flag a fan-out signal every worker checks BEFORE every request, not a per-caller return value'
 assert_eq "$TRANSPORT_BEFORE" "$(cat "$TRANSPORT_LOG")" \
   'and that request never reached the transport - the breaker stops traffic, it does not merely report it'
+unset SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES
+
+printf '\n-- the HARD CONSTRAINT: a target that TRULY stops answering still trips the ORIGINAL, low, transport threshold --\n'
+
+# The fix above must not have bought its false-positive relief by weakening
+# the breaker against a genuinely dead target. A transport-level failure (no
+# usable response at all) is UNCHANGED: same key, same conservative default,
+# same rolling-window behaviour, still the most sensitive signal the breaker
+# has.
+_limits_reset
+: >"$TRANSPORT_LOG"
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=3
+rc=0
+http_request GET 'https://still-good.fixture.example/fail-transport' >/dev/null || rc=$?
+assert_eq 1 "$rc" \
+  'one transport failure is recorded and reported to the CALLER as an ordinary failed request (exit 1) - it does not abort the RUN, which is the distinction "not fatal" draws here (a 5xx never even returns non-zero, since it is a normal HTTP response)'
+rc=0
+http_request GET 'https://still-good.fixture.example/fail-transport' >/dev/null || rc=$?
+assert_eq 1 "$rc" 'two transport failures, still below the configured threshold of 3, do not abort the run'
+rc=0
+http_request GET 'https://still-good.fixture.example/ok' >/dev/null || rc=$?
+assert_eq 0 "$rc" 'a successful request interleaved between the failures is served normally'
+rc=0
+( http_request GET 'https://still-good.fixture.example/fail-transport' >/dev/null ) 2>"$W/breaker-die-transport.err" || rc=$?
+assert_eq 5 "$rc" \
+  'the THIRD transport failure inside the window trips the breaker and exits 5, exactly as it did before this fix - a target that genuinely stops answering must still stop the run'
+
+BREAKER_DIE_TRANSPORT=$(cat "$W/breaker-die-transport.err")
+assert_contains "$BREAKER_DIE_TRANSPORT" '--circuit-breaker-failures' \
+  'the transport breaker-open message names the --circuit-breaker-failures flag (not the 5xx one) by its real spelling'
+assert_contains "$BREAKER_DIE_TRANSPORT" 'currently 3' \
+  'the message states the CURRENT effective transport threshold'
+assert_contains "$BREAKER_DIE_TRANSPORT" 'genuinely down or unreachable' \
+  'the message states that a transport-level failure is the strongest evidence the breaker has - it is not the weaker, higher-threshold 5xx signal'
+assert_contains "$BREAKER_DIE_TRANSPORT" '--circuit-breaker-5xx-failures' \
+  'the message also names the SEPARATE 5xx counter, so an operator whose target answers with 5xx rather than truly failing to answer knows which flag actually applies to them'
 unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
 SCOURSH_HTTP_TRANSPORT=_test_transport
 
@@ -765,15 +853,19 @@ assert_at_least_ms 2000 $(( T1 - T0 )) \
 _limits_reset
 : >"$W/wA.log"
 : >"$W/wB.log"
-export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=3
+# The worker's own /fail path answers 503 (a well-formed 5xx), so this races
+# the 5XX counter specifically - the transport counter's cross-process
+# sharing is pinned independently below via direct
+# _http_breaker_record_failure calls (which default to the transport class).
+export SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES=3
 rcA=0
 bash "$W/limit-worker.sh" "$ROOT" "$FIXTURE_SCOPE" 'https://still-good.fixture.example/fail' 2 "$W/wA.log" || rcA=$?
-assert_eq 0 "$rcA" 'the first worker process records two failures, below the threshold, and exits cleanly'
+assert_eq 0 "$rcA" 'the first worker process records two 5xx failures, below the threshold, and exits cleanly'
 rcB=0
 bash "$W/limit-worker.sh" "$ROOT" "$FIXTURE_SCOPE" 'https://still-good.fixture.example/fail' 1 "$W/wB.log" || rcB=$?
 assert_eq 5 "$rcB" \
-  'a SECOND, INDEPENDENT process issuing the third failure trips the breaker and exits 5 - FAILS under per-process breaker state, where this process starts its count at zero, sees one failure, and never trips. That is tension 16 exactly: "eight workers each below threshold keep hammering a target that is comprehensively down"'
-unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
+  'a SECOND, INDEPENDENT process issuing the third 5xx failure trips the breaker and exits 5 - FAILS under per-process breaker state, where this process starts its count at zero, sees one failure, and never trips. That is tension 16 exactly: "eight workers each below threshold keep hammering a target that is comprehensively down"'
+unset SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES
 
 _limits_reset
 : >"$W/wA.log"
@@ -834,10 +926,10 @@ export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=2
 # against rules/RULE-FORMAT.md 9.6.1's `^(0|[1-9][0-9]*)$` shape for this key.
 export SCOURSH_CONFIG_CIRCUIT_BREAKER_WINDOW=10000000000000000000
 rc=0
-( http_request GET 'https://still-good.fixture.example/fail' >/dev/null ) || rc=$?
-assert_eq 0 "$rc" 'the first failure under an absurd window is recorded, not fatal'
+( http_request GET 'https://still-good.fixture.example/fail-transport' >/dev/null ) || rc=$?
+assert_eq 1 "$rc" 'the first failure under an absurd window is recorded, not fatal'
 rc=0
-( http_request GET 'https://still-good.fixture.example/fail' >/dev/null ) || rc=$?
+( http_request GET 'https://still-good.fixture.example/fail-transport' >/dev/null ) || rc=$?
 assert_eq 5 "$rc" \
   'a circuit-breaker-window ABOVE the 64-bit range still trips the breaker at the configured threshold - FAILS while the window is clamped upwards only, where the oversized literal wraps, the rolling-window cutoff lands in the future, every stored failure stamp is pruned on every call, and one schema-valid config value silently disables the breaker entirely'
 unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES SCOURSH_CONFIG_CIRCUIT_BREAKER_WINDOW

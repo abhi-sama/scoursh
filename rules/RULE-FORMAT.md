@@ -917,6 +917,7 @@ an absent file is equivalent to one containing only `id: scanner`.
 | `max-redirects` | single | no | Non-negative integer | `5` |
 | `request-budget` | single | no | Positive integer, per run | `20000` |
 | `circuit-breaker-failures` | single | no | Positive integer | `10` |
+| `circuit-breaker-5xx-failures` | single | no | Positive integer | `200` |
 | `circuit-breaker-window` | single | no | Seconds | `60` |
 | `fail-on` | single | no | Severity name or `none` | `none` |
 | `min-confidence` | single | no | `high` `medium` `low` | `low` |
@@ -952,6 +953,13 @@ peers that made adding a key to this frozen schema costly to land in parallel) h
 `modules/dast/passive/headers_engine.sh`'s `hdr_load_recommended` header for the read precedence
 (config, then the vendored-file/environment-seam mechanism it replaces as the primary source but does
 not remove).  Additive and optional, so it too trips §14 item 2 alone with no `format_version` bump.
+
+`circuit-breaker-5xx-failures` is the same shape again (the breaker-5xx-semantics fix,
+`docs/FOUNDATION.md` tension 16's amendment): a well-formed 5xx response is counted toward this
+SEPARATE counter rather than toward `circuit-breaker-failures`, which after this fix counts only
+transport-level failures (no usable response at all).  See `lib/http.sh`'s
+`_http_breaker_record_failure` for the full reasoning behind the split.  Additive and optional, so it
+too trips §14 item 2 alone with no `format_version` bump.
 
 `docs/DESIGN.md` §11 also lists "the named scan-profile check-sets (`quick`/`full`/`compliance`)" as
 living here.

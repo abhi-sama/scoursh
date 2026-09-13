@@ -898,7 +898,7 @@ _http_curl_cfg_quote() {
 # curl/wget/nc/`openssl s_client` in any file but the two it exempts by path.
 http_authorize_raw_connection() {
   local url=$1 target=${2:-} dns_fatal=${3:-true}
-  local rps_milli budget breaker_failures breaker_window inflight_max
+  local rps_milli budget breaker_failures breaker_5xx_failures breaker_window inflight_max
   _HTTP_RAW_ADDR='' _HTTP_RAW_HOST='' _HTTP_RAW_PORT='' _HTTP_RAW_SCHEME=''
   _HTTP_RAW_BUCKET='' _HTTP_RAW_REASON=''
 
@@ -920,6 +920,8 @@ http_authorize_raw_connection() {
   budget=$_HTTP_EFF_LIMIT
   _http_effective_limit_set circuit-breaker-failures
   breaker_failures=$_HTTP_EFF_LIMIT
+  _http_effective_limit_set circuit-breaker-5xx-failures
+  breaker_5xx_failures=$_HTTP_EFF_LIMIT
   _http_effective_limit_set circuit-breaker-window
   breaker_window=$_HTTP_EFF_LIMIT
   # Resolved here so the announced numbers are the whole set, and so an
@@ -929,7 +931,7 @@ http_authorize_raw_connection() {
   _http_effective_limit_set jobs
   inflight_max=$_HTTP_EFF_LIMIT
   _http_limit_dir_set
-  _http_limit_announce_once "$rps_milli" "$budget" "$breaker_failures" "$breaker_window" "$inflight_max"
+  _http_limit_announce_once "$rps_milli" "$budget" "$breaker_failures" "$breaker_5xx_failures" "$breaker_window" "$inflight_max"
 
   _http_abort_check "$bucket"
   _http_throttle "$bucket" "$rps_milli" "$budget"
@@ -1289,6 +1291,13 @@ _http_limit_ceiling_set() {
     jobs) _HTTP_LIMIT_CEIL=4 ;;
     request-budget) _HTTP_LIMIT_CEIL=5000 ;;
     circuit-breaker-failures) _HTTP_LIMIT_CEIL=10 ;;
+    # The 5xx counter's own ceiling (docs/FOUNDATION.md tension 16's
+    # amendment): equal to its own §9.6.1 default, the same "no clamp, no
+    # warning, on an unedited install" property every other ceiling here has.
+    # An order of magnitude above the transport threshold because a 5xx is a
+    # real answer and individually weaker evidence than "no answer at all" -
+    # see _http_breaker_record_failure's own header for the full reasoning.
+    circuit-breaker-5xx-failures) _HTTP_LIMIT_CEIL=200 ;;
     circuit-breaker-window) _HTTP_LIMIT_CEIL=60 ;;
     *) _HTTP_LIMIT_CEIL=''; return 1 ;;
   esac
@@ -1436,7 +1445,8 @@ _http_limit_warn_clamp() {
 # The rate has its own accessor below because it is the one decimal key.
 #
 # WHICH BOUNDS AN AFFIRMATION LIFTS, AND WHICH IT NEVER DOES.  The affirmation
-# raises the four UPPER bounds - rate, concurrency, budget, breaker threshold -
+# raises the five UPPER bounds - rate, concurrency, budget, and BOTH breaker
+# thresholds (transport-failure and 5xx-failure, tension 16's amendment) -
 # because those are the numbers whose only justification is that this tool
 # cannot vet the host, and against a host that genuinely is the operator's, a
 # 4/s cap has no safety content.  Concurrency joins that list rather than the
@@ -1612,10 +1622,10 @@ _http_limit_warn_coarse_clock() {
 # difference between one fork per run and one fork per request.  The mkdir is
 # still what decides, because it is the part that is atomic between workers.
 _http_limit_announce_once() {
-  local rps_milli=$1 budget=$2 failures=$3 window=$4 inflight=$5
+  local rps_milli=$1 budget=$2 failures=$3 failures5xx=$4 window=$5 inflight=$6
   [[ -d $_HTTP_LIMIT_DIR/announced ]] && return 0
   mkdir "$_HTTP_LIMIT_DIR/announced" 2>/dev/null || return 0
-  log_info "request limiter armed for this run: $(_http_rps_render "$rps_milli") requests/second, at most $inflight request(s) in flight at once, a per-run budget of $budget requests, and a circuit breaker at $failures failed requests within ${window}s (docs/FOUNDATION.md tension 16)"
+  log_info "request limiter armed for this run: $(_http_rps_render "$rps_milli") requests/second, at most $inflight request(s) in flight at once, a per-run budget of $budget requests, and a circuit breaker at $failures transport-level failure(s) or $failures5xx well-formed-5xx response(s) within ${window}s (docs/FOUNDATION.md tension 16)"
   return 0
 }
 
@@ -1699,7 +1709,7 @@ http_budget_remaining_set() {
 # Dies (exit 2) for an explicit CLI/env value above a ceiling with no
 # affirmation, so it must be called directly and never through `$(...)`.
 http_limits_record() {
-  local rps_milli budget failures window inflight contact
+  local rps_milli budget failures failures5xx window inflight contact
   local rps_ceil='4.000'
 
   _http_effective_rps_milli_set
@@ -1724,6 +1734,10 @@ http_limits_record() {
   failures=$_HTTP_EFF_LIMIT
   _http_limit_delta_record circuit-breaker-failures 10 "$failures"
 
+  _http_effective_limit_set circuit-breaker-5xx-failures
+  failures5xx=$_HTTP_EFF_LIMIT
+  _http_limit_delta_record circuit-breaker-5xx-failures 200 "$failures5xx"
+
   _http_effective_limit_set circuit-breaker-window
   window=$_HTTP_EFF_LIMIT
 
@@ -1733,7 +1747,7 @@ http_limits_record() {
   # reader has to reason from the version number.
   run_record limits_enforced "request-budget:$budget (finite, never removable)"
   run_record limits_enforced "concurrency:$inflight-in-flight (bounded at the transport, never removable)"
-  run_record limits_enforced "circuit-breaker:$failures-failures/${window}s (never disableable)"
+  run_record limits_enforced "circuit-breaker:$failures-transport-failures-or-$failures5xx-5xx-failures/${window}s (never disableable)"
   run_record limits_enforced 'scope-gate:config/scope.conf (every URL and every redirect hop; no affirmation authorises a target)'
   run_record limits_enforced 'payloads:detection-only (docs/DESIGN.md §7.3; no destructive payload exists at any setting)'
   run_record limits_enforced 'ssrf:in-scope-sentinels-only'
@@ -1934,18 +1948,33 @@ _http_throttle() {
   done
 }
 
-# What counts as a failure, stated rather than assumed.  A transport-level
-# failure (no usable response at all) and a 5xx.  NOT a 4xx: a 404 is the most
-# common response a DAST run gets and is a RESULT, not a fault, so counting it
-# would open the breaker on every healthy scan.  429 is deliberately left out
-# too - docs/STEP5-DAST-PLAN.md's argument for the breaker is specifically
-# that "a target returning sustained 5xx produces no useful findings", and
-# whether a throttling target should also trip it is a real question that
-# belongs in the register rather than being settled here by a regex.
-_http_status_is_failure() {
-  local status=$1
-  [[ $status =~ ^[1-5][0-9][0-9]$ ]] || return 0
-  [[ $status =~ ^5[0-9][0-9]$ ]]
+# What counts as a failure, stated rather than assumed - and, since the
+# breaker-5xx-semantics fix, WHICH of two classes it is.  NOT a 4xx: a 404 is
+# the most common response a DAST run gets and is a RESULT, not a fault, so
+# counting it would open the breaker on every healthy scan.  429 is
+# deliberately left out too (see modules/dast/ratelimit_engine.sh's own note on
+# why a 503 is not a throttle either) - whether a throttling target should also
+# trip the breaker is a real question that belongs in the register rather than
+# being settled here by a regex.
+#
+# `_http_status_is_malformed STATUS` - true when the TRANSPORT reported success
+# (tx_rc == 0 at the one call site that ever asks) but the status line itself
+# is not a well-formed 1xx-5xx code.  Grouped with transport-level failures,
+# never with 5xx: a transport that cannot even label a real status is stronger
+# evidence of a broken transport/parse than "the application chose to answer
+# 500", which is the exact distinction the 5xx split below exists to draw, so
+# folding this edge case into the weaker class would undermine it.
+_http_status_is_malformed() {
+  [[ $1 =~ ^[1-5][0-9][0-9]$ ]] && return 1
+  return 0
+}
+
+# `_http_status_is_5xx STATUS` - true only for a well-formed 5xx status line.
+# This is what `http_request` now records against the SEPARATE, much higher
+# `circuit-breaker-5xx-failures` threshold rather than the transport one - see
+# `_http_breaker_record_failure`'s own header for the full reasoning.
+_http_status_is_5xx() {
+  [[ $1 =~ ^5[0-9][0-9]$ ]]
 }
 
 # The circuit breaker, per scope target, over a ROLLING WINDOW.
@@ -1962,15 +1991,84 @@ _http_status_is_failure() {
 # `half-open` state, but opening the breaker aborts the run (exit 5) rather
 # than pausing it, so no process ever survives to probe a recovery; inventing
 # a half-open transition now would be designing past the frozen resolution.
+#
+# TWO INDEPENDENT COUNTERS PER BUCKET, NOT ONE (the breaker-5xx-semantics
+# fix, docs/FOUNDATION.md tension 16's amendment).  PR #298's own message
+# already said it: an application that returns a 5xx for an unmatched path, a
+# wrong method, or an unauthenticated route IS answering - that is a routine
+# target quirk, not evidence of an outage - and yet the single counter it
+# shipped with counted exactly that 5xx toward the same 10-failures/60s
+# threshold a genuinely dead target trips, so `scan.sh dast --intensity
+# active` could not finish content-discovery against an ordinary application
+# that 500s on a handful of unmatched/malformed routes (measured: 11 of 11
+# counted failures on a real run were 500 STATUS RESPONSES, zero transport).
+# The fix is not "stop counting 5xx" (option (a) this ticket's brief weighed
+# and rejected): tension 16 itself gives the scenario a unified counter was
+# for - "each worker sees only its own share of the 5xx responses ... a
+# target that is comprehensively down" - and a target that 5xxs on
+# EVERYTHING really is that scenario, so losing the ability to trip on
+# sustained 5xx would be a real regression, not a fix. Nor is it "exempt
+# discovery/methods" (the narrower option (c)): that would (a) require
+# threading which PHASE is calling into this general-purpose chokepoint,
+# which every other caller (crawl.sh, auth.sh, every future module) would
+# then have to remember to NOT do, the exact "control each caller must
+# remember" tension 19 already rejects for this file; and (b) let a target
+# that is completely 5xx-dead during discovery specifically grind through
+# its entire (up to 600-request) candidate set for nothing, defeating the
+# efficiency the breaker exists for in precisely the phase with the largest
+# request volume. So: `class` (`transport` or `5xx`) picks a SEPARATE
+# rolling-window counter and threshold. `transport` (tx_rc != 0 or a
+# malformed status line - see `_http_status_is_malformed` - "no usable
+# response at all") keeps the original, most-sensitive threshold
+# (`circuit-breaker-failures`, default 10/60s): that remains the strongest
+# and fastest signal of an outage. `5xx` (a well-formed 5xx status) is
+# counted against a SEPARATE, much higher threshold
+# (`circuit-breaker-5xx-failures`, default 200/60s, its own §9.6.1 key): real
+# evidence, but individually weaker, since the response IS an answer. Either
+# counter reaching its own threshold opens the SAME breaker (the shared
+# abort flag below is keyed on the bucket, not the class), so "sustained 5xx"
+# still aborts the run - it now needs two hundred data points instead of ten,
+# which is the whole point: enough to distinguish "this target 5xxs on a
+# handful of backup-suffix and malformed-method probes" from "this target has
+# stopped answering", without needing an operator to guess a number "in the
+# thousands" by hand.
+#
+# 200 IS MEASURED, NOT GUESSED, AND IS BOUNDED BY THE RATE LIMITER ON THE
+# OTHER SIDE.  Instrumenting a real crawl+discovery pass against an ordinary,
+# healthy OWASP Juice Shop instance (41 crawled endpoints - an unremarkable
+# count) and independently re-deriving discovery's own backup-suffix
+# candidates (endpoint path + one of nine suffixes, `_discovery_backup_suffixes`
+# above) found **180 of 369** candidates - 49% - answer 500 on this ordinary
+# target, because appending a suffix to a nested REST path trips an unrelated
+# routing quirk in its framework. A default of 10 (the pre-fix shared
+# counter) or 50 (the number this project's own operator tried by hand and
+# still hit) both undershoot that by an order of magnitude; even 100 was
+# measured insufficient end to end. 200 has real margin above 180 for THIS
+# target, but the harder constraint is the one on the other side: the
+# default rate ceiling is 4 requests/second and the window floor is 60s
+# (both frozen, see `_http_limit_ceiling_set`/`_HTTP_BREAKER_WINDOW_MAX`), so
+# AT MOST ~240 requests of any kind can ever land inside one rolling window
+# under an unaffirmed run. A default set at or above that ceiling would not
+# merely be generous - it would make the 5xx counter UNABLE TO OPEN AT ALL
+# under default settings, which is the disable-by-a-back-door failure mode
+# tension 16's own window bounds already exist to refuse (a schema-valid
+# value that reaches "never trips" by a route other than the frozen refusal).
+# 200 sits with real margin below that ~240 physical ceiling and real margin
+# above the 180 measured on an ordinary target, which is why it is the
+# shipped default rather than 100, and why it is not "a much larger number"
+# either: a bigger default buys nothing once it can never be reached, and
+# "raise it until it works" is exactly the non-answer this fix exists to
+# retire - the number is derived from the two real bounds on either side of
+# it, not chosen to make one target's log go quiet.
 _http_breaker_record_failure() {
-  local bucket=$1 threshold=$2 window=$3
+  local bucket=$1 threshold=$2 window=$3 class=${4:-transport}
   local slug state_file line now cutoff i v count start out
   local -a fields=() kept=() bounded=()
 
   _http_limit_dir_set
   _http_limit_slug_set "$bucket"
   slug=$_HTTP_SLUG
-  state_file=$_HTTP_LIMIT_DIR/breaker/$slug.state
+  state_file=$_HTTP_LIMIT_DIR/breaker/$slug.$class.state
   now=$(now_epoch)
   cutoff=$(( now - window ))
 
@@ -2011,11 +2109,22 @@ _http_breaker_record_failure() {
     # The fan-out abort signal (tension 16).  Written before the mutex is
     # released so no worker can take a token against a target that is already
     # decided, and it is what makes the abort reach the OTHER workers: they
-    # are separate processes and cannot see this one's return value.
+    # are separate processes and cannot see this one's return value.  Keyed on
+    # the BUCKET alone (never the class) - the run is stopping against this
+    # target either way, and a worker checking `_http_abort_check` has no use
+    # for which of the two counters got there first.
     : >"$_HTTP_LIMIT_DIR/abort/$slug"
     mutex_release "$_HTTP_LIMIT_MUTEX"
-    die "$SCOURSH_EXIT_INCOMPLETE" \
-      "the circuit breaker opened for target '$bucket': ${#bounded[@]} failed requests within ${window}s (threshold $threshold); the run stopped rather than continuing against a target that is not answering, so its coverage is incomplete. This can mean the target is genuinely down - in which case raising the threshold only hides that. It can also mean the target IS answering, just not with 2xx/3xx/4xx: an application that returns a 5xx (rather than a 404/401/405) for an unmatched path, a wrong method, or an unauthenticated route is a routine target quirk, not evidence of an outage, and content-discovery/method-enumeration phases probe exactly those shapes. Only in that second case is '--circuit-breaker-failures' (currently $threshold) and/or '--circuit-breaker-window' (currently ${window}s) the right lever - both need --i-own-target to raise, since they are CLI-supplied values above the conservative default (docs/USAGE.md, 'Conservative DAST limits and --i-own-target')."
+    case $class in
+      5xx)
+        die "$SCOURSH_EXIT_INCOMPLETE" \
+          "the circuit breaker opened for target '$bucket': ${#bounded[@]} well-formed 5xx responses within ${window}s (threshold $threshold); the run stopped rather than continuing against a target that is not answering usefully, so its coverage is incomplete. A single 5xx is not evidence of an outage on its own - an application that answers an unmatched path, a wrong method, or an unauthenticated route with a 5xx (rather than a 404/401/405) is a routine target quirk, and content-discovery/method-enumeration phases probe exactly those shapes, which is why this threshold is much higher than the transport-failure one. Reaching it anyway means the target answered with a server error this many times in the window, which can still mean it is comprehensively broken - in which case raising the threshold only hides that. If instead this is expected noise from an idiosyncratic-but-healthy target, '--circuit-breaker-5xx-failures' (currently $threshold) and/or '--circuit-breaker-window' (currently ${window}s) is the right lever - both need --i-own-target to raise, since they are CLI-supplied values above the conservative default (docs/USAGE.md, 'Conservative DAST limits and --i-own-target')."
+        ;;
+      *)
+        die "$SCOURSH_EXIT_INCOMPLETE" \
+          "the circuit breaker opened for target '$bucket': ${#bounded[@]} transport-level failures (no usable response at all - connection refused, timeout, reset, or a malformed status line) within ${window}s (threshold $threshold); the run stopped rather than continuing against a target that is not answering, so its coverage is incomplete. This is the strongest evidence the breaker has, and it is almost always a genuinely down or unreachable target - raising the threshold hides that rather than fixing it. If this specific target is known to be flaky at the transport level for a reason that is not an outage, '--circuit-breaker-failures' (currently $threshold) and/or '--circuit-breaker-window' (currently ${window}s) is the lever - both need --i-own-target to raise, since they are CLI-supplied values above the conservative default (docs/USAGE.md, 'Conservative DAST limits and --i-own-target'). A target that answers with a well-formed 5xx rather than failing to answer at all is tracked by the SEPARATE, much higher '--circuit-breaker-5xx-failures' counter instead, which is what a later run against this same target trips if its own, higher threshold is reached instead."
+        ;;
+    esac
   fi
   mutex_release "$_HTTP_LIMIT_MUTEX"
   return 0
@@ -2339,7 +2448,7 @@ _http_inflight_release() {
 http_request() {
   local method=$1 url=$2 max_redirects=${3:-5} target=${4:-}
   local cur=$url hop=0 addr out status location ctype bucket line tx_rc
-  local rps_milli budget breaker_failures breaker_window inflight_max
+  local rps_milli budget breaker_failures breaker_5xx_failures breaker_window inflight_max
   local origin prev_origin='' item hop_url
   local -a req_headers=() kept=() outlines=()
 
@@ -2382,15 +2491,17 @@ http_request() {
   budget=$_HTTP_EFF_LIMIT
   _http_effective_limit_set circuit-breaker-failures
   breaker_failures=$_HTTP_EFF_LIMIT
+  _http_effective_limit_set circuit-breaker-5xx-failures
+  breaker_5xx_failures=$_HTTP_EFF_LIMIT
   _http_effective_limit_set circuit-breaker-window
   breaker_window=$_HTTP_EFF_LIMIT
-  # Resolved with the other four rather than inside `_http_inflight_acquire`
+  # Resolved with the others rather than inside `_http_inflight_acquire`
   # alone, so an explicit over-ceiling `jobs` is refused before this call sends
   # anything, and so the announced numbers are the complete set.
   _http_effective_limit_set jobs
   inflight_max=$_HTTP_EFF_LIMIT
   _http_limit_dir_set
-  _http_limit_announce_once "$rps_milli" "$budget" "$breaker_failures" "$breaker_window" "$inflight_max"
+  _http_limit_announce_once "$rps_milli" "$budget" "$breaker_failures" "$breaker_5xx_failures" "$breaker_window" "$inflight_max"
 
   while :; do
     bucket=${_HTTP_MATCH_ID:-unattributed}
@@ -2506,7 +2617,9 @@ http_request() {
     if (( tx_rc != 0 )); then
       # No usable response at all, which is the strongest evidence the breaker
       # gets; it is recorded before the failure is returned, so a caller that
-      # swallows the non-zero status cannot also swallow the breaker.
+      # swallows the non-zero status cannot also swallow the breaker.  Class
+      # `transport` (the default): the most sensitive threshold, unchanged by
+      # the breaker-5xx-semantics fix.
       _http_breaker_record_failure "$bucket" "$breaker_failures" "$breaker_window"
       return 1
     fi
@@ -2525,8 +2638,17 @@ http_request() {
     ctype=${outlines[2]:-}
     _HTTP_LAST_CONTENT_TYPE=$ctype
 
-    if _http_status_is_failure "$status"; then
+    # A well-formed status line that is NOT 1xx-5xx at all (the transport
+    # claimed success but the status line is unusable) is grouped with
+    # transport-level failures rather than with 5xx - see
+    # `_http_status_is_malformed`'s own header for why. A genuine 5xx is
+    # counted against the SEPARATE, much higher `circuit-breaker-5xx-failures`
+    # threshold: it is a real answer, just a weaker signal than "no answer at
+    # all" (docs/FOUNDATION.md tension 16's amendment).
+    if _http_status_is_malformed "$status"; then
       _http_breaker_record_failure "$bucket" "$breaker_failures" "$breaker_window"
+    elif _http_status_is_5xx "$status"; then
+      _http_breaker_record_failure "$bucket" "$breaker_5xx_failures" "$breaker_window" 5xx
     fi
 
     if [[ $status =~ ^3[0-9][0-9]$ && -n $location ]] && (( hop < max_redirects )); then

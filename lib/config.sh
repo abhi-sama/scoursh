@@ -171,6 +171,12 @@ _scanner_default() {
     max-redirects) printf '%s' 5 ;;
     request-budget) printf '%s' 20000 ;;
     circuit-breaker-failures) printf '%s' 10 ;;
+    # docs/FOUNDATION.md tension 16's amendment (the breaker-5xx-semantics
+    # fix): a well-formed 5xx is a real answer and weaker evidence of an
+    # outage than a transport-level failure, so it is counted separately
+    # against its own, much higher threshold - see lib/http.sh's
+    # _http_breaker_record_failure for the full reasoning.
+    circuit-breaker-5xx-failures) printf '%s' 200 ;;
     circuit-breaker-window) printf '%s' 60 ;;
     fail-on) printf '%s' none ;;
     min-confidence) printf '%s' low ;;
@@ -235,6 +241,7 @@ _scanner_validate_value() {
     requests-per-second)
       [[ $val =~ ^(0|[1-9][0-9]*)(\.[0-9]+)?$ ]] ;;
     jobs | http-timeout | request-budget | circuit-breaker-failures \
+      | circuit-breaker-5xx-failures \
       | max-matches-per-file | evidence-max-bytes | state-retain-runs \
       | history-window-days | history-max-commits | lock-stale-seconds \
       | mutex-timeout-seconds)

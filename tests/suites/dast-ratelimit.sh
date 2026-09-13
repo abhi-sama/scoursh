@@ -147,6 +147,7 @@ id: scanner
 requests-per-second: $1
 request-budget: $2
 circuit-breaker-failures: 100000
+circuit-breaker-5xx-failures: 100000
 EOF
   config_scanner_load "$W/scanner.conf"
 }
@@ -390,7 +391,7 @@ _cap_probe() {
     cd -- "$1"
     # shellcheck source=/dev/null
     source modules/dast/ratelimit_engine.sh
-    printf "id: scanner\nrequests-per-second: 5000\nrequest-budget: %s\ncircuit-breaker-failures: 100000\n" "$2" >"$3"
+    printf "id: scanner\nrequests-per-second: 5000\nrequest-budget: %s\ncircuit-breaker-failures: 100000\ncircuit-breaker-5xx-failures: 100000\n" "$2" >"$3"
     config_scanner_load "$3"
     rate_burst_size || true
     printf "%s\n" "$_RATE_BURST_N"

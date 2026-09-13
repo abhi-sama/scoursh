@@ -245,9 +245,11 @@ rate_signal_scan() {
 # turn "this endpoint collapses when you ask for it fifty times" - the worse
 # outcome - into a clean bill of health for the very control being tested.
 # lib/http.sh's own breaker draws the same line from the other side: a 5xx is a
-# failure it counts and a 429 is not (`_http_status_is_failure`), so a target
-# that 503s under this burst opens the circuit breaker and stops the run rather
-# than being reported as throttled.
+# failure it counts (against its own, separate `circuit-breaker-5xx-failures`
+# threshold - `_http_status_is_5xx`, docs/FOUNDATION.md tension 16's
+# amendment) and a 429 is not, so a target that 503s enough under this burst
+# still opens the circuit breaker and stops the run rather than being reported
+# as throttled.
 rate_status_is_throttle() {
   [[ $1 == 429 ]]
 }
