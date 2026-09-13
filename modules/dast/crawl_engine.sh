@@ -926,11 +926,16 @@ _crawl_js_literal_ok() {
   esac
   # A REGEX LITERAL STORED AS A STRING is the false positive this exists to
   # catch, and it is common: `"/^[a-z0-9_-]+$/"` starts with `/` exactly like
-  # a rooted path does. None of `^ $ [ ] | \` is ever RAW in a real URL path -
-  # a path that genuinely needed one of them would percent-encode it - so a
-  # candidate carrying any of them unencoded is regex/code, not a route.
+  # a rooted path does. None of `^ $ [ ] | \ ( )` is ever RAW in a real URL
+  # path - a path that genuinely needed one of them would percent-encode it -
+  # so a candidate carrying any of them unencoded is regex/code, not a route.
+  # `(`/`)` are in this set for the identical reason: measured against a real
+  # Angular bundle, the router's own source calls
+  # `this.peekStartsWith("/(")` to recognise its aux-route syntax, and the
+  # plain string literal `"/("` passed every other check here and was mined
+  # as the inventory endpoint `/(` before this exclusion existed.
   case $v in
-    *'^'* | *'$'* | *'['* | *']'* | *'|'* | *'\'*) return 1 ;;
+    *'^'* | *'$'* | *'['* | *']'* | *'|'* | *'\'* | *'('* | *')'*) return 1 ;;
   esac
   # A comment opener quoted as a literal - e.g. a templating engine's own
   # delimiter stored as a string constant - is not a reference.
@@ -970,6 +975,23 @@ crawl_js_scan_line() {
     (( found < _CRAWL_JS_MAX_URLS_PER_LINE )) || break
     c=${line:i:1}
     [[ $c == '"' || $c == "'" ]] || continue
+    # A quote whose PRECEDING character is a bare `/` is never a real string
+    # opener - a valid quoted literal is never written immediately after a
+    # division operator in practice, and this exact shape is how a bare JS
+    # REGEX LITERAL whose pattern itself contains a quote character
+    # (`.replace(/"/g,"&quot;")`, escaping HTML entities - a real, common
+    # minifier output) gets misread: this walker has no concept of a regex
+    # literal, so it treats the pattern's own `/"/ ` delimiter as if it opened
+    # a string, and the run of flag letters plus trailing punctuation before
+    # the REAL closing quote (`/g,` here) then passes every check in
+    # `_crawl_js_literal_ok` and is mined as a bogus endpoint. Measured
+    # against a real Juice Shop bundle: this produced the inventory endpoint
+    # `/g,`. Skipping this quote (never treating it as an opener) costs at
+    # most a MISS on the vanishingly rare literal division-by-string-literal,
+    # the accepted direction to be wrong in.
+    if (( i > 0 )) && [[ ${line:i-1:1} == '/' ]]; then
+      continue
+    fi
     q=$c
     p=$(( i + 1 ))
     val=''

@@ -187,6 +187,35 @@ Each has a full entry in `docs/FOUNDATION.md`.
   every value so target-derived text cannot forge a column. Note this does NOT make the existing
   tab-separated readers in this tree wrong - `crawl_html_extract` and the inventory readers emit no
   empty middle field - it makes the tab a hazard for any NEW stream that does.
+- **`crawl_js_scan_line`'s character walker has no concept of a JS regex literal, and both ways that
+  bites are real, measured false positives it mined out of a live Angular/Juice Shop bundle, not
+  hypothetical ones.** A plain string literal that IS a parenthesised code fragment - Angular's own
+  router calls `this.peekStartsWith("/(")` to recognise its aux-route syntax - passed every check in
+  `_crawl_js_literal_ok` before `(`/`)` joined the `^ $ [ ] | \` regex-metacharacter exclusion, and was
+  mined as the bogus endpoint `/(`. Separately, a BARE regex literal whose own pattern matches a quote
+  character - `.replace(/"/g,"&quot;")`, ordinary HTML-escaping code - has its regex delimiter
+  misread as a string opener, because the walker only knows `"`/`'` as quote characters and has no
+  regex-literal awareness at all; the flag-plus-punctuation run before the REAL closing quote (`/g,`)
+  then passes every check and gets mined too. The fix for the second one is a guard in
+  `crawl_js_scan_line` itself: a quote whose immediately preceding character is a bare `/` is never
+  treated as an opener, since a valid string literal is never written immediately after a division
+  operator in real code - a real regex literal always is. Both are pinned in
+  `tests/suites/dast-crawl.sh` and in the `pages-jsdiscovery` fixture bundle with the exact reproducing
+  shapes, not paraphrases of them.
+- **The tension-16 circuit breaker tripping during `discovery`/`methods` on a target this scanner is
+  actively finding MORE of is not evidence of a transport problem - check the STATUS before assuming
+  TXFAIL.** Measured against the local Juice Shop test target: enabling `js-endpoint-discovery`
+  (`crawl.sh`) took the endpoint inventory from 13 to 43, and `active/discovery.sh`'s backup/temp-suffix
+  technique (B) derives candidates from EVERY endpoint path template, so the newly-mined real API bases
+  (`/rest/admin`, `/rest/user/login`, ...) - which a static crawl of an SPA never reaches - are now also
+  suffixed and probed. Juice Shop answers several of those unauthenticated/wrong-method paths with a
+  bare 500 rather than 401/404/405, and multiple independent passive phases each issue their OWN GET to
+  the same newly-visible endpoint, so one target quirk gets counted once per phase. Both are exactly
+  `docs/USAGE.md`'s already-documented "an application that answers an unmatched path with a 5xx...
+  raise `--circuit-breaker-failures`" scenario - just reached sooner because more real surface exists to
+  trigger it, not a new transport failure mode. `lib/http.sh`'s breaker-open message now names
+  `--circuit-breaker-failures`/`--circuit-breaker-window` with their current effective values and points
+  at that doc section directly, rather than leaving an operator to already know to look for it.
 - **A DELIBERATE unquoted expansion of target-derived text still needs `set -f`, because word
   splitting and PATHNAME EXPANSION are one switch and only the first one is ever wanted**
   (`markup_tokens_have`, `modules/dast/passive/markup_engine.sh`, DAST-11; CWE-807). `rel` and

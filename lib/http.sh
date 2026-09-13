@@ -2015,7 +2015,7 @@ _http_breaker_record_failure() {
     : >"$_HTTP_LIMIT_DIR/abort/$slug"
     mutex_release "$_HTTP_LIMIT_MUTEX"
     die "$SCOURSH_EXIT_INCOMPLETE" \
-      "the circuit breaker opened for target '$bucket': ${#bounded[@]} failed requests within ${window}s (threshold $threshold); the run stopped rather than continuing against a target that is not answering, so its coverage is incomplete"
+      "the circuit breaker opened for target '$bucket': ${#bounded[@]} failed requests within ${window}s (threshold $threshold); the run stopped rather than continuing against a target that is not answering, so its coverage is incomplete. This can mean the target is genuinely down - in which case raising the threshold only hides that. It can also mean the target IS answering, just not with 2xx/3xx/4xx: an application that returns a 5xx (rather than a 404/401/405) for an unmatched path, a wrong method, or an unauthenticated route is a routine target quirk, not evidence of an outage, and content-discovery/method-enumeration phases probe exactly those shapes. Only in that second case is '--circuit-breaker-failures' (currently $threshold) and/or '--circuit-breaker-window' (currently ${window}s) the right lever - both need --i-own-target to raise, since they are CLI-supplied values above the conservative default (docs/USAGE.md, 'Conservative DAST limits and --i-own-target')."
   fi
   mutex_release "$_HTTP_LIMIT_MUTEX"
   return 0
