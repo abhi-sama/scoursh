@@ -33,6 +33,16 @@
 #      21).  The wrong reading is "the crawler is the producer, so it owns the
 #      file" - which silently deletes every route SAST extracted.
 #   6. A CREDENTIAL-NAMED PARAMETER'S OBSERVED VALUE NEVER REACHES DISK.
+#   7. A THIRD-PARTY URL MINED OUT OF A FETCHED JS BUNDLE IS NEVER REQUESTED,
+#      and never even written to the inventory.  The wrong reading is "record
+#      it and let a later consumer's own gate catch it" - which this suite
+#      proves is unnecessary by asserting the request log directly: an
+#      adversarial bundle naming `api.stripe.com` and an ingest host shaped
+#      like a real error-reporting SDK's produces zero requests to either,
+#      and neither string appears anywhere in endpoints.json or
+#      parameters.json.  A relative path and an explicitly-relative `./`
+#      reference on the SAME target, by contrast, ARE seeded - the main
+#      prize this feature exists for.
 #
 # Every case that pins a decision names the reading it FAILS under, per
 # AGENTS.md's testing rule.  No case here needs a network or Docker: the
@@ -202,6 +212,109 @@ for ref in '#top' 'javascript:alert(1)' 'mailto:a@b.example' 'data:text/html,x' 
   crawl_url_resolve "$B" "$ref" >/dev/null 2>&1 && rc=0 || rc=$?
   assert_ne 0 "$rc" "'$ref' is rejected - FAILS under \"resolve it and let the gate sort it out\", which turns a non-link into a request"
 done
+
+# ===========================================================================
+printf -- '\n-- JS/source-map URL mining (crawl_engine.sh §5a) --\n'
+# ===========================================================================
+# crawl_js_scan_line/crawl_js_scan_body only ever RESOLVE a candidate to an
+# absolute URL; they never gate or fetch it - that is `_crawl_static`'s job,
+# proven end to end further down against a stubbed transport.  These cases
+# pin the pure extraction rules in isolation: what is a candidate at all, and
+# what specifically is excluded and why.
+
+t_case 'Content-Type recognises every real JS/source-map spelling'
+for ct in 'application/javascript' 'text/javascript' 'application/x-javascript' \
+  'application/ecmascript' 'text/ecmascript' 'module' 'application/javascript; charset=utf-8'; do
+  assert_status 0 "Content-Type '$ct' is recognised as JS" crawl_body_is_js "$ct" 'https://h.example/x'
+done
+
+t_case 'a generic/absent Content-Type falls back to the URL extension'
+assert_status 0 'a .js URL with no Content-Type at all' crawl_body_is_js '' 'https://h.example/app.js'
+assert_status 0 'a .mjs URL served as octet-stream' crawl_body_is_js 'application/octet-stream' 'https://h.example/app.mjs'
+assert_status 0 'a .map URL' crawl_body_is_js '' 'https://h.example/app.js.map'
+assert_status 1 'a plain page with none of the markers' crawl_body_is_js '' 'https://h.example/'
+
+t_case 'an EXPLICIT text/html Content-Type always wins over a .js-shaped URL'
+assert_status 1 'a catch-all route answering every path with its HTML shell is not mistaken for JS' \
+  crawl_body_is_js 'text/html; charset=utf-8' 'https://h.example/app.js'
+
+t_case 'a rooted path, an absolute URL, and a scheme-relative reference are all candidates'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'fetch("/api/v1/orders")'
+assert_contains "$(printf '%s\n' "${_CRAWL_JS_URLS[@]}")" 'https://h.example/api/v1/orders' \
+  'a root-relative literal resolves against the fetching response'"'"'s own URL'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' "var u = 'https://api.example.invalid/v2/widgets';"
+assert_contains "$(printf '%s\n' "${_CRAWL_JS_URLS[@]}")" 'https://api.example.invalid/v2/widgets' \
+  'an absolute http(s) literal is taken as-is'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'var u = "//cdn.example.invalid/api/health";'
+assert_contains "$(printf '%s\n' "${_CRAWL_JS_URLS[@]}")" 'https://cdn.example.invalid/api/health' \
+  'a scheme-relative literal inherits the fetching page'"'"'s own scheme'
+
+t_case 'an explicitly-relative ./ or ../ literal is a candidate too - this feature'"'"'s own second worked example'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' "axios.get('./v2/items')"
+assert_contains "$(printf '%s\n' "${_CRAWL_JS_URLS[@]}")" 'https://h.example/static/js/v2/items' \
+  './v2/items resolves against the fetching response'"'"'s own directory, the identical rule crawl_url_resolve already applies to a relative <a href>'
+
+t_case 'a bare word with none of the four markers is never a candidate'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'console.log("Loading application, please wait")'
+assert_eq 0 "${#_CRAWL_JS_URLS[@]}" \
+  'FAILS under "mine every quoted string", which cannot tell "componentName" from a relative path with no marker at all'
+
+t_case 'a mime type, a regex-as-string, a JS/CSS comment, and a static-asset path are all rejected'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'var a="application/json", b="/^[a-z0-9_-]+$/", c="/* build info */", d="/static/img/logo.png";'
+assert_eq 0 "${#_CRAWL_JS_URLS[@]}" \
+  'FAILS if any of the four false-positive shapes this section names slips through - a mime type never starts with /, a quoted regex is excluded by its raw ^ $ [ ] bytes, a comment opener is excluded by its own check, and a known static-asset extension is excluded outright'
+
+t_case 'a query string literally present in the mined literal is carried through to the resolved URL'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'fetch("/search?q=hello&page=2")'
+assert_contains "$(printf '%s\n' "${_CRAWL_JS_URLS[@]}")" 'https://h.example/search?q=hello&page=2' \
+  'the query is observed, not invented - docs/INVENTORY-FORMAT.md'"'"'s own honesty rule for example values applied to which parameters exist at all'
+
+t_case 'a fragment-only, mailto:, and data: literal are all rejected - crawl_url_resolve'"'"'s own refusal, reused rather than reimplemented'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'var a="#top", b="mailto:x@example.invalid", c="data:text/plain,x";'
+assert_eq 0 "${#_CRAWL_JS_URLS[@]}" 'none of the three resolves to a fetchable URL'
+
+t_case 'a minified single-line bundle is chunked, and a candidate well inside a later chunk is still found'
+LONGPAD=$(printf 'x%.0s' $(seq 1 4090))
+JSBODYFILE=$W/js-chunk-body.js
+# The padding carries NO quote character, so it cannot itself straddle the
+# chunk boundary and throw off which quote the next chunk reads as opening
+# versus closing - that hazard is exercised on its own, deliberately, in the
+# next case.
+printf '// %s\nfetch("/api/after-the-boundary");' "$LONGPAD" >"$JSBODYFILE"
+crawl_js_reset
+crawl_js_scan_body "$JSBODYFILE" 'https://h.example/static/js/main.js'
+assert_contains "$(printf '%s\n' "${_CRAWL_JS_URLS[@]}")" 'https://h.example/api/after-the-boundary' \
+  'a real candidate well inside a later chunk is still found - chunking must not lose everything past the first boundary'
+rm -f "$JSBODYFILE"
+
+t_case 'a quoted literal that itself straddles a chunk boundary is missed, never mis-scanned'
+LONGPAD2=$(printf 'x%.0s' $(seq 1 4090))
+JSBODYFILE2=$W/js-chunk-straddle.js
+# The FIRST string here opens before byte 4096 and closes after it, so it
+# straddles the chunk split; `_CRAWL_JS_MAX_LINE_BYTES`'s own header names
+# this the accepted cost. What matters is the DIRECTION of the failure: the
+# straddling literal is simply never seen (there is no request budget spent
+# on a phantom half-URL), and the well-formed literal is asserted absent too,
+# which pins the ACTUAL observed effect (both are lost) rather than the
+# narrower, rosier claim that only the straddling one is.
+printf 'var pad = "%s"; fetch("/api/after-the-boundary");' "$LONGPAD2" >"$JSBODYFILE2"
+crawl_js_reset
+crawl_js_scan_body "$JSBODYFILE2" 'https://h.example/static/js/main.js'
+assert_eq 0 "${#_CRAWL_JS_URLS[@]}" \
+  'FAILS if a straddling literal is ever turned into a fabricated URL instead of simply being dropped - the direction this bound must never be wrong in'
+
+t_case 'an unterminated quote near the end of a line does not hang or corrupt later parsing'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'var broken = "/never/closes/this/quote/at/all/keeps/going/without/end'
+assert_eq 0 "${#_CRAWL_JS_URLS[@]}" 'an unterminated literal yields no candidate rather than reading past the line'
 
 # ===========================================================================
 printf -- '\n-- content-type-absent markup sniffing (crawl_engine.sh, crawl_body_looks_like_markup) --\n'
@@ -727,9 +840,19 @@ case $p in
   *) f=${p#/} ;;
 esac
 src=$CRAWL_STUB_PAGES/$f
+# Content-Type follows the fixture file's own extension - real enough for the
+# JS-endpoint-discovery cases below to exercise crawl_body_is_js's
+# Content-Type arm rather than only its extension fallback.  Everything else
+# still defaults to text/html, matching every case that predates this.
+case $f in
+  *.js) ct='application/javascript' ;;
+  *.map) ct='application/json' ;;
+  *.css) ct='text/css' ;;
+  *) ct='text/html; charset=utf-8' ;;
+esac
 if [[ -f $src ]]; then
   [[ -n $bodyout ]] && cat -- "$src" >"$bodyout"
-  printf '200\n\ntext/html; charset=utf-8\n'
+  printf '200\n\n%s\n' "$ct"
 else
   [[ -n $bodyout ]] && printf 'not found\n' >"$bodyout"
   printf '404\n\ntext/html\n'
@@ -1125,5 +1248,90 @@ t_case 'a run WITHOUT --authed does not claim an authentication gap'
 RUNJSON=$(_slurp "$W/run-basic/run.json")
 assert_not_contains "$RUNJSON" 'reason=authenticated_crawl_unavailable' \
   'FAILS if the gap is unconditional, which would put a warning about a login nobody asked for into every anonymous scan'
+
+# ===========================================================================
+printf -- '\n-- SPA endpoint discovery, end to end against an adversarial bundle --\n'
+# ===========================================================================
+# tests/fixtures/dast-crawl/pages-jsdiscovery/ is the fixture this ticket's
+# own constraint 7 (see this file's header) calls for: one HTML shell linking
+# to one JS bundle whose own source names four IN-SCOPE literals (two
+# root-relative, one explicitly-relative ./, one absolute), TWO THIRD-PARTY
+# absolute URLs shaped like a real payment processor and a real
+# error-reporting SDK's ingest host, and a handful of URL-shaped
+# non-endpoints (a mime type, a regex-as-string, a static-asset path, a JS
+# comment, a data: URI, a bare fragment). The pure crawl_js_scan_line/
+# crawl_js_scan_body cases above already pin the extraction rules in
+# isolation; this section is the end-to-end proof those rules cannot give on
+# their own - that a real `scan.sh dast` run actually wires this in, and that
+# the third-party candidates never reach a request, asserted on the STUB
+# TRANSPORT'S OWN REQUEST LOG rather than on inventory content alone.
+CRAWL_STUB_PAGES=$FIXTURES/pages-jsdiscovery _crawl_scan "$W/run-jsdiscovery"
+
+t_case 'the run completes cleanly against the adversarial bundle'
+assert_eq 0 "$_RC" 'a bundle full of third-party and non-endpoint noise must not itself break the crawl'
+JSEPJSON=$(_slurp "$W/run-jsdiscovery/inventory/endpoints.json")
+JSPARJSON=$(_slurp "$W/run-jsdiscovery/inventory/parameters.json")
+JSREQLOG=$(_slurp "$REQLOG")
+
+t_case 'ZERO requests were ever sent to either third-party host named inside the bundle'
+assert_not_contains "$JSREQLOG" 'stripe.com' \
+  'the api.stripe.com literal is never dialled - FAILS under "record it and let a later consumer'"'"'s own gate catch it", which this case proves is unnecessary by reading the transport'"'"'s own request log directly rather than trusting inventory content alone'
+assert_not_contains "$JSREQLOG" 'sentry.io' \
+  'nor is the sentry-shaped ingest host - the same property, for the second, differently-shaped third-party URL this fixture plants'
+
+t_case 'and neither third-party host ever reached the inventory in the first place'
+assert_not_contains "$JSEPJSON" 'stripe.com' \
+  'the discard happens BEFORE the row is ever written to disk, not after - FAILS under "record-and-skip-later", which this constraint forbids outright'
+assert_not_contains "$JSEPJSON" 'sentry.io' 'the same for the ingest host'
+assert_not_contains "$JSPARJSON" 'stripe.com' 'and nothing derived from either URL reached parameters.json either'
+assert_not_contains "$JSPARJSON" 'sentry.io' 'the same for the ingest host'
+
+t_case 'the in-scope literals ARE seeded - the main prize this feature exists for'
+assert_contains "$JSEPJSON" '"url": "https://crawl.fixture.invalid/api/v1/orders"' \
+  'a root-relative fetch() literal is seeded as its own endpoint'
+assert_contains "$JSEPJSON" '"url": "https://crawl.fixture.invalid/static/js/v2/items"' \
+  'an explicitly-relative ./v2/items literal resolves against the bundle'"'"'s own directory and is seeded too'
+assert_contains "$JSEPJSON" '"url": "https://crawl.fixture.invalid/api/v1/widgets"' \
+  'an absolute, in-scope literal is taken as-is - the scope gate admits it exactly because it names an authorised host, not because it is relative'
+assert_contains "$JSEPJSON" '"url": "https://crawl.fixture.invalid/search"' \
+  'a literal carrying a query is seeded with the query stripped, identically to a crawled link'
+assert_contains "$JSPARJSON" '"name": "q"' \
+  'the query string LITERALLY PRESENT in the mined literal becomes an OBSERVED parameter - never a fabricated one, docs/INVENTORY-FORMAT.md'"'"'s own honesty rule for example values applied here too'
+assert_contains "$JSPARJSON" '"name": "page"' 'both of them'
+
+t_case 'every js-mined row carries the weaker source=js provenance, distinct from the bundle'"'"'s own crawl-sourced row'
+assert_contains "$JSEPJSON" '"source": "js"' \
+  'a mined literal is recorded with weaker provenance than a route this run actually requested - a report reader must be able to tell the two apart'
+assert_contains "$JSEPJSON" '"url": "https://crawl.fixture.invalid/static/js/main.bundle.js"' \
+  'the bundle itself is still an ordinary crawl-sourced endpoint - it really was fetched, unlike anything mined out of it'
+
+t_case 'the URL-shaped NON-endpoints inside the bundle never became inventory rows - a precise small set, not a noisy large one'
+assert_not_contains "$JSEPJSON" 'logo.png' \
+  'a static-asset path is excluded, per crawl_body_is_js'"'"'s own static-extension table - an injection probe should never spend its budget on a fetched image reference'
+assert_not_contains "$JSEPJSON" '[a-z0-9' \
+  'a quoted regex-as-string literal is excluded by its own raw regex-metacharacter bytes'
+assert_not_contains "$JSEPJSON" 'build:' \
+  'a JS comment opener quoted as a string literal is excluded'
+assert_not_contains "$JSEPJSON" 'text/plain,x' 'a data: URI is rejected the same way crawl_url_resolve already rejects one from an <a href>'
+
+t_case 'the mined-endpoint count is recorded honestly in run.json - the js/crawl split is a real, checkable fact, not a claim'
+JSRUNJSON=$(_slurp "$W/run-jsdiscovery/run.json")
+assert_contains "$JSRUNJSON" 'js_scanned=1' 'exactly one JS/source-map body was fetched and scanned - never a claim about bodies this run never downloaded'
+assert_contains "$JSRUNJSON" 'js_endpoints=4' \
+  'and it contributed exactly the four in-scope candidates this fixture plants - never the two third-party ones, and never any of the non-endpoint noise'
+
+t_case 'js-endpoint-discovery: false restores byte-for-byte pre-feature behaviour for an operator who opts out'
+cat >"$FIX/config/discovery.conf" <<EOF
+id: crawl-fixture
+js-endpoint-discovery: false
+EOF
+CRAWL_STUB_PAGES=$FIXTURES/pages-jsdiscovery _crawl_scan "$W/run-jsdiscovery-off"
+assert_eq 0 "$_RC" 'opting out does not break the run'
+OFFEPJSON=$(_slurp "$W/run-jsdiscovery-off/inventory/endpoints.json")
+assert_not_contains "$OFFEPJSON" '"source": "js"' \
+  'FAILS if the opt-out key is ignored, which would leave an operator who explicitly asked for a crawl/spec/HAR-only inventory with mined rows anyway'
+assert_contains "$OFFEPJSON" '"url": "https://crawl.fixture.invalid/static/js/main.bundle.js"' \
+  'the bundle is still fetched and still an ordinary crawl-sourced endpoint - only the MINING is disabled, never the fetch this feature piggybacks on'
+rm -f "$FIX/config/discovery.conf"
 
 t_summary dast-crawl

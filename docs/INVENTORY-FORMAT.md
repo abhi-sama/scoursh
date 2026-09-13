@@ -68,7 +68,7 @@ lost the routes another module contributed.
 | `url` | string | Absolute URL, **query string and fragment removed**. See §4. |
 | `host` | string | The URL's host, split out so a consumer does not re-parse. |
 | `path` | string | The URL's path, likewise. May contain a template segment such as `{petId}` when the source was a specification. |
-| `source` | string | One of `crawl`, `openapi`, `postman`, `har`, `graphql`, `imported`. |
+| `source` | string | One of `crawl`, `openapi`, `postman`, `har`, `graphql`, `js`, `imported`. |
 | `depth` | number | Crawl depth at which it was found; `0` for anything not found by following a link. |
 | `status` | string | The observed HTTP status, or `""` when nothing was requested. |
 | `content_type` | string | The observed `Content-Type`, or `""`. |
@@ -78,6 +78,18 @@ lost the routes another module contributed.
 An endpoint that arrived as `imported` stays `imported` even if the crawler later reaches the same URL,
 because "SAST asserted this route exists" and "a request to this route was answered" are different
 claims and tension 21 requires imported inventory to keep its audit trail.
+
+`js` is `modules/dast/crawl.sh`'s weakest-provenance source: a URL-shaped literal string read out of a
+JS or source-map response the crawl already fetched (`js-endpoint-discovery`, `rules/RULE-FORMAT.md`
+§9.6.3, default on), never a URL that was itself requested. Its own `status` and `content_type` are
+always `""` for exactly that reason - nothing was sent - the same convention a spec-derived (`openapi`,
+`postman`, `har`, `graphql`) row already uses. Like every other source, it is never rewritten: a `js`
+row that the crawl or a later spec import also reaches by a real request keeps whichever source got
+there first, and a `crawl`/`openapi`/`har`/`graphql`/`imported` row already at that (method, url) is
+never downgraded to `js`. Every `js` candidate is resolved against the fetching page's own URL and
+passed through the identical scope gate a crawled `<a href>` already goes through before it is ever
+written here - a third-party URL named inside a bundle (an analytics call, an error-reporting SDK's
+ingest host) never reaches this file.
 
 ## 3. `parameters.json`
 

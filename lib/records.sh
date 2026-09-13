@@ -118,6 +118,7 @@ _schema_def() {
         'id:req:single:sl' 'openapi-path:opt:single:sl' 'graphql-schema-path:opt:single:sl' \
         'postman-path:opt:single:sl' 'har-path:opt:single:sl' 'crawl-depth:opt:single:sl' \
         'include-path:opt:repeatable:sl' 'exclude-path:opt:repeatable:sl' \
+        'js-endpoint-discovery:opt:single:sl' \
         'notes:opt:single:ml' 'format-version:opt:single:sl'
       ;;
     posture-expectation)

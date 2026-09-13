@@ -1002,6 +1002,7 @@ One record per target, `id` = the target id.
 | `crawl-depth` | optional | single | no | Non-negative integer. Default `3`. |
 | `include-path` | optional | repeatable | no | Glob (§9.1.2) of target-relative paths to crawl. |
 | `exclude-path` | optional | repeatable | no | Glob of target-relative paths never to request. |
+| `js-endpoint-discovery` | optional | single | no | `true`/`false`. Default `true`. Mine URL-shaped literal strings out of a fetched JS/source-map response and seed them into the inventory as `source=js` rows (docs/INVENTORY-FORMAT.md §2). An additive optional key (§14's "additive optional key" shape); `false` opts a target out for an operator who wants a strictly crawl/spec/HAR-only inventory. |
 | `notes` | optional | single | yes | Free text. |
 
 #### 9.6.4 `config/posture.conf` - posture expectation

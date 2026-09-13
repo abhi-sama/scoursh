@@ -123,6 +123,17 @@ _crawl_discovery_load() {
   local target=$1 path=${SCOURSH_INSTALL_ROOT:-.}/config/discovery.conf idx
   _CRAWL_D_OPENAPI='' _CRAWL_D_GRAPHQL='' _CRAWL_D_POSTMAN='' _CRAWL_D_HAR=''
   _CRAWL_D_DEPTH=3
+  # Default ON: this adds no fetch of its own (docs/INVENTORY-FORMAT.md's
+  # `source=js` rows are mined from bodies the crawl was already going to
+  # download and record as endpoints), and the passive crawl phase runs
+  # unconditionally regardless of `--intensity`, so enabling it cannot
+  # surprise an operator with more TRAFFIC than they already asked for - only
+  # a larger inventory for whatever `--intensity`/`--allow-intrusive` they
+  # already chose to probe with. `js-endpoint-discovery: false` is the
+  # additive optional key (rules/RULE-FORMAT.md §14's "additive optional key"
+  # shape, the same one `contact` in §9.6.1 already is) an operator sets when
+  # they want a strictly HAR/spec/crawl-only inventory instead.
+  _CRAWL_D_JS_DISCOVERY=true
   declare -ga _CRAWL_D_INCLUDE=()
   declare -ga _CRAWL_D_EXCLUDE=()
   _CRAWL_D_PRESENT=0
@@ -136,6 +147,8 @@ _crawl_discovery_load() {
       _CRAWL_D_HAR=$(records_field_or discovery "$idx" har-path '')
       _CRAWL_D_DEPTH=$(records_field_or discovery "$idx" crawl-depth 3)
       [[ $_CRAWL_D_DEPTH =~ ^[0-9]+$ ]] || _CRAWL_D_DEPTH=3
+      _CRAWL_D_JS_DISCOVERY=$(records_field_or discovery "$idx" js-endpoint-discovery true)
+      [[ $_CRAWL_D_JS_DISCOVERY == false ]] || _CRAWL_D_JS_DISCOVERY=true
 
       local g
       while IFS= read -r g; do
@@ -312,6 +325,7 @@ _crawl_static() {
   local -A visited=()
   local depth=0 pages=0 url kind a b
   local form_method='' form_action='' formurl='' formep=''
+  local jsurl jspath jsep jqn jqv ep_before jsquery jsbase
 
   _CRAWL_PAGES=0
   _CRAWL_PAGECAP=0
@@ -321,6 +335,8 @@ _crawl_static() {
   _CRAWL_FORMS=0
   _CRAWL_UNREACHABLE=0
   _CRAWL_GATE_REASON=''
+  _CRAWL_JS_SCANNED=0
+  _CRAWL_JS_EP_ADDED=0
   # A crawled link or form action is dropped through the shared counting
   # wrapper `dast_endpoint_keep` (modules/dast/engine.sh section 3b), reset
   # once for the whole static crawl so `_DAST_SCOPE_SKIPPED`/
@@ -389,6 +405,68 @@ _crawl_static() {
         while IFS=$'\t' read -r qn qv; do
           crawl_add_param "$pageep" "$target" GET "$_CRAWL_U_BASE" "$qn" query crawl "$qv" || true
         done < <(crawl_query_names "$uquery")
+      fi
+
+      # SPA endpoint discovery: a JS/source-map response never matches
+      # `*html*` below and would otherwise just be counted as non-markup and
+      # skipped - here it gets one extra look first, for URL-shaped strings
+      # its OWN code names (crawl_engine.sh section 5a has the full account
+      # of what is and is not mined, and why nothing this loop finds is ever
+      # fetched). `js-endpoint-discovery` (rules/RULE-FORMAT.md §9.6.3) is the
+      # operator's opt-out; the response is still counted as non-markup
+      # either way, so disabling it is byte-for-byte the pre-existing
+      # behaviour.
+      if crawl_body_is_js "$_CRAWL_CTYPE" "$url"; then
+        if [[ -s $body && $_CRAWL_D_JS_DISCOVERY == true ]]; then
+          crawl_js_reset
+          crawl_js_scan_body "$body" "$url"
+          _CRAWL_JS_SCANNED=$(( _CRAWL_JS_SCANNED + 1 ))
+          for jsurl in "${_CRAWL_JS_URLS[@]+"${_CRAWL_JS_URLS[@]}"}"; do
+            # THE SAME TWO-GATE SHAPE the `link` case below already has: a
+            # candidate the scanned application's OWN code named is not a URL
+            # the operator authorised, so it goes through the identical
+            # shared predicate before it is ever written to disk - an
+            # out-of-scope one (a third-party analytics/error-reporting host,
+            # say) is discarded right here and never reaches `_CRAWL_EP`.
+            if declare -F dast_endpoint_keep >/dev/null; then
+              dast_endpoint_keep "$jsurl" "${SCOURSH_DAST_TARGET:-}" || continue
+            elif ! _crawl_in_scope "$jsurl"; then
+              continue
+            fi
+            crawl_url_split "$jsurl"
+            jspath=/
+            if [[ $_CRAWL_U_BASE =~ ^[A-Za-z][A-Za-z0-9+.-]*://[^/]*(/.*)?$ ]]; then
+              jspath=${BASH_REMATCH[1]:-/}
+            fi
+            _crawl_path_allowed "$jspath" || continue
+            # Captured into a LOCAL before crawl_add_endpoint runs, exactly as
+            # the page-fetch path above captures $uquery first: that function
+            # calls crawl_url_split on its own (query-less) URL argument as
+            # part of writing the row, which overwrites _CRAWL_U_QUERY/
+            # _CRAWL_U_BASE as a side effect - reading them AFTER the call
+            # always sees an empty query, silently dropping every JS-observed
+            # parameter. Caught by this feature's own adversarial end-to-end
+            # test (a literal query string that never reached parameters.json).
+            jsquery=$_CRAWL_U_QUERY
+            jsbase=$_CRAWL_U_BASE
+            ep_before=${#_CRAWL_EP[@]}
+            if crawl_add_endpoint "$target" GET "$jsbase" js "$depth" '' ''; then
+              jsep=$_CRAWL_LAST_EP_ID
+              (( ${#_CRAWL_EP[@]} > ep_before )) && _CRAWL_JS_EP_ADDED=$(( _CRAWL_JS_EP_ADDED + 1 ))
+              # A query string literally present in the mined string is an
+              # OBSERVED parameter name; nothing about its value is ever
+              # invented (docs/INVENTORY-FORMAT.md's own honesty rule for
+              # `example`).
+              if [[ -n $jsquery && -n $jsep ]]; then
+                while IFS=$'\t' read -r jqn jqv; do
+                  crawl_add_param "$jsep" "$target" GET "$jsbase" "$jqn" query js "$jqv" || true
+                done < <(crawl_query_names "$jsquery")
+              fi
+            fi
+          done
+        fi
+        _CRAWL_NONHTML=$(( _CRAWL_NONHTML + 1 ))
+        continue
       fi
 
       # Only markup is parsed.  A content type this does not recognise is
@@ -536,13 +614,18 @@ _crawl_static() {
 # endpoints in a fifty-route application and reports success is the failure
 # this project keeps rooting out.
 _crawl_record_spa_gap() {
-  local target=$1 pages=$2 endpoints=$3
-  local shape=''
+  local target=$1 pages=$2 endpoints=$3 jscount=${4:-0}
+  local shape='' jsnote=''
   if (( ${_CRAWL_SPA_SHAPED:-0} )); then
     shape=", and this target's own root document has script tags and almost no links, which is what a client-rendered application looks like from here"
   fi
-  run_record coverage_gap "dast/crawl: no OpenAPI, GraphQL schema, Postman collection or HAR capture was supplied for target '$(crawl_safe_text "$target" 80)' (config/discovery.conf, rules/RULE-FORMAT.md §9.6.3), so the surface below is only what a static crawl could reach by following links: $pages page(s) fetched, $endpoints endpoint(s) known$shape. scoursh executes no JavaScript and has no browser, so a client-rendered application's routes and its XHR/fetch endpoints are INVISIBLE here and every later DAST check will report clean for them because it never saw them - that is the absence of a test, not the absence of a problem (docs/DESIGN.md §7.5). To close this, supply a spec or a HAR capture of real usage in config/discovery.conf; failing that, a SAST route extraction merged through reports/<run>/inventory/endpoints.json covers the server-side half (docs/FOUNDATION.md tension 21)."
-  run_record coverage_reduction "module=dast phase=crawl reason=no_specification_supplied target=$(crawl_safe_text "$target" 80) pages=$pages endpoints=$endpoints spa_shaped=${_CRAWL_SPA_SHAPED:-0}"
+  if (( jscount > 0 )); then
+    local verb=were
+    (( jscount == 1 )) && verb=was
+    jsnote=" $jscount of them $verb read as a literal path inside a fetched JS/source-map file rather than requested directly - WEAKER evidence than the rest (source=js, docs/INVENTORY-FORMAT.md), naming a path only, never a method or a body field a spec or HAR would carry."
+  fi
+  run_record coverage_gap "dast/crawl: no OpenAPI, GraphQL schema, Postman collection or HAR capture was supplied for target '$(crawl_safe_text "$target" 80)' (config/discovery.conf, rules/RULE-FORMAT.md §9.6.3), so the surface below is only what a static crawl could reach by following links, plus whatever path a fetched JS bundle's own code happened to name as a literal string: $pages page(s) fetched, $endpoints endpoint(s) known$shape.$jsnote scoursh executes no JavaScript and has no browser, so a client-rendered application's routes and its XHR/fetch endpoints reached only through a computed URL, a dynamic import, or logic this scanner cannot run are still INVISIBLE here, and every later DAST check will report clean for them because it never saw them - that is the absence of a test, not the absence of a problem (docs/DESIGN.md §7.5). To close this properly, supply a spec or a HAR capture of real usage in config/discovery.conf, which is STILL the strictly better input - it carries methods, parameters and request bodies a mined string never can; failing that, a SAST route extraction merged through reports/<run>/inventory/endpoints.json covers the server-side half (docs/FOUNDATION.md tension 21)."
+  run_record coverage_reduction "module=dast phase=crawl reason=no_specification_supplied target=$(crawl_safe_text "$target" 80) pages=$pages endpoints=$endpoints spa_shaped=${_CRAWL_SPA_SHAPED:-0} js_inferred_endpoints=$jscount"
   _crawl_nudge_spa_import "$target"
 }
 
@@ -770,7 +853,7 @@ _crawl_run_phase() {
   crawl_inv_write_parameters "$rundir/inventory/parameters.json"
 
   local nep=${#_CRAWL_EP[@]} npar=${#_CRAWL_PARAM[@]}
-  run_record notes "module=dast phase=crawl target=$(crawl_safe_text "$target" 80) pages=$_CRAWL_PAGES endpoints=$nep parameters=$npar imported=$imported spec_endpoints=$spec_count spec_kinds=[$(crawl_safe_text "${spec_kinds% }" 80)] forms=$_CRAWL_FORMS"
+  run_record notes "module=dast phase=crawl target=$(crawl_safe_text "$target" 80) pages=$_CRAWL_PAGES endpoints=$nep parameters=$npar imported=$imported spec_endpoints=$spec_count spec_kinds=[$(crawl_safe_text "${spec_kinds% }" 80)] forms=$_CRAWL_FORMS js_scanned=${_CRAWL_JS_SCANNED:-0} js_endpoints=${_CRAWL_JS_EP_ADDED:-0}"
   _crawl_record_surface_provenance
 
   # -- 6. every bound that bit, on the surface a reader sees -----------------
@@ -855,7 +938,7 @@ _crawl_run_phase() {
 
   # -- 7. the SPA gap, which is this ticket's own acceptance criterion -------
   if [[ -z $spec_kinds ]]; then
-    _crawl_record_spa_gap "$target" "$_CRAWL_PAGES" "$nep"
+    _crawl_record_spa_gap "$target" "$_CRAWL_PAGES" "$nep" "${_CRAWL_JS_EP_ADDED:-0}"
   fi
 
   if (( nep == 0 )); then

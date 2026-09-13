@@ -54,9 +54,18 @@
 #     form element they are lexically inside.  It skips comments and the
 #     contents of `<script>`/`<style>`.  It does NOT recover from malformed
 #     nesting the way a browser does, and it deliberately does NOT mine
-#     URL-shaped strings out of JavaScript: a string in a bundle is not
-#     evidence of a route, and guessing produces a request to a path the
-#     operator's application may never have had.
+#     URL-shaped strings out of an INLINE `<script>` block sitting inside an
+#     HTML page it is already parsing: a string glimpsed on the way through a
+#     document is not evidence of anything (pinned by
+#     tests/suites/dast-crawl.sh's "a URL-shaped string in a script body is
+#     not mined" case, which still holds). Section 5a below is the narrower,
+#     deliberate exception: a response whose OWN Content-Type or URL
+#     extension says it IS JavaScript or a source map - fetched because a
+#     `<link>`/`<a>`/form action pointed at it, never a new fetch this
+#     feature adds - is mined for URL-shaped literal strings and seeds
+#     `source=js` inventory rows, weaker evidence than a route this scanner
+#     actually requested, gated through the identical scope predicate every
+#     crawled link already goes through before it is ever written to disk.
 #   * `crawl_spec_openapi` resolves a `requestBody`/Swagger-2 `in: body`
 #     schema's `$ref` against `components.schemas` (IMPORT-03) - bounded depth
 #     and cycle-guarded, never followed forever - and picks the FIRST
@@ -828,6 +837,234 @@ crawl_query_names() {
     [[ -n $name ]] || continue
     printf '%s\t%s\n' "$name" "$value"
   done
+}
+
+# ---------------------------------------------------------------------------
+# 5a. JS / source-map URL mining (SPA endpoint discovery)
+# ---------------------------------------------------------------------------
+# An SPA's real API surface routinely exists nowhere but as plain strings
+# inside the JS bundles the crawl already fetched and, until now, only ever
+# checked for security headers.  `crawl_html_extract`'s own header still says
+# a tag scanner "does NOT recover from malformed nesting... and deliberately
+# does NOT mine URL-shaped strings out of JavaScript" - that restraint is
+# UNCHANGED and still correct for an INLINE `<script>` block sitting inside an
+# HTML page (see the "commented-out link and a URL inside <script> are NOT
+# links" case in tests/suites/dast-crawl.sh, which still passes): a string
+# glimpsed on the way through an HTML document is not evidence of anything.
+# What is different here is the input: a response whose OWN Content-Type or
+# URL extension says it IS JavaScript or a source map (`crawl_body_is_js`
+# below) was fetched, on purpose, because a `<link>`/`<a>`/form action pointed
+# at it, and its own code naming a path IS weak evidence that path exists -
+# weak enough that it is recorded with `source=js`
+# (docs/INVENTORY-FORMAT.md), never `crawl`, so a consumer can always tell an
+# inferred route from one this run actually requested and got an answer from.
+#
+# THE SAFETY PROPERTY THIS SECTION MUST NEVER LOSE: nothing here is fetched.
+# A candidate becomes, at most, one row `crawl_add_endpoint` may write to
+# inventory/endpoints.json; the caller in `_crawl_static` below gates every
+# one of them through the identical `dast_endpoint_keep`/`_crawl_in_scope`
+# predicate a crawled `<a href>` or form action already goes through before
+# it is even enqueued (never a second, parallel notion of "in scope"), and
+# every later consumer of that inventory re-gates a row a second time before
+# ever composing a request from it (tension 19; tension 21's "a URL lifted
+# out of the inventory" pre-check `inject_inventory_load` and its siblings
+# already apply). A third-party absolute URL mined out of a bundle - an
+# analytics endpoint, an error-reporting SDK's ingest host, a CDN - is
+# therefore DISCARDED before it is ever written to disk, not
+# recorded-and-skipped-later: it fails the very first gate and never reaches
+# `_CRAWL_EP` at all.
+crawl_js_reset() {
+  declare -ga _CRAWL_JS_URLS=()
+  declare -gA _CRAWL_JS_URLS_SEEN=()
+}
+
+# Extensions that name a static asset rather than an application endpoint. A
+# webpack/Vite bundle is FULL of these - a dynamic `import('/chunks/x.js')`
+# code-split reference, a CSS-in-JS `url(/fonts/a.woff2)`, an imported
+# `/images/logo.svg` - and none of them is a thing an injection probe should
+# spend its budget on. `.json` is deliberately NOT here: an API frequently
+# really does answer on a `.json`-suffixed path, and excluding it would cost
+# exactly the endpoint this feature exists to find.
+_CRAWL_JS_STATIC_EXT_RE='\.(png|jpe?g|gif|svg|ico|bmp|webp|avif|woff2?|ttf|eot|otf|css|less|scss|sass|js|mjs|cjs|map|pdf|zip|gz|tgz|mp4|webm|mp3|wav|wasm|txt|md)([?#].*)?$'
+
+# `_crawl_js_literal_ok VALUE` - 0 when VALUE (the raw bytes between two
+# matching quotes in a JS/source-map body) is worth resolving as a URL at
+# all.
+#
+# A RESTRICTIVE PREFIX CHECK FIRST is what keeps this from mining every
+# quoted word in the bundle: a literal is a candidate only if it starts with
+# one of the four shapes a real reference actually takes - `http://`/
+# `https://` (absolute), `//host` (scheme-relative), `/path` (root-relative),
+# or `./path`/`../path` (explicitly relative, this feature's own
+# `./v2/items` worked example). "componentName" and "Loading..." are
+# indistinguishable from a bare relative path with no marker at all, so a
+# literal with none of the four markers is never a candidate, full stop -
+# admitting bare words is what would flood the inventory with prose instead
+# of the "precise small set" this is meant to be.
+#
+# A BACKTICK TEMPLATE LITERAL IS NEVER A CANDIDATE AT ALL - `crawl_js_scan_line`
+# below only recognises `"` and `'` as the opening/closing delimiter of a
+# string, so something like a templated `` `/api/${id}/orders` `` is never
+# even reached as a literal to check here.  This is a stated limitation, not
+# a bug: this scanner does not execute JavaScript, so it has no value to
+# substitute for `${id}`, and guessing at one is exactly the kind of guess
+# this feature refuses to make.  A plain quoted string built by concatenation
+# (`'/api/' + id + '/orders'`) is caught only for its static `/api/` half,
+# for the identical reason.
+_crawl_js_literal_ok() {
+  local v=$1
+  case $v in
+    http://* | https://* | //* | ./* | ../*) : ;;
+    /*) : ;;
+    *) return 1 ;;
+  esac
+  # No whitespace, no backtick, no angle bracket - none of which a URL ever
+  # legitimately carries, and every one of which shows up in ordinary prose a
+  # bundle also quotes (an error message, a template's static text).
+  case $v in
+    *' '* | *$'\t'* | *$'\n'* | *$'\r'* | *'`'* | *'<'* | *'>'*) return 1 ;;
+  esac
+  # A REGEX LITERAL STORED AS A STRING is the false positive this exists to
+  # catch, and it is common: `"/^[a-z0-9_-]+$/"` starts with `/` exactly like
+  # a rooted path does. None of `^ $ [ ] | \` is ever RAW in a real URL path -
+  # a path that genuinely needed one of them would percent-encode it - so a
+  # candidate carrying any of them unencoded is regex/code, not a route.
+  case $v in
+    *'^'* | *'$'* | *'['* | *']'* | *'|'* | *'\'*) return 1 ;;
+  esac
+  # A comment opener quoted as a literal - e.g. a templating engine's own
+  # delimiter stored as a string constant - is not a reference.
+  case $v in
+    /\**) return 1 ;;
+  esac
+  # Nothing past the marker itself.
+  case $v in
+    / | // | ./ | ../) return 1 ;;
+  esac
+  [[ $v =~ $_CRAWL_JS_STATIC_EXT_RE ]] && return 1
+  return 0
+}
+
+# `crawl_js_scan_line PAGEURL LINE` - the character walk. Every quoted
+# literal on LINE that passes `_crawl_js_literal_ok` is resolved against
+# PAGEURL through `crawl_url_resolve` - the SAME resolver every crawled link
+# and form action already uses, so a `../` climb, dot-segment normalisation
+# and a `?query` are all handled identically here and there is no second URL
+# resolution implementation to keep in step with it. A literal
+# `crawl_url_resolve` itself refuses (`javascript:`, `mailto:`, a bare
+# fragment) is dropped the identical way a rejected `<a href>` already is.
+#
+# Bounded the same way `leakage_engine.sh`'s own JS/text scanners are: a
+# minified bundle is one multi-hundred-KB line, so `_CRAWL_JS_MAX_LITERAL`
+# caps how far an unterminated quote is chased before this gives up on it,
+# and `_CRAWL_JS_MAX_URLS_PER_LINE` caps how many distinct candidates one
+# chunk can contribute. Both bounds can only cost a MISS, never a false
+# positive - the direction docs/DESIGN.md §15 accepts.
+: "${_CRAWL_JS_MAX_LITERAL:=2048}"
+: "${_CRAWL_JS_MAX_URLS_PER_LINE:=200}"
+
+crawl_js_scan_line() {
+  local pageurl=$1 line=$2
+  local i n=${#line} c q p val ch found=0 abs
+  for (( i = 0; i < n; i++ )); do
+    (( found < _CRAWL_JS_MAX_URLS_PER_LINE )) || break
+    c=${line:i:1}
+    [[ $c == '"' || $c == "'" ]] || continue
+    q=$c
+    p=$(( i + 1 ))
+    val=''
+    while (( p < n )); do
+      ch=${line:p:1}
+      # shellcheck disable=SC1003
+      if [[ $ch == '\' ]]; then
+        val+=${line:p+1:1}
+        p=$(( p + 2 ))
+        continue
+      fi
+      [[ $ch == "$q" ]] && break
+      val+=$ch
+      p=$(( p + 1 ))
+      if (( ${#val} > _CRAWL_JS_MAX_LITERAL )); then
+        val=''
+        break
+      fi
+    done
+    if (( p < n )) && [[ -n $val ]] && _crawl_js_literal_ok "$val"; then
+      if abs=$(crawl_url_resolve "$pageurl" "$val"); then
+        if [[ -z ${_CRAWL_JS_URLS_SEEN[$abs]:-} ]]; then
+          _CRAWL_JS_URLS_SEEN[$abs]=1
+          _CRAWL_JS_URLS+=("$abs")
+          found=$(( found + 1 ))
+        fi
+      fi
+    fi
+    i=$p
+  done
+  return 0
+}
+
+# `crawl_js_scan_body FILE PAGEURL` - reads FILE (a fetched JS/source-map
+# response body), bounded to `_CRAWL_MAX_BODY_BYTES` (the identical bound
+# `crawl_html_extract`'s own caller applies) and populates `_CRAWL_JS_URLS`.
+#
+# A MINIFIED BUNDLE IS ONE LINE, AND CHUNKING IT IS NOT COSMETIC - the
+# identical lesson `leakage_engine.sh`'s own `leak_body_read` states for the
+# same reason: a webpack bundle is routinely one 900KB line, and running the
+# character walk above over the whole thing at once is what a bound exists to
+# prevent. `_CRAWL_JS_MAX_LINE_BYTES` splits it into fixed chunks first; a
+# candidate literal that straddles a chunk boundary is missed, the accepted,
+# stated direction to be wrong in.
+: "${_CRAWL_JS_MAX_LINE_BYTES:=4096}"
+
+crawl_js_scan_body() {
+  local file=$1 pageurl=$2
+  [[ -r $file && -s $file ]] || return 0
+  local bounded=$SCOURSH_SCRATCH/crawl-js-body.$BASHPID
+  head -c "$_CRAWL_MAX_BODY_BYTES" -- "$file" >"$bounded" 2>/dev/null || { rm -f "$bounded"; return 0; }
+  local line rest chunk
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=${line%$'\r'}
+    rest=$line
+    while [[ -n $rest ]]; do
+      chunk=${rest:0:_CRAWL_JS_MAX_LINE_BYTES}
+      rest=${rest:_CRAWL_JS_MAX_LINE_BYTES}
+      crawl_js_scan_line "$pageurl" "$chunk"
+    done
+  done <"$bounded"
+  rm -f "$bounded"
+  return 0
+}
+
+# `crawl_body_is_js CTYPE URL` - 0 when a fetched response's Content-Type or
+# URL extension says its body is JavaScript or a source map. Extension is a
+# fallback that applies REGARDLESS of Content-Type (never gated behind an
+# empty/generic one): a source map is routinely served as
+# `application/octet-stream` or with no Content-Type at all, and treating raw
+# bytes as text costs nothing when the guess is wrong - the same
+# no-Content-Type reasoning `crawl_body_looks_like_markup` already applies to
+# HTML, generalised to "trust the URL's own extension when the header is
+# silent or generic".
+crawl_body_is_js() {
+  local ctype=${1,,} url=$2
+  ctype=${ctype%%;*}
+  ctype=${ctype#"${ctype%%[![:space:]]*}"}
+  ctype=${ctype%"${ctype##*[![:space:]]}"}
+  case $ctype in
+    application/javascript | text/javascript | application/x-javascript | \
+      application/ecmascript | text/ecmascript | module)
+      return 0
+      ;;
+    # An EXPLICIT Content-Type that says otherwise always wins over a guess
+    # from the URL's own extension - a catch-all route that answers every
+    # path (including one that happens to end `.js`) with its HTML shell must
+    # still be parsed as HTML, not skipped as a false JS match.
+    text/html | application/xhtml+xml) return 1 ;;
+  esac
+  crawl_url_split "$url"
+  case ${_CRAWL_U_BASE,,} in
+    *.js | *.mjs | *.cjs | *.map) return 0 ;;
+  esac
+  return 1
 }
 
 # ---------------------------------------------------------------------------
