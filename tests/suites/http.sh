@@ -673,9 +673,31 @@ rc=0
 http_request GET 'https://still-good.fixture.example/ok' >/dev/null || rc=$?
 assert_eq 0 "$rc" 'a successful request interleaved between the failures is served normally'
 rc=0
-( http_request GET 'https://still-good.fixture.example/fail' >/dev/null ) || rc=$?
+( http_request GET 'https://still-good.fixture.example/fail' >/dev/null ) 2>"$W/breaker-die.err" || rc=$?
 assert_eq 5 "$rc" \
   'the THIRD failure inside the window trips the breaker and exits 5, even though a success was interleaved before it - FAILS under a consecutive-failures reading, where the interleaved success resets the counter and this request is only failure number one. docs/FOUNDATION.md tension 16 freezes a ROLLING WINDOW ("the rolling window counters"), and docs/STEP5-DAST-PLAN.md states it as "10 failures in a 60s window"'
+
+# The abort message is the ONLY thing an operator sees at the moment the run
+# stops, so it is where the lever to raise has to be named - a fact buried
+# only in docs/USAGE.md's "Conservative DAST limits" prose is a fact an
+# operator mid-incident will not go read.  It names both keys BY THEIR ACTUAL
+# FLAG SPELLING (never a paraphrase a config-key rename could silently drift
+# from), states the CURRENT effective values so an operator does not have to
+# go compute what they already hit, and states the judgement call rather than
+# just the lever: raising it is right for a target that is UP but answers
+# with a 5xx instead of a 404/401/405, and wrong for a target that is
+# genuinely down, where raising it would just hide that.
+BREAKER_DIE=$(cat "$W/breaker-die.err")
+assert_contains "$BREAKER_DIE" '--circuit-breaker-failures' \
+  'the breaker-open message names the --circuit-breaker-failures flag by its real spelling, not a paraphrase'
+assert_contains "$BREAKER_DIE" '--circuit-breaker-window' \
+  'the breaker-open message names the --circuit-breaker-window flag by its real spelling, not a paraphrase'
+assert_contains "$BREAKER_DIE" 'currently 3' \
+  'the message states the CURRENT effective threshold (3, this test lowered it), not the schema default (10) - an operator comparing the message against their own invocation needs the number that actually applies to THIS run'
+assert_contains "$BREAKER_DIE" 'docs/USAGE.md' \
+  'the message points at the doc that carries the full "Conservative DAST limits" guidance rather than trying to restate all of it inline'
+assert_contains "$BREAKER_DIE" 'genuinely down' \
+  'the message states the judgement an operator must make before reaching for the flags - FAILS on a version that names the lever with no caveat, which reads as "always safe to raise this" and would turn a real outage into a wider window that just delays the same abort'
 
 TRANSPORT_BEFORE=$(cat "$TRANSPORT_LOG")
 rc=0

@@ -270,6 +270,30 @@ crawl_js_scan_line 'https://h.example/static/js/main.js' 'var a="application/jso
 assert_eq 0 "${#_CRAWL_JS_URLS[@]}" \
   'FAILS if any of the four false-positive shapes this section names slips through - a mime type never starts with /, a quoted regex is excluded by its raw ^ $ [ ] bytes, a comment opener is excluded by its own check, and a known static-asset extension is excluded outright'
 
+t_case 'a plain string literal that is exactly a parenthesised code fragment is rejected - measured against a real Angular router bundle'
+crawl_js_reset
+# The real, minified line this reproduces: Angular's router source calls
+# this.peekStartsWith("/(") to recognise its own aux-route syntax. Before
+# `(`/`)` joined the regex-metacharacter exclusion, "/(" passed every other
+# check here (it starts with `/`, carries none of ^ $ [ ] | \, is not a bare
+# `/`, is not a comment opener, and is not a static-asset extension) and was
+# mined as the bogus inventory endpoint `/(`.
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'n.peekStartsWith("/(")&&f()'
+assert_eq 0 "${#_CRAWL_JS_URLS[@]}" \
+  'FAILS before the ( ) exclusion existed, where "/(" is indistinguishable from a real rooted path and is mined as one'
+
+t_case 'a bare JS regex literal whose pattern matches a quote character is not misread as a string opener'
+crawl_js_reset
+# The real, minified line this reproduces: an HTML-escaping helper chains
+# `.replace(/"/g,"&quot;")`. The walker has no concept of a regex literal, so
+# without the "quote immediately preceded by /" guard it treats the regex
+# delimiter'"'"'s own /"/ as if it opened a string, captures the flag-plus-
+# punctuation run "/g," that sits before the REAL closing quote, and mines it
+# as the bogus endpoint `/g,` - measured against a real Juice Shop bundle.
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'str.replace(/"/g,"&quot;")'
+assert_eq 0 "${#_CRAWL_JS_URLS[@]}" \
+  'FAILS without the guard, which mines "/g," as a rooted path candidate; the REAL string literal ("&quot;") that follows the regex is correctly skipped anyway since it does not start with any of the four URL markers'
+
 t_case 'a query string literally present in the mined literal is carried through to the resolved URL'
 crawl_js_reset
 crawl_js_scan_line 'https://h.example/static/js/main.js' 'fetch("/search?q=hello&page=2")'
@@ -1313,6 +1337,10 @@ assert_not_contains "$JSEPJSON" '[a-z0-9' \
 assert_not_contains "$JSEPJSON" 'build:' \
   'a JS comment opener quoted as a string literal is excluded'
 assert_not_contains "$JSEPJSON" 'text/plain,x' 'a data: URI is rejected the same way crawl_url_resolve already rejects one from an <a href>'
+assert_not_contains "$JSEPJSON" '"path": "/("' \
+  'a plain string literal that is a parenthesised code fragment (isAuxRoute'"'"'s "/(" - the real Angular router shape measured to slip through before ( ) joined the regex-metacharacter exclusion) is rejected'
+assert_not_contains "$JSEPJSON" '"path": "/g,"' \
+  'a bare regex literal whose pattern matches a quote character (escapeHtml'"'"'s /"/g - the real shape measured to be misread as a string opener before the preceding-/ guard existed) is rejected'
 
 t_case 'the mined-endpoint count is recorded honestly in run.json - the js/crawl split is a real, checkable fact, not a claim'
 JSRUNJSON=$(_slurp "$W/run-jsdiscovery/run.json")
