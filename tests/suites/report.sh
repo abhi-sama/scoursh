@@ -1435,6 +1435,83 @@ SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 SCOURSH_INSTALL_ROOT=$ROOT
 
 # =============================================================================
+printf '\n-- REGRESSION: a W-class rule-authoring warning prints once per die() abort, not once per report writer that re-walks the registry --\n'
+# =============================================================================
+# Real operator run, 2026-09-13: `scan.sh dast ... --intensity active
+# --allow-intrusive --verbose` against a target whose circuit breaker opened
+# (10 failed requests within 60s) printed the tool's whole W033
+# rule-authoring block TWICE - the same 13 lines, in the same order, back to
+# back. A prior investigation (PR #297) had verified `checks_registry_load
+# sast ...` then `checks_registry_load iac ...` IN ONE PROCESS prints exactly
+# 13 lines and a repeat load adds zero, and concluded the dedupe was
+# correct - true for that shape, and NOT the shape a real abort takes.
+#
+# The real shape: die() (lib/core.sh) routes every abort through
+# run_json_refresh_incomplete, which runs report_run_json/report_md/
+# report_html/report_sarif/... each in its OWN subshell (so a die() inside
+# the expensive registry walk can only ever kill that subshell, never
+# replace the original abort's exit code). report_run_json's subshell does
+# the tool's one, real full-catalog walk and prints the W033 block for the
+# first time. report_sarif's subshell is DELIBERATELY forced to redo that
+# walk from scratch (report_registries_dump's own header explains why: its
+# rules[] needs lib/records.sh's raw parsed record state, which cannot
+# cheaply cross a subshell boundary) - and lib/records.sh's own print-dedup
+# memo (_RECORDS_W_PRINTED, an ordinary bash associative array) cannot cross
+# that boundary either, so report_sarif's subshell starts with nothing
+# recorded and reprints the identical 13 lines. sarif sits in the DEFAULT
+# --format list, so this fires on an ordinary aborted run with no --format
+# flag at all - exactly the operator's own command line.
+#
+# Explicitly cleared rather than trusted to be unset: this suite runs many
+# cases in ONE sourced process, and an earlier one may already have primed
+# _RPT_CHECKMETA_LOADED_ROOT (and friends) for $ROOT via an ordinary,
+# non-abort report_all call - which would make report_run_json's OWN
+# subshell below skip the walk entirely (inheriting an already-warm flag)
+# and leave only report_sarif's forced walk to print anything, passing this
+# test for the wrong reason even on unmodified code. Clearing them first
+# reproduces the real-world first-walk-of-the-process shape the operator's
+# report actually took.
+unset _RPT_CHECKMETA_LOADED_ROOT _RPTOW_REGISTRY_LOADED_ROOT \
+  _RPTCIS_REGISTRY_LOADED_ROOT 2>/dev/null || true
+declare -gA _RECORDS_W_PRINTED=()
+DW033=$SCOURSH_SCRATCH/rpt-w033-abort
+rm -rf "$DW033"
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID='' SCOURSH_FORMATS=''
+run_init "$DW033"
+DW033=$SCOURSH_RUN_DIR
+# Any real check id makes meta/checks_run non-empty, which is report_count's
+# own gate for doing the full per-category walk at all (#287) - the ordinary
+# state of an abort that happened mid-scan, after at least one check ran.
+run_record checks_run SAST-SEC-HARDCODED_PASSWORD-01
+W033_LOG=$SCOURSH_SCRATCH/rpt-w033-abort.log
+(
+  SCOURSH_SHOW_RULE_WARNINGS=true
+  die "$SCOURSH_EXIT_SCOPE" \
+    'scope gate refused GET https://bad-target.example: destination not in scope.conf'
+) >"$W033_LOG" 2>&1 || true
+
+t_case 'a die() abort under the default --format list (sarif included) prints one specific W033 warning exactly once'
+# Matched by file:line rather than by check id: tools/gen-status.sh's own
+# witness search (`gs_classify_pack`) scans every tests/suites/*.sh file for
+# a rule pack's check-id text to decide which suite "exercises" it, so a
+# literal check id quoted here would make THIS file - which sorts ahead of
+# tests/suites/sast.sh under LC_ALL=C - the new first hit for java.rules,
+# silently rewriting the committed status block (tests/lint-status.sh) for a
+# reason that has nothing to do with what this test is actually proving.
+W033_ONE_COUNT=$(grep -c 'modules/sast/rules/java.rules:56:1: W033' "$W033_LOG" || true)
+assert_eq 1 "$W033_ONE_COUNT" \
+  "FAILS on unmodified dev with 2: report_run_json's walk prints it once, report_sarif's forced re-walk (its own subshell in run_json_refresh_incomplete) prints it again because _RECORDS_W_PRINTED never survived that subshell boundary; got $W033_ONE_COUNT occurrence(s)"
+
+t_case 'every DISTINCT W-class warning line in that same abort log is unique - none of them repeats'
+W033_TOTAL=$(grep -c 'W0[0-9][0-9] ' "$W033_LOG" || true)
+W033_UNIQUE=$(grep 'W0[0-9][0-9] ' "$W033_LOG" | sort -u | wc -l | tr -d '[:space:]')
+assert_eq "$W033_UNIQUE" "$W033_TOTAL" \
+  "total W-class lines ($W033_TOTAL) must equal distinct W-class lines ($W033_UNIQUE) - a mismatch means some warning printed more than once in this one abort"
+
+SCOURSH_RUN_DIR='' SCOURSH_RUN_ID='' SCOURSH_FORMATS=''
+SCOURSH_INSTALL_ROOT=$ROOT
+
+# =============================================================================
 printf '\n-- report --from DIR (report_regenerate_from): byte-identical regeneration --\n'
 # =============================================================================
 # "A live scan into DIR, then report --from DIR" - D15 is built the exact way
