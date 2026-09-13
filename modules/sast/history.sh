@@ -440,7 +440,9 @@ _sast_history_scan() {
 
 # ---------------------------------------------------------------------------
 # 9. docs/STEP7-STATE-PLAN.md STATE-02: path-root coverage for every
-#    SAST-HIST-* check, plus its history_boundary block (tension 13).
+#    SAST-HIST-* check, plus its history_boundary block (tension 13) - AND
+#    (bug fix) run.json's own `checks_run`, which this function used to leave
+#    completely unwritten for the whole SAST-HIST-* family.
 #    Reached only from the tail of _sast_history_scan above, i.e. only once
 #    the WHOLE bounded blob walk has finished - the same "the caller decides
 #    completion by where it calls this from" discipline
@@ -451,14 +453,36 @@ _sast_history_scan() {
 #    evaluates every one of them against every blob it visits (see
 #    _sast_history_scan_blob), so "the walk completed" is "every check in the
 #    pack completed", uniformly.
+#
+#    BUG (found auditing a real operator run that passed --history and got
+#    zero SAST-HIST-* ids in checks_run no matter what history actually
+#    found): `sast_record_checks_run` (modules/sast/engine.sh) is the ONLY
+#    place `run_record checks_run` was ever called for module sast, and it is
+#    called once from modules/sast/run.sh with the WORKING-TREE's own
+#    profile-filtered id list - `SAST-SEC-*` etc, never the `SAST-HIST-*`
+#    family this file mints at runtime (_sast_hist_check_id) and which
+#    therefore never appears in ANY *.rules registry for that filter to have
+#    selected in the first place. So a completed, working `--history` replay
+#    - one that genuinely walked history and would have emitted a finding had
+#    a secret been present - left run.json's checks_run silently unable to
+#    ever show it ran, indistinguishable there from "this check never even
+#    loaded". `run_record checks_run "$hist_id"` below is the fix, in the
+#    same loop and on the SAME "the walk completed for every record in the
+#    pack" basis `state_add_covered` already uses - deliberately NOT gated on
+#    `state_add_covered`'s own `declare -F` guard, since checks_run is not a
+#    step-7 state-plan feature and must not go dark whenever lib/state.sh's
+#    functions happen to be absent (a standalone caller sourcing history.sh
+#    without lib/state.sh, for instance).
 # ---------------------------------------------------------------------------
 _sast_history_record_coverage() {
-  declare -F state_add_covered >/dev/null 2>&1 || return 0
   local secretsset=$1 oldest_commit=$2 oldest_commit_time=$3 objects_scanned=$4 bound_by=$5
-  local n idx hist_id digest
+  local n idx hist_id digest have_state=false
+  declare -F state_add_covered >/dev/null 2>&1 && have_state=true
   n=$(records_count "$secretsset")
   for (( idx = 0; idx < n; idx++ )); do
     hist_id=$(_sast_hist_check_id "$(records_id "$secretsset" "$idx")")
+    run_record checks_run "$hist_id"
+    $have_state || continue
     digest=$(records_digest "$secretsset" "$idx")
     state_add_covered "$hist_id" "$digest" path-root "$SCOURSH_PATH_ROOT"
     if declare -F state_add_history_boundary >/dev/null 2>&1; then

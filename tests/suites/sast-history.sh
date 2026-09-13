@@ -214,6 +214,31 @@ assert_contains "$FIELDS" 'oldest_reaching_commit_time=' \
 t_case 'the finding carries a commit sha for navigation (tension 13: "the path, the earliest reaching commit, the line ... and the blob sha")'
 assert_contains "$FIELDS" 'commit=' 'a commit= field is present'
 
+t_case 'checks_run records the SAST-HIST-* id that actually fired a finding (bug fix: sast_record_checks_run, modules/sast/engine.sh, only ever wrote the working-tree id list - a completed history replay left checks_run with nothing to show for itself, indistinguishable there from "this check never loaded")'
+assert_contains "$(cat "$W/run-secret-history/meta/checks_run" 2>/dev/null)" 'SAST-HIST-AWS_AKID-01' \
+  'fails without the fix: _sast_history_record_coverage never called run_record checks_run for any SAST-HIST-* id'
+
+# =============================================================================
+printf -- '\n-- checks_run reflects a COMPLETED replay, not merely a finding --\n'
+# =============================================================================
+CLEANHISTREPO=$W/clean-history-repo
+_new_repo "$CLEANHISTREPO"
+printf 'print("nothing sensitive here")\n' >"$CLEANHISTREPO/app.py"
+git -C "$CLEANHISTREPO" add app.py
+git -C "$CLEANHISTREPO" commit -q -m 'a clean repo with no secret anywhere in its history'
+
+declare -A SCAN_FLAGS=([history]=true)
+_run_history "$CLEANHISTREPO" "$W/run-clean-history"
+
+t_case 'a --history replay that finds ZERO secrets still records SAST-HIST-* ids in checks_run - the whole point of the fix: "ran and found nothing" must stay distinguishable from "never ran"'
+assert_eq '' "$(_ids_found "$W/run-clean-history")" 'sanity: this fixture is genuinely clean'
+assert_contains "$(cat "$W/run-clean-history/meta/checks_run" 2>/dev/null)" 'SAST-HIST-AWS_AKID-01' \
+  'fails under the pre-fix code: checks_run stayed empty for a clean history replay, which reads identically to history.sh never having run at all'
+
+t_case '--history not requested: a declared no-op records no SAST-HIST-* id in checks_run'
+assert_not_contains "$(cat "$W/run-not-requested/meta/checks_run" 2>/dev/null)" 'SAST-HIST-' \
+  'fails if a declared no-op (history_not_requested) somehow still recorded history checks as run'
+
 # =============================================================================
 printf -- '\n-- only secrets.rules is replayed, never the full check registry --\n'
 # =============================================================================
