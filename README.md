@@ -149,14 +149,66 @@ walkthrough, including measured import size/time and the `range_only_skipped` co
 
 ### 2. Per-surface scans
 
+Each surface needs one thing set up first, noted as a trailing comment:
+
 ```sh
-./scan.sh sast --path DIR --format html,audit --out reports/sast
-./scan.sh sca  --path DIR --format html,audit --out reports/sca      # needs step 1
-./scan.sh iac  --path DIR --format html,audit --out reports/iac
-./scan.sh dast --target NAME --i-own-target NAME --intensity passive --format html,audit --out reports/dast
+./scan.sh sast    --path DIR --format html,audit --out reports/sast
+./scan.sh sca     --path DIR --format html,audit --out reports/sca      # needs step 1 (data/advisories.db)
+./scan.sh iac     --path DIR --format html,audit --out reports/iac
+./scan.sh dast    --target NAME --format html,audit --out reports/dast     # NAME must be authorized first - see 3a below
+./scan.sh network --target NAME --format html,audit --out reports/network  # same authorization; scans NAME's declared extra-host listeners
+./scan.sh image   --image ID --format html,audit --out reports/image      # config/images.conf must name ID, or pass --source PATH
+./scan.sh cloud   --live --format html,audit --out reports/cloud         # needs the `aws` CLI on PATH and resolvable credentials
 ```
 
-### 3. DAST against a live app - the recipe that actually lands injection findings
+`network` only probes `extra-host` listeners declared in `config/scope.conf` - a target with only
+`base-url` gives it nothing to test, and every phase records `no_declared_listeners`. `image` never
+pulls anything: point `--source` at a `docker save ID -o PATH` tarball or an OCI-layout directory (a
+plain file is read as the tarball, a directory as the OCI layout). `cloud --live` makes real, read-only
+AWS API calls against whichever account your credentials resolve to.
+
+### 3a. Authorize a `dast`/`network` target
+
+`--target NAME` refuses to run unless `NAME` is authorized in `config/scope.conf`. At an interactive
+terminal, scoursh **offers to write the record for you** the moment it hits that refusal - answer its
+prompts and the same command continues, no second invocation needed. Non-interactively (CI, a script),
+write the record by hand - `config/scope.conf.example` documents every key; the minimum is:
+
+```sh
+cat >> config/scope.conf <<'EOF'
+id: my-app
+base-url: https://my-app.example.com/
+EOF
+```
+
+Add one `extra-host: host:port` line per additional listener you want `network` to scan. `--guided`
+walks through the same choices interactively: `./scan.sh dast --guided`.
+
+### 3b. DAST against a single-page app (capture a HAR)
+
+A static crawl only follows HTML links and mines literal-looking paths out of fetched JS - a real API
+call an SPA makes from a click handler is invisible to it. Measured against a local Angular SPA
+fixture: a plain crawl found **41 endpoints** (crawl + JS-mined) but missed a real search endpoint, a
+real product-listing endpoint, and the login call's method and body entirely. Capturing ~20 seconds of
+real browser traffic and importing it added exactly those **3** as verified `source: har` entries with
+real methods and bodies, visible in `reports/<run>/inventory/endpoints.json`.
+
+1. Open the app in Chrome, open DevTools (`Cmd+Opt+I` / `F12`) -> **Network** tab.
+2. Check **Preserve log** (so an SPA route change or reload doesn't clear the capture).
+3. Use the app for real for ~20-30 seconds - log in, click through the flows you want tested.
+4. Right-click any request in the list -> **Save all as HAR with content**.
+5. Run the scan against the saved file:
+
+```sh
+./scan.sh dast --target NAME --har ./capture.har --intensity passive --format html,audit --out reports/dast-har
+```
+
+Only the HAR's **paths** are used - any host it names is discarded, and every request scoursh sends
+still goes to your authorized `base-url`. `--openapi FILE` does the same job when the app publishes an
+OpenAPI/Swagger document instead (often at `/openapi.json` or `/swagger.json`); `config/discovery.conf`'s
+`har-path`/`openapi-path` keys do either one for every future run without re-passing the flag.
+
+### 4. DAST against a live app - the recipe that actually lands injection findings
 
 A bare passive scan of a target the crawler hasn't seen much of finds relatively little - most of a
 real application's surface is API endpoints a static HTML crawl never reaches:
@@ -166,7 +218,7 @@ real application's surface is API endpoints a static HTML crawl never reaches:
   --target dast-test-target --i-own-target dast-test-target \
   --intensity active \
   --openapi ./openapi.json \
-  --requests-per-second 2 --jobs 2 --circuit-breaker-failures 40 \
+  --requests-per-second 2 --jobs 2 \
   --format json,sarif,html,md,audit,agent \
   --out reports/dast-full
 ```
@@ -175,21 +227,22 @@ real application's surface is API endpoints a static HTML crawl never reaches:
   same target.
 - Import your real API surface with `--openapi`/`--har`/`--postman`/`--graphql-schema` so the scanner
   reaches real endpoints - a single-page app's own routes are close to invisible to a static crawl
-  alone.
-- The circuit breaker (10 failures/60s by default) is a **safety feature**, not a bug: it stops the
-  run if the target stops answering. Go gentler than the unaffirmed defaults on a small target
+  alone (see 3b above for the HAR walkthrough).
+- The circuit breaker is a **safety feature**, not a bug: it stops the run if the target genuinely stops
+  answering (10 transport-level failures/60s by default) - a *separate*, much higher counter
+  (`--circuit-breaker-5xx-failures`, default 200) tracks an application that merely answers unmatched
+  paths with `5xx`, so an idiosyncratic-but-healthy target no longer needs either raised as routine
+  practice. Go gentler than the unaffirmed defaults on a small target instead
   (`--requests-per-second 2 --jobs 2` - both already under the 4/s ceiling, so neither needs
-  `--i-own-target` on its own) and raise `--circuit-breaker-failures` (which *does* need
-  `--i-own-target`, since it's above the default 10) if an idiosyncratic-but-healthy target trips it
-  during discovery, before the injection phase ever runs.
+  `--i-own-target` on its own).
 - Run one scan at a time against a target - concurrent scans multiply the effective request rate the
   target sees and can trip the breaker for reasons that have nothing to do with the target's health.
 
-### 4. Everything in one run
+### 5. Everything in one run
 
 ```sh
 ./scan.sh all --path DIR --target NAME --i-own-target NAME --intensity active \
-  --openapi ./openapi.json --requests-per-second 2 --jobs 2 --circuit-breaker-failures 40 \
+  --openapi ./openapi.json --requests-per-second 2 --jobs 2 \
   --format json,sarif,html,md,audit,agent --out reports/all
 ```
 
@@ -201,7 +254,7 @@ binary file. If `--path` includes it - for example, running `./scan.sh all --pat
 checkout where you just built the database - `sast` will walk it like source, producing noise and a
 very slow run for no security value. Point `--path` at real source, or exclude `data/`.
 
-### 5. Guided (interactive) mode
+### 6. Guided (interactive) mode
 
 ```sh
 ./scan.sh all --guided                    # walks you through the choices and runs the composed command
@@ -217,18 +270,90 @@ pick a surface, point it at a path or target, toggle options, and copy the exact
 nothing on that page runs anything. `./scan.sh <command> --guided --print-command` is its terminal
 equivalent.
 
-### 6. Optional specialist engines, for extra depth
+### 7. Vendor the engines, for extra depth
+
+`--use-engines` (`sast`: semgrep + gitleaks; `iac`: trivy) does nothing until the named engine's binary
+is actually on disk under `modules/<module>/adapters/<engine>/` - absent, `scan.sh` warns
+("`--use-engines was given, but no adapter is vendored ... this run will use no engine checks at
+all`") but does not error, and nothing is ever fetched at scan time. Every adapter fetches a **raw, single-file executable**
+and `chmod +x`'s it - it never unpacks an archive - so the fiddly part is that gitleaks and trivy publish
+`.tar.gz` archives only: download and verify the archive yourself, extract it, then point the adapter at
+the extracted file with a `file://` URL.
+
+**gitleaks** (~20MB, MIT-licensed):
 
 ```sh
-tools/vendor-engines.sh <engine>          # semgrep | gitleaks | trivy - you pin version + URL + sha256
-./scan.sh sast --path DIR --use-engines       # adds semgrep (broader rules) + gitleaks (secrets)
-./scan.sh iac  --path DIR --use-engines       # adds trivy config (broader IaC coverage)
+GITLEAKS_VERSION=8.30.1   # current version + platform asset names: https://github.com/gitleaks/gitleaks/releases
+PLATFORM=darwin_arm64     # or linux_x64, linux_arm64, darwin_x64, ...
+curl -fsSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+curl -fsSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_${PLATFORM}.tar.gz"
+grep "${PLATFORM}.tar.gz" "gitleaks_${GITLEAKS_VERSION}_checksums.txt"   # compare this line's hash...
+shasum -a 256 "gitleaks_${GITLEAKS_VERSION}_${PLATFORM}.tar.gz"          # ...against this one, by eye, before continuing
+
+mkdir -p gitleaks-extracted && tar -xzf "gitleaks_${GITLEAKS_VERSION}_${PLATFORM}.tar.gz" -C gitleaks-extracted gitleaks
+chmod +x gitleaks-extracted/gitleaks
+curl -fsSLo gitleaks-extracted/gitleaks.toml "https://raw.githubusercontent.com/gitleaks/gitleaks/v${GITLEAKS_VERSION}/config/gitleaks.toml"
+
+export SCOURSH_GITLEAKS_VERSION=$GITLEAKS_VERSION
+export SCOURSH_GITLEAKS_URL="file://$(pwd)/gitleaks-extracted/gitleaks"
+export SCOURSH_GITLEAKS_SHA256=$(shasum -a 256 gitleaks-extracted/gitleaks | cut -d' ' -f1)
+export SCOURSH_GITLEAKS_RULES_URL="file://$(pwd)/gitleaks-extracted/gitleaks.toml"
+export SCOURSH_GITLEAKS_RULES_SHA256=$(shasum -a 256 gitleaks-extracted/gitleaks.toml | cut -d' ' -f1)
+tools/vendor-engines.sh gitleaks
 ```
 
-`--use-engines` only does anything once the named engine's vendored binary and ruleset are actually
-on disk; absent, it is a silent no-op, never an error. Nothing is fetched at scan time.
+**trivy** (~155MB, Apache-2.0) - the identical shape, minus a separate ruleset (trivy's checks are
+compiled into the binary):
 
-### 7. CI gating, state, and other commands
+```sh
+TRIVY_VERSION=0.74.0   # current version + platform asset names: https://github.com/aquasecurity/trivy/releases
+ASSET=trivy_${TRIVY_VERSION}_macOS-ARM64.tar.gz   # or Linux-64bit, Linux-ARM64, macOS-64bit, ...
+curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
+curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${ASSET}"
+grep "$ASSET" "trivy_${TRIVY_VERSION}_checksums.txt"    # compare this hash...
+shasum -a 256 "$ASSET"                                  # ...against this one, before continuing
+
+mkdir -p trivy-extracted && tar -xzf "$ASSET" -C trivy-extracted trivy
+chmod +x trivy-extracted/trivy
+
+export SCOURSH_TRIVY_VERSION=$TRIVY_VERSION
+export SCOURSH_TRIVY_URL="file://$(pwd)/trivy-extracted/trivy"
+export SCOURSH_TRIVY_SHA256=$(shasum -a 256 trivy-extracted/trivy | cut -d' ' -f1)
+tools/vendor-engines.sh trivy
+```
+
+Then turn each on:
+
+```sh
+./scan.sh sast --path DIR --use-engines   # adds gitleaks (semgrep too, once vendored - see below)
+./scan.sh iac  --path DIR --use-engines   # adds trivy config
+```
+
+**Do not commit the vendored `bin/`/`rules/` directories to git**, whatever `tools/vendor-engines.sh`'s
+own success message suggests - re-run the vendor step per machine (or per CI image) instead:
+
+- trivy's binary is ~155MB - over **GitHub's 100MB hard limit**, so pushing it is not merely unwise, it
+  is impossible.
+- gitleaks' default `gitleaks.toml` and binary are small enough to push, but a ~20MB binary blob checked
+  into git history forever is still worth avoiding on general principle.
+- semgrep's default ruleset, if you ever obtain one, ships under "Semgrep Rules License v1.0", which
+  explicitly forbids redistribution - committing it to this (Apache-2.0, public) repository would be a
+  license violation, not just bloat.
+
+**semgrep has no working recipe here, and that's a real gap, not an oversight.** Unlike gitleaks and
+trivy, semgrep publishes **zero binary assets** on its GitHub releases - installation is pip/pipx or
+Homebrew only. A Homebrew install's `bin/semgrep` is a ~220-byte Python wrapper
+(`#!/opt/homebrew/Cellar/semgrep/<version>/libexec/bin/python`, importing
+`semgrep.console_scripts.entrypoint`) that depends on an entire ~240MB, version-pinned
+Cellar tree staying in place - not a single, relocatable, checksummable artifact the way the other two
+adapters expect. Pointing `SCOURSH_SEMGREP_URL` at that wrapper technically satisfies the adapter's
+"is it executable" check, but the byte-identity guarantee `tools/vendor-engines.sh` exists for doesn't
+hold: the wrapper breaks the moment that Homebrew formula is upgraded or removed, and there is no
+publisher-issued checksum for a `pip`/`brew` install to verify against in the first place. Skip vendoring
+semgrep until upstream ships a real release binary, or accept that a `pip`/`brew` install is unpinned and
+treat it accordingly.
+
+### 8. CI gating, state, and other commands
 
 ```sh
 ./scan.sh sast --path DIR --fail-on high              # exit 1 if anything at/above high is found
@@ -238,6 +363,19 @@ on disk; absent, it is a silent no-op, never an error. Nothing is fetched at sca
 ./scan.sh report --from reports/<prior-run>           # regenerate report.md/html/sarif from a prior run's own findings, no rescan
 ./scan.sh cloud --live                                # AWS CSPM - 30 services, read-only, needs AWS credentials
 ```
+
+`report --from DIR` needs `DIR` to hold `findings.jsonl`, a well-formed `run.json`, `findings.fields`,
+*and* `meta/` - all four, so it can't regenerate an aborted run's report (an abort never writes
+`findings.jsonl`). Verified working end to end (re-rendered `report.md` byte-identical to the original
+run bar its SARIF timestamp).
+
+Every normal `sast`/`sca`/`iac`/`dast`/`cloud`/`network`/`image` run already auto-classifies its own
+findings against `state/latest.json` - each finding's `status` in that run's own `findings.jsonl` is
+already `new`/`recurring`/`fixed`/`unknown`, with no extra command needed. **`diff --against` itself is
+currently broken on this branch**: the classification it computes is correct (visible in
+`meta/diff_present`/`meta/diff_absent` in its output directory), but the rendered `report.md`/`run.json`
+counts always read 0/0/0/0 regardless - verified by reproducing it from a clean `state/` directory twice.
+Until fixed, read the per-run `findings.jsonl` `status` field above instead of running `diff` standalone.
 
 ## Output & the audit report
 

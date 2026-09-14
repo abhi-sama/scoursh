@@ -275,16 +275,61 @@ for the reasoning behind each one.
 ### Per-surface scans
 
 `sast`, `sca`, and `iac` all take a `--path`; `dast` and `network` both take a `--target`; `image` takes
-an `--image`. Write each report to its own directory so consecutive scans don't clobber one another:
+an `--image`; `cloud` takes `--live`. Write each report to its own directory so consecutive scans don't
+clobber one another:
 
 ```sh
 ./scan.sh sast    --path DIR --format html,audit --out reports/sast
 ./scan.sh sca     --path DIR --format html,audit --out reports/sca      # needs data/advisories.db - see above
 ./scan.sh iac     --path DIR --format html,audit --out reports/iac
-./scan.sh dast    --target NAME --format html,audit --out reports/dast     # config/scope.conf must authorize NAME first
-./scan.sh network --target NAME --format html,audit --out reports/network  # same authorization; scans NAME's declared listener set
-./scan.sh image   --image ID --format html,audit --out reports/image      # config/images.conf must name ID first (or pass --source)
+./scan.sh dast    --target NAME --format html,audit --out reports/dast     # config/scope.conf must authorize NAME first - see "Authorize a target" below
+./scan.sh network --target NAME --format html,audit --out reports/network  # same authorization; scans NAME's declared extra-host listener set, never base-url's own port
+./scan.sh image   --image ID --format html,audit --out reports/image      # config/images.conf must name ID first (or pass --source PATH - a docker-save tarball or OCI-layout directory)
+./scan.sh cloud   --live --format html,audit --out reports/cloud         # needs the aws CLI on PATH and resolvable credentials; makes real, read-only AWS API calls
 ```
+
+### Authorize a `dast`/`network` target
+
+`--target NAME` refuses to dispatch unless `NAME` has a record in `config/scope.conf`. At an
+interactive terminal, hitting that refusal makes scoursh **offer to write the record for you** (a
+recent addition - see `_scan_pf_offer_authorize_target` in `scan.sh`): confirming the prompts it shows
+continues the *same* invocation, with no second command needed. `--guided` walks through the identical
+choice as part of its own flow. Non-interactively (CI, a script, or just to see the shape), write it by
+hand instead - copy `config/scope.conf.example`, or append the minimum directly:
+
+```sh
+cat >> config/scope.conf <<'EOF'
+id: my-app
+base-url: https://my-app.example.com/
+EOF
+```
+
+Add `extra-host: host:port` (repeatable) for every additional listener you want `network` to test -
+see ["`config/scope.conf`"](#configscopeconf---required-only-for-dast-network) below for every key.
+
+### DAST against a single-page app (capturing a HAR)
+
+`config/discovery.conf` (below) covers this in full depth; this is the short, copy-paste version. A
+static crawl only follows HTML links and mines URL-shaped literal strings out of fetched JS - a real
+API call an SPA makes from a click handler is invisible to both. Measured against a local Angular SPA
+fixture: a plain crawl found **41 endpoints** (crawl-sourced plus JS-mined) but missed a real search
+endpoint, a real product-listing endpoint, and the login call's method and body entirely; capturing
+~20 seconds of real browser traffic and importing it added exactly those **3** as verified `source: har`
+inventory entries with real methods and bodies.
+
+1. Open the app in Chrome, open DevTools (`Cmd+Opt+I` / `F12`) -> **Network** tab.
+2. Check **Preserve log**, so an SPA route change or reload doesn't clear what's captured.
+3. Use the app for real, for ~20-30 seconds - log in, click through the flows worth testing.
+4. Right-click any request in the list -> **Save all as HAR with content**.
+5. Re-run the scan naming the capture:
+
+```sh
+./scan.sh dast --target NAME --har ./capture.har --intensity passive --format html,audit --out reports/dast-har
+```
+
+Only the HAR's **paths** are read - any host it names is discarded, and every request still goes to
+`NAME`'s own authorized `base-url`. `--openapi FILE` does the identical job when the app publishes an
+OpenAPI/Swagger document instead (a common path is `/openapi.json` or `/swagger.json`).
 
 ### A full active-DAST recipe
 
@@ -354,17 +399,93 @@ pressing **Enter** accepts the bracketed default and scans every language; typin
 comma-separated) and re-prompts. See ["Flag equivalence"](#flag-equivalence) above for every other
 prompt's non-interactive form.
 
-### Optional specialist engines for extra depth
+### Vendor the engines, for extra depth
+
+`--use-engines` (`sast`: semgrep + gitleaks; `iac`: trivy) has an effect only once the named engine's
+vendored binary is actually present on disk under `modules/<module>/adapters/<engine>/`; absent,
+`scan.sh` warns (`--use-engines was given, but no adapter is vendored ...`) but does not error, and the
+scan behaves exactly as if the flag were absent. Nothing is fetched at scan time, whatever the flag is
+given.
+
+Every adapter's `vendor.sh` fetches a **raw, single-file executable** to `bin/<engine>` and `chmod +x`'s
+it - see `modules/*/adapters/*/vendor.sh` and `veng_fetch` (`tools/vendor-engines.sh`). It never
+extracts an archive. gitleaks and trivy publish `.tar.gz` releases only, so vendoring either one is a
+three-step dance: download and verify the **archive** against the publisher's own checksums file,
+extract the one binary you need, then point the adapter at the extracted file with a `file://` URL and
+*that file's own* sha256 (not the archive's).
+
+**gitleaks** (~20MB, MIT):
 
 ```sh
-tools/vendor-engines.sh <engine>      # semgrep | gitleaks | trivy - you supply and pin version+URL+sha256
-./scan.sh sast --path DIR --use-engines    # sast: adds semgrep (broader rules) and gitleaks (secrets)
-./scan.sh iac  --path DIR --use-engines    # iac: adds trivy config (broader misconfiguration coverage)
+GITLEAKS_VERSION=8.30.1   # current version + platform asset names: https://github.com/gitleaks/gitleaks/releases
+PLATFORM=darwin_arm64     # or linux_x64, linux_arm64, darwin_x64, ...
+curl -fsSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+curl -fsSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_${PLATFORM}.tar.gz"
+grep "${PLATFORM}.tar.gz" "gitleaks_${GITLEAKS_VERSION}_checksums.txt"   # compare this line's hash...
+shasum -a 256 "gitleaks_${GITLEAKS_VERSION}_${PLATFORM}.tar.gz"          # ...against this one, by eye, before continuing
+
+mkdir -p gitleaks-extracted && tar -xzf "gitleaks_${GITLEAKS_VERSION}_${PLATFORM}.tar.gz" -C gitleaks-extracted gitleaks
+chmod +x gitleaks-extracted/gitleaks
+curl -fsSLo gitleaks-extracted/gitleaks.toml "https://raw.githubusercontent.com/gitleaks/gitleaks/v${GITLEAKS_VERSION}/config/gitleaks.toml"
+
+export SCOURSH_GITLEAKS_VERSION=$GITLEAKS_VERSION
+export SCOURSH_GITLEAKS_URL="file://$(pwd)/gitleaks-extracted/gitleaks"
+export SCOURSH_GITLEAKS_SHA256=$(shasum -a 256 gitleaks-extracted/gitleaks | cut -d' ' -f1)
+export SCOURSH_GITLEAKS_RULES_URL="file://$(pwd)/gitleaks-extracted/gitleaks.toml"
+export SCOURSH_GITLEAKS_RULES_SHA256=$(shasum -a 256 gitleaks-extracted/gitleaks.toml | cut -d' ' -f1)
+tools/vendor-engines.sh gitleaks
 ```
 
-`--use-engines` only has an effect once the named engine's vendored binary and ruleset are actually
-present on disk; absent, it is a silent no-op - never an error, and never a reason a scan behaves any
-differently from one without the flag. Nothing is fetched at scan time, whatever the flag is given.
+**trivy** (~155MB, Apache-2.0) - the identical shape, minus a separate ruleset (its misconfiguration
+checks are compiled into the binary):
+
+```sh
+TRIVY_VERSION=0.74.0   # current version + platform asset names: https://github.com/aquasecurity/trivy/releases
+ASSET=trivy_${TRIVY_VERSION}_macOS-ARM64.tar.gz   # or Linux-64bit, Linux-ARM64, macOS-64bit, ...
+curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
+curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${ASSET}"
+grep "$ASSET" "trivy_${TRIVY_VERSION}_checksums.txt"    # compare this hash...
+shasum -a 256 "$ASSET"                                  # ...against this one, before continuing
+
+mkdir -p trivy-extracted && tar -xzf "$ASSET" -C trivy-extracted trivy
+chmod +x trivy-extracted/trivy
+
+export SCOURSH_TRIVY_VERSION=$TRIVY_VERSION
+export SCOURSH_TRIVY_URL="file://$(pwd)/trivy-extracted/trivy"
+export SCOURSH_TRIVY_SHA256=$(shasum -a 256 trivy-extracted/trivy | cut -d' ' -f1)
+tools/vendor-engines.sh trivy
+```
+
+```sh
+./scan.sh sast --path DIR --use-engines    # adds gitleaks (secrets) and semgrep, once vendored (broader rules)
+./scan.sh iac  --path DIR --use-engines    # adds trivy config (broader misconfiguration coverage)
+```
+
+**Do not commit the resulting `bin/`/`rules/` directories to git**, whatever each `vendor.sh`'s own
+closing log line suggests - re-run the vendor step per machine or per CI image instead of checking the
+bytes in:
+
+- trivy's binary measures **~155MB**, over **GitHub's 100MB hard per-file limit** - pushing it is not
+  merely unwise, it is refused outright.
+- gitleaks' binary and ruleset are small enough to push (~20MB total), but a binary blob checked into
+  git history forever is worth avoiding on general principle even when it fits.
+- semgrep's own default ruleset, if you ever obtain one, ships under "Semgrep Rules License v1.0",
+  which explicitly forbids redistribution - committing it into this Apache-2.0, public repository would
+  be a license violation, not just bloat.
+
+**semgrep has no working recipe here - a real gap, not an oversight.** Unlike gitleaks and trivy,
+semgrep publishes **zero binary release assets** on GitHub (verified: `GET
+/repos/semgrep/semgrep/releases/latest` returns an empty `assets` array) - installation is `pip`/`pipx`
+or Homebrew only. A Homebrew install's `bin/semgrep` is a ~220-byte Python wrapper
+(`#!/opt/homebrew/Cellar/semgrep/<version>/libexec/bin/python`, importing
+`semgrep.console_scripts.entrypoint`) depending on an entire ~240MB, version-pinned Cellar tree staying
+in place - not the single, relocatable, checksummable artifact `semgrep_vendor`
+(`modules/sast/adapters/semgrep/vendor.sh`) expects. Pointing `SCOURSH_SEMGREP_URL` at that wrapper satisfies
+`semgrep_detect`'s "is it executable" check, but not the byte-identity guarantee vendoring exists
+for: the wrapper breaks the moment that Homebrew formula is upgraded or removed, and there is no
+publisher-issued checksum to verify a `pip`/`brew` install against in the first place. Skip vendoring
+semgrep until upstream ships a real release binary, or knowingly accept a `pip`/`brew` install as
+unpinned.
 
 ## `--format` and the `formats` config key
 
@@ -517,6 +638,16 @@ prior run's state before its own gate is evaluated.
 - **`diff --against DIR`** - `DIR` must be a prior run's own output directory. Classifies
   `state/latest.json` (the most recently completed run) against the state recorded for the named
   prior run and renders the delta into a fresh output directory. Performs no new scan of its own.
+  **Known defect, verified on this branch**: `diff_render_against` (`lib/diff.sh`) correctly writes
+  the real classification into that output directory's `meta/diff_present`/`meta/diff_absent`, but
+  `report_count` (`lib/report.sh`) - which reads those two files into the counts `report.md`/`run.json`
+  render - returns early via `[[ -s $rundir/findings.fields ]] || return 0` before ever reaching them,
+  since a standalone `diff` run has no `findings.fields` of its own. The result: `report.md`'s "Since
+  last scan" section and `run.json`'s `counts.by_status` always read 0/0/0/0 for the standalone command,
+  even when the underlying classification is correct - reproduced from a clean `state/` directory on
+  two independent runs. The **automatic** per-run classification above (every finding's own `status`
+  field in that run's `findings.jsonl`) is unaffected and correct; read that instead of relying on a
+  standalone `diff --against` render until this is fixed.
 - **`report --from DIR`** - see ["`report --from DIR`"](#report---from-dir) below; regenerates a
   prior run's report artifacts with no reclassification and no new scan.
 - **`--baseline FILE`** - suppresses findings whose fingerprint matches an entry in
