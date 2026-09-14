@@ -10,6 +10,22 @@ on:
     branches: [main, dev]
   pull_request:
 
+# The suite takes 1.5h+ (the ubuntu-only PR leg) to 2.5h+ (push, both legs),
+# and with no concurrency control a second push to the same ref started a
+# SECOND full run rather than replacing the first - two multi-hour jobs
+# competing for the same runner pool, every time a fixup landed on an
+# already-pushed branch. Measured directly: this PR's own second push left
+# its first run still in flight nearly 5 hours later, both visibly slower
+# for sharing the pool. `github.ref` differs by trigger in exactly the way
+# that keeps this scoped correctly with no extra logic - a `pull_request`
+# event's ref is the PR's own merge ref (so only pushes to THAT PR cancel
+# each other), while a `push` event's ref is the branch itself (so only a
+# second rapid push to the same branch, e.g. dev, cancels the first's run
+# rather than ever canceling a sibling PR's).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   suite:
     strategy:
