@@ -329,8 +329,8 @@ Then turn each on:
 ./scan.sh iac  --path DIR --use-engines   # adds trivy config
 ```
 
-**Do not commit the vendored `bin/`/`rules/` directories to git**, whatever `tools/vendor-engines.sh`'s
-own success message suggests - re-run the vendor step per machine (or per CI image) instead:
+**Do not commit the vendored `bin/`/`rules/` directories to git** - `modules/*/adapters/*/bin/` and
+`.../rules/` are gitignored by design; re-run the vendor step per machine (or per CI image) instead:
 
 - trivy's binary is ~155MB - over **GitHub's 100MB hard limit**, so pushing it is not merely unwise, it
   is impossible.

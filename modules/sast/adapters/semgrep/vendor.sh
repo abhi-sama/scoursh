@@ -72,8 +72,10 @@ semgrep_vendor() {
   veng_fetch "$rules_url" "$rules_dir/semgrep-rules.yml" "$rules_sha256"
 
   log_info "vendor-engines: semgrep $version vendored into ${adapter_dir#"$SCOURSH_INSTALL_ROOT"/}"
-  log_info '  commit modules/sast/adapters/semgrep/bin and .../rules to git; every real scan'
-  log_info '  from here on runs fully offline against exactly these bytes.'
+  log_info '  do NOT commit bin/ or rules/ - both are gitignored by design (the ruleset is'
+  log_info '  under Semgrep Rules License v1.0, which forbids redistribution). Every real'
+  log_info '  scan from here on runs fully offline against exactly these bytes; the version'
+  log_info '  + sha256 pin above is what reproduces them, not a git commit of the bytes.'
   log_info '  Run scan.sh sast --use-engines once against a real target next - adapter.sh'
   log_info '  will name the exact flag if this semgrep release rejects one of its own'
   log_info '  (docs/ADAPTERS.md §7a explains why that check runs here, not as a vendor-time'

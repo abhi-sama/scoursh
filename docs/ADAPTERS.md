@@ -50,8 +50,8 @@ engine's binary or ruleset is permitted to live.
 
 This has one direct, load-bearing consequence for adapter code:
 
-- **`adapter.sh` never fetches anything.** It only *detects* a vendored binary already committed to the
-  repository at a fixed path (§4), *runs* it fully offline, and *normalizes* its output. It contains no
+- **`adapter.sh` never fetches anything.** It only *detects* a vendored binary already present on disk
+  at a fixed path (§4), *runs* it fully offline, and *normalizes* its output. It contains no
   `curl`, `wget`, `nc`, `ncat`, `netcat`, or `openssl s_client` invocation, and it never sources or calls
   `tools/vendor-engines.sh`.
 - `tests/lint-shell.sh` enforces both directions: the tension-19 "no bypass" check (no bare
@@ -97,10 +97,12 @@ of its own to select or drop (§6 below).
 ```
 modules/<module>/adapters/<engine>/
   adapter.sh   # the three-function contract, §5 below
-  bin/         # the vendored engine binary (or binaries), committed to git,
-               # populated by tools/vendor-engines.sh on a networked box
+  bin/         # the vendored engine binary (or binaries) - gitignored, not
+               # committed (a vendored ruleset routinely carries a
+               # non-redistributable licence); populated per-machine by
+               # tools/vendor-engines.sh on a networked box
   rules/       # the vendored local ruleset/config the engine runs against
-               # offline, committed to git, populated the same way
+               # offline - gitignored, populated the same way
 ```
 
 - `<module>` is the scoursh module the adapter augments - `sast`, `iac`, and so on. `docs/DESIGN.md`'s

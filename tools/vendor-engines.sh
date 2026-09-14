@@ -17,12 +17,18 @@
 # BOX, to populate `modules/<module>/adapters/<engine>/bin/` and `.../rules/`
 # with a vendored engine binary and its local ruleset (docs/DESIGN.md §9's
 # "drop vendored offline engines into adapters/ ... commit the binaries +
-# local rule DBs, then the scanner uses them offline forever").  The result
-# is committed to git.  From that point on, every real scan of source,
-# dependencies, or IaC (scoursh is egress-restricted, not air-gapped -
-# docs/FOUNDATION.md tension 28 - but those three modules make zero network
-# calls of their own) needs no network access and never invokes this script
-# again.
+# local rule DBs, then the scanner uses them offline forever").  CORRECTION
+# (D1, scoursh's Apache-2.0 repository is PUBLIC; a vendored ruleset is
+# routinely under a non-redistributable licence, e.g. Semgrep's own Semgrep
+# Rules License v1.0): the result is deliberately NOT committed to git -
+# `modules/*/adapters/*/bin/` and `.../rules/` are gitignored - and
+# reproducibility comes from the pinned version + digest this script
+# verified, not from a git commit of the bytes.  From that point on, every
+# real scan of source, dependencies, or IaC (scoursh is egress-restricted,
+# not air-gapped - docs/FOUNDATION.md tension 28 - but those three modules
+# make zero network calls of their own) needs no network access and never
+# invokes this script again; each operator who wants offline engine use
+# vendors their own copy locally.
 #
 # WHAT THIS IS NOT.
 #   - It is NEVER called during a scan.  `scan.sh`, every `lib/*.sh`, and
