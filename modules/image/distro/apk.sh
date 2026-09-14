@@ -242,7 +242,7 @@ apk_scan_installed() {
   run_record checks_run IMAGE-PKG-VULNERABLE_OS_PACKAGE-01
 
   local i n=${#APK_INSTALLED_NAMES[@]}
-  local name ver prefix row marked row_eco pkg rver advisory sev fixed
+  local name ver prefix row marked _row_eco pkg _rver advisory sev fixed
   local -A seen_advisory=()
   for (( i = 0; i < n; i++ )); do
     name=${APK_INSTALLED_NAMES[i]}
@@ -267,7 +267,7 @@ apk_scan_installed() {
       # middle-empty field (an advisory with no published fixed_versions)
       # silently shifts every later field under a literal-tab `read`.
       marked=${row//$'\t'/$'\x1f'}
-      IFS=$'\x1f' read -r row_eco pkg rver advisory sev fixed <<<"$marked"
+      IFS=$'\x1f' read -r _row_eco pkg _rver advisory sev fixed <<<"$marked"
       # One finding per (package, advisory), never per matching row: two db
       # rows can legitimately share one advisory_id (one Alpine advisory
       # recorded against more than one affected version within the same
@@ -318,11 +318,11 @@ _apk_row_still_vulnerable() {
 # `_apk_summary_for ADVISORY_ID` - data/advisory-summaries.db's own row, or a
 # placeholder, mirroring modules/sca/engine.sh's `_sca_summary_for`. A local
 # copy rather than a `source modules/sca/engine.sh` edge: that file is a real
-# shellcheck -x hub (AGENTS.md's own "the shared response reader"/"a
-# DIAMOND" measurements document exactly this cost for other consumers), and
-# the env var name is reused verbatim so a test pointing
-# SCOURSH_SCA_SUMMARIES_DB at a fixture redirects this lookup too - the one
-# thing that actually has to agree.
+# hub for the `shellcheck -x` fan-out cost (AGENTS.md's own "the shared
+# response reader"/"a DIAMOND" measurements document exactly this cost for
+# other consumers), and the env var name is reused verbatim so a test
+# pointing SCOURSH_SCA_SUMMARIES_DB at a fixture redirects this lookup too -
+# the one thing that actually has to agree.
 _apk_summary_for() {
   local advisory=$1 db prefix row marked _adv summary
   db=${SCOURSH_SCA_SUMMARIES_DB:-${SCOURSH_INSTALL_ROOT:-}/data/advisory-summaries.db}

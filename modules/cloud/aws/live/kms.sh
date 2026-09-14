@@ -192,6 +192,10 @@ _kms_check_rotation() {
   fi
   kms_doc_load "$f" || true
   _kms_note_evaluated "$id"
+  # `kms_rotation_enabled_set` requires a variable name to write its nameref
+  # result into (`printf -v "$__var"`), but only its RETURN STATUS is
+  # consulted here - the value itself is unused.
+  # shellcheck disable=SC2034
   local enabled=''
   kms_rotation_enabled_set enabled && return 0
   kms_emit_finding "$id" "$arn" '' \

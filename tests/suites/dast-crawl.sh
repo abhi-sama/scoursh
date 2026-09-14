@@ -197,19 +197,19 @@ t_case 'an unnamed control contributes no parameter'
 assert_not_contains "$EX" 'input	submit' 'an input with no name attribute is not a parameter'
 
 t_case 'URL resolution follows RFC 3986, including the dot segments'
-B=https://h.example/dir/page.html
-assert_eq 'https://h.example/abs?q=1' "$(crawl_url_resolve "$B" '/abs?q=1')" 'a rooted reference keeps its query'
-assert_eq 'https://h.example/dir/rel.html' "$(crawl_url_resolve "$B" 'rel.html')" 'a relative reference resolves against the base directory'
-assert_eq 'https://h.example/up' "$(crawl_url_resolve "$B" '../up')" 'a parent reference climbs one level'
-assert_eq 'https://other.example/x' "$(crawl_url_resolve "$B" '//other.example/x')" 'a protocol-relative reference inherits the scheme'
-assert_eq 'https://h.example/etc' "$(crawl_url_resolve "$B" '/a/../../etc')" \
+CRAWL_BASE=https://h.example/dir/page.html
+assert_eq 'https://h.example/abs?q=1' "$(crawl_url_resolve "$CRAWL_BASE" '/abs?q=1')" 'a rooted reference keeps its query'
+assert_eq 'https://h.example/dir/rel.html' "$(crawl_url_resolve "$CRAWL_BASE" 'rel.html')" 'a relative reference resolves against the base directory'
+assert_eq 'https://h.example/up' "$(crawl_url_resolve "$CRAWL_BASE" '../up')" 'a parent reference climbs one level'
+assert_eq 'https://other.example/x' "$(crawl_url_resolve "$CRAWL_BASE" '//other.example/x')" 'a protocol-relative reference inherits the scheme'
+assert_eq 'https://h.example/etc' "$(crawl_url_resolve "$CRAWL_BASE" '/a/../../etc')" \
   'dot segments collapse past the root - FAILS if remove_dot_segments is skipped, which leaves a path a path-scoped scope target compares differently from what is actually requested'
-assert_eq 'https://h.example/dir/page.html' "$(crawl_url_resolve "$B" 'page.html#section')" \
+assert_eq 'https://h.example/dir/page.html' "$(crawl_url_resolve "$CRAWL_BASE" 'page.html#section')" \
   'a fragment is always dropped - FAILS if it is kept, which makes one endpoint look like many and costs a real request each'
 
 t_case 'a reference that is not a fetchable http(s) URL is REJECTED, not coerced'
 for ref in '#top' 'javascript:alert(1)' 'mailto:a@b.example' 'data:text/html,x' 'tel:+100' 'ws://h.example/s'; do
-  crawl_url_resolve "$B" "$ref" >/dev/null 2>&1 && rc=0 || rc=$?
+  crawl_url_resolve "$CRAWL_BASE" "$ref" >/dev/null 2>&1 && rc=0 || rc=$?
   assert_ne 0 "$rc" "'$ref' is rejected - FAILS under \"resolve it and let the gate sort it out\", which turns a non-link into a request"
 done
 

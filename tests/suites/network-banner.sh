@@ -389,6 +389,9 @@ assert_not_contains "$NETWORK_ATTEMPTS" 'ncat ' 'no ncat invocation was logged'
 assert_not_contains "$NETWORK_ATTEMPTS" 'netcat ' \
   'no netcat invocation was logged - banner.sh reaches the network exclusively through lib/nettransport.sh'"'"'s net_connect_probe and net_read_banner (which this suite'"'"'s hooks already replace) and lib/http.sh'"'"'s http_authorize_raw_connection (whose own resolution this suite'"'"'s SCOURSH_HTTP_RESOLVE hook already replaces) - FAILS if banner.sh (or a future edit to it) ever shelled out to one of these directly instead'
 
+# Reset for the next process/test to inherit clean global state, not read
+# again in this file - the same end-of-file idiom tests/suites/image.sh uses.
+# shellcheck disable=SC2034
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 
 t_summary 'network-banner'

@@ -376,6 +376,10 @@ run_json_refresh_incomplete() {
       fi
     ) || true
     if [[ -n $_rjri_regdump && -s $_rjri_regdump ]]; then
+      # A scratch file path computed at runtime (report_registries_dump's own
+      # `declare -p` snapshot, escaping the subshell above), never a static
+      # path shellcheck could follow.
+      # shellcheck disable=SC1090
       source "$_rjri_regdump"
     fi
   done

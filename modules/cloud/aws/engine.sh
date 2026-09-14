@@ -666,30 +666,19 @@ cloud_run_service() {
 # reads identically to `<"$file"`, since awk's END block reads all of stdin
 # either way), for the same "one parser, not a fifth copy" reasoning that
 # file's own header states.
-declare -gA _CLOUD_POLICY_DOC=()
-declare -gA _CLOUD_POLICY_DOCT=()
+#
+# `_CLOUD_POLICY_DOC`/`_CLOUD_POLICY_DOCT` and `cloud_policy_load` itself are
+# declared once, above (section... look for `declare -gA _CLOUD_POLICY_DOC`) -
+# a second copy of both used to live here, byte-identical except its
+# `cloud_policy_load` ended in an unconditional `return 0` rather than
+# `(( ${#_CLOUD_POLICY_DOCT[@]} > 0 ))`, so it silently reported SUCCESS for a
+# non-empty TEXT that failed to parse into any leaf, contradicting its own
+# header's documented "Returns 1 ... for an unparseable TEXT" contract. Being
+# defined SECOND, it also shadowed the correct one, so shellcheck's SC2329
+# ("this function is never invoked") on the first definition was flagging a
+# real bug, not dead-code hygiene alone.  `_CLOUD_POLICY_STMT_BASES` is the
+# one genuinely new piece of state this block added.
 declare -ga _CLOUD_POLICY_STMT_BASES=()
-
-# `cloud_policy_load TEXT` - flatten TEXT (already-unescaped JSON policy text,
-# never a file path) into `_CLOUD_POLICY_DOC`/`_CLOUD_POLICY_DOCT`.  Returns 1
-# and leaves both empty for an empty or unparseable TEXT - the caller's own
-# classifiers then correctly answer "not open" / "does not deny" for a policy
-# that could not be read, which is the same "an absent document is not the
-# document" convention `s3_doc_load` already establishes for a missing file.
-cloud_policy_load() {
-  local __text=$1
-  _CLOUD_POLICY_DOC=()
-  _CLOUD_POLICY_DOCT=()
-  [[ -n $__text ]] || return 1
-  local __path __type __val
-  while IFS=$'\t' read -r __path __type __val; do
-    [[ -n $__path ]] || continue
-    [[ $__type == s ]] && __val=$(cloud_json_unescape "$__val")
-    _CLOUD_POLICY_DOC[$__path]=$__val
-    _CLOUD_POLICY_DOCT[$__path]=$__type
-  done < <(printf '%s' "$__text" | cloud_json_flatten 2>/dev/null)
-  return 0
-}
 
 # `_cloud_policy_statement_bases_set` - the list of `Statement<US><i>` (or the
 # single `Statement`, for the equally-legal bare-object spelling IAM accepts

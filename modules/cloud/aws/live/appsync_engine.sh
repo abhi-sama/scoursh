@@ -71,7 +71,10 @@ declare -gA _APPSYNC_DOCT=()
 # ticket.  `appsync_key_expiry_state` below takes it as a plain argument
 # rather than reading it as a global, so a future ticket that DOES want it
 # configurable only has to change where this constant is read from, not the
-# classifier's own contract.
+# classifier's own contract. Read from appsync.sh (the phase script this
+# engine file has no visibility into on its own), which is why a per-file
+# lint pass reports it unused.
+# shellcheck disable=SC2034
 declare -g APPSYNC_KEY_LONG_EXPIRY_DAYS=90
 
 # ---------------------------------------------------------------------------

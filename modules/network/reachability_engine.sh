@@ -178,6 +178,11 @@ _net_json_flatten() {
 # modules/dast/crawl_engine.sh's `crawl_json_unescape` for the identical
 # reason `_net_json_flatten` above is - and narrower because this file only
 # ever unescapes a scanner-authored value, never target-controlled bytes.
+# SC1003: `'\'` below is a literal single backslash - the character this
+# function exists to interpret - not a botched attempt to escape a quote,
+# the same shape modules/dast/crawl_engine.sh's `crawl_json_unescape`
+# already documents.
+# shellcheck disable=SC1003
 _net_json_unescape() {
   local s=$1 out='' i n ch nx code decoded
   if [[ $s != *'\'* ]]; then

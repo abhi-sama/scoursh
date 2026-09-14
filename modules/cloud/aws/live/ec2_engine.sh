@@ -144,8 +144,12 @@ ec2_arn() {
 # citing CIS 5.2 against a Redis or MySQL exposure would misattribute a control
 # that does not cover it (docs/CIS-MAPPINGS.md §1's own rule) - the reason
 # CLOUD-EC2-SG_OPEN_ADMIN_PORT-01 and CLOUD-EC2-SG_OPEN_DB_PORT-01 are two
-# check ids rather than one.
+# check ids rather than one. Both are read from ec2.sh (the phase script this
+# engine file has no visibility into on its own), which is why a per-file
+# lint pass reports them unused.
+# shellcheck disable=SC2034
 declare -g EC2_ADMIN_PORTS='22 3389'
+# shellcheck disable=SC2034
 declare -g EC2_DB_PORTS='1433 1434 3306 5432 1521 27017 6379 5984 9200 11211 5439'
 
 # `ec2_port_in_range FROM TO PORT` - true when PORT falls in [FROM, TO].  FROM

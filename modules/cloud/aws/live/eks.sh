@@ -133,7 +133,10 @@ _eks_examine_cluster() {
 }
 
 _eks_walk_nodegroups() {
-  local cluster=$1 cluster_arn=$2 work=$3
+  # $2 (the cluster ARN) is accepted for call-site symmetry with its own
+  # caller but genuinely unused here - the node-group role check below never
+  # needs it.
+  local cluster=$1 work=$3
   local id=CLOUD-EKS-POD_ROLE_OVERPERMISSIVE-01
   _eks_selected "$id" || return 0
 

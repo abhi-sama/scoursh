@@ -31,6 +31,12 @@
 #
 # SC2016: assertion prose quotes flag/JSON syntax literally.
 # shellcheck disable=SC2016
+#
+# SC2030/SC2031: several cases below deliberately set SCOURSH_INSTALL_ROOT/
+# SCOURSH_RUN_DIR inside a `( ... )` subshell, precisely so the change is
+# LOCAL to that one test case and never leaks into the rest of this file -
+# the isolation is the point, not an oversight.
+# shellcheck disable=SC2030,SC2031
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)

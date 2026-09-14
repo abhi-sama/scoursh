@@ -393,6 +393,9 @@ assert_eq 0 "$_NT_RC" 'the run still exits 0 with a poisoned PATH'
 assert_file_absent "$W/network-attempts" \
   'no curl/wget/nc/ncat/netcat/openssl was invoked - reachability.sh reaches the network exclusively through lib/nettransport.sh'"'"'s net_connect_probe (which this suite'"'"'s SCOURSH_NET_PROBE hook already replaces) and lib/http.sh'"'"'s http_authorize_raw_connection (whose own resolution this suite'"'"'s SCOURSH_HTTP_RESOLVE hook already replaces)'
 
+# Reset for the next process/test to inherit clean global state, not read
+# again in this file - the same end-of-file idiom tests/suites/image.sh uses.
+# shellcheck disable=SC2034
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 
 t_summary 'network-reachability'

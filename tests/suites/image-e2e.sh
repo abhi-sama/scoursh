@@ -121,6 +121,10 @@ assert_eq 0 $? 'no published fix means "not known safe", mirroring modules/sca/e
 t_case 'apk_scan_installed: end to end against the fixture apk db and advisories.db'
 apk_scan_installed "$APKFILE" e2e-unit 'Alpine:v3.18' "$FIXDB"
 assert_eq 0 $? 'returns 0 - the apk database was readable'
+# _APK_SCAN_SKIPPED and dpkg.sh's own _DPKG_SCAN_SKIPPED are two distinct,
+# intentional per-distro counters, not a typo of each other - shellcheck's
+# SC2153 similarity heuristic can't tell the two families apart.
+# shellcheck disable=SC2153
 assert_eq 0 "$_APK_SCAN_SKIPPED" 'every installed package here has a well-formed version, so nothing was skipped'
 findings_merge "$D"
 FIELDS=$(_slurp "$D/findings.fields")
@@ -146,6 +150,7 @@ t_case 'a genuinely absent apk database is a real refusal, not zero packages'
 _rc=0
 apk_scan_installed "$W/definitely-absent-installed" e2e-unit3 'Alpine:v3.18' "$FIXDB" || _rc=$?
 assert_eq 1 "$_rc" 'FAILS if this were conflated with "the file parsed to zero packages"'
+# shellcheck disable=SC2153 # distinct from dpkg.sh's own _DPKG_INSTALLED_REASON
 assert_eq no_package_db_found "$_APK_INSTALLED_REASON" 'the specific, distinguishable reason'
 
 # `run_init` (lib/core.sh) exports SCOURSH_RUN_ID/SCOURSH_RUN_DIR into THIS
@@ -158,6 +163,7 @@ assert_eq no_package_db_found "$_APK_INSTALLED_REASON" 'the specific, distinguis
 # and read the same state/<id>.json regardless of which --out they used).
 # Cleared to empty, mirroring tests/suites/image.sh's own end-of-file reset,
 # rather than `unset`, since `:=` treats an empty value the same as unset.
+# shellcheck disable=SC2034
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 
 # =============================================================================

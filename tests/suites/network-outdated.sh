@@ -319,6 +319,9 @@ assert_contains "$AGENT_JSON" '"scoursh_agent":1' 'agent-fix.json was written'
 assert_contains "$AGENT_JSON" 'NET-SVC-OUTDATED_COMPONENT-01' \
   'the finding round-trips into the agent format too'
 
+# Reset for the next process/test to inherit clean global state, not read
+# again in this file - the same end-of-file idiom tests/suites/image.sh uses.
+# shellcheck disable=SC2034
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 
 t_summary 'network-outdated'

@@ -1523,8 +1523,14 @@ report_md() {
   {
     printf '# scoursh scan report\n\n'
     _md_abort_banner "$rundir"
+    # The backtick pairs below are literal Markdown code-span syntax in the
+    # rendered report, not an attempted command substitution - shellcheck's
+    # SC2016 can't tell the two apart inside a single-quoted printf format.
+    # shellcheck disable=SC2016
     printf -- '- run: `%s`\n' "${SCOURSH_RUN_ID:-}"
+    # shellcheck disable=SC2016
     printf -- '- tool version: `%s`\n' "$(scoursh_version)"
+    # shellcheck disable=SC2016
     printf -- '- fingerprint schema: `%s`\n' "$FP_SCHEMA"
     printf -- '- findings: %s live, %s accepted risk (%s total)\n\n' \
       "$_RPT_LIVE" "$_RPT_SUPPRESSED" "$_RPT_TOTAL"
@@ -1553,6 +1559,7 @@ report_md() {
     # a reader could not tell an accepted risk from a live critical.
     if (( _RPT_SUPPRESSED > 0 )); then
       printf '## Accepted risk (%s)\n\n' "$_RPT_SUPPRESSED"
+      # shellcheck disable=SC2016 # literal Markdown code span, not a substitution
       printf 'These are suppressed by `config/baseline.json` and are excluded from the\n'
       printf 'counts above and from the CI gate. They are still reported, never deleted.\n\n'
       _md_findings "$rundir" suppressed
