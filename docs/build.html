@@ -659,6 +659,10 @@ function computeNotes() {
     notes.push({kind: "info", text: "--use-engines only does anything once the named engine's vendored binary + ruleset already exist on disk under modules/<module>/adapters/<engine>/ (docs/ADAPTERS.md). Absent, it is a silent, logged no-op."});
   }
 
+  if ((f.lang || "").trim() !== "") {
+    notes.push({kind: "warn", text: "--lang is validated but never read - every SAST rule pack runs regardless of this value. It will not restrict scope; scan.sh itself warns at preflight when it is given."});
+  }
+
   var required = REQUIRED[cmd];
   if (required && !(f[required] || "").trim()) {
     notes.push({kind: "danger", text: "--" + required + " is required for scan.sh " + cmd + "."});
