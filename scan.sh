@@ -2213,6 +2213,32 @@ _scan_pf_warn_inert_use_engines() {
   fi
 }
 
+# `_scan_pf_warn_inert_lang` - the same operator-facing shape as
+# `_scan_pf_warn_inert_use_engines` above, for a flag with an even simpler
+# story: `--lang` is validated as a CSV of the four language names
+# (`_SCAN_FLAG_KIND`'s `lang) _scan_validate_csv ...` case) and then never
+# read by anything - `grep -rn 'flags\[lang\]' scan.sh modules/` is 0 hits.
+# `modules/sast/engine.sh` applies every rule pack under `modules/sast/rules/`
+# to every file whose own `files:` glob matches, regardless of `--lang`; a
+# rule pack's own language scoping (or absence of it - `crypto.rules` and
+# `secrets.rules` carry no `files:` glob at all and match across languages
+# inside a single check's pattern, e.g. `SAST-CRY-TLS_VERIFY_DISABLED-01`
+# alternates Python/Node/Go syntax in one regex) makes `--lang` unimplementable
+# as a simple pack- or check-level filter without either splitting a shipped
+# check id - a fingerprint component, tension 5/6 - or silently dropping a
+# generic check's coverage for languages its own pattern still matches.
+# `docs/USAGE.md`'s "Accepted but not yet implemented" section states this
+# precisely; this function is the preflight-time echo of it, so an operator
+# reading only their terminal - never opening `docs/USAGE.md` - still learns
+# it before any module runs. Unlike `_scan_pf_warn_inert_use_engines`, there
+# is no partial-effect case to guard: `--lang` reaches zero consumers under
+# every command that accepts it (sast, all), so this fires unconditionally
+# whenever a value is given.
+_scan_pf_warn_inert_lang() {
+  [[ -n ${SCAN_FLAGS[lang]:-} ]] || return 0
+  log_warn "preflight: --lang '${SCAN_FLAGS[lang]}' was given, but it is validated and then never read - every rule pack under modules/sast/rules/ is applied to every matching file regardless of this value (docs/USAGE.md, 'Accepted but not yet implemented'). This run's SAST scope is identical to a run with no --lang at all."
+}
+
 # -----------------------------------------------------------------------------
 # 6b. The interactive authorisation OFFER (operator-reported friction: "I don't
 #     believe user going to create file and copy, too much friction").
@@ -2478,6 +2504,7 @@ _scan_preflight() {
 
   _scan_pf_warn_declared_skips
   _scan_pf_warn_inert_use_engines
+  _scan_pf_warn_inert_lang
 }
 
 # `_scan_capture VARNAME CMD [ARGS...]` - runs CMD (which may call die(), e.g.

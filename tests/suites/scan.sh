@@ -1425,6 +1425,40 @@ assert_not_contains "$(cat "$USE_ENG_PARTIAL_LOG")" 'dispatches no module that c
   'all dispatches both sast and iac, so the "wrong command" message must not fire either'
 
 # =============================================================================
+printf '\n-- preflight: --lang is warned as inert BEFORE dispatch, unconditionally, whenever given --\n'
+# =============================================================================
+# `--lang` is validated as a CSV of the four language names
+# (`_SCAN_FLAG_KIND`'s `lang) _scan_validate_csv ...` case) and then never
+# read by anything: `grep -rn 'flags\[lang\]' scan.sh modules/` is 0 hits, so
+# `--lang go` and no `--lang` at all produce byte-identical findings on the
+# same tree. Unlike `--use-engines`, there is no partial-effect case: `--lang`
+# reaches zero consumers under every command that accepts it, so this warning
+# fires on every non-empty value, never just some of them.
+t_case '--lang go on a real sast dispatch: warns, naming the given value and that it is never read'
+LANG_LOG=$W/lang-sast.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main sast \
+    --path "$ROOT_WITH_SCOPE_AND_SAST" --lang go --out "$W/run-lang-sast" \
+) >"$LANG_LOG" 2>&1 || true
+assert_contains "$(cat "$LANG_LOG")" 'preflight' 'the warning is printed at preflight, before/alongside the rest of the run'
+assert_contains "$(cat "$LANG_LOG")" "lang 'go'" 'names the exact value the operator gave'
+assert_contains "$(cat "$LANG_LOG")" 'never read' 'states plainly that the value has no effect'
+
+t_case '--lang under `all`: warns too - fails if the probe only checked SCAN_COMMAND == sast'
+LANG_ALL_LOG=$W/lang-all.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main all \
+    --path "$ROOT_WITH_SCOPE_AND_SAST" --lang 'py,js' --out "$W/run-lang-all" \
+) >"$LANG_ALL_LOG" 2>&1 || true
+assert_contains "$(cat "$LANG_ALL_LOG")" "lang 'py,js'" 'names the CSV value verbatim under all too'
+
+t_case '--lang is silent when it was never given (no flag, healthy default run) - never fires unprompted'
+LANG_NOFLAG_LOG=$W/lang-absent.log
+( SCOURSH_INSTALL_ROOT=$ROOT_WITH_SCOPE_AND_SAST _run_main sast \
+    --path "$ROOT_WITH_SCOPE_AND_SAST" --out "$W/run-lang-absent" \
+) >"$LANG_NOFLAG_LOG" 2>&1 || true
+assert_not_contains "$(cat "$LANG_NOFLAG_LOG")" '--lang' \
+  'fails if the warning fired even though the operator never passed --lang'
+
+# =============================================================================
 printf '\n-- preflight timing: the new inert-flag warnings must not slow preflight down --\n'
 # =============================================================================
 # This must isolate PREFLIGHT's OWN cost, never the cost of a real scan
