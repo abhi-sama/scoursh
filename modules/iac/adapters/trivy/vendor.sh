@@ -81,10 +81,11 @@ trivy_vendor() {
   chmod +x "$bin_dir/trivy"
 
   log_info "vendor-engines: trivy $version vendored into ${adapter_dir#"$SCOURSH_INSTALL_ROOT"/}"
-  log_info '  commit modules/iac/adapters/trivy/bin to git; every real scan from here'
-  log_info '  on runs fully offline against exactly these bytes.  No rules/ directory'
-  log_info '  is vendored - trivy'\''s misconfiguration checks are compiled into the'
-  log_info '  binary itself.'
+  log_info '  do NOT commit bin/ - it is gitignored by design. Every real scan from here'
+  log_info '  on runs fully offline against exactly these bytes; the version + sha256 pin'
+  log_info '  above is what reproduces them, not a git commit of the bytes. No rules/'
+  log_info '  directory is vendored - trivy'\''s misconfiguration checks are compiled into'
+  log_info '  the binary itself.'
   log_info '  Run scan.sh iac --use-engines once against a real target next - adapter.sh'
   log_info '  will name the exact flag if this trivy release rejects one of its own'
   log_info '  (docs/ADAPTERS.md §7a explains why that check runs here, not as a vendor-time'
