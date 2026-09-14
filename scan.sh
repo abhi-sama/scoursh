@@ -549,14 +549,27 @@ Global:
                               continue with a logged coverage_reduction,
                               never an error. Nothing is fetched at scan
                               time - see tools/vendor-engines.sh.)
-  --allow-intrusive         (side-effecting checks: live user enumeration,
-                              signup/reset probing, the burst probe. On `dast`
-                              - and on `all` with a --target - this requires
-                              --i-own-target as well, because the blast radius
-                              escapes the target: these checks create users and
-                              send messages, so the harmed parties are the
-                              target's USERS, and owning a host does not confer
-                              permission to do that to them.)
+  --allow-intrusive         (checks tagged `intrusive` in their registry
+                              record - rules/RULE-FORMAT.md §9.1.3: one whose
+                              payload can mutate state beyond the single
+                              request/response cycle it inspects. Shipped
+                              today: DAST-INJ-CRLF_RESPONSE_SPLITTING-01 (a
+                              forged second HTTP response a downstream cache
+                              could store and later serve to a different
+                              visitor) and both DAST-INJ-PROTOPOLLUTION_*-01
+                              ids (a write attempt into a shared, process-wide
+                              object every later request on that process can
+                              read). Not yet built: live user enumeration and
+                              signup/reset probing, which will also need it
+                              once they exist, since they create users and
+                              send messages on a real identity provider. On
+                              `dast` - and on `all` with a --target - this
+                              requires --i-own-target as well, because the
+                              blast radius of an intrusive check can escape
+                              the target itself: the harmed party may be the
+                              target's USERS or another of its own visitors,
+                              and owning a host does not confer permission to
+                              do that to them.)
   --contact VALUE           (an email address or URL a target owner can reach
                               you at. It is placed in the User-Agent every
                               request carries. Also settable as `contact` in
@@ -1209,7 +1222,7 @@ _scan_check_affirmation() {
   fi
 
   if [[ $intrusive == true && -z $affirm ]]; then
-    scan_die_usage "--allow-intrusive turns on side-effecting checks that create users and send messages, so the parties they can harm are the TARGET'S USERS rather than the target. Owning a host does not confer permission to do that to them, which is why this needs the affirmation as well as its own opt-in: re-run with '--i-own-target $target' if you accept that."
+    scan_die_usage "--allow-intrusive turns on checks whose payload can mutate state beyond the target you named - forging a cached response another visitor may later receive, or polluting a shared object every other request on that process reads - so the parties they can harm may not be limited to the target itself. Owning a host does not confer permission to do that to whoever else it serves, which is why this needs the affirmation as well as its own opt-in: re-run with '--i-own-target $target' if you accept that."
   fi
   return 0
 }

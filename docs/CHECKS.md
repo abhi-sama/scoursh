@@ -37,6 +37,9 @@ needs to run. 319 checks ship in the box (53 SAST + 36 IaC + 92 DAST + 15 networ
 - 🟠 **Needs AWS credentials** - resolvable via profile, environment, or instance role
   (`aws sts get-caller-identity`); read-only only, enforced by `lib/awscli.sh`'s `aws_ro` chokepoint.
   Optional `--i-own-account ID` affirmation and `--assume-role` for multi-account.
+- 🔴 **Needs `--allow-intrusive`** - the check's payload can mutate state beyond the single
+  request/response cycle it inspects (`rules/RULE-FORMAT.md` §9.1.3's `intrusive` tag), so it is
+  refused in addition to `--intensity active` + `--i-own-target`.
 
 ## SAST 🟢 no external data
 
@@ -160,7 +163,10 @@ database. (One exception is marked 🔵 below.)
 ## DAST — active 🟢 no external data
 
 Sends real attack payloads to a running app. Needs a reachable target plus `--intensity active` and
-`--i-own-target` (your authorization). No database.
+`--i-own-target` (your authorization). No database. Three checks are additionally marked 🔴 below: their
+payload can mutate state beyond the request/response cycle the rest of this family inspects (a cache
+that stores a forged response, a process-wide object every other request reads), so they also need
+`--allow-intrusive`.
 
 | Check | Catches |
 |---|---|
@@ -174,8 +180,9 @@ Sends real attack payloads to a running app. Needs a reachable target plus `--in
 | `DAST-INJ-OPENREDIR_HEADER/META-01` | Open redirect via Location header or meta-refresh |
 | `DAST-INJ-XXE_ENTITY / XXE_SSRF-01` | XXE entity processing and XXE-driven SSRF |
 | `DAST-INJ-SSRF_PARAM-01` | Server-side request forgery via a parameter |
-| `DAST-INJ-CRLF_HEADER_INJECTION / RESPONSE_SPLITTING-01` | CRLF header injection and full response splitting |
-| `DAST-INJ-PROTOPOLLUTION_ERROR / MARKER_REFLECTED-01` | Prototype pollution (error-based and confirmed-reflected) |
+| `DAST-INJ-CRLF_HEADER_INJECTION-01` | CRLF header injection (one header on this response only) |
+| `DAST-INJ-CRLF_RESPONSE_SPLITTING-01` 🔴 also needs `--allow-intrusive` | CRLF forges a full second HTTP response - a downstream cache can store and later serve it to a different visitor |
+| `DAST-INJ-PROTOPOLLUTION_ERROR / MARKER_REFLECTED-01` 🔴 also needs `--allow-intrusive` | Prototype pollution (error-based and confirmed-reflected) - both attempt a write into a shared, process-wide object |
 | `DAST-HOSTHDR-REFLECTED_BODY / LOCATION-01` | Host-header reflection into body or redirect authority |
 | `DAST-DISC-SENSITIVE / BACKUP / CONTENT / DIRLIST-01` | Exposed sensitive/backup files, content discovery, directory listing |
 | `DAST-METHOD-TRACE / WRITE / CONNECT-01` | Dangerous HTTP methods advertised (TRACE, PUT/DELETE/PATCH, CONNECT) |

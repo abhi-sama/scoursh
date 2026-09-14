@@ -26,6 +26,22 @@
 # one. (The tests/fixtures/ copy tags an example SQLi check `intrusive` only to
 # exercise that filter arm; it is not this shipped catalog.)
 #
+# THAT REASONING DOES NOT HOLD FOR EVERY FAMILY IN THIS FILE, AND THREE RECORDS
+# BELOW CARRY `intrusive` FOR REAL. rules/RULE-FORMAT.md §9.1.3 defines the tag
+# precisely - "marks a check that mutates target state" - which is narrower than
+# "sends an injection payload" or "could enable an attacker to do damage": most
+# of this catalog probes a defect without ever causing a state change (a timing
+# delay, a reflected marker, an outbound fetch of a self-referential sentinel,
+# an evaluated arithmetic expression) and stays ungated beyond `--intensity
+# active`. Two families do not fit that description - CRLF response splitting
+# forges a second HTTP response an in-path cache can store and later serve to a
+# DIFFERENT visitor, and both prototype-pollution techniques attempt to write
+# into a shared, process-wide object that every concurrent request on that
+# process reads - so those three records below each carry `tags: intrusive` in
+# addition to `tags: active`, with the reasoning given at each one. Do not read
+# this comment as covering them; see the per-family notes lower in this file
+# before deciding whether a NEW check needs the tag.
+#
 # One check id per technique, because the DAST fingerprint (target, method,
 # path_template, param_location, param_name) does not carry the technique: a
 # single id would make an error-based and a time-based finding on the same
@@ -410,6 +426,13 @@ references: RFC 7231 section 4.3.6
 # Appended by the path-traversal ticket, keeping this file's append-only
 # convention (see the DAST-19 note above): a merge conflict here is resolved
 # by keeping BOTH blocks, never by choosing a side.
+#
+# NOT `intrusive`: the script's own header calls this "detection-only,
+# read-only, and REPORT ACCESS - DO NOT HARVEST CONTENTS" - it never sends a
+# write, and the finding's evidence names the marker and the matched signature,
+# never the file's actual bytes. Reading a file the operator did not intend to
+# expose is the defect this check reports; it is not itself a change to any
+# state the target holds, so `--intensity active` is the whole gate.
 
 id: DAST-INJ-PATH_TRAVERSAL-01
 title: Path traversal via request parameter
@@ -438,6 +461,15 @@ references: https://owasp.org/Top10/A01_2021-Broken_Access_Control/
 # phase table's `active/cmdi.sh:active` floor. The injected sleep duration is
 # clamped into 1..10s BEFORE substitution so a probe can never become a DoS -
 # the bound is load-bearing and applied, not advisory.
+#
+# NOT `intrusive`: the only command this probe ever injects is a bounded
+# `sleep`, chosen precisely because it demonstrates that the target executes
+# request-derived shell text without doing anything the shell runs. It writes
+# no file, spawns no persistent process, and leaves nothing behind once the
+# clamp expires - a real command-injection defect could obviously run a
+# destructive command instead, but that is a property of the VULNERABILITY,
+# not of what this check's own payload does, and `checks_is_intrusive` gates
+# checks on the latter.
 
 id: DAST-INJ-CMDI_TIME-01
 title: OS command injection (time-based blind) via request parameter
@@ -562,6 +594,24 @@ references: CWE-1336
 references: CWE-94
 references: https://owasp.org/Top10/A03_2021-Injection/
 
+# --- DAST-20, modules/dast/active/xxe_ssrf.sh (docs/DESIGN.md §7.3) ---------
+# Three ids: an internal-entity reflection with no network component at all
+# (XXE_ENTITY), an external entity naming the in-scope sentinel (XXE_SSRF), and
+# the identical sentinel sent as a plain parameter value (SSRF_PARAM).
+#
+# NOT `intrusive`, for all three. XXE_ENTITY only reads back a value the
+# request body itself declared - nothing external is contacted. The two SSRF
+# techniques cause the TARGET to make an outbound fetch, but the destination is
+# never attacker-chosen: it is read out of `lib/http.sh`'s own resolved scope
+# tuple for this run (an operator-declared `extra-host`, or else the target's
+# own `base-url`), so the worst case is the target fetching itself or a host
+# the operator already authorised - the same request shape an ordinary crawl
+# already makes, not a pivot to an arbitrary or third-party system. Causing a
+# target to issue a read of a URL it (or its operator) already controls is not
+# a mutation of the target's own state, so `--intensity active` is the whole
+# gate; docs/STEP5-DAST-PLAN.md's DAST-36 restatement for DAST-20 is what keeps
+# the sentinel in-scope-only and un-widenable by any affirmation.
+
 id: DAST-INJ-XXE_ENTITY-01
 title: XML parser processes a DOCTYPE-declared entity (candidate XXE sink)
 script: active/xxe_ssrf.sh
@@ -661,6 +711,30 @@ remediation: Never build a NoSQL query, $where expression, or filter object
 references: CWE-943
 references: https://owasp.org/Top10/A03_2021-Injection/
 
+# --- DAST-23, modules/dast/active/crlf.sh (docs/DESIGN.md §7.3) -------------
+# Two ids, one root cause at two possible strengths, and only the stronger one
+# carries `intrusive`.
+#
+# DAST-INJ-CRLF_HEADER_INJECTION-01 is NOT intrusive: the injected marker
+# lands as an extra header on the SAME single response this run's own request
+# receives, and stops there - nothing about it is stored anywhere or served to
+# a different visitor. It demonstrates the injection primitive without
+# affecting any state beyond the one response scoursh already discards after
+# reading it.
+#
+# DAST-INJ-CRLF_RESPONSE_SPLITTING-01 IS `intrusive`: confirming it means the
+# forged bytes moved the header/body boundary and produced a complete second,
+# independently-framed HTTP message inside the one connection. Any cache or
+# reverse proxy sitting in front of the target - which this check has no way
+# to know is absent - treats that as a real second response tied to the
+# request's cache key and stores it, so the NEXT visitor who requests that same
+# resource can be served the forged one instead of the real page (cache
+# poisoning; see this record's own remediation text). That is a mutation of
+# shared, target-adjacent state that outlives this one request/response cycle
+# and can affect a user other than whoever scoursh is scanning on behalf of -
+# exactly the harm `--allow-intrusive` exists to require a separate,
+# deliberate opt-in for, on top of `--intensity active`.
+
 id: DAST-INJ-CRLF_HEADER_INJECTION-01
 title: CRLF injection - request parameter reaches raw HTTP response header construction
 script: active/crlf.sh
@@ -688,6 +762,7 @@ confidence: high
 cwe: CWE-113
 owasp: A03:2021
 tags: active
+tags: intrusive
 coverage-scope: target
 remediation: Never build a response header by concatenating request-derived
   data into raw header text. Use the web framework or HTTP library's own
@@ -702,6 +777,25 @@ remediation: Never build a response header by concatenating request-derived
 references: CWE-113
 references: https://owasp.org/Top10/A03_2021-Injection/
 
+# --- DAST-25, modules/dast/active/protopollution.sh (docs/DESIGN.md §7.3) ---
+# Two ids, one detection technique each, and BOTH carry `intrusive` - the
+# split here is unlike CRLF's, because it is not one strong and one weak
+# variant of the same mutation. Both send a `__proto__`- or
+# `constructor.prototype`-shaped payload as the parameter's value, and on a
+# vulnerable merge/assign/extend implementation that payload writes into
+# Object.prototype (or an equivalently shared, long-lived object) whether or
+# not the request that carried it happens to error. The two ids differ only in
+# how the run CONFIRMS the write occurred - a JS-runtime/merge-library error
+# signature for ERROR-01, a marker read back by a separate, unrelated
+# follow-up request for MARKER_REFLECTED-01 - not in whether the underlying
+# payload can mutate state. A property written onto Object.prototype is
+# visible to every request the same process serves afterward, for every other
+# user of the application, until the process restarts (see
+# MARKER_REFLECTED-01's own remediation, which says exactly that): that is
+# target state mutation reaching beyond the probing request/response cycle,
+# so `--intensity active` is not sufficient on its own here and
+# `--allow-intrusive` is required in addition, for both ids.
+
 id: DAST-INJ-PROTOPOLLUTION_ERROR-01
 title: Prototype pollution (error-based) via __proto__/constructor.prototype request parameter
 script: active/protopollution.sh
@@ -710,6 +804,7 @@ confidence: high
 cwe: CWE-1321
 owasp: A03:2021
 tags: active
+tags: intrusive
 coverage-scope: target
 remediation: Never pass request-derived data straight into a recursive merge,
   assign, extend, or deep-clone function. Reject or strip the keys
@@ -729,6 +824,7 @@ confidence: high
 cwe: CWE-1321
 owasp: A03:2021
 tags: active
+tags: intrusive
 coverage-scope: target
 remediation: Never pass request-derived data straight into a recursive merge,
   assign, extend, or deep-clone function. This is the confirmed-impact case,
