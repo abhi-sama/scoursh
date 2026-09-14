@@ -59,7 +59,11 @@ assert_eq 0 "$(cmp_v 1.0.0-alpha+001 1.0.0-alpha+002)" 'build metadata is ignore
 
 t_case 'a leading v or = is stripped before comparison'
 assert_eq 0 "$(cmp_v v1.2.3 1.2.3)" 'v-prefixed and bare compare equal'
-assert_eq 0 "$(cmp_v =1.2.3 1.2.3)" '=-prefixed and bare compare equal'
+# Quoted (unlike its v-prefixed sibling above): shellcheck 0.11.0's SC2283
+# misreads a bare `=1.2.3` positional argument as a botched `word = value`
+# assignment attempt. Quoting is a no-op for cmp_v, which only ever passes
+# $1/$2 through untouched - this changes shellcheck's read, not the test.
+assert_eq 0 "$(cmp_v "=1.2.3" 1.2.3)" '=-prefixed and bare compare equal'
 
 # ---------------------------------------------------------------------------
 printf -- '\n-- SemVer 2.0.0 prerelease precedence (§11), including the spec'"'"'s own adversarial ladder --\n'

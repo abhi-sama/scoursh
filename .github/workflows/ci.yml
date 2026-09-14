@@ -121,6 +121,23 @@ jobs:
       # tests/lint-source-graph.sh).  This step can never fail the job: it is
       # a measurement, not an assertion, and a runner image without
       # `/usr/bin/time` must not turn that into a red X.
+      #
+      # `ulimit -v` below is NOT part of that "can never fail the job" design and
+      # is load-bearing on its own: shellcheck's GHC runtime sizes its heap off
+      # *available* memory at measurement time, not off a fixed multiple of the
+      # file's own size (AGENTS.md, "the memory model" - measured directly:
+      # peak RSS for this identical file/commit was 6.43 GB on this runner six
+      # days ago and was reproduced locally at >14 GB and still climbing on a
+      # 64 GB host with nothing else running). This step runs first, right
+      # after checkout, with the whole runner's RAM still free, which is
+      # exactly the condition that lets the heap balloon past the runner's own
+      # physical ceiling - at which point the runner's *host* OOMs and GitHub
+      # reports "the runner has received a shutdown signal", which
+      # `continue-on-error: true` cannot catch because there is no process exit
+      # code to catch; the whole job dies. Capping virtual memory here turns
+      # that failure mode back into an ordinary process exit `continue-on-error`
+      # already handles, without touching the actual (bounded, headroom-aware)
+      # shellcheck stage in `tests/run-tests.sh` that runs later.
       - name: Measure peak shellcheck -x RSS for the tree's heaviest file
         continue-on-error: true
         run: |
@@ -128,6 +145,11 @@ jobs:
           if ! command -v /usr/bin/time >/dev/null 2>&1; then
             echo "no /usr/bin/time on this image - skipping the measurement"; exit 0
           fi
+          # 10 GiB, well under this runner's own ~14 GB available: best-effort,
+          # since RLIMIT_AS enforcement is unreliable on macOS - a no-op there
+          # is no worse than the status quo, and Linux is where the crash was
+          # observed.
+          ulimit -v 10485760 2>/dev/null || true
           if [ "$RUNNER_OS" = "macOS" ]; then
             # BSD `time -l` reports maximum RSS in BYTES, in field 1.
             /usr/bin/time -l shellcheck -x -s bash "$f" 2>&1 \
