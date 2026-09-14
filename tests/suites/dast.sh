@@ -618,6 +618,17 @@ assert_not_contains "$(_slurp "$_LOG")" 'no operator contact is configured' \
   'and says nothing about a missing contact - fails if the notice is unconditional, which is noise rather than information'
 
 t_case 'an explicit env value above a ceiling is exit 2 through the real CLI, before anything ran'
+# lib/core.sh's die() (since #282, "Record why a run aborted (exit 2/3/4),
+# and render it in the report") now unconditionally re-runs every report
+# writer on ANY die(), this one included: "a run that aborts mid-scan still
+# leaves behind what it was authorised to do" is deliberate, so report.md
+# DOES now exist here - see that commit, and lib/core.sh's own comment on
+# run_json_refresh_incomplete, for the reasoning. What must still hold is
+# the property this case actually exists to pin: the refusal happens BEFORE
+# any request went out, so nothing in that report may read as a completed
+# or clean scan - it must say plainly that the run never started. This
+# mirrors tests/suites/report.sh's own 'THIS RUN DID NOT COMPLETE'/
+# abort_reason assertions for the identical mechanism.
 _RC=0
 SCOURSH_INSTALL_ROOT=$FIX_SCOPE SCOURSH_CONFIG_REQUEST_BUDGET=100000 \
   bash "$ROOT/scan.sh" dast --target dast-fixture --out "$W/run-authz-refuse" \
@@ -626,8 +637,13 @@ assert_eq 2 "$_RC" \
   'an explicit over-ceiling request-budget exits 2 end to end - fails under a symmetric clamp, which would run the scan at a number the operator did not ask for'
 assert_contains "$(_slurp "$W/refuse.log")" '--i-own-target' \
   'and the refusal names the flag that resolves it'
-assert_file_absent "$W/run-authz-refuse/report.md" \
-  'and it refuses BEFORE the module ran, so no report claims a scan happened - fails if the ceiling is only enforced at the first request, where a usage error fires after traffic has already left'
+REFUSE_MD=$(_slurp "$W/run-authz-refuse/report.md")
+assert_contains "$REFUSE_MD" 'THIS RUN DID NOT COMPLETE' \
+  'and the report the abort path writes says so unmissably at the top - fails if the ceiling is only enforced at the first request (where a usage error fires after traffic has already left) or if the abort banner were ever dropped, either of which would let this report read as a completed scan'
+assert_contains "$REFUSE_MD" "'request-budget' is 100000" \
+  'and the banner carries the real abort reason (the explicit over-ceiling value), never a generic placeholder'
+assert_contains "$REFUSE_MD" '0 live, 0 accepted risk (0 total)' \
+  'and the finding counts are honestly zero, because no request was ever sent for this refusal to be a clamp-and-run in disguise'
 
 t_case 'an affirmed run records the deltas, banners them, and says so on stderr'
 _RC=0
