@@ -55,6 +55,28 @@ jobs:
     if: ${{ !github.event.repository.private }}
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os }} (${{ matrix.userland }})
+    # No timeout meant the platform default (360 minutes) was the only
+    # ceiling, so a job that stalled read as a silent 6-hour hang rather than
+    # a fast, legible failure. Measured directly on this PR: a run that
+    # should take ~1.5h (the historical ubuntu-only PR-leg estimate above)
+    # instead spent 336 of its 361 total minutes - 93% - sitting in one of
+    # 180 separate gaps (15s to 23 minutes each) between what should be
+    # near-instant fixture-driven assertions, in suites with nothing to do
+    # with each other (guide, sast, iac, cognito, lambda, efs, opensearch,
+    # redshift) and nothing in common with tests/lib/bounded-read.sh's own
+    # already-fixed orphaned-process leak (#305) - the gaps start inside
+    # guide.sh, which runs before any DAST suite ever does, so that fix
+    # cannot be the (sole) cause. By minute 150 essentially the whole runner
+    # was idle-waiting rather than working (90-100% of every 30-minute
+    # window from there on), which is what actually produced the 361-minute
+    # total and the run's own "cancelled" conclusion - not a manual
+    # cancellation, GitHub's own default timeout. 150 minutes is comfortably
+    # above both historical legs (~1.5h ubuntu-only, ~2.5h with macOS) while
+    # cutting a recurrence of this pathology from 6 hours to 2.5 - a fast,
+    # legible failure instead of a silent one that still ends in the same
+    # "cancelled" result. It does not fix the underlying slowdown, which is
+    # unresolved - see the PR description.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
