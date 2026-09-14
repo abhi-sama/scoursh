@@ -38,6 +38,14 @@
 #
 # shellcheck shell=bash
 
+# _BR_STATE_DIR/_BR_PID_FILE/_BR_PATH_FILE: where the producer's pid and FIFO
+# path are recorded, so bounded_read_reap can find them from a DIFFERENT
+# shell than the one that forked the producer - see the "PERSISTED TO DISK"
+# comment on bounded_read_serve_fifo below for why this exists at all.
+_BR_STATE_DIR=${SCOURSH_SCRATCH:-${TMPDIR:-/tmp}}
+_BR_PID_FILE=$_BR_STATE_DIR/.bounded-read-producer.pid
+_BR_PATH_FILE=$_BR_STATE_DIR/.bounded-read-producer.path
+
 # bounded_read_serve_fifo PATH SOURCE MARKER
 #
 # Replace PATH (a file the caller's transport stub was handed) with a FIFO and
@@ -90,6 +98,32 @@ bounded_read_serve_fifo() {
   ) >/dev/null 2>&1 </dev/null &
   _BR_PRODUCER_PID=$!
   _BR_FIFO_PATH=$path
+  # PERSISTED TO DISK, NOT JUST THE VARIABLES ABOVE - THIS IS THE PART THAT
+  # MATTERS.  Every real caller of this function is a stub HTTP transport,
+  # and lib/http.sh runs the transport inside a command SUBSTITUTION
+  # (`out=$("$TRANSPORT" ...)`) to read its status line.  A command
+  # substitution is a subshell: the two variable assignments just above are
+  # real inside it, but vanish the instant `$(...)` returns, because a
+  # subshell's writes to shell variables never propagate to its parent.  The
+  # caller-visible effect: `bounded_read_reap` sees `_BR_PRODUCER_PID` EMPTY,
+  # takes its early `return 0`, and never sends the producer SIGKILL - which
+  # leaves it running the "serve every later opener an immediate EOF" loop
+  # below forever, blocked in a FIFO open() with nothing left that will ever
+  # open the read end.  Measured: this is exactly what orphaned
+  # `tests/suites/dast-discovery.sh` and `tests/suites/dast-auth.sh`
+  # processes at ppid 1, 0.00 CPU, with no children and no sockets - `ps`
+  # still reports the ORIGINAL SCRIPT'S own argv for it, because the leaked
+  # process never execs a new program, which is why a process-alive check
+  # keyed on the suite's name cannot tell it apart from the suite actually
+  # still running.
+  #
+  # A file is the one channel that DOES cross a subshell boundary (the
+  # filesystem is shared, unlike shell-variable state), so the pid and path
+  # are ALSO written here, to a location derived only from `$SCOURSH_SCRATCH`
+  # - a value this function only ever READS, never writes, so it is stable
+  # across the same boundary that just discarded the two variables above.
+  printf '%s\n' "$_BR_PRODUCER_PID" >"$_BR_PID_FILE"
+  printf '%s\n' "$path" >"$_BR_PATH_FILE"
 }
 
 # bounded_read_producer_finished MARKER -> 0 if the producer drained SOURCE
@@ -106,18 +140,35 @@ bounded_read_producer_finished() {
 # never exit on its own, so this is required rather than tidy-up.  It is also
 # why nothing here waits on it with a timeout: a wait would be a duration, and
 # the point of this file is that no duration decides anything.
+#
+# Reads the pid and FIFO path from the on-disk record FIRST, falling back to
+# the in-process variables only if it is absent - see the "PERSISTED TO DISK"
+# comment on bounded_read_serve_fifo for why the file is the one that can
+# actually be trusted: it is the only one of the two that survives the
+# command-substitution subshell every real caller invokes this pair through.
 bounded_read_reap() {
-  [[ -n ${_BR_PRODUCER_PID:-} ]] || return 0
-  kill -9 "$_BR_PRODUCER_PID" 2>/dev/null || true
-  wait "$_BR_PRODUCER_PID" 2>/dev/null || true
+  local pid='' path=''
+  if [[ -f $_BR_PID_FILE ]]; then
+    pid=$(<"$_BR_PID_FILE")
+    rm -f -- "$_BR_PID_FILE"
+  fi
+  pid=${pid:-${_BR_PRODUCER_PID:-}}
+  if [[ -f $_BR_PATH_FILE ]]; then
+    path=$(<"$_BR_PATH_FILE")
+    rm -f -- "$_BR_PATH_FILE"
+  fi
+  path=${path:-${_BR_FIFO_PATH:-}}
+  [[ -n $pid ]] || return 0
+  kill -9 "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
   _BR_PRODUCER_PID=
   # Put a REGULAR FILE back at the path.  lib/http.sh truncates its body sink
   # with `: >"$cap_body"` before every request, and opening a FIFO for writing
   # blocks until a reader arrives - so leaving the FIFO in place would hang the
   # NEXT request through this same sink rather than the one under test.
-  if [[ -n ${_BR_FIFO_PATH:-} && -p ${_BR_FIFO_PATH:-} ]]; then
-    rm -f -- "$_BR_FIFO_PATH"
-    : >"$_BR_FIFO_PATH"
+  if [[ -n $path && -p $path ]]; then
+    rm -f -- "$path"
+    : >"$path"
   fi
   _BR_FIFO_PATH=
 }
