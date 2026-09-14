@@ -94,7 +94,7 @@ scan.sh <command> [options]
 | `--verbose` | boolean | off | live |
 | `--paranoid` | boolean | off | live on Linux (`ss`/`strace`) and macOS (`lsof`) |
 | `--use-engines` | boolean | off | live, but no engine is vendored here |
-| `--allow-intrusive` | boolean | off | live as a gate (needs `--i-own-target` too, for dast/all); no shipped check is tagged `intrusive` today, so it admits nothing yet except turning DAST's live user-enumeration probe on - which is itself not built and records why it did nothing |
+| `--allow-intrusive` | boolean | off | live as a gate (needs `--i-own-target` too, for dast/all); three shipped DAST checks carry the `intrusive` tag and are refused without it - `DAST-INJ-CRLF_RESPONSE_SPLITTING-01` and both `DAST-INJ-PROTOPOLLUTION_*-01` ids, each of which can mutate state beyond the request/response cycle a check ordinarily inspects (see `docs/CHECKS.md`'s "DAST — active" section, or `modules/dast/active/checks.rules`'s own per-record comments, for why) - and it also gates DAST's live user-enumeration probe, which is itself not built yet and records why it did nothing |
 | `--contact VALUE` | one printable, space-free token | from `config/scanner.conf` (`contact`), else none | live |
 | `--user-agent-suffix TOKEN` | one printable, space-free token | none | live |
 | `--jobs N` | positive integer | from `config/scanner.conf` (`4`) | live - real worker parallelism for `sast`/`sca`/`iac`, and DAST's in-flight-connection ceiling - see [`--jobs N`](#--jobs-n-and-the-jobs-config-key) |
@@ -628,10 +628,14 @@ it as a usage error); `--allow-intrusive` is a global flag every command accepts
 Both are wired into the same check-selection chain `dast` uses, so under `scan.sh all` they also pass
 over sast/sca/iac's own checks - but neither changes what gets selected there: `--intensity` filters on
 a check's type tag and every non-DAST/non-network check shipped here is tagged `static`, which all
-three tiers admit, while `--allow-intrusive` filters on the `intrusive` tag, which no shipped check
-anywhere carries yet. For `dast` and `network`, both are live and do gate real check selection - see
-the per-command flags table above and ["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target)
-below for the details.
+three tiers admit, and `--allow-intrusive` filters on the `intrusive` tag, which `rules/RULE-FORMAT.md`
+§9.1.3 forbids a pattern rule from ever carrying (`E043`) - so it is inert for `sast`/`sca`/`iac` by
+construction, not because no check happens to use it. For `dast` and `network`, both are live and do
+gate real check selection: three shipped DAST checks carry `intrusive` today - see `docs/CHECKS.md`'s
+"DAST — active" section, or `modules/dast/active/checks.rules`'s own per-record comments - and the
+per-command flags table above and
+["Conservative DAST limits"](#conservative-dast-limits-and---i-own-target) below have the rest of the
+details.
 
 ### Conservative DAST limits and `--i-own-target`
 
