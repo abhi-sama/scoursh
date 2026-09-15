@@ -223,9 +223,35 @@ jobs:
           (
             while true; do
               printf -- '--- %s ---\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              # "test index" (which of tests/run-tests.sh's SUITES has
+              # started so far, and which one is current) so a stall can be
+              # correlated against WHICH suite was running, not only against
+              # elapsed wall-clock time - suite.log is being written
+              # concurrently by "Run the suite" below.
+              if [ -r suite.log ]; then
+                n=$(grep -c '^=== suite: ' suite.log 2>/dev/null || printf 0)
+                cur=$(grep '^=== suite: ' suite.log 2>/dev/null | tail -1)
+                printf 'test index: %s  current: %s\n' "$n" "$cur"
+              else
+                printf 'test index: (suite.log not yet present)\n'
+              fi
               df -h . 2>&1
               printf 'reports/: '; du -sh reports 2>/dev/null || printf '(absent)\n'
               printf 'state/: '; du -sh state 2>/dev/null || printf '(absent)\n'
+              # tests/run-tests.sh runs every suite as its OWN `bash` child
+              # (never sourced), so each suite's lib/core.sh sees no
+              # inherited SCOURSH_SCRATCH and calls tmpdir_make() for a
+              # fresh one of its own - which its own EXIT trap should erase
+              # on the way out. A nonzero, growing count here is exactly
+              # what a suite that dies without running that trap (a SIGKILL,
+              # an OOM, a killed subprocess) would leave behind.
+              scratch_dir=${TMPDIR:-/tmp}
+              scratch_count=$(find "$scratch_dir" -maxdepth 1 -type d -name 'scoursh.*' 2>/dev/null | wc -l)
+              scratch_size=0
+              if [ "$scratch_count" -gt 0 ]; then
+                scratch_size=$(du -sch "$scratch_dir"/scoursh.* 2>/dev/null | tail -1 | awk '{print $1}')
+              fi
+              printf 'scratch dirs under %s: %s  total size: %s\n' "$scratch_dir" "$scratch_count" "$scratch_size"
               printf 'process count: %s\n' "$(ps aux 2>/dev/null | wc -l)"
               uptime 2>&1
               sleep 30
