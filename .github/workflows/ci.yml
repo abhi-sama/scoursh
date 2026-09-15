@@ -202,6 +202,37 @@ jobs:
             sysctl -n hw.memsize | awk '{printf "hw.memsize: %.1f GB\n", $1/1024/1024/1024}'
           fi
 
+      # A real full run of `tests/run-tests.sh` has been measured spending
+      # ~93% of its wall-clock time (336 of 361 minutes on one run, 337 of
+      # 361 on another) sitting in gaps between individual assertions that
+      # do no real network or filesystem work and complete instantly
+      # locally - confirmed on BOTH ubuntu-latest and macos-latest
+      # independently, so it is not platform-specific, and confirmed to
+      # start before any DAST suite runs, so it is not
+      # tests/lib/bounded-read.sh's own already-fixed orphaned-process leak
+      # (#305). The mechanism is still unidentified. This sampler exists to
+      # gather the ONE kind of evidence that cannot be reconstructed after
+      # the fact once the runner is torn down: disk/process state DURING the
+      # run, at the moment a stall is actually happening. It samples in the
+      # background, in parallel with "Run the suite" below, and is killed
+      # the instant that step finishes - so it changes nothing about what
+      # the suite itself does or how long it takes, and never runs
+      # unsupervised past the step it is scoped to.
+      - name: Start a background resource sampler for the run below
+        run: |
+          (
+            while true; do
+              printf -- '--- %s ---\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              df -h . 2>&1
+              printf 'reports/: '; du -sh reports 2>/dev/null || printf '(absent)\n'
+              printf 'state/: '; du -sh state 2>/dev/null || printf '(absent)\n'
+              printf 'process count: %s\n' "$(ps aux 2>/dev/null | wc -l)"
+              uptime 2>&1
+              sleep 30
+            done
+          ) >resource-samples.log 2>&1 &
+          echo "$!" >resource-sampler.pid
+
       - name: Run the suite
         run: |
           BASH=bash
@@ -210,6 +241,17 @@ jobs:
           done
           set -o pipefail
           "$BASH" tests/run-tests.sh 2>&1 | tee suite.log
+
+      # Always runs, timeout or not: `if: always()` steps still get their
+      # turn during the grace period after `timeout-minutes` cancels the
+      # job, which is exactly the case this sampler exists for - the run
+      # that never reaches a verdict is the one whose samples matter most.
+      - name: Stop the background resource sampler
+        if: always()
+        run: |
+          if [ -r resource-sampler.pid ]; then
+            kill "$(cat resource-sampler.pid)" 2>/dev/null || true
+          fi
 
       # The job log is only readable through an API that truncates, and a
       # failure summary lives at the END of the run, so the log is kept as an
@@ -220,6 +262,14 @@ jobs:
         with:
           name: suite-log-${{ matrix.os }}
           path: suite.log
+          if-no-files-found: warn
+
+      - name: Keep the resource-sampler log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resource-samples-${{ matrix.os }}
+          path: resource-samples.log
           if-no-files-found: warn
 
       - name: Emit the fixture scan for cross-userland comparison
