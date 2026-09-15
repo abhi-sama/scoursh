@@ -30,7 +30,91 @@ LINTERS=(lint-rules lint-shell lint-aws-readonly lint-status lint-no-ai lint-sou
 # so prose about it must never start a line with it.)
 STAGES=(shellcheck)
 
+# ===========================================================================
+# `--shard I/N` - run the Ith of N disjoint slices of a FULL run.
+# ===========================================================================
+# This exists for wall-clock alone.  It changes nothing about what any suite
+# does, asserts, or costs: the union of the N shards is exactly the work list
+# a bare `tests/run-tests.sh` executes, each item in exactly one shard, so N
+# shards run on N runners finish the same work in roughly 1/N the time.  A
+# shard is NOT a filter and must never become one - there is no way to spell
+# "skip this suite" here, and `--shard 1/1` is the full run by construction.
+#
+# ROUND-ROBIN (`idx % N`), NOT CONTIGUOUS BLOCKS.  The cost of a suite in this
+# array varies by three orders of magnitude (`tests/suites/scan.sh` alone has
+# run for 91 minutes on a hosted runner while `color` finishes in under a
+# second), and the expensive ones are NOT evenly spread through the array -
+# the `dast-*` family is one long contiguous run of them.  Contiguous blocks
+# would therefore hand one shard most of the cost and leave another idle,
+# which is the shape that makes sharding look like it did not work.  Dealing
+# the array out one item at a time spreads a clustered run of heavy suites
+# across every shard instead of concentrating it in one.
+#
+# The ORDER WITHIN a shard is the array's own order, so a shard is still a
+# legible subsequence of a full run's log rather than a reshuffle.
+#
+# The linters and the whole-tree shellcheck stage are dealt into the SAME
+# rotation rather than pinned to a shard of their own: the stage is the single
+# most expensive item in the list, so giving it a dedicated shard would make
+# that shard the pole every other one waits behind - exactly the bound this
+# is meant to remove.
+SHARD_INDEX=0
+SHARD_TOTAL=0
+if [[ ${1:-} == --shard ]]; then
+  if [[ ! ${2:-} =~ ^[1-9][0-9]*/[1-9][0-9]*$ ]]; then
+    printf 'tests/run-tests.sh: --shard wants I/N with 1 <= I <= N, both positive integers (got: %s)\n' \
+      "${2-<nothing>}" >&2
+    exit 2
+  fi
+  SHARD_INDEX=${2%%/*}
+  SHARD_TOTAL=${2##*/}
+  if (( SHARD_INDEX > SHARD_TOTAL )); then
+    printf 'tests/run-tests.sh: --shard %s asks for shard %s of only %s\n' \
+      "$2" "$SHARD_INDEX" "$SHARD_TOTAL" >&2
+    exit 2
+  fi
+  shift 2
+fi
+
+# `shard_work` prints the `<kind> <name> <path>` triples THIS shard owns, one
+# per line, in full-run order.  With no `--shard` it prints every one of them,
+# which is what makes the no-shard path and the sharded path the same code
+# rather than two enumerations that can drift apart.
+shard_work() {
+  local idx=0 s l
+  for s in "${SUITES[@]}"; do
+    _shard_mine "$idx" && printf 'suite %s tests/suites/%s.sh\n' "$s" "$s"
+    idx=$(( idx + 1 ))
+  done
+  for l in "${LINTERS[@]}"; do
+    _shard_mine "$idx" && printf 'linter %s tests/%s.sh\n' "$l" "$l"
+    idx=$(( idx + 1 ))
+  done
+  # The stage has no file of its own; `-` marks that and `run_one` is never
+  # called for it.
+  _shard_mine "$idx" && printf 'stage shellcheck -\n'
+  # ALWAYS 0.  `_shard_mine` returns non-zero for an item this shard does not
+  # own, so without this the function's status is "did the LAST item belong to
+  # me" - which is false for N-1 of every N shards, and under `set -Eeuo
+  # pipefail` aborts the run before a single suite has started.  Measured: 17
+  # of 23 shards across N=2,3,4,5,8 exited non-zero with an empty log.
+  return 0
+}
+
+_shard_mine() {
+  (( SHARD_TOTAL == 0 )) && return 0
+  (( $1 % SHARD_TOTAL == SHARD_INDEX - 1 ))
+}
+
 if [[ ${1:-} == --list ]]; then
+  if (( SHARD_TOTAL > 0 )); then
+    # `--shard I/N --list` is how a caller (and tests/suites/run-tests-stage.sh)
+    # checks the partition without running anything: concatenating every shard's
+    # list must reproduce the full list exactly, with nothing dropped and
+    # nothing run twice.
+    shard_work
+    exit 0
+  fi
   printf 'suites:  %s\n' "${SUITES[*]}"
   printf 'linters: %s\n' "${LINTERS[*]}"
   printf 'stages:  %s\n' "${STAGES[*]}"
@@ -1067,6 +1151,12 @@ sc_stage() {
   fi
 }
 
+if [[ -n ${1:-} ]] && (( SHARD_TOTAL > 0 )); then
+  printf 'tests/run-tests.sh: --shard selects a slice of a FULL run; it cannot be combined with a named suite (got: %s)\n' \
+    "$1" >&2
+  exit 2
+fi
+
 if [[ -n ${1:-} ]]; then
   want=$1
   if [[ -f tests/suites/$want.sh ]]; then
@@ -1084,14 +1174,22 @@ if [[ -n ${1:-} ]]; then
     exit 2
   fi
 else
-  for s in "${SUITES[@]}"; do
-    run_one suite "$s" "tests/suites/$s.sh"
-  done
-  for l in "${LINTERS[@]}"; do
-    run_one linter "$l" "tests/$l.sh"
-  done
-  sc_stage
-  if (( SC_STAGE_STATUS != 0 )); then failed+=(shellcheck); fi
+  # One loop for both the full run and a shard of one: `shard_work` with no
+  # `--shard` yields every item, so there is exactly one place that knows what
+  # a full run consists of.
+  if (( SHARD_TOTAL > 0 )); then
+    printf '=== shard %s of %s ===\n' "$SHARD_INDEX" "$SHARD_TOTAL"
+  fi
+  while read -r w_kind w_name w_path; do
+    if [[ $w_kind == stage ]]; then
+      # A plain call, never `sc_stage || ...` - see sc_stage's own header for
+      # why the `||` spelling would disable `errexit` for the whole stage body.
+      sc_stage
+      if (( SC_STAGE_STATUS != 0 )); then failed+=(shellcheck); fi
+    else
+      run_one "$w_kind" "$w_name" "$w_path"
+    fi
+  done < <(shard_work)
 fi
 
 printf '\n'
@@ -1105,11 +1203,25 @@ fi
 # pass of everything it did do and is not the same fact as a full pass -
 # leaving the bare line to stand for both is the false green this stage was
 # filed for, one level up.
-if (( SC_STAGE_NOT_INSTALLED )); then
-  printf 'all green (shellcheck is not installed on this host, so the whole-tree stage did not run)\n'
-elif (( SC_STAGE_SKIPPED > 0 )); then
-  printf 'all green (NOT a full pass: the shellcheck stage skipped %s file(s) this host lacks the memory to check - named above)\n' \
-    "$SC_STAGE_SKIPPED"
+# A SHARD is never a full pass either, and for the same reason: it really did
+# pass everything it ran, and that is not the same fact as the suite passing.
+# The bare `all green` line is reserved for a run that did all of the work, so
+# a shard says which slice it was and leaves the verdict to whoever collects
+# every shard - otherwise a CI matrix in which one shard silently never
+# started would still show green lines and read as a full pass.
+# `> 1`, not `> 0`: `--shard 1/1` is the FULL work list by construction (the
+# partition of one), so attaching the note there would make the one spelling a
+# caller uses to prove sharding changes nothing claim the opposite.
+if (( SHARD_TOTAL > 1 )); then
+  shard_note=" (shard $SHARD_INDEX of $SHARD_TOTAL - NOT a full pass on its own; every shard must pass)"
 else
-  printf 'all green\n'
+  shard_note=''
+fi
+if (( SC_STAGE_NOT_INSTALLED )); then
+  printf 'all green%s (shellcheck is not installed on this host, so the whole-tree stage did not run)\n' "$shard_note"
+elif (( SC_STAGE_SKIPPED > 0 )); then
+  printf 'all green%s (NOT a full pass: the shellcheck stage skipped %s file(s) this host lacks the memory to check - named above)\n' \
+    "$shard_note" "$SC_STAGE_SKIPPED"
+else
+  printf 'all green%s\n' "$shard_note"
 fi
