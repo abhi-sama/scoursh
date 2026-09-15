@@ -137,19 +137,20 @@ assert_eq 1 "$_rc" 'refused'
 assert_eq no_os_release "$_IMAGE_DISTRO_REASON" 'the specific, distinguishable reason'
 assert_eq '' "$_IMAGE_DISTRO_ECOSYSTEM" 'and no ecosystem is guessed - guessing "latest" produces a false NEGATIVE on an older image, the direction that reads as a pass'
 
-# NOTE: this case used to plant ID=debian here, back when v1 was
-# Alpine-only. IMG-09 added real Debian/Ubuntu support (see
-# tests/suites/image-debian.sh for that coverage), so this case now plants
-# an rpm-based distro instead - rpm (IMG-12) remains genuinely unsupported,
-# which is exactly what this case exists to prove.
-t_case 'ID present but recognised as a distro this module cannot yet map: distro_not_yet_supported, still no guess'
-cat >"$W/os-release-fedora" <<'EOF'
-ID=fedora
+# This must never name a real distro the module might learn to map. The case
+# originally used Debian, then Fedora after IMG-09; both landed later and made
+# this assertion stale even though the resolver was right. A test-only ID is
+# a durable absent fixture: it has no corresponding on-disk distro handler or
+# resolver branch, so this test continues to exercise the unsupported-ID path
+# as the real distro support set grows.
+t_case 'ID present but names a synthetic distro this module cannot map: distro_not_yet_supported, still no guess'
+cat >"$W/os-release-synthetic-unsupported" <<'EOF'
+ID=scoursh-test-unsupported-distro
 VERSION_ID=39
 EOF
 _rc=0
-image_distro_ecosystem_resolve "$W/os-release-fedora" || _rc=$?
-assert_eq 1 "$_rc" 'refused - rpm (IMG-12) is not yet supported'
+image_distro_ecosystem_resolve "$W/os-release-synthetic-unsupported" || _rc=$?
+assert_eq 1 "$_rc" 'refused - this synthetic ID is deliberately outside the real supported-distro set'
 assert_eq distro_not_yet_supported "$_IMAGE_DISTRO_REASON" \
   'a DIFFERENT, more specific reason than no_os_release - FAILS if a real, parseable os-release for an unsupported distro were folded into the same bucket as a missing file, which would tell an operator to go looking for a file that is actually right there'
 
