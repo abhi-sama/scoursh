@@ -215,6 +215,36 @@ _ids_for_bucket() {
   printf '%s\n' "$table" | awk -F'\t' -v b="arn:aws:s3:::$bucket" '$2 == b { print $1 }' | LC_ALL=C sort
 }
 
+# Derive the live catalog from the dispatcher-owned service table. Presence is
+# the same real `-f` test cloud_run_service uses, never table membership alone.
+_cloud_service_census() {
+  local spec script
+  _CLOUD_SERVICE_ROWS=${#_CLOUD_SERVICES[@]}
+  _CLOUD_SERVICE_PRESENT=0
+  for spec in "${_CLOUD_SERVICES[@]+"${_CLOUD_SERVICES[@]}"}"; do
+    script=${spec%%:*}
+    [[ -f "$ROOT/modules/cloud/aws/$script" ]] || continue
+    _CLOUD_SERVICE_PRESENT=$(( _CLOUD_SERVICE_PRESENT + 1 ))
+  done
+}
+
+# The benchmark identity is data owned by data/cis-mappings' first record,
+# not report prose. Read only the two frozen fields report.md renders.
+_cis_benchmark_from_registry() {
+  local line
+  _CIS_BENCHMARK_NAME=''
+  _CIS_BENCHMARK_VERSION=''
+  [[ -f "$ROOT/data/cis-mappings" ]] || return 1
+  while IFS= read -r line || [[ -n $line ]]; do
+    case $line in
+      'benchmark: '*) _CIS_BENCHMARK_NAME=${line#benchmark: } ;;
+      'benchmark-version: '*) _CIS_BENCHMARK_VERSION=${line#benchmark-version: } ;;
+    esac
+    [[ -n $_CIS_BENCHMARK_NAME && -n $_CIS_BENCHMARK_VERSION ]] && return 0
+  done <"$ROOT/data/cis-mappings"
+  return 1
+}
+
 # ===========================================================================
 # A. The classifiers, against the committed fixtures, with no scan at all.
 # ===========================================================================
@@ -498,16 +528,11 @@ assert_file_exists "$W/run-b/report.md" 'E7 report.md written'
 assert_file_exists "$W/run-b/report.html" 'E8 report.html written'
 _MD=$(cat "$W/run-b/report.md")
 assert_contains "$_MD" "arn:aws:s3:::$PUB" 'E9 report.md names the bucket ARN'
-# THE CIS CONTROL ID REACHES SARIF, NOT report.md, AND THAT IS THE CURRENT
-# CONTRACT RATHER THAN A GAP THIS TICKET LEFT.  docs/CIS-MAPPINGS.md §7 states
-# it in terms: the label table "renders nothing - no CIS section exists in
-# report.md or report.html", because the CIS report VIEW is COMPLIANCE-04, a
-# separate ticket that this one unblocks by being the first check to author a
-# real `cis:` value.  Asserting a CIS section in report.md would therefore pin
-# a behaviour nothing has built; asserting its ABSENCE is what makes the day
-# COMPLIANCE-04 lands visible here instead of silent.
-assert_not_contains "$_MD" 'CIS Amazon Web Services Foundations Benchmark' \
-  'E10 report.md carries no CIS section yet - that view is COMPLIANCE-04, which this ticket unblocks'
+_cis_benchmark_from_registry
+assert_contains "$_MD" '## CIS compliance' \
+  'E10 report.md carries COMPLIANCE-04’s CIS section'
+assert_contains "$_MD" "**$_CIS_BENCHMARK_NAME $_CIS_BENCHMARK_VERSION**" \
+  'E10b the CIS section names the benchmark and version from data/cis-mappings'
 
 _routes_default
 _run_cloud "$W/run-sarif" --format sarif
@@ -523,22 +548,11 @@ _run_cloud "$W/run-audit" --format audit
 assert_file_exists "$W/run-audit/report-audit.html" 'E14 --format audit writes report-audit.html'
 _AUDIT=$(cat "$W/run-audit/report-audit.html")
 assert_contains "$_AUDIT" 'CLOUD-S3-' 'E15 the audit view carries the cloud checks'
-# lib/report.sh's own coverage-strength note for the cloud category names
-# the real, current extent of the live catalog rather than a stale sentence.
-# It named S3 alone at CLOUD-05, then S3 and API Gateway at CLOUD-22, then
-# ELB/ALB and CloudFront at CLOUD-14/24, then KMS/Secrets Manager/SSM at
-# CLOUD-07/08/09, then IAM (CLOUD-06) and EC2/VPC (CLOUD-13), then the
-# CLOUD-30..34 governance bundle (tests/suites/cloud-governance.sh), then
-# also RDS and DynamoDB (CLOUD-15/16, tests/suites/cloud-rds.sh /
-# tests/suites/cloud-dynamodb.sh), then also Lambda (CLOUD-21,
-# tests/suites/cloud-lambda.sh, section E), and now also ECR, ECS and EKS
-# (CLOUD-25/26/27, tests/suites/cloud-{ecr,ecs,eks}.sh), and now also
-# Cognito (CLOUD-20, tests/suites/cloud-cognito.sh) - exactly as this
-# comment originally predicted a later service landing would require - see
-# tests/suites/cloud-ssm.sh's own round-trip section for an earlier stage of
-# this same guard.
-assert_contains "$_AUDIT" 'ships the S3, Cognito, Lambda, RDS, DynamoDB, API Gateway, ECR, ECS, EKS, ELB/ALB, CloudFront, KMS, Secrets Manager, SSM, IAM, EC2/VPC, CloudTrail, AWS Config, GuardDuty, Inspector2 and Macie2 services so far' \
-  'E16 the audit view states the real, current extent of the live catalog'
+_cloud_service_census
+assert_eq "$_CLOUD_SERVICE_ROWS" "$_CLOUD_SERVICE_PRESENT" \
+  'E16 every cloud service table entry has its real script on disk'
+assert_contains "$_AUDIT" "ships all $_CLOUD_SERVICE_PRESENT docs/DESIGN.md §8.1 services" \
+  'E16b the audit view states the real, current extent of the live catalog'
 assert_not_contains "$_AUDIT" 'ships no service script yet' \
   'E17 ... and no longer claims the catalog is empty'
 assert_not_contains "$_AUDIT" 'ships the S3 service only so far' \

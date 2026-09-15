@@ -134,8 +134,12 @@ PROT_IDS=$(_ids_for_arn "$TBL" "$PROTECTED")
 
 assert_contains "$UNPROT_IDS" 'CLOUD-BACKUP-NO_PLAN_COVERAGE-01' \
   'B3 the volume with no recovery point fires'
-assert_eq '' "$PROT_IDS" \
-  'B4 the volume AWS Backup names as protected, in the SAME run, produces no finding'
+# `ec2.sh` also examines this same EBS volume now. B4 belongs to Backup's
+# classification, so it distinguishes a false Backup finding from an
+# independent EC2 finding rather than requiring the growing cloud catalog to
+# stay silent about this resource.
+assert_not_contains "$PROT_IDS" 'CLOUD-BACKUP-NO_PLAN_COVERAGE-01' \
+  'B4 the volume AWS Backup names as protected produces no Backup coverage finding in the SAME run'
 
 # ===========================================================================
 # C. ARN, region, account, cell - and NO cis (an honest absence).
