@@ -202,89 +202,6 @@ jobs:
             sysctl -n hw.memsize | awk '{printf "hw.memsize: %.1f GB\n", $1/1024/1024/1024}'
           fi
 
-      # A real full run of `tests/run-tests.sh` has been measured spending
-      # ~93% of its wall-clock time (336 of 361 minutes on one run, 337 of
-      # 361 on another) sitting in gaps between individual assertions that
-      # do no real network or filesystem work and complete instantly
-      # locally - confirmed on BOTH ubuntu-latest and macos-latest
-      # independently, so it is not platform-specific, and confirmed to
-      # start before any DAST suite runs, so it is not
-      # tests/lib/bounded-read.sh's own already-fixed orphaned-process leak
-      # (#305). The mechanism is still unidentified. This sampler exists to
-      # gather the ONE kind of evidence that cannot be reconstructed after
-      # the fact once the runner is torn down: disk/process state DURING the
-      # run, at the moment a stall is actually happening. It samples in the
-      # background, in parallel with "Run the suite" below, and is killed
-      # the instant that step finishes - so it changes nothing about what
-      # the suite itself does or how long it takes, and never runs
-      # unsupervised past the step it is scoped to.
-      - name: Start a background resource sampler for the run below
-        run: |
-          (
-            # CPU steal time (Linux-only: /proc/stat field 8, jiffies stolen
-            # by the hypervisor from this VM's own vCPUs, cumulative since
-            # boot) is the direct measurement for the leading hypothesis in
-            # the PR description - variable, unpredictable per-subprocess-spawn
-            # overhead consistent with "noisy neighbor" contention on a
-            # shared hosted runner. Reported as a DELTA since the previous
-            # sample (30s apart) rather than the raw cumulative counter, so a
-            # reader can see "how much of the last ~30s was stolen" directly
-            # without doing the subtraction themselves. macOS has no
-            # equivalent exposed to a guest process, so this is one more
-            # reason the earlier ubuntu/macOS symmetry check used gap
-            # counting rather than this metric - this field will simply read
-            # N/A there.
-            prev_steal=''
-            while true; do
-              printf -- '--- %s ---\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-              if [ -r /proc/stat ]; then
-                read -r _ user nice system idle iowait irq softirq steal _ </proc/stat
-                if [ -n "$prev_steal" ]; then
-                  delta=$(( steal - prev_steal ))
-                  printf 'cpu steal: +%s jiffies since last sample (~%s%% of the last ~30s, at 100 jiffies/s)\n' "$delta" "$(( delta / 30 ))"
-                else
-                  printf 'cpu steal: (first sample, no delta yet) cumulative=%s jiffies\n' "$steal"
-                fi
-                prev_steal=$steal
-              else
-                printf 'cpu steal: N/A (no /proc/stat on this platform)\n'
-              fi
-              # "test index" (which of tests/run-tests.sh's SUITES has
-              # started so far, and which one is current) so a stall can be
-              # correlated against WHICH suite was running, not only against
-              # elapsed wall-clock time - suite.log is being written
-              # concurrently by "Run the suite" below.
-              if [ -r suite.log ]; then
-                n=$(grep -c '^=== suite: ' suite.log 2>/dev/null || printf 0)
-                cur=$(grep '^=== suite: ' suite.log 2>/dev/null | tail -1)
-                printf 'test index: %s  current: %s\n' "$n" "$cur"
-              else
-                printf 'test index: (suite.log not yet present)\n'
-              fi
-              df -h . 2>&1
-              printf 'reports/: '; du -sh reports 2>/dev/null || printf '(absent)\n'
-              printf 'state/: '; du -sh state 2>/dev/null || printf '(absent)\n'
-              # tests/run-tests.sh runs every suite as its OWN `bash` child
-              # (never sourced), so each suite's lib/core.sh sees no
-              # inherited SCOURSH_SCRATCH and calls tmpdir_make() for a
-              # fresh one of its own - which its own EXIT trap should erase
-              # on the way out. A nonzero, growing count here is exactly
-              # what a suite that dies without running that trap (a SIGKILL,
-              # an OOM, a killed subprocess) would leave behind.
-              scratch_dir=${TMPDIR:-/tmp}
-              scratch_count=$(find "$scratch_dir" -maxdepth 1 -type d -name 'scoursh.*' 2>/dev/null | wc -l)
-              scratch_size=0
-              if [ "$scratch_count" -gt 0 ]; then
-                scratch_size=$(du -sch "$scratch_dir"/scoursh.* 2>/dev/null | tail -1 | awk '{print $1}')
-              fi
-              printf 'scratch dirs under %s: %s  total size: %s\n' "$scratch_dir" "$scratch_count" "$scratch_size"
-              printf 'process count: %s\n' "$(ps aux 2>/dev/null | wc -l)"
-              uptime 2>&1
-              sleep 30
-            done
-          ) >resource-samples.log 2>&1 &
-          echo "$!" >resource-sampler.pid
-
       - name: Run the suite
         run: |
           BASH=bash
@@ -293,17 +210,6 @@ jobs:
           done
           set -o pipefail
           "$BASH" tests/run-tests.sh 2>&1 | tee suite.log
-
-      # Always runs, timeout or not: `if: always()` steps still get their
-      # turn during the grace period after `timeout-minutes` cancels the
-      # job, which is exactly the case this sampler exists for - the run
-      # that never reaches a verdict is the one whose samples matter most.
-      - name: Stop the background resource sampler
-        if: always()
-        run: |
-          if [ -r resource-sampler.pid ]; then
-            kill "$(cat resource-sampler.pid)" 2>/dev/null || true
-          fi
 
       # The job log is only readable through an API that truncates, and a
       # failure summary lives at the END of the run, so the log is kept as an
@@ -314,14 +220,6 @@ jobs:
         with:
           name: suite-log-${{ matrix.os }}
           path: suite.log
-          if-no-files-found: warn
-
-      - name: Keep the resource-sampler log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: resource-samples-${{ matrix.os }}
-          path: resource-samples.log
           if-no-files-found: warn
 
       - name: Emit the fixture scan for cross-userland comparison
