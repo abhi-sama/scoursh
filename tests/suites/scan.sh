@@ -658,6 +658,33 @@ printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-06: the load-bearing round-trip test 
 # is safe by the identical lint rule but is actually ROUTED off-host and so
 # blocks for the full `http-timeout` per attempt instead of failing
 # immediately - the wrong choice for a test that needs to stay fast).
+#
+# THAT "INSTANTLY" IS A PROPERTY OF THE HOST'S ROUTE TABLE, NOT OF THE
+# ADDRESS, AND IT IS FALSE ON EVERY CLOUD RUNNER - which is why every
+# invocation below ALSO pins `SCOURSH_HTTP_TIMEOUT`.  On a developer machine
+# 169.254.0.0/16 is a REJECT route (measured here: `netstat -rn` shows the
+# `!` blackhole flag, and curl returns `rc=7` "Could not connect" after 0 ms),
+# so the kernel refuses without a packet leaving the host, exactly as the
+# paragraph above says.  A GitHub-hosted runner is a cloud VM whose primary
+# NIC carries an ORDINARY link-local route, because 169.254.169.254 is the
+# instance-metadata endpoint - so the same connect ARPs for an address
+# nothing answers and blocks for the FULL `http-timeout` (20s, lib/http.sh's
+# `_http_transport_default` passes it to curl as `--max-time`) instead of
+# 0 ms.  At the default breaker ceiling that is 10 x 20s per run, and the
+# `--circuit-breaker-failures 50` case below tolerates FIFTY failures before
+# opening: 1000 seconds for one assertion group, on a suite CI must finish
+# inside a fixed budget.  Pinning the timeout bounds the damage to 2s per
+# attempt WITHOUT changing a single thing any assertion reads: every
+# assertion here is about what run.json RECORDS (the authorization object,
+# the config object, a flag fact), never about how many connections were
+# attempted, how long one took, or whether the breaker opened.  On a host
+# where the route really does reject instantly the value is never reached at
+# all, so this is inert there and identical to the pre-change behaviour.
+# `SCOURSH_HTTP_TIMEOUT` is lib/http.sh's own seam for this (read with a
+# default at the single curl invocation); the `http-timeout` scanner.conf key
+# is deliberately NOT used, because it is resolved for `run.json`'s config
+# record and never reaches the transport - setting it here would be a silent
+# no-op.
 # `--requests-per-second` is raised to "No limit" so nothing here is bounded
 # by wall-clock rate - the run therefore always ends the same way, in well
 # under a second: `lib/http.sh`'s own circuit breaker opens at its default
@@ -672,6 +699,15 @@ printf '\n-- docs/STEP-GUIDE-PLAN.md GUIDE-06: the load-bearing round-trip test 
 # modules/ fires a spurious E081 the instant a real check registry loads)
 # and are canonicalised (`cd && pwd -P`) for the identical
 # $ROOT_WITH_CHECKS reason.
+# The per-attempt transport bound the long comment above argues for.  Two
+# seconds rather than one: it has to stay a plausible REAL timeout, so that a
+# host which answers slowly but correctly is still answered rather than being
+# turned into a synthetic failure by the test's own impatience.  Every
+# consumer of it below (both round-trip runs and the circuit-breaker run)
+# takes the SAME value, which is what keeps RUN 1 and RUN 2 comparable - the
+# two are asserted byte-identical on their authorization and config objects,
+# so an asymmetric bound here would be a real difference between them.
+RT_HTTP_TIMEOUT=2
 RT_ROOT1=$(cd -- "$W" && mkdir -p rt-root1/config && cp -R "$ROOT/modules" rt-root1/modules \
   && cd -- rt-root1 && pwd -P)
 RT_ROOT2=$(cd -- "$W" && mkdir -p rt-root2/config && cp -R "$ROOT/modules" rt-root2/modules \
@@ -693,6 +729,7 @@ t_case 'RUN 1: the guided flow, with a scripted answer stream, actually runs the
 RT_ANSWERS=$'1\n3\nroundtrip-target\n4\n1\n1\n1\n1\n'
 RT_LOG1=$W/rt-run1.log
 ( _guide_env SCOURSH_INSTALL_ROOT="$RT_ROOT1" SCOURSH_GUIDE_FORCE_TTY=true \
+    SCOURSH_HTTP_TIMEOUT="$RT_HTTP_TIMEOUT" \
     bash "$ROOT/scan.sh" dast --guided --out "$RT_ROOT1/out" <<<"$RT_ANSWERS" ) >"$RT_LOG1" 2>&1 || true
 assert_file_exists "$RT_ROOT1/out/run.json" \
   'FAILS if the guided "Run it" path never reached scan_parse_args/run_init at all - a run this test cannot compare against anything'
@@ -711,7 +748,8 @@ RT_LOG2=$W/rt-run2.log
 # printed command would, which means real word splitting rather than one
 # giant single argument.
 # shellcheck disable=SC2086
-( _guide_env SCOURSH_INSTALL_ROOT="$RT_ROOT2" bash "$ROOT/scan.sh" $RT_ARGS ) </dev/null >"$RT_LOG2" 2>&1 || true
+( _guide_env SCOURSH_INSTALL_ROOT="$RT_ROOT2" SCOURSH_HTTP_TIMEOUT="$RT_HTTP_TIMEOUT" \
+    bash "$ROOT/scan.sh" $RT_ARGS ) </dev/null >"$RT_LOG2" 2>&1 || true
 assert_file_exists "$RT_ROOT2/out/run.json" \
   'FAILS if the plain, non-guided invocation of the printed command could not even complete a run.json - the two runs would then have nothing to compare'
 
@@ -1047,6 +1085,11 @@ assert_eq "${SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES-}" "$_SCAN_ENV_BREAKER_PRIS
 
 t_case 'a real scan_dispatch dast subprocess with --circuit-breaker-failures raises the breaker exactly like requests-per-second/request-budget do, per run.json'"'"'s own authorization record'
 # The same instantly-refusing link-local target the round-trip case above
+# uses - and, for the reason that section's own comment gives at length, the
+# same `SCOURSH_HTTP_TIMEOUT` bound, which matters MORE here than anywhere
+# else in this file: this is the one case that raises the breaker ceiling to
+# 50, so it is the one case where a host that blocks per attempt rather than
+# refusing costs fifty timeouts instead of ten.
 # uses (0ms per attempt, no packet leaves the host), so this stays fast: with
 # the DEFAULT ceiling (10) the breaker opens after 10 failed connections; with
 # --circuit-breaker-failures 50 it tolerates 50 before opening, which is what
@@ -1065,7 +1108,8 @@ base-url: http://169.254.1.1:1/
 allow-subdomains: false
 allow-private-addresses: true
 EOF
-( _guide_env SCOURSH_INSTALL_ROOT="$CBW" bash "$ROOT/scan.sh" dast --target breaker-fixture \
+( _guide_env SCOURSH_INSTALL_ROOT="$CBW" SCOURSH_HTTP_TIMEOUT="$RT_HTTP_TIMEOUT" \
+    bash "$ROOT/scan.sh" dast --target breaker-fixture \
     --i-own-target breaker-fixture --circuit-breaker-failures 50 \
     --out "$CBW/out" ) </dev/null >"$CBW/run.log" 2>&1 || true
 assert_file_exists "$CBW/out/run.json" \
@@ -1909,10 +1953,55 @@ assert_contains "$(cat "$W/bin.out")" 'scan.sh <command> [options]' 'usage text 
 t_case 'an unknown command exits 2 when run as a real script, matching the sourced-function behaviour'
 assert_status 2 './scan.sh bogus exits 2' _bin_run bogus
 
+# THE SCAN ROOT IS THIS REPOSITORY'S OWN SOURCE, ASSEMBLED, RATHER THAN THE
+# CHECKOUT ITSELF - AND THAT IS A COST FIX, NOT A NARROWING OF THE CLAIM.
+#
+# What this case asserts is that the real script, run as a real subprocess,
+# completes a `sast` dispatch end to end and writes an honest run.json.  None
+# of its three assertions reads the tree: not the finding count, not which
+# rules fired, not the scan root.  The tree only has to be a large, real,
+# heterogeneous one rather than a curated fixture, which this still is.
+#
+# What it was paying for instead was DRIFT.  `--path "$ROOT"` walks whatever
+# happens to be committed, and `bench/` - a corpus of benchmark OUTPUT
+# (scorecards, findings dumps, raw engine stdout) - is now 2438 of the
+# checkout's 3653 files, 66% of the walk.  Measured on this host: the whole
+# checkout costs 715s, the same scan without that corpus costs 332s, and
+# assembling the root costs 0.25s.  Nobody chose 715s; it grew, silently,
+# every time a benchmark result landed, and it will keep growing.  That is the
+# same shape as the stale link-local claim this file's round-trip section now
+# documents - an assumption about the machine that was true when written and
+# was never re-checked - and it is why the sibling `all` case a few lines below
+# already states the principle in its own comment: "the smallest tree that does
+# so", rather than the whole fixture tree.
+#
+# The exclusions are the benchmark corpus plus the three the walker prunes for
+# itself anyway (`.git`, `reports`, `state` are in SAST_DEFAULT_EXCLUDE_DIRS),
+# so skipping those in the copy costs nothing and is not a second policy.
+# `git init` is run in the assembled root so `--path` still resolves its scan
+# root through the git-toplevel branch (lib/core.sh) exactly as the checkout
+# does, rather than silently taking the plain-path fallback; it is guarded
+# because a host without git must not turn this into a failure.
+#
+# This does NOT stop scoursh being scanned by scoursh: `bench/` is excluded
+# because it is committed scanner OUTPUT, not because it is expensive, and
+# every line of first-party source and every test fixture is still walked.
+SELF_SCAN_ROOT=$W/self-scan-root
+rm -rf "$SELF_SCAN_ROOT"
+mkdir -p "$SELF_SCAN_ROOT"
+for _e in "$ROOT"/* "$ROOT"/.[!.]*; do
+  [[ -e $_e ]] || continue
+  case ${_e##*/} in
+    .git | bench | reports | state) continue ;;
+  esac
+  cp -R "$_e" "$SELF_SCAN_ROOT/"
+done
+git -C "$SELF_SCAN_ROOT" init -q >/dev/null 2>&1 || true
+
 t_case 'a full sast invocation exits 0 and writes a real run.json to disk'
 rm -rf "$W/real-run"
-assert_status 0 './scan.sh sast --path . --out DIR exits 0 end to end' \
-  _bin_run sast --path "$ROOT" --out "$W/real-run"
+assert_status 0 './scan.sh sast --path <this repository'"'"'s own source> --out DIR exits 0 end to end' \
+  _bin_run sast --path "$SELF_SCAN_ROOT" --out "$W/real-run"
 assert_file_exists "$W/real-run/run.json" 'run.json was written by the real script, not just the sourced function'
 assert_contains "$(cat "$W/real-run/run.json")" '"gate": "not-evaluated"' \
   'run.json honestly reports that no gate has been evaluated yet (no findings pipeline exists yet)'
