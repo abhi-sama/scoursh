@@ -153,6 +153,31 @@ _slurp() {
   cat -- "$f"
 }
 
+# `_BANNER_REGISTERED_CHECKS` - every check id modules/network/
+# checks-banner.rules registers for this phase script, in registration
+# order, DERIVED from that on-disk file rather than pinned as a literal
+# string here. This is the same class of fix PR #310 applied to
+# tests/suites/network.sh's phase-table counts: this suite used to assert
+# `checks=[NET-SVC-BANNER_DISCLOSURE-01]` alone in three reductions, which
+# was true only until NET-11 (NET-SVC-OUTDATED_COMPONENT-01) landed inside
+# this SAME phase script. modules/network/banner.sh's own header explains
+# why that landing changed those three specific reductions and no others:
+# every check this phase script registers needs an ACTUALLY-READ banner
+# from an open, declared listener (one capability check, one
+# listener-presence check, one open/not-open/filtered loop, shared by
+# every check this file emits), so the three reductions that fire before
+# any listener is successfully read - no_declared_listeners,
+# net_check_not_applicable, net_probe_cmd_absent - each name EVERY
+# registered check, never one alone. Reading the registry file keeps this
+# tracking reality the next time a further check lands inside banner.sh
+# sharing that same gating, the identical reasoning _net_phase_census
+# applies to _NET_PHASES in tests/suites/network.sh.
+_banner_registered_check_ids() {
+  grep -E '^id: ' "$ROOT/modules/network/checks-banner.rules" | sed -E 's/^id: //'
+}
+_BANNER_REGISTERED_CHECKS=$(_banner_registered_check_ids | tr '\n' ' ')
+_BANNER_REGISTERED_CHECKS=${_BANNER_REGISTERED_CHECKS% }
+
 # =============================================================================
 printf '\n-- an open listener that discloses a product+version fires the check; a not-open/filtered one never gets a banner probe at all --\n'
 # =============================================================================
@@ -225,8 +250,8 @@ assert_contains "$RUN_MULTI_JSON" 'reason=no_banner checks=[NET-SVC-BANNER_DISCL
   'the reduction names the exact reason this module'"'"'s own honesty vocabulary lists for this check, and the real count'
 
 t_case 'the not-open and filtered listeners are ONE counted net_check_not_applicable reduction, naming both states'
-assert_contains "$RUN_MULTI_JSON" 'reason=net_check_not_applicable checks=[NET-SVC-BANNER_DISCLOSURE-01] target=net-banner count=2 not_open=1 filtered=1' \
-  'both non-open listeners are folded into one reduction with the real breakdown - FAILS if either were silently dropped or reported as a finding'
+assert_contains "$RUN_MULTI_JSON" "reason=net_check_not_applicable checks=[$_BANNER_REGISTERED_CHECKS] target=net-banner count=2 not_open=1 filtered=1" \
+  'both non-open listeners are folded into one reduction with the real breakdown, naming EVERY check this phase registers (derived from checks-banner.rules, not a single hardcoded id) since neither could be read from a listener that was never open - FAILS if either listener were silently dropped or reported as a finding, or if a registered check were missing from the bracket'
 
 t_case 'checks_run records NET-SVC-BANNER_DISCLOSURE-01 once at least one listener was actually open and read'
 assert_contains "$RUN_MULTI_JSON" 'NET-SVC-BANNER_DISCLOSURE-01' 'the check id is in checks_run'
@@ -278,8 +303,8 @@ t_case 'a base-url-only target (no listeners.json at all, NET-05 rule 3) records
 _net_scan "$W/run-solo" "$FIX_SOLO" --target net-solo
 assert_eq 0 "$_RC" 'exits 0'
 SOLO_JSON=$(_slurp "$W/run-solo/run.json")
-assert_contains "$SOLO_JSON" 'reason=no_declared_listeners checks=[NET-SVC-BANNER_DISCLOSURE-01]' \
-  'the named reason from the module'"'"'s own declared-skip vocabulary appears, naming this check specifically'
+assert_contains "$SOLO_JSON" "reason=no_declared_listeners checks=[$_BANNER_REGISTERED_CHECKS]" \
+  'the named reason from the module'"'"'s own declared-skip vocabulary appears, naming EVERY check this phase registers (derived from checks-banner.rules) rather than only NET-07'"'"'s own disclosure id - FAILS if a registered check were missing from the bracket or the reduction degraded to a generic module note'
 SOLO_JSONL=$(_slurp "$W/run-solo/findings.jsonl")
 assert_not_contains "$SOLO_JSONL" 'NET-SVC-BANNER_DISCLOSURE-01' \
   'no finding was fabricated with nothing to probe'
@@ -307,8 +332,8 @@ assert_eq 0 "$_CAP_RC" 'exits 0 - a bash without --enable-net-redirections is a 
 NOCAP_JSON=$(_slurp "$W/run-nocap/run.json")
 assert_contains "$NOCAP_JSON" 'reason=net_probe_cmd_absent' \
   'the named reason from the module'"'"'s own declared-skip vocabulary appears'
-assert_contains "$NOCAP_JSON" 'checks=[NET-SVC-BANNER_DISCLOSURE-01]' \
-  'the reduction names this check id specifically, not only a generic module note'
+assert_contains "$NOCAP_JSON" "checks=[$_BANNER_REGISTERED_CHECKS]" \
+  'the reduction names EVERY check this phase registers specifically (derived from checks-banner.rules), not only a generic module note - FAILS if a registered check were missing from the bracket'
 assert_file_absent "$W/net-probe.log" \
   'net_connect_probe (SCOURSH_NET_PROBE) was NEVER invoked - FAILS if the capability check ran per-listener rather than once up front (AGENTS.md'"'"'s "checks_run must count what SUCCEEDED" lesson)'
 assert_file_absent "$W/net-banner.log" \
