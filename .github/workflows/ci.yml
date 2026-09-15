@@ -33,18 +33,38 @@ jobs:
       # The `matrix` context is not available in a job-level `if:` (only
       # `github`, `inputs`, `needs` and `vars` are - actionlint catches this,
       # a real schema violation the first version of this change shipped and
-      # that silently zeroed out every job on every trigger), so narrowing a
-      # single matrix leg by trigger has to happen in the matrix itself.
-      #
-      # A `pull_request` run gets the `ubuntu-latest` entry alone: that leg
-      # (~1.5h) is what a PR waits on, by maintainer-directed change, and the
-      # macOS leg (~2.5h) - the pole every PR used to wait on - is not even
-      # generated as a job on that trigger, rather than generated and skipped.
-      # Every other trigger (a `push` to `main` or `dev`) still gets both
-      # legs, so a macOS-only regression is caught there before `dev` is
-      # promoted to `main`.
+      # that silently zeroed out every job on every trigger), so narrowing by
+      # trigger has to happen in the matrix itself.
       matrix:
-        include: ${{ github.event_name == 'pull_request' && fromJSON('[{"os":"ubuntu-latest","userland":"GNU coreutils"}]') || fromJSON('[{"os":"ubuntu-latest","userland":"GNU coreutils"},{"os":"macos-latest","userland":"BSD"}]') }}
+        # SHARDING (tests/run-tests.sh --shard I/N).  The suite array is dealt
+        # round-robin across six legs, so the six together run exactly the work
+        # one unsharded leg did - tests/suites/run-tests-stage.sh reconstructs
+        # the full work list from every shard's own `--list` and fails if a
+        # single item is dropped or claimed twice.
+        #
+        # THIS IS A WALL-CLOCK SPLIT AND NOT A COST REDUCTION.  The number of
+        # `scan.sh` subprocesses CI spawns is UNCHANGED; they are spread over
+        # six runners instead of one, so this buys ~1/6 the wall clock for ~6x
+        # the runner-minutes.  The pole is whichever shard owns
+        # tests/suites/scan.sh, because no split makes one suite faster than
+        # itself - that suite's own remaining cost is stated in this change's
+        # PR description rather than papered over here.
+        #
+        # THE CROSS PRODUCT IS WRITTEN OUT, NOT EXPRESSED AS `shard:` PLUS
+        # `include:`.  A bare `shard: [1..6]` key alongside this `include:`
+        # would be a base matrix of six combinations that GitHub then tries to
+        # merge each `include` object into, and the two objects here both carry
+        # `os` - which is the ambiguous case, not a documented cross product.
+        # This file has already shipped one matrix-schema mistake that silently
+        # zeroed out every job on every trigger (see the `if:` note below), so
+        # the legs are enumerated explicitly and are exactly what runs.
+        #
+        # A `pull_request` run gets the `ubuntu-latest` legs alone: that is
+        # what a PR waits on, by maintainer-directed change, and the macOS legs
+        # are not even generated as jobs on that trigger. Every other trigger
+        # (a `push` to `main` or `dev`) gets both userlands, so a macOS-only
+        # regression is caught there before `dev` is promoted to `main`.
+        include: ${{ github.event_name == 'pull_request' && fromJSON('[{"os":"ubuntu-latest","userland":"GNU coreutils","shard":1},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":2},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":3},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":4},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":5},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":6}]') || fromJSON('[{"os":"ubuntu-latest","userland":"GNU coreutils","shard":1},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":2},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":3},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":4},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":5},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":6},{"os":"macos-latest","userland":"BSD","shard":1},{"os":"macos-latest","userland":"BSD","shard":2},{"os":"macos-latest","userland":"BSD","shard":3},{"os":"macos-latest","userland":"BSD","shard":4},{"os":"macos-latest","userland":"BSD","shard":5},{"os":"macos-latest","userland":"BSD","shard":6}]') }}
     # The repository is PUBLIC, so this evaluates true and the job runs for
     # real. The guard is kept rather than deleted: on a private repository
     # hosted Actions cannot start a run here at all (a billing condition,
@@ -54,29 +74,23 @@ jobs:
     # again.
     if: ${{ !github.event.repository.private }}
     runs-on: ${{ matrix.os }}
-    name: ${{ matrix.os }} (${{ matrix.userland }})
-    # No timeout meant the platform default (360 minutes) was the only
-    # ceiling, so a job that stalled read as a silent 6-hour hang rather than
-    # a fast, legible failure. Measured directly on this PR: a run that
-    # should take ~1.5h (the historical ubuntu-only PR-leg estimate above)
-    # instead spent 336 of its 361 total minutes - 93% - sitting in one of
-    # 180 separate gaps (15s to 23 minutes each) between what should be
-    # near-instant fixture-driven assertions, in suites with nothing to do
-    # with each other (guide, sast, iac, cognito, lambda, efs, opensearch,
-    # redshift) and nothing in common with tests/lib/bounded-read.sh's own
-    # already-fixed orphaned-process leak (#305) - the gaps start inside
-    # guide.sh, which runs before any DAST suite ever does, so that fix
-    # cannot be the (sole) cause. By minute 150 essentially the whole runner
-    # was idle-waiting rather than working (90-100% of every 30-minute
-    # window from there on), which is what actually produced the 361-minute
-    # total and the run's own "cancelled" conclusion - not a manual
-    # cancellation, GitHub's own default timeout. 150 minutes is comfortably
-    # above both historical legs (~1.5h ubuntu-only, ~2.5h with macOS) while
-    # cutting a recurrence of this pathology from 6 hours to 2.5 - a fast,
-    # legible failure instead of a silent one that still ends in the same
-    # "cancelled" result. It does not fix the underlying slowdown, which is
-    # unresolved - see the PR description.
-    timeout-minutes: 150
+    name: ${{ matrix.os }} (${{ matrix.userland }}) shard ${{ matrix.shard }}/6
+    # PER SHARD, and lower than the 150 this replaces.
+    #
+    # #308 measured why a ceiling is needed at all: with no timeout the
+    # platform default (360 minutes) was the only bound, and a run that should
+    # have taken ~1.5h instead spent 336 of 361 minutes - 93% - sitting in 180
+    # separate gaps between what should be near-instant fixture-driven
+    # assertions, ending in a silent "cancelled" rather than a verdict. That
+    # slowdown is not fully resolved; two measured causes of it inside
+    # tests/suites/scan.sh are fixed in the commit before this one, and what
+    # remains is bounded rather than cured.
+    #
+    # 150 was chosen for ONE leg running the whole array. A shard is a sixth
+    # of that work, so 120 is already generous for it while cutting a
+    # recurrence of the pathology from 2.5h to 2h. The pole is whichever shard
+    # owns tests/suites/scan.sh; no split makes one suite faster than itself.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -177,6 +191,10 @@ jobs:
       # already handles, without touching the actual (bounded, headroom-aware)
       # shellcheck stage in `tests/run-tests.sh` that runs later.
       - name: Measure peak shellcheck -x RSS for the tree's heaviest file
+        # ONE SHARD ONLY.  It is a measurement of the tree, not of the shard,
+        # so running it on all six legs would pay for it six times over and
+        # publish six copies of one number.
+        if: matrix.shard == 1
         continue-on-error: true
         run: |
           f=tests/suites/dast-methods.sh
@@ -202,14 +220,14 @@ jobs:
             sysctl -n hw.memsize | awk '{printf "hw.memsize: %.1f GB\n", $1/1024/1024/1024}'
           fi
 
-      - name: Run the suite
+      - name: Run the suite (shard ${{ matrix.shard }} of 6)
         run: |
           BASH=bash
           for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
             [ -x "$candidate" ] && BASH=$candidate && break
           done
           set -o pipefail
-          "$BASH" tests/run-tests.sh 2>&1 | tee suite.log
+          "$BASH" tests/run-tests.sh --shard "${{ matrix.shard }}/6" 2>&1 | tee suite.log
 
       # The job log is only readable through an API that truncates, and a
       # failure summary lives at the END of the run, so the log is kept as an
@@ -218,11 +236,18 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: suite-log-${{ matrix.os }}
+          name: suite-log-${{ matrix.os }}-shard${{ matrix.shard }}
           path: suite.log
           if-no-files-found: warn
 
       - name: Emit the fixture scan for cross-userland comparison
+        # ONE SHARD ONLY, for the same reason as the measurement above: this
+        # scans a fixture tree and has nothing to do with which suites this leg
+        # ran, so six legs would produce six identical artifacts - and six
+        # uploads competing for one artifact name, which is an upload error
+        # rather than a harmless duplicate. The `compare` job downloads
+        # `findings-<os>`, which shard 1 alone now publishes.
+        if: matrix.shard == 1
         run: |
           BASH=bash
           for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
@@ -237,6 +262,7 @@ jobs:
           wc -l findings.normalised.jsonl
 
       - uses: actions/upload-artifact@v4
+        if: matrix.shard == 1
         with:
           name: findings-${{ matrix.os }}
           path: findings.normalised.jsonl

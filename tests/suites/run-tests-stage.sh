@@ -713,4 +713,125 @@ assert_contains "$STAGE_OUT" 'can give one process' \
 assert_not_contains "$STAGE_OUT" 'could NOT be checked' \
   'and is NOT filed as unmeasured, which is for results this stage should have got and did not'
 
+# =============================================================================
+printf '\n-- --shard I/N: a wall-clock split that is provably not a filter --\n'
+# =============================================================================
+# `--shard` exists to let CI run the same work on N runners instead of one.
+# The whole safety of that rests on ONE property - the union of the N shards
+# is the full work list, each item in exactly one shard - because every way of
+# getting it wrong makes CI FASTER AND GREENER while testing less, which is
+# the single most expensive direction for this mechanism to fail in.  A shard
+# that silently dropped a suite would show `all green` on every leg.
+#
+# So this section asserts the partition ITSELF, by reconstruction, rather than
+# asserting any particular assignment: it concatenates every shard's own
+# `--list` and requires it to equal the unsharded list exactly, sorted (no
+# item missing) AND by count (no item twice).  That is checked over several N,
+# including N=1 (which must be the full run by construction) and an N larger
+# than any CI matrix would use.
+
+_shard_list() { bash "$RUNNER" --shard "$1" --list; }
+
+SHARD_FULL=$(bash "$RUNNER" --shard 1/1 --list)
+SHARD_FULL_N=$(printf '%s\n' "$SHARD_FULL" | wc -l | tr -d ' ')
+
+t_case '--shard 1/1 is the full work list, so a shard can never be a way to run less'
+# Counted against tests/run-tests.sh's OWN arrays rather than a number typed
+# here, which would go stale the next time a suite is registered and would
+# then be asserting the wrong thing quietly.
+SHARD_DECLARED_N=$(bash "$RUNNER" --list \
+  | awk -F': *' '/^(suites|linters|stages): /{n+=split($2,a," ")} END{print n}')
+assert_eq "$SHARD_DECLARED_N" "$SHARD_FULL_N" \
+  '--shard 1/1 lists exactly as many work items as SUITES + LINTERS + STAGES declares - FAILS if the shard path enumerates the full run from a second, drifting list of its own'
+assert_eq 1 "$( (( SHARD_FULL_N > 100 )) && printf 1 || printf 0 )" \
+  "and that is the real, whole array rather than a filtered remnant (got $SHARD_FULL_N items)"
+
+for _n in 1 2 3 4 5 8 13; do
+  t_case "the union of all $_n shards is exactly the full work list, with nothing dropped and nothing run twice"
+  _union=''
+  _rc_all=0
+  for _i in $(seq 1 "$_n"); do
+    _one=$(_shard_list "$_i/$_n") || _rc_all=1
+    [[ -n $_one ]] && _union+=$_one$'\n'
+  done
+  assert_eq 0 "$_rc_all" \
+    "every one of the $_n shards exits 0 - FAILS under a shard_work whose status is 'did the LAST item belong to me', which aborts N-1 of every N shards under set -Eeuo pipefail before a single suite starts"
+  _union=${_union%$'\n'}
+  assert_eq "$(printf '%s\n' "$SHARD_FULL" | LC_ALL=C sort)" "$(printf '%s\n' "$_union" | LC_ALL=C sort)" \
+    "the $_n shards reconstruct the full list exactly - FAILS if any shard drops an item (CI goes green having tested less) or claims one twice"
+  assert_eq "$SHARD_FULL_N" "$(printf '%s\n' "$_union" | wc -l | tr -d ' ')" \
+    "and the item COUNT matches too - the sorted compare alone cannot see a duplicate, so this is the half that catches an item assigned to two shards"
+done
+
+t_case 'the split is ROUND-ROBIN, not contiguous blocks - the difference is whether a clustered run of expensive suites lands on one shard or is spread'
+# The first three work items of a 3-shard split must be the first three items
+# of the full list, one per shard.  Under contiguous blocks shard 1 would hold
+# the first THIRD of the list and shards 2 and 3 would hold none of item 2 or
+# 3, so this fails under that reading rather than merely differing from it.
+_full_1=$(printf '%s\n' "$SHARD_FULL" | sed -n 1p)
+_full_2=$(printf '%s\n' "$SHARD_FULL" | sed -n 2p)
+_full_3=$(printf '%s\n' "$SHARD_FULL" | sed -n 3p)
+assert_eq "$_full_1" "$(_shard_list 1/3 | sed -n 1p)" 'shard 1 of 3 leads with work item 1'
+assert_eq "$_full_2" "$(_shard_list 2/3 | sed -n 1p)" \
+  'shard 2 of 3 leads with work item 2 - FAILS under a contiguous split, where item 2 is still shard 1'"'"'s'
+assert_eq "$_full_3" "$(_shard_list 3/3 | sed -n 1p)" \
+  'shard 3 of 3 leads with work item 3 - same reading, third shard'
+
+t_case 'the whole-tree shellcheck STAGE is dealt into the rotation like everything else, and lands in exactly one shard'
+_stage_shards=0
+for _i in 1 2 3 4; do
+  if _shard_list "$_i/4" | grep -q '^stage shellcheck '; then _stage_shards=$(( _stage_shards + 1 )); fi
+done
+assert_eq 1 "$_stage_shards" \
+  'exactly one of four shards owns the stage - FAILS both if it is pinned to every shard (the slowest item in the list, run four times) and if it is dropped entirely'
+
+t_case 'a malformed or out-of-range --shard is refused with exit 2, never silently treated as "run everything"'
+for _bad in 0/3 4/3 abc 1/0 '' 3; do
+  _rc=0
+  bash "$RUNNER" --shard "$_bad" --list >/dev/null 2>&1 || _rc=$?
+  assert_eq 2 "$_rc" \
+    "--shard '$_bad' exits 2 - FAILS under a permissive parse, which would run the FULL suite on every CI leg and read as a passing matrix that is really N duplicate runs"
+done
+
+t_case '--shard cannot be combined with a named suite: a slice of a full run and one suite are different requests'
+_rc=0
+bash "$RUNNER" --shard 1/2 scan >/dev/null 2>&1 || _rc=$?
+assert_eq 2 "$_rc" \
+  'exit 2 rather than quietly ignoring one of the two - FAILS under a parse that drops --shard and runs the named suite, which a CI matrix would report as N green legs having each run one suite'
+
+t_case 'a shard REALLY RUNS its items rather than only listing them, and its verdict line refuses to claim a full pass'
+# The direction a "the list looks right" assertion cannot reach: a shard_work
+# whose output never reaches the run loop exits 0 having run NOTHING, and every
+# list-shaped assertion above still passes.
+#
+# N is the work-item COUNT, so every shard owns exactly one item and the one
+# that owns `color` (a real suite, and the cheapest in the array) runs that and
+# nothing else.  This is deliberate rather than incidental: at a round N like
+# 40 the shard holding `color` also holds `scan`, and this single case would
+# then take the 23 minutes that suite costs - measured, on the first draft of
+# this test.  It doubles as the degenerate-maximum case, where N equals the
+# list length and a shard is a single item.
+_color_idx=$(printf '%s\n' "$SHARD_FULL" | grep -n '^suite color ' | cut -d: -f1)
+assert_ne '' "$_color_idx" 'the cheap `color` suite is in the work list, so there is something fast to run'
+_run_out=$(cd "$ROOT" && bash "$RUNNER" --shard "$_color_idx/$SHARD_FULL_N" 2>&1) || true
+assert_eq 1 "$(printf '%s\n' "$_run_out" | grep -c '^=== suite: ')" \
+  'that shard ran exactly ONE suite - confirms N=item-count really is one item per shard, so the timing of this case cannot drift onto an expensive suite later'
+_color_shard=$_color_idx
+_shard_of=$SHARD_FULL_N
+assert_contains "$_run_out" '=== suite: color ===' \
+  'the shard that owns `color` actually ran it - FAILS under a shard_work whose output is never fed to the run loop, which would exit 0 having run nothing'
+assert_contains "$_run_out" "=== shard $_color_shard of $_shard_of ===" \
+  'and says which slice it is, so a log is attributable to a matrix leg'
+assert_contains "$_run_out" 'NOT a full pass on its own' \
+  'and its closing verdict refuses to read as a full pass - FAILS under the bare `all green` line, which is what a CI matrix with one silently-dead leg would otherwise show on every surviving leg'
+
+t_case 'an UNSHARDED run prints the bare `all green`, so the shard note can never leak into a real full pass'
+# Driven through the named-suite path with the cheapest real suite in the
+# array, so this costs a second rather than the hour a true full run does, and
+# still exercises the same closing verdict block every run reaches.
+_plain_out=$(cd "$ROOT" && bash "$RUNNER" color 2>&1) || true
+assert_contains "$_plain_out" 'all green' 'an unsharded run reaches the verdict line'
+assert_not_contains "$_plain_out" 'NOT a full pass' \
+  'and carries NO shard note - FAILS under a note keyed on "was --shard parsed at all", which would caveat every ordinary run'
+
 t_summary run-tests-stage
