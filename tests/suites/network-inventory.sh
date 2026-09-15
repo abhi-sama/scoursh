@@ -286,6 +286,9 @@ assert_file_absent "$W/network-attempts" \
 assert_file_exists "$W/run-multi-notraffic/inventory/listeners.json" \
   'sanity: the run still produced the authorised set despite the poisoned PATH, proving the no-traffic result above is not an accidental early failure'
 
+# Reset for the next process/test to inherit clean global state, not read
+# again in this file - the same end-of-file idiom tests/suites/image.sh uses.
+# shellcheck disable=SC2034
 SCOURSH_RUN_DIR='' SCOURSH_RUN_ID=''
 
 t_summary 'network-inventory'

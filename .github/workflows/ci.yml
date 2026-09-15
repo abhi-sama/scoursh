@@ -10,6 +10,22 @@ on:
     branches: [main, dev]
   pull_request:
 
+# The suite takes 1.5h+ (the ubuntu-only PR leg) to 2.5h+ (push, both legs),
+# and with no concurrency control a second push to the same ref started a
+# SECOND full run rather than replacing the first - two multi-hour jobs
+# competing for the same runner pool, every time a fixup landed on an
+# already-pushed branch. Measured directly: this PR's own second push left
+# its first run still in flight nearly 5 hours later, both visibly slower
+# for sharing the pool. `github.ref` differs by trigger in exactly the way
+# that keeps this scoped correctly with no extra logic - a `pull_request`
+# event's ref is the PR's own merge ref (so only pushes to THAT PR cancel
+# each other), while a `push` event's ref is the branch itself (so only a
+# second rapid push to the same branch, e.g. dev, cancels the first's run
+# rather than ever canceling a sibling PR's).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   suite:
     strategy:
@@ -39,6 +55,28 @@ jobs:
     if: ${{ !github.event.repository.private }}
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os }} (${{ matrix.userland }})
+    # No timeout meant the platform default (360 minutes) was the only
+    # ceiling, so a job that stalled read as a silent 6-hour hang rather than
+    # a fast, legible failure. Measured directly on this PR: a run that
+    # should take ~1.5h (the historical ubuntu-only PR-leg estimate above)
+    # instead spent 336 of its 361 total minutes - 93% - sitting in one of
+    # 180 separate gaps (15s to 23 minutes each) between what should be
+    # near-instant fixture-driven assertions, in suites with nothing to do
+    # with each other (guide, sast, iac, cognito, lambda, efs, opensearch,
+    # redshift) and nothing in common with tests/lib/bounded-read.sh's own
+    # already-fixed orphaned-process leak (#305) - the gaps start inside
+    # guide.sh, which runs before any DAST suite ever does, so that fix
+    # cannot be the (sole) cause. By minute 150 essentially the whole runner
+    # was idle-waiting rather than working (90-100% of every 30-minute
+    # window from there on), which is what actually produced the 361-minute
+    # total and the run's own "cancelled" conclusion - not a manual
+    # cancellation, GitHub's own default timeout. 150 minutes is comfortably
+    # above both historical legs (~1.5h ubuntu-only, ~2.5h with macOS) while
+    # cutting a recurrence of this pathology from 6 hours to 2.5 - a fast,
+    # legible failure instead of a silent one that still ends in the same
+    # "cancelled" result. It does not fix the underlying slowdown, which is
+    # unresolved - see the PR description.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -121,6 +159,23 @@ jobs:
       # tests/lint-source-graph.sh).  This step can never fail the job: it is
       # a measurement, not an assertion, and a runner image without
       # `/usr/bin/time` must not turn that into a red X.
+      #
+      # `ulimit -v` below is NOT part of that "can never fail the job" design and
+      # is load-bearing on its own: shellcheck's GHC runtime sizes its heap off
+      # *available* memory at measurement time, not off a fixed multiple of the
+      # file's own size (AGENTS.md, "the memory model" - measured directly:
+      # peak RSS for this identical file/commit was 6.43 GB on this runner six
+      # days ago and was reproduced locally at >14 GB and still climbing on a
+      # 64 GB host with nothing else running). This step runs first, right
+      # after checkout, with the whole runner's RAM still free, which is
+      # exactly the condition that lets the heap balloon past the runner's own
+      # physical ceiling - at which point the runner's *host* OOMs and GitHub
+      # reports "the runner has received a shutdown signal", which
+      # `continue-on-error: true` cannot catch because there is no process exit
+      # code to catch; the whole job dies. Capping virtual memory here turns
+      # that failure mode back into an ordinary process exit `continue-on-error`
+      # already handles, without touching the actual (bounded, headroom-aware)
+      # shellcheck stage in `tests/run-tests.sh` that runs later.
       - name: Measure peak shellcheck -x RSS for the tree's heaviest file
         continue-on-error: true
         run: |
@@ -128,6 +183,11 @@ jobs:
           if ! command -v /usr/bin/time >/dev/null 2>&1; then
             echo "no /usr/bin/time on this image - skipping the measurement"; exit 0
           fi
+          # 10 GiB, well under this runner's own ~14 GB available: best-effort,
+          # since RLIMIT_AS enforcement is unreliable on macOS - a no-op there
+          # is no worse than the status quo, and Linux is where the crash was
+          # observed.
+          ulimit -v 10485760 2>/dev/null || true
           if [ "$RUNNER_OS" = "macOS" ]; then
             # BSD `time -l` reports maximum RSS in BYTES, in field 1.
             /usr/bin/time -l shellcheck -x -s bash "$f" 2>&1 \

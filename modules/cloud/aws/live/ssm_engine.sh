@@ -125,12 +125,15 @@ ssm_param_entry_field_set() {
 # does not take on.
 ssm_name_looks_sensitive() {
   local n=${1,,}
+  # clientsecret/client-secret/client_secret are deliberately not listed: all
+  # three already match *secret* above, and a pattern already covered by an
+  # earlier one in this same alternation is dead weight, not documentation
+  # (shellcheck SC2221/SC2222). authtoken/auth-token/auth_token are the same
+  # story against *token*, and are dropped for the identical reason.
   case $n in
     *password* | *passwd* | *secret* | *apikey* | *api-key* | *api_key* | \
       *credential* | *creds* | *privatekey* | *private-key* | *private_key* | \
-      *accesskey* | *access-key* | *access_key* | *clientsecret* | \
-      *client-secret* | *client_secret* | *authtoken* | *auth-token* | \
-      *auth_token* | *token*)
+      *accesskey* | *access-key* | *access_key* | *token*)
       return 0
       ;;
     *) return 1 ;;

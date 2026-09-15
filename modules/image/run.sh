@@ -322,6 +322,10 @@ _image_run_module() {
           case $distro_id in
             alpine)
               apk_scan_installed "$metadir/lib/apk/db/installed" "$image_id" "$ecosystem" || rc=$?
+              # _APK_SCAN_SKIPPED below and dpkg.sh's own _DPKG_SCAN_SKIPPED
+              # (used in the dpkg branch below) are two distinct, intentional
+              # per-distro counters - not a typo of each other.
+              # shellcheck disable=SC2153
               if (( rc != 0 )); then
                 # No apk database in ANY layer, despite a resolved, covered
                 # Alpine release (the `no_package_db_found`

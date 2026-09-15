@@ -960,7 +960,7 @@ PAR_S4=$(find "$W/par-j4/shards" -name '*.fields' 2>/dev/null | grep -c '' || pr
 assert_eq 1 "$PAR_S1" 'one worker, one shard'
 PAR_OK=1; (( PAR_S4 > 1 )) && PAR_OK=0
 assert_true "$PAR_OK" \
-  "4 workers wrote $PAR_S4 shards - this is what distinguishes real parallelism from a `--jobs` value that is merely recorded, and it is asserted on the FILESYSTEM rather than on the note the run wrote about itself"
+  "4 workers wrote $PAR_S4 shards - this is what distinguishes real parallelism from a \`--jobs\` value that is merely recorded, and it is asserted on the FILESYSTEM rather than on the note the run wrote about itself"
 
 # ---------------------------------------------------------------------------
 printf -- '\n-- --jobs N: a worker failure is surfaced, never silently dropped --\n'

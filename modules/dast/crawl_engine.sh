@@ -911,6 +911,11 @@ _CRAWL_JS_STATIC_EXT_RE='\.(png|jpe?g|gif|svg|ico|bmp|webp|avif|woff2?|ttf|eot|o
 # this feature refuses to make.  A plain quoted string built by concatenation
 # (`'/api/' + id + '/orders'`) is caught only for its static `/api/` half,
 # for the identical reason.
+#
+# SC1003: `'\'` below is a literal single backslash, the same
+# not-a-botched-quote-escape shape `crawl_json_unescape` above already
+# documents - not a mistake to fix.
+# shellcheck disable=SC1003
 _crawl_js_literal_ok() {
   local v=$1
   case $v in

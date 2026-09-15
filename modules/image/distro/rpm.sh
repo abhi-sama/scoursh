@@ -387,7 +387,7 @@ rpm_scan_installed() {
 
   local i n=${#RPM_INSTALLED_NAMES[@]}
   local name epoch version release arch installed_evr
-  local prefix row marked row_eco pkg rver advisory sev fixed
+  local prefix row marked _row_eco pkg _rver advisory sev fixed
   local -A seen_advisory=()
   for (( i = 0; i < n; i++ )); do
     name=${RPM_INSTALLED_NAMES[i]}
@@ -415,7 +415,7 @@ rpm_scan_installed() {
       # fixed_versions) silently shifts every later field under a
       # literal-tab `read`.
       marked=${row//$'\t'/$'\x1f'}
-      IFS=$'\x1f' read -r row_eco pkg rver advisory sev fixed <<<"$marked"
+      IFS=$'\x1f' read -r _row_eco pkg _rver advisory sev fixed <<<"$marked"
       # One finding per (package, advisory), never per matching row - the
       # identical reasoning `apk_scan_installed`'s and `dpkg_scan_installed`'s
       # own loops give.

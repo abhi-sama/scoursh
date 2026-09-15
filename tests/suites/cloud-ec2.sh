@@ -308,6 +308,10 @@ for want_arn in \
   'CLOUD-EC2-IMDSV2_NOT_ENFORCED-01 arn:aws:ec2:us-east-1:123456789012:instance/i-badimds1' \
   'CLOUD-EC2-FLOW_LOGS_OFF-01 arn:aws:ec2:us-east-1:123456789012:vpc/vpc-bad1' \
 ; do
+  # Deliberate word-splitting: each entry above is exactly "CHECK_ID ARN",
+  # neither half ever contains whitespace or a glob character, and this is
+  # how the pair is split into $1/$2 - quoting would collapse it to one field.
+  # shellcheck disable=SC2086
   set -- $want_arn
   assert_contains "$(_ids_for_arn "$TBL" "$2")" "$1" "B3 $1 fires against its bad-region resource"
 done

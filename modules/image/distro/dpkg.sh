@@ -312,7 +312,7 @@ dpkg_scan_installed() {
   run_record checks_run IMAGE-PKG-VULNERABLE_OS_PACKAGE-02
 
   local i n=${#DPKG_INSTALLED_NAMES[@]}
-  local bin ver src prefix row marked row_eco pkg rver advisory sev fixed
+  local bin ver src prefix row marked _row_eco pkg _rver advisory sev fixed
   local -A seen_advisory=()
   for (( i = 0; i < n; i++ )); do
     bin=${DPKG_INSTALLED_NAMES[i]}
@@ -336,7 +336,7 @@ dpkg_scan_installed() {
       # field (an advisory with no published fixed_versions) silently
       # shifts every later field under a literal-tab `read`.
       marked=${row//$'\t'/$'\x1f'}
-      IFS=$'\x1f' read -r row_eco pkg rver advisory sev fixed <<<"$marked"
+      IFS=$'\x1f' read -r _row_eco pkg _rver advisory sev fixed <<<"$marked"
       # One finding per (source package, advisory), never per matching row -
       # the identical reasoning `apk_scan_installed`'s own loop gives.
       [[ -n $advisory && -z ${seen_advisory[$advisory]:-} ]] || continue

@@ -529,20 +529,43 @@ state_write() {
 }
 
 # `state_prune STATE_DIR [RETAIN_COUNT]` - keeps the RETAIN_COUNT
-# newest `<run-id>.json` files (by `LC_ALL=C` name sort, which sorts
-# correctly because a run id is the ISO-8601 timestamp `now_iso` produces
-# with `:` replaced by `-`) plus `latest.json`, which is never a candidate
-# for deletion.  A non-numeric RETAIN_COUNT falls back to the same default
-# `state_write` uses, rather than pruning everything or nothing.
+# newest `<run-id>.json` files, plus `latest.json`, which is never a
+# candidate for deletion.  A non-numeric RETAIN_COUNT falls back to the same
+# default `state_write` uses, rather than pruning everything or nothing.
+#
+# Sorted by mtime FIRST (via lib/core.sh's `stat_mtime`), with `LC_ALL=C` NAME
+# order as a tiebreaker ONLY within the same whole second: `run_id` is only
+# an ISO-8601 timestamp (which sorts correctly by name alone) when nothing
+# else set `SCOURSH_RUN_ID` first, and `lib/core.sh` defaults it to
+# `basename "$SCOURSH_RUN_DIR"` - so any caller that names its own `--out`
+# directory (every one of this project's own test suites, and any operator
+# who does the same) gets a run id that is an arbitrary string with no
+# chronological meaning at all.  Sorting THOSE by name alone prunes whichever
+# id sorts alphabetically last, regardless of which run actually happened
+# last - measured directly: tests/suites/cloud-kms.sh's own state-snapshot
+# assertion started failing not from anything wrong in KMS, but because
+# `kms-run-b`/`kms-run-denied` sort before enough OTHER suites' own run ids
+# (`secm-*`, `ssm-*`, `verify-*`, ...) that they were the first evicted once
+# the shared state/ directory - written to by every suite in one full
+# `tests/run-tests.sh` run - passed this function's own RETAIN_COUNT.
+# `stat_mtime` is whole-second resolution, so name stays the tiebreaker for
+# runs written within the same second (this suite's own "5 runs, no delay
+# between them" pruning fixture is exactly that case, and depends on it).
 state_prune() {
   local state_dir=$1 retain=${2:-30}
   [[ -d $state_dir ]] || return 0
   [[ $retain =~ ^[0-9]+$ ]] || retain=30
-  local -a files=()
-  local f
+  local -a keyed=()
+  local f mt
   while IFS= read -r f; do
+    [[ -n $f ]] || continue
+    mt=$(stat_mtime "$f" 2>/dev/null) || mt=0
+    keyed+=("$mt"$'\t'"$f")
+  done < <(find "$state_dir" -maxdepth 1 -type f -name '*.json' ! -name 'latest.json' 2>/dev/null)
+  local -a files=()
+  while IFS=$'\t' read -r mt f; do
     [[ -n $f ]] && files+=("$f")
-  done < <(find "$state_dir" -maxdepth 1 -type f -name '*.json' ! -name 'latest.json' 2>/dev/null | LC_ALL=C sort -r)
+  done < <(printf '%s\n' "${keyed[@]+"${keyed[@]}"}" | LC_ALL=C sort -t $'\t' -k1,1rn -k2,2r)
   local i
   for (( i = retain; i < ${#files[@]}; i++ )); do
     rm -f -- "${files[$i]}"

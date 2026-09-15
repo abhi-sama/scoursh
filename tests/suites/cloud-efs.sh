@@ -46,9 +46,17 @@ mkdir -p "$W/bin"
 W=$(cd -- "$W" && pwd -P)
 
 FIX=$ROOT/tests/fixtures/aws/cloud-efs
+# Plain fixture-id strings, not arithmetic - shellcheck's SC2100 heuristic
+# misfires on these four short all-caps names only when this file is
+# analysed as part of the whole-tree -x sweep (verified: isolated, they don't
+# trigger it at all).
+# shellcheck disable=SC2100
 PUB=fsid-public
+# shellcheck disable=SC2100
 HARD=fsid-hardened
+# shellcheck disable=SC2100
 DENY=fsid-denied
+# shellcheck disable=SC2100
 NOPOLICY=fsid-nopolicy
 
 aws_fixture_stub_install "$W/bin"

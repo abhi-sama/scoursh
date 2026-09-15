@@ -124,16 +124,19 @@ eks_cluster_endpoint_public() {
 # the open case, not the safe one" rule s3_engine.sh's `s3_bpa_gaps_set`
 # states for Block Public Access).
 eks_cluster_public_cidrs_set() {
-  local __var=$1 __i=0 __p __v __out=''
+  # __joined is a plain string here, unlike eks_array_collect's own array
+  # named __out above - a distinct name avoids shellcheck's cross-function
+  # SC2178/SC2128 confusion between the two.
+  local __var=$1 __i=0 __p __v __joined=''
   while :; do
     __p=$(eks_path cluster resourcesVpcConfig publicAccessCidrs "$__i")
     eks_doc_has "$__p" || break
     __v=${_EKS_DOC[$__p]:-}
-    [[ -n $__v ]] && __out+="${__out:+ }$__v"
+    [[ -n $__v ]] && __joined+="${__joined:+ }$__v"
     __i=$(( __i + 1 ))
   done
-  [[ -n $__out ]] || __out='0.0.0.0/0'
-  printf -v "$__var" '%s' "$__out"
+  [[ -n $__joined ]] || __joined='0.0.0.0/0'
+  printf -v "$__var" '%s' "$__joined"
   return 0
 }
 

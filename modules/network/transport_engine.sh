@@ -109,6 +109,7 @@
 # `*_engine.sh` in this tree.
 #
 # shellcheck shell=bash
+# shellcheck source=lib/core.sh
 source "${BASH_SOURCE[0]%/*}/../../lib/core.sh"
 # `reach_listeners_load` (NET-06's own listeners.json reader) - reused for
 # the identical reason modules/network/tlsport.sh's own header gives for

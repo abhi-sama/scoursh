@@ -65,6 +65,7 @@
 #   the operator-facing spelling of them - nothing in it is meant to expand.
 #   Same reason modules/dast/passive/banner_engine.sh carries this directive.
 # shellcheck disable=SC2016
+# shellcheck source=lib/core.sh
 source "${BASH_SOURCE[0]%/*}/../../lib/core.sh"
 # shellcheck source=modules/dast/passive/banner_engine.sh
 if [[ -z ${SCOURSH_DAST_BANNER_ENGINE_SOURCED:-} ]]; then
@@ -238,9 +239,9 @@ _banner_safe_text() {
 # probe reports (net_banner_identify_text stops at the first hit), so
 # (target, host, port) alone already identifies the finding uniquely.
 banner_emit_disclosure() {
-  local target=$1 role=$2 scheme=$3 host=$4 port=$5 product=$6 version=$7 raw=$8
+  local target=$1 role=$2 scheme=$3 host=$4 port=$5 product=$6 version=$7 raw_text=$8
   local what safe_raw evi
-  safe_raw=$(_banner_safe_text "$raw" 200)
+  safe_raw=$(_banner_safe_text "$raw_text" 200)
   if [[ -n $version ]]; then
     what="announces itself as '$product' version '$version'"
   else
