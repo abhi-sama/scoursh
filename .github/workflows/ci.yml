@@ -221,8 +221,34 @@ jobs:
       - name: Start a background resource sampler for the run below
         run: |
           (
+            # CPU steal time (Linux-only: /proc/stat field 8, jiffies stolen
+            # by the hypervisor from this VM's own vCPUs, cumulative since
+            # boot) is the direct measurement for the leading hypothesis in
+            # the PR description - variable, unpredictable per-subprocess-spawn
+            # overhead consistent with "noisy neighbor" contention on a
+            # shared hosted runner. Reported as a DELTA since the previous
+            # sample (30s apart) rather than the raw cumulative counter, so a
+            # reader can see "how much of the last ~30s was stolen" directly
+            # without doing the subtraction themselves. macOS has no
+            # equivalent exposed to a guest process, so this is one more
+            # reason the earlier ubuntu/macOS symmetry check used gap
+            # counting rather than this metric - this field will simply read
+            # N/A there.
+            prev_steal=''
             while true; do
               printf -- '--- %s ---\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              if [ -r /proc/stat ]; then
+                read -r _ user nice system idle iowait irq softirq steal _ </proc/stat
+                if [ -n "$prev_steal" ]; then
+                  delta=$(( steal - prev_steal ))
+                  printf 'cpu steal: +%s jiffies since last sample (~%s%% of the last ~30s, at 100 jiffies/s)\n' "$delta" "$(( delta / 30 ))"
+                else
+                  printf 'cpu steal: (first sample, no delta yet) cumulative=%s jiffies\n' "$steal"
+                fi
+                prev_steal=$steal
+              else
+                printf 'cpu steal: N/A (no /proc/stat on this platform)\n'
+              fi
               # "test index" (which of tests/run-tests.sh's SUITES has
               # started so far, and which one is current) so a stall can be
               # correlated against WHICH suite was running, not only against
