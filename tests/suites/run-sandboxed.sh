@@ -104,8 +104,20 @@ assert_contains "$require_darwin_msg" 'macOS-only' \
   'the error names the actual reason (macOS-only), not a generic failure'
 unset -f uname
 
-assert_status 0 'a real Darwin host (this suite'"'"'s own uname -s): _sbx_require_darwin succeeds' \
-  _sbx_require_darwin
+# This case needs a REAL Darwin host - not the faked uname(1) above - so on
+# CI's Linux shard it can never pass and must not be asked to. Gated exactly
+# like every other host-conditional case in this file (sections A/B/E/G):
+# SKIP with the reason stated plainly, never a silent pass and never counted
+# as covered - a skip that reads as clean is the defect this project's own
+# doctrine forbids.
+if [[ $(command uname -s) == Darwin ]]; then
+  t_case 'require-darwin: real host'
+  assert_status 0 'a real Darwin host (this suite'"'"'s own uname -s): _sbx_require_darwin succeeds' \
+    _sbx_require_darwin
+  t_case ''
+else
+  printf '\n-- _sbx_require_darwin real-host case: SKIPPED (this host is not Darwin; NOT exercised on this host/run - section A below covers the non-Darwin fail-closed path for real) --\n'
+fi
 
 printf '\n-- _sbx_require_sandbox_exec --\n'
 # die() calls a bare `exit`, which terminates the WHOLE subshell below
@@ -129,8 +141,18 @@ assert_eq "$SCOURSH_EXIT_INPUT" "$no_sbx_rc" \
 assert_contains "$(cat "$W/no-sandbox-exec.out")" 'sandbox-exec' \
   'the error names the actual missing command'
 
-assert_status 0 'sandbox-exec present (real PATH on this suite'"'"'s own host): _sbx_require_sandbox_exec succeeds' \
-  _sbx_require_sandbox_exec
+# This case needs sandbox-exec genuinely present on this suite's own real
+# PATH (macOS-only) - not the PATH-blanked subshell above - so on a host
+# without it (any non-Darwin host, which is what CI's Linux shard is) it
+# can never pass. Same declared-skip idiom as above and as sections A/B/E/G.
+if type -P sandbox-exec >/dev/null 2>&1; then
+  t_case 'require-sandbox-exec: real host'
+  assert_status 0 'sandbox-exec present (real PATH on this suite'"'"'s own host): _sbx_require_sandbox_exec succeeds' \
+    _sbx_require_sandbox_exec
+  t_case ''
+else
+  printf '\n-- _sbx_require_sandbox_exec real-host case: SKIPPED (sandbox-exec is not on PATH on this host; NOT exercised on this host/run - the PATH-absent fail-closed case above already covers this host for real) --\n'
+fi
 
 printf '\n-- _sbx_require_profile_ok: PRE-VALIDATION, never a live first attempt --\n'
 RUN_SANDBOXED_PROFILE='(version 1)(this is not a valid profile'
@@ -141,8 +163,21 @@ assert_eq "$SCOURSH_EXIT_INPUT" "$profile_rc" \
 assert_contains "$(cat "$W/bad-profile.out")" 'rejected the Seatbelt profile' \
   'the error names the actual reason (profile rejected), not a generic failure'
 RUN_SANDBOXED_PROFILE='(version 1)(allow default)(deny network*)'
-assert_status 0 'the real, shipped deny-all profile is accepted by a real sandbox-exec' \
-  _sbx_require_profile_ok
+
+# This case needs a REAL Darwin host with a REAL sandbox-exec on PATH - it
+# is the only coverage proving the shipped deny-all profile is accepted by
+# a real sandbox-exec, so it must still run for real wherever that host
+# exists, and SKIP with the reason stated plainly everywhere else (CI's
+# Linux shard included). Same declared-skip idiom as the two cases above
+# and as sections A/B/E/G.
+if [[ $(command uname -s) == Darwin ]] && type -P sandbox-exec >/dev/null 2>&1; then
+  t_case 'require-profile-ok: real shipped profile, real host'
+  assert_status 0 'the real, shipped deny-all profile is accepted by a real sandbox-exec' \
+    _sbx_require_profile_ok
+  t_case ''
+else
+  printf '\n-- _sbx_require_profile_ok real-host case: SKIPPED (needs a real Darwin host with sandbox-exec on PATH; the real, shipped deny-all profile is NOT proven accepted on this host/run) --\n'
+fi
 
 printf '\n-- _sbx_require_command_exists --\n'
 assert_status "$SCOURSH_EXIT_INPUT" 'a command not on PATH and not an executable file is refused with exit 4 - never left to sandbox-exec'"'"'s own out-of-contract execvp() exit 71' \
