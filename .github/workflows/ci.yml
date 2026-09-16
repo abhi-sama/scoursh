@@ -37,22 +37,33 @@ jobs:
       # trigger has to happen in the matrix itself.
       matrix:
         # SHARDING (tests/run-tests.sh --shard I/N).  The suite array is dealt
-        # round-robin across six legs, so the six together run exactly the work
-        # one unsharded leg did - tests/suites/run-tests-stage.sh reconstructs
-        # the full work list from every shard's own `--list` and fails if a
-        # single item is dropped or claimed twice.
+        # WEIGHT-AWARE (LPT - see tests/run-tests.sh's own `--shard` header)
+        # across ten legs, so the ten together run exactly the work one
+        # unsharded leg did - tests/suites/run-tests-stage.sh reconstructs the
+        # full work list from every shard's own `--list` and fails if a single
+        # item is dropped or claimed twice.
         #
         # THIS IS A WALL-CLOCK SPLIT AND NOT A COST REDUCTION.  The number of
         # `scan.sh` subprocesses CI spawns is UNCHANGED; they are spread over
-        # six runners instead of one, so this buys ~1/6 the wall clock for ~6x
-        # the runner-minutes.  The pole is whichever shard owns
+        # ten runners instead of one, so this buys roughly 1/10 the wall clock
+        # for ~10x the runner-minutes.  The pole is whichever shard owns
         # tests/suites/scan.sh, because no split makes one suite faster than
         # itself - that suite's own remaining cost is stated in this change's
         # PR description rather than papered over here.
         #
+        # WAS SIX LEGS, ROUND-ROBIN BY POSITION.  CI run 35064153768 (dev, six
+        # shards, both userlands) had two shards - the same two, on both
+        # userlands - cancelled at the then-120-minute ceiling while the
+        # lightest shard finished in 50 minutes: a fixed positional deal put
+        # `tests/suites/scan.sh` (91 documented minutes on its own) in with a
+        # full share of everything else, every run, on every platform. Ten
+        # legs plus the weighted split below is this change's fix; see
+        # tests/run-tests.sh's `--shard` header for the full rationale and
+        # tests/shard-weights.tsv for the checked-in per-item cost table.
+        #
         # THE CROSS PRODUCT IS WRITTEN OUT, NOT EXPRESSED AS `shard:` PLUS
-        # `include:`.  A bare `shard: [1..6]` key alongside this `include:`
-        # would be a base matrix of six combinations that GitHub then tries to
+        # `include:`.  A bare `shard: [1..10]` key alongside this `include:`
+        # would be a base matrix of ten combinations that GitHub then tries to
         # merge each `include` object into, and the two objects here both carry
         # `os` - which is the ambiguous case, not a documented cross product.
         # This file has already shipped one matrix-schema mistake that silently
@@ -64,7 +75,7 @@ jobs:
         # are not even generated as jobs on that trigger. Every other trigger
         # (a `push` to `main` or `dev`) gets both userlands, so a macOS-only
         # regression is caught there before `dev` is promoted to `main`.
-        include: ${{ github.event_name == 'pull_request' && fromJSON('[{"os":"ubuntu-latest","userland":"GNU coreutils","shard":1},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":2},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":3},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":4},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":5},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":6}]') || fromJSON('[{"os":"ubuntu-latest","userland":"GNU coreutils","shard":1},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":2},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":3},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":4},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":5},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":6},{"os":"macos-latest","userland":"BSD","shard":1},{"os":"macos-latest","userland":"BSD","shard":2},{"os":"macos-latest","userland":"BSD","shard":3},{"os":"macos-latest","userland":"BSD","shard":4},{"os":"macos-latest","userland":"BSD","shard":5},{"os":"macos-latest","userland":"BSD","shard":6}]') }}
+        include: ${{ github.event_name == 'pull_request' && fromJSON('[{"os":"ubuntu-latest","userland":"GNU coreutils","shard":1},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":2},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":3},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":4},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":5},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":6},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":7},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":8},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":9},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":10}]') || fromJSON('[{"os":"ubuntu-latest","userland":"GNU coreutils","shard":1},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":2},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":3},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":4},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":5},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":6},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":7},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":8},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":9},{"os":"ubuntu-latest","userland":"GNU coreutils","shard":10},{"os":"macos-latest","userland":"BSD","shard":1},{"os":"macos-latest","userland":"BSD","shard":2},{"os":"macos-latest","userland":"BSD","shard":3},{"os":"macos-latest","userland":"BSD","shard":4},{"os":"macos-latest","userland":"BSD","shard":5},{"os":"macos-latest","userland":"BSD","shard":6},{"os":"macos-latest","userland":"BSD","shard":7},{"os":"macos-latest","userland":"BSD","shard":8},{"os":"macos-latest","userland":"BSD","shard":9},{"os":"macos-latest","userland":"BSD","shard":10}]') }}
     # The repository is PUBLIC, so this evaluates true and the job runs for
     # real. The guard is kept rather than deleted: on a private repository
     # hosted Actions cannot start a run here at all (a billing condition,
@@ -74,8 +85,8 @@ jobs:
     # again.
     if: ${{ !github.event.repository.private }}
     runs-on: ${{ matrix.os }}
-    name: ${{ matrix.os }} (${{ matrix.userland }}) shard ${{ matrix.shard }}/6
-    # PER SHARD, and lower than the 150 this replaces.
+    name: ${{ matrix.os }} (${{ matrix.userland }}) shard ${{ matrix.shard }}/10
+    # PER SHARD.
     #
     # #308 measured why a ceiling is needed at all: with no timeout the
     # platform default (360 minutes) was the only bound, and a run that should
@@ -86,11 +97,23 @@ jobs:
     # tests/suites/scan.sh are fixed in the commit before this one, and what
     # remains is bounded rather than cured.
     #
-    # 150 was chosen for ONE leg running the whole array. A shard is a sixth
-    # of that work, so 120 is already generous for it while cutting a
-    # recurrence of the pathology from 2.5h to 2h. The pole is whichever shard
-    # owns tests/suites/scan.sh; no split makes one suite faster than itself.
-    timeout-minutes: 120
+    # RAISED FROM 120 TO 150, as a safety margin over the weighted split
+    # below rather than as the fix for it - see tests/run-tests.sh's `--shard`
+    # header and this change's PR description for why balance is the real
+    # fix. Derivation: `tests/shard-weights.tsv` only has real, sourced costs
+    # for two of the matrix's 149 work items (`scan`, `color`); every other
+    # item still carries an estimated default, so the ~91-minute
+    # `tests/suites/scan.sh` shard the weighted split now isolates is the one
+    # number in this projection with real evidence behind it, and the other
+    # nine shards' true costs are not yet individually measured (see
+    # SCOURSH_SHARD_RECORD in tests/run-tests.sh for how that data gets
+    # collected going forward). 150 gives that isolated shard ~1.6x headroom
+    # over its own documented 91 minutes, and gives every other shard - whose
+    # real composition is still uncertain - more room than the 120-minute
+    # ceiling that CI run 35064153768 just proved insufficient, without
+    # returning to the 150-minute figure #308 sized for a single leg running
+    # the WHOLE array (a shard is a tenth of that work now, not a sixth).
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
@@ -192,8 +215,8 @@ jobs:
       # shellcheck stage in `tests/run-tests.sh` that runs later.
       - name: Measure peak shellcheck -x RSS for the tree's heaviest file
         # ONE SHARD ONLY.  It is a measurement of the tree, not of the shard,
-        # so running it on all six legs would pay for it six times over and
-        # publish six copies of one number.
+        # so running it on all ten legs would pay for it ten times over and
+        # publish ten copies of one number.
         if: matrix.shard == 1
         continue-on-error: true
         run: |
@@ -220,14 +243,28 @@ jobs:
             sysctl -n hw.memsize | awk '{printf "hw.memsize: %.1f GB\n", $1/1024/1024/1024}'
           fi
 
-      - name: Run the suite (shard ${{ matrix.shard }} of 6)
+      - name: Run the suite (shard ${{ matrix.shard }} of 10)
+        env:
+          # Real per-item wall-clock, appended as the shard runs - see
+          # tests/run-tests.sh's `--shard` header. Uploaded below so a
+          # maintainer can fold real numbers into tests/shard-weights.tsv;
+          # nothing reads this file automatically.
+          SCOURSH_SHARD_RECORD: ${{ github.workspace }}/shard-timing.tsv
         run: |
           BASH=bash
           for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash; do
             [ -x "$candidate" ] && BASH=$candidate && break
           done
           set -o pipefail
-          "$BASH" tests/run-tests.sh --shard "${{ matrix.shard }}/6" 2>&1 | tee suite.log
+          "$BASH" tests/run-tests.sh --shard "${{ matrix.shard }}/10" 2>&1 | tee suite.log
+
+      - name: Keep the per-item shard timing
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-timing-${{ matrix.os }}-shard${{ matrix.shard }}
+          path: shard-timing.tsv
+          if-no-files-found: ignore
 
       # The job log is only readable through an API that truncates, and a
       # failure summary lives at the END of the run, so the log is kept as an
@@ -243,7 +280,7 @@ jobs:
       - name: Emit the fixture scan for cross-userland comparison
         # ONE SHARD ONLY, for the same reason as the measurement above: this
         # scans a fixture tree and has nothing to do with which suites this leg
-        # ran, so six legs would produce six identical artifacts - and six
+        # ran, so ten legs would produce ten identical artifacts - and ten
         # uploads competing for one artifact name, which is an upload error
         # rather than a harmless duplicate. The `compare` job downloads
         # `findings-<os>`, which shard 1 alone now publishes.

@@ -1,0 +1,28 @@
+# tests/shard-weights.tsv - per-item wall-clock cost, in SECONDS, for weighted
+# CI sharding (`tests/run-tests.sh --shard I/N`; see that file's own `--shard`
+# header for the full derivation and the LPT algorithm this table feeds).
+#
+# Format: one `<kind>:<name><TAB><seconds>` record per line. `<kind>` is
+# `suite`, `linter`, or `stage`, matching the prefixes `shard_work` itself
+# prints, so a linter and a suite that happen to share a name can never
+# collide. Comments are whole-line, first byte `#`.
+#
+# An item with NO row here is never dropped: `_shard_weight_of`
+# (tests/run-tests.sh) falls back to `SHARD_DEFAULT_WEIGHT_SECONDS` for any
+# key this file does not name.
+#
+# THESE TWO ROWS ARE THE ONLY REAL, SOURCED NUMBERS IN THIS FILE TODAY.
+# Both are cited directly from tests/run-tests.sh's own long-standing comment
+# ("tests/suites/scan.sh alone has run for 91 minutes on a hosted runner while
+# `color` finishes in under a second"), not fabricated for this table.
+suite:scan	5460
+suite:color	1
+#
+# REFRESH THIS FILE DELIBERATELY, from real data, never by generating it.
+# Run with `SCOURSH_SHARD_RECORD=<path>` set (CI's own "Run the suite" step
+# does this and uploads the result as a `shard-timing-<os>-shard<N>`
+# artifact) to collect real `<kind>:<name><TAB><seconds>` lines, then fold
+# them into this file by hand. There is deliberately no importer that writes
+# this file unattended - a suite's true cost moves with the runner and the
+# fixture tree, and an unreviewed auto-update could drift the shard plan
+# without anyone deciding it should.

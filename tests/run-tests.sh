@@ -40,24 +40,63 @@ STAGES=(shellcheck)
 # shard is NOT a filter and must never become one - there is no way to spell
 # "skip this suite" here, and `--shard 1/1` is the full run by construction.
 #
-# ROUND-ROBIN (`idx % N`), NOT CONTIGUOUS BLOCKS.  The cost of a suite in this
-# array varies by three orders of magnitude (`tests/suites/scan.sh` alone has
-# run for 91 minutes on a hosted runner while `color` finishes in under a
-# second), and the expensive ones are NOT evenly spread through the array -
-# the `dast-*` family is one long contiguous run of them.  Contiguous blocks
-# would therefore hand one shard most of the cost and leave another idle,
-# which is the shape that makes sharding look like it did not work.  Dealing
-# the array out one item at a time spreads a clustered run of heavy suites
-# across every shard instead of concentrating it in one.
+# WEIGHTED (LPT - longest processing time first), NOT `idx % N`.  A plain
+# round-robin deal assumes every item costs about the same, and it does not:
+# `tests/suites/scan.sh` alone has run for 91 minutes on a hosted runner while
+# `color` finishes in under a second - three orders of magnitude apart in one
+# array.  Round-robin has no way to know that, so on CI run 35064153768 (dev,
+# twelve shards, both userlands) two shards landed the worst piles on BOTH
+# userlands and were cancelled at the 120-minute ceiling while the lightest
+# shard finished in 50: the same suite mix costs the same on every platform,
+# so a fixed positional deal reproduces the same imbalance every run rather
+# than averaging it out. `tests/shard-weights.tsv` is the checked-in per-item
+# cost table (seconds); `_shard_build_plan` sorts every item heaviest-first
+# and greedily drops each one onto whichever shard's running total is
+# currently smallest (ties -> the lowest-numbered shard, for a plan that is a
+# pure function of (items, weights, N) rather than of scheduling order).
 #
-# The ORDER WITHIN a shard is the array's own order, so a shard is still a
-# legible subsequence of a full run's log rather than a reshuffle.
+# A NEW SUITE WITH NO ROW IN THE COST TABLE IS NEVER DROPPED.  It is still
+# walked and still assigned - `_shard_weight_of` falls back to
+# `SHARD_DEFAULT_WEIGHT_SECONDS` for any key the table does not name, so an
+# unrecorded cost degrades to "assume it costs about the average", never to
+# "leave it out of every shard's plan".
+#
+# THE DEFAULT IS DERIVED, NOT PICKED ROUND.  CI run 35064153768's own
+# per-shard totals (using the two cancelled shards' 120/121-minute ceiling as
+# a LOWER bound on their true cost) sum to roughly 531 minutes of ubuntu work
+# across the matrix's 149 work items; subtracting `scan`'s own documented 91
+# minutes and dividing the remaining ~26,400 seconds across the other 148
+# items averages to ~178 seconds each. `SHARD_DEFAULT_WEIGHT_SECONDS` rounds
+# that to 180 - a coarse, honest average standing in for suites nobody has
+# individually timed yet, not a real per-suite measurement.
+#
+# ITEMS TIED AT THE DEFAULT WEIGHT REPRODUCE ROUND-ROBIN, WHICH IS DELIBERATE
+# RATHER THAN COINCIDENTAL.  With every weight equal, the "smallest running
+# total, ties to the lowest shard" rule assigns item 0 to shard 1, item 1 to
+# shard 2, ... item N-1 to shard N, item N back to shard 1, exactly like the
+# `idx % N` scheme it replaces - so a full run with no cost data at all
+# degrades to the OLD behaviour rather than to something untested. Only an
+# item with a REAL recorded weight (today: `scan`, `color`) is pulled out of
+# that rotation and placed by actual cost.
+#
+# REFRESH THE TABLE DELIBERATELY, from real data, never by generating it.
+# Set `SCOURSH_SHARD_RECORD=<path>` when invoking this script (CI's own "Run
+# the suite" step does, and uploads the result as a `shard-timing-<os>-shard<N>`
+# artifact) to append real `<kind>:<name><TAB><seconds>` lines as each item
+# finishes, then fold real numbers back into `tests/shard-weights.tsv` by
+# hand. There is deliberately no automatic importer: this file has no
+# machinery anywhere that regenerates a cost table from a log unattended, and
+# a suite's cost is elastic enough (a slower CI runner, a bigger fixture tree)
+# that an unreviewed auto-update could quietly drift the plan.
+#
+# The ORDER WITHIN a shard is still the array's own declaration order, so a
+# shard is still a legible subsequence of a full run's log rather than a
+# reshuffle.
 #
 # The linters and the whole-tree shellcheck stage are dealt into the SAME
-# rotation rather than pinned to a shard of their own: the stage is the single
-# most expensive item in the list, so giving it a dedicated shard would make
-# that shard the pole every other one waits behind - exactly the bound this
-# is meant to remove.
+# weighted plan rather than pinned to a shard of their own, for the same
+# reason as before: pinning the stage would make its shard the pole every
+# other one waits behind.
 SHARD_INDEX=0
 SHARD_TOTAL=0
 if [[ ${1:-} == --shard ]]; then
@@ -76,34 +115,106 @@ if [[ ${1:-} == --shard ]]; then
   shift 2
 fi
 
+SHARD_DEFAULT_WEIGHT_SECONDS=180
+SHARD_WEIGHTS_FILE=${SCOURSH_SHARD_WEIGHTS_FILE:-$ROOT/tests/shard-weights.tsv}
+declare -A SHARD_WEIGHT=()
+
+# Reads the checked-in cost table into SHARD_WEIGHT.  Silently a no-op if the
+# file is missing (every item then falls back to the default), so a
+# from-scratch checkout with the table deleted degrades rather than aborts.
+_shard_load_weights() {
+  [[ -f $SHARD_WEIGHTS_FILE ]] || return 0
+  local key secs
+  while IFS=$'\t' read -r key secs; do
+    [[ -z $key || $key == \#* ]] && continue
+    SHARD_WEIGHT[$key]=$secs
+  done < "$SHARD_WEIGHTS_FILE"
+}
+
+_shard_weight_of() {   # $1 = "<kind>:<name>"
+  if [[ -n ${SHARD_WEIGHT[$1]+x} ]]; then
+    printf '%s' "${SHARD_WEIGHT[$1]}"
+  else
+    printf '%s' "$SHARD_DEFAULT_WEIGHT_SECONDS"
+  fi
+}
+
+declare -A SHARD_PLAN=()
+
+# Builds SHARD_PLAN[key] = shard number (1..SHARD_TOTAL), a pure function of
+# the item list, the weight table, and SHARD_TOTAL - every one of the
+# SHARD_TOTAL separate `--shard I/N` invocations a CI matrix makes computes
+# the identical plan and just filters it down to its own I, so which shard a
+# given item lands in never depends on which shard asked.
+_shard_build_plan() {
+  SHARD_PLAN=()
+  local -a keys=() weights=()
+  local s l
+  for s in "${SUITES[@]}"; do
+    keys+=("suite:$s"); weights+=("$(_shard_weight_of "suite:$s")")
+  done
+  for l in "${LINTERS[@]}"; do
+    keys+=("linter:$l"); weights+=("$(_shard_weight_of "linter:$l")")
+  done
+  keys+=("stage:shellcheck"); weights+=("$(_shard_weight_of "stage:shellcheck")")
+
+  # LPT: heaviest first.  Sorted by (weight desc, original index asc) so a
+  # tie keeps declaration order - the property the "degrades to round-robin"
+  # comment above depends on.
+  local n=${#keys[@]} i sortin
+  sortin=''
+  for (( i = 0; i < n; i++ )); do
+    sortin+="${weights[i]}"$'\t'"$i"$'\n'
+  done
+  local -a order=()
+  local oi
+  while IFS=$'\t' read -r _ oi; do
+    [[ -z $oi ]] && continue
+    order+=("$oi")
+  done < <(printf '%s' "$sortin" | LC_ALL=C sort -t $'\t' -k1,1nr -k2,2n)
+
+  local -a totals=()
+  for (( i = 0; i < SHARD_TOTAL; i++ )); do totals[i]=0; done
+
+  local best bi
+  for oi in "${order[@]}"; do
+    best=0
+    for (( bi = 1; bi < SHARD_TOTAL; bi++ )); do
+      (( totals[bi] < totals[best] )) && best=$bi
+    done
+    SHARD_PLAN[${keys[oi]}]=$(( best + 1 ))
+    totals[best]=$(( totals[best] + weights[oi] ))
+  done
+}
+
 # `shard_work` prints the `<kind> <name> <path>` triples THIS shard owns, one
 # per line, in full-run order.  With no `--shard` it prints every one of them,
 # which is what makes the no-shard path and the sharded path the same code
 # rather than two enumerations that can drift apart.
 shard_work() {
-  local idx=0 s l
+  local s l
+  if (( SHARD_TOTAL == 0 )); then
+    for s in "${SUITES[@]}"; do printf 'suite %s tests/suites/%s.sh\n' "$s" "$s"; done
+    for l in "${LINTERS[@]}"; do printf 'linter %s tests/%s.sh\n' "$l" "$l"; done
+    printf 'stage shellcheck -\n'
+    return 0
+  fi
+  _shard_load_weights
+  _shard_build_plan
   for s in "${SUITES[@]}"; do
-    _shard_mine "$idx" && printf 'suite %s tests/suites/%s.sh\n' "$s" "$s"
-    idx=$(( idx + 1 ))
+    [[ ${SHARD_PLAN[suite:$s]} == "$SHARD_INDEX" ]] && printf 'suite %s tests/suites/%s.sh\n' "$s" "$s"
   done
   for l in "${LINTERS[@]}"; do
-    _shard_mine "$idx" && printf 'linter %s tests/%s.sh\n' "$l" "$l"
-    idx=$(( idx + 1 ))
+    [[ ${SHARD_PLAN[linter:$l]} == "$SHARD_INDEX" ]] && printf 'linter %s tests/%s.sh\n' "$l" "$l"
   done
-  # The stage has no file of its own; `-` marks that and `run_one` is never
-  # called for it.
-  _shard_mine "$idx" && printf 'stage shellcheck -\n'
-  # ALWAYS 0.  `_shard_mine` returns non-zero for an item this shard does not
-  # own, so without this the function's status is "did the LAST item belong to
-  # me" - which is false for N-1 of every N shards, and under `set -Eeuo
-  # pipefail` aborts the run before a single suite has started.  Measured: 17
-  # of 23 shards across N=2,3,4,5,8 exited non-zero with an empty log.
+  [[ ${SHARD_PLAN[stage:shellcheck]} == "$SHARD_INDEX" ]] && printf 'stage shellcheck -\n'
+  # ALWAYS 0, regardless of whether the last item printed belonged to this
+  # shard - the old idx%N scheme's status was "did the LAST item belong to
+  # me", which is false for N-1 of every N shards and aborts the run before a
+  # single suite starts under `set -Eeuo pipefail`. Measured against that
+  # scheme: 17 of 23 shards across N=2,3,4,5,8 exited non-zero with an empty
+  # log.
   return 0
-}
-
-_shard_mine() {
-  (( SHARD_TOTAL == 0 )) && return 0
-  (( $1 % SHARD_TOTAL == SHARD_INDEX - 1 ))
 }
 
 if [[ ${1:-} == --list ]]; then
@@ -124,13 +235,29 @@ fi
 failed=()
 run_one() {
   local kind=$1 name=$2 path=$3
+  local t0 t1
   printf '\n=== %s: %s ===\n' "$kind" "$name"
+  t0=$(date +%s)
   if bash "$path"; then
     printf -- '--- %s passed\n' "$name"
   else
     printf -- '--- %s FAILED\n' "$name"
     failed+=("$name")
   fi
+  t1=$(date +%s)
+  _shard_record "$kind:$name" $(( t1 - t0 ))
+}
+
+# Appends a real `<kind>:<name><TAB><seconds>` line to SCOURSH_SHARD_RECORD
+# when that env var is set - opt-in only, so an ordinary run pays nothing.
+# This is how `tests/shard-weights.tsv` gets refreshed with real numbers
+# instead of estimates: see the `--shard` block below for the derivation this
+# feeds and why the fold-in stays a deliberate, by-hand step.
+_shard_record() {
+  [[ -n ${SCOURSH_SHARD_RECORD:-} ]] || return 0
+  # `|| true`: an unwritable record path must never abort the run it is only
+  # trying to measure - this is an opt-in side channel, not a required output.
+  printf '%s\t%s\n' "$1" "$2" >> "$SCOURSH_SHARD_RECORD" || true
 }
 
 # ===========================================================================
@@ -1261,7 +1388,9 @@ if [[ -n ${1:-} ]]; then
   elif [[ " ${STAGES[*]} " == *" $want "* ]]; then
     # A plain call, never `sc_stage || ...` - see sc_stage's own header for why
     # the `||` spelling would disable `errexit` for the whole stage body.
+    _sc_t0=$(date +%s)
     sc_stage
+    _shard_record "stage:shellcheck" $(( $(date +%s) - _sc_t0 ))
     if (( SC_STAGE_STATUS != 0 )); then failed+=(shellcheck); fi
   else
     printf 'no such suite, linter or stage: %s\n' "$want" >&2
@@ -1279,7 +1408,9 @@ else
     if [[ $w_kind == stage ]]; then
       # A plain call, never `sc_stage || ...` - see sc_stage's own header for
       # why the `||` spelling would disable `errexit` for the whole stage body.
+      _sc_t0=$(date +%s)
       sc_stage
+      _shard_record "stage:shellcheck" $(( $(date +%s) - _sc_t0 ))
       if (( SC_STAGE_STATUS != 0 )); then failed+=(shellcheck); fi
     else
       run_one "$w_kind" "$w_name" "$w_path"
