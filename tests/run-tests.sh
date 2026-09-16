@@ -525,6 +525,54 @@ sc_stage() {
       if [[ ! $sc_ci_worst_gb =~ ^[0-9]+$ ]] || (( sc_ci_worst_gb < 1 )); then
         sc_ci_worst_gb=6
       fi
+
+      # THE ALLOWANCE ABOVE WAS ARITHMETIC ONLY, AND THAT WAS THE BUG.  It
+      # sized `sc_jobs` so the PLANNED total fit the runner, but nothing
+      # stopped one invocation from spending past its own share - and when it
+      # did (GHC's own heap-sizing heuristic grows off *available* memory at
+      # measurement time, not a fixed multiple of the file - see "the memory
+      # model" above), the excess came out of the WHOLE RUNNER's memory. The
+      # runner's host then resolves that by killing the runner: GitHub reports
+      # "The runner has received a shutdown signal" and exit 143, which
+      # `continue-on-error` cannot catch because there is no process exit to
+      # catch it from - the whole job dies with every shard's result still in
+      # flight. Measured on run 35047131248, ubuntu shard 5/6, at exactly
+      # this stage.
+      #
+      # `ulimit -v` closes the gap the same way the "Measure peak shellcheck
+      # -x RSS" step in .github/workflows/ci.yml already closes it for one
+      # file: a hard RLIMIT_AS around each invocation turns "this process
+      # wants more memory than its share" from a HOST-level event (fatal to
+      # every file still in flight, unattributable) into an ORDINARY
+      # per-process exit the loop below already has a home for - it lands in
+      # `sc_unchecked`, a real, named, stage-failing outcome, never a silent
+      # skip. That is the deliberate choice here: a file that cannot be
+      # checked inside its allowance FAILS the stage, exactly as an
+      # already-unchecked file always has (see "There is NO `skipped`
+      # outcome" above) - "the runner is too small for this file" is not a
+      # fact CI is allowed to shrug at the way a contributor's laptop can.
+      #
+      # THE CAP IS NOT `sc_ci_worst_gb` ITSELF. `ulimit -v` bounds virtual
+      # ADDRESS SPACE, and GHC's RTS reserves address space well beyond what
+      # it actually dirties even while capped - the sibling measurement step
+      # already proved this on a real ubuntu-latest runner: `ulimit -v
+      # 10485760` (10GB) let this same tree's heaviest file finish at a peak
+      # RESIDENT 6.43GB, roughly 1.5x its own footprint in reserved address
+      # space just to run at all. A cap set AT `sc_ci_worst_gb` (6GB) would
+      # refuse that already-passing file outright - the opposite-direction
+      # version of this ticket's own bug, a false failure instead of a false
+      # pass. `sc_ci_ulimit_margin_gb` names that proven margin (4GB, chosen
+      # so the default 10GB total matches the value the sibling step already
+      # verified on real hardware) rather than re-deriving it per host.
+      sc_ci_ulimit_margin_gb=${SCOURSH_SHELLCHECK_CI_ULIMIT_MARGIN_GB:-4}
+      if [[ ! $sc_ci_ulimit_margin_gb =~ ^[0-9]+$ ]]; then
+        sc_ci_ulimit_margin_gb=4
+      fi
+      sc_ci_ulimit_gb=${SCOURSH_SHELLCHECK_CI_ULIMIT_GB:-}
+      if [[ ! $sc_ci_ulimit_gb =~ ^[0-9]+$ ]] || (( sc_ci_ulimit_gb < 1 )); then
+        sc_ci_ulimit_gb=$(( sc_ci_worst_gb + sc_ci_ulimit_margin_gb ))
+      fi
+
       # Same reserve/headroom shape as the local model, for the same reason:
       # never plan against memory the OS and the rest of the job also need.
       sc_ci_reserve_gb=$(( sc_ci_total_gb / 8 ))
@@ -532,27 +580,52 @@ sc_stage() {
       sc_ci_headroom_gb=$(( sc_ci_avail_gb - sc_ci_reserve_gb ))
       (( sc_ci_headroom_gb < 1 )) && sc_ci_headroom_gb=1
       sc_ci_cores=$(_sc_detect_cores)
-      sc_jobs=$(( sc_ci_headroom_gb / sc_ci_worst_gb ))
+      # `sc_jobs` now divides by the ENFORCED cap (`sc_ci_ulimit_gb`), not
+      # the softer planning figure (`sc_ci_worst_gb`). The enforced cap is
+      # the true worst case a single invocation can reach before it
+      # self-terminates, so THAT is the number that must multiply out to no
+      # more than the headroom - dividing by the smaller `sc_ci_worst_gb`
+      # instead (as this used to) would let two invocations legitimately
+      # ride right up to their own, now-enforced, 10GB ceilings at once and
+      # still sum past the runner's real memory: 2 x 10 = 20GB against a
+      # 15GB runner is the identical over-commitment this ticket exists to
+      # close, just moved one level down and dressed as "enforced".
+      sc_jobs=$(( sc_ci_headroom_gb / sc_ci_ulimit_gb ))
       (( sc_jobs < 1 )) && sc_jobs=1
       (( sc_jobs > sc_ci_cores )) && sc_jobs=$sc_ci_cores
       (( sc_jobs > 4 )) && sc_jobs=4
 
-      # Worked, on the two runners this workflow targets:
-      #   ubuntu-latest  16GB total, ~15 avail, reserve 2 -> headroom 13
-      #                  13 / 6 = 2 jobs; 2 x 5.75 = 11.5GB <= 13.  Fits.
+      # Worked, on the two runners this workflow targets, and on the actual
+      # figures from the crash this ticket fixes (run 35047131248: 15GB
+      # total, 14GB available, 2GB reserved -> 12GB headroom, 4 cores):
+      #   ubuntu-latest  12GB headroom / 10GB enforced cap = 1 job.
+      #                  1 x 10 = 10GB <= 12GB headroom, with 2GB to spare
+      #                  for the OS and this one process's own overhead -
+      #                  down from the old plan's 2 jobs (2 x 6 = 12GB
+      #                  planned against 12GB headroom, i.e. zero spare
+      #                  before anything even went over budget). Slower
+      #                  (roughly 2x the wall-clock this one stage costs on
+      #                  this leg), and that is the accepted trade: this
+      #                  ticket's job is to stop the runner dying, not to
+      #                  keep yesterday's throughput.
       #   macos-latest    7GB total,  ~5 avail, reserve 2 -> headroom  3
-      #                   3 / 6 = 0 -> clamped to 1 job; 5.75GB on a 7GB
-      #                  machine.  Tight, and one file at a time is the
-      #                  narrowest this can be made without dropping a file,
-      #                  which is not on offer here.
-      printf 'shellcheck: %s files; CI runner %sGB total, %sGB available, %sGB reserved -> %sGB headroom, %s cores -> %s parallel x 1 file per invocation (%sGB allowed each)\n' \
+      #                   3 / 10 = 0 -> clamped to 1 job, unchanged from
+      #                  before. `ulimit -v` is a documented no-op on macOS
+      #                  (RLIMIT_AS enforcement is unreliable there, the
+      #                  same caveat the sibling measurement step already
+      #                  carries) - best-effort only, never worse than the
+      #                  status quo, and the real fix on this leg remains
+      #                  "one file at a time".
+      printf 'shellcheck: %s files; CI runner %sGB total, %sGB available, %sGB reserved -> %sGB headroom, %s cores -> %s parallel x 1 file per invocation (%sGB planned, %sGB hard cap enforced via ulimit -v)\n' \
         "$sc_total" "$sc_ci_total_gb" "$sc_ci_avail_gb" "$sc_ci_reserve_gb" \
-        "$sc_ci_headroom_gb" "$sc_ci_cores" "$sc_jobs" "$sc_ci_worst_gb"
+        "$sc_ci_headroom_gb" "$sc_ci_cores" "$sc_jobs" "$sc_ci_worst_gb" "$sc_ci_ulimit_gb"
 
       # No `trap ... EXIT` here: the stage-wide traps installed above already
       # remove $sc_shard_dir, and re-arming EXIT would drop the verdict trap.
       sc_shard_dir=$(mktemp -d)
       export SC_SHARD_DIR=$sc_shard_dir
+      # In KB, the unit `ulimit -v` itself takes.
+      export SC_CI_ULIMIT_KB=$(( sc_ci_ulimit_gb * 1024 * 1024 ))
 
       # Each invocation writes to its OWN file rather than shared stdout:
       # appends above PIPE_BUF interleave (tension 17 - the same reason scan
@@ -562,11 +635,28 @@ sc_stage() {
       # file here, the same as locally.
       # `-x` is unchanged: it still follows every `source`.
       #
+      # `ulimit -v` runs INSIDE the `sh -c` child, before `shellcheck` is
+      # execed, so it binds the shellcheck process itself (a ulimit set in
+      # the parent shell would not survive `exec`, but `xargs -n 1 sh -c`
+      # already forks a fresh shell per file, and `ulimit` is a shell
+      # builtin whose limit is inherited across `exec` within that same
+      # process). `2>/dev/null || true` matches the sibling measurement
+      # step's own posture: setting RLIMIT_AS can itself fail (or silently
+      # no-op, on macOS) and that must never be why a FILE goes unchecked -
+      # only exceeding a limit that was actually applied should do that.
+      #
       # The per-invocation exit status is recorded next to the shard rather
       # than inferred later: `shellcheck` exits 1 for "I have findings" and 2
       # for "I could not process this file", and those two are a defect in the
       # tree and a defect in the run respectively - collapsing them is exactly
       # what the `sc_unchecked`/`sc_findings` split above exists to prevent.
+      # A `ulimit -v` hit is a THIRD shape: GHC's RTS notices the failed
+      # allocation itself and exits with its own non-standard code (measured
+      # directly against this exact tree's heaviest file: 251, printing
+      # "shellcheck: out of memory") rather than either of shellcheck's own
+      # two - so it already falls into the `else` (unchecked) arm below
+      # without needing a dedicated branch, and the message there names the
+      # cap so the reason is not left to guesswork.
       # The shard NAME is a percent-encoding of the path (`%` -> `%25` first,
       # then `/` -> `%2F`), not a `tr / _` fold: folding is not injective, so
       # `a/b.sh` and `a_b.sh` would collide on one shard and one of the two
@@ -575,20 +665,25 @@ sc_stage() {
       printf '%s\n' "${sc_file_list[@]}" \
         | xargs -P "$sc_jobs" -n 1 sh -c \
           'sc_out=$SC_SHARD_DIR/$(printf "%s" "$1" | sed -e "s/%/%25/g" -e "s|/|%2F|g")
+           ulimit -v "$SC_CI_ULIMIT_KB" 2>/dev/null || true
            shellcheck -x -s bash -- "$1" >"$sc_out" 2>&1
            printf "%s" "$?" >"$sc_out.rc"' _ || true
 
       # Every file in the list must have left a status behind.  A missing
-      # `.rc` means that invocation never ran to completion - the runner
-      # killed it, `sh` could not start it, or `xargs` gave up - and that is
-      # an unchecked file, never a clean one.
+      # `.rc` means that invocation never ran to completion - `sh` could not
+      # start it, or `xargs` gave up before it produced one - and that is an
+      # unchecked file, never a clean one.  It is no longer "almost always
+      # the job running out of memory": that case now leaves an ordinary
+      # exit status behind (the `else` arm below), because the whole point
+      # of the cap above is to make it do that instead of taking the runner
+      # down with it.
       sc_status=0
       for sc_f in "${sc_file_list[@]}"; do
         sc_out=$sc_shard_dir/$(printf '%s' "$sc_f" | sed -e 's/%/%25/g' -e 's|/|%2F|g')
         sc_rc=
         [[ -r $sc_out.rc ]] && sc_rc=$(cat -- "$sc_out.rc")
         if [[ ! $sc_rc =~ ^[0-9]+$ ]]; then
-          sc_unchecked+=("$sc_f (no result - the invocation did not complete; on a hosted runner this is almost always the job running out of memory)")
+          sc_unchecked+=("$sc_f (no result - the invocation did not complete despite the ${sc_ci_ulimit_gb}GB per-invocation memory cap; this is a defect in the stage or the runner, not a memory overrun the cap should already have converted into an ordinary exit)")
           sc_status=1
           continue
         fi
@@ -599,14 +694,14 @@ sc_stage() {
         if (( sc_rc == 1 )); then
           sc_findings+=("$sc_f")
         else
-          sc_unchecked+=("$sc_f (shellcheck exited $sc_rc - it never produced a result for this file)")
+          sc_unchecked+=("$sc_f (shellcheck exited $sc_rc - it never produced a result for this file; if this is 251 with \"out of memory\" above, it hit this run's enforced ${sc_ci_ulimit_gb}GB per-invocation cap - raise it with SCOURSH_SHELLCHECK_CI_ULIMIT_GB, or shrink this file's own -x source fan-out per tests/lint-source-graph.sh)")
         fi
         sc_status=1
       done
 
       rm -rf "$sc_shard_dir"
       sc_shard_dir=
-      unset SC_SHARD_DIR
+      unset SC_SHARD_DIR SC_CI_ULIMIT_KB
     else
       # Local: cap concurrency by memory, not core count, and run one file
       # per shellcheck invocation so a watchdog kill - or a plain finding -
