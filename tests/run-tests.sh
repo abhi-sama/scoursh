@@ -577,6 +577,248 @@ sc_stage() {
     fi
     sc_total=${#sc_file_list[@]}
 
+    # `ps` is what the resident-memory watchdog below samples with, on BOTH
+    # the CI path and the local path - see docs/CI-RUNBOOK.md "the memory
+    # model" for why RSS, sampled externally, is the only ceiling that means
+    # what it claims to mean for this specific binary.  Computed once, ahead
+    # of the branch, because both branches now share the one watchdog.
+    sc_have_ps=0
+    command -v ps >/dev/null 2>&1 && sc_have_ps=1
+
+    # _sc_run_pass BUDGET_GB JOBS RETRY_LABEL
+    #
+    # Runs every path in `sc_queue` at JOBS concurrency, allowing each
+    # process BUDGET_GB of RESIDENT memory - sampled externally via `ps`,
+    # never a `ulimit` of any kind - before the watchdog takes it, and files
+    # each outcome under the reason it actually had:
+    #
+    #   sc_findings      checked, and shellcheck had something to say
+    #   sc_pass_over     exceeded THIS pass's budget - the file's own doing
+    #   sc_pass_pressure killed because the HOST came under pressure while
+    #                    this file was merely the largest thing running -
+    #                    NOT the file's doing, so the caller retries it
+    #   sc_unchecked     any other way of failing to produce a result
+    #
+    # Keeping `over` and `pressure` apart is acceptance criterion 3, and it
+    # is the whole difference between an actionable message and the
+    # unattributable kill this ticket was filed for: under the old stage
+    # both arms ended up in one "killed by this stage's own watchdog"
+    # bucket, so a reader could not tell "this file needs more memory than
+    # it was given" from "something unrelated on this machine grew".
+    #
+    # SHARED BETWEEN THE CI AND THE LOCAL PATH.  It used to be local-only,
+    # with CI relying on `ulimit -v` instead - a hard RLIMIT_AS around each
+    # invocation.  That bounds VIRTUAL ADDRESS SPACE, and GHC's RTS reserves
+    # address space well beyond what it actually dirties, in an amount that
+    # itself scales with how much memory the HOST appears to have, not with
+    # the file being checked (docs/CI-RUNBOOK.md "the memory model" measures
+    # this directly: the same file's peak RESIDENT size was not reproducible
+    # across hosts, and re-running `shellcheck +RTS -M2g -RTS` or
+    # `GHCRTS=-M2g shellcheck` against the exact pinned 0.11.0 binary this
+    # project ships confirms the shipped binary was built without
+    # `-rtsopts`: the `+RTS` form is silently ignored ("Most RTS options are
+    # disabled") and the environment-variable form is FATAL - the binary
+    # refuses to start at all rather than warning and continuing.  So there
+    # is no RTS-level heap ceiling available, on either userland, for this
+    # exact binary - measured on the real Linux binary this project vendors
+    # (tools/daily-suite/gnu.dockerfile), not only on the BSD host's
+    # Homebrew build.  A CI run measured eight real files failing to even
+    # START under a 10, 12, 14 AND 16GB `ulimit -v` - not because they
+    # needed that much RESIDENT memory, but because GHC's own startup and
+    # heap-growth reservation for THOSE files' `-x` closures exceeded
+    # whatever virtual ceiling was set, on a runner with plenty of real
+    # memory to spare.  A real per-process memory cgroup (`docker run
+    # --memory`, `systemd-run --scope -p MemoryMax=`) was tried and
+    # REJECTED for the opposite reason, also measured rather than assumed:
+    # cgroup `memory.max` does not stop GHC from RESERVING however much
+    # virtual space it wants (a reservation is not a fault until the pages
+    # inside it are dirtied), so nothing gives GHC's heap-growth heuristic
+    # any earlier back-pressure - it grows exactly as it would unconstrained,
+    # right up to the moment the kernel's cgroup OOM killer SIGKILLs it, with
+    # no chance to shrink first.  Measured directly: this tree's own
+    # heaviest file, run inside a container with a 10GB real memory limit on
+    # a host with ~15GB of total memory, was killed (exit 137) after running
+    # for over six minutes - the SAME `ulimit -v 10GB` bound left that exact
+    # file finishing cleanly, because the virtual ceiling forces smaller
+    # allocations to fail fast and GHC's allocator adapts to what it is
+    # given, where a real-memory cgroup lets it commit to a doomed
+    # trajectory before anything intervenes.  The external, polling watchdog
+    # below is the one mechanism that is neither: it never constrains what
+    # GHC may RESERVE (so a large, legitimate startup reservation is never
+    # mistaken for an overrun), and it acts on REAL, sampled RSS rather than
+    # waiting for the kernel's own OOM killer to notice (so it can intervene
+    # well before a runaway actually exhausts the runner, the same margin
+    # that already protects a contributor's own machine, where no `ulimit`
+    # or cgroup of any kind is available at all).
+    _sc_run_pass() {
+      local pass_budget_gb=$1 pass_jobs=$2 pass_label=$3
+      local pass_budget_kb=$(( pass_budget_gb * 1024 * 1024 ))
+      # TEST SEAM.  The real budgets are whole GB and a stub `shellcheck`
+      # uses a few MB, so the OVER-BUDGET arm below is unreachable from a
+      # test without a finer-grained knob - and an arm no test can reach is
+      # how the two kill causes stayed indistinguishable for as long as they
+      # did.  Never set by a real run.
+      if [[ ${SCOURSH_SHELLCHECK_BUDGET_KB:-} =~ ^[0-9]+$ ]]; then
+        pass_budget_kb=$SCOURSH_SHELLCHECK_BUDGET_KB
+      fi
+      local pass_total=${#sc_queue[@]} pass_next=0
+      local pid f shard idx rss_kb biggest_pid biggest_rss rpid pid_exit now_gb
+
+      declare -A pass_pid_file=()
+      declare -A pass_active=()
+      declare -A pass_running=()
+      declare -A pass_over_kill=()
+      declare -A pass_pressure_kill=()
+
+      sc_pass_over=()
+      sc_pass_pressure=()
+
+      (( pass_total == 0 )) && return 0
+
+      _sc_launch_one() {
+        f=${sc_queue[pass_next]}
+        idx=$(printf '%05d' "$sc_shard_seq")
+        shard=$(mktemp "$sc_shard_dir/shard-${idx}-XXXXXX")
+        shellcheck -x -s bash -- "$f" >"$shard" 2>&1 &
+        pid=$!
+        pass_pid_file[$pid]=$f
+        pass_active[$pid]=1
+
+        pass_next=$(( pass_next + 1 ))
+        sc_shard_seq=$(( sc_shard_seq + 1 ))
+      }
+
+      while (( pass_next < pass_total )) && (( ${#pass_active[@]} < pass_jobs )); do
+        _sc_launch_one
+      done
+
+      # No `wait -n` here: it needs bash >= 4.3 and this project's frozen
+      # minimum is 4.2 (AGENTS.md).  `jobs -p -r` (a plain bash builtin,
+      # well inside that minimum) lists still-running background PIDs
+      # instead, and a completed-but-unreaped pid drops out of it even
+      # before `wait` collects its exit status.
+      while (( ${#pass_active[@]} > 0 )); do
+        sleep 0.4
+
+        if (( sc_have_ps )); then
+          biggest_pid=
+          biggest_rss=0
+          for pid in "${!pass_active[@]}"; do
+            kill -0 "$pid" 2>/dev/null || continue
+            # `|| rss_kb=` is NOT belt-and-braces, it is the fix for the
+            # "prints nothing at all" face of this ticket.  A bare
+            # `rss_kb=$(ps ...)` is a simple assignment whose exit status is
+            # the command substitution's, so when `ps` exits 1 the
+            # assignment exits 1 and `set -e` tears the whole stage down -
+            # past the watchdog roll-up, past the verdict, leaving a log
+            # that ends at the header.
+            #
+            # It is a RACE, which is why it never showed in this suite: the
+            # `kill -0` above proves the process was alive a few
+            # microseconds ago, not that it is alive now, and a shellcheck
+            # that finishes in that window makes `ps` fail.  Six stub files
+            # never lose that race; 130 real ones lose it almost every run.
+            # Reproduced on this tree before the fix - 9 of 130 files
+            # unmeasured and the stage ending on "an unexpected non-zero
+            # exit before it could reach a verdict", with none of the 9
+            # watchdog messages that would have explained them ever
+            # printed.  Section K drives the race directly.
+            rss_kb=$(ps -o rss= -p "$pid" 2>/dev/null) || rss_kb=
+            rss_kb=${rss_kb//[!0-9]/}
+            [[ $rss_kb =~ ^[0-9]+$ ]] || continue
+            if (( rss_kb > biggest_rss )); then
+              biggest_rss=$rss_kb
+              biggest_pid=$pid
+            fi
+            if (( rss_kb > pass_budget_kb )); then
+              kill -TERM "$pid" 2>/dev/null || true
+              sleep 0.2
+              kill -KILL "$pid" 2>/dev/null || true
+              pass_over_kill[$pid]=$(( rss_kb / 1024 / 1024 ))
+              # Spelled as an `if`, not `[[ ... ]] && biggest_pid=`.  The
+              # ticket that rewrote this stage carried a hypothesis that
+              # the `&&` spelling aborted the script under `set -e` when
+              # the test was false, which would explain a stage that
+              # printed only its header.  MEASURED, and REFUTED: bash
+              # exempts a whole `A && B` list from `set -e` when A itself
+              # fails, at top level and inside a loop or an `if` body
+              # alike, so it never fired.  The `if` stays because it is
+              # clearer, not because it fixes anything.
+              if [[ $biggest_pid == "$pid" ]]; then biggest_pid=; fi
+            fi
+          done
+
+          # Second, independent layer: even when every process is within
+          # its own budget, several together can still starve the host if
+          # something ELSE on the machine grew after the plan was made.
+          # Kill only the single biggest offender, not everything, so a
+          # transient dip does not take out a whole pass - and record it
+          # as PRESSURE, so the caller retries it rather than blaming it.
+          if [[ -n $biggest_pid ]]; then
+            now_gb=$(_sc_mem_avail_gb) || now_gb=
+            if [[ $now_gb =~ ^[0-9]+$ ]] && (( now_gb < sc_free_floor_gb )); then
+              kill -TERM "$biggest_pid" 2>/dev/null || true
+              sleep 0.2
+              kill -KILL "$biggest_pid" 2>/dev/null || true
+              pass_pressure_kill[$biggest_pid]=$now_gb
+            fi
+          fi
+        fi
+
+        pass_running=()
+        while IFS= read -r rpid; do
+          [[ -n $rpid ]] && pass_running[$rpid]=1
+        done < <(jobs -p -r)
+
+        for pid in "${!pass_active[@]}"; do
+          if [[ -z ${pass_running[$pid]:-} ]]; then
+            # `wait` on its own line is the LAST command in a simple list,
+            # so under `set -e` a non-zero exit here (a real finding, or
+            # the watchdog's kill above) would abort the whole stage
+            # instead of being recorded and continuing to the next file.
+            # Folding it into an `||` exempts it.
+            pid_exit=0
+            wait "$pid" 2>/dev/null || pid_exit=$?
+            if (( pid_exit != 0 )); then
+              # Exit 1 is the only status that means "this file WAS checked
+              # and shellcheck has something to say about it".  Everything
+              # else means the file was never actually checked, and those
+              # outcomes are kept apart rather than merged into one
+              # non-zero: shellcheck's own exit 2 is "could not process
+              # this file", 126/127 are the shell's "could not run the
+              # linter at all", and 128+n is "died from signal n" (bash
+              # manual, "Exit Status").  Rounding any of them up to a clean
+              # result is the single most expensive way for this stage to
+              # be wrong, because an unmeasured file looks exactly like a
+              # clean one in the output.
+              if (( pid_exit == 1 )); then
+                sc_status=1
+                sc_findings+=("${pass_pid_file[$pid]}")
+              elif [[ -n ${pass_over_kill[$pid]:-} ]]; then
+                sc_pass_over+=("${pass_pid_file[$pid]}")
+                sc_watch_msgs+=("shellcheck: OVER BUDGET - ${pass_pid_file[$pid]} reached ~${pass_over_kill[$pid]}GB resident, past the ${pass_budget_gb}GB allowed in the $pass_label pass, and was killed.  Cause: this one file, not host memory pressure.")
+              elif [[ -n ${pass_pressure_kill[$pid]:-} ]]; then
+                sc_pass_pressure+=("${pass_pid_file[$pid]}")
+                sc_watch_msgs+=("shellcheck: HOST MEMORY PRESSURE - available memory fell to ${pass_pressure_kill[$pid]}GB, under the ${sc_free_floor_gb}GB floor, while ${pass_pid_file[$pid]} was the largest process running.  It was killed as the biggest offender; its own RSS was within the ${pass_budget_gb}GB budget, so this is the host's doing and not this file's.")
+              elif (( pid_exit > 128 )); then
+                sc_status=1
+                sc_unchecked+=("${pass_pid_file[$pid]} (died from signal $(( pid_exit - 128 )), not this stage's doing)")
+                sc_watch_msgs+=("shellcheck: ${pass_pid_file[$pid]} was killed (signal $(( pid_exit - 128 ))) by something other than this stage's own watchdog - not a shellcheck finding, but the stage still fails since that file was never actually checked")
+              else
+                sc_status=1
+                sc_unchecked+=("${pass_pid_file[$pid]} (shellcheck exited $pid_exit - it never produced a result for this file)")
+              fi
+            fi
+            unset "pass_active[$pid]"
+            if (( pass_next < pass_total )); then
+              _sc_launch_one
+            fi
+          fi
+        done
+      done
+      return 0
+    }
+
     if (( sc_total == 0 )); then
       sc_status=0
     elif [[ ${GITHUB_ACTIONS:-} == true ]]; then
@@ -606,25 +848,36 @@ sc_stage() {
       # the number the tree's own `-x` hygiene (tests/lint-source-graph.sh)
       # actually bounds.
       #
-      # TWO PROPERTIES HERE ARE DELIBERATELY NOT THE LOCAL PATH'S.
+      # A LATER FIX THEN REPLACED THE UNBOUNDED PER-INVOCATION RUN WITH A
+      # HARD `ulimit -v` (RLIMIT_AS) AROUND EACH ONE, AND THAT WAS ITSELF A
+      # DEFECT, NOW CORRECTED HERE.  See the shared `_sc_run_pass` comment
+      # above for the full measurement: `ulimit -v` bounds VIRTUAL ADDRESS
+      # SPACE, which GHC's RTS reserves in an amount that scales with how
+      # much memory the HOST appears to have, not with the file being
+      # checked - so a ceiling low enough to protect a ~15GB runner rejected
+      # eight real files that never came close to using that much RESIDENT
+      # memory, purely because their `-x` closures triggered a bigger
+      # virtual reservation on a runner with room to spare.  This branch now
+      # shares the same real-RSS watchdog (`_sc_run_pass`, defined above)
+      # the local path has always used - it never constrains what GHC may
+      # RESERVE, only what it may actually DIRTY, sampled externally.
       #
-      #   * There is NO watchdog.  The local watchdog exists because macOS
-      #     offers no per-process memory ceiling and a runaway kernel-panicked
-      #     a contributor's machine twice; a hosted runner is ephemeral, so
-      #     nothing needs defending, and a watchdog here could only turn a
-      #     check that would have completed into a false failure.
-      #   * There is NO `skipped` outcome.  "This host is too small for this
-      #     file" is a legitimate answer about a contributor's laptop and is
-      #     never a legitimate answer on CI: the runner IS the target, so a
-      #     file that cannot be checked here is a FAILURE and lands in
-      #     `sc_unchecked`.  That is what keeps a green CI run from meaning
-      #     "every file we felt like checking was clean".
+      # ONE PROPERTY HERE IS STILL DELIBERATELY NOT THE LOCAL PATH'S: there
+      # is NO `skipped` outcome.  "This host is too small for this file" is
+      # a legitimate answer about a contributor's laptop and is never a
+      # legitimate answer on CI: the runner IS the target, so a file that
+      # cannot be checked here is a FAILURE and lands in `sc_unchecked`.
+      # That is what keeps a green CI run from meaning "every file we felt
+      # like checking was clean" - see the classification after the two
+      # passes below, which routes BOTH an over-budget kill and a
+      # host-pressure kill into `sc_unchecked`, never `sc_skipped`.
       #
-      # `sc_jobs` is derived from the runner's own memory rather than pinned,
-      # because the two runners differ by more than 2x (16GB vs 7GB) and one
-      # constant cannot be right for both.  It is clamped to the core count
-      # and to 4, since a hosted runner has 3-4 cores and more processes than
-      # cores only adds contention and concurrent peaks.
+      # `sc_ci_jobs` is derived from the runner's own memory rather than
+      # pinned, because the two runners differ by more than 2x (16GB vs
+      # 7GB) and one constant cannot be right for both.  It is clamped to
+      # the core count and to 4, since a hosted runner has 3-4 cores and
+      # more processes than cores only adds contention and concurrent
+      # peaks.
       sc_ci_total_gb=${SCOURSH_SHELLCHECK_FORCE_TOTAL_GB:-}
       if [[ ! $sc_ci_total_gb =~ ^[0-9]+$ ]] || (( sc_ci_total_gb < 1 )); then
         sc_ci_total_gb=$(_sc_mem_total_gb)
@@ -636,69 +889,6 @@ sc_stage() {
       if [[ ! $sc_ci_avail_gb =~ ^[0-9]+$ ]] || (( sc_ci_avail_gb < 1 )); then
         sc_ci_avail_gb=1
       fi
-      # THE PER-FILE ALLOWANCE HERE IS THE TREE'S WORST FILE, NOT THE LOCAL
-      # PATH'S `step_gb`, AND THE DIFFERENCE IS NOT A TUNING CHOICE.  Locally,
-      # `step_gb` is a TYPICAL footprint and a file that exceeds it is
-      # DEFERRED to a second, narrower pass - so planning wide against a
-      # typical figure is safe, because the heavy tail is caught later.  This
-      # path has no second pass: every file runs in the one pass, so the
-      # allowance has to cover the HEAVIEST file or the plan is
-      # over-committed exactly when several heavy files land together.
-      # Measured worst on this tree is 5.75GB (tests/suites/dast-methods.sh),
-      # so the allowance is 6.  With the local 5GB step this came out at 3
-      # jobs on a 16GB runner - 3 x 5.75 = 17.25GB against 16GB of RAM, which
-      # is the same over-commitment as the batching it replaces, just smaller.
-      sc_ci_worst_gb=${SCOURSH_SHELLCHECK_CI_WORST_GB:-6}
-      if [[ ! $sc_ci_worst_gb =~ ^[0-9]+$ ]] || (( sc_ci_worst_gb < 1 )); then
-        sc_ci_worst_gb=6
-      fi
-
-      # THE ALLOWANCE ABOVE WAS ARITHMETIC ONLY, AND THAT WAS THE BUG.  It
-      # sized `sc_jobs` so the PLANNED total fit the runner, but nothing
-      # stopped one invocation from spending past its own share - and when it
-      # did (GHC's own heap-sizing heuristic grows off *available* memory at
-      # measurement time, not a fixed multiple of the file - see "the memory
-      # model" above), the excess came out of the WHOLE RUNNER's memory. The
-      # runner's host then resolves that by killing the runner: GitHub reports
-      # "The runner has received a shutdown signal" and exit 143, which
-      # `continue-on-error` cannot catch because there is no process exit to
-      # catch it from - the whole job dies with every shard's result still in
-      # flight. Measured on run 35047131248, ubuntu shard 5/6, at exactly
-      # this stage.
-      #
-      # `ulimit -v` closes the gap the same way the "Measure peak shellcheck
-      # -x RSS" step in .github/workflows/ci.yml already closes it for one
-      # file: a hard RLIMIT_AS around each invocation turns "this process
-      # wants more memory than its share" from a HOST-level event (fatal to
-      # every file still in flight, unattributable) into an ORDINARY
-      # per-process exit the loop below already has a home for - it lands in
-      # `sc_unchecked`, a real, named, stage-failing outcome, never a silent
-      # skip. That is the deliberate choice here: a file that cannot be
-      # checked inside its allowance FAILS the stage, exactly as an
-      # already-unchecked file always has (see "There is NO `skipped`
-      # outcome" above) - "the runner is too small for this file" is not a
-      # fact CI is allowed to shrug at the way a contributor's laptop can.
-      #
-      # THE CAP IS NOT `sc_ci_worst_gb` ITSELF. `ulimit -v` bounds virtual
-      # ADDRESS SPACE, and GHC's RTS reserves address space well beyond what
-      # it actually dirties even while capped - the sibling measurement step
-      # already proved this on a real ubuntu-latest runner: `ulimit -v
-      # 10485760` (10GB) let this same tree's heaviest file finish at a peak
-      # RESIDENT 6.43GB, roughly 1.5x its own footprint in reserved address
-      # space just to run at all. A cap set AT `sc_ci_worst_gb` (6GB) would
-      # refuse that already-passing file outright - the opposite-direction
-      # version of this ticket's own bug, a false failure instead of a false
-      # pass. `sc_ci_ulimit_margin_gb` names that proven margin (4GB, chosen
-      # so the default 10GB total matches the value the sibling step already
-      # verified on real hardware) rather than re-deriving it per host.
-      sc_ci_ulimit_margin_gb=${SCOURSH_SHELLCHECK_CI_ULIMIT_MARGIN_GB:-4}
-      if [[ ! $sc_ci_ulimit_margin_gb =~ ^[0-9]+$ ]]; then
-        sc_ci_ulimit_margin_gb=4
-      fi
-      sc_ci_ulimit_gb=${SCOURSH_SHELLCHECK_CI_ULIMIT_GB:-}
-      if [[ ! $sc_ci_ulimit_gb =~ ^[0-9]+$ ]] || (( sc_ci_ulimit_gb < 1 )); then
-        sc_ci_ulimit_gb=$(( sc_ci_worst_gb + sc_ci_ulimit_margin_gb ))
-      fi
 
       # Same reserve/headroom shape as the local model, for the same reason:
       # never plan against memory the OS and the rest of the job also need.
@@ -707,128 +897,100 @@ sc_stage() {
       sc_ci_headroom_gb=$(( sc_ci_avail_gb - sc_ci_reserve_gb ))
       (( sc_ci_headroom_gb < 1 )) && sc_ci_headroom_gb=1
       sc_ci_cores=$(_sc_detect_cores)
-      # `sc_jobs` now divides by the ENFORCED cap (`sc_ci_ulimit_gb`), not
-      # the softer planning figure (`sc_ci_worst_gb`). The enforced cap is
-      # the true worst case a single invocation can reach before it
-      # self-terminates, so THAT is the number that must multiply out to no
-      # more than the headroom - dividing by the smaller `sc_ci_worst_gb`
-      # instead (as this used to) would let two invocations legitimately
-      # ride right up to their own, now-enforced, 10GB ceilings at once and
-      # still sum past the runner's real memory: 2 x 10 = 20GB against a
-      # 15GB runner is the identical over-commitment this ticket exists to
-      # close, just moved one level down and dressed as "enforced".
-      sc_jobs=$(( sc_ci_headroom_gb / sc_ci_ulimit_gb ))
-      (( sc_jobs < 1 )) && sc_jobs=1
-      (( sc_jobs > sc_ci_cores )) && sc_jobs=$sc_ci_cores
-      (( sc_jobs > 4 )) && sc_jobs=4
 
-      # Worked, on the two runners this workflow targets, and on the actual
-      # figures from the crash this ticket fixes (run 35047131248: 15GB
-      # total, 14GB available, 2GB reserved -> 12GB headroom, 4 cores):
-      #   ubuntu-latest  12GB headroom / 10GB enforced cap = 1 job.
-      #                  1 x 10 = 10GB <= 12GB headroom, with 2GB to spare
-      #                  for the OS and this one process's own overhead -
-      #                  down from the old plan's 2 jobs (2 x 6 = 12GB
-      #                  planned against 12GB headroom, i.e. zero spare
-      #                  before anything even went over budget). Slower
-      #                  (roughly 2x the wall-clock this one stage costs on
-      #                  this leg), and that is the accepted trade: this
-      #                  ticket's job is to stop the runner dying, not to
-      #                  keep yesterday's throughput.
-      #   macos-latest    7GB total,  ~5 avail, reserve 2 -> headroom  3
-      #                   3 / 10 = 0 -> clamped to 1 job, unchanged from
-      #                  before. `ulimit -v` is a documented no-op on macOS
-      #                  (RLIMIT_AS enforcement is unreliable there, the
-      #                  same caveat the sibling measurement step already
-      #                  carries) - best-effort only, never worse than the
-      #                  status quo, and the real fix on this leg remains
-      #                  "one file at a time".
-      printf 'shellcheck: %s files; CI runner %sGB total, %sGB available, %sGB reserved -> %sGB headroom, %s cores -> %s parallel x 1 file per invocation (%sGB planned, %sGB hard cap enforced via ulimit -v)\n' \
+      # PASS 1's BUDGET IS A TYPICAL FOOTPRINT, NOT A HARD CEILING - exactly
+      # the local path's `step_gb` role, so the bulk of the tree runs wide
+      # and only the heavy tail is deferred.  Measured worst REAL resident
+      # size on this tree (with no virtual-space cap in the way to shrink
+      # it artificially) is 5.75GB (tests/suites/dast-methods.sh), so 6 is
+      # the default; a file that needs more is not refused here, it is
+      # DEFERRED to pass 2 below, which retries it alone against the whole
+      # of the runner's real headroom - unlike the ulimit-based model this
+      # replaces, which had no second tier and so had to size ONE ceiling
+      # for the heaviest file in the tree, forever a step behind whatever
+      # the actual worst case turns out to be on the day's runner.
+      sc_ci_worst_gb=${SCOURSH_SHELLCHECK_CI_WORST_GB:-6}
+      if [[ ! $sc_ci_worst_gb =~ ^[0-9]+$ ]] || (( sc_ci_worst_gb < 1 )); then
+        sc_ci_worst_gb=6
+      fi
+      sc_ci_jobs=$(( sc_ci_headroom_gb / sc_ci_worst_gb ))
+      (( sc_ci_jobs < 1 )) && sc_ci_jobs=1
+      (( sc_ci_jobs > sc_ci_cores )) && sc_ci_jobs=$sc_ci_cores
+      (( sc_ci_jobs > 4 )) && sc_ci_jobs=4
+
+      printf 'shellcheck: %s files; CI runner %sGB total, %sGB available, %sGB reserved -> %sGB headroom, %s cores -> %s parallel x 1 file per invocation (%sGB planned per file, a resident-memory watchdog enforces it - no ulimit, no fixed hard cap)\n' \
         "$sc_total" "$sc_ci_total_gb" "$sc_ci_avail_gb" "$sc_ci_reserve_gb" \
-        "$sc_ci_headroom_gb" "$sc_ci_cores" "$sc_jobs" "$sc_ci_worst_gb" "$sc_ci_ulimit_gb"
+        "$sc_ci_headroom_gb" "$sc_ci_cores" "$sc_ci_jobs" "$sc_ci_worst_gb"
 
       # No `trap ... EXIT` here: the stage-wide traps installed above already
       # remove $sc_shard_dir, and re-arming EXIT would drop the verdict trap.
       sc_shard_dir=$(mktemp -d)
-      export SC_SHARD_DIR=$sc_shard_dir
-      # In KB, the unit `ulimit -v` itself takes.
-      export SC_CI_ULIMIT_KB=$(( sc_ci_ulimit_gb * 1024 * 1024 ))
-
-      # Each invocation writes to its OWN file rather than shared stdout:
-      # appends above PIPE_BUF interleave (tension 17 - the same reason scan
-      # workers write to their own shard files, not a shared findings.jsonl).
-      # The shard is NAMED AFTER THE FILE, so unlike the batched shape this
-      # replaces, a finding and a failure are both attributable to exactly one
-      # file here, the same as locally.
-      # `-x` is unchanged: it still follows every `source`.
-      #
-      # `ulimit -v` runs INSIDE the `sh -c` child, before `shellcheck` is
-      # execed, so it binds the shellcheck process itself (a ulimit set in
-      # the parent shell would not survive `exec`, but `xargs -n 1 sh -c`
-      # already forks a fresh shell per file, and `ulimit` is a shell
-      # builtin whose limit is inherited across `exec` within that same
-      # process). `2>/dev/null || true` matches the sibling measurement
-      # step's own posture: setting RLIMIT_AS can itself fail (or silently
-      # no-op, on macOS) and that must never be why a FILE goes unchecked -
-      # only exceeding a limit that was actually applied should do that.
-      #
-      # The per-invocation exit status is recorded next to the shard rather
-      # than inferred later: `shellcheck` exits 1 for "I have findings" and 2
-      # for "I could not process this file", and those two are a defect in the
-      # tree and a defect in the run respectively - collapsing them is exactly
-      # what the `sc_unchecked`/`sc_findings` split above exists to prevent.
-      # A `ulimit -v` hit is a THIRD shape: GHC's RTS notices the failed
-      # allocation itself and exits with its own non-standard code (measured
-      # directly against this exact tree's heaviest file: 251, printing
-      # "shellcheck: out of memory") rather than either of shellcheck's own
-      # two - so it already falls into the `else` (unchecked) arm below
-      # without needing a dedicated branch, and the message there names the
-      # cap so the reason is not left to guesswork.
-      # The shard NAME is a percent-encoding of the path (`%` -> `%25` first,
-      # then `/` -> `%2F`), not a `tr / _` fold: folding is not injective, so
-      # `a/b.sh` and `a_b.sh` would collide on one shard and one of the two
-      # files would silently take the other's result.
-      # shellcheck disable=SC2016
-      printf '%s\n' "${sc_file_list[@]}" \
-        | xargs -P "$sc_jobs" -n 1 sh -c \
-          'sc_out=$SC_SHARD_DIR/$(printf "%s" "$1" | sed -e "s/%/%25/g" -e "s|/|%2F|g")
-           ulimit -v "$SC_CI_ULIMIT_KB" 2>/dev/null || true
-           shellcheck -x -s bash -- "$1" >"$sc_out" 2>&1
-           printf "%s" "$?" >"$sc_out.rc"' _ || true
-
-      # Every file in the list must have left a status behind.  A missing
-      # `.rc` means that invocation never ran to completion - `sh` could not
-      # start it, or `xargs` gave up before it produced one - and that is an
-      # unchecked file, never a clean one.  It is no longer "almost always
-      # the job running out of memory": that case now leaves an ordinary
-      # exit status behind (the `else` arm below), because the whole point
-      # of the cap above is to make it do that instead of taking the runner
-      # down with it.
       sc_status=0
-      for sc_f in "${sc_file_list[@]}"; do
-        sc_out=$sc_shard_dir/$(printf '%s' "$sc_f" | sed -e 's/%/%25/g' -e 's|/|%2F|g')
-        sc_rc=
-        [[ -r $sc_out.rc ]] && sc_rc=$(cat -- "$sc_out.rc")
-        if [[ ! $sc_rc =~ ^[0-9]+$ ]]; then
-          sc_unchecked+=("$sc_f (no result - the invocation did not complete despite the ${sc_ci_ulimit_gb}GB per-invocation memory cap; this is a defect in the stage or the runner, not a memory overrun the cap should already have converted into an ordinary exit)")
-          sc_status=1
-          continue
-        fi
-        if (( sc_rc == 0 )); then
-          continue
-        fi
-        [[ -s $sc_out ]] && cat -- "$sc_out"
-        if (( sc_rc == 1 )); then
-          sc_findings+=("$sc_f")
+      sc_shard_seq=0
+      # The watchdog's second, host-wide layer (see `_sc_run_pass` above)
+      # needs a floor below which available memory means "something else on
+      # this runner is competing for it" - the same reserve already carved
+      # out of the plan above is what that floor is FOR, so it is reused
+      # rather than invented a second time.  SCOURSH_SHELLCHECK_FREE_FLOOR_GB
+      # is the same test seam the local path reads, for the same reason: a
+      # test needs to force a pressure kill deterministically without
+      # actually starving the host it runs on.
+      sc_free_floor_gb=${SCOURSH_SHELLCHECK_FREE_FLOOR_GB:-$sc_ci_reserve_gb}
+      if [[ ! $sc_free_floor_gb =~ ^[0-9]+$ ]] || (( sc_free_floor_gb < 1 )); then
+        sc_free_floor_gb=$sc_ci_reserve_gb
+      fi
+
+      # --- pass 1: the whole tree, planned against a typical footprint ------
+      sc_queue=("${sc_file_list[@]}")
+      _sc_run_pass "$sc_ci_worst_gb" "$sc_ci_jobs" "first"
+
+      # --- pass 2: only what pass 1 could not fit, against the real ceiling -
+      #
+      # Unlike the local path, NEITHER category here is ever allowed to end
+      # as a skip: this runner IS the target, so a file this stage still
+      # cannot measure after using the whole of the runner's real headroom
+      # is a stage FAILURE, named, with the reason and the knob to raise
+      # spelled out - never a silent, or even a loud-but-passing, omission.
+      sc_ci_pass2_budget_gb=$sc_ci_headroom_gb
+      sc_queue=("${sc_pass_over[@]+"${sc_pass_over[@]}"}" "${sc_pass_pressure[@]+"${sc_pass_pressure[@]}"}")
+
+      if (( ${#sc_queue[@]} > 0 )); then
+        if (( sc_ci_pass2_budget_gb <= sc_ci_worst_gb )); then
+          # This runner's whole headroom is already pass 1's budget, so
+          # there is no bigger ceiling to retry into - the same short
+          # circuit the local path takes, but CI has no skip outcome to
+          # take instead, so both categories fail the stage.
+          for sc_f in "${sc_pass_over[@]+"${sc_pass_over[@]}"}"; do
+            sc_unchecked+=("$sc_f (needs more than the ${sc_ci_worst_gb}GB this runner's ${sc_ci_headroom_gb}GB headroom can give one process, and there is no larger budget left to retry it at - raise it with SCOURSH_SHELLCHECK_CI_WORST_GB, or shrink this file's own -x source fan-out per tests/lint-source-graph.sh)")
+            sc_status=1
+          done
+          for sc_f in "${sc_pass_pressure[@]+"${sc_pass_pressure[@]}"}"; do
+            sc_unchecked+=("$sc_f (killed for host memory pressure, and this runner's headroom is already committed to one process, so there is no larger budget to retry it at - something else on this runner is competing for memory)")
+            sc_status=1
+          done
         else
-          sc_unchecked+=("$sc_f (shellcheck exited $sc_rc - it never produced a result for this file; if this is 251 with \"out of memory\" above, it hit this run's enforced ${sc_ci_ulimit_gb}GB per-invocation cap - raise it with SCOURSH_SHELLCHECK_CI_ULIMIT_GB, or shrink this file's own -x source fan-out per tests/lint-source-graph.sh)")
+          printf 'shellcheck: pass 2 - %s file(s) pass 1 could not fit, 1 parallel x %sGB (the whole of this runner'"'"'s real headroom) of %sGB headroom\n' \
+            "${#sc_queue[@]}" "$sc_ci_pass2_budget_gb" "$sc_ci_headroom_gb"
+          _sc_run_pass "$sc_ci_pass2_budget_gb" 1 "second"
+          for sc_f in "${sc_pass_over[@]+"${sc_pass_over[@]}"}"; do
+            sc_unchecked+=("$sc_f (needs more real resident memory than ${sc_ci_pass2_budget_gb}GB - the whole of this runner's real headroom - even alone; raise it with SCOURSH_SHELLCHECK_CI_WORST_GB is not enough here, this file needs a bigger runner or a smaller -x fan-out per tests/lint-source-graph.sh)")
+            sc_status=1
+          done
+          for sc_f in "${sc_pass_pressure[@]+"${sc_pass_pressure[@]}"}"; do
+            sc_unchecked+=("$sc_f (killed for host memory pressure in both passes - its retry did not help; something else on this runner is competing for memory)")
+            sc_status=1
+          done
         fi
-        sc_status=1
+      fi
+
+      for sc_shard in "$sc_shard_dir"/shard-*; do
+        if [[ -e $sc_shard ]]; then
+          cat -- "$sc_shard"
+        fi
       done
 
       rm -rf "$sc_shard_dir"
       sc_shard_dir=
-      unset SC_SHARD_DIR SC_CI_ULIMIT_KB
     else
       # Local: cap concurrency by memory, not core count, and run one file
       # per shellcheck invocation so a watchdog kill - or a plain finding -
@@ -1034,201 +1196,11 @@ sc_stage() {
       # No `trap ... EXIT` here either - see the CI branch's note above.
       sc_shard_dir=$(mktemp -d)
 
-      sc_have_ps=0
-      command -v ps >/dev/null 2>&1 && sc_have_ps=1
-
       sc_status=0
       # sc_watch_msgs / sc_skipped are initialised beside sc_unchecked above,
       # before the traps are armed, because _sc_verdict now reads all three
       # and an abort can reach it before this point.
       sc_shard_seq=0
-
-      # _sc_run_pass BUDGET_GB JOBS RETRY_LABEL
-      #
-      # Runs every path in `sc_queue` at JOBS concurrency, allowing each
-      # process BUDGET_GB before the watchdog takes it, and files each
-      # outcome under the reason it actually had:
-      #
-      #   sc_findings      checked, and shellcheck had something to say
-      #   sc_pass_over     exceeded THIS pass's budget - the file's own doing
-      #   sc_pass_pressure killed because the HOST came under pressure while
-      #                    this file was merely the largest thing running -
-      #                    NOT the file's doing, so the caller retries it
-      #   sc_unchecked     any other way of failing to produce a result
-      #
-      # Keeping `over` and `pressure` apart is acceptance criterion 3, and it
-      # is the whole difference between an actionable message and the
-      # unattributable kill this ticket was filed for: under the old stage
-      # both arms ended up in one "killed by this stage's own watchdog"
-      # bucket, so a reader could not tell "this file needs more memory than
-      # it was given" from "something unrelated on this machine grew".
-      _sc_run_pass() {
-        local pass_budget_gb=$1 pass_jobs=$2 pass_label=$3
-        local pass_budget_kb=$(( pass_budget_gb * 1024 * 1024 ))
-        # TEST SEAM.  The real budgets are whole GB and a stub `shellcheck`
-        # uses a few MB, so the OVER-BUDGET arm below is unreachable from a
-        # test without a finer-grained knob - and an arm no test can reach is
-        # how the two kill causes stayed indistinguishable for as long as they
-        # did.  Never set by a real run.
-        if [[ ${SCOURSH_SHELLCHECK_BUDGET_KB:-} =~ ^[0-9]+$ ]]; then
-          pass_budget_kb=$SCOURSH_SHELLCHECK_BUDGET_KB
-        fi
-        local pass_total=${#sc_queue[@]} pass_next=0
-        local pid f shard idx rss_kb biggest_pid biggest_rss rpid pid_exit now_gb
-
-        declare -A pass_pid_file=()
-        declare -A pass_active=()
-        declare -A pass_running=()
-        declare -A pass_over_kill=()
-        declare -A pass_pressure_kill=()
-
-        sc_pass_over=()
-        sc_pass_pressure=()
-
-        (( pass_total == 0 )) && return 0
-
-        _sc_launch_one() {
-          f=${sc_queue[pass_next]}
-          idx=$(printf '%05d' "$sc_shard_seq")
-          shard=$(mktemp "$sc_shard_dir/shard-${idx}-XXXXXX")
-          shellcheck -x -s bash -- "$f" >"$shard" 2>&1 &
-          pid=$!
-          pass_pid_file[$pid]=$f
-          pass_active[$pid]=1
-          pass_next=$(( pass_next + 1 ))
-          sc_shard_seq=$(( sc_shard_seq + 1 ))
-        }
-
-        while (( pass_next < pass_total )) && (( ${#pass_active[@]} < pass_jobs )); do
-          _sc_launch_one
-        done
-
-        # No `wait -n` here: it needs bash >= 4.3 and this project's frozen
-        # minimum is 4.2 (AGENTS.md).  `jobs -p -r` (a plain bash builtin,
-        # well inside that minimum) lists still-running background PIDs
-        # instead, and a completed-but-unreaped pid drops out of it even
-        # before `wait` collects its exit status.
-        while (( ${#pass_active[@]} > 0 )); do
-          sleep 0.4
-
-          if (( sc_have_ps )); then
-            biggest_pid=
-            biggest_rss=0
-            for pid in "${!pass_active[@]}"; do
-              kill -0 "$pid" 2>/dev/null || continue
-              # `|| rss_kb=` is NOT belt-and-braces, it is the fix for the
-              # "prints nothing at all" face of this ticket.  A bare
-              # `rss_kb=$(ps ...)` is a simple assignment whose exit status is
-              # the command substitution's, so when `ps` exits 1 the
-              # assignment exits 1 and `set -e` tears the whole stage down -
-              # past the watchdog roll-up, past the verdict, leaving a log
-              # that ends at the header.
-              #
-              # It is a RACE, which is why it never showed in this suite: the
-              # `kill -0` above proves the process was alive a few
-              # microseconds ago, not that it is alive now, and a shellcheck
-              # that finishes in that window makes `ps` fail.  Six stub files
-              # never lose that race; 130 real ones lose it almost every run.
-              # Reproduced on this tree before the fix - 9 of 130 files
-              # unmeasured and the stage ending on "an unexpected non-zero
-              # exit before it could reach a verdict", with none of the 9
-              # watchdog messages that would have explained them ever
-              # printed.  Section K drives the race directly.
-              rss_kb=$(ps -o rss= -p "$pid" 2>/dev/null) || rss_kb=
-              rss_kb=${rss_kb//[!0-9]/}
-              [[ $rss_kb =~ ^[0-9]+$ ]] || continue
-              if (( rss_kb > biggest_rss )); then
-                biggest_rss=$rss_kb
-                biggest_pid=$pid
-              fi
-              if (( rss_kb > pass_budget_kb )); then
-                kill -TERM "$pid" 2>/dev/null || true
-                sleep 0.2
-                kill -KILL "$pid" 2>/dev/null || true
-                pass_over_kill[$pid]=$(( rss_kb / 1024 / 1024 ))
-                # Spelled as an `if`, not `[[ ... ]] && biggest_pid=`.  The
-                # ticket that rewrote this stage carried a hypothesis that
-                # the `&&` spelling aborted the script under `set -e` when
-                # the test was false, which would explain a stage that
-                # printed only its header.  MEASURED, and REFUTED: bash
-                # exempts a whole `A && B` list from `set -e` when A itself
-                # fails, at top level and inside a loop or an `if` body
-                # alike, so it never fired.  The `if` stays because it is
-                # clearer, not because it fixes anything.
-                if [[ $biggest_pid == "$pid" ]]; then biggest_pid=; fi
-              fi
-            done
-
-            # Second, independent layer: even when every process is within
-            # its own budget, several together can still starve the host if
-            # something ELSE on the machine grew after the plan was made.
-            # Kill only the single biggest offender, not everything, so a
-            # transient dip does not take out a whole pass - and record it
-            # as PRESSURE, so the caller retries it rather than blaming it.
-            if [[ -n $biggest_pid ]]; then
-              now_gb=$(_sc_mem_avail_gb) || now_gb=
-              if [[ $now_gb =~ ^[0-9]+$ ]] && (( now_gb < sc_free_floor_gb )); then
-                kill -TERM "$biggest_pid" 2>/dev/null || true
-                sleep 0.2
-                kill -KILL "$biggest_pid" 2>/dev/null || true
-                pass_pressure_kill[$biggest_pid]=$now_gb
-              fi
-            fi
-          fi
-
-          pass_running=()
-          while IFS= read -r rpid; do
-            [[ -n $rpid ]] && pass_running[$rpid]=1
-          done < <(jobs -p -r)
-
-          for pid in "${!pass_active[@]}"; do
-            if [[ -z ${pass_running[$pid]:-} ]]; then
-              # `wait` on its own line is the LAST command in a simple list,
-              # so under `set -e` a non-zero exit here (a real finding, or
-              # the watchdog's kill above) would abort the whole stage
-              # instead of being recorded and continuing to the next file.
-              # Folding it into an `||` exempts it.
-              pid_exit=0
-              wait "$pid" 2>/dev/null || pid_exit=$?
-              if (( pid_exit != 0 )); then
-                # Exit 1 is the only status that means "this file WAS checked
-                # and shellcheck has something to say about it".  Everything
-                # else means the file was never actually checked, and those
-                # outcomes are kept apart rather than merged into one
-                # non-zero: shellcheck's own exit 2 is "could not process
-                # this file", 126/127 are the shell's "could not run the
-                # linter at all", and 128+n is "died from signal n" (bash
-                # manual, "Exit Status").  Rounding any of them up to a clean
-                # result is the single most expensive way for this stage to
-                # be wrong, because an unmeasured file looks exactly like a
-                # clean one in the output.
-                if (( pid_exit == 1 )); then
-                  sc_status=1
-                  sc_findings+=("${pass_pid_file[$pid]}")
-                elif [[ -n ${pass_over_kill[$pid]:-} ]]; then
-                  sc_pass_over+=("${pass_pid_file[$pid]}")
-                  sc_watch_msgs+=("shellcheck: OVER BUDGET - ${pass_pid_file[$pid]} reached ~${pass_over_kill[$pid]}GB resident, past the ${pass_budget_gb}GB allowed in the $pass_label pass, and was killed.  Cause: this one file, not host memory pressure.")
-                elif [[ -n ${pass_pressure_kill[$pid]:-} ]]; then
-                  sc_pass_pressure+=("${pass_pid_file[$pid]}")
-                  sc_watch_msgs+=("shellcheck: HOST MEMORY PRESSURE - available memory fell to ${pass_pressure_kill[$pid]}GB, under the ${sc_free_floor_gb}GB floor, while ${pass_pid_file[$pid]} was the largest process running.  It was killed as the biggest offender; its own RSS was within the ${pass_budget_gb}GB budget, so this is the host's doing and not this file's.")
-                elif (( pid_exit > 128 )); then
-                  sc_status=1
-                  sc_unchecked+=("${pass_pid_file[$pid]} (died from signal $(( pid_exit - 128 )), not this stage's doing)")
-                  sc_watch_msgs+=("shellcheck: ${pass_pid_file[$pid]} was killed (signal $(( pid_exit - 128 ))) by something other than this stage's own watchdog - not a shellcheck finding, but the stage still fails since that file was never actually checked")
-                else
-                  sc_status=1
-                  sc_unchecked+=("${pass_pid_file[$pid]} (shellcheck exited $pid_exit - it never produced a result for this file)")
-                fi
-              fi
-              unset "pass_active[$pid]"
-              if (( pass_next < pass_total )); then
-                _sc_launch_one
-              fi
-            fi
-          done
-        done
-        return 0
-      }
 
       # --- pass 1: the whole tree, planned against a typical footprint ------
       sc_pass1_budget_gb=$sc_step_gb
@@ -1352,8 +1324,11 @@ sc_stage() {
 
       rm -rf "$sc_shard_dir"
       sc_shard_dir=
-      unset -f _sc_launch_one _sc_run_pass
     fi
+    # _sc_run_pass and its nested _sc_launch_one are shared by the CI and
+    # local branches above (or never invoked at all, on the zero-files
+    # branch) - unset once, here, rather than in either branch alone.
+    unset -f _sc_launch_one _sc_run_pass
 
     # A file that could not be checked fails the stage on its own, even when
     # nothing that DID get checked reported anything.
