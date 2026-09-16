@@ -851,19 +851,50 @@ for _n in 1 2 3 4 5 8 13; do
     "and the item COUNT matches too - the sorted compare alone cannot see a duplicate, so this is the half that catches an item assigned to two shards"
 done
 
-t_case 'the split is ROUND-ROBIN, not contiguous blocks - the difference is whether a clustered run of expensive suites lands on one shard or is spread'
+t_case 'with every item at the same (default) weight, the split degrades to the old round-robin ordering - so a from-scratch checkout with no cost data behaves exactly as before'
 # The first three work items of a 3-shard split must be the first three items
 # of the full list, one per shard.  Under contiguous blocks shard 1 would hold
 # the first THIRD of the list and shards 2 and 3 would hold none of item 2 or
 # 3, so this fails under that reading rather than merely differing from it.
+# A MISSING weights file is what forces every item to the same default: point
+# the seam at a file that does not exist rather than relying on
+# tests/shard-weights.tsv's own current (real, non-uniform) contents, which
+# would make this case depend on data this file has no business knowing about.
+_NOWEIGHTS=$W/no-such-weights.tsv
 _full_1=$(printf '%s\n' "$SHARD_FULL" | sed -n 1p)
 _full_2=$(printf '%s\n' "$SHARD_FULL" | sed -n 2p)
 _full_3=$(printf '%s\n' "$SHARD_FULL" | sed -n 3p)
-assert_eq "$_full_1" "$(_shard_list 1/3 | sed -n 1p)" 'shard 1 of 3 leads with work item 1'
-assert_eq "$_full_2" "$(_shard_list 2/3 | sed -n 1p)" \
+assert_eq "$_full_1" "$(SCOURSH_SHARD_WEIGHTS_FILE=$_NOWEIGHTS _shard_list 1/3 | sed -n 1p)" \
+  'shard 1 of 3 leads with work item 1'
+assert_eq "$_full_2" "$(SCOURSH_SHARD_WEIGHTS_FILE=$_NOWEIGHTS _shard_list 2/3 | sed -n 1p)" \
   'shard 2 of 3 leads with work item 2 - FAILS under a contiguous split, where item 2 is still shard 1'"'"'s'
-assert_eq "$_full_3" "$(_shard_list 3/3 | sed -n 1p)" \
+assert_eq "$_full_3" "$(SCOURSH_SHARD_WEIGHTS_FILE=$_NOWEIGHTS _shard_list 3/3 | sed -n 1p)" \
   'shard 3 of 3 leads with work item 3 - same reading, third shard'
+
+t_case 'the split is WEIGHT-AWARE, not index-based - two items that would tie onto the same shard under plain round-robin are separated once a cost table says one of them is expensive'
+# `records` (work item 1) and `config` (work item 3) are BOTH odd-numbered
+# 1-indexed positions an N=2 round-robin deal puts on the same shard (index 0
+# and index 2, both even 0-indexed, i.e. both idx%2==0) - which is exactly the
+# shape CI run 35064153768 was filed over: a positional deal cannot tell two
+# expensive items apart from two cheap ones and may cluster them anyway. A
+# fixture cost table makes both of them the two heaviest items in the array;
+# if the split is really weight-aware they land on DIFFERENT shards despite
+# sharing that position parity, where the old idx%N scheme could only ever
+# put them together.
+_W2=$W/weights-two-heavy.tsv
+printf 'suite:records\t100000\nsuite:config\t100000\n' > "$_W2"
+# `grep -c` exits 1 on a zero count (tension 4: never call it bare), and that
+# status IS a bare assignment's own under `set -e` - guard each with `|| true`
+# so "not on this shard" (a legitimate, expected outcome half the time here)
+# does not abort the suite.
+_w2_records=$(SCOURSH_SHARD_WEIGHTS_FILE=$_W2 _shard_list 1/2 | grep -c '^suite records ') || true
+_w2_records2=$(SCOURSH_SHARD_WEIGHTS_FILE=$_W2 _shard_list 2/2 | grep -c '^suite records ') || true
+_w2_config1=$(SCOURSH_SHARD_WEIGHTS_FILE=$_W2 _shard_list 1/2 | grep -c '^suite config ') || true
+_w2_config2=$(SCOURSH_SHARD_WEIGHTS_FILE=$_W2 _shard_list 2/2 | grep -c '^suite config ') || true
+assert_eq 1 "$(( _w2_records + _w2_records2 ))" 'records is assigned to exactly one of the two shards'
+assert_eq 1 "$(( _w2_config1 + _w2_config2 ))" 'config is assigned to exactly one of the two shards'
+assert_ne "$_w2_records" "$_w2_config1" \
+  'records and config land on DIFFERENT shards once weighted heavy - FAILS under an index-based scheme, which cannot see the fixture cost table at all and would still tie them by position'
 
 t_case 'the whole-tree shellcheck STAGE is dealt into the rotation like everything else, and lands in exactly one shard'
 _stage_shards=0
@@ -892,19 +923,28 @@ t_case 'a shard REALLY RUNS its items rather than only listing them, and its ver
 # whose output never reaches the run loop exits 0 having run NOTHING, and every
 # list-shaped assertion above still passes.
 #
-# N is the work-item COUNT, so every shard owns exactly one item and the one
+# N is the work-item COUNT, so every shard owns exactly one item, and the one
 # that owns `color` (a real suite, and the cheapest in the array) runs that and
-# nothing else.  This is deliberate rather than incidental: at a round N like
-# 40 the shard holding `color` also holds `scan`, and this single case would
-# then take the 23 minutes that suite costs - measured, on the first draft of
-# this test.  It doubles as the degenerate-maximum case, where N equals the
-# list length and a shard is a single item.
-_color_idx=$(printf '%s\n' "$SHARD_FULL" | grep -n '^suite color ' | cut -d: -f1)
-assert_ne '' "$_color_idx" 'the cheap `color` suite is in the work list, so there is something fast to run'
-_run_out=$(cd "$ROOT" && bash "$RUNNER" --shard "$_color_idx/$SHARD_FULL_N" 2>&1) || true
+# nothing else - which is what keeps this case fast rather than drifting onto
+# an expensive suite.  It doubles as the degenerate-maximum case, where N
+# equals the list length and a shard is a single item.
+#
+# WHICH SHARD NUMBER owns `color` is found by asking the split itself, never
+# assumed from `color`'s position in the declared array: the weighted split
+# (unlike the old idx%N one) does not promise position i lands on shard i, so
+# a hardcoded index here would silently start testing the wrong shard the
+# moment the real cost table changes.
+_color_shard=''
+for _ci in $(seq 1 "$SHARD_FULL_N"); do
+  if _shard_list "$_ci/$SHARD_FULL_N" | grep -q '^suite color '; then
+    _color_shard=$_ci
+    break
+  fi
+done
+assert_ne '' "$_color_shard" 'the cheap `color` suite is assigned to exactly one shard at N=item-count'
+_run_out=$(cd "$ROOT" && bash "$RUNNER" --shard "$_color_shard/$SHARD_FULL_N" 2>&1) || true
 assert_eq 1 "$(printf '%s\n' "$_run_out" | grep -c '^=== suite: ')" \
   'that shard ran exactly ONE suite - confirms N=item-count really is one item per shard, so the timing of this case cannot drift onto an expensive suite later'
-_color_shard=$_color_idx
 _shard_of=$SHARD_FULL_N
 assert_contains "$_run_out" '=== suite: color ===' \
   'the shard that owns `color` actually ran it - FAILS under a shard_work whose output is never fed to the run loop, which would exit 0 having run nothing'

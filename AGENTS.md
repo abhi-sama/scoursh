@@ -4912,6 +4912,18 @@ edit to `SUITES=(...)` in `tests/run-tests.sh` itself (`docs/CI-RUNBOOK.md` chec
 doc has no way of tracking automatically. Run `tests/run-tests.sh --list` to see what actually exists;
 do not hand-maintain a duplicate enumeration here or trust one written before your current checkout.
 
+**`--shard I/N` is WEIGHT-AWARE (LPT), not a plain `idx % N` deal** - a positional split could not
+tell `tests/suites/scan.sh` (documented ~91 minutes alone) from a suite costing seconds, and CI run
+35064153768 (dev, six shards) showed the consequence: the same two shards, on both userlands, clustered
+enough cost to blow the ceiling while the lightest shard finished in a fraction of the time. The full
+rationale, the LPT algorithm, and the default-weight degrade path (an item with no row still runs, at
+an estimated average cost, never dropped) are in `tests/run-tests.sh`'s own `--shard` header comment -
+read that before touching the mechanism. `tests/shard-weights.tsv` is the checked-in per-item cost
+table; it carries real, sourced numbers for exactly two items today (`scan`, `color`) and refreshes only
+by hand, from `SCOURSH_SHARD_RECORD=<path>` real timing data (CI's own "Run the suite" step already
+collects and uploads this as a `shard-timing-<os>-shard<N>` artifact) - there is no automatic importer,
+deliberately.
+
 See `docs/CI-RUNBOOK.md` for how the suite is run: the hosted workflow, the daily local runner, how to install and remove its schedule, how to read a result, the GNU/BSD dual-userland rationale, and the checklist for adding a new suite or linter.
 
 `package.json` at the repository root exists **only** so the conventional `pnpm test` / `npm test`
