@@ -530,7 +530,7 @@ _MD=$(cat "$W/run-b/report.md")
 assert_contains "$_MD" "arn:aws:s3:::$PUB" 'E9 report.md names the bucket ARN'
 _cis_benchmark_from_registry
 assert_contains "$_MD" '## CIS compliance' \
-  'E10 report.md carries COMPLIANCE-04’s CIS section'
+  'E10 report.md carries COMPLIANCE-04-s CIS section'
 assert_contains "$_MD" "**$_CIS_BENCHMARK_NAME $_CIS_BENCHMARK_VERSION**" \
   'E10b the CIS section names the benchmark and version from data/cis-mappings'
 
