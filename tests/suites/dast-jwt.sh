@@ -74,19 +74,26 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "$ROOT/lib/http.sh"
-# -x back-edge cut: modules/dast/jwt_engine.sh
-# is already inlined elsewhere in this file's own source graph, and shellcheck
-# re-expands EVERY source edge it follows.  Cutting this one loses no checking
-# and is what keeps the linter's memory bounded - see the shellcheck stage in
-# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
-# shellcheck source=/dev/null
+# Kept REAL, unlike jwt.sh's own five occurrences below: jwt.sh's real
+# content was the ONLY thing in this file's graph that called
+# `dast_check_selected` (defined in modules/dast/engine.sh, real above) and
+# read `SCOURSH_HTTP_RESOLVE`/`SCOURSH_HTTP_TRANSPORT` (lib/http.sh, sourced
+# for real inside this file), so cutting every jwt.sh occurrence to /dev/null
+# without also keeping this one real turned those into real SC2329/SC2034
+# findings - a loss of context the header comment above did not anticipate,
+# because the accidental heuristic-followed jwt.sh edge this ticket closes
+# (see the "modules/dast/jwt.sh" occurrences below) had been supplying it by
+# accident. jwt_engine.sh alone is cheap (hub sum 5) next to jwt.sh's own
+# full chain (crawl_engine.sh + auth_engine.sh + method-adjacent surface).
+# shellcheck source=modules/dast/jwt_engine.sh
 source "$ROOT/modules/dast/jwt_engine.sh"
-# -x back-edge cut: modules/dast/auth_engine.sh
-# is already inlined elsewhere in this file's own source graph, and shellcheck
-# re-expands EVERY source edge it follows.  Cutting this one loses no checking
-# and is what keeps the linter's memory bounded - see the shellcheck stage in
-# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
-# shellcheck source=/dev/null
+# Kept REAL for the identical reason: `DAST_AUTH_LOADED` (read via
+# `(( DAST_AUTH_LOADED ))`) is only assigned here, and this file's own
+# `dast_auth_load`/`DAST_AUTH_LOADED=0` t_case lines need it in scope. Also
+# cheap alone (hub sum 5); the top-level lib/http.sh cut two lines above
+# stays /dev/null since jwt_engine.sh's own real edge to it already supplies
+# that content once.
+# shellcheck source=modules/dast/auth_engine.sh
 source "$ROOT/modules/dast/auth_engine.sh"
 # -x back-edge cut: modules/dast/crawl_engine.sh
 # is already inlined elsewhere in this file's own source graph, and shellcheck
@@ -715,6 +722,11 @@ t_case 'the phase skips entirely when no DAST-JWT-* check is selected'
 # The whole-phase arm, mirroring passive/cookies.sh's cookies_no_check_selected.
 # Without it a fully-filtered run still authenticates, walks the inventory and
 # establishes an oracle - three real requests - before finding nothing to probe.
+# This override IS invoked - modules/dast/jwt_engine.sh's `_jwt_selected`
+# (real, sourced above) calls it via `declare -F dast_check_selected` - but
+# SC2329 does not connect a call site textually ABOVE this redefinition to
+# the function this line rebinds, so it reads as unused.
+# shellcheck disable=SC2329
 dast_check_selected() { return 1; }
 _fresh_run; _srv_reset
 rm -rf "$SCOURSH_SCRATCH/dast-auth"
@@ -727,6 +739,12 @@ _seed_session jwt-fixture a "$JWTTOK"
 SRV_SECRET=secret
 INV=$W/inv3/endpoints.json; _write_inventory "$INV"
 _phase_env true "$INV"
+# -x back-edge cut: modules/dast/jwt.sh
+# is already inlined elsewhere in this file's own source graph, and shellcheck
+# re-expands EVERY source edge it follows.  Cutting this one loses no checking
+# and is what keeps the linter's memory bounded - see the shellcheck stage in
+# tests/run-tests.sh, and docs/CI-RUNBOOK.md.
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/jwt.sh"
 assert_eq 0 "$(_request_count)" \
   'not one request is sent when every DAST-JWT-* id is filtered out - FAILS on the ungated phase, which authenticates and probes the full variant set regardless of the check set'

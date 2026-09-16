@@ -61,15 +61,21 @@
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
-# shellcheck source=lib/http.sh
+# -x back-edge cut: lib/http.sh, modules/network/reachability_engine.sh,
+# lib/nettransport.sh and modules/dast/passive/tls_engine.sh are all already
+# inlined via modules/network/transport.sh's own real edges to them, once
+# the first t_case below sources transport.sh for real - each of these four
+# direct edges duplicated that same content a second time, re-expanding the
+# hub chain with it (docs/CI-RUNBOOK.md "the memory model").
+# shellcheck source=/dev/null
 source "$ROOT/lib/http.sh"
 # shellcheck source=modules/network/engine.sh
 source "$ROOT/modules/network/engine.sh"
-# shellcheck source=modules/network/reachability_engine.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/network/reachability_engine.sh"
-# shellcheck source=lib/nettransport.sh
+# shellcheck source=/dev/null
 source "$ROOT/lib/nettransport.sh"
-# shellcheck source=modules/dast/passive/tls_engine.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/passive/tls_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
@@ -255,6 +261,13 @@ _write_listeners net-transport \
   'extra-host:https:transport.fixture.invalid:9999'
 t_case 'the phase runs cleanly over seven declared non-base-url listeners plus one base-url row'
 RC=0
+# -x back-edge: this file sources modules/network/transport.sh once per test
+# case below; shellcheck's own dynamic-path heuristic resolves $ROOT (a
+# BASH_SOURCE-derived variable) and follows every occurrence independently,
+# re-expanding the whole graph each time.  This first occurrence is the one
+# kept real; every later one is cut to /dev/null as a repeat of an identical
+# target already inlined here (docs/CI-RUNBOOK.md "the memory model").
+# shellcheck source=modules/network/transport.sh
 source "$ROOT/modules/network/transport.sh" || RC=$?
 assert_eq '0' "$RC" 'transport.sh returns 0'
 
@@ -351,6 +364,9 @@ t_case 'a base-url-only target (no listeners.json at all, NET-05 rule 3) records
 _fresh_run
 _phase_env net-transport-solo
 RC=0
+# -x back-edge cut: modules/network/transport.sh is already inlined
+# elsewhere in this file's own source graph (see the first t_case above).
+# shellcheck source=/dev/null
 source "$ROOT/modules/network/transport.sh" || RC=$?
 assert_eq '0' "$RC" 'exits 0'
 META=$(_meta_text); FIND=$(_shard_text)
@@ -366,6 +382,9 @@ _fresh_run
 _phase_env net-transport
 _write_listeners net-transport 'base-url:https:transport.fixture.invalid:443'
 RC=0
+# -x back-edge cut: modules/network/transport.sh is already inlined
+# elsewhere in this file's own source graph (see the first t_case above).
+# shellcheck source=/dev/null
 source "$ROOT/modules/network/transport.sh" || RC=$?
 assert_eq '0' "$RC" 'exits 0'
 META=$(_meta_text)
@@ -385,6 +404,9 @@ _phase_env net-transport
 _write_listeners net-transport \
   'base-url:https:transport.fixture.invalid:443' \
   'extra-host:https:transport.fixture.invalid:25'
+# -x back-edge cut: modules/network/transport.sh is already inlined
+# elsewhere in this file's own source graph (see the first t_case above).
+# shellcheck source=/dev/null
 source "$ROOT/modules/network/transport.sh" || RC=$?
 META=$(_meta_text); FIND=$(_shard_text)
 eval "$_have_real"
@@ -409,6 +431,9 @@ _write_listeners net-transport \
   'extra-host:https:transport.fixture.invalid:25'
 _NET_TCP_CAPABLE=''
 export SCOURSH_NET_TCP_CAPABLE=0
+# -x back-edge cut: modules/network/transport.sh is already inlined
+# elsewhere in this file's own source graph (see the first t_case above).
+# shellcheck source=/dev/null
 source "$ROOT/modules/network/transport.sh" || RC=$?
 unset SCOURSH_NET_TCP_CAPABLE
 _NET_TCP_CAPABLE=''

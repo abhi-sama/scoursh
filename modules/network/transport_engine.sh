@@ -123,8 +123,14 @@ source "${BASH_SOURCE[0]%/*}/reachability_engine.sh"
 # the one that matters to tests/lint-shell.sh's tension-19 no-bypass check
 # lives inside this sourced file's own `_tls_probe_default`, already
 # exempted by path.
-# shellcheck source=modules/dast/passive/tls_engine.sh
 if [[ -z ${SCOURSH_DAST_TLS_ENGINE_SOURCED:-} ]]; then
+  # A `# shellcheck source=` directive only applies to the line immediately
+  # following it (comment lines aside); placed before the `if` above it never
+  # took effect, and shellcheck's own dynamic-path heuristic on
+  # `${BASH_SOURCE[0]%/*}/...` was silently following this edge anyway,
+  # invisibly to tests/lint-source-graph.sh's walker.  Placed here it is
+  # tracked instead.
+  # shellcheck source=modules/dast/passive/tls_engine.sh
   source "${BASH_SOURCE[0]%/*}/../dast/passive/tls_engine.sh"
 fi
 

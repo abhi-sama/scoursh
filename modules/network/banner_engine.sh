@@ -67,8 +67,14 @@
 # shellcheck disable=SC2016
 # shellcheck source=lib/core.sh
 source "${BASH_SOURCE[0]%/*}/../../lib/core.sh"
-# shellcheck source=modules/dast/passive/banner_engine.sh
 if [[ -z ${SCOURSH_DAST_BANNER_ENGINE_SOURCED:-} ]]; then
+  # A `# shellcheck source=` directive only applies to the line immediately
+  # following it (comment lines aside); placed before the `if` above it
+  # never took effect, and shellcheck's own dynamic-path heuristic on
+  # `${BASH_SOURCE[0]%/*}/...` was silently following this edge anyway,
+  # invisibly to tests/lint-source-graph.sh's walker.  Placed here it is
+  # tracked instead.
+  # shellcheck source=modules/dast/passive/banner_engine.sh
   source "${BASH_SOURCE[0]%/*}/../dast/passive/banner_engine.sh"
 fi
 # shellcheck source=modules/network/reachability_engine.sh
