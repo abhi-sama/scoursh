@@ -4971,7 +4971,7 @@ declare -ga _AGENT_MODULE_PREFIXES=(
 # contributes a classifiable id of its own, so nothing is lost.
 _agent_module_of_check() {
   local id=$1 entry prefix
-  for entry in "${_AGENT_MODULE_PREFIXES[@]}"; do
+  for entry in "${_AGENT_MODULE_PREFIXES[@]+"${_AGENT_MODULE_PREFIXES[@]}"}"; do
     prefix=${entry%%:*}
     case $id in
       "$prefix"*) printf '%s' "${entry#*:}"; return 0 ;;
@@ -4984,7 +4984,7 @@ _agent_module_of_check() {
 # complete set `modules_not_run` subtracts `_agent_modules_reported` from.
 _agent_all_modules() {
   local entry
-  for entry in "${_AGENT_MODULE_PREFIXES[@]}"; do
+  for entry in "${_AGENT_MODULE_PREFIXES[@]+"${_AGENT_MODULE_PREFIXES[@]}"}"; do
     printf '%s\n' "${entry#*:}"
   done
 }
