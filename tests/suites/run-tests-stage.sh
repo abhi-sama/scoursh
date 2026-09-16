@@ -104,24 +104,6 @@ for entry in ${STUB_PLAN:-}; do
       sleep 30
       exit 0
     fi
-    # Reports the KB value the CI path COMPUTED AND EXPORTED for this
-    # invocation (`$SC_CI_ULIMIT_KB`), not what `ulimit -v` reports back -
-    # proof the stage's own arithmetic reaches the child's environment,
-    # without needing a real memory-hungry binary to trip a real kill (that
-    # half is proven separately, against a real shellcheck, and is not
-    # something a portable, deterministic suite should depend on).  Reading
-    # `ulimit -v` back instead would conflate this with whether RLIMIT_AS
-    # enforcement itself is honoured, which is real-hardware- and
-    # kernel-dependent and a documented no-op on macOS (AGENTS.md, "the
-    # memory model") - this suite runs on that userland as often as Linux,
-    # so a case built on the OS actually honouring the limit would be
-    # exactly the one-userland-only flake that note already warns against.
-    # Exits non-zero so the line surfaces in the stage's own output (a
-    # clean, `rc == 0` invocation is never `cat`ed).
-    if [[ $action == ulimitreport ]]; then
-      printf 'STUB_ULIMIT_V_KB=%s\n' "${SC_CI_ULIMIT_KB:-<unset>}"
-      exit 9
-    fi
     printf 'stub: %s exits %s\n' "$b" "$action"
     exit "$action"
   fi
@@ -662,42 +644,36 @@ _stage_ci_host() {   # $1 total GB, $2 available GB
 
 STUB_PLAN='' _stage_ci_host 16 15
 assert_contains "$STAGE_OUT" '2GB reserved -> 13GB headroom'   'ubuntu-latest shape (16GB total, 15GB available): reserve is max(2, total/8) = 2GB and headroom is 13GB'
-assert_contains "$STAGE_OUT" '1 parallel x 1 file per invocation (6GB planned, 10GB hard cap enforced via ulimit -v)'   'and 13GB of headroom divides by the ENFORCED 10GB cap (the 6GB planning figure plus the proven 4GB ulimit-vs-RSS margin), not the softer 6GB figure - 13/10 plans ONE job; FAILS under dividing by the 6GB planning figure alone, which plans two jobs whose ulimit-enforced ceilings could together reach 20GB against a 16GB runner, the same over-commitment this ticket exists to close'
+assert_contains "$STAGE_OUT" '2 parallel x 1 file per invocation (6GB planned per file, a resident-memory watchdog enforces it - no ulimit, no fixed hard cap)'   'and 13GB of headroom divides by the 6GB TYPICAL planning figure - 13/6 plans TWO jobs, more throughput than the old ulimit-based model ever allowed (which had to divide by an inflated 10GB enforced ceiling to stay safe, so it never planned more than one job on this exact shape) - because a typical-footprint pass with a real second pass behind it can plan wide without risking a false rejection the way one fixed hard ceiling did'
 
 STUB_PLAN='' _stage_ci_host 7 5
 assert_contains "$STAGE_OUT" '2GB reserved -> 3GB headroom'   'macos-latest shape (7GB total, 5GB available): reserve 2GB, headroom 3GB'
 assert_contains "$STAGE_OUT" '1 parallel x 1 file per invocation'   'and 3GB of headroom plans exactly ONE job rather than zero - a runner smaller than one file still has to check every file, so the floor is 1 and never a skip'
 
 # ===========================================================================
-printf '== M2: the per-invocation memory cap is BINDING, not just arithmetic ==\n'
+printf '== M2: the CI path bounds REAL resident memory, never virtual address space ==\n'
 # ===========================================================================
-# Before this, the "NGB allowed each" figure in the plan line was a number the
-# stage printed and then never enforced: nothing stopped one invocation from
-# spending past it, and when GHC's own heap sizing did exactly that against a
-# real hosted runner, the excess came out of the RUNNER's memory rather than
-# the process's own - which the runner's host resolves by killing the whole
-# runner (exit 143, "The runner has received a shutdown signal"), not by
-# failing the one file responsible. Measured on run 35047131248, ubuntu shard
-# 5/6.
+# WHAT THIS REPLACES.  The CI path used to bind a `ulimit -v` (RLIMIT_AS)
+# around each invocation - virtual ADDRESS SPACE, not real memory.  Measured
+# directly against this project's own pinned 0.11.0 shellcheck binary (a real
+# Linux build, not only the BSD host's Homebrew one): GHC's RTS reserves
+# address space in an amount that scales with how much memory the HOST
+# appears to have, not with the file being checked, so a ceiling low enough to
+# protect a real runner's ~15GB of physical memory rejected eight real files
+# outright - each failing to even START its own analysis - despite none of
+# them needing anywhere near that much RESIDENT memory. Raising the ceiling
+# enough to admit those eight files would have meant admitting a ceiling that
+# no longer protects the runner at all, which is the contradiction this
+# rework closes by changing WHAT is measured (resident memory, sampled
+# externally) rather than by re-tuning the old ceiling's number.
 #
-# `ulimit -v` closes that by binding a real RLIMIT_AS around each invocation,
-# INSIDE the same `sh -c` child the stub already runs in - so what this
-# section proves is the WIRING: the KB value the stage COMPUTES really
-# reaches that child's environment (`$SC_CI_ULIMIT_KB`), for both the
-# default derivation and every override knob. It deliberately does NOT
-# assert what `ulimit -v` reports back, or try to make a stub actually
-# EXCEED the cap and get killed for it: RLIMIT_AS enforcement itself is
-# real-hardware- and kernel-dependent and a documented no-op on macOS
-# (AGENTS.md, "the memory model") - this suite runs on that userland as
-# often as Linux, so a case built on the OS actually honouring the limit
-# would be exactly the one-userland-only flake that note already warns
-# against (confirmed directly while writing this: `ulimit -v` read back as
-# `unlimited` on this suite's own macOS dev host, silently, exactly as
-# documented). That half is proven separately, against a real
-# `shellcheck -x` and a real GHC runtime, in a Linux container - not
-# something a portable, few-second, stub-driven suite should depend on.
-_stage_ci_ulimit() {   # $1 total GB, $2 available GB, $3 STUB_PLAN, plus any
-                       # SCOURSH_SHELLCHECK_CI_* overrides the caller exported
+# The replacement is the SAME watchdog (`_sc_run_pass`, shared with the local
+# path above) rather than a second, CI-specific implementation - so this
+# section proves the WIRING and the CI-specific POLICY on top of it (no
+# skip, ever), not the watchdog's own kill mechanics, which sections C2, H,
+# I, J and K above already pin directly.
+_stage_ci_watchdog() {   # $1 total GB, $2 available GB, $3 STUB_PLAN, plus any
+                         # SCOURSH_SHELLCHECK_* overrides the caller exported
   local out status=0
   out=$(PATH=$W/bin:$PATH \
         GITHUB_ACTIONS=true \
@@ -705,39 +681,58 @@ _stage_ci_ulimit() {   # $1 total GB, $2 available GB, $3 STUB_PLAN, plus any
         SCOURSH_SHELLCHECK_FORCE_TOTAL_GB=$1 \
         SCOURSH_SHELLCHECK_FORCE_AVAIL_GB=$2 \
         STUB_PLAN=$3 \
+        STUB_ALIVE=$W/alive-m2 \
         bash "$RUNNER" shellcheck 2>&1) || status=$?
   STAGE_OUT=$out
   STAGE_STATUS=$status
 }
 
-# Default derivation: worst_gb (6) + margin (4) = 10GB = 10485760 KB.
-_stage_ci_ulimit 16 15 'ci1.sh:ulimitreport'
-assert_contains "$STAGE_OUT" 'STUB_ULIMIT_V_KB=10485760' \
-  'the default 6GB planning figure plus the default 4GB margin reaches the child as a 10GB (10485760 KB) ulimit -v - FAILS under the pre-fix stage, which set no ulimit at all and left this unbounded'
+if command -v ps >/dev/null 2>&1; then
+  # OVER BUDGET: the file's own doing, in BOTH passes (the tiny forced KB
+  # budget applies uniformly, so pass 2's bigger headroom cannot rescue it
+  # either) - the CI equivalent of section I's host-capacity SKIP, except CI
+  # has no skip outcome to fall back to, so this must FAIL rather than pass.
+  rm -f "$W/alive-m2"
+  SCOURSH_SHELLCHECK_BUDGET_KB=100 _stage_ci_watchdog 16 15 'ci1.sh:sleep'
+  assert_eq 1 "$STAGE_STATUS" \
+    'a file that exceeds its resident-memory budget in every pass FAILS the CI stage - this project has no reported-and-continue outcome for it, the same "the runner IS the target" policy an already-unchecked CI file always had'
+  assert_contains "$STAGE_OUT" 'ci1.sh' 'and the failing file is named'
+  assert_contains "$STAGE_OUT" 'OVER BUDGET' \
+    'and the message names OVER BUDGET as the cause, exactly as the local path already does - FAILS under a stage that reports one generic kill message for CI'
+  assert_contains "$STAGE_OUT" 'SCOURSH_SHELLCHECK_CI_WORST_GB' \
+    'and names the knob to raise it with, rather than leaving a reader to rediscover it by reading this file'
+  assert_not_contains "$STAGE_OUT" 'SKIPPED' \
+    'and is NEVER reported as a host-capacity skip - CI has no such outcome, unlike the local path section I already pins'
 
-# SCOURSH_SHELLCHECK_CI_ULIMIT_GB overrides the derivation outright.
-SCOURSH_SHELLCHECK_CI_ULIMIT_GB=3 _stage_ci_ulimit 16 15 'ci1.sh:ulimitreport'
-assert_contains "$STAGE_OUT" 'STUB_ULIMIT_V_KB=3145728' \
-  'SCOURSH_SHELLCHECK_CI_ULIMIT_GB=3 reaches the child as 3GB (3145728 KB), bypassing worst_gb+margin entirely - the knob the failure message below tells an operator to reach for'
+  # HOST PRESSURE: NOT the file's own doing, and CI still has no skip to file
+  # it under - it FAILS, unlike the local path's own equivalent (section N),
+  # which can legitimately pass a pressure kill through as a host-size skip
+  # once no bigger budget is left to retry at.
+  rm -f "$W/alive-m2"
+  SCOURSH_SHELLCHECK_FREE_FLOOR_GB=9999999 _stage_ci_watchdog 16 15 'ci1.sh:sleep'
+  assert_eq 1 "$STAGE_STATUS" \
+    'a host-pressure kill on CI FAILS the stage too - FAILS under filing it as a host-size skip, which reports a file the stage never measured as a clean pass on the one path where the runner really is the target'
+  assert_contains "$STAGE_OUT" 'HOST MEMORY PRESSURE' \
+    'and the message names HOST MEMORY PRESSURE as the cause, not OVER BUDGET - the two causes stay apart on CI exactly as they do locally'
+  assert_not_contains "$STAGE_OUT" 'SKIPPED' \
+    'and is NEVER reported as a host-capacity skip on CI, regardless of which of the two causes the kill actually had'
 
-# SCOURSH_SHELLCHECK_CI_ULIMIT_MARGIN_GB changes only the margin, not the base.
-SCOURSH_SHELLCHECK_CI_ULIMIT_MARGIN_GB=1 _stage_ci_ulimit 16 15 'ci1.sh:ulimitreport'
-assert_contains "$STAGE_OUT" 'STUB_ULIMIT_V_KB=7340032' \
-  'a 1GB margin over the 6GB default plans a 7GB (7340032 KB) cap, proving the margin is additive to worst_gb rather than replacing it'
-
-# A file that hits its cap is a STAGE FAILURE, named, with the cap and the
-# remediation knob in the message - never a silent pass and never a bare
-# unattributed exit code. `251` stands in for the real, measured GHC exit
-# ("shellcheck: out of memory") a genuinely over-budget invocation produces.
-_stage_ci_ulimit 16 15 'ci1.sh:251'
-assert_eq 1 "$STAGE_STATUS" \
-  'a file that exhausts its enforced memory cap FAILS the stage - this project has no reported-and-continue outcome for it, the same "the runner IS the target" policy an already-unchecked CI file always had'
-assert_contains "$STAGE_OUT" 'ci1.sh' 'and the failing file is named'
-assert_contains "$STAGE_OUT" '10GB per-invocation cap' \
-  'and the message states the enforced cap that was hit'
-assert_contains "$STAGE_OUT" 'SCOURSH_SHELLCHECK_CI_ULIMIT_GB' \
-  'and names the knob to raise it with, rather than leaving a reader to rediscover it by reading this file'
-assert_eq 6 "$(wc -l <"$W/argc.log" | tr -d ' ')"   'and one job still means six invocations for six files, not one batch of six'
+  # Still one invocation per file, never a batch, under the new mechanism.
+  : > "$W/argc.log"
+  out=$(PATH=$W/bin:$PATH \
+        GITHUB_ACTIONS=true \
+        STUB_ARGC_LOG=$W/argc.log \
+        SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist-ci \
+        SCOURSH_SHELLCHECK_FORCE_TOTAL_GB=16 \
+        SCOURSH_SHELLCHECK_FORCE_AVAIL_GB=15 \
+        STUB_PLAN='' bash "$RUNNER" shellcheck 2>&1) || true
+  assert_eq 6 "$(wc -l <"$W/argc.log" | tr -d ' ')" \
+    'six files still produce SIX shellcheck invocations under the watchdog-based CI path, not a batch of six'
+  assert_eq 1 "$(sort -rn <"$W/argc.log" | head -1)" \
+    'and no invocation is handed more than ONE file under the watchdog-based CI path either'
+else
+  printf 'SKIPPED (no ps on this host, so the CI path runs with no watchdog at all)\n'
+fi
 
 # ===========================================================================
 printf '== N: on a host too small for a SECOND pass, the two kill causes stay apart ==\n'
