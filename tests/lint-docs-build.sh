@@ -34,6 +34,34 @@ fi
 FAILED=0
 HITS=$SCOURSH_SCRATCH/docs-build-hits
 
+# `scan_match` (lib/core.sh) always runs through `SCOURSH_GREP`, which
+# core_bind_engine bakes `-E` into for grep and `--engine default` into for
+# rg - the frozen ERE dialect every call site is meant to share (tension 2).
+# Passing `-F` (fixed-strings) on top of that asks for TWO matcher modes in
+# one invocation; BSD grep quietly takes the last one, but GNU grep refuses
+# outright with "conflicting matchers specified" (rc 2), which is exactly
+# what CI run 35047131248 hit on every ubuntu shard - reproduced locally
+# against a real GNU grep 3.12 and confirmed absent under GNU/rg both once
+# `-F` is dropped.  Every pattern below is meant as a LITERAL substring, not
+# a regex, so `_docs_build_literal` escapes it for the ERE dialect instead of
+# asking the already-`-E`-bound wrapper for fixed-string mode.
+_docs_build_literal() {
+  local s=$1
+  s=${s//\\/\\\\}
+  s=${s//\./\\.}
+  s=${s//\*/\\*}
+  s=${s//\[/\\[}
+  s=${s//\^/\\^}
+  s=${s//\$/\\$}
+  s=${s//\(/\\(}
+  s=${s//\)/\\)}
+  s=${s//\{/\\{}
+  s=${s//\|/\\|}
+  s=${s//+/\\+}
+  s=${s//\?/\\?}
+  printf '%s' "$s"
+}
+
 # Substring, human label.  Any one hit means the page can either reach an
 # external resource/network or hand a viewer a live network primitive - both
 # are forbidden by docs/build.html's own hard constraints.
@@ -48,7 +76,7 @@ declare -a CHECKS=(
 
 check_entry() {
   local pat=$1 label=$2
-  if scan_match "$HITS" -F -e "$pat" -- "$PAGE"; then
+  if scan_match "$HITS" -e "$(_docs_build_literal "$pat")" -- "$PAGE"; then
     FAILED=1
     printf '  FAIL  %s contains %s:\n' "${PAGE#"$ROOT"/}" "$label" >&2
     sed 's/^/          /' "$HITS" >&2
@@ -69,7 +97,7 @@ printf '\n== inline field-shape warnings exist, and the --target wording mirrors
 # three hours before refusing. These are POSITIVE presence checks - unlike
 # CHECKS above - proving the non-blocking, inline validation table actually
 # ships, not just that the page avoids network primitives.
-if scan_match "$HITS" -F -e 'FIELD_VALIDATORS' -- "$PAGE"; then
+if scan_match "$HITS" -e "$(_docs_build_literal 'FIELD_VALIDATORS')" -- "$PAGE"; then
   printf '  ok    a FIELD_VALIDATORS table (the inline, non-blocking field-shape warnings) is present\n'
 else
   FAILED=1
@@ -82,17 +110,18 @@ fi
 # the moment the CLI's own wording changes without the page following it.
 CONFIG_SH=$ROOT/lib/config.sh
 CLI_MSG_FRAGMENT='wants the ID a target is declared UNDER in'
-if ! scan_match "$SCOURSH_SCRATCH/docs-build-cli-msg" -F -e "$CLI_MSG_FRAGMENT" -- "$CONFIG_SH"; then
+CLI_MSG_FRAGMENT_ERE=$(_docs_build_literal "$CLI_MSG_FRAGMENT")
+if ! scan_match "$SCOURSH_SCRATCH/docs-build-cli-msg" -e "$CLI_MSG_FRAGMENT_ERE" -- "$CONFIG_SH"; then
   FAILED=1
   printf '  FAIL  lib/config.sh no longer contains the expected --target refusal wording fragment (%s) - cannot verify the page agrees with it\n' "$CLI_MSG_FRAGMENT" >&2
-elif scan_match "$HITS" -F -e "$CLI_MSG_FRAGMENT" -- "$PAGE"; then
+elif scan_match "$HITS" -e "$CLI_MSG_FRAGMENT_ERE" -- "$PAGE"; then
   printf '  ok    the inline --target warning wording matches lib/config.sh'"'"'s _scope_target_not_found_message\n'
 else
   FAILED=1
   printf '  FAIL  %s does not contain the CLI'"'"'s own --target refusal wording (%s) - the inline warning has drifted from lib/config.sh\n' "${PAGE#"$ROOT"/}" "$CLI_MSG_FRAGMENT" >&2
 fi
 
-if scan_match "$HITS" -F -e 'targetAffirmMismatch' -- "$PAGE"; then
+if scan_match "$HITS" -e "$(_docs_build_literal 'targetAffirmMismatch')" -- "$PAGE"; then
   printf '  ok    a --target/--i-own-target equality check (targetAffirmMismatch) is present\n'
 else
   FAILED=1
