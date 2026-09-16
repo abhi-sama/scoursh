@@ -214,6 +214,20 @@ _ids_for_arn() {
   printf '%s\n' "$table" | awk -F$'\x1f' -v a="$arn" '$2 == a { print $1 }' | LC_ALL=C sort
 }
 
+# Derive the audit view's service count from the dispatcher-owned catalog, not
+# from the services that had landed when this suite was last edited. A row is
+# present only when its actual script exists, matching run.sh's `-f` predicate.
+_cloud_service_census() {
+  local spec script
+  _CLOUD_SERVICE_ROWS=${#_CLOUD_SERVICES[@]}
+  _CLOUD_SERVICE_PRESENT=0
+  for spec in "${_CLOUD_SERVICES[@]+"${_CLOUD_SERVICES[@]}"}"; do
+    script=${spec%%:*}
+    [[ -f "$ROOT/modules/cloud/aws/$script" ]] || continue
+    _CLOUD_SERVICE_PRESENT=$(( _CLOUD_SERVICE_PRESENT + 1 ))
+  done
+}
+
 # ===========================================================================
 # A. The classifiers, against the committed fixtures, with no scan at all.
 # ===========================================================================
@@ -492,14 +506,11 @@ _run_cloud "$W/run-audit" --format audit
 assert_file_exists "$W/run-audit/report-audit.html" 'E14 --format audit writes report-audit.html'
 _AUDIT=$(cat "$W/run-audit/report-audit.html")
 assert_contains "$_AUDIT" 'CLOUD-EC2-' 'E15 the audit view carries the EC2/VPC checks'
-# lib/report.sh's own coverage-strength note for the cloud category named the
-# live catalog's real, current extent; this ticket adds a third service to
-# it (S3 and API Gateway having already landed), and both halves are pinned
-# here so the NEXT service to land finds a failing assertion rather than a
-# stale sentence - the same discipline tests/suites/cloud-s3.sh's own E16/E17
-# already established.
-assert_contains "$_AUDIT" 'ships S3, API Gateway and EC2/VPC so far' \
-  'E16 the audit view states the real, current extent of the live catalog'
+_cloud_service_census
+assert_eq "$_CLOUD_SERVICE_ROWS" "$_CLOUD_SERVICE_PRESENT" \
+  'E16 every cloud service table entry has its real script on disk'
+assert_contains "$_AUDIT" "ships all $_CLOUD_SERVICE_PRESENT docs/DESIGN.md §8.1 services" \
+  'E16b the audit view states the real, current extent of the live catalog'
 assert_not_contains "$_AUDIT" 'ships the S3 and API Gateway services only so far' \
   'E17 ... and no longer claims S3+API Gateway are the only two'
 

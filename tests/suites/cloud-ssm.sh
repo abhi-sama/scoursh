@@ -113,6 +113,20 @@ _ids_for_arn() {
   printf '%s\n' "$table" | awk -F$'\x1f' -v b="$arn" '$2 == b { print $1 }' | LC_ALL=C sort
 }
 
+# The audit view's claim tracks this dispatcher-owned catalog. Count each
+# actual script with the same `-f` predicate run.sh applies, so a future row
+# or missing implementation cannot preserve an old snapshot silently.
+_cloud_service_census() {
+  local spec script
+  _CLOUD_SERVICE_ROWS=${#_CLOUD_SERVICES[@]}
+  _CLOUD_SERVICE_PRESENT=0
+  for spec in "${_CLOUD_SERVICES[@]+"${_CLOUD_SERVICES[@]}"}"; do
+    script=${spec%%:*}
+    [[ -f "$ROOT/modules/cloud/aws/$script" ]] || continue
+    _CLOUD_SERVICE_PRESENT=$(( _CLOUD_SERVICE_PRESENT + 1 ))
+  done
+}
+
 # ===========================================================================
 # A. The classifiers, against the committed fixtures, with no scan at all.
 # ===========================================================================
@@ -230,18 +244,14 @@ _SARIF=$(cat "$W/ssm-run-sarif/report.sarif")
 assert_contains "$_SARIF" CLOUD-SSM-STRING_TYPE_SENSITIVE-01 'E5 the SARIF run names the check as a rule'
 assert_contains "$_SARIF" "$BAD_ARN" 'E6 the SARIF result names the resource'
 
-# The tri-service half of tests/suites/cloud-s3.sh's own E16/E17 guard: SSM is
-# the last of CLOUD-07/08/09 landed in this ticket, so this is where the
-# audit view's coverage-strength note is checked for the FULL, updated
-# sentence rather than only the fact that it changed at all. CLOUD-22
-# (apigw.sh) landed alongside CLOUD-07/08/09 on dev, and CLOUD-06 (iam.sh),
-# CLOUD-13 (ec2.sh) and CLOUD-30..34 (the governance bundle) landed after,
-# so the sentence names all twelve landed services.
 _routes_default
 _run_cloud "$W/ssm-run-audit" --format audit
 assert_file_exists "$W/ssm-run-audit/report-audit.html" 'E7 --format audit writes report-audit.html'
 _AUDIT=$(cat "$W/ssm-run-audit/report-audit.html")
-assert_contains "$_AUDIT" 'ships the S3, API Gateway, KMS, Secrets Manager, SSM, IAM, EC2/VPC, CloudTrail, AWS Config, GuardDuty, Inspector2 and Macie2 services so far' \
-  'E8 the audit view names all twelve landed cloud services'
+_cloud_service_census
+assert_eq "$_CLOUD_SERVICE_ROWS" "$_CLOUD_SERVICE_PRESENT" \
+  'E8 every cloud service table entry has its real script on disk'
+assert_contains "$_AUDIT" "ships all $_CLOUD_SERVICE_PRESENT docs/DESIGN.md §8.1 services" \
+  'E8b the audit view names the current catalog extent'
 
 t_summary cloud-ssm
