@@ -182,6 +182,14 @@ _MOD_GATE_RC=0
   declare -A SCAN_FLAGS=([target]=no-such-target)
   export SCOURSH_RUN_DIR=$W/run-modgate
   mkdir -p "$SCOURSH_RUN_DIR/meta"
+  # -x back-edge label: this source has no static path, so shellcheck's own
+  # heuristic dynamic-path resolution was silently following it anyway - a
+  # real edge invisible to tests/lint-source-graph.sh's walker, which only
+  # tracks explicit `# shellcheck source=` directives.  Naming it explicitly
+  # makes the cost visible and trackable rather than removing it, since this
+  # file's own line 43 cuts the direct edge to modules/dast/engine.sh as
+  # redundant with the one this source pulls in via modules/dast/run.sh.
+  # shellcheck source=modules/dast/run.sh
   source "$ROOT/modules/dast/run.sh"
 ) >/dev/null 2>&1 || _MOD_GATE_RC=$?
 assert_eq 3 "$_MOD_GATE_RC" \
