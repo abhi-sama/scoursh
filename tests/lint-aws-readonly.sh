@@ -92,15 +92,26 @@ while IFS= read -r f; do
 
   # Check 1: a bare `aws` at command position anywhere but the chokepoint.
   if scan_match "$HITS" -e '(^|[;&|(])[[:space:]]*aws[[:space:]]' -- "$rel"; then
-    bare=1
-    report "$rel: a bare 'aws' invocation; every AWS call goes through aws_ro in lib/awscli.sh"
-    cat "$HITS" >&2
+    while IFS= read -r hit; do
+      hit=${hit#*:}
+      [[ $hit =~ ^[[:space:]]*# ]] && continue
+      bare=1
+      report "$rel: a bare 'aws' invocation; every AWS call goes through aws_ro in lib/awscli.sh"
+      printf '%s\n' "$hit" >&2
+    done <"$HITS"
   fi
 
   # Checks 2 and 3: the operation argument of each aws_ro call.
   if scan_match "$HITS" -e 'aws_ro[[:space:]]' -- "$rel"; then
     while IFS= read -r hit; do
       [[ -n $hit ]] || continue
+      hit=${hit#*:}
+      # `scan_match` returns source lines, including comments.  The lint's
+      # contract is to inspect invocations, not prose: an `aws_ro` example in
+      # a full-line comment is not a call and must not be tokenized as one.
+      # Keep this test before extracting arguments so a comment can never turn
+      # a backticked example or explanatory word into an apparent operation.
+      [[ $hit =~ ^[[:space:]]*# ]] && continue
       calls=$(( calls + 1 ))
       # `aws_ro <service> <operation> ...` - take the second word after aws_ro.
       op=${hit#*aws_ro }
