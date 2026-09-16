@@ -176,15 +176,12 @@ _ec2_run_service() {
   return 0
 }
 
-# `_ec2_call REASONVAR SERVICE OPERATION OUTFILE [ARGS...]` - one `aws_ro`
-# call, writing the reason (lib/awscli.sh's own vocabulary) into REASONVAR on
-# failure.  A thin shared tail so a call site never has to remember to call
-# `aws_ro_reduction_reason_set` itself.
-_ec2_call() {
-  local __reasonvar=$1 __svc=$2 __op=$3 __out=$4
-  shift 4
-  local __rc=0
-  aws_ro "$__svc" "$__op" "$@" >"$__out" || __rc=$?
+# `_ec2_call_result REASONVAR OPERATION STATUS` - records a completed literal
+# aws_ro invocation's result.  It intentionally does not invoke aws_ro: each
+# transport call below spells out its service and operation so the read-only
+# lint can certify the exact operation that reaches the AWS CLI.
+_ec2_call_result() {
+  local __reasonvar=$1 __op=$2 __rc=$3
   if (( __rc != 0 )); then
     aws_ro_reduction_reason_set "$__reasonvar"
     return 1
@@ -206,7 +203,8 @@ _ec2_pass_security_groups() {
 
   local reason='' rc=0
   local sgf=$work/describe-security-groups.json
-  _ec2_call reason ec2 describe-security-groups "$sgf" || rc=$?
+  aws_ro ec2 describe-security-groups >"$sgf" || rc=$?
+  _ec2_call_result reason describe-security-groups "$rc" || rc=$?
   if (( rc != 0 )); then
     _ec2_family_lost "$reason" "$admin" "$db" "$defsg"
     run_record coverage_reduction "module=cloud reason=$reason service=ec2 operation=describe-security-groups account=$account region=$region - the security group list could not be read (${SCOURSH_AWS_RO_OUTCOME}${SCOURSH_AWS_RO_CODE:+, code ${SCOURSH_AWS_RO_CODE}}), so no security group in this region was examined for an open admin/database port or for default-SG usage."
@@ -262,7 +260,9 @@ _ec2_pass_security_groups() {
   # whether anything actually references it - only a network interface's own
   # `Groups[]` says that.
   local enif=$work/describe-network-interfaces.json
-  _ec2_call reason ec2 describe-network-interfaces "$enif" || rc=$?
+  rc=0
+  aws_ro ec2 describe-network-interfaces >"$enif" || rc=$?
+  _ec2_call_result reason describe-network-interfaces "$rc" || rc=$?
   if (( rc != 0 )); then
     _ec2_family_lost "$reason" "$defsg"
     run_record coverage_reduction "module=cloud reason=$reason service=ec2 operation=describe-network-interfaces account=$account region=$region - the network interface list could not be read (${SCOURSH_AWS_RO_OUTCOME}${SCOURSH_AWS_RO_CODE:+, code ${SCOURSH_AWS_RO_CODE}}), so whether this region's default security group(s) are actually attached to anything could not be determined."
@@ -304,7 +304,8 @@ _ec2_pass_amis() {
 
   local reason='' rc=0
   local listf=$work/describe-images.json
-  _ec2_call reason ec2 describe-images "$listf" --owners self || rc=$?
+  aws_ro ec2 describe-images --owners self >"$listf" || rc=$?
+  _ec2_call_result reason describe-images "$rc" || rc=$?
   if (( rc != 0 )); then
     _ec2_family_lost "$reason" "$id"
     run_record coverage_reduction "module=cloud reason=$reason service=ec2 operation=describe-images account=$account region=$region - this account's owned AMI list could not be read (${SCOURSH_AWS_RO_OUTCOME}${SCOURSH_AWS_RO_CODE:+, code ${SCOURSH_AWS_RO_CODE}}), so no AMI in this region was examined for public launch permission."
@@ -326,7 +327,8 @@ _ec2_pass_amis() {
     safe=${img//[^A-Za-z0-9._-]/_}
     attrf=$work/image-attr-$safe.json
     rc=0
-    _ec2_call reason ec2 describe-image-attribute "$attrf" --image-id "$img" --attribute launchPermission || rc=$?
+    aws_ro ec2 describe-image-attribute --image-id "$img" --attribute launchPermission >"$attrf" || rc=$?
+    _ec2_call_result reason describe-image-attribute "$rc" || rc=$?
     if (( rc != 0 )); then
       _ec2_note_lost "$id" "$reason"
       run_record coverage_reduction "module=cloud reason=$reason service=ec2 operation=describe-image-attribute image=$img account=$account region=$region - the launch permission for this AMI could not be read (${SCOURSH_AWS_RO_OUTCOME}${SCOURSH_AWS_RO_CODE:+, code ${SCOURSH_AWS_RO_CODE}}), so it was not tested."
@@ -352,7 +354,8 @@ _ec2_pass_snapshots() {
 
   local reason='' rc=0
   local listf=$work/describe-snapshots.json
-  _ec2_call reason ec2 describe-snapshots "$listf" --owner-ids self || rc=$?
+  aws_ro ec2 describe-snapshots --owner-ids self >"$listf" || rc=$?
+  _ec2_call_result reason describe-snapshots "$rc" || rc=$?
   if (( rc != 0 )); then
     _ec2_family_lost "$reason" "$id"
     run_record coverage_reduction "module=cloud reason=$reason service=ec2 operation=describe-snapshots account=$account region=$region - this account's owned EBS snapshot list could not be read (${SCOURSH_AWS_RO_OUTCOME}${SCOURSH_AWS_RO_CODE:+, code ${SCOURSH_AWS_RO_CODE}}), so no snapshot in this region was examined for public create-volume permission."
@@ -374,7 +377,8 @@ _ec2_pass_snapshots() {
     safe=${snap//[^A-Za-z0-9._-]/_}
     attrf=$work/snapshot-attr-$safe.json
     rc=0
-    _ec2_call reason ec2 describe-snapshot-attribute "$attrf" --snapshot-id "$snap" --attribute createVolumePermission || rc=$?
+    aws_ro ec2 describe-snapshot-attribute --snapshot-id "$snap" --attribute createVolumePermission >"$attrf" || rc=$?
+    _ec2_call_result reason describe-snapshot-attribute "$rc" || rc=$?
     if (( rc != 0 )); then
       _ec2_note_lost "$id" "$reason"
       run_record coverage_reduction "module=cloud reason=$reason service=ec2 operation=describe-snapshot-attribute snapshot=$snap account=$account region=$region - the create-volume permission for this snapshot could not be read (${SCOURSH_AWS_RO_OUTCOME}${SCOURSH_AWS_RO_CODE:+, code ${SCOURSH_AWS_RO_CODE}}), so it was not tested."
@@ -400,7 +404,8 @@ _ec2_pass_volumes() {
 
   local reason='' rc=0
   local f=$work/describe-volumes.json
-  _ec2_call reason ec2 describe-volumes "$f" || rc=$?
+  aws_ro ec2 describe-volumes >"$f" || rc=$?
+  _ec2_call_result reason describe-volumes "$rc" || rc=$?
   if (( rc != 0 )); then
     _ec2_family_lost "$reason" "$id"
     run_record coverage_reduction "module=cloud reason=$reason service=ec2 operation=describe-volumes account=$account region=$region - the EBS volume list could not be read (${SCOURSH_AWS_RO_OUTCOME}${SCOURSH_AWS_RO_CODE:+, code ${SCOURSH_AWS_RO_CODE}}), so no volume in this region was examined for encryption at rest."
@@ -432,7 +437,8 @@ _ec2_pass_instances() {
 
   local reason='' rc=0
   local f=$work/describe-instances.json
-  _ec2_call reason ec2 describe-instances "$f" || rc=$?
+  aws_ro ec2 describe-instances >"$f" || rc=$?
+  _ec2_call_result reason describe-instances "$rc" || rc=$?
   if (( rc != 0 )); then
     _ec2_family_lost "$reason" "$id"
     run_record coverage_reduction "module=cloud reason=$reason service=ec2 operation=describe-instances account=$account region=$region - the instance list could not be read (${SCOURSH_AWS_RO_OUTCOME}${SCOURSH_AWS_RO_CODE:+, code ${SCOURSH_AWS_RO_CODE}}), so no instance in this region was examined for IMDSv2 enforcement."
@@ -476,7 +482,8 @@ _ec2_pass_vpc_flow_logs() {
 
   local reason='' rc=0
   local vpcf=$work/describe-vpcs.json
-  _ec2_call reason ec2 describe-vpcs "$vpcf" || rc=$?
+  aws_ro ec2 describe-vpcs >"$vpcf" || rc=$?
+  _ec2_call_result reason describe-vpcs "$rc" || rc=$?
   if (( rc != 0 )); then
     _ec2_family_lost "$reason" "$id"
     run_record coverage_reduction "module=cloud reason=$reason service=ec2 operation=describe-vpcs account=$account region=$region - the VPC list could not be read (${SCOURSH_AWS_RO_OUTCOME}${SCOURSH_AWS_RO_CODE:+, code ${SCOURSH_AWS_RO_CODE}}), so whether any VPC in this region has flow logging enabled could not be determined."
@@ -497,7 +504,9 @@ _ec2_pass_vpc_flow_logs() {
   fi
 
   local flf=$work/describe-flow-logs.json
-  _ec2_call reason ec2 describe-flow-logs "$flf" || rc=$?
+  rc=0
+  aws_ro ec2 describe-flow-logs >"$flf" || rc=$?
+  _ec2_call_result reason describe-flow-logs "$rc" || rc=$?
   if (( rc != 0 )); then
     _ec2_family_lost "$reason" "$id"
     run_record coverage_reduction "module=cloud reason=$reason service=ec2 operation=describe-flow-logs account=$account region=$region - the flow log list could not be read (${SCOURSH_AWS_RO_OUTCOME}${SCOURSH_AWS_RO_CODE:+, code ${SCOURSH_AWS_RO_CODE}}), so this region's ${#vpc_ids[@]} VPC(s) could not be checked for active flow logging."
