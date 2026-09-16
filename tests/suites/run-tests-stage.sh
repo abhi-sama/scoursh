@@ -104,6 +104,24 @@ for entry in ${STUB_PLAN:-}; do
       sleep 30
       exit 0
     fi
+    # Reports the KB value the CI path COMPUTED AND EXPORTED for this
+    # invocation (`$SC_CI_ULIMIT_KB`), not what `ulimit -v` reports back -
+    # proof the stage's own arithmetic reaches the child's environment,
+    # without needing a real memory-hungry binary to trip a real kill (that
+    # half is proven separately, against a real shellcheck, and is not
+    # something a portable, deterministic suite should depend on).  Reading
+    # `ulimit -v` back instead would conflate this with whether RLIMIT_AS
+    # enforcement itself is honoured, which is real-hardware- and
+    # kernel-dependent and a documented no-op on macOS (AGENTS.md, "the
+    # memory model") - this suite runs on that userland as often as Linux,
+    # so a case built on the OS actually honouring the limit would be
+    # exactly the one-userland-only flake that note already warns against.
+    # Exits non-zero so the line surfaces in the stage's own output (a
+    # clean, `rc == 0` invocation is never `cat`ed).
+    if [[ $action == ulimitreport ]]; then
+      printf 'STUB_ULIMIT_V_KB=%s\n' "${SC_CI_ULIMIT_KB:-<unset>}"
+      exit 9
+    fi
     printf 'stub: %s exits %s\n' "$b" "$action"
     exit "$action"
   fi
@@ -644,11 +662,81 @@ _stage_ci_host() {   # $1 total GB, $2 available GB
 
 STUB_PLAN='' _stage_ci_host 16 15
 assert_contains "$STAGE_OUT" '2GB reserved -> 13GB headroom'   'ubuntu-latest shape (16GB total, 15GB available): reserve is max(2, total/8) = 2GB and headroom is 13GB'
-assert_contains "$STAGE_OUT" '2 parallel x 1 file per invocation (6GB allowed each)'   'and 13GB of headroom at a 6GB worst-file allowance plans TWO jobs - 2 x the 5.75GB worst file is 11.5GB, inside 13GB; FAILS under the local path 5GB step, which plans 3 and over-commits a 16GB runner'
+assert_contains "$STAGE_OUT" '1 parallel x 1 file per invocation (6GB planned, 10GB hard cap enforced via ulimit -v)'   'and 13GB of headroom divides by the ENFORCED 10GB cap (the 6GB planning figure plus the proven 4GB ulimit-vs-RSS margin), not the softer 6GB figure - 13/10 plans ONE job; FAILS under dividing by the 6GB planning figure alone, which plans two jobs whose ulimit-enforced ceilings could together reach 20GB against a 16GB runner, the same over-commitment this ticket exists to close'
 
 STUB_PLAN='' _stage_ci_host 7 5
 assert_contains "$STAGE_OUT" '2GB reserved -> 3GB headroom'   'macos-latest shape (7GB total, 5GB available): reserve 2GB, headroom 3GB'
 assert_contains "$STAGE_OUT" '1 parallel x 1 file per invocation'   'and 3GB of headroom plans exactly ONE job rather than zero - a runner smaller than one file still has to check every file, so the floor is 1 and never a skip'
+
+# ===========================================================================
+printf '== M2: the per-invocation memory cap is BINDING, not just arithmetic ==\n'
+# ===========================================================================
+# Before this, the "NGB allowed each" figure in the plan line was a number the
+# stage printed and then never enforced: nothing stopped one invocation from
+# spending past it, and when GHC's own heap sizing did exactly that against a
+# real hosted runner, the excess came out of the RUNNER's memory rather than
+# the process's own - which the runner's host resolves by killing the whole
+# runner (exit 143, "The runner has received a shutdown signal"), not by
+# failing the one file responsible. Measured on run 35047131248, ubuntu shard
+# 5/6.
+#
+# `ulimit -v` closes that by binding a real RLIMIT_AS around each invocation,
+# INSIDE the same `sh -c` child the stub already runs in - so what this
+# section proves is the WIRING: the KB value the stage COMPUTES really
+# reaches that child's environment (`$SC_CI_ULIMIT_KB`), for both the
+# default derivation and every override knob. It deliberately does NOT
+# assert what `ulimit -v` reports back, or try to make a stub actually
+# EXCEED the cap and get killed for it: RLIMIT_AS enforcement itself is
+# real-hardware- and kernel-dependent and a documented no-op on macOS
+# (AGENTS.md, "the memory model") - this suite runs on that userland as
+# often as Linux, so a case built on the OS actually honouring the limit
+# would be exactly the one-userland-only flake that note already warns
+# against (confirmed directly while writing this: `ulimit -v` read back as
+# `unlimited` on this suite's own macOS dev host, silently, exactly as
+# documented). That half is proven separately, against a real
+# `shellcheck -x` and a real GHC runtime, in a Linux container - not
+# something a portable, few-second, stub-driven suite should depend on.
+_stage_ci_ulimit() {   # $1 total GB, $2 available GB, $3 STUB_PLAN, plus any
+                       # SCOURSH_SHELLCHECK_CI_* overrides the caller exported
+  local out status=0
+  out=$(PATH=$W/bin:$PATH \
+        GITHUB_ACTIONS=true \
+        SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist-ci \
+        SCOURSH_SHELLCHECK_FORCE_TOTAL_GB=$1 \
+        SCOURSH_SHELLCHECK_FORCE_AVAIL_GB=$2 \
+        STUB_PLAN=$3 \
+        bash "$RUNNER" shellcheck 2>&1) || status=$?
+  STAGE_OUT=$out
+  STAGE_STATUS=$status
+}
+
+# Default derivation: worst_gb (6) + margin (4) = 10GB = 10485760 KB.
+_stage_ci_ulimit 16 15 'ci1.sh:ulimitreport'
+assert_contains "$STAGE_OUT" 'STUB_ULIMIT_V_KB=10485760' \
+  'the default 6GB planning figure plus the default 4GB margin reaches the child as a 10GB (10485760 KB) ulimit -v - FAILS under the pre-fix stage, which set no ulimit at all and left this unbounded'
+
+# SCOURSH_SHELLCHECK_CI_ULIMIT_GB overrides the derivation outright.
+SCOURSH_SHELLCHECK_CI_ULIMIT_GB=3 _stage_ci_ulimit 16 15 'ci1.sh:ulimitreport'
+assert_contains "$STAGE_OUT" 'STUB_ULIMIT_V_KB=3145728' \
+  'SCOURSH_SHELLCHECK_CI_ULIMIT_GB=3 reaches the child as 3GB (3145728 KB), bypassing worst_gb+margin entirely - the knob the failure message below tells an operator to reach for'
+
+# SCOURSH_SHELLCHECK_CI_ULIMIT_MARGIN_GB changes only the margin, not the base.
+SCOURSH_SHELLCHECK_CI_ULIMIT_MARGIN_GB=1 _stage_ci_ulimit 16 15 'ci1.sh:ulimitreport'
+assert_contains "$STAGE_OUT" 'STUB_ULIMIT_V_KB=7340032' \
+  'a 1GB margin over the 6GB default plans a 7GB (7340032 KB) cap, proving the margin is additive to worst_gb rather than replacing it'
+
+# A file that hits its cap is a STAGE FAILURE, named, with the cap and the
+# remediation knob in the message - never a silent pass and never a bare
+# unattributed exit code. `251` stands in for the real, measured GHC exit
+# ("shellcheck: out of memory") a genuinely over-budget invocation produces.
+_stage_ci_ulimit 16 15 'ci1.sh:251'
+assert_eq 1 "$STAGE_STATUS" \
+  'a file that exhausts its enforced memory cap FAILS the stage - this project has no reported-and-continue outcome for it, the same "the runner IS the target" policy an already-unchecked CI file always had'
+assert_contains "$STAGE_OUT" 'ci1.sh' 'and the failing file is named'
+assert_contains "$STAGE_OUT" '10GB per-invocation cap' \
+  'and the message states the enforced cap that was hit'
+assert_contains "$STAGE_OUT" 'SCOURSH_SHELLCHECK_CI_ULIMIT_GB' \
+  'and names the knob to raise it with, rather than leaving a reader to rediscover it by reading this file'
 assert_eq 6 "$(wc -l <"$W/argc.log" | tr -d ' ')"   'and one job still means six invocations for six files, not one batch of six'
 
 # ===========================================================================
