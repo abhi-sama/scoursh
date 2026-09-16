@@ -52,15 +52,21 @@
 
 set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
-# shellcheck source=lib/http.sh
+# -x back-edge cut: lib/http.sh, modules/network/reachability_engine.sh,
+# lib/nettransport.sh and modules/dast/passive/tls_engine.sh are all already
+# inlined via modules/network/tlsport.sh's own real edges to them, once the
+# first t_case below sources tlsport.sh for real - each of these four direct
+# edges duplicated that same content a second time, re-expanding the hub
+# chain with it (docs/CI-RUNBOOK.md "the memory model").
+# shellcheck source=/dev/null
 source "$ROOT/lib/http.sh"
 # shellcheck source=modules/network/engine.sh
 source "$ROOT/modules/network/engine.sh"
-# shellcheck source=modules/network/reachability_engine.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/network/reachability_engine.sh"
-# shellcheck source=lib/nettransport.sh
+# shellcheck source=/dev/null
 source "$ROOT/lib/nettransport.sh"
-# shellcheck source=modules/dast/passive/tls_engine.sh
+# shellcheck source=/dev/null
 source "$ROOT/modules/dast/passive/tls_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
@@ -248,6 +254,13 @@ _write_listeners net-tls \
   'extra-host:https:net-tls.fixture.invalid:2222'
 t_case 'the phase runs cleanly over six declared non-base-url listeners plus one base-url row'
 RC=0
+# -x back-edge: this file sources modules/network/tlsport.sh once per test
+# case below; shellcheck's own dynamic-path heuristic resolves $ROOT (a
+# BASH_SOURCE-derived variable) and follows every occurrence independently,
+# re-expanding the whole graph each time.  This first occurrence is the one
+# kept real; every later one is cut to /dev/null as a repeat of an identical
+# target already inlined here (docs/CI-RUNBOOK.md "the memory model").
+# shellcheck source=modules/network/tlsport.sh
 source "$ROOT/modules/network/tlsport.sh" || RC=$?
 assert_eq '0' "$RC" 'tlsport.sh returns 0'
 
@@ -333,6 +346,9 @@ _phase_env net-tls
 _write_listeners net-tls \
   'base-url:https:net-tls.fixture.invalid:443' \
   'extra-host:https:net-tls.fixture.invalid:8443'
+# -x back-edge cut: modules/network/tlsport.sh is already inlined elsewhere
+# in this file's own source graph (see the first t_case above).
+# shellcheck source=/dev/null
 source "$ROOT/modules/network/tlsport.sh"
 FIND=$(_shard_text)
 assert_contains "$FIND" 'check_id=NET-TLS-WILDCARD_CERT-01' \
@@ -344,6 +360,9 @@ _phase_env net-tls-wildcard-ok
 _write_listeners net-tls-wildcard-ok \
   'base-url:https:net-tls-wc.fixture.invalid:443' \
   'extra-host:https:net-tls-wc.fixture.invalid:8443'
+# -x back-edge cut: modules/network/tlsport.sh is already inlined elsewhere
+# in this file's own source graph (see the first t_case above).
+# shellcheck source=/dev/null
 source "$ROOT/modules/network/tlsport.sh"
 FIND=$(_shard_text); META=$(_meta_text)
 assert_not_contains "$FIND" 'NET-TLS-WILDCARD_CERT-01' \
@@ -360,6 +379,9 @@ t_case 'a base-url-only target (no listeners.json at all) records no_declared_li
 _fresh_run
 _phase_env net-tls-solo
 RC=0
+# -x back-edge cut: modules/network/tlsport.sh is already inlined elsewhere
+# in this file's own source graph (see the first t_case above).
+# shellcheck source=/dev/null
 source "$ROOT/modules/network/tlsport.sh" || RC=$?
 assert_eq '0' "$RC" 'exits 0'
 META=$(_meta_text); FIND=$(_shard_text)
@@ -373,6 +395,9 @@ _fresh_run
 _phase_env net-tls
 _write_listeners net-tls 'base-url:https:net-tls.fixture.invalid:443'
 RC=0
+# -x back-edge cut: modules/network/tlsport.sh is already inlined elsewhere
+# in this file's own source graph (see the first t_case above).
+# shellcheck source=/dev/null
 source "$ROOT/modules/network/tlsport.sh" || RC=$?
 assert_eq '0' "$RC" 'exits 0'
 META=$(_meta_text)
@@ -392,6 +417,9 @@ _phase_env net-tls
 _write_listeners net-tls \
   'base-url:https:net-tls.fixture.invalid:443' \
   'extra-host:https:net-tls.fixture.invalid:8443'
+# -x back-edge cut: modules/network/tlsport.sh is already inlined elsewhere
+# in this file's own source graph (see the first t_case above).
+# shellcheck source=/dev/null
 source "$ROOT/modules/network/tlsport.sh" || RC=$?
 META=$(_meta_text); FIND=$(_shard_text)
 eval "$_have_real"
