@@ -572,6 +572,32 @@ check 'no `read -p` outside lib/guide.sh' \
   'read[[:space:]].*-p([[:space:]]|$)' \
   guide_isolation_files lib/guide.sh
 
+printf '\n== no smart quotes in shell code (SC1112) ==\n'
+# ShellCheck's own SC1112 already flags a stray U+2018/2019/201C/201D - but
+# only for a file small enough to reach that stage at all.  The files most
+# likely to carry one (a large test suite a prose-heavy editor auto-corrected
+# while typing a possessive into an assert message, per the incident that
+# added this check) are exactly the files tests/lint-source-graph.sh's hub
+# fan-out cap or the shellcheck stage's own memory budget can cause to be
+# SKIPPED - see AGENTS.md's shellcheck-memory-model notes.  This check is a
+# plain alternation of four fixed-width UTF-8 byte sequences (never a bracket
+# expression, which is not portably multi-byte-aware across BSD and GNU
+# regex engines - see AGENTS.md "things measured on this codebase"), so it
+# costs nothing and covers every `*.sh` file regardless of size.  It is
+# scoped to all_files() - `*.sh` only, never docs/ or a `.rules` prose field
+# - because a curly quote is legitimate English prose there and only a
+# defect in code.
+#
+# The pattern is built from bash 4.2's ANSI-C `$'\uHHHH'` escapes rather than
+# the literal characters: a literal would make this file match its own
+# check (the "a rule file that spells a credential-shaped example in its own
+# header matches itself" trap AGENTS.md's secrets.rules note already
+# records) AND trip ShellCheck's own SC1112 on the pattern that describes
+# SC1112, in the file ShellCheck is not skipping.
+_smart_quote_pattern=$'(\u2018|\u2019|\u201c|\u201d)'
+check 'no U+2018/2019/201C/201D smart quote (retype as ASCII '"'"'/")' \
+  "$_smart_quote_pattern" all_files
+
 printf '\n'
 if (( FAILED )); then
   printf 'lint-shell: FAILED\n'
