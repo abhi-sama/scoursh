@@ -132,6 +132,21 @@ _run_cloud() {
   return 0
 }
 
+# Derive the audit view's service count from the dispatcher-owned catalog, not
+# from the services that had landed when this suite was last edited. A row is
+# present only when its actual script exists, matching run.sh's `-f` predicate
+# - the same helper tests/suites/cloud-{s3,ec2,ssm,backup}.sh already carry.
+_cloud_service_census() {
+  local spec script
+  _CLOUD_SERVICE_ROWS=${#_CLOUD_SERVICES[@]}
+  _CLOUD_SERVICE_PRESENT=0
+  for spec in "${_CLOUD_SERVICES[@]+"${_CLOUD_SERVICES[@]}"}"; do
+    script=${spec%%:*}
+    [[ -f "$ROOT/modules/cloud/aws/$script" ]] || continue
+    _CLOUD_SERVICE_PRESENT=$(( _CLOUD_SERVICE_PRESENT + 1 ))
+  done
+}
+
 _json() {
   python3 - "$1" "$2" <<'PY'
 import json, sys
@@ -480,8 +495,11 @@ _run_cloud "$W/run-audit" --format audit
 assert_file_exists "$W/run-audit/report-audit.html" 'E12 --format audit writes report-audit.html'
 _AUDIT=$(cat "$W/run-audit/report-audit.html")
 assert_contains "$_AUDIT" 'CLOUD-LAMBDA-' 'E13 the audit view carries the lambda checks'
-assert_contains "$_AUDIT" 'ships the S3 and lambda services only so far' \
-  'E14 the audit view states the real, current extent of the live catalog, updated for this ticket'
+_cloud_service_census
+assert_eq "$_CLOUD_SERVICE_ROWS" "$_CLOUD_SERVICE_PRESENT" \
+  'E14 every cloud service table entry has its real script on disk'
+assert_contains "$_AUDIT" "ships all $_CLOUD_SERVICE_PRESENT docs/DESIGN.md §8.1 services" \
+  'E14b the audit view states the real, current extent of the live catalog'
 assert_not_contains "$_AUDIT" 'ships the S3 service only so far' \
   'E15 ... and the pre-CLOUD-21 sentence naming only S3 is gone rather than left standing beside it'
 

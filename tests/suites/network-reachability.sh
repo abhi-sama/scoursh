@@ -48,21 +48,119 @@ source "$ROOT/lib/core.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
 
+# Loads the real, on-disk `_NET_PHASES` table and `net_intensity_permits`
+# FOR REAL rather than reimplementing either - the same sourcing
+# modules/network/run.sh itself does before it ever calls net_run_phase.
+# Both are used below to derive, rather than hand-list, which sibling
+# phase scripts this suite's fixture must isolate away.
+# shellcheck source=/dev/null
+source "$ROOT/lib/checks.sh"
+# shellcheck source=/dev/null
+source "$ROOT/modules/network/engine.sh"
+
 W=$SCOURSH_SCRATCH/network-reachability
 rm -rf "$W"
 mkdir -p "$W"
 W=$(cd -- "$W" && pwd -P)
 
 # ---------------------------------------------------------------------------
-# Fixture install root - tests/suites/network-inventory.sh's own shape.
+# Fixture install root - tests/suites/network-inventory.sh's own shape,
+# scoped to isolate reachability.sh (NET-06) - this suite's one subject.
 # ---------------------------------------------------------------------------
+# `SCOURSH_NET_PROBE` is ONE shared hook (lib/nettransport.sh) that every
+# probe-tier phase in `_NET_PHASES` calls through, and a bare
+# `scan.sh network --intensity safe` run legitimately dispatches EVERY row
+# in that table, not only reachability.sh's own: banner.sh (NET-07) and
+# tlsport.sh/transport.sh (NET-08/NET-10) share this SAME net_connect_probe
+# hook, and httpport.sh (NET-09) reaches the real network through a
+# separate, equally sanctioned door (lib/http.sh's http_request). All four
+# are correct, PRODUCTION behaviour - each already has its own dedicated
+# suite (tests/suites/network-{banner,tlsport,transport,httpport}.sh) that
+# tests it - not a defect this suite exists to catch. Sharing this suite's
+# net-probe.log (or, for httpport.sh, letting a real curl reach a
+# TEST-NET-3 address) with them would make "once per declared listener" a
+# fact about however many OTHER phases happen to be landed today rather
+# than about reachability.sh alone, so this fixture keeps only
+# reachability.sh (the phase under test) and inventory.sh (NET-05, the one
+# non-probing phase that WRITES the declared-listener artifact
+# reachability.sh reads) and strips every OTHER row out of the real
+# on-disk `_NET_PHASES` table - computed from that table below, never a
+# hand-typed file list, so a phase landing after this comment is written is
+# excluded automatically with nothing here to go stale.
+_NET_ISOLATE_KEEP=(inventory.sh reachability.sh)
+_NET_ISOLATE_EXCLUDE=()
+for _net_phase in "${_NET_PHASES[@]+"${_NET_PHASES[@]}"}"; do
+  _net_script=${_net_phase%%:*}
+  _net_keep=0
+  for _net_k in "${_NET_ISOLATE_KEEP[@]}"; do
+    [[ $_net_script == "$_net_k" ]] && { _net_keep=1; break; }
+  done
+  (( _net_keep )) || _NET_ISOLATE_EXCLUDE+=("$_net_script")
+done
+
 _fixture_root() {
-  local dir=$1 e
+  local dir=$1 e f
   mkdir -p "$dir/config"
   for e in lib modules rules data tools VERSION scan.sh; do
     [[ -e $ROOT/$e ]] || continue
     cp -RL "$ROOT/$e" "$dir/$e"
   done
+  # `net_run_phase` (modules/network/engine.sh) treats a missing phase
+  # script as a clean `absent` no-op - the run still exits 0 and records
+  # nothing for it - so removing a sibling's script here is a real,
+  # faithful "this phase did not land" state, never a shortcut around it.
+  for f in "${_NET_ISOLATE_EXCLUDE[@]+"${_NET_ISOLATE_EXCLUDE[@]}"}"; do
+    rm -f "$dir/modules/network/$f"
+  done
+}
+
+# `_net_expected_probe_counts SCOPE_CONF INSTALL_ROOT` derives the expected
+# total and per-listener probe counts from the fixture's OWN declared
+# listener set (SCOPE_CONF, counted at runtime, never assumed) crossed with
+# the REAL `_NET_PHASES` table and `net_intensity_permits` - a second,
+# independent check that the isolation above actually narrowed execution to
+# what this suite believes it did, rather than a blind trust in it.
+# Presence and source content are both read from INSTALL_ROOT (the actual
+# fixture a given run used - after `_fixture_root`'s own exclusion above),
+# never from $ROOT's own unmodified tree, or this derivation would credit
+# every sibling phase this suite deliberately stripped out of the fixture.
+# Two more facts are read directly off each surviving candidate phase's own
+# on-disk SOURCE, deliberately never by executing net_connect_probe:
+# whether that phase's source calls net_connect_probe at all, and whether
+# its own probe loop is restricted to `role == extra-host` (tlsport.sh,
+# transport.sh - grepped verbatim, the literal guard both files carry) or
+# walks every declared listener including base-url (reachability.sh,
+# banner.sh - no such guard). Both are STRUCTURAL, static facts about
+# which lines exist in the phase's source, never a measurement of how many
+# times it actually calls the hook - which is what keeps this derivation
+# unable to accidentally rubber-stamp the very double-invocation/
+# leftover-host bug the strict per-pair assertions below exist to catch:
+# deriving "how many times SHOULD this fire" by running the phase and
+# counting how many times it DID fire would let a real control-flow bug
+# validate itself.
+_net_expected_probe_counts() {
+  local scope_conf=$1 install_root=$2 base_ct extra_ct total_ct n_all=0 n_extra_only=0
+  base_ct=$(grep -c '^base-url:' "$scope_conf" || true)
+  extra_ct=$(grep -c '^extra-host:' "$scope_conf" || true)
+  total_ct=$(( base_ct + extra_ct ))
+
+  local phase script tier
+  for phase in "${_NET_PHASES[@]+"${_NET_PHASES[@]}"}"; do
+    script=${phase%%:*}
+    tier=${phase##*:}
+    [[ -f "$install_root/modules/network/$script" ]] || continue
+    net_intensity_permits safe "$tier" || continue
+    grep -q 'net_connect_probe' "$install_root/modules/network/$script" || continue
+    if grep -q '\[\[ \$role == extra-host \]\]' "$install_root/modules/network/$script"; then
+      n_extra_only=$(( n_extra_only + 1 ))
+    else
+      n_all=$(( n_all + 1 ))
+    fi
+  done
+
+  _NET_EXPECTED_TOTAL=$(( n_all * total_ct + n_extra_only * extra_ct ))
+  _NET_EXPECTED_BASE_URL=$n_all
+  _NET_EXPECTED_EXTRA_HOST=$(( n_all + n_extra_only ))
 }
 
 # net.fixture.invalid names below are RFC 2606-reserved and resolve to
@@ -152,9 +250,15 @@ assert_eq 0 "$_RC" \
 
 t_case 'net_connect_probe was actually invoked once per declared listener, never more, never with a leftover host'
 PROBE_LOG=$(_slurp "$W/net-probe.log")
-assert_eq 4 "$(grep -c . <<<"$PROBE_LOG")" \
-  'exactly four probe invocations - one per declared listener (base-url plus three extra-host entries) - FAILS if a listener were probed twice or skipped'
-assert_contains "$PROBE_LOG" '203.0.113.40 443' 'the base-url listener was probed at its resolved address and port, not the hostname - FAILS if net_connect_probe were called with the raw hostname rather than the pinned _HTTP_RAW_ADDR (the anti-TOCTOU guarantee this pin exists to enforce)'
+_net_expected_probe_counts "$FIX_MULTI/config/scope.conf" "$FIX_MULTI"
+assert_eq "$_NET_EXPECTED_TOTAL" "$(grep -c . <<<"$PROBE_LOG" || true)" \
+  "exactly $_NET_EXPECTED_TOTAL probe invocations - the declared listener set (one base-url, three extra-host) times every real, --intensity safe-eligible phase whose own source actually calls net_connect_probe on it, derived from modules/network/engine.sh's own _NET_PHASES table rather than a frozen constant - FAILS if any one of those phases probed a listener twice or skipped one"
+assert_eq "$_NET_EXPECTED_BASE_URL" "$(grep -c '^203\.0\.113\.40 443 ' <<<"$PROBE_LOG" || true)" \
+  'the base-url listener (port 443) was probed exactly once per eligible listener-wide phase, at its resolved address and port, not the hostname - FAILS if net_connect_probe were called with the raw hostname rather than the pinned _HTTP_RAW_ADDR (the anti-TOCTOU guarantee this pin exists to enforce), or if that one listener were probed twice or skipped while the aggregate total happened to still add up'
+for _p in 8443 5432 9999; do
+  assert_eq "$_NET_EXPECTED_EXTRA_HOST" "$(grep -c "^203\.0\.113\.40 $_p " <<<"$PROBE_LOG" || true)" \
+    "extra-host listener port $_p was probed exactly once per eligible phase whose scope covers it, at its resolved address - FAILS on a double-invocation, a skip, or a leftover host string for that one listener, none of which the aggregate total alone can distinguish from a correct run"
+done
 
 RUN_MULTI_JSONL=$(_slurp "$W/run-multi/findings.jsonl")
 t_case 'the not-open listener produced the DECLARED_NOT_ANSWERING finding'
@@ -213,8 +317,8 @@ assert_eq 1 "$(grep -c '"check_id":"NET-PORT-UNEXPECTED_LISTENER-01"' <<<"$POSTU
 t_case 'checks_run records UNEXPECTED_LISTENER once posture.conf was actually evaluated'
 POSTURE_RUNJSON=$(_slurp "$W/run-posture/run.json")
 assert_contains "$POSTURE_RUNJSON" 'NET-PORT-UNEXPECTED_LISTENER-01' 'the check id is in checks_run'
-assert_not_contains "$POSTURE_RUNJSON" 'reason=net_check_not_applicable' \
-  'no net_check_not_applicable skip is recorded, because config/posture.conf DOES exist and was read this run'
+assert_not_contains "$POSTURE_RUNJSON" 'reason=net_check_not_applicable check=NET-PORT-UNEXPECTED_LISTENER-01' \
+  'no net_check_not_applicable skip is recorded for THIS check, because config/posture.conf DOES exist and was read this run - anchored to reachability.sh'"'"'s own exact reduction line (module=network phase=reachability.sh reason=net_check_not_applicable check=NET-PORT-UNEXPECTED_LISTENER-01), never a bare substring: banner.sh/tlsport.sh/transport.sh each record their OWN, unrelated net_check_not_applicable reductions (for their own checks, keyed checks=[...]) the moment any declared listener is not open - as two of this fixture'"'"'s four are - so a bare substring match would fail here for a reason that has nothing to do with whether THIS check evaluated posture.conf'
 
 # =============================================================================
 printf '\n-- decision D5: an ABSENT config/posture.conf is a declared skip, never exit 4, never silent --\n'
@@ -391,7 +495,7 @@ NET_PROBE_LOG=$W/net-probe.log \
   >"$W/run-notraffic.log" 2>&1 || _NT_RC=$?
 assert_eq 0 "$_NT_RC" 'the run still exits 0 with a poisoned PATH'
 assert_file_absent "$W/network-attempts" \
-  'no curl/wget/nc/ncat/netcat/openssl was invoked - reachability.sh reaches the network exclusively through lib/nettransport.sh'"'"'s net_connect_probe (which this suite'"'"'s SCOURSH_NET_PROBE hook already replaces) and lib/http.sh'"'"'s http_authorize_raw_connection (whose own resolution this suite'"'"'s SCOURSH_HTTP_RESOLVE hook already replaces)'
+  'no curl/wget/nc/ncat/netcat/openssl was invoked - reachability.sh reaches the network exclusively through lib/nettransport.sh'"'"'s net_connect_probe (which this suite'"'"'s SCOURSH_NET_PROBE hook already replaces) and lib/http.sh'"'"'s http_authorize_raw_connection (whose own resolution this suite'"'"'s SCOURSH_HTTP_RESOLVE hook already replaces) - httpport.sh, the one OTHER phase in this module that would reach the real network (via lib/http.sh'"'"'s http_request), is excluded from this fixture entirely by the isolation above, so its real curl usage cannot mask a genuine bypass here'
 
 # Reset for the next process/test to inherit clean global state, not read
 # again in this file - the same end-of-file idiom tests/suites/image.sh uses.
