@@ -957,9 +957,20 @@ printf '\n-- the shellcheck stage'"'"'s FILE LIST is sharded, not pinned to one 
 # used to be correct and is now the defect this ticket removed.
 
 t_case 'the shellcheck stage'"'"'s files are spread across MULTIPLE shards, not pinned to one'
+# Capture to a variable BEFORE grepping it, rather than piping straight into
+# `grep -q`: `-q` exits the instant it finds its first match, closing the
+# pipe, and under `set -o pipefail` the upstream `_shard_list` subshell then
+# dying of SIGPIPE (141) - not grep's own 0 - becomes the PIPELINE's exit
+# status, so `if _shard_list ... | grep -q ...` reads false even when grep
+# genuinely matched. Measured: with ~85 `^file ` lines per shard, grep found
+# one almost immediately every time, so this was not a rare race - it failed
+# on every real shard, every run, deterministically. `grep -c` (used for the
+# suite/config split below) drains its whole input and is unaffected; only a
+# quiet-mode early exit racing pipefail causes this.
 _file_owning_shards=0
 for _i in 1 2 3 4; do
-  if _shard_list "$_i/4" | grep -q '^file '; then _file_owning_shards=$(( _file_owning_shards + 1 )); fi
+  _shard_out=$(_shard_list "$_i/4")
+  if grep -q '^file ' <<<"$_shard_out"; then _file_owning_shards=$(( _file_owning_shards + 1 )); fi
 done
 assert_eq 4 "$_file_owning_shards" \
   'all four shards own at least one shellcheck file - FAILS under the old one-shard-owns-the-whole-stage shape, which is exactly the pole this ticket removes (with 336-odd real files and 4 shards, every shard getting at least one is the expected shape, not a coincidence)'
