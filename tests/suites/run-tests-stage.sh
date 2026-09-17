@@ -608,6 +608,22 @@ assert_eq 6 "$CI_INVOCATIONS" \
 assert_eq 1 "$CI_MAXARGC" \
   'and no invocation is handed more than ONE file - FAILS under the batched shape, whose peak memory is the SUM over its batch rather than the MAX over the tree, which is what took the ubuntu-latest runner down'
 
+# THE DECLARED HANDOFF BANNER.  This CI-path stage call reads the REAL
+# tests/shellcheck-heavy-files.txt (SCOURSH_SHELLCHECK_HEAVY_FILES_LIST is not
+# overridden here), so it exercises the real, checked-in list rather than a
+# fixture stand-in - the banner names the count and every file, unconditionally,
+# because the exclusion happened upstream in `_shard_build_plan` and this is
+# the one place left that can still say so out loud.
+_heavy_n=$(awk '!/^[[:space:]]*($|#)/{n++} END{print n+0}' "$ROOT/tests/shellcheck-heavy-files.txt")
+assert_contains "$STAGE_OUT" "shellcheck: $_heavy_n file(s) handed off to the daily suite" \
+  'the CI-path stage names the declared handoff count on every run - a silent exclusion here would read exactly like a file that was simply never discovered'
+assert_contains "$STAGE_OUT" 'tests/shellcheck-heavy-files.txt' \
+  'and points at the one named place the list lives, rather than leaving a reader to search for it'
+assert_contains "$STAGE_OUT" '  - scan.sh' \
+  'and names at least one real handed-off file - never phrased as though it passed here'
+assert_contains "$STAGE_OUT" '  - tests/suites/dast-methods.sh' \
+  'and another - the banner lists every file, not merely the count'
+
 # Per-file attribution, which the batched shape explicitly could not do: it
 # reported `(batched - see the output above)` in place of a filename.
 STUB_PLAN='ci4.sh:1' _stage_ci
@@ -801,6 +817,50 @@ assert_contains "$STAGE_OUT" 'can give one process' \
 assert_not_contains "$STAGE_OUT" 'could NOT be checked' \
   'and is NOT filed as unmeasured, which is for results this stage should have got and did not'
 
+# ===========================================================================
+printf '== N2: SCOURSH_SHELLCHECK_SKIP_IS_FATAL - a skip that daily-suite.sh cannot afford to be quiet about ==\n'
+# ===========================================================================
+# The identical too-small-host shape as the OVER BUDGET case directly above -
+# same host, same file, same cause, and the local path's ordinary answer is
+# still a clean SKIPPED pass, because a laptop really can be too small for a
+# file. tools/daily-suite.sh's own dedicated heavy-file pass cannot accept
+# that answer for a file this project has DECLARED heavy (see
+# tests/shellcheck-heavy-files.txt): "the container was too small" has to be
+# exactly as fatal as CI's own "the runner was too small" is, or the daily
+# suite would be a quieter version of the very gap the CI handoff exists to
+# close. SCOURSH_SHELLCHECK_SKIP_IS_FATAL=1 is what tools/daily-suite/gnu-leg.sh
+# sets for that one dedicated call, and only for it - this section proves it
+# flips the verdict without inventing a second skip mechanism.
+status=0
+out=$(PATH=$W/bin:$PATH \
+      GITHUB_ACTIONS='' \
+      SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist \
+      SCOURSH_SHELLCHECK_FREE_FLOOR_GB=1 \
+      SCOURSH_SHELLCHECK_BUDGET_KB=100 \
+      SCOURSH_SHELLCHECK_FORCE_TOTAL_GB=7 \
+      SCOURSH_SHELLCHECK_FORCE_AVAIL_GB=3 \
+      SCOURSH_SHELLCHECK_SKIP_IS_FATAL=1 \
+      STUB_PLAN='alpha.sh:sleep beta.sh:sleep' \
+      bash "$RUNNER" shellcheck 2>&1) || status=$?
+STAGE_OUT=$out
+STAGE_STATUS=$status
+assert_ne 0 "$STAGE_STATUS" \
+  'with SCOURSH_SHELLCHECK_SKIP_IS_FATAL=1, the SAME host-capacity skip that passes by default now FAILS the stage - FAILS under a knob that only decorates the message without changing the exit status'
+assert_contains "$STAGE_OUT" '--- shellcheck FAILED' \
+  'and reaches the FAILED verdict line, exactly as visibly as an ordinary unchecked file does'
+assert_contains "$STAGE_OUT" 'SKIPPED - this host does not have the memory' \
+  'and the roll-up still names the real cause (a host-capacity skip, not a finding) - the flag changes the VERDICT, never the diagnosis'
+status=0
+
+# The unset default: an ordinary run with nothing set behaves exactly as
+# section I already pinned - SKIPPED still passes. Re-asserted here, right
+# next to the fatal case, so the two are read as a pair rather than trusting
+# that section I's own result still holds by the time a reader reaches this
+# one.
+_stage_small_host 1 100
+assert_eq 0 "$STAGE_STATUS" \
+  'with SCOURSH_SHELLCHECK_SKIP_IS_FATAL unset, the identical skip still PASSES - the ordinary contributor path is unchanged by this knob existing at all'
+
 # =============================================================================
 printf '\n-- --shard I/N: a wall-clock split that is provably not a filter --\n'
 # =============================================================================
@@ -852,10 +912,49 @@ _sl_declared_dirs=()
 for _d in lib tests tools modules aws; do [[ -d "$ROOT/$_d" ]] && _sl_declared_dirs+=("$_d"); done
 SHARD_DECLARED_FILE_N=$(cd "$ROOT" && find "${_sl_declared_dirs[@]}" -name '*.sh' -type f 2>/dev/null | wc -l | tr -d ' ')
 [[ -f "$ROOT/scan.sh" ]] && SHARD_DECLARED_FILE_N=$(( SHARD_DECLARED_FILE_N + 1 ))
-assert_eq "$(( SHARD_DECLARED_SL_N + SHARD_DECLARED_FILE_N ))" "$SHARD_FULL_N" \
-  '--shard 1/1 lists exactly as many work items as SUITES + LINTERS declares, plus one per real *.sh file under lib/tests/tools/modules/aws (+ scan.sh) - FAILS if the shard path enumerates the full run from a second, drifting list of its own, or stops being one item per file'
+# tests/shellcheck-heavy-files.txt names files `_shard_build_plan`
+# deliberately excludes from every shard's file-item plan - see that
+# function's own header in tests/run-tests.sh. Read the same way
+# tests/run-tests.sh's own `_sc_load_heavy_files` does (blank lines and `#`
+# comments ignored), rather than a count typed here, so this assertion tracks
+# the real list rather than a snapshot of it.
+SHARD_DECLARED_HEAVY_N=$(awk '!/^[[:space:]]*($|#)/{n++} END{print n+0}' "$ROOT/tests/shellcheck-heavy-files.txt")
+assert_eq "$(( SHARD_DECLARED_SL_N + SHARD_DECLARED_FILE_N - SHARD_DECLARED_HEAVY_N ))" "$SHARD_FULL_N" \
+  '--shard 1/1 lists exactly as many work items as SUITES + LINTERS declares, plus one per real *.sh file under lib/tests/tools/modules/aws (+ scan.sh), MINUS the declared CI handoff (tests/shellcheck-heavy-files.txt), which --shard deliberately excludes from every shard - FAILS if the shard path enumerates the full run from a second, drifting list of its own, stops being one item per file, or stops excluding the declared handoff'
 assert_eq 1 "$( (( SHARD_FULL_N > 100 )) && printf 1 || printf 0 )" \
   "and that is the real, whole array rather than a filtered remnant (got $SHARD_FULL_N items)"
+
+t_case 'the CI handoff (tests/shellcheck-heavy-files.txt) is a true partition: every heavy file is a real, discoverable *.sh file, and none of them appear in --shard'"'"'s file-item plan at any N'
+# The union-completeness proof this ticket's own brief demands: CI's checked
+# set (SHARD_FULL's own `file` lines) plus the daily suite's checked set
+# (tests/shellcheck-heavy-files.txt) must equal the FULL, unfiltered tree
+# walk exactly - no file in neither, and no file the shard plan silently
+# still owns despite being declared handed off.
+_heavy_list=$ROOT/tests/shellcheck-heavy-files.txt
+assert_file_exists "$_heavy_list" 'the CI handoff list exists at the one named place both consumers read'
+_heavy_paths=()
+while IFS= read -r _hp; do
+  [[ -z $_hp || $_hp == \#* ]] && continue
+  _heavy_paths+=("$_hp")
+done < "$_heavy_list"
+assert_eq 1 "$( (( ${#_heavy_paths[@]} > 0 )) && printf 1 || printf 0 )" \
+  'the handoff list names at least one file, so this section is not vacuously true'
+_full_tree=$(cd "$ROOT" && find "${_sl_declared_dirs[@]}" -name '*.sh' -type f 2>/dev/null | LC_ALL=C sort)
+[[ -f "$ROOT/scan.sh" ]] && _full_tree=$(printf '%s\nscan.sh\n' "$_full_tree" | LC_ALL=C sort)
+_shard_full_files=$(printf '%s\n' "$SHARD_FULL" | awk '$1=="file"{print $2}' | LC_ALL=C sort)
+for _hp in "${_heavy_paths[@]}"; do
+  assert_eq 1 "$( (( $(grep -Fxc "$_hp" <<<"$_full_tree") > 0 )) && printf 1 || printf 0 )" \
+    "declared heavy file $_hp is a real file under the tree --shard's own discovery walks - a stale entry would silently mean this file is checked NOWHERE"
+  # An EXACT line match, never assert_not_contains's plain substring test:
+  # "scan.sh" is itself a substring of the unrelated, non-heavy
+  # tests/e2e/fixture-scan.sh, which a substring check would misread as a
+  # leak.
+  assert_eq 0 "$(grep -Fxc "$_hp" <<<"$_shard_full_files")" \
+    "declared heavy file $_hp never appears in --shard's file-item plan at N=1 - a leak here would mean CI still attempts a file it claims to have handed off"
+done
+_union_files=$(printf '%s\n%s\n' "$_shard_full_files" "$(printf '%s\n' "${_heavy_paths[@]}")" | LC_ALL=C sort -u)
+assert_eq "$_full_tree" "$_union_files" \
+  'CI'"'"'s own file-item plan UNION the declared heavy list reconstructs the full, unfiltered tree exactly - the load-bearing union-completeness proof: every *.sh file is claimed by CI or by the declared handoff, never by neither and never by both'
 
 # EVERY TEST BELOW THAT DOES NOT SPECIFICALLY WANT REAL HUB-SUM WEIGHTING USES
 # THIS OVERRIDE, exported for the rest of this section.  A `file:<path>` item

@@ -273,6 +273,35 @@ _sc_discover_files() {
   done < <(find "${dirs[@]+"${dirs[@]}"}" -name '*.sh' -type f | LC_ALL=C sort)
 }
 
+# ===========================================================================
+# The CI shellcheck HANDOFF list (tests/shellcheck-heavy-files.txt).
+# ===========================================================================
+# See that file's own header for the full rationale. In short: every path it
+# names needs more real resident shellcheck -x memory than CI's own runner
+# can give one process, even running alone at the whole of that runner's real
+# headroom - measured, not guessed, on CI run 35204437732. `_shard_build_plan`
+# below excludes every one of them from the file-item plan `--shard I/N`
+# builds, UNCONDITIONALLY: `--shard` has exactly one real caller (CI), and
+# CI can never check these files no matter how the plan is weighted. They are
+# genuinely checked instead by tools/daily-suite.sh's GNU leg, in its own
+# container, against this SAME file - see tests/shellcheck-heavy-files.txt's
+# own header for why there is exactly one named place this list lives, not
+# two that could drift.
+SCOURSH_SHELLCHECK_HEAVY_FILES_LIST=${SCOURSH_SHELLCHECK_HEAVY_FILES_LIST:-$ROOT/tests/shellcheck-heavy-files.txt}
+declare -A SC_HEAVY_FILES=()
+SC_HEAVY_FILES_ORDER=()
+_sc_load_heavy_files() {
+  SC_HEAVY_FILES=()
+  SC_HEAVY_FILES_ORDER=()
+  [[ -f $SCOURSH_SHELLCHECK_HEAVY_FILES_LIST ]] || return 0
+  local line
+  while IFS= read -r line; do
+    [[ -z $line || $line == \#* ]] && continue
+    SC_HEAVY_FILES[$line]=1
+    SC_HEAVY_FILES_ORDER+=("$line")
+  done < "$SCOURSH_SHELLCHECK_HEAVY_FILES_LIST"
+}
+
 declare -A SHARD_PLAN=()
 
 # Builds SHARD_PLAN[key] = shard number (1..SHARD_TOTAL), a pure function of
@@ -292,9 +321,14 @@ _shard_build_plan() {
   done
   # The shellcheck STAGE contributes one item PER FILE, not one item for the
   # whole tree - see the `--shard` header block above for why. `SC_ALL_FILES`
-  # is left populated afterwards, for `shard_work` to filter against.
+  # is left populated afterwards, for `shard_work` to filter against. Every
+  # path named in tests/shellcheck-heavy-files.txt is left OUT of this plan
+  # entirely - see this block's own header above - so it never lands in any
+  # shard's file-item list and CI never attempts it.
   _sc_discover_files
+  _sc_load_heavy_files
   for f in "${SC_ALL_FILES[@]}"; do
+    [[ -n ${SC_HEAVY_FILES[$f]:-} ]] && continue
     keys+=("file:$f"); weights+=("$(_shard_weight_of "file:$f")")
   done
 
@@ -360,7 +394,13 @@ shard_work() {
     [[ ${SHARD_PLAN[linter:$l]} == "$SHARD_INDEX" ]] && printf 'linter %s tests/%s.sh\n' "$l" "$l"
   done
   for f in "${SC_ALL_FILES[@]}"; do
-    [[ ${SHARD_PLAN[file:$f]} == "$SHARD_INDEX" ]] && printf 'file %s %s\n' "$f" "$f"
+    # `:-` rather than a bare reference: a path named in
+    # tests/shellcheck-heavy-files.txt is discovered here (SC_ALL_FILES is
+    # the unfiltered walk) but was deliberately never given a SHARD_PLAN
+    # entry by `_shard_build_plan` above, so an unguarded reference to an
+    # absent associative-array key aborts the whole script under this file's
+    # own `set -Eeuo pipefail` - never merely evaluates to a non-match.
+    [[ ${SHARD_PLAN[file:$f]:-} == "$SHARD_INDEX" ]] && printf 'file %s %s\n' "$f" "$f"
   done
   # ALWAYS 0, regardless of whether the last item printed belonged to this
   # shard - the old idx%N scheme's status was "did the LAST item belong to
@@ -1081,6 +1121,24 @@ sc_stage() {
         "$sc_total" "$sc_ci_total_gb" "$sc_ci_avail_gb" "$sc_ci_reserve_gb" \
         "$sc_ci_headroom_gb" "$sc_ci_cores" "$sc_ci_jobs" "$sc_ci_worst_gb"
 
+      # THE DECLARED HANDOFF.  Printed on every CI shard, unconditionally,
+      # because it is a fact about the whole tree rather than about this
+      # shard's own slice - `_shard_build_plan` has already excluded every
+      # one of these paths from every shard's file-item plan (see that
+      # function's own header), so this banner is what keeps the exclusion
+      # from reading as a silent gap in the log: a file named here was never
+      # attempted on CI, on purpose, and is checked for real by
+      # tools/daily-suite.sh's GNU leg instead - never phrased as though it
+      # passed here.
+      _sc_load_heavy_files
+      if (( ${#SC_HEAVY_FILES_ORDER[@]} > 0 )); then
+        printf 'shellcheck: %s file(s) handed off to the daily suite'"'"'s own container - NOT checked in CI, see %s:\n' \
+          "${#SC_HEAVY_FILES_ORDER[@]}" "$SCOURSH_SHELLCHECK_HEAVY_FILES_LIST"
+        for sc_hf in "${SC_HEAVY_FILES_ORDER[@]}"; do
+          printf '  - %s\n' "$sc_hf"
+        done
+      fi
+
       # No `trap ... EXIT` here: the stage-wide traps installed above already
       # remove $sc_shard_dir, and re-arming EXIT would drop the verdict trap.
       sc_shard_dir=$(mktemp -d)
@@ -1120,7 +1178,7 @@ sc_stage() {
           # circuit the local path takes, but CI has no skip outcome to
           # take instead, so both categories fail the stage.
           for sc_f in "${sc_pass_over[@]+"${sc_pass_over[@]}"}"; do
-            sc_unchecked+=("$sc_f (needs more than the ${sc_ci_worst_gb}GB this runner's ${sc_ci_headroom_gb}GB headroom can give one process, and there is no larger budget left to retry it at - raise it with SCOURSH_SHELLCHECK_CI_WORST_GB, or shrink this file's own -x source fan-out per tests/lint-source-graph.sh)")
+            sc_unchecked+=("$sc_f (needs more than the ${sc_ci_worst_gb}GB this runner's ${sc_ci_headroom_gb}GB headroom can give one process, and there is no larger budget left to retry it at - raise it with SCOURSH_SHELLCHECK_CI_WORST_GB, shrink this file's own -x source fan-out per tests/lint-source-graph.sh, or - if neither is enough - add it to tests/shellcheck-heavy-files.txt to hand it to tools/daily-suite.sh's GNU leg instead, which sizes its own container's memory for exactly this)")
             sc_status=1
           done
           for sc_f in "${sc_pass_pressure[@]+"${sc_pass_pressure[@]}"}"; do
@@ -1132,7 +1190,7 @@ sc_stage() {
             "${#sc_queue[@]}" "$sc_ci_pass2_budget_gb" "$sc_ci_headroom_gb"
           _sc_run_pass "$sc_ci_pass2_budget_gb" 1 "second"
           for sc_f in "${sc_pass_over[@]+"${sc_pass_over[@]}"}"; do
-            sc_unchecked+=("$sc_f (needs more real resident memory than ${sc_ci_pass2_budget_gb}GB - the whole of this runner's real headroom - even alone; raise it with SCOURSH_SHELLCHECK_CI_WORST_GB is not enough here, this file needs a bigger runner or a smaller -x fan-out per tests/lint-source-graph.sh)")
+            sc_unchecked+=("$sc_f (needs more real resident memory than ${sc_ci_pass2_budget_gb}GB - the whole of this runner's real headroom - even alone; raising SCOURSH_SHELLCHECK_CI_WORST_GB is not enough here, this file needs a bigger runner, a smaller -x fan-out per tests/lint-source-graph.sh, or adding it to tests/shellcheck-heavy-files.txt to hand it to tools/daily-suite.sh's GNU leg instead)")
             sc_status=1
           done
           for sc_f in "${sc_pass_pressure[@]+"${sc_pass_pressure[@]}"}"; do
@@ -1492,6 +1550,24 @@ sc_stage() {
     # A file that could not be checked fails the stage on its own, even when
     # nothing that DID get checked reported anything.
     if (( ${#sc_unchecked[@]} > 0 )); then
+      sc_status=1
+    fi
+    # SCOURSH_SHELLCHECK_SKIP_IS_FATAL - never set by an ordinary run, and
+    # never consulted on the CI branch above (CI has no `sc_skipped` outcome
+    # to begin with; every file it discovers either gets a result or fails).
+    # tools/daily-suite.sh's dedicated heavy-file pass
+    # (tests/shellcheck-heavy-files.txt) sets this, because that pass is this
+    # project's declared, sole replacement for the CI coverage those files
+    # were excluded from - "this container does not have the memory either"
+    # has to read exactly as fatally as CI's own "this runner does not have
+    # the memory" does, or the daily suite would quietly become a version of
+    # the same gap the handoff exists to close, just one hop further away
+    # from anyone watching. An ordinary contributor running the plain suite
+    # keeps the original, lenient behaviour: SKIPPED still passes there,
+    # because "this laptop is too small for this file" remains a legitimate
+    # answer everywhere except the one place this project now promises an
+    # answer will always be a real one.
+    if [[ ${SCOURSH_SHELLCHECK_SKIP_IS_FATAL:-0} == 1 ]] && (( ${#sc_skipped[@]} > 0 )); then
       sc_status=1
     fi
     _sc_verdict "$sc_status"
