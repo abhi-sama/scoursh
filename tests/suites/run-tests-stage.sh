@@ -34,8 +34,13 @@
 #     suites and linters do not run (this file included - without it, this
 #     suite would recurse);
 #   * SCOURSH_SHELLCHECK_FILE_LIST pointing at a two-file fixture list, so the
-#     stage does not walk the real tree.  That variable is a test seam and
-#     nothing else: a real run has it unset and still checks every *.sh file.
+#     stage does not walk the real tree.  It is used PURELY as a test seam
+#     here (an unsharded `tests/run-tests.sh shellcheck`, which is what every
+#     case up to the `--shard` section below drives, still checks every *.sh
+#     file when it is left unset) - the `--shard` section further down in
+#     this file exercises this SAME variable's other, real caller: a sharded
+#     run setting it itself, internally, to hand `sc_stage` exactly the files
+#     that shard owns.
 #
 # shellcheck shell=bash
 #
@@ -812,6 +817,14 @@ printf '\n-- --shard I/N: a wall-clock split that is provably not a filter --\n'
 # item missing) AND by count (no item twice).  That is checked over several N,
 # including N=1 (which must be the full run by construction) and an N larger
 # than any CI matrix would use.
+#
+# THE WORK LIST NOW INCLUDES ONE ITEM PER SHELLCHECK FILE, not one item for
+# the whole tree - see tests/run-tests.sh's own `--shard` header for why (the
+# short version: a whole-tree stage pinned to one shard was the pole on CI run
+# 35167252242, while nineteen other jobs sat idle). Every property this
+# section already proved for suites and linters has to hold for `file:<path>`
+# items too, which is why the reconstruction loop below needs no changes at
+# all to cover them - it never looks at what KIND of item a line names.
 
 _shard_list() { bash "$RUNNER" --shard "$1" --list; }
 
@@ -819,15 +832,55 @@ SHARD_FULL=$(bash "$RUNNER" --shard 1/1 --list)
 SHARD_FULL_N=$(printf '%s\n' "$SHARD_FULL" | wc -l | tr -d ' ')
 
 t_case '--shard 1/1 is the full work list, so a shard can never be a way to run less'
-# Counted against tests/run-tests.sh's OWN arrays rather than a number typed
-# here, which would go stale the next time a suite is registered and would
-# then be asserting the wrong thing quietly.
-SHARD_DECLARED_N=$(bash "$RUNNER" --list \
-  | awk -F': *' '/^(suites|linters|stages): /{n+=split($2,a," ")} END{print n}')
-assert_eq "$SHARD_DECLARED_N" "$SHARD_FULL_N" \
-  '--shard 1/1 lists exactly as many work items as SUITES + LINTERS + STAGES declares - FAILS if the shard path enumerates the full run from a second, drifting list of its own'
+# Counted against tests/run-tests.sh's OWN arrays for suites and linters, and
+# against an INDEPENDENT `find` over the same directories `_sc_discover_files`
+# walks for the shellcheck file list, rather than a number typed here - either
+# one going stale (a suite registered, a new top-level *.sh file landing)
+# would otherwise silently fall out of step with what this assertion expects.
+# A single `stages: shellcheck` name no longer accounts for the file-list
+# dimension at all - see the header note above - so it is deliberately left
+# out of this sum rather than added to it.
+SHARD_DECLARED_SL_N=$(bash "$RUNNER" --list \
+  | awk -F': *' '/^(suites|linters): /{n+=split($2,a," ")} END{print n}')
+# Only directories that EXIST are passed to `find` - exactly the
+# `[[ -d $d ]]` guard `_sc_discover_files` itself applies - because `aws/`
+# does not exist in this checkout yet (step 6 is unstarted) and a bare `find`
+# naming a missing path exits non-zero (both GNU find and a `bfs` shadowing
+# it on PATH do), which under `pipefail` silently poisons this whole
+# assignment's exit status even though the file COUNT it captured is correct.
+_sl_declared_dirs=()
+for _d in lib tests tools modules aws; do [[ -d "$ROOT/$_d" ]] && _sl_declared_dirs+=("$_d"); done
+SHARD_DECLARED_FILE_N=$(cd "$ROOT" && find "${_sl_declared_dirs[@]}" -name '*.sh' -type f 2>/dev/null | wc -l | tr -d ' ')
+[[ -f "$ROOT/scan.sh" ]] && SHARD_DECLARED_FILE_N=$(( SHARD_DECLARED_FILE_N + 1 ))
+assert_eq "$(( SHARD_DECLARED_SL_N + SHARD_DECLARED_FILE_N ))" "$SHARD_FULL_N" \
+  '--shard 1/1 lists exactly as many work items as SUITES + LINTERS declares, plus one per real *.sh file under lib/tests/tools/modules/aws (+ scan.sh) - FAILS if the shard path enumerates the full run from a second, drifting list of its own, or stops being one item per file'
 assert_eq 1 "$( (( SHARD_FULL_N > 100 )) && printf 1 || printf 0 )" \
   "and that is the real, whole array rather than a filtered remnant (got $SHARD_FULL_N items)"
+
+# EVERY TEST BELOW THAT DOES NOT SPECIFICALLY WANT REAL HUB-SUM WEIGHTING USES
+# THIS OVERRIDE, exported for the rest of this section.  A `file:<path>` item
+# never falls back to the flat default with no weights file at all - it
+# always carries its own real hub-sum weight (tests/run-tests.sh's
+# `_sc_file_weight_seconds`, which calls tests/lib/hubsum.sh's real,
+# ~50-second whole-tree walk) - so leaving every subsequent `_shard_list` call
+# unoverridden would multiply that cost by however many times this section
+# calls it, which is minutes for the reconstruction loop below alone and
+# HOURS for the degenerate one-item-per-shard case further down. None of the
+# STRUCTURAL properties this section proves (completeness, no duplicates,
+# degeneration to round-robin, weight causing separation) depend on which
+# real numbers the weights happen to be - LPT visits every item exactly once
+# regardless of the weight values, so a bug that dropped or doubled an item
+# would still be caught under controlled weights. Building this from
+# SHARD_FULL's OWN file lines (rather than re-deriving the file list a second
+# time) is what keeps this fixture itself from becoming a second, drifting
+# enumeration.
+SHARD_DEFAULT_SECONDS=$(sed -n 's/^SHARD_DEFAULT_WEIGHT_SECONDS=\([0-9][0-9]*\)$/\1/p' "$RUNNER")
+assert_ne '' "$SHARD_DEFAULT_SECONDS" \
+  'could not read SHARD_DEFAULT_WEIGHT_SECONDS out of tests/run-tests.sh - this fixture pins every file back to it, and guessing the number would test nothing'
+_ALL_DEFAULT=$W/weights-all-default.tsv
+printf '%s\n' "$SHARD_FULL" \
+  | awk -v d="$SHARD_DEFAULT_SECONDS" '$1=="file"{printf "file:%s\t%s\n", $2, d}' > "$_ALL_DEFAULT"
+export SCOURSH_SHARD_WEIGHTS_FILE=$_ALL_DEFAULT
 
 for _n in 1 2 3 4 5 8 13; do
   t_case "the union of all $_n shards is exactly the full work list, with nothing dropped and nothing run twice"
@@ -851,19 +904,19 @@ t_case 'with every item at the same (default) weight, the split degrades to the 
 # of the full list, one per shard.  Under contiguous blocks shard 1 would hold
 # the first THIRD of the list and shards 2 and 3 would hold none of item 2 or
 # 3, so this fails under that reading rather than merely differing from it.
-# A MISSING weights file is what forces every item to the same default: point
-# the seam at a file that does not exist rather than relying on
-# tests/shard-weights.tsv's own current (real, non-uniform) contents, which
-# would make this case depend on data this file has no business knowing about.
-_NOWEIGHTS=$W/no-such-weights.tsv
+# Uses the section-wide `_ALL_DEFAULT` override (already exported above)
+# rather than a missing-file seam: a `file:<path>` item never falls back to
+# the flat default on its own (see that override's own note), so forcing
+# every item in the plan - suite, linter AND file alike - back to the same
+# number is what actually reproduces "no real cost data anywhere" now.
 _full_1=$(printf '%s\n' "$SHARD_FULL" | sed -n 1p)
 _full_2=$(printf '%s\n' "$SHARD_FULL" | sed -n 2p)
 _full_3=$(printf '%s\n' "$SHARD_FULL" | sed -n 3p)
-assert_eq "$_full_1" "$(SCOURSH_SHARD_WEIGHTS_FILE=$_NOWEIGHTS _shard_list 1/3 | sed -n 1p)" \
+assert_eq "$_full_1" "$(_shard_list 1/3 | sed -n 1p)" \
   'shard 1 of 3 leads with work item 1'
-assert_eq "$_full_2" "$(SCOURSH_SHARD_WEIGHTS_FILE=$_NOWEIGHTS _shard_list 2/3 | sed -n 1p)" \
+assert_eq "$_full_2" "$(_shard_list 2/3 | sed -n 1p)" \
   'shard 2 of 3 leads with work item 2 - FAILS under a contiguous split, where item 2 is still shard 1'"'"'s'
-assert_eq "$_full_3" "$(SCOURSH_SHARD_WEIGHTS_FILE=$_NOWEIGHTS _shard_list 3/3 | sed -n 1p)" \
+assert_eq "$_full_3" "$(_shard_list 3/3 | sed -n 1p)" \
   'shard 3 of 3 leads with work item 3 - same reading, third shard'
 
 t_case 'the split is WEIGHT-AWARE, not index-based - two items that would tie onto the same shard under plain round-robin are separated once a cost table says one of them is expensive'
@@ -875,9 +928,12 @@ t_case 'the split is WEIGHT-AWARE, not index-based - two items that would tie on
 # fixture cost table makes both of them the two heaviest items in the array;
 # if the split is really weight-aware they land on DIFFERENT shards despite
 # sharing that position parity, where the old idx%N scheme could only ever
-# put them together.
+# put them together.  Built ON TOP of `_ALL_DEFAULT` (every file still pinned
+# to the flat default) rather than replacing it, so this stays a two-item
+# override and not a second real hub-sum pass.
 _W2=$W/weights-two-heavy.tsv
-printf 'suite:records\t100000\nsuite:config\t100000\n' > "$_W2"
+cat "$_ALL_DEFAULT" > "$_W2"
+printf 'suite:records\t100000\nsuite:config\t100000\n' >> "$_W2"
 # `grep -c` exits 1 on a zero count (tension 4: never call it bare), and that
 # status IS a bare assignment's own under `set -e` - guard each with `|| true`
 # so "not on this shard" (a legitimate, expected outcome half the time here)
@@ -891,13 +947,80 @@ assert_eq 1 "$(( _w2_config1 + _w2_config2 ))" 'config is assigned to exactly on
 assert_ne "$_w2_records" "$_w2_config1" \
   'records and config land on DIFFERENT shards once weighted heavy - FAILS under an index-based scheme, which cannot see the fixture cost table at all and would still tie them by position'
 
-t_case 'the whole-tree shellcheck STAGE is dealt into the rotation like everything else, and lands in exactly one shard'
-_stage_shards=0
+# =============================================================================
+printf '\n-- the shellcheck stage'"'"'s FILE LIST is sharded, not pinned to one shard --\n'
+# =============================================================================
+# This is the property CI run 35167252242 was filed over: pinning the WHOLE
+# stage to one shard (`stage:shellcheck` as a single item) made that shard the
+# pole while nineteen others sat idle. The old test here asserted the OPPOSITE
+# of what this section proves - "lands in exactly one shard" - because that
+# used to be correct and is now the defect this ticket removed.
+
+t_case 'the shellcheck stage'"'"'s files are spread across MULTIPLE shards, not pinned to one'
+# Capture to a variable BEFORE grepping it, rather than piping straight into
+# `grep -q`: `-q` exits the instant it finds its first match, closing the
+# pipe, and under `set -o pipefail` the upstream `_shard_list` subshell then
+# dying of SIGPIPE (141) - not grep's own 0 - becomes the PIPELINE's exit
+# status, so `if _shard_list ... | grep -q ...` reads false even when grep
+# genuinely matched. Measured: with ~85 `^file ` lines per shard, grep found
+# one almost immediately every time, so this was not a rare race - it failed
+# on every real shard, every run, deterministically. `grep -c` (used for the
+# suite/config split below) drains its whole input and is unaffected; only a
+# quiet-mode early exit racing pipefail causes this.
+_file_owning_shards=0
 for _i in 1 2 3 4; do
-  if _shard_list "$_i/4" | grep -q '^stage shellcheck '; then _stage_shards=$(( _stage_shards + 1 )); fi
+  _shard_out=$(_shard_list "$_i/4")
+  if grep -q '^file ' <<<"$_shard_out"; then _file_owning_shards=$(( _file_owning_shards + 1 )); fi
 done
-assert_eq 1 "$_stage_shards" \
-  'exactly one of four shards owns the stage - FAILS both if it is pinned to every shard (the slowest item in the list, run four times) and if it is dropped entirely'
+assert_eq 4 "$_file_owning_shards" \
+  'all four shards own at least one shellcheck file - FAILS under the old one-shard-owns-the-whole-stage shape, which is exactly the pole this ticket removes (with 336-odd real files and 4 shards, every shard getting at least one is the expected shape, not a coincidence)'
+assert_not_contains "$(_shard_list 1/4)" 'stage shellcheck' \
+  'and no shard prints the old monolithic `stage shellcheck` line any more - the stage is now reached only through its own per-file items'
+
+t_case 'the split is WEIGHT-AWARE for FILES too - two files that would tie onto the same shard under plain round-robin are separated once a cost table says one of them is expensive'
+# The exact `records`/`config` shape above, replayed for `file:<path>` keys:
+# mechanically this is the SAME `_shard_weight_of`/`_shard_build_plan` code
+# path (it does not branch on kind once an explicit override row exists), but
+# it is worth pinning independently rather than trusting that by inspection -
+# a future change that special-cased `file:` handling in the assignment loop
+# itself (rather than only in the DEFAULT-weight fallback, which is the only
+# place this ticket actually added a branch) would not be caught by the
+# suite-only version of this test. Any two real files will do; the two
+# lightest-sounding names in the tree are picked so this reads as arbitrary
+# rather than as if the CHOICE of file mattered.
+_HEAVY_A=tests/lib/assert.sh
+_HEAVY_B=lib/records.sh
+_W3=$W/weights-two-heavy-files.tsv
+cat "$_ALL_DEFAULT" > "$_W3"
+printf 'file:%s\t100000\nfile:%s\t100000\n' "$_HEAVY_A" "$_HEAVY_B" >> "$_W3"
+_w3_a1=$(SCOURSH_SHARD_WEIGHTS_FILE=$_W3 _shard_list 1/2 | grep -c "^file $_HEAVY_A ") || true
+_w3_a2=$(SCOURSH_SHARD_WEIGHTS_FILE=$_W3 _shard_list 2/2 | grep -c "^file $_HEAVY_A ") || true
+_w3_b1=$(SCOURSH_SHARD_WEIGHTS_FILE=$_W3 _shard_list 1/2 | grep -c "^file $_HEAVY_B ") || true
+_w3_b2=$(SCOURSH_SHARD_WEIGHTS_FILE=$_W3 _shard_list 2/2 | grep -c "^file $_HEAVY_B ") || true
+assert_eq 1 "$(( _w3_a1 + _w3_a2 ))" "$_HEAVY_A is assigned to exactly one of the two shards"
+assert_eq 1 "$(( _w3_b1 + _w3_b2 ))" "$_HEAVY_B is assigned to exactly one of the two shards"
+assert_ne "$_w3_a1" "$_w3_b1" \
+  "$_HEAVY_A and $_HEAVY_B land on DIFFERENT shards once weighted heavy - FAILS under a scheme that only ever balances suite/linter items and drops files into the rotation positionally"
+
+t_case 'the DEFAULT file weight is real signal, not a placeholder - a heavily-nested file outweighs a leaf file, with no override at all'
+# The one assertion in this whole file that exercises tests/lib/hubsum.sh for
+# REAL rather than through the `_ALL_DEFAULT`/`_W3` overrides above - kept to
+# exactly two single-file hub-sum walks (a fraction of a second each) rather
+# than a whole-tree pass, since that is all this claim needs: a file with a
+# real source-graph fan-out outweighs a file with none. tests/lib/assert.sh
+# sources nothing (hub sum 0); lib/http.sh sources lib/config.sh and
+# lib/findings.sh, both of which reach the hub chain (hub sum > 0 - the exact
+# fan-out number is deliberately not pinned here, since it is a fact about the
+# tree's OWN source graph on a given day and tests/lint-source-graph.sh's own
+# suite already pins the walker's correctness in detail; this case only needs
+# the two to differ in the right direction).
+# shellcheck source=tests/lib/hubsum.sh
+source "$ROOT/tests/lib/hubsum.sh"
+_hub_leaf=$(hubsum_for tests/lib/assert.sh "$ROOT")
+_hub_nested=$(hubsum_for lib/http.sh "$ROOT")
+assert_eq 0 "$_hub_leaf" 'tests/lib/assert.sh, which sources nothing, has hub sum 0'
+assert_eq 1 "$( (( _hub_nested > _hub_leaf )) && printf 1 || printf 0 )" \
+  "lib/http.sh's hub sum ($_hub_nested) is real, measured signal that exceeds a leaf file's (0) - this is the DEFAULT weight tests/run-tests.sh's \`_sc_file_weight_seconds\` builds on, not a hardcoded list of today's heaviest files"
 
 t_case 'a malformed or out-of-range --shard is refused with exit 2, never silently treated as "run everything"'
 for _bad in 0/3 4/3 abc 1/0 '' 3; do
@@ -928,7 +1051,11 @@ t_case 'a shard REALLY RUNS its items rather than only listing them, and its ver
 # assumed from `color`'s position in the declared array: the weighted split
 # (unlike the old idx%N one) does not promise position i lands on shard i, so
 # a hardcoded index here would silently start testing the wrong shard the
-# moment the real cost table changes.
+# moment the real cost table changes.  SHARD_FULL_N now includes one item per
+# shellcheck file (500-odd total rather than the ~215 suites+linters alone),
+# so this search loop runs that many `_shard_list` calls - still fast, since
+# it inherits the section-wide `_ALL_DEFAULT` override rather than paying for
+# a real hub-sum walk on every single one of them.
 _color_shard=''
 for _ci in $(seq 1 "$SHARD_FULL_N"); do
   if _shard_list "$_ci/$SHARD_FULL_N" | grep -q '^suite color '; then
@@ -956,5 +1083,7 @@ _plain_out=$(cd "$ROOT" && bash "$RUNNER" color 2>&1) || true
 assert_contains "$_plain_out" 'all green' 'an unsharded run reaches the verdict line'
 assert_not_contains "$_plain_out" 'NOT a full pass' \
   'and carries NO shard note - FAILS under a note keyed on "was --shard parsed at all", which would caveat every ordinary run'
+
+unset SCOURSH_SHARD_WEIGHTS_FILE
 
 t_summary run-tests-stage
