@@ -588,13 +588,44 @@ printf '\n== no smart quotes in shell code (SC1112) ==\n'
 # - because a curly quote is legitimate English prose there and only a
 # defect in code.
 #
-# The pattern is built from bash 4.2's ANSI-C `$'\uHHHH'` escapes rather than
-# the literal characters: a literal would make this file match its own
-# check (the "a rule file that spells a credential-shaped example in its own
-# header matches itself" trap AGENTS.md's secrets.rules note already
-# records) AND trip ShellCheck's own SC1112 on the pattern that describes
-# SC1112, in the file ShellCheck is not skipping.
-_smart_quote_pattern=$'(\u2018|\u2019|\u201c|\u201d)'
+# This used to build the pattern from bash 4.2's ANSI-C `$'\uHHHH'` escapes,
+# specifically so this file would not contain a literal smart quote (the "a
+# rule file that spells a credential-shaped example in its own header
+# matches itself" trap AGENTS.md's secrets.rules note already records).  That
+# half worked.  It also shipped a second, worse self-match: `\uHHHH` support
+# is a bash-4.2 feature, and wherever the running shell does not expand it,
+# the assignment keeps the literal escape TEXT - `(\u2018|\u2019|\u201c|\u201d)`
+# - which, handed to grep/rg as an ERE, degrades to `(u2018|u2019|u201c|u201d)`
+# and matches THAT VERY SUBSTRING on the line defining it.  CI measured this
+# on both userlands at once (run 35154597539, shard 7): the guard reported
+# itself, line 597, as the finding.
+#
+# The fix below never writes anything shaped like "u2018" as text, expanded
+# or not, so there is no substring left for a broken conversion to hand back
+# to the pattern hunting for it - self-matching is closed structurally,
+# not by hoping an escape expands.  The only numbers in the source are the
+# four plain DECIMAL codepoints and the fixed bit masks of RFC 3629's 3-byte
+# UTF-8 encoding; `_smart_quote_utf8_char` turns a codepoint into its raw
+# bytes with `printf '%03o'` (decimal to octal digits, a plain data
+# conversion) and `printf -v ... '%b'` (backslash-escape expansion of the
+# resulting octal text, done via `%b`'s data argument rather than a
+# variable-as-format-string, so this needs no shellcheck disable).  Both are
+# ordinary printf(1) conversions, not `$'\uHHHH'` ANSI-C quoting, so nothing
+# here depends on the shell's Unicode-escape support one way or the other -
+# measured byte-identical under macOS's own bash 3.2.57 (which this project's
+# `>= 4.2` floor, tension 24, refuses to even source lib/core.sh under, so it
+# was never a supported RUNTIME for this file - only the escape-building
+# logic itself was isolated and re-run there) and under a current bash 5.
+_smart_quote_utf8_char() {
+  local codepoint=$1 b1 b2 b3 fmt out
+  b1=$(( 0xE0 | (codepoint >> 12) ))
+  b2=$(( 0x80 | ((codepoint >> 6) & 0x3F) ))
+  b3=$(( 0x80 | (codepoint & 0x3F) ))
+  printf -v fmt '\%03o\%03o\%03o' "$b1" "$b2" "$b3"
+  printf -v out '%b' "$fmt"
+  printf '%s' "$out"
+}
+_smart_quote_pattern="($(_smart_quote_utf8_char 8216)|$(_smart_quote_utf8_char 8217)|$(_smart_quote_utf8_char 8220)|$(_smart_quote_utf8_char 8221))"
 check 'no U+2018/2019/201C/201D smart quote (retype as ASCII '"'"'/")' \
   "$_smart_quote_pattern" all_files
 
