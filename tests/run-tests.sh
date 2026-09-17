@@ -18,6 +18,13 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$ROOT"
 
+# The shellcheck -x hub-fan-out walker, shared with tests/lint-source-graph.sh
+# (which caps it) - the `--shard` file-list planner below uses it as a
+# per-file COST PROXY. See tests/lib/hubsum.sh's own header and the `--shard`
+# block below for why.
+# shellcheck source=tests/lib/hubsum.sh
+source "$ROOT/tests/lib/hubsum.sh"
+
 SUITES=(records core config checks findings report agent-format sarif-locations sarif-rules sarif-results sarif-schema http e2e scan guide guide-scope state state-coverage state-classify state-history-classify state-diff state-baseline sast sast-secrets-forms sast-history sca sca-semver iac dast dast-auth dast-cookies dast-crawl dast-cors dast-discovery dast-headers dast-leakage dast-markup dast-methods dast-scope-precheck dast-ratelimit dast-response-engine dast-transport dast-sqli dast-pathtraversal dast-cmdi dast-nosqli dast-ldapi dast-ssti dast-xss dast-openredirect dast-xxe-ssrf dast-inject-engine dast-crlf dast-hosthdr dast-protopollution dast-jwt dast-graphql dast-authz dast-coverage-accounting dast-banner dast-tls exit-code-matrix gate-mutation-proof ci-smoke netns run-sandboxed paranoid vendor-engines vendor-engines-advisories engines sast-semgrep iac-trivy sast-gitleaks awscli aws-lint aws-fixtures cloud cloud-s3 cloud-cognito cloud-lambda cloud-rds cloud-dynamodb cloud-apigw cloud-opensearch cloud-redshift cloud-efs cloud-eks cloud-ecs cloud-ecr cloud-elb cloud-cloudfront cloud-kms cloud-secretsmanager cloud-ssm cloud-iam cloud-ec2 cloud-governance cloud-sns cloud-sqs cloud-acm cloud-route53 cloud-backup cloud-appsync lint-no-ai-selftest dast35-lint net01-lint nettransport network network-inventory network-reachability network-banner network-tlsport network-httpport network-outdated network-transport image image-acquire image-advisories image-apk image-apk-version image-dpkg image-dpkg-version image-rpm image-rpm-version image-e2e image-config image-debian image-langdeps image-rpm-e2e image-iac-correlate lint-rules-paths daily-suite run-tests-stage color secret-redaction lint-source-graph-selftest lint-shell-selftest bench bench-sca bench-b6-labels bench-dast build-commands)
 LINTERS=(lint-rules lint-shell lint-aws-readonly lint-status lint-no-ai lint-source-graph lint-docs-build)
 # The whole-tree shellcheck run is a STAGE, not a suite and not a linter file:
@@ -93,10 +100,85 @@ STAGES=(shellcheck)
 # shard is still a legible subsequence of a full run's log rather than a
 # reshuffle.
 #
-# The linters and the whole-tree shellcheck stage are dealt into the SAME
-# weighted plan rather than pinned to a shard of their own, for the same
-# reason as before: pinning the stage would make its shard the pole every
-# other one waits behind.
+# The linters are dealt into the SAME weighted plan as the suites, for the
+# same reason as before: pinning anything to a shard of its own would make
+# that shard the pole every other one waits behind.
+#
+# ===========================================================================
+# The shellcheck STAGE is not one item in that plan - its FILE LIST is.
+# ===========================================================================
+# It used to be: one `stage:shellcheck` item, whole-tree, pinned like any
+# other item to exactly one shard.  That made the stage itself the pole: CI
+# run 35167252242 (dev, ten shards, both userlands) had ZERO test failures -
+# 18 of 20 jobs green - and the two shards that drew the stage were both
+# CANCELLED at the 150-minute ceiling, mid-way through the stage's own pass 2
+# (PR #321's real-RSS watchdog, which runs the tree's heaviest files ONE AT A
+# TIME against the whole of a runner's headroom, because that is the only
+# safe way to give a heavy file enough real memory - see `_sc_run_pass`'s own
+# header below).  Eighteen files at several minutes each, run strictly
+# serially because that is what a bounded runner can safely give any one of
+# them, does not fit one 150-minute shard - while nineteen other jobs sat
+# idle with nothing to help.  Pinning the whole tree to one shard was never
+# going to fit once the tree grew past what a single shard's memory budget
+# could clear in the time given, whichever shard drew it.
+#
+# So every file `sc_stage` would otherwise discover is now its OWN item in
+# the SAME LPT plan as every suite and linter (`file:<relpath>`), and a shard
+# that owns some of them runs `sc_stage` ONCE, at the end of its own list,
+# over exactly that subset - via `SCOURSH_SHELLCHECK_FILE_LIST`, the same
+# seam the test suite already used to drive the stage over a tiny fixture (it
+# is no longer solely a test seam; see that variable's own note inside
+# `sc_stage` for the corrected claim).  `_sc_run_pass`'s two-pass
+# typical/runaway budgeting and its real-RSS watchdog are UNCHANGED - a shard
+# still checks its own files exactly as `sc_stage` always has, one file per
+# `shellcheck` invocation on CI, deferring what does not fit a typical
+# footprint to a second, single-process pass against the whole of the
+# runner's headroom.  What changed is which files land in front of that
+# machinery on a given shard, not the machinery.
+#
+# WEIGHT: the per-file HUB SUM tests/lint-source-graph.sh already computes
+# and caps (tests/lib/hubsum.sh, shared rather than duplicated - see that
+# file's own header).  This is a REAL SIGNAL, not a guess standing in for one
+# the way `SHARD_DEFAULT_WEIGHT_SECONDS` is for an untimed suite: that lint's
+# own measurements are that shellcheck -x's cost on this tree is driven by
+# how many times a file's `-x` closure re-expands the five `lib/` hub files,
+# not by its line count, with a near-exponential relationship and a measured
+# cliff between 6 and 8 copies (0.79 GB at 6, 36.75 GB at 8 - AGENTS.md,
+# "shellcheck -x follows source STATICALLY").  `_sc_file_weight_seconds`
+# below turns that into a monotone estimate of the same shape (cubed, so the
+# handful of genuinely heavy files dominate the sort the way they dominate
+# real wall-clock, without hand-naming any of them - see that function's own
+# header for the measured calibration points and why a fixed list of "the
+# current heavy files" was rejected).  It is deliberately NOT a hardcoded
+# list: hub sum is recomputed from THIS tree's own source graph every time
+# the plan is built, so a file that grows a new source edge next month is
+# weighted correctly with no list for anyone to remember to update - the
+# exact failure mode `tests/lint-source-graph.sh`'s own cap already exists to
+# catch structurally, applied here to load-balancing instead of a ceiling.
+#
+# THIS WAS THE DELIBERATE CHOICE OVER A HAND-MAINTAINED WEIGHT TABLE ENTRY
+# PER FILE, even though `tests/shard-weights.tsv`'s own header asks for real,
+# measured data over a generated one everywhere else in this mechanism. Real
+# per-file shellcheck timing is exactly that kind of data, and a `file:<path>`
+# row in that table still wins over the computed default the instant one is
+# folded in (`_shard_weight_of` already prefers an explicit row over any
+# default, unconditionally on kind) - so nothing here forecloses that path
+# for the handful of files worth hand-tuning once real `SCOURSH_SHARD_RECORD`
+# numbers exist.  What is rejected is using a SNAPSHOT of "the 18 files pass 2
+# named on one run" as the whole mechanism: that list is a fact about the
+# tree on one day, the tree's shape changes every time a module lands a new
+# script sourcing the hub chain a new way, and a list nobody updates goes
+# stale exactly like `data/versions.db` would (AGENTS.md, DAST-09) - quietly,
+# and in the direction that reads as fine.
+#
+# THIS ALSO ANSWERS "should heavy files be spread deliberately or by luck":
+# deliberately, by construction. LPT already guarantees that for suites (the
+# "records vs config" case above, `run-tests-stage.sh`), and it is the exact
+# reason `_shard_build_plan` sorts heaviest-first rather than walking the
+# array in declaration order - a positional or unweighted scheme has no way
+# to know two files are both expensive and might cluster them on one shard
+# by coincidence, which is exactly the CI-run-35064153768 shape this whole
+# mechanism was built to stop repeating.
 SHARD_INDEX=0
 SHARD_TOTAL=0
 if [[ ${1:-} == --shard ]]; then
@@ -131,12 +213,64 @@ _shard_load_weights() {
   done < "$SHARD_WEIGHTS_FILE"
 }
 
+# A `file:<relpath>` item's DEFAULT weight - used only until a real,
+# measured `file:<relpath>` row is folded into tests/shard-weights.tsv by
+# hand, exactly as a suite's default already works.  There is no real
+# per-file timing data yet (that needs a `--shard` CI run to have happened
+# even once with this mechanism live), so this stands in with the best
+# signal available today: tests/lint-source-graph.sh's own hub sum, cubed.
+#
+# CALIBRATION.  Four real, one-off `shellcheck -x -s bash` timings on this
+# tree (a contributor's machine, no watchdog, so these are floors rather than
+# CI numbers): hub sum 0 (tests/lib/assert.sh) 0.05s, hub sum 2
+# (lib/records.sh) 0.89s, hub sum 4 (modules/iac/parse.sh) 5.53s, hub sum 11
+# (modules/dast/active/methods.sh) still climbing past 5 real minutes and
+# 11GB RSS when the measurement was stopped. That is not a clean curve to fit
+# - lint-source-graph.sh's own header already says hub sum is "a strong
+# predictor, not a perfect one" - but it is unambiguously superlinear with a
+# heavy tail, which is what `hub^3` gives without a hand-picked threshold:
+# hub 0 -> 1s, hub 4 -> 65s, hub 11 -> 1332s, hub 17 (today's worst,
+# tests/suites/dast-methods.sh) -> 4914s. That puts the single heaviest file
+# in the tree at roughly the same order of magnitude as `suite:scan`'s own
+# real 5460s (the only other real number this table carries) rather than
+# tied with every other file at the flat 180s default, which is the whole
+# point: LPT needs to see it as one of the biggest single items in the plan
+# to place it deliberately rather than let it land wherever declaration
+# order happens to put it.
+_sc_file_weight_seconds() {
+  local hub
+  hub=$(hubsum_for "$1" "$ROOT") || hub=0
+  [[ $hub =~ ^[0-9]+$ ]] || hub=0
+  printf '%s' "$(( 1 + hub * hub * hub ))"
+}
+
 _shard_weight_of() {   # $1 = "<kind>:<name>"
   if [[ -n ${SHARD_WEIGHT[$1]+x} ]]; then
     printf '%s' "${SHARD_WEIGHT[$1]}"
+  elif [[ $1 == file:* ]]; then
+    _sc_file_weight_seconds "${1#file:}"
   else
     printf '%s' "$SHARD_DEFAULT_WEIGHT_SECONDS"
   fi
+}
+
+# Discovers the real shellcheck file list: every `*.sh` under lib/, tests/,
+# tools/, modules/, aws/, plus scan.sh itself.  This is the SAME tree
+# `sc_stage` itself walks when no `SCOURSH_SHELLCHECK_FILE_LIST` override is
+# given (that function now calls this rather than repeating the `find`
+# inline), so the file-list planner below and an unsharded full run can never
+# drift into checking a different set of files from each other.
+SC_ALL_FILES=()
+_sc_discover_files() {
+  local d
+  local -a dirs=()
+  for d in lib tests tools modules aws; do [[ -d $d ]] && dirs+=("$d"); done
+  [[ -f scan.sh ]] && dirs+=(scan.sh)
+  SC_ALL_FILES=()
+  local f
+  while IFS= read -r f; do
+    SC_ALL_FILES+=("$f")
+  done < <(find "${dirs[@]+"${dirs[@]}"}" -name '*.sh' -type f | LC_ALL=C sort)
 }
 
 declare -A SHARD_PLAN=()
@@ -149,14 +283,20 @@ declare -A SHARD_PLAN=()
 _shard_build_plan() {
   SHARD_PLAN=()
   local -a keys=() weights=()
-  local s l
+  local s l f
   for s in "${SUITES[@]}"; do
     keys+=("suite:$s"); weights+=("$(_shard_weight_of "suite:$s")")
   done
   for l in "${LINTERS[@]}"; do
     keys+=("linter:$l"); weights+=("$(_shard_weight_of "linter:$l")")
   done
-  keys+=("stage:shellcheck"); weights+=("$(_shard_weight_of "stage:shellcheck")")
+  # The shellcheck STAGE contributes one item PER FILE, not one item for the
+  # whole tree - see the `--shard` header block above for why. `SC_ALL_FILES`
+  # is left populated afterwards, for `shard_work` to filter against.
+  _sc_discover_files
+  for f in "${SC_ALL_FILES[@]}"; do
+    keys+=("file:$f"); weights+=("$(_shard_weight_of "file:$f")")
+  done
 
   # LPT: heaviest first.  Sorted by (weight desc, original index asc) so a
   # tie keeps declaration order - the property the "degrades to round-robin"
@@ -191,8 +331,20 @@ _shard_build_plan() {
 # per line, in full-run order.  With no `--shard` it prints every one of them,
 # which is what makes the no-shard path and the sharded path the same code
 # rather than two enumerations that can drift apart.
+#
+# The unsharded branch below still prints a single `stage shellcheck -` line
+# covering the WHOLE tree, exactly as before `--shard` learned to split the
+# stage's file list: an ordinary `bash tests/run-tests.sh` (or a direct
+# `tests/run-tests.sh shellcheck`) is unaffected by any of this and still
+# checks every file in one `sc_stage` call with its own internal, unsharded
+# discovery. A SHARDED run instead emits one `file <relpath> <relpath>` line
+# per file this shard owns (kind `file`, distinct from `suite`/`linter`/
+# `stage` so nothing can collide with it - see this function's own long-
+# standing note on that), and the caller (below) collects them and makes ONE
+# `sc_stage` call over that subset, so the two-pass budgeting still sees one
+# coherent queue rather than 30-odd separate stage invocations.
 shard_work() {
-  local s l
+  local s l f
   if (( SHARD_TOTAL == 0 )); then
     for s in "${SUITES[@]}"; do printf 'suite %s tests/suites/%s.sh\n' "$s" "$s"; done
     for l in "${LINTERS[@]}"; do printf 'linter %s tests/%s.sh\n' "$l" "$l"; done
@@ -207,7 +359,9 @@ shard_work() {
   for l in "${LINTERS[@]}"; do
     [[ ${SHARD_PLAN[linter:$l]} == "$SHARD_INDEX" ]] && printf 'linter %s tests/%s.sh\n' "$l" "$l"
   done
-  [[ ${SHARD_PLAN[stage:shellcheck]} == "$SHARD_INDEX" ]] && printf 'stage shellcheck -\n'
+  for f in "${SC_ALL_FILES[@]}"; do
+    [[ ${SHARD_PLAN[file:$f]} == "$SHARD_INDEX" ]] && printf 'file %s %s\n' "$f" "$f"
+  done
   # ALWAYS 0, regardless of whether the last item printed belonged to this
   # shard - the old idx%N scheme's status was "did the LAST item belong to
   # me", which is false for N-1 of every N shards and aborts the run before a
@@ -553,11 +707,22 @@ sc_stage() {
     trap '_sc_abort_verdict SIGTERM; exit 143' TERM
 
     # The file list is normally the whole tree.  SCOURSH_SHELLCHECK_FILE_LIST
-    # is a TEST SEAM (tests/suites/run-tests-stage.sh drives this stage over a
-    # two-file fixture with a stub `shellcheck`, which is the only way to
-    # exercise the watchdog and the abort paths in seconds instead of minutes).
-    # It is never set by a real run, and it is deliberately NOT a way to
-    # exclude files: a real run still checks every *.sh in the tree.
+    # overrides it, and it now has TWO legitimate callers, not one:
+    #
+    #   * tests/suites/run-tests-stage.sh, a TEST SEAM driving this stage over
+    #     a tiny fixture with a stub `shellcheck`, so the watchdog and abort
+    #     paths run in seconds instead of minutes.
+    #   * the `--shard` dispatch loop below, a REAL caller as of the file-list
+    #     sharding change (see the `--shard` header block above): a shard
+    #     that owns some of the tree's files sets this to exactly that
+    #     subset before making its one `sc_stage` call.
+    #
+    # It is still deliberately NOT a way to exclude files from an UNSHARDED
+    # run: `tests/run-tests.sh` and `tests/run-tests.sh shellcheck` both leave
+    # it unset and both still check every *.sh in the tree, via
+    # `_sc_discover_files` below - the same discovery the `--shard` planner
+    # itself uses to build its per-file plan, so the two can never drift into
+    # checking a different set of files.
     if [[ -n ${SCOURSH_SHELLCHECK_FILE_LIST:-} && -r ${SCOURSH_SHELLCHECK_FILE_LIST:-} ]]; then
       sc_file_list=()
       while IFS= read -r sc_f; do
@@ -566,14 +731,8 @@ sc_stage() {
       printf 'shellcheck: file list overridden by SCOURSH_SHELLCHECK_FILE_LIST (%s)\n' \
         "$SCOURSH_SHELLCHECK_FILE_LIST"
     else
-      sc_dirs=()
-      for d in lib tests tools modules aws; do [[ -d $d ]] && sc_dirs+=("$d"); done
-      [[ -f scan.sh ]] && sc_dirs+=(scan.sh)
-
-      sc_file_list=()
-      while IFS= read -r sc_f; do
-        sc_file_list+=("$sc_f")
-      done < <(find "${sc_dirs[@]+"${sc_dirs[@]}"}" -name '*.sh' -type f | LC_ALL=C sort)
+      _sc_discover_files
+      sc_file_list=("${SC_ALL_FILES[@]}")
     fi
     sc_total=${#sc_file_list[@]}
 
@@ -1379,6 +1538,14 @@ else
   if (( SHARD_TOTAL > 0 )); then
     printf '=== shard %s of %s ===\n' "$SHARD_INDEX" "$SHARD_TOTAL"
   fi
+  # `file` lines (one per shellcheck file THIS shard owns - only ever
+  # produced by a sharded `shard_work`, never the unsharded whole-tree
+  # `stage` line) are collected here rather than acted on inline, so the
+  # stage still gets ONE call over its whole slice - the two-pass
+  # typical/runaway budgeting needs one coherent queue to plan against, not
+  # 30-odd single-file stage invocations each re-deriving a jobs/budget plan
+  # for a queue of one.
+  sc_shard_file_list=()
   while read -r w_kind w_name w_path; do
     if [[ $w_kind == stage ]]; then
       # A plain call, never `sc_stage || ...` - see sc_stage's own header for
@@ -1387,10 +1554,26 @@ else
       sc_stage
       _shard_record "stage:shellcheck" $(( $(date +%s) - _sc_t0 ))
       if (( SC_STAGE_STATUS != 0 )); then failed+=(shellcheck); fi
+    elif [[ $w_kind == file ]]; then
+      sc_shard_file_list+=("$w_name")
     else
       run_one "$w_kind" "$w_name" "$w_path"
     fi
   done < <(shard_work)
+  if (( ${#sc_shard_file_list[@]} > 0 )); then
+    _sc_shard_file_list_tmp=$(mktemp)
+    printf '%s\n' "${sc_shard_file_list[@]}" > "$_sc_shard_file_list_tmp"
+    _sc_t0=$(date +%s)
+    # Prefix assignment, not `export` - scopes SCOURSH_SHELLCHECK_FILE_LIST to
+    # this one call (bash: a variable assigned ahead of a function call is
+    # visible inside it and reverts the moment the call returns, exactly as
+    # for an external command), so nothing here can leak into a later
+    # `run_one` or into the named-target dispatch path above.
+    SCOURSH_SHELLCHECK_FILE_LIST=$_sc_shard_file_list_tmp sc_stage
+    _shard_record "stage:shellcheck" $(( $(date +%s) - _sc_t0 ))
+    rm -f "$_sc_shard_file_list_tmp"
+    if (( SC_STAGE_STATUS != 0 )); then failed+=(shellcheck); fi
+  fi
 fi
 
 printf '\n'

@@ -62,6 +62,13 @@
 # prove both directions on a disposable fixture tree without mutating this
 # repository.
 #
+# THE WALKER ITSELF LIVES IN tests/lib/hubsum.sh, sourced by relpath to
+# SELF_ROOT (this file's own location) rather than SCAN_ROOT (the tree being
+# analysed, which for a self-test fixture carries no tests/lib/ of its own).
+# tests/run-tests.sh's `--shard` file-list planner sources the identical
+# library, as a per-file COST PROXY rather than a cap - see that file's own
+# `--shard` header for why this is the one signal it trusts.
+#
 # shellcheck shell=bash
 #
 # SC2016: diagnostic prose quotes shellcheck directive syntax literally.
@@ -70,102 +77,11 @@
 set -Eeuo pipefail
 SELF_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 SCAN_ROOT=$(cd -- "${1:-$SELF_ROOT}" && pwd -P)
+# shellcheck source=tests/lib/hubsum.sh
+source "$SELF_ROOT/tests/lib/hubsum.sh"
 cd "$SCAN_ROOT"
 
 CAP=17
-HUBS=(lib/core.sh lib/records.sh lib/findings.sh lib/http.sh lib/config.sh)
-# A pathological or genuinely cyclic-by-mistake graph must not hang the lint;
-# this is far above any real entry point's true expansion count (the worst
-# one on record, dast-methods.sh at baseline, was 116) and only guards
-# against a runaway.
-VISIT_GUARD=200000
-
-declare -A KIDS_CACHE   # relpath -> newline-separated child relpaths, memoised once
-declare -A KIDS_DONE    # relpath -> 1 once KIDS_CACHE is populated
-declare -A COUNTS       # relpath -> expansion count, reset per entry point
-VISITS=0
-
-is_hub() {
-  local rel=$1 h
-  for h in "${HUBS[@]}"; do
-    [[ $rel == "$h" ]] && return 0
-  done
-  return 1
-}
-
-# Parse one file's followed source= edges, memoised in KIDS_CACHE. Mirrors
-# the report's expand.py: a directive's target applies to the NEXT
-# source/`.` line, tolerating comment lines in between, and is dropped the
-# moment a real code line intervenes.
-parse_file() {
-  local rel=$1 path=$SCAN_ROOT/$1
-  [[ -n ${KIDS_DONE[$rel]+_} ]] && return 0
-  KIDS_DONE[$rel]=1
-  [[ -f $path ]] || { KIDS_CACHE[$rel]=''; return 0; }
-
-  local line pending='' kids='' trimmed target cand candrel
-  while IFS= read -r line || [[ -n $line ]]; do
-    if [[ $line =~ ^[[:space:]]*#[[:space:]]*shellcheck[[:space:]]+source=([^[:space:]]+) ]]; then
-      pending=${BASH_REMATCH[1]}
-      continue
-    fi
-    if [[ $line =~ ^[[:space:]]*(source|\.)[[:space:]]+[^[:space:]] ]]; then
-      if [[ -n $pending && $pending != /dev/null ]]; then
-        target=$pending
-        target=${target#./}
-        if [[ $target == /* ]]; then
-          cand=$target
-          candrel=${cand#"$SCAN_ROOT"/}
-        else
-          cand=$SCAN_ROOT/$target
-          candrel=$target
-        fi
-        [[ -f $cand ]] && kids+="$candrel"$'\n'
-      fi
-      pending=''
-      continue
-    fi
-    trimmed=${line#"${line%%[![:space:]]*}"}
-    if [[ -n $trimmed && ${trimmed:0:1} != '#' ]]; then
-      pending=''
-    fi
-  done < "$path"
-  KIDS_CACHE[$rel]=$kids
-}
-
-# Depth-first walk with a per-path cycle guard (":"-delimited stack), exactly
-# as expand.py's `stack` frozenset: a file already on the current path is
-# counted once more but not re-descended into, since the runtime
-# SCOURSH_*_SOURCED guards make repeated sourcing a no-op anyway.
-walk() {
-  local rel=$1 stack=$2
-  VISITS=$((VISITS + 1))
-  if (( VISITS > VISIT_GUARD )); then
-    printf 'lint-source-graph: ABORT - visit guard (%d) exceeded, likely a cycle bug in the walker itself\n' "$VISIT_GUARD" >&2
-    exit 2
-  fi
-  COUNTS[$rel]=$(( ${COUNTS[$rel]:-0} + 1 ))
-  case ":$stack:" in
-    *":$rel:"*) return 0 ;;
-  esac
-  parse_file "$rel"
-  local newstack="$stack:$rel" kid
-  while IFS= read -r kid; do
-    [[ -n $kid ]] || continue
-    walk "$kid" "$newstack"
-  done <<<"${KIDS_CACHE[$rel]}"
-}
-
-hub_sum_for() {
-  local entry=$1 h sum=0
-  COUNTS=()
-  VISITS=0
-  walk "$entry" ''
-  for h in "${HUBS[@]}"; do
-    sum=$(( sum + ${COUNTS[$h]:-0} ))
-  done
-  printf '%d' "$sum"
-}
 
 mapfile -t ENTRY_POINTS < <(find . -name '*.sh' -not -path './.git/*' -type f | sed 's#^\./##' | LC_ALL=C sort)
 
@@ -174,7 +90,7 @@ printf '== source-graph hub fan-out (cap %d) ==\n' "$CAP"
 FAILED=0
 WORST_FILE='' WORST_SUM=-1
 for entry in "${ENTRY_POINTS[@]}"; do
-  sum=$(hub_sum_for "$entry")
+  sum=$(hubsum_for "$entry" "$SCAN_ROOT")
   if (( sum > WORST_SUM )); then
     WORST_SUM=$sum
     WORST_FILE=$entry

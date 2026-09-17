@@ -4924,6 +4924,50 @@ by hand, from `SCOURSH_SHARD_RECORD=<path>` real timing data (CI's own "Run the 
 collects and uploads this as a `shard-timing-<os>-shard<N>` artifact) - there is no automatic importer,
 deliberately.
 
+**The whole-tree shellcheck STAGE is not one item in that plan any more - its FILE LIST is, one item per
+file.** It used to be a single `stage:shellcheck` entry, pinned like any other item to exactly one shard,
+which made the stage itself the pole once the tree grew: CI run 35167252242 (dev, ten shards, both
+userlands) had ZERO test failures - 18 of 20 jobs green - and the two shards that drew the stage were both
+cancelled at the 150-minute ceiling mid-way through the stage's own pass 2 (the real-RSS watchdog runs the
+tree's heaviest files ONE AT A TIME against a runner's whole headroom, on purpose - see the memory-model
+bullet below), while nineteen other jobs sat idle with nothing to help. Every file `sc_stage` would
+otherwise discover is now its own `file:<relpath>` item in the SAME LPT plan as every suite and linter; a
+shard that owns some of them makes ONE `sc_stage` call at the end of its own list, over exactly that
+subset, via `SCOURSH_SHELLCHECK_FILE_LIST` - which is no longer solely a test seam, it is now this
+mechanism's real plumbing too (`tests/run-tests.sh`'s dispatch loop sets it itself, scoped to that one
+call via bash's prefix-assignment semantics, never `export`). `_sc_run_pass`'s two-pass typical/runaway
+budgeting and its real-RSS watchdog are UNCHANGED by this - a shard still checks its files exactly as
+`sc_stage` always has; only WHICH files land in front of that machinery changed. `_sc_discover_files`
+(`tests/run-tests.sh`) is the one place that walks `lib/tests/tools/modules/aws` + `scan.sh`, shared by
+`sc_stage`'s own default discovery and the `--shard` planner, so the two can never check a different set
+of files from each other.
+
+**A file's weight is its `tests/lint-source-graph.sh` HUB SUM, cubed** (`_sc_file_weight_seconds`,
+`tests/run-tests.sh`), not a hand-typed list of "today's heavy files" and not the flat
+`SHARD_DEFAULT_WEIGHT_SECONDS`. The hub-sum walker itself now lives in `tests/lib/hubsum.sh`, shared
+between that lint (which caps it) and this planner (which uses it as a cost proxy) - one definition, so
+the two can never drift on what shellcheck -x actually follows. This is real, self-updating signal rather
+than a snapshot: hub sum is recomputed from the tree's OWN current source graph every time the plan is
+built, so a file that grows a new source edge next month is weighted correctly with no list for anyone to
+remember to update - deliberately rejected the alternative of hardcoding "the 18 files pass 2 named on one
+CI run" as the whole mechanism, since that list is a fact about the tree on one day and goes stale exactly
+like `data/versions.db` would (the DAST-09 bullet above) - quietly, in the direction that reads as fine. A
+real, measured `file:<path>` row in `tests/shard-weights.tsv` still wins over the computed default the
+instant one is folded in, exactly like a suite's - nothing here forecloses hand-tuning a specific file once
+real `SCOURSH_SHARD_RECORD` numbers exist for it.
+`tests/suites/run-tests-stage.sh`'s `--shard` section is the proof, including the union-reconstruction
+loop (unchanged code - it never looks at what KIND of item a line names) now covering file items for free,
+and a dedicated section proving files spread across multiple shards, that heavy FILE items get separated
+by weight the same way heavy suites already do, and that the DEFAULT weight is real hub-sum signal (two
+single-file `hubsum_for` calls, not a whole-tree pass) rather than a placeholder. Almost every case in that
+section runs under one shared, exported `SCOURSH_SHARD_WEIGHTS_FILE` override pinning every real file back
+to the flat default - real, unoverridden hub-sum weighting is a full ~50-second whole-tree walk (paid once,
+for `SHARD_FULL`, the section's own ground truth), and none of the STRUCTURAL properties being proved
+(completeness, no duplicates, degeneration to round-robin, weight causing separation) depend on which real
+numbers the weights happen to be - LPT visits every item exactly once regardless of the weight values,
+so a bug that dropped or doubled an item is still caught under controlled weights, at a cost of seconds
+rather than minutes.
+
 See `docs/CI-RUNBOOK.md` for how the suite is run: the hosted workflow, the daily local runner, how to install and remove its schedule, how to read a result, the GNU/BSD dual-userland rationale, and the checklist for adding a new suite or linter.
 
 `package.json` at the repository root exists **only** so the conventional `pnpm test` / `npm test`
