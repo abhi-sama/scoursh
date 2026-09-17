@@ -96,6 +96,37 @@ gl_assert_gnu_userland
 # each.  Do not fan these out.
 bash tests/run-tests.sh
 
+# ---------------------------------------------------------------------------
+# The dedicated heavy-file shellcheck pass.
+#
+# tests/shellcheck-heavy-files.txt names every *.sh file tests/run-tests.sh's
+# own CI branch (`_shard_build_plan`) excludes from every `--shard I/N` plan,
+# because none of them fit a CI runner's real per-process headroom even
+# running alone - see that file's own header. This container is where they
+# are genuinely checked instead: tools/daily-suite.sh sizes it with real
+# memory (`ds_gnu_memory_gb`), not a fixed CI-runner shape.
+#
+# A SECOND, separate `tests/run-tests.sh shellcheck` call, not folded into
+# the run above. The plain run just above already discovered and attempted
+# every one of these files as part of the whole tree, but under the LOCAL
+# memory model a file that does not fit is a legitimate, silent SKIPPED
+# pass - the exact leniency an ordinary contributor's own laptop still needs
+# and must keep. This project has DECLARED these 16 files heavy, which is a
+# stronger claim than "this host happened to be too small today", so
+# SCOURSH_SHELLCHECK_SKIP_IS_FATAL=1 is set for this call ALONE: a skip here
+# has to be exactly as fatal as an unchecked file is on CI, because this pass
+# is the sole thing standing in for the CI coverage those 16 files were
+# excluded from - a quieter, easier-to-ignore version of that same gap is
+# not an acceptable substitute for closing it.
+HEAVY_LIST=$ROOT/tests/shellcheck-heavy-files.txt
+if [[ ! -f $HEAVY_LIST ]]; then
+  gl_fail "$HEAVY_LIST is missing - the CI handoff has nowhere to point, and this leg cannot claim to have checked the files CI excluded on its behalf"
+fi
+printf '\n== GNU leg: dedicated heavy-file shellcheck pass (%s) ==\n' "$HEAVY_LIST"
+SCOURSH_SHELLCHECK_FILE_LIST=$HEAVY_LIST \
+  SCOURSH_SHELLCHECK_SKIP_IS_FATAL=1 \
+  bash tests/run-tests.sh shellcheck
+
 # The fixture scan, normalised the same way the host leg normalises its own, so
 # the two can be diffed byte for byte.  The run timestamp is the only value that
 # legitimately differs between two runs.
