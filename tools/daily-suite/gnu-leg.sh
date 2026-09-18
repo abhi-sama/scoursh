@@ -122,10 +122,23 @@ HEAVY_LIST=$ROOT/tests/shellcheck-heavy-files.txt
 if [[ ! -f $HEAVY_LIST ]]; then
   gl_fail "$HEAVY_LIST is missing - the CI handoff has nowhere to point, and this leg cannot claim to have checked the files CI excluded on its behalf"
 fi
-printf '\n== GNU leg: dedicated heavy-file shellcheck pass (%s) ==\n' "$HEAVY_LIST"
-SCOURSH_SHELLCHECK_FILE_LIST=$HEAVY_LIST \
+# SCOURSH_SHELLCHECK_FILE_LIST is a PLAIN path-per-line file with no comment
+# support at all (tests/run-tests.sh's own loader skips only truly-blank
+# lines) - it is the same seam a sharded CI plan feeds itself, always from a
+# clean, machine-generated list. tests/shellcheck-heavy-files.txt is a
+# human-authored, heavily-commented document, so `--print-heavy-files` (the
+# SAME parser tests/run-tests.sh's own CI-exclusion path uses, exposed rather
+# than re-implemented here) is what turns it into one; handing the raw file
+# to SCOURSH_SHELLCHECK_FILE_LIST directly was measured to read every `#`
+# comment line as a bogus extra "file", inflating a 16-file pass into 70.
+HEAVY_CLEAN=$(mktemp)
+bash tests/run-tests.sh --print-heavy-files > "$HEAVY_CLEAN"
+printf '\n== GNU leg: dedicated heavy-file shellcheck pass (%s, %s file(s)) ==\n' \
+  "$HEAVY_LIST" "$(wc -l < "$HEAVY_CLEAN" | tr -d ' ')"
+SCOURSH_SHELLCHECK_FILE_LIST=$HEAVY_CLEAN \
   SCOURSH_SHELLCHECK_SKIP_IS_FATAL=1 \
   bash tests/run-tests.sh shellcheck
+rm -f "$HEAVY_CLEAN"
 
 # The fixture scan, normalised the same way the host leg normalises its own, so
 # the two can be diffed byte for byte.  The run timestamp is the only value that

@@ -411,6 +411,18 @@ shard_work() {
   return 0
 }
 
+if [[ ${1:-} == --print-heavy-files ]]; then
+  # The ONE reader of tests/shellcheck-heavy-files.txt's comment/blank-line
+  # convention (`_sc_load_heavy_files`), exposed here so a caller that needs
+  # the clean, plain path-per-line form - tools/daily-suite/gnu-leg.sh builds
+  # SCOURSH_SHELLCHECK_FILE_LIST from exactly this, since that variable's own
+  # loader supports no comment syntax at all - never re-implements the
+  # filter and risks it drifting from this file's own parse.
+  _sc_load_heavy_files
+  printf '%s\n' "${SC_HEAVY_FILES_ORDER[@]+"${SC_HEAVY_FILES_ORDER[@]}"}"
+  exit 0
+fi
+
 if [[ ${1:-} == --list ]]; then
   if (( SHARD_TOTAL > 0 )); then
     # `--shard I/N --list` is how a caller (and tests/suites/run-tests-stage.sh)

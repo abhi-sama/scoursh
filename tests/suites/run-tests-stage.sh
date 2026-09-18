@@ -956,6 +956,19 @@ _union_files=$(printf '%s\n%s\n' "$_shard_full_files" "$(printf '%s\n' "${_heavy
 assert_eq "$_full_tree" "$_union_files" \
   'CI'"'"'s own file-item plan UNION the declared heavy list reconstructs the full, unfiltered tree exactly - the load-bearing union-completeness proof: every *.sh file is claimed by CI or by the declared handoff, never by neither and never by both'
 
+t_case '--print-heavy-files is the ONE reader of tests/shellcheck-heavy-files.txt'"'"'s comment/blank-line convention - tools/daily-suite/gnu-leg.sh builds its own SCOURSH_SHELLCHECK_FILE_LIST from this, never from the raw commented file'
+# SCOURSH_SHELLCHECK_FILE_LIST itself supports no comment syntax (only a
+# truly-blank line is skipped), so pointing it directly at the human-authored
+# tests/shellcheck-heavy-files.txt reads every prose `#` line as a bogus
+# extra file - measured directly: a 16-file pass inflated to 70. This
+# case pins that --print-heavy-files' output is exactly the clean list, with
+# no comment or blank line surviving into it.
+_print_heavy_out=$(bash "$RUNNER" --print-heavy-files)
+assert_eq "$(printf '%s\n' "${_heavy_paths[@]}")" "$_print_heavy_out" \
+  '--print-heavy-files emits exactly the declared heavy paths, one per line, in file order - no comment, no blank line, nothing extra'
+assert_not_contains "$_print_heavy_out" '#' \
+  'and never leaks a comment-line byte into what is meant to be a plain, machine-consumable list'
+
 # EVERY TEST BELOW THAT DOES NOT SPECIFICALLY WANT REAL HUB-SUM WEIGHTING USES
 # THIS OVERRIDE, exported for the rest of this section.  A `file:<path>` item
 # never falls back to the flat default with no weights file at all - it
