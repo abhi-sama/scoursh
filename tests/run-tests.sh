@@ -511,6 +511,53 @@ SC_STAGE_SKIPPED=0
 SC_STAGE_NOT_INSTALLED=0
 sc_stage() {
   SC_STAGE_STATUS=0
+
+  # =========================================================================
+  # DECLARED PLATFORM HANDOFF: on a GitHub-Actions macOS runner, this stage
+  # runs on the Linux leg only, and says so - it never attempts a single file.
+  # =========================================================================
+  # Measured on CI run 35298522350 (dev @ 6c15cd7): the macOS runner reported
+  # "7GB total, 2GB available, 2GB reserved -> 1GB headroom, 3 cores -> 1
+  # parallel x 1 file" and still killed ORDINARY files under that ceiling -
+  # modules/image/run.sh and tests/suites/dast-markup.sh, neither one on
+  # tests/shellcheck-heavy-files.txt (that list's 16 files were derived from
+  # UBUNTU's ~12GB budget, not this one).  There is no per-file tuning that
+  # fits a ~6GB-per-file plan into 1GB of headroom; the CI-path arithmetic
+  # below is real and correct, it is simply being asked a question this
+  # runner cannot answer for any real file, heavy or not.
+  #
+  # This linter is static analysis: the same pinned binary
+  # (.github/workflows/ci.yml installs the identical v0.11.0 build on both
+  # legs) reading the same bytes yields the same findings regardless of host
+  # userland.  That is unlike the SUITES, which this project runs on both GNU
+  # and BSD specifically to catch RUNTIME behavioural differences between the
+  # two userlands (docs/FOUNDATION.md tension 24) - this stage has no runtime
+  # behaviour to differ.  Handing it to the Linux leg alone therefore loses no
+  # coverage: ubuntu-latest already checks the full, unfiltered file set
+  # (minus the separately-declared tests/shellcheck-heavy-files.txt handoff to
+  # tools/daily-suite.sh's GNU leg), and the macOS leg gains a stage it is
+  # physically unable to complete.
+  #
+  # DECLARED, never silent - the same discipline tests/shellcheck-heavy-files.txt
+  # already applies to its own handoff: this prints unconditionally, names the
+  # leg it defers to, and reports zero files checked HERE, so a reader can
+  # never mistake this for a pass earned on this host.  Gated on RUNNER_OS,
+  # the variable GitHub Actions itself sets - never on `uname`, which would
+  # also catch a contributor's own real Mac and stop them running this stage
+  # locally, where a real machine's real headroom works fine.
+  if [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_OS:-} == macOS ]]; then
+    printf '\n=== linter: shellcheck ===\n'
+    printf 'shellcheck: DECLARED PLATFORM HANDOFF - this stage runs on the Linux CI leg only; it checks NOTHING on macOS CI.\n'
+    printf 'shellcheck: this runner'"'"'s real headroom cannot fit even one ordinary file (measured on CI run 35298522350: 7GB total, 2GB available, 2GB reserved -> 1GB headroom, well under the ~6GB this project plans per file).\n'
+    printf 'shellcheck: shellcheck is static analysis - the same pinned binary reading the same bytes on ubuntu-latest yields identical findings, so this handoff costs no coverage; only the suites need both userlands (docs/FOUNDATION.md tension 24).\n'
+    printf 'shellcheck: 0 file(s) checked on this runner - see the ubuntu-latest leg(s) of this same run for the real, full-tree result.\n'
+    printf -- '--- shellcheck passed (0 file(s) checked HERE - handed off to the Linux CI leg, by design, see message above)\n'
+    SC_STAGE_STATUS=0
+    SC_STAGE_SKIPPED=0
+    SC_STAGE_NOT_INSTALLED=0
+    return 0
+  fi
+
   # ShellCheck is optional: an air-gapped host may not have it, and the suite
   # must still be runnable there.  CI installs it, and so does tools/daily-suite.sh's GNU leg
   # (its BSD leg expects it installed on the machine already) - see docs/CI-RUNBOOK.md.

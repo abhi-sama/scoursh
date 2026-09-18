@@ -132,6 +132,19 @@ chmod +x "$W/bin/shellcheck"
 # 33677872951 with 13 failures in this file while the stage it was testing
 # was working correctly.  Section K below drives the CI path deliberately,
 # with GITHUB_ACTIONS set, so neither path is left untested.
+#
+# EVERY GITHUB_ACTIONS=true CALL BELOW ALSO PINS RUNNER_OS='', FOR THE
+# IDENTICAL REASON.  The CI path itself now branches a second time - a
+# GitHub-Actions macOS runner takes the declared-handoff exit rather than the
+# memory-derived arithmetic every case up to section O2 means to exercise -
+# and RUNNER_OS is a real GitHub Actions env var, so it is ambient-set to
+# `macOS` on exactly the runner this whole suite most needs to keep testing
+# the arithmetic on.  Left unpinned, every `_stage_ci*` helper below would
+# silently take the handoff exit whenever THIS suite itself happens to run on
+# `macos-latest` CI - the same "not hypothetical" failure shape the paragraph
+# above already names for GITHUB_ACTIONS, one layer further down. Section O2
+# is the one place that deliberately sets RUNNER_OS=macOS, to test the
+# handoff itself.
 _stage() {
   local out status=0
   out=$(PATH=$W/bin:$PATH \
@@ -573,6 +586,7 @@ _stage_ci() {
   : > "$W/argc.log"
   out=$(PATH=$W/bin:$PATH \
         GITHUB_ACTIONS=true \
+        RUNNER_OS='' \
         STUB_ARGC_LOG=$W/argc.log \
         SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist-ci \
         bash "$RUNNER" shellcheck 2>&1) || status=$?
@@ -658,7 +672,14 @@ assert_not_contains "$STAGE_OUT" 'SKIPPED' \
 _stage_ci_host() {   # $1 total GB, $2 available GB
   local out status=0
   : > "$W/argc.log"
-  out=$(PATH=$W/bin:$PATH         GITHUB_ACTIONS=true         STUB_ARGC_LOG=$W/argc.log         SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist-ci         SCOURSH_SHELLCHECK_FORCE_TOTAL_GB=$1         SCOURSH_SHELLCHECK_FORCE_AVAIL_GB=$2         bash "$RUNNER" shellcheck 2>&1) || status=$?
+  out=$(PATH=$W/bin:$PATH \
+        GITHUB_ACTIONS=true \
+        RUNNER_OS='' \
+        STUB_ARGC_LOG=$W/argc.log \
+        SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist-ci \
+        SCOURSH_SHELLCHECK_FORCE_TOTAL_GB=$1 \
+        SCOURSH_SHELLCHECK_FORCE_AVAIL_GB=$2 \
+        bash "$RUNNER" shellcheck 2>&1) || status=$?
   STAGE_OUT=$out
   STAGE_STATUS=$status
 }
@@ -698,6 +719,7 @@ _stage_ci_watchdog() {   # $1 total GB, $2 available GB, $3 STUB_PLAN, plus any
   local out status=0
   out=$(PATH=$W/bin:$PATH \
         GITHUB_ACTIONS=true \
+        RUNNER_OS='' \
         SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist-ci \
         SCOURSH_SHELLCHECK_FORCE_TOTAL_GB=$1 \
         SCOURSH_SHELLCHECK_FORCE_AVAIL_GB=$2 \
@@ -742,6 +764,7 @@ if command -v ps >/dev/null 2>&1; then
   : > "$W/argc.log"
   out=$(PATH=$W/bin:$PATH \
         GITHUB_ACTIONS=true \
+        RUNNER_OS='' \
         STUB_ARGC_LOG=$W/argc.log \
         SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist-ci \
         SCOURSH_SHELLCHECK_FORCE_TOTAL_GB=16 \
@@ -861,6 +884,94 @@ _stage_small_host 1 100
 assert_eq 0 "$STAGE_STATUS" \
   'with SCOURSH_SHELLCHECK_SKIP_IS_FATAL unset, the identical skip still PASSES - the ordinary contributor path is unchanged by this knob existing at all'
 
+# ===========================================================================
+printf '== O: a GitHub-Actions macOS runner takes a DECLARED HANDOFF, never the CI arithmetic ==\n'
+# ===========================================================================
+# CI run 35298522350 (dev @ 6c15cd7): every one of the ten macos-latest shards
+# failed. The runner reported "7GB total, 2GB available, 2GB reserved -> 1GB
+# headroom, 3 cores -> 1 parallel x 1 file" and still killed ORDINARY files
+# under that ceiling - modules/image/run.sh and tests/suites/dast-markup.sh,
+# neither one on tests/shellcheck-heavy-files.txt (that list's 16 files were
+# derived from UBUNTU's ~12GB budget, not this one). No per-file tuning fits a
+# ~6GB-per-file plan into 1GB of headroom, so this stage now hands the whole
+# thing to the Linux leg on a GitHub-Actions macOS runner, unconditionally -
+# it is static analysis, so the pinned binary on ubuntu-latest produces
+# byte-identical findings, and only the SUITES need both userlands.
+#
+# The proof has three parts, and all three fail under a "just skip quietly"
+# reading: the stage must never attempt shellcheck AT ALL here (measured by
+# the STUB_ARGC_LOG invocation count - section M's same technique - never by
+# a return value, which a silent no-op could satisfy just as well as a real
+# handoff), it must exit 0 (a pass, not a skip and not a failure), and it must
+# SAY so in the log a reader actually reads.
+_stage_macos_handoff() {
+  local out status=0
+  : > "$W/argc.log"
+  out=$(PATH=$W/bin:$PATH \
+        GITHUB_ACTIONS=true \
+        RUNNER_OS=macOS \
+        STUB_ARGC_LOG=$W/argc.log \
+        SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist-ci \
+        bash "$RUNNER" shellcheck 2>&1) || status=$?
+  STAGE_OUT=$out
+  STAGE_STATUS=$status
+}
+
+_stage_macos_handoff
+assert_eq 0 "$STAGE_STATUS" \
+  'a macOS-CI declared handoff exits 0 - it is a pass, not a skip and not a failure'
+assert_eq 0 "$(wc -l <"$W/argc.log" | tr -d ' ')" \
+  'shellcheck was invoked ZERO times, despite a real six-file list being handed to the stage - FAILS under any reading that still attempts even one file before giving up'
+assert_contains "$STAGE_OUT" 'DECLARED PLATFORM HANDOFF' \
+  'and says so, unconditionally - never silent, exactly as the heavy-file handoff (section M) is required to be'
+assert_contains "$STAGE_OUT" 'Linux CI leg' \
+  'and names which leg actually checked the tree, so a reader is not left to guess'
+assert_contains "$STAGE_OUT" '0 file(s) checked on this runner' \
+  'and states its OWN contribution as zero, in the same log a reader reads the verdict from'
+assert_contains "$STAGE_OUT" '--- shellcheck passed' \
+  'and reaches the ordinary passed verdict line - a reader skimming only that line still sees the parenthetical naming the handoff, never a bare "passed" that could be misread as earned on this host'
+assert_not_contains "$STAGE_OUT" 'ci1.sh' \
+  'and never names an individual file, because no file was ever handed to a real shellcheck invocation here'
+
+# The gate is RUNNER_OS == macOS, exactly as GitHub Actions itself sets it -
+# never `uname`, which would also catch a contributor's own real Mac and stop
+# them running this stage locally. Un-set (a contributor's laptop) and set to
+# something else (a future non-Linux, non-macOS CI image) both take the
+# ordinary path.
+: > "$W/argc.log"
+out=$(PATH=$W/bin:$PATH \
+      GITHUB_ACTIONS=true \
+      RUNNER_OS='' \
+      STUB_ARGC_LOG=$W/argc.log \
+      SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist-ci \
+      bash "$RUNNER" shellcheck 2>&1) || true
+assert_eq 6 "$(wc -l <"$W/argc.log" | tr -d ' ')" \
+  'GITHUB_ACTIONS=true with RUNNER_OS unset takes the ordinary CI arithmetic path, not the handoff - FAILS if the gate gets loosened to GITHUB_ACTIONS alone'
+assert_not_contains "$out" 'DECLARED PLATFORM HANDOFF' \
+  'and the declared-handoff banner never appears there'
+
+: > "$W/argc.log"
+out=$(PATH=$W/bin:$PATH \
+      GITHUB_ACTIONS=true \
+      RUNNER_OS=Linux \
+      STUB_ARGC_LOG=$W/argc.log \
+      SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist-ci \
+      bash "$RUNNER" shellcheck 2>&1) || true
+assert_eq 6 "$(wc -l <"$W/argc.log" | tr -d ' ')" \
+  'RUNNER_OS=Linux (the real ubuntu-latest value) takes the ordinary CI arithmetic path and checks every file - the handoff is macOS-only'
+
+: > "$W/argc.log"
+out=$(PATH=$W/bin:$PATH \
+      GITHUB_ACTIONS='' \
+      RUNNER_OS=macOS \
+      STUB_ARGC_LOG=$W/argc.log \
+      SCOURSH_SHELLCHECK_FILE_LIST=$W/filelist-ci \
+      bash "$RUNNER" shellcheck 2>&1) || true
+assert_eq 6 "$(wc -l <"$W/argc.log" | tr -d ' ')" \
+  'RUNNER_OS=macOS with GITHUB_ACTIONS unset (a contributor'"'"'s own real Mac) takes the ordinary local-memory-model path, not the handoff - a real laptop still gets a real shellcheck run'
+assert_not_contains "$out" 'DECLARED PLATFORM HANDOFF' \
+  'and never claims a handoff on a machine that is not actually GitHub-Actions CI'
+
 # =============================================================================
 printf '\n-- --shard I/N: a wall-clock split that is provably not a filter --\n'
 # =============================================================================
@@ -955,6 +1066,37 @@ done
 _union_files=$(printf '%s\n%s\n' "$_shard_full_files" "$(printf '%s\n' "${_heavy_paths[@]}")" | LC_ALL=C sort -u)
 assert_eq "$_full_tree" "$_union_files" \
   'CI'"'"'s own file-item plan UNION the declared heavy list reconstructs the full, unfiltered tree exactly - the load-bearing union-completeness proof: every *.sh file is claimed by CI or by the declared handoff, never by neither and never by both'
+
+# THE THIRD CONTEXT: macOS CI must contribute NOTHING to the reconstruction
+# above, and must SAY so, not merely be untested (section O proves the
+# mechanism in isolation on a tiny fixture; this proves it against the REAL,
+# full-tree file-item plan the two-way union just verified, closing the loop
+# the brief asks for: Linux CI's own file set, plus the declared heavy
+# handoff, plus a macOS run that contributes the empty set). Feed the stage
+# the SAME real file-item plan Linux CI would receive - not a fixture stand-in
+# - under a simulated macOS-CI environment, and prove by INVOCATION COUNT,
+# never by return value, that shellcheck never ran once.
+_macos_file_list_tmp=$(mktemp)
+printf '%s\n' "$_shard_full_files" > "$_macos_file_list_tmp"
+: > "$W/argc.log"
+_macos_union_out=$(PATH=$W/bin:$PATH \
+  GITHUB_ACTIONS=true \
+  RUNNER_OS=macOS \
+  STUB_ARGC_LOG=$W/argc.log \
+  SCOURSH_SHELLCHECK_FILE_LIST=$_macos_file_list_tmp \
+  bash "$RUNNER" shellcheck 2>&1) || true
+rm -f "$_macos_file_list_tmp"
+_linux_file_n=$(printf '%s\n' "$_shard_full_files" | grep -c .)
+assert_eq 0 "$(wc -l <"$W/argc.log" | tr -d ' ')" \
+  "macOS CI invoked shellcheck ZERO times over all $_linux_file_n of Linux CI's own real file-item plan - FAILS under any reading that still attempts even one real file"
+assert_contains "$_macos_union_out" 'DECLARED PLATFORM HANDOFF' \
+  'and the real-tree run says so too, not only the tiny fixture in section O'
+assert_contains "$_macos_union_out" '0 file(s) checked on this runner' \
+  'and states its own contribution to the union as zero, in the log'
+printf 'shellcheck union: Linux CI %s file(s) + daily-suite heavy handoff %s file(s) = %s of the %s-file tree; macOS CI contributes 0\n' \
+  "$_linux_file_n" "${#_heavy_paths[@]}" "$(( _linux_file_n + ${#_heavy_paths[@]} ))" "$(printf '%s\n' "$_full_tree" | grep -c .)"
+assert_eq "$(printf '%s\n' "$_full_tree" | grep -c .)" "$(( _linux_file_n + ${#_heavy_paths[@]} ))" \
+  'and the arithmetic matches the reconstruction above exactly: Linux CI + the declared heavy handoff already equal the whole tree, so macOS'"'"'s own zero is a fact about coverage, never a gap the union silently depended on it to fill'
 
 t_case '--print-heavy-files is the ONE reader of tests/shellcheck-heavy-files.txt'"'"'s comment/blank-line convention - tools/daily-suite/gnu-leg.sh builds its own SCOURSH_SHELLCHECK_FILE_LIST from this, never from the raw commented file'
 # SCOURSH_SHELLCHECK_FILE_LIST itself supports no comment syntax (only a
@@ -1164,7 +1306,7 @@ t_case 'a shard REALLY RUNS its items rather than only listing them, and its ver
 # (unlike the old idx%N one) does not promise position i lands on shard i, so
 # a hardcoded index here would silently start testing the wrong shard the
 # moment the real cost table changes.  SHARD_FULL_N now includes one item per
-# shellcheck file (500-odd total rather than the ~215 suites+linters alone),
+# file shellcheck scans (500-odd total rather than the ~215 suites+linters alone),
 # so this search loop runs that many `_shard_list` calls - still fast, since
 # it inherits the section-wide `_ALL_DEFAULT` override rather than paying for
 # a real hub-sum walk on every single one of them.
