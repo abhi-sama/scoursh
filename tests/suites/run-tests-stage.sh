@@ -1164,7 +1164,7 @@ t_case 'a shard REALLY RUNS its items rather than only listing them, and its ver
 # (unlike the old idx%N one) does not promise position i lands on shard i, so
 # a hardcoded index here would silently start testing the wrong shard the
 # moment the real cost table changes.  SHARD_FULL_N now includes one item per
-# shellcheck file (500-odd total rather than the ~215 suites+linters alone),
+# file shellcheck scans (500-odd total rather than the ~215 suites+linters alone),
 # so this search loop runs that many `_shard_list` calls - still fast, since
 # it inherits the section-wide `_ALL_DEFAULT` override rather than paying for
 # a real hub-sum walk on every single one of them.
