@@ -287,10 +287,16 @@ assert_eq sca "$(_fp_profile_for sca SCA-A-B-01)" 'sca'
 assert_eq dast "$(_fp_profile_for dast DAST-A-B-01)" 'dast'
 assert_eq cloud "$(_fp_profile_for cloud CLOUD-A-B-01)" 'cloud'
 assert_eq posture "$(_fp_profile_for posture POSTURE-A-B-01)" 'posture'
+assert_eq net "$(_fp_profile_for net NET-PORT-X-01)" 'net - the additive module this change adds'
 assert_eq derived "$(_fp_profile_for derived COMPOSITE-X)" 'derived'
 assert_eq 'blob_sha
 match_digest
 occurrence' "$(_fp_components_for history)" 'history carries all three components, in that order'
+assert_eq 'target
+host
+port
+transport' "$(_fp_components_for net)" \
+  'net carries target, host, port, transport, in that order - a port has no slot in any other profile'
 
 t_case 'SCA excludes the version deliberately'
 assert_not_contains "$(_fp_components_for sca)" version \
@@ -606,14 +612,14 @@ t_case 'case 3: does not fire, every prior contributor pair covered -> fixed'
 printf 'fpA\tSAST-A-A-01\t.\t\nfpC\tSAST-C-C-01\t.\t\n' >"$PS"
 printf 'SAST-A-A-01\t.\nSAST-B-B-01\t.\nSAST-C-C-01\t.\n' >"$CN"
 printf 'SAST-A-A-01\t.\nSAST-B-B-01\t.\nSAST-C-C-01\t.\n' >"$CP"
-out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' "$PS" "$CN" "$CP" '')
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' usable "$PS" "$CN" "$CP" '')
 assert_eq fixed "${out%%$'\t'*}" 'the chain is broken and every contributor was reassessed'
 
 t_case 'case 4: one prior contributor cell not visited (--regions narrowed) -> unknown'
 # Fails under classification keyed on the bare check id ("ran somewhere").
 printf 'fpA\tSAST-A-A-01\tus-east-1\t\nfpC\tSAST-C-C-01\teu-west-1\t\n' >"$PS"
 printf 'SAST-A-A-01\tus-east-1\nSAST-B-B-01\tus-east-1\nSAST-C-C-01\tus-east-1\n' >"$CN"
-out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' "$PS" "$CN" "$CP" '')
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' usable "$PS" "$CN" "$CP" '')
 assert_eq unknown "${out%%$'\t'*}" 'the cell where the contributor could have fired was never revisited'
 
 t_case 'case 5: the composite record itself was dropped by a filter -> unknown'
@@ -627,7 +633,7 @@ t_case 'case 5: the composite record itself was dropped by a filter -> unknown'
 # 5 note says the same.
 printf 'fpA\tSAST-A-A-01\t.\t\nfpC\tSAST-C-C-01\t.\t\n' >"$PS"
 printf 'SAST-A-A-01\t.\nSAST-B-B-01\t.\nSAST-C-C-01\t.\n' >"$CN"
-out=$(SCOURSH_SELECTED_CHECKS='SAST-A-A-01' classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' "$PS" "$CN" "$CP" '')
+out=$(SCOURSH_SELECTED_CHECKS='SAST-A-A-01' classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' usable "$PS" "$CN" "$CP" '')
 assert_eq unknown "${out%%$'\t'*}" 'a composite that was not selected is unknown'
 assert_contains "$out" composite-not-selected 'and run.json says why'
 
@@ -638,7 +644,7 @@ t_case 'case 6: a listed any-of alternative whose prior cells were not all revis
 printf 'fpA\tSAST-A-A-01\tus-east-1\t\nfpB\tSAST-B-B-01\tus-east-1\t\n' >"$PS"
 printf 'SAST-A-A-01\tus-east-1\nSAST-B-B-01\tus-east-1\nSAST-C-C-01\tus-east-1\n' >"$CN"
 printf 'SAST-C-C-01\tus-east-1\nSAST-C-C-01\teu-west-1\n' >"$CP"
-out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpB' "$PS" "$CN" "$CP" '')
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpB' usable "$PS" "$CN" "$CP" '')
 assert_eq unknown "${out%%$'\t'*}" 'the prior cell set is not a subset of this run cells'
 
 t_case 'case 9: an alternative never covered in EITHER run -> unknown'
@@ -650,7 +656,7 @@ t_case 'case 9: an alternative never covered in EITHER run -> unknown'
 printf 'fpA\tSAST-A-A-01\t.\t\nfpB\tSAST-B-B-01\t.\t\n' >"$PS"
 printf 'SAST-A-A-01\t.\nSAST-B-B-01\t.\n' >"$CN"      # C has NO entry at all
 : >"$CP"
-out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpB' "$PS" "$CN" "$CP" '')
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpB' usable "$PS" "$CN" "$CP" '')
 assert_eq unknown "${out%%$'\t'*}" 'a check with no entry in this run covered_checks is never covered'
 
 t_case 'case 7: a SAST-HIST-* contributor inside a covered cell whose boundary receded -> unknown'
@@ -662,15 +668,394 @@ records_load "$W/hist.rules" derived derivedset >/dev/null 2>&1
 printf 'fpH\tSAST-HIST-K-01\t.\t2025-01-01T00:00:00Z\nfpB\tSAST-B-B-01\t.\t\n' >"$PS"
 printf 'SAST-HIST-K-01\t.\nSAST-B-B-01\t.\n' >"$CN"
 : >"$CP"
-out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpH,fpB' "$PS" "$CN" "$CP" '2026-01-01T00:00:00Z')
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpH,fpB' usable "$PS" "$CN" "$CP" '2026-01-01T00:00:00Z')
 assert_eq unknown "${out%%$'\t'*}" 'the contributor could not have been seen by this run walk'
-out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpH,fpB' "$PS" "$CN" "$CP" '2024-01-01T00:00:00Z')
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpH,fpB' usable "$PS" "$CN" "$CP" '2024-01-01T00:00:00Z')
 assert_eq fixed "${out%%$'\t'*}" 'and it IS fixed when the boundary still reaches it'
 
 t_case 'case 8: a prior composite with no recorded contributors -> unknown'
 # Fails under the "covered in at least one cell" fallback applied to this branch.
-out=$(classify_derived COMPOSITE-TEST-CHAIN . false '' "$PS" "$CN" "$CP" '')
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false '' usable "$PS" "$CN" "$CP" '')
 assert_eq unknown "${out%%$'\t'*}" 'nothing was learned, so nothing is claimed'
 assert_contains "$out" contributors-unavailable 'and the reason is recorded'
+
+# ---------------------------------------------------------------------------
+printf '\n-- STATE-05: classify_derived wired against real prior state (GUARD) --\n'
+# ---------------------------------------------------------------------------
+# `classify_derived` used to know nothing about tension 12's own guard - the
+# same fp_schema/scan_root_id incomparability that protects every ORDINARY
+# finding never reached a composite's contributors at all, so a composite was
+# a second, ungoverned path to `fixed` off state the rest of the run had
+# already decided was unusable.  Every case below reuses case 3's fixture
+# (every prior contributor pair covered, nothing else wrong - `fixed` under
+# `usable`), varying only GUARD, so each one fails under the pre-refactor
+# reading that never consulted GUARD at all.
+records_load "$W/d4.rules" derived derivedset >/dev/null 2>&1
+printf 'fpA\tSAST-A-A-01\t.\t\nfpC\tSAST-C-C-01\t.\t\n' >"$PS"
+printf 'SAST-A-A-01\t.\nSAST-B-B-01\t.\nSAST-C-C-01\t.\n' >"$CN"
+printf 'SAST-A-A-01\t.\nSAST-B-B-01\t.\nSAST-C-C-01\t.\n' >"$CP"
+
+t_case 'fp_schema_mismatch invalidates the whole prior state, composite included -> unknown'
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' fp_schema_mismatch "$PS" "$CN" "$CP" '')
+assert_eq unknown "${out%%$'\t'*}" 'an fp_schema bump makes the prior set incomparable, composite included, even though every contributor pair is (coincidentally) still covered'
+assert_contains "$out" fp_schema_mismatch 'and the reason names the guard, not a contributor'
+
+t_case 'no_prior_state -> unknown'
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' no_prior_state "$PS" "$CN" "$CP" '')
+assert_eq unknown "${out%%$'\t'*}" 'no prior state at all means nothing here can be classified fixed'
+assert_contains "$out" no_prior_state 'and the reason names the guard'
+
+t_case 'scan_root_id_mismatch: a path-root contributor is NOT covered even though its cell string still matches -> unknown'
+# The acceptance case this ticket names explicitly: a contributor "simply not
+# covered this run" - here because a scan_root_id change makes its prior cell
+# dishonest to compare, not because the string differs (it is identical, ".",
+# on both sides).  Fails under the pre-refactor _contributor_covered, which
+# tested only `_pair_covered` - a bare string match - and never consulted
+# GUARD, so a scan-root change and a coincidentally-matching path both read as
+# `fixed`.  Threading GUARD through into `findings_classify_absent` (STATE-04
+# built the function; STATE-05's contribution is that b1 now calls it) is
+# what closes this: SAST-A-A-01/SAST-C-C-01 both resolve to `path-root` scope
+# via `_derived_contributor_scope`, which is exactly the scope
+# `scan_root_id_mismatch` gates.
+out=$(classify_derived COMPOSITE-TEST-CHAIN . false 'fpA,fpC' scan_root_id_mismatch "$PS" "$CN" "$CP" '')
+assert_eq unknown "${out%%$'\t'*}" 'a path-root contributor cell is not comparable across a scan_root_id change'
+assert_contains "$out" contributor-not-covered 'and the composite records the contributor(s) as not covered'
+
+# ---------------------------------------------------------------------------
+printf '\n-- tension 22 / SARIF-01: a profile-driven logical-identity default --\n'
+# ---------------------------------------------------------------------------
+# _finding_default_logical (lib/findings.sh) fills logical_kind/logical_fqn
+# ONCE in finding_emit, for whichever profile the emitter left unset.  Every
+# case below is written to fail under the reading the plan names as the real
+# risk: a per-module setter that reaches only one profile and leaves the rest
+# empty, or a default that reaches into a field _fp_components_for actually
+# hashes.
+#
+# The fingerprint check in each case is "recompute finding_fingerprint from
+# the CURRENT _F state, right after finding_emit populated logical_kind/fqn,
+# and assert it matches the fingerprint finding_emit already wrote" - since
+# _fp_components_for never names logical_kind/logical_fqn, that recomputation
+# is only ever identical to the emitted value if the default touched nothing
+# a profile's fingerprint reads.  This is the executable form of "the merged
+# findings.jsonl is byte-identical before and after": a manual comparison of
+# tests/e2e/fixture-scan.sh's real output before and after this change (every
+# one of its findings already sets logical_kind itself, so the guard below
+# never fires for it) confirmed findings.jsonl, findings.fields,
+# findings.json, report.md and report.html are byte-identical modulo
+# first_seen/last_seen/started_at/completed_at; the case below exercises the
+# opposite path - an emitter that does NOT set the field, which is what every
+# real sast/dast/cloud/posture emitter in the tree does today.
+
+t_case 'path profile (sast, non-history): kind=file, fqn=<loc_path>:<loc_line>'
+new_run sarif01-path
+d=$SCOURSH_RUN_DIR
+occurrence_reset_unit app.py
+finding_new
+finding_set check_id SAST-X-Y-01
+finding_set module sast
+finding_set title t
+finding_set base_severity high
+finding_set cwe none
+finding_set owasp none
+finding_set loc_path app.py
+finding_set loc_line 12
+finding_set cell .
+finding_set_match 'eval(x)'
+finding_set_evidence 'eval(x)'
+finding_emit
+assert_eq "${_F[fingerprint]}" "$(finding_fingerprint)" \
+  'recomputing the fingerprint after logical_kind/fqn are populated reproduces the same value (fails if the default touches a component field)'
+findings_merge "$d"
+finding_decode "$(/usr/bin/grep 'check_id=SAST-X-Y-01' "$d/findings.fields")"
+assert_eq file "${_DF[logical_kind]}" 'defaults to kind=file'
+assert_eq 'app.py:12' "${_DF[logical_fqn]}" 'defaults to fqn=<loc_path>:<loc_line>'
+
+t_case 'history profile (SAST-HIST-*): kind=file, fqn=<loc_path>:<loc_line>'
+new_run sarif01-history
+d=$SCOURSH_RUN_DIR
+finding_new
+finding_set check_id SAST-HIST-AWSKEY-01
+finding_set module sast
+finding_set title t
+finding_set base_severity critical
+finding_set cwe CWE-798
+finding_set owasp A07:2021
+finding_set loc_blob_sha 1111111111111111111111111111111111111111
+finding_set loc_path app.py
+finding_set loc_line 3
+finding_set cell .
+finding_set_match secret
+finding_set_evidence secret
+finding_emit
+assert_eq "${_F[fingerprint]}" "$(finding_fingerprint)" \
+  'the history fingerprint (blob_sha match_digest occurrence) is untouched by the logical default'
+findings_merge "$d"
+finding_decode "$(/usr/bin/grep 'check_id=SAST-HIST-AWSKEY-01' "$d/findings.fields")"
+assert_eq file "${_DF[logical_kind]}" 'history also defaults to kind=file (tension 22 does not distinguish it from path)'
+assert_eq 'app.py:3' "${_DF[logical_fqn]}" 'and to the same <loc_path>:<loc_line> shape'
+
+t_case 'dast profile: kind=endpoint, fqn=<target>:<method> <path_template>#<param>'
+new_run sarif01-dast
+d=$SCOURSH_RUN_DIR
+finding_new
+finding_set check_id DAST-A-B-01
+finding_set module dast
+finding_set title t
+finding_set base_severity medium
+finding_set cwe CWE-79
+finding_set owasp A03:2021
+finding_set loc_target api.example
+finding_set loc_method GET
+finding_set loc_path_template '/users/{id}'
+finding_set loc_param_location query
+finding_set loc_param_name q
+finding_set cell api.example
+finding_set_evidence e
+finding_emit
+assert_eq "${_F[fingerprint]}" "$(finding_fingerprint)" \
+  'the dast fingerprint (target method path_template param_location param_name) is untouched'
+findings_merge "$d"
+finding_decode "$(/usr/bin/grep 'check_id=DAST-A-B-01' "$d/findings.fields")"
+assert_eq endpoint "${_DF[logical_kind]}" 'defaults to kind=endpoint'
+assert_eq 'api.example:GET /users/{id}#q' "${_DF[logical_fqn]}" \
+  'defaults to the exact tension-22 shape, verbatim'
+
+t_case 'a dast fqn built from target-supplied data is redacted exactly like any other field (tension 9)'
+new_run sarif01-dast-redact
+d=$SCOURSH_RUN_DIR
+finding_new
+finding_set check_id DAST-A-B-01
+finding_set module dast
+finding_set title t
+finding_set base_severity medium
+finding_set cwe CWE-79
+finding_set owasp A03:2021
+finding_set loc_target api.example
+finding_set loc_method GET
+finding_set loc_path_template '/users/{id}'
+finding_set loc_param_location query
+finding_set loc_param_name 'Bearer FQNREDACTTOKEN0123456789abcdef'
+finding_set cell api.example
+finding_set_evidence e
+finding_emit
+findings_merge "$d"
+finding_decode "$(/usr/bin/grep 'check_id=DAST-A-B-01' "$d/findings.fields")"
+assert_not_contains "${_DF[logical_fqn]}" 'FQNREDACTTOKEN' \
+  'a credential composed into the default fqn never survives (fails if the default writes _F[logical_fqn] directly instead of through finding_set)'
+assert_contains "${_DF[logical_fqn]}" '<redacted:BEARER:' 'and the redaction placeholder is present in its place'
+
+t_case 'cloud profile: kind=resource, fqn=<loc_resource_key>'
+new_run sarif01-cloud
+d=$SCOURSH_RUN_DIR
+finding_new
+finding_set check_id CLOUD-A-B-01
+finding_set module cloud
+finding_set title t
+finding_set base_severity medium
+finding_set cwe CWE-798
+finding_set owasp A07:2021
+finding_set loc_account_id 123456789012
+finding_set loc_region us-east-1
+finding_set loc_resource_key 'arn:aws:s3:::example-bucket'
+finding_set loc_sub_key none
+finding_set cell '123456789012/us-east-1'
+finding_set_evidence e
+finding_emit
+assert_eq "${_F[fingerprint]}" "$(finding_fingerprint)" \
+  'the cloud fingerprint (account_id region resource_key sub_key) is untouched'
+findings_merge "$d"
+finding_decode "$(/usr/bin/grep 'check_id=CLOUD-A-B-01' "$d/findings.fields")"
+assert_eq resource "${_DF[logical_kind]}" 'defaults to kind=resource'
+assert_eq 'arn:aws:s3:::example-bucket' "${_DF[logical_fqn]}" \
+  'defaults to the ARN alone (docs/STEP6-CLOUD-PLAN.md), not the full account/region/sub_key tuple'
+
+t_case 'posture profile: kind=control, fqn=<loc_control_id>'
+new_run sarif01-posture
+d=$SCOURSH_RUN_DIR
+finding_new
+finding_set check_id POSTURE-A-B-01
+finding_set module posture
+finding_set title t
+finding_set base_severity low
+finding_set cwe none
+finding_set owasp none
+finding_set loc_control_id POSTURE-EDGE-WAF_GEO-01
+finding_set loc_scope_key target-a
+finding_set cell target-a
+finding_set_evidence e
+finding_emit
+assert_eq "${_F[fingerprint]}" "$(finding_fingerprint)" \
+  'the posture fingerprint (control_id scope_key) is untouched'
+findings_merge "$d"
+finding_decode "$(/usr/bin/grep 'check_id=POSTURE-A-B-01' "$d/findings.fields")"
+assert_eq control "${_DF[logical_kind]}" 'defaults to kind=control'
+assert_eq POSTURE-EDGE-WAF_GEO-01 "${_DF[logical_fqn]}" 'defaults to <loc_control_id>'
+
+t_case 'net profile: target host port transport - NET-02 identity only, no logical-default arm yet'
+new_run sarif01-net
+d=$SCOURSH_RUN_DIR
+finding_new
+finding_set check_id NET-PORT-UNEXPECTED_LISTENER-01
+finding_set module net
+finding_set title t
+finding_set base_severity high
+finding_set cwe none
+finding_set owasp none
+finding_set loc_target lab
+finding_set loc_host target.example
+finding_set loc_port 8443
+finding_set loc_transport tcp
+finding_set cell lab
+finding_set_evidence e
+finding_emit
+assert_eq "${_F[fingerprint]}" "$(finding_fingerprint)" \
+  'the net fingerprint (target host port transport) round-trips through finding_emit'
+findings_merge "$d"
+assert_eq 1 "$(fps_of "$d" | wc -l | tr -d ' ')" 'exactly one finding was written'
+finding_decode "$(/usr/bin/grep 'check_id=NET-PORT-UNEXPECTED_LISTENER-01' "$d/findings.fields")"
+assert_eq net "${_DF[module]}" 'module round-trips through the merge as net'
+assert_eq lab "${_DF[loc_target]}" 'loc_target round-trips'
+assert_eq 8443 "${_DF[loc_port]}" 'loc_port round-trips - the component no other profile has a slot for'
+
+t_case 'sca profile: an emitters own logical identity is never overwritten'
+new_run sarif01-sca
+d=$SCOURSH_RUN_DIR
+finding_new
+finding_set check_id SCA-A-B-01
+finding_set module sca
+finding_set title t
+finding_set base_severity high
+finding_set cwe CWE-1395
+finding_set owasp A06:2021
+finding_set loc_ecosystem pypi
+finding_set loc_package example
+finding_set loc_advisory_id FIXTURE-1
+finding_set path requirements.txt
+finding_set cell .
+finding_set logical_kind dependency
+finding_set logical_fqn 'pypi:example@1.0.0'
+finding_set_evidence e
+finding_emit
+findings_merge "$d"
+finding_decode "$(/usr/bin/grep 'check_id=SCA-A-B-01' "$d/findings.fields")"
+assert_eq dependency "${_DF[logical_kind]}" 'kept exactly as modules/sca/ set it'
+assert_eq 'pypi:example@1.0.0' "${_DF[logical_fqn]}" \
+  'and the fqn is untouched too (fails if the guard checks the wrong field, or checks none)'
+
+t_case 'derived profile: an emitters own logical identity (kind=composite) is never overwritten'
+new_run sarif01-derived
+d=$SCOURSH_RUN_DIR
+occurrence_reset_unit sameunit.py
+emit_match "$d" SAST-A-A-01 sameunit.py 1 one
+emit_match "$d" SAST-B-B-01 sameunit.py 2 two
+findings_merge "$d"
+mk_derived "$W/sarif01.rules" file SAST-A-A-01 SAST-B-B-01
+derive_findings "$d" "$W/sarif01.rules"
+finding_decode "$(/usr/bin/grep 'check_id=COMPOSITE-TEST-CHAIN' "$d/findings.fields")"
+assert_eq composite "${_DF[logical_kind]}" 'kept exactly as the composite path set it'
+assert_eq 'COMPOSITE-TEST-CHAIN@sameunit.py' "${_DF[logical_fqn]}" 'and the fqn (check_id@correlation) is untouched'
+
+# ---------------------------------------------------------------------------
+t_case 'a single run emitting five profiles leaves none of them with an empty logical identity'
+# ---------------------------------------------------------------------------
+# The reading this fails under: a per-module setter added to, say, only
+# modules/dast/ would pass every case above in isolation (each new_run only
+# ever emits one profile) and still leave sast/cloud/posture/sca findings
+# empty in a real run that emits more than one profile at once - exactly the
+# shape of an ordinary `scan.sh all`.
+new_run sarif01-multi
+d=$SCOURSH_RUN_DIR
+occurrence_reset_unit multi.py
+
+finding_new
+finding_set check_id SAST-M-A-01
+finding_set module sast
+finding_set title t
+finding_set base_severity high
+finding_set cwe none
+finding_set owasp none
+finding_set loc_path multi.py
+finding_set loc_line 1
+finding_set cell .
+finding_set_match m
+finding_set_evidence m
+finding_emit
+
+finding_new
+finding_set check_id DAST-M-A-01
+finding_set module dast
+finding_set title t
+finding_set base_severity medium
+finding_set cwe CWE-79
+finding_set owasp A03:2021
+finding_set loc_target api.example
+finding_set loc_method GET
+finding_set loc_path_template /a
+finding_set loc_param_location query
+finding_set loc_param_name p
+finding_set cell api.example
+finding_set_evidence e
+finding_emit
+
+finding_new
+finding_set check_id CLOUD-M-A-01
+finding_set module cloud
+finding_set title t
+finding_set base_severity medium
+finding_set cwe CWE-798
+finding_set owasp A07:2021
+finding_set loc_account_id 123456789012
+finding_set loc_region us-east-1
+finding_set loc_resource_key 'arn:aws:s3:::multi-bucket'
+finding_set loc_sub_key none
+finding_set cell '123456789012/us-east-1'
+finding_set_evidence e
+finding_emit
+
+finding_new
+finding_set check_id POSTURE-M-A-01
+finding_set module posture
+finding_set title t
+finding_set base_severity low
+finding_set cwe none
+finding_set owasp none
+finding_set loc_control_id POSTURE-M-A-01
+finding_set loc_scope_key target-m
+finding_set cell target-m
+finding_set_evidence e
+finding_emit
+
+finding_new
+finding_set check_id SCA-M-A-01
+finding_set module sca
+finding_set title t
+finding_set base_severity high
+finding_set cwe CWE-1395
+finding_set owasp A06:2021
+finding_set loc_ecosystem pypi
+finding_set loc_package multi-pkg
+finding_set loc_advisory_id FIXTURE-M
+finding_set path requirements.txt
+finding_set cell .
+finding_set logical_kind dependency
+finding_set logical_fqn 'pypi:multi-pkg@1.0.0'
+finding_set_evidence e
+finding_emit
+
+findings_merge "$d"
+empty_kinds=0
+fp_mismatches=0
+while IFS= read -r line; do
+  [[ -n $line ]] || continue
+  finding_decode "$line"
+  [[ -n ${_DF[logical_kind]:-} ]] || empty_kinds=$(( empty_kinds + 1 ))
+  finding_adopt_decoded
+  [[ $(finding_fingerprint) == "${_DF[fingerprint]}" ]] || fp_mismatches=$(( fp_mismatches + 1 ))
+done <"$d/findings.fields"
+assert_eq 5 "$(wc -l <"$d/findings.fields" | tr -d ' ')" 'sanity: all five findings landed'
+assert_eq 0 "$empty_kinds" \
+  'every finding across sast/dast/cloud/posture/sca carries a non-empty logical_kind (fails under a per-module setter reaching only one of them)'
+assert_eq 0 "$fp_mismatches" \
+  'every merged fingerprint still matches what finding_fingerprint independently computes from the (now logical-populated) record - the executable form of "the merged findings.jsonl is byte-identical before and after"'
 
 t_summary findings

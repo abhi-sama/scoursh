@@ -1,0 +1,53 @@
+Package: zlib1g
+Status: install ok installed
+Priority: required
+Section: libs
+Version: 1:1.2.13.dfsg-1
+Architecture: amd64
+
+Status: install ok installed
+Priority: optional
+Section: misc
+Version: 9.9.9-1
+Architecture: amd64
+Description: a block with no Package: line at all - must not be enumerated
+ as a nameless package, regardless of its own Status/Version.
+
+Package: coreutils
+Status: install ok installed
+Priority: required
+Section: utils
+Version: 9.1-1
+Architecture: amd64
+
+Package: no-status-pkg
+Priority: optional
+Section: misc
+Version: 1.0-1
+Architecture: amd64
+Description: a block with a Package: line but no Status: line at all - the
+ empty status never equals "install ok installed", so this is excluded by
+ the same gate that excludes a deinstall/config-files package.
+
+Package: sed
+Status: install ok installed
+Priority: required
+Section: utils
+Version: 4.9-2
+Architecture: amd64
+
+Package: no-version-pkg
+Status: install ok installed
+Priority: optional
+Section: misc
+Architecture: amd64
+Description: a block with a name and a passing Status: but no Version: line
+ - must still be enumerated, with an empty version string, mirroring
+ apk_installed_enumerate's identical recovery for a P:-only block.
+
+Package: grep
+Status: install ok installed
+Priority: required
+Section: utils
+Version: 3.11-3
+Architecture: amd64

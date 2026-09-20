@@ -1,0 +1,51 @@
+{
+  "cases": 20,
+  "real_cases": 14,
+  "trap_cases": 6,
+  "min_severity": "any",
+  "match": "file",
+  "line_window": 0,
+  "categories": ["cors", "info-disclosure", "missing-csp", "sqli"],
+  "tools": {
+    "scoursh-dast": {
+      "version": "0.1.0-dev+3b25a218a010",
+      "corpus_commit": "sha256:cd58d79c5cb4d82f22fbaf616f9ff43bbd04ba630cd6b448a9ed99cf652fcebf",
+      "claims": "cors missing-csp sqli info-disclosure",
+      "findings_kept": 18,
+      "findings_dropped_by_severity": 0,
+      "findings_without_a_line": 18,
+      "loose": {
+        "cors": {"coverage": "scored", "tp": 2, "fn": 10, "fp": 0, "tn": 0, "recall": 0.167, "fpr": null, "precision": 1.000, "youden_j": null},
+        "info-disclosure": {"coverage": "scored", "tp": 0, "fn": 0, "fp": 1, "tn": 3, "recall": null, "fpr": 0.250, "precision": 0.000, "youden_j": null},
+        "missing-csp": {"coverage": "scored", "tp": 1, "fn": 0, "fp": 0, "tn": 0, "recall": 1.000, "fpr": null, "precision": 1.000, "youden_j": null},
+        "sqli": {"coverage": "scored", "tp": 0, "fn": 1, "fp": 0, "tn": 2, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000}
+      },
+      "strict": {
+        "cors": {"coverage": "scored", "tp": 2, "fn": 10, "fp": 0, "tn": 0, "recall": 0.167, "fpr": null, "precision": 1.000, "youden_j": null},
+        "info-disclosure": {"coverage": "scored", "tp": 0, "fn": 0, "fp": 0, "tn": 4, "recall": null, "fpr": 0.000, "precision": null, "youden_j": null},
+        "missing-csp": {"coverage": "scored", "tp": 1, "fn": 0, "fp": 0, "tn": 0, "recall": 1.000, "fpr": null, "precision": 1.000, "youden_j": null},
+        "sqli": {"coverage": "scored", "tp": 0, "fn": 1, "fp": 0, "tn": 2, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000}
+      }
+    },
+    "zap": {
+      "version": "2.17.0",
+      "corpus_commit": "sha256:cd58d79c5cb4d82f22fbaf616f9ff43bbd04ba630cd6b448a9ed99cf652fcebf",
+      "claims": "cors missing-csp sqli info-disclosure",
+      "findings_kept": 588,
+      "findings_dropped_by_severity": 0,
+      "findings_without_a_line": 588,
+      "loose": {
+        "cors": {"coverage": "scored", "tp": 4, "fn": 8, "fp": 0, "tn": 0, "recall": 0.333, "fpr": null, "precision": 1.000, "youden_j": null},
+        "info-disclosure": {"coverage": "scored", "tp": 0, "fn": 0, "fp": 2, "tn": 2, "recall": null, "fpr": 0.500, "precision": 0.000, "youden_j": null},
+        "missing-csp": {"coverage": "scored", "tp": 1, "fn": 0, "fp": 0, "tn": 0, "recall": 1.000, "fpr": null, "precision": 1.000, "youden_j": null},
+        "sqli": {"coverage": "scored", "tp": 0, "fn": 1, "fp": 0, "tn": 2, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000}
+      },
+      "strict": {
+        "cors": {"coverage": "scored", "tp": 0, "fn": 12, "fp": 0, "tn": 0, "recall": 0.000, "fpr": null, "precision": null, "youden_j": null},
+        "info-disclosure": {"coverage": "scored", "tp": 0, "fn": 0, "fp": 0, "tn": 4, "recall": null, "fpr": 0.000, "precision": null, "youden_j": null},
+        "missing-csp": {"coverage": "scored", "tp": 0, "fn": 1, "fp": 0, "tn": 0, "recall": 0.000, "fpr": null, "precision": null, "youden_j": null},
+        "sqli": {"coverage": "scored", "tp": 0, "fn": 1, "fp": 0, "tn": 2, "recall": 0.000, "fpr": 0.000, "precision": null, "youden_j": 0.000}
+      }
+    }
+  }
+}

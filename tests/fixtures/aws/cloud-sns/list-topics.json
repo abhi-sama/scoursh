@@ -1,0 +1,7 @@
+{
+    "Topics": [
+        {"TopicArn": "arn:aws:sns:eu-west-2:123456789012:scoursh-fixture-public-topic"},
+        {"TopicArn": "arn:aws:sns:eu-west-2:123456789012:scoursh-fixture-hardened-topic"},
+        {"TopicArn": "arn:aws:sns:eu-west-2:123456789012:scoursh-fixture-denied-topic"}
+    ]
+}

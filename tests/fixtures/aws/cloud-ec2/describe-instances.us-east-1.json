@@ -1,0 +1,19 @@
+{
+    "Reservations": [
+        {
+            "ReservationId": "r-bad1",
+            "Instances": [
+                {
+                    "InstanceId": "i-badimds1",
+                    "State": {"Name": "running"},
+                    "MetadataOptions": {"HttpTokens": "optional"}
+                },
+                {
+                    "InstanceId": "i-badterminated1",
+                    "State": {"Name": "terminated"},
+                    "MetadataOptions": {"HttpTokens": "optional"}
+                }
+            ]
+        }
+    ]
+}

@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+# tests/suites/cloud-sqs.sh - modules/cloud/aws/live/sqs.sh: the §8.1 SQS
+# read-only checks (docs/STEP6-CLOUD-PLAN.md CLOUD-29).
+#
+# Mirrors tests/suites/cloud-sns.sh's own shape (which itself mirrors
+# tests/suites/cloud-s3.sh - see that suite's header for the full reasoning).
+# What is SPECIFIC to this suite: `list-queues` returns a URL only, so the
+# ARN this check cites comes from the SAME `get-queue-attributes` call the
+# checks themselves depend on (section A2); and the encryption check has a
+# managed-default exemption S3 has and SNS does not (`SqsManagedSseEnabled`),
+# so section A also pins that SSE-managed-true is NOT a finding.
+#
+# NO NETWORK AND NO AWS ACCOUNT: every case runs against tests/lib/aws-
+# fixtures.sh's routed stub, serving tests/fixtures/aws/cloud-sqs/.
+#
+# shellcheck shell=bash
+#
+# SC2016: assertion prose quotes flag/JSON syntax literally.
+# SC2030/SC2031: a prefix `VAR=val cmd` before a subprocess is deliberately
+#   scoped to that one invocation.
+# shellcheck disable=SC2016,SC2030,SC2031
+
+set -Eeuo pipefail
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+# -x back-edge cut: see tests/suites/cloud-s3.sh's identical note.
+# shellcheck source=/dev/null
+source "$ROOT/modules/cloud/aws/live/sqs_engine.sh"
+# shellcheck source=tests/lib/aws-fixtures.sh
+source "$ROOT/tests/lib/aws-fixtures.sh"
+# shellcheck source=tests/lib/assert.sh
+source "$ROOT/tests/lib/assert.sh"
+
+W=$SCOURSH_SCRATCH/cloud-sqs
+rm -rf "$W"
+mkdir -p "$W/bin"
+W=$(cd -- "$W" && pwd -P)
+
+# `awk -F'\x1f'` does NOT reliably parse the hex escape as the real byte
+# (measured: BSD/macOS awk 20200816 treats it as a literal no-op and leaves
+# the whole line as ONE field, so every `$2 == ...` compare is silently
+# false) - the fix is a shell variable holding the ACTUAL byte, passed to
+# `-F"$SEP"`, never the hex-escape spelling in the -F argument itself.
+SEP=$'\x1f'
+FIX=$ROOT/tests/fixtures/aws/cloud-sqs
+PUB_URL=https://sqs.eu-west-2.amazonaws.com/123456789012/scoursh-fixture-public-queue
+HARD_URL=https://sqs.eu-west-2.amazonaws.com/123456789012/scoursh-fixture-hardened-queue
+DENY_URL=https://sqs.eu-west-2.amazonaws.com/123456789012/scoursh-fixture-denied-queue
+PUB=arn:aws:sqs:eu-west-2:123456789012:scoursh-fixture-public-queue
+HARD=arn:aws:sqs:eu-west-2:123456789012:scoursh-fixture-hardened-queue
+
+aws_fixture_stub_install "$W/bin"
+
+_routes_default() {
+  local omit=${1:-}
+  aws_fixture_route_reset
+  aws_fixture_route_add sts get-caller-identity "$FIX/sts.get-caller-identity.json"
+  aws_fixture_route_add ec2 describe-regions    "$FIX/ec2.describe-regions.json"
+  aws_fixture_route_add sqs list-queues         "$FIX/list-queues.json"
+
+  if [[ $omit != get-queue-attributes ]]; then
+    aws_fixture_route_add_for sqs get-queue-attributes "$PUB_URL"  "$FIX/get-queue-attributes.public.json"
+    aws_fixture_route_add_for sqs get-queue-attributes "$HARD_URL" "$FIX/get-queue-attributes.hardened.json"
+    aws_fixture_route_add_for sqs get-queue-attributes "$DENY_URL" "$FIX/get-queue-attributes.denied.err"
+  fi
+}
+
+_run_cloud() {
+  local out=$1
+  shift
+  _RC=0
+  rm -rf "$out"
+  PATH="$W/bin:$PATH" SCOURSH_AWS_CACHE_DIR=$W/cache/$(basename "$out") \
+    bash "$ROOT/scan.sh" cloud --live "$@" --out "$out" >"$out.log" 2>&1 || _RC=$?
+  return 0
+}
+
+_json() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+cur = doc
+for part in sys.argv[2].split('.'):
+    if part.isdigit() and isinstance(cur, list):
+        cur = cur[int(part)]
+    else:
+        cur = cur.get(part) if isinstance(cur, dict) else None
+    if cur is None:
+        break
+print('' if cur is None else (json.dumps(cur, separators=(',', ':')) if isinstance(cur, (list, dict)) else cur))
+PY
+}
+
+_findings_table() {
+  python3 - "$1" <<'PY'
+import json, sys
+for line in open(sys.argv[1]):
+    line = line.strip()
+    if not line:
+        continue
+    f = json.loads(line)
+    loc = f.get('location') or {}
+    print('\x1f'.join([
+        f.get('check_id', ''),
+        loc.get('resource_key', '') or '',
+        loc.get('region', '') or '',
+        f.get('cell') or '',
+        ','.join(f.get('cis') or []),
+        loc.get('account_id', '') or '',
+    ]))
+PY
+}
+
+_ids_for_arn() {
+  local table=$1 arn=$2
+  printf '%s\n' "$table" | awk -F"$SEP" -v a="$arn" '$2 == a { print $1 }' | LC_ALL=C sort
+}
+
+# ===========================================================================
+# A. The classifiers, against fixtures, with no scan at all.
+# ===========================================================================
+t_case 'A. classifiers'
+
+sqs_doc_load "$FIX/get-queue-attributes.public.json"
+_arn='' _rc=0
+sqs_queue_arn_set _arn || _rc=1
+assert_true "$_rc" 'A1 the ARN is read off Attributes.QueueArn, not list-queues'
+assert_eq "$PUB" "$_arn" 'A2 the correct ARN is read'
+
+_pol=''
+sqs_queue_policy_string_set _pol
+sqs_policy_string_load "$_pol"
+assert_true "$(sqs_policy_is_public && echo 0 || echo 1)" 'A3 a wildcard AWS principal with no Condition is public'
+assert_true "$(sqs_queue_encrypted && echo 1 || echo 0)" 'A4 no KmsMasterKeyId and no SqsManagedSseEnabled is not encrypted'
+
+sqs_doc_load "$FIX/get-queue-attributes.hardened.json"
+sqs_queue_policy_string_set _pol
+sqs_policy_string_load "$_pol"
+assert_true "$(sqs_policy_is_public && echo 1 || echo 0)" 'A5 a principal scoped to one account id is not public'
+# SqsManagedSseEnabled=true is NOT a finding, unlike SNS which has no such
+# managed-default exemption - the reading this fails under treats every
+# queue without a customer-managed KmsMasterKeyId as unencrypted.
+assert_true "$(sqs_queue_encrypted && echo 0 || echo 1)" 'A6 SqsManagedSseEnabled=true counts as encrypted (the SSE-S3-style managed default)'
+
+# The SQS attribute value is a STRING "true"/"false", never a JSON boolean -
+# a reader that expected a `type == b` leaf would silently never match.
+cat >"$W/sse-false.json" <<'J'
+{"Attributes": {"QueueArn": "arn:x", "SqsManagedSseEnabled": "false"}}
+J
+sqs_doc_load "$W/sse-false.json"
+assert_true "$(sqs_queue_encrypted && echo 1 || echo 0)" 'A7 SqsManagedSseEnabled="false" (a string) is still read correctly as not encrypted'
+
+# ===========================================================================
+# B. One scan, three queues: fires on the public one, quiet on the hardened.
+# ===========================================================================
+t_case 'B. both directions in one run'
+
+_routes_default
+_run_cloud "$W/run-b"
+assert_eq '0' "$_RC" 'B1 a cloud --live run over the fixture account exits 0'
+assert_file_exists "$W/run-b/findings.jsonl" 'B2 findings.jsonl was written'
+
+TBL=$(_findings_table "$W/run-b/findings.jsonl")
+PUB_IDS=$(_ids_for_arn "$TBL" "$PUB")
+HARD_IDS=$(_ids_for_arn "$TBL" "$HARD")
+
+for want in CLOUD-SQS-PUBLIC_POLICY-01 CLOUD-SQS-NO_ENCRYPTION-01; do
+  assert_contains "$PUB_IDS" "$want" "B3 the public queue is reported by $want"
+done
+assert_eq '' "$HARD_IDS" 'B4 the hardened queue in the SAME run produces no finding at all'
+
+# ===========================================================================
+# C. ARN, region, account, cell - and NO cis (an honest absence).
+# ===========================================================================
+t_case 'C. finding citation'
+
+_row=$(printf '%s\n' "$TBL" | awk -F"$SEP" '$1 == "CLOUD-SQS-PUBLIC_POLICY-01" { print; exit }')
+IFS=$'\x1f' read -r _c_id _c_arn _c_region _c_cell _c_cis _c_account <<<"$_row"
+
+assert_eq "$PUB" "$_c_arn" 'C1 the finding cites the queue ARN'
+assert_eq '123456789012' "$_c_account" 'C2 the finding cites the account id'
+assert_eq 'eu-west-2' "$_c_region" 'C3 the finding cites the region'
+assert_eq "123456789012/eu-west-2" "$_c_cell" 'C4 the cell agrees with the region for a regional service'
+assert_eq '' "$_c_cis" 'C5 the finding carries NO cis value - CIS AWS Foundations Benchmark v3.0.0 has no SQS section'
+
+# ===========================================================================
+# D. Honesty: a denied call is a reduction, never silence.
+# ===========================================================================
+t_case 'D. honesty accounting'
+
+RUNJSON=$W/run-b/run.json
+REDUCTIONS=$(_json "$RUNJSON" coverage_reduction)
+CHECKS_RUN=$(_json "$RUNJSON" checks_run)
+
+assert_contains "$CHECKS_RUN" 'CLOUD-SQS-PUBLIC_POLICY-01' \
+  'D1 a check that answered for SOME queues is in checks_run'
+assert_contains "$REDUCTIONS" 'aws_api_access_denied' \
+  'D2 the AccessDenied on the denied queue is recorded as a coverage_reduction'
+assert_contains "$REDUCTIONS" 'queues_unanswered=1' \
+  'D3 the reduction says how many queues did not answer'
+
+_routes_default get-queue-attributes
+aws_fixture_route_add sqs get-queue-attributes "$FIX/get-queue-attributes.denied.err"
+_run_cloud "$W/run-d"
+CR2=$(_json "$W/run-d/run.json" checks_run)
+RED2=$(_json "$W/run-d/run.json" coverage_reduction)
+assert_not_contains "$CR2" 'CLOUD-SQS-' \
+  'D4 a check denied for every queue is absent from checks_run entirely'
+assert_contains "$RED2" 'check=CLOUD-SQS-PUBLIC_POLICY-01' \
+  'D5 ... and it has its own coverage_reduction saying so'
+
+aws_fixture_route_reset
+aws_fixture_route_add sts get-caller-identity "$FIX/sts.get-caller-identity.json"
+aws_fixture_route_add ec2 describe-regions    "$FIX/ec2.describe-regions.json"
+aws_fixture_route_add sqs list-queues         "$FIX/get-queue-attributes.denied.err"
+_run_cloud "$W/run-denied"
+CR3=$(_json "$W/run-denied/run.json" checks_run)
+assert_not_contains "$CR3" 'CLOUD-SQS-' 'D6 a denied list-queues credits no check at all'
+assert_contains "$(_json "$W/run-denied/run.json" coverage_gap)" 'queue list' \
+  'D7 ... and the coverage_gap says the queue list could not be read'
+
+# ===========================================================================
+# E. Round-trip: coverage cell, state, and every report format.
+# ===========================================================================
+t_case 'E. round-trip'
+
+RUN_ID=$(_json "$RUNJSON" run_id)
+assert_ne '' "$RUN_ID" 'E1 run.json carries the run id'
+STATE_FILE=$ROOT/state/$RUN_ID.json
+assert_file_exists "$STATE_FILE" 'E2 the run persisted a state snapshot'
+COVER=$(python3 - "$STATE_FILE" <<'PYCOVER'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+out = []
+for cid, entry in sorted((doc.get('covered_checks') or {}).items()):
+    if cid.startswith('CLOUD-SQS-'):
+        out.append('%s %s %s' % (cid, entry.get('scope'), ','.join(entry.get('cells') or [])))
+print('\n'.join(out))
+PYCOVER
+)
+assert_contains "$COVER" 'CLOUD-SQS-PUBLIC_POLICY-01 account-region 123456789012/eu-west-2' \
+  'E3 the run wrote a real account-region coverage cell for the region actually visited'
+
+assert_file_exists "$W/run-b/report.md" 'E4 report.md written'
+_MD=$(cat "$W/run-b/report.md")
+assert_contains "$_MD" "$PUB" 'E5 report.md names the queue ARN'
+
+_routes_default
+_run_cloud "$W/run-sarif" --format sarif
+assert_file_exists "$W/run-sarif/report.sarif" 'E6 --format sarif writes report.sarif'
+_SARIF=$(cat "$W/run-sarif/report.sarif")
+assert_contains "$_SARIF" 'CLOUD-SQS-PUBLIC_POLICY-01' 'E7 the SARIF run names the check as a rule'
+assert_contains "$_SARIF" "$PUB" 'E8 the SARIF result names the resource'
+
+t_summary cloud-sqs

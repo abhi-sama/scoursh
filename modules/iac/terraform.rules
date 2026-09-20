@@ -51,6 +51,9 @@ tags: static
 tags: compliance
 cis: 5.2
 cis: 5.3
+fix-kind: replace-tpl
+fix-find: "0.0.0.0/0"
+fix-replace: "<TRUSTED_CIDR>"
 remediation: Restrict the CIDR to the smallest network that needs access.
   Where public reachability is genuinely required (a public load balancer listener),
   terminate it at an edge that applies WAF and rate limiting rather than at the

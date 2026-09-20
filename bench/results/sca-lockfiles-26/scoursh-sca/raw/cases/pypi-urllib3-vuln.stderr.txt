@@ -1,0 +1,1 @@
+2026-09-10T11:19:44Z info  scan complete in 41s - report: <BENCH>/results/sca-lockfiles-26/scoursh-sca/raw/cases/pypi-urllib3-vuln

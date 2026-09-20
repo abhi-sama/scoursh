@@ -1,0 +1,10 @@
+{
+    "Policy": {
+        "PolicyName": "scoursh-fixture-managed-broad",
+        "PolicyId": "ANPAEXAMPLEFIXTURE01",
+        "Arn": "arn:aws:iam::123456789012:policy/scoursh-fixture-managed-broad",
+        "DefaultVersionId": "v3",
+        "AttachmentCount": 1,
+        "IsAttachable": true
+    }
+}

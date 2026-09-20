@@ -1,0 +1,16 @@
+{
+  "DomainNames": [
+    {
+      "DomainName": "scoursh-fixture-public-domain",
+      "EngineType": "OpenSearch"
+    },
+    {
+      "DomainName": "scoursh-fixture-hardened-domain",
+      "EngineType": "OpenSearch"
+    },
+    {
+      "DomainName": "scoursh-fixture-denied-domain",
+      "EngineType": "OpenSearch"
+    }
+  ]
+}

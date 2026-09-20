@@ -488,7 +488,15 @@ _dast_openredirect_phase() {
   local epf=${SCOURSH_DAST_ENDPOINTS:-} pf=${SCOURSH_DAST_PARAMETERS:-}
   inject_inventory_load "$epf" "$pf" openredirect
   if (( _INJ_N == 0 )); then
-    run_record coverage_reduction "module=dast reason=no_parameter_inventory target=$target - the crawler wrote no injectable parameter (docs/INVENTORY-FORMAT.md), so the open-redirect probe had no request field to test. Feed a spec/HAR (config/discovery.conf) or run the crawl against an application with discoverable parameters."
+    # Name the ids, so `lib/report.sh`'s coverage report can attribute this
+    # reason to them instead of leaving them in its `unaccounted` residual
+    # (docs/DESIGN.md §15).  Narrowed to what this run actually SELECTED:
+    # an id the filter chain already dropped was declared once by
+    # lib/checks.sh:353 and naming it twice corrupts that report's own
+    # arithmetic - see dast_selected_narrow (modules/dast/engine.sh).
+    local _nc='DAST-INJ-OPENREDIR_HEADER-01 DAST-INJ-OPENREDIR_META-01'
+    declare -F dast_selected_narrow >/dev/null && dast_selected_narrow _nc
+    run_record coverage_reduction "module=dast reason=no_parameter_inventory target=$target${_nc:+ checks=[$_nc]} - the crawler wrote no injectable parameter (docs/INVENTORY-FORMAT.md), so the open-redirect probe had no request field to test. Feed a spec/HAR (config/discovery.conf) or run the crawl against an application with discoverable parameters."
     run_record coverage_gap "dast openredirect: target '$target' has no known request parameters, so no open-redirect probe was sent. This is a coverage gap - nothing was tested - not a finding of safety."
     return 0
   fi
@@ -581,7 +589,15 @@ _dast_openredirect_phase() {
     run_record coverage_gap "dast openredirect: target '$target' had more redirect-influencing parameters than this probe's own cap of $_OR_MAX_PARAMS, so $capped candidate(s) were not probed for open redirect. This is a coverage bound, not a clean result."
   fi
   if (( skipped > 0 )); then
-    run_record coverage_reduction "module=dast reason=openredirect_parameter_not_redirect_shaped target=$target count=$skipped - $skipped discovered parameter(s) were neither named like a redirect destination (modules/dast/payloads/openredirect-params.txt) nor carrying an absolute-URL example, so they were not probed for open redirect. Add the name to that file to include one."
+    # Name the ids, so `lib/report.sh`'s coverage report can attribute this
+    # reason to them instead of leaving them in its `unaccounted` residual
+    # (docs/DESIGN.md §15).  Narrowed to what this run actually SELECTED:
+    # an id the filter chain already dropped was declared once by
+    # lib/checks.sh:353 and naming it twice corrupts that report's own
+    # arithmetic - see dast_selected_narrow (modules/dast/engine.sh).
+    local _nc='DAST-INJ-OPENREDIR_HEADER-01 DAST-INJ-OPENREDIR_META-01'
+    declare -F dast_selected_narrow >/dev/null && dast_selected_narrow _nc
+    run_record coverage_reduction "module=dast reason=openredirect_parameter_not_redirect_shaped target=$target${_nc:+ checks=[$_nc]} count=$skipped - $skipped discovered parameter(s) were neither named like a redirect destination (modules/dast/payloads/openredirect-params.txt) nor carrying an absolute-URL example, so they were not probed for open redirect. Add the name to that file to include one."
   fi
   if (( uninjectable > 0 )); then
     run_record coverage_reduction "module=dast reason=openredirect_uninjectable_parameters target=$target count=$uninjectable - $uninjectable redirect-shaped parameter(s) were a GraphQL operation, a path segment with no template slot this probe could substitute, or an endpoint every request to which failed at the transport; they were not tested for open redirect here."

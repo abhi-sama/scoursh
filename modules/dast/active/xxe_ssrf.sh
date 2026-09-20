@@ -677,26 +677,37 @@ _dast_xxe_ssrf_phase() {
   # checks_run carries ONLY the ids whose payload actually went out at
   # least once; everything else is a named reduction (lib/records.sh's own
   # definition of checks_run, and DAST-29's own H3 lesson applied here).
+  #
+  # THE PLURAL `checks=[...]` FORM BELOW, EVEN FOR ONE ID, AND THAT IS NOT
+  # PEDANTRY.  These three reductions already named the real check id - and
+  # named it in the SINGULAR `check=` field, which every other DAST caller uses
+  # for a PHASE name (`check=tls`, `check=jwt`, `check=graphql`, `check=authz`).
+  # `lib/report.sh`'s coverage report reads only `checks=[...]`, so all three
+  # ids were reported as `unaccounted` on a run where this emitter had done
+  # everything right: the reason WAS recorded, correctly, in a field nothing
+  # reads as an id.  Widening the parser to also accept `check=<id>` was the
+  # rejected alternative - it would make one field mean two different things
+  # depending on whether its value happened to look like an id.
   # --------------------------------------------------------------------
   if (( sel_entity )); then
     if (( entity_executed > 0 )); then
       run_record checks_run "$_XS_CHECK_ENTITY"
     else
-      run_record coverage_reduction "module=dast reason=xxe_entity_not_executed check=$_XS_CHECK_ENTITY target=$target - no POST/PUT/PATCH endpoint in the inventory accepted a body-override request this run, so internal-entity XXE detection was not assessed."
+      run_record coverage_reduction "module=dast reason=xxe_entity_not_executed checks=[$_XS_CHECK_ENTITY] target=$target - no POST/PUT/PATCH endpoint in the inventory accepted a body-override request this run, so internal-entity XXE detection was not assessed."
     fi
   fi
   if (( sel_xxe_ssrf )); then
     if (( xxe_ssrf_executed > 0 )); then
       run_record checks_run "$_XS_CHECK_XXE_SSRF"
     else
-      run_record coverage_reduction "module=dast reason=xxe_ssrf_not_executed check=$_XS_CHECK_XXE_SSRF target=$target - either no in-scope SSRF sentinel/oracle was available, no POST/PUT/PATCH endpoint existed, or every endpoint's baseline already carried the sentinel's own content signature (noisy), so XXE-driven SSRF confirmation was not assessed."
+      run_record coverage_reduction "module=dast reason=xxe_ssrf_not_executed checks=[$_XS_CHECK_XXE_SSRF] target=$target - either no in-scope SSRF sentinel/oracle was available, no POST/PUT/PATCH endpoint existed, or every endpoint's baseline already carried the sentinel's own content signature (noisy), so XXE-driven SSRF confirmation was not assessed."
     fi
   fi
   if (( sel_ssrf_param )); then
     if (( ssrf_executed > 0 )); then
       run_record checks_run "$_XS_CHECK_SSRF_PARAM"
     else
-      run_record coverage_reduction "module=dast reason=ssrf_param_not_executed check=$_XS_CHECK_SSRF_PARAM target=$target - either no in-scope SSRF sentinel/oracle was available, the discovered parameters were all GraphQL/path-uninjectable, or every baseline already carried the sentinel's own content signature (noisy), so per-parameter SSRF confirmation was not assessed."
+      run_record coverage_reduction "module=dast reason=ssrf_param_not_executed checks=[$_XS_CHECK_SSRF_PARAM] target=$target - either no in-scope SSRF sentinel/oracle was available, the discovered parameters were all GraphQL/path-uninjectable, or every baseline already carried the sentinel's own content signature (noisy), so per-parameter SSRF confirmation was not assessed."
     fi
   fi
 

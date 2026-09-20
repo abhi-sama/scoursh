@@ -1,0 +1,2 @@
+2026-09-10T13:20:03Z info  run-sandboxed: executing under Seatbelt (deny-all-network): ./scan.sh sca --path tests/fixtures/sca/mixed-four-ecosystems --format json --out <BENCH_OUT>/tierA-sca
+2026-09-10T13:20:35Z info  scan complete in 32s - report: <BENCH_OUT>/tierA-sca

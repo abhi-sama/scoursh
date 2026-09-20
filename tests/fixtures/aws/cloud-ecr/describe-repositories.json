@@ -1,0 +1,46 @@
+{
+    "repositories": [
+        {
+            "repositoryArn": "arn:aws:ecr:eu-west-2:123456789012:repository/scoursh-fixture-ecr-bad",
+            "registryId": "123456789012",
+            "repositoryName": "scoursh-fixture-ecr-bad",
+            "repositoryUri": "123456789012.dkr.ecr.eu-west-2.amazonaws.com/scoursh-fixture-ecr-bad",
+            "createdAt": "2024-01-01T00:00:00Z",
+            "imageTagMutability": "MUTABLE",
+            "imageScanningConfiguration": {
+                "scanOnPush": false
+            },
+            "encryptionConfiguration": {
+                "encryptionType": "AES256"
+            }
+        },
+        {
+            "repositoryArn": "arn:aws:ecr:eu-west-2:123456789012:repository/scoursh-fixture-ecr-good",
+            "registryId": "123456789012",
+            "repositoryName": "scoursh-fixture-ecr-good",
+            "repositoryUri": "123456789012.dkr.ecr.eu-west-2.amazonaws.com/scoursh-fixture-ecr-good",
+            "createdAt": "2024-01-01T00:00:00Z",
+            "imageTagMutability": "IMMUTABLE",
+            "imageScanningConfiguration": {
+                "scanOnPush": true
+            },
+            "encryptionConfiguration": {
+                "encryptionType": "AES256"
+            }
+        },
+        {
+            "repositoryArn": "arn:aws:ecr:eu-west-2:123456789012:repository/scoursh-fixture-ecr-denied",
+            "registryId": "123456789012",
+            "repositoryName": "scoursh-fixture-ecr-denied",
+            "repositoryUri": "123456789012.dkr.ecr.eu-west-2.amazonaws.com/scoursh-fixture-ecr-denied",
+            "createdAt": "2024-01-01T00:00:00Z",
+            "imageTagMutability": "IMMUTABLE",
+            "imageScanningConfiguration": {
+                "scanOnPush": true
+            },
+            "encryptionConfiguration": {
+                "encryptionType": "AES256"
+            }
+        }
+    ]
+}

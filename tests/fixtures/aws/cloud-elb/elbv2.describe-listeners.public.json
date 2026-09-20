@@ -1,0 +1,36 @@
+{
+    "Listeners": [
+        {
+            "ListenerArn": "arn:aws:elasticloadbalancing:eu-west-2:123456789012:listener/app/scoursh-fixture-alb-public/bbbbbbbbbbbbbbbb/4444444444444444",
+            "LoadBalancerArn": "arn:aws:elasticloadbalancing:eu-west-2:123456789012:loadbalancer/app/scoursh-fixture-alb-public/bbbbbbbbbbbbbbbb",
+            "Port": 80,
+            "Protocol": "HTTP",
+            "DefaultActions": [
+                {
+                    "Type": "redirect",
+                    "RedirectConfig": {
+                        "Protocol": "#{protocol}",
+                        "Path": "/legacy",
+                        "StatusCode": "HTTP_302"
+                    }
+                }
+            ]
+        },
+        {
+            "ListenerArn": "arn:aws:elasticloadbalancing:eu-west-2:123456789012:listener/app/scoursh-fixture-alb-public/bbbbbbbbbbbbbbbb/5555555555555555",
+            "LoadBalancerArn": "arn:aws:elasticloadbalancing:eu-west-2:123456789012:loadbalancer/app/scoursh-fixture-alb-public/bbbbbbbbbbbbbbbb",
+            "Port": 443,
+            "Protocol": "HTTPS",
+            "SslPolicy": "ELBSecurityPolicy-2016-08",
+            "Certificates": [
+                {"CertificateArn": "arn:aws:acm:eu-west-2:123456789012:certificate/scoursh-fixture"}
+            ],
+            "DefaultActions": [
+                {
+                    "Type": "forward",
+                    "TargetGroupArn": "arn:aws:elasticloadbalancing:eu-west-2:123456789012:targetgroup/scoursh-fixture-tg/6666666666666666"
+                }
+            ]
+        }
+    ]
+}

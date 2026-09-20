@@ -414,9 +414,29 @@ _dast_cors_phase() {
   # EXECUTED" (AGENTS.md), and the second probe genuinely does not execute at
   # all on a run where every route already came back reflected or wildcard -
   # reporting coverage there would claim a probe that was never sent.
-  if (( null_tested > 0 && do_null )); then
-    run_record checks_run DAST-CORS-NULL_ORIGIN-01
-    run_record checks_run DAST-CORS-NULL_ORIGIN_WITH_CREDENTIALS-01
+  #
+  # THE `else` ARM IS LOAD-BEARING AND ITS ABSENCE WAS A SHIPPED DEFECT.  With
+  # only the positive arm, a run where the second probe was never sent dropped
+  # both ids with NO record anywhere - not a coverage_reduction, not a
+  # coverage_gap, not a note - while the phase's other three ids sat in
+  # `checks_run`, so an operator read "CORS was tested" with two of its five
+  # checks vanished without trace.  That is the exact silence docs/DESIGN.md §15
+  # forbids, and it is the commonest outcome rather than an edge case: any
+  # target that reflects or wildcards every route reaches it.  Measured against
+  # a live target: 13 of 13 routes wildcard, `null_tested=0`, and `grep -i null`
+  # over the whole run's meta/ returned nothing.
+  #
+  # Guarded on do_null alone: a DESELECTED id was already declared by
+  # lib/checks.sh:353's pre-dispatch `skipped_by` record and must not be
+  # declared twice under two different reasons.
+  if (( do_null )); then
+    if (( null_tested > 0 )); then
+      run_record checks_run DAST-CORS-NULL_ORIGIN-01
+      run_record checks_run DAST-CORS-NULL_ORIGIN_WITH_CREDENTIALS-01
+    else
+      run_record coverage_reduction "module=dast reason=cors_null_probe_not_sent check=cors target=$target checks=[DAST-CORS-NULL_ORIGIN-01 DAST-CORS-NULL_ORIGIN_WITH_CREDENTIALS-01] candidates=${#probe[@]} already_reflected_or_wildcard=$null_skipped unreachable=$null_failed - the second, \`Origin: null\` probe was never sent to any route, so whether this target trusts the null origin is NOT covered by this run. A route that already reflected an arbitrary sentinel origin or answered with a wildcard is deliberately not probed again (its own finding is already stronger), and a route whose first probe never answered could not be probed a second time - but neither is evidence about the null origin itself."
+      run_record coverage_gap "dast cors: the \`Origin: null\` probe was not sent to any route on target '$target' ($null_skipped route(s) already reflected an arbitrary origin or answered with a wildcard, $null_failed unreachable), so whether it trusts the null origin was not tested. A clean result for those two checks here is the absence of a test, not the absence of a problem."
+    fi
   fi
 
   if (( truncated > 0 )); then

@@ -138,6 +138,22 @@ source "$SCOURSH_SCAN_SH_DIR/lib/report.sh"
 # tests/run-tests.sh, and docs/CI-RUNBOOK.md.
 # shellcheck source=/dev/null
 source "$SCOURSH_SCAN_SH_DIR/lib/config.sh"
+# lib/parallel.sh is `--jobs N`'s bounded worker fan-out, consumed by
+# modules/{sast,iac,sca}'s tree walks.  It is sourced HERE, from the real
+# install root's own `lib/`, rather than left to modules/sast/engine.sh's own
+# guarded self-relative fallback, for the reason that file's neighbouring
+# lib/report.sh and lib/config.sh sources are also mirrored here: `run.sh` and
+# `engine.sh` are copied into fixture roots that carry no `lib/` sibling at all
+# (tests/suites/sast.sh's ROOT_REAL_REGISTRY), where the self-relative form
+# cannot even LOCATE the file and the `source` fails before any guard can make
+# it a no-op.  Sourcing it before dispatch sets the guard so the module-side
+# fallback is never reached in a real run - and that fallback still exists, and
+# is still needed, for a suite that sources engine.sh directly with no scan.sh
+# anywhere in the process.  It is a LEAF (it sources nothing at all,
+# deliberately - see its own header), so this edge costs one file and no
+# subtree in the `shellcheck -x` expansion.
+# shellcheck source=lib/parallel.sh
+source "$SCOURSH_SCAN_SH_DIR/lib/parallel.sh"
 # lib/http.sh is sourced here, not only by modules/dast/, because THIS file is
 # what writes the run's authorisation record (docs/STEP5-DAST-PLAN.md DAST-32:
 # "scan.sh writes the affirmation as a per-run record under the run directory
@@ -160,11 +176,37 @@ source "$SCOURSH_SCAN_SH_DIR/lib/checks.sh"
 source "$SCOURSH_SCAN_SH_DIR/lib/paranoid.sh"
 # shellcheck source=lib/engines.sh
 source "$SCOURSH_SCAN_SH_DIR/lib/engines.sh"
+# docs/STEP7-STATE-PLAN.md STATE-06: the `diff` command and automatic
+# per-run classification.  lib/diff.sh itself sources lib/state.sh (STATE-01)
+# and lib/report.sh, so THIS is the real edge that supplies state.sh's own
+# content to this file's graph - the direct `source lib/state.sh` line that
+# used to sit here was a genuine diamond (both paths landing on lib/state.sh
+# in this same file), measured at 10.55 GB peak `shellcheck -x` RSS against a
+# documented 4.41 GB baseline for this entry point, over the 6 GB per-file CI
+# budget and the actual cause of a runner-killing OOM on the ubuntu-latest
+# leg.  The direct edge is cut below instead of this one, because lib/diff.sh
+# is also sourced (with no other path to lib/state.sh at all) from all four
+# `modules/*/run.sh` files - cutting there would silently lose real checking
+# for those four entry points, where this file has none.
+# shellcheck source=lib/diff.sh
+source "$SCOURSH_SCAN_SH_DIR/lib/diff.sh"
+# -x back-edge cut: lib/state.sh is already inlined just above via
+# lib/diff.sh's own real edge to it - see that comment.
+# shellcheck source=/dev/null
+source "$SCOURSH_SCAN_SH_DIR/lib/state.sh"
+# docs/STEP-GUIDE-PLAN.md GUIDE-01: lib/guide.sh (the guided-interactive-mode
+# prompt gate, signal trap and menu primitives) is sourced here so a later
+# ticket's scan_main routing needs no new source line - this ticket itself
+# wires no call site into scan_main.
+# -x back-edge cut: lib/core.sh is already inlined elsewhere in this file's
+# own source graph (see the lib/config.sh/lib/http.sh notes above).
+# shellcheck source=/dev/null
+source "$SCOURSH_SCAN_SH_DIR/lib/guide.sh"
 
 # -----------------------------------------------------------------------------
 # 2. The §5 grammar, encoded as data rather than a chain of if/elif.
 # -----------------------------------------------------------------------------
-SCAN_COMMANDS=(sast sca iac dast cloud all diff report)
+SCAN_COMMANDS=(sast sca iac dast cloud network image all diff report)
 
 # One map, keyed "scope:flag" (global, or a command name), because bash 4.2
 # has no namerefs (those are 4.3+, and tension 24 froze the minimum at 4.2)
@@ -185,6 +227,19 @@ declare -A _SCAN_FLAG_KIND=(
   [global:contact]=value
   [global:user-agent-suffix]=value
 
+  # docs/STEP-GUIDE-PLAN.md GUIDE-02: `--guided` turns the interactive
+  # questionnaire ON (scan_main's own routing, section 4c below, decides
+  # eligibility - lib/guide.sh's guide_may_prompt never reads SCAN_FLAGS at
+  # all); `--print-command` (GUIDE-06's own flag, added here rather than
+  # there because both new keys belong in one change to this map) will
+  # eventually print the guided flow's composed command and exit instead of
+  # running it.  Both are global bools for the identical reason
+  # --allow-intrusive is: a command-scoped guided/print-command pair would
+  # have to be repeated across every one of SCAN_COMMANDS' eight entries for
+  # no behavioural difference between them.
+  [global:guided]=bool
+  [global:print-command]=bool
+
   [sast:path]=value
   [sast:lang]=value
   [sast:history]=bool
@@ -202,11 +257,95 @@ declare -A _SCAN_FLAG_KIND=(
   # a host has nothing to say on a `sast` run and offering it there would be
   # inviting it into CI boilerplate that never scans anything.
   [dast:i-own-target]=value
+  # docs/STEP-GUIDE-PLAN.md GUIDE-04's own "Flag equivalence" table (G6 rate,
+  # G6 budget).  DAST-32 already reads both as `config/scanner.conf` keys
+  # (`_http_effective_rps_milli_set`/`_http_effective_limit_set`, lib/http.sh)
+  # with a conservative ceiling and an asymmetric clamp, but never gained a
+  # dedicated CLI parameter the way `jobs`/`fail-on` did - this pair of flags
+  # is what closes that gap, so the guided flow's rate/budget prompts (which
+  # this plan's own "one architectural decision" section requires to have a
+  # flag) have something real to emit.  Same key names `config/scanner.conf`
+  # already uses, so no second vocabulary is invented.  Reaches DAST-32's
+  # clamp via `SCOURSH_CONFIG_REQUESTS_PER_SECOND`/`SCOURSH_CONFIG_REQUEST_BUDGET`
+  # (the resolver's own documented env-override level, docs/USAGE.md) rather
+  # than a change to lib/http.sh's chokepoint - see scan_main's own comment
+  # where those are exported for the full reasoning.
+  [dast:requests-per-second]=value
+  [dast:request-budget]=value
+  # DAST detector-gap fix (docs/FOUNDATION.md tension 16): `circuit-breaker-
+  # failures` had a config/scanner.conf key and DAST-32's own asymmetric
+  # clamp/relax-under-affirmation already applied to it generically
+  # (lib/http.sh's `_http_effective_limit_set` treats every non-window integer
+  # key alike), but - unlike `requests-per-second`/`request-budget` above - it
+  # had no dedicated CLI flag, so an operator who owns a target that answers
+  # unmatched paths with 5xx (rather than 404) had no first-class way to raise
+  # it without hand-editing config/scanner.conf or knowing the undocumented
+  # SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES env-override name. This flag closes
+  # exactly that gap, mirroring the pair above byte-for-byte: it changes NOTHING
+  # for a run that never passes it (the ceiling stays 10/60s, unraisable without
+  # an explicit value + --i-own-target, exactly as before), and an explicit
+  # value above the ceiling with no --i-own-target is refused (exit 2) exactly
+  # as the other two are - see scan_main's own comment where all three are
+  # exported as SCOURSH_CONFIG_* for lib/http.sh's DAST-32 clamp.
+  [dast:circuit-breaker-failures]=value
+  # breaker-5xx-semantics fix (docs/FOUNDATION.md tension 16's amendment):
+  # `--circuit-breaker-failures` above raises the TRANSPORT-failure threshold
+  # (no usable response at all), which a well-formed 5xx response no longer
+  # counts against at all - it is tracked by this SEPARATE counter and its own,
+  # much higher default (200 vs. 10), because a 5xx is a real answer and
+  # individually weaker evidence of an outage. Same mechanism, same asymmetric
+  # clamp, same CLI/env/file/default resolution as its sibling; see
+  # lib/http.sh's `_http_breaker_record_failure` for the full reasoning behind
+  # the split.
+  [dast:circuit-breaker-5xx-failures]=value
+  # IMPORT-07: an ephemeral, --target-scoped override of the matching
+  # config/discovery.conf key (rules/RULE-FORMAT.md §9.6.3's openapi-path/
+  # har-path/postman-path/graphql-schema-path) - never persisted, and never a
+  # second ingestion mechanism: `modules/dast/crawl.sh`'s
+  # `_crawl_discovery_load` writes these into the SAME `_CRAWL_D_*` variables
+  # the config file would. Valid on `dast` and `all` only, matching
+  # `i-own-target`'s own scoping reasoning - a spec/HAR path has nothing to
+  # say on a `sast` run.
+  [dast:openapi]=value
+  [dast:har]=value
+  [dast:postman]=value
+  [dast:graphql-schema]=value
 
   [cloud:live]=bool
   [cloud:profile]=value
   [cloud:regions]=value
   [cloud:assume-role]=value
+  # docs/STEP6-CLOUD-PLAN.md D1's OPTIONAL account affirmation.  Deliberately
+  # weaker than `--i-own-target`, which is REQUIRED before dast will raise a
+  # limit: dast sends injection payloads and cloud cannot change a single byte
+  # of state (lib/awscli.sh's `aws_ro` refuses any non-read operation with exit
+  # 3 before exec'ing the CLI, and that is runtime-enforced and tested).  What
+  # it buys, and the only reason it exists at all, is the same friction in the
+  # ACCIDENTAL case `_scan_check_affirmation` below documents: a stale command
+  # or a copied CI job pointed at the wrong account.  Its mismatch check lives
+  # in modules/cloud/aws/run.sh rather than here, because unlike `--target` the
+  # account id is not in SCAN_FLAGS - it is resolved from the credentials, at
+  # dispatch time, by `sts get-caller-identity`.
+  [cloud:i-own-account]=value
+
+  # NET-04: mirrors dast's own target/intensity/affirmation trio exactly -
+  # a network probe is gated by exactly the same
+  # chokepoint and the same ceilings a DAST request is. No
+  # requests-per-second/request-budget/circuit-breaker-failures/openapi/har/
+  # postman/graphql-schema pair here: those are DAST-32's own rate/discovery
+  # knobs, meaningless for a module with no HTTP discovery phase of its own.
+  [network:target]=value
+  [network:intensity]=value
+  [network:i-own-target]=value
+
+  # IMG-01: the module-foundation ticket.  `--image` is the operator-declared
+  # STABLE id (the coverage-scope cell, NOT the volatile digest or tag - a
+  # rebuild or retag must not reset coverage), enforced via
+  # _SCAN_REQUIRED_FLAG below; `--source` names the offline docker-save
+  # tarball or OCI layout directory the operator supplies (config/images.conf's
+  # `docker-archive`/`oci-layout` shapes - never a registry pull).
+  [image:image]=value
+  [image:source]=value
 
   [diff:against]=value
 
@@ -230,11 +369,33 @@ declare -A _SCAN_FLAG_KIND=(
   [all:intensity]=value
   [all:authed]=bool
   [all:i-own-target]=value
+  [all:i-own-account]=value
+  [all:requests-per-second]=value
+  [all:request-budget]=value
+  [all:circuit-breaker-failures]=value
+  [all:circuit-breaker-5xx-failures]=value
+  [all:openapi]=value
+  [all:har]=value
+  [all:postman]=value
+  [all:graphql-schema]=value
   [all:live]=bool
   [all:profile]=value
   [all:regions]=value
   [all:assume-role]=value
+  [all:image]=value
+  [all:source]=value
 )
+
+# `network` deliberately reuses `all:target`/`all:intensity`/
+# `all:i-own-target` above (they are already present, shared with `dast`) -
+# only the flags `network` and `all` accept that `dast` and `all` do NOT
+# already share need their own `[all:...]` row here, and network introduces
+# none: every one of its own flags is already in the union.
+#
+# `image` introduces `--image`/`--source`, which no other command already
+# shares, so `all` needs its own `[all:image]`/`[all:source]` rows above -
+# the identical reason `cloud`'s `--live`/`--profile`/`--regions` each got
+# one.
 
 # The one required flag per command that needs one, read both by the
 # cross-flag check at the end of scan_parse_args below AND by
@@ -243,6 +404,8 @@ declare -A _SCAN_FLAG_KIND=(
 # which flag a command demands.
 declare -A _SCAN_REQUIRED_FLAG=(
   [dast]=target
+  [network]=target
+  [image]=image
   [diff]=against
   [report]=from
 )
@@ -271,11 +434,92 @@ Commands:
   iac      [--path DIR]
   dast     --target <name-from-scope> [--intensity passive|safe|active] [--authed]
            [--i-own-target <same-name>]
+           [--openapi FILE] [--har FILE] [--postman FILE] [--graphql-schema FILE]
                                         (--intensity default: passive)
                                         (--intensity above passive, and
                                          --allow-intrusive, each require
                                          --i-own-target)
-  cloud    [--live] [--profile <p>] [--regions all|us-east-1,...] [--assume-role ARN]
+                                        (--openapi/--har/--postman/--graphql-schema:
+                                         IMPORT-07 - an ephemeral, this-run-only
+                                         override of the matching
+                                         config/discovery.conf key for --target;
+                                         nothing is written to that file. A
+                                         relative path is resolved against the
+                                         install root, exactly as the config
+                                         file's own paths are - not against
+                                         your current directory. Each requires
+                                         --target, exit 2 otherwise - same
+                                         rule as --i-own-target. Prefer
+                                         config/discovery.conf for anything you
+                                         want to keep re-running the same way.
+                                         If a run's report or terminal output
+                                         says a target "looks like a single-page
+                                         app", this is the fix - see
+                                         docs/USAGE.md's config/discovery.conf
+                                         section for a 30-second HAR-capture
+                                         recipe.)
+  cloud    [--live] [--profile <p>] [--regions all|us-east-1,...]
+           [--i-own-account <account-id>] [--assume-role ARN]
+                            (read-only throughout: every AWS call goes through
+                              a chokepoint that refuses any operation which is
+                              not describe-/list-/get-.  --live is what makes
+                              it talk to AWS at all; without it no API call is
+                              made.  --regions defaults to EVERY region the
+                              account has enabled, because auditing one region
+                              and reporting clean says nothing about the rest.
+                              --i-own-account is optional and checked against
+                              the account the credentials actually resolve to
+                              (exit 2 on a mismatch), which is what catches a
+                              stale command pointed at the wrong account.
+                              --assume-role ARN iterates a read-only role
+                              across every ACTIVE account of the organization
+                              the resolved credentials belong to
+                              (organizations list-accounts, then sts
+                              assume-role per account) - the ARN's account
+                              segment is a template, rewritten per member
+                              account, so name any account and role name/path
+                              that exists identically in every account to
+                              scan.  --i-own-account is still checked against
+                              the CALLING identity only, not per member
+                              account.)
+  network  --target <name-from-scope> [--intensity passive|safe|active]
+           [--i-own-target <same-name>]
+                            (service-posture scanning over the DECLARED
+                              listener set config/scope.conf's own
+                              base-url/extra-host entries name for
+                              --target - never a port sweep or host
+                              discovery: a port scoursh was not told about is
+                              never probed, exactly as an unauthorised host
+                              is never requested by `dast`.  Gated by the
+                              identical chokepoint, ceilings and
+                              --i-own-target affirmation `dast` uses - one
+                              TCP connect costs exactly what one HTTP
+                              request costs.  Built: all six scan phases
+                              (reachability, banner/HTTP disclosure, TLS
+                              posture, transport posture) have landed; run
+                              `scan.sh network --help` for the current phase
+                              count.  A run whose target has no non-web
+                              listener declared still resolves the target and
+                              records why it found nothing rather than
+                              reporting a clean scan.)
+  image    --image <id> [--source <path>]
+                            (built-container-image scanning: offline
+                              installed-package enumeration and CVE matching
+                              against a docker-save tarball or OCI image
+                              layout the operator supplies - never a
+                              registry pull. --image is a STABLE id you choose
+                              (survives a rebuild or a retag - the coverage
+                              cell, not the volatile digest), never validated
+                              against the image's actual content.
+                              Built: acquisition, apk/dpkg/rpm enumeration and
+                              version comparison, language-dependency
+                              extraction, and the config-blob checks have all
+                              landed; run `scan.sh image --help` for the
+                              current component count. A missing advisory
+                              database for the image's distro release records
+                              why nothing was found rather than reporting a
+                              clean scan; --source overrides the configured
+                              path for this run only.)
   all      run every module for which inputs are configured
   diff     --against <prior-run-dir>
   report   --from <prior-run-dir>
@@ -305,14 +549,27 @@ Global:
                               continue with a logged coverage_reduction,
                               never an error. Nothing is fetched at scan
                               time - see tools/vendor-engines.sh.)
-  --allow-intrusive         (side-effecting checks: live user enumeration,
-                              signup/reset probing, the burst probe. On `dast`
-                              - and on `all` with a --target - this requires
-                              --i-own-target as well, because the blast radius
-                              escapes the target: these checks create users and
-                              send messages, so the harmed parties are the
-                              target's USERS, and owning a host does not confer
-                              permission to do that to them.)
+  --allow-intrusive         (checks tagged `intrusive` in their registry
+                              record - rules/RULE-FORMAT.md §9.1.3: one whose
+                              payload can mutate state beyond the single
+                              request/response cycle it inspects. Shipped
+                              today: DAST-INJ-CRLF_RESPONSE_SPLITTING-01 (a
+                              forged second HTTP response a downstream cache
+                              could store and later serve to a different
+                              visitor) and both DAST-INJ-PROTOPOLLUTION_*-01
+                              ids (a write attempt into a shared, process-wide
+                              object every later request on that process can
+                              read). Not yet built: live user enumeration and
+                              signup/reset probing, which will also need it
+                              once they exist, since they create users and
+                              send messages on a real identity provider. On
+                              `dast` - and on `all` with a --target - this
+                              requires --i-own-target as well, because the
+                              blast radius of an intrusive check can escape
+                              the target itself: the harmed party may be the
+                              target's USERS or another of its own visitors,
+                              and owning a host does not confer permission to
+                              do that to them.)
   --contact VALUE           (an email address or URL a target owner can reach
                               you at. It is placed in the User-Agent every
                               request carries. Also settable as `contact` in
@@ -329,7 +586,17 @@ Global:
   --jobs N                  (worker parallelism; on a network module it is
                               also the ceiling on simultaneous connections and
                               is held to 4 without --i-own-target)
-  --format json,sarif,html,md
+  --format json,sarif,html,md,audit,agent
+                              (default: json,sarif,html,md,agent - naming
+                              --format explicitly always replaces that list,
+                              never adds to it. audit alone is opt-in: it is
+                              never in the default list, and requesting it
+                              never drops any other format. audit writes
+                              report-audit.html alongside report.html, never
+                              in place of it. agent writes
+                              reports/<run>/agent-fix.json, a compact,
+                              schema-projected findings file for a downstream
+                              fixing agent - see docs/AGENT-FORMAT.md)
   --fail-on SEVERITY        (critical|high|medium|low|info|none)
   --fail-on-new             (requires --fail-on; usage error otherwise)
   --min-confidence LEVEL    (high|medium|low; default low)
@@ -396,17 +663,92 @@ _scan_dast_phase_status() {
   printf '%s of %s scan phases implemented' "$present" "$total"
 }
 
+# `_scan_network_phase_status` - "N of M scan phases implemented", the exact
+# shape and reasoning of `_scan_dast_phase_status` above, applied to
+# modules/network/engine.sh's own `_NET_PHASES` table.
+_scan_network_phase_status() {
+  local total=0 present=0 spec script path
+  if [[ -z ${_NET_PHASES+x} && -f $SCOURSH_INSTALL_ROOT/modules/network/engine.sh ]]; then
+    # shellcheck disable=SC1091
+    source "$SCOURSH_INSTALL_ROOT/modules/network/engine.sh"
+  fi
+  for spec in "${_NET_PHASES[@]+"${_NET_PHASES[@]}"}"; do
+    script=${spec%%:*}
+    path=$SCOURSH_INSTALL_ROOT/modules/network/$script
+    total=$(( total + 1 ))
+    [[ -f $path ]] && present=$(( present + 1 ))
+  done
+  printf '%s of %s scan phases implemented' "$present" "$total"
+}
+
+# `_scan_cloud_service_status` - "N of M AWS services implemented", counted by
+# walking modules/cloud/aws/engine.sh's own `_CLOUD_SERVICES` table and
+# checking the same file path `cloud_run_service` checks for each row (its
+# "absent" outcome).  The exact shape, and the exact reasoning, of
+# `_scan_dast_phase_status` above: sourcing engine.sh costs nothing at source
+# time (a pure function/array library, guarded) and is skipped entirely if
+# modules/cloud/aws/run.sh itself does not exist, so a fixture
+# SCOURSH_INSTALL_ROOT with no cloud module never tries to source a file that
+# is not there.
+_scan_cloud_service_status() {
+  local total=0 present=0 spec
+  if [[ -z ${_CLOUD_SERVICES+x} && -f $SCOURSH_INSTALL_ROOT/modules/cloud/aws/engine.sh ]]; then
+    # shellcheck disable=SC1091
+    source "$SCOURSH_INSTALL_ROOT/modules/cloud/aws/engine.sh"
+  fi
+  for spec in "${_CLOUD_SERVICES[@]+"${_CLOUD_SERVICES[@]}"}"; do
+    total=$(( total + 1 ))
+    [[ -f $SCOURSH_INSTALL_ROOT/modules/cloud/aws/${spec%%:*} ]] && present=$(( present + 1 ))
+  done
+  printf '%s of %s AWS services implemented' "$present" "$total"
+}
+
+# `_scan_image_component_status` - "N of M pipeline components implemented",
+# the same file-existence idiom as `_scan_dast_phase_status` and
+# `_scan_cloud_service_status` above, applied to the image module's own
+# fixed acquire -> enumerate -> compare pipeline.  Unlike dast/network/cloud,
+# modules/image/engine.sh deliberately declares no phase table of its own
+# (see that file's header: there is nothing to gate on `--intensity` here,
+# so a table would have nothing to put in it) - this list therefore lives
+# here, in scan.sh, purely to keep this help text honest, rather than in
+# engine.sh where it would contradict that file's own documented design.
+_scan_image_component_status() {
+  local total=0 present=0 rel
+  local -a components=(
+    acquire.sh
+    distro/apk.sh
+    distro/apk_version.sh
+    distro/dpkg.sh
+    distro/dpkg_version.sh
+    distro/rpm.sh
+    distro/rpm_version.sh
+    config.sh
+    langdeps.sh
+  )
+  for rel in "${components[@]+"${components[@]}"}"; do
+    total=$(( total + 1 ))
+    [[ -f $SCOURSH_INSTALL_ROOT/modules/image/$rel ]] && present=$(( present + 1 ))
+  done
+  printf '%s of %s pipeline components implemented' "$present" "$total"
+}
+
 # `_scan_stateful_command_built CMD` - `diff` and `report` are not modules
 # (scan_main's own case block handles both inline, never through
 # scan_dispatch), so there is no run.sh on disk to check the way there is for
-# every other command.  Both need docs/DESIGN.md §13 step 7's persistent
-# state/ tracking, which has not landed; this is the ONE function both
-# scan_main's diff/report case arms AND scan_usage_for read for that fact, so
-# landing step 7 and flipping this to real logic keeps the real dispatch and
-# this help text in agreement by construction rather than by remembering to
-# edit both.
+# every other command.  `diff` needed docs/DESIGN.md §13 step 7's persistent
+# state/ tracking and has it (docs/STEP7-STATE-PLAN.md STATE-06:
+# lib/diff.sh's `diff_render_against`, wired into scan_main's own `diff` case
+# arm).  `report` needs no classification at all, only re-emission from a
+# prior run's own findings.fields/meta (lib/report.sh's
+# report_regenerate_from), so it never depended on state/ and lands
+# independently of it.  This stays the ONE function scan_main's diff/report
+# case arms AND scan_usage_for both read, so the two can never silently
+# disagree about which of them is built.
 _scan_stateful_command_built() {
-  return 1
+  case $1 in
+    diff | report) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 scan_usage_for() {
@@ -461,7 +803,7 @@ scan_usage_for() {
       ;;
     dast)
       if _scan_module_built dast; then
-        printf 'partially built - the scope gate, rate limiter and phase harness are real (%s, docs/STEP5-DAST-PLAN.md). A run against a real target completes cleanly and records why it found nothing, rather than reporting a clean scan.\n' \
+        printf 'built - every scan phase has landed (%s, docs/STEP5-DAST-PLAN.md): the scope gate, rate limiter, session/crawl inventory, and the full passive/active/tier-5 check set. A run against a real target completes cleanly and records why a check found nothing, rather than reporting a clean scan when it did not look.\n' \
           "$(_scan_dast_phase_status)"
       else
         printf '%s\n' 'NOT built - modules/dast/run.sh does not exist on disk yet.'
@@ -469,23 +811,40 @@ scan_usage_for() {
       ;;
     cloud)
       if _scan_module_built cloud; then
-        printf '%s\n' 'built.'
+        printf 'built - the dispatch entry point, the caller-identity/authorization record, the enabled-region iteration, and every AWS service check have landed (%s, docs/STEP6-CLOUD-PLAN.md). A --live run examines every enabled service across every enabled region; where a call is inaccessible (access denied, opted out, throttled), that gap is recorded as a coverage reduction rather than folded into a clean scan. The posture/ phase (SSO, edge and session-drift checks, docs/DESIGN.md §8.7) has not landed - only its config/posture.conf schema has - so a posture-relevant control is a declared skip today.\n' \
+          "$(_scan_cloud_service_status)"
       else
         printf '%s\n' 'NOT built - modules/cloud/aws/run.sh does not exist on disk yet; this command is a logged no-op (docs/DESIGN.md §13 step 6).'
       fi
       ;;
+    network)
+      if _scan_module_built network; then
+        printf 'built - every scan phase has landed (%s): three-state reachability verification, banner/HTTP service and version disclosure, TLS posture on non-web ports, and plaintext/STARTTLS transport posture, gated by the same scope chokepoint and --i-own-target affirmation dast uses. This is deliberately not a port scanner - a port the operator did not declare in config/scope.conf is never probed.\n' \
+          "$(_scan_network_phase_status)"
+      else
+        printf '%s\n' 'NOT built - modules/network/run.sh does not exist on disk yet.'
+      fi
+      ;;
+    image)
+      if _scan_module_built image; then
+        printf 'built - every pipeline stage has landed (%s): tarball/OCI-layout acquisition, apk/dpkg/rpm package enumeration and version comparison against data/advisories.db, language-dependency extraction reusing sca'"'"'s tree-walkers, and the config-blob checks (effective runtime user, exposed ports, mutable base-image reference). This is offline lookup against an operator-supplied image, never a registry pull or a running-container inspection.\n' \
+          "$(_scan_image_component_status)"
+      else
+        printf '%s\n' 'NOT built - modules/image/run.sh does not exist on disk yet.'
+      fi
+      ;;
     diff)
       if _scan_stateful_command_built diff; then
-        printf '%s\n' 'built.'
+        printf '%s\n' 'built - classifies state/latest.json (the most recently completed run) against the named --against run and renders the delta into a fresh report directory (run.json, report.md); performs no new scan.'
       else
         printf '%s\n' 'NOT built - diff classification needs the persistent state/ tracking of docs/DESIGN.md §13 step 7, which has not landed. This command validates --against and then records a declared no-op.'
       fi
       ;;
     report)
       if _scan_stateful_command_built report; then
-        printf '%s\n' 'built.'
+        printf '%s\n' "built - regenerates report.md/report.html/report.sarif/report-audit.html (honouring --format) from a prior run directory's own findings.fields and meta/, with no rescan and no module dispatched; run.json is carried forward byte-for-byte from that run."
       else
-        printf '%s\n' 'NOT built - report regeneration needs the same step-7 state/ persistence diff does, which has not landed. This command validates --from and then records a declared no-op.'
+        printf '%s\n' 'NOT built.'
       fi
       ;;
     all)
@@ -531,8 +890,20 @@ scan_validate_flag_value() {
     intensity) checks_valid_intensity "$val" ;;
     fail-on) [[ $val =~ ^(critical|high|medium|low|info|none)$ ]] ;;
     min-confidence) [[ $val =~ ^(high|medium|low)$ ]] ;;
-    jobs) [[ $val =~ ^[1-9][0-9]*$ ]] ;;
-    format) _scan_validate_csv "$val" '^(json|sarif|html|md)$' ;;
+    jobs | request-budget | circuit-breaker-failures | circuit-breaker-5xx-failures) [[ $val =~ ^[1-9][0-9]*$ ]] ;;
+    # Copied verbatim from lib/config.sh's `_scanner_validate_value` (the same
+    # duplication `jobs`/`fail-on`/`min-confidence` above already accept:
+    # there is no cross-file regex-sharing mechanism in this codebase, and the
+    # two layers - CLI shape and config-key shape - are deliberately
+    # independent checks). `0` is schema-legal here but is refused later, at
+    # the DAST-32 chokepoint itself (`_http_rps_milli_set`/
+    # `_http_decimal_is_zero`, lib/http.sh): a genuinely zero rate means "wait
+    # forever for a token that can never arrive", which that function treats
+    # as a real usage error rather than "unlimited" - this validator only
+    # checks the value is a well-formed non-negative decimal, not that it is
+    # runnable.
+    requests-per-second) [[ $val =~ ^(0|[1-9][0-9]*)(\.[0-9]+)?$ ]] ;;
+    format) _scan_validate_csv "$val" '^(json|sarif|html|md|audit|agent)$' ;;
     lang) _scan_validate_csv "$val" '^(py|js|go|java)$' ;;
     regions) [[ $val == all ]] || _scan_validate_csv "$val" '^[a-zA-Z0-9-]+$' ;;
     assume-role) [[ $val == arn:*:role/* ]] ;;
@@ -546,6 +917,35 @@ scan_validate_flag_value() {
     *) [[ -n $val ]] ;;   # every other value-flag: non-empty is the whole contract
   esac
 }
+
+# docs/STEP-GUIDE-PLAN.md GUIDE-04: a snapshot, taken once at source time
+# (before any scan_main call), of whatever `SCOURSH_CONFIG_REQUESTS_PER_SECOND`
+# / `SCOURSH_CONFIG_REQUEST_BUDGET` the CALLER'S OWN shell environment already
+# carried - the documented env-override level of DAST-32's clamp
+# (docs/USAGE.md "environment variable > file > built-in default").  scan_main
+# exports these two under `--requests-per-second`/`--request-budget` (see its
+# own comment for why), and `scan_main` can run more than once in one process
+# (every test in tests/suites/scan.sh does exactly that) - so a run that gives
+# neither flag must restore whatever the environment held BEFORE this file's
+# own code ever touched it, never a blind `unset`, or a genuine operator-set
+# `SCOURSH_CONFIG_REQUESTS_PER_SECOND=10 scan.sh dast ...` would be destroyed
+# by scan.sh's own second invocation in the same test process.  The `+set`
+# form is `${var+set}` (bash 4.2, no `-v` test needed): it distinguishes
+# "unset" from "set to the empty string", which `-n` alone cannot.
+_SCAN_ENV_RPS_PRISTINE=${SCOURSH_CONFIG_REQUESTS_PER_SECOND-}
+_SCAN_ENV_RPS_PRISTINE_SET=${SCOURSH_CONFIG_REQUESTS_PER_SECOND+set}
+_SCAN_ENV_BUDGET_PRISTINE=${SCOURSH_CONFIG_REQUEST_BUDGET-}
+_SCAN_ENV_BUDGET_PRISTINE_SET=${SCOURSH_CONFIG_REQUEST_BUDGET+set}
+# The same pristine-snapshot treatment for --circuit-breaker-failures, added
+# alongside its two siblings above for the identical reason (a second
+# scan_main call in one process, tests/suites/scan.sh's own pattern, must not
+# destroy a genuine operator-set SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES).
+_SCAN_ENV_BREAKER_PRISTINE=${SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES-}
+_SCAN_ENV_BREAKER_PRISTINE_SET=${SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES+set}
+# breaker-5xx-semantics fix: the identical pristine-snapshot treatment for the
+# separate --circuit-breaker-5xx-failures flag/env var.
+_SCAN_ENV_BREAKER_5XX_PRISTINE=${SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES-}
+_SCAN_ENV_BREAKER_5XX_PRISTINE_SET=${SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES+set}
 
 # -----------------------------------------------------------------------------
 # 4. The parser.  Hand-rolled rather than `getopts`/`getopt`: `getopts` (the
@@ -634,8 +1034,102 @@ scan_parse_args() {
     esac
   done
 
-  # Cross-flag and required-flag checks that need the whole flag set, not
-  # just one flag in isolation.
+  # The required-flag and cross-flag block that used to end this function
+  # (docs/STEP-GUIDE-PLAN.md GUIDE-02) now lives in `_scan_check_required`,
+  # section 4a below, called by scan_main AFTER its guided-mode routing
+  # (section 4c) rather than from here.  This is what lets
+  # `scan.sh dast --guided` PARSE cleanly with no --target given: this
+  # function stops at shape-validating whatever was actually typed, and
+  # never itself decides whether the result is complete enough to run.
+  # scan_parse_args stays a pure function that never reads a terminal - see
+  # this function's own header - which is exactly the property a required-
+  # flag check evaluated here, before a guided pass had any chance to fill a
+  # gap, would not have needed and would not have honoured.
+  #
+  # `_scan_resolve_target_flags` runs FIRST, so a --target/--i-own-target
+  # given as a declared target's own base-url is already its canonical id by
+  # the time `_scan_check_affirmation` compares the two flags below, and by
+  # the time every later reader (config_scope_require, run_record targets,
+  # every module's own direct SCAN_FLAGS[target] read) sees it - one
+  # resolution, at the earliest point both flags exist together, rather than
+  # a control each of those callers would otherwise have to remember apply
+  # itself (tension 19's own argument, applied here too).
+  #
+  # `_scan_check_affirmation` is NOT part of that moved block and stays
+  # called from here, unchanged: its rules (docs/STEP5-DAST-PLAN.md DAST-32)
+  # read whatever combination of `--i-own-target`/`--target`/`--intensity`/
+  # `--allow-intrusive` was ACTUALLY typed and are already correct when none
+  # of them were - see that function's own comment - so a guided pass filling
+  # them in later changes what it reads, never what it checks.
+  _scan_resolve_target_flags
+  _scan_check_affirmation
+  _scan_check_discovery_flags
+}
+
+# -----------------------------------------------------------------------------
+# 3z. --target/--i-own-target base-url resolution (UX fix: an operator hit
+#     config_scope_require's "wants the ID, not the base-url" refusal three
+#     separate times with the tool already holding the answer - see
+#     lib/config.sh's `config_scope_resolve_target`, the actual matching
+#     engine this wraps). Called from the tail of scan_parse_args, above,
+#     BEFORE `_scan_check_affirmation`, so that function's own literal
+#     `$affirm != $target` compare needs no change at all: by the time it
+#     runs, a URL in one flag and its target's own id in the other are
+#     already the identical string.
+#
+#     Reads config/scope.conf when (and only when) a flag's value is shaped
+#     like a URL or host:port (`config_scope_resolve_target`'s own fast-path
+#     gate) - an ordinary id round-trips with no file touched at all, and a
+#     typo'd id is left exactly as typed, so its existing refusal downstream
+#     (config_scope_require / the preflight gate, both unchanged) still
+#     fires with the same message it always has. A value that resolves to
+#     MORE THAN ONE declared target dies HERE, immediately, naming every
+#     candidate: guessing among them is the exact silent substitution this
+#     feature must never do, and refusing early means nothing downstream
+#     ever acts on an unresolved, ambiguous value.
+# -----------------------------------------------------------------------------
+_scan_resolve_target_flags() {
+  local flag value path=$SCOURSH_INSTALL_ROOT/config/scope.conf
+  local __tmp resolved rc
+  for flag in target i-own-target; do
+    value=${SCAN_FLAGS[$flag]:-}
+    [[ -n $value ]] || continue
+
+    # Never through $(...): config_scope_resolve_target can die() (a
+    # genuinely malformed config/scope.conf), and a subshell would swallow
+    # that die's exit silently - the identical hazard _scan_capture's own
+    # header documents, worked around the same way: a plain redirection,
+    # never a command substitution, around the call that might die.
+    __tmp=$SCOURSH_SCRATCH/_scan_resolve_target.$$
+    rc=0
+    config_scope_resolve_target "$value" "$path" >"$__tmp" || rc=$?
+    resolved=$(<"$__tmp")
+    rm -f "$__tmp"
+
+    case $rc in
+      0)
+        log_info "--$flag '$value' resolved to declared target id '$resolved' (its base-url)"
+        SCAN_FLAGS[$flag]=$resolved
+        ;;
+      2)
+        die "$SCOURSH_EXIT_SCOPE" "--$flag '$value' matches more than one declared target's base-url/extra-host in $path: $resolved - refusing to guess which one; re-run with that target's own id instead."
+        ;;
+      *) ;; # no match (or nothing to resolve) - leave it as typed
+    esac
+  done
+}
+
+# -----------------------------------------------------------------------------
+# 4a. Required-flag and cross-flag checks moved out of scan_parse_args
+#     (docs/STEP-GUIDE-PLAN.md GUIDE-02).  Called by scan_main AFTER its
+#     guided-mode routing (section 4c below), so a future guided pass that
+#     fills a missing --target/--against/--from before this runs changes
+#     what this function finds, never what it enforces.  Rules and exit-2
+#     message text are UNCHANGED from scan_parse_args's own former copy -
+#     see tests/suites/scan.sh's four retargeted assertions, named by their
+#     t_case labels in that ticket's own row rather than by line number.
+# -----------------------------------------------------------------------------
+_scan_check_required() {
   if [[ ${SCAN_FLAGS[fail-on-new]:-} == true && -z ${SCAN_FLAGS[fail-on]:-} ]]; then
     scan_die_usage '--fail-on-new requires --fail-on (docs/FOUNDATION.md tension 14)'
   fi
@@ -647,11 +1141,11 @@ scan_parse_args() {
     [[ -n ${SCAN_FLAGS[$_scan_req]:-} ]] \
       || scan_die_usage "'$SCAN_COMMAND' requires --$_scan_req"
   fi
-  _scan_check_affirmation
+  return 0
 }
 
 # -----------------------------------------------------------------------------
-# 4a. The own-your-target affirmation (docs/STEP5-DAST-PLAN.md DAST-32)
+# 4b. The own-your-target affirmation (docs/STEP5-DAST-PLAN.md DAST-32)
 # -----------------------------------------------------------------------------
 # THE AFFIRMATION IS A KEY, NOT A SWITCH.  It makes the higher settings
 # AVAILABLE; it never itself selects one.  `--i-own-target` on its own changes
@@ -677,6 +1171,19 @@ _scan_check_affirmation() {
   local intensity=${SCAN_FLAGS[intensity]:-}
   local intrusive=${SCAN_FLAGS[allow-intrusive]:-false}
 
+  # `--i-own-account` (docs/STEP6-CLOUD-PLAN.md D1) is checked for the same
+  # ACCIDENTAL case, one flag along: an affirmation naming an account this run
+  # will never contact is an affirmation about nothing, exactly as
+  # `--i-own-target` with no `--target` is.  Without `--live` the cloud module
+  # makes no AWS call at all, so there is no identity to compare it against and
+  # the flag would sit in run.json looking like an affirmation that was
+  # honoured.  The VALUE comparison cannot happen here - unlike `--target`, the
+  # account id is not something the operator typed twice, it is resolved from
+  # the credentials at dispatch - so modules/cloud/aws/run.sh owns that half.
+  if [[ -n ${SCAN_FLAGS[i-own-account]:-} && ${SCAN_FLAGS[live]:-} != true ]]; then
+    scan_die_usage "--i-own-account '${SCAN_FLAGS[i-own-account]}' was given but this run has no --live, so no AWS account is contacted and there is nothing it affirms ownership of"
+  fi
+
   # A stale command, a shell alias, or a CI config copied between repositories
   # is exactly how an affirmation ends up pointed at a host nobody meant, so a
   # mismatch is fatal rather than ignored.  The no-`--target` case lands here
@@ -690,10 +1197,14 @@ _scan_check_affirmation() {
   fi
 
   # Only where a live endpoint is actually reachable.  `all` without a
-  # `--target` runs no DAST at all, so refusing there would be refusing an
-  # invocation that sends nothing.
+  # `--target` runs no DAST (or network) at all, so refusing there would be
+  # refusing an invocation that sends nothing.  `network` (NET-04) joins
+  # `dast` here rather than getting its own arm: a network probe is gated by
+  # exactly the same ceiling this function
+  # already enforces, so the identical `--intensity`/`--allow-intrusive`
+  # affirmation rule applies unchanged.
   case $SCAN_COMMAND in
-    dast) ;;
+    dast | network) ;;
     all) [[ -n $target ]] || return 0 ;;
     *) return 0 ;;
   esac
@@ -711,9 +1222,748 @@ _scan_check_affirmation() {
   fi
 
   if [[ $intrusive == true && -z $affirm ]]; then
-    scan_die_usage "--allow-intrusive turns on side-effecting checks that create users and send messages, so the parties they can harm are the TARGET'S USERS rather than the target. Owning a host does not confer permission to do that to them, which is why this needs the affirmation as well as its own opt-in: re-run with '--i-own-target $target' if you accept that."
+    scan_die_usage "--allow-intrusive turns on checks whose payload can mutate state beyond the target you named - forging a cached response another visitor may later receive, or polluting a shared object every other request on that process reads - so the parties they can harm may not be limited to the target itself. Owning a host does not confer permission to do that to whoever else it serves, which is why this needs the affirmation as well as its own opt-in: re-run with '--i-own-target $target' if you accept that."
   fi
   return 0
+}
+
+# -----------------------------------------------------------------------------
+# 4b-1. IMPORT-07's own validation: a discovery-input flag with no --target
+# -----------------------------------------------------------------------------
+# `--openapi`/`--har`/`--postman`/`--graphql-schema` are an ephemeral, this-
+# run-only override of a config/discovery.conf record (rules/RULE-FORMAT.md
+# §9.6.3), and that record is keyed on the `--target` id - there is no
+# "targetless" discovery input, on either the file-based or the CLI-flag
+# path. Refusing here, in `scan_parse_args`, follows `_scan_check_affirmation`'s
+# own precedent immediately above: a stale command or a copied CI invocation
+# that dropped `--target` is exactly the accidental-misuse case a usage error
+# (exit 2, `scan_die_usage`) is for, rather than a silent no-op that reads as
+# "the flag did nothing" (docs/DESIGN.md §15's honesty standard applied to
+# the CLI itself, not only to a run's findings).
+#
+# Deliberately does NOT check whether `--target` actually names an entry in
+# config/scope.conf - that is `config_scope_require`'s own, already-fatal gate
+# (exit 3, `SCOURSH_EXIT_SCOPE`) later in dispatch, and duplicating it here
+# would mean loading scope.conf inside what `_scan_check_affirmation`'s own
+# header establishes must stay a PURE, config-free function.
+#
+# Pure for the identical reason: reads SCAN_FLAGS and dies, touches no run
+# directory, so it runs inside scan_parse_args and is unit-testable without a
+# run.
+_scan_check_discovery_flags() {
+  local target=${SCAN_FLAGS[target]:-} flag
+  for flag in openapi har postman graphql-schema; do
+    [[ -n ${SCAN_FLAGS[$flag]:-} ]] || continue
+    [[ -n $target ]] \
+      || scan_die_usage "--$flag was given but this run has no --target, so there is no target's discovery input to override (config/discovery.conf, rules/RULE-FORMAT.md §9.6.3)"
+  done
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# 4c. Guided-mode routing (docs/STEP-GUIDE-PLAN.md GUIDE-02)
+# -----------------------------------------------------------------------------
+# scan_main (section 8 below) is the ONLY caller of guide_may_prompt in this
+# file, and it calls it from exactly two places - never from
+# scan_parse_args, which must stay pure (see that function's own header):
+#
+#   1. Before scan_parse_args ever runs, for a bare `scan.sh` ($# == 0) -
+#      scan_parse_args's own first line dies "no command given" the instant
+#      it is called with zero arguments, so the zero-argument branch of the
+#      plan's "asked for" condition has to be caught here, before that call.
+#   2. Right after scan_parse_args returns, by reading SCAN_FLAGS[guided] -
+#      by then `--guided` is just an ordinary already-parsed global bool
+#      flag (this ticket's own addition to _SCAN_FLAG_KIND), so there is no
+#      need to re-scan argv for the literal token a second time.
+#
+# Both call sites share this one helper for what happens once guided mode is
+# actually eligible.  docs/STEP-GUIDE-PLAN.md's own GUIDE-02 row is explicit
+# that this ticket ships NO menu (G1 onward is GUIDE-03's job) - so there is,
+# on purpose, nothing yet for an eligible invocation to hand control to.
+# Silently falling through to run an unconfigured scan would be exactly the
+# "silent fallback to a default scan" the plan calls "a worse outcome than a
+# clear refusal"; this states plainly that the feature the operator asked
+# for is not built in this version yet, the same discipline this project
+# already applies to an unbuilt module (`scan.sh dast --help`'s own "not
+# built yet" text) or a missing advisory database (SCA-COV-NO_ADVISORY_DB-01)
+# - an absence here is not a clean scan, so it must not exit 0 as if it
+# considered one.  Exit 2 (usage): nothing was run, and nothing is waiting
+# for input, the identical vocabulary the plan uses for the ineligible case.
+# Superseded by `_scan_guide_run` below (docs/STEP-GUIDE-PLAN.md GUIDE-03):
+# once a real G1 menu exists, an eligible invocation has somewhere real to go
+# rather than this blanket refusal - see that function's own header for why
+# it still ends in a refusal of its own, just a later and more specific one.
+
+# -----------------------------------------------------------------------------
+# 4d. The guided menu flow (docs/STEP-GUIDE-PLAN.md GUIDE-03): G1 (scan
+#     type), G2 (the local-surface follow-ups: path, languages, git history)
+#     and G8 (the CI gate).
+#
+# CORRECTION, GUIDE-06: G3/G5/G6 (the DAST target, intensity and affirmation
+# screens - `lib/guide.sh`'s `guide_dast_configure`, landed by GUIDE-04) and
+# G9 (the review/run screen, `_scan_compose_argv` plus the "Run it / Print /
+# Cancel" menu below) are now wired in.  Picking `dast` at G1 (or typing
+# `scan.sh dast --guided` with no dast-specific flag already given) now
+# reaches a real target menu instead of the "guided setup for this is
+# partial" note that used to follow it - see `_guide_g1_status`'s own
+# dast/cloud split and `_guide_g1_note_guided_setup_partial`'s header, both
+# updated in the same change.  `cloud` (G7) still gets that note, but for a
+# DIFFERENT reason now that `modules/cloud/aws/run.sh` exists: the module is
+# built and reachable, and it is only its guided ACCOUNT/REGION screens that
+# have not been written.  `_guide_g1_status` already derives the difference
+# from `_scan_module_built`, so nothing there had to change with it.
+#
+# AVAILABILITY LABELS come from the SAME probe scan_dispatch itself uses,
+# through ONE shared function per prerequisite - this ticket's own
+# acceptance criterion, so the menu can never advertise a capability dispatch
+# will not deliver:
+#   - `_scan_module_built` (section 2b above) - exactly the check
+#     scan_dispatch makes before sourcing a module's run.sh.
+#   - `sca_advisories_db_readable` (modules/sca/engine.sh) for SCA's
+#     data/advisories.db - the same predicate modules/sca/run.sh gates on.
+#   - `_have git` (lib/core.sh) for --history - the same primitive
+#     scan_main's own `require_cmd git` call (section 8 below) is built on.
+#   - `_have aws` for `cloud --live` - the same call scan_main's own cloud
+#     dispatch arm already makes (`command -v aws`; `_have` is its exact
+#     definition).
+#   - `guide_dast_target_menu` (lib/guide.sh) itself reads
+#     config/scope.conf's target list, through `http_scope_load` - the same
+#     pipeline the real gate uses - so this file never re-derives it.
+# -----------------------------------------------------------------------------
+
+# `_guide_g1_reachable CMD` - 0 when picking CMD at G1 should proceed past the
+# menu (the underlying module actually exists), 1 when it must loop back with
+# an explanation.  Literally `_scan_module_built` - see this section's own
+# header for why a second, separately-typed judgement here would be exactly
+# the drift the acceptance criterion guards against.
+_guide_g1_reachable() {
+  _scan_module_built "$1"
+}
+
+# `_guide_sca_advisories_ready` - true only when the sca module is built AND
+# its data/advisories.db is readable.  Sources modules/sca/engine.sh purely
+# for its function definitions (the identical guarded-source-for-probing-only
+# idiom `_scan_dast_phase_status` above already uses for
+# modules/dast/engine.sh) - never modules/sca/run.sh, which docs/DESIGN.md's
+# own build-order note and that file's own header both state plainly has NO
+# "sourced once" guard and does real scan work on every source.
+_guide_sca_advisories_ready() {
+  _guide_g1_reachable sca || return 1
+  if [[ -z ${SCOURSH_SCA_ENGINE_SOURCED:-} && -f $SCOURSH_INSTALL_ROOT/modules/sca/engine.sh ]]; then
+    # shellcheck disable=SC1091
+    source "$SCOURSH_INSTALL_ROOT/modules/sca/engine.sh"
+  fi
+  declare -F sca_advisories_db_readable >/dev/null && sca_advisories_db_readable
+}
+
+# `_guide_g1_status CMD` - the trailing status word(s) for CMD's menu row.
+# `dast` joined the plain sast/iac case at docs/STEP-GUIDE-PLAN.md GUIDE-06:
+# `guide_dast_configure` (G3/G5/G6) is wired into `_scan_guide_run` below, so
+# picking it here reaches a real target menu rather than the "partial" note -
+# only `cloud` still has no guided target flow of its own.
+_guide_g1_status() {
+  local cmd=$1
+  case $cmd in
+    sast | iac | dast)
+      if _guide_g1_reachable "$cmd"; then printf 'ready'; else printf 'not built yet in this version'; fi
+      ;;
+    sca)
+      if ! _guide_g1_reachable sca; then
+        printf 'not built yet in this version'
+      elif _guide_sca_advisories_ready; then
+        printf 'ready'
+      else
+        printf 'no advisory database installed'
+      fi
+      ;;
+    cloud)
+      if _guide_g1_reachable "$cmd"; then
+        printf 'ready (guided setup for this is partial - see below)'
+      else
+        printf 'not built yet in this version'
+      fi
+      ;;
+  esac
+}
+
+# `_guide_g1_line DESC CMDTEXT STATUS` - one aligned menu row.
+_guide_g1_line() {
+  printf '%-44s %-15s %s' "$1" "$2" "$3"
+}
+
+# `_guide_g1_explain_not_built CMD` - the plan's own G1 mockup explanation
+# ("planned but not built yet in this version"), generalised to whichever
+# item was actually picked rather than hardcoded to dast/cloud, since which
+# modules are built is exactly the fact this whole section derives at
+# menu-build time instead of assuming.
+_guide_g1_explain_not_built() {
+  local cmd=$1 label
+  case $cmd in
+    sast) label='Source code scanning (sast)' ;;
+    sca) label='Dependency and lockfile scanning (sca)' ;;
+    iac) label='Infrastructure-as-code scanning (iac)' ;;
+    dast) label='A running web application (dast)' ;;
+    cloud) label='An AWS account, read-only (cloud)' ;;
+  esac
+  {
+    printf '\n'
+    printf '  %s is planned but not built yet in this version of\n' "$label"
+    printf '  scoursh.  Nothing runs for it, and walking through questions for a scan\n'
+    printf '  that cannot do anything yet would only waste your time - so this returns\n'
+    printf '  you to the menu instead.\n\n'
+  } >&2
+}
+
+# `_guide_g1_explain_sca_db_missing` - docs/STEP-GUIDE-PLAN.md's own G1
+# wording: absence here means unknown, never safe, and the operator may
+# still proceed since the module already emits its own coverage_reduction.
+_guide_g1_explain_sca_db_missing() {
+  {
+    printf '\n'
+    printf '  No advisory database is installed (data/advisories.db), so a dependency\n'
+    printf '  scan has nothing to match a package against.  A run that finds nothing\n'
+    printf '  because its data is missing is not a run that found nothing wrong -\n'
+    printf '  absence here means unknown, never safe.\n\n'
+    printf '  To install it on a networked machine:\n'
+    printf '    tools/vendor-engines.sh advisories --all\n\n'
+    printf '  You can still proceed; the run will record this as a coverage gap.\n\n'
+  } >&2
+}
+
+# `_guide_g1_note_guided_setup_partial CMD` - cloud only, as of
+# docs/STEP-GUIDE-PLAN.md GUIDE-06: a future cloud ticket has not landed, so
+# guided mode can compose only cloud's --fail-on today.  Not a refusal - the
+# menu still proceeds - only the prerequisite-honesty note this ticket's own
+# title promises.  dast USED to be handled by this same function
+# (GUIDE-04's target/intensity/affirmation screens had not been wired into
+# `_scan_guide_run` yet); GUIDE-06 is what wires
+# `guide_dast_configure` (G3/G5/G6) into the flow below, so picking dast at
+# G1 now reaches a real target menu rather than this note - see
+# `_guide_g1_status`'s own dast/cloud split for the matching menu-row change.
+_guide_g1_note_guided_setup_partial() {
+  local cmd=cloud example=--live
+  {
+    printf '\n'
+    printf '  %s scanning is built, but its guided setup beyond the scan type and the\n' "$cmd"
+    printf '  CI gate is not wired into --guided yet in this version\n'
+    printf '  (docs/STEP-GUIDE-PLAN.md, a future cloud ticket).  Only --fail-on is asked below.\n'
+    printf '  Once you have a target, run it directly:  scan.sh %s %s ...\n\n' "$cmd" "$example"
+  } >&2
+}
+
+# G1 - docs/STEP-GUIDE-PLAN.md's own scan-type menu.  Sets GUIDE_G1_COMMAND
+# (never prints it - guide_menu's own header explains why a die-capable
+# function must never be read through `$(...)`) and returns 0 once a
+# proceedable command has been chosen, or exits directly (Quit, or any
+# die() a called primitive raises).  Menu items are FIXED in number and
+# order, per the plan's own "The menu flow" section - only the trailing
+# status text and what happens on selection are derived.
+GUIDE_G1_COMMAND=''
+_guide_g1_scan_type() {
+  {
+    printf 'scoursh %s - guided setup\n' "$(scoursh_version)"
+    printf -- '--------------------------------\n\n'
+    printf '  This asks a few questions and then shows you the exact command it would\n'
+    printf '  run, so you can paste it into CI next time.  Nothing is scanned until you\n'
+    printf '  confirm at the end, and every answer here has a command-line flag.\n\n'
+    printf '  Press Enter at any menu to see the list again.\n'
+    printf '  To skip this and use flags directly:  scan.sh --help\n'
+    printf '  To turn it off permanently:           export SCOURSH_NO_PROMPT=1\n'
+  } >&2
+  while :; do
+    local -a items=(
+      "$(_guide_g1_line 'Source code' 'scan.sh sast' "$(_guide_g1_status sast)")"
+      "$(_guide_g1_line 'Dependencies and lockfiles' 'scan.sh sca' "$(_guide_g1_status sca)")"
+      "$(_guide_g1_line 'Infrastructure as code' 'scan.sh iac' "$(_guide_g1_status iac)")"
+      "$(_guide_g1_line 'A running web application over HTTP' 'scan.sh dast' "$(_guide_g1_status dast)")"
+      "$(_guide_g1_line 'An AWS account, read-only' 'scan.sh cloud' "$(_guide_g1_status cloud)")"
+      "$(_guide_g1_line 'Everything this checkout can actually do' 'scan.sh all' 'runs every ready surface')"
+      'Quit without scanning'
+    )
+    printf '\nWhat do you want to scan?\n\n' >&2
+    guide_menu 'pick a number> ' "${items[@]+"${items[@]}"}"
+    case $GUIDE_MENU_REPLY in
+      1)
+        if _guide_g1_reachable sast; then GUIDE_G1_COMMAND=sast; return 0; fi
+        _guide_g1_explain_not_built sast
+        ;;
+      2)
+        if ! _guide_g1_reachable sca; then _guide_g1_explain_not_built sca; continue; fi
+        _guide_sca_advisories_ready || _guide_g1_explain_sca_db_missing
+        GUIDE_G1_COMMAND=sca
+        return 0
+        ;;
+      3)
+        if _guide_g1_reachable iac; then GUIDE_G1_COMMAND=iac; return 0; fi
+        _guide_g1_explain_not_built iac
+        ;;
+      4)
+        if _guide_g1_reachable dast; then
+          GUIDE_G1_COMMAND=dast
+          return 0
+        fi
+        _guide_g1_explain_not_built dast
+        ;;
+      5)
+        if _guide_g1_reachable cloud; then
+          _guide_g1_note_guided_setup_partial
+          GUIDE_G1_COMMAND=cloud
+          return 0
+        fi
+        _guide_g1_explain_not_built cloud
+        ;;
+      6)
+        GUIDE_G1_COMMAND=all
+        return 0
+        ;;
+      7)
+        printf '%s\n' 'Cancelled.  Nothing was scanned.' >&2
+        exit "$SCOURSH_EXIT_OK"
+        ;;
+    esac
+  done
+}
+
+# G2 - docs/STEP-GUIDE-PLAN.md's own local-surface follow-ups: path, then
+# languages, then git history.  Only asked for a command that actually
+# accepts the matching flag (`scan_flag_kind` is the same membership test
+# the parser itself uses), which is what keeps sca/iac from being asked a
+# --lang/--history question neither command's own _SCAN_FLAG_KIND entry
+# accepts - "every prompt has a flag equivalent" (docs/STEP-GUIDE-PLAN.md,
+# "The one architectural decision everything else follows from") forbids
+# asking one that does not.
+#
+# PRESET is `_scan_guide_run`'s own `local -A preset` (its already-parsed
+# SCAN_FLAGS from `scan.sh CMD --guided ...`), read here by BASH'S DYNAMIC
+# SCOPING rather than passed as a parameter: bash 4.2 (this project's frozen
+# minimum, tension 24) has no `local -n` nameref, so an associative array
+# cannot cross a function boundary by name the way a scalar can via the
+# `_scan_capture`-style indirect-assignment idiom - the identical
+# dynamic-scoping contract scan.sh's own header already documents for
+# `input`/`gate` between scan_main and a sourced module's run.sh.  This
+# function is therefore called ONLY from `_scan_guide_run`, which declares
+# `preset` immediately above every call - never `local preset` a second time
+# here, which would shadow it with an unrelated empty variable instead of
+# reading the caller's.
+#
+# The plan's own "'--guided' only ever fills flags that were not supplied on
+# the command line" rule (docs/STEP-GUIDE-PLAN.md, "must not prompt, ever"):
+# a key present in PRESET is never asked about here at all; `_scan_guide_run`
+# already carries it into the composed preview straight from PRESET, so
+# skipping it here is what keeps `scan.sh sast --path /x --guided` from
+# re-asking a question the operator just answered on the command line.  An
+# empty PRESET (the bare zero-argument `scan.sh` path, where no flag of any
+# kind was typed) asks every question below unconditionally.
+#
+# Sets GUIDE_G2_FLAGS (flag name -> value; a bool's value is the literal
+# string "true") to exactly what THIS function asked and was told - never a
+# copy of PRESET, which `_scan_guide_run` already has.  Returns 1 - never
+# dies - when a bad --path was re-asked once and is still bad; PRESET empty
+# means "go back to G1" (the plan's own G2 row); PRESET non-empty means there
+# is no G1 to go back to (the command was already given explicitly), and the
+# caller turns that into an ordinary refusal instead.
+declare -A GUIDE_G2_FLAGS=()
+_guide_g2_local_followups() {
+  local cmd=$1
+  GUIDE_G2_FLAGS=()
+
+  if [[ -z ${preset[path]+set} ]]; then
+    local path='' resolved='' attempts=0
+    while :; do
+      guide_ask 'Where should scoursh look?  [.]: ' '.'
+      path=$GUIDE_ASK_REPLY
+      resolved=$(realpath_of "$path")
+      [[ -e $resolved && -r $resolved ]] && break
+      attempts=$(( attempts + 1 ))
+      printf "  '%s' does not exist, or is not readable.\n" "$path" >&2
+      if (( attempts >= 2 )); then
+        return 1
+      fi
+    done
+    [[ $path == . ]] || GUIDE_G2_FLAGS[path]=$path
+  fi
+
+  if scan_flag_kind "$cmd" lang >/dev/null 2>&1 && [[ -z ${preset[lang]+set} ]]; then
+    while :; do
+      guide_ask 'Limit to which languages?  (py,js,go,java, comma-separated)  [all]: ' ''
+      [[ -z $GUIDE_ASK_REPLY ]] && break
+      if scan_validate_flag_value lang "$GUIDE_ASK_REPLY"; then
+        GUIDE_G2_FLAGS[lang]=$GUIDE_ASK_REPLY
+        break
+      fi
+      printf "  '%s' is not a valid language list (py, js, go, java only).\n" "$GUIDE_ASK_REPLY" >&2
+    done
+  fi
+
+  if scan_flag_kind "$cmd" history >/dev/null 2>&1 && [[ -z ${preset[history]+set} ]]; then
+    if _have git; then
+      printf '\nReplay the secret checks across this repository'\''s git history too?\n\n' >&2
+      guide_menu 'pick a number> ' \
+        'No  - just scan the working tree' \
+        'Yes - also replay the secret checks across git history'
+      [[ $GUIDE_MENU_REPLY == 2 ]] && GUIDE_G2_FLAGS[history]=true
+    else
+      printf '\n  --history is unavailable here: git was not found on PATH.\n' >&2
+    fi
+  fi
+  return 0
+}
+
+# G8 - docs/STEP-GUIDE-PLAN.md's own CI gate: whether the run should exit
+# non-zero on findings, and at what severity.  Item 1 (no gate at all) is
+# the conservative option and matches config_scanner_value's own "none"
+# default (lib/config.sh) - the plan's own "the conservative option is item
+# 1 on every fixed menu" rule.  PRESET is the same caller's-`local`,
+# read-by-dynamic-scoping array G2 reads - see that function's own header for
+# why it is never a parameter on a bash 4.2 minimum - for the identical
+# "never re-ask a flag already supplied" reason.  Sets GUIDE_G8_FLAGS the
+# same way G2 sets GUIDE_G2_FLAGS.
+declare -A GUIDE_G8_FLAGS=()
+_guide_g8_ci_gate() {
+  GUIDE_G8_FLAGS=()
+  [[ -z ${preset[fail-on]+set} ]] || return 0
+  printf '\nShould this fail the build (a non-zero exit) when it finds something?\n\n' >&2
+  guide_menu 'pick a number> ' \
+    'No  - just report; always exit 0 regardless of findings' \
+    'Yes - fail at critical' \
+    'Yes - fail at high or above' \
+    'Yes - fail at medium or above' \
+    'Yes - fail at low or above' \
+    'Yes - fail at info or above (fails if anything at all was found)'
+  case $GUIDE_MENU_REPLY in
+    2) GUIDE_G8_FLAGS[fail-on]=critical ;;
+    3) GUIDE_G8_FLAGS[fail-on]=high ;;
+    4) GUIDE_G8_FLAGS[fail-on]=medium ;;
+    5) GUIDE_G8_FLAGS[fail-on]=low ;;
+    6) GUIDE_G8_FLAGS[fail-on]=info ;;
+  esac
+}
+
+# `_scan_compose_argv CMD` - the SINGLE renderer for "the composed command",
+# read by both G9 below and the standalone `--print-command` flag
+# (`_scan_print_command_and_exit`).  docs/STEP-GUIDE-PLAN.md's own
+# architectural decision is "the printed command cannot drift from what ran,
+# because it IS what ran ... no second renderer to keep in sync" - so there
+# is exactly one place this array/string pair is built, ever.
+#
+# Reads the caller's own `local -A flags` by BASH'S DYNAMIC SCOPING, the
+# identical PRESET contract `_guide_g2_local_followups`/`_guide_g8_ci_gate`
+# already use (bash 4.2, this project's frozen minimum, has no `local -n`
+# nameref for an associative array - see those functions' own header for the
+# full reasoning).  Sets two globals rather than printing one, for the same
+# `die`-through-`$(...)` reason `guide_menu` is written that way:
+#   `_SCAN_ARGV`      - the RAW args after CMD (no `scan.sh`, no quoting) -
+#                       what actually gets handed to scan_parse_args on
+#                       "Run it".
+#   `_SCAN_ARGV_LINE` - the human-readable, `_guide_shquote`d preview line
+#                       ("scan.sh CMD --flag val ..."), safe to paste into a
+#                       shell.
+_SCAN_ARGV=()
+_SCAN_ARGV_LINE=''
+_scan_compose_argv() {
+  local cmd=$1
+  # A deterministic key order - `mapfile` would discard `sort`'s own exit
+  # status (tension 4 rule 4, lint-shell.sh), so this reads it back the same
+  # `while read` way `_scan_capture_list` above does.
+  local -a sorted_keys=()
+  if (( ${#flags[@]} > 0 )); then
+    local _cak
+    while IFS= read -r _cak; do
+      [[ -n $_cak ]] && sorted_keys+=("$_cak")
+    done < <(printf '%s\n' "${!flags[@]}" | LC_ALL=C sort)
+  fi
+  _SCAN_ARGV=()
+  _SCAN_ARGV_LINE="scan.sh $cmd"
+  local _cak2
+  for _cak2 in "${sorted_keys[@]+"${sorted_keys[@]}"}"; do
+    _SCAN_ARGV+=("--$_cak2")
+    _SCAN_ARGV_LINE+=" --$_cak2"
+    if [[ ${flags[$_cak2]} != true ]]; then
+      _SCAN_ARGV+=("${flags[$_cak2]}")
+      _SCAN_ARGV_LINE+=" $(_guide_shquote "${flags[$_cak2]}")"
+    fi
+  done
+  return 0
+}
+
+# `_guide_g9_describe_dast` - the DAST-specific half of G9's "This will:"
+# bullets (docs/STEP-GUIDE-PLAN.md's own G9 mockup).  Reads `flags`
+# (dynamic scoping, as above) and the target's normalised base-url straight
+# out of config/scope.conf - never re-derived, and guarded against a target
+# that does not (yet) resolve to a real record, since G9 can be reached with
+# a --target the operator TYPED but that `_scan_check_required`/
+# `config_scope_require` have not validated yet (this preview must never be
+# the thing that dies on a bad target; the ordinary gate still will).
+_guide_g9_describe_dast() {
+  local target=${flags[target]:-} base_url=''
+  if [[ -n $target ]]; then
+    http_scope_load
+    if records_index_of_id scope "$target" >/dev/null 2>&1; then
+      base_url=$(config_scope_field "$target" base-url)
+    fi
+  fi
+  case ${flags[intensity]:-$CHECKS_INTENSITY_DEFAULT} in
+    active)
+      printf '  - send injection payloads to %s\n' "${base_url:-$target}" >&2
+      ;;
+    safe)
+      printf '  - probe %s for open paths and accepted HTTP methods\n' "${base_url:-$target}" >&2
+      ;;
+    *)
+      printf '  - read-only checks against %s (headers, cookies, TLS, markup, served\n' "${base_url:-$target}" >&2
+      printf '    JavaScript): nothing is injected\n' >&2
+      ;;
+  esac
+  if [[ -n ${flags[requests-per-second]:-} ]]; then
+    if [[ ${flags[requests-per-second]} == "$_GUIDE_DAST_RPS_UNLIMITED" ]]; then
+      printf '  - as fast as %s answers' "${base_url:-$target}" >&2
+    else
+      printf '  - at up to %s requests/second' "${flags[requests-per-second]}" >&2
+    fi
+    if [[ -n ${flags[request-budget]:-} ]]; then
+      printf ', stopping after %s requests\n' "${flags[request-budget]}" >&2
+    else
+      printf '\n' >&2
+    fi
+  elif [[ -n ${flags[request-budget]:-} ]]; then
+    printf '  - stopping after %s requests\n' "${flags[request-budget]}" >&2
+  fi
+  if [[ ${flags[allow-intrusive]:-} == true ]]; then
+    printf '  - including checks that may email or create real users\n' >&2
+  fi
+}
+
+# `_guide_g9_describe CMD` - the plain-language "This will:" statement G9's
+# own mockup shows.  Reads `flags` by dynamic scoping, as above.
+_guide_g9_describe() {
+  local cmd=$1
+  case $cmd in
+    sast)
+      printf '  - scan source code under %s for secrets, crypto, injection and\n' "${flags[path]:-.}" >&2
+      printf '    language-specific issues\n' >&2
+      [[ ${flags[history]:-} == true ]] && printf '  - and replay the secret checks across git history too\n' >&2
+      ;;
+    sca)
+      printf '  - scan dependency lockfiles under %s against the vendored advisory\n' "${flags[path]:-.}" >&2
+      printf '    database\n' >&2
+      ;;
+    iac)
+      printf '  - scan infrastructure-as-code files under %s for misconfiguration\n' "${flags[path]:-.}" >&2
+      ;;
+    dast)
+      _guide_g9_describe_dast
+      ;;
+    cloud)
+      printf '  - read the AWS account configured for this checkout, read-only\n' >&2
+      ;;
+    all)
+      printf '  - run every scan surface this checkout can actually do (source code,\n' >&2
+      printf '    dependencies, infrastructure-as-code, and DAST when a --target is set)\n' >&2
+      [[ -n ${flags[target]:-} ]] && _guide_g9_describe_dast
+      ;;
+  esac
+  if [[ -n ${flags[fail-on]:-} ]]; then
+    printf '  - and exit 1 if it finds anything %s or above\n' "${flags[fail-on]}" >&2
+  else
+    printf '  - and always exit 0 regardless of findings (no CI gate was set)\n' >&2
+  fi
+}
+
+# `_guide_g9_affirmation_restatement CMD` - the affirmation restatement G9's
+# own mockup shows ("Authorisation affirmed for 'staging-api' by abhi at
+# ...").  Only printed when `flags[i-own-target]` is actually set - a
+# conservative composed argv (nothing raised) has no affirmation to restate.
+# The timestamp here is PREVIEW TEXT, not the audit record: the real
+# `authorized_at` this run.json will carry is stamped later, at
+# `_scan_record_authorization` time, once the composed argv has actually run
+# through `scan_parse_args`/`_scan_check_affirmation` - this line only tells
+# the operator, before they confirm, what they are about to affirm.
+_guide_g9_affirmation_restatement() {
+  local cmd=$1
+  [[ $cmd == dast || $cmd == all ]] || return 0
+  [[ -n ${flags[i-own-target]:-} ]] || return 0
+  local operator
+  operator=${SCOURSH_OPERATOR:-$(id -un 2>/dev/null)}
+  [[ -n $operator ]] || operator='(unknown)'
+  {
+    printf "Authorisation affirmed for '%s' by %s at %s.\n" "${flags[i-own-target]}" "$operator" "$(now_iso)"
+    printf "That affirmation, and every limit it raised, is recorded in this run's\n"
+    printf 'run.json.\n\n'
+  } >&2
+}
+
+# `_scan_guide_run [CMD]` - the orchestrator scan_main calls once guided mode
+# is eligible (section 8 below).  CMD is empty for the bare zero-argument
+# path (nothing was typed at all, so G1 always runs and no flag can already
+# be present) and the already-parsed SCAN_COMMAND for `scan.sh CMD --guided`
+# (docs/STEP-GUIDE-PLAN.md: "scan.sh dast --guided must work" - the command
+# was already given explicitly, so G1 is skipped, and SCAN_FLAGS is this
+# invocation's own already-typed flags, threaded through G2/G3/G5/G6/G8 as
+# PRESET so nothing re-asks a question the command line already answered).
+#
+# docs/STEP-GUIDE-PLAN.md GUIDE-06 wires G3/G5/G6 (`guide_dast_configure`,
+# GUIDE-04) and G9 (the review/run screen) into this orchestrator.  A `dast`
+# selection with NO dast-specific flag already on the command line runs the
+# full target/intensity/affirmation flow; ANY of `--target`/`--intensity`/
+# `--i-own-target`/`--requests-per-second`/`--request-budget`/
+# `--allow-intrusive` already present skips it entirely (docs/STEP-GUIDE-PLAN.md's
+# own "'--guided' only ever fills flags that were not supplied on the command
+# line") - DAST's questions are interdependent (target, then intensity, then
+# the affirmation gate every raised limit), unlike G2's independent
+# path/lang/history questions, so there is no sound way to ask only the
+# missing subset; an operator who already typed one of these flags is treated
+# as having made this decision by hand, and `_scan_check_required`/
+# `_scan_check_affirmation` validate the result exactly as they would a
+# hand-typed invocation.
+_scan_guide_run() {
+  local cmd=${1:-}
+  local -A preset=()
+  if [[ -n $cmd ]]; then
+    local k
+    for k in "${!SCAN_FLAGS[@]}"; do
+      [[ $k == guided || $k == print-command ]] && continue
+      preset[$k]=${SCAN_FLAGS[$k]}
+    done
+  fi
+
+  local dast_preset=false
+  local dk
+  for dk in target intensity i-own-target requests-per-second request-budget allow-intrusive; do
+    [[ -z ${preset[$dk]+set} ]] || dast_preset=true
+  done
+
+  if [[ -z $cmd ]]; then
+    while :; do
+      _guide_g1_scan_type
+      cmd=$GUIDE_G1_COMMAND
+      if [[ $cmd == dast ]]; then
+        guide_dast_configure && break
+        continue
+      elif scan_flag_kind "$cmd" path >/dev/null 2>&1; then
+        _guide_g2_local_followups "$cmd" && break
+        printf '  Returning to the scan-type menu.\n' >&2
+        continue
+      fi
+      break
+    done
+  elif [[ $cmd == dast && $dast_preset == false ]]; then
+    guide_dast_configure \
+      || die "$SCOURSH_EXIT_USAGE" "no DAST target was chosen; nothing was run and nothing is waiting for input - re-run with a valid --target instead"
+  elif scan_flag_kind "$cmd" path >/dev/null 2>&1; then
+    _guide_g2_local_followups "$cmd" \
+      || die "$SCOURSH_EXIT_USAGE" "--path was asked twice and neither answer resolved to a readable directory; nothing was run and nothing is waiting for input - re-run with a valid --path instead"
+  fi
+
+  local -A flags=()
+  local k
+  for k in "${!preset[@]}"; do
+    flags[$k]=${preset[$k]}
+  done
+  for k in "${!GUIDE_G2_FLAGS[@]}"; do
+    flags[$k]=${GUIDE_G2_FLAGS[$k]}
+  done
+
+  # Fold guide_dast_configure's own GUIDE_DAST_ARGV (--target X --intensity Y
+  # ...) into the SAME flags map G2/G8 build into, so G9 below and
+  # _scan_compose_argv see ONE composed set regardless of which step supplied
+  # which flag.  `scan_flag_kind` (never a hardcoded name) decides bool-vs-
+  # value, the identical single source of truth scan_parse_args itself
+  # defers to - GUIDE_DAST_ARGV's only bool member is --allow-intrusive.
+  if [[ $cmd == dast && $dast_preset == false ]]; then
+    local -a dargv=("${GUIDE_DAST_ARGV[@]+"${GUIDE_DAST_ARGV[@]}"}")
+    local di=0 dfk dkind
+    while (( di < ${#dargv[@]} )); do
+      dfk=${dargv[di]#--}
+      dkind=$(scan_flag_kind "$cmd" "$dfk")
+      if [[ $dkind == bool ]]; then
+        flags[$dfk]=true
+        di=$(( di + 1 ))
+      else
+        flags[$dfk]=${dargv[di + 1]}
+        di=$(( di + 2 ))
+      fi
+    done
+  fi
+
+  _guide_g8_ci_gate
+  for k in "${!GUIDE_G8_FLAGS[@]}"; do
+    flags[$k]=${GUIDE_G8_FLAGS[$k]}
+  done
+
+  _scan_compose_argv "$cmd"
+
+  # G9 - review, and the exit (docs/STEP-GUIDE-PLAN.md's own G9 mockup).
+  {
+    printf '\nReady.\n\n'
+    printf '  %s\n\n' "$_SCAN_ARGV_LINE"
+    printf 'This will:\n'
+  } >&2
+  _guide_g9_describe "$cmd"
+  printf '\n' >&2
+  _guide_g9_affirmation_restatement "$cmd"
+
+  # Item ordering here differs from every other screen on purpose (the plan's
+  # own note): this is an action menu, not a settings menu, so "Run it" stays
+  # at 1 for stable muscle memory - all of the safety work already happened
+  # upstream.
+  guide_menu 'pick a number> ' \
+    'Run it' \
+    'Print the command and exit without running' \
+    'Cancel'
+  case $GUIDE_MENU_REPLY in
+    1)
+      # "The guided mode never runs a scan.  It ... hands that argv to the
+      # ordinary scan_parse_args path." (docs/STEP-GUIDE-PLAN.md's own
+      # architectural decision) - this is that hand-off: the SAME function
+      # every hand-typed invocation goes through, on the SAME composed
+      # array G9 just showed, so every existing validation
+      # (scan_flag_kind, scan_validate_flag_value, _scan_check_affirmation)
+      # runs unmoved, and nothing downstream can tell this run was
+      # configured interactively.  Returning 0 (never exiting) lets
+      # scan_main continue past this call exactly as it would after
+      # parsing a hand-typed "$@" - see that function's own
+      # `_SCAN_GUIDE_RAN` guard for why the bare zero-argument call site
+      # must not re-parse the (empty) original argv afterward.
+      scan_parse_args "$cmd" "${_SCAN_ARGV[@]+"${_SCAN_ARGV[@]}"}"
+      _SCAN_GUIDE_RAN=true
+      return 0
+      ;;
+    2)
+      # Writes to STDOUT (so it pipes and copies) and exits 0 with no run
+      # directory created - the plan's own wording, and the identical
+      # contract the standalone --print-command flag gives ANY invocation
+      # (_scan_print_command_and_exit below), guided or not.
+      printf '%s\n' "$_SCAN_ARGV_LINE"
+      exit "$SCOURSH_EXIT_OK"
+      ;;
+    3)
+      _guide_on_cancel
+      ;;
+  esac
+}
+
+# `_scan_print_command_and_exit` - the non-interactive twin of G9's own
+# "Print the command and exit without running" item, and `--print-command`'s
+# whole implementation: renders the fully resolved invocation for ANY
+# invocation (guided or not) and exits 0 without running
+# (docs/STEP-GUIDE-PLAN.md's own wording).  Reuses `_scan_compose_argv`, the
+# SAME renderer G9 uses, so a plain `scan.sh dast --target X --print-command`
+# and picking item 2 at the end of a guided run for the identical target
+# print the identical line - there is exactly one place this text is built.
+# Called from scan_main AFTER `_scan_check_required` (section 8 below), so an
+# invocation --print-command cannot itself validate (a missing --target, an
+# unmatched affirmation) still dies with the ordinary usage error rather than
+# printing a command that would only die a moment later if actually run.
+_scan_print_command_and_exit() {
+  local -A flags=()
+  local k
+  for k in "${!SCAN_FLAGS[@]}"; do
+    [[ $k == guided || $k == print-command ]] && continue
+    flags[$k]=${SCAN_FLAGS[$k]}
+  done
+  _scan_compose_argv "$SCAN_COMMAND"
+  printf '%s\n' "$_SCAN_ARGV_LINE"
+  exit "$SCOURSH_EXIT_OK"
 }
 
 # -----------------------------------------------------------------------------
@@ -767,6 +2017,507 @@ _scan_require_readable_path() {
   _SCAN_RESOLVED_PATH=$(realpath_of "$path")
   [[ -e $_SCAN_RESOLVED_PATH ]] || die "$SCOURSH_EXIT_INPUT" "--path '$path' does not exist"
   [[ -r $_SCAN_RESOLVED_PATH ]] || die "$SCOURSH_EXIT_INPUT" "--path '$path' is not readable"
+}
+
+# -----------------------------------------------------------------------------
+# 6a. Preflight (operator-reported bug fix, widened by request into a single
+#     up-front gate): every precondition that is knowable WITHOUT running a
+#     module, checked and reported TOGETHER, before the first scan_dispatch
+#     call of any kind. `all` used to call config_scope_require only after
+#     `sast`, `sca` and `iac` had ALREADY finished - a real run scanned for
+#     3h03m before dying on a --target typo that was knowable the instant
+#     flags were parsed. `--baseline` and `--live`'s aws requirement have the
+#     identical shape under `all` (baseline_apply/the aws check both sat
+#     after sast/sca/iac too); --path already ran first thing in every arm
+#     that takes one.
+#
+#     Each `_scan_pf_check_*` below is a non-dying DETECTOR: it sets
+#     _SCAN_PF_CLASS/_SCAN_PF_MSG and returns 1 on a problem, so every
+#     problem across every check can be collected before anything is
+#     reported. Called DIRECTLY, never through $(...) - config_scope_load
+#     and config_load_if_present can still die (config_load_or_die) on a
+#     genuinely malformed config file, and that must abort the process
+#     immediately rather than be swallowed by a captured subshell, exactly
+#     the hazard _scan_require_readable_path's own comment documents for
+#     die() in general. A malformed config file is therefore still an
+#     immediate, individual die - not accumulated - which is correct: there
+#     is nothing useful to keep checking once a config file itself fails to
+#     parse.
+#
+#     None of this REPLACES its later, authoritative counterpart:
+#     config_scope_require, _scan_require_readable_path, baseline_apply and
+#     the --live aws check all still run again, unchanged, at their existing
+#     call sites below - a control only one caller remembers to apply is not
+#     a control (tension 19's own argument, applied here too).
+#
+#     What this deliberately does NOT fail on, because the existing,
+#     documented design already treats it as a graceful, declared skip
+#     rather than an error: an --image id with no config/images.conf entry
+#     and no --source (rules/RULE-FORMAT.md §9.6.8 - tests/suites/image.sh's
+#     own "an --image run completes cleanly and exits 0" case is exactly
+#     this), and a missing data/advisories.db ahead of an `sca` walk
+#     (docs/FOUNDATION.md tension 14's own required-input table: sca records
+#     a coverage_reduction and an exit-4 `input` flag itself, deliberately,
+#     rather than dying). Turning either into a preflight die would be a
+#     real behaviour change to a previously-reviewed design decision, not a
+#     fail-fast fix - so preflight only WARNS about them, immediately and
+#     honestly, same as it warns that a --target's own base-url is never
+#     probed here: preflight cannot know whether a target actually answers
+#     or whether cloud/dast credentials are valid, only that the shape of
+#     the input is coherent. Those remain "checked at run time" - stated so
+#     rather than implied by a clean preflight.
+# -----------------------------------------------------------------------------
+_SCAN_PF_CLASS='' _SCAN_PF_MSG=''
+
+# `_scan_pf_check_target TARGET` - config_scope_require's own "does this id
+# resolve" question, without the die.
+_scan_pf_check_target() {
+  local target=$1 path=$SCOURSH_INSTALL_ROOT/config/scope.conf
+  if [[ ! -e $path ]]; then
+    _SCAN_PF_CLASS=input
+    _SCAN_PF_MSG="a --target-scoped command requires $path, and it does not exist"
+    return 1
+  fi
+  config_scope_load "$path"
+  records_index_of_id scope "$target" >/dev/null && return 0
+  _SCAN_PF_CLASS=scope
+  _SCAN_PF_MSG=$(_scope_target_not_found_message "$target" "$path")
+  return 1
+}
+
+# `_scan_pf_check_path PATH` - _scan_require_readable_path's own two tests,
+# without the die.
+_scan_pf_check_path() {
+  local path=${1:-.} resolved
+  resolved=$(realpath_of "$path")
+  if [[ ! -e $resolved ]]; then
+    _SCAN_PF_CLASS=input
+    _SCAN_PF_MSG="--path '$path' does not exist"
+    return 1
+  fi
+  if [[ ! -r $resolved ]]; then
+    _SCAN_PF_CLASS=input
+    _SCAN_PF_MSG="--path '$path' is not readable"
+    return 1
+  fi
+  return 0
+}
+
+# `_scan_pf_check_baseline` - baseline_apply's own existence/readability
+# tests (lib/diff.sh's `_baseline_resolve_file_set`/`baseline_apply`),
+# without the die. An implicit config/baseline.json (no --baseline given) is
+# never required to exist (baseline_apply's own documented behaviour), so
+# this only fires for an EXPLICIT --baseline.
+_scan_pf_check_baseline() {
+  local file=${SCAN_FLAGS[baseline]:-}
+  [[ -n $file ]] || return 0
+  if [[ ! -e $file ]]; then
+    _SCAN_PF_CLASS=input
+    _SCAN_PF_MSG="--baseline $file: no such file"
+    return 1
+  fi
+  if [[ ! -r $file ]]; then
+    _SCAN_PF_CLASS=input
+    _SCAN_PF_MSG="baseline $file exists but is not readable"
+    return 1
+  fi
+  return 0
+}
+
+# `_scan_pf_check_live` - the same `cloud --live requires the aws CLI`
+# check every arm that can reach cloud already makes, without the die.
+_scan_pf_check_live() {
+  [[ ${SCAN_FLAGS[live]:-} == true ]] || return 0
+  command -v aws >/dev/null 2>&1 && return 0
+  _SCAN_PF_CLASS=input
+  _SCAN_PF_MSG='cloud --live requires the aws CLI to be installed'
+  return 1
+}
+
+# `_scan_pf_warn_declared_skips` - the non-fatal, informational half:
+# surfaces (via log_warn, at second zero) the two declared-skip conditions
+# named in this section's own header above. Deliberately never adds to the
+# fatal problem list and never changes the exit code - see that header for
+# why turning these fatal would be a real design change, not this ticket's.
+_scan_pf_warn_declared_skips() {
+  local image_id=${SCAN_FLAGS[image]:-}
+  if [[ -n $image_id && -z ${SCAN_FLAGS[source]:-} ]]; then
+    # Mirrors modules/image/acquire.sh's own image_sources_load: same
+    # schema/set pair, called directly (config_load_if_present can die on a
+    # malformed images.conf, exactly like config_scope_load above).
+    config_load_if_present "$SCOURSH_INSTALL_ROOT/config/images.conf" image-source images >/dev/null || true
+    if ! records_index_of_id images "$image_id" >/dev/null 2>&1; then
+      log_warn "preflight: --image '$image_id' has no config/images.conf entry and no --source override - a declared, non-fatal coverage gap (rules/RULE-FORMAT.md §9.6.8), will be checked when the image module actually runs, not a preflight failure"
+    fi
+  fi
+  case $SCAN_COMMAND in
+    sca | all)
+      # Mirrors modules/sca/engine.sh's sca_advisories_db_path default;
+      # keep the two in step if that resolution order ever changes.
+      local db=${SCOURSH_SCA_ADVISORIES_DB:-$SCOURSH_INSTALL_ROOT/data/advisories.db}
+      [[ -r $db ]] \
+        || log_warn "preflight: $db is absent or unreadable - sca records this as a declared coverage_reduction and its own exit-4 input flag when it actually runs (docs/FOUNDATION.md tension 14), not a preflight failure"
+      ;;
+  esac
+}
+
+# `_scan_pf_engine_pairs` - the exact "module engine" pairs `--use-engines`
+# can possibly matter for under $SCAN_COMMAND, one line per pair. This is
+# NOT a second, invented notion of "which engines exist" - it is only the
+# dispatch table (which modules run under this command) crossed with the
+# two real call sites that ever check `has_engine` today
+# (modules/sast/run.sh: semgrep, gitleaks; modules/iac/run.sh: trivy,
+# `docs/ADAPTERS.md` §9's roster). A module gaining a THIRD adapter, or a
+# new module gaining its first, means adding one line here - the same
+# maintenance cost `docs/ADAPTERS.md` §9's own roster table already pays,
+# not a new one.
+_scan_pf_engine_pairs() {
+  case $SCAN_COMMAND in
+    sast) printf '%s\n' sast:semgrep sast:gitleaks ;;
+    iac) printf '%s\n' iac:trivy ;;
+    all) printf '%s\n' sast:semgrep sast:gitleaks iac:trivy ;;
+  esac
+}
+
+# `_scan_pf_warn_inert_use_engines` - operator report, 2026-09-12: a real
+# 4h27m run passed `--use-engines` against a fresh checkout with nothing
+# ever vendored (no vendor/ dir at all), and only learned this from
+# run.json's coverage_reduction array afterwards, once every module had
+# already run. Whether an adapter is vendored is a PURE FILESYSTEM QUESTION
+# (`has_engine`, lib/engines.sh: an adapter.sh existing on disk AND its own
+# `<engine>_detect` returning 0 - no network, no subprocess beyond a
+# detect script's own cheap check), so it is exactly as knowable before
+# module dispatch as it is inside modules/sast/run.sh - this reuses
+# `has_engine` itself rather than inventing a second, divergent notion of
+# "vendored" that could silently drift from the one the modules actually
+# gate on.
+#
+# Fires ONLY when EVERY engine `--use-engines` could possibly reach this
+# run is missing - never on a partial vendoring (say, gitleaks vendored,
+# semgrep and trivy not): --use-engines DID do something for a run like
+# that, so calling it inert would be false, and noise on a healthy run is
+# what trains an operator to stop reading preflight (this ticket's own
+# design constraint). A command that dispatches neither sast nor iac at
+# all (dast, sca, cloud, network, image, diff, report) is the other,
+# simpler inert case: `--use-engines` reaches no consumer whatsoever.
+_scan_pf_warn_inert_use_engines() {
+  [[ ${SCAN_FLAGS[use-engines]:-} == true ]] || return 0
+  local -a pairs=() missing=()
+  local pair module engine
+  while IFS= read -r pair; do
+    [[ -n $pair ]] && pairs+=("$pair")
+  done < <(_scan_pf_engine_pairs)
+
+  if (( ${#pairs[@]} == 0 )); then
+    log_warn "preflight: --use-engines was given, but '$SCAN_COMMAND' dispatches no module that consults it - only sast (semgrep, gitleaks) and iac (trivy) ever call has_engine (docs/ADAPTERS.md) - so this run will not use any vendored engine"
+    return 0
+  fi
+
+  for pair in "${pairs[@]+"${pairs[@]}"}"; do
+    module=${pair%%:*}
+    engine=${pair#*:}
+    has_engine "$module" "$engine" || missing+=("$engine")
+  done
+
+  if (( ${#missing[@]} == ${#pairs[@]} )); then
+    local list
+    list=$(IFS=,; printf '%s' "${missing[*]}")
+    log_warn "preflight: --use-engines was given, but no adapter is vendored ($list) - this run will use no engine checks at all, exactly as if the flag were absent. Vendor one first: tools/vendor-engines.sh --list"
+  fi
+}
+
+# `_scan_pf_warn_inert_lang` - the same operator-facing shape as
+# `_scan_pf_warn_inert_use_engines` above, for a flag with an even simpler
+# story: `--lang` is validated as a CSV of the four language names
+# (`_SCAN_FLAG_KIND`'s `lang) _scan_validate_csv ...` case) and then never
+# read by anything - `grep -rn 'flags\[lang\]' scan.sh modules/` is 0 hits.
+# `modules/sast/engine.sh` applies every rule pack under `modules/sast/rules/`
+# to every file whose own `files:` glob matches, regardless of `--lang`; a
+# rule pack's own language scoping (or absence of it - `crypto.rules` and
+# `secrets.rules` carry no `files:` glob at all and match across languages
+# inside a single check's pattern, e.g. `SAST-CRY-TLS_VERIFY_DISABLED-01`
+# alternates Python/Node/Go syntax in one regex) makes `--lang` unimplementable
+# as a simple pack- or check-level filter without either splitting a shipped
+# check id - a fingerprint component, tension 5/6 - or silently dropping a
+# generic check's coverage for languages its own pattern still matches.
+# `docs/USAGE.md`'s "Accepted but not yet implemented" section states this
+# precisely; this function is the preflight-time echo of it, so an operator
+# reading only their terminal - never opening `docs/USAGE.md` - still learns
+# it before any module runs. Unlike `_scan_pf_warn_inert_use_engines`, there
+# is no partial-effect case to guard: `--lang` reaches zero consumers under
+# every command that accepts it (sast, all), so this fires unconditionally
+# whenever a value is given.
+_scan_pf_warn_inert_lang() {
+  [[ -n ${SCAN_FLAGS[lang]:-} ]] || return 0
+  log_warn "preflight: --lang '${SCAN_FLAGS[lang]}' was given, but it is validated and then never read - every rule pack under modules/sast/rules/ is applied to every matching file regardless of this value (docs/USAGE.md, 'Accepted but not yet implemented'). This run's SAST scope is identical to a run with no --lang at all."
+}
+
+# -----------------------------------------------------------------------------
+# 6b. The interactive authorisation OFFER (operator-reported friction: "I don't
+#     believe user going to create file and copy, too much friction").
+#
+#     config/scope.conf is scoursh's PRIMARY safety control - `dast` sends real
+#     attack traffic, and docs/DESIGN.md §7 calls the target gate "the single
+#     most important safety control; do not make it bypassable by raw URL".
+#     So this makes the AUTHORISATION ACT cheap, and changes nothing about the
+#     gate: a target authorised here is a target DECLARED IN THE FILE, matched
+#     afterwards by exactly the same `config_scope_require` every hand-written
+#     record is matched by.  There is no new code path into a scan.
+#
+#     It WIRES UP what already exists rather than adding a second prompt or a
+#     second writer: `guide_may_prompt` (lib/guide.sh section 1 - the five
+#     condition gate, which subsumes `_guide_stdin_is_tty`, stderr, the nine
+#     non-interactive environment markers and `SCOURSH_NO_PROMPT`) decides
+#     whether prompting is permitted at all, and `guide_g4_authorize_target`
+#     (lib/guide.sh section 7, over lib/guide_scope.sh's validate-then-rename
+#     writer) is the screen and the writer.  Neither is reimplemented here.
+#
+#     SIX PROPERTIES, each load-bearing, each pinned in tests/suites/scan.sh's
+#     own section for this and named there by the reading it fails under:
+#
+#     1. INTERACTIVE ONLY, and `SCOURSH_NO_PROMPT` suppresses it.  A pipe, a
+#        script, a cron job or a CI runner gets today's refusal with today's
+#        exit code and no prompt - not a hang, and not a write.  That is
+#        `guide_may_prompt true`, unchanged and not re-derived: a second TTY
+#        probe here is a second place for the answer to be wrong.
+#
+#     2. NO FLAG REACHES IT.  There is deliberately no `--yes`/`--authorize`/
+#        `--force`: a flag that authorises a target is a flag that can sit in
+#        a CI file, which is precisely the non-bypassability docs/DESIGN.md §7
+#        demands.  An operator who wants non-interactive authorisation edits
+#        config/scope.conf, the existing auditable path, and the refusal
+#        message below says so.  tests/suites/scan.sh asserts the ABSENCE of
+#        such a flag against `_SCAN_FLAG_KIND` itself, so a later ticket
+#        cannot quietly add one without a test going red.
+#
+#     3. ONLY THE HOST THE OPERATOR NAMED.  Enforced STRUCTURALLY rather than
+#        by comparing strings: the offer is made only for a --target that is
+#        shaped like a URL or host:port (`_scope_looks_like_url_or_hostport`,
+#        the same test the refusal message's own hint already uses), and a
+#        write is accepted only if re-running `_scan_resolve_target_flags`
+#        then resolves THAT value against the new file.  An operator who
+#        types a different host at the prompt writes a record for it - their
+#        own act, durable and auditable, exactly as a hand edit would be -
+#        and this run still refuses, because the value they PASSED still
+#        resolves to nothing.  A bare, non-URL id is never offered at all:
+#        `guide_scope_record_text` derives the id from the host, so an
+#        arbitrary typed id could not match the write either, and offering
+#        there would mean prompting a human and then refusing anyway.
+#
+#     4. THE OFFER IS MADE ONLY WHEN IT IS THE SOLE BLOCKER.  `_scan_preflight`
+#        collects every problem first; accepting this prompt therefore always
+#        continues the run, and an operator is never asked to authorise a host
+#        for a run that was going to die on an unreadable --path regardless.
+#
+#     5. THE REFUSAL IS BYTE-IDENTICAL WHEN THE OPERATOR DECLINES.  A cancel
+#        (blank URL, unparseable URL, mismatched confirmation - every one of
+#        which `guide_g4_authorize_target` returns 1 for rather than dying)
+#        leaves today's message and today's exit code untouched.  The teaching
+#        hint below is appended ONLY when no offer was made, which is the case
+#        where the operator has not just been told the easy path on screen.
+#
+#     5a. ONE CONSEQUENCE IS ACCEPTED RATHER THAN PAPERED OVER: EOF at a G4
+#        prompt (Ctrl-D) is `guide_ask`/`guide_confirm`'s own exit 2, not this
+#        gate's 3 or 4, exactly as it is on every other guided screen.  It is
+#        still a refusal with nothing scanned and nothing written, and the
+#        alternative - catching it - means running G4 inside a subshell, which
+#        is precisely what turns a `die` into an ignorable exit status (see
+#        `_scan_require_readable_path`).  A blank answer, the cancel the banner
+#        actually tells the operator to use, keeps today's exit code.
+#
+#     6. THE OWNERSHIP ASSERTION IS EXPLICIT.  The banner states, before the
+#        first question, that this declares the operator owns or is authorised
+#        to attack the host - and `guide_g4_authorize_target`'s own
+#        confirmation is "type the host name", not "[y/N]", so the confirming
+#        act names the host it authorises.  A second `guide_confirm` was
+#        deliberately NOT added in front of it: a bare yes/no is exactly the
+#        weaker shape this property exists to avoid, and two prompts to write
+#        one record is the friction this ticket removes.
+# -----------------------------------------------------------------------------
+_SCAN_PF_OFFER_MADE=false
+
+# `_scan_pf_offer_authorize_target TARGET` - returns 0 only when TARGET is now
+# a declared, resolvable target id in SCAN_FLAGS (so the caller may continue
+# the run); 1 in every other case, including every case where no prompt was
+# shown at all.  Sets _SCAN_PF_OFFER_MADE so the caller can tell "the operator
+# declined" from "we never asked".  Never dies on a cancel; CAN die, by design,
+# through `_scan_resolve_target_flags` on a genuinely ambiguous resolution and
+# through `guide_scope_append` on a composed file that would not parse - both
+# of which must abort rather than be swallowed, which is why this is called
+# directly and never through $(...) (see `_scan_require_readable_path`).
+_scan_pf_offer_authorize_target() {
+  local target=$1 path=$SCOURSH_INSTALL_ROOT/config/scope.conf
+  _SCAN_PF_OFFER_MADE=false
+
+  # Property 3: only a value that can be re-resolved back to what was passed.
+  _scope_looks_like_url_or_hostport "$target" || return 1
+  # Properties 1 and 2: the only gate, and no flag feeds it.
+  guide_may_prompt true || return 1
+
+  _SCAN_PF_OFFER_MADE=true
+  {
+    printf '\n'
+    printf "  '%s' is not authorised in %s, so this run has not started.\n" "$target" "$path"
+    printf '\n'
+    printf '  scoursh can write that authorisation now.  Confirming the questions\n'
+    printf '  that follow DECLARES THAT YOU OWN THIS HOST, OR HAVE WRITTEN PERMISSION\n'
+    printf '  TO ATTACK IT.  A scan sends real requests to it, and some of them are\n'
+    printf '  real attack traffic.  If that is not true of %s, cancel\n' "$target"
+    printf '  by leaving the next answer blank.\n'
+  } >&2
+
+  guide_g4_authorize_target "$path" || return 1
+
+  # Property 3, the structural half: whatever was written, this run continues
+  # only if the value the operator actually PASSED resolves against the new
+  # file.  `_scan_resolve_target_flags` is the one resolver every other caller
+  # already goes through, so "was it really this target" cannot drift onto a
+  # second opinion here; it also rewrites --i-own-target in the same pass, so a
+  # run affirming the same URL stays consistent with `_scan_check_affirmation`'s
+  # already-performed compare.
+  _scan_resolve_target_flags
+  _scan_pf_check_target "${SCAN_FLAGS[target]:-}" || {
+    {
+      printf '\n'
+      printf "  That record does not authorise '%s', the --target this run was\n" "$target"
+      printf '  given, so this run is still refused.  The record was written and is\n'
+      printf '  yours to keep or remove; re-run naming the host you authorised.\n'
+    } >&2
+    return 1
+  }
+
+  # run.json honesty: `_scan_record_config` has ALREADY recorded
+  # `config_scope_conf_sha256` for the pre-write file (it runs before
+  # preflight), and lib/report.sh reads that key with `_meta_first`, so a
+  # second line under the same key would be invisible rather than corrective.
+  # Record the post-write state under its own key instead.
+  # `authorization_scope_conf_sha256` needs no such fixup - it is written by
+  # `_scan_record_authorization`, which runs AFTER preflight for every command
+  # that can reach this gate, and so already names the file this run used.
+  run_record scope_authorization_interactive "${SCAN_FLAGS[target]}"
+  run_record config_scope_conf_sha256_post_authorization "$(_scan_scope_conf_sha256)"
+  log_info "authorised target '${SCAN_FLAGS[target]}' interactively in $path - continuing"
+  return 0
+}
+
+# `_scan_pf_target_hint PATH` - the teaching half of a refusal where no offer
+# was shown (property 5).  Names both easy paths, so an operator who hit this
+# in a pipeline learns them without reading the source: an interactive re-run
+# offers to write the record, `--guided` walks the whole thing, and a hand
+# edit remains the non-interactive answer.
+_scan_pf_target_hint() {
+  local path=$1
+  printf ' To authorise it: re-run this command at an interactive terminal and scoursh will offer to write the record for you; or run it with --guided to be walked through target selection and authorisation; or add the target to %s by hand (config/scope.conf.example shows the shape).' "$path"
+}
+
+# `_scan_preflight` - the orchestrator. Runs every check relevant to
+# $SCAN_COMMAND, collects every problem, and if any exist, dies ONCE with
+# every problem listed together and the correct precedence class
+# (scope beats input, matching scan_exit_code's own 2>3>4>5>1>0 order -
+# usage-class problems are structurally impossible here, since
+# _scan_check_required already died on any of those before run_init ever
+# ran). Zero problems: falls through, and every check below still runs
+# again for real at its existing call site.
+_scan_preflight() {
+  local -a problems=()
+  local have_scope=false target=${SCAN_FLAGS[target]:-} path=${SCAN_FLAGS[path]:-.}
+  # The target problem is held ASIDE rather than appended with the rest,
+  # because section 6b's offer may still clear it - and may only be OFFERED
+  # once every other check has had its say (property 4: accepting the prompt
+  # must always continue the run).  It is prepended back below if it survives,
+  # so a refusal naming several problems lists them in the same order it
+  # always has.
+  local target_failed=false target_msg='' target_class=''
+  # Reset explicitly rather than relying on the global's initial value: a
+  # process that runs scan_main more than once (this suite does) must not read
+  # a previous run's answer to "was an offer shown".
+  _SCAN_PF_OFFER_MADE=false
+
+  case $SCAN_COMMAND in
+    dast | network | all)
+      if [[ -n $target ]] && ! _scan_pf_check_target "$target"; then
+        target_failed=true
+        target_msg=$_SCAN_PF_MSG
+        target_class=$_SCAN_PF_CLASS
+      fi
+      ;;
+  esac
+
+  case $SCAN_COMMAND in
+    sast | sca | iac | all)
+      _scan_pf_check_path "$path" || problems+=("$_SCAN_PF_MSG")
+      ;;
+  esac
+
+  # --baseline is a [global:...] flag (accepted, syntactically, by every
+  # command - scan_flag_kind's own global fallback), but baseline_apply is
+  # only ever CALLED from sast/sca/iac/dast/network/cloud/image's own run.sh
+  # - diff and report never read it at all. Checking it for diff/report too
+  # would refuse a --baseline value those two commands have always silently
+  # ignored, which is a new failure this ticket's own "change no exit-code
+  # semantics" principle forbids introducing.
+  case $SCAN_COMMAND in
+    diff | report) ;;
+    *) _scan_pf_check_baseline || problems+=("$_SCAN_PF_MSG") ;;
+  esac
+
+  case $SCAN_COMMAND in
+    cloud | all)
+      _scan_pf_check_live || problems+=("$_SCAN_PF_MSG")
+      ;;
+  esac
+
+  # Section 6b: offer to authorise, but only when the unauthorised --target is
+  # the ONLY thing standing between this run and a dispatch, and only when
+  # prompting is permitted.  A successful write that re-resolves to the value
+  # the operator passed clears the problem outright; every other outcome -
+  # including every case where no prompt was shown - leaves it exactly as it
+  # was found.
+  if $target_failed && (( ${#problems[@]} == 0 )); then
+    if _scan_pf_offer_authorize_target "$target"; then
+      target_failed=false
+    else
+      # The offer can WRITE a record and still refuse - the operator typed a
+      # different host at the prompt (property 3) - so the message captured
+      # above may now be stale, and a "config/scope.conf does not exist"
+      # refusal naming a file this run just created is exactly the kind of
+      # wrong that reads as a tool bug.  `_scan_pf_check_target` re-ran inside
+      # the offer on that path and left the current truth in _SCAN_PF_MSG;
+      # every other path out of the offer left it untouched, so re-reading it
+      # is correct in all of them.
+      target_msg=$_SCAN_PF_MSG
+      target_class=$_SCAN_PF_CLASS
+    fi
+  fi
+
+  if $target_failed; then
+    # Property 5: today's message, unchanged, when the operator saw the offer
+    # and declined it.  The hint is for the operator who did NOT see it.
+    if [[ $_SCAN_PF_OFFER_MADE != true ]]; then
+      target_msg+=$(_scan_pf_target_hint "$SCOURSH_INSTALL_ROOT/config/scope.conf")
+    fi
+    problems=("$target_msg" "${problems[@]+"${problems[@]}"}")
+    if [[ $target_class == scope ]]; then
+      have_scope=true
+    fi
+  fi
+
+  if (( ${#problems[@]} > 0 )); then
+    local msg="preflight refused to start: ${#problems[@]} problem(s) found before any module ran -"
+    local p
+    for p in "${problems[@]+"${problems[@]}"}"; do
+      msg+=$'\n  - '"$p"
+    done
+    if $have_scope; then
+      die "$SCOURSH_EXIT_SCOPE" "$msg"
+    else
+      die "$SCOURSH_EXIT_INPUT" "$msg"
+    fi
+  fi
+
+  _scan_pf_warn_declared_skips
+  _scan_pf_warn_inert_use_engines
+  _scan_pf_warn_inert_lang
 }
 
 # `_scan_capture VARNAME CMD [ARGS...]` - runs CMD (which may call die(), e.g.
@@ -827,11 +2578,38 @@ _scan_require_prior_run() {
     || die "$SCOURSH_EXIT_INPUT" "--$flag '$dir' does not look like a prior run directory (no findings.jsonl or run.json)"
 }
 
+# `report --from DIR` needs a STRICTER check than `_scan_require_prior_run`
+# above: `diff --against` never reads DIR's own files at all (only DIR's
+# basename, to find state/<run-id>.json - lib/diff.sh's diff_render_against),
+# so either mandatory file being present is enough to accept a plausible run
+# id. `report --from` regenerates the actual report artifacts straight from
+# DIR's own findings (lib/report.sh's report_regenerate_from), so it needs
+# BOTH mandatory files, non-empty and minimally well-formed, AND the two
+# records the real renderer reads - findings.fields and meta/ - never
+# findings.jsonl/run.json themselves. A directory holding only the two
+# mandatory files (e.g. an archive that dropped everything else) is a real,
+# reportable error here, never a silent empty report - this ticket's own
+# honesty requirement, applied at the input side rather than the output side.
+_scan_require_report_source() {
+  local dir=$1 resolved first_byte
+  resolved=$(realpath_of "$dir")
+  [[ -d $resolved ]] || die "$SCOURSH_EXIT_INPUT" "--from '$dir' is not a directory"
+  [[ -r $resolved/findings.jsonl ]] \
+    || die "$SCOURSH_EXIT_INPUT" "--from '$dir' does not look like a prior run directory (no findings.jsonl)"
+  [[ -s $resolved/run.json ]] \
+    || die "$SCOURSH_EXIT_INPUT" "--from '$dir' does not look like a prior run directory (no run.json, or it is empty)"
+  first_byte=$(head -c1 -- "$resolved/run.json" 2>/dev/null || true)
+  [[ $first_byte == '{' ]] \
+    || die "$SCOURSH_EXIT_INPUT" "--from '$dir' run.json is malformed (does not start with '{')"
+  [[ -f $resolved/findings.fields && -d $resolved/meta ]] \
+    || die "$SCOURSH_EXIT_INPUT" "--from '$dir' is missing its own findings.fields/meta - report --from needs the run directory scoursh itself wrote, not a copy of just findings.jsonl and run.json"
+}
+
 # -----------------------------------------------------------------------------
 # 7. Dispatch.  `scan_dispatch` sources the module's own run.sh when that
 #    file exists on disk, which is the real path for `sast`, `sca` and `iac`
-#    today (AGENTS.md "Build order").  For a module that has NOT landed -
-#    `dast` and `cloud` today - there is no run.sh to source, so it falls
+#    today (AGENTS.md "Build order"), and now for `dast` and `cloud` too.  For
+#    a module that has NOT landed there is no run.sh to source, so it falls
 #    back to a thin, logged no-op rather than a guess at module internals
 #    that a later ticket will actually own, and records a
 #    `coverage_reduction` fact so run.json states the reason honestly
@@ -879,9 +2657,36 @@ scan_dispatch() {
 # Also grows SCOURSH_SELECTED_CHECKS (declared with SCAN_FLAGS below): the
 # LF-joined id list lib/findings.sh's `_derived_record_selected` already
 # reads (tension 6 condition (a)), across every module this run dispatches -
-# `scan.sh all` must union sast+sca+iac+dast+cloud's selections, not just the
+# `scan.sh all` must union sast+sca+iac+dast+cloud+network's selections, not just the
 # last module filtered, or a composite whose contributors span modules would
 # be judged against only one of them.
+# -----------------------------------------------------------------------------
+# 6a. docs/STEP7-STATE-PLAN.md STATE-02: persist-on-every-run wiring.
+# -----------------------------------------------------------------------------
+# `_scan_state_begin` - initialises this run's in-memory state/ builder
+# (lib/state.sh) BEFORE any module dispatch, so a module's own coverage
+# recording (modules/sast/engine.sh's sast_record_coverage, and its
+# siblings) has somewhere to write.  Called once right after `run_init`,
+# using a cwd-derived scan_root_id/path_root as the fallback every command
+# without a `--path` (dast, cloud, diff, report) keeps - the identical
+# recipe tension 12 freezes for `--path .`, just computed unconditionally
+# rather than only when a flag is missing.  `sast`/`sca`/`iac`/`all` each
+# call `state_set_run` a SECOND time, right after they resolve the real
+# `_SCAN_RESOLVED_PATH`-based value, which safely OVERWRITES this fallback
+# before any module can call `state_add_covered` (`state_set_run` never
+# clears already-recorded coverage; `state_reset` does, and only this first
+# call makes that one, since scan_main may run more than once in one
+# process).
+_scan_state_begin() {
+  local root
+  root=$(realpath_of .)
+  SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$root")
+  SCOURSH_PATH_ROOT=$(path_root_cell "$root")
+  export SCOURSH_SCAN_ROOT_ID SCOURSH_PATH_ROOT
+  state_reset
+  state_set_run "$SCOURSH_RUN_ID" "$SCOURSH_SCAN_ROOT_ID" "$FP_SCHEMA" "$(scoursh_version)"
+}
+
 _scan_apply_profile_filter() {
   local module=$1
   local profile=${SCAN_FLAGS[profile-scan]:-$CHECKS_PROFILE_DEFAULT}
@@ -985,6 +2790,95 @@ _scan_scope_conf_sha256() {
   cat -- "$f" | sha256_of
 }
 
+# As _scan_scope_conf_sha256, for config/scanner.conf - docs/STEP-GUIDE-PLAN.md
+# GUIDE-06's own "config" audit object needs a way to say "was this run's
+# scanner.conf the same file a reviewer is looking at now", the identical
+# question scope_conf_sha256 already answers for the scope gate.
+_scan_scanner_conf_sha256() {
+  local f=$SCOURSH_INSTALL_ROOT/config/scanner.conf
+  [[ -r $f ]] || { printf '%s' ''; return 0; }
+  # shellcheck disable=SC2002
+  cat -- "$f" | sha256_of
+}
+
+# -----------------------------------------------------------------------------
+# 7b. The run's config record (docs/STEP-GUIDE-PLAN.md GUIDE-06, "What is
+#     recorded for audit", item 2)
+# -----------------------------------------------------------------------------
+# `run.json`'s `invocation` is not the run's only input: `config_scanner_value`
+# resolves every scanner.conf setting through CLI > env > file > default, and
+# the CLI layer covers only a subset of those keys (jobs, fail-on,
+# min-confidence, contact, format, requests-per-second, request-budget) -
+# `http-timeout`, `max-redirects`, `circuit-breaker-failures`,
+# `circuit-breaker-window`, `max-matches-per-file`, `evidence-max-bytes`,
+# `redact-secrets` and the rest resolve from the environment or from
+# config/scanner.conf alone, invisibly to anyone reading only the printed
+# command.  The SAME printed command therefore produces a materially different
+# scan on a different machine.  This records the effective value AND the
+# resolution source for EVERY scanner.conf key, so reproducibility is stated
+# honestly as "this argv against these two digests", never as "this argv"
+# alone (the plan's own wording).
+#
+# This is a RECORDING change, not a new resolution mechanism:
+# `config_scanner_value`/`config_scanner_list` already compute exactly this in
+# their own `CONFIG_SCANNER_LAST_SOURCE`/`CONFIG_SCANNER_LIST_LAST_SOURCE`
+# (lib/config.sh); this function's only job is to read those back and persist
+# them, once, for every command - unconditionally, unlike the DAST-only
+# authorisation record above, because every command resolves scanner.conf
+# whether or not it ever reaches a network.
+#
+# The CLI value passed to each call is this invocation's own already-parsed
+# SCAN_FLAGS entry where one exists, so a key an operator DID type on the
+# command line is correctly reported as "source": "cli" here too, rather than
+# as "env" merely because scan_main also re-exports requests-per-second/
+# request-budget/circuit-breaker-failures as SCOURSH_CONFIG_* for lib/http.sh's
+# own DAST-32 clamp (see that export's own comment above) - this is a SEPARATE
+# resolution, purely for the record, and reads SCAN_FLAGS directly rather than
+# the export.
+_scan_record_config() {
+  local key val cli
+  local -a single_keys=(
+    circuit-breaker-failures circuit-breaker-5xx-failures circuit-breaker-window
+    contact evidence-max-bytes
+    fail-on history-max-commits history-window-days http-timeout jobs
+    lock-stale-seconds max-matches-per-file max-redirects min-confidence
+    mutex-timeout-seconds redact-secrets request-budget requests-per-second
+    scratch-dir state-retain-runs tls-expiry-warn-days
+  )
+  for key in "${single_keys[@]+"${single_keys[@]}"}"; do
+    case $key in
+      contact) cli=${SCAN_FLAGS[contact]:-} ;;
+      fail-on) cli=${SCAN_FLAGS[fail-on]:-} ;;
+      jobs) cli=${SCAN_FLAGS[jobs]:-} ;;
+      min-confidence) cli=${SCAN_FLAGS[min-confidence]:-} ;;
+      request-budget) cli=${SCAN_FLAGS[request-budget]:-} ;;
+      requests-per-second) cli=${SCAN_FLAGS[requests-per-second]:-} ;;
+      circuit-breaker-failures) cli=${SCAN_FLAGS[circuit-breaker-failures]:-} ;;
+      circuit-breaker-5xx-failures) cli=${SCAN_FLAGS[circuit-breaker-5xx-failures]:-} ;;
+      *) cli='' ;;
+    esac
+    _scan_capture val config_scanner_value "$key" "$cli"
+    run_record "config_value_$key" "$val"
+    run_record "config_source_$key" "$CONFIG_SCANNER_LAST_SOURCE"
+  done
+
+  local -a list_keys=(formats paranoid-allow recommended-header)
+  for key in "${list_keys[@]+"${list_keys[@]}"}"; do
+    case $key in
+      formats) cli=${SCAN_FLAGS[format]:-} ;;
+      *) cli='' ;;
+    esac
+    while IFS= read -r val; do
+      [[ -n $val ]] && run_record "config_value_$key" "$val"
+    done < <(config_scanner_list "$key" "$cli")
+    run_record "config_source_$key" "$CONFIG_SCANNER_LIST_LAST_SOURCE"
+  done
+
+  run_record config_scanner_conf_sha256 "$(_scan_scanner_conf_sha256)"
+  run_record config_scope_conf_sha256 "$(_scan_scope_conf_sha256)"
+  return 0
+}
+
 # DAST-34: ONE stderr line at run start when limits were actually relaxed.
 # Loud, once, not a wall.
 #
@@ -1014,7 +2908,84 @@ _scan_announce_unrestricted() {
 # -----------------------------------------------------------------------------
 scan_main() {
   local _scan_t0=$SECONDS
-  scan_parse_args "$@"
+
+  # docs/STEP-GUIDE-PLAN.md GUIDE-02: the zero-argument branch of guided-mode
+  # routing (section 4c above).  A bare `scan.sh` is "asked for" per the
+  # plan's condition 1, but scan_parse_args's own first line dies "no
+  # command given" the instant $# is 0 - before any flag, including
+  # --guided, could ever be parsed - so this case has to be caught here,
+  # BEFORE that call, or it could never be routed at all.
+  #
+  # When guided mode is INeligible (no terminal, a CI marker, ...), this
+  # deliberately does nothing and falls straight through to the unmodified
+  # `scan_parse_args "$@"` call below, which reproduces TODAY's exit-2 "no
+  # command given" usage error byte-for-byte - the ticket's own named
+  # non-regression test (tests/suites/scan.sh).  That silence is correct
+  # specifically because a bare `scan.sh` was never an EXPLICIT ask the way
+  # `--guided` is: the plan's own "must not prompt" list names only the
+  # terminal-and-eligible case for this loud "not built yet" refusal.
+  #
+  # docs/STEP-GUIDE-PLAN.md GUIDE-03/GUIDE-06: `_scan_guide_run` (section 4d
+  # above) replaces GUIDE-02's blanket `_scan_guided_not_yet_available`
+  # refusal with the real G1-G9 menu flow.  `_SCAN_GUIDE_RAN` is set true
+  # only on "Run it" (`_scan_guide_run`'s own comment on that branch): every
+  # other path out of it exits the process directly (Cancel, "Print the
+  # command", any die()), so reaching the line after this `if` with the flag
+  # still false always means _scan_guide_run never ran at all - the case a
+  # plain `scan.sh` on a real terminal is INELIGIBLE for guided mode falls
+  # into.  On "Run it", `_scan_guide_run` has ALREADY called scan_parse_args
+  # itself, on the composed argv - calling it again here on the ORIGINAL
+  # (empty, for this branch) "$@" would silently reset SCAN_FLAGS/
+  # SCAN_COMMAND back to nothing and die "no command given", so this second
+  # call is guarded on the flag rather than being unconditional.
+  local _SCAN_GUIDE_RAN=false
+  if (( $# == 0 )) && guide_may_prompt true; then
+    _scan_guide_run
+  fi
+
+  if [[ $_SCAN_GUIDE_RAN != true ]]; then
+    scan_parse_args "$@"
+  fi
+
+  # docs/STEP-GUIDE-PLAN.md GUIDE-02: the `--guided` branch of guided-mode
+  # routing.  By this point `--guided` is just an ordinary already-parsed
+  # global bool flag (this ticket's own addition to _SCAN_FLAG_KIND) rather
+  # than a token scan_main has to look for itself, since scan_parse_args
+  # accepts and shape-validates it exactly like any other flag - it never
+  # reads a terminal to do so, keeping that function pure.  Unlike the
+  # zero-argument branch above, `--guided` typed explicitly IS the plan's
+  # "explicitly requested" case, so an ineligible gate here is never silent:
+  # it fails loudly with the concrete reason, before _scan_check_required
+  # (and everything after it) ever runs.  `_scan_guide_run "$SCAN_COMMAND"`
+  # here re-parses SCAN_FLAGS on "Run it" too (this branch runs strictly
+  # after the one `scan_parse_args "$@"` call above, never before it), so no
+  # second `_SCAN_GUIDE_RAN` guard is needed on this call site.
+  if [[ ${SCAN_FLAGS[guided]:-} == true ]]; then
+    if guide_may_prompt true; then
+      _scan_guide_run "$SCAN_COMMAND"
+    else
+      scan_usage >&2
+      die "$SCOURSH_EXIT_USAGE" \
+        "--guided: $(guide_ineligible_reason); nothing was run and nothing is waiting for input"
+    fi
+  fi
+
+  # The required-flag and cross-flag block scan_parse_args used to end with
+  # (docs/STEP-GUIDE-PLAN.md GUIDE-02) runs HERE, after both guided-mode
+  # branches above - see _scan_check_required's own header for why the
+  # ordering matters even though no real prompt exists yet to change what it
+  # finds.
+  _scan_check_required
+
+  # docs/STEP-GUIDE-PLAN.md GUIDE-06: `--print-command` - the non-interactive
+  # twin of G9's own "Print the command and exit" item, for ANY invocation.
+  # Placed after `_scan_check_required` (an invocation that could not itself
+  # validate still gets the ordinary usage error, never a command that would
+  # only die a moment later if actually run) and before `run_init` (no run
+  # directory is ever created for it).
+  if [[ ${SCAN_FLAGS[print-command]:-} == true ]]; then
+    _scan_print_command_and_exit
+  fi
 
   core_require_baseline
   [[ ${SCAN_FLAGS[history]:-} != true ]] || require_cmd git
@@ -1027,6 +2998,7 @@ scan_main() {
   # calls scan_main repeatedly), and _scan_apply_profile_filter only ever
   # APPENDS to this variable.
   SCOURSH_SELECTED_CHECKS=''
+  _scan_state_begin
 
   # 8a. The config loader runs before any dispatch (this ticket's third
   # acceptance criterion, verbatim): scanner.conf is resolved through the
@@ -1041,6 +3013,67 @@ scan_main() {
   # version a CI image happens to ship.
   # shellcheck disable=SC2119
   config_scanner_load
+
+  # docs/STEP-GUIDE-PLAN.md GUIDE-04: `--requests-per-second`/`--request-budget`
+  # (and, by the identical construction, `--circuit-breaker-failures` below)
+  # have no dedicated CLI-capture call site inside lib/http.sh the way
+  # `jobs`/`fail-on`/`min-confidence` do above - DAST-32's clamp
+  # (`_http_effective_rps_milli_set`/`_http_effective_limit_set`, lib/http.sh)
+  # calls `config_scanner_value` with NO CLI argument at all, so it only ever
+  # sees env/file/default.  `SCOURSH_CONFIG_<KEY>` is that resolver's own
+  # documented environment-override level (lib/config.sh's `_scanner_env_name`;
+  # docs/USAGE.md "environment variable > file > built-in default"), and
+  # DAST-32's asymmetric clamp treats `cli`/`env` identically - both die exit 2
+  # on an explicit over-ceiling value with no `--i-own-target`
+  # (`_http_limit_refuse_or_clamp`'s `case $src in cli | env)`), so exporting
+  # the flag's value under that name reaches the clamp with the exact same
+  # authority a dedicated CLI parameter would have, with no change to
+  # lib/http.sh's chokepoint required.  An invocation that gives neither flag
+  # restores whatever `_SCAN_ENV_*_PRISTINE` recorded at source time (a real
+  # operator env override, or unset) rather than leaving a prior scan_main
+  # call's export behind - see that snapshot's own comment above.
+  if [[ -n ${SCAN_FLAGS[requests-per-second]:-} ]]; then
+    export SCOURSH_CONFIG_REQUESTS_PER_SECOND=${SCAN_FLAGS[requests-per-second]}
+  elif [[ -n $_SCAN_ENV_RPS_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_REQUESTS_PER_SECOND=$_SCAN_ENV_RPS_PRISTINE
+  else
+    unset SCOURSH_CONFIG_REQUESTS_PER_SECOND
+  fi
+  if [[ -n ${SCAN_FLAGS[request-budget]:-} ]]; then
+    export SCOURSH_CONFIG_REQUEST_BUDGET=${SCAN_FLAGS[request-budget]}
+  elif [[ -n $_SCAN_ENV_BUDGET_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_REQUEST_BUDGET=$_SCAN_ENV_BUDGET_PRISTINE
+  else
+    unset SCOURSH_CONFIG_REQUEST_BUDGET
+  fi
+  # --circuit-breaker-failures: the third member of this trio (see the
+  # comment above). It raises the TRANSPORT-failure threshold (no usable
+  # response at all - the strongest evidence of a genuinely down target).
+  # An owning operator raises it the same way as rate/budget: an explicit
+  # value here plus --i-own-target.
+  if [[ -n ${SCAN_FLAGS[circuit-breaker-failures]:-} ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=${SCAN_FLAGS[circuit-breaker-failures]}
+  elif [[ -n $_SCAN_ENV_BREAKER_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES=$_SCAN_ENV_BREAKER_PRISTINE
+  else
+    unset SCOURSH_CONFIG_CIRCUIT_BREAKER_FAILURES
+  fi
+  # --circuit-breaker-5xx-failures: the breaker-5xx-semantics fix
+  # (docs/FOUNDATION.md tension 16's amendment). A target that answers
+  # unmatched paths with 5xx (rather than 404) is answering, not outage
+  # evidence, so it is counted SEPARATELY from a transport failure, against a
+  # much higher default (200 vs. 10) - which is what closes the gap the
+  # comment this replaced used to describe against --circuit-breaker-failures:
+  # a real DAST run against an ordinary application no longer needs to raise
+  # anything by hand for content-discovery/method-enumeration to finish.
+  if [[ -n ${SCAN_FLAGS[circuit-breaker-5xx-failures]:-} ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES=${SCAN_FLAGS[circuit-breaker-5xx-failures]}
+  elif [[ -n $_SCAN_ENV_BREAKER_5XX_PRISTINE_SET ]]; then
+    export SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES=$_SCAN_ENV_BREAKER_5XX_PRISTINE
+  else
+    unset SCOURSH_CONFIG_CIRCUIT_BREAKER_5XX_FAILURES
+  fi
+
   _scan_capture SCOURSH_JOBS config_scanner_value jobs "${SCAN_FLAGS[jobs]:-}"
   _scan_capture SCOURSH_FAIL_ON config_scanner_value fail-on "${SCAN_FLAGS[fail-on]:-}"
   _scan_capture SCOURSH_MIN_CONFIDENCE config_scanner_value min-confidence "${SCAN_FLAGS[min-confidence]:-}"
@@ -1056,6 +3089,12 @@ scan_main() {
   _scan_capture_list SCOURSH_FORMATS config_scanner_list formats "${SCAN_FLAGS[format]:-}"
   export SCOURSH_JOBS SCOURSH_FAIL_ON SCOURSH_MIN_CONFIDENCE SCOURSH_REDACT_SECRETS \
     SCOURSH_SHOW_RULE_WARNINGS SCOURSH_FORMATS
+
+  # docs/STEP-GUIDE-PLAN.md GUIDE-06: run.json's `config` object.  Recorded
+  # here, right after config_scanner_load and every scanner.conf key this
+  # section already resolved, and unconditionally for every command - see
+  # _scan_record_config's own header for why.
+  _scan_record_config
 
   # 8b. --paranoid (docs/FOUNDATION.md tension 20; lib/paranoid.sh): attached
   # AFTER config is loaded (paranoid_allow, the fourth allowlist set, comes
@@ -1113,13 +3152,26 @@ scan_main() {
   # shellcheck disable=SC2034
   local incomplete=0 gate=0 input=0 path
 
+  # Preflight (section 6a above): every problem it can safely detect,
+  # together, before the first scan_dispatch call of any kind. Dies here on
+  # any of them; falls through unchanged when there are none.
+  _scan_preflight
+
   case $SCAN_COMMAND in
     sast | sca | iac)
       path=${SCAN_FLAGS[path]:-.}
       _scan_require_readable_path "$path"
       SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$_SCAN_RESOLVED_PATH")
       SCOURSH_PATH_ROOT=$(path_root_cell "$_SCAN_RESOLVED_PATH")
-      export SCOURSH_SCAN_ROOT_ID SCOURSH_PATH_ROOT
+      # SARIF-02 / tension 22 case 3: the only absolute path
+      # report_locations' filesystem test needs, to answer "does a
+      # SAST-HIST-* finding's loc_path still resolve in the working tree".
+      SCOURSH_SCAN_ROOT_PATH=$(scan_root_of "$_SCAN_RESOLVED_PATH")
+      export SCOURSH_SCAN_ROOT_ID SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_PATH
+      # docs/STEP7-STATE-PLAN.md STATE-02: replaces _scan_state_begin's
+      # cwd-derived fallback with the real --path-based scan_root_id, before
+      # any module can call state_add_covered.
+      state_set_run "$SCOURSH_RUN_ID" "$SCOURSH_SCAN_ROOT_ID" "$FP_SCHEMA" "$(scoursh_version)"
       _scan_apply_profile_filter "$SCAN_COMMAND"
       scan_dispatch "$SCAN_COMMAND"
       ;;
@@ -1143,12 +3195,39 @@ scan_main() {
       _scan_apply_profile_filter cloud
       scan_dispatch cloud
       ;;
+    network)
+      # Byte-identical shape to the `dast` arm above (NET-04's own explicit
+      # instruction: follow the dast precedent exactly).  config_scope_require
+      # is the non-bypassable gate: no matching --target dies 3, a wholly
+      # missing scope.conf dies 4.  modules/network/run.sh
+      # re-asserts it a second, independent time.
+      config_scope_require "${SCAN_FLAGS[target]}"
+      run_record targets "${SCAN_FLAGS[target]}"
+      _scan_record_authorization "${SCAN_FLAGS[target]}"
+      _scan_apply_profile_filter network
+      scan_dispatch network
+      ;;
+    image)
+      # IMG-01: no scope gate and no live target - image scanning reads an
+      # operator-supplied offline archive (or, once IMG-02 lands, a
+      # config/images.conf entry), never a network address, so there is
+      # nothing here for config_scope_require to check. --image is enforced
+      # by _SCAN_REQUIRED_FLAG above (scan_die_usage, exit 2) before this
+      # arm is ever reached.
+      _scan_apply_profile_filter image
+      scan_dispatch image
+      ;;
     all)
       path=${SCAN_FLAGS[path]:-.}
       _scan_require_readable_path "$path"
       SCOURSH_SCAN_ROOT_ID=$(scan_root_id_of "$_SCAN_RESOLVED_PATH")
       SCOURSH_PATH_ROOT=$(path_root_cell "$_SCAN_RESOLVED_PATH")
-      export SCOURSH_SCAN_ROOT_ID SCOURSH_PATH_ROOT
+      SCOURSH_SCAN_ROOT_PATH=$(scan_root_of "$_SCAN_RESOLVED_PATH")
+      export SCOURSH_SCAN_ROOT_ID SCOURSH_PATH_ROOT SCOURSH_SCAN_ROOT_PATH
+      # docs/STEP7-STATE-PLAN.md STATE-02: see the identical call in the
+      # sast|sca|iac arm above for why this replaces the cwd-derived
+      # fallback before dispatch.
+      state_set_run "$SCOURSH_RUN_ID" "$SCOURSH_SCAN_ROOT_ID" "$FP_SCHEMA" "$(scoursh_version)"
       _scan_apply_profile_filter sast
       scan_dispatch sast
       _scan_apply_profile_filter sca
@@ -1158,11 +3237,21 @@ scan_main() {
       if [[ -n ${SCAN_FLAGS[target]:-} ]]; then
         config_scope_require "${SCAN_FLAGS[target]}"
         run_record targets "${SCAN_FLAGS[target]}"
+        # One authorization record per target, not one per target-scoped
+        # module: `dast` and `network` (NET-04) share the same --target,
+        # --intensity and --i-own-target values under `all`, so a second call
+        # here would double every authorization_* fact in run.json for no new
+        # information - the deliberate design decision is "network runs
+        # under `all` whenever dast does", not "network gets
+        # its own affirmation record".
         _scan_record_authorization "${SCAN_FLAGS[target]}"
         _scan_apply_profile_filter dast
         scan_dispatch dast
+        _scan_apply_profile_filter network
+        scan_dispatch network
       else
         run_record coverage_reduction 'module=dast reason=no --target given (declared, all)'
+        run_record coverage_reduction 'module=network reason=no --target given (declared, all)'
       fi
       if [[ ${SCAN_FLAGS[live]:-} == true ]]; then
         command -v aws >/dev/null 2>&1 \
@@ -1172,16 +3261,25 @@ scan_main() {
       else
         run_record coverage_reduction 'module=cloud reason=no --live given (declared, all)'
       fi
+      # IMG-01: `all` runs image scanning only when the operator gave
+      # --image, mirroring the `--live`/`--target` conditionals above -
+      # `all` "runs every module for which inputs are configured"
+      # (docs/DESIGN.md §5), and image has no default target the way
+      # sast/sca/iac's `--path .` does.
+      if [[ -n ${SCAN_FLAGS[image]:-} ]]; then
+        _scan_apply_profile_filter image
+        scan_dispatch image
+      else
+        run_record coverage_reduction 'module=image reason=no --image given (declared, all)'
+      fi
       ;;
     diff)
       _scan_require_prior_run against "${SCAN_FLAGS[against]}"
-      run_record coverage_reduction 'module=diff reason=not_yet_built'
-      log_warn "'diff' has no engine yet (docs/FOUNDATION.md tension 12 lands with state/, step 7)"
+      diff_render_against "${SCAN_FLAGS[against]}" "$SCOURSH_RUN_DIR"
       ;;
     report)
-      _scan_require_prior_run from "${SCAN_FLAGS[from]}"
-      run_record coverage_reduction 'module=report reason=not_yet_built'
-      log_warn "'report' regeneration has no engine yet"
+      _scan_require_report_source "${SCAN_FLAGS[from]}"
+      report_regenerate_from "${SCAN_FLAGS[from]}" "$SCOURSH_RUN_DIR"
       ;;
   esac
 
@@ -1205,7 +3303,41 @@ scan_main() {
     paranoid_detach
   fi
 
-  report_run_json "$SCOURSH_RUN_DIR"
+  # `report` is the one exception: report_regenerate_from already wrote
+  # run.json as a byte-for-byte copy of the ORIGINAL run's own (its own
+  # header explains why - several of the fields below are process-exported
+  # facts a live scan sets and no meta/ fact records, so recomputing them
+  # here, with no module dispatched and no --path given, would silently
+  # replace the original run's real values with empty defaults). Calling
+  # this unconditionally would immediately overwrite that copy.
+  [[ $SCAN_COMMAND == report ]] || report_run_json "$SCOURSH_RUN_DIR"
+
+  # docs/STEP7-STATE-PLAN.md STATE-02: persist-on-every-run.  Reached on
+  # every normal completion of scan_main - a clean run, a gated one
+  # (SCOURSH_EXIT_GATE), and an incomplete one that still reached this line
+  # rather than dying mid-flight (lib/core.sh's run_json_refresh_incomplete
+  # is the identical persistence for the die()-exit-5 case that never
+  # reaches here).
+  #
+  # docs/STEP7-STATE-PLAN.md STATE-06's own correctness fix: `diff` and
+  # `report` dispatch no module and add no coverage or findings to the
+  # write-side builder `_scan_state_begin` reset at the top of this
+  # invocation, so persisting it here would write a genuinely empty
+  # state/<run-id>.json and - far worse - overwrite state/latest.json with
+  # it, corrupting the one reference point automatic per-run classification
+  # (lib/diff.sh's diff_classify_run) reads on every future scan.  Before
+  # `diff` was a real command this was a latent defect with no observable
+  # effect (the stub state_write'd an equally empty snapshot); making it real
+  # is what turns "nobody happened to see this" into "half the point of this
+  # feature quietly breaks itself", so it is fixed in the same change.
+  case $SCAN_COMMAND in
+    sast | sca | iac | dast | cloud | network | image | all)
+      local _scan_state_retain
+      _scan_capture _scan_state_retain config_scanner_value state-retain-runs ''
+      state_write '' "$_scan_state_retain"
+      ;;
+  esac
+
   log_info "scan complete in $(( SECONDS - _scan_t0 ))s - report: $SCOURSH_RUN_DIR"
 
   local code

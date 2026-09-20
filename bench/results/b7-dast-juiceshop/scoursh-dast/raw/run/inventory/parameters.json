@@ -1,0 +1,6 @@
+{
+  "schema": "scoursh.inventory.parameters/1",
+  "run_id": "scoursh-active-run",
+  "generated_by": "modules/dast/crawl.sh",
+  "parameters": []
+}

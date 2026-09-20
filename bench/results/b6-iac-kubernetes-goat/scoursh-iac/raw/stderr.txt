@@ -1,0 +1,2 @@
+2026-09-10T11:22:24Z info  iac: scanning 16 files under <SCAN_ROOT>
+2026-09-10T11:23:19Z info  scan complete in 65s - report: <BENCH>/results/b6-iac-kubernetes-goat/scoursh-iac/raw/run

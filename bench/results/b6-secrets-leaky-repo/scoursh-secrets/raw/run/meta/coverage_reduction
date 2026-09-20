@@ -1,0 +1,2 @@
+module=sast reason=no_matching_files checks=[SAST-GO-EXEC_CONCAT-01 SAST-GO-TEMPLATE_HTML-01 SAST-GO-WEAK_RANDOM-01 SAST-GO-SQL_CONCAT-01 SAST-GO-TLS_SKIP_VERIFY-01 SAST-JAVA-JDBC_SQL_CONCAT-01 SAST-JAVA-XXE_DISALLOW_DOCTYPE-01 SAST-JAVA-UNSAFE_DESERIALIZATION-01 SAST-JAVA-TRUST_ALL_MANAGER-01 SAST-JAVA-TRUST_ALL_HOSTNAME-01 SAST-JAVA-SPEL_INJECTION-01 SAST-JAVA-OGNL_INJECTION-01] - none of the files under this scan root matched this check's files: glob, so its pattern was never evaluated. It is NOT covered by this run.
+module=sast reason=history_not_requested

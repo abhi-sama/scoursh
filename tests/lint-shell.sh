@@ -101,6 +101,19 @@ dast_scope_files() {
   } | LC_ALL=C sort
 }
 
+# docs/STEP-GUIDE-PLAN.md GUIDE-02: everything under lib/ and modules/ -
+# deliberately NOT scan.sh, which is the one and only place `guide_*` may be
+# called from (its own scan_main routing, sections 4c and 8).  lib/guide.sh
+# itself is exempted below, at the `check` call site, the same
+# one-exemption-with-a-stated-reason shape the tension-19 "no bypass" check
+# above already uses for lib/http.sh.
+guide_isolation_files() {
+  local dirs=() d
+  for d in lib modules; do [[ -d $d ]] && dirs+=("$d"); done
+  (( ${#dirs[@]} > 0 )) || return 0
+  find "${dirs[@]}" -type f -name '*.sh' | LC_ALL=C sort
+}
+
 # `check NAME PATTERN FILE-LIST-FN [EXEMPT...]` - fails when PATTERN matches.
 check() {
   local name=$1 pattern=$2 lister=$3
@@ -237,6 +250,34 @@ check 'no bypass: no curl/wget/nc/openssl s_client outside lib/http.sh' \
   '(^|[;&|(])[[:space:]]*(curl|wget|nc|ncat|netcat|openssl[[:space:]]+s_client)([[:space:]]|\$)' \
   engine_files lib/http.sh tools/vendor-engines.sh \
   modules/dast/passive/tls.sh modules/dast/passive/tls_engine.sh
+
+# `/dev/tcp` and `/dev/udp` are a SECOND, un-gated path to the network: a bash
+# redirection like `exec 3<>/dev/tcp/host/port` never goes near curl, so the
+# check above cannot see it, and until now nothing else could either -
+# `printf 'exec 3<>/dev/tcp/host/22\n'` matched none of the patterns this file
+# checks. That gap is latent today; it stops being latent the moment a module
+# actually opens a raw socket this way (the upcoming network-scanning module's
+# declared-listener probe), so the lint that keeps the chokepoint honest has
+# to cover it before that first real caller lands, not after.
+#
+# Matched as a device PATH, not a command word - `/dev/tcp`/`/dev/udp` are
+# never invoked, only redirected into, so there is no command-position anchor
+# to match the way curl/wget above do.
+#
+# Exactly two path exemptions, same one-exemption-with-a-stated-reason shape
+# as the check above: `lib/paranoid.sh`, which already opens
+# `/dev/udp/127.0.0.1/9` as its own loopback control socket for the tension-20
+# connection sampler (an unrelated, pre-existing, already-reviewed use with no
+# scan target involved at all); and `lib/nettransport.sh`, the network
+# module's own transport primitive - not yet landed, exempted here ahead of
+# it so the exemption list is written when there is exactly one caller rather
+# than retrofitted once several modules/network/ scripts depend on it. Every
+# other file, including every future modules/network/ script, reaches the
+# network only by calling that primitive - never by opening /dev/tcp itself -
+# so no further exemption is anticipated.
+check 'no bypass: no /dev/tcp or /dev/udp outside the network transport primitive' \
+  '/dev/(tcp|udp)/' \
+  engine_files lib/paranoid.sh lib/nettransport.sh
 
 printf '\n== DAST-35: no bundled scan target - docs/STEP5-DAST-PLAN.md ==\n'
 # "A convenient example target" is a helpful-looking contribution that would
@@ -495,6 +536,98 @@ printf '\n== tension 27: tools/vendor-engines.sh is never wired into a scan ==\n
 check 'no wiring of tools/vendor-engines.sh into the scan-time dispatch path' \
   '(^|[;&|(])[[:space:]]*(source|\.|eval|bash|sh)[[:space:]]+.*vendor-engines\.sh' \
   dispatch_path_files
+
+printf '\n== docs/STEP-GUIDE-PLAN.md GUIDE-02: guided mode stays isolated to lib/guide.sh ==\n'
+# `select` and `read -p` are exactly the two builtins that can silently hang
+# a pipeline if gated wrong (lib/guide.sh's own header), which is why
+# lib/guide.sh absorbs every measured edge of both ONCE (docs/STEP-GUIDE-PLAN.md
+# "select, measured rather than assumed") rather than leaving each future
+# module or library free to reimplement its own prompt and re-derive those
+# edges the expensive way. A module or library reaching for `guide_may_prompt`
+# (or any other `guide_*`/`_guide_*` primitive), `select`, or `read -p`
+# directly is a second, ungated prompt path - exactly the kind of bypass the
+# tension-19 "no bypass" check above already polices for the network, applied
+# here to the terminal. scan.sh is the one place these are meant to be
+# called from (its own scan_main routing) and is deliberately absent from
+# guide_isolation_files above, so it needs no exemption; lib/guide.sh itself
+# is the one exemption below, for the identical reason lib/http.sh is
+# exempted from the "no bypass" check - it is the file that DEFINES the
+# primitives, not a caller of them.
+#
+# Matched at COMMAND position (start of line, or after `;`/`&`/`|`/`(`, or
+# inside a `$(...)` substitution), with a trailing space-or-end-of-line
+# boundary required too - the same discipline the "no bypass" and
+# tension-27 checks above already use - so an English comment mentioning
+# "guide.sh" in prose, or a word like "guidepost", cannot false-positive
+# this the way an unanchored substring match would.
+check 'no guide_*/_guide_* function call outside lib/guide.sh' \
+  '(^|[;&|(]|\$\()[[:space:]]*_?guide_[A-Za-z0-9_]+([[:space:]]|$)' \
+  guide_isolation_files lib/guide.sh
+
+check 'no `select` builtin outside lib/guide.sh' \
+  '(^|[;&|(])[[:space:]]*select[[:space:]]' \
+  guide_isolation_files lib/guide.sh
+
+check 'no `read -p` outside lib/guide.sh' \
+  'read[[:space:]].*-p([[:space:]]|$)' \
+  guide_isolation_files lib/guide.sh
+
+printf '\n== no smart quotes in shell code (SC1112) ==\n'
+# ShellCheck's own SC1112 already flags a stray U+2018/2019/201C/201D - but
+# only for a file small enough to reach that stage at all.  The files most
+# likely to carry one (a large test suite a prose-heavy editor auto-corrected
+# while typing a possessive into an assert message, per the incident that
+# added this check) are exactly the files tests/lint-source-graph.sh's hub
+# fan-out cap or the shellcheck stage's own memory budget can cause to be
+# SKIPPED - see AGENTS.md's shellcheck-memory-model notes.  This check is a
+# plain alternation of four fixed-width UTF-8 byte sequences (never a bracket
+# expression, which is not portably multi-byte-aware across BSD and GNU
+# regex engines - see AGENTS.md "things measured on this codebase"), so it
+# costs nothing and covers every `*.sh` file regardless of size.  It is
+# scoped to all_files() - `*.sh` only, never docs/ or a `.rules` prose field
+# - because a curly quote is legitimate English prose there and only a
+# defect in code.
+#
+# This used to build the pattern from bash 4.2's ANSI-C `$'\uHHHH'` escapes,
+# specifically so this file would not contain a literal smart quote (the "a
+# rule file that spells a credential-shaped example in its own header
+# matches itself" trap AGENTS.md's secrets.rules note already records).  That
+# half worked.  It also shipped a second, worse self-match: `\uHHHH` support
+# is a bash-4.2 feature, and wherever the running shell does not expand it,
+# the assignment keeps the literal escape TEXT - `(\u2018|\u2019|\u201c|\u201d)`
+# - which, handed to grep/rg as an ERE, degrades to `(u2018|u2019|u201c|u201d)`
+# and matches THAT VERY SUBSTRING on the line defining it.  CI measured this
+# on both userlands at once (run 35154597539, shard 7): the guard reported
+# itself, line 597, as the finding.
+#
+# The fix below never writes anything shaped like "u2018" as text, expanded
+# or not, so there is no substring left for a broken conversion to hand back
+# to the pattern hunting for it - self-matching is closed structurally,
+# not by hoping an escape expands.  The only numbers in the source are the
+# four plain DECIMAL codepoints and the fixed bit masks of RFC 3629's 3-byte
+# UTF-8 encoding; `_smart_quote_utf8_char` turns a codepoint into its raw
+# bytes with `printf '%03o'` (decimal to octal digits, a plain data
+# conversion) and `printf -v ... '%b'` (backslash-escape expansion of the
+# resulting octal text, done via `%b`'s data argument rather than a
+# variable-as-format-string, so this needs no shellcheck disable).  Both are
+# ordinary printf(1) conversions, not `$'\uHHHH'` ANSI-C quoting, so nothing
+# here depends on the shell's Unicode-escape support one way or the other -
+# measured byte-identical under macOS's own bash 3.2.57 (which this project's
+# `>= 4.2` floor, tension 24, refuses to even source lib/core.sh under, so it
+# was never a supported RUNTIME for this file - only the escape-building
+# logic itself was isolated and re-run there) and under a current bash 5.
+_smart_quote_utf8_char() {
+  local codepoint=$1 b1 b2 b3 fmt out
+  b1=$(( 0xE0 | (codepoint >> 12) ))
+  b2=$(( 0x80 | ((codepoint >> 6) & 0x3F) ))
+  b3=$(( 0x80 | (codepoint & 0x3F) ))
+  printf -v fmt '\%03o\%03o\%03o' "$b1" "$b2" "$b3"
+  printf -v out '%b' "$fmt"
+  printf '%s' "$out"
+}
+_smart_quote_pattern="($(_smart_quote_utf8_char 8216)|$(_smart_quote_utf8_char 8217)|$(_smart_quote_utf8_char 8220)|$(_smart_quote_utf8_char 8221))"
+check 'no U+2018/2019/201C/201D smart quote (retype as ASCII '"'"'/")' \
+  "$_smart_quote_pattern" all_files
 
 printf '\n'
 if (( FAILED )); then

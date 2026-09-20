@@ -1,0 +1,25 @@
+{
+    "Users": [
+        {
+            "UserName": "scoursh-fixture-admin-user",
+            "Path": "/",
+            "UserId": "AIDAADMIN000000000001",
+            "Arn": "arn:aws:iam::123456789012:user/scoursh-fixture-admin-user",
+            "CreateDate": "2020-01-15T09:00:00+00:00"
+        },
+        {
+            "UserName": "scoursh-fixture-clean-user",
+            "Path": "/",
+            "UserId": "AIDACLEAN000000000001",
+            "Arn": "arn:aws:iam::123456789012:user/scoursh-fixture-clean-user",
+            "CreateDate": "2024-06-01T09:00:00+00:00"
+        },
+        {
+            "UserName": "scoursh-fixture-denied-user",
+            "Path": "/",
+            "UserId": "AIDADENIED00000000001",
+            "Arn": "arn:aws:iam::123456789012:user/scoursh-fixture-denied-user",
+            "CreateDate": "2022-03-10T09:00:00+00:00"
+        }
+    ]
+}

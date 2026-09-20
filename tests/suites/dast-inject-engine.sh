@@ -42,6 +42,8 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 source "$ROOT/modules/dast/active/inject_engine.sh"
 # shellcheck source=tests/lib/assert.sh
 source "$ROOT/tests/lib/assert.sh"
+# shellcheck source=tests/lib/bounded-read.sh
+source "$ROOT/tests/lib/bounded-read.sh"
 
 W=$SCOURSH_SCRATCH/dast-inject-engine-workspace
 rm -rf "$W"; mkdir -p "$W"
@@ -65,6 +67,7 @@ id: scanner
 requests-per-second: 5000
 request-budget: 20000
 circuit-breaker-failures: 100000
+circuit-breaker-5xx-failures: 100000
 EOF
 config_scanner_load "$W/scanner.conf"
 
@@ -105,6 +108,7 @@ printf '== dast inject_engine: the response BODY read is bounded AT READ TIME, n
 # directly on this host, through this exact harness: the fixed `-N` read
 # finishes in well under 200ms; the un-bounded `read -d ''` this replaces
 # takes 1.7+ seconds for the identical 256 MiB body).
+INJ_HUGE_MARKER=$W/huge-producer-finished
 HUGEFILE=$W/huge-body.raw
 if [[ ! -f $HUGEFILE ]]; then
   hs='a'
@@ -122,7 +126,9 @@ _inj_huge_body_transport() {
   printf '%s %s\n' "$method" "$path" >>"$REQ_LOG"
   if [[ -n ${_HTTP_TX_BODY_OUT:-} ]]; then
     if [[ $path == /probe* ]]; then
-      cp -- "$HUGEFILE" "$_HTTP_TX_BODY_OUT"
+      # Served through a FIFO so the PRODUCER'S own progress, not a clock,
+      # reports whether the whole body was read - see tests/lib/bounded-read.sh.
+      bounded_read_serve_fifo "$_HTTP_TX_BODY_OUT" "$HUGEFILE" "$INJ_HUGE_MARKER"
     else
       printf 'not found' >"$_HTTP_TX_BODY_OUT"
     fi
@@ -132,17 +138,17 @@ _inj_huge_body_transport() {
 
 _inj_set_candidate GET query
 SCOURSH_HTTP_TRANSPORT=_inj_huge_body_transport
-t0=$(now_epoch_ns)
 huge_rc=0
 inject_send 0 'x' || huge_rc=$?
-t1=$(now_epoch_ns)
-huge_ms=$(( (t1 - t0) / 1000000 ))
+huge_finished=1
+bounded_read_producer_finished "$INJ_HUGE_MARKER" || huge_finished=0
+bounded_read_reap
 
 assert_eq 0 "$huge_rc" 'inject_send itself succeeds for a large-but-reachable body'
 assert_eq "$_INJ_MAX_BODY_BYTES" "${#_INJ_BODY}" \
   "a 256 MiB body (1024x the cap) leaves _INJ_BODY holding exactly the ${_INJ_MAX_BODY_BYTES}-byte cap - FAILS if the cap is applied to what is RETAINED after a full read rather than to what is READ"
-assert_true "$([[ $huge_ms -lt 800 ]] && echo 0 || echo 1)" \
-  "inject_send completed in ${huge_ms}ms for a 256 MiB body - FAILS under the un-bounded \`read -d ''\` this replaces, which must slurp the whole body before trimming it (measured 1.7+ seconds on this host for the identical fixture through this exact harness)"
+assert_eq 0 "$huge_finished" \
+  "the producer serving the 256 MiB body was still parked mid-write when inject_send returned, so the body was never read whole - FAILS under the un-bounded \`read -d ''\` this replaces, which drains the pipe to EOF and lets the producer finish. This was an 800ms wall-clock ceiling calibrated on one machine; see tests/lib/bounded-read.sh"
 
 # ===========================================================================
 printf '== dast inject_engine: the response HEADER read (opt-in via _INJ_WANT_HEADERS) is ALSO bounded AT READ TIME ==\n'
@@ -153,6 +159,7 @@ printf '== dast inject_engine: the response HEADER read (opt-in via _INJ_WANT_HE
 # signal; a target answering with an oversized or pathologically repeated
 # header block would otherwise be slurped whole here on every probe that
 # reads it.
+INJ_HDR_MARKER=$W/huge-headers-producer-finished
 HUGEHDRFILE=$W/huge-headers.raw
 if [[ ! -f $HUGEHDRFILE ]]; then
   # ~5 MiB of header lines (80x the default 64 KiB _INJ_MAX_HEADERS_BYTES
@@ -182,7 +189,7 @@ _inj_huge_headers_transport() {
     printf 'ok' >"$_HTTP_TX_BODY_OUT"
   fi
   if [[ -n ${_HTTP_TX_HEADERS_OUT:-} ]]; then
-    cp -- "$HUGEHDRFILE" "$_HTTP_TX_HEADERS_OUT"
+    bounded_read_serve_fifo "$_HTTP_TX_HEADERS_OUT" "$HUGEHDRFILE" "$INJ_HDR_MARKER"
   fi
   printf '%s\n\n%s\n' "$status" 'text/html'
 }
@@ -190,18 +197,18 @@ _inj_huge_headers_transport() {
 _inj_set_candidate GET query
 _INJ_WANT_HEADERS=1
 SCOURSH_HTTP_TRANSPORT=_inj_huge_headers_transport
-t0=$(now_epoch_ns)
 hdr_rc=0
 inject_send 0 'x' || hdr_rc=$?
-t1=$(now_epoch_ns)
-hdr_ms=$(( (t1 - t0) / 1000000 ))
+hdr_finished=1
+bounded_read_producer_finished "$INJ_HDR_MARKER" || hdr_finished=0
+bounded_read_reap
 _INJ_WANT_HEADERS=0
 
 assert_eq 0 "$hdr_rc" 'inject_send succeeds for a large header block'
 assert_eq "$_INJ_MAX_HEADERS_BYTES" "${#_INJ_HEADERS}" \
   "a ~4 MiB header block (64x the cap) leaves _INJ_HEADERS holding exactly the ${_INJ_MAX_HEADERS_BYTES}-byte cap - FAILS if the read has no cap at all (the pre-fix shape) or if the cap were only applied after a full slurp"
-assert_true "$([[ $hdr_ms -lt 800 ]] && echo 0 || echo 1)" \
-  "inject_send completed in ${hdr_ms}ms for the oversized header block - an unbounded \`read -d ''\` over the same fixture is measured well past this ceiling on this host"
+assert_eq 0 "$hdr_finished" \
+  "the producer serving the oversized header block was still parked mid-write when inject_send returned, so the header block was never read whole - FAILS under the un-bounded \`read -d ''\` this replaces. This was an 800ms wall-clock ceiling, and it was DECORATION: measured, the un-bounded read of this ~5 MiB fixture completes in 208ms, so no time ceiling above that can tell the two readings apart - only the byte-exact cap assertion above caught the mutation. See tests/lib/bounded-read.sh"
 
 # ===========================================================================
 printf '== dast inject_engine: an embedded NUL byte in the body does not abort inject_send ==\n'
@@ -236,5 +243,321 @@ assert_eq 0 "$nul_rc" \
   'a body carrying embedded NUL bytes does not abort inject_send - FAILS if the bounded read chokes on a NUL rather than just losing it'
 assert_true "$([[ ${#_INJ_BODY} -le $_INJ_MAX_BODY_BYTES ]] && echo 0 || echo 1)" \
   "_INJ_BODY (${#_INJ_BODY} bytes) still never exceeds the cap for a body containing embedded NULs"
+
+# ===========================================================================
+printf '== dast inject_engine: IMPORT-05 - unsendable/out-of-vocabulary locations are refused, never "tested clean" ==\n'
+# ===========================================================================
+# Two pre-existing defects a hostile import can trip,
+# closed by (a) crawl_add_param validating at IMPORT time
+# (tests/suites/dast-crawl.sh owns that half) and (b) inject_send gaining an
+# explicit `*)` refusal arm, right here.
+#
+#   (a) A header-location parameter whose NAME is not an RFC 7230 token
+#       reaches http_request_header, which `die`s the WHOLE PROCESS (exit 5,
+#       lib/http.sh:625-630). Calling that in-process would kill this whole
+#       test run, so the reproduction below is an isolated subprocess - the
+#       proof that the crash crawl_add_param exists to keep unreachable is
+#       real, not merely theoretical.
+#   (b) inject_send's location dispatch had NO DEFAULT ARM, so a `location`
+#       outside the seven-value vocabulary (docs/INVENTORY-FORMAT.md §3) fell
+#       through every case, sent nothing, and still returned 0 - every probe
+#       recorded it as "tested" while the payload was never on the wire. The
+#       reproduction sources a byte copy of THIS FILE with the two lines this
+#       ticket adds stripped back out, so it exercises the actual pre-fix
+#       logic rather than a hand-written stand-in for it.
+
+t_case '(a) reproduction: a header-location candidate whose name is not an RFC 7230 token kills the WHOLE PROCESS, exit 5'
+HDRNAME_SCRIPT=$W/hdrname-repro.sh
+cat >"$HDRNAME_SCRIPT" <<EOS
+set -Eeuo pipefail
+source "$ROOT/modules/dast/active/inject_engine.sh"
+_INJ_N=1
+_INJ_TARGET=(inj-fixture)
+_INJ_METHOD=(GET)
+_INJ_URL=(https://inj.fixture.example/probe)
+_INJ_PATH=('')
+_INJ_NAME=('X Bad Name')
+_INJ_LOCATION=(header)
+_INJ_EXAMPLE=(1)
+_INJ_EPID=(ep1)
+inject_send 0 payload
+EOS
+HDRNAME_RC=0
+bash "$HDRNAME_SCRIPT" >"$W/hdrname-repro.out" 2>&1 || HDRNAME_RC=$?
+assert_eq 5 "$HDRNAME_RC" \
+  'a header parameter name carrying a space really does die exit 5 when it reaches inject_send - this is the crash modules/dast/crawl_engine.sh:crawl_add_param must keep unreachable from any spec, HAR, or hand-written inventory; the fix is import-time validation, never a change to http_request_header itself, which is correct as it stands'
+assert_contains "$(cat "$W/hdrname-repro.out")" 'not a valid HTTP header field name' \
+  'and the reason is the one lib/http.sh already gives, unmodified by this ticket'
+
+t_case '(b) reproduction against a byte copy of the file as it shipped before IMPORT-05: an out-of-vocabulary location returns 0 with the payload sent nowhere'
+PREROOT=$W/pre-import05-root
+rm -rf "$PREROOT"
+mkdir -p "$PREROOT"
+cp -RL "$ROOT/lib" "$PREROOT/lib"
+cp -RL "$ROOT/modules" "$PREROOT/modules"
+# Strip the two lines THIS TICKET adds, reproducing the shipped pre-fix
+# dispatch exactly rather than trusting a hand-written stand-in for it.
+sed -i.bak \
+  -e '/query | body | formData | header | cookie) ;;/d' \
+  -e '/\*) return 1 ;;/d' \
+  "$PREROOT/modules/dast/active/inject_engine.sh"
+rm -f "$PREROOT/modules/dast/active/inject_engine.sh.bak"
+VOCAB_ARM_COUNT=$(grep -c 'query | body | formData | header | cookie) ;;' "$PREROOT/modules/dast/active/inject_engine.sh" || true)
+assert_eq 0 "${VOCAB_ARM_COUNT:-0}" 'sanity: the reproduction copy really lost the vocabulary arm this ticket adds'
+DEFAULT_ARM_COUNT=$(grep -c '\*) return 1 ;;' "$PREROOT/modules/dast/active/inject_engine.sh" || true)
+assert_eq 0 "${DEFAULT_ARM_COUNT:-0}" 'sanity: and the default-refusal arm too'
+
+PREREQLOG=$PREROOT/requests.log
+: >"$PREREQLOG"
+PRESCRIPT=$W/prefix-repro.sh
+cat >"$PRESCRIPT" <<'EOS'
+set -Eeuo pipefail
+PATCHROOT=$1
+REQLOG=$2
+source "$PATCHROOT/modules/dast/active/inject_engine.sh"
+cat >"$PATCHROOT/scope.conf" <<'EOF'
+id: repro-fixture
+base-url: https://repro.fixture.invalid/
+notes: IMPORT-05 pre-fix reproduction target. Never dialled - the transport is stubbed.
+EOF
+http_scope_load "$PATCHROOT/scope.conf"
+config_scope_load "$PATCHROOT/scope.conf"
+cat >"$PATCHROOT/scanner.conf" <<'EOF'
+id: scanner
+requests-per-second: 5000
+request-budget: 20000
+circuit-breaker-failures: 100000
+circuit-breaker-5xx-failures: 100000
+EOF
+config_scanner_load "$PATCHROOT/scanner.conf"
+_repro_resolve() {
+  case $1 in
+    repro.fixture.invalid) printf '203.0.113.77' ;;
+    *) return 1 ;;
+  esac
+}
+SCOURSH_HTTP_RESOLVE=_repro_resolve
+_repro_transport() {
+  local method=$1 path=$5
+  printf '%s %s\n' "$method" "$path" >>"$REQLOG"
+  printf '200\n\ntext/html\n'
+}
+SCOURSH_HTTP_TRANSPORT=_repro_transport
+_INJ_N=1
+_INJ_TARGET=(repro-fixture)
+_INJ_METHOD=(GET)
+_INJ_URL=(https://repro.fixture.invalid/probe)
+_INJ_PATH=('')
+_INJ_NAME=(q)
+_INJ_LOCATION=(json)
+_INJ_EXAMPLE=(1)
+_INJ_EPID=(ep1)
+rc=0
+inject_send 0 'PAYLOAD-MARKER' || rc=$?
+printf 'RC=%s\n' "$rc"
+printf 'SENT_URL=%s\n' "$_INJ_SENT_URL"
+EOS
+PREOUT=$W/prefix-repro.out
+bash "$PRESCRIPT" "$PREROOT" "$PREREQLOG" >"$PREOUT" 2>&1
+PRE_RC=$(grep '^RC=' "$PREOUT" | cut -d= -f2)
+assert_eq 0 "$PRE_RC" \
+  'the pre-fix code returns 0 for an out-of-vocabulary location - reported as a normal, tested send'
+assert_contains "$(cat "$PREREQLOG")" 'GET /probe' \
+  'and a real request WAS sent - this is not "nothing happened", it is "something happened and was called clean"'
+assert_not_contains "$(cat "$PREOUT")$(cat "$PREREQLOG")" 'PAYLOAD-MARKER' \
+  'yet the payload itself is nowhere in what was sent or logged - the exact "tested clean" false negative this case guards against'
+
+t_case '(b) hardened: the shipped inject_send refuses an out-of-vocabulary location - "cannot test", never "tested clean"'
+_inj_set_candidate GET json
+: >"$REQ_LOG"
+_inj_noop_transport() {
+  local method=$1 path=$5
+  printf '%s %s\n' "$method" "$path" >>"$REQ_LOG"
+  printf '200\n\ntext/html\n'
+}
+SCOURSH_HTTP_TRANSPORT=_inj_noop_transport
+json_rc=0
+inject_send 0 'PAYLOAD-MARKER' || json_rc=$?
+assert_eq 1 "$json_rc" \
+  'the call is refused (return 1) - FAILS under the pre-fix reading proven above, which returned 0'
+assert_eq '' "$(cat "$REQ_LOG")" \
+  'and NO request was sent at all - FAILS under the pre-fix reading proven above, which sent a real request with the payload nowhere in it'
+
+# ===========================================================================
+printf '== dast inject_engine: IMPORT-02 - a json endpoint composes ONE application/json body ==\n'
+# ===========================================================================
+# `request_body_type=json` (docs/INVENTORY-FORMAT.md §2/§3) turns every
+# `body`-location sibling into leaves of ONE JSON document instead of a flat
+# form-urlencoded blob, with the payload under test at its own pointer and
+# every sibling at its benign value. `_inj_json_transport` logs the outgoing
+# Content-Type (read off `_HTTP_TX_HEADERS`, the same globals
+# `_http_transport_default` itself sends from) and the outgoing body
+# (`_HTTP_TX_BODY`) so the assertions below read what was actually composed,
+# not a return value.
+_inj_json_transport() {
+  local method=$1 path=$5
+  printf '%s %s ' "$method" "$path" >>"$REQ_LOG"
+  local h
+  for h in "${_HTTP_TX_HEADERS[@]}"; do
+    [[ $h == Content-Type:* ]] && printf 'ctype=%s ' "${h#Content-Type: }" >>"$REQ_LOG"
+  done
+  printf 'body=%s\n' "$_HTTP_TX_BODY" >>"$REQ_LOG"
+  [[ -n ${_HTTP_TX_BODY_OUT:-} ]] && printf 'ok' >"$_HTTP_TX_BODY_OUT"
+  printf '200\n\ntext/plain\n'
+}
+
+: >"$REQ_LOG"
+_INJ_N=2
+_INJ_TARGET=(inj-fixture inj-fixture)
+_INJ_METHOD=(POST POST)
+_INJ_URL=(https://inj.fixture.example/login https://inj.fixture.example/login)
+_INJ_PATH=('' '')
+_INJ_NAME=(/email /password)
+_INJ_LOCATION=(body body)
+_INJ_EXAMPLE=('' '')
+_INJ_EPID=(ep-json ep-json)
+_INJ_BODY_TYPE=(json json)
+
+SCOURSH_HTTP_TRANSPORT=_inj_json_transport
+json_rc=0
+inject_send 0 PAYLOAD || json_rc=$?
+JSON_LOG=$(cat "$REQ_LOG")
+
+assert_eq 0 "$json_rc" 'a json endpoint sends successfully'
+assert_contains "$JSON_LOG" 'ctype=application/json' \
+  'Content-Type is application/json - FAILS if request_body_type is ignored and the old form-urlencoded Content-Type is sent instead'
+assert_contains "$JSON_LOG" 'body={"email":"PAYLOAD","password":"1"}' \
+  'the composed document has the payload at /email and the sibling benign value at /password, as ONE JSON object - FAILS under the old flat reading, which would send "email=PAYLOAD&password=1" as a form-urlencoded body instead'
+
+# ===========================================================================
+printf '== dast inject_engine: IMPORT-02 - a nested RFC 6901 pointer nests the payload, never flattens it ==\n'
+# ===========================================================================
+: >"$REQ_LOG"
+_INJ_N=1
+_INJ_TARGET=(inj-fixture)
+_INJ_METHOD=(POST)
+_INJ_URL=(https://inj.fixture.example/orders)
+_INJ_PATH=('')
+_INJ_NAME=(/orderLines/0/productId)
+_INJ_LOCATION=(body)
+_INJ_EXAMPLE=('')
+_INJ_EPID=(ep-nested)
+_INJ_BODY_TYPE=(json)
+
+SCOURSH_HTTP_TRANSPORT=_inj_json_transport
+nested_rc=0
+inject_send 0 PAYLOAD || nested_rc=$?
+NESTED_LOG=$(cat "$REQ_LOG")
+
+assert_eq 0 "$nested_rc" 'a nested-pointer json endpoint sends successfully'
+assert_contains "$NESTED_LOG" 'body={"orderLines":[{"productId":"PAYLOAD"}]}' \
+  'the pointer /orderLines/0/productId nests the payload inside an array of one object at the right key - FAILS under a flattening reading, which would send a single top-level key literally named "orderLines/0/productId" (or a dotted "orderLines.0.productId" string) instead of a nested structure'
+
+# ===========================================================================
+printf '== dast inject_engine: IMPORT-02 - a form endpoint (the default) is byte-identical to before ==\n'
+# ===========================================================================
+# request_body_type defaults to `form`, so an endpoint that never set the
+# field - every endpoint before this ticket - must behave exactly as it did:
+# the same Content-Type, the same urlencoded body, and the JSON composer is
+# never even consulted.
+: >"$REQ_LOG"
+_INJ_N=2
+_INJ_TARGET=(inj-fixture inj-fixture)
+_INJ_METHOD=(POST POST)
+_INJ_URL=(https://inj.fixture.example/login https://inj.fixture.example/login)
+_INJ_PATH=('' '')
+_INJ_NAME=(email password)
+_INJ_LOCATION=(body body)
+_INJ_EXAMPLE=('' '')
+_INJ_EPID=(ep-form ep-form)
+_INJ_BODY_TYPE=()
+
+SCOURSH_HTTP_TRANSPORT=_inj_json_transport
+form_rc=0
+inject_send 0 PAYLOAD || form_rc=$?
+FORM_LOG=$(cat "$REQ_LOG")
+
+assert_eq 0 "$form_rc" 'a plain (non-json) endpoint still sends successfully'
+assert_contains "$FORM_LOG" 'ctype=application/x-www-form-urlencoded' \
+  'a form endpoint still gets the classic form-urlencoded Content-Type - FAILS if json became the default and every existing probe silently switched body models'
+assert_contains "$FORM_LOG" 'body=email=PAYLOAD&password=1' \
+  'the form body is unchanged, byte for byte, from before IMPORT-02 - FAILS under a reading where the new JSON composer is consulted even for a form (non-json) endpoint'
+
+# ===========================================================================
+printf '== dast inject_engine: IMPORT-03/04 - an IMPORTED json-body parameter reaches inject_send end to end ==\n'
+# ===========================================================================
+# Everything above drives inject_send directly, by hand-populating its own
+# _INJ_* arrays - proof that the SENDER composes correctly, given the right
+# input. What is proven here is the other half: that crawl_spec_openapi's OWN
+# written endpoints.json/parameters.json - the artifact an operator's spec
+# actually produces (docs/INVENTORY-FORMAT.md) - is read back by
+# inject_inventory_load into exactly the input the sender needs: proof that an imported
+# parameter reaches an injection check, using the same Juice Shop
+# shape (a nested requestBody field, resolved through $ref) a real target reproduces.
+IMPORT_SPEC=$W/import-order-spec.json
+cat >"$IMPORT_SPEC" <<'EOF'
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/orders": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/Order"}
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Order": {
+        "type": "object",
+        "properties": {
+          "orderLines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "productId": {"type": "string", "example": "p1"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+EOF
+IMPORT_INV=$W/import-inventory
+mkdir -p "$IMPORT_INV"
+crawl_inv_reset
+crawl_spec_openapi "$IMPORT_SPEC" inj-fixture https://inj.fixture.example \
+  || _t_no 'the fixture requestBody parsed' "$_CRAWL_SPEC_ERROR"
+crawl_inv_write_endpoints "$IMPORT_INV/endpoints.json"
+crawl_inv_write_parameters "$IMPORT_INV/parameters.json"
+
+_INJ_N=0
+inject_inventory_load "$IMPORT_INV/endpoints.json" "$IMPORT_INV/parameters.json"
+
+assert_eq 1 "$_INJ_N" \
+  'the written, then re-read, inventory carries exactly the one body parameter the requestBody schema resolved to - FAILS if inject_inventory_load reads a different shape than crawl_inv_write_endpoints/write_parameters actually write'
+assert_eq '/orderLines/0/productId' "${_INJ_NAME[0]:-}" 'its name is the RFC 6901 pointer the OpenAPI resolver built'
+assert_eq json "${_INJ_EP_BODY_TYPE[${_INJ_EPID[0]}]:-}" \
+  'and the endpoint it joins to is read back as request_body_type=json - FAILS if the field written by crawl_inv_write_endpoints and the key inject_inventory_load reads have drifted apart'
+
+: >"$REQ_LOG"
+SCOURSH_HTTP_TRANSPORT=_inj_json_transport
+import_rc=0
+inject_send 0 PAYLOAD || import_rc=$?
+IMPORT_LOG=$(cat "$REQ_LOG")
+
+assert_eq 0 "$import_rc" 'the imported parameter sends successfully'
+assert_contains "$IMPORT_LOG" 'ctype=application/json' \
+  'Content-Type is application/json, read from the IMPORTED request_body_type field rather than assumed'
+assert_contains "$IMPORT_LOG" 'body={"orderLines":[{"productId":"PAYLOAD"}]}' \
+  'the payload lands nested at the exact pointer the requestBody schema described - a live probe now reaches it instead of finding zero parameters to test'
 
 t_summary 'dast-inject-engine'

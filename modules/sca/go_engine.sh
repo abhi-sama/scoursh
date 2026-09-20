@@ -226,9 +226,11 @@ _sca_go_parse_sum() {
 # the report rather than silently rewriting what the operator pinned.
 _sca_go_emit_finding() {
   local direct=$1 manifest_rel=$2 pinned_ver=$3 row=$4
-  local eco pkg ver advisory sev fixed summary
+  local eco pkg ver advisory sev fixed
   local marked=${row//$'\t'/$'\x1f'}
-  IFS=$'\x1f' read -r eco pkg ver advisory sev fixed summary <<<"$marked"
+  IFS=$'\x1f' read -r eco pkg ver advisory sev fixed <<<"$marked"
+  local summary
+  summary=$(_sca_summary_for "$advisory")
 
   local accept_risk=false
   [[ -z $fixed ]] && accept_risk=true
@@ -249,6 +251,8 @@ _sca_go_emit_finding() {
   finding_set cell "$SCOURSH_PATH_ROOT"
   finding_set logical_kind dependency
   finding_set logical_fqn "$eco:$pkg@$ver"
+  finding_set dep_type "$direct"
+  finding_set fix_fixed_versions "$fixed"
   if [[ -n $fixed ]]; then
     finding_set remediation "Upgrade $pkg to one of: $fixed."
   else
@@ -314,7 +318,7 @@ sca_go_scan_tree() {
   sca_advisories_db_readable "$db" || return 0
 
   local dir has_mod has_sum relpath hits name pinned_ver direct row processed=0
-  hits=$SCOURSH_SCRATCH/sca-go-hits.$$
+  hits=$SCOURSH_SCRATCH/sca-go-hits.$BASHPID
 
   while IFS= read -r dir; do
     [[ -n $dir ]] || continue
@@ -323,6 +327,14 @@ sca_go_scan_tree() {
     [[ -f $dir/go.mod ]] && has_mod=1
     [[ -f $dir/go.sum ]] && has_sum=1
     if (( ! has_mod && ! has_sum )); then continue; fi
+    # `--jobs N`: a worker owns a BLOCK of the run's unit list and skips the
+    # rest.  Unpartitioned (every standalone call, including every unit test in
+    # tests/suites/sca.sh) this is always true - see sca_unit_selected's own
+    # header in modules/sca/engine.sh for why the permissive default is the
+    # load-bearing half.  It is applied AFTER the go.mod/go.sum test, so
+    # `processed` still counts exactly the directories this call really walked,
+    # and it matches sca_enumerate_units, which applies the same predicate.
+    sca_unit_selected "$dir" || continue
     processed=$(( processed + 1 ))
 
     if (( has_mod )); then
@@ -359,7 +371,14 @@ sca_go_scan_tree() {
   # deferred window is open.
   _sca_rollup_autoflush
 
-  if (( processed > 0 )); then
+  # Recorded once per CALL, and under `--jobs N` a call is one worker's block -
+  # so a run with go manifests split across four workers would state this same
+  # fact four times in run.json, which reads as four separate limitations
+  # rather than the one it is.  Under a partition the record is left to
+  # modules/sca/run.sh, which knows how many go units the whole run had; a
+  # standalone call (every unit test, and every `--jobs 1` run, where no
+  # partition is installed at all) still records it here exactly as before.
+  if (( processed > 0 )) && ! (( _SCA_UNIT_PARTITIONED )); then
     run_record coverage_reduction 'module=sca reason=go_replace_exclude_directives_not_resolved'
   fi
 }

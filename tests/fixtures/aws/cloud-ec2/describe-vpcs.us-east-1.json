@@ -1,0 +1,5 @@
+{
+    "Vpcs": [
+        {"VpcId": "vpc-bad1", "IsDefault": false}
+    ]
+}

@@ -1,0 +1,42 @@
+{
+    "PolicyVersion": {
+        "VersionId": "v3",
+        "IsDefaultVersion": true,
+        "Document": {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Sid": "NarrowGrantMustNotBeReported",
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:GetObject"
+                    ],
+                    "Resource": "arn:aws:s3:::scoursh-fixture-public-assets/*"
+                },
+                {
+                    "Sid": "ConditionedWildcardMustBeSetAside",
+                    "Effect": "Allow",
+                    "Action": "dynamodb:*",
+                    "Resource": "*",
+                    "Condition": {
+                        "StringEquals": {
+                            "aws:PrincipalTag/tenant": "acme"
+                        }
+                    }
+                },
+                {
+                    "Sid": "DenyStatementMustNotBeReported",
+                    "Effect": "Deny",
+                    "Action": "*",
+                    "Resource": "*"
+                },
+                {
+                    "Sid": "ServiceWideWildcardIsTheFinding",
+                    "Effect": "Allow",
+                    "Action": "s3:*",
+                    "Resource": "*"
+                }
+            ]
+        }
+    }
+}

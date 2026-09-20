@@ -5,9 +5,13 @@ inventory and `docs/ADAPTERS.md` is for engine adapters.
 It defines the file the DAST banner check (`modules/dast/passive/banner.sh`, `docs/DESIGN.md` §7.1) reads
 to decide whether a version it discovered on a running endpoint is known to be vulnerable.
 
-`docs/FOUNDATION.md` tension 25 is the decision this implements.
-Read that first if you are changing anything here: it is the reason the scanner performs **no version
-comparison and no range arithmetic at all**, and the reason this file is a table rather than a rule pack.
+`docs/FOUNDATION.md` tension 25 is the decision this implements, **as amended**: the `banner` namespace
+this file owns follows the AMENDED (summary-normalisation) schema below, exactly like every SCA
+ecosystem's own `data/advisories.db` rows - `summary` no longer lives inline. `banner` rows do NOT
+follow the npm-range amendment; they remain exact-version rows, one row per exact affected product
+version, same as before. Read tension 25 first if you are changing anything here: it is the reason the
+scanner performs **no version comparison and no range arithmetic at all** for this namespace, and the
+reason this file is a table rather than a rule pack.
 
 ## 1. Why the file exists, and why it is offline
 
@@ -25,30 +29,47 @@ A scan never fetches it, never refreshes it, and never notices that it is stale 
 
 ## 2. The file, and the two namespaces in it
 
-`data/versions.db` is the frozen tension-25 TSV, byte-for-byte the same schema as `data/advisories.db`:
+`data/versions.db` is the tension-25 TSV, byte-for-byte the same schema as `data/advisories.db`'s own
+non-npm ecosystem rows. `banner` is a namespace, not one of the six SCA ecosystems, so it is never
+touched by the npm-range amendment - its rows stay exact-version rows, under the AMENDED
+(summary-normalised) schema:
 
 ```
-ecosystem \t package \t version \t advisory_id \t severity \t fixed_versions \t summary
+ecosystem \t package \t version \t advisory_id \t severity \t fixed_versions
 ```
+
+`summary` no longer lives inline (`docs/FOUNDATION.md` tension 25's summary-normalisation amendment): it
+lives in the advisory-keyed side table `data/version-summaries.db` (`advisory_id \t summary`, one row per
+advisory_id), read back by `banner_summaries_db_path`/`banner_db_match`
+(`modules/dast/passive/banner_engine.sh`) at finding-emission time. A missing summary row degrades to a
+placeholder rather than a fatal error.
 
 Sorted by the first three fields under `LC_ALL=C`, with `#` comment lines at the top.
 No field may contain a TAB or an LF.
 Lookup is `db_lookup_exact` (`lib/core.sh`) - `LC_ALL=C look` on a prefix, falling back to
 `grep -F -m 1` where `look` is absent - and nothing else ever reads the file.
 
-The first field is a **namespace**, and this file carries two kinds of row:
+The first field is a **namespace**, and this file carries three kinds of row:
 
 | Field 1 | Rows | Written by | Read by |
 |---|---|---|---|
 | an SCA ecosystem (`npm`, `pypi`, `maven`, `Go`, `RubyGems`, `composer`) | one per exact affected package version | `tools/vendor-engines.sh advisories` | nothing today - `modules/sca/` reads `data/advisories.db`, and `tools/vendor-engines.sh` writes both files from one call (tension 25's "the same shape and the same rule") |
 | the literal `banner` | one per exact affected **product** version | an operator, per §5 | `modules/dast/passive/banner_engine.sh` |
+| a per-release Alpine key (`Alpine:v3.18`, `Alpine:v3.19`, ...) | one per exact affected apk package version | `tools/vendor-engines.sh advisories alpine` (IMG-03) | nothing today - `modules/image/` reads `data/advisories.db`, mirroring the SCA row above; both files get it for the identical "same shape, same rule" reason |
 
-The two coexist safely and that is by construction, not by luck.
-`tools/vendor-engines.sh`'s single writer (`_veng_advisories_write_db`) replaces only the rows whose first
-field equals the ecosystem it is writing and carries every other row through untouched, so refreshing npm
-cannot delete the banner catalogue and vendoring a banner row cannot delete npm's.
+All three coexist safely and that is by construction, not by luck.
+`tools/vendor-engines.sh`'s writer for a single fixed namespace
+(`_veng_advisories_write_db`) replaces only the rows whose first field EQUALS the ecosystem it is
+writing and carries every other row through untouched, so refreshing npm cannot delete the banner
+catalogue and vendoring a banner row cannot delete npm's. The Alpine importer uses a PREFIX-matched
+sibling writer instead (`_veng_advisories_write_db_prefix`) because one import can legitimately name
+several different Alpine releases at once - see that function's own header in `tools/vendor-engines.sh`
+for why an exact match does not fit this one namespace.
 `banner` also sorts before every ecosystem name under `LC_ALL=C`, so adding banner rows never disturbs the
-sort the lookup depends on.
+sort the lookup depends on. `Alpine:` (capital `A`, byte `0x41`) sorts before every lowercase-initial
+namespace - `banner` (`0x62`), `composer`, `maven`, `npm`, `pypi` - and before the two other
+capital-initial ecosystems, `Go` (`0x47`) and `RubyGems` (`0x52`); only the file's own `#` header lines
+(`0x23`) sort earlier still. Adding Alpine rows therefore never disturbs the sort either.
 
 ## 3. The `banner` row, field by field
 

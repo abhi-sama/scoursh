@@ -1,0 +1,24 @@
+{
+    "DBSnapshots": [
+        {
+            "DBSnapshotIdentifier": "scoursh-fixture-public-db-snap",
+            "DBSnapshotArn": "arn:aws:rds:eu-west-2:123456789012:snapshot:scoursh-fixture-public-db-snap",
+            "SnapshotType": "manual"
+        },
+        {
+            "DBSnapshotIdentifier": "scoursh-fixture-hardened-db-snap",
+            "DBSnapshotArn": "arn:aws:rds:eu-west-2:123456789012:snapshot:scoursh-fixture-hardened-db-snap",
+            "SnapshotType": "manual"
+        },
+        {
+            "DBSnapshotIdentifier": "rds:scoursh-fixture-hardened-db-2024-01-01-00-00",
+            "DBSnapshotArn": "arn:aws:rds:eu-west-2:123456789012:snapshot:rds:scoursh-fixture-hardened-db-2024-01-01-00-00",
+            "SnapshotType": "automated"
+        },
+        {
+            "DBSnapshotIdentifier": "scoursh-fixture-denied-db-snap",
+            "DBSnapshotArn": "arn:aws:rds:eu-west-2:123456789012:snapshot:scoursh-fixture-denied-db-snap",
+            "SnapshotType": "manual"
+        }
+    ]
+}

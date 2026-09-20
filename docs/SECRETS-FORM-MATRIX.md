@@ -1,10 +1,10 @@
 # The secrets-rule assignment-form matrix
 
-This document records what `modules/sast/rules/secrets.rules` caught **before**
-this ticket and what it catches **after**, measured against a dedicated tree of
-planted controls at `tests/fixtures/sast-secret-forms/`.
+This document records what `modules/sast/rules/secrets.rules` catches, and what
+an earlier, narrower version of the pack (commit `a656663`) missed, measured
+against a dedicated tree of planted controls at `tests/fixtures/sast-secret-forms/`.
 
-It exists because the miss it fixes was found by planting a positive control, not
+It exists because the gap it closed was found by planting a positive control, not
 by reading the rules.
 A secrets scanner's false negative is the product silently failing at its one
 job - worse than a crash, because the operator reads a clean report and believes
@@ -25,9 +25,10 @@ this repository - the pattern engine has no comment awareness anywhere
 | negative controls flagged | 0 of 32 | 0 of 32 |
 | findings on this repository outside its own test material | 0 | 0 |
 
-The reported bug - an uppercase, double-quoted, seven-byte assignment in a
-`.env` file - is control **P15**, and it failed for **two independent reasons**
-at once, which is why fixing either alone would still have missed it:
+The gap that motivated this widening - an uppercase, double-quoted, seven-byte
+assignment in a `.env` file - is control **P15** below, and it failed for **two
+independent reasons** at once under the earlier pack, which is why fixing
+either alone would still have missed it:
 
 1. the identifier pattern was lowercase-only, so `DB_PASSWORD` never matched, and
 2. the value floor was 8 bytes, so a seven-byte value could not have matched
@@ -132,8 +133,8 @@ and should re-measure rather than reasoning from the shape of the rule file.
 ## The full table
 
 Regenerate it by running `tests/suites/sast-secrets-forms.sh`, which asserts
-every row of it. `before` is `modules/sast/rules/secrets.rules` as of `a656663`;
-`after` is this branch.
+every row of it. `before` is `modules/sast/rules/secrets.rules` as of `a656663`,
+the pack's state prior to this widening; `after` is the pack as it ships today.
 
 | control | form | file | before | after | check |
 |---|---|---|---|---|---|

@@ -1,0 +1,32 @@
+{
+    "ResourceRecordSets": [
+        {
+            "Name": "dangling.example.com.",
+            "Type": "CNAME",
+            "TTL": 300,
+            "ResourceRecords": [{"Value": "dangling.example.com.s3-website-us-east-1.amazonaws.com"}]
+        },
+        {
+            "Name": "www.example.com.",
+            "Type": "CNAME",
+            "TTL": 300,
+            "ResourceRecords": [{"Value": "www.example.com.s3-website-us-east-1.amazonaws.com"}]
+        },
+        {
+            "Name": "\\052.example.com.",
+            "Type": "A",
+            "AliasTarget": {"HostedZoneId": "Z3AQBSTGFYJSTF", "DNSName": "s3-website-us-east-1.amazonaws.com.", "EvaluateTargetHealth": false}
+        },
+        {
+            "Name": "mail.example.com.",
+            "Type": "MX",
+            "TTL": 300,
+            "ResourceRecords": [{"Value": "10 mail.example.com."}]
+        },
+        {
+            "Name": "app.example.com.",
+            "Type": "A",
+            "AliasTarget": {"HostedZoneId": "Z2FDTNDATAQYW2", "DNSName": "d123456abcdef8.cloudfront.net.", "EvaluateTargetHealth": false}
+        }
+    ]
+}

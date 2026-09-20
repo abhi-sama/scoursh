@@ -1,0 +1,9 @@
+{
+    "Regions": [
+        {
+            "Endpoint": "ec2.eu-west-2.amazonaws.com",
+            "RegionName": "eu-west-2",
+            "OptInStatus": "opt-in-not-required"
+        }
+    ]
+}

@@ -2,218 +2,99 @@
 
 **Scan exhaustively. Trust nothing over the network.**
 
-`scoursh` is an egress-restricted, shell-based security scanner - meaning it has no back-channel to
-anyone. It never phones home, never checks for updates, never fetches its own rules or advisories
-from a server, and never sends telemetry to its maintainers or anyone else. One tool, one entry
-point, one report - covering source code (SAST), dependencies (SCA), infrastructure-as-code (IaC),
-and a running endpoint (DAST) today, all with **zero network calls except the ones you explicitly
-authorized**. Live cloud posture checking (CSPM) is already designed and next in line; by nature, it
-has to talk to *something* - but only ever to a target *you* explicitly pre-authorized, never
-anywhere scoursh decided on its own. See [Why egress-restricted, not air-gapped](#why-egress-restricted-not-air-gapped)
-for exactly where the line is drawn and why.
+`scoursh` is an egress-restricted, shell-based security scanner: one tool, one CLI, one report,
+across source code (SAST), dependencies (SCA), infrastructure-as-code (IaC), a running endpoint
+(DAST), a network/host listener set, a container image, and live AWS configuration (Cloud/CSPM). It
+makes zero network calls except the ones you explicitly authorize, runs on nothing but
+`bash` and standard coreutils, and treats "we did not check that" as a first-class result instead of
+folding it into "clean." The name blends **scour** (search thoroughly, corner to corner) and **sh**
+(the shell it's written in) - *scan exhaustively*.
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-## Table of contents
+## Contents
 
-- [Why "scoursh"](#why-scoursh)
-- [Features](#features)
-- [Types of security scans, and where scoursh stands today](#types-of-security-scans-and-where-scoursh-stands-today)
-- [scoursh vs. semgrep](#scoursh-vs-semgrep)
-- [Why egress-restricted, not air-gapped](#why-egress-restricted-not-air-gapped)
-- [Installation](#installation)
-- [Try it yourself: sample vulnerable repos](#try-it-yourself-sample-vulnerable-repos)
-- [Optional third-party engines](#optional-third-party-engines)
-- [Build status](#build-status)
-- [Known gaps](#known-gaps)
-- [What's next](#whats-next)
+- [What it scans](#what-it-scans)
+- [Why scoursh](#why-scoursh)
+- [Install](#install)
+- [Quickstart](#quickstart)
+- [Commands & recipes](#commands--recipes)
+- [Output & the audit report](#output--the-audit-report)
+- [Safety model](#safety-model)
 - [Documentation](#documentation)
+- [Status](#status)
 - [License](#license)
 
-## Why "scoursh"
+## What it scans
 
-The name is a blend of **scour** - to search something thoroughly, corner to corner, and clean out
-what you find - and **sh**, the Unix shell the entire tool is written in: no runtime, no
-interpreter, no dependency beyond `bash` and standard coreutils. The tagline says the rest: *scan
-exhaustively.*
-
-## Features
-
-- **Five scan surfaces in one tool** - source code, dependencies, infrastructure-as-code, secrets,
-  and a running endpoint (DAST), sharing one CLI, one exit-code contract, and one report.
-- **Egress-restricted, enforced by destination, precisely defined** - scoursh itself has no
-  back-channel to anyone: no update check, no telemetry, no rule registry to fetch from. SAST, SCA,
-  and IaC make zero network calls, full stop. The only traffic that ever leaves the host at all is to
-  a target *you* explicitly pre-authorized (a DAST target in `config/scope.conf`, or your own AWS
-  account) - never to scoursh's maintainers, never to a third party, and never automatically. Every
-  network call in the codebase, present or future, routes through one of two chokepoints, a dedicated
-  lint fails the build if anything bypasses them, and a separate lint proves no AI/LLM provider is
-  reachable from the shipped tool at all.
-- **Deterministic output** - the same scan produces byte-identical findings whether it runs on
-  Linux with GNU coreutils or macOS with a BSD userland. That equivalence is checked by
-  `tools/daily-suite.sh`, which runs the whole suite on both userlands and diffs their findings
-  byte for byte; it runs on the maintainer's own machine on a daily schedule, and today it is the
-  only thing that actually runs - the GitHub Actions workflow is dormant until the repository is
-  public, so no PR currently gets an automatic pass/fail either way
-  ([`docs/CI-RUNBOOK.md`](docs/CI-RUNBOOK.md)).
-  Fingerprints survive reindentation and unrelated edits, so a diff or baseline never reports a
-  false "fixed" or a false "new."
-- **A detector for egress, on Linux *and* macOS** - `--paranoid` watches the process's own outbound
-  connections and aborts on the first one outside scope, sampling through `ss` or `strace` on Linux
-  and through `lsof` on macOS.
-  It refuses the run outright rather than proceeding unobserved on a host that supports none of them.
-  **On Linux there is also a guarantee** - `tools/run-in-netns.sh` builds a network namespace where an
-  out-of-scope connection is not just detected but physically impossible.
-  That one is Linux-only and has no macOS equivalent, so a macOS run has the detector and nothing
-  behind it.
-- **Honest about its own gaps** - every module a run skips, every coverage limitation, every
-  unproven claim is recorded directly in the run's own output as a `coverage_reduction` or
-  `coverage_gap` fact, not silently dropped from the report.
-- **Optional extra firepower, still offline** - can shell out to vendored copies of semgrep,
-  gitleaks, and trivy for broader coverage, with results deduplicated against scoursh's own
-  findings, all still under the same zero-network-at-scan-time rule.
-- **A real CI gate, not just a report** - a fixed 0-5 exit-code contract, severity thresholds,
-  confidence filtering, and a `--fail-on-new` mode designed to gate a pull request rather than just
-  produce a PDF nobody reads.
-  Which parts of that are wired today, and which are accepted but inert, is in
-  [Known gaps](#known-gaps).
-
-## Types of security scans, and where scoursh stands today
-
-Security scanning is usually split into a handful of categories, tied to *when* in a project's
-lifecycle they run:
-
-| Scanner type | What it scans | Stage in lifecycle | scoursh |
-|---|---|---|---|
-| **SAST** | Source code | Development / build | ✅ Available - `scan.sh sast` |
-| **SCA** | Open source dependencies | Build / CI-CD pipeline | ✅ Available - `scan.sh sca`, once you have built an advisory database ([Installation](#installation)); see also [Known gaps](#known-gaps) |
-| **IaC** | Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose | CI-CD pipeline | ✅ Available - `scan.sh iac` |
-| **Secret detection** | Git repositories / files | Commit / pre-commit | ✅ Available - built into `sast` (`--history` replays across git history) |
-| **DAST** | A running application | Staging / production | ✅ Available - `scan.sh dast`, once you authorize a target in `config/scope.conf` |
-| **CSPM** | Live cloud infrastructure | Production / runtime | 🚧 Designed, not built - the read-only AWS wrapper exists ahead of schedule; `scan.sh cloud` does nothing yet, with or without `--live` |
-| **Container image scanning** | Built Docker images (layers, installed packages) | Build / registry | ⛔ Not planned - `scoursh` lints Dockerfile/compose *source* as IaC, not built image layers |
-| **Network / host scanning** | Servers, ports, OS patches | Operations / maintenance | ⛔ Not planned |
-
-So today, `scoursh` covers everything on that list except live cloud posture (CSPM) - static
-analysis of a local checkout, and dynamic testing of a running endpoint you've authorized.
-The dependency half of the static coverage stays inert until you build `data/advisories.db` yourself
-([Installation](#installation)).
-See [What's next](#whats-next) for the rest.
-
-### What's available today, in detail
-
-- **SAST** (`modules/sast/`) - pattern-based scanning for Go, Java, JavaScript, and Python, covering
-  injection, crypto misuse, and language-specific issues, plus a dedicated secrets pack.
-  `--history` replays the secrets pack across git history, so a credential removed from the working
-  tree but still reachable through git log still gets caught.
-- **SCA** (`modules/sca/`) - parses lockfiles/manifests for six ecosystems (npm/yarn/pnpm,
-  pip/poetry/Pipfile, Go modules, Maven, RubyGems, Composer) and matches every pinned dependency
-  against a locally-generated advisory database sourced from [OSV.dev](https://osv.dev) - no
-  network lookup at scan time.
-  That advisory database is never bundled or auto-fetched, and until you build it once, every
-  ecosystem walk skips the scan entirely ([Installation](#installation)).
-  Its `--fail-on` severity gate is wired, the same one `sast` and `iac` use: a run carrying a finding
-  at or above the threshold exits 1 and records `"gate": "fail"` in `run.json`.
-  That gate went unevaluated in earlier revisions, so `scan.sh sca --fail-on critical` exited 0 on
-  critical findings; it is fixed, and covered by a regression test.
-- **IaC** (`modules/iac/`) - six rule packs: Terraform, Kubernetes manifests, Helm chart sources,
-  CloudFormation templates, Dockerfile, and docker-compose.
-- **DAST** (`modules/dast/`) - crawls and tests a running endpoint you've authorized in
-  `config/scope.conf`: authentication/session handling, passive checks (security headers, cookies,
-  TLS, CORS, information leakage, mixed content), safe-active checks (content discovery, method
-  enumeration), injection probes (SQLi, XSS, command injection, path traversal, SSTI, NoSQLi, LDAPi,
-  CRLF, XXE/SSRF, prototype pollution, open redirect, host-header injection), and application-layer
-  checks (GraphQL introspection, rate limiting, JWT, object-level authorization/IDOR). All of it is
-  bound by a rate limiter, a per-run request budget, and a circuit breaker, and every intrusive tier
-  requires `--i-own-target` naming the exact target. This module isn't covered by the generated
-  status table below - that table tracks only `docs/DESIGN.md`'s §6.3/§6.5/§6.6/§8.2 static-analysis
-  catalog - see [`docs/STEP5-DAST-PLAN.md`](docs/STEP5-DAST-PLAN.md) for its own per-check landing
-  record.
-
-The exact, generated breakdown of every rule pack and ecosystem - how many checks each carries and
-what's still outstanding - is in [Build status](#build-status) below; it's regenerated from the
-repository tree on every change, so it can't go stale the way hand-written status prose does.
-
-## scoursh vs. semgrep
-
-Both are pattern-based scanners, and they're not really competitors - `scoursh` can optionally
-*vendor semgrep itself* as an add-on engine (see [Optional third-party
-engines](#optional-third-party-engines)). But if you're deciding which to reach for, here's the
-honest comparison:
-
-| | scoursh | semgrep |
+| Surface | Covers | Status |
 |---|---|---|
-| Network posture | Zero network calls at scan time, enforced by lints in the test suite and (on Linux) a kernel-level network-namespace guarantee | Rule registry fetches and telemetry contact home by default unless explicitly disabled |
-| Scope | SAST + SCA + IaC + secrets, one tool, one report, one exit-code contract | Primarily SAST; dependency/supply-chain scanning is a separate paid product |
-| Matching engine | Regex/pattern-based; can optionally vendor semgrep itself for AST-aware matching | Full AST-aware, semantic pattern matching - more precise, broader language support |
-| Rule ecosystem | Small, hand-authored, project-owned rule set | Large community and commercial rule registry |
-| Determinism | Tested byte-identical across GNU and BSD userlands, by a scheduled local suite run rather than hosted CI | Not a stated design goal |
-| Maturity | Early-stage, single project, 4 languages | Mature, widely adopted, dozens of languages, IDE integrations |
+| **SAST** | Source code - injection, crypto misuse, secrets, language-specific issues (Go, Java, JavaScript, Python), plus git-history secret replay | ✅ built - `scan.sh sast` |
+| **SCA** | Dependency/lockfile CVEs across 6 ecosystems (npm, PyPI, Maven, Go, RubyGems, Composer) | ✅ built - `scan.sh sca`, once you've [built the advisory database](#commands--recipes) |
+| **IaC** | Terraform, CloudFormation, Kubernetes, Helm, Dockerfile, docker-compose | ✅ built - `scan.sh iac` |
+| **DAST** | A running application you've authorized - auth/crawl, passive checks, safe-active, the full injection family, application-layer (GraphQL, rate-limiting, JWT, IDOR) | ✅ built - `scan.sh dast` |
+| **Network / host** | Service-posture scanning over an operator-declared listener set (`config/scope.conf`'s `base-url`/`extra-host` entries) - reachability, banner/version disclosure, TLS posture on non-web ports, plaintext/STARTTLS transport posture. Never a port sweep or host discovery: a port scoursh was not told about is never probed | ✅ built - `scan.sh network --target NAME` |
+| **Container image** | Offline OS-package (apk, dpkg, rpm) and language-dependency CVE matching, plus config-blob checks (effective runtime user, exposed ports, mutable base tag), against a `docker save` tarball or OCI image layout you supply - never a registry pull | ✅ built - `scan.sh image --image ID` |
+| **Cloud / CSPM** | Live AWS configuration | ✅ built - `scan.sh cloud`, 30 AWS services, read-only, credential-authorized, CIS/OWASP-mapped |
 
-**Reach for scoursh** when the environment itself is the constraint - an air-gapped network, a
-regulated pipeline where "the scanner phones home" is disqualifying on its own, or you want one CLI
-covering SAST, SCA, and IaC instead of stitching several tools together.
+319 checks ship across the seven built surfaces (53 SAST + 36 IaC + 92 DAST + 15 network + 11
+container-image + 112 Cloud/AWS; SCA is a table lookup across 6 ecosystems rather than a check count).
+The complete catalogue - every check id, what it catches, and what it needs to run - is
+[`docs/CHECKS.md`](docs/CHECKS.md) (also published as a standalone page,
+[`docs/checks.html`](docs/checks.html)). Almost all of it runs with **no external data**: point scoursh
+at a path or a running target and every SAST/IaC/DAST/network check works immediately. Dependency-CVE
+matching (SCA), most container-image checks, and the three version-lookup checks (one DAST, two
+network) need the vendored advisory database - see
+[Commands & recipes](#commands--recipes).
 
-**Reach for semgrep** when you need its semantic matching, its much larger rule registry, or broad
-language coverage scoursh doesn't have yet.
+## Why scoursh
 
-**Or use both** - point `scoursh --use-engines` at a vendored copy of semgrep and get its matching
-engine's coverage inside scoursh's own unified report, still with zero network calls once vendored.
+scoursh is not a deeper Semgrep, ZAP, or Trivy, and it won't claim to be - a specialist in any single
+category outclasses it there. Its value is different:
 
-## Why egress-restricted, not air-gapped
+- **One** unified, egress-safe sweep across seven surfaces (SAST, SCA, IaC, DAST, network/host,
+  container image, Cloud/CSPM) in a single CLI and a single report, with no heavy toolchain to
+  install - pure `bash` and coreutils.
+- **Egress is restricted, not promised - and kernel-enforced for the three offline scanners.**
+  `sast`/`sca`/`iac` genuinely make zero network calls, and `tools/run-sandboxed.sh` (macOS Seatbelt)
+  and `tools/run-in-netns.sh` (Linux network namespaces) back that with a real, kernel-level
+  deny-all-network guarantee rather than a policy the tool merely follows - which is why those three
+  run in air-gapped and egress-audited environments a network-dependent specialist can't run in at
+  all. `dast` and `cloud --live` inherently have to talk to the target or account you authorized, so
+  scoursh is deliberately **egress-restricted, not air-gapped** overall - see
+  [Safety model](#safety-model) for exactly what's guaranteed and where the line is.
+- **"We did not check that" is a first-class, recorded result**, never folded into a silent "clean" -
+  so "did it actually check?" stays an answerable question for an auditor, a post-incident review, or
+  compliance evidence.
+- **`--format agent`** emits a compact findings file (`reports/<run>/agent-fix.json`) shaped for a
+  downstream fixing agent to consume and act on, not for a human to triage.
 
-**What this does and doesn't mean.** scoursh is **egress-restricted, enforced by destination** -
-not air-gapped, and that distinction is deliberate rather than pedantic: "air-gapped" would mean the
-tool never touches a network at all, and that's not true of it as a whole, nor was it ever meant to
-be. `dast` and `cloud --live` inherently have to talk to *something*, since testing a running
-application or reading your live AWS configuration is the entire point of those two scans. What
-scoursh actually guarantees is narrower, and it's the part that actually matters: **scoursh itself
-has no back-channel, and it never decides on its own who to contact.** Exactly two kinds of outbound
-traffic are ever permitted, and both require *you* to have named the exact target first: `curl` to a
-host you explicitly authorized in `config/scope.conf`, and read-only AWS API calls to your own
-account. Everything else - phoning home, a SaaS backend, fetching rules or advisories at scan time,
-telemetry to scoursh's own maintainers or anyone else - is forbidden by design, with no
-configuration flag that turns it back on. That's why SAST, SCA, and IaC - the three modules
-actually built today - make genuinely zero network calls: nothing about reading source code,
-dependency manifests, or config files needs an external target to begin with, so for those three,
-"no network calls when authorized" and "no network calls at all" are the same thing in practice -
-and it's the reason those three modules really can run unmodified on a genuinely air-gapped host,
-even though the tool as a whole is not one. See `docs/FOUNDATION.md` tension 28 for the full
-correction and `docs/adr/0001-egress-model-correction.md` for the dated decision record.
+Reach for a specialist - Semgrep, ZAP, Trivy, Checkov, Gitleaks, Prowler - when you need its depth.
 
-That single constraint shapes most of the architecture:
+The full capability comparison, including measured head-to-head numbers and an honest verdict per
+surface, is [`docs/COMPARISON.md`](docs/COMPARISON.md) (also
+[`docs/comparison.html`](docs/comparison.html)).
 
-- Rules, payloads, wordlists, and advisory data are **vendored in the repo** and read from disk.
-- `tools/vendor-engines.sh` is the only script that ever touches the network, is never called
-  during a scan, and is quarantined and tested as such.
-- Every HTTP call goes through one wrapper (`lib/http.sh`) that refuses any host absent from the
-  resolved scope allowlist; every AWS call goes through one wrapper (`lib/awscli.sh`) that refuses
-  any operation that is not read-only.
-  The AWS half is real and tested, but it currently guards an empty set: no AWS call ships in the tool
-  yet, and the project's own read-only lint reports zero call sites for it.
-  The wrapper and its lint landed ahead of the cloud checks deliberately, so that no cloud check is
-  ever written against a bare `aws` in the first place.
-- The HTML report is self-contained, with no external assets and a strict inline CSP.
-- `--paranoid` samples the process's own outbound connections during a run and aborts the moment
-  it observes one outside the resolved allowlist.
-  It has three sampling backends, tried in order: `ss`, then `strace -f -e trace=connect`, then
-  `lsof`.
-  The first two are Linux-only; `lsof` is what macOS ships, so `--paranoid` works there too.
-  On a host where none of the three is usable, it refuses the entire scan with exit 4 before any
-  module runs, rather than quietly downgrading to an unobserved one.
-  It is a **detector, not a guarantee** on every platform: it samples, so a connection that opens and
-  closes between two polls is never seen, and `lsof` has exactly the same blind spot `ss` does.
-  `tools/run-in-netns.sh` is the guarantee - a network namespace whose route table admits only the
-  declared scope, so an out-of-scope connection is categorically impossible rather than merely
-  observed - and it is **Linux-only with no macOS equivalent**.
-  On macOS the detector is the only egress control available; there is no stronger tier behind it.
-- `tests/lint-no-ai.sh` scans the entire shipped tool for any AI/LLM provider hostname, SDK name, or
-  API-key-shaped environment variable, and fails the build if it finds one.
+## Install
 
-## Installation
+No build step, no runtime dependency beyond a standard Unix toolchain:
 
-`scoursh` is pure POSIX-leaning bash - there is no build step and no runtime dependency beyond a
-standard Unix toolchain (`bash`, `grep`/`rg`, `awk`, coreutils).
+- **bash >= 4.2** (macOS ships 3.2 by default - install a newer one and put it ahead of `/bin/bash`
+  on `PATH`; `scan.sh` checks this itself and refuses with a clear message otherwise), plus
+  `grep`/`rg`, `awk`, and coreutils.
+- `git` on `PATH` is needed only for `sast --history`. Nothing else is required to run `sast`, `sca`,
+  `iac`, or `dast`.
+- `tar` on `PATH` is needed only for `image`, which reads a `docker save` tarball or an OCI image
+  layout the operator supplies. Strictly, `tar` is not coreutils - it is called out separately here
+  rather than folded into the line above, because a dependency that only one subcommand needs should
+  be visible as exactly that.
+- `dast` additionally needs a target authorized in `config/scope.conf` - it's the safety control that
+  keeps `scan.sh` from ever being pointed at a host you don't own. Copy the bundled fixture to try it
+  against a local, disposable test target:
+
+  ```sh
+  cp tools/dast-test-target/scope.conf config/scope.conf   # authorizes 127.0.0.1:3400 as dast-test-target
+  ```
 
 ```sh
 git clone https://github.com/abhi-sama/scoursh.git
@@ -221,144 +102,383 @@ cd scoursh
 ./scan.sh --help
 ```
 
-`tests/run-tests.sh` is the real test entry point; `pnpm test` / `npm test` are thin aliases for it
-(`package.json` exists only for that convention - scoursh has no JavaScript and no Node runtime
-dependency).
+`tests/run-tests.sh` is the real test entry point; `pnpm test`/`npm test` are thin aliases for it -
+scoursh has no Node runtime dependency.
 
-**One-time setup for SCA, required before your first scan.**
-`data/advisories.db` is not shipped with this repository - the advisory data is deliberately never
-bundled or auto-fetched, and you build it yourself.
-SCA's parsing and matching code is fully built and tested, but every ecosystem walk tests for that
-file first and returns before it discovers or parses a single manifest.
-So until you build it, `scan.sh sca` does not scan at all - and it says so rather than reporting a
-clean project.
-It **exits 4** (`missing required input`, [`docs/USAGE.md`](docs/USAGE.md)'s exit-code contract), writes
-its report, records one `module=sca reason=no_advisories_db_on_disk ecosystems=<all six>` coverage
-reduction in `run.json`, and puts a `SCA-COV-NO_ADVISORY_DB-01` finding on the report stating that zero
-dependencies were checked.
-Nothing about that run can be read as a clean dependency scan, by you or by CI - which is the point,
-because absence of findings here is absence of evidence, never evidence of absence.
-(`scan.sh all` behaves the same way except for the exit code: it skips `sca` with that same recorded
-reason and finding, and leaves the exit code to the modules that did run.)
+## Quickstart
 
-You build it on a networked box with `tools/vendor-engines.sh`, which resolves advisories from
-[OSV.dev](https://osv.dev) into the pre-expanded rows the scanner looks up.
-There are two ways to do it.
-
-**Bulk, which is what you almost certainly want.**
-`advisories bulk` imports a whole ecosystem's published export in one command, or all six with
-`--all`, so you do not have to know in advance which advisories matter - which is the thing a
-dependency scanner is supposed to tell you.
-Because that export is rebuilt upstream continuously, there is no fixed checksum to pin, so an
-import whose content was not verified refuses until you pass `--accept-unverified`.
-Every import prints the integrity grade it achieved and records the digest of exactly what it
-fetched into the database header, so you can pin that digest with `--sha256` next time.
-
-**One advisory at a time**, when you already know the specific IDs you care about.
-You supply them per ecosystem and `advisories <ecosystem>` resolves just those.
-Here `--all` means "every ecosystem you have supplied an ID list for", not "every known advisory".
+The single most useful command right after cloning - `--path` defaults to `.`, so this scans
+scoursh's own source tree with no further setup:
 
 ```sh
-# Bulk: every advisory OSV publishes for an ecosystem, in one command.
-tools/vendor-engines.sh advisories bulk --accept-unverified npm
-# ...or all six ecosystems at once.
-tools/vendor-engines.sh advisories bulk --accept-unverified --all
-# ...or pin the exact bytes, once you know the digest you want.
-tools/vendor-engines.sh advisories bulk --sha256 <hex> npm
-
-# One advisory at a time, when you already know the IDs.
-export SCOURSH_ADVISORY_NPM_IDS="GHSA-xxxx-xxxx-xxxx,GHSA-yyyy-yyyy-yyyy"
-tools/vendor-engines.sh advisories npm
-# or, once an ID list is set for each ecosystem you care about:
-tools/vendor-engines.sh advisories --all
+./scan.sh sast
 ```
 
-See [`tools/vendor-engines.sh advisories --help`](tools/vendor-engines.sh) for the full list of
-per-ecosystem environment variables.
+Every run writes to a fresh, timestamped directory under `reports/` and prints that path when it
+finishes. `report.html` is the human-readable report; `findings.jsonl` (one JSON object per finding)
+and `run.json` (the run's own identity, coverage facts, and exit-gate decision - what a CI step should
+actually read) land alongside it on every run, whatever `--format` you asked for. Add `--format
+html,audit` and you additionally get `report-audit.html`, built for an auditor rather than a triager:
+every registered check, not just the ones that fired, in one of *found something / ran clean / didn't
+run (why) / unaccounted*.
 
-For the complete CLI, exit-code, and configuration-file reference, see
-[`docs/USAGE.md`](docs/USAGE.md).
-That document describes the grammar `scan.sh` accepts, not what each flag does today - read it
-alongside [Known gaps](#known-gaps), which is where the accepted-but-inert flags are listed.
+## Commands & recipes
 
-## Try it yourself: sample vulnerable repos
+This section is task-flow, copy-paste, and validated against this branch. The full flag-by-flag
+reference - including every accepted-but-not-yet-live flag - is
+[`docs/USAGE.md`](docs/USAGE.md); its own [Recipes](docs/USAGE.md#recipes) section has the deeper
+version of everything below.
 
-`scoursh` has no bundled test targets of its own - point it at any real project, or at one of the
-well-known intentionally-vulnerable repos below to see it fire for real.
+### 1. Populate the advisory database (needed only for SCA / dependency CVEs)
 
-### IaC
+scoursh ships **no** advisory database - it is deliberately never bundled or auto-fetched. Build it
+once, by hand, on a networked box:
 
 ```sh
-git clone --depth 1 https://github.com/bridgecrewio/terragoat ~/scoursh-test-repos/terragoat
-./scan.sh iac --path ~/scoursh-test-repos/terragoat            # Terraform
-
-git clone --depth 1 https://github.com/bridgecrewio/cfngoat ~/scoursh-test-repos/cfngoat
-./scan.sh iac --path ~/scoursh-test-repos/cfngoat               # CloudFormation
-
-git clone --depth 1 https://github.com/madhuakula/kubernetes-goat ~/scoursh-test-repos/kubernetes-goat
-./scan.sh iac --path ~/scoursh-test-repos/kubernetes-goat        # Kubernetes / Helm
-
-git clone --depth 1 https://github.com/bridgecrewio/cnappgoat ~/scoursh-test-repos/cnappgoat
-./scan.sh iac --path ~/scoursh-test-repos/cnappgoat              # multi-cloud Terraform
+tools/vendor-engines.sh advisories bulk --all --accept-unverified
 ```
 
-### SAST
+This resolves OSV.dev's published export for all six ecosystems, verifies each archive's transport,
+and writes `data/advisories.db`. `--accept-unverified` acknowledges an unpinned (transport-
+authenticated, not content-pinned) fetch - pin the exact bytes with `--sha256` once you know the
+digest you want. Without this step, `scan.sh sca` honestly reports that no advisory data was
+available and **exits 4** rather than a false all-clear. `tools/vendor-engines.sh` is the *only*
+script in this repository permitted to touch the network, and it is never invoked during a scan. Full
+walkthrough, including measured import size/time and the `range_only_skipped` coverage caveat:
+[`docs/USAGE.md`](docs/USAGE.md#dependency-data-dataadvisoriesdb).
+
+### 2. Per-surface scans
+
+Each surface needs one thing set up first, noted as a trailing comment:
 
 ```sh
-git clone --depth 1 https://github.com/WebGoat/WebGoat ~/scoursh-test-repos/webgoat
-./scan.sh sast --path ~/scoursh-test-repos/webgoat --lang java --history
-
-git clone --depth 1 https://github.com/OWASP/NodeGoat ~/scoursh-test-repos/nodegoat
-./scan.sh sast --path ~/scoursh-test-repos/nodegoat --lang js --history
-
-git clone --depth 1 https://github.com/adeyosemanputra/pygoat ~/scoursh-test-repos/pygoat
-./scan.sh sast --path ~/scoursh-test-repos/pygoat --lang py --history
-
-git clone --depth 1 https://github.com/OWASP-Benchmark/BenchmarkJava ~/scoursh-test-repos/owasp-benchmark
-./scan.sh sast --path ~/scoursh-test-repos/owasp-benchmark --lang java
+./scan.sh sast    --path DIR --format html,audit --out reports/sast
+./scan.sh sca     --path DIR --format html,audit --out reports/sca      # needs step 1 (data/advisories.db)
+./scan.sh iac     --path DIR --format html,audit --out reports/iac
+./scan.sh dast    --target NAME --format html,audit --out reports/dast     # NAME must be authorized first - see 3a below
+./scan.sh network --target NAME --format html,audit --out reports/network  # same authorization; scans NAME's declared extra-host listeners
+./scan.sh image   --image ID --format html,audit --out reports/image      # config/images.conf must name ID, or pass --source PATH
+./scan.sh cloud   --live --format html,audit --out reports/cloud         # needs the `aws` CLI on PATH and resolvable credentials
 ```
 
-### SCA (and dual-purpose SAST + SCA)
+`network` only probes `extra-host` listeners declared in `config/scope.conf` - a target with only
+`base-url` gives it nothing to test, and every phase records `no_declared_listeners`. `image` never
+pulls anything: point `--source` at a `docker save ID -o PATH` tarball or an OCI-layout directory (a
+plain file is read as the tarball, a directory as the OCI layout). `cloud --live` makes real, read-only
+AWS API calls against whichever account your credentials resolve to.
+
+### 3a. Authorize a `dast`/`network` target
+
+`--target NAME` refuses to run unless `NAME` is authorized in `config/scope.conf`. At an interactive
+terminal, scoursh **offers to write the record for you** the moment it hits that refusal - answer its
+prompts and the same command continues, no second invocation needed. Non-interactively (CI, a script),
+write the record by hand - `config/scope.conf.example` documents every key; the minimum is:
 
 ```sh
-git clone --depth 1 https://github.com/juice-shop/juice-shop ~/scoursh-test-repos/juice-shop
-./scan.sh sast --path ~/scoursh-test-repos/juice-shop --lang js --history
-./scan.sh sca --path ~/scoursh-test-repos/juice-shop   # finds nothing until you build data/advisories.db, see Installation
+cat >> config/scope.conf <<'EOF'
+id: my-app
+base-url: https://my-app.example.com/
+EOF
 ```
 
-`scan.sh` never clones anything itself - `--path` must already point at a local, readable
-directory. Re-run with `git -C <dir> pull` instead of re-cloning if you want to re-test after a
-code change, since cloning into a non-empty directory fails.
+Add one `extra-host: host:port` line per additional listener you want `network` to scan. `--guided`
+walks through the same choices interactively: `./scan.sh dast --guided`.
 
-## Optional third-party engines
+### 3b. DAST against a single-page app (capture a HAR)
 
-Beyond its own native rule packs, `scoursh` can optionally shell out to a small set of vendored
-third-party engines for extra coverage, gated behind `--use-engines`:
+A static crawl only follows HTML links and mines literal-looking paths out of fetched JS - a real API
+call an SPA makes from a click handler is invisible to it. Measured against a local Angular SPA
+fixture: a plain crawl found **41 endpoints** (crawl + JS-mined) but missed a real search endpoint, a
+real product-listing endpoint, and the login call's method and body entirely. Capturing ~20 seconds of
+real browser traffic and importing it added exactly those **3** as verified `source: har` entries with
+real methods and bodies, visible in `reports/<run>/inventory/endpoints.json`.
 
-| Module | Engine | What it adds |
-|---|---|---|
-| `sast` | [semgrep](https://github.com/semgrep/semgrep) | Broader, AST-aware SAST coverage |
-| `sast` | [gitleaks](https://github.com/gitleaks/gitleaks) | Secondary secrets detection, deduplicated against native findings at the same file/line |
-| `iac` | [trivy](https://aquasecurity.github.io/trivy/) (`trivy config`) | Broader IaC misconfiguration coverage across Terraform, CloudFormation, Kubernetes, Helm, and docker-compose |
+1. Open the app in Chrome, open DevTools (`Cmd+Opt+I` / `F12`) -> **Network** tab.
+2. Check **Preserve log** (so an SPA route change or reload doesn't clear the capture).
+3. Use the app for real for ~20-30 seconds - log in, click through the flows you want tested.
+4. Right-click any request in the list -> **Save all as HAR with content**.
+5. Run the scan against the saved file:
 
-None of these engines ship with the repository. `tools/vendor-engines.sh` is the one script
-permitted to touch the network - it is never called during a scan - and requires you to supply
-the exact binary URL and checksum yourself via environment variables (`SCOURSH_SEMGREP_*`,
-`SCOURSH_GITLEAKS_*`, `SCOURSH_TRIVY_*`); it never guesses or fetches a hardcoded version. Without
-`--use-engines`, or with an engine simply absent, `scoursh` behaves exactly as if the flag were never
-given - the run is unaffected, only the coverage gap is logged.
+```sh
+./scan.sh dast --target NAME --har ./capture.har --intensity passive --format html,audit --out reports/dast-har
+```
 
-## Build status
+Only the HAR's **paths** are used - any host it names is discarded, and every request scoursh sends
+still goes to your authorized `base-url`. `--openapi FILE` does the same job when the app publishes an
+OpenAPI/Swagger document instead (often at `/openapi.json` or `/swagger.json`); `config/discovery.conf`'s
+`har-path`/`openapi-path` keys do either one for every future run without re-passing the flag.
 
-Four modules are available today and produce real findings: `sast`, `iac`, `sca` - the last of those
-once you have built `data/advisories.db` ([Installation](#installation)) - and `dast`, once you
-authorize a target. `cloud` is designed but not built; see [What's next](#whats-next).
+### 4. DAST against a live app - the recipe that actually lands injection findings
 
-Exactly which rule packs and ecosystems the three static-analysis modules cover is generated below
-straight from the repository tree, so it can't drift out of sync with what's actually on disk (`dast`
-isn't part of this table - see the DAST bullet above). In this table,
-**landed** is the generator's own term for "built and covered by a passing test" - everything else
-follows from that.
+A bare passive scan of a target the crawler hasn't seen much of finds relatively little - most of a
+real application's surface is API endpoints a static HTML crawl never reaches:
+
+```sh
+./scan.sh dast \
+  --target dast-test-target --i-own-target dast-test-target \
+  --intensity active \
+  --openapi ./openapi.json \
+  --requests-per-second 2 --jobs 2 \
+  --format json,sarif,html,md,audit,agent \
+  --out reports/dast-full
+```
+
+- `--intensity active` sends real attack payloads and **requires** `--i-own-target NAME` naming the
+  same target.
+- Import your real API surface with `--openapi`/`--har`/`--postman`/`--graphql-schema` so the scanner
+  reaches real endpoints - a single-page app's own routes are close to invisible to a static crawl
+  alone (see 3b above for the HAR walkthrough).
+- The circuit breaker is a **safety feature**, not a bug: it stops the run if the target genuinely stops
+  answering (10 transport-level failures/60s by default) - a *separate*, much higher counter
+  (`--circuit-breaker-5xx-failures`, default 200) tracks an application that merely answers unmatched
+  paths with `5xx`, so an idiosyncratic-but-healthy target no longer needs either raised as routine
+  practice. Go gentler than the unaffirmed defaults on a small target instead
+  (`--requests-per-second 2 --jobs 2` - both already under the 4/s ceiling, so neither needs
+  `--i-own-target` on its own).
+- Run one scan at a time against a target - concurrent scans multiply the effective request rate the
+  target sees and can trip the breaker for reasons that have nothing to do with the target's health.
+
+### 5. Everything in one run
+
+```sh
+./scan.sh all --path DIR --target NAME --i-own-target NAME --intensity active \
+  --openapi ./openapi.json --requests-per-second 2 --jobs 2 \
+  --format json,sarif,html,md,audit,agent --out reports/all
+```
+
+`all` runs every module whose inputs are configured - `--path` drives SAST/SCA/IaC, `--target` drives
+DAST - and records a `coverage_reduction` for any module it skips, rather than dropping it silently.
+
+**Gotcha: don't scan `data/` itself.** After step 1, `data/advisories.db` is a several-hundred-MB
+binary file. If `--path` includes it - for example, running `./scan.sh all --path .` from inside a
+checkout where you just built the database - `sast` will walk it like source, producing noise and a
+very slow run for no security value. Point `--path` at real source, or exclude `data/`.
+
+### 6. Guided (interactive) mode
+
+```sh
+./scan.sh all --guided                    # walks you through the choices and runs the composed command
+./scan.sh dast --guided --print-command   # walk through the choices, but print the command instead of running it
+```
+
+At the languages prompt, press **Enter** to accept the bracketed default and scan every language;
+typing the literal word `all` is rejected (only `py`, `js`, `go`, `java` are valid, singly or
+comma-separated) and re-prompts.
+
+Prefer clicking over typing? [`docs/build.html`](docs/build.html) is a static, offline command builder:
+pick a surface, point it at a path or target, toggle options, and copy the exact command it composes -
+nothing on that page runs anything. `./scan.sh <command> --guided --print-command` is its terminal
+equivalent.
+
+### 7. Vendor the engines, for extra depth
+
+`--use-engines` (`sast`: semgrep + gitleaks; `iac`: trivy) does nothing until the named engine's binary
+is actually on disk under `modules/<module>/adapters/<engine>/` - absent, `scan.sh` warns
+("`--use-engines was given, but no adapter is vendored ... this run will use no engine checks at
+all`") but does not error, and nothing is ever fetched at scan time. Every adapter fetches a **raw, single-file executable**
+and `chmod +x`'s it - it never unpacks an archive - so the fiddly part is that gitleaks and trivy publish
+`.tar.gz` archives only: download and verify the archive yourself, extract it, then point the adapter at
+the extracted file with a `file://` URL.
+
+**gitleaks** (~20MB, MIT-licensed):
+
+```sh
+GITLEAKS_VERSION=8.30.1   # current version + platform asset names: https://github.com/gitleaks/gitleaks/releases
+PLATFORM=darwin_arm64     # or linux_x64, linux_arm64, darwin_x64, ...
+curl -fsSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+curl -fsSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_${PLATFORM}.tar.gz"
+grep "${PLATFORM}.tar.gz" "gitleaks_${GITLEAKS_VERSION}_checksums.txt"   # compare this line's hash...
+shasum -a 256 "gitleaks_${GITLEAKS_VERSION}_${PLATFORM}.tar.gz"          # ...against this one, by eye, before continuing
+
+mkdir -p gitleaks-extracted && tar -xzf "gitleaks_${GITLEAKS_VERSION}_${PLATFORM}.tar.gz" -C gitleaks-extracted gitleaks
+chmod +x gitleaks-extracted/gitleaks
+curl -fsSLo gitleaks-extracted/gitleaks.toml "https://raw.githubusercontent.com/gitleaks/gitleaks/v${GITLEAKS_VERSION}/config/gitleaks.toml"
+
+export SCOURSH_GITLEAKS_VERSION=$GITLEAKS_VERSION
+export SCOURSH_GITLEAKS_URL="file://$(pwd)/gitleaks-extracted/gitleaks"
+export SCOURSH_GITLEAKS_SHA256=$(shasum -a 256 gitleaks-extracted/gitleaks | cut -d' ' -f1)
+export SCOURSH_GITLEAKS_RULES_URL="file://$(pwd)/gitleaks-extracted/gitleaks.toml"
+export SCOURSH_GITLEAKS_RULES_SHA256=$(shasum -a 256 gitleaks-extracted/gitleaks.toml | cut -d' ' -f1)
+tools/vendor-engines.sh gitleaks
+```
+
+**trivy** (~155MB, Apache-2.0) - the identical shape, minus a separate ruleset (trivy's checks are
+compiled into the binary):
+
+```sh
+TRIVY_VERSION=0.74.0   # current version + platform asset names: https://github.com/aquasecurity/trivy/releases
+ASSET=trivy_${TRIVY_VERSION}_macOS-ARM64.tar.gz   # or Linux-64bit, Linux-ARM64, macOS-64bit, ...
+curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt"
+curl -fsSLO "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${ASSET}"
+grep "$ASSET" "trivy_${TRIVY_VERSION}_checksums.txt"    # compare this hash...
+shasum -a 256 "$ASSET"                                  # ...against this one, before continuing
+
+mkdir -p trivy-extracted && tar -xzf "$ASSET" -C trivy-extracted trivy
+chmod +x trivy-extracted/trivy
+
+export SCOURSH_TRIVY_VERSION=$TRIVY_VERSION
+export SCOURSH_TRIVY_URL="file://$(pwd)/trivy-extracted/trivy"
+export SCOURSH_TRIVY_SHA256=$(shasum -a 256 trivy-extracted/trivy | cut -d' ' -f1)
+tools/vendor-engines.sh trivy
+```
+
+Then turn each on:
+
+```sh
+./scan.sh sast --path DIR --use-engines   # adds gitleaks (semgrep too, once vendored - see below)
+./scan.sh iac  --path DIR --use-engines   # adds trivy config
+```
+
+**Do not commit the vendored `bin/`/`rules/` directories to git** - `modules/*/adapters/*/bin/` and
+`.../rules/` are gitignored by design; re-run the vendor step per machine (or per CI image) instead:
+
+- trivy's binary is ~155MB - over **GitHub's 100MB hard limit**, so pushing it is not merely unwise, it
+  is impossible.
+- gitleaks' default `gitleaks.toml` and binary are small enough to push, but a ~20MB binary blob checked
+  into git history forever is still worth avoiding on general principle.
+- semgrep's default ruleset, if you ever obtain one, ships under "Semgrep Rules License v1.0", which
+  explicitly forbids redistribution - committing it to this (Apache-2.0, public) repository would be a
+  license violation, not just bloat.
+
+**semgrep has no working recipe here, and that's a real gap, not an oversight.** Unlike gitleaks and
+trivy, semgrep publishes **zero binary assets** on its GitHub releases - installation is pip/pipx or
+Homebrew only. A Homebrew install's `bin/semgrep` is a ~220-byte Python wrapper
+(`#!/opt/homebrew/Cellar/semgrep/<version>/libexec/bin/python`, importing
+`semgrep.console_scripts.entrypoint`) that depends on an entire ~240MB, version-pinned
+Cellar tree staying in place - not a single, relocatable, checksummable artifact the way the other two
+adapters expect. Pointing `SCOURSH_SEMGREP_URL` at that wrapper technically satisfies the adapter's
+"is it executable" check, but the byte-identity guarantee `tools/vendor-engines.sh` exists for doesn't
+hold: the wrapper breaks the moment that Homebrew formula is upgraded or removed, and there is no
+publisher-issued checksum for a `pip`/`brew` install to verify against in the first place. Skip vendoring
+semgrep until upstream ships a real release binary, or accept that a `pip`/`brew` install is unpinned and
+treat it accordingly.
+
+### 8. CI gating, state, and other commands
+
+```sh
+./scan.sh sast --path DIR --fail-on high              # exit 1 if anything at/above high is found
+./scan.sh sast --path DIR --fail-on high --fail-on-new    # ...but only for findings new since the last run
+./scan.sh sast --path DIR --baseline config/baseline.json # suppress accepted-risk findings by fingerprint
+./scan.sh diff --against reports/<prior-run>          # classify the latest run vs a named earlier one
+./scan.sh report --from reports/<prior-run>           # regenerate report.md/html/sarif from a prior run's own findings, no rescan
+./scan.sh cloud --live                                # AWS CSPM - 30 services, read-only, needs AWS credentials
+```
+
+`report --from DIR` needs `DIR` to hold `findings.jsonl`, a well-formed `run.json`, `findings.fields`,
+*and* `meta/` - all four, so it can't regenerate an aborted run's report (an abort never writes
+`findings.jsonl`). Verified working end to end (re-rendered `report.md` byte-identical to the original
+run bar its SARIF timestamp).
+
+Every normal `sast`/`sca`/`iac`/`dast`/`cloud`/`network`/`image` run already auto-classifies its own
+findings against `state/latest.json` - each finding's `status` in that run's own `findings.jsonl` is
+already `new`/`recurring`/`fixed`/`unknown`, with no extra command needed. **`diff --against` itself is
+currently broken on this branch**: the classification it computes is correct (visible in
+`meta/diff_present`/`meta/diff_absent` in its output directory), but the rendered `report.md`/`run.json`
+counts always read 0/0/0/0 regardless - verified by reproducing it from a clean `state/` directory twice.
+Until fixed, read the per-run `findings.jsonl` `status` field above instead of running `diff` standalone.
+
+## Output & the audit report
+
+`--format` takes a CSV of `json,sarif,html,md,audit,agent` (default `json,sarif,html,md,agent` -
+naming `--format` explicitly replaces that default list rather than adding to it):
+
+- `json` -> `findings.json`; `sarif` -> a complete, schema-validated `report.sarif` that drops into
+  GitHub code scanning or any SARIF-aware viewer (it deliberately omits `security-severity` - see
+  [`docs/USAGE.md`](docs/USAGE.md#sarif-output) for why); `html`/`md` -> `report.html`/`report.md`.
+- `findings.jsonl` and `run.json` are written on **every** run regardless of `--format` - they are
+  mandatory per-run records, not one of the six selectable formats.
+- `agent` -> `agent-fix.json`, in the default list so a plain run writes it with **no flag required**:
+  a compact, schema-projected findings file for a downstream AI fixing agent, with a deterministic fix
+  scaffold where scoursh can derive one (an SCA version bump, an IaC one-line config fix, or a cloud
+  CLI command explicitly labeled suggested/human-review/never-auto-run) and a coverage header so "did
+  not check" can never read as "clean". Contract: [`docs/AGENT-FORMAT.md`](docs/AGENT-FORMAT.md).
+- `audit` is the one remaining **opt-in** value: it writes `report-audit.html` **alongside**
+  `report.html`, never in place of it. Where the ordinary report lists findings, the audit report
+  lists every registered check and its fate - found / ran clean / skipped (with a reason) / not
+  covered - so "we looked and found nothing" and "we never looked" are never the same line.
+
+Full reference: [`docs/USAGE.md`](docs/USAGE.md#--format-and-the-formats-config-key).
+
+## Safety model
+
+- **One egress chokepoint.** Every outbound HTTP call goes through `lib/http.sh`, which refuses any
+  host absent from `config/scope.conf`'s resolved allowlist - no raw-URL bypass, enforced at runtime
+  and lint-checked in the test suite. SAST, SCA, and IaC make zero network calls, full stop; DAST
+  talks only to a target you named there.
+- **Read-only AWS, by construction.** Every AWS call - across all 30 `scan.sh cloud` service checks -
+  goes through `lib/awscli.sh`'s `aws_ro` wrapper, which refuses any operation that is not read-only,
+  enforced at runtime and lint-checked in the test suite, the same way `lib/http.sh` gates DAST.
+- **Active DAST requires `--i-own-target NAME`.** Raising the default rate limit, request budget, or
+  intensity above `passive` needs this affirmation, and `NAME` must equal `--target` exactly - a
+  stale command or a copied CI config can never carry an authorization to a host that changed hands.
+  It's a key, not a switch: on its own it raises nothing and authorizes nothing; a host is only ever
+  scannable if it has its own record in `config/scope.conf`.
+- **A detector on top of the enforcement.** `--paranoid` samples the scan process's own outbound
+  connections and aborts on the first one outside scope, on Linux (`ss`/`strace`) and macOS (`lsof`)
+  alike. `tools/run-in-netns.sh` goes further on Linux, building a network namespace where an
+  out-of-scope connection is physically impossible rather than merely observed. macOS gets two routes to
+  the same kind of guarantee: `tools/run-sandboxed.sh` (a kernel-enforced, unprivileged deny-all-network
+  sandbox - narrower than the netns route table, since it can't scope to one target, but genuinely
+  physically impossible for `sast`/`sca`/`iac`, which need no network at all), and running
+  `tools/run-in-netns.sh` unmodified inside a Linux container, for full parity.
+
+This is deliberately **egress-restricted, not air-gapped**: `dast` and `cloud --live` inherently have
+to talk to *something*, since testing a running app or reading live AWS config is the entire point of
+those two scans. What's actually guaranteed is narrower, and it's the part that
+matters - scoursh itself has no back-channel, and it never decides on its own who to contact. See
+`docs/FOUNDATION.md` tension 28 for the full correction and `docs/adr/0001-egress-model-correction.md`
+for the dated decision record.
+
+## Documentation
+
+- [`docs/USAGE.md`](docs/USAGE.md) - the full CLI, exit-code, and configuration reference.
+- [`docs/CHECKS.md`](docs/CHECKS.md) - every built-in check, grouped by surface and by what data it needs.
+- [`docs/build.html`](docs/build.html) - a static, offline command builder: pick a surface, toggle
+  options, and copy the exact command it composes.
+- [`docs/AGENT-FORMAT.md`](docs/AGENT-FORMAT.md) - the `--format agent` contract, for a downstream
+  AI fixing agent reading `agent-fix.json`.
+- [`docs/COMPARISON.md`](docs/COMPARISON.md) - the honest comparison against Semgrep, Trivy, Checkov,
+  ZAP, Gitleaks, Prowler, and others, including measured head-to-head numbers.
+- [`docs/DESIGN.md`](docs/DESIGN.md) - the original handoff spec, preserved verbatim.
+- [`docs/FOUNDATION.md`](docs/FOUNDATION.md) - the design-tension register: every non-obvious
+  architectural decision, with its resolution.
+- [`rules/RULE-FORMAT.md`](rules/RULE-FORMAT.md) - the frozen on-disk rule record format.
+- [`docs/ADAPTERS.md`](docs/ADAPTERS.md) - the convention for optional third-party engine adapters.
+- [`docs/CI-RUNBOOK.md`](docs/CI-RUNBOOK.md) - how this project's tests actually run today (the
+  hosted GitHub Actions workflow is dormant until the repository is public).
+- [`ROADMAP.md`](ROADMAP.md) - what's landed and what's left, in priority order.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) - how to propose a change and what a PR needs.
+- [`AGENTS.md`](AGENTS.md) - the contributor/agent guide: architecture, sharp edges, and build order
+  (`CLAUDE.md` is a symlink to the same file, for tooling that looks for that name specifically).
+
+## Status
+
+Seven surfaces are built and produce real findings today: **SAST**, **IaC**, **SCA** (once you've
+built `data/advisories.db`), **DAST** (once you've authorized a target), **Network/host** (once
+you've authorized a target), **Container image** (once you've pointed it at a `docker save` tarball
+or OCI layout), and **Cloud/AWS CSPM** (once you've pointed it at an account with resolvable
+credentials). Guided mode, persistent run state with a
+real `--fail-on-new` CI carve-out, a complete, schema-validated SARIF 2.1.0 writer, and both halves of
+the compliance report (findings grouped by OWASP Top 10 category and by CIS AWS Foundations Benchmark
+v3.0.0 control, each with an honest per-category/per-control
+assessed/out-of-scope/not-applicable/filtered status, in both `report.md` and `report.html`) have also
+landed. **Cloud/AWS (CSPM) is built**: `scan.sh cloud --live` resolves the account and its enabled
+regions, runs read-only checks against all 30 services in `docs/DESIGN.md` §8.1's catalog through the
+`aws_ro` chokepoint, and records access-denied, opted-out, or throttled services as a declared
+coverage reduction rather than folding them into a silent clean pass. What's still open is the
+`posture/` phase (SSO/edge/session drift checks against an operator-declared baseline) - the config
+schema (`config/posture.conf.example`) exists but no posture check has landed yet - and there is no
+bundled or hosted AWS account: you point it at your own.
+See [`ROADMAP.md`](ROADMAP.md) for the full, current priority order, including recently-fixed defects
+in shipped features, and [`docs/USAGE.md`'s "Accepted but not yet
+implemented"](docs/USAGE.md#accepted-but-not-yet-implemented) for every flag that parses today but
+changes nothing yet.
+
+The exact, generated breakdown of every rule pack and ecosystem the three static-analysis modules
+cover is below, straight from the repository tree, so it can't drift out of sync with what's on disk
+(`dast` isn't part of this table - see [`docs/STEP5-DAST-PLAN.md`](docs/STEP5-DAST-PLAN.md) for its
+own per-check landing record). **Landed** is the generator's own term for "built and covered by a
+passing test."
 
 <!-- BEGIN GENERATED STATUS -->
 <!--
@@ -399,15 +519,15 @@ shipped here before.
 
 | Artifact | Status | Checks | Exercised by |
 | --- | --- | --- | --- |
-| `modules/sast/rules/crypto.rules` | landed | 5 | `tests/suites/sast.sh` |
+| `modules/sast/rules/crypto.rules` | landed | 5 | `tests/suites/report.sh` |
 | `modules/sast/rules/go.rules` | landed | 5 | `tests/suites/sast.sh` |
 | `modules/sast/rules/injection.rules` | landed | 8 | `tests/suites/sast.sh` |
 | `modules/sast/rules/java.rules` | landed | 7 | `tests/suites/sast.sh` |
-| `modules/sast/rules/javascript.rules` | landed | 7 | `tests/suites/sast.sh` |
+| `modules/sast/rules/javascript.rules` | landed | 7 | `tests/suites/report.sh` |
 | `modules/sast/rules/ldap.rules` | landed | 3 | `tests/suites/sast.sh` |
 | `modules/sast/rules/nosql.rules` | landed | 4 | `tests/suites/sast.sh` |
-| `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/sast.sh` |
-| `modules/sast/rules/secrets.rules` | landed | 7 | `tests/suites/records.sh` |
+| `modules/sast/rules/python.rules` | landed | 7 | `tests/suites/report.sh` |
+| `modules/sast/rules/secrets.rules` | landed | 7 | `tests/suites/agent-format.sh` |
 | `modules/sast/history.sh` | landed | - | `tests/suites/sast-history.sh` |
 
 Landed 10 of 10.  Outstanding: none.
@@ -431,109 +551,21 @@ Landed 6 of 6.  Outstanding: none.
 | --- | --- | --- | --- |
 | `modules/iac/cloudformation.rules` | landed | 8 | `tests/suites/iac.sh` |
 | `modules/iac/docker-compose.rules` | landed | 4 | `tests/suites/iac.sh` |
-| `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/iac.sh` |
+| `modules/iac/dockerfile.rules` | landed | 6 | `tests/suites/agent-format.sh` |
 | `modules/iac/helm.rules` | landed | 3 | `tests/suites/iac.sh` |
-| `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/iac.sh` |
-| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/iac-trivy.sh` |
+| `modules/iac/kubernetes.rules` | landed | 8 | `tests/suites/agent-format.sh` |
+| `modules/iac/terraform.rules` | landed | 7 | `tests/suites/agent-format.sh` |
 
 Landed 6 of 6.  Outstanding: none.
 
 #### Totals
 
 - Pattern packs on disk: **15** (`modules/sast/rules/` 9, `modules/iac/` 6).
-- Module directories present: `modules/dast/`, `modules/iac/`, `modules/sast/`, `modules/sca/`.
+- Module directories present: `modules/cloud/`, `modules/dast/`, `modules/iac/`, `modules/image/`, `modules/network/`, `modules/sast/`, `modules/sca/`.
 
 <!-- END GENERATED STATUS -->
 
-## Known gaps
-
-Some of the CLI grammar is accepted today but does nothing yet, because the machinery behind it
-belongs to a later step; a few other rough edges in shipped behavior are listed here too.
-Several are self-disclosed in the run's own `run.json`, but with one exception none of them warns you
-on the console or changes an exit code, so they are listed here to be found while you are evaluating
-the tool rather than in a pipeline:
-
-- **`sca` scans nothing until you build an advisory database** - but it will not pretend otherwise.
-  No `data/advisories.db` ships with this repository, and each ecosystem walk returns before it
-  discovers or parses a single manifest without one.
-  This is the one gap here that both warns on the console and changes the exit code: until you build it
-  ([Installation](#installation)), `scan.sh sca` **exits 4**, prints one warning naming every ecosystem
-  it could not scan, and reports a `SCA-COV-NO_ADVISORY_DB-01` finding saying zero dependencies were
-  checked.
-  It is listed here because it is a setup step you have to know about, not because it can be mistaken
-  for a passing scan.
-- **`--format` does nothing.**
-  Every run writes all five artifacts - `findings.json`, `findings.jsonl`, `report.md`,
-  `report.html`, and `run.json` - whatever `--format` is given, so `--format md` still writes the
-  HTML report.
-  `--format sarif` is accepted too, and nothing anywhere in the tree emits SARIF yet.
-- **`--baseline FILE` is parsed and never read.**
-  Baseline suppression arrives with persistent run state.
-  A path that does not exist is accepted with no error, no warning, and no record of the flag in
-  `run.json`.
-- **`--fail-on-new` currently behaves identically to `--fail-on`.**
-  Every finding is emitted with `status=new` until there is persistent run state to compare a run
-  against, so there is nothing yet for it to narrow the gate down to.
-- **`--jobs N` is parsed and ignored.**
-  Every scan is single-worker and records `single_worker_no_parallel_scan_yet` in its own output.
-- **`--authed` works, and DAST's checks use the session it acquires.**
-  It belongs to `dast`, and `modules/dast/auth.sh` reads it: with a `config/auth.conf`
-  (`config/auth.conf.example` is the annotated template) it logs in, keeps a session, and
-  re-authenticates once on a `401`. `modules/dast/authz.sh` (object-level authorization / IDOR) and
-  the crawl/injection phases spend that session directly; with two configured identities, `authz.sh`
-  also probes cross-user access.
-- **There is no per-subcommand help.**
-  `scan.sh dast --help`, `scan.sh cloud --help`, `scan.sh diff --help`, and `scan.sh sca --help` all
-  print the same global usage and exit 0, so nothing there tells you a subcommand is unbuilt.
-- `report`'s `--from` flag name is not specified in `docs/DESIGN.md`'s grammar block; `--from` is the
-  engineer's own judgment call, noted as such in `scan.sh`'s own comments for a human to confirm or
-  override.
-
-## What's next
-
-The full, dependency-ordered build plan lives in [`docs/DESIGN.md`](docs/DESIGN.md) §13, with a
-running account of progress in [`CLAUDE.md`](CLAUDE.md)'s "Build order and where we are" section.
-What's left, in priority order:
-
-**DAST is done** - `scan.sh dast` (`modules/dast/`) is a complete engine: authentication, crawling,
-every passive/safe-active/injection/application-layer check `docs/STEP5-DAST-PLAN.md` planned, and
-the tension-16 rate limiter/budget/circuit breaker every request pays. What remains, in priority
-order:
-
-1. **Persistent run state** (`state/`) - needed before `--baseline` suppression, a `--fail-on-new` that
-   means anything, and the `diff`/`report` subcommands do real work; all are currently no-ops.
-   A full ticket plan exists here too ([`docs/STEP7-STATE-PLAN.md`](docs/STEP7-STATE-PLAN.md)).
-2. **SARIF output** - `--format sarif` is accepted but nothing emits it yet.
-3. **The compliance-mapping report.**
-4. **Live cloud/CSPM scanning** (`scan.sh cloud`) - fully planned
-   ([`docs/STEP6-CLOUD-PLAN.md`](docs/STEP6-CLOUD-PLAN.md)), and last in the queue.
-   The subcommand is inert today with or without `--live`; there is no `modules/cloud/` in the tree at
-   all.
-   The read-only AWS wrapper already exists ahead of schedule.
-
-Outside that ordering: container image scanning (scanning built image layers, not just
-Dockerfile/compose source) and network/host scanning are not currently part of the design plan at all.
-
-See [`ROADMAP.md`](ROADMAP.md) for the fuller breakdown, including work that's already landed ahead
-of its normal turn (the optional engine adapters, the `--paranoid` connection observer, and the
-Linux network-namespace guarantee are all further along than the step numbering alone would
-suggest).
-
-## Documentation
-
-- [`docs/USAGE.md`](docs/USAGE.md) - the full CLI, exit-code, and configuration reference.
-- [`docs/DESIGN.md`](docs/DESIGN.md) - the original handoff spec.
-- [`docs/FOUNDATION.md`](docs/FOUNDATION.md) - the design-tension register: every non-obvious
-  architectural decision, with its resolution.
-- [`rules/RULE-FORMAT.md`](rules/RULE-FORMAT.md) - the frozen on-disk rule record format.
-- [`docs/ADAPTERS.md`](docs/ADAPTERS.md) - the convention for optional third-party engine adapters.
-- [`docs/CI-RUNBOOK.md`](docs/CI-RUNBOOK.md) - how this project's tests are actually run: the
-  GitHub Actions workflow is dormant until the repository is public, so there is no pull-request
-  status check today - this is where the daily local suite run, its schedule, and how to read its
-  result are documented, alongside what changes once the workflow goes live.
-- [`CLAUDE.md`](CLAUDE.md) - the contributor/agent guide: architecture, sharp edges, and build
-  order.
-
 ## License
 
-Apache License 2.0 - see [`LICENSE`](LICENSE).
+Apache License 2.0 - see [`LICENSE`](LICENSE). Contributions welcome - see
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for how a PR flows and what it needs.

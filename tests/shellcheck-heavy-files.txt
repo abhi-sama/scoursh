@@ -1,0 +1,71 @@
+# tests/shellcheck-heavy-files.txt - the CI shellcheck HANDOFF list.
+#
+# Every path below is a *.sh file whose real, resident `shellcheck -x` memory
+# requirement exceeds what CI's own runner can give ONE process, even running
+# alone against the whole of that runner's real headroom (measured on CI run
+# 35204437732, dev @ d1802a7: these 16 files, spread ~2 per shard across a
+# 10-shard, weighted matrix, took every one of the 20 jobs down).
+#
+# THIS IS THE SINGLE NAMED PLACE this list is maintained.  Two, and only two,
+# consumers read it, and neither duplicates it:
+#
+#   * tests/run-tests.sh's `_shard_build_plan` excludes every path here from
+#     the file-item plan `--shard I/N` builds - UNCONDITIONALLY, not behind
+#     an env knob, because CI (the sole real caller of `--shard`) can never
+#     check these files no matter how the plan is weighted.  They are never
+#     discovered, never shelled out to, and never reported as a skip on CI:
+#     see the "handed off" banner tests/run-tests.sh's CI branch prints on
+#     every run.
+#   * tools/daily-suite.sh's GNU leg (tools/daily-suite/gnu-leg.sh) reads
+#     this same file to build a SECOND, dedicated `tests/run-tests.sh
+#     shellcheck` pass, scoped to exactly these files, inside its own
+#     container - sized with enough real memory to complete - with
+#     SCOURSH_SHELLCHECK_SKIP_IS_FATAL=1 set, so a file this project has
+#     declared heavy can never quietly fall back to a passing "SKIPPED, this
+#     host is too small" the way an ordinary contributor's own laptop run
+#     legitimately still can.
+#
+# THE GUARD.  This list is maintained BY HAND, not derived: hub sum
+# (tests/lint-source-graph.sh, tests/run-tests.sh's `_sc_file_weight_seconds`)
+# is a strong predictor of a file's real shellcheck -x memory cost, not a
+# reliable enough one to threshold on automatically here - three of the
+# sixteen files below carry a hub sum as low as 7, well under
+# tests/lint-source-graph.sh's cap of 20.  What keeps this list from silently
+# going stale is that nothing here EXEMPTS a file from CI; it only ever
+# REMOVES a file from CI's own discovery.  A file that grows past CI's real
+# per-process headroom and is NOT named here is still discovered, still
+# shelled out to, and still fails the CI stage outright - the existing
+# "needs more real resident memory than this runner's real headroom, even
+# alone" arm in tests/run-tests.sh - so the next heavy file cannot go
+# unchecked everywhere: it makes CI red until it is either shrunk (see
+# tests/lint-source-graph.sh's own hub-fan-out cap) or added here and picked
+# up by tools/daily-suite.sh instead.  This is a self-enforcing guard, not a
+# lint that can go stale on its own: an undeclared heavy file fails loudly,
+# by construction, the first time CI actually meets it.
+#
+# Re-verify this list's entries periodically rather than only ever adding to
+# it: a structural fix (a `tests/lint-source-graph.sh` back-edge cut, a
+# shrunk -x fan-out) can bring a file back under the CI ceiling, at which
+# point removing it here gives CI back real coverage of it and removes one
+# more file from the daily suite's own workload.
+#
+# Format: one repository-relative path per line, blank lines and `#`
+# comments ignored - the same tolerant parse tests/run-tests.sh's own
+# `_shard_load_weights` already uses for tests/shard-weights.tsv.
+
+scan.sh
+lib/guide.sh
+modules/dast/run.sh
+modules/network/run.sh
+tests/suites/build-commands.sh
+tests/suites/dast.sh
+tests/suites/dast-cookies.sh
+tests/suites/dast-jwt.sh
+tests/suites/dast-methods.sh
+tests/suites/exit-code-matrix.sh
+tests/suites/guide.sh
+tests/suites/network-tlsport.sh
+tests/suites/network-transport.sh
+tests/suites/paranoid.sh
+tests/suites/scan.sh
+tests/suites/state-coverage.sh

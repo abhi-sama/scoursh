@@ -318,7 +318,15 @@ _dast_tls_phase() {
   # findings with two check ids on one fact and make whichever ticket lands
   # second look like a regression.
   if [[ $scheme != https ]]; then
-    run_record coverage_reduction "module=dast reason=target_not_https check=tls target=$target - config/scope.conf's base-url for this target is '$scheme://$host:$port', so there is no TLS listener to handshake with and no transport property to assess."
+    # Name the ids, so `lib/report.sh`'s coverage report can attribute this
+    # reason to them instead of leaving them in its `unaccounted` residual
+    # (docs/DESIGN.md §15).  Narrowed to what this run actually SELECTED:
+    # an id the filter chain already dropped was declared once by
+    # lib/checks.sh:353 and naming it twice corrupts that report's own
+    # arithmetic - see dast_selected_narrow (modules/dast/engine.sh).
+    local _nc='DAST-TLS-WEAK_PROTOCOL-01 DAST-TLS-WEAK_CIPHER-01 DAST-TLS-CERT_EXPIRED-01 DAST-TLS-CERT_EXPIRING-01 DAST-TLS-SELF_SIGNED-01 DAST-TLS-WILDCARD_CERT-01'
+    declare -F dast_selected_narrow >/dev/null && dast_selected_narrow _nc
+    run_record coverage_reduction "module=dast reason=target_not_https check=tls target=$target${_nc:+ checks=[$_nc]} - config/scope.conf's base-url for this target is '$scheme://$host:$port', so there is no TLS listener to handshake with and no transport property to assess."
     run_record coverage_gap "dast tls: target '$target' is configured over plain $scheme, so the transport-security checks (protocol, cipher, certificate expiry, self-signing, wildcard) did not run. Whether this target SHOULD be offering TLS is DAST-30's (modules/dast/transport.sh) question, not this check's, and that phase has not landed."
     return 0
   fi

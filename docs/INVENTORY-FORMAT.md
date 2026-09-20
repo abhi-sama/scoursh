@@ -22,8 +22,8 @@ consumed by §7.3/§7.4").
 |---|---|---|
 | Producer | `modules/dast/crawl.sh` (DAST-04) | landed |
 | Producer | SAST route extraction (`docs/DESIGN.md` §8.4) | not built |
-| Producer | `modules/cloud/aws/live/apigw.sh` (§8.4) | not built |
-| Consumer | every `docs/STEP5-DAST-PLAN.md` ticket in tiers 2-5 | not built |
+| Producer | `modules/cloud/aws/live/apigw.sh` (§8.4) | landed (CLOUD-22) |
+| Consumer | every `docs/STEP5-DAST-PLAN.md` ticket in tiers 2-5 | landed |
 
 Every consumer treats both files as **optional input**.
 An absent, empty, or unreadable inventory is a normal state and is never an error; what a consumer owes
@@ -68,15 +68,28 @@ lost the routes another module contributed.
 | `url` | string | Absolute URL, **query string and fragment removed**. See §4. |
 | `host` | string | The URL's host, split out so a consumer does not re-parse. |
 | `path` | string | The URL's path, likewise. May contain a template segment such as `{petId}` when the source was a specification. |
-| `source` | string | One of `crawl`, `openapi`, `postman`, `har`, `graphql`, `imported`. |
+| `source` | string | One of `crawl`, `openapi`, `postman`, `har`, `graphql`, `js`, `imported`. |
 | `depth` | number | Crawl depth at which it was found; `0` for anything not found by following a link. |
 | `status` | string | The observed HTTP status, or `""` when nothing was requested. |
 | `content_type` | string | The observed `Content-Type`, or `""`. |
+| `request_body_type` | string | **Optional.** `json` or `form`; absent or anything else means `form`. See §3's "JSON pointer names" for what this changes about `body`-location parameters. Added by IMPORT-02 as an additive optional field - `schema` stays `scoursh.inventory.endpoints/1` per §9. |
 
 `source` is **never rewritten**.
 An endpoint that arrived as `imported` stays `imported` even if the crawler later reaches the same URL,
 because "SAST asserted this route exists" and "a request to this route was answered" are different
 claims and tension 21 requires imported inventory to keep its audit trail.
+
+`js` is `modules/dast/crawl.sh`'s weakest-provenance source: a URL-shaped literal string read out of a
+JS or source-map response the crawl already fetched (`js-endpoint-discovery`, `rules/RULE-FORMAT.md`
+§9.6.3, default on), never a URL that was itself requested. Its own `status` and `content_type` are
+always `""` for exactly that reason - nothing was sent - the same convention a spec-derived (`openapi`,
+`postman`, `har`, `graphql`) row already uses. Like every other source, it is never rewritten: a `js`
+row that the crawl or a later spec import also reaches by a real request keeps whichever source got
+there first, and a `crawl`/`openapi`/`har`/`graphql`/`imported` row already at that (method, url) is
+never downgraded to `js`. Every `js` candidate is resolved against the fetching page's own URL and
+passed through the identical scope gate a crawled `<a href>` already goes through before it is ever
+written here - a third-party URL named inside a bundle (an analytics call, an error-reporting SDK's
+ingest host) never reaches this file.
 
 ## 3. `parameters.json`
 
@@ -105,6 +118,9 @@ claims and tension 21 requires imported inventory to keep its audit trail.
 |---|---|---|
 | `id` | string | 12 hex characters of the SHA-256 of `"<endpoint_id>|<location>|<name>"`. |
 | `endpoint_id` | string | The `endpoints.json` entry this parameter belongs to. |
+| `target` | string | The `config/scope.conf` target id, as for an endpoint. Falls back to `SCOURSH_DAST_TARGET` when a producer left it blank (`inject_engine.sh`'s `_inject_flush_param`). |
+| `method` | string | Uppercase HTTP method - the endpoint's own when its row is present, else this field, else `GET`. |
+| `url` | string | Absolute URL, query string and fragment removed, as for an endpoint. **Load-bearing as a fallback**: when `endpoint_id` names no row in `endpoints.json`, `_inject_flush_param` composes the request from this field instead of dropping the parameter. |
 | `name` | string | The parameter name, verbatim from the target or the specification. **Untrusted.** |
 | `location` | string | One of `query`, `body`, `path`, `header`, `cookie`, `formData`, `graphql`. |
 | `source` | string | As for an endpoint. |
@@ -112,6 +128,30 @@ claims and tension 21 requires imported inventory to keep its audit trail.
 
 `docs/DESIGN.md` §7.3 requires every injection probe to iterate "query params, body/JSON fields,
 headers, and path segments - not just top-level query strings", which is what `location` is for.
+
+### 3a. `name` as a JSON pointer, on a `json` endpoint (IMPORT-02)
+
+When the parameter's endpoint has `request_body_type: json` (§2), a `body`-location parameter's `name`
+is not a form field name - it is an **RFC 6901 JSON pointer** naming where in the one composed request
+body its value belongs, so a producer can describe a nested field the way `crawl_spec_openapi`'s
+`requestBody` and `crawl_spec_har`'s `postData.text` actually shape one:
+
+- `/email` places the value at the top-level `email` key: `{"email": "<value>"}`.
+- `/orderLines/0/productId` nests through an object, an array, and another object:
+  `{"orderLines": [{"productId": "<value>"}]}`. A segment that is a canonical non-negative integer
+  (`0`, `12` - never `01`) makes its level an array; any other segment makes an object.
+- A `name` with no leading `/` is not a pointer at all and is treated as a single top-level key, so a
+  flat parameter (`email`) needs no rewrite to keep working.
+- The two RFC 6901 escapes apply inside a segment: `~1` decodes to a literal `/`, `~0` to a literal `~`
+  (decoded in that order, so `~01` is the one-character `~1`).
+
+Every `body`-location parameter for the same endpoint contributes to the **same** document - the
+payload under test at its own pointer, every sibling at its benign value at its own pointer
+(`modules/dast/active/inject_engine.sh`'s `inject_send`, section 2a) - and every value is written
+through `json_string` (§6), exactly like every other producer-written string in these two files.
+
+On a `form` endpoint (the default), `name` is unchanged: a plain form-field name, exactly as before this
+field existed.
 
 ## 4. Why the query string is not part of an endpoint
 

@@ -34,16 +34,39 @@
 #    (finding F16). A SKIP here is not a pass; it is recorded as exactly
 #    what it is, so a human reviewing this run knows AC2's kernel-level
 #    claim was not exercised on THIS host.
-#  - Section C deliberately does not attempt a live IN-scope connection
-#    (i.e. that the admitted addresses actually work): that would need real
-#    egress/DNS inside CI, which conflicts with this project's own no-live-
-#    network testing discipline everywhere else (docs/DESIGN.md §12: DAST
-#    logic is tested against recorded mocks, never a live target). Section
-#    B (the command-sequence tests) already proves the correct /32 routes
-#    ARE added for resolved in-scope addresses and for nameservers; section
-#    C proves specifically that an address NOT in that set is refused.
-#    Together they cover this ticket's AC1 and AC2 without a flaky live
-#    socket.
+#  - Section C deliberately does not attempt a live IN-scope connection to a
+#    real internet host (i.e. that the admitted addresses actually work over
+#    a real WAN path): that would need real egress/DNS inside CI, which
+#    conflicts with this project's own no-live-network testing discipline
+#    everywhere else (docs/DESIGN.md §12: DAST logic is tested against
+#    recorded mocks, never a live target). Section B (the command-sequence
+#    tests) proves the correct /32-or-/128 routes ARE added for resolved
+#    in-scope addresses and for nameservers, in EITHER family; section C's
+#    v6-target sub-case additionally proves, at the real kernel level
+#    (inside a genuinely-built namespace), that the route the tool logs it
+#    is admitting really exists in the route table the wrapped command
+#    sees - without depending on real internet reachability, since the
+#    assertion is against `ip -6 route show` output, not a live socket.
+#    Section C's block sub-cases prove specifically that an address NOT in
+#    the admitted set is refused, in EITHER family. Together they cover
+#    this ticket's AC1 and AC2, and this follow-up's IPv6/dual-stack
+#    extension, without a flaky live socket to a real host.
+#  - This suite's IPv6 extension (the follow-up ROADMAP.md named when
+#    NETNS-01 originally shipped IPv4-only) adds: two new fixture ids
+#    (netns-fixture-v6-literal, netns-fixture-dual-stack) to
+#    tests/fixtures/config/netns-scope.conf; RUN_NETNS_TARGET_IPS6/
+#    RUN_NETNS_NAMESERVERS6 coverage alongside the existing IPv4 arrays
+#    (section 2); `ip -6`/`ip6tables` command-sequence assertions and a "no
+#    IPv6 default route" assertion alongside the existing IPv4 ones
+#    (section 3); a new section proving _netns_has_ipv6_kernel_support/
+#    _netns_require_ipv6 fail loudly rather than silently degrading to
+#    IPv4-only (section 1b, unit-level via the same fixture-path
+#    indirection RUN_NETNS_PROC_STATUS_FILE already uses, plus a real
+#    subprocess proof inside section C); and section C's own v6 block/works
+#    sub-cases described above. Exactly like the rest of this suite, the
+#    real-kernel-level cases are gated on genuine capability and SKIP with a
+#    stated reason - never a false pass - when the host cannot support
+#    them (missing ip6tables, or no /proc/net/if_inet6).
 #
 # shellcheck shell=bash
 #
@@ -121,6 +144,53 @@ assert_status 1 '_netns_has_cap_bit fails closed (returns non-zero) when the sta
 RUN_NETNS_PROC_STATUS_FILE=/proc/self/status
 
 # ---------------------------------------------------------------------------
+# -- section 1b: _netns_has_ipv6_kernel_support / _netns_require_ipv6 -
+#    the "fails loudly rather than silently degrading to IPv4-only"
+#    precondition this ticket adds, unit-tested via the same
+#    fixture-path-indirection idiom RUN_NETNS_PROC_STATUS_FILE uses above,
+#    so it is deterministic on ANY host regardless of that host's real
+#    IPv6 support or ip6tables installation. A real-subprocess proof of
+#    the same property lives in section C below (gated on real privilege).
+# ---------------------------------------------------------------------------
+printf '\n-- _netns_has_ipv6_kernel_support / _netns_require_ipv6: fail-loud precondition --\n'
+
+# A stub, defined here so this section is independent of whether ip6tables
+# is actually installed on the host running this suite; section 3 below
+# redefines this function again for its own (logging) purposes.
+ip6tables() { return 0; }
+
+RUN_NETNS_IF_INET6_FILE=$W/if_inet6-present
+: >"$RUN_NETNS_IF_INET6_FILE"
+assert_status 0 'a readable if_inet6-style file reads as IPv6 kernel support present' \
+  _netns_has_ipv6_kernel_support
+
+RUN_NETNS_IF_INET6_FILE=$W/if_inet6-absent
+rm -f "$RUN_NETNS_IF_INET6_FILE"
+assert_status 1 'a missing if_inet6-style file reads as IPv6 kernel support ABSENT, never assumed present' \
+  _netns_has_ipv6_kernel_support
+
+# _netns_require_ipv6 dies (exit 4) when the kernel-support probe fails,
+# even with ip6tables available - "fails loudly rather than silently
+# degrading to v4-only" is this ticket's own stated requirement. Run in a
+# subshell: die() calls exit, which would otherwise take this whole suite
+# down with it (same discipline the partial-build-state test below uses).
+RUN_NETNS_IF_INET6_FILE=$W/if_inet6-absent
+require_ipv6_rc=0
+( _netns_require_ipv6 ) >/dev/null 2>&1 || require_ipv6_rc=$?
+assert_eq "$SCOURSH_EXIT_INPUT" "$require_ipv6_rc" \
+  'no IPv6 kernel support: _netns_require_ipv6 exits 4 (missing required input), never a silent v4-only fallback'
+require_ipv6_msg=$( ( _netns_require_ipv6 ) 2>&1 || true )
+assert_contains "$require_ipv6_msg" 'IPv6' \
+  'the error names the actual reason (IPv6 kernel support), not a generic failure'
+
+RUN_NETNS_IF_INET6_FILE=$W/if_inet6-present
+: >"$RUN_NETNS_IF_INET6_FILE"
+assert_status 0 '_netns_require_ipv6 succeeds when kernel-support IS present and ip6tables is available' \
+  _netns_require_ipv6
+
+RUN_NETNS_IF_INET6_FILE=/proc/net/if_inet6
+
+# ---------------------------------------------------------------------------
 # -- section 2: the allowlist collectors (lib/http.sh's pinned resolution
 #    cache + the resolv.conf nameserver set) --
 # ---------------------------------------------------------------------------
@@ -139,14 +209,27 @@ RUN_NETNS_SCOPE_CONF=$FIXTURE_SCOPE
 
 _netns_collect_target_ips
 _ips_joined=$(printf '%s\n' "${RUN_NETNS_TARGET_IPS[@]+"${RUN_NETNS_TARGET_IPS[@]}"}" | LC_ALL=C sort -u)
+_ips6_joined=$(printf '%s\n' "${RUN_NETNS_TARGET_IPS6[@]+"${RUN_NETNS_TARGET_IPS6[@]}"}" | LC_ALL=C sort -u)
+
 assert_contains "$_ips_joined" '93.184.216.34' \
-  'a scope host resolved through http_resolve_host (the SAME pinned-cache function the scope gate uses) is admitted'
+  'a scope host resolved through http_resolve_host (the SAME pinned-cache function the scope gate uses) is admitted into the IPv4 array'
 assert_contains "$_ips_joined" '198.51.100.7' \
-  'a scope host that is already an IPv4 literal is admitted directly, with no resolution attempted'
-assert_not_contains "$_ips_joined" '2001:db8::1' \
-  'an IPv6-resolved scope host is NOT admitted - IPv6 routing is out-of-scope for this tool (FAILS if the IPv6 skip branch is removed)'
-assert_eq 2 "${#RUN_NETNS_TARGET_IPS[@]}" \
-  'exactly two addresses survive from the four-entry fixture: the IPv6-resolving host and the unresolvable host are both skipped, not silently admitted or silently crashing the collector'
+  'a scope host that is already an IPv4 literal is admitted directly into the IPv4 array, with no resolution attempted'
+assert_not_contains "$_ips_joined" '2001:db8' \
+  'no IPv6 address ever lands in the IPv4 array'
+assert_eq 3 "${#RUN_NETNS_TARGET_IPS[@]}" \
+  'three IPv4 addresses collected (pre-dedup - dedup happens later in _netns_build): netns-fixture-good and netns-fixture-dual-stack both resolve the same hostname to the same address, plus the literal'
+
+assert_contains "$_ips6_joined" '2001:db8::1' \
+  'a scope host that RESOLVED to an IPv6 address (through the SAME pinned-cache function the scope gate uses) is admitted into the IPv6 array - the change this ticket makes over the original skip-and-warn behaviour'
+assert_contains "$_ips6_joined" '2001:db8::7' \
+  'a scope host that is already an IPv6 literal is admitted directly into the IPv6 array, with no resolution attempted - the IPv6 sibling of the IPv4-literal assertion above'
+assert_contains "$_ips6_joined" '2001:db8::99' \
+  "a dual-stack target's IPv6 extra-host is admitted into the IPv6 array ALONGSIDE its own IPv4 base-url address, not instead of it"
+assert_not_contains "$_ips6_joined" '93.184.216.34' \
+  'no IPv4 address ever lands in the IPv6 array'
+assert_eq 3 "${#RUN_NETNS_TARGET_IPS6[@]}" \
+  "three IPv6 addresses collected: the resolved-to-IPv6 host, the IPv6 literal host, and the dual-stack target's IPv6 extra-host - the unresolvable host still contributes to neither array"
 
 printf '\n-- _netns_collect_nameservers: /etc/resolv.conf parsing (fixture, not the real file) --\n'
 cat >"$W/resolv-fixture.conf" <<'RESOLV_EOF'
@@ -163,34 +246,45 @@ _netns_collect_nameservers_from() {
   # reason to point elsewhere), so this test exercises the SAME regex body
   # against a fixture path instead of monkeypatching /etc/resolv.conf itself.
   RUN_NETNS_NAMESERVERS=()
+  RUN_NETNS_NAMESERVERS6=()
   local line
   while IFS= read -r line; do
     if [[ $line =~ ^[[:space:]]*nameserver[[:space:]]+([0-9]{1,3}(\.[0-9]{1,3}){3})([[:space:]]|$) ]]; then
       RUN_NETNS_NAMESERVERS+=("${BASH_REMATCH[1]}")
+    elif [[ $line =~ ^[[:space:]]*nameserver[[:space:]]+([0-9a-fA-F:]+) ]]; then
+      RUN_NETNS_NAMESERVERS6+=("${BASH_REMATCH[1]}")
     fi
   done <"$1"
 }
 _netns_collect_nameservers_from "$W/resolv-fixture.conf"
 _ns_joined=$(printf '%s\n' "${RUN_NETNS_NAMESERVERS[@]+"${RUN_NETNS_NAMESERVERS[@]}"}" | LC_ALL=C sort -u)
+_ns6_joined=$(printf '%s\n' "${RUN_NETNS_NAMESERVERS6[@]+"${RUN_NETNS_NAMESERVERS6[@]}"}" | LC_ALL=C sort -u)
 assert_eq '10.0.0.53
 8.8.8.8' "$_ns_joined" \
-  'both IPv4 nameservers are collected regardless of leading whitespace or tab-vs-space separation; the IPv6 nameserver and the non-nameserver "options" line are excluded'
+  'both IPv4 nameservers are collected regardless of leading whitespace or tab-vs-space separation; the non-nameserver "options" line is excluded'
+assert_eq '2001:4860:4860::8888' "$_ns6_joined" \
+  'the IPv6 nameserver is collected into its own array - the change this ticket makes over the original skip-and-warn behaviour'
 
 # The real function against the REAL /etc/resolv.conf: only asserts it does
-# not blow up and only ever collects well-formed IPv4 dotted-quads - the
-# actual content is host-dependent so nothing about specific addresses is
-# asserted here.
+# not blow up and only ever collects well-formed addresses in each family -
+# the actual content is host-dependent so nothing about specific addresses
+# is asserted here.
 _netns_collect_nameservers
 for _ns in "${RUN_NETNS_NAMESERVERS[@]+"${RUN_NETNS_NAMESERVERS[@]}"}"; do
   assert_true "$([[ $_ns =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] && echo 0 || echo 1)" \
     "real /etc/resolv.conf nameserver '$_ns' is a well-formed IPv4 dotted-quad"
 done
+for _ns in "${RUN_NETNS_NAMESERVERS6[@]+"${RUN_NETNS_NAMESERVERS6[@]}"}"; do
+  assert_true "$([[ $_ns =~ ^[0-9a-fA-F:]+$ ]] && echo 0 || echo 1)" \
+    "real /etc/resolv.conf nameserver '$_ns' is a well-formed IPv6-shaped literal"
+done
 
 # ---------------------------------------------------------------------------
 # -- section 3: build/teardown COMMAND SEQUENCE against shadowed ip/
-#    iptables/sysctl (logic-level, not a real kernel test - see header) --
+#    iptables/ip6tables/sysctl (logic-level, not a real kernel test - see
+#    header) --
 # ---------------------------------------------------------------------------
-printf '\n-- _netns_build / _netns_teardown: command sequence against stubbed ip/iptables/sysctl --\n'
+printf '\n-- _netns_build / _netns_teardown: command sequence against stubbed ip/iptables/ip6tables/sysctl --\n'
 
 CMDLOG=$W/cmdlog.txt
 : >"$CMDLOG"
@@ -202,6 +296,7 @@ ip() {
   return 0
 }
 iptables() { printf 'iptables %s\n' "$*" >>"$CMDLOG"; return 0; }
+ip6tables() { printf 'ip6tables %s\n' "$*" >>"$CMDLOG"; return 0; }
 sysctl() { printf 'sysctl %s\n' "$*" >>"$CMDLOG"; return 0; }
 
 RUN_NETNS_SCOPE_CONF=$FIXTURE_SCOPE
@@ -212,20 +307,39 @@ _build_log=$(cat "$CMDLOG")
 assert_contains "$_build_log" "ip netns add $NS_NAME_USED" 'build creates the namespace'
 assert_contains "$_build_log" 'type veth peer name' 'build creates a veth pair'
 assert_contains "$_build_log" "ip netns exec $NS_NAME_USED ip route add 93.184.216.34/32" \
-  'build routes the resolved in-scope address into the namespace'
+  'build routes the resolved in-scope IPv4 address into the namespace'
 assert_contains "$_build_log" "ip netns exec $NS_NAME_USED ip route add 198.51.100.7/32" \
-  'build routes the literal in-scope address into the namespace'
+  'build routes the literal in-scope IPv4 address into the namespace'
 assert_not_contains "$_build_log" 'route add 0.0.0.0/0' \
-  'NO default route is ever installed inside the namespace - FAILS if a default route sneaks in, since that would make the "only admitted addresses are reachable" guarantee false'
+  'NO IPv4 default route is ever installed inside the namespace - FAILS if a default route sneaks in, since that would make the "only admitted addresses are reachable" guarantee false'
 assert_contains "$_build_log" 'MASQUERADE' 'build sets up NAT for the namespace to reach the outside world'
-assert_contains "$_build_log" "$NS_NAME_USED ip link set lo up" 'loopback is brought up inside the namespace'
+assert_contains "$_build_log" "$NS_NAME_USED ip link set lo up" 'loopback is brought up inside the namespace (both families - see below)'
+
+assert_contains "$_build_log" 'ip -6 addr add' 'build assigns an IPv6 address to the host-side veth end'
+assert_contains "$_build_log" "ip netns exec $NS_NAME_USED ip -6 addr add" \
+  'build assigns an IPv6 address to the namespace-side veth end'
+assert_contains "$_build_log" "ip netns exec $NS_NAME_USED ip -6 route add 2001:db8::1/128" \
+  'build routes the resolved-to-IPv6 in-scope address into the namespace - the change this ticket makes over the original IPv4-only implementation'
+assert_contains "$_build_log" "ip netns exec $NS_NAME_USED ip -6 route add 2001:db8::7/128" \
+  'build routes the literal IPv6 in-scope address into the namespace'
+assert_contains "$_build_log" "ip netns exec $NS_NAME_USED ip -6 route add 2001:db8::99/128" \
+  "build routes the dual-stack target's IPv6 extra-host into the namespace ALONGSIDE its own IPv4 route - proving a dual-stack target is admitted in BOTH families, not just one"
+assert_not_contains "$_build_log" 'route add ::/0' \
+  'NO IPv6 default route is ever installed inside the namespace either - FAILS if a v6 default route sneaks in, the IPv6 sibling of the v4 assertion above; this is what stops a dual-stack target bypassing containment over whichever family is left unconfigured'
+assert_contains "$_build_log" 'ip6tables -t nat -A POSTROUTING' \
+  "build sets up IPv6 NAT (MASQUERADE) for the namespace's own point-to-point address to reach the outside world"
+assert_contains "$_build_log" 'sysctl -w net.ipv6.conf.all.forwarding=1' \
+  "build enables IPv6 forwarding on the host so the namespace's v6 traffic can be NAT'd out"
 
 : >"$CMDLOG"
 _netns_teardown
 _teardown_log=$(cat "$CMDLOG")
-assert_contains "$_teardown_log" "iptables -t nat -D POSTROUTING" 'teardown removes the exact MASQUERADE rule build added'
-assert_contains "$_teardown_log" "ip link del" 'teardown deletes the veth pair (which cascades to the namespace-side peer)'
+assert_contains "$_teardown_log" "iptables -t nat -D POSTROUTING" 'teardown removes the exact IPv4 MASQUERADE rule build added'
+assert_contains "$_teardown_log" "ip6tables -t nat -D POSTROUTING" 'teardown removes the exact IPv6 MASQUERADE rule build added'
+assert_contains "$_teardown_log" "ip link del" 'teardown deletes the veth pair (which cascades to the namespace-side peer, in both families)'
 assert_contains "$_teardown_log" "ip netns del $NS_NAME_USED" 'teardown deletes the namespace itself'
+assert_contains "$_teardown_log" 'sysctl -w net.ipv6.conf.all.forwarding=' \
+  "teardown restores the host's original IPv6 forwarding sysctl"
 assert_eq 0 "${#RUN_NETNS_NAT_RULES[@]}" 'teardown clears its own NAT-rule bookkeeping, so a second teardown call is a safe no-op'
 
 printf '\n-- a build failure partway through still tears down everything already created --\n'
@@ -254,6 +368,7 @@ STATEFILE=$W/partial-build-state.sh
 (
   trap 'declare -p RUN_NETNS_NAME RUN_NETNS_VETH_HOST RUN_NETNS_NS_CREATED \
     RUN_NETNS_VETH_CREATED RUN_NETNS_IPFWD_CHANGED RUN_NETNS_IPFWD_ORIG \
+    RUN_NETNS_IP6FWD_CHANGED RUN_NETNS_IP6FWD_ORIG \
     RUN_NETNS_NAT_RULES >"$STATEFILE"' EXIT
   _netns_build
 ) >/dev/null 2>&1 || build_rc=$?
@@ -319,14 +434,31 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# -- section C: THE real, kernel-level test (this ticket's AC2) - gated on
-#    Linux + privilege + required tools. This is the ONLY block in this
-#    suite that creates a genuine namespace and makes a genuine connection
-#    attempt; everything else above is a stub/logic test (see header).
+# -- section C: THE real, kernel-level test (this ticket's AC2, and this
+#    file's own IPv6/dual-stack extension) - gated on Linux + privilege +
+#    required tools INCLUDING ip6tables + real host IPv6 kernel support.
+#    This is the ONLY block in this suite that creates a genuine namespace
+#    and makes a genuine connection attempt; everything else above is a
+#    stub/logic test (see header).
+#
+#    The gate below uses `type -P`, not `command -v` or a bare `command -v
+#    ip`: section 3 above shadows ip/iptables/ip6tables/sysctl with STUB
+#    FUNCTIONS that persist for the rest of THIS script's own process
+#    (bash functions are not scoped to a block), and `command -v` reports a
+#    function as found regardless of whether the real binary is on PATH -
+#    so a gate written that way would never correctly SKIP on a host that
+#    genuinely lacks one of these tools. `type -P` forces a PATH-only
+#    lookup, ignoring functions/aliases/builtins, so it reports what is
+#    ACTUALLY installed. For the same reason, every direct (non-`bash
+#    "$TOOL"`) introspection call below is prefixed with the `command`
+#    builtin, which has the identical bypass effect for a single
+#    invocation - `bash "$TOOL" ...` itself is unaffected either way, since
+#    a spawned subprocess never inherits this script's own shell functions.
 # ---------------------------------------------------------------------------
 if [[ $(uname -s) == Linux ]] && _have_netns_privilege \
-  && command -v ip >/dev/null 2>&1 && command -v iptables >/dev/null 2>&1; then
-  printf '\n-- section C: REAL kernel-level test (Linux, privileged, ip+iptables present) --\n'
+  && type -P ip >/dev/null 2>&1 && type -P iptables >/dev/null 2>&1 \
+  && type -P ip6tables >/dev/null 2>&1 && _netns_has_ipv6_kernel_support; then
+  printf '\n-- section C: REAL kernel-level test (Linux, privileged, ip+iptables+ip6tables present, host has IPv6) --\n'
 
   EMPTY_SCOPE=$W/empty-scope.conf
   : >"$EMPTY_SCOPE"
@@ -340,13 +472,59 @@ if [[ $(uname -s) == Linux ]] && _have_netns_privilege \
   bash "$TOOL" --scope-conf "$EMPTY_SCOPE" -- \
     timeout 5 bash -c 'exec 3<>/dev/tcp/203.0.113.5/80' >"$W/c-out.txt" 2>&1 || rc=$?
   assert_ne 0 "$rc" \
-    'a connection attempt from inside the real namespace to an address outside its route table fails - FAILS (rc=0) if the namespace has any route to the outside world it should not have'
+    'a connection attempt from inside the real namespace to an IPv4 address outside its route table fails - FAILS (rc=0) if the namespace has any route to the outside world it should not have'
 
-  ns_left=$(ip netns list 2>/dev/null || true)
+  rc6=0
+  # 2001:db8::1 is RFC 3849's documentation prefix: the IPv6 sibling of
+  # 203.0.113.5 above - guaranteed non-routable, and (the fixture scope is
+  # still empty) never added to this run's route table at all.
+  bash "$TOOL" --scope-conf "$EMPTY_SCOPE" -- \
+    timeout 5 bash -c 'exec 3<>/dev/tcp/2001:db8::1/80' >"$W/c6-out.txt" 2>&1 || rc6=$?
+  assert_ne 0 "$rc6" \
+    'a connection attempt from inside the real namespace to an IPv6 address outside its route table fails too - the IPv6 sibling of the block test above, proving BOTH families are contained by the same kernel-level "no route" mechanism, not merely a check that happens to also refuse'
+
+  # A genuinely IN-SCOPE IPv6 target: unlike the block cases above, this
+  # asserts (at the real kernel level, inside a genuinely-built namespace)
+  # that the /128 route the tool logs it is admitting really exists in the
+  # route table the wrapped command sees - "a v6 target connection works",
+  # proven without depending on real internet reachability (this project's
+  # own no-live-network testing discipline, docs/DESIGN.md §12), since the
+  # assertion is against the real, in-namespace `ip -6 route show` output
+  # rather than a live socket to a real host. Section B above already
+  # proves the command gets ISSUED (stub-level); this proves the kernel
+  # actually INSTALLED it.
+  V6_TARGET_SCOPE=$W/v6-target-scope.conf
+  cat >"$V6_TARGET_SCOPE" <<'V6_TARGET_SCOPE_EOF'
+id: netns-v6-target-live
+base-url: https://[2001:db8::42]/x
+V6_TARGET_SCOPE_EOF
+  bash "$TOOL" --scope-conf "$V6_TARGET_SCOPE" -- \
+    ip -6 route show >"$W/c-v6-route.txt" 2>&1
+  assert_contains "$(cat "$W/c-v6-route.txt")" '2001:db8::42' \
+    'an in-scope IPv6 target IS routed inside the real namespace the wrapped command runs in'
+
+  # Simulating "this host has no IPv6 kernel support" via
+  # RUN_NETNS_IF_INET6_FILE (this suite's own test-only indirection,
+  # exported to the child process here since a real Linux+root host that
+  # can run this whole section almost certainly DOES have real IPv6
+  # support, so there is no other deterministic way to exercise this real,
+  # end-to-end refusal path): a REAL invocation refuses immediately with
+  # exit 4, before building anything, rather than silently degrading to an
+  # IPv4-only namespace - the real-subprocess sibling of section 1b's
+  # in-process proof of the same property.
+  no_ipv6_rc=0
+  RUN_NETNS_IF_INET6_FILE=/no-such-if-inet6-for-test \
+    bash "$TOOL" --scope-conf "$EMPTY_SCOPE" -- true >"$W/c-noipv6.out" 2>&1 || no_ipv6_rc=$?
+  assert_eq "$SCOURSH_EXIT_INPUT" "$no_ipv6_rc" \
+    'a REAL invocation against a host simulated to lack IPv6 kernel support refuses with exit 4, never silently building an IPv4-only namespace'
+  assert_contains "$(cat "$W/c-noipv6.out")" 'IPv6' \
+    'the refusal names the actual reason (IPv6 kernel support), not a generic failure'
+
+  ns_left=$(command ip netns list 2>/dev/null || true)
   assert_not_contains "$ns_left" 'scoursh-ns-' \
-    'no scoursh-created namespace is left behind after the run - teardown ran even though <command> itself failed'
+    'no scoursh-created namespace is left behind after any of the runs above - teardown ran even where <command> itself failed or never started, in both address families'
 else
-  printf '\n-- section C: SKIPPED (needs Linux + root/CAP_NET_ADMIN+CAP_SYS_ADMIN + ip + iptables; this ticket'"'"'s AC2 kernel-level claim is NOT exercised on this host/run - see the header comment) --\n'
+  printf '\n-- section C: SKIPPED (needs Linux + root/CAP_NET_ADMIN+CAP_SYS_ADMIN + ip + iptables + ip6tables + real host IPv6 kernel support (/proc/net/if_inet6); this ticket'"'"'s AC2 kernel-level claim and this file'"'"'s IPv6/dual-stack extension are NOT exercised on this host/run - see the header comment) --\n'
 fi
 
 t_summary 'netns'

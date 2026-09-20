@@ -1,0 +1,28 @@
+{
+    "DistributionList": {
+        "Marker": "",
+        "MaxItems": 100,
+        "IsTruncated": false,
+        "Quantity": 3,
+        "Items": [
+            {
+                "Id": "EHARD1FIXTURE",
+                "ARN": "arn:aws:cloudfront::123456789012:distribution/EHARD1FIXTURE",
+                "Status": "Deployed",
+                "DomainName": "d1hardened.cloudfront.net"
+            },
+            {
+                "Id": "EPUB1FIXTURE",
+                "ARN": "arn:aws:cloudfront::123456789012:distribution/EPUB1FIXTURE",
+                "Status": "Deployed",
+                "DomainName": "d2public.cloudfront.net"
+            },
+            {
+                "Id": "EDENY1FIXTURE",
+                "ARN": "arn:aws:cloudfront::123456789012:distribution/EDENY1FIXTURE",
+                "Status": "Deployed",
+                "DomainName": "d3denied.cloudfront.net"
+            }
+        ]
+    }
+}

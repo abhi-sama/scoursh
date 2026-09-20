@@ -33,6 +33,16 @@
 #      21).  The wrong reading is "the crawler is the producer, so it owns the
 #      file" - which silently deletes every route SAST extracted.
 #   6. A CREDENTIAL-NAMED PARAMETER'S OBSERVED VALUE NEVER REACHES DISK.
+#   7. A THIRD-PARTY URL MINED OUT OF A FETCHED JS BUNDLE IS NEVER REQUESTED,
+#      and never even written to the inventory.  The wrong reading is "record
+#      it and let a later consumer's own gate catch it" - which this suite
+#      proves is unnecessary by asserting the request log directly: an
+#      adversarial bundle naming `api.stripe.com` and an ingest host shaped
+#      like a real error-reporting SDK's produces zero requests to either,
+#      and neither string appears anywhere in endpoints.json or
+#      parameters.json.  A relative path and an explicitly-relative `./`
+#      reference on the SAME target, by contrast, ARE seeded - the main
+#      prize this feature exists for.
 #
 # Every case that pins a decision names the reading it FAILS under, per
 # AGENTS.md's testing rule.  No case here needs a network or Docker: the
@@ -75,6 +85,15 @@ _slurp() {
   local f=$1
   [[ -r $f ]] || { printf ''; return 0; }
   cat -- "$f"
+}
+
+# `_run_dir_grep NEEDLE DIR` - true iff NEEDLE appears, literally, in ANY file
+# under DIR. Used where `_slurp` (one file) is not enough: a redaction
+# property is a claim about the WHOLE run's output, not about parameters.json
+# alone.
+_run_dir_grep() {
+  local needle=$1 dir=$2
+  grep -RIF -- "$needle" "$dir" >/dev/null 2>&1
 }
 
 # ===========================================================================
@@ -178,34 +197,224 @@ t_case 'an unnamed control contributes no parameter'
 assert_not_contains "$EX" 'input	submit' 'an input with no name attribute is not a parameter'
 
 t_case 'URL resolution follows RFC 3986, including the dot segments'
-B=https://h.example/dir/page.html
-assert_eq 'https://h.example/abs?q=1' "$(crawl_url_resolve "$B" '/abs?q=1')" 'a rooted reference keeps its query'
-assert_eq 'https://h.example/dir/rel.html' "$(crawl_url_resolve "$B" 'rel.html')" 'a relative reference resolves against the base directory'
-assert_eq 'https://h.example/up' "$(crawl_url_resolve "$B" '../up')" 'a parent reference climbs one level'
-assert_eq 'https://other.example/x' "$(crawl_url_resolve "$B" '//other.example/x')" 'a protocol-relative reference inherits the scheme'
-assert_eq 'https://h.example/etc' "$(crawl_url_resolve "$B" '/a/../../etc')" \
+CRAWL_BASE=https://h.example/dir/page.html
+assert_eq 'https://h.example/abs?q=1' "$(crawl_url_resolve "$CRAWL_BASE" '/abs?q=1')" 'a rooted reference keeps its query'
+assert_eq 'https://h.example/dir/rel.html' "$(crawl_url_resolve "$CRAWL_BASE" 'rel.html')" 'a relative reference resolves against the base directory'
+assert_eq 'https://h.example/up' "$(crawl_url_resolve "$CRAWL_BASE" '../up')" 'a parent reference climbs one level'
+assert_eq 'https://other.example/x' "$(crawl_url_resolve "$CRAWL_BASE" '//other.example/x')" 'a protocol-relative reference inherits the scheme'
+assert_eq 'https://h.example/etc' "$(crawl_url_resolve "$CRAWL_BASE" '/a/../../etc')" \
   'dot segments collapse past the root - FAILS if remove_dot_segments is skipped, which leaves a path a path-scoped scope target compares differently from what is actually requested'
-assert_eq 'https://h.example/dir/page.html' "$(crawl_url_resolve "$B" 'page.html#section')" \
+assert_eq 'https://h.example/dir/page.html' "$(crawl_url_resolve "$CRAWL_BASE" 'page.html#section')" \
   'a fragment is always dropped - FAILS if it is kept, which makes one endpoint look like many and costs a real request each'
 
 t_case 'a reference that is not a fetchable http(s) URL is REJECTED, not coerced'
 for ref in '#top' 'javascript:alert(1)' 'mailto:a@b.example' 'data:text/html,x' 'tel:+100' 'ws://h.example/s'; do
-  crawl_url_resolve "$B" "$ref" >/dev/null 2>&1 && rc=0 || rc=$?
+  crawl_url_resolve "$CRAWL_BASE" "$ref" >/dev/null 2>&1 && rc=0 || rc=$?
   assert_ne 0 "$rc" "'$ref' is rejected - FAILS under \"resolve it and let the gate sort it out\", which turns a non-link into a request"
 done
+
+# ===========================================================================
+printf -- '\n-- JS/source-map URL mining (crawl_engine.sh §5a) --\n'
+# ===========================================================================
+# crawl_js_scan_line/crawl_js_scan_body only ever RESOLVE a candidate to an
+# absolute URL; they never gate or fetch it - that is `_crawl_static`'s job,
+# proven end to end further down against a stubbed transport.  These cases
+# pin the pure extraction rules in isolation: what is a candidate at all, and
+# what specifically is excluded and why.
+
+t_case 'Content-Type recognises every real JS/source-map spelling'
+for ct in 'application/javascript' 'text/javascript' 'application/x-javascript' \
+  'application/ecmascript' 'text/ecmascript' 'module' 'application/javascript; charset=utf-8'; do
+  assert_status 0 "Content-Type '$ct' is recognised as JS" crawl_body_is_js "$ct" 'https://h.example/x'
+done
+
+t_case 'a generic/absent Content-Type falls back to the URL extension'
+assert_status 0 'a .js URL with no Content-Type at all' crawl_body_is_js '' 'https://h.example/app.js'
+assert_status 0 'a .mjs URL served as octet-stream' crawl_body_is_js 'application/octet-stream' 'https://h.example/app.mjs'
+assert_status 0 'a .map URL' crawl_body_is_js '' 'https://h.example/app.js.map'
+assert_status 1 'a plain page with none of the markers' crawl_body_is_js '' 'https://h.example/'
+
+t_case 'an EXPLICIT text/html Content-Type always wins over a .js-shaped URL'
+assert_status 1 'a catch-all route answering every path with its HTML shell is not mistaken for JS' \
+  crawl_body_is_js 'text/html; charset=utf-8' 'https://h.example/app.js'
+
+t_case 'a rooted path, an absolute URL, and a scheme-relative reference are all candidates'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'fetch("/api/v1/orders")'
+assert_contains "$(printf '%s\n' "${_CRAWL_JS_URLS[@]}")" 'https://h.example/api/v1/orders' \
+  'a root-relative literal resolves against the fetching response'"'"'s own URL'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' "var u = 'https://api.example.invalid/v2/widgets';"
+assert_contains "$(printf '%s\n' "${_CRAWL_JS_URLS[@]}")" 'https://api.example.invalid/v2/widgets' \
+  'an absolute http(s) literal is taken as-is'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'var u = "//cdn.example.invalid/api/health";'
+assert_contains "$(printf '%s\n' "${_CRAWL_JS_URLS[@]}")" 'https://cdn.example.invalid/api/health' \
+  'a scheme-relative literal inherits the fetching page'"'"'s own scheme'
+
+t_case 'an explicitly-relative ./ or ../ literal is a candidate too - this feature'"'"'s own second worked example'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' "axios.get('./v2/items')"
+assert_contains "$(printf '%s\n' "${_CRAWL_JS_URLS[@]}")" 'https://h.example/static/js/v2/items' \
+  './v2/items resolves against the fetching response'"'"'s own directory, the identical rule crawl_url_resolve already applies to a relative <a href>'
+
+t_case 'a bare word with none of the four markers is never a candidate'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'console.log("Loading application, please wait")'
+assert_eq 0 "${#_CRAWL_JS_URLS[@]}" \
+  'FAILS under "mine every quoted string", which cannot tell "componentName" from a relative path with no marker at all'
+
+t_case 'a mime type, a regex-as-string, a JS/CSS comment, and a static-asset path are all rejected'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'var a="application/json", b="/^[a-z0-9_-]+$/", c="/* build info */", d="/static/img/logo.png";'
+assert_eq 0 "${#_CRAWL_JS_URLS[@]}" \
+  'FAILS if any of the four false-positive shapes this section names slips through - a mime type never starts with /, a quoted regex is excluded by its raw ^ $ [ ] bytes, a comment opener is excluded by its own check, and a known static-asset extension is excluded outright'
+
+t_case 'a plain string literal that is exactly a parenthesised code fragment is rejected - measured against a real Angular router bundle'
+crawl_js_reset
+# The real, minified line this reproduces: Angular's router source calls
+# this.peekStartsWith("/(") to recognise its own aux-route syntax. Before
+# `(`/`)` joined the regex-metacharacter exclusion, "/(" passed every other
+# check here (it starts with `/`, carries none of ^ $ [ ] | \, is not a bare
+# `/`, is not a comment opener, and is not a static-asset extension) and was
+# mined as the bogus inventory endpoint `/(`.
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'n.peekStartsWith("/(")&&f()'
+assert_eq 0 "${#_CRAWL_JS_URLS[@]}" \
+  'FAILS before the ( ) exclusion existed, where "/(" is indistinguishable from a real rooted path and is mined as one'
+
+t_case 'a bare JS regex literal whose pattern matches a quote character is not misread as a string opener'
+crawl_js_reset
+# The real, minified line this reproduces: an HTML-escaping helper chains
+# `.replace(/"/g,"&quot;")`. The walker has no concept of a regex literal, so
+# without the "quote immediately preceded by /" guard it treats the regex
+# delimiter'"'"'s own /"/ as if it opened a string, captures the flag-plus-
+# punctuation run "/g," that sits before the REAL closing quote, and mines it
+# as the bogus endpoint `/g,` - measured against a real Juice Shop bundle.
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'str.replace(/"/g,"&quot;")'
+assert_eq 0 "${#_CRAWL_JS_URLS[@]}" \
+  'FAILS without the guard, which mines "/g," as a rooted path candidate; the REAL string literal ("&quot;") that follows the regex is correctly skipped anyway since it does not start with any of the four URL markers'
+
+t_case 'a query string literally present in the mined literal is carried through to the resolved URL'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'fetch("/search?q=hello&page=2")'
+assert_contains "$(printf '%s\n' "${_CRAWL_JS_URLS[@]}")" 'https://h.example/search?q=hello&page=2' \
+  'the query is observed, not invented - docs/INVENTORY-FORMAT.md'"'"'s own honesty rule for example values applied to which parameters exist at all'
+
+t_case 'a fragment-only, mailto:, and data: literal are all rejected - crawl_url_resolve'"'"'s own refusal, reused rather than reimplemented'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'var a="#top", b="mailto:x@example.invalid", c="data:text/plain,x";'
+assert_eq 0 "${#_CRAWL_JS_URLS[@]}" 'none of the three resolves to a fetchable URL'
+
+t_case 'a minified single-line bundle is chunked, and a candidate well inside a later chunk is still found'
+LONGPAD=$(printf 'x%.0s' $(seq 1 4090))
+JSBODYFILE=$W/js-chunk-body.js
+# The padding carries NO quote character, so it cannot itself straddle the
+# chunk boundary and throw off which quote the next chunk reads as opening
+# versus closing - that hazard is exercised on its own, deliberately, in the
+# next case.
+printf '// %s\nfetch("/api/after-the-boundary");' "$LONGPAD" >"$JSBODYFILE"
+crawl_js_reset
+crawl_js_scan_body "$JSBODYFILE" 'https://h.example/static/js/main.js'
+assert_contains "$(printf '%s\n' "${_CRAWL_JS_URLS[@]}")" 'https://h.example/api/after-the-boundary' \
+  'a real candidate well inside a later chunk is still found - chunking must not lose everything past the first boundary'
+rm -f "$JSBODYFILE"
+
+t_case 'a quoted literal that itself straddles a chunk boundary is missed, never mis-scanned'
+LONGPAD2=$(printf 'x%.0s' $(seq 1 4090))
+JSBODYFILE2=$W/js-chunk-straddle.js
+# The FIRST string here opens before byte 4096 and closes after it, so it
+# straddles the chunk split; `_CRAWL_JS_MAX_LINE_BYTES`'s own header names
+# this the accepted cost. What matters is the DIRECTION of the failure: the
+# straddling literal is simply never seen (there is no request budget spent
+# on a phantom half-URL), and the well-formed literal is asserted absent too,
+# which pins the ACTUAL observed effect (both are lost) rather than the
+# narrower, rosier claim that only the straddling one is.
+printf 'var pad = "%s"; fetch("/api/after-the-boundary");' "$LONGPAD2" >"$JSBODYFILE2"
+crawl_js_reset
+crawl_js_scan_body "$JSBODYFILE2" 'https://h.example/static/js/main.js'
+assert_eq 0 "${#_CRAWL_JS_URLS[@]}" \
+  'FAILS if a straddling literal is ever turned into a fabricated URL instead of simply being dropped - the direction this bound must never be wrong in'
+
+t_case 'an unterminated quote near the end of a line does not hang or corrupt later parsing'
+crawl_js_reset
+crawl_js_scan_line 'https://h.example/static/js/main.js' 'var broken = "/never/closes/this/quote/at/all/keeps/going/without/end'
+assert_eq 0 "${#_CRAWL_JS_URLS[@]}" 'an unterminated literal yields no candidate rather than reading past the line'
+
+# ===========================================================================
+printf -- '\n-- content-type-absent markup sniffing (crawl_engine.sh, crawl_body_looks_like_markup) --\n'
+# ===========================================================================
+# A real active scan printed "hosthdr_engine.sh: line 286: warning: command
+# substitution: ignored null byte in input" to stderr from the sibling
+# hh_body_reflects, because a fetched response body is arbitrary
+# target-controlled bytes and hh_body_reflects used to load it into a bash
+# string via `body=$(cat ...)`/`body=$(head -c ...)`.  crawl.sh's own
+# no-Content-Type sniff (used to decide whether a headerless response is fed
+# to the tag scanner) had the identical `sniff=$(head -c 512 -- "$body")`
+# shape and the identical exposure, so crawl_body_looks_like_markup replaces
+# it the same way: matched on the file, through scan_match, never by reading
+# the body into a bash string.
+CS=$SCOURSH_SCRATCH/dast-crawl-sniff
+rm -rf "$CS"
+mkdir -p "$CS"
+
+t_case 'a NUL-containing body that also carries an HTML marker still looks like markup'
+CSF1=$CS/nul-with-marker.bin
+printf 'AAAA\x00BBBB<a href="/x">link</a>CCCC' >"$CSF1"
+CSF1_ERR=$CS/nul-with-marker.stderr
+RC1=0
+crawl_body_looks_like_markup "$CSF1" >/dev/null 2>"$CSF1_ERR" || RC1=$?
+assert_eq 0 "$RC1" 'the <a > marker is still found past the NUL byte'
+CSF1_ERR_TEXT=$(cat -- "$CSF1_ERR" 2>/dev/null || printf '')
+assert_not_contains "$CSF1_ERR_TEXT" 'ignored null byte' \
+  'no "ignored null byte" warning reaches stderr - FAILS against the pre-fix $(head -c ...) implementation'
+
+t_case 'a NUL-containing body with no HTML marker does not look like markup'
+CSF2=$CS/nul-clean.bin
+printf 'AAAA\x00BBBBnothing interesting hereCCCC' >"$CSF2"
+CSF2_ERR=$CS/nul-clean.stderr
+RC2=0
+crawl_body_looks_like_markup "$CSF2" >/dev/null 2>"$CSF2_ERR" || RC2=$?
+assert_eq 1 "$RC2" 'no marker, no NUL warning either, is reported as non-markup'
+CSF2_ERR_TEXT=$(cat -- "$CSF2_ERR" 2>/dev/null || printf '')
+assert_not_contains "$CSF2_ERR_TEXT" 'ignored null byte' \
+  'no warning on the negative NUL case either'
+
+t_case 'an ordinary plain-text body with no marker at all does not look like markup'
+CSF3=$CS/plain.bin
+printf 'plain text, nothing markup-shaped here' >"$CSF3"
+assert_status 1 'a plain body is not markup' crawl_body_looks_like_markup "$CSF3"
+
+t_case 'an ordinary HTML body with no NUL byte still looks like markup'
+CSF4=$CS/plain-html.bin
+printf '<!DOCTYPE html><html><body>hi</body></html>' >"$CSF4"
+assert_status 0 'a real HTML document is recognised' crawl_body_looks_like_markup "$CSF4"
 
 # ===========================================================================
 printf -- '\n-- specification ingestion (crawl_engine.sh §8) --\n'
 # ===========================================================================
 TGT=https://crawl.fixture.invalid
 
+# `_CRAWL_EP`/`_CRAWL_PARAM` entries are US(0x1f)-separated, not tab - a tab
+# is an IFS-*whitespace* character, so a run of empty fields (routine here:
+# `status`/`content_type` are both empty for every spec-added endpoint) folds
+# into one delimiter under `IFS=$'\t' read` and shifts every later field left
+# (the DAST-11 lesson, reproduced and fixed in crawl_engine.sh itself). `cut`
+# has no such folding - it is delimiter-exact - so `-d $'\x1f'` here is enough.
+_EPSEP=$'\x1f'
 _ep_lines() {
   local r
-  for r in "${_CRAWL_EP[@]+"${_CRAWL_EP[@]}"}"; do printf '%s|%s|%s\n' "$(printf '%s' "$r" | cut -f3)" "$(printf '%s' "$r" | cut -f4)" "$(printf '%s' "$r" | cut -f7)"; done
+  for r in "${_CRAWL_EP[@]+"${_CRAWL_EP[@]}"}"; do printf '%s|%s|%s\n' "$(printf '%s' "$r" | cut -d "$_EPSEP" -f3)" "$(printf '%s' "$r" | cut -d "$_EPSEP" -f4)" "$(printf '%s' "$r" | cut -d "$_EPSEP" -f7)"; done
 }
 _param_lines() {
   local r
-  for r in "${_CRAWL_PARAM[@]+"${_CRAWL_PARAM[@]}"}"; do printf '%s|%s|%s|%s\n' "$(printf '%s' "$r" | cut -f6)" "$(printf '%s' "$r" | cut -f7)" "$(printf '%s' "$r" | cut -f8)" "$(printf '%s' "$r" | cut -f9)"; done
+  for r in "${_CRAWL_PARAM[@]+"${_CRAWL_PARAM[@]}"}"; do printf '%s|%s|%s|%s\n' "$(printf '%s' "$r" | cut -d "$_EPSEP" -f6)" "$(printf '%s' "$r" | cut -d "$_EPSEP" -f7)" "$(printf '%s' "$r" | cut -d "$_EPSEP" -f8)" "$(printf '%s' "$r" | cut -d "$_EPSEP" -f9)"; done
+}
+# `url|request_body_type` - IMPORT-02/03/04's field, the 11th of
+# crawl_add_endpoint's tuple (`_ep_lines` above deliberately doesn't carry it,
+# so every existing 3-field assertion is unaffected).
+_ep_body_type_lines() {
+  local r
+  for r in "${_CRAWL_EP[@]+"${_CRAWL_EP[@]}"}"; do printf '%s|%s\n' "$(printf '%s' "$r" | cut -d "$_EPSEP" -f4)" "$(printf '%s' "$r" | cut -d "$_EPSEP" -f11)"; done
 }
 
 t_case 'an OpenAPI 3 document yields every operation, including one nothing links to'
@@ -238,6 +447,68 @@ assert_contains "$EPS" "GET|$TGT/v1/users|openapi" 'basePath is the Swagger 2 sp
 assert_contains "$EPS" "POST|$TGT/v1/users|openapi" 'and a second method on it'
 assert_contains "$EPS" "GET|$TGT/v1/users/{userId}|openapi" 'and a templated path'
 assert_contains "$(_param_lines)" 'page|query|openapi' 'its parameters land too'
+
+t_case 'IMPORT-03: a Swagger 2.0 in:body parameter'"'"'s schema is resolved into real field parameters'
+assert_contains "$(_param_lines)" '/username|body|openapi|alice' \
+  'the body parameter'"'"'s own name ("body") is a human label, not a field name - FAILS under the pre-IMPORT-03 reading, which stores that label itself as a bogus parameter instead of resolving its schema'
+assert_not_contains "$(_param_lines)" 'body|body|openapi' \
+  'and the label itself never becomes a parameter beside the real field - FAILS if Pass 4 is not taught to skip location=body once Pass 3 has already resolved its schema'
+assert_contains "$(_ep_body_type_lines)" "$TGT/v1/users|json" \
+  'the endpoint is flagged request_body_type=json purely from the in:body parameter existing - Swagger 2.0 has no requestBody/content to read a media type off'
+
+# ===========================================================================
+printf -- '\n-- IMPORT-03: OpenAPI requestBody + $ref/components resolution (crawl_engine.sh §8a) --\n'
+# ===========================================================================
+# A reproduction of a real gap: an
+# application whose entire attack surface sits in requestBody, with a $ref to
+# a components.schemas entry, produced ZERO parameters before this ticket.
+
+t_case 'a requestBody whose schema is entirely a $ref yields nested body parameters, not zero'
+crawl_inv_reset
+crawl_spec_openapi "$FIXTURES/specs/openapi.json" crawl-fixture "$TGT" || _t_no 'openapi parsed' "$_CRAWL_SPEC_ERROR"
+EPS=$(_ep_lines)
+PARAMS=$(_param_lines)
+assert_contains "$EPS" "POST|$TGT/api/v2/orders|openapi" 'the requestBody-only operation is still an endpoint'
+assert_contains "$(_ep_body_type_lines)" "$TGT/api/v2/orders|json" \
+  'and it is flagged request_body_type=json - FAILS under the pre-IMPORT-03 reading, in which every body-location parameter is sent as flat form-urlencoded regardless of what the spec declared'
+assert_contains "$PARAMS" '/customerReference|body|openapi|cust-42' 'a top-level $ref-resolved field, named by its RFC 6901 pointer'
+assert_contains "$PARAMS" '/orderLines/0/productId|body|openapi|p1' \
+  'a field nested through an array and another object - FAILS under a reading that only reads requestBody.content.*.schema.properties one level deep, which is exactly the shape docs/INVENTORY-FORMAT.md §3a documents this as needing to reach'
+assert_contains "$PARAMS" '/orderLines/0/quantity|body|openapi|2' 'and its sibling field'
+assert_ne 0 "$(printf '%s\n' "$PARAMS" | grep -c '|body|openapi|')" \
+  'parameters>0 for a spec whose surface is ENTIRELY in requestBody - the exact §1b reproduction this ticket exists to close'
+
+t_case 'the servers[].url host is STILL discarded, requestBody or not'
+assert_not_contains "$EPS" 'spec-declared-host' \
+  'FAILS if requestBody resolution reads a host from anywhere in the document rather than trusting only the BASE_URL argument - the identical property dast-crawl.sh already pins for the non-requestBody paths above'
+
+t_case 'a $ref chain that loops back on itself is dropped, counted, and does not hang the scan'
+crawl_inv_reset
+crawl_spec_openapi "$FIXTURES/specs/openapi-refs.json" crawl-fixture "$TGT" || _t_no 'refs fixture parsed' "$_CRAWL_SPEC_ERROR"
+PARAMS=$(_param_lines)
+assert_contains "$PARAMS" '/name|body|openapi|n1' 'the non-cyclic sibling field still resolves'
+assert_not_contains "$PARAMS" '/child' \
+  'the self-referencing field never resolves to an infinite pointer - FAILS under "follow every $ref", which never terminates'
+assert_eq 1 "${_CRAWL_SPEC_REF_UNRESOLVED:-0}" \
+  'and the drop is COUNTED rather than merely absent - FAILS under a reading that silently gives up with no coverage_reduction to show for it'
+
+t_case 'a 3.1 oneOf/anyOf resolves the FIRST subschema, and the pick is counted'
+assert_contains "$PARAMS" '/a|body|openapi|x' 'the first oneOf branch'"'"'s field is resolved'
+assert_not_contains "$PARAMS" '/b' \
+  'the second branch is NOT also resolved - a schema is one shape, and merging both would describe a body the API never accepts'
+assert_eq 1 "${_CRAWL_SPEC_POLY_UNSUPPORTED:-0}" \
+  'and picking only the first branch is counted, per the ticket'"'"'s own "record a reduction rather than silently dropping" - FAILS if oneOf/anyOf is resolved with no trace of the narrowing'
+
+t_case 'a JSON-pointer-named credential field is still covered by the secretish-name control'
+crawl_inv_reset
+crawl_add_param ep-json crawl-fixture POST "$TGT/x" /password body openapi hunter2
+crawl_add_param ep-json crawl-fixture POST "$TGT/x" /user/token body openapi abc123
+PARAMS=$(_param_lines)
+assert_contains "$PARAMS" '/password|body|openapi|' \
+  'the pointer /password is still recognised as a credential by its LAST segment - FAILS under the anchored ^password$ match alone, which never matches a string starting with "/" and would leave a real password sitting in example'
+assert_contains "$PARAMS" '/user/token|body|openapi|' 'a nested pointer'"'"'s last segment is tested the same way'
+assert_not_contains "$PARAMS" 'hunter2' 'the captured password value appears nowhere'
+assert_not_contains "$PARAMS" 'abc123' 'nor does the captured token value'
 
 t_case 'a YAML spec using an unsupported construct fails LOUDLY, with a reason'
 crawl_inv_reset
@@ -278,6 +549,56 @@ assert_contains "$PARAMS" 'password|body|har|' \
   'the password parameter is still inventoried, with an EMPTY example - FAILS under "redact() covers it", which it provably cannot: no redaction rule can classify an arbitrary human-chosen password by shape, so a real captured password would land on disk'
 assert_not_contains "$PARAMS" 'correct-horse-battery' 'the captured value appears nowhere'
 
+# ===========================================================================
+printf -- '\n-- IMPORT-04: HAR JSON body + headers + path-template dedup (crawl_engine.sh §8) --\n'
+# ===========================================================================
+# A reproduction of a real gap: a Chrome-shaped
+# HAR of real XHRs lost every JSON body and every header before this ticket,
+# and a numbered listing inflated the surface into one endpoint per number.
+
+t_case 'postData.text on a JSON entry is flattened into RFC 6901 body parameters'
+assert_contains "$(_ep_body_type_lines)" "$TGT/xhr/register|json" \
+  'the entry is flagged request_body_type=json from postData.mimeType - FAILS under "only postData.params is ever read", which is the pre-IMPORT-04 shape and produces zero body parameters for a JSON XHR'
+assert_contains "$PARAMS" '/email|body|har|new@example.invalid' 'a top-level JSON field, named by its RFC 6901 pointer'
+assert_contains "$PARAMS" '/profile/age|body|har|30' \
+  'a field nested inside an object - FAILS under a reading that only reads postData.text as one opaque string rather than re-flattening the decoded body'
+assert_not_contains "$PARAMS" 'hunter2' 'the credential-named nested field never leaks its captured value'
+assert_contains "$PARAMS" '/password|body|har|' \
+  'and the /password pointer is still recognised as a credential by its last segment, keeping its NAME with an EMPTY example - the identical secretish-pointer control IMPORT-03 needs for OpenAPI'
+
+t_case 'the classic form login (postData.params) is byte-for-byte unaffected by the JSON-body path landing beside it'
+assert_contains "$PARAMS" 'email|body|har|someone@example.invalid' 'the un-prefixed flat form field name is unchanged'
+assert_not_contains "$(_ep_body_type_lines)" "$TGT/xhr/login|json" \
+  'and that endpoint is NOT flagged json - it posted application/x-www-form-urlencoded, never JSON'
+
+t_case 'request.headers[] lands through a bounded allowlist, still redaction-controlled'
+assert_contains "$PARAMS" 'Authorization|header|har|' \
+  'Authorization is on the allowlist and inventoried, with an EMPTY example - FAILS under "headers are never read", the exact §1c gap, and under "redact() alone", which cannot classify an arbitrary bearer token by shape as reliably as the name-based control does'
+assert_not_contains "$PARAMS" 'har-payload' 'the captured bearer token value appears nowhere'
+assert_not_contains "$PARAMS" 'Accept|header' 'Accept is boilerplate on every request and is not on the allowlist'
+assert_not_contains "$PARAMS" 'User-Agent|header' \
+  'nor is User-Agent - FAILS under "allowlist means RFC-7230-token", which both of these already are, so only an explicit NAME list keeps them out'
+
+t_case 'a numbered listing collapses onto ONE endpoint with a {id}-style path'
+EPS=$(_ep_lines)
+assert_contains "$EPS" "GET|$TGT/api/BasketItems/{id}|har" \
+  'FAILS under "one endpoint per literal URL", which is the exact §1c gap: a numbered listing inflates the surface and every later check re-tests the identical handler once per number'
+assert_not_contains "$EPS" '/api/BasketItems/1' 'the literal /1 path is not its own endpoint'
+assert_not_contains "$EPS" '/api/BasketItems/2' 'nor is /2 - both collapsed into the templated one above'
+
+t_case 'a third-party HAR entry still has its host discarded, and its JSON body still parses'
+assert_contains "$EPS" "POST|$TGT/collect|har" \
+  'the third-party analytics call is re-based onto this run'"'"'s own target - the scope safety property (§4a) - contributing only its path'
+assert_not_contains "$EPS" 'collector.example.invalid' 'the third-party host itself never appears in any endpoint'
+assert_contains "$PARAMS" '/cid|body|har|abc123' \
+  'and its JSON body is STILL parsed even though the entry was re-based - FAILS under a reading that only flattens postData.text for entries that kept their original host'
+
+t_case 'a non-http(s) HAR entry is dropped, counted, and produces no endpoint'
+assert_not_contains "$EPS" 'chrome-extension' \
+  'a chrome-extension:// entry contributes nothing - this run has no authorised host to re-base it onto'
+assert_eq 1 "${_CRAWL_HAR_DROPPED:-0}" \
+  'and the drop is COUNTED - FAILS under the pre-IMPORT-04 shape, a bare `continue` with nothing to show for it in run.json'
+
 t_case 'a GraphQL SDL schema yields one endpoint and one parameter per root field'
 crawl_inv_reset
 crawl_spec_graphql "$FIXTURES/specs/schema.graphql" crawl-fixture "$TGT/graphql" || _t_no 'sdl parsed' "$_CRAWL_SPEC_ERROR"
@@ -298,6 +619,163 @@ assert_contains "$PARAMS" 'signIn|graphql|graphql' 'and of the one named by muta
 assert_not_contains "$PARAMS" 'viewer|graphql|graphql|x' 'no stray field shape'
 assert_not_contains "$PARAMS" 'email|graphql' \
   'a field of an ordinary type is not an operation - FAILS under "match the literal type name Query", which misses a schema whose root is called RootQuery and is wrong for one that has a non-root type called Query'
+
+# ===========================================================================
+printf -- '\n-- IMPORT-05: import-time hardening of untrusted param name + location (crawl_engine.sh §6) --\n'
+# ===========================================================================
+# Two pre-existing defects a hostile spec/HAR/hand-written inventory can trip,
+# fixed at the one place every
+# producer already funnels through: crawl_add_param.
+#
+#   (a) A header-location name that is not an RFC 7230 token reaches
+#       http_request_header, which `die`s the WHOLE PROCESS (exit 5,
+#       lib/http.sh:625-630) - reproduced end to end, in an isolated
+#       subprocess, in tests/suites/dast-inject-engine.sh, since that is
+#       where the crash actually happens. Proven HERE: crawl_add_param never
+#       admits the name in the first place.
+#   (b) A `location` outside docs/INVENTORY-FORMAT.md §3's seven-value
+#       vocabulary was stored as-is (only non-empty name + dedup were
+#       checked), and inject_send had no arm for it - "tested clean" for a
+#       parameter nothing was ever sent for (also reproduced in
+#       tests/suites/dast-inject-engine.sh, against a byte copy of the
+#       pre-fix file).
+
+t_case 'a header-location parameter whose name is not an RFC 7230 token is never admitted'
+crawl_inv_reset
+crawl_add_param ep1 crawl-fixture GET "$TGT/x" 'X Bad Name' header openapi ''
+assert_eq 0 "${#_CRAWL_PARAM[@]}" \
+  'the row is not stored - FAILS if crawl_add_param validates only non-empty name (its pre-IMPORT-05 shape), which is exactly what let this name become a header inventory row'
+assert_eq 1 "${_CRAWL_PARAM_INVALID_HEADER_NAME:-0}" \
+  'and the refusal is counted, so it can reach run.json as a coverage_reduction rather than vanishing silently'
+
+t_case 'a VALID header-location name is unaffected - this is a token check, not a header ban'
+crawl_inv_reset
+crawl_add_param ep1 crawl-fixture GET "$TGT/x" 'X-Trace-Id' header openapi ''
+assert_eq 1 "${#_CRAWL_PARAM[@]}" 'the row IS stored'
+assert_eq 0 "${_CRAWL_PARAM_INVALID_HEADER_NAME:-0}" 'and nothing was counted as invalid'
+
+t_case 'a non-header location is never held to the header token rule'
+crawl_inv_reset
+crawl_add_param ep1 crawl-fixture GET "$TGT/x" 'not a token either' query openapi ''
+assert_eq 1 "${#_CRAWL_PARAM[@]}" \
+  'a query parameter with the identical unfriendly name is stored anyway - FAILS if the token check applied regardless of location, which would reject query parameter names no rule requires to be tokens at all'
+
+t_case 'a location outside the frozen seven-value vocabulary is never stored'
+crawl_inv_reset
+crawl_add_param ep1 crawl-fixture GET "$TGT/x" name json openapi ''
+assert_eq 0 "${#_CRAWL_PARAM[@]}" \
+  'the row is not stored - FAILS if crawl_add_param stores whatever location string it is handed, which inject_send then has no arm for and silently drops while still reporting the send as clean'
+assert_eq 1 "${_CRAWL_PARAM_INVALID_LOCATION:-0}" 'and the refusal is counted'
+
+t_case 'every value in the frozen vocabulary is still accepted'
+crawl_inv_reset
+for loc in query body path header cookie formData graphql; do
+  name=n_$loc
+  [[ $loc == header ]] && name=X-Ok
+  crawl_add_param ep1 crawl-fixture GET "$TGT/x" "$name" "$loc" openapi ''
+done
+assert_eq 7 "${#_CRAWL_PARAM[@]}" \
+  'all seven land - FAILS if the vocabulary check is stricter than docs/INVENTORY-FORMAT.md §3 actually declares'
+assert_eq 0 "${_CRAWL_PARAM_INVALID_LOCATION:-0}" 'none of them were counted as invalid'
+
+# The end-to-end proof (a hostile spec, through a real scan.sh dast crawl
+# phase) needs $FIX and _crawl_scan, which the stubbed-transport section below
+# defines - see 'a hostile OpenAPI header-parameter name is dropped end to
+# end' further down, right after the crawl-depth case.
+
+# ===========================================================================
+printf -- '\n-- security audit finding A1: a JSON-escaped C0 control byte cannot forge the 0x1f tuple delimiter (crawl_engine.sh §6) --\n'
+# ===========================================================================
+# `crawl_json_unescape` decodes a JSON `` (or any other `\u00XX` C0)
+# escape in an untrusted name/value/method/URL into the RAW byte - which is
+# the exact US (0x1f) `crawl_add_endpoint`/`crawl_add_param` use to join their
+# own tuple. A raw control byte smuggled into one field therefore shifts
+# every field after it once the tuple is re-split with `IFS=$'\x1f' read`
+# (`crawl_inv_write_endpoints`/`crawl_inv_write_parameters` above), forging
+# whichever field the shift lands on - reproduced concretely below, before
+# testing that `crawl_has_control_byte` rejects the row outright instead.
+
+t_case 'crawl_has_control_byte recognises every C0 byte and DEL, and nothing else'
+CTL=$(printf '\x1f')
+assert_status 0 'the unit separator itself (0x1f)' crawl_has_control_byte "a${CTL}b"
+assert_status 0 'a bare CR' crawl_has_control_byte "$(printf 'a\rb')"
+assert_status 0 'a bare LF' crawl_has_control_byte "$(printf 'a\nb')"
+assert_status 0 'DEL (0x7f)' crawl_has_control_byte "$(printf 'a\x7fb')"
+assert_status 1 'an ordinary space is NOT a control byte' crawl_has_control_byte 'a b'
+assert_status 1 'an ordinary token is clean' crawl_has_control_byte 'X-Good-Name'
+
+t_case 'WITHOUT the guard, an embedded 0x1f in a parameter NAME forges the written LOCATION field'
+# The exact mechanism this ticket closes, reproduced directly against
+# crawl_inv_write_parameters rather than described: `crawl_has_control_byte`
+# is mutated out in a subshell (bash function tables do not escape a
+# subshell, so the real function is untouched for every later case), and the
+# forged output is asserted, not merely a return code.
+(
+  crawl_has_control_byte() { return 1; }
+  crawl_inv_reset
+  crawl_add_param ep1 crawl-fixture GET "$TGT/x" "Bad Name${CTL}header" query openapi ''
+  crawl_inv_write_parameters "$W/mut-cb-parameters.json"
+)
+MUTPARAMS=$(_slurp "$W/mut-cb-parameters.json")
+assert_contains "$MUTPARAMS" '"location": "header"' \
+  'the embedded byte shifts the tuple so the WRITTEN row claims location=header - the row was validated as location=query, and the IMPORT-05 header-token check never ran because that check only fires for location==header AT CALL TIME, before the corruption exists. This is the forgery finding A1 describes, reproduced end to end against the real writer - FAILS (i.e. does not reproduce) if crawl_inv_write_parameters stops re-splitting on 0x1f, which would mean this whole class of defect no longer applies'
+assert_not_contains "$MUTPARAMS" '"location": "query"' \
+  'the real location is gone, overwritten by the shift rather than merely duplicated'
+assert_contains "$MUTPARAMS" '"name": "Bad Name"' \
+  'and the name itself is truncated at the injected byte, rather than raising any error - a forged row, not a crash, which is exactly why it would otherwise reach the inventory silently'
+
+t_case 'WITH the guard, the identical embedded 0x1f is rejected before the tuple is ever built'
+crawl_inv_reset
+crawl_add_param ep1 crawl-fixture GET "$TGT/x" "Bad Name${CTL}header" query openapi ''
+assert_eq 0 "${#_CRAWL_PARAM[@]}" \
+  'the row is not stored at all - FAILS under the mutated reading directly above, which is the point of pairing the two cases'
+assert_eq 1 "${_CRAWL_PARAM_CONTROL_BYTE:-0}" 'and the refusal is counted, so it can reach run.json as a coverage_reduction'
+
+t_case 'a control byte in an endpoint field (method/url/source/status/content-type) is rejected the same way'
+crawl_inv_reset
+crawl_add_endpoint crawl-fixture "GE${CTL}T" "$TGT/cb" crawl 0 200 text/html
+assert_eq 0 "${#_CRAWL_EP[@]}" 'the endpoint is not stored'
+assert_eq 1 "${_CRAWL_EP_CONTROL_BYTE:-0}" 'and the refusal is counted'
+crawl_add_endpoint crawl-fixture GET "$TGT/clean" crawl 0 200 text/html
+assert_eq 1 "${#_CRAWL_EP[@]}" 'a clean endpoint alongside it is unaffected'
+
+t_case 'a control byte does not survive a round trip through crawl_json_unescape into crawl_add_param'
+# The realistic path: crawl_json_unescape (crawl_engine.sh §2) is what turns
+# the SIX-character JSON escape into the raw byte in the first place - this
+# is the actual decoder finding A1 names, not a hand-built raw byte.
+crawl_inv_reset
+# SC1003: one literal backslash is exactly what this needs to hold.
+# shellcheck disable=SC1003
+BS=$(printf '\\')
+DECODED_NAME=$(crawl_json_unescape "Bad Name${BS}u001fheader")
+assert_eq "Bad Name${CTL}header" "$DECODED_NAME" \
+  'sanity: the JSON escape really does decode to the raw delimiter byte'
+crawl_add_param ep1 crawl-fixture GET "$TGT/x" "$DECODED_NAME" query openapi ''
+assert_eq 0 "${#_CRAWL_PARAM[@]}" 'the decoded, now-hostile name is still rejected'
+assert_eq 1 "${_CRAWL_PARAM_CONTROL_BYTE:-0}" 'and counted'
+
+t_case 'an OpenAPI document with the escaped byte in one parameter name imports the well-formed sibling and drops only the hostile one'
+crawl_inv_reset
+crawl_spec_openapi "$FIXTURES/specs/openapi-control-byte.json" crawl-fixture "$TGT" \
+  || _t_no 'openapi parsed' "$_CRAWL_SPEC_ERROR"
+PARAMS=$(_param_lines)
+assert_contains "$PARAMS" 'X-Good-Name|query|openapi' 'the sibling parameter, on the same operation, is unaffected'
+assert_not_contains "$PARAMS" 'Bad Name' 'the hostile name never reaches the inventory, whole or truncated'
+assert_eq 1 "${_CRAWL_PARAM_CONTROL_BYTE:-0}" 'and the drop is counted'
+
+t_case 'a HAR entry whose request.method carries CRLF is dropped, closing the CRLF-in-HAR-method observation in the same change'
+crawl_inv_reset
+crawl_spec_har "$FIXTURES/specs/har-control-byte.har" crawl-fixture "$TGT" \
+  || _t_no 'har parsed' "$_CRAWL_SPEC_ERROR"
+EPS=$(_ep_lines)
+assert_contains "$EPS" "GET|$TGT/xhr/good|har" 'the well-formed sibling entry is unaffected'
+assert_not_contains "$EPS" '/xhr/cb' 'the CRLF-carrying entry never reaches the inventory'
+assert_eq 1 "${_CRAWL_EP_CONTROL_BYTE:-0}" 'and the drop is counted'
+
+# The end-to-end proof (both fixtures, through a real scan.sh dast crawl
+# phase) needs $FIX and _crawl_scan - see 'A1: a hostile OpenAPI parameter
+# name with an embedded control byte degrades rather than forges or aborts'
+# further down, right after the IMPORT-05 end-to-end case.
 
 # ===========================================================================
 printf -- '\n-- the tension-21 inventory merge (crawl_engine.sh §7) --\n'
@@ -386,9 +864,19 @@ case $p in
   *) f=${p#/} ;;
 esac
 src=$CRAWL_STUB_PAGES/$f
+# Content-Type follows the fixture file's own extension - real enough for the
+# JS-endpoint-discovery cases below to exercise crawl_body_is_js's
+# Content-Type arm rather than only its extension fallback.  Everything else
+# still defaults to text/html, matching every case that predates this.
+case $f in
+  *.js) ct='application/javascript' ;;
+  *.map) ct='application/json' ;;
+  *.css) ct='text/css' ;;
+  *) ct='text/html; charset=utf-8' ;;
+esac
 if [[ -f $src ]]; then
   [[ -n $bodyout ]] && cat -- "$src" >"$bodyout"
-  printf '200\n\ntext/html; charset=utf-8\n'
+  printf '200\n\n%s\n' "$ct"
 else
   [[ -n $bodyout ]] && printf 'not found\n' >"$bodyout"
   printf '404\n\ntext/html\n'
@@ -439,7 +927,7 @@ _crawl_scan() {
     SCOURSH_HTTP_TRANSPORT=$STUB_DIR/transport \
     SCOURSH_HTTP_RESOLVE=$STUB_DIR/resolve \
     CRAWL_STUB_LOG=$REQLOG \
-    CRAWL_STUB_PAGES=$FIXTURES/pages \
+    CRAWL_STUB_PAGES=${CRAWL_STUB_PAGES:-$FIXTURES/pages} \
     bash "$ROOT/scan.sh" dast --target crawl-fixture --out "$rundir" "$@" \
     >"$_LOG" 2>&1 || _RC=$?
   return 0
@@ -458,6 +946,15 @@ assert_contains "$EPJSON" '"url": "https://crawl.fixture.invalid/search"' \
   'a link carrying a query is ONE endpoint with the query removed - FAILS if the query is part of the endpoint, which turns a paginated listing into fifty endpoints and re-tests one handler fifty times'
 assert_contains "$PARJSON" '"name": "q"' 'and its query parameter is in parameters.json instead'
 assert_contains "$PARJSON" '"name": "page"' 'both of them'
+
+t_case 'the crawl phase records structured per-source surface counts (IMPORT-06), not only the notes[] prose'
+SURF_EP=$(_slurp "$W/run-basic/meta/dast_surface_endpoints_by_source")
+SURF_PAR=$(_slurp "$W/run-basic/meta/dast_surface_parameters_by_source")
+assert_contains "$SURF_EP" 'crawl' \
+  'a structured "source<US>count" fact exists per source discovered - FAILS if only the notes[] prose line carries the breakdown, which a consumer would have to substring-scrape (report §6'"'"'s own gap)'
+assert_contains "$SURF_PAR" 'crawl' 'the same structured breakdown exists for parameters'
+assert_not_contains "$SURF_EP" $'\t' \
+  'the field separator is US (0x1f), never a tab - FAILS under a tab-delimited line, which AGENTS.md'"'"'s DAST-11 lesson already names as unsafe once a value could legitimately be empty or contain a space'
 
 t_case 'a form is an endpoint and its inputs are parameters, with nothing submitted'
 assert_contains "$EPJSON" '"url": "https://crawl.fixture.invalid/login"' 'the form action is an endpoint'
@@ -497,6 +994,7 @@ id: scanner
 requests-per-second: 5000
 request-budget: 20000
 circuit-breaker-failures: 100000
+circuit-breaker-5xx-failures: 100000
 EOS
 config_scanner_load "$FIX/config/scanner.conf"
 _m_resolve() {
@@ -559,6 +1057,92 @@ assert_contains "$RUNJSON" 'reason=crawl_depth_reached' \
   'and the links it cost are recorded - FAILS under "the operator set the depth, so they know", which is indistinguishable in the report from a site that really had no more pages'
 rm -f "$FIX/config/discovery.conf"
 
+t_case 'IMPORT-05: a hostile OpenAPI header-parameter name is dropped end to end, and the scan degrades rather than dies'
+cat >"$FIX/config/discovery.conf" <<EOF
+id: crawl-fixture
+openapi-path: $FIXTURES/specs/openapi-hostile-params.json
+EOF
+_crawl_scan "$W/run-hostile-header"
+assert_eq 0 "$_RC" \
+  'the run completes cleanly - FAILS under the pre-IMPORT-05 reading, in which this exact parameter reaches inject_send on a later active run and dies exit 5 (reproduced in tests/suites/dast-inject-engine.sh)'
+PARJSON=$(_slurp "$W/run-hostile-header/inventory/parameters.json")
+assert_not_contains "$PARJSON" 'X Bad Name' 'the malformed name never reaches the inventory at all'
+assert_contains "$PARJSON" 'X-Good-Name' 'but its well-formed sibling on the same operation still does'
+RUNJSON=$(_slurp "$W/run-hostile-header/run.json")
+assert_contains "$RUNJSON" 'reason=param_invalid_header_name' 'and the drop is a counted coverage_reduction, not a silent one'
+rm -f "$FIX/config/discovery.conf"
+
+t_case 'A1: a hostile OpenAPI parameter name with an embedded control byte degrades rather than forges or aborts'
+cat >"$FIX/config/discovery.conf" <<EOF
+id: crawl-fixture
+openapi-path: $FIXTURES/specs/openapi-control-byte.json
+EOF
+_crawl_scan "$W/run-control-byte-openapi"
+assert_eq 0 "$_RC" \
+  'the run completes cleanly, exit 0 - FAILS under the pre-fix reading, in which the escaped 0x1f decodes to the raw tuple delimiter, forges the written LOCATION field to "header", and (with a name that is not an RFC 7230 token) reaches http_request_header on a later active run and dies exit 5 - the denial-of-scan finding A1 describes'
+PARJSON=$(_slurp "$W/run-control-byte-openapi/inventory/parameters.json")
+assert_not_contains "$PARJSON" 'Bad Name' 'the hostile name never reaches the written inventory, whole or truncated'
+assert_not_contains "$PARJSON" '"location": "header"' \
+  'and no row was forged to claim location=header - this is the secondary, inventory-forgery half of finding A1'
+assert_contains "$PARJSON" 'X-Good-Name' 'but the well-formed sibling on the same operation still does'
+RUNJSON=$(_slurp "$W/run-control-byte-openapi/run.json")
+assert_contains "$RUNJSON" 'reason=param_control_byte' 'and the drop is a counted coverage_reduction, not a silent one'
+rm -f "$FIX/config/discovery.conf"
+
+t_case 'A1: a hostile HAR request.method carrying CRLF degrades rather than forges or aborts'
+cat >"$FIX/config/discovery.conf" <<EOF
+id: crawl-fixture
+har-path: $FIXTURES/specs/har-control-byte.har
+EOF
+_crawl_scan "$W/run-control-byte-har"
+assert_eq 0 "$_RC" \
+  'the run completes cleanly, exit 0 - closing the CRLF-in-HAR-method observation the same way as the escaped-0x1f case above, since CR and LF are both in the same C0 range'
+EPJSON=$(_slurp "$W/run-control-byte-har/inventory/endpoints.json")
+assert_not_contains "$EPJSON" '/xhr/cb' 'the CRLF-carrying entry never reaches the written inventory'
+assert_contains "$EPJSON" '/xhr/good' 'but the well-formed sibling entry still does'
+RUNJSON=$(_slurp "$W/run-control-byte-har/run.json")
+assert_contains "$RUNJSON" 'reason=endpoint_control_byte' 'and the drop is a counted coverage_reduction, not a silent one'
+rm -f "$FIX/config/discovery.conf"
+
+t_case 'IMPORT-03: an unresolved $ref chain and a first-subschema oneOf pick both reach run.json as coverage_reductions, end to end'
+cat >"$FIX/config/discovery.conf" <<EOF
+id: crawl-fixture
+openapi-path: $FIXTURES/specs/openapi-refs.json
+EOF
+_crawl_scan "$W/run-openapi-refs"
+assert_eq 0 "$_RC" 'the run completes cleanly - a $ref cycle degrades coverage, it does not fail the scan'
+RUNJSON=$(_slurp "$W/run-openapi-refs/run.json")
+assert_contains "$RUNJSON" 'reason=openapi_ref_unresolved' \
+  'the cyclic $ref is recorded - FAILS under a reading that silently drops the field with nothing in run.json to show an operator the coverage they lost'
+assert_contains "$RUNJSON" 'reason=openapi_polymorphism_first_subschema' 'and the oneOf narrowing is recorded too'
+PARJSON=$(_slurp "$W/run-openapi-refs/inventory/parameters.json")
+assert_contains "$PARJSON" '"name": "/name"' 'the non-cyclic sibling field is in the real written inventory, as an RFC 6901 pointer'
+assert_contains "$PARJSON" '"name": "/a"' 'and the first oneOf branch'"'"'s field too'
+EPJSON=$(_slurp "$W/run-openapi-refs/inventory/endpoints.json")
+assert_contains "$EPJSON" '"request_body_type": "json"' \
+  'endpoints.json really does carry the field through the real crawl.sh -> scan.sh path, not only through the direct-engine calls above'
+rm -f "$FIX/config/discovery.conf"
+
+t_case 'IMPORT-04: a HAR import, end to end through a real scan.sh dast run - the drop is counted and no captured secret reaches any output file'
+cat >"$FIX/config/discovery.conf" <<EOF
+id: crawl-fixture
+har-path: $FIXTURES/specs/capture.har
+EOF
+_crawl_scan "$W/run-har"
+assert_eq 0 "$_RC" 'the run completes cleanly'
+RUNJSON=$(_slurp "$W/run-har/run.json")
+assert_contains "$RUNJSON" 'reason=har_entry_unusable' 'the dropped chrome-extension:// entry is a counted coverage_reduction, not a silent continue'
+EPJSON=$(_slurp "$W/run-har/inventory/endpoints.json")
+PARJSON=$(_slurp "$W/run-har/inventory/parameters.json")
+assert_contains "$EPJSON" '"url": "https://crawl.fixture.invalid/api/BasketItems/{id}"' \
+  'the numbered listing collapsed onto one templated endpoint in the REAL written inventory, not only in the in-memory accumulator the direct-engine tests above read'
+assert_contains "$PARJSON" '"name": "/email"' 'a JSON body field reached the written inventory as an RFC 6901 pointer'
+assert_status 1 'the JSON-body password value reaches no file this run wrote - FAILS if the secretish-pointer fix is not wired through the real crawl.sh path' \
+  _run_dir_grep hunter2 "$W/run-har"
+assert_status 1 'nor does the captured Authorization bearer token' _run_dir_grep har-payload "$W/run-har"
+assert_status 1 'nor the classic form password, unchanged from before this ticket' _run_dir_grep correct-horse-battery "$W/run-har"
+rm -f "$FIX/config/discovery.conf"
+
 # ===========================================================================
 printf -- '\n-- the SPA gap actually reaches run.json and the report (constraint 2) --\n'
 # ===========================================================================
@@ -581,6 +1165,59 @@ assert_not_contains "$REPORTHTML" '<script' \
 t_case 'the gap names the mitigations, so it is actionable rather than an apology'
 assert_contains "$RUNJSON" 'config/discovery.conf' 'it names where to supply a spec'
 assert_contains "$RUNJSON" 'tension 21' 'and the SAST-route mitigation for the server-side half'
+
+# ===========================================================================
+printf -- '\n-- the SPA HAR-import nudge: guidance only --\n'
+# ===========================================================================
+# The design decision rejected static-JS auto-discovery and
+# asked instead for a clear, actionable nudge toward --har/--openapi whenever
+# the crawler'"'"'s own SPA heuristic actually fires. This is a narrower trigger
+# than "no specification was supplied" above: index.html (used by run-nospec
+# and run-basic) has 5 links and 1 <script>, so crawl_html_looks_client_rendered
+# never sets _CRAWL_SPA_SHAPED for it, and the nudge must stay silent there -
+# telling an operator scanning an ordinary multi-page site "this looks like an
+# SPA" would itself be an overstated, misleading claim (docs/DESIGN.md §15).
+
+t_case 'the SPA-specific HAR/OpenAPI nudge is ABSENT on a normal run with discovered parameters'
+assert_not_contains "$RUNJSON" 'single-page app' \
+  'run-nospec'"'"'s root page (index.html) is NOT client-rendered by the crawler'"'"'s own heuristic (5 links, 1 script) - FAILS if the nudge fires on every no-spec run rather than only when the SPA heuristic itself fired, which would misdescribe an ordinary server-rendered site'
+BASICRUNJSON=$(_slurp "$W/run-basic/run.json")
+BASICLOG=$(_slurp "$W/run-basic.log")
+assert_contains "$(_slurp "$W/run-basic/inventory/parameters.json")" '"name": "username"' \
+  'sanity: run-basic really is "a normal run with discovered parameters" (form inputs were inventoried)'
+assert_not_contains "$BASICRUNJSON" 'single-page app' \
+  'and the nudge is absent there too - the same run whose report already documents real discovered parameters must not also claim the target is an SPA'
+assert_not_contains "$BASICLOG" 'single-page app' 'nor does it reach that run'"'"'s terminal output'
+
+t_case 'WHEN the crawler-own SPA heuristic actually fires, the nudge appears in run.json, both reports, AND the terminal output - and nothing else changes'
+CRAWL_STUB_PAGES=$FIXTURES/pages-spa _crawl_scan "$W/run-spa-nudge"
+assert_eq 0 "$_RC" \
+  'the run completes cleanly - the nudge is guidance, not a finding, and must never affect the exit code'
+SPARUNJSON=$(_slurp "$W/run-spa-nudge/run.json")
+SPAREPORTMD=$(_slurp "$W/run-spa-nudge/report.md")
+SPAREPORTHTML=$(_slurp "$W/run-spa-nudge/report.html")
+SPALOG=$(_slurp "$W/run-spa-nudge.log")
+assert_contains "$SPARUNJSON" 'reason=no_specification_supplied' 'the pre-existing SPA-gap coverage_reduction still fires'
+assert_contains "$SPARUNJSON" 'spa_shaped=1' 'and it still records that the root page looked client-rendered, unchanged by this ticket'
+assert_contains "$SPARUNJSON" 'single-page app' \
+  'the new nudge reached run.json - FAILS if it is only a log line, which docs/STEP5-DAST-PLAN.md-style acceptance already rejects for the sibling SPA gap above'
+assert_contains "$SPARUNJSON" '--har' 'it names --har by flag'
+assert_contains "$SPARUNJSON" '--openapi' 'and --openapi as the alternative'
+assert_contains "$SPARUNJSON" 'Save all as HAR' 'and gives the concrete, copy-pasteable DevTools capture step - not just "supply a HAR"'
+assert_contains "$SPARUNJSON" 'docs/USAGE.md' 'and points at the authoritative doc rather than duplicating its full reference table'
+assert_contains "$SPAREPORTMD" 'single-page app' 'the human-readable report.md carries the nudge too'
+assert_contains "$SPAREPORTHTML" 'single-page app' 'so does report.html'
+assert_not_contains "$SPAREPORTHTML" '<script' \
+  'and the HTML report still contains no script tag, with target-derived text (docs/FOUNDATION.md tension 10) - this nudge is scanner-authored prose, but the invariant must not regress'
+assert_contains "$SPALOG" 'single-page app' \
+  'and the SAME sentence reached the terminal output (log_warn -> stderr, captured here) - FAILS if the nudge is report-only and an operator watching the run live never sees it'
+
+t_case 'the nudge changes no finding and no coverage number'
+SPAFINDINGS=$(_slurp "$W/run-spa-nudge/findings.jsonl" 2>/dev/null || printf '')
+assert_not_contains "$SPAFINDINGS" 'single-page app' \
+  'the nudge never became a finding - FAILS if it were emitted via finding_emit instead of run_record coverage_gap/log_warn, which would let operator guidance masquerade as a scanner verdict'
+assert_contains "$SPARUNJSON" 'endpoints=1' \
+  'the endpoint count the SPA gap itself reports is untouched by the nudge (one endpoint: the root document a two-script, zero-link page yields) - FAILS if the nudge text were folded into the counted sentence instead of appended as its own record'
 
 t_case 'WITH a specification supplied, the SPA gap is ABSENT'
 cat >"$FIX/config/discovery.conf" <<EOF
@@ -636,5 +1273,94 @@ t_case 'a run WITHOUT --authed does not claim an authentication gap'
 RUNJSON=$(_slurp "$W/run-basic/run.json")
 assert_not_contains "$RUNJSON" 'reason=authenticated_crawl_unavailable' \
   'FAILS if the gap is unconditional, which would put a warning about a login nobody asked for into every anonymous scan'
+
+# ===========================================================================
+printf -- '\n-- SPA endpoint discovery, end to end against an adversarial bundle --\n'
+# ===========================================================================
+# tests/fixtures/dast-crawl/pages-jsdiscovery/ is the fixture this ticket's
+# own constraint 7 (see this file's header) calls for: one HTML shell linking
+# to one JS bundle whose own source names four IN-SCOPE literals (two
+# root-relative, one explicitly-relative ./, one absolute), TWO THIRD-PARTY
+# absolute URLs shaped like a real payment processor and a real
+# error-reporting SDK's ingest host, and a handful of URL-shaped
+# non-endpoints (a mime type, a regex-as-string, a static-asset path, a JS
+# comment, a data: URI, a bare fragment). The pure crawl_js_scan_line/
+# crawl_js_scan_body cases above already pin the extraction rules in
+# isolation; this section is the end-to-end proof those rules cannot give on
+# their own - that a real `scan.sh dast` run actually wires this in, and that
+# the third-party candidates never reach a request, asserted on the STUB
+# TRANSPORT'S OWN REQUEST LOG rather than on inventory content alone.
+CRAWL_STUB_PAGES=$FIXTURES/pages-jsdiscovery _crawl_scan "$W/run-jsdiscovery"
+
+t_case 'the run completes cleanly against the adversarial bundle'
+assert_eq 0 "$_RC" 'a bundle full of third-party and non-endpoint noise must not itself break the crawl'
+JSEPJSON=$(_slurp "$W/run-jsdiscovery/inventory/endpoints.json")
+JSPARJSON=$(_slurp "$W/run-jsdiscovery/inventory/parameters.json")
+JSREQLOG=$(_slurp "$REQLOG")
+
+t_case 'ZERO requests were ever sent to either third-party host named inside the bundle'
+assert_not_contains "$JSREQLOG" 'stripe.com' \
+  'the api.stripe.com literal is never dialled - FAILS under "record it and let a later consumer'"'"'s own gate catch it", which this case proves is unnecessary by reading the transport'"'"'s own request log directly rather than trusting inventory content alone'
+assert_not_contains "$JSREQLOG" 'sentry.io' \
+  'nor is the sentry-shaped ingest host - the same property, for the second, differently-shaped third-party URL this fixture plants'
+
+t_case 'and neither third-party host ever reached the inventory in the first place'
+assert_not_contains "$JSEPJSON" 'stripe.com' \
+  'the discard happens BEFORE the row is ever written to disk, not after - FAILS under "record-and-skip-later", which this constraint forbids outright'
+assert_not_contains "$JSEPJSON" 'sentry.io' 'the same for the ingest host'
+assert_not_contains "$JSPARJSON" 'stripe.com' 'and nothing derived from either URL reached parameters.json either'
+assert_not_contains "$JSPARJSON" 'sentry.io' 'the same for the ingest host'
+
+t_case 'the in-scope literals ARE seeded - the main prize this feature exists for'
+assert_contains "$JSEPJSON" '"url": "https://crawl.fixture.invalid/api/v1/orders"' \
+  'a root-relative fetch() literal is seeded as its own endpoint'
+assert_contains "$JSEPJSON" '"url": "https://crawl.fixture.invalid/static/js/v2/items"' \
+  'an explicitly-relative ./v2/items literal resolves against the bundle'"'"'s own directory and is seeded too'
+assert_contains "$JSEPJSON" '"url": "https://crawl.fixture.invalid/api/v1/widgets"' \
+  'an absolute, in-scope literal is taken as-is - the scope gate admits it exactly because it names an authorised host, not because it is relative'
+assert_contains "$JSEPJSON" '"url": "https://crawl.fixture.invalid/search"' \
+  'a literal carrying a query is seeded with the query stripped, identically to a crawled link'
+assert_contains "$JSPARJSON" '"name": "q"' \
+  'the query string LITERALLY PRESENT in the mined literal becomes an OBSERVED parameter - never a fabricated one, docs/INVENTORY-FORMAT.md'"'"'s own honesty rule for example values applied here too'
+assert_contains "$JSPARJSON" '"name": "page"' 'both of them'
+
+t_case 'every js-mined row carries the weaker source=js provenance, distinct from the bundle'"'"'s own crawl-sourced row'
+assert_contains "$JSEPJSON" '"source": "js"' \
+  'a mined literal is recorded with weaker provenance than a route this run actually requested - a report reader must be able to tell the two apart'
+assert_contains "$JSEPJSON" '"url": "https://crawl.fixture.invalid/static/js/main.bundle.js"' \
+  'the bundle itself is still an ordinary crawl-sourced endpoint - it really was fetched, unlike anything mined out of it'
+
+t_case 'the URL-shaped NON-endpoints inside the bundle never became inventory rows - a precise small set, not a noisy large one'
+assert_not_contains "$JSEPJSON" 'logo.png' \
+  'a static-asset path is excluded, per crawl_body_is_js'"'"'s own static-extension table - an injection probe should never spend its budget on a fetched image reference'
+assert_not_contains "$JSEPJSON" '[a-z0-9' \
+  'a quoted regex-as-string literal is excluded by its own raw regex-metacharacter bytes'
+assert_not_contains "$JSEPJSON" 'build:' \
+  'a JS comment opener quoted as a string literal is excluded'
+assert_not_contains "$JSEPJSON" 'text/plain,x' 'a data: URI is rejected the same way crawl_url_resolve already rejects one from an <a href>'
+assert_not_contains "$JSEPJSON" '"path": "/("' \
+  'a plain string literal that is a parenthesised code fragment (isAuxRoute'"'"'s "/(" - the real Angular router shape measured to slip through before ( ) joined the regex-metacharacter exclusion) is rejected'
+assert_not_contains "$JSEPJSON" '"path": "/g,"' \
+  'a bare regex literal whose pattern matches a quote character (escapeHtml'"'"'s /"/g - the real shape measured to be misread as a string opener before the preceding-/ guard existed) is rejected'
+
+t_case 'the mined-endpoint count is recorded honestly in run.json - the js/crawl split is a real, checkable fact, not a claim'
+JSRUNJSON=$(_slurp "$W/run-jsdiscovery/run.json")
+assert_contains "$JSRUNJSON" 'js_scanned=1' 'exactly one JS/source-map body was fetched and scanned - never a claim about bodies this run never downloaded'
+assert_contains "$JSRUNJSON" 'js_endpoints=4' \
+  'and it contributed exactly the four in-scope candidates this fixture plants - never the two third-party ones, and never any of the non-endpoint noise'
+
+t_case 'js-endpoint-discovery: false restores byte-for-byte pre-feature behaviour for an operator who opts out'
+cat >"$FIX/config/discovery.conf" <<EOF
+id: crawl-fixture
+js-endpoint-discovery: false
+EOF
+CRAWL_STUB_PAGES=$FIXTURES/pages-jsdiscovery _crawl_scan "$W/run-jsdiscovery-off"
+assert_eq 0 "$_RC" 'opting out does not break the run'
+OFFEPJSON=$(_slurp "$W/run-jsdiscovery-off/inventory/endpoints.json")
+assert_not_contains "$OFFEPJSON" '"source": "js"' \
+  'FAILS if the opt-out key is ignored, which would leave an operator who explicitly asked for a crawl/spec/HAR-only inventory with mined rows anyway'
+assert_contains "$OFFEPJSON" '"url": "https://crawl.fixture.invalid/static/js/main.bundle.js"' \
+  'the bundle is still fetched and still an ordinary crawl-sourced endpoint - only the MINING is disabled, never the fetch this feature piggybacks on'
+rm -f "$FIX/config/discovery.conf"
 
 t_summary dast-crawl

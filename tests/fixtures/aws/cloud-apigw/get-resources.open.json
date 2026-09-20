@@ -1,0 +1,54 @@
+{
+    "items": [
+        {
+            "id": "resroot1",
+            "path": "/",
+            "resourceMethods": {}
+        },
+        {
+            "id": "respublic1",
+            "parentId": "resroot1",
+            "pathPart": "public",
+            "path": "/public",
+            "resourceMethods": {
+                "GET": {
+                    "httpMethod": "GET",
+                    "authorizationType": "NONE",
+                    "apiKeyRequired": false,
+                    "methodIntegration": {
+                        "type": "AWS_PROXY",
+                        "httpMethod": "POST",
+                        "uri": "arn:aws:apigateway:eu-west-2:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-west-2:123456789012:function:fixture-public/invocations"
+                    }
+                },
+                "OPTIONS": {
+                    "httpMethod": "OPTIONS",
+                    "authorizationType": "NONE",
+                    "apiKeyRequired": false,
+                    "methodIntegration": {
+                        "type": "MOCK",
+                        "httpMethod": ""
+                    }
+                }
+            }
+        },
+        {
+            "id": "reskeyed1",
+            "parentId": "resroot1",
+            "pathPart": "keyed",
+            "path": "/keyed",
+            "resourceMethods": {
+                "POST": {
+                    "httpMethod": "POST",
+                    "authorizationType": "NONE",
+                    "apiKeyRequired": true,
+                    "methodIntegration": {
+                        "type": "AWS_PROXY",
+                        "httpMethod": "POST",
+                        "uri": "arn:aws:apigateway:eu-west-2:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-west-2:123456789012:function:fixture-keyed/invocations"
+                    }
+                }
+            }
+        }
+    ]
+}

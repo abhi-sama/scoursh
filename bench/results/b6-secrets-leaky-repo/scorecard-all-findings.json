@@ -1,0 +1,56 @@
+{
+  "cases": 82,
+  "real_cases": 65,
+  "trap_cases": 17,
+  "min_severity": "any",
+  "match": "line",
+  "line_window": 0,
+  "categories": ["secrets"],
+  "tools": {
+    "gitleaks": {
+      "version": "8.30.1",
+      "corpus_commit": "2e951359cac53addbee56437da3ffb546e3dfe24",
+      "claims": "secrets",
+      "findings_kept": 22,
+      "findings_dropped_by_severity": 0,
+      "findings_without_a_line": 0,
+      "findings_outside_every_labelled_range": 1,
+      "loose": {
+        "secrets": {"coverage": "scored", "tp": 21, "fn": 44, "fp": 0, "tn": 17, "recall": 0.323, "fpr": 0.000, "precision": 1.000, "youden_j": 0.323}
+      },
+      "strict": {
+        "secrets": {"coverage": "no_cwe_in_truth"}
+      }
+    },
+    "scoursh-secrets": {
+      "version": "0.1.0-dev+0be15e965f28",
+      "corpus_commit": "2e951359cac53addbee56437da3ffb546e3dfe24",
+      "claims": "secrets",
+      "findings_kept": 37,
+      "findings_dropped_by_severity": 0,
+      "findings_without_a_line": 0,
+      "findings_outside_every_labelled_range": 1,
+      "loose": {
+        "secrets": {"coverage": "scored", "tp": 33, "fn": 32, "fp": 0, "tn": 17, "recall": 0.508, "fpr": 0.000, "precision": 1.000, "youden_j": 0.508}
+      },
+      "strict": {
+        "secrets": {"coverage": "no_cwe_in_truth"}
+      }
+    },
+    "trufflehog": {
+      "version": "trufflehog 3.97.4",
+      "corpus_commit": "2e951359cac53addbee56437da3ffb546e3dfe24",
+      "claims": "secrets",
+      "findings_kept": 12,
+      "findings_dropped_by_severity": 0,
+      "findings_without_a_line": 0,
+      "findings_outside_every_labelled_range": 2,
+      "loose": {
+        "secrets": {"coverage": "scored", "tp": 9, "fn": 56, "fp": 1, "tn": 16, "recall": 0.138, "fpr": 0.059, "precision": 0.900, "youden_j": 0.079}
+      },
+      "strict": {
+        "secrets": {"coverage": "no_cwe_in_truth"}
+      }
+    }
+  }
+}

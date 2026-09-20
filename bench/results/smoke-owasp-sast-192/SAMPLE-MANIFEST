@@ -1,0 +1,10 @@
+sample: sast-192
+corpus: owasp-benchmark
+commit: 20cbf3d11123347e47ed89541e6942836def53f7
+licence: GPL-2.0
+per-class: 12
+categories: sqli cmdi ldapi pathtraver crypto hash weakrand xss
+cases: 192
+real-cases: 96
+trap-cases: 96
+selection: first N by LC_ALL=C sort of the case id - deterministic, never random

@@ -1,0 +1,5 @@
+{
+    "repositoryName": "scoursh-fixture-ecr-bad",
+    "registryId": "123456789012",
+    "policyText": "{\"Version\":\"2008-10-17\",\"Statement\":[{\"Sid\":\"AllowPublicPull\",\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":[\"ecr:GetDownloadUrlForLayer\",\"ecr:BatchGetImage\"]}]}"
+}

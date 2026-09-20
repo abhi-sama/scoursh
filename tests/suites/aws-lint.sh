@@ -31,14 +31,29 @@ source "$ROOT/tests/lib/assert.sh"
 W=$SCOURSH_SCRATCH/aws-lint
 mkdir -p "$W"
 
+# ISOLATED from the real, committed tests/aws-readonly-allow.txt, always -
+# every case below plants a fixture tree that carries none of that file's own
+# entries, and check 4 fails on any entry the SCANNED tree does not call.
+# Before docs/STEP6-CLOUD-PLAN.md P20 seeded that file, it was simply absent
+# and check 4 no-opped over it, so every bare `lint()` call in this suite was
+# ACCIDENTALLY isolated rather than deliberately so; seeding the real file
+# with `sts assume-role` would otherwise fail every fixture in this suite that
+# lacks that exact call (F1-F4 below, none of which have it) with a stale-entry
+# complaint that has nothing to do with what each of those cases is actually
+# testing.  Measured: this is exactly the coupling the ticket that seeded the
+# file exists to avoid reintroducing.
 lint() {
-  bash "$ROOT/tests/lint-aws-readonly.sh" "$1"
+  SCOURSH_AWS_LINT_ALLOWFILE="$W/lint-default-allow-does-not-exist.txt" \
+    bash "$ROOT/tests/lint-aws-readonly.sh" "$1"
 }
 
 # check 4's allow-list tests use SCOURSH_AWS_LINT_ALLOWFILE (added alongside
 # this suite) so they never write to the real, committed
-# tests/aws-readonly-allow.txt - which is deliberately absent right now
-# (docs/FOUNDATION.md tension 23: "seeded at §13 step 6").
+# tests/aws-readonly-allow.txt - which docs/STEP6-CLOUD-PLAN.md P20 has since
+# seeded with exactly one entry, `sts assume-role` (docs/FOUNDATION.md tension
+# 23: "seeded at §13 step 6").  Every case in this file still runs against an
+# isolated fixture allowlist, never the real one, so a later addition to the
+# real file cannot change what any assertion here means.
 lint_with_allowfile() {
   SCOURSH_AWS_LINT_ALLOWFILE=$1 bash "$ROOT/tests/lint-aws-readonly.sh" "$2"
 }
@@ -165,5 +180,62 @@ assert_status 1 'get-session-token is listed but appears in no code' lint_with_a
 out=$(lint_with_allowfile "$ALLOW_FIXTURE" "$F5" 2>&1 || true)
 assert_contains "$out" "get-session-token" 'the failure names the stale entry'
 assert_contains "$out" "appears in no code" 'the failure explains why: it would otherwise rot into a blanket permission'
+
+# ---------------------------------------------------------------------------
+printf '\n-- the negative fixture: one script fails BOTH the lint and aws_ro'"'"'s own runtime guard --\n'
+# ---------------------------------------------------------------------------
+# docs/FOUNDATION.md tension 23's own "Consequence for the build" paragraph:
+# "a negative test asserts that a script calling a mutating operation fails
+# both the lint and the runtime guard."  Every case above already proves each
+# HALF against its own purpose-built fixture; this is the one place both
+# halves are proven against the SAME throwaway script, which is what that
+# paragraph actually asks for (docs/STEP6-CLOUD-PLAN.md CLOUD-03's own
+# remaining scope item).
+F6=$W/negative
+fixture "$F6"
+write_check "$F6" ec2 \
+  '#!/usr/bin/env bash' \
+  'aws_ro ec2 create-security-group --group-name evil --description evil'
+
+t_case 'the negative fixture fails the STATIC lint'
+assert_status 1 'create-security-group is refused by the lint' lint "$F6"
+neg_lint_out=$(lint "$F6" 2>&1 || true)
+assert_contains "$neg_lint_out" "create-security-group" 'the failure names the exact operation the lint refused'
+
+t_case 'the SAME script fails aws_ro'"'"'s own RUNTIME guard when actually sourced'
+NEG_STUB=$W/negative-stub/bin
+mkdir -p "$NEG_STUB"
+# A working stub `aws` is required even though it must never be reached: the
+# runtime refusal happens AFTER lib/awscli.sh's own `_awscli_probe` (which
+# needs `aws --version` to succeed to conclude the binary is present) and
+# BEFORE the CLI is ever exec'd for the real operation - so a missing/broken
+# stub here would prove "aws_ro with no aws binary aborts", not "aws_ro
+# refuses a mutating operation", which is a different property entirely.
+cat >"$NEG_STUB/aws" <<'STUB'
+#!/usr/bin/env bash
+if [[ ${1:-} == --version ]]; then
+  printf 'aws-cli/2.15.0 Python/3.11.6 Linux/6.1.0 exe/x86_64.stub\n'
+  exit 0
+fi
+printf 'the negative fixture reached a real aws invocation - the runtime guard did not refuse it\n' >&2
+exit 1
+STUB
+chmod +x "$NEG_STUB/aws"
+neg_rc=0
+PATH="$NEG_STUB:$PATH" SCOURSH_AWSCLI_BIN=aws \
+  SCOURSH_AWSCLI_ALLOWLIST="$W/negative-allow-does-not-exist.txt" \
+  bash -c '
+    set -Eeuo pipefail
+    source "'"$ROOT"'/lib/core.sh"
+    source "'"$ROOT"'/lib/awscli.sh"
+    source "'"$F6"'/modules/cloud/aws/live/ec2.sh"
+  ' >"$W/negative.out" 2>&1 || neg_rc=$?
+assert_eq 3 "$neg_rc" \
+  'sourcing the fixture script exits 3 (SCOURSH_EXIT_SCOPE) - the runtime chokepoint refuses it independently of the static lint'
+neg_out=$(cat "$W/negative.out")
+assert_contains "$neg_out" 'not a read-only operation' \
+  'and the refusal names why, the same reading the lint-only cases above assert on'
+assert_not_contains "$neg_out" 'reached a real aws invocation' \
+  'and the stub aws binary was never actually invoked for the mutating call - refused before exec, not after'
 
 t_summary aws-lint

@@ -1,0 +1,3 @@
+2026-09-10T13:20:35Z info  run-sandboxed: executing under Seatbelt (deny-all-network): ./scan.sh iac --path tests/fixtures/iac/docker-compose --format json --out <BENCH_OUT>/tierA-iac
+2026-09-10T13:20:46Z info  iac: scanning 1 files under <SCAN_ROOT>/tests/fixtures/iac/docker-compose
+2026-09-10T13:21:11Z info  scan complete in 36s - report: <BENCH_OUT>/tierA-iac

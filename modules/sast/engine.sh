@@ -49,6 +49,29 @@ if [[ -z ${SCOURSH_CONFIG_SOURCED:-} ]]; then
   # shellcheck source=lib/config.sh
   source "${BASH_SOURCE[0]%/*}/../../lib/config.sh"
 fi
+# lib/parallel.sh is `--jobs N`'s bounded worker fan-out (docs/DESIGN.md §5,
+# docs/FOUNDATION.md tension 17), consumed by `sast_scan_tree` and - through
+# modules/iac/parse.sh's own source of this file - by `iac_scan_tree`.
+# modules/sca/run.sh reaches it through this same edge, since it sources this
+# file for `sast_evaluate_gate`.  It is a LEAF in the source graph (it sources
+# nothing at all, deliberately - see its own header), so this edge adds one
+# file to every consumer's `shellcheck -x` expansion and no subtree.  Guarded
+# exactly like the two above, and for the identical reason: this file is copied
+# into fixture roots that carry no `lib/` sibling.
+if [[ -z ${SCOURSH_PARALLEL_SOURCED:-} ]]; then
+  # shellcheck source=lib/parallel.sh
+  source "${BASH_SOURCE[0]%/*}/../../lib/parallel.sh"
+fi
+# docs/STEP7-STATE-PLAN.md STATE-06: `diff_classify_run` is NOT sourced here.
+# This file is reached by every DAST phase test (modules/dast/engine.sh's own
+# real edge to it), not only the four run.sh files that actually call
+# diff_classify_run - sourcing lib/diff.sh here would add its lib/state.sh
+# edge (genuinely new content, not a diamond a back-edge cut could remove) to
+# every one of them, which is what pushed tests/suites/dast-methods.sh over
+# its own already-tight shellcheck -x memory budget (AGENTS.md "Sharp edges")
+# and killed a CI run. Each of the four run.sh files sources lib/diff.sh
+# itself instead, at its own top, exactly where it already sources this file -
+# see modules/sast/run.sh's own comment on it.
 
 # ---------------------------------------------------------------------------
 # 1. Directory walk
@@ -291,6 +314,101 @@ sast_index_checks() {
 }
 
 # ---------------------------------------------------------------------------
+# 4a. Per-check applicability counter (docs/FOUNDATION.md tension 5's sibling
+#     honesty rule, AGENTS.md "the checks_run semantics fix"): mirrors DAST's
+#     `_HDRF_EVAL` (modules/dast/passive/headers.sh) so `checks_run` means the
+#     SAME thing in every module - "at least one thing this check applies to
+#     was actually inspected" - rather than "selected and present in the rule
+#     index".  `sast_scan_tree`/`iac_scan_tree` mark a check here the instant
+#     `sast_rule_matches_file` says a real file is in scope for it, BEFORE the
+#     pattern itself is ever evaluated - a check that ran over the file and
+#     matched nothing is still "ran"; a check whose `files:` glob matched
+#     nothing in this tree is not.
+# ---------------------------------------------------------------------------
+declare -gA _SAST_CHECK_EVAL=()
+
+# `SCOURSH_WALK_FAILED` - how many of the last tree walk's parallel workers
+# failed.  Read by modules/{sast,iac}/run.sh; see `_sast_walk_parallel`'s header
+# for why the walk signals through this rather than through its exit status.
+declare -g SCOURSH_WALK_FAILED=0
+
+sast_eval_reset() {
+  _SAST_CHECK_EVAL=()
+}
+
+sast_eval_mark() {
+  local id=$1
+  _SAST_CHECK_EVAL[$id]=$(( ${_SAST_CHECK_EVAL[$id]:-0} + 1 ))
+}
+
+# sast_record_checks_run MODULE ID... - the single place either module.sh
+# writes `checks_run`, called once, AFTER the tree walk returns (never before
+# it, which is the bug this function exists to close).  An id evaluated
+# against >=1 file (per `_SAST_CHECK_EVAL`, populated during the walk that
+# just completed) is genuinely "run"; one whose `files:` glob matched nothing
+# under this scan root is declared instead, by name, as a coverage_reduction
+# `checks=[...]` list - the exact convention
+# modules/dast/passive/headers.sh's own `headers_check_not_applicable`
+# reduction already established, which this report's own coverage renderer
+# already parses. Never silently dropped into the unaccounted residual: a
+# reason is always recorded for a selected-but-unevaluated check.
+sast_record_checks_run() {
+  local module=$1
+  shift
+  local id
+  local -a not_applicable=()
+  for id in "$@"; do
+    if (( ${_SAST_CHECK_EVAL[$id]:-0} > 0 )); then
+      run_record checks_run "$id"
+    else
+      not_applicable+=("$id")
+    fi
+  done
+  if (( ${#not_applicable[@]} > 0 )); then
+    run_record coverage_reduction "module=$module reason=no_matching_files checks=[${not_applicable[*]}] - none of the files under this scan root matched this check's files: glob, so its pattern was never evaluated. It is NOT covered by this run."
+  fi
+}
+
+# sast_record_coverage CELL ID... - docs/STEP7-STATE-PLAN.md STATE-02: records
+# path-root coverage (docs/FOUNDATION.md tension 12's frozen table - SAST and
+# IaC both use `path-root`) for a list of checks that have ALREADY run to
+# completion.  Reused unchanged by modules/iac/run.sh for the identical
+# reason sast_index_checks/sast_evaluate_gate already are: despite its name,
+# nothing here is SAST-specific - it only reads `_SAST_CHECK_LOC` (built by
+# sast_index_checks above, which both modules call) and `lib/state.sh`'s
+# builder API.
+#
+# The caller decides "ran to completion" by WHERE it calls this from: both
+# modules/sast/run.sh and modules/iac/run.sh call it only on the line right
+# after their own scan-tree call returns, which under `set -Eeuo pipefail` is
+# only reached when that call did not die - so an id enumerated into the
+# caller's own `ids` list but never reaching this function (a mid-walk engine
+# failure, tension 4's `scan_match` distinguishing no-match from a real
+# error) is correctly never marked covered, per tension 12's own six
+# non-completion cases.
+#
+# Guarded on `declare -F state_add_covered`, exactly the "an absent function
+# is a no-op" contract lib/core.sh's own run_json_refresh_incomplete already
+# uses for report_run_json/report_md/report_html: a test that sources this
+# file standalone, without ever sourcing lib/state.sh (most of
+# tests/suites/sast.sh and tests/suites/iac.sh), must not fail merely because
+# it never asked for coverage recording.
+sast_record_coverage() {
+  declare -F state_add_covered >/dev/null 2>&1 || return 0
+  local cell=$1
+  shift
+  local id loc set idx digest
+  for id in "$@"; do
+    loc=${_SAST_CHECK_LOC[$id]:-}
+    [[ -n $loc ]] || continue
+    read -r set idx <<<"$loc"
+    digest=$(records_digest "$set" "$idx")
+    state_add_covered "$id" "$digest" path-root "$cell"
+  done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # 5. Sensitive-data heuristic (mirrors tests/e2e/fixture-scan.sh's own, which
 #    this ticket generalises: a secrets-family check id marks its findings
 #    sensitive_data=true, which the rubric (data/severity-rubric.conf) reads.)
@@ -318,7 +436,16 @@ sast_scan_file() {
   pattern=$(records_field "$set" "$idx" pattern)
   id=$(records_id "$set" "$idx")
 
-  local hits=$SCOURSH_SCRATCH/sast-hits.$$
+  # `$BASHPID`, NEVER `$$`: this file is scanned by lib/parallel.sh's forked
+  # workers under `--jobs N`, and inside a subshell bash keeps `$$` as the
+  # PARENT's pid, so a `$$`-named scratch file is ONE file shared by every
+  # worker - each one truncating it while a sibling reads it and `rm -f`ing it
+  # out from under the others on the way out.  Measured on this codebase before
+  # it was fixed: "No such file or directory" on the match file, then an
+  # arithmetic error on a line number read back out of a half-written one, then
+  # a dead worker and an incomplete run.  `$BASHPID` is the real pid in every
+  # shell including the top-level one, so the single-worker path is unchanged.
+  local hits=$SCOURSH_SCRATCH/sast-hits.$BASHPID
   if ! scan_match_offsets "$hits" "$pattern" "$abspath"; then
     rm -f "$hits"
     return 0
@@ -426,11 +553,123 @@ _sast_capture_max_matches() {
   rm -f "$tmp"
 }
 
-sast_scan_tree() {
-  local root=$1
-  shift
+# `_sast_scan_block START COUNT LISTFILE SCAN_ROOT SCANFN ID...` - scans the
+# COUNT files starting at 0-based offset START of LISTFILE, applying every
+# selected check to each.  This is the body the tree walk always had, lifted
+# out unchanged except for its bounds, so that lib/parallel.sh can call it once
+# in the current shell (`--jobs 1`) or once per worker (`--jobs N`) with no
+# second copy of the scanning logic to keep in step.
+#
+# SCANFN is `sast_scan_file` or `iac_scan_file`; passing it is what lets
+# modules/iac/parse.sh reuse this whole mechanism rather than forking a
+# near-identical copy of it, exactly as `iac_scan_tree` already reuses
+# sast_walk_files/sast_relpath/sast_rule_matches_file.
+#
+# `_SAST_CHECK_EVAL` is marked here as before.  In a worker that table lives in
+# the worker's own memory and dies with it, so the block DUMPS it to the aux
+# directory on the way out and the parent folds every worker's dump back in
+# (`sast_eval_absorb`).  Summing is exact rather than approximate because
+# lib/parallel.sh assigns each file to exactly one worker: no file is counted
+# twice and none is dropped.  In the inline case `SCOURSH_WORKER_AUX` is empty
+# and the in-process table is already the answer, so nothing is written.
+#
+# The progress line is printed only when running inline: N workers each
+# rewriting the same `\r`-terminated line would render as noise, and it is a
+# courtesy for an interactive operator rather than an artifact of the run.
+# SC2031: `SCOURSH_WORKER_AUX` is set by lib/parallel.sh INSIDE the subshell it
+# forks for this callback, which is the mechanism rather than an accident - the
+# "change might be lost" shellcheck is warning about is exactly what is wanted,
+# since the parent must not see a worker's value.  Reading it here is how the
+# callback learns whether it is a worker at all.
+# shellcheck disable=SC2031
+_sast_scan_block() {
+  local start=$1 count=$2 listfile=$3 scan_root=$4 scanfn=$5
+  shift 5
   local -a ids=("$@")
-  _sast_capture_max_matches
+  local abspath rel id loc set idx n=0
+  local inline=0
+  [[ -n ${SCOURSH_WORKER_AUX:-} ]] || inline=1
+  while IFS= read -r abspath; do
+    [[ -n $abspath ]] || continue
+    n=$(( n + 1 ))
+    if (( inline )) && is_tty; then
+      printf '\r  %d / %d files scanned' "$n" "$count" >&2
+    fi
+    rel=$(sast_relpath "$scan_root" "$abspath")
+    occurrence_reset_unit "$rel"
+    for id in "${ids[@]+"${ids[@]}"}"; do
+      loc=${_SAST_CHECK_LOC[$id]:-}
+      [[ -n $loc ]] || continue
+      read -r set idx <<<"$loc"
+      sast_rule_matches_file "$set" "$idx" "$rel" || continue
+      sast_eval_mark "$id"
+      "$scanfn" "$set" "$idx" "$rel" "$abspath"
+    done
+  done < <(sed -n "$(( start + 1 )),$(( start + count ))p" "$listfile")
+  if (( inline )) && is_tty && (( count > 0 )); then
+    printf '\r  %d / %d files scanned\n' "$n" "$count" >&2
+  fi
+  if (( ! inline )); then
+    sast_eval_dump >"$SCOURSH_WORKER_AUX/sast_eval"
+  fi
+  return 0
+}
+
+# `sast_eval_dump` - one `id<TAB>count` line per check this process evaluated,
+# `LC_ALL=C` sorted so a worker's dump is reproducible in its own right.
+sast_eval_dump() {
+  local id
+  (( ${#_SAST_CHECK_EVAL[@]} > 0 )) || return 0
+  while IFS= read -r id; do
+    [[ -n $id ]] || continue
+    printf '%s\t%s\n' "$id" "${_SAST_CHECK_EVAL[$id]}"
+  done < <(printf '%s\n' "${!_SAST_CHECK_EVAL[@]}" | LC_ALL=C sort)
+  return 0
+}
+
+# `sast_eval_absorb` - folds every worker's dump back into this process's
+# `_SAST_CHECK_EVAL`, so `sast_record_checks_run` sees the same table a
+# single-worker walk would have built.  Reads through lib/parallel.sh's
+# `parallel_aux_read`, which prints nothing when the walk ran inline - in that
+# case the table is already complete and this is a no-op.
+sast_eval_absorb() {
+  local id cnt
+  while IFS=$'\t' read -r id cnt; do
+    [[ -n $id ]] || continue
+    [[ $cnt =~ ^[0-9]+$ ]] || cnt=1
+    _SAST_CHECK_EVAL[$id]=$(( ${_SAST_CHECK_EVAL[$id]:-0} + cnt ))
+  done < <(parallel_aux_read sast_eval)
+  return 0
+}
+
+# `_sast_walk_parallel MODULE ROOT SCANFN ID...` - the shared body of
+# `sast_scan_tree` and `iac_scan_tree`: build the file list, fan out over it at
+# the resolved `jobs` width, fold the workers' coverage marks back in, and
+# record honestly whether the walk was single-worker or parallel and whether
+# every worker finished.
+#
+# IT SETS `SCOURSH_WALK_FAILED` AND ALWAYS RETURNS 0, and so do `sast_scan_tree`
+# and `iac_scan_tree` above it.  A caller that wrote `sast_scan_tree ... ||
+# walk_ok=0` would be invoking it in a `||` context, and bash SUSPENDS `set -e`
+# for the entire call tree of a command whose status is being tested - so on the
+# single-worker path, where the whole walk runs in this very shell, that shape
+# switches `set -Eeuo pipefail` off for every per-file scan under it.  Measured:
+# under `outer || rc=1` a bare `false` inside `outer`'s callee does not abort.
+# Signalling through a global keeps the walk exactly as strict as it was before
+# this module learned to fan out, which for the `--jobs 1` path is the whole
+# point.  It deliberately does not `die` either: what a partial walk means for
+# the run is the module's call (tension 14 puts it at exit 5, with an
+# `incomplete_reason`), and the module is the only layer that knows what it can
+# still honestly report.
+# SC2034: `SCOURSH_WALK_FAILED` is written here and read by modules/sast/run.sh
+# and modules/iac/run.sh across the source boundary, which shellcheck cannot
+# see - the same disable lib/checks.sh already carries for its own cross-file
+# globals.
+# shellcheck disable=SC2034
+_sast_walk_parallel() {
+  local module=$1 root=$2 scanfn=$3
+  shift 3
+  local -a ids=("$@")
   # Every file's identity (`files`/`exclude-files` matching, §9.1.2, AND
   # `loc_path` - a fingerprint component, tension 5) is relative to the SCAN
   # ROOT (the git toplevel, or the resolved path when not a git repo -
@@ -442,51 +681,110 @@ sast_scan_tree() {
   # base.  `--path src/sub` would otherwise report `x.py` while `--path .`
   # reports `src/sub/x.py` for the identical file and vulnerability - two
   # different fingerprints for one issue.
+  # Reset per walk: `scan.sh all` runs sast's walk and then iac's in one
+  # process, and a stale count from the first would make the second decline to
+  # record coverage it did in fact earn.
+  SCOURSH_WALK_FAILED=0
   local scan_root
   scan_root=$(scan_root_of "$root")
-  local abspath rel id loc set idx
-  local files total n
-  files=$(sast_walk_files "$root")
-  total=0
-  if [[ -n $files ]]; then
-    total=$(wc -l <<<"$files")
-    total=${total// /}
+  local listfile=$SCOURSH_SCRATCH/${module}-files.$$
+  sast_walk_files "$root" >"$listfile"
+  local total
+  total=$(wc -l <"$listfile")
+  total=${total// /}
+  log_info "$module: scanning $total files under $root"
+
+  # BARE, never `|| rc=1` - see this function's own header: `parallel_map`
+  # reports a failed worker through PARALLEL_FAILED precisely so this call can
+  # stay bare and leave `set -e` in force for the inline walk underneath it.
+  parallel_map "${SCOURSH_JOBS:-1}" "$total" _sast_scan_block \
+    "$listfile" "$scan_root" "$scanfn" "${ids[@]+"${ids[@]}"}"
+  SCOURSH_WALK_FAILED=$PARALLEL_FAILED
+  sast_eval_absorb
+  parallel_cleanup
+  rm -f "$listfile"
+
+  # docs/DESIGN.md §5's `--jobs N` is now real for this module, so the honest
+  # record is what actually happened rather than the flat
+  # `single_worker_no_parallel_scan_yet` this line replaced.  Still recorded on
+  # the single-worker path, because "one worker" remains a real reduction in
+  # what the run could have done in the time it took, and an operator reading
+  # run.json must be able to tell a `--jobs 1` run from a 4-way one without
+  # re-deriving it from the flag list.
+  if (( PARALLEL_WORKERS <= 1 )); then
+    run_record coverage_reduction "module=$module reason=single_worker jobs=${SCOURSH_JOBS:-1} files=$total"
+  else
+    run_record notes "module=$module parallel scan: $PARALLEL_WORKERS workers over $total files"
   fi
-  log_info "sast: scanning $total files under $root"
-  n=0
-  while IFS= read -r abspath; do
-    [[ -n $abspath ]] || continue
-    n=$(( n + 1 ))
-    if is_tty; then
-      printf '\r  %d / %d files scanned' "$n" "$total" >&2
-    fi
-    rel=$(sast_relpath "$scan_root" "$abspath")
-    occurrence_reset_unit "$rel"
-    for id in "${ids[@]+"${ids[@]}"}"; do
-      loc=${_SAST_CHECK_LOC[$id]:-}
-      [[ -n $loc ]] || continue
-      read -r set idx <<<"$loc"
-      sast_rule_matches_file "$set" "$idx" "$rel" || continue
-      sast_scan_file "$set" "$idx" "$rel" "$abspath"
-    done
-  done <<<"$files"
-  if is_tty && (( total > 0 )); then
-    printf '\r  %d / %d files scanned\n' "$n" "$total" >&2
+  return 0
+}
+
+# `_sast_record_walk_failure MODULE` - what a lost parallel worker means for
+# the run.  docs/FOUNDATION.md tension 14 puts an aborted-mid-flight run at
+# exit 5 (`SCOURSH_EXIT_INCOMPLETE`), whose exact predicate is a non-empty
+# `incomplete_reason`, and this is that shape: the scan did have its required
+# inputs and did start, and then part of it did not finish.  The alternative -
+# swallowing it and exiting 0 - is the failure this whole ticket exists to
+# avoid one level up: a run that scanned three quarters of a tree and reported
+# a clean result is indistinguishable from one that scanned all of it.
+#
+# `incomplete` is scan_main's OWN local, reached by bash's dynamic scoping
+# through the sourced-not-subprocess contract scan.sh's header documents - the
+# identical mechanism `sast_evaluate_gate` uses for `gate` and
+# modules/sca/run.sh uses for `input`.  A plain assignment with no `local` and
+# no `export` is deliberate; shellcheck cannot see that caller across the
+# source boundary.  Guarded on the variable already existing so a standalone
+# engine caller (every tests/suites/{sast,iac}.sh case) records the reason
+# without minting a global scan.sh never declared.
+_sast_record_walk_failure() {
+  local module=$1
+  run_record incomplete_reason \
+    "module=$module reason=parallel_worker_failed workers=$PARALLEL_WORKERS failed=$PARALLEL_FAILED - part of the file tree was not scanned; this run's results are incomplete and its coverage is NOT recorded, so a later run cannot infer anything as fixed from it"
+  run_record coverage_reduction \
+    "module=$module reason=parallel_worker_failed failed=$PARALLEL_FAILED of $PARALLEL_WORKERS workers"
+  log_warn "$module: $PARALLEL_FAILED of $PARALLEL_WORKERS scan workers failed; results are incomplete"
+  if [[ -n ${incomplete+set} ]]; then
+    # shellcheck disable=SC2034
+    incomplete=1
   fi
+  return 0
+}
+
+sast_scan_tree() {
+  local root=$1
+  shift
+  local -a ids=("$@")
+  _sast_capture_max_matches
+  # Fresh per call (this function is the whole run's one tree walk for its
+  # module): a stale count from an earlier scan_main invocation in the same
+  # process (tests/suites/scan.sh calls it repeatedly) must never let a check
+  # ride to `checks_run` on a walk it was not actually part of.
+  sast_eval_reset
+  _sast_walk_parallel sast "$root" sast_scan_file "${ids[@]+"${ids[@]}"}"
 }
 
 # ---------------------------------------------------------------------------
-# 8. Gate evaluation - docs/FOUNDATION.md tension 14: "the gate itself lands
-#    in step 10 but its inputs exist from step 2".  What is implemented here
-#    is exactly what is decidable with no state/ (step 7) and no diff engine
-#    (step 10) on disk yet: every finding this run produces is `status: new`
-#    by construction (finding_new's own default, never overwritten - nothing
-#    before step 7 exists that could set anything else), so on the first-ever
-#    run tension 12's own table already says `new` is the correct status, and
-#    `--fail-on-new` therefore degenerates to exactly `--fail-on` rather than
-#    needing diff_usable / unknown-exclusion, neither of which has an input to
-#    read yet.  This function does not anticipate step 10's refinements; it
-#    computes the one case that is already fully determined.
+# 8. Gate evaluation - docs/FOUNDATION.md tension 14, refined by
+#    docs/STEP7-STATE-PLAN.md STATE-08 (tension 11 stage 7's carve-out).
+#    `--fail-on-new`'s status filter applies IF AND ONLY IF `diff_usable` is
+#    true (`$SCOURSH_DIFF_USABLE`, set by lib/diff.sh's `diff_classify_run`
+#    immediately before this function is called at every one of its four
+#    call sites - sast/run.sh, iac/run.sh, sca/run.sh, and dast/run.sh, all
+#    of which reuse this function unchanged).  When `diff_usable` is
+#    false - no prior state, an `fp_schema` mismatch, or a `scan_root_id`
+#    mismatch on a run with `path-root` findings - a finding's `status` was
+#    computed against state this run cannot trust, so the gate considers
+#    ALL findings regardless of status rather than trusting a stale-or-absent
+#    classification.  This is NOT optional wording: a bare `status == new`
+#    test happens to gate correctly on a first run or after an `fp_schema`
+#    bump (everything really is `new` then), but FAILS OPEN the moment prior
+#    state exists and is merely stale in part - a finding classified
+#    `recurring`/`unknown` off state the guard has already declared unusable
+#    would silently pass the bare test even though its status is not
+#    trustworthy this run. That is not hypothetical: it is how the fail-open
+#    shipped once, per this project's own tension register, which is why the
+#    carve-out is tested here as its own case rather than assumed to follow
+#    from the four-row classification table.
 sast_evaluate_gate() {
   local rundir=${1:-$SCOURSH_RUN_DIR}
   # SCAN_FLAGS is scan.sh's own global associative array; when this module is
@@ -532,7 +830,11 @@ sast_evaluate_gate() {
       finding_decode "$line"
       [[ ${_DF[suppressed]:-false} != true ]] || continue
       if [[ $fail_on_new == true ]]; then
-        [[ ${_DF[status]:-new} == new ]] || continue
+        # STATE-08's carve-out: only trust `status` when this run's prior
+        # state was usable at all - see this function's own header comment.
+        if [[ ${SCOURSH_DIFF_USABLE:-false} == true ]]; then
+          [[ ${_DF[status]:-new} == new ]] || continue
+        fi
       fi
       (( $(severity_rank "${_DF[severity]:-info}") >= threshold )) || continue
       (( $(_sast_confidence_rank "${_DF[confidence]:-medium}") >= conf_threshold )) || continue

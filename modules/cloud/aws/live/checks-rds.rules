@@ -1,0 +1,134 @@
+# modules/cloud/aws/live/checks-rds.rules - the §8.1 RDS read-only
+# script-check registry (rules/RULE-FORMAT.md §9.5; docs/STEP6-CLOUD-PLAN.md
+# CLOUD-15).  Owned by modules/cloud/aws/live/rds.sh; ids are all
+# `CLOUD-RDS-*`.
+#
+# A SEPARATE FILE FROM `checks.rules`, RATHER THAN APPENDED TO IT, per that
+# file's own header: "A later service whose peers really are in flight
+# simultaneously may add its own checks-<service>.rules beside this one; both
+# spellings load, because checks_registry_load globs every *.rules under
+# modules/cloud/ at any depth with no per-file allowlist and no registration
+# step." Step 6's tier-2 service PRs (docs/DESIGN.md §13; the dispatch plan's
+# own tier-2 bundle) are dispatched as genuinely parallel, simultaneously
+# in-flight peers rather than the sequential bundles `checks.rules`'s own
+# header describes - so this ticket takes the escape hatch that header names
+# rather than appending to a file every sibling PR would also be appending to.
+#
+# `coverage-scope: account-region` is CLOUD's cell (§9.5.1). UNLIKE S3, EVERY
+# RECORD BELOW LANDS IN THE `<account_id>/<region>` CELL, NOT `<account_id>/
+# global`: `_CLOUD_SERVICES` marks `live/rds.sh` `regional` (RDS has no
+# S3-shaped global namespace call - every instance and snapshot lives in
+# exactly one region and is addressed by a regional endpoint), so the cell the
+# pass actually visits and the region a finding cites are the SAME value here.
+# See modules/cloud/aws/live/rds.sh's own header for the full reasoning.
+#
+# `cis:` IS AUTHORED HERE, ON THE RECORD, AND ONLY WHERE A REAL CIS v3.0.0
+# CONTROL EXISTS (data/cis-mappings is an id -> label table and never a source
+# of ids, docs/CIS-MAPPINGS.md §1). CIS AWS Foundations Benchmark v3.0.0
+# section 2.3 - the RDS section - contains exactly three controls: 2.3.1
+# (encryption at rest), 2.3.2 (auto minor version upgrade, which no check
+# below observes), and 2.3.3 (public access). CLOUD-RDS-NO_ENCRYPTION-01 and
+# CLOUD-RDS-PUBLIC_ACCESS-01 cite those two; CLOUD-RDS-NO_BACKUPS-01 and
+# CLOUD-RDS-PUBLIC_SNAPSHOT-01 cite NOTHING, because v3.0.0 has no RDS backup-
+# retention or snapshot-exposure control - the identical honest-absence
+# decision modules/cloud/aws/live/checks.rules already documents for S3's
+# versioning and logging checks. Inventing a control number to satisfy a "must
+# cite CIS" habit is the overstated-coverage failure docs/DESIGN.md §15
+# forbids.
+#
+# The type tag is `config-read` on every record (one read-only AWS API call,
+# mutates nothing), plus `quick` (docs/DESIGN.md §5's "passive + config-read,
+# no active probes"), plus `compliance` on exactly the two records that carry
+# a `cis` value (finding F3's TAG reading of that profile, lib/checks.sh) -
+# the identical scheme checks.rules already uses for S3.
+
+id: CLOUD-RDS-PUBLIC_ACCESS-01
+title: RDS instance is configured as publicly accessible
+script: aws/live/rds.sh
+severity: critical
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 2.3.3
+remediation: Set the instance's PubliclyAccessible setting to false so it no
+  longer receives a public IP address or a publicly resolvable DNS name. A
+  publicly accessible instance is reachable from outside its VPC subject only
+  to its security group rules, which makes a single overly permissive
+  security group rule the whole remaining barrier between this database and
+  the internet. Reach the instance through a bastion host, a VPN, or an
+  application tier running inside the same VPC instead, and review CloudTrail
+  and the database's own connection logs for any access from an unexpected
+  source while it was public.
+references: CWE-284
+references: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_VPC.html
+
+id: CLOUD-RDS-NO_ENCRYPTION-01
+title: RDS instance storage is not encrypted at rest
+script: aws/live/rds.sh
+severity: medium
+confidence: high
+cwe: CWE-311
+owasp: A02:2021
+tags: config-read
+tags: quick
+tags: compliance
+coverage-scope: account-region
+cis: 2.3.1
+remediation: Encryption at rest can only be enabled at CREATION time for an
+  RDS instance - it cannot be turned on for an existing one in place. Create
+  an encrypted snapshot of the instance (copy-db-snapshot with
+  --kms-key-id, or a manual snapshot followed by a copy that sets encryption),
+  restore a new instance from that encrypted snapshot, cut applications over
+  to it, and decommission the unencrypted original. Once encrypted, its
+  automated backups, read replicas and further snapshots inherit encryption
+  automatically.
+references: CWE-311
+references: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Overview.Encryption.html
+
+id: CLOUD-RDS-NO_BACKUPS-01
+title: RDS instance has automated backups and point-in-time recovery disabled
+script: aws/live/rds.sh
+severity: medium
+confidence: high
+cwe: CWE-693
+owasp: A05:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Set the instance's backup retention period to a non-zero value
+  (7-35 days is the ordinary range). This enables both automated daily
+  backups and point-in-time recovery, since PITR is built on the automated
+  backup plus the transaction-log stream - a retention period of zero
+  disables both at once. Without either, an accidental deletion, a bad
+  migration, or a compromised credential that damages this database's data is
+  unrecoverable except from a manual snapshot taken before the incident, if
+  one happens to exist.
+references: CWE-693
+references: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html
+
+id: CLOUD-RDS-PUBLIC_SNAPSHOT-01
+title: RDS snapshot is shared publicly with every AWS account
+script: aws/live/rds.sh
+severity: critical
+confidence: high
+cwe: CWE-284
+owasp: A01:2021
+tags: config-read
+tags: quick
+coverage-scope: account-region
+remediation: Remove the public share immediately
+  (modify-db-snapshot-attribute --db-snapshot-identifier ID
+  --attribute-name restore --values-to-remove all). A snapshot's restore
+  attribute set to 'all' is AWS's own documented sentinel for "any AWS
+  account in this partition may restore a full copy of this database from
+  it" - not a named account, every account - so this is the entire database
+  as of the snapshot's creation time, exposed to anyone who can guess or
+  enumerate the snapshot identifier. Review whether the snapshot was already
+  restored by an account you did not authorise, and confirm no other
+  snapshot of this or a related instance carries the same attribute.
+references: CWE-284
+references: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_ShareSnapshot.html

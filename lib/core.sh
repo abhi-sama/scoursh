@@ -87,8 +87,10 @@ _want_color() {
   esac
 }
 
-# `_redact_out TEXT` - docs/FOUNDATION.md tension 9 defines redact() as what is
-# written ANYWHERE, and names run.json and logs in the same breath as evidence.
+# `_redact_out TEXT` - sets `_REDACT_OUT_V` to the masked text (a setter, not
+# a stdout producer - see below for why).  docs/FOUNDATION.md tension 9
+# defines redact() as what is written ANYWHERE, and names run.json and logs
+# in the same breath as evidence.
 # Both writers in this file - `_log` and `run_record` - carry target-derived
 # bytes: modules/dast/ratelimit.sh logs the burst endpoint it lifted out of the
 # crawler's inventory, and a `coverage_gap` naming an endpoint it could not
@@ -114,18 +116,65 @@ _want_color() {
 # shell and inherited by the `$(redact ...)` subshell, which is what makes the
 # inner call bail; a redact() that dies takes only that subshell with it and the
 # raw text is used, because a logger that aborts the run is worse than one that
-# fails open on its own error path.
+# fails open on its own error path.  The `$(redact ...)` call below is KEPT
+# exactly as it always was - same subshell, same containment, same fail-open
+# behaviour on a genuine engine failure (tests/suites/secret-redaction.sh I3
+# pins this) - and is still the only place text actually reaches the matching
+# engine.
+#
+# `_redact_out` itself, though, is now a SETTER (`_REDACT_OUT_V`) rather than a
+# function callers wrap in `$(_redact_out ...)`.  That is not a style choice:
+# `_log` and `run_record` used to call it as `$(_redact_out "$*")`, and command
+# substitution forks a subshell around the ENTIRE call - so the per-process
+# cache below, and redact()'s own ruleset-load/memo (lib/findings.sh), were
+# being recreated and thrown away on every single invocation, never surviving
+# to the next one even though both live in ordinary global variables.
+# `_scan_record_config` (scan.sh) alone calls `run_record` roughly forty times,
+# and measured on this tree the overwhelmingly common case is the SAME literal
+# value recurring (a `config_source_*` of "default", a boolean, a format
+# name) - each paying a fresh external grep/rg fork for a question this run
+# already answered.  Calling `_redact_out` directly - no `$(...)` - is what
+# lets `_REDACT_OUT_MEMO` actually persist: the ONLY subshell left in the path
+# is `redact()`'s own internal one two paragraphs up, entered only on a cache
+# MISS, so the die()-containment guarantee is exactly as strong as before and
+# a MISS costs exactly what it always cost.  Caching is sound because redact()
+# is a pure function of its input for the run's lifetime (its own comment
+# above: "the same bytes in always produce the same masked bytes out") - the
+# ruleset never changes mid-run, so caching input->output here changes
+# nothing about WHAT gets redacted, only how many times the identical
+# question gets re-asked.  Capped at the same 512-byte size `redact()`'s own
+# memo uses, for the same reason: evidence is usually long and usually unique,
+# so the cap keeps this from growing on the inputs least likely to repeat.
 _REDACT_OUT_BUSY=0
+declare -gA _REDACT_OUT_MEMO=()
+_REDACT_OUT_V=''
 _redact_out() {
   if (( _REDACT_OUT_BUSY )) || ! declare -F redact >/dev/null 2>&1; then
-    printf '%s' "$1"
+    _REDACT_OUT_V=$1
+    return 0
+  fi
+  local text=$1
+  # An empty key on an associative array is a bash bug, not a style question -
+  # `${arr[$k]+set}`/`arr[$k]=v` with `k=''` raises "bad array subscript" on
+  # bash 5.3.9 (measured on this host), which is merely a warning without
+  # `set -e` and a hard abort of the whole process WITH it. `redact()` itself
+  # already treats empty text as a trivial no-op (`[[ -z $text ]]` up front,
+  # this file's own docstring above), so this mirrors that rather than
+  # inventing a new case: skip the cache and the cost together.
+  if [[ -z $text ]]; then
+    _REDACT_OUT_V=''
+    return 0
+  fi
+  if (( ${#text} <= 512 )) && [[ -n ${_REDACT_OUT_MEMO[$text]+set} ]]; then
+    _REDACT_OUT_V=${_REDACT_OUT_MEMO[$text]}
     return 0
   fi
   _REDACT_OUT_BUSY=1
   local out
-  out=$(redact "$1") || out=$1
+  out=$(redact "$text") || out=$text
   _REDACT_OUT_BUSY=0
-  printf '%s' "$out"
+  (( ${#text} <= 512 )) && _REDACT_OUT_MEMO[$text]=$out
+  _REDACT_OUT_V=$out
 }
 
 _log() {
@@ -140,7 +189,8 @@ _log() {
     prefix=$'\033['"$colour"'m'
     suffix=$'\033[0m'
   fi
-  printf '%s %s%-5s%s %s\n' "$(now_iso)" "$prefix" "$level" "$suffix" "$(_redact_out "$*")" >&2
+  _redact_out "$*"
+  printf '%s %s%-5s%s %s\n' "$(now_iso)" "$prefix" "$level" "$suffix" "$_REDACT_OUT_V" >&2
 }
 
 log_debug() { _log debug '2;37' "$@"; }
@@ -155,6 +205,24 @@ log_error() { _log error '1;31' "$@"; }
 # so no path can leave the process with an unclassifiable status.  A code of 5
 # additionally records `incomplete_reason`, which tension 14 makes exactly the
 # exit-5 predicate.
+#
+# Every OTHER code die() ever actually receives (2 usage, 3 scope, 4 input -
+# 0 and 1 are never passed to this function; see scan_exit_code, which
+# computes those two without ever calling die) is itself a run terminating
+# before every planned module ran, and until now the reason lived nowhere but
+# stderr: a combined `scan.sh all` run that dies at the DAST scope gate after
+# sast/sca/iac already wrote a report leaves that report's own per-category
+# tables saying "did not run this scan - no reason recorded" for dast, even
+# though the tool knew exactly why. `abort_reason` records that reason -
+# deliberately a SEPARATE meta key from `incomplete_reason`, never folded into
+# it: that field's emptiness is exactly the exit-5 predicate a few lines above
+# and lib/report.sh ~889 states again, so writing a scope/usage/input reason
+# into it here would silently turn every scope refusal into an exit-5
+# incomplete run. `abort_reason` has no exit-code effect of its own; it is
+# read-only for the report (lib/report.sh's OWASP/CIS `not_run` bucket and the
+# Limitations section), which renders it in place of "no reason recorded" when
+# one is present and falls back to that same honest text when it is not - a
+# check simply never selected is not an abort, and must not read like one.
 die() {
   local code=$1
   shift
@@ -167,26 +235,41 @@ die() {
   esac
   if (( code == SCOURSH_EXIT_INCOMPLETE )); then
     run_record incomplete_reason "$*"
-    run_json_refresh_incomplete
+  else
+    run_record abort_reason "exit=$code $*"
   fi
+  # Unconditional, not only for code 5: any die() call means the process is
+  # about to exit outside scan_main's own end-of-run report_all call, so
+  # whichever report is already on disk (written by the last module that
+  # finished normally) is stale about the abort either way. Safe to call for
+  # every code - including 2/4 reached before a run directory ever existed -
+  # because the function itself no-ops with no SCOURSH_RUN_DIR/meta.
+  run_json_refresh_incomplete
   log_error "$*"
   # An intentional exit is not an error to be re-reported by the ERR trap.
   trap - ERR
   exit "$code"
 }
 
-# The exit-5 half of tension 14, enforced on the CONSUMER SURFACE rather than
-# only on the internal meta record.
+# Originally the exit-5 half of tension 14 alone, enforced on the CONSUMER
+# SURFACE rather than only on the internal meta record; `die` now calls this
+# for every code it can terminate on (2/3/4/5), because the same staleness
+# problem is not specific to 5.
 #
-# `die 5` terminates the process, so a run that aborts partway through never
+# Any `die` terminates the process, so a run that aborts partway through never
 # reaches scan.sh's own `report_run_json`.  In a combined scan the earlier
 # modules have each already called `report_all`, so the run directory is left
-# holding a `run.json`, `report.md` and `report.html` written by the PREVIOUS
-# module - an empty `incomplete_reason` and a computed gate verdict - while the
-# on-disk meta record says the run was truncated.  The exit code and the report
-# then contradict each other, and it is the report a consumer reads.
-# Re-running the run.json writer here closes that: whenever the exit code is 5,
-# `run.json`'s `incomplete_reason` is non-empty.
+# holding a `run.json`, `report.md`, `report.html` and `agent-fix.json`
+# written by the PREVIOUS module - an empty `incomplete_reason`/`abort_reason`
+# and a computed gate verdict - while the on-disk meta record says the run was
+# truncated.  The exit code and the report then contradict each other, and it
+# is the report a consumer reads.  Re-running the writers here closes that:
+# whenever the exit code is 5, `run.json`'s `incomplete_reason` is non-empty,
+# and for 2/3/4 its `abort_reason` is - and `agent-fix.json`'s own `run`
+# header (§4, docs/AGENT-FORMAT.md) carries the identical value, because it is
+# the ONLY format a downstream fixing agent reads by default (docs/DESIGN.md
+# §15): an agent that saw no file at all on an abort could not tell "ran and
+# found nothing" from "never ran", which is worse than an empty result.
 #
 # Three guards, each load-bearing:
 #
@@ -201,13 +284,33 @@ die() {
 #     can neither replace the original exit code nor print a crash-shaped
 #     second diagnostic over the real message.
 #
-# The writers run in that order, each in its own subshell, and run.json goes
-# FIRST on purpose: it is the one the exit-5 contract is stated over, so a
-# failure inside either of the heavier human-readable writers cannot cost the
-# guarantee.  The two findings writers are deliberately NOT re-run - they merge
-# every worker's shard, which is the one part of `report_all` that is unsafe
-# while other workers may still be mid-write, and neither of them is what
-# claims the run completed.
+# `run.json` and `findings.jsonl` are MANDATORY on every run, abort included -
+# docs/USAGE.md's and README's own "written on every run whatever --format
+# asked for" contract, which this loop used to violate two different ways: it
+# always wrote report.html/agent-fix.json regardless of --format (never
+# consulting SCOURSH_FORMATS at all), and it never wrote findings.jsonl,
+# leaving a real functional gap - `report --from` requires findings.jsonl
+# (scan.sh's `_scan_require_report_source`) and so could never read an aborted
+# run's own directory back.  Both are fixed here: `_report_format_wanted`
+# (lib/report.sh) - the SAME function `_report_render_formats` uses on a
+# normal run - is consulted for every optional writer, and findings.jsonl
+# joins run.json as unconditional.  `findings_write_jsonl` only ever READS the
+# already-merged `findings.fields` (never a worker's own shard file, which
+# tension 17 keeps private until `findings_merge` folds it in) - "mid-write"
+# for it means findings.fields reflects only whatever `findings_merge` had
+# already appended before the abort, the identical partial-information
+# tradeoff already accepted for the meta-derived writers below, not a
+# corruption risk.  An aborted run's findings.jsonl is normally EMPTY; that is
+# correct and is not the same as absent - a consumer distinguishes the two by
+# `run.json`'s own `abort_reason`/`incomplete_reason` (also carried verbatim
+# into `agent-fix.json`'s `run` header), which is unconditional here and reads
+# empty on a genuine clean scan.
+#
+# The writers run in this order, each in its own subshell so one writer's
+# failure cannot cost any of the others: `report_run_json` FIRST, since it is
+# the one the exit-5 contract is stated over; `findings_write_jsonl` next,
+# also mandatory; then every optional renderer `_report_render_formats` would
+# have run on a normal completed scan, each gated on `--format` identically.
 #
 # These writers live in lib/report.sh, which lib/core.sh deliberately does not
 # source (the dependency runs the other way).  A run that never loaded them has
@@ -215,15 +318,90 @@ die() {
 # error.
 _SCOURSH_RUN_JSON_REFRESHED=0
 run_json_refresh_incomplete() {
-  local fn
+  local fn _rjri_name='' _rjri_fmt='' _rjri_regdump=''
   (( _SCOURSH_RUN_JSON_REFRESHED == 0 )) || return 0
   [[ -n ${SCOURSH_RUN_DIR:-} && -d ${SCOURSH_RUN_DIR:-}/meta ]] || return 0
   [[ ${_SCOURSH_RUN_OWNER:-} == "$$" ]] || return 0
   _SCOURSH_RUN_JSON_REFRESHED=1
-  for fn in report_run_json report_md report_html; do
-    declare -F "$fn" >/dev/null 2>&1 || continue
-    ( trap - ERR; "$fn" "$SCOURSH_RUN_DIR" ) || true
+  # report_run_json/report_md/report_html/report_agent each independently
+  # re-parse the tool's whole *.rules catalog (via report_count's OWASP/CIS
+  # registry state) the first time they run in a process - normally paid once
+  # and memoized for the rest of that process, but each of these runs in its
+  # OWN subshell (below), and a subshell can never write its memoized state
+  # back to this parent. Dumping that state out of each subshell and sourcing
+  # it back here - see report_registries_dump's own header comment - means
+  # only the FIRST writer that needs it pays for the parse; a no-op if
+  # lib/report.sh (or $SCOURSH_SCRATCH) is unavailable.  Harmless, and cheap,
+  # for the writers below that never touch the registry at all.
+  if [[ -n ${SCOURSH_SCRATCH:-} && -d ${SCOURSH_SCRATCH:-} ]]; then
+    _rjri_regdump=$SCOURSH_SCRATCH/report-registries.$$
+  fi
+  # `report_agent` is last: it is the one format a downstream fixing agent
+  # reads by default (docs/AGENT-FORMAT.md), and every field in its `run`
+  # header it needs - `abort_reason`, `checks_run`, `coverage_gap`/
+  # `coverage_reduction` - is read straight from meta/, the same records
+  # report_run_json/report_md/report_html already read; it adds no dispatch
+  # of its own and no registry walk beyond the one report_count already
+  # shares across this loop (report_count's own `_RPT_COMPLIANCE_SKIPPED`
+  # gate, #287, keeps that walk skipped whenever meta/checks_run is empty -
+  # the ordinary abort shape - so this adds no cost on the common case).
+  #
+  # `NAME:FORMAT` pairs; an empty FORMAT means "mandatory, never format-gated".
+  for fn in report_run_json: findings_write_jsonl: \
+            findings_write_json:json report_md:md report_html:html \
+            report_sarif:sarif report_audit:audit report_agent:agent; do
+    _rjri_name=${fn%%:*}
+    _rjri_fmt=${fn#*:}
+    declare -F "$_rjri_name" >/dev/null 2>&1 || continue
+    if [[ -n $_rjri_fmt ]] && declare -F _report_format_wanted >/dev/null 2>&1; then
+      _report_format_wanted "$_rjri_fmt" || continue
+    fi
+    (
+      trap - ERR
+      # report_sarif/report_audit build their per-check descriptors from
+      # lib/records.sh's own raw parsed record state, which
+      # report_registries_dump does not (and cannot cheaply) carry across a
+      # subshell boundary - see that function's own header. A memo flag this
+      # subshell inherited from an EARLIER writer's dump would make the
+      # registry walk below short-circuit without ever populating that state
+      # HERE, so force each its own complete, self-consistent walk instead of
+      # trusting an inherited flag.
+      if [[ $_rjri_name == report_sarif || $_rjri_name == report_audit ]]; then
+        unset _RPT_CHECKMETA_LOADED_ROOT _RPTOW_REGISTRY_LOADED_ROOT \
+          _RPTCIS_REGISTRY_LOADED_ROOT 2>/dev/null || true
+      fi
+      "$_rjri_name" "$SCOURSH_RUN_DIR"
+      if [[ -n $_rjri_regdump ]] && declare -F report_registries_dump >/dev/null 2>&1; then
+        report_registries_dump "$_rjri_regdump"
+      fi
+    ) || true
+    if [[ -n $_rjri_regdump && -s $_rjri_regdump ]]; then
+      # A scratch file path computed at runtime (report_registries_dump's own
+      # `declare -p` snapshot, escaping the subshell above), never a static
+      # path shellcheck could follow.
+      # shellcheck disable=SC1090
+      source "$_rjri_regdump"
+    fi
   done
+  [[ -z $_rjri_regdump ]] || rm -f "$_rjri_regdump"
+  # docs/STEP7-STATE-PLAN.md STATE-02: `state/<run-id>.json` is persisted on
+  # EVERY run, not only a clean or gated one - the identical "an incomplete
+  # run still leaves a real report behind" argument the three writers above
+  # already make, applied to state/.  `state_run_pending` (lib/state.sh) is
+  # the one thing read from that file here, exactly as `declare -F` above is
+  # the one thing checked before calling it - a run that never loaded
+  # lib/state.sh (a caller that sources only lib/core.sh, or a die() that
+  # fired before scan_main ever called state_set_run) leaves it undefined or
+  # false, and both are a silent no-op rather than an error, the same
+  # contract this function's own header already states for report_run_json.
+  # Only whatever coverage individual modules had ALREADY recorded via
+  # state_add_covered before the abort is written - nothing here tries to
+  # salvage partial credit for the module that was mid-flight when the abort
+  # happened, which is the conservative, fail-safe direction (tension 12: a
+  # (check, cell) pair not yet marked covered stays uncovered).
+  if declare -F state_run_pending >/dev/null 2>&1 && state_run_pending; then
+    ( trap - ERR; state_write ) || true
+  fi
   return 0
 }
 
@@ -704,17 +882,58 @@ core_require_baseline() {
 # outside this file - a second implementation in modules/sca/ would be exactly
 # the "ad hoc parser, subtly different" failure tension 24 exists to prevent.
 #
+# _db_lookup_exec PREFIX FILE FALLBACK_ARGS... - runs the capability-selected
+# engine (`look`, else `grep -F` with FALLBACK_ARGS appended - `-m 1` for the
+# exact caller, nothing for the prefix caller) and captures its rc the same
+# way scan_match does, rather than letting it be the function's bare last
+# statement: `look`/`grep` exit 1 on NO MATCH, which is the ordinary case for
+# both callers below (most packages carry no advisory), and under scoursh's
+# mandatory `set -Eeuo pipefail` an untested trailing command tripping that
+# exit trips the ERR trap too - loudly, on every clean lookup, from inside
+# whatever subshell the caller used (`sca_lookup_range`'s
+# `done < <(db_lookup_prefix ...)` is the reported case, but any bare/`$()`
+# call is equally exposed). `rc <= 1` is normal (0 matched, 1 no match) and is
+# returned with no trap noise; `rc > 1` is a genuine engine/file failure and
+# is `die`'d exactly as scan_match's own does, because a real failure here
+# must stay loud.
+_db_lookup_exec() {
+  local prefix=$1 file=$2 rc=0
+  shift 2
+  if [[ ${SCOURSH_CAP_LOOK:-none} == look ]]; then
+    LC_ALL=C look -- "$prefix" "$file" || rc=$?
+  else
+    LC_ALL=C grep -F "$@" -- "$prefix" "$file" || rc=$?
+  fi
+  (( rc <= 1 )) || die "$SCOURSH_EXIT_INCOMPLETE" "db lookup engine failed (rc=$rc): prefix=$prefix file=$file"
+  return "$rc"
+}
+
 # Returns the underlying command's own exit status: 0 with output when at
 # least one line matched, 1 with no output otherwise. FILE must already be
 # sorted under `LC_ALL=C` (tension 25) - this function does not sort it.
 db_lookup_exact() {
   local prefix=$1 file=$2
   [[ -r $file ]] || return 1
-  if [[ ${SCOURSH_CAP_LOOK:-none} == look ]]; then
-    LC_ALL=C look -- "$prefix" "$file"
-  else
-    LC_ALL=C grep -F -m 1 -- "$prefix" "$file"
-  fi
+  _db_lookup_exec "$prefix" "$file" -m 1
+}
+
+# db_lookup_prefix PREFIX FILE - like db_lookup_exact, but ALWAYS returns
+# every line sharing PREFIX, even under the `look`-less grep fallback.
+# docs/FOUNDATION.md tension 25's amendment (npm semver-range matching)
+# needs this: db_lookup_exact's asymmetric `grep -F -m 1` fallback is
+# deliberately safe for an EXACT (ecosystem, package, version) prefix - at
+# most a handful of advisories share one exact version - but is a
+# correctness bug for a (ecosystem, package) PREFIX, where every row must be
+# evaluated against the interval comparator. Measured on the real range
+# database: `grep -F -m 1 'npm<TAB>lodash<TAB>'` returns 1 of 10 rows a
+# `look`-having host sees. Dropping `-m 1` here also makes a `look`-less host
+# MORE correct than db_lookup_exact's own exact-lookup fallback already is,
+# never less - see modules/sca/engine.sh's sca_lookup_range for the one
+# caller.
+db_lookup_prefix() {
+  local prefix=$1 file=$2
+  [[ -r $file ]] || return 1
+  _db_lookup_exec "$prefix" "$file"
 }
 
 # ---------------------------------------------------------------------------
@@ -796,11 +1015,31 @@ run_init() {
 # Append a run-level fact.  Workers may call this concurrently, so each fact is
 # its own file under meta/ and each append is a single short line, well below
 # PIPE_BUF (tension 17's reasoning applied to a much smaller record).
+#
+# `SCOURSH_META_DIR` OVERRIDES WHERE THAT LINE LANDS, and exists for exactly one
+# caller: lib/parallel.sh points each of its forked workers at a private
+# directory so their appends never interleave in the shared meta/.  Being below
+# PIPE_BUF makes a concurrent append ATOMIC - no line is ever torn - but says
+# nothing about the ORDER lines arrive in, and lib/report.sh renders several
+# meta keys (`coverage_reduction`, `coverage_gap`, `notes`,
+# `incomplete_reason`) in file order rather than sorted, so interleaved appends
+# alone are enough to make run.json stop being byte-reproducible across runs.
+# The parent folds the per-worker directories back in, in worker order, once
+# every worker has exited - see lib/parallel.sh's own determinism contract.
+# Unset (the default, and every caller outside a worker) means meta/ itself.
+#
+# The `-d $SCOURSH_RUN_DIR/meta` guard is deliberately kept as the test for
+# "is there a run to record against", rather than being moved onto the resolved
+# directory: a worker's private directory existing is not what makes a run
+# recordable, and a caller with no run directory at all must stay a no-op.
 run_record() {
   local key=$1
   shift
   [[ -n ${SCOURSH_RUN_DIR:-} && -d ${SCOURSH_RUN_DIR:-}/meta ]] || return 0
-  printf '%s\n' "$(_redact_out "$*")" >>"$SCOURSH_RUN_DIR/meta/$key"
+  local dir=${SCOURSH_META_DIR:-$SCOURSH_RUN_DIR/meta}
+  [[ -d $dir ]] || dir=$SCOURSH_RUN_DIR/meta
+  _redact_out "$*"
+  printf '%s\n' "$_REDACT_OUT_V" >>"$dir/$key"
   return 0
 }
 

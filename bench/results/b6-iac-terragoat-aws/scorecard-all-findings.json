@@ -1,0 +1,71 @@
+{
+  "cases": 71,
+  "real_cases": 33,
+  "trap_cases": 38,
+  "min_severity": "any",
+  "match": "line",
+  "line_window": 0,
+  "categories": ["terraform-aws"],
+  "tools": {
+    "checkov": {
+      "version": "3.3.10",
+      "corpus_commit": "729f8da62c6a85ce4af5ad3d123de97776d954c4",
+      "claims": "terraform-aws kubernetes",
+      "findings_kept": 164,
+      "findings_dropped_by_severity": 0,
+      "findings_without_a_line": 0,
+      "findings_outside_every_labelled_range": 1,
+      "loose": {
+        "terraform-aws": {"coverage": "scored", "tp": 25, "fn": 8, "fp": 10, "tn": 28, "recall": 0.758, "fpr": 0.263, "precision": 0.714, "youden_j": 0.495}
+      },
+      "strict": {
+        "terraform-aws": {"coverage": "no_cwe_in_truth"}
+      }
+    },
+    "kics": {
+      "version": "2.1.21",
+      "corpus_commit": "729f8da62c6a85ce4af5ad3d123de97776d954c4",
+      "claims": "terraform-aws kubernetes",
+      "findings_kept": 155,
+      "findings_dropped_by_severity": 0,
+      "findings_without_a_line": 0,
+      "findings_outside_every_labelled_range": 11,
+      "loose": {
+        "terraform-aws": {"coverage": "scored", "tp": 32, "fn": 1, "fp": 18, "tn": 20, "recall": 0.970, "fpr": 0.474, "precision": 0.640, "youden_j": 0.496}
+      },
+      "strict": {
+        "terraform-aws": {"coverage": "no_cwe_in_truth"}
+      }
+    },
+    "scoursh-iac": {
+      "version": "0.1.0-dev+0be15e965f28",
+      "corpus_commit": "729f8da62c6a85ce4af5ad3d123de97776d954c4",
+      "claims": "terraform-aws kubernetes",
+      "findings_kept": 7,
+      "findings_dropped_by_severity": 0,
+      "findings_without_a_line": 0,
+      "findings_outside_every_labelled_range": 2,
+      "loose": {
+        "terraform-aws": {"coverage": "scored", "tp": 3, "fn": 30, "fp": 2, "tn": 36, "recall": 0.091, "fpr": 0.053, "precision": 0.600, "youden_j": 0.038}
+      },
+      "strict": {
+        "terraform-aws": {"coverage": "no_cwe_in_truth"}
+      }
+    },
+    "trivy-config": {
+      "version": "0.74.0",
+      "corpus_commit": "729f8da62c6a85ce4af5ad3d123de97776d954c4",
+      "claims": "terraform-aws kubernetes",
+      "findings_kept": 115,
+      "findings_dropped_by_severity": 0,
+      "findings_without_a_line": 2,
+      "findings_outside_every_labelled_range": 0,
+      "loose": {
+        "terraform-aws": {"coverage": "scored", "tp": 28, "fn": 5, "fp": 9, "tn": 29, "recall": 0.848, "fpr": 0.237, "precision": 0.757, "youden_j": 0.611}
+      },
+      "strict": {
+        "terraform-aws": {"coverage": "no_cwe_in_truth"}
+      }
+    }
+  }
+}

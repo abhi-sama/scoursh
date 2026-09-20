@@ -1,0 +1,56 @@
+{
+    "UserPoolClient": {
+        "UserPoolId": "eu-west-2_weakpool01",
+        "ClientName": "scoursh-fixture-weak-client",
+        "ClientId": "weakclient000000000000000",
+        "RefreshTokenValidity": 3650,
+        "AccessTokenValidity": 24,
+        "IdTokenValidity": 60,
+        "TokenValidityUnits": {
+            "AccessToken": "hours",
+            "IdToken": "minutes",
+            "RefreshToken": "days"
+        },
+        "ReadAttributes": [
+            "email",
+            "email_verified"
+        ],
+        "WriteAttributes": [
+            "email",
+            "email_verified",
+            "custom:role",
+            "custom:wardrobe"
+        ],
+        "ExplicitAuthFlows": [
+            "ALLOW_USER_PASSWORD_AUTH",
+            "ALLOW_ADMIN_USER_PASSWORD_AUTH",
+            "ALLOW_REFRESH_TOKEN_AUTH"
+        ],
+        "SupportedIdentityProviders": [
+            "COGNITO"
+        ],
+        "CallbackURLs": [
+            "https://app.example.com/callback",
+            "http://staging.example.com/callback",
+            "http://localhost:3000/callback",
+            "https://*.example.com/callback"
+        ],
+        "LogoutURLs": [
+            "https://app.example.com/logout"
+        ],
+        "AllowedOAuthFlows": [
+            "implicit",
+            "code",
+            "client_credentials"
+        ],
+        "AllowedOAuthScopes": [
+            "openid",
+            "email"
+        ],
+        "AllowedOAuthFlowsUserPoolClient": true,
+        "PreventUserExistenceErrors": "LEGACY",
+        "EnableTokenRevocation": false,
+        "EnablePropagateAdditionalUserContextData": false,
+        "AuthSessionValidity": 3
+    }
+}

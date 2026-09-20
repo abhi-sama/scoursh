@@ -178,11 +178,27 @@ _dast_banner_phase() {
     case $_BANNER_DB_STATE in
       absent)
         do_outdated=0
-        run_record coverage_reduction "module=dast reason=versions_db_absent target=$target - the vendored known-vulnerable version list at data/versions.db is missing or unreadable, so discovered component versions were not checked against it. Version DISCLOSURE was still checked. Populate the list on a networked box (docs/VERSIONS-DB.md); nothing in a scan ever fetches it."
+        # Name the ids, so `lib/report.sh`'s coverage report can attribute this
+        # reason to them instead of leaving them in its `unaccounted` residual
+        # (docs/DESIGN.md §15).  Narrowed to what this run actually SELECTED:
+        # an id the filter chain already dropped was declared once by
+        # lib/checks.sh:353 and naming it twice corrupts that report's own
+        # arithmetic - see dast_selected_narrow (modules/dast/engine.sh).
+        local _nc='DAST-BANNER-OUTDATED_COMPONENT-01'
+        declare -F dast_selected_narrow >/dev/null && dast_selected_narrow _nc
+        run_record coverage_reduction "module=dast reason=versions_db_absent target=$target${_nc:+ checks=[$_nc]} - the vendored known-vulnerable version list at data/versions.db is missing or unreadable, so discovered component versions were not checked against it. Version DISCLOSURE was still checked. Populate the list on a networked box (docs/VERSIONS-DB.md); nothing in a scan ever fetches it."
         ;;
       no_banner_rows)
         do_outdated=0
-        run_record coverage_reduction "module=dast reason=versions_db_no_banner_rows target=$target - data/versions.db exists but carries no \`banner\` rows, so no discovered component version could be matched against a known-vulnerable one. This is the state of a fresh clone: the list is vendored by an operator action, never by a scan (docs/VERSIONS-DB.md). Version DISCLOSURE was still checked."
+        # Name the ids, so `lib/report.sh`'s coverage report can attribute this
+        # reason to them instead of leaving them in its `unaccounted` residual
+        # (docs/DESIGN.md §15).  Narrowed to what this run actually SELECTED:
+        # an id the filter chain already dropped was declared once by
+        # lib/checks.sh:353 and naming it twice corrupts that report's own
+        # arithmetic - see dast_selected_narrow (modules/dast/engine.sh).
+        local _nc='DAST-BANNER-OUTDATED_COMPONENT-01'
+        declare -F dast_selected_narrow >/dev/null && dast_selected_narrow _nc
+        run_record coverage_reduction "module=dast reason=versions_db_no_banner_rows target=$target${_nc:+ checks=[$_nc]} - data/versions.db exists but carries no \`banner\` rows, so no discovered component version could be matched against a known-vulnerable one. This is the state of a fresh clone: the list is vendored by an operator action, never by a scan (docs/VERSIONS-DB.md). Version DISCLOSURE was still checked."
         ;;
       present)
         run_record notes "module=dast phase=banner target=$target versions_db=present${_BANNER_DB_GENERATED:+ generated=$_BANNER_DB_GENERATED}"

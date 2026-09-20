@@ -1,0 +1,32 @@
+{
+  "DomainStatus": {
+    "DomainId": "123456789012/scoursh-fixture-hardened-domain",
+    "DomainName": "scoursh-fixture-hardened-domain",
+    "ARN": "arn:aws:es:eu-west-2:123456789012:domain/scoursh-fixture-hardened-domain",
+    "Created": true,
+    "Deleted": false,
+    "Endpoint": "vpc-scoursh-fixture-hardened-domain.eu-west-2.es.amazonaws.com",
+    "Processing": false,
+    "EngineVersion": "OpenSearch_2.11",
+    "VPCOptions": {
+      "VPCId": "vpc-0123456789abcdef0",
+      "SubnetIds": [
+        "subnet-abc"
+      ],
+      "SecurityGroupIds": [
+        "sg-abc"
+      ]
+    },
+    "AccessPolicies": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::123456789012:role/scoursh-fixture-role\"},\"Action\":\"es:*\",\"Resource\":\"arn:aws:es:eu-west-2:123456789012:domain/scoursh-fixture-hardened-domain/*\"}]}",
+    "EncryptionAtRestOptions": {
+      "Enabled": true,
+      "KmsKeyId": "arn:aws:kms:eu-west-2:123456789012:key/abc"
+    },
+    "NodeToNodeEncryptionOptions": {
+      "Enabled": true
+    },
+    "DomainEndpointOptions": {
+      "EnforceHTTPS": true
+    }
+  }
+}

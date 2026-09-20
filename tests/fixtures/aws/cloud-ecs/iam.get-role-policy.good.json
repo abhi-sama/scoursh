@@ -1,0 +1,15 @@
+{
+    "RoleName": "scoursh-fixture-ecs-good-role",
+    "PolicyName": "scoursh-fixture-scoped-s3-read",
+    "PolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "ReadOneBucket",
+                "Effect": "Allow",
+                "Action": ["s3:GetObject", "s3:ListBucket"],
+                "Resource": ["arn:aws:s3:::scoursh-fixture-app-bucket/*"]
+            }
+        ]
+    }
+}

@@ -74,8 +74,13 @@ repo_record_files() {
   # step 1/2 shipped none, so this directory did not exist yet).
   for d in rules data config modules; do [[ -d $d ]] && dirs+=("$d"); done
   (( ${#dirs[@]} > 0 )) || return 0
+  # `-name cis-mappings` is a literal basename match, not an extension glob:
+  # data/cis-mappings (COMPLIANCE-03, rules/RULE-FORMAT.md §9.6.7) is a
+  # human-authored records file with no extension, unlike its machine-generated
+  # data/ siblings versions.db and advisories.db (tension 25), which carry no
+  # extension either and must NOT be swept here - they are TSV, not records.
   find "${dirs[@]}" -type f \
-    \( -name '*.rules' -o -name '*.conf' -o -name '*.conf.example' \) \
+    \( -name '*.rules' -o -name '*.conf' -o -name '*.conf.example' -o -name cis-mappings \) \
     | LC_ALL=C sort
 }
 
@@ -88,6 +93,7 @@ fixture_schema_for() {
     tests/fixtures/config/netns-scope.conf) printf '%s' scope-target ;;
     tests/fixtures/checks-registry/modules/sast/rules/*.rules) printf '%s' pattern-rule ;;
     tests/fixtures/checks-registry/modules/dast/checks.rules) printf '%s' script-check ;;
+    tests/fixtures/checks-registry/modules/cloud/aws/live/checks.rules) printf '%s' script-check ;;
     *) return 1 ;;
   esac
 }
@@ -214,8 +220,8 @@ module_can_supply() {
   local module=$1 key=$2
   case $key in
     none) return 0 ;;
-    file) case $module in SAST | SCA | IAC) return 0 ;; *) return 1 ;; esac ;;
-    target) case $module in DAST | CLOUD | POSTURE) return 0 ;; *) return 1 ;; esac ;;
+    file) case $module in SAST | SCA | IAC | IMAGE) return 0 ;; *) return 1 ;; esac ;;
+    target) case $module in DAST | CLOUD | POSTURE | NET) return 0 ;; *) return 1 ;; esac ;;
     account | account-region) case $module in CLOUD | POSTURE) return 0 ;; *) return 1 ;; esac ;;
     *) return 1 ;;
   esac

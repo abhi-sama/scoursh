@@ -1,0 +1,15 @@
+{
+    "RoleName": "scoursh-fixture-eks-good-role",
+    "PolicyName": "scoursh-fixture-scoped-ecr-pull",
+    "PolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "PullFromOneRepo",
+                "Effect": "Allow",
+                "Action": ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage"],
+                "Resource": "arn:aws:ecr:eu-west-2:123456789012:repository/scoursh-fixture-app"
+            }
+        ]
+    }
+}

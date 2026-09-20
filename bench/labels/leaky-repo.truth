@@ -1,0 +1,668 @@
+# bench/labels/leaky-repo.truth - the HAND-AUTHORED ground truth for the
+# leaky-repo secrets corpus, pinned at bench/corpus.lock's `leaky-repo` commit.
+#
+# WHY THIS CORPUS AND NOT SecretBench.  SecretBench (setu1421/SecretBench,
+# MSR'23) is the best-labelled public secrets dataset and is NOT OBTAINABLE
+# HERE: the repository of that name holds only metadata, and the 97,479
+# labelled secrets live in Google BigQuery and Google Cloud Storage behind a
+# Google Cloud account, a signed data-protection agreement with the authors,
+# and per-email access they grant by hand.  That is recorded as an explicit
+# not-measured cell in the leg README rather than quietly substituted.
+#
+# leaky-repo is the substitute: MIT, third-party, unchanged since 2020, and
+# deliberately seeded with the credential-bearing files that most often reach a
+# public repository by accident.  Its author states plainly that none of the
+# values are real - they are randomised or redacted reproductions of shapes
+# seen in the wild.
+#
+# ITS RELATIONSHIP TO THE TOOLS BEING SCORED, stated rather than left to be
+# found.  It is not any scanned tool's own fixture set, which is what
+# methodology rule R1 requires.  It does ship `.leaky-meta/benchmarking/*.md`
+# reporting how Gitleaks, TruffleHog, gitrob and detect-secrets scored against
+# it, so a tool author COULD have tuned against it at some point since 2019.
+# That is a weaker relationship than authorship, and it cuts against scoursh
+# rather than for it, so it is disclosed here.
+#
+# ---------------------------------------------------------------------------
+# THE UNIT IS ONE PLANTED CREDENTIAL, at its own line or line range
+# ---------------------------------------------------------------------------
+# A `real: true` case is one credential; a file holding three distinct
+# credentials is three cases, because finding one of them is not finding the
+# other two.  A multi-line secret (a PEM key, a WordPress salt block, a SQL
+# credential dump) is one case spanning its real extent, so a tool anchoring
+# anywhere inside it is credited once.
+#
+# A `real: false` case is a NEGATIVE CONTROL: a contiguous region carrying no
+# credential at all, chosen where a detector plausibly errs - a public key
+# beside a private one, an entropy-dense string that authenticates nothing, the
+# word `password` as a column name or a class path, a config block of hosts and
+# usernames.  A tool that reports a finding inside one of these is counted as a
+# false positive, and that is the whole reason they are here: recall alone is a
+# metric that a rule flagging every line scores 100% on.
+#
+# ---------------------------------------------------------------------------
+# WHAT IS DELIBERATELY LEFT UNLABELLED
+# ---------------------------------------------------------------------------
+# Lines that are genuinely ambiguous carry NO case, in either direction, and
+# are therefore neither credited nor penalised.  The clearest example is an AWS
+# access key ID with no secret beside it: leaky-repo's own secrets.csv calls it
+# `informative`, a reasonable scanner reports it, and calling that a false
+# positive would be a judgement this label set should not make silently.  The
+# same applies to the two binary Firefox stores `cert9.db` and `key4.db`, and
+# to `.leaky-meta/`, which is the corpus's notes about itself.
+#
+# Leaving a region unlabelled is not free and is not hidden: the leg README
+# reports, per tool, how many of its findings landed outside every labelled
+# range, so a reader can see how much of each tool's output this label set
+# declined to judge.
+#
+# ---------------------------------------------------------------------------
+# CROSS-CHECK
+# ---------------------------------------------------------------------------
+# leaky-repo ships `.leaky-meta/secrets.csv`, a per-FILE count of `risk` and
+# `informative` lines covering part of the tree.  It is NOT the labels - it has
+# no line numbers, it omits many of the files below, and a benchmark whose
+# truth is a count cannot score a line - but it is an independent second
+# opinion, and where a call below agrees or disagrees with it the rationale
+# says so.
+#
+# ---------------------------------------------------------------------------
+# FORMAT: bench/lib/truth.sh records - five 0x1f-separated fields plus a sixth.
+#
+#     <case><US><file><US><category><US><cwe><US><real><US><line-range>
+#
+# The sixth field is the credential's line range and is what `bench/score.sh
+# --match line` scores against.  `cwe` is EMPTY for every case here, and that
+# is a statement rather than an omission: every planted credential in this
+# corpus is CWE-798, so a strict-CWE column would be a tautology - it would
+# separate no two tools and no two cases.  The scorer renders the strict column
+# for such a category as an explicit `no CWE in truth` cell rather than as a
+# row of zeros.
+#
+# 82 cases: 65 planted secrets, 17 negative controls.
+
+# ==========================================================================
+# .bash_profile
+# ==========================================================================
+
+# aws-secret-access-key  (line 12)
+#   An AWS secret access key assigned to AWS_SECRET_ACCESS_KEY. The secret
+#   half of a credential pair, in a file every login shell sources.
+.bash_profile:aws-secret-access-key.bash_profilesecretstrue12
+
+# rds-password  (line 20)
+#   RDS_PASSWORD as a literal. The RDS hostname two lines earlier makes it
+#   usable.
+.bash_profile:rds-password.bash_profilesecretstrue20
+
+# heroku-api-key  (line 21)
+#   HEROKU_API_KEY as a literal. A Heroku API key is a full-account
+#   credential.
+.bash_profile:heroku-api-key.bash_profilesecretstrue21
+
+# github-api-token  (line 22)
+#   A 40-hex GitHub token in HOMEBREW_GITHUB_API_TOKEN - the classic
+#   personal access token shape.
+.bash_profile:github-api-token.bash_profilesecretstrue22
+
+# slack-api-token  (line 23)
+#   An `xoxp-` Slack user token. Provider-prefixed and unambiguous.
+.bash_profile:slack-api-token.bash_profilesecretstrue23
+
+# mlab-password  (line 24)
+#   MLAB_PASS as a literal, with the database host and name beside it.
+.bash_profile:mlab-password.bash_profilesecretstrue24
+
+# informative-not-secret  (lines 13-19)
+#   NEGATIVE CONTROL. A region, an AWS region alias, a bucket name and an
+#   RDS hostname - identifiers that disclose infrastructure but authenticate
+#   nothing. leaky-repo's own secrets.csv classes each of these
+#   `informative` rather than `risk`, which is an independent second opinion
+#   on the call.
+.bash_profile:informative-not-secret.bash_profilesecretsfalse13-19
+
+# ==========================================================================
+# .bashrc
+# ==========================================================================
+
+# gmail-password  (line 105)
+#   GMAIL_PASSWORD as a literal, with the account name on the line above.
+.bashrc:gmail-password.bashrcsecretstrue105
+
+# mailchimp-api-key  (line 106)
+#   A Mailchimp API key in its documented `<32 hex>-<dc>` form.
+.bashrc:mailchimp-api-key.bashrcsecretstrue106
+
+# jekyll-github-token  (line 109)
+#   A 40-hex GitHub token in JEKYLL_GITHUB_TOKEN.
+.bashrc:jekyll-github-token.bashrcsecretstrue109
+
+# shell-config-not-secret  (lines 1-100)
+#   NEGATIVE CONTROL. A hundred lines of stock Debian .bashrc - history
+#   settings, prompt escapes, ls aliases and an `alert` alias containing a
+#   sed program. Nothing here authenticates anything, and the escape-heavy
+#   prompt strings are exactly the shape a naive entropy detector mistakes
+#   for a key.
+.bashrc:shell-config-not-secret.bashrcsecretsfalse1-100
+
+# ==========================================================================
+# .docker/.dockercfg
+# ==========================================================================
+
+# registry-auth  (line 4)
+#   A base64 `auth` blob for index.docker.io. base64 is encoding, not
+#   encryption - it decodes to `_token:<token>` and logs the client in.
+.docker/.dockercfg:registry-auth.docker/.dockercfgsecretstrue4
+
+# registry-auth-hub  (line 8)
+#   The same credential for hub.docker.com. A second registry entry is a
+#   second credential to find, not a duplicate of the first.
+.docker/.dockercfg:registry-auth-hub.docker/.dockercfgsecretstrue8
+
+# ==========================================================================
+# .docker/config.json
+# ==========================================================================
+
+# registry-auth  (line 5)
+#   The modern spelling of the same Docker registry credential, under
+#   `auths`.
+.docker/config.json:registry-auth.docker/config.jsonsecretstrue5
+
+# registry-auth-hub  (line 9)
+#   The hub.docker.com entry of the same file.
+.docker/config.json:registry-auth-hub.docker/config.jsonsecretstrue9
+
+# ==========================================================================
+# .esmtprc
+# ==========================================================================
+
+# smtp-password  (line 4)
+#   An SMTP password in an esmtp configuration file, with the identity and
+#   host beside it.
+.esmtprc:smtp-password.esmtprcsecretstrue4
+
+# ==========================================================================
+# .ftpconfig
+# ==========================================================================
+
+# sftp-password  (line 6)
+#   A `"pass":` key carrying a root sftp login password.
+.ftpconfig:sftp-password.ftpconfigsecretstrue6
+
+# key-passphrase  (line 12)
+#   `"passphrase"` for the private key the same connection would use.
+.ftpconfig:key-passphrase.ftpconfigsecretstrue12
+
+# ==========================================================================
+# .git-credentials
+# ==========================================================================
+
+# git-credential-url  (line 1)
+#   A git credential store line:
+#   `https://user@example.com:password!#@498@github.com`. The password sits
+#   in the URL userinfo, which is the shape a URL parser has to get right -
+#   the password itself contains an `@`.
+.git-credentials:git-credential-url.git-credentialssecretstrue1
+
+# ==========================================================================
+# .idea/WebServers.xml
+# ==========================================================================
+
+# ftp-password  (line 6)
+#   A JetBrains WebServers entry with the FTP password in a `password=`
+#   attribute. The value is JetBrains' reversible obfuscation, not a hash.
+.idea/WebServers.xml:ftp-password.idea/WebServers.xmlsecretstrue6
+
+# ==========================================================================
+# .netrc
+# ==========================================================================
+
+# netrc-password-imap  (line 1)
+#   A .netrc line carrying login and password in the clear for
+#   imap.gmail.com.
+.netrc:netrc-password-imap.netrcsecretstrue1
+
+# netrc-password-smtp  (line 2)
+#   The same for smtp.gmail.com.
+.netrc:netrc-password-smtp.netrcsecretstrue2
+
+# ==========================================================================
+# .npmrc
+# ==========================================================================
+
+# npm-auth  (line 7)
+#   An `_auth =` line: base64 of a user:password pair, which is the credential
+#   npm sends to the registry.  base64 is an encoding, not encryption.
+.npmrc:npm-auth.npmrcsecretstrue7
+
+# npm-auth-token  (line 9)
+#   A registry-scoped `_authToken`, which is the credential npm actually
+#   uses.
+.npmrc:npm-auth-token.npmrcsecretstrue9
+
+# npm-settings-not-secret  (lines 1-5)
+#   NEGATIVE CONTROL. The registry URL, `always-auth`, `package-lock` and an
+#   email address. leaky-repo's own file marks this region `# Informative`
+#   and the credentials `# Risk`, immediately below.
+.npmrc:npm-settings-not-secret.npmrcsecretsfalse1-5
+
+# ==========================================================================
+# .remote-sync.json
+# ==========================================================================
+
+# sftp-password  (line 17)
+#   A root password in an atom remote-sync configuration.
+.remote-sync.json:sftp-password.remote-sync.jsonsecretstrue17
+
+# ==========================================================================
+# .vscode/sftp.json
+# ==========================================================================
+
+# sftp-password  (line 6)
+#   A root password in a VS Code sftp configuration.
+.vscode/sftp.json:sftp-password.vscode/sftp.jsonsecretstrue6
+
+# ==========================================================================
+# config
+# ==========================================================================
+
+# irc-password  (line 10)
+#   IRC_PASS as a literal. The file's own comment marks it `# Risk`.
+config:irc-passwordconfigsecretstrue10
+
+# irc-settings-not-secret  (lines 1-8)
+#   NEGATIVE CONTROL. Host, real name, port and nick, each marked `#
+#   Informative` by the file itself.
+config:irc-settings-not-secretconfigsecretsfalse1-8
+
+# ==========================================================================
+# deployment-config.json
+# ==========================================================================
+
+# sftp-password  (line 5)
+#   A root sftp password in a deployment configuration.
+deployment-config.json:sftp-passworddeployment-config.jsonsecretstrue5
+
+# ==========================================================================
+# sftp-config.json
+# ==========================================================================
+
+# sftp-password  (line 15)
+#   A root sftp password in a Sublime sftp configuration.
+sftp-config.json:sftp-passwordsftp-config.jsonsecretstrue15
+
+# sublime-settings-not-secret  (lines 1-12)
+#   NEGATIVE CONTROL. Twelve boolean sync settings. No credential.
+sftp-config.json:sublime-settings-not-secretsftp-config.jsonsecretsfalse1-12
+
+# ==========================================================================
+# ventrilo_srv.ini
+# ==========================================================================
+
+# admin-password  (line 7)
+#   AdminPassword for a Ventrilo server.
+ventrilo_srv.ini:admin-passwordventrilo_srv.inisecretstrue7
+
+# user-password  (line 8)
+#   The server's user Password, a separate credential from the admin one.
+ventrilo_srv.ini:user-passwordventrilo_srv.inisecretstrue8
+
+# server-tuning-not-secret  (lines 9-24)
+#   NEGATIVE CONTROL. Buffer sizes, timeouts and codec numbers.
+ventrilo_srv.ini:server-tuning-not-secretventrilo_srv.inisecretsfalse9-24
+
+# ==========================================================================
+# hub
+# ==========================================================================
+
+# github-oauth-token  (line 4)
+#   A 40-hex `oauth_token` in a hub(1) configuration file.
+hub:github-oauth-tokenhubsecretstrue4
+
+# ==========================================================================
+# proftpdpasswd
+# ==========================================================================
+
+# sha512-crypt-hash  (line 1)
+#   A `$6$` SHA-512-crypt hash for root in a ProFTPD password file. A hash
+#   rather than a cleartext password, and still a credential: it is
+#   offline-crackable and it is the file an attacker wants.
+proftpdpasswd:sha512-crypt-hashproftpdpasswdsecretstrue1
+
+# ==========================================================================
+# cloud/.credentials
+# ==========================================================================
+
+# aws-secret-default  (line 4)
+#   An aws_secret_access_key under [default] in an AWS shared credentials
+#   file.
+cloud/.credentials:aws-secret-defaultcloud/.credentialssecretstrue4
+
+# aws-secret-second  (line 7)
+#   The same under [second-profile]. A second profile is a second
+#   credential.
+cloud/.credentials:aws-secret-secondcloud/.credentialssecretstrue7
+
+# ==========================================================================
+# cloud/.s3cfg
+# ==========================================================================
+
+# s3cmd-secret-key  (line 1)
+#   `secret_key` in an s3cmd configuration. The file's own comment marks it
+#   `# Sensitive` and the access key on the next line `# Informative`.
+cloud/.s3cfg:s3cmd-secret-keycloud/.s3cfgsecretstrue1
+
+# ==========================================================================
+# cloud/.tugboat
+# ==========================================================================
+
+# digitalocean-api-key  (line 4)
+#   A DigitalOcean `api_key`, marked `# Risk.` by the file itself.
+cloud/.tugboat:digitalocean-api-keycloud/.tugboatsecretstrue4
+
+# tugboat-defaults-not-secret  (lines 5-15)
+#   NEGATIVE CONTROL. ssh user, key path, port, region, image and size
+#   defaults - and `ssh_key: ''`, an empty value that a key-name matcher can
+#   fire on.
+cloud/.tugboat:tugboat-defaults-not-secretcloud/.tugboatsecretsfalse5-15
+
+# ==========================================================================
+# cloud/heroku.json
+# ==========================================================================
+
+# heroku-api-key  (line 4)
+#   A 32-hex Heroku API key.
+cloud/heroku.json:heroku-api-keycloud/heroku.jsonsecretstrue4
+
+# ==========================================================================
+# db/.pgpass
+# ==========================================================================
+
+# pgpass-password  (line 2)
+#   A .pgpass line: host:port:database:user:password, password in the clear.
+db/.pgpass:pgpass-passworddb/.pgpasssecretstrue2
+
+# pgpass-format-comment  (line 1)
+#   NEGATIVE CONTROL. The format comment
+#   `#hostname:port:database:username:password` - the literal word
+#   `password` in a colon-separated run, with no value anywhere on the line.
+db/.pgpass:pgpass-format-commentdb/.pgpasssecretsfalse1
+
+# ==========================================================================
+# db/mongoid.yml
+# ==========================================================================
+
+# mongodb-uri-credential  (line 4)
+#   A MongoDB connection URI carrying the user and password in its userinfo -
+#   the shape a URL parser has to handle to see at all.
+db/mongoid.yml:mongodb-uri-credentialdb/mongoid.ymlsecretstrue4
+
+# ==========================================================================
+# db/robomongo.json
+# ==========================================================================
+
+# mongo-user-password  (line 14)
+#   `userPassword` for the mongo connection.
+db/robomongo.json:mongo-user-passworddb/robomongo.jsonsecretstrue14
+
+# ssh-passphrase  (line 22)
+#   `sshPassphrase` for the tunnel the same connection opens.
+db/robomongo.json:ssh-passphrasedb/robomongo.jsonsecretstrue22
+
+# ssh-user-password  (line 27)
+#   `sshUserPassword` for root over that tunnel - a third distinct
+#   credential in one connection block.
+db/robomongo.json:ssh-user-passworddb/robomongo.jsonsecretstrue27
+
+# ==========================================================================
+# db/dbeaver-data-sources.xml
+# ==========================================================================
+
+# jdbc-password  (line 4)
+#   A DBeaver data source with `password="password"` in a connection element
+#   alongside the JDBC URL.
+db/dbeaver-data-sources.xml:jdbc-passworddb/dbeaver-data-sources.xmlsecretstrue4
+
+# ==========================================================================
+# db/dump.sql
+# ==========================================================================
+
+# bcrypt-hash-dump  (lines 32-41)
+#   Ten bcrypt `$2y$12$` password hashes in a MySQL INSERT. A credential
+#   dump is what a database breach IS, and these are offline-crackable.
+db/dump.sql:bcrypt-hash-dumpdb/dump.sqlsecretstrue32-41
+
+# sql-schema-not-secret  (lines 1-30)
+#   NEGATIVE CONTROL. mysqldump preamble and a CREATE TABLE naming a
+#   `password` column. The word `password` appears as an identifier with no
+#   value - the commonest false positive a keyword-based secrets rule
+#   produces.
+db/dump.sql:sql-schema-not-secretdb/dump.sqlsecretsfalse1-30
+
+# ==========================================================================
+# .ssh/id_rsa
+# ==========================================================================
+
+# rsa-private-key  (lines 1-26)
+#   A PEM RSA private key, header to footer. The single least arguable
+#   secret in the corpus.
+.ssh/id_rsa:rsa-private-key.ssh/id_rsasecretstrue1-26
+
+# ==========================================================================
+# .ssh/id_rsa.pub
+# ==========================================================================
+
+# ssh-public-key  (line 1)
+#   NEGATIVE CONTROL. The matching PUBLIC key. It is a 380-byte base64 blob
+#   that sits beside a private key and passes every entropy test, and
+#   publishing it is its entire purpose. leaky-repo's own secrets.csv scores
+#   this file 0 risk.
+.ssh/id_rsa.pub:ssh-public-key.ssh/id_rsa.pubsecretsfalse1
+
+# ==========================================================================
+# misc-keys/cert-key.pem
+# ==========================================================================
+
+# pem-private-key  (lines 1-28)
+#   A PEM `PRIVATE KEY` block, header to footer.
+misc-keys/cert-key.pem:pem-private-keymisc-keys/cert-key.pemsecretstrue1-28
+
+# ==========================================================================
+# misc-keys/putty-example.ppk
+# ==========================================================================
+
+# putty-private-lines  (lines 11-26)
+#   The `Private-Lines` section of a PuTTY key with `Encryption: none`, plus
+#   its Private-MAC. An unencrypted private key in PuTTY's own format rather
+#   than PEM, so a rule anchored on `-----BEGIN` cannot see it.
+misc-keys/putty-example.ppk:putty-private-linesmisc-keys/putty-example.ppksecretstrue11-26
+
+# putty-public-lines  (lines 1-10)
+#   NEGATIVE CONTROL. The header and `Public-Lines` of the same file - six
+#   lines of base64 that are the PUBLIC half. A detector that flags the file
+#   wholesale on entropy hits here as well as on the private section.
+misc-keys/putty-example.ppk:putty-public-linesmisc-keys/putty-example.ppksecretsfalse1-10
+
+# ==========================================================================
+# web/ruby/config/master.key
+# ==========================================================================
+
+# rails-master-key  (line 1)
+#   A Rails master.key: 32 hex characters, no key name, no context, alone in
+#   a file. It decrypts credentials.yml.enc, and there is nothing on the
+#   line for a keyword-based rule to match on.
+web/ruby/config/master.key:rails-master-keyweb/ruby/config/master.keysecretstrue1
+
+# ==========================================================================
+# web/django/settings.py
+# ==========================================================================
+
+# django-secret-key  (line 24)
+#   Django's SECRET_KEY, which signs sessions and password-reset tokens.
+web/django/settings.py:django-secret-keyweb/django/settings.pysecretstrue24
+
+# password-validators-not-secret  (lines 84-102)
+#   NEGATIVE CONTROL. AUTH_PASSWORD_VALIDATORS - nineteen lines in which the
+#   word `password` appears eight times as part of a dotted class path and
+#   never with a value.
+web/django/settings.py:password-validators-not-secretweb/django/settings.pysecretsfalse84-102
+
+# ==========================================================================
+# web/js/salesforce.js
+# ==========================================================================
+
+# salesforce-login-password  (line 7)
+#   A Salesforce password passed as the second positional argument to
+#   `conn.login(...)`. A positional argument, so there is no `password =`
+#   for a key-value rule to anchor on.
+web/js/salesforce.js:salesforce-login-passwordweb/js/salesforce.jssecretstrue7
+
+# ==========================================================================
+# web/ruby/secrets.yml
+# ==========================================================================
+
+# rails-secret-development  (line 14)
+#   A 128-hex Rails secret_key_base for development.
+web/ruby/secrets.yml:rails-secret-developmentweb/ruby/secrets.ymlsecretstrue14
+
+# rails-secret-test  (line 17)
+#   The test environment's secret_key_base.
+web/ruby/secrets.yml:rails-secret-testweb/ruby/secrets.ymlsecretstrue17
+
+# rails-secret-production  (line 22)
+#   The production secret_key_base - in the repository, four lines under a
+#   comment telling the reader not to put it there.
+web/ruby/secrets.yml:rails-secret-productionweb/ruby/secrets.ymlsecretstrue22
+
+# ==========================================================================
+# web/var/www/.env
+# ==========================================================================
+
+# laravel-app-key  (line 5)
+#   APP_KEY, the Laravel application encryption key, marked `# Risk` by the
+#   file.
+web/var/www/.env:laravel-app-keyweb/var/www/.envsecretstrue5
+
+# db-password  (line 14)
+#   DB_PASSWORD, marked `# Risk`.
+web/var/www/.env:db-passwordweb/var/www/.envsecretstrue14
+
+# redis-password  (line 23)
+#   REDIS_PASSWORD, marked `# Risk`.
+web/var/www/.env:redis-passwordweb/var/www/.envsecretstrue23
+
+# mail-password  (line 33)
+#   MAIL_PASSWORD, marked `# Risk`.
+web/var/www/.env:mail-passwordweb/var/www/.envsecretstrue33
+
+# env-informative-not-secret  (lines 6-12)
+#   NEGATIVE CONTROL. DB_HOST, DB_DATABASE and DB_USERNAME, each marked `#
+#   Informative` by the file. `DB_USERNAME=root` is the shape a generic
+#   `(user|name)=` rule fires on.
+web/var/www/.env:env-informative-not-secretweb/var/www/.envsecretsfalse6-12
+
+# ==========================================================================
+# web/var/www/public_html/.htpasswd
+# ==========================================================================
+
+# apr1-hash  (line 1)
+#   An `$apr1$` MD5-crypt hash for `admin` in an htpasswd file.
+web/var/www/public_html/.htpasswd:apr1-hashweb/var/www/public_html/.htpasswdsecretstrue1
+
+# ==========================================================================
+# web/var/www/public_html/config.php
+# ==========================================================================
+
+# php-db-password  (line 11)
+#   `$dbpasswd = 'pass123';`, marked `# Risk` by the file.
+web/var/www/public_html/config.php:php-db-passwordweb/var/www/public_html/config.phpsecretstrue11
+
+# ==========================================================================
+# web/var/www/public_html/wp-config.php
+# ==========================================================================
+
+# wordpress-db-password  (line 20)
+#   DB_PASSWORD in a WordPress configuration.
+web/var/www/public_html/wp-config.php:wordpress-db-passwordweb/var/www/public_html/wp-config.phpsecretstrue20
+
+# wordpress-salts  (lines 33-48)
+#   The eight WordPress AUTH/SECURE_AUTH/LOGGED_IN/NONCE keys and salts.
+#   They are what sign WordPress auth cookies, and they are
+#   punctuation-dense enough to defeat a charset-restricted entropy rule.
+web/var/www/public_html/wp-config.php:wordpress-saltsweb/var/www/public_html/wp-config.phpsecretstrue33-48
+
+# ==========================================================================
+# .mozilla/firefox/logins.json
+# ==========================================================================
+
+# firefox-encrypted-logins  (lines 1-70)
+#   Four Firefox saved logins. `encryptedUsername`/`encryptedPassword` are
+#   encrypted under the profile's key4.db, which is committed in the same
+#   directory - so the pair is a credential store, not protected data.
+.mozilla/firefox/logins.json:firefox-encrypted-logins.mozilla/firefox/logins.jsonsecretstrue1-70
+
+# ==========================================================================
+# etc/shadow
+# ==========================================================================
+
+# shadow-user-hash  (line 20)
+#   A `$6$` SHA-512-crypt hash for the `ubuntu` account, uid 0.
+etc/shadow:shadow-user-hashetc/shadowsecretstrue20
+
+# shadow-locked-accounts  (lines 1-19)
+#   NEGATIVE CONTROL. Nineteen system accounts whose password field is `*`
+#   or empty - locked, no hash present. A rule that flags /etc/shadow by
+#   FILENAME rather than by content fires here.
+etc/shadow:shadow-locked-accountsetc/shadowsecretsfalse1-19
+
+# ==========================================================================
+# filezilla/filezilla.xml
+# ==========================================================================
+
+# filezilla-password  (line 13)
+#   A `<Pass>` element carrying an FTP password in the clear.
+filezilla/filezilla.xml:filezilla-passwordfilezilla/filezilla.xmlsecretstrue13
+
+# ==========================================================================
+# filezilla/recentservers.xml
+# ==========================================================================
+
+# filezilla-recent-password-1  (line 13)
+#   A base64-encoded `<Pass>` for the first recent server.
+filezilla/recentservers.xml:filezilla-recent-password-1filezilla/recentservers.xmlsecretstrue13
+
+# filezilla-recent-password-2  (line 30)
+#   A base64-encoded `<Pass>` for the second recent server, a separate
+#   entry.
+filezilla/recentservers.xml:filezilla-recent-password-2filezilla/recentservers.xmlsecretstrue30
+
+# ==========================================================================
+# .gitattributes
+# ==========================================================================
+
+# gitattributes-not-secret  (lines 1-6)
+#   NEGATIVE CONTROL. Its own first line says `This is not a secrets file
+#   but must be in the root directory.` Two glob rules and two year
+#   comments.
+.gitattributes:gitattributes-not-secret.gitattributessecretsfalse1-6
+
+# ==========================================================================
+# high-entropy-misc.txt
+# ==========================================================================
+
+# high-entropy-not-secret  (lines 1-2)
+#   NEGATIVE CONTROL, and the sharpest one in the corpus. Two
+#   maximum-entropy strings - a 64-character alphanumeric run and a base64
+#   blob - that are not credentials for anything. leaky-repo's own
+#   secrets.csv scores this file 0 risk and 2 informative. A tool scoring
+#   purely on Shannon entropy cannot pass this case and clear the Rails
+#   master.key case at the same time.
+high-entropy-misc.txt:high-entropy-not-secrethigh-entropy-misc.txtsecretsfalse1-2
+
+# ==========================================================================
+# LICENSE
+# ==========================================================================
+
+# licence-text-not-secret  (lines 1-21)
+#   NEGATIVE CONTROL. The MIT licence.
+LICENSE:licence-text-not-secretLICENSEsecretsfalse1-21

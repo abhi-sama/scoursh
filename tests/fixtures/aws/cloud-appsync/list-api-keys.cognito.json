@@ -1,0 +1,9 @@
+{
+    "apiKeys": [
+        {
+            "id": "da2-cognitolongkey01",
+            "description": "an additional API_KEY provider configured beside the Cognito default",
+            "expires": 1717280000
+        }
+    ]
+}

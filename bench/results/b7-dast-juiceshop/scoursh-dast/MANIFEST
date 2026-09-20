@@ -1,0 +1,9 @@
+tool: scoursh-dast
+version: 0.1.0-dev+3b25a218a010
+corpus: dast-juiceshop
+corpus-commit: sha256:cd58d79c5cb4d82f22fbaf616f9ff43bbd04ba630cd6b448a9ed99cf652fcebf
+scan-root: (none - a running HTTP target, not a directory)
+records: 18
+claims-categories: cors missing-csp sqli info-disclosure
+ground-truth: bench/labels/dast-juiceshop.truth
+gate: scan.sh dast --target dast-test-target --authed --intensity active --i-own-target dast-test-target --format json (NOT --use-engines; --intensity active + --i-own-target is required to reach scoursh's injection/tier-5 checks at all, since the DAST engine default is passive-only)

@@ -1,0 +1,7 @@
+{
+    "Policy": {
+        "PolicyName": "ExtraIamAccessPolicy",
+        "Arn": "arn:aws:iam::123456789012:policy/ExtraIamAccessPolicy",
+        "DefaultVersionId": "v1"
+    }
+}

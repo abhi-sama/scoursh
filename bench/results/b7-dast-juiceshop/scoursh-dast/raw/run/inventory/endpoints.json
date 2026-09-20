@@ -1,0 +1,20 @@
+{
+  "schema": "scoursh.inventory.endpoints/1",
+  "run_id": "scoursh-active-run",
+  "generated_by": "modules/dast/crawl.sh",
+  "endpoints": [
+    {"id": "19477459505f", "target": "dast-test-target", "method": "GET", "url": "http://127.0.0.1:3400/", "host": "127.0.0.1:3400", "path": "/", "source": "crawl", "depth": 0, "status": "200", "content_type": "text/html; charset=UTF-8", "request_body_type": ""},
+    {"id": "50d74b508ad9", "target": "dast-test-target", "method": "GET", "url": "http://127.0.0.1:3400/assets/public/favicon_js.ico", "host": "127.0.0.1:3400", "path": "/assets/public/favicon_js.ico", "source": "crawl", "depth": 1, "status": "200", "content_type": "image/x-icon", "request_body_type": ""},
+    {"id": "a4b51f3c8935", "target": "dast-test-target", "method": "GET", "url": "http://127.0.0.1:3400/chunk-5K74DZ2F.js", "host": "127.0.0.1:3400", "path": "/chunk-5K74DZ2F.js", "source": "crawl", "depth": 1, "status": "200", "content_type": "application/javascript; charset=UTF-8", "request_body_type": ""},
+    {"id": "2e98d1317a77", "target": "dast-test-target", "method": "GET", "url": "http://127.0.0.1:3400/chunk-DYXK4NW4.js", "host": "127.0.0.1:3400", "path": "/chunk-DYXK4NW4.js", "source": "crawl", "depth": 1, "status": "200", "content_type": "application/javascript; charset=UTF-8", "request_body_type": ""},
+    {"id": "137e477df61d", "target": "dast-test-target", "method": "GET", "url": "http://127.0.0.1:3400/chunk-NWDAIMF4.js", "host": "127.0.0.1:3400", "path": "/chunk-NWDAIMF4.js", "source": "crawl", "depth": 1, "status": "200", "content_type": "application/javascript; charset=UTF-8", "request_body_type": ""},
+    {"id": "3224adf4a7fb", "target": "dast-test-target", "method": "GET", "url": "http://127.0.0.1:3400/chunk-OKA37M7B.js", "host": "127.0.0.1:3400", "path": "/chunk-OKA37M7B.js", "source": "crawl", "depth": 1, "status": "200", "content_type": "application/javascript; charset=UTF-8", "request_body_type": ""},
+    {"id": "2cc570637700", "target": "dast-test-target", "method": "GET", "url": "http://127.0.0.1:3400/chunk-PX7UKXVL.js", "host": "127.0.0.1:3400", "path": "/chunk-PX7UKXVL.js", "source": "crawl", "depth": 1, "status": "200", "content_type": "application/javascript; charset=UTF-8", "request_body_type": ""},
+    {"id": "5663e39f26a4", "target": "dast-test-target", "method": "GET", "url": "http://127.0.0.1:3400/chunk-QBYXNN7Z.js", "host": "127.0.0.1:3400", "path": "/chunk-QBYXNN7Z.js", "source": "crawl", "depth": 1, "status": "200", "content_type": "application/javascript; charset=UTF-8", "request_body_type": ""},
+    {"id": "be25d967627f", "target": "dast-test-target", "method": "GET", "url": "http://127.0.0.1:3400/chunk-UNFVUBM2.js", "host": "127.0.0.1:3400", "path": "/chunk-UNFVUBM2.js", "source": "crawl", "depth": 1, "status": "200", "content_type": "application/javascript; charset=UTF-8", "request_body_type": ""},
+    {"id": "797d5fa81d56", "target": "dast-test-target", "method": "GET", "url": "http://127.0.0.1:3400/chunk-VJL3IV3O.js", "host": "127.0.0.1:3400", "path": "/chunk-VJL3IV3O.js", "source": "crawl", "depth": 1, "status": "200", "content_type": "application/javascript; charset=UTF-8", "request_body_type": ""},
+    {"id": "1493c82e5a97", "target": "dast-test-target", "method": "GET", "url": "http://127.0.0.1:3400/chunk-VS3A3LTT.js", "host": "127.0.0.1:3400", "path": "/chunk-VS3A3LTT.js", "source": "crawl", "depth": 1, "status": "200", "content_type": "application/javascript; charset=UTF-8", "request_body_type": ""},
+    {"id": "199d8ce58b75", "target": "dast-test-target", "method": "GET", "url": "http://127.0.0.1:3400/chunk-YVDT5JXT.js", "host": "127.0.0.1:3400", "path": "/chunk-YVDT5JXT.js", "source": "crawl", "depth": 1, "status": "200", "content_type": "application/javascript; charset=UTF-8", "request_body_type": ""},
+    {"id": "46777173d440", "target": "dast-test-target", "method": "GET", "url": "http://127.0.0.1:3400/styles.css", "host": "127.0.0.1:3400", "path": "/styles.css", "source": "crawl", "depth": 1, "status": "200", "content_type": "text/css; charset=UTF-8", "request_body_type": ""}
+  ]
+}

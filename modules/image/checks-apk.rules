@@ -1,0 +1,73 @@
+# modules/image/checks-apk.rules - the container-image module's apk-specific
+# script-check registry (rules/RULE-FORMAT.md §9's `checks-<name>.rules`
+# row, docs/FOUNDATION.md tension 29).
+#
+# ONE FILE PER OWNING DRIVER, per the "one registry per owner" binding rule
+# (the cloud-wave `checks.rules` corruption, `c9f0e80`, is the incident that rule
+# exists to prevent) and modules/image/checks-advisories.rules' own
+# identical precedent: this ticket's OWN file, never an append to a shared
+# `modules/image/checks.rules` a later dpkg/rpm ticket could then collide
+# on.
+#
+# `id: IMAGE-PKG-VULNERABLE_OS_PACKAGE-01` IS APK-SPECIFIC, despite its
+# generic-sounding name ("apk
+# package ... Alpine release"), because a check id names one owning file
+# under §9.1.1's uniqueness rule (E019), so a future dpkg or rpm ticket adds
+# its OWN id in its OWN `checks-dpkg.rules`/`checks-rpm.rules` rather than
+# reusing this one - each distro's own package manager gets its own registry
+# for exactly this reason.
+#
+# `script: distro/apk.sh` because the comparator IMG-05 adds and the finding
+# emission IMG-06 wires both land in this same file, mirroring
+# checks-advisories.rules' own `script: run.sh` (that file's emitter,
+# `image_report_no_advisory_db`, lives in engine.sh but is called from
+# run.sh - the script field names the DRIVER a reader would go to, not
+# necessarily the literal function body).
+#
+# THIS CHECK NOW FIRES (IMG-06): `distro/apk.sh`'s `apk_scan_installed`
+# enumerates the installed apk database, looks every package up against
+# `data/advisories.db` under this image's resolved ecosystem, and compares
+# with `distro/apk_version.sh`'s comparator (IMG-05) - see that function's
+# own header for the matching rule.  `modules/image/run.sh` calls it from
+# the branch that used to be an unconditional
+# `no_distro_enumerator_on_disk_yet` reduction.
+#
+# `severity: high` is the REGISTERED DEFAULT, not a promise every finding
+# will carry it - the real severity is "from
+# row" (data/advisories.db's own per-advisory `severity` field). This
+# mirrors modules/network/checks-banner.rules' own
+# NET-SVC-OUTDATED_COMPONENT-01: that record also declares a fixed registry
+# severity while its emitter (`banner_engine.sh`) calls
+# `finding_set base_severity "$sev"` with the vendored list's own row value.
+# IMG-06's comparator/emitter is expected to do the identical thing against
+# data/advisories.db's row rather than defer to this field.
+#
+# `tags: passive` - apk enumeration reads one already-extracted local file
+# and makes no network call and mutates nothing, the identical reasoning
+# checks-advisories.rules' own header gives for the same tag.  `tags: quick`
+# for the identical reason that file gives too: a single-file parse plus a
+# `db_lookup_exact` prefix test is the cheapest real coverage a run can buy.
+#
+# `coverage-scope: image-id` - the only legal value for the `IMAGE` module
+# (rules/RULE-FORMAT.md §9.5.1's frozen table); the cell is the
+# operator-declared stable id from `config/images.conf`, never the image
+# digest or tag - a rebuild or retag must not reset coverage.
+
+id: IMAGE-PKG-VULNERABLE_OS_PACKAGE-01
+title: Installed apk package matches a known advisory for this image's Alpine release
+script: distro/apk.sh
+severity: high
+confidence: high
+cwe: CWE-1104
+owasp: A06:2021
+tags: passive
+tags: quick
+coverage-scope: image-id
+remediation: Rebuild the image against an updated base layer (or upgrade
+  the named package directly, where the Dockerfile installs it explicitly)
+  so the installed version no longer matches this advisory, then re-scan.
+  A base-image bump alone can carry this fix silently, so treat a `FROM`
+  tag pin as something to review whenever this finding's advisory has a
+  fixed-in version at or below the base image's own release.
+references: CWE-1104
+references: https://owasp.org/Top10/A06_2021-Vulnerable_and_Outdated_Components/

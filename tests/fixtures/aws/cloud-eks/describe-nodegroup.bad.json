@@ -1,0 +1,8 @@
+{
+    "nodegroup": {
+        "nodegroupName": "scoursh-fixture-eks-bad-ng",
+        "clusterName": "scoursh-fixture-eks-bad-cluster",
+        "status": "ACTIVE",
+        "nodeRole": "arn:aws:iam::123456789012:role/scoursh-fixture-eks-bad-role"
+    }
+}

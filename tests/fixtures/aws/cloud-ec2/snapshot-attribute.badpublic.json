@@ -1,0 +1,6 @@
+{
+    "SnapshotId": "snap-badpublic1",
+    "CreateVolumePermissions": [
+        {"Group": "all"}
+    ]
+}

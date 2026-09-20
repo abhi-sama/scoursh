@@ -1,0 +1,14 @@
+{
+    "PolicyDescriptions": [
+        {
+            "PolicyName": "scoursh-fixture-hardened-policy",
+            "PolicyTypeName": "SSLNegotiationPolicyType",
+            "PolicyAttributeDescriptions": [
+                {
+                    "AttributeName": "Reference-Security-Policy",
+                    "AttributeValue": "ELBSecurityPolicy-TLS-1-2-2017-01"
+                }
+            ]
+        }
+    ]
+}

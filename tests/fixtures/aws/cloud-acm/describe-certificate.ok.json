@@ -1,0 +1,9 @@
+{
+    "Certificate": {
+        "CertificateArn": "arn:aws:acm:eu-west-2:123456789012:certificate/scoursh-fixture-ok-cert",
+        "DomainName": "ok.example.com",
+        "Status": "ISSUED",
+        "Type": "AMAZON_ISSUED",
+        "NotAfter": 1717280000.0
+    }
+}

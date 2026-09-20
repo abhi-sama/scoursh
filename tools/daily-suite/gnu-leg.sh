@@ -96,6 +96,50 @@ gl_assert_gnu_userland
 # each.  Do not fan these out.
 bash tests/run-tests.sh
 
+# ---------------------------------------------------------------------------
+# The dedicated heavy-file shellcheck pass.
+#
+# tests/shellcheck-heavy-files.txt names every *.sh file tests/run-tests.sh's
+# own CI branch (`_shard_build_plan`) excludes from every `--shard I/N` plan,
+# because none of them fit a CI runner's real per-process headroom even
+# running alone - see that file's own header. This container is where they
+# are genuinely checked instead: tools/daily-suite.sh sizes it with real
+# memory (`ds_gnu_memory_gb`), not a fixed CI-runner shape.
+#
+# A SECOND, separate `tests/run-tests.sh shellcheck` call, not folded into
+# the run above. The plain run just above already discovered and attempted
+# every one of these files as part of the whole tree, but under the LOCAL
+# memory model a file that does not fit is a legitimate, silent SKIPPED
+# pass - the exact leniency an ordinary contributor's own laptop still needs
+# and must keep. This project has DECLARED these 16 files heavy, which is a
+# stronger claim than "this host happened to be too small today", so
+# SCOURSH_SHELLCHECK_SKIP_IS_FATAL=1 is set for this call ALONE: a skip here
+# has to be exactly as fatal as an unchecked file is on CI, because this pass
+# is the sole thing standing in for the CI coverage those 16 files were
+# excluded from - a quieter, easier-to-ignore version of that same gap is
+# not an acceptable substitute for closing it.
+HEAVY_LIST=$ROOT/tests/shellcheck-heavy-files.txt
+if [[ ! -f $HEAVY_LIST ]]; then
+  gl_fail "$HEAVY_LIST is missing - the CI handoff has nowhere to point, and this leg cannot claim to have checked the files CI excluded on its behalf"
+fi
+# SCOURSH_SHELLCHECK_FILE_LIST is a PLAIN path-per-line file with no comment
+# support at all (tests/run-tests.sh's own loader skips only truly-blank
+# lines) - it is the same seam a sharded CI plan feeds itself, always from a
+# clean, machine-generated list. tests/shellcheck-heavy-files.txt is a
+# human-authored, heavily-commented document, so `--print-heavy-files` (the
+# SAME parser tests/run-tests.sh's own CI-exclusion path uses, exposed rather
+# than re-implemented here) is what turns it into one; handing the raw file
+# to SCOURSH_SHELLCHECK_FILE_LIST directly was measured to read every `#`
+# comment line as a bogus extra "file", inflating a 16-file pass into 70.
+HEAVY_CLEAN=$(mktemp)
+bash tests/run-tests.sh --print-heavy-files > "$HEAVY_CLEAN"
+printf '\n== GNU leg: dedicated heavy-file shellcheck pass (%s, %s file(s)) ==\n' \
+  "$HEAVY_LIST" "$(wc -l < "$HEAVY_CLEAN" | tr -d ' ')"
+SCOURSH_SHELLCHECK_FILE_LIST=$HEAVY_CLEAN \
+  SCOURSH_SHELLCHECK_SKIP_IS_FATAL=1 \
+  bash tests/run-tests.sh shellcheck
+rm -f "$HEAVY_CLEAN"
+
 # The fixture scan, normalised the same way the host leg normalises its own, so
 # the two can be diffed byte for byte.  The run timestamp is the only value that
 # legitimately differs between two runs.

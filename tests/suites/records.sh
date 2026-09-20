@@ -192,6 +192,10 @@ assert_eq redaction "$(records_schema_for_path rules/redaction.rules)" 'redactio
 assert_eq scope-target "$(records_schema_for_path config/scope.conf)" 'scope'
 assert_eq scanner-config "$(records_schema_for_path config/scanner.conf)" 'scanner'
 assert_eq severity-modifier "$(records_schema_for_path data/severity-rubric.conf)" 'rubric'
+assert_eq owasp-category "$(records_schema_for_path data/owasp-categories.conf)" \
+  'the COMPLIANCE-01 OWASP category label table (§9.6.6)'
+assert_eq cis-mapping "$(records_schema_for_path data/cis-mappings)" \
+  'the COMPLIANCE-03 CIS control label table (§9.6.7)'
 assert_status 1 'a file matching no row is E070' records_schema_for_path some/other/file.rules
 
 # --- §9's `checks-<name>.rules` row ----------------------------------------
@@ -254,6 +258,10 @@ assert_eq POSTURE "$(records_owning_module modules/cloud/posture/checks.rules)" 
 assert_eq CLOUD "$(records_owning_module modules/cloud/aws/checks.rules)" 'cloud'
 assert_eq COMPOSITE "$(records_owning_module rules/derived.rules)" 'derived.rules is COMPOSITE'
 assert_eq SAST "$(records_owning_module rules/redaction.rules)" 'redaction ids are SAST-REDACT-*'
+assert_eq NET "$(records_owning_module modules/network/checks.rules)" \
+  'modules/network/ owns NET, added by this change - its directory name does not match its enum spelling, the same way modules/cloud/posture/ does not match POSTURE'
+assert_eq IMAGE "$(records_owning_module modules/image/checks.rules)" \
+  'modules/image/ owns IMAGE - unlike NET, its directory name matches its enum spelling exactly'
 
 # ---------------------------------------------------------------------------
 printf '\n-- §9 validation codes --\n'
@@ -273,10 +281,45 @@ assert_contains "$(val v2.rules "${base/cwe: CWE-95/cwe: CWE95}" pattern-rule)" 
 assert_contains "$(val v3.rules "${base/owasp: A03:2021/owasp: A3:2021}" pattern-rule)" E026 'E026 owasp form'
 assert_contains "$(val v4.rules "${base/id: SAST-PY-EVAL-01/id: SAST-PY-EVAL}" pattern-rule)" E027 \
   'E027 SEQ is required outside the derived schema'
+# owasp-category (§9.6.6, COMPLIANCE-01): the id must be an A<nn>:<yyyy> form,
+# never the generic lowercase-kebab fallback every other non-check-id schema
+# uses.
+assert_eq '' "$(val vow1.conf 'id: A01:2021\ncategory: Broken Access Control\n' owasp-category)" \
+  'a well-formed owasp-category record validates cleanly'
+assert_contains "$(val vow2.conf 'id: a01:2021\ncategory: Broken Access Control\n' owasp-category)" E027 \
+  'E027 owasp-category id form rejects the generic lowercase-kebab id'
+assert_contains "$(val vow3.conf 'id: A01:2021\n' owasp-category)" E023 \
+  'E023 owasp-category missing required category'
+# cis-mapping (§9.6.7, COMPLIANCE-03): the id is the benchmark's own
+# dotted-decimal control number, never the generic lowercase-kebab fallback
+# every other non-check-id schema uses.
+assert_eq '' "$(val vcis1 'id: 1.4\ntitle: Ensure no root user access key exists\n' cis-mapping)" \
+  'a well-formed cis-mapping record validates cleanly'
+assert_contains "$(val vcis2 'id: one-four\ntitle: t\n' cis-mapping)" E027 \
+  'E027 cis-mapping id form rejects the generic lowercase-kebab id'
+assert_contains "$(val vcis3 'id: 1.4\n' cis-mapping)" E023 \
+  'E023 cis-mapping missing required title'
+assert_eq '' "$(val vcis4 'id: 1.4\ntitle: t\n' cis-mapping)" \
+  'a bare single-segment-free dotted id like 1.4 is a legal cis-mapping id'
+assert_eq '' "$(val vcis5 'id: 2.1.1\ntitle: t\n' cis-mapping)" \
+  'a three-segment dotted id like 2.1.1 is also legal'
+assert_contains "$(val vcis6 'id: 1\ntitle: t\n' cis-mapping)" E027 \
+  'E027 a single undotted segment is not a control id (at least one dot required)'
 assert_contains "$(val v5.rules 'id: SAST-PY-EVAL-01\ntitle: t\nseverity: high\ncwe: none\nowasp: none\npattern: x\ntags: static\n' pattern-rule)" E023 \
   'E023 a missing required key'
 assert_contains "$(val v6.rules "${base}severity-floor: critical\nseverity-ceiling: low\n" pattern-rule)" E029 \
   'E029 floor above ceiling'
+# §9.1.4's fix scaffold (docs/AGENT-FORMAT.md; --format agent)
+assert_contains "$(val v6a.rules "${base}fix-replace: y\n" pattern-rule)" E082 \
+  'E082 fix-replace present without fix-find'
+assert_eq '' "$(val v6b.rules "${base}fix-find: x\nfix-replace: y\n" pattern-rule)" \
+  'fix-find plus fix-replace together is legal'
+assert_eq '' "$(val v6c.rules "${base}fix-find: x\nfix-snippet: y\nfix-kind: insert-near\n" pattern-rule)" \
+  'fix-find plus fix-snippet with no fix-replace is legal (insert-near carries no fix-replace)'
+assert_contains "$(val v6d.rules "${base}fix-kind: overwrite\n" pattern-rule)" E024 \
+  'E024 fix-kind outside its enum'
+assert_eq '' "$(val v6e.rules "${base}fix-kind: replace\n" pattern-rule)" \
+  'fix-kind: replace is legal on its own (fix-find/fix-replace are independently optional at the schema layer)'
 assert_contains "$(val v7.rules "${base}context-window: 3\n" pattern-rule)" E031 \
   'E031 context-window with no require and no deny'
 assert_contains "$(val v8.rules "${base}context-deny: y\ncontext-window: 99\n" pattern-rule)" E032 \
@@ -308,6 +351,22 @@ assert_contains "$(val v21.rules 'id: SAST-A-B-01\ntitle: t\nscript: x.sh\nsever
   'E044 a script check may not carry the static type tag'
 assert_contains "$(val v22.rules "${base}pattern: dup\n" pattern-rule)" E014 'E014 through the validator too'
 
+t_case 'the NET module (rules/RULE-FORMAT.md §14 third worked example) is a purely additive enum entry'
+assert_eq '' "$(val vnet1.rules 'id: NET-PORT-UNEXPECTED_LISTENER-01\ntitle: t\nscript: x.sh\nseverity: high\ncwe: none\nowasp: none\ntags: safe-active\ncoverage-scope: target\nremediation: r\n' script-check)" \
+  'a well-formed NET script check validates cleanly - fails if the widened §9.1.1 MODULE alternation rejects NET'
+assert_contains "$(val vnet2.rules 'id: NET-PORT-UNEXPECTED_LISTENER-01\ntitle: t\nscript: x.sh\nseverity: high\ncwe: none\nowasp: none\ntags: safe-active\ncoverage-scope: path-root\nremediation: r\n' script-check)" E079 \
+  'E079 NET is required to carry coverage-scope: target, exactly like DAST, per the §9.5.1 row this change adds'
+assert_contains "$(val vnet3.rules 'id: XNET-PORT-X-01\ntitle: t\nscript: x.sh\nseverity: high\ncwe: none\nowasp: none\ntags: safe-active\ncoverage-scope: target\nremediation: r\n' script-check)" E027 \
+  'a near-miss module spelling is still rejected - the widened alternation legalises exactly NET, not any prefix containing it'
+
+t_case 'the IMAGE module (IMG-01, rules/RULE-FORMAT.md §14 additive-enum pattern) is a purely additive enum entry'
+assert_eq '' "$(val vimg1.rules 'id: IMAGE-PKG-VULNERABLE_OS_PACKAGE-01\ntitle: t\nscript: x.sh\nseverity: high\ncwe: none\nowasp: none\ntags: passive\ncoverage-scope: image-id\nremediation: r\n' script-check)" \
+  'a well-formed IMAGE script check validates cleanly - fails if the widened §9.1.1 MODULE alternation rejects IMAGE'
+assert_contains "$(val vimg2.rules 'id: IMAGE-PKG-VULNERABLE_OS_PACKAGE-01\ntitle: t\nscript: x.sh\nseverity: high\ncwe: none\nowasp: none\ntags: passive\ncoverage-scope: path-root\nremediation: r\n' script-check)" E079 \
+  'E079 IMAGE is required to carry coverage-scope: image-id, per the §9.5.1 row this change adds'
+assert_contains "$(val vimg3.rules 'id: XIMAGE-PKG-X-01\ntitle: t\nscript: x.sh\nseverity: high\ncwe: none\nowasp: none\ntags: passive\ncoverage-scope: image-id\nremediation: r\n' script-check)" E027 \
+  'a near-miss module spelling is still rejected - the widened alternation legalises exactly IMAGE, not any prefix containing it'
+
 t_case 'a clean record produces no diagnostics at all'
 assert_eq '' "$(val ok.rules "$base" pattern-rule)" 'the seeded shape validates silently'
 
@@ -329,8 +388,9 @@ assert_ne "$(records_digest d1 0)" "$(records_digest d3 0)" 'changing a value do
 printf '\n-- the shipped record files parse and validate --\n'
 # ---------------------------------------------------------------------------
 t_case 'repository record files'
-for f in rules/redaction.rules data/severity-rubric.conf \
-  config/scanner.conf.example config/scope.conf.example \
+for f in rules/redaction.rules data/severity-rubric.conf data/owasp-categories.conf \
+  data/cis-mappings \
+  config/scanner.conf.example config/scope.conf.example config/discovery.conf.example \
   tests/fixtures/rules/fixture.rules tests/fixtures/rules/context.rules \
   tests/fixtures/rules/derived.rules tests/fixtures/config/scope.conf; do
   records_reset_diagnostics
@@ -347,6 +407,30 @@ for f in rules/redaction.rules data/severity-rubric.conf \
     _t_no "$f parses and validates" "$(diags)"
   fi
 done
+
+t_case 'config/discovery.conf.example resolves to the discovery-input schema, by path, not by luck'
+assert_eq 'discovery-input' "$(records_schema_for_path config/discovery.conf.example)" \
+  'the §9 path table maps the .example file to the same schema as the real config/discovery.conf - FAILS if a future path-table edit stops stripping the .example suffix, which would make the "it parses" case above pass under a different, silently-wrong schema'
+records_load "$ROOT/config/discovery.conf.example" '' discovery_ex >/dev/null 2>&1
+assert_eq 1 "$(records_count discovery_ex)" 'the shipped example is exactly one worked record, matching every other config/*.example file'
+assert_eq 'example-target' "$(records_id discovery_ex 0)" 'its id names the same placeholder target config/scope.conf.example uses'
+assert_ne '' "$(records_field_or discovery_ex 0 openapi-path '')" 'openapi-path is set'
+assert_ne '' "$(records_field_or discovery_ex 0 graphql-schema-path '')" 'graphql-schema-path is set'
+assert_ne '' "$(records_field_or discovery_ex 0 postman-path '')" 'postman-path is set'
+assert_ne '' "$(records_field_or discovery_ex 0 har-path '')" 'har-path is set'
+assert_eq '3' "$(records_field_or discovery_ex 0 crawl-depth '')" 'crawl-depth is set'
+assert_contains "$(records_list discovery_ex 0 include-path)" '/api/**' 'include-path is set (repeatable)'
+assert_contains "$(records_list discovery_ex 0 exclude-path)" '/admin/**' 'exclude-path is set (repeatable)'
+# A grep for the bare words `base-url`/`extra-host` would also match this
+# file's own explanatory prose, which discusses them BY NAME to say they are
+# absent; the real question is whether either is a RECORD KEY (line-anchored,
+# as rules/RULE-FORMAT.md requires - §8.2), never whether the word appears.
+if grep -qE '^(base-url|extra-host):' "$ROOT/config/discovery.conf.example"; then
+  _t_no 'no scope-target host anywhere in this file' \
+    'found a base-url or extra-host record - FAILS if a future edit adds a base-url/host shortcut here, which would give discovery.conf a second, undocumented way to name a target host outside config/scope.conf'
+else
+  _t_ok 'no scope-target host anywhere in this file (no base-url/extra-host record key)'
+fi
 
 t_case 'the §10 context directive round-trips through the parser'
 records_load "$ROOT/tests/fixtures/rules/context.rules" pattern-rule ctx >/dev/null 2>&1

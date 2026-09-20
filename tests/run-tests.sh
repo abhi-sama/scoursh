@@ -18,8 +18,15 @@ set -Eeuo pipefail
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$ROOT"
 
-SUITES=(records core config checks findings report http e2e scan sast sast-secrets-forms sast-history sca iac dast dast-auth dast-cookies dast-crawl dast-cors dast-discovery dast-headers dast-leakage dast-markup dast-methods dast-scope-precheck dast-ratelimit dast-response-engine dast-transport dast-sqli dast-pathtraversal dast-cmdi dast-nosqli dast-ldapi dast-ssti dast-xss dast-openredirect dast-xxe-ssrf dast-inject-engine dast-crlf dast-hosthdr dast-protopollution dast-jwt dast-graphql dast-authz dast-banner dast-tls exit-code-matrix gate-mutation-proof ci-smoke netns paranoid vendor-engines vendor-engines-advisories engines sast-semgrep iac-trivy sast-gitleaks awscli aws-lint aws-fixtures lint-no-ai-selftest dast35-lint lint-rules-paths daily-suite run-tests-stage color secret-redaction lint-source-graph-selftest)
-LINTERS=(lint-rules lint-shell lint-aws-readonly lint-status lint-no-ai lint-source-graph)
+# The shellcheck -x hub-fan-out walker, shared with tests/lint-source-graph.sh
+# (which caps it) - the `--shard` file-list planner below uses it as a
+# per-file COST PROXY. See tests/lib/hubsum.sh's own header and the `--shard`
+# block below for why.
+# shellcheck source=tests/lib/hubsum.sh
+source "$ROOT/tests/lib/hubsum.sh"
+
+SUITES=(records core config checks findings report agent-format sarif-locations sarif-rules sarif-results sarif-schema http e2e scan guide guide-scope state state-coverage state-classify state-history-classify state-diff state-baseline sast sast-secrets-forms sast-history sca sca-semver iac dast dast-auth dast-cookies dast-crawl dast-cors dast-discovery dast-headers dast-leakage dast-markup dast-methods dast-scope-precheck dast-ratelimit dast-response-engine dast-transport dast-sqli dast-pathtraversal dast-cmdi dast-nosqli dast-ldapi dast-ssti dast-xss dast-openredirect dast-xxe-ssrf dast-inject-engine dast-crlf dast-hosthdr dast-protopollution dast-jwt dast-graphql dast-authz dast-coverage-accounting dast-banner dast-tls exit-code-matrix gate-mutation-proof ci-smoke netns run-sandboxed paranoid vendor-engines vendor-engines-advisories engines sast-semgrep iac-trivy sast-gitleaks awscli aws-lint aws-fixtures cloud cloud-s3 cloud-cognito cloud-lambda cloud-rds cloud-dynamodb cloud-apigw cloud-opensearch cloud-redshift cloud-efs cloud-eks cloud-ecs cloud-ecr cloud-elb cloud-cloudfront cloud-kms cloud-secretsmanager cloud-ssm cloud-iam cloud-ec2 cloud-governance cloud-sns cloud-sqs cloud-acm cloud-route53 cloud-backup cloud-appsync lint-no-ai-selftest dast35-lint net01-lint nettransport network network-inventory network-reachability network-banner network-tlsport network-httpport network-outdated network-transport image image-acquire image-advisories image-apk image-apk-version image-dpkg image-dpkg-version image-rpm image-rpm-version image-e2e image-config image-debian image-langdeps image-rpm-e2e image-iac-correlate lint-rules-paths daily-suite run-tests-stage color secret-redaction lint-source-graph-selftest lint-shell-selftest bench bench-sca bench-b6-labels bench-dast build-commands)
+LINTERS=(lint-rules lint-shell lint-aws-readonly lint-status lint-no-ai lint-source-graph lint-docs-build)
 # The whole-tree shellcheck run is a STAGE, not a suite and not a linter file:
 # it has no tests/*.sh of its own, it is the last thing a full run does, and it
 # is the slowest thing in the suite by a wide margin.  Run it alone with
@@ -30,7 +37,401 @@ LINTERS=(lint-rules lint-shell lint-aws-readonly lint-status lint-no-ai lint-sou
 # so prose about it must never start a line with it.)
 STAGES=(shellcheck)
 
+# ===========================================================================
+# `--shard I/N` - run the Ith of N disjoint slices of a FULL run.
+# ===========================================================================
+# This exists for wall-clock alone.  It changes nothing about what any suite
+# does, asserts, or costs: the union of the N shards is exactly the work list
+# a bare `tests/run-tests.sh` executes, each item in exactly one shard, so N
+# shards run on N runners finish the same work in roughly 1/N the time.  A
+# shard is NOT a filter and must never become one - there is no way to spell
+# "skip this suite" here, and `--shard 1/1` is the full run by construction.
+#
+# WEIGHTED (LPT - longest processing time first), NOT `idx % N`.  A plain
+# round-robin deal assumes every item costs about the same, and it does not:
+# `tests/suites/scan.sh` alone has run for 91 minutes on a hosted runner while
+# `color` finishes in under a second - three orders of magnitude apart in one
+# array.  Round-robin has no way to know that, so on CI run 35064153768 (dev,
+# twelve shards, both userlands) two shards landed the worst piles on BOTH
+# userlands and were cancelled at the 120-minute ceiling while the lightest
+# shard finished in 50: the same suite mix costs the same on every platform,
+# so a fixed positional deal reproduces the same imbalance every run rather
+# than averaging it out. `tests/shard-weights.tsv` is the checked-in per-item
+# cost table (seconds); `_shard_build_plan` sorts every item heaviest-first
+# and greedily drops each one onto whichever shard's running total is
+# currently smallest (ties -> the lowest-numbered shard, for a plan that is a
+# pure function of (items, weights, N) rather than of scheduling order).
+#
+# A NEW SUITE WITH NO ROW IN THE COST TABLE IS NEVER DROPPED.  It is still
+# walked and still assigned - `_shard_weight_of` falls back to
+# `SHARD_DEFAULT_WEIGHT_SECONDS` for any key the table does not name, so an
+# unrecorded cost degrades to "assume it costs about the average", never to
+# "leave it out of every shard's plan".
+#
+# THE DEFAULT IS DERIVED, NOT PICKED ROUND.  CI run 35064153768's own
+# per-shard totals (using the two cancelled shards' 120/121-minute ceiling as
+# a LOWER bound on their true cost) sum to roughly 531 minutes of ubuntu work
+# across the matrix's 149 work items; subtracting `scan`'s own documented 91
+# minutes and dividing the remaining ~26,400 seconds across the other 148
+# items averages to ~178 seconds each. `SHARD_DEFAULT_WEIGHT_SECONDS` rounds
+# that to 180 - a coarse, honest average standing in for suites nobody has
+# individually timed yet, not a real per-suite measurement.
+#
+# ITEMS TIED AT THE DEFAULT WEIGHT REPRODUCE ROUND-ROBIN, WHICH IS DELIBERATE
+# RATHER THAN COINCIDENTAL.  With every weight equal, the "smallest running
+# total, ties to the lowest shard" rule assigns item 0 to shard 1, item 1 to
+# shard 2, ... item N-1 to shard N, item N back to shard 1, exactly like the
+# `idx % N` scheme it replaces - so a full run with no cost data at all
+# degrades to the OLD behaviour rather than to something untested. Only an
+# item with a REAL recorded weight (today: `scan`, `color`) is pulled out of
+# that rotation and placed by actual cost.
+#
+# REFRESH THE TABLE DELIBERATELY, from real data, never by generating it.
+# Set `SCOURSH_SHARD_RECORD=<path>` when invoking this script (CI's own "Run
+# the suite" step does, and uploads the result as a `shard-timing-<os>-shard<N>`
+# artifact) to append real `<kind>:<name><TAB><seconds>` lines as each item
+# finishes, then fold real numbers back into `tests/shard-weights.tsv` by
+# hand. There is deliberately no automatic importer: this file has no
+# machinery anywhere that regenerates a cost table from a log unattended, and
+# a suite's cost is elastic enough (a slower CI runner, a bigger fixture tree)
+# that an unreviewed auto-update could quietly drift the plan.
+#
+# The ORDER WITHIN a shard is still the array's own declaration order, so a
+# shard is still a legible subsequence of a full run's log rather than a
+# reshuffle.
+#
+# The linters are dealt into the SAME weighted plan as the suites, for the
+# same reason as before: pinning anything to a shard of its own would make
+# that shard the pole every other one waits behind.
+#
+# ===========================================================================
+# The shellcheck STAGE is not one item in that plan - its FILE LIST is.
+# ===========================================================================
+# It used to be: one `stage:shellcheck` item, whole-tree, pinned like any
+# other item to exactly one shard.  That made the stage itself the pole: CI
+# run 35167252242 (dev, ten shards, both userlands) had ZERO test failures -
+# 18 of 20 jobs green - and the two shards that drew the stage were both
+# CANCELLED at the 150-minute ceiling, mid-way through the stage's own pass 2
+# (PR #321's real-RSS watchdog, which runs the tree's heaviest files ONE AT A
+# TIME against the whole of a runner's headroom, because that is the only
+# safe way to give a heavy file enough real memory - see `_sc_run_pass`'s own
+# header below).  Eighteen files at several minutes each, run strictly
+# serially because that is what a bounded runner can safely give any one of
+# them, does not fit one 150-minute shard - while nineteen other jobs sat
+# idle with nothing to help.  Pinning the whole tree to one shard was never
+# going to fit once the tree grew past what a single shard's memory budget
+# could clear in the time given, whichever shard drew it.
+#
+# So every file `sc_stage` would otherwise discover is now its OWN item in
+# the SAME LPT plan as every suite and linter (`file:<relpath>`), and a shard
+# that owns some of them runs `sc_stage` ONCE, at the end of its own list,
+# over exactly that subset - via `SCOURSH_SHELLCHECK_FILE_LIST`, the same
+# seam the test suite already used to drive the stage over a tiny fixture (it
+# is no longer solely a test seam; see that variable's own note inside
+# `sc_stage` for the corrected claim).  `_sc_run_pass`'s two-pass
+# typical/runaway budgeting and its real-RSS watchdog are UNCHANGED - a shard
+# still checks its own files exactly as `sc_stage` always has, one file per
+# `shellcheck` invocation on CI, deferring what does not fit a typical
+# footprint to a second, single-process pass against the whole of the
+# runner's headroom.  What changed is which files land in front of that
+# machinery on a given shard, not the machinery.
+#
+# WEIGHT: the per-file HUB SUM tests/lint-source-graph.sh already computes
+# and caps (tests/lib/hubsum.sh, shared rather than duplicated - see that
+# file's own header).  This is a REAL SIGNAL, not a guess standing in for one
+# the way `SHARD_DEFAULT_WEIGHT_SECONDS` is for an untimed suite: that lint's
+# own measurements are that shellcheck -x's cost on this tree is driven by
+# how many times a file's `-x` closure re-expands the five `lib/` hub files,
+# not by its line count, with a near-exponential relationship and a measured
+# cliff between 6 and 8 copies (0.79 GB at 6, 36.75 GB at 8 - AGENTS.md,
+# "shellcheck -x follows source STATICALLY").  `_sc_file_weight_seconds`
+# below turns that into a monotone estimate of the same shape (cubed, so the
+# handful of genuinely heavy files dominate the sort the way they dominate
+# real wall-clock, without hand-naming any of them - see that function's own
+# header for the measured calibration points and why a fixed list of "the
+# current heavy files" was rejected).  It is deliberately NOT a hardcoded
+# list: hub sum is recomputed from THIS tree's own source graph every time
+# the plan is built, so a file that grows a new source edge next month is
+# weighted correctly with no list for anyone to remember to update - the
+# exact failure mode `tests/lint-source-graph.sh`'s own cap already exists to
+# catch structurally, applied here to load-balancing instead of a ceiling.
+#
+# THIS WAS THE DELIBERATE CHOICE OVER A HAND-MAINTAINED WEIGHT TABLE ENTRY
+# PER FILE, even though `tests/shard-weights.tsv`'s own header asks for real,
+# measured data over a generated one everywhere else in this mechanism. Real
+# per-file shellcheck timing is exactly that kind of data, and a `file:<path>`
+# row in that table still wins over the computed default the instant one is
+# folded in (`_shard_weight_of` already prefers an explicit row over any
+# default, unconditionally on kind) - so nothing here forecloses that path
+# for the handful of files worth hand-tuning once real `SCOURSH_SHARD_RECORD`
+# numbers exist.  What is rejected is using a SNAPSHOT of "the 18 files pass 2
+# named on one run" as the whole mechanism: that list is a fact about the
+# tree on one day, the tree's shape changes every time a module lands a new
+# script sourcing the hub chain a new way, and a list nobody updates goes
+# stale exactly like `data/versions.db` would (AGENTS.md, DAST-09) - quietly,
+# and in the direction that reads as fine.
+#
+# THIS ALSO ANSWERS "should heavy files be spread deliberately or by luck":
+# deliberately, by construction. LPT already guarantees that for suites (the
+# "records vs config" case above, `run-tests-stage.sh`), and it is the exact
+# reason `_shard_build_plan` sorts heaviest-first rather than walking the
+# array in declaration order - a positional or unweighted scheme has no way
+# to know two files are both expensive and might cluster them on one shard
+# by coincidence, which is exactly the CI-run-35064153768 shape this whole
+# mechanism was built to stop repeating.
+SHARD_INDEX=0
+SHARD_TOTAL=0
+if [[ ${1:-} == --shard ]]; then
+  if [[ ! ${2:-} =~ ^[1-9][0-9]*/[1-9][0-9]*$ ]]; then
+    printf 'tests/run-tests.sh: --shard wants I/N with 1 <= I <= N, both positive integers (got: %s)\n' \
+      "${2-<nothing>}" >&2
+    exit 2
+  fi
+  SHARD_INDEX=${2%%/*}
+  SHARD_TOTAL=${2##*/}
+  if (( SHARD_INDEX > SHARD_TOTAL )); then
+    printf 'tests/run-tests.sh: --shard %s asks for shard %s of only %s\n' \
+      "$2" "$SHARD_INDEX" "$SHARD_TOTAL" >&2
+    exit 2
+  fi
+  shift 2
+fi
+
+SHARD_DEFAULT_WEIGHT_SECONDS=180
+SHARD_WEIGHTS_FILE=${SCOURSH_SHARD_WEIGHTS_FILE:-$ROOT/tests/shard-weights.tsv}
+declare -A SHARD_WEIGHT=()
+
+# Reads the checked-in cost table into SHARD_WEIGHT.  Silently a no-op if the
+# file is missing (every item then falls back to the default), so a
+# from-scratch checkout with the table deleted degrades rather than aborts.
+_shard_load_weights() {
+  [[ -f $SHARD_WEIGHTS_FILE ]] || return 0
+  local key secs
+  while IFS=$'\t' read -r key secs; do
+    [[ -z $key || $key == \#* ]] && continue
+    SHARD_WEIGHT[$key]=$secs
+  done < "$SHARD_WEIGHTS_FILE"
+}
+
+# A `file:<relpath>` item's DEFAULT weight - used only until a real,
+# measured `file:<relpath>` row is folded into tests/shard-weights.tsv by
+# hand, exactly as a suite's default already works.  There is no real
+# per-file timing data yet (that needs a `--shard` CI run to have happened
+# even once with this mechanism live), so this stands in with the best
+# signal available today: tests/lint-source-graph.sh's own hub sum, cubed.
+#
+# CALIBRATION.  Four real, one-off `shellcheck -x -s bash` timings on this
+# tree (a contributor's machine, no watchdog, so these are floors rather than
+# CI numbers): hub sum 0 (tests/lib/assert.sh) 0.05s, hub sum 2
+# (lib/records.sh) 0.89s, hub sum 4 (modules/iac/parse.sh) 5.53s, hub sum 11
+# (modules/dast/active/methods.sh) still climbing past 5 real minutes and
+# 11GB RSS when the measurement was stopped. That is not a clean curve to fit
+# - lint-source-graph.sh's own header already says hub sum is "a strong
+# predictor, not a perfect one" - but it is unambiguously superlinear with a
+# heavy tail, which is what `hub^3` gives without a hand-picked threshold:
+# hub 0 -> 1s, hub 4 -> 65s, hub 11 -> 1332s, hub 17 (today's worst,
+# tests/suites/dast-methods.sh) -> 4914s. That puts the single heaviest file
+# in the tree at roughly the same order of magnitude as `suite:scan`'s own
+# real 5460s (the only other real number this table carries) rather than
+# tied with every other file at the flat 180s default, which is the whole
+# point: LPT needs to see it as one of the biggest single items in the plan
+# to place it deliberately rather than let it land wherever declaration
+# order happens to put it.
+_sc_file_weight_seconds() {
+  local hub
+  hub=$(hubsum_for "$1" "$ROOT") || hub=0
+  [[ $hub =~ ^[0-9]+$ ]] || hub=0
+  printf '%s' "$(( 1 + hub * hub * hub ))"
+}
+
+_shard_weight_of() {   # $1 = "<kind>:<name>"
+  if [[ -n ${SHARD_WEIGHT[$1]+x} ]]; then
+    printf '%s' "${SHARD_WEIGHT[$1]}"
+  elif [[ $1 == file:* ]]; then
+    _sc_file_weight_seconds "${1#file:}"
+  else
+    printf '%s' "$SHARD_DEFAULT_WEIGHT_SECONDS"
+  fi
+}
+
+# Discovers the real shellcheck file list: every `*.sh` under lib/, tests/,
+# tools/, modules/, aws/, plus scan.sh itself.  This is the SAME tree
+# `sc_stage` itself walks when no `SCOURSH_SHELLCHECK_FILE_LIST` override is
+# given (that function now calls this rather than repeating the `find`
+# inline), so the file-list planner below and an unsharded full run can never
+# drift into checking a different set of files from each other.
+SC_ALL_FILES=()
+_sc_discover_files() {
+  local d
+  local -a dirs=()
+  for d in lib tests tools modules aws; do [[ -d $d ]] && dirs+=("$d"); done
+  [[ -f scan.sh ]] && dirs+=(scan.sh)
+  SC_ALL_FILES=()
+  local f
+  while IFS= read -r f; do
+    SC_ALL_FILES+=("$f")
+  done < <(find "${dirs[@]+"${dirs[@]}"}" -name '*.sh' -type f | LC_ALL=C sort)
+}
+
+# ===========================================================================
+# The CI shellcheck HANDOFF list (tests/shellcheck-heavy-files.txt).
+# ===========================================================================
+# See that file's own header for the full rationale. In short: every path it
+# names needs more real resident shellcheck -x memory than CI's own runner
+# can give one process, even running alone at the whole of that runner's real
+# headroom - measured, not guessed, on CI run 35204437732. `_shard_build_plan`
+# below excludes every one of them from the file-item plan `--shard I/N`
+# builds, UNCONDITIONALLY: `--shard` has exactly one real caller (CI), and
+# CI can never check these files no matter how the plan is weighted. They are
+# genuinely checked instead by tools/daily-suite.sh's GNU leg, in its own
+# container, against this SAME file - see tests/shellcheck-heavy-files.txt's
+# own header for why there is exactly one named place this list lives, not
+# two that could drift.
+SCOURSH_SHELLCHECK_HEAVY_FILES_LIST=${SCOURSH_SHELLCHECK_HEAVY_FILES_LIST:-$ROOT/tests/shellcheck-heavy-files.txt}
+declare -A SC_HEAVY_FILES=()
+SC_HEAVY_FILES_ORDER=()
+_sc_load_heavy_files() {
+  SC_HEAVY_FILES=()
+  SC_HEAVY_FILES_ORDER=()
+  [[ -f $SCOURSH_SHELLCHECK_HEAVY_FILES_LIST ]] || return 0
+  local line
+  while IFS= read -r line; do
+    [[ -z $line || $line == \#* ]] && continue
+    SC_HEAVY_FILES[$line]=1
+    SC_HEAVY_FILES_ORDER+=("$line")
+  done < "$SCOURSH_SHELLCHECK_HEAVY_FILES_LIST"
+}
+
+declare -A SHARD_PLAN=()
+
+# Builds SHARD_PLAN[key] = shard number (1..SHARD_TOTAL), a pure function of
+# the item list, the weight table, and SHARD_TOTAL - every one of the
+# SHARD_TOTAL separate `--shard I/N` invocations a CI matrix makes computes
+# the identical plan and just filters it down to its own I, so which shard a
+# given item lands in never depends on which shard asked.
+_shard_build_plan() {
+  SHARD_PLAN=()
+  local -a keys=() weights=()
+  local s l f
+  for s in "${SUITES[@]}"; do
+    keys+=("suite:$s"); weights+=("$(_shard_weight_of "suite:$s")")
+  done
+  for l in "${LINTERS[@]}"; do
+    keys+=("linter:$l"); weights+=("$(_shard_weight_of "linter:$l")")
+  done
+  # The shellcheck STAGE contributes one item PER FILE, not one item for the
+  # whole tree - see the `--shard` header block above for why. `SC_ALL_FILES`
+  # is left populated afterwards, for `shard_work` to filter against. Every
+  # path named in tests/shellcheck-heavy-files.txt is left OUT of this plan
+  # entirely - see this block's own header above - so it never lands in any
+  # shard's file-item list and CI never attempts it.
+  _sc_discover_files
+  _sc_load_heavy_files
+  for f in "${SC_ALL_FILES[@]}"; do
+    [[ -n ${SC_HEAVY_FILES[$f]:-} ]] && continue
+    keys+=("file:$f"); weights+=("$(_shard_weight_of "file:$f")")
+  done
+
+  # LPT: heaviest first.  Sorted by (weight desc, original index asc) so a
+  # tie keeps declaration order - the property the "degrades to round-robin"
+  # comment above depends on.
+  local n=${#keys[@]} i sortin
+  sortin=''
+  for (( i = 0; i < n; i++ )); do
+    sortin+="${weights[i]}"$'\t'"$i"$'\n'
+  done
+  local -a order=()
+  local oi
+  while IFS=$'\t' read -r _ oi; do
+    [[ -z $oi ]] && continue
+    order+=("$oi")
+  done < <(printf '%s' "$sortin" | LC_ALL=C sort -t $'\t' -k1,1nr -k2,2n)
+
+  local -a totals=()
+  for (( i = 0; i < SHARD_TOTAL; i++ )); do totals[i]=0; done
+
+  local best bi
+  for oi in "${order[@]}"; do
+    best=0
+    for (( bi = 1; bi < SHARD_TOTAL; bi++ )); do
+      (( totals[bi] < totals[best] )) && best=$bi
+    done
+    SHARD_PLAN[${keys[oi]}]=$(( best + 1 ))
+    totals[best]=$(( totals[best] + weights[oi] ))
+  done
+}
+
+# `shard_work` prints the `<kind> <name> <path>` triples THIS shard owns, one
+# per line, in full-run order.  With no `--shard` it prints every one of them,
+# which is what makes the no-shard path and the sharded path the same code
+# rather than two enumerations that can drift apart.
+#
+# The unsharded branch below still prints a single `stage shellcheck -` line
+# covering the WHOLE tree, exactly as before `--shard` learned to split the
+# stage's file list: an ordinary `bash tests/run-tests.sh` (or a direct
+# `tests/run-tests.sh shellcheck`) is unaffected by any of this and still
+# checks every file in one `sc_stage` call with its own internal, unsharded
+# discovery. A SHARDED run instead emits one `file <relpath> <relpath>` line
+# per file this shard owns (kind `file`, distinct from `suite`/`linter`/
+# `stage` so nothing can collide with it - see this function's own long-
+# standing note on that), and the caller (below) collects them and makes ONE
+# `sc_stage` call over that subset, so the two-pass budgeting still sees one
+# coherent queue rather than 30-odd separate stage invocations.
+shard_work() {
+  local s l f
+  if (( SHARD_TOTAL == 0 )); then
+    for s in "${SUITES[@]}"; do printf 'suite %s tests/suites/%s.sh\n' "$s" "$s"; done
+    for l in "${LINTERS[@]}"; do printf 'linter %s tests/%s.sh\n' "$l" "$l"; done
+    printf 'stage shellcheck -\n'
+    return 0
+  fi
+  _shard_load_weights
+  _shard_build_plan
+  for s in "${SUITES[@]}"; do
+    [[ ${SHARD_PLAN[suite:$s]} == "$SHARD_INDEX" ]] && printf 'suite %s tests/suites/%s.sh\n' "$s" "$s"
+  done
+  for l in "${LINTERS[@]}"; do
+    [[ ${SHARD_PLAN[linter:$l]} == "$SHARD_INDEX" ]] && printf 'linter %s tests/%s.sh\n' "$l" "$l"
+  done
+  for f in "${SC_ALL_FILES[@]}"; do
+    # `:-` rather than a bare reference: a path named in
+    # tests/shellcheck-heavy-files.txt is discovered here (SC_ALL_FILES is
+    # the unfiltered walk) but was deliberately never given a SHARD_PLAN
+    # entry by `_shard_build_plan` above, so an unguarded reference to an
+    # absent associative-array key aborts the whole script under this file's
+    # own `set -Eeuo pipefail` - never merely evaluates to a non-match.
+    [[ ${SHARD_PLAN[file:$f]:-} == "$SHARD_INDEX" ]] && printf 'file %s %s\n' "$f" "$f"
+  done
+  # ALWAYS 0, regardless of whether the last item printed belonged to this
+  # shard - the old idx%N scheme's status was "did the LAST item belong to
+  # me", which is false for N-1 of every N shards and aborts the run before a
+  # single suite starts under `set -Eeuo pipefail`. Measured against that
+  # scheme: 17 of 23 shards across N=2,3,4,5,8 exited non-zero with an empty
+  # log.
+  return 0
+}
+
+if [[ ${1:-} == --print-heavy-files ]]; then
+  # The ONE reader of tests/shellcheck-heavy-files.txt's comment/blank-line
+  # convention (`_sc_load_heavy_files`), exposed here so a caller that needs
+  # the clean, plain path-per-line form - tools/daily-suite/gnu-leg.sh builds
+  # SCOURSH_SHELLCHECK_FILE_LIST from exactly this, since that variable's own
+  # loader supports no comment syntax at all - never re-implements the
+  # filter and risks it drifting from this file's own parse.
+  _sc_load_heavy_files
+  printf '%s\n' "${SC_HEAVY_FILES_ORDER[@]+"${SC_HEAVY_FILES_ORDER[@]}"}"
+  exit 0
+fi
+
 if [[ ${1:-} == --list ]]; then
+  if (( SHARD_TOTAL > 0 )); then
+    # `--shard I/N --list` is how a caller (and tests/suites/run-tests-stage.sh)
+    # checks the partition without running anything: concatenating every shard's
+    # list must reproduce the full list exactly, with nothing dropped and
+    # nothing run twice.
+    shard_work
+    exit 0
+  fi
   printf 'suites:  %s\n' "${SUITES[*]}"
   printf 'linters: %s\n' "${LINTERS[*]}"
   printf 'stages:  %s\n' "${STAGES[*]}"
@@ -40,13 +441,29 @@ fi
 failed=()
 run_one() {
   local kind=$1 name=$2 path=$3
+  local t0 t1
   printf '\n=== %s: %s ===\n' "$kind" "$name"
+  t0=$(date +%s)
   if bash "$path"; then
     printf -- '--- %s passed\n' "$name"
   else
     printf -- '--- %s FAILED\n' "$name"
     failed+=("$name")
   fi
+  t1=$(date +%s)
+  _shard_record "$kind:$name" $(( t1 - t0 ))
+}
+
+# Appends a real `<kind>:<name><TAB><seconds>` line to SCOURSH_SHARD_RECORD
+# when that env var is set - opt-in only, so an ordinary run pays nothing.
+# This is how `tests/shard-weights.tsv` gets refreshed with real numbers
+# instead of estimates: see the `--shard` block below for the derivation this
+# feeds and why the fold-in stays a deliberate, by-hand step.
+_shard_record() {
+  [[ -n ${SCOURSH_SHARD_RECORD:-} ]] || return 0
+  # `|| true`: an unwritable record path must never abort the run it is only
+  # trying to measure - this is an opt-in side channel, not a required output.
+  printf '%s\t%s\n' "$1" "$2" >> "$SCOURSH_SHARD_RECORD" || true
 }
 
 # ===========================================================================
@@ -94,6 +511,53 @@ SC_STAGE_SKIPPED=0
 SC_STAGE_NOT_INSTALLED=0
 sc_stage() {
   SC_STAGE_STATUS=0
+
+  # =========================================================================
+  # DECLARED PLATFORM HANDOFF: on a GitHub-Actions macOS runner, this stage
+  # runs on the Linux leg only, and says so - it never attempts a single file.
+  # =========================================================================
+  # Measured on CI run 35298522350 (dev @ 6c15cd7): the macOS runner reported
+  # "7GB total, 2GB available, 2GB reserved -> 1GB headroom, 3 cores -> 1
+  # parallel x 1 file" and still killed ORDINARY files under that ceiling -
+  # modules/image/run.sh and tests/suites/dast-markup.sh, neither one on
+  # tests/shellcheck-heavy-files.txt (that list's 16 files were derived from
+  # UBUNTU's ~12GB budget, not this one).  There is no per-file tuning that
+  # fits a ~6GB-per-file plan into 1GB of headroom; the CI-path arithmetic
+  # below is real and correct, it is simply being asked a question this
+  # runner cannot answer for any real file, heavy or not.
+  #
+  # This linter is static analysis: the same pinned binary
+  # (.github/workflows/ci.yml installs the identical v0.11.0 build on both
+  # legs) reading the same bytes yields the same findings regardless of host
+  # userland.  That is unlike the SUITES, which this project runs on both GNU
+  # and BSD specifically to catch RUNTIME behavioural differences between the
+  # two userlands (docs/FOUNDATION.md tension 24) - this stage has no runtime
+  # behaviour to differ.  Handing it to the Linux leg alone therefore loses no
+  # coverage: ubuntu-latest already checks the full, unfiltered file set
+  # (minus the separately-declared tests/shellcheck-heavy-files.txt handoff to
+  # tools/daily-suite.sh's GNU leg), and the macOS leg gains a stage it is
+  # physically unable to complete.
+  #
+  # DECLARED, never silent - the same discipline tests/shellcheck-heavy-files.txt
+  # already applies to its own handoff: this prints unconditionally, names the
+  # leg it defers to, and reports zero files checked HERE, so a reader can
+  # never mistake this for a pass earned on this host.  Gated on RUNNER_OS,
+  # the variable GitHub Actions itself sets - never on `uname`, which would
+  # also catch a contributor's own real Mac and stop them running this stage
+  # locally, where a real machine's real headroom works fine.
+  if [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_OS:-} == macOS ]]; then
+    printf '\n=== linter: shellcheck ===\n'
+    printf 'shellcheck: DECLARED PLATFORM HANDOFF - this stage runs on the Linux CI leg only; it checks NOTHING on macOS CI.\n'
+    printf 'shellcheck: this runner'"'"'s real headroom cannot fit even one ordinary file (measured on CI run 35298522350: 7GB total, 2GB available, 2GB reserved -> 1GB headroom, well under the ~6GB this project plans per file).\n'
+    printf 'shellcheck: shellcheck is static analysis - the same pinned binary reading the same bytes on ubuntu-latest yields identical findings, so this handoff costs no coverage; only the suites need both userlands (docs/FOUNDATION.md tension 24).\n'
+    printf 'shellcheck: 0 file(s) checked on this runner - see the ubuntu-latest leg(s) of this same run for the real, full-tree result.\n'
+    printf -- '--- shellcheck passed (0 file(s) checked HERE - handed off to the Linux CI leg, by design, see message above)\n'
+    SC_STAGE_STATUS=0
+    SC_STAGE_SKIPPED=0
+    SC_STAGE_NOT_INSTALLED=0
+    return 0
+  fi
+
   # ShellCheck is optional: an air-gapped host may not have it, and the suite
   # must still be runnable there.  CI installs it, and so does tools/daily-suite.sh's GNU leg
   # (its BSD leg expects it installed on the machine already) - see docs/CI-RUNBOOK.md.
@@ -230,6 +694,18 @@ sc_stage() {
   if command -v shellcheck >/dev/null 2>&1; then
     printf '\n=== linter: shellcheck ===\n'
 
+    # THE VERSION IS PART OF THE VERDICT, so it is recorded next to it.
+    # `shellcheck`'s findings are not version-stable: measured on this tree,
+    # 0.9.0 (Ubuntu apt's build) reports SC2119/SC2120 where 0.11.0 reports
+    # nothing, and 0.9.0's SC2317 fires on functions this codebase invokes
+    # indirectly by design (traps, and the SCOURSH_HTTP_TRANSPORT /
+    # SCOURSH_PARANOID_* seams).  A CI run once reported 56 findings across 18
+    # files that no local run could reproduce, and the log gave no way to see
+    # why.  .github/workflows/ci.yml pins the version; this line is what makes
+    # a future skew visible in any log rather than inferred from the findings.
+    sc_version=$(shellcheck --version 2>/dev/null | awk '/^version:/{print $2}') || sc_version=
+    printf 'shellcheck: %s\n' "${sc_version:-<version unreadable>}"
+
     # --- the verdict, on every exit path ------------------------------------
     #
     # `sc_unchecked` names files this stage could not get a result for, as
@@ -330,11 +806,22 @@ sc_stage() {
     trap '_sc_abort_verdict SIGTERM; exit 143' TERM
 
     # The file list is normally the whole tree.  SCOURSH_SHELLCHECK_FILE_LIST
-    # is a TEST SEAM (tests/suites/run-tests-stage.sh drives this stage over a
-    # two-file fixture with a stub `shellcheck`, which is the only way to
-    # exercise the watchdog and the abort paths in seconds instead of minutes).
-    # It is never set by a real run, and it is deliberately NOT a way to
-    # exclude files: a real run still checks every *.sh in the tree.
+    # overrides it, and it now has TWO legitimate callers, not one:
+    #
+    #   * tests/suites/run-tests-stage.sh, a TEST SEAM driving this stage over
+    #     a tiny fixture with a stub `shellcheck`, so the watchdog and abort
+    #     paths run in seconds instead of minutes.
+    #   * the `--shard` dispatch loop below, a REAL caller as of the file-list
+    #     sharding change (see the `--shard` header block above): a shard
+    #     that owns some of the tree's files sets this to exactly that
+    #     subset before making its one `sc_stage` call.
+    #
+    # It is still deliberately NOT a way to exclude files from an UNSHARDED
+    # run: `tests/run-tests.sh` and `tests/run-tests.sh shellcheck` both leave
+    # it unset and both still check every *.sh in the tree, via
+    # `_sc_discover_files` below - the same discovery the `--shard` planner
+    # itself uses to build its per-file plan, so the two can never drift into
+    # checking a different set of files.
     if [[ -n ${SCOURSH_SHELLCHECK_FILE_LIST:-} && -r ${SCOURSH_SHELLCHECK_FILE_LIST:-} ]]; then
       sc_file_list=()
       while IFS= read -r sc_f; do
@@ -343,49 +830,433 @@ sc_stage() {
       printf 'shellcheck: file list overridden by SCOURSH_SHELLCHECK_FILE_LIST (%s)\n' \
         "$SCOURSH_SHELLCHECK_FILE_LIST"
     else
-      sc_dirs=()
-      for d in lib tests tools modules aws; do [[ -d $d ]] && sc_dirs+=("$d"); done
-      [[ -f scan.sh ]] && sc_dirs+=(scan.sh)
-
-      sc_file_list=()
-      while IFS= read -r sc_f; do
-        sc_file_list+=("$sc_f")
-      done < <(find "${sc_dirs[@]+"${sc_dirs[@]}"}" -name '*.sh' -type f | LC_ALL=C sort)
+      _sc_discover_files
+      sc_file_list=("${SC_ALL_FILES[@]}")
     fi
     sc_total=${#sc_file_list[@]}
+
+    # `ps` is what the resident-memory watchdog below samples with, on BOTH
+    # the CI path and the local path - see docs/CI-RUNBOOK.md "the memory
+    # model" for why RSS, sampled externally, is the only ceiling that means
+    # what it claims to mean for this specific binary.  Computed once, ahead
+    # of the branch, because both branches now share the one watchdog.
+    sc_have_ps=0
+    command -v ps >/dev/null 2>&1 && sc_have_ps=1
+
+    # _sc_run_pass BUDGET_GB JOBS RETRY_LABEL
+    #
+    # Runs every path in `sc_queue` at JOBS concurrency, allowing each
+    # process BUDGET_GB of RESIDENT memory - sampled externally via `ps`,
+    # never a `ulimit` of any kind - before the watchdog takes it, and files
+    # each outcome under the reason it actually had:
+    #
+    #   sc_findings      checked, and shellcheck had something to say
+    #   sc_pass_over     exceeded THIS pass's budget - the file's own doing
+    #   sc_pass_pressure killed because the HOST came under pressure while
+    #                    this file was merely the largest thing running -
+    #                    NOT the file's doing, so the caller retries it
+    #   sc_unchecked     any other way of failing to produce a result
+    #
+    # Keeping `over` and `pressure` apart is acceptance criterion 3, and it
+    # is the whole difference between an actionable message and the
+    # unattributable kill this ticket was filed for: under the old stage
+    # both arms ended up in one "killed by this stage's own watchdog"
+    # bucket, so a reader could not tell "this file needs more memory than
+    # it was given" from "something unrelated on this machine grew".
+    #
+    # SHARED BETWEEN THE CI AND THE LOCAL PATH.  It used to be local-only,
+    # with CI relying on `ulimit -v` instead - a hard RLIMIT_AS around each
+    # invocation.  That bounds VIRTUAL ADDRESS SPACE, and GHC's RTS reserves
+    # address space well beyond what it actually dirties, in an amount that
+    # itself scales with how much memory the HOST appears to have, not with
+    # the file being checked (docs/CI-RUNBOOK.md "the memory model" measures
+    # this directly: the same file's peak RESIDENT size was not reproducible
+    # across hosts, and re-running `shellcheck +RTS -M2g -RTS` or
+    # `GHCRTS=-M2g shellcheck` against the exact pinned 0.11.0 binary this
+    # project ships confirms the shipped binary was built without
+    # `-rtsopts`: the `+RTS` form is silently ignored ("Most RTS options are
+    # disabled") and the environment-variable form is FATAL - the binary
+    # refuses to start at all rather than warning and continuing.  So there
+    # is no RTS-level heap ceiling available, on either userland, for this
+    # exact binary - measured on the real Linux binary this project vendors
+    # (tools/daily-suite/gnu.dockerfile), not only on the BSD host's
+    # Homebrew build.  A CI run measured eight real files failing to even
+    # START under a 10, 12, 14 AND 16GB `ulimit -v` - not because they
+    # needed that much RESIDENT memory, but because GHC's own startup and
+    # heap-growth reservation for THOSE files' `-x` closures exceeded
+    # whatever virtual ceiling was set, on a runner with plenty of real
+    # memory to spare.  A real per-process memory cgroup (`docker run
+    # --memory`, `systemd-run --scope -p MemoryMax=`) was tried and
+    # REJECTED for the opposite reason, also measured rather than assumed:
+    # cgroup `memory.max` does not stop GHC from RESERVING however much
+    # virtual space it wants (a reservation is not a fault until the pages
+    # inside it are dirtied), so nothing gives GHC's heap-growth heuristic
+    # any earlier back-pressure - it grows exactly as it would unconstrained,
+    # right up to the moment the kernel's cgroup OOM killer SIGKILLs it, with
+    # no chance to shrink first.  Measured directly: this tree's own
+    # heaviest file, run inside a container with a 10GB real memory limit on
+    # a host with ~15GB of total memory, was killed (exit 137) after running
+    # for over six minutes - the SAME `ulimit -v 10GB` bound left that exact
+    # file finishing cleanly, because the virtual ceiling forces smaller
+    # allocations to fail fast and GHC's allocator adapts to what it is
+    # given, where a real-memory cgroup lets it commit to a doomed
+    # trajectory before anything intervenes.  The external, polling watchdog
+    # below is the one mechanism that is neither: it never constrains what
+    # GHC may RESERVE (so a large, legitimate startup reservation is never
+    # mistaken for an overrun), and it acts on REAL, sampled RSS rather than
+    # waiting for the kernel's own OOM killer to notice (so it can intervene
+    # well before a runaway actually exhausts the runner, the same margin
+    # that already protects a contributor's own machine, where no `ulimit`
+    # or cgroup of any kind is available at all).
+    _sc_run_pass() {
+      local pass_budget_gb=$1 pass_jobs=$2 pass_label=$3
+      local pass_budget_kb=$(( pass_budget_gb * 1024 * 1024 ))
+      # TEST SEAM.  The real budgets are whole GB and a stub `shellcheck`
+      # uses a few MB, so the OVER-BUDGET arm below is unreachable from a
+      # test without a finer-grained knob - and an arm no test can reach is
+      # how the two kill causes stayed indistinguishable for as long as they
+      # did.  Never set by a real run.
+      if [[ ${SCOURSH_SHELLCHECK_BUDGET_KB:-} =~ ^[0-9]+$ ]]; then
+        pass_budget_kb=$SCOURSH_SHELLCHECK_BUDGET_KB
+      fi
+      local pass_total=${#sc_queue[@]} pass_next=0
+      local pid f shard idx rss_kb biggest_pid biggest_rss rpid pid_exit now_gb
+
+      declare -A pass_pid_file=()
+      declare -A pass_active=()
+      declare -A pass_running=()
+      declare -A pass_over_kill=()
+      declare -A pass_pressure_kill=()
+
+      sc_pass_over=()
+      sc_pass_pressure=()
+
+      (( pass_total == 0 )) && return 0
+
+      _sc_launch_one() {
+        f=${sc_queue[pass_next]}
+        idx=$(printf '%05d' "$sc_shard_seq")
+        shard=$(mktemp "$sc_shard_dir/shard-${idx}-XXXXXX")
+        shellcheck -x -s bash -- "$f" >"$shard" 2>&1 &
+        pid=$!
+        pass_pid_file[$pid]=$f
+        pass_active[$pid]=1
+
+        pass_next=$(( pass_next + 1 ))
+        sc_shard_seq=$(( sc_shard_seq + 1 ))
+      }
+
+      while (( pass_next < pass_total )) && (( ${#pass_active[@]} < pass_jobs )); do
+        _sc_launch_one
+      done
+
+      # No `wait -n` here: it needs bash >= 4.3 and this project's frozen
+      # minimum is 4.2 (AGENTS.md).  `jobs -p -r` (a plain bash builtin,
+      # well inside that minimum) lists still-running background PIDs
+      # instead, and a completed-but-unreaped pid drops out of it even
+      # before `wait` collects its exit status.
+      while (( ${#pass_active[@]} > 0 )); do
+        sleep 0.4
+
+        if (( sc_have_ps )); then
+          biggest_pid=
+          biggest_rss=0
+          for pid in "${!pass_active[@]}"; do
+            kill -0 "$pid" 2>/dev/null || continue
+            # `|| rss_kb=` is NOT belt-and-braces, it is the fix for the
+            # "prints nothing at all" face of this ticket.  A bare
+            # `rss_kb=$(ps ...)` is a simple assignment whose exit status is
+            # the command substitution's, so when `ps` exits 1 the
+            # assignment exits 1 and `set -e` tears the whole stage down -
+            # past the watchdog roll-up, past the verdict, leaving a log
+            # that ends at the header.
+            #
+            # It is a RACE, which is why it never showed in this suite: the
+            # `kill -0` above proves the process was alive a few
+            # microseconds ago, not that it is alive now, and a shellcheck
+            # that finishes in that window makes `ps` fail.  Six stub files
+            # never lose that race; 130 real ones lose it almost every run.
+            # Reproduced on this tree before the fix - 9 of 130 files
+            # unmeasured and the stage ending on "an unexpected non-zero
+            # exit before it could reach a verdict", with none of the 9
+            # watchdog messages that would have explained them ever
+            # printed.  Section K drives the race directly.
+            rss_kb=$(ps -o rss= -p "$pid" 2>/dev/null) || rss_kb=
+            rss_kb=${rss_kb//[!0-9]/}
+            [[ $rss_kb =~ ^[0-9]+$ ]] || continue
+            if (( rss_kb > biggest_rss )); then
+              biggest_rss=$rss_kb
+              biggest_pid=$pid
+            fi
+            if (( rss_kb > pass_budget_kb )); then
+              kill -TERM "$pid" 2>/dev/null || true
+              sleep 0.2
+              kill -KILL "$pid" 2>/dev/null || true
+              pass_over_kill[$pid]=$(( rss_kb / 1024 / 1024 ))
+              # Spelled as an `if`, not `[[ ... ]] && biggest_pid=`.  The
+              # ticket that rewrote this stage carried a hypothesis that
+              # the `&&` spelling aborted the script under `set -e` when
+              # the test was false, which would explain a stage that
+              # printed only its header.  MEASURED, and REFUTED: bash
+              # exempts a whole `A && B` list from `set -e` when A itself
+              # fails, at top level and inside a loop or an `if` body
+              # alike, so it never fired.  The `if` stays because it is
+              # clearer, not because it fixes anything.
+              if [[ $biggest_pid == "$pid" ]]; then biggest_pid=; fi
+            fi
+          done
+
+          # Second, independent layer: even when every process is within
+          # its own budget, several together can still starve the host if
+          # something ELSE on the machine grew after the plan was made.
+          # Kill only the single biggest offender, not everything, so a
+          # transient dip does not take out a whole pass - and record it
+          # as PRESSURE, so the caller retries it rather than blaming it.
+          if [[ -n $biggest_pid ]]; then
+            now_gb=$(_sc_mem_avail_gb) || now_gb=
+            if [[ $now_gb =~ ^[0-9]+$ ]] && (( now_gb < sc_free_floor_gb )); then
+              kill -TERM "$biggest_pid" 2>/dev/null || true
+              sleep 0.2
+              kill -KILL "$biggest_pid" 2>/dev/null || true
+              pass_pressure_kill[$biggest_pid]=$now_gb
+            fi
+          fi
+        fi
+
+        pass_running=()
+        while IFS= read -r rpid; do
+          [[ -n $rpid ]] && pass_running[$rpid]=1
+        done < <(jobs -p -r)
+
+        for pid in "${!pass_active[@]}"; do
+          if [[ -z ${pass_running[$pid]:-} ]]; then
+            # `wait` on its own line is the LAST command in a simple list,
+            # so under `set -e` a non-zero exit here (a real finding, or
+            # the watchdog's kill above) would abort the whole stage
+            # instead of being recorded and continuing to the next file.
+            # Folding it into an `||` exempts it.
+            pid_exit=0
+            wait "$pid" 2>/dev/null || pid_exit=$?
+            if (( pid_exit != 0 )); then
+              # Exit 1 is the only status that means "this file WAS checked
+              # and shellcheck has something to say about it".  Everything
+              # else means the file was never actually checked, and those
+              # outcomes are kept apart rather than merged into one
+              # non-zero: shellcheck's own exit 2 is "could not process
+              # this file", 126/127 are the shell's "could not run the
+              # linter at all", and 128+n is "died from signal n" (bash
+              # manual, "Exit Status").  Rounding any of them up to a clean
+              # result is the single most expensive way for this stage to
+              # be wrong, because an unmeasured file looks exactly like a
+              # clean one in the output.
+              if (( pid_exit == 1 )); then
+                sc_status=1
+                sc_findings+=("${pass_pid_file[$pid]}")
+              elif [[ -n ${pass_over_kill[$pid]:-} ]]; then
+                sc_pass_over+=("${pass_pid_file[$pid]}")
+                sc_watch_msgs+=("shellcheck: OVER BUDGET - ${pass_pid_file[$pid]} reached ~${pass_over_kill[$pid]}GB resident, past the ${pass_budget_gb}GB allowed in the $pass_label pass, and was killed.  Cause: this one file, not host memory pressure.")
+              elif [[ -n ${pass_pressure_kill[$pid]:-} ]]; then
+                sc_pass_pressure+=("${pass_pid_file[$pid]}")
+                sc_watch_msgs+=("shellcheck: HOST MEMORY PRESSURE - available memory fell to ${pass_pressure_kill[$pid]}GB, under the ${sc_free_floor_gb}GB floor, while ${pass_pid_file[$pid]} was the largest process running.  It was killed as the biggest offender; its own RSS was within the ${pass_budget_gb}GB budget, so this is the host's doing and not this file's.")
+              elif (( pid_exit > 128 )); then
+                sc_status=1
+                sc_unchecked+=("${pass_pid_file[$pid]} (died from signal $(( pid_exit - 128 )), not this stage's doing)")
+                sc_watch_msgs+=("shellcheck: ${pass_pid_file[$pid]} was killed (signal $(( pid_exit - 128 ))) by something other than this stage's own watchdog - not a shellcheck finding, but the stage still fails since that file was never actually checked")
+              else
+                sc_status=1
+                sc_unchecked+=("${pass_pid_file[$pid]} (shellcheck exited $pid_exit - it never produced a result for this file)")
+              fi
+            fi
+            unset "pass_active[$pid]"
+            if (( pass_next < pass_total )); then
+              _sc_launch_one
+            fi
+          fi
+        done
+      done
+      return 0
+    }
 
     if (( sc_total == 0 )); then
       sc_status=0
     elif [[ ${GITHUB_ACTIONS:-} == true ]]; then
-      # CI: ephemeral runner, a failed job is harmless - keep a fixed 2-way
-      # batch (the prior core-count-derived batching, pinned rather than
-      # host-detected), no memory cap, no watchdog.
-      sc_jobs=2
-      sc_batch=$(( (sc_total + sc_jobs - 1) / sc_jobs ))
-      (( sc_batch < 1 )) && sc_batch=1
+      # CI: ONE FILE PER `shellcheck` INVOCATION, and every file must produce
+      # a result.
+      #
+      # WHAT THIS REPLACES, AND WHY IT COULD NOT WORK.  This branch used to
+      # split the tree into `sc_jobs` BATCHES and hand each whole batch to a
+      # single `shellcheck -x` process - 85 files per process at today's tree
+      # size.  `shellcheck` holds every file it was given, plus each one's
+      # whole `-x` source closure, in one heap, so that process's peak is
+      # roughly the SUM over its batch rather than the MAX over it.  Measured
+      # consequences, on the two runners this workflow actually targets:
+      #
+      #   ubuntu-latest (16GB)  killed - the JOB died with exit 143 and
+      #                         "The runner has received a shutdown signal"
+      #                         about five minutes into the stage, with no
+      #                         stage output at all and not even the
+      #                         `if: always()` log-upload step reached.  That
+      #                         is the runner going down under memory
+      #                         pressure, not a finding.
+      #   macos-latest  (7GB)   completed, in 41m45s (21:24:56 -> 22:06:41 on
+      #                         run 33677872951), by swapping the whole time.
+      #
+      # Both are the same defect.  One file per invocation makes the stage's
+      # peak the MAX over the tree instead of the SUM over a batch, which is
+      # the number the tree's own `-x` hygiene (tests/lint-source-graph.sh)
+      # actually bounds.
+      #
+      # A LATER FIX THEN REPLACED THE UNBOUNDED PER-INVOCATION RUN WITH A
+      # HARD `ulimit -v` (RLIMIT_AS) AROUND EACH ONE, AND THAT WAS ITSELF A
+      # DEFECT, NOW CORRECTED HERE.  See the shared `_sc_run_pass` comment
+      # above for the full measurement: `ulimit -v` bounds VIRTUAL ADDRESS
+      # SPACE, which GHC's RTS reserves in an amount that scales with how
+      # much memory the HOST appears to have, not with the file being
+      # checked - so a ceiling low enough to protect a ~15GB runner rejected
+      # eight real files that never came close to using that much RESIDENT
+      # memory, purely because their `-x` closures triggered a bigger
+      # virtual reservation on a runner with room to spare.  This branch now
+      # shares the same real-RSS watchdog (`_sc_run_pass`, defined above)
+      # the local path has always used - it never constrains what GHC may
+      # RESERVE, only what it may actually DIRTY, sampled externally.
+      #
+      # ONE PROPERTY HERE IS STILL DELIBERATELY NOT THE LOCAL PATH'S: there
+      # is NO `skipped` outcome.  "This host is too small for this file" is
+      # a legitimate answer about a contributor's laptop and is never a
+      # legitimate answer on CI: the runner IS the target, so a file that
+      # cannot be checked here is a FAILURE and lands in `sc_unchecked`.
+      # That is what keeps a green CI run from meaning "every file we felt
+      # like checking was clean" - see the classification after the two
+      # passes below, which routes BOTH an over-budget kill and a
+      # host-pressure kill into `sc_unchecked`, never `sc_skipped`.
+      #
+      # `sc_ci_jobs` is derived from the runner's own memory rather than
+      # pinned, because the two runners differ by more than 2x (16GB vs
+      # 7GB) and one constant cannot be right for both.  It is clamped to
+      # the core count and to 4, since a hosted runner has 3-4 cores and
+      # more processes than cores only adds contention and concurrent
+      # peaks.
+      sc_ci_total_gb=${SCOURSH_SHELLCHECK_FORCE_TOTAL_GB:-}
+      if [[ ! $sc_ci_total_gb =~ ^[0-9]+$ ]] || (( sc_ci_total_gb < 1 )); then
+        sc_ci_total_gb=$(_sc_mem_total_gb)
+      fi
+      sc_ci_avail_gb=${SCOURSH_SHELLCHECK_FORCE_AVAIL_GB:-}
+      if [[ ! $sc_ci_avail_gb =~ ^[0-9]+$ ]] || (( sc_ci_avail_gb < 1 )); then
+        sc_ci_avail_gb=$(_sc_mem_avail_gb) || sc_ci_avail_gb=$(( sc_ci_total_gb / 2 ))
+      fi
+      if [[ ! $sc_ci_avail_gb =~ ^[0-9]+$ ]] || (( sc_ci_avail_gb < 1 )); then
+        sc_ci_avail_gb=1
+      fi
+
+      # Same reserve/headroom shape as the local model, for the same reason:
+      # never plan against memory the OS and the rest of the job also need.
+      sc_ci_reserve_gb=$(( sc_ci_total_gb / 8 ))
+      (( sc_ci_reserve_gb < 2 )) && sc_ci_reserve_gb=2
+      sc_ci_headroom_gb=$(( sc_ci_avail_gb - sc_ci_reserve_gb ))
+      (( sc_ci_headroom_gb < 1 )) && sc_ci_headroom_gb=1
+      sc_ci_cores=$(_sc_detect_cores)
+
+      # PASS 1's BUDGET IS A TYPICAL FOOTPRINT, NOT A HARD CEILING - exactly
+      # the local path's `step_gb` role, so the bulk of the tree runs wide
+      # and only the heavy tail is deferred.  Measured worst REAL resident
+      # size on this tree (with no virtual-space cap in the way to shrink
+      # it artificially) is 5.75GB (tests/suites/dast-methods.sh), so 6 is
+      # the default; a file that needs more is not refused here, it is
+      # DEFERRED to pass 2 below, which retries it alone against the whole
+      # of the runner's real headroom - unlike the ulimit-based model this
+      # replaces, which had no second tier and so had to size ONE ceiling
+      # for the heaviest file in the tree, forever a step behind whatever
+      # the actual worst case turns out to be on the day's runner.
+      sc_ci_worst_gb=${SCOURSH_SHELLCHECK_CI_WORST_GB:-6}
+      if [[ ! $sc_ci_worst_gb =~ ^[0-9]+$ ]] || (( sc_ci_worst_gb < 1 )); then
+        sc_ci_worst_gb=6
+      fi
+      sc_ci_jobs=$(( sc_ci_headroom_gb / sc_ci_worst_gb ))
+      (( sc_ci_jobs < 1 )) && sc_ci_jobs=1
+      (( sc_ci_jobs > sc_ci_cores )) && sc_ci_jobs=$sc_ci_cores
+      (( sc_ci_jobs > 4 )) && sc_ci_jobs=4
+
+      printf 'shellcheck: %s files; CI runner %sGB total, %sGB available, %sGB reserved -> %sGB headroom, %s cores -> %s parallel x 1 file per invocation (%sGB planned per file, a resident-memory watchdog enforces it - no ulimit, no fixed hard cap)\n' \
+        "$sc_total" "$sc_ci_total_gb" "$sc_ci_avail_gb" "$sc_ci_reserve_gb" \
+        "$sc_ci_headroom_gb" "$sc_ci_cores" "$sc_ci_jobs" "$sc_ci_worst_gb"
+
+      # THE DECLARED HANDOFF.  Printed on every CI shard, unconditionally,
+      # because it is a fact about the whole tree rather than about this
+      # shard's own slice - `_shard_build_plan` has already excluded every
+      # one of these paths from every shard's file-item plan (see that
+      # function's own header), so this banner is what keeps the exclusion
+      # from reading as a silent gap in the log: a file named here was never
+      # attempted on CI, on purpose, and is checked for real by
+      # tools/daily-suite.sh's GNU leg instead - never phrased as though it
+      # passed here.
+      _sc_load_heavy_files
+      if (( ${#SC_HEAVY_FILES_ORDER[@]} > 0 )); then
+        printf 'shellcheck: %s file(s) handed off to the daily suite'"'"'s own container - NOT checked in CI, see %s:\n' \
+          "${#SC_HEAVY_FILES_ORDER[@]}" "$SCOURSH_SHELLCHECK_HEAVY_FILES_LIST"
+        for sc_hf in "${SC_HEAVY_FILES_ORDER[@]}"; do
+          printf '  - %s\n' "$sc_hf"
+        done
+      fi
 
       # No `trap ... EXIT` here: the stage-wide traps installed above already
       # remove $sc_shard_dir, and re-arming EXIT would drop the verdict trap.
       sc_shard_dir=$(mktemp -d)
-      export SC_SHARD_DIR=$sc_shard_dir
+      sc_status=0
+      sc_shard_seq=0
+      # The watchdog's second, host-wide layer (see `_sc_run_pass` above)
+      # needs a floor below which available memory means "something else on
+      # this runner is competing for it" - the same reserve already carved
+      # out of the plan above is what that floor is FOR, so it is reused
+      # rather than invented a second time.  SCOURSH_SHELLCHECK_FREE_FLOOR_GB
+      # is the same test seam the local path reads, for the same reason: a
+      # test needs to force a pressure kill deterministically without
+      # actually starving the host it runs on.
+      sc_free_floor_gb=${SCOURSH_SHELLCHECK_FREE_FLOOR_GB:-$sc_ci_reserve_gb}
+      if [[ ! $sc_free_floor_gb =~ ^[0-9]+$ ]] || (( sc_free_floor_gb < 1 )); then
+        sc_free_floor_gb=$sc_ci_reserve_gb
+      fi
 
-      # Each batch writes to its OWN file rather than shared stdout: appends
-      # above PIPE_BUF interleave (tension 17 - the same reason scan workers
-      # write to their own shard files, not a shared findings.jsonl).
-      # `-x` is unchanged: it still follows every `source`, per batch.
+      # --- pass 1: the whole tree, planned against a typical footprint ------
+      sc_queue=("${sc_file_list[@]}")
+      _sc_run_pass "$sc_ci_worst_gb" "$sc_ci_jobs" "first"
+
+      # --- pass 2: only what pass 1 could not fit, against the real ceiling -
       #
-      # xargs -P's own aggregate exit status is what `if` branches on here -
-      # 123 if any invocation exited 1-125, so a failure in any ONE batch,
-      # first or last, still fails the stage.  Nothing here re-derives
-      # success from output content or discards an individual invocation's
-      # status.
-      # shellcheck disable=SC2016
-      if printf '%s\n' "${sc_file_list[@]}" \
-        | xargs -P "$sc_jobs" -n "$sc_batch" sh -c \
-          'shellcheck -x -s bash "$@" >"$(mktemp "$SC_SHARD_DIR/shard-XXXXXX")" 2>&1' _; then
-        sc_status=0
-      else
-        sc_status=$?
+      # Unlike the local path, NEITHER category here is ever allowed to end
+      # as a skip: this runner IS the target, so a file this stage still
+      # cannot measure after using the whole of the runner's real headroom
+      # is a stage FAILURE, named, with the reason and the knob to raise
+      # spelled out - never a silent, or even a loud-but-passing, omission.
+      sc_ci_pass2_budget_gb=$sc_ci_headroom_gb
+      sc_queue=("${sc_pass_over[@]+"${sc_pass_over[@]}"}" "${sc_pass_pressure[@]+"${sc_pass_pressure[@]}"}")
+
+      if (( ${#sc_queue[@]} > 0 )); then
+        if (( sc_ci_pass2_budget_gb <= sc_ci_worst_gb )); then
+          # This runner's whole headroom is already pass 1's budget, so
+          # there is no bigger ceiling to retry into - the same short
+          # circuit the local path takes, but CI has no skip outcome to
+          # take instead, so both categories fail the stage.
+          for sc_f in "${sc_pass_over[@]+"${sc_pass_over[@]}"}"; do
+            sc_unchecked+=("$sc_f (needs more than the ${sc_ci_worst_gb}GB this runner's ${sc_ci_headroom_gb}GB headroom can give one process, and there is no larger budget left to retry it at - raise it with SCOURSH_SHELLCHECK_CI_WORST_GB, shrink this file's own -x source fan-out per tests/lint-source-graph.sh, or - if neither is enough - add it to tests/shellcheck-heavy-files.txt to hand it to tools/daily-suite.sh's GNU leg instead, which sizes its own container's memory for exactly this)")
+            sc_status=1
+          done
+          for sc_f in "${sc_pass_pressure[@]+"${sc_pass_pressure[@]}"}"; do
+            sc_unchecked+=("$sc_f (killed for host memory pressure, and this runner's headroom is already committed to one process, so there is no larger budget to retry it at - something else on this runner is competing for memory)")
+            sc_status=1
+          done
+        else
+          printf 'shellcheck: pass 2 - %s file(s) pass 1 could not fit, 1 parallel x %sGB (the whole of this runner'"'"'s real headroom) of %sGB headroom\n' \
+            "${#sc_queue[@]}" "$sc_ci_pass2_budget_gb" "$sc_ci_headroom_gb"
+          _sc_run_pass "$sc_ci_pass2_budget_gb" 1 "second"
+          for sc_f in "${sc_pass_over[@]+"${sc_pass_over[@]}"}"; do
+            sc_unchecked+=("$sc_f (needs more real resident memory than ${sc_ci_pass2_budget_gb}GB - the whole of this runner's real headroom - even alone; raising SCOURSH_SHELLCHECK_CI_WORST_GB is not enough here, this file needs a bigger runner, a smaller -x fan-out per tests/lint-source-graph.sh, or adding it to tests/shellcheck-heavy-files.txt to hand it to tools/daily-suite.sh's GNU leg instead)")
+            sc_status=1
+          done
+          for sc_f in "${sc_pass_pressure[@]+"${sc_pass_pressure[@]}"}"; do
+            sc_unchecked+=("$sc_f (killed for host memory pressure in both passes - its retry did not help; something else on this runner is competing for memory)")
+            sc_status=1
+          done
+        fi
       fi
 
       for sc_shard in "$sc_shard_dir"/shard-*; do
@@ -393,15 +1264,9 @@ sc_stage() {
           cat -- "$sc_shard"
         fi
       done
+
       rm -rf "$sc_shard_dir"
       sc_shard_dir=
-      unset SC_SHARD_DIR
-      # Batched, so a finding cannot be attributed to one file here; the
-      # per-file attribution the local path gives is not available on CI and
-      # is not faked.  `sc_status` alone carries the verdict on this path.
-      if (( sc_status != 0 )); then
-        sc_findings=("(batched - see the output above)")
-      fi
     else
       # Local: cap concurrency by memory, not core count, and run one file
       # per shellcheck invocation so a watchdog kill - or a plain finding -
@@ -413,13 +1278,18 @@ sc_stage() {
       # spread is enormous.  Measured here with /usr/bin/time -l, one file
       # per invocation, watchdog out of the way:
       #
-      #     tests/suites/dast-cors.sh      23.79 GB  (re-measured; see below)
-      #     tests/suites/dast-hosthdr.sh   did not converge, sampled >25 GB
-      #     tests/suites/dast-methods.sh   ~22-41 GB, non-reproducible
-      #     tests/suites/dast-cookies.sh   12.99 GB  (STALE - see below)
-      #     tests/suites/dast-jwt.sh       12.96 GB  (STALE - see below)
-      #     scan.sh                         4.74 GB
+      #     tests/suites/dast-methods.sh    5.75 GB   (hub 17)  <- tree max
+      #     tests/suites/dast-cookies.sh    5.44 GB   (hub 16)
+      #     tests/suites/state-coverage.sh  5.34 GB   (hub 12)
+      #     scan.sh                         4.41 GB   (hub 12)
+      #     tests/suites/dast-hosthdr.sh    4.07 GB   (hub 13)
+      #     tests/suites/dast-cors.sh       2.82 GB   (hub 13)
       #     modules/sca/run.sh              3.46 GB
+      #
+      # These are CURRENT figures, not before/after pairs: only dast-cors.sh
+      # and dast-hosthdr.sh were cut by the change that took them, and the
+      # earlier figures for the others were already superseded.  See
+      # docs/CI-RUNBOOK.md's table, which carries the provenance per row.
       #     lib/engines.sh                  0.11 GB
       #
       # A 200x+ spread is why ONE number could not do this job.  The old
@@ -443,21 +1313,27 @@ sc_stage() {
       #      killed as false failures.  The 8.42-9.87GB figure the previous
       #      note relied on is stale; the tree has grown since it was taken.
       #
-      # THE 12.99GB/20GB PAIR ABOVE IS ITSELF NOW STALE, TREE-WIDE, NOT JUST
-      # FOR ONE FILE.  `dast-cors.sh` and `dast-hosthdr.sh` carry ZERO
-      # repeated source targets - confirmed by reading every `source` line in
-      # each - so there is no redundant edge in either to cut.  Their cost is
-      # the irreducible floor of sourcing lib/http.sh once plus
-      # modules/dast/engine.sh once (-> modules/sast/engine.sh ->
-      # lib/report.sh/lib/config.sh -> lib/findings.sh/lib/records.sh/
-      # lib/core.sh), the same two chains every DAST phase test needs, and
-      # that floor alone now measures 23.79GB - almost double the old
-      # 12.99GB reference and already above the old 20GB pass-2 ceiling.  A
-      # real full-stage run (165 files today, not 130) skipped
-      # dast-methods.sh, dast-hosthdr.sh and dast-cors.sh at the 20GB budget
-      # for exactly this reason: the shared lib/ dependency chain has grown
-      # since 12.99GB was measured, independent of any one file's own
-      # source-graph hygiene.  See docs/CI-RUNBOOK.md's "memory model"
+      # THE TABLE ABOVE IS THE POST-CUT TREE, AND THE FIGURES IT REPLACES
+      # WERE NOT AN IRREDUCIBLE FLOOR.  The previous note recorded
+      # `dast-cors.sh` at 23.79GB and asserted that it and `dast-hosthdr.sh`
+      # carried "ZERO repeated source targets ... no redundant edge in either
+      # to cut", so their cost was the irreducible floor of the shared lib/
+      # chain.  That was measured correctly and concluded wrongly: the
+      # repeated expansions were not DIRECT repeats inside those files, they
+      # were reached TRANSITIVELY, and they were cuttable.  `dast-cors.sh`
+      # sourced lib/http.sh directly AND again through
+      # modules/dast/passive/cors_engine.sh AND a third time through
+      # modules/dast/passive/cors.sh; cutting the two edges whose target the
+      # file already reached another way took it from hub sum 18 to 13 and
+      # from 22.86GB to 2.82GB, re-measured here, with `shellcheck -x`
+      # reporting byte-identical (empty) output before and after.  Eleven
+      # such cuts across nine entry points were made; the claim they support
+      # is TREE-WIDE rather than per-file - the worst file in the tree was
+      # dast-cors.sh at 22.86GB and is now dast-methods.sh at 5.75GB, which
+      # is the number this stage's plan is sized against.  A structural flattening of the lib/http.sh ->
+      # lib/config.sh + lib/findings.sh -> lib/records.sh diamond would
+      # reduce what is left and remains its own filed follow-up.
+      # See docs/CI-RUNBOOK.md's "memory model"
       # section for the full evidence, including that peak RSS here is
       # itself ambient-memory-dependent (shellcheck's GHC runtime ignores
       # `+RTS -M` and sizes its heap off available memory at measurement
@@ -487,14 +1363,17 @@ sc_stage() {
       #     headroom  = max(avail - reserve, 1)
       #
       # PASS 1 plans against a TYPICAL footprint (`step_gb`, 5GB - above
-      # scan.sh's 4.74GB, so the whole body of the tree clears it) and runs
-      # wide.  A file that exceeds it is NOT a failure: it is DEFERRED.
+      # scan.sh's 4.41GB, so the body of the tree clears it) and runs wide.
+      # A file that exceeds it is NOT a failure: it is DEFERRED.  Three files
+      # exceed it today (5.75, 5.44 and 5.34GB) and are checked in pass 2.
       # PASS 2 re-runs only the deferred files against the RUNAWAY trip point
-      # (`budget_gb`, 50GB as of this ticket - raised from 20GB, which is now
-      # BELOW the re-measured 23.79GB floor of dast-cors.sh/dast-hosthdr.sh
-      # and the sibling ticket's observed 22-41GB range for dast-methods.sh;
-      # a genuine runaway is still caught but no legitimate file is),
-      # necessarily narrow.  Both budgets are clamped down to `headroom`,
+      # (`budget_gb`, 50GB).  That default is left where it was even though
+      # the tree's worst file is now 5.75GB rather than 22.86GB: it is a
+      # RUNAWAY trip point, not a size estimate, peak RSS here is
+      # ambient-memory-dependent (below), and it is clamped down to
+      # `headroom` on every host anyway, so lowering it would buy nothing and
+      # could only turn a legitimate file into a false SKIP on a big host.
+      # Both budgets are clamped down to `headroom`,
       # which is what makes (2) above impossible to reproduce, and which
       # also means raising this default costs nothing on a small host - it
       # is clamped to whatever that host can actually give, same as before.
@@ -511,24 +1390,19 @@ sc_stage() {
       #   8GB host, 6GB available:  reserve 2, headroom 4.
       #     pass 1: budget min(5,4)=4,  jobs min(4/4,cores)=1  -> 4 <= 4
       #     pass 2: budget min(50,4)=4, jobs 1                 -> 4 <= 4
-      #     The heaviest files cannot fit in 4GB on this host at all, so
-      #     they are reported as SKIPPED, by name, with that reason - never
-      #     as a silent kill and never rounded up to clean.
+      #     The three files above 4GB cannot fit on this host, so they are
+      #     reported as SKIPPED, by name, with that reason - never as a
+      #     silent kill and never rounded up to clean.
       #  27GB host, 20GB available: reserve 3, headroom 17.
       #     pass 1: budget 5,  jobs min(17/5,cores)=3          -> 15 <= 17
       #     pass 2: budget min(50,17)=17, jobs 1               -> 17 <= 17
-      #     23.79 > 17, so dast-cors.sh/dast-hosthdr.sh are still SKIPPED by
-      #     name on this size host even with the raised default; lighter
-      #     files are measured.
+      #     5.75 <= 17, so every file in the tree is measured on this size
+      #     host.  Before the back-edge cuts in this same change the worst
+      #     file was 22.86GB and three files SKIPPED here.
       #  64GB host, 36GB available: reserve 8, headroom 28.
       #     pass 1: budget 5,  jobs min(28/5,cores)=5          -> 25 <= 28
       #     pass 2: budget min(50,28)=28, jobs 1               -> 28 <= 28
-      #     23.79 <= 28, so dast-cors.sh now fits with real but not generous
-      #     margin; dast-hosthdr.sh and dast-methods.sh's upper range (up to
-      #     41GB) may still SKIP on this documented reference size.  A host
-      #     with more available memory than this (e.g. ~52GB available on
-      #     64GB total, ~44GB headroom, the host this ticket measured on)
-      #     measures all three cleanly.
+      #     Every file is measured, with a wide margin.
       #
       # SCOURSH_SHELLCHECK_MEM_BUDGET_GB and SCOURSH_SHELLCHECK_STEP_GB
       # override the two defaults; SCOURSH_SHELLCHECK_FREE_FLOOR_GB overrides
@@ -598,201 +1472,11 @@ sc_stage() {
       # No `trap ... EXIT` here either - see the CI branch's note above.
       sc_shard_dir=$(mktemp -d)
 
-      sc_have_ps=0
-      command -v ps >/dev/null 2>&1 && sc_have_ps=1
-
       sc_status=0
       # sc_watch_msgs / sc_skipped are initialised beside sc_unchecked above,
       # before the traps are armed, because _sc_verdict now reads all three
       # and an abort can reach it before this point.
       sc_shard_seq=0
-
-      # _sc_run_pass BUDGET_GB JOBS RETRY_LABEL
-      #
-      # Runs every path in `sc_queue` at JOBS concurrency, allowing each
-      # process BUDGET_GB before the watchdog takes it, and files each
-      # outcome under the reason it actually had:
-      #
-      #   sc_findings      checked, and shellcheck had something to say
-      #   sc_pass_over     exceeded THIS pass's budget - the file's own doing
-      #   sc_pass_pressure killed because the HOST came under pressure while
-      #                    this file was merely the largest thing running -
-      #                    NOT the file's doing, so the caller retries it
-      #   sc_unchecked     any other way of failing to produce a result
-      #
-      # Keeping `over` and `pressure` apart is acceptance criterion 3, and it
-      # is the whole difference between an actionable message and the
-      # unattributable kill this ticket was filed for: under the old stage
-      # both arms ended up in one "killed by this stage's own watchdog"
-      # bucket, so a reader could not tell "this file needs more memory than
-      # it was given" from "something unrelated on this machine grew".
-      _sc_run_pass() {
-        local pass_budget_gb=$1 pass_jobs=$2 pass_label=$3
-        local pass_budget_kb=$(( pass_budget_gb * 1024 * 1024 ))
-        # TEST SEAM.  The real budgets are whole GB and a stub `shellcheck`
-        # uses a few MB, so the OVER-BUDGET arm below is unreachable from a
-        # test without a finer-grained knob - and an arm no test can reach is
-        # how the two kill causes stayed indistinguishable for as long as they
-        # did.  Never set by a real run.
-        if [[ ${SCOURSH_SHELLCHECK_BUDGET_KB:-} =~ ^[0-9]+$ ]]; then
-          pass_budget_kb=$SCOURSH_SHELLCHECK_BUDGET_KB
-        fi
-        local pass_total=${#sc_queue[@]} pass_next=0
-        local pid f shard idx rss_kb biggest_pid biggest_rss rpid pid_exit now_gb
-
-        declare -A pass_pid_file=()
-        declare -A pass_active=()
-        declare -A pass_running=()
-        declare -A pass_over_kill=()
-        declare -A pass_pressure_kill=()
-
-        sc_pass_over=()
-        sc_pass_pressure=()
-
-        (( pass_total == 0 )) && return 0
-
-        _sc_launch_one() {
-          f=${sc_queue[pass_next]}
-          idx=$(printf '%05d' "$sc_shard_seq")
-          shard=$(mktemp "$sc_shard_dir/shard-${idx}-XXXXXX")
-          shellcheck -x -s bash -- "$f" >"$shard" 2>&1 &
-          pid=$!
-          pass_pid_file[$pid]=$f
-          pass_active[$pid]=1
-          pass_next=$(( pass_next + 1 ))
-          sc_shard_seq=$(( sc_shard_seq + 1 ))
-        }
-
-        while (( pass_next < pass_total )) && (( ${#pass_active[@]} < pass_jobs )); do
-          _sc_launch_one
-        done
-
-        # No `wait -n` here: it needs bash >= 4.3 and this project's frozen
-        # minimum is 4.2 (AGENTS.md).  `jobs -p -r` (a plain bash builtin,
-        # well inside that minimum) lists still-running background PIDs
-        # instead, and a completed-but-unreaped pid drops out of it even
-        # before `wait` collects its exit status.
-        while (( ${#pass_active[@]} > 0 )); do
-          sleep 0.4
-
-          if (( sc_have_ps )); then
-            biggest_pid=
-            biggest_rss=0
-            for pid in "${!pass_active[@]}"; do
-              kill -0 "$pid" 2>/dev/null || continue
-              # `|| rss_kb=` is NOT belt-and-braces, it is the fix for the
-              # "prints nothing at all" face of this ticket.  A bare
-              # `rss_kb=$(ps ...)` is a simple assignment whose exit status is
-              # the command substitution's, so when `ps` exits 1 the
-              # assignment exits 1 and `set -e` tears the whole stage down -
-              # past the watchdog roll-up, past the verdict, leaving a log
-              # that ends at the header.
-              #
-              # It is a RACE, which is why it never showed in this suite: the
-              # `kill -0` above proves the process was alive a few
-              # microseconds ago, not that it is alive now, and a shellcheck
-              # that finishes in that window makes `ps` fail.  Six stub files
-              # never lose that race; 130 real ones lose it almost every run.
-              # Reproduced on this tree before the fix - 9 of 130 files
-              # unmeasured and the stage ending on "an unexpected non-zero
-              # exit before it could reach a verdict", with none of the 9
-              # watchdog messages that would have explained them ever
-              # printed.  Section K drives the race directly.
-              rss_kb=$(ps -o rss= -p "$pid" 2>/dev/null) || rss_kb=
-              rss_kb=${rss_kb//[!0-9]/}
-              [[ $rss_kb =~ ^[0-9]+$ ]] || continue
-              if (( rss_kb > biggest_rss )); then
-                biggest_rss=$rss_kb
-                biggest_pid=$pid
-              fi
-              if (( rss_kb > pass_budget_kb )); then
-                kill -TERM "$pid" 2>/dev/null || true
-                sleep 0.2
-                kill -KILL "$pid" 2>/dev/null || true
-                pass_over_kill[$pid]=$(( rss_kb / 1024 / 1024 ))
-                # Spelled as an `if`, not `[[ ... ]] && biggest_pid=`.  The
-                # ticket that rewrote this stage carried a hypothesis that
-                # the `&&` spelling aborted the script under `set -e` when
-                # the test was false, which would explain a stage that
-                # printed only its header.  MEASURED, and REFUTED: bash
-                # exempts a whole `A && B` list from `set -e` when A itself
-                # fails, at top level and inside a loop or an `if` body
-                # alike, so it never fired.  The `if` stays because it is
-                # clearer, not because it fixes anything.
-                if [[ $biggest_pid == "$pid" ]]; then biggest_pid=; fi
-              fi
-            done
-
-            # Second, independent layer: even when every process is within
-            # its own budget, several together can still starve the host if
-            # something ELSE on the machine grew after the plan was made.
-            # Kill only the single biggest offender, not everything, so a
-            # transient dip does not take out a whole pass - and record it
-            # as PRESSURE, so the caller retries it rather than blaming it.
-            if [[ -n $biggest_pid ]]; then
-              now_gb=$(_sc_mem_avail_gb) || now_gb=
-              if [[ $now_gb =~ ^[0-9]+$ ]] && (( now_gb < sc_free_floor_gb )); then
-                kill -TERM "$biggest_pid" 2>/dev/null || true
-                sleep 0.2
-                kill -KILL "$biggest_pid" 2>/dev/null || true
-                pass_pressure_kill[$biggest_pid]=$now_gb
-              fi
-            fi
-          fi
-
-          pass_running=()
-          while IFS= read -r rpid; do
-            [[ -n $rpid ]] && pass_running[$rpid]=1
-          done < <(jobs -p -r)
-
-          for pid in "${!pass_active[@]}"; do
-            if [[ -z ${pass_running[$pid]:-} ]]; then
-              # `wait` on its own line is the LAST command in a simple list,
-              # so under `set -e` a non-zero exit here (a real finding, or
-              # the watchdog's kill above) would abort the whole stage
-              # instead of being recorded and continuing to the next file.
-              # Folding it into an `||` exempts it.
-              pid_exit=0
-              wait "$pid" 2>/dev/null || pid_exit=$?
-              if (( pid_exit != 0 )); then
-                # Exit 1 is the only status that means "this file WAS checked
-                # and shellcheck has something to say about it".  Everything
-                # else means the file was never actually checked, and those
-                # outcomes are kept apart rather than merged into one
-                # non-zero: shellcheck's own exit 2 is "could not process
-                # this file", 126/127 are the shell's "could not run the
-                # linter at all", and 128+n is "died from signal n" (bash
-                # manual, "Exit Status").  Rounding any of them up to a clean
-                # result is the single most expensive way for this stage to
-                # be wrong, because an unmeasured file looks exactly like a
-                # clean one in the output.
-                if (( pid_exit == 1 )); then
-                  sc_status=1
-                  sc_findings+=("${pass_pid_file[$pid]}")
-                elif [[ -n ${pass_over_kill[$pid]:-} ]]; then
-                  sc_pass_over+=("${pass_pid_file[$pid]}")
-                  sc_watch_msgs+=("shellcheck: OVER BUDGET - ${pass_pid_file[$pid]} reached ~${pass_over_kill[$pid]}GB resident, past the ${pass_budget_gb}GB allowed in the $pass_label pass, and was killed.  Cause: this one file, not host memory pressure.")
-                elif [[ -n ${pass_pressure_kill[$pid]:-} ]]; then
-                  sc_pass_pressure+=("${pass_pid_file[$pid]}")
-                  sc_watch_msgs+=("shellcheck: HOST MEMORY PRESSURE - available memory fell to ${pass_pressure_kill[$pid]}GB, under the ${sc_free_floor_gb}GB floor, while ${pass_pid_file[$pid]} was the largest process running.  It was killed as the biggest offender; its own RSS was within the ${pass_budget_gb}GB budget, so this is the host's doing and not this file's.")
-                elif (( pid_exit > 128 )); then
-                  sc_status=1
-                  sc_unchecked+=("${pass_pid_file[$pid]} (died from signal $(( pid_exit - 128 )), not this stage's doing)")
-                  sc_watch_msgs+=("shellcheck: ${pass_pid_file[$pid]} was killed (signal $(( pid_exit - 128 ))) by something other than this stage's own watchdog - not a shellcheck finding, but the stage still fails since that file was never actually checked")
-                else
-                  sc_status=1
-                  sc_unchecked+=("${pass_pid_file[$pid]} (shellcheck exited $pid_exit - it never produced a result for this file)")
-                fi
-              fi
-              unset "pass_active[$pid]"
-              if (( pass_next < pass_total )); then
-                _sc_launch_one
-              fi
-            fi
-          done
-        done
-        return 0
-      }
 
       # --- pass 1: the whole tree, planned against a typical footprint ------
       sc_pass1_budget_gb=$sc_step_gb
@@ -827,8 +1511,35 @@ sc_stage() {
           # to one process, so a second pass would run at the same ceiling
           # and be killed at the same point.  Say so, by name, rather than
           # burning the time and reporting the same kill twice.
-          for sc_f in "${sc_queue[@]}"; do
+          #
+          # THE TWO CATEGORIES ARE SPLIT HERE FOR THE SAME REASON THEY ARE
+          # SPLIT AFTER PASS 2, AND LUMPING THEM WAS A REAL DEFECT.  This
+          # branch used to file EVERY deferred file under `skipped`, including
+          # the ones killed for HOST PRESSURE - so the stage printed
+          # "HOST MEMORY PRESSURE ... its own RSS was within the budget, so
+          # this is the host's doing and not this file's" and then, one line
+          # later, "needs more than the 1GB this host's headroom can give one
+          # process", which is the opposite claim about the same file.  It
+          # also turned a stage that failed to measure a file into a PASS.
+          # Reproduced on a `macos-latest` runner (7GB total, 3GB available,
+          # so headroom 1GB and pass 1's budget already the whole of it):
+          # `tests/suites/run-tests-stage.sh` section C2 failed there and only
+          # there, on both a pre-change and a post-change run, because on any
+          # host with real headroom pass 2 exists and the split below applies.
+          #
+          #   OVER BUDGET  the file genuinely wants more than this host can
+          #                give one process.  A host capability limit -
+          #                SKIPPED by name, and not a failure.
+          #   PRESSURE     the file was within its budget and was killed
+          #                because something else on the machine took the
+          #                memory.  That is this stage failing to measure it,
+          #                with no retry available - UNCHECKED, and it FAILS.
+          for sc_f in "${sc_pass_over[@]+"${sc_pass_over[@]}"}"; do
             sc_skipped+=("$sc_f (needs more than the ${sc_pass1_budget_gb}GB this host's ${sc_headroom_gb}GB headroom can give one process)")
+          done
+          for sc_f in "${sc_pass_pressure[@]+"${sc_pass_pressure[@]}"}"; do
+            sc_status=1
+            sc_unchecked+=("$sc_f (killed for host memory pressure, and this host's ${sc_headroom_gb}GB headroom is already committed to one process, so there is no larger budget to retry it at - something else on this machine is competing for memory)")
           done
           sc_queue=()
         else
@@ -889,12 +1600,33 @@ sc_stage() {
 
       rm -rf "$sc_shard_dir"
       sc_shard_dir=
-      unset -f _sc_launch_one _sc_run_pass
     fi
+    # _sc_run_pass and its nested _sc_launch_one are shared by the CI and
+    # local branches above (or never invoked at all, on the zero-files
+    # branch) - unset once, here, rather than in either branch alone.
+    unset -f _sc_launch_one _sc_run_pass
 
     # A file that could not be checked fails the stage on its own, even when
     # nothing that DID get checked reported anything.
     if (( ${#sc_unchecked[@]} > 0 )); then
+      sc_status=1
+    fi
+    # SCOURSH_SHELLCHECK_SKIP_IS_FATAL - never set by an ordinary run, and
+    # never consulted on the CI branch above (CI has no `sc_skipped` outcome
+    # to begin with; every file it discovers either gets a result or fails).
+    # tools/daily-suite.sh's dedicated heavy-file pass
+    # (tests/shellcheck-heavy-files.txt) sets this, because that pass is this
+    # project's declared, sole replacement for the CI coverage those files
+    # were excluded from - "this container does not have the memory either"
+    # has to read exactly as fatally as CI's own "this runner does not have
+    # the memory" does, or the daily suite would quietly become a version of
+    # the same gap the handoff exists to close, just one hop further away
+    # from anyone watching. An ordinary contributor running the plain suite
+    # keeps the original, lenient behaviour: SKIPPED still passes there,
+    # because "this laptop is too small for this file" remains a legitimate
+    # answer everywhere except the one place this project now promises an
+    # answer will always be a real one.
+    if [[ ${SCOURSH_SHELLCHECK_SKIP_IS_FATAL:-0} == 1 ]] && (( ${#sc_skipped[@]} > 0 )); then
       sc_status=1
     fi
     _sc_verdict "$sc_status"
@@ -910,6 +1642,12 @@ sc_stage() {
   fi
 }
 
+if [[ -n ${1:-} ]] && (( SHARD_TOTAL > 0 )); then
+  printf 'tests/run-tests.sh: --shard selects a slice of a FULL run; it cannot be combined with a named suite (got: %s)\n' \
+    "$1" >&2
+  exit 2
+fi
+
 if [[ -n ${1:-} ]]; then
   want=$1
   if [[ -f tests/suites/$want.sh ]]; then
@@ -919,7 +1657,9 @@ if [[ -n ${1:-} ]]; then
   elif [[ " ${STAGES[*]} " == *" $want "* ]]; then
     # A plain call, never `sc_stage || ...` - see sc_stage's own header for why
     # the `||` spelling would disable `errexit` for the whole stage body.
+    _sc_t0=$(date +%s)
     sc_stage
+    _shard_record "stage:shellcheck" $(( $(date +%s) - _sc_t0 ))
     if (( SC_STAGE_STATUS != 0 )); then failed+=(shellcheck); fi
   else
     printf 'no such suite, linter or stage: %s\n' "$want" >&2
@@ -927,14 +1667,48 @@ if [[ -n ${1:-} ]]; then
     exit 2
   fi
 else
-  for s in "${SUITES[@]}"; do
-    run_one suite "$s" "tests/suites/$s.sh"
-  done
-  for l in "${LINTERS[@]}"; do
-    run_one linter "$l" "tests/$l.sh"
-  done
-  sc_stage
-  if (( SC_STAGE_STATUS != 0 )); then failed+=(shellcheck); fi
+  # One loop for both the full run and a shard of one: `shard_work` with no
+  # `--shard` yields every item, so there is exactly one place that knows what
+  # a full run consists of.
+  if (( SHARD_TOTAL > 0 )); then
+    printf '=== shard %s of %s ===\n' "$SHARD_INDEX" "$SHARD_TOTAL"
+  fi
+  # `file` lines (one per shellcheck file THIS shard owns - only ever
+  # produced by a sharded `shard_work`, never the unsharded whole-tree
+  # `stage` line) are collected here rather than acted on inline, so the
+  # stage still gets ONE call over its whole slice - the two-pass
+  # typical/runaway budgeting needs one coherent queue to plan against, not
+  # 30-odd single-file stage invocations each re-deriving a jobs/budget plan
+  # for a queue of one.
+  sc_shard_file_list=()
+  while read -r w_kind w_name w_path; do
+    if [[ $w_kind == stage ]]; then
+      # A plain call, never `sc_stage || ...` - see sc_stage's own header for
+      # why the `||` spelling would disable `errexit` for the whole stage body.
+      _sc_t0=$(date +%s)
+      sc_stage
+      _shard_record "stage:shellcheck" $(( $(date +%s) - _sc_t0 ))
+      if (( SC_STAGE_STATUS != 0 )); then failed+=(shellcheck); fi
+    elif [[ $w_kind == file ]]; then
+      sc_shard_file_list+=("$w_name")
+    else
+      run_one "$w_kind" "$w_name" "$w_path"
+    fi
+  done < <(shard_work)
+  if (( ${#sc_shard_file_list[@]} > 0 )); then
+    _sc_shard_file_list_tmp=$(mktemp)
+    printf '%s\n' "${sc_shard_file_list[@]}" > "$_sc_shard_file_list_tmp"
+    _sc_t0=$(date +%s)
+    # Prefix assignment, not `export` - scopes SCOURSH_SHELLCHECK_FILE_LIST to
+    # this one call (bash: a variable assigned ahead of a function call is
+    # visible inside it and reverts the moment the call returns, exactly as
+    # for an external command), so nothing here can leak into a later
+    # `run_one` or into the named-target dispatch path above.
+    SCOURSH_SHELLCHECK_FILE_LIST=$_sc_shard_file_list_tmp sc_stage
+    _shard_record "stage:shellcheck" $(( $(date +%s) - _sc_t0 ))
+    rm -f "$_sc_shard_file_list_tmp"
+    if (( SC_STAGE_STATUS != 0 )); then failed+=(shellcheck); fi
+  fi
 fi
 
 printf '\n'
@@ -948,11 +1722,25 @@ fi
 # pass of everything it did do and is not the same fact as a full pass -
 # leaving the bare line to stand for both is the false green this stage was
 # filed for, one level up.
-if (( SC_STAGE_NOT_INSTALLED )); then
-  printf 'all green (shellcheck is not installed on this host, so the whole-tree stage did not run)\n'
-elif (( SC_STAGE_SKIPPED > 0 )); then
-  printf 'all green (NOT a full pass: the shellcheck stage skipped %s file(s) this host lacks the memory to check - named above)\n' \
-    "$SC_STAGE_SKIPPED"
+# A SHARD is never a full pass either, and for the same reason: it really did
+# pass everything it ran, and that is not the same fact as the suite passing.
+# The bare `all green` line is reserved for a run that did all of the work, so
+# a shard says which slice it was and leaves the verdict to whoever collects
+# every shard - otherwise a CI matrix in which one shard silently never
+# started would still show green lines and read as a full pass.
+# `> 1`, not `> 0`: `--shard 1/1` is the FULL work list by construction (the
+# partition of one), so attaching the note there would make the one spelling a
+# caller uses to prove sharding changes nothing claim the opposite.
+if (( SHARD_TOTAL > 1 )); then
+  shard_note=" (shard $SHARD_INDEX of $SHARD_TOTAL - NOT a full pass on its own; every shard must pass)"
 else
-  printf 'all green\n'
+  shard_note=''
+fi
+if (( SC_STAGE_NOT_INSTALLED )); then
+  printf 'all green%s (shellcheck is not installed on this host, so the whole-tree stage did not run)\n' "$shard_note"
+elif (( SC_STAGE_SKIPPED > 0 )); then
+  printf 'all green%s (NOT a full pass: the shellcheck stage skipped %s file(s) this host lacks the memory to check - named above)\n' \
+    "$shard_note" "$SC_STAGE_SKIPPED"
+else
+  printf 'all green%s\n' "$shard_note"
 fi

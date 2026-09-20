@@ -1,0 +1,12 @@
+{
+    "DBInstances": [
+        {
+            "DBInstanceIdentifier": "scoursh-fixture-public-db",
+            "DBInstanceArn": "arn:aws:rds:eu-west-2:123456789012:db:scoursh-fixture-public-db",
+            "PubliclyAccessible": true,
+            "StorageEncrypted": false,
+            "BackupRetentionPeriod": 0
+        }
+    ],
+    "Marker": "scoursh-fixture-rds-marker-token"
+}

@@ -1,0 +1,32 @@
+{
+    "SecurityGroups": [
+        {
+            "GroupId": "sg-hard1",
+            "GroupName": "web-hard",
+            "VpcId": "vpc-hard1",
+            "IpPermissions": [
+                {
+                    "IpProtocol": "tcp",
+                    "FromPort": 443,
+                    "ToPort": 443,
+                    "IpRanges": [
+                        {"CidrIp": "10.0.0.0/16"}
+                    ]
+                }
+            ]
+        },
+        {
+            "GroupId": "sg-defaulthard",
+            "GroupName": "default",
+            "VpcId": "vpc-hard1",
+            "IpPermissions": [
+                {
+                    "IpProtocol": "-1",
+                    "UserIdGroupPairs": [
+                        {"GroupId": "sg-defaulthard"}
+                    ]
+                }
+            ]
+        }
+    ]
+}

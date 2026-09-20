@@ -1,0 +1,1 @@
+2026-09-10T11:10:35Z info  scan complete in 34s - report: <BENCH>/results/sca-lockfiles-26/scoursh-sca/raw/cases/npm-lodash-patched

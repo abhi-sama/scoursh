@@ -1,0 +1,14 @@
+{
+    "Reservations": [
+        {
+            "ReservationId": "r-hard1",
+            "Instances": [
+                {
+                    "InstanceId": "i-hardimds1",
+                    "State": {"Name": "running"},
+                    "MetadataOptions": {"HttpTokens": "required"}
+                }
+            ]
+        }
+    ]
+}

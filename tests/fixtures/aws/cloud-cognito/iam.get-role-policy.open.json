@@ -1,0 +1,12 @@
+{
+    "RoleName": "Cognito_openpoolUnauth_Role",
+    "PolicyName": "scoursh-fixture-inline-admin",
+    "PolicyDocument": {
+        "Version": "2012-10-17",
+        "Statement": {
+            "Effect": "Allow",
+            "Action": "*",
+            "Resource": "*"
+        }
+    }
+}

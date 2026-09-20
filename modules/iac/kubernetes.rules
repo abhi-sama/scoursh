@@ -154,6 +154,9 @@ exclude-files: compose.*.yml
 exclude-files: compose.*.yaml
 tags: static
 tags: compliance
+fix-kind: replace
+fix-find: privileged: true
+fix-replace: privileged: false
 remediation: Remove `privileged: true` from the container's securityContext.
   A privileged container has near-complete access to the host - device nodes, kernel
   capabilities, and namespaces - so almost every real workload can run instead with a

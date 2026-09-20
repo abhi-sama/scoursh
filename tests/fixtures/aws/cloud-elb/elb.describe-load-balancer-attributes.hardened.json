@@ -1,0 +1,13 @@
+{
+    "LoadBalancerAttributes": {
+        "CrossZoneLoadBalancing": {"Enabled": true},
+        "AccessLog": {
+            "Enabled": true,
+            "S3BucketName": "scoursh-fixture-elb-logs",
+            "EmitInterval": 60,
+            "S3BucketPrefix": "classic-hardened"
+        },
+        "ConnectionDraining": {"Enabled": true, "Timeout": 300},
+        "ConnectionSettings": {"IdleTimeout": 60}
+    }
+}

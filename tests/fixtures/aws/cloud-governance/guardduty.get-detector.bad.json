@@ -1,0 +1,12 @@
+{
+    "CreatedAt": "2020-09-13T12:00:00.000Z",
+    "FindingPublishingFrequency": "SIX_HOURS",
+    "ServiceRole": "arn:aws:iam::123456789012:role/aws-service-role/guardduty.amazonaws.com/AWSServiceRoleForAmazonGuardDuty",
+    "Status": "DISABLED",
+    "UpdatedAt": "2023-07-22T09:00:00.000Z",
+    "DataSources": {
+        "CloudTrail": {"Status": "DISABLED"},
+        "DNSLogs": {"Status": "DISABLED"},
+        "FlowLogs": {"Status": "DISABLED"}
+    }
+}

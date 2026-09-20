@@ -1,0 +1,6 @@
+{
+    "LoggingEnabled": {
+        "TargetBucket": "scoursh-fixture-log-bucket",
+        "TargetPrefix": "s3-access/"
+    }
+}

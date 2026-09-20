@@ -1,0 +1,4 @@
+{
+  "FileSystemId": "fsid-public",
+  "Policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"elasticfilesystem:ClientMount\",\"Resource\":\"arn:aws:elasticfilesystem:eu-west-2:123456789012:file-system/fsid-public\"}]}"
+}

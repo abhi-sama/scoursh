@@ -1,0 +1,10 @@
+{
+    "taskDefinition": {
+        "taskDefinitionArn": "arn:aws:ecs:eu-west-2:123456789012:task-definition/scoursh-fixture-ecs-good-task:1",
+        "family": "scoursh-fixture-ecs-good-task",
+        "revision": 1,
+        "taskRoleArn": "arn:aws:iam::123456789012:role/scoursh-fixture-ecs-good-role",
+        "executionRoleArn": "arn:aws:iam::123456789012:role/scoursh-fixture-ecs-execution-role",
+        "networkMode": "awsvpc"
+    }
+}

@@ -1,0 +1,5 @@
+{
+ "path_root": "bench/corpora/_samples/sast-192/root",
+ "tool": "scoursh",
+ "tool_version": "0.1.0-dev"
+}

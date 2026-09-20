@@ -1,0 +1,9 @@
+{
+    "UserPoolClients": [
+        {
+            "ClientId": "oauthoffclient0000000000",
+            "UserPoolId": "eu-west-2_optpool01",
+            "ClientName": "scoursh-fixture-oauth-off-client"
+        }
+    ]
+}
